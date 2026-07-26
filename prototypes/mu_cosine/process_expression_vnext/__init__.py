@@ -6,10 +6,13 @@ Proves the parser/elaborator seam described in
 
 ```text
 functional expression
-    -> lossless source AST        (functional_parser)
-    -> registry-driven elaboration (elaborator)
-    -> in-memory typed ground term (ast)
+    -> elaboration-preserving source AST  (functional_parser)
+    -> registry-driven elaboration        (elaborator)
+    -> in-memory typed ground term        (ast)
 ```
+
+The source tree keeps what elaboration and diagnostics need; it does not
+promise exact source reconstruction.
 
 **This is not vNext activation.** It creates no identity-bearing bytes, no
 canonical ``pe-typed-ast-v1`` serialization, no digests, no receipts, and no

@@ -19,7 +19,15 @@ from pathlib import Path
 import re
 from typing import Any, Mapping
 
-from .ast import IndexedType, ListType, Type, TypeName, TypeVar
+from .ast import (
+    IndexedType,
+    ListType,
+    ReferenceIndex,
+    Type,
+    TypeName,
+    TypeVar,
+    ValueIndex,
+)
 
 
 def _contains_type_var(declared: Type) -> bool:
@@ -34,6 +42,9 @@ def _contains_type_var(declared: Type) -> bool:
     return False
 
 _TYPE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+#: An index position may hold a punctuated registered name such as
+#: ``gpt-5.5-low``, which the plain type-name charset cannot express.
+_INDEX_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.\-]*")
 _INDEX_VAR = re.compile(r"[A-Z][A-Za-z0-9_]*\Z")
 
 #: Kinds a fixture entry may declare.
@@ -71,8 +82,19 @@ def _parse_type(text: str, i: int) -> tuple[Type, int]:
                 indices.append(TypeVar(inner_match.group(0)))
                 i = inner_match.end()
             else:
-                inner, i = _parse_type(text, i)
-                indices.append(inner)
+                punctuated = _INDEX_NAME.match(text, i)
+                if punctuated and (
+                    punctuated.end() >= len(text)
+                    or text[punctuated.end()] in ",]"
+                ):
+                    # A bare concrete index token.  Whether it denotes a type or
+                    # a registered value reference cannot be known until every
+                    # entry is loaded, so it is resolved in a second pass below.
+                    indices.append(TypeName(punctuated.group(0)))
+                    i = punctuated.end()
+                else:
+                    inner, i = _parse_type(text, i)
+                    indices.append(inner)
             if i < len(text) and text[i] == ",":
                 i += 1
                 continue
@@ -304,8 +326,14 @@ def load_registry(path: str | Path) -> Registry:
                     )
                 )
             fields = tuple(collected)
-        elif spec.get("args") or spec.get("fields"):
-            raise RegistryError(f"reference {name!r} cannot declare args or fields")
+        else:
+            # Check *presence*, not truthiness: `{"args": [], "binds": "junk"}`
+            # would otherwise load with all three declarations silently dropped.
+            present = sorted(set(spec) & {"args", "fields", "binds"})
+            if present:
+                raise RegistryError(
+                    f"reference {name!r} cannot declare call-only key(s): {present}"
+                )
 
         entries[name] = Entry(
             name=name,
@@ -315,4 +343,57 @@ def load_registry(path: str | Path) -> Registry:
             fields=fields,
             binds=binds,
         )
-    return Registry(entries, label=document.get("label", str(path)))
+
+    # Second pass: a concrete index token naming a registered *reference* is a
+    # value index, not a type.  Only now is the full name set known, so this
+    # cannot be decided while individual signatures are parsed.  Without it the
+    # registry and the surface parser would build different nodes for the same
+    # spelling, and `fixed()::substrate[pearltrees]` would fail with the
+    # contradictory message "expected substrate[pearltrees], found
+    # substrate[pearltrees]".
+    references = {n for n, e in entries.items() if e.kind == KIND_REFERENCE}
+    resolved = {
+        name: Entry(
+            name=entry.name,
+            kind=entry.kind,
+            result_type=_resolve_value_indices(entry.result_type, references),
+            arg_types=tuple(
+                _resolve_value_indices(t, references) for t in entry.arg_types
+            ),
+            fields=tuple(
+                FieldSpec(
+                    name=f.name,
+                    type=_resolve_value_indices(f.type, references),
+                    required=f.required,
+                    default=f.default,
+                )
+                for f in entry.fields
+            ),
+            binds=entry.binds,
+        )
+        for name, entry in entries.items()
+    }
+    return Registry(resolved, label=document.get("label", str(path)))
+
+
+def _resolve_value_indices(declared: Type, references: set[str]) -> Type:
+    """Rewrite index-position type names that actually name a reference."""
+
+    if isinstance(declared, IndexedType):
+        indices = []
+        for index in declared.indices:
+            if isinstance(index, TypeName) and index.name in references:
+                indices.append(ReferenceIndex(index.name))
+            elif isinstance(index, Type):
+                indices.append(_resolve_value_indices(index, references))
+            else:
+                indices.append(index)
+        return IndexedType(declared.name, tuple(indices))
+    if isinstance(declared, ListType):
+        element = _resolve_value_indices(declared.element, references)
+        if isinstance(element, ValueIndex):
+            raise RegistryError(
+                f"list element type may not be a value reference: {element}"
+            )
+        return ListType(element)
+    return declared

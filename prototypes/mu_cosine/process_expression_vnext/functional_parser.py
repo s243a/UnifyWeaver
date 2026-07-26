@@ -196,6 +196,9 @@ class _Parser:
             if not match:
                 raise ParseError("malformed atom literal", self.i)
             self.i = match.end()
+            # Atom values are canonically encoded too, so they need the same
+            # Unicode-scalar guard as strings.
+            _reject_lone_surrogates(match.group(1), start)
             return SourceAtom(Span(start, self.i), match.group(1))
 
         if char.isdigit() or (
@@ -344,6 +347,7 @@ class _Parser:
             raise ParseError("expected a type name after '::'", self.i)
         name = word.group(0)
         self.i = word.end()
+        name_end = self.i
         if name == "function":
             raise NotImplementedInMilestone(
                 "function types are recognized but not implemented in this milestone",
@@ -351,7 +355,10 @@ class _Parser:
             )
         self._ws()
         if not self._at("["):
-            return SourceTypeName(Span(start, self.i), name)
+            # Close the span before trivia, then rewind so trailing whitespace
+            # belongs to the caller rather than to the type token.
+            self.i = name_end
+            return SourceTypeName(Span(start, name_end), name)
         self.i += 1
         indices: list[Any] = []
         while True:
@@ -389,10 +396,12 @@ class _Parser:
         name = self._match_registered_name()
         if name is not None:
             after = self.i + len(name)
-            following = self.text[after : after + 1]
-            if following != "(":
+            probe = after
+            while probe < len(self.text) and self.text[probe].isspace():
+                probe += 1
+            if probe >= len(self.text) or self.text[probe] != "(":
                 self.i = after
-                return SourceReferenceIndex(Span(start, self.i), name)
+                return SourceReferenceIndex(Span(start, after), name)
             raise NotImplementedInMilestone(
                 "an expression-valued type index is recognized but not implemented "
                 "in this milestone; its wire representation is an open "
@@ -405,7 +414,10 @@ class _Parser:
 
 
 def parse_functional(text: str, registry) -> SourceNode:
-    """Parse functional-surface text into a lossless source AST.
+    """Parse functional-surface text into an elaboration-preserving source AST.
+
+    The tree keeps what elaboration and diagnostics need; it does not promise
+    exact source reconstruction.
 
     ``registry`` supplies registered names for longest-match lexing only; no
     signature, arity, or type information is consulted here.

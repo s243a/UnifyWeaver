@@ -132,10 +132,8 @@ def test_unknown_missing_and_ignored_fields_fail_closed(reg):
 
 
 def test_explicit_and_elided_defaults_elaborate_identically(reg):
-    elided = ela("lineage_op(principal_tree(pearltrees))", reg)
-    explicit = ela(
-        "lineage_op(principal_tree(pearltrees),decay=0.85,depth=unbounded_depth)", reg
-    )
+    elided = ela("default_probe()", reg)
+    explicit = ela("default_probe(decay=0.85,depth=unbounded_depth)", reg)
     assert elided == explicit
     fields = dict(elided.fields)
     assert isinstance(fields["decay"], Real)
@@ -319,9 +317,101 @@ def test_no_type_variable_survives_into_an_elaborated_result(reg):
         "principal_tree(pearltrees)",
         "lineage_op(principal_tree(pearltrees))",
         "hop_decay_targets(principal_tree(pearltrees),decay=0.85)",
+        "order_probe(s=principal_tree(pearltrees))",
     ]:
         for term in walk(ela(text, reg)):
             assert "TypeVar" not in repr(term.inferred_type)
+
+
+def test_registry_and_surface_agree_on_a_concrete_value_index(tmp_path):
+    """The same spelling must build the same node in both parsers.
+
+    Otherwise a fixed-result entry loads but cannot be annotated, producing the
+    contradictory diagnostic "expected substrate[pearltrees], found
+    substrate[pearltrees]".
+    """
+
+    from process_expression_vnext.registry import parse_type
+
+    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    document["entries"]["fixed_tree"] = {
+        "kind": "call",
+        "type": "substrate[pearltrees]",
+        "args": [],
+    }
+    path = tmp_path / "fixed.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    registry = load_registry(path)
+
+    call = elaborate(parse_functional("fixed_tree()", registry), registry)
+    assert call.inferred_type == IndexedType("substrate", (ReferenceIndex("pearltrees"),))
+    # ...and the annotation of the identical spelling now agrees.
+    annotated = elaborate(
+        parse_functional("fixed_tree()::substrate[pearltrees]", registry), registry
+    )
+    assert annotated == call
+
+    # A punctuated reference is expressible in a registry signature too.
+    assert parse_type("judge_scope[gpt-5.5-low]") is not None
+
+
+def test_a_value_index_cannot_become_a_list_element_type(reg):
+    """`list[T]` requires a genuine type; a value is not one."""
+
+    with pytest.raises(ElaborationError, match="must be a type, not the value"):
+        ela("[]::list[pearltrees]", reg)
+
+
+def test_a_callable_cannot_be_used_as_a_value_index(reg):
+    with pytest.raises(ElaborationError, match="callable and cannot be used"):
+        ela("[]::list[principal_tree]", reg)
+    with pytest.raises(ElaborationError, match="callable and cannot be used"):
+        ela("principal_tree(pearltrees)::substrate[principal_tree]", reg)
+
+
+def test_default_resolution_does_not_depend_on_json_field_order(reg, tmp_path):
+    """`order_probe` declares the defaulted field *before* the field that binds it."""
+
+    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    assert list(document["entries"]["order_probe"]["fields"]) == ["x", "s"]
+    forward = ela("order_probe(s=principal_tree(pearltrees))", reg)
+
+    # Swapping the JSON member order must not change the outcome.
+    swapped = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    probe = swapped["entries"]["order_probe"]["fields"]
+    swapped["entries"]["order_probe"]["fields"] = {"s": probe["s"], "x": probe["x"]}
+    path = tmp_path / "swapped.json"
+    path.write_text(json.dumps(swapped), encoding="utf-8")
+    other = load_registry(path)
+    reversed_result = elaborate(
+        parse_functional("order_probe(s=principal_tree(pearltrees))", other), other
+    )
+    assert forward == reversed_result
+
+
+def test_the_specifications_own_lineage_examples_are_executable(reg):
+    """§4.1's coarse-to-precise ladder must not fail as unknown fields."""
+
+    for text in [
+        "lineage_op(principal_tree(pearltrees))",
+        "lineage_op(principal_tree(pearltrees),"
+        "family_spec='lineage_interpretations_v1')",
+        "lineage_op(principal_tree(pearltrees),estimand='hop_decay')",
+        "lineage_op(principal_tree(pearltrees),estimand='hop_decay',"
+        "impl='graph_walk',decay=0.85,hop_origin=1,direction='ancestor',"
+        "depth=unbounded_depth)",
+    ]:
+        ela(text, reg)
+
+
+def test_the_coarse_lineage_form_inserts_no_defaults(reg):
+    """`lineage_op(S)` is "ground but underconstrained" per §4.1.
+
+    Inserting hop-decay-shaped defaults would silently answer the very
+    interpretation question the coarse form leaves open.
+    """
+
+    assert ela("lineage_op(principal_tree(pearltrees))", reg).fields == ()
 
 
 # --------------------------------------------------------------------------
@@ -330,21 +420,14 @@ def test_no_type_variable_survives_into_an_elaborated_result(reg):
 
 
 def test_lists_are_homogeneous_per_declared_element_type(reg):
-    term = ela(
-        "hop_decay_targets(principal_tree(pearltrees),decay=0.85,weights=[0.4,0.6])",
-        reg,
-    )
+    term = ela("list_probe(weights=[0.4,0.6])", reg)
     weights = dict(term.fields)["weights"]
     assert isinstance(weights, ListTerm)
     assert weights.inferred_type == ListType(TypeName("real"))
     assert all(isinstance(i, Real) for i in weights.items)
 
     with pytest.raises(ElaborationError):
-        ela(
-            "hop_decay_targets(principal_tree(pearltrees),decay=0.85,"
-            "weights=[0.4,'six'])",
-            reg,
-        )
+        ela("list_probe(weights=[0.4,'six'])", reg)
 
 
 # --------------------------------------------------------------------------
@@ -520,13 +603,99 @@ def test_spans_cover_the_expression_and_exclude_trailing_trivia(reg):
     assert padded.span.end == len("  pearltrees")  # trailing trivia excluded
 
 
+def test_debug_rendering_of_a_real_is_bounded(reg):
+    """A ~12-character lexeme must not demand a gigabyte of output.
+
+    Fixed-point rendering scales with the exponent, so the noncanonical debug
+    form falls back to scientific notation past a ceiling.
+    """
+
+    from process_expression_vnext.numerics import (
+        MAX_RENDER_CHARS,
+        NumberLexeme,
+        to_real,
+    )
+
+    for text in ("1e1000000000", "1e100000", "1e-100000"):
+        rendered = to_real(NumberLexeme(text)).plain_string()
+        assert len(rendered) <= MAX_RENDER_CHARS, text
+    # Ordinary precision still renders plainly, so exactness stays visible.
+    precise = "0.1234567890123456789012345"
+    assert to_real(NumberLexeme(precise)).plain_string() == precise
+
+
+def test_host_integer_conversion_limit_is_translated(reg):
+    """CPython's limit is configurable and may sit below the frontend ceiling."""
+
+    from process_expression_vnext.numerics import NumberLexeme, NumericError, to_int
+
+    original = sys.get_int_max_str_digits()
+    try:
+        sys.set_int_max_str_digits(640)
+        with pytest.raises(NumericError):
+            to_int(NumberLexeme("9" * 700))
+    finally:
+        sys.set_int_max_str_digits(original)
+
+
+def test_lone_surrogates_are_rejected_in_atoms_too(reg):
+    """Canonical encoding covers atom values, so they need the same guard."""
+
+    with pytest.raises(ParseError, match="surrogate"):
+        parse_functional("'" + chr(0xD800) + "'", reg)
+    assert ela("'ok'", reg).value == "ok"
+
+
+def test_a_simple_type_span_excludes_trailing_trivia(reg):
+    node = parse_functional("pearltrees::corpus  ", reg)
+    assert node.span.end == len("pearltrees::corpus")
+
+
+def test_expression_index_diagnostic_survives_trivia(reg):
+    """Whitespace must not downgrade the deferral into a generic parse error."""
+
+    for text in [
+        "lineage_op(principal_tree(pearltrees))"
+        "::abstract_lineage_process[principal_tree(pearltrees)]",
+        "lineage_op(principal_tree(pearltrees))"
+        "::abstract_lineage_process[principal_tree (pearltrees)]",
+    ]:
+        with pytest.raises(NotImplementedInMilestone, match="specification decision"):
+            parse_functional(text, reg)
+
+
+def test_a_reference_cannot_carry_silently_discarded_declarations(tmp_path):
+    """Presence, not truthiness: `{"args": [], "binds": "junk"}` must fail."""
+
+    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    document["entries"]["pearltrees"] = {
+        "kind": "reference",
+        "type": "corpus",
+        "args": [],
+        "fields": {},
+        "binds": "garbage",
+    }
+    path = tmp_path / "ref_extras.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(RegistryError, match="call-only key"):
+        load_registry(path)
+
+
 def test_source_tree_is_documented_as_elaboration_preserving_not_lossless():
     """The public claim must match what the implementation delivers."""
 
     from process_expression_vnext import ast as ast_module
     from process_expression_vnext import functional_parser as parser_module
 
-    for doc in (ast_module.__doc__, parser_module.__doc__):
+    import process_expression_vnext as package
+
+    docs = (
+        ast_module.__doc__,
+        parser_module.__doc__,
+        package.__doc__,
+        parse_functional.__doc__,
+    )
+    for doc in docs:
         flat = " ".join(doc.split())
         assert "elaboration-preserving" in flat
         assert "exact source reconstruction" in flat

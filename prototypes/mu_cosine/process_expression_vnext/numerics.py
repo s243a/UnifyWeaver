@@ -41,6 +41,12 @@ NUMBER_RE = re.compile(r"\A-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\Z")
 #: integer via ``10 ** exponent``.
 MAX_INT_DIGITS = 4096
 
+#: Ceiling on characters produced by the *noncanonical debug* rendering of a
+#: real.  Fixed-point formatting of a short lexeme like ``1e1000000000`` would
+#: otherwise attempt a gigabyte-scale allocation, so the renderer falls back to
+#: a bounded scientific form instead.
+MAX_RENDER_CHARS = 4096
+
 
 class NumericError(ValueError):
     """A numeric lexeme is malformed or cannot satisfy its declared type."""
@@ -110,8 +116,22 @@ class RealValue:
         return Decimal((sign, digits, exponent))
 
     def plain_string(self) -> str:
-        """Non-canonical debug rendering.  See module docstring."""
+        """NONCANONICAL debug rendering, bounded in size.
 
+        Fixed-point output grows with the exponent, so a ~12-character input
+        such as ``1e1000000000`` would demand roughly a gigabyte.  When the
+        plain form would exceed :data:`MAX_RENDER_CHARS` this returns
+        scientific notation instead.  Debug output is never identity-bearing,
+        so the fallback costs nothing but must not be mistaken for a canonical
+        form.
+        """
+
+        sign, digits, exponent = self.triple
+        plain_length = len(digits) + max(exponent, 0) + (1 if sign else 0)
+        if exponent < 0:
+            plain_length = max(len(digits), -exponent + 1) + 2 + (1 if sign else 0)
+        if plain_length > MAX_RENDER_CHARS:
+            return format(self.decimal, "e")
         return format(self.decimal, "f")
 
     def __eq__(self, other: object) -> bool:
@@ -159,7 +179,15 @@ def to_int(lexeme: NumberLexeme) -> int:
             f"integer literal needs {total_digits} digits, above this "
             f"experimental frontend's limit of {MAX_INT_DIGITS}"
         )
-    magnitude = int("".join(str(d) for d in digits)) * (10 ** exponent)
+    try:
+        magnitude = int("".join(str(d) for d in digits)) * (10 ** exponent)
+    except ValueError as exc:
+        # CPython's integer-string conversion limit is configurable and may sit
+        # below this module's ceiling; translate it rather than leaking a raw
+        # host error out of the frontend.
+        raise NumericError(
+            f"integer literal exceeds the host conversion limit: {exc}"
+        ) from exc
     return -magnitude if sign else magnitude
 
 

@@ -119,17 +119,35 @@ def _unify(declared: Type, actual: Type, bindings: dict[str, Any]) -> bool:
     return False
 
 
-def _resolve_source_type(node: SourceType):
+def _resolve_source_type(node: SourceType, registry: Registry):
     if isinstance(node, SourceReferenceIndex):
+        # An index may name a *reference* value.  A callable is not a value, so
+        # `list[principal_tree]` and `substrate[principal_tree]` must not pass.
+        try:
+            entry = registry.get(node.name)
+        except RegistryError as exc:
+            raise ElaborationError(str(exc), node.span) from exc
+        if entry.kind != "reference":
+            raise ElaborationError(
+                f"{node.name!r} is a callable and cannot be used as a value index",
+                node.span,
+            )
         return ReferenceIndex(node.name)
     if isinstance(node, SourceTypeName):
         return TypeName(node.name)
     if isinstance(node, SourceIndexedType):
-        indices = tuple(_resolve_source_type(i) for i in node.indices)
+        indices = tuple(_resolve_source_type(i, registry) for i in node.indices)
         if node.name == "list":
             if len(indices) != 1:
                 raise ElaborationError("list takes exactly one element type", node.span)
-            return ListType(indices[0])
+            element = indices[0]
+            if not isinstance(element, Type) or isinstance(element, ValueIndex):
+                # A value index is not a type; `list[pearltrees]` is ill-formed.
+                raise ElaborationError(
+                    f"list element type must be a type, not the value {element}",
+                    node.span,
+                )
+            return ListType(element)
         return IndexedType(node.name, indices)
     raise ElaborationError(f"unsupported type form: {type(node).__name__}", node.span)
 
@@ -177,7 +195,7 @@ def _elaborate(
     node: SourceNode, registry: Registry, expected: Type | None
 ) -> TypedTerm:
     if isinstance(node, SourceAnnotated):
-        asserted = _resolve_source_type(node.asserted)
+        asserted = _resolve_source_type(node.asserted, registry)
         # The assertion narrows what the inner term may be, but never converts.
         inner = _elaborate(node.term, registry, asserted)
         if inner.inferred_type != asserted:
@@ -310,6 +328,11 @@ def _elaborate_call(
             )
 
     fields: dict[str, TypedTerm] = {}
+
+    # Pass 1: every authored field.  Doing these first makes the result
+    # independent of the order fields happen to appear in the JSON — otherwise
+    # an authored field declared later could not bind an index that a default
+    # declared earlier needs.
     for spec in entry.fields:
         if spec.name in seen:
             want = _substitute(spec.type, bindings)
@@ -323,7 +346,12 @@ def _elaborate_call(
                     node.span,
                 )
             fields[spec.name] = term
-        elif spec.required:
+
+    # Pass 2: required-but-absent, then defaults, against fully bound indices.
+    for spec in entry.fields:
+        if spec.name in seen:
+            continue
+        if spec.required:
             raise ElaborationError(
                 f"{node.name} is missing required field {spec.name!r}", node.span
             )
