@@ -12518,13 +12518,148 @@ plawk_hex_digit(D, Char) :-
     char_code(Char, Code).
 
 plawk_begin_print_string_globals(BeginClauses, GlobalIR) :-
-    plawk_begin_print_fields(BeginClauses, Fields),
-    phrase(plawk_begin_print_string_global_lines(Fields, 0), Lines0),
+    % The globals come from string literals only, so the separator does not
+    % affect them -- but it is derived the same way the body derives it, so the
+    % two halves are emitted from identical inputs.
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_clause_outputs_ir(BeginClauses, OutputSeparator, OutputGlobalIR,
+        _BodyIR),
     plawk_fs_regex_global_lines(BeginClauses, RegexLines),
     plawk_rs_global_lines(BeginClauses, RsLines),
     plawk_subsep_global_lines(BeginClauses, SubsepLines),
-    append([Lines0, RegexLines, RsLines, SubsepLines], Lines),
-    atomic_list_concat(Lines, '\n', GlobalIR).
+    append([[OutputGlobalIR], RegexLines, RsLines, SubsepLines], Lines),
+    plawk_join_nonempty_ir(Lines, GlobalIR).
+
+%% plawk_begin_clause_outputs_ir(+BeginClauses, -GlobalIR, -BodyIR) is semidet.
+%
+%  The BEGIN block's output statements, as BOTH the module globals they need and
+%  the body that references them. The globals predicate above and the body
+%  emitter below both take their half from this one call, so they cannot
+%  disagree about a global's name or index -- they used to be two independent
+%  walks over the BEGIN clause, each numbering string globals from 0 on its own.
+%
+%  An empty / absent BEGIN, or one with no output statement, yields '' for both.
+plawk_begin_clause_outputs_ir([], _OutputSeparator, '', '') :-
+    !.
+plawk_begin_clause_outputs_ir([begin(Actions)], OutputSeparator, GlobalIR, BodyIR) :-
+    plawk_begin_output_statements(Actions, Statements),
+    (   Statements == []
+    ->  GlobalIR = '', BodyIR = ''
+    ;   plawk_begin_outputs_ir(Statements, OutputSeparator, GlobalIR, BodyIR)
+    ).
+
+%% plawk_begin_output_statements(+Actions, -Statements) is det.
+%  The output statements a BEGIN block performs, IN SOURCE ORDER. The emitter
+%  used to pick the first `print` with member/2 and emit only that, so
+%  `BEGIN { print "a"; print "b" }` silently dropped the second line and a
+%  `printf` (no `print` present at all) was silently dropped entirely. Other
+%  BEGIN actions -- FS / OFS / RS / SUBSEP assignments, cache declarations --
+%  are handled by their own startup-store paths, not here.
+plawk_begin_output_statements(Actions, Statements) :-
+    findall(Statement,
+        ( member(Statement, Actions),
+          plawk_begin_output_statement(Statement)
+        ),
+        Statements).
+
+plawk_begin_output_statement(print(_Fields)).
+plawk_begin_output_statement(printf(string(_Format), _Args)).
+
+%% plawk_begin_outputs_ir(+Statements, -GlobalIR, -BodyIR) is semidet.
+%  Emit every BEGIN output statement in order. Statement 0 is byte-identical to
+%  the old single-statement output; statement I has its `begin_`-prefixed SSA
+%  names and string globals renamed `begin_` -> `begin<I>_` so they stay unique
+%  across statements -- the same uniquing rule the END statement list uses.
+%  Fails if any statement cannot be lowered, so the driver declines rather than
+%  emitting a BEGIN block that quietly omits output.
+plawk_begin_outputs_ir(Statements, OutputSeparator, GlobalIR, BodyIR) :-
+    plawk_begin_outputs_ir_(Statements, 0, OutputSeparator, Globals, Bodies),
+    plawk_join_nonempty_ir(Globals, GlobalIR),
+    plawk_join_nonempty_ir(Bodies, BodyIR).
+
+plawk_begin_outputs_ir_([], _Index, _OutputSeparator, [], []).
+plawk_begin_outputs_ir_([Statement | Rest], Index, OutputSeparator,
+        [Global | Globals], [Body | Bodies]) :-
+    plawk_begin_output_ir(Statement, OutputSeparator, RawGlobal, RawBody),
+    plawk_begin_output_suffix_rename(Index, RawGlobal, Global),
+    plawk_begin_output_suffix_rename(Index, RawBody, Body),
+    NextIndex is Index + 1,
+    plawk_begin_outputs_ir_(Rest, NextIndex, OutputSeparator, Globals, Bodies).
+
+% One BEGIN output statement. BEGIN runs before the record loop, so there is no
+% current record and no scalar state: a `print` field is a string literal, and a
+% printf argument is a string / integer / float literal.
+plawk_begin_output_ir(print(Fields), OutputSeparator, GlobalIR, BodyIR) :-
+    maplist(plawk_begin_print_field, Fields),
+    phrase(plawk_begin_print_string_global_lines(Fields, 0), GlobalLines),
+    plawk_join_nonempty_ir(GlobalLines, GlobalIR),
+    phrase(plawk_begin_print_lines(Fields, OutputSeparator, 0), BodyLines),
+    atomic_list_concat(BodyLines, '\n', BodyIR).
+plawk_begin_output_ir(printf(string(Format), Args), _OutputSeparator, GlobalIR,
+        BodyIR) :-
+    plawk_begin_printf_ir(Format, Args, GlobalIR-BodyIR).
+
+% Suffix a BEGIN output statement's `begin_`-prefixed SSA names and string
+% globals so multiple statements do not collide. Index 0 is unchanged
+% (byte-identical single-statement IR). Shared runtime globals
+% (`@.plawk_surface_*`, `@plawk_ors_ptr`) contain no `begin_` and are untouched.
+plawk_begin_output_suffix_rename(0, IR, IR) :-
+    !.
+plawk_begin_output_suffix_rename(Index, IR0, IR) :-
+    format(atom(Replacement), 'begin~w_', [Index]),
+    plawk_atom_replace_all(IR0, 'begin_', Replacement, IR).
+
+%% plawk_begin_printf_ir(+Format, +Args, -GlobalIR-IR)
+%
+%  `BEGIN { printf "fmt", args }`. BEGIN runs before the record loop, so there
+%  is neither a current record nor any scalar slot: the arguments are literals
+%  (string / integer / float). Everything after the arguments -- argument kinds,
+%  the awk->C format rewrite, the format global, the `@printf` call -- is the
+%  shared plawk_printf_from_arg_pairs/4, the same consumer the record-context
+%  and END printf argument producers feed, so the format rewrite is identical in
+%  all three contexts.
+plawk_begin_printf_ir(Format, Args, Pair) :-
+    phrase(plawk_begin_printf_arg_pairs(Args, plawk_begin_printf, 0), ArgPairs),
+    plawk_printf_from_arg_pairs(ArgPairs, Format, plawk_begin_printf, Pair).
+
+plawk_begin_printf_arg_pairs([], _Prefix, _Index) -->
+    [].
+plawk_begin_printf_arg_pairs([Arg | Args], Prefix, Index) -->
+    { plawk_begin_printf_arg(Arg, Prefix, Index, GlobalParts, SetupParts, CallArgs),
+      plawk_join_nonempty_ir(GlobalParts, GlobalIR),
+      plawk_join_nonempty_ir(SetupParts, SetupIR),
+      NextIndex is Index + 1
+    },
+    [GlobalIR-(SetupIR-CallArgs)],
+    plawk_begin_printf_arg_pairs(Args, Prefix, NextIndex).
+
+%% plawk_begin_printf_arg(+Arg, +Prefix, +Index, -Globals, -Setup, -CallArgs)
+%  One BEGIN printf argument, lowered to the printf call-argument vocabulary.
+%  Fails for anything BEGIN cannot reach -- a field read or a scalar variable,
+%  neither of which exists yet -- so the driver declines.
+plawk_begin_printf_arg(string(Value), Prefix, Index, [GlobalIR], [PtrLine],
+        [string_ptr(PtrIR)]) :-
+    !,
+    format(atom(GlobalName), '~w_arg~w_str', [Prefix, Index]),
+    llvm_emit_c_string_global(GlobalName, Value, GlobalIR, _StringLen, BytesLen),
+    format(atom(PtrIR), '%~w_arg~w_str_ptr', [Prefix, Index]),
+    format(atom(PtrLine),
+        '  ~w = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+        [PtrIR, BytesLen, BytesLen, GlobalName]).
+plawk_begin_printf_arg(int(Value), Prefix, Index, [], SetupParts, [i64(ValueIR)]) :-
+    integer(Value),
+    !,
+    format(atom(Base), '~w_arg~w', [Prefix, Index]),
+    plawk_i64_expr_ir(int(Value), 0, Base, Base, ValueIR, [], SetupParts).
+plawk_begin_printf_arg(float_const(Mantissa, Denominator), Prefix, Index, [],
+        SetupParts, [f64(ValueIR)]) :-
+    integer(Mantissa),
+    integer(Denominator),
+    Denominator > 0,
+    !,
+    format(atom(Base), '~w_arg~w', [Prefix, Index]),
+    plawk_f64_expr_ir(float_const(Mantissa, Denominator), 0, Base, Base, ValueIR,
+        [], SetupParts).
 
 %% plawk_fs_regex_global_lines(+BeginClauses, -Lines)
 %
@@ -12558,16 +12693,23 @@ plawk_begin_print_string_global_lines([_Field | Rest], Index) -->
 
 plawk_begin_print_ir([], _OutputSeparator, '') :-
     !.
+% A BEGIN block with output statements: the startup stores, then EVERY `print` /
+% `printf` in source order. The cut commits once an output statement is present,
+% so a statement that cannot be lowered (an unsupported print field, a printf
+% argument BEGIN cannot reach) fails this predicate and the program declines --
+% it must never fall through to the stores-only clause below and quietly drop
+% the output.
 plawk_begin_print_ir([begin(Actions)], OutputSeparator, IR) :-
-    member(print(Fields), Actions),
+    plawk_begin_output_statements(Actions, Statements),
+    Statements \== [],
     !,
-    maplist(plawk_begin_print_field, Fields),
-    phrase(plawk_begin_print_lines(Fields, OutputSeparator, 0), PrintLines),
+    plawk_begin_clause_outputs_ir([begin(Actions)], OutputSeparator, _GlobalIR,
+        OutputIR),
     plawk_rs_store_lines([begin(Actions)], RsStoreLines),
     plawk_subsep_store_lines([begin(Actions)], SubsepStoreLines),
     plawk_fs_regex_store_lines([begin(Actions)], StoreLines),
-    append([RsStoreLines, SubsepStoreLines, StoreLines, PrintLines], Lines),
-    atomic_list_concat(Lines, '\n', IR).
+    append([RsStoreLines, SubsepStoreLines, StoreLines, [OutputIR]], Lines),
+    plawk_join_nonempty_ir(Lines, IR).
 plawk_begin_print_ir([begin(Actions)], _OutputSeparator, IR) :-
     plawk_rs_store_lines([begin(Actions)], RsStoreLines),
     plawk_subsep_store_lines([begin(Actions)], SubsepStoreLines),

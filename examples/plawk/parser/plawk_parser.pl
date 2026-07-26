@@ -1856,6 +1856,13 @@ begin_action(unsupported_getline(begin(Action))) -->
 begin_action(Action) -->
     begin_assignment(Action),
     !.
+% `BEGIN { printf "fmt", args }` -- before print_action so the longer keyword
+% wins (`print` would otherwise match the prefix of `printf` and leave a stray
+% `f`). BEGIN runs before the record loop, so there is no record and no scalar
+% state; codegen decides which argument shapes it can lower.
+begin_action(Action) -->
+    printf_action(Action),
+    !.
 begin_action(Action) -->
     print_action(Action),
     !.
