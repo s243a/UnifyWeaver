@@ -1439,6 +1439,58 @@ plawk_program_native_driver_ir(
             RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+% A MIXED END statement chain: for-in loops interleaved with plain statements --
+% `END { for (k in c) print k; print "done" }`, `END { print "n"; for (k in c) … }`,
+% `END { for (k in c) print k; exit 2 }`. Same driver wiring as the all-loops
+% clause above; the difference is that the END is a chain of ITEMS (see
+% plawk_end_chain_items/2), so a plain statement gets its own block in the chain
+% rather than being rejected. Requires at least one loop and at least one plain
+% statement, which keeps it disjoint from the all-loops clause above (byte-
+% identical) and from the all-plain scalar clause (which is tried earlier and
+% rejects a for-in outright).
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules, [end(Statements)]),
+    InputPath,
+    DriverIR
+) :-
+    plawk_end_chain_items(Statements, Items),
+    plawk_end_chain_plan(Rules, Items, AssocPlan),
+    AssocPlan = assoc_plan(Tables, _),
+    plawk_end_chain_fields(Items, AllPrintFields),
+    plawk_program_cache_tables(BeginClauses, CacheNamePaths),
+    plawk_cache_entries(Tables, [], [], CacheNamePaths, CacheEntries,
+        CachePathGlobals),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    plawk_assoc_record_program_ok(FieldSeparator, Rules, AllPrintFields),
+    plawk_end_chain_globals(Items, StringGlobalIR, AssocKeyGlobalIR),
+    plawk_assoc_entry_setup_ir(AssocPlan, CacheEntries, EntrySetupIR),
+    plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR,
+        AssocChainIR),
+    plawk_assoc_record_counter(Rules, AllPrintFields, AssocChainIR,
+        RecordLoopPhiIR, RecordIR),
+    plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
+    plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
+    plawk_end_chain_ir(Items, AssocPlan, FieldSeparator, OutputSeparator,
+        EndPrintIR),
+    plawk_cache_commit_lines(CacheEntries, CommitIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, AssocKeyGlobalIR, AssocRuleGlobalIR,
+         CachePathGlobals]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
+    plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w
+~w',
+        [CommitIR, EndPrintIR]),
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, RecordLoopPhiIR,
+            lowered_assoc, RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
 %% plawk_program_native_driver_ir(+Program, +InputPath, +Options, -DriverIR) is semidet.
 %
 %  Options-aware driver entry. Programs that call compiled Prolog
@@ -5999,6 +6051,199 @@ plawk_multi_forin_loop_ok(for_in(var(LoopVar), var(_ArrayName), [print(PrintFiel
     PrintFields = [_ | _],
     maplist(plawk_multi_forin_field_ok(LoopVar), PrintFields).
 
+%% END statement CHAIN: for-in loops interleaved with plain statements ------
+%
+%  `END { for (k in c) print k; print "done" }` and friends. The all-loops driver
+%  chains N for-in loops; the scalar driver chains N plain statements. Neither
+%  accepted a MIX, so six shapes declined for one structural reason: a for-in
+%  followed by a print / printf / exit, a print before a for-in, and so on.
+%
+%  A for-in loop is a group of basic blocks (`forin<I>_head` / `_body` /
+%  `_body_done` / `_after`) wired to a predecessor and a successor, so a plain
+%  statement joining that chain also needs a block: `endstmt<I>`, holding its
+%  straight-line print IR and the same tail (branch onward, or free the tables
+%  and return). Modelling both statement kinds as chain ITEMS with an entry label
+%  and an exit label is what lets them interleave in any order.
+
+%% plawk_end_chain_item(+Statement, -Item) is semidet.
+%  Classify one END statement. Fails for anything this chain cannot lower (a
+%  guarded for-in, an accumulate loop, an `if`), so those shapes keep falling
+%  through to their own drivers.
+plawk_end_chain_item(for_in(var(LoopVar), var(ArrayName), [print(Fields)]),
+        loop(LoopVar, ArrayName, Fields)) :-
+    !,
+    plawk_multi_forin_loop_ok(
+        for_in(var(LoopVar), var(ArrayName), [print(Fields)])).
+plawk_end_chain_item(print(Fields), plain(print(Fields))) :-
+    Fields = [_ | _].
+plawk_end_chain_item(exit(int(Code)), plain(exit(int(Code)))) :-
+    integer(Code).
+
+%% plawk_end_chain_items(+Statements, -Items) is semidet.
+%  Require at least one loop AND at least one plain statement: an all-loops END
+%  belongs to the multi-for-in driver (which stays byte-identical) and an
+%  all-plain END to the scalar driver, so this clause only claims the MIXED
+%  shapes that used to decline.
+plawk_end_chain_items(Statements, Items) :-
+    Statements = [_, _ | _],
+    maplist(plawk_end_chain_item, Statements, Items),
+    memberchk(loop(_, _, _), Items),
+    memberchk(plain(_), Items).
+
+%% plawk_end_chain_plan(+Rules, +Items, -AssocPlan) is semidet.
+%  One shared table plan for the whole chain: the iterated tables, the lookup
+%  tables the loop bodies read by loop key, and any table a PLAIN statement reads
+%  by literal key (`print c["a"]`). Missing that last set is what would leave a
+%  plain statement's lookup without a table slot.
+plawk_end_chain_plan(Rules, Items, AssocPlan) :-
+    findall(A, member(loop(_LV, A, _F), Items), IterArrays),
+    IterArrays = [First | RestIter],
+    findall(Lk,
+        ( member(loop(L, _A2, F2), Items),
+          member(assoc(var(Lk), var(L)), F2)
+        ),
+        LoopLookups),
+    findall(Pa,
+        ( member(plain(print(PF)), Items),
+          member(Field, PF),
+          plawk_assoc_print_array(Field, Pa)
+        ),
+        PlainArrays),
+    append([RestIter, LoopLookups, PlainArrays], ExtraArrays),
+    plawk_forin_assoc_plan(Rules, First, ExtraArrays, AssocPlan).
+
+%% plawk_end_chain_fields(+Items, -Fields) is det.
+%  Every print field the chain reads, across both statement kinds -- fed to the
+%  program-shape gate and the string-literal globals.
+plawk_end_chain_fields(Items, Fields) :-
+    findall(F,
+        ( ( member(loop(_L, _A, FL), Items) ; member(plain(print(FL)), Items) ),
+          member(F, FL)
+        ),
+        Fields).
+
+% A chain item's entry label (where control arrives) and exit label (the block
+% that branches onward). A loop's phi needs its predecessor's exit label, which
+% is why both are named explicitly rather than derived from the index alone.
+plawk_end_chain_entry_label(loop(_L, _A, _F), Index, Label) :-
+    plawk_forin_index_suffix(Index, Suffix),
+    format(atom(Label), 'forin~w_head', [Suffix]).
+plawk_end_chain_entry_label(plain(_S), Index, Label) :-
+    format(atom(Label), 'endstmt~w', [Index]).
+
+plawk_end_chain_exit_label(loop(_L, _A, _F), Index, Label) :-
+    plawk_forin_index_suffix(Index, Suffix),
+    format(atom(Label), 'forin~w_after', [Suffix]).
+plawk_end_chain_exit_label(plain(_S), Index, Label) :-
+    format(atom(Label), 'endstmt~w', [Index]).
+
+%% plawk_end_chain_stmt_rename(+Index, +IR0, -IR) is det.
+%  Uniquify one plain statement's module-level names by statement index. TWO
+%  families need it and they must be renamed together, in the body AND in the
+%  globals, or the body references a global that was never emitted:
+%
+%    `plawk_end_print_string_N`  -- string literals  (`end_`-prefixed)
+%    `plawk_assoc_print_key_N`   -- literal assoc keys (NOT `end_`-prefixed, so
+%                                   the end_ rename alone leaves two statements
+%                                   both pointing at ..._key_0)
+%
+%  Index 0 is unchanged, so a single plain statement emits exactly the IR the
+%  existing assoc-END print driver does.
+plawk_end_chain_stmt_rename(Index, IR0, IR) :-
+    plawk_end_print_suffix_rename(Index, IR0, IR1),
+    plawk_end_chain_key_rename(Index, IR1, IR).
+
+plawk_end_chain_key_rename(0, IR, IR) :-
+    !.
+plawk_end_chain_key_rename(Index, IR0, IR) :-
+    format(atom(Replacement), 'plawk_assoc_print_key~w_', [Index]),
+    plawk_atom_replace_all(IR0, 'plawk_assoc_print_key_', Replacement, IR).
+
+%% plawk_end_chain_globals(+Items, -StringGlobalIR, -KeyGlobalIR) is det.
+%  The module globals the chain's PLAIN statements need, each renamed by its own
+%  statement index so they match that statement's body. Loop items contribute
+%  none: a chain loop's print fields are the loop key and lookups by loop key
+%  (plawk_multi_forin_field_ok/2), neither of which emits a global.
+plawk_end_chain_globals(Items, StringGlobalIR, KeyGlobalIR) :-
+    plawk_end_chain_globals_(Items, 0, StringParts, KeyParts),
+    plawk_join_nonempty_ir(StringParts, StringGlobalIR),
+    plawk_join_nonempty_ir(KeyParts, KeyGlobalIR).
+
+plawk_end_chain_globals_([], _Index, [], []).
+plawk_end_chain_globals_([plain(print(Fields)) | Rest], Index,
+        [StringIR | StringParts], [KeyIR | KeyParts]) :-
+    !,
+    plawk_end_print_string_globals(Fields, RawString),
+    plawk_assoc_print_key_globals(Fields, RawKey),
+    plawk_end_chain_stmt_rename(Index, RawString, StringIR),
+    plawk_end_chain_stmt_rename(Index, RawKey, KeyIR),
+    NextIndex is Index + 1,
+    plawk_end_chain_globals_(Rest, NextIndex, StringParts, KeyParts).
+plawk_end_chain_globals_([_Item | Rest], Index, StringParts, KeyParts) :-
+    NextIndex is Index + 1,
+    plawk_end_chain_globals_(Rest, NextIndex, StringParts, KeyParts).
+
+%% plawk_end_chain_ir(+Items, +AssocPlan, +Descriptor, +OutputSeparator, -IR)
+%  The whole END block: enter the first item, then every item's blocks in order.
+plawk_end_chain_ir(Items, AssocPlan, Descriptor, OutputSeparator, IR) :-
+    Items = [FirstItem | _],
+    plawk_end_chain_entry_label(FirstItem, 0, FirstLabel),
+    plawk_end_chain_blocks(Items, 0, end_print, AssocPlan, Descriptor,
+        OutputSeparator, BlockIRs),
+    atomic_list_concat(BlockIRs, '\n\n', BlocksIR),
+    format(atom(IR), '  br label %~w\n\n~w', [FirstLabel, BlocksIR]).
+
+plawk_end_chain_blocks([], _Index, _PrevLabel, _AssocPlan, _Descriptor,
+        _OutputSeparator, []).
+% `exit [N]`: store the status, free the tables, return it. TRUNCATES -- the
+% recursion stops, so later statements are never emitted, matching awk and the
+% scalar chain's behaviour.
+plawk_end_chain_blocks([plain(exit(int(Code))) | _Rest], Index, _PrevLabel,
+        AssocPlan, _Descriptor, _OutputSeparator, [IR]) :-
+    !,
+    plawk_end_chain_entry_label(plain(exit(int(Code))), Index, Label),
+    plawk_forin_end_tail_ir(free_ret_exit_code, AssocPlan, TailIR),
+    format(atom(IR),
+'~w:
+  store i32 ~w, i32* @plawk_exit_code
+~w',
+        [Label, Code, TailIR]).
+plawk_end_chain_blocks([plain(print(Fields)) | Rest], Index, _PrevLabel, AssocPlan,
+        Descriptor, OutputSeparator, [IR | More]) :-
+    !,
+    plawk_end_chain_entry_label(plain(print(Fields)), Index, Label),
+    plawk_assoc_end_print_body_ir(Fields, AssocPlan, Descriptor, OutputSeparator,
+        RawBody),
+    % Uniquify this statement's names by index -- the same rename applied to its
+    % globals, so body and globals agree.
+    plawk_end_chain_stmt_rename(Index, RawBody, Body),
+    NextIndex is Index + 1,
+    plawk_end_chain_tail(Rest, NextIndex, AssocPlan, TailIR),
+    % (the tail is the branch to the next item, or free-and-return when last)
+    format(atom(IR), '~w:\n~w\n~w', [Label, Body, TailIR]),
+    plawk_end_chain_blocks(Rest, NextIndex, Label, AssocPlan, Descriptor,
+        OutputSeparator, More).
+plawk_end_chain_blocks([loop(LoopVar, ArrayName, Fields) | Rest], Index, PrevLabel,
+        AssocPlan, Descriptor, OutputSeparator, [IR | More]) :-
+    plawk_forin_index_suffix(Index, Suffix),
+    NextIndex is Index + 1,
+    plawk_end_chain_loop_tail(Rest, NextIndex, Tail),
+    plawk_forin_end_print_ir_indexed(Suffix, PrevLabel, Tail, LoopVar, ArrayName,
+        Fields, AssocPlan, Descriptor, OutputSeparator, IR),
+    plawk_end_chain_exit_label(loop(LoopVar, ArrayName, Fields), Index, ExitLabel),
+    plawk_end_chain_blocks(Rest, NextIndex, ExitLabel, AssocPlan, Descriptor,
+        OutputSeparator, More).
+
+% The tail an item hands to the next one: branch to its entry label, or -- when
+% nothing follows -- free the tables and return the exit status.
+plawk_end_chain_loop_tail([], _NextIndex, free_ret_exit_code).
+plawk_end_chain_loop_tail([Next | _], NextIndex, chain(NextLabel)) :-
+    plawk_end_chain_entry_label(Next, NextIndex, NextLabel).
+
+plawk_end_chain_tail(Rest, NextIndex, AssocPlan, TailIR) :-
+    plawk_end_chain_loop_tail(Rest, NextIndex, Tail),
+    plawk_forin_end_tail_ir(Tail, AssocPlan, TailIR).
+
 plawk_multi_forin_field_ok(LoopVar, var(LoopVar)).
 plawk_multi_forin_field_ok(LoopVar, assoc(var(_ArrayName), var(LoopVar))).
 
@@ -6304,6 +6549,18 @@ plawk_forin_end_tail_ir(free_ret, AssocPlan, IR) :-
     phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
     atomic_list_concat(FreeLines, '\n', FreeIR),
     format(atom(IR), '~w\n  ret i32 0', [FreeIR]).
+% As free_ret, but returning @plawk_exit_code instead of a hardcoded 0. Used by
+% the mixed statement chain, whose END can contain an `exit`. The plain free_ret
+% above keeps its literal 0 so the existing all-loops drivers stay byte-identical;
+% that is sound only because an `exit` in an ASSOC rule body declines, so those
+% drivers cannot reach a nonzero code. Any future assoc rule-level exit must
+% switch them to this tail.
+plawk_forin_end_tail_ir(free_ret_exit_code, AssocPlan, IR) :-
+    phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
+    atomic_list_concat(FreeLines, '\n', FreeIR),
+    format(atom(IR),
+        '~w\n  %plawk_exit_ec = load i32, i32* @plawk_exit_code\n  ret i32 %plawk_exit_ec',
+        [FreeIR]).
 plawk_forin_end_tail_ir(chain(NextHead), _AssocPlan, IR) :-
     format(atom(IR), '  br label %~w', [NextHead]).
 
@@ -13072,6 +13329,33 @@ plawk_assoc_end_print_ir(PrintFields, AssocPlan, Descriptor, OutputSeparator, IR
     phrase(plawk_assoc_end_print_lines(PrintFields, AssocPlan, Descriptor,
         OutputSeparator, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
+
+%% plawk_assoc_end_print_body_ir(+PrintFields, +AssocPlan, +Descriptor,
+%%     +OutputSeparator, -IR) is det.
+%
+%  As plawk_assoc_end_print_ir/5 but WITHOUT the table frees.
+%
+%  plawk_assoc_end_print_lines//5 ends by freeing every table, which is right
+%  when the print IS the whole END block. In a statement CHAIN it is not: the
+%  chain's tail frees exactly once, at the end, so a per-statement free would
+%  double-free (`double free or corruption`) and leave any later for-in iterating
+%  freed memory.
+%
+%  The frees are the emitted line list's exact tail, so they are split off by
+%  length rather than by matching -- an arithmetic split cannot strip the wrong
+%  occurrence the way a suffix search could.
+plawk_assoc_end_print_body_ir(PrintFields, AssocPlan, Descriptor, OutputSeparator,
+        IR) :-
+    phrase(plawk_assoc_end_print_lines(PrintFields, AssocPlan, Descriptor,
+        OutputSeparator, 0), Lines),
+    phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
+    length(Lines, LineCount),
+    length(FreeLines, FreeCount),
+    BodyCount is LineCount - FreeCount,
+    BodyCount >= 0,
+    length(BodyLines, BodyCount),
+    append(BodyLines, FreeLines, Lines),
+    atomic_list_concat(BodyLines, '\n', IR).
 
 plawk_assoc_end_print_lines([], AssocPlan, _Descriptor, _OutputSeparator, _) -->
     { plawk_ors_terminator_ir(end_newline_fmt, end_ors_ptr, printed_end_newline,
