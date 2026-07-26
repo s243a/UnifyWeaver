@@ -405,6 +405,15 @@ median of 4812 / 5610. This is about 17.0× faster than the original hosted R
 query result of 62595 ms. Lazy/cached LMDB policies and TermValue /
 `iterate_goal` fallbacks are unchanged.
 
+PERF-R-CA-PATHMARK investigated O(1) path-local membership counts as a
+follow-up to STACK. Post-STACK Rprof on a Cursor cloud agent attributes only
+~1.3% self time to `any` path scans; the ~1.7s instrumented membership total
+was dominated by per-check `proc.time` overhead. A trial dense+sparse count
+implementation preserved 271-row parity but did not beat same-host STACK
+(query median 2660 → 2673 ms). The speculative production change was not
+retained. Remaining CA cost is the iterative `hops_ids` loop body and cached
+`lookup_ids`, with lowered WAM `step`/orchestration outside the kernel.
+
 #### Reproduction
 
 ```bash
