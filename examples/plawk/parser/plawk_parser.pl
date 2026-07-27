@@ -3642,12 +3642,16 @@ concat_rest([]) -->
 % A ternary `L <op> R ? THEN : ELSE`. The condition is a numeric comparison and
 % each branch is a numeric field_expr (nested ternaries are a follow-on). Used
 % by print fields and printf args.
-ternary_expr(ternary(cmp(Left, Op, Right), Then, Else)) -->
-    ternary_operand(Left),
+% A PARENTHESISED condition -- `($2 > 1) ? a : b`, which is how the ternary is
+% most often written. Tried first: the leading `(` is unambiguous here, since a
+% ternary operand never starts with one. The condition inside is the same
+% comparison the bare form takes, so both share ternary_cond//1 and cannot drift.
+ternary_expr(ternary(Cond, Then, Else)) -->
+    "(",
     ws,
-    numeric_cmp_op(Op),
+    ternary_cond(Cond),
     ws,
-    ternary_operand(Right),
+    ")",
     ws,
     "?",
     ws,
@@ -3656,6 +3660,27 @@ ternary_expr(ternary(cmp(Left, Op, Right), Then, Else)) -->
     ":",
     ws,
     ternary_operand(Else).
+ternary_expr(ternary(Cond, Then, Else)) -->
+    ternary_cond(Cond),
+    ws,
+    "?",
+    ws,
+    ternary_operand(Then),
+    ws,
+    ":",
+    ws,
+    ternary_operand(Else).
+
+% The ternary's condition: a comparison between two operands. Whether codegen can
+% lower it depends on the operand kinds -- two i64s become an `icmp`, a field
+% against a string literal uses the field-vs-literal comparator -- so the grammar
+% admits both and plawk_ternary_cond_ok/3 decides.
+ternary_cond(cmp(Left, Op, Right)) -->
+    ternary_operand(Left),
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    ternary_operand(Right).
 
 % A ternary condition operand or branch: a field_expr (`$N`, `NR`, `NF`,
 % arithmetic, `length(...)`, ...) or a bare integer literal (which field_expr

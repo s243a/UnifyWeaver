@@ -236,9 +236,22 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    evaluated (no side effects in an i64 expression), so it composes straight-line
    anywhere an i64 value is used (`plawk_i64_expr_ir(ternary(...))`), and the
    `%s`/`%d`/arith paths are unaffected. Tests: `tests/test_plawk_ternary.pl`.
-   *Still open (follow-on):* assignment-context ternary (`x = c ? a : b`, needs
-   scalar-var operands + the assignment RHS grammar), string-valued branches,
-   and boolean-combination conditions (`a && b ? ...`).
+   **Parenthesised and string-comparison CONDITIONS landed** --
+   `x = ($2 > 1) ? 10 : 20` was a parse error and `x = $1 == "a" ? 1 : 2`
+   declined. Both grammar forms now share `ternary_cond//1`; a string condition
+   reuses the same field-vs-literal comparator the `$N OP "str"` guards use, which
+   yields an i1 directly and covers all SIX operators, so only the condition
+   differs and the `select` is unchanged. A POSITIVE field only: `$0` against a
+   string literal is unsupported across the whole surface (the `$0 OP "str"` guard
+   form does not even parse) and the comparator answers false for index 0, so
+   admitting it produced WRONG OUTPUT rather than a decline. Both gates that admit
+   a ternary now ask through one `plawk_ternary_cond_ok/3`. Note the
+   **assignment-context ternary already worked** for numeric conditions
+   (`x = $2 > 1 ? 10 : 20`, `x = NR == 2 ? 1 : 0`) -- it was listed as open here in
+   error. Tests: `tests/test_plawk_ternary_cond.pl`.
+   *Still open (follow-on):* string-valued branches (`c ? "hi" : "lo"`), a
+   reversed comparison (the string on the left), boolean-combination conditions
+   (`a && b ? ...`), and a ternary in an END block (no current record).
    (String concatenation landed in both contexts — `print $1 $2` earlier, and
    **assignment concat `x = $1 $2` via string-valued scalars** now: a string
    scalar's slot holds an interned atom id (an i64, so it reuses the whole
