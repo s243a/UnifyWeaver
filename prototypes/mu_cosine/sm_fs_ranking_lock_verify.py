@@ -1,65 +1,103 @@
 #!/usr/bin/env python3
-"""Candidate/final execution-lock emitter + independent verifier (CAND-4/5 replacement).
+"""Candidate/final lock emitter + verifier v3 (CAND2-3/5 replacement).
 
-One authority for the lock schemas: `emit_candidate()` writes the v2-namespace candidate with
-every §4 binding as an enforced FIELD; `verify_candidate_lock`/`verify_final_lock` recompute
-every bound hash from disk and reject tampering. The final verifier is what the pipeline's
-fitting gate calls — locks never self-assert (CAND-2).
+Finalization chain (CAND2-3): a final lock is valid only when
+  1. the LIVE preregistration authorizes fitting;
+  2. the lock binds the exact reviewed CANDIDATE bytes (candidate_sha256) and the rigor lane's
+     REVIEW ID, and the named review artifact — a file COMMITTED by the rigor lane's own PR —
+     records verdict "accepted" for that exact candidate SHA and review ID. Caller-authored
+     JSON cannot substitute for the committed review artifact;
+  3. every hash the candidate bound still recomputes from disk (the only permitted intervening
+     changes are the preregistration amendments the review authorizes).
 
-  python3 sm_fs_ranking_lock_verify.py emit      # fresh candidate in the v2 namespace
+All-fields verification (CAND2-5): _verify_common enforces EVERY bound field — code hashes
+(ID-free set; sm_fs_protocols is deliberately excluded per CAND2-2), ranking manifest AND the
+manifest-bound pairs/fold bytes, titles, plan, initialized checkpoints BY READING THE BYTES,
+the exact 18 trainable names+shapes (obtained by really loading a countersigned checkpoint
+through the established loader), environment INVARIANT fields (versions/flags — enforced), with
+runtime fields (CUDA device/driver) recorded separately as descriptive so sandboxed
+verification neither falsely passes nor falsely fails.
+
+  python3 sm_fs_ranking_lock_verify.py emit
   python3 sm_fs_ranking_lock_verify.py verify --lock PATH
 """
 import argparse
-import hashlib
 import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from sm_fs_ranking_pipeline import (ADAM, ANCHOR_W, ARMS, BOOT, BS, CLIP, DRAWS, INIT_SHA,
+from sm_fs_ranking_pipeline import (ADAM, ANCHOR_W, ARMS, BS, CLIP, DRAWS, INIT_SHA,
                                     RANK_DIR, ROOT, RUN_DIR, SEEDS, STEPS, PipelineError,
-                                    canon, enforce_environment, git_head, install_private,
-                                    lane_clean, need, read_bound, sha_bytes)
+                                    canon, enforce_environment, git_head,
+                                    install_private, lane_clean, load_checkpoint_bytes,
+                                    need, read_bound, resolve_allowlist, sha_bytes)
 
 CODE_FILES = ("sm_fs_ranking_pipeline.py", "sm_fs_ranking_lock_verify.py",
-              "sm_fs_ranking_construct.py", "sm_fs_protocols.py",
+              "sm_fs_sampler.py", "sm_fs_bootstrap.py", "sm_fs_ranking_construct.py",
               "fine_tune_channel_heads.py", "mu_attention.py", "judge_cards.py")
-CAND_SCHEMA = "unifyweaver.sm-fs-ranking-execution-lock.candidate.v2"
-FINAL_SCHEMA = "unifyweaver.sm-fs-ranking-execution-lock.final.v1"
+CAND_SCHEMA = "unifyweaver.sm-fs-ranking-execution-lock.candidate.v3"
+FINAL_SCHEMA = "unifyweaver.sm-fs-ranking-execution-lock.final.v2"
+RECEIPT_SCHEMA = "unifyweaver.sm-fs-ranking-final-verification-receipt.v2"
+
+
+def _trainable_inventory():
+    """Load a real countersigned checkpoint (cpu) and resolve the exact 18 names+shapes."""
+    ckpt_bytes = read_bound(os.path.join(RANK_DIR, f"init_seed{SEEDS[0]}.pt"),
+                            expect_sha=INIT_SHA[SEEDS[0]], private=True,
+                            description="initialized checkpoint")
+    model, _ = load_checkpoint_bytes(ckpt_bytes, "cpu")
+    names, shapes, tensors = resolve_allowlist(model)
+    return shapes
 
 
 def _bindings():
     need(lane_clean(), "tracked prototypes/mu_cosine files dirty — land the commit first "
-                       "(scope: tracked lane files only; untracked and other paths excluded)")
-    man_sha = sha_bytes(read_bound(os.path.join(RANK_DIR, "manifest.json")))
-    titles_path = os.path.join(RUN_DIR, "titles.json")
+                       "(scope: tracked lane files only)")
+    man_bytes = read_bound(os.path.join(RANK_DIR, "manifest.json"))
+    man = json.loads(man_bytes)
+    # manifest-bound data files verified by bytes, not presence (CAND2-5)
+    read_bound(os.path.join(RANK_DIR, "pairs.jsonl"),
+               expect_sha=man["outputs"]["pairs.jsonl"], description="pairs")
+    read_bound(os.path.join(RANK_DIR, "fold_assignment.tsv"),
+               expect_sha=man["outputs"]["fold_assignment.tsv"], description="folds")
+    for s in SEEDS:                                     # init bytes actually read (CAND2-5)
+        read_bound(os.path.join(RANK_DIR, f"init_seed{s}.pt"), expect_sha=INIT_SHA[s],
+                   private=True, description=f"init seed {s}")
+    env = enforce_environment()
     return {
         "git_commit": git_head(),
         "cleanliness_scope": "tracked prototypes/mu_cosine files only",
-        "ranking_bundle_manifest_sha256": man_sha,
+        "ranking_bundle_manifest_sha256": sha_bytes(man_bytes),
         "initialized_checkpoints": {str(s): INIT_SHA[s] for s in SEEDS},
-        "title_table_sha256": sha_bytes(read_bound(titles_path, description="title table")),
+        "title_table_sha256": sha_bytes(read_bound(
+            os.path.join(RUN_DIR, "titles.json"), private=True, description="title table")),
+        "training_plan_sha256": sha_bytes(read_bound(
+            os.path.join(RUN_DIR, "training_plan.json"), private=True,
+            description="training plan")),
         "e5_revision": __import__("mu_attention").E5_REVISION,
         "tokenizer_structure": "mu_attention.Tokenizer(qtbl, ptbl, idx, {}, {}); "
                                "e5 query/passage prefixes; titles-only text",
         "code_sha256": {n: sha_bytes(read_bound(os.path.join(ROOT, n))) for n in CODE_FILES},
         "adam": ADAM, "steps": STEPS, "batch_size": BS, "query_draws": DRAWS,
         "anchor_weight": ANCHOR_W, "grad_clip": CLIP, "early_stopping": False,
-        "trainable_contract": {"tensor_count": 18, "param_count": 1195782,
-                               "assertion": "resolve_allowlist before optimizer construction"},
+        "trainable_names_shapes": _trainable_inventory(),
         "frozen_reference": "copy.deepcopy of exact loaded init, eval, grads off, "
                             "before optimizer creation",
         "augmentation": {"train_rng": "numpy default_rng(seed+1), consumed in row order",
                          "anchor_rows_augmented": False},
         "tie_rule": "ascending-frozen-catalog-column",
-        "bootstrap": BOOT,
-        "schemas": ["unifyweaver.sm-fs-ranking-train-projection.v1",
-                    "unifyweaver.sm-fs-ranking-fit-receipt.v1",
-                    "unifyweaver.sm-fs-ranking-eval-receipt.v1",
-                    "unifyweaver.sm-fs-ranking-decision.v1"],
-        "environment": enforce_environment(),
+        "environment_invariant": env["invariant"],
     }
+
+
+BOUND_KEYS = ("cleanliness_scope", "ranking_bundle_manifest_sha256",
+              "initialized_checkpoints", "title_table_sha256", "training_plan_sha256",
+              "e5_revision", "tokenizer_structure", "code_sha256", "adam", "steps",
+              "batch_size", "query_draws", "anchor_weight", "grad_clip", "early_stopping",
+              "trainable_names_shapes", "frozen_reference", "augmentation", "tie_rule",
+              "environment_invariant")
 
 
 def emit_candidate():
@@ -67,38 +105,71 @@ def emit_candidate():
     lock["schema"] = CAND_SCHEMA
     lock["status"] = "CANDIDATE for independent review; fitting stays blocked"
     lock["fitting_authorized"] = False
+    lock["environment_runtime_descriptive"] = enforce_environment()["runtime"]
     data = canon(lock)
-    out = os.path.join(RUN_DIR, "candidate_lock_v2.json")
+    out = os.path.join(RUN_DIR, "candidate_lock_v3.json")
     install_private(out, data)
-    print(f"candidate v2 -> {out} (sha {sha_bytes(data)[:16]}, "
+    print(f"candidate v3 -> {out} (sha {sha_bytes(data)[:16]}, "
           f"commit {lock['git_commit'][:12]})")
     return out
 
 
 def _verify_common(lock):
     live = _bindings()
-    for key in ("ranking_bundle_manifest_sha256", "initialized_checkpoints",
-                "title_table_sha256", "e5_revision", "code_sha256", "adam", "steps",
-                "batch_size", "query_draws", "anchor_weight", "grad_clip",
-                "trainable_contract", "tie_rule", "bootstrap", "schemas"):
+    for key in BOUND_KEYS:
         need(lock.get(key) == live[key],
              f"lock binding {key!r} does not match recomputed state")
-    need(lock.get("git_commit") == live["git_commit"],
-         "lock was generated from a different commit than the current tree")
 
 
-def verify_candidate_lock(lock, **_):
-    need(lock.get("schema") == CAND_SCHEMA, "not a v2 candidate lock")
+def verify_candidate_lock(lock):
+    need(lock.get("schema") == CAND_SCHEMA, "not a v3 candidate lock")
     need(lock.get("fitting_authorized") is False, "candidate must not authorize fitting")
     _verify_common(lock)
+    need(lock.get("git_commit") == git_head(),
+         "candidate was generated from a different commit than the current tree")
     return True
 
 
-def verify_final_lock(lock, **_):
-    need(lock.get("schema") == FINAL_SCHEMA, "not a final lock")
+def verify_final_lock(lock):
+    need(lock.get("schema") == FINAL_SCHEMA, "not a final.v2 lock")
     need(lock.get("fitting_authorized") is True, "final lock must authorize fitting")
-    _verify_common(lock)
+    cand_path = os.path.join(RUN_DIR, "candidate_lock_v3.json")
+    cand_bytes = read_bound(cand_path, private=True, description="reviewed candidate")
+    need(lock.get("candidate_sha256") == sha_bytes(cand_bytes),
+         "final lock does not bind the reviewed candidate bytes")
+    review_name = lock.get("review_artifact")
+    need(isinstance(review_name, str) and review_name.startswith("SM_FS_")
+         and "/" not in review_name, "final lock must name a committed review artifact")
+    review = json.loads(read_bound(os.path.join(ROOT, review_name),
+                                   description="committed review artifact"))
+    need(review.get("verdict") == "accepted", "committed review verdict is not 'accepted'")
+    need(review.get("candidate_sha256") == lock.get("candidate_sha256"),
+         "committed review does not accept this candidate")
+    need(review.get("review_id") == lock.get("review_id"),
+         "review id mismatch between lock and committed review")
+    _verify_common(lock)                      # only prereg amendments may have intervened
     return True
+
+
+def fitting_allowed(final_lock_path, receipt_path):
+    doc = json.loads(read_bound(os.path.join(ROOT, "SM_FS_LINEAGE_RANKING_PREREG.json"),
+                                description="live preregistration"))
+    need(doc.get("model_fitting_authorized") is True,
+         "live preregistration does not authorize model fitting")
+    lock_bytes = read_bound(final_lock_path, description="final lock")
+    lock = json.loads(lock_bytes)
+    receipt = json.loads(read_bound(receipt_path, description="verification receipt"))
+    need(receipt.get("schema") == RECEIPT_SCHEMA, "receipt schema mismatch")
+    need(receipt.get("final_lock_sha256") == sha_bytes(lock_bytes),
+         "receipt does not bind these exact final-lock bytes")
+    need(receipt.get("review_id") == lock.get("review_id"),
+         "receipt review id mismatch")
+    derived = sha_bytes(canon({k: v for k, v in doc.items() if k != "prereg_id"}))
+    need(lock.get("prereg_id") == doc.get("prereg_id") == receipt.get("prereg_id"),
+         "prereg id mismatch across lock/receipt/live document")
+    need(lock.get("prereg_id_derived") == derived, "lock's derived prereg id is stale")
+    verify_final_lock(lock)
+    return lock, receipt
 
 
 def main(argv=None):
