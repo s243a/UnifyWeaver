@@ -22,7 +22,7 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
 | **F# LMDB cached (two-level L1/L2)** | **2** | -- | **1** | **Yes** | Fact-access only (no WAM overhead); see below |
 | Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
-| R WAM (functions, kernels_on) | 3679 | 4344 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + iterative integer-ID DFS frames (STACK); 3-rep median query |
+| R WAM (functions, kernels_on) | 3412 | 4076 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + IDTABLE (lazy in-memory adjacency); 3-rep median query |
 | Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
 
 **Key takeaway:** Atom interning (replacing `HashMap<String, Vec<String>>` with
@@ -437,6 +437,24 @@ faster overall than hosted STACK 3679 / 4344, with the same 271-row reference
 parity. This is about 18.3× faster than the original hosted R query result of
 62595 ms. Residual cost is the iterative DFS body and lowered WAM
 `step`/orchestration.
+
+PERF-R-CA-LOOPBODY line-profiled the post-IDTABLE iterative
+`category_ancestor_hops_ids` body on a Cursor cloud agent (R 4.3.3; no
+per-loop `proc.time`). Call-level phase walls on scale-300 attribute
+~38% of query time to `hops_ids`, ~0% to CA result packing beyond that,
+and ~62% to lowered WAM `step` / effective-distance orchestration outside
+CA. Counters: ~369k node enters, growth-branch hits = 0, max frame sp = 9
+with `cap = max_depth + 2` (max_depth = 10), so the capacity-growth path
+is idle but removing it alone is not a measurable win. Specialized
+single-change trials (no growth branch; skip redundant `as.integer`; skip
+frame-slot clear; O(1) root-on-path count via frame save/restore) all
+preserved 271-row parity and stayed within run-to-run noise or were
+slightly slower (7-rep interleaved medians ≈ 2553 ms base vs 2558 / 2581
+ms). Official same-host 5-rep IDTABLE baseline: query samples
+3106, 2542, 2488, 2528, 2507 (median 2528 / total 3049). No production
+change retained. Hosted IDTABLE reference remains 3412 / 4076 (samples
+4078, 3412, 3268) vs STACK 3679 / 4344. Next end-to-end leverage is
+outside the CA DFS loop.
 
 #### Reproduction
 
