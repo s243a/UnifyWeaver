@@ -644,6 +644,64 @@ plawk_program_native_driver_ir(
             RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+% A statement LIST in the mixed (scalar slots + assoc tables) END chain:
+% `{ c[$1]++; n++ } END { print n; print c["a"] }`, `… END { print n; exit 3 }`.
+% The fourth and last END chain to take a statement list, completing the set --
+% scalar, for-in, assoc, mixed. Same wiring as the single-print clause below; the
+% END is a list, emitted straight-line (there is no loop here) with each statement
+% renamed by index and the tables freed once at the end. The guard excludes a lone
+% plain print, which that clause keeps byte-identically.
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules, [end(Statements)]),
+    InputPath,
+    DriverIR
+) :-
+    \+ plawk_begin_has_binfmt(BeginClauses),
+    plawk_end_list_statements(mixed, Statements, Items),
+    plawk_end_list_statement_fields(Items, PrintFields),
+    plawk_mixed_state_plan(Rules, PrintFields, MixedPlan),
+    MixedPlan = mixed_plan(ScalarPlan, AssocPlan, _PlannedRules),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_field_separator(BeginClauses, FieldSeparator),
+    plawk_end_list_statement_globals(Items, ScalarPlan, StringGlobalIR,
+        AssocGlobalIR),
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_mixed_rule_chain_ir(MixedPlan, FieldSeparator, OutputSeparator,
+        RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    append(PrintFields, BodyPrintFields, PrintExprs),
+    append(PrintExprs, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(ScalarPlan, RecordCounterExprs,
+        RecordLoopPhiIR, RecordCounterIR),
+    plawk_state_loop_phi_ir(ScalarPlan, StateLoopPhiIR),
+    plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
+    plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
+    plawk_mixed_rule_controls(MixedPlan, MixedRuleControls),
+    plawk_mixed_scalar_next_phi_ir(ScalarPlan, RuleCount, MixedRuleControls,
+        BranchControlExits, NextPhiIR),
+    plawk_break_close_ir(ScalarPlan, RuleCount, MixedRuleControls,
+        BranchControlExits, done, BreakCloseIR, FinalStatePhiIR),
+    plawk_end_list_statements_ir(mixed, Items, ScalarPlan, AssocPlan,
+        FieldSeparator, OutputSeparator, EndPrintIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, RuleGlobalIR]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
+    plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w~w
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
+        [FinalStatePhiIR, EndPrintIR]),
+    llvm_emit_stream_driver_ir(InputPath,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, LoopPhiIR,
+            lowered_mixed, RecordIR, NextPhiIR, BreakCloseIR, end_print,
+            CloseOkIR),
+        DriverIR).
+
 plawk_program_native_driver_ir(
     program(BeginClauses, Rules, [end([print(PrintFields)])]),
     InputPath,
@@ -1150,15 +1208,16 @@ plawk_program_native_driver_ir(
     InputPath,
     DriverIR
 ) :-
-    plawk_assoc_end_statements(Statements, Items),
-    plawk_assoc_end_statement_fields(Items, PrintFields),
+    plawk_end_list_statements(assoc, Statements, Items),
+    plawk_end_list_statement_fields(Items, PrintFields),
     plawk_assoc_end_list_plan(Rules, PrintFields, AssocPlan),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_record_descriptor(BeginClauses, FieldSeparator),
     plawk_assoc_record_program_ok(FieldSeparator, Rules, PrintFields),
-    plawk_assoc_end_statement_globals(Items, StringGlobalIR, AssocGlobalIR),
+    plawk_end_list_statement_globals(Items, state_plan([]), StringGlobalIR,
+        AssocGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
     plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR,
         AssocChainIR),
@@ -1171,8 +1230,8 @@ plawk_program_native_driver_ir(
     plawk_join_nonempty_ir([RecordCounterIR, AssocChainIR], RecordIR),
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
-    plawk_assoc_end_statements_ir(Items, AssocPlan, FieldSeparator,
-        OutputSeparator, EndPrintIR),
+    plawk_end_list_statements_ir(assoc, Items, state_plan([]), AssocPlan,
+        FieldSeparator, OutputSeparator, EndPrintIR),
     format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, AssocRuleGlobalIR]),
     plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
@@ -13407,57 +13466,71 @@ plawk_assoc_end_list_plan(Rules, PrintFields, AssocPlan) :-
         plawk_assoc_runtime_record_plan(Rules, AssocPlan)
     ).
 
-%% plawk_assoc_end_statement(+Statement, -Item) is semidet.
-plawk_assoc_end_statement(print(Fields), print(Fields)) :-
+%% plawk_end_list_statement(+Kind, +Statement, -Item) is semidet.
+%  Classify one statement of a loop-free END list. Kind is the chain it belongs
+%  to -- `assoc` (tables only) or `mixed` (scalar slots AND tables) -- and the
+%  only difference is which printf arguments are reachable.
+plawk_end_list_statement(_Kind, print(Fields), print(Fields)) :-
     Fields = [_ | _].
-plawk_assoc_end_statement(exit(int(Code)), exit(int(Code))) :-
+plawk_end_list_statement(_Kind, exit(int(Code)), exit(int(Code))) :-
     integer(Code).
-% `printf` with LITERAL arguments only. The pure-assoc chain has no scalar state
-% plan, so a `var` argument has no slot to read; and `NR` would emit a reference
-% to a counter this driver does not define, which would be invalid IR rather than
-% a decline. Restricting the arguments to literals and constant arithmetic keeps
-% the useful case (a fixed trailer line) without either hazard.
-plawk_assoc_end_statement(printf(string(Format), Args),
+plawk_end_list_statement(Kind, printf(string(Format), Args),
         printf(string(Format), Args)) :-
-    maplist(plawk_assoc_end_printf_arg_ok, Args).
+    maplist(plawk_end_list_printf_arg_ok(Kind), Args).
 
-plawk_assoc_end_printf_arg_ok(string(_Value)) :-
+% ASSOC chain: LITERAL arguments only. It has no scalar state plan, so a `var`
+% argument has no slot to read; and `NR` would emit a reference to a counter this
+% driver does not define -- invalid IR rather than a decline.
+plawk_end_list_printf_arg_ok(assoc, string(_Value)) :-
     !.
-plawk_assoc_end_printf_arg_ok(Expr) :-
+plawk_end_list_printf_arg_ok(assoc, Expr) :-
+    plawk_begin_const_expr(Expr).
+% MIXED chain: scalar slots DO exist, so a `var` argument reads its final slot,
+% exactly as in the scalar END printf. `NR` is still excluded -- this driver's
+% record counter is not the one the END printf emitter would reference.
+plawk_end_list_printf_arg_ok(mixed, special('NR')) :-
+    !,
+    fail.
+plawk_end_list_printf_arg_ok(mixed, var(_Name)) :-
+    !.
+plawk_end_list_printf_arg_ok(mixed, string(_Value)) :-
+    !.
+plawk_end_list_printf_arg_ok(mixed, Expr) :-
     plawk_begin_const_expr(Expr).
 
-%% plawk_assoc_end_statements(+Statements, -Items) is semidet.
-%  A statement list this driver owns. Excludes a lone plain print, which the
-%  single-print clause above keeps (byte-identical), so this only claims shapes
-%  that used to decline.
-plawk_assoc_end_statements(Statements, Items) :-
+%% plawk_end_list_statements(+Kind, +Statements, -Items) is semidet.
+%  A statement list a loop-free END driver owns. Excludes a lone plain print,
+%  which the single-print clauses keep (byte-identical), so this only claims
+%  shapes that used to decline.
+plawk_end_list_statements(Kind, Statements, Items) :-
     Statements = [_ | _],
     Statements \= [print(_)],
-    maplist(plawk_assoc_end_statement, Statements, Items).
+    maplist(plawk_end_list_statement(Kind), Statements, Items).
 
-%% plawk_assoc_end_statement_fields(+Items, -Fields) is det.
+%% plawk_end_list_statement_fields(+Items, -Fields) is det.
 %  Every print field across the statements -- the table plan, the program-shape
 %  gate and the globals all key off this. printf arguments contribute nothing:
 %  they are literals by the gate above, so they reference no table.
-plawk_assoc_end_statement_fields(Items, Fields) :-
+plawk_end_list_statement_fields(Items, Fields) :-
     findall(F,
         ( member(print(FL), Items),
           member(F, FL)
         ),
         Fields).
 
-%% plawk_assoc_end_statement_globals(+Items, -StringGlobalIR, -KeyGlobalIR) is det.
+%% plawk_end_list_statement_globals(+Items, +StatePlan, -StringGlobalIR,
+%%     -KeyGlobalIR) is det.
 %  Per-statement globals, each renamed by its statement index to match that
 %  statement's body -- both the `end_`-prefixed string literals and the
 %  `plawk_assoc_print_key_N` literal keys, which the string rename alone does not
 %  reach (two literal-key lookups would otherwise share one key global).
-plawk_assoc_end_statement_globals(Items, StringGlobalIR, KeyGlobalIR) :-
-    plawk_assoc_end_statement_globals_(Items, 0, StringParts, KeyParts),
+plawk_end_list_statement_globals(Items, StatePlan, StringGlobalIR, KeyGlobalIR) :-
+    plawk_end_list_statement_globals_(Items, 0, StatePlan, StringParts, KeyParts),
     plawk_join_nonempty_ir(StringParts, StringGlobalIR),
     plawk_join_nonempty_ir(KeyParts, KeyGlobalIR).
 
-plawk_assoc_end_statement_globals_([], _Index, [], []).
-plawk_assoc_end_statement_globals_([print(Fields) | Rest], Index,
+plawk_end_list_statement_globals_([], _Index, _StatePlan, [], []).
+plawk_end_list_statement_globals_([print(Fields) | Rest], Index, StatePlan,
         [StringIR | StringParts], [KeyIR | KeyParts]) :-
     !,
     plawk_end_print_string_globals(Fields, RawString),
@@ -13465,23 +13538,29 @@ plawk_assoc_end_statement_globals_([print(Fields) | Rest], Index,
     plawk_end_chain_stmt_rename(Index, RawString, StringIR),
     plawk_end_chain_stmt_rename(Index, RawKey, KeyIR),
     NextIndex is Index + 1,
-    plawk_assoc_end_statement_globals_(Rest, NextIndex, StringParts, KeyParts).
-plawk_assoc_end_statement_globals_([printf(string(Format), Args) | Rest], Index,
-        [PrintfGlobalIR | StringParts], KeyParts) :-
+    plawk_end_list_statement_globals_(Rest, NextIndex, StatePlan, StringParts,
+        KeyParts).
+plawk_end_list_statement_globals_([printf(string(Format), Args) | Rest], Index,
+        StatePlan, [PrintfGlobalIR | StringParts], KeyParts) :-
     !,
-    plawk_assoc_end_printf_pair(Format, Args, Index, RawGlobal-_Body),
+    plawk_end_list_printf_pair(Format, Args, StatePlan, RawGlobal-_Body),
     plawk_end_chain_stmt_rename(Index, RawGlobal, PrintfGlobalIR),
     NextIndex is Index + 1,
-    plawk_assoc_end_statement_globals_(Rest, NextIndex, StringParts, KeyParts).
-plawk_assoc_end_statement_globals_([_Item | Rest], Index, StringParts, KeyParts) :-
+    plawk_end_list_statement_globals_(Rest, NextIndex, StatePlan, StringParts,
+        KeyParts).
+plawk_end_list_statement_globals_([_Item | Rest], Index, StatePlan, StringParts,
+        KeyParts) :-
     NextIndex is Index + 1,
-    plawk_assoc_end_statement_globals_(Rest, NextIndex, StringParts, KeyParts).
+    plawk_end_list_statement_globals_(Rest, NextIndex, StatePlan, StringParts,
+        KeyParts).
 
-% One END printf in the assoc chain. Its arguments are literals by the gate, so
-% the empty state plan is never consulted -- passing it keeps ONE printf emitter
-% (and therefore one awk->C format rewrite) shared with every other context.
-plawk_assoc_end_printf_pair(Format, Args, _Index, Pair) :-
-    plawk_end_printf_ir(Format, Args, state_plan([]), Pair).
+% One END printf in a loop-free list. StatePlan is the chain's scalar plan --
+% `state_plan([])` for the assoc chain, whose gate admits only literals so the
+% plan is never consulted, and the real plan for the mixed chain, whose `var`
+% arguments read their final slots. Either way this is the SAME printf emitter
+% every other context uses, so the awk->C format rewrite cannot diverge.
+plawk_end_list_printf_pair(Format, Args, StatePlan, Pair) :-
+    plawk_end_printf_ir(Format, Args, StatePlan, Pair).
 
 %% plawk_assoc_end_statements_ir(+Items, +AssocPlan, +Descriptor,
 %%     +OutputSeparator, -IR) is semidet.
@@ -13490,36 +13569,69 @@ plawk_assoc_end_printf_pair(Format, Args, _Index, Pair) :-
 %  free is what double-freed in the for-in chain. An `exit` stores the status and
 %  TRUNCATES, so later statements are never emitted; the frees still follow,
 %  because control reaches the single `ret` either way.
-plawk_assoc_end_statements_ir(Items, AssocPlan, Descriptor, OutputSeparator, IR) :-
-    plawk_assoc_end_statements_bodies(Items, 0, AssocPlan, Descriptor,
+plawk_end_list_statements_ir(Kind, Items, ScalarPlan, AssocPlan, Descriptor,
+        OutputSeparator, IR) :-
+    plawk_end_list_bodies(Kind, Items, 0, ScalarPlan, AssocPlan, Descriptor,
         OutputSeparator, Bodies),
     phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
     atomic_list_concat(FreeLines, '\n', FreeIR),
     append(Bodies, [FreeIR], Parts),
     plawk_join_nonempty_ir(Parts, IR).
 
-plawk_assoc_end_statements_bodies([], _Index, _AssocPlan, _Descriptor,
+plawk_end_list_bodies(_Kind, [], _Index, _ScalarPlan, _AssocPlan, _Descriptor,
         _OutputSeparator, []).
-plawk_assoc_end_statements_bodies([exit(int(Code)) | _Rest], _Index, _AssocPlan,
-        _Descriptor, _OutputSeparator, [Body]) :-
+plawk_end_list_bodies(_Kind, [exit(int(Code)) | _Rest], _Index, _ScalarPlan,
+        _AssocPlan, _Descriptor, _OutputSeparator, [Body]) :-
     !,
     format(atom(Body), '  store i32 ~w, i32* @plawk_exit_code', [Code]).
-plawk_assoc_end_statements_bodies([print(Fields) | Rest], Index, AssocPlan,
+% The one place the two chains differ: which print emitter resolves a field. The
+% assoc chain reads tables only; the mixed chain also reads scalar slots.
+plawk_end_list_bodies(Kind, [print(Fields) | Rest], Index, ScalarPlan, AssocPlan,
         Descriptor, OutputSeparator, [Body | Bodies]) :-
     !,
-    plawk_assoc_end_print_body_ir(Fields, AssocPlan, Descriptor, OutputSeparator,
-        RawBody),
+    (   Kind == mixed
+    ->  plawk_mixed_end_print_body_ir(Fields, ScalarPlan, AssocPlan,
+            OutputSeparator, RawBody)
+    ;   plawk_assoc_end_print_body_ir(Fields, AssocPlan, Descriptor,
+            OutputSeparator, RawBody)
+    ),
     plawk_end_chain_stmt_rename(Index, RawBody, Body),
     NextIndex is Index + 1,
-    plawk_assoc_end_statements_bodies(Rest, NextIndex, AssocPlan, Descriptor,
+    plawk_end_list_bodies(Kind, Rest, NextIndex, ScalarPlan, AssocPlan, Descriptor,
         OutputSeparator, Bodies).
-plawk_assoc_end_statements_bodies([printf(string(Format), Args) | Rest], Index,
-        AssocPlan, Descriptor, OutputSeparator, [Body | Bodies]) :-
-    plawk_assoc_end_printf_pair(Format, Args, Index, _Global-RawBody),
+plawk_end_list_bodies(Kind, [printf(string(Format), Args) | Rest], Index,
+        ScalarPlan, AssocPlan, Descriptor, OutputSeparator, [Body | Bodies]) :-
+    plawk_end_list_printf_pair(Format, Args, ScalarPlan, _Global-RawBody),
     plawk_end_chain_stmt_rename(Index, RawBody, Body),
     NextIndex is Index + 1,
-    plawk_assoc_end_statements_bodies(Rest, NextIndex, AssocPlan, Descriptor,
+    plawk_end_list_bodies(Kind, Rest, NextIndex, ScalarPlan, AssocPlan, Descriptor,
         OutputSeparator, Bodies).
+
+%% plawk_mixed_end_print_body_ir(+PrintFields, +ScalarPlan, +AssocPlan,
+%%     +OutputSeparator, -IR) is det.
+%  The MIXED chain's print, without the table frees -- same reason as
+%  plawk_assoc_end_print_body_ir/5 below: in a statement list the frees belong at
+%  the end, once, not after every statement. Both emitters append
+%  plawk_assoc_free_lines//1 in their base case, so both need this treatment.
+plawk_mixed_end_print_body_ir(PrintFields, ScalarPlan, AssocPlan, OutputSeparator,
+        IR) :-
+    phrase(plawk_mixed_end_print_lines(PrintFields, ScalarPlan, AssocPlan,
+        OutputSeparator, 0), Lines),
+    plawk_end_strip_free_lines(Lines, AssocPlan, BodyLines),
+    atomic_list_concat(BodyLines, '\n', IR).
+
+%% plawk_end_strip_free_lines(+Lines, +AssocPlan, -BodyLines) is semidet.
+%  Split the table frees off an END print's emitted line list. They are its exact
+%  tail, so the split is by LENGTH -- an arithmetic split cannot strip the wrong
+%  occurrence the way a suffix search could.
+plawk_end_strip_free_lines(Lines, AssocPlan, BodyLines) :-
+    phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
+    length(Lines, LineCount),
+    length(FreeLines, FreeCount),
+    BodyCount is LineCount - FreeCount,
+    BodyCount >= 0,
+    length(BodyLines, BodyCount),
+    append(BodyLines, FreeLines, Lines).
 
 %% plawk_assoc_end_print_body_ir(+PrintFields, +AssocPlan, +Descriptor,
 %%     +OutputSeparator, -IR) is det.
@@ -13539,13 +13651,7 @@ plawk_assoc_end_print_body_ir(PrintFields, AssocPlan, Descriptor, OutputSeparato
         IR) :-
     phrase(plawk_assoc_end_print_lines(PrintFields, AssocPlan, Descriptor,
         OutputSeparator, 0), Lines),
-    phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
-    length(Lines, LineCount),
-    length(FreeLines, FreeCount),
-    BodyCount is LineCount - FreeCount,
-    BodyCount >= 0,
-    length(BodyLines, BodyCount),
-    append(BodyLines, FreeLines, Lines),
+    plawk_end_strip_free_lines(Lines, AssocPlan, BodyLines),
     atomic_list_concat(BodyLines, '\n', IR).
 
 plawk_assoc_end_print_lines([], AssocPlan, _Descriptor, _OutputSeparator, _) -->

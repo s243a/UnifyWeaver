@@ -159,10 +159,12 @@ test(nr_plain_print_declines) :-
     build_status("{ c[$1]++ } END { print c[\"a\"]; print NR }\n", 3),
     !.
 
-% A MIXED scalar+assoc program with a statement list belongs to the mixed driver,
-% which still takes a single print -- the remaining sibling, declining cleanly.
-test(mixed_scalar_assoc_statement_list_declines) :-
-    build_status("{ c[$1]++; n++ } END { print n; print c[\"a\"] }\n", 3),
+% A MIXED scalar+assoc program with a statement list is the fourth chain, landed
+% as the sibling to this one; behaviour is covered in
+% tests/test_plawk_mixed_end_list.pl. Asserted here only as no-longer-declining,
+% since this suite's driver deliberately does not claim it.
+test(mixed_scalar_assoc_statement_list_compiles, [condition(clang_available)]) :-
+    build_status("{ c[$1]++; n++ } END { print n; print c[\"a\"] }\n", 0),
     !.
 
 % --- structure -----------------------------------------------------------
@@ -170,36 +172,42 @@ test(mixed_scalar_assoc_statement_list_declines) :-
 % The driver claims a statement list but NOT a lone plain print, so the
 % single-print clause keeps its shape.
 test(statement_list_excludes_a_lone_print) :-
-    assertion(plawk_native_codegen:plawk_assoc_end_statements(
+    assertion(plawk_native_codegen:plawk_end_list_statements(assoc,
         [print([string("a")]), print([string("b")])], _)),
-    assertion(plawk_native_codegen:plawk_assoc_end_statements(
+    assertion(plawk_native_codegen:plawk_end_list_statements(assoc,
         [print([string("a")]), exit(int(1))], _)),
-    assertion(plawk_native_codegen:plawk_assoc_end_statements(
+    assertion(plawk_native_codegen:plawk_end_list_statements(assoc,
         [exit(int(1))], _)),
-    assertion(\+ plawk_native_codegen:plawk_assoc_end_statements(
+    assertion(\+ plawk_native_codegen:plawk_end_list_statements(assoc,
         [print([string("a")])], _)),
-    % a for-in is not a statement of THIS list -- that is the mixed chain's job
-    assertion(\+ plawk_native_codegen:plawk_assoc_end_statements(
+    % a for-in is not a statement of a loop-free list -- that is the chain's job
+    assertion(\+ plawk_native_codegen:plawk_end_list_statements(assoc,
         [for_in(var(k), var(c), [print([var(k)])]), print([string("x")])], _)),
     !.
 
 % The printf argument gate: literals and constant arithmetic in, everything that
 % needs runtime state out.
 test(printf_arg_gate) :-
-    assertion(plawk_native_codegen:plawk_assoc_end_printf_arg_ok(string("x"))),
-    assertion(plawk_native_codegen:plawk_assoc_end_printf_arg_ok(int(1))),
-    assertion(plawk_native_codegen:plawk_assoc_end_printf_arg_ok(
+    assertion(plawk_native_codegen:plawk_end_list_printf_arg_ok(assoc,
+        string("x"))),
+    assertion(plawk_native_codegen:plawk_end_list_printf_arg_ok(assoc, int(1))),
+    assertion(plawk_native_codegen:plawk_end_list_printf_arg_ok(assoc,
         add_i64(int(1), int(2)))),
-    assertion(\+ plawk_native_codegen:plawk_assoc_end_printf_arg_ok(var(n))),
-    assertion(\+ plawk_native_codegen:plawk_assoc_end_printf_arg_ok(
+    assertion(\+ plawk_native_codegen:plawk_end_list_printf_arg_ok(assoc, var(n))),
+    assertion(\+ plawk_native_codegen:plawk_end_list_printf_arg_ok(assoc,
         special('NR'))),
-    assertion(\+ plawk_native_codegen:plawk_assoc_end_printf_arg_ok(field(1))),
+    assertion(\+ plawk_native_codegen:plawk_end_list_printf_arg_ok(assoc,
+        field(1))),
+    % the MIXED chain admits a `var` (its slots exist) but still not NR
+    assertion(plawk_native_codegen:plawk_end_list_printf_arg_ok(mixed, var(n))),
+    assertion(\+ plawk_native_codegen:plawk_end_list_printf_arg_ok(mixed,
+        special('NR'))),
     !.
 
 % printf arguments reference no table, so they contribute no print fields to the
 % table plan -- only the prints do.
 test(statement_fields_come_from_prints_only) :-
-    plawk_native_codegen:plawk_assoc_end_statement_fields(
+    plawk_native_codegen:plawk_end_list_statement_fields(
         [print([assoc(var(c), string("a"))]),
          printf(string("%d\n"), [int(7)]),
          print([string("x")])],
