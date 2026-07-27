@@ -1,41 +1,34 @@
 #!/usr/bin/env python3
-"""SM-FS ranking pipeline v3 — CAND2-1..8 replacement; fitting double-locked.
+"""SM-FS ranking pipeline v4 — CAND3-1..5 replacement; fitting chain-locked.
 
-Changes from the rejected v2 candidate (REVIEW_sm_fs_ranking_candidate_v2_lock.md):
+Changes from rejected candidate v3 (REVIEW_sm_fs_ranking_candidate_v3_lock.md):
 
-CAND2-1  Checkpoints load through the ESTABLISHED path: verified descriptor-bound bytes are
-         staged to a 0600 tempfile and loaded with fine_tune_channel_heads.load_expanded, which
-         accepts the countersigned legacy cfg ({heads, layers, judge_name, ridge, ...}).
-         An executable test loads a real countersigned checkpoint, constructs the optimizer,
-         and runs one fit step.
-CAND2-2  The sampler seam is ID-free (sm_fs_sampler.py); this pipeline imports no module that
-         hard-codes a preregistration ID. `plan` emits the fresh v3 plan: the exact 30-job
-         matrix, ALL FIVE per-fold projection identities, schedule populations, and its own hash.
-CAND2-3  Finalization chain lives in sm_fs_ranking_lock_verify: the final lock must bind the
-         reviewed candidate SHA and the independent review ID from the rigor lane's COMMITTED
-         review artifact — caller-authored JSON cannot substitute.
-CAND2-4  Nothing trusts adjacent self-authored metadata: `fit` authenticates its projection
-         against the PLAN-bound hash; `evaluate` fully validates the fit receipt (schema, job
-         identity, countersigned init hash, plan-bound projection, lock chain, trainable names,
-         environment) and verifies the checkpoint bytes BEFORE any held outcome is opened;
-         `decide` validates every eval receipt (schema, job identity, checkpoint chain, catalog
-         hash, tie rule, finiteness, query uniqueness, exact fold membership, complete
-         361-query population). Eval receipts store the FULL per-candidate score vector plus
-         registered diagnostics (nDCG, AUC, MSE/MAE, per-relation and per-hardness) so no
-         reporting choice survives scoring.
-CAND2-6  Decision inference = sm_fs_bootstrap (frozen SHA-256 rejection sampler, 82 draws per
-         replicate, query-weighted block mean, nearest-rank endpoints 249/9749). Nonfinite
-         scores fail closed at scoring time — a NaN can never rank.
-CAND2-7  install_private: parent-directory mode/owner/symlink checks, unlink-target rollback on
-         post-verify failure, directory fsync after staging cleanup; read_bound(private=True)
-         requires mode 0600.
-CAND2-8  test_sm_fs_ranking_pipeline.py exercises the real loader+optimizer+one-step fit,
-         scoring with NaN rejection, receipt acceptance/rejection, bootstrap known answers, and
-         the decision path.
+CAND3-1  Finalization lives in sm_fs_ranking_chain: the accepted review must be GIT-TRACKED with
+         bytes equal to the blob at HEAD, schema-registered, ID-rederived, and explicitly accept
+         the exact candidate SHA; the final lock's execution bindings are compared field-by-field
+         with the reviewed candidate (drift outside the explicit amendment whitelist rejected);
+         both preregistrations are bound and the retention cascade checked; the chain context
+         hands VERIFIED BYTES (plan, titles) to every capability.
+CAND3-2  Fit receipts bind the full chain (candidate SHA, review ID, final-lock SHA, plan SHA,
+         execution commit, exact inventory vs the candidate's bound inventory, environment,
+         optimizer/budget) and validate_fit_receipt checks every one against the live chain.
+         `decide` RECOMPUTES destination, rank, and reciprocal rank from each receipt's bound
+         finite score vector — a caller-supplied rr is never trusted — and validates the complete
+         30-job/query/fold population plus checkpoint and fit-receipt chains.
+CAND3-3  Weighted MSE/MAE (pair objective weights), relation & hardness slices, R@1/5/10,
+         nDCG, AUC, best-leaf-title sensitivity, per-candidate scores in every eval receipt;
+         decision reports three whole-population seed-specific results per arm, bootstrap
+         mean/attempts, held/blocks/unique-destination counts. Runtime provenance includes the
+         driver (required when CUDA is present). Control arms (unchanged warm start, frozen e5
+         title-cosine) are registered evaluate-time descriptive arms under the same chain gate.
+CAND3-4  install_private: rollback failures are RAISED (never suppressed into success), the
+         rollback unlink is made durable with a directory fsync, and errors compose; the fitter
+         consumes chain-verified bytes instead of reopening unauthenticated paths.
+CAND3-5  test_sm_fs_ranking_pipeline.py adds adversarial end-to-end coverage: forged/untracked
+         reviews, post-review drift, forged fit and eval receipts, decision recomputation on a
+         full synthetic chain in a throwaway git repo, and rollback-failure injection.
 
-Fitting remains blocked: cmd_fit calls sm_fs_ranking_lock_verify.fitting_allowed, which requires
-the live prereg to authorize fitting AND a final lock bound to the reviewed candidate SHA and
-review ID. No such artifacts exist yet.
+Fitting remains blocked: no accepted review, amended preregistration, or final lock exists.
 """
 import argparse
 import hashlib
@@ -52,10 +45,12 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(ROOT, "..", ".."))
 RANK_DIR = os.path.expanduser("~/mu_data/sm_fs_ranking_v1")
-RUN_DIR = os.path.expanduser("~/mu_data/sm_fs_ranking_run_v3")     # fresh namespace
+RUN_DIR = os.path.expanduser("~/mu_data/sm_fs_ranking_run_v4")     # fresh namespace
 SEEDS = (3997001, 3997002, 3997003)
 ARMS = ("positive_only", "graded_negative")
+CONTROL_ARMS = ("control_warm_start", "control_e5_cosine")
 STEPS, BS, DRAWS, LR, ANCHOR_W, CLIP = 800, 48, 24, 5e-4, 1.0, 1.0
 ADAM = {"class": "torch.optim.Adam", "lr": LR, "betas": [0.9, 0.999], "eps": 1e-08,
         "weight_decay": 0, "amsgrad": False}
@@ -65,11 +60,10 @@ INIT_SHA = {
     3997002: "fb353e693951819683793641464155e144caad73c553039fc64f1c6e253ad796",
     3997003: "f42bdea0071a64dca0dad5312178127906b96215ba6890f6a37ad19d87ffdd5a",
 }
-PLAN_SCHEMA = "unifyweaver.sm-fs-ranking-training-plan.v3"
-PROJ_SCHEMA = "unifyweaver.sm-fs-ranking-train-projection.v1"
-FIT_SCHEMA = "unifyweaver.sm-fs-ranking-fit-receipt.v2"
-EVAL_SCHEMA = "unifyweaver.sm-fs-ranking-eval-receipt.v2"
-DEC_SCHEMA = "unifyweaver.sm-fs-ranking-decision.v2"
+PLAN_SCHEMA = "unifyweaver.sm-fs-ranking-training-plan.v4"
+FIT_SCHEMA = "unifyweaver.sm-fs-ranking-fit-receipt.v3"
+EVAL_SCHEMA = "unifyweaver.sm-fs-ranking-eval-receipt.v3"
+DEC_SCHEMA = "unifyweaver.sm-fs-ranking-decision.v3"
 
 
 class PipelineError(RuntimeError):
@@ -135,8 +129,8 @@ def _fsync_dir(d):
 
 
 def install_private(path, data):
-    """Crash-atomic private install: parent checks, 0600 staging + fsync, hard-link no-replace,
-    dir fsync, staging cleanup + dir fsync, post-install verification with TARGET ROLLBACK."""
+    """Crash-atomic private install. Rollback failures are RAISED, never suppressed into
+    success, and the rollback unlink is itself made durable (CAND3-4)."""
     d = os.path.dirname(path)
     os.makedirs(d, mode=0o700, exist_ok=True)
     _check_parent(d)
@@ -155,7 +149,7 @@ def install_private(path, data):
         installed = True
         _fsync_dir(d)
         os.unlink(stage)
-        _fsync_dir(d)                                  # final one-link namespace made durable
+        _fsync_dir(d)
         st = os.lstat(path)
         need(stat.S_ISREG(st.st_mode), "installed non-regular file")
         need(stat.S_IMODE(st.st_mode) == 0o600, "installed mode is not 0600")
@@ -163,14 +157,35 @@ def install_private(path, data):
         read_bound(path, expect_sha=sha_bytes(data), private=True,
                    description=f"installed {path}")
         return sha_bytes(data)
-    except BaseException:
+    except BaseException as primary:
+        rollback_errors = []
         for p in (stage, path if installed else None):
-            if p:
-                try:
-                    os.unlink(p)                       # rollback the partial target too
-                except OSError:
-                    pass
+            if not p:
+                continue
+            try:
+                os.unlink(p)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                rollback_errors.append(f"{p}: {exc}")
+        try:
+            _fsync_dir(d)                              # make the rollback durable too
+        except OSError as exc:
+            rollback_errors.append(f"fsync {d}: {exc}")
+        if rollback_errors:
+            raise PipelineError(
+                f"install failed AND rollback incomplete ({'; '.join(rollback_errors)}); "
+                f"original error: {primary}") from primary
         raise
+
+
+def _nvidia_driver():
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=driver_version",
+                            "--format=csv,noheader"], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except FileNotFoundError:
+        return None
 
 
 def enforce_environment():
@@ -199,15 +214,18 @@ def enforce_environment():
                            "numpy default_rng(seed+1) for augmentation, consumed in row order; "
                            "training sampler and bootstrap are counter-based (no RNG)",
     }
-    runtime = {"cuda_available": torch.cuda.is_available(),
+    cuda = torch.cuda.is_available()
+    runtime = {"cuda_available": cuda,
                "cuda_version": getattr(torch.version, "cuda", None),
-               "device_name": (torch.cuda.get_device_name(0)
-                               if torch.cuda.is_available() else None)}
+               "device_name": torch.cuda.get_device_name(0) if cuda else None,
+               "driver": _nvidia_driver() if cuda else None}
     for key, want in (("deterministic_algorithms", True), ("cudnn_deterministic", True),
                       ("cudnn_benchmark", False), ("tf32_matmul", False),
                       ("tf32_cudnn", False), ("matmul_precision", "highest"),
                       ("cublas_workspace", ":4096:8")):
         need(invariant[key] == want, f"environment {key}={invariant[key]!r} != {want!r}")
+    if cuda:
+        need(runtime["driver"], "CUDA present but driver provenance unavailable (required)")
     return {"invariant": invariant, "runtime": runtime}
 
 
@@ -220,7 +238,7 @@ def git_head():
 def lane_clean():
     r = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no",
                         "--", "prototypes/mu_cosine"],
-                       cwd=os.path.join(ROOT, "..", ".."), capture_output=True, text=True)
+                       cwd=REPO_ROOT, capture_output=True, text=True)
     need(r.returncode == 0, "git status failed")
     return r.stdout.strip() == ""
 
@@ -237,15 +255,13 @@ def load_pairs_verified():
 
 
 def load_checkpoint_bytes(ckpt_bytes, dev):
-    """CAND2-1: established loader over verified bytes (0600 tempfile → load_expanded)."""
     from fine_tune_channel_heads import load_expanded
     fd, tmp = tempfile.mkstemp(prefix=".ckpt-bound-", suffix=".pt")
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(ckpt_bytes)
-        model, cfg = load_expanded(tmp, dev=dev)
-        return model, cfg
+        return load_expanded(tmp, dev=dev)
     finally:
         try:
             os.unlink(tmp)
@@ -277,8 +293,7 @@ def resolve_allowlist(model):
     need(len(names) == 18, f"allowlist has {len(names)} tensors, requires 18")
     for p in model.parameters():
         p.requires_grad = False
-    tensors = []
-    shapes = []
+    tensors, shapes = [], []
     for n in names:
         by_name[n].requires_grad = True
         tensors.append(by_name[n])
@@ -322,7 +337,6 @@ def sample_step(fold, seed, step, train_q, pos, buckets, arm):
 
 def fit_one_step(model, ref, tensors, opt, tok, rows, sel_common, sel_contrast,
                  aug_rng, dev):
-    """The exact per-step objective — factored so tests can execute it (CAND2-8)."""
     import torch
 
     from fine_tune_channel_heads import mu_batch
@@ -348,13 +362,15 @@ def fit_one_step(model, ref, tensors, opt, tok, rows, sel_common, sel_contrast,
     return float(loss.detach().cpu())
 
 
-def score_catalog(mu_scores, catalog, dest_index):
-    """Frozen tie rule with fail-closed finiteness (CAND2-6): any nonfinite score aborts."""
-    for j, v in enumerate(mu_scores):
-        need(math.isfinite(v), f"nonfinite score at catalog column {j}")
-    d = mu_scores[dest_index]
+def recompute_rank(scores, catalog, dest_index):
+    """Rank from a bound finite score vector (CAND3-2: never trust a stored rank/rr)."""
+    need(len(scores) == len(catalog), "score vector length != catalog size")
+    for j, v in enumerate(scores):
+        need(isinstance(v, (int, float)) and not isinstance(v, bool)
+             and math.isfinite(v), f"nonfinite score at catalog column {j}")
+    d = scores[dest_index]
     rank = 1
-    for j, v in enumerate(mu_scores):
+    for j, v in enumerate(scores):
         if v > d or (v == d and j < dest_index):
             rank += 1
     return rank
@@ -378,8 +394,7 @@ def cmd_plan(a):
         else:
             read_bound(out, expect_sha=proj_sha, private=True,
                        description=f"existing fold{f} projection")
-        pos_counts = defaultdict(int)
-        bucket_counts = defaultdict(lambda: defaultdict(int))
+        pos_counts, bucket_counts = defaultdict(int), defaultdict(lambda: defaultdict(int))
         for p in train_rows:
             if p["class"].startswith("positive"):
                 pos_counts[p["query"]] += 1
@@ -400,15 +415,19 @@ def cmd_plan(a):
             os.path.join(RANK_DIR, "manifest.json"))),
         "jobs": [{"fold": f, "arm": arm, "seed": s}
                  for f in range(5) for s in SEEDS for arm in ARMS],
-        "job_count": 30, "steps": STEPS, "batch_size": BS, "query_draws_per_step": DRAWS,
+        "job_count": 30,
+        "control_arms": list(CONTROL_ARMS),
+        "steps": STEPS, "batch_size": BS, "query_draws_per_step": DRAWS,
         "adam": ADAM, "anchor_weight": ANCHOR_W, "grad_clip": CLIP, "early_stopping": False,
         "projections": projections,
         "sampler_module_sha256": sha_bytes(read_bound(
             os.path.join(ROOT, "sm_fs_sampler.py"))),
         "bootstrap_module_sha256": sha_bytes(read_bound(
             os.path.join(ROOT, "sm_fs_bootstrap.py"))),
+        "chain_module_sha256": sha_bytes(read_bound(
+            os.path.join(ROOT, "sm_fs_ranking_chain.py"))),
         "initialized_checkpoints": {str(s): INIT_SHA[s] for s in SEEDS},
-        "receipt_schemas": [PROJ_SCHEMA, FIT_SCHEMA, EVAL_SCHEMA, DEC_SCHEMA],
+        "receipt_schemas": [FIT_SCHEMA, EVAL_SCHEMA, DEC_SCHEMA],
         "fitting_authorized": False,
     }
     data = canon(plan)
@@ -419,25 +438,45 @@ def cmd_plan(a):
         print(f"plan unchanged -> {out}")
     else:
         install_private(out, data)
-        print(f"plan v3 -> {out} (sha {sha_bytes(data)[:16]}, 30 jobs, all 5 projections)")
+        print(f"plan v4 -> {out} (sha {sha_bytes(data)[:16]}, 30 jobs + controls)")
 
 
-def _load_plan():
-    return json.loads(read_bound(os.path.join(RUN_DIR, "training_plan.json"),
-                                 private=True, description="training plan"))
+def chain_context(final_lock_path, receipt_path):
+    """Full chain verification; the context every capability requires (CAND3-1/2)."""
+    import sm_fs_ranking_chain as chain
+    from sm_fs_ranking_lock_verify import BOUND_KEYS, _bindings
+    lock_bytes = read_bound(final_lock_path, description="final lock")
+    receipt_bytes = read_bound(receipt_path, description="verification receipt")
+    lock, candidate, review = chain.verify_final_state(
+        lock_bytes, RUN_DIR, REPO_ROOT, _bindings, BOUND_KEYS)
+    receipt = chain.verify_receipt(receipt_bytes, lock_bytes)
+    plan_bytes = read_bound(os.path.join(RUN_DIR, "training_plan.json"),
+                            expect_sha=candidate["training_plan_sha256"], private=True,
+                            description="chain-bound training plan")
+    titles_bytes = read_bound(os.path.join(RUN_DIR, "titles.json"),
+                              expect_sha=candidate["title_table_sha256"], private=True,
+                              description="chain-bound title table")
+    return {
+        "lock": lock, "candidate": candidate, "review": review, "receipt": receipt,
+        "final_lock_sha256": sha_bytes(lock_bytes),
+        "candidate_sha256": lock["candidate_sha256"], "review_id": lock["review_id"],
+        "plan": json.loads(plan_bytes), "plan_sha256": sha_bytes(plan_bytes),
+        "titles": json.loads(titles_bytes),
+        "execution_commit": lock["execution_commit"],
+    }
 
 
 def cmd_fit(a):
-    from sm_fs_ranking_lock_verify import fitting_allowed
-    lock, receipt = fitting_allowed(a.final_lock, a.verification_receipt)   # raises today
+    ctx = chain_context(a.final_lock, a.verification_receipt)       # raises today
     env = enforce_environment()
     import copy
+    import io
 
     import numpy as np
     import torch
 
     from mu_attention import E5_REVISION, Tokenizer, build_e5_tables
-    plan = _load_plan()
+    plan = ctx["plan"]
     proj = plan["projections"][str(a.fold)]
     rows_bytes = read_bound(os.path.join(RUN_DIR, f"fold{a.fold}", "train_projection.jsonl"),
                             expect_sha=proj["projection_sha256"], private=True,
@@ -445,8 +484,7 @@ def cmd_fit(a):
     rows = [json.loads(l) for l in rows_bytes.decode().splitlines()]
     for p in rows:
         need(p["fold"] != a.fold, "held-fold row inside plan-bound projection")
-    titles = json.loads(read_bound(os.path.join(RUN_DIR, "titles.json"), private=True,
-                                   description="title table"))
+    titles = ctx["titles"]                                          # chain-verified bytes
     torch.manual_seed(a.seed)
     aug_rng = np.random.default_rng(a.seed + 1)
     ckpt_bytes = read_bound(os.path.join(RANK_DIR, f"init_seed{a.seed}.pt"),
@@ -459,6 +497,8 @@ def cmd_fit(a):
     for p in ref.parameters():
         p.requires_grad = False
     names, shapes, tensors = resolve_allowlist(model)
+    need(shapes == ctx["candidate"]["trainable_names_shapes"],
+         "resolved inventory differs from the reviewed candidate's bound inventory")
     opt = torch.optim.Adam(tensors, lr=ADAM["lr"], betas=tuple(ADAM["betas"]),
                            eps=ADAM["eps"], weight_decay=ADAM["weight_decay"],
                            amsgrad=ADAM["amsgrad"])
@@ -476,7 +516,6 @@ def cmd_fit(a):
         c, k = sample_step(a.fold, a.seed, step, train_q, pos, buckets, a.arm)
         losses.append(fit_one_step(model, ref, tensors, opt, tok, rows, c, k, aug_rng, dev))
     model.eval()
-    import io
     buf = io.BytesIO()
     torch.save({"state": model.state_dict(), "cfg": cfg}, buf)
     out_dir = os.path.join(RUN_DIR, f"fold{a.fold}")
@@ -485,9 +524,9 @@ def cmd_fit(a):
         "schema": FIT_SCHEMA, "fold": a.fold, "arm": a.arm, "seed": a.seed,
         "init_sha256": INIT_SHA[a.seed], "checkpoint_sha256": ck_sha,
         "projection_sha256": proj["projection_sha256"],
-        "plan_sha256": sha_bytes(read_bound(os.path.join(RUN_DIR, "training_plan.json"),
-                                            private=True)),
-        "final_lock_sha256": receipt["final_lock_sha256"],
+        "plan_sha256": ctx["plan_sha256"], "final_lock_sha256": ctx["final_lock_sha256"],
+        "candidate_sha256": ctx["candidate_sha256"], "review_id": ctx["review_id"],
+        "execution_commit": ctx["execution_commit"],
         "steps": STEPS, "batch_size": BS, "adam": ADAM, "anchor_weight": ANCHOR_W,
         "grad_clip": CLIP, "trainable_names_shapes": shapes,
         "loss_first_last": [losses[0], losses[-1]],
@@ -498,115 +537,185 @@ def cmd_fit(a):
     print(f"sealed fit fold={a.fold} arm={a.arm} seed={a.seed} ckpt {ck_sha[:16]}")
 
 
-def validate_fit_receipt(rec, fold, arm, seed, plan):
+def validate_fit_receipt(rec, fold, arm, seed, ctx):
+    """Exact, chain-bound validation (CAND3-2): every field against the live chain."""
     need(rec.get("schema") == FIT_SCHEMA, "fit receipt schema mismatch")
     need((rec.get("fold"), rec.get("arm"), rec.get("seed")) == (fold, arm, seed),
          "fit receipt job identity mismatch")
     need(rec.get("init_sha256") == INIT_SHA[seed],
          "fit receipt init hash is not the countersigned checkpoint")
     need(rec.get("projection_sha256")
-         == plan["projections"][str(fold)]["projection_sha256"],
+         == ctx["plan"]["projections"][str(fold)]["projection_sha256"],
          "fit receipt projection is not the plan-bound projection")
-    need(isinstance(rec.get("trainable_names_shapes"), list)
-         and len(rec["trainable_names_shapes"]) == 18, "fit receipt trainable inventory")
-    need(isinstance(rec.get("environment"), dict)
-         and rec["environment"].get("invariant", {}).get("dtype") == "float32",
-         "fit receipt environment missing")
+    need(rec.get("plan_sha256") == ctx["plan_sha256"], "fit receipt plan chain broken")
+    need(rec.get("final_lock_sha256") == ctx["final_lock_sha256"],
+         "fit receipt final-lock chain broken")
+    need(rec.get("candidate_sha256") == ctx["candidate_sha256"],
+         "fit receipt candidate chain broken")
+    need(rec.get("review_id") == ctx["review_id"], "fit receipt review chain broken")
+    need(rec.get("execution_commit") == ctx["execution_commit"],
+         "fit receipt commit differs from the bound execution commit")
+    need(rec.get("trainable_names_shapes") == ctx["candidate"]["trainable_names_shapes"],
+         "fit receipt inventory differs from the reviewed candidate's bound inventory")
+    need(rec.get("adam") == ADAM and rec.get("steps") == STEPS
+         and rec.get("batch_size") == BS and rec.get("anchor_weight") == ANCHOR_W
+         and rec.get("grad_clip") == CLIP, "fit receipt optimizer/budget mismatch")
+    env = rec.get("environment")
+    need(isinstance(env, dict)
+         and env.get("invariant") == ctx["candidate"]["environment_invariant"],
+         "fit receipt environment invariant differs from the reviewed candidate")
+    rt = env.get("runtime", {}) if isinstance(env, dict) else {}
+    need("cuda_available" in rt, "fit receipt runtime missing")
+    if rt.get("cuda_available"):
+        need(rt.get("driver"), "fit receipt lacks required driver provenance")
     need(isinstance(rec.get("checkpoint_sha256"), str)
          and len(rec["checkpoint_sha256"]) == 64, "fit receipt checkpoint hash malformed")
 
 
+def _leaf(path):
+    return path.rsplit("/", 1)[-1]
+
+
 def cmd_evaluate(a):
-    plan = _load_plan()
+    ctx = chain_context(a.final_lock, a.verification_receipt)
     out_dir = os.path.join(RUN_DIR, f"fold{a.fold}")
-    rec = json.loads(read_bound(
-        os.path.join(out_dir, f"fit_{a.arm}_{a.seed}.receipt.json"), private=True,
-        description="fit receipt"))
-    validate_fit_receipt(rec, a.fold, a.arm, a.seed, plan)          # BEFORE held bytes
-    ck_bytes = read_bound(os.path.join(out_dir, f"fit_{a.arm}_{a.seed}.pt"),
-                          expect_sha=rec["checkpoint_sha256"], private=True,
-                          description="sealed checkpoint")
+    is_control = a.arm in CONTROL_ARMS
+    rec = None
+    ck_bytes = None
+    if not is_control:
+        rec = json.loads(read_bound(
+            os.path.join(out_dir, f"fit_{a.arm}_{a.seed}.receipt.json"), private=True,
+            description="fit receipt"))
+        validate_fit_receipt(rec, a.fold, a.arm, a.seed, ctx)       # BEFORE held bytes
+        ck_bytes = read_bound(os.path.join(out_dir, f"fit_{a.arm}_{a.seed}.pt"),
+                              expect_sha=rec["checkpoint_sha256"], private=True,
+                              description="sealed checkpoint")
+    elif a.arm == "control_warm_start":
+        ck_bytes = read_bound(os.path.join(RANK_DIR, f"init_seed{a.seed}.pt"),
+                              expect_sha=INIT_SHA[a.seed], private=True,
+                              description="warm-start control checkpoint")
     env = enforce_environment()
-    import numpy as np
     import torch
 
     from fine_tune_channel_heads import mu_batch
     from mu_attention import CORPORA, E5_REVISION, JUDGES, NODETYPE, OPS, Tokenizer, \
         build_e5_tables
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    model, _ = load_checkpoint_bytes(ck_bytes, dev)                 # checkpoint verified first
-    model.eval()
-    man, pairs, _ = load_pairs_verified()                           # held bytes open ONLY now
+    titles = ctx["titles"]
+    qtbl, ptbl, idx = build_e5_tables(sorted(titles), cache_path=None, texts=titles,
+                                      model_revision=E5_REVISION)
+    tok = Tokenizer(qtbl, ptbl, idx, {}, {})
+    model = None
+    if a.arm != "control_e5_cosine":
+        model, _ = load_checkpoint_bytes(ck_bytes, dev)
+        model.eval()
+    man, pairs, _ = load_pairs_verified()                           # held bytes open here
     catalog = sorted({p["candidate"] for p in pairs})
     catalog_sha = sha_bytes("\n".join(catalog).encode())
     held = defaultdict(dict)
     for p in pairs:
         if p["fold"] == a.fold:
             held[p["query"]][p["candidate"]] = p
-    titles = json.loads(read_bound(os.path.join(RUN_DIR, "titles.json"), private=True))
-    qtbl, ptbl, idx = build_e5_tables(sorted(titles), cache_path=None, texts=titles,
-                                      model_revision=E5_REVISION)
-    tok = Tokenizer(qtbl, ptbl, idx, {}, {})
     C, J, MM = CORPORA["mindmap"], JUDGES["graph"], NODETYPE["mindmap_node"]
+    Pn = ptbl.numpy()
+    Qn = qtbl.numpy()
     out_rows = []
     with torch.no_grad():
         for q in sorted(held):
-            items = [(q, c, OPS["LINEAGE"], C, J, MM, MM) for c in catalog]
-            mu = [float(v) for v in mu_batch(model, tok, items, dev).cpu()]
+            if a.arm == "control_e5_cosine":
+                qv = Qn[idx[q]]
+                mu = [float(qv @ Pn[idx[c]]) for c in catalog]
+            else:
+                items = [(q, c, OPS["LINEAGE"], C, J, MM, MM) for c in catalog]
+                mu = [float(v) for v in mu_batch(model, tok, items, dev).cpu()]
             dest = next(c for c, p in held[q].items() if p["class"] == "positive_parent")
             di = catalog.index(dest)
-            rank = score_catalog(mu, catalog, di)                   # fail-closed nonfinite
-            errs = [(mu[catalog.index(c)], p["target"], p.get("relation"),
-                     p.get("hardness")) for c, p in held[q].items()]
-            mse = sum((m - t) ** 2 for m, t, _, _ in errs) / len(errs)
-            mae = sum(abs(m - t) for m, t, _, _ in errs) / len(errs)
+            rank = recompute_rank(mu, catalog, di)
+            wsum = werr = wabs = 0.0
+            slices = defaultdict(lambda: [0.0, 0])
+            for c, p in held[q].items():
+                m = mu[catalog.index(c)]
+                w = float(p.get("weight", 1.0))
+                wsum += w
+                werr += w * (m - p["target"]) ** 2
+                wabs += w * abs(m - p["target"])
+                for key in (p.get("relation") or p["class"],
+                            ("hardness:" + p["hardness"]) if "hardness" in p else None):
+                    if key:
+                        slices[key][0] += (m - p["target"]) ** 2
+                        slices[key][1] += 1
             pos_set = {c for c, p in held[q].items() if p["class"].startswith("positive")}
-            pos_scores = [mu[catalog.index(c)] for c in pos_set]
-            neg_scores = [mu[catalog.index(c)] for c in held[q] if c not in pos_set]
-            wins = sum(1 for ps in pos_scores for ns in neg_scores if ps > ns)
-            ties = sum(1 for ps in pos_scores for ns in neg_scores if ps == ns)
-            auc = ((wins + 0.5 * ties) / (len(pos_scores) * len(neg_scores))
-                   if pos_scores and neg_scores else None)
+            ps = [mu[catalog.index(c)] for c in pos_set]
+            ns = [mu[catalog.index(c)] for c in held[q] if c not in pos_set]
+            wins = sum(1 for x in ps for y in ns if x > y)
+            ties = sum(1 for x in ps for y in ns if x == y)
+            auc = (wins + 0.5 * ties) / (len(ps) * len(ns)) if ps and ns else None
             order = sorted(range(len(catalog)), key=lambda j: (-mu[j], j))
             dcg = sum(held[q].get(catalog[j], {}).get("target", 0.0)
                       / math.log2(r + 2) for r, j in enumerate(order[:10]))
             ideal = sorted((p["target"] for p in held[q].values()), reverse=True)[:10]
             idcg = sum(t / math.log2(r + 2) for r, t in enumerate(ideal))
-            out_rows.append({"query": q, "destination": dest, "rank": rank,
-                             "rr": 1.0 / rank, "scores": mu, "mse": mse, "mae": mae,
-                             "auc": auc, "ndcg10": (dcg / idcg if idcg else None)})
+            leaf = _leaf(dest)
+            title_rank = min(recompute_rank(mu, catalog, j)
+                             for j, c in enumerate(catalog) if _leaf(c) == leaf)
+            out_rows.append({
+                "query": q, "destination": dest, "rank": rank, "rr": 1.0 / rank,
+                "scores": mu, "weighted_mse": werr / wsum, "weighted_mae": wabs / wsum,
+                "slice_mse": {k: v[0] / v[1] for k, v in sorted(slices.items())},
+                "auc": auc, "ndcg10": (dcg / idcg if idcg else None),
+                "title_equivalent_rank": title_rank,
+            })
     pred = {"schema": EVAL_SCHEMA, "fold": a.fold, "arm": a.arm, "seed": a.seed,
-            "checkpoint_sha256": rec["checkpoint_sha256"],
-            "fit_receipt_sha256": sha_bytes(canon(rec)),
+            "checkpoint_sha256": (rec["checkpoint_sha256"] if rec
+                                  else (INIT_SHA[a.seed]
+                                        if a.arm == "control_warm_start" else None)),
+            "fit_receipt_sha256": (sha_bytes(canon(rec)) if rec else None),
+            "final_lock_sha256": ctx["final_lock_sha256"],
+            "candidate_sha256": ctx["candidate_sha256"], "review_id": ctx["review_id"],
             "catalog_sha256": catalog_sha, "catalog_size": len(catalog),
             "tie_rule": "ascending-frozen-catalog-column", "rows": out_rows,
-            "held_query_count": len(out_rows), "environment": env,
-            "git_commit": git_head()}
+            "held_query_count": len(out_rows),
+            "r_at": {str(k): sum(1 for r in out_rows if r["rank"] <= k) / len(out_rows)
+                     for k in (1, 5, 10)},
+            "environment": env, "git_commit": git_head()}
     install_private(os.path.join(out_dir, f"eval_{a.arm}_{a.seed}.receipt.json"), canon(pred))
     mrr = sum(r["rr"] for r in out_rows) / len(out_rows)
     print(f"sealed eval fold={a.fold} arm={a.arm} seed={a.seed} MRR {mrr:.4f} n={len(out_rows)}")
 
 
 def cmd_decide(a):
+    ctx = chain_context(a.final_lock, a.verification_receipt)
     from sm_fs_bootstrap import decide as boot_decide
-    plan = _load_plan()
     man, pairs, fold_txt = load_pairs_verified()
     catalog = sorted({p["candidate"] for p in pairs})
     catalog_sha = sha_bytes("\n".join(catalog).encode())
+    cat_index = {c: j for j, c in enumerate(catalog)}
     fold_of = {p["query"]: p["fold"] for p in pairs}
     dest_of = {p["query"]: p["candidate"] for p in pairs if p["class"] == "positive_parent"}
     rr = {arm: defaultdict(dict) for arm in ARMS}
-    per_seed_mrr = defaultdict(dict)
     for f in range(5):
         for arm in ARMS:
             for seed in SEEDS:
+                fit_rec = json.loads(read_bound(
+                    os.path.join(RUN_DIR, f"fold{f}", f"fit_{arm}_{seed}.receipt.json"),
+                    private=True, description="fit receipt"))
+                validate_fit_receipt(fit_rec, f, arm, seed, ctx)
                 rec = json.loads(read_bound(
                     os.path.join(RUN_DIR, f"fold{f}", f"eval_{arm}_{seed}.receipt.json"),
                     private=True, description="eval receipt"))
                 need(rec.get("schema") == EVAL_SCHEMA, "eval receipt schema")
                 need((rec["fold"], rec["arm"], rec["seed"]) == (f, arm, seed),
                      "eval receipt job identity mismatch")
-                need(rec.get("catalog_sha256") == catalog_sha, "eval catalog mismatch")
+                need(rec.get("checkpoint_sha256") == fit_rec["checkpoint_sha256"],
+                     "eval receipt checkpoint chain broken")
+                need(rec.get("fit_receipt_sha256") == sha_bytes(canon(fit_rec)),
+                     "eval receipt does not bind the validated fit receipt")
+                need(rec.get("final_lock_sha256") == ctx["final_lock_sha256"]
+                     and rec.get("candidate_sha256") == ctx["candidate_sha256"]
+                     and rec.get("review_id") == ctx["review_id"],
+                     "eval receipt chain fields broken")
+                need(rec.get("catalog_sha256") == catalog_sha
+                     and rec.get("catalog_size") == len(catalog), "eval catalog mismatch")
                 need(rec.get("tie_rule") == "ascending-frozen-catalog-column", "tie rule")
                 seen = set()
                 for row in rec["rows"]:
@@ -614,11 +723,13 @@ def cmd_decide(a):
                     need(q not in seen, f"duplicate query {q} in receipt")
                     seen.add(q)
                     need(fold_of.get(q) == f, f"query {q} not in fold {f}")
-                    need(math.isfinite(row["rr"]) and 0 < row["rr"] <= 1, "rr out of range")
-                    rr[arm].setdefault(q, {})[seed] = row["rr"]
-                per_seed_mrr[arm][(f, seed)] = (
-                    sum(r["rr"] for r in rec["rows"]) / len(rec["rows"]))
-    all_held = {q for q, f in fold_of.items()}
+                    need(dest_of.get(q) == row.get("destination"),
+                         f"receipt destination for {q} differs from the frozen bundle")
+                    rank = recompute_rank(row.get("scores", []), catalog,
+                                          cat_index[dest_of[q]])
+                    need(rank == row.get("rank"), f"stored rank for {q} != recomputed")
+                    rr[arm].setdefault(q, {})[seed] = 1.0 / rank    # recomputed, not trusted
+    all_held = set(fold_of)
     for arm in ARMS:
         need(sorted(rr[arm]) == sorted(all_held),
              f"{arm} evaluated {len(rr[arm])} queries; population requires {len(all_held)}")
@@ -635,10 +746,12 @@ def cmd_decide(a):
     result = boot_decide(block_values)
     result.update({
         "schema": DEC_SCHEMA, "catalog_sha256": catalog_sha,
-        "unique_destinations": len(set(dest_of[q] for q in all_held)),
-        "per_seed_mrr": {arm: {f"fold{f}/seed{s}": per_seed_mrr[arm][(f, s)]
-                               for f in range(5) for s in SEEDS} for arm in ARMS},
-        "plan_sha256": sha_bytes(canon(plan)),
+        "unique_destinations": len({dest_of[q] for q in all_held}),
+        "seed_specific_mrr": {arm: {str(s): (sum(rr[arm][q][s] for q in all_held)
+                                             / len(all_held)) for s in SEEDS}
+                              for arm in ARMS},
+        "plan_sha256": ctx["plan_sha256"], "final_lock_sha256": ctx["final_lock_sha256"],
+        "candidate_sha256": ctx["candidate_sha256"], "review_id": ctx["review_id"],
         "authorizes": ("new-reserve-preregistration-only"
                        if result["passed_exploratory_gate"] else "nothing"),
         "git_commit": git_head(),
@@ -652,17 +765,15 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("plan")
-    f = sub.add_parser("fit")
-    f.add_argument("--fold", type=int, required=True)
-    f.add_argument("--arm", choices=ARMS, required=True)
-    f.add_argument("--seed", type=int, required=True, choices=SEEDS)
-    f.add_argument("--final-lock", required=True)
-    f.add_argument("--verification-receipt", required=True)
-    e = sub.add_parser("evaluate")
-    e.add_argument("--fold", type=int, required=True)
-    e.add_argument("--arm", choices=ARMS, required=True)
-    e.add_argument("--seed", type=int, required=True, choices=SEEDS)
-    sub.add_parser("decide")
+    for name in ("fit", "evaluate", "decide"):
+        p = sub.add_parser(name)
+        p.add_argument("--final-lock", required=True)
+        p.add_argument("--verification-receipt", required=True)
+        if name != "decide":
+            p.add_argument("--fold", type=int, required=True)
+            p.add_argument("--arm", required=True,
+                           choices=ARMS + (CONTROL_ARMS if name == "evaluate" else ()))
+            p.add_argument("--seed", type=int, required=True, choices=SEEDS)
     a = ap.parse_args(argv)
     return {"plan": cmd_plan, "fit": cmd_fit,
             "evaluate": cmd_evaluate, "decide": cmd_decide}[a.cmd](a)
