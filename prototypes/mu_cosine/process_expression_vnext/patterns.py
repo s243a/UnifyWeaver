@@ -56,6 +56,7 @@ from .ast import (
     ValueIndex,
     VarId,
 )
+from .registry import RegistryError
 
 
 class GroundingError(ValueError):
@@ -76,13 +77,24 @@ class GroundingError(ValueError):
 class GroundAST:
     """A typed term proved free of variables and signature type variables.
 
-    Construct through :func:`make_ground`, which runs the proof.  Building the
-    dataclass directly is possible in Python and is not defended against — the
-    guarantee is that every path in this package goes through the proof, not
-    that the type is unforgeable.
+    The proof runs in ``__post_init__``, so **every** way of obtaining a
+    ``GroundAST`` — including calling the exported constructor directly — is
+    checked.  A state type whose invariant held only on the package's own happy
+    path would be a claim rather than a guarantee, and it is exported.
+
+    ``registry`` records which registry the term was elaborated against, so a
+    term cannot be carried into a pattern built from a different one.  It is
+    ``None`` only for a value the caller assembled by hand, which has no
+    registry to attribute it to.
     """
 
     term: TypedTerm
+    registry: Any = None
+
+    def __post_init__(self) -> None:
+        defects = _term_defects(self.term, "term")
+        if defects:
+            raise GroundingError(_not_ground_message("term", defects))
 
     def __str__(self) -> str:
         return f"GroundAST({type(self.term).__name__})"
@@ -127,7 +139,15 @@ class PatternAST:
 
     term: TypedTerm
     variables: tuple[PatternVar, ...]
-    registry_label: str
+    #: The registry this pattern was elaborated against.  Held by identity, not
+    #: by label: two registries can share a label, and two loads of one file are
+    #: not the same registry — nothing guarantees the file did not change
+    #: between them, so being told is better than being guessed at.
+    registry: Any
+
+    @property
+    def registry_label(self) -> str:
+        return getattr(self.registry, "label", str(self.registry))
 
     @property
     def named_variables(self) -> tuple[PatternVar, ...]:
@@ -199,16 +219,27 @@ def is_ground(term: TypedTerm) -> bool:
     return not _term_defects(term, "term")
 
 
-def make_ground(term: TypedTerm, *, what: str = "term") -> GroundAST:
-    """Prove ``term`` ground and wrap it.  The only supported constructor."""
+def _not_ground_message(what: str, defects: list[str]) -> str:
+    return (
+        f"{what} is not ground: "
+        + "; ".join(defects[:8])
+        + ("; …" if len(defects) > 8 else "")
+    )
+
+
+def make_ground(
+    term: TypedTerm, *, what: str = "term", registry: Any = None
+) -> GroundAST:
+    """Prove ``term`` ground and wrap it, naming the caller's context on failure.
+
+    ``GroundAST`` re-runs the same proof, so this is a diagnostic convenience
+    rather than the security boundary: the boundary is in ``__post_init__``.
+    """
 
     defects = _term_defects(term, what)
     if defects:
-        raise GroundingError(
-            f"{what} is not ground: " + "; ".join(defects[:8])
-            + ("; …" if len(defects) > 8 else "")
-        )
-    return GroundAST(term)
+        raise GroundingError(_not_ground_message(what, defects))
+    return GroundAST(term, registry)
 
 
 # --------------------------------------------------------------------------
@@ -231,20 +262,30 @@ def index_of(term: TypedTerm) -> ValueIndex:
 
 
 def _substitute_type(
-    declared: Any, index_values: Mapping[VarId, ValueIndex]
+    declared: Any,
+    term_values: Mapping[VarId, TypedTerm],
+    index_values: Mapping[VarId, ValueIndex],
 ) -> Any:
     if isinstance(declared, PatternIndex):
         bound = index_values.get(declared.var)
         return declared if bound is None else bound
     if isinstance(declared, TermIndex):
-        return TermIndex(_substitute_term(declared.term, {}, index_values))
+        # An expression-valued index is a *term*, so it can contain term
+        # variables of its own: `hop_decay_targets(principal_tree(C), ...)`
+        # indexes its result by `principal_tree(C)`.  Substituting only indices
+        # here would leave that C unbound and make a legitimate pattern
+        # ungroundable.
+        return TermIndex(_substitute_term(declared.term, term_values, index_values))
     if isinstance(declared, IndexedType):
         return IndexedType(
             declared.name,
-            tuple(_substitute_type(i, index_values) for i in declared.indices),
+            tuple(
+                _substitute_type(i, term_values, index_values)
+                for i in declared.indices
+            ),
         )
     if isinstance(declared, ListType):
-        return ListType(_substitute_type(declared.element, index_values))
+        return ListType(_substitute_type(declared.element, term_values, index_values))
     return declared
 
 
@@ -258,7 +299,7 @@ def _substitute_term(
         if bound is None:
             return term
         return bound
-    inferred = _substitute_type(term.inferred_type, index_values)
+    inferred = _substitute_type(term.inferred_type, term_values, index_values)
     if isinstance(term, Call):
         return Call(
             inferred,
@@ -319,10 +360,43 @@ def _unify_constraint(
     return False  # pragma: no cover - every Type subclass is covered above
 
 
-def _binding_term(value: Any, label: str) -> TypedTerm:
+def _materialize(index: ValueIndex, registry: Any) -> TypedTerm | None:
+    """Recover the term a determined index denotes, if it denotes one.
+
+    This is what makes ownership inference symmetric rather than left-to-right:
+    in ``cross_substrate(principal_tree(C), S::substrate[C])``, binding ``S``
+    determines ``C``, and requiring the caller to restate ``C`` would be exactly
+    the "redundant input" the brief rules out.  Returns ``None`` when the index
+    determines no term, in which case the variable stays unbound and is reported
+    as missing.
+    """
+
+    if isinstance(index, TermIndex):
+        return index.term
+    if isinstance(index, ReferenceIndex):
+        try:
+            entry = registry.get(index.name)
+        except RegistryError:
+            return None
+        if entry.kind != "reference":
+            return None
+        # Built exactly as `_elaborate` builds a `SourceName`, so a recovered
+        # binding and a supplied one are the same node.
+        return Reference(entry.result_type, index.name)
+    return None
+
+
+def _binding_term(value: Any, label: str, pattern: "PatternAST") -> TypedTerm:
     """Accept a typed ground value or a :class:`GroundAST`; reject the rest."""
 
     if isinstance(value, GroundAST):
+        if value.registry is not None and value.registry is not pattern.registry:
+            raise GroundingError(
+                f"binding for {label} was elaborated against registry "
+                f"{getattr(value.registry, 'label', value.registry)!r}, but the "
+                f"pattern was elaborated against {pattern.registry_label!r}; a "
+                "term only means what its own registry says it means"
+            )
         return value.term
     if isinstance(value, PatternAST):
         raise GroundingError(
@@ -358,8 +432,16 @@ def ground(
     ground terms or :class:`GroundAST`.
 
     The pattern is not mutated, the result does not depend on mapping order, and
-    an index variable that another binding already determines need not be
-    supplied — but if it is, it must agree.
+    a variable that another binding already determines need not be supplied —
+    but if it is, it must agree.  Determination runs to a fixpoint in both
+    directions: a binding can determine an index, and a determined index can in
+    turn supply the term binding for a variable that occurs in both positions.
+
+    A :class:`GroundAST` binding carries the registry it was elaborated against
+    and is refused if that is not this pattern's registry.  A bare
+    :class:`~.ast.TypedTerm` has no registry to attribute it to, so it is
+    accepted on the caller's authority — assembling one by hand is a deliberate
+    act, unlike carrying a ``GroundAST`` in from elsewhere.
     """
 
     if not isinstance(pattern, PatternAST):
@@ -369,57 +451,92 @@ def ground(
     supplied = dict(bindings or {})
     by_id = {v.var: v for v in pattern.variables}
     by_name = {v.name: v for v in pattern.named_variables}
+    specs = sorted(pattern.variables, key=lambda s: s.var.serial)
 
-    # 1. Resolve keys.  Sorting by serial makes the diagnostic for a pattern with
-    #    several problems deterministic rather than dict-order dependent.
+    # 1. Resolve keys.  Every bad key is collected and reported together in a
+    #    sorted order, so which of several problems you hear about does not
+    #    depend on the order the caller happened to build the mapping in.
     resolved: dict[VarId, TypedTerm] = {}
+    unknown: list[str] = []
+    doubled: list[str] = []
     for key, value in supplied.items():
         if isinstance(key, VarId):
             spec = by_id.get(key)
             if spec is None:
-                raise GroundingError(
-                    f"binding handle {key.display!r} (serial {key.serial}) does not "
-                    "belong to this pattern"
+                unknown.append(
+                    f"handle {key.display!r} (serial {key.serial}) does not belong "
+                    "to this pattern"
                 )
+                continue
         elif isinstance(key, str):
             spec = by_name.get(key)
             if spec is None:
-                known = ", ".join(sorted(v.name for v in pattern.named_variables))
-                raise GroundingError(
-                    f"unknown binding {key!r}; this pattern binds "
-                    f"[{known}]" + (" plus anonymous handles"
-                                    if pattern.anonymous_variables else "")
-                )
+                unknown.append(f"unknown binding {key!r}")
+                continue
         else:
-            raise GroundingError(
-                f"binding key must be a variable name or a VarId handle, got "
-                f"{type(key).__name__}"
+            unknown.append(
+                f"binding key {key!r} is a {type(key).__name__}, not a variable "
+                "name or a VarId handle"
             )
+            continue
         if spec.var in resolved:
-            raise GroundingError(
-                f"variable {spec.label} is bound twice, once by name and once by "
-                "handle"
-            )
-        resolved[spec.var] = _binding_term(value, spec.label)
+            doubled.append(spec.label)
+            continue
+        resolved[spec.var] = _binding_term(value, spec.label, pattern)
 
-    # 2. Seed index values from every binding, then check each constraint.  Both
-    #    loops run in serial order so acceptance and the message are independent
-    #    of the caller's mapping order.
-    order = sorted(resolved, key=lambda v: v.serial)
+    if unknown:
+        known = ", ".join(sorted(v.name for v in pattern.named_variables))
+        suffix = " plus anonymous handles" if pattern.anonymous_variables else ""
+        raise GroundingError(
+            "; ".join(sorted(unknown))
+            + f"; this pattern binds [{known}]{suffix}"
+        )
+    if doubled:
+        raise GroundingError(
+            "bound twice, once by name and once by handle: "
+            + ", ".join(sorted(set(doubled)))
+        )
+
+    # 2. Solve to a fixpoint rather than in one left-to-right sweep.  A constraint
+    #    check can determine an index, and a determined index can in turn supply a
+    #    term binding whose type determines further indices, so a single pass
+    #    would make the outcome depend on the order variables happen to appear in.
     index_values: dict[VarId, ValueIndex] = {}
-    for var in order:
+    for var in sorted(resolved, key=lambda v: v.serial):
         index_values[var] = index_of(resolved[var])
 
-    for var in order:
-        spec = by_id[var]
-        if spec.constraint is None:
-            continue
-        value = resolved[var]
-        if not _unify_constraint(spec.constraint, value.inferred_type, index_values):
-            raise GroundingError(
-                f"binding for {spec.label} has type {value.inferred_type}, which "
-                f"does not satisfy {_substitute_type(spec.constraint, index_values)}"
-            )
+    for _round in range(len(pattern.variables) + 2):
+        # Progress is *either* a new term binding or a newly determined index:
+        # a constraint check that binds an index has learned something even
+        # though it materialized nothing, and stopping there would leave a
+        # variable whose value the next round would have recovered.
+        before = (len(resolved), len(index_values))
+        for spec in specs:
+            value = resolved.get(spec.var)
+            if value is None:
+                if not spec.in_term_position:
+                    continue
+                index = index_values.get(spec.var)
+                recovered = None if index is None else _materialize(
+                    index, pattern.registry
+                )
+                if recovered is None:
+                    continue
+                resolved[spec.var] = value = recovered
+            if spec.constraint is None:
+                continue
+            if not _unify_constraint(
+                spec.constraint, value.inferred_type, index_values
+            ):
+                raise GroundingError(
+                    f"binding for {spec.label} has type {value.inferred_type}, which "
+                    "does not satisfy "
+                    f"{_substitute_type(spec.constraint, resolved, index_values)}"
+                )
+        if (len(resolved), len(index_values)) == before:
+            break
+    else:  # pragma: no cover - each round adds a binding or an index
+        raise GroundingError("binding constraints did not reach a fixpoint")
 
     # 3. Every variable in term position needs a value; an index-only variable is
     #    allowed to be inferred (§3.5's "fresh C").
@@ -434,7 +551,9 @@ def ground(
         )
 
     result = _substitute_term(pattern.term, resolved, index_values)
-    return make_ground(result, what="grounded term")
+    return make_ground(
+        result, what="grounded term", registry=pattern.registry
+    )
 
 
 # --------------------------------------------------------------------------

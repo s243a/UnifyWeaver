@@ -69,7 +69,14 @@ from .ast import (
     new_var_id,
 )
 from .numerics import NumericError, to_float64, to_int, to_real
-from .patterns import GroundAST, PatternAST, PatternVar, ground, make_ground
+from .patterns import (
+    GroundAST,
+    GroundingError,
+    PatternAST,
+    PatternVar,
+    ground,
+    make_ground,
+)
 from .registry import Entry, Registry, RegistryError
 
 
@@ -639,7 +646,11 @@ def elaborate_ground(source: SourceNode, registry: Registry) -> GroundAST:
     than asserted.
     """
 
-    return make_ground(elaborate(source, registry), what="ground elaboration")
+    return make_ground(
+        elaborate(source, registry),
+        what="ground elaboration",
+        registry=registry,
+    )
 
 
 def elaborate_pattern(source: SourceNode, registry: Registry) -> PatternAST:
@@ -656,9 +667,7 @@ def elaborate_pattern(source: SourceNode, registry: Registry) -> PatternAST:
     scope = _Scope()
     term = _elaborate(source, registry, None, scope)
     _assert_no_type_vars(term)
-    return PatternAST(
-        term=term, variables=scope.table(), registry_label=registry.label
-    )
+    return PatternAST(term=term, variables=scope.table(), registry=registry)
 
 
 def ground_surface(
@@ -679,6 +688,12 @@ def ground_surface(
 
     from .functional_parser import parse_functional
 
+    if registry is not pattern.registry:
+        raise GroundingError(
+            f"ground_surface() was given registry {registry.label!r} but the "
+            f"pattern was elaborated against {pattern.registry_label!r}; the "
+            "bindings would be parsed against names the pattern never saw"
+        )
     prepared: dict[Any, TypedTerm] = {}
     for key, text in bindings.items():
         if isinstance(key, VarId):

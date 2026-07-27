@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from pathlib import Path
 import sys
 
@@ -46,6 +47,7 @@ from process_expression_vnext import (
     is_ground,
     load_registry,
     parse_functional,
+    RegistryError,
 )
 from process_expression_vnext.ast import (
     Call,
@@ -100,6 +102,22 @@ HOP_DECAY_BINDINGS = {
 @pytest.fixture(scope="module")
 def reg():
     return load_registry(FIXTURE)
+
+
+@pytest.fixture(scope="module")
+def other_reg(tmp_path_factory):
+    """A second registry with the same entries but a distinct identity.
+
+    Same content on purpose: if provenance were enforced by comparing *shapes*,
+    a same-shaped registry would slip through, and this fixture would pass while
+    the property it tests did not hold.
+    """
+
+    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    document["label"] = "second-independent-fixture"
+    path = tmp_path_factory.mktemp("registries") / "other_fixture.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return load_registry(path)
 
 
 def pat(text, registry) -> PatternAST:
@@ -729,9 +747,15 @@ def test_a_pattern_is_not_a_ground_ast(reg):
 
 def test_grounding_leaves_the_pattern_untouched(reg):
     pattern = pat(HOP_DECAY_PATTERN, reg)
-    before = copy.deepcopy(pattern)
+    # Snapshot the value parts only: the registry is held by identity on purpose,
+    # so deep-copying it would compare a clone against the original and fail for
+    # a reason that has nothing to do with mutation.
+    before_term = copy.deepcopy(pattern.term)
+    before_vars = copy.deepcopy(pattern.variables)
     ground_surface(pattern, reg, HOP_DECAY_BINDINGS)
-    assert pattern == before
+    assert pattern.term == before_term
+    assert pattern.variables == before_vars
+    assert pattern.registry is reg
     assert _variables_in(pattern.term)  # still a pattern, not consumed
 
 
@@ -747,6 +771,142 @@ def test_one_pattern_grounds_more_than_once_with_different_bindings(reg):
     assert first.term == gnd(
         "cross_substrate(principal_tree(pearltrees),full_dag(pearltrees))", reg
     ).term
+
+
+# --------------------------------------------------------------------------
+# review regressions (PR #4028 @ 5957f63)
+# --------------------------------------------------------------------------
+
+
+def test_a_variable_inside_an_expression_valued_index_is_substituted(reg):
+    """An index is a *term*, so it can carry term variables of its own.
+
+    `hop_decay_targets` binds its result index to argument 0, so the pattern's
+    result type is `target_factory[principal_tree(C), hop_decay]`.  Substituting
+    only indices left that C unbound and made a legitimate pattern ungroundable.
+    """
+
+    pattern = pat("hop_decay_targets(principal_tree(C), decay=D::real)", reg)
+    index = pattern.term.inferred_type.indices[0]
+    assert isinstance(index, TermIndex)
+    assert _variables_in(pattern.term)  # the variable really is in there
+
+    result = ground_surface(pattern, reg, {"C": "pearltrees", "D": "0.85"})
+    assert result.term == gnd(
+        "hop_decay_targets(principal_tree(pearltrees),decay=0.85)", reg
+    ).term
+    assert _variables_in(result.term) == []
+    assert isinstance(result.term.inferred_type.indices[0], TermIndex)
+
+
+def test_an_ownership_index_determined_by_another_binding_is_recovered(reg):
+    """Inference is symmetric, not left-to-right.
+
+    Binding `S` determines the corpus, so `C` need not be restated — and the
+    variable `C` occurs earlier than `S`, which is exactly the ordering a single
+    left-to-right sweep gets wrong.
+    """
+
+    pattern = pat(OWNERSHIP, reg)
+    inferred_only = ground_surface(pattern, reg, {"S": "full_dag(pearltrees)"})
+    both_supplied = ground_surface(
+        pattern, reg, {"C": "pearltrees", "S": "full_dag(pearltrees)"}
+    )
+    assert inferred_only.term == both_supplied.term
+    assert inferred_only.term == gnd(
+        "cross_substrate(principal_tree(pearltrees),full_dag(pearltrees))", reg
+    ).term
+
+
+def test_recovering_a_binding_does_not_weaken_the_conflict_check(reg):
+    """Inference must not become a way to launder a contradiction."""
+
+    with pytest.raises(GroundingError, match="does not satisfy"):
+        ground_surface(
+            pat(OWNERSHIP, reg),
+            reg,
+            {"C": "simplewiki", "S": "full_dag(pearltrees)"},
+        )
+
+
+def test_a_variable_that_nothing_determines_is_still_missing(reg):
+    """Recovery fills in what is determined, not what is merely unbound."""
+
+    with pytest.raises(GroundingError, match="missing binding"):
+        ground_surface(pat(CROSS, reg), reg, {"S": "principal_tree(pearltrees)"})
+
+
+def test_the_exported_ground_ast_constructor_runs_the_proof(reg):
+    """The invariant has to hold for the exported type, not just for our path.
+
+    A state type that could be constructed around a pattern term would be a
+    claim about `make_ground` rather than a guarantee about `GroundAST`, and
+    `GroundAST` is what downstream code would type-annotate against.
+    """
+
+    pattern_term = pat("cross_substrate(S, S)", reg).term
+    with pytest.raises(GroundingError, match="unbound variable"):
+        GroundAST(pattern_term)
+    with pytest.raises(GroundingError, match="unresolved signature type variable"):
+        GroundAST(Reference(IndexedType("substrate", (TypeVar("C"),)), "pearltrees"))
+    # A genuinely ground term still constructs.
+    assert GroundAST(gnd("pearltrees", reg).term).term.name == "pearltrees"
+
+
+def test_a_term_from_another_registry_cannot_be_bound(reg, other_reg):
+    """A term only means what its own registry says it means."""
+
+    pattern = pat(CROSS, reg)
+    native = elaborate_ground(parse_functional("principal_tree(pearltrees)", reg), reg)
+    foreign = elaborate_ground(
+        parse_functional("full_dag(pearltrees)", other_reg), other_reg
+    )
+    with pytest.raises(GroundingError, match="elaborated against registry"):
+        ground(pattern, {"S": native, "T": foreign})
+
+
+def test_ground_surface_refuses_a_foreign_registry(reg, other_reg):
+    with pytest.raises(GroundingError, match="pattern was elaborated against"):
+        ground_surface(
+            pat(CROSS, reg),
+            other_reg,
+            {"S": "principal_tree(pearltrees)", "T": "full_dag(pearltrees)"},
+        )
+
+
+def test_a_registry_may_not_register_a_name_that_is_variable_syntax(tmp_path):
+    """§4 says an uppercase token is a variable; a registry cannot overrule that.
+
+    Longest-match lexing would otherwise let an entry named `S` shadow the
+    variable syntax for every pattern written against that registry.
+    """
+
+    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    for shadowing in ("S", "Corpus", "_"):
+        document["entries"][shadowing] = {"kind": "reference", "type": "corpus"}
+        path = tmp_path / f"shadow_{shadowing.strip('_') or 'anon'}.json"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        with pytest.raises(RegistryError, match="variable syntax"):
+            load_registry(path)
+        del document["entries"][shadowing]
+
+
+def test_binding_diagnostics_do_not_depend_on_mapping_order(reg):
+    """Which of several bad keys you hear about must not be dict-order luck."""
+
+    pattern = pat(CROSS, reg)
+    value = elaborate_ground(parse_functional("principal_tree(pearltrees)", reg), reg)
+    messages = []
+    for bindings in (
+        {"Zed": value, "Aaa": value},
+        {"Aaa": value, "Zed": value},
+    ):
+        with pytest.raises(GroundingError) as excinfo:
+            ground(pattern, bindings)
+        messages.append(str(excinfo.value))
+    assert messages[0] == messages[1]
+    # Both problems are reported, not just whichever came first.
+    assert "'Aaa'" in messages[0] and "'Zed'" in messages[0]
 
 
 # --------------------------------------------------------------------------
