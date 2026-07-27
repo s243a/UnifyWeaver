@@ -1,0 +1,248 @@
+{
+  "schema": "unifyweaver.sm-fs-ranking-candidate-review.v4",
+  "review_document": "REVIEW_sm_fs_ranking_candidate_v4_lock.md",
+  "review_document_sha256": "94893efd055d179789f15e21f0efcb5ffe971e6fb69ccc9724a96a17e82ab182",
+  "review_status": "authentic-executable-static-artifact-request-changes-before-step-4",
+  "reviewed_before": [
+    "decision-bearing-ranking-optimizer-step",
+    "held-fold-score",
+    "reserve-access",
+    "step-4-prereg-amendment"
+  ],
+  "parent_contracts": {
+    "prior_candidate_review_id": "421fbab584df2c02eb34d11d4d4a8ee3a536ef06ab38f38ba8eb585b68da71f6",
+    "ranking_prereg_id": "0235521270c565a413d69feaa01a6e101fb533261942451a43ddf963e409aca2",
+    "ranking_prereg_sha256": "2cefb96f96a1bfb76ed0dbe54dfd8b84e9da79f4d96fe609ade1178a5df68729",
+    "ranking_protocol_sha256": "25bac71a67b317700f6a5123af238f01e9b57225bf4deaf71a6470486bd194f3",
+    "retention_prereg_id": "f3e1d123e6f81191489689d7f7e0fd121e25ff891ada330fe668b8b3238497c1",
+    "retention_prereg_sha256": "b40feb04d94dc9e1da05bcb8e2c74204357492649fb6fbd45c7dba0de3f2fc7a",
+    "retention_protocol_sha256": "5cbe305ed3eb0c2ecbb78b6f032e326c5c0c72bf415d218c538bbe3abdacd3d8"
+  },
+  "candidate": {
+    "path": "~/mu_data/sm_fs_ranking_run_v4/candidate_lock_v4.json",
+    "schema": "unifyweaver.sm-fs-ranking-execution-lock.candidate.v4",
+    "sha256": "b5a2a7e7034a937d8241e437d48536592c579bca13dcd7af59b0d9bc4e21f4fa",
+    "git_commit": "fe87d08c8c96b5b0b886dc3154dc18d14efd8250",
+    "ranking_bundle_manifest_sha256": "e01e1e48b5464bd315cff3c982e035f390cab8ba2b4c3ee60322dac65bf35894",
+    "title_table_sha256": "78182f1559123bbbb8ac05a47bb2a32f9651225bee2c574688718a32acf8ba20",
+    "training_plan_sha256": "1cdb659bd3baa291af1847de764f46148318df98f95ea4b286270868f8a486d1",
+    "initialized_checkpoints": {
+      "3997001": "a3bf4c0588cc3e4cf1ad335b66440c113e7ee11fd116bd7307a3cee57447098e",
+      "3997002": "fb353e693951819683793641464155e144caad73c553039fc64f1c6e253ad796",
+      "3997003": "f42bdea0071a64dca0dad5312178127906b96215ba6890f6a37ad19d87ffdd5a"
+    },
+    "code_sha256": {
+      "fine_tune_channel_heads.py": "4e156eebb6675d950a6b5b41bdeaa87e2d2df2780b6fd5706f5c0eb54d15395c",
+      "judge_cards.py": "71c8733a8dcdf782dc4620a65c99846e2575e2400032336fca599aaa1537844d",
+      "mu_attention.py": "778664fa6e2b95100bff526bab5751b3907887a2e77ea412897dcffffb788443",
+      "sm_fs_bootstrap.py": "76c6be512542210b72a971d0b15dc1f236dd174044f1fba0fe93ee145b203f00",
+      "sm_fs_ranking_chain.py": "39079cecc8a76e4aaaf236d569205eae05f5c6c51c57c20c67b672778c1bea09",
+      "sm_fs_ranking_construct.py": "40ed4212f218817166df305b78280966a6af9561d5e3a12440d40af9a2ff67bc",
+      "sm_fs_ranking_lock_verify.py": "6262c60b861a25f9a9a240c2b4abaf2b63e9809b2f614f7f5c240d7af27fcf79",
+      "sm_fs_ranking_pipeline.py": "3ed0029ba36b262a283493918c741326b1ac0e99729b7944e10ca23823e7721e",
+      "sm_fs_sampler.py": "790225b25f9ccc20b2b3d8e988441e5158f8388b12460dc63f74b72b18339267"
+    },
+    "fitting_authorized": false,
+    "static_hashes_match": true,
+    "supplied_candidate_verifier_accepts": true,
+    "complete_authorization_chain_enforced": false,
+    "model_derived_score_evidence_enforced": false
+  },
+  "grounding": {
+    "queries": 361,
+    "candidates": 359,
+    "pairs": 129599,
+    "lineage_blocks": 82,
+    "fold_query_counts": [
+      73,
+      72,
+      72,
+      72,
+      72
+    ],
+    "fold_assignment_sha256": "b5439b1acdfb5020ecb7fb4fad437fd183242408d09056e1ed7ec90d33335f37",
+    "jobs": 30,
+    "fold_projections": {
+      "0": {
+        "rows": 103392,
+        "held_queries": 73,
+        "held_query_overlap": 0,
+        "sha256": "3bd7feb3742895d72866d5ba5dc90427db34ad973ec95fa43fe5f878f664b539"
+      },
+      "1": {
+        "rows": 103751,
+        "held_queries": 72,
+        "held_query_overlap": 0,
+        "sha256": "1699ff88e2d6e3bfe3f7622e01bd5c6f1aed841c9dc603189d3a9752791d6f20"
+      },
+      "2": {
+        "rows": 103751,
+        "held_queries": 72,
+        "held_query_overlap": 0,
+        "sha256": "9c605c9abaea5142c78d551d355abeedfa23026a19e5246610f7c32c1e3084cc"
+      },
+      "3": {
+        "rows": 103751,
+        "held_queries": 72,
+        "held_query_overlap": 0,
+        "sha256": "eb9ea3a4633d2289a8279af856578f7eb9e00a011889d038bf8388a9cfd0e0b5"
+      },
+      "4": {
+        "rows": 103751,
+        "held_queries": 72,
+        "held_query_overlap": 0,
+        "sha256": "420fbb7772d9f173001fc3c371ea06ce60ea2af7f98ef70893f37ab93e102891"
+      }
+    },
+    "checkpoint_loader_passes_all_seeds": true,
+    "exact_trainable_tensor_count": 18,
+    "exact_trainable_parameter_count": 1195782,
+    "synthetic_cpu_optimizer_step_passes": true,
+    "synthetic_gpu_optimizer_step_passes": true,
+    "all_training_sampler_known_answers_match": true,
+    "frozen_bootstrap_implemented_exactly": true,
+    "nonfinite_catalog_scores_fail_closed": true,
+    "decision_recomputes_rank_from_scores": true,
+    "decision_authenticates_scores_from_checkpoint": false,
+    "fabricated_scores_can_pass_primary_gate": true,
+    "arbitrary_preregistration_amendments_can_pass": true,
+    "exact_review_schema_and_authority_enforced": false,
+    "final_lock_emitter_present": false,
+    "verification_receipt_emitter_present": false,
+    "complete_secondary_and_control_report_enforced": false,
+    "decision_bearing_end_to_end_tests_present": false
+  },
+  "adversarial_reproductions": {
+    "fabricated_scores": {
+      "checkpoint_files": 0,
+      "jobs": 30,
+      "lineage_blocks": 82,
+      "query_count": 82,
+      "bootstrap_resamples": 9999,
+      "sampler_attempts": 819918,
+      "delta_mrr": 0.9878048780487787,
+      "ci95": [
+        0.9878048780487787,
+        0.9878048780487787
+      ],
+      "bootstrap_mean": 0.9878048780485253,
+      "positive_only_seed_mrr": 0.01219512195121952,
+      "graded_negative_seed_mrr": 1.0,
+      "passed_exploratory_gate": true,
+      "authorizes": "new-reserve-preregistration-only"
+    },
+    "preregistration_rewrite_accepted": true,
+    "caller_authored_review_accepted": true,
+    "caller_authored_verification_receipt_accepted": true
+  },
+  "blocking_findings": [
+    "caller-authored-score-vectors-can-pass-primary-decision",
+    "preregistration-amendment-and-retention-cascade-unrestricted",
+    "review-and-verification-authority-caller-forgeable",
+    "registered-secondary-control-and-reporting-contract-incomplete",
+    "verified-byte-handoff-and-decision-bearing-integration-tests-incomplete"
+  ],
+  "authorization": {
+    "candidate_accepted": false,
+    "step_4_prereg_amendment_authorized": false,
+    "retention_cascade_authorized": false,
+    "model_fitting_authorized": false,
+    "held_fold_scoring_authorized": false,
+    "reserve_access_authorized": false,
+    "checkpoint_release_authorized": false
+  },
+  "replacement_sequence": [
+    "use-one-exact-schema-and-fixed-path-with-schema-specific-review-verification",
+    "anchor-review-acceptance-to-user-merged-or-cryptographically-countersigned-authority",
+    "bind-candidate-commit-sha-plan-report-protocols-and-explicit-amendment-contract",
+    "recover-starting-preregistration-blobs-from-candidate-commit-and-verify-their-hashes",
+    "structurally-diff-ranking-amendment-and-enforce-only-enumerated-json-pointer-values",
+    "rederive-retention-id-link-and-enforce-exact-still-blocked-narrow-cascade",
+    "emit-final-lock-and-verification-receipt-through-reviewed-private-no-replace-transactions",
+    "authenticate-fitted-checkpoint-provenance-before-held-data-access",
+    "reproduce-scores-from-authenticated-checkpoints-and-frozen-evaluator-inputs-before-decision",
+    "carry-candidate-bound-source-bytes-or-hashes-through-every-held-data-loader",
+    "complete-controls-binary-zero-sensitivity-secondary-diagnostics-and-whole-population-report",
+    "add-end-to-end-chain-fit-evaluate-decide-and-adversarial-evidence-tests",
+    "generate-fresh-plan-and-candidate-v5-in-a-new-no-replace-namespace",
+    "independently-review-fresh-candidate-before-any-amendment-or-fit"
+  ],
+  "frozen_later_amendment_requirements": {
+    "ranking_estimand_unchanged": true,
+    "queries": 361,
+    "candidates": 359,
+    "folds": 5,
+    "lineage_blocks": 82,
+    "fold_assignment_sha256": "b5439b1acdfb5020ecb7fb4fad437fd183242408d09056e1ed7ec90d33335f37",
+    "evidence_scope": "map-near-lineage-blocked-catalog-transductive",
+    "primary": {
+      "metric": "exact-destination-mrr",
+      "contrast": "graded-negative-minus-positive-only",
+      "minimum_point_gain": 0.01,
+      "interval_lower_strictly_greater_than": 0.0,
+      "tie_rule": "ascending-frozen-catalog-column",
+      "secondary_rescue_authorized": false,
+      "passing_authorizes": "new-reserve-preregistration-only"
+    },
+    "reserve_rows_untouched": 1481,
+    "ranking_seeds": [
+      3997001,
+      3997002,
+      3997003
+    ],
+    "track_t_independent_regrowth": true,
+    "track_t_seeds": [
+      3998101,
+      3998102,
+      3998103
+    ],
+    "bootstrap": {
+      "seed_average_within_query_before_contrast": true,
+      "unit": "frozen-adaptive-lineage-block",
+      "observed_eligible_blocks": 82,
+      "draws_per_replicate": 82,
+      "resamples": 9999,
+      "seed": 3997999,
+      "same_multiplicities_both_arms": true,
+      "query_weighted_mean_preserved": true,
+      "replicate_formula": "sum_b(m_b*sum_q_in_b(d_q))/sum_b(m_b*n_b)",
+      "sampler_schema": "unifyweaver.sm-fs-ranking-bootstrap-key.v1",
+      "sampler_id": "sm-fs-ranking-bootstrap-v1",
+      "sampler_serialization": "canonical-json-sorted-keys-compact-utf8-terminal-lf",
+      "sampler_key_fields": [
+        "draw",
+        "replicate",
+        "retry",
+        "sampler_id",
+        "schema",
+        "seed"
+      ],
+      "sampler_index": "sha256-unsigned-big-endian-rejection-then-modulo-82",
+      "lower_order_zero_based": 249,
+      "upper_order_zero_based": 9749,
+      "order_rule": "nearest-rank-ceil-p-times-resamples-one-based",
+      "minimum_observed_blocks": 20,
+      "minimum_unique_blocks_per_replicate": null
+    }
+  },
+  "retention_cascade": {
+    "only_allowed_source_changes": [
+      "ranking_protocol_sha256",
+      "ranking_prereg_id",
+      "negative_bundle_status",
+      "negative_bundle_sha256"
+    ],
+    "execution_authorized": false,
+    "null_ledger_status": "blocked-until-frozen-and-verified",
+    "null_ledger_sha256": null,
+    "behavior_panel_sha256": null,
+    "fresh_target_cohort_stays_blocked": true,
+    "reserve_rows_authorized": false,
+    "quarantined_rows_authorized": false,
+    "track_r_contract_unchanged": true,
+    "track_t_contract_unchanged": true,
+    "inference_and_bonferroni_unchanged": true,
+    "privacy_and_checkpoint_release_gates_unchanged": true
+  },
+  "review_id": "3c08f4165054360c92a43c19a21d5cbf613a49ef4c30f9b0913b9cb9e712e090"
+}
