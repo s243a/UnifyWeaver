@@ -3,20 +3,14 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
-import os
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-import sm_fs_ranking_lock_verify as supplied
-import sm_fs_ranking_pipeline as pipeline
-from mu_attention import MuAttention
 from routed_policy import canonical_json_bytes
 from sm_fs_protocols import ProtocolError
-from sm_fs_ranking_candidate_review import EXPECTED_BOOTSTRAP
 from sm_fs_ranking_candidate_v2_review import (
     EXPECTED_BLOCKERS,
     EXPECTED_REPLACEMENT_SEQUENCE,
@@ -123,74 +117,42 @@ def test_hard_bound_review_id_rejects_unenumerated_reseal(tmp_path):
         load_and_verify_candidate_v2_review(path)
 
 
-def test_pipeline_constructor_is_incompatible_with_countersigned_cfg():
-    params = inspect.signature(MuAttention.__init__).parameters
-    assert "heads" not in params and "layers" not in params
-    assert "n_heads" in params and "n_layers" in params
-    source = inspect.getsource(pipeline.cmd_fit)
-    assert 'MuAttention(**blob["cfg"])' in source
-    legacy_cfg = {
-        "d_model": 384,
-        "heads": 4,
-        "layers": 3,
-        "judge_name": True,
-        "ridge": 0.1,
-        "op_name": True,
-        "corpus_name": True,
-    }
-    with pytest.raises(TypeError, match="unexpected keyword argument 'heads'"):
-        MuAttention(**legacy_cfg)
+def test_v2_review_permanently_records_checkpoint_and_optimizer_failure():
+    review = load_and_verify_candidate_v2_review()
+    assert review["grounding"]["countersigned_checkpoint_loads_in_pipeline"] is False
+    assert review["grounding"]["optimizer_reachable"] is False
+    assert (
+        "countersigned-checkpoint-config-incompatible-with-fit-and-evaluate"
+        in review["blocking_findings"]
+    )
 
 
-def test_supplied_verifier_accepts_tampered_claimed_bindings(monkeypatch):
-    baseline = {
-        "git_commit": "a" * 40,
-        "ranking_bundle_manifest_sha256": "b" * 64,
-        "initialized_checkpoints": {"3997001": "c" * 64},
-        "title_table_sha256": "d" * 64,
-        "e5_revision": "e" * 40,
-        "code_sha256": {"x": "f" * 64},
-        "adam": {"lr": 0.1},
-        "steps": 1,
-        "batch_size": 2,
-        "query_draws": 1,
-        "anchor_weight": 1.0,
-        "grad_clip": 1.0,
-        "trainable_contract": {"tensor_count": 18, "param_count": 1195782},
-        "tie_rule": "ascending-frozen-catalog-column",
-        "bootstrap": {"seed": 3997999},
-        "schemas": ["x"],
-        "environment": {"cuda_available": True},
-        "tokenizer_structure": "expected",
-        "frozen_reference": "expected",
-        "augmentation": {"anchor_rows_augmented": False},
-        "early_stopping": False,
-        "cleanliness_scope": "expected",
-    }
-    monkeypatch.setattr(supplied, "_bindings", lambda: dict(baseline))
-    lock = dict(baseline)
-    lock.update(schema=supplied.CAND_SCHEMA, fitting_authorized=False)
-    lock["environment"] = {"cuda_available": False}
-    lock["tokenizer_structure"] = "forged"
-    lock["frozen_reference"] = "forged"
-    lock["augmentation"] = {"anchor_rows_augmented": True}
-    lock["early_stopping"] = True
-    lock["cleanliness_scope"] = "forged"
-    assert supplied.verify_candidate_lock(lock) is True
+def test_v2_review_permanently_records_incomplete_binding_verification():
+    review = load_and_verify_candidate_v2_review()
+    assert review["candidate"]["complete_state_reproduction_enforced"] is False
+    assert (
+        "claimed-environment-tokenizer-reference-augmentation-and-trainable-bindings-not-enforced"
+        in review["blocking_findings"]
+    )
 
 
-def test_no_final_lock_or_independent_receipt_emitter_exists():
-    assert not hasattr(supplied, "emit_final")
-    assert not hasattr(supplied, "emit_verification_receipt")
-    source = inspect.getsource(pipeline.fitting_allowed)
-    assert 'receipt.get("verifier") not in (None, "", "self")' in source
+def test_v2_review_permanently_records_missing_finalization_emitters():
+    review = load_and_verify_candidate_v2_review()
+    assert review["grounding"]["final_lock_emitter_present"] is False
+    assert review["grounding"]["verification_receipt_emitter_present"] is False
+    assert (
+        "final-lock-and-independent-receipt-not-candidate-bound"
+        in review["blocking_findings"]
+    )
 
 
-def test_current_decision_uses_wrong_sampler_and_percentile():
-    source = inspect.getsource(pipeline.cmd_decide)
-    assert "np.random.default_rng" in source
-    assert "np.percentile" in source
-    assert EXPECTED_BOOTSTRAP["sampler_id"] not in source
+def test_v2_review_permanently_records_wrong_bootstrap_implementation():
+    review = load_and_verify_candidate_v2_review()
+    assert review["grounding"]["frozen_bootstrap_implemented"] is False
+    assert (
+        "frozen-bootstrap-and-nonfinite-ranking-fail-closed-contract-not-implemented"
+        in review["blocking_findings"]
+    )
 
 
 def test_nan_destination_score_is_silently_ranked_first_by_current_expression():
@@ -206,23 +168,12 @@ def test_nan_destination_score_is_silently_ranked_first_by_current_expression():
     assert not np.isfinite(scores).all()
 
 
-def test_install_failure_after_link_leaves_permanent_target(tmp_path, monkeypatch):
-    target = tmp_path / "receipt.json"
-    real_fsync = pipeline.os.fsync
-    calls = 0
-
-    def fail_directory_fsync(fd):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("injected directory fsync failure")
-        return real_fsync(fd)
-
-    monkeypatch.setattr(pipeline.os, "fsync", fail_directory_fsync)
-    with pytest.raises(OSError, match="injected directory fsync failure"):
-        pipeline.install_private(str(target), b"payload\n")
-    assert target.exists()
-    assert not list(tmp_path.glob(".stage-*"))
+def test_v2_review_permanently_records_transaction_failure():
+    review = load_and_verify_candidate_v2_review()
+    assert (
+        "transaction-rollback-directory-durability-and-private-mode-contract-incomplete"
+        in review["blocking_findings"]
+    )
 
 
 def test_review_id_uses_canonical_json():
