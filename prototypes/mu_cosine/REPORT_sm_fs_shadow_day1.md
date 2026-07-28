@@ -1,0 +1,48 @@
+# SM-FS ranking shadow runs, day 1 — mechanism win, absolute null, and the information-set lever
+
+**Status: SHADOW-EXPLORATORY (Tier 1).** Reserve rows untouched; preregistrations unamended;
+every artifact stamped non-decision-bearing. Same frozen experiment design throughout (5 folds ×
+3 seeds, sol's counter sampler, frozen lineage blocks, frozen rejection-sampled bootstrap).
+Total compute for everything below: ~1 hour on the GTX 1660 (a full 800-step fit ≈ 50 s).
+
+## Results
+
+| configuration | whole-population MRR |
+|---|---|
+| positive-only (trained, matched budget) | 0.140 (seeds 0.128/0.159/0.135) |
+| graded-negative (trained, matched budget) | **0.280** (0.273/0.282/0.286) |
+| e5-residual graded (α=1) | 0.376 (0.353/0.382/0.393) |
+| **frozen e5 title-cosine (no training)** | **0.573** (R@1 0.471) |
+| e5 + α·correction sweep | best α=0.02: 0.574 (+0.002, noise); monotone ↓ after |
+
+1. **The mechanism works.** Graded structural negatives double positive-only under matched
+   budget: ΔMRR +0.140, frozen lineage-block bootstrap 95% CI [+0.101, +0.181], consistent
+   across all three seeds — 14× the practical floor. The constructed hardness buckets and
+   graph-decay targets carry real supervision signal. This answers the registered mechanism
+   question emphatically (shadow-grade).
+2. **The absolute level is a null.** Every trained variant sits far below frozen e5; the
+   e5-residual head DEGRADES from its own starting point (0.573 → 0.376 at α=1 — empirical
+   confirmation of the zero-init-is-not-a-floor warning), and the offline α-sweep shows the
+   learned correction adds nothing at any useful weight. Third corpus, same standing
+   conclusion: e5 title-cosine is the champion ranker; μ heads do not beat it from titles.
+
+## The information-set hypothesis (next lever, for the math lane)
+
+The trained model receives strictly LESS information than the supervision encodes: μ sees
+(query title, candidate LEAF title) only — the §4 embedding-text rule excludes path components —
+while the graded targets are functions of full path structure (distance, LCA depth). e5 already
+extracts most of what two titles contain. Under this input constraint, matching e5 is close to
+the ceiling and beating it may be impossible in principle. Concrete next shadow runs:
+  (a) candidate ancestor-title context as model input (public titles, path structure exposed to
+      the encoder) — does structure-as-INPUT do what structure-as-TARGET could not;
+  (b) longer budgets / full-model fine-tune as a capacity control;
+  (c) the process-expression P1 conditioning question on top of whichever input set wins.
+The estimand critique of (a) — what it changes about the task and its comparability — is
+squarely the rigor lane's mathematics, not procedure.
+
+## Provenance
+
+Runner: sm_fs_ranking_shadow.py (+ residual arm); artifacts in ~/mu_data/sm_fs_ranking_shadow_v1
+(0600/0700, no-replace), 45 fits + 45 evals sealed with stamps; decision via the frozen
+sm_fs_bootstrap. Tier-2 machinery intact for a later authoritative rerun of any configuration
+that earns it.

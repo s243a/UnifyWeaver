@@ -75,6 +75,14 @@ def fit_job(fold, arm, seed, tok_cache):
                            eps=pl.ADAM["eps"], weight_decay=pl.ADAM["weight_decay"],
                            amsgrad=pl.ADAM["amsgrad"])
     tok = tok_cache["tok"]
+    if arm.endswith("_residual"):
+        # residual supervision: mu learns (target - e5cos), rescaled into [0,1]
+        Q, P = tok_cache["qtbl"].numpy(), tok_cache["ptbl"].numpy()
+        idx = tok_cache["idx"]
+        for p in rows:
+            cos = float(Q[idx[p["query"]]] @ P[idx[p["candidate"]]])
+            p["target"] = min(1.0, max(0.0, (p["target"] - cos + 1.0) / 2.0))
+    base_arm = arm.replace("_residual", "")
     pos, buckets = defaultdict(list), defaultdict(lambda: defaultdict(list))
     for i, p in enumerate(rows):
         (pos[p["query"]].append(i) if p["class"].startswith("positive")
@@ -84,7 +92,7 @@ def fit_job(fold, arm, seed, tok_cache):
     losses = []
     t0 = time.time()
     for step in range(pl.STEPS):
-        c, k = pl.sample_step(fold, seed, step, train_q, pos, buckets, arm)
+        c, k = pl.sample_step(fold, seed, step, train_q, pos, buckets, base_arm)
         losses.append(pl.fit_one_step(model, ref, tensors, opt, tok, rows, c, k,
                                       aug_rng, dev))
     model.eval()
@@ -123,6 +131,11 @@ def eval_job(fold, arm, seed, tok_cache, pairs, catalog, held_by_fold):
         for q in sorted(held):
             items = [(q, c, OPS["LINEAGE"], C, J, MM, MM) for c in catalog]
             mu = [float(v) for v in mu_batch(model, tok, items, dev).cpu()]
+            if arm.endswith("_residual"):
+                Q, P = tok_cache["qtbl"].numpy(), tok_cache["ptbl"].numpy()
+                idx2 = tok_cache["idx"]
+                mu = [float(Q[idx2[q]] @ P[idx2[c]]) + (2.0 * m - 1.0)
+                      for c, m in zip(catalog, mu)]
             dest = next(c for c, p in held[q].items() if p["class"] == "positive_parent")
             rank = pl.recompute_rank(mu, catalog, catalog.index(dest))
             out_rows.append({"query": q, "destination": dest, "rank": rank,
@@ -185,7 +198,7 @@ def cmd_run_all(_a=None):
     titles = _titles()
     qtbl, ptbl, idx = build_e5_tables(sorted(titles), cache_path=None, texts=titles,
                                       model_revision=E5_REVISION)
-    tok_cache = {"tok": Tokenizer(qtbl, ptbl, idx, {}, {})}
+    tok_cache = {"tok": Tokenizer(qtbl, ptbl, idx, {}, {}), "qtbl": qtbl, "ptbl": ptbl, "idx": idx}
     man, pairs, _ = pl.load_pairs_verified()
     catalog = sorted({p["candidate"] for p in pairs})
     held_by_fold = defaultdict(lambda: defaultdict(dict))
