@@ -46,3 +46,25 @@ Runner: sm_fs_ranking_shadow.py (+ residual arm); artifacts in ~/mu_data/sm_fs_r
 (0600/0700, no-replace), 45 fits + 45 evals sealed with stamps; decision via the frozen
 sm_fs_bootstrap. Tier-2 machinery intact for a later authoritative rerun of any configuration
 that earns it.
+
+## Day 2 addendum: data-scale and multi-judge shadow runs (all null; all informative)
+
+| experiment | SM-FS MRR | verdict |
+|---|---|---|
+| wiki pretrain (64x graph rows) zero-shot | 0.072 | no cross-corpus transfer |
+| wiki pretrain + SM-FS graded fine-tune | 0.283 vs 0.280 | more same-channel data: null |
+| multi-judge, random-pair e5 distillation | graph 0.175 / e5j 0.157 | naive mixing HURT (dilution + mean-teaching) |
+| multi-judge, WITHIN-QUERY e5 distillation | graph 0.220 / e5j 0.116 | pointwise MSE cannot absorb a ranker |
+| blend sweeps (cos + a*graph + b*e5j) | best = pure cos 0.573 | learned channels add nothing at any weight |
+
+Standing synthesis after 5 experiments (~2h GPU total): the graded-negative MECHANISM is real
+(+0.140 CI-solid), but no configuration of the 18-tensor pointwise-MSE mu head approaches frozen
+e5 (0.573) — not structure-as-target, not 64x data, not residual heads, not multi-channel
+conditioning, not e5 distillation. The convergent explanation is LOSS/CAPACITY: reproducing or
+beating a ranker requires (a) a ranking loss (pairwise/listwise — the deferred LINEAGE_RANK arm)
+and/or (b) more trainable capacity than last-layer+readouts+residuals. The owner's
+configuration-diversity thesis is NOT refuted: it has not yet been tested with a loss that can
+express ranking. Next levers, in order: LINEAGE_RANK listwise arm; full-model fine-tune control;
+then judge-diversity again on top of whichever works. e5-judge onboarding mechanics (12th row:
+card + zero residual + zero embedding, pre-construction state-dict growth) are now working
+machinery for that rematch.
