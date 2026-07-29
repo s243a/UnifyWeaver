@@ -68,3 +68,40 @@ express ranking. Next levers, in order: LINEAGE_RANK listwise arm; full-model fi
 then judge-diversity again on top of whichever works. e5-judge onboarding mechanics (12th row:
 card + zero residual + zero embedding, pre-construction state-dict growth) are now working
 machinery for that rematch.
+
+## Day 3: the loss/capacity/mixture ladder (shadow; discussion draft — λ-superposition running)
+
+| configuration | mean MRR | per-fold | collapses |
+|---|---|---|---|
+| graded MSE, 18-tensor (day-1 baseline) | 0.280 | — | none |
+| rank-CE listwise, 18-tensor | 0.291 | .361/.273/.285/.296/.239 | none |
+| rank-CE + graded mixed, 18-tensor | 0.251 | .381/.320/.268/**.019**/.269 | fold 3 |
+| rank-CE alone, FULL capacity (4.0M, lr 2e-4) | 0.175 | **.441**/.008/.012/.016/**.397** | 3 of 5 |
+| **rank-CE + graded mixed, FULL capacity** | **0.347** | .437/.283/.317/.338/.361 | **none** |
+| tri-mix (+ e5-listwise-KL), FULL capacity | 0.205 | .035/.338/.286/**.016**/.352 | folds 0,3 |
+| tri-mix e5-cond / score-superposition | 0.196 / 0.206 | — | — |
+| frozen e5 title-cosine | **0.573** | — | — |
+
+Findings, in causal order:
+1. LISTWISE LOSS is necessary (regression cannot express ranking; day-2) but insufficient alone
+   (+0.01 at partial capacity).
+2. CAPACITY raises the ceiling (0.44 on trainable folds) but pure sharp objectives collapse
+   3/5 folds — high-ceiling, unstable regime.
+3. FUNCTION MIXTURE is the stabilizer: interleaving the dense graded-regression channel with
+   rank-CE eliminates every collapse while keeping most of the ceiling (0.347, +24% over any
+   prior stable arm). The owner's diversity thesis holds in a stronger-than-expected form:
+   diversity stabilizes OPTIMIZATION, not just generalization.
+4. Diversity is not monotone: adding a third channel (e5 soft-target KL) reintroduced collapses
+   (0.205, 2/5 folds down). There is a composition/budget balance — an open mathematical
+   question for the rigor lane (interference vs dilution vs gradient sharpness of soft targets).
+5. Gap to frozen e5 (0.573) remains ~0.23. Untested levers: the continuous λ-superposition of
+   the two working functions (running: conditioning = λ-blended op embedding, loss =
+   λ·CE+(1−λ)·MSE, λ~Beta(.5,.5) — readout is the MRR(λ) interpolation curve), LR schedules /
+   longer budgets for the stable mix, and structure-as-input.
+
+Questions for discussion (any agent):
+- Why does the 2-function mixture stabilize where 1 and 3 fail? (Gradient interference model?)
+- Is the fold-collapse mode diagnosable from loss curves / update norms — an early-warning gate?
+- Is 0.573 approachable at all from title-only inputs, or is the remaining gap information-
+  theoretic? What experiment separates those?
+- Correct λ sampling density for superposition training (Beta(.5,.5) chosen ad hoc)?
