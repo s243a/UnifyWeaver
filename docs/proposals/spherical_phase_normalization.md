@@ -53,7 +53,7 @@ consequences worth noting:
 
 - A **circular time shift** by `τ` maps `φ_k ↦ φ_k + 2πkτ/N` — a *linear-in-k phase ramp*,
   i.e. a specific one-parameter subgroup of torus translations. Shift-invariant comparison =
-  quotienting by that subgroup = phase-only correlation (computable by FFT; see §5).
+  quotienting by that subgroup = phase-only correlation (computable by FFT; see §6).
 - With **irrationally related** frequencies (the continuous analog, as in RoPE or the fixed
   geometric frequencies of `DESIGN_path_operator.md` §"Fourier feature encoding"), the
   winding line never closes and is dense on the torus — the quasi-periodicity that makes
@@ -212,7 +212,46 @@ vs. the torus (fully commuting, `O(n)`, exactly invertible — appropriate for r
 binding and positional structure where order-independence of the *bindings themselves* is
 fine and the sphere must be preserved exactly).
 
-## 5. Practical implications for the filing system
+## 5. Position embeddings are phase translations
+
+The construction's most immediate payoff: on the Clifford torus, encoding position `p` is
+the phase translation `φ_k ↦ φ_k + ω_k p` — and this is exactly **RoPE** (rotary position
+embedding). The 2017 Vaswani sinusoidal encoding and RoPE are two faces of the same torus
+object: the additive encoding *adds the coordinates* of the torus point
+`(cos ω_k p, sin ω_k p)` to the token — the additive approximation that leaves the sphere —
+while RoPE *applies the group action* (rotates by it), which is the geometrically honest
+version. Three properties fall out:
+
+1. **Relative position for free.** With token phases shifted by `ψ(p) = (ω_1 p, …, ω_n p)`
+   and `ψ(q)` respectively, the cosine is `(1/n) Σ_k cos((φ_k − φ'_k) + ω_k (p − q))` —
+   a function of the *offset* `p − q` only. Shift-equivariance of similarity is automatic,
+   not approximated.
+
+2. **Positions compose as a group homomorphism.** `ψ(p + q) = ψ(p) + ψ(q)` exactly, and `p`
+   need not be an integer: scaling the phases of a single unit-spectrum "step" vector gives
+   **fractional binding** — continuous positions from one code. This is the fractional
+   power encoding / Spatial Semantic Pointer construction (Komer & Eliasmith), where
+   grid-cell-like interference patterns emerge from exactly this mechanism. For the filing
+   system: `gen_emb[d]` could be `d` fractional applications of *one* step phasor
+   (`step^d`, i.e. phases `d·ψ_step`) instead of a lookup table of additive depth tags —
+   depth becomes an actual translation along the torus, with interpolation between integer
+   depths defined for free.
+
+3. **The LCM analysis of §1 is the collision-control knob.** Commensurate frequencies make
+   position codes exactly periodic — collisions at the LCM period, chosen deliberately if
+   depth beyond some bound should saturate. Incommensurate/geometric frequencies (RoPE's
+   choice) make the winding line dense: no exact collisions in finite range, no exact
+   periodicity.
+
+**Caveat for tree positions: the torus is abelian.** Phase translations commute, so binding
+edge roles as pure phase additions makes the path `a/b` collide with `b/a` — unacceptable
+for the typed, ordered role paths of `DESIGN_tree_position_encoding_theory.md` §4. Order
+sensitivity must be reintroduced either by depth-indexed role keys (bind `role_ρ ⊛ step^t`,
+distinguishing *which level* each role occupied) or by escaping into the non-commuting part
+of the rotor group — the torus-vs-`Spin(2n)` trade of §4. Commutativity is a feature for
+positions and a bug for ordered composition; spend non-commutativity only where needed.
+
+## 6. Practical implications for the filing system
 
 1. **Replace additive tags with phase binding where norm preservation matters.** The current
    additive scheme (`e5(X) + gen_emb[0]`, `+ role_emb[ANCHOR]`) can be swapped, per slot,
@@ -244,6 +283,8 @@ fine and the sphere must be preserved exactly).
 - Oppenheim, A. & Lim, J. (1981) — *The importance of phase in signals.* Proc. IEEE.
 - Tancik et al. (2020) — *Fourier features let networks learn high frequency functions.* NeurIPS.
 - Su et al. (2021) — *RoFormer: Enhanced transformer with rotary position embedding.*
+- Komer, B. & Eliasmith, C. (2019+) — fractional power encoding / Spatial Semantic Pointers
+  (continuous positions via fractional phase binding).
 - Baez, J. (2002) — *The octonions.* Bull. AMS. (Hurwitz theorem, Hopf fibrations, parallelizable spheres.)
 - Hestenes, D. — *New Foundations for Classical Mechanics* (rotors, bivectors).
 - In-repo: `prototypes/mu_cosine/DESIGN_model_applications.md` (§"Theory note — μ is a
