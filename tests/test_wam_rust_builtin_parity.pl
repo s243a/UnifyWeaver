@@ -147,6 +147,11 @@ t_process_resource_updates(Priority, CoreLimit) :-
     getrlimit(4, CoreLimit),
     setrlimit(4, CoreLimit).
 
+:- dynamic t_process_fs_context/4.
+t_process_fs_context(NewDirectory, NewMask, OldDirectory, OldMask) :-
+    working_directory(OldDirectory, NewDirectory),
+    umask(OldMask, NewMask).
+
 :- dynamic t_login_name/1.
 t_login_name(Name) :- getlogin(Name).
 
@@ -478,6 +483,7 @@ test_builtin_parity_execution :-
              user:t_os_errors/2,
              user:t_process_resource_queries/3,
              user:t_process_resource_updates/2,
+             user:t_process_fs_context/4,
              user:t_login_name/1,
              user:t_time_conversions/3,
              user:t_random_builtins/4,
@@ -533,6 +539,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_os_errors_2,
     t_process_resource_queries_3,
     t_process_resource_updates_2,
+    t_process_fs_context_4,
     t_login_name_1,
     t_time_conversions_3,
     t_random_builtins_4,
@@ -585,6 +592,17 @@ fn native_process_identity() -> [i64; 6] {
             i64::from(getpgrp()),
         ]
     }
+}
+
+#[cfg(unix)]
+fn native_process_umask() -> i64 {
+    let output = std::process::Command::new("sh")
+        .args(["-c", "umask"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    i64::from_str_radix(text.trim(), 8).unwrap()
 }
 
 #[cfg(unix)]
@@ -918,6 +936,22 @@ fn test_process_resource_updates_compiled() {
         &mut vm, ub("Priority"), ub("CoreLimit")));
     assert!((-20..=19).contains(&integer_var(&vm, "Priority")));
     let _ = integer_var(&vm, "CoreLimit");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_process_fs_context_compiled() {
+    let directory = std::env::current_dir().unwrap();
+    let directory_text = directory.to_string_lossy().into_owned();
+    let mask = native_process_umask();
+    let mut vm = vmnew();
+    assert!(t_process_fs_context_4(
+        &mut vm, a(&directory_text), i(mask),
+        ub("OldDirectory"), ub("OldMask")));
+    assert_eq!(read_var(&vm, "OldDirectory"), a(&directory_text));
+    assert_eq!(read_var(&vm, "OldMask"), i(mask));
+    assert_eq!(std::env::current_dir().unwrap(), directory);
+    assert_eq!(native_process_umask(), mask);
 }
 
 #[test]
@@ -3059,6 +3093,68 @@ fn test_process_soft_limit_direct() {
 fn test_process_soft_limit_unavailable_direct() {
     assert!(!call2("getrlimit/2", i(1), ub("Limit")).0);
     assert!(!call2("setrlimit/2", i(1), i(0)).0);
+}
+
+#[test]
+fn test_working_directory_direct() {
+    let directory = std::env::current_dir().unwrap();
+    let directory_text = directory.to_string_lossy().into_owned();
+
+    let (ok, vm) = call2(
+        "working_directory/2", ub("Old"), a(&directory_text));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "Old"), a(&directory_text));
+    assert_eq!(std::env::current_dir().unwrap(), directory);
+
+    let mut shared_vm = vmnew();
+    shared_vm.set_reg("A1", ub("Directory"));
+    shared_vm.set_reg("A2", ub("Directory"));
+    assert!(shared_vm.execute_builtin("working_directory/2", 2));
+    assert_eq!(read_var(&shared_vm, "Directory"), a(&directory_text));
+
+    let (query_ok, query_vm) = call2(
+        "working_directory/2", ub("Old"), ub("New"));
+    assert!(query_ok);
+    assert_eq!(read_var(&query_vm, "Old"), a(&directory_text));
+    assert_eq!(read_var(&query_vm, "New"), a(&directory_text));
+
+    assert!(!call2("working_directory/2", a("__wrong_old__"),
+                  a(&directory_text)).0);
+    assert!(!call2("working_directory/2", ub("Old"),
+                  a("__unifyweaver_missing_working_directory__")).0);
+    assert!(!call2("working_directory/2", ub("Old"), i(7)).0);
+    assert!(!call2("working_directory/2", ub("Old"), a("bad\0path")).0);
+    assert!(!vmnew().execute_builtin("working_directory/2", 2));
+    assert_eq!(std::env::current_dir().unwrap(), directory);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_umask_direct() {
+    let mask = native_process_umask();
+
+    let (ok, vm) = call2("umask/2", ub("Old"), i(mask));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "Old"), i(mask));
+    assert_eq!(native_process_umask(), mask);
+    assert!(call2("umask/2", i(mask), i(mask)).0);
+    assert!(!call2("umask/2", i(mask.wrapping_add(1)), i(mask)).0);
+    assert_eq!(native_process_umask(), mask);
+
+    assert!(!call2("umask/2", ub("Old"), a("mask")).0);
+    assert!(!call2("umask/2", ub("Old"), ub("Mask")).0);
+    assert!(!call2("umask/2", ub("Old"), Value::Float(mask as f64)).0);
+    assert!(!vmnew().execute_builtin("umask/2", 2));
+    let mut missing_new = vmnew();
+    missing_new.set_reg("A1", ub("Old"));
+    assert!(!missing_new.execute_builtin("umask/2", 2));
+    assert_eq!(native_process_umask(), mask);
+}
+
+#[cfg(not(unix))]
+#[test]
+fn test_umask_unavailable_direct() {
+    assert!(!call2("umask/2", ub("Old"), i(0)).0);
 }
 
 #[cfg(all(unix, target_pointer_width = "64"))]
