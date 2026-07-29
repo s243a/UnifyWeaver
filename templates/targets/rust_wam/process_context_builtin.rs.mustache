@@ -1,0 +1,77 @@
+{{match part}}{{case helpers}}
+    fn current_working_directory() -> Option<String> {
+        std::env::current_dir()
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+
+    fn change_working_directory(path: &str) -> bool {
+        std::env::set_current_dir(path).is_ok()
+    }
+
+    #[cfg(unix)]
+    fn set_file_creation_mask(mask: i64) -> Option<i64> {
+        extern "C" {
+            fn umask(mask: std::os::raw::c_uint) -> std::os::raw::c_uint;
+        }
+
+        Some(i64::from(unsafe { umask(mask as std::os::raw::c_uint) }))
+    }
+
+    #[cfg(not(unix))]
+    fn set_file_creation_mask(_mask: i64) -> Option<i64> {
+        None
+    }
+{{case arms}}
+            "working_directory/2" => {
+                let directory = match Self::current_working_directory() {
+                    Some(directory) => Value::Atom(directory),
+                    None => return false,
+                };
+                let old = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if !self.unify(&old, &directory) {
+                    self.unwind_trail_to(mark);
+                    return false;
+                }
+
+                let new = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                match self.deref_heap(&self.deref_var(&new)) {
+                    Value::Atom(path) => {
+                        if Self::change_working_directory(&path) {
+                            self.pc += 1; true
+                        } else {
+                            self.unwind_trail_to(mark);
+                            false
+                        }
+                    }
+                    _ => {
+                        if self.unify(&new, &directory) {
+                            self.pc += 1; true
+                        } else {
+                            self.unwind_trail_to(mark);
+                            false
+                        }
+                    }
+                }
+            }
+            "umask/2" => {
+                let new_mask = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(mask)) => mask,
+                    _ => return false,
+                };
+                let old_mask = match Self::set_file_creation_mask(new_mask) {
+                    Some(mask) => Value::Integer(mask),
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &old_mask) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+{{/match}}
