@@ -1,0 +1,114 @@
+{{match part}}{{case helpers}}
+    fn line_reader_table() -> &'static Mutex<
+        Vec<Option<Arc<Mutex<std::io::BufReader<std::fs::File>>>>>
+    > {
+        static TABLE: OnceLock<Mutex<
+            Vec<Option<Arc<Mutex<std::io::BufReader<std::fs::File>>>>>
+        >> = OnceLock::new();
+        TABLE.get_or_init(|| Mutex::new(vec![None]))
+    }
+
+    fn open_line_reader(path: &str) -> Option<i64> {
+        let file = std::fs::File::open(path).ok()?;
+        let reader = Arc::new(Mutex::new(std::io::BufReader::with_capacity(4096, file)));
+        let mut table = Self::line_reader_table().lock().ok()?;
+        if table.len() >= 4096 {
+            return None;
+        }
+        let handle = table.len() as i64;
+        table.push(Some(reader));
+        Some(handle)
+    }
+
+    fn read_line_reader(handle: i64) -> Option<Option<String>> {
+        if !(1..4096).contains(&handle) {
+            return None;
+        }
+        let reader = {
+            let table = Self::line_reader_table().lock().ok()?;
+            table.get(handle as usize)?.as_ref()?.clone()
+        };
+        let mut reader = reader.lock().ok()?;
+        let mut bytes = Vec::new();
+        match std::io::BufRead::read_until(&mut *reader, b'\n', &mut bytes) {
+            Ok(0) => Some(None),
+            Ok(_) => {
+                if bytes.last() == Some(&b'\n') {
+                    bytes.pop();
+                }
+                if bytes.last() == Some(&b'\r') {
+                    bytes.pop();
+                }
+                String::from_utf8(bytes).ok().map(Some)
+            }
+            Err(_) => None,
+        }
+    }
+
+    fn close_line_reader(handle: i64) -> bool {
+        if !(1..4096).contains(&handle) {
+            return false;
+        }
+        let mut table = match Self::line_reader_table().lock() {
+            Ok(table) => table,
+            Err(_) => return false,
+        };
+        if let Some(slot) = table.get_mut(handle as usize) {
+            slot.take();
+        }
+        true
+    }
+{{case arms}}
+            "stream_open/2" => {
+                let path = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(path)) => path,
+                    _ => return false,
+                };
+                let handle = match Self::open_line_reader(&path) {
+                    Some(handle) => handle,
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Integer(handle)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    Self::close_line_reader(handle);
+                    false
+                }
+            }
+            "read_line/2" => {
+                let handle = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(handle)) => handle,
+                    _ => return false,
+                };
+                let line = match Self::read_line_reader(handle) {
+                    Some(Some(line)) => Value::Atom(line),
+                    Some(None) => Value::Atom("end_of_file".to_string()),
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &line) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "stream_close/1" => {
+                let handle = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(handle)) => handle,
+                    _ => return false,
+                };
+                if Self::close_line_reader(handle) {
+                    self.pc += 1; true
+                } else {
+                    false
+                }
+            }
+{{/match}}

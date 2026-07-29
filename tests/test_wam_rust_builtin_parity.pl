@@ -152,6 +152,15 @@ t_process_fs_context(NewDirectory, NewMask, OldDirectory, OldMask) :-
     working_directory(OldDirectory, NewDirectory),
     umask(OldMask, NewMask).
 
+:- dynamic t_stream_lines/5.
+t_stream_lines(Path, First, Empty, Last, Eof) :-
+    stream_open(Path, Handle),
+    read_line(Handle, First),
+    read_line(Handle, Empty),
+    read_line(Handle, Last),
+    read_line(Handle, Eof),
+    stream_close(Handle).
+
 :- dynamic t_login_name/1.
 t_login_name(Name) :- getlogin(Name).
 
@@ -484,6 +493,7 @@ test_builtin_parity_execution :-
              user:t_process_resource_queries/3,
              user:t_process_resource_updates/2,
              user:t_process_fs_context/4,
+             user:t_stream_lines/5,
              user:t_login_name/1,
              user:t_time_conversions/3,
              user:t_random_builtins/4,
@@ -540,6 +550,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_process_resource_queries_3,
     t_process_resource_updates_2,
     t_process_fs_context_4,
+    t_stream_lines_5,
     t_login_name_1,
     t_time_conversions_3,
     t_random_builtins_4,
@@ -952,6 +963,25 @@ fn test_process_fs_context_compiled() {
     assert_eq!(read_var(&vm, "OldMask"), i(mask));
     assert_eq!(std::env::current_dir().unwrap(), directory);
     assert_eq!(native_process_umask(), mask);
+}
+
+#[test]
+fn test_stream_builtins_compiled() {
+    let path = "stream_builtins_compiled_fixture.txt";
+    std::fs::write(
+        path,
+        [97, 108, 112, 104, 97, 10, 10, 111, 109, 101, 103, 97, 13, 10],
+    ).unwrap();
+
+    let mut vm = vmnew();
+    assert!(t_stream_lines_5(
+        &mut vm, a(path), ub("First"), ub("Empty"), ub("Last"), ub("Eof")));
+    assert_eq!(read_var(&vm, "First"), a("alpha"));
+    assert_eq!(read_var(&vm, "Empty"), a(""));
+    assert_eq!(read_var(&vm, "Last"), a("omega"));
+    assert_eq!(read_var(&vm, "Eof"), a("end_of_file"));
+
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
@@ -3155,6 +3185,80 @@ fn test_umask_direct() {
 #[test]
 fn test_umask_unavailable_direct() {
     assert!(!call2("umask/2", ub("Old"), i(0)).0);
+}
+
+#[test]
+fn test_stream_builtins_direct() {
+    let path = "stream_builtins_direct_fixture.txt";
+    let mut content = vec![102, 105, 114, 115, 116, 13, 10, 10];
+    content.extend(std::iter::repeat(120u8).take(70000));
+    content.push(10);
+    content.extend_from_slice(b"last");
+    std::fs::write(path, content).unwrap();
+
+    let (open_ok, open_vm) = call2("stream_open/2", a(path), ub("Handle"));
+    assert!(open_ok);
+    let handle = integer_var(&open_vm, "Handle");
+    assert!((1..4096).contains(&handle));
+
+    let (first_ok, first_vm) = call2("read_line/2", i(handle), ub("Line"));
+    assert!(first_ok);
+    assert_eq!(read_var(&first_vm, "Line"), a("first"));
+    let (empty_ok, empty_vm) = call2("read_line/2", i(handle), ub("Line"));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Line"), a(""));
+    let (long_ok, long_vm) = call2("read_line/2", i(handle), ub("Line"));
+    assert!(long_ok);
+    assert_eq!(read_var(&long_vm, "Line"), a(&"x".repeat(70000)));
+    let (last_ok, last_vm) = call2("read_line/2", i(handle), ub("Line"));
+    assert!(last_ok);
+    assert_eq!(read_var(&last_vm, "Line"), a("last"));
+    for _ in 0..2 {
+        let (eof_ok, eof_vm) = call2("read_line/2", i(handle), ub("Line"));
+        assert!(eof_ok);
+        assert_eq!(read_var(&eof_vm, "Line"), a("end_of_file"));
+    }
+
+    assert!(call1("stream_close/1", i(handle)).0);
+    assert!(call1("stream_close/1", i(handle)).0);
+    assert!(!call2("read_line/2", i(handle), ub("Line")).0);
+
+    let mismatch_path = "stream_builtins_mismatch_fixture.txt";
+    std::fs::write(
+        mismatch_path,
+        [97, 108, 112, 104, 97, 10, 98, 101, 116, 97, 10],
+    ).unwrap();
+    let (mismatch_open_ok, mismatch_open_vm) =
+        call2("stream_open/2", a(mismatch_path), ub("Handle"));
+    assert!(mismatch_open_ok);
+    let mismatch_handle = integer_var(&mismatch_open_vm, "Handle");
+    assert!(!call2("read_line/2", i(mismatch_handle), a("wrong")).0);
+    let (after_ok, after_vm) =
+        call2("read_line/2", i(mismatch_handle), ub("Line"));
+    assert!(after_ok);
+    assert_eq!(read_var(&after_vm, "Line"), a("beta"));
+    assert!(call1("stream_close/1", i(mismatch_handle)).0);
+
+    let nul_path = String::from_utf8(vec![98, 97, 100, 0, 112, 97, 116, 104]).unwrap();
+    assert!(!call2("stream_open/2", i(7), ub("Handle")).0);
+    assert!(!call2("stream_open/2", ub("Path"), ub("Handle")).0);
+    assert!(!call2(
+        "stream_open/2", a("__unifyweaver_missing_stream_file__"), ub("Handle")).0);
+    assert!(!call2("stream_open/2", a(&nul_path), ub("Handle")).0);
+    assert!(!call2("stream_open/2", a(path), a("handle")).0);
+    assert!(!call2("read_line/2", i(0), ub("Line")).0);
+    assert!(!call2("read_line/2", i(4096), ub("Line")).0);
+    assert!(!call2("read_line/2", a("handle"), ub("Line")).0);
+    assert!(call1("stream_close/1", i(4095)).0);
+    assert!(!call1("stream_close/1", i(0)).0);
+    assert!(!call1("stream_close/1", i(4096)).0);
+    assert!(!call1("stream_close/1", a("handle")).0);
+    assert!(!vmnew().execute_builtin("stream_open/2", 2));
+    assert!(!vmnew().execute_builtin("read_line/2", 2));
+    assert!(!vmnew().execute_builtin("stream_close/1", 1));
+
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(mismatch_path).unwrap();
 }
 
 #[cfg(all(unix, target_pointer_width = "64"))]
