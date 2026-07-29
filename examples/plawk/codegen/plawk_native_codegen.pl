@@ -99,6 +99,11 @@ plawk_dedupe_keep_order([PI | Rest0], [PI | Deduped]) :-
 :- use_module('../../../src/unifyweaver/targets/wam_llvm_target',
     [llvm_emit_atom_prefix_guard/5,
      llvm_emit_atom_field_eq_guard/7,
+     % Field-vs-string-literal comparison (the `$N OP "str"` guards and the
+     % string-condition ternary). Previously resolved only because bin/plawk
+     % loads wam_llvm_target into `user`; importing it explicitly makes the
+     % codegen module usable on its own, as the test suites load it.
+     llvm_emit_atom_field_str_cmp_guard/8,
      llvm_emit_regex_field_match_guard/7,
      llvm_emit_atom_field_slice/5,
      llvm_emit_atom_field_count/4,
@@ -14316,9 +14321,8 @@ plawk_rule_body_print_field(string(_)).
 % a ternary `COND ? A : B`: the condition operands and both branches must be
 % i64-valued (field / NR / NF / int literal / length / i64 arithmetic); lowered
 % to an LLVM select.
-plawk_rule_body_print_field(ternary(cmp(Left, _Op, Right), Then, Else)) :-
-    plawk_ternary_i64_operand_ok(Left),
-    plawk_ternary_i64_operand_ok(Right),
+plawk_rule_body_print_field(ternary(cmp(Left, Op, Right), Then, Else)) :-
+    plawk_ternary_cond_ok(Left, Op, Right),
     plawk_ternary_i64_operand_ok(Then),
     plawk_ternary_i64_operand_ok(Else).
 % a string concatenation (`print $1 $2`): every operand must be a valid print
@@ -14418,6 +14422,30 @@ plawk_ternary_i64_operand_ok(int(field(_))).
 plawk_ternary_i64_operand_ok(length(field(_))).
 plawk_ternary_i64_operand_ok(Expr) :-
     plawk_i64_operand_expr(Expr).
+
+%% plawk_ternary_cond_ok(+Left, +Op, +Right) is semidet.
+%  A ternary CONDITION this codegen can lower. Two forms:
+%
+%    * both operands i64 -- an `icmp`;
+%    * a field compared to a STRING LITERAL -- the same field-vs-literal
+%      comparator the `$N OP "str"` rule guards use, which yields an i1 for all
+%      six operators (equality and lexical ordering alike).
+%
+%  Every gate that admits a ternary asks through here, so a condition form cannot
+%  be accepted in one context and rejected in another -- the drift shape this
+%  campaign keeps finding.
+plawk_ternary_cond_ok(Left, _Op, Right) :-
+    plawk_ternary_i64_operand_ok(Left),
+    plawk_ternary_i64_operand_ok(Right),
+    !.
+% A POSITIVE field only. `$0` against a string literal is unsupported across the
+% whole surface -- the `$0 OP "str"` pattern-guard form does not even parse -- and
+% the comparator answers false for index 0, so admitting `$0` here yielded WRONG
+% OUTPUT instead of a decline.
+plawk_ternary_cond_ok(field(Index), Op, string(_Expected)) :-
+    integer(Index),
+    Index >= 1,
+    plawk_field_cmp_op_code(Op, _OpCode).
 
 plawk_prolog_call_expr(prolog_call(Name, Args)) :-
     atom(Name),
@@ -15253,10 +15281,9 @@ plawk_scalar_action_update(getline_pipe_capture(_Status, Var, Command), Var,
     string(Command).
 % Ternary assignment `x = COND ? A : B`: an i64 value via select (the operation
 % lowers through plawk_scalar_numeric_expr_ir(ternary(...)) -> plawk_i64_expr_ir).
-plawk_scalar_action_update(set(var(Name), ternary(cmp(Left, _Op, Right), Then, Else)),
-        Name, set(ternary(cmp(Left, _Op, Right), Then, Else))) :-
-    plawk_ternary_i64_operand_ok(Left),
-    plawk_ternary_i64_operand_ok(Right),
+plawk_scalar_action_update(set(var(Name), ternary(cmp(Left, Op, Right), Then, Else)),
+        Name, set(ternary(cmp(Left, Op, Right), Then, Else))) :-
+    plawk_ternary_cond_ok(Left, Op, Right),
     plawk_ternary_i64_operand_ok(Then),
     plawk_ternary_i64_operand_ok(Else).
 plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) :-
@@ -16869,6 +16896,40 @@ plawk_i64_expr_ir(special('ARGC'), _FieldSeparator, Base, _GlobalBase,
 % `L <op> R`; both branches are evaluated (no side effects in an i64 expr) and
 % an LLVM `select` picks one -- straight-line, so a ternary composes anywhere an
 % i64 expression is used (print, printf arg, assignment, arithmetic operand).
+% Ternary whose CONDITION compares a field to a STRING LITERAL
+% (`x = $1 == "a" ? 1 : 2`). The condition is not an i64 comparison, so it cannot
+% go through the icmp path below; it reuses the same field-vs-literal comparator
+% the `$N OP "str"` rule guards use, which yields an i1 directly and covers all
+% six operators (equality and lexical ordering alike). The branches stay i64, so
+% only the condition differs -- the `select` is identical.
+%
+% Text mode only: the comparator projects a field slice out of the record, so a
+% binary descriptor has no text to compare. Matched before the i64 clause, whose
+% operand lowering would fail on the string anyway.
+plawk_i64_expr_ir(ternary(cmp(field(Index), Op, string(Expected)), Then, Else),
+        FieldSeparator, Base, GlobalBase, ValueIR, GlobalParts, SetupParts) :-
+    integer(FieldSeparator),
+    integer(Index),
+    Index >= 1,
+    plawk_field_cmp_op_code(Op, OpCode),
+    !,
+    format(atom(CondGlobal), '~w_strcond', [GlobalBase]),
+    format(atom(CondIR), '%~w_cond', [Base]),
+    llvm_emit_atom_field_str_cmp_guard(CondGlobal, '%line', Index, OpCode,
+        Expected, FieldSeparator, CondIR, CondGlobalIR-CondCallIR),
+    format(atom(ThenBase), '~w_t', [Base]),
+    format(atom(ThenGlobal), '~w_t', [GlobalBase]),
+    plawk_i64_expr_ir(Then, FieldSeparator, ThenBase, ThenGlobal,
+        ThenValueIR, ThenGlobalParts, ThenSetupParts),
+    format(atom(ElseBase), '~w_e', [Base]),
+    format(atom(ElseGlobal), '~w_e', [GlobalBase]),
+    plawk_i64_expr_ir(Else, FieldSeparator, ElseBase, ElseGlobal,
+        ElseValueIR, ElseGlobalParts, ElseSetupParts),
+    format(atom(SelLine), '  %~w = select i1 ~w, i64 ~w, i64 ~w',
+        [Base, CondIR, ThenValueIR, ElseValueIR]),
+    format(atom(ValueIR), '%~w', [Base]),
+    append([[CondGlobalIR], ThenGlobalParts, ElseGlobalParts], GlobalParts),
+    append([ThenSetupParts, ElseSetupParts, [CondCallIR, SelLine]], SetupParts).
 plawk_i64_expr_ir(ternary(cmp(CondLeft, Op, CondRight), Then, Else),
         FieldSeparator, Base, GlobalBase, ValueIR, GlobalParts, SetupParts) :-
     plawk_icmp_pred(Op, Pred),
