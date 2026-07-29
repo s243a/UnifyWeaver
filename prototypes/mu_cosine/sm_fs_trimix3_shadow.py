@@ -68,6 +68,8 @@ def run():
         ck = pl.read_bound(os.path.join(pl.RANK_DIR, f"init_seed{SEED}.pt"),
                            expect_sha=pl.INIT_SHA[SEED], private=True)
         model, cfg = pl.load_checkpoint_bytes(ck, dev)
+        if os.environ.get("WARM_SD"):        # cross-corpus warm start (wiki-pretrained trunk)
+            model.load_state_dict(torch.load(os.environ["WARM_SD"], map_location=dev))
         n_ops = model.readout_w.shape[0]
         ref = copy.deepcopy(model); ref.eval()
         for p in ref.parameters(): p.requires_grad = False
