@@ -538,12 +538,34 @@ def test_unregistered_name_is_not_guessed_to_be_an_atom(reg):
 
 
 def test_deferred_constructs_are_rejected_precisely_not_misparsed(reg):
-    for text in ["lineage_op(S)", "haiku.D", "haiku@rev/abc", "X"]:
+    deferred = [
+        "haiku.D",                                              # modifier
+        "haiku@rev/abc",                                        # provenance pin
+        "pearltrees::substrate[principal_tree(pearltrees)]",    # expression index
+        "pearltrees::function([corpus],corpus)",                # function type
+        "attention",                                            # unregistered word
+    ]
+    for text in deferred:
         with pytest.raises((NotImplementedInMilestone, ParseError)) as excinfo:
             parse_functional(text, reg)
         assert "not implemented in this milestone" in str(excinfo.value) or (
             "unregistered" in str(excinfo.value)
         )
+
+
+def test_variables_parse_but_the_ground_path_still_refuses_them(reg):
+    """Milestone 2 moved the variable rejection from parsing to elaboration.
+
+    Variables now parse — scoping is not something the parser can decide — but
+    ``elaborate()`` stays ground-only, so the ground surface is unchanged: every
+    expression that failed before still fails, with a type-stage diagnostic
+    instead of a parse-stage one.
+    """
+
+    for text in ["lineage_op(S)", "X", "lineage_op(S::substrate[C])"]:
+        parse_functional(text, reg)  # no longer a parse error
+        with pytest.raises(ElaborationError, match="ground expression"):
+            ela(text, reg)
 
 
 def test_arity_errors_name_the_call(reg):

@@ -27,6 +27,7 @@ noncanonical for that reason.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import itertools
 from typing import Any
 
 from .numerics import Float64Value, NumberLexeme, RealValue
@@ -101,7 +102,13 @@ class SourceAnnotated(SourceNode):
 
 @dataclass(frozen=True)
 class SourceVariable(SourceNode):
-    """Recognized so it can be rejected precisely, not misparsed."""
+    """A functional-surface variable: ``S``, ``Limit``, or ``_``.
+
+    The parser records the *spelling*.  Whether two occurrences denote one
+    logical variable is a scoping question the pattern elaborator answers, not
+    something the source tree may presume — ``_`` is fresh per occurrence while
+    ``S`` is not, and the parser has no scope to decide that in.
+    """
 
     name: str
 
@@ -141,6 +148,18 @@ class SourceReferenceIndex(SourceType):
 
     Kept distinct from :class:`SourceTypeName` so the elaborator can produce a
     :class:`ReferenceIndex` rather than conflating it with a type.
+    """
+
+    name: str
+
+
+@dataclass(frozen=True)
+class SourceVariableIndex(SourceType):
+    """A variable occupying an index position, e.g. the ``C`` in ``substrate[C]``.
+
+    ``TypeOrIndex := Type | Variable | Reference`` (§4), so an index variable is
+    a third thing.  Keeping it distinct from :class:`SourceTypeName` is what
+    stops ``substrate[C]`` from silently meaning "indexed by a type spelled C".
     """
 
     name: str
@@ -239,6 +258,81 @@ class TermIndex(ValueIndex):
         return _index_display(self.term)
 
 
+#: Process-wide monotonic source of variable serials.
+#:
+#: Global rather than per-pattern on purpose.  Per-pattern numbering would let
+#: two independently elaborated patterns mint colliding identities, so a handle
+#: taken from one pattern would silently bind a *different* variable in another.
+#: The cost is that two separately elaborated copies of the same pattern are not
+#: ``==``; :func:`process_expression_vnext.patterns.alpha_equivalent` is the
+#: supported way to compare them.
+_VAR_SERIALS = itertools.count(1)
+
+
+@dataclass(frozen=True, eq=False)
+class VarId:
+    """Opaque identity of one logical pattern variable.
+
+    Identity is the serial alone.  ``display`` is carried for diagnostics and is
+    deliberately *not* part of equality: two variables both spelled ``S`` in
+    different patterns are different variables, and two occurrences of ``_`` in
+    one pattern are different variables despite an identical spelling.
+
+    ``origin`` separates four concepts that §3.4 and the milestone brief require
+    stay distinct, and which are easy to collapse by accident:
+
+    ``named``
+        an author-written variable such as ``S``; bindable by name.
+    ``anonymous``
+        an author-written ``_``; fresh per occurrence, bindable only through the
+        opaque handle this class provides.
+    ``inferred``
+        a constraint variable minted while typing a bare variable against a
+        signature — the "fresh C" in §3.5's *"S is inferred as substrate[C] for a
+        fresh C"*.  It has no author-visible name and is never bindable.
+
+    The fourth concept, a registry signature's own placeholder, is
+    :class:`TypeVar` and is not a :class:`VarId` at all.
+    """
+
+    serial: int
+    origin: str
+    display: str
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, VarId) and self.serial == other.serial
+
+    def __hash__(self) -> int:
+        return hash(self.serial)
+
+    def __str__(self) -> str:
+        return self.display
+
+
+def new_var_id(origin: str, display: str) -> VarId:
+    if origin not in ("named", "anonymous", "inferred"):
+        raise ValueError(f"unknown variable origin: {origin!r}")
+    return VarId(next(_VAR_SERIALS), origin, display)
+
+
+@dataclass(frozen=True)
+class PatternIndex(ValueIndex):
+    """A pattern variable occupying a value-index position.
+
+    ``substrate[C]`` in a *pattern* is indexed by a variable that will later be
+    bound to a corpus reference.  Representing that as :class:`TypeName`,
+    :class:`ReferenceIndex`, or a display string would each be a lie of a
+    different kind: the first makes it a type, the second makes it a registered
+    name that does not exist, and the third loses the identity that decides
+    whether two occurrences are the same variable.
+    """
+
+    var: VarId
+
+    def __str__(self) -> str:
+        return self.var.display
+
+
 def _index_display(term: "TypedTerm") -> str:
     if isinstance(term, Reference):
         return term.name
@@ -301,6 +395,19 @@ class ListTerm(TypedTerm):
     items: tuple[TypedTerm, ...]
 
 
+@dataclass(frozen=True)
+class PatternVariable(TypedTerm):
+    """A variable in term position.  Only a ``PatternAST`` may contain one.
+
+    ``inferred_type`` is the variable's *constraint*, whether the author stated
+    it (``S::substrate[C]``) or it came from the signature slot the variable
+    sits in (``lineage_op(S)``).  A variable with no constraint from either
+    source is underconstrained and never reaches this node.
+    """
+
+    var: VarId
+
+
 def debug_repr(term: TypedTerm) -> dict[str, Any]:
     """NONCANONICAL, NON-IDENTITY-BEARING debug rendering.
 
@@ -332,4 +439,14 @@ def debug_repr(term: TypedTerm) -> dict[str, Any]:
         return {**base, "kind": "float64", "value": term.value.hex16()}
     if isinstance(term, ListTerm):
         return {**base, "kind": "list", "items": [debug_repr(i) for i in term.items]}
+    if isinstance(term, PatternVariable):
+        # The serial is shown because the display name is not identity; two
+        # distinct `_` nodes would otherwise render identically in a diagnostic.
+        return {
+            **base,
+            "kind": "var",
+            "name": term.var.display,
+            "origin": term.var.origin,
+            "serial": term.var.serial,
+        }
     raise TypeError(f"unknown typed term: {type(term).__name__}")

@@ -168,6 +168,13 @@ FIELD_KEYS = frozenset({"type", "required", "default", "note"})
 _ENTRY_NAME = re.compile(r"\A[A-Za-z_][A-Za-z0-9_.\-]*\Z")
 _FIELD_NAME = re.compile(r"\A[a-z_][a-z0-9_]*\Z")
 
+#: §4: ``Variable := "_" | /[A-Z][A-Za-z0-9_]*/``.  A registered name matching
+#: this would be lexed as a reference by longest-match, silently shadowing the
+#: variable syntax — ``S`` would stop being a variable for every pattern written
+#: against that registry.  A registry cannot be allowed to redefine the grammar,
+#: so such a name is refused at load rather than resolved by precedence.
+_SHADOWS_VARIABLE = re.compile(r"\A(?:_|[A-Z][A-Za-z0-9_]*)\Z")
+
 
 def _strict_pairs(pairs):
     """Reject duplicate keys at every object level.
@@ -223,6 +230,11 @@ def load_registry(path: str | Path) -> Registry:
     for name, spec in raw_entries.items():
         if not _ENTRY_NAME.match(name):
             raise RegistryError(f"malformed entry name: {name!r}")
+        if _SHADOWS_VARIABLE.match(name):
+            raise RegistryError(
+                f"entry name {name!r} is variable syntax (§4) and would shadow it "
+                "for every pattern written against this registry"
+            )
         if not isinstance(spec, dict):
             raise RegistryError(f"entry {name!r} must be an object")
         _reject_unknown(spec, ENTRY_KEYS, f"entry {name!r}")
