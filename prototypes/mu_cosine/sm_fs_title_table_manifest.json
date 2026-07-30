@@ -1,0 +1,18 @@
+{
+ "title_table_version": "v1-stems",
+ "titles_sha256": "13bd201796b0fd9b1df7faf900cfb6f2fabcee829b8faf0ada4c581eb707d74e",
+ "typofix_map_sha256": "82b3a078e3335dbb961699743d14e47428a2e8e7eb0e5dd625e09cb05c2b0631",
+ "history": [
+  {
+   "version": "v1-stems",
+   "floor_mrr": 0.5723,
+   "note": "filename stems as shipped in run_v4 titles.json; all rounds 1-7 numbers"
+  },
+  {
+   "version": "v2-typofix",
+   "floor_mrr": 0.5765,
+   "note": "v1 + sm_fs_typofix_map.json (12 confident typos, case-preserving, artifact strip); NOT yet default"
+  }
+ ],
+ "rule": "every reported MRR must name its title_table_version; expansion map will be v3 after owner review"
+}

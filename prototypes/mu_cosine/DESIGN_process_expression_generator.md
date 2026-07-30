@@ -13,6 +13,12 @@ registered processes. Measurements land as tests in
 [`test_process_expression_envelope.py`](test_process_expression_envelope.py), never as prose only.
 Numbers that a test does not reproduce are marked *provisional* or *assumed*.
 
+> **vNext boundary:** proposed variables, indexed types, interpretation/representation rules, and
+> factory verification live in
+> [`DESIGN_process_expression_patterns.md`](DESIGN_process_expression_patterns.md). They do not
+> extend this v0.3/`pec-v2` envelope in place. Activating that language requires the separate,
+> sealed migration specified there and fresh support measurements.
+
 ## 0. Bundle supersession procedure
 
 The encoder handoff §9 states the rule — *any intentional contract change creates a new bundle and
@@ -60,6 +66,19 @@ corpus and may never alter it. Corpus manifests, template digests, LOCO assignme
 fixtures are computed before any weight exists and are unaffected by every weighting arm.
 
 ## 2. Corpus — exhaustive enumeration under measured caps
+
+> **Enumeration is PAUSED pending the registry `v0.4` bump requested in issue #4013.** The whole
+> point of exhaustive enumeration is to *freeze the support*, and the support is a function of the
+> pinned registry. Findings 2/3/7 split the `source` catch-all into substrate / μ-source / scorer,
+> register the corpora, and add a `mu=` slot — under which **13 of the 15** currently enumerable
+> `lineage(...)` argument forms become unenumerable, because they are the type-correct-but-
+> meaningless ones the split exists to remove (*measured*: 9 bare `source`-typed names plus 6
+> registered modifier variants all parse as a `lineage` argument; only `graph` and `graph.discrim`
+> could denote a substrate, and #4013 finding 3 notes `graph.discrim` is itself a judge use, so the
+> true figure is 13 or 14). Sealing a corpus against `v0.3` would therefore
+> freeze a support that `v0.4` immediately invalidates, and re-sealing is exactly the cost the
+> sealed-bundle lifecycle exists to avoid. The gate is the **shipping** of `v0.4`, not the ruling
+> that authorizes it: a ruling unblocks designing the registry, not running the generator.
 
 ### 2.1 Measured envelope
 
@@ -505,7 +524,35 @@ A decay sweep over a real corpus sample under the standing node-disjoint evaluat
 empirical curve, and sampling decay proportionally to that curve trains hardest where production
 will operate. Nobody hand-sets anything; the weighting *is* a measurement.
 
-Four conditions keep it honest:
+**What `decay` measures.** Transitive μ — graded element/subcategory relatedness computed over
+several hops — is the *quantity*. Hop decay is one *estimator* of it, and an LLM judge is another;
+the substrate, judge, and relation type jointly define the methodology. `decay` is therefore a
+parameter of the graph-judge method, not a claim about semantic truth, which is what makes fitting
+it legitimate: the sweep is **judge calibration**, verifiable against filing outcomes, rather than a
+commitment to an unverifiable semantic value. `DESIGN_transitive_relations.md`'s objection to point
+targets concerns *composition* — whether `μ(A→C)` equals `Π links` or `min(links)` — and the ordinal
+constraint `μ(A→C) ≤ min(links)` is the rule for **fusing** per-link estimates. Hop decay is a rule
+for **generating** one estimator's per-link values. Different stages, no conflict.
+
+Note that hop decay alone is an incomplete closeness measure: `gamma^hops` tends to zero, whereas
+the closeness of two arbitrary nodes tends to the corpus mean, not to nothing.
+`prototype_graph_judge.py` composes the two ideas rather than choosing —
+`mu_graph = max(floor, gamma^hops * lca_frac)` — pairing drift (`gamma^hops`) with pure structural
+closeness (`lca_frac`, shared-prefix depth) under a floor. That floor is a constant (`0.02`), not the
+corpus mean; the cumulative-walk geometry accepted in `DECISIONS_graph_geometry.md` (2026-07-12) is
+the model that actually approaches the right asymptote. A sweep over `decay` alone therefore varies
+one parameter of a composite estimator, which §5.0's exactness layering already requires be stated
+rather than implied.
+
+**The sweep is stratified by substrate.** `decay` models *semantic drift*, and drift is expected to
+differ by hierarchy shape: a corpus with a principal parent (`principal_tree(pearltrees)`,
+`principal_tree(simplemind)`) should drift less per hop than one where a node has many parents
+(`full_dag(simplewiki)`). These are already **distinct registered processes**, not one process over
+different data, so a single global curve fitted across both would average away precisely the effect
+the parameter names. One curve per substrate; combining them requires a recorded rule and a stated
+reason, not convenience.
+
+Six conditions keep it honest:
 
 1. **The sweep is preregistered** — corpus digest, metric, partition, grid resolution. A curve read
    off an ad-hoc run is the numeric analogue of treating a descriptive curve as a calibrated
@@ -519,6 +566,23 @@ Four conditions keep it honest:
 4. **No circularity** — the sweep that produces the distribution cannot also serve as evidence that
    the encoder improved numeric sensitivity. The sweep is an input; the encoder needs its own
    held-out basis.
+5. **The substrate is part of the record** — a curve is fitted per substrate, and its recorded
+   provenance names which one. A `decay` fitted on `full_dag(simplewiki)` is outside its support on
+   `principal_tree(pearltrees)`, for the same reason a different-corpus use is.
+6. **The title-cleaning version is part of the record** — title typos split what should be one
+   parent into two, which *inflates apparent drift*. A `decay` fitted on uncleaned titles is a
+   drift-plus-noise composite, and no amount of held-out data reveals the error because the holdout
+   carries the same typos. Sweeps run before and after a title fix are therefore **not comparable
+   numbers**, and the fitted-on record must name the cleaning version alongside the corpus digest.
+
+   Two estimands are available here and they must not be conflated:
+
+   - **observed titles** — `decay` absorbs data-quality noise; honest only if labelled as such;
+   - **canonicalized titles** — the hierarchy is repaired first and `decay` estimates drift on the
+     *intended* structure.
+
+   Which one applies is part of the methodology and belongs in the registry with the judge and
+   substrate, not in a runner's flags. Neither is wrong; silently switching between them is.
 
 ## 6. Structural effectiveness weighting — deferred, and why
 

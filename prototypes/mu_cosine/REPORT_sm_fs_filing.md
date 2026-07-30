@@ -169,3 +169,35 @@ the untouched v3 reserve. Cross-corpus claims are separately gated by
 `PROTOCOL_sm_fs_retention_transfer.md`: retention starts from the Pearltrees-trained checkpoint,
 whereas genuine transfer starts from a common pre-Pearltrees state and must beat both the
 unchanged base and a matched structure-scrambled source control.
+
+PR #4010 subsequently produced a proposed ranking execution lock. The independent review in
+`REVIEW_sm_fs_ranking_execution_lock.md` countersigns its migrated pre-Pearltrees warm start and
+the three exact initialized checkpoints, but does **not** authorize fitting: no ranking trainer or
+complete fold/arm/seed execution plan exists yet, the proposal predates its emitter commit, and
+its privacy/atomicity and observed-determinism gates remain incomplete. The machine-checkable
+review keeps `model_fitting_authorized=false` until a new proposal closes those gaps.
+
+The later candidate lock at commit `094de6345`, SHA-256 `6c4801cf387f0f8a…`, is authentic and
+reproducible but remains a disabled preflight scaffold. The independent
+`REVIEW_sm_fs_ranking_candidate_lock.md` therefore blocks the step-4 preregistration amendment:
+the complete fit/evaluate/decide transaction, held-outcome capability boundary, candidate/final
+verifier, and complete execution bindings must land before a fresh candidate is generated and
+reviewed.
+
+Replacement candidate v2 at commit `64ee948ed`, SHA-256 `a490cff99178ca01…`, is also rejected
+before step 4 by `REVIEW_sm_fs_ranking_candidate_v2_lock.md`. Its static hashes and honest fold-0
+projection check out, but its fitter cannot instantiate the countersigned checkpoints, no fresh
+v2 plan or candidate-derived final-lock receipt exists, held access and downstream receipts remain
+self-authenticated, and its NumPy/interpolated bootstrap differs from the exact SHA-256/nearest-rank
+procedure frozen by the first candidate review. Both preregistrations, fitting, held scoring,
+reserve access, and checkpoint release therefore remain blocked.
+
+Replacement candidate v3 at commit `db5dea709`, SHA-256 `33628b5da5f3bed7…`, closes the numerical
+and static-artifact failures: all five projections and the 30-job plan rederive, the exact
+checkpoints load, one CPU and one GPU optimizer step execute, and the frozen SHA-256 bootstrap is
+correct. It remains rejected before step 4 by `REVIEW_sm_fs_ranking_candidate_v3_lock.md`.
+Finalization accepts an untracked caller-authored “accepted review” and never compares the live
+final state with the reviewed candidate, while held evaluation and decision still trust
+self-authored receipts. Thirty fabricated evaluation receipts containing only query IDs and
+reciprocal ranks produced a passing, reserve-authorizing decision. Both preregistrations, fitting,
+held scoring, reserve access, and checkpoint release remain blocked pending a fresh candidate.

@@ -833,7 +833,7 @@ Add each target to the scale-300 effective-distance matrix in
 
 ### BENCH-R: Add R row to effective-distance scale-300 matrix ✅
 - **Lever:** Effective-distance benchmark rows  **Target:** R  **Size:** L  **Depends on:** —
-- **Status:** Done — `examples/benchmark/generate_wam_r_effective_distance_benchmark.pl`, guarded Rscript harness block, scale-300 matrix row + subsection in `WAM_CROSS_TARGET_BENCHMARK_RESULTS.md` (hosted-CI query_ms=3679 median / total_ms=4344 after STACK; prior IDCACHE hosted median was 4812/5610; reference parity match). Initial BENCH-R branch `cursor/bench-r-effective-distance-f421`; optimized by PERF-R-CA-DIRECT, IDDFS, IDCACHE, and STACK.
+- **Status:** Done — `examples/benchmark/generate_wam_r_effective_distance_benchmark.pl`, guarded Rscript harness block, scale-300 matrix row + subsection in `WAM_CROSS_TARGET_BENCHMARK_RESULTS.md` (hosted-CI IDTABLE query_ms=3412 median / total_ms=4076, 1.08× / 1.07× vs hosted STACK 3679/4344; prior IDCACHE hosted median was 4812/5610; reference parity match). Initial BENCH-R branch `cursor/bench-r-effective-distance-f421`; optimized by PERF-R-CA-DIRECT, IDDFS, IDCACHE, STACK, and IDTABLE. PATHMARK and LOOPBODY profiled/declined.
 
 ---
 
