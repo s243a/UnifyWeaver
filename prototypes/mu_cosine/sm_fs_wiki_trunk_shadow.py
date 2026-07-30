@@ -17,7 +17,7 @@ import sm_fs_ranking_shadow as sh
 from fine_tune_channel_heads import mu_batch
 from mu_attention import CORPORA, E5_REVISION, JUDGES, NODETYPE, OPS, Tokenizer, build_e5_tables
 
-OUT = os.path.expanduser("~/mu_data/wiki_lineage_v1")
+OUT = os.path.expanduser(os.environ.get("WIKI_DIR", "~/mu_data/wiki_lineage_v1"))
 SEED, STEPS, SLATE = 3997001, int(os.environ.get("TRUNK_STEPS", "12000")), 32
 CE, CM = CORPORA["enwiki"], CORPORA["mindmap"]
 J, MM, CAT = JUDGES["graph"], NODETYPE["mindmap_node"], NODETYPE["category"]
@@ -53,24 +53,35 @@ def run():
     # hard negatives for train slates
     tq_ids = torch.tensor([ix[n] for n, _ in train], device=dev)
     td_col = torch.tensor([ci[a] for _, a in train], device=dev)
+    ci_full = {c: j for j, c in enumerate(catalog)}
+    tq_col = torch.tensor([ci_full.get(n, 0) for n, _ in train], device=dev)
+    tq_has = torch.tensor([1.0 if n in ci_full else 0.0 for n, _ in train], device=dev)
     hard = torch.empty(len(train), 32, dtype=torch.long)
     with torch.no_grad():
         for s in range(0, len(train), 1024):
             sc = Q[tq_ids[s:s + 1024]] @ cv.T
             sc.scatter_(1, td_col[s:s + 1024].unsqueeze(1), -1e9)
+            # v2 children are categories: the query may BE a catalog entry — never serve a
+            # node to itself as a hard negative (cos=1 self-collision blows up training)
+            self_pen = (-1e9) * tq_has[s:s + 1024]
+            sc.scatter_(1, tq_col[s:s + 1024].unsqueeze(1), self_pen.unsqueeze(1))
             hard[s:s + 1024] = sc.topk(32, dim=1).indices.cpu()
     hard = hard.numpy()
     # frozen eval slates: 300 held queries x (dest + 999 sampled distractors)
     ev = []
     for n, a in held[:N_EVAL_Q]:
-        dist = [catalog[i] for i in rng.integers(0, len(catalog), N_DIST) if catalog[i] != a]
+        dist = [catalog[i] for i in rng.integers(0, len(catalog), N_DIST)
+                if catalog[i] != a and catalog[i] != n]
         ev.append((n, a, dist[:N_DIST - 1]))
     def wiki_eval(score_fn):
         rrs = []
         for n, a, dist in ev:
             cands = [a] + dist
             s = score_fn(n, cands)
-            rrs.append(1.0 / (1 + sum(1 for v in s[1:] if v > s[0])))
+            # mid-tie rank: a saturated constant scorer must NOT get rank 1 via ties
+            gt = sum(1 for v in s[1:] if v > s[0])
+            eq = sum(1 for v in s[1:] if v == s[0])
+            rrs.append(1.0 / (1 + gt + eq / 2.0))
         return float(np.mean(rrs))
     e5_floor = wiki_eval(lambda n, cands: [float(Q[ix[n]] @ P[ix[c]]) for c in cands])
     print(f"[trunk] wiki e5 floor (sampled-{N_DIST}): {e5_floor:.4f}", flush=True)
@@ -84,6 +95,7 @@ def run():
     tensors = list(model.parameters())
     opt = torch.optim.Adam(tensors, lr=2e-4)
     model.train(); t0 = time.time()
+    best_m, best_step, best_sd = -1.0, 0, None
     Qn, Pn = qtbl.numpy(), ptbl.numpy()
     for step in range(STEPS):
         lam = rng.dirichlet((0.5, 0.5, 0.5))
@@ -115,15 +127,23 @@ def run():
                     reduction="sum")
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(tensors, 1.0); opt.step()
-        if (step + 1) % 4000 == 0:
+        if (step + 1) % 2000 == 0:
             model.eval()
             with torch.no_grad():
                 m = wiki_eval(lambda n, cands: [float(v) for v in mu_batch(
                     model, tok, [(n, c, OPS["LINEAGE_RANK"], CE, J, MM, CAT)
                                  for c in cands], dev).cpu()])
             model.train()
+            tag = ""
+            if m > best_m:                    # early stopping: keep the best checkpoint
+                best_m, best_step = m, step + 1
+                best_sd = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                tag = " *best*"
             print(f"[trunk] step {step+1}: wiki held {m:.4f} (floor {e5_floor:.4f}, "
-                  f"{(time.time()-t0)/60:.1f} min)", flush=True)
+                  f"{(time.time()-t0)/60:.1f} min){tag}", flush=True)
+    if best_sd is not None:
+        model.load_state_dict(best_sd)
+        print(f"[trunk] early stop: best step {best_step} ({best_m:.4f})", flush=True)
     torch.save(model.state_dict(), os.path.join(OUT, f"trunk_wiki_{STEPS}.pt"))
     # zero-shot SM-FS transfer (mindmap conditioning, full catalog)
     model.eval()
