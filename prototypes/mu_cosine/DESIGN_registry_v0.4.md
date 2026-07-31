@@ -125,6 +125,42 @@ The changes implied by §2:
 Item 2 is the one with reach: eight of nine registered processes name a `source`-typed entry, so
 the split touches nearly the whole registry rather than a corner of it.
 
+### 3.1 Two couplings that make this larger than a registry edit
+
+Both were verified against the landed code and neither is optional.
+
+**Both sealed golden bundles stop loading.** They pin the registry version, and the loader
+*validates* it:
+
+```python
+# process_expression_contract.py
+if document.get("registry_version") != REGISTRY_VERSION:
+    raise ...
+```
+
+`PROCESS_EXPRESSION_GOLDEN_v1.json` and `_v2.json` both record `registry_version: v0.3`. A bump to
+`v0.4` therefore makes both fail to load, so a **v3 bundle is mandatory**, produced through the
+supersession procedure in `DESIGN_process_expression_generator.md` §0. This is not a tidy-up that
+can follow later; nothing that reads a bundle works until it exists.
+
+**The tokenizer vocabulary moves, so `tok-v1` becomes `tok-v2`.** The vocabulary is *derived from
+the registry* rather than fixed:
+
+```python
+terms += [f"<NAME:{name}>"    for name in sorted(REGISTRY)]
+terms += [f"<OUTPUT:{output}>" for output in sorted({s.output for s in REGISTRY.values()})]
+keys   = sorted({key for s in REGISTRY.values() for key in s.kwargs})
+```
+
+All three inputs change under `v0.4`: new corpus names, retired and added output types, and the
+new `mu=` / `estimand=` / `impl=` kwarg keys. `<OUTPUT:source>` is presently a literal token in
+the 376-term `tok-v1` vocabulary, and it ceases to exist. Since `VOCAB_VERSION` "moves when the ID
+assignment changes," `v0.4` forces `tok-v2` — superseding the tokenizer merged in #4012.
+
+The consequence for planning: **`v0.4` is a staged project, not a single change.** Registry,
+bundle, tokenizer, migration manifest and their test suites move together, and the order matters
+because each stage's tests depend on the previous stage's artifacts.
+
 ## 4. What this fixes
 
 | finding | fixed by | how |
@@ -220,6 +256,20 @@ v0.4 implementation + seal      not started  <- gates everything below
 corpus enumeration              gated
 encoder step 2 part 2           gated
 ```
+
+Within the implementation, §3.1's couplings force an order:
+
+| stage | contents | gated on |
+|---|---|---|
+| 1 | registry types and entries; `REGISTRY_VERSION` → `v0.4`; signatures gain `mu=`, `estimand=`, `impl=`; `decay` direction documented | the `max`/product decision in §7, which changes stage 1's shape |
+| 2 | golden bundle **v3** via the §0 supersession procedure — both current bundles stop loading at stage 1 | stage 1 |
+| 3 | tokenizer **`tok-v2`**; vocabulary re-derived, round-trip re-proved over the v3 bundle | stage 2 |
+| 4 | migration manifest over the frozen legacy inventory; `lineage(fs,…)` rows regenerated rather than migrated | stages 1–3 |
+| 5 | conditioning-card cache key gains `registry_version` — *ranking lane* | stage 1 shipping |
+
+Stages 1–3 cannot be split across releases: between them the repository has a registry whose
+bundles do not load and a tokenizer whose vocabulary does not match. They land together or not at
+all.
 
 Issue #4013's stated purpose — *"rulings needed before registry v0.4"* — is discharged. The
 findings it recorded are not all fixed, so a separate implementation issue should carry findings
