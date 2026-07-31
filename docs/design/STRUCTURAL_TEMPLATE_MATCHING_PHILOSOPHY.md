@@ -402,6 +402,36 @@ Neither is urgent. Until such a tool exists, `.mustache` keeps its current strin
 two paths stay separate — which is the conservative default anyway, and makes "assume legacy" a
 deferral with a stated precondition rather than a standing assumption.
 
+### Starting fresh beats converting, and no file currently needs either
+
+The better default is not to convert at all: write a **new** `.stache` file and leave the
+`.mustache` one in place. The old file keeps working for anyone who wants the old behaviour, the
+new patterns are isolated, and the extension alone tells a reader which files use them.
+
+Conversion earns its keep in one case — a **template used as a library**, where a file holds many
+cases and one new pattern case is wanted alongside them. Retyping the existing cases by hand
+would be tedious and error-prone, so converting a copy is worth it there.
+
+That case does not currently exist. Counting `{{case}}` blocks per file:
+
+| cases | file |
+|---:|---|
+| 32 | `src/unifyweaver/core/template_system.pl` — its own self-tests and documentation, not a template |
+| **5** | `templates/targets/fsharp_wam/program.fs.mustache` — the largest real library |
+| 2 | the other twelve `{{match}}`-using templates |
+
+Five cases is not a conversion burden. So **start-fresh is sufficient for every file in this
+repository today**, and the converter is justified by nothing currently present. The threshold for
+revisiting is a library large enough that hand-copying its cases would be error-prone — which is
+a condition to check rather than a date to wait for.
+
+**If a copy is ever made, divergence is the hazard.** Two live files sharing most of their cases
+will drift. The clean fix would be delegation — the new file's `{{default}}` falling through to
+the legacy template — but that is **not expressible today**: the supported subset has no partials
+(`{{> name}}`), and `compose_templates/3` concatenates *rendered output* rather than delegating
+dispatch. Delegation would therefore be new machinery, and belongs in the same "later" bucket as
+the converter itself.
+
 **What remains open** is the framing, not really the mechanism:
 
 - **(A) Require the header; a `.stache` file without one is an error.** Every case value is read
