@@ -456,6 +456,24 @@ change retained. Hosted IDTABLE reference remains 3412 / 4076 (samples
 4078, 3412, 3268) vs STACK 3679 / 4344. Next end-to-end leverage is
 outside the CA DFS loop.
 
+PERF-R-ED-BOUNDARY attributed that outside-CA remainder on a Cursor cloud
+agent (R 4.3.3). Full-query counts: 385 weight queries, 385 `hops_ids`
+calls, 137817 `WamRuntime$step` calls. Light call-level walls again put
+`hops_ids` near 38% of query; CA packing beyond hops stays ~2%. Rprof
+by.self after that is dominated by the lowered WAM interpreter on the
+power-sum / effective-distance path (`step` ~13%, `get_reg` ~8%, `deref`
+~6%, `append_build_arg` ~5%, `builtin_is_lax` ~4%, `put_reg` ~4%). Harness
+enumeration/sort/format and per-query `exists`/`get` dispatch are
+negligible. Separately trialled hypotheses — resolve the lowered function
+once, pre-cache category/root `Atom` values, reuse a `reset_state` pool,
+and replace `intern`'s `match` with a hash map — all preserved 271-row
+six-decimal parity but stayed within noise on two independent 7-rep
+interleaved sequences (best ~1.02×; gate was ≥5%). No production change
+retained. Hosted IDTABLE reference remains 3412 / 4076. Next
+evidence-based leverage is the WAM step/register/arithmetic path (or a
+deeper native lowering of power-sum aggregation), not further CA-loop or
+query-boundary micro-opts.
+
 #### Reproduction
 
 ```bash
