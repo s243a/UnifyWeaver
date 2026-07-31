@@ -381,6 +381,23 @@ one of two shapes:
 - a **load-time shim for `.mustache` only**, auto-quoting every case so legacy files can be read
   through the pattern parser and one code path serves both.
 
+**The one-shot converter is the better of the two**, for three reasons.
+
+*Conversion is a doorway, not a destination.* Whoever converts a file is converting it because
+they want the patterns. The converted file will not stay literal-only, so a shim would be
+permanent machinery serving a transient state.
+
+*The shim's payoff does not exist.* Its argument was collapsing to a single code path — but the
+corpus does not support that. Of **307** `.mustache` files across 44 target directories, only
+**13** contain a `{{match}}` block at all. The remaining 294 dispatch on nothing, would gain
+nothing from patterns, and will never migrate. The string parser therefore survives regardless,
+and a shim becomes permanent maintenance buying nothing.
+
+*Quoting is a semantic edit and should be visible.* Adding quotes changes what a value means to
+the reader. A converter records that as a reviewable diff in version control; a shim applies it
+invisibly at every load, where nobody ever sees which values were changed or checks that the
+change was right.
+
 Neither is urgent. Until such a tool exists, `.mustache` keeps its current string parser and the
 two paths stay separate — which is the conservative default anyway, and makes "assume legacy" a
 deferral with a stated precondition rather than a standing assumption.
