@@ -293,6 +293,66 @@ The cheaper order:
 This also preserves the most useful outcome: discovering that structural dispatch does *not*
 earn its keep for the AST target, learned in a prototype instead of across 67 backends.
 
+## Open question: is `.stache` backward compatible with `.mustache`?
+
+Deliberately unsettled, but the evidence is cheap to gather and is recorded here so the decision
+is not made from intuition.
+
+**Measurement.** 24 distinct `{{case}}` values exist across `templates/` and `src/`, after
+discarding two scanning artifacts — the literal `...` and an empty value, both from comments in
+`template_system.pl` that describe the syntax rather than use it:
+
+| shape | count | fate when read as a term |
+|---|---:|---|
+| lowercase-atom (`helpers`, `lazy`, `v1`) | 22 | reads as the same atom — compatible |
+| hyphenated (`wam-fsharp`, `wam-haskell`) | 2 | reads as the compound `-(wam, fsharp)` — **silent mismatch** |
+| uppercase | 0 | — |
+
+The two hyphenated values live in `template_system.pl`'s own self-test rather than in a
+production template, so nothing ships broken today. But a hyphenated tag was a natural thing for
+someone to write once, which means it is a natural thing to write again.
+
+**The zero is the important number.** A case value beginning with an uppercase letter —
+`{{case Helpers}}` — matches that literal string under the current parser. Read as a term it is a
+**fresh variable, which unifies with anything**, so the first case swallows all input and every
+later case becomes unreachable. Silent, total, and absent today only by chance.
+
+**One option is self-defeating.** If a `.stache` file *without* a header were to mean mustache
+semantics, then `.stache` files would carry two possible semantics and the extension would no
+longer say which parser applies — reinstating precisely the invisible-difference hazard the
+extension exists to remove. Treat that as ruled out rather than open.
+
+**What remains open** is the framing, not really the mechanism:
+
+- **(A) Require the header; a `.stache` file without one is an error.** Renaming a `.mustache`
+  file costs one line, and 22 of 24 case values work unchanged.
+- **(C) Clean break — claim no compatibility at all.** Identical in practice to (A); differs only
+  in what is promised.
+
+The suggestion here is **(A) without promising superset semantics**: practical compatibility for
+the common shapes, an explicit migration checklist for hyphenated and uppercase tags, and no
+guarantee that the uppercase case would quietly violate. Promising a superset is what would
+invite someone to write `{{case Helpers}}` and lose an afternoon to it.
+
+## Is this document enough to build from?
+
+No — and that is deliberate. A philosophy note is enough to decide *whether* to proceed and to
+scope a prototype. It is not enough to hand someone a build, because six things would have to be
+invented rather than read:
+
+1. the binding-propagation mechanism — scoped child dict, and how shadowing resolves;
+2. the term-reading context for `{{case}}` bodies — operator table, variable naming, read options;
+3. whether case overlap is detected, and if so at load or never;
+4. determinism when a body fails after a case has committed;
+5. loader dispatch — a new `try_source/4` strategy, or a branch inside `render_named_template/4`;
+6. what the Dict contract becomes once values may be terms, and whether that breaks callers that
+   currently pass atoms.
+
+Those six are the contents of the SPECIFICATION, and per "Why no specification yet" they should
+be *answered by a prototype* rather than guessed at in advance. The handoff-able unit today is
+therefore a prototype in `prototypes/mu_cosine/` against a single consumer, reporting which
+patterns it actually needed — not a change to core.
+
 ## Non-goals
 
 - Changing the behaviour of any existing target.
