@@ -121,6 +121,106 @@ splitting template text. A structured pattern has to be parsed as a term, which 
 operator-table and variable-naming questions the string form never had to answer. This is the
 substantial piece of work, and it is invisible from the one-line predicate.
 
+## What it would look like
+
+The block syntax does not change. `{{match}}`, `{{case}}`, `{{default}}`, `{{/match}}` and the
+delimiters stay exactly as they are. Three things change: the case value becomes a **term**
+rather than a tag, the dict value becomes a term, and the body may reference **variables bound by
+the match**.
+
+Today, from `templates/targets/rust_wam/time_builtin.rs.mustache` — the key is a plain tag
+selecting which section of the file to emit:
+
+```text
+{{match part}}{{case helpers}}
+    fn time_value_seconds(value: &Value) -> Option<i64> { ... }
+```
+
+Structural, minimally:
+
+```text
+{{match node}}
+{{case substrate(C)}}  substrate over {{C}}
+{{case judge(J)}}      judged by {{J}}
+{{/match}}
+```
+
+The motivating case — goals to AST nodes:
+
+```text
+{{match goal}}
+{{case has_type(X, substrate(C))}}
+  TypeNode { term: {{X}}, kind: "substrate", corpus: {{C}} }
+{{case non_amplifying(Op)}}
+  ConstraintNode { kind: "non_amplifying", op: {{Op}} }
+{{default}}
+  /* unhandled goal: {{goal}} */
+{{/match}}
+```
+
+That last block is unreachable with string matching: it would need one case per concrete
+spelling — `has_type_x_substrate_pearltrees`, and so on for every corpus — which is the
+fixed-enumeration problem the change exists to remove.
+
+### The syntax similarity is itself the hazard
+
+Note `{{C}}` above. It is **syntactically indistinguishable** from an ordinary interpolation.
+Under the string parser `C` is merely a missing dict key, and the mustache rule for a missing key
+is to render the **empty string**, not to raise.
+
+So a structural template fed to the string parser does not fail. It emits a document with holes
+where the bindings belong. Same file, same extension, same `{{...}}`, two parsers, and nothing
+visible to say which applies. *Something* therefore has to mark the dialect.
+
+### Three ways to mark it
+
+1. **Distinct extension.** Strongest signal, visible in directory listings and editor
+   configuration.
+2. **First-line pragma.** `{{! dialect: pattern_stache }}` — mustache comments are already valid
+   mustache and are ignored by stock renderers, so this is backward compatible and the file
+   self-describes when opened. Invisible in a listing.
+3. **Both.** Extension for tooling, pragma for self-description.
+
+Either of the first two gives the same guarantee *by construction*: no existing file carries the
+marker, so no existing file can reach the structural parser, whatever the configuration says.
+That is strictly stronger than a `structural(true)` config option, which can be set at a call
+site, inherited through `Config`, or defaulted globally, and then silently change how 67 targets
+parse.
+
+### Naming
+
+The dialect name and the file extension are different things, and languages routinely separate
+them (TypeScript/`.ts`, Markdown/`.md`). Recommendation:
+
+| | |
+|---|---|
+| dialect | `pattern_stache` — pattern matching with mustache syntax |
+| extension | `.stache` |
+| pragma | `{{! dialect: pattern_stache }}` |
+
+`pattern_stache` uses an underscore rather than a hyphen for a concrete reason: the pragma value
+would be read by a Prolog loader, where `pattern_stache` is a valid unquoted atom while
+`pattern-stache` parses as the compound `-(pattern, stache)` and would need quoting at every read
+site.
+
+`.stache` truncates from the front, so it reads as deliberate rather than as a typo — unlike a
+`p`- or `s`- prefix on `mustache`. It keeps the lineage the dialect genuinely retains without
+claiming to *be* mustache.
+
+Rejected, with reasons worth not re-deriving:
+
+- **`.plt`** — the standard SWI-Prolog `plunit` test-file extension. No `.plt` files exist here
+  yet only because 30 files declare tests inline with `begin_tests`; the collision becomes real
+  the moment anyone splits tests out, in exactly the lane that would read these templates.
+- **`.hbs`** — claims Handlebars compatibility the dialect would not have.
+- **`.mst`, `.mus`** — concise, but they buy brevity with ambiguity in a name that is read in
+  directory listings.
+- **`.tache`** — one letter from `.cache`, in a system whose default `cache_dir` is
+  `templates/cache` (created on demand by `save_template_to_cache_file/3`), so cached and
+  templated paths already sit side by side.
+- **`.pattern_stache`** as an extension — the name is good; paying fifteen characters for it in
+  every filename is not.
+
 ## The constraint that shapes everything: 67 targets
 
 `template_system.pl` is core. Every target depends on `case_matches/2` behaving as it does.
