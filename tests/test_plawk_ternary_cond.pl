@@ -128,10 +128,11 @@ test(arithmetic_operands_unchanged, [condition(clang_available)]) :-
 
 % --- clean declines ------------------------------------------------------
 
-% The comparator projects a field out of the record, so the FIELD must be on the
-% left. A reversed comparison declines rather than comparing the wrong way round.
-test(string_on_the_left_declines) :-
-    build_status("{ x = \"a\" == $1 ? 1 : 2; print x }\n", 3),
+% A REVERSED comparison (the literal on the left) used to decline. The parser now
+% mirrors it to the field-first form, so it compiles and means the same thing --
+% covered in tests/test_plawk_reversed_cmp.pl. Asserted here as no-longer-declining.
+test(string_on_the_left_compiles, [condition(clang_available)]) :-
+    build_status("{ x = \"a\" == $1 ? 1 : 2; print x }\n", 0),
     !.
 
 test(two_string_literals_decline) :-
