@@ -317,6 +317,26 @@ someone to write once, which means it is a natural thing to write again.
 **fresh variable, which unifies with anything**, so the first case swallows all input and every
 later case becomes unreachable. Silent, total, and absent today only by chance.
 
+**Quoting resolves both — the incompatibility is with *unquoted* reading, not with the values.**
+Measured against SWI's reader:
+
+```text
+wam-fsharp         -> compound -/2
+'wam-fsharp'       -> atom
+Helpers            -> VARIABLE (unifies with anything)
+'Helpers'          -> atom
+helpers            -> atom
+```
+
+So `{{case 'wam-fsharp'}}` and `{{case 'Helpers'}}` would both be correct. Existing files write
+these unquoted, which is why they would change meaning.
+
+**The failure is a successful parse, not an error.** This is the part that constrains the design.
+Neither `wam-fsharp` nor `Helpers` fails to read — each reads *into the wrong thing*. So the
+obvious rescue, *attempt a term read and fall back to a string on failure*, cannot work: there is
+no failure to catch. A silent successful misparse is undetectable by fallback, which rules out
+the cheapest compatibility strategy before it is proposed.
+
 **One option is self-defeating.** If a `.stache` file *without* a header were to mean mustache
 semantics, then `.stache` files would carry two possible semantics and the extension would no
 longer say which parser applies — reinstating precisely the invisible-difference hazard the
@@ -324,15 +344,31 @@ extension exists to remove. Treat that as ruled out rather than open.
 
 **What remains open** is the framing, not really the mechanism:
 
-- **(A) Require the header; a `.stache` file without one is an error.** Renaming a `.mustache`
-  file costs one line, and 22 of 24 case values work unchanged.
+- **(A) Require the header; a `.stache` file without one is an error.** Every case value is read
+  as a term. Renaming a `.mustache` file costs one line plus quoting any hyphenated or
+  uppercase tag; 22 of 24 work unchanged.
 - **(C) Clean break — claim no compatibility at all.** Identical in practice to (A); differs only
   in what is promised.
+- **(D) Mark the intent per case rather than per file.** A literal case stays a literal; a
+  pattern is flagged where it is written:
 
-The suggestion here is **(A) without promising superset semantics**: practical compatibility for
-the common shapes, an explicit migration checklist for hyphenated and uppercase tags, and no
-guarantee that the uppercase case would quietly violate. Promising a superset is what would
-invite someone to write `{{case Helpers}}` and lose an afternoon to it.
+  ```text
+  {{case helpers}}          literal tag — string compare, unchanged
+  {{case ?substrate(C)}}    pattern — read as a term
+  ```
+
+  (or a distinct keyword, `{{pcase substrate(C)}}`). This gives **backward compatibility with
+  zero migration** — every existing unquoted value stays literal, hyphens included — and makes
+  overlap detection finer-grained, since only marked cases can overlap. The cost is one more
+  piece of syntax in a dialect whose appeal is that it stays mustache-shaped.
+
+(A) and (C) put the decision at the file boundary; (D) puts it at the point of use. The
+file-level options need a migration and buy uniformity; (D) needs none and buys precision. The
+trade is genuine and is not resolved here.
+
+Whichever is chosen, **do not promise superset semantics**. A superset promise is what would
+invite someone to write `{{case Helpers}}` unquoted and lose an afternoon to a case that silently
+swallows every input.
 
 ## Is this document enough to build from?
 
