@@ -425,6 +425,11 @@ repository today**, and the converter is justified by nothing currently present.
 revisiting is a library large enough that hand-copying its cases would be error-prone — which is
 a condition to check rather than a date to wait for.
 
+The converter is registered as deferred work in
+[`docs/TODO_STACHE_CONVERTER.md`](../TODO_STACHE_CONVERTER.md), which records the reasoning above
+and the condition for revisiting — so that "not built" is a decision on the record rather than an
+omission someone later mistakes for an oversight.
+
 **If a copy is ever made, divergence is the hazard.** Two live files sharing most of their cases
 will drift. The clean fix would be delegation — the new file's `{{default}}` falling through to
 the legacy template — but that is **not expressible today**: the supported subset has no partials
