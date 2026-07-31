@@ -108,9 +108,18 @@ property test. A matcher that appears to promise more than that will be believed
 patterns can. Prolog commits to the first matching clause, and `resolve_match/5` uses `member/2`
 under `->`, so first-match-wins is already the behaviour. Today that is harmless. With patterns
 it means **reordering a template file can change output**, silently. Haskell and Mercury forbid
-overlapping instances precisely to avoid this. The options are to require non-overlapping cases
-and check it at load, or to accept ordering as part of the contract and version it — but not to
-inherit it by accident.
+overlapping instances precisely to avoid this.
+
+This document originally posed the response as a binary — forbid overlap, or version the order.
+The prototype in #4052 found that **the decision is a trichotomy**, which is a better answer:
+
+| relation between two cases | treatment |
+|---|---|
+| earlier subsumes later | hard error — the later case is unreachable |
+| later subsumes earlier | allowed silently — this is the specific-before-general idiom |
+| mutually unifiable, neither subsuming | warning, first-match-wins |
+
+Forbidding all overlap would have banned the idiom every pattern language depends on.
 
 **2. Binding scope and shadowing are undesigned.** If a match binds `C` and the surrounding dict
 already has `C`, which wins? A scoped child dict is the obvious answer, and "obvious" is how
@@ -162,15 +171,34 @@ That last block is unreachable with string matching: it would need one case per 
 spelling — `has_type_x_substrate_pearltrees`, and so on for every corpus — which is the
 fixed-enumeration problem the change exists to remove.
 
-### The syntax similarity is itself the hazard
+### The syntax similarity is a hazard, but a narrower one than it first appears
 
-Note `{{C}}` above. It is **syntactically indistinguishable** from an ordinary interpolation.
-Under the string parser `C` is merely a missing dict key, and the mustache rule for a missing key
-is to render the **empty string**, not to raise.
+Note `{{C}}` above. It is **syntactically indistinguishable** from an ordinary interpolation, so
+the same file can be read by two parsers with nothing visible to say which applies.
 
-So a structural template fed to the string parser does not fail. It emits a document with holes
-where the bindings belong. Same file, same extension, same `{{...}}`, two parsers, and nothing
-visible to say which applies. *Something* therefore has to mark the dialect.
+An earlier draft of this document claimed the resulting failure would be *silent* — that the
+mustache rule of rendering a missing key as the empty string would produce a document with
+invisible holes. **That is wrong for this codebase**, as the prototype in #4052 established and as
+direct measurement confirms:
+
+```prolog
+?- render_template('before [{{missing}}] after', [present=x], R).
+R = "before [{{missing}}] after".          % verbatim, not empty
+
+?- render_template('x{{k}}y', [k=substrate(pearltrees)], R).
+ERROR: type_error(atom, substrate(pearltrees))  % from atom_string/2
+```
+
+So the two loudest cases are loud. A missing key leaves `{{C}}` visible in the output rather than
+a hole, and a term-valued dict raises rather than mis-rendering.
+
+The silent corner that remains is narrow but real: an **atom**-valued dict combined with a case
+value that misparses — the hyphenated and uppercase rows of the migration checklist below. There
+the read succeeds, produces the wrong term, and nothing complains.
+
+The argument for marking the dialect therefore survives at reduced strength. It rests less on
+preventing silent corruption than on two things that hold regardless: closing that narrow corner,
+and making the choice of parser a property of the artifact rather than of configuration.
 
 ### Three ways to mark it
 
@@ -480,9 +508,24 @@ invented rather than read:
    currently pass atoms.
 
 Those six are the contents of the SPECIFICATION, and per "Why no specification yet" they should
-be *answered by a prototype* rather than guessed at in advance. The handoff-able unit today is
+be *answered by a prototype* rather than guessed at in advance. The handoff-able unit is
 therefore a prototype in `prototypes/mu_cosine/` against a single consumer, reporting which
 patterns it actually needed — not a change to core.
+
+**That prototype now exists (#4052), and answered all six.** Two answers are worth recording here
+because they correct this document rather than merely extending it:
+
+- **Question 5 was posed wrongly.** Neither option is right: `try_source/4` selects *provenance*
+  — file, cached, or generated — not dialect, and cached and generated templates have no file
+  extension at all. The dialect needs its own load step, producing a tagged term that the render
+  path branches on.
+- **Question 3's answer is the trichotomy above**, not the binary this document assumed.
+
+The headline result also vindicates the central claim: the consumer needed exactly **four**
+pattern shapes, all first-order, linear, and guard-free — no guards, arithmetic, list patterns,
+or nesting. A specification written in advance would have been substantially larger than the one
+the evidence supports, which is the argument for prototyping stated as a measurement rather than
+a preference.
 
 ## Non-goals
 
