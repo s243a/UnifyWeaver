@@ -263,19 +263,31 @@ resolve_match_term(Key, Dict, Cases, Default, Body, ChildDict) :-
     ).
 
 %% substitute_placeholders(+Text, +Dict, -Result)
-%  Replace {{Key}} for every Key=Value in Dict.  Values are terms;
-%  they are rendered with ~w (plain write, no quoting), matching what
-%  a template author expects for atoms while printing compounds
-%  readably.  Keys not in the dict are left verbatim, exactly as the
-%  core renderer leaves them (NOT replaced by the empty string — see
-%  the report's "what the philosophy doc got wrong").
+%  Replace {{Key}} and {{q:Key}} for every Key=Value in Dict.  Values
+%  are terms.  Two interpolation forms exist because two consumers
+%  demanded them:
+%    {{Key}}    ~w, plain write — display text (the AST-emission
+%               consumer); atoms render unquoted, as a template
+%               author expects.
+%    {{q:Key}}  ~q, quoted write — RE-READABLE text (the constraint-
+%               dispatch consumer, whose rendered output is read back
+%               as a term); 'hello world' keeps its quotes, plain
+%               atoms are unchanged.
+%  Keys not in the dict are left verbatim in both forms, exactly as
+%  the core renderer leaves them (NOT replaced by the empty string —
+%  see the report's "what the philosophy doc got wrong").
 substitute_placeholders(Text, [], Text) :- !.
 substitute_placeholders(Text, [Key=Value|Rest], Result) :-
+    format(atom(QPlaceholder), '{{q:~w}}', [Key]),
+    format(atom(QValueAtom), '~q', [Value]),
+    atom_string(QValueAtom, QValueStr),
+    atom_string(QPlaceholder, QPlaceholderStr),
+    replace_substring(Text, QPlaceholderStr, QValueStr, QMid),
     format(atom(Placeholder), '{{~w}}', [Key]),
     format(atom(ValueAtom), '~w', [Value]),
     atom_string(ValueAtom, ValueStr),
     atom_string(Placeholder, PlaceholderStr),
-    replace_substring(Text, PlaceholderStr, ValueStr, Mid),
+    replace_substring(QMid, PlaceholderStr, ValueStr, Mid),
     substitute_placeholders(Mid, Rest, Result).
 
 replace_substring(String, Find, Replace, Result) :-

@@ -247,3 +247,11 @@ is small, as the doc guessed — "the predicate is the small part" was right, th
 *reading and scoping*, not the scanner, that carries the design weight); whitespace ownership
 needs a rule; term interpolation needs a quoting story before templates can emit *re-readable*
 terms rather than display text.
+
+---
+
+*Addendum: the second consumer (constraints as dispatch keys) has since been prototyped against
+this same dispatcher — see
+[`REPORT_pattern_stache_second_consumer.md`](REPORT_pattern_stache_second_consumer.md). The
+quoting story deferred above became that consumer's one real demand and is now implemented as
+`{{q:Key}}`; the pattern shapes found here held.*
