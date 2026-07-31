@@ -337,10 +337,53 @@ obvious rescue, *attempt a term read and fall back to a string on failure*, cann
 no failure to catch. A silent successful misparse is undetectable by fallback, which rules out
 the cheapest compatibility strategy before it is proposed.
 
-**One option is self-defeating.** If a `.stache` file *without* a header were to mean mustache
-semantics, then `.stache` files would carry two possible semantics and the extension would no
-longer say which parser applies — reinstating precisely the invisible-difference hazard the
-extension exists to remove. Treat that as ruled out rather than open.
+**Put the decision on the extension, not on the header's presence.** If a `.stache` file
+*without* a header meant mustache semantics, `.stache` files would carry two possible semantics
+and the extension would no longer say which parser applies — reinstating the invisible-difference
+hazard the extension exists to remove. The rule that avoids this:
+
+| file | rule |
+|---|---|
+| `.mustache` | every case value is a literal; string-compared, exactly as today |
+| `.stache` | header required; case values are read as terms. A headerless `.stache` is an error |
+
+No file is then ambiguous, and neither extension needs to inspect the other's conventions.
+
+### The migration checklist
+
+Converting a `.mustache` file to `.stache` means adding the header and quoting any case value
+that is not already a lowercase atom:
+
+| shape | example | action | how it fails unquoted |
+|---|---|---|---|
+| lowercase atom | `{{case helpers}}` | none | — reads as the same atom |
+| hyphenated | `{{case wam-fsharp}}` | quote | **silently** — reads as compound `-/2` |
+| other operator chars | `{{case 3-way}}` | quote | **silently** — reads as compound `-/2` |
+| uppercase-initial | `{{case Helpers}}` | quote | **silently and totally** — becomes a variable matching every input |
+| contains a space | `{{case a b}}` | quote | loudly — the read raises |
+
+The middle three are the dangerous rows: they parse, so no error surfaces. Only the space case
+fails loudly, which means review — or the pre-processor below — has to catch the others rather
+than relying on the reader to complain.
+
+### A quote-inserting pre-processor, and its limit
+
+That checklist is mechanical, so it can be automated — but only for files in which *every* case
+value is a literal, which is exactly what a legacy `.mustache` file is. The rule "quote anything
+that is not already a lowercase atom" is unambiguous there.
+
+It cannot be applied inside a `.stache` file. Faced with `{{case substrate(C)}}` a pre-processor
+has no way to tell a pattern it must leave alone from a literal tag it must quote; both are
+merely "not a lowercase atom." So the tool is a **migration aid, not a compatibility layer**, in
+one of two shapes:
+
+- a **one-shot converter**, `.mustache` → `.stache`, quoting as it goes; or
+- a **load-time shim for `.mustache` only**, auto-quoting every case so legacy files can be read
+  through the pattern parser and one code path serves both.
+
+Neither is urgent. Until such a tool exists, `.mustache` keeps its current string parser and the
+two paths stay separate — which is the conservative default anyway, and makes "assume legacy" a
+deferral with a stated precondition rather than a standing assumption.
 
 **What remains open** is the framing, not really the mechanism:
 
