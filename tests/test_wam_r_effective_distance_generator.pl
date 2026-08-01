@@ -45,7 +45,7 @@ test(generate_kernels_on_functions_emits_runner_kernel_and_factsource) :-
             % PERF-R-WAM-STEP: is_lax power/unary fast path is present in runtime.
             directory_file_path(TmpDir, 'R/wam_runtime.R', RtPath),
             read_file_to_string(RtPath, Rt, []),
-            assertion(once(sub_string(Rt, _, _, _, 'is_lax_pow_fid'))),
+            assertion(once(sub_string(Rt, _, _, _, 'table$is_lax_fids'))),
             assertion(once(sub_string(Rt, _, _, _, 'PERF-R-WAM-STEP')))
         ),
         cleanup_tmp_dir(TmpDir)).
@@ -64,34 +64,63 @@ r_is_lax_power_unary_proof :-
                 open(Script, write, S),
                 write(S,
 'source("generated_program.R")
-eval_via_is_lax <- function(expr_term) {
+call_is_lax <- function(program, expr_term, target_term = Unbound("T")) {
   state <- WamRuntime$new_state()
   WamRuntime$promote_regs(state)
-  target <- Unbound("T")
-  WamRuntime$put_reg(state, 1L, target)
+  WamRuntime$put_reg(state, 1L, target_term)
   WamRuntime$put_reg(state, 2L, expr_term)
-  stopifnot(isTRUE(WamRuntime$builtin_is_lax(shared_program, state)))
-  WamRuntime$deref(state, target)
+  ok <- WamRuntime$builtin_is_lax(program, state)
+  list(ok = ok, value = WamRuntime$deref(state, target_term))
 }
 plus <- as.integer(WamRuntime$intern(intern_table, "+"))
+hat <- as.integer(WamRuntime$intern(intern_table, "^"))
 pow <- as.integer(WamRuntime$intern(intern_table, "**"))
 minus <- as.integer(WamRuntime$intern(intern_table, "-"))
 # Hops+1
 e_plus <- StructTerm(plus, list(IntTerm(3L), IntTerm(1L)))
-r_plus <- eval_via_is_lax(e_plus)
-stopifnot(identical(r_plus$tag, "int"), identical(as.integer(r_plus$val), 4L))
-# unary -N (dimension factor)
+r_plus <- call_is_lax(shared_program, e_plus)
+stopifnot(isTRUE(r_plus$ok), identical(r_plus$value$tag, "int"),
+          identical(as.integer(r_plus$value$val), 4L))
+# unary -N for integer and float inputs
 e_neg <- StructTerm(minus, list(IntTerm(5L)))
-r_neg <- eval_via_is_lax(e_neg)
-stopifnot(identical(r_neg$tag, "int"), identical(as.integer(r_neg$val), -5L))
-# (Hops+1) ** (-N) — float power used by effective-distance
+r_neg <- call_is_lax(shared_program, e_neg)
+stopifnot(isTRUE(r_neg$ok), identical(r_neg$value$tag, "int"),
+          identical(as.integer(r_neg$value$val), -5L))
+e_neg_float <- StructTerm(minus, list(FloatTerm(1.25)))
+r_neg_float <- call_is_lax(shared_program, e_neg_float)
+stopifnot(isTRUE(r_neg_float$ok), identical(r_neg_float$value$tag, "float"),
+          identical(as.numeric(r_neg_float$value$val), -1.25))
+# (Hops+1) ** (-N), plus the ^ alias
 e_pow <- StructTerm(pow, list(IntTerm(4L), IntTerm(-5L)))
-r_pow <- eval_via_is_lax(e_pow)
-stopifnot(identical(r_pow$tag, "float"))
-stopifnot(abs(as.numeric(r_pow$val) - (4 ^ -5)) < 1e-12)
-# Cross-check eval_arith
+r_pow <- call_is_lax(shared_program, e_pow)
+stopifnot(isTRUE(r_pow$ok), identical(r_pow$value$tag, "float"),
+          abs(as.numeric(r_pow$value$val) - (4 ^ -5)) < 1e-12)
+e_hat <- StructTerm(hat, list(IntTerm(3L), IntTerm(4L)))
+r_hat <- call_is_lax(shared_program, e_hat)
+stopifnot(isTRUE(r_hat$ok), identical(as.numeric(r_hat$value$val), 81))
+# Cross-check the recursive evaluator and bound-target unification.
 n <- WamRuntime$eval_arith(WamRuntime$new_state(), e_pow, intern_table)
-stopifnot(abs(n - as.numeric(r_pow$val)) < 1e-12)
+stopifnot(abs(n - as.numeric(r_pow$value$val)) < 1e-12)
+stopifnot(isTRUE(call_is_lax(shared_program, e_neg, IntTerm(-5L))$ok))
+stopifnot(!isTRUE(call_is_lax(shared_program, e_neg, IntTerm(-4L))$ok))
+# Bad/unbound arithmetic retains the lax silent-failure contract.
+e_unbound <- StructTerm(pow, list(IntTerm(2L), Unbound("Exponent")))
+stopifnot(!isTRUE(call_is_lax(shared_program, e_unbound)$ok))
+# Functor ids belong to one intern table. Exercise a second program whose
+# atom ordering deliberately gives ** a different id after the first cache
+# is warm; a WamRuntime-global cache would misdispatch this call.
+pads <- sprintf("cache_pad_%d", seq_len(as.integer(pow) + 3L))
+table2 <- WamRuntime$new_intern_table(c(pads, "-", "+", "^", "**"))
+program2 <- list(intern_table = table2)
+pow2 <- as.integer(WamRuntime$intern(table2, "**"))
+stopifnot(!identical(pow2, pow))
+e_pow2 <- StructTerm(pow2, list(IntTerm(2L), IntTerm(-3L)))
+r_pow2 <- call_is_lax(program2, e_pow2)
+stopifnot(isTRUE(r_pow2$ok), identical(r_pow2$value$tag, "float"),
+          abs(as.numeric(r_pow2$value$val) - 0.125) < 1e-12)
+stopifnot(!is.null(intern_table$is_lax_fids),
+          !is.null(table2$is_lax_fids),
+          !identical(intern_table$is_lax_fids$pow, table2$is_lax_fids$pow))
 cat("OK is_lax power/unary parity\\n")
 '),
                 close(S)
