@@ -39,19 +39,29 @@ SPEC = ROOT / "DESIGN_process_expression_generator.md"
 def _walk(node, depth=0):
     yield node, depth
     for child in node.args:
-        yield from _walk(child, depth + 1)
+        if isinstance(child, pc.Node):
+            yield from _walk(child, depth + 1)
 
 
 def _resolved_walk(resolved):
     yield resolved
     for child in resolved.args:
-        yield from _resolved_walk(child)
+        if isinstance(child, pec.ResolvedNode):
+            yield from _resolved_walk(child)
+    for kwarg in resolved.kwargs:
+        if isinstance(kwarg.value, pec.ResolvedNode):
+            yield from _resolved_walk(kwarg.value)
 
 
 def _numeric_literals(resolved):
     out = []
     for node in _resolved_walk(resolved):
+        for child in node.args:
+            if isinstance(child, pec.ResolvedLiteral):
+                out.append(child.value)
         for kwarg in node.kwargs:
+            if isinstance(kwarg.value, pec.ResolvedNode):
+                continue
             values = kwarg.value if isinstance(kwarg.value, tuple) else [kwarg.value]
             for value in values:
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -71,7 +81,7 @@ def _all_registered():
 def test_measured_ast_depth_and_node_count():
     nodes = [list(_walk(n)) for n in _all_registered()]
     assert max(max(d for _, d in group) for group in nodes) == 3
-    assert max(len(group) for group in nodes) == 5
+    assert max(len(group) for group in nodes) == 6
 
 
 def test_measured_arity_kwargs_modifiers_and_pins():
@@ -91,10 +101,12 @@ def test_measured_list_length_and_absence_of_string_literals():
             for kwarg in node.kwargs:
                 if isinstance(kwarg.value, tuple):
                     lengths.append(len(kwarg.value))
-                if isinstance(kwarg.value, str):
+                if kwarg.value_type == "string":
                     strings.append(kwarg.value)
     assert max(lengths) == 2
     assert strings == []  # routing.manifest is registered but never used
+    # The enumerated methodology kinds are strings lexically but never free
+    # text; they are measured as their own kinds, not as `string`.
 
 
 def test_measured_token_count_and_path_length():
@@ -108,7 +120,7 @@ def test_measured_token_count_and_path_length():
 
 
 def test_registry_caps_modifiers_at_one_per_node():
-    """`MOD(index>0)` stays schema-legal but unreachable under registry v0.3."""
+    """`MOD(index>0)` stays schema-legal but unreachable under registry v0.4."""
 
     with pytest.raises(pc.ParseError, match="at most one modifier"):
         pc.parse("llm.element.subcat")
@@ -123,13 +135,19 @@ def test_registry_caps_modifiers_at_one_per_node():
 # --------------------------------------------------------------------------
 
 
-def test_only_atoms_produce_source():
-    """This, not the caps, is why enumeration does not explode."""
+def test_only_atoms_produce_substrates_and_judges():
+    """This, not the caps, is why enumeration does not explode.
 
-    producers = {n for n, s in REGISTRY.items() if s.output == "source"}
-    assert producers, "expected at least one source producer"
-    for name in producers:
-        assert REGISTRY[name].atom, f"{name} produces source but is not an atom"
+    v0.4 split the old `source` role into `substrate` and `judge` (R2); both
+    remain atom-only producer roles, so the argument carries over unchanged.
+    """
+
+    assert not any(s.output == "source" for s in REGISTRY.values())  # retired
+    for role in ("substrate", "judge"):
+        producers = {n for n, s in REGISTRY.items() if s.output == role}
+        assert producers, f"expected at least one {role} producer"
+        for name in producers:
+            assert REGISTRY[name].atom, f"{name} produces {role} but is not an atom"
 
 
 def test_process_is_the_only_recursive_channel():
@@ -142,7 +160,7 @@ def test_process_is_the_only_recursive_channel():
     }
     assert set(wildcards) == {"e5"}
     assert pc._output_matches("process", "target-set")
-    assert not pc._output_matches("score", "source")
+    assert not pc._output_matches("score", "judge")
 
 
 # --------------------------------------------------------------------------
@@ -155,15 +173,15 @@ def test_v3_differs_from_v2_only_by_pins():
         node = pc.parse(expression)
         assert pc.render(node, 2) == pc.render(node, 3)  # no registered pins
 
-    pinned = pc.parse("lineage(graph,decay=0.85)@synthetic/pin-a")
+    pinned = pc.parse("lineage(pearltrees,decay=0.85)@synthetic/pin-a")
     assert pc.render(pinned, 2) != pc.render(pinned, 3)
     assert pc.render(pinned, 3).endswith("@synthetic/pin-a")
 
 
 def test_v1_differs_from_v2_only_by_non_default_kwargs():
-    default = pc.parse("lineage(graph,decay=0.85)")  # decay default is 0.85
+    default = pc.parse("lineage(pearltrees,decay=0.85)")  # decay default is 0.85
     assert pc.render(default, 1) == pc.render(default, 2)
-    non_default = pc.parse("lineage(graph,decay=0.5)")
+    non_default = pc.parse("lineage(pearltrees,decay=0.5)")
     assert pc.render(non_default, 1) != pc.render(non_default, 2)
 
 
@@ -179,8 +197,8 @@ def test_v0_has_no_semantic_card():
 # --------------------------------------------------------------------------
 
 
-PRESENT_DIGITS = set("012358")
-ABSENT_DIGITS = set("4679")
+PRESENT_DIGITS = set("0123568")
+ABSENT_DIGITS = set("479")
 
 
 def test_registered_processes_cover_only_six_digit_bytes():
@@ -208,7 +226,7 @@ def test_resolved_numeric_literals_are_the_measured_set():
     for expression in PROCESSES.values():
         for value in _numeric_literals(resolve_expression(expression)):
             literals.add(pc._render_val(value))
-    assert literals == {"0.02", "0.03", "0.85", "10", "20"}
+    assert literals == {"0.02", "0.03", "0.6", "0.85", "10", "20"}
     # The pre-resolution view would wrongly omit the default-valued decay.
     unresolved = {
         pc._render_val(v)
@@ -236,11 +254,21 @@ def structural_template(node) -> str:
     signature = REGISTRY[node.name]
     if not node.args and not node.kwargs:
         return f"<{signature.output}>" + "".join("." + m for m in node.mods)
-    parts = [structural_template(child) for child in node.args]
+    parts = []
+    for child in node.args:
+        if isinstance(child, pc.Node):
+            parts.append(structural_template(child))
+        else:
+            # v0.4: a positional numeric literal is a typed slot too.
+            parts.append("<number>")
     resolved = {key: spec.default for key, spec in signature.kwargs.items()}
     resolved.update(dict(node.kwargs))
     for key, value in sorted(resolved.items()):
         if value is None:
+            continue
+        if isinstance(value, pc.Node):
+            # v0.4: a node-valued kwarg (mu=…) keeps its structural shape.
+            parts.append(f"{key}={structural_template(value)}")
             continue
         kind = signature.kwargs[key].kind
         slot = f"<{kind}:len{len(value)}>" if isinstance(value, tuple) else f"<{kind}>"
@@ -249,12 +277,12 @@ def structural_template(node) -> str:
     return body + "".join("." + m for m in node.mods) + "@<pin>" * len(node.pins)
 
 
-def test_witnessed_template_set_is_nine_distinct_shapes():
+def test_witnessed_template_set_is_ten_distinct_shapes():
     templates = {structural_template(pc.parse(e)): n for n, e in PROCESSES.items()}
-    assert len(templates) == 9
-    assert "kalman(<source>.D,<source>.S)" in templates
+    assert len(templates) == 10
+    assert "kalman(<judge>.D,<judge>.S)" in templates
     assert (
-        "e5(routing(<score>,<source>.lineage,menus=<int_list:len2>,t=<number_list:len2>))"
+        "e5(routing(<score>,<judge>.lineage,menus=<int_list:len2>,t=<number_list:len2>))"
         in templates
     )
 
@@ -339,6 +367,7 @@ def test_tolerance_table_covers_every_number_field_and_nothing_else():
         "margin.t": 0.002,
         "lineage.decay": 0.01,
         "blend.w": 0.01,
+        "hop_decay.gamma": 0.01,
     }
 
 
@@ -442,6 +471,7 @@ def test_integer_fields_are_typed_int_and_therefore_exempt_from_tolerance():
         ("margin", "t"),
         ("lineage", "decay"),
         ("blend", "w"),
+        ("hop_decay", "gamma"),
     }
     assert not (int_fields & number_fields)
 
@@ -461,7 +491,7 @@ def test_missing_digits_cap_resolution_below_the_stated_tolerance():
     # longer demonstrated what its name claims.
     routing_tolerance = _spec_tolerances()["routing.t"]
     assert forced_error > routing_tolerance
-    assert ABSENT_DIGITS == {"4", "6", "7", "9"}
+    assert ABSENT_DIGITS == {"4", "7", "9"}
 
 
 def test_identity_is_derived_from_retained_bytes_not_decoded_text():
@@ -477,16 +507,16 @@ def test_identity_is_derived_from_retained_bytes_not_decoded_text():
 
     from process_identity import deployed_identity, verify_identity_record
 
-    node = pc.parse("lineage(graph,decay=0.85)")
+    node = pc.parse("lineage(pearltrees,decay=0.85)")
     record = deployed_identity(node, factory_fingerprint="f").as_record()
     # The record carries the canonical bytes, so verification never needs the
     # decoder to have spelled anything.
-    assert record["canonical_identity_string"] == "lineage(graph,decay=0.85)"
+    assert record["canonical_identity_string"] == "lineage(pearltrees,decay=0.85)"
     verify_identity_record(record)
 
     # A near-miss decode is a different process identity, not a tolerated one:
     # nothing in the identity layer knows about tolerance.
-    near = pc.parse("lineage(graph,decay=0.84)")
+    near = pc.parse("lineage(pearltrees,decay=0.84)")
     from process_identity import full_ast_digest
 
     assert full_ast_digest(near) != full_ast_digest(node)
@@ -503,7 +533,7 @@ def test_identity_boundary_is_currently_a_discipline_not_an_invariant():
 
     from process_identity import deployed_identity, full_ast_digest_for_expression
 
-    decoded_looking_text = "lineage(graph,decay=0.84)"  # imagine a decode
+    decoded_looking_text = "lineage(pearltrees,decay=0.84)"  # imagine a decode
     # Nothing distinguishes it from an authored expression:
     assert len(full_ast_digest_for_expression(decoded_looking_text)) == 64
     identity = deployed_identity(

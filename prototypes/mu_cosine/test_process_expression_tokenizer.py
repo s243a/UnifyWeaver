@@ -105,9 +105,15 @@ def test_token_strings_reproduce_the_sealed_golden_bundle():
         assert actual == expected, row["name"]
 
 
-def test_every_golden_row_round_trips_to_its_canonical_identity():
+def test_every_golden_row_round_trips_to_its_canonical_form():
+    """Round-trip targets the FULL canonical (pins survive the stream); the
+    pin-free identity string is a prefix-equal of it except on pinned rows —
+    exactly the R9 split."""
     for row in load_golden(GOLDEN_PATH)["rows"]:
-        assert round_trip(row["expression"]) == row["canonical_identity_string"], row["name"]
+        assert round_trip(row["expression"]) == row["canonical_full_string"], row["name"]
+        pinned = "@" in row["canonical_full_string"]
+        differ = row["canonical_full_string"] != row["canonical_identity_string"]
+        assert pinned == differ, row["name"]
 
 
 @pytest.mark.parametrize("name,expression", sorted(ALL_CASES.items()))
@@ -151,8 +157,8 @@ def test_integer_spelled_number_decodes_back_to_an_integer():
 def test_elided_default_round_trips_through_the_resolved_stream():
     """`lineage(graph)` streams its resolved default and comes back identical."""
 
-    assert round_trip("lineage(graph)") == "lineage(graph,decay=0.85)"
-    assert pc.canonical(pc.parse("lineage(graph)")) == "lineage(graph,decay=0.85)"
+    assert round_trip("lineage(pearltrees)") == "lineage(pearltrees,decay=0.85)"
+    assert pc.canonical(pc.parse("lineage(pearltrees)")) == "lineage(pearltrees,decay=0.85)"
 
 
 def test_utf8_and_escaped_strings_survive_byte_exactly():
@@ -168,9 +174,9 @@ def test_utf8_and_escaped_strings_survive_byte_exactly():
 
 
 def test_negative_numbers_and_pins_round_trip():
-    assert_round_trips("lineage(graph,decay=-0.5)")
-    assert_round_trips("lineage(graph,decay=0.85)@run/2026-07-25")
-    decoded = decode(encode_expression("lineage(graph,decay=0.85)@run/2026-07-25"))
+    assert_round_trips("lineage(pearltrees,decay=-0.5)")
+    assert_round_trips("lineage(pearltrees,decay=0.85)@run/2026-07-25")
+    decoded = decode(encode_expression("lineage(pearltrees,decay=0.85)@run/2026-07-25"))
     assert decoded.pins == ("run/2026-07-25",)
 
 
@@ -214,7 +220,7 @@ def test_index_beyond_the_frozen_bound_fails_closed_rather_than_wrapping():
 
 
 def test_stream_kind_must_agree_with_the_registry():
-    terms = list(encode_terms(resolve_expression("lineage(graph,decay=0.85)")))
+    terms = list(encode_terms(resolve_expression("lineage(pearltrees,decay=0.85)")))
     swapped = ["<KIND:atom>" if t == "<KIND:apply>" else t for t in terms]
     with pytest.raises(TokenizerError, match="KIND"):
         decode_terms(swapped)
@@ -238,7 +244,7 @@ def test_value_tag_must_agree_with_the_declared_kind():
 
 
 def test_unknown_kwarg_and_unregistered_name_are_rejected():
-    terms = list(encode_terms(resolve_expression("lineage(graph,decay=0.85)")))
+    terms = list(encode_terms(resolve_expression("lineage(pearltrees,decay=0.85)")))
     with pytest.raises(TokenizerError, match="unknown kwarg"):
         decode_terms(["<KW:n>" if t == "<KW:decay>" else t for t in terms])
 
@@ -318,7 +324,7 @@ def test_malformed_model_bytes_fail_through_tokenizer_error():
     # modifiers do, but through a separate call site, so the guard needs its own
     # regression rather than inheriting case 3's coverage.
     pbase = list(encode_terms(
-        resolve_expression("lineage(graph,decay=0.85)@run/2026-07-25")))
+        resolve_expression("lineage(pearltrees,decay=0.85)@run/2026-07-25")))
     assert pbase.count("BYTE:0x72") == 1          # 'r' occurs only in the pin
     bad_p = ["BYTE:0xff" if t == "BYTE:0x72" else t for t in pbase]
     with pytest.raises(TokenizerError, match="pin payload"):

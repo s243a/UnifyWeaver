@@ -744,16 +744,19 @@ def test_parsing_and_elaboration_are_deterministic(reg):
 # --------------------------------------------------------------------------
 
 
-def test_registry_is_injected_and_never_falls_back_to_v0_3(reg):
-    """v0.3 names must not resolve through the vNext fixture."""
+def test_registry_is_injected_and_never_falls_back_to_the_p0_registry(reg):
+    """P0 registry names must not resolve through the vNext fixture."""
 
     import process_cards as pc
 
     assert "luna" in pc.REGISTRY and "luna" not in reg
     with pytest.raises(ParseError, match="unregistered name"):
         parse_functional("luna", reg)
-    # And the fixture's own names are not in v0.3.
-    assert "pearltrees" not in pc.REGISTRY
+    # And the fixture's own operator names are not in the P0 registry.
+    # (v0.4 registered `pearltrees` as a shared corpus atom, so the isolation
+    # witness is an operator that only the fixture declares.)
+    assert "principal_tree" not in pc.REGISTRY
+    assert "lineage_op" not in pc.REGISTRY
 
 
 def test_fixture_declares_itself_experimental_and_non_release():
@@ -839,12 +842,12 @@ def test_sealed_golden_bundles_are_byte_identical():
         assert actual == digest, f"{name} changed"
 
 
-def test_v0_3_behavior_is_unchanged():
+def test_p0_registry_is_current_and_vnext_does_not_change_it():
     import process_cards as pc
 
-    assert pc.REGISTRY_VERSION == "v0.3"
-    node = pc.parse("lineage(graph,decay=0.85)")
-    assert pc.canonical(node) == "lineage(graph,decay=0.85)"
+    assert pc.REGISTRY_VERSION == "v0.4"
+    node = pc.parse("lineage(pearltrees,decay=0.85)")
+    assert pc.canonical(node) == "lineage(pearltrees,decay=0.85)"
     assert len(pc.ast_sha(node)) == 16
 
 

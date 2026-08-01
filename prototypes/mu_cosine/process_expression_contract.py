@@ -38,11 +38,14 @@ from typing import Any, Iterator, Mapping, Sequence
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from process_cards import (
+    OUTPUT_TYPES,
     REGISTRY,
     REGISTRY_VERSION,
+    VALUE_KINDS,
     Node,
     _render_val,
-    canonical,
+    canonical_full,
+    canonical_semantic,
     parse,
     validate,
 )
@@ -55,14 +58,23 @@ from process_identity import full_ast_digest
 #: type inferred from the Python runtime value.  ``margin(t=1)`` now emits
 #: ``<NUMBER>`` instead of ``<INT>``.  No pec-v1 fixture row was affected — that
 #: is precisely why pec-v2 adds a row covering an integer-spelled ``number``.
-CONTRACT_VERSION = "pec-v2"
+#:
+#: pec-v3 (registry v0.4): numeric literals may occupy positional argument
+#: slots — they serialize as value tokens inside the ``<ARG:i>`` fence
+#: (§10.1 flagged decision 1); kwargs may carry sub-expression values
+#: (``mu=haiku``), serialized as a ``<NODE>`` inside the ``<KW:…>`` fence;
+#: the enumerated methodology kinds get their own fences (``<ESTIMAND>``,
+#: ``<IMPL>``); and golden rows split identity per R9 — the identity string
+#: is the pin-free ``canonical_semantic``, with ``canonical_full_string``
+#: carried alongside for provenance and round-trip.
+CONTRACT_VERSION = "pec-v3"
 
-GOLDEN_SCHEMA = "unifyweaver.process-expression-golden.v1"
+GOLDEN_SCHEMA = "unifyweaver.process-expression-golden.v2"
 
 #: The bundle a consumer must reproduce.  When a contract change seals a new
 #: bundle, this pointer and every document naming it move together — see
 #: ``DESIGN_process_expression_generator.md`` §0 for the supersession procedure.
-CURRENT_GOLDEN_BUNDLE = "PROCESS_EXPRESSION_GOLDEN_v2.json"
+CURRENT_GOLDEN_BUNDLE = "PROCESS_EXPRESSION_GOLDEN_v3.json"
 
 #: Superseded bundles, retained as audit-only provenance.  They are never
 #: mutated and never accepted by the current loader; their integrity is pinned
@@ -72,6 +84,10 @@ SUPERSEDED_GOLDEN_BUNDLES = {
         "contract_version": "pec-v1",
         "sha256": "b053351a2a419ac58b7ab644afe15c60543846ce8b9d5a3d9bcbc332ca24db29",
     },
+    "PROCESS_EXPRESSION_GOLDEN_v2.json": {
+        "contract_version": "pec-v2",
+        "sha256": "85e6421f5a1347fca5937d1243dc01500a9aa5b7221571b4918248e57ece6344",
+    },
 }
 
 #: Coverage the golden bundle must carry beyond the registered processes.
@@ -80,16 +96,22 @@ SUPERSEDED_GOLDEN_BUNDLES = {
 REQUIRED_COVERAGE_CASES = {
     "atom-bare": "graph.discrim",
     "atom-dual-bare": "e5",
-    "pinned": "lineage(graph,decay=0.85)@run/2026-07-25",
+    # v0.4 re-spellings: `graph` is judge-only, so substrate slots take corpora.
+    "pinned": "lineage(pearltrees,decay=0.85)@run/2026-07-25",
     "utf8-string": 'routing(e5,haiku,t=[0.02],menus=[10],manifest="héllo·wörld")',
     "escaped-string": 'routing(e5,haiku,t=[0.02],menus=[10],manifest="a\\"b\\\\c")',
     "menu-required-int": "menu(graph,n=10)",
     "blend-variadic": "blend(luna.D,luna.S,graph)",
     "margin-number": "margin(t=0.03)",
-    "neg-number": "lineage(graph,decay=-0.5)",
+    "neg-number": "lineage(fs,decay=-0.5)",
     # pec-v2: a `number` field spelled as an integer must keep its declared kind.
     "int-spelled-number": "margin(t=1)",
     "int-spelled-number-list": "routing(e5,haiku,t=[1],menus=[10])",
+    # pec-v3 / registry v0.4 coverage: each new grammar feature gets a row.
+    "substrate-atom": "fs",
+    "numeric-positional-literal": "max(0.02,e5(margin(t=0.03)))",
+    "mu-judge-kwarg": "lineage(simplewiki,mu=sonnet.lineage)",
+    "estimand-impl": 'lca_frac(simplemind,estimand="path",impl="structural")',
 }
 
 KIND_ATOM = "atom"
@@ -172,6 +194,36 @@ class ResolvedKwarg:
     value_type: str
     value: Any
 
+    def as_record(self) -> dict[str, Any]:
+        if isinstance(self.value, ResolvedNode):
+            # pec-v3: a kwarg may carry a sub-expression (mu=haiku); it is a
+            # node record, never a lexical string, so nothing re-parses it.
+            return {
+                "key": self.key,
+                "value_type": self.value_type,
+                "node": self.value.as_record(),
+            }
+        return {
+            "key": self.key,
+            "value_type": self.value_type,
+            "lexical": _lexical(self.value),
+        }
+
+
+@dataclass(frozen=True)
+class ResolvedLiteral:
+    """pec-v3: a numeric literal occupying a positional argument slot."""
+
+    value_type: str
+    value: Any
+
+    def as_record(self) -> dict[str, Any]:
+        return {
+            "literal": True,
+            "value_type": self.value_type,
+            "lexical": _lexical(self.value),
+        }
+
 
 @dataclass(frozen=True)
 class ResolvedNode:
@@ -180,7 +232,7 @@ class ResolvedNode:
     name: str
     kind: str
     output: str
-    args: tuple["ResolvedNode", ...]
+    args: tuple["ResolvedNode | ResolvedLiteral", ...]
     kwargs: tuple[ResolvedKwarg, ...]
     mods: tuple[str, ...]
     pins: tuple[str, ...]
@@ -191,10 +243,7 @@ class ResolvedNode:
             "kind": self.kind,
             "output": self.output,
             "args": [child.as_record() for child in self.args],
-            "kwargs": [
-                {"key": kw.key, "value_type": kw.value_type, "lexical": _lexical(kw.value)}
-                for kw in self.kwargs
-            ],
+            "kwargs": [kw.as_record() for kw in self.kwargs],
             "mods": list(self.mods),
             "pins": list(self.pins),
         }
@@ -211,7 +260,7 @@ def _lexical(value: Any) -> str:
     return _render_val(value)
 
 
-_SCALAR_KINDS = ("number", "int", "string")
+_SCALAR_KINDS = ("number", "int", "string", "estimand", "impl")
 
 
 def _value_type(value: Any, declared_kind: str | None) -> str:
@@ -259,19 +308,31 @@ def resolve(node: Node) -> ResolvedNode:
     defaults = {key: spec.default for key, spec in signature.kwargs.items()}
     merged = dict(defaults)
     merged.update(dict(node.kwargs))
-    # ``canonical()`` drops resolved kwargs that are still ``None``; the DTO
+    # The canonicalizer drops resolved kwargs that are still ``None``; the DTO
     # serializes the same set so identity and input stay in agreement.
-    resolved_kwargs = tuple(
-        ResolvedKwarg(
-            key=key,
-            value_type=_value_type(
-                value, signature.kwargs[key].kind if key in signature.kwargs else None
-            ),
-            value=value,
-        )
-        for key, value in sorted(merged.items())
-        if value is not None
-    )
+    resolved_kwargs = []
+    for key, value in sorted(merged.items()):
+        if value is None:
+            continue
+        declared = signature.kwargs[key].kind if key in signature.kwargs else None
+        if isinstance(value, Node):
+            # pec-v3: a node-valued kwarg (mu=haiku) resolves recursively and
+            # carries its declared output type, per the registry.
+            if declared not in OUTPUT_TYPES and declared != "process":
+                raise ContractError(
+                    f"{node.name}.{key} carries a node but is not declared "
+                    f"an output type: {declared!r}"
+                )
+            resolved_kwargs.append(
+                ResolvedKwarg(key=key, value_type=declared, value=resolve(value))
+            )
+        else:
+            resolved_kwargs.append(
+                ResolvedKwarg(
+                    key=key, value_type=_value_type(value, declared), value=value
+                )
+            )
+    resolved_kwargs = tuple(resolved_kwargs)
 
     called = bool(node.args or resolved_kwargs) or (
         signature.operator and not signature.atom
@@ -284,11 +345,22 @@ def resolve(node: Node) -> ResolvedNode:
     if kind == KIND_APPLY and not signature.operator:
         raise ContractError(f"{node.name} is not registered as an operator")
 
+    resolved_args = []
+    for index, child in enumerate(node.args):
+        if isinstance(child, Node):
+            resolved_args.append(resolve(child))
+        else:
+            resolved_args.append(
+                ResolvedLiteral(
+                    value_type=_literal_arg_kind(signature, index, child), value=child
+                )
+            )
+
     resolved = ResolvedNode(
         name=node.name,
         kind=kind,
         output=signature.output,
-        args=tuple(resolve(child) for child in node.args),
+        args=tuple(resolved_args),
         kwargs=resolved_kwargs,
         mods=tuple(node.mods),
         pins=tuple(node.pins),
@@ -306,6 +378,24 @@ def _expected_arg_type(signature, index: int) -> str:
     if signature.variadic_arg_type is not None:
         return signature.variadic_arg_type
     raise ContractError(f"positional argument {index} has no registered type")
+
+
+def _literal_arg_kind(signature, index: int, value: Any) -> str:
+    """The declared value kind a positional literal resolves under.
+
+    A declared type may be a union (``number|score``); the literal takes the
+    single value-kind alternative — declared-type-wins, never runtime
+    inference alone (§3.1).
+    """
+
+    declared = _expected_arg_type(signature, index)
+    kinds = [alt for alt in declared.split("|") if alt in VALUE_KINDS]
+    if len(kinds) != 1:
+        raise ContractError(
+            f"positional literal at {index} needs exactly one declared value "
+            f"kind, got {declared!r}"
+        )
+    return _value_type(value, kinds[0])
 
 
 # --------------------------------------------------------------------------
@@ -359,6 +449,12 @@ def _value_tokens(value: Any, value_type: str, path: RolePath) -> Iterator[Token
         open_tag, close_tag = "<STRING>", "</STRING>"
         # Exact UTF-8 bytes of the string itself, not its JSON quoting.
         payload = value.encode("utf-8")
+    elif value_type in ("estimand", "impl"):
+        # pec-v3: the enumerated methodology kinds keep their declared kind on
+        # the stream, so a decoder can hold them to the registry enumeration.
+        open_tag = f"<{value_type.upper()}>"
+        close_tag = f"</{value_type.upper()}>"
+        payload = value.encode("utf-8")
     else:
         raise ContractError(f"unsupported scalar value type: {value_type!r}")
 
@@ -380,7 +476,12 @@ def _node_tokens(node: ResolvedNode, path: RolePath) -> Iterator[Token]:
             ROLE_ARG, index=index, type_name=_expected_arg_type(signature, index)
         )
         yield Token(f"<ARG:{index}>", path)
-        yield from _node_tokens(child, path + (step,))
+        if isinstance(child, ResolvedLiteral):
+            # pec-v3: a positional literal is value tokens inside the ARG
+            # fence — no <NODE> wrapper, because there is no node.
+            yield from _value_tokens(child.value, child.value_type, path + (step,))
+        else:
+            yield from _node_tokens(child, path + (step,))
         yield Token("</ARG>", path)
     yield Token("</ARGS>", path)
 
@@ -388,7 +489,12 @@ def _node_tokens(node: ResolvedNode, path: RolePath) -> Iterator[Token]:
     for kwarg in node.kwargs:
         step = RoleStep(ROLE_KWARG, key=kwarg.key, type_name=kwarg.value_type)
         yield Token(f"<KW:{kwarg.key}>", path)
-        yield from _value_tokens(kwarg.value, kwarg.value_type, path + (step,))
+        if isinstance(kwarg.value, ResolvedNode):
+            # pec-v3: a node-valued kwarg (mu=haiku) is a whole node inside
+            # the KW fence.
+            yield from _node_tokens(kwarg.value, path + (step,))
+        else:
+            yield from _value_tokens(kwarg.value, kwarg.value_type, path + (step,))
         yield Token("</KW>", path)
     yield Token("</KWARGS>", path)
 
@@ -451,7 +557,11 @@ def golden_row(name: str, expression: str) -> dict[str, Any]:
     return {
         "name": name,
         "expression": expression,
-        "canonical_identity_string": canonical(node),
+        # R9 split: identity is the pin-free semantic form; the full form is
+        # provenance and the round-trip target. They differ only on pinned rows
+        # — which is exactly what test obligation 10 checks.
+        "canonical_identity_string": canonical_semantic(node),
+        "canonical_full_string": canonical_full(node),
         "full_process_digest": full_ast_digest(node),
         "resolved_ast": resolved.as_record(),
         "token_count": len(tokens),

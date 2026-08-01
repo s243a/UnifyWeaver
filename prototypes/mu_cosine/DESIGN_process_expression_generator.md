@@ -316,6 +316,7 @@ tolerance.routing.t      = 0.002     # < half the 0.01 gap between registered ti
 tolerance.margin.t       = 0.002
 tolerance.lineage.decay  = 0.01      # decays live in 0.8-0.95
 tolerance.blend.w        = 0.01
+tolerance.hop_decay.gamma = 0.01     # retention factor, same regime as decay (v0.4/R8)
 ```
 
 #### Per-field tolerance is not sufficient on its own

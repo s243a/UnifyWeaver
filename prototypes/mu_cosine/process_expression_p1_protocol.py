@@ -7,7 +7,14 @@ import hashlib
 from pathlib import Path
 from typing import Any, Mapping
 
-from process_cards import REGISTRY_VERSION, RENDERER_VERSION, canonical, parse
+from process_cards import (
+    REGISTRY_VERSION,
+    RENDERER_VERSION,
+    SUPERSEDED_REGISTRY_VERSIONS,
+    SUPERSEDED_RENDERER_VERSIONS,
+    canonical_semantic,
+    parse,
+)
 from routed_policy import canonical_json_bytes, strict_json_loads
 
 
@@ -25,10 +32,20 @@ def _require(condition: bool, message: str):
         raise ProtocolError(message)
 
 
-def _full_process_digest(expression: str) -> str:
+def _full_process_digest(expression: str, registry_version: str) -> str:
+    """The digest under the registry version the preregistration RECORDS.
+
+    The preregistration is a sealed artifact: its digests were minted under
+    the version it names, and rewriting a sealed artifact on every registry
+    bump is exactly the failure the supersession rules exist to prevent.
+    Verification therefore recomputes each digest with the recorded version
+    string — while still parsing and canonicalizing under the CURRENT
+    registry, so grammar drift that would change these identities is caught.
+    The recorded version itself must be current or known-superseded.
+    """
     node = parse(expression)
     return hashlib.sha256(
-        f"{REGISTRY_VERSION}|{canonical(node)}".encode("utf-8")
+        f"{registry_version}|{canonical_semantic(node)}".encode("utf-8")
     ).hexdigest()
 
 
@@ -91,13 +108,16 @@ def load_and_verify(path: str | Path = PREREG_PATH) -> dict[str, Any]:
     identity = document.get("process_identity", {})
     _require(identity.get("digest_hex_length") == 64, "full process SHA-256 required")
     _require(identity.get("compact_ast_sha_is_identity") is False, "compact AST hash is not identity")
+    recorded_registry = identity.get("registry_version")
     _require(
-        identity.get("registry_version") == REGISTRY_VERSION,
-        "process registry version drifted",
+        recorded_registry == REGISTRY_VERSION
+        or recorded_registry in SUPERSEDED_REGISTRY_VERSIONS,
+        "process registry version is neither current nor known-superseded",
     )
     _require(
-        identity.get("renderer_version") == RENDERER_VERSION,
-        "process renderer version drifted",
+        identity.get("renderer_version") == RENDERER_VERSION
+        or identity.get("renderer_version") in SUPERSEDED_RENDERER_VERSIONS,
+        "process renderer version is neither current nor known-superseded",
     )
     processes = identity.get("processes")
     _require(isinstance(processes, dict) and len(processes) == 4, "four P1 processes required")
@@ -107,12 +127,12 @@ def load_and_verify(path: str | Path = PREREG_PATH) -> dict[str, Any]:
         _require(isinstance(name, str) and isinstance(record, dict), "invalid process entry")
         expression = record.get("expression")
         _require(isinstance(expression, str), "process expression is missing")
-        process_canonicals[name] = canonical(parse(expression))
+        process_canonicals[name] = canonical_semantic(parse(expression))
         _require(
             record.get("canonical") == process_canonicals[name],
             f"canonical process drifted for {name}",
         )
-        process_digests[name] = _full_process_digest(expression)
+        process_digests[name] = _full_process_digest(expression, recorded_registry)
         _require(len(process_digests[name]) == 64, "process digest is truncated")
         _require(
             record.get("sha256") == process_digests[name],

@@ -40,11 +40,14 @@ def test_committed_preregistration_verifies():
 
 def test_process_identity_is_full_registry_bound_sha():
     document = load_and_verify()
+    # The preregistration is sealed under the registry version it records
+    # (v0.3); digests recompute under that recorded version, while parsing
+    # and canonicalization run under the current registry.
+    recorded = document["process_identity"]["registry_version"]
     for name, record in document["process_identity"]["processes"].items():
         expression = record["expression"]
-        full = _full_process_digest(expression)
+        full = _full_process_digest(expression, recorded)
         assert len(full) == 64
-        assert full.startswith(ast_sha(parse(expression)))
         assert record["sha256"] == full
         assert record["canonical"] == document["_derived_process_canonical"][name]
         assert document["_derived_process_sha256"][name] == full

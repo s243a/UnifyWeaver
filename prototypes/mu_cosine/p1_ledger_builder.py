@@ -12,7 +12,7 @@ Contract enforced here (prereg `ledger` section + PROTOCOL §2–4):
     never re-derives eligibility, but it never trusts paths without byte identity either.
   - exact qid join per bundle (every task qid exactly one pick row; no strays).
   - record unit = query-process-target; process identity = FULL 64-hex digest
-    (process_expression_p1_protocol._full_process_digest; compact ast_sha is never identity).
+    (process_identity.full_ast_digest_for_expression; compact ast_sha is never identity).
   - the training ledger contains NO recorded destination (labels live in a separate artifact).
   - null picks stay in the ledger flagged `excluded_from_primary_loss` (no primary ranking loss).
   - per-process weights normalize to EQUAL total training mass per process.
@@ -27,7 +27,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from process_expression_p1_protocol import _full_process_digest
+# The ledger mints CURRENT identities for new rows, so it uses the identity
+# module directly; the P1 protocol's digest helper is for verifying the sealed
+# preregistration under the registry version it records.
+from process_identity import full_ast_digest_for_expression
 
 REPORT_SCHEMA = "unifyweaver.process-expression-p1-eligibility.v1"
 LEDGER_SCHEMA = "unifyweaver.process-expression-p1-ledger.v1"
@@ -73,7 +76,7 @@ def build(report_path, out_dir, split_seed=0, holdout_frac=0.30):
             raise LedgerError(f"task bytes differ from report hash ({b['tier_id']})")
         if sha_bytes(p_raw) != b["picks_sha256"]:
             raise LedgerError(f"picks bytes differ from report hash ({b['tier_id']})")
-        digest = _full_process_digest(b["process_expression"])
+        digest = full_ast_digest_for_expression(b["process_expression"])
         tasks = {r["qid"]: r for r in t_rows if "qid" in r and "menu" in r}
         picks = {}
         for r in p_rows:
