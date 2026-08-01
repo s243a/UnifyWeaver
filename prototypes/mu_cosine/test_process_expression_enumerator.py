@@ -249,3 +249,147 @@ def small_caps(monkeypatch):
 def test_dp_matches_brute_force_at_reduced_caps(small_caps, scenario):
     dp_total, _ = en.count(scenario)
     assert dp_total == _brute_force(scenario)
+
+
+# --------------------------------------------------------------------------
+# full-caps template materialization (third independent path)
+# --------------------------------------------------------------------------
+
+
+def test_dp_matches_full_caps_template_materialization():
+    """The reduced-caps brute force cannot exercise depth-3 composition at the
+    real caps; template-mode materialization can (98,070 shapes is tractable
+    where 54.9M expressions is not). This concretely materializes every
+    root-only template shape at FULL caps with budget-threaded slot products
+    and compares exactly. The blend.w length-forced-by-arity rule and the
+    routing shared-length pairing are reproduced independently here — a
+    divergence in either shows up as a count mismatch."""
+
+    def leaf_templates(output):
+        shapes = set()
+        for name, sig in pc.REGISTRY.items():
+            if sig.atom and sig.output == output and not sig.operator:
+                shapes.add((output, None))
+                for m in sig.modifiers:
+                    shapes.add((output, m))
+        out = [f"<{o}>" + (f".{m}" if m else "")
+               for o, m in sorted(shapes, key=lambda x: (x[0], x[1] or ""))]
+        if output == "score":
+            out.append("<e5-atom>")
+        return [(s, 1) for s in out]
+
+    def kw_shapes(kind):
+        if kind in ("number", "int", "estimand", "impl"):
+            return [f"<{kind}>"]
+        if kind in ("number_list", "int_list"):
+            return [f"<{kind}:len{L}>" for L in range(1, en.MAX_LIST_LENGTH + 1)]
+        return []
+
+    def feasible_products(slots, budget):
+        if not slots:
+            yield (), 0
+            return
+        head, tail = slots[0], slots[1:]
+        min_tail = sum(min(n for _, n in s) for s in tail) if tail else 0
+        for item in head:
+            n = item[1]
+            if n + min_tail > budget:
+                continue
+            for rest, rest_nodes in feasible_products(tail, budget - n):
+                yield (item,) + rest, n + rest_nodes
+
+    memo = {}
+
+    def build(output, d, allow_meth):
+        key = (output, d, allow_meth)
+        if key in memo:
+            return memo[key]
+        out = list(leaf_templates(output))
+        if d > 0:
+            for name, sig in pc.REGISTRY.items():
+                if not sig.operator or sig.output != output:
+                    continue
+                cap = sig.max_args if sig.max_args is not None else en.MAX_ARITY
+                for arity in range(sig.min_args, min(cap, en.MAX_ARITY) + 1):
+                    slot_opts, dead = [], False
+                    for i in range(arity):
+                        declared = (sig.arg_types[i] if i < len(sig.arg_types)
+                                    else sig.variadic_arg_type)
+                        opts = []
+                        for alt in declared.split("|"):
+                            if alt in pc.VALUE_KINDS:
+                                opts += [(s, 0) for s in kw_shapes(alt)]
+                            elif alt == "process":
+                                for typ in en.OUTPUT_ROOTS:
+                                    opts += build(typ, d - 1, False)
+                            else:
+                                opts += build(alt, d - 1, False)
+                        opts = [o for o in opts if o[1] <= en.MAX_NODE_COUNT - 1]
+                        if not opts:
+                            dead = True
+                            break
+                        slot_opts.append(opts)
+                    if dead:
+                        continue
+                    kw_opts = []
+                    for kname in sorted(sig.kwargs):
+                        spec = sig.kwargs[kname]
+                        if kname in ("estimand", "impl") and not allow_meth:
+                            continue
+                        if spec.kind in pc.OUTPUT_TYPES:
+                            vals = [(s, n) for s, n in build(spec.kind, d - 1, False)
+                                    if n <= en.MAX_NODE_COUNT - 1]
+                        elif name == "blend" and kname == "w":
+                            if arity > en.MAX_LIST_LENGTH:
+                                continue  # capped-out list: unenumerable, fail closed
+                            vals = [(f"<number_list:len{arity}>", 0)]
+                        elif spec.kind == "string":
+                            continue
+                        else:
+                            vals = [(s, 0) for s in kw_shapes(spec.kind)]
+                        if not vals:
+                            continue
+                        kw_opts.append([(kname, s, n) for s, n in vals])
+                    for arg_sel, arg_nodes in feasible_products(
+                        slot_opts, en.MAX_NODE_COUNT - 1
+                    ):
+                        base_nodes = 1 + arg_nodes
+                        for r in range(0, en.MAX_KWARGS_NODE + 1):
+                            for combo in itertools.combinations(range(len(kw_opts)), r):
+                                names_in = [kw_opts[i][0][0] for i in combo]
+                                if any(s.required and k not in names_in
+                                       for k, s in sig.kwargs.items()):
+                                    continue
+                                if name == "routing" and (
+                                    ("t" in names_in) != ("menus" in names_in)
+                                ):
+                                    continue
+                                for sel in itertools.product(
+                                    *[kw_opts[i] for i in combo]
+                                ):
+                                    if name == "routing" and "t" in names_in:
+                                        chosen = {k: s for k, s, _ in sel}
+                                        if (chosen["t"].split("len")[1]
+                                                != chosen["menus"].split("len")[1]):
+                                            continue
+                                    total = base_nodes + sum(n for _, _, n in sel)
+                                    if total > en.MAX_NODE_COUNT:
+                                        continue
+                                    kw_part = ",".join(
+                                        f"{k}={s}" for k, s, _ in
+                                        sorted(sel, key=lambda item: item[0])
+                                    )
+                                    body = ",".join(s for s, _ in arg_sel)
+                                    template = (f"{name}({body}"
+                                                + (f",{kw_part}" if kw_part else "")
+                                                + ")")
+                                    out.append((template, total))
+        memo[key] = out
+        return out
+
+    seen = set()
+    for output in en.OUTPUT_ROOTS:
+        for template, n in build(output, en.MAX_DEPTH, True):
+            if n <= en.MAX_NODE_COUNT:
+                seen.add(template)
+    assert len(seen) == en.count("methodology-root-only", template_mode=True)[0]
