@@ -3975,7 +3975,8 @@ WamRuntime$eval_scalar_aggregate_arith <- function(program, compiled, reg_env) {
 
 # Match arith_to_term's int vs float tagging for aggregate bag construction.
 WamRuntime$arith_num_is_float_tag <- function(n) {
-  !(is.finite(n) && n == as.integer(n) && abs(n) < .Machine$integer.max)
+  !(length(n) == 1L && is.finite(n) &&
+    abs(n) < .Machine$integer.max && n == trunc(n))
 }
 
 WamRuntime$scalar_aggregate_bag_term <- function(
