@@ -399,3 +399,74 @@ in the term is rejected: it creates a format never seen at serve time and two in
 distributions for one semantic identity. Because pin hash tokens are opaque and can only be
 memorized, a pin-visible P1 win must be checked against the opaque-process-token baseline it
 resembles.
+
+**Importance is read from coordinates, never inferred from arrival order.** A second,
+independent rationale for the ablation-stability rule above (two arguments for one rule keep it
+from being relitigated): with stream-indexed positions, finding the structurally important
+nodes is positional *arithmetic* — locate index 0, reason about what shifted — while with
+tree-derived coordinates it is a *lookup*: the root is the empty path at any stream position,
+and depth is a deterministic function of the coordinate, so root-ward relevance weighting is
+free at readout. Serialization order is canonicalized for the digest, not chosen for the
+encoder's benefit; the encoder lineage (MuAttention) is permutation-invariant over the token
+set, so arrival order carries nothing and all relevance structure must come from the
+coordinates. A sequence-indexed arm added later would silently break this — hence the
+requirement is stated, not emergent.
+
+**Two traversals, one join: the stream↔tree mapping.** There are two legitimate orderings of
+the same tokens, and the mapping is the join between them — not merely a diagnostic overlay on
+one:
+
+1. the **canonical serialization** — pre-order, fixed, digest-bearing. Identity does not care
+   about the encoder's convenience, and this traversal never moves;
+2. an optional **relevance-ordered encoder stream** — a deliberate permutation
+   (most-relevant-first: root functor, estimand, then progressively deeper and lateral detail)
+   fed to training. The permutation is legitimate precisely because every token wears its
+   tree-derived coordinates, so reordering loses nothing the encoder needs.
+
+Two disciplines govern the second traversal. *The relevance order is a canonical function of
+the coordinates, never a curation*: a deterministic sort key over the typed path (channel
+priority, then depth, then role priority), versioned like `RENDERER_VERSION` — an
+encoder-input-format version, never an identity input. A hand-tuned per-expression ordering
+would be an unversioned judgment call baked into training data. And *the payoff must be stated
+honestly*: for the permutation-invariant attention lineage a reordered stream produces the same
+output, so relevance ordering buys nothing in that forward pass. Where it pays: (a)
+**relevance-aware truncation** — a token-budget cut drops the least relevant tail, giving the
+envelope-overflow policy a second degradation mode besides fail-closed (truncate and report the
+rate, same posture as the preregistered `OVERFLOW` role); (b) **order-sensitive ablation arms**
+— causal or recurrent baselines, where order is semantic by construction; (c) **deliberately
+order-biased attention** — an arm that biases attention toward earlier tokens (a
+primacy/position-decaying bias) makes arrival order carry the relevance signal in the forward
+pass itself; the ordering matters exactly when the architecture is made order-sensitive on
+purpose, and that is a legitimate design choice to screen, not an assumption to smuggle in.
+None of this weakens the coordinates-first requirement above: order may *add* a relevance
+signal where an arm is deliberately order-sensitive, but importance must remain readable from
+coordinates alone, because the permutation-invariant arms see nothing else.
+
+The mapping's diagnostic uses stand regardless of which traversal feeds the model: readable
+attention maps ("the `gamma` leaf attends to the `hop_decay` call node" instead of "token 14
+attends to token 7"), translating sequence-arm outputs into tree coordinates so arms compare on
+the same diagnostics, and cross-checking the serializer against the tree. Three rules keep the
+join honest: (1) *one direction of truth* — both traversals and the mapping are recomputed from
+the AST plus their versioned ordering rules, never stored as independent facts, and the tree
+wins any conflict; (2) *version-bound* — stream indices are a property of a traversal under a
+specific contract (`tok-v2` for the canonical order; the versioned sort key for the encoder
+order), and a stored mapping must bind those versions or a re-ordered stream silently mislabels
+every analysis; (3) *keys stay tree-side* — §7's "never use a position vector as a key" extends
+to stream indices of either traversal, for the same reason: a stream is a projection of the
+tree, not an authority.
+
+**Open question — pattern-form input (variables plus a binding channel) as an ablation arm.**
+As *identity* design, a binding channel is declined: bindings are identity-determining
+(`C=simplemind` and `C=pearltrees` are different processes), so the channel could not be
+pin-like (identity-transparent) without making deployed identity a two-artifact (term,
+bindings) pair — and the ground form already carries the same semantics in one artifact. As an
+*encoder input* choice it needs no identity change at all, same status as pin visibility:
+identity stays ground, while the rendering fed to training presents the vNext pattern form —
+variable nodes plus a binding channel — letting the model learn corpus-independent structure
+(the shape of `max(floor, product(hop_decay(C,γ), lca_frac(C)))` shared across bindings). The
+caveat that keeps this an open question rather than a plan: repeated named variables are one
+`VarId`, i.e. a *shared* node, which turns the tree into a DAG — and this document's coordinate
+system is built on unique root-to-node paths. A twice-occurring variable has two paths. The pin
+trick transfers (`position(binding) = path(occurrence)` extended by one bind-role edge, one
+binding token per occurrence), but the DAG consequences for identifiability and the §9 path
+tests are unexamined. Record, do not build, until the flat-corpus arms have run.
