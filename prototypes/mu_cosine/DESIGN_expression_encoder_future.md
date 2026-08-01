@@ -315,6 +315,35 @@ experiment; its support obligation is the estimand vocabulary's own split (the s
 `assoc`/`see_also` vs the directional family), so the learned blend is also a first consumer of
 `estimand=` as a conditioning input rather than metadata.
 
+**Executed with controls; confirmed in-domain, e5-override out-of-domain** (*measured*,
+training lane, on `main`): in-domain (simplewiki) the learned linear blend goes A-dominant
+(e5 0.19 / S 0.33 / A 0.61), the gate nearly discards e5 (`we`=0.12) and learns exactly the
+hypothesized shape — monotone in A at moderate-to-high S ("trust A when A is strong, fall back
+to S otherwise"), with the strongA/weakA stratum gap appearing only in the gate arm. Neither
+learned arm beat the fixed μ-max baseline, *by construction*: `ELEM` sits outside the ruled
+(S, A) parameterization. Out-of-domain (Pearltrees) the learned blend converges to e5-dominant
+(0.88/0.10/0.06) and ties e5-only, while the in-domain-tuned **fixed** blend transported
+backwards by 2× — fixed blend weights are not transportable across corpora; a blend learned
+against filing CE rediscovers the right regime per domain.
+
+**Direction, second iteration (owner): the relationship is still open, and the next arms must
+separate two failure modes.** The owner's reading of the OOD result — *we have not found the
+right relationship yet, and it need not be linear* — stands, with one diagnostic discipline
+attached: a blend can fail OOD because its **functional form** is wrong, or because its
+**inputs carry no signal** there, and no functional form repairs signal-free inputs. So the
+next iteration, in order: (1) report per-channel *standalone* OOD performance first — if S and
+A alone sit at chance on Pearltrees, the finding is about the μ estimators (corpus-bound walk
+structure, the standing honest-NULL memory), not the blend; (2) **extend the parameterization
+to (S, A, ELEM)** — granted, and not merely as scope creep: filing *is* predominantly
+`element_of` placement, so the three-way blend is exactly the estimand vocabulary's family
+split (symmetric family / directional family / membership terminator), completing the
+parameterization the R7 enumeration implies — the μ-max baseline is unbeatable from inside
+(S, A) because it sees a family the learned arms cannot; (3) a **domain-conditioned gate** arm:
+feed the gate cheap substrate statistics (density, branching, depth distribution) so one
+learned function can *transfer by conditioning* instead of retraining per corpus — the learned
+gate rediscovering each domain's regime is the mechanism-level win already in hand; a gate that
+knows *which regime it is in* is the candidate for the relationship that generalizes.
+
 ## 6. Finite deterministic synthetic corpus
 
 "Synthetic" does not mean unlimited or unconstrained. First freeze a checked-in generator
