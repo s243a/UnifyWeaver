@@ -24,8 +24,10 @@ all_names = sorted(set(children) | {p for ps in parents.values() for p in ps})
 rng = np.random.default_rng(SEED)
 rows = 0
 with open(os.path.join(OUT, "targets.tsv"), "w", encoding="utf-8") as out:
-    out.write("# process_expression\tlineage(graph,decay=0.85) [wiki v2, 100k_cats full,"
-              " approx negatives]\n")
+    # v0.4 spelling per REGISTRY_V04_MIGRATION_MANIFEST.json: 100k_cats is the
+    # SimpleWiki category graph, and the structural mu-source is stated as mu=graph.
+    out.write('# process_expression\tlineage(simplewiki,mu=graph,estimand="ancestry")'
+              " [wiki v2, 100k_cats full, approx negatives]\n")
     out.write("# node\tancestor\ttarget\tkind\n")
     for c in children:
         node, seen = c, {c}
