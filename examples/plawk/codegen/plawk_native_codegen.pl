@@ -18539,6 +18539,10 @@ plawk_pattern_guard_ir(field_str_cmp(Index, Op, Value), FieldSeparator, GuardIR)
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_str_cmp_guard(plawk_surface_field_strcmp, '%line', Index,
         OpCode, Value, FieldSeparator, '%is_match', GuardIR).
+% Whole-record-vs-string-literal `$0 OP "str"` (single-rule guard).
+plawk_pattern_guard_ir(record_str_cmp(Op, Value), _FieldSeparator, GuardIR) :-
+    plawk_record_str_cmp_guard_ir(Op, Value, plawk_surface_record_strcmp,
+        '%is_match', GuardIR).
 % Expression pattern `NF OP int` (single-rule guard): count the current
 % record's fields with the active FS, then compare to the literal.
 plawk_pattern_guard_ir(special_cmp('NF', Op, Value), FieldSeparator, ''-GuardCallIR) :-
@@ -18675,6 +18679,42 @@ plawk_pattern_guard_ir(field_str_cmp(Index, Op, Value), FieldSeparator, GlobalBa
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_str_cmp_guard(GlobalBase, '%line', Index, OpCode, Value,
         FieldSeparator, MatchValue, GuardIR).
+% Whole-record-vs-string-literal (multi-rule guard): a per-rule GlobalBase keeps
+% the literal constant and the temporaries unique across rule blocks.
+plawk_pattern_guard_ir(record_str_cmp(Op, Value), _FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
+    plawk_record_str_cmp_guard_ir(Op, Value, GlobalBase, MatchValue, GuardIR).
+
+%% plawk_record_str_cmp_guard_ir(+Op, +Value, +GlobalBase, +MatchValue, -GlobalIR-GuardIR)
+%
+%  `$0 OP "str"`: strcmp the whole record against the literal, then compare the
+%  result to 0. ONE emitter, called by both the single-rule and multi-rule guard
+%  arities, which differ only in the base name and the i1 they define.
+%
+%  No field slicing, and no dependence on FS: the record is already a
+%  NUL-terminated string. That is also why this cannot reuse the field-vs-literal
+%  comparator -- that one projects field N out of the record and answers false
+%  for N = 0.
+%
+%  The record pointer is re-resolved here via plawk_fresh_record_ptr_ir/3 rather
+%  than reusing `%line_s`, because a `getline` can grow and relocate the shared
+%  transient buffer; `%line` keeps the reserved transient atom id, so
+%  re-resolving is cheap and relocation-safe.
+plawk_record_str_cmp_guard_ir(Op, Value, GlobalBase, MatchValue, GlobalIR-GuardIR) :-
+    plawk_icmp_pred(Op, Pred),
+    format(atom(LitName), '~w_reclit', [GlobalBase]),
+    llvm_emit_c_string_global(LitName, Value, GlobalIR, _Len, BytesLen),
+    format(atom(RecordBase), '~w_rec', [GlobalBase]),
+    plawk_fresh_record_ptr_ir(RecordBase, RecordPtr, ResolveLines),
+    format(atom(LitPtrLine),
+        '  %~w_reclitptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+        [GlobalBase, BytesLen, BytesLen, LitName]),
+    format(atom(CmpLine),
+        '  %~w_reccmp = call i32 @strcmp(i8* ~w, i8* %~w_reclitptr)',
+        [GlobalBase, RecordPtr, GlobalBase]),
+    format(atom(TestLine), '  ~w = icmp ~w i32 %~w_reccmp, 0',
+        [MatchValue, Pred, GlobalBase]),
+    append(ResolveLines, [LitPtrLine, CmpLine, TestLine], Lines),
+    atomic_list_concat(Lines, '\n', GuardIR).
 % Expression pattern `NF OP int` (multi-rule guard): a per-rule GlobalBase keeps
 % the field-count temporary unique across rule blocks.
 plawk_pattern_guard_ir(special_cmp('NF', Op, Value), FieldSeparator, GlobalBase, MatchValue, ''-GuardCallIR) :-
