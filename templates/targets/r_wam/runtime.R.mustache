@@ -3849,16 +3849,20 @@ WamRuntime$register_bulk_collect <- function(program, key, fn, output_regs) {
   invisible(NULL)
 }
 
-WamRuntime$compile_scalar_aggregate_arith <- function(program, body, call_i) {
+WamRuntime$compile_scalar_aggregate_arith <- function(
+    program, body, call_i, template_reg) {
   if (call_i >= length(body)) return(NULL)
   post <- body[(call_i + 1L):length(body)]
   compiled <- list()
   i <- 1L
   while (i <= length(post)) {
-    # A pre-bound is/2 target and SetVariable arithmetic inputs need normal
-    # unification/failure semantics. Keep the fast shape to a fresh lax target.
-    if (!identical(post[[i]]$op, "PutVariable")) return(NULL)
+    # Only a fresh target or the aggregate's isolated template register may
+    # bypass ordinary target unification. Arbitrary PutValue targets fall back.
+    target_op <- post[[i]]$op
     dest <- as.integer(post[[i]]$xn)
+    if (!(identical(target_op, "PutVariable") ||
+          (identical(target_op, "PutValue") &&
+           identical(dest, as.integer(template_reg))))) return(NULL)
     if (as.integer(post[[i]]$ai) != 1L) return(NULL)
     i <- i + 1L
     if (i > length(post) || !identical(post[[i]]$op, "PutStructure")) return(NULL)
@@ -3989,7 +3993,8 @@ WamRuntime$try_scalar_aggregate_fastpath <- function(program, state, instr) {
   bulk_cap <- get(key, envir = be, inherits = FALSE)
   if (!is.list(bulk_cap) || !is.function(bulk_cap$fn) ||
       is.null(bulk_cap$output_regs)) return(NULL)
-  compiled <- WamRuntime$compile_scalar_aggregate_arith(program, body, call_i)
+  compiled <- WamRuntime$compile_scalar_aggregate_arith(
+    program, body, call_i, as.integer(instr$template))
   if (is.null(compiled)) return(NULL)
   for (step in compiled) {
     opname <- WamRuntime$string_of(program$intern_table, as.integer(step$fid))
