@@ -14482,6 +14482,14 @@ plawk_ternary_cond_ok(field(Index), Op, string(_Expected)) :-
     integer(Index),
     Index >= 1,
     plawk_field_cmp_op_code(Op, _OpCode).
+% `$0` against a string literal. Admitted only now that there is a comparison
+% that is CORRECT at index 0: the whole-record strcmp introduced for the
+% `$0 OP "str"` rule pattern. It used to be excluded here precisely because the
+% only available comparator projected a field slice and answered false for index
+% 0 -- so admitting it printed 0/0/0 where gawk gives 0/1/0. The gate and the
+% emitter move together: plawk_ternary_cond_ir/8 has the matching clause.
+plawk_ternary_cond_ok(field(0), Op, string(_Expected)) :-
+    plawk_icmp_pred(Op, _Pred).
 
 %% plawk_ternary_str_branches_ok(+Then, +Else) is semidet.
 %
@@ -17076,6 +17084,19 @@ plawk_ternary_str_ptr_ir(Cond, string(Then), string(Else), FieldSeparator, Base,
 %  binary descriptor has no text to compare), and positive fields only -- the
 %  comparator answers false for index 0, so admitting `$0` printed wrong answers
 %  rather than declining.
+%  Form 0 -- `$0` against a string literal (`$0 == "b 2" ? … : …`). The whole
+%  record, not a field slice, so it reuses plawk_record_str_cmp_guard_ir/5 -- the
+%  same emitter the `$0 OP "str"` RULE PATTERN uses, which is a plain strcmp and
+%  is therefore correct at index 0, unlike the field comparator below. One
+%  emitter, two surfaces: a whole-record comparison means the same thing as a
+%  pattern and as a ternary condition.
+plawk_ternary_cond_ir(cmp(field(0), Op, string(Expected)), _FieldSeparator,
+        Base, GlobalBase, CondIR, [CondGlobalIR], [], [CondCallIR]) :-
+    plawk_icmp_pred(Op, _Pred),
+    !,
+    format(atom(CondIR), '%~w_cond', [Base]),
+    plawk_record_str_cmp_guard_ir(Op, Expected, GlobalBase, CondIR,
+        CondGlobalIR-CondCallIR).
 plawk_ternary_cond_ir(cmp(field(Index), Op, string(Expected)), FieldSeparator,
         Base, GlobalBase, CondIR, [CondGlobalIR], [], [CondCallIR]) :-
     integer(FieldSeparator),
