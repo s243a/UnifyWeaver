@@ -18,7 +18,7 @@ Companion contracts:
   lossless-identity/lossy-card distinction;
 - `DESIGN_process_expression_patterns.md` — proposed vNext pattern/ground AST states, optional
   types, interpretation and representation rules, factory verification, and migration boundary.
-  It is not active under registry v0.3 or `pec-v2`;
+  It is not active under registry v0.4 or `pec-v3`;
 - `DESIGN_process_expression_implementation.md` and `PROTOCOL_process_expression_p1.md` — the
   empirical ladder and activation evidence;
 - `DESIGN_tree_position_encoding_theory.md` — candidate compression operators for tree
@@ -432,12 +432,14 @@ run, not permission to shrink data/model or change precision post hoc.
    fixture authority only; the versioned vocabulary IDs and the 256-byte literal fallback belong
    to step 2, which must reproduce those frozen structures exactly.
 
-   **Current bundle: `PROCESS_EXPRESSION_GOLDEN_v2.json` (contract `pec-v2`).** Step 2 reproduces
-   this one. `PROCESS_EXPRESSION_GOLDEN_v1.json` is retained as audit-only provenance and is
-   rejected by the current loader; reproducing it would fail closed and would miss the
-   integer-spelled-`number` coverage. The authoritative pointer is
-   `process_expression_contract.CURRENT_GOLDEN_BUNDLE`, and this line moves with it — see
-   `DESIGN_process_expression_generator.md` §0 for the supersession procedure.
+   **Current bundle: `PROCESS_EXPRESSION_GOLDEN_v3.json` (contract `pec-v3`, registry `v0.4`).**
+   Step 2 reproduces this one. `PROCESS_EXPRESSION_GOLDEN_v1.json` and
+   `PROCESS_EXPRESSION_GOLDEN_v2.json` are retained as audit-only provenance and are rejected by
+   the current loader; reproducing either would fail closed and would miss the v0.4 coverage
+   (substrate atoms, positional numeric literals, `mu=` sub-expressions, `estimand=`/`impl=`).
+   The authoritative pointer is `process_expression_contract.CURRENT_GOLDEN_BUNDLE`, and this
+   line moves with it — see `DESIGN_process_expression_generator.md` §0 for the supersession
+   procedure.
 2. **Tokenizer and generator:** implement reversible typed serialization, finite deterministic
    generation, structural templates, LOCO splits, and overlap/privacy validators.
 3. **Model core:** implement the bounded encoder, complete role-path positions, lexical numeric

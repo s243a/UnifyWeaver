@@ -401,9 +401,11 @@ Per the project convention, these land as tests rather than as prose.
 ```text
 rulings issued (#4013)          done
 this design note                done
-v0.4 implementation + seal      not started  <- gates everything below
-corpus enumeration              gated
-encoder step 2 part 2           gated
+v0.4 stages 1-3 (impl + seal)   done  — registry v0.4, bundle v3 (pec-v3), tok-v2
+v0.4 stage 4 (migration)        not started  <- gates the ship
+v0.4 stage 5 (ranking cache)    not started
+corpus enumeration              gated on ship
+encoder step 2 part 2           gated on ship
 ```
 
 Within the implementation, §3.1's couplings force an order:

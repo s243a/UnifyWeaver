@@ -1,9 +1,25 @@
 #!/usr/bin/env python3
-"""P0 of DESIGN_process_expression_*: AST, registry-driven parser, canonicalizer, verbosity cards.
+"""Registry v0.4: AST, registry-driven parser, canonicalizer, verbosity cards.
 
-Lossless process identity = canonical AST string + registry version (+ factory fingerprint,
-supplied by callers). Cards (V0-V3) are lossy renderings for conditioning only. Embedding cache
-keys bind (ast_sha, verbosity, RENDERER_VERSION, embedding revision, prefix) — never the string.
+Lossless process identity = SEMANTIC canonical AST string + registry version
+(+ factory fingerprint, supplied by callers). v0.4 splits identity per R9
+(`DESIGN_registry_v0.4.md` §10.3): ``canonical_semantic`` strips provenance
+pins and is the digest preimage for ``ast_sha``, seals, and cache keys;
+``canonical_full`` retains pins for provenance and round-trip. Cards (V0-V3)
+are lossy renderings for conditioning only. Embedding cache keys bind
+(ast_sha, verbosity, RENDERER_VERSION, embedding revision, prefix) — never the
+string — plus the pin-bearing digest at V3, the only verbosity that renders
+pins.
+
+v0.4 registry changes (rulings R1-R10, `DESIGN_registry_v0.4.md`):
+- the `source` output type splits into `substrate` (walkable structure) and
+  `judge` (mu-source); corpora register as substrate atoms;
+- `product`, `max`, `hop_decay`, `lca_frac` join the function vocabulary (R8);
+- numeric literals are legal in positional argument positions, typed by the
+  signature's declared arg kind (§10.1 flagged decision 1);
+- `mu=` takes a judge expression (R4); `estimand=` / `impl=` are enumerated,
+  fail-closed methodology kwargs (R5, R7) — the estimand names the relation,
+  never the procedure.
 """
 from __future__ import annotations
 
@@ -13,8 +29,34 @@ import json
 import math
 import re
 
-RENDERER_VERSION = "r2"
-REGISTRY_VERSION = "v0.3"
+RENDERER_VERSION = "r3"
+REGISTRY_VERSION = "v0.4"
+
+#: Versions that sealed artifacts may still cite as provenance.  A superseded
+#: version is never the digest preimage for NEW identities; it is accepted
+#: only when verifying an artifact that records it explicitly.
+SUPERSEDED_REGISTRY_VERSIONS = frozenset({"v0.3"})
+SUPERSEDED_RENDERER_VERSIONS = frozenset({"r2"})
+
+#: R7: the estimand enumeration is the RELATION vocabulary. Seven primitives
+#: plus two derived names typed by the composition rule (`compose_estimands`).
+PRIMITIVE_ESTIMANDS = frozenset(
+    {"subcategory", "super_category", "element_of", "subtopic",
+     "see_also", "assoc", "bridge"}
+)
+DERIVED_ESTIMANDS = frozenset({"ancestry", "path"})
+ESTIMANDS = PRIMITIVE_ESTIMANDS | DERIVED_ESTIMANDS
+
+#: R5: only implementations that actually exist may be registered.
+IMPLS = frozenset({"structural", "attention"})
+
+#: Process output types after the R2 split. `source` no longer exists.
+OUTPUT_TYPES = frozenset({"substrate", "judge", "score", "target-set", "pick"})
+
+#: Literal value kinds a signature may declare for kwargs or positional args.
+VALUE_KINDS = frozenset(
+    {"number", "int", "string", "number_list", "int_list", "estimand", "impl"}
+)
 
 
 @dataclass(frozen=True)
@@ -22,6 +64,7 @@ class KwSpec:
     kind: str
     default: object = None
     required: bool = False
+    doc: str = ""
 
 
 @dataclass(frozen=True)
@@ -32,12 +75,19 @@ class Signature:
     arg_types: tuple[str, ...] = ()
     variadic_arg_type: str | None = None
     kwargs: dict[str, KwSpec] = field(default_factory=dict)
-    output: str = "source"
+    output: str = "judge"
     modifiers: frozenset[str] = frozenset()
 
     @property
     def operator(self):
         return self.min_args is not None
+
+
+def _check_declared_type(declared):
+    for alternative in declared.split("|"):
+        if alternative not in OUTPUT_TYPES and alternative not in VALUE_KINDS \
+                and alternative != "process":
+            raise ValueError(f"signature declares an unknown type: {declared!r}")
 
 
 def _sig(
@@ -47,7 +97,7 @@ def _sig(
     arg_types=(),
     variadic_arg_type=None,
     kwargs=None,
-    output="source",
+    output="judge",
     modifiers=(),
 ):
     minimum, maximum = (None, None) if args is None else args
@@ -60,6 +110,14 @@ def _sig(
             raise ValueError("signature has more positional types than arguments")
         if maximum is None and variadic_arg_type is None:
             raise ValueError("unbounded signature requires a variadic positional type")
+    if output not in OUTPUT_TYPES:
+        raise ValueError(f"signature declares an unknown output type: {output!r}")
+    for declared in arg_types:
+        _check_declared_type(declared)
+    if variadic_arg_type is not None:
+        _check_declared_type(variadic_arg_type)
+    for spec in (kwargs or {}).values():
+        _check_declared_type(spec.kind)
     return Signature(
         atom=atom,
         min_args=minimum,
@@ -72,64 +130,122 @@ def _sig(
     )
 
 
+def _methodology():
+    """R5's two-axis methodology slot: what quantity, and which implementation
+    of it. Optional everywhere, enumerated, fail-closed on unknown values;
+    absence blocks deployment (`require_deployable`) without breaking parsing."""
+    return {"estimand": KwSpec("estimand"), "impl": KwSpec("impl")}
+
+
+#: R3: `decay` and `gamma` are RETENTION factors — the fraction of weight
+#: retained per hop, multiplying per hop — not loss rates.
+_RETENTION_DOC = "retention factor: fraction of weight retained per hop; multiplies per hop"
+
 # Longest-match lexing over registered names keeps dotted model names distinct
-# from modifiers. Signatures are intentionally strict: P0 process identity must
+# from modifiers. Signatures are intentionally strict: process identity must
 # fail before hashing if a factory expression has unknown or mistyped inputs.
 REGISTRY = {
-    "e5": _sig(atom=True, args=(1, 1), arg_types=("process",), output="score"),
-    "graph": _sig(atom=True, output="source", modifiers=("discrim",)),
-    "human": _sig(atom=True),
-    "luna": _sig(atom=True, modifiers=("D", "S")),
-    "sonnet": _sig(atom=True, modifiers=("lineage",)),
-    "haiku": _sig(atom=True),
-    "gpt-5.5-low": _sig(atom=True),
-    "gemini": _sig(atom=True),
-    "opus": _sig(atom=True),
+    # -- substrates (R2): walkable corpora, the structures a process walks --
+    "pearltrees": _sig(atom=True, output="substrate"),
+    "simplemind": _sig(atom=True, output="substrate"),
+    "simplewiki": _sig(atom=True, output="substrate"),
+    "fs": _sig(atom=True, output="substrate"),
+    # -- judges (R2): mu-sources. `graph` is judge-only under v0.4; its former
+    #    substrate role is carried by the real corpora above. --
+    "graph": _sig(atom=True, output="judge", modifiers=("discrim",)),
+    "human": _sig(atom=True, output="judge"),
+    "luna": _sig(atom=True, output="judge", modifiers=("D", "S")),
+    "sonnet": _sig(atom=True, output="judge", modifiers=("lineage",)),
+    "haiku": _sig(atom=True, output="judge"),
+    "gpt-5.5-low": _sig(atom=True, output="judge"),
+    "gemini": _sig(atom=True, output="judge"),
+    "opus": _sig(atom=True, output="judge"),
+    "llm": _sig(atom=True, output="judge", modifiers=("element", "subcat")),
+    # -- scorers and operators --
+    "e5": _sig(
+        atom=True,
+        args=(1, 1),
+        arg_types=("process",),
+        kwargs=_methodology(),
+        output="score",
+    ),
     "routing": _sig(
         args=(2, 2),
-        arg_types=("score", "source"),
+        arg_types=("score", "judge"),
         kwargs={
             "t": KwSpec("number_list"),
             "menus": KwSpec("int_list"),
             "manifest": KwSpec("string"),
+            **_methodology(),
         },
         output="pick",
     ),
     "pick": _sig(args=(1, 1), arg_types=("target-set",), output="pick"),
     "kalman": _sig(
         args=(2, 2),
-        arg_types=("source", "source"),
+        arg_types=("judge", "judge"),
+        kwargs=_methodology(),
         output="target-set",
     ),
     "blend": _sig(
         args=(2, None),
-        arg_types=("source", "source"),
-        variadic_arg_type="source",
-        kwargs={"w": KwSpec("number_list")},
+        arg_types=("judge", "judge"),
+        variadic_arg_type="judge",
+        kwargs={"w": KwSpec("number_list"), **_methodology()},
         output="target-set",
     ),
     "lineage": _sig(
         args=(1, 1),
-        arg_types=("source",),
+        arg_types=("substrate",),
         kwargs={
-            "decay": KwSpec("number", 0.85),
+            "mu": KwSpec("judge"),
+            "decay": KwSpec("number", 0.85, doc=_RETENTION_DOC),
             "depth": KwSpec("int"),
+            **_methodology(),
         },
         output="target-set",
     ),
-    "distill": _sig(args=(1, 1), arg_types=("score",), output="target-set"),
+    "distill": _sig(
+        args=(1, 1), arg_types=("score",), kwargs=_methodology(), output="target-set"
+    ),
     "menu": _sig(
         args=(1, 1),
-        arg_types=("source",),
+        arg_types=("judge",),
         kwargs={"n": KwSpec("int", required=True)},
         output="target-set",
     ),
     "margin": _sig(
         args=(0, 0),
-        kwargs={"t": KwSpec("number", required=True)},
+        kwargs={"t": KwSpec("number", required=True), **_methodology()},
         output="score",
     ),
-    "llm": _sig(atom=True, modifiers=("element", "subcat")),
+    # -- R8 additions: the function vocabulary the graph judge composes --
+    "product": _sig(
+        args=(2, None),
+        arg_types=("score", "score"),
+        variadic_arg_type="score",
+        kwargs=_methodology(),
+        output="score",
+    ),
+    "max": _sig(
+        args=(2, None),
+        arg_types=("number|score", "score"),
+        variadic_arg_type="score",
+        kwargs=_methodology(),
+        output="score",
+    ),
+    "hop_decay": _sig(
+        args=(1, 1),
+        arg_types=("substrate",),
+        kwargs={
+            "gamma": KwSpec("number", required=True, doc=_RETENTION_DOC),
+            **_methodology(),
+        },
+        output="score",
+    ),
+    "lca_frac": _sig(
+        args=(1, 1), arg_types=("substrate",), kwargs=_methodology(), output="score"
+    ),
 }
 _NAMES = sorted(REGISTRY, key=len, reverse=True)
 _MOD = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
@@ -142,10 +258,18 @@ class ParseError(ValueError):
     pass
 
 
+class CompositionError(ValueError):
+    """An estimand chain violates the R7 composition rules."""
+
+
+class DeploymentError(ValueError):
+    """A process is grammatical but not deployable (missing methodology)."""
+
+
 @dataclass(frozen=True)
 class Node:
     name: str
-    args: tuple = ()                 # positional child Nodes
+    args: tuple = ()                 # positional child Nodes and/or numeric literals
     kwargs: tuple = ()               # sorted (kw, value) pairs; values canonical
     mods: tuple = ()                 # dotted modifiers, in order
     pins: tuple = ()                 # provenance pins, in order
@@ -226,6 +350,11 @@ def _value_matches(kind, value):
             isinstance(value, str)
             and not any(0xD800 <= ord(character) <= 0xDFFF for character in value)
         )
+    if kind == "estimand":
+        # Fail closed: an unknown estimand is refused, never defaulted (R5/R7).
+        return isinstance(value, str) and value in ESTIMANDS
+    if kind == "impl":
+        return isinstance(value, str) and value in IMPLS
     if kind == "number_list":
         return (
             isinstance(value, tuple)
@@ -241,6 +370,26 @@ def _value_matches(kind, value):
 
 def _output_matches(expected, actual):
     return expected == "process" or expected == actual
+
+
+def _arg_matches(declared, child):
+    """A positional slot accepts what its declared type says — alternatives
+    separated by '|', each either an output type or a literal value kind
+    (§10.1 flagged decision 1: declared-type-wins, same as kwargs)."""
+    for alternative in declared.split("|"):
+        if isinstance(child, Node):
+            if (alternative == "process" or alternative in OUTPUT_TYPES) and \
+                    _output_matches(alternative, REGISTRY[child.name].output):
+                return True
+        elif alternative in VALUE_KINDS and _value_matches(alternative, child):
+            return True
+    return False
+
+
+def _describe_arg(child):
+    if isinstance(child, Node):
+        return REGISTRY[child.name].output
+    return f"literal {type(child).__name__}"
 
 
 def _validate_signature(name, called, args, kwargs, mods):
@@ -262,10 +411,10 @@ def _validate_signature(name, called, args, kwargs, mods):
                 expected = signature.variadic_arg_type
             if expected is None:
                 raise AssertionError(f"{name} signature lacks positional type {index}")
-            actual = REGISTRY[child.name].output
-            if not _output_matches(expected, actual):
+            if not _arg_matches(expected, child):
                 raise ParseError(
-                    f"{name} argument {index + 1} must be {expected}, got {actual}"
+                    f"{name} argument {index + 1} must be {expected}, "
+                    f"got {_describe_arg(child)}"
                 )
     elif not signature.atom:
         raise ParseError(f"{name} is not an atom")
@@ -277,7 +426,19 @@ def _validate_signature(name, called, args, kwargs, mods):
         spec = signature.kwargs.get(key)
         if spec is None:
             raise ParseError(f"unknown kwarg for {name}: {key}")
-        if not _value_matches(spec.kind, value):
+        if spec.kind in OUTPUT_TYPES or spec.kind == "process":
+            if not isinstance(value, Node) or not _output_matches(
+                spec.kind, REGISTRY[value.name].output
+            ):
+                raise ParseError(f"{name}.{key} must be a {spec.kind} expression")
+        elif not _value_matches(spec.kind, value):
+            if spec.kind in ("estimand", "impl"):
+                allowed = ESTIMANDS if spec.kind == "estimand" else IMPLS
+                raise ParseError(
+                    f"{name}.{key} must be one of the registered {spec.kind} "
+                    f"values {sorted(allowed)}; unknown values are refused, "
+                    f"not defaulted"
+                )
             raise ParseError(f"{name}.{key} must be {spec.kind}")
     missing = [
         key for key, spec in signature.kwargs.items()
@@ -317,8 +478,20 @@ def _parse_expr(s, i):
             kw_match = _KW.match(s, i)
             if kw_match:
                 kw = kw_match.group("name")
-                v, i = _parse_val(s, kw_match.end())
+                j = _skip_ws(s, kw_match.end())
+                if j < len(s) and (s[j].isdigit() or s[j] in '-["'):
+                    v, i = _parse_val(s, j)
+                else:
+                    # A kwarg value that is not a literal is a sub-expression
+                    # (e.g. mu=haiku); the signature decides whether that is
+                    # legal, the grammar only decides what it is.
+                    v, i = _parse_expr(s, j)
                 kwargs.append((kw, v))
+            elif s[i].isdigit() or s[i] == "-":
+                # §10.1 flagged decision 1: numeric literals are legal in
+                # positional argument positions, typed by the declared kind.
+                v, i = _parse_val(s, i)
+                args.append(v)
             else:
                 child, i = _parse_expr(s, i)
                 args.append(child)
@@ -353,7 +526,7 @@ def _parse_expr(s, i):
     # An explicitly written default is the same process as its elided form.
     defaults = {key: spec.default for key, spec in REGISTRY[name].kwargs.items()}
     kwargs = [(key, value) for key, value in kwargs if defaults.get(key) != value]
-    return Node(name, tuple(args), tuple(sorted(kwargs)), tuple(mods), tuple(pins)), i
+    return Node(name, tuple(args), tuple(sorted(kwargs, key=lambda kv: kv[0])), tuple(mods), tuple(pins)), i
 
 
 def parse(text):
@@ -364,6 +537,13 @@ def parse(text):
     if i != len(text):
         raise ParseError(f"trailing input at {i}")
     return node
+
+
+def _validate_literal(owner, value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ParseError(f"{owner} has a malformed positional literal")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ParseError(f"{owner} has a non-finite positional literal")
 
 
 def validate(node):
@@ -377,7 +557,10 @@ def validate(node):
     if not isinstance(node.mods, tuple) or not isinstance(node.pins, tuple):
         raise ParseError(f"{node.name} modifiers and pins must be tuples")
     for child in node.args:
-        validate(child)
+        if isinstance(child, Node):
+            validate(child)
+        else:
+            _validate_literal(node.name, child)
     for item in node.kwargs:
         if not (
             isinstance(item, tuple)
@@ -385,6 +568,8 @@ def validate(node):
             and isinstance(item[0], str)
         ):
             raise ParseError(f"{node.name} has a malformed kwarg")
+        if isinstance(item[1], Node):
+            validate(item[1])
     for modifier in node.mods:
         if not isinstance(modifier, str) or _MOD.fullmatch(modifier) is None:
             raise ParseError(f"{node.name} has a malformed modifier")
@@ -406,6 +591,8 @@ def _render_val(v):
         return repr(v)
     if isinstance(v, str):
         return json.dumps(v, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(v, Node):
+        raise ValueError("node values render through the canonicalizer, not _render_val")
     return str(v)
 
 
@@ -415,12 +602,17 @@ def _validate_verbosity(verbosity):
 
 
 def render(node, verbosity=3):
-    """V1: names+structure, kwargs elided. V2: + non-default kwargs. V3: + pins. V0: ''. Lossless
-    canonical = V3 plus default kwargs made explicit (identity string)."""
+    """V1: names+structure, kwargs elided. V2: + non-default kwargs. V3: + pins. V0: ''.
+    Lossless canonical = ``canonical_full`` (identity digests use
+    ``canonical_semantic``, which strips pins)."""
     validate(node)
     _validate_verbosity(verbosity)
     if verbosity == 0:
         return ""
+
+    def _value(v):
+        return render(v, verbosity) if isinstance(v, Node) else _render_val(v)
+
     kw = ""
     if verbosity >= 2:
         defaults = {
@@ -428,8 +620,11 @@ def render(node, verbosity=3):
         }
         kept = [(k, v) for k, v in node.kwargs if defaults.get(k) != v]
         if kept:
-            kw = ("," if node.args else "") + ",".join(f"{k}={_render_val(v)}" for k, v in kept)
-    inner = ",".join(render(a, verbosity) for a in node.args)
+            kw = ("," if node.args else "") + ",".join(f"{k}={_value(v)}" for k, v in kept)
+    inner = ",".join(
+        render(a, verbosity) if isinstance(a, Node) else _render_val(a)
+        for a in node.args
+    )
     called = bool(node.args or kw) or (
         REGISTRY[node.name].operator and not REGISTRY[node.name].atom
     )
@@ -440,34 +635,139 @@ def render(node, verbosity=3):
     return s
 
 
-def canonical(node):
-    """Lossless identity string: V3 rendering with ALL kwargs explicit (defaults resolved)."""
-    validate(node)
+def _canonical(node, keep_pins):
     defaults = {
         key: spec.default for key, spec in REGISTRY[node.name].kwargs.items()
     }
     kws = dict(defaults)
     kws.update(dict(node.kwargs))
-    kw = ",".join(f"{k}={_render_val(v)}" for k, v in sorted(kws.items()) if v is not None)
-    inner = ",".join(canonical(a) for a in node.args)
+
+    def _value(v):
+        return _canonical(v, keep_pins) if isinstance(v, Node) else _render_val(v)
+
+    kw = ",".join(f"{k}={_value(v)}" for k, v in sorted(kws.items()) if v is not None)
+    inner = ",".join(_value(a) for a in node.args)
     body = ",".join(x for x in (inner, kw) if x)
     s = node.name + (f"({body})" if body else "")
-    return s + "".join("." + m for m in node.mods) + "".join("@" + p for p in node.pins)
+    s += "".join("." + m for m in node.mods)
+    if keep_pins:
+        s += "".join("@" + p for p in node.pins)
+    return s
+
+
+def canonical_semantic(node):
+    """The SEMANTIC identity string: V3-with-resolved-defaults, pins stripped
+    at every node. This is the digest preimage for ``ast_sha``, seals, and
+    cache keys (R9 §10.3): two derivations of the same precise AST share
+    semantic identity, so a pin can never mint a new process."""
+    validate(node)
+    return _canonical(node, keep_pins=False)
+
+
+def canonical_full(node):
+    """The provenance string: semantic form plus pins, for round-trip and
+    audit. Never a digest preimage for semantic identity."""
+    validate(node)
+    return _canonical(node, keep_pins=True)
+
+
+def canonical(node):
+    """Back-compat name for the lossless round-trip string (= canonical_full).
+    Identity digests use ``canonical_semantic``."""
+    return canonical_full(node)
 
 
 def ast_sha(node):
     return hashlib.sha256(
-        (REGISTRY_VERSION + "|" + canonical(node)).encode()).hexdigest()[:16]
+        (REGISTRY_VERSION + "|" + canonical_semantic(node)).encode()).hexdigest()[:16]
 
 
 def embedding_cache_key(node, verbosity, e5_revision, prefix="passage"):
     _validate_verbosity(verbosity)
-    return hashlib.sha256("|".join(
-        [ast_sha(node), str(verbosity), RENDERER_VERSION, e5_revision, prefix]
-    ).encode()).hexdigest()[:16]
+    parts = [ast_sha(node), str(verbosity), RENDERER_VERSION, e5_revision, prefix]
+    if verbosity >= 3:
+        # V3 is the only verbosity that renders pins, and pins are outside
+        # ast_sha under v0.4 — bind the pin-bearing canonical so two pin
+        # variants of one semantic process cannot share a V3 card embedding.
+        parts.append(
+            hashlib.sha256(
+                (REGISTRY_VERSION + "|" + canonical_full(node)).encode()
+            ).hexdigest()[:16]
+        )
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
 
-# Registry of CURRENT processes (P0 exit requirement)
+def compose_estimands(steps):
+    """Type a relation chain per R7. Chains are written ITEM-FIRST (the first
+    step leaves the item, later steps continue upward/downward through the
+    hierarchy). Returns the composite estimand:
+
+    - a single primitive composes to itself;
+    - `element_of` may appear only as the item-end step (index 0) and survives
+      descent (`element_of ∘ subcategory ⇒ element_of`);
+    - `subtopic` and `subcategory` compose interchangeably — the label is
+      curational, the graph relation is primary;
+    - `bridge` is transparent to typing;
+    - a monotone composition types as `ancestry`; any mixed-direction
+      composition types as `path`;
+    - `assoc` and `see_also` are excluded from chains entirely.
+    """
+    if not isinstance(steps, (list, tuple)) or not steps:
+        raise CompositionError("an estimand chain must be a nonempty sequence")
+    for step in steps:
+        if step not in PRIMITIVE_ESTIMANDS:
+            raise CompositionError(
+                f"chain step must be a primitive estimand, got {step!r}"
+            )
+        if step in ("assoc", "see_also"):
+            raise CompositionError(
+                f"{step} is non-transitive and excluded from chains (R7)"
+            )
+    for index, step in enumerate(steps):
+        if step == "element_of" and index != 0:
+            raise CompositionError(
+                "element_of terminates a chain at the item end; membership is "
+                "not transitive through membership (R7)"
+            )
+    typed = [step for step in steps if step != "bridge"]
+    if not typed:
+        return "bridge"
+    directions = {
+        "up" if step in ("subcategory", "subtopic", "element_of") else "down"
+        for step in typed
+    }
+    if len(directions) > 1:
+        return "path"
+    if len(typed) == 1:
+        return typed[0]
+    if typed[0] == "element_of":
+        return "element_of"
+    return "ancestry"
+
+
+def require_deployable(node):
+    """Deployment gate (test obligation 4): a process may not deploy without a
+    stated `estimand=` on its root. Ordinary registered defaults (`decay=0.85`)
+    keep working — only the methodology slot fails closed on absence. `impl=`
+    stays optional: it is a selection constraint, not identity (R9)."""
+    validate(node)
+    signature = REGISTRY[node.name]
+    if "estimand" not in signature.kwargs:
+        raise DeploymentError(
+            f"{node.name} has no estimand slot and cannot state its methodology"
+        )
+    if dict(node.kwargs).get("estimand") is None:
+        raise DeploymentError(
+            f"{node.name} does not state estimand=; absence is unresolved, "
+            f"not a default (R5)"
+        )
+    return node
+
+
+# Registry of CURRENT processes. The eight v0.3 survivors re-spell unchanged
+# (their judge arguments re-type registry-side). `lineage-graph` is retired per
+# §10.1 — the stage-4 migration manifest owns its history — and two additions
+# exercise the new vocabulary.
 PROCESSES = {
     "e5-auto": "e5(margin(t=0.03))",
     "haiku-n10": "e5(routing(e5,haiku,t=[0.02],menus=[10]))",
@@ -476,6 +776,13 @@ PROCESSES = {
     "kalman-fused": "kalman(luna.D,luna.S)",
     "blend": "blend(luna.D,luna.S)",
     "dir-blend": "blend(graph.discrim,llm.element,llm.subcat)",
-    "lineage-graph": "lineage(graph,decay=0.85)",
     "distill-3tier": "distill(e5(routing(e5,sonnet.lineage,t=[0.02,0.03],menus=[10,20])))",
+    # R8: the graph judge, max(floor, gamma^hops * lca_frac), estimand `path` —
+    # parameters are the prototype's measured defaults (gamma 0.6, floor 0.02).
+    "graph-judge": (
+        'max(0.02,product(hop_decay(simplemind,gamma=0.6),'
+        'lca_frac(simplemind)),estimand="path")'
+    ),
+    # R4's own example: lineage over a real substrate with an explicit mu-source.
+    "lineage-haiku": 'lineage(pearltrees,mu=haiku,estimand="ancestry")',
 }

@@ -35,12 +35,15 @@ from typing import Any, Mapping
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from process_cards import REGISTRY_VERSION, canonical, parse, validate
+from process_cards import REGISTRY_VERSION, canonical_semantic, parse, validate
 
-#: The digest convention frozen by ``PROTOCOL_process_expression_p1.md``.
+#: The digest convention frozen by ``PROTOCOL_process_expression_p1.md``,
+#: preserved in shape.  Under registry v0.4 the canonical identity string is
+#: the SEMANTIC form — pins stripped (R9, ``DESIGN_registry_v0.4.md`` §10.3) —
+#: so a provenance pin can never mint a new process identity.
 IDENTITY_DIGEST_ALGORITHM = "sha256"
 IDENTITY_DIGEST_HEX_LENGTH = 64
-IDENTITY_PREIMAGE = "REGISTRY_VERSION|canonical_identity_string"
+IDENTITY_PREIMAGE = "REGISTRY_VERSION|canonical_semantic_identity_string"
 
 _HEX64 = re.compile(r"\A[0-9a-f]{64}\Z")
 _COMPACT_HEX = re.compile(r"\A[0-9a-f]{16}\Z")
@@ -51,10 +54,16 @@ class ProcessIdentityError(ValueError):
 
 
 def canonical_identity_string(node) -> str:
-    """The lossless V3-plus-resolved-defaults rendering used for identity."""
+    """The pin-free semantic rendering used for identity (R9).
+
+    Resolved defaults are explicit; pins are stripped at every node, so two
+    derivations of the same precise AST share identity regardless of which
+    audit pins each carries.  The pin-bearing form lives in
+    ``process_cards.canonical_full`` and is provenance, never identity.
+    """
 
     validate(node)
-    return canonical(node)
+    return canonical_semantic(node)
 
 
 def canonical_identity_bytes(node) -> bytes:

@@ -53,8 +53,9 @@ from process_identity import (
     verify_identity_record,
 )
 
-GOLDEN_PATH = ROOT / "PROCESS_EXPRESSION_GOLDEN_v2.json"
+GOLDEN_PATH = ROOT / "PROCESS_EXPRESSION_GOLDEN_v3.json"
 SUPERSEDED_GOLDEN_PATH = ROOT / "PROCESS_EXPRESSION_GOLDEN_v1.json"
+SUPERSEDED_GOLDEN_V2_PATH = ROOT / "PROCESS_EXPRESSION_GOLDEN_v2.json"
 SPEC_SHA = "a" * 64
 
 
@@ -74,12 +75,12 @@ def test_full_digest_matches_the_frozen_p1_convention():
 
     for expression in PROCESSES.values():
         assert full_ast_digest_for_expression(expression) == _full_process_digest(
-            expression
+            expression, REGISTRY_VERSION
         )
 
 
 def test_compact_ast_sha_is_a_prefix_but_not_an_identity():
-    node = pc.parse("lineage(graph,decay=0.85)")
+    node = pc.parse("lineage(pearltrees,decay=0.85)")
     full = full_ast_digest(node)
     compact = pc.ast_sha(node)
     assert len(full) == 64 and len(compact) == 16
@@ -106,7 +107,7 @@ def test_deployed_identity_requires_a_factory_fingerprint():
 
 
 def test_identity_record_is_recomputed_from_its_own_bytes():
-    node = pc.parse("lineage(graph,decay=0.85)")
+    node = pc.parse("lineage(pearltrees,decay=0.85)")
     record = deployed_identity(node, factory_fingerprint="f").as_record()
 
     tampered = dict(record, full_process_digest="0" * 64)
@@ -114,7 +115,7 @@ def test_identity_record_is_recomputed_from_its_own_bytes():
         verify_identity_record(tampered)
 
     # A non-canonical spelling of the same process is rejected, not normalized.
-    noncanonical = dict(record, canonical_identity_string="lineage(graph)")
+    noncanonical = dict(record, canonical_identity_string="lineage(pearltrees)")
     with pytest.raises(ProcessIdentityError, match="not canonical"):
         verify_identity_record(noncanonical)
 
@@ -167,27 +168,28 @@ def test_resolved_kwargs_match_the_canonical_identity_string():
 
     for expression in list(PROCESSES.values()) + [
         "menu(graph,n=10)",
-        "lineage(graph)",
-        "lineage(graph,decay=0.85)",
+        "lineage(pearltrees)",
+        "lineage(pearltrees,decay=0.85)",
     ]:
         node = pc.parse(expression)
         resolved = resolve(node)
-        rendered = ",".join(
-            f"{kw.key}={pc._render_val(kw.value)}" for kw in resolved.kwargs
-        )
-        # Every resolved kwarg appears verbatim in the identity string.
-        for part in filter(None, rendered.split(",")):
-            assert part in pc.canonical(node)
+        for kw in resolved.kwargs:
+            if isinstance(kw.value, pec.ResolvedNode):
+                # Node-valued kwargs render through the canonicalizer.
+                assert f"{kw.key}=" in pc.canonical(node)
+                continue
+            # Every resolved kwarg appears verbatim in the identity string.
+            assert f"{kw.key}={pc._render_val(kw.value)}" in pc.canonical(node)
 
 
 def test_elided_default_resolves_to_the_same_process():
     """An explicitly written default is the same process as its elided form."""
 
-    bare = resolve_expression("lineage(graph)")
-    explicit = resolve_expression("lineage(graph,decay=0.85)")
+    bare = resolve_expression("lineage(pearltrees)")
+    explicit = resolve_expression("lineage(pearltrees,decay=0.85)")
     assert bare == explicit
-    assert full_ast_digest_for_expression("lineage(graph)") == (
-        full_ast_digest_for_expression("lineage(graph,decay=0.85)")
+    assert full_ast_digest_for_expression("lineage(pearltrees)") == (
+        full_ast_digest_for_expression("lineage(pearltrees,decay=0.85)")
     )
 
 
@@ -212,7 +214,7 @@ def test_variadic_positional_types_resolve():
     resolved = resolve_expression("blend(luna.D,luna.S,graph)")
     tokens = token_stream(resolved)
     paths = role_paths(tokens)
-    assert "ARG(2,source)" in paths  # third arg uses the variadic type
+    assert "ARG(2,judge)" in paths  # third arg uses the variadic type
 
 
 def test_non_finite_and_unsupported_literals_fail_closed():
@@ -245,19 +247,19 @@ EXPECTED_LINEAGE_STREAM = [
     "<OUTPUT:target-set>\tROOT",
     "<ARGS>\tROOT",
     "<ARG:0>\tROOT",
-    "<NODE>\tARG(0,source)",
-    "<KIND:atom>\tARG(0,source)",
-    "<NAME:graph>\tARG(0,source)",
-    "<OUTPUT:source>\tARG(0,source)",
-    "<ARGS>\tARG(0,source)",
-    "</ARGS>\tARG(0,source)",
-    "<KWARGS>\tARG(0,source)",
-    "</KWARGS>\tARG(0,source)",
-    "<MODS>\tARG(0,source)",
-    "</MODS>\tARG(0,source)",
-    "<PINS>\tARG(0,source)",
-    "</PINS>\tARG(0,source)",
-    "</NODE>\tARG(0,source)",
+    "<NODE>\tARG(0,substrate)",
+    "<KIND:atom>\tARG(0,substrate)",
+    "<NAME:pearltrees>\tARG(0,substrate)",
+    "<OUTPUT:substrate>\tARG(0,substrate)",
+    "<ARGS>\tARG(0,substrate)",
+    "</ARGS>\tARG(0,substrate)",
+    "<KWARGS>\tARG(0,substrate)",
+    "</KWARGS>\tARG(0,substrate)",
+    "<MODS>\tARG(0,substrate)",
+    "</MODS>\tARG(0,substrate)",
+    "<PINS>\tARG(0,substrate)",
+    "</PINS>\tARG(0,substrate)",
+    "</NODE>\tARG(0,substrate)",
     "</ARG>\tROOT",
     "</ARGS>\tROOT",
     "<KWARGS>\tROOT",
@@ -280,7 +282,7 @@ EXPECTED_LINEAGE_STREAM = [
 
 
 def test_worked_example_matches_the_hand_written_stream():
-    assert _stream("lineage(graph,decay=0.85)") == EXPECTED_LINEAGE_STREAM
+    assert _stream("lineage(pearltrees,decay=0.85)") == EXPECTED_LINEAGE_STREAM
     # "0.85" is the canonicalizer's own lexical form, byte for byte.
     assert bytes(
         int(line.split("\t")[0][7:], 16)
@@ -328,7 +330,7 @@ def test_sibling_swap_changes_the_path_and_the_stream():
     left = _stream("kalman(luna.D,luna.S)")
     right = _stream("kalman(luna.S,luna.D)")
     assert left != right
-    assert "ARG(0,source)" in role_paths(
+    assert "ARG(0,judge)" in role_paths(
         token_stream(resolve_expression("kalman(luna.D,luna.S)"))
     )
 
@@ -361,7 +363,7 @@ def test_kwarg_roles_use_the_registry_key_and_value_type():
 
 def test_modifiers_and_pins_have_ordered_roles():
     paths = role_paths(
-        token_stream(resolve_expression("lineage(graph,decay=0.85)@run/2026-07-25"))
+        token_stream(resolve_expression("lineage(pearltrees,decay=0.85)@run/2026-07-25"))
     )
     assert any(path.startswith("PIN(0)") for path in paths)
     mods = role_paths(token_stream(resolve_expression("llm.element")))
@@ -369,7 +371,7 @@ def test_modifiers_and_pins_have_ordered_roles():
 
 
 def test_registry_currently_caps_modifiers_at_one_per_node():
-    """``MOD(index>0)`` is schema-legal but unreachable under registry v0.3.
+    """``MOD(index>0)`` is schema-legal but unreachable under registry v0.4.
 
     The role schema keeps ordered ``MOD(index)`` because the grammar could
     relax this later; recording the current cap here means the step-2 envelope
@@ -379,7 +381,8 @@ def test_registry_currently_caps_modifiers_at_one_per_node():
     def walk(node):
         yield node
         for child in node.args:
-            yield from walk(child)
+            if isinstance(child, pc.Node):
+                yield from walk(child)
 
     with pytest.raises(pc.ParseError, match="at most one modifier"):
         pc.parse("llm.element.subcat")
@@ -446,6 +449,10 @@ def test_golden_fixture_verifies_and_covers_the_required_shapes():
         "menu-required-int",
         "blend-variadic",
         "neg-number",
+        "substrate-atom",
+        "numeric-positional-literal",
+        "mu-judge-kwarg",
+        "estimand-impl",
     ):
         assert required in names, required
 
@@ -477,23 +484,26 @@ def test_golden_detects_a_row_recomputed_differently():
         verify_golden(document)
 
 
-def test_superseded_v1_bundle_is_retained_and_fails_closed():
+def test_superseded_bundles_are_retained_and_fail_closed():
     """A contract change creates a new bundle; it never mutates a sealed one.
 
-    pec-v1 stays on disk as the sealed artifact it was.  Because scalar literals
-    now carry their declared registry kind, it is loadable but no longer valid
-    under the current contract — which is the designed behavior, not clutter.
+    pec-v1 and pec-v2 stay on disk as the sealed artifacts they were.  Both
+    record the retired ``…golden.v1`` row schema, so the current loader
+    rejects them at the schema layer before any version check — designed
+    behavior, not clutter.
     """
 
-    assert SUPERSEDED_GOLDEN_PATH.exists()
-    with pytest.raises(ContractError, match="different contract version"):
-        load_golden(SUPERSEDED_GOLDEN_PATH)
-
-    superseded = json.loads(SUPERSEDED_GOLDEN_PATH.read_text(encoding="utf-8"))
-    assert superseded["contract_version"] == "pec-v1"
-    # No pec-v1 row was affected by the fix, which is exactly why pec-v2 had to
-    # add explicit coverage for an integer-spelled `number`.
-    assert not any(row["name"].startswith("int-spelled") for row in superseded["rows"])
+    for path, version in (
+        (SUPERSEDED_GOLDEN_PATH, "pec-v1"),
+        (SUPERSEDED_GOLDEN_V2_PATH, "pec-v2"),
+    ):
+        assert path.exists()
+        with pytest.raises(ContractError, match="unsupported golden fixture schema"):
+            load_golden(path)
+        superseded = json.loads(path.read_text(encoding="utf-8"))
+        assert superseded["contract_version"] == version
+        # Sealed under registry v0.3 — the registry the current parser retired.
+        assert superseded["registry_version"] == "v0.3"
 
 
 def test_superseded_bundle_integrity_is_pinned_independently():
@@ -522,7 +532,7 @@ def test_superseded_bundle_integrity_is_pinned_independently():
     # an intact one through the loader alone.
     corrupted = json.loads(SUPERSEDED_GOLDEN_PATH.read_text(encoding="utf-8"))
     corrupted["rows"][0]["tokens"][0] = "<CORRUPTED>\tROOT"
-    with pytest.raises(ContractError, match="different contract version"):
+    with pytest.raises(ContractError, match="unsupported golden fixture schema"):
         verify_golden(corrupted)
 
 
@@ -545,7 +555,7 @@ def test_committed_bundle_is_reproducible_from_the_module_alone():
     rebuilt = build_golden(cases)
     committed = load_golden(GOLDEN_PATH)
     assert rebuilt["golden_sha256"] == committed["golden_sha256"]
-    assert len(rebuilt["rows"]) == len(committed["rows"]) == 20
+    assert len(rebuilt["rows"]) == len(committed["rows"]) == 25
 
 
 def test_declared_registry_kind_wins_over_the_runtime_value_type():
@@ -581,12 +591,12 @@ def test_golden_is_reproducible():
 # --------------------------------------------------------------------------
 
 
-def test_p0_behavior_is_unchanged():
-    """Step 1 adds contracts; it does not alter existing card behavior."""
+def test_card_behavior_is_stable_for_surviving_processes():
+    """The v0.4 split changes types and identity, not card mechanics."""
 
-    node = pc.parse("lineage(graph,decay=0.85)")
+    node = pc.parse("lineage(pearltrees,decay=0.85)")
     assert len(pc.ast_sha(node)) == 16
     assert pc.render(node, verbosity=0) == ""
-    assert pc.render(node, verbosity=3) == "lineage(graph)"
-    assert pc.canonical(node) == "lineage(graph,decay=0.85)"
+    assert pc.render(node, verbosity=3) == "lineage(pearltrees)"
+    assert pc.canonical(node) == "lineage(pearltrees,decay=0.85)"
     assert len(pc.embedding_cache_key(node, 3, "rev")) == 16

@@ -35,7 +35,15 @@ from typing import Any, Iterator, Mapping, Sequence
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from process_cards import REGISTRY, Node, canonical, parse, validate
+from process_cards import (
+    OUTPUT_TYPES,
+    REGISTRY,
+    VALUE_KINDS,
+    Node,
+    canonical,
+    parse,
+    validate,
+)
 from process_expression_contract import (
     CONTRACT_VERSION,
     ContractError,
@@ -46,7 +54,15 @@ from process_expression_contract import (
 
 #: Bumped when the ID assignment changes.  Independent of CONTRACT_VERSION,
 #: which tracks the structure those IDs are assigned to.
-VOCAB_VERSION = "tok-v1"
+#:
+#: tok-v2 (registry v0.4 / pec-v3): the vocabulary is registry-derived, and
+#: the registry moved — corpus substrate names joined, `<OUTPUT:source>`
+#: ceased to exist in favor of `<OUTPUT:substrate>`/`<OUTPUT:judge>`, the
+#: `mu=`/`estimand=`/`impl=`/`gamma=` kwarg keys arrived, and the enumerated
+#: methodology kinds gained their own value fences.  The decoder additionally
+#: accepts positional literals inside `<ARG:i>` fences and node-valued kwargs
+#: inside `<KW:…>` fences.
+VOCAB_VERSION = "tok-v2"
 
 #: Bounds the indexed structural tokens.  Deliberately wider than the measured
 #: envelope (arity 3, list length 2, one modifier, no pins) so the vocabulary
@@ -86,6 +102,8 @@ def _vocabulary_terms() -> list[str]:
         "<INT>", "</INT>",
         "<NUMBER>", "</NUMBER>",
         "<STRING>", "</STRING>",
+        "<ESTIMAND>", "</ESTIMAND>",
+        "<IMPL>", "</IMPL>",
         "</ARG>", "</KW>", "</ITEM>", "</MOD>", "</PIN>",
     ]
     terms += ["<KIND:atom>", "<KIND:apply>"]
@@ -229,7 +247,9 @@ def _controlled(fn, description: str):
 
 def _value_from(kind: str, payload: bytes) -> Any:
     text = _controlled(lambda: payload.decode("utf-8"), "utf-8 value payload")
-    if kind == "string":
+    if kind in ("string", "estimand", "impl"):
+        # Enumeration membership for estimand/impl is enforced by validate()
+        # at the end of decoding — fail-closed there, not silently here.
         return text
     if kind == "int":
         return _controlled(lambda: int(text), "integer payload")
@@ -259,7 +279,9 @@ def _decode_value(cursor: _Cursor, kind: str) -> Any:
 
     opener = cursor.take()
     mapping = {"<INT>": ("int", "</INT>"), "<NUMBER>": ("number", "</NUMBER>"),
-               "<STRING>": ("string", "</STRING>")}
+               "<STRING>": ("string", "</STRING>"),
+               "<ESTIMAND>": ("estimand", "</ESTIMAND>"),
+               "<IMPL>": ("impl", "</IMPL>")}
     if opener not in mapping:
         raise TokenizerError(f"expected a value token, got {opener}")
     tagged_kind, closing = mapping[opener]
@@ -269,6 +291,41 @@ def _decode_value(cursor: _Cursor, kind: str) -> Any:
             f"stream declares {tagged_kind!r} for a field registered {kind!r}"
         )
     return _value_from(kind, _take_payload(cursor, closing))
+
+
+_VALUE_OPENERS = {
+    "<INT>": "int",
+    "<NUMBER>": "number",
+    "<STRING>": "string",
+    "<ESTIMAND>": "estimand",
+    "<IMPL>": "impl",
+}
+
+
+def _decode_positional_value(cursor: _Cursor, signature, index: int) -> Any:
+    """Decode a literal in a positional slot under the declared arg kind.
+
+    The declared type may be a union (``number|score``); the literal must
+    match its single value-kind alternative, and the stream's own tag must
+    agree with it — same declared-kind-wins rule kwarg values follow.
+    """
+
+    if index < len(signature.arg_types):
+        declared = signature.arg_types[index]
+    elif signature.variadic_arg_type is not None:
+        declared = signature.variadic_arg_type
+    else:
+        raise TokenizerError(f"positional argument {index} has no registered type")
+    kinds = [alt for alt in declared.split("|") if alt in VALUE_KINDS]
+    if len(kinds) != 1:
+        raise TokenizerError(
+            f"positional literal at {index} needs exactly one declared value "
+            f"kind, got {declared!r}"
+        )
+    opener = cursor.peek()
+    if opener != "<LIST>" and _VALUE_OPENERS.get(opener) is None:
+        raise TokenizerError(f"expected <NODE> or a value token, got {opener}")
+    return _decode_value(cursor, kinds[0])
 
 
 def _decode_node(cursor: _Cursor) -> Node:
@@ -290,7 +347,13 @@ def _decode_node(cursor: _Cursor) -> Node:
         index = int(_tagged(cursor.take(), "<ARG:"))
         if index != len(args):
             raise TokenizerError("argument indices must be contiguous")
-        args.append(_decode_node(cursor))
+        if cursor.peek() == "<NODE>":
+            args.append(_decode_node(cursor))
+        else:
+            # tok-v2: a positional literal inside the ARG fence, typed by the
+            # signature's declared kind for this slot — never by the stream
+            # alone.
+            args.append(_decode_positional_value(cursor, signature, index))
         cursor.expect("</ARG>")
 
     cursor.expect("<KWARGS>")
@@ -300,7 +363,12 @@ def _decode_node(cursor: _Cursor) -> Node:
         spec = signature.kwargs.get(key)
         if spec is None:
             raise TokenizerError(f"unknown kwarg for {name}: {key}")
-        kwargs.append((key, _decode_value(cursor, spec.kind)))
+        if spec.kind in OUTPUT_TYPES or spec.kind == "process":
+            # tok-v2: a node-valued kwarg (mu=haiku) is a whole node inside
+            # the KW fence; validate() holds its output to the declared kind.
+            kwargs.append((key, _decode_node(cursor)))
+        else:
+            kwargs.append((key, _decode_value(cursor, spec.kind)))
         cursor.expect("</KW>")
 
     cursor.expect("<MODS>")
@@ -323,7 +391,15 @@ def _decode_node(cursor: _Cursor) -> Node:
 
     cursor.expect("</NODE>")
 
-    node = Node(name, tuple(args), tuple(sorted(kwargs)), tuple(mods), tuple(pins))
+    # Sort by key only: kwarg values may be Nodes under tok-v2, and a
+    # duplicate-key stream must fail in validate(), not in a tuple comparison.
+    node = Node(
+        name,
+        tuple(args),
+        tuple(sorted(kwargs, key=lambda kv: kv[0])),
+        tuple(mods),
+        tuple(pins),
+    )
     # KIND is derived, so it must agree with what the registry implies rather
     # than being taken on the stream's word (§3.1).
     implied = "apply" if (node.args or node.kwargs) or (

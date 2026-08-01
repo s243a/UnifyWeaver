@@ -45,10 +45,10 @@ def test_dotted_and_hyphen_dot_names():
 
 
 def test_canonical_resolves_defaults_and_is_lossless():
-    a = parse("lineage(graph)")
-    b = parse("lineage(graph,decay=0.85)")
+    a = parse("lineage(pearltrees)")
+    b = parse("lineage(pearltrees,decay=0.85)")
     assert canonical(a) == canonical(b) and ast_sha(a) == ast_sha(b)
-    assert render(a, 1) == "lineage(graph)"                  # V1 elides kwargs entirely
+    assert render(a, 1) == "lineage(pearltrees)"             # V1 elides kwargs entirely
     assert "decay=0.85" in canonical(a)                      # identity keeps resolved defaults
 
 
@@ -114,14 +114,14 @@ def test_strings_and_whitespace_round_trip_without_content_loss():
 
 
 def test_float_canonicalization_is_lossless_and_collision_resistant():
-    first = parse("lineage(graph,decay=0.12345671)")
-    second = parse("lineage(graph,decay=0.12345672)")
+    first = parse("lineage(fs,decay=0.12345671)")
+    second = parse("lineage(fs,decay=0.12345672)")
     assert canonical(first) != canonical(second)
     assert ast_sha(first) != ast_sha(second)
     for expression in (
-        "lineage(graph,decay=1.0000001)",
-        "lineage(graph,decay=1234567.1)",
-        "lineage(graph,decay=1e-12)",
+        "lineage(fs,decay=1.0000001)",
+        "lineage(fs,decay=1234567.1)",
+        "lineage(fs,decay=1e-12)",
     ):
         node = parse(expression)
         assert parse(render(node, 3)) == node
@@ -130,7 +130,7 @@ def test_float_canonicalization_is_lossless_and_collision_resistant():
 
 def test_nonfinite_numeric_input_fails_closed():
     with pytest.raises(ParseError, match="non-finite"):
-        parse("lineage(graph,decay=1e9999)")
+        parse("lineage(fs,decay=1e9999)")
 
 
 def test_invalid_unicode_string_fails_before_identity_hashing():
@@ -170,8 +170,8 @@ def test_programmatic_nodes_are_validated_before_render_or_hash():
 
 
 def test_registry_is_versioned_and_has_typed_signatures():
-    assert REGISTRY_VERSION == "v0.3"
-    assert RENDERER_VERSION == "r2"
-    assert REGISTRY["routing"].arg_types == ("score", "source")
+    assert REGISTRY_VERSION == "v0.4"
+    assert RENDERER_VERSION == "r3"
+    assert REGISTRY["routing"].arg_types == ("score", "judge")
     assert REGISTRY["routing"].kwargs["manifest"].kind == "string"
     assert REGISTRY["routing"].output == "pick"
