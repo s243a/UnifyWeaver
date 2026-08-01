@@ -3,6 +3,8 @@
 % Usage: swipl -g run_tests -t halt tests/test_wam_rust_target.pl
 
 :- use_module('../src/unifyweaver/targets/wam_rust_target').
+:- use_module('../src/unifyweaver/targets/wam_llvm_target',
+              [builtin_op_to_id/2]).
 :- use_module('../src/unifyweaver/targets/wam_rust_lowered_emitter',
               [lower_predicate_to_rust/4]).
 :- use_module('../src/unifyweaver/targets/rust_target').
@@ -602,6 +604,56 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, 'bind_compiled_parse_atom')
     ->  pass(Test)
     ;   fail_test(Test, 'Missing builtin dispatch cases')
+    ).
+
+rust_string_literal(Atom, Literal) :-
+    atom_codes(Atom, Codes),
+    rust_escape_string_codes(Codes, Escaped),
+    append([34|Escaped], [34], LiteralCodes),
+    atom_codes(Literal, LiteralCodes).
+
+rust_escape_string_codes([], []).
+rust_escape_string_codes([92|Codes], [92,92|Escaped]) :- !,
+    rust_escape_string_codes(Codes, Escaped).
+rust_escape_string_codes([34|Codes], [92,34|Escaped]) :- !,
+    rust_escape_string_codes(Codes, Escaped).
+rust_escape_string_codes([Code|Codes], [Code|Escaped]) :-
+    rust_escape_string_codes(Codes, Escaped).
+
+rust_dispatch_literal(Code, Literal) :-
+    sub_atom(Code, Before, Length, _, Literal),
+    After is Before + Length,
+    sub_atom(Code, After, _, 0, Tail),
+    atom_codes(Tail, TailCodes),
+    drop_rust_whitespace(TailCodes, DispatchCodes),
+    ( DispatchCodes = [124|_]
+    ; DispatchCodes = [61,62|_]
+    ), !.
+
+drop_rust_whitespace([Code|Codes], Rest) :-
+    memberchk(Code, [9,10,13,32]), !,
+    drop_rust_whitespace(Codes, Rest).
+drop_rust_whitespace(Codes, Codes).
+
+test_llvm_builtin_registry_parity :-
+    Test = 'WAM-Rust: dispatch covers the LLVM builtin registry',
+    compile_wam_helpers_to_rust([], Code),
+    findall(Op,
+            ( builtin_op_to_id(Op, Id),
+              Id =\= 200
+            ),
+            Ops0),
+    sort(Ops0, Ops),
+    findall(Op,
+            ( member(Op, Ops),
+              rust_string_literal(Op, Literal),
+              \+ rust_dispatch_literal(Code, Literal)
+            ),
+            Missing),
+    (   Missing == []
+    ->  pass(Test)
+    ;   format('[INFO] Missing Rust builtin dispatch literals: ~q~n', [Missing]),
+        fail_test(Test, 'LLVM builtin registry entries are missing from Rust')
     ).
 
 test_predicate_wrapper :-
@@ -2390,6 +2442,7 @@ run_tests :-
     test_full_runtime_generation,
     test_all_instruction_arms,
     test_builtin_dispatch,
+    test_llvm_builtin_registry_parity,
     test_predicate_wrapper,
     test_foreign_spec_wrapper_generation,
     test_recursive_kernel_ir_selection,

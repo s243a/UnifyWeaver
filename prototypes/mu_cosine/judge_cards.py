@@ -113,3 +113,26 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# --- R10 refinement (registry v0.4, encoder-side note): prompt-text cards ----------------
+# For LLM judges whose ACTUAL harness prompt is on record, the card becomes identity line +
+# the prompt text itself — a genuine low-fidelity function channel (the prompt IS the
+# function; the model line keeps same-prompt judges distinguishable). Judges without a
+# recorded prompt keep their descriptive card (truthful metadata only — never guess).
+# e5-small truncates ~512 tokens; the prompt head carries the task semantics, so truncation
+# keeps the discriminative part. Descriptive CARDS stay the default everywhere.
+ROUTED_PROMPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "ROUTED_JUDGE_PROMPT_three_tier_v1.md")
+CAMPAIGN_PROMPT_PATH = os.path.expanduser("~/mu_data/sonnet_smoke_prompt.txt")
+
+def prompt_text_cards():
+    cards = dict(JUDGE_CARDS)
+    routed = open(ROUTED_PROMPT_PATH, encoding="utf-8").read().strip()
+    camp = open(CAMPAIGN_PROMPT_PATH, encoding="utf-8").read()
+    camp = camp.split("PAIRS:")[0].strip()          # instructions only, never task data
+    for j, ident in (("haiku", JUDGE_CARDS["haiku"]), ("sonnet", JUDGE_CARDS["sonnet"])):
+        cards[j] = f"{ident}. judged with prompt: {routed}"
+    for j in ("gpt-5.5-low", "gpt-5.6-luna"):
+        cards[j] = f"{JUDGE_CARDS[j]}. judged with prompt: {camp}"
+    return cards

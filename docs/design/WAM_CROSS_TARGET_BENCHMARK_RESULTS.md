@@ -22,7 +22,7 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
 | **F# LMDB cached (two-level L1/L2)** | **2** | -- | **1** | **Yes** | Fact-access only (no WAM overhead); see below |
 | Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
-| R WAM (functions, kernels_on) | 3412 | 4076 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + IDTABLE (lazy in-memory adjacency); 3-rep median query |
+| R WAM (functions, kernels_on) | 1564 | 2077 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + AGGREGATE-LOWER (bulk_collect + scalar is_lax reduce); 3-rep median query |
 | Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
 
 **Key takeaway:** Atom interning (replacing `HashMap<String, Vec<String>>` with
@@ -354,14 +354,15 @@ R 4.3.3, single-core.
 
 | Scale | query_ms | total_ms | rows | Cores | vs reference |
 |-------|----------|----------|------|-------|--------------|
-| 300 | 3412 | 4076 | 271 | 1 | match (`normalize_three_column_float_rows`, 6 dp) |
+| 300 | 1564 | 2077 | 271 | 1 | match (`normalize_three_column_float_rows`, 6 dp) |
 
 `query_ms` is the 3-run median of article×root enumeration only
-(samples: 4078, 3412, 3268). `total_ms` is setup (Rscript startup +
+(samples: 2118, 1422, 1564). `total_ms` is setup (Rscript startup +
 generated-program / FactSource load + article/root TSV load) plus that
 median query. Output validated against
 `data/benchmark/300/reference_output.tsv` with canonical sort and 6-decimal
-float tolerance (not row-count-only).
+float tolerance (not row-count-only). Prior hosted IDTABLE row was
+3412 / 4076 (samples 4078, 3412, 3268).
 
 The prior hosted GitHub Actions post-PERF-R-CA-IDDFS median was query_ms=7521 /
 total_ms=8341 (samples: 8260, 7509, 7521). PERF-R-CA-IDCACHE reduces that to
@@ -473,6 +474,70 @@ retained. Hosted IDTABLE reference remains 3412 / 4076. Next
 evidence-based leverage is the WAM step/register/arithmetic path (or a
 deeper native lowering of power-sum aggregation), not further CA-loop or
 query-boundary micro-opts.
+
+PERF-R-WAM-STEP profiled that interpreter/power-sum path. Full-query
+instruction counts show ~23k `PutStructure`, ~24k `BuiltinCall`, and
+~11k `EndAggregate` steps alongside the CA kernel; `is_lax/2` alone is
+invoked 22729 times (11172 `+/2`, 11172 `**/2`, 385 unary `-/1`). The
+prior int+int fast path covered only `+`; `**` and unary `-` fell through
+to recursive `eval_arith`. Extending `builtin_is_lax` with memoized
+functor ids for `**/^/+/−`, an `arith_to_term` power short-circuit, and
+unary minus — while preserving the existing IntTerm path for
+`+,-,*,//,mod` — is a reusable runtime change (not harness-specific).
+A separate `begin_build`/`append_build_arg` pre-size trial was neutral or
+slower and was not retained. Same-host interleaved 7-rep × 2 sequences
+(R 4.3.3, 271-row six-decimal parity):
+
+| Sequence | base median | candidate median | speedup |
+|----------|-------------|------------------|---------|
+| A | 2561 | 2451 | 1.045× |
+| B | 2562 | 2436 | 1.052× |
+
+Official candidate 7-rep samples: 3021, 2454, 2460, 2478, 2438, 2478, 2462
+(median query 2462 / total 2973). Hosted IDTABLE row above remains
+3412 / 4076 until a hosted WAM-STEP remeasure is recorded. Residual cost
+is still dominated by WAM `step`/register traffic around hop streaming
+and structure build; further leverage is deeper power-sum lowering or
+`step`/`get_reg` work, not CA-loop micro-opts.
+
+PERF-R-LOWERED-DIRECTCALL investigated whether Call/Execute→`run`/`step`
+routing still dominates after WAM-STEP and whether a general direct
+invoke of Phase-3 lowered callees would help. Runtime Call/Execute
+already direct-dispatch `program$lowered_dispatch` for kernels and
+fact-table iterators (`lowered_path_ok`); Phase-3 lowered functions are
+intentionally not registered there (wrappers own entry state; internal
+calls stay on the WAM array). Scale-300 counts: 137817 `step`s, 1155
+`Call`s, 0 `Execute`s; every weight query does one `WamRuntime$run`
+into `power_sum_selected/3`, whose Calls are `category_ancestor/4`
+(already direct), `dimension_n/1` (already direct), and
+`power_sum_bound/3` (BeginAggregate — not lowered). A trial that
+rewired the ED-selected stub to call the existing lowered
+`power_sum_selected` function (skipping that predicate's WAM shell)
+cut steps by 3.54% with 271-row parity but was wall-time neutral
+(interleaved 7-rep medians ≈ 1.003× / 1.001×). No production change
+retained. Hosted IDTABLE reference remained 3412 / 4076 until
+AGGREGATE-LOWER.
+
+PERF-R-AGGREGATE-LOWER targets the `BeginAggregate`/`EndAggregate`
+region that still dominated after LOWERED-DIRECTCALL. Profile:
+`BeginAggregate`×385, `EndAggregate`×11172, 137817 `step`s; streaming
+numeric accumulate alone was wall-neutral, and bulk-collect + per-hop
+`step` of `is_lax` was slower. Retained path: kernels may register a
+`bulk_collect` capability; `BeginAggregate` for `sum|count|min|max`
+with a single Call/Execute plus straight-line `is`/`is_lax` arithmetic
+compiles the template and reduces without EndAggregate/backtrack.
+`category_ancestor/4` publishes hop bulk_collect; unsupported shapes
+keep the classic frame. Steps 137817→14540, EndAggregate 11172→0.
+Same-host interleaved 7-rep × 2 (R 4.3.3, 271-row six-decimal multiset
+parity):
+
+| Sequence | base median | candidate median | query speedup | total speedup |
+|----------|-------------|------------------|---------------|---------------|
+| A | 3005 | 2101 | 1.430× | 1.348× |
+| B | 3011 | 2088 | 1.442× | 1.358× |
+
+Hosted 3-rep after retain: query samples 2118, 1422, 1564 (median 1564 /
+total 2077). Primary matrix row updated accordingly.
 
 #### Reproduction
 

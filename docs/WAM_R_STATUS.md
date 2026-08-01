@@ -62,14 +62,14 @@ default 4096), and explicit `auto` (codegen resolves via shared
 - Effective-distance cross-target matrix row populated (BENCH-R): scale-300
   `emit_mode(functions)` + auto `category_ancestor/4` kernel, reference
   parity match — see `docs/design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md`.
-  Further optimized by PERF-R-CA-DIRECT / IDDFS / IDCACHE / STACK / IDTABLE.
-  Hosted-CI IDTABLE median query_ms=3412 / total_ms=4076, 1.08× / 1.07×
-  vs hosted STACK 3679/4344. PERF-R-CA-LOOPBODY profiled the remaining
-  `hops_ids` loop body and declined micro-opts (within noise; ~62% of
-  query is outside CA). PERF-R-ED-BOUNDARY attributed that remainder to
-  lowered WAM step/register/arithmetic on the power-sum path; boundary
-  hypotheses (resolve-once, atom cache, state pool, hashed intern) did
-  not clear a 5% gate.
+  Further optimized by PERF-R-CA-DIRECT / IDDFS / IDCACHE / STACK / IDTABLE /
+  WAM-STEP / AGGREGATE-LOWER. Hosted-CI AGGREGATE-LOWER median
+  query_ms=1564 / total_ms=2077 (prior IDTABLE 3412/4076).
+  PERF-R-CA-LOOPBODY, PATHMARK, ED-BOUNDARY, and LOWERED-DIRECTCALL
+  profiled/declined where measured. PERF-R-WAM-STEP short-circuits
+  `is_lax` `**/^` and unary `-`. PERF-R-AGGREGATE-LOWER capability-gates
+  scalar `sum|count|min|max` regions over `bulk_collect` generators
+  (~1.43–1.44× same-host query; steps 137817→14540).
 
 ## Path forward
 
@@ -78,7 +78,6 @@ default 4096), and explicit `auto` (codegen resolves via shared
 
 ## Document status
 
-Fleet-aligned snapshot updated for PERF-R-ED-BOUNDARY (2026-07-27):
-post-CA overhead attributed to WAM interpreter/power-sum path; boundary
-trials declined. Hosted IDTABLE 3412/4076 retained. PATHMARK and LOOPBODY
-remain declined.
+Fleet-aligned snapshot updated for PERF-R-AGGREGATE-LOWER (2026-08-01):
+hosted 1564/2077; PATHMARK, LOOPBODY, ED-BOUNDARY, and
+LOWERED-DIRECTCALL declined where measured.
