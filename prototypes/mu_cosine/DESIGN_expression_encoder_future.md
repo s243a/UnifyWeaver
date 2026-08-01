@@ -344,6 +344,23 @@ learned function can *transfer by conditioning* instead of retraining per corpus
 gate rediscovering each domain's regime is the mechanism-level win already in hand; a gate that
 knows *which regime it is in* is the candidate for the relationship that generalizes.
 
+**The blend may be hop-dependent, and the S/A ratio may be a distance proxy (owner).** The
+mechanism, observed on Wikipedia: semantic drift over parent hops makes `subcategory`
+relationships *read as symmetric* at distance — the directional signal decays toward general
+relatedness faster than the symmetric one, so what arrives as "related" may be a drifted
+ancestor. Hop distance is unobservable for a new node, but the **ratio of symmetric to
+asymmetric signal** is observable and may indicate it — which would give the gate's learned
+shape a mechanistic reading (discount A by inferred distance: filing wants a *near* parent, not
+a distant ancestor). In-domain this is directly testable because hop distance is ground truth
+on the wiki graph: measure A/S as a function of true hop distance before trusting the ratio as
+a proxy anywhere. Two confounds carry over from the standing record and must be reported
+alongside: in a **non-DAG** substrate multiple parents blur the hop-distance interpretation
+(the R1 rider: drift is expected larger under `full_dag` than `principal_tree`), and **typos
+masquerade as semantic drift** (title noise splits parents and inflates apparent drift — the
+registry note's §7 `decay` estimand fork, observed vs canonicalized titles, is exactly this
+confound and remains undecided; its eventual ruling feeds this experiment's interpretation, and
+no holdout detects the typo share because the holdout carries the same typos).
+
 ## 6. Finite deterministic synthetic corpus
 
 "Synthetic" does not mean unlimited or unconstrained. First freeze a checked-in generator
