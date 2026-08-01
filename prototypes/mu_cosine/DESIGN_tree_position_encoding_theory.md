@@ -399,3 +399,45 @@ in the term is rejected: it creates a format never seen at serve time and two in
 distributions for one semantic identity. Because pin hash tokens are opaque and can only be
 memorized, a pin-visible P1 win must be checked against the opaque-process-token baseline it
 resembles.
+
+**Importance is read from coordinates, never inferred from arrival order.** A second,
+independent rationale for the ablation-stability rule above (two arguments for one rule keep it
+from being relitigated): with stream-indexed positions, finding the structurally important
+nodes is positional *arithmetic* — locate index 0, reason about what shifted — while with
+tree-derived coordinates it is a *lookup*: the root is the empty path at any stream position,
+and depth is a deterministic function of the coordinate, so root-ward relevance weighting is
+free at readout. Serialization order is canonicalized for the digest, not chosen for the
+encoder's benefit; the encoder lineage (MuAttention) is permutation-invariant over the token
+set, so arrival order carries nothing and all relevance structure must come from the
+coordinates. A sequence-indexed arm added later would silently break this — hence the
+requirement is stated, not emergent.
+
+**The stream↔tree mapping is a derived, version-bound diagnostic view.** The serializer
+produces stream indices by traversing the tree, so `stream_index ↔ path(u)` falls out of the
+traversal free and may be carried alongside sealed rows. Its value is interpretation, not
+addressing: converting attention matrices from "token 14 attends to token 7" into "the `gamma`
+leaf attends to the `hop_decay` call node"; translating sequence-arm ablation outputs into tree
+coordinates so arms compare on the same diagnostics; and cross-checking the serializer against
+the tree. Three rules keep it honest: (1) *one direction of truth* — the mapping is recomputed
+from the AST plus the canonical traversal, never stored as an independent fact, and the tree
+wins any conflict; (2) *version-bound* — stream indices are a property of the traversal under a
+specific contract (`tok-v2`), and a stored mapping must bind that version or a re-ordered
+stream silently mislabels every analysis; (3) *keys stay tree-side* — §7's "never use a
+position vector as a key" extends to stream indices for the same reason: the stream is a
+projection of the tree, not an authority.
+
+**Open question — pattern-form input (variables plus a binding channel) as an ablation arm.**
+As *identity* design, a binding channel is declined: bindings are identity-determining
+(`C=simplemind` and `C=pearltrees` are different processes), so the channel could not be
+pin-like (identity-transparent) without making deployed identity a two-artifact (term,
+bindings) pair — and the ground form already carries the same semantics in one artifact. As an
+*encoder input* choice it needs no identity change at all, same status as pin visibility:
+identity stays ground, while the rendering fed to training presents the vNext pattern form —
+variable nodes plus a binding channel — letting the model learn corpus-independent structure
+(the shape of `max(floor, product(hop_decay(C,γ), lca_frac(C)))` shared across bindings). The
+caveat that keeps this an open question rather than a plan: repeated named variables are one
+`VarId`, i.e. a *shared* node, which turns the tree into a DAG — and this document's coordinate
+system is built on unique root-to-node paths. A twice-occurring variable has two paths. The pin
+trick transfers (`position(binding) = path(occurrence)` extended by one bind-role edge, one
+binding token per occurrence), but the DAG consequences for identifiability and the §9 path
+tests are unexamined. Record, do not build, until the flat-corpus arms have run.
