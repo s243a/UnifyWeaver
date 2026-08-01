@@ -450,6 +450,16 @@ variables. Resolution:
 max(0.02, product(hop_decay(simplemind, gamma=0.6), lca_frac(simplemind)))
 ```
 
+**The repeated literal is the deliberate ground form.** Writing `simplemind` twice hides the
+functional connection (both components must walk one substrate), and the connected form exists —
+it is vNext's pattern surface: `product(hop_decay(C, gamma=0.6), lca_frac(C))` with a binding
+`C=simplemind` is a `PatternAST` plus `ground(bindings)`, already implemented, where the two `C`
+occurrences are provably one variable and grounding produces a term byte-identical to the
+repeated-literal spelling. A future `where` clause is sugar over that API, not a v0.4 feature —
+variables stay out of the sealed grammar. Known v0.4 limitation: the flat signatures cannot
+*check* that `hop_decay` and `lca_frac` received the same substrate; a mismatched pair parses
+and is legal-but-odd. vNext's index unification checks it for free.
+
 with `estimand='path'`. Parameter values are the prototype's measured defaults
 (`prototype_graph_judge.py`: `--gamma 0.6`, `--floor 0.02`); the old `lineage-graph`
 process (`decay=0.85`) is retired and handled by the stage-4 migration manifest, not

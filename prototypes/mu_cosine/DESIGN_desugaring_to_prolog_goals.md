@@ -318,3 +318,26 @@ Two riders:
 3. Do residual goals enter the embedded structure, and if so does the encoder see them as
    structure or as features? (§5 gives the criterion, not the encoding.)
 4. Which surface constructs desugar, and which stay primitive for diagnostic quality? (§7)
+
+## 12. Where-clauses are binding goals, and they vanish at elaboration
+
+A Haskell-style `where` — `product(hop_decay(C, gamma=0.6), lca_frac(C)) where C=simplemind` —
+desugars, in this note's frame, to a **binding goal** in the goal store: Prolog's version is a
+declaration predicate the body matches. §5's discharge criterion then answers the "does it
+dilute the AST" question directly: the binding is ground at elaboration time, so it is
+**discharged** — a side condition that constructed the term, never part of it. *Measured*:
+`ground(pattern, {C: simplemind})` yields a term byte-identical to the repeated-literal
+spelling. The where clause is one more surface spelling of the same ground AST.
+
+The pattern form is not merely sugar, though: the repeated variable makes the functional
+connection **enforced** rather than implied — two occurrences of `C` are one `VarId`, so one
+binding substitutes both and a mismatch cannot be written. The repeated-literal ground form
+hides that connection; the flat v0.4 grammar also cannot check it (a mismatched substrate pair
+parses); vNext's index unification checks it by construction.
+
+**Pins are the wrong channel for bindings**, by the identity ruling: pins are
+identity-transparent (adding one must not move the semantic digest), while a binding is
+identity-*determining* — `C=simplemind` and `C=pearltrees` are different processes. Routing
+bindings through the pin envelope would force one of those properties to break. No third
+channel is needed: a binding is consumed at elaboration, so it never reaches the artifact it
+would have annotated.
