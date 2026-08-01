@@ -266,6 +266,10 @@ jobs:
         run: |
           swipl -q -f init.pl -s tests/test_wam_r_effective_distance_generator.pl -g "run_tests, halt" -t "halt(1)"
 
+      - name: Run R aggregate lowering contract suite
+        run: |
+          swipl -q -f init.pl -s tests/test_wam_r_aggregate_lower.pl -g "run_tests, halt" -t "halt(1)"
+
       - name: Run R direct arg1 lookup contract suite
         run: |
           swipl -q -f init.pl -s tests/test_wam_r_ca_direct_lookup.pl -g "run_tests, halt" -t "halt(1)"
