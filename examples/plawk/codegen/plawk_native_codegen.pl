@@ -14345,6 +14345,11 @@ plawk_rule_body_print_field(ternary(cmp(Left, Op, Right), Then, Else)) :-
     plawk_ternary_cond_ok(Left, Op, Right),
     plawk_ternary_i64_operand_ok(Then),
     plawk_ternary_i64_operand_ok(Else).
+% a ternary with STRING-valued branches (`print $1 == "b" ? "yes" : "no"`):
+% the same conditions, but the select is over two string pointers and the result
+% prints through the ordinary string-literal print path.
+plawk_rule_body_print_field(ternary(Cond, Then, Else)) :-
+    plawk_ternary_str_ok(Cond, Then, Else).
 % a string concatenation (`print $1 $2`): every operand must be a valid print
 % field; they are emitted adjacently with no separator.
 plawk_rule_body_print_field(concat(Parts)) :-
@@ -14466,6 +14471,29 @@ plawk_ternary_cond_ok(field(Index), Op, string(_Expected)) :-
     integer(Index),
     Index >= 1,
     plawk_field_cmp_op_code(Op, _OpCode).
+
+%% plawk_ternary_str_branches_ok(+Then, +Else) is semidet.
+%
+%  A STRING-valued ternary: `$2 > 1 ? "hi" : "lo"`. Both branches must be string
+%  literals -- BOTH, not one -- because the `select` picks between two values of
+%  one LLVM type, and awk's mixed `cond ? "hi" : 3` would need a runtime
+%  number->string conversion on one arm. A mixed pair declines cleanly.
+%
+%  The CONDITION is the same plawk_ternary_cond_ok/3 an i64-valued ternary
+%  admits, and the same plawk_ternary_cond_ir/8 emits it, so branch type and
+%  condition form are independent: every condition that works with i64 branches
+%  works with string branches.
+plawk_ternary_str_branches_ok(string(Then), string(Else)) :-
+    string(Then),
+    string(Else).
+
+%% plawk_ternary_str_ok(+Cond, +Then, +Else) is semidet.
+%
+%  The whole string-valued ternary. One gate, asked by the print-field gate and
+%  the scalar-assignment gate alike.
+plawk_ternary_str_ok(cmp(Left, Op, Right), Then, Else) :-
+    plawk_ternary_cond_ok(Left, Op, Right),
+    plawk_ternary_str_branches_ok(Then, Else).
 
 plawk_prolog_call_expr(prolog_call(Name, Args)) :-
     atom(Name),
@@ -15246,6 +15274,15 @@ plawk_scalar_action_update(set(var(Name), concat(Parts)), Name, set_str(concat(P
     maplist(plawk_str_scalar_part_ok, Parts).
 plawk_scalar_action_update(set(var(Name), string(Value)), Name, set_str(string(Value))) :-
     string(Value).
+% `x = COND ? "hi" : "lo"` -- a STRING-valued ternary. Reported as a set_str so
+% the state plan types the slot as scalar_string (a string slot holds an interned
+% atom id), which is what makes a later `print x` resolve it back to text.
+% Declared here among the set_str clauses, i.e. BEFORE the i64 ternary clause
+% below, for the same reason every other string RHS is: a numeric typing of the
+% slot would store a number and print empty.
+plawk_scalar_action_update(set(var(Name), ternary(Cond, Then, Else)), Name,
+        set_str(ternary_str(Cond, Then, Else))) :-
+    plawk_ternary_str_ok(Cond, Then, Else).
 % `x = ENVIRON["NAME"]`: the env var value as a string scalar (via getenv).
 plawk_scalar_action_update(set(var(Name), environ(Key)), Name, set_str(environ(Key))) :-
     string(Key).
@@ -16395,6 +16432,30 @@ plawk_str_build_ir(string(Value), _FieldSeparator, Base, IdValueIR,
         '  %~w_id = call i64 @wam_intern_atom(i8* %~w_ptr, i64 ~w)',
         [Base, Base, Len]),
     format(atom(IdValueIR), '%~w_id', [Base]).
+% `COND ? "hi" : "lo"` into a string slot: build each branch's interned id with
+% the string-literal clause ABOVE (so the interning idiom is written once, not
+% re-spelled here) and `select i64` between the two ids. A string slot holds an
+% id, so selecting ids is the whole lowering -- no runtime string copy, and the
+% branches are constants so materialising both is free of side effects.
+%
+% The condition comes from plawk_ternary_cond_ir/8, the same emitter the
+% i64-valued ternary and the print-context string ternary use.
+plawk_str_build_ir(ternary_str(Cond, string(Then), string(Else)), FieldSeparator,
+        Base, IdValueIR, GlobalParts, SetupLines) :-
+    format(atom(ThenBase), '~w_t', [Base]),
+    plawk_str_build_ir(string(Then), FieldSeparator, ThenBase, ThenIdIR,
+        ThenGlobalParts, ThenLines),
+    format(atom(ElseBase), '~w_e', [Base]),
+    plawk_str_build_ir(string(Else), FieldSeparator, ElseBase, ElseIdIR,
+        ElseGlobalParts, ElseLines),
+    plawk_ternary_cond_ir(Cond, FieldSeparator, Base, Base, CondIR,
+        CondGlobalParts, CondOperandSetupParts, CondLines),
+    format(atom(SelLine), '  %~w_sel = select i1 ~w, i64 ~w, i64 ~w',
+        [Base, CondIR, ThenIdIR, ElseIdIR]),
+    format(atom(IdValueIR), '%~w_sel', [Base]),
+    append([CondGlobalParts, ThenGlobalParts, ElseGlobalParts], GlobalParts),
+    append([CondOperandSetupParts, ThenLines, ElseLines, CondLines, [SelLine]],
+        SetupLines).
 % `ENVIRON["NAME"]`: look up the environment variable (a NUL-terminated key
 % constant) and yield the interned atom id of its value (0 = unset -> empty).
 plawk_str_build_ir(environ(Name), _FieldSeparator, Base, IdValueIR,
@@ -16942,6 +17003,44 @@ plawk_i64_expr_ir(ternary(Cond, Then, Else),
     format(atom(ValueIR), '%~w', [Base]),
     append([CondGlobalParts, ThenGlobalParts, ElseGlobalParts], GlobalParts),
     append([CondOperandSetupParts, ThenSetupParts, ElseSetupParts, CondLines,
+            [SelLine]], SetupParts).
+
+%% plawk_ternary_str_ptr_ir(+Cond, +Then, +Else, +FieldSeparator, +Base,
+%%                          -PtrIR, -GlobalParts, -SetupParts)
+%
+%  A string-valued ternary as an i8* POINTER: emit a constant for each branch,
+%  then `select i8*`. Used in the print / printf contexts, where the value is
+%  consumed as a pointer and printed with `%s`.
+%
+%  Both branches are materialised unconditionally. They are string CONSTANTS, so
+%  that is two getelementptrs and no side effects -- the same reason the i64
+%  ternary evaluates both arms rather than branching.
+%
+%  The scalar-ASSIGNMENT context needs an interned atom id instead of a pointer
+%  (a string slot holds an id), so it selects over ids in
+%  plawk_str_build_ir(ternary_str(...)) rather than reusing this. Both call
+%  plawk_ternary_cond_ir/8 for the condition, which is the part that could
+%  otherwise drift.
+plawk_ternary_str_ptr_ir(Cond, string(Then), string(Else), FieldSeparator, Base,
+        PtrIR, GlobalParts, SetupParts) :-
+    plawk_ternary_cond_ir(Cond, FieldSeparator, Base, Base, CondIR,
+        CondGlobalParts, CondOperandSetupParts, CondLines),
+    format(atom(ThenName), '~w_tstr', [Base]),
+    llvm_emit_c_string_global(ThenName, Then, ThenGlobalIR, _ThenLen, ThenBytes),
+    format(atom(ThenPtrLine),
+        '  %~w_tptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+        [Base, ThenBytes, ThenBytes, ThenName]),
+    format(atom(ElseName), '~w_estr', [Base]),
+    llvm_emit_c_string_global(ElseName, Else, ElseGlobalIR, _ElseLen, ElseBytes),
+    format(atom(ElsePtrLine),
+        '  %~w_eptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+        [Base, ElseBytes, ElseBytes, ElseName]),
+    format(atom(SelLine),
+        '  %~w_sel = select i1 ~w, i8* %~w_tptr, i8* %~w_eptr',
+        [Base, CondIR, Base, Base]),
+    format(atom(PtrIR), '%~w_sel', [Base]),
+    append([CondGlobalParts, [ThenGlobalIR, ElseGlobalIR]], GlobalParts),
+    append([CondOperandSetupParts, [ThenPtrLine, ElsePtrLine], CondLines,
             [SelLine]], SetupParts).
 
 %% plawk_ternary_cond_ir(+Cond, +FieldSeparator, +Base, +GlobalBase, -CondIR,
@@ -19248,6 +19347,17 @@ plawk_expr_uses_nr(ternary(cmp(Left, _Op, Right), Then, Else)) :-
     ; plawk_expr_uses_nr(Then)
     ; plawk_expr_uses_nr(Else)
     ).
+% A string-valued ternary in a scalar assignment. The set_str operation carries it
+% as ternary_str/3 (the string-build payload vocabulary), so it needs a row here
+% too -- DELEGATED to the ternary/3 clause above rather than re-walking the parts,
+% so "which sub-terms of a ternary can mention NR" stays one definition.
+%
+% Without this row `x = NR == 2 ? "a" : "b"` referenced an undefined %current_nr:
+% a clang failure, i.e. the record counter is emitted only when a walker SEES the
+% NR. Any future scalar-update payload that can contain an expression needs a row
+% here for the same reason.
+plawk_expr_uses_nr(ternary_str(Cond, Then, Else)) :-
+    plawk_expr_uses_nr(ternary(Cond, Then, Else)).
 plawk_expr_uses_nr(sprintf(_Format, Args)) :-
     member(Arg, Args),
     plawk_expr_uses_nr(Arg).
@@ -19766,6 +19876,21 @@ plawk_emit_print_str_id(Value, _FieldSeparator, Context,
         '  %~w_sptr = select i1 %~w_empty_c, i8* getelementptr ([1 x i8], [1 x i8]* @.~w, i64 0, i64 0), i8* %~w_s',
         [Base, Base, EmptyName, Base]),
     format(atom(PtrIR), '%~w_sptr', [Base]).
+
+% Ternary print field with STRING-valued branches: `print $1 == "b" ? "yes" : "no"`.
+% The select is over two i8* string-constant pointers, and the result is the
+% ordinary `string(Base, PtrIR)` print type -- so it prints through the same `%s`
+% path a plain string literal does, and needs no new output emitter. Placed
+% before the i64 clause below: that clause's head is general, and its operand
+% lowering would merely fail on a string branch, so this only keeps the choice
+% deterministic.
+plawk_emit_print_expr_for_context(ternary(Cond, Then, Else), FieldSeparator, Context,
+        string(Base, PtrIR), GlobalParts, SetupParts) :-
+    plawk_ternary_str_branches_ok(Then, Else),
+    !,
+    plawk_print_expr_value_base(Context, string, Base),
+    plawk_ternary_str_ptr_ir(Cond, Then, Else, FieldSeparator, Base, PtrIR,
+        GlobalParts, SetupParts).
 
 % Ternary print field `print (COND ? A : B)`: an i64 value via select.
 plawk_emit_print_expr_for_context(ternary(Cond, Then, Else), FieldSeparator, Context,
