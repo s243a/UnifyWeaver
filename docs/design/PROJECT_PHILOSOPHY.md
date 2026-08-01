@@ -121,6 +121,29 @@ inference as an inference.
 The reciprocal obligation is to correct plainly when a claim turns out wrong, without
 ceremony — state the correction, give the evidence, move on.
 
+## 9. Lead with purpose; the contract comes second
+
+A design document that opens with authorities, prohibitions, and ablation protocol is readable
+only by someone who already knows what the artifact is for. The reader who needs the document —
+future maintainers, other lanes, models asked to work from it, and the owner verifying it months
+later — does not share the author's context.
+
+The instance: a position-encoding design was handed to an LLM tutor for a step-by-step
+walkthrough, and the tutor missed the point of **all five** of its own quiz questions — not
+randomly, but in two clusters: it never learned what the encoder was *for* (the document nowhere
+stated purpose, input, or output), and it collapsed a three-level distinction (identity /
+coordinates / features) that the document enforced rule-by-rule but never laid out in one frame.
+The consolidated ruling comment one document earlier had failed the same way for the same
+reader, and was fixed the same way — a plain-terms block prepended after the fact. The
+pattern-stache philosophy note avoided the failure from the start by opening with "The
+question."
+
+So: design documents open with **purpose, input, output, and the one table that prevents the
+predictable conflation** — before the contract. Precision without comprehensibility fails the
+record's main purpose, because the owner is the verification layer. A useful acceptance test: a
+fresh reader (or agent) with no conversation history should be able to explain the design back
+correctly from the document alone.
+
 ## Non-goals
 
 This document does not prescribe architecture, and it does not override any feature-scoped
