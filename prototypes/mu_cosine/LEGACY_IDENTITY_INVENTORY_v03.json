@@ -1,0 +1,195 @@
+{
+  "inventory_sha256": "4e51ebf607917004686e7b531221136cc76b6351fd64c201626f3ddcfa141c30",
+  "items": [
+    {
+      "canonical": "blend(luna.D,luna.S,graph)",
+      "identity_key": "08afce846ba79b67be3c4f742cd189973010bc716bc1bc4f948df3781aa8ad33",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:blend-variadic",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:blend-variadic"
+      ]
+    },
+    {
+      "canonical": "routing(e5,haiku,manifest=\"héllo·wörld\",menus=[10],t=[0.02])",
+      "identity_key": "0b6b53d6609f523ab57d9b78833f325c7917d1c790069718590e4317f0b4cba2",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:utf8-string",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:utf8-string"
+      ]
+    },
+    {
+      "canonical": "margin(t=1)",
+      "identity_key": "15c5855723a4e6799a5faf5238adaacd671f029ddc86a876a03e18cde18202ec",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:int-spelled-number"
+      ]
+    },
+    {
+      "canonical": "e5(routing(e5,sonnet.lineage,menus=[10],t=[0.02]))",
+      "identity_key": "22949ce22cb3c224bfb2f1059a553f6d455d79f3ecfc382e30b4e89cd5ced7c0",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:sonnet-lin-n10",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:sonnet-lin-n10",
+        "PROCESS_EXPRESSION_P1_PREREG.json:sonnet_lineage_n10"
+      ]
+    },
+    {
+      "canonical": "lineage(graph,decay=0.85)@run/2026-07-25",
+      "identity_key": "3b2a112062c33f07378c24678abdc811a016795d05a933d90e1280a402f1c144",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:pinned",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:pinned"
+      ]
+    },
+    {
+      "canonical": "routing(e5,haiku,menus=[10],t=[1])",
+      "identity_key": "3e5b14da634c6474841d059686b73cbd8cdc454c2457cc783f774f84426a8b72",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:int-spelled-number-list"
+      ]
+    },
+    {
+      "canonical": "kalman(luna.D,luna.S)",
+      "identity_key": "4292a46ad30186e9b80e2b89be06464825d1261344f3c69664d6c6d00bde9110",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:kalman-fused",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:kalman-fused"
+      ]
+    },
+    {
+      "canonical": "routing(e5,haiku,manifest=\"a\\\"b\\\\c\",menus=[10],t=[0.02])",
+      "identity_key": "56a7eee44c98aef9551898d3b74ed7d650e69a3d443eac59a388d35f2ecab60a",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:escaped-string",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:escaped-string"
+      ]
+    },
+    {
+      "canonical": "margin(t=0.03)",
+      "identity_key": "6bad3656d69837df2737ab24ce48704a6a84f242d2f1fb99c1754690197c6cb9",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:margin-number",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:margin-number"
+      ]
+    },
+    {
+      "canonical": "lineage(graph,decay=0.85)",
+      "identity_key": "7086e00d3cec012af99f9fc8c5e2d0d3959db0bd1f42ecf8e0c94726f6dd91dc",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:lineage-graph",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:lineage-graph",
+        "gen_wiki_lineage_v2.py:targets-header"
+      ]
+    },
+    {
+      "canonical": "distill(e5(routing(e5,sonnet.lineage,menus=[10,20],t=[0.02,0.03])))",
+      "identity_key": "7ae9a9390d20e19a17cc5188d7a8631084b734670217eeba4f156895f8bfc9a9",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:distill-3tier",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:distill-3tier"
+      ]
+    },
+    {
+      "canonical": "graph.discrim",
+      "identity_key": "7f7aad120585bcf587e10c338096f3ea36051513a91a8f311e534d306329ff71",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:atom-bare",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:atom-bare"
+      ]
+    },
+    {
+      "canonical": "e5(routing(e5,sonnet.lineage,menus=[10,20],t=[0.02,0.03]))",
+      "identity_key": "8fd632d50e639ce670fa0e81b064c5d7b5135b4b4221b04cd561089f81ea2b02",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:sonnet-lin-n20",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:sonnet-lin-n20",
+        "PROCESS_EXPRESSION_P1_PREREG.json:sonnet_lineage_n20"
+      ]
+    },
+    {
+      "canonical": "blend(luna.D,luna.S)",
+      "identity_key": "965d5383d24fa08489955d6966c82098257796c4c11f63cc74ab7d9314af9e61",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:blend",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:blend"
+      ]
+    },
+    {
+      "canonical": "blend(graph.discrim,llm.element,llm.subcat)",
+      "identity_key": "a95d236a3ccf73f98e54ce70f190412d95ca2629519ec8f5eab3b37a4172903c",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:dir-blend",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:dir-blend"
+      ]
+    },
+    {
+      "canonical": "e5(routing(e5,haiku,menus=[10],t=[0.02]))",
+      "identity_key": "ab4d7afc2ec5915c429d5e00b7270d0b2cd84309a1bfa46dfc52b901224dd4e2",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:haiku-n10",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:haiku-n10",
+        "PROCESS_EXPRESSION_P1_PREREG.json:haiku_n10"
+      ]
+    },
+    {
+      "canonical": "lineage(graph,decay=-0.5)",
+      "identity_key": "badeb9a3d3e3ac7a51853e9e6eda168a689cc68992c18d5a55d58b4fb0b23f65",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:neg-number",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:neg-number"
+      ]
+    },
+    {
+      "canonical": "menu(graph,n=10)",
+      "identity_key": "cb89d6bd26edfa9fd85706a06c62417227ebc9fa74e28e91ea7809c49535abc0",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:menu-required-int",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:menu-required-int"
+      ]
+    },
+    {
+      "canonical": "e5(margin(t=0.03))",
+      "identity_key": "d2a12a2cfb43740a3ffddbd37a8ba777627714a0ffcd27b5c38016e6472914b1",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:e5-auto",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:e5-auto",
+        "PROCESS_EXPRESSION_P1_PREREG.json:e5_auto"
+      ]
+    },
+    {
+      "canonical": "e5",
+      "identity_key": "e9370724cb46df3c00383836e98a37701a16dca1276a4180bba6478b55c19bba",
+      "sources": [
+        "PROCESS_EXPRESSION_GOLDEN_v1.json:atom-dual-bare",
+        "PROCESS_EXPRESSION_GOLDEN_v2.json:atom-dual-bare"
+      ]
+    }
+  ],
+  "legacy_identity_preimage": "REGISTRY_VERSION|canonical_identity_string",
+  "legacy_registry_sha256": null,
+  "legacy_registry_version": "v0.3",
+  "note": "Legacy canonical bytes and digests are copied from the sealed sources above, never recomputed through the current parser. out_of_scope entries have no legacy identity and are regenerated, not migrated.",
+  "out_of_scope": [
+    {
+      "artifact": "SM_FS_LINEAGE_RANKING_PREREG.json",
+      "expression": "lineage(fs,decay=0.85)",
+      "reason": "not grammatical under v0.3 (fs was unregistered), so it has no legacy identity; parses under v0.4; regenerated, not migrated"
+    },
+    {
+      "artifact": "sm_fs_freeze.py:EXPR",
+      "expression": "lineage(fs,decay=0.85)",
+      "reason": "freeze targets are computed without the registry (no process_cards import), so regeneration under the v0.4 spelling is byte-identical (test obligation 7)"
+    },
+    {
+      "artifact": "fine_tune_sm_fs.py:header-assertion",
+      "expression": "lineage(fs,decay=0.85)",
+      "reason": "consumer of the regenerated freeze artifact; no identity of its own"
+    }
+  ],
+  "schema": "unifyweaver.legacy-identity-inventory.v1",
+  "sealed_sources": {
+    "PROCESS_EXPRESSION_GOLDEN_v1.json": "b053351a2a419ac58b7ab644afe15c60543846ce8b9d5a3d9bcbc332ca24db29",
+    "PROCESS_EXPRESSION_GOLDEN_v2.json": "85e6421f5a1347fca5937d1243dc01500a9aa5b7221571b4918248e57ece6344",
+    "PROCESS_EXPRESSION_P1_PREREG.json": "f5df1929939abe0079c2c0512234360a3a0c02699041591b9eec59f9c64e6998"
+  }
+}
