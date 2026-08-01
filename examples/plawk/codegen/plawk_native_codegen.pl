@@ -5939,6 +5939,14 @@ plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
     nth0(Idx, Slots, Slot),
     plawk_slot_name(Slot, Name),
     !,
+    % The slot must actually HOLD TEXT. An id comparison on a numeric counter
+    % compares a count against an interned id -- `{ n++ } if (n == "3")` answered
+    % false where awk (number vs string => STRING comparison) says true. The
+    % sibling emitter for the bare string-scalar PATTERN
+    % (plawk_resolve_scalar_cmp/4) already required a scalar_string/scalar_strnum
+    % slot; this copy did not, which is the whole bug. Failing here (after the
+    % cut) declines the program rather than emitting a wrong comparison.
+    plawk_slot_holds_text(Slot),
     nth0(Idx, Values0, SlotValue),
     format(atom(LitName), '~w_lit', [GlobalBase]),
     llvm_emit_c_string_global(LitName, Value, GlobalIR, Len, BytesLen),
@@ -5962,6 +5970,9 @@ plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
     nth0(Idx, Slots, Slot),
     plawk_slot_name(Slot, Name),
     !,
+    % Same text-slot requirement as the equality clause above: strcmp on a
+    % counter's id would compare whatever text that id happens to name.
+    plawk_slot_holds_text(Slot),
     nth0(Idx, Values0, SlotValue),
     format(atom(LitName), '~w_lit', [GlobalBase]),
     llvm_emit_c_string_global(LitName, Value, GlobalIR, Len, BytesLen),
@@ -17985,16 +17996,28 @@ plawk_vars_as_fields([V | Vs], [var(V) | Fs]) :-
 % (unique names per branch, so the two blocks' temporaries don't collide) with
 % scalar reads substituted to their final-slot SSA values. Returns the string
 % globals the branch prints need, plus the body IR.
+% The condition goes through plawk_if_cond_ir/8 -- the SAME emitter a rule-body
+% `if` uses -- rather than straight to plawk_while_cond_ir/7. That is what makes
+% a STRING comparison work here (`END { if (s == "c") … }`): the string-scalar
+% clauses live on plawk_if_cond_ir/8 (they need a globals channel for the literal
+% constant, which the while-condition emitter does not have), so calling the
+% while emitter directly reached the numeric forms only, and every string END
+% guard declined while the identical rule-body guard compiled.
+%
+% A NUMERIC condition is unaffected: plawk_if_cond_ir/8's fall-through clause is
+% exactly the plawk_while_cond_ir/7 call this used to make, and it returns an
+% empty globals half that plawk_join_nonempty_ir/2 drops -- byte-identical.
 plawk_scalar_end_if_ir(Cond, ThenActions, ElseActions, StatePlan, FieldSeparator,
         OutputSeparator, GlobalIR, IR) :-
     plawk_state_plan_slots(StatePlan, Slots),
     plawk_final_slot_values(StatePlan, FinalValues),
-    plawk_while_cond_ir(Cond, Slots, FinalValues, FieldSeparator, plawk_endif, CondVar, CondIR),
+    plawk_if_cond_ir(scalar_if(Cond), Slots, FinalValues, [], FieldSeparator,
+        plawk_endif, CondVar, CondGlobal-CondIR),
     plawk_end_if_branch_ir(ThenActions, Slots, FinalValues, FieldSeparator,
         OutputSeparator, plawk_endif_then, ThenGlobal, ThenIR),
     plawk_end_if_branch_ir(ElseActions, Slots, FinalValues, FieldSeparator,
         OutputSeparator, plawk_endif_else, ElseGlobal, ElseIR),
-    plawk_join_nonempty_ir([ThenGlobal, ElseGlobal], GlobalIR),
+    plawk_join_nonempty_ir([CondGlobal, ThenGlobal, ElseGlobal], GlobalIR),
     format(atom(IR),
 '~w
   br i1 ~w, label %plawk_endif_then, label %plawk_endif_else
