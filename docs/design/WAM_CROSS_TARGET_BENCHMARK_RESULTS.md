@@ -499,6 +499,23 @@ is still dominated by WAM `step`/register traffic around hop streaming
 and structure build; further leverage is deeper power-sum lowering or
 `step`/`get_reg` work, not CA-loop micro-opts.
 
+PERF-R-LOWERED-DIRECTCALL investigated whether Call/Execute→`run`/`step`
+routing still dominates after WAM-STEP and whether a general direct
+invoke of Phase-3 lowered callees would help. Runtime Call/Execute
+already direct-dispatch `program$lowered_dispatch` for kernels and
+fact-table iterators (`lowered_path_ok`); Phase-3 lowered functions are
+intentionally not registered there (wrappers own entry state; internal
+calls stay on the WAM array). Scale-300 counts: 137817 `step`s, 1155
+`Call`s, 0 `Execute`s; every weight query does one `WamRuntime$run`
+into `power_sum_selected/3`, whose Calls are `category_ancestor/4`
+(already direct), `dimension_n/1` (already direct), and
+`power_sum_bound/3` (BeginAggregate — not lowered). A trial that
+rewired the ED-selected stub to call the existing lowered
+`power_sum_selected` function (skipping that predicate's WAM shell)
+cut steps by 3.54% with 271-row parity but was wall-time neutral
+(interleaved 7-rep medians ≈ 1.003× / 1.001×). No production change
+retained. Hosted IDTABLE reference remains 3412 / 4076.
+
 #### Reproduction
 
 ```bash
