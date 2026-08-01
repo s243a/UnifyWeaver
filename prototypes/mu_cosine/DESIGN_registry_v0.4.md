@@ -423,3 +423,92 @@ all.
 Issue #4013 is closed; its purpose — *"rulings needed before registry v0.4"* — is discharged.
 Implementation is tracked in #4055, whose consolidated stage-1 ruling this document reproduces as
 R7–R10. Stage 1 is unblocked.
+
+## 10. Stage-1 concrete registrations (implementation blueprint)
+
+Written before the code, so the decisions are reviewable as decisions. Three of them are
+implementation calls not explicitly ruled; each is flagged.
+
+### 10.1 The writable form of the graph judge
+
+R8's mathematical form `max(floor, gamma^hops * lca_frac)` is not directly writable in v0.3:
+positional numeric arguments are **rejected** (*measured*: `kalman(0.02, luna.S)` →
+`ParseError: unregistered name`), there is no exponentiation operator, and there are no
+variables. Resolution:
+
+- **Grammar extension (flagged decision 1):** v0.4 accepts numeric literals in positional
+  argument positions, typed by the signature's declared arg kind — the same
+  declared-type-wins rule kwarg values already follow. `tok-v2` serializes them as value
+  nodes inside `<ARG>` fences.
+- **No exponentiation operator.** `gamma^hops` is the *parameterized interior* of a registered
+  call — `hop_decay(<substrate>, gamma=…)` — because `hops` is supplied by the walk at run
+  time, not by the expression. The term describes the procedure; the exponent is the
+  procedure's definition.
+- **Registered spelling:**
+
+```text
+max(0.02, product(hop_decay(simplemind, gamma=0.6), lca_frac(simplemind)))
+```
+
+with `estimand='path'`. Parameter values are the prototype's measured defaults
+(`prototype_graph_judge.py`: `--gamma 0.6`, `--floor 0.02`); the old `lineage-graph`
+process (`decay=0.85`) is retired and handled by the stage-4 migration manifest, not
+re-registered.
+
+**R6/R8 reconciliation (flagged decision 2).** R6 declined registering `hops`/`lca_frac` via
+the `blend` restructuring; R8 requires the composite to be writable, which requires its
+components. What survives of R6: `lineage` is *not* demoted (it remains, gaining `mu=`), and
+`blend` is *not* widened (it stays a weighted sum over judges). The components arrive as
+`hop_decay/1+gamma` and `lca_frac/1` — substrate-taking calls, not the bare pairwise atoms R6
+declined.
+
+### 10.2 Entry table
+
+**Output types.** `source` splits: **`substrate`** (walkable structure) and **`judge`**
+(μ-source). `score`, `target-set`, `pick` are unchanged; R2's "scorer" is the existing
+`score`-producing family.
+
+**Substrate atoms (flagged decision 3 — the name set):** `pearltrees`, `simplemind`,
+`simplewiki`, `fs`. These are the corpora the landed code actually names; `enwiki` waits
+until something uses it.
+
+**Judge atoms:** `haiku`, `luna`, `sonnet`, `llm`, `opus`, `gemini`, `human`, `gpt-5.5-low`,
+and `graph` — which becomes **judge-only**, its former substrate role taken by the real
+corpora. Existing modifier sets carry over (`graph.discrim`, `llm.element`, …).
+
+**Operators:**
+
+| entry | signature | output |
+|---|---|---|
+| `product` | `(score, score, …)` variadic ≥2 | `score` |
+| `max` | `(number\|score, score, …)` variadic ≥2 | `score` |
+| `hop_decay` | `(substrate, gamma=number)` — gamma is retention: multiplies per hop | `score` |
+| `lca_frac` | `(substrate)` | `score` |
+| `lineage` | `(substrate, mu=judge, decay=number, depth=int)` — decay documented as retention (R3) | `target-set` |
+| `blend`, `kalman`, `e5`, `routing`, `margin`, `distill` | as v0.3, `source` arg types re-typed `judge` | unchanged |
+
+**New kwargs on mechanism-bearing operators:** `estimand=` and `impl=`, optional, enumerated,
+fail-closed on unknown values (§16.15 posture):
+
+```text
+ESTIMANDS = { subcategory, super_category, element_of, subtopic,
+              see_also, assoc, bridge, ancestry, path }
+IMPLS     = { structural, attention }        # only implementations that exist (R5)
+```
+
+`hop_targets` appears in neither: it names a procedure, and the term is the procedure (R7).
+
+### 10.3 Identity split (R9)
+
+`canonical()` gains a semantic/full split: **`canonical_semantic`** strips pins and is the
+digest preimage for `ast_sha`, `full_ast_digest`, seals, and cache keys;
+**`canonical_full`** retains pins for provenance and round-trip. Test obligation 10 checks
+that the split is real: adding a pin moves `canonical_full` and leaves the semantic digest
+byte-identical.
+
+### 10.4 Registered processes under v0.4
+
+The eight surviving processes re-spell unchanged (their judge arguments simply re-type).
+`lineage-graph` is retired per §10.1. Two additions exercise the new vocabulary:
+`graph-judge` (the §10.1 spelling, estimand `path`) and `lineage-haiku` =
+`lineage(pearltrees, mu=haiku)` (R4's own example, estimand `ancestry`).

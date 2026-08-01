@@ -144,6 +144,18 @@ record's main purpose, because the owner is the verification layer. A useful acc
 fresh reader (or agent) with no conversation history should be able to explain the design back
 correctly from the document alone.
 
+**Run the test with the least capable reader that must succeed.** The failure modes are
+asymmetric: a weak reader *under-fills* — if the document does not say it, the gap surfaces as a
+wrong answer, loudly — while a strong reader *over-fills*, reconstructing the intended design
+from fragments plus prior knowledge, so its success measures document-plus-capability rather
+than the document, and a real vacuum gets filled plausibly and silently. A suspiciously smooth
+read by a strong model is not evidence; this is the documentation analog of distrusting perfect
+numbers. Measured instance: on the same three documents, the small model's ambiguity list found
+the real completeness defects (a stale count, a notation collision, an underspecified terminator
+rule) while the top-tier model's list was mostly deliberate-tension observations. Both readers
+are useful — the weak one tests whether the document is self-contained, the strong one whether
+it is internally consistent — but the weak one is the acceptance gate.
+
 ## Non-goals
 
 This document does not prescribe architecture, and it does not override any feature-scoped
