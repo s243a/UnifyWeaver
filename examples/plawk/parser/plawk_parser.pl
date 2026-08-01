@@ -988,6 +988,12 @@ base_pattern(Pattern) -->
 base_pattern(Pattern) -->
     field_match_pattern(Pattern),
     !.
+% Reversed string comparison (`"a" == $1`). Its leading quote is unambiguous
+% here -- no other pattern starts with one -- so ordering against the field-first
+% productions does not matter.
+base_pattern(Pattern) -->
+    reversed_field_str_cmp_pattern(Pattern),
+    !.
 base_pattern(Pattern) -->
     field_div_cmp_pattern(Pattern),
     !.
@@ -1338,6 +1344,46 @@ field_str_ne_pattern(not_pat(field_eq(Index, Value))) -->
 %  (`$N < 5`, tried earlier in base_pattern); only a quoted-string RHS matches
 %  here. `==` / `!=` are the field_eq / field_str_ne rules; this covers the four
 %  ordering operators, parsed via string_ordering_cmp_op (longest match first).
+% A REVERSED string comparison: the literal on the LEFT -- `"a" == $1 { … }`,
+% `"b" < $1 { … }`, and inside a rule-body `if ("a" == $1)`. awk accepts either
+% operand order.
+%
+% The comparators project a field out of the record, so the field has to end up on
+% the left. This production parses the literal-first form and emits the SAME term
+% the field-first productions build, with the operator mirrored by the shared
+% swap_cmp_op/2 -- the very helper the reversed NUMERIC forms (`2 < $1`,
+% `3 < NF`) already use, so the two orders cannot drift apart. Nothing downstream
+% sees a literal-first comparison at all.
+reversed_field_str_cmp_pattern(Pattern) -->
+    quoted_string(ValueCodes),
+    ws,
+    reversed_str_cmp_op(ReadOp),
+    ws,
+    "$",
+    integer_codes(IndexCodes),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index > 0,
+      string_codes(Value, ValueCodes),
+      swap_cmp_op(ReadOp, Op),
+      reversed_str_cmp_term(Index, Op, Value, Pattern)
+    }.
+
+% Equality / inequality, then the ordering operators (longest match first inside
+% string_ordering_cmp_op//1).
+reversed_str_cmp_op(eq) --> "==".
+reversed_str_cmp_op(ne) --> "!=".
+reversed_str_cmp_op(Op) --> string_ordering_cmp_op(Op).
+
+% The mirrored operator decides which field-first term to build: equality is
+% field_eq, inequality its negation (as `$N != "s"` parses), ordering is
+% field_str_cmp.
+reversed_str_cmp_term(Index, eq, Value, field_eq(Index, Value)) :-
+    !.
+reversed_str_cmp_term(Index, ne, Value, not_pat(field_eq(Index, Value))) :-
+    !.
+reversed_str_cmp_term(Index, Op, Value, field_str_cmp(Index, Op, Value)).
+
 field_str_cmp_pattern(field_str_cmp(Index, Op, Value)) -->
     "$",
     integer_codes(IndexCodes),
@@ -1356,6 +1402,24 @@ string_ordering_cmp_op(ge) --> ">=".
 string_ordering_cmp_op(lt) --> "<".
 string_ordering_cmp_op(gt) --> ">".
 
+% The REVERSED numeric form: the integer literal first (`2 < $2 { … }`). awk
+% accepts either order, and the reversed order already worked against the numeric
+% SPECIALS (`3 < NF`) and against a scalar (`2 < n`) -- but not against a field,
+% which left the two operand orders inconsistent for `$N` alone. Same
+% swap_cmp_op/2 mirroring as those, emitting the field-first term so codegen sees
+% one shape.
+field_i64_cmp_pattern(field_cmp(Index, Op, Value)) -->
+    signed_integer_value(Value),
+    ws,
+    numeric_cmp_op(ReadOp),
+    ws,
+    "$",
+    integer_codes(IndexCodes),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index > 0,
+      swap_cmp_op(ReadOp, Op)
+    }.
 field_i64_cmp_pattern(field_cmp(Index, Op, Value)) -->
     "$",
     integer_codes(IndexCodes),
@@ -3675,12 +3739,25 @@ ternary_expr(ternary(Cond, Then, Else)) -->
 % lower it depends on the operand kinds -- two i64s become an `icmp`, a field
 % against a string literal uses the field-vs-literal comparator -- so the grammar
 % admits both and plawk_ternary_cond_ok/3 decides.
-ternary_cond(cmp(Left, Op, Right)) -->
+ternary_cond(Cond) -->
     ternary_operand(Left),
     ws,
     numeric_cmp_op(Op),
     ws,
-    ternary_operand(Right).
+    ternary_operand(Right),
+    { normalise_ternary_cmp(Left, Op, Right, Cond) }.
+
+% Put a string literal on the RIGHT, mirroring the operator: the comparator the
+% codegen uses projects a field out of the record, so the field must be the left
+% operand. Same normalisation the reversed pattern production performs, via the
+% same swap_cmp_op/2, so `"a" == $1` means one thing everywhere.
+normalise_ternary_cmp(string(Value), ReadOp, field(Index),
+        cmp(field(Index), Op, string(Value))) :-
+    integer(Index),
+    Index > 0,
+    swap_cmp_op(ReadOp, Op),
+    !.
+normalise_ternary_cmp(Left, Op, Right, cmp(Left, Op, Right)).
 
 % A ternary condition operand or branch: a field_expr (`$N`, `NR`, `NF`,
 % arithmetic, `length(...)`, ...) or a bare integer literal (which field_expr
