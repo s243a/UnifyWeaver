@@ -127,9 +127,16 @@ v0.4** (*measured*, `test_process_expression_enumerator.py`; grids = the witness
 
 | scenario | expressions | structural templates |
 |---|---:|---:|
-| naive full (methodology kwargs everywhere) | **3,303,413,185,358** | 3,835,821 |
-| methodology on the root only | 54,871,574 | **98,070** |
-| structural only (no `estimand`/`impl`/`mu`) | 10,756,382 | 28,521 |
+| naive full (methodology kwargs everywhere) | **3,303,413,185,358** | 3,795,703 |
+| methodology on the root only | 54,871,574 | **96,196** |
+| structural only (no `estimand`/`impl`/`mu`) | 10,756,382 | 28,225 |
+
+Template counts use the **resolved-kwarg identity** — the established structural-template
+convention, where a defaulted kwarg is always present after canonical resolution and
+absent-vs-explicit-default is not a template distinction. (An earlier revision counted raw
+production skeletons, 98,070; the adversarial re-review computed 96,196 under the established
+identity, and the corrected DP reproduces that number exactly — a genuine identity mismatch,
+not a counting error.)
 | v0.3, for scale (history) | 285,478 | 19,131 |
 
 What moved: `estimand=` (9 values) × `impl=` (2) on eleven operators, `mu=` taking judge
@@ -151,7 +158,7 @@ methodology-root-only support (`covers()`, including the six-node `graph-judge` 
 
 ### 2.5 The corpus decision: components compose; complete trees are samples
 
-An earlier draft of this section recommended freezing the 98,070 complete-tree templates as the
+An earlier draft of this section recommended freezing the ~96k complete-tree templates as the
 exhaustive support. The owner rejected that direction: *"We can't have that many templates. The
 templates need to both be more general, and used as composable components."* The revision below
 follows that ruling, and the measurement shows why it is right — the complete-tree "templates"
@@ -163,19 +170,30 @@ of these components through the type system. The support is **serialized content
 (adversarial review finding on the first draft: an invalid component can replace a valid one at
 equal cardinality, so counts alone cannot freeze support — and the first draft's vocabulary
 indeed counted three unenumerable `blend/3{…w…}` shapes that the legality rules exclude).
-`component_vocabulary()` emits canonical identities (`op:blend/2{w}`,
+`component_vocabulary()` emits canonical identities (`op:blend/2{w:number_list}`,
 `edge:lineage.kw:mu->judge`, `slot:max/2.arg0:number`), and
 `component_vocabulary_sha256()` binds the set. *Measured*
 (`test_process_expression_enumerator.py`):
 
 | component class | count |
 |---|---:|
-| leaf shapes (output type × modifier shape) | 9 |
-| operator-local shapes, interior (no methodology kwargs) | 24 |
-| operator-local shapes, root-only extension (methodology patterns) | 48 |
+| leaf shapes (output type × modifier shape, terminals pinned) | 9 |
+| operator-local shapes, interior (no methodology kwargs) | 21 |
+| operator-local shapes, root-only extension (methodology patterns) | 46 |
 | node-composition edges (parent slot → child output, incl. `mu=`) | 31 |
 | literal slots (parent slot → value kind; terminate, do not compose) | 2 |
-| **component vocabulary total** | **81** |
+| **component vocabulary total** | **76** |
+
+Component identities are the **resolved-kwarg** patterns (same identity convention as templates
+— `decay:number` appears in every `lineage` component, never as a presence choice), carry their
+**registry-declared kwarg kinds** (`op:lineage/1{decay:number,mu:judge}`), and leaves pin their
+**exact terminal atoms** (`leaf:judge.D{luna}`, `leaf:substrate{fs,pearltrees,simplemind,simplewiki}`)
+— so an atom added, renamed, or re-typed moves the vocabulary hash even at constant cardinality.
+The manifest also states its own exclusion boundary (`excluded_synthetic`: pins, string kwargs,
+interior methodology — each sampler coverage with its owning section), and
+`enumeration_spec_sha256()` additionally binds the registry signature-table content witness and
+the categorical value domains (`ESTIMANDS`, `IMPLS`), so the preregistration preimage pins the
+semantics the vocabulary derives from, not only the vocabulary itself.
 
 **Three layers, deliberately separated** — the first draft conflated them:
 
@@ -193,10 +211,11 @@ indeed counted three unenumerable `blend/3{…w…}` shapes that the legality ru
    frequency only; it can never repair a support gap, which is why layers 1–2 are checked
    before any §4 arm runs.
 
-Neither the 98,070 complete shapes nor the 54.9M expressions is an enumeration target again;
+Neither the 96,196 complete shapes nor the 54.9M expressions is an enumeration target again;
 those stand only as measurements of the composition space — the reason exhaustiveness died.
-(The 98,070 figure itself is triple-checked: DP, reduced-caps brute force, and a full-caps
-template materialization by an independent code path.)
+(The 96,196 figure is quadruple-checked: DP, reduced-caps brute force, a full-caps template
+materialization by an independent code path, and the re-reviewer's independent computation
+under the established identity.)
 
 **Composition-aware splits (§8 coupling).** Under a component-level support, the LOCO split
 unit stays the whole tree, but the split gains a constraint and a redefinition: the training
@@ -205,6 +224,29 @@ induced by splitting is a build error, fail closed); the **far slice** is redefi
 whose *compositions* — (edge, context) pairs beyond single edges — are unseen in training,
 which is exactly generalization over composition. Both are checkable at build time from the
 serialized vocabulary.
+
+The split has a canonical identity and a deterministic assignment algorithm — nothing about it
+is a runtime judgment call:
+
+- **Unit and identity.** The split unit is the whole tree, identified by its 64-hex
+  `full_process_digest` (semantic). The composition identity a far-slice test reads is the
+  **edge-context pair**: the serialized string
+  `pair:<parent component identity>|<edge identity>|<child component identity>`, computed from
+  the same vocabulary serialization the support freeze pins. A tree's pair set is a pure
+  function of its AST.
+- **Assignment.** Base assignment is `int(sha256(digest || split_seed)) mod 10_000` mapped to
+  train/dev/test by preregistered fraction boundaries — deterministic, seed-pinned, and
+  independent of enumeration or sampling order.
+- **Repair pass, deterministic and recorded.** After base assignment, iterate the support
+  items (components, node edges, literal slots, grid values) in sorted identity order; for any
+  item unwitnessed in train, move the lexicographically smallest-digest tree containing it
+  from dev, else from test, into train. Every move is recorded in the split manifest with the
+  item that forced it. Fail closed if an item is witnessed by no tree at all, or if repair
+  would empty a slice below its preregistered floor.
+- **Far-slice membership** is then computed, never sampled: a test tree is *far* iff its pair
+  set contains at least one pair absent from the union of train pair sets. The split manifest
+  records seed, fractions, floors, moves, far-slice membership, and the support-coverage
+  check's result, and is content-addressed alongside the corpus manifest.
 
 Restricting methodology kwargs to the root remains the recommendation and is semantically
 motivated: `estimand=`/`impl=` are deployment metadata and `require_deployable` checks exactly
@@ -683,7 +725,7 @@ structural-effectiveness evidence used for weighting requires an independent eva
 inner/outer separation between the runs that fit the weights and the runs that evaluate the
 encoder.
 
-**The tractable path is features, not templates.** 98,070 per-template measurements (v0.4
+**The tractable path is features, not templates.** 96,196 per-template measurements (v0.4
 root-only count; 19,131 under v0.3) will never
 exist, but structural *features* — depth, operator composition, presence of a `routing` stage,
 `distill` wrapping, blend arity — can be measured because ledger runs can be designed as

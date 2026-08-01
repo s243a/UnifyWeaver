@@ -122,7 +122,11 @@ jobs:
             prototypes/mu_cosine/test_process_expression_p1_protocol.py \
             prototypes/mu_cosine/test_process_expression_vnext_frontend.py \
             prototypes/mu_cosine/test_process_expression_vnext_patterns.py \
-            prototypes/mu_cosine/test_process_expression_tokenizer.py
+            prototypes/mu_cosine/test_process_expression_tokenizer.py \
+            prototypes/mu_cosine/test_registry_v04_obligations.py \
+            prototypes/mu_cosine/test_registry_v04_migration.py \
+            prototypes/mu_cosine/test_registry_v04_stage5.py \
+            prototypes/mu_cosine/test_process_expression_enumerator.py
 
       - name: Run F# WAM target tests (codegen + dotnet smoke + LMDB conformance)
         env:

@@ -311,7 +311,7 @@ def test_specification_records_the_measured_numbers():
     for needle in (
         "3,303,413,185,358",  # naive v0.4 enumeration — the explosion finding
         "54,871,574",         # methodology-root-only expressions
-        "98,070",             # methodology-root-only structural templates
+        "96,196",             # methodology-root-only structural templates
         "285,478",            # v0.3 corpus, retained as history
         "10/10",              # registered-process coverage under v0.4
         "0.9725",             # e5 numeric insensitivity

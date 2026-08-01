@@ -45,6 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import process_cards as pc
 from process_cards import REGISTRY
+from registry_v04_migration import registry_content_sha256 as _registry_content_sha256
 
 ENUMERATION_VERSION = "enum-v1"
 
@@ -94,6 +95,12 @@ def enumeration_spec_sha256() -> str:
         "excluded": ["string", "pins"],
         "scenarios": {name: dict(flags) for name, flags in sorted(SCENARIOS.items())},
         "component_vocabulary_sha256": component_vocabulary_sha256(),
+        # Registry semantics: the signature-table content witness (kinds,
+        # defaults, outputs, modifiers) plus the categorical value domains
+        # the signatures reference by kind name only.
+        "registry_content_sha256": _registry_content_sha256(),
+        "estimands": sorted(pc.ESTIMANDS),
+        "impls": sorted(pc.IMPLS),
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -185,6 +192,15 @@ def _kwarg_selections(
             continue
         if spec.kind in pc.OUTPUT_TYPES or spec.kind == "process":
             per_key[key] = "NODE"
+            continue
+        if template_mode and spec.default is not None:
+            # The template identity is computed over RESOLVED kwargs — the
+            # established structural-template convention: a defaulted kwarg is
+            # always present after canonical resolution, so absent-vs-explicit
+            # is not a template distinction and contributes no presence choice.
+            # (Re-review finding: counting it split templates the canonical
+            # identity merges.)
+            per_key[key] = None
             continue
         count = _value_count(spec.kind, template_mode)
         if not template_mode and spec.default is not None:
@@ -343,20 +359,30 @@ def _depth(node) -> int:
 
 def _values_in_grid(node) -> bool:
     """Every literal must come from the declared grids, judged by the
-    registry-declared kind — `estimand`/`impl` are enumerations (validate
-    already holds them to their sets), `string` fields are excluded from
-    enumeration entirely (§3.2), and numeric kinds must sit on the grid."""
+    registry-DECLARED kind — never the runtime type. `estimand`/`impl` are
+    enumerations (validate already holds them to their sets), `string` fields
+    are excluded from enumeration entirely (§3.2), and numeric kinds must sit
+    on the declared kind's grid: `max(10, e5)` parses (int satisfies a
+    `number` slot) but 10 is outside NUMBER_GRID, so it is outside the
+    enumerable support — the adversarial re-review's counterexample."""
     signature = REGISTRY[node.name]
-    for child in node.args:
+    for index, child in enumerate(node.args):
         if isinstance(child, pc.Node):
             if not _values_in_grid(child):
                 return False
-        elif isinstance(child, float):
-            if child not in NUMBER_GRID:
-                return False
-        elif isinstance(child, int) and not isinstance(child, bool):
-            if child not in NUMBER_GRID + INT_GRID:
-                return False
+            continue
+        declared = (
+            signature.arg_types[index]
+            if index < len(signature.arg_types)
+            else signature.variadic_arg_type
+        )
+        kinds = [alt for alt in declared.split("|") if alt in pc.VALUE_KINDS]
+        if len(kinds) != 1:
+            return False
+        grid = NUMBER_GRID if kinds[0] == "number" else (
+            INT_GRID if kinds[0] == "int" else ())
+        if child not in grid:
+            return False
     for key, value in node.kwargs:
         kind = signature.kwargs[key].kind
         if isinstance(value, pc.Node):
@@ -438,26 +464,32 @@ def covers(node, scenario: str) -> bool:
 
 
 def _component_kwarg_patterns(name: str, sig, arity: int, allow_methodology: bool):
-    """Legal kwarg-presence patterns for one operator shape — the SAME
+    """Legal RESOLVED kwarg patterns for one operator shape — the SAME
     legality rules `_kwarg_selections` enforces (routing pairing, blend.w
     length forced by arity and capped by the list limit, strings excluded),
-    so a pattern is a component if and only if it is enumerable. Counts alone
-    cannot freeze support; these patterns serialize into identities below."""
+    so a pattern is a component if and only if it is enumerable. The pattern
+    is the canonical *resolved* key set: a defaulted kwarg is always present
+    after resolution, so it belongs to every pattern and is never a presence
+    choice (re-review alignment with the structural-template identity).
+    Counts alone cannot freeze support; patterns serialize into identities."""
 
-    usable = []
+    constant, usable = [], []
     for key in sorted(sig.kwargs):
         spec = sig.kwargs[key]
         if key in ("estimand", "impl") and not allow_methodology:
             continue
         if spec.kind == "string":
             continue
-        usable.append(key)
+        if spec.default is not None:
+            constant.append(key)  # resolved into every pattern
+        else:
+            usable.append(key)
     patterns = set()
     for r in range(0, MAX_KWARGS_NODE + 1):
         for subset in itertools.combinations(usable, r):
             chosen = set(subset)
             if any(
-                spec.required and key not in chosen
+                spec.required and key not in chosen and key not in constant
                 for key, spec in sig.kwargs.items()
             ):
                 continue
@@ -465,7 +497,7 @@ def _component_kwarg_patterns(name: str, sig, arity: int, allow_methodology: boo
                 continue
             if name == "blend" and "w" in chosen and arity > MAX_LIST_LENGTH:
                 continue  # w's length is the arity; capped out = unenumerable
-            patterns.add(frozenset(chosen))
+            patterns.add(frozenset(chosen | set(constant)))
     return patterns
 
 
@@ -486,13 +518,25 @@ def component_vocabulary() -> dict:
     terminate in grid values.
     """
 
-    leaf_ids = set()
+    # Leaf identities carry their exact terminal atoms: `leaf:judge.D{luna}`.
+    # Without the terminals, a leaf shape's realizing set could change (an
+    # atom added or renamed) while the identity — and any count — stayed
+    # fixed (re-review finding: the manifest must pin terminals).
+    terminals: dict = {}
     for name, sig in REGISTRY.items():
         if sig.atom and not sig.operator:
-            leaf_ids.add(f"leaf:{sig.output}")
+            terminals.setdefault((sig.output, None), set()).add(name)
             for modifier in sig.modifiers:
-                leaf_ids.add(f"leaf:{sig.output}.{modifier}")
-    leaf_ids.add("leaf:score.e5-atom")  # the dual atom is its own leaf shape
+                terminals.setdefault((sig.output, modifier), set()).add(name)
+    terminals[("score", "e5-atom")] = {"e5"}  # the dual atom's own leaf shape
+    leaf_ids = set()
+    for (output, modifier), atoms in terminals.items():
+        shape = f"{output}.{modifier}" if modifier else output
+        leaf_ids.add(f"leaf:{shape}{{{','.join(sorted(atoms))}}}")
+
+    def _typed(pattern, sig):
+        # kwarg keys carry their registry-declared kinds: `mu:judge`.
+        return ",".join(f"{key}:{sig.kwargs[key].kind}" for key in sorted(pattern))
 
     interior_ids: set = set()
     root_only_ids: set = set()
@@ -506,9 +550,9 @@ def component_vocabulary() -> dict:
         for arity in range(sig.min_args, min(cap, MAX_ARITY) + 1):
             interior_patterns = _component_kwarg_patterns(name, sig, arity, False)
             for pattern in interior_patterns:
-                interior_ids.add(f"op:{name}/{arity}{{{','.join(sorted(pattern))}}}")
+                interior_ids.add(f"op:{name}/{arity}{{{_typed(pattern, sig)}}}")
             for pattern in _component_kwarg_patterns(name, sig, arity, True):
-                identity = f"op:{name}/{arity}{{{','.join(sorted(pattern))}}}"
+                identity = f"op:{name}/{arity}{{{_typed(pattern, sig)}}}"
                 if pattern not in interior_patterns:
                     root_only_ids.add(identity)
             for index in range(arity):
@@ -536,6 +580,15 @@ def component_vocabulary() -> dict:
         "operators_root_only": sorted(root_only_ids),
         "node_edges": sorted(node_edge_ids),
         "literal_slots": sorted(literal_slot_ids),
+        # Synthetic forms the support deliberately excludes, named so the
+        # manifest states its own boundary instead of implying it: each is
+        # sampler coverage with its owning section.
+        "excluded_synthetic": [
+            "pins (sampler coverage, generator spec 3.1)",
+            "string kwargs (sampler coverage, generator spec 3.2)",
+            "interior methodology kwargs (sampler coverage under"
+            " methodology-root-only, generator spec 2.5)",
+        ],
     }
 
 

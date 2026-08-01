@@ -40,9 +40,13 @@ def test_measured_scenario_counts_are_pinned():
 
 
 def test_measured_template_counts_are_pinned():
-    assert en.count("naive-full", template_mode=True)[0] == 3_835_821
-    assert en.count("methodology-root-only", template_mode=True)[0] == 98_070
-    assert en.count("structural-only", template_mode=True)[0] == 28_521
+    """Template identity is the RESOLVED-kwarg identity (the established
+    structural-template convention): absent-vs-explicit-default is not a
+    template distinction. The re-review computed 96,196 independently under
+    that identity; this DP reproduces it exactly."""
+    assert en.count("naive-full", template_mode=True)[0] == 3_795_703
+    assert en.count("methodology-root-only", template_mode=True)[0] == 96_196
+    assert en.count("structural-only", template_mode=True)[0] == 28_225
 
 
 def test_the_binding_constraint_moved_to_kwarg_enumeration():
@@ -61,11 +65,11 @@ def test_component_vocabulary_is_pinned():
     through the type system — not complete-tree skeletons."""
     assert en.component_vocabulary_counts() == {
         "leaf_shapes": 9,
-        "operator_shapes_interior": 24,
-        "operator_shapes_root_only_extension": 48,
+        "operator_shapes_interior": 21,
+        "operator_shapes_root_only_extension": 46,
         "node_composition_edges": 31,
         "literal_slots": 2,
-        "vocabulary_total": 81,
+        "vocabulary_total": 76,
     }
 
 
@@ -79,9 +83,9 @@ def test_component_vocabulary_is_content_not_counts():
                   + vocabulary["operators_root_only"])
     # blend.w's length is its arity; arity 3 exceeds the list cap, so no
     # w-bearing blend/3 component may exist (the first draft counted three).
-    assert not any(item.startswith("op:blend/3") and "w" in item
+    assert not any(item.startswith("op:blend/3") and "w:" in item
                    for item in everything)
-    assert "op:blend/2{w}" in everything          # the legal counterpart
+    assert "op:blend/2{w:number_list}" in everything  # the legal counterpart
     # Node-composition edges are separated from literal slots: only the
     # former compose recursively.
     assert "edge:lineage.kw:mu->judge" in vocabulary["node_edges"]
@@ -95,7 +99,7 @@ def test_component_vocabulary_is_content_not_counts():
     forged = dict(vocabulary)
     forged["operators_interior"] = (
         [item for item in vocabulary["operators_interior"]
-         if item != "op:blend/2{w}"] + ["op:blend/3{w}"])
+         if item != "op:blend/2{w:number_list}"] + ["op:blend/3{w:number_list}"])
     import hashlib as _hashlib
     forged_sha = _hashlib.sha256(
         _json.dumps(forged, sort_keys=True, separators=(",", ":")).encode()
@@ -122,6 +126,49 @@ def test_component_vocabulary_is_tiny_relative_to_the_composition_space():
     templates = en.count("methodology-root-only", template_mode=True)[0]
     vocabulary = en.component_vocabulary_counts()["vocabulary_total"]
     assert templates > 1000 * vocabulary
+
+
+def test_covers_judges_literals_by_declared_kind_not_runtime_type():
+    """Re-review counterexample: max(10, e5) parses (an int satisfies a
+    `number` slot) but 10 is outside NUMBER_GRID, so it is outside the
+    enumerable support — covers() must say so."""
+    assert not en.covers(pc.parse("max(10,e5)"), "methodology-root-only")
+    assert en.covers(pc.parse("max(0.02,e5)"), "methodology-root-only")
+
+
+def test_manifest_pins_terminals_typed_kwargs_and_synthetic_boundary():
+    """Re-review: the manifest must carry exact terminals, typed kwargs, and
+    its own exclusion boundary — not imply them."""
+    vocabulary = en.component_vocabulary()
+    assert "leaf:substrate{fs,pearltrees,simplemind,simplewiki}" in vocabulary["leaves"]
+    assert "leaf:judge.D{luna}" in vocabulary["leaves"]
+    assert "leaf:score.e5-atom{e5}" in vocabulary["leaves"]
+    assert "op:lineage/1{decay:number,mu:judge}" in (
+        vocabulary["operators_interior"])
+    assert any("pins" in item for item in vocabulary["excluded_synthetic"])
+    assert any("string" in item for item in vocabulary["excluded_synthetic"])
+    assert any("interior methodology" in item
+               for item in vocabulary["excluded_synthetic"])
+
+
+def test_component_patterns_use_the_resolved_kwarg_identity():
+    """decay has a registered default, so it is in EVERY lineage component —
+    never a presence choice — matching canonical resolution."""
+    vocabulary = en.component_vocabulary()
+    lineage = [item for item in vocabulary["operators_interior"]
+               + vocabulary["operators_root_only"]
+               if item.startswith("op:lineage/")]
+    assert lineage and all("decay:number" in item for item in lineage)
+
+
+def test_spec_sha_binds_registry_semantics_and_domains():
+    sha = en.enumeration_spec_sha256()
+    original = pc.ESTIMANDS
+    try:
+        pc.ESTIMANDS = frozenset(original | {"bogus_relation"})
+        assert en.enumeration_spec_sha256() != sha
+    finally:
+        pc.ESTIMANDS = original
 
 
 def test_registered_processes_are_inside_the_root_only_support():
@@ -393,6 +440,8 @@ def test_dp_matches_full_caps_template_materialization():
                             vals = [(f"<number_list:len{arity}>", 0)]
                         elif spec.kind == "string":
                             continue
+                        elif spec.default is not None:
+                            continue  # resolved into every shape below, not a choice
                         else:
                             vals = [(s, 0) for s in kw_shapes(spec.kind)]
                         if not vals:
@@ -423,9 +472,14 @@ def test_dp_matches_full_caps_template_materialization():
                                     total = base_nodes + sum(n for _, _, n in sel)
                                     if total > en.MAX_NODE_COUNT:
                                         continue
+                                    resolved = list(sel) + [
+                                        (k, f"<{sp.kind}>", 0)
+                                        for k, sp in sig.kwargs.items()
+                                        if sp.default is not None
+                                    ]
                                     kw_part = ",".join(
                                         f"{k}={s}" for k, s, _ in
-                                        sorted(sel, key=lambda item: item[0])
+                                        sorted(resolved, key=lambda item: item[0])
                                     )
                                     body = ",".join(s for s, _ in arg_sel)
                                     template = (f"{name}({body}"
