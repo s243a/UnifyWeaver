@@ -2743,6 +2743,59 @@ fn test_atomic_direct() {
 }
 
 #[test]
+fn test_type_predicates_direct() {
+    assert!(call1("atom/1", a("x")).0);
+    assert!(!call1("atom/1", i(1)).0);
+    assert!(!call1("atom/1", Value::List(vec![])).0);
+
+    assert!(call1("integer/1", i(1)).0);
+    assert!(!call1("integer/1", Value::Float(1.0)).0);
+    assert!(call1("float/1", Value::Float(1.0)).0);
+    assert!(!call1("float/1", i(1)).0);
+    assert!(call1("number/1", i(1)).0);
+    assert!(call1("number/1", Value::Float(1.0)).0);
+    assert!(!call1("number/1", a("one")).0);
+
+    assert!(call1(
+        "compound/1", Value::Str("node/1".to_string(), vec![a("x")])).0);
+    assert!(call1("compound/1", Value::List(vec![a("x")])).0);
+    assert!(!call1("compound/1", Value::List(vec![])).0);
+    assert!(!call1("compound/1", a("x")).0);
+
+    assert!(call1("var/1", ub("X")).0);
+    assert!(!call1("var/1", a("x")).0);
+    assert!(call1("nonvar/1", a("x")).0);
+    assert!(!call1("nonvar/1", ub("X")).0);
+    assert!(call1("is_list/1", Value::List(vec![])).0);
+    assert!(call1("is_list/1", Value::List(vec![a("x")])).0);
+    assert!(!call1("is_list/1", a("x")).0);
+
+    let (bind_ok, mut bound_atom_vm) = call2("=/2", ub("X"), a("bound"));
+    assert!(bind_ok);
+    for op in ["atom/1", "nonvar/1"] {
+        bound_atom_vm.set_reg("A1", ub("X"));
+        assert!(bound_atom_vm.execute_builtin(op, 1), "{op} must dereference X");
+    }
+    bound_atom_vm.set_reg("A1", ub("X"));
+    assert!(!bound_atom_vm.execute_builtin("var/1", 1));
+
+    let (list_bind_ok, mut bound_list_vm) = call2(
+        "=/2", ub("X"), Value::List(vec![a("item")]));
+    assert!(list_bind_ok);
+    for op in ["compound/1", "is_list/1"] {
+        bound_list_vm.set_reg("A1", ub("X"));
+        assert!(bound_list_vm.execute_builtin(op, 1), "{op} must dereference X");
+    }
+
+    for op in [
+        "atom/1", "integer/1", "float/1", "number/1", "atomic/1",
+        "compound/1", "var/1", "nonvar/1", "is_list/1",
+    ] {
+        assert!(!vmnew().execute_builtin(op, 1), "{op} requires A1");
+    }
+}
+
+#[test]
 fn test_tab_direct() {
     assert!(call1("tab/1", i(3)).0);
     assert!(call1("tab/1", i(0)).0);
