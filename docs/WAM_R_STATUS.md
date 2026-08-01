@@ -63,13 +63,16 @@ default 4096), and explicit `auto` (codegen resolves via shared
   `emit_mode(functions)` + auto `category_ancestor/4` kernel, reference
   parity match — see `docs/design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md`.
   Further optimized by PERF-R-CA-DIRECT / IDDFS / IDCACHE / STACK / IDTABLE /
-  WAM-STEP / AGGREGATE-LOWER. Hosted-CI AGGREGATE-LOWER median
-  query_ms=1564 / total_ms=2077 (prior IDTABLE 3412/4076).
+  WAM-STEP / AGGREGATE-LOWER / AGG-BATCH. Hosted-CI AGG-BATCH median
+  query_ms=1111 / total_ms=1621 (prior AGGREGATE-LOWER 1564/2077;
+  IDTABLE 3412/4076).
   PERF-R-CA-LOOPBODY, PATHMARK, ED-BOUNDARY, and LOWERED-DIRECTCALL
   profiled/declined where measured. PERF-R-WAM-STEP short-circuits
   `is_lax` `**/^` and unary `-`. PERF-R-AGGREGATE-LOWER capability-gates
   scalar `sum|count|min|max` regions over `bulk_collect` generators
-  (~1.43–1.44× same-host query; steps 137817→14540).
+  (~1.43–1.44× same-host query; steps 137817→14540). PERF-R-AGG-BATCH
+  adds typed numeric batches + vectorized closed `is_lax` reduce
+  (~1.18× same-host query over AGGREGATE-LOWER; steps unchanged at 14540).
 
 ## Path forward
 
@@ -78,6 +81,6 @@ default 4096), and explicit `auto` (codegen resolves via shared
 
 ## Document status
 
-Fleet-aligned snapshot updated for PERF-R-AGGREGATE-LOWER (2026-08-01):
-hosted 1564/2077; PATHMARK, LOOPBODY, ED-BOUNDARY, and
+Fleet-aligned snapshot updated for PERF-R-AGG-BATCH (2026-08-01):
+hosted 1111/1621; PATHMARK, LOOPBODY, ED-BOUNDARY, and
 LOWERED-DIRECTCALL declined where measured.
