@@ -1653,6 +1653,12 @@ WamRuntime$step <- function(program, state, instr) {
     # are exhausted, backtrack reaches the aggregate frame and
     # finalizes -- binding the bag register to the accumulated list.
     "BeginAggregate" = {
+      # Capability-gated scalar aggregate region (PERF-R-AGGREGATE-LOWER):
+      # when the body is a single Call/Execute to a bulk_collect-capable
+      # predicate plus straight-line is_lax arithmetic, accumulate without
+      # per-solution EndAggregate/backtrack. Unsupported shapes fall through.
+      handled <- WamRuntime$try_scalar_aggregate_fastpath(program, state, instr)
+      if (!is.null(handled)) return(handled)
       # Pre-compute the matching end_aggregate's PC so the aggregate
       # frame has a valid continuation even when the goal has zero
       # solutions (and thus EndAggregate never fires). We scan from
@@ -3813,6 +3819,317 @@ WamRuntime$aggregate_result <- function(kind, collected, table) {
     return(NULL)
   }
   WamRuntime$wam_list_build(items, table)
+}
+
+# ------------------------------------------------------------------
+# PERF-R-AGGREGATE-LOWER: capability-gated scalar aggregate regions
+# ------------------------------------------------------------------
+# Kernels may register a bulk_collect(program, state) -> list of
+# list(reg=<Ai>, val=<numeric>) solutions under
+# program$lowered_dispatch$__bulk_collect__. BeginAggregate then
+# optionally compiles a closed is_lax arithmetic template and reduces
+# without EndAggregate/backtrack. Anything outside the closed shape
+# returns NULL from try_scalar_aggregate_fastpath and uses the classic
+# aggregate frame path unchanged.
+WamRuntime$bulk_collect_env <- function(program) {
+  if (is.null(program$lowered_dispatch)) return(NULL)
+  if (!exists("__bulk_collect__", envir = program$lowered_dispatch,
+             inherits = FALSE)) {
+    assign("__bulk_collect__", new.env(parent = emptyenv()),
+           envir = program$lowered_dispatch)
+  }
+  get("__bulk_collect__", envir = program$lowered_dispatch, inherits = FALSE)
+}
+
+WamRuntime$register_bulk_collect <- function(program, key, fn) {
+  be <- WamRuntime$bulk_collect_env(program)
+  if (is.null(be)) return(invisible(NULL))
+  assign(as.character(key), fn, envir = be)
+  invisible(NULL)
+}
+
+WamRuntime$compile_scalar_aggregate_arith <- function(body, call_i) {
+  if (call_i >= length(body)) return(NULL)
+  post <- body[(call_i + 1L):length(body)]
+  compiled <- list()
+  i <- 1L
+  while (i <= length(post)) {
+    if (!(post[[i]]$op %in% c("PutVariable", "PutValue"))) return(NULL)
+    dest <- as.integer(post[[i]]$xn)
+    if (as.integer(post[[i]]$ai) != 1L) return(NULL)
+    i <- i + 1L
+    if (i > length(post) || !identical(post[[i]]$op, "PutStructure")) return(NULL)
+    fid <- as.integer(post[[i]]$fid)
+    arity <- as.integer(post[[i]]$arity)
+    if (as.integer(post[[i]]$ai) != 2L) return(NULL)
+    i <- i + 1L
+    args <- vector("list", arity)
+    for (a in seq_len(arity)) {
+      if (i > length(post)) return(NULL)
+      if (identical(post[[i]]$op, "SetValue") ||
+          identical(post[[i]]$op, "SetVariable")) {
+        args[[a]] <- list(kind = "reg", reg = as.integer(post[[i]]$xn))
+      } else if (identical(post[[i]]$op, "SetConstant")) {
+        c <- post[[i]]$c
+        if (is.null(c$tag) || !(c$tag %in% c("int", "float"))) return(NULL)
+        args[[a]] <- list(kind = "const", val = as.numeric(c$val))
+      } else return(NULL)
+      i <- i + 1L
+    }
+    if (i > length(post) || !identical(post[[i]]$op, "BuiltinCall")) return(NULL)
+    bp <- as.character(post[[i]]$pred)
+    if (!(bp %in% c("is/2", "is_lax/2"))) return(NULL)
+    i <- i + 1L
+    compiled[[length(compiled) + 1L]] <- list(
+      dest = dest, fid = fid, arity = arity, args = args)
+  }
+  if (!length(compiled)) return(NULL)
+  compiled
+}
+
+WamRuntime$eval_scalar_aggregate_arith <- function(program, compiled, reg_env) {
+  for (step in compiled) {
+    opname <- WamRuntime$string_of(program$intern_table, as.integer(step$fid))
+    if (is.null(opname) || !nzchar(opname)) return(NULL)
+    vals <- numeric(length(step$args))
+    for (j in seq_along(step$args)) {
+      a <- step$args[[j]]
+      if (identical(a$kind, "const")) {
+        vals[[j]] <- a$val
+      } else {
+        key <- as.character(a$reg)
+        if (!exists(key, envir = reg_env, inherits = FALSE)) return(NULL)
+        vals[[j]] <- get(key, envir = reg_env, inherits = FALSE)
+      }
+    }
+    result <- switch(opname,
+      "+" = vals[[1]] + vals[[2]],
+      "-" = if (step$arity == 1L) -vals[[1]] else vals[[1]] - vals[[2]],
+      "*" = vals[[1]] * vals[[2]],
+      "/" = vals[[1]] / vals[[2]],
+      "//" = vals[[1]] %/% vals[[2]],
+      "**" = vals[[1]] ^ vals[[2]],
+      "^" = vals[[1]] ^ vals[[2]],
+      NULL)
+    if (is.null(result)) return(NULL)
+    assign(as.character(step$dest), result, envir = reg_env)
+  }
+  reg_env
+}
+
+WamRuntime$scalar_aggregate_bag_term <- function(kind, stream_n, stream_total,
+                                                  stream_saw_float, stream_best_n) {
+  if (identical(kind, "count")) return(IntTerm(as.integer(stream_n)))
+  if (identical(kind, "min") || identical(kind, "max")) {
+    if (stream_n == 0L || is.null(stream_best_n)) return(NULL)
+    if (stream_saw_float || stream_best_n != trunc(stream_best_n))
+      return(FloatTerm(stream_best_n))
+    return(IntTerm(as.integer(stream_best_n)))
+  }
+  total <- stream_total
+  if (stream_saw_float || !is.finite(total) ||
+      total > .Machine$integer.max ||
+      total < (-.Machine$integer.max - 1) || total != trunc(total))
+    return(FloatTerm(total))
+  IntTerm(as.integer(total))
+}
+
+# Returns TRUE/FALSE when the fast path handled the region; NULL to
+# fall through to the classic BeginAggregate frame.
+WamRuntime$try_scalar_aggregate_fastpath <- function(program, state, instr) {
+  kind <- as.character(instr$kind)
+  if (!(kind %in% c("sum", "count", "min", "max"))) return(NULL)
+  be <- WamRuntime$bulk_collect_env(program)
+  if (is.null(be)) return(NULL)
+
+  end_pc <- 0L
+  depth <- 1L
+  for (j in seq.int(state$pc + 1L, length(program$instructions))) {
+    opj <- program$instructions[[j]]$op
+    if (opj == "BeginAggregate") depth <- depth + 1L
+    else if (opj == "EndAggregate") {
+      depth <- depth - 1L
+      if (depth == 0L) { end_pc <- j; break }
+    }
+  }
+  if (end_pc == 0L) return(NULL)
+
+  body_pcs <- seq.int(state$pc + 1L, end_pc - 1L)
+  body <- program$instructions[body_pcs]
+  call_i <- 0L
+  for (i in seq_along(body)) {
+    op <- body[[i]]$op
+    if (op %in% c("Call", "Execute")) {
+      if (call_i != 0L) return(NULL)
+      call_i <- i
+    } else if (op %in% c("PutValue", "PutVariable", "PutConstant",
+                          "PutStructure", "PutList", "SetValue",
+                          "SetVariable", "SetConstant", "GetVariable",
+                          "GetValue", "GetConstant", "BuiltinCall")) {
+      if (identical(op, "BuiltinCall") &&
+          !(as.character(body[[i]]$pred) %in% c("is/2", "is_lax/2")))
+        return(NULL)
+    } else return(NULL)
+  }
+  if (call_i == 0L) return(NULL)
+  cinst <- body[[call_i]]
+  key <- paste0(as.character(cinst$pred), "/", as.integer(cinst$arity))
+  if (!exists(key, envir = be, inherits = FALSE)) return(NULL)
+  compiled <- WamRuntime$compile_scalar_aggregate_arith(body, call_i)
+  if (is.null(compiled)) return(NULL)
+  for (step in compiled) {
+    opname <- WamRuntime$string_of(program$intern_table, as.integer(step$fid))
+    if (is.null(opname) ||
+        !(opname %in% c("+", "-", "*", "/", "//", "**", "^"))) return(NULL)
+  }
+
+  # Run setup puts until the generator Call/Execute.
+  state$pc <- state$pc + 1L
+  call_pc <- state$pc + call_i - 1L
+  while (state$pc < call_pc) {
+    if (!isTRUE(WamRuntime$step(program, state,
+                                program$instructions[[state$pc]])))
+      return(FALSE)
+  }
+
+  bulk_fn <- get(key, envir = be, inherits = FALSE)
+  sols <- bulk_fn(program, state)
+  if (is.null(sols)) return(FALSE)
+
+  out_aliases <- new.env(parent = emptyenv())
+  for (i in seq_len(call_i - 1L)) {
+    bi <- body[[i]]
+    if (identical(bi$op, "PutVariable")) {
+      ai_key <- as.character(as.integer(bi$ai))
+      prev <- if (exists(ai_key, envir = out_aliases, inherits = FALSE))
+        get(ai_key, envir = out_aliases, inherits = FALSE) else integer(0)
+      assign(ai_key, c(prev, as.integer(bi$xn)), envir = out_aliases)
+    }
+  }
+
+  needed <- integer(0)
+  for (step in compiled) {
+    needed <- c(needed, as.integer(step$dest))
+    for (a in step$args)
+      if (identical(a$kind, "reg")) needed <- c(needed, as.integer(a$reg))
+  }
+  needed <- unique(needed)
+  base_vals <- new.env(parent = emptyenv())
+  alias_all <- integer(0)
+  for (k in ls(out_aliases, all.names = TRUE))
+    alias_all <- c(alias_all, get(k, envir = out_aliases, inherits = FALSE))
+  for (r in needed) {
+    if (r %in% alias_all) next
+    # Skip output Ai keys too — filled per solution.
+    if (exists(as.character(r), envir = out_aliases, inherits = FALSE)) next
+    v <- WamRuntime$deref(state, WamRuntime$get_reg(state, r))
+    if (!is.null(v) && !is.null(v$tag) && v$tag %in% c("int", "float"))
+      assign(as.character(r), as.numeric(v$val), envir = base_vals)
+  }
+
+  template_reg <- as.integer(instr$template)
+  tkey <- as.character(template_reg)
+  stream_n <- 0L
+  stream_total <- 0.0
+  stream_saw_float <- FALSE
+  stream_best_n <- NULL
+  for (sol in sols) {
+    env <- new.env(parent = emptyenv())
+    for (k in ls(base_vals, all.names = TRUE))
+      assign(k, get(k, envir = base_vals, inherits = FALSE), envir = env)
+    out_reg <- as.integer(sol$reg)
+    assign(as.character(out_reg), as.numeric(sol$val), envir = env)
+    out_key <- as.character(out_reg)
+    aliases <- if (exists(out_key, envir = out_aliases, inherits = FALSE))
+      get(out_key, envir = out_aliases, inherits = FALSE) else integer(0)
+    for (a in aliases)
+      assign(as.character(a), as.numeric(sol$val), envir = env)
+    env2 <- WamRuntime$eval_scalar_aggregate_arith(program, compiled, env)
+    if (is.null(env2)) next
+    if (!exists(tkey, envir = env2, inherits = FALSE)) next
+    nval <- get(tkey, envir = env2, inherits = FALSE)
+    if (identical(kind, "count")) {
+      stream_n <- stream_n + 1L
+    } else if (identical(kind, "sum")) {
+      stream_total <- stream_total + nval
+      stream_n <- stream_n + 1L
+      if (nval != trunc(nval)) stream_saw_float <- TRUE
+    } else {
+      if (is.null(stream_best_n) ||
+          (identical(kind, "min") && nval < stream_best_n) ||
+          (identical(kind, "max") && nval > stream_best_n))
+        stream_best_n <- nval
+      stream_n <- stream_n + 1L
+      if (nval != trunc(nval)) stream_saw_float <- TRUE
+    }
+  }
+
+  bag <- WamRuntime$scalar_aggregate_bag_term(
+    kind, stream_n, stream_total, stream_saw_float, stream_best_n)
+  if (is.null(bag)) return(FALSE)
+  bag_reg <- as.integer(instr$bag)
+  cur <- WamRuntime$get_reg(state, bag_reg)
+  if (is.null(cur)) {
+    WamRuntime$put_reg(state, bag_reg, bag)
+  } else if (!WamRuntime$unify(state, cur, bag)) {
+    return(FALSE)
+  }
+  state$pc <- as.integer(end_pc + 1L)
+  TRUE
+}
+
+# Bulk collect for category_ancestor/4: numeric hops for A3, no stream CPs.
+WamRuntime$category_ancestor_bulk_collect <- function(program, state, edge_pred,
+                                                       edge_key, max_depth) {
+  table <- program$intern_table
+  src_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+  root_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+  visited <- WamRuntime$get_reg(state, 4L)
+  if (is.null(src_v) || is.null(root_v) ||
+      !identical(src_v$tag, "atom") || !identical(root_v$tag, "atom"))
+    return(list())
+  visited_elems <- WamRuntime$wam_list_decompose(state, visited, table)
+  if (is.null(visited_elems)) return(list())
+  cap <- WamRuntime$get_arg1_capability(program, edge_key)
+  lookup_ids <- if (!is.null(cap)) cap$lookup_ids else NULL
+  id_table <- if (!is.null(cap)) {
+    WamRuntime$resolve_arg1_parent_id_table(cap$id_table)
+  } else NULL
+  parent_lookup <- if (!is.null(cap)) cap$lookup else NULL
+  edge_atom_id <- WamRuntime$intern(table, edge_pred)
+  hops_num <- numeric(0)
+  if (!is.null(lookup_ids) || !is.null(id_table)) {
+    vlen0 <- length(visited_elems)
+    visited_ids <- integer(max(8L, vlen0))
+    for (i in seq_along(visited_elems)) {
+      elem <- visited_elems[[i]]
+      if (!is.null(elem) && identical(elem$tag, "atom"))
+        visited_ids[[i]] <- as.integer(elem$id)
+    }
+    out <- new.env(parent = emptyenv())
+    out$buf <- integer(8L)
+    out$n <- 0L
+    WamRuntime$category_ancestor_hops_ids(
+      lookup_ids, as.integer(src_v$id), as.integer(root_v$id),
+      visited_ids, vlen0, as.integer(max_depth), out, id_table)
+    if (out$n > 0L) hops_num <- as.numeric(out$buf[seq_len(out$n)])
+  } else {
+    visited_env <- new.env(parent = emptyenv())
+    for (elem in visited_elems) {
+      if (!is.null(elem) && identical(elem$tag, "atom"))
+        assign(as.character(elem$id), TRUE, envir = visited_env)
+    }
+    out <- new.env(parent = emptyenv())
+    out$hops <- list()
+    WamRuntime$category_ancestor_hops_rec(
+      program, state, edge_atom_id, parent_lookup, src_v, root_v$id,
+      visited_env, length(visited_elems), as.integer(max_depth), out)
+    if (length(out$hops) > 0L) {
+      hops_num <- vapply(out$hops, function(t) as.numeric(t$val), numeric(1))
+    }
+  }
+  if (!length(hops_num)) return(list())
+  lapply(hops_num, function(h) list(reg = 3L, val = h))
 }
 
 # Iterate a precomputed result list, unifying each entry with the

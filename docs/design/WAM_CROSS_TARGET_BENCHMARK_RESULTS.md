@@ -22,7 +22,7 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
 | **F# LMDB cached (two-level L1/L2)** | **2** | -- | **1** | **Yes** | Fact-access only (no WAM overhead); see below |
 | Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
-| R WAM (functions, kernels_on) | 3412 | 4076 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + IDTABLE (lazy in-memory adjacency); 3-rep median query |
+| R WAM (functions, kernels_on) | 1564 | 2077 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + AGGREGATE-LOWER (bulk_collect + scalar is_lax reduce); 3-rep median query |
 | Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
 
 **Key takeaway:** Atom interning (replacing `HashMap<String, Vec<String>>` with
@@ -354,14 +354,15 @@ R 4.3.3, single-core.
 
 | Scale | query_ms | total_ms | rows | Cores | vs reference |
 |-------|----------|----------|------|-------|--------------|
-| 300 | 3412 | 4076 | 271 | 1 | match (`normalize_three_column_float_rows`, 6 dp) |
+| 300 | 1564 | 2077 | 271 | 1 | match (`normalize_three_column_float_rows`, 6 dp) |
 
 `query_ms` is the 3-run median of article×root enumeration only
-(samples: 4078, 3412, 3268). `total_ms` is setup (Rscript startup +
+(samples: 2118, 1422, 1564). `total_ms` is setup (Rscript startup +
 generated-program / FactSource load + article/root TSV load) plus that
 median query. Output validated against
 `data/benchmark/300/reference_output.tsv` with canonical sort and 6-decimal
-float tolerance (not row-count-only).
+float tolerance (not row-count-only). Prior hosted IDTABLE row was
+3412 / 4076 (samples 4078, 3412, 3268).
 
 The prior hosted GitHub Actions post-PERF-R-CA-IDDFS median was query_ms=7521 /
 total_ms=8341 (samples: 8260, 7509, 7521). PERF-R-CA-IDCACHE reduces that to
@@ -514,7 +515,29 @@ rewired the ED-selected stub to call the existing lowered
 `power_sum_selected` function (skipping that predicate's WAM shell)
 cut steps by 3.54% with 271-row parity but was wall-time neutral
 (interleaved 7-rep medians ≈ 1.003× / 1.001×). No production change
-retained. Hosted IDTABLE reference remains 3412 / 4076.
+retained. Hosted IDTABLE reference remained 3412 / 4076 until
+AGGREGATE-LOWER.
+
+PERF-R-AGGREGATE-LOWER targets the `BeginAggregate`/`EndAggregate`
+region that still dominated after LOWERED-DIRECTCALL. Profile:
+`BeginAggregate`×385, `EndAggregate`×11172, 137817 `step`s; streaming
+numeric accumulate alone was wall-neutral, and bulk-collect + per-hop
+`step` of `is_lax` was slower. Retained path: kernels may register a
+`bulk_collect` capability; `BeginAggregate` for `sum|count|min|max`
+with a single Call/Execute plus straight-line `is`/`is_lax` arithmetic
+compiles the template and reduces without EndAggregate/backtrack.
+`category_ancestor/4` publishes hop bulk_collect; unsupported shapes
+keep the classic frame. Steps 137817→14540, EndAggregate 11172→0.
+Same-host interleaved 7-rep × 2 (R 4.3.3, 271-row six-decimal multiset
+parity):
+
+| Sequence | base median | candidate median | query speedup | total speedup |
+|----------|-------------|------------------|---------------|---------------|
+| A | 3005 | 2101 | 1.430× | 1.348× |
+| B | 3011 | 2088 | 1.442× | 1.358× |
+
+Hosted 3-rep after retain: query samples 2118, 1422, 1564 (median 1564 /
+total 2077). Primary matrix row updated accordingly.
 
 #### Reproduction
 

@@ -1099,7 +1099,13 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, IsoConfig, BasePC
         ),
         emit_r_lowered_wrapper(P, Arity, KFuncName, WrapperCode),
         emit_lowered_dispatch_entry(P, Arity, KFuncName, DispEntry),
-        NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
+        % PERF-R-AGGREGATE-LOWER: category_ancestor also publishes a
+        % bulk_collect capability so scalar aggregate regions can reduce
+        % hops without EndAggregate/backtrack. Other kernels omit this.
+        (   emit_bulk_collect_entry(P, Arity, Kernel, BulkEntry)
+        ->  NewLoweredDispAcc = [BulkEntry, DispEntry | LoweredDispAcc]
+        ;   NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
+        )
     ;   WamCodeForLower \= "",
         catch(wam_r_fact_classify(WamCodeForLower,
                                    fact_info(NCls, _FArity, FTuples)),
@@ -1172,6 +1178,22 @@ emit_lowered_dispatch_entry(Pred, Arity, FuncName, Entry) :-
     format(string(Entry),
            'assign("~w/~w", ~w, envir = shared_program$lowered_dispatch)',
            [Pred, Arity, FuncName]).
+
+%% emit_bulk_collect_entry(+Pred, +Arity, +Kernel, -Entry) is semidet.
+%  Registers a bulk_collect callback for kernels that can materialize
+%  all solutions without streaming choice points. Currently only
+%  category_ancestor/4 (hop integers on A3).
+emit_bulk_collect_entry(Pred, 4, recursive_kernel(category_ancestor, _, ConfigOps),
+                        Entry) :-
+    member(edge_pred(EdgePred/2), ConfigOps),
+    member(max_depth(MaxDepth), ConfigOps),
+    integer(MaxDepth),
+    MaxDepth > 0,
+    format(string(Entry),
+'WamRuntime$register_bulk_collect(shared_program, "~w/4", function(program, state) {
+  WamRuntime$category_ancestor_bulk_collect(program, state, "~w", "~w/2", ~wL)
+})',
+           [Pred, EdgePred, EdgePred, MaxDepth]).
 
 offset_label_entry(Offset, Entry0, Entry) :-
     atom_string(Entry0, S),
