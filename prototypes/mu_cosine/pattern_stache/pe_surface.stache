@@ -1,0 +1,19 @@
+{{! dialect(pattern_stache, 1) }}
+{{match form}}
+{{case bare(Name)}}{{Name}}
+{{case modded(Base, Mod)}}{{Base}}.{{Mod}}
+{{case pinned(Expr, Pin)}}{{Expr}}@{{Pin}}
+{{case e5(P)}}e5({{P}}{{kw}})
+{{case routing(S, J)}}routing({{S}},{{J}}{{kw}})
+{{case pick(T)}}pick({{T}}{{kw}})
+{{case kalman(A, B)}}kalman({{A}},{{B}}{{kw}})
+{{case blend(Args)}}blend({{Args}}{{kw}})
+{{case lineage(S)}}lineage({{S}}{{kw}})
+{{case distill(S)}}distill({{S}}{{kw}})
+{{case menu(J)}}menu({{J}}{{kw}})
+{{case margin}}margin({{kw}})
+{{case product(Args)}}product({{Args}}{{kw}})
+{{case max(Args)}}max({{Args}}{{kw}})
+{{case hop_decay(S)}}hop_decay({{S}}{{kw}})
+{{case lca_frac(S)}}lca_frac({{S}}{{kw}})
+{{/match}}
