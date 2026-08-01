@@ -3812,6 +3812,26 @@ ternary_expr(ternary(Cond, Then, Else)) -->
     ":",
     ws,
     ternary_operand(Else).
+% A parenthesised WHOLE ternary -- `(c ? a : b)`, as distinct from the
+% parenthesised CONDITION `(c) ? a : b` above. Both are ordinary awk; only the
+% second parsed, so `x = ($2 > 1 ? "hi" : "lo")` was a PARSE ERROR.
+%
+% That gap bites hardest in a print list, because of an awk subtlety: a bare `>`
+% there is output REDIRECTION, so `print $1, $2 > 1 ? "hi" : "lo"` is a SYNTAX
+% ERROR in gawk and the parenthesised form is the only legal spelling -- the one
+% plawk could not read. (plawk instead accepts the bare form and treats `>` as a
+% comparison, which is a separate, pre-existing divergence.)
+%
+% Recursive rather than a copy of the two clauses above, so a parenthesised
+% ternary admits exactly what an unparenthesised one does -- including nesting,
+% `((c ? a : b))` -- and cannot drift from it. Placed LAST so it cannot perturb
+% either existing parse: both are tried first and this only runs when they fail.
+ternary_expr(Ternary) -->
+    "(",
+    ws,
+    ternary_expr(Ternary),
+    ws,
+    ")".
 
 % The ternary's condition: a comparison between two operands. Whether codegen can
 % lower it depends on the operand kinds -- two i64s become an `icmp`, a field
