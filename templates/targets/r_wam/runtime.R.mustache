@@ -2061,9 +2061,9 @@ WamRuntime$iso_arith_culprit <- function(state, term, table) {
 
 # Lax is/2 body (also powers is_lax/2). Fail silently on bad eval.
 # PERF-R-WAM-STEP: keep the int+int +,-,*,//,mod IntTerm path, and also
-# short-circuit **/^ (often float results) plus unary +/- so power-sum
+# short-circuit **/^ (often float results) plus unary - so power-sum
 # aggregation does not fall through to recursive eval_arith per solution.
-# Functor ids for the hot power-sum ops are memoized on first use.
+# Functor ids are memoized per intern table: atom ids are program-local.
 WamRuntime$builtin_is_lax <- function(program, state) {
   table <- program$intern_table
   target <- WamRuntime$get_reg(state, 1L)
@@ -2073,12 +2073,15 @@ WamRuntime$builtin_is_lax <- function(program, state) {
       expr_d$tag == "struct") {
     nargs <- length(expr_d$args)
     fid <- as.integer(expr_d$fid)
-    if (is.null(WamRuntime$is_lax_pow_fid)) {
-      WamRuntime$is_lax_pow_fid <- as.integer(WamRuntime$intern(table, "**"))
-      WamRuntime$is_lax_hat_fid <- as.integer(WamRuntime$intern(table, "^"))
-      WamRuntime$is_lax_plus_fid <- as.integer(WamRuntime$intern(table, "+"))
-      WamRuntime$is_lax_minus_fid <- as.integer(WamRuntime$intern(table, "-"))
+    if (is.null(table$is_lax_fids)) {
+      table$is_lax_fids <- list(
+        pow = as.integer(WamRuntime$intern(table, "**")),
+        hat = as.integer(WamRuntime$intern(table, "^")),
+        plus = as.integer(WamRuntime$intern(table, "+")),
+        minus = as.integer(WamRuntime$intern(table, "-"))
+      )
     }
+    fids <- table$is_lax_fids
     if (nargs == 2L) {
       a_d <- WamRuntime$deref(state, expr_d$args[[1L]])
       b_d <- WamRuntime$deref(state, expr_d$args[[2L]])
@@ -2086,13 +2089,12 @@ WamRuntime$builtin_is_lax <- function(program, state) {
           !is.null(a_d$tag) && !is.null(b_d$tag) &&
           a_d$tag == "int" && b_d$tag == "int") {
         res <- NULL
-        if (identical(fid, WamRuntime$is_lax_pow_fid) ||
-            identical(fid, WamRuntime$is_lax_hat_fid)) {
+        if (identical(fid, fids$pow) || identical(fid, fids$hat)) {
           # (Hops+1) ** (-N) yields a float; match eval_arith via arith_to_term.
           res <- WamRuntime$arith_to_term(a_d$val ^ b_d$val)
-        } else if (identical(fid, WamRuntime$is_lax_plus_fid)) {
+        } else if (identical(fid, fids$plus)) {
           res <- IntTerm(as.integer(a_d$val + b_d$val))
-        } else if (identical(fid, WamRuntime$is_lax_minus_fid)) {
+        } else if (identical(fid, fids$minus)) {
           res <- IntTerm(as.integer(a_d$val - b_d$val))
         } else {
           op <- WamRuntime$string_of(table, fid)
@@ -2113,7 +2115,7 @@ WamRuntime$builtin_is_lax <- function(program, state) {
           return(WamRuntime$unify(state, target, res))
         }
       }
-    } else if (nargs == 1L && identical(fid, WamRuntime$is_lax_minus_fid)) {
+    } else if (nargs == 1L && identical(fid, fids$minus)) {
       a_d <- WamRuntime$deref(state, expr_d$args[[1L]])
       if (!is.null(a_d) && !is.null(a_d$tag) &&
           (a_d$tag == "int" || a_d$tag == "float")) {
