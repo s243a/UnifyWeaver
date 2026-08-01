@@ -99,12 +99,13 @@ test(string_condition_in_printf, [condition(clang_available)]) :-
     run("{ printf \"%d\\n\", $1 == \"b\" ? 1 : 0 }\n", "0\n1\n0\n"),
     !.
 
-% `$0` against a string literal DECLINES. It is unsupported across the whole
-% surface -- even the `$0 OP "str"` pattern-guard form does not parse -- and the
-% comparator answers false for index 0, so admitting it here produced wrong output
-% (0/0/0 where gawk gives 0/1/0) rather than a decline. Positive fields only.
-test(whole_record_string_condition_declines) :-
-    build_status("{ x = $0 == \"b 2\" ? 1 : 0; print x }\n", 3),
+% `$0` against a string literal used to DECLINE here, after an earlier attempt
+% made it a miscompile (0/0/0 where gawk gives 0/1/0) because the only comparator
+% projected a field slice and answers false for index 0. A whole-record strcmp
+% now exists, so the condition compiles and is CORRECT -- covered in
+% tests/test_plawk_ternary_record_cond.pl. Asserted here as no-longer-declining.
+test(whole_record_string_condition_compiles, [condition(clang_available)]) :-
+    build_status("{ x = $0 == \"b 2\" ? 1 : 0; print x }\n", 0),
     !.
 
 % --- regressions: the forms that already worked ---------------------------

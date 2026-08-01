@@ -141,16 +141,15 @@ test(whole_record_regex_unchanged, [condition(clang_available)]) :-
     run("$0 ~ /b 2/ { print $1 }\n", "b\n"),
     !.
 
-% --- still declines: the TERNARY condition --------------------------------
+% --- the TERNARY condition, now on this same emitter ----------------------
 
-% This change is about the rule-pattern / `if`-guard surface. A ternary CONDITION
-% goes through a different production and gate (plawk_ternary_cond_ok/3, which
-% requires a positive field), so `$0` there still declines -- deliberately, since
-% that gate feeds the field comparator that answers false for index 0. Wiring the
-% ternary to the new record term is a follow-on; pinned so it is a decision, not
-% an oversight.
-test(whole_record_ternary_condition_still_declines) :-
-    build_status("{ x = $0 == \"b 2\" ? 1 : 0; print x }\n", 3),
+% This change was about the rule-pattern / `if`-guard surface; a ternary CONDITION
+% goes through a different production and gate (plawk_ternary_cond_ok/3) and
+% declined at the time. It no longer does: the follow-up wired that gate to the
+% whole-record strcmp introduced here, so one emitter serves both surfaces. Pinned
+% as compiling, in the suite that owns the emitter.
+test(whole_record_ternary_condition_compiles, [condition(clang_available)]) :-
+    build_status("{ x = $0 == \"b 2\" ? 1 : 0; print x }\n", 0),
     !.
 
 % --- structure -------------------------------------------------------------
