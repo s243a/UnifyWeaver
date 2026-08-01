@@ -2060,35 +2060,73 @@ WamRuntime$iso_arith_culprit <- function(state, term, table) {
 }
 
 # Lax is/2 body (also powers is_lax/2). Fail silently on bad eval.
+# PERF-R-WAM-STEP: keep the int+int +,-,*,//,mod IntTerm path, and also
+# short-circuit **/^ (often float results) plus unary +/- so power-sum
+# aggregation does not fall through to recursive eval_arith per solution.
+# Functor ids for the hot power-sum ops are memoized on first use.
 WamRuntime$builtin_is_lax <- function(program, state) {
   table <- program$intern_table
   target <- WamRuntime$get_reg(state, 1L)
   expr   <- WamRuntime$get_reg(state, 2L)
   expr_d <- WamRuntime$deref(state, expr)
   if (!is.null(expr_d) && is.list(expr_d) && !is.null(expr_d$tag) &&
-      expr_d$tag == "struct" && length(expr_d$args) == 2L) {
-    a_d <- WamRuntime$deref(state, expr_d$args[[1L]])
-    b_d <- WamRuntime$deref(state, expr_d$args[[2L]])
-    if (!is.null(a_d) && !is.null(b_d) &&
-        !is.null(a_d$tag) && !is.null(b_d$tag) &&
-        a_d$tag == "int" && b_d$tag == "int") {
-      op <- WamRuntime$string_of(table, expr_d$fid)
-      fast_val <- switch(op,
-        "+"   = a_d$val + b_d$val,
-        "-"   = a_d$val - b_d$val,
-        "*"   = a_d$val * b_d$val,
-        "//"  = a_d$val %/% b_d$val,
-        "mod" = a_d$val %% b_d$val,
-        NULL)
-      if (!is.null(fast_val)) {
-        res <- IntTerm(as.integer(fast_val))
-        target_d <- WamRuntime$deref(state, target)
-        if (!is.null(target_d) && !is.null(target_d$tag) &&
-            target_d$tag == "unbound") {
-          WamRuntime$bind(state, target_d$name, res)
-          return(TRUE)
+      expr_d$tag == "struct") {
+    nargs <- length(expr_d$args)
+    fid <- as.integer(expr_d$fid)
+    if (is.null(WamRuntime$is_lax_pow_fid)) {
+      WamRuntime$is_lax_pow_fid <- as.integer(WamRuntime$intern(table, "**"))
+      WamRuntime$is_lax_hat_fid <- as.integer(WamRuntime$intern(table, "^"))
+      WamRuntime$is_lax_plus_fid <- as.integer(WamRuntime$intern(table, "+"))
+      WamRuntime$is_lax_minus_fid <- as.integer(WamRuntime$intern(table, "-"))
+    }
+    if (nargs == 2L) {
+      a_d <- WamRuntime$deref(state, expr_d$args[[1L]])
+      b_d <- WamRuntime$deref(state, expr_d$args[[2L]])
+      if (!is.null(a_d) && !is.null(b_d) &&
+          !is.null(a_d$tag) && !is.null(b_d$tag) &&
+          a_d$tag == "int" && b_d$tag == "int") {
+        res <- NULL
+        if (identical(fid, WamRuntime$is_lax_pow_fid) ||
+            identical(fid, WamRuntime$is_lax_hat_fid)) {
+          # (Hops+1) ** (-N) yields a float; match eval_arith via arith_to_term.
+          res <- WamRuntime$arith_to_term(a_d$val ^ b_d$val)
+        } else if (identical(fid, WamRuntime$is_lax_plus_fid)) {
+          res <- IntTerm(as.integer(a_d$val + b_d$val))
+        } else if (identical(fid, WamRuntime$is_lax_minus_fid)) {
+          res <- IntTerm(as.integer(a_d$val - b_d$val))
+        } else {
+          op <- WamRuntime$string_of(table, fid)
+          fast_val <- switch(op,
+            "*"   = a_d$val * b_d$val,
+            "//"  = a_d$val %/% b_d$val,
+            "mod" = a_d$val %% b_d$val,
+            NULL)
+          if (!is.null(fast_val)) res <- IntTerm(as.integer(fast_val))
         }
-        return(WamRuntime$unify(state, target, res))
+        if (!is.null(res)) {
+          target_d <- WamRuntime$deref(state, target)
+          if (!is.null(target_d) && !is.null(target_d$tag) &&
+              target_d$tag == "unbound") {
+            WamRuntime$bind(state, target_d$name, res)
+            return(TRUE)
+          }
+          return(WamRuntime$unify(state, target, res))
+        }
+      }
+    } else if (nargs == 1L && identical(fid, WamRuntime$is_lax_minus_fid)) {
+      a_d <- WamRuntime$deref(state, expr_d$args[[1L]])
+      if (!is.null(a_d) && !is.null(a_d$tag) &&
+          (a_d$tag == "int" || a_d$tag == "float")) {
+        res <- WamRuntime$arith_to_term(-a_d$val)
+        if (!is.null(res)) {
+          target_d <- WamRuntime$deref(state, target)
+          if (!is.null(target_d) && !is.null(target_d$tag) &&
+              target_d$tag == "unbound") {
+            WamRuntime$bind(state, target_d$name, res)
+            return(TRUE)
+          }
+          return(WamRuntime$unify(state, target, res))
+        }
       }
     }
   }

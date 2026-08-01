@@ -41,7 +41,68 @@ test(generate_kernels_on_functions_emits_runner_kernel_and_factsource) :-
             assertion(once(sub_string(Prog, _, _, _, 'arg1_lookups = new.env'))),
             % Runner enumerates via WAM helpers only — no host-side graph walk.
             assertion(\+ sub_string(Runner, _, _, _, 'lookup_parents')),
-            assertion(\+ sub_string(Runner, _, _, _, 'category_ancestor_hops'))
+            assertion(\+ sub_string(Runner, _, _, _, 'category_ancestor_hops')),
+            % PERF-R-WAM-STEP: is_lax power/unary fast path is present in runtime.
+            directory_file_path(TmpDir, 'R/wam_runtime.R', RtPath),
+            read_file_to_string(RtPath, Rt, []),
+            assertion(once(sub_string(Rt, _, _, _, 'is_lax_pow_fid'))),
+            assertion(once(sub_string(Rt, _, _, _, 'PERF-R-WAM-STEP')))
+        ),
+        cleanup_tmp_dir(TmpDir)).
+
+% Runtime: is_lax **/2 and unary -/1 match eval_arith (power-sum hot path).
+test(r_is_lax_power_unary_fast_path_parity) :-
+    once((rscript_available -> r_is_lax_power_unary_proof ; true)).
+
+r_is_lax_power_unary_proof :-
+    setup_call_cleanup(
+        unique_tmp_dir('tmp_wam_r_is_lax', TmpDir),
+        (   once(generate('data/benchmark/dev/facts.pl', TmpDir, kernels_on, functions)),
+            directory_file_path(TmpDir, 'R', RDir),
+            directory_file_path(RDir, 'is_lax_proof.R', Script),
+            setup_call_cleanup(
+                open(Script, write, S),
+                write(S,
+'source("generated_program.R")
+eval_via_is_lax <- function(expr_term) {
+  state <- WamRuntime$new_state()
+  WamRuntime$promote_regs(state)
+  target <- Unbound("T")
+  WamRuntime$put_reg(state, 1L, target)
+  WamRuntime$put_reg(state, 2L, expr_term)
+  stopifnot(isTRUE(WamRuntime$builtin_is_lax(shared_program, state)))
+  WamRuntime$deref(state, target)
+}
+plus <- as.integer(WamRuntime$intern(intern_table, "+"))
+pow <- as.integer(WamRuntime$intern(intern_table, "**"))
+minus <- as.integer(WamRuntime$intern(intern_table, "-"))
+# Hops+1
+e_plus <- StructTerm(plus, list(IntTerm(3L), IntTerm(1L)))
+r_plus <- eval_via_is_lax(e_plus)
+stopifnot(identical(r_plus$tag, "int"), identical(as.integer(r_plus$val), 4L))
+# unary -N (dimension factor)
+e_neg <- StructTerm(minus, list(IntTerm(5L)))
+r_neg <- eval_via_is_lax(e_neg)
+stopifnot(identical(r_neg$tag, "int"), identical(as.integer(r_neg$val), -5L))
+# (Hops+1) ** (-N) — float power used by effective-distance
+e_pow <- StructTerm(pow, list(IntTerm(4L), IntTerm(-5L)))
+r_pow <- eval_via_is_lax(e_pow)
+stopifnot(identical(r_pow$tag, "float"))
+stopifnot(abs(as.numeric(r_pow$val) - (4 ^ -5)) < 1e-12)
+# Cross-check eval_arith
+n <- WamRuntime$eval_arith(WamRuntime$new_state(), e_pow, intern_table)
+stopifnot(abs(n - as.numeric(r_pow$val)) < 1e-12)
+cat("OK is_lax power/unary parity\\n")
+'),
+                close(S)
+            ),
+            process_create(path('Rscript'), ['is_lax_proof.R'],
+                           [cwd(RDir), stdout(pipe(Out)), stderr(pipe(Err)),
+                            process(PID)]),
+            read_string(Out, _, OutTxt), close(Out),
+            read_string(Err, _, ErrTxt), close(Err),
+            process_wait(PID, exit(0)),
+            assertion(once(sub_string(OutTxt, _, _, _, 'OK is_lax power/unary parity')))
         ),
         cleanup_tmp_dir(TmpDir)).
 
