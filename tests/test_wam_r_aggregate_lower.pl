@@ -261,7 +261,9 @@ stopifnot(isTRUE(WamRuntime$arith_num_is_float_tag(1.5)),
           isTRUE(WamRuntime$arith_num_is_float_tag(Inf)),
           isTRUE(WamRuntime$arith_num_is_float_tag(NaN)),
           !isTRUE(WamRuntime$arith_num_is_float_tag(3)),
-          !isTRUE(WamRuntime$arith_num_is_float_tag(4.0)))
+          !isTRUE(WamRuntime$arith_num_is_float_tag(4.0)),
+          isTRUE(WamRuntime$arith_num_is_float_tag(1e20)),
+          isTRUE(WamRuntime$arith_num_is_float_tag(-1e20)))
 
 # Empty / singleton aggregate bags for sum|count|min|max.
 stopifnot(identical(
