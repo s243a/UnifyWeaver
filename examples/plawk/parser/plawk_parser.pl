@@ -991,8 +991,19 @@ base_pattern(Pattern) -->
 % Reversed string comparison (`"a" == $1`). Its leading quote is unambiguous
 % here -- no other pattern starts with one -- so ordering against the field-first
 % productions does not matter.
+% `"str" OP $0` -- tried before the reversed FIELD form, which requires a
+% positive index and would otherwise consume the literal and then fail.
+base_pattern(Pattern) -->
+    reversed_record_str_cmp_pattern(Pattern),
+    !.
 base_pattern(Pattern) -->
     reversed_field_str_cmp_pattern(Pattern),
+    !.
+% `$0 OP "str"` -- before the field-vs-literal productions, all of which reject
+% index 0. Ordering is not load-bearing (they would fail and backtrack) but it
+% keeps the whole-record case adjacent to its reversed twin.
+base_pattern(Pattern) -->
+    record_str_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
     field_div_cmp_pattern(Pattern),
@@ -1396,6 +1407,61 @@ field_str_cmp_pattern(field_str_cmp(Index, Op, Value)) -->
       Index > 0,
       string_codes(Value, ValueCodes)
     }.
+
+%% record_str_cmp_pattern(-Pattern)//
+%
+%  `$0 OP "str"` -- the WHOLE RECORD against a string literal, all six operators.
+%  Every field-vs-literal production above requires `Index > 0`, so this was a
+%  PARSE ERROR in both operand orders, in a rule pattern and inside a rule-body
+%  `if` alike -- the one comparison shape with no spelling at all (`$0 ~ /re/`
+%  works, and every positive field compares fine).
+%
+%  It gets its OWN term, `record_str_cmp(Op, Value)`, rather than reusing
+%  `field_eq`/`field_str_cmp` with index 0, because the field comparators project
+%  a field slice out of the record and answer false for index 0 -- which is why
+%  admitting `$0` into them produced wrong output rather than a decline when it
+%  was tried as a ternary condition. A distinct term makes that mis-routing
+%  impossible: the whole record is already a NUL-terminated string, so its guard
+%  is a plain strcmp with no slicing.
+%
+%  awk compares a field against a string constant as STRINGS (the constant forces
+%  it), so a lexical strcmp is the right semantics for all six operators.
+record_str_cmp_pattern(record_str_cmp(Op, Value)) -->
+    "$",
+    integer_codes(IndexCodes),
+    ws,
+    record_str_cmp_op(Op),
+    ws,
+    quoted_string(ValueCodes),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index =:= 0,
+      string_codes(Value, ValueCodes)
+    }.
+
+% The REVERSED order, `"str" OP $0`. Mirrors the operator with the shared
+% swap_cmp_op/2 -- the same helper every other reversed form uses -- and emits
+% the SAME record_str_cmp term, so nothing downstream sees a literal-first
+% comparison and the two orders cannot drift.
+reversed_record_str_cmp_pattern(record_str_cmp(Op, Value)) -->
+    quoted_string(ValueCodes),
+    ws,
+    record_str_cmp_op(ReadOp),
+    ws,
+    "$",
+    integer_codes(IndexCodes),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index =:= 0,
+      string_codes(Value, ValueCodes),
+      swap_cmp_op(ReadOp, Op)
+    }.
+
+% Equality / inequality, then the ordering operators (longest match first inside
+% string_ordering_cmp_op//1, so `<=` is not read as `<`).
+record_str_cmp_op(eq) --> "==".
+record_str_cmp_op(ne) --> "!=".
+record_str_cmp_op(Op) --> string_ordering_cmp_op(Op).
 
 string_ordering_cmp_op(le) --> "<=".
 string_ordering_cmp_op(ge) --> ">=".
@@ -3746,6 +3812,26 @@ ternary_expr(ternary(Cond, Then, Else)) -->
     ":",
     ws,
     ternary_operand(Else).
+% A parenthesised WHOLE ternary -- `(c ? a : b)`, as distinct from the
+% parenthesised CONDITION `(c) ? a : b` above. Both are ordinary awk; only the
+% second parsed, so `x = ($2 > 1 ? "hi" : "lo")` was a PARSE ERROR.
+%
+% That gap bites hardest in a print list, because of an awk subtlety: a bare `>`
+% there is output REDIRECTION, so `print $1, $2 > 1 ? "hi" : "lo"` is a SYNTAX
+% ERROR in gawk and the parenthesised form is the only legal spelling -- the one
+% plawk could not read. (plawk instead accepts the bare form and treats `>` as a
+% comparison, which is a separate, pre-existing divergence.)
+%
+% Recursive rather than a copy of the two clauses above, so a parenthesised
+% ternary admits exactly what an unparenthesised one does -- including nesting,
+% `((c ? a : b))` -- and cannot drift from it. Placed LAST so it cannot perturb
+% either existing parse: both are tried first and this only runs when they fail.
+ternary_expr(Ternary) -->
+    "(",
+    ws,
+    ternary_expr(Ternary),
+    ws,
+    ")".
 
 % The ternary's condition: a comparison between two operands. Whether codegen can
 % lower it depends on the operand kinds -- two i64s become an `icmp`, a field
