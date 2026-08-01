@@ -5939,6 +5939,14 @@ plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
     nth0(Idx, Slots, Slot),
     plawk_slot_name(Slot, Name),
     !,
+    % The slot must actually HOLD TEXT. An id comparison on a numeric counter
+    % compares a count against an interned id -- `{ n++ } if (n == "3")` answered
+    % false where awk (number vs string => STRING comparison) says true. The
+    % sibling emitter for the bare string-scalar PATTERN
+    % (plawk_resolve_scalar_cmp/4) already required a scalar_string/scalar_strnum
+    % slot; this copy did not, which is the whole bug. Failing here (after the
+    % cut) declines the program rather than emitting a wrong comparison.
+    plawk_slot_holds_text(Slot),
     nth0(Idx, Values0, SlotValue),
     format(atom(LitName), '~w_lit', [GlobalBase]),
     llvm_emit_c_string_global(LitName, Value, GlobalIR, Len, BytesLen),
@@ -5962,6 +5970,9 @@ plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
     nth0(Idx, Slots, Slot),
     plawk_slot_name(Slot, Name),
     !,
+    % Same text-slot requirement as the equality clause above: strcmp on a
+    % counter's id would compare whatever text that id happens to name.
+    plawk_slot_holds_text(Slot),
     nth0(Idx, Values0, SlotValue),
     format(atom(LitName), '~w_lit', [GlobalBase]),
     llvm_emit_c_string_global(LitName, Value, GlobalIR, Len, BytesLen),
