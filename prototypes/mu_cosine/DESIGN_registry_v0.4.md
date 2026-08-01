@@ -401,12 +401,32 @@ Per the project convention, these land as tests rather than as prose.
 ```text
 rulings issued (#4013)          done
 this design note                done
-v0.4 stages 1-3 (impl + seal)   done  — registry v0.4, bundle v3 (pec-v3), tok-v2
-v0.4 stage 4 (migration)        not started  <- gates the ship
-v0.4 stage 5 (ranking cache)    not started
+v0.4 stages 1-3 (impl + seal)   done  — registry v0.4, bundle v3 (pec-v3), tok-v2 (#4058)
+v0.4 stage 4 (migration)        done  — inventory + manifest, obligations 6-9 as tests
+v0.4 stage 5 (ranking cache)    not started  — ranking lane; trigger: v0.4 ship
 corpus enumeration              gated on ship
 encoder step 2 part 2           gated on ship
 ```
+
+**Stage-4 artifacts** (`registry_v04_migration.py`; content-addressed, refuse-overwrite):
+
+- `LEGACY_IDENTITY_INVENTORY_v03.json` — 20 deduplicated legacy identities from the sealed v1/v2
+  bundles and the P1 preregistration (each pinned by file sha), plus the wiki-lineage header
+  declaration attached by canonical bytes; 3 `lineage(fs,…)` declarations recorded out of scope
+  (*not grammatical under v0.3*, regenerated under v0.4 — obligation 7 holds because
+  `sm_fs_freeze.py` computes targets with no registry import, *measured*).
+- `REGISTRY_V04_MIGRATION_MANIFEST.json` — 19 mapped, 1 tombstoned, 0 ambiguous.
+  - `lineage(graph,decay=0.85)` maps to `lineage(simplewiki,mu=graph,estimand="ancestry")`:
+    the only committed use walks `100k_cats/category_parent.tsv`, which is the **SimpleWiki**
+    category graph (*measured*: `REPORT_repeated_judge_source_regions.md` source table), so R1/R2
+    supply the substrate-and-estimand ruling §15.1 required.
+  - The pinned variant maps to the **same** semantic successor — the R9 collapse made concrete:
+    two v0.3 identities become one v0.4 semantic identity, `run/2026-07-25` moves to the
+    provenance envelope.
+  - `lineage(graph,decay=-0.5)` (fixture-only coverage row) is tombstoned: no deployed usage
+    determines a substrate, and the v3 bundle carries its own negative-decay coverage.
+  - Mapped rows are proposals plus receipts; factory verification is still required before any
+    deployed identity, per §15.1.
 
 Within the implementation, §3.1's couplings force an order:
 
