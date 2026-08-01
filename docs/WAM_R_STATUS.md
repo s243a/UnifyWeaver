@@ -71,6 +71,8 @@ default 4096), and explicit `auto` (codegen resolves via shared
   hypotheses (resolve-once, atom cache, state pool, hashed intern) did
   not clear a 5% gate. PERF-R-WAM-STEP short-circuits `is_lax` `**/^`
   and unary `-` on the power-sum path (~1.045–1.052× same-host query).
+  PERF-R-LOWERED-DIRECTCALL found Call/Execute already direct-dispatch
+  registered kernels/facts; a Phase-3 lowered rewire was wall-neutral.
 
 ## Path forward
 
@@ -79,7 +81,6 @@ default 4096), and explicit `auto` (codegen resolves via shared
 
 ## Document status
 
-Fleet-aligned snapshot updated for PERF-R-WAM-STEP (2026-08-01):
-`builtin_is_lax` power/unary fast path retained; hosted IDTABLE 3412/4076
-still the primary fleet row pending hosted remeasure. PATHMARK, LOOPBODY,
-and ED-BOUNDARY remain declined for their respective hypotheses.
+Fleet-aligned snapshot updated for PERF-R-LOWERED-DIRECTCALL (2026-08-01):
+no production change; hosted IDTABLE 3412/4076 retained. PATHMARK,
+LOOPBODY, ED-BOUNDARY, and LOWERED-DIRECTCALL declined where measured.
