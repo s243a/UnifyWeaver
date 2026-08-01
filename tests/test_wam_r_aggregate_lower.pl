@@ -157,25 +157,25 @@ stopifnot(is.null(handled2))
 # compile helper: zero-length body, strict is/2, SetVariable arithmetic
 # inputs, and invalid operator arities are outside the closed lax shape.
 stopifnot(is.null(WamRuntime$compile_scalar_aggregate_arith(
-  shared_program, list(), 0L)))
+  shared_program, list(), 0L, 210L)))
 plus_fid <- as.integer(WamRuntime$intern(intern_table, "+"))
 strict_body <- list(
   PutVariable(210L, 1L), PutStructure(plus_fid, 2L, 2L),
   SetConstant(IntTerm(1L)), SetConstant(IntTerm(2L)),
   BuiltinCall("is/2", 2L))
 stopifnot(is.null(WamRuntime$compile_scalar_aggregate_arith(
-  shared_program, strict_body, 0L)))
+  shared_program, strict_body, 0L, 210L)))
 var_body <- list(
   PutVariable(210L, 1L), PutStructure(plus_fid, 2L, 2L),
   SetVariable(211L), SetConstant(IntTerm(2L)),
   BuiltinCall("is_lax/2", 2L))
 stopifnot(is.null(WamRuntime$compile_scalar_aggregate_arith(
-  shared_program, var_body, 0L)))
+  shared_program, var_body, 0L, 210L)))
 unary_plus_body <- list(
   PutVariable(210L, 1L), PutStructure(plus_fid, 2L, 1L),
   SetConstant(IntTerm(1L)), BuiltinCall("is_lax/2", 2L))
 stopifnot(is.null(WamRuntime$compile_scalar_aggregate_arith(
-  shared_program, unary_plus_body, 0L)))
+  shared_program, unary_plus_body, 0L, 210L)))
 
 # Preserve aggregate term tags: min/max returns the selected item type,
 # not a float merely because some non-selected item was a float.
