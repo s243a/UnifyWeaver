@@ -139,9 +139,19 @@ test(two_string_literals_decline) :-
     build_status("{ x = \"a\" == \"b\" ? 1 : 2; print x }\n", 3),
     !.
 
-% The BRANCHES are still i64 -- a string-valued branch is a separate follow-on.
-test(string_valued_branches_decline) :-
-    build_status("{ x = $2 > 1 ? \"hi\" : \"lo\"; print x }\n", 3),
+% String-valued BRANCHES used to decline (this suite pinned that). They now
+% compile in both the assignment and print contexts -- covered in
+% tests/test_plawk_ternary_str_branches.pl. Asserted here as no-longer-declining,
+% the same way the reversed-comparison pin above was flipped.
+test(string_valued_branches_compile, [condition(clang_available)]) :-
+    build_status("{ x = $2 > 1 ? \"hi\" : \"lo\"; print x }\n", 0),
+    build_status("{ print $1 == \"b\" ? \"yes\" : \"no\" }\n", 0),
+    !.
+
+% MIXED branches still decline: awk would stringify the number, which needs a
+% runtime conversion on one arm. Both branches must be string literals.
+test(mixed_string_and_int_branches_decline) :-
+    build_status("{ x = $2 > 1 ? \"hi\" : 3; print x }\n", 3),
     !.
 
 % END has no current record, so a field condition cannot be lowered there.
