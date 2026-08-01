@@ -276,6 +276,45 @@ pinned numerical tolerance. This tests adapter wiring independently of encoder a
 Existing checkpoints load with the adapter inactive. Activating encoder outputs is a new
 downstream arm; `W` is not assumed valid merely because vector dimensions match.
 
+### 5.1 Judge-channel rulings from the R10 bundle (measured, #4069)
+
+The training lane executed R10's judge-channel refinements (prompt-text cards, asymmetric
+channel dropout, the slot contract as assertions) and surfaced two questions plus one measured
+hazard. Rulings and recordings:
+
+**Ruling — the model-identity line stays.** Haiku and sonnet ran under the *same* frozen
+prompt, so pure prompt-text cards would give two judges identical embeddings. That collapse is
+not a rendering nicety gone wrong — it is a violation of the recorded doctrine: the
+label-generating function is `prompt(Model, PromptText, Harness)` (§1.1 of the registry v0.4
+note), and `Model` is an **argument of the function**, not an execution detail. Two judges
+sharing `PromptText` but differing in `Model` are different functions and must embed
+differently. The prepended identity line is therefore the card-level rendering of the `Model`
+argument — ratified, not a workaround. Judge identity carried entirely by residual rows is
+rejected for the same reason the channel exists at all: residuals are per-registered-identity
+and give an unseen judge nothing, while the card is what lets e5 place it.
+
+**Open question — cross-judge coupling through the shared translation.** *Measured* (#4069):
+re-anchoring only the LLM cards moved the untouched graph judge's conditioning by up to ±0.08
+through the single shared `W`. The coupling is real and load-bearing, and the function encoder
+must make it a **choice**: preserve one shared translation (cross-judge geometry transfers, but
+every card edit perturbs every judge) or give judge *families* independent translations/adapters
+(isolation, at the cost of transfer). Not ruled here — it needs the function-encoder design
+context — but it enters that design as a named decision with a measurement attached, not a
+surprise.
+
+**Direction — learned symmetric/asymmetric fusion for filing (owner).** The same experiment
+measured prompt-text cards strengthening the directional channel (+0.11–0.13 contribution vs
++0.08 baseline) while weakening the symmetric channel — and the owner's standing observation
+sharpens what to do with that: a strong **asymmetric** relation is direct evidence of *where to
+file* (filing makes the item a child; the historical misclassification of a symmetric relation
+as asymmetric is exactly what made this distinction visible), while symmetric relatedness is
+context. The fusion of the two channels should therefore be **learned against the filing
+objective** — cross-entropy over filing decisions — and need not be linear: a gating or small
+MLP head over the (symmetric, asymmetric) channel scores is in scope. This is a training-lane
+experiment; its support obligation is the estimand vocabulary's own split (the symmetric family
+`assoc`/`see_also` vs the directional family), so the learned blend is also a first consumer of
+`estimand=` as a conditioning input rather than metadata.
+
 ## 6. Finite deterministic synthetic corpus
 
 "Synthetic" does not mean unlimited or unconstrained. First freeze a checked-in generator
