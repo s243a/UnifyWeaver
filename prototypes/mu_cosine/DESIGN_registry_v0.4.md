@@ -20,10 +20,24 @@ They matter because corpus enumeration was about to freeze a support against `v0
 unenumerable under the ruled split, so sealing first would have frozen a support that `v0.4`
 immediately invalidates.
 
+## 1.1 The model in plain terms
+
+Every process expression answers five questions in five separate places, and no slot may borrow
+another's answer:
+
+| question | where | example |
+|---|---|---|
+| What relation are we estimating? | `estimand=` | `ancestry`, `path`, `assoc` |
+| How is it computed (the procedure)? | the function term itself | `max(floor, gamma^hops * lca_frac)` |
+| Which implementation should run? | `impl=` (a request) | graph-walk vs materialized table |
+| Which code actually ran? | factory fingerprint | content-bound realization record |
+| Audit/provenance annotations? | `@` pins — a third channel | `@impl_hash/4e13e0d` |
+
 ## 2. The rulings
 
-Six rulings, all issued by the owner on #4013. Reasoning is reproduced because a decision without
-its reasoning gets re-litigated.
+Ten rulings, all issued by the owner — R1–R6 on #4013, R7–R10 in the consolidated stage-1 ruling
+on #4055 (which is final where anything overlaps). Reasoning is reproduced because a decision
+without its reasoning gets re-litigated.
 
 ### R1 — Transitive μ is the quantity; hop decay is one estimator of it
 
@@ -98,6 +112,92 @@ visible omission with an invisible inaccuracy.
 The direction is sound and the form is not ready. It may be prototyped in the experimental vNext
 package, where the registry is a test fixture and nothing seals. `v0.4` does not wait for it.
 
+### R7 — `estimand=` names the relation, not the procedure
+
+*(#4055 findings 11/12; consolidated ruling item 1)*
+
+The term *is* the procedure, so there is no `method=` field. The enumerated set is the
+**relation** vocabulary, reconciling `DESIGN_transitive_relations.md` with the labels live in
+`score_inferred_tail.py`: `subcategory`, `super_category`, `element_of`, `subtopic`, `see_also`,
+`assoc`, `bridge`. `see_also` and `assoc` are two distinct relations in one symmetric family —
+judges already emit separate μ for each — and both are non-transitive.
+
+**The three hierarchical labels are one family with positional roles, and the label is secondary
+to the graph relation.** `subtopic` and `subcategory` compose interchangeably, in any order — the
+distinction (categories more general, often pluralized) is curational, and a subtopic may be
+promoted to a subcategory without the graph changing. `element_of` **terminates** a chain at the
+item end: membership is not transitive through membership (`element_of ∘ element_of` is
+deliberately absent), but survives descent (`element_of ∘ subcategory ⇒ element_of`).
+
+Plus two **derived** estimands, with a typing rule: a composition of descent primitives in one
+direction types as **`ancestry`**; any mixed-direction composition types as **`path`**, of which
+ancestry is the monotone special case. `sibling` (up then down through a common ancestor,
+generalizing to kinship up^m ∘ down^n) is a named *shape* of path, not a separate estimand, and
+is label-insensitive among the descent family. Ancestry chains: at most one `element_of` at the
+item end, then any mix of `subtopic`/`subcategory`; `bridge` transparent; `assoc`/`see_also`
+excluded from chains, checkable by construction. Both derived estimands are registered as
+*defined by rule*, not opaque — their meaning is computed from the composition rules rather than
+stipulated as an eighth primitive. The lineage **object** (a path value) witnesses an `ancestry`
+or `path` claim; it is not itself an estimand.
+
+μ over derived composites is fuzzy and weakens with length toward the corpus mean — bounded by
+the ordinal constraint for monotone chains, modeled by the random walk (drift-away vs
+regression-to-the-mean per hop; cumulative walk in `DECISIONS_graph_geometry.md`, depth-drift
+analysis in `DESIGN_bidirectional_walk.md`). Estimator-side; not registry surface.
+
+Naming: `lineage_op` stays the vNext coarse operator; `lineage_at` is superseded by `ancestry`
+and omitted per the patterns doc's own escape clause. Migration note for the vNext lane: §15.1
+will need rows mapping coarse `lineage_op(...)` requests to `ancestry`/`path` resolutions.
+
+### R8 — Add `max` and product; the graph judge registers under `path`
+
+*(#4055 finding 11; consolidated ruling item 2)*
+
+`max` and multiplication join the **function vocabulary** — they are operators of the function
+term (the procedure), not estimand values. The graph judge registers as
+`max(floor, gamma^hops * lca_frac)` under **estimand `path`**, not under any lineage/ancestry
+name and not under primitive `assoc`: measured against `prototype_graph_judge.py`, it walks an
+*undirected* adjacency with ancestors and descendants excluded from the candidate pool, so it
+computes derived kinship-shaped relatedness (the up-down-through-LCA shape that `lca_frac`
+measures) rather than either a hierarchical relation or the curated lateral edge `assoc` names.
+
+### R9 — Pins are outside semantic identity; v0.4 must make that true
+
+*(#4055 finding 13; consolidated ruling item 3)*
+
+Audit identifiers (`impl_hash`, commit/line) are **pins** — a third channel (`@kind/value`),
+outside both the estimand slot and the function term. They are excluded from **semantic
+identity**: per §16.25/26 two derivations of the same precise AST share semantic identity, so a
+regeneration of realizing code must not mint a new process. The realization that ran is
+identified by the factory fingerprint; `impl=` remains a selection constraint only.
+
+**Stage-1 obligation.** v0.3's canonical digest currently **includes** pins (*measured*:
+`ast_sha("lineage(graph,decay=0.85)@run/2026-07-25")` ≠ `ast_sha("lineage(graph,decay=0.85)")`),
+so v0.4 must split identity — a pin-free **semantic** digest for seals, cards, and cache keys,
+with pins + factory fingerprint layered outside it. Enforced **by construction, not by flag**:
+the transpiler emits two artifacts from one parse — the semantic AST (pin-free, the only form it
+can take) and a provenance envelope (pins with their §16.27 target-role-path + node-digest
+attachments). No configuration can produce a pin-bearing digest.
+
+**Model-input visibility is a separate, training-time choice.** Renderings fed to the encoder may
+include the pin channel as auxiliary conditioning (the V3 card already renders pins; V1/V2 elide
+them), letting the model learn where implementations diverge without identity forking. Because
+hash tokens are opaque and can only be memorized, pin-visible input enters as an **ablation arm**
+(V2 vs V3 cards), not the default. Encoder-side consequences (per-channel edge-role namespaces,
+pin positions as target-path ⊗ pin-role, coordinates materialized while encodings are computed
+from shared tables, pin-channel dropout instead of format mixing) are recorded in
+`DESIGN_tree_position_encoding_theory.md` §11.
+
+### R10 — Judges stay atoms in v0.4
+
+*(consolidated ruling item 4)*
+
+A bare `haiku` hides `prompt(Model, PromptText, Harness)`, so two judges differing only in prompt
+text share an expression — finding 8's under-determination in the judge namespace. The limitation
+is accepted and recorded rather than fixed this cycle. Revisit when a prompt slot can bind
+through the factory mechanism — prompt text and model revisions belong in factory binding, which
+already versions realizing code, rather than in the grammar.
+
 ## 3. What `v0.4` must change
 
 Current state, *measured* against the landed `v0.3` registry:
@@ -118,9 +218,16 @@ The changes implied by §2:
 3. **Register the corpora** as substrates — `pearltrees`, `simplemind`, a Wikipedia corpus, and
    `fs` (R2). This is what makes finding 1's expression parseable.
 4. **Add `mu=`** to lineage-shaped operators (R4).
-5. **Add `estimand=` and `impl=`** as separate fields with enumerated value sets, registering only
-   implementations that exist (R5).
+5. **Add `estimand=` and `impl=`** as separate fields, registering only implementations that
+   exist (R5). The `estimand` enumeration is the relation vocabulary of R7 — seven primitives
+   plus rule-defined `ancestry` and `path`.
 6. **Document `decay` as a retention factor**; optionally rename (R3).
+7. **Add `max` and multiplication** to the function vocabulary; re-register the graph judge as
+   `max(floor, gamma^hops * lca_frac)` under estimand `path` (R8).
+8. **Split identity**: pin-free semantic digest, provenance envelope outside it, emitted as two
+   artifacts by construction (R9).
+9. **Update `DESIGN_transitive_relations.md`'s composition table** with the mixed-chain and
+   terminator semantics of R7, so the table states what the ruling extended.
 
 Item 2 is the one with reach: eight of nine registered processes name a `source`-typed entry, so
 the split touches nearly the whole registry rather than a corner of it.
@@ -172,8 +279,11 @@ because each stage's tests depend on the previous stage's artifacts.
 | 5 — "decay" means two things | R1 | it is a parameter of the graph-judge method |
 | 6 — direction misleading | R3 | documented as retention |
 | 7 — scalar cannot express composition | R4 | `mu=` names the estimator |
-| 8, 10 — expression under-determines the process | R5 | `estimand`/`impl` make the mechanism expressible |
+| 8, 10 — expression under-determines the process | R5, R8 | `estimand`/`impl` name the axes; `max`/product make the graph judge's computation writable |
 | 9 — pairwise measures inexpressible | — | **not fixed**; deferred by R6 |
+| 11 (#4055) — graph judge measures lateral kinship, not hierarchy | R8 | registered under estimand `path`, not `lineage`/`assoc` |
+| 12 (#4055) — "estimand" conflated relation with procedure | R7 | estimand = relation; the term is the procedure |
+| 13 (#4055) — `impl` conflated request with result | R9 | `impl=` requests; factory fingerprint records; audit ids are pins |
 
 ## 5. Identity and migration consequences
 
@@ -211,12 +321,6 @@ designing the registry; it does not unblock running the generator. See
 
 ## 7. Still undecided
 
-**`max` and product operators.** R6 declines the pairwise-atoms restructuring, which leaves the
-graph judge's actual computation — `max(floor, gamma^hops * lca_frac)` — inexpressible. Adding
-`max` and multiplication would let it be registered as *what it computes* rather than mislabelled,
-closing finding 8 by description rather than by label. **This is an addition to `v0.4`'s scope
-that no #4013 ruling requested, and deserves its own decision rather than riding one.**
-
 **The `decay` estimand fork.** `DESIGN_process_expression_generator.md` §5.5 names two estimands
 and does not choose between them:
 
@@ -243,7 +347,16 @@ A `v0.4` implementation is not done until:
 7. regenerated `sm_fs_freeze.py` targets are byte-identical to the originals;
 8. the enumerable `lineage(...)` argument forms drop from 15 to the substrate-only set;
 9. every committed artifact field named `process_expression` parses under `v0.4`
-   (`DESIGN_process_expression_patterns.md` §16.34).
+   (`DESIGN_process_expression_patterns.md` §16.34);
+10. **adding a pin does not move the v0.4 semantic digest** — checkable as: stripping the fenced
+    `<PINS>` sections is a no-op on the digest preimage (R9);
+11. the graph judge's registered form is `max(floor, gamma^hops * lca_frac)` with estimand
+    `path`, and it round-trips (R8);
+12. `estimand` values are exactly the R7 enumeration; an `ancestry` or `path` value is accepted
+    only where its composition rule derives it, and `assoc`/`see_also` inside a chain is a type
+    error;
+13. `subtopic` and `subcategory` are interchangeable inside a derived chain, and `element_of`
+    is rejected anywhere but the item end.
 
 Per the project convention, these land as tests rather than as prose.
 
@@ -261,7 +374,7 @@ Within the implementation, §3.1's couplings force an order:
 
 | stage | contents | gated on |
 |---|---|---|
-| 1 | registry types and entries; `REGISTRY_VERSION` → `v0.4`; signatures gain `mu=`, `estimand=`, `impl=`; `decay` direction documented | the `max`/product decision in §7, which changes stage 1's shape |
+| 1 | registry types and entries; `REGISTRY_VERSION` → `v0.4`; signatures gain `mu=`, `estimand=`, `impl=`; `max`/product operators; identity split (R9); `decay` direction documented; transitive-relations table updated (R7) | nothing — all rulings issued |
 | 2 | golden bundle **v3** via the §0 supersession procedure — both current bundles stop loading at stage 1 | stage 1 |
 | 3 | tokenizer **`tok-v2`**; vocabulary re-derived, round-trip re-proved over the v3 bundle | stage 2 |
 | 4 | migration manifest over the frozen legacy inventory; `lineage(fs,…)` rows regenerated rather than migrated | stages 1–3 |
@@ -271,6 +384,6 @@ Stages 1–3 cannot be split across releases: between them the repository has a 
 bundles do not load and a tokenizer whose vocabulary does not match. They land together or not at
 all.
 
-Issue #4013's stated purpose — *"rulings needed before registry v0.4"* — is discharged. The
-findings it recorded are not all fixed, so a separate implementation issue should carry findings
-1, 8, 9 and 10 forward before it is closed.
+Issue #4013 is closed; its purpose — *"rulings needed before registry v0.4"* — is discharged.
+Implementation is tracked in #4055, whose consolidated stage-1 ruling this document reproduces as
+R7–R10. Stage 1 is unblocked.

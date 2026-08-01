@@ -18,6 +18,20 @@ Hierarchical relations compose; lateral ones do not:
 - `bridge ∘ R ⇒ R` (identity passes a relation through — see open Q5).
 - `see_also` / `assoc`: **NOT transitive** (lateral) — excluded.
 
+**Mixed chains and terminators** (ruled on #4055 for registry v0.4; extends the table above):
+- `subtopic` and `subcategory` compose **interchangeably, in any order** — the label distinction
+  is curational (a subtopic may be promoted to a subcategory without the graph changing); the
+  graph relation is primary, the label secondary.
+- `element_of` **terminates** a chain at the item end: `element_of ∘ element_of` is deliberately
+  absent (an element of an element is not an element), while `element_of` survives descent per
+  the second rule above.
+- **Typing rule for composites**: a composition of descent primitives in one direction types as
+  **`ancestry`**; any mixed-direction composition types as **`path`** (ancestry is its monotone
+  special case). `sibling` — up then down through a common ancestor, generalizing to kinship
+  up^m ∘ down^n — is a named *shape* of path, label-insensitive among the descent family, and is
+  what `lca_frac` measures. A lineage **object** (a path value) witnesses an `ancestry` or
+  `path` claim; the relation and the witnessing path are distinct concepts.
+
 Compose **only tagged edges** — composing the noisy conf<1.0 tail would re-import the noise we just measured.
 
 ## The structure: a PAIRWISE ORDINAL CONSTRAINT, not a point target

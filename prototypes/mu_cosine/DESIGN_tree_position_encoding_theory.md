@@ -316,3 +316,52 @@ reserved post-activation process family, corpus, or prospective cohort stays unt
 whole encoder configuration, including its position arm, has been frozen. Passing these checks
 licenses evaluation of the position feature; it does not establish compositional generalization,
 improve a filing metric, or authorize deployment.
+
+## 11. Input channels and pin positions
+
+*Added after the registry v0.4 stage-1 ruling (#4055); encoder-side consequences of the
+pin/identity split ruled there (R9 in `DESIGN_registry_v0.4.md`). Nothing here is registry
+surface.*
+
+The encoder input has three channels — the function term, the estimand slot, and the pin
+channel — and each gets its **own edge-role namespace** in the position encoding, extending the
+§7 rule ("depth 2 cannot be looked up as arg 2") to "a pin edge cannot be looked up as an arg
+edge." The channels use position very unevenly: the function term is deep and branching (role ⊗
+depth does full work), the estimand slot is a single atom (essentially pure role code), and the
+pin channel is a flat list (role code + list index, no depth).
+
+**Ablation-stability requirement.** Removing the pin channel must move no other token's
+position. This is what makes the pin-visibility comparison (V2 vs V3 cards) clean: with
+sequence-indexed positions, deleting the fenced `<PINS>` section would shift every subsequent
+index and confound the arms; with channel-scoped structural positions, pin removal is a pure
+deletion. This requirement rules out sequence-style positional schemes for the serialized form.
+
+**Pin positions are their target's path.** Envelope pins carry a target role path and node
+digest (patterns doc §16.27), so a pin token's position is
+
+```text
+position(pin) = path(target node) ⊗ pin-role suffix
+```
+
+The pin sits in its own channel but wears its target's path, making the pin↔node attachment
+geometric — read off the shared path prefix — rather than something attention must discover.
+
+**Coordinates are materialized; encodings are computed.** The path *indices* (including the pin
+suffix) are static, computed at data-prep time, and are what sealed training rows carry —
+consistent with §7's rule never to use a position *vector* as a key. The position *encoding* is
+the learned function of those indices, computed each forward pass from tables **shared** with
+the target's own position computation. Weight sharing gives lockstep: when training moves the
+target's position, the pin's moves with it. Two designs are rejected for breaking that shared
+space: a pin-private position table, and freezing the materialized path into a fixed vector
+(hash or random projection) — static-and-disconnected reintroduces the discovery burden.
+A fixed-phase depth component (RoPE-style `d·ψ_step`, cf. the phase-binding proposal) is
+compatible and makes the depth part deterministic before training, shrinking the learned part
+to the role tables.
+
+**Robustness comes from channel dropout, not format mixing.** Pin-visible input is an ablation
+arm (V2 vs V3), optionally made continuous as stochastic pin-channel dropout within the one
+canonical format (pins in channel, path-linked positions). Training with pins sometimes inline
+in the term is rejected: it creates a format never seen at serve time and two input
+distributions for one semantic identity. Because pin hash tokens are opaque and can only be
+memorized, a pin-visible P1 win must be checked against the opaque-process-token baseline it
+resembles.
