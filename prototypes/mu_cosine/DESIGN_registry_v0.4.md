@@ -22,7 +22,7 @@ immediately invalidates.
 
 ## 1.1 The model in plain terms
 
-Every process expression answers five questions in five separate places, and no slot may borrow
+Every process expression answers six questions in six separate places, and no slot may borrow
 another's answer:
 
 | question | where | example |
@@ -31,7 +31,7 @@ another's answer:
 | How is it computed (the procedure)? | the function term itself | `max(floor, gamma^hops * lca_frac)` |
 | Which implementation should run? | `impl=` (a request) | graph-walk vs materialized table |
 | Which code actually ran? | factory fingerprint | content-bound realization record |
-| Audit/provenance annotations? | `@` pins — a third channel | `@impl_hash/4e13e0d` |
+| Audit/provenance annotations? | `@` pins — their own channel | `@impl_hash/4e13e0d` |
 | Who supplies the μ labels, over what structure? | `mu=` + the substrate argument | `mu=haiku`, `principal_tree(pearltrees)` |
 
 On the last row: **the judge is not a third methodological axis — it is a role the function
@@ -142,7 +142,7 @@ to the graph relation.** `subtopic` and `subcategory` compose interchangeably, i
 distinction (categories more general, often pluralized) is curational, and a subtopic may be
 promoted to a subcategory without the graph changing. `element_of` **terminates** a chain at the
 item end: membership is not transitive through membership (`element_of ∘ element_of` is
-deliberately absent), but survives descent (`element_of ∘ subcategory ⇒ element_of`).
+deliberately absent), but survives descent (`element_of ∘ subcategory ⇒ element_of`) — i.e. it may appear only as the item-end step of a chain, which then continues upward through descent; it never passes through a second membership.
 
 Plus two **derived** estimands, with a typing rule: a composition of descent primitives in one
 direction types as **`ancestry`**; any mixed-direction composition types as **`path`**, of which

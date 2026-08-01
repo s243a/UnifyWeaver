@@ -374,7 +374,7 @@ deletion. This requirement rules out sequence-style positional schemes for the s
 digest (patterns doc §16.27), so a pin token's position is
 
 ```text
-position(pin) = path(target node) ⊗ pin-role suffix
+position(pin) = path(target node) extended by one pin-role edge
 ```
 
 The pin sits in its own channel but wears its target's path, making the pin↔node attachment
