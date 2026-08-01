@@ -154,8 +154,54 @@ handled2 <- WamRuntime$try_scalar_aggregate_fastpath(
   prog2, state2, prog2$instructions[[state2$pc]])
 stopifnot(is.null(handled2))
 
-# compile helper: zero-length / non-is body => NULL
-stopifnot(is.null(WamRuntime$compile_scalar_aggregate_arith(list(), 0L)))
+# compile helper: zero-length body, strict is/2, SetVariable arithmetic
+# inputs, and invalid operator arities are outside the closed lax shape.
+stopifnot(is.null(WamRuntime$compile_scalar_aggregate_arith(
+  shared_program, list(), 0L)))
+plus_fid <- as.integer(WamRuntime$intern(intern_table, "+"))
+strict_body <- list(
+  PutVariable(210L, 1L), PutStructure(plus_fid, 2L, 2L),
+  SetConstant(IntTerm(1L)), SetConstant(IntTerm(2L)),
+  BuiltinCall("is/2", 2L))
+stopifnot(is.null(WamRuntime$compile_scalar_aggregate_arith(
+  shared_program, strict_body, 0L)))
+var_body <- list(
+  PutVariable(210L, 1L), PutStructure(plus_fid, 2L, 2L),
+  SetVariable(211L), SetConstant(IntTerm(2L)),
+  BuiltinCall("is_lax/2", 2L))
+stopifnot(is.null(WamRuntime$compile_scalar_aggregate_arith(
+  shared_program, var_body, 0L)))
+unary_plus_body <- list(
+  PutVariable(210L, 1L), PutStructure(plus_fid, 2L, 1L),
+  SetConstant(IntTerm(1L)), BuiltinCall("is_lax/2", 2L))
+stopifnot(is.null(WamRuntime$compile_scalar_aggregate_arith(
+  shared_program, unary_plus_body, 0L)))
+
+# Preserve aggregate term tags: min/max returns the selected item type,
+# not a float merely because some non-selected item was a float.
+min_i <- WamRuntime$scalar_aggregate_bag_term(
+  "min", 2L, 0, FALSE, 1, FALSE)
+min_f <- WamRuntime$scalar_aggregate_bag_term(
+  "min", 2L, 0, FALSE, 1, TRUE)
+sum_inf <- WamRuntime$scalar_aggregate_bag_term(
+  "sum", 1L, Inf, TRUE, NULL, FALSE)
+stopifnot(identical(min_i$tag, "int"),
+          identical(min_f$tag, "float"),
+          identical(sum_inf$tag, "float"))
+
+# Dynamic clauses shadow the bulk capability exactly as they shadow the
+# ordinary lowered Call/Execute path.
+prog_dyn <- shared_program
+prog_dyn$dynamic <- new.env(parent = emptyenv())
+assign("category_ancestor/4", list(), envir = prog_dyn$dynamic)
+psb <- as.integer(prog_dyn$labels[["category_ancestor$power_sum_bound/3"]])
+rel_begin <- which(vapply(
+  prog_dyn$instructions[psb:length(prog_dyn$instructions)],
+  function(x) identical(x$op, "BeginAggregate"), logical(1)))[[1]]
+state_dyn <- WamRuntime$new_state()
+state_dyn$pc <- as.integer(psb + rel_begin - 1L)
+stopifnot(is.null(WamRuntime$try_scalar_aggregate_fastpath(
+  prog_dyn, state_dyn, prog_dyn$instructions[[state_dyn$pc]])))
 
 cat("OK aggregate_lower runtime semantics\\n")
 '),
