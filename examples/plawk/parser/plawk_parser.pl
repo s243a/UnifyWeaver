@@ -3421,6 +3421,18 @@ print_action(print(Fields)) -->
     "print",
     required_ws,
     print_fields(Fields).
+% A BARE `print` -- no argument list. In awk `print` means `print $0`, so desugar
+% it here: every downstream consumer then sees the whole-record print it already
+% handles, and no codegen path needs to know the difference.
+%
+% Tried AFTER the argument form, so `print $1` still parses its field list.
+% identifier_boundary//0 is what makes this safe: it stops `print` matching the
+% prefix of a longer word, and in particular stops it swallowing the `print` of
+% `printf` (the next char `f` is an identifier char, so the boundary fails and
+% printf_action//1 gets its turn).
+print_action(print([field(0)])) -->
+    "print",
+    identifier_boundary.
 
 % `emit E` -- the producer counterpart of `print` inside a generator block
 % (PLAWK_GENERATOR_BLOCKS.md). Instead of writing a record to stdout, it
