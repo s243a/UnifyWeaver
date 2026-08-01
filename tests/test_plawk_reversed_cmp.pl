@@ -143,15 +143,17 @@ test(reversed_special_unchanged, [condition(clang_available)]) :-
 
 % --- clean declines / unchanged rejections -------------------------------
 
-% `$0` against a string literal is unsupported in BOTH orders -- the forward
-% `$0 == "s"` form does not parse either, so the reversed one is consistent with
-% it rather than newly broken.
-test(reversed_whole_record_still_rejected) :-
-    build_status("\"b 2\" == $0 { print \"p\" }\n", 2),
+% `$0` against a string literal used to be a PARSE ERROR in both orders (this
+% suite pinned that). Both orders now compile as a rule pattern, via a dedicated
+% record_str_cmp term and a whole-record strcmp -- covered in
+% tests/test_plawk_whole_record_str_cmp.pl. Asserted here as no-longer-rejected,
+% in PAIRS, so the two orders keep moving together.
+test(reversed_whole_record_compiles, [condition(clang_available)]) :-
+    build_status("\"b 2\" == $0 { print \"p\" }\n", 0),
     !.
 
-test(forward_whole_record_still_rejected) :-
-    build_status("$0 == \"b 2\" { print \"p\" }\n", 2),
+test(forward_whole_record_compiles, [condition(clang_available)]) :-
+    build_status("$0 == \"b 2\" { print \"p\" }\n", 0),
     !.
 
 % Two literals: neither order is a comparison plawk lowers.
