@@ -65,31 +65,24 @@ The separation mirrors the filing track's catalog/policy boundary: the sampler m
 corpus and may never alter it. Corpus manifests, template digests, LOCO assignment, and the golden
 fixtures are computed before any weight exists and are unaffected by every weighting arm.
 
-## 2. Corpus — exhaustive enumeration under measured caps
+## 2. Corpus — enumeration re-measured under registry v0.4
 
-> **Enumeration is PAUSED pending the registry `v0.4` bump requested in issue #4013.** The whole
-> point of exhaustive enumeration is to *freeze the support*, and the support is a function of the
-> pinned registry. Findings 2/3/7 split the `source` catch-all into substrate / μ-source / scorer,
-> register the corpora, and add a `mu=` slot — under which **13 of the 15** currently enumerable
-> `lineage(...)` argument forms become unenumerable, because they are the type-correct-but-
-> meaningless ones the split exists to remove (*measured*: 9 bare `source`-typed names plus 6
-> registered modifier variants all parse as a `lineage` argument; only `graph` and `graph.discrim`
-> could denote a substrate, and #4013 finding 3 notes `graph.discrim` is itself a judge use, so the
-> true figure is 13 or 14). Sealing a corpus against `v0.3` would therefore
-> freeze a support that `v0.4` immediately invalidates, and re-sealing is exactly the cost the
-> sealed-bundle lifecycle exists to avoid. The gate is the **shipping** of `v0.4`, not the ruling
-> that authorizes it: a ruling unblocks designing the registry, not running the generator.
+> **Status: v0.4 has shipped and the re-measurement is done**
+> (`process_expression_enumerator.py`, exact DP counts verified against brute-force
+> materialization at reduced caps). The v0.3 numbers below the fold are retained as history. The
+> headline finding: **exhaustive expression-level enumeration is no longer feasible** — the
+> corpus posture must change, and §2.5 states the decision that needs the owner.
 
 ### 2.1 Measured envelope
 
-Over the nine registered processes (*measured*):
+Over the ten registered processes under v0.4 (*measured*, envelope tests):
 
 | quantity | max observed | registry hard limit |
 |---|---:|---|
 | AST depth | 3 | unbounded |
-| node count | 5 | unbounded |
-| positional arity | 3 | `blend` variadic `(2, unbounded)` |
-| kwargs per node | 2 | 3 (`routing`) |
+| node count | **6** (`graph-judge`) | unbounded |
+| positional arity | 3 | `blend`/`product`/`max` variadic `(2, unbounded)` |
+| kwargs per node | 2 | 5 (`routing`) |
 | modifiers per node | 1 | 1, validator-enforced |
 | pins per node | **0** | unbounded |
 | list length | 2 | unbounded |
@@ -112,7 +105,7 @@ Provisional, with headroom over the measured envelope:
 
 ```text
 max_depth        = 3      # 2 drops distill-3tier, the only three-operator chain
-max_node_count   = 5
+max_node_count   = 6      # was 5; graph-judge is exactly 6 nodes, so 5 fails §2.4
 max_arity        = 3
 max_kwargs_node  = 2
 max_list_length  = 2
@@ -122,27 +115,62 @@ max_path_length  = 8
 ```
 
 `max_node_count` is stated explicitly because it does as much pruning as `max_depth`; a depth cap
-alone leaves wide shallow trees unbounded.
+alone leaves wide shallow trees unbounded. Node count includes node-valued kwargs (`mu=haiku`
+costs a node); depth nests through them.
 
-### 2.3 The type system is the binding constraint
+### 2.3 The binding constraint has moved — the type system no longer holds the line
 
-Enumeration does not explode, and the reason is structural rather than a consequence of the caps
-(*measured*):
+The v0.3 claim in this section — *enumeration does not explode, because only atoms produce
+`source` and `process` is the single recursive channel* — was true of v0.3 and is **false under
+v0.4** (*measured*, `test_process_expression_enumerator.py`; grids = the witnessed literal set
+`{0.02, 0.03, 0.6, 0.85} / {10, 20}`, strings and pins excluded per §3):
 
-- only atoms produce `source`, so `kalman`/`blend`/`lineage`/`menu` consume flat atoms and cannot
-  recurse through their own outputs;
-- `e5`'s positional type is `process`, which `_output_matches` treats as a wildcard. This is the
-  only recursive channel, and it is what compounds with depth.
+| scenario | expressions | structural templates |
+|---|---:|---:|
+| naive full (methodology kwargs everywhere) | **3,303,413,185,358** | 3,835,821 |
+| methodology on the root only | 54,871,574 | **98,070** |
+| structural only (no `estimand`/`impl`/`mu`) | 10,756,382 | 28,521 |
+| v0.3, for scale (history) | 285,478 | 19,131 |
 
-At the §2.2 caps this yields **285,478** canonical expressions over **19,131** structural
-templates (~14.9 expressions per template; 10,982 templates are singletons). Overflow policy is
-fail closed: an expression exceeding any cap is rejected and counted, never clipped or wrapped.
+What moved: `estimand=` (9 values) × `impl=` (2) on eleven operators, `mu=` taking judge
+*expressions*, four substrate atoms, and the score-typed `product`/`max` channel compounding
+through itself. The type system still prevents infinite recursion; it no longer prevents
+explosion. Lever sensitivity (*measured*): capping variadic arity at 2 divides expressions by
+~2.6; shrinking to 2-value grids divides by ~6.4; both together still leave **3.6M** — 13× the
+v0.3 corpus — and tiny grids violate §5.2's own digit-coverage support floor. No defensible
+cap-and-grid combination restores expression-level exhaustiveness.
+
+Overflow policy is unchanged: fail closed — an expression exceeding any cap is rejected and
+counted, never clipped or wrapped.
 
 ### 2.4 Coverage validation
 
-The generator must reproduce every registered process. *Measured:* **9/9**, including
-`distill(e5(routing(e5,sonnet.lineage,menus=[10,20],t=[0.02,0.03])))`. Generator grammar coverage
-strictly subsumes production. This is a blocking engineering gate, not a diagnostic.
+The support must contain every registered process. *Measured:* **10/10** lie inside the
+methodology-root-only support (`covers()`, including the six-node `graph-judge` and
+`lineage-haiku`'s node-valued `mu=`). This is a blocking engineering gate, not a diagnostic.
+
+### 2.5 The corpus decision (owner)
+
+The tractable exhaustive object under v0.4 is the **structural template set** — 98,070
+templates under methodology-root-only, ~5× the v0.3 template count and well inside the §8
+resource envelope. The recommendation is therefore §1's support/frequency separation applied one
+level up:
+
+- **support** = the template set, enumerated exhaustively and frozen;
+- **frequency** = per-template value instantiation by *sampling* under the §5.2 coverage
+  invariants (every grid value, every digit byte, every magnitude scale appears; the tail never
+  reaches zero) — instead of the value cross-product that caused the explosion.
+
+Restricting methodology kwargs to the root is semantically motivated, not just convenient:
+`estimand=`/`impl=` are deployment metadata and `require_deployable` checks exactly the root.
+Interior-methodology expressions remain grammatical; they are sampler coverage (like pins and
+strings), not enumeration support.
+
+Three things need the owner before the generator runs, all preregistration content bound by
+`enumeration_spec_sha256()`: the scenario (recommendation: methodology-root-only), the corpus
+size per template (v0.3's ratio was ~14.9 expressions/template; the same ratio here gives a
+~1.5M-row corpus, ~6 GB at the §8 row estimate), and confirmation that the widened §5.2 numeric
+grid enters through the sampler rather than the enumeration grids.
 
 ## 3. Mandatory synthetic coverage
 
@@ -607,7 +635,8 @@ structural-effectiveness evidence used for weighting requires an independent eva
 inner/outer separation between the runs that fit the weights and the runs that evaluate the
 encoder.
 
-**The tractable path is features, not templates.** 19,131 per-template measurements will never
+**The tractable path is features, not templates.** 98,070 per-template measurements (v0.4
+root-only count; 19,131 under v0.3) will never
 exist, but structural *features* — depth, operator composition, presence of a `routing` stage,
 `distill` wrapping, blend arity — can be measured because ledger runs can be designed as
 structural ablations. Templates are then weighted by feature profile: a few measured dimensions
@@ -637,14 +666,17 @@ far-slice degradation that disqualifies a scheme are written down before the sea
 
 ## 8. Splits, artifacts, and resources
 
-Structural LOCO by template digest, whole templates to one side. *Measured* at the §2.2 caps:
-train 206,851 / dev 23,213 / test 55,414, with **zero** canonical-AST overlap across all three
-pairs. The sealed-test transaction of the encoder handoff §6 applies unchanged: the training
-worker receives only the train/dev projection.
+Structural LOCO by template digest, whole templates to one side. The v0.3 measurement (train
+206,851 / dev 23,213 / test 55,414, zero canonical-AST overlap) is history: the split is
+re-measured once the §2.5 corpus decision fixes the v0.4 corpus. The sealed-test transaction of
+the encoder handoff §6 applies unchanged: the training worker receives only the train/dev
+projection.
 
-Resource envelope, worth stating because it constrains storage and versioning: 285,478 rows ×
-384 float32 ≈ **438 MB per view**, ~1.3 GB for three views. Teacher caches are content-addressed
-and pinned to the exact e5 revision; they are not regenerated silently.
+Resource envelope, worth stating because it constrains storage and versioning: at the v0.3 scale,
+285,478 rows × 384 float32 ≈ **438 MB per view**, ~1.3 GB for three views; the §2.5
+recommendation (~1.5M rows) scales this to ~2.3 GB per view, still tractable, which is part of
+why that recommendation is made. Teacher caches are content-addressed and pinned to the exact e5
+revision; they are not regenerated silently.
 
 ## 9. What lands as tests
 
