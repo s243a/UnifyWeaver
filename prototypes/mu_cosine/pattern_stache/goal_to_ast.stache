@@ -1,0 +1,8 @@
+{{! dialect(pattern_stache, 1) }}
+{{match goal}}
+{{case has_type(X, substrate(C))}}TypeNode { term: {{X}}, kind: "substrate", corpus: {{C}} }
+{{case has_type(X, judge(J))}}TypeNode { term: {{X}}, kind: "judge", judge: {{J}} }
+{{case non_amplifying(Op)}}ConstraintNode { kind: "non_amplifying", op: {{Op}} }
+{{case mu_bounded(Op, B)}}ConstraintNode { kind: "mu_bounded", op: {{Op}}, bound: {{B}} }
+{{default}}/* unhandled goal: {{goal}} */
+{{/match}}
