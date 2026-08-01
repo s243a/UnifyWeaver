@@ -1303,7 +1303,10 @@ compile_execute_arith_builtin_to_rust(Code) :-
     Code = '    fn execute_arith_builtin(&mut self, op: &str, _arity: usize) -> bool {
         match op {
             "is/2" => {
-                let expr = self.get_reg_raw("A2").map(|v| self.deref_var(&v)).unwrap_or(Value::Integer(0));
+                let expr = match self.get_reg_raw("A2") {
+                    Some(value) => self.deref_var(&value),
+                    None => return false,
+                };
                 if let Some(result) = self.eval_arith(&expr) {
                     let lhs = self.get_reg_raw("A1").map(|v| self.deref_var(&v));
                     // Bind as integer if result is very close to a whole number
@@ -1338,8 +1341,8 @@ compile_execute_arith_builtin_to_rust(Code) :-
                         "</2" => n1 < n2,
                         ">=/2" => n1 >= n2,
                         "=</2" => n1 <= n2,
-                        "=:=/2" => (n1 - n2).abs() < f64::EPSILON,
-                        "=\\\\=/2" => (n1 - n2).abs() >= f64::EPSILON,
+                        "=:=/2" => n1 == n2,
+                        "=\\\\=/2" => !n1.is_nan() && !n2.is_nan() && n1 != n2,
                         _ => false,
                     };
                     if ok { self.pc += 1; true } else { false }
@@ -6618,8 +6621,17 @@ compile_eval_arith_to_rust(Code) :-
                 "-" => Some(a - b),
                 "*" => Some(a * b),
                 "/" if b != 0.0 => Some(a / b),
-                "//" if b != 0.0 => Some((a / b).floor()),
-                "mod" if b != 0.0 => Some(a % b),
+                "//" if b != 0.0 => Some((a / b).trunc()),
+                "mod" if b != 0.0 => {
+                    let remainder = a % b;
+                    if remainder != 0.0
+                        && (remainder.is_sign_negative() != b.is_sign_negative())
+                    {
+                        Some(remainder + b)
+                    } else {
+                        Some(remainder)
+                    }
+                }
                 "**" => Some(a.powf(b)),
                 _ => None,
             }
