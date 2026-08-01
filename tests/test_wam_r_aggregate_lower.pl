@@ -42,6 +42,12 @@ test(aggregate_lower_emits_bulk_collect_for_ca_kernel) :-
                 'compile_scalar_aggregate_arith'))),
             assertion(once(sub_string(Rt, _, _, _,
                 'PERF-R-AGGREGATE-LOWER'))),
+            assertion(once(sub_string(Rt, _, _, _,
+                'PERF-R-AGG-BATCH'))),
+            assertion(once(sub_string(Rt, _, _, _,
+                'as_bulk_numeric_batch'))),
+            assertion(once(sub_string(Rt, _, _, _,
+                'numeric_batch'))),
             % kernels_off must not register bulk_collect for CA
             unique_tmp_dir('tmp_wam_r_agg_off', OffDir),
             setup_call_cleanup(
@@ -202,6 +208,109 @@ state_dyn <- WamRuntime$new_state()
 state_dyn$pc <- as.integer(psb + rel_begin - 1L)
 stopifnot(is.null(WamRuntime$try_scalar_aggregate_fastpath(
   prog_dyn, state_dyn, prog_dyn$instructions[[state_dyn$pc]])))
+
+# ---- PERF-R-AGG-BATCH: typed numeric batch + vector reduce ----
+# Re-register CA bulk collect (removed above for classic-fallback check).
+WamRuntime$register_bulk_collect(
+  shared_program, "category_ancestor/4",
+  function(program, state) {
+    WamRuntime$category_ancestor_bulk_collect(
+      program, state, "category_parent", "category_parent/2", 10L)
+  }, 3L)
+be <- get("__bulk_collect__", envir = shared_program$lowered_dispatch,
+          inherits = FALSE)
+
+# CA bulk_collect returns typed numeric_batch (not per-hop records).
+st_b <- WamRuntime$new_state(); WamRuntime$promote_regs(st_b)
+WamRuntime$put_reg(st_b, 1L, atom_of("Quantum_mechanics"))
+WamRuntime$put_reg(st_b, 2L, atom_of("Physics"))
+WamRuntime$put_reg(st_b, 3L, Unbound("H"))
+WamRuntime$put_reg(st_b, 4L, WamRuntime$wam_list_build(list(), intern_table))
+cap <- get("category_ancestor/4", envir = be, inherits = FALSE)
+batch <- cap$fn(shared_program, st_b)
+stopifnot(is.list(batch), identical(batch$type, "numeric_batch"),
+          identical(as.integer(batch$reg), 3L), is.numeric(batch$val),
+          length(batch$val) >= 1L)
+
+# as_bulk_numeric_batch: empty list, one/many records, typed batch, rejects junk.
+stopifnot(identical(
+  WamRuntime$as_bulk_numeric_batch(list(), 3L)$val, numeric(0)))
+one <- WamRuntime$as_bulk_numeric_batch(list(list(reg = 3L, val = 2)), 3L)
+many <- WamRuntime$as_bulk_numeric_batch(
+  list(list(reg = 3L, val = 1), list(reg = 3L, val = 1),
+       list(reg = 3L, val = 4)), 3L)
+stopifnot(identical(one$val, 2), identical(many$val, c(1, 1, 4)))
+stopifnot(identical(
+  WamRuntime$as_bulk_numeric_batch(
+    list(type = "numeric_batch", reg = 3L, val = c(1, 2)), 3L)$val, c(1, 2)))
+stopifnot(is.null(WamRuntime$as_bulk_numeric_batch(
+  list(list(reg = 3L, val = 1), list(reg = 4L, val = 2)), 3L)))
+stopifnot(is.null(WamRuntime$as_bulk_numeric_batch(
+  list(type = "numeric_batch", reg = 3L, val = "x"), 3L)))
+
+# Vector arith shared with scalar eval: integer, whole float, fractional,
+# Inf, NaN, and unary/binary ops via compiled-op helper.
+stopifnot(identical(
+  WamRuntime$eval_scalar_aggregate_arith_op("+", 2L, list(1, 2)), 3))
+stopifnot(identical(
+  WamRuntime$eval_scalar_aggregate_arith_op("-", 1L, list(4)), -4))
+pow_v <- WamRuntime$eval_scalar_aggregate_arith_op(
+  "**", 2L, list(c(1, 2, 3), 2))
+stopifnot(identical(as.numeric(pow_v), c(1, 4, 9)))
+stopifnot(isTRUE(WamRuntime$arith_num_is_float_tag(1.5)),
+          isTRUE(WamRuntime$arith_num_is_float_tag(Inf)),
+          isTRUE(WamRuntime$arith_num_is_float_tag(NaN)),
+          !isTRUE(WamRuntime$arith_num_is_float_tag(3)),
+          !isTRUE(WamRuntime$arith_num_is_float_tag(4.0)))
+
+# Empty / singleton aggregate bags for sum|count|min|max.
+stopifnot(identical(
+  WamRuntime$scalar_aggregate_bag_term("sum", 0L, 0, FALSE, NULL, FALSE)$tag,
+  "int"),
+  identical(
+    as.integer(WamRuntime$scalar_aggregate_bag_term(
+      "sum", 0L, 0, FALSE, NULL, FALSE)$val), 0L),
+  identical(
+    as.integer(WamRuntime$scalar_aggregate_bag_term(
+      "count", 0L, 0, FALSE, NULL, FALSE)$val), 0L),
+  identical(
+    as.integer(WamRuntime$scalar_aggregate_bag_term(
+      "count", 1L, 0, FALSE, NULL, FALSE)$val), 1L),
+  is.null(WamRuntime$scalar_aggregate_bag_term(
+    "min", 0L, 0, FALSE, NULL, FALSE)),
+  is.null(WamRuntime$scalar_aggregate_bag_term(
+    "max", 0L, 0, FALSE, NULL, FALSE)),
+  identical(
+    WamRuntime$scalar_aggregate_bag_term(
+      "min", 1L, 0, FALSE, 7, FALSE)$tag, "int"))
+
+# Legacy list-record callback still accepted (coerce -> batch) and matches
+# typed-batch result for the bound power-sum query.
+WamRuntime$register_bulk_collect(
+  shared_program, "category_ancestor/4",
+  function(program, state) {
+    b <- WamRuntime$category_ancestor_bulk_collect(
+      program, state, "category_parent", "category_parent/2", 10L)
+    if (is.list(b) && identical(b$type, "numeric_batch"))
+      return(lapply(b$val, function(h) list(reg = 3L, val = h)))
+    b
+  }, 3L)
+Sum_list <- Unbound("SL")
+r_list <- run_bound("Quantum_mechanics", "Physics", Sum_list)
+stopifnot(isTRUE(r_list$ok))
+stopifnot(abs(as.numeric(r_list$val$val) - as.numeric(r2$val$val)) < 1e-12)
+
+# Restore typed-batch CA publisher and confirm parity again.
+WamRuntime$register_bulk_collect(
+  shared_program, "category_ancestor/4",
+  function(program, state) {
+    WamRuntime$category_ancestor_bulk_collect(
+      program, state, "category_parent", "category_parent/2", 10L)
+  }, 3L)
+Sum_batch <- Unbound("SB")
+r_batch <- run_bound("Quantum_mechanics", "Physics", Sum_batch)
+stopifnot(isTRUE(r_batch$ok))
+stopifnot(abs(as.numeric(r_batch$val$val) - as.numeric(r2$val$val)) < 1e-12)
 
 cat("OK aggregate_lower runtime semantics\\n")
 '),

@@ -3822,15 +3822,20 @@ WamRuntime$aggregate_result <- function(kind, collected, table) {
 }
 
 # ------------------------------------------------------------------
-# PERF-R-AGGREGATE-LOWER: capability-gated scalar aggregate regions
+# PERF-R-AGGREGATE-LOWER / PERF-R-AGG-BATCH: capability-gated scalar
+# aggregate regions with optional typed numeric batch reduction.
 # ------------------------------------------------------------------
-# Kernels may register a bulk_collect(program, state) -> list of
-# list(reg=<Ai>, val=<numeric>) solutions under
-# program$lowered_dispatch$__bulk_collect__. BeginAggregate then
-# optionally compiles a closed is_lax arithmetic template and reduces
-# without EndAggregate/backtrack. Anything outside the closed shape
-# returns NULL from try_scalar_aggregate_fastpath and uses the classic
-# aggregate frame path unchanged.
+# Kernels may register a bulk_collect(program, state) callback under
+# program$lowered_dispatch$__bulk_collect__. The callback may return:
+#   - list of list(reg=<Ai>, val=<numeric>) solution records (legacy), or
+#   - list(type="numeric_batch", reg=<Ai>, val=<numeric vector>).
+# BeginAggregate compiles a closed is_lax arithmetic template once and
+# reduces without EndAggregate/backtrack. Typed batches evaluate the
+# template on vectors (or reused scalar storage); legacy lists are
+# coerced to a batch when every value is a length-1 numeric on the
+# declared output register, otherwise the per-solution env path runs.
+# Anything outside the closed shape returns NULL from
+# try_scalar_aggregate_fastpath and uses the classic aggregate frame.
 WamRuntime$bulk_collect_env <- function(program) {
   if (is.null(program$lowered_dispatch)) return(NULL)
   if (!exists("__bulk_collect__", envir = program$lowered_dispatch,
@@ -3847,6 +3852,36 @@ WamRuntime$register_bulk_collect <- function(program, key, fn, output_regs) {
   assign(as.character(key),
          list(fn = fn, output_regs = as.integer(output_regs)), envir = be)
   invisible(NULL)
+}
+
+# Coerce bulk_collect results to a single-output numeric batch, or NULL
+# when the shape requires the per-solution record interpreter.
+WamRuntime$as_bulk_numeric_batch <- function(sols, output_regs) {
+  if (is.null(sols) || !is.numeric(output_regs) || length(output_regs) != 1L)
+    return(NULL)
+  oreg <- as.integer(output_regs[[1]])
+  if (!is.finite(oreg) || oreg < 1L) return(NULL)
+  if (is.list(sols) && identical(sols$type, "numeric_batch")) {
+    reg <- as.integer(sols$reg)[1]
+    val <- sols$val
+    if (!identical(reg, oreg) || !is.numeric(val)) return(NULL)
+    return(list(reg = oreg, val = as.numeric(val)))
+  }
+  if (!is.list(sols)) return(NULL)
+  n <- length(sols)
+  if (n == 0L) return(list(reg = oreg, val = numeric(0)))
+  # Reject typed-batch-shaped lists that are not proper record lists.
+  if (!is.null(sols$type)) return(NULL)
+  vals <- numeric(n)
+  for (i in seq_len(n)) {
+    sol <- sols[[i]]
+    if (!(is.list(sol) && !is.null(sol$reg) && !is.null(sol$val))) return(NULL)
+    if (!identical(as.integer(sol$reg)[1], oreg)) return(NULL)
+    v <- sol$val
+    if (!is.numeric(v) || length(v) != 1L) return(NULL)
+    vals[[i]] <- as.numeric(v)
+  }
+  list(reg = oreg, val = vals)
 }
 
 WamRuntime$compile_scalar_aggregate_arith <- function(
@@ -3894,17 +3929,32 @@ WamRuntime$compile_scalar_aggregate_arith <- function(
       return(NULL)
     i <- i + 1L
     compiled[[length(compiled) + 1L]] <- list(
-      dest = dest, fid = fid, arity = arity, args = args)
+      dest = dest, fid = fid, arity = arity, args = args, opname = opname)
   }
   if (!length(compiled)) return(NULL)
   compiled
 }
 
+WamRuntime$eval_scalar_aggregate_arith_op <- function(opname, arity, vals) {
+  switch(opname,
+    "+" = vals[[1]] + vals[[2]],
+    "-" = if (arity == 1L) -vals[[1]] else vals[[1]] - vals[[2]],
+    "*" = vals[[1]] * vals[[2]],
+    "/" = vals[[1]] / vals[[2]],
+    "//" = vals[[1]] %/% vals[[2]],
+    "**" = vals[[1]] ^ vals[[2]],
+    "^" = vals[[1]] ^ vals[[2]],
+    NULL)
+}
+
 WamRuntime$eval_scalar_aggregate_arith <- function(program, compiled, reg_env) {
   for (step in compiled) {
-    opname <- WamRuntime$string_of(program$intern_table, as.integer(step$fid))
+    opname <- step$opname
+    if (is.null(opname) || !nzchar(opname)) {
+      opname <- WamRuntime$string_of(program$intern_table, as.integer(step$fid))
+    }
     if (is.null(opname) || !nzchar(opname)) return(NULL)
-    vals <- numeric(length(step$args))
+    vals <- vector("list", length(step$args))
     for (j in seq_along(step$args)) {
       a <- step$args[[j]]
       if (identical(a$kind, "const")) {
@@ -3915,19 +3965,17 @@ WamRuntime$eval_scalar_aggregate_arith <- function(program, compiled, reg_env) {
         vals[[j]] <- get(key, envir = reg_env, inherits = FALSE)
       }
     }
-    result <- switch(opname,
-      "+" = vals[[1]] + vals[[2]],
-      "-" = if (step$arity == 1L) -vals[[1]] else vals[[1]] - vals[[2]],
-      "*" = vals[[1]] * vals[[2]],
-      "/" = vals[[1]] / vals[[2]],
-      "//" = vals[[1]] %/% vals[[2]],
-      "**" = vals[[1]] ^ vals[[2]],
-      "^" = vals[[1]] ^ vals[[2]],
-      NULL)
+    result <- WamRuntime$eval_scalar_aggregate_arith_op(
+      opname, as.integer(step$arity), vals)
     if (is.null(result)) return(NULL)
     assign(as.character(step$dest), result, envir = reg_env)
   }
   reg_env
+}
+
+# Match arith_to_term's int vs float tagging for aggregate bag construction.
+WamRuntime$arith_num_is_float_tag <- function(n) {
+  !(is.finite(n) && n == as.integer(n) && abs(n) < .Machine$integer.max)
 }
 
 WamRuntime$scalar_aggregate_bag_term <- function(
@@ -4057,38 +4105,77 @@ WamRuntime$try_scalar_aggregate_fastpath <- function(program, state, instr) {
   stream_saw_float <- FALSE
   stream_best_n <- NULL
   stream_best_float <- FALSE
-  for (sol in sols) {
+
+  is_typed_batch <- is.list(sols) && identical(sols$type, "numeric_batch")
+  batch <- WamRuntime$as_bulk_numeric_batch(sols, bulk_cap$output_regs)
+  if (is_typed_batch && is.null(batch)) return(FALSE)
+  if (!is.null(batch)) {
+    # Vectorized closed is_lax template over a typed numeric batch.
     env <- new.env(parent = emptyenv())
     for (k in ls(base_vals, all.names = TRUE))
       assign(k, get(k, envir = base_vals, inherits = FALSE), envir = env)
-    out_reg <- as.integer(sol$reg)
-    assign(as.character(out_reg), as.numeric(sol$val), envir = env)
+    out_reg <- as.integer(batch$reg)
+    assign(as.character(out_reg), batch$val, envir = env)
     out_key <- as.character(out_reg)
     aliases <- if (exists(out_key, envir = out_aliases, inherits = FALSE))
       get(out_key, envir = out_aliases, inherits = FALSE) else integer(0)
     for (a in aliases)
-      assign(as.character(a), as.numeric(sol$val), envir = env)
+      assign(as.character(a), batch$val, envir = env)
     env2 <- WamRuntime$eval_scalar_aggregate_arith(program, compiled, env)
-    if (is.null(env2)) next
-    if (!exists(tkey, envir = env2, inherits = FALSE)) next
-    nval <- get(tkey, envir = env2, inherits = FALSE)
-    nterm <- WamRuntime$arith_to_term(nval)
-    if (is.null(nterm)) next
-    n_is_float <- identical(nterm$tag, "float")
-    if (identical(kind, "count")) {
-      stream_n <- stream_n + 1L
-    } else if (identical(kind, "sum")) {
-      stream_total <- stream_total + nval
-      stream_n <- stream_n + 1L
-      if (n_is_float) stream_saw_float <- TRUE
-    } else {
-      if (is.null(stream_best_n) ||
-          (identical(kind, "min") && nval < stream_best_n) ||
-          (identical(kind, "max") && nval > stream_best_n)) {
-        stream_best_n <- nval
-        stream_best_float <- n_is_float
+    if (is.null(env2) || !exists(tkey, envir = env2, inherits = FALSE))
+      return(FALSE)
+    nvals <- get(tkey, envir = env2, inherits = FALSE)
+    if (!is.numeric(nvals)) return(FALSE)
+    stream_n <- length(nvals)
+    if (identical(kind, "sum")) {
+      if (stream_n > 0L) {
+        stream_total <- sum(nvals)
+        # Vector form of arith_to_term's float tag (avoid per-element terms).
+        stream_saw_float <- any(
+          !is.finite(nvals) |
+          abs(nvals) >= .Machine$integer.max |
+          nvals != trunc(nvals))
       }
-      stream_n <- stream_n + 1L
+    } else if (!identical(kind, "count") && stream_n > 0L) {
+      idx <- if (identical(kind, "min")) which.min(nvals) else which.max(nvals)
+      stream_best_n <- nvals[[idx]]
+      stream_best_float <- WamRuntime$arith_num_is_float_tag(stream_best_n)
+    }
+  } else {
+    # Legacy per-solution record path (non-batch / multi-reg shapes).
+    for (sol in sols) {
+      env <- new.env(parent = emptyenv())
+      for (k in ls(base_vals, all.names = TRUE))
+        assign(k, get(k, envir = base_vals, inherits = FALSE), envir = env)
+      out_reg <- as.integer(sol$reg)
+      assign(as.character(out_reg), as.numeric(sol$val), envir = env)
+      out_key <- as.character(out_reg)
+      aliases <- if (exists(out_key, envir = out_aliases, inherits = FALSE))
+        get(out_key, envir = out_aliases, inherits = FALSE) else integer(0)
+      for (a in aliases)
+        assign(as.character(a), as.numeric(sol$val), envir = env)
+      env2 <- WamRuntime$eval_scalar_aggregate_arith(program, compiled, env)
+      if (is.null(env2)) next
+      if (!exists(tkey, envir = env2, inherits = FALSE)) next
+      nval <- get(tkey, envir = env2, inherits = FALSE)
+      nterm <- WamRuntime$arith_to_term(nval)
+      if (is.null(nterm)) next
+      n_is_float <- identical(nterm$tag, "float")
+      if (identical(kind, "count")) {
+        stream_n <- stream_n + 1L
+      } else if (identical(kind, "sum")) {
+        stream_total <- stream_total + nval
+        stream_n <- stream_n + 1L
+        if (n_is_float) stream_saw_float <- TRUE
+      } else {
+        if (is.null(stream_best_n) ||
+            (identical(kind, "min") && nval < stream_best_n) ||
+            (identical(kind, "max") && nval > stream_best_n)) {
+          stream_best_n <- nval
+          stream_best_float <- n_is_float
+        }
+        stream_n <- stream_n + 1L
+      }
     }
   }
 
@@ -4107,7 +4194,7 @@ WamRuntime$try_scalar_aggregate_fastpath <- function(program, state, instr) {
   TRUE
 }
 
-# Bulk collect for category_ancestor/4: numeric hops for A3, no stream CPs.
+# Bulk collect for category_ancestor/4: typed numeric hop batch on A3.
 WamRuntime$category_ancestor_bulk_collect <- function(program, state, edge_pred,
                                                        edge_key, max_depth) {
   table <- program$intern_table
@@ -4158,7 +4245,7 @@ WamRuntime$category_ancestor_bulk_collect <- function(program, state, edge_pred,
     }
   }
   if (!length(hops_num)) return(list())
-  lapply(hops_num, function(h) list(reg = 3L, val = h))
+  list(type = "numeric_batch", reg = 3L, val = hops_num)
 }
 
 # Iterate a precomputed result list, unifying each entry with the
