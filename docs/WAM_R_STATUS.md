@@ -84,6 +84,6 @@ default 4096), and explicit `auto` (codegen resolves via shared
 
 ## Document status
 
-Fleet-aligned snapshot updated for PERF-R-AGG-BATCH (2026-08-01):
+Fleet-aligned snapshot updated through PERF-R-CA-BULK-HOPS (2026-08-01):
 hosted 1111/1621; PATHMARK, LOOPBODY, ED-BOUNDARY, LOWERED-DIRECTCALL,
 and CA-BULK-HOPS declined where measured.
