@@ -17,6 +17,40 @@ Current art remains:
 - [`ARCHITECTURE_filing_engine.md`](../../docs/design/ARCHITECTURE_filing_engine.md): FUSE-003 and OPENQ-012,
   the eventual conditioning and cross-corpus consumers.
 
+## 0. Background: what this is for
+
+*Added after a cold-reader comprehension test failed (an LLM tutor quizzed on this doc missed the
+point of all five of its own questions). This section deliberately restates things the authors
+"already know" — the rest of the document opens straight into the contract layer, and a reader
+without the project's context has to reverse-engineer the positive picture from prohibitions.*
+
+The process-expression encoder maps a **fixed** canonical AST — the representation of a
+distance-type function over a graph, e.g. `max(floor, gamma^hops * lca_frac)` — to semantic
+vectors used for downstream training. The tree is an **input, not a learning target**: nothing
+in this design updates, rearranges, or generates tree structure. Node positions exist to give
+the encoder structural information about where each token sits in the function.
+
+Position information lives at three levels, and most of this document's rules are about keeping
+them separate:
+
+| level | what it is | may be used as a key? |
+|---|---|---|
+| identity | canonical AST + registry + digests | yes — seals, caches, manifests |
+| coordinates | materialized typed-path indices (static, per node) | yes — sealed training rows |
+| features | position vectors computed from coordinates, each forward pass | **never** |
+
+Coordinates are looked up; features are computed. Depth and lateral (role/ancestor) information
+are both **coordinates** and are combined into one position **feature** — first locally per edge
+(an operator `C` over the depth and role tables, §3), then along the path (an order-sensitive
+encoder `g`, §5). Which operator `C` uses — concatenation, outer product, circular convolution,
+bilinear — is an ablation arm: a choice of compression scheme over the same coordinates, not a
+fixed part of the design.
+
+Terminology used throughout: **typed role path** (the coordinate), **position encoding** (the
+feature), **estimand** (which relation the function estimates — `DESIGN_registry_v0.4.md` R7),
+**pin** (an audit/provenance annotation in its own channel, §11), **sealed row** (a training
+example whose static bytes are frozen and hashable).
+
 ## 1. Structural authority: a typed root-to-node role path
 
 The earlier shorthand `(depth, breadth)` is not a node identity. At depth 3, for example,

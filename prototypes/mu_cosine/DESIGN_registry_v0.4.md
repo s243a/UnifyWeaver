@@ -32,6 +32,15 @@ another's answer:
 | Which implementation should run? | `impl=` (a request) | graph-walk vs materialized table |
 | Which code actually ran? | factory fingerprint | content-bound realization record |
 | Audit/provenance annotations? | `@` pins — a third channel | `@impl_hash/4e13e0d` |
+| Who supplies the μ labels, over what structure? | `mu=` + the substrate argument | `mu=haiku`, `principal_tree(pearltrees)` |
+
+On the last row: **the judge is not a third methodological axis — it is a role the function
+plays.** For an LLM judge the label-generating function is `prompt(Model, PromptText, Harness)`;
+for graph-derived labels it is the registered function over the substrate (e.g.
+`max(floor, gamma^hops * lca_frac)` over `principal_tree(pearltrees)`). So the methodology is
+defined by **function + substrate (+ estimand)**, and `mu=haiku` is an *abbreviated reference to
+the label-generating function* — abbreviated because R10 keeps judges as bare atoms in v0.4,
+with prompt text and model revision carried by factory binding rather than the grammar.
 
 ## 2. The rulings
 
@@ -46,6 +55,12 @@ without its reasoning gets re-litigated.
 Transitive μ is graded element/subcategory relatedness computed over several hops. **Hop decay is
 one estimator of it; an LLM judge is another.** The substrate, judge, and relation type jointly
 define the methodology.
+
+*(Refinement, ruled after this on #4055: the "judge" in that triple is not an independent axis —
+it reduces to the function. An LLM judge's function is `prompt(Model, PromptText, Harness)`; a
+graph judge reduces to substrate + function. The doctrine restated without the redundancy:
+**function + substrate (+ estimand) define the methodology**, and "judge" names the
+μ-label-generating role a function plays. See §1.1 and R10.)*
 
 `sm_fs_freeze.py`'s targets are therefore graph-judge *estimates*, not assertions of semantic μ,
 and do not contradict [`DESIGN_transitive_relations.md`](DESIGN_transitive_relations.md). That
@@ -197,6 +212,27 @@ text share an expression — finding 8's under-determination in the judge namesp
 is accepted and recorded rather than fixed this cycle. Revisit when a prompt slot can bind
 through the factory mechanism — prompt text and model revisions belong in factory binding, which
 already versions realizing code, rather than in the grammar.
+
+Under the §1.1 reduction (judge = the function's role), the revisit condition has a sharper
+meaning: it is the moment the judge **atom dissolves entirely into an ordinary function term** —
+`prompt(Model, PromptText)` becomes expressible, factory binding versions the model revision and
+harness, and judge registry entries become function terms like any other. The atom is
+scaffolding; the reduction is the building.
+
+The judge as a *conditioning channel* in model input remains legitimate and unchanged — it tells
+the encoder whether labels came from a model or from graph structure, which affects how
+supervision is interpreted. Verified against landed code: that channel already embeds
+**descriptive function cards, not names** — `judge_cards.py` supplies e.g. `"deterministic
+structural judge, graph walk, no language model"`, consumed as `W·e5(card) + residual`
+(`mu_attention.py` NameFunctionCond), with the stated rationale "e5 can't place opaque tokens,
+give it words." The remaining refinement path is card → actual prompt text for LLM judges, which
+would make the e5 channel a genuine low-fidelity *function* channel, redundant with the future
+custom encoder — redundancy that licenses aggressive, **asymmetric** channel dropout (drop the
+e5 judge channel more often than the function channel, so the from-scratch encoder gets gradient
+pressure) and gives legacy models a bridge input. Interface constraint to state now: the future
+function channel's output vector should be drop-in compatible with the judge channel's slot, so
+the substitution is a swap rather than a rewire. These are encoder-side notes for
+`DESIGN_expression_encoder_future.md`; none of it is registry surface.
 
 ## 3. What `v0.4` must change
 
