@@ -149,28 +149,55 @@ The support must contain every registered process. *Measured:* **10/10** lie ins
 methodology-root-only support (`covers()`, including the six-node `graph-judge` and
 `lineage-haiku`'s node-valued `mu=`). This is a blocking engineering gate, not a diagnostic.
 
-### 2.5 The corpus decision (owner)
+### 2.5 The corpus decision: components compose; complete trees are samples
 
-The tractable exhaustive object under v0.4 is the **structural template set** — 98,070
-templates under methodology-root-only, ~5× the v0.3 template count and well inside the §8
-resource envelope. The recommendation is therefore §1's support/frequency separation applied one
-level up:
+An earlier draft of this section recommended freezing the 98,070 complete-tree templates as the
+exhaustive support. The owner rejected that direction: *"We can't have that many templates. The
+templates need to both be more general, and used as composable components."* The revision below
+follows that ruling, and the measurement shows why it is right — the complete-tree "templates"
+were themselves a cross-product, not a generative vocabulary.
 
-- **support** = the template set, enumerated exhaustively and frozen;
-- **frequency** = per-template value instantiation by *sampling* under the §5.2 coverage
-  invariants (every grid value, every digit byte, every magnitude scale appears; the tail never
-  reaches zero) — instead of the value cross-product that caused the explosion.
+**The general, composable object is the operator-local shape**: one operator, one arity, one
+kwarg-presence pattern — plus the typed leaf shapes. Complete trees are *compositions* of these
+components through the type system. *Measured* (`test_process_expression_enumerator.py`):
 
-Restricting methodology kwargs to the root is semantically motivated, not just convenient:
-`estimand=`/`impl=` are deployment metadata and `require_deployable` checks exactly the root.
-Interior-methodology expressions remain grammatical; they are sampler coverage (like pins and
-strings), not enumeration support.
+| component class | count |
+|---|---:|
+| leaf shapes (output type × modifier shape) | 9 |
+| operator-local shapes, interior (no methodology kwargs) | 25 |
+| operator-local shapes incl. root methodology patterns | 75 |
+| legal composition edges (parent slot → child output, incl. `mu=`) | 33 |
+| **component vocabulary total** | **84** |
 
-Three things need the owner before the generator runs, all preregistration content bound by
-`enumeration_spec_sha256()`: the scenario (recommendation: methodology-root-only), the corpus
-size per template (v0.3's ratio was ~14.9 expressions/template; the same ratio here gives a
-~1.5M-row corpus, ~6 GB at the §8 row estimate), and confirmation that the widened §5.2 numeric
-grid enters through the sampler rather than the enumeration grids.
+Support/frequency separation, applied at the *component* level:
+
+- **support** = the component vocabulary and its legal composition edges, both enumerated
+  exhaustively and frozen — 84 components, 33 edges. Coverage invariant: every component and
+  every legal edge is witnessed in the training split, alongside the §5.2 value floors (every
+  grid value, every digit byte, every magnitude scale; the tail never reaches zero).
+- **frequency** = complete trees are *sampled* compositions of components, with values sampled
+  per §5.2. Neither the 98,070 complete shapes nor the 54.9M expressions is ever an enumeration
+  target again; those numbers stand only as measurements of the composition space — the reason
+  exhaustiveness died.
+
+This also makes the §7 far-slice evaluation principled rather than incidental: with a
+component-level support, held-out *compositions* of witnessed components are exactly what the
+far slice tests, so generalization over composition is the design, not an accident of which
+templates a cap happened to exclude. It matches the encoder's own inductive structure — the
+model sees per-node roles and typed paths, i.e. components and edges, never a "whole template"
+feature.
+
+Restricting methodology kwargs to the root remains the recommendation and is semantically
+motivated: `estimand=`/`impl=` are deployment metadata and `require_deployable` checks exactly
+the root. Interior-methodology expressions stay grammatical; they are sampler coverage (like
+pins and strings), not support.
+
+What still needs the owner before the generator runs, all preregistration content bound by
+`enumeration_spec_sha256()`: the corpus row count (a free choice now that support no longer
+scales with it — the §8 envelope supports ~1.5M rows comfortably), the composition-sampling
+distribution over depth/branching (support guarantees the floor; the distribution shapes the
+mass), and confirmation that the widened §5.2 numeric grid enters through the sampler rather
+than the enumeration grids.
 
 ## 3. Mandatory synthetic coverage
 

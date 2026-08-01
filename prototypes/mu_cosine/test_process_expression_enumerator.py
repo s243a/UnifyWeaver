@@ -55,6 +55,27 @@ def test_the_binding_constraint_moved_to_kwarg_enumeration():
     assert structural > 35 * 285_478  # the v0.3 corpus, for scale
 
 
+def test_component_vocabulary_is_pinned():
+    """§2.5 (owner ruling): the composable support is the predicate-level
+    component vocabulary — operator-local shapes composed via recursion
+    through the type system — not complete-tree skeletons."""
+    assert en.component_vocabulary() == {
+        "leaf_shapes": 9,
+        "operator_shapes_interior": 25,
+        "operator_shapes_with_root_methodology": 75,
+        "composition_edges": 33,
+        "vocabulary_total": 84,
+    }
+
+
+def test_component_vocabulary_is_tiny_relative_to_the_composition_space():
+    """The reason the ruling is right: complete-tree templates were a
+    cross-product of the vocabulary, three orders of magnitude larger."""
+    templates = en.count("methodology-root-only", template_mode=True)[0]
+    vocabulary = en.component_vocabulary()["vocabulary_total"]
+    assert templates > 1000 * vocabulary
+
+
 def test_registered_processes_are_inside_the_root_only_support():
     """§2.4 coverage gate at the support level: every registered process lies
     inside the methodology-root-only enumerable set."""

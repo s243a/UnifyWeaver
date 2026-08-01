@@ -432,6 +432,83 @@ def covers(node, scenario: str) -> bool:
     return _methodology_placement_ok(node, SCENARIOS[scenario], True)
 
 
+def component_vocabulary() -> dict:
+    """The composable support of §2.5: operator-local shapes and typed leaves.
+
+    The owner's ruling on the corpus posture: templates must be general,
+    composable components — not complete-tree skeletons. A component is one
+    operator with one arity and one kwarg-presence pattern (or one typed leaf
+    shape); complete trees are compositions of components through the type
+    system, and the legal composition edges are part of the frozen support.
+    """
+
+    leaves: set = set()
+    for name, sig in REGISTRY.items():
+        if sig.atom and not sig.operator:
+            leaves.add((sig.output, None))
+            for modifier in sig.modifiers:
+                leaves.add((sig.output, modifier))
+    leaves.add(("score", "e5-atom"))  # the dual atom is its own leaf shape
+
+    def kwarg_patterns(name: str, sig, allow_methodology: bool) -> set:
+        usable = []
+        for key in sorted(sig.kwargs):
+            spec = sig.kwargs[key]
+            if key in ("estimand", "impl") and not allow_methodology:
+                continue
+            if spec.kind == "string":
+                continue
+            usable.append(key)
+        patterns: set = set()
+        for r in range(0, MAX_KWARGS_NODE + 1):
+            for subset in itertools.combinations(usable, r):
+                chosen = set(subset)
+                if any(
+                    spec.required and key not in chosen
+                    for key, spec in sig.kwargs.items()
+                ):
+                    continue
+                if name == "routing" and (("t" in chosen) != ("menus" in chosen)):
+                    continue
+                patterns.add(frozenset(chosen))
+        return patterns
+
+    interior: set = set()
+    with_root: set = set()
+    edges = 0
+    for name, sig in REGISTRY.items():
+        if not sig.operator:
+            continue
+        cap = sig.max_args if sig.max_args is not None else MAX_ARITY
+        for arity in range(sig.min_args, min(cap, MAX_ARITY) + 1):
+            for pattern in kwarg_patterns(name, sig, False):
+                interior.add((name, arity, pattern))
+            for pattern in kwarg_patterns(name, sig, True):
+                with_root.add((name, arity, pattern))
+            for index in range(arity):
+                declared = (
+                    sig.arg_types[index]
+                    if index < len(sig.arg_types)
+                    else sig.variadic_arg_type
+                )
+                for alternative in declared.split("|"):
+                    if alternative == "process":
+                        edges += len(OUTPUT_ROOTS)
+                    elif alternative in pc.OUTPUT_TYPES or alternative in pc.VALUE_KINDS:
+                        edges += 1
+        for key in sorted(sig.kwargs):
+            if sig.kwargs[key].kind in pc.OUTPUT_TYPES:
+                edges += 1  # node-valued kwarg edge (mu -> judge)
+
+    return {
+        "leaf_shapes": len(leaves),
+        "operator_shapes_interior": len(interior),
+        "operator_shapes_with_root_methodology": len(with_root),
+        "composition_edges": edges,
+        "vocabulary_total": len(leaves) + len(with_root),
+    }
+
+
 def main(argv=None) -> int:
     print(f"enumeration {ENUMERATION_VERSION} over registry {pc.REGISTRY_VERSION}")
     print(f"spec sha {enumeration_spec_sha256()[:16]}…")
@@ -443,6 +520,10 @@ def main(argv=None) -> int:
         templates, _ = count(scenario, template_mode=True)
         print(f"  {scenario:22s} expressions {expressions:>16,}  templates {templates:>10,}")
         print(f"  {'':22s} by node count {by_nodes}")
+    vocabulary = component_vocabulary()
+    print("component vocabulary (§2.5 — the composable support):")
+    for key, value in vocabulary.items():
+        print(f"  {key:40s} {value}")
     return 0
 
 
