@@ -59,20 +59,68 @@ def test_component_vocabulary_is_pinned():
     """§2.5 (owner ruling): the composable support is the predicate-level
     component vocabulary — operator-local shapes composed via recursion
     through the type system — not complete-tree skeletons."""
-    assert en.component_vocabulary() == {
+    assert en.component_vocabulary_counts() == {
         "leaf_shapes": 9,
-        "operator_shapes_interior": 25,
-        "operator_shapes_with_root_methodology": 75,
-        "composition_edges": 33,
-        "vocabulary_total": 84,
+        "operator_shapes_interior": 24,
+        "operator_shapes_root_only_extension": 48,
+        "node_composition_edges": 31,
+        "literal_slots": 2,
+        "vocabulary_total": 81,
     }
+
+
+def test_component_vocabulary_is_content_not_counts():
+    """Sol's adversarial finding on the first draft: counts alone cannot
+    freeze support — an invalid component can replace a valid one at equal
+    cardinality. The vocabulary is serialized identities, hash-bound, and
+    the illegal shape the first draft counted is provably absent."""
+    vocabulary = en.component_vocabulary()
+    everything = (vocabulary["operators_interior"]
+                  + vocabulary["operators_root_only"])
+    # blend.w's length is its arity; arity 3 exceeds the list cap, so no
+    # w-bearing blend/3 component may exist (the first draft counted three).
+    assert not any(item.startswith("op:blend/3") and "w" in item
+                   for item in everything)
+    assert "op:blend/2{w}" in everything          # the legal counterpart
+    # Node-composition edges are separated from literal slots: only the
+    # former compose recursively.
+    assert "edge:lineage.kw:mu->judge" in vocabulary["node_edges"]
+    assert vocabulary["literal_slots"] == [
+        "slot:max/2.arg0:number", "slot:max/3.arg0:number",
+    ]
+    # A cardinality-preserving substitution moves the hash.
+    sha = en.component_vocabulary_sha256()
+    assert len(sha) == 64
+    import json as _json
+    forged = dict(vocabulary)
+    forged["operators_interior"] = (
+        [item for item in vocabulary["operators_interior"]
+         if item != "op:blend/2{w}"] + ["op:blend/3{w}"])
+    import hashlib as _hashlib
+    forged_sha = _hashlib.sha256(
+        _json.dumps(forged, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert forged_sha != sha
+
+
+def test_prereg_sha_binds_scenarios_and_vocabulary():
+    """The preregistration hash covers methodology placement and the
+    serialized support, not just caps and grids."""
+    sha = en.enumeration_spec_sha256()
+    original = en.SCENARIOS["methodology-root-only"]
+    try:
+        en.SCENARIOS["methodology-root-only"] = dict(
+            original, methodology_interior=True)
+        assert en.enumeration_spec_sha256() != sha
+    finally:
+        en.SCENARIOS["methodology-root-only"] = original
 
 
 def test_component_vocabulary_is_tiny_relative_to_the_composition_space():
     """The reason the ruling is right: complete-tree templates were a
     cross-product of the vocabulary, three orders of magnitude larger."""
     templates = en.count("methodology-root-only", template_mode=True)[0]
-    vocabulary = en.component_vocabulary()["vocabulary_total"]
+    vocabulary = en.component_vocabulary_counts()["vocabulary_total"]
     assert templates > 1000 * vocabulary
 
 

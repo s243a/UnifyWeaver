@@ -74,7 +74,10 @@ SCENARIOS = {
 
 
 def enumeration_spec_sha256() -> str:
-    """Content witness binding version, caps, and grids for preregistration."""
+    """Content witness for preregistration: version, caps, grids, the scenario
+    definitions (root/interior methodology placement is part of the spec, not
+    folklore), and the serialized component vocabulary's own hash — so the
+    preimage pins WHAT the support contains, not merely how big it is."""
 
     payload = {
         "version": ENUMERATION_VERSION,
@@ -89,6 +92,8 @@ def enumeration_spec_sha256() -> str:
         "number_grid": list(NUMBER_GRID),
         "int_grid": list(INT_GRID),
         "excluded": ["string", "pins"],
+        "scenarios": {name: dict(flags) for name, flags in sorted(SCENARIOS.items())},
+        "component_vocabulary_sha256": component_vocabulary_sha256(),
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -432,59 +437,80 @@ def covers(node, scenario: str) -> bool:
     return _methodology_placement_ok(node, SCENARIOS[scenario], True)
 
 
+def _component_kwarg_patterns(name: str, sig, arity: int, allow_methodology: bool):
+    """Legal kwarg-presence patterns for one operator shape — the SAME
+    legality rules `_kwarg_selections` enforces (routing pairing, blend.w
+    length forced by arity and capped by the list limit, strings excluded),
+    so a pattern is a component if and only if it is enumerable. Counts alone
+    cannot freeze support; these patterns serialize into identities below."""
+
+    usable = []
+    for key in sorted(sig.kwargs):
+        spec = sig.kwargs[key]
+        if key in ("estimand", "impl") and not allow_methodology:
+            continue
+        if spec.kind == "string":
+            continue
+        usable.append(key)
+    patterns = set()
+    for r in range(0, MAX_KWARGS_NODE + 1):
+        for subset in itertools.combinations(usable, r):
+            chosen = set(subset)
+            if any(
+                spec.required and key not in chosen
+                for key, spec in sig.kwargs.items()
+            ):
+                continue
+            if name == "routing" and (("t" in chosen) != ("menus" in chosen)):
+                continue
+            if name == "blend" and "w" in chosen and arity > MAX_LIST_LENGTH:
+                continue  # w's length is the arity; capped out = unenumerable
+            patterns.add(frozenset(chosen))
+    return patterns
+
+
 def component_vocabulary() -> dict:
-    """The composable support of §2.5: operator-local shapes and typed leaves.
+    """The composable support of §2.5, as SERIALIZED IDENTITIES.
 
     The owner's ruling on the corpus posture: templates must be general,
-    composable components — not complete-tree skeletons. A component is one
-    operator with one arity and one kwarg-presence pattern (or one typed leaf
-    shape); complete trees are compositions of components through the type
-    system, and the legal composition edges are part of the frozen support.
+    composable components — one operator with one arity and one legal
+    kwarg-presence pattern (or one typed leaf shape) — composed via recursion
+    through the type system. A support freeze needs content, not counts: each
+    component and each edge has a canonical string identity here, and
+    ``component_vocabulary_sha256`` binds the whole set, so a component
+    swapped for an equal-cardinality impostor moves the hash.
+
+    Node-composition edges (parent slot -> child OUTPUT type, including the
+    ``mu=`` kwarg edge) are serialized separately from literal slots (parent
+    slot -> value kind): only the former compose recursively; the latter
+    terminate in grid values.
     """
 
-    leaves: set = set()
+    leaf_ids = set()
     for name, sig in REGISTRY.items():
         if sig.atom and not sig.operator:
-            leaves.add((sig.output, None))
+            leaf_ids.add(f"leaf:{sig.output}")
             for modifier in sig.modifiers:
-                leaves.add((sig.output, modifier))
-    leaves.add(("score", "e5-atom"))  # the dual atom is its own leaf shape
+                leaf_ids.add(f"leaf:{sig.output}.{modifier}")
+    leaf_ids.add("leaf:score.e5-atom")  # the dual atom is its own leaf shape
 
-    def kwarg_patterns(name: str, sig, allow_methodology: bool) -> set:
-        usable = []
-        for key in sorted(sig.kwargs):
-            spec = sig.kwargs[key]
-            if key in ("estimand", "impl") and not allow_methodology:
-                continue
-            if spec.kind == "string":
-                continue
-            usable.append(key)
-        patterns: set = set()
-        for r in range(0, MAX_KWARGS_NODE + 1):
-            for subset in itertools.combinations(usable, r):
-                chosen = set(subset)
-                if any(
-                    spec.required and key not in chosen
-                    for key, spec in sig.kwargs.items()
-                ):
-                    continue
-                if name == "routing" and (("t" in chosen) != ("menus" in chosen)):
-                    continue
-                patterns.add(frozenset(chosen))
-        return patterns
+    interior_ids: set = set()
+    root_only_ids: set = set()
+    node_edge_ids: set = set()
+    literal_slot_ids: set = set()
 
-    interior: set = set()
-    with_root: set = set()
-    edges = 0
     for name, sig in REGISTRY.items():
         if not sig.operator:
             continue
         cap = sig.max_args if sig.max_args is not None else MAX_ARITY
         for arity in range(sig.min_args, min(cap, MAX_ARITY) + 1):
-            for pattern in kwarg_patterns(name, sig, False):
-                interior.add((name, arity, pattern))
-            for pattern in kwarg_patterns(name, sig, True):
-                with_root.add((name, arity, pattern))
+            interior_patterns = _component_kwarg_patterns(name, sig, arity, False)
+            for pattern in interior_patterns:
+                interior_ids.add(f"op:{name}/{arity}{{{','.join(sorted(pattern))}}}")
+            for pattern in _component_kwarg_patterns(name, sig, arity, True):
+                identity = f"op:{name}/{arity}{{{','.join(sorted(pattern))}}}"
+                if pattern not in interior_patterns:
+                    root_only_ids.add(identity)
             for index in range(arity):
                 declared = (
                     sig.arg_types[index]
@@ -493,20 +519,50 @@ def component_vocabulary() -> dict:
                 )
                 for alternative in declared.split("|"):
                     if alternative == "process":
-                        edges += len(OUTPUT_ROOTS)
-                    elif alternative in pc.OUTPUT_TYPES or alternative in pc.VALUE_KINDS:
-                        edges += 1
+                        for output in OUTPUT_ROOTS:
+                            node_edge_ids.add(f"edge:{name}/{arity}.arg{index}->{output}")
+                    elif alternative in pc.OUTPUT_TYPES:
+                        node_edge_ids.add(f"edge:{name}/{arity}.arg{index}->{alternative}")
+                    elif alternative in pc.VALUE_KINDS:
+                        literal_slot_ids.add(f"slot:{name}/{arity}.arg{index}:{alternative}")
         for key in sorted(sig.kwargs):
-            if sig.kwargs[key].kind in pc.OUTPUT_TYPES:
-                edges += 1  # node-valued kwarg edge (mu -> judge)
+            kind = sig.kwargs[key].kind
+            if kind in pc.OUTPUT_TYPES:
+                node_edge_ids.add(f"edge:{name}.kw:{key}->{kind}")
 
     return {
-        "leaf_shapes": len(leaves),
-        "operator_shapes_interior": len(interior),
-        "operator_shapes_with_root_methodology": len(with_root),
-        "composition_edges": edges,
-        "vocabulary_total": len(leaves) + len(with_root),
+        "leaves": sorted(leaf_ids),
+        "operators_interior": sorted(interior_ids),
+        "operators_root_only": sorted(root_only_ids),
+        "node_edges": sorted(node_edge_ids),
+        "literal_slots": sorted(literal_slot_ids),
     }
+
+
+def component_vocabulary_counts() -> dict:
+    vocabulary = component_vocabulary()
+    return {
+        "leaf_shapes": len(vocabulary["leaves"]),
+        "operator_shapes_interior": len(vocabulary["operators_interior"]),
+        "operator_shapes_root_only_extension": len(vocabulary["operators_root_only"]),
+        "node_composition_edges": len(vocabulary["node_edges"]),
+        "literal_slots": len(vocabulary["literal_slots"]),
+        "vocabulary_total": (
+            len(vocabulary["leaves"])
+            + len(vocabulary["operators_interior"])
+            + len(vocabulary["operators_root_only"])
+        ),
+    }
+
+
+def component_vocabulary_sha256() -> str:
+    """Content hash of the serialized support — what a preregistration pins.
+    Cardinality-preserving substitutions move this hash."""
+
+    return hashlib.sha256(
+        json.dumps(component_vocabulary(), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
 
 
 def main(argv=None) -> int:
@@ -520,10 +576,11 @@ def main(argv=None) -> int:
         templates, _ = count(scenario, template_mode=True)
         print(f"  {scenario:22s} expressions {expressions:>16,}  templates {templates:>10,}")
         print(f"  {'':22s} by node count {by_nodes}")
-    vocabulary = component_vocabulary()
-    print("component vocabulary (§2.5 — the composable support):")
-    for key, value in vocabulary.items():
+    counts = component_vocabulary_counts()
+    print("component vocabulary (§2.5 — the composable support, serialized):")
+    for key, value in counts.items():
         print(f"  {key:40s} {value}")
+    print(f"  vocabulary sha {component_vocabulary_sha256()[:16]}…")
     return 0
 
 

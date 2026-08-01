@@ -158,46 +158,67 @@ follows that ruling, and the measurement shows why it is right — the complete-
 were themselves a cross-product, not a generative vocabulary.
 
 **The general, composable object is the operator-local shape**: one operator, one arity, one
-kwarg-presence pattern — plus the typed leaf shapes. Complete trees are *compositions* of these
-components through the type system. *Measured* (`test_process_expression_enumerator.py`):
+*legal* kwarg-presence pattern — plus the typed leaf shapes. Complete trees are *compositions*
+of these components through the type system. The support is **serialized content, not counts**
+(adversarial review finding on the first draft: an invalid component can replace a valid one at
+equal cardinality, so counts alone cannot freeze support — and the first draft's vocabulary
+indeed counted three unenumerable `blend/3{…w…}` shapes that the legality rules exclude).
+`component_vocabulary()` emits canonical identities (`op:blend/2{w}`,
+`edge:lineage.kw:mu->judge`, `slot:max/2.arg0:number`), and
+`component_vocabulary_sha256()` binds the set. *Measured*
+(`test_process_expression_enumerator.py`):
 
 | component class | count |
 |---|---:|
 | leaf shapes (output type × modifier shape) | 9 |
-| operator-local shapes, interior (no methodology kwargs) | 25 |
-| operator-local shapes incl. root methodology patterns | 75 |
-| legal composition edges (parent slot → child output, incl. `mu=`) | 33 |
-| **component vocabulary total** | **84** |
+| operator-local shapes, interior (no methodology kwargs) | 24 |
+| operator-local shapes, root-only extension (methodology patterns) | 48 |
+| node-composition edges (parent slot → child output, incl. `mu=`) | 31 |
+| literal slots (parent slot → value kind; terminate, do not compose) | 2 |
+| **component vocabulary total** | **81** |
 
-Support/frequency separation, applied at the *component* level:
+**Three layers, deliberately separated** — the first draft conflated them:
 
-- **support** = the component vocabulary and its legal composition edges, both enumerated
-  exhaustively and frozen — 84 components, 33 edges. Coverage invariant: every component and
-  every legal edge is witnessed in the training split, alongside the §5.2 value floors (every
-  grid value, every digit byte, every magnitude scale; the tail never reaches zero).
-- **frequency** = complete trees are *sampled* compositions of components, with values sampled
-  per §5.2. Neither the 98,070 complete shapes nor the 54.9M expressions is ever an enumeration
-  target again; those numbers stand only as measurements of the composition space — the reason
-  exhaustiveness died.
+1. **Support freeze** (this section's object): the serialized component vocabulary, node-edge
+   set, and literal-slot set, hash-bound via `enumeration_spec_sha256()` — which also binds the
+   scenario definitions (root/interior methodology placement is spec content, not folklore) and
+   the vocabulary hash itself. Exhaustive and frozen at preregistration.
+2. **Corpus materialization** (a build step, §3–§5's input): complete trees are *sampled*
+   compositions of components with values sampled per §5.2. The corpus is an artifact with its
+   own manifest and digest; it *witnesses* the support but is not the support. Coverage
+   invariant checked at build: every component, every node edge, every literal slot, every grid
+   value, every digit byte appears in the materialized corpus at least the preregistered
+   minimum number of times.
+3. **Training sampling** (§4's job): weighting over the materialized corpus. Weighting shapes
+   frequency only; it can never repair a support gap, which is why layers 1–2 are checked
+   before any §4 arm runs.
 
-This also makes the §7 far-slice evaluation principled rather than incidental: with a
-component-level support, held-out *compositions* of witnessed components are exactly what the
-far slice tests, so generalization over composition is the design, not an accident of which
-templates a cap happened to exclude. It matches the encoder's own inductive structure — the
-model sees per-node roles and typed paths, i.e. components and edges, never a "whole template"
-feature.
+Neither the 98,070 complete shapes nor the 54.9M expressions is an enumeration target again;
+those stand only as measurements of the composition space — the reason exhaustiveness died.
+(The 98,070 figure itself is triple-checked: DP, reduced-caps brute force, and a full-caps
+template materialization by an independent code path.)
+
+**Composition-aware splits (§8 coupling).** Under a component-level support, the LOCO split
+unit stays the whole tree, but the split gains a constraint and a redefinition: the training
+side must still witness every component, node edge, literal slot, and grid value (a support gap
+induced by splitting is a build error, fail closed); the **far slice** is redefined as trees
+whose *compositions* — (edge, context) pairs beyond single edges — are unseen in training,
+which is exactly generalization over composition. Both are checkable at build time from the
+serialized vocabulary.
 
 Restricting methodology kwargs to the root remains the recommendation and is semantically
 motivated: `estimand=`/`impl=` are deployment metadata and `require_deployable` checks exactly
 the root. Interior-methodology expressions stay grammatical; they are sampler coverage (like
 pins and strings), not support.
 
-What still needs the owner before the generator runs, all preregistration content bound by
-`enumeration_spec_sha256()`: the corpus row count (a free choice now that support no longer
-scales with it — the §8 envelope supports ~1.5M rows comfortably), the composition-sampling
-distribution over depth/branching (support guarantees the floor; the distribution shapes the
-mass), and confirmation that the widened §5.2 numeric grid enters through the sampler rather
-than the enumeration grids.
+What still needs the owner before the generator runs, all bound by
+`enumeration_spec_sha256()`: the coverage minimum `k` (appearances per component/edge/value —
+the corpus row count is then **derived** from `k` and the composition-sampling distribution,
+not chosen first; the earlier "~1.5M rows" figure was a v0.3-ratio anchor with no
+coverage-derived justification and is withdrawn as a target, surviving only as the §8
+feasibility scale), the composition-sampling distribution over depth/branching, and
+confirmation that the widened §5.2 numeric grid enters through the sampler rather than the
+enumeration grids.
 
 ## 3. Mandatory synthetic coverage
 
@@ -700,10 +721,11 @@ the encoder handoff §6 applies unchanged: the training worker receives only the
 projection.
 
 Resource envelope, worth stating because it constrains storage and versioning: at the v0.3 scale,
-285,478 rows × 384 float32 ≈ **438 MB per view**, ~1.3 GB for three views; the §2.5
-recommendation (~1.5M rows) scales this to ~2.3 GB per view, still tractable, which is part of
-why that recommendation is made. Teacher caches are content-addressed and pinned to the exact e5
-revision; they are not regenerated silently.
+285,478 rows × 384 float32 ≈ **438 MB per view**, ~1.3 GB for three views. The v0.4 row count is
+derived from the §2.5 coverage minimum rather than chosen, so the envelope statement here is a
+feasibility bound, not a target: even a ~1.5M-row corpus stays ~2.3 GB per view, comfortably
+inside storage. Teacher caches are content-addressed and pinned to the exact e5 revision; they
+are not regenerated silently.
 
 ## 9. What lands as tests
 
