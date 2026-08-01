@@ -134,6 +134,40 @@ nothing checks that it does. Covered by
 `tests/test_plawk_whole_record_ors.pl`, which asserts the four drivers against
 gawk and pins the whole-record-vs-field terminator equivalence directly.
 
+## The sharpest instance: two copies differing in ONE guard
+
+The string-scalar comparison (`s == "text"` on a scalar slot) is written twice:
+
+| copy | context | required a text-holding slot? |
+|---|---|---|
+| `plawk_resolve_scalar_cmp/4` | the bare string-scalar rule PATTERN | **yes** (`scalar_string` / `scalar_strnum`) |
+| `plawk_if_cond_ir/8` | the `if` guard | **no** — matched on slot NAME alone |
+
+Same semantics, same six operators, different temporary names — and one of them
+silently mis-compared. A numeric counter against a string literal compared a
+*count* against an *interned atom id*:
+
+```
+{ n++; if (n == "3") print "eq" }    printed nothing;  gawk prints eq
+```
+
+awk compares a number against a string **as strings**, so `n == "3"` with `n = 3`
+is true. Nothing forced the two copies to agree, and the unguarded one had been
+wrong since it was written.
+
+This is the same shape as the whole-record print above — N emitters, one
+contract — but it shows the failure mode at its sharpest: the copies were not
+*missing* a feature relative to each other, they differed in a **single
+precondition**, which is exactly the kind of divergence that survives review.
+Both `if` clauses now require `plawk_slot_holds_text/1`, so the shape declines
+instead of mis-comparing, in the rule body and in `END` alike.
+
+Note what did NOT fix it: adding a third caller. Routing `END` through the `if`
+emitter (so a string guard works there at all) *propagated* the missing guard to
+a new context before it was closed. Reusing an emitter inherits its bugs as well
+as its behaviour — worth checking the emitter's preconditions when you add a
+caller, not only its output.
+
 ## Suggested habit
 
 When adding a way to populate a table, grep the producer tables
