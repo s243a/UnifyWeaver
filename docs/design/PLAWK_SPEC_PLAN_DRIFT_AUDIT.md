@@ -97,6 +97,43 @@ Alongside it:
 Covered by `tests/test_plawk_posarray_view.pl` (10 tests), including a
 determinism test that would have caught (3).
 
+## A sibling shape: N emitters, one output contract
+
+The same defect class shows up without any level distinction at all — several
+emitters for **one output contract**, each spelling it out itself. The
+whole-record print was this: FOUR emitters print a record without slicing it
+into fields (the single-action driver, the prefixed emitter for a print among
+statements, the gsub driver, the field-assign driver), and all four formatted it
+with the `"%s\n"` global `@.plawk_surface_print_line` — a newline baked into the
+format, so no `ORS` could reach it:
+
+```
+BEGIN { ORS = "|" } { print }      emitted "a 1\n"   gawk: "a 1|"
+BEGIN { ORS = "|" } { print $1 }   emitted "a 1|"    correct
+```
+
+Every print that *names* its fields was already right, because those all funnel
+through `plawk_print_fields_ir//4`, whose base case calls
+`plawk_ors_terminator_ir/4`. The whole-record emitters bypassed that base case —
+they have no field list to recurse over, so each terminated the record itself,
+and "how a record is terminated" was re-derived four times. It only became
+*visible* when the bare `print` desugaring made `print $0` the idiomatic
+spelling of that path.
+
+The fix is the same as everywhere else in this document: each of the four now
+appends `plawk_ors_terminator_ir/4` — one emitter, four callers — so the
+contract cannot be honoured in one spelling and dropped in another. Nothing was
+threaded to make that possible: the ORS already rides a pointer global
+(`@plawk_ors_ptr`) that every driver emits.
+
+The tell for this shape is different from the level-drift one. There is no
+functor to grep for, so look instead for a **fast path that skips the general
+walker**: if the general path's base case does the finishing work, a
+special-case clause that returns early must do the same finishing work, and
+nothing checks that it does. Covered by
+`tests/test_plawk_whole_record_ors.pl`, which asserts the four drivers against
+gawk and pins the whole-record-vs-field terminator equivalence directly.
+
 ## Suggested habit
 
 When adding a way to populate a table, grep the producer tables
@@ -106,3 +143,7 @@ appear at. When adding a second emitter for a read that already has one, check
 whether the existing one probes for presence first — awk's uninitialised
 element is empty in string context, and only one of the two emitters used to
 know that.
+
+When adding a fast path that short-circuits a general walker, check what the
+walker's **base case** does after the last element and do that too. `ORS`
+termination, table frees and separator emission all live there.
