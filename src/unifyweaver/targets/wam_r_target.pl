@@ -1192,7 +1192,7 @@ emit_bulk_collect_entry(Pred, 4, recursive_kernel(category_ancestor, _, ConfigOp
     format(string(Entry),
 'WamRuntime$register_bulk_collect(shared_program, "~w/4", function(program, state) {
   WamRuntime$category_ancestor_bulk_collect(program, state, "~w", "~w/2", ~wL)
-})',
+}, 3L)',
            [Pred, EdgePred, EdgePred, MaxDepth]).
 
 offset_label_entry(Offset, Entry0, Entry) :-
