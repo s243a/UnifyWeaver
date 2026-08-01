@@ -412,19 +412,48 @@ set, so arrival order carries nothing and all relevance structure must come from
 coordinates. A sequence-indexed arm added later would silently break this — hence the
 requirement is stated, not emergent.
 
-**The stream↔tree mapping is a derived, version-bound diagnostic view.** The serializer
-produces stream indices by traversing the tree, so `stream_index ↔ path(u)` falls out of the
-traversal free and may be carried alongside sealed rows. Its value is interpretation, not
-addressing: converting attention matrices from "token 14 attends to token 7" into "the `gamma`
-leaf attends to the `hop_decay` call node"; translating sequence-arm ablation outputs into tree
-coordinates so arms compare on the same diagnostics; and cross-checking the serializer against
-the tree. Three rules keep it honest: (1) *one direction of truth* — the mapping is recomputed
-from the AST plus the canonical traversal, never stored as an independent fact, and the tree
-wins any conflict; (2) *version-bound* — stream indices are a property of the traversal under a
-specific contract (`tok-v2`), and a stored mapping must bind that version or a re-ordered
-stream silently mislabels every analysis; (3) *keys stay tree-side* — §7's "never use a
-position vector as a key" extends to stream indices for the same reason: the stream is a
-projection of the tree, not an authority.
+**Two traversals, one join: the stream↔tree mapping.** There are two legitimate orderings of
+the same tokens, and the mapping is the join between them — not merely a diagnostic overlay on
+one:
+
+1. the **canonical serialization** — pre-order, fixed, digest-bearing. Identity does not care
+   about the encoder's convenience, and this traversal never moves;
+2. an optional **relevance-ordered encoder stream** — a deliberate permutation
+   (most-relevant-first: root functor, estimand, then progressively deeper and lateral detail)
+   fed to training. The permutation is legitimate precisely because every token wears its
+   tree-derived coordinates, so reordering loses nothing the encoder needs.
+
+Two disciplines govern the second traversal. *The relevance order is a canonical function of
+the coordinates, never a curation*: a deterministic sort key over the typed path (channel
+priority, then depth, then role priority), versioned like `RENDERER_VERSION` — an
+encoder-input-format version, never an identity input. A hand-tuned per-expression ordering
+would be an unversioned judgment call baked into training data. And *the payoff must be stated
+honestly*: for the permutation-invariant attention lineage a reordered stream produces the same
+output, so relevance ordering buys nothing in that forward pass. Where it pays: (a)
+**relevance-aware truncation** — a token-budget cut drops the least relevant tail, giving the
+envelope-overflow policy a second degradation mode besides fail-closed (truncate and report the
+rate, same posture as the preregistered `OVERFLOW` role); (b) **order-sensitive ablation arms**
+— causal or recurrent baselines, where order is semantic by construction; (c) **deliberately
+order-biased attention** — an arm that biases attention toward earlier tokens (a
+primacy/position-decaying bias) makes arrival order carry the relevance signal in the forward
+pass itself; the ordering matters exactly when the architecture is made order-sensitive on
+purpose, and that is a legitimate design choice to screen, not an assumption to smuggle in.
+None of this weakens the coordinates-first requirement above: order may *add* a relevance
+signal where an arm is deliberately order-sensitive, but importance must remain readable from
+coordinates alone, because the permutation-invariant arms see nothing else.
+
+The mapping's diagnostic uses stand regardless of which traversal feeds the model: readable
+attention maps ("the `gamma` leaf attends to the `hop_decay` call node" instead of "token 14
+attends to token 7"), translating sequence-arm outputs into tree coordinates so arms compare on
+the same diagnostics, and cross-checking the serializer against the tree. Three rules keep the
+join honest: (1) *one direction of truth* — both traversals and the mapping are recomputed from
+the AST plus their versioned ordering rules, never stored as independent facts, and the tree
+wins any conflict; (2) *version-bound* — stream indices are a property of a traversal under a
+specific contract (`tok-v2` for the canonical order; the versioned sort key for the encoder
+order), and a stored mapping must bind those versions or a re-ordered stream silently mislabels
+every analysis; (3) *keys stay tree-side* — §7's "never use a position vector as a key" extends
+to stream indices of either traversal, for the same reason: a stream is a projection of the
+tree, not an authority.
 
 **Open question — pattern-form input (variables plus a binding channel) as an ablation arm.**
 As *identity* design, a binding channel is declined: bindings are identity-determining
