@@ -474,6 +474,31 @@ evidence-based leverage is the WAM step/register/arithmetic path (or a
 deeper native lowering of power-sum aggregation), not further CA-loop or
 query-boundary micro-opts.
 
+PERF-R-WAM-STEP profiled that interpreter/power-sum path. Full-query
+instruction counts show ~23k `PutStructure`, ~24k `BuiltinCall`, and
+~11k `EndAggregate` steps alongside the CA kernel; `is_lax/2` alone is
+invoked 22729 times (11172 `+/2`, 11172 `**/2`, 385 unary `-/1`). The
+prior int+int fast path covered only `+`; `**` and unary `-` fell through
+to recursive `eval_arith`. Extending `builtin_is_lax` with memoized
+functor ids for `**/^/+/−`, an `arith_to_term` power short-circuit, and
+unary minus — while preserving the existing IntTerm path for
+`+,-,*,//,mod` — is a reusable runtime change (not harness-specific).
+A separate `begin_build`/`append_build_arg` pre-size trial was neutral or
+slower and was not retained. Same-host interleaved 7-rep × 2 sequences
+(R 4.3.3, 271-row six-decimal parity):
+
+| Sequence | base median | candidate median | speedup |
+|----------|-------------|------------------|---------|
+| A | 2561 | 2451 | 1.045× |
+| B | 2562 | 2436 | 1.052× |
+
+Official candidate 7-rep samples: 3021, 2454, 2460, 2478, 2438, 2478, 2462
+(median query 2462 / total 2973). Hosted IDTABLE row above remains
+3412 / 4076 until a hosted WAM-STEP remeasure is recorded. Residual cost
+is still dominated by WAM `step`/register traffic around hop streaming
+and structure build; further leverage is deeper power-sum lowering or
+`step`/`get_reg` work, not CA-loop micro-opts.
+
 #### Reproduction
 
 ```bash

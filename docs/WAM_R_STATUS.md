@@ -69,7 +69,8 @@ default 4096), and explicit `auto` (codegen resolves via shared
   query is outside CA). PERF-R-ED-BOUNDARY attributed that remainder to
   lowered WAM step/register/arithmetic on the power-sum path; boundary
   hypotheses (resolve-once, atom cache, state pool, hashed intern) did
-  not clear a 5% gate.
+  not clear a 5% gate. PERF-R-WAM-STEP short-circuits `is_lax` `**/^`
+  and unary `-` on the power-sum path (~1.045–1.052× same-host query).
 
 ## Path forward
 
@@ -78,7 +79,7 @@ default 4096), and explicit `auto` (codegen resolves via shared
 
 ## Document status
 
-Fleet-aligned snapshot updated for PERF-R-ED-BOUNDARY (2026-07-27):
-post-CA overhead attributed to WAM interpreter/power-sum path; boundary
-trials declined. Hosted IDTABLE 3412/4076 retained. PATHMARK and LOOPBODY
-remain declined.
+Fleet-aligned snapshot updated for PERF-R-WAM-STEP (2026-08-01):
+`builtin_is_lax` power/unary fast path retained; hosted IDTABLE 3412/4076
+still the primary fleet row pending hosted remeasure. PATHMARK, LOOPBODY,
+and ED-BOUNDARY remain declined for their respective hypotheses.
