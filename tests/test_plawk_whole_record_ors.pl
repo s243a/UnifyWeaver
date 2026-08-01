@@ -267,7 +267,9 @@ test(field_assign_ir_loads_the_ors_pointer) :-
 % appends, so a caller cannot invent its own spelling.
 test(one_shared_terminator_emitter) :-
     plawk_native_codegen:plawk_ors_terminator_ir(f, p, r, Lines),
-    assertion(Lines = [FmtLine, LoadLine, PrintLine]),
+    % destructured OUTSIDE the assertion: assertion/1 does not propagate bindings
+    length(Lines, 3),
+    Lines = [FmtLine, LoadLine, PrintLine],
     assertion(sub_atom(FmtLine, _, _, _, '@.plawk_surface_print_string')),
     assertion(sub_atom(LoadLine, _, _, _, '@plawk_ors_ptr')),
     assertion(sub_atom(PrintLine, _, _, _, '@printf')),
