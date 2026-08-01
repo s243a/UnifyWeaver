@@ -294,11 +294,16 @@ plawk_program_native_driver_ir(
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
     plawk_gsub_actions_ir(SubActions, GsubGlobalIR, GsubBodyIR, FinalIdVar),
+    % The rewritten record, then the ORS -- `%s` on the record plus the shared
+    % plawk_ors_terminator_ir/4, not a "%s\n" global (which ignored ORS).
+    plawk_ors_terminator_ir(gsx_ors_fmt, gsx_ors_ptr, gsx_ors_pr, GsubTermLines),
+    atomic_list_concat(GsubTermLines, '\n', GsubTermIR),
     format(atom(PrintIR),
 '  %gsx_out = call i8* @wam_atom_to_string(i64 ~w)
-  %gsx_out_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_line, i32 0, i32 0
-  %gsx_out_pr = call i32 (i8*, ...) @printf(i8* %gsx_out_fmt, i8* %gsx_out)',
-        [FinalIdVar]),
+  %gsx_out_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0
+  %gsx_out_pr = call i32 (i8*, ...) @printf(i8* %gsx_out_fmt, i8* %gsx_out)
+~w',
+        [FinalIdVar, GsubTermIR]),
     format(atom(RecordIR),
 '~w
   br i1 %is_match, label %print_line, label %continue_loop
@@ -403,6 +408,11 @@ plawk_program_native_driver_ir(
     plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
     plawk_field_assign_sets_ir(SetFields, AssignGlobalIR, SetBodyIR),
     plawk_field_ofs_global(OutputSeparator, FieldOfsGlobal, OfsArrLen, OfsSepLen),
+    % The OFS-joined record, then the ORS via the shared terminator. OFS
+    % separates the record's fields; ORS terminates the record -- two separate
+    % separators, and this driver used to honour only the first.
+    plawk_ors_terminator_ir(fa_ors_fmt, fa_ors_ptr, fa_ors_pr, FieldAssignTermLines),
+    atomic_list_concat(FieldAssignTermLines, '\n', FieldAssignTermIR),
     format(atom(RecordIR),
 '~w
   br i1 %is_match, label %print_line, label %continue_loop
@@ -411,12 +421,14 @@ print_line:
   %fa_fb = call %WamFieldBuf* @wam_fields_new(i8* %line_s, i8 ~w)
 ~w
   %fa_joined = call i8* @wam_fields_join_str(%WamFieldBuf* %fa_fb, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_field_ofs, i64 0, i64 0), i64 ~w)
-  %fa_out_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_line, i32 0, i32 0
+  %fa_out_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0
   %fa_out_pr = call i32 (i8*, ...) @printf(i8* %fa_out_fmt, i8* %fa_joined)
+~w
   call void @free(i8* %fa_joined)
   call void @wam_fields_free(%WamFieldBuf* %fa_fb)
   br label %continue_loop',
-        [GuardCallIR, FieldSeparator, SetBodyIR, OfsArrLen, OfsArrLen, OfsSepLen]),
+        [GuardCallIR, FieldSeparator, SetBodyIR, OfsArrLen, OfsArrLen, OfsSepLen,
+         FieldAssignTermIR]),
     plawk_ors_global_line(BeginClauses, OrsGlobalLine),
     format(atom(RuntimeGlobals),
 '@.plawk_surface_print_line = private constant [4 x i8] c"%s\\0A\\00"
@@ -7281,6 +7293,14 @@ plawk_combine_entry_ir(IR, '', IR) :-
 plawk_combine_entry_ir(FirstIR, SecondIR, CombinedIR) :-
     format(atom(CombinedIR), '~w~n~w', [FirstIR, SecondIR]).
 
+% NOTE: `@.plawk_surface_print_line` (the "%s\n" format) is now referenced by
+% NOTHING -- the four whole-record print emitters that used it were the last
+% users, and each terminates with plawk_ors_terminator_ir/4 instead. It is left
+% DEFINED in this and the other three globals blocks deliberately: it is a
+% `private constant`, so LLVM drops it and the binary is unaffected, while
+% deleting it would rewrite the globals of every program and break the
+% byte-identity that the golden IR diff uses to prove unrelated output did not
+% drift. Removing it is a mechanical follow-on, not part of the ORS fix.
 plawk_i64_end_print_globals(BeginClauses, SurfaceGlobals, RuntimeGlobals) :-
     plawk_ors_global_line(BeginClauses, OrsGlobalLine),
     format(atom(RuntimeGlobals),
@@ -19232,11 +19252,20 @@ plawk_fresh_record_ptr_ir(Base, PtrIR, [PayloadLine, PtrLine]) :-
         '  ~w = call i8* @wam_atom_to_string(i64 %~w_payload)',
         [PtrIR, Base]).
 
+% `print` / `print $0` -- the whole record, printed straight from the transient
+% record pointer with no field slicing. It terminates with the ORS like every
+% other print: `%s` on the record, then plawk_ors_terminator_ir/4 -- the SAME
+% terminator plawk_print_fields_ir//4's base case emits. Formatting the record
+% with a "%s\n" global instead would bake a newline in and ignore ORS (it did,
+% and `print $1` did not, so the two spellings disagreed under `ORS = "|"`).
+% OutputSeparator is the OFS and stays unused here: one record has no gaps.
 plawk_print_action_ir([field(0)], _FieldSeparator, _OutputSeparator, ''-IR) :-
     !,
-    llvm_emit_printf_string(plawk_surface_print_line, 4, fmt, printed, '%line_s',
+    llvm_emit_printf_string(plawk_surface_print_string, fmt, printed, '%line_s',
         [FmtPtr, PrintCall]),
-    atomic_list_concat([FmtPtr, PrintCall], '\n', IR).
+    plawk_ors_terminator_ir(newline_fmt, newline_ors_ptr, printed_newline,
+        TermLines),
+    atomic_list_concat([FmtPtr, PrintCall | TermLines], '\n', IR).
 plawk_print_action_ir(Fields, FieldSeparator, OutputSeparator, GlobalIR-IR) :-
     phrase(plawk_print_fields_ir(Fields, FieldSeparator, OutputSeparator, 0), Pairs),
     plawk_print_ir_parts(Pairs, GlobalParts, BodyParts),
@@ -19263,15 +19292,22 @@ plawk_output_action_ir(writebin_arm_out(Tag, ArmTypes, Fields), FieldSeparator,
     plawk_writebin_union_record_ir(Tag, ArmTypes, Fields, [], [],
         FieldSeparator, plawk_writebin, Pair).
 
+% As above, under a statement prefix. The terminator names match the ones
+% plawk_prefixed_print_fields_ir//5's base case builds, so the fast path and the
+% general path spell the same variables the same way under the same prefix.
 plawk_prefixed_print_action_ir([field(0)], _FieldSeparator, _OutputSeparator, Prefix, ''-IR) :-
     !,
     format(atom(FmtVar), '~w_line_fmt', [Prefix]),
     format(atom(PrintVar), '~w_printed_line', [Prefix]),
     format(atom(RecordBase), '~w_current_record', [Prefix]),
     plawk_fresh_record_ptr_ir(RecordBase, RecordPtr, ResolveLines),
-    llvm_emit_printf_string(plawk_surface_print_line, 4, FmtVar, PrintVar, RecordPtr,
+    llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar, RecordPtr,
         [FmtPtr, PrintCall]),
-    append(ResolveLines, [FmtPtr, PrintCall], Lines),
+    format(atom(TermFmtVar), '~w_newline_fmt', [Prefix]),
+    format(atom(TermPtrVar), '~w_newline_ors_ptr', [Prefix]),
+    format(atom(TermPrintVar), '~w_printed_newline', [Prefix]),
+    plawk_ors_terminator_ir(TermFmtVar, TermPtrVar, TermPrintVar, TermLines),
+    append([ResolveLines, [FmtPtr, PrintCall], TermLines], Lines),
     atomic_list_concat(Lines, '\n', IR).
 plawk_prefixed_print_action_ir(Fields, FieldSeparator, OutputSeparator, Prefix, GlobalIR-IR) :-
     phrase(plawk_prefixed_print_fields_ir(Fields, FieldSeparator, OutputSeparator, Prefix, 0), Pairs),
