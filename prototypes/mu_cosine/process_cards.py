@@ -683,8 +683,21 @@ def ast_sha(node):
 
 
 def embedding_cache_key(node, verbosity, e5_revision, prefix="passage"):
+    """Cache key for a conditioning-card embedding (stage 5, §5).
+
+    Cards are e5 embeddings of registry-dependent strings, so the key binds
+    ``REGISTRY_VERSION`` explicitly — not only transitively through the
+    truncated ``ast_sha`` — so a post-bump lookup can never return a vector
+    embedded from a string that no longer exists."""
     _validate_verbosity(verbosity)
-    parts = [ast_sha(node), str(verbosity), RENDERER_VERSION, e5_revision, prefix]
+    parts = [
+        REGISTRY_VERSION,
+        ast_sha(node),
+        str(verbosity),
+        RENDERER_VERSION,
+        e5_revision,
+        prefix,
+    ]
     if verbosity >= 3:
         # V3 is the only verbosity that renders pins, and pins are outside
         # ast_sha under v0.4 — bind the pin-bearing canonical so two pin

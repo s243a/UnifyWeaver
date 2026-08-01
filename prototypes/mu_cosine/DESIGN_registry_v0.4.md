@@ -402,11 +402,19 @@ Per the project convention, these land as tests rather than as prose.
 rulings issued (#4013)          done
 this design note                done
 v0.4 stages 1-3 (impl + seal)   done  — registry v0.4, bundle v3 (pec-v3), tok-v2 (#4058)
-v0.4 stage 4 (migration)        done  — inventory + manifest, obligations 6-9 as tests
-v0.4 stage 5 (ranking cache)    not started  — ranking lane; trigger: v0.4 ship
-corpus enumeration              gated on ship
-encoder step 2 part 2           gated on ship
+v0.4 stage 4 (migration)        done  — inventory + manifest, obligations 6-9 as tests (#4059)
+v0.4 stage 5 (ranking cache)    done  — see below
+corpus enumeration              UNGATED — v0.4 has shipped
+encoder step 2 part 2           UNGATED — v0.4 has shipped
 ```
+
+**Stage 5 resolution** (*measured*, `test_registry_v04_stage5.py`): the digest-keyed
+conditioning-card cache key is `process_cards.embedding_cache_key`, and it now binds
+`REGISTRY_VERSION` **explicitly** — not only transitively through the truncated `ast_sha` —
+proven by holding `ast_sha` fixed while varying the version. The ranking lane's live e5 card
+caches (`mu_attention.build_e5_tables`) turned out to need no version field at all: they
+revalidate on the embedded text content itself (names + human strings + model + revision), so a
+changed string is a changed cache and nothing can silently cross the version boundary.
 
 **Stage-4 artifacts** (`registry_v04_migration.py`; content-addressed, refuse-overwrite):
 
