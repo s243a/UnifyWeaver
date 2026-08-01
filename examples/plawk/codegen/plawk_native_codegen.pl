@@ -16916,27 +16916,19 @@ plawk_i64_expr_ir(special('ARGC'), _FieldSeparator, Base, _GlobalBase,
 % `L <op> R`; both branches are evaluated (no side effects in an i64 expr) and
 % an LLVM `select` picks one -- straight-line, so a ternary composes anywhere an
 % i64 expression is used (print, printf arg, assignment, arithmetic operand).
-% Ternary whose CONDITION compares a field to a STRING LITERAL
-% (`x = $1 == "a" ? 1 : 2`). The condition is not an i64 comparison, so it cannot
-% go through the icmp path below; it reuses the same field-vs-literal comparator
-% the `$N OP "str"` rule guards use, which yields an i1 directly and covers all
-% six operators (equality and lexical ordering alike). The branches stay i64, so
-% only the condition differs -- the `select` is identical.
 %
-% Text mode only: the comparator projects a field slice out of the record, so a
-% binary descriptor has no text to compare. Matched before the i64 clause, whose
-% operand lowering would fail on the string anyway.
-plawk_i64_expr_ir(ternary(cmp(field(Index), Op, string(Expected)), Then, Else),
+% The CONDITION is emitted by plawk_ternary_cond_ir/8, which handles both
+% supported forms (i64 `icmp` and the field-vs-string-literal comparator). This
+% clause therefore does not care which form it got: it places the condition's
+% operand setup, then the branches, then the condition line and the `select`.
+% STRING-valued branches use that same condition emitter (see
+% plawk_ternary_str_ptr_ir/7 and plawk_str_build_ir(ternary_str(...))), so the
+% set of lowerable conditions cannot differ between an i64-valued and a
+% string-valued ternary.
+plawk_i64_expr_ir(ternary(Cond, Then, Else),
         FieldSeparator, Base, GlobalBase, ValueIR, GlobalParts, SetupParts) :-
-    integer(FieldSeparator),
-    integer(Index),
-    Index >= 1,
-    plawk_field_cmp_op_code(Op, OpCode),
-    !,
-    format(atom(CondGlobal), '~w_strcond', [GlobalBase]),
-    format(atom(CondIR), '%~w_cond', [Base]),
-    llvm_emit_atom_field_str_cmp_guard(CondGlobal, '%line', Index, OpCode,
-        Expected, FieldSeparator, CondIR, CondGlobalIR-CondCallIR),
+    plawk_ternary_cond_ir(Cond, FieldSeparator, Base, GlobalBase, CondIR,
+        CondGlobalParts, CondOperandSetupParts, CondLines),
     format(atom(ThenBase), '~w_t', [Base]),
     format(atom(ThenGlobal), '~w_t', [GlobalBase]),
     plawk_i64_expr_ir(Then, FieldSeparator, ThenBase, ThenGlobal,
@@ -16948,10 +16940,47 @@ plawk_i64_expr_ir(ternary(cmp(field(Index), Op, string(Expected)), Then, Else),
     format(atom(SelLine), '  %~w = select i1 ~w, i64 ~w, i64 ~w',
         [Base, CondIR, ThenValueIR, ElseValueIR]),
     format(atom(ValueIR), '%~w', [Base]),
-    append([[CondGlobalIR], ThenGlobalParts, ElseGlobalParts], GlobalParts),
-    append([ThenSetupParts, ElseSetupParts, [CondCallIR, SelLine]], SetupParts).
-plawk_i64_expr_ir(ternary(cmp(CondLeft, Op, CondRight), Then, Else),
-        FieldSeparator, Base, GlobalBase, ValueIR, GlobalParts, SetupParts) :-
+    append([CondGlobalParts, ThenGlobalParts, ElseGlobalParts], GlobalParts),
+    append([CondOperandSetupParts, ThenSetupParts, ElseSetupParts, CondLines,
+            [SelLine]], SetupParts).
+
+%% plawk_ternary_cond_ir(+Cond, +FieldSeparator, +Base, +GlobalBase, -CondIR,
+%%                       -GlobalParts, -OperandSetupParts, -CondLines)
+%
+%  The i1 for a ternary condition. ONE emitter for both forms, asked by every
+%  ternary lowering (i64-valued branches, string-valued branches in a print, and
+%  string-valued branches in a scalar assignment), so a condition that lowers in
+%  one branch type lowers in all of them -- and plawk_ternary_cond_ok/3 stays the
+%  single gate that decides which conditions are admitted at all.
+%
+%  Operand setup and the condition line come back SEPARATELY because the caller
+%  interleaves them: operand setup first, then the branches, then the condition
+%  and the select. (Keeping that order is also what makes this factoring
+%  byte-identical to the two clauses it replaced.)
+%
+%  Form 1 -- a field against a STRING LITERAL (`$1 == "a" ? …`). Not an i64
+%  comparison, so it cannot go through `icmp`; it reuses the same
+%  field-vs-literal comparator the `$N OP "str"` rule guards use, which yields an
+%  i1 directly and covers all six operators, equality and lexical ordering alike.
+%  Text mode only (the comparator projects a field slice out of the record, so a
+%  binary descriptor has no text to compare), and positive fields only -- the
+%  comparator answers false for index 0, so admitting `$0` printed wrong answers
+%  rather than declining.
+plawk_ternary_cond_ir(cmp(field(Index), Op, string(Expected)), FieldSeparator,
+        Base, GlobalBase, CondIR, [CondGlobalIR], [], [CondCallIR]) :-
+    integer(FieldSeparator),
+    integer(Index),
+    Index >= 1,
+    plawk_field_cmp_op_code(Op, OpCode),
+    !,
+    format(atom(CondGlobal), '~w_strcond', [GlobalBase]),
+    format(atom(CondIR), '%~w_cond', [Base]),
+    llvm_emit_atom_field_str_cmp_guard(CondGlobal, '%line', Index, OpCode,
+        Expected, FieldSeparator, CondIR, CondGlobalIR-CondCallIR).
+%  Form 2 -- an i64 comparison (`$2 > 1 ? …`, `NR == 2 ? …`): lower both operands
+%  as i64 expressions and `icmp`.
+plawk_ternary_cond_ir(cmp(CondLeft, Op, CondRight), FieldSeparator, Base,
+        GlobalBase, CondIR, GlobalParts, OperandSetupParts, [CondLine]) :-
     plawk_icmp_pred(Op, Pred),
     format(atom(CondLeftBase), '~w_cl', [Base]),
     format(atom(CondLeftGlobal), '~w_cl', [GlobalBase]),
@@ -16961,23 +16990,11 @@ plawk_i64_expr_ir(ternary(cmp(CondLeft, Op, CondRight), Then, Else),
     format(atom(CondRightGlobal), '~w_cr', [GlobalBase]),
     plawk_i64_expr_ir(CondRight, FieldSeparator, CondRightBase, CondRightGlobal,
         CondRightValueIR, CondRightGlobalParts, CondRightSetupParts),
-    format(atom(ThenBase), '~w_t', [Base]),
-    format(atom(ThenGlobal), '~w_t', [GlobalBase]),
-    plawk_i64_expr_ir(Then, FieldSeparator, ThenBase, ThenGlobal,
-        ThenValueIR, ThenGlobalParts, ThenSetupParts),
-    format(atom(ElseBase), '~w_e', [Base]),
-    format(atom(ElseGlobal), '~w_e', [GlobalBase]),
-    plawk_i64_expr_ir(Else, FieldSeparator, ElseBase, ElseGlobal,
-        ElseValueIR, ElseGlobalParts, ElseSetupParts),
     format(atom(CondLine), '  %~w_cond = icmp ~w i64 ~w, ~w',
         [Base, Pred, CondLeftValueIR, CondRightValueIR]),
-    format(atom(SelLine), '  %~w = select i1 %~w_cond, i64 ~w, i64 ~w',
-        [Base, Base, ThenValueIR, ElseValueIR]),
-    format(atom(ValueIR), '%~w', [Base]),
-    append([CondLeftGlobalParts, CondRightGlobalParts, ThenGlobalParts,
-            ElseGlobalParts], GlobalParts),
-    append([CondLeftSetupParts, CondRightSetupParts, ThenSetupParts,
-            ElseSetupParts, [CondLine, SelLine]], SetupParts).
+    format(atom(CondIR), '%~w_cond', [Base]),
+    append([CondLeftGlobalParts, CondRightGlobalParts], GlobalParts),
+    append([CondLeftSetupParts, CondRightSetupParts], OperandSetupParts).
 
 %% plawk_i64_binary_op_lines(+LLVMOp, +Base, +LeftIR, +RightIR, -Lines)
 %
