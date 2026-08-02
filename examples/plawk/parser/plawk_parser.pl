@@ -3852,7 +3852,7 @@ ternary_cond(Cond) -->
 normalise_ternary_cmp(string(Value), ReadOp, field(Index),
         cmp(field(Index), Op, string(Value))) :-
     integer(Index),
-    Index > 0,
+    Index >= 0,
     swap_cmp_op(ReadOp, Op),
     !.
 normalise_ternary_cmp(Left, Op, Right, cmp(Left, Op, Right)).

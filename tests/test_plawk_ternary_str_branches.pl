@@ -160,18 +160,23 @@ test(scalar_var_condition_declines_for_both_branch_types) :-
     build_status("{ n++; x = n > 1 ? \"a\" : \"b\"; print x }\n", 3),
     !.
 
-% `$0` against a string literal stays unsupported, string branches or not (the
-% comparator answers false for index 0, so admitting it would be wrong output).
-test(whole_record_condition_still_declines) :-
-    build_status("{ x = $0 == \"b 2\" ? \"y\" : \"n\"; print x }\n", 3),
+% `$0` against a string literal now compiles as a condition, via a whole-record
+% strcmp that is correct at index 0 -- and because the condition emitter is shared
+% across branch types, it works with STRING branches without extra work. That
+% sharing is the property being pinned here.
+test(whole_record_condition_compiles_with_string_branches,
+        [condition(clang_available)]) :-
+    build_status("{ x = $0 == \"b 2\" ? \"y\" : \"n\"; print x }\n", 0),
     !.
 
-% A parenthesised WHOLE ternary is a PARSE error, unchanged by this work and the
-% same for i64 branches. Worth pinning: `x = (c) ? a : b` (parenthesised
-% CONDITION, #4035) parses, `x = (c ? a : b)` does not.
-test(parenthesised_whole_ternary_is_a_parse_error) :-
-    build_status("{ x = ($2 > 1 ? \"hi\" : \"lo\"); print x }\n", 2),
-    build_status("{ x = ($2 > 1 ? 10 : 20); print x }\n", 2),
+% A parenthesised WHOLE ternary used to be a PARSE error (this suite pinned it as
+% a gap found while building string branches). It now parses -- covered in
+% tests/test_plawk_ternary_parens.pl -- for BOTH branch types, which is the pairing
+% worth keeping: the parenthesised form is a grammar question, not a branch-type
+% one.
+test(parenthesised_whole_ternary_compiles, [condition(clang_available)]) :-
+    build_status("{ x = ($2 > 1 ? \"hi\" : \"lo\"); print x }\n", 0),
+    build_status("{ x = ($2 > 1 ? 10 : 20); print x }\n", 0),
     !.
 
 % --- structure: one gate, one condition emitter ---------------------------
