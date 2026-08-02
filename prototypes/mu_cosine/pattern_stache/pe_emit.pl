@@ -68,90 +68,29 @@
 
 :- use_module('../../../src/unifyweaver/core/pattern_stache',
               [load_stache_file/2, render_stache/3]).
+:- use_module(pe_registry_mirror,
+              [pe_atom/1, pe_operator/1, pe_variadic/1, pe_kwspec/4]).
 :- use_module(library(lists)).
 :- use_module(library(apply)).
 
 %% ============================================
-%% REGISTRY MIRROR (v0.4, from process_cards.py REGISTRY)
+%% REGISTRY MIRROR (v0.4)
 %% ============================================
 %
-% This is the Config: per-operator facts the introspection consults.
-% The sealed Python registry remains the authority; the byte-equality
-% tests are what keep this mirror honest.
-
-% pe_atom(Name): forms that may appear bare.
-pe_atom(pearltrees).
-pe_atom(simplemind).
-pe_atom(simplewiki).
-pe_atom(fs).
-pe_atom(graph).
-pe_atom(human).
-pe_atom(luna).
-pe_atom(sonnet).
-pe_atom(haiku).
-pe_atom('gpt-5.5-low').
-pe_atom(gemini).
-pe_atom(opus).
-pe_atom(llm).
-pe_atom(e5).
-
-% pe_variadic(Name): operators whose positional args are open-ended;
-% the surface template takes them pre-joined in one slot.
-pe_variadic(blend).
-pe_variadic(product).
-pe_variadic(max).
-
-% pe_kwspec(Op, KwName, Kind, Default)
-%   Kind: string | number | int | number_list | int_list | expr
-%   Default: none, or default(Value) — v0.4 has exactly one default.
-pe_kwspec(e5,        estimand, string,      none).
-pe_kwspec(e5,        impl,     string,      none).
-pe_kwspec(routing,   t,        number_list, none).
-pe_kwspec(routing,   menus,    int_list,    none).
-pe_kwspec(routing,   manifest, string,      none).
-pe_kwspec(routing,   estimand, string,      none).
-pe_kwspec(routing,   impl,     string,      none).
-pe_kwspec(kalman,    estimand, string,      none).
-pe_kwspec(kalman,    impl,     string,      none).
-pe_kwspec(blend,     w,        number_list, none).
-pe_kwspec(blend,     estimand, string,      none).
-pe_kwspec(blend,     impl,     string,      none).
-pe_kwspec(lineage,   mu,       expr,        none).
-pe_kwspec(lineage,   decay,    number,      default(0.85)).
-pe_kwspec(lineage,   depth,    int,         none).
-pe_kwspec(lineage,   estimand, string,      none).
-pe_kwspec(lineage,   impl,     string,      none).
-pe_kwspec(distill,   estimand, string,      none).
-pe_kwspec(distill,   impl,     string,      none).
-pe_kwspec(menu,      n,        int,         none).
-pe_kwspec(margin,    t,        number,      none).
-pe_kwspec(margin,    estimand, string,      none).
-pe_kwspec(margin,    impl,     string,      none).
-pe_kwspec(product,   estimand, string,      none).
-pe_kwspec(product,   impl,     string,      none).
-pe_kwspec(max,       estimand, string,      none).
-pe_kwspec(max,       impl,     string,      none).
-pe_kwspec(hop_decay, gamma,    number,      none).
-pe_kwspec(hop_decay, estimand, string,      none).
-pe_kwspec(hop_decay, impl,     string,      none).
-pe_kwspec(lca_frac,  estimand, string,      none).
-pe_kwspec(lca_frac,  impl,     string,      none).
-
-% pe_operator(Name): anything that may be applied to arguments.
-% (pick takes no kwargs; it still dispatches through the same path.)
-pe_operator(e5).
-pe_operator(routing).
-pe_operator(pick).
-pe_operator(kalman).
-pe_operator(blend).
-pe_operator(lineage).
-pe_operator(distill).
-pe_operator(menu).
-pe_operator(margin).
-pe_operator(product).
-pe_operator(max).
-pe_operator(hop_decay).
-pe_operator(lca_frac).
+% The per-operator facts the introspection consults (pe_atom/1,
+% pe_operator/1, pe_variadic/1, pe_kwspec/4) come from the GENERATED,
+% hash-checked mirror pe_registry_mirror.pl -- regenerated from the
+% sealed process_cards.py by gen_registry_mirror.py, refusing to load
+% on source drift (ruling 5(b), DESIGN_prolog_elaborator.md /
+% PR #4093).  The hand-maintained copy that used to live here is
+% retired; the golden-bundle byte tests are the drift test proving the
+% swap changed nothing.
+%
+% Kind vocabulary note: the generated mirror carries the registry's
+% kinds verbatim -- estimand and impl are their own kinds (rendered
+% like strings), and a node-valued kwarg carries its declared output
+% type (mu -> judge) rather than the invented kind `expr` the retired
+% copy used.
 
 %% ============================================
 %% TEMPLATE LOADING (once, cached)
@@ -283,19 +222,33 @@ render_kwarg(Op, Mode, K-V, Text) :-
     render_kw_value(Kind, Mode, V, VText),
     render_value(kw(K, VText), Text).
 
-render_kw_value(string, _Mode, V, Text) :-
+render_kw_value(Kind, _Mode, V, Text) :-
+    string_like_kind(Kind),
+    !,
     json_escape(V, Escaped),
     render_value(str(Escaped), Text).
 render_kw_value(number, _Mode, V, Text) :-
+    !,
     render_value(lit(V), Text).
 render_kw_value(int, _Mode, V, Text) :-
+    !,
     render_value(lit(V), Text).
 render_kw_value(number_list, Mode, V, Text) :-
+    !,
     render_list(Mode, V, Text).
 render_kw_value(int_list, Mode, V, Text) :-
+    !,
     render_list(Mode, V, Text).
-render_kw_value(expr, Mode, V, Text) :-
+render_kw_value(_NodeKind, Mode, V, Text) :-
+    % a kwarg whose declared kind is an output type (mu -> judge)
+    % carries a node: render it as an expression
     pe_emit(V, Mode, Text).
+
+% estimand and impl are enumerated kinds that render as strings on the
+% v0.4 surface (quoted, JSON-escaped), exactly like string.
+string_like_kind(string).
+string_like_kind(estimand).
+string_like_kind(impl).
 
 render_list(_Mode, Items, Text) :-
     maplist([I, T]>>render_value(lit(I), T), Items, Rendered),
