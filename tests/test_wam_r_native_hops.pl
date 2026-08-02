@@ -102,6 +102,36 @@ so <- normalizePath(file.path("..", "src", "uw_ca_hops.so"), mustWork = FALSE)
 WamRuntime$configure_native_ca_hops(so)
 b_n <- run_hops(FALSE)
 stopifnot(identical(as.numeric(b_r$val), as.numeric(b_n$val)))
+if (file.exists(so)) {
+  stopifnot(isTRUE(WamRuntime$.native_ca_hops$ok),
+            !is.null(WamRuntime$.native_ca_hops$sym))
+
+  # Same dense_cap does not imply the same graph. Switching to another
+  # table must rebuild CSR instead of reusing the first program's adjacency.
+  sid <- as.integer(atom_of("Quantum_mechanics")$id)
+  rid <- as.integer(atom_of("Physics")$id)
+  initial <- integer(11L); initial[[1L]] <- sid
+  out1 <- new.env(parent = emptyenv()); out1$buf <- integer(8L); out1$n <- 0L
+  WamRuntime$category_ancestor_hops_ids(
+    NULL, sid, rid, initial, 1L, 10L, out1, id_table)
+  expected <- out1$buf[seq_len(out1$n)]
+  stopifnot(length(expected) > 0L)
+
+  dense2 <- id_table$dense
+  dense2[[sid + 1L]] <- integer(0)
+  id_table2 <- list(dense = dense2,
+                    overflow = new.env(hash = TRUE, parent = emptyenv()),
+                    dense_cap = id_table$dense_cap)
+  out2 <- new.env(parent = emptyenv()); out2$buf <- integer(8L); out2$n <- 0L
+  WamRuntime$category_ancestor_hops_ids(
+    NULL, sid, rid, initial, 1L, 10L, out2, id_table2)
+  stopifnot(identical(out2$n, 0L))
+
+  out3 <- new.env(parent = emptyenv()); out3$buf <- integer(8L); out3$n <- 0L
+  WamRuntime$category_ancestor_hops_ids(
+    NULL, sid, rid, initial, 1L, 10L, out3, id_table)
+  stopifnot(identical(out3$buf[seq_len(out3$n)], expected))
+}
 
 # Missing shared library falls back without error
 WamRuntime$configure_native_ca_hops("/nonexistent/uw_ca_hops.so")
