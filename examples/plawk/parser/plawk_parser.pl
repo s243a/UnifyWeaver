@@ -3837,7 +3837,47 @@ ternary_expr(Ternary) -->
 % lower it depends on the operand kinds -- two i64s become an `icmp`, a field
 % against a string literal uses the field-vs-literal comparator -- so the grammar
 % admits both and plawk_ternary_cond_ok/3 decides.
+%  A condition is one or more comparisons joined by `&&` / `||`, with `&&`
+%  binding tighter, mirroring the layering while_condition//1 and the rule
+%  patterns already use. A single comparison parses to the same bare `cmp(...)`
+%  term it always did, so nothing downstream sees a change unless a combinator is
+%  actually written.
 ternary_cond(Cond) -->
+    ternary_cond_and(First),
+    ternary_cond_or_rest(First, Cond).
+
+ternary_cond_or_rest(Left, Cond) -->
+    ws,
+    "||",
+    ws,
+    ternary_cond_and(Right),
+    ternary_cond_or_rest(or(Left, Right), Cond).
+ternary_cond_or_rest(Cond, Cond) -->
+    [].
+
+ternary_cond_and(Cond) -->
+    ternary_cmp(First),
+    ternary_cond_and_rest(First, Cond).
+
+ternary_cond_and_rest(Left, Cond) -->
+    ws,
+    "&&",
+    ws,
+    ternary_cmp(Right),
+    ternary_cond_and_rest(and(Left, Right), Cond).
+ternary_cond_and_rest(Cond, Cond) -->
+    [].
+
+% A parenthesised sub-condition, so precedence can be overridden:
+% `($1 == "a" || $1 == "b") && $2 > 1`. Recursive, so it admits exactly what a
+% top-level condition does.
+ternary_cmp(Cond) -->
+    "(",
+    ws,
+    ternary_cond(Cond),
+    ws,
+    ")".
+ternary_cmp(Cond) -->
     ternary_operand(Left),
     ws,
     numeric_cmp_op(Op),
