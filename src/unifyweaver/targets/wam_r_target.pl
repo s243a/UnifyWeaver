@@ -2161,9 +2161,12 @@ write_wam_r_project(Predicates, Options, ProjectDir) :-
     r_foreign_handlers_code(Options, ForeignHandlersBody),
     r_op_decls_code(Options, OpDeclsBody),
     write_runtime_source(RDir),
-    % Optional native CA hop kernel (PERF-R-NATIVE-HOPS-0). Soft-fail: pure-R
-    % remains correct when R CMD SHLIB / headers are unavailable.
-    write_native_ca_hops_source(ProjectDir),
+    % Emit/build the optional native kernel only when codegen actually
+    % registered a CA bulk capability. Other R projects incur no C toolchain work.
+    (   sub_string(LoweredDispatchCode, _, _, _, 'category_ancestor_bulk_collect')
+    ->  write_native_ca_hops_source(ProjectDir)
+    ;   true
+    ),
     % Additive conformance driver (CONF-R): when true, the Rscript main
     % prints only true/false for argv[0]=pred/arity. Default human/bench
     % CLI is unchanged when the option is absent/false.
