@@ -61,6 +61,7 @@
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
+:- use_module(library(process), [process_create/3, process_wait/2]).
 :- use_module('../targets/wam_target', [
     compile_predicate_to_wam_text/3,
     compile_predicate_to_wam_items/3
@@ -2137,6 +2138,7 @@ r_escape_chars([C    | T], [C | RestEsc]) :-
 %    DESCRIPTION                R package metadata
 %    R/wam_runtime.R            WAM runtime
 %    R/generated_program.R      compiled program (instr array, labels, wrappers)
+%    src/uw_ca_hops.c[.so]      optional native CA hop kernel (soft-fail build)
 write_wam_r_project(Predicates, Options, ProjectDir) :-
     option(module_name(ModName), Options, 'wam.r.generated'),
     wam_target_runtime_parser(wam_r, Options, RuntimeParserMode),
@@ -2159,6 +2161,9 @@ write_wam_r_project(Predicates, Options, ProjectDir) :-
     r_foreign_handlers_code(Options, ForeignHandlersBody),
     r_op_decls_code(Options, OpDeclsBody),
     write_runtime_source(RDir),
+    % Optional native CA hop kernel (PERF-R-NATIVE-HOPS-0). Soft-fail: pure-R
+    % remains correct when R CMD SHLIB / headers are unavailable.
+    write_native_ca_hops_source(ProjectDir),
     % Additive conformance driver (CONF-R): when true, the Rscript main
     % prints only true/false for argv[0]=pred/arity. Default human/bench
     % CLI is unchanged when the option is absent/false.
@@ -2168,6 +2173,41 @@ write_wam_r_project(Predicates, Options, ProjectDir) :-
                          LoweredFunctionsCode, FactShapeComments,
                          LoweredDispatchCode, OpDeclsBody,
                          RuntimeParserModeCode, ConfMain).
+
+%% write_native_ca_hops_source(+ProjectDir) is det.
+%  Emits src/uw_ca_hops.c and best-effort compiles uw_ca_hops.so beside it.
+write_native_ca_hops_source(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src', SrcDir),
+    make_directory_path(SrcDir),
+    find_template('templates/targets/r_wam/uw_ca_hops.c.mustache', Template),
+    get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
+    render_template(Template, ['date'=DateStr], Content),
+    directory_file_path(SrcDir, 'uw_ca_hops.c', CPath),
+    write_file(CPath, Content),
+    directory_file_path(SrcDir, 'uw_ca_hops.so', SoPath),
+    (   catch(try_compile_native_ca_hops(CPath, SoPath), _, fail)
+    ->  true
+    ;   true
+    ).
+
+try_compile_native_ca_hops(CPath, SoPath) :-
+    absolute_file_name(CPath, CAbs, [access(read)]),
+    file_directory_name(SoPath, SoDir0),
+    absolute_file_name(SoDir0, SoDir, [file_type(directory), access(write)]),
+    file_base_name(SoPath, SoBase),
+    directory_file_path(SoDir, SoBase, SoAbs),
+    process_create(path('R'),
+                   ['CMD', 'SHLIB', '-o', SoAbs, CAbs],
+                   [stdout(null), stderr(null), process(PID), cwd(SoDir)]),
+    process_wait(PID, exit(0)),
+    exists_file(SoAbs),
+    % Drop object file; do not commit/build-cache .o beside sources.
+    file_name_extension(Stub, 'c', CAbs),
+    file_name_extension(Stub, 'o', OAbs),
+    (   exists_file(OAbs)
+    ->  catch(delete_file(OAbs), _, true)
+    ;   true
+    ).
 
 write_description(ProjectDir, ModName) :-
     find_template('templates/targets/r_wam/DESCRIPTION.mustache', Template),

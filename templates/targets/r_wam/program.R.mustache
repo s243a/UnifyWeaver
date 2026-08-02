@@ -12,6 +12,10 @@ local({
   src  <- file.path(here, "wam_runtime.R")
   if (!file.exists(src)) src <- "wam_runtime.R"
   source(src, local = FALSE)
+  # Optional native CA hop kernel (.so built next to ../src at generate time).
+  so <- normalizePath(file.path(here, "..", "src", "uw_ca_hops.so"),
+                      mustWork = FALSE)
+  WamRuntime$configure_native_ca_hops(so)
 })
 
 # ----------------------------------------------------------

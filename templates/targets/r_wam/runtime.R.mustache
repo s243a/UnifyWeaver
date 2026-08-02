@@ -3218,10 +3218,66 @@ WamRuntime$category_ancestor_hops_rec <- function(program, state, edge_atom_id,
   invisible(NULL)
 }
 
+# PERF-R-NATIVE-HOPS-0: optional .Call hop kernel (CSR over dense id_table).
+# ../src/uw_ca_hops.so is built at generate time when R CMD SHLIB works;
+# otherwise hops_ids stays on the pure-R path. Overflow id_tables fall back.
+WamRuntime$.native_ca_hops <- new.env(parent = emptyenv())
+WamRuntime$configure_native_ca_hops <- function(so_path) {
+  st <- WamRuntime$.native_ca_hops
+  st$so_path <- if (is.null(so_path) || !nzchar(so_path)) NULL
+               else as.character(so_path)[1]
+  st$loaded <- FALSE; st$ok <- FALSE; st$off <- NULL; st$flat <- NULL
+  st$dense_cap <- -1L
+  invisible(NULL)
+}
+WamRuntime$try_native_ca_hops_ids <- function(start_id, root_id, visited, vlen0,
+                                               max_depth, out, id_table) {
+  st <- WamRuntime$.native_ca_hops
+  dcap <- as.integer(id_table$dense_cap)
+  if (!(isTRUE(st$ok) && identical(st$dense_cap, dcap))) {
+    if (is.null(st$so_path) || !file.exists(st$so_path)) return(FALSE)
+    ov <- id_table$overflow
+    if (!is.null(ov) && length(ls(ov, all.names = TRUE)) > 0L) return(FALSE)
+    if (!isTRUE(st$loaded)) {
+      if (!isTRUE(tryCatch({ dyn.load(st$so_path); TRUE },
+                           error = function(e) FALSE))) return(FALSE)
+      st$loaded <- TRUE
+    }
+    dense <- id_table$dense
+    counts <- vapply(seq_len(dcap), function(i) {
+      hit <- dense[[i]]; if (is.null(hit)) 0L else length(hit)
+    }, integer(1))
+    off <- integer(dcap + 1L); off[[1L]] <- 0L
+    for (i in seq_len(dcap)) off[[i + 1L]] <- off[[i]] + counts[[i]]
+    flat <- integer(off[[dcap + 1L]])
+    for (i in seq_len(dcap)) {
+      hit <- dense[[i]]
+      if (!is.null(hit) && length(hit)) {
+        s <- off[[i]] + 1L
+        flat[s:(s + length(hit) - 1L)] <- as.integer(hit)
+      }
+    }
+    st$off <- off; st$flat <- flat; st$dense_cap <- dcap; st$ok <- TRUE
+  }
+  hops <- tryCatch(
+    .Call("uw_ca_hops_ids", st$off, st$flat, as.integer(start_id),
+          as.integer(root_id), as.integer(visited), as.integer(vlen0),
+          as.integer(max_depth)),
+    error = function(e) NULL)
+  if (is.null(hops) || !is.integer(hops)) return(FALSE)
+  n <- length(hops)
+  if (n > length(out$buf)) length(out$buf) <- as.integer(max(8L, n))
+  if (n > 0L) out$buf[seq_len(n)] <- hops
+  out$n <- as.integer(n)
+  TRUE
+}
+
 # Integer-ID DFS with downward depth (PERF-R-CA-IDDFS / STACK / IDTABLE).
 # Iterative frame stack avoids R recursive dispatch and copy-on-write of the
 # path vector on every descent. When an in-memory id_table capability is
 # present, parent vectors are read by list index (no per-node R closure).
+# Optional native .Call path (PERF-R-NATIVE-HOPS-0) replaces this body when
+# uw_ca_hops.so is loadable and the id_table is dense-only.
 # Semantics match the former recursive ID path: path-local cycle checks
 # (not a global visited set), emit depth+1 when root is among parents,
 # continue through root when the contract does, single hop buffer.
@@ -3232,6 +3288,10 @@ WamRuntime$category_ancestor_hops_ids <- function(lookup_ids, start_id, root_id,
   vlen0 <- as.integer(vlen0)
   root_id <- as.integer(root_id)
   use_table <- !is.null(id_table)
+  if (use_table &&
+      WamRuntime$try_native_ca_hops_ids(start_id, root_id, visited, vlen0,
+                                          max_depth, out, id_table))
+    return(invisible(NULL))
   dense <- if (use_table) id_table$dense else NULL
   dense_cap <- if (use_table) as.integer(id_table$dense_cap) else 0L
   overflow <- if (use_table) id_table$overflow else NULL
