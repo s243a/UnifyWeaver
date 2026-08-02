@@ -3226,22 +3226,32 @@ WamRuntime$configure_native_ca_hops <- function(so_path) {
   st <- WamRuntime$.native_ca_hops
   st$so_path <- if (is.null(so_path) || !nzchar(so_path)) NULL
                else as.character(so_path)[1]
-  st$loaded <- FALSE; st$ok <- FALSE; st$off <- NULL; st$flat <- NULL
-  st$dense_cap <- -1L
+  st$loaded <- FALSE; st$dll <- NULL; st$sym <- NULL
+  st$ok <- FALSE; st$off <- NULL; st$flat <- NULL
+  st$dense_cap <- -1L; st$table_token <- NULL
   invisible(NULL)
 }
 WamRuntime$try_native_ca_hops_ids <- function(start_id, root_id, visited, vlen0,
                                                max_depth, out, id_table) {
   st <- WamRuntime$.native_ca_hops
   dcap <- as.integer(id_table$dense_cap)
-  if (!(isTRUE(st$ok) && identical(st$dense_cap, dcap))) {
+  ov <- id_table$overflow
+  # The overflow environment is unique to an immutable id_table and gives a
+  # constant-time identity token. Capacity alone cannot distinguish programs.
+  if (!is.environment(ov) || length(ls(ov, all.names = TRUE)) > 0L)
+    return(FALSE)
+  table_token <- ov
+  if (!(isTRUE(st$ok) && identical(st$dense_cap, dcap) &&
+        identical(st$table_token, table_token))) {
     if (is.null(st$so_path) || !file.exists(st$so_path)) return(FALSE)
-    ov <- id_table$overflow
-    if (!is.null(ov) && length(ls(ov, all.names = TRUE)) > 0L) return(FALSE)
     if (!isTRUE(st$loaded)) {
-      if (!isTRUE(tryCatch({ dyn.load(st$so_path); TRUE },
-                           error = function(e) FALSE))) return(FALSE)
-      st$loaded <- TRUE
+      native <- tryCatch({
+        dll <- dyn.load(st$so_path)
+        sym <- getNativeSymbolInfo("uw_ca_hops_ids", PACKAGE = dll)
+        list(dll = dll, sym = sym)
+      }, error = function(e) NULL)
+      if (is.null(native)) return(FALSE)
+      st$dll <- native$dll; st$sym <- native$sym; st$loaded <- TRUE
     }
     dense <- id_table$dense
     counts <- vapply(seq_len(dcap), function(i) {
@@ -3257,10 +3267,12 @@ WamRuntime$try_native_ca_hops_ids <- function(start_id, root_id, visited, vlen0,
         flat[s:(s + length(hit) - 1L)] <- as.integer(hit)
       }
     }
-    st$off <- off; st$flat <- flat; st$dense_cap <- dcap; st$ok <- TRUE
+    st$off <- off; st$flat <- flat; st$dense_cap <- dcap
+    st$table_token <- table_token; st$ok <- TRUE
   }
+  if (is.null(st$sym)) return(FALSE)
   hops <- tryCatch(
-    .Call("uw_ca_hops_ids", st$off, st$flat, as.integer(start_id),
+    .Call(st$sym, st$off, st$flat, as.integer(start_id),
           as.integer(root_id), as.integer(visited), as.integer(vlen0),
           as.integer(max_depth)),
     error = function(e) NULL)
