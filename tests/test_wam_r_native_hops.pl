@@ -188,9 +188,9 @@ test(native_hops_kernels_off_has_no_bulk_native_req) :-
             read_file_to_string(ProgPath, Prog, []),
             assertion(\+ sub_string(Prog, _, _, _,
                 'register_bulk_collect(shared_program, "category_ancestor/4"')),
-            % C source may still be emitted (harmless); runtime stays optional.
+            % No CA capability means no native source or compiler work.
             directory_file_path(TmpDir, 'src/uw_ca_hops.c', CPath),
-            assertion(exists_file(CPath))
+            assertion(\+ exists_file(CPath))
         ),
         cleanup_tmp(TmpDir)).
 
