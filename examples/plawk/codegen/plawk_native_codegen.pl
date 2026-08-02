@@ -14454,6 +14454,12 @@ plawk_i64_operand_expr(Expr) :-
 %  lowers directly.
 plawk_ternary_i64_operand_ok(special('NR')).
 plawk_ternary_i64_operand_ok(special('NF')).
+% A scalar VARIABLE read (`n > 1 ? …`, `… ? n : 0`). The slot's SSA value is
+% substituted in before emission (plawk_substitute_scalar_reads/4 rewrites
+% var(Name) to ssa(Value)), so by the time the emitter sees it there is nothing
+% special about it. A name with no slot fails substitution and the program
+% declines, which is why admitting `var(_)` here cannot mis-lower.
+plawk_ternary_i64_operand_ok(var(_)).
 plawk_ternary_i64_operand_ok(int(field(_))).
 plawk_ternary_i64_operand_ok(length(field(_))).
 plawk_ternary_i64_operand_ok(Expr) :-
@@ -15043,13 +15049,48 @@ plawk_substitute_scalar_reads(sprintf(Format, Args), Slots, Values,
         sprintf(Format, SubArgs)) :-
     !,
     maplist(plawk_substitute_scalar_read_part(Slots, Values), Args, SubArgs).
-plawk_substitute_scalar_reads(ternary(cmp(Left0, Op, Right0), Then0, Else0),
-        Slots, Values, ternary(cmp(Left, Op, Right), Then, Else)) :-
+% The CONDITION is walked by plawk_substitute_cond_scalar_reads/4 rather than
+% destructured as `cmp(...)` here, so a scalar read inside a `&&`/`||` condition
+% is substituted too. With the old head an `and(...)` condition simply did not
+% match, the read stayed a `var(...)`, and the emitter failed -- a clean decline,
+% but a silent one that made a scalar-var condition look unsupported inside a
+% combinator while working outside it.
+plawk_substitute_scalar_reads(ternary(Cond0, Then0, Else0),
+        Slots, Values, ternary(Cond, Then, Else)) :-
     !,
-    plawk_substitute_scalar_reads(Left0, Slots, Values, Left),
-    plawk_substitute_scalar_reads(Right0, Slots, Values, Right),
+    plawk_substitute_cond_scalar_reads(Cond0, Slots, Values, Cond),
     plawk_substitute_scalar_reads(Then0, Slots, Values, Then),
     plawk_substitute_scalar_reads(Else0, Slots, Values, Else).
+
+% The string-valued ternary carried by a set_str operation as ternary_str/3.
+% Without this row a scalar read in its CONDITION was never substituted, so
+% `n > 1 ? "a" : "b"` declined while the i64-branch spelling compiled -- an
+% asymmetry between branch types, which is exactly what the shared condition
+% emitter exists to prevent. DELEGATED to the condition walker, so the two
+% payload spellings cannot diverge.
+plawk_substitute_scalar_reads(ternary_str(Cond0, Then, Else), Slots, Values,
+        ternary_str(Cond, Then, Else)) :-
+    !,
+    plawk_substitute_cond_scalar_reads(Cond0, Slots, Values, Cond).
+
+%% plawk_substitute_cond_scalar_reads(+Cond0, +Slots, +Values, -Cond)
+%
+%  Scalar reads inside a ternary condition, through the combinators. One
+%  definition, so a new condition form needs no second row -- the same shape as
+%  plawk_cond_expr_uses_nr/1 for the NR walker.
+plawk_substitute_cond_scalar_reads(cmp(Left0, Op, Right0), Slots, Values,
+        cmp(Left, Op, Right)) :-
+    !,
+    plawk_substitute_scalar_reads(Left0, Slots, Values, Left),
+    plawk_substitute_scalar_reads(Right0, Slots, Values, Right).
+plawk_substitute_cond_scalar_reads(and(A0, B0), Slots, Values, and(A, B)) :-
+    !,
+    plawk_substitute_cond_scalar_reads(A0, Slots, Values, A),
+    plawk_substitute_cond_scalar_reads(B0, Slots, Values, B).
+plawk_substitute_cond_scalar_reads(or(A0, B0), Slots, Values, or(A, B)) :-
+    !,
+    plawk_substitute_cond_scalar_reads(A0, Slots, Values, A),
+    plawk_substitute_cond_scalar_reads(B0, Slots, Values, B).
 plawk_substitute_scalar_read_part(Slots, Values, Part, SubPart) :-
     plawk_substitute_scalar_reads(Part, Slots, Values, SubPart).
 plawk_substitute_scalar_reads(var(Name), Slots, Values, Substituted) :-
