@@ -174,27 +174,36 @@ test(nr_walker_recurses_through_combinators) :-
 
 % --- IR shape -------------------------------------------------------------
 
-test(and_condition_emits_and_i1) :-
+% NOTE: these pin the COMBINATOR'S OWN sub-condition bases (`_bl_cond` /
+% `_br_cond`), not bare `and i1` / `or i1`. Every driver's read loop already
+% contains `%line_bad = and i1 …`, so a bare-mnemonic assertion is true no matter
+% what the ternary emitted -- and its negation fails for a reason unrelated to
+% the feature. (It did; that is why this note exists.)
+
+test(and_condition_emits_a_combined_i1) :-
     plawk_parse_string("{ x = ($1 == \"a\" && $2 > 0) ? 1 : 0; print x }\n",
         Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, ' = and i1 '))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '_bl_cond'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '_br_cond'))),
     assertion(once(sub_atom(DriverIR, _, _, _, 'select i1'))),
     !.
 
-test(or_condition_emits_or_i1) :-
+test(or_condition_emits_a_combined_i1) :-
     plawk_parse_string("{ x = ($2 > 2 || $1 == \"a\") ? 1 : 0; print x }\n",
         Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, ' = or i1 '))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '_bl_cond'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '_br_cond'))),
     !.
 
-% A single comparison emits neither -- the combinator path is not entered.
+% A single comparison never enters the combinator path, so neither sub-condition
+% base appears.
 test(single_comparison_emits_no_combinator) :-
     plawk_parse_string("{ x = $2 > 1 ? 10 : 20; print x }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(\+ sub_atom(DriverIR, _, _, _, ' = and i1 ')),
-    assertion(\+ sub_atom(DriverIR, _, _, _, ' = or i1 ')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '_bl_cond')),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '_br_cond')),
     !.
 
 :- end_tests(plawk_ternary_bool).
