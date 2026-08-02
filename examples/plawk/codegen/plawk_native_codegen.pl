@@ -14352,8 +14352,8 @@ plawk_rule_body_print_field(string(_)).
 % a ternary `COND ? A : B`: the condition operands and both branches must be
 % i64-valued (field / NR / NF / int literal / length / i64 arithmetic); lowered
 % to an LLVM select.
-plawk_rule_body_print_field(ternary(cmp(Left, Op, Right), Then, Else)) :-
-    plawk_ternary_cond_ok(Left, Op, Right),
+plawk_rule_body_print_field(ternary(Cond, Then, Else)) :-
+    plawk_ternary_condition_ok(Cond),
     plawk_ternary_i64_operand_ok(Then),
     plawk_ternary_i64_operand_ok(Else).
 % a ternary with STRING-valued branches (`print $1 == "b" ? "yes" : "no"`):
@@ -14491,6 +14491,26 @@ plawk_ternary_cond_ok(field(Index), Op, string(_Expected)) :-
 plawk_ternary_cond_ok(field(0), Op, string(_Expected)) :-
     plawk_icmp_pred(Op, _Pred).
 
+%% plawk_ternary_condition_ok(+Cond) is semidet.
+%
+%  A whole ternary CONDITION: a single comparison, or comparisons joined by
+%  `&&` / `||` to any depth. The leaf case delegates to plawk_ternary_cond_ok/3,
+%  so a combinator admits exactly the comparisons a bare condition does -- adding
+%  a new comparison form needs no change here, and cannot be admitted at the top
+%  level but rejected inside an `&&`.
+%
+%  Every gate that admits a ternary asks through this one predicate (a print
+%  field, a scalar assignment, and the string-branch gate), which is what keeps a
+%  condition from being accepted in one context and rejected in another.
+plawk_ternary_condition_ok(cmp(Left, Op, Right)) :-
+    plawk_ternary_cond_ok(Left, Op, Right).
+plawk_ternary_condition_ok(and(A, B)) :-
+    plawk_ternary_condition_ok(A),
+    plawk_ternary_condition_ok(B).
+plawk_ternary_condition_ok(or(A, B)) :-
+    plawk_ternary_condition_ok(A),
+    plawk_ternary_condition_ok(B).
+
 %% plawk_ternary_str_branches_ok(+Then, +Else) is semidet.
 %
 %  A STRING-valued ternary: `$2 > 1 ? "hi" : "lo"`. Both branches must be string
@@ -14510,8 +14530,8 @@ plawk_ternary_str_branches_ok(string(Then), string(Else)) :-
 %
 %  The whole string-valued ternary. One gate, asked by the print-field gate and
 %  the scalar-assignment gate alike.
-plawk_ternary_str_ok(cmp(Left, Op, Right), Then, Else) :-
-    plawk_ternary_cond_ok(Left, Op, Right),
+plawk_ternary_str_ok(Cond, Then, Else) :-
+    plawk_ternary_condition_ok(Cond),
     plawk_ternary_str_branches_ok(Then, Else).
 
 plawk_prolog_call_expr(prolog_call(Name, Args)) :-
@@ -15357,9 +15377,9 @@ plawk_scalar_action_update(getline_pipe_capture(_Status, Var, Command), Var,
     string(Command).
 % Ternary assignment `x = COND ? A : B`: an i64 value via select (the operation
 % lowers through plawk_scalar_numeric_expr_ir(ternary(...)) -> plawk_i64_expr_ir).
-plawk_scalar_action_update(set(var(Name), ternary(cmp(Left, Op, Right), Then, Else)),
-        Name, set(ternary(cmp(Left, Op, Right), Then, Else))) :-
-    plawk_ternary_cond_ok(Left, Op, Right),
+plawk_scalar_action_update(set(var(Name), ternary(Cond, Then, Else)),
+        Name, set(ternary(Cond, Then, Else))) :-
+    plawk_ternary_condition_ok(Cond),
     plawk_ternary_i64_operand_ok(Then),
     plawk_ternary_i64_operand_ok(Else).
 plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) :-
@@ -17084,6 +17104,49 @@ plawk_ternary_str_ptr_ir(Cond, string(Then), string(Else), FieldSeparator, Base,
 %  binary descriptor has no text to compare), and positive fields only -- the
 %  comparator answers false for index 0, so admitting `$0` printed wrong answers
 %  rather than declining.
+%  Form -1 -- `&&` / `||` over sub-conditions. Both sides are lowered and
+%  combined with `and i1` / `or i1` (no short-circuit: a ternary condition has no
+%  side effects, and both arms are already evaluated for the `select`, so this
+%  stays straight-line and composes everywhere a ternary does).
+%
+%  Placement matters for SSA: each side's OPERAND setup goes in the operand half
+%  and each side's CONDITION lines go in the condition half, so the caller emits
+%  setupA, setupB, [branches], condA, condB, combine -- every use dominated by
+%  its definition.
+plawk_ternary_cond_ir(and(A, B), FieldSeparator, Base, GlobalBase, CondIR,
+        GlobalParts, OperandSetupParts, CondLines) :-
+    !,
+    plawk_ternary_bool_cond_ir('and', A, B, FieldSeparator, Base, GlobalBase,
+        CondIR, GlobalParts, OperandSetupParts, CondLines).
+plawk_ternary_cond_ir(or(A, B), FieldSeparator, Base, GlobalBase, CondIR,
+        GlobalParts, OperandSetupParts, CondLines) :-
+    !,
+    plawk_ternary_bool_cond_ir('or', A, B, FieldSeparator, Base, GlobalBase,
+        CondIR, GlobalParts, OperandSetupParts, CondLines).
+
+%% plawk_ternary_bool_cond_ir(+LLVMOp, +A, +B, +FieldSeparator, +Base,
+%%     +GlobalBase, -CondIR, -GlobalParts, -OperandSetupParts, -CondLines)
+%
+%  `and`/`or` differ only in the instruction mnemonic, so they share this.
+%  Recurses through plawk_ternary_cond_ir/8, so a combinator inherits every
+%  condition form -- including a nested combinator.
+plawk_ternary_bool_cond_ir(LLVMOp, A, B, FieldSeparator, Base, GlobalBase,
+        CondIR, GlobalParts, OperandSetupParts, CondLines) :-
+    format(atom(LeftBase), '~w_bl', [Base]),
+    format(atom(LeftGlobal), '~w_bl', [GlobalBase]),
+    plawk_ternary_cond_ir(A, FieldSeparator, LeftBase, LeftGlobal, LeftCondIR,
+        LeftGlobalParts, LeftOperandParts, LeftCondLines),
+    format(atom(RightBase), '~w_br', [Base]),
+    format(atom(RightGlobal), '~w_br', [GlobalBase]),
+    plawk_ternary_cond_ir(B, FieldSeparator, RightBase, RightGlobal, RightCondIR,
+        RightGlobalParts, RightOperandParts, RightCondLines),
+    format(atom(CondIR), '%~w_cond', [Base]),
+    format(atom(CombineLine), '  ~w = ~w i1 ~w, ~w',
+        [CondIR, LLVMOp, LeftCondIR, RightCondIR]),
+    append(LeftGlobalParts, RightGlobalParts, GlobalParts),
+    append(LeftOperandParts, RightOperandParts, OperandSetupParts),
+    append([LeftCondLines, RightCondLines, [CombineLine]], CondLines).
+
 %  Form 0 -- `$0` against a string literal (`$0 == "b 2" ? … : …`). The whole
 %  record, not a field slice, so it reuses plawk_record_str_cmp_guard_ir/5 -- the
 %  same emitter the `$0 OP "str"` RULE PATTERN uses, which is a plain strcmp and
@@ -19425,12 +19488,30 @@ plawk_expr_uses_nr(special('NR')).
 plawk_expr_uses_nr(concat(Parts)) :-
     member(Part, Parts),
     plawk_expr_uses_nr(Part).
-plawk_expr_uses_nr(ternary(cmp(Left, _Op, Right), Then, Else)) :-
-    ( plawk_expr_uses_nr(Left)
-    ; plawk_expr_uses_nr(Right)
+% The CONDITION is walked by plawk_cond_expr_uses_nr/1 rather than destructured
+% as `cmp(...)` here, so a `&&`/`||` condition is covered. It was not: the head
+% used to match only a bare comparison, so `x = (NR == 2 && $1 == "a") ? 1 : 0`
+% would have referenced an undefined %current_nr -- the record counter is emitted
+% only when a walker SEES the NR, and a combinator hid it.
+plawk_expr_uses_nr(ternary(Cond, Then, Else)) :-
+    ( plawk_cond_expr_uses_nr(Cond)
     ; plawk_expr_uses_nr(Then)
     ; plawk_expr_uses_nr(Else)
     ).
+
+%% plawk_cond_expr_uses_nr(+Cond) is semidet.
+%
+%  NR anywhere in a ternary condition, through the combinators. One definition of
+%  "which sub-terms of a condition can mention NR", so adding a condition form
+%  does not need a second row here.
+plawk_cond_expr_uses_nr(cmp(Left, _Op, Right)) :-
+    ( plawk_expr_uses_nr(Left)
+    ; plawk_expr_uses_nr(Right)
+    ).
+plawk_cond_expr_uses_nr(and(A, B)) :-
+    ( plawk_cond_expr_uses_nr(A) ; plawk_cond_expr_uses_nr(B) ).
+plawk_cond_expr_uses_nr(or(A, B)) :-
+    ( plawk_cond_expr_uses_nr(A) ; plawk_cond_expr_uses_nr(B) ).
 % A string-valued ternary in a scalar assignment. The set_str operation carries it
 % as ternary_str/3 (the string-build payload vocabulary), so it needs a row here
 % too -- DELEGATED to the ternary/3 clause above rather than re-walking the parts,
