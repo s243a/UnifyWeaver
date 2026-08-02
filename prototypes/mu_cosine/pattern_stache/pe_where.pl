@@ -72,18 +72,30 @@
 %     prototype targets ground emission; residuation is the
 %     elaborator's future, not this driver's.
 %
-% pe_emit.pl is used UNCHANGED (its non-exported registry mirror is
-% consulted by module-qualified calls, which modifies nothing).  The
-% vNext Python machinery is neither imported, wrapped, nor ported —
+% Registry facts come from the GENERATED, hash-checked mirror
+% pe_registry_mirror.pl (ruling 5(b), PR #4093), which replaced the
+% earlier module-qualified reads of pe_emit's hand-maintained copy.
+% The vNext Python machinery is neither imported, wrapped, nor ported —
 % the oracle is the sealed bundle bytes.
 
 :- module(pe_where, [
     elaborate_where/2,        % +WhereTerm, -GroundGoal
     where_semantic/2,         % +WhereTerm, -CanonicalSemanticText
-    where_full/2              % +WhereTerm, -CanonicalFullText
+    where_full/2,             % +WhereTerm, -CanonicalFullText
+    % validation machinery reused by the elaborator (pe_elaborate.pl),
+    % per DESIGN_prolog_elaborator.md §1 "Reused as-is":
+    check_binding_shapes/1,   % +Bindings
+    check_no_duplicates/1,    % +Bindings
+    occurrences/3,            % +Term, +Ctx, -Occs
+    check_value_at/2          % +Ctx, +Val
 ]).
 
 :- use_module(pe_emit, [pe_semantic/2, pe_full/2]).
+% Registry facts come from the GENERATED, hash-checked mirror (ruling
+% 5(b)) — this retires the earlier module-qualified reads of pe_emit's
+% hand-maintained copy, which no longer exists.
+:- use_module(pe_registry_mirror,
+              [pe_atom/1, pe_operator/1, pe_kwspec/4]).
 :- use_module(library(lists)).
 :- use_module(library(apply)).
 
@@ -195,7 +207,7 @@ occurrences(pin(E, P), _, Occs) :-
 occurrences(Goal, _, Occs) :-
     compound(Goal),
     compound_name_arguments(Goal, Name, RawArgs),
-    pe_emit:pe_operator(Name),
+    pe_operator(Name),
     !,
     op_arg_occurrences(RawArgs, Name, 1, Occs).
 occurrences(Goal, Ctx, Occs) :-
@@ -211,7 +223,7 @@ op_arg_occurrences([A|Rest], Op, I, Occs) :-
     (   nonvar(A),
         compound(A),
         compound_name_arguments(A, K, [V0]),
-        pe_emit:pe_kwspec(Op, K, _, _)
+        pe_kwspec(Op, K, _, _)
     ->  kw_value_occurrences(V0, Op, K, O1),
         I1 = I                                  % kwargs don't consume an index
     ;   occurrences(A, arg(Op, I), O1),
@@ -255,38 +267,44 @@ legal_at(mod_name, Val) :-
     atom(Val).
 legal_at(mod_base, Val) :-
     atom(Val),
-    pe_emit:pe_atom(Val).
+    pe_atom(Val).
 legal_at(root, Val)       :- legal_expr(Val).
 legal_at(pin_expr, Val)   :- legal_expr(Val).
 legal_at(arg(_, _), Val)  :- legal_expr(Val).
 legal_at(kwarg(Op, K), Val) :-
-    once(pe_emit:pe_kwspec(Op, K, Kind, _)),
+    once(pe_kwspec(Op, K, Kind, _)),
     legal_kind(Kind, Val).
 legal_at(list_elem(Op, K), Val) :-
-    once(pe_emit:pe_kwspec(Op, K, Kind, _)),
+    once(pe_kwspec(Op, K, Kind, _)),
     (   Kind == number_list -> number(Val)
     ;   Kind == int_list    -> integer(Val)
     ).
 
-legal_kind(number, Val)      :- number(Val).
-legal_kind(int, Val)         :- integer(Val).
-legal_kind(string, Val)      :- ( string(Val) ; atom(Val) ), !.
-legal_kind(number_list, Val) :- is_list(Val), maplist(number, Val).
-legal_kind(int_list, Val)    :- is_list(Val), maplist(integer, Val).
-legal_kind(expr, Val)        :- legal_expr(Val).
+legal_kind(number, Val)      :- !, number(Val).
+legal_kind(int, Val)         :- !, integer(Val).
+legal_kind(string, Val)      :- !, ( string(Val) -> true ; atom(Val) ).
+% estimand and impl are enumerated kinds spelled as atoms/strings in
+% the goal convention (the generated mirror carries them verbatim).
+legal_kind(estimand, Val)    :- !, ( string(Val) -> true ; atom(Val) ).
+legal_kind(impl, Val)        :- !, ( string(Val) -> true ; atom(Val) ).
+legal_kind(number_list, Val) :- !, is_list(Val), maplist(number, Val).
+legal_kind(int_list, Val)    :- !, is_list(Val), maplist(integer, Val).
+% any other declared kind is an output type (mu -> judge): the value
+% is a node, checked as an expression
+legal_kind(_NodeKind, Val)   :- legal_expr(Val).
 
 %% legal_expr(+Val)
 %  Structurally renderable expression values.  pin/2 is refused here
 %  too: a pin arriving THROUGH the binding channel would smuggle
 %  provenance into an identity-determining substitution (§12).
 legal_expr(V) :- number(V), !.
-legal_expr(V) :- atom(V), !, pe_emit:pe_atom(V).
+legal_expr(V) :- atom(V), !, pe_atom(V).
 legal_expr(mod(B, M)) :- !, atom(M), legal_expr(B).
 legal_expr(pin(_, _)) :- !, fail.
 legal_expr(V) :-
     compound(V),
     compound_name_arguments(V, Name, _),
-    pe_emit:pe_operator(Name).
+    pe_operator(Name).
 
 %% ============================================
 %% SUBSTITUTION
