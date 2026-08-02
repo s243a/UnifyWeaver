@@ -94,24 +94,32 @@ def enumeration_spec_sha256() -> str:
         "number_grid": list(NUMBER_GRID),
         "int_grid": list(INT_GRID),
         "excluded": ["string", "pins"],
+        # The root output-type universe is executable behavior (count() and
+        # the vocabulary's `process` expansion both iterate it), so it is
+        # bound here — the fourth review found it floating.
+        "output_roots": list(OUTPUT_ROOTS),
         "scenarios": {name: dict(flags) for name, flags in sorted(SCENARIOS.items())},
         "component_vocabulary_sha256": component_vocabulary_sha256(),
+        # The authoritative REQUIRED witness universe (fourth review: a
+        # caller-supplied universe lets omissions vanish silently). The split
+        # contract binds the same hash, and assign() verifies against it.
+        "required_witness_universe_sha256": _split.universe_sha256(
+            required_witness_universe()
+        ),
         # Registry semantics: the signature-table content witness (kinds,
         # defaults, outputs, modifiers) plus the categorical value domains
         # the signatures reference by kind name only.
         "registry_content_sha256": _registry_content_sha256(),
         "estimands": sorted(pc.ESTIMANDS),
         "impls": sorted(pc.IMPLS),
-        # The split ALGORITHM is bound here (version + rules); the value-level
-        # contract (seed, k, fractions, floors) is chosen at preregistration
+        # The split ALGORITHM is bound here as its complete machine-readable
+        # manifest — coverage semantics, repair, far classification, pair
+        # extraction, held grouping, bucket boundaries — not a four-constant
+        # summary (the fourth review's finding). The value-level contract
+        # (seed, buckets, k, held pairs, floors) is chosen at preregistration
         # and enters through preregistration_witness_sha256(), which combines
         # this hash with split_contract_sha256.
-        "split_algorithm": {
-            "version": _split.SPLIT_CONTRACT_VERSION,
-            "held_selection_rule": _split.HELD_SELECTION_RULE,
-            "hash_bytes_rule": _split.HASH_BYTES_RULE,
-            "modulus": _split.MODULUS,
-        },
+        "split_algorithm": dict(_split.SPLIT_ALGORITHM_MANIFEST),
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -629,6 +637,223 @@ def component_vocabulary_sha256() -> str:
 
 
 
+# --------------------------------------------------------------------------
+# deterministic AST-to-family extractor + the authoritative witness universe
+# --------------------------------------------------------------------------
+#
+# The fourth adversarial review's second finding: the split's witness
+# universe was whatever the caller summarized, and no real AST-to-family
+# builder existed — an extractor that silently dropped digits, terminals, or
+# synthetic forms would still "cover everything". This section is the
+# builder. `families_from_expressions` maps real v0.4 expressions (parsed by
+# the sealed registry, never re-lexed here) to `Family` records whose item
+# identity strings are the SAME serialized vocabulary the support freeze
+# pins, and `required_witness_universe` derives — from the vocabulary, the
+# grids, and the registry's categorical domains, never from any corpus — the
+# authoritative item list whose hash both the enumeration spec and the split
+# contract bind.
+
+
+def _spell(value) -> str:
+    """Canonical literal spelling — identical to the canonical renderer's."""
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _leaf_identity_index() -> dict:
+    """(output, modifier|None) -> the vocabulary's leaf identity string.
+
+    Built by the same construction as `component_vocabulary` so the
+    extractor cannot drift from the frozen support serialization."""
+    terminals: dict = {}
+    for name, sig in REGISTRY.items():
+        if sig.atom and not sig.operator:
+            terminals.setdefault((sig.output, None), set()).add(name)
+            for modifier in sig.modifiers:
+                terminals.setdefault((sig.output, modifier), set()).add(name)
+    terminals[("score", "e5-atom")] = {"e5"}
+    return {
+        (output, modifier): (
+            f"leaf:{output + '.' + modifier if modifier else output}"
+            f"{{{','.join(sorted(atoms))}}}"
+        )
+        for (output, modifier), atoms in terminals.items()
+    }
+
+
+def _is_leaf(node) -> bool:
+    return bool(REGISTRY[node.name].atom) and not node.args and not node.kwargs
+
+
+def _resolved_pattern(node) -> frozenset:
+    """The resolved kwarg key set: explicit non-string keys plus every
+    defaulted key (a default is always present after canonical resolution).
+    String kwargs are synthetic coverage, never part of the component."""
+    sig = REGISTRY[node.name]
+    keys = {key for key, _ in node.kwargs if sig.kwargs[key].kind != "string"}
+    keys |= {key for key, spec in sig.kwargs.items() if spec.default is not None}
+    return frozenset(keys)
+
+
+def _row_witnesses(node, items: set, pairs: set, leaf_index: dict) -> None:
+    sig = REGISTRY[node.name]
+    if node.pins:
+        items.add("synthetic:pin")
+    if _is_leaf(node):
+        items.add(f"terminal:{node.name}")
+        shapes = (
+            [("score", "e5-atom")] if node.name == "e5"
+            else [(sig.output, modifier) for modifier in node.mods]
+            or [(sig.output, None)]
+        )
+        for shape in shapes:
+            items.add(leaf_index[shape])
+        return
+    arity = len(node.args)
+    typed = ",".join(
+        f"{key}:{sig.kwargs[key].kind}" for key in sorted(_resolved_pattern(node))
+    )
+    items.add(f"op:{node.name}/{arity}{{{typed}}}")
+    for index, child in enumerate(node.args):
+        declared = (
+            sig.arg_types[index]
+            if index < len(sig.arg_types)
+            else sig.variadic_arg_type
+        )
+        if isinstance(child, pc.Node):
+            child_output = REGISTRY[child.name].output
+            items.add(f"edge:{node.name}/{arity}.arg{index}->{child_output}")
+            pairs.add(f"pair:{node.name}|{child.name}")
+            _row_witnesses(child, items, pairs, leaf_index)
+        else:
+            kinds = [a for a in declared.split("|") if a in pc.VALUE_KINDS]
+            (kind,) = kinds  # validate() admitted the literal, so exactly one
+            items.add(f"slot:{node.name}/{arity}.arg{index}:{kind}")
+            items.add(f"value:{kind}:{_spell(child)}")
+            items.update(f"digit:{ch}" for ch in _spell(child) if ch.isdigit())
+    for key, value in node.kwargs:
+        kind = sig.kwargs[key].kind
+        if isinstance(value, pc.Node):
+            items.add(f"edge:{node.name}.kw:{key}->{kind}")
+            pairs.add(f"pair:{node.name}|{value.name}")
+            _row_witnesses(value, items, pairs, leaf_index)
+        elif kind in ("estimand", "impl"):
+            items.add(f"{kind}:{value}")
+        elif kind == "string":
+            items.add("synthetic:string")
+        elif kind in ("number_list", "int_list"):
+            element_kind = "number" if kind == "number_list" else "int"
+            for element in value:
+                items.add(f"value:{element_kind}:{_spell(element)}")
+                items.update(
+                    f"digit:{ch}" for ch in _spell(element) if ch.isdigit()
+                )
+        else:
+            items.add(f"value:{kind}:{_spell(value)}")
+            items.update(f"digit:{ch}" for ch in _spell(value) if ch.isdigit())
+
+
+def _template_identity(node) -> str:
+    """The resolved-kwarg structural template — the family unit.
+
+    Leaves collapse to their SHAPE (the template convention `_leaf_dist`
+    counts: `luna` and `haiku` share `leaf:judge`); literals collapse to
+    typed placeholders with lists keeping their length; defaulted kwargs are
+    resolved present; strings and pins are stripped (synthetic projection:
+    they never create families)."""
+    sig = REGISTRY[node.name]
+    if _is_leaf(node):
+        if node.name == "e5":
+            return "leaf:score.e5-atom"
+        shape = sig.output + "".join("." + modifier for modifier in node.mods)
+        return f"leaf:{shape}"
+    arity = len(node.args)
+    parts = []
+    for child in node.args:
+        if isinstance(child, pc.Node):
+            parts.append(_template_identity(child))
+        else:
+            index = len(parts)
+            declared = (
+                sig.arg_types[index]
+                if index < len(sig.arg_types)
+                else sig.variadic_arg_type
+            )
+            (kind,) = [a for a in declared.split("|") if a in pc.VALUE_KINDS]
+            parts.append(f"<{kind}>")
+    explicit = dict(node.kwargs)
+    for key in sorted(_resolved_pattern(node)):
+        kind = sig.kwargs[key].kind
+        value = explicit.get(key, REGISTRY[node.name].kwargs[key].default)
+        if isinstance(value, pc.Node):
+            parts.append(f"{key}={_template_identity(value)}")
+        elif kind in ("number_list", "int_list"):
+            parts.append(f"{key}=<{kind}*{len(value)}>")
+        else:
+            parts.append(f"{key}=<{kind}>")
+    rendered = f"{node.name}/{arity}({','.join(parts)})"
+    return rendered + "".join("." + modifier for modifier in node.mods)
+
+
+def families_from_expressions(expressions) -> list:
+    """Group real v0.4 expression strings into split `Family` records.
+
+    Deterministic: parse with the sealed registry, validate, project each
+    row into its SEMANTIC template's family (pins and strings contribute
+    synthetic items but never families), and count each witness item once
+    per row that witnesses it — the per-item row counts the split's
+    coverage rule requires."""
+    leaf_index = _leaf_identity_index()
+    grouped: dict = {}
+    for expression in expressions:
+        node = pc.parse(expression)
+        pc.validate(node)
+        family_id = "tmpl:" + _template_identity(node)
+        items: set = set()
+        pairs: set = set()
+        _row_witnesses(node, items, pairs, leaf_index)
+        counts, family_pairs, rows = grouped.setdefault(family_id, ({}, set(), [0]))
+        for item in items:
+            counts[item] = counts.get(item, 0) + 1
+        family_pairs |= pairs
+        rows[0] += 1
+    return [
+        _split.Family.make(family_id, counts, family_pairs, rows[0])
+        for family_id, (counts, family_pairs, rows) in sorted(grouped.items())
+    ]
+
+
+def required_witness_universe() -> list:
+    """The authoritative required item list — derived from the serialized
+    vocabulary, the grids, and the registry's categorical domains; never
+    from any corpus. Its hash is bound by both the enumeration spec and the
+    split contract, so an extractor omission cannot vanish silently: a
+    required item no family witnesses fails the split closed."""
+    vocabulary = component_vocabulary()
+    universe: set = set()
+    for section in ("leaves", "operators_interior", "operators_root_only",
+                    "node_edges", "literal_slots"):
+        universe.update(vocabulary[section])
+    for value in NUMBER_GRID:
+        universe.add(f"value:number:{_spell(value)}")
+        universe.update(f"digit:{ch}" for ch in _spell(value) if ch.isdigit())
+    for value in INT_GRID:
+        universe.add(f"value:int:{_spell(value)}")
+        universe.update(f"digit:{ch}" for ch in _spell(value) if ch.isdigit())
+    for name, sig in REGISTRY.items():
+        if sig.atom:
+            universe.add(f"terminal:{name}")
+    for estimand in pc.ESTIMANDS:
+        universe.add(f"estimand:{estimand}")
+    for impl in pc.IMPLS:
+        universe.add(f"impl:{impl}")
+    universe.update(("synthetic:pin", "synthetic:string"))
+    return sorted(universe)
+
+
+def required_witness_universe_sha256() -> str:
+    return _split.universe_sha256(required_witness_universe())
+
+
 def main(argv=None) -> int:
     print(f"enumeration {ENUMERATION_VERSION} over registry {pc.REGISTRY_VERSION}")
     print(f"spec sha {enumeration_spec_sha256()[:16]}…")
@@ -645,6 +870,9 @@ def main(argv=None) -> int:
     for key, value in counts.items():
         print(f"  {key:40s} {value}")
     print(f"  vocabulary sha {component_vocabulary_sha256()[:16]}…")
+    universe = required_witness_universe()
+    print(f"required witness universe: {len(universe)} items, "
+          f"sha {required_witness_universe_sha256()[:16]}…")
     return 0
 
 

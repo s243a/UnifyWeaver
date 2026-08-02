@@ -226,81 +226,133 @@ which is exactly generalization over composition. Both are checkable at build ti
 serialized vocabulary.
 
 The split has a canonical identity and a deterministic assignment algorithm — nothing about it
-is a runtime judgment call. The algorithm is **executable**
-(`process_expression_split.py`), and the worked example below is pinned as a golden vector in
-`test_process_expression_split.py`, so this section cannot drift from the code. (An earlier
-revision assigned individual expression digests; the third adversarial review caught that this
-violates the standing whole-template LOCO contract — rows sharing one structural template could
-cross train/test — along with four follow-on gaps, all corrected here.)
+is a runtime judgment call. The algorithm is **executable** (`process_expression_split.py`,
+`split-v2`), it consumes families built by a **real extractor over real ASTs**
+(`families_from_expressions`), and both worked examples below are pinned as full-manifest
+golden vectors in `test_process_expression_split.py`, so this section cannot drift from the
+code. (Two earlier revisions were corrected under adversarial review: the first assigned
+individual expression digests, violating the standing whole-template LOCO contract; the second
+inflated coverage, took its witness universe from the caller, held arbitrary structural
+families rather than compositions, and bound only four of its constants. Each correction is
+named at the point it applies below.)
 
 - **Unit and identity.** The split unit is the **structural family**: every corpus row sharing
   one template identity (the resolved-kwarg structural template). Base assignment hashes the
-  FAMILY identity — exact bytes: `sha256(utf8(family_id) + "|" + utf8(seed)) mod 10_000`
-  against cumulative fraction boundaries — so whole templates land on one side by
-  construction. Synthetic projection is defined: a pinned or string-bearing row belongs to the
-  family of its *semantic* template (pins and strings never create families) while
-  contributing its synthetic witness items.
-- **Held families.** Disjoint dev-held and test-held family sets with nonempty preregistered
-  floors are derived deterministically (the floor-many lexicographically smallest family ids
-  within each slice's base assignment) and recorded. Held families are immovable: repair may
-  never consume them, and a base assignment that cannot fill a floor fails closed.
-- **Repair, deterministic and recorded.** The witness-item universe is complete — component
-  identities, node edges, literal slots, grid values, **exact terminal atoms, categorical
-  values (every estimand and impl), digit bytes, and the synthetic-form floors** — iterated in
-  sorted identity order. For any item whose train coverage is below the preregistered minimum
-  `k` (to `k`, not merely to one), whole families move — smallest family id first, from dev
-  then test, never a held family — until coverage reaches `k`. Every move is recorded with the
-  item that forced it. Fail closed if an item's total coverage is below `k` (a corpus-build
-  error no split can repair), if only held families carry it, or if repair would drop a slice
-  below its floor.
+  FAMILY identity — exact bytes: `sha256(utf8(family_id) + "|" + utf8(seed)) mod 10_000` — and
+  the boundaries are **integer buckets summing exactly to the modulus**, so whole templates land
+  on one side by construction and no fraction rounding exists anywhere in the assignment
+  (fractional inputs left the dev/test boundary underspecified). Synthetic projection is
+  defined: a pinned or string-bearing row belongs to the family of its *semantic* template
+  (pins and strings never create families) while contributing its synthetic witness items.
+- **The extractor is real, and the required universe is authoritative.** Families are built by
+  parsing actual v0.4 expressions with the sealed registry and projecting each row into the
+  serialized vocabulary — the same identity strings the support freeze pins. The **required**
+  witness universe (`required_witness_universe`) is *derived from the support*: every
+  component, node edge, literal slot, grid value, digit byte, exact terminal atom, categorical
+  value (every estimand and impl), and the synthetic floors — never from whatever a corpus
+  happened to contain. Its hash is bound by `enumeration_spec_sha256()` **and** by the split
+  contract; `assign()` verifies the universe it is handed against that hash and fails closed
+  when a required item reaches no family. A caller-shaped universe used to let an extractor's
+  omission disappear silently; it now cannot.
+- **Coverage counts rows, per item.** A family records, for each witness item, the number of
+  its rows witnessing that item (a row counts once however many times the item occurs inside
+  it). Crediting a family's whole row count to every item it carried anywhere made one pinned
+  row in a hundred-row family read as a hundred pin witnesses.
+- **Held units are preregistered compositions, and far has floors.** The contract names
+  explicit **held composition pair ids** per side, disjoint across sides. Every structural
+  family carrying a held pair is grouped with it and pinned to that pair's slice before repair,
+  immovable; a held pair with no carrier, and a family carrying held pairs from both sides, are
+  contract errors. Because a held pair's carriers all sit on one side, the pair is unseen by
+  train ∪ dev and its carriers are far by construction — and the contract's **far floors** are
+  still checked, so a far slice thinner than preregistered fails rather than passing quietly.
+  Holding lexicographically-smallest *structural* families protected nothing compositional.
+- **Repair, deterministic and recorded.** Required items are iterated in sorted identity order.
+  For any item whose train coverage is below the preregistered minimum `k` (to `k`, not merely
+  to one), whole families move — smallest family id first, from dev then test, never a pinned
+  held family — until coverage reaches `k`. Every move is recorded with the item that forced
+  it. Fail closed if an item's total coverage is below `k` (a corpus-build error no split can
+  repair), if only held-pinned families carry it, or if repair empties a slice.
 - **Far-slice membership** is computed, never sampled, at family granularity: a TEST family is
-  *far* iff its pair set (union of members' edge-context pairs,
-  `pair:<parent component>|<edge>|<child component>`) contains at least one pair absent from
-  the union over **train and dev** — a composition seen in dev steers model selection and is
-  not far. A DEV family's far flag is judged against train alone.
-- **Preregistration binding.** The split *algorithm* (version, held-selection rule, hash-byte
-  rule, modulus) is inside `enumeration_spec_sha256()`; the *instantiated* contract (seed,
-  fractions, floors, `k`) hashes via `split_contract_sha256()`; and
-  `preregistration_witness_sha256()` binds both halves into the single hash a preregistration
-  pins. The split manifest — slices, held sets, moves, far membership, coverage report,
-  contract hash — is content-addressed alongside the corpus manifest.
+  *far* iff its pair set (union of members' composition pairs, `pair:<parent>|<child head>`
+  over node-valued edges including `mu=`) contains at least one pair absent from the union over
+  **train and dev** — a composition seen in dev steers model selection and is not far. A DEV
+  family's far flag is judged against train alone.
+- **Preregistration binding.** The split algorithm enters `enumeration_spec_sha256()` as its
+  **complete machine-readable manifest** (`SPLIT_ALGORITHM_MANIFEST`: unit, hash bytes, bucket
+  rule, coverage semantics, required-universe rule, held rule, repair rule, far rule, pair
+  extraction), alongside the required-universe hash and `OUTPUT_ROOTS`; the *instantiated*
+  contract (seed, buckets, `k`, held pairs, far floors, universe hash) hashes via
+  `split_contract_sha256()`; and `preregistration_witness_sha256()` binds both halves into the
+  single hash a preregistration pins. The split manifest — slices, held groups, moves, far
+  membership, coverage report, contract hash, and **its own canonical-bytes hash** — is
+  content-addressed alongside the corpus manifest.
 
-**Worked example (normative — pinned in `test_process_expression_split.py`).** Twelve toy
-families `tmpl:A…tmpl:L`, two rows each; every witness item has exactly two carrier families;
-`item:rare` is carried only by `C` and `G`; only `L` carries `pair:routing|score`. Contract:
-seed `worked-example-v5`, fractions 0.5/0.25/0.25, floors 1/1, `k=2`. What happens, in order:
+**Worked example 1, the readable narration (normative — pinned as a full manifest in
+`test_process_expression_split.py`).** Twelve toy families `tmpl:A…tmpl:L`, two rows each.
+Per-item counts matter: `G` witnesses `op:max` from only one of its two rows, and `H`
+witnesses `digit:8` from one of two. Contract: seed `worked-v2-7`, buckets 5000/2500/2500,
+`k=2`, held compositions dev `pair:kalman|judge` (carried by `H` and `K`) and test
+`pair:routing|score` (carried by `L`). What happens, in order:
 
-1. *Base assignment* by family-id hash puts `{A,D,E,K,L}` in train, `{C,H,I}` in dev, and
-   `{B,F,G,J}` in test.
-2. *Holding*: dev's floor-1 held family is `C` (smallest id in dev); test's is `B`.
-3. *Repair*, items in sorted order: `digit:8`'s carriers are `F` (test) and `H` (dev) — repair
-   prefers dev, moving `H` to train. `item:rare`'s carriers are `C` (dev, **held**) and `G`
-   (test): protection forbids taking `C`, so repair falls back to test and moves `G`.
-   `op:lineage`'s carriers `I` (dev) and `J` (test): `I` moves from dev. Three moves, each
-   recorded with its forcing item; `C` ends exactly where base assignment put it.
-4. *Floors survive*: dev retains `{C}` (≥ 1). Final slices: train
-   `{A,D,E,G,H,I,K,L}`, dev `{C}`, test `{B,F,J}`.
-5. *Far*: `J`'s `pair:lineage|judge` appears nowhere in train ∪ dev → `J` is far; `B` and `F`
-   share every pair with train → near. Far-dev is empty.
+1. *Base assignment* by family-id hash puts `{B,E,G,H,I,K,L}` in train, `{A,J}` in dev, and
+   `{C,D,F}` in test.
+2. *Held pinning*: `H` and `K` carry the dev-held pair and move to dev; `L` carries the
+   test-held pair and moves to test. All three were base-assigned to train — holding
+   compositions, not slices, is what puts them where the contract says.
+3. *Repair*, items in sorted order: `digit:0` moves `A` from dev; `digit:8` moves `F` from
+   test (its other carrier `H` is held, and protection forbids taking it); `estimand:ancestry`
+   moves `J` from dev; and `op:max` moves `C` from test — `G` is already in train but supplies
+   only one witnessing row, so `k=2` is still unmet. Under the old row-count crediting this
+   fourth move would not exist.
+4. *Final slices*: train `{A,B,C,E,F,G,I,J}`, dev `{H,K}`, test `{D,L}`; `op:max` reaches
+   3 = C(2) + G(1).
+5. *Far*: the held pairs live only on their own sides, so `{H,K}` are dev-far and `{L}` is
+   test-far, both meeting their floors; `D` shares `pair:e5|margin` with train and is
+   test-near.
 
-The test asserts this manifest verbatim, plus: every witness item reaches `k=2` in train,
-whole families never straddle slices, assignment is input-order independent, a scarce item
-carried only by held families fails closed, and the preregistration witness moves when either
-the seed or `k` changes.
+**Worked example 2, the focused boundary/cascade vector.** The re-reviewer's request was a
+second *compact* vector exercising what narration hides, not a larger one for scale. Eight
+families, seed `cascade-v2-1328`, `k=3`: item `x` totals exactly three across three one-row
+families, two of them outside train, so `x` forces **two moves for one item** — dev searched
+before test. Item `y` rides the same three families and is satisfied entirely by `x`'s moves,
+so **no move names `y`** (a cross-item cascade). `HD` is base-assigned to test and pinned to
+dev while `HT` is base-assigned to train and pinned to test (**mixed held motifs, both
+directions**). `TN` sits in test but its only pair is carried by `DN` in dev, so it is
+**test-near**, while `TF`'s pair appears nowhere else and it is far. A separate vector pins the
+**exact bucket edges** 4999/5000/7499/7500 against the integer boundaries.
+
+Both tests assert their manifests in full — every field plus the manifest's own hash — rather
+than a handful of keys. The suite adds: input-order independence, the hash-bound universe
+refusing a shrunken list, a required item no family witnesses failing closed, repair refusing
+to consume a held group, conflicting and carrier-less held pairs failing closed, an unmet far
+floor failing closed, and the preregistration witness moving when the seed, `k`, the held
+pairs, or the buckets change. A companion test in `test_process_expression_enumerator.py`
+records a measured consequence: over the ten registered processes alone, **every** choice of
+held composition pair fails closed, because each family is the sole carrier of some witness
+item — the corpus build must supply overlapping templates, and the split says so rather than
+quietly shrinking coverage.
 
 Restricting methodology kwargs to the root remains the recommendation and is semantically
 motivated: `estimand=`/`impl=` are deployment metadata and `require_deployable` checks exactly
 the root. Interior-methodology expressions stay grammatical; they are sampler coverage (like
 pins and strings), not support.
 
-What still needs the owner before the generator runs, all bound by
-`enumeration_spec_sha256()`: the coverage minimum `k` (appearances per component/edge/value —
-the corpus row count is then **derived** from `k` and the composition-sampling distribution,
-not chosen first; the earlier "~1.5M rows" figure was a v0.3-ratio anchor with no
-coverage-derived justification and is withdrawn as a target, surviving only as the §8
-feasibility scale), the composition-sampling distribution over depth/branching, and
-confirmation that the widened §5.2 numeric grid enters through the sampler rather than the
-enumeration grids.
+What still needs the owner before the generator runs, all bound by the preregistration witness:
+
+1. the coverage minimum `k` (appearances per component/edge/value — the corpus row count is
+   then **derived** from `k` and the composition-sampling distribution, not chosen first; the
+   earlier "~1.5M rows" figure was a v0.3-ratio anchor with no coverage-derived justification
+   and is withdrawn as a target, surviving only as the §8 feasibility scale);
+2. the composition-sampling distribution over depth/branching;
+3. confirmation that the widened §5.2 numeric grid enters through the sampler rather than the
+   enumeration grids;
+4. **the held composition pairs** — which compositions dev and test hold out, per side. This is
+   now an owner input rather than a derived one, because holding a composition is a scientific
+   claim about what generalization is being measured, not a bookkeeping choice; the sampler
+   must then supply enough overlapping templates that no held pair is the sole carrier of a
+   required item (the thin-corpus test measures what happens otherwise);
+5. **the far floors** — the minimum far families each side must contain for the split to be
+   accepted.
 
 ## 3. Mandatory synthetic coverage
 

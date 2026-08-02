@@ -196,6 +196,200 @@ def test_spec_sha_binds_caps_and_grids():
 
 
 # --------------------------------------------------------------------------
+# the AST-to-family extractor and the authoritative witness universe
+# (fourth adversarial review, finding 2: the split's universe was
+# caller-supplied and no real builder existed)
+# --------------------------------------------------------------------------
+
+
+def test_extractor_groups_rows_by_resolved_template_not_by_spelling():
+    """Two expressions differing only in their literals and terminals share
+    one structural family; differing in SHAPE they do not."""
+    same = en.families_from_expressions([
+        "hop_decay(simplemind,gamma=0.6)",
+        "hop_decay(simplewiki,gamma=0.85)",
+    ])
+    assert len(same) == 1 and same[0].row_count == 2
+    different = en.families_from_expressions([
+        "hop_decay(simplemind,gamma=0.6)",
+        "lca_frac(simplemind)",
+    ])
+    assert len(different) == 2
+
+
+def test_extractor_projects_pins_and_strings_into_the_semantic_family():
+    """Synthetic projection (the split's `unit` rule): a pinned row joins its
+    semantic template's family and contributes `synthetic:pin`, rather than
+    creating a family of its own."""
+    families = en.families_from_expressions([
+        "lca_frac(simplemind)",
+        "lca_frac(simplemind)@run/2026-07-25",
+    ])
+    assert len(families) == 1
+    family = families[0]
+    assert family.row_count == 2
+    assert family.counts["synthetic:pin"] == 1        # one row of two
+    assert family.counts["op:lca_frac/1{}"] == 2      # both rows
+
+
+def test_extractor_counts_items_per_row_not_per_family():
+    """Finding 1's root cause, at the source: an item witnessed by one row
+    of a many-row family counts once, not once per row."""
+    families = en.families_from_expressions([
+        "hop_decay(simplemind,gamma=0.6)",
+        "hop_decay(simplemind,gamma=0.6)",
+        "hop_decay(simplewiki,gamma=0.85)",
+    ])
+    (family,) = families
+    assert family.row_count == 3
+    assert family.counts["value:number:0.6"] == 2
+    assert family.counts["value:number:0.85"] == 1
+    assert family.counts["terminal:simplemind"] == 2
+    # A repeated item within ONE row still counts that row once.
+    (repeated,) = en.families_from_expressions([
+        "product(hop_decay(simplemind,gamma=0.6),lca_frac(simplemind))"
+    ])
+    assert repeated.counts["terminal:simplemind"] == 1
+
+
+def test_extractor_emits_composition_pairs_over_node_edges_only():
+    (family,) = en.families_from_expressions([
+        'lineage(pearltrees,mu=haiku,estimand="ancestry")'
+    ])
+    assert family.pairs == frozenset({
+        "pair:lineage|pearltrees",   # positional child
+        "pair:lineage|haiku",        # node-valued kwarg (mu=)
+    })
+    assert family.counts["estimand:ancestry"] == 1   # categorical, not a pair
+
+
+def test_extractor_items_are_the_frozen_vocabulary_serialization():
+    """Every item a real expression witnesses must be an item the support
+    freeze knows — otherwise the universe and the corpus speak different
+    languages."""
+    universe = set(en.required_witness_universe())
+    for name, expression in pc.PROCESSES.items():
+        for family in en.families_from_expressions([expression]):
+            assert family.witness_items <= universe, name
+
+
+def test_required_universe_is_derived_from_the_support_not_a_corpus():
+    universe = en.required_witness_universe()
+    vocabulary = en.component_vocabulary()
+    for section in ("leaves", "operators_interior", "operators_root_only",
+                    "node_edges", "literal_slots"):
+        assert set(vocabulary[section]) <= set(universe), section
+    # Grid values, their digit bytes, exact terminals, both categorical
+    # domains, and the synthetic floors — the completeness the review asked
+    # for, each checked rather than asserted in prose.
+    assert {"value:number:0.6", "value:int:10"} <= set(universe)
+    assert {"digit:0", "digit:6", "digit:8", "digit:2"} <= set(universe)
+    assert {"terminal:luna", "terminal:simplemind"} <= set(universe)
+    assert {f"estimand:{e}" for e in pc.ESTIMANDS} <= set(universe)
+    assert {f"impl:{i}" for i in pc.IMPLS} <= set(universe)
+    assert {"synthetic:pin", "synthetic:string"} <= set(universe)
+
+
+def test_spec_sha_binds_the_required_universe_and_output_roots():
+    """Both were floating before the fourth review: the universe was not in
+    the spec preimage at all, and OUTPUT_ROOTS drives count() yet was
+    unbound."""
+    sha = en.enumeration_spec_sha256()
+    universe_sha = en.required_witness_universe_sha256()
+    original_roots = en.OUTPUT_ROOTS
+    try:
+        en.OUTPUT_ROOTS = original_roots + ("bogus-output",)
+        assert en.enumeration_spec_sha256() != sha
+    finally:
+        en.OUTPUT_ROOTS = original_roots
+    original_int_grid = en.INT_GRID
+    try:
+        # A widened grid moves the universe (new value item, new digit
+        # bytes), and the moved universe moves the spec hash.
+        en.INT_GRID = original_int_grid + (37,)
+        assert en.required_witness_universe_sha256() != universe_sha
+        assert en.enumeration_spec_sha256() != sha
+    finally:
+        en.INT_GRID = original_int_grid
+
+
+#: A deliberately overlapping corpus of REAL v0.4 expressions: several
+#: distinct templates carry each composition pair, which is what makes a
+#: held-composition split feasible at all (see the thin-corpus test below).
+OVERLAPPING_CORPUS = [
+    "product(hop_decay(simplemind,gamma=0.6),lca_frac(simplemind))",
+    "product(hop_decay(simplewiki,gamma=0.85),lca_frac(simplewiki))",
+    "product(hop_decay(simplemind,gamma=0.6),hop_decay(simplewiki,gamma=0.85))",
+    "product(lca_frac(simplemind),lca_frac(simplewiki))",
+    "max(0.02,product(hop_decay(simplemind,gamma=0.6),lca_frac(simplemind)))",
+    "max(0.03,lca_frac(simplewiki))",
+    "max(0.02,hop_decay(simplemind,gamma=0.6))",
+    'lineage(pearltrees,mu=haiku,estimand="ancestry")',
+    'lineage(simplewiki,mu=graph,estimand="ancestry")',
+    "lineage(simplemind,mu=haiku)",
+    "lineage(pearltrees,mu=graph)",
+    "blend(luna.D,luna.S)",
+    "blend(luna.D,haiku)",
+    "kalman(luna.D,luna.S)",
+    "kalman(haiku,luna.S)",
+    "e5(margin(t=0.03))",
+    "e5(margin(t=0.02))",
+]
+
+
+def test_extractor_and_universe_meet_in_a_real_split():
+    """End-to-end over real expressions: extractor to families, families and
+    the derived universe to the split. This path had no executable existence
+    before this review round — the split was fed hand-written summaries."""
+    import process_expression_split as sp
+
+    expressions = OVERLAPPING_CORPUS * 2 + [
+        "lca_frac(simplemind)", "lca_frac(simplemind)@run/2026-07-25",
+    ]
+    families = en.families_from_expressions(expressions)
+    universe = sorted({i for f in families for i in f.witness_items})
+    contract = sp.split_contract(
+        seed="registered-smoke", coverage_minimum_k=1,
+        required_universe_sha256=sp.universe_sha256(universe),
+        held_compositions={"dev": ["pair:blend|haiku"],
+                           "test": ["pair:kalman|haiku"]},
+        buckets={"train": 6000, "dev": 2000, "test": 2000},
+    )
+    manifest = sp.assign(families, contract, universe)
+    assert all(manifest["train_coverage"][item] >= 1 for item in universe)
+    assert manifest["far"]["test"] and manifest["far"]["dev"]
+    assert len(manifest["manifest_sha256"]) == 64
+    # Whole families, one slice each — LOCO at the structural level.
+    placed = [f for ids in manifest["slices"].values() for f in ids]
+    assert sorted(placed) == sorted(f.family_id for f in families)
+
+
+def test_a_thin_corpus_cannot_support_a_held_composition_split():
+    """A measured consequence worth recording: over the ten registered
+    processes alone, EVERY choice of held composition pair fails — each
+    family is the sole carrier of some witness item, so pinning it out of
+    train orphans that item. The corpus build must supply overlapping
+    templates; the split says so rather than quietly shrinking coverage."""
+    import itertools as _itertools
+    import process_expression_split as sp
+
+    families = en.families_from_expressions(
+        [e for expression in pc.PROCESSES.values() for e in (expression,) * 2]
+    )
+    universe = sorted({i for f in families for i in f.witness_items})
+    pairs = sorted({p for f in families for p in f.pairs})
+    for dev_pair, test_pair in _itertools.permutations(pairs, 2):
+        contract = sp.split_contract(
+            seed="thin-corpus", coverage_minimum_k=1,
+            required_universe_sha256=sp.universe_sha256(universe),
+            held_compositions={"dev": [dev_pair], "test": [test_pair]},
+            buckets={"train": 5000, "dev": 2500, "test": 2500},
+        )
+        with pytest.raises(sp.SplitError):
+            sp.assign(families, contract, universe)
+
+
+# --------------------------------------------------------------------------
 # DP-vs-brute equivalence at reduced caps
 # --------------------------------------------------------------------------
 
