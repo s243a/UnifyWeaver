@@ -5928,6 +5928,68 @@ plawk_while_cond_operand(var(Name), Slots, CondValues, _Base, _Path, _Side, Ref,
 %  scalar comparison over slots -- lowered like a loop condition, reading the
 %  current slot SSA values (Values0). A field/pattern guard is lowered by the
 %  existing pattern-guard emitter (which reads the record).
+%% plawk_scalar_str_cmp_ir(+Flavour, +SlotValue, +Op, +Value, +GlobalBase,
+%%                          +CondVar, -GlobalIR, -IR)
+%
+%  Compare a string-holding scalar slot against a string LITERAL, yielding an i1
+%  in CondVar. ONE emitter for what used to be two verbatim copies:
+%
+%    * the scalar-`if` guard        `if (s == "text")`, `if (s < "text")`
+%    * the bare string-scalar rule PATTERN  `name == "text" { … }`
+%
+%  Same semantics, same six operators, and they had drifted in exactly the way
+%  duplicated emitters do: the pattern copy required a text-holding slot and the
+%  `if` copy did not, which was a wrong-output bug (`{ n++; if (n == "3") }`
+%  answered false where awk says true). That divergence is closed; this removes
+%  the conditions that produced it.
+%
+%  `==`/`!=` compare interned atom ids directly -- interning is canonical, so
+%  equal strings share an id. The ordering operators cannot: ids are not ordered
+%  by string value, so the id is resolved to text and `strcmp`ed, with an unset
+%  scalar (id 0) resolving to empty via the literal global's trailing NUL.
+%
+%  FLAVOUR exists solely to preserve byte-identity. The two call sites named
+%  their temporaries differently (`lit`/`slit`, `empty`/`sempty`, `scmp`/`sscmp`)
+%  and one computed its condition variable while the other was handed one. Rather
+%  than renaming either -- which would churn the IR of every program using it and
+%  spend the byte-identity that makes golden diffs meaningful -- the flavour ('' or
+%  s) and the caller-supplied CondVar reproduce both spellings exactly. Verified
+%  by golden dump: identical .ll for both surfaces.
+plawk_scalar_str_cmp_ir(Flavour, SlotValue, Op, Value, GlobalBase, CondVar,
+        GlobalIR, IR) :-
+    memberchk(Op, [eq, ne]),
+    !,
+    format(atom(LitName), '~w_~wlit', [GlobalBase, Flavour]),
+    llvm_emit_c_string_global(LitName, Value, GlobalIR, Len, BytesLen),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(IR),
+'  %~w_~wlitptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  %~w_~wlitid = call i64 @wam_intern_atom(i8* %~w_~wlitptr, i64 ~w)
+  ~w = icmp ~w i64 ~w, %~w_~wlitid',
+        [GlobalBase, Flavour, BytesLen, BytesLen, LitName,
+         GlobalBase, Flavour, GlobalBase, Flavour, Len,
+         CondVar, Pred, SlotValue, GlobalBase, Flavour]).
+plawk_scalar_str_cmp_ir(Flavour, SlotValue, Op, Value, GlobalBase, CondVar,
+        GlobalIR, IR) :-
+    memberchk(Op, [lt, le, gt, ge]),
+    format(atom(LitName), '~w_~wlit', [GlobalBase, Flavour]),
+    llvm_emit_c_string_global(LitName, Value, GlobalIR, Len, BytesLen),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(IR),
+'  %~w_~wlitptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  %~w_sraw = call i8* @wam_atom_to_string(i64 ~w)
+  %~w_~wempty = icmp eq i64 ~w, 0
+  %~w_sptr = select i1 %~w_~wempty, i8* getelementptr ([~w x i8], [~w x i8]* @.~w, i64 0, i64 ~w), i8* %~w_sraw
+  %~w_~wscmp = call i32 @strcmp(i8* %~w_sptr, i8* %~w_~wlitptr)
+  ~w = icmp ~w i32 %~w_~wscmp, 0',
+        [GlobalBase, Flavour, BytesLen, BytesLen, LitName,
+         GlobalBase, SlotValue,
+         GlobalBase, Flavour, SlotValue,
+         GlobalBase, GlobalBase, Flavour, BytesLen, BytesLen, LitName, Len, GlobalBase,
+         GlobalBase, Flavour, GlobalBase, GlobalBase, Flavour,
+         CondVar, Pred, GlobalBase, Flavour]).
+
+% String-equality guard `if (s == "text")` / `!=` on a string scalar.
 % String-equality guard `if (s == "text")` / `!=` on a string scalar: intern the
 % literal and compare atom ids (interning is canonical, so equal strings share an
 % id). Only == / != (ordering would need strcmp). A single comparison, not
@@ -5948,17 +6010,9 @@ plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
     % cut) declines the program rather than emitting a wrong comparison.
     plawk_slot_holds_text(Slot),
     nth0(Idx, Values0, SlotValue),
-    format(atom(LitName), '~w_lit', [GlobalBase]),
-    llvm_emit_c_string_global(LitName, Value, GlobalIR, Len, BytesLen),
-    plawk_icmp_pred(Op, Pred),
     format(atom(CondValue), '%~w_cond', [GlobalBase]),
-    format(atom(IR),
-'  %~w_litptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
-  %~w_litid = call i64 @wam_intern_atom(i8* %~w_litptr, i64 ~w)
-  %~w_cond = icmp ~w i64 ~w, %~w_litid',
-        [GlobalBase, BytesLen, BytesLen, LitName,
-         GlobalBase, GlobalBase, Len,
-         GlobalBase, Pred, SlotValue, GlobalBase]).
+    plawk_scalar_str_cmp_ir('', SlotValue, Op, Value, GlobalBase, CondValue,
+        GlobalIR, IR).
 % String-ordering guard `if (s < "text")` / `<=` / `>` / `>=` on a string scalar:
 % atom ids are not ordered by string value, so resolve the scalar's id to text
 % and `strcmp` against the literal, then compare the result to 0. An unset scalar
@@ -5974,23 +6028,9 @@ plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
     % counter's id would compare whatever text that id happens to name.
     plawk_slot_holds_text(Slot),
     nth0(Idx, Values0, SlotValue),
-    format(atom(LitName), '~w_lit', [GlobalBase]),
-    llvm_emit_c_string_global(LitName, Value, GlobalIR, Len, BytesLen),
-    plawk_icmp_pred(Op, Pred),
     format(atom(CondValue), '%~w_cond', [GlobalBase]),
-    format(atom(IR),
-'  %~w_litptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
-  %~w_sraw = call i8* @wam_atom_to_string(i64 ~w)
-  %~w_empty = icmp eq i64 ~w, 0
-  %~w_sptr = select i1 %~w_empty, i8* getelementptr ([~w x i8], [~w x i8]* @.~w, i64 0, i64 ~w), i8* %~w_sraw
-  %~w_scmp = call i32 @strcmp(i8* %~w_sptr, i8* %~w_litptr)
-  %~w_cond = icmp ~w i32 %~w_scmp, 0',
-        [GlobalBase, BytesLen, BytesLen, LitName,
-         GlobalBase, SlotValue,
-         GlobalBase, SlotValue,
-         GlobalBase, GlobalBase, BytesLen, BytesLen, LitName, Len, GlobalBase,
-         GlobalBase, GlobalBase, GlobalBase,
-         GlobalBase, Pred, GlobalBase]).
+    plawk_scalar_str_cmp_ir('', SlotValue, Op, Value, GlobalBase, CondValue,
+        GlobalIR, IR).
 plawk_if_cond_ir(scalar_if(Cond), Slots, Values0, _AssocPlan, FieldSeparator,
         GlobalBase, CondValue, ''-GuardIR) :-
     !,
@@ -18936,37 +18976,14 @@ plawk_pattern_guard_ir(field_scalar_str_resolved(FieldIndex, Op, SSARef), FieldS
 % canonical, so equal strings share an id); the ordering ops resolve the id to
 % text and strcmp against the literal (an unset scalar, id 0, resolves to empty
 % via the literal global's trailing NUL). Mirrors the scalar-`if` string guard.
-plawk_pattern_guard_ir(scalar_str_cmp_resolved(SSARef, Op, Str), _FieldSeparator, GlobalBase, MatchValue, GlobalIR-GuardCallIR) :-
-    memberchk(Op, [eq, ne]),
-    !,
-    format(atom(LitName), '~w_slit', [GlobalBase]),
-    llvm_emit_c_string_global(LitName, Str, GlobalIR, Len, BytesLen),
-    plawk_icmp_pred(Op, Pred),
-    format(atom(GuardCallIR),
-'  %~w_slitptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
-  %~w_slitid = call i64 @wam_intern_atom(i8* %~w_slitptr, i64 ~w)
-  ~w = icmp ~w i64 ~w, %~w_slitid',
-        [GlobalBase, BytesLen, BytesLen, LitName,
-         GlobalBase, GlobalBase, Len,
-         MatchValue, Pred, SSARef, GlobalBase]).
-plawk_pattern_guard_ir(scalar_str_cmp_resolved(SSARef, Op, Str), _FieldSeparator, GlobalBase, MatchValue, GlobalIR-GuardCallIR) :-
-    memberchk(Op, [lt, le, gt, ge]),
-    format(atom(LitName), '~w_slit', [GlobalBase]),
-    llvm_emit_c_string_global(LitName, Str, GlobalIR, Len, BytesLen),
-    plawk_icmp_pred(Op, Pred),
-    format(atom(GuardCallIR),
-'  %~w_slitptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
-  %~w_sraw = call i8* @wam_atom_to_string(i64 ~w)
-  %~w_sempty = icmp eq i64 ~w, 0
-  %~w_sptr = select i1 %~w_sempty, i8* getelementptr ([~w x i8], [~w x i8]* @.~w, i64 0, i64 ~w), i8* %~w_sraw
-  %~w_sscmp = call i32 @strcmp(i8* %~w_sptr, i8* %~w_slitptr)
-  ~w = icmp ~w i32 %~w_sscmp, 0',
-        [GlobalBase, BytesLen, BytesLen, LitName,
-         GlobalBase, SSARef,
-         GlobalBase, SSARef,
-         GlobalBase, GlobalBase, BytesLen, BytesLen, LitName, Len, GlobalBase,
-         GlobalBase, GlobalBase, GlobalBase,
-         MatchValue, Pred, GlobalBase]).
+% Bare string-scalar pattern `name OP "lit"`, resolved to the scalar's slot
+% atom-id SSA value. Shares plawk_scalar_str_cmp_ir/8 with the scalar-`if` guard
+% -- one emitter, two surfaces. The `s` flavour reproduces this site's historical
+% temporary names (`slit`, `sempty`, `sscmp`) byte-for-byte.
+plawk_pattern_guard_ir(scalar_str_cmp_resolved(SSARef, Op, Str), _FieldSeparator,
+        GlobalBase, MatchValue, GlobalIR-GuardCallIR) :-
+    plawk_scalar_str_cmp_ir(s, SSARef, Op, Str, GlobalBase, MatchValue,
+        GlobalIR, GuardCallIR).
 % Field-vs-field pattern `$I OP $J` (multi-rule / combined-pattern guard): use
 % the per-rule base for unique slice/comparator temporaries.
 plawk_pattern_guard_ir(field_cmp2(I, Op, J), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
