@@ -46,6 +46,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import process_cards as pc
 from process_cards import REGISTRY
 from registry_v04_migration import registry_content_sha256 as _registry_content_sha256
+import process_expression_split as _split
 
 ENUMERATION_VERSION = "enum-v1"
 
@@ -101,6 +102,16 @@ def enumeration_spec_sha256() -> str:
         "registry_content_sha256": _registry_content_sha256(),
         "estimands": sorted(pc.ESTIMANDS),
         "impls": sorted(pc.IMPLS),
+        # The split ALGORITHM is bound here (version + rules); the value-level
+        # contract (seed, k, fractions, floors) is chosen at preregistration
+        # and enters through preregistration_witness_sha256(), which combines
+        # this hash with split_contract_sha256.
+        "split_algorithm": {
+            "version": _split.SPLIT_CONTRACT_VERSION,
+            "held_selection_rule": _split.HELD_SELECTION_RULE,
+            "hash_bytes_rule": _split.HASH_BYTES_RULE,
+            "modulus": _split.MODULUS,
+        },
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()

@@ -226,27 +226,67 @@ which is exactly generalization over composition. Both are checkable at build ti
 serialized vocabulary.
 
 The split has a canonical identity and a deterministic assignment algorithm — nothing about it
-is a runtime judgment call:
+is a runtime judgment call. The algorithm is **executable**
+(`process_expression_split.py`), and the worked example below is pinned as a golden vector in
+`test_process_expression_split.py`, so this section cannot drift from the code. (An earlier
+revision assigned individual expression digests; the third adversarial review caught that this
+violates the standing whole-template LOCO contract — rows sharing one structural template could
+cross train/test — along with four follow-on gaps, all corrected here.)
 
-- **Unit and identity.** The split unit is the whole tree, identified by its 64-hex
-  `full_process_digest` (semantic). The composition identity a far-slice test reads is the
-  **edge-context pair**: the serialized string
-  `pair:<parent component identity>|<edge identity>|<child component identity>`, computed from
-  the same vocabulary serialization the support freeze pins. A tree's pair set is a pure
-  function of its AST.
-- **Assignment.** Base assignment is `int(sha256(digest || split_seed)) mod 10_000` mapped to
-  train/dev/test by preregistered fraction boundaries — deterministic, seed-pinned, and
-  independent of enumeration or sampling order.
-- **Repair pass, deterministic and recorded.** After base assignment, iterate the support
-  items (components, node edges, literal slots, grid values) in sorted identity order; for any
-  item unwitnessed in train, move the lexicographically smallest-digest tree containing it
-  from dev, else from test, into train. Every move is recorded in the split manifest with the
-  item that forced it. Fail closed if an item is witnessed by no tree at all, or if repair
-  would empty a slice below its preregistered floor.
-- **Far-slice membership** is then computed, never sampled: a test tree is *far* iff its pair
-  set contains at least one pair absent from the union of train pair sets. The split manifest
-  records seed, fractions, floors, moves, far-slice membership, and the support-coverage
-  check's result, and is content-addressed alongside the corpus manifest.
+- **Unit and identity.** The split unit is the **structural family**: every corpus row sharing
+  one template identity (the resolved-kwarg structural template). Base assignment hashes the
+  FAMILY identity — exact bytes: `sha256(utf8(family_id) + "|" + utf8(seed)) mod 10_000`
+  against cumulative fraction boundaries — so whole templates land on one side by
+  construction. Synthetic projection is defined: a pinned or string-bearing row belongs to the
+  family of its *semantic* template (pins and strings never create families) while
+  contributing its synthetic witness items.
+- **Held families.** Disjoint dev-held and test-held family sets with nonempty preregistered
+  floors are derived deterministically (the floor-many lexicographically smallest family ids
+  within each slice's base assignment) and recorded. Held families are immovable: repair may
+  never consume them, and a base assignment that cannot fill a floor fails closed.
+- **Repair, deterministic and recorded.** The witness-item universe is complete — component
+  identities, node edges, literal slots, grid values, **exact terminal atoms, categorical
+  values (every estimand and impl), digit bytes, and the synthetic-form floors** — iterated in
+  sorted identity order. For any item whose train coverage is below the preregistered minimum
+  `k` (to `k`, not merely to one), whole families move — smallest family id first, from dev
+  then test, never a held family — until coverage reaches `k`. Every move is recorded with the
+  item that forced it. Fail closed if an item's total coverage is below `k` (a corpus-build
+  error no split can repair), if only held families carry it, or if repair would drop a slice
+  below its floor.
+- **Far-slice membership** is computed, never sampled, at family granularity: a TEST family is
+  *far* iff its pair set (union of members' edge-context pairs,
+  `pair:<parent component>|<edge>|<child component>`) contains at least one pair absent from
+  the union over **train and dev** — a composition seen in dev steers model selection and is
+  not far. A DEV family's far flag is judged against train alone.
+- **Preregistration binding.** The split *algorithm* (version, held-selection rule, hash-byte
+  rule, modulus) is inside `enumeration_spec_sha256()`; the *instantiated* contract (seed,
+  fractions, floors, `k`) hashes via `split_contract_sha256()`; and
+  `preregistration_witness_sha256()` binds both halves into the single hash a preregistration
+  pins. The split manifest — slices, held sets, moves, far membership, coverage report,
+  contract hash — is content-addressed alongside the corpus manifest.
+
+**Worked example (normative — pinned in `test_process_expression_split.py`).** Twelve toy
+families `tmpl:A…tmpl:L`, two rows each; every witness item has exactly two carrier families;
+`item:rare` is carried only by `C` and `G`; only `L` carries `pair:routing|score`. Contract:
+seed `worked-example-v5`, fractions 0.5/0.25/0.25, floors 1/1, `k=2`. What happens, in order:
+
+1. *Base assignment* by family-id hash puts `{A,D,E,K,L}` in train, `{C,H,I}` in dev, and
+   `{B,F,G,J}` in test.
+2. *Holding*: dev's floor-1 held family is `C` (smallest id in dev); test's is `B`.
+3. *Repair*, items in sorted order: `digit:8`'s carriers are `F` (test) and `H` (dev) — repair
+   prefers dev, moving `H` to train. `item:rare`'s carriers are `C` (dev, **held**) and `G`
+   (test): protection forbids taking `C`, so repair falls back to test and moves `G`.
+   `op:lineage`'s carriers `I` (dev) and `J` (test): `I` moves from dev. Three moves, each
+   recorded with its forcing item; `C` ends exactly where base assignment put it.
+4. *Floors survive*: dev retains `{C}` (≥ 1). Final slices: train
+   `{A,D,E,G,H,I,K,L}`, dev `{C}`, test `{B,F,J}`.
+5. *Far*: `J`'s `pair:lineage|judge` appears nowhere in train ∪ dev → `J` is far; `B` and `F`
+   share every pair with train → near. Far-dev is empty.
+
+The test asserts this manifest verbatim, plus: every witness item reaches `k=2` in train,
+whole families never straddle slices, assignment is input-order independent, a scarce item
+carried only by held families fails closed, and the preregistration witness moves when either
+the seed or `k` changes.
 
 Restricting methodology kwargs to the root remains the recommendation and is semantically
 motivated: `estimand=`/`impl=` are deployment metadata and `require_deployable` checks exactly
