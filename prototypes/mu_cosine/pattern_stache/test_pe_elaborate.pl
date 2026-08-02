@@ -441,6 +441,71 @@ test(origins_alongside_never_inside) :-
 :- end_tests(elab_residual_behavior).
 
 %% ============================================
+%% v1.1: eager validation without goal rewriting (ruled on PR #4095)
+%% ============================================
+
+:- begin_tests(elab_eager_validation).
+
+% THE STORE-INVARIANCE TEST, explicit per the ruling: a legal
+% residuating goal elaborated with the eager check produces a store
+% whose numbered projection is ==-identical to v1's output (captured
+% from the v1 build before this refinement landed).  No goal
+% splitting, no narrowed residuals — the check changes nothing on the
+% legal path.
+test(store_bytes_identical_to_v1_on_legal_path) :-
+    elaborate(product(hop_decay(C, gamma(0.6)), lca_frac(C)),
+              [has_type(_X, substrate(C))],
+              pattern(T, S)),
+    copy_term(T-S, Numbered),
+    numbervars(Numbered, 0, _),
+    % frozen v1 baseline, captured before the v1.1 edit:
+    Numbered == product(hop_decay('$VAR'(0), gamma(0.6)), lca_frac('$VAR'(0)))
+                - [has_type('$VAR'(1), substrate('$VAR'(0)))].
+
+% The ruling's own example: ground type side, free subject —
+% under-instantiated used to residuate silently; ground-and-false now
+% throws at elaboration, named distinctly from a ground discharge
+% failure.
+test(ground_and_false_type_throws_eagerly,
+     error(pe_elaborate(constraint_unsatisfiable(has_type(_, substrate(frobnicate)), origin(none))))) :-
+    elaborate(fs, [has_type(_X, substrate(frobnicate))], _).
+
+% A kind that no registered name inhabits can never ground: dormant
+% forever under v1, an error now.
+test(uninhabited_kind_throws_eagerly,
+     error(pe_elaborate(constraint_unsatisfiable(has_type(_, frobnicate(_)), origin(none))))) :-
+    elaborate(fs, [has_type(_X, frobnicate(_C))], _).
+
+% Partially-ground mod spine: a ground base that is not a judge, or a
+% base with no registered modifiers, can never satisfy the check.
+test(unregistered_mod_base_throws_eagerly,
+     error(pe_elaborate(constraint_unsatisfiable(_, _)))) :-
+    elaborate(fs, [has_type(_X, judge(mod(frobnicate, _M)))], _).
+
+test(modifierless_base_with_free_mod_throws_eagerly,
+     error(pe_elaborate(constraint_unsatisfiable(_, _)))) :-
+    % human is a registered judge but declares no modifiers, so
+    % mod(human, _M) can never ground
+    elaborate(fs, [has_type(_X, judge(mod(human, _M)))], _).
+
+% The legal partial spines residuate exactly as before: inhabited kind
+% with free subject; registered base with free modifier slot where a
+% modifier exists; wholly unbound type side.
+test(legal_partial_spines_still_residuate) :-
+    elaborate(fs, [has_type(_A, substrate(_C))], pattern(fs, [has_type(_, substrate(_))])),
+    elaborate(fs, [has_type(_B, judge(mod(sonnet, _M)))], pattern(fs, [has_type(_, judge(mod(sonnet, _)))])),
+    elaborate(fs, [has_type(_D, _T)], pattern(fs, [has_type(_, _)])).
+
+% The error carries the origin when one was supplied.
+test(eager_error_names_origin,
+     error(pe_elaborate(constraint_unsatisfiable(_, origin('surface:X::substrate[frobnicate]'))))) :-
+    elaborate(fs,
+              [has_type(_X, substrate(frobnicate))-'surface:X::substrate[frobnicate]'],
+              _, _).
+
+:- end_tests(elab_eager_validation).
+
+%% ============================================
 %% Canonical store: measured stability, re-asserted
 %% ============================================
 

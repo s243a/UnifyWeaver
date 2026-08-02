@@ -70,6 +70,26 @@ jobs:
         run: |
           swipl -q -g run_tests -t halt tests/core/test_root_metric.pl
 
+      # Every goal below is invoked explicitly as -g: a swipl load-time
+      # initialization error does NOT set the exit status, so relying on
+      # the mirror's load-time check alone would let a stale mirror pass
+      # CI (PR #4095, report finding 4).  The mirror-verify goal makes a
+      # PR that changes process_cards.py's registry fail here until the
+      # mirror is regenerated.
+      - name: Run pattern_stache suites and registry-mirror drift check
+        run: |
+          swipl -g "use_module('prototypes/mu_cosine/pattern_stache/pe_registry_mirror'), pe_registry_mirror:pe_mirror_verify" -t halt
+          swipl -q -g run_tests -t halt tests/core/test_pattern_stache.pl
+          swipl -q -g run_tests -t halt prototypes/mu_cosine/pattern_stache/test_pattern_stache.pl
+          swipl -q -g run_tests -t halt prototypes/mu_cosine/pattern_stache/test_constraint_dispatch.pl
+          swipl -q -g run_tests -t halt prototypes/mu_cosine/pattern_stache/test_pe_emit.pl
+          swipl -q -g run_tests -t halt prototypes/mu_cosine/pattern_stache/test_pe_where.pl
+          swipl -q -g run_tests -t halt prototypes/mu_cosine/pattern_stache/test_pe_elaborate.pl
+          swipl -q -g run_tests -t halt prototypes/mu_cosine/pattern_stache/probe_residual_order.pl
+
+      - name: Verify pattern_stache tutorial outputs
+        run: python3 docs/tutorials/check_tutorial.py docs/tutorials/TUTORIAL_pattern_stache.md
+
       - name: Run C# query target tests (codegen only)
         run: |
           SKIP_CSHARP_EXECUTION=1 swipl -q -f init.pl -s tests/core/test_csharp_query_target.pl -g "test_csharp_query_target:test_csharp_query_target" -t halt
