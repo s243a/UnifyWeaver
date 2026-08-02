@@ -2211,25 +2211,54 @@ compile_execute_term_builtin_to_rust(Code) :-
                 } else { false }
             }
             "length/2" => {
-                let list_val = self.get_reg_raw("A1").unwrap_or(Value::List(vec![]));
-                let derefed = self.deref_heap(&list_val);
-                let len = match &derefed {
-                    Value::List(items) => items.len() as i64,
-                    _ => return false,
+                let list_raw = match self.get_reg_raw("A1") {
+                    Some(value) => value,
+                    None => return false,
                 };
-                let len_val = Value::Integer(len);
-                let lhs = self.get_reg_raw("A2").map(|v| self.deref_var(&v));
-                match lhs {
-                    Some(Value::Unbound(ref var_name)) => {
-                        self.trail_binding("A2");
-                        self.set_reg_str("A2", len_val.clone());
-                        self.bind_var(var_name, len_val);
+                let length_raw = match self.get_reg_raw("A2") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let list = self.deref_heap(&self.deref_var(&list_raw));
+                let length = self.deref_heap(&self.deref_var(&length_raw));
+                let measured_length = match &list {
+                    Value::List(items) => Some(items.len()),
+                    Value::Atom(name) if name == "[]" => Some(0),
+                    _ => None,
+                };
+
+                if let Some(count) = measured_length {
+                    let length_value = Value::Integer(count as i64);
+                    let mark = self.trail.len();
+                    if self.unify(&length_raw, &length_value) {
                         self.pc += 1; true
+                    } else {
+                        self.unwind_trail_to(mark);
+                        false
                     }
-                    Some(Value::Integer(n)) if n == len => {
+                } else if list.is_unbound() {
+                    let count = match length {
+                        Value::Integer(n) if n >= 0 => match usize::try_from(n) {
+                            Ok(count) => count,
+                            Err(_) => return false,
+                        },
+                        _ => return false,
+                    };
+                    let mut items = Vec::new();
+                    if items.try_reserve_exact(count).is_err() { return false; }
+                    for _ in 0..count {
+                        self.var_counter += 1;
+                        items.push(Value::Unbound(format!("_L{}", self.var_counter)));
+                    }
+                    let mark = self.trail.len();
+                    if self.unify(&list_raw, &Value::List(items)) {
                         self.pc += 1; true
+                    } else {
+                        self.unwind_trail_to(mark);
+                        false
                     }
-                    _ => false,
+                } else {
+                    false
                 }
             }
             "append/3" => {
