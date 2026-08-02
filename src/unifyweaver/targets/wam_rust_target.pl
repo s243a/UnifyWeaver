@@ -1303,7 +1303,10 @@ compile_execute_arith_builtin_to_rust(Code) :-
     Code = '    fn execute_arith_builtin(&mut self, op: &str, _arity: usize) -> bool {
         match op {
             "is/2" => {
-                let expr = self.get_reg_raw("A2").map(|v| self.deref_var(&v)).unwrap_or(Value::Integer(0));
+                let expr = match self.get_reg_raw("A2") {
+                    Some(value) => self.deref_var(&value),
+                    None => return false,
+                };
                 if let Some(result) = self.eval_arith(&expr) {
                     let lhs = self.get_reg_raw("A1").map(|v| self.deref_var(&v));
                     // Bind as integer if result is very close to a whole number
@@ -1338,8 +1341,8 @@ compile_execute_arith_builtin_to_rust(Code) :-
                         "</2" => n1 < n2,
                         ">=/2" => n1 >= n2,
                         "=</2" => n1 <= n2,
-                        "=:=/2" => (n1 - n2).abs() < f64::EPSILON,
-                        "=\\\\=/2" => (n1 - n2).abs() >= f64::EPSILON,
+                        "=:=/2" => n1 == n2,
+                        "=\\\\=/2" => !n1.is_nan() && !n2.is_nan() && n1 != n2,
                         _ => false,
                     };
                     if ok { self.pc += 1; true } else { false }
@@ -2142,26 +2145,36 @@ compile_execute_io_builtin_to_rust(Code) :-
 
 compile_execute_type_builtin_to_rust(Code) :-
     Code = '    fn execute_type_builtin(&mut self, op: &str, _arity: usize) -> bool {
-        if let Some(val) = self.get_reg_raw("A1") {
-            let ok = match op {
-                "atom/1" => matches!(val, Value::Atom(_)),
-                "integer/1" => matches!(val, Value::Integer(_)),
-                "float/1" => matches!(val, Value::Float(_)),
-                "number/1" => val.is_number(),
-                "atomic/1" => {
-                    let derefed = self.deref_heap(&self.deref_var(&val));
-                    matches!(&derefed,
-                        Value::Atom(_) | Value::Integer(_) | Value::Float(_) | Value::Bool(_))
-                        || matches!(&derefed, Value::List(items) if items.is_empty())
-                }
-                "compound/1" => val.is_compound(),
-                "var/1" => val.is_unbound(),
-                "nonvar/1" => !val.is_unbound(),
-                "is_list/1" => val.is_list(),
-                _ => return false,
-            };
-            if ok { self.pc += 1; true } else { false }
-        } else { false }
+        if !matches!(op,
+            "atom/1" | "integer/1" | "float/1" | "number/1" |
+            "atomic/1" | "compound/1" | "var/1" | "nonvar/1" | "is_list/1") {
+            return false;
+        }
+        let raw = match self.get_reg_raw("A1") {
+            Some(value) => value,
+            None => return false,
+        };
+        let value = self.deref_heap(&self.deref_var(&raw));
+        let ok = match op {
+            "atom/1" => matches!(value, Value::Atom(_)),
+            "integer/1" => matches!(value, Value::Integer(_)),
+            "float/1" => matches!(value, Value::Float(_)),
+            "number/1" => value.is_number(),
+            "atomic/1" => {
+                matches!(&value,
+                    Value::Atom(_) | Value::Integer(_) | Value::Float(_) | Value::Bool(_))
+                    || matches!(&value, Value::List(items) if items.is_empty())
+            }
+            "compound/1" => {
+                value.is_compound()
+                    || matches!(&value, Value::List(items) if !items.is_empty())
+            }
+            "var/1" => value.is_unbound(),
+            "nonvar/1" => !value.is_unbound(),
+            "is_list/1" => value.is_list(),
+            _ => unreachable!(),
+        };
+        if ok { self.pc += 1; true } else { false }
     }'.
 
 compile_execute_term_builtin_to_rust(Code) :-
@@ -6608,8 +6621,17 @@ compile_eval_arith_to_rust(Code) :-
                 "-" => Some(a - b),
                 "*" => Some(a * b),
                 "/" if b != 0.0 => Some(a / b),
-                "//" if b != 0.0 => Some((a / b).floor()),
-                "mod" if b != 0.0 => Some(a % b),
+                "//" if b != 0.0 => Some((a / b).trunc()),
+                "mod" if b != 0.0 => {
+                    let remainder = a % b;
+                    if remainder != 0.0
+                        && (remainder.is_sign_negative() != b.is_sign_negative())
+                    {
+                        Some(remainder + b)
+                    } else {
+                        Some(remainder)
+                    }
+                }
                 "**" => Some(a.powf(b)),
                 _ => None,
             }

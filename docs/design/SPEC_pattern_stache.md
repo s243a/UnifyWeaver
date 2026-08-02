@@ -208,6 +208,29 @@ extending the grammar in place.
 | **partials / delegation** (`{{> name}}`) | absent | the two-live-files divergence hazard in the philosophy doc materializes |
 | **`.mustache` → `.stache` converter** | not built | per [`docs/TODO_STACHE_CONVERTER.md`](../TODO_STACHE_CONVERTER.md): a match-using library grows to the low tens of cases |
 
+### Why non-linearity is refused while nesting is tolerated
+
+*Recorded rationale for the asymmetry between the first two exclusion rows — flagged in
+[`REPORT_pattern_stache_graduation.md`](../../prototypes/mu_cosine/REPORT_pattern_stache_graduation.md)
+(§1–§2) and recommended here, pending the owner's explicit ratification.*
+
+The two rows get opposite treatment because they fail differently:
+
+- **Non-linearity silently changes matching semantics.** In a bare `f(X, X)` the second
+  occurrence is an implicit equality constraint — `f(a, b)` no longer matches — yet nothing at
+  the syntax level marks that the second `X` is a *test* rather than another hole. A template
+  author scanning `{{case}}` heads for binding slots reads it as one; whether an equality check
+  was intended cannot be determined from the file. An unmarked construct whose meaning diverges
+  from what its surface suggests is exactly the class of hazard this dialect exists to remove
+  (compare the unquoted-`Helpers` row of the migration checklist), so v1 refuses it outright.
+- **Nesting composes without surprise.** A nested `{{match}}` changes the meaning of nothing
+  around it: each block keeps its own dispatch, bindings extend lexically inward exactly as the
+  scoping rule already specifies, and the prototype witnessed working semantics under test. It
+  is unpromised only because no real consumer template has needed it — an evidence gap, not a
+  hazard.
+
+Refuse what misleads; tolerate what merely lacks a witness.
+
 ## Relationship to the string dialect
 
 `template_system.pl` and its 67 dependent targets are untouched and remain the default for every

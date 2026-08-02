@@ -1,0 +1,7 @@
+{{! dialect(pattern_stache, 1) }}
+{{match val}}
+{{case kw(K, V)}}{{K}}={{V}}
+{{case str(S)}}"{{S}}"
+{{case list(Items)}}[{{Items}}]
+{{case lit(X)}}{{X}}
+{{/match}}

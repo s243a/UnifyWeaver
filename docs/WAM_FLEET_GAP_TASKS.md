@@ -833,7 +833,7 @@ Add each target to the scale-300 effective-distance matrix in
 
 ### BENCH-R: Add R row to effective-distance scale-300 matrix ✅
 - **Lever:** Effective-distance benchmark rows  **Target:** R  **Size:** L  **Depends on:** —
-- **Status:** Done — `examples/benchmark/generate_wam_r_effective_distance_benchmark.pl`, guarded Rscript harness block, scale-300 matrix row + subsection in `WAM_CROSS_TARGET_BENCHMARK_RESULTS.md` (hosted-CI AGGREGATE-LOWER query_ms=1564 median / total_ms=2077; prior IDTABLE 3412/4076; reference parity match). Initial BENCH-R branch `cursor/bench-r-effective-distance-f421`; optimized by PERF-R-CA-DIRECT, IDDFS, IDCACHE, STACK, IDTABLE, WAM-STEP (`is_lax` power/unary), and AGGREGATE-LOWER (`bulk_collect` + scalar is_lax reduce). PATHMARK, LOOPBODY, ED-BOUNDARY, and LOWERED-DIRECTCALL profiled/declined.
+- **Status:** Done — `examples/benchmark/generate_wam_r_effective_distance_benchmark.pl`, guarded Rscript harness block, scale-300 matrix row + subsection in `WAM_CROSS_TARGET_BENCHMARK_RESULTS.md` (hosted-CI AGG-BATCH query_ms=1111 median / total_ms=1621; prior AGGREGATE-LOWER 1564/2077; IDTABLE 3412/4076; reference multiset parity match). Initial BENCH-R branch `cursor/bench-r-effective-distance-f421`; optimized by PERF-R-CA-DIRECT, IDDFS, IDCACHE, STACK, IDTABLE, WAM-STEP (`is_lax` power/unary), AGGREGATE-LOWER (`bulk_collect` + scalar is_lax reduce), and AGG-BATCH (typed numeric batch + vectorized is_lax reduce). PATHMARK, LOOPBODY, ED-BOUNDARY, LOWERED-DIRECTCALL, and CA-BULK-HOPS (post-AGG-BATCH hops_ids ~84% of query; R-level trials ≤~1.016×) profiled/declined.
 
 ---
 

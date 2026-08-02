@@ -1810,6 +1810,89 @@ fn test_not_unify_and_not_equal() {
 }
 
 #[test]
+fn test_arithmetic_evaluation_direct() {
+    let bin = |op: &str, left: Value, right: Value| {
+        Value::Str(format!("{op}/2"), vec![left, right])
+    };
+
+    let nested = bin("*", bin("+", i(2), i(3)), i(4));
+    let (nested_ok, nested_vm) = call2("is/2", ub("Result"), nested);
+    assert!(nested_ok);
+    assert_eq!(read_var(&nested_vm, "Result"), i(20));
+
+    let (division_ok, division_vm) = call2("is/2", ub("Result"), bin("/", i(7), i(2)));
+    assert!(division_ok);
+    assert_eq!(read_var(&division_vm, "Result"), Value::Float(3.5));
+
+    let (quotient_ok, quotient_vm) = call2("is/2", ub("Result"), bin("//", i(-3), i(2)));
+    assert!(quotient_ok);
+    assert_eq!(read_var(&quotient_vm, "Result"), i(-1));
+
+    let (positive_mod_ok, positive_mod_vm) =
+        call2("is/2", ub("Result"), bin("mod", i(-3), i(2)));
+    assert!(positive_mod_ok);
+    assert_eq!(read_var(&positive_mod_vm, "Result"), i(1));
+
+    let (negative_mod_ok, negative_mod_vm) =
+        call2("is/2", ub("Result"), bin("mod", i(3), i(-2)));
+    assert!(negative_mod_ok);
+    assert_eq!(read_var(&negative_mod_vm, "Result"), i(-1));
+
+    assert!(call2("is/2", i(5), bin("+", i(2), i(3))).0);
+    assert!(!call2("is/2", i(6), bin("+", i(2), i(3))).0);
+
+    let mut bound_expr = vmnew();
+    assert!(bound_expr.unify(&ub("Expr"), &bin("+", i(8), i(1))));
+    bound_expr.set_reg("A1", ub("Result"));
+    bound_expr.set_reg("A2", ub("Expr"));
+    assert!(bound_expr.execute_builtin("is/2", 2));
+    assert_eq!(read_var(&bound_expr, "Result"), i(9));
+
+    assert!(!call2("is/2", ub("Result"), bin("/", i(1), i(0))).0);
+    assert!(!call2("is/2", ub("Result"), bin("unknown", i(1), i(2))).0);
+    assert!(!call2("is/2", ub("Result"), ub("Expr")).0);
+
+    let mut missing_expr = vmnew();
+    missing_expr.set_reg("A1", ub("Result"));
+    assert!(!missing_expr.execute_builtin("is/2", 2));
+    assert_eq!(read_var(&missing_expr, "Result"), ub("Result"));
+
+    let mut missing_result = vmnew();
+    missing_result.set_reg("A2", bin("+", i(1), i(2)));
+    assert!(!missing_result.execute_builtin("is/2", 2));
+}
+
+#[test]
+fn test_arithmetic_comparisons_direct() {
+    let bin = |op: &str, left: Value, right: Value| {
+        Value::Str(format!("{op}/2"), vec![left, right])
+    };
+
+    assert!(call2(">/2", i(4), i(3)).0);
+    assert!(call2("</2", i(3), Value::Float(3.5)).0);
+    assert!(call2(">=/2", i(4), i(4)).0);
+    assert!(call2("=</2", bin("+", i(1), i(2)), i(3)).0);
+    assert!(call2("=:=/2", bin("*", i(3), i(4)), i(12)).0);
+    assert!(call2("=:=/2", i(1), Value::Float(1.0)).0);
+    assert!(call2("=\\\\=/2", i(1), Value::Float(1.5)).0);
+
+    let inexact_sum = bin("+", Value::Float(0.1), Value::Float(0.2));
+    assert!(!call2("=:=/2", inexact_sum.clone(), Value::Float(0.3)).0);
+    assert!(call2("=\\\\=/2", inexact_sum, Value::Float(0.3)).0);
+
+    assert!(!call2(">/2", ub("Left"), i(1)).0);
+    assert!(!call2("=:=/2", a("not_a_number"), i(1)).0);
+
+    let mut missing_left = vmnew();
+    missing_left.set_reg("A2", i(1));
+    assert!(!missing_left.execute_builtin("</2", 2));
+
+    let mut missing_right = vmnew();
+    missing_right.set_reg("A1", i(1));
+    assert!(!missing_right.execute_builtin("</2", 2));
+}
+
+#[test]
 fn test_standard_order() {
     assert!(call2("@</2", a("a"), a("b")).0);
     assert!(!call2("@</2", a("b"), a("a")).0);
@@ -2740,6 +2823,59 @@ fn test_atomic_direct() {
     assert!(!call1("atomic/1", Value::List(vec![a("x")])).0);
     assert!(!call1("atomic/1", Value::Str("f".to_string(), vec![a("x")])).0);
     assert!(!call1("atomic/1", ub("X")).0);
+}
+
+#[test]
+fn test_type_predicates_direct() {
+    assert!(call1("atom/1", a("x")).0);
+    assert!(!call1("atom/1", i(1)).0);
+    assert!(!call1("atom/1", Value::List(vec![])).0);
+
+    assert!(call1("integer/1", i(1)).0);
+    assert!(!call1("integer/1", Value::Float(1.0)).0);
+    assert!(call1("float/1", Value::Float(1.0)).0);
+    assert!(!call1("float/1", i(1)).0);
+    assert!(call1("number/1", i(1)).0);
+    assert!(call1("number/1", Value::Float(1.0)).0);
+    assert!(!call1("number/1", a("one")).0);
+
+    assert!(call1(
+        "compound/1", Value::Str("node/1".to_string(), vec![a("x")])).0);
+    assert!(call1("compound/1", Value::List(vec![a("x")])).0);
+    assert!(!call1("compound/1", Value::List(vec![])).0);
+    assert!(!call1("compound/1", a("x")).0);
+
+    assert!(call1("var/1", ub("X")).0);
+    assert!(!call1("var/1", a("x")).0);
+    assert!(call1("nonvar/1", a("x")).0);
+    assert!(!call1("nonvar/1", ub("X")).0);
+    assert!(call1("is_list/1", Value::List(vec![])).0);
+    assert!(call1("is_list/1", Value::List(vec![a("x")])).0);
+    assert!(!call1("is_list/1", a("x")).0);
+
+    let (bind_ok, mut bound_atom_vm) = call2("=/2", ub("X"), a("bound"));
+    assert!(bind_ok);
+    for op in ["atom/1", "nonvar/1"] {
+        bound_atom_vm.set_reg("A1", ub("X"));
+        assert!(bound_atom_vm.execute_builtin(op, 1), "{op} must dereference X");
+    }
+    bound_atom_vm.set_reg("A1", ub("X"));
+    assert!(!bound_atom_vm.execute_builtin("var/1", 1));
+
+    let (list_bind_ok, mut bound_list_vm) = call2(
+        "=/2", ub("X"), Value::List(vec![a("item")]));
+    assert!(list_bind_ok);
+    for op in ["compound/1", "is_list/1"] {
+        bound_list_vm.set_reg("A1", ub("X"));
+        assert!(bound_list_vm.execute_builtin(op, 1), "{op} must dereference X");
+    }
+
+    for op in [
+        "atom/1", "integer/1", "float/1", "number/1", "atomic/1",
+        "compound/1", "var/1", "nonvar/1", "is_list/1",
+    ] {
+        assert!(!vmnew().execute_builtin(op, 1), "{op} requires A1");
+    }
 }
 
 #[test]

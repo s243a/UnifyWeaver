@@ -22,7 +22,7 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
 | **F# LMDB cached (two-level L1/L2)** | **2** | -- | **1** | **Yes** | Fact-access only (no WAM overhead); see below |
 | Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
-| R WAM (functions, kernels_on) | 1564 | 2077 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + AGGREGATE-LOWER (bulk_collect + scalar is_lax reduce); 3-rep median query |
+| R WAM (functions, kernels_on) | 1111 | 1621 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + AGG-BATCH (typed numeric batch + vectorized is_lax reduce); 3-rep median query |
 | Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
 
 **Key takeaway:** Atom interning (replacing `HashMap<String, Vec<String>>` with
@@ -538,6 +538,55 @@ parity):
 
 Hosted 3-rep after retain: query samples 2118, 1422, 1564 (median 1564 /
 total 2077). Primary matrix row updated accordingly.
+
+PERF-R-AGG-BATCH profiles the post-AGGREGATE-LOWER path: hop collection
+still dominates attributed exclusive time (~62%), but per-solution
+`new.env` / base-copy / arithmetic-template interpretation is ~38%
+(`lapply` record materialization only ~0.5%). No prior typed-batch /
+vector bulk-reduce machinery existed on R (Rust `ParAggregate` is a
+parallel region model and was not reused). Retained path: `bulk_collect`
+may return `list(type="numeric_batch", reg, val=<numeric vector>)`;
+legacy list-of-record callbacks coerce when every value is a length-1
+numeric on the single declared output register; the closed `is_lax`
+template is evaluated once on vectors before `sum|count|min|max`
+reduction. Eligibility, dynamic shadowing, and classic-frame fallback
+are unchanged; steps remain 14540 / EndAggregate 0. Same-host
+interleaved 7-rep × 2 (R 4.3.3, 271-row six-decimal multiset parity):
+
+| Sequence | base median | candidate median | query speedup | total speedup |
+|----------|-------------|------------------|---------------|---------------|
+| A | 2105 | 1786 | 1.179× | 1.137× |
+| B | 2115 | 1796 | 1.178× | 1.140× |
+
+Warm-query Rprofmem: 66.48 MB → 64.02 MB (−3.7% bytes; −29% alloc events).
+Hosted 3-rep after retain: query samples 1813, 1111, 1108 (median 1111 /
+total 1621). Primary matrix row updated accordingly.
+
+PERF-R-CA-BULK-HOPS profiled the post-AGG-BATCH remainder. On a Cursor
+cloud agent (R 4.3.3), a warm scale-300 query attributes **84% of query
+wall** to `category_ancestor_hops_ids` (98% of bulk_collect time); typed-batch
+setup and int→numeric transfer are ≤1% combined. Counters: 385 bulk calls,
+368854 node enters, avg path length 8.63 / max 10, max frame sp 9, 11172
+emits, 351 hop-buffer grows, all parent lookups via IDTABLE dense slots.
+Rprof by.self: `hops_ids` ~68%, `any` ~7% (path membership), then
+`integer`/`length`. This does not contradict PATHMARK / LOOPBODY: short
+path scans remain cheaper than O(1) mark tables, and prior single-change
+loop micro-opts stayed in noise. New trials (reusable hop buffer, inline
+while membership, dense `integer(0)` fill, `cmpfun`, CSR parent frames)
+were parity-safe where applicable but neutral or slower. The best trial —
+`match()` instead of `any(visited[seq_len(v)]==id)` for path membership —
+was ~1.03× on hops-only micros and failed the fresh-process interleaved
+gate (7-rep × 2):
+
+| Sequence | base median | candidate median | query speedup | total speedup |
+|----------|-------------|------------------|---------------|---------------|
+| A | 1805 | 1776 | 1.016× | 1.015× |
+| B | 1801 | 1777 | 1.014× | 1.010× |
+
+No production change retained. Hosted AGG-BATCH row remains 1111 / 1621.
+Next evidence-based leverage is outside the interpreted R DFS body (native
+hop kernel / deeper representation change), not further R-level membership
+or buffer micro-opts.
 
 #### Reproduction
 
