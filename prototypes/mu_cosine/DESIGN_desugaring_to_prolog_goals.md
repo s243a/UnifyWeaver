@@ -341,3 +341,16 @@ identity-*determining* — `C=simplemind` and `C=pearltrees` are different proce
 bindings through the pin envelope would force one of those properties to break. No third
 channel is needed: a binding is consumed at elaboration, so it never reaches the artifact it
 would have annotated.
+
+*Clarification, ratified after the first where-elaborator implementation
+(`pattern_stache/pe_where.pl`) asked: the disjointness holds in **both directions**. A binding
+variable standing in a pin position is refused — bindings are identity-determining machinery
+and may not construct identity-transparent content — and a pin term arriving **as** a binding
+value is refused, because substituting it into a semantic position would put provenance into
+the digest preimage, which R9's by-construction clause exists to make impossible ("no
+configuration can produce a pin-bearing digest"; a binding channel that could inject pins
+would be such a configuration). A binding inside the semantic part of a pinned expression is
+of course legal — the pin is untouched, the binding never crosses into it. Implementation
+hazard recorded by the same consumer: in Prolog, anything that copies terms (`findall/3`
+templates in particular) silently severs the one-variable-many-occurrences identity the whole
+design rests on; collect occurrences by walking, never by copying.*
