@@ -189,6 +189,23 @@ $ swipl -g "use_module('prototypes/mu_cosine/pattern_stache/pe_elaborate'), elab
 ground(lca_frac(simplemind))
 ```
 
+### d-addendum. The second oracle: structure, not just strings
+
+Byte equality (example b) checks the *rendered* surface. The bundle also seals each row's
+`resolved_ast` — the elaborated node structure as JSON — so the elaborated **term** can be
+verified independently of any renderer: elaborate, project the ground term into the
+correspondence (`pe_resolved_ast.pl` documents it), and compare structurally against the
+sealed JSON, read as data:
+
+```console
+$ swipl -g "use_module('prototypes/mu_cosine/pattern_stache/pe_elaborate'), use_module('prototypes/mu_cosine/pattern_stache/pe_resolved_ast'), elaborate(menu(graph, n(10)), [], ground(G)), ( projection_matches_row('menu-required-int', G) -> writeln('structure matches sealed resolved_ast: true') ; writeln(mismatch) )" -t halt
+structure matches sealed resolved_ast: true
+```
+
+**Why two oracles on the same rows:** with structure checked before rendering, a builder bug
+and a renderer bug can no longer mask each other — each would have to fool a different sealed
+artifact.
+
 ## e. The fail-closed gallery
 
 Every refusal below is a named error thrown at elaboration time. One sentence each on the
