@@ -1,0 +1,150 @@
+{
+ "stamp": "shadow-exploratory-tier1-not-decision-bearing",
+ "S1_LOCO_with_variance": {
+  "train_simplewiki_eval_pearltrees": {
+   "per_seed": [
+    {
+     "seed": 7,
+     "transfer": 0.1451,
+     "e5": 0.3079,
+     "in_domain": 0.257
+    },
+    {
+     "seed": 17,
+     "transfer": 0.154,
+     "e5": 0.3355,
+     "in_domain": 0.2979
+    },
+    {
+     "seed": 27,
+     "transfer": 0.1815,
+     "e5": 0.3429,
+     "in_domain": 0.2734
+    },
+    {
+     "seed": 37,
+     "transfer": 0.1351,
+     "e5": 0.3218,
+     "in_domain": 0.285
+    },
+    {
+     "seed": 47,
+     "transfer": 0.1319,
+     "e5": 0.3139,
+     "in_domain": 0.2559
+    }
+   ],
+   "mean": {
+    "transfer": 0.1495,
+    "e5": 0.3244,
+    "in_domain": 0.2738
+   },
+   "sd_transfer": 0.0178,
+   "transfer_minus_e5_CI95": [
+    -0.2214,
+    -0.1292
+   ],
+   "transfer_minus_indomain_CI95": [
+    -0.1789,
+    -0.0737
+   ]
+  },
+  "train_pearltrees_eval_simplewiki": {
+   "per_seed": [
+    {
+     "seed": 7,
+     "transfer": 0.2439,
+     "e5": 0.2309,
+     "in_domain": 0.2276
+    },
+    {
+     "seed": 17,
+     "transfer": 0.2302,
+     "e5": 0.2331,
+     "in_domain": 0.2355
+    },
+    {
+     "seed": 27,
+     "transfer": 0.238,
+     "e5": 0.2288,
+     "in_domain": 0.2697
+    },
+    {
+     "seed": 37,
+     "transfer": 0.2491,
+     "e5": 0.2427,
+     "in_domain": 0.2489
+    },
+    {
+     "seed": 47,
+     "transfer": 0.2562,
+     "e5": 0.2506,
+     "in_domain": 0.267
+    }
+   ],
+   "mean": {
+    "transfer": 0.2435,
+    "e5": 0.2372,
+    "in_domain": 0.2497
+   },
+   "sd_transfer": 0.0089,
+   "transfer_minus_e5_CI95": [
+    -0.036,
+    0.0465
+   ],
+   "transfer_minus_indomain_CI95": [
+    -0.0575,
+    0.0399
+   ]
+  }
+ },
+ "S2_ceiling_threshold_sweep": {
+  "0.8": {
+   "mean_T": 17.68,
+   "n_err": 173,
+   "err_into_alt": 47,
+   "share": 0.272
+  },
+  "0.85": {
+   "mean_T": 2.11,
+   "n_err": 173,
+   "err_into_alt": 8,
+   "share": 0.046
+  },
+  "0.9": {
+   "mean_T": 1.075,
+   "n_err": 173,
+   "err_into_alt": 1,
+   "share": 0.006
+  },
+  "0.95": {
+   "mean_T": 1.0,
+   "n_err": 173,
+   "err_into_alt": 0,
+   "share": 0.0
+  }
+ },
+ "S3_probe_all_folders": {
+  "acc": 0.8224,
+  "n_pairs": 40000,
+  "tag": "all"
+ },
+ "S3_probe_topic_matched_society+everyday": {
+  "acc": 0.8082,
+  "n_pairs": 28400,
+  "tag": "society+everyday",
+  "n_folders": [
+   71,
+   661
+  ]
+ },
+ "S3_probe_topic_matched_society_only": {
+  "acc": 0.799,
+  "n_pairs": 16000,
+  "tag": "society_only",
+  "n_folders": [
+   40,
+   291
+  ]
+ }
+}
