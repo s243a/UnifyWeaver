@@ -15383,6 +15383,13 @@ plawk_expr_scalar_read_name(Expr, Name) :-
     ).
 
 plawk_scalar_action_update(inc(var(Name)), Name, add(const(1))).
+% `n--` is `n += -1`. It reports the same `add(const(_))` update as `n++`, so
+% every downstream consumer of that operation (the strnum-safety check, the
+% double-typing fixpoint, the slot emitters) already covers it -- which is why
+% this is one row and not a new operation. The `add(var(N), int(V))` clause below
+% requires V >= 0, so `n += -1` written out longhand still declines; that
+% asymmetry is pre-existing and pinned in the tests rather than widened here.
+plawk_scalar_action_update(dec(var(Name)), Name, add(const(-1))).
 plawk_scalar_action_update(add(var(Name), int(Value)), Name, add(const(Value))) :-
     integer(Value),
     Value >= 0.

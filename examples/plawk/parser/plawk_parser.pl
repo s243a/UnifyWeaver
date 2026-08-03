@@ -2262,6 +2262,9 @@ for_c_simple(Action) -->
     increment_action(Action),
     !.
 for_c_simple(Action) -->
+    decrement_action(Action),
+    !.
+for_c_simple(Action) -->
     add_assign_action(Action),
     !.
 for_c_simple(Action) -->
@@ -2527,6 +2530,9 @@ action(Action) -->
     !.
 action(Action) -->
     increment_action(Action),
+    !.
+action(Action) -->
+    decrement_action(Action),
     !.
 
 %% getline_action(-Action)//
@@ -2963,6 +2969,23 @@ increment_action(inc_assoc(var(Name), KeyExpr)) -->
 increment_action(inc(var(Name))) -->
     identifier(Name),
     "++".
+
+%% decrement_action(-Action)//
+%
+%  `n--` -- post-decrement, the mirror of `n++`, which existed while this was a
+%  PARSE ERROR everywhere (`n = n - 1` was the only spelling). As a STATEMENT the
+%  produced value is unused, so `n--` is exactly `n -= 1`: it reports the same
+%  scalar update as `n++` with a delta of -1, and needs no new emitter.
+%
+%  SCALAR only. `arr[k]--` stays a parse error on purpose: the assoc increment is
+%  a whole action family (`inc_assoc`, with rows in the table-name walker, the
+%  update-action gate, the body-action spec and the increment planner), so a
+%  decrement there means a row in every one of them. That is a separate change --
+%  pinned as a follow-on rather than left half-wired, which is how this codebase's
+%  recurring defect gets in.
+decrement_action(dec(var(Name))) -->
+    identifier(Name),
+    "--".
 
 next_action(next) -->
     "next",
