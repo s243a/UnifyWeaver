@@ -23,7 +23,9 @@ from mu_attention import OPS, Tokenizer, build_e5_tables, E5_REVISION, load_dag,
 
 TREES = "/home/s243a/Projects/UnifyWeaver/.local/data/pearltrees_api/trees"
 CKPT, SEED, MAXQ = "model_pt_filing.pt", 7, 500
-CACHE = os.path.expanduser("~/mu_data/sa_scores_%s.pt")
+CACHE = os.path.expanduser("~/mu_data/sa_scores_v2_%s.pt")   # v2 schema: + qtbl/ptbl/idx/cand
+NEEDED = ("queries", "cand", "tid_list", "q_keys", "f_keys", "truepos",
+          "Cz", "Sz", "Az", "Ez", "qtbl", "ptbl", "idx")
 REGIONS = {
     "stem_physical": "physics chemistry mathematics astronomy thermodynamics engineering",
     "stem_computing": "computer science software programming algorithms networks security",
@@ -56,7 +58,11 @@ def region_of(titles, rtbl, rnames, model_tbls):
 def build(source, dev):
     cp = CACHE % source
     if os.path.exists(cp):
-        return torch.load(cp, weights_only=False)
+        d = torch.load(cp, weights_only=False)
+        if all(k in d for k in NEEDED):
+            print(f"[cache] {cp}", flush=True)
+            return d
+        print(f"[cache] {cp} stale (schema) — rebuilding", flush=True)
     if source == "simplewiki":
         queries, cand = load_membership(GRAPH, 3)
     else:
@@ -265,4 +271,5 @@ def run():
     json.dump(res, open("PHASE1_AUDIT_SCOREBOARD.json", "w"), indent=1)
     print(json.dumps(res, indent=1), flush=True)
 
-run()
+if __name__ == "__main__":
+    run()
