@@ -1019,6 +1019,7 @@ plawk_program_native_driver_ir(
 ) :-
     plawk_end_actions_have_loop(EndActions),
     !,
+    plawk_end_loop_actions_ok(EndActions),
     plawk_end_loop_print_fields(EndActions, PrintFields),
     plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules1, WritebinPlan),
     plawk_record_descriptor(BeginClauses, FieldSeparator),
@@ -1065,6 +1066,61 @@ plawk_program_native_driver_ir(
         driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
             NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
+
+%% plawk_end_loop_actions_ok(+Actions) is semidet.
+%
+%  What an END block containing a loop may contain. Both exclusions are bugs this
+%  clause would otherwise INTRODUCE, found by probing rather than reasoning:
+%
+%  1. A FIELD READ anywhere. END has no current record: at `end_print` the
+%     transient `%line` holds the EOF sentinel, so the sequence emitter happily
+%     lowered `END { while (…) print $1 }` to a read of it and the program printed
+%     `end_of_file` three times where gawk prints the last record. WRONG OUTPUT,
+%     which is worse than the decline this now produces. (A straight-line
+%     `END { print $1 }` already declined; admitting loops into END is what made
+%     the field path reachable.)
+%
+%  2. `exit` INSIDE a loop body. An END `exit` is lowered as a store to
+%     @plawk_exit_code plus TRUNCATION of the remaining statements -- sound only
+%     because straight-line code cannot come back. A loop body can, so the
+%     truncated block left the loop malformed and clang rejected it (exit 4).
+%     `exit` AFTER the loop is fine and stays supported: the truncation is then
+%     genuinely at the end of straight-line code.
+%
+%  Both are declines, not silent narrowings, and both are pinned in the tests.
+plawk_end_loop_actions_ok(Actions) :-
+    \+ plawk_end_term_mentions_field(Actions),
+    forall(( member(Action, Actions),
+             plawk_end_loop_action(Action)
+           ),
+           \+ plawk_end_term_mentions_exit(Action)).
+
+%% plawk_end_term_mentions_field(+Term) is semidet.
+%
+%  A `field(_)` anywhere in the term, at any depth -- so a field buried in a
+%  nested loop body, an `if` branch or a print list is found. A structural walk
+%  rather than a per-action-shape walker on purpose: this is a SAFETY gate, and a
+%  walker that has to learn each new action shape is how the misses in this line
+%  happened.
+plawk_end_term_mentions_field(field(_)) :-
+    !.
+plawk_end_term_mentions_field(Term) :-
+    compound(Term),
+    arg(_, Term, Sub),
+    plawk_end_term_mentions_field(Sub).
+
+%% plawk_end_term_mentions_exit(+Term) is semidet.
+%
+%  An `exit` / `exit(_)` anywhere in the term, same reasoning as above. Applied
+%  to LOOP actions only, so an `exit` after the loop is unaffected.
+plawk_end_term_mentions_exit(exit) :-
+    !.
+plawk_end_term_mentions_exit(exit(_)) :-
+    !.
+plawk_end_term_mentions_exit(Term) :-
+    compound(Term),
+    arg(_, Term, Sub),
+    plawk_end_term_mentions_exit(Sub).
 
 %% plawk_end_actions_have_loop(+Actions) is semidet.
 %
