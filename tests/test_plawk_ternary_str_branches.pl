@@ -141,14 +141,26 @@ test(i64_arithmetic_branches_unchanged, [condition(clang_available)]) :-
 
 % --- clean declines -------------------------------------------------------
 
-% MIXED branches: awk stringifies the number, which needs a runtime conversion on
-% one arm. Declined rather than guessed -- in both contexts.
-test(mixed_string_and_int_branches_decline_in_assignment) :-
-    build_status("{ x = $2 > 1 ? \"hi\" : 3; print x }\n", 3),
+% MIXED branches used to decline (this suite pinned that, reasoning that awk's
+% stringification needs a runtime conversion). It does not for an INTEGER literal:
+% the conversion is exactly its decimal digits, so the arm is folded to text at
+% compile time -- covered in tests/test_plawk_ternary_mixed.pl. Asserted here as
+% no-longer-declining, in both contexts, so the pair keeps moving together.
+test(mixed_string_and_int_branches_compile_in_assignment,
+        [condition(clang_available)]) :-
+    build_status("{ x = $2 > 1 ? \"hi\" : 3; print x }\n", 0),
     !.
 
-test(mixed_string_and_int_branches_decline_in_print) :-
-    build_status("{ print $2 > 1 ? \"hi\" : 3 }\n", 3),
+test(mixed_string_and_int_branches_compile_in_print,
+        [condition(clang_available)]) :-
+    build_status("{ print $2 > 1 ? \"hi\" : 3 }\n", 0),
+    !.
+
+% A NON-LITERAL numeric arm still declines -- that one does need a runtime
+% conversion, which is what the original reasoning above actually applies to.
+test(non_literal_numeric_arm_still_declines) :-
+    build_status("{ x = $2 > 1 ? \"hi\" : $1; print x }\n", 3),
+    build_status("{ x = $2 > 1 ? \"hi\" : 3.5; print x }\n", 3),
     !.
 
 % A SCALAR-VARIABLE condition declines -- for BOTH branch types. This is the
@@ -181,13 +193,15 @@ test(parenthesised_whole_ternary_compiles, [condition(clang_available)]) :-
 
 % --- structure: one gate, one condition emitter ---------------------------
 
-% The branch-type gate accepts a literal pair and nothing else.
+% The branch-type gate. A string pair, and now a MIXED pair (the integer literal
+% folds to text) -- but NOT two integer literals, which must keep taking the
+% ordinary i64 path rather than becoming a string-valued expression.
 test(string_branch_gate) :-
     assertion(plawk_native_codegen:plawk_ternary_str_branches_ok(
         string("hi"), string("lo"))),
-    assertion(\+ plawk_native_codegen:plawk_ternary_str_branches_ok(
+    assertion(plawk_native_codegen:plawk_ternary_str_branches_ok(
         string("hi"), int(3))),
-    assertion(\+ plawk_native_codegen:plawk_ternary_str_branches_ok(
+    assertion(plawk_native_codegen:plawk_ternary_str_branches_ok(
         int(3), string("lo"))),
     assertion(\+ plawk_native_codegen:plawk_ternary_str_branches_ok(
         int(1), int(0))),

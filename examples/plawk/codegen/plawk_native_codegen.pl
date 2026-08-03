@@ -14568,9 +14568,37 @@ plawk_ternary_condition_ok(or(A, B)) :-
 %  admits, and the same plawk_ternary_cond_ir/8 emits it, so branch type and
 %  condition form are independent: every condition that works with i64 branches
 %  works with string branches.
-plawk_ternary_str_branches_ok(string(Then), string(Else)) :-
-    string(Then),
-    string(Else).
+plawk_ternary_str_branches_ok(Then, Else) :-
+    plawk_ternary_str_branch_value(Then, _ThenText),
+    plawk_ternary_str_branch_value(Else, _ElseText),
+    % At least one arm must be a genuine string. Two integer literals are the
+    % ORDINARY i64 ternary and must keep taking that path -- routing them here
+    % would turn `c ? 1 : 0` into a string-valued expression.
+    ( Then = string(_) ; Else = string(_) ).
+
+%% plawk_ternary_str_branch_value(+Branch, -Text) is semidet.
+%
+%  A string-valued ternary arm as TEXT. A string literal is itself; an INTEGER
+%  literal is folded to its decimal spelling at compile time, which is what makes
+%  a MIXED ternary work -- `c ? "hi" : 3` is `c ? "hi" : "3"`, because awk's
+%  number->string conversion of an integer is exactly its decimal digits.
+%
+%  Folding at the GATE means both string-ternary emitters (the print-context
+%  pointer select and the assignment-context id select) keep seeing `string(_)`
+%  arms only, so neither learns about numbers and they cannot disagree about the
+%  conversion.
+%
+%  INTEGER literals only. A FLOAT literal is declined rather than folded: awk
+%  converts a non-integer with CONVFMT (`%.6g`), so `3.5` happens to fold exactly
+%  but `3.14159265` would not (`3.14159`), and silently truncating a literal is
+%  worse than declining it. A non-literal numeric arm (`c ? $1 : "hi"`,
+%  `c ? n : "hi"`) needs a RUNTIME conversion and is also declined. Both are
+%  follow-ons, pinned in the tests.
+plawk_ternary_str_branch_value(string(Text), Text) :-
+    string(Text).
+plawk_ternary_str_branch_value(int(Value), Text) :-
+    integer(Value),
+    number_string(Value, Text).
 
 %% plawk_ternary_str_ok(+Cond, +Then, +Else) is semidet.
 %
@@ -16560,8 +16588,10 @@ plawk_str_build_ir(string(Value), _FieldSeparator, Base, IdValueIR,
 %
 % The condition comes from plawk_ternary_cond_ir/8, the same emitter the
 % i64-valued ternary and the print-context string ternary use.
-plawk_str_build_ir(ternary_str(Cond, string(Then), string(Else)), FieldSeparator,
+plawk_str_build_ir(ternary_str(Cond, ThenBranch, ElseBranch), FieldSeparator,
         Base, IdValueIR, GlobalParts, SetupLines) :-
+    plawk_ternary_str_branch_value(ThenBranch, Then),
+    plawk_ternary_str_branch_value(ElseBranch, Else),
     format(atom(ThenBase), '~w_t', [Base]),
     plawk_str_build_ir(string(Then), FieldSeparator, ThenBase, ThenIdIR,
         ThenGlobalParts, ThenLines),
@@ -17141,8 +17171,12 @@ plawk_i64_expr_ir(ternary(Cond, Then, Else),
 %  plawk_str_build_ir(ternary_str(...)) rather than reusing this. Both call
 %  plawk_ternary_cond_ir/8 for the condition, which is the part that could
 %  otherwise drift.
-plawk_ternary_str_ptr_ir(Cond, string(Then), string(Else), FieldSeparator, Base,
+plawk_ternary_str_ptr_ir(Cond, ThenBranch, ElseBranch, FieldSeparator, Base,
         PtrIR, GlobalParts, SetupParts) :-
+    % Arms normalised through the one folding predicate, so an integer literal
+    % reaches the constants below already spelled as text.
+    plawk_ternary_str_branch_value(ThenBranch, Then),
+    plawk_ternary_str_branch_value(ElseBranch, Else),
     plawk_ternary_cond_ir(Cond, FieldSeparator, Base, Base, CondIR,
         CondGlobalParts, CondOperandSetupParts, CondLines),
     format(atom(ThenName), '~w_tstr', [Base]),

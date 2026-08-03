@@ -149,10 +149,12 @@ test(string_valued_branches_compile, [condition(clang_available)]) :-
     build_status("{ print $1 == \"b\" ? \"yes\" : \"no\" }\n", 0),
     !.
 
-% MIXED branches still decline: awk would stringify the number, which needs a
-% runtime conversion on one arm. Both branches must be string literals.
-test(mixed_string_and_int_branches_decline) :-
-    build_status("{ x = $2 > 1 ? \"hi\" : 3; print x }\n", 3),
+% MIXED branches used to decline; an INTEGER literal arm now folds to its decimal
+% text at compile time, so this compiles -- covered in
+% tests/test_plawk_ternary_mixed.pl. A non-literal numeric arm still declines.
+test(mixed_string_and_int_branches_compile, [condition(clang_available)]) :-
+    build_status("{ x = $2 > 1 ? \"hi\" : 3; print x }\n", 0),
+    build_status("{ x = $2 > 1 ? \"hi\" : $1; print x }\n", 3),
     !.
 
 % END has no current record, so a field condition cannot be lowered there.
