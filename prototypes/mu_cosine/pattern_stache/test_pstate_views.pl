@@ -194,3 +194,64 @@ numbered(X, N) :-
     numbervars(N, 0, _).
 
 :- end_tests(ordering_defect_characterization).
+
+%% ============================================
+%% The ruled acceptance criterion for canonical labelling
+%% ============================================
+%
+% Ruling 1 (AST-lane, on this note): adopt canonical labelling by
+% refinement PLUS INDIVIDUALIZATION — refinement alone is sound but
+% incomplete (it stabilizes with non-singleton colour classes on
+% symmetric structures), and if the tie-break there were input order
+% we would rebuild the defect one layer deeper.  The ruling's stated
+% correctness property is transcribed here as a reusable predicate, so
+% whoever builds the scheme has the acceptance test ready and does not
+% have to re-derive it:
+%
+%   for ANY store, EVERY input permutation must yield =@= outputs.
+%
+% It is checkable without a digest, so it stays left of the identity
+% fence (DESIGN_pattern_state_identity.md §7).
+
+%% permutation_stable(+Term, +Goals) is semidet.
+%  True when elaborating Term against every permutation of Goals
+%  yields pairwise alpha-equivalent (=@=) states.  This is the
+%  property the future canonical labelling must satisfy for all
+%  inputs; today it holds for some and fails for the §2 shape.
+permutation_stable(Term, Goals) :-
+    findall(S,
+            ( permutation(Goals, P),
+              elaborate(Term, P, S)
+            ),
+            States),
+    States = [First|Rest],
+    forall(member(S, Rest), S =@= First).
+
+:- begin_tests(permutation_property).
+
+% Holds today: distinct projections.
+test(distinct_projections_permutation_stable) :-
+    permutation_stable(fs, [has_type(_A, substrate(pearltrees)),
+                            has_type(_B, judge(haiku))]).
+
+% Holds today, and for the right reason: a fully symmetric pair is an
+% automorphism, so every permutation is a variant of every other.
+test(symmetric_pair_permutation_stable) :-
+    permutation_stable(fs, [has_type(_A, substrate(pearltrees)),
+                            has_type(_B, substrate(pearltrees))]).
+
+% Holds today: goals sharing a term variable, distinct kinds.
+test(shared_term_var_permutation_stable) :-
+    permutation_stable(lca_frac(C), [has_type(_X, substrate(C)),
+                                     has_type(_Y, judge(_J))]).
+
+% DOES NOT hold today — the §2 near-symmetric shape.  Asserted as the
+% known failure it is; when canonical labelling lands this test fails
+% and forces the reconciliation.
+test(near_symmetric_NOT_permutation_stable_KNOWN_DEFECT) :-
+    GJa = has_type(A, judge(_J1)),
+    GJb = has_type(_B, judge(_J2)),
+    GSa = has_type(A, substrate(_C)),
+    \+ permutation_stable(fs, [GJa, GJb, GSa]).
+
+:- end_tests(permutation_property).

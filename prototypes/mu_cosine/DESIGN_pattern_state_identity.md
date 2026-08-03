@@ -134,14 +134,40 @@ one, and must not be quietly promoted into one. The alternatives:
 defective (§2); and even repaired, position-derived numbering is *non-local* — adding one goal
 can renumber every variable, so nothing incremental can be cached against it.
 
-**(B) Canonical labelling by iterated refinement.** Colour each variable by its local signature
-(the multiset of goal-shapes and argument positions it occurs in), refine to a fixpoint
-(Weisfeiler–Leman style), then break any remaining ties by a canonical search over the surviving
-automorphism group. Costs: a real algorithm with a real correctness burden, and worst-case
-search on highly symmetric states. Benefits: it is the *correct* answer for a hypergraph up to
-renaming, it fixes §2 by construction (the distinguishing `substrate` goal enters the colour of
-`A` in the first refinement round, before any tie is broken), and remaining ties are provably
-automorphisms — where any choice is equally right.
+**(B) Canonical labelling by refinement *plus individualization*.** Colour each variable by its
+local signature (the multiset of goal-shapes and argument positions it occurs in), refine to a
+fixpoint (Weisfeiler–Leman style) — and then, **if a non-singleton colour class remains,
+individualize**: pick the smallest such class, branch on each member, recurse, and take the
+lexicographic minimum over branches (the standard nauty/bliss shape). Costs: a real algorithm
+with a real correctness burden, and worst-case exponential branching on highly symmetric states.
+Benefits: it is the *correct* answer for a hypergraph up to renaming, and it fixes §2 by
+construction — the distinguishing `substrate` goal enters `A`'s colour in the first refinement
+round, before any tie is broken.
+
+> **Refinement alone is not enough, and getting this wrong would be the third instance of the
+> same bug.** Colour refinement is sound but **incomplete**: it never gives distinguishable
+> variables the same colour, but it can *fail to separate* them, stabilizing with a non-singleton
+> class on symmetric or regular structures. At that point something must break the tie — and if
+> that something is input order, the defect is rebuilt one layer deeper: *"accidentally stable
+> when refinement separates."* Individualization is what makes the scheme a genuine canonical
+> form rather than merely an invariant. Ruled explicitly (ruling 1) so it is specified before it
+> is built, not discovered afterwards.
+
+Two riders on (B), both ruled:
+
+- **Cap the branching, fail closed.** Individualization–refinement is exponential in the worst
+  case. At pattern-state sizes (a handful of goals) that is irrelevant, but a pathological store
+  must **refuse** rather than hang or silently degrade to a weaker labelling — this lane's
+  standing discipline. A hard branch-count cap with a named error, not a timeout and not a
+  fallback.
+- **The correctness property is permutation stability.** For any store, *every* input
+  permutation must yield `=@=` outputs. It is checkable **without a digest**, so the acceptance
+  test for the scheme sits entirely left of the identity fence. Already transcribed as runnable
+  code — `permutation_stable/2` in
+  [`test_pstate_views.pl`](pattern_stache/test_pstate_views.pl) — so the implementer inherits
+  the criterion rather than re-deriving it. Today it passes for distinct-projection, fully
+  symmetric, and shared-term-variable stores, and fails for the §2 shape; that failure is
+  asserted, so the scheme landing will fire it.
 
 **(C) Adopt vNext's `VarId` directly.** vNext's index unification already mints variable
 identities on the pattern surface. Costs: a cross-stack dependency on the path that currently
@@ -250,37 +276,51 @@ the ruling, that is the cheap half to run first.
 | ordering stability, distinct projections | property test | green, and still true |
 | ordering stability, fully symmetric ties | property test | green, and green *for the right reason* (automorphism, §5) |
 | ordering stability, near-symmetric ties | property test | **characterized as a defect** (§2) — the honest state is "known-wrong, pinned" |
-| α-equivalence correctness of any candidate scheme | **no oracle exists** | needs the ruling first; a scheme cannot be verified against a contract that does not exist |
+| α-equivalence correctness of any candidate scheme | **permutation-stability property test** — `permutation_stable/2` | *this row changed with ruling 1.* It was recorded as "no oracle exists"; the ruling supplied one, and it is a real oracle rather than a fixture: every input permutation of a store must yield `=@=` output. Digest-free, so it stays left of the identity fence |
 | pattern-state digests / canonical bytes | **no oracle exists** | fenced, `peid-v1` |
 | cross-check against vNext `PatternAST` | vNext testdata as **data only** — and no fixture there covers pattern states today | so: **no oracle**, and the standing rule forbids reaching past the fixtures into the machinery |
 
-Three "no oracle" rows, all gating, all stated as findings rather than gaps to be filled by
-opinion.
+**Two** "no oracle" rows remain, both gating, both stated as findings rather than gaps to be
+filled by opinion. The third was closed by ruling 1 supplying permutation stability — worth
+noting as a pattern: an oracle-less row is not permanently oracle-less, and naming it is what
+lets a later ruling close it deliberately.
 
-## 8. Rulings needed
+## 8. Rulings
 
-Each with alternatives and a recommendation; none assumed above.
+*Rulings 1, 2, 3 and 6 were decided on the PR that carried this note, after an independent
+reproduction of §2; the decisions are folded into the sections above and recorded here with
+their alternatives so the reasoning survives. Rulings 4 and 5 stand as recommendations.*
 
-1. **Repair the ordering defect, and how** *(AST-lane; gating for the structure arm)*.
-   (a) minimal patch — break ties by a secondary key; (b) replace with scheme (B) canonical
-   labelling; (c) leave characterized until ruling 6 lands.
-   **Recommend (c) then (b)**: (a) is another sort-key refinement, which is the move that has
-   now failed twice at two different levels; and the work is only on the critical path if
-   ruling 6 answers "structure" (§6). Leaving it characterized costs nothing today and keeps
-   the tripwire visible.
-2. **The VarId scheme** *(AST-lane, with vNext boundary)*. (A)/(B)/(C)/(D) of §3.
-   **Recommend (B)**, with the §3 boundary: vNext's index unification fixes the sharing; the
-   canonical labelling derives the order. Explicitly **do not** promote the numbervars device.
-3. **Origins in the canonical form** *(AST-lane)*. In, or out.
-   **Recommend: out** — ruling 3(b) reaffirmed, on the §4 argument that including them would
-   fragment identity by spelling, contradicting §12's measured where-form equivalence.
-4. **May a candidate view ever be sealed before ruling 6?** *(owner)*. (a) no view is sealed
-   until the ruling lands; (b) seal the features view early since it is order-immune.
-   **Recommend (a)**: (b) is exactly how a probe becomes a contract, and the features view's
-   immunity is a reason to *trust its ablation results*, not a reason to freeze its shape.
-5. **Whether the features arm of the ruling-6 ablation may run before the defect is repaired**
-   *(encoder lane)*. **Recommend: yes** — §6's measured immunity is what makes that safe, and
-   it is the cheap half of the evidence the ruling needs.
+**Decided:**
+
+- **Ruling 1 — the canonical-labelling scheme: ACCEPTED as (B), *amended*.** Refinement **plus
+  individualization**, not refinement alone; branch-count capped with fail-closed refusal;
+  acceptance criterion is permutation stability. The amendment matters and is recorded in §3:
+  refinement alone is incomplete, and an input-order tie-break after it would rebuild §2's
+  defect one layer deeper.
+- **Ruling 2 — repairing §2: after ruling 6's sequencing, via ruling 1's scheme.** Not a
+  minimal tie-break patch — that is another sort-key refinement, the move that has now failed
+  twice at two levels. The defect stays characterized in the meantime.
+- **Ruling 3 — origins: OUT, confirmed.** Ruling 3(b) reaffirmed on §4's argument (including
+  them would fragment identity by spelling, contradicting §12's measured where-form
+  equivalence).
+- **Ruling 6 — sequencing, not an answer: the features arm runs NOW; the structure arm runs
+  after canonical labelling lands.** Licensed by §6's measurement rather than by preference:
+  `features_view_immune_to_the_ordering_defect` is what makes the features arm uncontaminated
+  by the open defect, so running it first is not a compromise — it is the only arm that is
+  currently sound. **Ruling 6 itself remains genuinely open** as a science question; this
+  sequences the ablation, it does not pre-decide it.
+
+**Still open:**
+
+- **Ruling 4 — may a candidate view ever be sealed before ruling 6 is answered?** *(owner)*.
+  (a) no view is sealed until the ruling lands; (b) seal the features view early, since it is
+  order-immune. **Recommend (a)**: (b) is exactly how a probe becomes a contract, and the
+  features view's immunity is a reason to *trust its ablation results*, not a reason to freeze
+  its shape.
+
+*(Ruling 5 as originally posed — whether the features arm may run before the defect is
+repaired — was absorbed into ruling 6's sequencing: yes, and that is now the ruled plan.)*
 
 Out of scope, unchanged: ruling 4(b) (`interpretation/3`/`representation/4`), registry-mirror
 derivation from the component vocabulary (parked on #4064, with the `non_amplifying/1`
