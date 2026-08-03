@@ -86,10 +86,33 @@ plawk_parse_source(Source, Program, PrologClauses) :-
 %  not inside a nested loop that consumes its own continue) is left un-desugared;
 %  codegen then rejects it cleanly rather than miscompiling. `continue` in a
 %  C-style for is a follow-on.
-plawk_normalise_c_for(program(Begin, Rules0, End), program(Begin, Rules, End)) :-
+%  Applied to the END clauses as well as the rules, so a C-for in an END block
+%  desugars to the same while_loop a rule-body one does. It used to rewrite only
+%  Rules, which would have left a `c_for/4` term sitting in END for the driver to
+%  reject -- the loop would parse and then decline for no reason a reader could
+%  see.
+plawk_normalise_c_for(program(Begin, Rules0, End0), program(Begin, Rules, End)) :-
     !,
-    plawk_norm_cfor_rules(Rules0, Rules).
+    plawk_norm_cfor_rules(Rules0, Rules),
+    plawk_norm_cfor_end(End0, End).
 plawk_normalise_c_for(Program, Program).
+
+%% plawk_norm_cfor_end(+End0, -End)
+%
+%  The END clause list, desugaring inside each `end(Actions)`. Reuses
+%  plawk_norm_cfor_actions/2 -- the same walker the rules use -- so the two
+%  contexts cannot desugar differently (including the own-`continue` exclusion,
+%  which applies in END for exactly the same reason).
+plawk_norm_cfor_end(End0, End) :-
+    is_list(End0),
+    !,
+    maplist(plawk_norm_cfor_end_clause, End0, End).
+plawk_norm_cfor_end(Other, Other).
+
+plawk_norm_cfor_end_clause(end(Actions0), end(Actions)) :-
+    !,
+    plawk_norm_cfor_actions(Actions0, Actions).
+plawk_norm_cfor_end_clause(Other, Other).
 
 plawk_norm_cfor_rules(Rules0, Rules) :-
     is_list(Rules0),
@@ -2164,6 +2187,53 @@ forin_accum_operand(_Array, _Key, int(Value)) -->
 
 end_action(Action) -->
     for_in_action(Action),
+    !.
+% LOOPS in an END block: `while (c) …`, `do … while (c)`, and the C-style
+% `for (init; c; update) …`. `for (k in arr)` above is a different production and
+% already worked.
+%
+% Ordered as action//1 orders them, and for the same reasons: do-while before
+% while (both start with a keyword that the other would partially match), and the
+% C-for after for-in (for-in commits on `in`; the `;` separators distinguish
+% them). Keeping the order identical is deliberate -- a divergence here would mean
+% a program parsing differently in END than in a rule body.
+%
+% These reuse the SAME action terms a rule body produces (while_loop/2,
+% do_while_loop/2, and the c_for/4 that plawk_normalise_c_for desugars to a
+% while_loop), so an END loop is not a new shape -- it is an existing shape in a
+% new position, and the codegen driver decides what it can lower.
+end_action(Action) -->
+    do_while_action(Action),
+    !.
+end_action(Action) -->
+    while_action(Action),
+    !.
+end_action(Action) -->
+    for_c_action(Action),
+    !.
+% A plain ASSIGNMENT or increment/decrement as an END statement. END admitted
+% neither, so the idiomatic counting loop
+%
+%   END { i = 0; while (i < n) { print i; i++ } }
+%
+% failed to parse on the `i = 0` -- not on the loop. The C-for spelling of the
+% same loop worked only because its initialiser comes from
+% plawk_normalise_c_for/2 rather than from this grammar, which is what made the
+% gap easy to mistake for a loop problem.
+%
+% The terms are the ones a rule body produces (set/2, inc/1, dec/1), so the END
+% statement emitter already handles them -- this is grammar only.
+end_action(Action) -->
+    increment_action(Action),
+    !.
+end_action(Action) -->
+    decrement_action(Action),
+    !.
+end_action(Action) -->
+    add_assign_action(Action),
+    !.
+end_action(Action) -->
+    assignment_action(Action),
     !.
 % As in BEGIN, retain getline syntax for a clean context rejection in codegen.
 end_action(unsupported_getline(end(Action))) -->

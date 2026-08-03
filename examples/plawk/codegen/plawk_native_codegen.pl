@@ -995,6 +995,191 @@ plawk_program_native_driver_ir(
             NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+%% END block containing a LOOP (while / do-while / desugared C-for).
+%
+%  The loop body is emitted by plawk_scalar_action_sequence_pairs//15 -- the SAME
+%  emitter a rule body uses -- rather than by hand-written phi plumbing. That is
+%  possible because the while/do-while clauses of that emitter derive every label
+%  from their Prefix and OpIndex and take their incoming slot values as a
+%  parameter: they carry no dependency on the record loop. So END supplies a
+%  distinct prefix (`end_body`) and the FINAL slot values as the loop's incoming
+%  values, and gets the same lowering, including break/continue via the loop
+%  context stack.
+%
+%  Writing a second loop emitter for END would have been the obvious move and the
+%  wrong one -- it is exactly the duplication this line keeps paying for.
+%
+%  END has no current record, so a field read in the body has nothing to project
+%  from; those fail inside the sequence emitter and the program declines. The
+%  supported body is scalar work plus prints of scalars and literals.
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules0, [end(EndActions)]),
+    InputPath,
+    DriverIR
+) :-
+    plawk_end_actions_have_loop(EndActions),
+    !,
+    plawk_end_loop_actions_ok(EndActions),
+    plawk_end_loop_print_fields(EndActions, PrintFields),
+    plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules1, WritebinPlan),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    plawk_resolve_dynrec_view_rules(Rules1, Rules1b),
+    plawk_resolve_foreach_rules(FieldSeparator, Rules1b, Rules),
+    plawk_scalar_state_plan(Rules, PrintFields, StatePlan),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR0),
+    plawk_writebin_entry_lines(WritebinPlan, WritebinEntryIR),
+    plawk_join_nonempty_ir([BeginIR0, WritebinEntryIR], BeginIR),
+    plawk_record_program_ok(FieldSeparator, Rules, PrintFields),
+    plawk_end_print_string_globals(PrintFields, StringGlobalIR),
+    plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator,
+        RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    append(PrintFields, BodyPrintFields, PrintExprs0),
+    append(PrintExprs0, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(StatePlan, RecordCounterExprs,
+        RecordLoopPhiIR, RecordCounterIR),
+    plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
+    plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
+    plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
+    plawk_scalar_rule_controls(Rules, ScalarRuleControls),
+    plawk_scalar_next_phi_ir(StatePlan, RuleCount, ScalarRuleControls,
+        BranchControlExits, NextPhiIR),
+    plawk_break_close_ir(StatePlan, RuleCount, ScalarRuleControls,
+        BranchControlExits, done, BreakCloseIR, FinalStatePhiIR),
+    plawk_end_loop_body_ir(EndActions, StatePlan, FieldSeparator,
+        OutputSeparator, EndLoopGlobalIR, EndLoopIR),
+    plawk_writebin_globals(WritebinPlan, WritebinGlobalIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, EndLoopGlobalIR, RuleGlobalIR,
+         WritebinGlobalIR]),
+    plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w~w
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
+        [FinalStatePhiIR, EndLoopIR]),
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
+        driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
+            NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
+%% plawk_end_loop_actions_ok(+Actions) is semidet.
+%
+%  What an END block containing a loop may contain. Both exclusions are bugs this
+%  clause would otherwise INTRODUCE, found by probing rather than reasoning:
+%
+%  1. A FIELD READ anywhere. END has no current record: at `end_print` the
+%     transient `%line` holds the EOF sentinel, so the sequence emitter happily
+%     lowered `END { while (…) print $1 }` to a read of it and the program printed
+%     `end_of_file` three times where gawk prints the last record. WRONG OUTPUT,
+%     which is worse than the decline this now produces. (A straight-line
+%     `END { print $1 }` already declined; admitting loops into END is what made
+%     the field path reachable.)
+%
+%  2. `exit` INSIDE a loop body. An END `exit` is lowered as a store to
+%     @plawk_exit_code plus TRUNCATION of the remaining statements -- sound only
+%     because straight-line code cannot come back. A loop body can, so the
+%     truncated block left the loop malformed and clang rejected it (exit 4).
+%     `exit` AFTER the loop is fine and stays supported: the truncation is then
+%     genuinely at the end of straight-line code.
+%
+%  Both are declines, not silent narrowings, and both are pinned in the tests.
+plawk_end_loop_actions_ok(Actions) :-
+    \+ plawk_end_term_mentions_field(Actions),
+    forall(( member(Action, Actions),
+             plawk_end_loop_action(Action)
+           ),
+           \+ plawk_end_term_mentions_exit(Action)).
+
+%% plawk_end_term_mentions_field(+Term) is semidet.
+%
+%  A `field(_)` anywhere in the term, at any depth -- so a field buried in a
+%  nested loop body, an `if` branch or a print list is found. A structural walk
+%  rather than a per-action-shape walker on purpose: this is a SAFETY gate, and a
+%  walker that has to learn each new action shape is how the misses in this line
+%  happened.
+plawk_end_term_mentions_field(field(_)) :-
+    !.
+plawk_end_term_mentions_field(Term) :-
+    compound(Term),
+    arg(_, Term, Sub),
+    plawk_end_term_mentions_field(Sub).
+
+%% plawk_end_term_mentions_exit(+Term) is semidet.
+%
+%  An `exit` / `exit(_)` anywhere in the term, same reasoning as above. Applied
+%  to LOOP actions only, so an `exit` after the loop is unaffected.
+plawk_end_term_mentions_exit(exit) :-
+    !.
+plawk_end_term_mentions_exit(exit(_)) :-
+    !.
+plawk_end_term_mentions_exit(Term) :-
+    compound(Term),
+    arg(_, Term, Sub),
+    plawk_end_term_mentions_exit(Sub).
+
+%% plawk_end_actions_have_loop(+Actions) is semidet.
+%
+%  Does this END block contain a loop at the TOP level? Only then does the clause
+%  above claim the program -- a straight-line END keeps its existing (simpler)
+%  driver, so nothing that worked before changes shape. `for (k in arr)` is
+%  excluded: it has its own assoc END drivers and is not a scalar loop.
+plawk_end_actions_have_loop(Actions) :-
+    is_list(Actions),
+    member(Action, Actions),
+    plawk_end_loop_action(Action),
+    !.
+
+plawk_end_loop_action(while_loop(_Cond, _Body)).
+plawk_end_loop_action(do_while_loop(_Body, _Cond)).
+
+%% plawk_end_loop_print_fields(+Actions, -Fields) is det.
+%
+%  Every print field mentioned anywhere in the END block, loop bodies included,
+%  so the state plan gives each printed scalar a slot. Reuses the existing
+%  nested-action walker, so a scalar printed only inside a loop body is not
+%  missed -- the failure that would otherwise show up as an undefined slot.
+plawk_end_loop_print_fields(Actions, Fields) :-
+    findall(Field,
+        ( member(Action, Actions),
+          plawk_end_loop_action_field(Action, Field)
+        ),
+        Fields).
+
+plawk_end_loop_action_field(Action, Field) :-
+    plawk_action_body_print_field(Action, Field).
+plawk_end_loop_action_field(print(Fields), Field) :-
+    member(Field, Fields).
+plawk_end_loop_action_field(Action, var(Name)) :-
+    plawk_scalar_update_name_expr(Action, Name, _Expr).
+
+%% plawk_end_loop_body_ir(+Actions, +StatePlan, +FieldSeparator,
+%%                        +OutputSeparator, -GlobalIR, -IR)
+%
+%  The END block's statements, threaded through the shared sequence emitter with
+%  the FINAL slot values as the incoming values. `end_body` is the prefix, so
+%  every label and temporary the loop emitter derives is distinct from the
+%  rule-body ones.
+%
+%  RuleIndex is passed as the count of rules: the sequence emitter only uses it
+%  to name rule-input slot references, which an END body has none of (it starts
+%  from the final values), so any value that cannot collide with a real rule index
+%  is correct. Using the rule count makes that non-collision structural.
+plawk_end_loop_body_ir(Actions, StatePlan, FieldSeparator, OutputSeparator,
+        GlobalIR, IR) :-
+    plawk_state_plan_slots(StatePlan, Slots),
+    plawk_final_slot_values(StatePlan, FinalValues),
+    phrase(plawk_scalar_action_sequence_pairs(Actions, Slots, none,
+        FieldSeparator, OutputSeparator, end_body, end_print, end_body, 0,
+        FinalValues, _OutValues, _NextOpIndex, _ExitLabel, _NextExits), Pairs),
+    pairs_keys_values(Pairs, GlobalParts, LineParts),
+    plawk_join_nonempty_ir(GlobalParts, GlobalIR),
+    atomic_list_concat(LineParts, '\n', IR).
+
 % Tag-guard sugar: with a union BINFMT, plain rules whose patterns lead
 % with TAG == K are shorthand for case blocks -- the tag test selects
 % the arm and the rest of the pattern stays as the rule's own guard, so
