@@ -1,0 +1,203 @@
+{
+ "stamp": "shadow-exploratory-tier1-not-decision-bearing",
+ "scope": "simplewiki only; no Pearltrees claim",
+ "caveat": "typos masquerade as drift (\u00a77) \u2014 curves are UPPER BOUNDS on drift",
+ "withdrawn": "v2 principal_tree contrast + its multi-parent conclusion (alphabetical sorted(set)[0] = zero semantic content)",
+ "D0_shortest_path_full_dag": {
+  "1": {
+   "n": 1031,
+   "A": 0.3761,
+   "S": 0.3341,
+   "A_over_S": 1.1255
+  },
+  "2": {
+   "n": 1559,
+   "A": 0.205,
+   "S": 0.2086,
+   "A_over_S": 0.9826
+  },
+  "3": {
+   "n": 1933,
+   "A": 0.1211,
+   "S": 0.1326,
+   "A_over_S": 0.9133
+  },
+  "4": {
+   "n": 2182,
+   "A": 0.0869,
+   "S": 0.1014,
+   "A_over_S": 0.857
+  },
+  "5": {
+   "n": 2359,
+   "A": 0.068,
+   "S": 0.0918,
+   "A_over_S": 0.7408
+  },
+  "6": {
+   "n": 2409,
+   "A": 0.0562,
+   "S": 0.0784,
+   "A_over_S": 0.7163
+  }
+ },
+ "D0_random_chain_null": {
+  "1": {
+   "mean": 1.0614,
+   "sd": 0.0196,
+   "min": 1.0207,
+   "max": 1.0979,
+   "full_dag_outside_band": true
+  },
+  "2": {
+   "mean": 0.846,
+   "sd": 0.037,
+   "min": 0.7637,
+   "max": 0.9152,
+   "full_dag_outside_band": true
+  },
+  "3": {
+   "mean": 0.8139,
+   "sd": 0.0545,
+   "min": 0.7326,
+   "max": 0.9328,
+   "full_dag_outside_band": false
+  },
+  "4": {
+   "mean": 0.8127,
+   "sd": 0.0556,
+   "min": 0.6932,
+   "max": 0.9145,
+   "full_dag_outside_band": false
+  },
+  "5": {
+   "mean": 0.7808,
+   "sd": 0.0816,
+   "min": 0.6389,
+   "max": 0.9559,
+   "full_dag_outside_band": false
+  },
+  "6": {
+   "mean": 0.7185,
+   "sd": 0.0454,
+   "min": 0.6171,
+   "max": 0.8125,
+   "full_dag_outside_band": false
+  }
+ },
+ "D0_multipath_at_fixed_hop": {
+  "2": {
+   "n_one": 1293,
+   "n_many": 266,
+   "A_over_S_one_path": 1.002,
+   "A_over_S_multi_path": 0.8744
+  },
+  "3": {
+   "n_one": 1509,
+   "n_many": 424,
+   "A_over_S_one_path": 0.9212,
+   "A_over_S_multi_path": 0.8797
+  },
+  "4": {
+   "n_one": 1714,
+   "n_many": 468,
+   "A_over_S_one_path": 0.878,
+   "A_over_S_multi_path": 0.7586
+  },
+  "5": {
+   "n_one": 2003,
+   "n_many": 356,
+   "A_over_S_one_path": 0.7419,
+   "A_over_S_multi_path": 0.7338
+  },
+  "6": {
+   "n_one": 2061,
+   "n_many": 348,
+   "A_over_S_one_path": 0.7376,
+   "A_over_S_multi_path": 0.6142
+  }
+ },
+ "D0b_degree_regression": {
+  "n": 11473,
+  "model": "log(A/S) ~ 1 + hop + log(deg)",
+  "coef": {
+   "intercept": 0.2317,
+   "hop": -0.1163,
+   "log_deg": -0.0797
+  },
+  "se": {
+   "hop": 0.006,
+   "log_deg": 0.0081
+  },
+  "hop_t": -19.42,
+  "log_deg_t": -9.86,
+  "hop_only_coef": -0.0935
+ },
+ "D0b_within_degree_band_A_over_S": {
+  "lowdeg": {
+   "1": 1.0039,
+   "2": 0.7616,
+   "3": 0.7201,
+   "4": 0.657,
+   "5": 0.5786,
+   "6": 0.5585
+  },
+  "middeg": {
+   "1": 1.0174,
+   "2": 0.7229,
+   "3": 0.6707,
+   "4": 0.5508,
+   "5": 0.5039,
+   "6": 0.4924
+  },
+  "highdeg": {
+   "1": 0.7479,
+   "2": 0.8416,
+   "3": 0.7755,
+   "4": 0.7366,
+   "5": 0.6287,
+   "6": 0.687
+  }
+ },
+ "D0d_A2_headline_variance": {
+  "per_seed": [
+   {
+    "seed": 7,
+    "gate_MRR": 0.2437,
+    "mumax_MRR": 0.2401,
+    "gap": 0.0036
+   },
+   {
+    "seed": 17,
+    "gate_MRR": 0.2361,
+    "mumax_MRR": 0.2216,
+    "gap": 0.0145
+   },
+   {
+    "seed": 27,
+    "gate_MRR": 0.2812,
+    "mumax_MRR": 0.2598,
+    "gap": 0.0214
+   },
+   {
+    "seed": 37,
+    "gate_MRR": 0.2418,
+    "mumax_MRR": 0.2447,
+    "gap": -0.0029
+   },
+   {
+    "seed": 47,
+    "gate_MRR": 0.2717,
+    "mumax_MRR": 0.2469,
+    "gap": 0.0248
+   }
+  ],
+  "mean_gap": 0.0123,
+  "sd_gap": 0.0105,
+  "pooled_bootstrap_CI95": [
+   -0.025,
+   0.0466
+  ],
+  "n_held": 200
+ }
+}
