@@ -199,6 +199,17 @@ attempt((V = Val)-Origin, _Term, _) :-
 % has_type/2: discharges when GROUND, by the closed registry check.
 % A failed check is an ERROR in the author's vocabulary (§7), not a
 % silent residual; an under-instantiated has_type residuates.
+%
+% v1.1 (ruled on PR #4095): EAGER VALIDATION WITHOUT GOAL REWRITING.
+% All-or-nothing discharge stays, but a residual whose ground portion
+% is checkable gets checked eagerly — throw on illegal, change nothing
+% on legal.  The deciding distinction: under-instantiated residuates,
+% but ground-and-false is an error — has_type(_X, substrate(frobnicate))
+% must fail at elaboration, not sit dormant in a pattern state as a
+% constraint that can never ground.  No goal splitting, no narrowed
+% residuals: the residual goal stays textually whole, so the store's
+% content (and any future peid-v1 canonical form over it) is untouched
+% by the check.
 attempt(has_type(X, T)-Origin, _Term, Outcome) :-
     !,
     (   ground(has_type(X, T))
@@ -206,12 +217,86 @@ attempt(has_type(X, T)-Origin, _Term, Outcome) :-
         ->  Outcome = discharged
         ;   throw(error(pe_elaborate(constraint_failed(has_type(X, T), origin(Origin))), _))
         )
-    ;   Outcome = residual
+    ;   eager_check_has_type(has_type(X, T), Origin),
+        Outcome = residual
     ).
 % Anything else: outside ruling 4(a)'s scope.  Its functor can never
 % become known, so this is an error now, not a residual (fail closed).
 attempt(Goal-Origin, _Term, _) :-
     throw(error(pe_elaborate(unknown_constraint(Goal, origin(Origin))), _)).
+
+%% eager_check_has_type(+Goal, +Origin)
+%  The v1.1 check over a RESIDUATING has_type: validate exactly the
+%  ground portion, mutate nothing.
+%    - type side fully ground -> the full registry check must hold
+%      (the ruling's own example: substrate(frobnicate) with a free
+%      subject throws now, not never);
+%    - type side partially ground -> its ground SPINE must still be
+%      satisfiable: the constructor must be an arity-1 kind with at
+%      least one registered inhabitant (has_type(_X, frobnicate(_C))
+%      can never ground to a registered check, so it throws), and a
+%      partially-ground mod/2 subject must keep its ground half
+%      registered;
+%    - type side unbound -> nothing ground to check; residuate.
+%  Failure throws constraint_unsatisfiable/2 — named distinctly from
+%  constraint_failed/2 (a GROUND goal failing at discharge) so the
+%  diagnostic says which situation the author is in.
+eager_check_has_type(has_type(_X, T), _Origin) :-
+    var(T),
+    !.
+eager_check_has_type(has_type(X, T), Origin) :-
+    ground(T),
+    !,
+    (   has_type_holds(T)
+    ->  true
+    ;   throw(error(pe_elaborate(constraint_unsatisfiable(has_type(X, T), origin(Origin))), _))
+    ).
+eager_check_has_type(has_type(X, T), Origin) :-
+    (   ground_spine_satisfiable(T)
+    ->  true
+    ;   throw(error(pe_elaborate(constraint_unsatisfiable(has_type(X, T), origin(Origin))), _))
+    ).
+
+% ground_spine_satisfiable(+T): T is a nonground type term; its ground
+% parts must still admit SOME registered grounding.
+ground_spine_satisfiable(T) :-
+    compound(T),
+    compound_name_arity(T, Kind, 1),
+    arg(1, T, C),
+    kind_inhabited(Kind),
+    subject_spine_satisfiable(C, Kind).
+
+kind_inhabited(Kind) :-
+    pe_output(_, Kind),
+    !.
+
+subject_spine_satisfiable(C, _Kind) :-
+    var(C),
+    !.
+subject_spine_satisfiable(mod(B, M), Kind) :-
+    !,
+    (   var(B)
+    ->  true
+    ;   atom(B),
+        pe_output(B, Kind)
+    ),
+    (   var(M)
+    ->  (   atom(B)
+        ->  pe_modifier(B, _)          % some modifier must exist on B
+        ;   true
+        )
+    ;   atom(B)
+    ->  pe_modifier(B, M)
+    ;   true
+    ).
+% a nonvar, non-mod subject inside a NONGROUND type term: the only
+% remaining nonground position was the kind side, which is impossible
+% here (the kind is the functor) — so a ground atom subject with a
+% ground kind was handled by the ground(T) clause; anything else is a
+% shape that can never satisfy the registry check.
+subject_spine_satisfiable(C, Kind) :-
+    atom(C),
+    pe_output(C, Kind).
 
 %% has_type_holds(+TypeTerm)
 %  The closed check the generated mirror supports: has_type(_X, K(C))

@@ -156,133 +156,67 @@ test(binding_store_grounds_where_rows, [forall(where_case(Name, Term, Store))]) 
 %% Ground path: sealed STRUCTURE (resolved_ast oracle)
 %% ============================================
 %
-% The elaborated ground term is converted to the bundle's resolved_ast
-% shape and compared against the sealed JSON — structural verification
-% with no Python involved.  Both sides are normalized to plain terms
-% (dicts with anonymous tags are never ==) before comparison.
+% The elaborated ground term is projected into the bundle's
+% resolved_ast shape and compared against the sealed JSON — structural
+% verification with no Python involved.  The projection and the
+% goal-term <-> resolved_ast correspondence live in pe_resolved_ast.pl
+% (promoted from this file when the oracle row was closed); both sides
+% are normalized to plain terms before comparison (dicts with
+% anonymous tags are never ==).
 
-% normalize_json(+Value, -Term): dicts -> obj(SortedPairs), lists
-% mapped, scalars as-is.
-normalize_json(V, obj(Norm)) :-
-    is_dict(V),
-    !,
-    dict_pairs(V, _, Pairs),
-    msort(Pairs, Sorted),
-    maplist([K-V0, K-N]>>normalize_json(V0, N), Sorted, Norm).
-normalize_json(V, list(Norm)) :-
-    is_list(V),
-    !,
-    maplist(normalize_json, V, Norm).
-normalize_json(V, V).
-
-% goal_ast_dict(+GroundGoal, -Dict): the resolved_ast shape, built by
-% the same introspection discipline as pe_emit (registry mirror as
-% Config), producing dicts that normalize equal to json_read_dict's.
-goal_ast_dict(pin(E, P), D) :-
-    !,
-    goal_ast_dict(E, D0),
-    atom_string(P, PS),
-    Pins0 = D0.pins,
-    append(Pins0, [PS], Pins),
-    D = D0.put(pins, Pins).
-goal_ast_dict(mod(B, M), D) :-
-    !,
-    goal_ast_dict(B, D0),
-    atom_string(M, MS),
-    Mods0 = D0.mods,
-    append(Mods0, [MS], Mods),
-    D = D0.put(mods, Mods).
-goal_ast_dict(N, D) :-
-    number(N),
-    !,
-    lex_plain(N, Lex),
-    D = _{lexical: Lex, literal: true, value_type: "number"}.
-goal_ast_dict(A, D) :-
-    atom(A),
-    pe_registry_mirror:pe_atom(A),
-    !,
-    atom_string(A, NameS),
-    pe_output(A, Out),
-    atom_string(Out, OutS),
-    D = _{args: [], kind: "atom", kwargs: [], mods: [], name: NameS,
-          output: OutS, pins: []}.
-goal_ast_dict(Goal, D) :-
-    compound(Goal),
-    compound_name_arguments(Goal, Name, RawArgs),
-    pe_registry_mirror:pe_operator(Name),
-    !,
-    split_kwargs(RawArgs, Name, Pos, Kw0),
-    findall(K-V, ( pe_registry_mirror:pe_kwspec(Name, K, _, default(V)),
-                   \+ memberchk(K-_, Kw0) ),
-            Defaults),
-    append(Kw0, Defaults, Kw1),
-    msort(Kw1, Kw),
-    maplist(goal_ast_dict, Pos, Args),
-    maplist(kw_entry(Name), Kw, Kwargs),
-    atom_string(Name, NameS),
-    pe_output(Name, Out),
-    atom_string(Out, OutS),
-    D = _{args: Args, kind: "apply", kwargs: Kwargs, mods: [],
-          name: NameS, output: OutS, pins: []}.
-
-split_kwargs([], _, [], []).
-split_kwargs([A|Rest], Op, Pos, [K-V|Kw]) :-
-    compound(A),
-    compound_name_arguments(A, K, [V]),
-    pe_registry_mirror:pe_kwspec(Op, K, _, _),
-    !,
-    split_kwargs(Rest, Op, Pos, Kw).
-split_kwargs([A|Rest], Op, [A|Pos], Kw) :-
-    split_kwargs(Rest, Op, Pos, Kw).
-
-kw_entry(Op, K-V, Entry) :-
-    once(pe_registry_mirror:pe_kwspec(Op, K, Kind, _)),
-    atom_string(K, KS),
-    atom_string(Kind, KindS),
-    (   value_kind_lex(Kind, V, Lex)
-    ->  Entry = _{key: KS, lexical: Lex, value_type: KindS}
-    ;   % node-valued kwarg (declared kind is an output type)
-        goal_ast_dict(V, Node),
-        Entry = _{key: KS, node: Node, value_type: KindS}
-    ).
-
-value_kind_lex(number, V, Lex)   :- lex_plain(V, Lex).
-value_kind_lex(int, V, Lex)      :- lex_plain(V, Lex).
-value_kind_lex(string, V, Lex)   :- lex_quoted(V, Lex).
-value_kind_lex(estimand, V, Lex) :- lex_quoted(V, Lex).
-value_kind_lex(impl, V, Lex)     :- lex_quoted(V, Lex).
-value_kind_lex(number_list, V, Lex) :- lex_list(V, Lex).
-value_kind_lex(int_list, V, Lex)    :- lex_list(V, Lex).
-
-lex_plain(V, Lex) :- format(string(Lex), "~w", [V]).
-lex_list(Vs, Lex) :-
-    maplist([V, S]>>format(string(S), "~w", [V]), Vs, Ss),
-    atomics_to_string(Ss, ",", Body),
-    format(string(Lex), "[~w]", [Body]).
-% the quoted lexical is the JSON-escaped, double-quoted spelling; the
-% escaper is pe_emit's (test-only qualified read, byte-anchored here)
-lex_quoted(V, Lex) :-
-    pe_emit:json_escape(V, Esc),
-    format(string(Lex), "\"~w\"", [Esc]).
-
-atomics_to_string(Ss, Sep, Out) :-
-    atomic_list_concat(Ss, Sep, A),
-    atom_string(A, Out).
+:- use_module(pe_resolved_ast,
+              [resolved_ast_projection/2, normalize_json_term/2,
+               strip_pins/2, projection_matches_row/2]).
 
 :- begin_tests(elab_resolved_ast_oracle).
 
 test(structural_oracle_all_rows, [forall(golden_goal(Name, Goal))]) :-
     golden_row(Name, _, _, SealedAst),
     elaborate(Goal, [], ground(Ground)),
-    goal_ast_dict(Ground, BuiltAst),
-    normalize_json(SealedAst, N1),
-    normalize_json(BuiltAst, N2),
+    resolved_ast_projection(Ground, BuiltAst),
+    normalize_json_term(SealedAst, N1),
+    normalize_json_term(BuiltAst, N2),
     (   N1 == N2
     ->  true
     ;   format(user_error, "~w: structural mismatch~n  sealed ~q~n  built  ~q~n",
                [Name, N1, N2]),
         fail
     ).
+
+% The where-spellings elaborate to the SAME structure as the direct
+% spellings — the structural oracle over the binding-store entry path.
+test(structural_oracle_where_rows, [forall(where_case(Name, Term, Store))]) :-
+    elaborate(Term, Store, ground(Ground)),
+    projection_matches_row(Name, Ground).
+
+% The pinned row, both spellings: the pinned spelling matches the
+% sealed structure exactly (resolved_ast is the FULL structure — pins
+% present); the unpinned spelling matches the sealed structure with
+% pins stripped at every node.
+test(pinned_spelling_matches_sealed_structure) :-
+    elaborate(pin(lineage(pearltrees, decay(0.85)), 'run/2026-07-25'), [],
+              ground(G)),
+    projection_matches_row(pinned, G).
+
+test(unpinned_spelling_matches_pin_stripped_structure) :-
+    golden_row(pinned, _, _, SealedAst),
+    elaborate(lineage(pearltrees, decay(0.85)), [], ground(G)),
+    resolved_ast_projection(G, Built),
+    strip_pins(SealedAst, SealedNoPins),
+    normalize_json_term(SealedNoPins, N1),
+    normalize_json_term(Built, N2),
+    N1 == N2.
+
+% ...and the two spellings differ in EXACTLY the pins field: without
+% stripping, the unpinned projection must NOT match the sealed pinned
+% structure (proving the comparison is not vacuous).
+test(pin_field_is_the_exact_difference) :-
+    golden_row(pinned, _, _, SealedAst),
+    elaborate(lineage(pearltrees, decay(0.85)), [], ground(G)),
+    resolved_ast_projection(G, Built),
+    normalize_json_term(SealedAst, N1),
+    normalize_json_term(Built, N2),
+    N1 \== N2.
 
 :- end_tests(elab_resolved_ast_oracle).
 
@@ -439,6 +373,71 @@ test(origins_alongside_never_inside) :-
     Goal == Goal2.
 
 :- end_tests(elab_residual_behavior).
+
+%% ============================================
+%% v1.1: eager validation without goal rewriting (ruled on PR #4095)
+%% ============================================
+
+:- begin_tests(elab_eager_validation).
+
+% THE STORE-INVARIANCE TEST, explicit per the ruling: a legal
+% residuating goal elaborated with the eager check produces a store
+% whose numbered projection is ==-identical to v1's output (captured
+% from the v1 build before this refinement landed).  No goal
+% splitting, no narrowed residuals — the check changes nothing on the
+% legal path.
+test(store_bytes_identical_to_v1_on_legal_path) :-
+    elaborate(product(hop_decay(C, gamma(0.6)), lca_frac(C)),
+              [has_type(_X, substrate(C))],
+              pattern(T, S)),
+    copy_term(T-S, Numbered),
+    numbervars(Numbered, 0, _),
+    % frozen v1 baseline, captured before the v1.1 edit:
+    Numbered == product(hop_decay('$VAR'(0), gamma(0.6)), lca_frac('$VAR'(0)))
+                - [has_type('$VAR'(1), substrate('$VAR'(0)))].
+
+% The ruling's own example: ground type side, free subject —
+% under-instantiated used to residuate silently; ground-and-false now
+% throws at elaboration, named distinctly from a ground discharge
+% failure.
+test(ground_and_false_type_throws_eagerly,
+     error(pe_elaborate(constraint_unsatisfiable(has_type(_, substrate(frobnicate)), origin(none))))) :-
+    elaborate(fs, [has_type(_X, substrate(frobnicate))], _).
+
+% A kind that no registered name inhabits can never ground: dormant
+% forever under v1, an error now.
+test(uninhabited_kind_throws_eagerly,
+     error(pe_elaborate(constraint_unsatisfiable(has_type(_, frobnicate(_)), origin(none))))) :-
+    elaborate(fs, [has_type(_X, frobnicate(_C))], _).
+
+% Partially-ground mod spine: a ground base that is not a judge, or a
+% base with no registered modifiers, can never satisfy the check.
+test(unregistered_mod_base_throws_eagerly,
+     error(pe_elaborate(constraint_unsatisfiable(_, _)))) :-
+    elaborate(fs, [has_type(_X, judge(mod(frobnicate, _M)))], _).
+
+test(modifierless_base_with_free_mod_throws_eagerly,
+     error(pe_elaborate(constraint_unsatisfiable(_, _)))) :-
+    % human is a registered judge but declares no modifiers, so
+    % mod(human, _M) can never ground
+    elaborate(fs, [has_type(_X, judge(mod(human, _M)))], _).
+
+% The legal partial spines residuate exactly as before: inhabited kind
+% with free subject; registered base with free modifier slot where a
+% modifier exists; wholly unbound type side.
+test(legal_partial_spines_still_residuate) :-
+    elaborate(fs, [has_type(_A, substrate(_C))], pattern(fs, [has_type(_, substrate(_))])),
+    elaborate(fs, [has_type(_B, judge(mod(sonnet, _M)))], pattern(fs, [has_type(_, judge(mod(sonnet, _)))])),
+    elaborate(fs, [has_type(_D, _T)], pattern(fs, [has_type(_, _)])).
+
+% The error carries the origin when one was supplied.
+test(eager_error_names_origin,
+     error(pe_elaborate(constraint_unsatisfiable(_, origin('surface:X::substrate[frobnicate]'))))) :-
+    elaborate(fs,
+              [has_type(_X, substrate(frobnicate))-'surface:X::substrate[frobnicate]'],
+              _, _).
+
+:- end_tests(elab_eager_validation).
 
 %% ============================================
 %% Canonical store: measured stability, re-asserted
