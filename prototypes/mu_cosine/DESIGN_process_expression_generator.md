@@ -337,22 +337,73 @@ motivated: `estimand=`/`impl=` are deployment metadata and `require_deployable` 
 the root. Interior-methodology expressions stay grammatical; they are sampler coverage (like
 pins and strings), not support.
 
+### 2.6 The coverage minimum — ruled
+
+**Ruling (owner, 2026-08-03): the decoder trains jointly with the encoder, and the governing
+coverage minimum is `pair-k = 100`.**
+
+*Joint training.* The decoder is trained alongside the encoder rather than after it. Two
+reasons, both structural rather than preferential. Reconstruction is **exactly gradeable** —
+decode, parse, `canonical_semantic`, byte-compare — so the training signal is an oracle rather
+than a proxy, and every piece of that check is already sealed and tested. And reconstruction is
+self-supervised on structure, so §6's circularity trap does not reach it: no incumbent e5
+judgment enters the objective, which is precisely the failure mode that rules out
+effectiveness-weighted structure.
+
+*Why the minimum is over pairs.* An encoder need only tell `product(hop_decay(…),lca_frac(…))`
+apart from its neighbors; a decoder must **emit** that nesting. The binding quantity is
+therefore composition coverage, not component coverage — and composition pairs cost roughly
+twice as many rows as components at every `k`. Component coverage is not a separate input: at
+`pair-k = 100` every component is witnessed a few hundred times as a by-product.
+
+*Provisional scale.* The figures below are **provisional**, not measured: they come from a
+scratch sampler that is not committed, so no test reproduces them. They firm up — and the row
+count likely falls — when the sampler lands as its own artifact. Token statistics use the
+sealed `tok-v2` vocabulary (393 terms) over sampled rows.
+
+| quantity | provisional value |
+|---|---:|
+| rows for `pair-k = 100` | ~200,000 |
+| distinct structural templates at that size | ~7,000 (of 96,196) |
+| tokens per row | mean 38.1, median 30, p99 107, max 156 |
+| corpus size | ~7.6M tokens per epoch |
+
+Treat 200,000 as an **upper bound** for this `k`. It assumes uniform-ish sampling; §2.5's tail
+is dominated by root-only methodology-bearing operator shapes and a handful of rare pairs, and
+a coverage-directed sampler that flattens that tail reaches the same `k` with fewer rows. This
+is also why `k` was not set higher: past roughly 100, additional rows drawn from the *same*
+distribution buy only the rarest few compositions, so the next increment of effort belongs in
+the sampler's shape, not in the corpus's volume.
+
+*Two anti-shortcut diagnostics, required before any result is trusted.* A sufficiently strong
+decoder can reconstruct from grammar priors rather than from the embedding — emitting
+`decay=0.85` because that is what the grammar usually says, not because the embedding carried
+it. Both diagnostics fall out of artifacts that already exist:
+
+1. **Embedding ablation.** Reconstruct from a shuffled or zeroed embedding and measure what
+   survives. Whatever does was never coming from the encoder. Cheap, and it calibrates every
+   later number, so it runs *before* the first real training run.
+2. **Near versus far reconstruction.** Grammar priors help least where compositions are unseen,
+   so a large near/far gap in reconstruction accuracy is the tell. The split already computes
+   far membership (§2.5) rather than sampling it, so this needs no new machinery.
+
 What still needs the owner before the generator runs, all bound by the preregistration witness:
 
-1. the coverage minimum `k` (appearances per component/edge/value — the corpus row count is
-   then **derived** from `k` and the composition-sampling distribution, not chosen first; the
-   earlier "~1.5M rows" figure was a v0.3-ratio anchor with no coverage-derived justification
-   and is withdrawn as a target, surviving only as the §8 feasibility scale);
-2. the composition-sampling distribution over depth/branching;
-3. confirmation that the widened §5.2 numeric grid enters through the sampler rather than the
+1. the composition-sampling distribution over depth/branching — the ruling above recommends
+   coverage-directed rather than uniform, but its exact shape is unset;
+2. confirmation that the widened §5.2 numeric grid enters through the sampler rather than the
    enumeration grids;
-4. **the held composition pairs** — which compositions dev and test hold out, per side. This is
-   now an owner input rather than a derived one, because holding a composition is a scientific
+3. **the held composition pairs** — which compositions dev and test hold out, per side. This is
+   an owner input rather than a derived one, because holding a composition is a scientific
    claim about what generalization is being measured, not a bookkeeping choice; the sampler
    must then supply enough overlapping templates that no held pair is the sole carrier of a
    required item (the thin-corpus test measures what happens otherwise);
-5. **the far floors** — the minimum far families each side must contain for the split to be
+4. **the far floors** — the minimum far families each side must contain for the split to be
    accepted.
+
+(The corpus row count is **derived** from `k` and the sampling distribution, never chosen
+first. The earlier "~1.5M rows" figure was a v0.3-ratio anchor with no coverage-derived
+justification; it is withdrawn as a target and survives only as the §8 feasibility scale.)
 
 ## 3. Mandatory synthetic coverage
 
