@@ -279,3 +279,19 @@ fence in §2).
 
 All three suites run in the CI leg as explicit `-g` goals (the `initialization/1` discipline).
 Still open, unchanged: pattern-state canonical bytes/digests (peid-v1, fenced in §2).
+
+---
+
+*Addendum — ruling 1's ordering device has a measured defect (reported, not repaired).*
+[`DESIGN_pattern_state_identity.md`](DESIGN_pattern_state_identity.md) §2 records a
+counterexample to this note's claim that the canonical store's numbering "is a function of
+logical content, not input order": when two residual goals share a projection **and** are
+projection-least, `least_by_projection_/4`'s strict `@<` breaks the tie by input order, so one
+store presented two ways yields canonical forms that are not even variants of each other.
+Reachable through `elaborate/3` inside ruling 4(a) scope. Blast radius is zero outside the §2
+identity fence — the ground path has no residual store, so every sealed oracle and all merged
+byte tests remain valid; the defect lives exactly in the territory this note fenced as
+oracle-less, which is the fence working as intended. It is characterized by tests
+(`test_pstate_views.pl`, `ordering_defect_characterization`) in the recorded-divergence style
+rather than patched, because the repair is a choice among canonical-labelling schemes — a
+ruling, not a fix. See that note's ruling 1.
