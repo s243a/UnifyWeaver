@@ -654,9 +654,54 @@ def component_vocabulary_sha256() -> str:
 # contract bind.
 
 
+#: The §3.3 synthetic allowlist. Pins and strings are the only literals the
+#: generator invents, and §3.3 forbids sampling anything real — repository
+#: paths, titles, private names, manifest ids, environment variables, logs.
+#: The extractor validates every pin and string against these prefixes and
+#: fails closed, so a privacy violation cannot enter the corpus silently
+#: (fifth review, finding 2: grammar-valid is not policy-valid).
+SYNTHETIC_PIN_PREFIX = "synthetic/pin-"
+SYNTHETIC_MANIFEST_PREFIX = "synthetic-manifest-"
+
+#: §3.2 requires three string classes, not one: an ASCII string, a
+#: non-ASCII UTF-8 string, and one containing an escape. A single
+#: `synthetic:string` item could be satisfied by three ASCII rows and leave
+#: the tokenizer's byte-fallback path untrained (fifth review, finding 4).
+STRING_CLASSES = ("ascii", "non_ascii", "escaped")
+
+
+class PolicyError(ValueError):
+    """A grammar-valid expression that violates corpus policy; fail closed."""
+
+
 def _spell(value) -> str:
     """Canonical literal spelling — identical to the canonical renderer's."""
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _string_class(value: str) -> str:
+    """The §3.2 coverage class of a string literal."""
+    if any(ord(ch) > 127 for ch in value):
+        return "non_ascii"
+    if json.dumps(value)[1:-1] != value:
+        return "escaped"          # the canonical spelling had to escape something
+    return "ascii"
+
+
+def _digit_items(spelling: str) -> set:
+    """Digit-byte witnesses carrying their POSITION CLASS.
+
+    §7's digit-holdout split trains on a held-out digit, so a digit's
+    position matters: `0` in the integer part of `10` and `0` in the
+    fractional part of `0.02` exercise different tokenizer paths. A single
+    `digit:0` item conflated them (fifth review, finding 4)."""
+    mantissa, _, exponent = spelling.partition("e") if "e" in spelling else (
+        spelling.partition("E") if "E" in spelling else (spelling, "", ""))
+    integer, _, fraction = mantissa.partition(".")
+    items = set()
+    for part, where in ((integer, "int"), (fraction, "frac"), (exponent, "exp")):
+        items.update(f"digit:{ch}@{where}" for ch in part if ch.isdigit())
+    return items
 
 
 def _leaf_identity_index() -> dict:
@@ -694,10 +739,27 @@ def _resolved_pattern(node) -> frozenset:
     return frozenset(keys)
 
 
-def _row_witnesses(node, items: set, pairs: set, leaf_index: dict) -> None:
+def _row_witnesses(node, items: set, pairs: set, leaf_index: dict,
+                   is_root: bool = True) -> None:
     sig = REGISTRY[node.name]
-    if node.pins:
-        items.add("synthetic:pin")
+    for pin in node.pins:
+        if not pin.startswith(SYNTHETIC_PIN_PREFIX):
+            raise PolicyError(
+                f"pin {pin!r} is outside the §3.3 synthetic allowlist "
+                f"(prefix {SYNTHETIC_PIN_PREFIX!r}) — the generator must never "
+                "sample real paths, titles, ids, or user data"
+            )
+        # Pins are the only thing separating V2 from V3 (§3.1), so the pin's
+        # HOST matters: pins on distinct nodes exercise distinct render paths.
+        items.add(f"synthetic:pin@{node.name}")
+    if not is_root:
+        present = {key for key, _ in node.kwargs} & {"estimand", "impl"}
+        for key in sorted(present):
+            # Interior methodology is sampler coverage under the ruled
+            # scenario (§2.5 excluded_synthetic). It was NAMED as excluded
+            # but had no witness item, so nothing required the corpus to
+            # contain any (fifth review, finding 4).
+            items.add(f"synthetic:interior_methodology@{node.name}.{key}")
     if _is_leaf(node):
         items.add(f"terminal:{node.name}")
         shapes = (
@@ -722,34 +784,41 @@ def _row_witnesses(node, items: set, pairs: set, leaf_index: dict) -> None:
         if isinstance(child, pc.Node):
             child_output = REGISTRY[child.name].output
             items.add(f"edge:{node.name}/{arity}.arg{index}->{child_output}")
-            pairs.add(f"pair:{node.name}|{child.name}")
-            _row_witnesses(child, items, pairs, leaf_index)
+            # The pair carries its SLOT. Without arity and position,
+            # product(hop_decay(..), X) and product(X, hop_decay(..)) shared
+            # one pair, so a composition holdout could not distinguish them
+            # (fifth review, finding 3).
+            pairs.add(f"pair:{node.name}/{arity}.arg{index}|{child.name}")
+            _row_witnesses(child, items, pairs, leaf_index, False)
         else:
             kinds = [a for a in declared.split("|") if a in pc.VALUE_KINDS]
             (kind,) = kinds  # validate() admitted the literal, so exactly one
             items.add(f"slot:{node.name}/{arity}.arg{index}:{kind}")
             items.add(f"value:{kind}:{_spell(child)}")
-            items.update(f"digit:{ch}" for ch in _spell(child) if ch.isdigit())
+            items.update(_digit_items(_spell(child)))
     for key, value in node.kwargs:
         kind = sig.kwargs[key].kind
         if isinstance(value, pc.Node):
             items.add(f"edge:{node.name}.kw:{key}->{kind}")
-            pairs.add(f"pair:{node.name}|{value.name}")
-            _row_witnesses(value, items, pairs, leaf_index)
+            pairs.add(f"pair:{node.name}.kw:{key}|{value.name}")
+            _row_witnesses(value, items, pairs, leaf_index, False)
         elif kind in ("estimand", "impl"):
             items.add(f"{kind}:{value}")
         elif kind == "string":
-            items.add("synthetic:string")
+            if not value.startswith(SYNTHETIC_MANIFEST_PREFIX):
+                raise PolicyError(
+                    f"string {value!r} is outside the §3.3 synthetic allowlist "
+                    f"(prefix {SYNTHETIC_MANIFEST_PREFIX!r})"
+                )
+            items.add(f"synthetic:string:{_string_class(value)}")
         elif kind in ("number_list", "int_list"):
             element_kind = "number" if kind == "number_list" else "int"
             for element in value:
                 items.add(f"value:{element_kind}:{_spell(element)}")
-                items.update(
-                    f"digit:{ch}" for ch in _spell(element) if ch.isdigit()
-                )
+                items.update(_digit_items(_spell(element)))
         else:
             items.add(f"value:{kind}:{_spell(value)}")
-            items.update(f"digit:{ch}" for ch in _spell(value) if ch.isdigit())
+            items.update(_digit_items(_spell(value)))
 
 
 def _template_identity(node) -> str:
@@ -794,19 +863,97 @@ def _template_identity(node) -> str:
     return rendered + "".join("." + modifier for modifier in node.mods)
 
 
-def families_from_expressions(expressions) -> list:
+def _grid_violation(node, path: str = "") -> str | None:
+    """Grid/cap check that TOLERATES the §3 synthetic extensions.
+
+    `covers()` answers "is this inside the enumerable support" and therefore
+    refuses string kwargs and interior methodology — but §3 makes exactly
+    those MANDATORY corpus content. Corpus policy is the support's caps and
+    numeric grids, extended by the declared synthetic forms; conflating the
+    two would make §3 unsatisfiable."""
+    signature = REGISTRY[node.name]
+    where = path or node.name
+    for index, child in enumerate(node.args):
+        if isinstance(child, pc.Node):
+            inner = _grid_violation(child, f"{where}.arg{index}")
+            if inner:
+                return inner
+            continue
+        declared = (
+            signature.arg_types[index]
+            if index < len(signature.arg_types)
+            else signature.variadic_arg_type
+        )
+        kinds = [alt for alt in declared.split("|") if alt in pc.VALUE_KINDS]
+        if len(kinds) != 1:
+            return f"{where}.arg{index}: ambiguous declared value kind"
+        grid = NUMBER_GRID if kinds[0] == "number" else (
+            INT_GRID if kinds[0] == "int" else ())
+        if child not in grid:
+            return f"{where}.arg{index}: literal {child!r} is off the {kinds[0]} grid"
+    for key, value in node.kwargs:
+        kind = signature.kwargs[key].kind
+        if isinstance(value, pc.Node):
+            inner = _grid_violation(value, f"{where}.kw:{key}")
+            if inner:
+                return inner
+        elif kind in ("estimand", "impl", "string"):
+            continue                      # enumerated domains / §3.2 synthetics
+        elif kind in ("number_list", "int_list"):
+            grid = NUMBER_GRID if kind == "number_list" else INT_GRID
+            if len(value) > MAX_LIST_LENGTH:
+                return f"{where}.kw:{key}: list longer than the cap"
+            if any(item not in grid for item in value):
+                return f"{where}.kw:{key}: list value off the {kind} grid"
+        elif value not in (NUMBER_GRID if kind == "number" else INT_GRID):
+            return f"{where}.kw:{key}: literal {value!r} is off the {kind} grid"
+    return None
+
+
+def corpus_policy_violation(node, scenario: str) -> str | None:
+    """None when the row is admissible corpus content; else why it is not.
+
+    Enforced: the declared caps and value grids. Tolerated because §3 makes
+    them mandatory: pins, allowlisted string kwargs, and interior
+    methodology under the ruled scenario (the allowlist itself is enforced
+    in `_row_witnesses`, which fails closed on a non-synthetic literal)."""
+    if scenario not in SCENARIOS:
+        raise PolicyError(f"unknown scenario {scenario!r}")
+    if _depth(node) > MAX_DEPTH:
+        return f"depth {_depth(node)} exceeds the cap {MAX_DEPTH}"
+    if _node_count(node) > MAX_NODE_COUNT:
+        return f"node count {_node_count(node)} exceeds the cap {MAX_NODE_COUNT}"
+    if _max_arity(node) > MAX_ARITY:
+        return f"arity {_max_arity(node)} exceeds the cap {MAX_ARITY}"
+    if _max_kwargs(node) > MAX_KWARGS_NODE:
+        return f"kwargs/node {_max_kwargs(node)} exceeds the cap {MAX_KWARGS_NODE}"
+    return _grid_violation(node)
+
+
+def families_from_expressions(expressions,
+                              scenario: str = "methodology-root-only") -> list:
     """Group real v0.4 expression strings into split `Family` records.
 
-    Deterministic: parse with the sealed registry, validate, project each
-    row into its SEMANTIC template's family (pins and strings contribute
-    synthetic items but never families), and count each witness item once
-    per row that witnesses it — the per-item row counts the split's
-    coverage rule requires."""
+    Deterministic: parse with the sealed registry, validate, ENFORCE CORPUS
+    POLICY, project each row into its SEMANTIC template's family (pins and
+    strings contribute synthetic items but never families), and count each
+    witness item once per row that witnesses it.
+
+    Policy enforcement is not the same as grammar validation, and conflating
+    them was the fifth review's second finding: `max(10,e5)` parses and
+    validates but sits outside the declared support, so admitting it would
+    let witness items appear that the frozen vocabulary does not contain.
+    Rows outside the scenario's caps, grids, or methodology placement are
+    refused here, as are pins and strings outside the §3.3 allowlist.
+    """
     leaf_index = _leaf_identity_index()
     grouped: dict = {}
     for expression in expressions:
         node = pc.parse(expression)
         pc.validate(node)
+        violation = corpus_policy_violation(node, scenario)
+        if violation:
+            raise PolicyError(f"{expression!r} violates corpus policy: {violation}")
         family_id = "tmpl:" + _template_identity(node)
         items: set = set()
         pairs: set = set()
@@ -835,10 +982,10 @@ def required_witness_universe() -> list:
         universe.update(vocabulary[section])
     for value in NUMBER_GRID:
         universe.add(f"value:number:{_spell(value)}")
-        universe.update(f"digit:{ch}" for ch in _spell(value) if ch.isdigit())
+        universe.update(_digit_items(_spell(value)))
     for value in INT_GRID:
         universe.add(f"value:int:{_spell(value)}")
-        universe.update(f"digit:{ch}" for ch in _spell(value) if ch.isdigit())
+        universe.update(_digit_items(_spell(value)))
     for name, sig in REGISTRY.items():
         if sig.atom:
             universe.add(f"terminal:{name}")
@@ -846,7 +993,19 @@ def required_witness_universe() -> list:
         universe.add(f"estimand:{estimand}")
     for impl in pc.IMPLS:
         universe.add(f"impl:{impl}")
-    universe.update(("synthetic:pin", "synthetic:string"))
+    # §3 synthetic floors, specified rather than gestured at (fifth review,
+    # finding 4). Pins are required on every operator that can host one,
+    # because §3.1's V2-vs-V3 collapse is a per-render-path property, not a
+    # global one; strings require all three §3.2 classes; interior
+    # methodology needs a witness per (operator, methodology kwarg) it can
+    # legally carry, or nothing obliges the sampler to emit any.
+    for name, sig in REGISTRY.items():
+        if sig.operator:
+            universe.add(f"synthetic:pin@{name}")
+            for key in ("estimand", "impl"):
+                if key in sig.kwargs:
+                    universe.add(f"synthetic:interior_methodology@{name}.{key}")
+    universe.update(f"synthetic:string:{cls}" for cls in STRING_CLASSES)
     return sorted(universe)
 
 

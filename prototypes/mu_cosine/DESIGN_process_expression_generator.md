@@ -244,16 +244,41 @@ named at the point it applies below.)
   (fractional inputs left the dev/test boundary underspecified). Synthetic projection is
   defined: a pinned or string-bearing row belongs to the family of its *semantic* template
   (pins and strings never create families) while contributing its synthetic witness items.
-- **The extractor is real, and the required universe is authoritative.** Families are built by
-  parsing actual v0.4 expressions with the sealed registry and projecting each row into the
-  serialized vocabulary — the same identity strings the support freeze pins. The **required**
-  witness universe (`required_witness_universe`) is *derived from the support*: every
-  component, node edge, literal slot, grid value, digit byte, exact terminal atom, categorical
-  value (every estimand and impl), and the synthetic floors — never from whatever a corpus
-  happened to contain. Its hash is bound by `enumeration_spec_sha256()` **and** by the split
-  contract; `assign()` verifies the universe it is handed against that hash and fails closed
-  when a required item reaches no family. A caller-shaped universe used to let an extractor's
-  omission disappear silently; it now cannot.
+- **The extractor is real, it enforces policy, and the required universe is authoritative.**
+  Families are built by parsing actual v0.4 expressions with the sealed registry and projecting
+  each row into the serialized vocabulary — the same identity strings the support freeze pins.
+  Three properties, each closing a distinct hole:
+  - **Grammar-valid is not policy-valid.** `max(10,e5)` parses and validates but sits outside
+    the declared support, so admitting it would create witness items the frozen vocabulary does
+    not contain. `corpus_policy_violation()` enforces the caps and value grids and the extractor
+    refuses violations. It deliberately *admits* the §3 synthetics — pins, allowlisted strings,
+    interior methodology — because those are mandatory corpus content that sits outside the
+    *enumerable* support; conflating the two questions would make §3 unsatisfiable.
+  - **§3.3's allowlist is enforced fail-closed.** Pins must carry the `synthetic/pin-` prefix
+    and string kwargs the `synthetic-manifest-` prefix. A literal outside the allowlist is a
+    privacy violation, not merely a policy one, and it is refused rather than recorded.
+  - **The universe binding is authoritative, not self-consistent.** `required_witness_universe()`
+    is derived *from the support* — every component, node edge, literal slot, grid value,
+    positioned digit byte, exact terminal atom, categorical value, and the §3 synthetic floors —
+    never from whatever a corpus happened to contain. An **authorizing** contract must bind
+    exactly that hash: previously the caller supplied both the universe and its hash, so a
+    one-item universe validated against its own hash and the binding proved nothing. A
+    **non-authorizing** contract may carry any universe — it is a feasibility probe, the flag
+    sits inside the contract and therefore inside its hash, and
+    `preregistration_witness_sha256()` refuses to witness one. Infeasible *authorizing* splits
+    stay fail-closed; only a non-authorizing probe is permitted to explore.
+- **Identities are fine-grained enough to define holdouts.** A composition pair carries its
+  slot — `pair:product/2.arg0|hop_decay`, `pair:lineage.kw:mu|haiku` — because a bare
+  parent-child pair made `product(hop_decay(…),X)` and `product(X,hop_decay(…))` one holdout
+  unit, and could not distinguish a positional child from a node-valued kwarg edge. Digit
+  witnesses carry a position class (`digit:0@int` vs `digit:0@frac`), since §7's digit-holdout
+  exercises different tokenizer paths in the integer part, the fraction, and the exponent.
+  §3.2's three string classes (ASCII, non-ASCII, escaped) are three separate required items,
+  because one `synthetic:string` item could be satisfied by three ASCII rows and leave the
+  byte-fallback path untrained. Pins are required per hosting operator, since §3.1's V2-vs-V3
+  collapse is a per-render-path property; and interior methodology — named as excluded from the
+  support but previously carrying no witness item at all — now has one per (operator,
+  methodology kwarg), so something actually obliges the sampler to emit it.
 - **Coverage counts rows, per item.** A family records, for each witness item, the number of
   its rows witnessing that item (a row counts once however many times the item occurs inside
   it). Crediting a family's whole row count to every item it carried anywhere made one pinned

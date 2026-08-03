@@ -88,9 +88,14 @@ SPLIT_ALGORITHM_MANIFEST = {
     ),
     "required_universe_rule": (
         "the contract binds required_universe_sha256 = sha256(canonical "
-        "json of the sorted universe list); assign() verifies the supplied "
-        "universe against it and fails closed when a required item is "
-        "absent from every family or cannot reach coverage k in train"
+        "json of the sorted universe list); an AUTHORIZING contract must "
+        "bind the AUTHORITATIVE hash (required_witness_universe_sha256), "
+        "so a caller-shaped universe hashed against itself is refused; "
+        "assign() verifies the supplied universe against the contract and "
+        "fails closed when a required item is absent from every family or "
+        "cannot reach coverage k in train; a non-authorizing contract is a "
+        "feasibility probe, carries authorizing=false inside its own hash, "
+        "and cannot be witnessed for preregistration"
     ),
     "held_rule": (
         "held units are composition PAIR ids, preregistered explicitly in "
@@ -170,22 +175,58 @@ def universe_sha256(universe: Iterable[str]) -> str:
     ).hexdigest()
 
 
+def _positive_int(value, what: str) -> int:
+    """Strict integer check. `bool` is an `int` in Python, so `k=True` and
+    `buckets={"train": True}` passed the old guards (fifth review, finding
+    5); every numeric field is checked the same way."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise SplitError(f"{what} must be a positive integer, got {value!r}")
+    return value
+
+
 def split_contract(seed: str, coverage_minimum_k: int,
                    required_universe_sha256: str,
                    held_compositions: Mapping[str, list],
                    buckets: Mapping[str, int] | None = None,
-                   far_floors: Mapping[str, int] | None = None) -> dict:
+                   far_floors: Mapping[str, int] | None = None,
+                   authorizing: bool = True) -> dict:
+    """Build a split contract, validating every field fail-closed.
+
+    ``authorizing`` (default True) is the fifth review's central
+    correction: an authorizing contract's ``required_universe_sha256`` must
+    equal the AUTHORITATIVE universe hash. Previously the caller supplied
+    both the universe and its hash, so a one-item universe validated
+    against its own hash and the binding proved nothing. A non-authorizing
+    contract may carry any universe — it is a feasibility PROBE, the flag
+    is inside the contract and therefore inside its hash, and
+    ``preregistration_witness_sha256`` refuses to witness one, so a probe
+    can never be mistaken for a preregistration.
+    """
+    if not isinstance(seed, str) or not seed:
+        raise SplitError("seed must be a non-empty string")
     buckets = dict(buckets or DEFAULT_BUCKETS)
     if sorted(buckets) != ["dev", "test", "train"]:
         raise SplitError("buckets must cover exactly train/dev/test")
-    if any(not isinstance(b, int) or b < 0 for b in buckets.values()):
-        raise SplitError("buckets must be non-negative integers")
+    for name, value in buckets.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise SplitError(f"bucket {name} must be a non-negative integer, "
+                             f"got {value!r}")
     if sum(buckets.values()) != MODULUS:
         raise SplitError(f"buckets must sum to the modulus {MODULUS}")
-    if not isinstance(coverage_minimum_k, int) or coverage_minimum_k < 1:
-        raise SplitError("coverage_minimum_k must be a positive integer")
-    held = {side: sorted(held_compositions.get(side, []))
-            for side in ("dev", "test")}
+    _positive_int(coverage_minimum_k, "coverage_minimum_k")
+    if not isinstance(held_compositions, Mapping):
+        raise SplitError("held_compositions must be a mapping of side -> pairs")
+    held = {}
+    for side in ("dev", "test"):
+        pairs = held_compositions.get(side, [])
+        if isinstance(pairs, str) or not isinstance(pairs, (list, tuple)):
+            raise SplitError(f"held_compositions[{side!r}] must be a list of "
+                             "composition pair id strings")
+        for pair in pairs:
+            if not isinstance(pair, str) or not pair:
+                raise SplitError(f"held composition {pair!r} must be a "
+                                 "non-empty string")
+        held[side] = sorted(pairs)
     if not held["dev"] or not held["test"]:
         raise SplitError(
             "held_compositions must name at least one composition pair per "
@@ -195,14 +236,32 @@ def split_contract(seed: str, coverage_minimum_k: int,
     if set(held["dev"]) & set(held["test"]):
         raise SplitError("a composition pair cannot be held on both sides")
     far_floors = dict(far_floors or {"dev": 1, "test": 1})
-    if any(f < 1 for f in far_floors.values()):
-        raise SplitError("far floors must be >= 1")
+    if sorted(far_floors) != ["dev", "test"]:
+        raise SplitError("far_floors must cover exactly dev and test")
+    for side in ("dev", "test"):
+        _positive_int(far_floors[side], f"far_floors[{side!r}]")
     if not (isinstance(required_universe_sha256, str)
-            and len(required_universe_sha256) == 64):
-        raise SplitError("required_universe_sha256 must be a sha256 hex digest")
+            and len(required_universe_sha256) == 64
+            and all(ch in "0123456789abcdef" for ch in required_universe_sha256)):
+        raise SplitError("required_universe_sha256 must be a 64-character "
+                         "lowercase hex sha256 digest")
+    if not isinstance(authorizing, bool):
+        raise SplitError("authorizing must be a bool")
+    if authorizing:
+        from process_expression_enumerator import required_witness_universe_sha256
+
+        authoritative = required_witness_universe_sha256()
+        if required_universe_sha256 != authoritative:
+            raise SplitError(
+                "an AUTHORIZING contract must bind the authoritative witness "
+                f"universe ({authoritative}); got {required_universe_sha256}. "
+                "A caller-shaped universe hashed against itself proves "
+                "nothing. Pass authorizing=False for a feasibility probe."
+            )
     return {
         "version": SPLIT_CONTRACT_VERSION,
         "seed": seed,
+        "authorizing": authorizing,
         "buckets": buckets,
         "modulus": MODULUS,
         "coverage_minimum_k": coverage_minimum_k,
@@ -384,6 +443,12 @@ def preregistration_witness_sha256(contract: Mapping) -> str:
 
     from process_expression_enumerator import enumeration_spec_sha256
 
+    if not contract.get("authorizing"):
+        raise SplitError(
+            "a non-authorizing feasibility probe cannot be witnessed; "
+            "preregistration requires an authorizing contract bound to the "
+            "authoritative witness universe"
+        )
     payload = {
         "enumeration_spec_sha256": enumeration_spec_sha256(),
         "split_contract_sha256": split_contract_sha256(contract),

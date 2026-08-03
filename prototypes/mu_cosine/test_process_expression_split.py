@@ -63,12 +63,13 @@ WORKED_CONTRACT = dict(
     held_compositions={"dev": ["pair:kalman|judge"],
                        "test": ["pair:routing|score"]},
     buckets={"train": 5000, "dev": 2500, "test": 2500},
+    authorizing=False,   # toy families: a feasibility probe, not a preregistration
 )
 
 #: The normative golden vector: §2.5 narrates exactly this, in full.
 WORKED_GOLDEN = {
     "split_contract_sha256":
-        "ea9d3bddac2b0a1f2be9985e30b9585beaf33ec5fd280b77fc6df88bc79af0cc",
+        "133b88eaba4fb711755eb581410df051bbd7657b20e10e68a4faafcc4c7dfcad",
     "slices": {
         "train": ["tmpl:A", "tmpl:B", "tmpl:C", "tmpl:E", "tmpl:F",
                   "tmpl:G", "tmpl:I", "tmpl:J"],
@@ -93,7 +94,7 @@ WORKED_GOLDEN = {
         "synthetic:string": 2, "terminal:luna": 2,
     },
     "manifest_sha256":
-        "3cae8ee8dae5d23e06a3e09dcb107270819fb8f26fdebf2b5ae6c328372d52f5",
+        "0c6426d97adc828e0b300aaebb7dd21998acdbedb160d671f4a2c13724db3681",
 }
 
 
@@ -170,11 +171,12 @@ CASCADE_CONTRACT = dict(
     required_universe_sha256=sp.universe_sha256(CASCADE_UNIVERSE),
     held_compositions={"dev": ["pair:held|dev"], "test": ["pair:held|test"]},
     buckets={"train": 5000, "dev": 2500, "test": 2500},
+    authorizing=False,
 )
 
 CASCADE_GOLDEN = {
     "split_contract_sha256":
-        "d015687fa0a334d03fd5b6b8f6799b83951d1f5a18ad02d68bb5e6e1db9f359d",
+        "15b6f49f1e94aa9ce1ad2989d00657a671fb0c246bf8920869fbd0cd8b3d4ad8",
     "slices": {
         "train": ["tmpl:T", "tmpl:U", "tmpl:V"],
         "dev": ["tmpl:DN", "tmpl:HD"],
@@ -191,7 +193,7 @@ CASCADE_GOLDEN = {
     "far": {"dev": ["tmpl:DN", "tmpl:HD"], "test": ["tmpl:HT", "tmpl:TF"]},
     "train_coverage": {"d": 3, "h1": 3, "h2": 3, "t": 3, "x": 3, "y": 3, "z": 3},
     "manifest_sha256":
-        "164e015904fae7d4ce24ddcdd11b32b38306e49de9fa9600be9fe1dd1d968ca8",
+        "d8db5394a62de7ee0a2b7762d411b34e12e21c38da1bc9ea2a594c1087999c92",
 }
 
 
@@ -240,6 +242,7 @@ def test_exact_boundary_buckets():
         required_universe_sha256=sp.universe_sha256([]),
         held_compositions={"dev": ["p"], "test": ["q"]},
         buckets={"train": 5000, "dev": 2500, "test": 2500},
+        authorizing=False,
     )
     edges = {
         "tmpl:bnd-3085": (4999, "train"),    # last train bucket
@@ -303,6 +306,7 @@ def test_repair_never_consumes_held_pinned_families():
         required_universe_sha256=sp.universe_sha256(universe),
         held_compositions={"dev": ["q"], "test": ["p"]},
         buckets={"train": 5000, "dev": 2500, "test": 2500},
+        authorizing=False,
     )
     with pytest.raises(sp.SplitError, match="held-pinned"):
         sp.assign(families, contract, universe)
@@ -316,6 +320,7 @@ def test_conflicting_held_pairs_on_one_family_fail_closed():
         seed="conflict", coverage_minimum_k=1,
         required_universe_sha256=sp.universe_sha256(universe),
         held_compositions={"dev": ["p"], "test": ["q"]},
+        authorizing=False,
     )
     with pytest.raises(sp.SplitError, match="both a dev-held and"):
         sp.assign(families, contract, universe)
@@ -329,6 +334,7 @@ def test_held_pair_with_no_carrier_fails_closed():
         seed="ghost", coverage_minimum_k=1,
         required_universe_sha256=sp.universe_sha256(universe),
         held_compositions={"dev": ["p"], "test": ["pair:not|present"]},
+        authorizing=False,
     )
     with pytest.raises(sp.SplitError, match="no carrier"):
         sp.assign(families, contract, universe)
@@ -348,30 +354,86 @@ def test_far_floor_fails_closed_when_unmet():
         required_universe_sha256=sp.universe_sha256(universe),
         held_compositions={"dev": ["p"], "test": ["q"]},
         far_floors={"dev": 1, "test": 3},
+        authorizing=False,
     )
     with pytest.raises(sp.SplitError, match="far floor unmet"):
         sp.assign(families, contract, universe)
 
 
 def test_contract_validation_fails_closed():
+    """Fifth review, finding 5: several malformed values reached the
+    algorithm. Every probe here bypassed validation before this round —
+    note especially the bools, since `bool` IS an `int` in Python."""
     usha = sp.universe_sha256([])
     held = {"dev": ["p"], "test": ["q"]}
-    with pytest.raises(sp.SplitError):
-        sp.split_contract("s", 0, usha, held)                     # k positive
-    with pytest.raises(sp.SplitError):
-        sp.split_contract("s", 1, usha, {"dev": [], "test": ["q"]})   # empty side
-    with pytest.raises(sp.SplitError):
-        sp.split_contract("s", 1, usha, {"dev": ["p"], "test": ["p"]})  # both sides
-    with pytest.raises(sp.SplitError):
-        sp.split_contract("s", 1, usha, held,
-                          buckets={"train": 9000, "dev": 900, "test": 99})
-    with pytest.raises(sp.SplitError):
-        sp.split_contract("s", 1, usha, held,
-                          buckets={"train": 8000.0, "dev": 1000, "test": 1000})
-    with pytest.raises(sp.SplitError):
-        sp.split_contract("s", 1, "not-a-sha", held)
-    with pytest.raises(sp.SplitError):
-        sp.split_contract("s", 1, usha, held, far_floors={"dev": 0, "test": 1})
+
+    def probe(**kwargs):
+        base = dict(seed="s", coverage_minimum_k=1,
+                    required_universe_sha256=usha, held_compositions=held,
+                    authorizing=False)
+        return sp.split_contract(**{**base, **kwargs})
+
+    for label, kwargs in [
+        ("k not positive",       dict(coverage_minimum_k=0)),
+        ("k is a bool",          dict(coverage_minimum_k=True)),
+        ("empty held side",      dict(held_compositions={"dev": [], "test": ["q"]})),
+        ("pair held both sides", dict(held_compositions={"dev": ["p"], "test": ["p"]})),
+        ("held pair not a str",  dict(held_compositions={"dev": [7], "test": ["q"]})),
+        ("held side not a list", dict(held_compositions={"dev": "p", "test": ["q"]})),
+        ("buckets miss modulus", dict(buckets={"train": 9000, "dev": 900, "test": 99})),
+        ("bucket is a float",    dict(buckets={"train": 8000.0, "dev": 1000, "test": 1000})),
+        ("bucket is a bool",     dict(buckets={"train": True, "dev": 4999, "test": 5000})),
+        ("sha not a digest",     dict(required_universe_sha256="not-a-sha")),
+        ("sha not hex",          dict(required_universe_sha256="z" * 64)),
+        ("far floor zero",       dict(far_floors={"dev": 0, "test": 1})),
+        ("far floor a float",    dict(far_floors={"dev": 1.5, "test": 1})),
+        ("far floor key missing", dict(far_floors={"dev": 1})),
+        ("seed not a string",    dict(seed=None)),
+        ("seed empty",           dict(seed="")),
+        ("authorizing not bool", dict(authorizing="yes")),
+    ]:
+        with pytest.raises(sp.SplitError):
+            probe(**kwargs)
+        assert True, label
+
+
+# --------------------------------------------------------------------------
+# finding 1: the universe binding must be AUTHORITATIVE, not self-consistent
+# --------------------------------------------------------------------------
+
+
+def test_authorizing_contract_must_bind_the_authoritative_universe():
+    """The fifth review's central finding: the caller supplied BOTH the
+    universe and its hash, so a one-item universe validated against its own
+    hash and the binding proved nothing."""
+    import process_expression_enumerator as en
+
+    held = {"dev": ["p"], "test": ["q"]}
+    with pytest.raises(sp.SplitError, match="AUTHORIZING"):
+        sp.split_contract("s", 1, sp.universe_sha256(["op:e5"]), held)
+    # The authoritative hash is accepted, and it is the one the enumerator
+    # derives from the support rather than from any corpus.
+    contract = sp.split_contract(
+        "s", 1, en.required_witness_universe_sha256(), held)
+    assert contract["authorizing"] is True
+    assert contract["required_universe_sha256"] == (
+        sp.universe_sha256(en.required_witness_universe()))
+
+
+def test_probe_contracts_are_allowed_but_cannot_be_witnessed():
+    """Warning-free small universes remain possible for feasibility work —
+    but the flag is inside the contract, so it is inside the contract hash,
+    and a probe can never be mistaken for a preregistration."""
+    held = {"dev": ["p"], "test": ["q"]}
+    probe = sp.split_contract("s", 1, sp.universe_sha256(["x"]), held,
+                              authorizing=False)
+    assert probe["authorizing"] is False
+    with pytest.raises(sp.SplitError, match="non-authorizing"):
+        sp.preregistration_witness_sha256(probe)
+    # Authorizing and probe contracts never share a hash.
+    import process_expression_enumerator as en
+    real = sp.split_contract("s", 1, en.required_witness_universe_sha256(), held)
+    assert sp.split_contract_sha256(real) != sp.split_contract_sha256(probe)
 
 
 def test_family_make_validates_counts():
@@ -382,7 +444,13 @@ def test_family_make_validates_counts():
 
 
 def test_preregistration_witness_binds_both_halves():
-    base = dict(WORKED_CONTRACT)
+    """Witnessing requires an AUTHORIZING contract, so this uses the real
+    authoritative universe rather than the toy one the vectors probe with."""
+    import process_expression_enumerator as en
+
+    base = dict(WORKED_CONTRACT,
+                required_universe_sha256=en.required_witness_universe_sha256(),
+                authorizing=True)
     contract_a = sp.split_contract(**base)
     variants = [
         sp.split_contract(**dict(base, coverage_minimum_k=3)),

@@ -223,12 +223,12 @@ def test_extractor_projects_pins_and_strings_into_the_semantic_family():
     creating a family of its own."""
     families = en.families_from_expressions([
         "lca_frac(simplemind)",
-        "lca_frac(simplemind)@run/2026-07-25",
+        "lca_frac(simplemind)@synthetic/pin-001",
     ])
     assert len(families) == 1
     family = families[0]
     assert family.row_count == 2
-    assert family.counts["synthetic:pin"] == 1        # one row of two
+    assert family.counts["synthetic:pin@lca_frac"] == 1        # one row of two
     assert family.counts["op:lca_frac/1{}"] == 2      # both rows
 
 
@@ -256,9 +256,12 @@ def test_extractor_emits_composition_pairs_over_node_edges_only():
     (family,) = en.families_from_expressions([
         'lineage(pearltrees,mu=haiku,estimand="ancestry")'
     ])
+    # The pair carries its SLOT (fifth review, finding 3): without arity and
+    # position a composition holdout could not distinguish argument orders,
+    # nor a positional child from a node-valued kwarg.
     assert family.pairs == frozenset({
-        "pair:lineage|pearltrees",   # positional child
-        "pair:lineage|haiku",        # node-valued kwarg (mu=)
+        "pair:lineage/1.arg0|pearltrees",   # positional child, arity 1, slot 0
+        "pair:lineage.kw:mu|haiku",         # node-valued kwarg edge
     })
     assert family.counts["estimand:ancestry"] == 1   # categorical, not a pair
 
@@ -283,11 +286,20 @@ def test_required_universe_is_derived_from_the_support_not_a_corpus():
     # domains, and the synthetic floors — the completeness the review asked
     # for, each checked rather than asserted in prose.
     assert {"value:number:0.6", "value:int:10"} <= set(universe)
-    assert {"digit:0", "digit:6", "digit:8", "digit:2"} <= set(universe)
+    # Digits carry their POSITION CLASS (fifth review, finding 4): `0` in
+    # the integer part of `10` and in the fraction of `0.02` exercise
+    # different tokenizer paths and are no longer one item.
+    assert {"digit:0@int", "digit:1@int",
+            "digit:0@frac", "digit:2@frac", "digit:6@frac",
+            "digit:8@frac"} <= set(universe)
     assert {"terminal:luna", "terminal:simplemind"} <= set(universe)
     assert {f"estimand:{e}" for e in pc.ESTIMANDS} <= set(universe)
     assert {f"impl:{i}" for i in pc.IMPLS} <= set(universe)
-    assert {"synthetic:pin", "synthetic:string"} <= set(universe)
+    # §3.2 needs all three string classes, and §3.1's V2-vs-V3 property is
+    # per-render-path, so pins are required per operator that can host one.
+    assert {f"synthetic:string:{c}" for c in en.STRING_CLASSES} <= set(universe)
+    assert {"synthetic:pin@lineage", "synthetic:pin@product"} <= set(universe)
+    assert "synthetic:interior_methodology@lineage.estimand" in universe
 
 
 def test_spec_sha_binds_the_required_universe_and_output_roots():
@@ -344,16 +356,17 @@ def test_extractor_and_universe_meet_in_a_real_split():
     import process_expression_split as sp
 
     expressions = OVERLAPPING_CORPUS * 2 + [
-        "lca_frac(simplemind)", "lca_frac(simplemind)@run/2026-07-25",
+        "lca_frac(simplemind)", "lca_frac(simplemind)@synthetic/pin-001",
     ]
     families = en.families_from_expressions(expressions)
     universe = sorted({i for f in families for i in f.witness_items})
     contract = sp.split_contract(
         seed="registered-smoke", coverage_minimum_k=1,
         required_universe_sha256=sp.universe_sha256(universe),
-        held_compositions={"dev": ["pair:blend|haiku"],
-                           "test": ["pair:kalman|haiku"]},
+        held_compositions={"dev": ["pair:blend/2.arg1|haiku"],
+                           "test": ["pair:kalman/2.arg0|haiku"]},
         buckets={"train": 6000, "dev": 2000, "test": 2000},
+        authorizing=False,
     )
     manifest = sp.assign(families, contract, universe)
     assert all(manifest["train_coverage"][item] >= 1 for item in universe)
@@ -362,6 +375,71 @@ def test_extractor_and_universe_meet_in_a_real_split():
     # Whole families, one slice each — LOCO at the structural level.
     placed = [f for ids in manifest["slices"].values() for f in ids]
     assert sorted(placed) == sorted(f.family_id for f in families)
+
+
+def test_extractor_enforces_corpus_policy_not_only_grammar():
+    """Fifth review, finding 2: grammar-valid is not policy-valid. An
+    expression that parses and validates but sits outside the declared
+    envelope would contribute witness items the frozen vocabulary does not
+    contain, so the extractor refuses it."""
+    for expression, why in [
+        ("max(10,e5)", "int literal off the number grid"),
+        ("hop_decay(simplemind,gamma=0.5)", "0.5 off the number grid"),
+        ("product(max(0.02,product(hop_decay(simplemind,gamma=0.6),"
+         "lca_frac(simplemind))),e5)", "depth 4 over the cap"),
+    ]:
+        with pytest.raises(en.PolicyError):
+            en.families_from_expressions([expression]), why
+
+
+def test_policy_admits_the_mandatory_synthetic_forms():
+    """The §3 synthetics are REQUIRED corpus content that deliberately sits
+    outside the enumerable support, so policy must admit what `covers()`
+    refuses — conflating the two would make §3 unsatisfiable."""
+    interior = ('product(e5(margin(t=0.02)),'
+                'max(0.02,lca_frac(simplemind),estimand="path"))')
+    assert not en.covers(pc.parse(interior), "methodology-root-only")
+    assert en.corpus_policy_violation(
+        pc.parse(interior), "methodology-root-only") is None
+    (family,) = en.families_from_expressions([interior])
+    assert any(item.startswith("synthetic:interior_methodology@max.estimand")
+               for item in family.witness_items)
+
+
+def test_synthetic_allowlist_is_enforced_fail_closed():
+    """§3.3: the generator must never sample real paths, titles, or ids.
+    A non-allowlisted pin is refused rather than silently recorded."""
+    with pytest.raises(en.PolicyError, match="allowlist"):
+        en.families_from_expressions(["lca_frac(simplemind)@run/2026-07-25"])
+    (family,) = en.families_from_expressions(
+        ["lca_frac(simplemind)@synthetic/pin-001"])
+    assert "synthetic:pin@lca_frac" in family.witness_items
+
+
+def test_digit_position_classes_separate_integer_and_fraction():
+    items = en._digit_items("0.02")
+    assert items == {"digit:0@int", "digit:0@frac", "digit:2@frac"}
+    assert en._digit_items("10") == {"digit:1@int", "digit:0@int"}
+    assert "digit:5@exp" in en._digit_items("1e-5")
+
+
+def test_string_classes_cover_the_three_required_kinds():
+    assert en._string_class("plain") == "ascii"
+    assert en._string_class("café") == "non_ascii"
+    assert en._string_class('a"b') == "escaped"
+    assert set(en.STRING_CLASSES) == {"ascii", "non_ascii", "escaped"}
+
+
+def test_pairs_distinguish_argument_order_and_kwarg_edges():
+    """Fifth review, finding 3: coarse pairs made two structurally distinct
+    compositions one holdout unit."""
+    forward = en.families_from_expressions(
+        ["product(hop_decay(simplemind,gamma=0.6),lca_frac(simplemind))"])[0]
+    reversed_ = en.families_from_expressions(
+        ["product(lca_frac(simplemind),hop_decay(simplemind,gamma=0.6))"])[0]
+    assert forward.pairs != reversed_.pairs
+    assert "pair:product/2.arg0|hop_decay" in forward.pairs
+    assert "pair:product/2.arg0|lca_frac" in reversed_.pairs
 
 
 def test_a_thin_corpus_cannot_support_a_held_composition_split():
@@ -384,6 +462,7 @@ def test_a_thin_corpus_cannot_support_a_held_composition_split():
             required_universe_sha256=sp.universe_sha256(universe),
             held_compositions={"dev": [dev_pair], "test": [test_pair]},
             buckets={"train": 5000, "dev": 2500, "test": 2500},
+            authorizing=False,
         )
         with pytest.raises(sp.SplitError):
             sp.assign(families, contract, universe)
