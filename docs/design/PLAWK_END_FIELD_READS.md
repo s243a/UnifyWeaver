@@ -101,6 +101,30 @@ many of this campaign's defects were exactly that.
 - **Byte-identity**: no program whose END lacks a field read may change. Verify by
   golden dump before/after over a corpus including several END shapes.
 
+## Sequencing constraint found by attempting it
+
+The runtime half was written (globals + `@wam_lastrec_set/2`, mirroring
+`@wam_rt_set`) and then **reverted**, which established a constraint worth
+knowing before starting:
+
+**The runtime cannot land before its wiring.** The `wam_rt_*` globals block is
+emitted into *every* driver, so adding `@wam_lastrec_*` beside it changes the
+`.ll` of **every program** — breaking the byte-identity that golden diffs depend
+on, for zero functional gain while the globals are unused. Unexercised runtime IR
+is also unverified runtime IR.
+
+So do it as one change: runtime + gated store + END projection + gate inversion,
+landing together, with the golden diff run at the end to show that only programs
+with an END field read differ. Do **not** split the runtime into a separate
+preparatory PR.
+
+For reference, the reverted runtime followed `@wam_rt_set` exactly: 5 globals
+(`@.wam_lastrec_empty`, `_ptr`, `_len`, `_buf`, `_cap` — no `suppress`), and a
+`define i1 @wam_lastrec_set(i8* %src, i64 %len)` with blocks
+clear/need/check/grow/alloc/store/copy/fail, `realloc` growth to
+`max(needlen, cap<4096 ? 4096 : cap*2)`, `llvm.memcpy` + NUL terminate, and an
+empty `%len` resetting to the empty constant so END sees `""` on empty input.
+
 ## Why it was not implemented in the session that designed it
 
 The remaining context was insufficient to hand-write the runtime IR and driver
