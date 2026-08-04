@@ -121,11 +121,42 @@ SPLIT_ALGORITHM_MANIFEST = {
         "pairs(train) is nonempty; len(far[side]) must reach the contract's "
         "far floor for that side, else fail closed"
     ),
-    "pair_rule": (
-        "a pair identity is 'pair:<parent-name>|<child-head-name>' over "
-        "node-valued edges only (positional children and node-valued "
-        "kwargs such as mu=), emitted by the deterministic extractor "
-        "families_from_expressions"
+    "holdable_rule": (
+        "holdable identities are (a) composition pairs "
+        "'pair:<resolved parent component>.<slot>|<resolved child component>' "
+        "over node-valued edges — positional children and node-valued kwargs "
+        "such as mu= — where BOTH endpoints are resolved components carrying "
+        "arity, typed kwarg pattern, and modifiers, and (b) kwarg/list-shape "
+        "motifs 'motif:<resolved component>.kw:<key>=<value>' and "
+        "'motif:<resolved component>.kw:<key>:len<N>'. Endpoint names alone "
+        "collapsed argument order, modifiers, and parent kwarg patterns into "
+        "single holdout units, and list LENGTH was invisible because a "
+        "component records the kwarg KIND; the encoder contract requires "
+        "operator-composition AND kwarg/list-shape holdouts, so both are "
+        "expressible and both may be named in held_compositions"
+    ),
+    "row_identity_rule": (
+        "corpus rows are deduplicated by canonical_full before family "
+        "counting, and the duplicate count is recorded in the corpus "
+        "manifest; canonical_FULL rather than canonical_semantic because "
+        "rows differing only by pins are distinct rows (§3.1: V3 differs "
+        "from V2 only by pins), so semantic dedup would delete required "
+        "coverage. Duplicates previously inflated coverage, letting k be "
+        "satisfied by copies of one example"
+    ),
+    "witness_containment_rule": (
+        "an authorizing corpus build refuses any extracted witness OUTSIDE "
+        "the authoritative universe, not merely checking that required "
+        "witnesses are present; a synthetic form the universe does not "
+        "declare (a pin hosted on a leaf atom) cannot enter the corpus"
+    ),
+    "family_invariants_rule": (
+        "every family is validated at construction AND re-validated inside "
+        "assign(), since the dataclass constructor bypasses the factory: "
+        "non-empty canonical family id, strict positive integer row_count "
+        "rejecting bool, non-empty witness map, every witness count a strict "
+        "integer in [1, row_count] rejecting bool, and non-empty string "
+        "witness and holdable identities"
     ),
 }
 
@@ -154,14 +185,43 @@ class Family:
     @staticmethod
     def make(family_id: str, witness_counts: Mapping[str, int],
              pairs: Iterable[str], row_count: int) -> "Family":
-        for item, count in witness_counts.items():
-            if not 1 <= count <= row_count:
-                raise SplitError(
-                    f"family {family_id!r}: item {item!r} has row count "
-                    f"{count}, outside [1, row_count={row_count}]"
-                )
         return Family(family_id, tuple(sorted(witness_counts.items())),
-                      frozenset(pairs), row_count)
+                      frozenset(pairs), row_count).validated()
+
+    def validated(self) -> "Family":
+        """Check every invariant, fail closed.
+
+        Sixth review, finding 6: `Family.make("zero", {}, [], 0)` and
+        `Family.make("bool", {"x": True}, [], True)` both succeeded, and the
+        dataclass constructor bypassed `make()` entirely. Validation now
+        lives on the instance and `assign()` re-checks every family it is
+        handed, so a directly-constructed one cannot slip past."""
+        if not isinstance(self.family_id, str) or not self.family_id:
+            raise SplitError(f"family id {self.family_id!r} must be a "
+                             "non-empty string")
+        if (isinstance(self.row_count, bool)
+                or not isinstance(self.row_count, int) or self.row_count < 1):
+            raise SplitError(
+                f"family {self.family_id!r}: row_count must be a positive "
+                f"integer, got {self.row_count!r}"
+            )
+        if not self.witness_counts:
+            raise SplitError(f"family {self.family_id!r} witnesses nothing")
+        for item, count in self.witness_counts:
+            if not isinstance(item, str) or not item:
+                raise SplitError(f"family {self.family_id!r}: witness item "
+                                 f"{item!r} must be a non-empty string")
+            if (isinstance(count, bool) or not isinstance(count, int)
+                    or not 1 <= count <= self.row_count):
+                raise SplitError(
+                    f"family {self.family_id!r}: item {item!r} has row count "
+                    f"{count!r}, outside [1, row_count={self.row_count}]"
+                )
+        for pair in self.pairs:
+            if not isinstance(pair, str) or not pair:
+                raise SplitError(f"family {self.family_id!r}: holdable id "
+                                 f"{pair!r} must be a non-empty string")
+        return self
 
     @property
     def counts(self) -> dict:
@@ -357,6 +417,8 @@ def assign(families: list[Family], contract: Mapping,
             "hash-bound, not caller-shaped"
         )
 
+    for family in families:
+        family.validated()        # direct construction bypasses make()
     by_id = {f.family_id: f for f in families}
     if len(by_id) != len(families):
         raise SplitError("duplicate family ids")

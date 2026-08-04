@@ -699,7 +699,13 @@ def synthetic_extension_policy() -> dict:
         "version": SYNTHETIC_EXTENSION_VERSION,
         "pins": list(SYNTHETIC_PINS),
         "manifests": {cls: SYNTHETIC_MANIFESTS[cls] for cls in STRING_CLASSES},
-        "membership_rule": (
+            # Sixth review, finding 4: `simplemind@synthetic/pin-0001` parsed,
+        # validated, and emitted `synthetic:pin@simplemind` — a witness the
+        # authoritative universe does not contain, because pin witnesses are
+        # declared for OPERATORS only. The policy now states its authorized
+        # hosts rather than leaving them implicit in the universe builder.
+    "authorized_pin_hosts": "operators only (leaf atoms may not host pins)",
+    "membership_rule": (
             "exact set membership over the committed finite sets above; a "
             "prefix test is NOT an allowlist and admitted traversal into "
             "real private paths"
@@ -769,6 +775,53 @@ def _leaf_identity_index() -> dict:
     }
 
 
+def _component_identity(node) -> str:
+    """The node's resolved component identity — the same string the frozen
+    vocabulary carries for operators, or the terminal-with-modifiers for a
+    leaf. Pairs use it for BOTH endpoints (sixth review qualification: the
+    parent must be the resolved component, not merely name/arity, or
+    lineage(s,decay=0.6) and lineage(s,decay=0.6,estimand=..) are one
+    holdout unit)."""
+    sig = REGISTRY[node.name]
+    if _is_leaf(node):
+        return node.name + "".join("." + modifier for modifier in node.mods)
+    typed = ",".join(
+        f"{key}:{sig.kwargs[key].kind}" for key in sorted(_resolved_pattern(node))
+    )
+    shape = f"{node.name}/{len(node.args)}{{{typed}}}"
+    return shape + "".join("." + modifier for modifier in node.mods)
+
+
+def _motifs(node) -> set:
+    """Holdable literal-kwarg and list-shape motifs.
+
+    The encoder contract requires kwarg/list-shape holdouts alongside
+    operator-composition holdouts, and neither was expressible: a pair
+    recorded no literal kwarg at all, and `t=[0.02]` and `t=[0.02,0.03]`
+    shared one component because the component records the KIND, not the
+    length. These motif ids live alongside pairs in the holdable set, so a
+    contract can hold them."""
+    sig = REGISTRY[node.name]
+    if _is_leaf(node):
+        return set()
+    out = set()
+    component = _component_identity(node)
+    # EXPLICIT kwargs only: a kwarg elided at its registered default is the
+    # same canonical expression as its explicit spelling, so its motif would
+    # hold every row rather than a distinguishable subset.
+    for key, value in node.kwargs:
+        kind = sig.kwargs[key].kind
+        if isinstance(value, pc.Node):
+            continue
+        if kind in ("number_list", "int_list"):
+            out.add(f"motif:{component}.kw:{key}:len{len(value)}")
+        elif kind == "string":
+            out.add(f"motif:{component}.kw:{key}:synthetic-string")
+        else:
+            out.add(f"motif:{component}.kw:{key}={_spell(value)}")
+    return out
+
+
 def _child_shape(node) -> str:
     """The child endpoint of a composition pair, as a SHAPE.
 
@@ -778,14 +831,7 @@ def _child_shape(node) -> str:
     unit. A leaf endpoint now carries its modifiers, and an operator
     endpoint its arity and resolved kwarg shape, so a pair determines both
     of its endpoints."""
-    sig = REGISTRY[node.name]
-    if _is_leaf(node):
-        return node.name + "".join("." + modifier for modifier in node.mods)
-    typed = ",".join(
-        f"{key}:{sig.kwargs[key].kind}" for key in sorted(_resolved_pattern(node))
-    )
-    shape = f"{node.name}/{len(node.args)}{{{typed}}}"
-    return shape + "".join("." + modifier for modifier in node.mods)
+    return _component_identity(node)
 
 
 def _is_leaf(node) -> bool:
@@ -805,7 +851,14 @@ def _resolved_pattern(node) -> frozenset:
 def _row_witnesses(node, items: set, pairs: set, leaf_index: dict,
                    is_root: bool = True) -> None:
     sig = REGISTRY[node.name]
+    pairs |= _motifs(node)          # holdable kwarg/list-shape motifs
     for pin in node.pins:
+        if not sig.operator:
+            raise PolicyError(
+                f"pin {pin!r} hosted on the leaf atom {node.name!r}: "
+                f"{SYNTHETIC_EXTENSION_VERSION} authorizes operators only, and "
+                "the authoritative universe carries no leaf pin witness"
+            )
         if pin not in SYNTHETIC_PINS:
             raise PolicyError(
                 f"pin {pin!r} is not a member of the committed §3.3 synthetic "
@@ -851,7 +904,8 @@ def _row_witnesses(node, items: set, pairs: set, leaf_index: dict,
             # product(hop_decay(..), X) and product(X, hop_decay(..)) shared
             # one pair, so a composition holdout could not distinguish them
             # (fifth review, finding 3).
-            pairs.add(f"pair:{node.name}/{arity}.arg{index}|{_child_shape(child)}")
+            pairs.add(f"pair:{_component_identity(node)}.arg{index}"
+                      f"|{_child_shape(child)}")
             _row_witnesses(child, items, pairs, leaf_index, False)
         else:
             kinds = [a for a in declared.split("|") if a in pc.VALUE_KINDS]
@@ -863,7 +917,8 @@ def _row_witnesses(node, items: set, pairs: set, leaf_index: dict,
         kind = sig.kwargs[key].kind
         if isinstance(value, pc.Node):
             items.add(f"edge:{node.name}.kw:{key}->{kind}")
-            pairs.add(f"pair:{node.name}.kw:{key}|{_child_shape(value)}")
+            pairs.add(f"pair:{_component_identity(node)}.kw:{key}"
+                      f"|{_child_shape(value)}")
             _row_witnesses(value, items, pairs, leaf_index, False)
         elif kind in ("estimand", "impl"):
             items.add(f"{kind}:{value}")
@@ -994,7 +1049,9 @@ def corpus_policy_violation(node, scenario: str) -> str | None:
 
 
 def families_from_expressions(expressions,
-                              scenario: str = "methodology-root-only") -> list:
+                              scenario: str = "methodology-root-only",
+                              authorizing: bool = True,
+                              return_manifest: bool = False):
     """Group real v0.4 expression strings into split `Family` records.
 
     Deterministic: parse with the sealed registry, validate, ENFORCE CORPUS
@@ -1011,25 +1068,63 @@ def families_from_expressions(expressions,
     """
     leaf_index = _leaf_identity_index()
     grouped: dict = {}
+    seen: set = set()
+    duplicates = 0
+    universe = set(required_witness_universe())
     for expression in expressions:
         node = pc.parse(expression)
         pc.validate(node)
         violation = corpus_policy_violation(node, scenario)
         if violation:
             raise PolicyError(f"{expression!r} violates corpus policy: {violation}")
+        # Sixth review, finding 5: duplicate canonical ASTs inflated
+        # coverage — two identical inputs counted as two witnesses, so `k`
+        # could be satisfied by copies of one example, and the split relied
+        # on an UNENFORCED upstream dedup assumption. The row identity is
+        # `canonical_full`, not `canonical_semantic`: rows differing only by
+        # pins are genuinely distinct rows (§3.1 — V3 differs from V2 only
+        # by pins), so semantic dedup would delete required coverage.
+        identity = pc.canonical_full(node)
+        if identity in seen:
+            duplicates += 1
+            continue
+        seen.add(identity)
         family_id = "tmpl:" + _template_identity(node)
         items: set = set()
         pairs: set = set()
         _row_witnesses(node, items, pairs, leaf_index)
+        # Sixth review, finding 4: checking that required witnesses are
+        # PRESENT is not the same as checking that no witness escapes. An
+        # authorizing build refuses any extracted item outside the
+        # authoritative universe, so a synthetic form the universe does not
+        # declare cannot enter the corpus.
+        if authorizing:
+            escaped = sorted(items - universe)
+            if escaped:
+                raise PolicyError(
+                    f"{expression!r} emits witnesses outside the authoritative "
+                    f"universe: {escaped}"
+                )
         counts, family_pairs, rows = grouped.setdefault(family_id, ({}, set(), [0]))
         for item in items:
             counts[item] = counts.get(item, 0) + 1
         family_pairs |= pairs
         rows[0] += 1
-    return [
+    families = [
         _split.Family.make(family_id, counts, family_pairs, rows[0])
         for family_id, (counts, family_pairs, rows) in sorted(grouped.items())
     ]
+    if return_manifest:
+        return families, {
+            "rows_in": len(expressions),
+            "rows_kept": len(seen),
+            "duplicates_removed": duplicates,
+            "families": len(families),
+            "dedup_key": "canonical_full",
+            "scenario": scenario,
+            "authorizing": authorizing,
+        }
+    return families
 
 
 def required_witness_universe() -> list:

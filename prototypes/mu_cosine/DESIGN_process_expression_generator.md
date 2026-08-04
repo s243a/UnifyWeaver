@@ -279,12 +279,34 @@ named at the point it applies below.)
     construction time proves nothing about a value used later. A *valid-but-different*
     mutation (a changed `k`) re-derives cleanly by design and is caught instead by the
     preregistration witness, which moves with it.
-- **Identities are fine-grained enough to define holdouts.** A composition pair carries its
-  slot *and its child's shape* — `pair:product/2.arg0|hop_decay/1{gamma:number}`,
-  `pair:blend/2.arg0|luna.D`, `pair:lineage.kw:mu|haiku` — because a bare parent-child pair
-  made `product(hop_decay(…),X)` and `product(X,hop_decay(…))` one holdout unit, could not
-  distinguish a positional child from a node-valued kwarg edge, and dropped modifiers entirely
-  (`blend(luna.D,luna.S)` and `blend(luna.S,luna.D)` produced identical pair sets). Digit
+- **Rows are deduplicated, and no witness escapes.** Corpus rows are deduplicated by
+  `canonical_full` before family counting and the duplicate count is recorded in the corpus
+  manifest; duplicates previously inflated coverage, so `k` could be met with copies of one
+  example while the split silently depended on an unenforced upstream assumption. The key is
+  `canonical_full` rather than `canonical_semantic` because rows differing only by pins are
+  genuinely distinct (§3.1: V3 differs from V2 *only* by pins), so semantic dedup would delete
+  required coverage. Separately, an authorizing build refuses any extracted witness **outside**
+  the authoritative universe — checking that required witnesses are *present* is not the same
+  as checking that none *escapes*, and a pin hosted on a leaf atom emitted exactly such an
+  escapee. `synth-v1` now states its authorized pin hosts (operators only).
+- **Family invariants are checked at construction and re-checked in `assign()`**, since the
+  dataclass constructor bypasses the factory: non-empty canonical id, strict positive integer
+  `row_count` rejecting `bool`, non-empty witness map, every count a strict integer in
+  `[1, row_count]`, and non-empty string identities throughout.
+- **Identities are fine-grained enough to define holdouts.** Both endpoints of a composition
+  pair are *resolved components* carrying arity, typed kwarg pattern, and modifiers —
+  `pair:product/2{}.arg0|hop_decay/1{gamma:number}`, `pair:blend/2{}.arg0|luna.D`,
+  `pair:lineage/1{decay:number,estimand:estimand,mu:judge}.kw:mu|haiku`. A bare parent-child
+  pair made `product(hop_decay(…),X)` and `product(X,hop_decay(…))` one holdout unit, could
+  not distinguish a positional child from a node-valued kwarg edge, dropped modifiers entirely
+  (`blend(luna.D,luna.S)` and `blend(luna.S,luna.D)` produced identical pair sets), and left
+  the parent's own kwarg pattern invisible. Alongside pairs, the holdable set carries
+  **kwarg and list-shape motifs** — `motif:<component>.kw:<key>=<value>` and
+  `motif:<component>.kw:<key>:len<N>` — because the encoder contract requires kwarg/list-shape
+  holdouts as well as operator-composition holdouts, and a component records a kwarg's *kind*,
+  not its length, so `t=[0.02]` and `t=[0.02,0.03]` were indistinguishable. A kwarg elided at
+  its registered default yields no motif: the elided and explicit spellings are one canonical
+  expression, so such a motif would be universal rather than a holdout unit. Digit
   witnesses carry a position class (`digit:0@int` vs `digit:0@frac`), since §7's digit-holdout
   exercises different tokenizer paths in the integer part, the fraction, and the exponent.
   §3.2's three string classes (ASCII, non-ASCII, escaped) are three separate required items,
@@ -365,11 +387,20 @@ than a handful of keys. The suite adds: input-order independence, the hash-bound
 refusing a shrunken list, a required item no family witnesses failing closed, repair refusing
 to consume a held group, conflicting and carrier-less held pairs failing closed, an unmet far
 floor failing closed, and the preregistration witness moving when the seed, `k`, the held
-pairs, or the buckets change. A companion test in `test_process_expression_enumerator.py`
-records a measured consequence: over the ten registered processes alone, **every** choice of
-held composition pair fails closed, because each family is the sole carrier of some witness
-item — the corpus build must supply overlapping templates, and the split says so rather than
-quietly shrinking coverage.
+pairs, or the buckets change. Two measured structural consequences are recorded as tests in
+`test_process_expression_enumerator.py` rather than worked around, because both constrain what
+a preregistration may ask for:
+
+1. Over the ten registered processes alone, **every** choice of held composition pair fails
+   closed — each family is the sole carrier of some witness item. The corpus build must supply
+   overlapping templates; the split says so rather than quietly shrinking coverage.
+2. Holding **every** carrier of a component leaves that component unwitnessed in train, so
+   holding both sides of a motif that partitions a component's families is refused. A holdout
+   must leave at least one carrier of each component trainside. This also bounds what
+   literal-*value* kwarg motifs can do: rows differing only in a literal share a template and
+   therefore a family, so such a motif is always a within-family distinction and holding it
+   holds the whole family. List-shape motifs *do* separate families (the template records the
+   list's length) and are holdable in the ordinary way.
 
 Restricting methodology kwargs to the root remains the recommendation and is semantically
 motivated: `estimand=`/`impl=` are deployment metadata and `require_deployable` checks exactly

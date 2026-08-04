@@ -237,14 +237,14 @@ def test_extractor_counts_items_per_row_not_per_family():
     of a many-row family counts once, not once per row."""
     families = en.families_from_expressions([
         "hop_decay(simplemind,gamma=0.6)",
-        "hop_decay(simplemind,gamma=0.6)",
+        "hop_decay(simplewiki,gamma=0.6)",
         "hop_decay(simplewiki,gamma=0.85)",
     ])
     (family,) = families
     assert family.row_count == 3
     assert family.counts["value:number:0.6"] == 2
     assert family.counts["value:number:0.85"] == 1
-    assert family.counts["terminal:simplemind"] == 2
+    assert family.counts["terminal:simplewiki"] == 2
     # A repeated item within ONE row still counts that row once.
     (repeated,) = en.families_from_expressions([
         "product(hop_decay(simplemind,gamma=0.6),lca_frac(simplemind))"
@@ -259,10 +259,16 @@ def test_extractor_emits_composition_pairs_over_node_edges_only():
     # The pair carries its SLOT (fifth review, finding 3): without arity and
     # position a composition holdout could not distinguish argument orders,
     # nor a positional child from a node-valued kwarg.
+    component = "lineage/1{decay:number,estimand:estimand,mu:judge}"
     assert family.pairs == frozenset({
-        "pair:lineage/1.arg0|pearltrees",   # positional child, arity 1, slot 0
-        "pair:lineage.kw:mu|haiku",         # node-valued kwarg edge
+        f"pair:{component}.arg0|pearltrees",       # positional child
+        f"pair:{component}.kw:mu|haiku",           # node-valued kwarg edge
+        f'motif:{component}.kw:estimand="ancestry"',   # holdable kwarg motif
     })
+    # A kwarg elided at its registered default yields NO motif: the elided
+    # and explicit spellings are one canonical expression, so a "decay=0.85"
+    # motif would be universal rather than a holdout unit.
+    assert not any(".kw:decay=" in item for item in family.pairs)
     assert family.counts["estimand:ancestry"] == 1   # categorical, not a pair
 
 
@@ -363,8 +369,8 @@ def test_extractor_and_universe_meet_in_a_real_split():
     contract = sp.split_contract(
         seed="registered-smoke", coverage_minimum_k=1,
         required_universe_sha256=sp.universe_sha256(universe),
-        held_compositions={"dev": ["pair:blend/2.arg1|haiku"],
-                           "test": ["pair:kalman/2.arg0|haiku"]},
+        held_compositions={"dev": ["pair:blend/2{}.arg1|haiku"],
+                           "test": ["pair:kalman/2{}.arg0|haiku"]},
         buckets={"train": 6000, "dev": 2000, "test": 2000},
         authorizing=False,
     )
@@ -472,9 +478,144 @@ def test_pairs_distinguish_argument_order_and_kwarg_edges():
     d_then_s = en.families_from_expressions(["blend(luna.D,luna.S)"])[0]
     s_then_d = en.families_from_expressions(["blend(luna.S,luna.D)"])[0]
     assert d_then_s.pairs != s_then_d.pairs
-    assert "pair:blend/2.arg0|luna.D" in d_then_s.pairs
-    assert "pair:product/2.arg0|hop_decay/1{gamma:number}" in forward.pairs
-    assert "pair:product/2.arg0|lca_frac/1{}" in reversed_.pairs
+    assert "pair:blend/2{}.arg0|luna.D" in d_then_s.pairs
+    assert "pair:product/2{}.arg0|hop_decay/1{gamma:number}" in forward.pairs
+    assert "pair:product/2{}.arg0|lca_frac/1{}" in reversed_.pairs
+
+
+def test_pins_on_leaf_atoms_are_refused():
+    """Sixth review, finding 4: `simplemind@synthetic/pin-0001` parsed,
+    validated, and emitted `synthetic:pin@simplemind` — a witness the
+    authoritative universe does not contain, because pin witnesses are
+    declared for operators only."""
+    with pytest.raises(en.PolicyError, match="leaf atom"):
+        en.families_from_expressions(["simplemind@synthetic/pin-0001"])
+    assert "operators only" in (
+        en.synthetic_extension_policy()["authorized_pin_hosts"])
+
+
+def test_authorizing_build_refuses_witnesses_outside_the_universe():
+    """Checking that required witnesses are PRESENT is not the same as
+    checking that none ESCAPES. An authorizing build refuses any extracted
+    item the authoritative universe does not declare."""
+    universe = set(en.required_witness_universe())
+    for expression in pc.PROCESSES.values():
+        for family in en.families_from_expressions([expression]):
+            assert family.witness_items <= universe
+    original = en.required_witness_universe
+    try:                      # shrink the universe: the build must notice
+        en.required_witness_universe = lambda: sorted(
+            set(original()) - {"terminal:simplemind"})
+        with pytest.raises(en.PolicyError, match="outside the authoritative"):
+            en.families_from_expressions(["lca_frac(simplemind)"])
+        # a non-authorizing probe is permitted to explore
+        assert en.families_from_expressions(
+            ["lca_frac(simplemind)"], authorizing=False)
+    finally:
+        en.required_witness_universe = original
+
+
+def test_duplicate_canonical_asts_are_removed_and_counted():
+    """Sixth review, finding 5: duplicates inflated coverage, so `k` could
+    be met with copies of one example, and the split silently depended on
+    an unenforced upstream dedup assumption."""
+    families, manifest = en.families_from_expressions(
+        ["hop_decay(simplemind,gamma=0.6)"] * 3 + ["lca_frac(simplemind)"],
+        return_manifest=True)
+    assert manifest["rows_in"] == 4
+    assert manifest["rows_kept"] == 2
+    assert manifest["duplicates_removed"] == 2
+    assert manifest["dedup_key"] == "canonical_full"
+    assert all(family.row_count == 1 for family in families)
+    # Non-canonical spellings of ONE identity are duplicates too.
+    _, manifest = en.families_from_expressions(
+        ["lineage(simplemind)", "lineage(simplemind,decay=0.85)"],
+        return_manifest=True)
+    assert manifest["duplicates_removed"] == 1
+    # But rows differing only by PINS are distinct: §3.1 requires them, and
+    # semantic dedup would delete the coverage that makes V3 differ from V2.
+    _, manifest = en.families_from_expressions(
+        ["lca_frac(simplemind)", "lca_frac(simplemind)@synthetic/pin-0001"],
+        return_manifest=True)
+    assert manifest["duplicates_removed"] == 0
+
+
+def test_kwarg_and_list_shape_motifs_are_holdable():
+    """Sixth review qualification: the encoder contract requires
+    kwarg/list-shape holdouts as well as operator-composition holdouts, and
+    neither was expressible — a pair recorded no literal kwarg, and
+    t=[0.02] and t=[0.02,0.03] shared one component because a component
+    records the kwarg KIND, not the length."""
+    import process_expression_split as sp
+
+    short = en.families_from_expressions(
+        ["e5(routing(e5,haiku,t=[0.02],menus=[10]))"])[0]
+    long_ = en.families_from_expressions(
+        ["e5(routing(e5,haiku,t=[0.02,0.03],menus=[10,20]))"])[0]
+    assert short.pairs != long_.pairs
+    component = "routing/2{menus:int_list,t:number_list}"
+    assert f"motif:{component}.kw:t:len1" in short.pairs
+    assert f"motif:{component}.kw:t:len2" in long_.pairs
+
+    # Motifs live in the HOLDABLE set, so a contract can name one and the
+    # split groups its carriers exactly as it does for composition pairs.
+    families = en.families_from_expressions([
+        "e5(routing(e5,haiku,t=[0.02],menus=[10]))",
+        "e5(routing(e5,sonnet.lineage,t=[0.02],menus=[10]))",
+        "e5(routing(e5,haiku,t=[0.02,0.03],menus=[10,20]))",
+        "e5(margin(t=0.02))", "e5(margin(t=0.03))",
+        "menu(luna,n=10)", "menu(haiku,n=20)",
+        "lca_frac(simplemind)", "max(0.02,e5)", "max(0.03,e5)",
+        "blend(luna.D,luna.S)", "blend(haiku,luna.S)", "blend(luna.D,haiku)",
+    ])
+    universe = sorted({i for f in families for i in f.witness_items})
+    held_motif = f"motif:{component}.kw:t:len2"
+    contract = sp.split_contract(
+        "motif-holdout", 1, sp.universe_sha256(universe),
+        held_compositions={"dev": [held_motif],
+                           "test": ["pair:blend/2{}.arg0|haiku"]},
+        buckets={"train": 6000, "dev": 2000, "test": 2000},
+        authorizing=False)
+    manifest = sp.assign(families, contract, universe)
+    assert manifest["held"]["dev"][held_motif]          # carriers grouped
+    assert manifest["far"]["dev"]                        # and far by construction
+
+
+def test_holding_every_carrier_of_a_component_fails_closed():
+    """A measured structural consequence, recorded rather than worked
+    around: holding BOTH sides of a motif that partitions a component's
+    families leaves the component itself unwitnessed in train, so the split
+    refuses. A holdout must leave at least one carrier of each component
+    trainside — the same shape as the thin-corpus finding."""
+    import process_expression_split as sp
+
+    families = en.families_from_expressions([
+        "e5(routing(e5,haiku,t=[0.02],menus=[10]))",
+        "e5(routing(e5,haiku,t=[0.02,0.03],menus=[10,20]))",
+        "e5(margin(t=0.02))", "lca_frac(simplemind)", "max(0.02,e5)",
+    ])
+    universe = sorted({i for f in families for i in f.witness_items})
+    component = "routing/2{menus:int_list,t:number_list}"
+    contract = sp.split_contract(
+        "both-sides", 1, sp.universe_sha256(universe),
+        held_compositions={"dev": [f"motif:{component}.kw:t:len1"],
+                           "test": [f"motif:{component}.kw:t:len2"]},
+        buckets={"train": 6000, "dev": 2000, "test": 2000},
+        authorizing=False)
+    with pytest.raises(sp.SplitError, match="held-pinned"):
+        sp.assign(families, contract, universe)
+
+
+def test_pairs_carry_the_resolved_parent_component():
+    """The qualification's first part: a bare parent name/arity made
+    lineage(s,decay=0.6) and lineage(s,decay=0.6,estimand=..) one holdout
+    unit."""
+    plain = en.families_from_expressions(["lineage(simplemind,decay=0.6)"])[0]
+    with_est = en.families_from_expressions(
+        ['lineage(simplemind,decay=0.6,estimand="ancestry")'])[0]
+    assert plain.pairs != with_est.pairs
+    assert any("estimand:estimand" in item and item.startswith("pair:")
+               for item in with_est.pairs)
 
 
 def test_a_thin_corpus_cannot_support_a_held_composition_split():

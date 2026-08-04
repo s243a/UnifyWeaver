@@ -69,7 +69,7 @@ WORKED_CONTRACT = dict(
 #: The normative golden vector: §2.5 narrates exactly this, in full.
 WORKED_GOLDEN = {
     "split_contract_sha256":
-        "8e778ad61c893adda5d641ead9c6df0da83aa99764cbaf438ff76228d56f02d6",
+        "b0a44bc1eaf698df324fdd3a761256ae10da6ae46d2cf7f71113dcd4aa95e186",
     "slices": {
         "train": ["tmpl:A", "tmpl:B", "tmpl:C", "tmpl:E", "tmpl:F",
                   "tmpl:G", "tmpl:I", "tmpl:J"],
@@ -94,7 +94,7 @@ WORKED_GOLDEN = {
         "synthetic:string": 2, "terminal:luna": 2,
     },
     "manifest_sha256":
-        "1ead78d3de9edde3dfc21fe71f7e7aaa65c3a2c7ebab07abcad058f3dd219964",
+        "f96b728d341114aa4f1c8c9f525181e0a5301ddc3c810f60ff2748ad82816353",
 }
 
 
@@ -176,7 +176,7 @@ CASCADE_CONTRACT = dict(
 
 CASCADE_GOLDEN = {
     "split_contract_sha256":
-        "0ea06880a7948485e924c668590b794049e9ccbd2ef4cc228cdcb97e15c049c0",
+        "4ca2d9d3e9628c0357795cd9991c5fef87b0dca4916b0a9d2ef70246dd817c8e",
     "slices": {
         "train": ["tmpl:T", "tmpl:U", "tmpl:V"],
         "dev": ["tmpl:DN", "tmpl:HD"],
@@ -193,7 +193,7 @@ CASCADE_GOLDEN = {
     "far": {"dev": ["tmpl:DN", "tmpl:HD"], "test": ["tmpl:HT", "tmpl:TF"]},
     "train_coverage": {"d": 3, "h1": 3, "h2": 3, "t": 3, "x": 3, "y": 3, "z": 3},
     "manifest_sha256":
-        "6b160ce986d4404949d2ba19e79263a32040ba9e57af78e0e3be535f3e7fa056",
+        "9e2bb20648369469838fd18799c79ff6ee5519b433530e8f6eb74c28d04c7ce6",
 }
 
 
