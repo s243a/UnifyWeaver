@@ -23,10 +23,15 @@
 %                           canonical bytes are the sealed golden
 %                           surface.
 %   pattern(Term, Store)    Term may contain variables; Store is the
-%                           canonicalized residual store (ruling 1:
-%                           numbervars-by-traversal projection order,
-%                           ==-dedup).  NO digest, NO canonical bytes,
-%                           NO persistent name — peid-v1's fence.
+%                           canonicalized residual store — canonical
+%                           labelling via pe_canonical.pl (ruling 1 as
+%                           amended: colour refinement to stability,
+%                           then individualization), ==-dedup.  A
+%                           canonical FORM is not an identity: NO
+%                           digest, NO canonical bytes, NO persistent
+%                           name — peid-v1's fence still stands, and
+%                           the form existing is exactly when not to
+%                           cross it.
 %
 % Origin metadata (ruling 3): carried ALONGSIDE the store, never
 % inside it.  elaborate/4 takes Goal-Origin pairs and returns residual

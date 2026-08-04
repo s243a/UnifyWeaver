@@ -282,16 +282,21 @@ Still open, unchanged: pattern-state canonical bytes/digests (peid-v1, fenced in
 
 ---
 
-*Addendum — ruling 1's ordering device has a measured defect (reported, not repaired).*
+*Addendum — ruling 1's ordering device had a measured defect; it is now repaired.*
 [`DESIGN_pattern_state_identity.md`](DESIGN_pattern_state_identity.md) §2 records a
 counterexample to this note's claim that the canonical store's numbering "is a function of
-logical content, not input order": when two residual goals share a projection **and** are
-projection-least, `least_by_projection_/4`'s strict `@<` breaks the tie by input order, so one
-store presented two ways yields canonical forms that are not even variants of each other.
-Reachable through `elaborate/3` inside ruling 4(a) scope. Blast radius is zero outside the §2
+logical content, not input order": when two residual goals shared a projection **and** were
+projection-least, `least_by_projection_/4`'s strict `@<` broke the tie by input order, so one
+store presented two ways yielded canonical forms that were not even variants of each other.
+Reachable through `elaborate/3` inside ruling 4(a) scope. Blast radius was zero outside the §2
 identity fence — the ground path has no residual store, so every sealed oracle and all merged
-byte tests remain valid; the defect lives exactly in the territory this note fenced as
-oracle-less, which is the fence working as intended. It is characterized by tests
-(`test_pstate_views.pl`, `ordering_defect_characterization`) in the recorded-divergence style
-rather than patched, because the repair is a choice among canonical-labelling schemes — a
-ruling, not a fix. See that note's ruling 1.
+byte tests stayed valid; the defect lived exactly in the territory this note fenced as
+oracle-less, which is the fence working as intended.
+
+The pass that found it did not repair it, because the repair was a choice among
+canonical-labelling schemes — a ruling, not a fix. That ruling landed (ruling 1, as amended:
+refinement **plus individualization**), and §2.1 of the companion note records the repair:
+`pattern_stache/pe_canonical.pl` replaced the ordering device, `least_by_projection_/4` is
+deleted, and the three tests that had asserted the defect flipped to assert the property.
+**This note's claim about `canonical_pairs/3` is therefore true again — but of a different
+mechanism**, which is why the history above is kept rather than overwritten.
