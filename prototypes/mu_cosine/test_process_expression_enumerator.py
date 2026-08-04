@@ -223,7 +223,7 @@ def test_extractor_projects_pins_and_strings_into_the_semantic_family():
     creating a family of its own."""
     families = en.families_from_expressions([
         "lca_frac(simplemind)",
-        "lca_frac(simplemind)@synthetic/pin-001",
+        "lca_frac(simplemind)@synthetic/pin-0001",
     ])
     assert len(families) == 1
     family = families[0]
@@ -356,7 +356,7 @@ def test_extractor_and_universe_meet_in_a_real_split():
     import process_expression_split as sp
 
     expressions = OVERLAPPING_CORPUS * 2 + [
-        "lca_frac(simplemind)", "lca_frac(simplemind)@synthetic/pin-001",
+        "lca_frac(simplemind)", "lca_frac(simplemind)@synthetic/pin-0001",
     ]
     families = en.families_from_expressions(expressions)
     universe = sorted({i for f in families for i in f.witness_items})
@@ -412,8 +412,37 @@ def test_synthetic_allowlist_is_enforced_fail_closed():
     with pytest.raises(en.PolicyError, match="allowlist"):
         en.families_from_expressions(["lca_frac(simplemind)@run/2026-07-25"])
     (family,) = en.families_from_expressions(
-        ["lca_frac(simplemind)@synthetic/pin-001"])
+        ["lca_frac(simplemind)@synthetic/pin-0001"])
     assert "synthetic:pin@lca_frac" in family.witness_items
+
+
+def test_synthetic_extension_is_finite_versioned_and_hash_bound():
+    """Sixth review, third finding: a PREFIX test is not an allowlist. The
+    old check accepted `synthetic/pin-../../home/s243a/private/notes` — a
+    real private path reached by traversal, exactly what §3.3 forbids.
+    Membership is now exact over a committed finite set, and the policy is
+    versioned and inside the preregistration hash."""
+    policy = en.synthetic_extension_policy()
+    assert policy["version"] == en.SYNTHETIC_EXTENSION_VERSION
+    assert set(policy["manifests"]) == set(en.STRING_CLASSES)
+    for value, cls in en.SYNTHETIC_MANIFESTS.items():
+        assert en._string_class(cls) == value      # one string per class
+    # traversal and lookalikes are refused; only committed members pass
+    for pin in ("synthetic/pin-../../home/s243a/private/notes",
+                "synthetic/pin-9999", "run/2026-07-25"):
+        with pytest.raises(en.PolicyError, match="not a member"):
+            en.families_from_expressions([f"lca_frac(simplemind)@{pin}"])
+    (family,) = en.families_from_expressions(
+        [f"lca_frac(simplemind)@{en.SYNTHETIC_PINS[0]}"])
+    assert "synthetic:pin@lca_frac" in family.witness_items
+    # the policy is bound by the preregistration hash
+    sha = en.enumeration_spec_sha256()
+    original = en.SYNTHETIC_PINS
+    try:
+        en.SYNTHETIC_PINS = original + ("synthetic/pin-0004",)
+        assert en.enumeration_spec_sha256() != sha
+    finally:
+        en.SYNTHETIC_PINS = original
 
 
 def test_digit_position_classes_separate_integer_and_fraction():
@@ -438,8 +467,14 @@ def test_pairs_distinguish_argument_order_and_kwarg_edges():
     reversed_ = en.families_from_expressions(
         ["product(lca_frac(simplemind),hop_decay(simplemind,gamma=0.6))"])[0]
     assert forward.pairs != reversed_.pairs
-    assert "pair:product/2.arg0|hop_decay" in forward.pairs
-    assert "pair:product/2.arg0|lca_frac" in reversed_.pairs
+    # Sixth review: the child endpoint carries its SHAPE, so a modifier can
+    # no longer collapse two distinct compositions into one holdout unit.
+    d_then_s = en.families_from_expressions(["blend(luna.D,luna.S)"])[0]
+    s_then_d = en.families_from_expressions(["blend(luna.S,luna.D)"])[0]
+    assert d_then_s.pairs != s_then_d.pairs
+    assert "pair:blend/2.arg0|luna.D" in d_then_s.pairs
+    assert "pair:product/2.arg0|hop_decay/1{gamma:number}" in forward.pairs
+    assert "pair:product/2.arg0|lca_frac/1{}" in reversed_.pairs
 
 
 def test_a_thin_corpus_cannot_support_a_held_composition_split():

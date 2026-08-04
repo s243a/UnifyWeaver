@@ -100,6 +100,9 @@ def enumeration_spec_sha256() -> str:
         "output_roots": list(OUTPUT_ROOTS),
         "scenarios": {name: dict(flags) for name, flags in sorted(SCENARIOS.items())},
         "component_vocabulary_sha256": component_vocabulary_sha256(),
+        # The §3 synthetic extension is a separate, finite, versioned
+        # policy (sixth review ruling: the support stays exhaustive).
+        "synthetic_extension_sha256": synthetic_extension_sha256(),
         # The authoritative REQUIRED witness universe (fourth review: a
         # caller-supplied universe lets omissions vanish silently). The split
         # contract binds the same hash, and assign() verifies against it.
@@ -654,20 +657,61 @@ def component_vocabulary_sha256() -> str:
 # contract bind.
 
 
-#: The §3.3 synthetic allowlist. Pins and strings are the only literals the
-#: generator invents, and §3.3 forbids sampling anything real — repository
-#: paths, titles, private names, manifest ids, environment variables, logs.
-#: The extractor validates every pin and string against these prefixes and
-#: fails closed, so a privacy violation cannot enter the corpus silently
-#: (fifth review, finding 2: grammar-valid is not policy-valid).
-SYNTHETIC_PIN_PREFIX = "synthetic/pin-"
-SYNTHETIC_MANIFEST_PREFIX = "synthetic-manifest-"
+#: The §3 SYNTHETIC EXTENSION POLICY — finite, versioned, hash-bound.
+#:
+#: The sixth review's ruling on the seam: the enumerable support stays
+#: exhaustive, and §3's forms enter through this separate policy rather than
+#: by widening the support. It also closes the review's third finding: a
+#: PREFIX test is not an allowlist. `synthetic/pin-` accepted
+#: `synthetic/pin-../../home/s243a/private/notes` — a real private path,
+#: reachable by traversal, which is exactly what §3.3 forbids. Membership is
+#: now exact set membership over a committed finite set.
+SYNTHETIC_EXTENSION_VERSION = "synth-v1"
+
+#: Committed pin ids. §3.1 needs pins at all (V2 and V3 are byte-identical
+#: without them); the count is a sampler choice, the SET is policy.
+SYNTHETIC_PINS = (
+    "synthetic/pin-0001",
+    "synthetic/pin-0002",
+    "synthetic/pin-0003",
+)
+
+#: §3.2's allowlist: exactly one string per required class, so the three
+#: classes cannot be satisfied by three strings of the same class.
+SYNTHETIC_MANIFESTS = {
+    "ascii": "synthetic-manifest-0001",
+    "non_ascii": "synthetic-manifest-0002-café",
+    "escaped": 'synthetic-manifest-0003-"quoted"',
+}
 
 #: §3.2 requires three string classes, not one: an ASCII string, a
 #: non-ASCII UTF-8 string, and one containing an escape. A single
 #: `synthetic:string` item could be satisfied by three ASCII rows and leave
 #: the tokenizer's byte-fallback path untrained (fifth review, finding 4).
 STRING_CLASSES = ("ascii", "non_ascii", "escaped")
+
+
+def synthetic_extension_policy() -> dict:
+    """The policy as data — what a preregistration pins alongside the
+    support. Separate from the support by ruling: the support stays
+    exhaustive, and §3 forms are a declared, bounded extension to it."""
+    return {
+        "version": SYNTHETIC_EXTENSION_VERSION,
+        "pins": list(SYNTHETIC_PINS),
+        "manifests": {cls: SYNTHETIC_MANIFESTS[cls] for cls in STRING_CLASSES},
+        "membership_rule": (
+            "exact set membership over the committed finite sets above; a "
+            "prefix test is NOT an allowlist and admitted traversal into "
+            "real private paths"
+        ),
+    }
+
+
+def synthetic_extension_sha256() -> str:
+    return hashlib.sha256(
+        json.dumps(synthetic_extension_policy(), sort_keys=True,
+                   separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 class PolicyError(ValueError):
@@ -725,6 +769,25 @@ def _leaf_identity_index() -> dict:
     }
 
 
+def _child_shape(node) -> str:
+    """The child endpoint of a composition pair, as a SHAPE.
+
+    Sixth review: `pair:blend/2.arg0|luna` dropped the modifier, so
+    blend(luna.D, luna.S) and blend(luna.S, luna.D) produced identical pair
+    sets — two structurally distinct compositions collapsed into one holdout
+    unit. A leaf endpoint now carries its modifiers, and an operator
+    endpoint its arity and resolved kwarg shape, so a pair determines both
+    of its endpoints."""
+    sig = REGISTRY[node.name]
+    if _is_leaf(node):
+        return node.name + "".join("." + modifier for modifier in node.mods)
+    typed = ",".join(
+        f"{key}:{sig.kwargs[key].kind}" for key in sorted(_resolved_pattern(node))
+    )
+    shape = f"{node.name}/{len(node.args)}{{{typed}}}"
+    return shape + "".join("." + modifier for modifier in node.mods)
+
+
 def _is_leaf(node) -> bool:
     return bool(REGISTRY[node.name].atom) and not node.args and not node.kwargs
 
@@ -743,11 +806,11 @@ def _row_witnesses(node, items: set, pairs: set, leaf_index: dict,
                    is_root: bool = True) -> None:
     sig = REGISTRY[node.name]
     for pin in node.pins:
-        if not pin.startswith(SYNTHETIC_PIN_PREFIX):
+        if pin not in SYNTHETIC_PINS:
             raise PolicyError(
-                f"pin {pin!r} is outside the §3.3 synthetic allowlist "
-                f"(prefix {SYNTHETIC_PIN_PREFIX!r}) — the generator must never "
-                "sample real paths, titles, ids, or user data"
+                f"pin {pin!r} is not a member of the committed §3.3 synthetic "
+                f"pin set ({SYNTHETIC_EXTENSION_VERSION}) — a prefix test is "
+                "not an allowlist and admitted traversal into real paths"
             )
         # Pins are the only thing separating V2 from V3 (§3.1), so the pin's
         # HOST matters: pins on distinct nodes exercise distinct render paths.
@@ -788,7 +851,7 @@ def _row_witnesses(node, items: set, pairs: set, leaf_index: dict,
             # product(hop_decay(..), X) and product(X, hop_decay(..)) shared
             # one pair, so a composition holdout could not distinguish them
             # (fifth review, finding 3).
-            pairs.add(f"pair:{node.name}/{arity}.arg{index}|{child.name}")
+            pairs.add(f"pair:{node.name}/{arity}.arg{index}|{_child_shape(child)}")
             _row_witnesses(child, items, pairs, leaf_index, False)
         else:
             kinds = [a for a in declared.split("|") if a in pc.VALUE_KINDS]
@@ -800,15 +863,15 @@ def _row_witnesses(node, items: set, pairs: set, leaf_index: dict,
         kind = sig.kwargs[key].kind
         if isinstance(value, pc.Node):
             items.add(f"edge:{node.name}.kw:{key}->{kind}")
-            pairs.add(f"pair:{node.name}.kw:{key}|{value.name}")
+            pairs.add(f"pair:{node.name}.kw:{key}|{_child_shape(value)}")
             _row_witnesses(value, items, pairs, leaf_index, False)
         elif kind in ("estimand", "impl"):
             items.add(f"{kind}:{value}")
         elif kind == "string":
-            if not value.startswith(SYNTHETIC_MANIFEST_PREFIX):
+            if value not in SYNTHETIC_MANIFESTS.values():
                 raise PolicyError(
-                    f"string {value!r} is outside the §3.3 synthetic allowlist "
-                    f"(prefix {SYNTHETIC_MANIFEST_PREFIX!r})"
+                    f"string {value!r} is not a member of the committed §3.3 "
+                    f"synthetic manifest set ({SYNTHETIC_EXTENSION_VERSION})"
                 )
             items.add(f"synthetic:string:{_string_class(value)}")
         elif kind in ("number_list", "int_list"):

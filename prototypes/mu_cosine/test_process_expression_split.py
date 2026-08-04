@@ -69,7 +69,7 @@ WORKED_CONTRACT = dict(
 #: The normative golden vector: §2.5 narrates exactly this, in full.
 WORKED_GOLDEN = {
     "split_contract_sha256":
-        "133b88eaba4fb711755eb581410df051bbd7657b20e10e68a4faafcc4c7dfcad",
+        "8e778ad61c893adda5d641ead9c6df0da83aa99764cbaf438ff76228d56f02d6",
     "slices": {
         "train": ["tmpl:A", "tmpl:B", "tmpl:C", "tmpl:E", "tmpl:F",
                   "tmpl:G", "tmpl:I", "tmpl:J"],
@@ -94,7 +94,7 @@ WORKED_GOLDEN = {
         "synthetic:string": 2, "terminal:luna": 2,
     },
     "manifest_sha256":
-        "0c6426d97adc828e0b300aaebb7dd21998acdbedb160d671f4a2c13724db3681",
+        "1ead78d3de9edde3dfc21fe71f7e7aaa65c3a2c7ebab07abcad058f3dd219964",
 }
 
 
@@ -176,7 +176,7 @@ CASCADE_CONTRACT = dict(
 
 CASCADE_GOLDEN = {
     "split_contract_sha256":
-        "15b6f49f1e94aa9ce1ad2989d00657a671fb0c246bf8920869fbd0cd8b3d4ad8",
+        "0ea06880a7948485e924c668590b794049e9ccbd2ef4cc228cdcb97e15c049c0",
     "slices": {
         "train": ["tmpl:T", "tmpl:U", "tmpl:V"],
         "dev": ["tmpl:DN", "tmpl:HD"],
@@ -193,7 +193,7 @@ CASCADE_GOLDEN = {
     "far": {"dev": ["tmpl:DN", "tmpl:HD"], "test": ["tmpl:HT", "tmpl:TF"]},
     "train_coverage": {"d": 3, "h1": 3, "h2": 3, "t": 3, "x": 3, "y": 3, "z": 3},
     "manifest_sha256":
-        "d8db5394a62de7ee0a2b7762d411b34e12e21c38da1bc9ea2a594c1087999c92",
+        "6b160ce986d4404949d2ba19e79263a32040ba9e57af78e0e3be535f3e7fa056",
 }
 
 
@@ -418,6 +418,46 @@ def test_authorizing_contract_must_bind_the_authoritative_universe():
     assert contract["authorizing"] is True
     assert contract["required_universe_sha256"] == (
         sp.universe_sha256(en.required_witness_universe()))
+
+
+def test_a_mutated_contract_is_refused_at_every_use_site():
+    """Sixth review, principal finding: `split_contract` returns a plain
+    dict, so a validated contract could be mutated before use and both
+    `assign` and the witness accepted it — reopening the one-item-universe
+    exploit in full. Validation at construction proves nothing about a
+    value used later, so every use site re-derives and compares."""
+    import process_expression_enumerator as en
+
+    held = {"dev": ["p"], "test": ["q"]}
+    families = [_fam(f"tmpl:{fid}", {"op:e5": 2}, [pair], 2)
+                for fid, pair in (("W", "r"), ("X", "r"), ("Y", "p"), ("Z", "q"))]
+
+    # (a) swap the bound universe for a one-item one, post-validation
+    tampered = sp.split_contract("s", 1, en.required_witness_universe_sha256(), held)
+    tampered["required_universe_sha256"] = sp.universe_sha256(["op:e5"])
+    with pytest.raises(sp.SplitError):
+        sp.assign(families, tampered, ["op:e5"])
+
+    # (b) promote a probe to authorizing, post-validation
+    promoted = sp.split_contract("s", 1, sp.universe_sha256(["x"]), held,
+                                 authorizing=False)
+    promoted["authorizing"] = True
+    with pytest.raises(sp.SplitError):
+        sp.preregistration_witness_sha256(promoted)
+
+    # (c) any structural mutation, not merely the two known ones
+    bucketed = sp.split_contract("s", 1, en.required_witness_universe_sha256(), held)
+    bucketed["buckets"]["train"] = 9999
+    with pytest.raises(sp.SplitError):
+        sp.assign(families, bucketed, en.required_witness_universe())
+
+    # A valid-but-different mutation (k) re-derives cleanly — it is caught
+    # instead by the preregistration witness, which moves with it.
+    original = sp.split_contract("s", 2, en.required_witness_universe_sha256(), held)
+    changed = sp.split_contract("s", 3, en.required_witness_universe_sha256(), held)
+    assert sp.revalidate(changed) == changed
+    assert (sp.preregistration_witness_sha256(original)
+            != sp.preregistration_witness_sha256(changed))
 
 
 def test_probe_contracts_are_allowed_but_cannot_be_witnessed():

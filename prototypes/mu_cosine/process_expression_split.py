@@ -95,7 +95,10 @@ SPLIT_ALGORITHM_MANIFEST = {
         "fails closed when a required item is absent from every family or "
         "cannot reach coverage k in train; a non-authorizing contract is a "
         "feasibility probe, carries authorizing=false inside its own hash, "
-        "and cannot be witnessed for preregistration"
+        "and cannot be witnessed for preregistration; every use site "
+        "RE-VALIDATES the contract by re-deriving it from its own fields, "
+        "because construction-time validation proves nothing about a value "
+        "mutated afterwards"
     ),
     "held_rule": (
         "held units are composition PAIR ids, preregistered explicitly in "
@@ -272,6 +275,41 @@ def split_contract(seed: str, coverage_minimum_k: int,
     }
 
 
+def revalidate(contract: Mapping) -> dict:
+    """Re-derive the contract from its own fields and require equality.
+
+    Sixth review, principal finding: `split_contract()` returns a plain
+    dict, so a validated contract could be MUTATED before use — flipping
+    `required_universe_sha256` to a one-item universe, or `authorizing`
+    from False to True — and both `assign()` and the witness accepted it.
+    Validation at construction time proves nothing about a value used
+    later, so every use site re-validates instead of trusting.
+
+    Reconstruction catches any mutation, not merely the two known ones: a
+    tampered field either fails `split_contract`'s own checks (an
+    authorizing contract must still bind the authoritative universe) or
+    produces a dict that differs from the one presented.
+    """
+    try:
+        rebuilt = split_contract(
+            seed=contract["seed"],
+            coverage_minimum_k=contract["coverage_minimum_k"],
+            required_universe_sha256=contract["required_universe_sha256"],
+            held_compositions=contract["held_compositions"],
+            buckets=contract["buckets"],
+            far_floors=contract["far_floors"],
+            authorizing=contract["authorizing"],
+        )
+    except KeyError as missing:
+        raise SplitError(f"contract is missing {missing}") from None
+    if rebuilt != dict(contract):
+        raise SplitError(
+            "contract does not re-derive from its own fields — it was "
+            "mutated after validation; fail closed"
+        )
+    return rebuilt
+
+
 def split_contract_sha256(contract: Mapping) -> str:
     return hashlib.sha256(
         json.dumps(dict(contract), sort_keys=True, separators=(",", ":")).encode()
@@ -310,6 +348,7 @@ def assign(families: list[Family], contract: Mapping,
     closed rather than degrading.
     """
 
+    revalidate(contract)          # never trust a contract handed to us
     universe = sorted(required_universe)
     if universe_sha256(universe) != contract["required_universe_sha256"]:
         raise SplitError(
@@ -443,6 +482,7 @@ def preregistration_witness_sha256(contract: Mapping) -> str:
 
     from process_expression_enumerator import enumeration_spec_sha256
 
+    revalidate(contract)
     if not contract.get("authorizing"):
         raise SplitError(
             "a non-authorizing feasibility probe cannot be witnessed; "

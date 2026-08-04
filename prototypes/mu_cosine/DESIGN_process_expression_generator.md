@@ -254,9 +254,13 @@ named at the point it applies below.)
     refuses violations. It deliberately *admits* the §3 synthetics — pins, allowlisted strings,
     interior methodology — because those are mandatory corpus content that sits outside the
     *enumerable* support; conflating the two questions would make §3 unsatisfiable.
-  - **§3.3's allowlist is enforced fail-closed.** Pins must carry the `synthetic/pin-` prefix
-    and string kwargs the `synthetic-manifest-` prefix. A literal outside the allowlist is a
-    privacy violation, not merely a policy one, and it is refused rather than recorded.
+  - **§3's forms enter through a finite, versioned, hash-bound extension policy** — the ruled
+    seam: the enumerable support stays exhaustive and is never widened to accommodate them.
+    `synthetic_extension_policy()` (`synth-v1`) commits the exact pin set and one manifest
+    string per §3.2 class, membership is exact set membership, and its hash enters
+    `enumeration_spec_sha256()`. A **prefix test is not an allowlist**: the earlier
+    `synthetic/pin-` check accepted `synthetic/pin-../../home/s243a/private/notes`, a real
+    private path reached by traversal, which is precisely what §3.3 forbids.
   - **The universe binding is authoritative, not self-consistent.** `required_witness_universe()`
     is derived *from the support* — every component, node edge, literal slot, grid value,
     positioned digit byte, exact terminal atom, categorical value, and the §3 synthetic floors —
@@ -267,10 +271,20 @@ named at the point it applies below.)
     sits inside the contract and therefore inside its hash, and
     `preregistration_witness_sha256()` refuses to witness one. Infeasible *authorizing* splits
     stay fail-closed; only a non-authorizing probe is permitted to explore.
+  - **Every use site re-validates rather than trusting.** `split_contract()` returns a plain
+    dict, so a validated contract could be *mutated* before use — swapping the bound universe
+    for a one-item one, or promoting a probe to authorizing — and both `assign()` and the
+    witness accepted it, reopening the exploit in full. `revalidate()` re-derives the contract
+    from its own fields and requires equality, so any tampering fails closed. Validation at
+    construction time proves nothing about a value used later. A *valid-but-different*
+    mutation (a changed `k`) re-derives cleanly by design and is caught instead by the
+    preregistration witness, which moves with it.
 - **Identities are fine-grained enough to define holdouts.** A composition pair carries its
-  slot — `pair:product/2.arg0|hop_decay`, `pair:lineage.kw:mu|haiku` — because a bare
-  parent-child pair made `product(hop_decay(…),X)` and `product(X,hop_decay(…))` one holdout
-  unit, and could not distinguish a positional child from a node-valued kwarg edge. Digit
+  slot *and its child's shape* — `pair:product/2.arg0|hop_decay/1{gamma:number}`,
+  `pair:blend/2.arg0|luna.D`, `pair:lineage.kw:mu|haiku` — because a bare parent-child pair
+  made `product(hop_decay(…),X)` and `product(X,hop_decay(…))` one holdout unit, could not
+  distinguish a positional child from a node-valued kwarg edge, and dropped modifiers entirely
+  (`blend(luna.D,luna.S)` and `blend(luna.S,luna.D)` produced identical pair sets). Digit
   witnesses carry a position class (`digit:0@int` vs `digit:0@frac`), since §7's digit-holdout
   exercises different tokenizer paths in the integer part, the fraction, and the exponent.
   §3.2's three string classes (ASCII, non-ASCII, escaped) are three separate required items,
