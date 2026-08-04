@@ -1893,6 +1893,61 @@ fn test_arithmetic_comparisons_direct() {
 }
 
 #[test]
+fn test_length_direct_modes() {
+    let (measure_ok, measure_vm) =
+        call2("length/2", Value::List(vec![a("a"), a("b"), a("c")]), ub("N"));
+    assert!(measure_ok);
+    assert_eq!(read_var(&measure_vm, "N"), i(3));
+
+    assert!(call2("length/2", Value::List(vec![a("a"), a("b")]), i(2)).0);
+    assert!(!call2("length/2", Value::List(vec![a("a"), a("b")]), i(3)).0);
+    assert!(call2("length/2", a("[]"), i(0)).0);
+
+    let (construct_ok, construct_vm) = call2("length/2", ub("List"), i(3));
+    assert!(construct_ok);
+    match read_var(&construct_vm, "List") {
+        Value::List(items) => {
+            assert_eq!(items.len(), 3);
+            assert!(items.iter().all(Value::is_unbound));
+            assert_ne!(items[0], items[1]);
+            assert_ne!(items[1], items[2]);
+            assert_ne!(items[0], items[2]);
+        }
+        other => panic!("expected constructed list, got {other:?}"),
+    }
+
+    let (empty_ok, empty_vm) = call2("length/2", ub("List"), i(0));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "List"), Value::List(vec![]));
+
+    let mut aliased_length = vmnew();
+    assert!(aliased_length.unify(&ub("N"), &i(2)));
+    aliased_length.set_reg("A1", ub("List"));
+    aliased_length.set_reg("A2", ub("N"));
+    assert!(aliased_length.execute_builtin("length/2", 2));
+    assert_eq!(read_var(&aliased_length, "N"), i(2));
+    assert!(matches!(read_var(&aliased_length, "List"), Value::List(items) if items.len() == 2));
+
+    let (shared_ok, shared_vm) =
+        call2("length/2", Value::List(vec![ub("X")]), ub("X"));
+    assert!(shared_ok);
+    assert_eq!(read_var(&shared_vm, "X"), i(1));
+
+    assert!(!call2("length/2", ub("List"), i(-1)).0);
+    assert!(!call2("length/2", ub("List"), i(i64::MAX)).0);
+    assert!(!call2("length/2", ub("List"), Value::Float(2.0)).0);
+    assert!(!call2("length/2", a("not_a_list"), ub("N")).0);
+
+    let mut missing_list = vmnew();
+    missing_list.set_reg("A2", i(0));
+    assert!(!missing_list.execute_builtin("length/2", 2));
+
+    let mut missing_length = vmnew();
+    missing_length.set_reg("A1", Value::List(vec![]));
+    assert!(!missing_length.execute_builtin("length/2", 2));
+}
+
+#[test]
 fn test_standard_order() {
     assert!(call2("@</2", a("a"), a("b")).0);
     assert!(!call2("@</2", a("b"), a("a")).0);
