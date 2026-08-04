@@ -63,9 +63,9 @@ default 4096), and explicit `auto` (codegen resolves via shared
   `emit_mode(functions)` + auto `category_ancestor/4` kernel, reference
   parity match — see `docs/design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md`.
   Further optimized by PERF-R-CA-DIRECT / IDDFS / IDCACHE / STACK / IDTABLE /
-  WAM-STEP / AGGREGATE-LOWER / AGG-BATCH. Hosted-CI AGG-BATCH median
-  query_ms=1111 / total_ms=1621 (prior AGGREGATE-LOWER 1564/2077;
-  IDTABLE 3412/4076).
+  WAM-STEP / AGGREGATE-LOWER / AGG-BATCH / NATIVE-HOPS-0. Hosted-CI
+  NATIVE-HOPS-0 median query_ms=270 / total_ms=776 (prior AGG-BATCH
+  1111/1621; AGGREGATE-LOWER 1564/2077; IDTABLE 3412/4076).
   PERF-R-CA-LOOPBODY, PATHMARK, ED-BOUNDARY, LOWERED-DIRECTCALL, and
   CA-BULK-HOPS profiled/declined where measured. PERF-R-WAM-STEP
   short-circuits `is_lax` `**/^` and unary `-`. PERF-R-AGGREGATE-LOWER
@@ -75,7 +75,9 @@ default 4096), and explicit `auto` (codegen resolves via shared
   reduce (~1.18× same-host query over AGGREGATE-LOWER; steps unchanged at
   14540). PERF-R-CA-BULK-HOPS found post-AGG-BATCH query time ~84% inside
   `category_ancestor_hops_ids`; R-level membership/buffer trials did not
-  clear the ≥1.05× gate (best ~1.016×).
+  clear the ≥1.05× gate (best ~1.016×). PERF-R-NATIVE-HOPS-0 adds an
+  optional base-R `.Call` hop kernel (`R CMD SHLIB`, pure-R fallback;
+  ~1.95× same-host query over AGG-BATCH; steps unchanged at 14540).
 
 ## Path forward
 
@@ -84,6 +86,6 @@ default 4096), and explicit `auto` (codegen resolves via shared
 
 ## Document status
 
-Fleet-aligned snapshot updated through PERF-R-CA-BULK-HOPS (2026-08-01):
-hosted 1111/1621; PATHMARK, LOOPBODY, ED-BOUNDARY, LOWERED-DIRECTCALL,
+Fleet-aligned snapshot updated for PERF-R-NATIVE-HOPS-0 (2026-08-02):
+hosted 270/776; PATHMARK, LOOPBODY, ED-BOUNDARY, LOWERED-DIRECTCALL,
 and CA-BULK-HOPS declined where measured.
