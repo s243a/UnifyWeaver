@@ -610,11 +610,13 @@ pure-R hops.
 PERF-R-POST-NATIVE-0 attributed the post-NATIVE-HOPS residual on a Cursor
 cloud host (R 4.3.3, scale-300, kernels_on/functions, 271-row six-decimal
 parity). Native hops are no longer the dominant bucket (~3–5% of warm
-query; 385/385 native calls). Clean Rprof + exclusive wrappers show
+query; 385/385 native calls). Separate Rprof/wrapper measurements show
 `WamRuntime$run`/`$step` ~84–90% of query wall, with
 `try_scalar_aggregate_fastpath` ~32% total, `put_reg` ~23%,
-`call_builtin` ~16%, and `fact_table_iter_subset` ~10%. Warm step count
-is 18005 (BeginAggregate×385, EndAggregate×0; one aggregate site).
+`call_builtin` ~16%, and `fact_table_iter_subset` ~10%. These buckets are
+nested/inclusive and are not additive. The attribution harness observed
+18005 step dispatches (BeginAggregate×385, EndAggregate×0; one aggregate
+site); no runtime code was retained, so this is not a before/after step delta.
 Trials that cached BeginAggregate plans and specialized typed-batch
 `(Batch ⊕ scalar) ** Exp` vector reduce preserved parity but were
 wall-time neutral (~1.00–1.03× interleaved smoke; gate ≥1.05× failed).
