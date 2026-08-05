@@ -572,11 +572,35 @@ test(surface_multi_rule_accumulates_overlapping_matches) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
         "4\n").
 
+% --- an unset array element prints EMPTY, not 0 --------------------------
+%
+% Several expectations below have an EMPTY field where a `0` reads more naturally,
+% e.g. "2  1" for `print skipped["trace"], counts["DEBUG"], counts["ERROR"]` when
+% `counts["DEBUG"]` was never incremented. That is awk, verified against gawk 5.2:
+% an uninitialised array element is the uninitialised value, which `print` renders
+% in STRING context as "". `@wam_assoc_i64_print` implements exactly that -- it
+% tests existence and prints nothing when the key is absent.
+%
+% These tests were written expecting `0` and were failing on every run. The
+% codegen was right and the expectations were wrong about awk; they are corrected
+% here rather than papered over, each one confirmed by running the same program
+% under gawk (the `break` cases are a plawk rule-level extension gawk cannot run,
+% but the field that changed is a missing-key read in every case).
+%
+% KNOWN DIVERGENCE, deliberately left alone here: an unset SCALAR prints `0` in
+% plawk (see the `skipped` field in the two tests immediately below) where gawk
+% prints empty for the same reason arrays do. That is a separate pre-existing
+% divergence with a much wider blast radius -- it would flip these currently-
+% PASSING tests -- so it is recorded in PLAWK_AWK_FEATURE_AUDIT.md as a follow-on
+% rather than folded into a test-expectation fix.
+
 test(surface_terminal_next_skips_remaining_scalar_rules) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { skipped++; next } { total++ } END { print total, skipped }\n",
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
         "2 2\n").
 
+% `skipped` is never assigned (dead code after `next`), so plawk prints its slot's
+% initial 0. gawk prints empty -- the known divergence noted above.
 test(surface_nonterminal_next_skips_dead_scalar_tail) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { next; skipped++ } { total++ } END { print total, skipped }\n",
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
@@ -585,22 +609,22 @@ test(surface_nonterminal_next_skips_dead_scalar_tail) :-
 test(surface_terminal_next_skips_remaining_assoc_rules) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { skipped[$2]++; next } { counts[$1]++ } END { print skipped[\"trace\"], counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
-        "2 0 1\n").
+        "2  1\n").
 
 test(surface_nonterminal_next_skips_dead_assoc_tail) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { next; skipped[$2]++ } { counts[$1]++ } END { print skipped[\"trace\"], counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
-        "0 0 1\n").
+        "  1\n").
 
 test(surface_terminal_next_skips_remaining_mixed_rules) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { skipped++; by_kind[$2]++; next } { total++; counts[$1]++ } END { print total, skipped, by_kind[\"trace\"], counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
-        "2 2 2 0 1\n").
+        "2 2 2  1\n").
 
 test(surface_nonterminal_next_skips_dead_mixed_tail) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { next; skipped++; by_kind[$2]++ } { total++; counts[$1]++ } END { print total, skipped, by_kind[\"trace\"], counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
-        "2 0 0 0 1\n").
+        "2 0   1\n").
 
 test(surface_terminal_next_only_skips_remaining_scalar_rules) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { next } { total++ } END { print total }\n",
@@ -610,12 +634,12 @@ test(surface_terminal_next_only_skips_remaining_scalar_rules) :-
 test(surface_terminal_next_only_skips_remaining_assoc_rules) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { next } { counts[$1]++ } END { print counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
-        "0 1\n").
+        " 1\n").
 
 test(surface_terminal_next_only_skips_remaining_mixed_rules) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { next } { total++; counts[$1]++ } END { print total, counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
-        "2 0 1\n").
+        "2  1\n").
 
 test(surface_terminal_break_stops_scalar_rule_chain_and_runs_end) :-
     run_surface_print_smoke("$1 == \"ERROR\" { hits++; break } { total++ } END { print hits, total }\n",
@@ -630,22 +654,22 @@ test(surface_nonterminal_break_skips_dead_scalar_tail) :-
 test(surface_terminal_break_stops_assoc_rule_chain_and_runs_end) :-
     run_surface_print_smoke("$1 == \"ERROR\" { seen[$2]++; break } { counts[$1]++ } END { print seen[\"disk\"], counts[\"ERROR\"], counts[\"WARN\"] }\n",
         "WARN cpu hot\nERROR disk full\nERROR net down\n",
-        "1 0 1\n").
+        "1  1\n").
 
 test(surface_nonterminal_break_skips_dead_assoc_tail) :-
     run_surface_print_smoke("$1 == \"ERROR\" { break; seen[$2]++ } { counts[$1]++ } END { print seen[\"disk\"], counts[\"ERROR\"], counts[\"WARN\"] }\n",
         "WARN cpu hot\nERROR disk full\nERROR net down\n",
-        "0 0 1\n").
+        "  1\n").
 
 test(surface_terminal_break_stops_mixed_rule_chain_and_runs_end) :-
     run_surface_print_smoke("$1 == \"ERROR\" { hits++; seen[$2]++; break } { total++; counts[$1]++ } END { print hits, total, seen[\"disk\"], counts[\"ERROR\"], counts[\"WARN\"] }\n",
         "WARN cpu hot\nERROR disk full\nERROR net down\n",
-        "1 1 1 0 1\n").
+        "1 1 1  1\n").
 
 test(surface_nonterminal_break_skips_dead_mixed_tail) :-
     run_surface_print_smoke("$1 == \"ERROR\" { break; hits++; seen[$2]++ } { total++; counts[$1]++ } END { print hits, total, seen[\"disk\"], counts[\"ERROR\"], counts[\"WARN\"] }\n",
         "WARN cpu hot\nERROR disk full\nERROR net down\n",
-        "0 1 0 0 1\n").
+        "0 1   1\n").
 
 test(surface_terminal_break_as_last_rule_keeps_continue_phi_valid) :-
     run_surface_print_smoke("{ total++ } $1 == \"ERROR\" { hits++; break } END { print hits, total }\n",
@@ -810,7 +834,7 @@ test(surface_scalar_if_else_branch_next_skips_dead_tail_and_later_actions) :-
 test(surface_mixed_if_else_branch_next_skips_later_rules) :-
     run_surface_print_smoke("{ if ($1 == \"DEBUG\") { skipped++; by_kind[$2]++; next } else { seen++ } } { total++; counts[$1]++ } END { print total, seen, skipped, by_kind[\"trace\"], counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
         "INFO boot ok\nDEBUG trace skip\nERROR disk full\nDEBUG trace drop\n",
-        "2 2 2 2 0 1\n").
+        "2 2 2 2  1\n").
 
 test(surface_scalar_if_else_branch_break_stops_stream) :-
     run_surface_print_smoke("{ if ($1 == \"ERROR\") { hits++; break } else { total++ } } END { print hits, total }\n",
@@ -959,7 +983,7 @@ test(surface_assoc_counts_resize_runtime_table) :-
     atomic_list_concat(Lines, '', Input0),
     format(string(Input), '~wK0 duplicate~n', [Input0]),
     run_surface_print_smoke("{ counts[$1]++ } END { print counts[\"K0\"], counts[\"K2050\"], counts[\"MISSING\"] }\n",
-        Input, "2 1 0\n").
+        Input, "2 1 \n").
 
 test(surface_assoc_counts_long_record_first_field) :-
     plawk_long_payload_string(70000, Payload),
@@ -976,12 +1000,18 @@ test(surface_literal_pattern_uses_native_index_guard) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
+% The END read is `@wam_assoc_i64_print`, not `@wam_assoc_i64_get`. The get moved
+% INSIDE that runtime helper (it calls @wam_assoc_i64_exists then
+% @wam_assoc_i64_get) so a missing key can print nothing without the driver having
+% to branch. This assertion named the callee rather than the property, so it went
+% stale when the helper absorbed the get -- the property it wanted, "the assoc read
+% goes through the runtime table", is still exactly true.
 test(surface_assoc_counts_use_runtime_table) :-
     plawk_parse_string("{ counts[$1]++ } END { print counts[\"ERROR\"], counts[\"WARN\"] }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
     assertion(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_new')),
     assertion(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_inc')),
-    assertion(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_get')),
+    assertion(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_print')),
     assertion(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_free')),
     assertion(\+ sub_atom(DriverIR, _, _, _, 'assoc_check_0')),
     assertion(\+ sub_atom(DriverIR, _, _, _, '%assoc_inc_slot_')),
@@ -996,7 +1026,9 @@ test(surface_assoc_counts_multiple_arrays_use_distinct_runtime_tables) :-
     assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_0_action_0:'))),
     assertion(once(sub_atom(DriverIR, _, _, _, 'assoc_rule_0_action_1:'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_inc'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_get'))),
+    % see surface_assoc_counts_use_runtime_table: the END read is the _print
+    % helper, which does the exists+get itself.
+    assertion(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_print')),
     assertion(\+ sub_atom(DriverIR, _, _, _, '%plawk_assoc_table = call')),
     !.
 
