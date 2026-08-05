@@ -2400,14 +2400,27 @@ compile_execute_term_builtin_to_rust(Code) :-
                 }
             }
             "arg/3" => {
-                let n_val = self.get_reg_raw("A1")
-                    .map(|v| self.deref_heap(&self.deref_var(&v)));
-                let t_val = self.get_reg_raw("A2")
-                    .map(|v| self.deref_heap(&self.deref_var(&v)));
-                match (n_val, t_val) {
-                    (Some(Value::Integer(n)), Some(t)) if n >= 1 => {
-                        let idx = (n - 1) as usize;
-                        let arg = match &t {
+                let index_raw = match self.get_reg_raw("A1") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let term_raw = match self.get_reg_raw("A2") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let output_raw = match self.get_reg_raw("A3") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let index = self.deref_heap(&self.deref_var(&index_raw));
+                let term = self.deref_heap(&self.deref_var(&term_raw));
+                match (index, term) {
+                    (Value::Integer(n), term) if n >= 1 => {
+                        let idx = match usize::try_from(n - 1) {
+                            Ok(idx) => idx,
+                            Err(_) => return false,
+                        };
+                        let arg = match &term {
                             Value::Str(_, args) => args.get(idx).cloned(),
                             Value::List(items) if n == 1 && !items.is_empty() =>
                                 Some(items[0].clone()),
@@ -2417,11 +2430,13 @@ compile_execute_term_builtin_to_rust(Code) :-
                         };
                         match arg {
                             Some(a) => {
-                                if let Some(a3) = self.get_reg_raw("A3") {
-                                    let derefed = self.deref_var(&self.deref_heap(&a3));
-                                    if self.unify(&derefed, &a) { self.pc += 1; true }
-                                    else { false }
-                                } else { false }
+                                let mark = self.trail.len();
+                                if self.unify(&output_raw, &a) {
+                                    self.pc += 1; true
+                                } else {
+                                    self.unwind_trail_to(mark);
+                                    false
+                                }
                             }
                             None => false,
                         }

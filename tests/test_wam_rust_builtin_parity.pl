@@ -2070,6 +2070,60 @@ fn test_functor_direct_modes_and_rollback() {
 }
 
 #[test]
+fn test_arg_direct_modes_and_rollback() {
+    let term = Value::Str("pair/2".to_string(), vec![a("left"), i(7)]);
+    let (first_ok, first_vm) = call3("arg/3", i(1), term.clone(), ub("Arg"));
+    assert!(first_ok);
+    assert_eq!(read_var(&first_vm, "Arg"), a("left"));
+
+    let (second_ok, second_vm) = call3("arg/3", i(2), term, ub("Arg"));
+    assert!(second_ok);
+    assert_eq!(read_var(&second_vm, "Arg"), i(7));
+
+    let list = Value::List(vec![a("head"), a("middle"), a("tail")]);
+    let (head_ok, head_vm) = call3("arg/3", i(1), list.clone(), ub("Arg"));
+    assert!(head_ok);
+    assert_eq!(read_var(&head_vm, "Arg"), a("head"));
+    let (tail_ok, tail_vm) = call3("arg/3", i(2), list, ub("Arg"));
+    assert!(tail_ok);
+    assert_eq!(
+        read_var(&tail_vm, "Arg"),
+        Value::List(vec![a("middle"), a("tail")]),
+    );
+
+    assert!(!call3("arg/3", i(0), a("atom"), ub("Arg")).0);
+    assert!(!call3("arg/3", i(-1), a("atom"), ub("Arg")).0);
+    assert!(!call3("arg/3", i(3), Value::Str("f/2".to_string(), vec![a("a"), a("b")]), ub("Arg")).0);
+    assert!(!call3("arg/3", i(i64::MAX), Value::List(vec![a("a")]), ub("Arg")).0);
+    assert!(!call3("arg/3", i(1), Value::List(vec![]), ub("Arg")).0);
+
+    let (rollback_ok, rollback_vm) = call3(
+        "arg/3",
+        i(1),
+        Value::Str(
+            "wrapper/1".to_string(),
+            vec![Value::Str("pair/2".to_string(), vec![a("a"), a("b")])],
+        ),
+        Value::Str("pair/2".to_string(), vec![ub("X"), a("wrong")]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "X"), ub("X"));
+
+    let mut bound_term = vmnew();
+    assert!(bound_term.unify(&ub("Term"), &Value::Str("one/1".to_string(), vec![a("value")])));
+    bound_term.set_reg("A1", i(1));
+    bound_term.set_reg("A2", ub("Term"));
+    bound_term.set_reg("A3", ub("Arg"));
+    assert!(bound_term.execute_builtin("arg/3", 3));
+    assert_eq!(read_var(&bound_term, "Arg"), a("value"));
+
+    let mut missing_output = vmnew();
+    missing_output.set_reg("A1", i(1));
+    missing_output.set_reg("A2", Value::Str("one/1".to_string(), vec![a("value")]));
+    assert!(!missing_output.execute_builtin("arg/3", 3));
+}
+
+#[test]
 fn test_standard_order() {
     assert!(call2("@</2", a("a"), a("b")).0);
     assert!(!call2("@</2", a("b"), a("a")).0);
