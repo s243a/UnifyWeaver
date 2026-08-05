@@ -83,18 +83,20 @@ default 4096), and explicit `auto` (codegen resolves via shared
   ~23%. These are nested/inclusive measurements and are not additive.
   Plan-cache + closed `(Batch ⊕ scalar) ** Exp` trials did not
   clear ≥1.05× (best ~1.00–1.03×); no production change retained.
+  PERF-R-BULK-REDUCE-REGION-0: shape-gated fused bulk-reduce prototype
+  ≈2.04×; thin step-driver ≈0.97×; direct-fusion trial ≈1.20× but
+  ≈320 LOC (>180 soft-stop) — reverted, docs-only.
 
 ## Path forward
 
 1. Optional follow-up: three-form keys for additional audited builtins
    beyond `is`/compares/`succ` (same class of work as ISO-PYTHON/ISO-FSHARP).
-2. Next ED performance lever after POST-NATIVE-0: deeper
-   `power_sum_bound` lowering that skips the WAM shell around bulk
-   collect + closed reduce (or `put_reg`/`step` infrastructure) — not
-   further hop-kernel / aggregate-arith micro-opts.
+2. Next ED performance lever: retain shape-gated direct bulk-reduce
+   fusion under LOC discipline (generate-time plan packing or raised
+   budget) — thin step-drivers do not clear ≥1.05×.
 
 ## Document status
 
-Fleet-aligned snapshot updated for PERF-R-POST-NATIVE-0 (2026-08-04):
-hosted NATIVE-HOPS-0 row unchanged at 270/776; POST-NATIVE plan-cache /
-closed-pow trials declined.
+Fleet-aligned snapshot updated for PERF-R-BULK-REDUCE-REGION-0
+(2026-08-05): hosted NATIVE-HOPS-0 row unchanged at 270/776; fused
+bulk-reduce declined on LOC soft-stop despite ≥1.05× trial evidence.
