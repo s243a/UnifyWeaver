@@ -2013,6 +2013,63 @@ fn test_append_direct_modes_and_rollback() {
 }
 
 #[test]
+fn test_functor_direct_modes_and_rollback() {
+    let compound = Value::Str("pair/2".to_string(), vec![a("left"), i(7)]);
+    let (read_ok, read_vm) = call3("functor/3", compound, ub("Name"), ub("Arity"));
+    assert!(read_ok);
+    assert_eq!(read_var(&read_vm, "Name"), a("pair"));
+    assert_eq!(read_var(&read_vm, "Arity"), i(2));
+
+    let (construct_ok, construct_vm) = call3("functor/3", ub("Term"), a("node"), i(2));
+    assert!(construct_ok);
+    match read_var(&construct_vm, "Term") {
+        Value::Str(name, args) => {
+            assert_eq!(name, "node");
+            assert_eq!(args.len(), 2);
+            assert!(args.iter().all(Value::is_unbound));
+            assert_ne!(args[0], args[1]);
+        }
+        other => panic!("expected constructed compound, got {other:?}"),
+    }
+
+    let (atom_ok, atom_vm) = call3("functor/3", ub("Term"), a("atom"), i(0));
+    assert!(atom_ok);
+    assert_eq!(read_var(&atom_vm, "Term"), a("atom"));
+
+    let (number_ok, number_vm) = call3("functor/3", ub("Term"), i(42), i(0));
+    assert!(number_ok);
+    assert_eq!(read_var(&number_vm, "Term"), i(42));
+
+    let (empty_list_ok, empty_list_vm) = call3("functor/3", ub("Term"), a("[]"), i(0));
+    assert!(empty_list_ok);
+    assert_eq!(read_var(&empty_list_vm, "Term"), a("[]"));
+
+    assert!(!call3("functor/3", ub("Term"), i(42), i(1)).0);
+    assert!(!call3("functor/3", ub("Term"), ub("Name"), i(0)).0);
+    assert!(!call3("functor/3", ub("Term"), a("f"), i(-1)).0);
+    assert!(!call3("functor/3", ub("Term"), a("f"), i(i64::MAX)).0);
+
+    let (rollback_ok, rollback_vm) = call3(
+        "functor/3",
+        Value::Str("f/2".to_string(), vec![a("a"), a("b")]),
+        ub("Name"),
+        i(1),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "Name"), ub("Name"));
+
+    let mut missing_name = vmnew();
+    missing_name.set_reg("A1", a("atom"));
+    missing_name.set_reg("A3", i(0));
+    assert!(!missing_name.execute_builtin("functor/3", 3));
+
+    let mut missing_arity = vmnew();
+    missing_arity.set_reg("A1", a("atom"));
+    missing_arity.set_reg("A2", ub("Name"));
+    assert!(!missing_arity.execute_builtin("functor/3", 3));
+}
+
+#[test]
 fn test_standard_order() {
     assert!(call2("@</2", a("a"), a("b")).0);
     assert!(!call2("@</2", a("b"), a("a")).0);
