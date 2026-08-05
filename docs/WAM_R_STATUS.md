@@ -78,14 +78,23 @@ default 4096), and explicit `auto` (codegen resolves via shared
   clear the ≥1.05× gate (best ~1.016×). PERF-R-NATIVE-HOPS-0 adds an
   optional base-R `.Call` hop kernel (`R CMD SHLIB`, pure-R fallback;
   ~1.95× same-host query over AGG-BATCH; steps unchanged at 14540).
+  PERF-R-POST-NATIVE-0 profiled the post-native residual: hops ~3–5% of
+  warm query; `run`/`step` ~84–90%, aggregate fast path ~32%, `put_reg`
+  ~23%. These are nested/inclusive measurements and are not additive.
+  Plan-cache + closed `(Batch ⊕ scalar) ** Exp` trials did not
+  clear ≥1.05× (best ~1.00–1.03×); no production change retained.
 
 ## Path forward
 
 1. Optional follow-up: three-form keys for additional audited builtins
    beyond `is`/compares/`succ` (same class of work as ISO-PYTHON/ISO-FSHARP).
+2. Next ED performance lever after POST-NATIVE-0: deeper
+   `power_sum_bound` lowering that skips the WAM shell around bulk
+   collect + closed reduce (or `put_reg`/`step` infrastructure) — not
+   further hop-kernel / aggregate-arith micro-opts.
 
 ## Document status
 
-Fleet-aligned snapshot updated for PERF-R-NATIVE-HOPS-0 (2026-08-02):
-hosted 270/776; PATHMARK, LOOPBODY, ED-BOUNDARY, LOWERED-DIRECTCALL,
-and CA-BULK-HOPS declined where measured.
+Fleet-aligned snapshot updated for PERF-R-POST-NATIVE-0 (2026-08-04):
+hosted NATIVE-HOPS-0 row unchanged at 270/776; POST-NATIVE plan-cache /
+closed-pow trials declined.
