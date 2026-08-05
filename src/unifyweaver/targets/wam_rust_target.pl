@@ -2323,57 +2323,80 @@ compile_execute_term_builtin_to_rust(Code) :-
                 }
             }
             "functor/3" => {
-                let t = self.get_reg_raw("A1")
-                    .map(|v| self.deref_heap(&self.deref_var(&v)));
-                match t {
-                    Some(Value::Unbound(ref var_name)) => {
-                        // Construct mode: read N (atom) and A (integer).
-                        let n = self.get_reg_raw("A2")
-                            .map(|v| self.deref_heap(&self.deref_var(&v)));
-                        let a = self.get_reg_raw("A3")
-                            .map(|v| self.deref_heap(&self.deref_var(&v)));
-                        match (n, a) {
-                            (Some(name_val), Some(Value::Integer(arity))) if arity >= 0 => {
-                                let built = if arity == 0 {
-                                    name_val
-                                } else if let Value::Atom(fname) = name_val {
-                                    let args: Vec<Value> = (0..arity as usize).map(|_| {
-                                        self.var_counter += 1;
-                                        Value::Unbound(format!("_F{}", self.var_counter))
-                                    }).collect();
-                                    Value::Str(fname, args)
-                                } else { return false; };
-                                self.trail_binding("A1");
-                                self.set_reg_str("A1", built.clone());
-                                self.bind_var(var_name, built);
-                                self.pc += 1; true
+                let term_raw = match self.get_reg_raw("A1") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let name_raw = match self.get_reg_raw("A2") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let arity_raw = match self.get_reg_raw("A3") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let term = self.deref_heap(&self.deref_var(&term_raw));
+                match term {
+                    Value::Unbound(_) => {
+                        let name = self.deref_heap(&self.deref_var(&name_raw));
+                        let arity = match self.deref_heap(&self.deref_var(&arity_raw)) {
+                            Value::Integer(arity) if arity >= 0 => match usize::try_from(arity) {
+                                Ok(arity) => arity,
+                                Err(_) => return false,
+                            },
+                            _ => return false,
+                        };
+                        let built = if arity == 0 {
+                            let is_atomic = match &name {
+                                Value::Atom(_) | Value::Integer(_) | Value::Float(_) | Value::Bool(_) => true,
+                                Value::List(items) => items.is_empty(),
+                                _ => false,
+                            };
+                            if is_atomic {
+                                name
+                            } else {
+                                return false;
                             }
-                            _ => false,
+                        } else if let Value::Atom(functor) = name {
+                            let mut args = Vec::new();
+                            if args.try_reserve_exact(arity).is_err() { return false; }
+                            for _ in 0..arity {
+                                self.var_counter += 1;
+                                args.push(Value::Unbound(format!("_F{}", self.var_counter)));
+                            }
+                            Value::Str(functor, args)
+                        } else {
+                            return false;
+                        };
+                        let mark = self.trail.len();
+                        if self.unify(&term_raw, &built) {
+                            self.pc += 1; true
+                        } else {
+                            self.unwind_trail_to(mark);
+                            false
                         }
                     }
-                    Some(t_val) => {
-                        // Read mode: extract functor name and arity.
-                        let (name, arity): (Value, i64) = match &t_val {
-                            Value::Str(f, args) => (Value::Atom(f.clone()), args.len() as i64),
+                    term => {
+                        let (name, arity): (Value, i64) = match &term {
+                            Value::Str(functor, args) => (Value::Atom(functor.clone()), args.len() as i64),
                             Value::List(items) if items.is_empty() =>
                                 (Value::Atom("[]".to_string()), 0),
                             Value::List(_) => (Value::Atom(".".to_string()), 2),
-                            Value::Atom(s) => (Value::Atom(s.clone()), 0),
+                            Value::Atom(name) => (Value::Atom(name.clone()), 0),
                             Value::Integer(_) | Value::Float(_) | Value::Bool(_) =>
-                                (t_val.clone(), 0),
+                                (term.clone(), 0),
                             _ => return false,
                         };
-                        if let Some(a2) = self.get_reg_raw("A2") {
-                            let derefed = self.deref_var(&self.deref_heap(&a2));
-                            if !self.unify(&derefed, &name) { return false; }
+                        let mark = self.trail.len();
+                        if self.unify(&name_raw, &name)
+                            && self.unify(&arity_raw, &Value::Integer(arity))
+                        {
+                            self.pc += 1; true
+                        } else {
+                            self.unwind_trail_to(mark);
+                            false
                         }
-                        if let Some(a3) = self.get_reg_raw("A3") {
-                            let derefed = self.deref_var(&self.deref_heap(&a3));
-                            if !self.unify(&derefed, &Value::Integer(arity)) { return false; }
-                        }
-                        self.pc += 1; true
                     }
-                    None => false,
                 }
             }
             "arg/3" => {
