@@ -2124,6 +2124,63 @@ fn test_arg_direct_modes_and_rollback() {
 }
 
 #[test]
+fn test_univ_direct_modes_and_rollback() {
+    let compound = Value::Str("pair/2".to_string(), vec![a("left"), i(7)]);
+    let (decompose_ok, decompose_vm) = call2("=../2", compound, ub("Parts"));
+    assert!(decompose_ok);
+    assert_eq!(read_var(&decompose_vm, "Parts"),
+        Value::List(vec![a("pair"), a("left"), i(7)]));
+
+    let (compose_ok, compose_vm) = call2(
+        "=../2", ub("Term"), Value::List(vec![a("node"), a("a"), i(7)]));
+    assert!(compose_ok);
+    assert_eq!(read_var(&compose_vm, "Term"),
+        Value::Str("node".to_string(), vec![a("a"), i(7)]));
+
+    let (atom_ok, atom_vm) = call2("=../2", a("atom"), ub("Parts"));
+    assert!(atom_ok);
+    assert_eq!(read_var(&atom_vm, "Parts"), Value::List(vec![a("atom")]));
+
+    let (number_ok, number_vm) = call2("=../2", ub("Term"), Value::List(vec![i(42)]));
+    assert!(number_ok);
+    assert_eq!(read_var(&number_vm, "Term"), i(42));
+
+    let (empty_ok, empty_vm) = call2("=../2", Value::List(vec![]), ub("Parts"));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Parts"), Value::List(vec![a("[]")]));
+
+    let (list_ok, list_vm) = call2(
+        "=../2", Value::List(vec![a("head"), a("tail")]), ub("Parts"));
+    assert!(list_ok);
+    assert_eq!(read_var(&list_vm, "Parts"), Value::List(vec![
+        a("."), a("head"), Value::List(vec![a("tail")]),
+    ]));
+
+    assert!(!call2("=../2", ub("Term"), Value::List(vec![])).0);
+    assert!(!call2("=../2", ub("Term"), Value::List(vec![ub("Head")])).0);
+    assert!(!call2("=../2", ub("Term"), Value::List(vec![
+        Value::Str("not_atomic/0".to_string(), vec![]),
+    ])).0);
+    assert!(!call2("=../2", ub("Term"), a("not_a_list")).0);
+
+    let (rollback_ok, rollback_vm) = call2(
+        "=../2",
+        Value::Str("pair/2".to_string(), vec![a("left"), a("right")]),
+        Value::List(vec![ub("Name"), a("wrong"), a("right")]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "Name"), ub("Name"));
+
+    let mut missing_term = vmnew();
+    missing_term.set_reg("A2", Value::List(vec![a("atom")]));
+    assert!(!missing_term.execute_builtin("=../2", 2));
+
+    let mut missing_list = vmnew();
+    missing_list.set_reg("A1", a("atom"));
+    assert!(!missing_list.execute_builtin("=../2", 2));
+}
+
+#[test]
 fn test_standard_order() {
     assert!(call2("@</2", a("a"), a("b")).0);
     assert!(!call2("@</2", a("b"), a("a")).0);

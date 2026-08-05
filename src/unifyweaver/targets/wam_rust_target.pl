@@ -2445,27 +2445,43 @@ compile_execute_term_builtin_to_rust(Code) :-
                 }
             }
             "=../2" => {
-                let t_val = self.get_reg_raw("A1")
-                    .map(|v| self.deref_heap(&self.deref_var(&v)));
-                match t_val {
-                    Some(Value::Unbound(ref var_name)) => {
-                        // Compose mode: build T from list in A2.
-                        let l_val = self.get_reg_raw("A2")
-                            .map(|v| self.deref_heap(&self.deref_var(&v)));
-                        if let Some(Value::List(items)) = l_val {
-                            if items.is_empty() { return false; }
-                            let built = if items.len() == 1 {
-                                items[0].clone()
-                            } else if let Value::Atom(fname) = &items[0] {
-                                Value::Str(fname.clone(), items[1..].to_vec())
-                            } else { return false; };
-                            self.trail_binding("A1");
-                            self.set_reg_str("A1", built.clone());
-                            self.bind_var(var_name, built);
+                let term_raw = match self.get_reg_raw("A1") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let list_raw = match self.get_reg_raw("A2") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let term = self.deref_heap(&self.deref_var(&term_raw));
+                match term {
+                    Value::Unbound(_) => {
+                        // Compose mode: build T from a nonempty proper list.
+                        let items = match self.value_as_list(&list_raw) {
+                            Some(items) if !items.is_empty() => items,
+                            _ => return false,
+                        };
+                        let head = self.deref_heap(&self.deref_var(&items[0]));
+                        let built = if items.len() == 1 {
+                            match head {
+                                Value::Atom(_) | Value::Integer(_) | Value::Float(_) | Value::Bool(_) => head,
+                                Value::List(ref values) if values.is_empty() => head,
+                                _ => return false,
+                            }
+                        } else if let Value::Atom(fname) = head {
+                            Value::Str(fname, items[1..].to_vec())
+                        } else {
+                            return false;
+                        };
+                        let mark = self.trail.len();
+                        if self.unify(&term_raw, &built) {
                             self.pc += 1; true
-                        } else { false }
+                        } else {
+                            self.unwind_trail_to(mark);
+                            false
+                        }
                     }
-                    Some(t) => {
+                    t => {
                         // Decompose mode: build list from T.
                         let list = match &t {
                             Value::Str(f, args) => {
@@ -2487,13 +2503,14 @@ compile_execute_term_builtin_to_rust(Code) :-
                             ]),
                             _ => return false,
                         };
-                        if let Some(a2) = self.get_reg_raw("A2") {
-                            let derefed = self.deref_var(&self.deref_heap(&a2));
-                            if self.unify(&derefed, &list) { self.pc += 1; true }
-                            else { false }
-                        } else { false }
+                        let mark = self.trail.len();
+                        if self.unify(&list_raw, &list) {
+                            self.pc += 1; true
+                        } else {
+                            self.unwind_trail_to(mark);
+                            false
+                        }
                     }
-                    None => false,
                 }
             }
             "copy_term/2" => {
