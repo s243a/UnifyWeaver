@@ -782,6 +782,7 @@ plawk_program_native_driver_ir(
     plawk_join_nonempty_ir([BeginIR0, WritebinEntryIR], BeginIR),
     plawk_record_program_ok(FieldSeparator, Rules, PrintFields),
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
+    plawk_end_record_source(FieldSeparator, PrintFields, EndRecord, RetainIR),
     plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator,
         RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
     plawk_rules_body_print_fields(Rules, BodyPrintFields),
@@ -794,15 +795,19 @@ plawk_program_native_driver_ir(
         RecordLoopPhiIR, RecordCounterIR),
     plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
     plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
-    plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
+    plawk_join_nonempty_ir([RetainIR, RecordCounterIR, RuleChainIR], RecordIR),
     plawk_scalar_rule_controls(Rules, ScalarRuleControls),
     plawk_scalar_next_phi_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, NextPhiIR),
     plawk_break_close_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, done,
         BreakCloseIR, FinalStatePhiIR),
-    plawk_scalar_end_print_ir(PrintFields, StatePlan, OutputSeparator, EndPrintIR),
+    plawk_scalar_end_print_ir(PrintFields, StatePlan, OutputSeparator, EndRecord,
+        EndPrintIR),
     plawk_writebin_globals(WritebinPlan, WritebinGlobalIR),
-    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+    format(atom(SurfaceGlobalIR0), '~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, RuleGlobalIR, WritebinGlobalIR]),
+    plawk_end_lastrec_globals_ir(EndRecord, LastRecGlobalIR),
+    plawk_append_surface_global_ir(SurfaceGlobalIR0, LastRecGlobalIR,
+        SurfaceGlobalIR),
     plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
@@ -843,8 +848,9 @@ plawk_program_native_driver_ir(
     plawk_writebin_entry_lines(WritebinPlan, WritebinEntryIR),
     plawk_join_nonempty_ir([BeginIR0, WritebinEntryIR], BeginIR),
     plawk_record_program_ok(FieldSeparator, Rules, AllFields),
-    plawk_scalar_end_prints_ir(Statements, StatePlan, OutputSeparator, EndPrintIR,
-        StringGlobalIR),
+    plawk_end_record_source(FieldSeparator, Statements, EndRecord, RetainIR),
+    plawk_scalar_end_prints_ir(Statements, StatePlan, OutputSeparator, EndRecord,
+        EndPrintIR, StringGlobalIR),
     plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator,
         RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
     plawk_rules_body_print_fields(Rules, BodyPrintFields),
@@ -857,14 +863,17 @@ plawk_program_native_driver_ir(
         RecordLoopPhiIR, RecordCounterIR),
     plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
     plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
-    plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
+    plawk_join_nonempty_ir([RetainIR, RecordCounterIR, RuleChainIR], RecordIR),
     plawk_scalar_rule_controls(Rules, ScalarRuleControls),
     plawk_scalar_next_phi_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, NextPhiIR),
     plawk_break_close_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, done,
         BreakCloseIR, FinalStatePhiIR),
     plawk_writebin_globals(WritebinPlan, WritebinGlobalIR),
-    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+    format(atom(SurfaceGlobalIR0), '~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, RuleGlobalIR, WritebinGlobalIR]),
+    plawk_end_lastrec_globals_ir(EndRecord, LastRecGlobalIR),
+    plawk_append_surface_global_ir(SurfaceGlobalIR0, LastRecGlobalIR,
+        SurfaceGlobalIR),
     plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
@@ -1258,7 +1267,12 @@ plawk_program_native_driver_ir(
     plawk_break_close_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, done,
         BreakCloseIR, FinalStatePhiIR),
     (   HasEnd == true
-    ->  plawk_scalar_end_print_ir(PrintFields, StatePlan, OutputSeparator, EndPrintIR)
+    ->  % no_end_record: binary records have no `%line_s` to retain, so an END
+        %  field read here declines rather than projecting from a store that was
+        %  never emitted. (`$N` in a binfmt END is its own follow-on -- it would
+        %  read the fixed-width record buffer, not a text slice.)
+        plawk_scalar_end_print_ir(PrintFields, StatePlan, OutputSeparator,
+            no_end_record, EndPrintIR)
     ;   EndPrintIR = ''
     ),
     plawk_writebin_globals(WritebinPlan, WritebinGlobalIR),
@@ -18139,11 +18153,13 @@ plawk_branch_next_phi_incomings([branch_next(Label, Values) | Rest], SlotIndex, 
 plawk_branch_next_phi_incomings([_Exit | Rest], SlotIndex, Incomings) :-
     plawk_branch_next_phi_incomings(Rest, SlotIndex, Incomings).
 
-plawk_scalar_end_print_ir(PrintFields, StatePlan, OutputSeparator, IR) :-
-    phrase(plawk_scalar_end_print_lines(PrintFields, StatePlan, OutputSeparator, 0), Lines),
+plawk_scalar_end_print_ir(PrintFields, StatePlan, OutputSeparator, EndRecord, IR) :-
+    phrase(plawk_scalar_end_print_lines(PrintFields, StatePlan, OutputSeparator,
+        EndRecord, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
 
-%% plawk_scalar_end_prints_ir(+Prints, +StatePlan, +OutputSeparator, -IR, -StringGlobalIR)
+%% plawk_scalar_end_prints_ir(+Prints, +StatePlan, +OutputSeparator, +EndRecord,
+%%     -IR, -StringGlobalIR)
 %
 %  Emit MULTIPLE prints in an END block (`END { print a; print b }`). Each print
 %  is lowered independently by the single-print emitter (fields + ORS newline,
@@ -18153,41 +18169,46 @@ plawk_scalar_end_print_ir(PrintFields, StatePlan, OutputSeparator, IR) :-
 %  the same rule as their block references, keeping them consistent. Print 0 is
 %  byte-identical to the single-print path. Returns the joined block IR and the
 %  joined (renamed) string-literal globals.
-plawk_scalar_end_prints_ir(Prints, StatePlan, OutputSeparator, IR, StringGlobalIR) :-
-    plawk_scalar_end_prints_ir_(Prints, 0, StatePlan, OutputSeparator, Blocks, Globals),
+plawk_scalar_end_prints_ir(Prints, StatePlan, OutputSeparator, EndRecord, IR,
+        StringGlobalIR) :-
+    plawk_scalar_end_prints_ir_(Prints, 0, StatePlan, OutputSeparator, EndRecord,
+        Blocks, Globals),
     atomic_list_concat(Blocks, '\n', IR),
     plawk_join_nonempty_ir(Globals, StringGlobalIR).
 
-plawk_scalar_end_prints_ir_([], _I, _StatePlan, _OutputSeparator, [], []).
+plawk_scalar_end_prints_ir_([], _I, _StatePlan, _OutputSeparator, _EndRecord, [], []).
 % `exit [N]` in END. END is the last thing that runs -- the block falls straight
 % into `ret %plawk_exit_ec` -- so setting the status needs no branch at all: emit
 % the store and STOP. Truncating here is what makes the rest of the END block
 % dead, matching awk (`END { print "a"; exit 1; print "b" }` prints only "a"),
 % and it works because the END statement list is straight-line code.
 plawk_scalar_end_prints_ir_([exit(int(Code)) | _Rest], _I, _StatePlan,
-        _OutputSeparator, [Block], ['']) :-
+        _OutputSeparator, _EndRecord, [Block], ['']) :-
     integer(Code),
     !,
     format(atom(Block), '  store i32 ~w, i32* @plawk_exit_code', [Code]).
 plawk_scalar_end_prints_ir_([print(Fields) | Rest], I, StatePlan, OutputSeparator,
-        [Block | Blocks], [Global | Globals]) :-
-    plawk_scalar_end_print_ir(Fields, StatePlan, OutputSeparator, RawBlock),
+        EndRecord, [Block | Blocks], [Global | Globals]) :-
+    plawk_scalar_end_print_ir(Fields, StatePlan, OutputSeparator, EndRecord,
+        RawBlock),
     plawk_end_print_string_globals(Fields, RawGlobal),
     plawk_end_print_suffix_rename(I, RawBlock, Block),
     plawk_end_print_suffix_rename(I, RawGlobal, Global),
     I1 is I + 1,
-    plawk_scalar_end_prints_ir_(Rest, I1, StatePlan, OutputSeparator, Blocks, Globals).
+    plawk_scalar_end_prints_ir_(Rest, I1, StatePlan, OutputSeparator, EndRecord,
+        Blocks, Globals).
 % `printf` in END. Unlike `print` it takes no OFS between arguments and appends
 % no ORS -- the format string is the entire output contract -- so it does not go
 % through the print-field emitters at all; it emits its own arguments and shares
 % the format rewriter with the record-context printf.
 plawk_scalar_end_prints_ir_([printf(string(Format), Args) | Rest], I, StatePlan,
-        OutputSeparator, [Block | Blocks], [Global | Globals]) :-
+        OutputSeparator, EndRecord, [Block | Blocks], [Global | Globals]) :-
     plawk_end_printf_ir(Format, Args, StatePlan, RawGlobal-RawBlock),
     plawk_end_print_suffix_rename(I, RawBlock, Block),
     plawk_end_print_suffix_rename(I, RawGlobal, Global),
     I1 is I + 1,
-    plawk_scalar_end_prints_ir_(Rest, I1, StatePlan, OutputSeparator, Blocks, Globals).
+    plawk_scalar_end_prints_ir_(Rest, I1, StatePlan, OutputSeparator, EndRecord,
+        Blocks, Globals).
 
 %% plawk_end_printf_ir(+Format, +Args, +StatePlan, -GlobalIR-IR)
 %
@@ -18333,8 +18354,36 @@ plawk_end_output_list([exit(int(Code)) | Rest], [[] | More]) :-
 %% END { if (COND) print ...; [else print ...] } support ---------------------
 
 % A supported END-if: each branch is a single print (else optional).
-plawk_end_if_ok([print(_)], []).
-plawk_end_if_ok([print(_)], [print(_)]).
+%% plawk_end_if_ok(+ThenActions, +ElseActions) is semidet.
+%
+%  What an `END { if … }` block's branches may contain: a single print each, and
+%  NO FIELD READ in either.
+%
+%  The field exclusion fixes WRONG OUTPUT that predates this gate.
+%  plawk_end_if_branch_ir/8 lowers each branch through the rule-body print
+%  emitter, which projects `$N` from `%line` -- and at `end_print` `%line` is the
+%  EOF sentinel, so `END { if (n == 3) print $1 }` printed `end_of_file` where
+%  gawk prints the last record. `$0` and the `else` branch were wrong the same
+%  way. That is the identical defect #4100 gated for END LOOPS, in a driver
+%  nobody re-checked: reuse inherits what an emitter ASSUMES, not just what it
+%  does, and this line has now paid for that three times.
+%
+%  A decline, not a projection: the straight-line END print path retains and
+%  projects the last record (plawk_end_record_source/4), but routing these
+%  branches through it means parameterising the record source of the whole
+%  prefixed print emitter -- its own change. Pinned in the tests so that change
+%  flips this deliberately.
+%
+%  The CONDITION is deliberately not checked. The associative END-if supports
+%  record-shaped keys (`END { if ($1 in arr) … }`) by synthesising a transient
+%  %Value for the condition alone; only the branch prints are broken.
+plawk_end_if_ok(ThenActions, ElseActions) :-
+    plawk_end_if_branch_shape_ok(ThenActions, ElseActions),
+    \+ plawk_end_term_mentions_field(ThenActions),
+    \+ plawk_end_term_mentions_field(ElseActions).
+
+plawk_end_if_branch_shape_ok([print(_)], []).
+plawk_end_if_branch_shape_ok([print(_)], [print(_)]).
 
 % A standalone associative END-if is intentionally narrower than the general
 % rule-pattern membership surface: one membership leaf, with any number of
@@ -18500,12 +18549,13 @@ plawk_final_slot_values(StatePlan, Values) :-
         ( nth0(I, Slots, _Slot), format(atom(V), '%final_slot_~w', [I]) ),
         Values).
 
-plawk_scalar_end_print_lines([], _StatePlan, _OutputSeparator, _) -->
+plawk_scalar_end_print_lines([], _StatePlan, _OutputSeparator, _EndRecord, _) -->
     { plawk_ors_terminator_ir(end_newline_fmt, end_ors_ptr, printed_end_newline,
           TermLines)
     },
     TermLines.
-plawk_scalar_end_print_lines([var(Name) | Rest], StatePlan, OutputSeparator, PrintIndex) -->
+plawk_scalar_end_print_lines([var(Name) | Rest], StatePlan, OutputSeparator,
+        EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     { plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
       format(atom(ValueIR), '%final_slot_~w', [SlotIndex]),
@@ -18545,48 +18595,72 @@ plawk_scalar_end_print_lines([var(Name) | Rest], StatePlan, OutputSeparator, Pri
       NextPrintIndex is PrintIndex + 1
     },
     Lines,
-    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
-plawk_scalar_end_print_lines([special('NR') | Rest], StatePlan, OutputSeparator, PrintIndex) -->
+    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
+plawk_scalar_end_print_lines([special('NR') | Rest], StatePlan, OutputSeparator,
+        EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     plawk_end_nr_print_lines(StatePlan, PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
-    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
-plawk_scalar_end_print_lines([special('RT') | Rest], StatePlan, OutputSeparator, PrintIndex) -->
+    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
+plawk_scalar_end_print_lines([special('RT') | Rest], StatePlan, OutputSeparator,
+        EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     plawk_end_rt_print_lines(PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
-    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
-plawk_scalar_end_print_lines([Expr | Rest], StatePlan, OutputSeparator, PrintIndex) -->
+    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
+% `$0` / `$N` in END -- projected from the RETAINED last record. Reachable only
+% under end_record(FS): that term is produced by the driver clause that also
+% emits the retain call, so the projection cannot be emitted without its store
+% (see plawk_end_record_source/4).
+plawk_scalar_end_print_lines([field(Index) | Rest], StatePlan, OutputSeparator,
+        EndRecord, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_lastrec_field_lines(Index, EndRecord, PrintIndex),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
+plawk_scalar_end_print_lines([Expr | Rest], StatePlan, OutputSeparator, EndRecord,
+        PrintIndex) -->
     { plawk_end_scalar_expr(Expr) },
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     plawk_end_expr_print_lines(Expr, StatePlan, PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
-    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
-plawk_scalar_end_print_lines([string(Value) | Rest], StatePlan, OutputSeparator, PrintIndex) -->
+    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
+plawk_scalar_end_print_lines([string(Value) | Rest], StatePlan, OutputSeparator,
+        EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     plawk_end_string_print_lines(Value, PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
-    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
+    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
 % concatenation in END (`print "total: " sum`): one leading separator, then each
 % operand printed adjacently (no separator between). Each part uses a unique
 % index (PrintIndex*1000 + part) so the fixed-name emitters don't collide.
-plawk_scalar_end_print_lines([concat(Parts) | Rest], StatePlan, OutputSeparator, PrintIndex) -->
+plawk_scalar_end_print_lines([concat(Parts) | Rest], StatePlan, OutputSeparator,
+        EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_concat_parts(Parts, StatePlan, PrintIndex, 0),
+    plawk_end_concat_parts(Parts, StatePlan, EndRecord, PrintIndex, 0),
     { NextPrintIndex is PrintIndex + 1 },
-    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
+    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
 
-plawk_end_concat_parts([], _StatePlan, _PrintIndex, _PartIndex) -->
+plawk_end_concat_parts([], _StatePlan, _EndRecord, _PrintIndex, _PartIndex) -->
     [].
-plawk_end_concat_parts([Part | Rest], StatePlan, PrintIndex, PartIndex) -->
+plawk_end_concat_parts([Part | Rest], StatePlan, EndRecord, PrintIndex, PartIndex) -->
     { CombinedIndex is PrintIndex * 1000 + PartIndex },
-    plawk_end_field_print_lines(Part, StatePlan, CombinedIndex),
+    plawk_end_field_print_lines(Part, StatePlan, EndRecord, CombinedIndex),
     { NextPartIndex is PartIndex + 1 },
-    plawk_end_concat_parts(Rest, StatePlan, PrintIndex, NextPartIndex).
+    plawk_end_concat_parts(Rest, StatePlan, EndRecord, PrintIndex, NextPartIndex).
 
 % One END print field WITHOUT a leading separator (the concat driver adds the
 % single separator before the whole concatenation).
-plawk_end_field_print_lines(var(Name), StatePlan, PrintIndex) -->
+plawk_end_field_print_lines(field(Index), _StatePlan, EndRecord, PrintIndex) -->
+    plawk_end_lastrec_field_lines(Index, EndRecord, PrintIndex).
+plawk_end_field_print_lines(var(Name), StatePlan, _EndRecord, PrintIndex) -->
     { plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
       format(atom(ValueIR), '%final_slot_~w', [SlotIndex]),
       ( Slot = scalar_double(_Name)
@@ -18604,13 +18678,13 @@ plawk_end_field_print_lines(var(Name), StatePlan, PrintIndex) -->
       )
     },
     [FmtPtr, PrintCall].
-plawk_end_field_print_lines(string(Value), _StatePlan, PrintIndex) -->
+plawk_end_field_print_lines(string(Value), _StatePlan, _EndRecord, PrintIndex) -->
     plawk_end_string_print_lines(Value, PrintIndex).
-plawk_end_field_print_lines(special('NR'), StatePlan, PrintIndex) -->
+plawk_end_field_print_lines(special('NR'), StatePlan, _EndRecord, PrintIndex) -->
     plawk_end_nr_print_lines(StatePlan, PrintIndex).
-plawk_end_field_print_lines(special('RT'), _StatePlan, PrintIndex) -->
+plawk_end_field_print_lines(special('RT'), _StatePlan, _EndRecord, PrintIndex) -->
     plawk_end_rt_print_lines(PrintIndex).
-plawk_end_field_print_lines(Expr, StatePlan, PrintIndex) -->
+plawk_end_field_print_lines(Expr, StatePlan, _EndRecord, PrintIndex) -->
     { plawk_end_scalar_expr(Expr) },
     plawk_end_expr_print_lines(Expr, StatePlan, PrintIndex).
 
@@ -18647,6 +18721,187 @@ plawk_end_rt_print_lines(PrintIndex) -->
           LenIR, PtrIR, [FmtPtr, PrintCall])
     },
     [PtrLine, Len64Line, LenLine, FmtPtr, PrintCall].
+
+%% plawk_end_lastrec_field_lines(+Index, +EndRecord, +PrintIndex)//
+%
+%  Print `$Index` of the RETAINED last record in END.
+%
+%  Only the end_record(FS) form has a clause, and only the driver clauses that
+%  emit the retain call construct that term (plawk_end_record_source/4). A driver
+%  that has not wired the store passes no_end_record, this fails, and the program
+%  declines -- the projection cannot outrun its store. That coupling is
+%  deliberate: an END field read whose bytes were never retained would print
+%  EMPTY, which is exactly the silently-wrong outcome this line refuses to ship.
+%
+%  Both forms first re-materialise the retained bytes in the shared transient
+%  record buffer (@plawk_lastrec_transient) and box the reserved transient atom
+%  id as a %Value. `$0` then prints that text; `$N` hands the %Value to
+%  llvm_emit_atom_field_slice/5 -- the SAME slicer every in-loop field read uses,
+%  already parameterised on the record Value, so no field-slicing logic is
+%  duplicated here.
+plawk_end_lastrec_field_lines(0, end_record(_FieldSeparator), PrintIndex) -->
+    { plawk_end_lastrec_value_lines(PrintIndex, _RecValueIR, ValueLines),
+      format(atom(StrLine),
+          '  %end_rec_s_~w = call i8* @wam_atom_to_string(i64 %end_rec_id_~w)',
+          [PrintIndex, PrintIndex]),
+      % A failed transient copy yields id -1, whose text is null; print it as
+      % empty rather than glibc's "(null)". The `%s\0` format global's trailing
+      % NUL is a ready-made empty C string, the same trick the END string-slot
+      % print uses.
+      format(atom(NullLine), '  %end_rec_null_~w = icmp eq i8* %end_rec_s_~w, null',
+          [PrintIndex, PrintIndex]),
+      format(atom(SelLine),
+          '  %end_rec_ptr_~w = select i1 %end_rec_null_~w, i8* getelementptr ([3 x i8], [3 x i8]* @.plawk_surface_print_string, i64 0, i64 2), i8* %end_rec_s_~w',
+          [PrintIndex, PrintIndex, PrintIndex]),
+      format(atom(FmtVar), 'end_rec_fmt_~w', [PrintIndex]),
+      format(atom(PrintVar), 'printed_end_rec_~w', [PrintIndex]),
+      format(atom(PtrIR), '%end_rec_ptr_~w', [PrintIndex]),
+      llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar, PtrIR,
+          PrintLines),
+      append(ValueLines, [StrLine, NullLine, SelLine | PrintLines], Lines)
+    },
+    plawk_emit_lines(Lines).
+plawk_end_lastrec_field_lines(Index, end_record(FieldSeparator), PrintIndex) -->
+    { integer(Index),
+      Index > 0,
+      plawk_end_lastrec_value_lines(PrintIndex, RecValueIR, ValueLines),
+      format(atom(Base), 'end_field_~w', [PrintIndex]),
+      llvm_emit_atom_field_slice(RecValueIR, Index, FieldSeparator, Base, SliceIR),
+      format(atom(LenIR), '%~w_len', [Base]),
+      format(atom(PtrIR), '%~w_ptr', [Base]),
+      format(atom(FmtVar), 'end_field_fmt_~w', [PrintIndex]),
+      format(atom(PrintVar), 'printed_end_field_~w', [PrintIndex]),
+      llvm_emit_printf_slice(plawk_surface_print_slice, FmtVar, PrintVar, LenIR,
+          PtrIR, PrintLines),
+      append(ValueLines, [SliceIR | PrintLines], Lines)
+    },
+    plawk_emit_lines(Lines).
+
+% Re-materialise the retained record as a %Value carrying the reserved transient
+% atom id. Emitted per field read: the store is one memcpy of the retained bytes,
+% and doing it per read keeps each slice pointer valid until its own print (a
+% later re-materialisation may realloc the transient buffer).
+plawk_end_lastrec_value_lines(PrintIndex, RecValueIR, [IdLine, V0Line, VLine]) :-
+    format(atom(IdLine),
+        '  %end_rec_id_~w = call i64 @plawk_lastrec_transient()', [PrintIndex]),
+    format(atom(V0Line),
+        '  %end_rec_v0_~w = insertvalue %Value undef, i32 0, 0', [PrintIndex]),
+    format(atom(VLine),
+        '  %end_rec_~w = insertvalue %Value %end_rec_v0_~w, i64 %end_rec_id_~w, 1',
+        [PrintIndex, PrintIndex, PrintIndex]),
+    format(atom(RecValueIR), '%end_rec_~w', [PrintIndex]).
+
+%% plawk_end_record_source(+FieldSeparator, +EndTerm, -EndRecord, -RetainIR)
+%
+%  Decide whether this program retains its last record, and hand back BOTH the
+%  capability token the END emitters need and the record-loop IR that makes it
+%  true. One predicate returning both is the point: the projection is unreachable
+%  unless the store is emitted, so the two cannot drift apart.
+%
+%  plawk_end_term_mentions_field/1 is the SAME structural walk #4100 added as the
+%  END-loop safety gate -- inverted here rather than restated, so a new nesting
+%  level cannot make one of the two disagree with the other.
+%
+%  Text records only: `integer(FieldSeparator)` is this file's established test
+%  for text mode, and the binary drivers have no `%line_s` to copy from.
+%
+%  An END with no field read yields no_end_record and an EMPTY RetainIR, which
+%  plawk_join_nonempty_ir/2 drops -- so every program that worked before this
+%  feature keeps byte-identical IR.
+plawk_end_record_source(FieldSeparator, EndTerm, end_record(FieldSeparator),
+        RetainIR) :-
+    integer(FieldSeparator),
+    plawk_end_term_mentions_field(EndTerm),
+    !,
+    RetainIR =
+'  %plawk_lastrec_srclen = call i64 @strlen(i8* %line_s)
+  call void @plawk_lastrec_store(i8* %line_s, i64 %plawk_lastrec_srclen)'.
+plawk_end_record_source(_FieldSeparator, _EndTerm, no_end_record, '').
+
+%% plawk_end_lastrec_globals_ir(+EndRecord, -GlobalIR)
+%
+%  The retained-record store, emitted as PROGRAM-level globals and defines rather
+%  than into the shared runtime block in wam_llvm_target.pl. That placement is
+%  what makes this feature pay-per-use: a program whose END reads no field emits
+%  none of it and its `.ll` is unchanged. (Adding these beside the @wam_rt_*
+%  globals was tried first and reverted -- those are emitted into EVERY driver,
+%  so it perturbed the IR of every program for zero gain.)
+%
+%  The buffer is a single reused, geometrically grown allocation -- the same
+%  shape as @wam_rt_set -- so retaining the record costs CONSTANT memory and one
+%  memcpy per record no matter how many records the stream has. Interning each
+%  record instead would grow the atom table with every distinct record and break
+%  the streaming invariant.
+%
+%  A null buffer (no record was ever read, e.g. empty input) re-materialises as
+%  the empty string, matching awk's empty `$0` in END rather than reading garbage.
+plawk_end_lastrec_globals_ir(no_end_record, '').
+plawk_end_lastrec_globals_ir(end_record(_FieldSeparator),
+'@.plawk_lastrec_empty = private constant [1 x i8] c"\\00"
+@plawk_lastrec_buf = internal global i8* null
+@plawk_lastrec_cap = internal global i64 0
+@plawk_lastrec_len = internal global i64 0
+
+define void @plawk_lastrec_store(i8* %src, i64 %len) {
+entry:
+  %lrs.need = add i64 %len, 1
+  %lrs.cap = load i64, i64* @plawk_lastrec_cap
+  %lrs.buf0 = load i8*, i8** @plawk_lastrec_buf
+  %lrs.bufok = icmp ne i8* %lrs.buf0, null
+  %lrs.capok = icmp uge i64 %lrs.cap, %lrs.need
+  %lrs.fits = and i1 %lrs.bufok, %lrs.capok
+  br i1 %lrs.fits, label %lrs.copy, label %lrs.grow
+
+lrs.grow:
+  %lrs.twice = shl i64 %lrs.cap, 1
+  %lrs.small = icmp ult i64 %lrs.cap, 4096
+  %lrs.basecap = select i1 %lrs.small, i64 4096, i64 %lrs.twice
+  %lrs.needmore = icmp ugt i64 %lrs.need, %lrs.basecap
+  %lrs.newcap = select i1 %lrs.needmore, i64 %lrs.need, i64 %lrs.basecap
+  %lrs.old = load i8*, i8** @plawk_lastrec_buf
+  %lrs.new = call i8* @realloc(i8* %lrs.old, i64 %lrs.newcap)
+  %lrs.newnull = icmp eq i8* %lrs.new, null
+  br i1 %lrs.newnull, label %lrs.fail, label %lrs.store
+
+lrs.store:
+  store i8* %lrs.new, i8** @plawk_lastrec_buf
+  store i64 %lrs.newcap, i64* @plawk_lastrec_cap
+  br label %lrs.copy
+
+lrs.copy:
+  %lrs.dst = load i8*, i8** @plawk_lastrec_buf
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %lrs.dst, i8* %src, i64 %len, i1 false)
+  %lrs.end = getelementptr i8, i8* %lrs.dst, i64 %len
+  store i8 0, i8* %lrs.end
+  store i64 %len, i64* @plawk_lastrec_len
+  ret void
+
+lrs.fail:
+  store i64 0, i64* @plawk_lastrec_len
+  ret void
+}
+
+define i64 @plawk_lastrec_transient() {
+entry:
+  %lrt.buf = load i8*, i8** @plawk_lastrec_buf
+  %lrt.len = load i64, i64* @plawk_lastrec_len
+  %lrt.null = icmp eq i8* %lrt.buf, null
+  %lrt.empty = getelementptr [1 x i8], [1 x i8]* @.plawk_lastrec_empty, i64 0, i64 0
+  %lrt.src = select i1 %lrt.null, i8* %lrt.empty, i8* %lrt.buf
+  %lrt.n = select i1 %lrt.null, i64 0, i64 %lrt.len
+  %lrt.id = call i64 @wam_transient_atom_from_bytes(i8* %lrt.src, i64 %lrt.n)
+  ret i64 %lrt.id
+}').
+
+%% plawk_append_surface_global_ir(+SurfaceGlobalIR0, +ExtraIR, -SurfaceGlobalIR)
+%
+%  Append an optional globals block. An empty ExtraIR leaves the text ALONE --
+%  not even a separating newline -- so threading this through a driver clause
+%  cannot change the IR of a program that does not use the feature.
+plawk_append_surface_global_ir(SurfaceGlobalIR, '', SurfaceGlobalIR) :-
+    !.
+plawk_append_surface_global_ir(SurfaceGlobalIR0, ExtraIR, SurfaceGlobalIR) :-
+    format(atom(SurfaceGlobalIR), '~w~n~w', [SurfaceGlobalIR0, ExtraIR]).
 
 plawk_end_expr_print_lines(Expr, StatePlan, PrintIndex) -->
     { plawk_substitute_end_reads(Expr, StatePlan, SubstitutedExpr),

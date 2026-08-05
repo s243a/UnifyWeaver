@@ -1,7 +1,46 @@
-# plawk: field reads in END (`END { print $1 }`) — design
+# plawk: field reads in END (`END { print $1 }`) — design, and what shipped
 
-Status: **designed, not implemented.** Every fact below was established by probing
-or reading the code, not inferred. Written so the implementation can start cold.
+Status: **implemented** for the straight-line END print (single print, statement
+list, concatenation). Every fact below was established by probing or reading the
+code, not inferred.
+
+Two things the implementation changed about this design; both are worth reading
+before the follow-ons, because each removed work the plan had budgeted for.
+
+**1. The runtime did not need to go in `wam_llvm_target.pl` at all.** The
+sequencing constraint recorded at the bottom of this note — "the runtime cannot
+land before its wiring", because globals beside `@wam_rt_*` perturb every
+program's `.ll` — dissolved once the globals and the two `define`s were emitted as
+**program-level IR from the codegen**, which plawk already does for its
+`@plawk_foreign_*` / `@plawk_dyncall_*` helpers. They are emitted only when the
+gate fires, so a program with no END field read is byte-identical (verified: 15/15
+of a mixed golden corpus). The constraint was real; the decomposition it forbade
+just turned out to be unnecessary.
+
+**2. Work item 3 ("END field projection") needed no field-emitter change.**
+`@wam_transient_atom_from_bytes(i8*, i64)` copies bytes into the shared transient
+record buffer and returns the reserved transient atom id — the mechanism
+`@wam_getline_file_record` already uses so "the existing `%line` Value immediately
+exposes the new `$0`". END re-materialises the retained bytes that way, boxes the
+id as a `%Value`, and hands it to `llvm_emit_atom_field_slice/5`, **which was
+already parameterised on the record Value** (`+ValueIR` is its first argument).
+So no slicing logic is duplicated and no emitter was reparameterised. The plan's
+warning against "a second field emitter" was right; the cheaper route was to
+notice the existing one already took the record as a parameter.
+
+Note the EOF `%Value` itself carries a *real interned* `end_of_file` atom id, not
+the transient id — so rewriting the transient buffer does **not** retarget `%line`
+at `end_print`. END must construct its own `%Value`. That was checked, not
+assumed, and it is the fact that decides between the two approaches.
+
+**A pre-existing wrong output this work surfaced.**
+`{ n++ } END { if (n == 3) print $1 }` printed `end_of_file`, and so did `$0` and
+the `else` branch — confirmed against the parent commit, so not introduced here.
+`plawk_end_if_branch_ir/8` lowers each branch through the **rule-body** print
+emitter, which projects `$N` from `%line`: the identical defect #4100 gated for
+END loops, in a driver nobody re-checked. Now a clean decline via
+`plawk_end_if_ok/2`, pinned. This is the third time in this campaign that reusing
+an emitter imported what it *assumes* rather than only what it does.
 
 ## The gap, and why it now has two callers
 
@@ -132,3 +171,38 @@ changes *and* verify them. The failure modes here are a clang failure or wrong
 output, both of which this line treats as unacceptable to ship unverified — and
 the wrong-output variant is precisely what #4100 had to gate. Better a precise
 design than a half-applied change to the record lifetime.
+
+## What shipped, and what is still declined
+
+Landed: `$0` and `$N` in a straight-line END print, an END statement list
+(`END { print $1; print $2 }`) and a concatenation (`print $1 " / " $2`).
+Honours FS, OFS, ORS and a custom RS. `$N` past `NF` is empty; empty input gives
+an empty `$0`; multi-KB records exercise the buffer growth. Every hazard listed
+above was probed against gawk rather than reasoned about.
+
+The projection is reachable only through `end_record(FS)`, and
+`plawk_end_record_source/4` returns that token **together with** the record-loop
+retain IR. One predicate returning both is the point: a driver cannot emit the
+projection without the store, and a projection whose bytes were never retained
+would print *empty* — silently wrong, the failure mode this line refuses to ship.
+
+Still declined (each pinned in `tests/test_plawk_end_field_reads.pl`, so a later
+change flips it deliberately):
+
+- **END `if` branch** — the wrong output described above, now a decline.
+  Projecting it means parameterising the record source of the prefixed print
+  emitter, which is its own change.
+- **END loop body** — #4100's gate, unchanged. Needs the same parameterisation in
+  `plawk_scalar_action_sequence_pairs//15`.
+- **`printf` argument in END** (`printf "%s\n", $1`) — the END printf emitter has
+  no field clause.
+- **`NF` in END** — falls out of the same retained record; not wired.
+- **END-only programs** (`END { print $1 }` with no rules) — a different driver,
+  which does not retain.
+- **Binary descriptors** (`binfmt`, `binfmt_union`) — no `%line_s` to copy from;
+  `$N` there would read the fixed-width record buffer, a separate feature.
+
+A `$0` **modified** in a rule (`{ $1 = "Z" } END { print $0 }`) is not a divergence
+today because those programs decline for unrelated reasons. When they compile, note
+that the retain happens at the *top* of the record block, so END would see the
+record as read rather than as modified — awk shows the modified one.

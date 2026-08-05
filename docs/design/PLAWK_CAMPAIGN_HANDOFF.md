@@ -32,9 +32,17 @@ Three distinct shapes, all confirmed by real bugs:
    each had to learn `&&`/`||` and `ternary_str/3` independently, one of which had
    no row at all.
 3. **Reuse importing assumptions.** Routing a new context through an existing
-   emitter inherits what it *assumes*, not only what it does. Twice: END string
-   guards inherited a missing text-slot guard (#4078); END loop bodies inherited
-   "`%line` is a real record" and printed the EOF sentinel (#4100).
+   emitter inherits what it *assumes*, not only what it does. Three times: END
+   string guards inherited a missing text-slot guard (#4078); END loop bodies
+   inherited "`%line` is a real record" and printed the EOF sentinel (#4100); and
+   the END **`if` branch** inherited the same thing from the rule-body print
+   emitter and printed `end_of_file` — undetected until the END field-read work
+   probed its neighbourhood, because nobody re-checked that driver when #4100
+   found the identical defect next door.
+
+   The lesson that keeps paying: when a bug is found in one context that reuses an
+   emitter, **enumerate the emitter's other callers in the same breath**. #4100
+   gated loops and stopped; the `if` driver was one grep away.
 
 **Prescriptions that worked:** one shared producer/emitter with callers
 parameterised (a *name flavour* parameter can preserve byte-identity — see
@@ -90,27 +98,50 @@ the whole-record print** (4 emitters) · ternary **string-valued branches** ·
 literal** · parenthesised whole ternary · `$0` as a ternary condition ·
 **`&&`/`||` in ternary conditions** · scalar-var ternary operands · **one emitter
 for the string-scalar comparison** (byte-identical) · **mixed ternary branches** ·
-**`n--`** · **loops in END**.
+**`n--`** · **loops in END** · **`END { print $1 }`** (retained last record,
+pay-per-use, + a pre-existing END-`if` wrong output converted to a decline).
 
-## Next: `END { print $1 }`
+## `END { print $1 }` — landed
 
-Fully designed in `PLAWK_END_FIELD_READS.md`. Summary of the load-bearing facts:
+Implemented for the straight-line END print (single print, statement list,
+concatenation). See `PLAWK_END_FIELD_READS.md` for the full record, including what
+the implementation changed about the design. The load-bearing facts:
 
 - The last record is **gone** by END — the transient buffer holds the bytes
-  `end_of_file` (proven by probe).
-- `@wam_rt_set/2` (`wam_llvm_target.pl` ~7567–7640) is the mechanism to copy: a
-  single reused, geometrically grown buffer → **constant memory, one copy per
-  record**. Interning per record would grow the atom table with every distinct
-  record and break the streaming invariant.
-- `plawk_end_term_mentions_field/1` (added in #4100 as a *safety* gate) is
-  exactly the predicate for "does END need the retained record" — so **invert**
-  it, don't define a second.
-- Two callers: `END { print $1 }`, and the field read in an END loop that #4100
-  gated. This *removes* a gate.
-- At the field-projection step, **parameterise the record source** rather than
-  writing a second field emitter.
+  `end_of_file` (proven by probe), and the EOF `%Value` carries a *real interned*
+  atom id, not the transient id, so `%line` cannot be retargeted.
+- The record loop copies each record into a reused, geometrically grown buffer
+  (`@plawk_lastrec_store`, modelled on `@wam_rt_set`) → **constant memory, one
+  memcpy per record**. Interning per record would grow the atom table with every
+  distinct record and break the streaming invariant.
+- **`@wam_transient_atom_from_bytes/2`** writes bytes into the shared transient
+  record buffer and returns the reserved transient atom id — the mechanism
+  `getline` already uses to expose a new `$0`. END re-materialises the retained
+  bytes that way and boxes the id as a `%Value`.
+- **`llvm_emit_atom_field_slice/5` was already parameterised on the record
+  Value.** So the projection reuses the *same* slicer every in-loop field read
+  uses; no field emitter was changed or duplicated. Worth checking for the
+  follow-ons: an emitter may already take as a parameter the thing you were about
+  to thread through it.
+- `plawk_end_term_mentions_field/1` (#4100's *safety* gate) is **inverted**, not
+  restated, to decide whether to retain.
+- `plawk_end_record_source/4` returns the capability token **and** the retain IR
+  together, so the projection cannot be emitted without its store. A projection
+  with no store prints *empty* — silently wrong.
+- The runtime is **program-level IR from the codegen**, not the shared runtime
+  block. That is what makes it pay-per-use and dissolved the "runtime cannot land
+  before its wiring" constraint this doc previously recorded.
 
 ## Remaining follow-ons
+
+**END field reads, the rest of the surface** — each pinned as a decline in
+`tests/test_plawk_end_field_reads.pl`. The `if`-branch and loop-body cases both
+need the *record source* parameterised in the emitter they share with rule bodies
+(`plawk_prefixed_print_action_ir` and `plawk_scalar_action_sequence_pairs//15`);
+do those two together, since it is one parameterisation serving both. Then:
+`printf "%s\n", $1` in END (its own argument emitter), `NF` in END (falls out of
+the same retained record), END-only programs (a driver with no retain), and `$N`
+in a `binfmt` END (reads the record buffer, not a text slice).
 
 `arr[k]--` (needs a row in each of four `inc_assoc` walkers) · `n += -1` (parser
 rejects a negative compound-assign delta; odd now `n--` works) · assoc rules
