@@ -1948,6 +1948,71 @@ fn test_length_direct_modes() {
 }
 
 #[test]
+fn test_append_direct_modes_and_rollback() {
+    let (forward_ok, forward_vm) = call3(
+        "append/3",
+        Value::List(vec![a("a"), a("b")]),
+        Value::List(vec![a("c"), a("d")]),
+        ub("Whole"),
+    );
+    assert!(forward_ok);
+    assert_eq!(
+        read_var(&forward_vm, "Whole"),
+        Value::List(vec![a("a"), a("b"), a("c"), a("d")]),
+    );
+
+    let (suffix_ok, suffix_vm) = call3(
+        "append/3",
+        Value::List(vec![a("a"), a("b")]),
+        ub("Suffix"),
+        Value::List(vec![a("a"), a("b"), a("c")]),
+    );
+    assert!(suffix_ok);
+    assert_eq!(read_var(&suffix_vm, "Suffix"), Value::List(vec![a("c")]));
+
+    let (prefix_ok, prefix_vm) = call3(
+        "append/3",
+        ub("Prefix"),
+        Value::List(vec![a("c"), a("d")]),
+        Value::List(vec![a("a"), a("b"), a("c"), a("d")]),
+    );
+    assert!(prefix_ok);
+    assert_eq!(read_var(&prefix_vm, "Prefix"), Value::List(vec![a("a"), a("b")]));
+
+    let (alias_ok, alias_vm) = call3(
+        "append/3",
+        Value::List(vec![ub("X")]),
+        Value::List(vec![a("b")]),
+        Value::List(vec![a("a"), a("b")]),
+    );
+    assert!(alias_ok);
+    assert_eq!(read_var(&alias_vm, "X"), a("a"));
+
+    assert!(call3("append/3", a("[]"), ub("Tail"), Value::List(vec![a("a")])).0);
+    assert!(!call3(
+        "append/3",
+        Value::List(vec![a("a"), a("b")]),
+        ub("Tail"),
+        Value::List(vec![a("a"), a("c")]),
+    ).0);
+    assert!(!call3("append/3", a("not_a_list"), a("[]"), ub("Whole")).0);
+
+    let (rollback_ok, rollback_vm) = call3(
+        "append/3",
+        Value::List(vec![a("a"), a("b")]),
+        Value::List(vec![a("c")]),
+        Value::List(vec![a("a"), ub("X"), a("wrong")]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "X"), ub("X"));
+
+    let mut missing_output = vmnew();
+    missing_output.set_reg("A1", Value::List(vec![]));
+    missing_output.set_reg("A2", Value::List(vec![]));
+    assert!(!missing_output.execute_builtin("append/3", 3));
+}
+
+#[test]
 fn test_standard_order() {
     assert!(call2("@</2", a("a"), a("b")).0);
     assert!(!call2("@</2", a("b"), a("a")).0);

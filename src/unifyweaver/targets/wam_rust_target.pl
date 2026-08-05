@@ -2262,16 +2262,64 @@ compile_execute_term_builtin_to_rust(Code) :-
                 }
             }
             "append/3" => {
-                let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                match (self.value_as_list(&a1), self.value_as_list(&a2)) {
-                    (Some(mut left), Some(right)) => {
-                        left.extend(right);
-                        if self.unify(&a3, &Value::List(left)) { self.pc += 1; true }
-                        else { false }
+                let a1 = match self.get_reg_raw("A1") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let a2 = match self.get_reg_raw("A2") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let a3 = match self.get_reg_raw("A3") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let left = self.value_as_list(&a1);
+                let right = self.value_as_list(&a2);
+                if let (Some(left), Some(right)) = (&left, &right) {
+                    let mut appended = left.clone();
+                    appended.extend(right.iter().cloned());
+                    let mark = self.trail.len();
+                    if self.unify(&a3, &Value::List(appended)) {
+                        self.pc += 1; true
+                    } else {
+                        self.unwind_trail_to(mark);
+                        false
                     }
-                    _ => false,
+                } else {
+                    let whole = match self.value_as_list(&a3) {
+                        Some(items) => items,
+                        None => return false,
+                    };
+                    if let Some(left) = left {
+                        if whole.starts_with(&left) {
+                            let suffix = Value::List(whole[left.len()..].to_vec());
+                            let mark = self.trail.len();
+                            if self.unify(&a2, &suffix) {
+                                self.pc += 1; true
+                            } else {
+                                self.unwind_trail_to(mark);
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else if let Some(right) = right {
+                        if whole.ends_with(&right) {
+                            let prefix = Value::List(whole[..whole.len() - right.len()].to_vec());
+                            let mark = self.trail.len();
+                            if self.unify(&a1, &prefix) {
+                                self.pc += 1; true
+                            } else {
+                                self.unwind_trail_to(mark);
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
                 }
             }
             "functor/3" => {
