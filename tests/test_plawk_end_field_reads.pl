@@ -224,7 +224,7 @@ test(end_field_read_emits_the_retained_record_ir) :-
     assertion(once(sub_atom(DriverIR, _, _, _,
         'call void @plawk_lastrec_store(i8* %line_s'))),
     % the END-side re-materialisation and slice
-    assertion(once(sub_atom(DriverIR, _, _, _, '%end_rec_id_0'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%end_field_0_id'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%end_field_0_ptr'))),
     !.
 
@@ -232,7 +232,7 @@ test(end_field_read_emits_the_retained_record_ir) :-
 test(end_whole_record_emits_no_field_slice) :-
     plawk_parse_string("{ n++ } END { print $0 }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%end_rec_id_0'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%end_rec_0_id'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '%end_field_0_ptr')),
     !.
 
@@ -245,6 +245,44 @@ test(the_retain_gate_is_the_end_loop_field_walk) :-
         [print([field(1)])])),
     assertion(\+ plawk_native_codegen:plawk_end_term_mentions_field(
         [print([var(n)])])),
+    !.
+
+% The rewrite is structural too, and reaches the same places the gate does -- a
+% field in a nested loop body, an `if` branch, a print list, a concatenation.
+% A per-shape rewriter that missed one would leave a raw field(N) to be lowered
+% against `%line`: the `end_of_file` wrong output again.
+test(the_rewrite_reaches_a_deeply_nested_field) :-
+    plawk_native_codegen:plawk_end_lastrec_rewrite(
+        [while_loop(cmp(var(n), gt, int(0)),
+             [if(scalar_if(cmp(var(n), eq, int(2))),
+                 [print([concat([field(1), string("-"), field(2)])])], [])])],
+        Rewritten),
+    assertion(\+ plawk_native_codegen:plawk_end_term_mentions_field(Rewritten)),
+    assertion(Rewritten ==
+        [while_loop(cmp(var(n), gt, int(0)),
+             [if(scalar_if(cmp(var(n), eq, int(2))),
+                 [print([concat([end_lastrec_field(1), string("-"),
+                                 end_lastrec_field(2)])])], [])])]),
+    !.
+
+% Non-field terms pass through untouched, so the rewrite cannot perturb a
+% field-free END.
+test(the_rewrite_leaves_a_field_free_term_alone) :-
+    Term = [print([var(n), string("x"), special('NR')])],
+    plawk_native_codegen:plawk_end_lastrec_rewrite(Term, Rewritten),
+    assertion(Rewritten == Term),
+    !.
+
+% Under no_end_record nothing is rewritten -- so a driver that did not retain
+% cannot end up emitting a projection.
+test(no_end_record_rewrites_nothing) :-
+    Fields = [field(1)],
+    plawk_native_codegen:plawk_end_branch_fields_rewrite(no_end_record, Fields,
+        Same),
+    assertion(Same == Fields),
+    plawk_native_codegen:plawk_end_branch_fields_rewrite(end_record(0' ), Fields,
+        Rewritten),
+    assertion(Rewritten == [end_lastrec_field(1)]),
     !.
 
 % Text records only: the binary drivers have no `%line_s` to copy from, so the
@@ -266,23 +304,47 @@ test(a_text_descriptor_without_a_field_read_does_not) :-
         0' , [print([var(n)])], no_end_record, '')),
     !.
 
-% --- declines that stay declines ----------------------------------------
+% --- END `if` branches ---------------------------------------------------
+%
+% These printed `end_of_file` before they were gated, and now project from the
+% retained record. The branch goes through the RULE-BODY print emitter, so what
+% made this work is the rewrite plus two clauses on that shared emitter -- no
+% second print emitter for END.
 
-% WRONG OUTPUT that predates this change: the END-if branch print goes through the
-% rule-body emitter and read `%line`, printing `end_of_file`. Now a clean decline.
-test(end_if_branch_field_read_declines) :-
-    build_status("{ n++ } END { if (n == 3) print $1 }\n", 3),
+test(end_if_branch_field_read, [condition(clang_available)]) :-
+    run("{ n++ } END { if (n == 3) print $1 }\n", "c\n"),
     !.
 
-test(end_if_else_branch_field_read_declines) :-
-    build_status("{ n++ } END { if (n == 3) print \"three\"; else print $2 }\n", 3),
+test(end_if_else_branch_field_read, [condition(clang_available)]) :-
+    run("{ n++ } END { if (n == 3) print \"three\"; else print $2 }\n", "three\n"),
     !.
 
-test(end_if_branch_whole_record_declines) :-
-    build_status("{ n++ } END { if (n == 3) print $0 }\n", 3),
+% Both branches, and the one that runs is the `else`.
+test(end_if_both_branches_field_reads, [condition(clang_available)]) :-
+    run("{ n++ } END { if (n == 9) print $1; else print $2 }\n", "3\n"),
     !.
 
-% A field-free END-if is untouched -- the gate looks only at the branch actions.
+test(end_if_branch_whole_record, [condition(clang_available)]) :-
+    run("{ n++ } END { if (n == 3) print $0 }\n", "c 3\n"),
+    !.
+
+test(end_if_branch_two_fields, [condition(clang_available)]) :-
+    run("{ n++ } END { if (n == 3) print $1, $2 }\n", "c 3\n"),
+    !.
+
+test(end_if_branch_concatenation, [condition(clang_available)]) :-
+    run("{ n++ } END { if (n == 3) print $1 \"/\" $2 }\n", "c/3\n"),
+    !.
+
+test(end_if_branch_field_past_nf_is_empty, [condition(clang_available)]) :-
+    run("{ n++ } END { if (n == 3) print $9 }\n", "\n"),
+    !.
+
+test(end_if_branch_honours_ors, [condition(clang_available)]) :-
+    run("BEGIN { ORS = \"|\" }\n{ n++ } END { if (n == 3) print $1 }\n", "c|"),
+    !.
+
+% A field-free END-if is untouched.
 test(field_free_end_if_unchanged, [condition(clang_available)]) :-
     run("{ n++ } END { if (n == 3) print \"three\"; else print \"other\" }\n",
         "three\n"),
@@ -296,11 +358,93 @@ test(assoc_end_if_condition_unchanged, [condition(clang_available)]) :-
         "yes\n"),
     !.
 
-% A field read in an END LOOP body stays declined: #4100's gate is unchanged, and
-% projecting it needs the rule-body sequence emitter's record source
-% parameterised. A follow-on, pinned so it is flipped deliberately.
-test(field_read_in_an_end_loop_still_declines) :-
-    build_status("{ n++ } END { while (n > 0) { print $1; n-- } }\n", 3),
+% --- END loop bodies ----------------------------------------------------
+%
+% The body goes through plawk_scalar_action_sequence_pairs//15 -- the same emitter
+% a rule body uses -- and needed no change: the rewrite happens before the actions
+% reach it, so it still sees an ordinary print of a print-expression term.
+
+test(field_read_in_an_end_while, [condition(clang_available)]) :-
+    run("{ n++ } END { while (n > 0) { print $1; n-- } }\n", "c\nc\nc\n"),
+    !.
+
+test(field_read_in_an_end_do_while, [condition(clang_available)]) :-
+    run("{ n++ } END { do { print $1; n-- } while (n > 0) }\n", "c\nc\nc\n"),
+    !.
+
+test(field_read_in_an_end_c_for, [condition(clang_available)]) :-
+    run("{ n++ } END { for (i = 0; i < n; i++) print $2 }\n", "3\n3\n3\n"),
+    !.
+
+test(whole_record_in_an_end_loop, [condition(clang_available)]) :-
+    run("{ n++ } END { while (n > 0) { print $0; n-- } }\n", "c 3\nc 3\nc 3\n"),
+    !.
+
+% A field buried in a NESTED loop -- the case that justified the structural walk
+% for the gate, and now justifies it for the rewrite.
+test(field_read_in_a_nested_end_loop, [condition(clang_available)]) :-
+    run("{ n++ } END { i = 0; while (i < 2) { j = 0; while (j < 2) { print $1, i, j; j++ }; i++ } }\n",
+        "c 0 0\nc 0 1\nc 1 0\nc 1 1\n"),
+    !.
+
+% ...and inside an `if` inside the loop.
+test(field_read_in_an_if_inside_an_end_loop, [condition(clang_available)]) :-
+    run("{ n++ } END { while (n > 0) { if (n == 2) print $1; n-- } }\n", "c\n"),
+    !.
+
+test(field_concatenation_in_an_end_loop, [condition(clang_available)]) :-
+    run("{ n++ } END { while (n > 0) { print $1 \"-\" $2; n-- } }\n",
+        "c-3\nc-3\nc-3\n"),
+    !.
+
+test(field_read_with_break_in_an_end_loop, [condition(clang_available)]) :-
+    run("{ n++ } END { while (n > 0) { n--; if (n == 1) break; print $1 } }\n",
+        "c\n"),
+    !.
+
+% A loop between straight-line prints, both reading fields: the loop's blocks
+% rejoin and the trailing statement still runs.
+test(end_loop_between_field_prints, [condition(clang_available)]) :-
+    run("{ n++ } END { print \"start\"; while (n > 0) { print $1; n-- }; print $2 }\n",
+        "start\nc\nc\nc\n3\n"),
+    !.
+
+test(end_loop_field_honours_ofs, [condition(clang_available)]) :-
+    run("BEGIN { OFS = \"-\" }\n{ n++ } END { while (n > 0) { print $1, $2; n-- } }\n",
+        "c-3\nc-3\nc-3\n"),
+    !.
+
+% --- declines that stay declines ----------------------------------------
+
+% A field in a loop or `if` CONDITION. The rewrite is structural, so it rewrites
+% conditions too -- and no condition emitter has a clause for
+% `end_lastrec_field(_)`, so these DECLINE rather than miscompiling. That
+% fail-safe is the reason the rewrite is allowed to be indiscriminate.
+test(field_in_an_end_if_condition_declines) :-
+    build_status("{ n++ } END { if ($1 == \"c\") print \"yes\"; else print \"no\" }\n",
+        3),
+    !.
+
+% `exit` inside an END loop body still fails clang if admitted, so it stays gated.
+test(exit_inside_an_end_loop_still_declines) :-
+    build_status("{ n++ } END { while (n > 0) { print $1; if (n == 2) exit 3; n-- } }\n",
+        3),
+    !.
+
+% The ASSOCIATIVE END-if restricts its branch prints to string literals -- a
+% pre-existing restriction unrelated to the record source
+% (plawk_assoc_end_if_branch_prints_ok/2), so a field there declines for that
+% reason, not this one. Pinned to keep the two apart.
+test(assoc_end_if_branch_field_read_declines) :-
+    build_status("{ arr[$1]++ } END { if (\"c\" in arr) print $1; else print \"no\" }\n",
+        3),
+    !.
+
+test(the_assoc_branch_guard_is_what_refuses_it) :-
+    assertion(\+ plawk_native_codegen:plawk_assoc_end_if_branch_prints_ok(
+        [print([field(1)])], [print([string("no")])])),
+    assertion(plawk_native_codegen:plawk_assoc_end_if_branch_prints_ok(
+        [print([string("yes")])], [print([string("no")])])),
     !.
 
 % `printf` in END takes its arguments through its own emitter, which has no field

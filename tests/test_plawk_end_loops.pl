@@ -37,9 +37,15 @@
 %                 END has no current record: at `end_print` the transient %line
 %                 holds the EOF sentinel, and the sequence emitter lowers `$1`
 %                 against %line without knowing it has left the record loop.
-%                 WRONG OUTPUT -- the worst failure mode -- now a decline.
-%                 A straight-line `END { print $1 }` already declined; routing
-%                 loop bodies through that emitter made the path reachable.
+%                 WRONG OUTPUT -- the worst failure mode -- so it was gated.
+%
+%                 SINCE FIXED, not still gated: the record loop now retains each
+%                 record and END projects fields from it, so this shape reads the
+%                 last record like gawk. The pins below are inverted rather than
+%                 removed. tests/test_plawk_end_field_reads.pl owns the behaviour;
+%                 what stays here is that a loop body gets it through the SAME
+%                 sequence emitter, with the field rewrite applied before the
+%                 actions reach it.
 %
 %   exit IN A     Made clang fail. An END `exit` stores to @plawk_exit_code and
 %   LOOP BODY     TRUNCATES the remaining statements -- sound only because
@@ -130,16 +136,24 @@ test(exit_after_an_end_loop, [condition(clang_available)]) :-
 
 % --- the two gated bugs --------------------------------------------------
 
-% A FIELD READ in a loop body. This printed `end_of_file` before the gate.
-test(field_read_in_an_end_loop_declines) :-
-    build_status("{ n++ } END { while (n > 0) { print $1; n-- } }\n", 3),
+% A FIELD READ in a loop body printed `end_of_file` and was gated to a decline
+% here. It now WORKS: the record loop retains each record and the loop body
+% projects `$1` from it (see tests/test_plawk_end_field_reads.pl, which owns the
+% behaviour). The pin is kept and inverted rather than deleted, so the history of
+% this shape stays visible: wrong output -> decline -> correct.
+test(field_read_in_an_end_loop_now_reads_the_last_record,
+     [condition(clang_available)]) :-
+    run("{ n++ } END { while (n > 0) { print $1; n-- } }\n", "c\nc\nc\n"),
     !.
 
 % ...including one buried in a NESTED loop, which a per-action-shape walker would
-% have missed. This is the test that justifies the structural term walk.
-test(field_read_in_a_nested_end_loop_declines) :-
-    build_status("{ n++ } END { i = 0; while (i < 2) { j = 0; while (j < 2) { print $1; j++ }; i++ } }\n",
-        3),
+% have missed. This justified the structural term walk for the GATE, and now
+% justifies it for the field REWRITE that replaced the gate: the two share the same
+% shape of walk on purpose.
+test(field_read_in_a_nested_end_loop_now_reads_the_last_record,
+     [condition(clang_available)]) :-
+    run("{ n++ } END { i = 0; while (i < 2) { j = 0; while (j < 2) { print $1; j++ }; i++ } }\n",
+        "c\nc\nc\nc\n"),
     !.
 
 % `exit` INSIDE a loop body. This made clang fail before the gate.
@@ -168,7 +182,30 @@ test(the_gate_itself_accepts_that_end_block) :-
     assertion(plawk_native_codegen:plawk_end_loop_actions_ok(
         [set(var(n), int(2)),
          while_loop(cmp(var(n), gt, int(0)),
-             [print([var(n)]), dec(var(n))])])),
+             [print([var(n)]), dec(var(n))])],
+        no_end_record)),
+    !.
+
+% The gate now takes the record source: a field read is admitted only under
+% end_record(_), the token a driver produces together with the retain IR. So a
+% driver that does not retain -- a binary descriptor -- still refuses the field,
+% and nothing can project from a store that was not emitted.
+test(the_gate_admits_a_field_read_only_when_the_record_is_retained) :-
+    Actions = [while_loop(cmp(var(n), gt, int(0)),
+                   [print([field(1)]), dec(var(n))])],
+    assertion(plawk_native_codegen:plawk_end_loop_actions_ok(Actions,
+        end_record(0' ))),
+    assertion(\+ plawk_native_codegen:plawk_end_loop_actions_ok(Actions,
+        no_end_record)),
+    !.
+
+% `exit` in a loop body is refused whichever way the record source goes -- it is a
+% clang failure, not a record-lifetime question.
+test(the_gate_still_refuses_exit_in_a_loop_body_when_retaining) :-
+    Actions = [while_loop(cmp(var(n), gt, int(0)),
+                   [print([field(1)]), exit(int(3))])],
+    assertion(\+ plawk_native_codegen:plawk_end_loop_actions_ok(Actions,
+        end_record(0' ))),
     !.
 
 % --- regressions: straight-line END keeps its old driver ----------------

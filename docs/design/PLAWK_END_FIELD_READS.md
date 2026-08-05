@@ -175,7 +175,9 @@ design than a half-applied change to the record lifetime.
 ## What shipped, and what is still declined
 
 Landed: `$0` and `$N` in a straight-line END print, an END statement list
-(`END { print $1; print $2 }`) and a concatenation (`print $1 " / " $2`).
+(`END { print $1; print $2 }`), a concatenation (`print $1 " / " $2`), an **END
+`if` branch** (either branch) and an **END loop body** (`while`, `do-while`,
+C-`for`, nested, and inside an `if` inside a loop, with `break`).
 Honours FS, OFS, ORS and a custom RS. `$N` past `NF` is empty; empty input gives
 an empty `$0`; multi-KB records exercise the buffer growth. Every hazard listed
 above was probed against gawk rather than reasoned about.
@@ -186,16 +188,42 @@ retain IR. One predicate returning both is the point: a driver cannot emit the
 projection without the store, and a projection whose bytes were never retained
 would print *empty* — silently wrong, the failure mode this line refuses to ship.
 
+### Round two: the `if` branch and the loop body
+
+Both landed, and neither needed the emitter parameterisation this note predicted.
+Instead of threading a record source through `plawk_prefixed_print_action_ir` and
+`plawk_scalar_action_sequence_pairs//15` (30 `%line` references, a wide diff, real
+byte-identity risk), the END actions are **rewritten** before they reach either
+emitter: `plawk_end_lastrec_rewrite/2` turns every `field(N)` into
+`end_lastrec_field(N)`, and **two clauses** on the shared print-expression emitter
+(`plawk_emit_print_expr_for_context/6`) know where those bytes come from.
+
+So the sequence emitter and the prefixed print emitter are untouched. One new term,
+two new clauses, and END `if` branches, END loop bodies, nested loops, `if`s inside
+loops, concatenations and `break` all work — because everything between the rewrite
+and the print (prefix naming, separators, the ORS terminator) never had to know.
+
+The rewrite is **structural**, matching `plawk_end_term_mentions_field/1`, so the
+gate and the rewrite cannot disagree about what counts as a field read. It rewrites
+loop and `if` **conditions** too, and that is deliberately **fail-safe**: no
+condition emitter has a clause for `end_lastrec_field(_)`, so
+`END { if ($1 == "c") … }` declines instead of miscompiling. Verified by probe —
+that program parses and exits 3.
+
 Still declined (each pinned in `tests/test_plawk_end_field_reads.pl`, so a later
 change flips it deliberately):
 
-- **END `if` branch** — the wrong output described above, now a decline.
-  Projecting it means parameterising the record source of the prefixed print
-  emitter, which is its own change.
-- **END loop body** — #4100's gate, unchanged. Needs the same parameterisation in
-  `plawk_scalar_action_sequence_pairs//15`.
+- **Field in a loop or `if` condition** — the fail-safe decline above. Conditions
+  are their own feature.
 - **`printf` argument in END** (`printf "%s\n", $1`) — the END printf emitter has
   no field clause.
+- **The associative END-`if` branch** — declines because
+  `plawk_assoc_end_if_branch_prints_ok/2` restricts those branches to string
+  literals, a pre-existing restriction unrelated to the record source. Pinned with
+  a test asserting *that* guard is what refuses it, so the two do not get
+  conflated.
+- **`exit` inside an END loop body** — still a clang failure if admitted; a
+  control-flow question, not a record-lifetime one.
 - **`NF` in END** — falls out of the same retained record; not wired.
 - **END-only programs** (`END { print $1 }` with no rules) — a different driver,
   which does not retain.

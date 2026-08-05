@@ -50,6 +50,21 @@ parameterised (a *name flavour* parameter can preserve byte-identity — see
 does after the last element; for safety gates prefer a **structural term walk**
 over a per-action-shape walker, because a new nesting level cannot defeat it.
 
+**And one that worked better than parameterising:** when a new context needs an
+emitter to behave differently, consider **rewriting the term** instead of threading
+a parameter. The END field reads in `if` branches and loop bodies needed the record
+source changed in emitters with 30 `%line` references between them; rewriting
+`field(N)` → `end_lastrec_field(N)` before the actions reach those emitters, plus
+two clauses on the shared print-expression emitter, left both emitters untouched.
+Everything in between — prefix naming, separators, the ORS terminator — never had
+to know.
+
+The safety property comes for free if you get the direction right: an unrewritten
+`field(N)` reaching a *print* emitter would miscompile, so the rewrite is
+structural (same walk as the gate); a rewritten `end_lastrec_field(N)` reaching a
+*condition* emitter finds no clause and **declines**. Rewrite indiscriminately and
+let the missing clauses be the gate.
+
 ## Verification practices (do not skip)
 
 - **gawk 5.2 is the oracle.** Compare output *and* exit status. Probe harness
@@ -134,14 +149,15 @@ the implementation changed about the design. The load-bearing facts:
 
 ## Remaining follow-ons
 
-**END field reads, the rest of the surface** — each pinned as a decline in
-`tests/test_plawk_end_field_reads.pl`. The `if`-branch and loop-body cases both
-need the *record source* parameterised in the emitter they share with rule bodies
-(`plawk_prefixed_print_action_ir` and `plawk_scalar_action_sequence_pairs//15`);
-do those two together, since it is one parameterisation serving both. Then:
-`printf "%s\n", $1` in END (its own argument emitter), `NF` in END (falls out of
-the same retained record), END-only programs (a driver with no retain), and `$N`
-in a `binfmt` END (reads the record buffer, not a text slice).
+**END field reads, what is left** — each pinned as a decline in
+`tests/test_plawk_end_field_reads.pl`. A field in a loop or `if` **condition**
+(currently a fail-safe decline: the rewrite reaches conditions, and no condition
+emitter has a clause for `end_lastrec_field(_)`) · `printf "%s\n", $1` in END (its
+own argument emitter) · `NF` in END (falls out of the same retained record) ·
+END-only programs (a driver with no retain) · the **associative** END-`if` branch
+(refused by `plawk_assoc_end_if_branch_prints_ok/2`, which allows only string
+literals there — an unrelated pre-existing restriction, pinned as such) · `$N` in
+a `binfmt` END (reads the record buffer, not a text slice).
 
 `arr[k]--` (needs a row in each of four `inc_assoc` walkers) · `n += -1` (parser
 rejects a negative compound-assign delta; odd now `n--` works) · assoc rules
