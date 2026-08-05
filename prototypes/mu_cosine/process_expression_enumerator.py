@@ -615,18 +615,33 @@ def component_vocabulary() -> dict:
 
 
 def component_vocabulary_counts() -> dict:
+    """Two totals, each named for what it sums.
+
+    An external verification pass found the old table unauditable: the five
+    class rows sum to 109 while the row labelled as the total read
+    76 — the count of COMPOSABLE COMPONENT shapes (leaves plus operator
+    shapes) only. Edges and literal slots are relations between components
+    rather than components, so both numbers are meaningful, but a row named
+    "total" sitting under five rows that sum to something else cannot be
+    checked by a reader. Both are now named for their contents, and
+    ``serialized_identities_total`` is the count the vocabulary hash binds.
+    """
     vocabulary = component_vocabulary()
+    sections = ("leaves", "operators_interior", "operators_root_only",
+                "node_edges", "literal_slots")
     return {
         "leaf_shapes": len(vocabulary["leaves"]),
         "operator_shapes_interior": len(vocabulary["operators_interior"]),
         "operator_shapes_root_only_extension": len(vocabulary["operators_root_only"]),
         "node_composition_edges": len(vocabulary["node_edges"]),
         "literal_slots": len(vocabulary["literal_slots"]),
-        "vocabulary_total": (
+        "composable_component_shapes": (
             len(vocabulary["leaves"])
             + len(vocabulary["operators_interior"])
             + len(vocabulary["operators_root_only"])
         ),
+        "serialized_identities_total": sum(
+            len(vocabulary[section]) for section in sections),
     }
 
 

@@ -506,28 +506,134 @@ def test_preregistration_witness_binds_both_halves():
         assert witness != sp.preregistration_witness_sha256(variant)
 
 
+def _flat(text: str) -> str:
+    """Collapse whitespace so a claim that wraps across lines still matches.
+    Prose wraps legitimately; a line break must not defeat the guard."""
+    return " ".join(text.split())
+
+
+def _once(spec: str, needle: str) -> None:
+    """The narrated claim must appear EXACTLY once.
+
+    An external verification pass showed that `needle in spec` tolerates
+    outright contradiction: appending a paragraph stating the opposite
+    slices left the guard green, because the correct string still existed
+    somewhere. Presence is not the same as the prose saying it.
+    """
+    count = _flat(spec).count(_flat(needle))
+    assert count == 1, f"expected exactly one occurrence of {needle!r}, found {count}"
+
+
 def test_specification_narrates_the_pinned_vectors(worked, cascade):
-    """The §2.5 narration and the executable algorithm must not drift apart:
-    the seeds, the contract shape, and the narrated final slices are read
-    back out of the spec text and checked against the manifests."""
+    """Every normative §2.5 claim is projected from the manifest and read
+    back out of the prose — not just the final slices.
+
+    An external verification pass mutation-tested the previous guard and
+    found it covered only the final-slice sentences: corrupting the step-1
+    base assignment, the repair moves, the coverage arithmetic, the far
+    membership, or the cascade's cross-item claim all left CI green. Those
+    are exactly the sentences that teach a reader WHY the slices are what
+    they are, and they were the ones free to rot. The code side was never
+    at risk — the full-manifest goldens catch any behavior change — so the
+    hole was prose-only drift, which is precisely what this guard exists
+    for.
+    """
     spec = (ROOT / "DESIGN_process_expression_generator.md").read_text(
         encoding="utf-8")
-    assert WORKED_CONTRACT["seed"] in spec
-    assert CASCADE_CONTRACT["seed"] in spec
-    assert "buckets 5000/2500/2500" in spec
-    for pair in ("pair:kalman|judge", "pair:routing|score"):
-        assert pair in spec
-    narrated = "train `{" + ",".join(
-        f.removeprefix("tmpl:") for f in worked["slices"]["train"]) + "}`"
-    assert narrated in spec, narrated
+    contract = sp.split_contract(**WORKED_CONTRACT)
+
+    # -- contract surface --------------------------------------------------
+    for needle in (WORKED_CONTRACT["seed"], CASCADE_CONTRACT["seed"],
+                   "buckets 5000/2500/2500",
+                   "pair:kalman|judge", "pair:routing|score"):
+        assert needle in spec, needle
+
+    # -- step 1: the base assignment, re-derived, not restated -------------
+    base = {}
+    for family in worked_example_families():
+        base.setdefault(sp._base_slice(family.family_id, contract), []).append(
+            family.family_id.removeprefix("tmpl:"))
+    for side, phrase in (("train", "`{%s}` in train"),
+                         ("dev", "`{%s}` in dev"),
+                         ("test", "and `{%s}` in test")):
+        _once(spec, phrase % ",".join(sorted(base[side])))
+
+    # -- steps 3-4: every repair move, and the coverage arithmetic ---------
+    for move in worked["moves"]:
+        family = move["family"].removeprefix("tmpl:")
+        _once(spec, f"moves `{family}` from {move['from']}")
+    _once(spec, "3 = C(2) + G(1)")
+    assert worked["train_coverage"]["op:max"] == 3
+
+    # -- step 5: far membership, both sides --------------------------------
     for side in ("dev", "test"):
-        narrated = side + " `{" + ",".join(
-            f.removeprefix("tmpl:") for f in worked["slices"][side]) + "}`"
-        assert narrated in spec, narrated
-    # The cascade vector's headline behaviors are named in the prose.
-    assert "two moves for one item" in spec
+        narrated = "`{%s}` %s-far" % (
+            ",".join(f.removeprefix("tmpl:") for f in worked["far"][side]), side)
+        _once(spec, narrated)
+    assert "tmpl:D" not in worked["far"]["test"]
+    near = sorted(set(worked["slices"]["test"]) - set(worked["far"]["test"]))
+    for family_id in near:
+        _once(spec, f"`{family_id.removeprefix('tmpl:')}` shares "
+                    "`pair:e5|margin` with train and is test-near")
+
+    # -- final slices: every slice-shaped claim in the file must be right --
+    # Uniqueness of the CORRECT string does not stop a contradicting
+    # restatement elsewhere (external verification, finding 2), so instead
+    # of asking "is the right sentence present", collect every claim of
+    # this SHAPE anywhere in the spec and require each to match the
+    # manifest. A stale or contradicting restatement is caught by being a
+    # match that disagrees.
+    import re
+
+    for side in ("train", "dev", "test"):
+        expected = "{" + ",".join(
+            f.removeprefix("tmpl:") for f in worked["slices"][side]) + "}"
+        claims = re.findall(rf"{side} `(\{{[A-Z,]+\}})`", _flat(spec))
+        assert claims, f"no {side} slice claim found in the spec"
+        for claim in claims:
+            assert claim == expected, (
+                f"spec states {side} `{claim}` but the manifest says "
+                f"`{expected}`")
+
+    # -- the cascade vector's claims ---------------------------------------
+    _once(spec, "two moves for one item")
+    assert len([m for m in cascade["moves"] if m["forced_by"] == "x"]) == 2
+    _once(spec, "no move names `y`")
+    assert not any(m["forced_by"] == "y" for m in cascade["moves"])
     assert "4999/5000/7499/7500" in spec
     assert len(cascade["moves"]) == 2
+
+
+def test_specification_records_the_vocabulary_counts():
+    """The §2.5 vocabulary table is measured content, so it is checked
+    against the measurement rather than transcribed once and trusted."""
+    import process_expression_enumerator as en
+
+    spec = (ROOT / "DESIGN_process_expression_generator.md").read_text(
+        encoding="utf-8")
+    counts = en.component_vocabulary_counts()
+    # Both totals are named for what they sum, and both are auditable: the
+    # five class rows add to serialized_identities_total, and the component
+    # subtotal is leaves + operator shapes.
+    assert (counts["leaf_shapes"] + counts["operator_shapes_interior"]
+            + counts["operator_shapes_root_only_extension"]
+            + counts["node_composition_edges"] + counts["literal_slots"]
+            == counts["serialized_identities_total"])
+    assert (counts["leaf_shapes"] + counts["operator_shapes_interior"]
+            + counts["operator_shapes_root_only_extension"]
+            == counts["composable_component_shapes"])
+    for label, key in (
+        ("leaf shapes", "leaf_shapes"),
+        ("operator shapes, interior", "operator_shapes_interior"),
+        ("operator shapes, root-only extension",
+         "operator_shapes_root_only_extension"),
+        ("node-composition edges", "node_composition_edges"),
+        ("literal slots", "literal_slots"),
+        ("composable component shapes", "composable_component_shapes"),
+        ("serialized identities, total", "serialized_identities_total"),
+    ):
+        _once(spec, f"| {label} | {counts[key]} |")
+    _once(spec, f"{len(en.required_witness_universe())} required witness items")
 
 
 def test_spec_sha_binds_the_whole_algorithm_manifest():

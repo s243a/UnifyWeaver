@@ -69,8 +69,17 @@ def test_component_vocabulary_is_pinned():
         "operator_shapes_root_only_extension": 46,
         "node_composition_edges": 31,
         "literal_slots": 2,
-        "vocabulary_total": 76,
+        # Two totals, each named for what it sums: an external verification
+        # pass found a single "total" row unauditable, since the five class
+        # rows above summed to 109 while the total read 76.
+        "composable_component_shapes": 76,
+        "serialized_identities_total": 109,
     }
+    counts = en.component_vocabulary_counts()
+    assert (counts["leaf_shapes"] + counts["operator_shapes_interior"]
+            + counts["operator_shapes_root_only_extension"]
+            + counts["node_composition_edges"] + counts["literal_slots"]
+            == counts["serialized_identities_total"] == 109)
 
 
 def test_component_vocabulary_is_content_not_counts():
@@ -124,7 +133,7 @@ def test_component_vocabulary_is_tiny_relative_to_the_composition_space():
     """The reason the ruling is right: complete-tree templates were a
     cross-product of the vocabulary, three orders of magnitude larger."""
     templates = en.count("methodology-root-only", template_mode=True)[0]
-    vocabulary = en.component_vocabulary_counts()["vocabulary_total"]
+    vocabulary = en.component_vocabulary_counts()["composable_component_shapes"]
     assert templates > 1000 * vocabulary
 
 

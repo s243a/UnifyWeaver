@@ -177,12 +177,23 @@ indeed counted three unenumerable `blend/3{…w…}` shapes that the legality ru
 
 | component class | count |
 |---|---:|
-| leaf shapes (output type × modifier shape, terminals pinned) | 9 |
-| operator-local shapes, interior (no methodology kwargs) | 21 |
-| operator-local shapes, root-only extension (methodology patterns) | 46 |
-| node-composition edges (parent slot → child output, incl. `mu=`) | 31 |
-| literal slots (parent slot → value kind; terminate, do not compose) | 2 |
-| **component vocabulary total** | **76** |
+| leaf shapes | 9 |
+| operator shapes, interior | 21 |
+| operator shapes, root-only extension | 46 |
+| node-composition edges | 31 |
+| literal slots | 2 |
+| composable component shapes | 76 |
+| serialized identities, total | 109 |
+
+Row meanings: leaf shapes are output type × modifier shape with terminals pinned; operator
+shapes are operator-local resolved-kwarg patterns, split by whether methodology kwargs appear;
+node-composition edges are parent slot → child output (including `mu=`); literal slots are
+parent slot → value kind and terminate rather than compose. **Two totals, each named for what
+it sums**: *composable component shapes* is leaves plus operator shapes — the things that
+compose recursively — while *serialized identities* is all five rows, and is what
+`component_vocabulary_sha256()` binds. An external verification pass found the earlier single
+"total" row unauditable, since the five class rows summed to something else. The witness
+universe derived from this vocabulary carries 187 required witness items.
 
 Component identities are the **resolved-kwarg** patterns (same identity convention as templates
 — `decay:number` appears in every `lineage` component, never as a presence choice), carry their
@@ -229,8 +240,20 @@ The split has a canonical identity and a deterministic assignment algorithm — 
 is a runtime judgment call. The algorithm is **executable** (`process_expression_split.py`,
 `split-v2`), it consumes families built by a **real extractor over real ASTs**
 (`families_from_expressions`), and both worked examples below are pinned as full-manifest
-golden vectors in `test_process_expression_split.py`, so this section cannot drift from the
-code. (Two earlier revisions were corrected under adversarial review: the first assigned
+golden vectors in `test_process_expression_split.py`.
+
+Drift is guarded in two directions, and the guarantee is stated precisely because an earlier
+version of this sentence overclaimed. *Code* drift is caught by the full-manifest goldens: any
+behavior change fails them. *Prose* drift is caught by `test_specification_narrates_the_pinned_vectors`,
+which projects each narrated claim **out of the manifest** and requires it in this text — the
+base assignment (re-derived through `_base_slice`), every repair move with its forcing item,
+the coverage arithmetic, far and near membership on both sides, the final slices, and the
+cascade vector's two claims — plus the §2.5 vocabulary table and universe count against
+`component_vocabulary_counts()`. Every claim must appear exactly once, and every sentence *of
+the narrated shape* must agree with the manifest, so a contradicting restatement elsewhere in
+the file is caught rather than tolerated. An external verification pass mutation-tested the
+earlier guard and found it read back only the final-slice sentences, leaving the steps that
+explain *why* those slices arise free to rot; that gap is what the projection above closes. (Two earlier revisions were corrected under adversarial review: the first assigned
 individual expression digests, violating the standing whole-template LOCO contract; the second
 inflated coverage, took its witness universe from the caller, held arbitrary structural
 families rather than compositions, and bound only four of its constants. Each correction is
@@ -355,21 +378,20 @@ witnesses `digit:8` from one of two. Contract: seed `worked-v2-7`, buckets 5000/
 `k=2`, held compositions dev `pair:kalman|judge` (carried by `H` and `K`) and test
 `pair:routing|score` (carried by `L`). What happens, in order:
 
-1. *Base assignment* by family-id hash puts `{B,E,G,H,I,K,L}` in train, `{A,J}` in dev, and
-   `{C,D,F}` in test.
+1. *Base assignment* by family-id hash puts `{B,E,G,H,I,K,L}` in train, `{A,J}` in dev,
+   and `{C,D,F}` in test.
 2. *Held pinning*: `H` and `K` carry the dev-held pair and move to dev; `L` carries the
    test-held pair and moves to test. All three were base-assigned to train — holding
    compositions, not slices, is what puts them where the contract says.
 3. *Repair*, items in sorted order: `digit:0` moves `A` from dev; `digit:8` moves `F` from
-   test (its other carrier `H` is held, and protection forbids taking it); `estimand:ancestry`
-   moves `J` from dev; and `op:max` moves `C` from test — `G` is already in train but supplies
-   only one witnessing row, so `k=2` is still unmet. Under the old row-count crediting this
-   fourth move would not exist.
+   test — its other carrier `H` is held, and protection forbids taking it; `estimand:ancestry`
+   moves `J` from dev; and `op:max` moves `C` from test, because `G` is already in train but
+   supplies only one witnessing row, so `k=2` is still unmet. Under the old row-count
+   crediting this fourth move would not exist.
 4. *Final slices*: train `{A,B,C,E,F,G,I,J}`, dev `{H,K}`, test `{D,L}`; `op:max` reaches
    3 = C(2) + G(1).
-5. *Far*: the held pairs live only on their own sides, so `{H,K}` are dev-far and `{L}` is
-   test-far, both meeting their floors; `D` shares `pair:e5|margin` with train and is
-   test-near.
+5. *Far*: the held pairs live only on their own sides, so `{H,K}` dev-far and `{L}` test-far,
+   both meeting their floors; `D` shares `pair:e5|margin` with train and is test-near.
 
 **Worked example 2, the focused boundary/cascade vector.** The re-reviewer's request was a
 second *compact* vector exercising what narration hides, not a larger one for scale. Eight
