@@ -63,7 +63,12 @@
 
 :- module(pe_emit, [
     pe_semantic/2,             % +Goal, -CanonicalSemanticText
-    pe_full/2                  % +Goal, -CanonicalFullText
+    pe_full/2,                 % +Goal, -CanonicalFullText
+    % the canonical JSON string spelling, shared with the structural
+    % oracle (pe_resolved_ast.pl) so the renderer and the projection
+    % cannot drift from each other; each remains independently pinned
+    % to its own sealed expected values
+    json_escape/2              % +AtomOrString, -EscapedAtom
 ]).
 
 :- use_module('../../../src/unifyweaver/core/pattern_stache',

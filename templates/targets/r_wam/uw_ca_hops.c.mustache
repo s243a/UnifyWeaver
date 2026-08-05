@@ -1,0 +1,172 @@
+/* PERF-R-NATIVE-HOPS-0: optional native CA hop kernel (UnifyWeaver R WAM).
+ * Generated at: {{date}}
+ * .Call("uw_ca_hops_ids", offsets, flat, start_id, root_id,
+ *       visited, vlen0, max_depth) -> INTSXP hop depths.
+ * CSR offsets are 0-based starts; offsets[dense_cap] is flat length.
+ * Semantics match WamRuntime$category_ancestor_hops_ids (path-local cycles,
+ * emit depth+1 when root is among parents, continue through root).
+ */
+#include <R.h>
+#include <Rinternals.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct {
+  const int *parents;
+  int npar;
+  int pos;
+  int depth;
+  int vlen;
+} Frame;
+
+static int path_has(const int *visited, int vlen, int id) {
+  int i;
+  for (i = 0; i < vlen; ++i)
+    if (visited[i] == id) return 1;
+  return 0;
+}
+
+static int parents_has(const int *parents, int npar, int id) {
+  int i;
+  for (i = 0; i < npar; ++i)
+    if (parents[i] == id) return 1;
+  return 0;
+}
+
+static void csr_parents(const int *offsets, int dense_cap, const int *flat,
+                        int flat_len, int aid, const int **out_p, int *out_n) {
+  int start, end;
+  if (aid < 0 || aid >= dense_cap) { *out_p = NULL; *out_n = 0; return; }
+  start = offsets[aid];
+  end = offsets[aid + 1];
+  if (start < 0 || end < start || end > flat_len) {
+    *out_p = NULL; *out_n = 0; return;
+  }
+  *out_n = end - start;
+  *out_p = (*out_n > 0) ? (flat + start) : NULL;
+}
+
+SEXP uw_ca_hops_ids(SEXP offsets_, SEXP flat_, SEXP start_id_, SEXP root_id_,
+                    SEXP visited_, SEXP vlen0_, SEXP max_depth_) {
+  const int *offsets, *flat, *cur_parents;
+  int off_len, dense_cap, flat_len, start_id, root_id, vlen0, max_depth;
+  int need, frame_cap, sp, buf_cap, n_out, i;
+  int cat_id, cur_vlen, cur_depth, cur_npar, cur_pos, do_enter;
+  int *visited, *buf;
+  Frame *stack;
+  SEXP ans;
+
+  if (!isInteger(offsets_) || !isInteger(flat_) || !isInteger(visited_))
+    error("uw_ca_hops_ids: offsets/flat/visited must be integer");
+  if (LENGTH(start_id_) != 1 || LENGTH(root_id_) != 1 ||
+      LENGTH(vlen0_) != 1 || LENGTH(max_depth_) != 1)
+    error("uw_ca_hops_ids: scalar args must have length 1");
+
+  offsets = INTEGER(offsets_);
+  off_len = LENGTH(offsets_);
+  if (off_len < 1) error("uw_ca_hops_ids: empty offsets");
+  dense_cap = off_len - 1;
+  flat = INTEGER(flat_);
+  flat_len = LENGTH(flat_);
+  start_id = INTEGER(start_id_)[0];
+  root_id = INTEGER(root_id_)[0];
+  vlen0 = INTEGER(vlen0_)[0];
+  max_depth = INTEGER(max_depth_)[0];
+  if (vlen0 < 0 || max_depth < 0)
+    error("uw_ca_hops_ids: negative vlen/max_depth");
+  if (LENGTH(visited_) < vlen0)
+    error("uw_ca_hops_ids: visited shorter than vlen0");
+
+  need = max_depth + 1;
+  if (need < vlen0) need = vlen0;
+  if (need < 8) need = 8;
+  visited = (int *)malloc((unsigned long)need * sizeof(int));
+  if (visited == NULL) error("uw_ca_hops_ids: malloc visited failed");
+  for (i = 0; i < vlen0; ++i) visited[i] = INTEGER(visited_)[i];
+  for (; i < need; ++i) visited[i] = 0;
+
+  frame_cap = max_depth + 2;
+  if (frame_cap < 2) frame_cap = 2;
+  stack = (Frame *)malloc((unsigned long)frame_cap * sizeof(Frame));
+  if (stack == NULL) { free(visited); error("uw_ca_hops_ids: malloc stack failed"); }
+  sp = 0;
+  buf_cap = 8;
+  buf = (int *)malloc((unsigned long)buf_cap * sizeof(int));
+  if (buf == NULL) {
+    free(visited); free(stack);
+    error("uw_ca_hops_ids: malloc buf failed");
+  }
+  n_out = 0;
+  cat_id = start_id; cur_vlen = vlen0; cur_depth = 0;
+  cur_parents = NULL; cur_npar = 0; cur_pos = 0; do_enter = 1;
+
+  for (;;) {
+    if (do_enter) {
+      int root_seen = (cur_vlen > 0) && path_has(visited, cur_vlen, root_id);
+      csr_parents(offsets, dense_cap, flat, flat_len, cat_id,
+                  &cur_parents, &cur_npar);
+      if (!root_seen && cur_npar > 0 &&
+          parents_has(cur_parents, cur_npar, root_id)) {
+        if (n_out >= buf_cap) {
+          int ncap = buf_cap * 2;
+          int *nb;
+          if (ncap < 8) ncap = 8;
+          nb = (int *)realloc(buf, (unsigned long)ncap * sizeof(int));
+          if (nb == NULL) {
+            free(buf); free(visited); free(stack);
+            error("uw_ca_hops_ids: realloc failed");
+          }
+          buf = nb; buf_cap = ncap;
+        }
+        buf[n_out++] = cur_depth + 1;
+      }
+      cur_pos = 0;
+      if (cur_vlen >= max_depth) { cur_parents = NULL; cur_npar = 0; }
+      do_enter = 0;
+    }
+    {
+      int descended = 0;
+      while (cur_pos < cur_npar) {
+        int pid = cur_parents[cur_pos++];
+        if (cur_vlen > 0 && path_has(visited, cur_vlen, pid)) continue;
+        if (cur_pos < cur_npar) {
+          if (sp >= frame_cap) {
+            int ncap = sp + 8;
+            Frame *ns = (Frame *)realloc(
+                stack, (unsigned long)ncap * sizeof(Frame));
+            if (ns == NULL) {
+              free(buf); free(visited); free(stack);
+              error("uw_ca_hops_ids: realloc stack failed");
+            }
+            stack = ns; frame_cap = ncap;
+          }
+          stack[sp].parents = cur_parents;
+          stack[sp].npar = cur_npar;
+          stack[sp].pos = cur_pos;
+          stack[sp].depth = cur_depth;
+          stack[sp].vlen = cur_vlen;
+          ++sp;
+        }
+        visited[cur_vlen] = pid;
+        cat_id = pid; cur_vlen += 1; cur_depth += 1;
+        do_enter = 1; descended = 1; break;
+      }
+      if (descended) continue;
+    }
+    if (sp < 1) break;
+    --sp;
+    cur_parents = stack[sp].parents;
+    cur_npar = stack[sp].npar;
+    cur_pos = stack[sp].pos;
+    cur_depth = stack[sp].depth;
+    cur_vlen = stack[sp].vlen;
+    do_enter = 0;
+  }
+
+  ans = PROTECT(allocVector(INTSXP, n_out));
+  if (n_out > 0)
+    memcpy(INTEGER(ans), buf, (unsigned long)n_out * sizeof(int));
+  free(buf); free(visited); free(stack);
+  UNPROTECT(1);
+  return ans;
+}

@@ -246,3 +246,52 @@ oracle* (every ground-path behaviour, against the sealed bundle's strings and `r
 ordering stability by property test), and *what awaits a ruling* (the seven above — most
 consequentially: pattern-state identity, which has no oracle and gates everything right of the
 fence in §2).
+
+---
+
+*Addendum — the three open oracle rows of §4, closed (post-#4096):*
+
+- **Ground-path structure (`resolved_ast`)** — closed. The goal-term ↔ `resolved_ast`
+  correspondence is documented and implemented in
+  [`pattern_stache/pe_resolved_ast.pl`](pattern_stache/pe_resolved_ast.pl) (promoted from
+  test-local code; "no Python" held — the bundle is read as data). All 25 rows are verified
+  structurally through the elaborator, plus the five where-spellings and both spellings of the
+  pinned row (the pinned spelling against the full sealed structure, the unpinned spelling
+  against the pin-stripped structure, and a non-vacuity check that the pins field is the exact
+  difference). Structure is now checked before rendering, so a renderer bug and a builder bug
+  can no longer mask each other.
+- **Typed diagnostics (§7)** — closed with own goldens, as recommended.
+  [`pattern_stache/ERROR_FIXTURES_pattern_stache.pl`](pattern_stache/ERROR_FIXTURES_pattern_stache.pl)
+  seals all fifteen raisable error classes (pe_where's eight, the elaborator's seven incl.
+  v1.1's `constraint_unsatisfiable`) as Prolog terms read as data; the raising suite
+  (`test_error_fixtures.pl`) freezes the fixture file's sha256 so a fixture edit and a test
+  edit must meet in one review. vNext's Python error strings remain uncoupled, per the
+  standing rule. `binding_variable_already_bound` has no fixture because validation makes the
+  defensive clause unreachable — recorded in the fixture file.
+- **Mode classification (§3's table)** — closed; the precondition ("registry seals which
+  predicates are closed") was met by ruling 5(b)'s hash-checked mirror.
+  `test_mode_classification.pl` transcribes the table against the live elaborator, citing it
+  in the header, with **two recorded divergences** asserted as live behavior so an admission
+  later forces reconciliation in review: `non_amplifying/1` (table: discharge; live: refused —
+  not in the sealed registry; unblocks with the parked registry-derivation work) and
+  `in_support/2` (table: runtime; live: refused — runtime phases are checker-dispatch
+  territory, outside ruling 4(a)).
+
+All three suites run in the CI leg as explicit `-g` goals (the `initialization/1` discipline).
+Still open, unchanged: pattern-state canonical bytes/digests (peid-v1, fenced in §2).
+
+---
+
+*Addendum — ruling 1's ordering device has a measured defect (reported, not repaired).*
+[`DESIGN_pattern_state_identity.md`](DESIGN_pattern_state_identity.md) §2 records a
+counterexample to this note's claim that the canonical store's numbering "is a function of
+logical content, not input order": when two residual goals share a projection **and** are
+projection-least, `least_by_projection_/4`'s strict `@<` breaks the tie by input order, so one
+store presented two ways yields canonical forms that are not even variants of each other.
+Reachable through `elaborate/3` inside ruling 4(a) scope. Blast radius is zero outside the §2
+identity fence — the ground path has no residual store, so every sealed oracle and all merged
+byte tests remain valid; the defect lives exactly in the territory this note fenced as
+oracle-less, which is the fence working as intended. It is characterized by tests
+(`test_pstate_views.pl`, `ordering_defect_characterization`) in the recorded-divergence style
+rather than patched, because the repair is a choice among canonical-labelling schemes — a
+ruling, not a fix. See that note's ruling 1.

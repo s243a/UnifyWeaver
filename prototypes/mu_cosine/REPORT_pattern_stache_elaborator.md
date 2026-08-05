@@ -148,3 +148,20 @@ One smaller note in the same spirit: any `=/2` goal is claimed by the binding ch
 
 The identity fence held throughout: no digest, no canonical bytes, and no persistent name
 exists anywhere for a pattern state.
+
+---
+
+*Addendum — v1.1, eager validation without goal rewriting (ruled on PR #4095, implemented).*
+Finding 2's follow-on question was ruled: all-or-nothing discharge stays, and a residual goal
+whose ground portion is checkable is checked **eagerly** — throw on illegal
+(`constraint_unsatisfiable`, named distinctly from a ground discharge failure), change nothing
+on legal. The deciding distinction: under-instantiated residuates, but ground-and-false is an
+error — `has_type(_X, substrate(frobnicate))` fails at elaboration instead of sitting dormant
+in a pattern state as a constraint that can never ground. No goal splitting, no narrowed
+residuals: the store-invariance test compares the numbered projection of a legal residuating
+elaboration against the frozen v1 baseline and requires `==` (`elab_eager_validation`, 7
+tests; suite now 95). Finding 4's CI leg also landed: `.github/workflows/test.yml` runs the
+mirror-verify goal and every pattern_stache suite explicitly as `-g` goals, plus the tutorial
+output verifier (`docs/tutorials/check_tutorial.py` over
+`docs/tutorials/TUTORIAL_pattern_stache.md`, 18 verified blocks), so a stale mirror now fails
+on the exact PR that changes `process_cards.py`'s registry.

@@ -1,0 +1,124 @@
+{
+ "stamp": "shadow-exploratory-tier1-not-decision-bearing",
+ "privacy_note": "private titles embedded in-memory for aggregate rates only; no private text printed or written",
+ "P1a_i_topical_composition": {
+  "pearltrees": {
+   "stem_physical": 0.061,
+   "stem_computing": 0.061,
+   "life_health": 0.121,
+   "society": 0.303,
+   "culture": 0.121,
+   "geography": 0.098,
+   "everyday": 0.235,
+   "n_folders": 132
+  },
+  "simplewiki": {
+   "stem_physical": 0.016,
+   "stem_computing": 0.059,
+   "life_health": 0.012,
+   "society": 0.145,
+   "culture": 0.089,
+   "geography": 0.494,
+   "everyday": 0.185,
+   "n_folders": 2002
+  }
+ },
+ "P1a_i_a_privacy_removal": {
+  "n_trees_total": 988,
+  "n_removed_nonpublic": 687,
+  "removal_rate_overall": 0.695,
+  "removal_rate_by_region": {
+   "stem_physical": 0.526,
+   "stem_computing": 0.595,
+   "life_health": 0.667,
+   "society": 0.732,
+   "culture": 0.634,
+   "geography": 0.716,
+   "everyday": 0.689
+  }
+ },
+ "P1a_i_b_min_bm_tail": {
+  "n_dropped_folders": 104,
+  "dropped_region_share": {
+   "stem_physical": 0.058,
+   "stem_computing": 0.048,
+   "life_health": 0.038,
+   "society": 0.442,
+   "culture": 0.067,
+   "geography": 0.077,
+   "everyday": 0.269
+  },
+  "kept_region_share": {
+   "stem_physical": 0.061,
+   "stem_computing": 0.061,
+   "life_health": 0.121,
+   "society": 0.303,
+   "culture": 0.121,
+   "geography": 0.098,
+   "everyday": 0.235,
+   "n_folders": 132
+  }
+ },
+ "P1a_ii_ground_truth_ceiling": {
+  "n_top1_errors": 173,
+  "errors_into_defensible_alt": 0,
+  "share_defensible": 0.0,
+  "mean_T_size": 1.0,
+  "mean_rank_to_capture_over_T": 23.45,
+  "note": "diagnostic only; set-valued view, NOT the training objective"
+ },
+ "P1a_iii_D1_by_region": {
+  "life_health": {
+   "n": 27,
+   "S": 0.0607,
+   "A": 0.1116,
+   "E": 0.2145,
+   "e5": 0.2658,
+   "e5_minus_best_mu": 0.0513
+  },
+  "society": {
+   "n": 66,
+   "S": 0.1679,
+   "A": 0.1537,
+   "E": 0.1776,
+   "e5": 0.3355,
+   "e5_minus_best_mu": 0.1579
+  },
+  "culture": {
+   "n": 33,
+   "S": 0.0956,
+   "A": 0.1596,
+   "E": 0.1527,
+   "e5": 0.2987,
+   "e5_minus_best_mu": 0.1391
+  },
+  "everyday": {
+   "n": 42,
+   "S": 0.0916,
+   "A": 0.1014,
+   "E": 0.1675,
+   "e5": 0.2728,
+   "e5_minus_best_mu": 0.1053
+  }
+ },
+ "P1b_LOCO_scoreboard": {
+  "train_simplewiki_eval_pearltrees": {
+   "transfer_gate_MRR": 0.1451,
+   "e5_only_MRR": 0.3079,
+   "chance_MRR": 0.0414,
+   "in_domain_gate_MRR": 0.257
+  },
+  "train_pearltrees_eval_simplewiki": {
+   "transfer_gate_MRR": 0.2439,
+   "e5_only_MRR": 0.2309,
+   "chance_MRR": 0.0041,
+   "in_domain_gate_MRR": 0.2276
+  }
+ },
+ "P1c_corpus_probe": {
+  "pair_level_accuracy": 0.8231,
+  "chance": 0.5,
+  "n_pairs": 40000,
+  "readout": "instrument for phase-2 tuning (target: -> chance)"
+ }
+}

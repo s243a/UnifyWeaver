@@ -22,7 +22,7 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
 | **F# LMDB cached (two-level L1/L2)** | **2** | -- | **1** | **Yes** | Fact-access only (no WAM overhead); see below |
 | Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
-| R WAM (functions, kernels_on) | 1111 | 1621 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + AGG-BATCH (typed numeric batch + vectorized is_lax reduce); 3-rep median query |
+| R WAM (functions, kernels_on) | 270 | 776 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + NATIVE-HOPS-0 (optional .Call CA hop kernel, pure-R fallback); 3-rep median query |
 | Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
 
 **Key takeaway:** Atom interning (replacing `HashMap<String, Vec<String>>` with
@@ -583,10 +583,29 @@ gate (7-rep × 2):
 | A | 1805 | 1776 | 1.016× | 1.015× |
 | B | 1801 | 1777 | 1.014× | 1.010× |
 
-No production change retained. Hosted AGG-BATCH row remains 1111 / 1621.
-Next evidence-based leverage is outside the interpreted R DFS body (native
-hop kernel / deeper representation change), not further R-level membership
-or buffer micro-opts.
+No production change retained. Hosted AGG-BATCH row remained 1111 / 1621
+until NATIVE-HOPS-0.
+
+PERF-R-NATIVE-HOPS-0 proves an optional native hop-kernel boundary after
+CA-BULK-HOPS. Audit: no prior R `.Call`/Rcpp path; prefer base R C API +
+`R CMD SHLIB`. Disposable prototype matched R `hops_ids` order/multiplicity
+on 385 ED samples plus synthetic empty/singleton/branch/cycle/depth cases;
+hops-only ≈144× with ~1.1µs empty `.Call`. Production wires
+`src/uw_ca_hops.c` (generate-time soft-fail SHLIB) through
+`configure_native_ca_hops` + CSR over dense `id_table` (overflow → pure-R).
+Same-host interleaved 7-rep × 2 (R 4.3.3, 271-row six-decimal multiset
+parity; total_ms includes generate-time `.so` already present, not rebuild):
+
+| Sequence | base median | candidate median | query speedup | total speedup |
+|----------|-------------|------------------|---------------|---------------|
+| A | 1810 | 923 | 1.961× | 1.622× |
+| B | 1819 | 933 | 1.950× | 1.610× |
+
+Warm query: steps 14540, native hop calls 385, EndAggregate 0.
+Hosted 3-rep after retain: samples 932, 258, 270 (median 270 / total 776).
+Primary matrix row updated accordingly. Platforms: Linux with `r-base-dev`
+(or equivalent headers/toolchain); elsewhere generated programs keep
+pure-R hops.
 
 #### Reproduction
 
