@@ -255,14 +255,14 @@ test(driver_claims_only_loop_bearing_end_blocks) :-
 test(structural_walks_reach_any_depth) :-
     Nested = while_loop(cmp(var(i), lt, int(2)),
         [while_loop(cmp(var(j), lt, int(2)), [print([field(1)])])]),
-    assertion(plawk_native_codegen:plawk_end_term_mentions_field(Nested)),
+    assertion(plawk_native_codegen:plawk_end_term_reads_record(Nested)),
     ExitNested = while_loop(cmp(var(i), lt, int(2)),
         [if(scalar_if(cmp(var(i), eq, int(1))), [exit(1)], [])]),
     assertion(plawk_native_codegen:plawk_end_term_mentions_exit(ExitNested)),
     % and do not fire on a clean loop
     Clean = while_loop(cmp(var(n), gt, int(0)),
         [print([var(n)]), dec(var(n))]),
-    assertion(\+ plawk_native_codegen:plawk_end_term_mentions_field(Clean)),
+    assertion(\+ plawk_native_codegen:plawk_end_term_reads_record(Clean)),
     assertion(\+ plawk_native_codegen:plawk_end_term_mentions_exit(Clean)),
     !.
 

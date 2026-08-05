@@ -23,6 +23,15 @@ probing or reading code in-session, not inferred.
 disagreeing.** Every wrong-output bug found in this campaign was an instance.
 Three distinct shapes, all confirmed by real bugs:
 
+0. **A name that describes the implementation, not the property.** The newest and
+   nastiest, because the gate reads as correct. `plawk_end_term_reads_record/1` was
+   called `plawk_end_term_mentions_field/1` and matched `field(_)` only — and `NF`
+   reads the record without being a `field(_)`, so it walked past the gate built to
+   catch exactly that, and `END { if (n == 3) print NF }` printed NF of the
+   `end_of_file` sentinel for as long as the driver existed. Nobody re-read the gate
+   because its name sounded like the property. **Name gates for the property they
+   enforce**; when the name and the clauses can drift, the name wins the argument
+   and the clauses stay wrong.
 1. **Level drift** — the same property asked at surface / spec / plan level, one
    level not taught a new producer. (The original audit doc covers this.)
 2. **N emitters or N walkers over one term.** The commonest. Examples: the ORS
@@ -81,6 +90,13 @@ let the missing clauses be the gate.
   every EOF check, `@wam_intern_atom` in every input-path intern, `and i1` in
   every read loop. Three tests written that way passed vacuously or failed for
   unrelated reasons. Pin the construct's **own** generated variable names.
+- **A fourth of the same shape, in the golden-diff harness:** it tested
+  `[ -f PROG.bin.ll ]` to decide whether a program compiled, but a **declining**
+  build still writes a `.ll` (the WAM fallback), so the test was always true and a
+  declining program contributed fallback IR to the corpus rather than being
+  recorded as declined. Key off the **binary** and record the build status. The
+  common thread in all four: **an assertion whose failure mode was unreachable.**
+  Before trusting a check, ask what would have to be true for it to fail.
 - **Flipping a pin:** rewrite it to say what changed, don't delete it. Check
   whether its *rationale* was broader than its truth (the mixed-ternary pin
   blamed "needs a runtime conversion", true only for non-literal arms — so it was
@@ -149,15 +165,18 @@ the implementation changed about the design. The load-bearing facts:
 
 ## Remaining follow-ons
 
-**END field reads, what is left** — each pinned as a decline in
-`tests/test_plawk_end_field_reads.pl`. A field in a loop or `if` **condition**
-(currently a fail-safe decline: the rewrite reaches conditions, and no condition
-emitter has a clause for `end_lastrec_field(_)`) · `printf "%s\n", $1` in END (its
-own argument emitter) · `NF` in END (falls out of the same retained record) ·
-END-only programs (a driver with no retain) · the **associative** END-`if` branch
-(refused by `plawk_assoc_end_if_branch_prints_ok/2`, which allows only string
-literals there — an unrelated pre-existing restriction, pinned as such) · `$N` in
-a `binfmt` END (reads the record buffer, not a text slice).
+**END record reads, what is left** — each pinned as a decline in
+`tests/test_plawk_end_field_reads.pl`. A field or `NF` in a loop / `if`
+**condition** (a fail-safe decline: the rewrite reaches conditions, and no
+condition emitter has a clause for `end_lastrec_field(_)` / `end_lastrec_nf`) ·
+**`length`** in END (already in the gate, not yet emitted) · **builtins over the
+record** in END (`substr($0, …)`, `toupper($1)` — the gate retains for them, the
+emitters have no clause) · **END-only** programs (a driver with no retain) ·
+`printf` field args in the **assoc / mixed END chain** (a different driver, passes
+`no_end_record`) · the **associative** END-`if` branch (refused by
+`plawk_assoc_end_if_branch_prints_ok/2`, which allows only string literals there —
+an unrelated pre-existing restriction, pinned as such) · `$N` in a `binfmt` END
+(reads the record buffer, not a text slice).
 
 `arr[k]--` (needs a row in each of four `inc_assoc` walkers) · `n += -1` (parser
 rejects a negative compound-assign delta; odd now `n--` works) · assoc rules

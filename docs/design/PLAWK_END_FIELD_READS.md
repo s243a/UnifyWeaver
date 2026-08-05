@@ -210,13 +210,52 @@ condition emitter has a clause for `end_lastrec_field(_)`, so
 `END { if ($1 == "c") … }` declines instead of miscompiling. Verified by probe —
 that program parses and exits 3.
 
+### Round three: `NF`, `printf` arguments — and the gate's name was the bug
+
+`NF` reads the current record. In END it must count the *retained* record. It did
+not, and the reason is worth stating plainly:
+
+**The gate was called `plawk_end_term_mentions_field/1` and matched `field(_)`
+only.** That name described the implementation, and the implementation was narrower
+than the property it stood for. `NF` reads the record without being a `field(_)`
+term, so it walked straight past the gate built specifically to catch
+record-reading terms in END, and
+
+```awk
+{ n++ } END { if (n == 3) print NF }             # printed 1, gawk prints 2
+{ n++ } END { while (n > 0) { print NF; n-- } }  # printed 1 1 1, gawk prints 2 2 2
+```
+
+`1` is NF of the bytes `end_of_file`. Wrong output, present since the END-`if`
+driver existed and since #4100 admitted loops, and found only by asking *what else
+reads `$0`* rather than by reading the gate. Straight-line `END { print NF }`
+declined, which is why nobody tripped over it.
+
+The predicate is now **`plawk_end_term_reads_record/1`** — named for the property,
+so the next record-reading term has an obvious home — and matches `field(_)`,
+`special('NF')` and `special(length)`. `length` is listed even though every END form
+of it currently declines: if a later change admits it, the gate already knows,
+rather than silently measuring the sentinel. `NR` and `RT` are deliberately absent;
+they are process state that legitimately survives to END.
+
+`printf` arguments landed alongside: `$0`, `$N` and `NF` produce the **same
+call-argument vocabulary** a record-context printf produces (`string_ptr`, a
+`slice_len`/`slice_ptr` pair, `i64`), so the format rewriter and the call renderer
+needed no new cases and cannot disagree with the in-loop printf about how a field
+argument is passed.
+
 Still declined (each pinned in `tests/test_plawk_end_field_reads.pl`, so a later
 change flips it deliberately):
 
-- **Field in a loop or `if` condition** — the fail-safe decline above. Conditions
-  are their own feature.
-- **`printf` argument in END** (`printf "%s\n", $1`) — the END printf emitter has
-  no field clause.
+- **Field or `NF` in a loop / `if` condition** — the fail-safe decline above.
+  Conditions are their own feature. Both declined before this work too, so nothing
+  narrowed.
+- **`length` in END** — in the gate, not yet emitted.
+- **Builtins over the record in END** (`substr($0, …)`, `toupper($1)`) — the gate
+  retains the record for them (they contain a field term) but the END emitters have
+  no clause.
+- **`printf` field arguments in the assoc / mixed END chain** — a different driver
+  that wires no retain, so it passes `no_end_record`.
 - **The associative END-`if` branch** — declines because
   `plawk_assoc_end_if_branch_prints_ok/2` restricts those branches to string
   literals, a pre-existing restriction unrelated to the record source. Pinned with
@@ -224,6 +263,19 @@ change flips it deliberately):
   conflated.
 - **`exit` inside an END loop body** — still a clang failure if admitted; a
   control-flow question, not a record-lifetime one.
+
+### A corpus guard that could not fail
+
+The golden-diff script tested `[ -f PROG.bin.ll ]` to decide whether a program
+compiled. A **declining** build still writes a `.ll` (the WAM-fallback module), so
+that test was always true and a declining program silently contributed fallback IR
+to the corpus instead of being recorded as declined. Nothing already claimed was
+wrong — every program in the corpus compiled on both sides — but the guard could
+not have told us otherwise. It now keys off the **binary** and records the build
+status.
+
+That is the fourth test anti-pattern of this shape in this campaign, and the same
+shape as the other three: an assertion whose failure mode was unreachable.
 - **`NF` in END** — falls out of the same retained record; not wired.
 - **END-only programs** (`END { print $1 }` with no rules) — a different driver,
   which does not retain.

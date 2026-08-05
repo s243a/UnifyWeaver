@@ -183,14 +183,34 @@ test(print_integer_constant_unchanged, [condition(clang_available)]) :-
     run_prog("{ print 1 }\n", "1\n1\n1\n"),
     !.
 
-% --- clean declines (no miscompile) ---------------------------------------
+% --- record reads in an END printf ---------------------------------------
 
-% END has no current record, so a field argument cannot be lowered. gawk keeps
-% $0 in END; plawk declines (status 3) rather than printing a stale or undefined
-% slice. A follow-on, together with END field reads generally.
-test(end_printf_field_arg_declines) :-
-    build_status("{ n++ } END { printf \"%s\\n\", $1 }\n", 3),
+% This declined because END had no current record to slice. It now reads the
+% RETAINED last record, like gawk: the record loop copies each record aside and the
+% printf argument projects from that copy. tests/test_plawk_end_field_reads.pl owns
+% the behaviour; the pin is inverted here rather than deleted so the transition
+% stays visible in this file.
+%
+% The argument produces the same call-argument vocabulary a RECORD-context printf
+% produces for a field -- a slice_len/slice_ptr pair -- so the format rewriter and
+% the call renderer needed no new cases.
+test(end_printf_field_arg_reads_the_last_record, [condition(clang_available)]) :-
+    run_end("{ n++ } END { printf \"%s\\n\", $1 }\n", "c\n"),
     !.
+
+test(end_printf_whole_record_arg_reads_the_last_record,
+     [condition(clang_available)]) :-
+    run_end("{ n++ } END { printf \"%s\\n\", $0 }\n", "c 3\n"),
+    !.
+
+% NF counts the retained record too -- and in the END `if` and loop drivers it had
+% been counting the `end_of_file` sentinel (printing 1), because the gate matched
+% `field(_)` only and NF is not a `field(_)`.
+test(end_printf_nf_arg_counts_the_last_record, [condition(clang_available)]) :-
+    run_end("{ n++ } END { printf \"%d\\n\", NF }\n", "2\n"),
+    !.
+
+% --- clean declines (no miscompile) ---------------------------------------
 
 % An assoc element as an END printf argument is not wired yet -- declines
 % cleanly rather than reaching the printf call with a raw table value.
