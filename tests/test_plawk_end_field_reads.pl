@@ -44,11 +44,17 @@
 % ---------------------------------------------------------------------------
 % ONE GATE, INVERTED -- NOT A SECOND DEFINITION
 %
-% plawk_end_term_mentions_field/1 is the structural term walk #4100 added as the
+% plawk_end_term_reads_record/1 is the structural term walk #4100 added as the
 % END-loop SAFETY gate. This feature INVERTS it rather than restating it: the same
-% walk that refuses a field read where none can be projected now decides whether
+% walk that refuses a record read where none can be projected now decides whether
 % to retain. One predicate, two uses, nothing to drift -- which matters given that
 % every wrong-output bug in this line was one property implemented twice.
+%
+% It was called plawk_end_term_mentions_field/1 and matched `field(_)` alone. That
+% name described the implementation, and the implementation was NARROWER THAN THE
+% PROPERTY: `NF` reads the record without being a `field(_)`, so it walked straight
+% past the gate and `END { if (n == 3) print NF }` printed 1 -- NF of the
+% `end_of_file` sentinel -- where gawk prints 2. See the NF section below.
 %
 % plawk_end_record_source/4 returns BOTH the capability token END needs and the
 % record-loop IR that makes it true, so a driver cannot emit the projection
@@ -241,9 +247,9 @@ test(end_whole_record_emits_no_field_slice) :-
 % The SAME structural walk that gates END loops decides whether to retain, so the
 % two cannot disagree about what counts as a field read.
 test(the_retain_gate_is_the_end_loop_field_walk) :-
-    assertion(plawk_native_codegen:plawk_end_term_mentions_field(
+    assertion(plawk_native_codegen:plawk_end_term_reads_record(
         [print([field(1)])])),
-    assertion(\+ plawk_native_codegen:plawk_end_term_mentions_field(
+    assertion(\+ plawk_native_codegen:plawk_end_term_reads_record(
         [print([var(n)])])),
     !.
 
@@ -257,7 +263,7 @@ test(the_rewrite_reaches_a_deeply_nested_field) :-
              [if(scalar_if(cmp(var(n), eq, int(2))),
                  [print([concat([field(1), string("-"), field(2)])])], [])])],
         Rewritten),
-    assertion(\+ plawk_native_codegen:plawk_end_term_mentions_field(Rewritten)),
+    assertion(\+ plawk_native_codegen:plawk_end_term_reads_record(Rewritten)),
     assertion(Rewritten ==
         [while_loop(cmp(var(n), gt, int(0)),
              [if(scalar_if(cmp(var(n), eq, int(2))),
@@ -447,15 +453,151 @@ test(the_assoc_branch_guard_is_what_refuses_it) :-
         [print([string("yes")])], [print([string("no")])])),
     !.
 
-% `printf` in END takes its arguments through its own emitter, which has no field
-% clause. A follow-on.
-test(end_printf_field_argument_declines) :-
-    build_status("{ n++ } END { printf \"%s\\n\", $1 }\n", 3),
+% --- NF in END ------------------------------------------------------------
+%
+% `NF` reads the current record, so in END it must count the RETAINED record. It
+% did not: the gate matched `field(_)` only, `NF` is not a `field(_)`, and
+% `END { if (n == 3) print NF }` printed 1 -- NF of the `end_of_file` sentinel --
+% where gawk prints 2. Wrong output, present since the END-`if` driver existed and
+% since #4100 admitted loops into END, and found only by asking what ELSE reads
+% `$0`. Straight-line `END { print NF }` declined, which is why it went unnoticed.
+%
+% The gate is now named for the property (plawk_end_term_reads_record/1) and the
+% rewrite covers `special('NF')` as well as `field(N)`.
+
+test(end_print_nf, [condition(clang_available)]) :-
+    run("{ n++ } END { print NF }\n", "2\n"),
     !.
 
-% NF in END would fall out of the same retained record but is not wired yet.
-test(end_nf_declines) :-
-    build_status("{ n++ } END { print NF }\n", 3),
+% The two that were WRONG, not merely declined.
+test(end_if_branch_nf, [condition(clang_available)]) :-
+    run("{ n++ } END { if (n == 3) print NF }\n", "2\n"),
+    !.
+
+test(nf_in_an_end_loop, [condition(clang_available)]) :-
+    run("{ n++ } END { while (n > 0) { print NF; n-- } }\n", "2\n2\n2\n"),
+    !.
+
+test(end_nf_with_a_field, [condition(clang_available)]) :-
+    run("{ n++ } END { print NF, $1 }\n", "2 c\n"),
+    !.
+
+test(end_nf_in_a_concatenation, [condition(clang_available)]) :-
+    run("{ n++ } END { print \"nf=\" NF }\n", "nf=2\n"),
+    !.
+
+test(end_nf_honours_fs, [condition(clang_available)]) :-
+    run_input("BEGIN { FS = \":\" }\n{ n++ } END { print NF }\n",
+        "x:y:z\np:q:r\n", "3\n"),
+    !.
+
+% Empty input: no record was read, so NF is 0 -- not the field count of whatever
+% happens to be in the buffer.
+test(end_nf_on_empty_input_is_zero, [condition(clang_available)]) :-
+    run_input("{ n++ } END { print NF }\n", "", "0\n"),
+    !.
+
+% The gate knows NF reads the record. This is the assertion whose absence was the
+% bug: it would have failed before the rename.
+test(the_gate_knows_nf_reads_the_record) :-
+    assertion(plawk_native_codegen:plawk_end_term_reads_record(
+        [print([special('NF')])])),
+    % ...and `length`, listed ahead of any END form of it being admitted, so a
+    % later change cannot silently measure the EOF sentinel.
+    assertion(plawk_native_codegen:plawk_end_term_reads_record(
+        [print([special(length)])])),
+    % NR and RT are process state that legitimately survives to END.
+    assertion(\+ plawk_native_codegen:plawk_end_term_reads_record(
+        [print([special('NR')])])),
+    assertion(\+ plawk_native_codegen:plawk_end_term_reads_record(
+        [print([special('RT')])])),
+    !.
+
+test(the_rewrite_covers_nf) :-
+    plawk_native_codegen:plawk_end_lastrec_rewrite(
+        [print([special('NF'), field(1), special('NR')])], Rewritten),
+    assertion(Rewritten ==
+        [print([end_lastrec_nf, end_lastrec_field(1), special('NR')])]),
+    !.
+
+% --- printf arguments in END ---------------------------------------------
+%
+% `$0`, `$N` and `NF` as printf arguments produce the SAME call-argument
+% vocabulary a record-context printf produces (`string_ptr`, a
+% `slice_len`/`slice_ptr` pair, `i64`), so the format rewriter and the call
+% renderer needed no new cases.
+
+test(end_printf_field_argument, [condition(clang_available)]) :-
+    run("{ n++ } END { printf \"%s\\n\", $1 }\n", "c\n"),
+    !.
+
+test(end_printf_whole_record_argument, [condition(clang_available)]) :-
+    run("{ n++ } END { printf \"%s\\n\", $0 }\n", "c 3\n"),
+    !.
+
+test(end_printf_nf_argument, [condition(clang_available)]) :-
+    run("{ n++ } END { printf \"%d\\n\", NF }\n", "2\n"),
+    !.
+
+test(end_printf_two_field_arguments, [condition(clang_available)]) :-
+    run("{ n++ } END { printf \"[%s] [%s]\\n\", $1, $2 }\n", "[c] [3]\n"),
+    !.
+
+test(end_printf_field_and_nf, [condition(clang_available)]) :-
+    run("{ n++ } END { printf \"%s=%d\\n\", $1, NF }\n", "c=2\n"),
+    !.
+
+% A scalar and a field in one printf: the scalar still reads its final slot.
+test(end_printf_scalar_and_field, [condition(clang_available)]) :-
+    run("{ n++ } END { printf \"%d %s\\n\", n, $1 }\n", "3 c\n"),
+    !.
+
+% Two printfs, so the per-statement `end_` rename has to keep their argument
+% temporaries apart.
+test(two_end_printfs_with_field_arguments, [condition(clang_available)]) :-
+    run("{ n++ } END { printf \"%s|\", $1; printf \"%s\\n\", $2 }\n", "c|3\n"),
+    !.
+
+test(end_printf_mixed_with_print, [condition(clang_available)]) :-
+    run("{ n++ } END { printf \"%s|\", $1; print $2 }\n", "c|3\n"),
+    !.
+
+test(end_printf_field_past_nf_is_empty, [condition(clang_available)]) :-
+    run("{ n++ } END { printf \"[%s]\\n\", $9 }\n", "[]\n"),
+    !.
+
+test(end_printf_field_on_empty_input, [condition(clang_available)]) :-
+    run_input("{ n++ } END { printf \"[%s]\\n\", $1 }\n", "", "[]\n"),
+    !.
+
+% --- more declines that stay declines -----------------------------------
+
+% `length` (bare, i.e. length($0)) reads the record and is in the gate, but no END
+% form of it is admitted yet. Pinned so admitting it has to go through the gate.
+test(end_length_declines) :-
+    build_status("{ n++ } END { print length }\n", 3),
+    !.
+
+test(end_length_in_a_loop_declines) :-
+    build_status("{ n++ } END { while (n > 0) { print length; n-- } }\n", 3),
+    !.
+
+% `NF` in a CONDITION: the rewrite reaches it, no condition emitter has a clause,
+% so it declines. It declined before this change too -- nothing narrows.
+test(nf_in_an_end_condition_declines) :-
+    build_status("{ n++ } END { if (NF == 2) print \"two\"; else print \"no\" }\n",
+        3),
+    !.
+
+% Builtins over `$0`/`$N` in END are a separate follow-on: they contain a field
+% term, so the gate retains the record, but the END emitters have no clause for
+% them.
+test(end_substr_of_the_record_declines) :-
+    build_status("{ n++ } END { print substr($0, 1, 1) }\n", 3),
+    !.
+
+test(end_toupper_of_a_field_declines) :-
+    build_status("{ n++ } END { print toupper($1) }\n", 3),
     !.
 
 % An END-only program (no rules) uses a different driver, which does not retain.
