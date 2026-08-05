@@ -68,7 +68,8 @@ def load_membership(graph_path, min_bm, holdout=None, drop_admin=None):
     return queries, cand
 
 
-def load_filing(trees_dir, min_bm, *, return_privacy=False, paths_jsonl=None):
+def load_filing(trees_dir, min_bm, *, return_privacy=False, paths_jsonl=None,
+                return_identity=False):
     """Parse a certified-public harvested snapshot into filing queries/folders.
 
     Privacy filtering is unconditional: there is deliberately no
@@ -78,6 +79,8 @@ def load_filing(trees_dir, min_bm, *, return_privacy=False, paths_jsonl=None):
     routing.  With ``return_privacy=True`` the exact privacy index used for the
     population is returned as a third value.
     """
+    import ast as _ast
+    identity = {}
     privacy = build_pearltrees_privacy_index(trees_dir, paths_jsonl=paths_jsonl)
     folders = {}                                  # tid -> title
     by_folder = collections.defaultdict(list)     # tid -> [bookmark_title, ...]
@@ -97,10 +100,23 @@ def load_filing(trees_dir, min_bm, *, return_privacy=False, paths_jsonl=None):
                 and not vis_private(p.get("visibility"))
             ):
                 by_folder[tid].append(p["title"])
+                if return_identity:
+                    _u = p.get("url")
+                    if isinstance(_u, str) and _u.strip().startswith("{"):
+                        try:
+                            _u = _ast.literal_eval(_u)
+                        except Exception:
+                            _u = None
+                    _url = _u.get("url") if isinstance(_u, dict) else None
+                    identity[(tid, p["title"])] = {"url": _url, "pearl_id": p.get("id")}
     cand = {tid: folders[tid] for tid, bms in by_folder.items() if len(bms) >= min_bm and tid in folders}
     queries = [(bt, tid) for tid in cand for bt in by_folder[tid]]   # (bookmark_title, true_folder_tid)
+    if return_privacy and return_identity:
+        return queries, cand, privacy, identity
     if return_privacy:
         return queries, cand, privacy
+    if return_identity:
+        return queries, cand, identity
     return queries, cand
 
 
