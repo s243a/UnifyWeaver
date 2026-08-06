@@ -53,6 +53,21 @@ Three distinct shapes, all confirmed by real bugs:
    emitter, **enumerate the emitter's other callers in the same breath**. #4100
    gated loops and stopped; the `if` driver was one grep away.
 
+**A fifth instance, and the cleanest illustration of the class:** awk's
+uninitialised value is `""` in string context and `0` in numeric. plawk implemented
+that property in *four* slot kinds and got it right in some and wrong in others —
+absent array elements were fixed (probe the occupied bit), string scalars were
+right (unset atom id 0 renders empty), and **counter scalars were wrong** (an i64
+register initialised to 0, rendered numerically), so `{ n++ } END { print n }` on
+empty input printed `0`. The property was never stated in one place, so each kind
+decided it locally, by its storage.
+
+**Prescription:** when a semantic rule spans representations, the *rule* needs a
+named home, not each representation. The fix used the same presence-not-value test
+the array path already had — and the giveaway that it was one property, four
+implementations, was that fixing one of them (arrays) left the others visibly
+inconsistent with it for a whole release.
+
 **Prescriptions that worked:** one shared producer/emitter with callers
 parameterised (a *name flavour* parameter can preserve byte-identity — see
 #4094); when adding a fast path, check what the general walker's **base case**
@@ -130,7 +145,23 @@ literal** · parenthesised whole ternary · `$0` as a ternary condition ·
 **`&&`/`||` in ternary conditions** · scalar-var ternary operands · **one emitter
 for the string-scalar comparison** (byte-identical) · **mixed ternary branches** ·
 **`n--`** · **loops in END** · **`END { print $1 }`** (retained last record,
-pay-per-use, + a pre-existing END-`if` wrong output converted to a decline).
+pay-per-use, + a pre-existing END-`if` wrong output converted to a decline) ·
+**field reads in END `if` branches and loop bodies** (term rewrite, not emitter
+parameterisation) · **`NF` and `printf` record args in END** (+ the gate renamed to
+the property it enforces) · **14 stale assoc expectations** in the prefix-print
+suite · **unset scalars render empty** (monotonic assigned-mark).
+
+## A note on the one shared-globals exception
+
+`@plawk_slot_assigned` and `@.plawk_surface_print_unset` live in
+`plawk_i64_end_print_globals/3` — the one globals emitter every driver clause calls
+— so they appear in **every** program's `.ll`, unlike the pay-per-use
+`@plawk_lastrec_*`. That was deliberate: giving the mark table a per-program width
+would mean threading the slot count into ~25 driver clauses. The consequence is that
+byte-identity golden diffs are not the right check for that change; the corpus was
+verified on **program output** instead (only empty-input runs of programs printing
+an unset counter differed, all matching gawk). If another change needs shared
+globals, expect the same tradeoff and verify the same way.
 
 ## `END { print $1 }` — landed
 

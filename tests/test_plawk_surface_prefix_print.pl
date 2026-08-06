@@ -587,24 +587,26 @@ test(surface_multi_rule_accumulates_overlapping_matches) :-
 % under gawk (the `break` cases are a plawk rule-level extension gawk cannot run,
 % but the field that changed is a missing-key read in every case).
 %
-% KNOWN DIVERGENCE, deliberately left alone here: an unset SCALAR prints `0` in
-% plawk (see the `skipped` field in the two tests immediately below) where gawk
-% prints empty for the same reason arrays do. That is a separate pre-existing
-% divergence with a much wider blast radius -- it would flip these currently-
-% PASSING tests -- so it is recorded in PLAWK_AWK_FEATURE_AUDIT.md as a follow-on
-% rather than folded into a test-expectation fix.
+% Unset SCALARS now match too, for the same reason: a counter that was never
+% assigned prints nothing (an empty field below), and only an ASSIGNED counter
+% prints its number -- including an assigned 0. So the `skipped`/`hits` fields in
+% the dead-tail tests below are empty, not `0`. tests/test_plawk_unset_scalar.pl
+% owns that behaviour; the expectations here follow it. The two gawk-runnable
+% shapes were re-verified against gawk 5.2; the `break` ones are a plawk extension
+% gawk cannot run, but the field that changed is an unreachable-assigned scalar in
+% each.
 
 test(surface_terminal_next_skips_remaining_scalar_rules) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { skipped++; next } { total++ } END { print total, skipped }\n",
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
         "2 2\n").
 
-% `skipped` is never assigned (dead code after `next`), so plawk prints its slot's
-% initial 0. gawk prints empty -- the known divergence noted above.
+% `skipped` is never assigned (dead code after `next`), so it prints EMPTY -- awk's
+% uninitialised value in string context. Verified against gawk.
 test(surface_nonterminal_next_skips_dead_scalar_tail) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { next; skipped++ } { total++ } END { print total, skipped }\n",
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
-        "2 0\n").
+        "2 \n").
 
 test(surface_terminal_next_skips_remaining_assoc_rules) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { skipped[$2]++; next } { counts[$1]++ } END { print skipped[\"trace\"], counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
@@ -649,7 +651,7 @@ test(surface_terminal_break_stops_scalar_rule_chain_and_runs_end) :-
 test(surface_nonterminal_break_skips_dead_scalar_tail) :-
     run_surface_print_smoke("$1 == \"ERROR\" { break; hits++ } { total++ } END { print hits, total }\n",
         "INFO boot ok\nWARN cpu hot\nERROR disk full\nERROR net down\n",
-        "0 2\n").
+        " 2\n").
 
 test(surface_terminal_break_stops_assoc_rule_chain_and_runs_end) :-
     run_surface_print_smoke("$1 == \"ERROR\" { seen[$2]++; break } { counts[$1]++ } END { print seen[\"disk\"], counts[\"ERROR\"], counts[\"WARN\"] }\n",
@@ -829,7 +831,7 @@ test(surface_scalar_if_else_branch_next_skips_later_actions) :-
 test(surface_scalar_if_else_branch_next_skips_dead_tail_and_later_actions) :-
     run_surface_print_smoke("{ if ($1 == \"DEBUG\") { next; skipped++ } else { seen++ }; total++ } END { print total, seen, skipped }\n",
         "INFO boot ok\nDEBUG trace skip\nERROR disk full\nDEBUG trace drop\n",
-        "2 2 0\n").
+        "2 2 \n").
 
 test(surface_mixed_if_else_branch_next_skips_later_rules) :-
     run_surface_print_smoke("{ if ($1 == \"DEBUG\") { skipped++; by_kind[$2]++; next } else { seen++ } } { total++; counts[$1]++ } END { print total, seen, skipped, by_kind[\"trace\"], counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
@@ -844,7 +846,7 @@ test(surface_scalar_if_else_branch_break_stops_stream) :-
 test(surface_scalar_if_else_branch_break_skips_dead_tail_and_stops_stream) :-
     run_surface_print_smoke("{ if ($1 == \"ERROR\") { break; hits++ } else { total++ } } END { print hits, total }\n",
         "INFO boot ok\nWARN cpu hot\nERROR disk full\nINFO after break\n",
-        "0 2\n").
+        " 2\n").
 
 test(surface_mixed_if_else_branch_break_stops_stream) :-
     run_surface_print_smoke("{ if ($1 == \"ERROR\") { hits++; seen[$2]++; break } else { total++; counts[$1]++ } } END { print hits, total, seen[\"disk\"], counts[\"INFO\"], counts[\"WARN\"] }\n",

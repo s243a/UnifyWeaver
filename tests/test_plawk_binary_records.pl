@@ -88,10 +88,17 @@ test(surface_binary_combined_guard) :-
         i64_pairs([50-1, 200-2, 300-3]),
         "1\n").
 
+% END still runs with no records -- and `total` was never assigned, so it prints
+% EMPTY, awk's uninitialised value in string context. gawk cannot be the oracle for
+% a BINFMT program, but `print <unset scalar>` is the same construct it validates in
+% text mode (`{ s += 1 } END { print s }` on empty input prints a blank line), and
+% having it render differently under a binary record format would be exactly the
+% storage-decides-the-type asymmetry that behaviour removed.
+% tests/test_plawk_unset_scalar.pl owns it.
 test(surface_binary_empty_input_runs_end) :-
     run_binary_smoke("BEGIN { BINFMT = \"i64 i64\" } { total += $2 } END { print total }\n",
         i64_pairs([]),
-        "0\n").
+        "\n").
 
 test(surface_binary_printf) :-
     run_binary_smoke("BEGIN { BINFMT = \"i64 i64\" } { printf \"%d;%d\\n\", $1, $2 }\n",
