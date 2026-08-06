@@ -47,12 +47,24 @@ struct Config {
     linktarget_dump: Option<PathBuf>,
     /// Required for mode=Correct.
     page_dump: Option<PathBuf>,
+    /// Correct mode: keep edges whose cl_from has no ns-14 page row
+    /// (default: drop + count — stale links break the walkable contract).
+    keep_unresolved_children: bool,
+    /// Correct mode: also write a named child_title<TAB>parent_title TSV.
+    titles_out: Option<PathBuf>,
+    /// With --titles-out: include parents that exist only as linktargets
+    /// ("wanted categories", no page row) in the NAMED output. The numeric
+    /// LMDB graph never contains them (no page_id exists to key them).
+    include_pageless_parents: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SinkStats {
     rows_scanned: usize,
     edges_written: usize,
+    unresolved_parents: usize,
+    unresolved_children: usize,
+    pageless_parent_titles_written: usize,
 }
 
 fn main() -> ExitCode {
@@ -95,6 +107,9 @@ where
     let mut stats_path = None;
     let mut refresh = false;
     let mut mode = IngestMode::Correct;
+    let mut keep_unresolved_children = false;
+    let mut titles_out = None;
+    let mut include_pageless_parents = false;
     let mut id_method = IdMethod::Position;
     let mut linktarget_dump: Option<PathBuf> = None;
     let mut page_dump: Option<PathBuf> = None;
@@ -155,6 +170,17 @@ where
                 stats_path = Some(PathBuf::from(args.next().ok_or("--stats requires a path")?));
             }
             "--refresh" => refresh = true,
+            "--keep-unresolved-children" => {
+                keep_unresolved_children = true;
+            }
+            "--titles-out" => {
+                titles_out = Some(PathBuf::from(
+                    args.next().ok_or("--titles-out requires a path")?,
+                ));
+            }
+            "--include-pageless-parents" => {
+                include_pageless_parents = true;
+            }
             "--mode" => {
                 let value = args.next().ok_or("--mode requires a value")?;
                 mode = IngestMode::parse(&value.to_string_lossy())
@@ -207,6 +233,9 @@ where
         id_method,
         linktarget_dump,
         page_dump,
+        keep_unresolved_children,
+        titles_out,
+        include_pageless_parents,
     })
 }
 
@@ -249,6 +278,14 @@ fn usage() -> String {
         "[--manifest <path>] [--predicate-name NAME] [--cl-type TYPE] ",
         "[--max-edges N] [--map-size BYTES] [--batch-size N] ",
         "[--fixture-tsv <path>] [--fixture-header TEXT] [--stats <path>] [--refresh]\n",
+        "[--keep-unresolved-children] [--titles-out <path>] [--include-pageless-parents]\n",
+        "\n",
+        "Correct-mode edge hygiene:\n",
+        "  children whose cl_from has no ns-14 page row (stale cross-snapshot links) are\n",
+        "  DROPPED and counted by default; --keep-unresolved-children restores the old\n",
+        "  permissive behaviour. --titles-out writes child_title<TAB>parent_title beside\n",
+        "  the numeric graph; --include-pageless-parents additionally keeps 'wanted\n",
+        "  category' parents (linktarget title, no page row) in the NAMED output only.\n",
         "\n",
         "Modes:\n",
         "  correct    (default) categorylinks + linktarget + page → walkable page_id graph\n",
@@ -276,6 +313,9 @@ fn sink_categorylinks_to_lmdb(config: &Config) -> Result<SinkStats, DynError> {
         let stats = SinkStats {
             rows_scanned: 0,
             edges_written: manifest_row_count(&config.manifest_path).unwrap_or(0),
+            unresolved_parents: 0,
+            unresolved_children: 0,
+            pageless_parent_titles_written: 0,
         };
         write_stats_if_requested(config, &stats)?;
         return Ok(stats);
@@ -331,7 +371,35 @@ fn sink_categorylinks_to_lmdb(config: &Config) -> Result<SinkStats, DynError> {
             "mysql_stream_lmdb: page rows kept (ns=14): {}",
             resolver.page_title_to_id.len()
         );
+        resolver.index_page_ids();
+        resolver.validate_children =
+            config.mode == IngestMode::Correct && !config.keep_unresolved_children;
     }
+    let page_id_to_title: std::collections::HashMap<i64, Vec<u8>> = if config.titles_out.is_some()
+    {
+        resolver
+            .page_title_to_id
+            .iter()
+            .map(|(title, id)| (*id, title.clone()))
+            .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
+    let mut titles_writer = match config.titles_out.as_deref() {
+        Some(path) => {
+            if config.mode != IngestMode::Correct {
+                return Err("--titles-out requires --mode=correct".into());
+            }
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut w = BufWriter::new(fs::File::create(path)?);
+            writeln!(w, "child\tparent")?;
+            Some(w)
+        }
+        None => None,
+    };
+    let mut pageless_parent_titles_written = 0usize;
 
     let env = Environment::new()
         .set_max_dbs(4)
@@ -357,7 +425,37 @@ fn sink_categorylinks_to_lmdb(config: &Config) -> Result<SinkStats, DynError> {
         let Some((cl_from, cl_target_id)) = categorylinks_raw_ids(&row, &config.cl_type) else {
             continue;
         };
-        let Some((child_id, parent_id)) = resolver.resolve_edge(cl_from, cl_target_id) else {
+        let resolved = if let Some(writer) = titles_writer.as_mut() {
+            // Single resolution path when titles are requested: resolve_named
+            // decides, the numeric edge derives from it — so unresolved rows
+            // are counted exactly once.
+            match resolver.resolve_named(
+                &page_id_to_title,
+                cl_from,
+                cl_target_id,
+                config.include_pageless_parents,
+            ) {
+                Some((child_t, parent_t, pageless)) => {
+                    writer.write_all(&child_t)?;
+                    writer.write_all(b"\t")?;
+                    writer.write_all(&parent_t)?;
+                    writer.write_all(b"\n")?;
+                    if pageless {
+                        pageless_parent_titles_written += 1;
+                        None // no page_id exists; numeric graph cannot hold it
+                    } else {
+                        resolver
+                            .page_title_to_id
+                            .get(parent_t.as_slice())
+                            .map(|pid| (cl_from, *pid))
+                    }
+                }
+                None => None,
+            }
+        } else {
+            resolver.resolve_edge(cl_from, cl_target_id)
+        };
+        let Some((child_id, parent_id)) = resolved else {
             continue;
         };
         let child_str = child_id.to_string();
@@ -389,18 +487,30 @@ fn sink_categorylinks_to_lmdb(config: &Config) -> Result<SinkStats, DynError> {
         writer.flush()?;
     }
 
+    if let Some(mut writer) = titles_writer {
+        writer.flush()?;
+    }
     if resolver.unresolved_parents > 0 {
         eprintln!(
             "mysql_stream_lmdb: unresolved parent ids (skipped): {}",
             resolver.unresolved_parents
         );
     }
+    if resolver.unresolved_children > 0 {
+        eprintln!(
+            "mysql_stream_lmdb: unresolved child ids (skipped): {}",
+            resolver.unresolved_children
+        );
+    }
 
-    write_csharp_query_manifest(config, edges_written)?;
     let stats = SinkStats {
         rows_scanned,
         edges_written,
+        unresolved_parents: resolver.unresolved_parents,
+        unresolved_children: resolver.unresolved_children,
+        pageless_parent_titles_written,
     };
+    write_csharp_query_manifest(config, edges_written, &stats)?;
     write_stats_if_requested(config, &stats)?;
     Ok(stats)
 }
@@ -449,7 +559,11 @@ fn field_i64(field: &Field) -> Option<i64> {
     }
 }
 
-fn write_csharp_query_manifest(config: &Config, row_count: usize) -> Result<(), DynError> {
+fn write_csharp_query_manifest(
+    config: &Config,
+    row_count: usize,
+    stats: &SinkStats,
+) -> Result<(), DynError> {
     let environment_path = manifest_environment_path(&config.lmdb_path, &config.manifest_path);
     let source_length = fs::metadata(&config.dump_path).ok().map(|meta| meta.len());
     let source_path = config.dump_path.display().to_string();
@@ -461,11 +575,25 @@ fn write_csharp_query_manifest(config: &Config, row_count: usize) -> Result<(), 
         IngestMode::Compromise => "compromise",
         IngestMode::Fallback => "fallback",
     };
-    let id_method_str = match config.id_method {
-        IdMethod::Raw => "raw",
-        IdMethod::Position => "position",
-        IdMethod::Hash => "hash",
+    // IdMethod only shapes the graph in Fallback mode; echoing the configured
+    // value in other modes made a correct-mode manifest read like a fallback
+    // run (observed in the field). Record n/a instead.
+    let id_method_str = if config.mode == IngestMode::Fallback {
+        match config.id_method {
+            IdMethod::Raw => "raw",
+            IdMethod::Position => "position",
+            IdMethod::Hash => "hash",
+        }
+    } else {
+        "n/a"
     };
+    let aux = |p: &Option<PathBuf>| {
+        p.as_deref()
+            .map(|v| format!("\"{}\"", json_escape(&v.display().to_string())))
+            .unwrap_or_else(|| "null".to_string())
+    };
+    let linktarget_json = aux(&config.linktarget_dump);
+    let page_json = aux(&config.page_dump);
     let manifest = format!(
         concat!(
             "{{\n",
@@ -483,7 +611,11 @@ fn write_csharp_query_manifest(config: &Config, row_count: usize) -> Result<(), 
             "  \"SourcePath\": \"{}\",\n",
             "  \"SourceLength\": {},\n",
             "  \"IngestMode\": \"{}\",\n",
-            "  \"IdMethod\": \"{}\"\n",
+            "  \"IdMethod\": \"{}\",\n",
+            "  \"LinktargetDump\": {},\n",
+            "  \"PageDump\": {},\n",
+            "  \"UnresolvedParents\": {},\n",
+            "  \"UnresolvedChildren\": {}\n",
             "}}\n"
         ),
         json_escape(&config.predicate_name),
@@ -494,6 +626,10 @@ fn write_csharp_query_manifest(config: &Config, row_count: usize) -> Result<(), 
         source_length_json,
         mode_str,
         id_method_str,
+        linktarget_json,
+        page_json,
+        stats.unresolved_parents,
+        stats.unresolved_children,
     );
     fs::write(&config.manifest_path, manifest)?;
     Ok(())
@@ -509,8 +645,16 @@ fn write_stats_if_requested(config: &Config, stats: &SinkStats) -> Result<(), Dy
     fs::write(
         path,
         format!(
-            "{{\n  \"rows_scanned\": {},\n  \"edges_written\": {}\n}}\n",
-            stats.rows_scanned, stats.edges_written
+            concat!(
+                "{{\n  \"rows_scanned\": {},\n  \"edges_written\": {},\n",
+                "  \"unresolved_parents\": {},\n  \"unresolved_children\": {},\n",
+                "  \"pageless_parent_titles_written\": {}\n}}\n"
+            ),
+            stats.rows_scanned,
+            stats.edges_written,
+            stats.unresolved_parents,
+            stats.unresolved_children,
+            stats.pageless_parent_titles_written
         ),
     )?;
     Ok(())
