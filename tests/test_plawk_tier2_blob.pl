@@ -149,9 +149,10 @@ test(surface_blob_error_paths) :-
     % truncated payload
     write_raw(InputPath, [i64(1), i64(5), bytes("12")]),
     run_status(BinPath, exit(11)),
-    % clean EOF runs END
+    % clean EOF runs END -- the counter was never assigned, so it prints EMPTY
+    % (awk's uninitialised value in string context); the newline still proves END ran.
     write_raw(InputPath, []),
-    run_expect(BinPath, "0\n"),
+    run_expect(BinPath, "\n"),
     !.
 
 % --- helpers ---------------------------------------------------------------

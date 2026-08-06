@@ -137,19 +137,24 @@ test(string_literal_unchanged, [condition(clang_available)]) :-
     run("{ print \"x\" }\n", "x\nx\nx\n"),
     !.
 
-% --- clean declines: no record outside the rule loop ---------------------
+% --- END now has a record; BEGIN still does not ---------------------------
 
-% BEGIN and END have no current record. gawk keeps `$0` in END (printing the last
-% record) and treats it as empty in BEGIN; plawk declines in both -- and declines
-% the EXPLICIT `print $0` there identically, so the bare form inherits that
-% pre-existing boundary rather than introducing one. Pinned in pairs so a future
-% fix to either context updates both.
-test(bare_print_in_end_declines) :-
-    build_status("{ n++ } END { print }\n", 3),
+% These were pinned as declines with the rationale "BEGIN and END have no current
+% record", pinned IN PAIRS so that a fix to either context would update both. END
+% has since been fixed -- the record loop retains each record and END projects `$0`
+% from it -- so the END half is inverted here and the BEGIN half stands. The pin's
+% rationale was broader than its truth, which is why it was worth keeping the pair
+% rather than one test.
+%
+% Both END forms print the LAST record, matching gawk, and print an empty line on
+% empty input. tests/test_plawk_end_field_reads.pl owns the behaviour.
+test(bare_print_in_end_reads_the_last_record, [condition(clang_available)]) :-
+    run("{ n++ } END { print }\n", "c 3\n"),
     !.
 
-test(explicit_whole_record_in_end_declines) :-
-    build_status("{ n++ } END { print $0 }\n", 3),
+test(explicit_whole_record_in_end_reads_the_last_record,
+     [condition(clang_available)]) :-
+    run("{ n++ } END { print $0 }\n", "c 3\n"),
     !.
 
 test(bare_print_in_begin_declines) :-

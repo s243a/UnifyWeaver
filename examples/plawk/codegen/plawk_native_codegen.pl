@@ -1295,7 +1295,7 @@ plawk_program_native_driver_ir(
         % the shared output layout -- no scalar state at all
         WritebinPlan \== none,
         PrintFields == [],
-        StatePlan = state_plan([])
+        StatePlan = state_plan([], [])
     ),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
@@ -1486,7 +1486,7 @@ plawk_program_native_driver_ir(
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_record_descriptor(BeginClauses, FieldSeparator),
     plawk_assoc_record_program_ok(FieldSeparator, Rules, PrintFields),
-    plawk_end_list_statement_globals(Items, state_plan([]), StringGlobalIR,
+    plawk_end_list_statement_globals(Items, state_plan([], []), StringGlobalIR,
         AssocGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
     plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR,
@@ -1500,7 +1500,7 @@ plawk_program_native_driver_ir(
     plawk_join_nonempty_ir([RecordCounterIR, AssocChainIR], RecordIR),
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
-    plawk_end_list_statements_ir(assoc, Items, state_plan([]), AssocPlan,
+    plawk_end_list_statements_ir(assoc, Items, state_plan([], []), AssocPlan,
         FieldSeparator, OutputSeparator, EndPrintIR),
     format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, AssocRuleGlobalIR]),
@@ -7605,8 +7605,18 @@ plawk_combine_entry_ir(FirstIR, SecondIR, CombinedIR) :-
 % deleting it would rewrite the globals of every program and break the
 % byte-identity that the golden IR diff uses to prove unrelated output did not
 % drift. Removing it is a mechanical follow-on, not part of the ORS fix.
+% @.plawk_surface_print_unset is an EMPTY printf format: printing an unset counter
+% selects it in place of "%ld" and the extra i64 argument is simply ignored (C
+% varargs), so an unset value needs no branch, just a different format pointer.
+%
+% @plawk_slot_assigned is the monotonic assigned-mark table (see
+% plawk_scalar_update_operation_ir/9). It lives here, beside @plawk_exit_code,
+% because this is the one globals emitter every driver clause already calls --
+% giving it a per-program width would mean threading the slot count into all of
+% them.
 plawk_i64_end_print_globals(BeginClauses, SurfaceGlobals, RuntimeGlobals) :-
     plawk_ors_global_line(BeginClauses, OrsGlobalLine),
+    plawk_slot_assigned_width(Width),
     format(atom(RuntimeGlobals),
 '@.plawk_surface_print_i64 = private constant [4 x i8] c"%ld\\00"
 @.plawk_surface_print_line = private constant [4 x i8] c"%s\\0A\\00"
@@ -7614,15 +7624,24 @@ plawk_i64_end_print_globals(BeginClauses, SurfaceGlobals, RuntimeGlobals) :-
 ~w
 @.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"
 @.plawk_surface_print_f64 = private constant [3 x i8] c"%g\\00"
+@.plawk_surface_print_unset = private constant [1 x i8] zeroinitializer
 @plawk_exit_code = internal global i32 0
+@plawk_slot_assigned = internal global [~w x i1] zeroinitializer
 ~w
 
 ',
-        [OrsGlobalLine, SurfaceGlobals]).
+        [OrsGlobalLine, Width, SurfaceGlobals]).
 
 % State plans keep recognized PLAWK state separate from the LLVM slot numbering.
 % Associative arrays use a separate table plan because they are pointer state.
-plawk_state_plan_slots(state_plan(Slots), Slots).
+plawk_state_plan_slots(state_plan(Slots, _Tracked), Slots).
+
+%% plawk_state_plan_tracked(+StatePlan, -TrackedIndices) is det.
+%
+%  Counter-slot indices whose UNSET value renders as empty rather than 0. Part of
+%  the plan rather than a threaded parameter because it is a property OF the slots,
+%  computed once where the rules are still in scope (plawk_unset_tracked_slots/3).
+plawk_state_plan_tracked(state_plan(_Slots, Tracked), Tracked).
 
 plawk_state_slot_count(StatePlan, Count) :-
     plawk_state_plan_slots(StatePlan, Slots),
@@ -7892,7 +7911,7 @@ plawk_scalar_rule_controls(Rules, Controls) :-
         ),
         Controls).
 
-plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
+plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots, Tracked)) :-
     findall(Name,
         ( member(rule(_Pattern, Actions), Rules),
           plawk_trim_control_tails(Actions, ReachableActions),
@@ -7919,7 +7938,8 @@ plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
         )
     ->  append(ScalarSlots, [scalar_record_number], Slots)
     ;   Slots = ScalarSlots
-    ).
+    ),
+    plawk_unset_tracked_slots(Rules, state_plan(Slots, []), Tracked).
 
 % A bare record-getline has an observable `$0` side effect but no scalar slot.
 % Keep the scalar action-chain driver active even when it is the only action in
@@ -8477,7 +8497,7 @@ plawk_mixed_state_plan(Rules, PrintFields, mixed_plan(ScalarPlan, AssocPlan, Pla
     ;   plawk_planned_rules_have_conditionals(PlannedRules)
     ).
 
-plawk_mixed_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
+plawk_mixed_scalar_state_plan(Rules, PrintFields, state_plan(Slots, Tracked)) :-
     findall(Name,
         ( member(rule(_Pattern, Actions), Rules),
           plawk_trim_control_tails(Actions, ReachableActions),
@@ -8498,7 +8518,8 @@ plawk_mixed_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
         )
     ->  append(ScalarSlots, [scalar_record_number], Slots)
     ;   Slots = ScalarSlots
-    ).
+    ),
+    plawk_unset_tracked_slots(Rules, state_plan(Slots, []), Tracked).
 
 plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, [])) :-
     findall(ArrayName,
@@ -15534,7 +15555,7 @@ plawk_substitute_end_reads(var(Name), StatePlan, Substituted) :-
     -> Substituted = ssa_strnum(Value)   % strnum: text for print, number in arith
     ;  Substituted = ssa(Value)
     ).
-plawk_substitute_end_reads(special('NR'), state_plan(Slots), ssa(Value)) :-
+plawk_substitute_end_reads(special('NR'), state_plan(Slots, _Tracked), ssa(Value)) :-
     plawk_record_number_slot(Slots, Index),
     !,
     format(atom(Value), '%final_slot_~w', [Index]).
@@ -16691,7 +16712,127 @@ plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest
         NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, RestNextExits),
     { append(BranchNextExits, RestNextExits, NextExits) }.
 
-plawk_scalar_update_operation_ir(add(Expr), scalar_double(_Name), FieldSeparator,
+%% plawk_scalar_update_operation_ir(+Operation, +Slot, +FieldSeparator, +Prefix,
+%%     +SlotIndex, +OpIndex, +InputValue, -NextValue, -GlobalIR-IR) is semidet.
+%
+%  One scalar-slot update, plus the ASSIGNED mark for counter slots.
+%
+%  The mark is appended here, in a wrapper over every clause of the operation
+%  emitter, rather than at each clause: an update that forgot to mark would leave
+%  an assigned counter reading as unassigned, which is wrong output. One wrapper
+%  cannot forget.
+%
+%  Why a mark is needed at all: awk's uninitialised value is a dual -- "" in string
+%  context, 0 in numeric -- so `END { print n }` prints NOTHING when `n` was never
+%  assigned, and `{ n++ } END { print n }` on EMPTY INPUT is exactly that case.
+%  plawk's counter slots are i64 registers initialised to 0, so the storage decided
+%  the type and the render always printed 0. String slots already got this right
+%  (an unset atom id 0 renders empty), so counters were the odd kind out.
+%
+%  The mark is a MONOTONIC bit in @plawk_slot_assigned: it only goes false->true,
+%  so it needs no SSA threading through the record loop's phis -- a plain store
+%  wherever the update is emitted is correct, including inside `if` branches and
+%  loop bodies, because it executes exactly when the assignment does.
+plawk_scalar_update_operation_ir(Operation, Slot, FieldSeparator, Prefix, SlotIndex,
+        OpIndex, InputValue, NextValue, GlobalIR-IR) :-
+    plawk_scalar_update_operation_ir_(Operation, Slot, FieldSeparator, Prefix,
+        SlotIndex, OpIndex, InputValue, NextValue, GlobalIR-IR0),
+    plawk_scalar_assigned_store_ir(Slot, SlotIndex, Prefix, OpIndex, StoreIR),
+    plawk_join_nonempty_ir([IR0, StoreIR], IR).
+
+%% plawk_scalar_assigned_store_ir(+Slot, +SlotIndex, +Prefix, +OpIndex, -IR) is det.
+%
+%  Mark a counter slot assigned. Emitted only for counter slots -- doubles and
+%  string/strnum slots either diverge separately (a follow-on) or already render an
+%  unset value correctly.
+%
+%  Slot indices at or beyond the table's width get NO mark, and
+%  plawk_unset_tracked_slots/3 refuses to track them, so the pair can never index
+%  out of bounds.
+plawk_scalar_assigned_store_ir(scalar_counter(_Name), SlotIndex, Prefix, OpIndex,
+        IR) :-
+    plawk_slot_assigned_width(Width),
+    SlotIndex < Width,
+    !,
+    format(atom(Ptr), '%~w_slot_~w_op_~w_asg', [Prefix, SlotIndex, OpIndex]),
+    format(atom(IR),
+'  ~w = getelementptr [~w x i1], [~w x i1]* @plawk_slot_assigned, i64 0, i64 ~w
+  store i1 true, i1* ~w',
+        [Ptr, Width, Width, SlotIndex, Ptr]).
+plawk_scalar_assigned_store_ir(_Slot, _SlotIndex, _Prefix, _OpIndex, '').
+
+%% plawk_slot_assigned_width(-Width) is det.
+%
+%  Width of the assigned-mark table. A fixed width keeps the globals emitter free
+%  of any dependence on a particular program's slot count -- it is the ONE place
+%  every driver clause already routes its globals through, and threading a count
+%  into it would mean touching every driver clause.
+plawk_slot_assigned_width(256).
+
+%% plawk_unset_tracked_slots(+Rules, +StatePlan, -TrackedIndices) is det.
+%
+%  Which counter-slot indices may render an UNSET value as empty.
+%
+%  The safety rule, and the reason this cannot produce wrong output: a slot is
+%  tracked only when EVERY reachable assignment to its name is an update-shaped
+%  action -- one that goes through plawk_scalar_update_operation_ir/9, the single
+%  emitter that writes the mark. A name also written by a getline capture, a
+%  `gsub` count or a dynrec bind (which write slot values through their own
+%  emitters, without a mark) is therefore NOT tracked, and keeps rendering 0 as
+%  before. So "tracked" means "every write is marked", by construction rather than
+%  by diligence.
+%
+%  A name with NO reachable assignment at all is also tracked: it can only ever be
+%  unset, and its mark can only ever be false.
+plawk_unset_tracked_slots(Rules, StatePlan, TrackedIndices) :-
+    plawk_state_plan_slots(StatePlan, Slots),
+    plawk_slot_assigned_width(Width),
+    findall(Index,
+        ( nth0(Index, Slots, scalar_counter(Name)),
+          Index < Width,
+          plawk_unset_name_only_updated(Rules, Name)
+        ),
+        TrackedIndices).
+
+%  Every reachable action that assigns Name is update-shaped. `forall` over an
+%  empty set is true, which is the no-assignment case above.
+plawk_unset_name_only_updated(Rules, Name) :-
+    forall(( member(rule(_Pattern, Actions), Rules),
+             plawk_trim_control_tails(Actions, ReachableActions),
+             plawk_end_actions_assigning(ReachableActions, Name, Action)
+           ),
+           plawk_scalar_action_update(Action, Name, _Operation)).
+
+%  Actions at any depth (an `if` branch, a loop body) that assign Name.
+plawk_end_actions_assigning(Actions, Name, Action) :-
+    member(Outer, Actions),
+    plawk_action_subaction(Outer, Action),
+    plawk_scalar_update_action_name(Action, Name).
+
+%% plawk_action_subaction(+Action, -Leaf) is nondet.
+%
+%  The LEAF actions of a possibly-nested action. Containers yield only what is
+%  inside them, never themselves: `plawk_scalar_update_action_name/2` reports an
+%  `if` as assigning whatever its branches assign, so yielding the container too
+%  would offer the trackability check an `if` term, which is not update-shaped, and
+%  every counter assigned under a condition would be judged untracked. (It was --
+%  `{ if ($1 == "ZZZ") n++ } END { print n }` printed 0 until the containers were
+%  excluded.)
+plawk_action_subaction(if(_Cond, ThenActions, ElseActions), Sub) :-
+    !,
+    ( member(Outer, ThenActions) ; member(Outer, ElseActions) ),
+    plawk_action_subaction(Outer, Sub).
+plawk_action_subaction(while_loop(_Cond, Body), Sub) :-
+    !,
+    member(Outer, Body),
+    plawk_action_subaction(Outer, Sub).
+plawk_action_subaction(do_while_loop(Body, _Cond), Sub) :-
+    !,
+    member(Outer, Body),
+    plawk_action_subaction(Outer, Sub).
+plawk_action_subaction(Action, Action).
+
+plawk_scalar_update_operation_ir_(add(Expr), scalar_double(_Name), FieldSeparator,
         Prefix, SlotIndex, OpIndex, InputValue, NextValue, GlobalIR-IR) :-
     !,
     plawk_scalar_f64_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
@@ -16700,7 +16841,7 @@ plawk_scalar_update_operation_ir(add(Expr), scalar_double(_Name), FieldSeparator
     format(atom(AddLine), '  ~w = fadd double ~w, ~w',
         [NextValue, InputValue, ValueIR]),
     plawk_join_nonempty_ir([SetupIR, AddLine], IR).
-plawk_scalar_update_operation_ir(set(Expr), scalar_double(_Name), FieldSeparator,
+plawk_scalar_update_operation_ir_(set(Expr), scalar_double(_Name), FieldSeparator,
         Prefix, SlotIndex, OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
     !,
     plawk_scalar_f64_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
@@ -16709,7 +16850,7 @@ plawk_scalar_update_operation_ir(set(Expr), scalar_double(_Name), FieldSeparator
     % -0.0 + x is the IEEE identity copy (x + 0.0 would flip -0.0).
     format(atom(SetLine), '  ~w = fadd double -0.0, ~w', [NextValue, ValueIR]),
     plawk_join_nonempty_ir([SetupIR, SetLine], IR).
-plawk_scalar_update_operation_ir(add(Expr), _Slot, FieldSeparator, Prefix, SlotIndex,
+plawk_scalar_update_operation_ir_(add(Expr), _Slot, FieldSeparator, Prefix, SlotIndex,
         OpIndex, InputValue, NextValue, GlobalIR-IR) :-
     plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
         OpIndex, ValueIR, GlobalIR, SetupIR),
@@ -16723,7 +16864,7 @@ plawk_scalar_update_operation_ir(add(Expr), _Slot, FieldSeparator, Prefix, SlotI
 % `gsub(/re/, "repl", var)`: substitute over the slot's CURRENT interned value
 % (InputValue -> text via @wam_atom_to_string), producing a fresh interned id.
 % The discarded count goes to the shared @plawk_gsub_count scratch.
-plawk_scalar_update_operation_ir(set_str(gsub_str(Global, Regex, Repl)), scalar_string(_Name),
+plawk_scalar_update_operation_ir_(set_str(gsub_str(Global, Regex, Repl)), scalar_string(_Name),
         _FieldSeparator, Prefix, SlotIndex, OpIndex, InputValue, NextValue, GlobalIR-IR) :-
     !,
     format(atom(Base), '~w_slot_~w_op_~w_gsub', [Prefix, SlotIndex, OpIndex]),
@@ -16752,7 +16893,7 @@ plawk_scalar_update_operation_ir(set_str(gsub_str(Global, Regex, Repl)), scalar_
 % plawk_str_build_ir); only comparison-time dispatch differs (strnum vs string).
 % So the store is identical for both -- the slot's KIND, not this op, drives the
 % numeric-vs-lexical choice.
-plawk_scalar_update_operation_ir(set_str(Src), Slot, FieldSeparator,
+plawk_scalar_update_operation_ir_(set_str(Src), Slot, FieldSeparator,
         Prefix, SlotIndex, OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
     plawk_slot_holds_text(Slot),
     !,
@@ -16771,7 +16912,7 @@ plawk_scalar_update_operation_ir(set_str(Src), Slot, FieldSeparator,
 % the slot got the field's numeric value (0 for non-numeric text), and printing
 % it resolved atom id 0 to empty. Both kinds hold an interned id, so both take
 % this store.
-plawk_scalar_update_operation_ir(set(field_i64(FieldIndex)), Slot,
+plawk_scalar_update_operation_ir_(set(field_i64(FieldIndex)), Slot,
         FieldSeparator, Prefix, SlotIndex, OpIndex, _InputValue, NextValue, ''-IR) :-
     plawk_slot_holds_text(Slot),
     !,
@@ -16789,10 +16930,10 @@ plawk_scalar_update_operation_ir(set(field_i64(FieldIndex)), Slot,
 % strnum copy `z = x` (step 4): both are strnum, so copy the source's atom id
 % straight into the target slot -- strnum-ness propagates, no coercion. The
 % read has already been substituted to ssa_strnum(Id).
-plawk_scalar_update_operation_ir(set(ssa_strnum(Id)), scalar_strnum(_Name),
+plawk_scalar_update_operation_ir_(set(ssa_strnum(Id)), scalar_strnum(_Name),
         _FieldSeparator, _Prefix, _SlotIndex, _OpIndex, _InputValue, Id, ''-'') :-
     !.
-plawk_scalar_update_operation_ir(set(Expr), _Slot, FieldSeparator, Prefix, SlotIndex,
+plawk_scalar_update_operation_ir_(set(Expr), _Slot, FieldSeparator, Prefix, SlotIndex,
         OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
     plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
         OpIndex, ValueIR, GlobalIR, SetupIR),
@@ -18659,6 +18800,46 @@ plawk_end_branch_fields_rewrite(end_record(_FieldSeparator), Fields, RecFields) 
     plawk_end_lastrec_rewrite(Fields, RecFields).
 plawk_end_branch_fields_rewrite(no_end_record, Fields, Fields).
 
+%% plawk_end_counter_print_lines(+StatePlan, +SlotIndex, +ValueIR, +PrintIndex,
+%%     -Lines) is det.
+%
+%  Print a COUNTER slot in END. awk's uninitialised value is "" in string context,
+%  so a counter that was never assigned prints NOTHING -- and `{ n++ }` on empty
+%  input never assigns. A counter that WAS assigned prints its number, including a
+%  legitimately assigned 0 (`n = 0`), so the test is the assigned MARK and never
+%  the value. That is the same presence-not-value rule @wam_assoc_i64_print already
+%  uses for absent array elements; counters were the last kind still deciding by
+%  storage type rather than by assignment.
+%
+%  Untracked slots keep printing the number unconditionally -- see
+%  plawk_unset_tracked_slots/3 for which slots qualify and why an unqualified one
+%  cannot be rendered this way.
+%
+%  The unset case selects an EMPTY format string instead of branching; the i64
+%  argument is then an unused vararg, which is well defined.
+plawk_end_counter_print_lines(StatePlan, SlotIndex, ValueIR, PrintIndex, Lines) :-
+    plawk_state_plan_tracked(StatePlan, Tracked),
+    memberchk(SlotIndex, Tracked),
+    !,
+    plawk_slot_assigned_width(Width),
+    format(atom(AsgPtr), '  %end_asg_ptr_~w = getelementptr [~w x i1], [~w x i1]* @plawk_slot_assigned, i64 0, i64 ~w',
+        [PrintIndex, Width, Width, SlotIndex]),
+    format(atom(AsgLoad), '  %end_asg_~w = load i1, i1* %end_asg_ptr_~w',
+        [PrintIndex, PrintIndex]),
+    format(atom(FmtSel),
+        '  %end_i64_fmt_~w = select i1 %end_asg_~w, i8* getelementptr ([4 x i8], [4 x i8]* @.plawk_surface_print_i64, i64 0, i64 0), i8* getelementptr ([1 x i8], [1 x i8]* @.plawk_surface_print_unset, i64 0, i64 0)',
+        [PrintIndex, PrintIndex]),
+    format(atom(PrintCall),
+        '  %printed_end_i64_~w = call i32 (i8*, ...) @printf(i8* %end_i64_fmt_~w, i64 ~w)',
+        [PrintIndex, PrintIndex, ValueIR]),
+    Lines = [AsgPtr, AsgLoad, FmtSel, PrintCall].
+plawk_end_counter_print_lines(_StatePlan, _SlotIndex, ValueIR, PrintIndex,
+        [FmtPtr, PrintCall]) :-
+    format(atom(FmtVar), 'end_i64_fmt_~w', [PrintIndex]),
+    format(atom(PrintVar), 'printed_end_i64_~w', [PrintIndex]),
+    llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
+        [FmtPtr, PrintCall]).
+
 % The final (post-loop) slot values, one per slot: %final_slot_0, %final_slot_1,
 % ... -- the values the END block reads.
 plawk_final_slot_values(StatePlan, Values) :-
@@ -18704,11 +18885,8 @@ plawk_scalar_end_print_lines([var(Name) | Rest], StatePlan, OutputSeparator,
              '  %printed_end_str_~w = call i32 (i8*, ...) @printf(i8* %end_str_fmt_~w, i8* %end_str_ptr_~w)',
              [PrintIndex, PrintIndex, PrintIndex]),
          Lines = [StrS, StrE, StrSel, FmtPtr, PrintCall]
-      ;  format(atom(FmtVar), 'end_i64_fmt_~w', [PrintIndex]),
-         format(atom(PrintVar), 'printed_end_i64_~w', [PrintIndex]),
-         llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
-             [FmtPtr, PrintCall]),
-         Lines = [FmtPtr, PrintCall]
+      ;  plawk_end_counter_print_lines(StatePlan, SlotIndex, ValueIR, PrintIndex,
+             Lines)
       ),
       NextPrintIndex is PrintIndex + 1
     },
@@ -18800,14 +18978,16 @@ plawk_end_field_print_lines(var(Name), StatePlan, _EndRecord, PrintIndex) -->
              [FmtVar]),
          format(atom(PrintCall),
              '  %printed_end_f64_~w = call i32 (i8*, ...) @printf(i8* %~w, double ~w)',
-             [PrintIndex, FmtVar, ValueIR])
-      ;  format(atom(FmtVar), 'end_i64_fmt_~w', [PrintIndex]),
-         format(atom(PrintVar), 'printed_end_i64_~w', [PrintIndex]),
-         llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
-             [FmtPtr, PrintCall])
+             [PrintIndex, FmtVar, ValueIR]),
+         Lines = [FmtPtr, PrintCall]
+      ;  % the SAME counter render the standalone END print uses, so a counter in a
+         % concatenation cannot disagree with a counter printed on its own about
+         % whether an unset value is empty
+         plawk_end_counter_print_lines(StatePlan, SlotIndex, ValueIR, PrintIndex,
+             Lines)
       )
     },
-    [FmtPtr, PrintCall].
+    plawk_emit_lines(Lines).
 plawk_end_field_print_lines(string(Value), _StatePlan, _EndRecord, PrintIndex) -->
     plawk_end_string_print_lines(Value, PrintIndex).
 plawk_end_field_print_lines(special('NR'), StatePlan, _EndRecord, PrintIndex) -->
@@ -18818,7 +18998,7 @@ plawk_end_field_print_lines(Expr, StatePlan, _EndRecord, PrintIndex) -->
     { plawk_end_scalar_expr(Expr) },
     plawk_end_expr_print_lines(Expr, StatePlan, PrintIndex).
 
-plawk_end_nr_value(state_plan(Slots), ValueIR) :-
+plawk_end_nr_value(state_plan(Slots, _Tracked), ValueIR) :-
     plawk_record_number_slot(Slots, Index),
     !,
     format(atom(ValueIR), '%final_slot_~w', [Index]).
@@ -20175,7 +20355,7 @@ plawk_field_cmp_op_code(ge, 5).
 % The hidden slot's loop phi is named *_prev because EOF branches before the
 % current outer record is counted; the lowered record block materializes the
 % current value after a successful driver read.
-plawk_print_record_counter_ir(state_plan(Slots), _Fields, '', RecordCounterIR) :-
+plawk_print_record_counter_ir(state_plan(Slots, _Tracked), _Fields, '', RecordCounterIR) :-
     plawk_record_number_slot(Slots, Index),
     !,
     format(atom(RecordCounterIR),

@@ -73,7 +73,10 @@ test(surface_float_call_prints_per_record) :-
     % zeros (3.0 prints as 3).
     run_ff_smoke("BEGIN { BINFMT = \"i64 f64\" } $1 > 0 { print $1, float(plawk_ff_wf($1, $2)) } END { print done }\n",
         [rec(2, 1.5), rec(-1, 2.5), rec(3, 0.25)],
-        "2 3\n3 0.75\n0\n").
+        % `done` is never assigned anywhere -- it is only an "END ran" marker -- so it
+        % prints EMPTY (awk's uninitialised value in string context) and the trailing
+        % newline still proves END ran. See tests/test_plawk_unset_scalar.pl.
+        "2 3\n3 0.75\n\n").
 
 test(surface_failed_float_call_contributes_zero) :-
     % posval fails on non-positive inputs: those records add 0.0.
