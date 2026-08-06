@@ -47,6 +47,29 @@ use crate::{iter_mysql_rows, Field};
 
 /// Namespace constant for Category pages in MediaWiki.
 pub const NS_CATEGORY: i64 = 14;
+/// Namespace constant for Article (main) pages in MediaWiki.
+pub const NS_ARTICLE: i64 = 0;
+
+/// Tier-1 "junk" admin-category classifier, ported from
+/// `prototypes/mu_cosine/eval_filing.py::_JUNK` (keep the two in sync).
+/// Tier-2 structural categories (by-year/by-country/…) are deliberately KEPT —
+/// they carry meaning; see the python comment for the rationale.
+pub fn is_admin_category(title: &[u8]) -> bool {
+    let name = String::from_utf8_lossy(title).to_lowercase().replace('_', " ");
+    const CONTAINS: [&str; 10] = [
+        "catautotoc", "navseasoncats", "navbox", "wikipedia", "template",
+        "redirect", "hidden", "tracking", "maintenance", "disambiguation",
+    ];
+    const PREFIXES: [&str; 5] = ["article ", "articles ", "page ", "pages ", "categor"];
+    if CONTAINS.iter().any(|p| name.contains(p)) {
+        return true;
+    }
+    if PREFIXES.iter().any(|p| name.starts_with(p)) {
+        return true;
+    }
+    // approximates stubs?
+    name.contains(" stub")
+}
 
 /// How the ingester decides which dumps to consume and how to resolve IDs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -456,6 +479,18 @@ mod tests {
         // validation off keeps the old permissive behaviour
         r.validate_children = false;
         assert_eq!(r.resolve_edge(10, 500), Some((10, 7777)));
+    }
+
+    #[test]
+    fn admin_classifier_matches_python_tier1() {
+        assert!(is_admin_category(b"Wikipedia_categories_named_after_people"));
+        assert!(is_admin_category(b"Articles_with_short_description"));
+        assert!(is_admin_category(b"All_article_disambiguation_pages"));
+        assert!(is_admin_category(b"Physics_stubs"));
+        assert!(is_admin_category(b"Hidden_categories"));
+        assert!(!is_admin_category(b"Physics"));
+        assert!(!is_admin_category(b"Establishments_in_1990")); // tier-2: kept
+        assert!(!is_admin_category(b"History_by_country"));     // tier-2: kept
     }
 
     #[test]

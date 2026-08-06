@@ -15,7 +15,8 @@ use std::process::ExitCode;
 
 use lmdb::{DatabaseFlags, Environment, Transaction, WriteFlags};
 use mysql_stream::categorylinks_resolve::{
-    build_linktarget_title_map, build_page_title_to_id_map, IdMethod, IngestMode, Resolver,
+    build_linktarget_title_map, build_page_title_to_id_map, is_admin_category, IdMethod,
+    IngestMode, Resolver, NS_ARTICLE,
 };
 use mysql_stream::{iter_mysql_rows, Field};
 
@@ -56,6 +57,16 @@ struct Config {
     /// ("wanted categories", no page row) in the NAMED output. The numeric
     /// LMDB graph never contains them (no page_id exists to key them).
     include_pageless_parents: bool,
+    /// Correct mode: also ingest ARTICLE data into two separate LMDB tables —
+    /// `article_category` (article page_id -> category page_id, dupsort) and
+    /// `article_meta` (article page_id -> title). Optional: category-only
+    /// builds stay small (memory/storage footprint); the API remains the
+    /// alternative for on-demand page info.
+    article_metadata: bool,
+    /// With --article-metadata: drop article_meta records for articles whose
+    /// categories are ALL admin/junk (Tier-1 classifier). Articles with no
+    /// categorylinks row at all are never ingested in either case.
+    drop_uncategorized_articles: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +76,9 @@ struct SinkStats {
     unresolved_parents: usize,
     unresolved_children: usize,
     pageless_parent_titles_written: usize,
+    article_category_rows: usize,
+    article_meta_rows: usize,
+    articles_dropped_admin_only: usize,
 }
 
 fn main() -> ExitCode {
@@ -110,6 +124,8 @@ where
     let mut keep_unresolved_children = false;
     let mut titles_out = None;
     let mut include_pageless_parents = false;
+    let mut article_metadata = false;
+    let mut drop_uncategorized_articles = false;
     let mut id_method = IdMethod::Position;
     let mut linktarget_dump: Option<PathBuf> = None;
     let mut page_dump: Option<PathBuf> = None;
@@ -181,6 +197,12 @@ where
             "--include-pageless-parents" => {
                 include_pageless_parents = true;
             }
+            "--article-metadata" => {
+                article_metadata = true;
+            }
+            "--drop-uncategorized-articles" => {
+                drop_uncategorized_articles = true;
+            }
             "--mode" => {
                 let value = args.next().ok_or("--mode requires a value")?;
                 mode = IngestMode::parse(&value.to_string_lossy())
@@ -236,11 +258,19 @@ where
         keep_unresolved_children,
         titles_out,
         include_pageless_parents,
+        article_metadata,
+        drop_uncategorized_articles,
     })
 }
 
 /// Validate that the auxiliary dumps required by the chosen mode are present.
 fn validate_mode_inputs(config: &Config) -> Result<(), DynError> {
+    if config.article_metadata && config.mode != IngestMode::Correct {
+        return Err("--article-metadata requires --mode=correct".into());
+    }
+    if config.drop_uncategorized_articles && !config.article_metadata {
+        return Err("--drop-uncategorized-articles requires --article-metadata".into());
+    }
     match config.mode {
         IngestMode::Correct => {
             if config.linktarget_dump.is_none() {
@@ -279,6 +309,7 @@ fn usage() -> String {
         "[--max-edges N] [--map-size BYTES] [--batch-size N] ",
         "[--fixture-tsv <path>] [--fixture-header TEXT] [--stats <path>] [--refresh]\n",
         "[--keep-unresolved-children] [--titles-out <path>] [--include-pageless-parents]\n",
+        "[--article-metadata] [--drop-uncategorized-articles]\n",
         "\n",
         "Correct-mode edge hygiene:\n",
         "  children whose cl_from has no ns-14 page row (stale cross-snapshot links) are\n",
@@ -316,6 +347,9 @@ fn sink_categorylinks_to_lmdb(config: &Config) -> Result<SinkStats, DynError> {
             unresolved_parents: 0,
             unresolved_children: 0,
             pageless_parent_titles_written: 0,
+            article_category_rows: 0,
+            article_meta_rows: 0,
+            articles_dropped_admin_only: 0,
         };
         write_stats_if_requested(config, &stats)?;
         return Ok(stats);
@@ -487,6 +521,99 @@ fn sink_categorylinks_to_lmdb(config: &Config) -> Result<SinkStats, DynError> {
         writer.flush()?;
     }
 
+    // ---- optional article pass (two separate LMDB tables) ----
+    let mut article_category_rows = 0usize;
+    let mut article_meta_rows = 0usize;
+    let mut articles_dropped_admin_only = 0usize;
+    if config.article_metadata {
+        let ac_db = env.create_db(Some("article_category"), DatabaseFlags::DUP_SORT)?;
+        let meta_db = env.create_db(Some("article_meta"), DatabaseFlags::empty())?;
+        // Pass A: categorylinks cl_type=page — write membership edges, and track
+        // which articles have at least one NON-ADMIN category (Tier-1 classifier).
+        let mut qualifying: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        let mut seen_any: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        let mut atxn = env.begin_rw_txn()?;
+        let mut written = 0usize;
+        eprintln!("mysql_stream_lmdb: article pass A (categorylinks cl_type=page)");
+        for row in iter_mysql_rows(dump_path)? {
+            let Some((cl_from, cl_target_id)) = categorylinks_raw_ids(&row, "page") else {
+                continue;
+            };
+            let Some(title) = resolver.lt_title_map.get(&cl_target_id) else {
+                continue; // parent not a category linktarget
+            };
+            let Some(parent_page_id) = resolver.page_title_to_id.get(title.as_slice()) else {
+                continue; // pageless category parent: no page_id keyspace entry
+            };
+            seen_any.insert(cl_from);
+            if !is_admin_category(title) {
+                qualifying.insert(cl_from);
+            }
+            atxn.put(
+                ac_db,
+                &cl_from.to_string().as_bytes(),
+                &parent_page_id.to_string().as_bytes(),
+                WriteFlags::empty(),
+            )?;
+            written += 1;
+            if written % config.batch_size == 0 {
+                atxn.commit()?;
+                atxn = env.begin_rw_txn()?;
+            }
+        }
+        article_category_rows = written;
+        // Pass B: page dump ns=0 — metadata (id -> title) for ingested articles.
+        // Articles with no categorylinks row are never ingested; with the drop
+        // flag, admin-only articles are dropped too (and counted).
+        let keep: &std::collections::HashSet<i64> = if config.drop_uncategorized_articles {
+            &qualifying
+        } else {
+            &seen_any
+        };
+        articles_dropped_admin_only = seen_any.len() - qualifying.len();
+        let page_path = config
+            .page_dump
+            .as_deref()
+            .and_then(Path::to_str)
+            .ok_or("page dump path must be valid UTF-8")?;
+        eprintln!(
+            "mysql_stream_lmdb: article pass B (page dump ns=0; keeping {} of {} seen)",
+            keep.len(),
+            seen_any.len()
+        );
+        for row in iter_mysql_rows(page_path)? {
+            let (Some(pid), Some(ns)) = (
+                row.get(0).and_then(|f| match f {
+                    Field::Int(n) => Some(*n),
+                    _ => None,
+                }),
+                row.get(1).and_then(|f| match f {
+                    Field::Int(n) => Some(*n),
+                    _ => None,
+                }),
+            ) else {
+                continue;
+            };
+            if ns != NS_ARTICLE || !keep.contains(&pid) {
+                continue;
+            }
+            let Some(title) = row.get(2).and_then(Field::as_bytes) else {
+                continue;
+            };
+            atxn.put(meta_db, &pid.to_string().as_bytes(), &title, WriteFlags::empty())?;
+            article_meta_rows += 1;
+            if article_meta_rows % config.batch_size == 0 {
+                atxn.commit()?;
+                atxn = env.begin_rw_txn()?;
+            }
+        }
+        atxn.commit()?;
+        eprintln!(
+            "mysql_stream_lmdb: article_category rows {} | article_meta rows {} | admin-only dropped {}",
+            article_category_rows, article_meta_rows, articles_dropped_admin_only
+        );
+    }
+
     if let Some(mut writer) = titles_writer {
         writer.flush()?;
     }
@@ -509,6 +636,9 @@ fn sink_categorylinks_to_lmdb(config: &Config) -> Result<SinkStats, DynError> {
         unresolved_parents: resolver.unresolved_parents,
         unresolved_children: resolver.unresolved_children,
         pageless_parent_titles_written,
+        article_category_rows,
+        article_meta_rows,
+        articles_dropped_admin_only,
     };
     write_csharp_query_manifest(config, edges_written, &stats)?;
     write_stats_if_requested(config, &stats)?;
@@ -615,7 +745,12 @@ fn write_csharp_query_manifest(
             "  \"LinktargetDump\": {},\n",
             "  \"PageDump\": {},\n",
             "  \"UnresolvedParents\": {},\n",
-            "  \"UnresolvedChildren\": {}\n",
+            "  \"UnresolvedChildren\": {},\n",
+            "  \"ArticleMetadata\": {},\n",
+            "  \"DropUncategorizedArticles\": {},\n",
+            "  \"ArticleCategoryRows\": {},\n",
+            "  \"ArticleMetaRows\": {},\n",
+            "  \"ArticlesDroppedAdminOnly\": {}\n",
             "}}\n"
         ),
         json_escape(&config.predicate_name),
@@ -630,6 +765,11 @@ fn write_csharp_query_manifest(
         page_json,
         stats.unresolved_parents,
         stats.unresolved_children,
+        config.article_metadata,
+        config.drop_uncategorized_articles,
+        stats.article_category_rows,
+        stats.article_meta_rows,
+        stats.articles_dropped_admin_only,
     );
     fs::write(&config.manifest_path, manifest)?;
     Ok(())
@@ -648,13 +788,18 @@ fn write_stats_if_requested(config: &Config, stats: &SinkStats) -> Result<(), Dy
             concat!(
                 "{{\n  \"rows_scanned\": {},\n  \"edges_written\": {},\n",
                 "  \"unresolved_parents\": {},\n  \"unresolved_children\": {},\n",
-                "  \"pageless_parent_titles_written\": {}\n}}\n"
+                "  \"pageless_parent_titles_written\": {},\n",
+                "  \"article_category_rows\": {},\n  \"article_meta_rows\": {},\n",
+                "  \"articles_dropped_admin_only\": {}\n}}\n"
             ),
             stats.rows_scanned,
             stats.edges_written,
             stats.unresolved_parents,
             stats.unresolved_children,
-            stats.pageless_parent_titles_written
+            stats.pageless_parent_titles_written,
+            stats.article_category_rows,
+            stats.article_meta_rows,
+            stats.articles_dropped_admin_only
         ),
     )?;
     Ok(())
