@@ -73,7 +73,7 @@ each WAM instruction).
 | **Elixir**   | ✅ | — | — | `none` | n/a — `runtime_parser(compiled)` correctly throws `domain_error` (since Elixir isn't in the capability table); guarded by `test_runtime_parser_compiled_request_errors` |
 | **Rust**     | ✅ | — | ✅ | `none` | yes — generated-runtime tests cover parser calls, buffered reads, term/atom round-trips, and variable metadata options |
 | **Haskell**  | ✅ | — | ✅ | `none` | partial — capability and project-expansion wiring; generated parser E2E is noted as slow in `docs/SESSION_HASKELL_PARITY_SUMMARY.md` |
-| **Go**       | ✅ | — | — | `none` | n/a (no parser-mode wiring) |
+| **Go**       | ✅ | — | ✅ | `none` | yes — `test_wam_go_parser_smoke.pl` 22/22, incl. operator precedence + associativity, lists, partial lists, parens, prefix ops |
 | **Clojure**  | ✅ | — | — | `none` | n/a (no parser-mode wiring) |
 | **Lua**      | ✅ | — | — | `none` | n/a (no parser-mode wiring) |
 
@@ -96,7 +96,8 @@ Auditing the other targets for the same bug classes turned up:
 | **Rust** | `rust_val_literal` re-emitted quoted-numeric atoms verbatim (`Value::Atom("'42'")` instead of `Value::Atom("42")`) — same class as F# #2422 | #2431 |
 | **Python** | `_constant_term` re-parsed `Atom("42").name` through `_parse_constant`, silently promoting it to `Int(42)` at `put_constant` time; `wam_lines_to_python` used a naive whitespace split that broke any atom token containing a space (`':- p'`) | #2433 |
 | **C++** | audit clean — uses `wam_text_to_items/2` + `wam_classify_constant_token/2` which already honour the quoted-atom convention.  One end-to-end `'42'` parse verified before the ~12-min-per-case compile time made `:- p` / `\+ foo` impractical to also verify. | none |
-| **R, Elixir, Lua, Clojure, Go** (compiled path) | not applicable — these targets either use native parsing or don't bundle the compiled parser | none |
+| **R, Elixir, Lua, Clojure** (compiled path) | not applicable — these targets either use native parsing or don't bundle the compiled parser | none |
+| **Go** (compiled path) | added after the original audit. Five runtime defects, none parser-specific: nested write contexts clobbered the enclosing term (cons tails never filled); `get_structure` tested unbound before dereferencing, so an already-bound argument took the write branch; `get_list` pushed a flat `*List`'s elements instead of head/tail, conflating cons pairs with builtin-produced lists; A-registers above A8 were outside the choicepoint snapshot, so any predicate of arity > 8 lost arguments on backtracking; and interned atoms were registered from an `init()`, which loses the map slot to package-level var initialisers and produced two distinct `[]` atoms under pointer-only `Atom.Equals`. | this branch |
 | **Haskell** (compiled path) | added after the original audit; appends portable parser + wrapper predicates but keeps the default off because parser-bundled generation is heavyweight | #2522 |
 
 The bug classes are roughly:

@@ -38,11 +38,11 @@ self-contained so a single coding agent can pick it up in isolation.
 | KT-ARITH-SLASH-FUNCTOR ✅ | Conformance gap fix | Kotlin | S | done — `///2` last-slash parse (`cursor/kt-arith-slash-functor-f421`) |
 | KT-Y-ENV-RECURSION ✅ | Conformance gap fix | Kotlin | M | done — Y heap-identity vars (`cursor/kt-y-env-recursion-f421`) |
 | PARSE-C | Runtime-parser entry | C | S | — |
-| PARSE-GO | Runtime-parser entry | Go | S | — |
+| PARSE-GO ✅ | Runtime-parser entry | Go | **L** (was S) | done — capability registered + `runtime_parser(compiled)` wired; 22/22 parser smoke; five runtime fixes |
 | PARSE-SCALA | Runtime-parser entry | Scala | S | — |
 | PARSE-CLOJURE | Runtime-parser entry | Clojure | S | — |
 | PARSE-LUA | Runtime-parser entry | Lua | S | — |
-| LMDB-GO | LMDB policy tiers | Go | M | — |
+| LMDB-GO ✅ | LMDB policy tiers | Go | M | done — eager/lazy/cached/auto + `lmdb_l2_capacity`; shared cost model for `auto` |
 | LMDB-SCALA | LMDB policy tiers | Scala | M | — |
 | LMDB-C-0 | LMDB lookup source (prereq) | C | M | — |
 | LMDB-C | LMDB policy tiers | C | L | LMDB-C-0 |
@@ -51,7 +51,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | LMDB-R-2A ✅ | bounded cached materialisation | R | S | done (`cached` + L2) |
 | LMDB-R-2B ✅ | auto materialisation resolution | R | S | done (shared `resolve_auto_lmdb_materialisation/2`) |
 | ISO-C | ISO three-form (new) | C | L | — |
-| ISO-GO | ISO three-form (new) | Go | L | — |
+| ISO-GO ✅ | ISO three-form (new) | Go | L | done — catch/throw, is_iso/is_lax, 6 compares, succ, rewrite, audit |
 | ISO-SCALA | ISO three-form (new) | Scala | L | — |
 | ISO-R-0 ✅ | shared wiring + `is/2` vertical slice | R | M | done |
 | ISO-R-1 ✅ | pre-existing catch/throw substrate | R | — | validated (`catch_throw_dyn_aggregator_e2e_rscript`) |
@@ -81,7 +81,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | BENCH-LLVM | Effective-distance bench row | LLVM | L | — |
 | BENCH-CPP | Effective-distance bench row | C++ | L | — |
 | BENCH-C | Effective-distance bench row | C | M | — |
-| BENCH-GO | Effective-distance bench row | Go | M | — |
+| BENCH-GO ✅ | Effective-distance bench row | Go | M | done — 1061/1061 ms scale-300 5-rep median, reference-verified |
 | BENCH-R ✅ | Effective-distance bench row | R | L | done — scale-300 matrix row (`cursor/bench-r-effective-distance-f421`) |
 
 Suggested ordering: **start with `EMIT-KOTLIN`** — lowest-risk (least-mature
@@ -226,8 +226,73 @@ catch-all clause.
   3. Add default `target_runtime_parser_default(wam_c, none).` (keep opt-in, matching F#/Haskell/Rust) — or `native(parse_term)` if step 2 confirms a shipping native parser.
 - **Acceptance:** `swipl -g "use_module('src/unifyweaver/targets/wam_runtime_parser_capability'), (wam_target_runtime_parser(c, [runtime_parser(compiled)], M), M==compiled(prolog_term_parser) -> writeln(ok) ; (writeln(fail),halt(1))), halt" -t 'halt(1)'` prints `ok`; and existing `swipl -g run_tests tests/test_wam_runtime_parser*.pl` (verify: exact test filename) stays green.
 
-### PARSE-GO: Add Go runtime-parser capability entry
-- **Lever:** Runtime-parser capability entries  **Target:** Go  **Size:** S  **Depends on:** —
+### PARSE-GO: Add Go runtime-parser capability entry ✅
+- **Lever:** Runtime-parser capability entries  **Target:** Go  **Size:** **L** (the S estimate was wrong)  **Depends on:** —
+- **Status:** Done. The capability entry is registered
+  (`compiled(prolog_term_parser)`, default `none`) and
+  `runtime_parser(compiled)` now pulls the portable parser + wrappers
+  into the project in write_wam_go_project/3, mirroring Python/F#.
+  `tests/test_wam_go_parser_smoke.pl` builds the generated Go and parses
+  22 inputs, including operator precedence (`a-b*c` -> `-(a, *(b, c))`),
+  yfx left-associativity (`1-2-3`), xfy right-associativity (`a^b^c`),
+  lists, partial lists, parens, prefix operators and quoted atoms.
+
+  **The S estimate was wrong by a wide margin** — not because the entry
+  is hard to write, but because the capability module only advertises a
+  mode with runtime proof, and producing that proof surfaced *eight*
+  WAM-Go defects. All of them mis-execute ordinary programs; the parser
+  was just the first workload exercising enough of the runtime to hit
+  them. Three were fixed earlier in this branch (see below); the other
+  five were:
+
+    4. **Nested write contexts clobbered the enclosing term.**
+       CurrentStruct/CurrentList were single slots while argument
+       contexts are a stack, so a head like `p(C, A, [tk(C)|A])` never
+       filled the cons tail. The target now lives on the WriteCtx frame.
+    5. **get_structure tested isUnbound before dereferencing**, so an
+       already-bound argument took the *write* branch and a fresh
+       structure was built over it.
+    6. **get_list pushed a flat `*List`'s elements** as the unify
+       context. `*List` is both a cons pair (put_list) and a flat list
+       (reverse/2, findall/3, sort/2, append/3); a flat one-element list
+       offered one slot so the cons-tail read failed.
+    7. **A-registers above A8 were never saved at a choicepoint.**
+       snapshotAllRegs skipped Regs[8..199] as "the X range", but A(N)
+       maps to Regs[N-1] and X starts at Regs[100]. Any predicate of
+       arity > 8 lost arguments on its second clause.
+    8. **Interned atoms were registered from an `init()`.** Go runs all
+       package-level var initialisers before any init(), so
+       `var emptyListAtom = internAtom("[]")` won the map slot and was
+       then overwritten — two distinct `[]` atoms under pointer-only
+       `Atom.Equals`, so `get_constant []` failed against a real empty
+       list. That is what stopped the parser at parse_op_loop/10's base
+       clause.
+
+  **Lesson for the remaining PARSE-* cards (C, Scala, Clojure, Lua):**
+  size them by whether the target's runtime has been exercised by
+  anything as demanding as the portable parser, not by the three-fact
+  capability edit. The edit is an S; the proof may not be.
+
+- **Defects 1-3**, found in the first pass at this card and shipped
+  separately (see `tests/test_wam_go_last_call_builtin.pl`):
+    1. **Arity name collisions.** Go identifiers were derived from the
+       predicate name alone, so `read_term_from_atom/2` and `/3` emitted
+       two identically named `func`s — "redeclared in this block". Fixed
+       by suffixing only names that actually collide.
+    2. **Last-call builtins.** `execute <builtin>/N` emitted a bare
+       `BuiltinCall`, which advances to the next instruction; `execute`
+       has none, so the predicate bound its outputs and *then* reported
+       failure. This alone broke `tokenize/2` (its last goal is
+       `reverse/2`). Fixed with a `BuiltinExecute` instruction.
+    3. **write/1 dropped compound arguments** — `Value.String()` renders
+       a `*Structure` as bare `functor/arity`. Fixed with a proper
+       renderer; this one only mattered for debugging, but it is why the
+       first traces were unreadable.
+  Those three got the parser to compile, link and tokenize; defects 4-8
+  above are what it took to get it *parsing*. As predicted, this was a
+  campaign on the scale of F#'s (PRs #2407/#2408/#2415/#2419/#2422/#2423),
+  not a three-fact edit.
+
 - **Goal:** Register `wam_go`'s runtime-parser capability so `wam_target_runtime_parser(go, ...)` resolves a mode instead of `none`/`domain_error`.
 - **Files to touch:** `src/unifyweaver/targets/wam_runtime_parser_capability.pl`
 - **Reference to copy from:** same file — `wam_rust` entries (`target_runtime_parser_default(wam_rust, none).` line ~139, `target_runtime_parser_mode_(wam_rust, compiled(prolog_term_parser)).` line ~148) + the `normalize_runtime_parser_target(rust, wam_rust)` alias pair (lines ~158-159).
@@ -235,7 +300,7 @@ catch-all clause.
   1. Add alias pair `normalize_runtime_parser_target(go, wam_go) :- !.` / `normalize_runtime_parser_target(wam_go, wam_go) :- !.` before the catch-all.
   2. Add `target_runtime_parser_mode_(wam_go, compiled(prolog_term_parser)).`
   3. Add `target_runtime_parser_default(wam_go, none).` (Go has no native runtime term parser — compiled portable parser only, opt-in; mirror Rust). (verify: no native parser in `wam_go_target.pl`.)
-- **Acceptance:** `swipl -g "use_module('src/unifyweaver/targets/wam_runtime_parser_capability'), (wam_target_runtime_parser(go, [runtime_parser(compiled)], M), M==compiled(prolog_term_parser) -> writeln(ok) ; halt(1)), halt" -t 'halt(1)'` prints `ok`; parser-capability unit tests stay green.
+- **Acceptance:** `swipl -g "use_module('src/unifyweaver/targets/wam_runtime_parser_capability'), (wam_target_runtime_parser(go, [runtime_parser(compiled)], M), M==compiled(prolog_term_parser) -> writeln(ok) ; halt(1)), halt" -t 'halt(1)'` prints `ok`; parser-capability unit tests stay green. ✅ passes, plus `tests/test_wam_go_parser_smoke.pl` for the runtime proof.
 
 ### PARSE-SCALA: Add Scala runtime-parser capability entry
 - **Lever:** Runtime-parser capability entries  **Target:** Scala  **Size:** S  **Depends on:** —
@@ -303,8 +368,21 @@ core module. **Naming caution (C):** the reverse-CSR `lmdb_offset` index
 materialisation — the LMDB-C cards target the forward `wam_fact_source_*`
 path, not the reverse index.
 
-### LMDB-GO: Add eager/lazy/cached materialisation tiers to Go LMDB fact source
+### LMDB-GO: Add eager/lazy/cached materialisation tiers to Go LMDB fact source ✅
 - **Lever:** LMDB policy tiers  **Target:** Go  **Size:** M  **Depends on:** —
+- **Status:** Done. `lmdb_materialisation(eager|lazy|cached|auto)` +
+  `lmdb_l2_capacity(N|auto)`, default `cached`/4096. eager scans once at
+  construction into an arg1 index; lazy is the previous per-lookup
+  helper spawn; cached memoises through L1 + bounded L2 (misses cached
+  too), guarded by an RWMutex for the parallel runner. `auto` defers to
+  `resolve_auto_lmdb_materialisation/2` in `core/cost_model.pl` — the
+  shared rule F#/Haskell/R already use — rather than a fourth private
+  copy of the decision tree. Options reach the emitter through a new
+  `go_foreign_setup_line/3`. Tests: `tests/test_go_lmdb_materialisation.pl`
+  (option plumbing) plus `TestLmdbMaterialisationTiers` in
+  `tests/test_wam_go_foreign_lowering.pl`, which builds and runs the
+  generated Go against a counting helper mock and pins per-tier
+  invocation counts.
 - **Goal:** Give the Go `lmdbAtomFact2Source` an `lmdb_materialisation(eager|lazy|cached|auto)` knob mirroring F#, adding an eager in-memory map and a cached L1/L2 layer over the existing on-demand lookup.
 - **Files to touch:** `src/unifyweaver/targets/wam_go_target.pl` (inline runtime around lines 2841–2945: `registerLmdbAtomFact2/2`, `lmdbAtomFact2Source`, `newLmdbAtomFact2Source`, `Scan`, `LookupArg1`, `run`; and foreign-setup emit `go_foreign_setup_line/2` line 982); optionally `templates/targets/go_wam/runtime.go.mustache`; add test `tests/test_go_lmdb_materialisation.pl`.
 - **Reference to copy from:** `src/unifyweaver/targets/wam_fsharp_target.pl` — `resolve_auto_lmdb_materialisation_fs/2` (4833), `compute_lmdb_materialisation_fs/2` (4841), `apply_edge_store_fs/3` (4825); tier semantics in `templates/targets/fsharp_wam/lmdb_fact_source.fs.mustache` (eager loaders vs cursor-lazy vs cached L2). Also Haskell `resolve_auto_lmdb_cache_mode/2` (`wam_haskell_target.pl:4589`).
@@ -420,8 +498,24 @@ plumbing there.
   6. Add inline-option/config plumbing (`iso_errors_config/1`, bare-PI multi-module warning) via `iso_errors_resolve_options/2`.
 - **Acceptance:** `swipl -g run_tests -t halt tests/test_wam_c_iso_smoke.pl` passes (mirror `tests/test_wam_haskell_iso_smoke.pl` structure: key-tables registered, ISO-default throws, lax-default fails/lax, explicit override bypasses rewrite, audit report); `swipl -g run_tests -t halt tests/test_iso_errors.pl` still green.
 
-### ISO-GO: New ISO three-form adoption for WAM Go target
+### ISO-GO: New ISO three-form adoption for WAM Go target ✅
 - **Lever:** ISO three-form  **Target:** Go  **Size:** L  **Depends on:** —
+- **Status:** Done — all seven adoption criteria met. Go uses
+  panic/recover for the ball (the card's first option); `Run` recovers
+  anything that escapes into `vm.UncaughtBall` and reports failure
+  rather than crashing. ISO keys throw `instantiation_error`,
+  `type_error(evaluable, F/N)` and `evaluation_error(zero_divisor)`
+  (integer division only — float division by zero yields IEEE-754
+  inf/NaN); `_lax` keys delegate to the plain keys, preserving existing
+  behaviour byte-for-byte. **Note for the remaining ISO-* cards:** every
+  ISO/lax key must also be registered in the target's direct-builtin
+  table, or `builtin_call`/`execute` falls through to the indexed-fact
+  path and silently fails. Unlike Python, Go rewrites only when an
+  `iso_errors` option is present, to avoid churning the keys in every
+  existing project. **Known limitation:** `catch/3` is deterministic —
+  a user-predicate Goal runs in a sub-VM whose bindings are copied back
+  on success, so it commits to the first solution. Tests:
+  `tests/test_wam_go_iso_smoke.pl`.
 - **Goal:** Bring the WAM Go target from non-adopter (only generator-side `catch/3` meta-calls) to full ISO three-form adoption mirroring F#/Haskell.
 - **Files to touch:** `src/unifyweaver/targets/wam_go_target.pl`, `src/unifyweaver/targets/wam_go_lowered_emitter.pl`, new `tests/test_wam_go_iso_smoke.pl`
 - **Reference to copy from:** `wam_haskell_target.pl` + `wam_fsharp_target.pl` (Prolog wiring, shared `iso_errors` module import); `wam_cpp_target.pl` for runtime pred shapes; spec `docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` §"What Counts As Adoption".
@@ -817,8 +911,24 @@ Add each target to the scale-300 effective-distance matrix in
   3. Add the populated doc row + a "C WAM" subsection.
 - **Acceptance:** `./examples/benchmark/run_wam_cross_target_benchmark.sh 300` runs the C benchmark and prints timings; doc table gains a populated C row.
 
-### BENCH-GO: Complete Go row in effective-distance scale-300 matrix
+### BENCH-GO: Complete Go row in effective-distance scale-300 matrix ✅
 - **Lever:** Effective-distance benchmark rows  **Target:** Go  **Size:** M  **Depends on:** —
+- **Status:** Done. **The card's premise was stale** — the generator
+  *did* wire facts into the runtime (they are compiled into the emitted
+  package, which is why `load_ms` is 0). What was actually missing was
+  rep support in the driver and a harness block that invoked this
+  generator at all: the script called
+  `generate_wam_go_optimized_benchmark.pl` and only built it. Both
+  fixed; the driver now takes `[factsDir] [reps]` like Rust's and
+  reports medians. Scale-300, go 1.24.7, 5-rep median: query_ms 1061 /
+  total_ms 1061, 386 seeds / 213 tuples / 271 articles, exact multiset
+  match against `data/benchmark/300/reference_output.tsv`. Go is
+  interpreter-bound here (near SWI-Prolog's 336/409, far from Rust's
+  17): the benchmark runs `category_ancestor/4` through the shared
+  bytecode loop, not the registered foreign kernels. **That is the next
+  lever for the Go row** — see the follow-up note in
+  `WAM_CROSS_TARGET_BENCHMARK_RESULTS.md`. Test:
+  `tests/test_wam_go_effective_distance_bench.pl`.
 - **Goal:** Finish the Go effective-distance benchmark (generator exists; doc row is present but shows `--` / "driver in progress") so the Go row carries real scale-300 numbers.
 - **Files to touch:**
   - `examples/benchmark/generate_wam_go_effective_distance_benchmark.pl` (exists — complete the "fact data not yet wired into runtime" gap noted in the doc's Go subsection)

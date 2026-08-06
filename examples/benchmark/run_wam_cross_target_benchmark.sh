@@ -5,7 +5,7 @@
 #   ./run_wam_cross_target_benchmark.sh [scale] [reps]
 #
 # Requires: swipl, cargo/rustc
-# Optional: go, python3, Rscript (Go/Python in progress; R ED skips if missing)
+# Optional: go, python3, Rscript (Python in progress; Go/R ED skip if missing)
 #
 # Toolchain env vars (adjust paths for your system):
 #   RUST:  /tmp/cargo/bin/cargo
@@ -159,27 +159,37 @@ fi
 
 echo ""
 
-# === Go WAM (in progress) ===
-echo "--- Go WAM (in progress) ---"
-GO_DIR="$BENCH_DIR/go-${SCALE}"
-mkdir -p "$GO_DIR"
+# === Go WAM Effective Distance (hybrid, kernels_on) ===
+echo "--- Go WAM Effective Distance (accumulated, kernels_on) ---"
+if command -v go >/dev/null 2>&1; then
+    GO_ED_DIR="$BENCH_DIR/go-ed-${SCALE}"
+    mkdir -p "$GO_ED_DIR"
 
-echo "Generating Go WAM project..."
-LANG=C.UTF-8 LC_ALL=C.UTF-8 swipl -q -s examples/benchmark/generate_wam_go_optimized_benchmark.pl \
-    -- "$FACTS_FILE" "$GO_DIR" accumulated 2>&1 || {
-    echo "WARNING: Go generation failed"
-}
-
-if [ -f "$GO_DIR/go.mod" ]; then
-    echo "Building Go WAM..."
-    cd "$GO_DIR"
-    go build ./... 2>&1 || {
-        echo "WARNING: Go build failed"
+    echo "Generating Go WAM effective-distance project..."
+    LANG=C.UTF-8 LC_ALL=C.UTF-8 swipl -q -s examples/benchmark/generate_wam_go_effective_distance_benchmark.pl \
+        -- "$FACTS_FILE" "$GO_ED_DIR" accumulated kernels_on 2>&1 || {
+        echo "WARNING: Go effective-distance generation failed"
     }
-    cd "$REPO_ROOT"
-    echo "NOTE: Go WAM builds but benchmark driver not yet wired up for fact loading"
+
+    if [ -f "$GO_ED_DIR/go.mod" ]; then
+        echo "Building Go WAM effective-distance..."
+        cd "$GO_ED_DIR"
+        if go build -o wam_go_ed_bench . 2>&1; then
+            echo "Running Go WAM effective-distance benchmark ($REPS reps)..."
+            # Args mirror the Rust driver ([factsDir] [reps]); the Go
+            # project compiles its facts in, so factsDir is ignored.
+            ./wam_go_ed_bench "$FACTS_DIR" "$REPS" > /dev/null || {
+                echo "WARNING: Go effective-distance run failed"
+            }
+        else
+            echo "WARNING: Go effective-distance build failed"
+        fi
+        cd "$REPO_ROOT"
+    else
+        echo "WARNING: Go effective-distance project not generated"
+    fi
 else
-    echo "WARNING: Go project not generated"
+    echo "SKIP: go not found (Go WAM effective-distance benchmark)"
 fi
 
 echo ""
