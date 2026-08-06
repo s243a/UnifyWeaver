@@ -23,9 +23,9 @@ WAM pipeline via `prefer_wam(true)`.
 
 | Module | Approx. lines |
 |---|---:|
-| `src/unifyweaver/targets/wam_go_target.pl` | ~3.7k |
+| `src/unifyweaver/targets/wam_go_target.pl` | ~4.3k |
 | `src/unifyweaver/targets/wam_go_lowered_emitter.pl` | ~0.8k |
-| Dedicated tests | ~13 files (~38 plunit cases) |
+| Dedicated tests | ~17 files |
 
 ## What's shipped
 
@@ -33,7 +33,25 @@ WAM pipeline via `prefer_wam(true)`.
 `go_foreign_lowering` / FFI dispatch. (`go_supported_shared_kernel/1`
 lists 5; weighted/A* are separate arms — the effective set is all 7.)
 
-**Fact sources.** TSV and LMDB atom-fact paths.
+**Fact sources.** TSV and LMDB atom-fact paths. The LMDB source
+carries the full `lmdb_materialisation(eager|lazy|cached|auto)` +
+`lmdb_l2_capacity(N|auto)` tier set (LMDB-GO), matching F#: eager
+materialises once at construction, lazy spawns the helper per lookup,
+cached memoises through an L1/L2 pair. `auto` defers to the shared cost
+model in `core/cost_model.pl`. Default is `cached`.
+
+**ISO three-form errors.** Full adoption (ISO-GO): `catch/3` + `throw/1`
+via panic/recover, `error(Formal, Context)` constructors, `is_iso`/
+`is_lax`, ISO/lax forms of the six arithmetic comparisons, `succ_iso`/
+`succ_lax`, per-predicate key rewrite, and `wam_go_iso_audit/3`.
+Rewriting is opt-in: without an `iso_errors` option the WAM text keeps
+its plain keys. `catch/3` is deterministic — it commits to the goal's
+first solution.
+
+**Effective-distance benchmark.** Scale-300 row populated (BENCH-GO):
+query_ms 1061 / total_ms 1061, 5-rep median, output an exact multiset
+match against the reference. See
+[`design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md`](design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md).
 
 **Dual lowering.** WAM instruction VM plus the lowered emitter.
 
@@ -49,22 +67,32 @@ non-WAM dataflow/stream compiler, not the WAM pipeline. Stays opt-in
 
 - **Default product path is non-WAM** (`go_target.pl`); the WAM route
   is opt-in.
-- **No two-level lazy/cached LMDB policies** (F#/Haskell tier).
-- **No ISO three-form contract adoption** (low ISO surface in source).
 - **No runtime-parser capability entry** in
-  `wam_runtime_parser_capability.pl`.
+  `wam_runtime_parser_capability.pl`. Two blocking codegen/runtime bugs
+  were fixed on the way to this (arity name collisions, last-call
+  builtins — see the parity audit), and the portable parser now
+  compiles, links and tokenizes under WAM-Go, but
+  `parse_term_from_atom/3` still fails, so the capability is
+  deliberately not advertised. See PARSE-GO in
+  [`WAM_FLEET_GAP_TASKS.md`](WAM_FLEET_GAP_TASKS.md) for where the
+  investigation stopped.
+- **Effective-distance row is interpreter-bound** (~1061 ms query vs
+  Rust's 17 ms): the benchmark runs `category_ancestor/4` through the
+  shared bytecode loop rather than the FFI kernel path.
 
 ## Path forward
 
 1. Decide whether the WAM route should become a first-class Go product
    path or stay the kernel-benchmarking arm.
-2. Richer LMDB policy tiers to match F#/Haskell.
-3. ISO three-form adoption if Go joins the error-fidelity set.
-4. Effective-distance cross-target matrix row.
+2. Route the effective-distance benchmark through the registered
+   foreign kernels — the single biggest lever on the Go perf row.
+3. Finish the compiled runtime-parser bring-up (PARSE-GO), then
+   register the capability entry.
 
 ## Document status
 
 Fleet-aligned snapshot; source-verified against `wam_go_target.pl`,
 the parity audit, and the conformance harness (`prefer_wam(true)`
-requirement confirmed) on 2026-07-11. Update the parity audit first,
+requirement confirmed) on 2026-07-11. Refreshed 2026-08-06 after
+LMDB-GO, ISO-GO and BENCH-GO landed. Update the parity audit first,
 then refresh here.

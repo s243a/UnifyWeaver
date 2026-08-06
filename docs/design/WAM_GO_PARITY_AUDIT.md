@@ -265,11 +265,67 @@ current cross-target builtin/runtime baseline.
   `UW_LMDB_RELATION_ARTIFACT_BIN`, so tests and deployments can provide the
   concrete LMDB reader without adding a generated-project Go dependency.
 
+## 2026-08 Findings (fleet gap-card work)
+
+Three defects surfaced while attempting the PARSE-GO card (compiling
+`prolog_term_parser` through the Go WAM target). All three are
+independent of the parser and are fixed; see
+`tests/test_wam_go_last_call_builtin.pl`.
+
+- **Last-call builtins reported failure after succeeding.** A clause
+  whose *final* goal is a builtin compiles to `execute <builtin>/N`, and
+  the emitter mapped that to a bare `BuiltinCall`. `BuiltinCall`
+  advances to the next instruction, but `execute` has none: the
+  predicate bound its output arguments correctly and then ran off the
+  end of its code, so `Run` returned false. `s(X) :- succ(1, X).` bound
+  `X = 2` and reported failure. This is the highest-severity item here —
+  it silently mis-reports success for a whole shape of clause, and it is
+  what broke `tokenize/2` (whose last goal is `reverse/2`). Fixed with a
+  `BuiltinExecute` instruction that runs the builtin and then takes
+  `Proceed`'s return path; kept as its own instruction so the WAM-line
+  to instruction mapping stays 1:1 and no later PC or label index shifts.
+
+- **Go identifiers collided across arities.** Wrapper names came from
+  the predicate name alone, so a project holding the same name at two
+  arities emitted two identically named `func`s and failed to compile
+  with "redeclared in this block". Any project carrying, say,
+  `read_term_from_atom/2` and `/3` was unbuildable. Fixed by computing
+  the overloaded set once per project and suffixing only the names that
+  actually collide, so existing generated code is unchanged.
+
+- **`write/1` dropped compound arguments.** The write-family builtins
+  (`write/1`, `writeln/1`, `print/1`, `display/1`, `write_to_stream/2`)
+  and `format`'s `~w`/`~p`/`~a` rendered terms via `Value.String()`,
+  which prints a `*Structure` as bare `functor/arity` — `write(foo(a,b))`
+  printed `foo/2`. Fixed with `writeTermString`, an unquoted sibling of
+  the `write_canonical/1` renderer; `~q` keeps canonical (quoted)
+  rendering. The existing `format` assertion in
+  `tests/test_go_wam_builtins.pl` encoded the old output (`pair/2/2`)
+  and was corrected to the SWI-compatible `pair(a, b)`.
+
+Also landed in the same pass: LMDB materialisation tiers (LMDB-GO), ISO
+three-form error adoption (ISO-GO), and the effective-distance scale-300
+benchmark row (BENCH-GO). See `docs/WAM_FLEET_GAP_TASKS.md`.
+
+**Still open:** the compiled runtime parser. After the fixes above the
+portable parser compiles, links and tokenizes correctly under WAM-Go,
+but `parse_term_from_atom/3` still fails. The next suspect is list
+construction in the Pratt loop — a cons cell built by the parser renders
+with an extra trailing slot, suggesting a `put_list`/`set_value` gap
+rather than anything parser-specific.
+
 ## Recommended Follow-Up Order
 
-1. Continue broadening generated Go WAM E2E coverage for any remaining
+1. Finish the compiled runtime-parser bring-up (PARSE-GO), starting from
+   `parse_expr/8` / `parse_op_loop/10` and the list construction feeding
+   them, then register the capability entry.
+2. Route the effective-distance benchmark through the registered foreign
+   kernels — the Go perf row is interpreter-bound (~1061 ms query vs
+   Rust's 17 ms) because `category_ancestor/4` runs through the shared
+   bytecode loop on that path.
+3. Continue broadening generated Go WAM E2E coverage for any remaining
    cross-target builtin edge cases.
-2. If Go should avoid a helper process for LMDB, add an optional native Go
+4. If Go should avoid a helper process for LMDB, add an optional native Go
    LMDB build-tag path once a dependency policy is settled.
 
 ## Verification Commands
@@ -279,6 +335,10 @@ Use these checks after touching Go WAM parity:
 ```sh
 swipl -q -g run_tests -t halt tests/test_wam_go_generator.pl
 swipl -q -g run_tests -t halt tests/test_go_wam_builtins.pl
+swipl -q -g run_tests -t halt tests/test_wam_go_last_call_builtin.pl
+swipl -q -g run_tests -t halt tests/test_go_lmdb_materialisation.pl
+swipl -q -g run_tests -t halt tests/test_wam_go_iso_smoke.pl
+swipl -q -g run_tests -t halt tests/test_wam_go_effective_distance_bench.pl
 swipl -q -g run_tests -t halt tests/test_wam_go_lowered_phase1.pl
 swipl -q -g run_tests -t halt tests/test_wam_go_lowered_phase2.pl
 swipl -q -g run_tests -t halt tests/test_wam_go_lowered_phase3.pl

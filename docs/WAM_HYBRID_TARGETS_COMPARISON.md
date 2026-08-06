@@ -178,6 +178,16 @@ broad builtin/IO/aggregate surface; TSV/LMDB atom-fact paths;
 conformance green **with `prefer_wam(true)`**. Default Go product path
 is still non-WAM `go_target.pl`.
 
+Three of the four Go gap cards closed 2026-08-06: **LMDB policy tiers**
+(eager/lazy/cached/auto, `auto` via the shared cost model), **ISO
+three-form adoption** (catch/throw via panic/recover, `is_iso`/`is_lax`,
+six compares, `succ`, per-predicate rewrite, audit), and the
+**effective-distance row** (1061/1061 ms at scale 300, reference-verified).
+The runtime-parser entry stays open — three real codegen/runtime bugs
+were fixed on the way to it (arity name collisions, last-call builtins,
+`write/1` dropping compound arguments) and the portable parser now
+compiles and tokenizes, but full parsing does not yet run.
+
 ### R (`wam_r_target`)
 
 [`WAM_R_TARGET.md`](WAM_R_TARGET.md) + session handoff: ~30-PR parity
@@ -275,12 +285,12 @@ are in [`WAM_FLEET_GAP_TASKS.md`](WAM_FLEET_GAP_TASKS.md).
 | Lever | Targets it unblocks | Notes |
 |---|---|---|
 | **Conformance adapters** | F#, LLVM, R, Clojure, Lua | F#/LLVM/R are otherwise mature; registering them closes the biggest correctness-visibility gap. |
-| **Two-level lazy/cached LMDB policies** | C, Go, Scala, R (Elixir too) | FactSource exists; the F#/Haskell policy tier is the missing piece for >~100k facts. |
-| **ISO three-form error contract** | C, Go, Scala, R (finish Python, F#) | C++/Elixir are the references to copy. |
+| **Two-level lazy/cached LMDB policies** | ~~Go~~, C, Scala, R (Elixir too) | FactSource exists; the F#/Haskell policy tier is the missing piece for >~100k facts. **Go done** (LMDB-GO): eager/lazy/cached/auto + `lmdb_l2_capacity`, `auto` via the shared cost model. |
+| **ISO three-form error contract** | ~~Go~~, C, Scala, R (finish Python, F#) | C++/Elixir are the references to copy. **Go done** (ISO-GO) — note every ISO/lax key must also land in the target's direct-builtin table or calls silently fail. |
 | **Finish foreign kernel templates** | F# (2 of 7 templated) | Detector fires for all kinds; only CA + bidirectional are emitted. |
 | **Lowered emitters** | ILAsm, JVM, Kotlin | Early scaffolds — decide invest-vs-retire given Scala/Clojure/F# cover .NET+JVM maturely. |
-| **Effective-distance bench rows** | LLVM, C++, C, Go, R | Perf-matrix coverage thinner than Rust/Haskell/F#. |
-| **Runtime-parser capability entries** | C, Go, Scala, Clojure, Lua | Only R/C++ are native-default; Python/F#/Haskell/Rust have compiled opt-in. |
+| **Effective-distance bench rows** | LLVM, C++, C, ~~Go~~, R | Perf-matrix coverage thinner than Rust/Haskell/F#. **Go done** (BENCH-GO): 1061/1061 ms, reference-verified; interpreter-bound, kernels not on that hot path. |
+| **Runtime-parser capability entries** | C, Go, Scala, Clojure, Lua | Only R/C++ are native-default; Python/F#/Haskell/Rust have compiled opt-in. **Go is an L, not an S** — the entry is a three-fact edit but the runtime proof is a campaign; see PARSE-GO. |
 
 Maturity bands for prioritisation: **Primary** (Elixir, Haskell, Rust,
 F#, LLVM, C++, Scala) → polish/parity; **Strong** (C, Go, R) →
@@ -302,9 +312,9 @@ Every `wam_*_target.pl` module now has a dedicated `WAM_*_STATUS.md`.
 Remaining scope-out work (tracked per-target under each STATUS "Path
 forward"): conformance adapters for **F# / LLVM / R / Clojure / Lua**;
 finish **F# kernel templates**; two-level lazy/cached LMDB policies for
-**C / Go / Scala / R**; lowered emitters for **ILAsm / JVM / Kotlin**;
-ISO three-form adoption for **C / Go / Scala / R** and completion for
-**Python / F#**.
+**C / Scala / R** (Go done); lowered emitters for **ILAsm / JVM /
+Kotlin**; ISO three-form adoption for **C / Scala / R** (Go done) and
+completion for **Python / F#**.
 
 ## Document status
 
