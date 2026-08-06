@@ -57,6 +57,12 @@
 :- use_module('../targets/go_target', [compile_predicate_to_go/3]).
 :- use_module('../targets/wam_go_lowered_emitter',
              [wam_go_lowerable/3, lower_predicate_to_go/4, go_func_name/2]).
+:- use_module('../core/prolog_term_parser', []).
+:- use_module('../core/cpp_runtime_parser_wrappers', []).
+:- use_module(wam_runtime_parser_capability, [
+    parser_dependent_body_goal/2,
+    wam_target_runtime_parser/3
+]).
 
 :- discontiguous wam_go_case/2.
 :- discontiguous wam_line_to_go_literal/4.
@@ -67,7 +73,15 @@
 
 %% write_wam_go_project(+Predicates, +Options, +ProjectDir)
 %  Generates a full Go project for the given predicates.
-write_wam_go_project(Predicates, Options, ProjectDir) :-
+write_wam_go_project(Predicates0, Options, ProjectDir) :-
+    % Runtime-parser mode. compiled(prolog_term_parser) appends the
+    % portable parser + target-agnostic wrappers to the predicate list
+    % so a generated project can call read_term_from_atom/2 directly;
+    % `none` rejects a predicate whose body visibly needs a parser
+    % rather than emitting a runtime that cannot honour the call.
+    wam_target_runtime_parser(wam_go, Options, RuntimeParserMode),
+    validate_go_runtime_parser_mode(Predicates0, RuntimeParserMode),
+    go_project_predicates(Predicates0, RuntimeParserMode, Predicates),
     option(module_name(ModuleName), Options, 'wam_generated'),
     option(package_name(PackageName), Options, 'wam'),
     get_time(TimeStamp),
@@ -173,6 +187,14 @@ func internAtom(name string) *Atom {
     atomInternMap[name] = a
     return a
 }
+
+// InternAtom is the exported form. Drivers and embedders must build
+// atoms through this rather than &Atom{Name: x}: Atom.Equals is pointer
+// identity only, so a fresh literal with the same name compares unequal
+// to the interned one the bytecode carries.
+func InternAtom(name string) *Atom {
+    return internAtom(name)
+}
 ', [PackageName]),
         directory_file_path(ProjectDir, 'atoms.go', AtomsPath),
         write_file(AtomsPath, AtomsContent)
@@ -231,6 +253,75 @@ func main() {
     ),
 
     format('WAM Go project created at: ~w~n', [ProjectDir]).
+
+%% go_project_predicates(+UserPreds, +Mode, -ProjectPreds)
+%  In compiled mode, append the portable parser and the wrapper
+%  predicates. Matches python_project_predicates/3 and
+%  fsharp_project_predicates/3.
+go_project_predicates(Predicates, compiled(prolog_term_parser), ProjectPredicates) :-
+    !,
+    go_runtime_parser_predicates(ParserPreds),
+    go_runtime_parser_wrapper_predicates(WrapperPreds),
+    append([Predicates, ParserPreds, WrapperPreds], Combined),
+    sort(Combined, ProjectPredicates).
+go_project_predicates(Predicates, _RuntimeParserMode, Predicates).
+
+%% go_runtime_parser_predicates(-Predicates)
+%  Non-imported predicates of `prolog_term_parser`, as
+%  `prolog_term_parser:Name/Arity` indicators.
+go_runtime_parser_predicates(Predicates) :-
+    findall(prolog_term_parser:Name/Arity,
+            ( current_predicate(prolog_term_parser:Name/Arity),
+              functor(Head, Name, Arity),
+              once(clause(prolog_term_parser:Head, _)),
+              \+ predicate_property(prolog_term_parser:Head, imported_from(_))
+            ),
+            Raw),
+    sort(Raw, Predicates).
+
+%% go_runtime_parser_wrapper_predicates(-Predicates)
+%  Non-imported predicates of `cpp_runtime_parser_wrappers` (the module
+%  name is C++-historical; the wrappers themselves are target-agnostic).
+%  These are what give the generated project read_term_from_atom/2,3.
+go_runtime_parser_wrapper_predicates(Predicates) :-
+    findall(cpp_runtime_parser_wrappers:Name/Arity,
+            ( current_predicate(cpp_runtime_parser_wrappers:Name/Arity),
+              functor(Head, Name, Arity),
+              once(clause(cpp_runtime_parser_wrappers:Head, _)),
+              \+ predicate_property(cpp_runtime_parser_wrappers:Head,
+                                    imported_from(_))
+            ),
+            Raw),
+    sort(Raw, Predicates).
+
+%% validate_go_runtime_parser_mode(+Predicates, +Mode)
+%  With the parser disabled, reject a predicate whose body has a
+%  statically visible parser-dependent call rather than emitting a
+%  runtime that silently cannot serve it. Mirrors
+%  validate_python_runtime_parser_mode/2.
+validate_go_runtime_parser_mode(Predicates, none) :-
+    !,
+    (   go_predicates_parser_dependency(Predicates, Pred, Builtin)
+    ->  throw(error(permission_error(use, runtime_parser, Builtin),
+                    context(write_wam_go_project/3,
+                            parser_disabled_for_predicate(Pred))))
+    ;   true
+    ).
+validate_go_runtime_parser_mode(_Predicates, _Mode).
+
+go_predicates_parser_dependency(Predicates, Pred, Builtin) :-
+    member(Pred, Predicates),
+    go_predicate_clause(Pred, _Head, Body),
+    parser_dependent_body_goal(Body, Builtin),
+    !.
+
+go_predicate_clause(Module:Name/Arity, Head, Body) :-
+    !,
+    functor(Head, Name, Arity),
+    catch(clause(Module:Head, Body), _, fail).
+go_predicate_clause(Name/Arity, Head, Body) :-
+    functor(Head, Name, Arity),
+    catch(clause(user:Head, Body), _, fail).
 
 %% go_lib_import_block(+Code, -ImportBlock)
 %  Emit a Go `import (...)` block listing exactly the std packages the
@@ -2153,6 +2244,17 @@ wam_go_case('GetValue', '        valA := vm.Regs[i.Ai]
 
 wam_go_case('GetStructure', '        val := vm.Regs[i.Ai]
         if val == nil { return false }
+        // Dereference before deciding read vs write mode. The register
+        // can hold a *Ref, or an *Unbound that is already bound through
+        // the Bindings table -- which is exactly what unify_variable
+        // leaves behind when it reads a nested term out of an enclosing
+        // one. Testing isUnbound on the raw value made get_structure
+        // take the *write* branch for an already-bound argument and
+        // build a fresh structure over the top of it, so a head like
+        // `p([tk(N)|R], N, R)` bound N to a new empty cell instead of
+        // the incoming value. GetList and GetConstant already deref
+        // first; this mirrors them.
+        val = vm.deref(val)
         if isUnbound(val) {
             addr := vm.heapPush(nil)
             arity := parseFunctorArity(i.Functor)
@@ -2161,11 +2263,10 @@ wam_go_case('GetStructure', '        val := vm.Regs[i.Ai]
             vm.CurrentStruct = s
             vm.CurrentList = nil
             vm.bindUnbound(val.(*Unbound), &Ref{Addr: addr})
-            vm.Stack = append(vm.Stack, &WriteCtx{N: arity})
+            vm.Stack = append(vm.Stack, &WriteCtx{N: arity, Struct: s})
             vm.PC++
             return true
         }
-        val = vm.deref(val)
         if s, ok := val.(*Structure); ok {
             if s.Functor == i.Functor {
                 vm.Stack = append(vm.Stack, &UnifyCtx{Args: s.Args})
@@ -2185,12 +2286,30 @@ wam_go_case('GetList', '        val := vm.Regs[i.Ai]
             vm.CurrentList = l
             vm.CurrentStruct = nil
             vm.bindUnbound(val.(*Unbound), &Ref{Addr: addr})
-            vm.Stack = append(vm.Stack, &WriteCtx{N: 2})
+            vm.Stack = append(vm.Stack, &WriteCtx{N: 2, List: l})
             vm.PC++
             return true
         }
-        if list, ok := val.(*List); ok && len(list.Elements) > 0 {
-            vm.Stack = append(vm.Stack, &UnifyCtx{Args: list.Elements})
+        // get_list reads a term as a *cons cell*: exactly two slots,
+        // head and tail. Push those, not the raw Elements slice.
+        //
+        // *List is used for two different things in this runtime: a
+        // cons pair built by put_list (Elements = [head, tail]) and a
+        // flat list returned by a Go builtin such as reverse/2,
+        // findall/3, sort/2 or append/3 (Elements = the items). Pushing
+        // Elements directly conflated them — a flat one-element list
+        // offered a single slot, so the following unify_* for the cons
+        // tail found an empty context and the clause failed; a flat
+        // three-element list offered three slots and bound the tail to
+        // the second *item*. That is why heads like
+        // `p([tk_atom(N)|R], ...)` matched a literal list but not one
+        // that had been through reverse/2.
+        //
+        // valueListHeadTail normalises both representations (and the
+        // heap-linked Compound/Structure cons form), so it is the one
+        // place that knows how to split a list value.
+        if h, t, ok := vm.valueListHeadTail(val); ok {
+            vm.Stack = append(vm.Stack, &UnifyCtx{Args: []Value{h, t}})
             vm.PC++
             return true
         }
@@ -2223,9 +2342,7 @@ wam_go_case('UnifyVariable', '        if ctx := vm.peekUnifyCtx(); ctx != nil &&
             }
             wctx.N--
             if wctx.N == 0 {
-                vm.popStack()
-                vm.CurrentStruct = nil
-                vm.CurrentList = nil
+                vm.popStackRestoringWriteTarget()
             }
             vm.putReg(i.Xn, v)
             vm.PC++
@@ -2256,9 +2373,7 @@ wam_go_case('UnifyValue', '        if ctx := vm.peekUnifyCtx(); ctx != nil && le
             }
             wctx.N--
             if wctx.N == 0 {
-                vm.popStack()
-                vm.CurrentStruct = nil
-                vm.CurrentList = nil
+                vm.popStackRestoringWriteTarget()
             }
             vm.PC++
             return true
@@ -2286,9 +2401,7 @@ wam_go_case('UnifyConstant', '        if ctx := vm.peekUnifyCtx(); ctx != nil &&
             }
             wctx.N--
             if wctx.N == 0 {
-                vm.popStack()
-                vm.CurrentStruct = nil
-                vm.CurrentList = nil
+                vm.popStackRestoringWriteTarget()
             }
             vm.PC++
             return true
@@ -2297,7 +2410,7 @@ wam_go_case('UnifyConstant', '        if ctx := vm.peekUnifyCtx(); ctx != nil &&
 
 % --- Body Construction Instructions ---
 
-wam_go_case('PutConstant', '        vm.Regs[i.Ai] = i.C
+wam_go_case('PutConstant', '        vm.putReg(i.Ai, i.C)
         vm.PC++
         return true').
 
@@ -2313,12 +2426,12 @@ wam_go_case('PutVariable', '        // Allocate a globally-unique Idx for the ne
         // collision entirely.
         v := &Unbound{Name: fmt.Sprintf("_R%d", i.Xn), Idx: vm.allocVarId()}
         vm.putReg(i.Xn, v)
-        vm.Regs[i.Ai] = v
+        vm.putReg(i.Ai, v)
         vm.PC++
         return true').
 
 wam_go_case('PutValue', '        val := vm.getReg(i.Xn)
-        vm.Regs[i.Ai] = val
+        vm.putReg(i.Ai, val)
         vm.PC++
         return true').
 
@@ -2352,8 +2465,8 @@ wam_go_case('PutStructure', '        addr := vm.heapPush(nil)
                 }
             }
         }
-        vm.Regs[i.Ai] = ref
-        vm.Stack = append(vm.Stack, &WriteCtx{N: arity})
+        vm.putReg(i.Ai, ref)
+        vm.Stack = append(vm.Stack, &WriteCtx{N: arity, Struct: s})
         vm.PC++
         return true').
 
@@ -2362,8 +2475,8 @@ wam_go_case('PutList', '        addr := vm.heapPush(nil)
         vm.Heap[addr] = l
         vm.CurrentList = l
         vm.CurrentStruct = nil
-        vm.Regs[i.Ai] = &Ref{Addr: addr}
-        vm.Stack = append(vm.Stack, &WriteCtx{N: 2})
+        vm.putReg(i.Ai, &Ref{Addr: addr})
+        vm.Stack = append(vm.Stack, &WriteCtx{N: 2, List: l})
         vm.PC++
         return true').
 
@@ -2376,8 +2489,7 @@ wam_go_case('SetVariable', '        addr := vm.HeapLen
                 vm.CurrentStruct.Args[idx] = v
                 wctx.N--
                 if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentStruct = nil
+                    vm.popStackRestoringWriteTarget()
                 }
             }
         } else if vm.CurrentList != nil {
@@ -2386,8 +2498,7 @@ wam_go_case('SetVariable', '        addr := vm.HeapLen
                 vm.CurrentList.Elements[idx] = v
                 wctx.N--
                 if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentList = nil
+                    vm.popStackRestoringWriteTarget()
                 }
             }
         }
@@ -2403,8 +2514,7 @@ wam_go_case('SetValue', '        val := vm.getReg(i.Xn)
                 vm.CurrentStruct.Args[idx] = val
                 wctx.N--
                 if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentStruct = nil
+                    vm.popStackRestoringWriteTarget()
                 }
             }
         } else if vm.CurrentList != nil {
@@ -2413,8 +2523,7 @@ wam_go_case('SetValue', '        val := vm.getReg(i.Xn)
                 vm.CurrentList.Elements[idx] = val
                 wctx.N--
                 if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentList = nil
+                    vm.popStackRestoringWriteTarget()
                 }
             }
         }
@@ -2428,8 +2537,7 @@ wam_go_case('SetConstant', '        vm.heapPush(i.C)
                 vm.CurrentStruct.Args[idx] = i.C
                 wctx.N--
                 if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentStruct = nil
+                    vm.popStackRestoringWriteTarget()
                 }
             }
         } else if vm.CurrentList != nil {
@@ -2438,8 +2546,7 @@ wam_go_case('SetConstant', '        vm.heapPush(i.C)
                 vm.CurrentList.Elements[idx] = i.C
                 wctx.N--
                 if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentList = nil
+                    vm.popStackRestoringWriteTarget()
                 }
             }
         }
@@ -4363,21 +4470,26 @@ emit_atom_table_go(GoCode) :-
         ], "\n", DeclHeader),
         atomic_list_concat(DeclLines, "\n", DeclBody),
         atomic_list_concat([DeclHeader, DeclBody, "\n)\n"], DeclBlock),
-        maplist(format_atom_register_line, Pairs, RegisterLines),
-        atomic_list_concat(RegisterLines, "\n", RegisterBody),
         format(atom(RuntimeHelper),
 '
-// atomInternMap is populated at package init time with every interned
-// atom from the var block above. internAtom(name) returns the shared
-// pointer for that name, allocating + caching one if the name is new.
+// atomInternMap is the single source of pointer identity for atoms.
+// internAtom(name) returns the shared pointer for that name, allocating
+// and caching one if the name is new. The wamAtom_ vars above are
+// themselves initialised through internAtom, so they populate this map
+// as a side effect of package initialisation.
+//
+// Deliberately NOT an init() that assigns into the map: Go runs every
+// package-level variable initialiser before any init(), so a var in
+// another file of this package that calls internAtom during its own
+// initialisation (state.go''s emptyListAtom) would win the map slot and
+// then be overwritten here, leaving two atoms with the same name and
+// different pointers. Atom.Equals is pointer-only, so that silently
+// broke equality — `get_constant []` against a real empty list.
+//
 // Bench drivers should construct atoms via internAtom rather than
-// `&Atom{Name: x}` so SwitchOnConstant in the WAM bytecode matches in
-// O(1) (Atom.Equals short-circuits on pointer identity).
+// `&Atom{Name: x}` for the same reason: SwitchOnConstant in the WAM
+// bytecode matches in O(1) on pointer identity.
 var atomInternMap = make(map[string]*Atom)
-
-func init() {
-~w
-}
 
 func internAtom(name string) *Atom {
     if a, ok := atomInternMap[name]; ok {
@@ -4387,12 +4499,17 @@ func internAtom(name string) *Atom {
     atomInternMap[name] = a
     return a
 }
-', [RegisterBody]),
+
+// InternAtom is the exported form. Drivers and embedders must build
+// atoms through this rather than &Atom{Name: x}: Atom.Equals is pointer
+// identity only, so a fresh literal with the same name compares unequal
+// to the interned one the bytecode carries.
+func InternAtom(name string) *Atom {
+    return internAtom(name)
+}
+', []),
         atomic_list_concat([DeclBlock, RuntimeHelper], GoCode)
     ).
-
-format_atom_register_line(VarName-_, Line) :-
-    format(atom(Line), "    atomInternMap[~w.Name] = ~w", [VarName, VarName]).
 
 % Sort by the trailing _<seq> on the variable name so emission order
 % matches first-seen order rather than alphabetical.
@@ -4407,9 +4524,31 @@ pair_seq_key(VarName-_, Seq) :-
     last(Parts, SeqStr),
     number_string(Seq, SeqStr).
 
+%% format_atom_decl(+VarName-Str, -Line)
+%  Each interned atom is initialised *through* internAtom rather than as
+%  a bare &Atom literal.
+%
+%  Atom.Equals is pointer-only, so every atom with a given name has to be
+%  the one object in atomInternMap. Registering the vars from an init()
+%  did not guarantee that: Go runs all package-level variable
+%  initialisers before any init(), so a var elsewhere in the package that
+%  calls internAtom during its own initialisation — state.go's
+%  `var emptyListAtom = internAtom("[]")` — created and cached its own
+%  "[]" atom first, and the init() then *overwrote* the map entry with
+%  the codegen's wamAtom_ var. The result was two distinct "[]" atoms:
+%  one reached through emptyListAtom (list tails, get_list on a
+%  one-element list) and one baked into the bytecode as a get_constant
+%  operand. `get_constant []` then failed against a genuinely empty
+%  list, which is what stopped the compiled portable parser dead at
+%  parse_op_loop/10's base clause.
+%
+%  Going through internAtom makes the var block order-independent:
+%  Go's initialisation-dependency analysis runs atomInternMap first
+%  (internAtom references it), and whichever caller asks for a name
+%  first, everyone gets the same pointer.
 format_atom_decl(VarName-Str, Line) :-
     escape_go_string(Str, Escaped),
-    format(atom(Line), "    ~w = &Atom{Name: \"~w\"}", [VarName, Escaped]).
+    format(atom(Line), "    ~w = internAtom(\"~w\")", [VarName, Escaped]).
 
 % ============================================================================
 % dimension_n Resolution (for codegen-time substitution)

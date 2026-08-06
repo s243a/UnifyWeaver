@@ -140,8 +140,29 @@ type UnifyCtx struct {
 	Args []Value
 }
 
+// WriteCtx is one frame of the write-mode argument stack: N counts the
+// argument slots still to be filled in the term being built.
+//
+// Struct/List name that term. They exist because write contexts *nest*:
+// a head like `p(C, A, [tk(C)|A])` compiles to
+//
+//	get_list A3
+//	unify_variable X3      % cons head
+//	get_structure tk/1, X3 % nested term, pushes its own context
+//	unify_value X1         % fills tk's argument, pops back
+//	unify_value X2         % must fill the *cons tail*
+//
+// The runtime used to track the term under construction in the single
+// vm.CurrentStruct / vm.CurrentList slots, which the nested
+// get_structure overwrote and then cleared on pop. The final
+// unify_value had no target left, so the cons tail was never filled and
+// `[tk(c)]` came out as a two-element list with an empty second slot.
+// Keeping the target on the frame lets popStackRestoringWriteTarget
+// restore the enclosing term.
 type WriteCtx struct {
-	N int
+	N      int
+	Struct *Structure
+	List   *List
 }
 
 type StackEntry interface {
@@ -238,6 +259,18 @@ type WamState struct {
 	// Monotonically grows; never resets. Starts at 200 so 0 means
 	// "no Y-regs used yet" via the formula `MaxYReg - 200`.
 	MaxYReg int
+	// MaxAReg is the highest A-register index ever written + 1.
+	//
+	// A-registers occupy Regs[0..99] (go_reg_index maps A(N) to N-1),
+	// so a predicate of arity > 8 uses Regs[8..] — which snapshotAllRegs
+	// used to skip as "the X-register range". X actually starts at
+	// Regs[100], so arguments A9 and up were never saved at a
+	// choicepoint and never restored on backtracking. Predicates like
+	// the portable parser's parse_op_loop/10 silently lost arguments on
+	// their second clause. Tracking the high-water mark keeps the
+	// snapshot small for the common arity<=8 case while staying correct
+	// for wider predicates.
+	MaxAReg int
 	// E is the stack index of the currently-active EnvFrame, or -1
 	// when no frame is allocated (e.g., right after NewWamState before
 	// any Allocate). With env trimming, Deallocate moves E back along
@@ -337,8 +370,12 @@ func (vm *WamState) putReg(idx int, val Value) {
 	// extra branch + compare is cheap relative to the snapshot
 	// shrink it enables (per-CP Y-range copy goes from 100
 	// elements to typically ~10).
-	if idx >= 200 && idx >= vm.MaxYReg {
-		vm.MaxYReg = idx + 1
+	if idx >= 200 {
+		if idx >= vm.MaxYReg {
+			vm.MaxYReg = idx + 1
+		}
+	} else if idx < 100 && idx >= vm.MaxAReg {
+		vm.MaxAReg = idx + 1
 	}
 }
 
@@ -431,32 +468,46 @@ func (vm *WamState) trailTrimTo(mark int) {
 	vm.TrailLen = mark
 }
 
-// snapshotAllRegs captures the A-register range (Regs[0..7]) plus
-// the actually-used portion of the Y-register range
-// (Regs[200..vm.MaxYReg]). The middle X-register range
-// (Regs[8..199]) is intentionally skipped — X-regs are clause-local
-// in the codegen, so the next clause's head writes whatever X-regs
-// it needs and stale leftovers from the failed clause never get
-// touched. Y-regs *do* need saving because env trimming stores
-// Y-regs at *Allocate* time (caller's outer Y-regs) — at TryMeElse
-// time the caller's *current* Y-regs only exist in the CP snapshot.
+// snapshotAllRegs captures the used A-register range plus the used
+// portion of the Y-register range (Regs[200..vm.MaxYReg]). The
+// X-register range (Regs[100..199]) is intentionally skipped — X-regs
+// are clause-local in the codegen, so the next clause's head writes
+// whatever X-regs it needs and stale leftovers from the failed clause
+// never get touched. Y-regs *do* need saving because env trimming
+// stores Y-regs at *Allocate* time (caller's outer Y-regs) — at
+// TryMeElse time the caller's *current* Y-regs only exist in the CP
+// snapshot.
+//
+// The A range is sized by vm.MaxAReg, floored at 8. It used to be a
+// hard Regs[0..7]: A-registers live at Regs[0..99] (A(N) -> N-1), so
+// everything from A9 up was silently outside the snapshot and was
+// never restored on backtracking. A predicate of arity > 8 — the
+// portable parser's parse_op_loop/10, for instance — lost arguments
+// the moment it tried its second clause. Sizing by the high-water mark
+// keeps the common arity<=8 case exactly as cheap as before.
 //
 // Layout in the returned slice:
-//   - SavedRegs[0..7]   := vm.Regs[0..7]    (A1..A8)
-//   - SavedRegs[8..8+ycount] := vm.Regs[200..200+ycount]  (used Y-regs)
+//   - saved[0]                   := acount (as *Integer)
+//   - saved[1 .. 1+acount)       := vm.Regs[0..acount)        (A regs)
+//   - saved[1+acount .. ]        := vm.Regs[200..200+ycount)  (Y regs)
 //
-// where ycount := max(0, vm.MaxYReg - 200). The bench's
-// category_ancestor uses ~10 Y-regs, so the snapshot is ~18
-// elements vs the prior 108, cutting per-CP memmove ~6x.
+// where acount := max(8, vm.MaxAReg) and ycount := max(0, MaxYReg-200).
+// acount is stored rather than implied because restoreSavedRegs has to
+// split the slice, and MaxAReg may have grown since the push.
 func (vm *WamState) snapshotAllRegs() []Value {
+	acount := vm.MaxAReg
+	if acount < 8 {
+		acount = 8
+	}
 	ycount := vm.MaxYReg - 200
 	if ycount < 0 {
 		ycount = 0
 	}
-	saved := make([]Value, 8+ycount)
-	copy(saved[:8], vm.Regs[:8])
+	saved := make([]Value, 1+acount+ycount)
+	saved[0] = &Integer{Val: int64(acount)}
+	copy(saved[1:1+acount], vm.Regs[:acount])
 	if ycount > 0 {
-		copy(saved[8:], vm.Regs[200:200+ycount])
+		copy(saved[1+acount:], vm.Regs[200:200+ycount])
 	}
 	return saved
 }
@@ -472,16 +523,28 @@ func (vm *WamState) snapshotAllRegs() []Value {
 // is bounded by MaxYReg-since-push (typically 0-2 slots), so it's
 // much cheaper than restoring the full 100-element Y range.
 func (vm *WamState) restoreSavedRegs(saved []Value) {
-	if len(saved) < 8 {
+	if len(saved) < 1 {
 		return
 	}
-	copy(vm.Regs[:8], saved[:8])
-	ycount := len(saved) - 8
-	if ycount > 0 {
-		copy(vm.Regs[200:200+ycount], saved[8:])
+	marker, ok := saved[0].(*Integer)
+	if !ok {
+		return
 	}
-	// Clear Y-regs that were written between snapshot and now but
-	// weren't captured (they were nil at push time, by definition).
+	acount := int(marker.Val)
+	if acount < 0 || 1+acount > len(saved) {
+		return
+	}
+	copy(vm.Regs[:acount], saved[1:1+acount])
+	ycount := len(saved) - 1 - acount
+	if ycount > 0 {
+		copy(vm.Regs[200:200+ycount], saved[1+acount:])
+	}
+	// Clear A-regs written between snapshot and now but not captured
+	// (they were outside the snapshot's range, so nil at push time).
+	for i := acount; i < vm.MaxAReg; i++ {
+		vm.Regs[i] = nil
+	}
+	// Same for Y-regs.
 	pushMaxY := 200 + ycount
 	for i := pushMaxY; i < vm.MaxYReg; i++ {
 		vm.Regs[i] = nil
@@ -600,6 +663,22 @@ func (vm *WamState) popStack() {
 	}
 }
 
+// popStackRestoringWriteTarget pops a finished write context and points
+// vm.CurrentStruct / vm.CurrentList back at the enclosing term, so the
+// unify_* instructions that follow a nested get_structure / get_list
+// fill the *outer* term's remaining slots. With no enclosing write
+// context both slots clear, which is the old unconditional behaviour.
+func (vm *WamState) popStackRestoringWriteTarget() {
+	vm.popStack()
+	if wctx := vm.peekWriteCtx(); wctx != nil {
+		vm.CurrentStruct = wctx.Struct
+		vm.CurrentList = wctx.List
+		return
+	}
+	vm.CurrentStruct = nil
+	vm.CurrentList = nil
+}
+
 func (vm *WamState) heapSubargs(start, n int) []Value {
 	if start+n > vm.HeapLen { return nil }
 	return vm.Heap[start : start+n]
@@ -638,6 +717,7 @@ func (vm *WamState) Clone() *WamState {
 		// backtrack inside the sub-VM doesn't restore values that
 		// the failed clause overwrote).
 		MaxYReg:      vm.MaxYReg,
+		MaxAReg:      vm.MaxAReg,
 	}
 	newState.Regs = vm.Regs
 	copy(newState.Bindings, vm.Bindings)
