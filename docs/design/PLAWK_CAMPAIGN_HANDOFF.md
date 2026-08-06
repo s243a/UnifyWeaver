@@ -32,6 +32,20 @@ Three distinct shapes, all confirmed by real bugs:
    because its name sounded like the property. **Name gates for the property they
    enforce**; when the name and the clauses can drift, the name wins the argument
    and the clauses stay wrong.
+0b. **A new producer capturing an older one's surface.** The same shape as 0, one
+   level down, and the only variant so far that lives in the **parser**. `TAG` is a
+   valid identifier, so registering the scalar-variable pattern (`n > 2`) ahead of
+   `tag_eq_pattern//1` made the tag production unreachable: `TAG == 1` parsed as a
+   comparison on a variable named TAG, the codegen desugar looked for `tag_pat/1`,
+   and the whole tagged-union tag-guard sugar became a clean decline. **Eight tests
+   across five suites**, one cause, red for however long.
+
+   Two things make this variant nasty: the failure is a *decline*, so nothing
+   crashes or prints wrongly, and DCG clause order carries the semantics invisibly —
+   nothing in either production mentions the other. When adding a pattern that can
+   match a bare identifier, check what it now shadows, and pin the precedence at the
+   **parse** level (assert the term) rather than only downstream, so the next
+   ordering change fails with the reason on the label.
 1. **Level drift** — the same property asked at surface / spec / plan level, one
    level not taught a new producer. (The original audit doc covers this.)
 2. **N emitters or N walkers over one term.** The commonest. Examples: the ORS
