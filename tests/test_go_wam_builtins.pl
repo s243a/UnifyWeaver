@@ -1501,7 +1501,10 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "pair('two words', 7)\ngo\n")),
         assertion(sub_string(FullOutput, _, _, _, "fmt_one ~ ok")),
         assertion(sub_string(FullOutput, _, _, _, "fmt_two go 42~")),
-        assertion(sub_string(FullOutput, _, _, _, "fmt_more atom_arg 17 pair/2/2 quoted_atom")),
+        % ~p renders the compound with its arguments, like SWI's write/1.
+        % This used to read "pair/2/2" -- Value.String() on a *Structure
+        % printed functor/arity and dropped the arguments entirely.
+        assertion(sub_string(FullOutput, _, _, _, "fmt_more atom_arg 17 pair(a, b) quoted_atom")),
         assertion(sub_string(FullOutput, _, _, _, "fmt_string atom_text ok")),
         assertion(sub_string(FullOutput, _, _, _, "FORMAT_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SET_SUCCESS")),

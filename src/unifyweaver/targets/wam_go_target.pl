@@ -325,7 +325,11 @@ resolve_template_path(RelativePath, AbsPath) :-
 
 %% compile_predicates_for_project(+Predicates, +Options, -Code)
 compile_predicates_for_project([], _, "").
-compile_predicates_for_project(Predicates, Options, Code) :-
+compile_predicates_for_project(Predicates, Options0, Code) :-
+    % Go has no overloading: resolve name/arity collisions once, up front,
+    % and thread the result through every emitter that mints an identifier.
+    go_overloaded_predicate_names(Predicates, Overloaded),
+    Options = [go_overloaded_names(Overloaded)|Options0],
     classify_predicates(Predicates, Options, Classified),
     collect_wam_entries(Classified, Options, 0, WamEntries, AllInstrParts, AllLabelEntries),
     compile_shared_foreign_setup(Classified, Options, SharedForeignSetup),
@@ -351,7 +355,7 @@ var SharedWamLabels = sharedWamLabels
 ', [SharedForeignSetup, AllInstrs, AllLabels])
     ;   SharedCode = ""
     ),
-    generate_predicate_codes(Classified, WamEntries, PredCodes),
+    generate_predicate_codes(Classified, WamEntries, Options, PredCodes),
     atomic_list_concat(PredCodes, '\n\n', PredicatesCode),
     (   SharedCode == ""
     ->  Code = PredicatesCode
@@ -441,28 +445,28 @@ collect_wam_entries([classified(Module, Pred, Arity, wam, WamCode)|Rest], Option
 collect_wam_entries([_|Rest], Options, PC, Entries, Instrs, Labels) :-
     collect_wam_entries(Rest, Options, PC, Entries, Instrs, Labels).
 
-generate_predicate_codes([], _, []).
-generate_predicate_codes([classified(_, Pred, Arity, ffi_fact, _)|Rest], WamEntries,
+generate_predicate_codes([], _, _, []).
+generate_predicate_codes([classified(_, Pred, Arity, ffi_fact, _)|Rest], WamEntries, Options,
                          [Code|RestCodes]) :-
     format(atom(Code), '// ~w/~w: FFI-owned fact — WAM compilation skipped', [Pred, Arity]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
-generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest], WamEntries,
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest], WamEntries, Options,
                          [Code|RestCodes]) :-
     format(atom(Code), '// Strategy: native~n~w', [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
-generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Rest], WamEntries,
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Rest], WamEntries, Options,
                          [Code|RestCodes]) :-
     format(atom(Code), '// Strategy: wam_foreign~n~w', [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
-generate_predicate_codes([classified(_, Pred, Arity, wam, _WamCode)|Rest], WamEntries,
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
+generate_predicate_codes([classified(_, Pred, Arity, wam, _WamCode)|Rest], WamEntries, Options,
                          [Code|RestCodes]) :-
     member(wam_entry(Pred, Arity, StartPC), WamEntries),
-    compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, Code),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
-generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest], WamEntries,
+    compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, Options, Code),
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest], WamEntries, Options,
                          [Code|RestCodes]) :-
     format(atom(Code), '// Strategy: failed~n~w', [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 
 compile_shared_foreign_setup(Classified, Options, Code) :-
     findall(Line,
@@ -786,11 +790,16 @@ wam_instruction_to_go_literal(call(P, N), GoLiteral) :-
 wam_instruction_to_go_literal(call_indexed_atom_fact2(Pred), GoLiteral) :-
     escape_go_string(Pred, EscapedPred),
     format(atom(GoLiteral), '&CallIndexedAtomFact2{Pred: "~w"}', [EscapedPred]).
+% `execute <builtin>` is a *last* call: the builtin must run and then
+% return to the caller. Emitting a plain BuiltinCall here left the
+% predicate falling off the end of its code (output arguments bound,
+% predicate reported as failed) — see the BuiltinExecute doc comment in
+% instructions.go.mustache.
 wam_instruction_to_go_literal(execute(P), GoLiteral) :-
     wam_go_direct_builtin(P, N, Op),
     !,
     escape_go_string(Op, EscapedPred),
-    format(atom(GoLiteral), '&BuiltinCall{Op: "~w", Arity: ~w}', [EscapedPred, N]).
+    format(atom(GoLiteral), '&BuiltinExecute{Op: "~w", Arity: ~w}', [EscapedPred, N]).
 wam_instruction_to_go_literal(execute(P), GoLiteral) :-
     format(atom(GoLiteral), '&Execute{Pred: "~w"}', [P]).
 wam_instruction_to_go_literal(proceed, '&Proceed{}').
@@ -851,7 +860,7 @@ go_struct_case(Functor-Label, Case) :-
 compile_wam_predicate_to_go(PredIndicator, WamCode, Options, GoCode) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     atom_string(Pred, PredStr),
-    predicate_go_name(Pred, CapPred),
+    predicate_go_name(Pred, Arity, Options, CapPred),
     build_go_wam_arg_list(Arity, ArgList),
     build_go_wam_arg_setup(Arity, ArgSetup),
     (   foreign_wrapper_setup(PredIndicator, WamCode, Options, InstrSetup, ForeignSetup, RunExpr)
@@ -893,9 +902,9 @@ func ~w(~w) bool {
     CapPred, CapPred, CapPred, CapPred, ArgList, CapPred, CapPred, ArgSetup])
     ).
 
-compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, GoCode) :-
+compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, Options, GoCode) :-
     atom_string(Pred, PredStr),
-    predicate_go_name(Pred, CapPred),
+    predicate_go_name(Pred, Arity, Options, CapPred),
     build_go_wam_arg_list(Arity, ArgList),
     build_go_wam_arg_setup(Arity, ArgSetup),
     format(atom(GoCode),
@@ -1026,6 +1035,46 @@ predicate_go_name(Pred, Name) :-
     ;   SafeCodes = [0'P]
     ),
     atom_codes(Name, SafeCodes).
+
+%% predicate_go_name(+Pred, +Arity, +Options, -Name)
+%  Arity-aware wrapper name. Go has no overloading, so a project that
+%  contains the *same* predicate name at two arities (e.g. the portable
+%  parser's `read_term_from_atom/2` and `/3`) would emit two `func
+%  Read_term_from_atom` declarations and fail to compile with
+%  "redeclared in this block".
+%
+%  Names are only suffixed with the arity when the project actually
+%  carries that name at more than one arity — the overloaded set is
+%  computed once per project in compile_predicates_for_project/3 and
+%  threaded through as `go_overloaded_names(Names)`. Projects without
+%  overloads keep the historical unsuffixed names, so existing
+%  generated code and its call sites are unchanged.
+predicate_go_name(Pred, Arity, Options, Name) :-
+    predicate_go_name(Pred, Base),
+    option(go_overloaded_names(Overloaded), Options, []),
+    (   memberchk(Pred, Overloaded)
+    ->  atom_concat(Base, Arity, Name)
+    ;   Name = Base
+    ).
+
+%% go_overloaded_predicate_names(+Predicates, -Names)
+%  Sorted set of predicate names that appear at two or more distinct
+%  arities in this project. These are the names that need arity
+%  suffixes in the emitted Go identifiers.
+go_overloaded_predicate_names(Predicates, Names) :-
+    findall(Pred-Arity,
+            ( member(PredIndicator, Predicates),
+              predicate_indicator_parts(PredIndicator, _M, Pred, Arity)
+            ),
+            Pairs0),
+    sort(Pairs0, Pairs),
+    findall(Pred,
+            ( member(Pred-A1, Pairs),
+              member(Pred-A2, Pairs),
+              A1 \== A2
+            ),
+            Dups0),
+    sort(Dups0, Names).
 
 go_ident_code(Code, Safe) :-
     (   code_type(Code, alnum)
@@ -1442,7 +1491,7 @@ wam_line_to_go_literal(["execute", P], PredIndicator, Options, GoLit) :-
     ->  format(atom(GoLit), '&CallForeign{Pred: "~w", Arity: ~w}', [ForeignPred, ForeignArity])
     ;   wam_go_direct_builtin(CP, Num, Op)
     ->  escape_go_string(Op, EscapedPred),
-        format(atom(GoLit), '&BuiltinCall{Op: "~w", Arity: ~w}', [EscapedPred, Num])
+        format(atom(GoLit), '&BuiltinExecute{Op: "~w", Arity: ~w}', [EscapedPred, Num])
     ;   format(atom(GoLit), '&Execute{Pred: "~w"}', [CP])
     ).
 wam_line_to_go_literal(["jump", L], GoLit) :-
@@ -2244,6 +2293,20 @@ wam_go_case('BuiltinCall', '        result := vm.executeBuiltin(i.Op, i.Arity)
             vm.PC++
         }
         return result').
+
+% Last-call builtin: run the builtin, then take Proceed''s return path.
+% See the BuiltinExecute doc comment in instructions.go.mustache for why
+% this is one instruction rather than BuiltinCall followed by Proceed.
+wam_go_case('BuiltinExecute', '        result := vm.executeBuiltin(i.Op, i.Arity)
+        if !result {
+            return false
+        }
+        if vm.CP > 0 {
+            vm.PC = vm.CP
+        } else {
+            vm.Halted = true
+        }
+        return true').
 
 % --- Choice Point Instructions ---
 

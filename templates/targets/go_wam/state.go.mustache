@@ -986,11 +986,21 @@ func (vm *WamState) formatTemplate(template string, args []Value) (string, bool)
 			b.WriteByte('\n')
 		case '~':
 			b.WriteByte('~')
-		case 'w', 'p', 'q':
+		// ~w and ~p render like write/1 (unquoted, arguments included);
+		// ~q renders like write_canonical/1 (quoted). All three used to
+		// call Value.String(), which printed a compound as "functor/arity"
+		// and dropped its arguments.
+		case 'w', 'p':
 			if argIdx >= len(args) {
 				return "", false
 			}
-			b.WriteString(vm.deref(args[argIdx]).String())
+			b.WriteString(vm.writeTermString(args[argIdx]))
+			argIdx++
+		case 'q':
+			if argIdx >= len(args) {
+				return "", false
+			}
+			b.WriteString(vm.canonicalTermString(args[argIdx]))
 			argIdx++
 		case 'a':
 			if argIdx >= len(args) {
@@ -1000,7 +1010,7 @@ func (vm *WamState) formatTemplate(template string, args []Value) (string, bool)
 			if atom, ok := value.(*Atom); ok {
 				b.WriteString(atom.Name)
 			} else {
-				b.WriteString(value.String())
+				b.WriteString(vm.writeTermString(value))
 			}
 			argIdx++
 		case 'd':
@@ -1273,8 +1283,71 @@ func inputCodeValue(r rune, eof bool) Value {
 	return &Integer{Val: int64(r)}
 }
 
-func (vm *WamState) canonicalTermString(value Value) string {
+// writeTermString renders a term the way write/1 does: recursively, with
+// nested arguments dereferenced, and without the quoting that
+// write_canonical/1 applies.
+//
+// The write-family builtins used to call Value.String() directly, which
+// renders a compound as bare "functor/arity" (Structure.String) and drops
+// every argument — write(foo(a,b)) printed "foo/2". Reuse the canonical
+// walker's structure here so writes carry their arguments; the only
+// difference is atom quoting.
+func (vm *WamState) writeTermString(value Value) string {
+	if value == nil {
+		return "_"
+	}
 	value = vm.deref(value)
+	if value == nil {
+		return "_"
+	}
+	if isEmptyListValue(value) {
+		return "[]"
+	}
+	if items, ok := vm.listToSlice(value); ok {
+		parts := make([]string, 0, len(items))
+		for _, item := range items {
+			parts = append(parts, vm.writeTermString(item))
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	}
+	switch t := value.(type) {
+	case *Atom:
+		return t.Name
+	case *Integer:
+		return strconv.FormatInt(t.Val, 10)
+	case *Float:
+		return strconv.FormatFloat(t.Val, 'g', -1, 64)
+	case *Compound:
+		return vm.writeCompoundString(parseFunctorName(t.Functor), t.Args)
+	case *Structure:
+		return vm.writeCompoundString(parseFunctorName(t.Functor), t.Args)
+	default:
+		return value.String()
+	}
+}
+
+func (vm *WamState) writeCompoundString(name string, args []Value) string {
+	if len(args) == 0 {
+		return name
+	}
+	parts := make([]string, 0, len(args))
+	for _, arg := range args {
+		parts = append(parts, vm.writeTermString(arg))
+	}
+	return name + "(" + strings.Join(parts, ", ") + ")"
+}
+
+func (vm *WamState) canonicalTermString(value Value) string {
+	// An argument slot can still be nil (e.g. a structure built by
+	// put_structure whose set_* instructions have not all run yet);
+	// render it as an anonymous variable rather than panicking.
+	if value == nil {
+		return "_"
+	}
+	value = vm.deref(value)
+	if value == nil {
+		return "_"
+	}
 	if isEmptyListValue(value) {
 		return "[]"
 	}
@@ -1805,10 +1878,10 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 
 	switch op {
 	case "display/1":
-		fmt.Print(vm.deref(arg1).String())
+		fmt.Print(vm.writeTermString(arg1))
 		return true
 	case "write/1":
-		fmt.Print(vm.deref(arg1).String())
+		fmt.Print(vm.writeTermString(arg1))
 		return true
 	case "write_canonical/1":
 		fmt.Print(vm.canonicalTermString(arg1))
@@ -1924,14 +1997,14 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		_, eof, ok := peekStreamRune(vm.deref(arg1))
 		return ok && eof
 	case "write_to_stream/2":
-		return writeStreamText(vm.deref(arg1), vm.deref(arg2).String())
+		return writeStreamText(vm.deref(arg1), vm.writeTermString(arg2))
 	case "nl_to_stream/1":
 		return writeStreamText(vm.deref(arg1), "\n")
 	case "writeln/1":
-		fmt.Println(vm.deref(arg1).String())
+		fmt.Println(vm.writeTermString(arg1))
 		return true
 	case "print/1":
-		fmt.Print(vm.deref(arg1).String())
+		fmt.Print(vm.writeTermString(arg1))
 		return true
 	case "format/1":
 		template, ok := formatTemplateText(vm.deref(arg1))

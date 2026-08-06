@@ -127,6 +127,21 @@ func (i *Proceed) instrTag() {}
 type BuiltinCall struct { Op string; Arity int }
 func (i *BuiltinCall) instrTag() {}
 
+// BuiltinExecute is the last-call form of BuiltinCall, emitted for
+// `execute <builtin>/N` (a clause whose final goal is a builtin, e.g.
+// `s(X) :- succ(1, X).`). BuiltinCall advances to the following
+// instruction; `execute` has no following instruction, so running the
+// builtin and then falling off the end of the predicate would bind the
+// output arguments correctly and still report failure. BuiltinExecute
+// runs the builtin and then performs Proceed's return-to-caller step.
+//
+// Kept as a distinct instruction rather than emitting BuiltinCall +
+// Proceed so the WAM-text line/instruction mapping stays 1:1 — inserting
+// an extra instruction would shift every later PC and label index in the
+// shared code table.
+type BuiltinExecute struct { Op string; Arity int }
+func (i *BuiltinExecute) instrTag() {}
+
 type TryMeElse struct { Label string; Arity int }
 func (i *TryMeElse) instrTag() {}
 
