@@ -49,9 +49,16 @@ its plain keys. `catch/3` is deterministic — it commits to the goal's
 first solution.
 
 **Effective-distance benchmark.** Scale-300 row populated (BENCH-GO):
-query_ms 1061 / total_ms 1061, 5-rep median, output an exact multiset
+query_ms 898 / total_ms 898, 5-rep median, output an exact multiset
 match against the reference. See
 [`design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md`](design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md).
+
+**Compiled runtime parser.** `runtime_parser(compiled)` compiles the
+portable `prolog_term_parser` and the target-agnostic wrappers into the
+project, so a generated program can call `read_term_from_atom/2`
+directly (PARSE-GO). Default stays `none`. Proven end-to-end by
+`tests/test_wam_go_parser_smoke.pl` — 22 inputs including operator
+precedence and associativity.
 
 **Dual lowering.** WAM instruction VM plus the lowered emitter.
 
@@ -67,16 +74,7 @@ non-WAM dataflow/stream compiler, not the WAM pipeline. Stays opt-in
 
 - **Default product path is non-WAM** (`go_target.pl`); the WAM route
   is opt-in.
-- **No runtime-parser capability entry** in
-  `wam_runtime_parser_capability.pl`. Two blocking codegen/runtime bugs
-  were fixed on the way to this (arity name collisions, last-call
-  builtins — see the parity audit), and the portable parser now
-  compiles, links and tokenizes under WAM-Go, but
-  `parse_term_from_atom/3` still fails, so the capability is
-  deliberately not advertised. See PARSE-GO in
-  [`WAM_FLEET_GAP_TASKS.md`](WAM_FLEET_GAP_TASKS.md) for where the
-  investigation stopped.
-- **Effective-distance row is interpreter-bound** (~1061 ms query vs
+- **Effective-distance row is interpreter-bound** (~898 ms query vs
   Rust's 17 ms): the benchmark runs `category_ancestor/4` through the
   shared bytecode loop rather than the FFI kernel path.
 
@@ -86,13 +84,14 @@ non-WAM dataflow/stream compiler, not the WAM pipeline. Stays opt-in
    path or stay the kernel-benchmarking arm.
 2. Route the effective-distance benchmark through the registered
    foreign kernels — the single biggest lever on the Go perf row.
-3. Finish the compiled runtime-parser bring-up (PARSE-GO), then
-   register the capability entry.
+3. Consider registering `conformance_target(go)` as default CI rather
+   than opt-in, now that the runtime has been hardened by the parser
+   bring-up.
 
 ## Document status
 
 Fleet-aligned snapshot; source-verified against `wam_go_target.pl`,
 the parity audit, and the conformance harness (`prefer_wam(true)`
-requirement confirmed) on 2026-07-11. Refreshed 2026-08-06 after
-LMDB-GO, ISO-GO and BENCH-GO landed. Update the parity audit first,
+requirement confirmed) on 2026-07-11. Refreshed 2026-08-06 after all four Go
+gap cards (LMDB-GO, ISO-GO, BENCH-GO, PARSE-GO) landed. Update the parity audit first,
 then refresh here.

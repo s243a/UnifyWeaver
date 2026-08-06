@@ -183,10 +183,14 @@ Three of the four Go gap cards closed 2026-08-06: **LMDB policy tiers**
 three-form adoption** (catch/throw via panic/recover, `is_iso`/`is_lax`,
 six compares, `succ`, per-predicate rewrite, audit), and the
 **effective-distance row** (1061/1061 ms at scale 300, reference-verified).
-The runtime-parser entry stays open — three real codegen/runtime bugs
-were fixed on the way to it (arity name collisions, last-call builtins,
-`write/1` dropping compound arguments) and the portable parser now
-compiles and tokenizes, but full parsing does not yet run.
+The **runtime-parser entry** landed too, making Go the sixth target
+with a working compiled `prolog_term_parser`. Reaching it required
+eight WAM-Go fixes — arity name collisions, last-call builtins,
+`write/1` dropping compound arguments, nested write contexts,
+`get_structure` deref order, `get_list` cons destructuring,
+A-registers above A8, and atom-intern initialisation order — every one
+of which also affected ordinary programs. All four Go cards are now
+closed.
 
 ### R (`wam_r_target`)
 
@@ -290,7 +294,7 @@ are in [`WAM_FLEET_GAP_TASKS.md`](WAM_FLEET_GAP_TASKS.md).
 | **Finish foreign kernel templates** | F# (2 of 7 templated) | Detector fires for all kinds; only CA + bidirectional are emitted. |
 | **Lowered emitters** | ILAsm, JVM, Kotlin | Early scaffolds — decide invest-vs-retire given Scala/Clojure/F# cover .NET+JVM maturely. |
 | **Effective-distance bench rows** | LLVM, C++, C, ~~Go~~, R | Perf-matrix coverage thinner than Rust/Haskell/F#. **Go done** (BENCH-GO): 1061/1061 ms, reference-verified; interpreter-bound, kernels not on that hot path. |
-| **Runtime-parser capability entries** | C, Go, Scala, Clojure, Lua | Only R/C++ are native-default; Python/F#/Haskell/Rust have compiled opt-in. **Go is an L, not an S** — the entry is a three-fact edit but the runtime proof is a campaign; see PARSE-GO. |
+| **Runtime-parser capability entries** | C, ~~Go~~, Scala, Clojure, Lua | Only R/C++ are native-default; Python/F#/Haskell/Rust/Go have compiled opt-in. **Go done** (PARSE-GO) — but it was an L, not an S: the entry is a three-fact edit, the runtime proof took eight fixes. Size the remaining ones by runtime maturity, not by the edit. |
 
 Maturity bands for prioritisation: **Primary** (Elixir, Haskell, Rust,
 F#, LLVM, C++, Scala) → polish/parity; **Strong** (C, Go, R) →

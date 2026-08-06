@@ -38,7 +38,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | KT-ARITH-SLASH-FUNCTOR ✅ | Conformance gap fix | Kotlin | S | done — `///2` last-slash parse (`cursor/kt-arith-slash-functor-f421`) |
 | KT-Y-ENV-RECURSION ✅ | Conformance gap fix | Kotlin | M | done — Y heap-identity vars (`cursor/kt-y-env-recursion-f421`) |
 | PARSE-C | Runtime-parser entry | C | S | — |
-| PARSE-GO ⚠ | Runtime-parser entry | Go | **L** (was S) | blocked — parser compiles/links/tokenizes; `parse_term_from_atom/3` still fails |
+| PARSE-GO ✅ | Runtime-parser entry | Go | **L** (was S) | done — capability registered + `runtime_parser(compiled)` wired; 22/22 parser smoke; five runtime fixes |
 | PARSE-SCALA | Runtime-parser entry | Scala | S | — |
 | PARSE-CLOJURE | Runtime-parser entry | Clojure | S | — |
 | PARSE-LUA | Runtime-parser entry | Lua | S | — |
@@ -226,14 +226,55 @@ catch-all clause.
   3. Add default `target_runtime_parser_default(wam_c, none).` (keep opt-in, matching F#/Haskell/Rust) — or `native(parse_term)` if step 2 confirms a shipping native parser.
 - **Acceptance:** `swipl -g "use_module('src/unifyweaver/targets/wam_runtime_parser_capability'), (wam_target_runtime_parser(c, [runtime_parser(compiled)], M), M==compiled(prolog_term_parser) -> writeln(ok) ; (writeln(fail),halt(1))), halt" -t 'halt(1)'` prints `ok`; and existing `swipl -g run_tests tests/test_wam_runtime_parser*.pl` (verify: exact test filename) stays green.
 
-### PARSE-GO: Add Go runtime-parser capability entry ⚠ blocked
+### PARSE-GO: Add Go runtime-parser capability entry ✅
 - **Lever:** Runtime-parser capability entries  **Target:** Go  **Size:** **L** (the S estimate was wrong)  **Depends on:** —
-- **Status (2026-08-06):** *Not* closed, and deliberately not registered.
-  The card treats this as a three-fact edit, but the capability module's
-  own rule is to advertise `compiled(prolog_term_parser)` only for
-  targets with compile *and runtime* proof. Attempting that proof turned
-  up three genuine WAM-Go defects, all fixed and shipped separately
-  (see `tests/test_wam_go_last_call_builtin.pl`):
+- **Status:** Done. The capability entry is registered
+  (`compiled(prolog_term_parser)`, default `none`) and
+  `runtime_parser(compiled)` now pulls the portable parser + wrappers
+  into the project in write_wam_go_project/3, mirroring Python/F#.
+  `tests/test_wam_go_parser_smoke.pl` builds the generated Go and parses
+  22 inputs, including operator precedence (`a-b*c` -> `-(a, *(b, c))`),
+  yfx left-associativity (`1-2-3`), xfy right-associativity (`a^b^c`),
+  lists, partial lists, parens, prefix operators and quoted atoms.
+
+  **The S estimate was wrong by a wide margin** — not because the entry
+  is hard to write, but because the capability module only advertises a
+  mode with runtime proof, and producing that proof surfaced *eight*
+  WAM-Go defects. All of them mis-execute ordinary programs; the parser
+  was just the first workload exercising enough of the runtime to hit
+  them. Three were fixed earlier in this branch (see below); the other
+  five were:
+
+    4. **Nested write contexts clobbered the enclosing term.**
+       CurrentStruct/CurrentList were single slots while argument
+       contexts are a stack, so a head like `p(C, A, [tk(C)|A])` never
+       filled the cons tail. The target now lives on the WriteCtx frame.
+    5. **get_structure tested isUnbound before dereferencing**, so an
+       already-bound argument took the *write* branch and a fresh
+       structure was built over it.
+    6. **get_list pushed a flat `*List`'s elements** as the unify
+       context. `*List` is both a cons pair (put_list) and a flat list
+       (reverse/2, findall/3, sort/2, append/3); a flat one-element list
+       offered one slot so the cons-tail read failed.
+    7. **A-registers above A8 were never saved at a choicepoint.**
+       snapshotAllRegs skipped Regs[8..199] as "the X range", but A(N)
+       maps to Regs[N-1] and X starts at Regs[100]. Any predicate of
+       arity > 8 lost arguments on its second clause.
+    8. **Interned atoms were registered from an `init()`.** Go runs all
+       package-level var initialisers before any init(), so
+       `var emptyListAtom = internAtom("[]")` won the map slot and was
+       then overwritten — two distinct `[]` atoms under pointer-only
+       `Atom.Equals`, so `get_constant []` failed against a real empty
+       list. That is what stopped the parser at parse_op_loop/10's base
+       clause.
+
+  **Lesson for the remaining PARSE-* cards (C, Scala, Clojure, Lua):**
+  size them by whether the target's runtime has been exercised by
+  anything as demanding as the portable parser, not by the three-fact
+  capability edit. The edit is an S; the proof may not be.
+
+- **Defects 1-3**, found in the first pass at this card and shipped
+  separately (see `tests/test_wam_go_last_call_builtin.pl`):
     1. **Arity name collisions.** Go identifiers were derived from the
        predicate name alone, so `read_term_from_atom/2` and `/3` emitted
        two identically named `func`s — "redeclared in this block". Fixed
@@ -247,17 +288,11 @@ catch-all clause.
        a `*Structure` as bare `functor/arity`. Fixed with a proper
        renderer; this one only mattered for debugging, but it is why the
        first traces were unreadable.
-  After those, the portable parser **compiles, links, and tokenizes
-  correctly** under WAM-Go (`tokenize([102,111,111], T)` yields
-  `[tk_atom(foo)]`), but `parse_term_from_atom/3` still fails. Next step
-  is the Pratt loop (`parse_expr/8`, `parse_op_loop/10`) and the partial
-  list construction feeding it — a cons cell whose tail slot renders as
-  an extra element hints at a `put_list`/`set_value` gap. Expect a
-  multi-PR campaign like F#'s (PRs #2407/#2408/#2415/#2419/#2422/#2423),
+  Those three got the parser to compile, link and tokenize; defects 4-8
+  above are what it took to get it *parsing*. As predicted, this was a
+  campaign on the scale of F#'s (PRs #2407/#2408/#2415/#2419/#2422/#2423),
   not a three-fact edit.
-- **Do not register the capability entry until the parser runs**: an
-  entry without a working runtime advertises a mode that silently
-  fails.
+
 - **Goal:** Register `wam_go`'s runtime-parser capability so `wam_target_runtime_parser(go, ...)` resolves a mode instead of `none`/`domain_error`.
 - **Files to touch:** `src/unifyweaver/targets/wam_runtime_parser_capability.pl`
 - **Reference to copy from:** same file — `wam_rust` entries (`target_runtime_parser_default(wam_rust, none).` line ~139, `target_runtime_parser_mode_(wam_rust, compiled(prolog_term_parser)).` line ~148) + the `normalize_runtime_parser_target(rust, wam_rust)` alias pair (lines ~158-159).
@@ -265,7 +300,7 @@ catch-all clause.
   1. Add alias pair `normalize_runtime_parser_target(go, wam_go) :- !.` / `normalize_runtime_parser_target(wam_go, wam_go) :- !.` before the catch-all.
   2. Add `target_runtime_parser_mode_(wam_go, compiled(prolog_term_parser)).`
   3. Add `target_runtime_parser_default(wam_go, none).` (Go has no native runtime term parser — compiled portable parser only, opt-in; mirror Rust). (verify: no native parser in `wam_go_target.pl`.)
-- **Acceptance:** `swipl -g "use_module('src/unifyweaver/targets/wam_runtime_parser_capability'), (wam_target_runtime_parser(go, [runtime_parser(compiled)], M), M==compiled(prolog_term_parser) -> writeln(ok) ; halt(1)), halt" -t 'halt(1)'` prints `ok`; parser-capability unit tests stay green.
+- **Acceptance:** `swipl -g "use_module('src/unifyweaver/targets/wam_runtime_parser_capability'), (wam_target_runtime_parser(go, [runtime_parser(compiled)], M), M==compiled(prolog_term_parser) -> writeln(ok) ; halt(1)), halt" -t 'halt(1)'` prints `ok`; parser-capability unit tests stay green. ✅ passes, plus `tests/test_wam_go_parser_smoke.pl` for the runtime proof.
 
 ### PARSE-SCALA: Add Scala runtime-parser capability entry
 - **Lever:** Runtime-parser capability entries  **Target:** Scala  **Size:** S  **Depends on:** —
