@@ -952,6 +952,21 @@ def _row_witnesses(node, items: set, pairs: set, leaf_index: dict,
         else:
             items.add(f"value:{kind}:{_spell(value)}")
             items.update(_digit_items(_spell(value)))
+    # Resolved defaults witness their VALUES (seventh review, finding 2). An
+    # elided default is canonically identical to its explicit spelling, and
+    # the component identity already resolves it — so lineage(simplemind)
+    # semantically carries decay=0.85 and must witness value:number:0.85 and
+    # its digits, or the universe's grid coverage is unreachable through
+    # rows spelled canonically. No MOTIF is emitted (the motif would be
+    # universal — that rationale stands for holdouts); the VALUE is counted.
+    explicit_keys = {key for key, _ in node.kwargs}
+    for key in sorted(sig.kwargs):
+        spec = sig.kwargs[key]
+        if key in explicit_keys or spec.default is None:
+            continue
+        if spec.kind in ("number", "int"):
+            items.add(f"value:{spec.kind}:{_spell(spec.default)}")
+            items.update(_digit_items(_spell(spec.default)))
 
 
 def _template_identity(node) -> str:
@@ -1084,6 +1099,7 @@ def families_from_expressions(expressions,
     leaf_index = _leaf_identity_index()
     grouped: dict = {}
     seen: set = set()
+    seen_semantic: set = set()
     duplicates = 0
     universe = set(required_witness_universe())
     for expression in expressions:
@@ -1108,6 +1124,16 @@ def families_from_expressions(expressions,
         items: set = set()
         pairs: set = set()
         _row_witnesses(node, items, pairs, leaf_index)
+        # Seventh review, finding 1: pin-copies of one SEMANTIC example are
+        # distinct corpus rows (canonical_full dedup is ruled correct — §3.1
+        # needs them), but they must not credit semantic witnesses twice
+        # toward k, or the coverage minimum can be met with pinned copies of
+        # one example. Semantic items count once per distinct semantic
+        # identity; synthetic items (the pins' own coverage) count per row.
+        semantic_identity = pc.canonical_semantic(node)
+        if semantic_identity in seen_semantic:
+            items = {item for item in items if item.startswith("synthetic:")}
+        seen_semantic.add(semantic_identity)
         # Sixth review, finding 4: checking that required witnesses are
         # PRESENT is not the same as checking that no witness escapes. An
         # authorizing build refuses any extracted item outside the

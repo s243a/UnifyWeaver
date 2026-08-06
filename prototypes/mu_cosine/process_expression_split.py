@@ -84,7 +84,12 @@ SPLIT_ALGORITHM_MANIFEST = {
         "witness counts are per-item ROW counts: a row witnesses an item "
         "once, however many times the item occurs inside it; an item is "
         "covered when the sum of its row counts over train families reaches "
-        "coverage_minimum_k"
+        "coverage_minimum_k; SEMANTIC witness items count once per distinct "
+        "semantic identity while SYNTHETIC items count per row, so "
+        "pin-copies of one semantic example cannot credit semantic coverage "
+        "twice toward k; resolved defaults witness their values and digit "
+        "bytes, since an elided default is canonically identical to its "
+        "explicit spelling"
     ),
     "required_universe_rule": (
         "the contract binds required_universe_sha256 = sha256(canonical "

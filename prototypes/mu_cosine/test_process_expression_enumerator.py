@@ -238,7 +238,41 @@ def test_extractor_projects_pins_and_strings_into_the_semantic_family():
     family = families[0]
     assert family.row_count == 2
     assert family.counts["synthetic:pin@lca_frac"] == 1        # one row of two
-    assert family.counts["op:lca_frac/1{}"] == 2      # both rows
+    # Seventh review, finding 1: the pinned row shares the unpinned row's
+    # SEMANTIC identity, so semantic witnesses count once — k cannot be met
+    # with pin-copies of one example. Synthetic witnesses count per row.
+    assert family.counts["op:lca_frac/1{}"] == 1
+
+
+def test_pin_copies_cannot_credit_semantic_coverage_twice():
+    """Two pin-variants of one semantic expression are distinct corpus rows
+    (canonical_full dedup — §3.1 needs them) but one semantic example."""
+    (family,) = en.families_from_expressions([
+        "lca_frac(simplemind)@synthetic/pin-0001",
+        "lca_frac(simplemind)@synthetic/pin-0002",
+    ])
+    assert family.row_count == 2
+    assert family.counts["op:lca_frac/1{}"] == 1          # one semantic example
+    assert family.counts["synthetic:pin@lca_frac"] == 2   # two pinned rows
+    # Distinct semantic rows still count independently.
+    (other,) = en.families_from_expressions([
+        "hop_decay(simplemind,gamma=0.6)", "hop_decay(simplewiki,gamma=0.6)"])
+    assert other.counts["op:hop_decay/1{gamma:number}"] == 2
+
+
+def test_resolved_defaults_witness_their_values():
+    """Seventh review, finding 2: lineage(simplemind) semantically carries
+    decay=0.85 — the component identity already resolves it — so it must
+    witness the value and its digits, or grid coverage is unreachable
+    through canonically-spelled rows. No explicitness motif is emitted."""
+    (family,) = en.families_from_expressions(["lineage(simplemind)"])
+    assert "value:number:0.85" in family.witness_items
+    assert {"digit:0@int", "digit:8@frac", "digit:5@frac"} <= family.witness_items
+    assert not any("decay" in item for item in family.pairs
+                   if item.startswith("motif:"))
+    # Both spellings are one canonical expression and witness identically.
+    (explicit,) = en.families_from_expressions(["lineage(simplemind,decay=0.85)"])
+    assert explicit.witness_items == family.witness_items
 
 
 def test_extractor_counts_items_per_row_not_per_family():

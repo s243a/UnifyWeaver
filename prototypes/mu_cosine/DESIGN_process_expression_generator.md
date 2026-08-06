@@ -304,7 +304,10 @@ named at the point it applies below.)
     preregistration witness, which moves with it.
 - **Rows are deduplicated, and no witness escapes.** Corpus rows are deduplicated by
   `canonical_full` before family counting and the duplicate count is recorded in the corpus
-  manifest; duplicates previously inflated coverage, so `k` could be met with copies of one
+  manifest — and semantic witness items count once per distinct *semantic* identity, while
+  synthetic items count per row: pin-copies of one semantic example are distinct rows
+  (§3.1 needs them) but must not credit semantic coverage twice toward `k`, or the minimum
+  could be met with pinned copies of one example (seventh review); duplicates previously inflated coverage, so `k` could be met with copies of one
   example while the split silently depended on an unenforced upstream assumption. The key is
   `canonical_full` rather than `canonical_semantic` because rows differing only by pins are
   genuinely distinct (§3.1: V3 differs from V2 *only* by pins), so semantic dedup would delete
@@ -329,7 +332,10 @@ named at the point it applies below.)
   holdouts as well as operator-composition holdouts, and a component records a kwarg's *kind*,
   not its length, so `t=[0.02]` and `t=[0.02,0.03]` were indistinguishable. A kwarg elided at
   its registered default yields no motif: the elided and explicit spellings are one canonical
-  expression, so such a motif would be universal rather than a holdout unit. Digit
+  expression, so such a motif would be universal rather than a holdout unit — but its
+  resolved VALUE and digit bytes are witnessed (the seventh review found them omitted:
+  `lineage(simplemind)` semantically carries `decay=0.85`, and grid coverage must be
+  reachable through canonically-spelled rows). Digit
   witnesses carry a position class (`digit:0@int` vs `digit:0@frac`), since §7's digit-holdout
   exercises different tokenizer paths in the integer part, the fraction, and the exponent.
   §3.2's three string classes (ASCII, non-ASCII, escaped) are three separate required items,
@@ -357,7 +363,9 @@ named at the point it applies below.)
   it. Fail closed if an item's total coverage is below `k` (a corpus-build error no split can
   repair), if only held-pinned families carry it, or if repair empties a slice.
 - **Far-slice membership** is computed, never sampled, at family granularity: a TEST family is
-  *far* iff its pair set (union of members' composition pairs, `pair:<parent>|<child head>`
+  *far* iff its holdable set (union of members' composition pairs and motifs —
+  `pair:<resolved parent component>.<slot>|<resolved child component>` and
+  `motif:<resolved component>.kw:…` —
   over node-valued edges including `mu=`) contains at least one pair absent from the union over
   **train and dev** — a composition seen in dev steers model selection and is not far. A DEV
   family's far flag is judged against train alone.
@@ -422,7 +430,10 @@ a preregistration may ask for:
    literal-*value* kwarg motifs can do: rows differing only in a literal share a template and
    therefore a family, so such a motif is always a within-family distinction and holding it
    holds the whole family. List-shape motifs *do* separate families (the template records the
-   list's length) and are holdable in the ordinary way.
+   list's length) and are holdable in the ordinary way. The seventh review ruled the
+   encoder contract does NOT require literal-value LOCO holdouts: structural splitting
+   stays family-granular, and scalar-value generalization is evaluated separately (the
+   §7 digit-holdout is that instrument).
 
 Restricting methodology kwargs to the root remains the recommendation and is semantically
 motivated: `estimand=`/`impl=` are deployment metadata and `require_deployable` checks exactly
