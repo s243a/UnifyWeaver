@@ -26,11 +26,13 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(yall)).
 :- use_module(library(option)).
 :- use_module(library(pairs), [pairs_values/2, map_list_to_pairs/3]).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../core/recursive_kernel_detection',
              [detect_recursive_kernel/4, kernel_metadata/4]).
+:- use_module('../core/cost_model', [resolve_auto_lmdb_materialisation/2]).
 :- use_module('../core/template_system').
 :- use_module('../bindings/go_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
@@ -472,7 +474,7 @@ compile_shared_foreign_setup(Classified, Options, Code) :-
     findall(Line,
         ( member(classified(Module, Pred, Arity, wam_foreign, _), Classified),
           go_foreign_spec(Module:Pred/Arity, Options, SetupOps, _RewriteCalls, _EntryPred/_EntryArity),
-          maplist(go_foreign_setup_line, SetupOps, SetupLines),
+          maplist([Op, L]>>go_foreign_setup_line(Op, Options, L), SetupOps, SetupLines),
           member(Line, SetupLines)
         ),
         RawLines),
@@ -940,7 +942,7 @@ build_go_wam_arg_setup(Arity, Setup) :-
 foreign_wrapper_setup(PredIndicator, _WamCode, Options, InstrSetup, Setup, RunExpr) :-
     go_foreign_spec(PredIndicator, Options, SetupOps, _RewriteCalls, EntryPred/EntryArity),
     InstrSetup = '    vm.PC = 1',
-    go_foreign_setup_code(SetupOps, Setup),
+    go_foreign_setup_code(SetupOps, Options, Setup),
     format(atom(RunExpr), 'vm.executeForeignPredicate("~w", ~w)', [EntryPred, EntryArity]).
 
 go_foreign_spec(_PredArity, Options, _SetupOps, _RewriteCalls, _EntryPredArity) :-
@@ -970,9 +972,12 @@ go_foreign_spec_term(Pred/Arity,
     is_list(SetupOps),
     is_list(RewriteCalls).
 
-go_foreign_setup_code([], "").
 go_foreign_setup_code(Ops, Setup) :-
-    maplist(go_foreign_setup_line, Ops, Lines),
+    go_foreign_setup_code(Ops, [], Setup).
+
+go_foreign_setup_code([], _Options, "").
+go_foreign_setup_code(Ops, Options, Setup) :-
+    maplist([Op, L]>>go_foreign_setup_line(Op, Options, L), Ops, Lines),
     atomic_list_concat(Lines, '\n', Setup).
 
 go_foreign_setup_line(register_foreign_native_kind(Pred/Arity, Kind), Line) :-
@@ -989,9 +994,7 @@ go_foreign_setup_line(register_tsv_atom_fact2(Pred/Arity, Path), Line) :-
     format(atom(Line), '    if err := vm.registerTsvAtomFact2("~w/~w", "~w"); err != nil { panic(err) }',
         [Pred, Arity, EscapedPath]).
 go_foreign_setup_line(register_lmdb_atom_fact2(Pred/Arity, ArtifactDir), Line) :-
-    escape_go_string(ArtifactDir, EscapedArtifactDir),
-    format(atom(Line), '    if err := vm.registerLmdbAtomFact2("~w/~w", "~w"); err != nil { panic(err) }',
-        [Pred, Arity, EscapedArtifactDir]).
+    go_lmdb_register_line(Pred/Arity, ArtifactDir, [], Line).
 go_foreign_setup_line(register_foreign_string_config(Pred/Arity, Key, ValuePred/ValueArity), Line) :-
     format(atom(Line), '    vm.registerForeignStringConfig("~w/~w", "~w", "~w/~w")',
         [Pred, Arity, Key, ValuePred, ValueArity]).
@@ -1006,6 +1009,66 @@ go_foreign_setup_line(register_indexed_atom_fact2(Pred/Arity, Pairs), Line) :-
 go_foreign_setup_line(register_indexed_weighted_edge(Pred/Arity, Triples), Line) :-
     go_fact_triples_literal(Triples, Literal),
     format(atom(Line), '    vm.registerIndexedWeightedEdgeTriples("~w/~w", []WeightedEdgeTriple{~w})', [Pred, Arity, Literal]).
+
+%% go_foreign_setup_line(+Op, +Options, -Line)
+%  Options-aware form. Only the LMDB registration reads Options (for the
+%  materialisation tier and cache size); every other op is
+%  option-independent and falls through to go_foreign_setup_line/2.
+go_foreign_setup_line(register_lmdb_atom_fact2(Pred/Arity, ArtifactDir), Options, Line) :-
+    !,
+    go_lmdb_register_line(Pred/Arity, ArtifactDir, Options, Line).
+go_foreign_setup_line(Op, _Options, Line) :-
+    go_foreign_setup_line(Op, Line).
+
+%% go_lmdb_register_line(+Pred/Arity, +ArtifactDir, +Options, -Line)
+%  Emit the registerLmdbAtomFact2 call with its resolved materialisation
+%  tier and L2 capacity.
+go_lmdb_register_line(Pred/Arity, ArtifactDir, Options, Line) :-
+    escape_go_string(ArtifactDir, EscapedArtifactDir),
+    go_lmdb_materialisation_mode(Options, Mode),
+    go_lmdb_l2_capacity(Options, Mode, Capacity),
+    format(atom(Line),
+        '    if err := vm.registerLmdbAtomFact2("~w/~w", "~w", "~w", ~w); err != nil { panic(err) }',
+        [Pred, Arity, EscapedArtifactDir, Mode, Capacity]).
+
+%% go_lmdb_materialisation_mode(+Options, -Mode)
+%  Resolve lmdb_materialisation(eager|lazy|cached|auto) to a concrete
+%  tier. `auto` defers to the shared cost model in core/cost_model.pl —
+%  the same rule F#, Haskell and R use — so a workload described once
+%  resolves the same way across targets.
+%
+%  The default is `cached`: it matches the F# default and is a strict
+%  improvement on the previous unconditional per-lookup helper spawn
+%  (the artifact is read-only for the process lifetime, so memoising
+%  lookups cannot change results). Pass lmdb_materialisation(lazy) to
+%  get the old behaviour back.
+go_lmdb_materialisation_mode(Options, Mode) :-
+    option(lmdb_materialisation(Requested), Options, cached),
+    (   Requested == auto
+    ->  resolve_auto_lmdb_materialisation(Options, Mode)
+    ;   memberchk(Requested, [eager, lazy, cached])
+    ->  Mode = Requested
+    ;   throw(error(domain_error(lmdb_materialisation, Requested), _))
+    ).
+
+%% go_lmdb_l2_capacity(+Options, +Mode, -Capacity)
+%  Resolve lmdb_l2_capacity(N|auto). Only the cached tier has a cache to
+%  size, so eager/lazy report 0. `auto` scales with the demand-set
+%  estimate, clamped to [256, 65536] — same shape as
+%  compute_l2_capacity_fs/2.
+go_lmdb_l2_capacity(_Options, Mode, 0) :-
+    Mode \== cached,
+    !.
+go_lmdb_l2_capacity(Options, _Mode, Capacity) :-
+    option(lmdb_l2_capacity(Requested), Options, 4096),
+    (   Requested == auto
+    ->  option(fact_count(F), Options, 0),
+        option(demand_set_estimate(D), Options, F),
+        Capacity is max(256, min(65536, integer(D * 0.1)))
+    ;   integer(Requested), Requested > 0
+    ->  Capacity = Requested
+    ;   throw(error(domain_error(lmdb_l2_capacity_positive_integer, Requested), _))
+    ).
 
 go_fact_pairs_literal(Pairs, Literal) :-
     maplist(go_fact_pair_literal, Pairs, PairLiterals),
@@ -2936,8 +2999,8 @@ func (vm *WamState) registerTsvAtomFact2(predKey string, path string) error {
     return nil
 }
 
-func (vm *WamState) registerLmdbAtomFact2(predKey string, artifactDir string) error {
-    source := newLmdbAtomFact2Source(predKey, artifactDir)
+func (vm *WamState) registerLmdbAtomFact2(predKey string, artifactDir string, mode string, l2Capacity int) error {
+    source := newLmdbAtomFact2Source(predKey, artifactDir, mode, l2Capacity)
     vm.Ctx.AtomFact2Sources[predKey] = source
     return nil
 }
@@ -3006,24 +3069,101 @@ func (source *staticAtomFact2Source) LookupArg1(left string) []AtomPair {
     return append([]AtomPair(nil), source.byLeft[left]...)
 }
 
+// lmdbAtomFact2Source serves arity-2 atom facts out of an LMDB
+// relation artifact through the `lmdb_relation_artifact` helper.
+//
+// Three materialisation tiers, selected at construction and mirroring
+// the F# LmdbFactSource (see templates/targets/fsharp_wam/
+// lmdb_fact_source.fs.mustache):
+//
+//   eager  — one Scan() at construction into an in-memory arg1 index.
+//            No helper process afterwards. Lowest per-lookup cost;
+//            pays a full materialisation up front, so it needs the
+//            demand set to fit in memory.
+//   lazy   — the original behaviour: one helper invocation per lookup,
+//            nothing retained. Right for segregated workloads with no
+//            cross-query key reuse.
+//   cached — on-demand like lazy, but memoised through a two-level
+//            cache. L1 is a small hot map; L2 is a larger bounded map.
+//            Once L2 is full new keys are served but not retained
+//            (bounded memory, no eviction churn), matching F#.
+//
+// Misses are cached too: a key with no rows records an empty result so
+// a repeated probe does not re-spawn the helper. The artifact is
+// read-only for the lifetime of the process, so this is safe.
 type lmdbAtomFact2Source struct {
     predKey string
     artifactDir string
     helperBin string
+    mode string
+    l1Capacity int
+    l2Capacity int
+
+    mu sync.RWMutex
+    eagerAll []AtomPair
+    eagerByLeft map[string][]AtomPair
+    l1 map[string][]AtomPair
+    l2 map[string][]AtomPair
 }
 
-func newLmdbAtomFact2Source(predKey string, artifactDir string) *lmdbAtomFact2Source {
+func newLmdbAtomFact2Source(predKey string, artifactDir string, mode string, l2Capacity int) *lmdbAtomFact2Source {
     helperBin := os.Getenv("UW_LMDB_RELATION_ARTIFACT_BIN")
     if helperBin == "" {
         helperBin = "lmdb_relation_artifact"
     }
-    return &lmdbAtomFact2Source{predKey: predKey, artifactDir: artifactDir, helperBin: helperBin}
+    switch mode {
+    case "eager", "lazy", "cached":
+    default:
+        mode = "cached"
+    }
+    if l2Capacity <= 0 {
+        l2Capacity = 4096
+    }
+    l1Capacity := l2Capacity / 8
+    if l1Capacity < 64 {
+        l1Capacity = 64
+    }
+    source := &lmdbAtomFact2Source{
+        predKey: predKey,
+        artifactDir: artifactDir,
+        helperBin: helperBin,
+        mode: mode,
+        l1Capacity: l1Capacity,
+        l2Capacity: l2Capacity,
+    }
+    if mode == "eager" {
+        source.materialise()
+    }
+    if mode == "cached" {
+        source.l1 = make(map[string][]AtomPair)
+        source.l2 = make(map[string][]AtomPair)
+    }
+    return source
+}
+
+// materialise runs the single eager-mode Scan and builds the arg1 index.
+func (source *lmdbAtomFact2Source) materialise() {
+    all := source.run("scan", source.artifactDir, source.predKey)
+    byLeft := make(map[string][]AtomPair, len(all))
+    for _, pair := range all {
+        byLeft[pair.Left] = append(byLeft[pair.Left], pair)
+    }
+    source.eagerAll = all
+    source.eagerByLeft = byLeft
 }
 
 func (source *lmdbAtomFact2Source) Scan() []AtomPair {
     if source == nil {
         return nil
     }
+    if source.mode == "eager" {
+        source.mu.RLock()
+        defer source.mu.RUnlock()
+        return append([]AtomPair(nil), source.eagerAll...)
+    }
+    // lazy and cached both stream the full relation on demand; a full
+    // scan is not key-addressed, so there is nothing for the key caches
+    // to serve it from.
     return source.run("scan", source.artifactDir, source.predKey)
 }
 
@@ -3031,7 +3171,51 @@ func (source *lmdbAtomFact2Source) LookupArg1(left string) []AtomPair {
     if source == nil {
         return nil
     }
-    return source.run("get", source.artifactDir, source.predKey, left)
+    switch source.mode {
+    case "eager":
+        source.mu.RLock()
+        defer source.mu.RUnlock()
+        return append([]AtomPair(nil), source.eagerByLeft[left]...)
+    case "cached":
+        return source.lookupCached(left)
+    default:
+        return source.run("get", source.artifactDir, source.predKey, left)
+    }
+}
+
+// lookupCached implements the L1 -> L2 -> helper dispatch. A hit in L2
+// promotes the entry into L1; a helper result populates both.
+func (source *lmdbAtomFact2Source) lookupCached(left string) []AtomPair {
+    source.mu.RLock()
+    if rows, ok := source.l1[left]; ok {
+        source.mu.RUnlock()
+        return append([]AtomPair(nil), rows...)
+    }
+    rows, ok := source.l2[left]
+    source.mu.RUnlock()
+    if ok {
+        source.mu.Lock()
+        if len(source.l1) < source.l1Capacity {
+            source.l1[left] = rows
+        }
+        source.mu.Unlock()
+        return append([]AtomPair(nil), rows...)
+    }
+
+    fetched := source.run("get", source.artifactDir, source.predKey, left)
+    if fetched == nil {
+        // Distinguish "no rows" from nil so a repeated miss stays cached.
+        fetched = []AtomPair{}
+    }
+    source.mu.Lock()
+    if len(source.l2) < source.l2Capacity {
+        source.l2[left] = fetched
+    }
+    if len(source.l1) < source.l1Capacity {
+        source.l1[left] = fetched
+    }
+    source.mu.Unlock()
+    return append([]AtomPair(nil), fetched...)
 }
 
 func (source *lmdbAtomFact2Source) run(args ...string) []AtomPair {
