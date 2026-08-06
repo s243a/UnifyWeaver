@@ -22,7 +22,10 @@
     intern_atom_go/2,                  % +AtomStr, -GoVarName
     emit_atom_table_go/1,              % -GoCode (var (...) declaration block)
     resolve_dimension_n_go/2,          % +Options, -DimN
-    escape_go_string/2                 % +Str, -EscStr (re-exported helper)
+    escape_go_string/2,                % +Str, -EscStr (re-exported helper)
+    iso_errors_rewrite_text/4,         % +Config, +PI, +WamText0, -WamText
+    wam_go_iso_audit/3,                % +Predicates, +Options, -Audit
+    wam_go_iso_audit_report/1          % +Audit
 ]).
 
 :- use_module(library(lists)).
@@ -33,6 +36,21 @@
 :- use_module('../core/recursive_kernel_detection',
              [detect_recursive_kernel/4, kernel_metadata/4]).
 :- use_module('../core/cost_model', [resolve_auto_lmdb_materialisation/2]).
+:- use_module('../core/iso_errors',
+              [ iso_errors_resolve_options/2,
+                iso_errors_load_config/2,
+                iso_errors_mode_for/3,
+                iso_errors_warn_multi_module/2,
+                iso_errors_rewrite/4,
+                iso_errors_rewrite_item/3,
+                iso_errors_audit_normalise_pi/2,
+                iso_errors_audit_walk/5
+              ]).
+% wam_text_parser's tokenizer is called module-qualified below: this
+% target already defines its own wam_tokenize_line/2 for the Go literal
+% emitter, and the two must not collide.
+:- use_module('../targets/wam_text_parser',
+              [ wam_recognise_instruction/2 ]).
 :- use_module('../core/template_system').
 :- use_module('../bindings/go_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
@@ -291,7 +309,7 @@ compile_lowered_predicates(Predicates, Options, Code) :-
           predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
           \+ is_ffi_owned_fact(Module, Pred, Arity, Options),
           catch(
-              once(( wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode),
+              once(( go_compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode),
                      wam_go_lowerable(Pred/Arity, WamCode, _Reason),
                      lower_predicate_to_go(Pred/Arity, WamCode, Options, GoLines),
                      atomic_list_concat(GoLines, '\n', GoCode)
@@ -376,6 +394,39 @@ is_ffi_owned_fact(Module, Pred, Arity, Options) :-
     Clauses \= [],
     forall(member(_-Body, Clauses), Body == true).
 
+%% go_compile_predicate_to_wam(+PI, +Options, -WamCode)
+%  compile_predicate_to_wam/3 plus the ISO three-form key rewrite.
+%
+%  The rewrite only runs when the caller actually configured ISO error
+%  handling -- iso_errors(true|false), a per-predicate iso_errors(PI,
+%  Mode) override, or iso_errors_config(File). Without any of those the
+%  WAM text passes through untouched and generated projects keep the
+%  plain builtin keys they have always used.
+%
+%  (Python rewrites unconditionally, mapping every default key to its
+%  _lax form when no config is present. That is behaviour-preserving --
+%  the _lax keys delegate to the plain ones -- but it would rewrite the
+%  keys in every existing Go project for no gain, so Go opts in
+%  instead.)
+go_compile_predicate_to_wam(PI, Options, WamCode) :-
+    wam_target:compile_predicate_to_wam(PI, Options, WamCode0),
+    (   go_iso_configured(Options)
+    ->  iso_errors_resolve_options(Options, Config),
+        iso_errors_audit_normalise_pi(PI, NormPI),
+        iso_errors_rewrite_text(Config, NormPI, WamCode0, WamCode)
+    ;   WamCode = WamCode0
+    ).
+
+%% go_iso_configured(+Options)
+%  True when Options carry any ISO error configuration.
+go_iso_configured(Options) :-
+    (   member(iso_errors(_), Options)
+    ->  true
+    ;   member(iso_errors(_, _), Options)
+    ->  true
+    ;   member(iso_errors_config(_), Options)
+    ).
+
 classify_predicates([], _, []).
 classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
@@ -386,20 +437,20 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         option(wam_fallback(WamFB0), Options, true),
         WamFB0 \== false,
         go_foreign_spec(Module:Pred/Arity, Options, _SetupOps0, _RewriteCalls0, _EntryPred0/_EntryArity0),
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode0)
+        go_compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode0)
     ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode0, Options, PredCode0),
         format(user_error, '  ~w/~w: WAM fallback (foreign, preferred)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam_foreign, PredCode0)
     ;   option(prefer_wam(true), Options),
         option(wam_fallback(WamFB1), Options, true),
         WamFB1 \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode1)
+        go_compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode1)
     ->  format(user_error, '  ~w/~w: WAM fallback (preferred)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam, WamCode1)
     ;   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity),
         option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
+        go_compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
     ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
         format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam_foreign, PredCode)
@@ -417,7 +468,7 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         Entry = classified(Module, Pred, Arity, native, PredCode)
     ;   option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
+        go_compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
     ->  (   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity)
         ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
             format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
@@ -725,6 +776,66 @@ wam_go_direct_builtin("atom_string/2", 2, 'atom_string/2').
 wam_go_direct_builtin(string_to_atom/2, 2, 'string_to_atom/2').
 wam_go_direct_builtin('string_to_atom/2', 2, 'string_to_atom/2').
 wam_go_direct_builtin("string_to_atom/2", 2, 'string_to_atom/2').
+
+% ISO three-form keys plus the catch/throw substrate. Registering
+% these makes `builtin_call <key>` and `execute <key>` route to the
+% runtime's ISO branches; without an entry the emitter falls through
+% to Execute{Pred: ...}, which looks the key up as an indexed fact
+% table and silently fails. See the ISO ERROR HANDLING section.
+wam_go_direct_builtin(catch/3, 3, 'catch/3').
+wam_go_direct_builtin('catch/3', 3, 'catch/3').
+wam_go_direct_builtin("catch/3", 3, 'catch/3').
+wam_go_direct_builtin(throw/1, 1, 'throw/1').
+wam_go_direct_builtin('throw/1', 1, 'throw/1').
+wam_go_direct_builtin("throw/1", 1, 'throw/1').
+wam_go_direct_builtin(is_iso/2, 2, 'is_iso/2').
+wam_go_direct_builtin('is_iso/2', 2, 'is_iso/2').
+wam_go_direct_builtin("is_iso/2", 2, 'is_iso/2').
+wam_go_direct_builtin(is_lax/2, 2, 'is_lax/2').
+wam_go_direct_builtin('is_lax/2', 2, 'is_lax/2').
+wam_go_direct_builtin("is_lax/2", 2, 'is_lax/2').
+wam_go_direct_builtin(succ_iso/2, 2, 'succ_iso/2').
+wam_go_direct_builtin('succ_iso/2', 2, 'succ_iso/2').
+wam_go_direct_builtin("succ_iso/2", 2, 'succ_iso/2').
+wam_go_direct_builtin(succ_lax/2, 2, 'succ_lax/2').
+wam_go_direct_builtin('succ_lax/2', 2, 'succ_lax/2').
+wam_go_direct_builtin("succ_lax/2", 2, 'succ_lax/2').
+wam_go_direct_builtin('<_iso'/2, 2, '<_iso/2').
+wam_go_direct_builtin('<_iso/2', 2, '<_iso/2').
+wam_go_direct_builtin("<_iso/2", 2, '<_iso/2').
+wam_go_direct_builtin('<_lax'/2, 2, '<_lax/2').
+wam_go_direct_builtin('<_lax/2', 2, '<_lax/2').
+wam_go_direct_builtin("<_lax/2", 2, '<_lax/2').
+wam_go_direct_builtin('>_iso'/2, 2, '>_iso/2').
+wam_go_direct_builtin('>_iso/2', 2, '>_iso/2').
+wam_go_direct_builtin(">_iso/2", 2, '>_iso/2').
+wam_go_direct_builtin('>_lax'/2, 2, '>_lax/2').
+wam_go_direct_builtin('>_lax/2', 2, '>_lax/2').
+wam_go_direct_builtin(">_lax/2", 2, '>_lax/2').
+wam_go_direct_builtin('=<_iso'/2, 2, '=<_iso/2').
+wam_go_direct_builtin('=<_iso/2', 2, '=<_iso/2').
+wam_go_direct_builtin("=<_iso/2", 2, '=<_iso/2').
+wam_go_direct_builtin('=<_lax'/2, 2, '=<_lax/2').
+wam_go_direct_builtin('=<_lax/2', 2, '=<_lax/2').
+wam_go_direct_builtin("=<_lax/2", 2, '=<_lax/2').
+wam_go_direct_builtin('>=_iso'/2, 2, '>=_iso/2').
+wam_go_direct_builtin('>=_iso/2', 2, '>=_iso/2').
+wam_go_direct_builtin(">=_iso/2", 2, '>=_iso/2').
+wam_go_direct_builtin('>=_lax'/2, 2, '>=_lax/2').
+wam_go_direct_builtin('>=_lax/2', 2, '>=_lax/2').
+wam_go_direct_builtin(">=_lax/2", 2, '>=_lax/2').
+wam_go_direct_builtin('=:=_iso'/2, 2, '=:=_iso/2').
+wam_go_direct_builtin('=:=_iso/2', 2, '=:=_iso/2').
+wam_go_direct_builtin("=:=_iso/2", 2, '=:=_iso/2').
+wam_go_direct_builtin('=:=_lax'/2, 2, '=:=_lax/2').
+wam_go_direct_builtin('=:=_lax/2', 2, '=:=_lax/2').
+wam_go_direct_builtin("=:=_lax/2", 2, '=:=_lax/2').
+wam_go_direct_builtin('=\\=_iso'/2, 2, '=\\=_iso/2').
+wam_go_direct_builtin('=\\=_iso/2', 2, '=\\=_iso/2').
+wam_go_direct_builtin("=\\=_iso/2", 2, '=\\=_iso/2').
+wam_go_direct_builtin('=\\=_lax'/2, 2, '=\\=_lax/2').
+wam_go_direct_builtin('=\\=_lax/2', 2, '=\\=_lax/2').
+wam_go_direct_builtin("=\\=_lax/2", 2, '=\\=_lax/2').
 
 wam_instruction_to_go_literal(get_constant(C, Ai), GoLiteral) :-
     go_value_literal(C, GoVal),
@@ -1083,6 +1194,154 @@ go_fact_triples_literal(Triples, Literal) :-
 
 go_fact_triple_literal(Left-Right-Weight, Literal) :-
     format(atom(Literal), '{Left: "~w", Right: "~w", Weight: ~15g}', [Left, Right, Weight]).
+
+% ============================================================================
+% ISO ERROR HANDLING (three-form dispatch)
+% ============================================================================
+%
+% Go joins C++/Elixir/Python/F#/Haskell as an ISO three-form adopter.
+% The shared config loading, mode resolution, PI matching and audit
+% walkers live in src/unifyweaver/core/iso_errors.pl; what stays here is
+% the Go key tables, the WAM-text rewrite, and the audit report.
+%
+% Contract: docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md.
+%
+% Three forms per builtin:
+%   is/2      default key; rewritten per predicate to _iso or _lax
+%   is_iso/2  throws error(instantiation_error, _),
+%             error(type_error(evaluable, F/N), _), or
+%             error(evaluation_error(zero_divisor), _)
+%   is_lax/2  the historical silent-failure behaviour
+%
+% Explicit _iso/_lax keys written in source survive a mode flip: the
+% rewrite only ever touches the *default* key.
+%
+% Only keys with a matching branch in the emitted Go runtime appear
+% here -- an entry without one would silently route calls to a dead key.
+
+iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2").
+iso_errors:iso_errors_default_to_iso(">/2", ">_iso/2").
+iso_errors:iso_errors_default_to_iso("</2", "<_iso/2").
+iso_errors:iso_errors_default_to_iso(">=/2", ">=_iso/2").
+iso_errors:iso_errors_default_to_iso("=</2", "=<_iso/2").
+iso_errors:iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
+iso_errors:iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
+iso_errors:iso_errors_default_to_iso("succ/2", "succ_iso/2").
+
+iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2").
+iso_errors:iso_errors_default_to_lax(">/2", ">_lax/2").
+iso_errors:iso_errors_default_to_lax("</2", "<_lax/2").
+iso_errors:iso_errors_default_to_lax(">=/2", ">=_lax/2").
+iso_errors:iso_errors_default_to_lax("=</2", "=<_lax/2").
+iso_errors:iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
+iso_errors:iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
+iso_errors:iso_errors_default_to_lax("succ/2", "succ_lax/2").
+
+%% iso_errors_rewrite_text(+Config, +PI, +WamText, -RewrittenText)
+%  Rewrite the default builtin keys in one predicate's WAM text to the
+%  ISO or lax key selected for that predicate.
+%
+%  Same strategy as the Python target: tokenize each line with the
+%  shared quote-aware tokenizer, recognise it to a structured item,
+%  apply the shared item-level rewrite, then splice the new key back
+%  into the original line so whitespace is preserved byte-for-byte.
+iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
+    iso_errors_mode_for(Config, PI, Mode),
+    (   Mode == false,
+        \+ go_iso_has_lax_entries
+    ->  RewrittenText = WamText
+    ;   atom_string(WamText, S),
+        split_string(S, "\n", "", Lines),
+        maplist(go_iso_rewrite_line(Mode), Lines, RewrittenLines),
+        atomic_list_concat(RewrittenLines, '\n', RewrittenText)
+    ).
+
+go_iso_has_lax_entries :- iso_errors:iso_errors_default_to_lax(_, _), !.
+
+go_iso_rewrite_line(Mode, Line, OutLine) :-
+    (   wam_text_parser:wam_tokenize_line(Line, Tokens),
+        wam_recognise_instruction(Tokens, Item0),
+        iso_errors_rewrite_item(Mode, Item0, Item1),
+        Item0 \== Item1,
+        arg(1, Item0, OldKey),
+        arg(1, Item1, NewKey),
+        go_iso_splice_line(Line, OldKey, NewKey, OutLine)
+    ->  true
+    ;   OutLine = Line
+    ).
+
+go_iso_splice_line(Line, Key, NewKey, OutLine) :-
+    sub_string(Line, Before, KLen, _After, Key),
+    string_length(Key, KLen),
+    sub_string(Line, 0, Before, _, Pre),
+    PostStart is Before + KLen,
+    sub_string(Line, PostStart, _, 0, Post),
+    string_concat(Pre, NewKey, T1),
+    string_concat(T1, Post, OutLine), !.
+
+go_iso_clean_key_token(Token0, Token) :-
+    (   string_concat(Token, ",", Token0)
+    ->  true
+    ;   Token = Token0
+    ).
+
+%% wam_go_iso_audit(+Predicates, +Options, -Audit)
+%  Read-only pass reporting, per predicate, which mode applies and what
+%  each builtin_call site resolves to. Mirrors wam_python_iso_audit/3.
+wam_go_iso_audit(Predicates, Options, Audit) :-
+    iso_errors_resolve_options(Options, Config),
+    findall(audit(PI, Mode, Sites), (
+        member(P, Predicates),
+        iso_errors_audit_normalise_pi(P, PI),
+        iso_errors_mode_for(Config, PI, Mode),
+        go_iso_audit_predicate(PI, Mode, Sites)
+    ), Audit).
+
+go_iso_audit_predicate(PI, Mode, Sites) :-
+    (   catch(
+            ( go_iso_audit_wam_for_pi(PI, WamText),
+              go_iso_audit_parse_lines(WamText, Items)
+            ),
+            _, fail)
+    ->  iso_errors_audit_walk(Items, 0, Mode, [], SitesRev),
+        reverse(SitesRev, Sites)
+    ;   Sites = []
+    ).
+
+go_iso_audit_wam_for_pi(Module:Pred/Arity, WamText) :- !,
+    wam_target:compile_predicate_to_wam(Module:Pred/Arity, [], WamText).
+go_iso_audit_wam_for_pi(Pred/Arity, WamText) :-
+    wam_target:compile_predicate_to_wam(Pred/Arity, [], WamText).
+
+go_iso_audit_parse_lines(WamText, Items) :-
+    atom_string(WamText, S),
+    split_string(S, "\n", "", Lines),
+    maplist(go_iso_audit_parse_one, Lines, MaybeItems),
+    exclude(==(skip), MaybeItems, Items).
+
+go_iso_audit_parse_one(Line, Item) :-
+    split_string(Line, " \t", " \t", Parts0),
+    exclude(==(""), Parts0, Parts),
+    go_iso_audit_classify_line(Parts, Item).
+
+go_iso_audit_classify_line([], skip).
+go_iso_audit_classify_line([Tok], label) :-
+    string_concat(_, ":", Tok), !.
+go_iso_audit_classify_line(["builtin_call", Key0 | _], builtin_call(Key, 0)) :- !,
+    go_iso_clean_key_token(Key0, Key).
+go_iso_audit_classify_line(_, other).
+
+%% wam_go_iso_audit_report(+Audit)
+wam_go_iso_audit_report([]).
+wam_go_iso_audit_report([audit(PI, Mode, Sites)|Rest]) :-
+    format('~w [~w]~n', [PI, Mode]),
+    (   Sites == []
+    ->  format('  (no builtin_call sites)~n', [])
+    ;   forall(member(site(PC, Orig, Res, Src, Flip), Sites),
+               format('  pc=~w  ~w -> ~w  (~w)  flip-changes=~w~n',
+                      [PC, Orig, Res, Src, Flip]))
+    ),
+    wam_go_iso_audit_report(Rest).
 
 capitalize_atom(Atom, Cap) :-
     atom_codes(Atom, [First|Rest]),
@@ -2532,7 +2791,20 @@ wam_go_case('SwitchOnConstantA2Pc', '        if val := vm.Regs[1]; val != nil &&
 compile_wam_helpers_to_go(_Options, GoCode) :-
     format(atom(GoCode),
 '// Run executes the WAM instruction loop until halt or failure.
-func (vm *WamState) Run() bool {
+func (vm *WamState) Run() (result bool) {
+    // An ISO error that escapes every catch/3 surfaces as failure with
+    // the ball recorded in vm.UncaughtBall, rather than as a process
+    // crash. Non-prologBall panics are genuine bugs and re-raise.
+    defer func() {
+        if r := recover(); r != nil {
+            thrown, ok := r.(prologBall)
+            if !ok {
+                panic(r)
+            }
+            vm.UncaughtBall = thrown.Ball
+            result = false
+        }
+    }()
     for {
         if vm.Halted {
             return true

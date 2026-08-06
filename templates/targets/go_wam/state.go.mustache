@@ -251,6 +251,11 @@ type WamState struct {
 	// and get_code/1. File-backed stream handles carry their own readers.
 	Input *bufio.Reader
 	NextStreamID int
+	// UncaughtBall holds the term of an ISO error that escaped every
+	// catch/3. Run recovers it and reports failure, so an uncaught
+	// error does not take the process down; callers that care can
+	// inspect this after Run returns false.
+	UncaughtBall Value
 }
 
 // allocVarId returns a fresh, globally-unique Idx for a new logical
@@ -1292,6 +1297,16 @@ func inputCodeValue(r rune, eof bool) Value {
 // every argument — write(foo(a,b)) printed "foo/2". Reuse the canonical
 // walker's structure here so writes carry their arguments; the only
 // difference is atom quoting.
+// WriteTerm is the exported form of writeTermString, for callers that
+// need to render a term the runtime handed back — most often
+// vm.UncaughtBall after Run reports failure.
+func (vm *WamState) WriteTerm(value Value) string {
+	if value == nil {
+		return "-"
+	}
+	return vm.writeTermString(value)
+}
+
 func (vm *WamState) writeTermString(value Value) string {
 	if value == nil {
 		return "_"
@@ -1868,6 +1883,346 @@ func (vm *WamState) evalArithmetic(v Value) (float64, bool) {
 	return 0, false
 }
 
+// ============================================================================
+// ISO error handling
+// ============================================================================
+//
+// Three-form dispatch, matching the F#/Haskell/C++/Elixir contract in
+// docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md:
+//
+//   is/2      the *default* key. The Prolog side rewrites it to the ISO
+//             or lax key per predicate before codegen, so what reaches
+//             the runtime is already resolved.
+//   is_iso/2  throws error(instantiation_error, _),
+//             error(type_error(evaluable, F/N), _) or
+//             error(evaluation_error(zero_divisor), _).
+//   is_lax/2  the historical silent-failure behaviour: fails instead of
+//             throwing. Delegates to the plain key.
+//
+// A throw travels as a Go panic carrying prologBall; catch/3 recovers
+// it, and Run recovers any ball that escapes so an uncaught error
+// surfaces as failure plus vm.UncaughtBall rather than a process crash.
+
+// prologBall carries a thrown Prolog term through panic/recover.
+type prologBall struct {
+	Ball Value
+}
+
+func makeErrorTerm(formal Value, context Value) Value {
+	return &Structure{Functor: "error/2", Arity: 2, Args: []Value{formal, context}}
+}
+
+func makeInstantiationError(context string) Value {
+	return makeErrorTerm(internAtom("instantiation_error"), internAtom(context))
+}
+
+func makeTypeError(expected string, culprit Value, context string) Value {
+	formal := &Structure{
+		Functor: "type_error/2",
+		Arity:   2,
+		Args:    []Value{internAtom(expected), culprit},
+	}
+	return makeErrorTerm(formal, internAtom(context))
+}
+
+func makeEvaluationError(what string, context string) Value {
+	formal := &Structure{
+		Functor: "evaluation_error/1",
+		Arity:   1,
+		Args:    []Value{internAtom(what)},
+	}
+	return makeErrorTerm(formal, internAtom(context))
+}
+
+// throwTerm raises a Prolog term as a ball.
+func (vm *WamState) throwTerm(ball Value) {
+	panic(prologBall{Ball: vm.resolveTerm(ball)})
+}
+
+// resolveTerm walks a term dereferencing every nested slot, so a ball
+// keeps its bindings after the goal's trail is unwound.
+func (vm *WamState) resolveTerm(value Value) Value {
+	if value == nil {
+		return nil
+	}
+	value = vm.deref(value)
+	switch t := value.(type) {
+	case *Structure:
+		args := make([]Value, len(t.Args))
+		for i, a := range t.Args {
+			args[i] = vm.resolveTerm(a)
+		}
+		return &Structure{Functor: t.Functor, Arity: t.Arity, Args: args}
+	case *Compound:
+		args := make([]Value, len(t.Args))
+		for i, a := range t.Args {
+			args[i] = vm.resolveTerm(a)
+		}
+		return &Compound{Functor: t.Functor, Args: args}
+	case *List:
+		items := make([]Value, len(t.Elements))
+		for i, e := range t.Elements {
+			items[i] = vm.resolveTerm(e)
+		}
+		return &List{Elements: items}
+	default:
+		return value
+	}
+}
+
+// hasUnboundDeep reports whether a term contains any unbound variable,
+// which is what distinguishes instantiation_error from type_error.
+func (vm *WamState) hasUnboundDeep(value Value) bool {
+	if value == nil {
+		return true
+	}
+	value = vm.deref(value)
+	if isUnbound(value) {
+		return true
+	}
+	switch t := value.(type) {
+	case *Structure:
+		for _, a := range t.Args {
+			if vm.hasUnboundDeep(a) {
+				return true
+			}
+		}
+	case *Compound:
+		for _, a := range t.Args {
+			if vm.hasUnboundDeep(a) {
+				return true
+			}
+		}
+	case *List:
+		for _, e := range t.Elements {
+			if vm.hasUnboundDeep(e) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// arithCulprit names the offending evaluable for type_error(evaluable, F/N).
+func (vm *WamState) arithCulprit(expr Value) Value {
+	expr = vm.deref(expr)
+	name, args := decompose(expr)
+	if name == "" {
+		return expr
+	}
+	return &Structure{
+		Functor: "//2",
+		Arity:   2,
+		Args:    []Value{internAtom(parseFunctorName(name)), &Integer{Val: int64(len(args))}},
+	}
+}
+
+// isoDivisionByZero reports whether expr contains an integer division or
+// modulo by zero. Float division by zero is *not* an error: it yields an
+// IEEE-754 infinity or NaN, which is what the lax form returns.
+func (vm *WamState) isoDivisionByZero(expr Value) bool {
+	expr = vm.deref(expr)
+	name, args := decompose(expr)
+	if name == "" {
+		return false
+	}
+	base := parseFunctorName(name)
+	if len(args) == 2 && (base == "//" || base == "mod" || base == "rem" || base == "/") {
+		_, leftIsInt := vm.deref(args[0]).(*Integer)
+		right := vm.deref(args[1])
+		if rInt, ok := right.(*Integer); ok && rInt.Val == 0 {
+			if base != "/" || leftIsInt {
+				return true
+			}
+		}
+	}
+	for _, a := range args {
+		if vm.isoDivisionByZero(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// evalArithIso evaluates an arithmetic expression, throwing the ISO
+// error the expression warrants instead of failing silently.
+func (vm *WamState) evalArithIso(expr Value, context string) float64 {
+	if vm.hasUnboundDeep(expr) {
+		vm.throwTerm(makeInstantiationError(context))
+	}
+	if vm.isoDivisionByZero(expr) {
+		vm.throwTerm(makeEvaluationError("zero_divisor", context))
+	}
+	val, ok := vm.evalArithmetic(expr)
+	if !ok {
+		vm.throwTerm(makeTypeError("evaluable", vm.arithCulprit(expr), context))
+	}
+	return val
+}
+
+// arithResultValue mirrors is/2's int-vs-float result heuristic.
+func arithResultValue(val float64) Value {
+	if !math.IsInf(val, 0) && !math.IsNaN(val) && val == math.Trunc(val) {
+		return &Integer{Val: int64(val)}
+	}
+	return &Float{Val: val}
+}
+
+// isoCompare applies one of the six arithmetic comparisons.
+func isoCompare(op string, v1 float64, v2 float64) bool {
+	switch op {
+	case "<":
+		return v1 < v2
+	case ">":
+		return v1 > v2
+	case "=<":
+		return v1 <= v2
+	case ">=":
+		return v1 >= v2
+	case "=:=":
+		return v1 == v2
+	case "=\\=":
+		return v1 != v2
+	}
+	return false
+}
+
+// isoComparisonOp maps an _iso/_lax comparison key back to its operator,
+// e.g. "<_iso/2" -> "<". Returns "" when op is not a comparison key.
+func isoComparisonOp(op string, suffix string) string {
+	if !strings.HasSuffix(op, suffix) {
+		return ""
+	}
+	base := strings.TrimSuffix(op, suffix)
+	switch base {
+	case "<", ">", "=<", ">=", "=:=", "=\\=":
+		return base
+	}
+	return ""
+}
+
+// callGoalTerm meta-calls a goal held as a term. Used by catch/3; the
+// same decompose-then-dispatch shape \+/1 already uses.
+//
+// Bindings made by a builtin goal propagate directly (it runs in this
+// VM). A user-predicate goal runs in a sub-VM, and its bindings are
+// copied back on success — catch/3 is therefore deterministic: it
+// commits to the goal's first solution and does not leave a
+// choicepoint for backtracking into it.
+func (vm *WamState) callGoalTerm(goal Value) bool {
+	goal = vm.deref(goal)
+	name, args := decompose(goal)
+	if name == "" {
+		return false
+	}
+	opName := fmt.Sprintf("%s/%d", parseFunctorName(name), len(args))
+
+	savedRegs := vm.snapshotAllRegs()
+	for idx := range args {
+		if idx < len(vm.Regs) {
+			vm.Regs[idx] = args[idx]
+		}
+	}
+	if pc, ok := vm.Ctx.Labels[opName]; ok {
+		vm.restoreSavedRegs(savedRegs)
+		return vm.runGoalPropagating(pc, args)
+	}
+	res := vm.executeBuiltin(opName, len(args))
+	if !res {
+		vm.restoreSavedRegs(savedRegs)
+	}
+	return res
+}
+
+// runGoalPropagating runs a user predicate in a sub-VM and copies the
+// resulting bindings back on success.
+func (vm *WamState) runGoalPropagating(targetPC int, args []Value) bool {
+	sub := vm.Clone()
+	for idx := range sub.Regs {
+		sub.Regs[idx] = nil
+	}
+	for idx, arg := range args {
+		if idx >= len(sub.Regs) {
+			break
+		}
+		sub.Regs[idx] = arg
+	}
+	sub.PC = targetPC
+	sub.CP = 0
+	sub.E = -1
+	sub.Stack = nil
+	sub.Trail = nil
+	sub.TrailLen = 0
+	sub.ChoicePoints = nil
+	sub.Halted = false
+	sub.CurrentStruct = nil
+	sub.CurrentList = nil
+	if !sub.Run() {
+		// Run recovers balls at its own top level, so a throw from
+		// inside the sub-VM lands in sub.UncaughtBall rather than
+		// unwinding into our caller. Re-raise it here so an enclosing
+		// catch/3 still sees it.
+		if sub.UncaughtBall != nil {
+			panic(prologBall{Ball: sub.UncaughtBall})
+		}
+		return false
+	}
+	// Adopt the sub-VM's bindings. Var IDs are shared (Clone carries
+	// NextVarId forward), so this is what makes the goal's bindings
+	// visible to the caller.
+	vm.Bindings = sub.Bindings
+	vm.NextVarId = sub.NextVarId
+	return true
+}
+
+// builtinCatch implements catch(Goal, Catcher, Recovery).
+//
+// A ball thrown while Goal runs is recovered here. If it unifies with
+// Catcher, Recovery runs in its place and catch/3 reports Recovery's
+// result; otherwise the ball is re-thrown for an outer catch/3 (or for
+// Run's top-level recovery). Bindings made before the throw are undone
+// before Recovery runs, matching ISO.
+func (vm *WamState) builtinCatch(goal Value, catcher Value, recovery Value) (result bool) {
+	mark := vm.TrailLen
+	cpLen := len(vm.ChoicePoints)
+	savedRegs := vm.snapshotAllRegs()
+
+	caught := false
+	var ball Value
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				thrown, ok := r.(prologBall)
+				if !ok {
+					panic(r)
+				}
+				caught = true
+				ball = thrown.Ball
+			}
+		}()
+		result = vm.callGoalTerm(goal)
+	}()
+
+	if !caught {
+		return result
+	}
+
+	// Undo the failed goal's bindings before trying the catcher.
+	vm.unwindTrailTo(mark)
+	if cpLen <= len(vm.ChoicePoints) {
+		vm.ChoicePoints = vm.ChoicePoints[:cpLen]
+	}
+	vm.restoreSavedRegs(savedRegs)
+
+	if !vm.Unify(catcher, ball) {
+		// Not ours: let an outer catch/3 (or Run) see it.
+		vm.unwindTrailTo(mark)
+		vm.restoreSavedRegs(savedRegs)
+		panic(prologBall{Ball: ball})
+	}
+	return vm.callGoalTerm(recovery)
+}
+
 func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	arg1 := vm.getReg(0) // A1
 	var arg2, arg3, arg4, arg5 Value
@@ -1875,6 +2230,55 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	if arity >= 3 { arg3 = vm.getReg(2) } // A3
 	if arity >= 4 { arg4 = vm.getReg(3) } // A4
 	if arity >= 5 { arg5 = vm.getReg(4) } // A5
+
+	// ISO three-form keys. The _lax forms delegate to the plain key
+	// (silent failure); the _iso forms throw. Handled ahead of the main
+	// switch so the comparison family can share one branch.
+	switch op {
+	case "throw/1":
+		if vm.hasUnboundDeep(arg1) {
+			vm.throwTerm(makeInstantiationError("throw/1"))
+		}
+		vm.throwTerm(arg1)
+	case "catch/3":
+		return vm.builtinCatch(arg1, arg2, arg3)
+	case "is_lax/2":
+		return vm.executeBuiltin("is/2", 2)
+	case "succ_lax/2":
+		return vm.executeBuiltin("succ/2", 2)
+	case "is_iso/2":
+		val := vm.evalArithIso(arg2, "is/2")
+		return vm.Unify(arg1, arithResultValue(val))
+	case "succ_iso/2":
+		a := vm.deref(arg1)
+		b := vm.deref(arg2)
+		if isUnbound(a) && isUnbound(b) {
+			vm.throwTerm(makeInstantiationError("succ/2"))
+		}
+		if !isUnbound(a) {
+			if n, ok := a.(*Integer); !ok {
+				vm.throwTerm(makeTypeError("integer", a, "succ/2"))
+			} else if n.Val < 0 {
+				vm.throwTerm(makeTypeError("not_less_than_zero", a, "succ/2"))
+			}
+		}
+		if !isUnbound(b) {
+			if n, ok := b.(*Integer); !ok {
+				vm.throwTerm(makeTypeError("integer", b, "succ/2"))
+			} else if n.Val < 0 {
+				vm.throwTerm(makeTypeError("not_less_than_zero", b, "succ/2"))
+			}
+		}
+		return vm.executeBuiltin("succ/2", 2)
+	}
+	if base := isoComparisonOp(op, "_lax/2"); base != "" {
+		return vm.executeBuiltin(base+"/2", 2)
+	}
+	if base := isoComparisonOp(op, "_iso/2"); base != "" {
+		v1 := vm.evalArithIso(arg1, base+"/2")
+		v2 := vm.evalArithIso(arg2, base+"/2")
+		return isoCompare(base, v1, v2)
+	}
 
 	switch op {
 	case "display/1":
