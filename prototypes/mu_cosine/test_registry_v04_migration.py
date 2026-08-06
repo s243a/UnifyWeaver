@@ -142,6 +142,9 @@ def test_obligation_7_freeze_computes_targets_without_the_registry():
 
 
 def test_obligation_7_freeze_expression_is_grammatical_under_v04():
+    # sm_fs_freeze imports the embedding stack; skip where torch is absent
+    # (CI runs the source-scan obligation-7 test above unconditionally).
+    pytest.importorskip("torch")
     import sm_fs_freeze
 
     node = pc.parse(sm_fs_freeze.EXPR)
