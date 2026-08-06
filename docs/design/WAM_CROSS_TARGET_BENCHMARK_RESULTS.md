@@ -23,7 +23,7 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | **F# LMDB cached (two-level L1/L2)** | **2** | -- | **1** | **Yes** | Fact-access only (no WAM overhead); see below |
 | Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
 | R WAM (functions, kernels_on) | 270 | 776 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + NATIVE-HOPS-0 (optional .Call CA hop kernel, pure-R fallback); 3-rep median query |
-| Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
+| Go WAM (accumulated, kernels_on) | 1061 | 1061 | 1 | Yes | Hosted Ubuntu 24.04 CI, go 1.24.7; 5-rep median; facts compiled in (load_ms=0) |
 
 **Key takeaway:** Atom interning (replacing `HashMap<String, Vec<String>>` with
 `HashMap<u32, Vec<u32>>`) delivers a **7.9x speedup** on the Rust FFI path at
@@ -284,12 +284,38 @@ cd /tmp/wam-bench/fsharp-300
 /tmp/dotnet/dotnet run -c Release -- /path/to/UnifyWeaver/data/benchmark/300 3
 ```
 
-### Go WAM (In Progress)
+### Go WAM
 
-The Go WAM target compiles successfully (after fixing `SharedWamCode`/
-`SharedWamLabels` export aliases), but the benchmark driver does not yet wire
-up fact data into the runtime. Status: **build OK, benchmark driver in
-progress**.
+Measured with `examples/benchmark/generate_wam_go_effective_distance_benchmark.pl`
+(accumulated variant, `kernels_on`) at scale 300 on hosted Ubuntu 24.04 CI,
+go 1.24.7. The generator emits a self-contained `package main` with the
+benchmark facts compiled in, so `load_ms` is 0 and `total_ms` is query plus
+aggregation only.
+
+| Scale | query_ms | total_ms | reps | seeds | tuples | articles |
+|-------|---------:|---------:|-----:|------:|-------:|---------:|
+| 300 | 1061 | 1061 | 5 (median) | 386 | 213 | 271 |
+
+Output verified against `data/benchmark/300/reference_output.tsv`: 271 rows,
+exact multiset match on (article, root_category, effective_distance) at 5
+decimal places.
+
+The driver takes the same `[factsDir] [reps]` arguments as the Rust driver so
+`run_wam_cross_target_benchmark.sh` invokes every target uniformly; `factsDir`
+is accepted and ignored because the facts are compiled in.
+
+Go sits at the interpreter-bound end of the matrix, close to SWI-Prolog
+(336/409) rather than to the FFI-accelerated rows. The WAM path here runs
+`category_ancestor/4` through the shared bytecode loop; the foreign-kernel
+dispatch that gives Rust and F# their order-of-magnitude wins is registered
+for Go (`go_foreign_lowering`) but is not on this benchmark's hot path. That
+is the obvious next lever for the Go row, not a further tweak to the driver.
+
+**Historical note:** this row previously read `--` with "benchmark driver in
+progress". The driver did in fact wire facts into the runtime; what was
+missing was rep support and a harness block that invoked *this* generator
+(the harness called `generate_wam_go_optimized_benchmark.pl` and only built
+it). Both are fixed.
 
 ### Python WAM
 
