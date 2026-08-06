@@ -61,7 +61,9 @@ test(surface_foreach_string_guard_aggregates) :-
 test(surface_foreach_prints_element_strings) :-
     run_rls_smoke("BEGIN { BINFMT = \"i64 rep4(lps8 i64)\" } { foreach { print $1, $2 } } END { print done }\n",
         [rec(1, [e("hot", 5), e("", 7), e("full8chr", 9)])],
-        "hot 5\n 7\nfull8chr 9\n0\n").
+        % `done` is never assigned -- an "END ran" marker only -- so it prints EMPTY;
+        % the trailing newline still proves END ran.
+        "hot 5\n 7\nfull8chr 9\n\n").
 
 test(surface_toplevel_s_field_equality) :-
     build_rls_probe("BEGIN { BINFMT = \"s4 lps8\" } $1 == \"abcd\" { c++ } END { print c }\n",

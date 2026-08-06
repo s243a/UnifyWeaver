@@ -83,10 +83,12 @@ test(surface_varlen_error_paths) :-
     % EOF mid-record (numeric field then nothing)
     write_raw(InputPath, [i64(20)]),
     run_capture_raw(BinPath, _, exit(11)),
-    % empty input is a clean EOF: END runs
+    % empty input is a clean EOF: END runs. The counter was never assigned, so it
+    % prints EMPTY (awk's uninitialised value in string context); the newline still
+    % proves END ran.
     write_raw(InputPath, []),
     run_capture_raw(BinPath, Out, exit(0)),
-    assertion(Out == "0\n"),
+    assertion(Out == "\n"),
     !.
 
 % --- helpers ---------------------------------------------------------------

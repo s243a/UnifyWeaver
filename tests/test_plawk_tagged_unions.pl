@@ -135,9 +135,13 @@ test(surface_union_error_paths) :-
     % truncated arm 0 (tag + i64, missing the f64)
     write_bytes(InputPath, [i64(0), i64(5)]),
     run_status(BinPath, exit(11)),
-    % clean EOF at a record boundary runs END
+    % clean EOF at a record boundary runs END -- and `c` was never assigned, so it
+    % prints EMPTY, awk's uninitialised value in string context. gawk cannot run a
+    % union BINFMT program, but `print <unset scalar>` is the construct it validates
+    % in text mode (`{ n++ } END { print n }` on empty input prints a blank line).
+    % tests/test_plawk_unset_scalar.pl owns it.
     write_bytes(InputPath, []),
-    run_expect(BinPath, "0\n"),
+    run_expect(BinPath, "\n"),
     !.
 
 % --- helpers ---------------------------------------------------------------
