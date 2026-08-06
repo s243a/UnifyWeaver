@@ -62,7 +62,9 @@ from process_expression_contract import (
 #: methodology kinds gained their own value fences.  The decoder additionally
 #: accepts positional literals inside `<ARG:i>` fences and node-valued kwargs
 #: inside `<KW:…>` fences.
-VOCAB_VERSION = "tok-v2"
+# tok-v3 (registry v0.5): enwiki/cowalk name terms plus the walk/weight
+# value fences join the vocabulary; ids reassign, so the version moves.
+VOCAB_VERSION = "tok-v3"
 
 #: Bounds the indexed structural tokens.  Deliberately wider than the measured
 #: envelope (arity 3, list length 2, one modifier, no pins) so the vocabulary
@@ -104,6 +106,8 @@ def _vocabulary_terms() -> list[str]:
         "<STRING>", "</STRING>",
         "<ESTIMAND>", "</ESTIMAND>",
         "<IMPL>", "</IMPL>",
+        "<WALK>", "</WALK>",
+        "<WEIGHT>", "</WEIGHT>",
         "</ARG>", "</KW>", "</ITEM>", "</MOD>", "</PIN>",
     ]
     terms += ["<KIND:atom>", "<KIND:apply>"]
@@ -247,7 +251,7 @@ def _controlled(fn, description: str):
 
 def _value_from(kind: str, payload: bytes) -> Any:
     text = _controlled(lambda: payload.decode("utf-8"), "utf-8 value payload")
-    if kind in ("string", "estimand", "impl"):
+    if kind in ("string", "estimand", "impl", "walk", "weight"):
         # Enumeration membership for estimand/impl is enforced by validate()
         # at the end of decoding — fail-closed there, not silently here.
         return text
@@ -281,7 +285,9 @@ def _decode_value(cursor: _Cursor, kind: str) -> Any:
     mapping = {"<INT>": ("int", "</INT>"), "<NUMBER>": ("number", "</NUMBER>"),
                "<STRING>": ("string", "</STRING>"),
                "<ESTIMAND>": ("estimand", "</ESTIMAND>"),
-               "<IMPL>": ("impl", "</IMPL>")}
+               "<IMPL>": ("impl", "</IMPL>"),
+               "<WALK>": ("walk", "</WALK>"),
+               "<WEIGHT>": ("weight", "</WEIGHT>")}
     if opener not in mapping:
         raise TokenizerError(f"expected a value token, got {opener}")
     tagged_kind, closing = mapping[opener]
@@ -299,6 +305,8 @@ _VALUE_OPENERS = {
     "<STRING>": "string",
     "<ESTIMAND>": "estimand",
     "<IMPL>": "impl",
+    "<WALK>": "walk",
+    "<WEIGHT>": "weight",
 }
 
 

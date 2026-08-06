@@ -34,9 +34,9 @@ import process_expression_enumerator as en
 
 
 def test_measured_scenario_counts_are_pinned():
-    assert en.count("naive-full")[0] == 3_303_413_185_358
-    assert en.count("methodology-root-only")[0] == 54_871_574
-    assert en.count("structural-only")[0] == 10_756_382
+    assert en.count("naive-full")[0] == 3_475_387_022_969
+    assert en.count("methodology-root-only")[0] == 61_908_552
+    assert en.count("structural-only")[0] == 11_409_263
 
 
 def test_measured_template_counts_are_pinned():
@@ -44,9 +44,9 @@ def test_measured_template_counts_are_pinned():
     structural-template convention): absent-vs-explicit-default is not a
     template distinction. The re-review computed 96,196 independently under
     that identity; this DP reproduces it exactly."""
-    assert en.count("naive-full", template_mode=True)[0] == 3_795_703
-    assert en.count("methodology-root-only", template_mode=True)[0] == 96_196
-    assert en.count("structural-only", template_mode=True)[0] == 28_225
+    assert en.count("naive-full", template_mode=True)[0] == 3_826_859
+    assert en.count("methodology-root-only", template_mode=True)[0] == 97_526
+    assert en.count("structural-only", template_mode=True)[0] == 28_373
 
 
 def test_the_binding_constraint_moved_to_kwarg_enumeration():
@@ -55,7 +55,9 @@ def test_the_binding_constraint_moved_to_kwarg_enumeration():
     naive = en.count("naive-full")[0]
     root_only = en.count("methodology-root-only")[0]
     structural = en.count("structural-only")[0]
-    assert naive > 60_000 * root_only
+    # ~56,000x under v0.5 (cowalk widens root-only faster than naive-full);
+    # was ~60,000x under v0.4. The claim is the ORDER of the explosion.
+    assert naive > 50_000 * root_only
     assert structural > 35 * 285_478  # the v0.3 corpus, for scale
 
 
@@ -65,21 +67,21 @@ def test_component_vocabulary_is_pinned():
     through the type system — not complete-tree skeletons."""
     assert en.component_vocabulary_counts() == {
         "leaf_shapes": 9,
-        "operator_shapes_interior": 21,
-        "operator_shapes_root_only_extension": 46,
-        "node_composition_edges": 31,
+        "operator_shapes_interior": 23,
+        "operator_shapes_root_only_extension": 48,
+        "node_composition_edges": 33,
         "literal_slots": 2,
         # Two totals, each named for what it sums: an external verification
         # pass found a single "total" row unauditable, since the five class
         # rows above summed to 109 while the total read 76.
-        "composable_component_shapes": 76,
-        "serialized_identities_total": 109,
+        "composable_component_shapes": 80,
+        "serialized_identities_total": 115,
     }
     counts = en.component_vocabulary_counts()
     assert (counts["leaf_shapes"] + counts["operator_shapes_interior"]
             + counts["operator_shapes_root_only_extension"]
             + counts["node_composition_edges"] + counts["literal_slots"]
-            == counts["serialized_identities_total"] == 109)
+            == counts["serialized_identities_total"] == 115)
 
 
 def test_component_vocabulary_is_content_not_counts():
@@ -149,7 +151,7 @@ def test_manifest_pins_terminals_typed_kwargs_and_synthetic_boundary():
     """Re-review: the manifest must carry exact terminals, typed kwargs, and
     its own exclusion boundary — not imply them."""
     vocabulary = en.component_vocabulary()
-    assert "leaf:substrate{fs,pearltrees,simplemind,simplewiki}" in vocabulary["leaves"]
+    assert "leaf:substrate{enwiki,fs,pearltrees,simplemind,simplewiki}" in vocabulary["leaves"]
     assert "leaf:judge.D{luna}" in vocabulary["leaves"]
     assert "leaf:score.e5-atom{e5}" in vocabulary["leaves"]
     assert "op:lineage/1{decay:number,mu:judge}" in (
@@ -728,6 +730,10 @@ def _brute_force(scenario: str) -> int:
             return sorted(pc.ESTIMANDS)
         if kind == "impl":
             return sorted(pc.IMPLS)
+        if kind == "walk":
+            return sorted(pc.WALKS)
+        if kind == "weight":
+            return sorted(pc.WEIGHTS)
         if kind == "string":
             return []
         return None
@@ -866,7 +872,7 @@ def test_dp_matches_full_caps_template_materialization():
         return [(s, 1) for s in out]
 
     def kw_shapes(kind):
-        if kind in ("number", "int", "estimand", "impl"):
+        if kind in ("number", "int", "estimand", "impl", "walk", "weight"):
             return [f"<{kind}>"]
         if kind in ("number_list", "int_list"):
             return [f"<{kind}:len{L}>" for L in range(1, en.MAX_LIST_LENGTH + 1)]

@@ -309,9 +309,9 @@ def test_specification_records_the_measured_numbers():
 
     text = SPEC.read_text(encoding="utf-8")
     for needle in (
-        "3,303,413,185,358",  # naive v0.4 enumeration — the explosion finding
-        "54,871,574",         # methodology-root-only expressions
-        "96,196",             # methodology-root-only structural templates
+        "3,475,387,022,969",  # naive v0.4 enumeration — the explosion finding
+        "61,908,552",         # methodology-root-only expressions
+        "97,526",             # methodology-root-only structural templates
         "285,478",            # v0.3 corpus, retained as history
         "10/10",              # registered-process coverage under v0.4
         "0.9725",             # e5 numeric insensitivity

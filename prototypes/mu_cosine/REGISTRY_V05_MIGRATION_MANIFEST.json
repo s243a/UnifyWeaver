@@ -1,0 +1,171 @@
+{
+ "added_names": [
+  "cowalk",
+  "enwiki"
+ ],
+ "added_value_kinds": [
+  "walk",
+  "weight"
+ ],
+ "additive": true,
+ "from_registry_version": "v0.4",
+ "manifest_sha256": "1f8514240f20bd64437dfaf5fe14e4abedb060a0b2e8a2a5fb00a537da7dc088",
+ "rows": [
+  {
+   "canonical_semantic": "blend(graph.discrim,llm.element,llm.subcat)",
+   "new_semantic_digest": "8595f17fe93ecdfa29b1f35adb4f477c4fdd538af681407a9b0b933b1c030078",
+   "old_semantic_digest": "8757e018bfc120c27143ba83ffe105fa9acbf7122380c871a05b77ddd1cda592",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "blend(luna.D,luna.S)",
+   "new_semantic_digest": "b28ff1c51a4a3a3c72b36e8bb5353d0a1ea88348f6f1794320afb67248f110f4",
+   "old_semantic_digest": "39727b3986660fb5195a8b8a6f6549460efa6d089ad05eac315b4dedd856dbc0",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "blend(luna.D,luna.S,graph)",
+   "new_semantic_digest": "8ce5d68d55ce8ac931c339dcf33f41d9466dddd17bebedbd6a9c72612d2ddef9",
+   "old_semantic_digest": "df6e4928e8900cfe4806a82b1e703933c11893699df555520f41bbc1fb40727e",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "distill(e5(routing(e5,sonnet.lineage,menus=[10,20],t=[0.02,0.03])))",
+   "new_semantic_digest": "9a9d9efe2db6bfa97591bbbf089660a9a6d9f98737ce649cb1cc18d8ae4db66a",
+   "old_semantic_digest": "73656b28d2cdb3ad38a51b660e59acdd0c003281c8a9e654dacd7a7debe0c1c9",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "e5",
+   "new_semantic_digest": "2997108a5dc60b503beb03a28b255a9297defebe3fdb10b91d8e05fddbe55f39",
+   "old_semantic_digest": "143d43c5a5caba30af2dd83f95c307e35f43b26d6128b0e191e7e9c6e21f8715",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "e5(margin(t=0.03))",
+   "new_semantic_digest": "616f0095e35f0ea0e14565a5655c57c880ee33cf3aee41772257fbb2d987ae6a",
+   "old_semantic_digest": "7de3fd97d97f54d308c581902e48cdc5d39b9c9703dbee88f248d0824a8ef3f5",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "e5(routing(e5,haiku,menus=[10],t=[0.02]))",
+   "new_semantic_digest": "c4d3669f9db458a7431aea895c9ebc10e95f18b6e902ff37d11411d1a064a402",
+   "old_semantic_digest": "64bd441369aae62088535de9785b46fba97da6453d9d2bd208cf28ea87c6fbe1",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "e5(routing(e5,sonnet.lineage,menus=[10,20],t=[0.02,0.03]))",
+   "new_semantic_digest": "cc0c0d8cc1f493a128786faa28b54f14d14153ef255c606220a1fe13c3183722",
+   "old_semantic_digest": "c191cd00c53c450d51f93955ba1aa463f56d97e40f36c50bd31ef69248b672a3",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "e5(routing(e5,sonnet.lineage,menus=[10],t=[0.02]))",
+   "new_semantic_digest": "1a4c7497d95c8f7ad2c1613bdd2a5d0a0b9212a9826c8ffbc277443148568023",
+   "old_semantic_digest": "f5b1a76ee50a41ef242e27f188d4aa89dc2859e7cede6bee257a3a317f31f38d",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "fs",
+   "new_semantic_digest": "ea42d8e3a7009f8413e53fbcd0f137455a6dc65ba80dc8a7d43e04143e43c0e9",
+   "old_semantic_digest": "294d60214f318c1fd5743f6eeb4ec1dccd6fda874e21923e93eab5db84b760fe",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "graph.discrim",
+   "new_semantic_digest": "3131e7c5d7881e936e972c25a9ef196c7dbd361f459479ada5f22682fa6becca",
+   "old_semantic_digest": "064f4eb5df0c0af9cb9651f78d672e51520afea475fbb0fefa19a11916c659c4",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "kalman(luna.D,luna.S)",
+   "new_semantic_digest": "86465fe8a5e72f5898caf91a45ba7013d6cca6bff3fd520b044e48fca91f056c",
+   "old_semantic_digest": "8af5e5dab5d7946da7acb15fdb5ab2850dfe3c895b9473ce9d8530fb44e0e6c5",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "lca_frac(simplemind,estimand=\"path\",impl=\"structural\")",
+   "new_semantic_digest": "f66e013b8fdb7eed63dbb2038755ba6885967fd1272beedae0f39a71c905ea45",
+   "old_semantic_digest": "fd1fd9b43b4e3bd12b876905c0c2f0dfd000d1c89c83f151f33315384c3215cc",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "lineage(fs,decay=-0.5)",
+   "new_semantic_digest": "b6071565254fa52738805e6240c328cd60f53afb75e81f1eb4669e600d13ceff",
+   "old_semantic_digest": "e757c1793d7b39eed6c759fa10665c54c3f4aed0b51ed335e3e8144630bc9a5b",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "lineage(pearltrees,decay=0.85)",
+   "new_semantic_digest": "a23e8ad9bceda1acb6c5fb82f76457f14a61647b7fe9e50f7db26a1f50cb64d1",
+   "old_semantic_digest": "29587e628ff191a32d3062c96cabff7f19079e46b5eaf7134e520502795f4d57",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "lineage(pearltrees,decay=0.85,estimand=\"ancestry\",mu=haiku)",
+   "new_semantic_digest": "5574e087ab598f799471fb003e62b1b1f4079141069ce9f658a5fcdb166bd8a5",
+   "old_semantic_digest": "fc680a83ab536ef51a1c035d784858a6a43fb369352e79bdc7a3531a9b3e0aef",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "lineage(simplewiki,decay=0.85,mu=sonnet.lineage)",
+   "new_semantic_digest": "ca492dc5ae04af2aed017d3ada66a049dba4f6925c844bae268d87ba2c740af1",
+   "old_semantic_digest": "c3289838e78e58229e4c499ee4c4c6580e81746cbbd5095dc6ac5e12234dc963",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "margin(t=0.03)",
+   "new_semantic_digest": "9d92b31e9835dea207f99f4df594d94ae6c29efc32839cdfe64d19843019622d",
+   "old_semantic_digest": "227c7fe79c108db9e90308b03b38f0007a1b1bfb0f5b36f3920ea4c330bf9344",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "margin(t=1)",
+   "new_semantic_digest": "ff98ac4046651dffd0e6628d06192063b01dc2e62e9d1bc2dc84efd84074808f",
+   "old_semantic_digest": "fd5f17ad442a80c56a94606f72bff3f69fcae36d7b365056ccc8de38521dd1e3",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "max(0.02,e5(margin(t=0.03)))",
+   "new_semantic_digest": "1fb8fae9d346f98ccfe758e5a882ee444ae6d0a1128254c45b47753ef8a717e7",
+   "old_semantic_digest": "255504cb0dfe4070338267aab4cfc4dac30f6db45abfeffdf99d81f48f0025ce",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "max(0.02,product(hop_decay(simplemind,gamma=0.6),lca_frac(simplemind)),estimand=\"path\")",
+   "new_semantic_digest": "dc0627ec707797d826aa4d6545e6bdd8ddd2e02a07bd0612f1fb932bc0597223",
+   "old_semantic_digest": "03de189477e196148129dc636c2182aef8ac5e859f38ab15ecb71f1ab110b5f6",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "menu(graph,n=10)",
+   "new_semantic_digest": "5d84ae2dcf72e555118e523cba2ccae90777dd89d91d1268ddc5c2d0d285e5a9",
+   "old_semantic_digest": "900950957cdbf3820a6bf19cebdf70f7f035e0b5300f35655f7ca366720221b9",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "routing(e5,haiku,manifest=\"a\\\"b\\\\c\",menus=[10],t=[0.02])",
+   "new_semantic_digest": "1e88faf0f52f0c3afa965cdd986bf633b81e92882e70997da4b796b07d0d01ef",
+   "old_semantic_digest": "f74fc736da14fcd261a9f496fa0732cd1e2e4054c9d942b4150133f9c52912ce",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "routing(e5,haiku,manifest=\"h\u00e9llo\u00b7w\u00f6rld\",menus=[10],t=[0.02])",
+   "new_semantic_digest": "375f5b8b6e51e303c478aea12af03b5a5576a10742e01706208cfb3e4b121114",
+   "old_semantic_digest": "86151475dcbf8220615391a478b39924bdc291372e606d12bb4dd10ed32e5c70",
+   "status": "mapped"
+  },
+  {
+   "canonical_semantic": "routing(e5,haiku,menus=[10],t=[1])",
+   "new_semantic_digest": "93db4e70e6194251feb28b6a6353fb181001df2a5075bb52c58054a491430925",
+   "old_semantic_digest": "d8aa71d8ef51401fb44c519efb834c196eaa097ba8635c0ef88dad6b2079e724",
+   "status": "mapped"
+  }
+ ],
+ "schema": "unifyweaver.registry-migration.v2",
+ "status_counts": {
+  "mapped": 25,
+  "tombstoned": 0
+ },
+ "to_registry_version": "v0.5"
+}

@@ -53,7 +53,7 @@ from process_identity import (
     verify_identity_record,
 )
 
-GOLDEN_PATH = ROOT / "PROCESS_EXPRESSION_GOLDEN_v3.json"
+GOLDEN_PATH = ROOT / "PROCESS_EXPRESSION_GOLDEN_v4.json"
 SUPERSEDED_GOLDEN_PATH = ROOT / "PROCESS_EXPRESSION_GOLDEN_v1.json"
 SUPERSEDED_GOLDEN_V2_PATH = ROOT / "PROCESS_EXPRESSION_GOLDEN_v2.json"
 SPEC_SHA = "a" * 64
@@ -555,7 +555,7 @@ def test_committed_bundle_is_reproducible_from_the_module_alone():
     rebuilt = build_golden(cases)
     committed = load_golden(GOLDEN_PATH)
     assert rebuilt["golden_sha256"] == committed["golden_sha256"]
-    assert len(rebuilt["rows"]) == len(committed["rows"]) == 25
+    assert len(rebuilt["rows"]) == len(committed["rows"]) == 30
 
 
 def test_declared_registry_kind_wins_over_the_runtime_value_type():

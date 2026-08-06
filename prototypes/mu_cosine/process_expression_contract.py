@@ -67,14 +67,21 @@ from process_identity import full_ast_digest
 #: ``<IMPL>``); and golden rows split identity per R9 — the identity string
 #: is the pin-free ``canonical_semantic``, with ``canonical_full_string``
 #: carried alongside for provenance and round-trip.
-CONTRACT_VERSION = "pec-v3"
+#: pec-v4 (registry v0.5): the composed-walk kinds get their own fences
+#: (``<WALK>``, ``<WEIGHT>``), same shape as the pec-v3 methodology fences —
+#: the declared kind stays on the stream so a decoder holds the value to the
+#: registry enumeration. This is a token-stream grammar change, so the
+#: contract version moves and bundle v4 is sealed; and per the standing note
+#: on PR #4077, the parked `pick` and scientific-notation rows join
+#: REQUIRED_COVERAGE_CASES at this change.
+CONTRACT_VERSION = "pec-v4"
 
 GOLDEN_SCHEMA = "unifyweaver.process-expression-golden.v2"
 
 #: The bundle a consumer must reproduce.  When a contract change seals a new
 #: bundle, this pointer and every document naming it move together — see
 #: ``DESIGN_process_expression_generator.md`` §0 for the supersession procedure.
-CURRENT_GOLDEN_BUNDLE = "PROCESS_EXPRESSION_GOLDEN_v3.json"
+CURRENT_GOLDEN_BUNDLE = "PROCESS_EXPRESSION_GOLDEN_v4.json"
 
 #: Superseded bundles, retained as audit-only provenance.  They are never
 #: mutated and never accepted by the current loader; their integrity is pinned
@@ -87,6 +94,10 @@ SUPERSEDED_GOLDEN_BUNDLES = {
     "PROCESS_EXPRESSION_GOLDEN_v2.json": {
         "contract_version": "pec-v2",
         "sha256": "85e6421f5a1347fca5937d1243dc01500a9aa5b7221571b4918248e57ece6344",
+    },
+    "PROCESS_EXPRESSION_GOLDEN_v3.json": {
+        "contract_version": "pec-v3",
+        "sha256": "90cc484021150aa9916be2f8c4fdb57b66f3a2e7d18dafff7e40c3c566af8ef7",
     },
 }
 
@@ -112,6 +123,16 @@ REQUIRED_COVERAGE_CASES = {
     "numeric-positional-literal": "max(0.02,e5(margin(t=0.03)))",
     "mu-judge-kwarg": "lineage(simplewiki,mu=sonnet.lineage)",
     "estimand-impl": 'lca_frac(simplemind,estimand="path",impl="structural")',
+    # pec-v4 / registry v0.5 coverage: each new grammar feature gets a row.
+    "enwiki-substrate": 'lineage(enwiki,mu=graph,estimand="ancestry")',
+    "cowalk-sibling": 'cowalk(enwiki,walk="sibling",estimand="path")',
+    "cowalk-weighted-cousin": (
+        'cowalk(simplewiki,walk="cousin",weight="idf_node_size",'
+        'mu=haiku,estimand="path")'
+    ),
+    # Parked on PR #4077 for "the next contract change", which is this one:
+    "pick-root": "pick(menu(graph,n=10))",
+    "scientific-notation-number": "margin(t=1e-05)",
 }
 
 KIND_ATOM = "atom"
@@ -260,7 +281,8 @@ def _lexical(value: Any) -> str:
     return _render_val(value)
 
 
-_SCALAR_KINDS = ("number", "int", "string", "estimand", "impl")
+_SCALAR_KINDS = ("number", "int", "string", "estimand", "impl",
+                 "walk", "weight")
 
 
 def _value_type(value: Any, declared_kind: str | None) -> str:
@@ -449,9 +471,10 @@ def _value_tokens(value: Any, value_type: str, path: RolePath) -> Iterator[Token
         open_tag, close_tag = "<STRING>", "</STRING>"
         # Exact UTF-8 bytes of the string itself, not its JSON quoting.
         payload = value.encode("utf-8")
-    elif value_type in ("estimand", "impl"):
-        # pec-v3: the enumerated methodology kinds keep their declared kind on
-        # the stream, so a decoder can hold them to the registry enumeration.
+    elif value_type in ("estimand", "impl", "walk", "weight"):
+        # pec-v3 (estimand/impl) and pec-v4 (walk/weight): enumerated kinds
+        # keep their declared kind on the stream, so a decoder can hold them
+        # to the registry enumeration.
         open_tag = f"<{value_type.upper()}>"
         close_tag = f"</{value_type.upper()}>"
         payload = value.encode("utf-8")

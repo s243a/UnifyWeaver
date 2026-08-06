@@ -845,7 +845,9 @@ def test_sealed_golden_bundles_are_byte_identical():
 def test_p0_registry_is_current_and_vnext_does_not_change_it():
     import process_cards as pc
 
-    assert pc.REGISTRY_VERSION == "v0.4"
+    # The property is that vNext does not CHANGE the live registry, not that
+    # the registry never moves: assert non-superseded, not a pinned label.
+    assert pc.REGISTRY_VERSION not in pc.SUPERSEDED_REGISTRY_VERSIONS
     node = pc.parse("lineage(pearltrees,decay=0.85)")
     assert pc.canonical(node) == "lineage(pearltrees,decay=0.85)"
     assert len(pc.ast_sha(node)) == 16
