@@ -23,10 +23,15 @@
 %                           canonical bytes are the sealed golden
 %                           surface.
 %   pattern(Term, Store)    Term may contain variables; Store is the
-%                           canonicalized residual store (ruling 1:
-%                           numbervars-by-traversal projection order,
-%                           ==-dedup).  NO digest, NO canonical bytes,
-%                           NO persistent name — peid-v1's fence.
+%                           canonicalized residual store — canonical
+%                           labelling via pe_canonical.pl (ruling 1 as
+%                           amended: colour refinement to stability,
+%                           then individualization), ==-dedup.  A
+%                           canonical FORM is not an identity: NO
+%                           digest, NO canonical bytes, NO persistent
+%                           name — peid-v1's fence still stands, and
+%                           the form existing is exactly when not to
+%                           cross it.
 %
 % Origin metadata (ruling 3): carried ALONGSIDE the store, never
 % inside it.  elaborate/4 takes Goal-Origin pairs and returns residual
@@ -63,6 +68,7 @@
                occurrences/3, check_value_at/2]).
 :- use_module(pe_registry_mirror,
               [pe_output/2, pe_modifier/2]).
+:- use_module(pe_canonical, [canonical_number/2]).
 :- use_module(library(lists)).
 :- use_module(library(apply)).
 :- use_module(library(pairs)).
@@ -370,48 +376,10 @@ canonical_store(Term, Goals, CanonGoals) :-
 canonical_pairs(Term, Pairs, CanonPairs) :-
     pairs_keys(Pairs, Goals),
     copy_term(Term-Goals, TermC-GoalsC),
-    numbervars(TermC, 0, N0),
-    number_store_goals(GoalsC, N0),
+    canonical_number(TermC, GoalsC),
     pairs_keys_values(KeyedPairs, GoalsC, Pairs),
     msort(KeyedPairs, Sorted),
     dedup_by_key(Sorted, CanonPairs).
-
-%% number_store_goals(+GoalsC, +N0)
-%  Number store-only variables: repeatedly take the projection-least
-%  goal still containing variables and number it (numbervars reaches
-%  shared variables across goals, so later goals inherit numbering).
-number_store_goals(GoalsC, N0) :-
-    include(goal_has_var, GoalsC, WithVars),
-    (   WithVars == []
-    ->  true
-    ;   least_by_projection(WithVars, Least),
-        numbervars(Least, N0, N1),
-        number_store_goals(GoalsC, N1)
-    ).
-
-goal_has_var(G) :-
-    term_variables(G, [_|_]).
-
-%% least_by_projection(+Goals, -Least)
-%  Projection: a COPY (safe — used only for comparison, never kept)
-%  with every remaining variable bound to a fixed sentinel, so
-%  comparison is over logical shape, not variable age.
-least_by_projection([G|Gs], Least) :-
-    projection(G, P),
-    least_by_projection_(Gs, G, P, Least).
-
-least_by_projection_([], Least, _, Least).
-least_by_projection_([G|Gs], Best, BestP, Least) :-
-    projection(G, P),
-    (   P @< BestP
-    ->  least_by_projection_(Gs, G, P, Least)
-    ;   least_by_projection_(Gs, Best, BestP, Least)
-    ).
-
-projection(G, P) :-
-    copy_term(G, P),
-    term_variables(P, Vs),
-    maplist(=('$unnumbered'), Vs).
 
 dedup_by_key([], []).
 dedup_by_key([K-V, K2-_|Rest], Out) :-

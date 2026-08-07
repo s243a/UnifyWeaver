@@ -57,12 +57,12 @@ here(Dir) :-
 load_golden :-
     retractall(golden_row(_, _, _, _)),
     here(Dir),
-    atomic_list_concat([Dir, '/../PROCESS_EXPRESSION_GOLDEN_v3.json'], Path),
+    atomic_list_concat([Dir, '/../PROCESS_EXPRESSION_GOLDEN_v4.json'], Path),
     setup_call_cleanup(
         open(Path, read, S, [encoding(utf8)]),
         json_read_dict(S, Bundle),
         close(S)),
-    Bundle.registry_version == "v0.4",
+    Bundle.registry_version == "v0.5",
     forall(member(Row, Bundle.rows),
            ( atom_string(Name, Row.name),
              assertz(golden_row(Name,
@@ -72,7 +72,7 @@ load_golden :-
 
 :- initialization(load_golden).
 
-%% The 25 goal terms (as in test_pe_emit.pl; the elaborator receives
+%% The 30 goal terms (as in test_pe_emit.pl; the elaborator receives
 %% them with an EMPTY goal store — every one must come back ground).
 
 golden_goal('atom-bare',        mod(graph, discrim)).
@@ -111,6 +111,32 @@ golden_goal('sonnet-lin-n20',
 golden_goal('substrate-atom',   fs).
 golden_goal('utf8-string',
     routing(e5, haiku, t([0.02]), menus([10]), manifest("héllo·wörld"))).
+
+%% ---- v0.5 additions (golden v4) ----
+% enwiki joins the registered substrates; nothing else about the row
+% is new, which is the point of including it.
+golden_goal('enwiki-substrate',
+    lineage(enwiki, mu(graph), estimand(ancestry))).
+% cowalk: the first operator whose kwargs use the ENUMERATED kinds
+% `walk` and `weight`.  Note the sealed canonical form injects
+% weight="uniform" — cowalk's registry default — even though the
+% authored expression omits it.
+golden_goal('cowalk-sibling',
+    cowalk(enwiki, walk(sibling), estimand(path))).
+golden_goal('cowalk-weighted-cousin',
+    cowalk(simplewiki, walk(cousin), weight(idf_node_size),
+           mu(haiku), estimand(path))).
+% pick over a menu: an operator applied to an operator, no kwargs.
+golden_goal('pick-root',
+    pick(menu(graph, n(10)))).
+% Scientific notation.  GOAL CONVENTION NOTE: Prolog's reader
+% normalizes the float literal to its own spelling (1e-05 and 1.0e-5
+% both read as the same float), so the goal term carries a FLOAT, not
+% a spelling — the v0.5 surface spelling `1e-05` is produced by
+% pe_number.pl's CPython-repr rendering, not by how the literal was
+% typed here.
+golden_goal('scientific-notation-number',
+    margin(t(1.0e-5))).
 
 %% Where-style spellings: the five repeated-atom rows, entering the
 %% elaborator as term + BINDING STORE (the §12 form, now through the

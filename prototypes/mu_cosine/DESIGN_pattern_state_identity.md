@@ -12,11 +12,13 @@ Companion to [`DESIGN_prolog_elaborator.md`](DESIGN_prolog_elaborator.md), whose
 territory; the elaborator prototype now existing is what lifts ruling 6's own stated gate
 ("this ruling should *follow* the elaborator prototype").
 
-> **This note reports a defect in merged code.** The lane's stop-clause — *report, do not patch
-> around* — fires here for the first time. See **§2, The ordering defect**. It is confined
-> inside the identity fence (no sealed oracle, no ground path, no shipped byte contract is
-> affected), and it is characterized by tests rather than repaired, because repairing it is a
-> ruling, not a patch.
+> **This note reported a defect in merged code, and that defect is now repaired.** The lane's
+> stop-clause — *report, do not patch around* — fired here for the first time; §2 records the
+> finding, and **§2.1 records the repair**: canonical labelling (`pe_canonical.pl`, ruling 1 as
+> amended) replaced the ordering device, and the three tests that had been asserting the defect
+> flipped to assert the property. The full cycle — measure, refuse to patch, rule, implement,
+> reconcile — is left visible in this note rather than tidied into a clean present tense,
+> because the mechanism is the reusable part.
 
 ## Purpose, input, output
 
@@ -42,16 +44,17 @@ how a prototype convenience becomes a shipped contract by accident:
 | | **ordering device** | **canonical form** | **identity scheme** |
 |---|---|---|---|
 | what it is | a deterministic sequence, for display and comparison within one process | a normal form: the same state always yields the same representation, different states never collide | a name or digest derived from the canonical form |
-| example | `pe_elaborate`'s numbervars-by-traversal projection | not built — this note designs the choice | `peid-v1` (fenced) |
+| example | the superseded numbervars-by-traversal projection (§2) | `pe_canonical.pl` — refinement + individualization (§2.1) | `peid-v1` (fenced) |
 | answers | "in what order shall I print these?" | "are these two things the same thing?" | "what is this thing called?" |
 | may be wrong without harm? | yes — a bad order is a readability bug | **no** — a wrong canonical form silently merges or splits states | **no** — a wrong identity poisons caches and seals |
-| status today | **shipped, and defective** (§2) | **not shipped** | **fenced** |
+| status today | **removed** — it was defective (§2) | **shipped** (§2.1); still not an identity | **fenced** — a canonical form does not become one by existing |
 | promotion rule | must **never** be promoted by default; §2 is what that hazard looks like when it materializes | only by an explicit ruling | only from a frozen canonical form |
 
-The elaborator's own source says its projection is "an ORDERING DEVICE, superseded by
-`peid-v1`'s numbering when that freezes — no identity claim attaches to it." That disclaimer is
-load-bearing, and §2 shows why: the device does not even satisfy the property an ordering device
-is usually assumed to have.
+The elaborator's own source called its projection "an ORDERING DEVICE … no identity claim
+attaches to it." That disclaimer was load-bearing, and §2 shows why: the device did not even
+satisfy the property an ordering device is usually assumed to have. The rightmost column is the
+one to keep watching now — a canonical form *exists* as of §2.1, which is precisely the moment
+deriving a digest from it starts to look easy and must not be done.
 
 ## 1. What a pattern state is, as data
 
@@ -72,7 +75,7 @@ is a bijection of variables carrying one to the other — α-equivalence. Any ca
 therefore a *canonical labelling* problem, which is the family of problems where "obvious"
 approaches are usually wrong in exactly the way §2 records.
 
-## 2. The ordering defect (stop-clause finding)
+## 2. The ordering defect (stop-clause finding, since repaired)
 
 **Claim in merged code** (`pe_elaborate.pl`, canonical-store section): *"each step numbering the
 projection-least remaining goal, so numbering is a function of logical content, not input
@@ -118,12 +121,49 @@ store, so all 360 merged tests and both sealed oracles remain valid. The defect 
 inside the §2 fence of the elaborator note — the territory that by construction has no oracle.
 That is the fence working as designed: the unsound thing was quarantined before it was trusted.
 
-**Not repaired here, deliberately.** A fix is a choice among the schemes in §3, i.e. a ruling.
-The defect is instead *characterized* by tests
-([`test_pstate_views.pl`](pattern_stache/test_pstate_views.pl),
-`ordering_defect_characterization`) in the lane's recorded-divergence style: they assert
-today's behaviour, so the day the ordering is fixed they fail and force the fix, the tests, and
-this note to be reconciled in one review.
+**Not repaired *in the pass that found it*, deliberately.** A fix is a choice among the schemes
+in §3, i.e. a ruling. The defect was instead *characterized* by tests in the lane's
+recorded-divergence style: they asserted the defective behaviour, so that fixing the ordering
+would fail them and force the fix, the tests, and this note to be reconciled in one review.
+
+That is exactly what happened one pass later — see §2.1.
+
+## 2.1 The repair, and what it cost
+
+`pe_canonical.pl` implements ruling 1 as amended: colour refinement to stability, then
+individualization. The defective `least_by_projection_/4` and its strict-`@<` tie-break are
+gone from `pe_elaborate.pl`; `canonical_pairs/3` now calls `canonical_number/2`.
+
+**The flip, as the tests promised.** Three assertions written as known-defect characterizations
+inverted the moment the labelling landed, and were rewritten as the positive properties they had
+always been the negative of:
+
+| test | was | is |
+|---|---|---|
+| `near_symmetric_tie_is_input_order_dependent_KNOWN_DEFECT` | asserts two presentations differ | `near_symmetric_tie_is_now_order_independent` |
+| `structure_view_inherits_the_defect_KNOWN` | asserts token streams differ | `structure_view_now_stable_under_presentation_order` |
+| `near_symmetric_NOT_permutation_stable_KNOWN_DEFECT` | asserts `\+ permutation_stable` | `near_symmetric_now_permutation_stable` |
+
+Measured on the §2 counterexample: all **6 permutations now yield exactly one canonical form**.
+
+**A third instance of the copying hazard, found while building it.** The first implementation
+used `maplist([A,SA]>>skeleton(A,V,Vars,Colours,SA), ...)`. yall's `>>` **copies its lambda's
+free variables** on every call, so `V` was renamed to a fresh variable, `T == V` never held, and
+`colour_of/4` failed against a copied variable list — leaving **refinement completely inert**.
+The suite still passed, because individualization alone explores every branch and takes the
+minimum, so it produced *correct but exponential* answers; the only visible symptom was the
+branch cap firing on stores that should never have branched at all. This is the same
+copy-severs-variable-identity hazard recorded in desugaring §12 for `findall/3`, now in a third
+venue, and it stayed invisible for the same reason the original ordering defect did: the wrong
+thing still produced right answers on the cases being looked at. Fixed with a plain helper
+predicate — a lambda cannot exhibit it if there is no lambda.
+
+**The cap, measured.** Refusal is reached at **6 fully symmetric goals** (six goals identical up
+to renaming, nothing distinguishing them) under the ruled cap of 1000 branches. Below that the
+labelling succeeds; at and above it, it throws `branch_cap_exceeded` and computes nothing — no
+timeout, no partial result, no fallback to the superseded device. Size alone is not the trigger:
+nine *distinguishable* goals are separated by refinement in one round and consume zero branches.
+The cost is symmetry, not size, and that is the honest shape of the bound.
 
 ## 3. The VarId question
 
@@ -244,9 +284,9 @@ makes the difference measurable rather than arguable.
 
 | if ruling 6 answers… | the canonical form is load-bearing for… | does §2 block it? | what must be built first |
 |---|---|---|---|
-| **structure** (tokens in the stream) | **tokenization** — goal order *is* token order, so the canonical form determines what the encoder sees on every example; two presentations of one state would train as two different examples | **yes, blocking** | scheme (B): a real canonical labelling, α-equivalence proven, §2 fixed |
+| **structure** (tokens in the stream) | **tokenization** — goal order *is* token order, so the canonical form determines what the encoder sees on every example; two presentations of one state would train as two different examples | **was blocking; now unblocked** (§2.1) | scheme (B) — *now built*; the structure arm's precondition is met |
 | **features** (side channel) | **caching only** — a feature vector is a sorted bag of counts; goal order cannot reach it | **no** | nothing: a features-only cache key derives from sorted counts without solving variable ordering at all |
-| **both, behind an ablation** | tokenization for the structure arm; caching for the features arm | yes, but **only for the structure arm** | (B) before the structure arm can be trusted; the features arm can run immediately |
+| **both, behind an ablation** | tokenization for the structure arm; caching for the features arm | **no longer** — both arms are runnable | nothing: ruling 6's sequencing gate has lifted, and the ablation can now run in full |
 
 **This is measured, not asserted.** The harness emits both views from the same elaboration, and
 the characterization suite proves the asymmetry on the §2 counterexample:
@@ -275,15 +315,19 @@ the ruling, that is the cheap half to run first.
 | features-view counts | own fixtures only | same reasoning |
 | ordering stability, distinct projections | property test | green, and still true |
 | ordering stability, fully symmetric ties | property test | green, and green *for the right reason* (automorphism, §5) |
-| ordering stability, near-symmetric ties | property test | **characterized as a defect** (§2) — the honest state is "known-wrong, pinned" |
-| α-equivalence correctness of any candidate scheme | **permutation-stability property test** — `permutation_stable/2` | *this row changed with ruling 1.* It was recorded as "no oracle exists"; the ruling supplied one, and it is a real oracle rather than a fixture: every input permutation of a store must yield `=@=` output. Digest-free, so it stays left of the identity fence |
-| pattern-state digests / canonical bytes | **no oracle exists** | fenced, `peid-v1` |
-| cross-check against vNext `PatternAST` | vNext testdata as **data only** — and no fixture there covers pattern states today | so: **no oracle**, and the standing rule forbids reaching past the fixtures into the machinery |
+| ordering stability, near-symmetric ties | property test | **now green** — was the §2 defect, repaired in §2.1; the test that pinned the defect is the test that now pins the property |
+| α-equivalence correctness of the labelling | **permutation-stability property test** — `permutation_stable/2`, exhaustive to 8 goals, sampled-with-seed above | *this row changed with ruling 1*, and is now **exercised**: `test_pe_canonical.pl` runs it over a seven-shape corpus including every shape that broke the superseded device |
+| the branch cap's refusal behaviour | **measured threshold test** | refusal at 6 fully symmetric goals is pinned, so the bound is a stated property rather than a surprise |
+| pattern-state digests / canonical bytes | **no oracle exists** | **why:** an oracle would have to be a *frozen* preimage definition, and `peid-v1` has not frozen one — the patterns doc assigns identifiers "only when their checked-in content is frozen" (§15). **What would supply one:** `peid-v1` ruling the preimage. Note the trap this row now guards: §2.1 shipped a canonical form, so a digest is *newly easy to compute and no more legitimate than before* |
+| cross-check against vNext `PatternAST` | **no oracle exists** | **why:** vNext's testdata carries a registry fixture but no pattern-state fixtures, and the standing rule forbids reaching past fixtures into the Python machinery to generate them. **What would supply one:** vNext publishing pattern-state fixtures *as data*, at which point this becomes a cross-check like the registry one |
 
-**Two** "no oracle" rows remain, both gating, both stated as findings rather than gaps to be
-filled by opinion. The third was closed by ruling 1 supplying permutation stability — worth
-noting as a pattern: an oracle-less row is not permanently oracle-less, and naming it is what
-lets a later ruling close it deliberately.
+Two "no oracle" rows remain, and each now records **why none exists and what would supply
+one** — because the reason is the actionable part. Ruling 1 proved it: that row's reason was
+"needs the ruling first", the ruling landed, and the row closed *deliberately* rather than by
+drift. A row whose reason is recorded can be closed on purpose; a row marked only "no oracle"
+can only be closed by someone noticing. Both remaining reasons name an external event
+(`peid-v1` freezing a preimage; vNext publishing pattern-state fixtures), so neither is
+closable from inside this lane — which is itself the finding.
 
 ## 8. Rulings
 
@@ -298,18 +342,19 @@ their alternatives so the reasoning survives. Rulings 4 and 5 stand as recommend
   acceptance criterion is permutation stability. The amendment matters and is recorded in §3:
   refinement alone is incomplete, and an input-order tie-break after it would rebuild §2's
   defect one layer deeper.
-- **Ruling 2 — repairing §2: after ruling 6's sequencing, via ruling 1's scheme.** Not a
-  minimal tie-break patch — that is another sort-key refinement, the move that has now failed
-  twice at two levels. The defect stays characterized in the meantime.
+- **Ruling 2 — repairing §2 via ruling 1's scheme: DONE** (§2.1). Not a minimal tie-break
+  patch — that would have been another sort-key refinement, the move that had already failed
+  twice at two levels. Implemented as canonical labelling, cap and all, with the three
+  characterization tests flipped in the same pass.
 - **Ruling 3 — origins: OUT, confirmed.** Ruling 3(b) reaffirmed on §4's argument (including
   them would fragment identity by spelling, contradicting §12's measured where-form
   equivalence).
 - **Ruling 6 — sequencing, not an answer: the features arm runs NOW; the structure arm runs
-  after canonical labelling lands.** Licensed by §6's measurement rather than by preference:
-  `features_view_immune_to_the_ordering_defect` is what makes the features arm uncontaminated
-  by the open defect, so running it first is not a compromise — it is the only arm that is
-  currently sound. **Ruling 6 itself remains genuinely open** as a science question; this
-  sequences the ablation, it does not pre-decide it.
+  after canonical labelling lands.** Licensed by §6's measurement rather than by preference.
+  **Status: the gate has lifted** — canonical labelling landed in §2.1, so the structure arm's
+  stated precondition is met and both arms are now runnable. **Ruling 6 itself remains
+  genuinely open** as a science question; the sequencing never pre-decided it, and the encoder
+  experiments still do.
 
 **Still open:**
 

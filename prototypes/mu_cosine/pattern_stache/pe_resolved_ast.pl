@@ -5,7 +5,7 @@
 % pe_resolved_ast.pl - the goal-term <-> resolved_ast correspondence:
 % the STRUCTURAL oracle over the sealed golden bundle.
 %
-% Every row of PROCESS_EXPRESSION_GOLDEN_v3.json carries `resolved_ast`
+% Every row of PROCESS_EXPRESSION_GOLDEN_v4.json carries `resolved_ast`
 % — the elaborated node structure as sealed JSON.  Consumers 3-4
 % verified emitted STRINGS against the bundle; this module verifies the
 % elaborated TERM: it projects a ground goal term into the
@@ -76,6 +76,7 @@
 :- use_module(pe_registry_mirror,
               [pe_atom/1, pe_operator/1, pe_kwspec/4, pe_output/2]).
 :- use_module(pe_emit, [json_escape/2]).
+:- use_module(pe_number, [pe_number_atom/2]).
 :- use_module(library(http/json)).
 :- use_module(library(apply)).
 :- use_module(library(lists)).
@@ -156,12 +157,15 @@ value_kind_lex(int, V, Lex)         :- lex_plain(V, Lex).
 value_kind_lex(string, V, Lex)      :- lex_quoted(V, Lex).
 value_kind_lex(estimand, V, Lex)    :- lex_quoted(V, Lex).
 value_kind_lex(impl, V, Lex)        :- lex_quoted(V, Lex).
+% v0.5: cowalk's enumerated kinds, same quoted spelling
+value_kind_lex(walk, V, Lex)        :- lex_quoted(V, Lex).
+value_kind_lex(weight, V, Lex)      :- lex_quoted(V, Lex).
 value_kind_lex(number_list, V, Lex) :- lex_list(V, Lex).
 value_kind_lex(int_list, V, Lex)    :- lex_list(V, Lex).
 
-lex_plain(V, Lex) :- format(string(Lex), "~w", [V]).
+lex_plain(V, Lex) :- pe_number_atom(V, A), atom_string(A, Lex).
 lex_list(Vs, Lex) :-
-    maplist([V, S]>>format(string(S), "~w", [V]), Vs, Ss),
+    maplist([V, S]>>( pe_number_atom(V, A), atom_string(A, S) ), Vs, Ss),
     atomic_list_concat(Ss, ',', A),
     format(string(Lex), "[~w]", [A]).
 lex_quoted(V, Lex) :-
@@ -217,12 +221,12 @@ golden_resolved_ast(Name, Dict) :-
 load_bundle :-
     module_property(pe_resolved_ast, file(Here)),
     file_directory_name(Here, Dir),
-    atomic_list_concat([Dir, '/../PROCESS_EXPRESSION_GOLDEN_v3.json'], Path),
+    atomic_list_concat([Dir, '/../PROCESS_EXPRESSION_GOLDEN_v4.json'], Path),
     setup_call_cleanup(
         open(Path, read, S, [encoding(utf8)]),
         json_read_dict(S, Bundle),
         close(S)),
-    Bundle.registry_version == "v0.4",
+    Bundle.registry_version == "v0.5",
     forall(member(Row, Bundle.rows),
            ( atom_string(N, Row.name),
              assertz(golden_ast_cache(N, Row.resolved_ast)) )).

@@ -4,10 +4,13 @@
 %
 % pe_emit.pl - PROTOTYPE third consumer for pattern_stache
 %
-% Template-driven emitter from Prolog goal terms to registry-v0.4
+% Template-driven emitter from Prolog goal terms to registry-v0.5
 % canonical process expressions, verified byte-exact against the
-% sealed golden bundle PROCESS_EXPRESSION_GOLDEN_v3.json (see
-% test_pe_emit.pl).  Uses the PRODUCTION engine
+% sealed golden bundle PROCESS_EXPRESSION_GOLDEN_v4.json, 30 rows,
+% contract pec-v4 (see test_pe_emit.pl).  Golden v3 is retained
+% upstream as audit-only provenance and is no longer this lane's
+% oracle; the 25 rows it shares with v4 were verified byte-identical
+% at the move.  Uses the PRODUCTION engine
 % (src/unifyweaver/core/pattern_stache.pl), not the prototype witness
 % in this directory.
 %
@@ -36,22 +39,33 @@
 %   numbers                Prolog numbers      0.02, 1, -0.5
 %   lists                  Prolog lists        [0.02, 0.03]
 %   strings                SWI strings         "a\"b\\c"
-%   enum values            atoms               estimand(ancestry), impl(structural)
+%   enum values            atoms               estimand(ancestry), impl(structural),
+%                                              walk(sibling), weight(uniform)
+%   exponent-form floats   Prolog floats       1.0e-5  (see the note below)
 %
 % Example (the task's own):
 %   lineage(pearltrees, mu(haiku), estimand(ancestry))
 %     =>  lineage(pearltrees,decay=0.85,estimand="ancestry",mu=haiku)
 %
+% EXPONENT-FORM FLOATS.  A goal term carries a FLOAT, never a
+% spelling: Prolog's reader normalizes 1e-05 and 1.0e-5 to the same
+% float, so how the literal was typed is not recoverable and cannot
+% matter.  The v0.5 surface spelling (`1e-05`) is produced by
+% pe_number.pl, which implements CPython's float-repr rule because
+% SWI's ~w disagrees with it on exponent form — measured, and the
+% reason that module exists.
+%
 % ============================================================
 % CANONICALIZATION (mirrors process_cards.py _canonical/_render_val)
 % ============================================================
-%   - registry defaults resolved explicitly (v0.4 has exactly one:
-%     lineage's decay=0.85); unset optional kwargs are omitted;
+%   - registry defaults resolved explicitly (v0.5 has two: lineage's
+%     decay=0.85 and cowalk's weight=uniform); unset optional kwargs
+%     are omitted;
 %   - kwargs sorted by name; no whitespace anywhere;
-%   - string-kind values (estimand, impl, manifest) rendered as JSON
-%     strings: double-quoted, \" and \\ escaped, non-ASCII preserved;
-%   - numbers via ~w (verified against Python repr for the golden
-%     corpus by the byte-equality tests);
+%   - enumerated- and string-kind values (string, estimand, impl, and
+%     v0.5's walk and weight) rendered as JSON strings: double-quoted,
+%     \" and \\ escaped, non-ASCII preserved;
+%   - numbers via pe_number.pl (CPython repr semantics), NOT ~w;
 %   - pins rendered only in the FULL form; the SEMANTIC form strips
 %     them at every node.
 %
@@ -75,6 +89,7 @@
               [load_stache_file/2, render_stache/3]).
 :- use_module(pe_registry_mirror,
               [pe_atom/1, pe_operator/1, pe_variadic/1, pe_kwspec/4]).
+:- use_module(pe_number, [pe_number_atom/2]).
 :- use_module(library(lists)).
 :- use_module(library(apply)).
 
@@ -92,10 +107,21 @@
 % swap changed nothing.
 %
 % Kind vocabulary note: the generated mirror carries the registry's
-% kinds verbatim -- estimand and impl are their own kinds (rendered
-% like strings), and a node-valued kwarg carries its declared output
-% type (mu -> judge) rather than the invented kind `expr` the retired
-% copy used.
+% kinds verbatim -- estimand, impl, and v0.5's walk and weight are
+% each their own kind (all rendered like strings), and a node-valued
+% kwarg carries its declared output type (mu -> judge) rather than the
+% invented kind `expr` the retired copy used.  Adding v0.5's two kinds
+% was a one-line enrolment in string_like_kind/1 each; no new
+% rendering path was needed.
+%
+% WALK SHAPES, for whoever consumes the family classification: the
+% registry declares each walk's shape (v0.5: sibling and cousin are
+% both "palindromic"; WALK_SHAPES also admits "non_palindromic").
+% READ THE DECLARED SHAPE from the registry — never infer it from the
+% walk's name.  This lane does not consume the classification today,
+% and the mirror consequently does not carry it; a consumer that needs
+% it should extend gen_registry_mirror.py to emit the declared shape
+% rather than deriving one here.
 
 %% ============================================
 %% TEMPLATE LOADING (once, cached)
@@ -164,7 +190,8 @@ pe_emit(mod(Base, Mod), Mode, Text) :-
 pe_emit(N, _Mode, Text) :-
     number(N),
     !,
-    render_value(lit(N), Text).
+    pe_number_atom(N, A),
+    render_value(lit(A), Text).
 % bare atom.
 pe_emit(A, _Mode, Text) :-
     atom(A),
@@ -234,10 +261,12 @@ render_kw_value(Kind, _Mode, V, Text) :-
     render_value(str(Escaped), Text).
 render_kw_value(number, _Mode, V, Text) :-
     !,
-    render_value(lit(V), Text).
+    pe_number_atom(V, A),
+    render_value(lit(A), Text).
 render_kw_value(int, _Mode, V, Text) :-
     !,
-    render_value(lit(V), Text).
+    pe_number_atom(V, A),
+    render_value(lit(A), Text).
 render_kw_value(number_list, Mode, V, Text) :-
     !,
     render_list(Mode, V, Text).
@@ -249,14 +278,23 @@ render_kw_value(_NodeKind, Mode, V, Text) :-
     % carries a node: render it as an expression
     pe_emit(V, Mode, Text).
 
-% estimand and impl are enumerated kinds that render as strings on the
-% v0.4 surface (quoted, JSON-escaped), exactly like string.
+% Enumerated kinds render as strings on the surface (quoted,
+% JSON-escaped), exactly like `string`.  v0.5 added `walk` and
+% `weight` for cowalk; they ride this same path rather than getting
+% their own, which is what the sealed bundle's lexicals confirm
+% (value_type "walk" / "weight", lexical "\"sibling\"" / "\"uniform\"").
 string_like_kind(string).
 string_like_kind(estimand).
 string_like_kind(impl).
+string_like_kind(walk).
+string_like_kind(weight).
+
+render_list_element(I, T) :-
+    pe_number_atom(I, A),
+    render_value(lit(A), T).
 
 render_list(_Mode, Items, Text) :-
-    maplist([I, T]>>render_value(lit(I), T), Items, Rendered),
+    maplist(render_list_element, Items, Rendered),
     atomic_list_concat(Rendered, ',', Joined),
     render_value(list(Joined), Text).
 

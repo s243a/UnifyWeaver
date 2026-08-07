@@ -32,12 +32,12 @@ load_golden :-
     retractall(golden_row(_, _, _)),
     module_property(pe_where, file(Here)),
     file_directory_name(Here, Dir),
-    atomic_list_concat([Dir, '/../PROCESS_EXPRESSION_GOLDEN_v3.json'], Path),
+    atomic_list_concat([Dir, '/../PROCESS_EXPRESSION_GOLDEN_v4.json'], Path),
     setup_call_cleanup(
         open(Path, read, S, [encoding(utf8)]),
         json_read_dict(S, Bundle),
         close(S)),
-    Bundle.registry_version == "v0.4",
+    Bundle.registry_version == "v0.5",
     forall(member(Row, Bundle.rows),
            ( atom_string(Name, Row.name),
              assertz(golden_row(Name,
@@ -102,6 +102,31 @@ where_spelling(pinned,
 where_spelling('substrate-atom',
     where(C, [C = fs]),
     fs).
+
+% -- v0.5 rows: bindings over the new substrate, the new operator, and
+%    the enumerated walk/weight kinds --
+where_spelling('enwiki-substrate',
+    where(lineage(S, mu(graph), estimand(ancestry)), [S = enwiki]),
+    lineage(enwiki, mu(graph), estimand(ancestry))).
+% A binding whose value is an ENUMERATED `walk` value: the first time
+% pe_where's per-position legality meets that kind.
+where_spelling('cowalk-sibling',
+    where(cowalk(enwiki, walk(W), estimand(path)), [W = sibling]),
+    cowalk(enwiki, walk(sibling), estimand(path))).
+% ...and one binding a `weight` value alongside a substrate binding.
+where_spelling('cowalk-weighted-cousin',
+    where(cowalk(S, walk(cousin), weight(Wt), mu(haiku), estimand(path)),
+          [S = simplewiki, Wt = idf_node_size]),
+    cowalk(simplewiki, walk(cousin), weight(idf_node_size),
+           mu(haiku), estimand(path))).
+where_spelling('pick-root',
+    where(pick(menu(J, n(10))), [J = graph]),
+    pick(menu(graph, n(10)))).
+% A binding carrying a scientific-notation float through to the
+% surface spelling produced by pe_number.pl.
+where_spelling('scientific-notation-number',
+    where(margin(t(T)), [T = 1.0e-5]),
+    margin(t(1.0e-5))).
 
 :- begin_tests(where_golden_bytes).
 
