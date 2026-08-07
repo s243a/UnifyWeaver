@@ -16756,15 +16756,20 @@ plawk_scalar_update_operation_ir(Operation, Slot, FieldSeparator, Prefix, SlotIn
 
 %% plawk_scalar_assigned_store_ir(+Slot, +SlotIndex, +Prefix, +OpIndex, -IR) is det.
 %
-%  Mark a counter slot assigned. Emitted only for counter slots -- doubles and
-%  string/strnum slots either diverge separately (a follow-on) or already render an
-%  unset value correctly.
+%  Mark a NUMERIC slot assigned -- exactly the kinds plawk_numeric_slot_print/5 knows
+%  how to render when unset, so the mark and the render agree by construction rather
+%  than by two lists of slot kinds kept in step by hand. (They were two lists for a
+%  release: counters were marked and rendered, doubles were neither, and
+%  `$1 == "ZZZ" { x += 1.5 } END { print x }` printed 0.)
+%
+%  String/strnum slots need no mark: an unset atom id is 0, and their render already
+%  treats that as empty.
 %
 %  Slot indices at or beyond the table's width get NO mark, and
 %  plawk_unset_tracked_slots/3 refuses to track them, so the pair can never index
 %  out of bounds.
-plawk_scalar_assigned_store_ir(scalar_counter(_Name), SlotIndex, Prefix, OpIndex,
-        IR) :-
+plawk_scalar_assigned_store_ir(Slot, SlotIndex, Prefix, OpIndex, IR) :-
+    plawk_numeric_slot_print(Slot, _Kind, _FmtGlobal, _FmtBytes, _LLVMType),
     plawk_slot_assigned_width(Width),
     SlotIndex < Width,
     !,
@@ -16785,7 +16790,9 @@ plawk_slot_assigned_width(256).
 
 %% plawk_unset_tracked_slots(+Rules, +StatePlan, -TrackedIndices) is det.
 %
-%  Which counter-slot indices may render an UNSET value as empty.
+%  Which NUMERIC slot indices (counter or double) may render an UNSET value as
+%  empty -- keyed off plawk_numeric_slot_print/5, the same table the render and the
+%  mark use, so a numeric kind is tracked exactly when it can be rendered.
 %
 %  The safety rule, and the reason this cannot produce wrong output: a slot is
 %  tracked only when EVERY reachable assignment to its name is an update-shaped
@@ -16802,7 +16809,9 @@ plawk_unset_tracked_slots(Rules, StatePlan, TrackedIndices) :-
     plawk_state_plan_slots(StatePlan, Slots),
     plawk_slot_assigned_width(Width),
     findall(Index,
-        ( nth0(Index, Slots, scalar_counter(Name)),
+        ( nth0(Index, Slots, Slot),
+          plawk_numeric_slot_print(Slot, _Kind, _Fmt, _Bytes, _Type),
+          plawk_slot_name(Slot, Name),
           Index < Width,
           plawk_unset_name_only_updated(Rules, Name)
         ),
@@ -18814,26 +18823,33 @@ plawk_end_branch_fields_rewrite(end_record(_FieldSeparator), Fields, RecFields) 
     plawk_end_lastrec_rewrite(Fields, RecFields).
 plawk_end_branch_fields_rewrite(no_end_record, Fields, Fields).
 
-%% plawk_end_counter_print_lines(+StatePlan, +SlotIndex, +ValueIR, +PrintIndex,
-%%     -Lines) is det.
+%% plawk_end_numeric_print_lines(+StatePlan, +Slot, +SlotIndex, +ValueIR,
+%%     +PrintIndex, -Lines) is det.
 %
-%  Print a COUNTER slot in END. awk's uninitialised value is "" in string context,
-%  so a counter that was never assigned prints NOTHING -- and `{ n++ }` on empty
-%  input never assigns. A counter that WAS assigned prints its number, including a
-%  legitimately assigned 0 (`n = 0`), so the test is the assigned MARK and never
-%  the value. That is the same presence-not-value rule @wam_assoc_i64_print already
-%  uses for absent array elements; counters were the last kind still deciding by
-%  storage type rather than by assignment.
+%  Print a NUMERIC slot (counter or double) in END. awk's uninitialised value is ""
+%  in string context, so a slot that was never assigned prints NOTHING -- and
+%  `{ n++ }` or `{ x += 1.5 }` on empty input never assigns. A slot that WAS
+%  assigned prints its number, including a legitimately assigned zero (`n = 0`,
+%  `x = 0.0`), so the test is the assigned MARK and never the value. That is the
+%  same presence-not-value rule @wam_assoc_i64_print applies to absent array
+%  elements.
+%
+%  ONE emitter for both numeric kinds, differing only in the format global and the
+%  printf argument type. Counters were done first and doubles kept printing 0 for a
+%  release; giving each kind its own copy of this logic is exactly how that gap
+%  opened, so the kinds are now parameters of one clause rather than two clauses.
 %
 %  Untracked slots keep printing the number unconditionally -- see
 %  plawk_unset_tracked_slots/3 for which slots qualify and why an unqualified one
 %  cannot be rendered this way.
 %
-%  The unset case selects an EMPTY format string instead of branching; the i64
+%  The unset case selects an EMPTY format string instead of branching; the numeric
 %  argument is then an unused vararg, which is well defined.
-plawk_end_counter_print_lines(StatePlan, SlotIndex, ValueIR, PrintIndex, Lines) :-
+plawk_end_numeric_print_lines(StatePlan, Slot, SlotIndex, ValueIR, PrintIndex,
+        Lines) :-
     plawk_state_plan_tracked(StatePlan, Tracked),
     memberchk(SlotIndex, Tracked),
+    plawk_numeric_slot_print(Slot, Kind, FmtGlobal, FmtBytes, LLVMType),
     !,
     plawk_slot_assigned_width(Width),
     format(atom(AsgPtr), '  %end_asg_ptr_~w = getelementptr [~w x i1], [~w x i1]* @plawk_slot_assigned, i64 0, i64 ~w',
@@ -18841,18 +18857,42 @@ plawk_end_counter_print_lines(StatePlan, SlotIndex, ValueIR, PrintIndex, Lines) 
     format(atom(AsgLoad), '  %end_asg_~w = load i1, i1* %end_asg_ptr_~w',
         [PrintIndex, PrintIndex]),
     format(atom(FmtSel),
-        '  %end_i64_fmt_~w = select i1 %end_asg_~w, i8* getelementptr ([4 x i8], [4 x i8]* @.plawk_surface_print_i64, i64 0, i64 0), i8* getelementptr ([1 x i8], [1 x i8]* @.plawk_surface_print_unset, i64 0, i64 0)',
-        [PrintIndex, PrintIndex]),
+        '  %end_~w_fmt_~w = select i1 %end_asg_~w, i8* getelementptr ([~w x i8], [~w x i8]* @.~w, i64 0, i64 0), i8* getelementptr ([1 x i8], [1 x i8]* @.plawk_surface_print_unset, i64 0, i64 0)',
+        [Kind, PrintIndex, PrintIndex, FmtBytes, FmtBytes, FmtGlobal]),
     format(atom(PrintCall),
-        '  %printed_end_i64_~w = call i32 (i8*, ...) @printf(i8* %end_i64_fmt_~w, i64 ~w)',
-        [PrintIndex, PrintIndex, ValueIR]),
+        '  %printed_end_~w_~w = call i32 (i8*, ...) @printf(i8* %end_~w_fmt_~w, ~w ~w)',
+        [Kind, PrintIndex, Kind, PrintIndex, LLVMType, ValueIR]),
     Lines = [AsgPtr, AsgLoad, FmtSel, PrintCall].
-plawk_end_counter_print_lines(_StatePlan, _SlotIndex, ValueIR, PrintIndex,
+% Untracked, or a slot kind with no unset render: the pre-existing unconditional
+% number. Names match what the tracked branch would emit, so the two are
+% interchangeable at a call site.
+plawk_end_numeric_print_lines(_StatePlan, scalar_double(_Name), _SlotIndex, ValueIR,
+        PrintIndex, [FmtPtr, PrintCall]) :-
+    !,
+    format(atom(FmtPtr),
+        '  %end_f64_fmt_~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
+        [PrintIndex]),
+    format(atom(PrintCall),
+        '  %printed_end_f64_~w = call i32 (i8*, ...) @printf(i8* %end_f64_fmt_~w, double ~w)',
+        [PrintIndex, PrintIndex, ValueIR]).
+plawk_end_numeric_print_lines(_StatePlan, _Slot, _SlotIndex, ValueIR, PrintIndex,
         [FmtPtr, PrintCall]) :-
     format(atom(FmtVar), 'end_i64_fmt_~w', [PrintIndex]),
     format(atom(PrintVar), 'printed_end_i64_~w', [PrintIndex]),
     llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
         [FmtPtr, PrintCall]).
+
+%% plawk_numeric_slot_print(+Slot, -Kind, -FmtGlobal, -FmtBytes, -LLVMType) is semidet.
+%
+%  How each numeric slot kind renders: the name fragment its temporaries use, its
+%  printf format global and that global's byte length, and the LLVM type of the
+%  printf argument. Only kinds listed here get the unset-aware render; a kind absent
+%  from this table falls through to the unconditional number, so adding a numeric
+%  slot kind cannot silently acquire a half-built unset path.
+plawk_numeric_slot_print(scalar_counter(_Name), i64, plawk_surface_print_i64, 4,
+    i64).
+plawk_numeric_slot_print(scalar_double(_Name), f64, plawk_surface_print_f64, 3,
+    double).
 
 % The final (post-loop) slot values, one per slot: %final_slot_0, %final_slot_1,
 % ... -- the values the END block reads.
@@ -18872,16 +18912,7 @@ plawk_scalar_end_print_lines([var(Name) | Rest], StatePlan, OutputSeparator,
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     { plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
       format(atom(ValueIR), '%final_slot_~w', [SlotIndex]),
-      ( Slot = scalar_double(_Name)
-      -> format(atom(FmtVar), 'end_f64_fmt_~w', [PrintIndex]),
-         format(atom(FmtPtr),
-             '  %~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
-             [FmtVar]),
-         format(atom(PrintCall),
-             '  %printed_end_f64_~w = call i32 (i8*, ...) @printf(i8* %~w, double ~w)',
-             [PrintIndex, FmtVar, ValueIR]),
-         Lines = [FmtPtr, PrintCall]
-      ;  ( Slot = scalar_string(_Name) ; Slot = scalar_strnum(_Name) )
+      ( ( Slot = scalar_string(_Name) ; Slot = scalar_strnum(_Name) )
       -> % resolve the atom id to text; id 0 (unset) prints as empty (the `%s\0`
          % global's trailing NUL is a ready-made empty C string). A strnum slot
          % holds an atom id too, so it prints identically.
@@ -18899,8 +18930,9 @@ plawk_scalar_end_print_lines([var(Name) | Rest], StatePlan, OutputSeparator,
              '  %printed_end_str_~w = call i32 (i8*, ...) @printf(i8* %end_str_fmt_~w, i8* %end_str_ptr_~w)',
              [PrintIndex, PrintIndex, PrintIndex]),
          Lines = [StrS, StrE, StrSel, FmtPtr, PrintCall]
-      ;  plawk_end_counter_print_lines(StatePlan, SlotIndex, ValueIR, PrintIndex,
-             Lines)
+      ;  % counter AND double: one emitter, unset renders empty for both
+         plawk_end_numeric_print_lines(StatePlan, Slot, SlotIndex, ValueIR,
+             PrintIndex, Lines)
       ),
       NextPrintIndex is PrintIndex + 1
     },
@@ -18985,21 +19017,11 @@ plawk_end_field_print_lines(special('NF'), _StatePlan, EndRecord, PrintIndex) --
 plawk_end_field_print_lines(var(Name), StatePlan, _EndRecord, PrintIndex) -->
     { plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
       format(atom(ValueIR), '%final_slot_~w', [SlotIndex]),
-      ( Slot = scalar_double(_Name)
-      -> format(atom(FmtVar), 'end_f64_fmt_~w', [PrintIndex]),
-         format(atom(FmtPtr),
-             '  %~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
-             [FmtVar]),
-         format(atom(PrintCall),
-             '  %printed_end_f64_~w = call i32 (i8*, ...) @printf(i8* %~w, double ~w)',
-             [PrintIndex, FmtVar, ValueIR]),
-         Lines = [FmtPtr, PrintCall]
-      ;  % the SAME counter render the standalone END print uses, so a counter in a
-         % concatenation cannot disagree with a counter printed on its own about
-         % whether an unset value is empty
-         plawk_end_counter_print_lines(StatePlan, SlotIndex, ValueIR, PrintIndex,
-             Lines)
-      )
+      % the SAME numeric render the standalone END print uses, so a counter or
+      % double in a concatenation cannot disagree with one printed on its own about
+      % whether an unset value is empty
+      plawk_end_numeric_print_lines(StatePlan, Slot, SlotIndex, ValueIR, PrintIndex,
+          Lines)
     },
     plawk_emit_lines(Lines).
 plawk_end_field_print_lines(string(Value), _StatePlan, _EndRecord, PrintIndex) -->
