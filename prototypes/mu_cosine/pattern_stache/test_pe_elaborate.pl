@@ -495,8 +495,11 @@ test(term_vars_numbered_by_term_traversal) :-
 test(mirror_verify_passes) :-
     pe_registry_mirror:pe_mirror_verify.
 
-test(mirror_version_is_v04) :-
-    pe_registry_version('v0.4').
+% This pin moves DELIBERATELY at each registry bump: it fails loudly
+% until the mirror is regenerated, which is the reminder it exists to
+% give. The load-time source-hash check is the primary drift guard.
+test(mirror_version_is_v05) :-
+    pe_registry_version('v0.5').
 
 % Drift refusal: a tampered copy (zeroed hash) placed beside a copy of
 % the sealed source REFUSES TO LOAD, in a separate process (separate
