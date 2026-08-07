@@ -127,9 +127,14 @@ v0.4** (*measured*, `test_process_expression_enumerator.py`; grids = the witness
 
 | scenario | expressions | structural templates |
 |---|---:|---:|
-| naive full (methodology kwargs everywhere) | **3,303,413,185,358** | 3,795,703 |
-| methodology on the root only | 54,871,574 | **96,196** |
-| structural only (no `estimand`/`impl`/`mu`) | 10,756,382 | 28,225 |
+| naive full (methodology kwargs everywhere) | **3,475,387,022,969** | 3,826,859 |
+| methodology on the root only | 61,908,552 | **97,526** |
+| structural only (no `estimand`/`impl`/`mu`) | 11,409,263 | 28,373 |
+
+Re-measured under registry **v0.5** (enwiki substrate + `cowalk` with enumerated walk/weight
+kinds; the v0.4 measurement — 3,303,413,185,358 / 54,871,574 / 96,196 — is retained as history
+alongside v0.3 below). The naive/root-only ratio is ~56,000× under v0.5, ~60,000× under v0.4;
+the claim is the order of the explosion, not the coefficient.
 
 Template counts use the **resolved-kwarg identity** — the established structural-template
 convention, where a defaulted kwarg is always present after canonical resolution and
@@ -178,12 +183,12 @@ indeed counted three unenumerable `blend/3{…w…}` shapes that the legality ru
 | component class | count |
 |---|---:|
 | leaf shapes | 9 |
-| operator shapes, interior | 21 |
-| operator shapes, root-only extension | 46 |
-| node-composition edges | 31 |
+| operator shapes, interior | 23 |
+| operator shapes, root-only extension | 48 |
+| node-composition edges | 33 |
 | literal slots | 2 |
-| composable component shapes | 76 |
-| serialized identities, total | 109 |
+| composable component shapes | 80 |
+| serialized identities, total | 115 |
 
 Row meanings: leaf shapes are output type × modifier shape with terminals pinned; operator
 shapes are operator-local resolved-kwarg patterns, split by whether methodology kwargs appear;
@@ -193,12 +198,12 @@ it sums**: *composable component shapes* is leaves plus operator shapes — the 
 compose recursively — while *serialized identities* is all five rows, and is what
 `component_vocabulary_sha256()` binds. An external verification pass found the earlier single
 "total" row unauditable, since the five class rows summed to something else. The witness
-universe derived from this vocabulary carries 187 required witness items.
+universe derived from this vocabulary carries 201 required witness items.
 
 Component identities are the **resolved-kwarg** patterns (same identity convention as templates
 — `decay:number` appears in every `lineage` component, never as a presence choice), carry their
 **registry-declared kwarg kinds** (`op:lineage/1{decay:number,mu:judge}`), and leaves pin their
-**exact terminal atoms** (`leaf:judge.D{luna}`, `leaf:substrate{fs,pearltrees,simplemind,simplewiki}`)
+**exact terminal atoms** (`leaf:judge.D{luna}`, `leaf:substrate{enwiki,fs,pearltrees,simplemind,simplewiki}`)
 — so an atom added, renamed, or re-typed moves the vocabulary hash even at constant cardinality.
 The manifest also states its own exclusion boundary (`excluded_synthetic`: pins, string kwargs,
 interior methodology — each sampler coverage with its owning section), and

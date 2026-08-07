@@ -115,6 +115,10 @@ def enumeration_spec_sha256() -> str:
         "registry_content_sha256": _registry_content_sha256(),
         "estimands": sorted(pc.ESTIMANDS),
         "impls": sorted(pc.IMPLS),
+        # v0.5: walk values with their DECLARED shapes (the family function
+        # depends on the shape, so it is bound, not inferred), and weights.
+        "walks": dict(sorted(pc.WALKS.items())),
+        "weights": sorted(pc.WEIGHTS),
         # The split ALGORITHM is bound here as its complete machine-readable
         # manifest — coverage semantics, repair, far classification, pair
         # extraction, held grouping, bucket boundaries — not a four-constant
@@ -155,6 +159,7 @@ def _value_count(kind: str, template_mode: bool) -> int:
         # A template keeps the slot's typed shape; lists keep their length.
         return {
             "number": 1, "int": 1, "estimand": 1, "impl": 1,
+            "walk": 1, "weight": 1,
             "number_list": MAX_LIST_LENGTH, "int_list": MAX_LIST_LENGTH,
         }[kind]
     if kind == "number":
@@ -169,6 +174,10 @@ def _value_count(kind: str, template_mode: bool) -> int:
         return len(pc.ESTIMANDS)
     if kind == "impl":
         return len(pc.IMPLS)
+    if kind == "walk":
+        return len(pc.WALKS)
+    if kind == "weight":
+        return len(pc.WEIGHTS)
     raise AssertionError(f"unexpected value kind: {kind}")
 
 
@@ -229,6 +238,10 @@ def _kwarg_selections(
             if spec.kind == "number" and spec.default in NUMBER_GRID:
                 count -= 1  # explicit default == elided form: one identity
             elif spec.kind == "int" and spec.default in INT_GRID:
+                count -= 1
+            elif spec.kind == "weight" and spec.default in pc.WEIGHTS:
+                count -= 1  # weight="uniform" == elided: one identity
+            elif spec.kind == "walk" and spec.default in pc.WALKS:
                 count -= 1
         per_key[key] = count
     usable = [key for key in sorted(sig.kwargs) if per_key[key] is not None]
@@ -410,7 +423,7 @@ def _values_in_grid(node) -> bool:
         if isinstance(value, pc.Node):
             if not _values_in_grid(value):
                 return False
-        elif kind in ("estimand", "impl"):
+        elif kind in ("estimand", "impl", "walk", "weight"):
             continue
         elif kind == "string":
             return False  # strings are sampler coverage, never enumeration
@@ -935,7 +948,7 @@ def _row_witnesses(node, items: set, pairs: set, leaf_index: dict,
             pairs.add(f"pair:{_component_identity(node)}.kw:{key}"
                       f"|{_child_shape(value)}")
             _row_witnesses(value, items, pairs, leaf_index, False)
-        elif kind in ("estimand", "impl"):
+        elif kind in ("estimand", "impl", "walk", "weight"):
             items.add(f"{kind}:{value}")
         elif kind == "string":
             if value not in SYNTHETIC_MANIFESTS.values():
@@ -967,6 +980,8 @@ def _row_witnesses(node, items: set, pairs: set, leaf_index: dict,
         if spec.kind in ("number", "int"):
             items.add(f"value:{spec.kind}:{_spell(spec.default)}")
             items.update(_digit_items(_spell(spec.default)))
+        elif spec.kind in ("estimand", "impl", "walk", "weight"):
+            items.add(f"{spec.kind}:{spec.default}")
 
 
 def _template_identity(node) -> str:
@@ -1045,7 +1060,7 @@ def _grid_violation(node, path: str = "") -> str | None:
             inner = _grid_violation(value, f"{where}.kw:{key}")
             if inner:
                 return inner
-        elif kind in ("estimand", "impl", "string"):
+        elif kind in ("estimand", "impl", "walk", "weight", "string"):
             continue                      # enumerated domains / §3.2 synthetics
         elif kind in ("number_list", "int_list"):
             grid = NUMBER_GRID if kind == "number_list" else INT_GRID
@@ -1192,6 +1207,10 @@ def required_witness_universe() -> list:
         universe.add(f"estimand:{estimand}")
     for impl in pc.IMPLS:
         universe.add(f"impl:{impl}")
+    for walk in pc.WALKS:
+        universe.add(f"walk:{walk}")
+    for weight in pc.WEIGHTS:
+        universe.add(f"weight:{weight}")
     # §3 synthetic floors, specified rather than gestured at (fifth review,
     # finding 4). Pins are required on every operator that can host one,
     # because §3.1's V2-vs-V3 collapse is a per-render-path property, not a

@@ -46,6 +46,12 @@ MANIFEST_SCHEMA = "unifyweaver.identity-migration-manifest.v1"
 ROW_SCHEMA = "unifyweaver.identity-migration-row.v1"
 
 LEGACY_REGISTRY_VERSION = "v0.3"
+#: The migration's TARGET version, pinned. This module documents the sealed
+#: v0.3 -> v0.4 transition; when the live registry moved to v0.5 the manifest
+#: kept verifying against the version it recorded, exactly as a sealed
+#: artifact must. The v0.4 -> v0.5 transition lives in
+#: registry_v05_migration.py.
+TARGET_REGISTRY_VERSION = "v0.4"
 #: v0.3 predates registry content-addressing (§15: identifiers are assigned
 #: only when checked-in content is frozen), so there is no legacy registry
 #: digest. Its behavioral witnesses are the sealed bundles pinned below.
@@ -287,7 +293,7 @@ def _new_side(successor_expression: str) -> tuple[str, str]:
     node = pc.parse(successor_expression)
     semantic = pc.canonical_semantic(node)
     digest = hashlib.sha256(
-        f"{pc.REGISTRY_VERSION}|{semantic}".encode("utf-8")
+        f"{TARGET_REGISTRY_VERSION}|{semantic}".encode("utf-8")
     ).hexdigest()
     return semantic, digest
 
@@ -302,7 +308,7 @@ def _migration_row(item: Mapping[str, Any], to_registry_sha: str) -> dict[str, A
         "old_canonical_bytes": canonical,
         "old_full_digest": item["identity_key"],
         "old_factory_fingerprint": None,
-        "to_registry_version": pc.REGISTRY_VERSION,
+        "to_registry_version": TARGET_REGISTRY_VERSION,
         "to_registry_sha256": to_registry_sha,
         "to_identity_preimage": CURRENT_IDENTITY_PREIMAGE,
         "new_canonical_bytes": None,
@@ -332,12 +338,12 @@ def _migration_row(item: Mapping[str, Any], to_registry_sha: str) -> dict[str, A
     except pc.ParseError as exc:
         raise MigrationError(
             f"legacy identity {canonical!r} does not parse under "
-            f"{pc.REGISTRY_VERSION} and has no ruling"
+            f"{TARGET_REGISTRY_VERSION} and has no ruling"
         ) from exc
     if pc.canonical_full(node) != canonical:
         raise MigrationError(
             f"legacy identity {canonical!r} re-canonicalizes differently under "
-            f"{pc.REGISTRY_VERSION}; it needs an explicit ruling"
+            f"{TARGET_REGISTRY_VERSION}; it needs an explicit ruling"
         )
     row["status"] = "mapped"
     row["reason"] = (
@@ -355,8 +361,15 @@ def _migration_row(item: Mapping[str, Any], to_registry_sha: str) -> dict[str, A
     return row
 
 
+#: The v0.4 registry's content witness, pinned from the sealed manifest.
+#: `registry_content_sha256()` reads the LIVE registry, which moved to v0.5;
+#: the sealed v0.3->v0.4 manifest must rebuild against the registry content
+#: it actually migrated to.
+TARGET_REGISTRY_CONTENT_SHA256 = "7f9b4c9d1bf3ed69416b22b61561d3773ea5d0ca0e8e2693127812f83eb6069c"
+
+
 def build_manifest(inventory: Mapping[str, Any]) -> dict[str, Any]:
-    to_registry_sha = registry_content_sha256()
+    to_registry_sha = TARGET_REGISTRY_CONTENT_SHA256
     rows = [
         _migration_row(item, to_registry_sha) for item in inventory["items"]
     ]
@@ -366,7 +379,7 @@ def build_manifest(inventory: Mapping[str, Any]) -> dict[str, Any]:
     document = {
         "schema": MANIFEST_SCHEMA,
         "inventory_sha256": inventory["inventory_sha256"],
-        "to_registry_version": pc.REGISTRY_VERSION,
+        "to_registry_version": TARGET_REGISTRY_VERSION,
         "to_registry_sha256": to_registry_sha,
         "rows": rows,
         "status_counts": dict(sorted(counts.items())),

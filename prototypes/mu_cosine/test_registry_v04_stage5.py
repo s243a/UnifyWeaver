@@ -36,13 +36,22 @@ def test_cache_key_binds_registry_version_explicitly(monkeypatch):
     assert before != after
 
 
-def test_cache_key_moves_across_the_actual_v03_v04_boundary():
-    """A v0.4 key can never collide with a v0.3-era key for the same card:
-    both the explicit version component and the ast_sha preimage moved."""
+def test_cache_key_moves_across_registry_version_boundaries():
+    """A key from one registry version can never collide with an earlier
+    version's key for the same card: both the explicit version component and
+    the ast_sha preimage move. Version-independent: the live version must be
+    a NON-superseded one, and superseded versions never mint new keys."""
     node = pc.parse("kalman(luna.D,luna.S)")
     key = pc.embedding_cache_key(node, 2, "rev-a")
     assert key == pc.embedding_cache_key(pc.parse("kalman(luna.D,luna.S)"), 2, "rev-a")
-    assert pc.REGISTRY_VERSION == "v0.4"  # the key above is a v0.4 key
+    assert pc.REGISTRY_VERSION not in pc.SUPERSEDED_REGISTRY_VERSIONS
+    original = pc.REGISTRY_VERSION
+    try:
+        for superseded in pc.SUPERSEDED_REGISTRY_VERSIONS:
+            pc.REGISTRY_VERSION = superseded
+            assert pc.embedding_cache_key(node, 2, "rev-a") != key
+    finally:
+        pc.REGISTRY_VERSION = original
 
 
 def test_ranking_lane_e5_caches_are_content_addressed():
