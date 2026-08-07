@@ -82,6 +82,15 @@ the array path already had — and the giveaway that it was one property, four
 implementations, was that fixing one of them (arrays) left the others visibly
 inconsistent with it for a whole release.
 
+**Sizing a follow-on by the wrong relative.** `arr[k]--` was recorded as needing "a
+row in each of four `inc_assoc` walkers", because `arr[k]++` is the `inc_assoc`
+family. It needed **none**: `arr[k] += N` already parses to `add_assoc/3`, so the
+decrement desugars into that family and no walker changed. The estimate had followed
+the nearest *spelling* (`++`) instead of the nearest *semantics* (`+= N`) — and
+adding `dec_assoc` would have made a third representation of one operation. When a
+follow-on is sized as "a row in every walker", first ask which existing family the
+surface form belongs to.
+
 **Prescriptions that worked:** one shared producer/emitter with callers
 parameterised (a *name flavour* parameter can preserve byte-identity — see
 #4094); when adding a fast path, check what the general walker's **base case**

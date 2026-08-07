@@ -3055,12 +3055,31 @@ increment_action(inc(var(Name))) -->
 %  produced value is unused, so `n--` is exactly `n -= 1`: it reports the same
 %  scalar update as `n++` with a delta of -1, and needs no new emitter.
 %
-%  SCALAR only. `arr[k]--` stays a parse error on purpose: the assoc increment is
-%  a whole action family (`inc_assoc`, with rows in the table-name walker, the
-%  update-action gate, the body-action spec and the increment planner), so a
-%  decrement there means a row in every one of them. That is a separate change --
-%  pinned as a follow-on rather than left half-wired, which is how this codebase's
-%  recurring defect gets in.
+%  `arr[k]--` was left a parse error with the reasoning that the assoc increment is
+%  a whole action family -- `inc_assoc`, with rows in the table-name walker, the
+%  update-action gate, the body-action spec and the increment planner -- so a
+%  decrement meant a row in every one of them.
+%
+%  That reasoning assumed `arr[k]--` had to become a NEW family. It does not:
+%  `arr[k] += N` already parses to add_assoc/3, an existing family with its own
+%  complete set of rows, so `arr[k]--` desugars to add_assoc(..., int(-1)) and no
+%  walker is touched at all. Adding a `dec_assoc` would have made a THIRD
+%  representation of "change this element by N" -- `inc_assoc` and `add_assoc` are
+%  already two -- which is the very defect the old note was trying to avoid.
+%
+%  Note the shape of the mistake: the follow-on was sized by looking at the nearest
+%  relative (`inc_assoc`) instead of asking which existing family the surface form
+%  belongs to.
+decrement_action(add_assoc(var(Name), KeyExpr, int(-1))) -->
+    table_ident(Name),
+    ws,
+    "[",
+    ws,
+    assoc_key_expr(KeyExpr),
+    ws,
+    "]",
+    !,
+    "--".
 decrement_action(dec(var(Name))) -->
     identifier(Name),
     "--".
@@ -3279,6 +3298,11 @@ dynrec_type(string) --> "string".
 % and the general form of `arr[k]++` (which is `+= 1`). DELTA is a field or
 % an integer literal (i64 table values); other deltas are a follow-on. Tried
 % before the scalar clause -- the `[` distinguishes them.
+%  `TABLE[k] -= D` is `TABLE[k] += -D` -- the same sugar the scalar `-=` is, and the
+%  same add_assoc/3 term. The OPERATOR is chosen after the key is parsed, in one
+%  clause: the `!` below commits as soon as `TABLE[key]` is seen, so a separate `-=`
+%  clause placed after this one would never be reached (it wasn't, and `c[$1] -= 1`
+%  stayed a parse error until the two were merged).
 add_assign_action(add_assoc(var(Name), KeyExpr, Delta)) -->
     table_ident(Name),
     ws,
@@ -3289,9 +3313,23 @@ add_assign_action(add_assoc(var(Name), KeyExpr, Delta)) -->
     "]",
     !,
     ws,
+    assoc_compound_delta(Delta).
+
+%% assoc_compound_delta(-Delta)//
+%
+%  The operator and its delta for an assoc compound assignment, with `-=` reduced to
+%  a negated `+=` delta. A non-literal `-=` delta fails here (the negation is a
+%  parse-time literal negation), leaving the whole statement refused rather than
+%  mis-negated.
+assoc_compound_delta(Delta) -->
     "+=",
     ws,
     assoc_add_delta(Delta).
+assoc_compound_delta(NegDelta) -->
+    "-=",
+    ws,
+    assoc_add_delta(Delta),
+    { plawk_negate_literal_delta(Delta, NegDelta) }.
 add_assign_action(add(var(Name), Delta)) -->
     identifier(Name),
     ws,
@@ -3334,6 +3372,16 @@ assoc_add_delta(field(Index)) -->
       Index >= 0
     },
     !.
+% A NEGATIVE literal delta (`total[$1] += -1`). `integer_codes//1` does not accept
+% a leading sign, so this had no production and was a parse error.
+assoc_add_delta(int(Value)) -->
+    "-",
+    ws,
+    integer_codes(ValueCodes),
+    { ValueCodes \== [],
+      number_codes(Magnitude, ValueCodes),
+      Value is -Magnitude
+    }.
 assoc_add_delta(int(Value)) -->
     integer_codes(ValueCodes),
     { ValueCodes \== [],

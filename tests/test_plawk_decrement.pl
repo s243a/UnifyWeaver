@@ -136,11 +136,22 @@ test(counter_into_end_unchanged, [condition(clang_available)]) :-
 
 % --- pinned parse errors -------------------------------------------------
 
-% `arr[k]--`: the assoc action family is not wired for a decrement. Pinned with
-% its increment sibling, so the pair shows this is about the FAMILY, not about
-% `--` being unparseable.
-test(assoc_decrement_is_a_parse_error) :-
-    build_status("{ c[\"a\"]++; c[\"a\"]--; print c[\"a\"] }\n", 2),
+% `arr[k]--` was a PARSE ERROR, pinned here with its increment sibling to show the
+% refusal was about the assoc action family rather than about `--` being
+% unparseable. It now PARSES -- desugared to `arr[k] += -1`, the existing add_assoc
+% family, so no walker was touched. tests/test_plawk_assoc_decrement.pl owns it.
+%
+% The form pinned here uses a LITERAL key, which add_assoc does not support, so it is
+% now a DECLINE rather than a parse error -- and it declines exactly where
+% `c["a"] += 1` declines, which is the point of keeping the pair. A field key
+% compiles; see the owning suite.
+test(assoc_decrement_declines_where_add_assign_declines) :-
+    build_status("{ c[\"a\"] += 1; print c[\"a\"] }\n", 3),
+    build_status("{ c[\"a\"]--; print c[\"a\"] }\n", 3),
+    !.
+
+test(assoc_decrement_with_a_field_key_compiles, [condition(clang_available)]) :-
+    run("{ c[$1]++; c[$1]-- } END { print c[\"a\"] }\n", "0\n"),
     !.
 
 test(assoc_increment_still_works, [condition(clang_available)]) :-
