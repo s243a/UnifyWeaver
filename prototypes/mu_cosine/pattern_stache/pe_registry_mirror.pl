@@ -18,7 +18,10 @@
     pe_output/2,
     pe_modifier/2,
     pe_kwspec/4,
-    pe_required/2
+    pe_required/2,
+    pe_walk_shape/2,
+    pe_walk_shape_kind/1,
+    pe_weight_value/1
 ]).
 
 :- use_module(library(sha)).
@@ -150,6 +153,19 @@ pe_required(cowalk, walk).
 pe_required(hop_decay, gamma).
 pe_required(margin, t).
 pe_required(menu, n).
+
+% pe_walk_shape(Walk, DeclaredShape).  READ this; never infer a
+% walk's family from its name.
+pe_walk_shape(cousin, palindromic).
+pe_walk_shape(sibling, palindromic).
+
+% pe_walk_shape_kind(Shape): the declared shape vocabulary.
+pe_walk_shape_kind(non_palindromic).
+pe_walk_shape_kind(palindromic).
+
+% pe_weight_value(Weight): the declared weight vocabulary.
+pe_weight_value(idf_node_size).
+pe_weight_value(uniform).
 
 % Load-time drift check: fail closed if the sealed source moved.
 pe_mirror_verify :-

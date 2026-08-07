@@ -83,6 +83,7 @@ jobs:
           swipl -q -g run_tests -t halt prototypes/mu_cosine/pattern_stache/test_pattern_stache.pl
           swipl -q -g run_tests -t halt prototypes/mu_cosine/pattern_stache/test_constraint_dispatch.pl
           swipl -q -g run_tests -t halt prototypes/mu_cosine/pattern_stache/test_pe_number.pl
+          swipl -q -g run_tests -t halt prototypes/mu_cosine/pattern_stache/test_pe_interpret.pl
           swipl -q -g run_tests -t halt prototypes/mu_cosine/pattern_stache/test_pe_emit.pl
           swipl -q -g run_tests -t halt prototypes/mu_cosine/pattern_stache/test_pe_where.pl
           swipl -q -g run_tests -t halt prototypes/mu_cosine/pattern_stache/test_pe_elaborate.pl

@@ -66,6 +66,13 @@ def main():
 
     atoms, operators, variadics, outputs, modifiers = [], [], [], [], []
     kwspecs, required = [], []
+    # v0.5: walks carry a DECLARED shape.  Emitted so a consumer READS the
+    # declaration instead of inferring it from the walk's name — the
+    # generator is the right place for that, so the first consumer that
+    # needs it does not have to touch this file.
+    walks = sorted(getattr(process_cards, "WALKS", {}).items())
+    walk_shapes = sorted(getattr(process_cards, "WALK_SHAPES", ()))
+    weights = sorted(getattr(process_cards, "WEIGHTS", ()))
 
     for name in sorted(reg):
         sig = reg[name]
@@ -107,7 +114,10 @@ def main():
     a("    pe_output/2,")
     a("    pe_modifier/2,")
     a("    pe_kwspec/4,")
-    a("    pe_required/2")
+    a("    pe_required/2,")
+    a("    pe_walk_shape/2,")
+    a("    pe_walk_shape_kind/1,")
+    a("    pe_weight_value/1")
     a("]).")
     a("")
     a(":- use_module(library(sha)).")
@@ -147,6 +157,19 @@ def main():
     for n, k in required:
         a(f"pe_required({q(n)}, {q(k)}).")
     a("")
+    a("% pe_walk_shape(Walk, DeclaredShape).  READ this; never infer a")
+    a("% walk's family from its name.")
+    for w, shape in walks:
+        a(f"pe_walk_shape({q(w)}, {q(shape)}).")
+    a("")
+    a("% pe_walk_shape_kind(Shape): the declared shape vocabulary.")
+    for sh in walk_shapes:
+        a(f"pe_walk_shape_kind({q(sh)}).")
+    a("")
+    a("% pe_weight_value(Weight): the declared weight vocabulary.")
+    for w in weights:
+        a(f"pe_weight_value({q(w)}).")
+    a("")
     a("% Load-time drift check: fail closed if the sealed source moved.")
     a("pe_mirror_verify :-")
     a("    module_property(pe_registry_mirror, file(Here)),")
@@ -170,7 +193,7 @@ def main():
 
     OUT.write_text("\n".join(lines), encoding="utf-8")
     print(f"wrote {OUT.name}: {len(atoms)} atoms, {len(operators)} operators, "
-          f"{len(kwspecs)} kwspecs, source sha256 {sha[:16]}...")
+          f"{len(kwspecs)} kwspecs, {len(walks)} walks, source sha256 {sha[:16]}...")
 
 
 if __name__ == "__main__":
