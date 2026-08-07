@@ -3349,7 +3349,25 @@ add_assign_action(add(var(Name), NegDelta)) -->
     "-=",
     ws,
     scalar_delta_expr(Delta),
-    { plawk_negate_literal_delta(Delta, NegDelta) }.
+    { plawk_negate_scalar_delta(Delta, NegDelta) }.
+
+%% plawk_negate_scalar_delta(+Delta, -Negated) is det.
+%
+%  Negate a scalar `-=` delta. A LITERAL is negated in place, so `n -= 1` stays the
+%  single-instruction `add i64 %slot, -1` it has always been. Anything else becomes
+%  `0 - Delta` -- the same `sub_i64/2` term the parser already builds for the surface
+%  subtraction in `n += 0 - $2`, so `n -= E` and `n += 0 - E` are literally the same
+%  term and cannot diverge. Whatever the explicit spelling does, including declining,
+%  the sugar does identically; a test pins that equivalence rather than enumerating
+%  which expressions work.
+%
+%  This is why `n -= $2` no longer needs a `sub` OPERATION in the update emitter,
+%  which was the reason it was refused: the emitter knows `add`, and `add` of a
+%  negation is the same arithmetic.
+plawk_negate_scalar_delta(Delta, Negated) :-
+    plawk_negate_literal_delta(Delta, Negated),
+    !.
+plawk_negate_scalar_delta(Delta, sub_i64(int(0), Delta)).
 
 %% plawk_negate_literal_delta(+Delta, -Negated) is semidet.
 %
