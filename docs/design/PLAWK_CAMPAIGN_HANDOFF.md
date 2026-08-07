@@ -91,6 +91,30 @@ adding `dec_assoc` would have made a third representation of one operation. When
 follow-on is sized as "a row in every walker", first ask which existing family the
 surface form belongs to.
 
+**A gate's failure mode decides what a missing row costs — and one kind of gate
+fails silently.** The svar-key assoc gap was *four* independent lists of which
+scalar-var-keyed action shapes exist (the mixed route's admission gate, the
+table-registration walker, the assoc-only body spec, and the strnum read-use gate),
+each naming `inc_assoc` and none naming `add_assoc`. Variant 2, so far so familiar.
+The instructive part is that **three of the four turn a missing row into a decline
+and the fourth turns it into wrong output**, because the strnum read-use gate does
+not admit or refuse a program — it decides the key scalar's *representation*. An
+unrecognised read deactivates strnum, `k` becomes a plain i64 counter, and the key
+silently becomes the decimal of the field *parsed as a number* — `"0"` for `"INFO"`.
+So while the other three gates were still refusing `c[k] += N` on its own, a program
+mixing the spellings (`{ k = $1; c[k]++; c[k] += 2 }`) passed admission on the `++`,
+registered its table on the `++`, **built, and printed an empty line where gawk
+prints 3**.
+
+Two things to carry forward. First, when auditing "N lists of one set", **sort the
+sites by what happens when a row is missing**; the decline sites are self-reporting
+and the representation-selecting ones are not, so they deserve the first look and the
+tightest pin (here: assert at the IR level that the key is interned from the field
+slice and never from a decimal). Second, a mixed-spelling program is the probe that
+finds this class — each spelling alone declined honestly; only the two together
+produced a build. **When two spellings of one operation have different coverage,
+probe them in the same rule body**, not just side by side.
+
 **Prescriptions that worked:** one shared producer/emitter with callers
 parameterised (a *name flavour* parameter can preserve byte-identity — see
 #4094); when adding a fast path, check what the general walker's **base case**
@@ -195,7 +219,11 @@ pay-per-use, + a pre-existing END-`if` wrong output converted to a decline) ·
 **field reads in END `if` branches and loop bodies** (term rewrite, not emitter
 parameterisation) · **`NF` and `printf` record args in END** (+ the gate renamed to
 the property it enforces) · **14 stale assoc expectations** in the prefix-print
-suite · **unset scalars render empty** (monotonic assigned-mark).
+suite · **unset scalars render empty** (monotonic assigned-mark) · **`arr[k]--` / `arr[k] -=
+D`** for a field key · **a non-literal `-=` delta** (`n -= $2`, by negating instead of
+subtracting) · **scalar-var assoc keys for the whole `add_assoc` family** (four lists
+of one set collapsed onto `plawk_assoc_scalar_key_update/4`; one of them was selecting
+the key's representation and producing wrong output).
 
 ## A note on the one shared-globals exception
 
@@ -255,8 +283,11 @@ emitters have no clause) · **END-only** programs (a driver with no retain) ·
 an unrelated pre-existing restriction, pinned as such) · `$N` in a `binfmt` END
 (reads the record buffer, not a text slice).
 
-`arr[k]--` (needs a row in each of four `inc_assoc` walkers) · `n += -1` (parser
-rejects a negative compound-assign delta; odd now `n--` works) · assoc rules
+A **literal** assoc key (`c["x"] += 1`, `c["x"]++`) — refused for *both* the
+`inc_assoc` and `add_assoc` families, so it belongs to neither · a **non-literal
+delta at a scalar-var key** (`c[k] += $2` declines, `c[k] -= $2` is a parse error;
+the field-key `c[$1] += $2` works, and the scalar `n -= $2` now works, so this is the
+last non-literal-delta hole) · assoc rules
 alongside a scalar END loop (state-plan boundary) · float-literal and non-literal
 ternary arms (need runtime number→string) · `dec` row in the binfmt action gate ·
 the dead `@.plawk_surface_print_line` global (removal costs byte-identity on every

@@ -8330,11 +8330,21 @@ plawk_strnum_action_unsafe_read(foreach_loop(_Layout, Body), Set, Name) :-
     !,
     member(A, Body),
     plawk_strnum_action_unsafe_read(A, Set, Name).
-% `arr[Name]++` -- reading Name as an associative-array key is a SUPPORTED strnum
-% read: the key is the scalar's string value, which is exactly the interned atom
-% id the strnum slot already holds (so the mixed walker uses it directly). Not
-% unsafe; cut and fail (fail = "not unsafe"). Placed before the catch-all.
-plawk_strnum_action_unsafe_read(inc_assoc(var(_Arr), var(Name)), _Set, Name) :-
+% `arr[Name]++`, `arr[Name] += N`, `arr[Name] -= N`, `arr[Name]--` -- reading Name
+% as an associative-array key is a SUPPORTED strnum read: the key is the scalar's
+% string value, which is exactly the interned atom id the strnum slot already holds
+% (so the mixed walker uses it directly). Not unsafe; cut and fail (fail = "not
+% unsafe"). Placed before the catch-all.
+%
+% Defers to plawk_assoc_scalar_key_update/4 rather than naming the action shapes,
+% because this gate DECIDES THE KEY'S REPRESENTATION and so must cover exactly the
+% shapes the emitter accepts. It listed `inc_assoc` only, so an `arr[Name] += N`
+% counted as an unsupported read, Name lost strnum status and became a plain i64
+% counter -- and the key silently became the DECIMAL of the field's numeric value
+% ("0" for "INFO") instead of the field's text. A build that runs and prints the
+% wrong thing, which is worse than the decline it replaced.
+plawk_strnum_action_unsafe_read(Action, _Set, Name) :-
+    plawk_assoc_scalar_key_update(Action, _Arr, Name, _Delta),
     !,
     fail.
 % `delete arr[Name]` -- likewise a SUPPORTED strnum read: the key is the scalar's
@@ -8769,9 +8779,13 @@ plawk_mixed_branch_body_actions(Actions) :-
 
 plawk_assoc_update_action(inc_assoc(var(_ArrayName), field(KeyIndex))) :-
     KeyIndex > 0.
-% `arr[x]++` -- a scalar-variable key (resolved to the scalar's slot value in the
-% mixed walker; only a string/strnum slot is a valid key, checked there).
-plawk_assoc_update_action(inc_assoc(var(_ArrayName), var(_Name))).
+% An assoc update at a SCALAR-VARIABLE key (resolved to the scalar's slot value in
+% the mixed walker; only a string/strnum/counter slot is a valid key, checked there).
+% Defers to plawk_assoc_scalar_key_update/4 rather than listing the action shapes, so
+% this gate and the emitter admit exactly the same set -- they were two lists, and
+% `arr[x]++` was in both while `arr[x] += 1` was in neither.
+plawk_assoc_update_action(Action) :-
+    plawk_assoc_scalar_key_update(Action, _ArrayName, _Name, _Delta).
 plawk_assoc_update_action(inc_assoc(var(_ArrayName), Blob)) :-
     plawk_assoc_blob_key_ok(Blob).
 
@@ -8813,6 +8827,18 @@ plawk_assoc_increment_specs_in_actions(Actions, Specs) :-
 
 plawk_assoc_increment_spec_in_action(Action, Spec) :-
     plawk_assoc_increment_action(Action, Spec).
+% `arr[x] += N` / `arr[x] -= N` / `arr[x]--` at a scalar-variable key. Registers the
+% table exactly as `arr[x]++` does -- they share the spec because they share the
+% operation. Restricted to add_assoc so this clause and the one above do not both
+% yield for `++`; the mixed route sorts the array names anyway, but a spec list with
+% a duplicate would emit the update twice.
+%
+% Without this the table was never registered, so `{ x = $1; arr[x] += N }` alone
+% declined while the same program with an `arr[x]++` beside it compiled -- the count
+% plan collected only increment specs.
+plawk_assoc_increment_spec_in_action(Action, ArrayName-svar(Name)) :-
+    Action = add_assoc(_Array, _Key, _Delta),
+    plawk_assoc_scalar_key_update(Action, ArrayName, Name, _D).
 plawk_assoc_increment_spec_in_action(if(_Pattern, ThenActions, ElseActions), Spec) :-
     ( plawk_assoc_increment_spec_in_actions(ThenActions, Spec)
     ; plawk_assoc_increment_spec_in_actions(ElseActions, Spec)
@@ -9052,12 +9078,18 @@ plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), subsep_key(Fields)),
 plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), Blob),
         ArrayName-blob_key(Blob)) :-
     plawk_assoc_blob_key_ok(Blob).
-% `arr[k]++` with a scalar-variable key -- the no-END group-by idiom
-% (`{ k = $N; arr[k]++ } END { for (kk in arr) ... }`). The key scalar is
-% threaded through a module global @plawk_scalar_<Name> set by a `k = $N` action
-% (scalar_set_str below); the inc loads that atom id as the key.
-plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), var(Name)),
-        assoc_inc_svar(ArrayName, Name)) :-
+% `arr[k]++`, `arr[k] += N`, `arr[k] -= N`, `arr[k]--` with a scalar-variable key --
+% the no-END group-by idiom (`{ k = $N; arr[k]++ } END { for (kk in arr) ... }`) and
+% its weighted form. The key scalar is threaded through a module global
+% @plawk_scalar_<Name> set by a `k = $N` action (scalar_set_str below); the update
+% loads that atom id as the key and folds Delta in.
+%
+% One spec for all four spellings, carrying the delta: `@wam_assoc_i64_inc` takes the
+% delta as an argument, so the increment and the add-assign are the same call with a
+% different constant. This row listed `inc_assoc` only, which is why `arr[k]++`
+% compiled while the identical `arr[k] += 1` declined.
+plawk_assoc_body_action_spec(Action, assoc_inc_svar(ArrayName, Name, Delta)) :-
+    plawk_assoc_scalar_key_update(Action, ArrayName, Name, Delta),
     atom(Name).
 % `delete arr[$k]` -- remove the entry keyed by field k (v1: a field key, like
 % the counted inc). Absent key is a no-op (backward-shift delete in the runtime).
@@ -9545,6 +9577,28 @@ plawk_forin_guard_ok(in_arr(var(LoopVar), _LookupArray), LoopVar, _Array).
 plawk_forin_guard_ok(not_pat(Pattern), LoopVar, Array) :-
     plawk_forin_guard_ok(Pattern, LoopVar, Array).
 
+%% plawk_assoc_scalar_key_update(+Action, -ArrayName, -ScalarName, -Delta) is semidet.
+%
+%  An assoc update at a key taken from a SCALAR VARIABLE, with its integer delta:
+%  `arr[x]++` is delta 1, and `arr[x] += N` / `arr[x] -= N` / `arr[x]--` are delta N
+%  (the last three all arrive as add_assoc/3 with the sign already folded in by the
+%  parser's literal negation).
+%
+%  ONE predicate for both spellings, because they are one operation -- the runtime
+%  takes the delta as an argument. They were two: `inc_assoc` had a scalar-var key
+%  clause and `add_assoc` did not, which is exactly why `arr[x]++` compiled and the
+%  identical `arr[x] += 1` declined.
+%
+%  A NON-LITERAL delta is not accepted: the emitter takes an integer, and a field
+%  delta would need the field read threaded in. `arr[$k] += $n` (a FIELD key) is
+%  unaffected -- it goes through the field-key path -- while `arr[x] += $n` declines,
+%  pinned.
+plawk_assoc_scalar_key_update(Action, ArrayName, Name, 1) :-
+    plawk_assoc_increment_action(Action, ArrayName-svar(Name)).
+plawk_assoc_scalar_key_update(add_assoc(var(ArrayName), var(Name), int(Delta)),
+        ArrayName, Name, Delta) :-
+    integer(Delta).
+
 plawk_assoc_increment_action(inc_assoc(var(ArrayName), field(KeyIndex)), ArrayName-KeyIndex) :-
     KeyIndex > 0.
 plawk_assoc_increment_action(inc_assoc(var(ArrayName), subsep_key(Fields)),
@@ -9761,12 +9815,13 @@ plawk_assoc_planned_actions([scalar_set_str(Name, KeyIndex) | Rest],
     { NextIndex is Index + 1 },
     [assoc_scalar_set_str_action(Index, Name, KeyIndex)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
-plawk_assoc_planned_actions([assoc_inc_svar(ArrayName, Name) | Rest],
+plawk_assoc_planned_actions([assoc_inc_svar(ArrayName, Name, Delta) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
     { nth0(TableIndex, Tables, ArrayName),
+      integer(Delta),
       NextIndex is Index + 1
     },
-    [assoc_inc_svar_action(Index, ArrayName, TableIndex, Name)],
+    [assoc_inc_svar_action(Index, ArrayName, TableIndex, Name, Delta)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 plawk_assoc_planned_actions([forin(LoopVar, ArrayName, Fields) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
@@ -10371,11 +10426,12 @@ plawk_assoc_rule_action_blocks(RuleIndex,
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
-% `arr[k]++` with a scalar-variable key: load the key scalar's atom id from
-% @plawk_scalar_<Name> and increment the table at that key. Straight-line -- the
-% scalar always holds a value (0 = the empty-string key if never set).
+% `arr[k] += Delta` with a scalar-variable key (Delta 1 for `arr[k]++`, -1 for
+% `arr[k]--`): load the key scalar's atom id from @plawk_scalar_<Name> and fold Delta
+% into the table at that key. Straight-line -- the scalar always holds a value
+% (0 = the empty-string key if never set).
 plawk_assoc_rule_action_blocks(RuleIndex,
-        [assoc_inc_svar_action(Index, _ArrayName, TableIndex, Name) | Rest], NextLabel, FieldSeparator) -->
+        [assoc_inc_svar_action(Index, _ArrayName, TableIndex, Name, Delta) | Rest], NextLabel, FieldSeparator) -->
     { ( Rest == []
       -> ActionNextLabel = NextLabel
       ;  NextIndex is Index + 1,
@@ -10386,8 +10442,8 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(B), 'assoc_rule_~w_action_~w_incsv', [RuleIndex, Index]),
       format(atom(LoadKey), '  %~w_key = load i64, i64* @plawk_scalar_~w', [B, Name]),
       format(atom(Inc),
-          '  %~w_count = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key, i64 1)',
-          [B, TableIndex, B]),
+          '  %~w_count = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key, i64 ~w)',
+          [B, TableIndex, B, Delta]),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       Lines = [Label, LoadKey, Inc, Next, '']
     },
@@ -16300,14 +16356,15 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
 % the program declines cleanly. Straight-line, so the block label is unchanged.
 plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
-    { plawk_assoc_increment_action(Action, ArrayName-svar(Name)),
+    { plawk_assoc_scalar_key_update(Action, ArrayName, Name, Delta),
       plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
       nth0(SlotIndex, Slots, Slot),
       plawk_slot_name(Slot, Name),
       ( Slot = scalar_strnum(_) ; Slot = scalar_string(_) ; Slot = scalar_counter(_) ),
       !,
       nth0(SlotIndex, Values0, SlotValue),
-      plawk_assoc_update_operation_keyid_ir(Prefix, OpIndex, TableIndex, Slot, SlotValue, Pair),
+      plawk_assoc_update_operation_keyid_ir(Prefix, OpIndex, TableIndex, Slot,
+          SlotValue, Delta, Pair),
       NextOpIndex is OpIndex + 1
     },
     [Pair],
@@ -18217,13 +18274,24 @@ plawk_assoc_scalar_key_id(scalar_counter(_), SlotValue, BaseName, KeyIdIR, [Setu
 % string scalar is id 0 = the empty-string key, matching awk's `arr[""]`). A
 % string/strnum slot value is the key id directly; a counter value is interned
 % via its decimal spelling first (SetupLines).
-plawk_assoc_update_operation_keyid_ir(Prefix, OpIndex, TableIndex, Slot, SlotValue, ''-IR) :-
+%% plawk_assoc_update_operation_keyid_ir(+Prefix, +OpIndex, +TableIndex, +Slot,
+%%     +SlotValue, +Delta, -GlobalIR-IR) is det.
+%
+%  Fold Delta into a table at a key taken from a SCALAR VARIABLE's slot value.
+%  Delta is an integer, so `arr[x]++` passes 1 and `arr[x]--` / `arr[x] += N` /
+%  `arr[x] -= N` pass theirs -- @wam_assoc_i64_inc takes the delta as an ARGUMENT, so
+%  the increment and the add-assign were always the same call with a different
+%  constant. This hardcoded `i64 1`, which is the whole reason `arr[x]++` compiled
+%  while the identical `arr[x] += 1` declined for a scalar-var key.
+plawk_assoc_update_operation_keyid_ir(Prefix, OpIndex, TableIndex, Slot, SlotValue,
+        Delta, ''-IR) :-
+    integer(Delta),
     format(atom(BaseName), '~w_assoc_~w', [Prefix, OpIndex]),
     plawk_assoc_scalar_key_id(Slot, SlotValue, BaseName, KeyIdIR, SetupLines),
     format(atom(CountValue), '%~w_count', [BaseName]),
     format(atom(IncLine),
-        '  ~w = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 1)',
-        [CountValue, TableIndex, KeyIdIR]),
+        '  ~w = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 ~w)',
+        [CountValue, TableIndex, KeyIdIR, Delta]),
     append(SetupLines, [IncLine], AllLines),
     atomic_list_concat(AllLines, '\n', IR).
 
