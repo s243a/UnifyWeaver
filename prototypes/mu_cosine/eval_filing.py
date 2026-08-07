@@ -37,8 +37,9 @@ import re
 # TIER 1 — truly meaningless: maintenance / template / navigation categories whose TITLE is procedural noise
 # (zero topical content). Neither e5-cos nor μ can rank them; no training data fixes a meaningless label. Always
 # safe to drop (pure noise removal).
-_JUNK = re.compile(r"catautotoc|navseasoncats|navbox|wikipedia|^articles?[ _]|^pages?[ _]|^categor|"
-                   r"[ _]stubs?\b|templates?|redirects?|hidden|tracking|maintenance|disambiguation", re.I)
+_JUNK = re.compile(r"catautotoc|navseasoncats|navbox|wikipedia|wikidata|^articles?[ _]|^pages?[ _]|^categor|"
+                   r"[ _]stubs?\b|templates?|redirects?|hidden|tracking|maintenance|disambiguation|"
+                   r"\b\w+-class[ _]|unassessed|-importance[ _]", re.I)
 # TIER 2 — loosely semantic: structural / temporal / by-X groupings (years, places, nationalities). These DO
 # carry meaning (just lower semantic density), so dropping them makes the eval EASIER on valid-but-hard targets.
 # Keep by default; down-SAMPLE (not drop) in training. Drop only with --drop-structural (to decompose the gain).

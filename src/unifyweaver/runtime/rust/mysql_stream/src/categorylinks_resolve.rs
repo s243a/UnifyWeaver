@@ -56,9 +56,10 @@ pub const NS_ARTICLE: i64 = 0;
 /// they carry meaning; see the python comment for the rationale.
 pub fn is_admin_category(title: &[u8]) -> bool {
     let name = String::from_utf8_lossy(title).to_lowercase().replace('_', " ");
-    const CONTAINS: [&str; 10] = [
+    const CONTAINS: [&str; 14] = [
         "catautotoc", "navseasoncats", "navbox", "wikipedia", "template",
         "redirect", "hidden", "tracking", "maintenance", "disambiguation",
+        "wikidata", "-class ", "unassessed", "-importance ",
     ];
     const PREFIXES: [&str; 5] = ["article ", "articles ", "page ", "pages ", "categor"];
     if CONTAINS.iter().any(|p| name.contains(p)) {
@@ -491,6 +492,11 @@ mod tests {
         assert!(!is_admin_category(b"Physics"));
         assert!(!is_admin_category(b"Establishments_in_1990")); // tier-2: kept
         assert!(!is_admin_category(b"History_by_country"));     // tier-2: kept
+        // v3 leak patterns (field-found: sampler noise surfaced them)
+        assert!(is_admin_category(b"Commons_category_link_from_Wikidata"));
+        assert!(is_admin_category(b"List-Class_Pop_music_articles"));
+        assert!(is_admin_category(b"Unassessed_Pop_music_articles"));
+        assert!(is_admin_category(b"Low-importance_Telangana_articles"));
     }
 
     #[test]
