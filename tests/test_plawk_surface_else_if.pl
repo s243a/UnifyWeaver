@@ -90,10 +90,14 @@ test(surface_else_less_if_with_branch_print) :-
         "ERROR disk 300\nWARN cpu 50\nINFO net 15\nERROR mem 8\n",
         "huge disk\ndone\n").
 
+% `by["cpu"]` is never incremented, so it prints EMPTY -- awk's uninitialised array
+% element is "" in string context. Verified against gawk 5.2. Same class as the 14
+% stale expectations corrected in tests/test_plawk_surface_prefix_print.pl; this
+% suite was missed then and only surfaced in a full-suite sweep.
 test(surface_else_less_if_with_assoc_increment) :-
     run_elseif_print_smoke("{ if ($1 == \"ERROR\") { by[$2]++ } } END { print by[\"disk\"], by[\"mem\"], by[\"cpu\"] }\n",
         "ERROR disk 300\nWARN cpu 50\nINFO net 15\nERROR mem 8\n",
-        "1 1 0\n").
+        "1 1 \n").
 
 test(surface_else_if_with_combined_condition) :-
     run_elseif_print_smoke("{ if ($1 == \"ERROR\" && $3 > 100) { crit++ } else if ($1 == \"ERROR\") { minor++ } } END { print crit, minor }\n",

@@ -60,6 +60,40 @@ test(named_fb_shims_emitted) :-
 
 % An entry used as both i64 and float shares ONE resolver + PC global (no
 % duplicate LLVM symbols).
+% Every rung of plawk_dyncall_support_ir/N's default-argument ladder must reach the
+% implementation. Every rung used to jump straight to it, re-encoding the whole
+% argument list; when posarray support extended the implementation from /14 to /18,
+% all eight rungs were left calling a /14 that no longer existed, and any caller
+% using a short arity threw `Unknown procedure: plawk_dyncall_support_ir/14` at
+% codegen time. shared_entry_single_resolver below happened to use /8 and so was the
+% only test that noticed.
+%
+% This calls EVERY rung, so the next extension fails here rather than waiting for a
+% program that happens to use that arity. The rungs now chain (each adds one group
+% and calls the next), which is what keeps the full list in one place -- but a chain
+% can be misordered too, so the check is that each rung actually produces IR.
+test(every_default_argument_rung_reaches_the_implementation) :-
+    forall(between(3, 20, N),
+        (   plawk_native_codegen:current_predicate(plawk_dyncall_support_ir/N)
+        ->  length(Args, N),
+            Args = [Path | Rest],
+            Path = 'lib.wamo',
+            append(Lists, [IR], Rest),
+            maplist(=([]), Lists),
+            Goal =.. [plawk_dyncall_support_ir | Args],
+            (   catch(plawk_native_codegen:Goal, E,
+                    ( print_message(error, E), fail ))
+            ->  assertion(atom(IR)),
+                assertion(sub_atom(IR, _, _, _, '@plawk_dyncall_get'))
+            ;   format(user_error,
+                    "~nplawk_dyncall_support_ir/~w did not reach the implementation~n",
+                    [N]),
+                fail
+            )
+        ;   true
+        )),
+    !.
+
 test(shared_entry_single_resolver) :-
     plawk_native_codegen:plawk_dyncall_support_ir('lib.wamo',
         [], [], [], [square-1], [square-1], [square-1], IR),

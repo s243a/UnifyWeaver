@@ -33,11 +33,31 @@ test(driver_reads_records_transiently) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, '@wam_stream_read_line_value(%Value %handle)')),
     !.
 
+% A whole-record foreign argument must be INTERNED -- the foreign call gets a stable
+% atom, never a pointer into the transient record buffer that the next read will
+% overwrite.
+%
+% This used to assert `@strlen(i8* %line_s)` and `@wam_intern_atom(i8* %line_s, …)`,
+% naming the driver's own record pointer. The record pointer is now RE-RESOLVED at
+% the point of use (`@value_payload` + `@wam_atom_to_string`) rather than reusing
+% `%line_s`, because a `getline` can grow and relocate that shared buffer -- a
+% correctness improvement, so the assertions were pinning an incidental spelling
+% rather than the property. Restated on the property: resolve, measure, intern; and
+% the transient pointer is never itself what gets interned.
 test(foreign_whole_record_arg_interns_line) :-
     plawk_parse_string("plawk_whole_line_error($0) { hits++ } END { print hits }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', [wam_vm(100, 20)], DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '_len = call i64 @strlen(i8* %line_s)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '_id = call i64 @wam_intern_atom(i8* %line_s, i64 %'))),
+    Base = '%plawk_surface_rule_0_a0',
+    atom_concat(Base, '_line_id = call i64 @value_payload(%Value %line)', ResolveId),
+    atom_concat(Base, '_line_ptr = call i8* @wam_atom_to_string(i64 ', ResolvePtr),
+    atom_concat(Base, '_len = call i64 @strlen(i8* ', Measure),
+    atom_concat(Base, '_id = call i64 @wam_intern_atom(i8* ', Intern),
+    assertion(once(sub_atom(DriverIR, _, _, _, ResolveId))),
+    assertion(once(sub_atom(DriverIR, _, _, _, ResolvePtr))),
+    assertion(once(sub_atom(DriverIR, _, _, _, Measure))),
+    assertion(once(sub_atom(DriverIR, _, _, _, Intern))),
+    % the guard that carries the intent: the transient pointer is not interned
+    assertion(\+ sub_atom(DriverIR, _, _, _, '@wam_intern_atom(i8* %line_s')),
     !.
 
 % Long line followed by short lines: a stale NUL terminator or reused

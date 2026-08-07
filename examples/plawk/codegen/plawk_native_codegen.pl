@@ -2644,34 +2644,48 @@ fail:
 %  object loads on the first dyncall and is reused for the rest of the
 %  run -- the object-call primitive rewinds the arena per call, so this
 %  stays constant-memory just like the compiled foreign bridge.
+%  DEFAULT-ARGUMENT LADDER. Each rung supplies the defaults for ONE more group and
+%  calls the NEXT RUNG UP -- never the full implementation directly.
+%
+%  Every rung used to jump straight to the implementation, which meant each rung
+%  re-encoded the whole argument list. When posarray support extended the
+%  implementation from /14 to /18, all eight rungs were left calling a /14 that no
+%  longer existed, so any caller using a short arity threw
+%  `Unknown procedure: plawk_dyncall_support_ir/14` at codegen time. Chaining puts
+%  the full list in ONE place (the last rung), so extending the implementation again
+%  touches one line instead of eight -- and
+%  tests/test_plawk_dyncall_named_fb.pl:every_default_argument_rung_reaches_the_implementation
+%  calls every rung, so a miss fails loudly instead of waiting for a program that
+%  happens to use that arity.
 plawk_dyncall_support_ir(Path, Arities, IR) :-
-    plawk_dyncall_support_ir(Path, Arities, [], [], [], [], [], [], [], [], IR).
+    plawk_dyncall_support_ir(Path, Arities, [], IR).
 plawk_dyncall_support_ir(Path, IArities, FArities, IR) :-
-    plawk_dyncall_support_ir(Path, IArities, FArities, [], [], [], [], [], [], [], IR).
+    plawk_dyncall_support_ir(Path, IArities, FArities, [], IR).
 plawk_dyncall_support_ir(Path, IArities, FArities, BArities, IR) :-
-    plawk_dyncall_support_ir(Path, IArities, FArities, BArities, [], [], [], [], [], [], IR).
+    plawk_dyncall_support_ir(Path, IArities, FArities, BArities, [], IR).
 plawk_dyncall_support_ir(Path, IArities, FArities, BArities, NamedEntries, IR) :-
     plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
-        NamedEntries, [], [], [], [], [], IR).
+        NamedEntries, [], [], IR).
 plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
         NamedI, NamedF, NamedB, IR) :-
     plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
-        NamedI, NamedF, NamedB, [], [], [], IR).
+        NamedI, NamedF, NamedB, [], [], IR).
 plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
         NamedI, NamedF, NamedB, RecArities, NamedRec, IR) :-
     plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
-        NamedI, NamedF, NamedB, RecArities, NamedRec, [], [], [], [], IR).
+        NamedI, NamedF, NamedB, RecArities, NamedRec, [], IR).
 plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
         NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc, IR) :-
     plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
-        NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc,
-        [], [], [], IR).
+        NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc, [], IR).
+%  The one rung that names every remaining group: extending the implementation means
+%  adding a default here (and a rung above, if callers want the shorter arity).
 plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
         NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc,
         AssocArities, IR) :-
     plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
         NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc,
-        AssocArities, [], [], IR).
+        AssocArities, [], [], [], [], [], [], IR).
 
 %% plawk_dyncall_support_ir(+Path, +IArities, +FArities, +BArities,
 %%                          +NamedI, +NamedF, +NamedB, +RecArities,

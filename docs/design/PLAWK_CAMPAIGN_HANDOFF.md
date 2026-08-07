@@ -142,6 +142,29 @@ let the missing clauses be the gate.
   PR on the feature line directly.
 - Suites are slow (each test does a full clang build, ~8s). Run them in the
   background and monitor; ~25 tests ≈ 4 minutes.
+- **Do not run suites concurrently.** Two `test_plawk_ternary_str_branches` tests
+  failed under parallel load and passed when the suite ran alone — a suite builds
+  into a fixed path and runs the binary, and concurrent clang invocations make that
+  flaky. It cost a wrong diagnosis (two tests reported broken that were fine). Run
+  them sequentially, and when a failure looks surprising, re-run that suite by
+  itself before believing it.
+- **Match every plunit summary form.** A sweep grepping
+  `"All N tests passed|tests failed"` silently misses the single-test form
+  (`% test passed`) *and* the singular failure (`% 1 test failed`) — twelve failing
+  suites reported as "no summary". Grep `^% .*(passed|failed)` instead. There is a
+  *third* form: `% PL-Unit: <name>  passed 0.2 sec` with **no test count and no
+  dots**, which means `% No tests to run` — every test filtered out by a
+  `condition/1`. Four LMDB/namespace suites look like that here because
+  `clang_lmdb_available` is false in this environment. Do not read those as passes.
+
+## Baseline
+
+**All 180 plawk suites sweep clean: 2323 tests passed, 0 failed** (176 suites run
+tests; 4 run none, LMDB-gated). This is the first fully green plawk base in the
+campaign — worth keeping that way, because twice a change landed on top of a red
+suite and the breakage went unnoticed for several PRs (`bare_print` from #4108, and
+seven broken `plawk_dyncall_support_ir` ladder rungs). Sweep before claiming a
+change is clean, and run the suites **sequentially**.
 - `swipl` loading the codegen module directly is slow enough to time out; prefer
   probing through `bin/plawk`.
 - Commit trailers required:
