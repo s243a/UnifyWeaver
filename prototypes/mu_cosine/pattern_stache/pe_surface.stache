@@ -9,6 +9,7 @@
 {{case kalman(A, B)}}kalman({{A}},{{B}}{{kw}})
 {{case blend(Args)}}blend({{Args}}{{kw}})
 {{case lineage(S)}}lineage({{S}}{{kw}})
+{{case cowalk(S)}}cowalk({{S}}{{kw}})
 {{case distill(S)}}distill({{S}}{{kw}})
 {{case menu(J)}}menu({{J}}{{kw}})
 {{case margin}}margin({{kw}})

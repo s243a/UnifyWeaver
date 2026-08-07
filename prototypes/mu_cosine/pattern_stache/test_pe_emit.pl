@@ -7,7 +7,7 @@
 % Run from this directory:
 %   swipl -g run_tests -t halt test_pe_emit.pl
 %
-% For every row of PROCESS_EXPRESSION_GOLDEN_v3.json the emitter is
+% For every row of PROCESS_EXPRESSION_GOLDEN_v4.json the emitter is
 % driven from the corresponding goal term (convention documented in
 % pe_emit.pl) and the output must equal the row's
 % canonical_identity_string byte-for-byte; the full form must equal
@@ -29,12 +29,12 @@ load_golden :-
     retractall(golden_row(_, _, _)),
     module_property(pe_emit, file(Here)),
     file_directory_name(Here, Dir),
-    atomic_list_concat([Dir, '/../PROCESS_EXPRESSION_GOLDEN_v3.json'], Path),
+    atomic_list_concat([Dir, '/../PROCESS_EXPRESSION_GOLDEN_v4.json'], Path),
     setup_call_cleanup(
         open(Path, read, S, [encoding(utf8)]),
         json_read_dict(S, Bundle),
         close(S)),
-    Bundle.registry_version == "v0.4",
+    Bundle.registry_version == "v0.5",
     forall(member(Row, Bundle.rows),
            ( atom_string(Name, Row.name),
              assertz(golden_row(Name,
@@ -44,7 +44,7 @@ load_golden :-
 :- initialization(load_golden).
 
 %% ============================================
-%% The 25 goal terms, one per golden row
+%% The 30 goal terms, one per golden row
 %% ============================================
 %
 % Hand-written under the documented goal convention; the golden
@@ -87,8 +87,34 @@ golden_goal('substrate-atom',   fs).
 golden_goal('utf8-string',
     routing(e5, haiku, t([0.02]), menus([10]), manifest("héllo·wörld"))).
 
+%% ---- v0.5 additions (golden v4) ----
+% enwiki joins the registered substrates; nothing else about the row
+% is new, which is the point of including it.
+golden_goal('enwiki-substrate',
+    lineage(enwiki, mu(graph), estimand(ancestry))).
+% cowalk: the first operator whose kwargs use the ENUMERATED kinds
+% `walk` and `weight`.  Note the sealed canonical form injects
+% weight="uniform" — cowalk's registry default — even though the
+% authored expression omits it.
+golden_goal('cowalk-sibling',
+    cowalk(enwiki, walk(sibling), estimand(path))).
+golden_goal('cowalk-weighted-cousin',
+    cowalk(simplewiki, walk(cousin), weight(idf_node_size),
+           mu(haiku), estimand(path))).
+% pick over a menu: an operator applied to an operator, no kwargs.
+golden_goal('pick-root',
+    pick(menu(graph, n(10)))).
+% Scientific notation.  GOAL CONVENTION NOTE: Prolog's reader
+% normalizes the float literal to its own spelling (1e-05 and 1.0e-5
+% both read as the same float), so the goal term carries a FLOAT, not
+% a spelling — the v0.5 surface spelling `1e-05` is produced by
+% pe_number.pl's CPython-repr rendering, not by how the literal was
+% typed here.
+golden_goal('scientific-notation-number',
+    margin(t(1.0e-5))).
+
 %% ============================================
-%% Byte-exact verification, all 25 rows
+%% Byte-exact verification, all 30 rows
 %% ============================================
 
 :- begin_tests(golden_bytes).
@@ -96,8 +122,8 @@ golden_goal('utf8-string',
 % Every golden row has a goal term and vice versa — no row silently
 % unaccounted for.
 test(bijection_rows_to_goals) :-
-    aggregate_all(count, golden_row(_, _, _), 25),
-    aggregate_all(count, golden_goal(_, _), 25),
+    aggregate_all(count, golden_row(_, _, _), 30),
+    aggregate_all(count, golden_goal(_, _), 30),
     forall(golden_row(Name, _, _), golden_goal(Name, _)),
     forall(golden_goal(Name, _), golden_row(Name, _, _)).
 

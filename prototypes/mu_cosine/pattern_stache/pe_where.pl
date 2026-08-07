@@ -287,6 +287,9 @@ legal_kind(string, Val)      :- !, ( string(Val) -> true ; atom(Val) ).
 % the goal convention (the generated mirror carries them verbatim).
 legal_kind(estimand, Val)    :- !, ( string(Val) -> true ; atom(Val) ).
 legal_kind(impl, Val)        :- !, ( string(Val) -> true ; atom(Val) ).
+% v0.5: cowalk's enumerated kinds
+legal_kind(walk, Val)        :- !, ( string(Val) -> true ; atom(Val) ).
+legal_kind(weight, Val)      :- !, ( string(Val) -> true ; atom(Val) ).
 legal_kind(number_list, Val) :- !, is_list(Val), maplist(number, Val).
 legal_kind(int_list, Val)    :- !, is_list(Val), maplist(integer, Val).
 % any other declared kind is an output type (mu -> judge): the value
