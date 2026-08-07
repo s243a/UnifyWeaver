@@ -151,7 +151,20 @@ let the missing clauses be the gate.
 - **Match every plunit summary form.** A sweep grepping
   `"All N tests passed|tests failed"` silently misses the single-test form
   (`% test passed`) *and* the singular failure (`% 1 test failed`) — twelve failing
-  suites reported as "no summary". Grep `^% .*(passed|failed)` instead.
+  suites reported as "no summary". Grep `^% .*(passed|failed)` instead. There is a
+  *third* form: `% PL-Unit: <name>  passed 0.2 sec` with **no test count and no
+  dots**, which means `% No tests to run` — every test filtered out by a
+  `condition/1`. Four LMDB/namespace suites look like that here because
+  `clang_lmdb_available` is false in this environment. Do not read those as passes.
+
+## Baseline
+
+**All 180 plawk suites sweep clean: 2323 tests passed, 0 failed** (176 suites run
+tests; 4 run none, LMDB-gated). This is the first fully green plawk base in the
+campaign — worth keeping that way, because twice a change landed on top of a red
+suite and the breakage went unnoticed for several PRs (`bare_print` from #4108, and
+seven broken `plawk_dyncall_support_ir` ladder rungs). Sweep before claiming a
+change is clean, and run the suites **sequentially**.
 - `swipl` loading the codegen module directly is slow enough to time out; prefer
   probing through `bin/plawk`.
 - Commit trailers required:
