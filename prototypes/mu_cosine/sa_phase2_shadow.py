@@ -164,4 +164,5 @@ def run():
     json.dump(res, open("PHASE2_MIXING_SWEEP.json", "w"), indent=1)
     print(json.dumps(res, indent=1), flush=True)
 
-run()
+if __name__ == "__main__":
+    run()
