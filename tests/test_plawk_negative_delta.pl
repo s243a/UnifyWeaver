@@ -174,20 +174,82 @@ test(increment_unchanged, [condition(clang_available)]) :-
 
 % --- clean refusals, pinned ---------------------------------------------
 
-% A NON-LITERAL `-=` delta. `n += $2` works, so this is an asymmetry -- a deliberate
-% one: negating at parse time only works for a literal, and the update emitter knows
-% `add` and `set` only, so a real subtraction is its own change. Refused rather than
-% mis-negated.
-test(non_literal_subtract_assign_is_refused) :-
-    build_status("{ n -= $2 } END { print n }\n", 2),
+% --- non-literal deltas ---------------------------------------------------
+%
+% `n -= $2` was refused, on the reasoning that a real subtraction was needed in the
+% update emitter (which knows `add` and `set`). It is not: `add` of a NEGATION is the
+% same arithmetic, and `0 - E` is the `sub_i64/2` term the parser already builds for
+% the surface subtraction in `n += 0 - $2`. So `n -= E` desugars to exactly the term
+% `n += 0 - E` produces and needs no new operation.
+%
+% A literal is still negated in place, so `n -= 1` stays the single-instruction
+% `add i64 %slot, -1` it has always been rather than growing a subtract.
+
+test(non_literal_subtract_assign, [condition(clang_available)]) :-
+    run("{ n -= $2 } END { print n }\n", "-10\n"),
     !.
 
-test(the_negation_helper_refuses_non_literals) :-
-    assertion(plawk_native_codegen:true),   % module loaded
+test(subtract_assign_a_special, [condition(clang_available)]) :-
+    run("{ n -= NR } END { print n }\n", "-10\n"),
+    !.
+
+test(subtract_assign_a_builtin, [condition(clang_available)]) :-
+    run("{ n -= length($1) } END { print n }\n", "-4\n"),
+    !.
+
+% Nested arithmetic on the right: `n -= $1 - $2` is n -= ($1 - $2).
+test(subtract_assign_an_arithmetic_expression, [condition(clang_available)]) :-
+    run("{ n -= $2 - 1 } END { print n }\n", "-6\n"),
+    !.
+
+% THE EQUIVALENCE, which is what makes the desugaring safe to state generally:
+% whatever `+= 0 - E` does -- including declining -- `-= E` does identically, because
+% it is the same term. Pinned as an equivalence rather than by enumerating which
+% expressions work.
+test(non_literal_subtract_assign_is_the_explicit_negation) :-
+    plawk_parse_string("{ n -= $2 } END { print n }\n", Sugar),
+    plawk_parse_string("{ n += 0 - $2 } END { print n }\n", Explicit),
+    assertion(Sugar == Explicit),
+    assertion(Sugar = program([],
+        [rule(always, [add(var(n), sub_i64(int(0), field(2)))])], [_])),
+    !.
+
+test(non_literal_subtract_assign_emits_identical_ir) :-
+    plawk_parse_string("{ n -= $2 } END { print n }\n", Sugar),
+    plawk_parse_string("{ n += 0 - $2 } END { print n }\n", Explicit),
+    plawk_program_native_driver_ir(Sugar, 'input.txt', SugarIR),
+    plawk_program_native_driver_ir(Explicit, 'input.txt', ExplicitIR),
+    assertion(SugarIR == ExplicitIR),
+    !.
+
+% A LITERAL still takes the in-place negation, not the subtract -- so the common form
+% does not regress into an extra instruction.
+test(a_literal_delta_stays_an_in_place_negation) :-
+    plawk_parse_string("{ n -= 1 } END { print n }\n",
+        program([], [rule(always, [add(var(n), int(-1))])], [_])),
     assertion(\+ plawk_parser:plawk_negate_literal_delta(field(2), _)),
     assertion(plawk_parser:plawk_negate_literal_delta(int(3), int(-3))),
     assertion(plawk_parser:plawk_negate_literal_delta(float_const(15, 10),
         float_const(-15, 10))),
+    !.
+
+% The fallback is total: a non-literal always becomes a negation rather than failing.
+test(the_scalar_negation_helper_is_total) :-
+    assertion(plawk_parser:plawk_negate_scalar_delta(int(3), int(-3))),
+    assertion(plawk_parser:plawk_negate_scalar_delta(field(2),
+        sub_i64(int(0), field(2)))),
+    assertion(plawk_parser:plawk_negate_scalar_delta(special('NR'),
+        sub_i64(int(0), special('NR')))),
+    !.
+
+% --- the assoc half is NOT fixed here, and is attributed ------------------
+
+% `c[$1] -= $2` still declines -- because the assoc delta accepts only a bare field
+% or an integer literal, so `c[$1] += 0 - $2` declines too. Pinned as a PAIR so the
+% restriction stays attributed to the assoc delta production rather than to `-=`.
+test(a_non_literal_assoc_delta_is_refused_for_both_spellings) :-
+    build_status("{ c[$1] += 0 - $2 } END { print c[\"a\"] }\n", 2),
+    build_status("{ c[$1] -= $2 } END { print c[\"a\"] }\n", 2),
     !.
 
 % A compound assign as an END STATEMENT declines -- for `+=`, `-=` and `++` alike,
