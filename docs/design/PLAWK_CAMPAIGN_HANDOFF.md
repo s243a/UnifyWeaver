@@ -115,6 +115,31 @@ finds this class — each spelling alone declined honestly; only the two togethe
 produced a build. **When two spellings of one operation have different coverage,
 probe them in the same rule body**, not just side by side.
 
+**Not every "missing row" is a missing row: two key spaces can share one surface
+syntax.** `c[5]++` looks like the integer sibling of the `c["x"]++` that landed beside
+it, and it is not. plawk has two array conventions and they share the spelling
+`arr[N]`: awk semantics (keys are **strings**, so `arr[5]` is interned `"5"`) and
+positional tables from `split()` / posarray binds (keyed by the **raw integer**
+position, which is how `lookup_int` reads them). *Which space a program means is decided
+by the table's kind, not by the subscript*, and the spec-level gate that would admit the
+update does not know the kind. Admitting it compiles `{ c[5]++; print c[5] }` into a
+store to interned `"5"` and a load from raw `5` — it **builds and prints four empty
+lines** where gawk prints 1..4.
+
+So the refusal is not conservatism about a shape; it is a real ambiguity that has to be
+resolved before the shape can exist. The tell that it was this and not a missing row:
+`c[$1,5]++` already works, so the integer literal builds fine as a *component* — the
+same bytes are buildable and only the *lone* form is refused. **When one arity or one
+operand position is refused while a strictly more general form works, look for a
+collision rather than a gap.**
+
+The same probe also found that the two spaces are **already** inconsistent:
+`delete arr[N]` takes the string reading (`assoc_delete_lit` interns
+`number_string(N)`), so on a positional table
+`{ split($0, a, " "); delete a[1]; print a[1] }` prints the field where gawk prints
+empty — a pre-existing wrong output, confirmed at the merged parent, and its own
+follow-on rather than something to fold into an unrelated change.
+
 **Prescriptions that worked:** one shared producer/emitter with callers
 parameterised (a *name flavour* parameter can preserve byte-identity — see
 #4094); when adding a fast path, check what the general walker's **base case**
@@ -223,7 +248,8 @@ suite · **unset scalars render empty** (monotonic assigned-mark) · **`arr[k]--
 D`** for a field key · **a non-literal `-=` delta** (`n -= $2`, by negating instead of
 subtracting) · **scalar-var assoc keys for the whole `add_assoc` family** (four lists
 of one set collapsed onto `plawk_assoc_scalar_key_update/4`; one of them was selecting
-the key's representation and producing wrong output).
+the key's representation and producing wrong output) · **string-literal assoc keys**
+(`c["total"]++`) — the multi-dimensional key builder at arity 1, one relaxed guard.
 
 ## A note on the one shared-globals exception
 
@@ -283,9 +309,11 @@ emitters have no clause) · **END-only** programs (a driver with no retain) ·
 an unrelated pre-existing restriction, pinned as such) · `$N` in a `binfmt` END
 (reads the record buffer, not a text slice).
 
-A **literal** assoc key (`c["x"] += 1`, `c["x"]++`) — refused for *both* the
-`inc_assoc` and `add_assoc` families, so it belongs to neither · a **non-literal
-delta at a scalar-var key** (`c[k] += $2` declines, `c[k] -= $2` is a parse error;
+An **integer-literal** assoc key (`c[5]++`) — blocked by the raw-integer/interned-text
+key-space collision above, not by a missing row · **`delete arr[N]` on a positional
+table** — a pre-existing wrong output from the same collision (`delete a[1]` interns
+`"1"` and misses raw key `1`), the fix being to take the raw reading when the table is a
+posarray, mirroring `lookup_int` · a **non-literal delta at a scalar-var key** (`c[k] += $2` declines, `c[k] -= $2` is a parse error;
 the field-key `c[$1] += $2` works, and the scalar `n -= $2` now works, so this is the
 last non-literal-delta hole) · assoc rules
 alongside a scalar END loop (state-plan boundary) · float-literal and non-literal

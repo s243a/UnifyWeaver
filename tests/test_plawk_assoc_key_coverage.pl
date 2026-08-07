@@ -209,11 +209,24 @@ test(every_decrement_spelling_emits_identical_ir) :-
 
 % --- what is still refused, pinned ---------------------------------------
 
-% A LITERAL key declines for both families -- unchanged, and unrelated to the key
-% kind fixed here.
-test(a_literal_key_still_declines_for_both_spellings) :-
-    build_status("{ c[\"x\"] += 1 } END { print c[\"x\"] }\n", 3),
-    build_status("{ c[\"x\"]++ } END { print c[\"x\"] }\n", 3),
+% WAS: both declined (status 3), pinned here as unrelated to the scalar-var key kind
+% this suite covers. Correctly attributed -- and it turned out to be unrelated in the
+% implementation too: a STRING-literal key is the arity-1 case of the multi-dimensional
+% key builder, needing no part of the machinery this suite exercises. Kept, inverted;
+% the full matrix is in tests/test_plawk_literal_assoc_key.pl.
+test(a_string_literal_key_now_works_for_both_spellings, [condition(clang_available)]) :-
+    run("{ c[\"x\"] += 1 } END { print c[\"x\"] }\n", "4\n"),
+    run("{ c[\"x\"]++ } END { print c[\"x\"] }\n", "4\n"),
+    !.
+
+% An INTEGER-literal key still declines, and for a different reason than the string
+% one ever did: `arr[N]` is already claimed by the raw-integer key space that
+% positional (split) tables read, so admitting the update would make
+% `{ c[5]++; print c[5] }` store and load different keys. Pinned in
+% tests/test_plawk_literal_assoc_key.pl with the component form beside it.
+test(an_integer_literal_key_still_declines) :-
+    build_status("{ c[5] += 1 } END { print c[\"5\"] }\n", 3),
+    build_status("{ c[5]++ } END { print c[\"5\"] }\n", 3),
     !.
 
 % A non-literal delta at an svar key declines cleanly (`+=`) or is a parse error

@@ -42,18 +42,21 @@
 %
 % `arr[k]--` is `arr[k] += -1`, so it supports exactly the keys `+=` supports:
 %
-%              field key $1   literal key "x"   scalar-var key k
-%   c[K]++          yes            no                 yes
-%   c[K] += N       yes            no                 yes
-%   c[K]--          yes            no                 yes
+%              field key $1   string key "x"   int key 5   scalar-var key k
+%   c[K]++          yes            yes               no           yes
+%   c[K] += N       yes            yes               no           yes
+%   c[K]--          yes            yes               no           yes
 %
 % The scalar-var column read `no / no` for the add_assoc rows when this suite was
 % written -- `c[k]++` compiled and `c[k]--` declined -- and that was NOT this change's
 % asymmetry but the pre-existing `inc_assoc` / `add_assoc` key-coverage gap, inherited
 % because the decrement rides `add_assoc`. That gap is now closed; see
-% tests/test_plawk_assoc_key_coverage.pl. The literal-key column is still `no` for
-% BOTH families and is pinned below in a pair, so it stays attributed to the family
-% that owns it.
+% tests/test_plawk_assoc_key_coverage.pl. The STRING-literal column read `no` for both
+% families too and is now closed as well (tests/test_plawk_literal_assoc_key.pl) -- it
+% was the arity-1 case of the multi-dimensional key builder, so like the decrement it
+% landed by riding an existing family. Only the INTEGER-literal key remains `no`, and
+% for a reason that has nothing to do with either family: `arr[N]` is already claimed
+% by the raw-integer key space that positional (split) tables read.
 %
 % gawk 5.2 is the oracle for every expectation here.
 
@@ -183,9 +186,16 @@ test(a_scalar_var_key_now_works_for_add_assign_and_decrement_alike,
     run("{ k = $1; c[k]-- } END { print c[\"INFO\"] }\n", "-1\n"),
     !.
 
-test(a_literal_key_declines_for_add_assign_and_decrement_alike) :-
-    build_status("{ c[\"x\"] += 1 } END { print c[\"x\"] }\n", 3),
-    build_status("{ c[\"x\"]-- } END { print c[\"x\"] }\n", 3),
+% WAS: both declined (status 3). The STRING-literal key now works for the whole
+% add_assoc family too -- it turned out to be the arity-1 case of the multi-dimensional
+% key builder, so like the decrement itself it landed by riding an existing family
+% rather than growing a new one. Kept, inverted; matrix in
+% tests/test_plawk_literal_assoc_key.pl. The INTEGER-literal key still declines, for an
+% unrelated reason (a key-space collision with positional tables), pinned there.
+test(a_string_literal_key_now_works_for_add_assign_and_decrement_alike,
+        [condition(clang_available)]) :-
+    run("{ c[\"x\"] += 1 } END { print c[\"x\"] }\n", "4\n"),
+    run("{ c[\"x\"]-- } END { print c[\"x\"] }\n", "-4\n"),
     !.
 
 % A NON-LITERAL `-=` delta is refused rather than mis-negated -- the negation is a
