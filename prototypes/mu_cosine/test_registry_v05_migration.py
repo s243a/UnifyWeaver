@@ -35,8 +35,16 @@ def test_every_v04_bundle_identity_is_mapped_and_byte_stable(manifest):
     )
     sealed = {row["canonical_identity_string"] for row in bundle["rows"]}
     mapped = {row["canonical_semantic"] for row in manifest["rows"]}
-    assert mapped == sealed
-    for semantic in sorted(sealed):
+    # External review (M3): the net also covers the v0.3->v0.4 manifest's
+    # mapped successors, two of which are not bundle rows — the inventory is
+    # the UNION of both sealed sources, so mapped is a strict superset.
+    assert sealed < mapped
+    v04 = json.loads(
+        (ROOT / "REGISTRY_V04_MIGRATION_MANIFEST.json").read_text(encoding="utf-8"))
+    successors = {row["new_canonical_bytes"] for row in v04["rows"]
+                  if row["status"] == "mapped"}
+    assert mapped == sealed | successors
+    for semantic in sorted(mapped):
         node = pc.parse(semantic)
         assert pc.canonical_semantic(node) == semantic  # byte-stable under v0.5
 

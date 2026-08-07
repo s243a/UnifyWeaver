@@ -9,7 +9,7 @@
  ],
  "additive": true,
  "from_registry_version": "v0.4",
- "manifest_sha256": "1f8514240f20bd64437dfaf5fe14e4abedb060a0b2e8a2a5fb00a537da7dc088",
+ "manifest_sha256": "4293b846dcdc6fbfc56b9ba995734e523b6a1dfa983eb66e36fb0df5b04bb211",
  "rows": [
   {
    "canonical_semantic": "blend(graph.discrim,llm.element,llm.subcat)",
@@ -108,6 +108,12 @@
    "status": "mapped"
   },
   {
+   "canonical_semantic": "lineage(simplewiki,decay=0.85,estimand=\"ancestry\",mu=graph)",
+   "new_semantic_digest": "685cc117a85319ca5d494cb90d905c9292fab879eb709c170107a359b3ee88b7",
+   "old_semantic_digest": "36d014ee7b14a6439ff1de6320df0fabb9e7d9c6ebabd2115b1acbc5537676e5",
+   "status": "mapped"
+  },
+  {
    "canonical_semantic": "lineage(simplewiki,decay=0.85,mu=sonnet.lineage)",
    "new_semantic_digest": "ca492dc5ae04af2aed017d3ada66a049dba4f6925c844bae268d87ba2c740af1",
    "old_semantic_digest": "c3289838e78e58229e4c499ee4c4c6580e81746cbbd5095dc6ac5e12234dc963",
@@ -164,7 +170,7 @@
  ],
  "schema": "unifyweaver.registry-migration.v2",
  "status_counts": {
-  "mapped": 25,
+  "mapped": 26,
   "tombstoned": 0
  },
  "to_registry_version": "v0.5"

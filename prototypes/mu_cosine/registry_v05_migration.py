@@ -38,6 +38,11 @@ TO_REGISTRY_VERSION = "v0.5"
 SEALED_SOURCES = {
     "PROCESS_EXPRESSION_GOLDEN_v3.json":
         "90cc484021150aa9916be2f8c4fdb57b66f3a2e7d18dafff7e40c3c566af8ef7",
+    # External review (M3): two of the v0.3->v0.4 manifest's mapped
+    # successors are not bundle rows, so a bundle-only inventory left them
+    # outside the byte-stability net. Both sealed sources are unioned.
+    "REGISTRY_V04_MIGRATION_MANIFEST.json":
+        "709c3eb499e1e4ff204e4da3619f6294eb02a2f36515fc5f536a5b1445583cc0",
 }
 
 MANIFEST_PATH = ROOT / "REGISTRY_V05_MIGRATION_MANIFEST.json"
@@ -56,8 +61,7 @@ def _digest(version: str, semantic: str) -> str:
     return hashlib.sha256(f"{version}|{semantic}".encode("utf-8")).hexdigest()
 
 
-def _sealed_bundle() -> Mapping[str, Any]:
-    name = "PROCESS_EXPRESSION_GOLDEN_v3.json"
+def _sealed(name: str) -> Mapping[str, Any]:
     raw = (ROOT / name).read_bytes()
     if hashlib.sha256(raw).hexdigest() != SEALED_SOURCES[name]:
         raise MigrationError(f"sealed source {name} does not match its pin")
@@ -65,13 +69,18 @@ def _sealed_bundle() -> Mapping[str, Any]:
 
 
 def build_manifest() -> dict[str, Any]:
-    bundle = _sealed_bundle()
+    bundle = _sealed("PROCESS_EXPRESSION_GOLDEN_v3.json")
     if bundle.get("registry_version") != FROM_REGISTRY_VERSION:
         raise MigrationError("sealed bundle is not a v0.4 artifact")
+    v04_manifest = _sealed("REGISTRY_V04_MIGRATION_MANIFEST.json")
+    if v04_manifest.get("to_registry_version") != FROM_REGISTRY_VERSION:
+        raise MigrationError("sealed v0.4 manifest does not target v0.4")
+    identities = [row["canonical_identity_string"] for row in bundle["rows"]]
+    identities += [row["new_canonical_bytes"] for row in v04_manifest["rows"]
+                   if row["status"] == "mapped"]
     rows = []
     seen: set = set()
-    for row in bundle["rows"]:
-        semantic = row["canonical_identity_string"]
+    for semantic in identities:
         if semantic in seen:
             continue
         seen.add(semantic)
@@ -114,6 +123,15 @@ def verify_manifest(manifest: Mapping[str, Any]) -> None:
     ).hexdigest()
     if digest != manifest["manifest_sha256"]:
         raise MigrationError("manifest_sha256 does not match the manifest body")
+    # External review (M2): a self-consistent hash over a WRONG header is
+    # still wrong — the verifier binds schema and both version labels, not
+    # only the body's internal consistency.
+    if manifest.get("schema") != "unifyweaver.registry-migration.v2":
+        raise MigrationError("unknown migration manifest schema")
+    if manifest.get("from_registry_version") != FROM_REGISTRY_VERSION:
+        raise MigrationError("manifest does not migrate FROM v0.4")
+    if manifest.get("to_registry_version") != TO_REGISTRY_VERSION:
+        raise MigrationError("manifest does not migrate TO v0.5")
     if manifest["status_counts"]["tombstoned"] != 0:
         raise MigrationError("an additive migration cannot tombstone")
     for row in manifest["rows"]:
