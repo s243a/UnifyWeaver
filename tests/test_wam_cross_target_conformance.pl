@@ -305,6 +305,56 @@ ct_default_target(elixir).
 %     delegated to step via emit_one_fs(builtin_call). No remaining
 %     fsharp / fsharp_functions ct_xfail or ct_skip.
 
+%  ---------------------------------------------------------------
+%  Head-shape programs (wide / nested / emptylist, added 2026-08-06)
+%  ---------------------------------------------------------------
+%  These three programs were added after the WAM-Go runtime-parser
+%  bring-up (PARSE-GO) found eight defects in a backend that was
+%  registered here and green on all six classic programs. The classics
+%  are all arity <= 3 with flat list/atom arguments, so nothing
+%  exercised: argument registers above A8, a structure nested inside a
+%  cons-cell head, the cons TAIL after such a nested structure, or `[]`
+%  reached as a tail versus written as a literal.
+%
+%  Adding them immediately found live divergences in two more mature
+%  backends. Both are recorded as xfail below so the suite stays green;
+%  each has a task card in docs/WAM_FLEET_GAP_TASKS.md.
+%
+%  Measured 2026-08-06 across every backend buildable in this
+%  environment (go, python, c, cpp, rust, wat):
+%    - go, python, cpp, wat: all three programs green.
+%    - `wide` is green everywhere except the WAM-Go bug it was written
+%      for, which is fixed — so it is a pure regression guard now.
+%
+%  C / nested — XFAIL. ctail/3 destructures `[tk(X)|R]` and then unifies
+%  the cons tail R. `ctail([tk(a),tk(b)], a, [tk(b)])` returns false, and
+%  `ctail([tk(a)], a, [])` *crashes the generated binary* (SIGSEGV, exit
+%  139). cnest/2 and ckind/2 pass, so the nested get_structure itself is
+%  fine; it is the tail unification after it that is broken. Same class
+%  as the WAM-Go write-context bug, where the nested structure clobbered
+%  the enclosing list and the tail was never filled — but C faults rather
+%  than silently mis-answering. See CONF-FIX-C-NESTED.
+ct_xfail(c, nested).
+
+%  Rust / nested — XFAIL. Two distinct failures:
+%   - ckind/2 discriminates on the *inner* functor across three clauses
+%     (`[cnum(V)|_]` / `[csym(V)|_]` / `[cwd(V)|_]`). All three correct
+%     queries return false, so no clause matches at all.
+%   - cnest/2([[tk(a)],z]) returns TRUE when it must be false — a silent
+%     wrong answer, not a missed solution. cnest recurses down the tail;
+%     with a one-element list the recursive clause should hit `[]` and
+%     fail.
+%  See CONF-FIX-RUST-NESTED.
+ct_xfail(rust, nested).
+
+%  Rust / emptylist — XFAIL. cone/2 is `cone(X, [X|[]])` — an explicit
+%  nil tail written in the head. Both queries come back INVERTED:
+%  `cone(a,[a])` false (should be true) and `cone(a,[a,b])` true (should
+%  be false). cnil_tail/2 passes, so `[]` reached as a tail is fine; it
+%  is the literal `[X|[]]` spine in the head that mis-unifies.
+%  See CONF-FIX-RUST-EMPTYLIST.
+ct_xfail(rust, emptylist).
+
 %  R (CONF-R). Adapter registered (opt-in via CONFORMANCE_TARGETS=r[,r_functions]).
 %  runtime_parser(off) is pinned so generation is deterministic: classic
 %  queries use 0-arity wrappers (no CLI term parsing); R's default is

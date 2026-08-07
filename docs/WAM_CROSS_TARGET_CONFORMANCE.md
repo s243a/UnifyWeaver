@@ -6,7 +6,8 @@
 ## What it is
 
 A single set of classic Prolog programs (`member`, `append`, `reverse`,
-`fib`, `ack`, and a `builtins` arithmetic/comparison/unification pack)
+`fib`, `ack`, and a `builtins` arithmetic/comparison/unification pack),
+plus three **head-shape** programs (`wide`, `nested`, `emptylist`)
 with one shared table of expected query results. The harness compiles
 that *same* spec to every WAM backend whose toolchain is on `PATH`, runs
 each backend, and asserts the answers match.
@@ -51,7 +52,46 @@ so the harness is built to stay cheap:
 - `member` — a set operation — is the preferred everyday case: high-level
   but far cheaper than a generic recursive algorithm;
 - the query set can be **random-sampled** so any single CI run is bounded
-  while coverage accumulates across runs.
+  while coverage accumulates across runs;
+- the head-shape programs (`wide`, `nested`, `emptylist`) are near-zero
+  compute by design — they exist to hit argument-passing and unification
+  edges, not to do work.
+
+## Head-shape programs (added 2026-08-06)
+
+The six classic programs are all arity <= 3 over flat lists and atoms.
+That leaves real gaps: nothing exercised argument registers **above A8**,
+a **structure nested inside a cons-cell head**, the **cons tail** unified
+after such a structure, or **`[]` reached as a tail** versus written as a
+literal.
+
+The gap was not hypothetical. The WAM-Go runtime-parser bring-up
+(PARSE-GO) found eight defects in a backend that was registered here and
+green on all six classics — including argument registers above A8 being
+dropped at every choicepoint, and two distinct `[]` atoms that made
+`get_constant []` fail against a genuinely empty list.
+
+Three programs now cover those shapes:
+
+| Program | Shape | What it catches |
+|---|---|---|
+| `wide` | arity-10 predicate whose first clause fails on argument 9 | argument registers above the runtime's fast-path window being dropped on backtracking |
+| `nested` | `[tk(X)|R]` head — list containing a structure; plus multi-clause discrimination on the *inner* functor | nested destructuring that clobbers the enclosing list context, and read/write-mode decisions made before dereferencing |
+| `emptylist` | `[]` as a cons tail, and a literal `[X|[]]` spine in a head | `[]` represented two different ways inside one runtime |
+
+They found live divergences in two more mature backends on the first
+run — see the `ct_xfail` block in
+`tests/test_wam_cross_target_conformance.pl` for the per-backend
+diagnosis, and `WAM_FLEET_GAP_TASKS.md` for the fix cards:
+
+- **C / `nested`** — `ctail/3` returns the wrong answer on one query and
+  **segfaults the generated binary** (exit 139) on another.
+- **Rust / `nested`** — three-way clause discrimination on the inner
+  functor matches nothing, and `cnest([tk(a)], z)` returns **true** when
+  it must be false (a silent wrong answer, not a missed solution).
+- **Rust / `emptylist`** — both `cone/2` queries come back **inverted**.
+
+`go`, `python`, `cpp` and `wat` pass all three.
 
 Environment knobs:
 

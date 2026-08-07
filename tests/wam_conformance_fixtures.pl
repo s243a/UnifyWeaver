@@ -101,6 +101,54 @@ user:cbi_cmp(N) :- N > 0, N < 10, N >= 1, N =< 9, N =:= 5, N =\= 4.
 % term unification =/2.
 user:cbi_eq(X) :- X = foo.
 
+% --- wide/10 — argument registers ABOVE A8 ---
+%     Most WAM runtimes special-case a small window of argument
+%     registers. A predicate of arity > 8 puts arguments outside that
+%     window, and the first clause here fails on argument 9, so the
+%     second clause is reached ONLY if A9 and A10 survive backtracking.
+%     WAM-Go silently lost them: snapshotAllRegs saved Regs[0..7] and
+%     skipped Regs[8..199] as "the X-register range", but A(N) maps to
+%     Regs[N-1] and X starts at Regs[100]. Every classic program in this
+%     file has arity <= 3, so nothing caught it.
+:- dynamic user:cwide/10.
+user:cwide(_,_,_,_,_,_,_,_, no, no).
+user:cwide(A,B,C,D,E,F,G,H,I,S) :- S is A+B+C+D+E+F+G+H+I.
+
+% --- nested structures inside a cons-cell head ---
+%     `[tk(X)|R]` in a head argument makes the runtime destructure a
+%     list AND a structure nested inside it, in that order. That is the
+%     shape every tokenizer/parser uses, and it exercises two hazards
+%     the flat classics never reach:
+%       1. the nested get_structure must not clobber the enclosing list
+%          context — the cons TAIL still has to be unified afterwards;
+%       2. get_structure must dereference before choosing read vs write
+%          mode, or an already-bound argument gets a fresh structure
+%          built over the top of it.
+%     ctail/3 pins the tail specifically; ckind/2 adds multi-clause
+%     discrimination on the *inner* functor.
+:- dynamic user:cnest/2.
+:- dynamic user:ctail/3.
+:- dynamic user:ckind/2.
+user:cnest([tk(X)|_], X).
+user:cnest([_|T], X) :- user:cnest(T, X).
+user:ctail([tk(X)|R], X, R).
+user:ckind([cnum(V)|_], n(V)).
+user:ckind([csym(V)|_], s(V)).
+user:ckind([cwd(V)|_],  w(V)).
+
+% --- empty-list identity ---
+%     `[]` reached as a cons tail must unify with a literal `[]`. These
+%     can be different objects inside a runtime (an interned atom, a
+%     package-level constant, an empty list value), and if equality is
+%     identity-based they silently differ. WAM-Go ended up with two
+%     distinct `[]` atoms because the codegen registered its interned
+%     atoms from a Go `init()`, which runs after package-level variable
+%     initialisers had already cached a different one.
+:- dynamic user:cnil_tail/2.
+:- dynamic user:cone/2.
+user:cnil_tail([_|T], T).
+user:cone(X, [X|[]]).
+
 % ============================================================
 % Fixture registry
 % ============================================================
@@ -111,6 +159,9 @@ conformance_program(reverse,  [user:crev_acc/3, user:clist_reverse/2]).
 conformance_program(fib,      [user:cfib/2]).
 conformance_program(ack,      [user:cack/3]).
 conformance_program(builtins, [user:cbi_arith/1, user:cbi_cmp/1, user:cbi_eq/1]).
+conformance_program(wide,      [user:cwide/10]).
+conformance_program(nested,    [user:cnest/2, user:ctail/3, user:ckind/2]).
+conformance_program(emptylist, [user:cnil_tail/2, user:cone/2]).
 
 % member/2 — the regression that motivated the harness; the preferred
 % cheap everyday case (set operation, first-arg indexing, backtracking).
@@ -149,3 +200,32 @@ conformance_query(builtins, 'cbi_cmp/1',   [5],   true).
 conformance_query(builtins, 'cbi_cmp/1',   [4],   false).
 conformance_query(builtins, 'cbi_eq/1',    [foo], true).
 conformance_query(builtins, 'cbi_eq/1',    [bar], false).
+
+% wide/10 — arguments above A8 must survive a failed first clause.
+% Clause 1 fails on argument 9, so a runtime that drops A9/A10 at the
+% choicepoint reports false here.
+conformance_query(wide, 'cwide/10', [1,2,3,4,5,6,7,8,9,45], true).
+conformance_query(wide, 'cwide/10', [1,2,3,4,5,6,7,8,9,44], false).
+% ...and clause 1 itself must still match when it should.
+conformance_query(wide, 'cwide/10', [0,0,0,0,0,0,0,0,no,no], true).
+
+% nested — structure inside a cons head, and the cons tail after it.
+conformance_query(nested, 'cnest/2', [[tk(a),tk(b)], a], true).
+conformance_query(nested, 'cnest/2', [[tk(a),tk(b)], b], true).
+conformance_query(nested, 'cnest/2', [[tk(a)],       z], false).
+% ctail pins the tail: it is unified AFTER the nested get_structure.
+conformance_query(nested, 'ctail/3', [[tk(a),tk(b)], a, [tk(b)]], true).
+conformance_query(nested, 'ctail/3', [[tk(a)],       a, []],      true).
+conformance_query(nested, 'ctail/3', [[tk(a),tk(b)], a, []],      false).
+% ckind discriminates on the inner functor across clauses.
+conformance_query(nested, 'ckind/2', [[cnum(7)], n(7)], true).
+conformance_query(nested, 'ckind/2', [[csym(x)], s(x)], true).
+conformance_query(nested, 'ckind/2', [[cwd(m)],  w(m)], true).
+conformance_query(nested, 'ckind/2', [[csym(x)], n(x)], false).
+
+% emptylist — `[]` as a cons tail must equal a literal `[]`.
+conformance_query(emptylist, 'cnil_tail/2', [[a],   []],  true).
+conformance_query(emptylist, 'cnil_tail/2', [[a,b], [b]], true).
+conformance_query(emptylist, 'cnil_tail/2', [[a],   [b]], false).
+conformance_query(emptylist, 'cone/2',      [a, [a]],     true).
+conformance_query(emptylist, 'cone/2',      [a, [a,b]],   false).

@@ -28,6 +28,9 @@ self-contained so a single coding agent can pick it up in isolation.
 | FS-LIST-PARTIAL-TAIL ✅ | Conformance gap fix | F# | M | done — GetValue→unifyVal (`cursor/fs-list-partial-tail-f421`); append/reverse green on fsharp + fsharp_functions |
 | FS-ARITH-INT-DIV ✅ | Conformance gap fix | F# | S | done — `//` in evalArith (`37debf71`) |
 | FS-FUNCTIONS-BUILTINS-LOWER ✅ | Conformance gap fix | F# | M | done — last-slash `parse_functor_fs` for `///2` (`cursor/fs-functions-builtins-lower-f421`); fsharp_functions/builtins green |
+| CONF-FIX-C-NESTED | Conformance gap fix | C | M | — (found by the new `nested` program; **includes a SIGSEGV**) |
+| CONF-FIX-RUST-NESTED | Conformance gap fix | Rust | M | — (found by the new `nested` program; **includes a silent wrong answer**) |
+| CONF-FIX-RUST-EMPTYLIST | Conformance gap fix | Rust | S | — (found by the new `emptylist` program) |
 | CONF-LLVM | Conformance adapter | LLVM | L | — |
 | CONF-R ✅ | Conformance adapter | R | M | done — opt-in; all classic programs green (R-SWITCH-INDEX-CONFORMANCE) |
 | R-SWITCH-INDEX-CONFORMANCE ✅ | Conformance gap fix | R | S | done — fallthrough/A2 reuse existing SwitchOnTerm no-op |
@@ -122,6 +125,68 @@ external toolchain.
 - **Status:** ✅ **Landed** on `cursor/fs-functions-builtins-lower-f421` (2026-07-15). Banner blamed `cbi_eq`/`=/2` Proceed stubs; the real stall was `parse_functor_fs` soft-cutting on the first `/` so `put_structure ///2` (integer-div in `cbi_arith`) failed mid-emit and `lower_all_fs` never finished. Fix: last-slash split (Scala/R/Lua shape) in `wam_fsharp_lowered_emitter.pl`. `=/2` already delegated to `step` via `emit_one_fs(builtin_call)`. **Measured:** `fsharp_functions`/builtins builds and runs green; `ct_skip` retired; interpreter builtins unchanged.
 - **Goal:** Lowering builtins completes without hanging; suite green under `fsharp_functions`.
 - **Acceptance:** Remove the skip; builtins lowers cleanly; suite completes under `CONFORMANCE_TARGETS=fsharp_functions`.
+
+### CONF-FIX-C-NESTED: WAM-C mis-unifies (and crashes on) a cons tail after a nested structure
+- **Lever:** Conformance gap fix  **Target:** C  **Size:** M  **Depends on:** —
+- **Found by:** the `nested` conformance program, added 2026-08-06. C was
+  registered and green on all six classic programs; they are all arity
+  <= 3 over flat lists, so none of them destructures a structure nested
+  inside a cons cell.
+- **Symptom:** `ctail([tk(X)|R], X, R)` — destructure the list, then the
+  structure inside its head, then unify the cons *tail*.
+    - `ctail([tk(a),tk(b)], a, [tk(b)])` returns **false** (expected true).
+    - `ctail([tk(a)], a, [])` **crashes the generated binary** with
+      SIGSEGV (exit 139).
+  `cnest/2` and `ckind/2` in the same program pass, so the nested
+  `get_structure` itself is fine — it is the tail unification *after* it
+  that breaks.
+- **Reference to copy from:** the same class of bug in WAM-Go, fixed in
+  PARSE-GO: `CurrentStruct`/`CurrentList` were single slots while the
+  argument contexts are a stack, so the nested `get_structure` took the
+  slot and cleared it on pop, leaving the following `unify_*` with no
+  target. The fix put the term under construction on the context frame
+  and restored it on pop (`popStackRestoringWriteTarget`). Look for the
+  equivalent single-slot "current structure" in the C runtime.
+- **Acceptance:** `CONFORMANCE_TARGETS=c CONFORMANCE_PROGRAMS=nested
+  swipl -q -g run_tests -t halt tests/test_wam_cross_target_conformance.pl`
+  passes with the `ct_xfail(c, nested)` entry removed. The SIGSEGV case
+  is the priority — a crash is worse than a wrong answer.
+
+### CONF-FIX-RUST-NESTED: WAM-Rust fails inner-functor clause discrimination and returns a false positive
+- **Lever:** Conformance gap fix  **Target:** Rust  **Size:** M  **Depends on:** —
+- **Found by:** the `nested` conformance program, added 2026-08-06.
+- **Symptoms:** two distinct failures.
+    1. `ckind/2` discriminates on the *inner* functor across three
+       clauses (`[cnum(V)|_]` / `[csym(V)|_]` / `[cwd(V)|_]`). All three
+       correct queries return **false** — no clause matches at all.
+    2. `cnest([tk(a)], z)` returns **true** when it must be false. This
+       is a silent wrong answer, not a missed solution, and is the more
+       serious of the two: `cnest/2` recurses down the tail, so with a
+       one-element list the recursive clause should reach `[]` and fail.
+- **Reference to copy from:** WAM-Go's `get_structure` took the *write*
+  branch for an already-bound argument because it tested unbound before
+  dereferencing, which both loses matches and can fabricate them. Check
+  the Rust runtime's read/write mode decision and its cons-tail
+  representation.
+- **Acceptance:** `CONFORMANCE_TARGETS=rust CONFORMANCE_PROGRAMS=nested
+  swipl -q -g run_tests -t halt tests/test_wam_cross_target_conformance.pl`
+  passes with `ct_xfail(rust, nested)` removed.
+
+### CONF-FIX-RUST-EMPTYLIST: WAM-Rust inverts a literal `[X|[]]` head spine
+- **Lever:** Conformance gap fix  **Target:** Rust  **Size:** S  **Depends on:** —
+- **Found by:** the `emptylist` conformance program, added 2026-08-06.
+- **Symptom:** `cone(X, [X|[]])` — an explicit nil tail written in the
+  head. Both queries come back **inverted**: `cone(a,[a])` is false
+  (expected true) and `cone(a,[a,b])` is true (expected false).
+  `cnil_tail/2` in the same program passes, so `[]` reached as a *tail*
+  is handled; it is the literal `[X|[]]` spine that mis-unifies.
+- **Reference to copy from:** the `[|]/2`-vs-compact-list split that WAT
+  and F# both hit (see the `ct_xfail` narrative in the harness and
+  FS-LIST-PARTIAL-TAIL) — a list literal written as a nested cons
+  compiles differently from the compact list value the runtime builds.
+- **Acceptance:** `CONFORMANCE_TARGETS=rust CONFORMANCE_PROGRAMS=emptylist
+  swipl -q -g run_tests -t halt tests/test_wam_cross_target_conformance.pl`
+  passes with `ct_xfail(rust, emptylist)` removed.
 
 ### CONF-LLVM: Register LLVM in the cross-target conformance harness
 - **Lever:** Conformance adapters  **Target:** LLVM  **Size:** L  **Depends on:** —
