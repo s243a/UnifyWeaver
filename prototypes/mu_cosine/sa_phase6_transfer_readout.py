@@ -21,9 +21,9 @@ from mu_attention import OPS, Tokenizer, build_e5_tables, E5_REVISION
 from sa_phase1_shadow import ranks_from, REGIONS, region_of
 from sa_phase3_shadow import train_arm, gate_score
 
-CK = os.path.expanduser("~/mu_data/enwiki_transitive_v1/trunk_stem_multiop.pt")
+CK = os.path.expanduser(os.environ.get("P6_CK", "~/mu_data/enwiki_transitive_v1/trunk_stem_multiop.pt"))
 OLD = os.path.expanduser("~/mu_data/sa_scores_v2_enwiki_real.pt")
-NEW = os.path.expanduser("~/mu_data/sa_scores_v2_enwiki_real_stemtrunk.pt")
+NEW = os.path.expanduser(os.environ.get("P6_NEW", "~/mu_data/sa_scores_v2_enwiki_real_stemtrunk.pt"))
 SEED = 7
 
 def nzrow(M):
@@ -94,6 +94,6 @@ def run():
              for r in out["old_trunk"] if r in out["stem_trunk"]}
     res["deltas"] = delta
     print("[deltas] " + json.dumps(delta, indent=1), flush=True)
-    json.dump(res, open("PHASE6_TRANSFER_READOUT.json", "w"), indent=1)
+    json.dump(res, open(os.environ.get("P6_OUT", "PHASE6_TRANSFER_READOUT.json"), "w"), indent=1)
 
 run()
