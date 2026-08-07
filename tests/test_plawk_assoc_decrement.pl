@@ -44,14 +44,16 @@
 %
 %              field key $1   literal key "x"   scalar-var key k
 %   c[K]++          yes            no                 yes
-%   c[K] += N       yes            no                 no
-%   c[K]--          yes            no                 no
+%   c[K] += N       yes            no                 yes
+%   c[K]--          yes            no                 yes
 %
-% So `c[k]++` compiles and `c[k]--` declines. That is NOT this change's asymmetry --
-% it is the pre-existing `inc_assoc` / `add_assoc` key-coverage gap, inherited
-% because the decrement rides `add_assoc`. Pinned below in pairs with the matching
-% `+=` form, so the two always move together and the gap stays attributed to the
-% family that owns it.
+% The scalar-var column read `no / no` for the add_assoc rows when this suite was
+% written -- `c[k]++` compiled and `c[k]--` declined -- and that was NOT this change's
+% asymmetry but the pre-existing `inc_assoc` / `add_assoc` key-coverage gap, inherited
+% because the decrement rides `add_assoc`. That gap is now closed; see
+% tests/test_plawk_assoc_key_coverage.pl. The literal-key column is still `no` for
+% BOTH families and is pinned below in a pair, so it stays attributed to the family
+% that owns it.
 %
 % gawk 5.2 is the oracle for every expectation here.
 
@@ -171,9 +173,14 @@ test(assoc_increment_with_a_scalar_key_unchanged, [condition(clang_available)]) 
 % family and not to this change. If a pair ever splits, the desugaring has been
 % bypassed.
 
-test(a_scalar_var_key_declines_for_add_assign_and_decrement_alike) :-
-    build_status("{ k = $1; c[k] += 1 } END { print c[\"INFO\"] }\n", 3),
-    build_status("{ k = $1; c[k]-- } END { print c[\"INFO\"] }\n", 3),
+% WAS: both declined (status 3), pinned as the inherited gap. The scalar-var key is
+% now covered for the whole add_assoc family -- see
+% tests/test_plawk_assoc_key_coverage.pl for the full matrix. Kept here, inverted, so
+% this suite still records which half of the gap moved.
+test(a_scalar_var_key_now_works_for_add_assign_and_decrement_alike,
+        [condition(clang_available)]) :-
+    run("{ k = $1; c[k] += 1 } END { print c[\"INFO\"] }\n", "1\n"),
+    run("{ k = $1; c[k]-- } END { print c[\"INFO\"] }\n", "-1\n"),
     !.
 
 test(a_literal_key_declines_for_add_assign_and_decrement_alike) :-
