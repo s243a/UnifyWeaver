@@ -163,13 +163,19 @@ test(non_literal_numeric_arm_still_declines) :-
     build_status("{ x = $2 > 1 ? \"hi\" : 3.5; print x }\n", 3),
     !.
 
-% A SCALAR-VARIABLE condition declines -- for BOTH branch types. This is the
-% asymmetry test: the condition gate is shared, so a condition form is never
-% admitted for i64 branches and refused for string branches. If one of these two
-% ever changes without the other, the shared emitter has been bypassed.
-test(scalar_var_condition_declines_for_both_branch_types) :-
-    build_status("{ n++; x = n > 1 ? 1 : 0; print x }\n", 3),
-    build_status("{ n++; x = n > 1 ? \"a\" : \"b\"; print x }\n", 3),
+% A SCALAR-VARIABLE condition, for BOTH branch types. This is the asymmetry test:
+% the condition gate is shared, so a condition form is never admitted for i64
+% branches and refused for string branches. If one of these two ever changes without
+% the other, the shared emitter has been bypassed.
+%
+% It was pinned as a DECLINE for both. Scalar-variable ternary conditions have since
+% landed, so it is inverted -- still asserting both branch types together, which is
+% the property that matters here, and now against gawk rather than a status code.
+% Both were verified against gawk 5.2 on "a 1 / b 2 / c 3".
+test(scalar_var_condition_compiles_for_both_branch_types,
+        [condition(clang_available)]) :-
+    run("{ n++; x = n > 1 ? 1 : 0; print x }\n", "0\n1\n1\n"),
+    run("{ n++; x = n > 1 ? \"a\" : \"b\"; print x }\n", "b\na\na\n"),
     !.
 
 % `$0` against a string literal now compiles as a condition, via a whole-record

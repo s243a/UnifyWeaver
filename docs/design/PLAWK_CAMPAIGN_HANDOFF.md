@@ -142,6 +142,16 @@ let the missing clauses be the gate.
   PR on the feature line directly.
 - Suites are slow (each test does a full clang build, ~8s). Run them in the
   background and monitor; ~25 tests ≈ 4 minutes.
+- **Do not run suites concurrently.** Two `test_plawk_ternary_str_branches` tests
+  failed under parallel load and passed when the suite ran alone — a suite builds
+  into a fixed path and runs the binary, and concurrent clang invocations make that
+  flaky. It cost a wrong diagnosis (two tests reported broken that were fine). Run
+  them sequentially, and when a failure looks surprising, re-run that suite by
+  itself before believing it.
+- **Match every plunit summary form.** A sweep grepping
+  `"All N tests passed|tests failed"` silently misses the single-test form
+  (`% test passed`) *and* the singular failure (`% 1 test failed`) — twelve failing
+  suites reported as "no summary". Grep `^% .*(passed|failed)` instead.
 - `swipl` loading the codegen module directly is slow enough to time out; prefer
   probing through `bin/plawk`.
 - Commit trailers required:
