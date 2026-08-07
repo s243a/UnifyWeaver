@@ -242,17 +242,6 @@ test(the_mark_table_width_bounds_tracking) :-
     assertion(OutIR == ''),
     !.
 
-% Only COUNTER slots get a mark: doubles and string/strnum slots either render an
-% unset value correctly already (an unset atom id 0 is empty) or are a follow-on.
-test(only_counter_slots_are_marked) :-
-    plawk_native_codegen:plawk_scalar_assigned_store_ir(scalar_double(x), 0,
-        rule_0, 1, DoubleIR),
-    assertion(DoubleIR == ''),
-    plawk_native_codegen:plawk_scalar_assigned_store_ir(scalar_string(s), 0,
-        rule_0, 1, StringIR),
-    assertion(StringIR == ''),
-    !.
-
 % --- IR shape -----------------------------------------------------------
 
 % The mark store lands in the record loop, and the END render selects the format
@@ -276,13 +265,92 @@ test(a_string_scalar_print_is_unchanged) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, '%end_asg_0')),
     !.
 
-% --- known remaining divergences, pinned --------------------------------
+% --- doubles, on the same footing as counters ----------------------------
+%
+% An unset double printed 0 for a release after counters were fixed: they were two
+% slot kinds with two renders and two lists of "which kinds get a mark". They now
+% share ONE render (plawk_end_numeric_print_lines/6) and ONE table
+% (plawk_numeric_slot_print/5) that the render, the mark and the trackability check
+% all key off -- so a numeric kind is marked exactly when it can be rendered, rather
+% than by three lists kept in step by hand.
 
-% An unset DOUBLE still prints 0 (gawk prints empty). Doubles are a separate slot
-% kind with a separate render; the mark table would extend to them, but the f64
-% render is its own path. A follow-on.
-test(an_unset_double_still_prints_zero, [condition(clang_available)]) :-
-    run("$1 == \"ZZZ\" { x += 1.5 } END { print x }\n", "0\n"),
+test(unset_double_prints_nothing, [condition(clang_available)]) :-
+    run("$1 == \"ZZZ\" { x += 1.5 } END { print x }\n", "\n"),
+    !.
+
+test(unset_double_on_empty_input_prints_nothing, [condition(clang_available)]) :-
+    run_input("{ x += 1.5 } END { print x }\n", "", "\n"),
+    !.
+
+test(assigned_double_prints_its_value, [condition(clang_available)]) :-
+    run("$1 == \"DEBUG\" { x += 1.5 } END { print x }\n", "3\n"),
+    !.
+
+% PRESENCE, NOT VALUE, for doubles too.
+test(explicitly_assigned_zero_double_prints_zero, [condition(clang_available)]) :-
+    run("{ x = 0.0 } END { print x }\n", "0\n"),
+    !.
+
+% A division result is a double slot, so it travels the same path.
+test(unset_division_result_prints_nothing, [condition(clang_available)]) :-
+    run("$1 == \"ZZZ\" { x = 7 / 2 } END { print x }\n", "\n"),
+    !.
+
+test(unset_double_in_a_concatenation, [condition(clang_available)]) :-
+    run("$1 == \"ZZZ\" { x += 1.5 } END { print \"x=\" x }\n", "x=\n"),
+    !.
+
+% The dual value holds for doubles: numeric context still reads 0.
+test(unset_double_in_arithmetic_is_zero, [condition(clang_available)]) :-
+    run("$1 == \"ZZZ\" { x += 1.5 } END { print x + 0 }\n", "0\n"),
+    !.
+
+% A counter and a double in one program, both unset.
+test(unset_counter_and_double_together, [condition(clang_available)]) :-
+    run("$1 == \"ZZZ\" { x += 1.5; n++ } END { print n, x }\n", " \n"),
+    !.
+
+% --- one table drives mark, render and trackability ---------------------
+
+% Both numeric kinds are marked; string/strnum are not (their unset atom id 0
+% already renders empty) -- and the mark keys off the SAME table as the render, so
+% the two cannot disagree about which kinds have an unset path.
+%
+% This REPLACES an `only_counter_slots_are_marked` pin that asserted doubles get no
+% mark. That pin was correct when only counters had an unset render, and it is the
+% test that would have flagged the doubles gap if anyone had asked why a slot kind
+% was excluded rather than merely asserting that it was. Stated as "the marked kinds
+% are exactly the renderable kinds", it now says the property instead of the
+% then-current membership.
+test(both_numeric_kinds_are_marked_and_no_others) :-
+    forall(member(Slot, [scalar_counter(n), scalar_double(x)]),
+        ( plawk_native_codegen:plawk_scalar_assigned_store_ir(Slot, 0, rule_0, 1, IR),
+          assertion(IR \== '') )),
+    forall(member(Slot, [scalar_string(s), scalar_strnum(t), scalar_record_number]),
+        ( plawk_native_codegen:plawk_scalar_assigned_store_ir(Slot, 0, rule_0, 1, IR),
+          assertion(IR == '') )),
+    !.
+
+% The table itself: exactly the kinds with an unset render.
+test(the_numeric_print_table_lists_both_kinds) :-
+    assertion(plawk_native_codegen:plawk_numeric_slot_print(scalar_counter(n),
+        _K1, _G1, _B1, i64)),
+    assertion(plawk_native_codegen:plawk_numeric_slot_print(scalar_double(x),
+        _K2, _G2, _B2, double)),
+    assertion(\+ plawk_native_codegen:plawk_numeric_slot_print(scalar_string(s),
+        _K3, _G3, _B3, _T3)),
+    !.
+
+% A double slot is tracked on the same terms as a counter -- and refused on the same
+% terms when a non-update emitter writes it.
+test(a_double_slot_is_tracked_like_a_counter) :-
+    plawk_parse_string("$1 == \"ZZZ\" { x += 1.5 } END { print x }\n",
+        program(_B, Rules, _E)),
+    plawk_native_codegen:plawk_scalar_state_plan(Rules, [var(x)], StatePlan),
+    plawk_native_codegen:plawk_state_plan_tracked(StatePlan, Tracked),
+    plawk_native_codegen:plawk_state_plan_slots(StatePlan, Slots),
+    nth0(Index, Slots, scalar_double(x)),
+    assertion(memberchk(Index, Tracked)),
     !.
 
 :- end_tests(plawk_unset_scalar).
