@@ -93,7 +93,19 @@ Multi-pass `pass { }` blocks · `cache(...)` (file / LMDB, namespaces, multi-tab
 · `over TABLE` / `records of` / `rows of` / `over query(Goal)` readers · reader
 guards · generator blocks (`gen { emit … } as name`, input iterators) ·
 `@prolog` blocks · `compile(...)` / `dyncall` eval surface · binary records
-(`BINFMT`) / DCG readers.
+(`BINFMT`) / DCG readers · tagged unions (`BINFMT = "case(a | b)"`, `case K { }`
+blocks and the `TAG == K && P { }` guard sugar).
+
+**A parser-precedence regression, fixed:** `TAG` is a valid identifier, so when the
+scalar-variable pattern (`n > 2` → `scalar_cmp(n, gt, 2)`) was added it was
+registered *ahead* of `tag_eq_pattern//1` and matched `TAG == 1` first — making the
+tag production unreachable and turning the whole tag-guard sugar into a clean
+decline. Eight tests across five union suites failed on that one cause, and had been
+failing since. `tag_eq_pattern//1` is now registered before every scalar-variable
+pattern, with a parse-level test pinning that `TAG == K` yields `tag_pat(K)` and that
+an identifier merely *starting* with `TAG` (e.g. `TAGS`) still does not. Nothing
+narrowed: an unassigned scalar has no slot, so `TAG == 0` in a non-union program
+declined either way, exactly as `zz == 0` still does.
 
 ## Prioritised gaps (recommended order)
 

@@ -1049,6 +1049,17 @@ base_pattern(Pattern) -->
 base_pattern(Pattern) -->
     special_i64_cmp_pattern(Pattern),
     !.
+% Before every SCALAR-VARIABLE pattern: `TAG` is a valid identifier, so
+% scalar_i64_cmp_pattern happily matched `TAG == 1` as a comparison on a variable
+% named TAG and this production became unreachable -- silently turning the
+% tagged-union tag-guard sugar into a decline, because the codegen desugar looks for
+% tag_pat/1. The scalar-variable patterns were added after this one and captured its
+% surface. Nothing narrows by putting it back in front: an unassigned scalar has no
+% slot, so `TAG == 0` in a non-union program declined either way (as `zz == 0` still
+% does).
+base_pattern(Pattern) -->
+    tag_eq_pattern(Pattern),
+    !.
 % Before scalar_i64: a float RHS (`rate > 2.5`) must take the f64 path -- else
 % scalar_i64 would greedily match `rate > 2` and leave `.5` to choke the rule.
 base_pattern(Pattern) -->
@@ -1068,9 +1079,6 @@ base_pattern(Pattern) -->
     !.
 base_pattern(Pattern) -->
     field_eq_pattern(Pattern),
-    !.
-base_pattern(Pattern) -->
-    tag_eq_pattern(Pattern),
     !.
 % blob(dyncall...) == "literal" -- an equality guard on a runtime
 % grammar's byte output (JIT roadmap item 2 follow-on). Must precede

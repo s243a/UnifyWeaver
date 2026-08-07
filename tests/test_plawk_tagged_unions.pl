@@ -88,6 +88,36 @@ test(surface_union_endless_program) :-
         [m(1, 1.0), e("aa", 5), e("bb", 6)],
         "aa 5\nbb 6\n").
 
+% PARSE-LEVEL precedence pin. `TAG` is a valid identifier, so the scalar-variable
+% pattern (`n > 2` -> scalar_cmp(n, gt, 2)) matched `TAG == 1` and made
+% tag_eq_pattern//1 unreachable -- the whole tag-guard sugar became a decline,
+% because the codegen desugar looks for tag_pat/1. Every failing test in the five
+% union suites had that one cause.
+%
+% The IR-equality test below would also have caught it, but only after a build, and
+% its failure says "these two IRs differ" rather than "the tag test did not parse as
+% a tag test". This asserts the term directly so the next production added ahead of
+% tag_eq_pattern fails here first, with the reason on the label.
+test(tag_guard_parses_as_a_tag_test_not_a_scalar_comparison) :-
+    plawk_parse_string("BEGIN { BINFMT = \"case(i64 f64 | lps16 i64)\" } TAG == 1 && $2 > 5 { b++ } END { print b }\n",
+        program(_B, Rules, _E)),
+    assertion(Rules == [rule(and_pat(tag_pat(1), field_cmp(2, gt, 5)),
+                             [inc(var(b))])]),
+    % ...and the bare form, with no residual guard
+    plawk_parse_string("BEGIN { BINFMT = \"case(i64 | lps8)\" } TAG == 0 { a++ }\n",
+        program(_B2, BareRules, _E2)),
+    assertion(BareRules == [rule(tag_pat(0), [inc(var(a))])]),
+    !.
+
+% A name that merely STARTS with TAG is still an identifier, not a tag test --
+% identifier_boundary//0 in the production is what keeps that true, and moving the
+% production earlier makes it load-bearing.
+test(an_identifier_starting_with_tag_is_not_a_tag_test) :-
+    plawk_parse_string("{ TAGS = 1 } TAGS == 1 { a++ } END { print a }\n",
+        program(_B, Rules, _E)),
+    assertion(Rules = [rule(always, [_]), rule(scalar_cmp('TAGS', eq, 1), [_])]),
+    !.
+
 test(tag_guard_sugar_matches_case_blocks_exactly) :-
     % TAG == K && P is pure sugar: it must compile to byte-identical IR
     % as the case-block spelling.
