@@ -69,7 +69,7 @@ test_atom_table_preserves_insertion_order :-
     ).
 
 test_atom_table_is_valid_go_syntax_shape :-
-    Test = 'WAM-Go-Lowered Phase 2: each decl line follows `<name> = &Atom{Name: "..."}` shape',
+    Test = 'WAM-Go-Lowered Phase 2: each decl line follows `<name> = internAtom("...")` shape',
     init_atom_intern_table_go,
     intern_atom_go("one",   VarOne),
     intern_atom_go("two",   VarTwo),
@@ -79,9 +79,9 @@ test_atom_table_is_valid_go_syntax_shape :-
     atom_string(VarOne,   VOS),
     atom_string(VarTwo,   VTS),
     atom_string(VarThree, VRS),
-    format(string(LineOne),   "~w = &Atom{Name: \"one\"}",   [VOS]),
-    format(string(LineTwo),   "~w = &Atom{Name: \"two\"}",   [VTS]),
-    format(string(LineThree), "~w = &Atom{Name: \"three\"}", [VRS]),
+    format(string(LineOne),   "~w = internAtom(\"one\")",   [VOS]),
+    format(string(LineTwo),   "~w = internAtom(\"two\")",   [VTS]),
+    format(string(LineThree), "~w = internAtom(\"three\")", [VRS]),
     (   sub_string(S, _, _, _, LineOne),
         sub_string(S, _, _, _, LineTwo),
         sub_string(S, _, _, _, LineThree)

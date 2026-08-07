@@ -2,7 +2,7 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 %
 % pe_registry_mirror.pl - GENERATED closed-constraint mirror of the
-% sealed v0.4 registry surface (process_cards.py REGISTRY).
+% sealed v0.5 registry surface (process_cards.py REGISTRY).
 %
 % DO NOT EDIT: regenerate with gen_registry_mirror.py (ruling 5(b),
 % DESIGN_prolog_elaborator.md / PR #4093).  The embedded sha256 of
@@ -23,12 +23,13 @@
 
 :- use_module(library(sha)).
 
-pe_registry_version('v0.4').
+pe_registry_version('v0.5').
 
-pe_mirror_source_sha256('358a4b575746786551218c0127ab5bfb0905a4c0d42c7f639e19100c59ea97ae').
+pe_mirror_source_sha256('ec60cf056dfe67736753d5eecb88b9f97c5d64df0337574645cc3c7616c25609').
 
 % pe_atom(Name): forms that may appear bare.
 pe_atom(e5).
+pe_atom(enwiki).
 pe_atom(fs).
 pe_atom(gemini).
 pe_atom('gpt-5.5-low').
@@ -45,6 +46,7 @@ pe_atom(sonnet).
 
 % pe_operator(Name): anything that may be applied to arguments.
 pe_operator(blend).
+pe_operator(cowalk).
 pe_operator(distill).
 pe_operator(e5).
 pe_operator(hop_decay).
@@ -65,8 +67,10 @@ pe_variadic(product).
 
 % pe_output(Name, OutputType).
 pe_output(blend, 'target-set').
+pe_output(cowalk, 'target-set').
 pe_output(distill, 'target-set').
 pe_output(e5, score).
+pe_output(enwiki, substrate).
 pe_output(fs, substrate).
 pe_output(gemini, judge).
 pe_output('gpt-5.5-low', judge).
@@ -106,6 +110,11 @@ pe_modifier(sonnet, lineage).
 pe_kwspec(blend, estimand, estimand, none).
 pe_kwspec(blend, impl, impl, none).
 pe_kwspec(blend, w, number_list, none).
+pe_kwspec(cowalk, estimand, estimand, none).
+pe_kwspec(cowalk, impl, impl, none).
+pe_kwspec(cowalk, mu, judge, none).
+pe_kwspec(cowalk, walk, walk, none).
+pe_kwspec(cowalk, weight, weight, default(uniform)).
 pe_kwspec(distill, estimand, estimand, none).
 pe_kwspec(distill, impl, impl, none).
 pe_kwspec(e5, estimand, estimand, none).
@@ -137,6 +146,7 @@ pe_kwspec(routing, menus, int_list, none).
 pe_kwspec(routing, t, number_list, none).
 
 % pe_required(Op, Kw): kwargs the registry marks required.
+pe_required(cowalk, walk).
 pe_required(hop_decay, gamma).
 pe_required(margin, t).
 pe_required(menu, n).

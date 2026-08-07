@@ -30,12 +30,19 @@ import math
 import re
 
 RENDERER_VERSION = "r3"
-REGISTRY_VERSION = "v0.4"
+#: v0.5 is a purely ADDITIVE bump over v0.4: the `enwiki` substrate atom, the
+#: `cowalk` operator, and the walk/weight enumerated kinds. No existing entry
+#: changed meaning — but a v0.5 expression like lineage(enwiki,...) would
+#: parse under a grown v0.4 and not the original, and two registries sharing
+#: a label while disagreeing on grammaticality is exactly the ambiguity
+#: versions exist to prevent. Every digest moves (the version is in every
+#: preimage); the v0.4->v0.5 migration is 1:1 with no tombstones.
+REGISTRY_VERSION = "v0.5"
 
 #: Versions that sealed artifacts may still cite as provenance.  A superseded
 #: version is never the digest preimage for NEW identities; it is accepted
 #: only when verifying an artifact that records it explicitly.
-SUPERSEDED_REGISTRY_VERSIONS = frozenset({"v0.3"})
+SUPERSEDED_REGISTRY_VERSIONS = frozenset({"v0.3", "v0.4"})
 SUPERSEDED_RENDERER_VERSIONS = frozenset({"r2"})
 
 #: R7: the estimand enumeration is the RELATION vocabulary. Seven primitives
@@ -50,12 +57,32 @@ ESTIMANDS = PRIMITIVE_ESTIMANDS | DERIVED_ESTIMANDS
 #: R5: only implementations that actually exist may be registered.
 IMPLS = frozenset({"structural", "attention"})
 
+#: v0.5: composed-walk vocabulary for `cowalk`. Each walk value DECLARES its
+#: shape at registration — never inferred at query time — because the family
+#: classification (symmetric or not) depends on whether the down-sequence is
+#: the reverse inverse of the up-sequence (inverse-palindromic), and depth
+#: balance alone is not sufficient. Admission to the enum does NOT require
+#: invertibility: closeness is a property any walk can carry (an article
+#: one-up-one-down from another is near it whether or not `element_of`
+#: inverts), so non-palindromic walks may join later with shape
+#: "non_palindromic" and no grammar change. The general step-sequence walk
+#: grammar is encoder-lane future work; this enum names the walks the
+#: generator actually produces.
+WALKS = {"sibling": "palindromic", "cousin": "palindromic"}
+WALK_SHAPES = frozenset({"palindromic", "non_palindromic"})
+
+#: v0.5: traversal weighting rules for `cowalk`. `idf_node_size` is the
+#: hub down-weighting axis (edge information scales inversely with the
+#: size of the node it passes through).
+WEIGHTS = frozenset({"uniform", "idf_node_size"})
+
 #: Process output types after the R2 split. `source` no longer exists.
 OUTPUT_TYPES = frozenset({"substrate", "judge", "score", "target-set", "pick"})
 
 #: Literal value kinds a signature may declare for kwargs or positional args.
 VALUE_KINDS = frozenset(
-    {"number", "int", "string", "number_list", "int_list", "estimand", "impl"}
+    {"number", "int", "string", "number_list", "int_list", "estimand", "impl",
+     "walk", "weight"}
 )
 
 
@@ -149,6 +176,7 @@ REGISTRY = {
     "pearltrees": _sig(atom=True, output="substrate"),
     "simplemind": _sig(atom=True, output="substrate"),
     "simplewiki": _sig(atom=True, output="substrate"),
+    "enwiki": _sig(atom=True, output="substrate"),
     "fs": _sig(atom=True, output="substrate"),
     # -- judges (R2): mu-sources. `graph` is judge-only under v0.4; its former
     #    substrate role is carried by the real corpora above. --
@@ -201,6 +229,23 @@ REGISTRY = {
             "mu": KwSpec("judge"),
             "decay": KwSpec("number", 0.85, doc=_RETENTION_DOC),
             "depth": KwSpec("int"),
+            **_methodology(),
+        },
+        output="target-set",
+    ),
+    # v0.5: composed walks (mixed up/down traversals — sibling, cousin).
+    # A DIFFERENT operator from `lineage`, whose semantics are a directional
+    # up-walk; direction is recorded by the ESTIMAND (R7 derives "path" for
+    # mixed compositions), and the walk's depth is implied by its value
+    # (sibling=1, cousin=2) — a depth kwarg would let depth and walk
+    # disagree, the same defect class the rejected `terminating=` had.
+    "cowalk": _sig(
+        args=(1, 1),
+        arg_types=("substrate",),
+        kwargs={
+            "walk": KwSpec("walk", required=True),
+            "weight": KwSpec("weight", "uniform"),
+            "mu": KwSpec("judge"),
             **_methodology(),
         },
         output="target-set",
@@ -355,6 +400,12 @@ def _value_matches(kind, value):
         return isinstance(value, str) and value in ESTIMANDS
     if kind == "impl":
         return isinstance(value, str) and value in IMPLS
+    if kind == "walk":
+        # Fail closed like estimand/impl: only registered walk values, each
+        # of which declared its shape when it was added.
+        return isinstance(value, str) and value in WALKS
+    if kind == "weight":
+        return isinstance(value, str) and value in WEIGHTS
     if kind == "number_list":
         return (
             isinstance(value, tuple)
@@ -432,12 +483,15 @@ def _validate_signature(name, called, args, kwargs, mods):
             ):
                 raise ParseError(f"{name}.{key} must be a {spec.kind} expression")
         elif not _value_matches(spec.kind, value):
-            if spec.kind in ("estimand", "impl"):
-                allowed = ESTIMANDS if spec.kind == "estimand" else IMPLS
+            enumerated = {
+                "estimand": ESTIMANDS, "impl": IMPLS,
+                "walk": frozenset(WALKS), "weight": WEIGHTS,
+            }
+            if spec.kind in enumerated:
                 raise ParseError(
                     f"{name}.{key} must be one of the registered {spec.kind} "
-                    f"values {sorted(allowed)}; unknown values are refused, "
-                    f"not defaulted"
+                    f"values {sorted(enumerated[spec.kind])}; unknown values "
+                    f"are refused, not defaulted"
                 )
             raise ParseError(f"{name}.{key} must be {spec.kind}")
     missing = [

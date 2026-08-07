@@ -132,8 +132,10 @@ test(tsv_atom_fact2_setup_generation) :-
     assertion(Line == '    if err := vm.registerTsvAtomFact2("edge/2", "/tmp/edge.tsv"); err != nil { panic(err) }').
 
 test(lmdb_atom_fact2_setup_generation) :-
+    % No options: the default materialisation tier is cached with a
+    % 4096-entry L2 (see go_lmdb_materialisation_mode/2).
     wam_go_target:go_foreign_setup_line(register_lmdb_atom_fact2(edge/2, '/tmp/edge_artifact'), Line),
-    assertion(Line == '    if err := vm.registerLmdbAtomFact2("edge/2", "/tmp/edge_artifact"); err != nil { panic(err) }').
+    assertion(Line == '    if err := vm.registerLmdbAtomFact2("edge/2", "/tmp/edge_artifact", "cached", 4096); err != nil { panic(err) }').
 
 test(atom_fact2_source_registry_runtime_shape) :-
     wam_go_target:compile_wam_runtime_to_go([], RuntimeCode),
@@ -141,8 +143,8 @@ test(atom_fact2_source_registry_runtime_shape) :-
     assertion(sub_string(Runtime, _, _, _, 'type staticAtomFact2Source struct')),
     assertion(sub_string(Runtime, _, _, _, 'func newStaticAtomFact2Source(pairs []AtomPair) *staticAtomFact2Source')),
     assertion(sub_string(Runtime, _, _, _, 'type lmdbAtomFact2Source struct')),
-    assertion(sub_string(Runtime, _, _, _, 'func newLmdbAtomFact2Source(predKey string, artifactDir string) *lmdbAtomFact2Source')),
-    assertion(sub_string(Runtime, _, _, _, 'func (vm *WamState) registerLmdbAtomFact2(predKey string, artifactDir string) error')),
+    assertion(sub_string(Runtime, _, _, _, 'func newLmdbAtomFact2Source(predKey string, artifactDir string, mode string, l2Capacity int) *lmdbAtomFact2Source')),
+    assertion(sub_string(Runtime, _, _, _, 'func (vm *WamState) registerLmdbAtomFact2(predKey string, artifactDir string, mode string, l2Capacity int) error')),
     assertion(sub_string(Runtime, _, _, _, 'exec.Command(source.helperBin, args...).Output()')),
     assertion(sub_string(Runtime, _, _, _, 'func (vm *WamState) registerAtomFact2Source(predKey string, source AtomFact2Source)')),
     assertion(sub_string(Runtime, _, _, _, 'pairs = source.LookupArg1(key)')),
@@ -326,8 +328,131 @@ test(foreign_execution_graph_kernels) :-
 import (
     "os"
     "path/filepath"
+    "strings"
     "testing"
 )
+
+// TestLmdbMaterialisationTiers pins the eager/lazy/cached behaviour of
+// lmdbAtomFact2Source. The helper mock appends one line per invocation to
+// a counter file, so the number of helper spawns per tier is observable:
+//
+//   eager  — one "scan" at construction, then zero helper calls
+//   lazy   — one "get" per lookup, including repeats
+//   cached — one "get" per *distinct* key; repeats served from L1/L2
+func TestLmdbMaterialisationTiers(t *testing.T) {
+    dir := t.TempDir()
+    counter := filepath.Join(dir, "calls.log")
+    helperPath := filepath.Join(dir, "lmdb_relation_artifact_mock")
+    helperScript := "#!/bin/sh\\n" +
+        "echo \\"$1 $4\\" >> " + counter + "\\n" +
+        "if [ \\"$1\\" = \\"get\\" ]; then\\n" +
+        "  if [ \\"$4\\" = \\"x\\" ]; then printf \\"x\\\\ty\\\\nx\\\\tz\\\\n\\"; fi\\n" +
+        "  if [ \\"$4\\" = \\"a\\" ]; then printf \\"a\\\\tb\\\\n\\"; fi\\n" +
+        "elif [ \\"$1\\" = \\"scan\\" ]; then\\n" +
+        "  printf \\"x\\\\ty\\\\nx\\\\tz\\\\na\\\\tb\\\\n\\"\\n" +
+        "fi\\n"
+    if err := os.WriteFile(helperPath, []byte(helperScript), 0755); err != nil {
+        t.Fatalf("write lmdb helper mock: %v", err)
+    }
+    t.Setenv("UW_LMDB_RELATION_ARTIFACT_BIN", helperPath)
+
+    helperCalls := func() int {
+        data, err := os.ReadFile(counter)
+        if err != nil {
+            return 0
+        }
+        n := 0
+        for _, line := range strings.Split(string(data), "\\n") {
+            if strings.TrimSpace(line) != "" {
+                n++
+            }
+        }
+        return n
+    }
+    reset := func() {
+        os.Remove(counter)
+    }
+    rights := func(pairs []AtomPair) []string {
+        out := make([]string, 0, len(pairs))
+        for _, p := range pairs {
+            out = append(out, p.Right)
+        }
+        return out
+    }
+    equal := func(got []string, want ...string) bool {
+        if len(got) != len(want) {
+            return false
+        }
+        for i := range got {
+            if got[i] != want[i] {
+                return false
+            }
+        }
+        return true
+    }
+
+    // eager: one scan up front, no helper calls per lookup.
+    reset()
+    eager := newLmdbAtomFact2Source("edge/2", dir, "eager", 0)
+    if got := helperCalls(); got != 1 {
+        t.Fatalf("eager construction: expected 1 helper call (scan), got %d", got)
+    }
+    if got := rights(eager.LookupArg1("x")); !equal(got, "y", "z") {
+        t.Fatalf("eager LookupArg1(x) = %v", got)
+    }
+    if got := rights(eager.LookupArg1("a")); !equal(got, "b") {
+        t.Fatalf("eager LookupArg1(a) = %v", got)
+    }
+    if got := rights(eager.LookupArg1("missing")); len(got) != 0 {
+        t.Fatalf("eager LookupArg1(missing) = %v", got)
+    }
+    if got := len(eager.Scan()); got != 3 {
+        t.Fatalf("eager Scan() returned %d pairs, want 3", got)
+    }
+    if got := helperCalls(); got != 1 {
+        t.Fatalf("eager lookups must not spawn the helper; total calls = %d", got)
+    }
+
+    // lazy: one helper call per lookup, repeats included.
+    reset()
+    lazy := newLmdbAtomFact2Source("edge/2", dir, "lazy", 0)
+    if got := helperCalls(); got != 0 {
+        t.Fatalf("lazy construction must not spawn the helper; got %d", got)
+    }
+    if got := rights(lazy.LookupArg1("x")); !equal(got, "y", "z") {
+        t.Fatalf("lazy LookupArg1(x) = %v", got)
+    }
+    lazy.LookupArg1("x")
+    lazy.LookupArg1("a")
+    if got := helperCalls(); got != 3 {
+        t.Fatalf("lazy: expected 3 helper calls for 3 lookups, got %d", got)
+    }
+
+    // cached: one helper call per distinct key; misses cached too.
+    reset()
+    cached := newLmdbAtomFact2Source("edge/2", dir, "cached", 128)
+    if got := helperCalls(); got != 0 {
+        t.Fatalf("cached construction must not spawn the helper; got %d", got)
+    }
+    if got := rights(cached.LookupArg1("x")); !equal(got, "y", "z") {
+        t.Fatalf("cached LookupArg1(x) = %v", got)
+    }
+    if got := rights(cached.LookupArg1("x")); !equal(got, "y", "z") {
+        t.Fatalf("cached repeat LookupArg1(x) = %v", got)
+    }
+    cached.LookupArg1("a")
+    cached.LookupArg1("a")
+    cached.LookupArg1("missing")
+    cached.LookupArg1("missing")
+    if got := helperCalls(); got != 3 {
+        t.Fatalf("cached: expected 3 helper calls for 3 distinct keys, got %d", got)
+    }
+
+    // An unknown mode falls back to cached rather than serving nothing.
+    if newLmdbAtomFact2Source("edge/2", dir, "bogus", 0).mode != "cached" {
+        t.Fatalf("unknown materialisation mode should fall back to cached")
+    }
+}
 
 func TestForeignGraphKernels(t *testing.T) {
     tsvPath := filepath.Join(t.TempDir(), "edge.tsv")
@@ -369,7 +494,7 @@ func TestForeignGraphKernels(t *testing.T) {
     }
     t.Setenv("UW_LMDB_RELATION_ARTIFACT_BIN", helperPath)
     lmdbVM := NewWamState([]Instruction{&CallIndexedAtomFact2{Pred: "lmdb_edge/2"}, &Proceed{}}, map[string]int{})
-    if err := lmdbVM.registerLmdbAtomFact2("lmdb_edge/2", filepath.Join(t.TempDir(), "edge_artifact")); err != nil {
+    if err := lmdbVM.registerLmdbAtomFact2("lmdb_edge/2", filepath.Join(t.TempDir(), "edge_artifact"), "lazy", 0); err != nil {
         t.Fatalf("register lmdb facts: %v", err)
     }
     if _, ok := lmdbVM.Ctx.AtomFact2Sources["lmdb_edge/2"]; !ok {

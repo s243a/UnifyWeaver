@@ -170,7 +170,7 @@ def test_programmatic_nodes_are_validated_before_render_or_hash():
 
 
 def test_registry_is_versioned_and_has_typed_signatures():
-    assert REGISTRY_VERSION == "v0.4"
+    assert REGISTRY_VERSION == "v0.5"
     assert RENDERER_VERSION == "r3"
     assert REGISTRY["routing"].arg_types == ("score", "judge")
     assert REGISTRY["routing"].kwargs["manifest"].kind == "string"

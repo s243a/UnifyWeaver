@@ -39,7 +39,7 @@
 // See docs/design/WAM_LMDB_RESIDENT_INTERNING_PHILOSOPHY.md for the
 // existing monotonic-intern design that this composes with.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
 
@@ -47,6 +47,29 @@ use crate::{iter_mysql_rows, Field};
 
 /// Namespace constant for Category pages in MediaWiki.
 pub const NS_CATEGORY: i64 = 14;
+/// Namespace constant for Article (main) pages in MediaWiki.
+pub const NS_ARTICLE: i64 = 0;
+
+/// Tier-1 "junk" admin-category classifier, ported from
+/// `prototypes/mu_cosine/eval_filing.py::_JUNK` (keep the two in sync).
+/// Tier-2 structural categories (by-year/by-country/…) are deliberately KEPT —
+/// they carry meaning; see the python comment for the rationale.
+pub fn is_admin_category(title: &[u8]) -> bool {
+    let name = String::from_utf8_lossy(title).to_lowercase().replace('_', " ");
+    const CONTAINS: [&str; 10] = [
+        "catautotoc", "navseasoncats", "navbox", "wikipedia", "template",
+        "redirect", "hidden", "tracking", "maintenance", "disambiguation",
+    ];
+    const PREFIXES: [&str; 5] = ["article ", "articles ", "page ", "pages ", "categor"];
+    if CONTAINS.iter().any(|p| name.contains(p)) {
+        return true;
+    }
+    if PREFIXES.iter().any(|p| name.starts_with(p)) {
+        return true;
+    }
+    // approximates stubs?
+    name.contains(" stub")
+}
 
 /// How the ingester decides which dumps to consume and how to resolve IDs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,6 +217,16 @@ pub struct Resolver {
     /// Statistics: edges where parent resolution failed (e.g. lt_id not in
     /// linktarget map, or title not in page map).
     pub unresolved_parents: usize,
+    /// Correct mode only: the set of valid ns-14 page_ids. When
+    /// `validate_children` is set, an edge whose `cl_from` is not in this
+    /// set is dropped and counted — a cl_from with no ns-14 page row is a
+    /// stale link (page deleted/moved between dump snapshots) and cannot be
+    /// walked further, so keeping it violates the "fully walkable graph
+    /// keyed by page_id" contract this mode promises. (Found in the field:
+    /// 16,622 of 9.93M enwiki edges had unresolvable children.)
+    pub page_ids: HashSet<i64>,
+    pub validate_children: bool,
+    pub unresolved_children: usize,
 }
 
 impl Resolver {
@@ -206,7 +239,15 @@ impl Resolver {
             intern: HashMap::new(),
             next_id: 0,
             unresolved_parents: 0,
+            page_ids: HashSet::new(),
+            validate_children: false,
+            unresolved_children: 0,
         }
+    }
+
+    /// Populate `page_ids` from the already-loaded page map (Correct mode).
+    pub fn index_page_ids(&mut self) {
+        self.page_ids = self.page_title_to_id.values().copied().collect();
     }
 
     /// Resolve one categorylinks subcat edge `(cl_from, cl_target_id)`
@@ -218,8 +259,23 @@ impl Resolver {
     pub fn resolve_edge(&mut self, cl_from: i64, cl_target_id: i64) -> Option<(i64, i64)> {
         match self.mode {
             IngestMode::Correct => {
-                let title = self.lt_title_map.get(&cl_target_id)?;
-                let parent_page_id = self.page_title_to_id.get(title.as_slice())?;
+                // Count BOTH failure legs: an lt_id absent from linktarget, and a
+                // linktarget title with no ns-14 page row (a "wanted category" —
+                // MediaWiki allows members in categories whose page was never
+                // created; 3,694 such edges in the enwiki reference ingest). The
+                // previous `?` dropped these silently.
+                let Some(title) = self.lt_title_map.get(&cl_target_id) else {
+                    self.unresolved_parents += 1;
+                    return None;
+                };
+                let Some(parent_page_id) = self.page_title_to_id.get(title.as_slice()) else {
+                    self.unresolved_parents += 1;
+                    return None;
+                };
+                if self.validate_children && !self.page_ids.contains(&cl_from) {
+                    self.unresolved_children += 1;
+                    return None;
+                }
                 Some((cl_from, *parent_page_id))
             }
             IngestMode::Compromise => {
@@ -248,6 +304,36 @@ impl Resolver {
                 }
             },
         }
+    }
+
+    /// Correct mode only: resolve one subcat edge to `(child_title, parent_title,
+    /// parent_is_pageless)`. The child must have an ns-14 page row (title comes
+    /// from `page_id_to_title`); the parent title comes from linktarget, so with
+    /// `include_pageless` a "wanted category" parent (no page row) still resolves
+    /// — matching the title-keyed graph contract where pageless categories are
+    /// legitimate named containers. Counts the same unresolved stats as
+    /// [`Self::resolve_edge`]. Requires `page_id_to_title`.
+    pub fn resolve_named(
+        &mut self,
+        page_id_to_title: &HashMap<i64, Vec<u8>>,
+        cl_from: i64,
+        cl_target_id: i64,
+        include_pageless: bool,
+    ) -> Option<(Vec<u8>, Vec<u8>, bool)> {
+        let Some(child_title) = page_id_to_title.get(&cl_from) else {
+            self.unresolved_children += 1;
+            return None;
+        };
+        let Some(parent_title) = self.lt_title_map.get(&cl_target_id) else {
+            self.unresolved_parents += 1;
+            return None;
+        };
+        let pageless = !self.page_title_to_id.contains_key(parent_title.as_slice());
+        if pageless && !include_pageless {
+            self.unresolved_parents += 1;
+            return None;
+        }
+        Some((child_title.clone(), parent_title.clone(), pageless))
     }
 
     fn intern_or_alloc(&mut self, raw: i64) -> i64 {
@@ -365,5 +451,72 @@ mod tests {
         r.lt_title_map.insert(500, b"Physics".to_vec());
         // title not in page_title_to_id
         assert_eq!(r.resolve_edge(10, 500), None);
+    }
+
+    #[test]
+    fn correct_counts_unresolved_parents_both_legs() {
+        // Regression: the old `?` dropped these SILENTLY — 3,694 pageless-parent
+        // edges in the enwiki reference ingest were invisible in stats.
+        let mut r = Resolver::new(IngestMode::Correct, IdMethod::Raw);
+        r.lt_title_map.insert(500, b"Wanted_category".to_vec());
+        assert_eq!(r.resolve_edge(10, 999), None); // lt_id missing
+        assert_eq!(r.resolve_edge(10, 500), None); // pageless parent
+        assert_eq!(r.unresolved_parents, 2);
+    }
+
+    #[test]
+    fn correct_child_validation_drops_stale_children() {
+        // Regression: 16,622 enwiki edges had cl_from with no ns-14 page row
+        // (stale links across dump snapshots); they leaked into the graph.
+        let mut r = Resolver::new(IngestMode::Correct, IdMethod::Raw);
+        r.lt_title_map.insert(500, b"Physics".to_vec());
+        r.page_title_to_id.insert(b"Physics".to_vec(), 7777);
+        r.index_page_ids();
+        r.validate_children = true;
+        assert_eq!(r.resolve_edge(10, 500), None); // 10 not an ns-14 page
+        assert_eq!(r.unresolved_children, 1);
+        assert_eq!(r.resolve_edge(7777, 500), Some((7777, 7777)));
+        // validation off keeps the old permissive behaviour
+        r.validate_children = false;
+        assert_eq!(r.resolve_edge(10, 500), Some((10, 7777)));
+    }
+
+    #[test]
+    fn admin_classifier_matches_python_tier1() {
+        assert!(is_admin_category(b"Wikipedia_categories_named_after_people"));
+        assert!(is_admin_category(b"Articles_with_short_description"));
+        assert!(is_admin_category(b"All_article_disambiguation_pages"));
+        assert!(is_admin_category(b"Physics_stubs"));
+        assert!(is_admin_category(b"Hidden_categories"));
+        assert!(!is_admin_category(b"Physics"));
+        assert!(!is_admin_category(b"Establishments_in_1990")); // tier-2: kept
+        assert!(!is_admin_category(b"History_by_country"));     // tier-2: kept
+    }
+
+    #[test]
+    fn resolve_named_handles_pageless_parents() {
+        use std::collections::HashMap;
+        let mut r = Resolver::new(IngestMode::Correct, IdMethod::Raw);
+        r.lt_title_map.insert(500, b"Wanted_category".to_vec());
+        r.lt_title_map.insert(501, b"Physics".to_vec());
+        r.page_title_to_id.insert(b"Physics".to_vec(), 7777);
+        let mut id2t: HashMap<i64, Vec<u8>> = HashMap::new();
+        id2t.insert(10, b"Child_cat".to_vec());
+        // pageless parent excluded by default...
+        assert_eq!(r.resolve_named(&id2t, 10, 500, false), None);
+        assert_eq!(r.unresolved_parents, 1);
+        // ...included on request, flagged pageless (python-ingest parity)
+        assert_eq!(
+            r.resolve_named(&id2t, 10, 500, true),
+            Some((b"Child_cat".to_vec(), b"Wanted_category".to_vec(), true))
+        );
+        // paged parent never flagged
+        assert_eq!(
+            r.resolve_named(&id2t, 10, 501, true),
+            Some((b"Child_cat".to_vec(), b"Physics".to_vec(), false))
+        );
+        // unknown child counted
+        assert_eq!(r.resolve_named(&id2t, 11, 501, true), None);
+        assert_eq!(r.unresolved_children, 1);
     }
 }

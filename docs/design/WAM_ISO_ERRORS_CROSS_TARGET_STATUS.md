@@ -57,17 +57,17 @@ Survey columns: shipped means code and tests exist in the target today.
 
 | Component | C++ | Elixir | Other WAM targets |
 |---|---|---|---|
-| Prolog config loader (`iso_errors_config/1`, inline overrides) | shipped | shipped | Python, F#, R shipped; others not adopted |
-| Bare-PI multi-module warning | shipped | shipped | Python, F#, R shipped; others not adopted |
-| Per-predicate default rewrite | shipped | shipped | Python, F#, R shipped; others not adopted |
-| Text-path rewrite coverage (`builtin_call`, `put_structure`, `call`, `execute`) | shipped | shipped | target-specific (R covers all four) |
-| Audit predicate and report | `wam_cpp_iso_audit/3` | `wam_elixir_iso_audit/3` | `wam_python_iso_audit/3`, `wam_fsharp_iso_audit/3`, `wam_r_iso_audit/3`; others not adopted |
-| `catch/3` + `throw/1` substrate | shipped | shipped | Python, F#, R shipped; others mostly missing/partial |
-| Error constructors and `throw_iso_error` helper | shipped | shipped | Python, F#, R shipped; others not adopted |
-| `is_iso/2` / `is_lax/2` | shipped | shipped | Python, F#, R shipped; others not adopted |
-| ISO/lax arithmetic compares | shipped | shipped | Python, F#, R shipped; others not adopted |
-| `succ_iso/2` / `succ_lax/2` | shipped | shipped | Python, F#, R shipped; others not adopted |
-| Lax IEEE-754 float divide behavior | shipped | shipped | Python shipped; R float `/` uses host Inf/NaN; F# partial (float div by zero returns nan/inf via CLR; integer div by zero fails silently); others not adopted |
+| Prolog config loader (`iso_errors_config/1`, inline overrides) | shipped | shipped | Python, F#, R, Haskell, Go shipped; others not adopted |
+| Bare-PI multi-module warning | shipped | shipped | Python, F#, R shipped; Go via the shared helper; others not adopted |
+| Per-predicate default rewrite | shipped | shipped | Python, F#, R, Haskell, Go shipped; others not adopted |
+| Text-path rewrite coverage (`builtin_call`, `put_structure`, `call`, `execute`) | shipped | shipped | target-specific (R and Go cover all four via the shared item rewrite) |
+| Audit predicate and report | `wam_cpp_iso_audit/3` | `wam_elixir_iso_audit/3` | `wam_python_iso_audit/3`, `wam_fsharp_iso_audit/3`, `wam_r_iso_audit/3`, `wam_go_iso_audit/3`; others not adopted |
+| `catch/3` + `throw/1` substrate | shipped | shipped | Python, F#, R shipped; Go shipped via panic/recover (deterministic `catch/3` — commits to the goal's first solution); others mostly missing/partial |
+| Error constructors and `throw_iso_error` helper | shipped | shipped | Python, F#, R, Go shipped; others not adopted |
+| `is_iso/2` / `is_lax/2` | shipped | shipped | Python, F#, R, Haskell, Go shipped; others not adopted |
+| ISO/lax arithmetic compares | shipped | shipped | Python, F#, R, Haskell, Go shipped; others not adopted |
+| `succ_iso/2` / `succ_lax/2` | shipped | shipped | Python, F#, R, Haskell, Go shipped; others not adopted |
+| Lax IEEE-754 float divide behavior | shipped | shipped | Python shipped; R float `/` uses host Inf/NaN; F# partial (float div by zero returns nan/inf via CLR; integer div by zero fails silently); Go shipped (float div by zero yields Go Inf/NaN, integer div by zero throws `evaluation_error(zero_divisor)` in ISO mode and fails in lax); others not adopted |
 
 The C++ and Elixir targets are therefore the current reference consumers. C++
 was the first implementation; Elixir proves the design is not C++-specific.
@@ -108,6 +108,17 @@ common Prolog helper module:
 - predicate-indicator matching and bare-PI warnings;
 - default/ISO/lax key tables;
 - audit record formatting.
+
+## Registering the keys with the target's builtin dispatcher
+
+A trap worth naming for the remaining adopters (C, Scala, R follow-ups):
+adding an ISO/lax key to the `iso_errors_default_to_iso/lax` tables is
+not enough on its own. The target's own builtin-dispatch table has to
+recognise the new key too. In Go, keys absent from
+`wam_go_direct_builtin/3` fell through to `Execute{Pred: ...}`, which
+looks a name up as an *indexed fact table* — so `succ_iso/2` silently
+failed instead of throwing. The rewrite looked correct in the emitted
+source and the behaviour was wrong at runtime. Test for it directly.
 
 ## Relationship To Runtime Parser Transpilation
 

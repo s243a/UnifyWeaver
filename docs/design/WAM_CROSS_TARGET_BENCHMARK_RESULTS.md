@@ -22,8 +22,8 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
 | **F# LMDB cached (two-level L1/L2)** | **2** | -- | **1** | **Yes** | Fact-access only (no WAM overhead); see below |
 | Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
-| R WAM (functions, kernels_on) | 1111 | 1621 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + AGG-BATCH (typed numeric batch + vectorized is_lax reduce); 3-rep median query |
-| Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
+| R WAM (functions, kernels_on) | 270 | 776 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + NATIVE-HOPS-0 (optional .Call CA hop kernel, pure-R fallback); 3-rep median query |
+| Go WAM (accumulated, kernels_on) | 898 | 898 | 1 | Yes | Hosted Ubuntu 24.04 CI, go 1.24.7; 5-rep median; facts compiled in (load_ms=0) |
 
 **Key takeaway:** Atom interning (replacing `HashMap<String, Vec<String>>` with
 `HashMap<u32, Vec<u32>>`) delivers a **7.9x speedup** on the Rust FFI path at
@@ -284,12 +284,43 @@ cd /tmp/wam-bench/fsharp-300
 /tmp/dotnet/dotnet run -c Release -- /path/to/UnifyWeaver/data/benchmark/300 3
 ```
 
-### Go WAM (In Progress)
+### Go WAM
 
-The Go WAM target compiles successfully (after fixing `SharedWamCode`/
-`SharedWamLabels` export aliases), but the benchmark driver does not yet wire
-up fact data into the runtime. Status: **build OK, benchmark driver in
-progress**.
+Measured with `examples/benchmark/generate_wam_go_effective_distance_benchmark.pl`
+(accumulated variant, `kernels_on`) at scale 300 on hosted Ubuntu 24.04 CI,
+go 1.24.7. The generator emits a self-contained `package main` with the
+benchmark facts compiled in, so `load_ms` is 0 and `total_ms` is query plus
+aggregation only.
+
+| Scale | query_ms | total_ms | reps | seeds | tuples | articles |
+|-------|---------:|---------:|-----:|------:|-------:|---------:|
+| 300 | 898 | 898 | 5 (median) | 386 | 213 | 271 |
+
+Output verified against `data/benchmark/300/reference_output.tsv`: 271 rows,
+exact multiset match on (article, root_category, effective_distance) at 5
+decimal places.
+
+The driver takes the same `[factsDir] [reps]` arguments as the Rust driver so
+`run_wam_cross_target_benchmark.sh` invokes every target uniformly; `factsDir`
+is accepted and ignored because the facts are compiled in.
+
+Re-measured after the PARSE-GO unification fixes (get_list cons
+destructuring, get_structure deref order, nested write contexts,
+A-register snapshot range, atom-intern initialisation): query_ms moved
+1061 -> 898 and the output still matches the reference exactly.
+
+Go sits at the interpreter-bound end of the matrix, close to SWI-Prolog
+(336/409) rather than to the FFI-accelerated rows. The WAM path here runs
+`category_ancestor/4` through the shared bytecode loop; the foreign-kernel
+dispatch that gives Rust and F# their order-of-magnitude wins is registered
+for Go (`go_foreign_lowering`) but is not on this benchmark's hot path. That
+is the obvious next lever for the Go row, not a further tweak to the driver.
+
+**Historical note:** this row previously read `--` with "benchmark driver in
+progress". The driver did in fact wire facts into the runtime; what was
+missing was rep support and a harness block that invoked *this* generator
+(the harness called `generate_wam_go_optimized_benchmark.pl` and only built
+it). Both are fixed.
 
 ### Python WAM
 
@@ -583,10 +614,47 @@ gate (7-rep × 2):
 | A | 1805 | 1776 | 1.016× | 1.015× |
 | B | 1801 | 1777 | 1.014× | 1.010× |
 
-No production change retained. Hosted AGG-BATCH row remains 1111 / 1621.
-Next evidence-based leverage is outside the interpreted R DFS body (native
-hop kernel / deeper representation change), not further R-level membership
-or buffer micro-opts.
+No production change retained. Hosted AGG-BATCH row remained 1111 / 1621
+until NATIVE-HOPS-0.
+
+PERF-R-NATIVE-HOPS-0 proves an optional native hop-kernel boundary after
+CA-BULK-HOPS. Audit: no prior R `.Call`/Rcpp path; prefer base R C API +
+`R CMD SHLIB`. Disposable prototype matched R `hops_ids` order/multiplicity
+on 385 ED samples plus synthetic empty/singleton/branch/cycle/depth cases;
+hops-only ≈144× with ~1.1µs empty `.Call`. Production wires
+`src/uw_ca_hops.c` (generate-time soft-fail SHLIB) through
+`configure_native_ca_hops` + CSR over dense `id_table` (overflow → pure-R).
+Same-host interleaved 7-rep × 2 (R 4.3.3, 271-row six-decimal multiset
+parity; total_ms includes generate-time `.so` already present, not rebuild):
+
+| Sequence | base median | candidate median | query speedup | total speedup |
+|----------|-------------|------------------|---------------|---------------|
+| A | 1810 | 923 | 1.961× | 1.622× |
+| B | 1819 | 933 | 1.950× | 1.610× |
+
+Warm query: steps 14540, native hop calls 385, EndAggregate 0.
+Hosted 3-rep after retain: samples 932, 258, 270 (median 270 / total 776).
+Primary matrix row updated accordingly. Platforms: Linux with `r-base-dev`
+(or equivalent headers/toolchain); elsewhere generated programs keep
+pure-R hops.
+
+PERF-R-POST-NATIVE-0 attributed the post-NATIVE-HOPS residual on a Cursor
+cloud host (R 4.3.3, scale-300, kernels_on/functions, 271-row six-decimal
+parity). Native hops are no longer the dominant bucket (~3–5% of warm
+query; 385/385 native calls). Separate Rprof/wrapper measurements show
+`WamRuntime$run`/`$step` ~84–90% of query wall, with
+`try_scalar_aggregate_fastpath` ~32% total, `put_reg` ~23%,
+`call_builtin` ~16%, and `fact_table_iter_subset` ~10%. These buckets are
+nested/inclusive and are not additive. The attribution harness observed
+18005 step dispatches (BeginAggregate×385, EndAggregate×0; one aggregate
+site); no runtime code was retained, so this is not a before/after step delta.
+Trials that cached BeginAggregate plans and specialized typed-batch
+`(Batch ⊕ scalar) ** Exp` vector reduce preserved parity but were
+wall-time neutral (~1.00–1.03× interleaved smoke; gate ≥1.05× failed).
+No production change retained. Hosted NATIVE-HOPS-0 row remains 270 / 776.
+Next leverage is deeper `power_sum_bound` lowering that skips the WAM
+shell around bulk collect + closed reduce, or `put_reg`/`step`
+infrastructure — not further hop-kernel or aggregate-arith micro-opts.
 
 #### Reproduction
 

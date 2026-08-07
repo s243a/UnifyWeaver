@@ -370,7 +370,37 @@ func computeResults(root string, articleCats []articleCategoryPair) ([]resultRow
     return rows, len(uniqueSeeds), tupleCount
 }
 
+// medianMs returns the median of a millisecond sample. Reporting the
+// median rather than a single run matches the Rust/R/C harness rows in
+// docs/design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md.
+func medianMs(samples []int64) int64 {
+    if len(samples) == 0 {
+        return 0
+    }
+    sorted := append([]int64(nil), samples...)
+    sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+    mid := len(sorted) / 2
+    if len(sorted)%2 == 1 {
+        return sorted[mid]
+    }
+    return (sorted[mid-1] + sorted[mid]) / 2
+}
+
 func main() {
+    // Args mirror the Rust driver: [factsDir] [reps]. factsDir is
+    // accepted and ignored — the Go project compiles its facts in — so
+    // the cross-target harness can invoke every target the same way.
+    reps := 1
+    if len(os.Args) > 2 {
+        if n, err := strconv.Atoi(os.Args[2]); err == nil && n > 0 {
+            reps = n
+        }
+    } else if len(os.Args) > 1 {
+        if n, err := strconv.Atoi(os.Args[1]); err == nil && n > 0 {
+            reps = n
+        }
+    }
+
     started := time.Now()
     roots := append([]string(nil), benchmarkRoots...)
     articleCats := append([]articleCategoryPair(nil), benchmarkArticleCategories...)
@@ -381,19 +411,30 @@ func main() {
     }
     root := roots[0]
 
-    queryStart := time.Now()
-    rows, seedCount, tupleCount := computeResults(root, articleCats)
-    queryMs := time.Since(queryStart).Milliseconds()
+    var (
+        rows []resultRow
+        seedCount int
+        tupleCount int
+        querySamples []int64
+        aggregationSamples []int64
+        totalSamples []int64
+    )
+    for rep := 0; rep < reps; rep++ {
+        repStart := time.Now()
+        queryStart := time.Now()
+        rows, seedCount, tupleCount = computeResults(root, articleCats)
+        querySamples = append(querySamples, time.Since(queryStart).Milliseconds())
 
-    aggregationStart := time.Now()
-    sort.Slice(rows, func(i, j int) bool {
-        if rows[i].Distance != rows[j].Distance {
-            return rows[i].Distance < rows[j].Distance
-        }
-        return rows[i].Article < rows[j].Article
-    })
-    aggregationMs := time.Since(aggregationStart).Milliseconds()
-    totalMs := time.Since(started).Milliseconds()
+        aggregationStart := time.Now()
+        sort.Slice(rows, func(i, j int) bool {
+            if rows[i].Distance != rows[j].Distance {
+                return rows[i].Distance < rows[j].Distance
+            }
+            return rows[i].Article < rows[j].Article
+        })
+        aggregationSamples = append(aggregationSamples, time.Since(aggregationStart).Milliseconds())
+        totalSamples = append(totalSamples, loadMs+time.Since(repStart).Milliseconds())
+    }
 
     fmt.Println("article\\troot_category\\teffective_distance")
     for _, row := range rows {
@@ -402,10 +443,11 @@ func main() {
 
     fmt.Fprintf(os.Stderr, "mode=accumulated_go_wam\\n")
     fmt.Fprintf(os.Stderr, "kernel_mode=~w\\n")
+    fmt.Fprintf(os.Stderr, "reps=%d\\n", reps)
     fmt.Fprintf(os.Stderr, "load_ms=%d\\n", loadMs)
-    fmt.Fprintf(os.Stderr, "query_ms=%d\\n", queryMs)
-    fmt.Fprintf(os.Stderr, "aggregation_ms=%d\\n", aggregationMs)
-    fmt.Fprintf(os.Stderr, "total_ms=%d\\n", totalMs)
+    fmt.Fprintf(os.Stderr, "query_ms=%d\\n", medianMs(querySamples))
+    fmt.Fprintf(os.Stderr, "aggregation_ms=%d\\n", medianMs(aggregationSamples))
+    fmt.Fprintf(os.Stderr, "total_ms=%d\\n", medianMs(totalSamples))
     fmt.Fprintf(os.Stderr, "seed_count=%d\\n", seedCount)
     fmt.Fprintf(os.Stderr, "tuple_count=%d\\n", tupleCount)
     fmt.Fprintf(os.Stderr, "article_count=%d\\n", len(rows))

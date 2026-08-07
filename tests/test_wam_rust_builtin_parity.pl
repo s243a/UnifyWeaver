@@ -1893,6 +1893,237 @@ fn test_arithmetic_comparisons_direct() {
 }
 
 #[test]
+fn test_length_direct_modes() {
+    let (measure_ok, measure_vm) =
+        call2("length/2", Value::List(vec![a("a"), a("b"), a("c")]), ub("N"));
+    assert!(measure_ok);
+    assert_eq!(read_var(&measure_vm, "N"), i(3));
+
+    assert!(call2("length/2", Value::List(vec![a("a"), a("b")]), i(2)).0);
+    assert!(!call2("length/2", Value::List(vec![a("a"), a("b")]), i(3)).0);
+    assert!(call2("length/2", a("[]"), i(0)).0);
+
+    let (construct_ok, construct_vm) = call2("length/2", ub("List"), i(3));
+    assert!(construct_ok);
+    match read_var(&construct_vm, "List") {
+        Value::List(items) => {
+            assert_eq!(items.len(), 3);
+            assert!(items.iter().all(Value::is_unbound));
+            assert_ne!(items[0], items[1]);
+            assert_ne!(items[1], items[2]);
+            assert_ne!(items[0], items[2]);
+        }
+        other => panic!("expected constructed list, got {other:?}"),
+    }
+
+    let (empty_ok, empty_vm) = call2("length/2", ub("List"), i(0));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "List"), Value::List(vec![]));
+
+    let mut aliased_length = vmnew();
+    assert!(aliased_length.unify(&ub("N"), &i(2)));
+    aliased_length.set_reg("A1", ub("List"));
+    aliased_length.set_reg("A2", ub("N"));
+    assert!(aliased_length.execute_builtin("length/2", 2));
+    assert_eq!(read_var(&aliased_length, "N"), i(2));
+    assert!(matches!(read_var(&aliased_length, "List"), Value::List(items) if items.len() == 2));
+
+    let (shared_ok, shared_vm) =
+        call2("length/2", Value::List(vec![ub("X")]), ub("X"));
+    assert!(shared_ok);
+    assert_eq!(read_var(&shared_vm, "X"), i(1));
+
+    assert!(!call2("length/2", ub("List"), i(-1)).0);
+    assert!(!call2("length/2", ub("List"), i(i64::MAX)).0);
+    assert!(!call2("length/2", ub("List"), Value::Float(2.0)).0);
+    assert!(!call2("length/2", a("not_a_list"), ub("N")).0);
+
+    let mut missing_list = vmnew();
+    missing_list.set_reg("A2", i(0));
+    assert!(!missing_list.execute_builtin("length/2", 2));
+
+    let mut missing_length = vmnew();
+    missing_length.set_reg("A1", Value::List(vec![]));
+    assert!(!missing_length.execute_builtin("length/2", 2));
+}
+
+#[test]
+fn test_append_direct_modes_and_rollback() {
+    let (forward_ok, forward_vm) = call3(
+        "append/3",
+        Value::List(vec![a("a"), a("b")]),
+        Value::List(vec![a("c"), a("d")]),
+        ub("Whole"),
+    );
+    assert!(forward_ok);
+    assert_eq!(
+        read_var(&forward_vm, "Whole"),
+        Value::List(vec![a("a"), a("b"), a("c"), a("d")]),
+    );
+
+    let (suffix_ok, suffix_vm) = call3(
+        "append/3",
+        Value::List(vec![a("a"), a("b")]),
+        ub("Suffix"),
+        Value::List(vec![a("a"), a("b"), a("c")]),
+    );
+    assert!(suffix_ok);
+    assert_eq!(read_var(&suffix_vm, "Suffix"), Value::List(vec![a("c")]));
+
+    let (prefix_ok, prefix_vm) = call3(
+        "append/3",
+        ub("Prefix"),
+        Value::List(vec![a("c"), a("d")]),
+        Value::List(vec![a("a"), a("b"), a("c"), a("d")]),
+    );
+    assert!(prefix_ok);
+    assert_eq!(read_var(&prefix_vm, "Prefix"), Value::List(vec![a("a"), a("b")]));
+
+    let (alias_ok, alias_vm) = call3(
+        "append/3",
+        Value::List(vec![ub("X")]),
+        Value::List(vec![a("b")]),
+        Value::List(vec![a("a"), a("b")]),
+    );
+    assert!(alias_ok);
+    assert_eq!(read_var(&alias_vm, "X"), a("a"));
+
+    assert!(call3("append/3", a("[]"), ub("Tail"), Value::List(vec![a("a")])).0);
+    assert!(!call3(
+        "append/3",
+        Value::List(vec![a("a"), a("b")]),
+        ub("Tail"),
+        Value::List(vec![a("a"), a("c")]),
+    ).0);
+    assert!(!call3("append/3", a("not_a_list"), a("[]"), ub("Whole")).0);
+
+    let (rollback_ok, rollback_vm) = call3(
+        "append/3",
+        Value::List(vec![a("a"), a("b")]),
+        Value::List(vec![a("c")]),
+        Value::List(vec![a("a"), ub("X"), a("wrong")]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "X"), ub("X"));
+
+    let mut missing_output = vmnew();
+    missing_output.set_reg("A1", Value::List(vec![]));
+    missing_output.set_reg("A2", Value::List(vec![]));
+    assert!(!missing_output.execute_builtin("append/3", 3));
+}
+
+#[test]
+fn test_functor_direct_modes_and_rollback() {
+    let compound = Value::Str("pair/2".to_string(), vec![a("left"), i(7)]);
+    let (read_ok, read_vm) = call3("functor/3", compound, ub("Name"), ub("Arity"));
+    assert!(read_ok);
+    assert_eq!(read_var(&read_vm, "Name"), a("pair"));
+    assert_eq!(read_var(&read_vm, "Arity"), i(2));
+
+    let (construct_ok, construct_vm) = call3("functor/3", ub("Term"), a("node"), i(2));
+    assert!(construct_ok);
+    match read_var(&construct_vm, "Term") {
+        Value::Str(name, args) => {
+            assert_eq!(name, "node");
+            assert_eq!(args.len(), 2);
+            assert!(args.iter().all(Value::is_unbound));
+            assert_ne!(args[0], args[1]);
+        }
+        other => panic!("expected constructed compound, got {other:?}"),
+    }
+
+    let (atom_ok, atom_vm) = call3("functor/3", ub("Term"), a("atom"), i(0));
+    assert!(atom_ok);
+    assert_eq!(read_var(&atom_vm, "Term"), a("atom"));
+
+    let (number_ok, number_vm) = call3("functor/3", ub("Term"), i(42), i(0));
+    assert!(number_ok);
+    assert_eq!(read_var(&number_vm, "Term"), i(42));
+
+    let (empty_list_ok, empty_list_vm) = call3("functor/3", ub("Term"), a("[]"), i(0));
+    assert!(empty_list_ok);
+    assert_eq!(read_var(&empty_list_vm, "Term"), a("[]"));
+
+    assert!(!call3("functor/3", ub("Term"), i(42), i(1)).0);
+    assert!(!call3("functor/3", ub("Term"), ub("Name"), i(0)).0);
+    assert!(!call3("functor/3", ub("Term"), a("f"), i(-1)).0);
+    assert!(!call3("functor/3", ub("Term"), a("f"), i(i64::MAX)).0);
+
+    let (rollback_ok, rollback_vm) = call3(
+        "functor/3",
+        Value::Str("f/2".to_string(), vec![a("a"), a("b")]),
+        ub("Name"),
+        i(1),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "Name"), ub("Name"));
+
+    let mut missing_name = vmnew();
+    missing_name.set_reg("A1", a("atom"));
+    missing_name.set_reg("A3", i(0));
+    assert!(!missing_name.execute_builtin("functor/3", 3));
+
+    let mut missing_arity = vmnew();
+    missing_arity.set_reg("A1", a("atom"));
+    missing_arity.set_reg("A2", ub("Name"));
+    assert!(!missing_arity.execute_builtin("functor/3", 3));
+}
+
+#[test]
+fn test_arg_direct_modes_and_rollback() {
+    let term = Value::Str("pair/2".to_string(), vec![a("left"), i(7)]);
+    let (first_ok, first_vm) = call3("arg/3", i(1), term.clone(), ub("Arg"));
+    assert!(first_ok);
+    assert_eq!(read_var(&first_vm, "Arg"), a("left"));
+
+    let (second_ok, second_vm) = call3("arg/3", i(2), term, ub("Arg"));
+    assert!(second_ok);
+    assert_eq!(read_var(&second_vm, "Arg"), i(7));
+
+    let list = Value::List(vec![a("head"), a("middle"), a("tail")]);
+    let (head_ok, head_vm) = call3("arg/3", i(1), list.clone(), ub("Arg"));
+    assert!(head_ok);
+    assert_eq!(read_var(&head_vm, "Arg"), a("head"));
+    let (tail_ok, tail_vm) = call3("arg/3", i(2), list, ub("Arg"));
+    assert!(tail_ok);
+    assert_eq!(
+        read_var(&tail_vm, "Arg"),
+        Value::List(vec![a("middle"), a("tail")]),
+    );
+
+    assert!(!call3("arg/3", i(0), a("atom"), ub("Arg")).0);
+    assert!(!call3("arg/3", i(-1), a("atom"), ub("Arg")).0);
+    assert!(!call3("arg/3", i(3), Value::Str("f/2".to_string(), vec![a("a"), a("b")]), ub("Arg")).0);
+    assert!(!call3("arg/3", i(i64::MAX), Value::List(vec![a("a")]), ub("Arg")).0);
+    assert!(!call3("arg/3", i(1), Value::List(vec![]), ub("Arg")).0);
+
+    let (rollback_ok, rollback_vm) = call3(
+        "arg/3",
+        i(1),
+        Value::Str(
+            "wrapper/1".to_string(),
+            vec![Value::Str("pair/2".to_string(), vec![a("a"), a("b")])],
+        ),
+        Value::Str("pair/2".to_string(), vec![ub("X"), a("wrong")]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "X"), ub("X"));
+
+    let mut bound_term = vmnew();
+    assert!(bound_term.unify(&ub("Term"), &Value::Str("one/1".to_string(), vec![a("value")])));
+    bound_term.set_reg("A1", i(1));
+    bound_term.set_reg("A2", ub("Term"));
+    bound_term.set_reg("A3", ub("Arg"));
+    assert!(bound_term.execute_builtin("arg/3", 3));
+    assert_eq!(read_var(&bound_term, "Arg"), a("value"));
+
+    let mut missing_output = vmnew();
+    missing_output.set_reg("A1", i(1));
+    missing_output.set_reg("A2", Value::Str("one/1".to_string(), vec![a("value")]));
+    assert!(!missing_output.execute_builtin("arg/3", 3));
+}
+
+#[test]
 fn test_standard_order() {
     assert!(call2("@</2", a("a"), a("b")).0);
     assert!(!call2("@</2", a("b"), a("a")).0);

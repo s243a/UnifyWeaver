@@ -65,31 +65,24 @@ The separation mirrors the filing track's catalog/policy boundary: the sampler m
 corpus and may never alter it. Corpus manifests, template digests, LOCO assignment, and the golden
 fixtures are computed before any weight exists and are unaffected by every weighting arm.
 
-## 2. Corpus — exhaustive enumeration under measured caps
+## 2. Corpus — enumeration re-measured under registry v0.4
 
-> **Enumeration is PAUSED pending the registry `v0.4` bump requested in issue #4013.** The whole
-> point of exhaustive enumeration is to *freeze the support*, and the support is a function of the
-> pinned registry. Findings 2/3/7 split the `source` catch-all into substrate / μ-source / scorer,
-> register the corpora, and add a `mu=` slot — under which **13 of the 15** currently enumerable
-> `lineage(...)` argument forms become unenumerable, because they are the type-correct-but-
-> meaningless ones the split exists to remove (*measured*: 9 bare `source`-typed names plus 6
-> registered modifier variants all parse as a `lineage` argument; only `graph` and `graph.discrim`
-> could denote a substrate, and #4013 finding 3 notes `graph.discrim` is itself a judge use, so the
-> true figure is 13 or 14). Sealing a corpus against `v0.3` would therefore
-> freeze a support that `v0.4` immediately invalidates, and re-sealing is exactly the cost the
-> sealed-bundle lifecycle exists to avoid. The gate is the **shipping** of `v0.4`, not the ruling
-> that authorizes it: a ruling unblocks designing the registry, not running the generator.
+> **Status: v0.4 has shipped and the re-measurement is done**
+> (`process_expression_enumerator.py`, exact DP counts verified against brute-force
+> materialization at reduced caps). The v0.3 numbers below the fold are retained as history. The
+> headline finding: **exhaustive expression-level enumeration is no longer feasible** — the
+> corpus posture must change, and §2.5 states the decision that needs the owner.
 
 ### 2.1 Measured envelope
 
-Over the nine registered processes (*measured*):
+Over the ten registered processes under v0.4 (*measured*, envelope tests):
 
 | quantity | max observed | registry hard limit |
 |---|---:|---|
 | AST depth | 3 | unbounded |
-| node count | 5 | unbounded |
-| positional arity | 3 | `blend` variadic `(2, unbounded)` |
-| kwargs per node | 2 | 3 (`routing`) |
+| node count | **6** (`graph-judge`) | unbounded |
+| positional arity | 3 | `blend`/`product`/`max` variadic `(2, unbounded)` |
+| kwargs per node | 2 | 5 (`routing`) |
 | modifiers per node | 1 | 1, validator-enforced |
 | pins per node | **0** | unbounded |
 | list length | 2 | unbounded |
@@ -112,7 +105,7 @@ Provisional, with headroom over the measured envelope:
 
 ```text
 max_depth        = 3      # 2 drops distill-3tier, the only three-operator chain
-max_node_count   = 5
+max_node_count   = 6      # was 5; graph-judge is exactly 6 nodes, so 5 fails §2.4
 max_arity        = 3
 max_kwargs_node  = 2
 max_list_length  = 2
@@ -122,27 +115,403 @@ max_path_length  = 8
 ```
 
 `max_node_count` is stated explicitly because it does as much pruning as `max_depth`; a depth cap
-alone leaves wide shallow trees unbounded.
+alone leaves wide shallow trees unbounded. Node count includes node-valued kwargs (`mu=haiku`
+costs a node); depth nests through them.
 
-### 2.3 The type system is the binding constraint
+### 2.3 The binding constraint has moved — the type system no longer holds the line
 
-Enumeration does not explode, and the reason is structural rather than a consequence of the caps
-(*measured*):
+The v0.3 claim in this section — *enumeration does not explode, because only atoms produce
+`source` and `process` is the single recursive channel* — was true of v0.3 and is **false under
+v0.4** (*measured*, `test_process_expression_enumerator.py`; grids = the witnessed literal set
+`{0.02, 0.03, 0.6, 0.85} / {10, 20}`, strings and pins excluded per §3):
 
-- only atoms produce `source`, so `kalman`/`blend`/`lineage`/`menu` consume flat atoms and cannot
-  recurse through their own outputs;
-- `e5`'s positional type is `process`, which `_output_matches` treats as a wildcard. This is the
-  only recursive channel, and it is what compounds with depth.
+| scenario | expressions | structural templates |
+|---|---:|---:|
+| naive full (methodology kwargs everywhere) | **3,475,387,022,969** | 3,826,859 |
+| methodology on the root only | 61,908,552 | **97,526** |
+| structural only (no `estimand`/`impl`/`mu`) | 11,409,263 | 28,373 |
 
-At the §2.2 caps this yields **285,478** canonical expressions over **19,131** structural
-templates (~14.9 expressions per template; 10,982 templates are singletons). Overflow policy is
-fail closed: an expression exceeding any cap is rejected and counted, never clipped or wrapped.
+Re-measured under registry **v0.5** (enwiki substrate + `cowalk` with enumerated walk/weight
+kinds; the v0.4 measurement — 3,303,413,185,358 / 54,871,574 / 96,196 — is retained as history
+alongside v0.3 below). The naive/root-only ratio is ~56,000× under v0.5, ~60,000× under v0.4;
+the claim is the order of the explosion, not the coefficient.
+
+Template counts use the **resolved-kwarg identity** — the established structural-template
+convention, where a defaulted kwarg is always present after canonical resolution and
+absent-vs-explicit-default is not a template distinction. (An earlier revision counted raw
+production skeletons, 98,070; the adversarial re-review computed 96,196 under the established
+identity, and the corrected DP reproduces that number exactly — a genuine identity mismatch,
+not a counting error.)
+| v0.3, for scale (history) | 285,478 | 19,131 |
+
+What moved: `estimand=` (9 values) × `impl=` (2) on eleven operators, `mu=` taking judge
+*expressions*, four substrate atoms, and the score-typed `product`/`max` channel compounding
+through itself. The type system still prevents infinite recursion; it no longer prevents
+explosion. Lever sensitivity (*measured*): capping variadic arity at 2 divides expressions by
+~2.6; shrinking to 2-value grids divides by ~6.4; both together still leave **3.6M** — 13× the
+v0.3 corpus — and tiny grids violate §5.2's own digit-coverage support floor. No defensible
+cap-and-grid combination restores expression-level exhaustiveness.
+
+Overflow policy is unchanged: fail closed — an expression exceeding any cap is rejected and
+counted, never clipped or wrapped.
 
 ### 2.4 Coverage validation
 
-The generator must reproduce every registered process. *Measured:* **9/9**, including
-`distill(e5(routing(e5,sonnet.lineage,menus=[10,20],t=[0.02,0.03])))`. Generator grammar coverage
-strictly subsumes production. This is a blocking engineering gate, not a diagnostic.
+The support must contain every registered process. *Measured:* **10/10** lie inside the
+methodology-root-only support (`covers()`, including the six-node `graph-judge` and
+`lineage-haiku`'s node-valued `mu=`). This is a blocking engineering gate, not a diagnostic.
+
+### 2.5 The corpus decision: components compose; complete trees are samples
+
+An earlier draft of this section recommended freezing the ~96k complete-tree templates as the
+exhaustive support. The owner rejected that direction: *"We can't have that many templates. The
+templates need to both be more general, and used as composable components."* The revision below
+follows that ruling, and the measurement shows why it is right — the complete-tree "templates"
+were themselves a cross-product, not a generative vocabulary.
+
+**The general, composable object is the operator-local shape**: one operator, one arity, one
+*legal* kwarg-presence pattern — plus the typed leaf shapes. Complete trees are *compositions*
+of these components through the type system. The support is **serialized content, not counts**
+(adversarial review finding on the first draft: an invalid component can replace a valid one at
+equal cardinality, so counts alone cannot freeze support — and the first draft's vocabulary
+indeed counted three unenumerable `blend/3{…w…}` shapes that the legality rules exclude).
+`component_vocabulary()` emits canonical identities (`op:blend/2{w:number_list}`,
+`edge:lineage.kw:mu->judge`, `slot:max/2.arg0:number`), and
+`component_vocabulary_sha256()` binds the set. *Measured*
+(`test_process_expression_enumerator.py`):
+
+| component class | count |
+|---|---:|
+| leaf shapes | 9 |
+| operator shapes, interior | 23 |
+| operator shapes, root-only extension | 48 |
+| node-composition edges | 33 |
+| literal slots | 2 |
+| composable component shapes | 80 |
+| serialized identities, total | 115 |
+
+Row meanings: leaf shapes are output type × modifier shape with terminals pinned; operator
+shapes are operator-local resolved-kwarg patterns, split by whether methodology kwargs appear;
+node-composition edges are parent slot → child output (including `mu=`); literal slots are
+parent slot → value kind and terminate rather than compose. **Two totals, each named for what
+it sums**: *composable component shapes* is leaves plus operator shapes — the things that
+compose recursively — while *serialized identities* is all five rows, and is what
+`component_vocabulary_sha256()` binds. An external verification pass found the earlier single
+"total" row unauditable, since the five class rows summed to something else. The witness
+universe derived from this vocabulary carries 201 required witness items.
+
+Component identities are the **resolved-kwarg** patterns (same identity convention as templates
+— `decay:number` appears in every `lineage` component, never as a presence choice), carry their
+**registry-declared kwarg kinds** (`op:lineage/1{decay:number,mu:judge}`), and leaves pin their
+**exact terminal atoms** (`leaf:judge.D{luna}`, `leaf:substrate{enwiki,fs,pearltrees,simplemind,simplewiki}`)
+— so an atom added, renamed, or re-typed moves the vocabulary hash even at constant cardinality.
+The manifest also states its own exclusion boundary (`excluded_synthetic`: pins, string kwargs,
+interior methodology — each sampler coverage with its owning section), and
+`enumeration_spec_sha256()` additionally binds the registry signature-table content witness and
+the categorical value domains (`ESTIMANDS`, `IMPLS`), so the preregistration preimage pins the
+semantics the vocabulary derives from, not only the vocabulary itself.
+
+**Three layers, deliberately separated** — the first draft conflated them:
+
+1. **Support freeze** (this section's object): the serialized component vocabulary, node-edge
+   set, and literal-slot set, hash-bound via `enumeration_spec_sha256()` — which also binds the
+   scenario definitions (root/interior methodology placement is spec content, not folklore) and
+   the vocabulary hash itself. Exhaustive and frozen at preregistration.
+2. **Corpus materialization** (a build step, §3–§5's input): complete trees are *sampled*
+   compositions of components with values sampled per §5.2. The corpus is an artifact with its
+   own manifest and digest; it *witnesses* the support but is not the support. Coverage
+   invariant checked at build: every component, every node edge, every literal slot, every grid
+   value, every digit byte appears in the materialized corpus at least the preregistered
+   minimum number of times.
+3. **Training sampling** (§4's job): weighting over the materialized corpus. Weighting shapes
+   frequency only; it can never repair a support gap, which is why layers 1–2 are checked
+   before any §4 arm runs.
+
+Neither the 96,196 complete shapes nor the 54.9M expressions is an enumeration target again;
+those stand only as measurements of the composition space — the reason exhaustiveness died.
+(The 96,196 figure is quadruple-checked: DP, reduced-caps brute force, a full-caps template
+materialization by an independent code path, and the re-reviewer's independent computation
+under the established identity.)
+
+**Composition-aware splits (§8 coupling).** Under a component-level support, the LOCO split
+unit stays the whole tree, but the split gains a constraint and a redefinition: the training
+side must still witness every component, node edge, literal slot, and grid value (a support gap
+induced by splitting is a build error, fail closed); the **far slice** is redefined as trees
+whose *compositions* — (edge, context) pairs beyond single edges — are unseen in training,
+which is exactly generalization over composition. Both are checkable at build time from the
+serialized vocabulary.
+
+The split has a canonical identity and a deterministic assignment algorithm — nothing about it
+is a runtime judgment call. The algorithm is **executable** (`process_expression_split.py`,
+`split-v2`), it consumes families built by a **real extractor over real ASTs**
+(`families_from_expressions`), and both worked examples below are pinned as full-manifest
+golden vectors in `test_process_expression_split.py`.
+
+Drift is guarded in two directions, and the guarantee is stated precisely because an earlier
+version of this sentence overclaimed. *Code* drift is caught by the full-manifest goldens: any
+behavior change fails them. *Prose* drift is caught by `test_specification_narrates_the_pinned_vectors`,
+which projects each narrated claim **out of the manifest** and requires it in this text — the
+base assignment (re-derived through `_base_slice`), every repair move with its forcing item,
+the coverage arithmetic, far and near membership on both sides, the final slices, and the
+cascade vector's two claims — plus the §2.5 vocabulary table and universe count against
+`component_vocabulary_counts()`. Every claim must appear exactly once, and every sentence *of
+the narrated shape* must agree with the manifest, so a contradicting restatement elsewhere in
+the file is caught rather than tolerated. An external verification pass mutation-tested the
+earlier guard and found it read back only the final-slice sentences, leaving the steps that
+explain *why* those slices arise free to rot; that gap is what the projection above closes. (Two earlier revisions were corrected under adversarial review: the first assigned
+individual expression digests, violating the standing whole-template LOCO contract; the second
+inflated coverage, took its witness universe from the caller, held arbitrary structural
+families rather than compositions, and bound only four of its constants. Each correction is
+named at the point it applies below.)
+
+- **Unit and identity.** The split unit is the **structural family**: every corpus row sharing
+  one template identity (the resolved-kwarg structural template). Base assignment hashes the
+  FAMILY identity — exact bytes: `sha256(utf8(family_id) + "|" + utf8(seed)) mod 10_000` — and
+  the boundaries are **integer buckets summing exactly to the modulus**, so whole templates land
+  on one side by construction and no fraction rounding exists anywhere in the assignment
+  (fractional inputs left the dev/test boundary underspecified). Synthetic projection is
+  defined: a pinned or string-bearing row belongs to the family of its *semantic* template
+  (pins and strings never create families) while contributing its synthetic witness items.
+- **The extractor is real, it enforces policy, and the required universe is authoritative.**
+  Families are built by parsing actual v0.4 expressions with the sealed registry and projecting
+  each row into the serialized vocabulary — the same identity strings the support freeze pins.
+  Three properties, each closing a distinct hole:
+  - **Grammar-valid is not policy-valid.** `max(10,e5)` parses and validates but sits outside
+    the declared support, so admitting it would create witness items the frozen vocabulary does
+    not contain. `corpus_policy_violation()` enforces the caps and value grids and the extractor
+    refuses violations. It deliberately *admits* the §3 synthetics — pins, allowlisted strings,
+    interior methodology — because those are mandatory corpus content that sits outside the
+    *enumerable* support; conflating the two questions would make §3 unsatisfiable.
+  - **§3's forms enter through a finite, versioned, hash-bound extension policy** — the ruled
+    seam: the enumerable support stays exhaustive and is never widened to accommodate them.
+    `synthetic_extension_policy()` (`synth-v1`) commits the exact pin set and one manifest
+    string per §3.2 class, membership is exact set membership, and its hash enters
+    `enumeration_spec_sha256()`. A **prefix test is not an allowlist**: the earlier
+    `synthetic/pin-` check accepted `synthetic/pin-../../home/s243a/private/notes`, a real
+    private path reached by traversal, which is precisely what §3.3 forbids.
+  - **The universe binding is authoritative, not self-consistent.** `required_witness_universe()`
+    is derived *from the support* — every component, node edge, literal slot, grid value,
+    positioned digit byte, exact terminal atom, categorical value, and the §3 synthetic floors —
+    never from whatever a corpus happened to contain. An **authorizing** contract must bind
+    exactly that hash: previously the caller supplied both the universe and its hash, so a
+    one-item universe validated against its own hash and the binding proved nothing. A
+    **non-authorizing** contract may carry any universe — it is a feasibility probe, the flag
+    sits inside the contract and therefore inside its hash, and
+    `preregistration_witness_sha256()` refuses to witness one. Infeasible *authorizing* splits
+    stay fail-closed; only a non-authorizing probe is permitted to explore.
+  - **Every use site re-validates rather than trusting.** `split_contract()` returns a plain
+    dict, so a validated contract could be *mutated* before use — swapping the bound universe
+    for a one-item one, or promoting a probe to authorizing — and both `assign()` and the
+    witness accepted it, reopening the exploit in full. `revalidate()` re-derives the contract
+    from its own fields and requires equality, so any tampering fails closed. Validation at
+    construction time proves nothing about a value used later. A *valid-but-different*
+    mutation (a changed `k`) re-derives cleanly by design and is caught instead by the
+    preregistration witness, which moves with it.
+- **Rows are deduplicated, and no witness escapes.** Corpus rows are deduplicated by
+  `canonical_full` before family counting and the duplicate count is recorded in the corpus
+  manifest — and semantic witness items count once per distinct *semantic* identity, while
+  synthetic items count per row: pin-copies of one semantic example are distinct rows
+  (§3.1 needs them) but must not credit semantic coverage twice toward `k`, or the minimum
+  could be met with pinned copies of one example (seventh review); duplicates previously inflated coverage, so `k` could be met with copies of one
+  example while the split silently depended on an unenforced upstream assumption. The key is
+  `canonical_full` rather than `canonical_semantic` because rows differing only by pins are
+  genuinely distinct (§3.1: V3 differs from V2 *only* by pins), so semantic dedup would delete
+  required coverage. Separately, an authorizing build refuses any extracted witness **outside**
+  the authoritative universe — checking that required witnesses are *present* is not the same
+  as checking that none *escapes*, and a pin hosted on a leaf atom emitted exactly such an
+  escapee. `synth-v1` now states its authorized pin hosts (operators only).
+- **Family invariants are checked at construction and re-checked in `assign()`**, since the
+  dataclass constructor bypasses the factory: non-empty canonical id, strict positive integer
+  `row_count` rejecting `bool`, non-empty witness map, every count a strict integer in
+  `[1, row_count]`, and non-empty string identities throughout.
+- **Identities are fine-grained enough to define holdouts.** Both endpoints of a composition
+  pair are *resolved components* carrying arity, typed kwarg pattern, and modifiers —
+  `pair:product/2{}.arg0|hop_decay/1{gamma:number}`, `pair:blend/2{}.arg0|luna.D`,
+  `pair:lineage/1{decay:number,estimand:estimand,mu:judge}.kw:mu|haiku`. A bare parent-child
+  pair made `product(hop_decay(…),X)` and `product(X,hop_decay(…))` one holdout unit, could
+  not distinguish a positional child from a node-valued kwarg edge, dropped modifiers entirely
+  (`blend(luna.D,luna.S)` and `blend(luna.S,luna.D)` produced identical pair sets), and left
+  the parent's own kwarg pattern invisible. Alongside pairs, the holdable set carries
+  **kwarg and list-shape motifs** — `motif:<component>.kw:<key>=<value>` and
+  `motif:<component>.kw:<key>:len<N>` — because the encoder contract requires kwarg/list-shape
+  holdouts as well as operator-composition holdouts, and a component records a kwarg's *kind*,
+  not its length, so `t=[0.02]` and `t=[0.02,0.03]` were indistinguishable. A kwarg elided at
+  its registered default yields no motif: the elided and explicit spellings are one canonical
+  expression, so such a motif would be universal rather than a holdout unit — but its
+  resolved VALUE and digit bytes are witnessed (the seventh review found them omitted:
+  `lineage(simplemind)` semantically carries `decay=0.85`, and grid coverage must be
+  reachable through canonically-spelled rows). Digit
+  witnesses carry a position class (`digit:0@int` vs `digit:0@frac`), since §7's digit-holdout
+  exercises different tokenizer paths in the integer part, the fraction, and the exponent.
+  §3.2's three string classes (ASCII, non-ASCII, escaped) are three separate required items,
+  because one `synthetic:string` item could be satisfied by three ASCII rows and leave the
+  byte-fallback path untrained. Pins are required per hosting operator, since §3.1's V2-vs-V3
+  collapse is a per-render-path property; and interior methodology — named as excluded from the
+  support but previously carrying no witness item at all — now has one per (operator,
+  methodology kwarg), so something actually obliges the sampler to emit it.
+- **Coverage counts rows, per item.** A family records, for each witness item, the number of
+  its rows witnessing that item (a row counts once however many times the item occurs inside
+  it). Crediting a family's whole row count to every item it carried anywhere made one pinned
+  row in a hundred-row family read as a hundred pin witnesses.
+- **Held units are preregistered compositions, and far has floors.** The contract names
+  explicit **held composition pair ids** per side, disjoint across sides. Every structural
+  family carrying a held pair is grouped with it and pinned to that pair's slice before repair,
+  immovable; a held pair with no carrier, and a family carrying held pairs from both sides, are
+  contract errors. Because a held pair's carriers all sit on one side, the pair is unseen by
+  train ∪ dev and its carriers are far by construction — and the contract's **far floors** are
+  still checked, so a far slice thinner than preregistered fails rather than passing quietly.
+  Holding lexicographically-smallest *structural* families protected nothing compositional.
+- **Repair, deterministic and recorded.** Required items are iterated in sorted identity order.
+  For any item whose train coverage is below the preregistered minimum `k` (to `k`, not merely
+  to one), whole families move — smallest family id first, from dev then test, never a pinned
+  held family — until coverage reaches `k`. Every move is recorded with the item that forced
+  it. Fail closed if an item's total coverage is below `k` (a corpus-build error no split can
+  repair), if only held-pinned families carry it, or if repair empties a slice.
+- **Far-slice membership** is computed, never sampled, at family granularity: a TEST family is
+  *far* iff its holdable set (union of members' composition pairs and motifs —
+  `pair:<resolved parent component>.<slot>|<resolved child component>` and
+  `motif:<resolved component>.kw:…` —
+  over node-valued edges including `mu=`) contains at least one pair absent from the union over
+  **train and dev** — a composition seen in dev steers model selection and is not far. A DEV
+  family's far flag is judged against train alone.
+- **Preregistration binding.** The split algorithm enters `enumeration_spec_sha256()` as its
+  **complete machine-readable manifest** (`SPLIT_ALGORITHM_MANIFEST`: unit, hash bytes, bucket
+  rule, coverage semantics, required-universe rule, held rule, repair rule, far rule, pair
+  extraction), alongside the required-universe hash and `OUTPUT_ROOTS`; the *instantiated*
+  contract (seed, buckets, `k`, held pairs, far floors, universe hash) hashes via
+  `split_contract_sha256()`; and `preregistration_witness_sha256()` binds both halves into the
+  single hash a preregistration pins. The split manifest — slices, held groups, moves, far
+  membership, coverage report, contract hash, and **its own canonical-bytes hash** — is
+  content-addressed alongside the corpus manifest.
+
+**Worked example 1, the readable narration (normative — pinned as a full manifest in
+`test_process_expression_split.py`).** Twelve toy families `tmpl:A…tmpl:L`, two rows each.
+Per-item counts matter: `G` witnesses `op:max` from only one of its two rows, and `H`
+witnesses `digit:8` from one of two. Contract: seed `worked-v2-7`, buckets 5000/2500/2500,
+`k=2`, held compositions dev `pair:kalman|judge` (carried by `H` and `K`) and test
+`pair:routing|score` (carried by `L`). What happens, in order:
+
+1. *Base assignment* by family-id hash puts `{B,E,G,H,I,K,L}` in train, `{A,J}` in dev,
+   and `{C,D,F}` in test.
+2. *Held pinning*: `H` and `K` carry the dev-held pair and move to dev; `L` carries the
+   test-held pair and moves to test. All three were base-assigned to train — holding
+   compositions, not slices, is what puts them where the contract says.
+3. *Repair*, items in sorted order: `digit:0` moves `A` from dev; `digit:8` moves `F` from
+   test — its other carrier `H` is held, and protection forbids taking it; `estimand:ancestry`
+   moves `J` from dev; and `op:max` moves `C` from test, because `G` is already in train but
+   supplies only one witnessing row, so `k=2` is still unmet. Under the old row-count
+   crediting this fourth move would not exist.
+4. *Final slices*: train `{A,B,C,E,F,G,I,J}`, dev `{H,K}`, test `{D,L}`; `op:max` reaches
+   3 = C(2) + G(1).
+5. *Far*: the held pairs live only on their own sides, so `{H,K}` dev-far and `{L}` test-far,
+   both meeting their floors; `D` shares `pair:e5|margin` with train and is test-near.
+
+**Worked example 2, the focused boundary/cascade vector.** The re-reviewer's request was a
+second *compact* vector exercising what narration hides, not a larger one for scale. Eight
+families, seed `cascade-v2-1328`, `k=3`: item `x` totals exactly three across three one-row
+families, two of them outside train, so `x` forces **two moves for one item** — dev searched
+before test. Item `y` rides the same three families and is satisfied entirely by `x`'s moves,
+so **no move names `y`** (a cross-item cascade). `HD` is base-assigned to test and pinned to
+dev while `HT` is base-assigned to train and pinned to test (**mixed held motifs, both
+directions**). `TN` sits in test but its only pair is carried by `DN` in dev, so it is
+**test-near**, while `TF`'s pair appears nowhere else and it is far. A separate vector pins the
+**exact bucket edges** 4999/5000/7499/7500 against the integer boundaries.
+
+Both tests assert their manifests in full — every field plus the manifest's own hash — rather
+than a handful of keys. The suite adds: input-order independence, the hash-bound universe
+refusing a shrunken list, a required item no family witnesses failing closed, repair refusing
+to consume a held group, conflicting and carrier-less held pairs failing closed, an unmet far
+floor failing closed, and the preregistration witness moving when the seed, `k`, the held
+pairs, or the buckets change. Two measured structural consequences are recorded as tests in
+`test_process_expression_enumerator.py` rather than worked around, because both constrain what
+a preregistration may ask for:
+
+1. Over the ten registered processes alone, **every** choice of held composition pair fails
+   closed — each family is the sole carrier of some witness item. The corpus build must supply
+   overlapping templates; the split says so rather than quietly shrinking coverage.
+2. Holding **every** carrier of a component leaves that component unwitnessed in train, so
+   holding both sides of a motif that partitions a component's families is refused. A holdout
+   must leave at least one carrier of each component trainside. This also bounds what
+   literal-*value* kwarg motifs can do: rows differing only in a literal share a template and
+   therefore a family, so such a motif is always a within-family distinction and holding it
+   holds the whole family. List-shape motifs *do* separate families (the template records the
+   list's length) and are holdable in the ordinary way. The seventh review ruled the
+   encoder contract does NOT require literal-value LOCO holdouts: structural splitting
+   stays family-granular, and scalar-value generalization is evaluated separately (the
+   §7 digit-holdout is that instrument).
+
+Restricting methodology kwargs to the root remains the recommendation and is semantically
+motivated: `estimand=`/`impl=` are deployment metadata and `require_deployable` checks exactly
+the root. Interior-methodology expressions stay grammatical; they are sampler coverage (like
+pins and strings), not support.
+
+### 2.6 The coverage minimum — ruled
+
+**Ruling (owner, 2026-08-03): the decoder trains jointly with the encoder, and the governing
+coverage minimum is `pair-k = 100`.**
+
+*Joint training.* The decoder is trained alongside the encoder rather than after it. Two
+reasons, both structural rather than preferential. Reconstruction is **exactly gradeable** —
+decode, parse, `canonical_semantic`, byte-compare — so the training signal is an oracle rather
+than a proxy, and every piece of that check is already sealed and tested. And reconstruction is
+self-supervised on structure, so §6's circularity trap does not reach it: no incumbent e5
+judgment enters the objective, which is precisely the failure mode that rules out
+effectiveness-weighted structure.
+
+*Why the minimum is over pairs.* An encoder need only tell `product(hop_decay(…),lca_frac(…))`
+apart from its neighbors; a decoder must **emit** that nesting. The binding quantity is
+therefore composition coverage, not component coverage — and composition pairs cost roughly
+twice as many rows as components at every `k`. Component coverage is not a separate input: at
+`pair-k = 100` every component is witnessed a few hundred times as a by-product.
+
+*Provisional scale.* The figures below are **provisional**, not measured: they come from a
+scratch sampler that is not committed, so no test reproduces them. They firm up — and the row
+count likely falls — when the sampler lands as its own artifact. Token statistics use the
+sealed `tok-v2` vocabulary (393 terms) over sampled rows.
+
+| quantity | provisional value |
+|---|---:|
+| rows for `pair-k = 100` | ~200,000 |
+| distinct structural templates at that size | ~7,000 (of 96,196) |
+| tokens per row | mean 38.1, median 30, p99 107, max 156 |
+| corpus size | ~7.6M tokens per epoch |
+
+Treat 200,000 as an **upper bound** for this `k`. It assumes uniform-ish sampling; §2.5's tail
+is dominated by root-only methodology-bearing operator shapes and a handful of rare pairs, and
+a coverage-directed sampler that flattens that tail reaches the same `k` with fewer rows. This
+is also why `k` was not set higher: past roughly 100, additional rows drawn from the *same*
+distribution buy only the rarest few compositions, so the next increment of effort belongs in
+the sampler's shape, not in the corpus's volume.
+
+*Two anti-shortcut diagnostics, required before any result is trusted.* A sufficiently strong
+decoder can reconstruct from grammar priors rather than from the embedding — emitting
+`decay=0.85` because that is what the grammar usually says, not because the embedding carried
+it. Both diagnostics fall out of artifacts that already exist:
+
+1. **Embedding ablation.** Reconstruct from a shuffled or zeroed embedding and measure what
+   survives. Whatever does was never coming from the encoder. Cheap, and it calibrates every
+   later number, so it runs *before* the first real training run.
+2. **Near versus far reconstruction.** Grammar priors help least where compositions are unseen,
+   so a large near/far gap in reconstruction accuracy is the tell. The split already computes
+   far membership (§2.5) rather than sampling it, so this needs no new machinery.
+
+What still needs the owner before the generator runs, all bound by the preregistration witness:
+
+1. the composition-sampling distribution over depth/branching — the ruling above recommends
+   coverage-directed rather than uniform, but its exact shape is unset;
+2. confirmation that the widened §5.2 numeric grid enters through the sampler rather than the
+   enumeration grids;
+3. **the held composition pairs** — which compositions dev and test hold out, per side. This is
+   an owner input rather than a derived one, because holding a composition is a scientific
+   claim about what generalization is being measured, not a bookkeeping choice; the sampler
+   must then supply enough overlapping templates that no held pair is the sole carrier of a
+   required item (the thin-corpus test measures what happens otherwise);
+4. **the far floors** — the minimum far families each side must contain for the split to be
+   accepted.
+
+(The corpus row count is **derived** from `k` and the sampling distribution, never chosen
+first. The earlier "~1.5M rows" figure was a v0.3-ratio anchor with no coverage-derived
+justification; it is withdrawn as a target and survives only as the §8 feasibility scale.)
 
 ## 3. Mandatory synthetic coverage
 
@@ -607,7 +976,8 @@ structural-effectiveness evidence used for weighting requires an independent eva
 inner/outer separation between the runs that fit the weights and the runs that evaluate the
 encoder.
 
-**The tractable path is features, not templates.** 19,131 per-template measurements will never
+**The tractable path is features, not templates.** 96,196 per-template measurements (v0.4
+root-only count; 19,131 under v0.3) will never
 exist, but structural *features* — depth, operator composition, presence of a `routing` stage,
 `distill` wrapping, blend arity — can be measured because ledger runs can be designed as
 structural ablations. Templates are then weighted by feature profile: a few measured dimensions
@@ -637,14 +1007,18 @@ far-slice degradation that disqualifies a scheme are written down before the sea
 
 ## 8. Splits, artifacts, and resources
 
-Structural LOCO by template digest, whole templates to one side. *Measured* at the §2.2 caps:
-train 206,851 / dev 23,213 / test 55,414, with **zero** canonical-AST overlap across all three
-pairs. The sealed-test transaction of the encoder handoff §6 applies unchanged: the training
-worker receives only the train/dev projection.
+Structural LOCO by template digest, whole templates to one side. The v0.3 measurement (train
+206,851 / dev 23,213 / test 55,414, zero canonical-AST overlap) is history: the split is
+re-measured once the §2.5 corpus decision fixes the v0.4 corpus. The sealed-test transaction of
+the encoder handoff §6 applies unchanged: the training worker receives only the train/dev
+projection.
 
-Resource envelope, worth stating because it constrains storage and versioning: 285,478 rows ×
-384 float32 ≈ **438 MB per view**, ~1.3 GB for three views. Teacher caches are content-addressed
-and pinned to the exact e5 revision; they are not regenerated silently.
+Resource envelope, worth stating because it constrains storage and versioning: at the v0.3 scale,
+285,478 rows × 384 float32 ≈ **438 MB per view**, ~1.3 GB for three views. The v0.4 row count is
+derived from the §2.5 coverage minimum rather than chosen, so the envelope statement here is a
+feasibility bound, not a target: even a ~1.5M-row corpus stays ~2.3 GB per view, comfortably
+inside storage. Teacher caches are content-addressed and pinned to the exact e5 revision; they
+are not regenerated silently.
 
 ## 9. What lands as tests
 

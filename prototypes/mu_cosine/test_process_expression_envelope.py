@@ -309,12 +309,20 @@ def test_specification_records_the_measured_numbers():
 
     text = SPEC.read_text(encoding="utf-8")
     for needle in (
-        "285,478",          # corpus size at the stated caps
-        "19,131",           # structural templates
-        "9/9",              # registered-process coverage
-        "0.9725",           # e5 numeric insensitivity
-        "1.15 of 3",        # mean distinct teacher texts without pins
-        "max_node_count   = 5",
+        "3,475,387,022,969",  # naive v0.5 enumeration — the explosion finding
+        "61,908,552",         # methodology-root-only expressions (v0.5)
+        "97,526",             # methodology-root-only structural templates
+        # External review (M1): the structural-only row and template counts
+        # were transcribed but unguarded — exactly the drift class this test
+        # exists to catch.
+        "11,409,263",         # structural-only expressions (v0.5)
+        "28,373",             # structural-only structural templates
+        "3,826,859",          # naive-full structural templates
+        "285,478",            # v0.3 corpus, retained as history
+        "10/10",              # registered-process coverage (10 registered processes)
+        "0.9725",             # e5 numeric insensitivity
+        "1.15 of 3",          # mean distinct teacher texts without pins
+        "max_node_count   = 6",
         "max_depth        = 3",
     ):
         assert needle in text, f"specification no longer records {needle!r}"

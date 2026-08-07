@@ -517,7 +517,7 @@ run, not permission to shrink data/model or change precision post hoc.
    fixture authority only; the versioned vocabulary IDs and the 256-byte literal fallback belong
    to step 2, which must reproduce those frozen structures exactly.
 
-   **Current bundle: `PROCESS_EXPRESSION_GOLDEN_v3.json` (contract `pec-v3`, registry `v0.4`).**
+   **Current bundle: `PROCESS_EXPRESSION_GOLDEN_v4.json` (contract `pec-v4`, registry `v0.5`).**
    Step 2 reproduces this one. `PROCESS_EXPRESSION_GOLDEN_v1.json` and
    `PROCESS_EXPRESSION_GOLDEN_v2.json` are retained as audit-only provenance and are rejected by
    the current loader; reproducing either would fail closed and would miss the v0.4 coverage

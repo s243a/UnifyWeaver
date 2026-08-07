@@ -1,0 +1,144 @@
+{
+ "stamp": "shadow-exploratory-tier1-not-decision-bearing",
+ "scope_item4": "gate = combiner of FROZEN channels; this maps where the CHANNEL INPUTS are weak, not the mu approach",
+ "region_label_crosscheck": {
+  "e5_vs_dag_agreement": 0.6454,
+  "n_shallow_ancestors": 1994,
+  "note": "regions where the two disagree are where an e5-only stratification misleads",
+  "e5_region_top_dag_match": {
+   "geography": "geography",
+   "society": "society",
+   "everyday": "everyday",
+   "culture": "culture",
+   "stem_computing": "everyday",
+   "stem_physical": "stem_physical",
+   "life_health": "life_health"
+  }
+ },
+ "enwiki_coverage": {
+  "sampled_categories": 14368,
+  "by_region": {
+   "everyday": 2040,
+   "stem_computing": 4452,
+   "geography": 4144,
+   "society": 945,
+   "stem_physical": 1916,
+   "culture": 391,
+   "life_health": 480
+  }
+ },
+ "region_weakness_map_simplewiki": {
+  "society": {
+   "e5": 0.1351,
+   "best_mu": 0.18,
+   "gate": 0.2171,
+   "gap": -0.0448,
+   "w_e5": 0.007,
+   "w_mu": 0.993,
+   "n": 45,
+   "enwiki_categories": 945,
+   "verdict": "mu already competitive"
+  },
+  "geography": {
+   "e5": 0.2727,
+   "best_mu": 0.3257,
+   "gate": 0.3588,
+   "gap": -0.053,
+   "w_e5": 0.0096,
+   "w_mu": 0.9904,
+   "n": 86,
+   "enwiki_categories": 4144,
+   "verdict": "mu already competitive"
+  },
+  "everyday": {
+   "e5": 0.196,
+   "best_mu": 0.1334,
+   "gate": 0.2146,
+   "gap": 0.0627,
+   "w_e5": 0.009,
+   "w_mu": 0.991,
+   "n": 54,
+   "enwiki_categories": 2040,
+   "verdict": "saturated/capability \u2014 bulk data likely wrong remedy"
+  }
+ },
+ "region_weakness_map_pearltrees": {
+  "stem_physical": {
+   "e5": 0.2641,
+   "best_mu": 0.131,
+   "gate": 0.3196,
+   "gap": 0.1331,
+   "w_e5": 0.6635,
+   "w_mu": 0.3365,
+   "n": 11,
+   "enwiki_categories": 1916,
+   "verdict": "saturated/capability \u2014 bulk data likely wrong remedy"
+  },
+  "stem_computing": {
+   "e5": 0.3177,
+   "best_mu": 0.173,
+   "gate": 0.3506,
+   "gap": 0.1448,
+   "w_e5": 0.8124,
+   "w_mu": 0.1876,
+   "n": 13,
+   "enwiki_categories": 4452,
+   "verdict": "saturated/capability \u2014 bulk data likely wrong remedy"
+  },
+  "life_health": {
+   "e5": 0.2825,
+   "best_mu": 0.2035,
+   "gate": 0.3576,
+   "gap": 0.079,
+   "w_e5": 0.8127,
+   "w_mu": 0.1873,
+   "n": 27,
+   "enwiki_categories": 480,
+   "verdict": "HARVEST (weak + thin coverage)"
+  },
+  "society": {
+   "e5": 0.3517,
+   "best_mu": 0.2031,
+   "gate": 0.3575,
+   "gap": 0.1486,
+   "w_e5": 0.762,
+   "w_mu": 0.238,
+   "n": 68,
+   "enwiki_categories": 945,
+   "verdict": "HARVEST (weak + thin coverage)"
+  },
+  "culture": {
+   "e5": 0.2702,
+   "best_mu": 0.1556,
+   "gate": 0.3135,
+   "gap": 0.1146,
+   "w_e5": 0.79,
+   "w_mu": 0.21,
+   "n": 29,
+   "enwiki_categories": 391,
+   "verdict": "HARVEST (weak + thin coverage)"
+  },
+  "geography": {
+   "e5": 0.484,
+   "best_mu": 0.1682,
+   "gate": 0.4566,
+   "gap": 0.3158,
+   "w_e5": 0.7681,
+   "w_mu": 0.2319,
+   "n": 9,
+   "enwiki_categories": 4144,
+   "verdict": "saturated/capability \u2014 bulk data likely wrong remedy"
+  },
+  "everyday": {
+   "e5": 0.3425,
+   "best_mu": 0.2147,
+   "gate": 0.3993,
+   "gap": 0.1278,
+   "w_e5": 0.7689,
+   "w_mu": 0.2311,
+   "n": 42,
+   "enwiki_categories": 2040,
+   "verdict": "saturated/capability \u2014 bulk data likely wrong remedy"
+  }
+ }
+}

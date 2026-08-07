@@ -115,8 +115,11 @@ def test_mapped_successors_are_canonical_v04_identities(committed):
             continue
         node = pc.parse(row["new_canonical_bytes"])
         assert pc.canonical_semantic(node) == row["new_canonical_bytes"]
+        # The sealed migration's successors are v0.4 identities; the digest
+        # preimage uses the migration's pinned TARGET version, not the live
+        # registry (which has since moved to v0.5).
         expected = hashlib.sha256(
-            f"{pc.REGISTRY_VERSION}|{row['new_canonical_bytes']}".encode()
+            f"{mig.TARGET_REGISTRY_VERSION}|{row['new_canonical_bytes']}".encode()
         ).hexdigest()
         assert row["new_semantic_digest"] == expected
 
@@ -142,6 +145,9 @@ def test_obligation_7_freeze_computes_targets_without_the_registry():
 
 
 def test_obligation_7_freeze_expression_is_grammatical_under_v04():
+    # sm_fs_freeze imports the embedding stack; skip where torch is absent
+    # (CI runs the source-scan obligation-7 test above unconditionally).
+    pytest.importorskip("torch")
     import sm_fs_freeze
 
     node = pc.parse(sm_fs_freeze.EXPR)
@@ -160,13 +166,16 @@ def test_obligation_8_lineage_argument_forms_are_the_substrate_set():
     substrates = {
         name for name, sig in pc.REGISTRY.items() if sig.output == declared
     }
-    assert substrates == {"pearltrees", "simplemind", "simplewiki", "fs"}
+    # v0.5 added enwiki; the obligation's property (substrate atoms declare
+    # no modifiers, so enumerable forms are exactly the atoms) is version-
+    # independent and re-measured against the live registry.
+    assert substrates == {"pearltrees", "simplemind", "simplewiki", "enwiki", "fs"}
     # Substrate atoms declare no modifiers, so the enumerable forms are
     # exactly the four atoms — down from the measured 15 under v0.3
     # (9 source atoms + 6 modifier variants).
     for name in substrates:
         assert pc.REGISTRY[name].modifiers == frozenset()
-    assert len(substrates) == 4 < 15
+    assert len(substrates) == 5 < 15
 
 
 # --------------------------------------------------------------------------

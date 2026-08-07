@@ -22,21 +22,47 @@
     intern_atom_go/2,                  % +AtomStr, -GoVarName
     emit_atom_table_go/1,              % -GoCode (var (...) declaration block)
     resolve_dimension_n_go/2,          % +Options, -DimN
-    escape_go_string/2                 % +Str, -EscStr (re-exported helper)
+    escape_go_string/2,                % +Str, -EscStr (re-exported helper)
+    iso_errors_rewrite_text/4,         % +Config, +PI, +WamText0, -WamText
+    wam_go_iso_audit/3,                % +Predicates, +Options, -Audit
+    wam_go_iso_audit_report/1          % +Audit
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(yall)).
 :- use_module(library(option)).
 :- use_module(library(pairs), [pairs_values/2, map_list_to_pairs/3]).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../core/recursive_kernel_detection',
              [detect_recursive_kernel/4, kernel_metadata/4]).
+:- use_module('../core/cost_model', [resolve_auto_lmdb_materialisation/2]).
+:- use_module('../core/iso_errors',
+              [ iso_errors_resolve_options/2,
+                iso_errors_load_config/2,
+                iso_errors_mode_for/3,
+                iso_errors_warn_multi_module/2,
+                iso_errors_rewrite/4,
+                iso_errors_rewrite_item/3,
+                iso_errors_audit_normalise_pi/2,
+                iso_errors_audit_walk/5
+              ]).
+% wam_text_parser's tokenizer is called module-qualified below: this
+% target already defines its own wam_tokenize_line/2 for the Go literal
+% emitter, and the two must not collide.
+:- use_module('../targets/wam_text_parser',
+              [ wam_recognise_instruction/2 ]).
 :- use_module('../core/template_system').
 :- use_module('../bindings/go_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('../targets/go_target', [compile_predicate_to_go/3]).
 :- use_module('../targets/wam_go_lowered_emitter',
              [wam_go_lowerable/3, lower_predicate_to_go/4, go_func_name/2]).
+:- use_module('../core/prolog_term_parser', []).
+:- use_module('../core/cpp_runtime_parser_wrappers', []).
+:- use_module(wam_runtime_parser_capability, [
+    parser_dependent_body_goal/2,
+    wam_target_runtime_parser/3
+]).
 
 :- discontiguous wam_go_case/2.
 :- discontiguous wam_line_to_go_literal/4.
@@ -47,7 +73,15 @@
 
 %% write_wam_go_project(+Predicates, +Options, +ProjectDir)
 %  Generates a full Go project for the given predicates.
-write_wam_go_project(Predicates, Options, ProjectDir) :-
+write_wam_go_project(Predicates0, Options, ProjectDir) :-
+    % Runtime-parser mode. compiled(prolog_term_parser) appends the
+    % portable parser + target-agnostic wrappers to the predicate list
+    % so a generated project can call read_term_from_atom/2 directly;
+    % `none` rejects a predicate whose body visibly needs a parser
+    % rather than emitting a runtime that cannot honour the call.
+    wam_target_runtime_parser(wam_go, Options, RuntimeParserMode),
+    validate_go_runtime_parser_mode(Predicates0, RuntimeParserMode),
+    go_project_predicates(Predicates0, RuntimeParserMode, Predicates),
     option(module_name(ModuleName), Options, 'wam_generated'),
     option(package_name(PackageName), Options, 'wam'),
     get_time(TimeStamp),
@@ -153,6 +187,14 @@ func internAtom(name string) *Atom {
     atomInternMap[name] = a
     return a
 }
+
+// InternAtom is the exported form. Drivers and embedders must build
+// atoms through this rather than &Atom{Name: x}: Atom.Equals is pointer
+// identity only, so a fresh literal with the same name compares unequal
+// to the interned one the bytecode carries.
+func InternAtom(name string) *Atom {
+    return internAtom(name)
+}
 ', [PackageName]),
         directory_file_path(ProjectDir, 'atoms.go', AtomsPath),
         write_file(AtomsPath, AtomsContent)
@@ -211,6 +253,75 @@ func main() {
     ),
 
     format('WAM Go project created at: ~w~n', [ProjectDir]).
+
+%% go_project_predicates(+UserPreds, +Mode, -ProjectPreds)
+%  In compiled mode, append the portable parser and the wrapper
+%  predicates. Matches python_project_predicates/3 and
+%  fsharp_project_predicates/3.
+go_project_predicates(Predicates, compiled(prolog_term_parser), ProjectPredicates) :-
+    !,
+    go_runtime_parser_predicates(ParserPreds),
+    go_runtime_parser_wrapper_predicates(WrapperPreds),
+    append([Predicates, ParserPreds, WrapperPreds], Combined),
+    sort(Combined, ProjectPredicates).
+go_project_predicates(Predicates, _RuntimeParserMode, Predicates).
+
+%% go_runtime_parser_predicates(-Predicates)
+%  Non-imported predicates of `prolog_term_parser`, as
+%  `prolog_term_parser:Name/Arity` indicators.
+go_runtime_parser_predicates(Predicates) :-
+    findall(prolog_term_parser:Name/Arity,
+            ( current_predicate(prolog_term_parser:Name/Arity),
+              functor(Head, Name, Arity),
+              once(clause(prolog_term_parser:Head, _)),
+              \+ predicate_property(prolog_term_parser:Head, imported_from(_))
+            ),
+            Raw),
+    sort(Raw, Predicates).
+
+%% go_runtime_parser_wrapper_predicates(-Predicates)
+%  Non-imported predicates of `cpp_runtime_parser_wrappers` (the module
+%  name is C++-historical; the wrappers themselves are target-agnostic).
+%  These are what give the generated project read_term_from_atom/2,3.
+go_runtime_parser_wrapper_predicates(Predicates) :-
+    findall(cpp_runtime_parser_wrappers:Name/Arity,
+            ( current_predicate(cpp_runtime_parser_wrappers:Name/Arity),
+              functor(Head, Name, Arity),
+              once(clause(cpp_runtime_parser_wrappers:Head, _)),
+              \+ predicate_property(cpp_runtime_parser_wrappers:Head,
+                                    imported_from(_))
+            ),
+            Raw),
+    sort(Raw, Predicates).
+
+%% validate_go_runtime_parser_mode(+Predicates, +Mode)
+%  With the parser disabled, reject a predicate whose body has a
+%  statically visible parser-dependent call rather than emitting a
+%  runtime that silently cannot serve it. Mirrors
+%  validate_python_runtime_parser_mode/2.
+validate_go_runtime_parser_mode(Predicates, none) :-
+    !,
+    (   go_predicates_parser_dependency(Predicates, Pred, Builtin)
+    ->  throw(error(permission_error(use, runtime_parser, Builtin),
+                    context(write_wam_go_project/3,
+                            parser_disabled_for_predicate(Pred))))
+    ;   true
+    ).
+validate_go_runtime_parser_mode(_Predicates, _Mode).
+
+go_predicates_parser_dependency(Predicates, Pred, Builtin) :-
+    member(Pred, Predicates),
+    go_predicate_clause(Pred, _Head, Body),
+    parser_dependent_body_goal(Body, Builtin),
+    !.
+
+go_predicate_clause(Module:Name/Arity, Head, Body) :-
+    !,
+    functor(Head, Name, Arity),
+    catch(clause(Module:Head, Body), _, fail).
+go_predicate_clause(Name/Arity, Head, Body) :-
+    functor(Head, Name, Arity),
+    catch(clause(user:Head, Body), _, fail).
 
 %% go_lib_import_block(+Code, -ImportBlock)
 %  Emit a Go `import (...)` block listing exactly the std packages the
@@ -289,7 +400,7 @@ compile_lowered_predicates(Predicates, Options, Code) :-
           predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
           \+ is_ffi_owned_fact(Module, Pred, Arity, Options),
           catch(
-              once(( wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode),
+              once(( go_compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode),
                      wam_go_lowerable(Pred/Arity, WamCode, _Reason),
                      lower_predicate_to_go(Pred/Arity, WamCode, Options, GoLines),
                      atomic_list_concat(GoLines, '\n', GoCode)
@@ -325,7 +436,11 @@ resolve_template_path(RelativePath, AbsPath) :-
 
 %% compile_predicates_for_project(+Predicates, +Options, -Code)
 compile_predicates_for_project([], _, "").
-compile_predicates_for_project(Predicates, Options, Code) :-
+compile_predicates_for_project(Predicates, Options0, Code) :-
+    % Go has no overloading: resolve name/arity collisions once, up front,
+    % and thread the result through every emitter that mints an identifier.
+    go_overloaded_predicate_names(Predicates, Overloaded),
+    Options = [go_overloaded_names(Overloaded)|Options0],
     classify_predicates(Predicates, Options, Classified),
     collect_wam_entries(Classified, Options, 0, WamEntries, AllInstrParts, AllLabelEntries),
     compile_shared_foreign_setup(Classified, Options, SharedForeignSetup),
@@ -351,7 +466,7 @@ var SharedWamLabels = sharedWamLabels
 ', [SharedForeignSetup, AllInstrs, AllLabels])
     ;   SharedCode = ""
     ),
-    generate_predicate_codes(Classified, WamEntries, PredCodes),
+    generate_predicate_codes(Classified, WamEntries, Options, PredCodes),
     atomic_list_concat(PredCodes, '\n\n', PredicatesCode),
     (   SharedCode == ""
     ->  Code = PredicatesCode
@@ -370,6 +485,39 @@ is_ffi_owned_fact(Module, Pred, Arity, Options) :-
     Clauses \= [],
     forall(member(_-Body, Clauses), Body == true).
 
+%% go_compile_predicate_to_wam(+PI, +Options, -WamCode)
+%  compile_predicate_to_wam/3 plus the ISO three-form key rewrite.
+%
+%  The rewrite only runs when the caller actually configured ISO error
+%  handling -- iso_errors(true|false), a per-predicate iso_errors(PI,
+%  Mode) override, or iso_errors_config(File). Without any of those the
+%  WAM text passes through untouched and generated projects keep the
+%  plain builtin keys they have always used.
+%
+%  (Python rewrites unconditionally, mapping every default key to its
+%  _lax form when no config is present. That is behaviour-preserving --
+%  the _lax keys delegate to the plain ones -- but it would rewrite the
+%  keys in every existing Go project for no gain, so Go opts in
+%  instead.)
+go_compile_predicate_to_wam(PI, Options, WamCode) :-
+    wam_target:compile_predicate_to_wam(PI, Options, WamCode0),
+    (   go_iso_configured(Options)
+    ->  iso_errors_resolve_options(Options, Config),
+        iso_errors_audit_normalise_pi(PI, NormPI),
+        iso_errors_rewrite_text(Config, NormPI, WamCode0, WamCode)
+    ;   WamCode = WamCode0
+    ).
+
+%% go_iso_configured(+Options)
+%  True when Options carry any ISO error configuration.
+go_iso_configured(Options) :-
+    (   member(iso_errors(_), Options)
+    ->  true
+    ;   member(iso_errors(_, _), Options)
+    ->  true
+    ;   member(iso_errors_config(_), Options)
+    ).
+
 classify_predicates([], _, []).
 classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
@@ -380,20 +528,20 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         option(wam_fallback(WamFB0), Options, true),
         WamFB0 \== false,
         go_foreign_spec(Module:Pred/Arity, Options, _SetupOps0, _RewriteCalls0, _EntryPred0/_EntryArity0),
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode0)
+        go_compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode0)
     ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode0, Options, PredCode0),
         format(user_error, '  ~w/~w: WAM fallback (foreign, preferred)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam_foreign, PredCode0)
     ;   option(prefer_wam(true), Options),
         option(wam_fallback(WamFB1), Options, true),
         WamFB1 \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode1)
+        go_compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode1)
     ->  format(user_error, '  ~w/~w: WAM fallback (preferred)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam, WamCode1)
     ;   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity),
         option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
+        go_compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
     ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
         format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam_foreign, PredCode)
@@ -411,7 +559,7 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         Entry = classified(Module, Pred, Arity, native, PredCode)
     ;   option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
+        go_compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
     ->  (   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity)
         ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
             format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
@@ -441,34 +589,34 @@ collect_wam_entries([classified(Module, Pred, Arity, wam, WamCode)|Rest], Option
 collect_wam_entries([_|Rest], Options, PC, Entries, Instrs, Labels) :-
     collect_wam_entries(Rest, Options, PC, Entries, Instrs, Labels).
 
-generate_predicate_codes([], _, []).
-generate_predicate_codes([classified(_, Pred, Arity, ffi_fact, _)|Rest], WamEntries,
+generate_predicate_codes([], _, _, []).
+generate_predicate_codes([classified(_, Pred, Arity, ffi_fact, _)|Rest], WamEntries, Options,
                          [Code|RestCodes]) :-
     format(atom(Code), '// ~w/~w: FFI-owned fact — WAM compilation skipped', [Pred, Arity]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
-generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest], WamEntries,
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest], WamEntries, Options,
                          [Code|RestCodes]) :-
     format(atom(Code), '// Strategy: native~n~w', [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
-generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Rest], WamEntries,
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Rest], WamEntries, Options,
                          [Code|RestCodes]) :-
     format(atom(Code), '// Strategy: wam_foreign~n~w', [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
-generate_predicate_codes([classified(_, Pred, Arity, wam, _WamCode)|Rest], WamEntries,
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
+generate_predicate_codes([classified(_, Pred, Arity, wam, _WamCode)|Rest], WamEntries, Options,
                          [Code|RestCodes]) :-
     member(wam_entry(Pred, Arity, StartPC), WamEntries),
-    compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, Code),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
-generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest], WamEntries,
+    compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, Options, Code),
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest], WamEntries, Options,
                          [Code|RestCodes]) :-
     format(atom(Code), '// Strategy: failed~n~w', [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 
 compile_shared_foreign_setup(Classified, Options, Code) :-
     findall(Line,
         ( member(classified(Module, Pred, Arity, wam_foreign, _), Classified),
           go_foreign_spec(Module:Pred/Arity, Options, SetupOps, _RewriteCalls, _EntryPred/_EntryArity),
-          maplist(go_foreign_setup_line, SetupOps, SetupLines),
+          maplist([Op, L]>>go_foreign_setup_line(Op, Options, L), SetupOps, SetupLines),
           member(Line, SetupLines)
         ),
         RawLines),
@@ -720,6 +868,66 @@ wam_go_direct_builtin(string_to_atom/2, 2, 'string_to_atom/2').
 wam_go_direct_builtin('string_to_atom/2', 2, 'string_to_atom/2').
 wam_go_direct_builtin("string_to_atom/2", 2, 'string_to_atom/2').
 
+% ISO three-form keys plus the catch/throw substrate. Registering
+% these makes `builtin_call <key>` and `execute <key>` route to the
+% runtime's ISO branches; without an entry the emitter falls through
+% to Execute{Pred: ...}, which looks the key up as an indexed fact
+% table and silently fails. See the ISO ERROR HANDLING section.
+wam_go_direct_builtin(catch/3, 3, 'catch/3').
+wam_go_direct_builtin('catch/3', 3, 'catch/3').
+wam_go_direct_builtin("catch/3", 3, 'catch/3').
+wam_go_direct_builtin(throw/1, 1, 'throw/1').
+wam_go_direct_builtin('throw/1', 1, 'throw/1').
+wam_go_direct_builtin("throw/1", 1, 'throw/1').
+wam_go_direct_builtin(is_iso/2, 2, 'is_iso/2').
+wam_go_direct_builtin('is_iso/2', 2, 'is_iso/2').
+wam_go_direct_builtin("is_iso/2", 2, 'is_iso/2').
+wam_go_direct_builtin(is_lax/2, 2, 'is_lax/2').
+wam_go_direct_builtin('is_lax/2', 2, 'is_lax/2').
+wam_go_direct_builtin("is_lax/2", 2, 'is_lax/2').
+wam_go_direct_builtin(succ_iso/2, 2, 'succ_iso/2').
+wam_go_direct_builtin('succ_iso/2', 2, 'succ_iso/2').
+wam_go_direct_builtin("succ_iso/2", 2, 'succ_iso/2').
+wam_go_direct_builtin(succ_lax/2, 2, 'succ_lax/2').
+wam_go_direct_builtin('succ_lax/2', 2, 'succ_lax/2').
+wam_go_direct_builtin("succ_lax/2", 2, 'succ_lax/2').
+wam_go_direct_builtin('<_iso'/2, 2, '<_iso/2').
+wam_go_direct_builtin('<_iso/2', 2, '<_iso/2').
+wam_go_direct_builtin("<_iso/2", 2, '<_iso/2').
+wam_go_direct_builtin('<_lax'/2, 2, '<_lax/2').
+wam_go_direct_builtin('<_lax/2', 2, '<_lax/2').
+wam_go_direct_builtin("<_lax/2", 2, '<_lax/2').
+wam_go_direct_builtin('>_iso'/2, 2, '>_iso/2').
+wam_go_direct_builtin('>_iso/2', 2, '>_iso/2').
+wam_go_direct_builtin(">_iso/2", 2, '>_iso/2').
+wam_go_direct_builtin('>_lax'/2, 2, '>_lax/2').
+wam_go_direct_builtin('>_lax/2', 2, '>_lax/2').
+wam_go_direct_builtin(">_lax/2", 2, '>_lax/2').
+wam_go_direct_builtin('=<_iso'/2, 2, '=<_iso/2').
+wam_go_direct_builtin('=<_iso/2', 2, '=<_iso/2').
+wam_go_direct_builtin("=<_iso/2", 2, '=<_iso/2').
+wam_go_direct_builtin('=<_lax'/2, 2, '=<_lax/2').
+wam_go_direct_builtin('=<_lax/2', 2, '=<_lax/2').
+wam_go_direct_builtin("=<_lax/2", 2, '=<_lax/2').
+wam_go_direct_builtin('>=_iso'/2, 2, '>=_iso/2').
+wam_go_direct_builtin('>=_iso/2', 2, '>=_iso/2').
+wam_go_direct_builtin(">=_iso/2", 2, '>=_iso/2').
+wam_go_direct_builtin('>=_lax'/2, 2, '>=_lax/2').
+wam_go_direct_builtin('>=_lax/2', 2, '>=_lax/2').
+wam_go_direct_builtin(">=_lax/2", 2, '>=_lax/2').
+wam_go_direct_builtin('=:=_iso'/2, 2, '=:=_iso/2').
+wam_go_direct_builtin('=:=_iso/2', 2, '=:=_iso/2').
+wam_go_direct_builtin("=:=_iso/2", 2, '=:=_iso/2').
+wam_go_direct_builtin('=:=_lax'/2, 2, '=:=_lax/2').
+wam_go_direct_builtin('=:=_lax/2', 2, '=:=_lax/2').
+wam_go_direct_builtin("=:=_lax/2", 2, '=:=_lax/2').
+wam_go_direct_builtin('=\\=_iso'/2, 2, '=\\=_iso/2').
+wam_go_direct_builtin('=\\=_iso/2', 2, '=\\=_iso/2').
+wam_go_direct_builtin("=\\=_iso/2", 2, '=\\=_iso/2').
+wam_go_direct_builtin('=\\=_lax'/2, 2, '=\\=_lax/2').
+wam_go_direct_builtin('=\\=_lax/2', 2, '=\\=_lax/2').
+wam_go_direct_builtin("=\\=_lax/2", 2, '=\\=_lax/2').
+
 wam_instruction_to_go_literal(get_constant(C, Ai), GoLiteral) :-
     go_value_literal(C, GoVal),
     go_reg_index(Ai, AiIdx),
@@ -786,11 +994,16 @@ wam_instruction_to_go_literal(call(P, N), GoLiteral) :-
 wam_instruction_to_go_literal(call_indexed_atom_fact2(Pred), GoLiteral) :-
     escape_go_string(Pred, EscapedPred),
     format(atom(GoLiteral), '&CallIndexedAtomFact2{Pred: "~w"}', [EscapedPred]).
+% `execute <builtin>` is a *last* call: the builtin must run and then
+% return to the caller. Emitting a plain BuiltinCall here left the
+% predicate falling off the end of its code (output arguments bound,
+% predicate reported as failed) — see the BuiltinExecute doc comment in
+% instructions.go.mustache.
 wam_instruction_to_go_literal(execute(P), GoLiteral) :-
     wam_go_direct_builtin(P, N, Op),
     !,
     escape_go_string(Op, EscapedPred),
-    format(atom(GoLiteral), '&BuiltinCall{Op: "~w", Arity: ~w}', [EscapedPred, N]).
+    format(atom(GoLiteral), '&BuiltinExecute{Op: "~w", Arity: ~w}', [EscapedPred, N]).
 wam_instruction_to_go_literal(execute(P), GoLiteral) :-
     format(atom(GoLiteral), '&Execute{Pred: "~w"}', [P]).
 wam_instruction_to_go_literal(proceed, '&Proceed{}').
@@ -851,7 +1064,7 @@ go_struct_case(Functor-Label, Case) :-
 compile_wam_predicate_to_go(PredIndicator, WamCode, Options, GoCode) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     atom_string(Pred, PredStr),
-    predicate_go_name(Pred, CapPred),
+    predicate_go_name(Pred, Arity, Options, CapPred),
     build_go_wam_arg_list(Arity, ArgList),
     build_go_wam_arg_setup(Arity, ArgSetup),
     (   foreign_wrapper_setup(PredIndicator, WamCode, Options, InstrSetup, ForeignSetup, RunExpr)
@@ -893,9 +1106,9 @@ func ~w(~w) bool {
     CapPred, CapPred, CapPred, CapPred, ArgList, CapPred, CapPred, ArgSetup])
     ).
 
-compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, GoCode) :-
+compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, Options, GoCode) :-
     atom_string(Pred, PredStr),
-    predicate_go_name(Pred, CapPred),
+    predicate_go_name(Pred, Arity, Options, CapPred),
     build_go_wam_arg_list(Arity, ArgList),
     build_go_wam_arg_setup(Arity, ArgSetup),
     format(atom(GoCode),
@@ -931,7 +1144,7 @@ build_go_wam_arg_setup(Arity, Setup) :-
 foreign_wrapper_setup(PredIndicator, _WamCode, Options, InstrSetup, Setup, RunExpr) :-
     go_foreign_spec(PredIndicator, Options, SetupOps, _RewriteCalls, EntryPred/EntryArity),
     InstrSetup = '    vm.PC = 1',
-    go_foreign_setup_code(SetupOps, Setup),
+    go_foreign_setup_code(SetupOps, Options, Setup),
     format(atom(RunExpr), 'vm.executeForeignPredicate("~w", ~w)', [EntryPred, EntryArity]).
 
 go_foreign_spec(_PredArity, Options, _SetupOps, _RewriteCalls, _EntryPredArity) :-
@@ -961,9 +1174,12 @@ go_foreign_spec_term(Pred/Arity,
     is_list(SetupOps),
     is_list(RewriteCalls).
 
-go_foreign_setup_code([], "").
 go_foreign_setup_code(Ops, Setup) :-
-    maplist(go_foreign_setup_line, Ops, Lines),
+    go_foreign_setup_code(Ops, [], Setup).
+
+go_foreign_setup_code([], _Options, "").
+go_foreign_setup_code(Ops, Options, Setup) :-
+    maplist([Op, L]>>go_foreign_setup_line(Op, Options, L), Ops, Lines),
     atomic_list_concat(Lines, '\n', Setup).
 
 go_foreign_setup_line(register_foreign_native_kind(Pred/Arity, Kind), Line) :-
@@ -980,9 +1196,7 @@ go_foreign_setup_line(register_tsv_atom_fact2(Pred/Arity, Path), Line) :-
     format(atom(Line), '    if err := vm.registerTsvAtomFact2("~w/~w", "~w"); err != nil { panic(err) }',
         [Pred, Arity, EscapedPath]).
 go_foreign_setup_line(register_lmdb_atom_fact2(Pred/Arity, ArtifactDir), Line) :-
-    escape_go_string(ArtifactDir, EscapedArtifactDir),
-    format(atom(Line), '    if err := vm.registerLmdbAtomFact2("~w/~w", "~w"); err != nil { panic(err) }',
-        [Pred, Arity, EscapedArtifactDir]).
+    go_lmdb_register_line(Pred/Arity, ArtifactDir, [], Line).
 go_foreign_setup_line(register_foreign_string_config(Pred/Arity, Key, ValuePred/ValueArity), Line) :-
     format(atom(Line), '    vm.registerForeignStringConfig("~w/~w", "~w", "~w/~w")',
         [Pred, Arity, Key, ValuePred, ValueArity]).
@@ -998,6 +1212,66 @@ go_foreign_setup_line(register_indexed_weighted_edge(Pred/Arity, Triples), Line)
     go_fact_triples_literal(Triples, Literal),
     format(atom(Line), '    vm.registerIndexedWeightedEdgeTriples("~w/~w", []WeightedEdgeTriple{~w})', [Pred, Arity, Literal]).
 
+%% go_foreign_setup_line(+Op, +Options, -Line)
+%  Options-aware form. Only the LMDB registration reads Options (for the
+%  materialisation tier and cache size); every other op is
+%  option-independent and falls through to go_foreign_setup_line/2.
+go_foreign_setup_line(register_lmdb_atom_fact2(Pred/Arity, ArtifactDir), Options, Line) :-
+    !,
+    go_lmdb_register_line(Pred/Arity, ArtifactDir, Options, Line).
+go_foreign_setup_line(Op, _Options, Line) :-
+    go_foreign_setup_line(Op, Line).
+
+%% go_lmdb_register_line(+Pred/Arity, +ArtifactDir, +Options, -Line)
+%  Emit the registerLmdbAtomFact2 call with its resolved materialisation
+%  tier and L2 capacity.
+go_lmdb_register_line(Pred/Arity, ArtifactDir, Options, Line) :-
+    escape_go_string(ArtifactDir, EscapedArtifactDir),
+    go_lmdb_materialisation_mode(Options, Mode),
+    go_lmdb_l2_capacity(Options, Mode, Capacity),
+    format(atom(Line),
+        '    if err := vm.registerLmdbAtomFact2("~w/~w", "~w", "~w", ~w); err != nil { panic(err) }',
+        [Pred, Arity, EscapedArtifactDir, Mode, Capacity]).
+
+%% go_lmdb_materialisation_mode(+Options, -Mode)
+%  Resolve lmdb_materialisation(eager|lazy|cached|auto) to a concrete
+%  tier. `auto` defers to the shared cost model in core/cost_model.pl —
+%  the same rule F#, Haskell and R use — so a workload described once
+%  resolves the same way across targets.
+%
+%  The default is `cached`: it matches the F# default and is a strict
+%  improvement on the previous unconditional per-lookup helper spawn
+%  (the artifact is read-only for the process lifetime, so memoising
+%  lookups cannot change results). Pass lmdb_materialisation(lazy) to
+%  get the old behaviour back.
+go_lmdb_materialisation_mode(Options, Mode) :-
+    option(lmdb_materialisation(Requested), Options, cached),
+    (   Requested == auto
+    ->  resolve_auto_lmdb_materialisation(Options, Mode)
+    ;   memberchk(Requested, [eager, lazy, cached])
+    ->  Mode = Requested
+    ;   throw(error(domain_error(lmdb_materialisation, Requested), _))
+    ).
+
+%% go_lmdb_l2_capacity(+Options, +Mode, -Capacity)
+%  Resolve lmdb_l2_capacity(N|auto). Only the cached tier has a cache to
+%  size, so eager/lazy report 0. `auto` scales with the demand-set
+%  estimate, clamped to [256, 65536] — same shape as
+%  compute_l2_capacity_fs/2.
+go_lmdb_l2_capacity(_Options, Mode, 0) :-
+    Mode \== cached,
+    !.
+go_lmdb_l2_capacity(Options, _Mode, Capacity) :-
+    option(lmdb_l2_capacity(Requested), Options, 4096),
+    (   Requested == auto
+    ->  option(fact_count(F), Options, 0),
+        option(demand_set_estimate(D), Options, F),
+        Capacity is max(256, min(65536, integer(D * 0.1)))
+    ;   integer(Requested), Requested > 0
+    ->  Capacity = Requested
+    ;   throw(error(domain_error(lmdb_l2_capacity_positive_integer, Requested), _))
+    ).
+
 go_fact_pairs_literal(Pairs, Literal) :-
     maplist(go_fact_pair_literal, Pairs, PairLiterals),
     atomic_list_concat(PairLiterals, ', ', Literal).
@@ -1011,6 +1285,154 @@ go_fact_triples_literal(Triples, Literal) :-
 
 go_fact_triple_literal(Left-Right-Weight, Literal) :-
     format(atom(Literal), '{Left: "~w", Right: "~w", Weight: ~15g}', [Left, Right, Weight]).
+
+% ============================================================================
+% ISO ERROR HANDLING (three-form dispatch)
+% ============================================================================
+%
+% Go joins C++/Elixir/Python/F#/Haskell as an ISO three-form adopter.
+% The shared config loading, mode resolution, PI matching and audit
+% walkers live in src/unifyweaver/core/iso_errors.pl; what stays here is
+% the Go key tables, the WAM-text rewrite, and the audit report.
+%
+% Contract: docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md.
+%
+% Three forms per builtin:
+%   is/2      default key; rewritten per predicate to _iso or _lax
+%   is_iso/2  throws error(instantiation_error, _),
+%             error(type_error(evaluable, F/N), _), or
+%             error(evaluation_error(zero_divisor), _)
+%   is_lax/2  the historical silent-failure behaviour
+%
+% Explicit _iso/_lax keys written in source survive a mode flip: the
+% rewrite only ever touches the *default* key.
+%
+% Only keys with a matching branch in the emitted Go runtime appear
+% here -- an entry without one would silently route calls to a dead key.
+
+iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2").
+iso_errors:iso_errors_default_to_iso(">/2", ">_iso/2").
+iso_errors:iso_errors_default_to_iso("</2", "<_iso/2").
+iso_errors:iso_errors_default_to_iso(">=/2", ">=_iso/2").
+iso_errors:iso_errors_default_to_iso("=</2", "=<_iso/2").
+iso_errors:iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
+iso_errors:iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
+iso_errors:iso_errors_default_to_iso("succ/2", "succ_iso/2").
+
+iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2").
+iso_errors:iso_errors_default_to_lax(">/2", ">_lax/2").
+iso_errors:iso_errors_default_to_lax("</2", "<_lax/2").
+iso_errors:iso_errors_default_to_lax(">=/2", ">=_lax/2").
+iso_errors:iso_errors_default_to_lax("=</2", "=<_lax/2").
+iso_errors:iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
+iso_errors:iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
+iso_errors:iso_errors_default_to_lax("succ/2", "succ_lax/2").
+
+%% iso_errors_rewrite_text(+Config, +PI, +WamText, -RewrittenText)
+%  Rewrite the default builtin keys in one predicate's WAM text to the
+%  ISO or lax key selected for that predicate.
+%
+%  Same strategy as the Python target: tokenize each line with the
+%  shared quote-aware tokenizer, recognise it to a structured item,
+%  apply the shared item-level rewrite, then splice the new key back
+%  into the original line so whitespace is preserved byte-for-byte.
+iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
+    iso_errors_mode_for(Config, PI, Mode),
+    (   Mode == false,
+        \+ go_iso_has_lax_entries
+    ->  RewrittenText = WamText
+    ;   atom_string(WamText, S),
+        split_string(S, "\n", "", Lines),
+        maplist(go_iso_rewrite_line(Mode), Lines, RewrittenLines),
+        atomic_list_concat(RewrittenLines, '\n', RewrittenText)
+    ).
+
+go_iso_has_lax_entries :- iso_errors:iso_errors_default_to_lax(_, _), !.
+
+go_iso_rewrite_line(Mode, Line, OutLine) :-
+    (   wam_text_parser:wam_tokenize_line(Line, Tokens),
+        wam_recognise_instruction(Tokens, Item0),
+        iso_errors_rewrite_item(Mode, Item0, Item1),
+        Item0 \== Item1,
+        arg(1, Item0, OldKey),
+        arg(1, Item1, NewKey),
+        go_iso_splice_line(Line, OldKey, NewKey, OutLine)
+    ->  true
+    ;   OutLine = Line
+    ).
+
+go_iso_splice_line(Line, Key, NewKey, OutLine) :-
+    sub_string(Line, Before, KLen, _After, Key),
+    string_length(Key, KLen),
+    sub_string(Line, 0, Before, _, Pre),
+    PostStart is Before + KLen,
+    sub_string(Line, PostStart, _, 0, Post),
+    string_concat(Pre, NewKey, T1),
+    string_concat(T1, Post, OutLine), !.
+
+go_iso_clean_key_token(Token0, Token) :-
+    (   string_concat(Token, ",", Token0)
+    ->  true
+    ;   Token = Token0
+    ).
+
+%% wam_go_iso_audit(+Predicates, +Options, -Audit)
+%  Read-only pass reporting, per predicate, which mode applies and what
+%  each builtin_call site resolves to. Mirrors wam_python_iso_audit/3.
+wam_go_iso_audit(Predicates, Options, Audit) :-
+    iso_errors_resolve_options(Options, Config),
+    findall(audit(PI, Mode, Sites), (
+        member(P, Predicates),
+        iso_errors_audit_normalise_pi(P, PI),
+        iso_errors_mode_for(Config, PI, Mode),
+        go_iso_audit_predicate(PI, Mode, Sites)
+    ), Audit).
+
+go_iso_audit_predicate(PI, Mode, Sites) :-
+    (   catch(
+            ( go_iso_audit_wam_for_pi(PI, WamText),
+              go_iso_audit_parse_lines(WamText, Items)
+            ),
+            _, fail)
+    ->  iso_errors_audit_walk(Items, 0, Mode, [], SitesRev),
+        reverse(SitesRev, Sites)
+    ;   Sites = []
+    ).
+
+go_iso_audit_wam_for_pi(Module:Pred/Arity, WamText) :- !,
+    wam_target:compile_predicate_to_wam(Module:Pred/Arity, [], WamText).
+go_iso_audit_wam_for_pi(Pred/Arity, WamText) :-
+    wam_target:compile_predicate_to_wam(Pred/Arity, [], WamText).
+
+go_iso_audit_parse_lines(WamText, Items) :-
+    atom_string(WamText, S),
+    split_string(S, "\n", "", Lines),
+    maplist(go_iso_audit_parse_one, Lines, MaybeItems),
+    exclude(==(skip), MaybeItems, Items).
+
+go_iso_audit_parse_one(Line, Item) :-
+    split_string(Line, " \t", " \t", Parts0),
+    exclude(==(""), Parts0, Parts),
+    go_iso_audit_classify_line(Parts, Item).
+
+go_iso_audit_classify_line([], skip).
+go_iso_audit_classify_line([Tok], label) :-
+    string_concat(_, ":", Tok), !.
+go_iso_audit_classify_line(["builtin_call", Key0 | _], builtin_call(Key, 0)) :- !,
+    go_iso_clean_key_token(Key0, Key).
+go_iso_audit_classify_line(_, other).
+
+%% wam_go_iso_audit_report(+Audit)
+wam_go_iso_audit_report([]).
+wam_go_iso_audit_report([audit(PI, Mode, Sites)|Rest]) :-
+    format('~w [~w]~n', [PI, Mode]),
+    (   Sites == []
+    ->  format('  (no builtin_call sites)~n', [])
+    ;   forall(member(site(PC, Orig, Res, Src, Flip), Sites),
+               format('  pc=~w  ~w -> ~w  (~w)  flip-changes=~w~n',
+                      [PC, Orig, Res, Src, Flip]))
+    ),
+    wam_go_iso_audit_report(Rest).
 
 capitalize_atom(Atom, Cap) :-
     atom_codes(Atom, [First|Rest]),
@@ -1026,6 +1448,46 @@ predicate_go_name(Pred, Name) :-
     ;   SafeCodes = [0'P]
     ),
     atom_codes(Name, SafeCodes).
+
+%% predicate_go_name(+Pred, +Arity, +Options, -Name)
+%  Arity-aware wrapper name. Go has no overloading, so a project that
+%  contains the *same* predicate name at two arities (e.g. the portable
+%  parser's `read_term_from_atom/2` and `/3`) would emit two `func
+%  Read_term_from_atom` declarations and fail to compile with
+%  "redeclared in this block".
+%
+%  Names are only suffixed with the arity when the project actually
+%  carries that name at more than one arity — the overloaded set is
+%  computed once per project in compile_predicates_for_project/3 and
+%  threaded through as `go_overloaded_names(Names)`. Projects without
+%  overloads keep the historical unsuffixed names, so existing
+%  generated code and its call sites are unchanged.
+predicate_go_name(Pred, Arity, Options, Name) :-
+    predicate_go_name(Pred, Base),
+    option(go_overloaded_names(Overloaded), Options, []),
+    (   memberchk(Pred, Overloaded)
+    ->  atom_concat(Base, Arity, Name)
+    ;   Name = Base
+    ).
+
+%% go_overloaded_predicate_names(+Predicates, -Names)
+%  Sorted set of predicate names that appear at two or more distinct
+%  arities in this project. These are the names that need arity
+%  suffixes in the emitted Go identifiers.
+go_overloaded_predicate_names(Predicates, Names) :-
+    findall(Pred-Arity,
+            ( member(PredIndicator, Predicates),
+              predicate_indicator_parts(PredIndicator, _M, Pred, Arity)
+            ),
+            Pairs0),
+    sort(Pairs0, Pairs),
+    findall(Pred,
+            ( member(Pred-A1, Pairs),
+              member(Pred-A2, Pairs),
+              A1 \== A2
+            ),
+            Dups0),
+    sort(Dups0, Names).
 
 go_ident_code(Code, Safe) :-
     (   code_type(Code, alnum)
@@ -1442,7 +1904,7 @@ wam_line_to_go_literal(["execute", P], PredIndicator, Options, GoLit) :-
     ->  format(atom(GoLit), '&CallForeign{Pred: "~w", Arity: ~w}', [ForeignPred, ForeignArity])
     ;   wam_go_direct_builtin(CP, Num, Op)
     ->  escape_go_string(Op, EscapedPred),
-        format(atom(GoLit), '&BuiltinCall{Op: "~w", Arity: ~w}', [EscapedPred, Num])
+        format(atom(GoLit), '&BuiltinExecute{Op: "~w", Arity: ~w}', [EscapedPred, Num])
     ;   format(atom(GoLit), '&Execute{Pred: "~w"}', [CP])
     ).
 wam_line_to_go_literal(["jump", L], GoLit) :-
@@ -1782,6 +2244,17 @@ wam_go_case('GetValue', '        valA := vm.Regs[i.Ai]
 
 wam_go_case('GetStructure', '        val := vm.Regs[i.Ai]
         if val == nil { return false }
+        // Dereference before deciding read vs write mode. The register
+        // can hold a *Ref, or an *Unbound that is already bound through
+        // the Bindings table -- which is exactly what unify_variable
+        // leaves behind when it reads a nested term out of an enclosing
+        // one. Testing isUnbound on the raw value made get_structure
+        // take the *write* branch for an already-bound argument and
+        // build a fresh structure over the top of it, so a head like
+        // `p([tk(N)|R], N, R)` bound N to a new empty cell instead of
+        // the incoming value. GetList and GetConstant already deref
+        // first; this mirrors them.
+        val = vm.deref(val)
         if isUnbound(val) {
             addr := vm.heapPush(nil)
             arity := parseFunctorArity(i.Functor)
@@ -1790,11 +2263,10 @@ wam_go_case('GetStructure', '        val := vm.Regs[i.Ai]
             vm.CurrentStruct = s
             vm.CurrentList = nil
             vm.bindUnbound(val.(*Unbound), &Ref{Addr: addr})
-            vm.Stack = append(vm.Stack, &WriteCtx{N: arity})
+            vm.Stack = append(vm.Stack, &WriteCtx{N: arity, Struct: s})
             vm.PC++
             return true
         }
-        val = vm.deref(val)
         if s, ok := val.(*Structure); ok {
             if s.Functor == i.Functor {
                 vm.Stack = append(vm.Stack, &UnifyCtx{Args: s.Args})
@@ -1814,12 +2286,30 @@ wam_go_case('GetList', '        val := vm.Regs[i.Ai]
             vm.CurrentList = l
             vm.CurrentStruct = nil
             vm.bindUnbound(val.(*Unbound), &Ref{Addr: addr})
-            vm.Stack = append(vm.Stack, &WriteCtx{N: 2})
+            vm.Stack = append(vm.Stack, &WriteCtx{N: 2, List: l})
             vm.PC++
             return true
         }
-        if list, ok := val.(*List); ok && len(list.Elements) > 0 {
-            vm.Stack = append(vm.Stack, &UnifyCtx{Args: list.Elements})
+        // get_list reads a term as a *cons cell*: exactly two slots,
+        // head and tail. Push those, not the raw Elements slice.
+        //
+        // *List is used for two different things in this runtime: a
+        // cons pair built by put_list (Elements = [head, tail]) and a
+        // flat list returned by a Go builtin such as reverse/2,
+        // findall/3, sort/2 or append/3 (Elements = the items). Pushing
+        // Elements directly conflated them — a flat one-element list
+        // offered a single slot, so the following unify_* for the cons
+        // tail found an empty context and the clause failed; a flat
+        // three-element list offered three slots and bound the tail to
+        // the second *item*. That is why heads like
+        // `p([tk_atom(N)|R], ...)` matched a literal list but not one
+        // that had been through reverse/2.
+        //
+        // valueListHeadTail normalises both representations (and the
+        // heap-linked Compound/Structure cons form), so it is the one
+        // place that knows how to split a list value.
+        if h, t, ok := vm.valueListHeadTail(val); ok {
+            vm.Stack = append(vm.Stack, &UnifyCtx{Args: []Value{h, t}})
             vm.PC++
             return true
         }
@@ -1852,9 +2342,7 @@ wam_go_case('UnifyVariable', '        if ctx := vm.peekUnifyCtx(); ctx != nil &&
             }
             wctx.N--
             if wctx.N == 0 {
-                vm.popStack()
-                vm.CurrentStruct = nil
-                vm.CurrentList = nil
+                vm.popStackRestoringWriteTarget()
             }
             vm.putReg(i.Xn, v)
             vm.PC++
@@ -1885,9 +2373,7 @@ wam_go_case('UnifyValue', '        if ctx := vm.peekUnifyCtx(); ctx != nil && le
             }
             wctx.N--
             if wctx.N == 0 {
-                vm.popStack()
-                vm.CurrentStruct = nil
-                vm.CurrentList = nil
+                vm.popStackRestoringWriteTarget()
             }
             vm.PC++
             return true
@@ -1915,9 +2401,7 @@ wam_go_case('UnifyConstant', '        if ctx := vm.peekUnifyCtx(); ctx != nil &&
             }
             wctx.N--
             if wctx.N == 0 {
-                vm.popStack()
-                vm.CurrentStruct = nil
-                vm.CurrentList = nil
+                vm.popStackRestoringWriteTarget()
             }
             vm.PC++
             return true
@@ -1926,7 +2410,7 @@ wam_go_case('UnifyConstant', '        if ctx := vm.peekUnifyCtx(); ctx != nil &&
 
 % --- Body Construction Instructions ---
 
-wam_go_case('PutConstant', '        vm.Regs[i.Ai] = i.C
+wam_go_case('PutConstant', '        vm.putReg(i.Ai, i.C)
         vm.PC++
         return true').
 
@@ -1942,12 +2426,12 @@ wam_go_case('PutVariable', '        // Allocate a globally-unique Idx for the ne
         // collision entirely.
         v := &Unbound{Name: fmt.Sprintf("_R%d", i.Xn), Idx: vm.allocVarId()}
         vm.putReg(i.Xn, v)
-        vm.Regs[i.Ai] = v
+        vm.putReg(i.Ai, v)
         vm.PC++
         return true').
 
 wam_go_case('PutValue', '        val := vm.getReg(i.Xn)
-        vm.Regs[i.Ai] = val
+        vm.putReg(i.Ai, val)
         vm.PC++
         return true').
 
@@ -1981,8 +2465,8 @@ wam_go_case('PutStructure', '        addr := vm.heapPush(nil)
                 }
             }
         }
-        vm.Regs[i.Ai] = ref
-        vm.Stack = append(vm.Stack, &WriteCtx{N: arity})
+        vm.putReg(i.Ai, ref)
+        vm.Stack = append(vm.Stack, &WriteCtx{N: arity, Struct: s})
         vm.PC++
         return true').
 
@@ -1991,8 +2475,8 @@ wam_go_case('PutList', '        addr := vm.heapPush(nil)
         vm.Heap[addr] = l
         vm.CurrentList = l
         vm.CurrentStruct = nil
-        vm.Regs[i.Ai] = &Ref{Addr: addr}
-        vm.Stack = append(vm.Stack, &WriteCtx{N: 2})
+        vm.putReg(i.Ai, &Ref{Addr: addr})
+        vm.Stack = append(vm.Stack, &WriteCtx{N: 2, List: l})
         vm.PC++
         return true').
 
@@ -2005,8 +2489,7 @@ wam_go_case('SetVariable', '        addr := vm.HeapLen
                 vm.CurrentStruct.Args[idx] = v
                 wctx.N--
                 if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentStruct = nil
+                    vm.popStackRestoringWriteTarget()
                 }
             }
         } else if vm.CurrentList != nil {
@@ -2015,8 +2498,7 @@ wam_go_case('SetVariable', '        addr := vm.HeapLen
                 vm.CurrentList.Elements[idx] = v
                 wctx.N--
                 if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentList = nil
+                    vm.popStackRestoringWriteTarget()
                 }
             }
         }
@@ -2032,8 +2514,7 @@ wam_go_case('SetValue', '        val := vm.getReg(i.Xn)
                 vm.CurrentStruct.Args[idx] = val
                 wctx.N--
                 if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentStruct = nil
+                    vm.popStackRestoringWriteTarget()
                 }
             }
         } else if vm.CurrentList != nil {
@@ -2042,8 +2523,7 @@ wam_go_case('SetValue', '        val := vm.getReg(i.Xn)
                 vm.CurrentList.Elements[idx] = val
                 wctx.N--
                 if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentList = nil
+                    vm.popStackRestoringWriteTarget()
                 }
             }
         }
@@ -2057,8 +2537,7 @@ wam_go_case('SetConstant', '        vm.heapPush(i.C)
                 vm.CurrentStruct.Args[idx] = i.C
                 wctx.N--
                 if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentStruct = nil
+                    vm.popStackRestoringWriteTarget()
                 }
             }
         } else if vm.CurrentList != nil {
@@ -2067,8 +2546,7 @@ wam_go_case('SetConstant', '        vm.heapPush(i.C)
                 vm.CurrentList.Elements[idx] = i.C
                 wctx.N--
                 if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentList = nil
+                    vm.popStackRestoringWriteTarget()
                 }
             }
         }
@@ -2245,6 +2723,20 @@ wam_go_case('BuiltinCall', '        result := vm.executeBuiltin(i.Op, i.Arity)
         }
         return result').
 
+% Last-call builtin: run the builtin, then take Proceed''s return path.
+% See the BuiltinExecute doc comment in instructions.go.mustache for why
+% this is one instruction rather than BuiltinCall followed by Proceed.
+wam_go_case('BuiltinExecute', '        result := vm.executeBuiltin(i.Op, i.Arity)
+        if !result {
+            return false
+        }
+        if vm.CP > 0 {
+            vm.PC = vm.CP
+        } else {
+            vm.Halted = true
+        }
+        return true').
+
 % --- Choice Point Instructions ---
 
 wam_go_case('TryMeElse', '        nextPC := 0
@@ -2406,7 +2898,20 @@ wam_go_case('SwitchOnConstantA2Pc', '        if val := vm.Regs[1]; val != nil &&
 compile_wam_helpers_to_go(_Options, GoCode) :-
     format(atom(GoCode),
 '// Run executes the WAM instruction loop until halt or failure.
-func (vm *WamState) Run() bool {
+func (vm *WamState) Run() (result bool) {
+    // An ISO error that escapes every catch/3 surfaces as failure with
+    // the ball recorded in vm.UncaughtBall, rather than as a process
+    // crash. Non-prologBall panics are genuine bugs and re-raise.
+    defer func() {
+        if r := recover(); r != nil {
+            thrown, ok := r.(prologBall)
+            if !ok {
+                panic(r)
+            }
+            vm.UncaughtBall = thrown.Ball
+            result = false
+        }
+    }()
     for {
         if vm.Halted {
             return true
@@ -2873,8 +3378,8 @@ func (vm *WamState) registerTsvAtomFact2(predKey string, path string) error {
     return nil
 }
 
-func (vm *WamState) registerLmdbAtomFact2(predKey string, artifactDir string) error {
-    source := newLmdbAtomFact2Source(predKey, artifactDir)
+func (vm *WamState) registerLmdbAtomFact2(predKey string, artifactDir string, mode string, l2Capacity int) error {
+    source := newLmdbAtomFact2Source(predKey, artifactDir, mode, l2Capacity)
     vm.Ctx.AtomFact2Sources[predKey] = source
     return nil
 }
@@ -2943,24 +3448,101 @@ func (source *staticAtomFact2Source) LookupArg1(left string) []AtomPair {
     return append([]AtomPair(nil), source.byLeft[left]...)
 }
 
+// lmdbAtomFact2Source serves arity-2 atom facts out of an LMDB
+// relation artifact through the `lmdb_relation_artifact` helper.
+//
+// Three materialisation tiers, selected at construction and mirroring
+// the F# LmdbFactSource (see templates/targets/fsharp_wam/
+// lmdb_fact_source.fs.mustache):
+//
+//   eager  — one Scan() at construction into an in-memory arg1 index.
+//            No helper process afterwards. Lowest per-lookup cost;
+//            pays a full materialisation up front, so it needs the
+//            demand set to fit in memory.
+//   lazy   — the original behaviour: one helper invocation per lookup,
+//            nothing retained. Right for segregated workloads with no
+//            cross-query key reuse.
+//   cached — on-demand like lazy, but memoised through a two-level
+//            cache. L1 is a small hot map; L2 is a larger bounded map.
+//            Once L2 is full new keys are served but not retained
+//            (bounded memory, no eviction churn), matching F#.
+//
+// Misses are cached too: a key with no rows records an empty result so
+// a repeated probe does not re-spawn the helper. The artifact is
+// read-only for the lifetime of the process, so this is safe.
 type lmdbAtomFact2Source struct {
     predKey string
     artifactDir string
     helperBin string
+    mode string
+    l1Capacity int
+    l2Capacity int
+
+    mu sync.RWMutex
+    eagerAll []AtomPair
+    eagerByLeft map[string][]AtomPair
+    l1 map[string][]AtomPair
+    l2 map[string][]AtomPair
 }
 
-func newLmdbAtomFact2Source(predKey string, artifactDir string) *lmdbAtomFact2Source {
+func newLmdbAtomFact2Source(predKey string, artifactDir string, mode string, l2Capacity int) *lmdbAtomFact2Source {
     helperBin := os.Getenv("UW_LMDB_RELATION_ARTIFACT_BIN")
     if helperBin == "" {
         helperBin = "lmdb_relation_artifact"
     }
-    return &lmdbAtomFact2Source{predKey: predKey, artifactDir: artifactDir, helperBin: helperBin}
+    switch mode {
+    case "eager", "lazy", "cached":
+    default:
+        mode = "cached"
+    }
+    if l2Capacity <= 0 {
+        l2Capacity = 4096
+    }
+    l1Capacity := l2Capacity / 8
+    if l1Capacity < 64 {
+        l1Capacity = 64
+    }
+    source := &lmdbAtomFact2Source{
+        predKey: predKey,
+        artifactDir: artifactDir,
+        helperBin: helperBin,
+        mode: mode,
+        l1Capacity: l1Capacity,
+        l2Capacity: l2Capacity,
+    }
+    if mode == "eager" {
+        source.materialise()
+    }
+    if mode == "cached" {
+        source.l1 = make(map[string][]AtomPair)
+        source.l2 = make(map[string][]AtomPair)
+    }
+    return source
+}
+
+// materialise runs the single eager-mode Scan and builds the arg1 index.
+func (source *lmdbAtomFact2Source) materialise() {
+    all := source.run("scan", source.artifactDir, source.predKey)
+    byLeft := make(map[string][]AtomPair, len(all))
+    for _, pair := range all {
+        byLeft[pair.Left] = append(byLeft[pair.Left], pair)
+    }
+    source.eagerAll = all
+    source.eagerByLeft = byLeft
 }
 
 func (source *lmdbAtomFact2Source) Scan() []AtomPair {
     if source == nil {
         return nil
     }
+    if source.mode == "eager" {
+        source.mu.RLock()
+        defer source.mu.RUnlock()
+        return append([]AtomPair(nil), source.eagerAll...)
+    }
+    // lazy and cached both stream the full relation on demand; a full
+    // scan is not key-addressed, so there is nothing for the key caches
+    // to serve it from.
     return source.run("scan", source.artifactDir, source.predKey)
 }
 
@@ -2968,7 +3550,51 @@ func (source *lmdbAtomFact2Source) LookupArg1(left string) []AtomPair {
     if source == nil {
         return nil
     }
-    return source.run("get", source.artifactDir, source.predKey, left)
+    switch source.mode {
+    case "eager":
+        source.mu.RLock()
+        defer source.mu.RUnlock()
+        return append([]AtomPair(nil), source.eagerByLeft[left]...)
+    case "cached":
+        return source.lookupCached(left)
+    default:
+        return source.run("get", source.artifactDir, source.predKey, left)
+    }
+}
+
+// lookupCached implements the L1 -> L2 -> helper dispatch. A hit in L2
+// promotes the entry into L1; a helper result populates both.
+func (source *lmdbAtomFact2Source) lookupCached(left string) []AtomPair {
+    source.mu.RLock()
+    if rows, ok := source.l1[left]; ok {
+        source.mu.RUnlock()
+        return append([]AtomPair(nil), rows...)
+    }
+    rows, ok := source.l2[left]
+    source.mu.RUnlock()
+    if ok {
+        source.mu.Lock()
+        if len(source.l1) < source.l1Capacity {
+            source.l1[left] = rows
+        }
+        source.mu.Unlock()
+        return append([]AtomPair(nil), rows...)
+    }
+
+    fetched := source.run("get", source.artifactDir, source.predKey, left)
+    if fetched == nil {
+        // Distinguish "no rows" from nil so a repeated miss stays cached.
+        fetched = []AtomPair{}
+    }
+    source.mu.Lock()
+    if len(source.l2) < source.l2Capacity {
+        source.l2[left] = fetched
+    }
+    if len(source.l1) < source.l1Capacity {
+        source.l1[left] = fetched
+    }
+    source.mu.Unlock()
+    return append([]AtomPair(nil), fetched...)
 }
 
 func (source *lmdbAtomFact2Source) run(args ...string) []AtomPair {
@@ -3844,21 +4470,26 @@ emit_atom_table_go(GoCode) :-
         ], "\n", DeclHeader),
         atomic_list_concat(DeclLines, "\n", DeclBody),
         atomic_list_concat([DeclHeader, DeclBody, "\n)\n"], DeclBlock),
-        maplist(format_atom_register_line, Pairs, RegisterLines),
-        atomic_list_concat(RegisterLines, "\n", RegisterBody),
         format(atom(RuntimeHelper),
 '
-// atomInternMap is populated at package init time with every interned
-// atom from the var block above. internAtom(name) returns the shared
-// pointer for that name, allocating + caching one if the name is new.
+// atomInternMap is the single source of pointer identity for atoms.
+// internAtom(name) returns the shared pointer for that name, allocating
+// and caching one if the name is new. The wamAtom_ vars above are
+// themselves initialised through internAtom, so they populate this map
+// as a side effect of package initialisation.
+//
+// Deliberately NOT an init() that assigns into the map: Go runs every
+// package-level variable initialiser before any init(), so a var in
+// another file of this package that calls internAtom during its own
+// initialisation (state.go''s emptyListAtom) would win the map slot and
+// then be overwritten here, leaving two atoms with the same name and
+// different pointers. Atom.Equals is pointer-only, so that silently
+// broke equality — `get_constant []` against a real empty list.
+//
 // Bench drivers should construct atoms via internAtom rather than
-// `&Atom{Name: x}` so SwitchOnConstant in the WAM bytecode matches in
-// O(1) (Atom.Equals short-circuits on pointer identity).
+// `&Atom{Name: x}` for the same reason: SwitchOnConstant in the WAM
+// bytecode matches in O(1) on pointer identity.
 var atomInternMap = make(map[string]*Atom)
-
-func init() {
-~w
-}
 
 func internAtom(name string) *Atom {
     if a, ok := atomInternMap[name]; ok {
@@ -3868,12 +4499,17 @@ func internAtom(name string) *Atom {
     atomInternMap[name] = a
     return a
 }
-', [RegisterBody]),
+
+// InternAtom is the exported form. Drivers and embedders must build
+// atoms through this rather than &Atom{Name: x}: Atom.Equals is pointer
+// identity only, so a fresh literal with the same name compares unequal
+// to the interned one the bytecode carries.
+func InternAtom(name string) *Atom {
+    return internAtom(name)
+}
+', []),
         atomic_list_concat([DeclBlock, RuntimeHelper], GoCode)
     ).
-
-format_atom_register_line(VarName-_, Line) :-
-    format(atom(Line), "    atomInternMap[~w.Name] = ~w", [VarName, VarName]).
 
 % Sort by the trailing _<seq> on the variable name so emission order
 % matches first-seen order rather than alphabetical.
@@ -3888,9 +4524,31 @@ pair_seq_key(VarName-_, Seq) :-
     last(Parts, SeqStr),
     number_string(Seq, SeqStr).
 
+%% format_atom_decl(+VarName-Str, -Line)
+%  Each interned atom is initialised *through* internAtom rather than as
+%  a bare &Atom literal.
+%
+%  Atom.Equals is pointer-only, so every atom with a given name has to be
+%  the one object in atomInternMap. Registering the vars from an init()
+%  did not guarantee that: Go runs all package-level variable
+%  initialisers before any init(), so a var elsewhere in the package that
+%  calls internAtom during its own initialisation — state.go's
+%  `var emptyListAtom = internAtom("[]")` — created and cached its own
+%  "[]" atom first, and the init() then *overwrote* the map entry with
+%  the codegen's wamAtom_ var. The result was two distinct "[]" atoms:
+%  one reached through emptyListAtom (list tails, get_list on a
+%  one-element list) and one baked into the bytecode as a get_constant
+%  operand. `get_constant []` then failed against a genuinely empty
+%  list, which is what stopped the compiled portable parser dead at
+%  parse_op_loop/10's base clause.
+%
+%  Going through internAtom makes the var block order-independent:
+%  Go's initialisation-dependency analysis runs atomInternMap first
+%  (internAtom references it), and whichever caller asks for a name
+%  first, everyone gets the same pointer.
 format_atom_decl(VarName-Str, Line) :-
     escape_go_string(Str, Escaped),
-    format(atom(Line), "    ~w = &Atom{Name: \"~w\"}", [VarName, Escaped]).
+    format(atom(Line), "    ~w = internAtom(\"~w\")", [VarName, Escaped]).
 
 % ============================================================================
 % dimension_n Resolution (for codegen-time substitution)
