@@ -115,6 +115,43 @@ finds this class — each spelling alone declined honestly; only the two togethe
 produced a build. **When two spellings of one operation have different coverage,
 probe them in the same rule body**, not just side by side.
 
+**Not every "missing row" is a missing row: two key spaces can share one surface
+syntax.** `c[5]++` looks like the integer sibling of the `c["x"]++` that landed beside
+it, and it is not. plawk has two array conventions and they share the spelling
+`arr[N]`: awk semantics (keys are **strings**, so `arr[5]` is interned `"5"`) and
+positional tables from `split()` / posarray binds (keyed by the **raw integer**
+position, which is how `lookup_int` reads them). *Which space a program means is decided
+by the table's kind, not by the subscript*, and the spec-level gate that would admit the
+update does not know the kind. Admitting it compiles `{ c[5]++; print c[5] }` into a
+store to interned `"5"` and a load from raw `5` — it **builds and prints four empty
+lines** where gawk prints 1..4.
+
+So the refusal is not conservatism about a shape; it is a real ambiguity that has to be
+resolved before the shape can exist. The tell that it was this and not a missing row:
+`c[$1,5]++` already works, so the integer literal builds fine as a *component* — the
+same bytes are buildable and only the *lone* form is refused. **When one arity or one
+operand position is refused while a strictly more general form works, look for a
+collision rather than a gap.**
+
+The collision also bit from the **other side**, and this is the part to remember: the
+string-literal key change added a rule-body read `print c["x"]` on the same arity-1 key,
+and that read made `{ split($0, a, " "); print a["1"] }` intern `"1"`, miss raw key `1`,
+and print an empty line where gawk prints the field — **a pre-existing decline turned
+into a wrong output by my own change**, caught only because I probed the *positional*
+table after reasoning about the collision on the update side. The row came back out.
+Lesson: once you have named a collision as the reason to refuse one direction, probe
+**every** direction that now crosses it, including the ones you just added and believed
+safe.
+
+Two neighbours are **already** broken on positional tables for the same reason:
+`delete arr[N]` takes the string reading (`assoc_delete_lit` interns
+`number_string(N)`), so `{ split($0, a, " "); delete a[1]; print a[1] }` prints the
+field where gawk prints empty; and `"N" in arr` builds and matches nothing. Both
+confirmed at the merged parent, so neither is from this work. The fix for all of them is
+one rule applied at **plan** time, where `PosArrays` is known: on a positional table, a
+subscript whose text is the canonical decimal of an integer ≥ 1 means that raw integer.
+Its own change, not something to fold into an unrelated diff.
+
 **Prescriptions that worked:** one shared producer/emitter with callers
 parameterised (a *name flavour* parameter can preserve byte-identity — see
 #4094); when adding a fast path, check what the general walker's **base case**
@@ -223,7 +260,10 @@ suite · **unset scalars render empty** (monotonic assigned-mark) · **`arr[k]--
 D`** for a field key · **a non-literal `-=` delta** (`n -= $2`, by negating instead of
 subtracting) · **scalar-var assoc keys for the whole `add_assoc` family** (four lists
 of one set collapsed onto `plawk_assoc_scalar_key_update/4`; one of them was selecting
-the key's representation and producing wrong output).
+the key's representation and producing wrong output) · **string-literal assoc keys**
+(`c["total"]++`) — the multi-dimensional key builder at arity 1, one relaxed guard (and
+one row added, then removed after it turned a decline into a wrong output on positional
+tables).
 
 ## A note on the one shared-globals exception
 
@@ -283,9 +323,13 @@ emitters have no clause) · **END-only** programs (a driver with no retain) ·
 an unrelated pre-existing restriction, pinned as such) · `$N` in a `binfmt` END
 (reads the record buffer, not a text slice).
 
-A **literal** assoc key (`c["x"] += 1`, `c["x"]++`) — refused for *both* the
-`inc_assoc` and `add_assoc` families, so it belongs to neither · a **non-literal
-delta at a scalar-var key** (`c[k] += $2` declines, `c[k] -= $2` is a parse error;
+An **integer-literal** assoc key (`c[5]++`) — blocked by the raw-integer/interned-text
+key-space collision above, not by a missing row · **`delete arr[N]` on a positional
+table**, **`"N" in arr` on a positional table**, and the **rule-body read
+`print arr["N"]`** — all three the same collision, all clean-slate at plan time where
+`PosArrays` is known (on a positional table, a subscript whose text is the canonical
+decimal of an integer ≥ 1 means that raw integer); the first two are pre-existing wrong
+outputs, the third a decline · a **non-literal delta at a scalar-var key** (`c[k] += $2` declines, `c[k] -= $2` is a parse error;
 the field-key `c[$1] += $2` works, and the scalar `n -= $2` now works, so this is the
 last non-literal-delta hole) · assoc rules
 alongside a scalar END loop (state-plan boundary) · float-literal and non-literal

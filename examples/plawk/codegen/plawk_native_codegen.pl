@@ -9140,6 +9140,17 @@ plawk_assoc_body_action_spec(add_assoc(var(ArrayName), subsep_key(Fields), Delta
         assoc_add_n(ArrayName, Comps, Delta)) :-
     plawk_subsep_key_components(Fields, Comps),
     plawk_assoc_add_delta_ok(Delta).
+% `arr["x"] += DELTA` / `arr["x"] -= DELTA` / `arr["x"]--` / `arr[5] += DELTA` -- a
+% LITERAL key, riding the multi-dimensional add-assign at arity 1, so the delta
+% shapes are whatever that form already accepts.
+plawk_assoc_body_action_spec(add_assoc(var(ArrayName), Lit, Delta),
+        assoc_add_n(ArrayName, Comps, Delta)) :-
+    plawk_assoc_literal_key_comps(Lit, Comps),
+    plawk_assoc_add_delta_ok(Delta).
+% `arr["x"]++` / `arr[5]++` -- likewise the arity-1 counter.
+plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), Lit),
+        ArrayName-subsep_key(Comps)) :-
+    plawk_assoc_literal_key_comps(Lit, Comps).
 
 plawk_assoc_add_delta_ok(field(V)) :- integer(V), V > 0.
 plawk_assoc_add_delta_ok(int(V)) :- integer(V).
@@ -9257,6 +9268,23 @@ plawk_assoc_print_field_spec(assoc(var(Arr), subsep_key(Fields)),
 % resolved from the str-array set at plan time.
 plawk_assoc_print_field_spec(assoc(var(Arr), int(N)), lookup_int(Arr, N)) :-
     atom(Arr), integer(N), N >= 1.
+% NO clause here for `print arr["x"]` -- a lone STRING-literal element read in a
+% per-record print. It was added and then REMOVED, and the reason is the same
+% key-space collision plawk_assoc_literal_key_comps/2 documents, arriving from the
+% other side.
+%
+% Riding the arity-1 N-ary read makes `print arr["x"]` intern "x", which is right for
+% an awk-semantics table and WRONG for a positional one: on a split table the keys are
+% raw integers, so `{ split($0, a, " "); print a["1"] }` interned "1", missed raw key
+% 1, and printed an empty line where gawk prints the field. That is a decline
+% (pre-existing) turned into a wrong output -- strictly worse -- so the row came out.
+%
+% Doing it correctly means deciding between the two key spaces by the TABLE'S KIND,
+% which is known at PLAN time (PosArrays) and not here. That is the collision's own
+% fix, together with `delete arr[N]` and `"N" in arr`, which are broken on positional
+% tables today for exactly this reason. The END read of a literal key is unaffected --
+% it goes through its own path and always worked.
+
 % A scalar accumulator read in a per-record print.
 plawk_assoc_print_field_spec(var(Name), svar(Name)) :-
     atom(Name).
@@ -9608,21 +9636,74 @@ plawk_assoc_increment_action(inc_assoc(var(ArrayName), subsep_key(Fields)),
 % the mixed walker resolves it to the scalar's slot atom id).
 plawk_assoc_increment_action(inc_assoc(var(ArrayName), var(Name)),
         ArrayName-svar(Name)).
+% `arr["x"]++` / `arr[5]++` -- a LITERAL key, yielding the SAME spec the
+% multi-dimensional form yields, because it is that form at arity 1.
+plawk_assoc_increment_action(inc_assoc(var(ArrayName), Lit),
+        ArrayName-subsep_key(Comps)) :-
+    plawk_assoc_literal_key_comps(Lit, Comps).
 plawk_assoc_increment_action(inc_assoc(var(ArrayName), Blob),
         ArrayName-blob_key(Blob)) :-
     plawk_assoc_blob_key_ok(Blob).
 
 %% plawk_subsep_key_components(+Subscripts, -Comps) is semidet.
-%  A multi-dimensional subscript `arr[s1,s2,...]`: accepts TWO OR MORE
-%  subscripts, each a record field (`$N`) or a compile-time literal (a string, or
-%  an integer keyed by its decimal text -- awk array keys are strings, so
-%  `arr[$1,5]` and `arr[$1,"5"]` are the same key). Any arity and any mix is
-%  handled uniformly. Yields component specs `fld(I)` / `lit(Text)`. A scalar
-%  variable subscript (`arr[$1,k]`) is not a compile-time constant, so it fails
-%  here and the program is cleanly rejected rather than miscompiled.
+%  A subscript list `arr[s1,s2,...]`: accepts ONE OR MORE subscripts, each a
+%  record field (`$N`) or a compile-time literal (a string, or an integer keyed by
+%  its decimal text -- awk array keys are strings, so `arr[$1,5]` and
+%  `arr[$1,"5"]` are the same key). Any arity and any mix is handled uniformly.
+%  Yields component specs `fld(I)` / `lit(Text)`. A scalar variable subscript
+%  (`arr[$1,k]`) is not a compile-time constant, so it fails here and the program
+%  is cleanly rejected rather than miscompiled.
+%
+%  ARITY 1 is admitted, which is what makes a LITERAL key (`arr["x"]`, `arr[5]`)
+%  buildable -- see plawk_assoc_literal_key_comps/2. The runtime was already
+%  general: @wam_intern_subsep_key_comp computes `(N-1) * SUBSEP_len` separator
+%  bytes and skips the separator for component 0, so with N = 1 it interns exactly
+%  the component's own bytes -- the same atom id @wam_intern_atom of that literal
+%  produces, which is what lets `arr["x"]++` and a `print arr["x"]` read (or a
+%  `delete arr["x"]`, which interns the literal directly) agree on the key. The
+%  guard here was `[_, _ | _]`, so the restriction was never the mechanism.
 plawk_subsep_key_components(Subscripts, Comps) :-
-    Subscripts = [_, _ | _],
+    Subscripts = [_ | _],
     maplist(plawk_subsep_key_component, Subscripts, Comps).
+
+%% plawk_assoc_literal_key_comps(+KeySubscript, -Comps) is semidet.
+%
+%  A single compile-time-LITERAL subscript (`arr["x"]`, `arr[5]`) as key
+%  components -- the arity-1 case of the multi-dimensional key builder.
+%
+%  This is the whole literal-key implementation: the surface form is a key built by
+%  joining N compile-time-described subscripts where N happens to be 1, so the
+%  existing spec rows, planner and both routes' emitters already handle it, and no
+%  key builder, planned action or emitter was added. Sized the other way -- as "a
+%  literal-key sibling of the field-key path" -- it would have needed a spec, a
+%  planned action and two emitters, duplicating a third way to say "intern these
+%  bytes and use them as a key".
+%
+%  A lone FIELD subscript (`arr[$1]`) is deliberately NOT routed here: it has its
+%  own path with a missing-field skip, and rerouting a working, well-covered
+%  emitter is not what closing this gap needs.
+%
+%  A lone INTEGER-literal subscript (`arr[5]`) is NOT routed here either, and the
+%  reason is not a missing row -- it is a KEY-SPACE COLLISION between two table
+%  conventions that share the surface syntax. plawk has two:
+%
+%    - awk semantics: keys are STRINGS, so `arr[5]` is the key `"5"`, interned.
+%    - positional tables (`split()`, posarray binds): keys are the RAW INTEGER
+%      position, and `plawk_assoc_print_one_field(lookup_int(...))` reads them that
+%      way, documented as "split / positional tables are keyed by integer".
+%
+%  Which space `arr[5]` means is decided by the TABLE'S KIND, not by the subscript,
+%  and nothing at this level knows the kind. Admitting the update here would compile
+%  `{ c[5]++; print c[5] }` into a store to interned `"5"` and a load from raw 5 --
+%  two different keys, so it builds and prints four EMPTY lines where gawk prints
+%  1..4. Verified, which is why it is refused rather than shipped.
+%
+%  (`delete arr[5]` already takes the string reading -- `assoc_delete_lit` interns
+%  `number_string(N)` -- so the two spaces are ALREADY inconsistent for a positional
+%  table. Reconciling them is its own change; this one does not widen the surface on
+%  which they disagree.)
+plawk_assoc_literal_key_comps(string(S), Comps) :-
+    plawk_subsep_key_components([string(S)], Comps).
 
 plawk_subsep_key_component(field(I), fld(I)) :-
     integer(I), I > 0.
