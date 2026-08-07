@@ -15683,15 +15683,16 @@ plawk_scalar_action_update(inc(var(Name)), Name, add(const(1))).
 % `n--` is `n += -1`. It reports the same `add(const(_))` update as `n++`, so
 % every downstream consumer of that operation (the strnum-safety check, the
 % double-typing fixpoint, the slot emitters) already covers it -- which is why
-% this is one row and not a new operation. Note `n += -1` longhand is rejected
-% EARLIER than this predicate -- the parser's compound-assign delta does not
-% accept a negative literal, so it is a parse error, not a surface decline. That
-% asymmetry (`n--` compiles, `n += -1` does not) is pre-existing and pinned in
-% the tests rather than widened here.
+% this is one row and not a new operation.
+%
+% This row is also the PROOF that a negative constant is safe on the `add` path: it
+% has emitted add(const(-1)) since `n--` landed. The longhand `n += -1` was rejected
+% anyway -- first by the parser's delta production, then by a `Value >= 0` guard
+% here -- so `n--` compiled and the identical `n += -1` did not. Both restrictions
+% are gone; the guard below asks only that the delta be an integer.
 plawk_scalar_action_update(dec(var(Name)), Name, add(const(-1))).
 plawk_scalar_action_update(add(var(Name), int(Value)), Name, add(const(Value))) :-
-    integer(Value),
-    Value >= 0.
+    integer(Value).
 plawk_scalar_action_update(add(var(Name), length(field(FieldIndex))), Name, add(length(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_scalar_action_update(add(var(Name), field(FieldIndex)), Name, add(field_i64(FieldIndex))) :-
@@ -15797,9 +15798,10 @@ plawk_scalar_action_update(set(var(Name), ternary(Cond, Then, Else)),
     plawk_ternary_condition_ok(Cond),
     plawk_ternary_i64_operand_ok(Then),
     plawk_ternary_i64_operand_ok(Else).
+% A negative constant assignment (`n = -1`) rides the same `set(const(_))`
+% operation, for the same reason the `add` row above accepts one.
 plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) :-
-    integer(Value),
-    Value >= 0.
+    integer(Value).
 plawk_scalar_action_update(set(var(Name), length(field(FieldIndex))), Name, set(length(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_scalar_action_update(set(var(Name), field(FieldIndex)), Name, set(field_i64(FieldIndex))) :-

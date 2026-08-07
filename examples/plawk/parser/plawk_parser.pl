@@ -3298,6 +3298,32 @@ add_assign_action(add(var(Name), Delta)) -->
     "+=",
     ws,
     scalar_delta_expr(Delta).
+% `n -= D` is `n += -D`. Pure sugar: it produces the SAME add/2 term the `+=`
+% spelling produces, so no codegen path learns anything new and the emitted IR is
+% identical to the negated `+=` -- a test asserts that equality.
+%
+% Only a LITERAL delta can be negated this way. `n -= $2` needs a real subtraction
+% in the update emitter (which knows `add` and `set` only), so it stays a clean
+% decline rather than being silently mis-negated; pinned in the tests.
+add_assign_action(add(var(Name), NegDelta)) -->
+    identifier(Name),
+    ws,
+    "-=",
+    ws,
+    scalar_delta_expr(Delta),
+    { plawk_negate_literal_delta(Delta, NegDelta) }.
+
+%% plawk_negate_literal_delta(+Delta, -Negated) is semidet.
+%
+%  Negate a literal compound-assign delta. Fails for anything non-literal, which is
+%  what keeps `n -= $2` a decline instead of a wrong answer.
+plawk_negate_literal_delta(int(Value), int(Negated)) :-
+    integer(Value),
+    Negated is -Value.
+plawk_negate_literal_delta(float_const(Mantissa, Denominator),
+        float_const(Negated, Denominator)) :-
+    integer(Mantissa),
+    Negated is -Mantissa.
 
 % Delta for an assoc add-assign: a numeric field or an integer literal.
 assoc_add_delta(field(Index)) -->
@@ -3593,6 +3619,23 @@ scalar_delta_expr(Expr) -->
     float_call_expr(Expr).
 scalar_delta_expr(Expr) -->
     float_literal_expr(Expr).
+% A NEGATIVE literal delta (`n += -1`, `x += -1.5`). The unsigned clauses below
+% require a non-negative value, so these were a parse error while `n++` and the
+% `dec(var(N))` term the codegen already had could express exactly the same update.
+% Float first: "-1.5" must not stop at the integer prefix "-1" and leave ".5" to
+% choke the statement, the same ordering hazard the unsigned pair has.
+scalar_delta_expr(float_const(Mantissa, Denominator)) -->
+    "-",
+    ws,
+    float_literal_expr(float_const(Magnitude, Denominator)),
+    { Mantissa is -Magnitude }.
+scalar_delta_expr(int(Value)) -->
+    "-",
+    ws,
+    integer_codes(ValueCodes),
+    { ValueCodes \== [],
+      number_codes(Magnitude, ValueCodes),
+      Value is -Magnitude }.
 scalar_delta_expr(int(Value)) -->
     integer_codes(ValueCodes),
     { ValueCodes \== [],

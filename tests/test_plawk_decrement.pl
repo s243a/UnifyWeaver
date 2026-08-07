@@ -37,7 +37,8 @@
 %                gets in, so a clean parse error plus this pin beats four-fifths
 %                of a feature.
 %
-%   n += -1      PARSE ERROR too -- and note WHERE: the parser's compound-assign
+%   n += -1      PARSE ERROR too (SINCE FIXED, see the pin below) -- note WHERE:
+%                the parser's compound-assign
 %                delta does not accept a negative literal, so this is rejected
 %                before codegen, not by the `add(var(N), int(V))` clause's
 %                `V >= 0` guard. Worth pinning precisely because the result is now
@@ -146,11 +147,18 @@ test(assoc_increment_still_works, [condition(clang_available)]) :-
     run("{ c[$1]++ } END { print c[\"a\"] }\n", "1\n"),
     !.
 
-% `n += -1`: rejected by the PARSER's compound-assign delta (a negative literal),
-% hence status 2 rather than a surface decline. Pinned because `n--` now compiles
-% while its longhand equivalent does not.
-test(negative_compound_add_is_a_parse_error) :-
-    build_status("{ n = 2; n += -1; print n }\n", 2),
+% `n += -1` was rejected by the PARSER's compound-assign delta (a negative literal),
+% and then by a `Value >= 0` guard in the codegen -- two layers, which is why fixing
+% the parser alone only turned the parse error into a decline. Pinned here because
+% `n--` compiled while its longhand equivalent did not.
+%
+% Both restrictions are gone: the longhand now compiles and agrees with `n--`, which
+% is what this row always implied should be true. tests/test_plawk_negative_delta.pl
+% owns the behaviour; the pin is inverted rather than deleted so the asymmetry it
+% recorded stays visible.
+test(negative_compound_add_agrees_with_decrement, [condition(clang_available)]) :-
+    run("{ n = 2; n += -1; print n }\n", "1\n1\n1\n"),
+    run("{ n = 2; n--; print n }\n", "1\n1\n1\n"),
     !.
 
 % --- structure -----------------------------------------------------------
