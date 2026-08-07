@@ -9268,14 +9268,23 @@ plawk_assoc_print_field_spec(assoc(var(Arr), subsep_key(Fields)),
 % resolved from the str-array set at plan time.
 plawk_assoc_print_field_spec(assoc(var(Arr), int(N)), lookup_int(Arr, N)) :-
     atom(Arr), integer(N), N >= 1.
-% `print arr["x"]` in a per-record print -- a STRING-literal element read, riding
-% the multi-dimensional read at arity 1, so it resolves the same interned key
-% `arr["x"]++` stores under. Placed after the int clause so `arr[N]` keeps its
-% positional (raw-integer) reading; see plawk_assoc_literal_key_comps/2 for why the
-% two key spaces are not merged here.
-plawk_assoc_print_field_spec(assoc(var(Arr), Lit), lookupn(Arr, Comps)) :-
-    atom(Arr),
-    plawk_assoc_literal_key_comps(Lit, Comps).
+% NO clause here for `print arr["x"]` -- a lone STRING-literal element read in a
+% per-record print. It was added and then REMOVED, and the reason is the same
+% key-space collision plawk_assoc_literal_key_comps/2 documents, arriving from the
+% other side.
+%
+% Riding the arity-1 N-ary read makes `print arr["x"]` intern "x", which is right for
+% an awk-semantics table and WRONG for a positional one: on a split table the keys are
+% raw integers, so `{ split($0, a, " "); print a["1"] }` interned "1", missed raw key
+% 1, and printed an empty line where gawk prints the field. That is a decline
+% (pre-existing) turned into a wrong output -- strictly worse -- so the row came out.
+%
+% Doing it correctly means deciding between the two key spaces by the TABLE'S KIND,
+% which is known at PLAN time (PosArrays) and not here. That is the collision's own
+% fix, together with `delete arr[N]` and `"N" in arr`, which are broken on positional
+% tables today for exactly this reason. The END read of a literal key is unaffected --
+% it goes through its own path and always worked.
+
 % A scalar accumulator read in a per-record print.
 plawk_assoc_print_field_spec(var(Name), svar(Name)) :-
     atom(Name).

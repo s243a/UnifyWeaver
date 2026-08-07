@@ -28,15 +28,14 @@
 % The RUNTIME was already general. @wam_intern_subsep_key_comp computes
 % `(N-1) * SUBSEP_len` separator bytes and skips the separator for component 0, so at
 % N = 1 it interns exactly the component's own bytes -- the same atom id
-% @wam_intern_atom of that literal produces. That equality is what lets the counter,
-% the reads, membership and `delete` all agree on the key, and it is pinned below by
+% @wam_intern_atom of that literal produces. That equality is what lets the counter, the
+% END read, membership and `delete` all agree on the key, and it is pinned below by
 % counting a literal key and a FIELD holding the same text into the same entry.
 %
 % Same shape as the `arr[k]--` sizing error (test_plawk_assoc_decrement.pl): follow the
 % nearest SEMANTICS ("a key built by joining N described subscripts, N = 1") instead of
 % the nearest spelling ("a literal, like assoc_delete_lit's literal"). Two rows at the
-% shape gates, one read row, and one relaxed arity guard; no new builder, planned
-% action or emitter.
+% shape gates and one relaxed arity guard; no new builder, planned action or emitter.
 %
 % ---------------------------------------------------------------------------
 % WHY THE INTEGER-LITERAL KEY IS *NOT* PART OF THIS
@@ -55,6 +54,17 @@
 % 1..4. Verified before deciding, which is why it is refused here rather than shipped.
 % Pinned as a decline, with `c[$1,5]++` beside it so the refusal stays attributed to
 % the collision and not to the literal.
+%
+% THE COLLISION BIT FROM THE OTHER SIDE TOO. A rule-body read `print c["x"]` was
+% implemented here on the same arity-1 key and then REMOVED, because it made
+% `{ split($0, a, " "); print a["1"] }` intern "1", miss raw key 1, and print an empty
+% line where gawk prints the field -- turning a pre-existing DECLINE into a wrong
+% output. Pinned below. Two neighbours are broken on positional tables today for the
+% same reason and are the collision's own follow-on: `delete arr[N]` (takes the string
+% reading, so `delete a[1]` misses raw key 1 -- confirmed at the merged parent) and
+% `"N" in arr` (builds and matches nothing). The fix for all three is one rule applied
+% at PLAN time, where the table's kind is known: on a positional table, a subscript
+% whose text is the canonical decimal of an integer >= 1 means that raw integer.
 %
 % gawk 5.2 is the oracle for every expectation here.
 
@@ -148,14 +158,18 @@ test(literal_key_add_assign_forin_end, [condition(clang_available)]) :-
 
 % --- reads, membership and delete on a literal key ------------------------
 
-% A rule-body read (`print c["x"]`) -- the running count each record.
-test(literal_key_rule_body_read, [condition(clang_available)]) :-
-    run("{ c[\"x\"]++; print c[\"x\"] }\n", "1\n2\n3\n4\n"),
-    !.
-
-% ...and inside a concatenation, which spec's its parts recursively.
-test(literal_key_read_in_a_concat, [condition(clang_available)]) :-
-    run("{ c[\"x\"]++; print \"n=\" c[\"x\"] }\n", "n=1\nn=2\nn=3\nn=4\n"),
+% A rule-body read (`print c["x"]`) still DECLINES, and this pin is the interesting
+% one in the suite: the read was implemented here (riding the same arity-1 N-ary key)
+% and then taken back out, because on a POSITIONAL table it is wrong --
+% `{ split($0, a, " "); print a["1"] }` interned "1", missed raw key 1, and printed an
+% empty line where gawk prints the field. A decline turned into a wrong output, so the
+% row came out. Deciding between the two key spaces needs the table's KIND, known at
+% plan time and not at the print-field spec; that is the collision's own fix, along
+% with `delete arr[N]` and `"N" in arr` (both broken on positional tables today).
+% Pinned as a PAIR with the posarray shape, so the two move together.
+test(a_rule_body_literal_read_declines_because_of_the_positional_key_space) :-
+    build_status("{ c[\"x\"]++; print c[\"x\"] }\n", 3),
+    build_status("{ split($0, a, \" \"); print a[\"1\"] }\n", 3),
     !.
 
 % Membership probes the same key the counter built.

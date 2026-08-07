@@ -133,12 +133,24 @@ same bytes are buildable and only the *lone* form is refused. **When one arity o
 operand position is refused while a strictly more general form works, look for a
 collision rather than a gap.**
 
-The same probe also found that the two spaces are **already** inconsistent:
+The collision also bit from the **other side**, and this is the part to remember: the
+string-literal key change added a rule-body read `print c["x"]` on the same arity-1 key,
+and that read made `{ split($0, a, " "); print a["1"] }` intern `"1"`, miss raw key `1`,
+and print an empty line where gawk prints the field — **a pre-existing decline turned
+into a wrong output by my own change**, caught only because I probed the *positional*
+table after reasoning about the collision on the update side. The row came back out.
+Lesson: once you have named a collision as the reason to refuse one direction, probe
+**every** direction that now crosses it, including the ones you just added and believed
+safe.
+
+Two neighbours are **already** broken on positional tables for the same reason:
 `delete arr[N]` takes the string reading (`assoc_delete_lit` interns
-`number_string(N)`), so on a positional table
-`{ split($0, a, " "); delete a[1]; print a[1] }` prints the field where gawk prints
-empty — a pre-existing wrong output, confirmed at the merged parent, and its own
-follow-on rather than something to fold into an unrelated change.
+`number_string(N)`), so `{ split($0, a, " "); delete a[1]; print a[1] }` prints the
+field where gawk prints empty; and `"N" in arr` builds and matches nothing. Both
+confirmed at the merged parent, so neither is from this work. The fix for all of them is
+one rule applied at **plan** time, where `PosArrays` is known: on a positional table, a
+subscript whose text is the canonical decimal of an integer ≥ 1 means that raw integer.
+Its own change, not something to fold into an unrelated diff.
 
 **Prescriptions that worked:** one shared producer/emitter with callers
 parameterised (a *name flavour* parameter can preserve byte-identity — see
@@ -249,7 +261,9 @@ D`** for a field key · **a non-literal `-=` delta** (`n -= $2`, by negating ins
 subtracting) · **scalar-var assoc keys for the whole `add_assoc` family** (four lists
 of one set collapsed onto `plawk_assoc_scalar_key_update/4`; one of them was selecting
 the key's representation and producing wrong output) · **string-literal assoc keys**
-(`c["total"]++`) — the multi-dimensional key builder at arity 1, one relaxed guard.
+(`c["total"]++`) — the multi-dimensional key builder at arity 1, one relaxed guard (and
+one row added, then removed after it turned a decline into a wrong output on positional
+tables).
 
 ## A note on the one shared-globals exception
 
@@ -311,9 +325,11 @@ an unrelated pre-existing restriction, pinned as such) · `$N` in a `binfmt` END
 
 An **integer-literal** assoc key (`c[5]++`) — blocked by the raw-integer/interned-text
 key-space collision above, not by a missing row · **`delete arr[N]` on a positional
-table** — a pre-existing wrong output from the same collision (`delete a[1]` interns
-`"1"` and misses raw key `1`), the fix being to take the raw reading when the table is a
-posarray, mirroring `lookup_int` · a **non-literal delta at a scalar-var key** (`c[k] += $2` declines, `c[k] -= $2` is a parse error;
+table**, **`"N" in arr` on a positional table**, and the **rule-body read
+`print arr["N"]`** — all three the same collision, all clean-slate at plan time where
+`PosArrays` is known (on a positional table, a subscript whose text is the canonical
+decimal of an integer ≥ 1 means that raw integer); the first two are pre-existing wrong
+outputs, the third a decline · a **non-literal delta at a scalar-var key** (`c[k] += $2` declines, `c[k] -= $2` is a parse error;
 the field-key `c[$1] += $2` works, and the scalar `n -= $2` now works, so this is the
 last non-literal-delta hole) · assoc rules
 alongside a scalar END loop (state-plan boundary) · float-literal and non-literal
