@@ -5,10 +5,17 @@ Copyright (c) 2026 John William Creighton (s243a)
 
 # plawk - Prolog awk: a compiled, binary-record awk/bash-like DSL
 
-> **Status:** design / prototype phase. This directory is the home of a planned
-> UnifyWeaver-powered application or future submodule. The canonical
-> specification lives in the design triad under [`docs/design/`](../../docs/design/)
-> (links below).
+> **Status:** working compiler, actively developed. `bin/plawk build prog.plawk -o prog`
+> produces a native binary; **185 test suites** under [`tests/`](../../tests/) cover the
+> surface, with **gawk 5.2 as the oracle** for behaviour (output *and* exit status).
+> The canonical specification lives in the design triad under
+> [`docs/design/`](../../docs/design/) (links below).
+>
+> Not finished, and the boundary is deliberate: a program outside the compilable surface
+> **declines cleanly** (exit 3) rather than mis-compiling, and each refusal is pinned by a
+> test so it cannot drift into a wrong answer unnoticed.
+> [`PLAWK_AWK_FEATURE_AUDIT.md`](../../docs/design/PLAWK_AWK_FEATURE_AUDIT.md) is the
+> per-feature record of what works, what declines, and why.
 
 ## What this is
 

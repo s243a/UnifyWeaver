@@ -240,8 +240,49 @@ let the missing clauses be the gate.
   suites reported as "no summary". Grep `^% .*(passed|failed)` instead. There is a
   *third* form: `% PL-Unit: <name>  passed 0.2 sec` with **no test count and no
   dots**, which means `% No tests to run` — every test filtered out by a
-  `condition/1`. Four LMDB/namespace suites look like that here because
-  `clang_lmdb_available` is false in this environment. Do not read those as passes.
+  `condition/1`.
+- **A `condition/1`-gated suite that reports zero tests is not evidence about the
+  feature — it is evidence about the machine.** Five suites
+  (`cache_lmdb`, `multitable_lmdb`, `row_durable_lmdb`, `use_table_lmdb`,
+  `use_namespace`) gate on `clang_lmdb_available`, which compiles and links a
+  three-line LMDB C probe. Without `liblmdb-dev` they silently run **nothing** and a
+  sweep summary still reads green. This cost something real: after four consecutive
+  full sweeps in which the LMDB path had never executed, I reported it as
+  unverified — and hedged a public claim the user was making about the project on
+  that basis. **`apt-get install -y liblmdb-dev` was the whole fix**, after which all
+  five suites pass, including `lmdb_histogram_persists` (an LMDB-backed histogram
+  that persists and *accumulates across separate runs* of the compiled binary).
+  Absence of evidence was a property of the container, not of the code. If a suite
+  is gated, install the dependency and run it before drawing any conclusion from its
+  silence — and never let a gated suite's silence reach a claim made outside the
+  repo.
+
+## Where the durable-store (DB) arc stands
+
+Recorded because this campaign has been elsewhere for weeks and the next DB step is
+easy to lose.
+
+Landed and verified: the `BEGIN cache(...) { declare NAME }` surface (phase 1b) with a
+**`file`** backend as the default; an opt-in **`lmdb`** backend (phase 5,
+`backend "lmdb"`); row-oriented tables; a self-describing store that persists and
+validates its schema on open (8.7); `use NAME` attaching to an existing store without
+re-`declare` (8.8); and multiple named tables per store — namespaces over LMDB named
+sub-DBs, `use ns.table` — (8.9). A multi-table *file* store is a deliberate class-A
+compile error; only LMDB routes each table to its own sub-DB.
+
+**Next: the views runtime.** `PLAWK_MULTIPASS_CACHE.md` §3.9 has column projection
+landed and the `materialize NAME` surface landed (parsed, its reference validated
+against the program's relations); what remains is materialise-and-cache — shared global
+column tables, a one-time lazy fill behind a done-flag, and consumer rewiring — so two
+passes over one relation stop materialising it twice.
+
+**Why it has waited.** The gawk back-compatibility work displaced it, deliberately and
+on the user's judgement: a surface that diverges from awk on ordinary programs is not
+trustworthy no matter what the store underneath can do, so closing those divergences
+outranks new store features. That has been the right trade — this stretch alone turned
+up several *silent wrong outputs* against gawk (unset scalars, END record reads, the
+two-key-space collision), each of which would have been inherited by any feature built
+on top.
 
 ## Baseline
 
