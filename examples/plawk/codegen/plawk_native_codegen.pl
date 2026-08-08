@@ -9268,22 +9268,18 @@ plawk_assoc_print_field_spec(assoc(var(Arr), subsep_key(Fields)),
 % resolved from the str-array set at plan time.
 plawk_assoc_print_field_spec(assoc(var(Arr), int(N)), lookup_int(Arr, N)) :-
     atom(Arr), integer(N), N >= 1.
-% NO clause here for `print arr["x"]` -- a lone STRING-literal element read in a
-% per-record print. It was added and then REMOVED, and the reason is the same
-% key-space collision plawk_assoc_literal_key_comps/2 documents, arriving from the
-% other side.
+% `print arr["x"]` in a per-record print -- a lone STRING-literal element read. The spec
+% records only the SYNTAX (a one-component literal key); which key space that means is
+% resolved at PLAN time by plawk_assoc_print_plan_field/5, because it depends on the
+% table's kind and nothing here knows it.
 %
-% Riding the arity-1 N-ary read makes `print arr["x"]` intern "x", which is right for
-% an awk-semantics table and WRONG for a positional one: on a split table the keys are
-% raw integers, so `{ split($0, a, " "); print a["1"] }` interned "1", missed raw key
-% 1, and printed an empty line where gawk prints the field. That is a decline
-% (pre-existing) turned into a wrong output -- strictly worse -- so the row came out.
-%
-% Doing it correctly means deciding between the two key spaces by the TABLE'S KIND,
-% which is known at PLAN time (PosArrays) and not here. That is the collision's own
-% fix, together with `delete arr[N]` and `"N" in arr`, which are broken on positional
-% tables today for exactly this reason. The END read of a literal key is unaffected --
-% it goes through its own path and always worked.
+% That split is the point. This row shipped once WITHOUT the plan-time resolution and
+% interned unconditionally, so on a split table `print a["1"]` missed raw key 1 and
+% printed an empty line where gawk prints the field -- a pre-existing decline turned into
+% a wrong output. Withdrawn, and restored here with the resolution in place.
+plawk_assoc_print_field_spec(assoc(var(Arr), Lit), lookupn(Arr, Comps)) :-
+    atom(Arr),
+    plawk_assoc_literal_key_comps(Lit, Comps).
 
 % A scalar accumulator read in a per-record print.
 plawk_assoc_print_field_spec(var(Name), svar(Name)) :-
@@ -9325,29 +9321,57 @@ plawk_assoc_arith_operand(assoc(var(Arr), field(N)), alookup(Arr, N)) :-
 % Resolve a print field's lookup array to its table index in the plan.
 % StrArrays is the set of str-valued (atom-id) tables, used to pick the value
 % kind for an integer-key element read.
-plawk_assoc_print_plan_field(_Tables, _StrArrays, fld(N), fld(N)).
-plawk_assoc_print_plan_field(_Tables, _StrArrays, record, record).
-plawk_assoc_print_plan_field(_Tables, _StrArrays, strlit(V), strlit(V)).
+plawk_assoc_print_plan_field(_Tables, _StrArrays, _PosArrays, fld(N), fld(N)).
+plawk_assoc_print_plan_field(_Tables, _StrArrays, _PosArrays, record, record).
+plawk_assoc_print_plan_field(_Tables, _StrArrays, _PosArrays, strlit(V), strlit(V)).
 % A field-keyed element read resolves its array to a table index AND its value
 % KIND from the str-array set: a row/split/str-bind table stores interned atom
 % ids, which must be resolved back to text rather than printed as numbers.
-plawk_assoc_print_plan_field(Tables, StrArrays, lookup(Arr, N), lookup(TableIndex, N, Kind)) :-
+plawk_assoc_print_plan_field(Tables, StrArrays, _PosArrays, lookup(Arr, N), lookup(TableIndex, N, Kind)) :-
     nth0(TableIndex, Tables, Arr),
     ( memberchk(Arr, StrArrays) -> Kind = str ; Kind = i64 ).
-% `arr[$i,$j,...]` multi-dim element read: same table + value-kind resolution.
-plawk_assoc_print_plan_field(Tables, StrArrays, lookupn(Arr, Comps), lookupn(TableIndex, Comps, Kind)) :-
+% A LONE-LITERAL element read (`arr["x"]`, and `arr[N]` via the clause below) resolves
+% its key through the one key-space rule, because which space a literal subscript means
+% depends on the table's kind:
+%
+%   - positional table -> lookup_int, the RAW position (raw 0 for a non-decimal
+%     literal, which is no position, so the read is the empty an absent element gives);
+%   - awk-semantics table -> lookupn with a single lit(...) component, i.e. the INTERNED
+%     text, the same key `arr["x"]++` stores under.
+%
+% This is what makes the rule-body literal read correct. It was shipped once resolving
+% to the interned text unconditionally, which read an empty line off a split table where
+% gawk prints the field, and was withdrawn; the missing ingredient was the table kind,
+% which lives here and not at the print-field spec.
+plawk_assoc_print_plan_field(Tables, StrArrays, PosArrays, lookupn(Arr, [lit(Text)]),
+        Planned) :-
+    nth0(TableIndex, Tables, Arr),
+    !,
+    ( memberchk(Arr, StrArrays) -> Kind = str ; Kind = i64 ),
+    plawk_assoc_literal_key_space(Arr, PosArrays, Text, KeySpace),
+    (   KeySpace = raw_int(N)
+    ->  Planned = lookup_int(TableIndex, N, Kind)
+    ;   Planned = lookupn(TableIndex, [lit(Text)], Kind)
+    ).
+% `arr[$i,$j,...]` multi-dim element read: same table + value-kind resolution. A key with
+% a field component is never a positional position, so no key-space question arises.
+plawk_assoc_print_plan_field(Tables, StrArrays, _PosArrays, lookupn(Arr, Comps), lookupn(TableIndex, Comps, Kind)) :-
     nth0(TableIndex, Tables, Arr),
     ( memberchk(Arr, StrArrays) -> Kind = str ; Kind = i64 ).
-% `arr[N]` element read: raw integer key; value kind from the str-array set.
-plawk_assoc_print_plan_field(Tables, StrArrays, lookup_int(Arr, N),
-        lookup_int(TableIndex, N, Kind)) :-
-    nth0(TableIndex, Tables, Arr),
-    ( memberchk(Arr, StrArrays) -> Kind = str ; Kind = i64 ).
-plawk_assoc_print_plan_field(_Tables, _StrArrays, svar(Name), svar(Name)).
-plawk_assoc_print_plan_field(Tables, StrArrays, concat_field(PartSpecs),
+% `arr[N]` element read. awk array subscripts are STRINGS, so `arr[5]` is the key "5";
+% it is routed through the lone-literal clause above on its decimal spelling, which
+% resolves to the raw position on a positional table (as it always did) and to the
+% interned "5" on an awk-semantics table (which it did NOT -- it read raw 5 there, an
+% atom id, so `{ c[$1]++; print c[5] }` printed empty where gawk prints the count).
+plawk_assoc_print_plan_field(Tables, StrArrays, PosArrays, lookup_int(Arr, N), Planned) :-
+    number_string(N, Text),
+    plawk_assoc_print_plan_field(Tables, StrArrays, PosArrays, lookupn(Arr, [lit(Text)]),
+        Planned).
+plawk_assoc_print_plan_field(_Tables, _StrArrays, _PosArrays, svar(Name), svar(Name)).
+plawk_assoc_print_plan_field(Tables, StrArrays, PosArrays, concat_field(PartSpecs),
         concat_field(Planned)) :-
-    maplist(plawk_assoc_print_plan_field(Tables, StrArrays), PartSpecs, Planned).
-plawk_assoc_print_plan_field(Tables, _StrArrays, farith(Op, L, R), farith(Op, L2, R2)) :-
+    maplist(plawk_assoc_print_plan_field(Tables, StrArrays, PosArrays), PartSpecs, Planned).
+plawk_assoc_print_plan_field(Tables, _StrArrays, _PosArrays, farith(Op, L, R), farith(Op, L2, R2)) :-
     plawk_assoc_arith_operand_plan(Tables, L, L2),
     plawk_assoc_arith_operand_plan(Tables, R, R2).
 
@@ -9704,6 +9728,80 @@ plawk_subsep_key_components(Subscripts, Comps) :-
 %  which they disagree.)
 plawk_assoc_literal_key_comps(string(S), Comps) :-
     plawk_subsep_key_components([string(S)], Comps).
+% An INTEGER-literal key (`arr[5]++`) is still not admitted here, but the reason has
+% CHANGED and shrunk, so record which one is now load-bearing.
+%
+% It was refused because `print arr[N]` read the RAW integer regardless of the table, so
+% admitting the update gave `{ c[5]++; print c[5] }` a store to interned "5" and a load
+% from raw 5 -- a program that built and printed empty. That reason is gone: the read now
+% resolves the key space from the table's kind, and a positional table (where a literal
+% key cannot be represented at all) declines at plawk_assoc_literal_key_update_ok/3.
+% Verified: with `plawk_assoc_literal_key_comps(int(N), ...)` added, `{ c[5]++; print
+% c[5] }` and `{ c[5] += 2 } END { print c["5"] }` agree with gawk, and the positional
+% cases decline.
+%
+% What is left is only that `END { print arr[N] }` still declines on an awk-semantics
+% table -- a DELIBERATE, documented refusal in plawk_assoc_end_print_lines/8 ("a
+% text-mode literal key would collide with an atom id"), which is this same collision
+% stated at that site and now resolvable the same way. Admitting the update without it
+% would ship `c[5]++` compiling while the natural `{ c[5]++ } END { print c[5] }`
+% declines, so the two belong in one follow-on rather than half here.
+
+
+%% plawk_assoc_literal_key_space(+ArrayName, +PosArrays, +Text, -KeySpace) is det.
+%
+%  THE one rule resolving the key-space collision described above. plawk has two array
+%  conventions sharing the surface syntax `arr[SUBSCRIPT]`, and which one a literal
+%  subscript means is decided by the TABLE'S KIND -- known here, and only here, because
+%  PosArrays is a plan-time set:
+%
+%    KeySpace = raw_int(N)    positional table (split / posarray bind), subscript text
+%                             is the canonical decimal of an integer >= 1: the key IS
+%                             that integer.
+%    KeySpace = raw_int(0)    positional table, any other literal text. Positional keys
+%                             are 1..n, so 0 is GUARANTEED ABSENT -- which is exactly
+%                             awk's reading of `a["x"]` on a split array (an absent
+%                             element: empty on read, false for `in`, a no-op to
+%                             delete). Not an approximation: interning "x" and probing
+%                             with the resulting atom id would be the WRONG answer, and
+%                             dangerously so, because atom ids are small sequential
+%                             integers and could COINCIDE with a live position.
+%    KeySpace = interned(Text)  awk-semantics table: keys are strings, so the key is the
+%                             interned text -- and for `arr[5]` that is "5", since awk
+%                             array subscripts are strings.
+%
+%  Canonicality matters: `a["01"]` must NOT become raw 1. awk's split keys are "1".."n",
+%  so "01" is a different (absent) key, and the round-trip check below is what keeps it
+%  one. This is also why the decimal test is not just number_string/2.
+%
+%  Stated once because it was getting decided independently -- and differently -- at
+%  every site: `lookup_int` read raw unconditionally (wrong on an awk-semantics table),
+%  `assoc_delete_lit` interned unconditionally (wrong on a positional one), and the
+%  string-literal membership probe interned unconditionally (likewise). Three sites,
+%  three answers, two of them a silent wrong output.
+plawk_assoc_literal_key_space(ArrayName, PosArrays, Text, KeySpace) :-
+    (   memberchk(ArrayName, PosArrays)
+    ->  (   plawk_canonical_decimal_key(Text, N)
+        ->  KeySpace = raw_int(N)
+        ;   KeySpace = raw_int(0)
+        )
+    ;   KeySpace = interned(Text)
+    ).
+
+%% plawk_canonical_decimal_key(+Text, -N) is semidet.
+%
+%  Text is the CANONICAL decimal spelling of a positional key: an integer >= 1 whose
+%  own spelling is byte-identical to Text. So "1" yields 1, while "01", "1.0", " 1",
+%  "0" and "-1" all fail -- each is a distinct awk key, and none of them is a
+%  positional slot. The round-trip comparison is the whole point; number_string/2 alone
+%  accepts "01" and would silently alias it onto slot 1.
+plawk_canonical_decimal_key(Text, N) :-
+    atom_string(Text, S),
+    catch(number_string(N, S), _, fail),
+    integer(N),
+    N >= 1,
+    number_string(N, Canonical),
+    Canonical == S.
 
 plawk_subsep_key_component(field(I), fld(I)) :-
     integer(I), I > 0.
@@ -9786,9 +9884,36 @@ plawk_assoc_planned_actions([], _Tables, _StrArrays, _PosArrays, _Index) -->
 % Multi-dimensional counter `arr[$i,$j]++`: the two field indexes ride as a
 % subsep_key so the emitter joins them with SUBSEP before interning. Placed
 % before the generic Array-KeyIndex clause, which is guarded to exclude it.
+%% plawk_assoc_literal_key_update_ok(+ArrayName, +PosArrays, +Comps) is semidet.
+%
+%  A LONE-LITERAL-keyed update (`arr["x"]++`, `arr["x"] += N`) is representable only on an
+%  awk-semantics table. Its key is the INTERNED text, while a positional table's keys are
+%  raw positions, so on a split / posarray-bound table the update and every read would
+%  land in different spaces:
+%
+%      { split($0, a, " "); a["x"]++; print a["x"] }
+%          gawk: 1/1/1        (a new element keyed "x")
+%          without this gate: empty lines -- the inc interned "x", the read resolved
+%          raw 0
+%
+%  A positional table cannot hold a non-integer key at all, so this is not a missing
+%  emitter: the program is unrepresentable in that table's key space and DECLINES. (Even
+%  the representable `a["1"]++` -- incrementing a split slot -- declines here; supporting
+%  it needs a raw-keyed increment, and it is not an idiom worth one.)
+%
+%  Only the lone-literal shape is gated, which is exactly the surface the string-literal
+%  key change added. A key with a field component (`a[$1]++`, `a[$1,$2]++`) is untouched
+%  and behaves as it always did.
+plawk_assoc_literal_key_update_ok(ArrayName, PosArrays, Comps) :-
+    (   Comps = [lit(_)]
+    ->  \+ memberchk(ArrayName, PosArrays)
+    ;   true
+    ).
+
 plawk_assoc_planned_actions([ArrayName-subsep_key(Comps) | Rest], Tables,
         StrArrays, PosArrays, Index) -->
     { nth0(TableIndex, Tables, ArrayName),
+      plawk_assoc_literal_key_update_ok(ArrayName, PosArrays, Comps),
       NextIndex is Index + 1
     },
     [assoc_action2(Index, ArrayName, TableIndex, Comps)],
@@ -9808,9 +9933,28 @@ plawk_assoc_planned_actions([assoc_delete(ArrayName, KeyIndex) | Rest],
     },
     [assoc_delete_action(Index, ArrayName, TableIndex, KeyIndex)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+% `delete arr[N]` / `delete arr["N"]` on a POSITIONAL table: the key is the raw
+% position, not the interned text. This clause is what fixes a wrong output -- the
+% interning clause below applied to every table, so on a split array
+% `{ split($0, a, " "); delete a[1]; print a[1] }` interned "1", missed raw key 1 and
+% printed the field where gawk prints empty. A non-decimal literal resolves to raw 0,
+% which cannot be a position, so the runtime delete is the no-op awk performs.
 plawk_assoc_planned_actions([assoc_delete_lit(ArrayName, Str) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
-    { nth0(TableIndex, Tables, ArrayName),
+    { memberchk(ArrayName, PosArrays),
+      nth0(TableIndex, Tables, ArrayName),
+      plawk_assoc_literal_key_space(ArrayName, PosArrays, Str, raw_int(N)),
+      NextIndex is Index + 1
+    },
+    [assoc_delete_int_action(Index, ArrayName, TableIndex, N)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+% ...and on an awk-semantics table the key is the interned text, as before. Guarded
+% against the clause above rather than cut, so the two are mutually exclusive whichever
+% order the planner is entered in.
+plawk_assoc_planned_actions([assoc_delete_lit(ArrayName, Str) | Rest],
+        Tables, StrArrays, PosArrays, Index) -->
+    { \+ memberchk(ArrayName, PosArrays),
+      nth0(TableIndex, Tables, ArrayName),
       NextIndex is Index + 1
     },
     [assoc_delete_lit_action(Index, ArrayName, TableIndex, Str)],
@@ -9825,6 +9969,7 @@ plawk_assoc_planned_actions([assoc_delete_n(ArrayName, Comps) | Rest],
 plawk_assoc_planned_actions([assoc_add_n(ArrayName, Comps, Delta) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
     { nth0(TableIndex, Tables, ArrayName),
+      plawk_assoc_literal_key_update_ok(ArrayName, PosArrays, Comps),
       NextIndex is Index + 1
     },
     [assoc_add_n_action(Index, ArrayName, TableIndex, Comps, Delta)],
@@ -9867,7 +10012,7 @@ plawk_assoc_planned_actions([dynassoc(ArrayName, Call) | Rest], Tables,
 plawk_assoc_planned_actions([assoc_guarded_print(Pattern, FieldSpecs) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
     { plawk_membership_pattern_key_shapes_ok(Pattern),
-      maplist(plawk_assoc_print_plan_field(Tables, StrArrays), FieldSpecs,
+      maplist(plawk_assoc_print_plan_field(Tables, StrArrays, PosArrays), FieldSpecs,
           PlannedFields),
       NextIndex is Index + 1
     },
@@ -9881,7 +10026,7 @@ plawk_assoc_planned_actions([assoc_guarded_print(Pattern, FieldSpecs) | Rest],
 % key (key_int) instead of the atom-resolved default.
 plawk_assoc_planned_actions([assoc_print(FieldSpecs) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
-    { maplist(plawk_assoc_print_plan_field(Tables, StrArrays), FieldSpecs, PlannedFields),
+    { maplist(plawk_assoc_print_plan_field(Tables, StrArrays, PosArrays), FieldSpecs, PlannedFields),
       NextIndex is Index + 1
     },
     [assoc_print_action(Index, PlannedFields)],
@@ -11062,6 +11207,27 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_action(Index, _ArrayName
 % (via a private c-string global) and call the same void backward-shift delete.
 % No missing-key branch is needed -- the literal is always present -- and the
 % runtime delete is itself a no-op if the interned key is not in the table.
+% `delete arr[N]` on a POSITIONAL table -- the key is the raw position, already resolved
+% at plan time, so there is no literal to intern and no global to emit. Simpler than the
+% interning sibling below for exactly that reason.
+plawk_assoc_rule_action_blocks(RuleIndex,
+        [assoc_delete_int_action(Index, _ArrayName, TableIndex, N) | Rest],
+        NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Base), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
+      format(atom(Label), '~w:', [Base]),
+      format(atom(Del),
+          '  call void @wam_assoc_i64_delete(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
+          [TableIndex, N]),
+      format(atom(Next), '  br label %~w', [ActionNextLabel])
+    },
+    [Label, Del, Next, ''],
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
 plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_lit_action(Index, _ArrayName, TableIndex, Str) | Rest], NextLabel, FieldSeparator) -->
     { ( Rest == []
       -> ActionNextLabel = NextLabel
@@ -14214,9 +14380,25 @@ plawk_assoc_end_print_lines([assoc(var(ArrayName), int(Key)) | Rest], AssocPlan,
     },
     plawk_emit_lines(ValueLines),
     plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, NextPrintIndex).
+% `END { print arr["1"] }` on a POSITIONAL table -- the key is the raw position, so this
+% delegates to the int-key clause above rather than interning. Without it the string
+% spelling interned "1" and missed raw key 1, so
+% `{ split($0, a, " ") } END { print a["1"] }` printed an empty line where gawk prints the
+% last record's first field -- the fourth site of the same collision, and the one the int
+% clause above had already got right (its comment names it: "a text-mode literal key would
+% collide with an atom id -- EXCEPT a positional-array table").
+plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], AssocPlan,
+        Descriptor, OutputSeparator, PrintIndex) -->
+    { plawk_assoc_plan_posarray_array(AssocPlan, ArrayName),
+      plawk_assoc_literal_key_space(ArrayName, [ArrayName], Key, raw_int(N))
+    },
+    plawk_assoc_end_print_lines([assoc(var(ArrayName), int(N)) | Rest], AssocPlan,
+        Descriptor, OutputSeparator, PrintIndex).
 plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    { plawk_assoc_key_codes(Key, Codes),
+    % Guarded against the positional clause above rather than cut, so the two stay
+    % mutually exclusive however the emitter is entered.
+    { \+ plawk_assoc_plan_posarray_array(AssocPlan, ArrayName),
+      plawk_assoc_key_codes(Key, Codes),
       length(Codes, KeyLen),
       BytesLen is KeyLen + 1,
       plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
@@ -19642,6 +19824,21 @@ plawk_membership_key_ir(field(Index), _ArrayName, _Context, FieldSeparator,
         '  %~w_key = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len)',
         [Base, Base, Base]),
     format(atom(KeyValue), '%~w_key', [Base]).
+% `"N" in arr` on a POSITIONAL table -- the key is the raw position, matching the
+% int-literal clause below that already did this. Without it the string spelling
+% interned "1" and probed an atom id against a raw-int-keyed table, so
+% `{ split($0, a, " "); if ("1" in a) print "y" }` built and matched NOTHING where gawk
+% matches every record. Worse than a miss in principle: atom ids are small sequential
+% integers, so the probe could instead have COINCIDED with a live position and reported
+% a spurious hit. A non-decimal literal resolves to raw 0, which is no position, so
+% membership is correctly false.
+plawk_membership_key_ir(string(Value), ArrayName, Context, FieldSeparator,
+        _LineValue, _Base, KeyValue, '', []) :-
+    integer(FieldSeparator),
+    ( string(Value) ; atom(Value) ),
+    plawk_assoc_context_posarray(Context, ArrayName),
+    !,
+    plawk_assoc_literal_key_space(ArrayName, [ArrayName], Value, raw_int(KeyValue)).
 plawk_membership_key_ir(string(Value), _ArrayName, _Context, FieldSeparator,
         _LineValue, Base, KeyValue, GlobalIR, [PtrLine, KeyLine]) :-
     integer(FieldSeparator),

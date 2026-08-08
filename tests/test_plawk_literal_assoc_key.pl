@@ -55,16 +55,16 @@
 % Pinned as a decline, with `c[$1,5]++` beside it so the refusal stays attributed to
 % the collision and not to the literal.
 %
-% THE COLLISION BIT FROM THE OTHER SIDE TOO. A rule-body read `print c["x"]` was
-% implemented here on the same arity-1 key and then REMOVED, because it made
-% `{ split($0, a, " "); print a["1"] }` intern "1", miss raw key 1, and print an empty
-% line where gawk prints the field -- turning a pre-existing DECLINE into a wrong
-% output. Pinned below. Two neighbours are broken on positional tables today for the
-% same reason and are the collision's own follow-on: `delete arr[N]` (takes the string
-% reading, so `delete a[1]` misses raw key 1 -- confirmed at the merged parent) and
-% `"N" in arr` (builds and matches nothing). The fix for all three is one rule applied
-% at PLAN time, where the table's kind is known: on a positional table, a subscript
-% whose text is the canonical decimal of an integer >= 1 means that raw integer.
+% THE COLLISION BIT FROM THE OTHER SIDE TOO, and has since been resolved. A rule-body
+% read `print c["x"]` was implemented here on the same arity-1 key and then REMOVED,
+% because it made `{ split($0, a, " "); print a["1"] }` intern "1", miss raw key 1 and
+% print an empty line where gawk prints the field -- a pre-existing DECLINE turned into a
+% wrong output. It is back now: the key space is chosen at PLAN time from the table's
+% kind (plawk_assoc_literal_key_space/4), which also fixed `delete arr[N]` and
+% `"N" in arr` on positional tables (both were wrong outputs) and made `print c[5]` on an
+% awk-semantics table read the interned "5" instead of a raw atom id. See
+% tests/test_plawk_posarray_keyspace.pl. A literal-key UPDATE on a positional table
+% declines there -- a positional table cannot hold a non-integer key at all.
 %
 % gawk 5.2 is the oracle for every expectation here.
 
@@ -158,18 +158,22 @@ test(literal_key_add_assign_forin_end, [condition(clang_available)]) :-
 
 % --- reads, membership and delete on a literal key ------------------------
 
-% A rule-body read (`print c["x"]`) still DECLINES, and this pin is the interesting
-% one in the suite: the read was implemented here (riding the same arity-1 N-ary key)
-% and then taken back out, because on a POSITIONAL table it is wrong --
-% `{ split($0, a, " "); print a["1"] }` interned "1", missed raw key 1, and printed an
-% empty line where gawk prints the field. A decline turned into a wrong output, so the
-% row came out. Deciding between the two key spaces needs the table's KIND, known at
-% plan time and not at the print-field spec; that is the collision's own fix, along
-% with `delete arr[N]` and `"N" in arr` (both broken on positional tables today).
-% Pinned as a PAIR with the posarray shape, so the two move together.
-test(a_rule_body_literal_read_declines_because_of_the_positional_key_space) :-
-    build_status("{ c[\"x\"]++; print c[\"x\"] }\n", 3),
-    build_status("{ split($0, a, \" \"); print a[\"1\"] }\n", 3),
+% A rule-body read (`print c["x"]`) -- the running count each record.
+%
+% HISTORY, because this row has been in and out: it shipped once WITHOUT plan-time key
+% resolution and interned unconditionally, which made
+% `{ split($0, a, " "); print a["1"] }` miss raw key 1 and print an empty line where gawk
+% prints the field -- a pre-existing decline turned into a wrong output. It was withdrawn
+% and pinned as a decline, then restored once the plan layer learned to pick the key
+% space from the table's kind. Both halves of that pair now WORK, and they are pinned
+% together in tests/test_plawk_posarray_keyspace.pl so neither can move alone again.
+test(literal_key_rule_body_read, [condition(clang_available)]) :-
+    run("{ c[\"x\"]++; print c[\"x\"] }\n", "1\n2\n3\n4\n"),
+    !.
+
+% ...and inside a concatenation, which spec's its parts recursively.
+test(literal_key_read_in_a_concat, [condition(clang_available)]) :-
+    run("{ c[\"x\"]++; print \"n=\" c[\"x\"] }\n", "n=1\nn=2\nn=3\nn=4\n"),
     !.
 
 % Membership probes the same key the counter built.
