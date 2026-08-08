@@ -656,6 +656,20 @@ Next leverage is deeper `power_sum_bound` lowering that skips the WAM
 shell around bulk collect + closed reduce, or `put_reg`/`step`
 infrastructure — not further hop-kernel or aggregate-arith micro-opts.
 
+PERF-R-BULK-REDUCE-REGION-0 tested shape-gated fused bulk-collect+aggregate
+lowering (instruction/capability shape only; no ED names). Audit: no
+existing whole-region step-bypass; AGGREGATE-LOWER still enters via
+`BeginAggregate` step. Uncommitted direct-region prototype (reuse
+`bulk_collect` + typed batch + closed `is_lax` + bag ctor; native hops
+385/385) projected ≈2.04× same-host warm query with 271-row parity
+(steps 18005→8724, BeginAggregate 385→0). A thin step-driver that only
+avoided nesting `run` while still `step`-ing the prologue was wall-time
+neutral/negative (≈0.97×). A full direct-fusion production trial cleared
+≈1.20× fresh-process smoke but needed ≈320 net production LOC, past the
+180 soft-stop. All runtime/emitter changes reverted. Hosted row remains
+270 / 776. Follow-up needs generate-time plan packing or a higher LOC
+budget to retain the direct-fusion path under discipline.
+
 #### Reproduction
 
 ```bash
