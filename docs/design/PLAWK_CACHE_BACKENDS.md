@@ -5,14 +5,31 @@ Copyright (c) 2026 John William Creighton (@s243a)
 
 # plawk cache backends: the default-table rule
 
-**Status**: specification (design). Defines, once and backend-independently,
-**which physical table a plawk store operation targets when the program does
-not name one** — the "default table" — and how named tables map onto each
-backend. Companion to `PLAWK_MULTIPASS_CACHE.md` (§3.5 secondary indexes,
-§3.6 row-oriented records, §3.7 table lifecycle, phases 8.7–8.9). Nothing here
-changes behaviour on its own; it is the contract the `use` / multi-table work
-(phases 8.8–8.9) must implement, and the yardstick for judging a backend's
-fit.
+**Status**: **implemented for the `file` and `lmdb` backends** (was: specification
+only). Defines, once and backend-independently, **which physical table a plawk store
+operation targets when the program does not name one** — the "default table" — and how
+named tables map onto each backend. Companion to `PLAWK_MULTIPASS_CACHE.md` (§3.5
+secondary indexes, §3.6 row-oriented records, §3.7 table lifecycle, phases 8.7–8.9).
+
+This document used to end its status with "Nothing here changes behaviour on its own;
+it is the contract the `use` / multi-table work (phases 8.8–8.9) must implement." That
+work has since landed: 8.7 (schema persisted and validated on open), 8.8 (`use NAME`)
+and 8.9 (multiple named tables per store — namespaces over LMDB named sub-DBs, so
+`use ns.table` selects among them) are all in, and the multi-table *file* store is the
+class-A compile error this spec calls for. So the contract below is now a description
+of behaviour, not only a yardstick — read it as binding on the two implemented
+backends and as the fit test for any new one.
+
+Verified end to end, including across process boundaries:
+`tests/test_plawk_cache_lmdb.pl` (3), `tests/test_plawk_multitable_lmdb.pl` (3),
+`tests/test_plawk_row_durable_lmdb.pl` (3), `tests/test_plawk_use_table_lmdb.pl` (2),
+`tests/test_plawk_use_namespace.pl` (2) — `lmdb_histogram_persists` runs the compiled
+binary twice and checks the histogram accumulates.
+
+> **These five suites are `condition(clang_lmdb_available)`-gated.** Without
+> `liblmdb-dev` installed they run **zero tests** and a sweep summary still reads
+> green, which is how the LMDB path went four full sweeps without executing once.
+> Install `liblmdb-dev` before concluding anything from their silence.
 
 ## 1. Why this spec exists
 
