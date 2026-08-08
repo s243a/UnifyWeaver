@@ -210,8 +210,12 @@ test(both_print_emitters_have_a_non_freeing_variant) :-
         [32], AssocWithout),
     assertion(once(sub_atom(AssocWith, _, _, _, '@wam_assoc_i64_free'))),
     assertion(\+ sub_atom(AssocWithout, _, _, _, '@wam_assoc_i64_free')),
+    % The mixed emitter takes an EndRecord capability token now (it grew NF-in-END support,
+    % which needs the retained last record). `no_end_record` here: this test is about the
+    % table frees, and a string literal reads no record -- so the token's value is
+    % irrelevant to what is asserted, and passing the no-op one keeps it that way.
     plawk_native_codegen:plawk_mixed_end_print_ir([string("x")],
-        state_plan([]), Plan, [32], MixedWith),
+        state_plan([]), Plan, [32], no_end_record, MixedWith),
     plawk_native_codegen:plawk_mixed_end_print_body_ir([string("x")],
         state_plan([]), Plan, [32], MixedWithout),
     assertion(once(sub_atom(MixedWith, _, _, _, '@wam_assoc_i64_free'))),

@@ -734,6 +734,7 @@ plawk_program_native_driver_ir(
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
     plawk_assoc_print_key_globals(PrintFields, AssocGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_end_record_source(FieldSeparator, PrintFields, EndRecord, RetainIR),
     plawk_mixed_rule_chain_ir(MixedPlan, FieldSeparator, OutputSeparator,
         RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
     plawk_rules_body_print_fields(Rules, BodyPrintFields),
@@ -744,14 +745,24 @@ plawk_program_native_driver_ir(
         RecordLoopPhiIR, RecordCounterIR),
     plawk_state_loop_phi_ir(ScalarPlan, StateLoopPhiIR),
     plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
-    plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
+    % RetainIR first, matching the scalar driver: each record has to be copied before the
+    % rule chain can `next` past it.
+    plawk_join_nonempty_ir([RetainIR, RecordCounterIR, RuleChainIR], RecordIR),
     plawk_mixed_rule_controls(MixedPlan, MixedRuleControls),
     plawk_mixed_scalar_next_phi_ir(ScalarPlan, RuleCount, MixedRuleControls, BranchControlExits, NextPhiIR),
     plawk_break_close_ir(ScalarPlan, RuleCount, MixedRuleControls, BranchControlExits, done,
         BreakCloseIR, FinalStatePhiIR),
-    plawk_mixed_end_print_ir(PrintFields, ScalarPlan, AssocPlan, OutputSeparator, EndPrintIR),
-    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+    plawk_mixed_end_print_ir(PrintFields, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
+        EndPrintIR),
+    format(atom(SurfaceGlobalIR0), '~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, RuleGlobalIR]),
+    % The retain buffer's globals and its store/transient functions, pay-per-use: emitted
+    % only when EndRecord says a field actually reads the record. Threading the token
+    % without this is what makes an NF print emit calls to functions nobody defined -- a
+    % clang failure (exit 4), not a decline, which is the one way this capability can go
+    % wrong loudly instead of silently.
+    plawk_end_lastrec_globals_ir(EndRecord, LastRecGlobalIR),
+    plawk_append_surface_global_ir(SurfaceGlobalIR0, LastRecGlobalIR, SurfaceGlobalIR),
     plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
     plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
@@ -14327,10 +14338,16 @@ plawk_end_list_bodies(Kind, [printf(string(Format), Args) | Rest], Index,
 %  plawk_assoc_end_print_body_ir/5 below: in a statement list the frees belong at
 %  the end, once, not after every statement. Both emitters append
 %  plawk_assoc_free_lines//1 in their base case, so both need this treatment.
+%  EndRecord is `no_end_record` here on purpose: this is the STATEMENT-LIST form, reached
+%  through plawk_end_list_bodies/8, which serves the assoc chain as well and does not carry
+%  the token. So `END { print NF; print x }` still declines while `END { print NF, x }`
+%  works -- a route boundary, pinned in tests/test_plawk_mixed_end_nf.pl rather than left to
+%  be discovered. Widening it means threading the capability through that shared
+%  dispatcher, which is its own change.
 plawk_mixed_end_print_body_ir(PrintFields, ScalarPlan, AssocPlan, OutputSeparator,
         IR) :-
     phrase(plawk_mixed_end_print_lines(PrintFields, ScalarPlan, AssocPlan,
-        OutputSeparator, 0), Lines),
+        OutputSeparator, no_end_record, 0), Lines),
     plawk_end_strip_free_lines(Lines, AssocPlan, BodyLines),
     atomic_list_concat(BodyLines, '\n', IR).
 
@@ -14562,11 +14579,14 @@ plawk_assoc_free_lines([_ArrayName | Rest], Index) -->
     [Line],
     plawk_assoc_free_lines(Rest, NextIndex).
 
-plawk_mixed_end_print_ir(PrintFields, ScalarPlan, AssocPlan, OutputSeparator, IR) :-
-    phrase(plawk_mixed_end_print_lines(PrintFields, ScalarPlan, AssocPlan, OutputSeparator, 0), Lines),
+plawk_mixed_end_print_ir(PrintFields, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
+        IR) :-
+    phrase(plawk_mixed_end_print_lines(PrintFields, ScalarPlan, AssocPlan, OutputSeparator,
+        EndRecord, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
 
-plawk_mixed_end_print_lines([], _ScalarPlan, AssocPlan, _OutputSeparator, _) -->
+plawk_mixed_end_print_lines([], _ScalarPlan, AssocPlan, _OutputSeparator, _EndRecord,
+        _) -->
     { plawk_ors_terminator_ir(end_newline_fmt, end_ors_ptr, printed_end_newline,
           TermLines)
     },
@@ -14575,14 +14595,15 @@ plawk_mixed_end_print_lines([], _ScalarPlan, AssocPlan, _OutputSeparator, _) -->
 % `END { print n }` where a rule also touches an assoc table. Shares the ONE bare-scalar
 % print emitter with the scalar-only route -- see plawk_end_scalar_var_print_lines/4 for
 % what this clause used to be and what that cost.
-plawk_mixed_end_print_lines([var(Name) | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
+plawk_mixed_end_print_lines([var(Name) | Rest], ScalarPlan, AssocPlan, OutputSeparator, EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     { plawk_end_scalar_var_print_lines(ScalarPlan, Name, PrintIndex, Lines),
       NextPrintIndex is PrintIndex + 1
     },
     Lines,
-    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
-plawk_mixed_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
+    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
+plawk_mixed_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], ScalarPlan, AssocPlan, OutputSeparator, EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     { plawk_assoc_key_codes(Key, Codes),
       length(Codes, KeyLen),
@@ -14611,28 +14632,49 @@ plawk_mixed_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], ScalarP
       NextPrintIndex is PrintIndex + 1
     },
     plawk_emit_lines(ValueLines),
-    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
-plawk_mixed_end_print_lines([special('NR') | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
+    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
+plawk_mixed_end_print_lines([special('NR') | Rest], ScalarPlan, AssocPlan, OutputSeparator, EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     plawk_end_nr_print_lines(ScalarPlan, PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
-    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
-plawk_mixed_end_print_lines([special('RT') | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
+    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
+% `END { print NF }` beside an assoc read. Shares plawk_end_lastrec_nf_lines//2 with the
+% scalar-only route rather than copying it -- the copy is what went stale for the bare-scalar
+% print, and NF's `%s\0`-style details are exactly the kind that drift.
+%
+% Unlike the bare-scalar case this was NOT a stale duplicate: the clause was absent because
+% the CAPABILITY was absent. NF in END needs the last record, which is gone by then, so it
+% needs `EndRecord` -- the token plawk_end_record_source/4 issues together with the retain IR
+% that makes it true. The mixed driver never asked for it. So this is a threaded capability,
+% not a deleted duplicate, and it is additive work rather than free.
+plawk_mixed_end_print_lines([special('NF') | Rest], ScalarPlan, AssocPlan, OutputSeparator,
+        EndRecord, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_lastrec_nf_lines(EndRecord, PrintIndex),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
+plawk_mixed_end_print_lines([special('RT') | Rest], ScalarPlan, AssocPlan, OutputSeparator, EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     plawk_end_rt_print_lines(PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
-    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
-plawk_mixed_end_print_lines([Expr | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
+    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
+plawk_mixed_end_print_lines([Expr | Rest], ScalarPlan, AssocPlan, OutputSeparator, EndRecord, PrintIndex) -->
     { plawk_end_scalar_expr(Expr) },
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     plawk_end_expr_print_lines(Expr, ScalarPlan, PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
-    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
-plawk_mixed_end_print_lines([string(Value) | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
+    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
+plawk_mixed_end_print_lines([string(Value) | Rest], ScalarPlan, AssocPlan, OutputSeparator, EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     plawk_end_string_print_lines(Value, PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
-    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
+    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
 
 plawk_scalar_print_expr(var(Name), Name).
 % a concatenation contributes each operand's scalar reads (so a printed scalar
