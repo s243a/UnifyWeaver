@@ -219,14 +219,17 @@ test(a_string_literal_key_now_works_for_both_spellings, [condition(clang_availab
     run("{ c[\"x\"]++ } END { print c[\"x\"] }\n", "4\n"),
     !.
 
-% An INTEGER-literal key still declines, and for a different reason than the string
-% one ever did: `arr[N]` is already claimed by the raw-integer key space that
-% positional (split) tables read, so admitting the update would make
-% `{ c[5]++; print c[5] }` store and load different keys. Pinned in
-% tests/test_plawk_literal_assoc_key.pl with the component form beside it.
-test(an_integer_literal_key_still_declines) :-
-    build_status("{ c[5] += 1 } END { print c[\"5\"] }\n", 3),
-    build_status("{ c[5]++ } END { print c[\"5\"] }\n", 3),
+% WAS a decline, and the reason recorded here was correct at the time: `arr[N]` was
+% claimed by the raw-integer key space that positional (split) tables read, so admitting
+% the update made `{ c[5]++; print c[5] }` store and load different keys. That cause is
+% gone -- the reads resolve the key space from the table's kind, and a positional table
+% declines the UPDATE separately, as unrepresentable rather than unresolved. So the
+% integer key works, and it is the SAME key as the string spelling, which is what awk
+% means by a subscript. tests/test_plawk_int_subscript.pl owns the matrix.
+test(an_integer_literal_key_now_works_and_is_the_same_key,
+        [condition(clang_available)]) :-
+    run("{ c[5] += 1 } END { print c[\"5\"] }\n", "4\n"),
+    run("{ c[5]++ } END { print c[\"5\"] }\n", "4\n"),
     !.
 
 % A non-literal delta at an svar key declines cleanly (`+=`) or is a parse error

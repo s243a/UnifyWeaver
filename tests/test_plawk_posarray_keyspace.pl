@@ -145,13 +145,16 @@ test(an_end_read_on_an_awk_table_still_interns, [condition(clang_available)]) :-
     run("{ c[$1]++ } END { print c[\"5\"] }\n", "2\n"),
     !.
 
-% An INT subscript in an END read still DECLINES on an awk-semantics table. That is a
-% deliberate, pre-existing refusal at that emitter -- this same collision stated there --
-% and it is the one piece the plan-time rule has not been wired into yet. Pinned so the
-% remaining gap is visible, and paired with the string spelling that works, so the pair
-% shows it is a spelling gap and not a missing key space.
-test(an_int_subscript_end_read_on_an_awk_table_still_declines) :-
-    build_status("{ c[$1]++ } END { print c[5] }\n", 3),
+% WAS a decline, pinned as "the one piece the plan-time rule has not been wired into yet".
+% It is wired in now: the END read rewrites `arr[5]` to the key "5" before either END walker
+% sees it, so an int subscript reads the same key the string spelling does. Kept, inverted,
+% and PAIRED with the string spelling -- awk subscripts are strings, so the two are one key
+% and must never drift apart again.
+test(an_int_subscript_end_read_on_an_awk_table_is_the_interned_text,
+        [condition(clang_available)]) :-
+    run("{ c[$1]++ } END { print c[5] }\n", "2\n"),
+    !,
+    run("{ c[$1]++ } END { print c[\"5\"] }\n", "2\n"),
     !.
 
 % --- the read, both spellings on both table kinds ------------------------

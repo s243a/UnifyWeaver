@@ -207,13 +207,16 @@ test(the_descriptor_array_has_one_element) :-
 
 % --- what is still refused, pinned --------------------------------------
 
-% An INTEGER-literal key declines -- pinned as a PAIR with the same integer literal
-% used as a multi-dim COMPONENT, which works. So the refusal is attributable: the
-% integer literal builds fine, and what blocks it is the raw-integer key space that
-% positional tables use for `arr[N]` reads.
-test(an_integer_literal_key_declines_while_the_same_component_works) :-
-    build_status("{ c[5]++ } END { print c[\"5\"] }\n", 3),
-    build_status("{ c[5] += 2 } END { print c[\"5\"] }\n", 3),
+% WAS a decline. The refusal was attributed here to the raw-integer key space that
+% positional tables use for `arr[N]` reads -- correctly, and that cause is now gone: the
+% reads resolve the key space from the table's kind, and a positional table declines the
+% UPDATE separately (unrepresentable, not unresolved). So the integer-literal key works, and
+% it is the SAME key as the string spelling, which is what awk means by a subscript.
+% tests/test_plawk_int_subscript.pl owns the matrix.
+test(an_integer_literal_key_now_works_and_is_the_same_key,
+        [condition(clang_available)]) :-
+    run("{ c[5]++ } END { print c[\"5\"] }\n", "4\n"),
+    run("{ c[5] += 2 } END { print c[\"5\"] }\n", "8\n"),
     !.
 
 test(an_integer_literal_multi_dim_component_still_works, [condition(clang_available)]) :-
