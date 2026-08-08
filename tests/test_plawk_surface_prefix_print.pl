@@ -623,10 +623,16 @@ test(surface_terminal_next_skips_remaining_mixed_rules) :-
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
         "2 2 2  1\n").
 
+% WAS "2 0   1": `skipped` is killed by the `next`, so it is an UNSET counter, and this
+% pinned it printing `0`. gawk prints EMPTY (verified: `2    1`) -- so this expectation was
+% recording a divergence as if it were correct. It only printed `0` because the MIXED END
+% walker held a stale copy of the bare-scalar print emitter that predated
+% unset-renders-empty; the scalar-only walker had been correct all along. Fixed by deleting
+% that copy, not by changing this behaviour.
 test(surface_nonterminal_next_skips_dead_mixed_tail) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { next; skipped++; by_kind[$2]++ } { total++; counts[$1]++ } END { print total, skipped, by_kind[\"trace\"], counts[\"DEBUG\"], counts[\"ERROR\"] }\n",
         "INFO boot ok\nDEBUG trace one\nERROR disk full\nDEBUG trace two\n",
-        "2 0   1\n").
+        "2    1\n").
 
 test(surface_terminal_next_only_skips_remaining_scalar_rules) :-
     run_surface_print_smoke("$1 == \"DEBUG\" { next } { total++ } END { print total }\n",
@@ -668,10 +674,16 @@ test(surface_terminal_break_stops_mixed_rule_chain_and_runs_end) :-
         "WARN cpu hot\nERROR disk full\nERROR net down\n",
         "1 1 1  1\n").
 
+% WAS "0 1   1": `hits` is killed by the `break`, so it is an UNSET counter. gawk cannot be
+% the oracle here -- a rule-level `break` is a plawk EXTENSION and gawk rejects it outright
+% ("`break' is not allowed outside a loop or switch") -- so the oracle is plawk's own
+% scalar-only route, which renders an unset counter EMPTY for this very program
+% (` 1`). The mixed route printed `0` only because its bare-scalar print emitter was a
+% stale duplicate. Same one-line cause as the `next` pin above; both agree now.
 test(surface_nonterminal_break_skips_dead_mixed_tail) :-
     run_surface_print_smoke("$1 == \"ERROR\" { break; hits++; seen[$2]++ } { total++; counts[$1]++ } END { print hits, total, seen[\"disk\"], counts[\"ERROR\"], counts[\"WARN\"] }\n",
         "WARN cpu hot\nERROR disk full\nERROR net down\n",
-        "0 1   1\n").
+        " 1   1\n").
 
 test(surface_terminal_break_as_last_rule_keeps_continue_phi_valid) :-
     run_surface_print_smoke("{ total++ } $1 == \"ERROR\" { hits++; break } END { print hits, total }\n",
