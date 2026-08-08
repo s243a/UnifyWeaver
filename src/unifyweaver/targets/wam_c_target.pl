@@ -2055,7 +2055,81 @@ void setup_~w_~w(WamState* state) {
 
 compile_step_wam_to_c(_Options, CCode) :-
     CCode =
-'    bool step_wam(WamState* state, Instruction* instr) {
+'    /* Read-mode argument contexts. See WamArgCtx in wam_runtime.h for
+       why a single S register is not enough: nested terms are emitted
+       interleaved with the enclosing term''s arguments, so S has to be
+       saved and restored around them. */
+    static void wam_push_arg_ctx(WamState* state, int nargs) {
+        if (state->arg_ctx_top >= WAM_ARG_CTX_MAX) {
+            /* Deeper nesting than the fixed stack allows. Dropping the
+               context degrades to the old single-S behaviour for this
+               term rather than corrupting the stack. */
+            return;
+        }
+        state->arg_ctx[state->arg_ctx_top].resume_s = state->S;
+        state->arg_ctx[state->arg_ctx_top].dest = 0;
+        state->arg_ctx[state->arg_ctx_top].remaining = nargs;
+        state->arg_ctx[state->arg_ctx_top].is_write = 0;
+        state->arg_ctx_top++;
+    }
+
+    /* Write-mode counterpart: `dest` is the heap address of the next
+       argument cell of the term being built. The cells are reserved by
+       the get_* instruction, so a nested term allocated afterwards
+       cannot land on top of them. */
+    static void wam_push_write_ctx(WamState* state, int dest, int nargs) {
+        if (state->arg_ctx_top >= WAM_ARG_CTX_MAX) return;
+        state->arg_ctx[state->arg_ctx_top].resume_s = state->S;
+        state->arg_ctx[state->arg_ctx_top].dest = dest;
+        state->arg_ctx[state->arg_ctx_top].remaining = nargs;
+        state->arg_ctx[state->arg_ctx_top].is_write = 1;
+        state->arg_ctx_top++;
+    }
+
+    /* Address of the cell the next write-mode unify_* should fill, or -1
+       when no write context is active (fall back to appending at H). */
+    static int wam_write_dest(WamState* state) {
+        if (state->arg_ctx_top <= 0) return -1;
+        WamArgCtx *ctx = &state->arg_ctx[state->arg_ctx_top - 1];
+        if (!ctx->is_write || ctx->remaining <= 0) return -1;
+        return ctx->dest;
+    }
+
+    /* Ensure the heap can hold `addr`. Reserving in the get_* instruction
+       keeps argument cells contiguous; this is the safety net. */
+    static void wam_reserve_heap(WamState* state, int addr) {
+        if (addr < state->H_cap) return;
+        if (state->H_cap == 0) state->H_cap = WAM_INITIAL_CAP;
+        while (addr >= state->H_cap) state->H_cap *= 2;
+        state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+    }
+
+    /* Called after each read-mode unify_* consumes one argument cell.
+       When the innermost term''s arguments are exhausted, S goes back to
+       the enclosing term so its remaining arguments are read from the
+       right place. */
+    static void wam_consume_arg_ctx(WamState* state) {
+        if (state->arg_ctx_top <= 0) return;
+        WamArgCtx *ctx = &state->arg_ctx[state->arg_ctx_top - 1];
+        if (ctx->is_write) ctx->dest++;
+        if (ctx->remaining > 0) ctx->remaining--;
+        if (ctx->remaining > 0) return;
+        /* This term is complete: restore the enclosing one.
+           resume_s always holds the enclosing term''s next-argument
+           pointer as of this frame''s push, whichever mode either is in,
+           so restoring it unconditionally is correct (and harmless when
+           the enclosing context turns out to be a write context).
+           The enclosing write context''s dest needs no fixup -- it was
+           only advanced by its own consumed arguments. */
+        state->S = ctx->resume_s;
+        state->arg_ctx_top--;
+        if (state->arg_ctx_top > 0) {
+            WamArgCtx *outer = &state->arg_ctx[state->arg_ctx_top - 1];
+            state->mode = outer->is_write ? MODE_WRITE : MODE_READ;
+        }
+    }
+
+    bool step_wam(WamState* state, Instruction* instr) {
         switch (instr->tag) {
             case INSTR_GET_CONSTANT: {
                 WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->as.constant.reg, instr->as.constant.is_y_reg));
@@ -2372,11 +2446,26 @@ compile_step_wam_to_c(_Options, CCode) :-
                         state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
                     }
                     state->H_array[state->H] = val_atom(instr->as.functor.pred);
-                    state->H++;
+                    /* Claim the argument cells now and record where they
+                       are. A nested term is allocated at H afterwards, so
+                       without this the enclosing term''s later unify_*
+                       would append past the nested term instead of
+                       filling its own reserved slots. */
+                    {
+                        int args_at = state->H + 1;
+                        for (int ai = 0; ai < arity; ai++) {
+                            state->H_array[args_at + ai] = val_unbound("heap_var");
+                        }
+                        state->H = args_at + arity;
+                        wam_push_write_ctx(state, args_at, arity);
+                    }
                     state->mode = MODE_WRITE;
                 } else if (cell->tag == VAL_STR) {
                     WamValue *f = &state->H_array[cell->data.ref_addr];
                     if (f->tag == VAL_ATOM && strcmp(f->data.atom, instr->as.functor.pred) == 0) {
+                        const char *rslash = strchr(instr->as.functor.pred, ''/'');
+                        int rarity = rslash ? (int) strtol(rslash + 1, NULL, 10) : 0;
+                        wam_push_arg_ctx(state, rarity);
                         state->S = cell->data.ref_addr + 1;
                         state->mode = MODE_READ;
                     } else { return false; }
@@ -2447,8 +2536,18 @@ compile_step_wam_to_c(_Options, CCode) :-
                         while (required >= state->H_cap) state->H_cap *= 2;
                         state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
                     }
+                    /* Claim head and tail cells up front -- see the
+                       matching comment in get_structure. */
+                    {
+                        int cells_at = state->H;
+                        state->H_array[cells_at] = val_unbound("heap_var");
+                        state->H_array[cells_at + 1] = val_unbound("heap_var");
+                        state->H = cells_at + 2;
+                        wam_push_write_ctx(state, cells_at, 2);
+                    }
                     state->mode = MODE_WRITE;
                 } else if (cell->tag == VAL_LIST) {
+                    wam_push_arg_ctx(state, 2);
                     state->S = cell->data.ref_addr;
                     state->mode = MODE_READ;
                 } else if (cell->tag == VAL_STR) {
@@ -2461,6 +2560,7 @@ compile_step_wam_to_c(_Options, CCode) :-
                     if (f->tag == VAL_ATOM &&
                         (strcmp(f->data.atom, "[|]/2") == 0 ||
                          strcmp(f->data.atom, "./2") == 0)) {
+                        wam_push_arg_ctx(state, 2);
                         state->S = cell->data.ref_addr + 1;
                         state->mode = MODE_READ;
                     } else { return false; }
@@ -2518,11 +2618,23 @@ compile_step_wam_to_c(_Options, CCode) :-
                 if (state->mode == MODE_READ) {
                     *cell = state->H_array[state->S];
                     state->S++;
+                    wam_consume_arg_ctx(state);
                 } else {
-                    // Note: wam_make_ref allocates an unbound cell in H_array and increments H,
-                    // satisfying the 1-slot heap pre-reservation invariant.
-                    WamValue ref = wam_make_ref(state);
-                    *cell = ref;
+                    int dest = wam_write_dest(state);
+                    if (dest >= 0) {
+                        /* Fill this term''s reserved argument cell and
+                           point the register at it. */
+                        wam_reserve_heap(state, dest);
+                        state->H_array[dest] = val_unbound("heap_var");
+                        WamValue ref; ref.tag = VAL_REF; ref.data.ref_addr = dest;
+                        *cell = ref;
+                        wam_consume_arg_ctx(state);
+                    } else {
+                        // Note: wam_make_ref allocates an unbound cell in H_array and increments H,
+                        // satisfying the 1-slot heap pre-reservation invariant.
+                        WamValue ref = wam_make_ref(state);
+                        *cell = ref;
+                    }
                 }
                 state->P++;
                 return true;
@@ -2532,13 +2644,21 @@ compile_step_wam_to_c(_Options, CCode) :-
                 if (state->mode == MODE_READ) {
                     if (!wam_unify(state, cell, &state->H_array[state->S])) return false;
                     state->S++;
+                    wam_consume_arg_ctx(state);
                 } else {
-                    if (state->H >= state->H_cap) {
-                        state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
-                        state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                    int dest = wam_write_dest(state);
+                    if (dest >= 0) {
+                        wam_reserve_heap(state, dest);
+                        state->H_array[dest] = *cell;
+                        wam_consume_arg_ctx(state);
+                    } else {
+                        if (state->H >= state->H_cap) {
+                            state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
+                            state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                        }
+                        state->H_array[state->H] = *cell;
+                        state->H++;
                     }
-                    state->H_array[state->H] = *cell;
-                    state->H++;
                 }
                 state->P++;
                 return true;
@@ -2553,13 +2673,21 @@ compile_step_wam_to_c(_Options, CCode) :-
                         return false;
                     }
                     state->S++;
+                    wam_consume_arg_ctx(state);
                 } else {
-                    if (state->H >= state->H_cap) {
-                        state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
-                        state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                    int dest = wam_write_dest(state);
+                    if (dest >= 0) {
+                        wam_reserve_heap(state, dest);
+                        state->H_array[dest] = instr->as.constant.val;
+                        wam_consume_arg_ctx(state);
+                    } else {
+                        if (state->H >= state->H_cap) {
+                            state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
+                            state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                        }
+                        state->H_array[state->H] = instr->as.constant.val;
+                        state->H++;
                     }
-                    state->H_array[state->H] = instr->as.constant.val;
-                    state->H++;
                 }
                 state->P++;
                 return true;

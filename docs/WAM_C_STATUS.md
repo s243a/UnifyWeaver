@@ -49,6 +49,18 @@ target module.
 whole spec with no `ct_xfail`/`ct_skip`; stays opt-in (needs a `gcc`
 per-program build) rather than default CI.
 
+**Nested-term unification (fixed 2026-08-06, CONF-FIX-C-NESTED).** The
+runtime carried a single `S` register, but the compiler emits a nested
+term *interleaved* with the enclosing term's arguments, so a head like
+`p([tk(X)|R], X, R)` lost the pointer to the cons tail: the last
+`unify_variable` read past the heap top — a wrong answer at `-O0`, a
+SIGSEGV at `-O1`. The same defect existed in the write path, where the
+cons tail slot was simply never written, so any constructor of the shape
+`foo(X, [tag(X)|Rest])` called with an unbound output silently failed.
+Both are fixed by a `WamArgCtx` stack that saves and restores the
+enclosing term's argument pointer around nested terms; the depth is
+restored on backtracking. Found by the `nested` conformance program.
+
 ## Gaps (relative to Rust / Haskell / F#)
 
 - **No ISO three-form contract adoption** — not a reference adopter
@@ -60,6 +72,10 @@ per-program build) rather than default CI.
   FactSource is present but the policy surface is thinner.
 - Effective-distance cross-target matrix presence is thinner than the
   Tier-A kernel benches.
+- **Two pre-existing failures in `tests/test_wam_c_target.pl`**
+  (`transitive_closure2` / `transitive_distance3` native kernel helpers
+  reported missing). Present on an unmodified tree as of 2026-08-06 and
+  unrelated to the nested-term fix; not yet triaged.
 
 ## Path forward
 

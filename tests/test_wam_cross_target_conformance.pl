@@ -326,15 +326,21 @@ ct_default_target(elixir).
 %    - `wide` is green everywhere except the WAM-Go bug it was written
 %      for, which is fixed — so it is a pure regression guard now.
 %
-%  C / nested — XFAIL. ctail/3 destructures `[tk(X)|R]` and then unifies
-%  the cons tail R. `ctail([tk(a),tk(b)], a, [tk(b)])` returns false, and
-%  `ctail([tk(a)], a, [])` *crashes the generated binary* (SIGSEGV, exit
-%  139). cnest/2 and ckind/2 pass, so the nested get_structure itself is
-%  fine; it is the tail unification after it that is broken. Same class
-%  as the WAM-Go write-context bug, where the nested structure clobbered
-%  the enclosing list and the tail was never filled — but C faults rather
-%  than silently mis-answering. See CONF-FIX-C-NESTED.
-ct_xfail(c, nested).
+%  C / nested — FIXED 2026-08-06 (CONF-FIX-C-NESTED). ctail/3
+%  destructures `[tk(X)|R]` and then unifies the cons tail R. It returned
+%  false on `ctail([tk(a),tk(b)], a, [tk(b)])` and SIGSEGV'd the
+%  generated binary on `ctail([tk(a)], a, [])`.
+%
+%  Root cause: the C runtime carried a single S register, but the
+%  compiler emits a nested term INTERLEAVED with the enclosing term's
+%  arguments — `get_list; unify_variable; get_structure; unify_variable;
+%  unify_variable` — so the nested get_structure overwrote the pointer to
+%  the cons tail. The final unify_variable then read past the heap top
+%  (S=4 with H=4 for a one-element list): a wrong answer at -O0, a fault
+%  at -O1. Fixed by saving S with an argument countdown around nested
+%  read-mode terms (WamArgCtx in wam_runtime.h); the depth is restored on
+%  backtracking so a clause that fails mid-head leaves nothing behind.
+%  Same class as the WAM-Go write-context bug fixed in PARSE-GO.
 
 %  Rust / nested — XFAIL. Two distinct failures:
 %   - ckind/2 discriminates on the *inner* functor across three clauses

@@ -73,6 +73,7 @@ typedef struct {
     int conj_top;
     int disj_top;
     int ite_top;
+    int arg_ctx_top;   /* read-mode arg-context depth at push time */
     int arity;
     WamValue a_regs[32]; // Reduced from MAX_REGS to save memory (typical max arity)
     /* Owned only when next_pc == WAM_FOREIGN_STREAM_NEXT. */
@@ -384,12 +385,57 @@ typedef struct {
 } Instruction;
 
 /* WAM state */
+/* Saved read-mode argument context.
+ *
+ * S is a single register, but the compiler emits nested terms
+ * INTERLEAVED with the enclosing term's arguments rather than after
+ * them. A head like `p([tk(X)|R], X, R)` compiles to
+ *
+ *     get_list A1
+ *     unify_variable X1        % cons head
+ *     get_structure tk/1, X1   % nested -- overwrites S
+ *     unify_variable X2        % tk's argument
+ *     unify_variable X3        % must read the cons TAIL
+ *
+ * With a bare S register the nested get_structure destroys the pointer
+ * to the cons tail, and the last unify_variable reads whatever follows
+ * tk's arguments on the heap -- past H entirely for a one-element list.
+ * That was a wrong answer at -O0 and a SIGSEGV at -O1.
+ *
+ * Each read-mode get_structure/get_list pushes the S it is about to
+ * overwrite together with a countdown of the arguments the new term
+ * owns; when that countdown reaches zero the unify_* instruction
+ * restores the enclosing S.
+ *
+ * WRITE mode has the same defect for the same reason. Building the same
+ * head with an unbound output, the cons cell reserves two heap slots but
+ * the nested get_structure then allocates at H, so the following
+ * unify_* appended AFTER the nested term's arguments and the cons TAIL
+ * slot was left uninitialised -- `mk(X, [tk(X)|[]])` produced a list
+ * whose tail was garbage, and every such query silently failed. Write
+ * contexts therefore carry the destination address of the next argument
+ * cell rather than relying on H growing one cell per unify_*.
+ *
+ * WAM_ARG_CTX_MAX bounds nesting depth of a single head term, not
+ * program size. */
+#define WAM_ARG_CTX_MAX 64
+
+typedef struct {
+    int resume_s;   /* READ: S to restore once this term's args are done */
+    int dest;       /* WRITE: heap address of this term's next arg cell  */
+    int remaining;  /* argument cells still to be filled/read            */
+    int is_write;   /* 1 = write mode context, 0 = read mode             */
+} WamArgCtx;
+
+/* WAM state */
 struct WamState {
     int P;    // Program Counter
     int CP;   // Continuation Pointer
     int S;    // Structure Pointer
     int HB;   // Heap Backtrack Pointer
     WamMode mode; // Read/Write mode for structure unification
+    WamArgCtx arg_ctx[WAM_ARG_CTX_MAX]; // nested read-mode arg contexts
+    int arg_ctx_top;                    // number of active contexts
     
     /* Registers: A and X registers share the same space typically */
     WamValue A[WAM_MAX_REGS];
@@ -1077,6 +1123,11 @@ static inline void push_choice_point(WamState *state, int next_pc, int arity) {
     cp->conj_top = state->conj_top;
     cp->disj_top = state->disj_top;
     cp->ite_top = state->ite_top;
+    /* Read-mode argument contexts are per-clause-head: a clause that
+       fails partway through head unification leaves entries behind, and
+       the next clause's get_* would push on top of them. Restoring the
+       depth on backtracking keeps each clause's head starting clean. */
+    cp->arg_ctx_top = state->arg_ctx_top;
     
     int save_arity = arity < 32 ? arity : 32;
     cp->arity = save_arity;
@@ -1101,6 +1152,9 @@ static inline void restore_choice_point(WamState *state, ChoicePoint *cp) {
     wam_trim_disj_frames(state, cp->disj_top);
     wam_trim_ite_frames(state, cp->ite_top);
     unwind_trail(state, cp->trail_size);
+    if (cp->arg_ctx_top >= 0 && cp->arg_ctx_top <= state->arg_ctx_top) {
+        state->arg_ctx_top = cp->arg_ctx_top;
+    }
     memcpy(state->A, cp->a_regs, sizeof(WamValue) * cp->arity);
 }
 static inline void pop_choice_point(WamState *state) {
