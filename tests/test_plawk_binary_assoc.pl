@@ -74,11 +74,25 @@ test(binary_assoc_rejects_text_shaped_programs) :-
         ;  true
         )).
 
-test(text_mode_rejects_int_assoc_keys) :-
-    % In text mode assoc keys are atom ids; a literal integer key would
-    % silently collide with them, so it must be refused.
+% WAS a refusal, on the reasoning that "in text mode assoc keys are atom ids; a literal
+% integer key would silently collide with them". That was true and is no longer: awk
+% subscripts are STRINGS, so `counts[5]` is the key "5", and the END read now rewrites the
+% subscript to that spelling before emission -- there is no atom id to collide with. The
+% raw-integer key space still exists, but only for POSITIONAL tables, and the read resolves
+% which space applies from the table's kind rather than refusing both.
+%
+% Kept and inverted rather than deleted, because the refusal it recorded was load-bearing
+% for as long as the collision was unresolved -- and BINARY mode, which this suite owns, is
+% the one place an int key was always legal, so the contrast is the useful part.
+test(text_mode_int_assoc_key_reads_the_decimal_key) :-
     plawk_parse_string("{ counts[$1]++ } END { print counts[5] }\n", Program),
-    assertion(\+ plawk_program_native_driver_ir(Program, 'input.txt', _)).
+    assertion(plawk_program_native_driver_ir(Program, 'input.txt', _)),
+    % ...and it lowers to the same program the string spelling does, which is the property
+    % that makes it safe: one key, one emission.
+    plawk_parse_string("{ counts[$1]++ } END { print counts[\"5\"] }\n", StrProgram),
+    plawk_program_native_driver_ir(Program, 'input.txt', IntIR),
+    plawk_program_native_driver_ir(StrProgram, 'input.txt', StrIR),
+    assertion(IntIR == StrIR).
 
 test(text_mode_string_assoc_still_works) :-
     plawk_parse_string("{ counts[$1]++ } END { print counts[\"alpha\"] }\n", Program),

@@ -1362,8 +1362,9 @@ plawk_program_native_driver_ir(
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
-    plawk_end_print_string_globals(PrintFields, StringGlobalIR),
-    plawk_assoc_print_key_globals(PrintFields, AssocGlobalIR),
+    plawk_assoc_end_int_key_rewrite(AssocPlan, Descriptor, PrintFields, EndPrintFields),
+    plawk_end_print_string_globals(EndPrintFields, StringGlobalIR),
+    plawk_assoc_print_key_globals(EndPrintFields, AssocGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
     plawk_assoc_rule_chain_ir(AssocPlan, Descriptor, AssocRuleGlobalIR, AssocChainIR),
     plawk_rules_body_print_fields(Rules, BodyPrintFields),
@@ -1374,7 +1375,7 @@ plawk_program_native_driver_ir(
     plawk_join_nonempty_ir([RecordCounterIR, AssocChainIR], RecordIR),
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
-    plawk_assoc_end_print_ir(PrintFields, AssocPlan, Descriptor, OutputSeparator, EndPrintIR),
+    plawk_assoc_end_print_ir(EndPrintFields, AssocPlan, Descriptor, OutputSeparator, EndPrintIR),
     format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, AssocRuleGlobalIR]),
     plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
@@ -1438,8 +1439,9 @@ plawk_program_native_driver_ir(
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_record_descriptor(BeginClauses, FieldSeparator),
     plawk_assoc_record_program_ok(FieldSeparator, Rules, PrintFields),
-    plawk_end_print_string_globals(PrintFields, StringGlobalIR),
-    plawk_assoc_print_key_globals(PrintFields, AssocGlobalIR),
+    plawk_assoc_end_int_key_rewrite(AssocPlan, FieldSeparator, PrintFields, EndPrintFields),
+    plawk_end_print_string_globals(EndPrintFields, StringGlobalIR),
+    plawk_assoc_print_key_globals(EndPrintFields, AssocGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
     plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR, AssocChainIR),
     plawk_rules_body_print_fields(Rules, BodyPrintFields),
@@ -1450,7 +1452,7 @@ plawk_program_native_driver_ir(
     plawk_join_nonempty_ir([RecordCounterIR, AssocChainIR], RecordIR),
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
-    plawk_assoc_end_print_ir(PrintFields, AssocPlan, FieldSeparator, OutputSeparator, EndPrintIR),
+    plawk_assoc_end_print_ir(EndPrintFields, AssocPlan, FieldSeparator, OutputSeparator, EndPrintIR),
     format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, AssocRuleGlobalIR]),
     plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
@@ -9728,24 +9730,25 @@ plawk_subsep_key_components(Subscripts, Comps) :-
 %  which they disagree.)
 plawk_assoc_literal_key_comps(string(S), Comps) :-
     plawk_subsep_key_components([string(S)], Comps).
-% An INTEGER-literal key (`arr[5]++`) is still not admitted here, but the reason has
-% CHANGED and shrunk, so record which one is now load-bearing.
+% `arr[5]++` -- an INTEGER-literal key, keyed by its decimal text, because awk array
+% subscripts are STRINGS and so `arr[5]` and `arr["5"]` are one key (which
+% plawk_subsep_key_component/2 already encodes for a multi-dim component).
 %
-% It was refused because `print arr[N]` read the RAW integer regardless of the table, so
-% admitting the update gave `{ c[5]++; print c[5] }` a store to interned "5" and a load
-% from raw 5 -- a program that built and printed empty. That reason is gone: the read now
-% resolves the key space from the table's kind, and a positional table (where a literal
-% key cannot be represented at all) declines at plawk_assoc_literal_key_update_ok/3.
-% Verified: with `plawk_assoc_literal_key_comps(int(N), ...)` added, `{ c[5]++; print
-% c[5] }` and `{ c[5] += 2 } END { print c["5"] }` agree with gawk, and the positional
-% cases decline.
+% Admitted only now, and the sequence is the interesting part: this refusal outlived its
+% cause TWICE. It began as the key-space collision -- `print arr[N]` read the RAW integer
+% regardless of the table, so admitting the update gave `{ c[5]++; print c[5] }` a store to
+% interned "5" and a load from raw 5, a program that built and printed empty. With the
+% reads resolved, what remained was `END { print arr[N] }` still declining on an
+% awk-semantics table, so admitting the update would have shipped `c[5]++` compiling while
+% the natural `{ c[5]++ } END { print c[5] }` did not. Both halves are now resolved, so the
+% refusal is retired rather than restated for a third time.
 %
-% What is left is only that `END { print arr[N] }` still declines on an awk-semantics
-% table -- a DELIBERATE, documented refusal in plawk_assoc_end_print_lines/8 ("a
-% text-mode literal key would collide with an atom id"), which is this same collision
-% stated at that site and now resolvable the same way. Admitting the update without it
-% would ship `c[5]++` compiling while the natural `{ c[5]++ } END { print c[5] }`
-% declines, so the two belong in one follow-on rather than half here.
+% A positional table still declines, at plawk_assoc_literal_key_update_ok/3: its keys are
+% integer positions, and this is an interning update. That is not the same refusal -- it is
+% unrepresentability, and it does not expire.
+plawk_assoc_literal_key_comps(int(N), Comps) :-
+    integer(N),
+    plawk_subsep_key_components([int(N)], Comps).
 
 
 %% plawk_assoc_literal_key_space(+ArrayName, +PosArrays, +Text, -KeySpace) is det.
@@ -11537,18 +11540,22 @@ plawk_assoc_record_program_ok(binfmt_union(_Arms), Rules, EndPrintFields) :-
              Field = assoc(_Array, Key)
            ),
         ( Key = int(_) ; Key = var(_) )).
-plawk_assoc_record_program_ok(_FieldSeparator, Rules, EndPrintFields) :-
-    % Text mode: integer assoc keys would collide with atom ids, so they
-    % stay binary-only -- EXCEPT positional-array tables, whose keys are
-    % integer positions (never interned atom ids), so int lookups on them
-    % are unambiguous.
-    plawk_program_posarray_arrays(Rules, PosArrays),
-    forall(( member(Field, EndPrintFields),
-             Field = assoc(Array, Key)
-           ),
-        ( Key \= int(_)
-        ; Array = var(Name), memberchk(Name, PosArrays)
-        )).
+plawk_assoc_record_program_ok(_FieldSeparator, _Rules, _EndPrintFields).
+% Text mode accepts every assoc END key shape, integer literals included.
+%
+% This clause USED to refuse an int key unless the table was positional, with the
+% reasoning "integer assoc keys would collide with atom ids, so they stay binary-only" --
+% the same sentence the END int emitter carried, copied into a gate. That premise is now
+% false: plawk_assoc_end_int_key_rewrite/4 turns `arr[5]` on an awk-semantics table into
+% the key "5", which is what awk means by it (subscripts are strings), so there is no
+% collision left to refuse. A positional table keeps the raw-position reading, which this
+% gate was already allowing.
+%
+% Worth noting how the restriction was found: it was the FIFTH site holding a private copy
+% of the two-key-space reasoning, after the rule-body read, the delete, the membership
+% probe and the END emitter. The first four each produced a wrong output; this one produced
+% a decline, which is why it outlived them -- a gate that refuses looks like caution rather
+% than like a duplicated decision.
 
 %% plawk_program_posarray_arrays(+Rules, -Names) is det.
 %  The positionally-keyed array names (an `as array` bind or a `split`),
@@ -14032,6 +14039,43 @@ plawk_begin_string_print_lines(Value, Index) -->
     },
     [StringPtr],
     [FmtPtr, PrintCall].
+
+%% plawk_assoc_end_int_key_rewrite(+AssocPlan, +Descriptor, +Fields0, -Fields) is det.
+%
+%  awk array subscripts are STRINGS, so `END { print arr[5] }` reads the key "5" -- the
+%  same key `arr["5"]` and a field holding "5" produce. Rewrite the subscript to that
+%  spelling before either END walker sees it, and the existing string-key path handles it:
+%  no new emitter, and no second place deciding what `arr[5]` means.
+%
+%  Rewriting rather than adding a clause is what keeps the two walkers in step. The
+%  key-globals walker (plawk_assoc_print_key_global_lines//2) declares the c-string
+%  constant that the print emitter's string clause references by index, and it takes only
+%  the field list -- no plan, no descriptor -- so it cannot itself tell an awk-semantics
+%  table from a positional one. A clause added to the emitter alone would reference a
+%  global nobody emitted; a clause added to both would put the key-space decision in a
+%  walker that has no way to make it. Rewriting the term upstream leaves both walkers
+%  exactly as they are.
+%
+%  Applied AFTER the plan is built, so the planned tables are unchanged (the array is
+%  collected for an int subscript either way, via plawk_assoc_print_array/2).
+%
+%  NOT rewritten, and each for its own reason:
+%    - a POSITIONAL table: its keys are raw positions, so `arr[5]` already means slot 5
+%      and the int clause reads it correctly. Rewriting would intern "5" and miss.
+%    - BINARY records: a plawk extension over fixed-width numeric fields, where an int key
+%      is the numeric key by contract and a missing one reads as 0 rather than empty.
+%  Both keep the int clause, whose condition is exactly those two cases.
+plawk_assoc_end_int_key_rewrite(AssocPlan, Descriptor, Fields0, Fields) :-
+    maplist(plawk_assoc_end_int_key_field(AssocPlan, Descriptor), Fields0, Fields).
+
+plawk_assoc_end_int_key_field(AssocPlan, Descriptor,
+        assoc(var(ArrayName), int(Key)), assoc(var(ArrayName), string(Text))) :-
+    integer(Key),
+    \+ plawk_descriptor_is_binary(Descriptor),
+    \+ plawk_assoc_plan_posarray_array(AssocPlan, ArrayName),
+    !,
+    number_string(Key, Text).
+plawk_assoc_end_int_key_field(_AssocPlan, _Descriptor, Field, Field).
 
 plawk_assoc_print_key_globals(PrintFields, GlobalIR) :-
     phrase(plawk_assoc_print_key_global_lines(PrintFields, 0), Lines),
