@@ -204,8 +204,11 @@ test(loop_free_chains_exclude_lone_print_and_forin) :-
 % the non-freeing variant a statement list uses.
 test(both_print_emitters_have_a_non_freeing_variant) :-
     Plan = assoc_plan([c], []),
+    % The assoc emitter takes an EndRecord capability token now (it grew field/NF-in-END
+    % support). `no_end_record` here: this test is about the table frees, and a string literal
+    % reads no record, so the token cannot affect what is asserted.
     plawk_native_codegen:plawk_assoc_end_print_ir([string("x")], Plan, 32, [32],
-        AssocWith),
+        no_end_record, AssocWith),
     plawk_native_codegen:plawk_assoc_end_print_body_ir([string("x")], Plan, 32,
         [32], AssocWithout),
     assertion(once(sub_atom(AssocWith, _, _, _, '@wam_assoc_i64_free'))),

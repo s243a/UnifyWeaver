@@ -154,9 +154,18 @@ test(printf_field_arg_declines) :-
     build_status("{ c[$1]++ } END { print c[\"a\"]; printf \"%s\\n\", $1 }\n", 3),
     !.
 
-% `NR` as a plain print statement is not wired to the record counter here either.
-test(nr_plain_print_declines) :-
-    build_status("{ c[$1]++ } END { print c[\"a\"]; print NR }\n", 3),
+% WAS a decline -- "not wired to the record counter here either". It is now, and the reason it
+% came for free is worth recording: NR needs no capability, only something to ask.
+% plawk_end_nr_value/2 already falls back to `%plawk_nr`, the counter this driver emits when a
+% print mentions NR, so the new clause passes `state_plan([], [])` -- the honest statement that
+% this route has no scalar slots, not a stub.
+%
+% Note this works in the STATEMENT-LIST form, which still declines for a field read and NF.
+% That is not an inconsistency: those two need the retained-record token that
+% plawk_end_list_bodies/8 does not carry, and NR does not. The boundary is per-capability, not
+% per-route.
+test(nr_plain_print_now_works, [condition(clang_available)]) :-
+    run("{ c[$1]++ } END { print c[\"a\"]; print NR }\n", "1\n3\n", 0),
     !.
 
 % A MIXED scalar+assoc program with a statement list is the fourth chain, landed

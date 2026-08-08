@@ -1373,6 +1373,12 @@ plawk_program_native_driver_ir(
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    % The retained-last-record capability, for `END { print $N }` / NF / a concat over
+    % them. Issued as a token PLUS the retain IR that backs it, so the projection cannot
+    % be emitted without its store. A binfmt descriptor yields `no_end_record`
+    % automatically (the source predicate requires an integer FS), which is why a
+    % binary-mode field read still declines rather than slicing a record buffer as text.
+    plawk_end_record_source(Descriptor, PrintFields, EndRecord, RetainIR),
     plawk_assoc_end_int_key_rewrite(AssocPlan, Descriptor, PrintFields, EndPrintFields),
     plawk_end_print_string_globals(EndPrintFields, StringGlobalIR),
     plawk_assoc_print_key_globals(EndPrintFields, AssocGlobalIR),
@@ -1383,12 +1389,18 @@ plawk_program_native_driver_ir(
     append(PrintFields, BodyPrintFields, PrintExprs),
     append(PrintExprs, ScalarExprs, RecordCounterExprs),
     plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
-    plawk_join_nonempty_ir([RecordCounterIR, AssocChainIR], RecordIR),
+    % RetainIR first: each record must be copied before the rule chain can `next`
+    % past it.
+    plawk_join_nonempty_ir([RetainIR, RecordCounterIR, AssocChainIR], RecordIR),
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
-    plawk_assoc_end_print_ir(EndPrintFields, AssocPlan, Descriptor, OutputSeparator, EndPrintIR),
-    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+    plawk_assoc_end_print_ir(EndPrintFields, AssocPlan, Descriptor, OutputSeparator,
+        EndRecord, EndPrintIR),
+    format(atom(SurfaceGlobalIR0), '~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, AssocRuleGlobalIR]),
+    plawk_end_lastrec_globals_ir(EndRecord, LastRecGlobalIR),
+    plawk_append_surface_global_ir(SurfaceGlobalIR0, LastRecGlobalIR,
+        SurfaceGlobalIR),
     plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
     plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
@@ -1450,6 +1462,12 @@ plawk_program_native_driver_ir(
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_record_descriptor(BeginClauses, FieldSeparator),
     plawk_assoc_record_program_ok(FieldSeparator, Rules, PrintFields),
+    % The retained-last-record capability, for `END { print $N }` / NF / a concat over
+    % them. Issued as a token PLUS the retain IR that backs it, so the projection cannot
+    % be emitted without its store. A binfmt descriptor yields `no_end_record`
+    % automatically (the source predicate requires an integer FS), which is why a
+    % binary-mode field read still declines rather than slicing a record buffer as text.
+    plawk_end_record_source(FieldSeparator, PrintFields, EndRecord, RetainIR),
     plawk_assoc_end_int_key_rewrite(AssocPlan, FieldSeparator, PrintFields, EndPrintFields),
     plawk_end_print_string_globals(EndPrintFields, StringGlobalIR),
     plawk_assoc_print_key_globals(EndPrintFields, AssocGlobalIR),
@@ -1460,12 +1478,18 @@ plawk_program_native_driver_ir(
     append(PrintFields, BodyPrintFields, PrintExprs),
     append(PrintExprs, ScalarExprs, RecordCounterExprs),
     plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
-    plawk_join_nonempty_ir([RecordCounterIR, AssocChainIR], RecordIR),
+    % RetainIR first: each record must be copied before the rule chain can `next`
+    % past it.
+    plawk_join_nonempty_ir([RetainIR, RecordCounterIR, AssocChainIR], RecordIR),
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
-    plawk_assoc_end_print_ir(EndPrintFields, AssocPlan, FieldSeparator, OutputSeparator, EndPrintIR),
-    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+    plawk_assoc_end_print_ir(EndPrintFields, AssocPlan, FieldSeparator, OutputSeparator,
+        EndRecord, EndPrintIR),
+    format(atom(SurfaceGlobalIR0), '~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, AssocRuleGlobalIR]),
+    plawk_end_lastrec_globals_ir(EndRecord, LastRecGlobalIR),
+    plawk_append_surface_global_ir(SurfaceGlobalIR0, LastRecGlobalIR,
+        SurfaceGlobalIR),
     plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
     plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
@@ -14156,9 +14180,10 @@ plawk_assoc_key_codes(Key, Codes) :-
 plawk_assoc_key_codes(Key, Codes) :-
     atom_codes(Key, Codes).
 
-plawk_assoc_end_print_ir(PrintFields, AssocPlan, Descriptor, OutputSeparator, IR) :-
-    phrase(plawk_assoc_end_print_lines(PrintFields, AssocPlan, Descriptor,
-        OutputSeparator, 0), Lines),
+plawk_assoc_end_print_ir(PrintFields, AssocPlan, Descriptor, OutputSeparator, EndRecord,
+        IR) :-
+    phrase(plawk_assoc_end_print_lines(PrintFields, AssocPlan, Descriptor, OutputSeparator,
+        EndRecord, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
 
 %% A LOOP-FREE assoc END statement list ------------------------------------
@@ -14378,20 +14403,25 @@ plawk_end_strip_free_lines(Lines, AssocPlan, BodyLines) :-
 %  The frees are the emitted line list's exact tail, so they are split off by
 %  length rather than by matching -- an arithmetic split cannot strip the wrong
 %  occurrence the way a suffix search could.
+%  EndRecord is `no_end_record` here, matching the mixed route's statement-list wrapper and
+%  for the same reason: this form is reached through plawk_end_list_bodies/8, which carries no
+%  token. So `END { print $1; print x }` declines while `END { print $1, x }` works. One
+%  boundary, both routes, pinned in both suites.
 plawk_assoc_end_print_body_ir(PrintFields, AssocPlan, Descriptor, OutputSeparator,
         IR) :-
-    phrase(plawk_assoc_end_print_lines(PrintFields, AssocPlan, Descriptor,
-        OutputSeparator, 0), Lines),
+    phrase(plawk_assoc_end_print_lines(PrintFields, AssocPlan, Descriptor, OutputSeparator,
+        no_end_record, 0), Lines),
     plawk_end_strip_free_lines(Lines, AssocPlan, BodyLines),
     atomic_list_concat(BodyLines, '\n', IR).
 
-plawk_assoc_end_print_lines([], AssocPlan, _Descriptor, _OutputSeparator, _) -->
+plawk_assoc_end_print_lines([], AssocPlan, _Descriptor, _OutputSeparator, _EndRecord,
+        _) -->
     { plawk_ors_terminator_ir(end_newline_fmt, end_ors_ptr, printed_end_newline,
           TermLines)
     },
     TermLines,
     plawk_assoc_free_lines(AssocPlan).
-plawk_assoc_end_print_lines([assoc(var(ArrayName), int(Key)) | Rest], AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
+plawk_assoc_end_print_lines([assoc(var(ArrayName), int(Key)) | Rest], AssocPlan, Descriptor, OutputSeparator, EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     % Integer-key lookups are binary-mode only (a text-mode literal key
     % would collide with an atom id) -- EXCEPT a positional-array table,
@@ -14440,7 +14470,8 @@ plawk_assoc_end_print_lines([assoc(var(ArrayName), int(Key)) | Rest], AssocPlan,
       NextPrintIndex is PrintIndex + 1
     },
     plawk_emit_lines(ValueLines),
-    plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, NextPrintIndex).
+    plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, EndRecord,
+        NextPrintIndex).
 % `END { print arr["1"] }` on a POSITIONAL table -- the key is the raw position, so this
 % delegates to the int-key clause above rather than interning. Without it the string
 % spelling interned "1" and missed raw key 1, so
@@ -14449,13 +14480,13 @@ plawk_assoc_end_print_lines([assoc(var(ArrayName), int(Key)) | Rest], AssocPlan,
 % clause above had already got right (its comment names it: "a text-mode literal key would
 % collide with an atom id -- EXCEPT a positional-array table").
 plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], AssocPlan,
-        Descriptor, OutputSeparator, PrintIndex) -->
+        Descriptor, OutputSeparator, EndRecord, PrintIndex) -->
     { plawk_assoc_plan_posarray_array(AssocPlan, ArrayName),
       plawk_assoc_literal_key_space(ArrayName, [ArrayName], Key, raw_int(N))
     },
     plawk_assoc_end_print_lines([assoc(var(ArrayName), int(N)) | Rest], AssocPlan,
-        Descriptor, OutputSeparator, PrintIndex).
-plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
+        Descriptor, OutputSeparator, EndRecord, PrintIndex).
+plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], AssocPlan, Descriptor, OutputSeparator, EndRecord, PrintIndex) -->
     % The OFS separator BEFORE the value, for every field after the first. Adding the guard
     % below meant rewriting this clause's head, and this goal was dropped in the process:
     % the whole failure was a missing space -- `END { print c["a"], c["b"] }` printed `48`
@@ -14492,12 +14523,69 @@ plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], AssocPl
       NextPrintIndex is PrintIndex + 1
     },
     plawk_emit_lines(ValueLines),
-    plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, NextPrintIndex).
-plawk_assoc_end_print_lines([string(Value) | Rest], AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
+    plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, EndRecord,
+        NextPrintIndex).
+% The rest of this route's row of the END print-field matrix. Each clause reuses the emitter
+% the scalar route already uses -- plawk_end_lastrec_field_lines//3,
+% plawk_end_lastrec_nf_lines//2, plawk_end_nr_print_lines//2, plawk_end_rt_print_lines//1,
+% plawk_end_concat_parts//5 -- so none of these is a copy.
+%
+% Three different reasons they were absent, worth keeping apart because they cost differently:
+%
+%   field, NF, concat  needed the `EndRecord` CAPABILITY (the retained last record). That is
+%                      the expensive part and it is paid once, in the two driver clauses.
+%   NR                 needed nothing but a state plan to ask; plawk_end_nr_value/2 falls back
+%                      to `%plawk_nr`, the counter this driver already emits when a print
+%                      mentions NR, so `state_plan([], [])` is not a stub -- it is the honest
+%                      statement that this route HAS no scalar slots.
+%   RT                 needed nothing at all. It reads @wam_rt_ptr directly. It was absent for
+%                      no reason beyond nobody adding the row.
+%
+% `state_plan([], [])` for the concat parts is the same honest empty: a var part in a concat
+% resolves against the slots, and this route has none, so such a concat declines -- which is
+% correct rather than a limitation, since a program with a scalar var is a MIXED program and
+% goes to the other walker.
+plawk_assoc_end_print_lines([field(Index) | Rest], AssocPlan, Descriptor, OutputSeparator,
+        EndRecord, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_lastrec_field_lines(Index, EndRecord, PrintIndex),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, EndRecord,
+        NextPrintIndex).
+plawk_assoc_end_print_lines([special('NF') | Rest], AssocPlan, Descriptor, OutputSeparator,
+        EndRecord, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_lastrec_nf_lines(EndRecord, PrintIndex),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, EndRecord,
+        NextPrintIndex).
+plawk_assoc_end_print_lines([special('NR') | Rest], AssocPlan, Descriptor, OutputSeparator,
+        EndRecord, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_nr_print_lines(state_plan([], []), PrintIndex),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, EndRecord,
+        NextPrintIndex).
+plawk_assoc_end_print_lines([special('RT') | Rest], AssocPlan, Descriptor, OutputSeparator,
+        EndRecord, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_rt_print_lines(PrintIndex),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, EndRecord,
+        NextPrintIndex).
+plawk_assoc_end_print_lines([concat(Parts) | Rest], AssocPlan, Descriptor, OutputSeparator,
+        EndRecord, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_concat_parts(Parts, state_plan([], []), EndRecord, PrintIndex, 0),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, EndRecord,
+        NextPrintIndex).
+plawk_assoc_end_print_lines([string(Value) | Rest], AssocPlan, Descriptor, OutputSeparator, EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     plawk_end_string_print_lines(Value, PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
-    plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, NextPrintIndex).
+    plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, EndRecord,
+        NextPrintIndex).
 
 plawk_assoc_table_index(assoc_plan(Tables, _Actions), ArrayName, TableIndex) :-
     nth0(TableIndex, Tables, ArrayName).

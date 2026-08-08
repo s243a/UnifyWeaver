@@ -167,9 +167,17 @@ test(forin_then_printf_declines) :-
     build_status("{ c[$1]++ } END { for (k in c) print k; printf \"n=%d\\n\", 1 }\n", 3),
     !.
 
-% `NR` in a plain chain statement is not wired to the record counter yet.
-test(nr_in_plain_chain_statement_declines) :-
-    build_status("{ c[$1]++ } END { for (k in c) print k; print NR }\n", 3),
+% WAS a decline -- "not wired to the record counter yet". It is now, for free: NR needs no
+% capability, only a state plan to ask, and plawk_end_nr_value/2 falls back to `%plawk_nr`,
+% which this driver already emits when a print mentions NR.
+%
+% `printf` above still declines, and a field read / NF in this chain still declines, because
+% those DO need something threaded (scalar argument state, and the retained-record token
+% respectively). The boundary is per-capability, not per-route -- which is why one of these
+% pins could flip while its neighbour stayed put.
+test(nr_in_plain_chain_statement_now_works, [condition(clang_available)]) :-
+    run_sorted("{ c[$1]++ } END { for (k in c) print k; print NR }\n",
+        ["3", "a", "b", "c"], 0),
     !.
 
 % A LOOP-FREE assoc END statement list (`END { print c["a"]; print "done" }`) is
@@ -212,8 +220,11 @@ test(chain_labels) :-
 % The non-freeing print body really omits the frees the full emitter appends.
 test(chain_print_body_omits_table_frees) :-
     Plan = assoc_plan([c], []),
+    % The assoc emitter takes an EndRecord capability token now (it grew field/NF-in-END
+    % support). `no_end_record` here: this test is about the table frees, and a string literal
+    % reads no record, so the token cannot affect what is asserted.
     plawk_native_codegen:plawk_assoc_end_print_ir([string("x")], Plan, 32, [32],
-        WithFrees),
+        no_end_record, WithFrees),
     plawk_native_codegen:plawk_assoc_end_print_body_ir([string("x")], Plan, 32,
         [32], WithoutFrees),
     assertion(once(sub_atom(WithFrees, _, _, _, '@wam_assoc_i64_free'))),
