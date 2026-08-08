@@ -143,14 +143,30 @@ Lesson: once you have named a collision as the reason to refuse one direction, p
 **every** direction that now crosses it, including the ones you just added and believed
 safe.
 
-Two neighbours are **already** broken on positional tables for the same reason:
-`delete arr[N]` takes the string reading (`assoc_delete_lit` interns
-`number_string(N)`), so `{ split($0, a, " "); delete a[1]; print a[1] }` prints the
-field where gawk prints empty; and `"N" in arr` builds and matches nothing. Both
-confirmed at the merged parent, so neither is from this work. The fix for all of them is
-one rule applied at **plan** time, where `PosArrays` is known: on a positional table, a
-subscript whose text is the canonical decimal of an integer ≥ 1 means that raw integer.
-Its own change, not something to fold into an unrelated diff.
+**Resolved, and the audit was the valuable part.** Probing the whole matrix (two table
+kinds × four subscript forms × read/membership/delete/update) found that *three*
+independent sites were each resolving a literal key on their own and disagreeing —
+`lookup_int` read raw always, `assoc_delete_lit` interned always, the string-literal
+membership probe interned always — and **all three were silent wrong outputs, none a
+decline**, because every one of them produces a key that is *type-correct and wrong*
+rather than absent. That is the signature of this variant: when the disagreement is over
+a *value* both sides consider valid, nothing declines and nothing crashes.
+
+One rule at plan time (`plawk_assoc_literal_key_space/4`) now answers for all of them.
+Two details in it are worth keeping:
+
+- **"Absent" must be a key that cannot exist, not a key that probably doesn't.** For
+  `a["x"]` on a positional table the tempting shortcut is to intern `"x"` and probe with
+  the result; atom ids are small sequential integers, so that id can *coincide* with a
+  live position and report a hit on an unrelated element. Raw 0 is used because
+  positional keys start at 1 — a correct answer instead of a lucky one.
+- **Canonicality needs a round trip.** `number_string/2` reads `"01"` as 1, which would
+  alias `a["01"]` onto slot 1; awk's split keys are `"1".."n"`, so `"01"` is a distinct
+  absent key. The test requires the text to be byte-identical to the spelling of its own
+  value.
+
+The update side is not a resolution problem and does not get a key space: a positional
+table's keys are integers, so `a["x"]++` cannot be represented and declines.
 
 **Prescriptions that worked:** one shared producer/emitter with callers
 parameterised (a *name flavour* parameter can preserve byte-identity — see
@@ -263,7 +279,9 @@ of one set collapsed onto `plawk_assoc_scalar_key_update/4`; one of them was sel
 the key's representation and producing wrong output) · **string-literal assoc keys**
 (`c["total"]++`) — the multi-dimensional key builder at arity 1, one relaxed guard (and
 one row added, then removed after it turned a decline into a wrong output on positional
-tables).
+tables) · **the positional/interned key-space collision resolved** by one plan-time rule,
+fixing three silent wrong outputs (`print c[5]` on an awk table, `delete a[1]` and
+`"1" in a` on a split table) and restoring the withdrawn rule-body literal read.
 
 ## A note on the one shared-globals exception
 
@@ -325,11 +343,7 @@ an unrelated pre-existing restriction, pinned as such) · `$N` in a `binfmt` END
 
 An **integer-literal** assoc key (`c[5]++`) — blocked by the raw-integer/interned-text
 key-space collision above, not by a missing row · **`delete arr[N]` on a positional
-table**, **`"N" in arr` on a positional table**, and the **rule-body read
-`print arr["N"]`** — all three the same collision, all clean-slate at plan time where
-`PosArrays` is known (on a positional table, a subscript whose text is the canonical
-decimal of an integer ≥ 1 means that raw integer); the first two are pre-existing wrong
-outputs, the third a decline · a **non-literal delta at a scalar-var key** (`c[k] += $2` declines, `c[k] -= $2` is a parse error;
+· a **non-literal delta at a scalar-var key** (`c[k] += $2` declines, `c[k] -= $2` is a parse error;
 the field-key `c[$1] += $2` works, and the scalar `n -= $2` now works, so this is the
 last non-literal-delta hole) · assoc rules
 alongside a scalar END loop (state-plan boundary) · float-literal and non-literal

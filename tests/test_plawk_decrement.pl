@@ -141,13 +141,16 @@ test(counter_into_end_unchanged, [condition(clang_available)]) :-
 % unparseable. It now PARSES -- desugared to `arr[k] += -1`, the existing add_assoc
 % family, so no walker was touched. tests/test_plawk_assoc_decrement.pl owns it.
 %
-% The form pinned here uses a LITERAL key, which add_assoc does not support, so it is
-% now a DECLINE rather than a parse error -- and it declines exactly where
-% `c["a"] += 1` declines, which is the point of keeping the pair. A field key
-% compiles; see the owning suite.
-test(assoc_decrement_declines_where_add_assign_declines) :-
-    build_status("{ c[\"a\"] += 1; print c[\"a\"] }\n", 3),
-    build_status("{ c[\"a\"]--; print c[\"a\"] }\n", 3),
+% The form pinned here uses a LITERAL key. That was a parse error, then a DECLINE, and it
+% now COMPILES -- the literal key landed as the arity-1 case of the multi-dimensional key
+% builder, and the rule-body literal read landed once the two array key spaces
+% (interned-text vs raw position) were resolved at plan time. Kept as a PAIR with the `+=`
+% form throughout all three states, which is the point: the decrement rides add_assoc, so
+% whatever `c["a"] += 1` does, `c["a"]--` does. See tests/test_plawk_literal_assoc_key.pl
+% and tests/test_plawk_posarray_keyspace.pl.
+test(assoc_decrement_works_where_add_assign_works, [condition(clang_available)]) :-
+    run("{ c[\"a\"] += 1; print c[\"a\"] }\n", "1\n2\n3\n"),
+    run("{ c[\"a\"]--; print c[\"a\"] }\n", "-1\n-2\n-3\n"),
     !.
 
 test(assoc_decrement_with_a_field_key_compiles, [condition(clang_available)]) :-
