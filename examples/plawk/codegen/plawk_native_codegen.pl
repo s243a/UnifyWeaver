@@ -14662,6 +14662,33 @@ plawk_mixed_end_print_lines([special('RT') | Rest], ScalarPlan, AssocPlan, Outpu
     { NextPrintIndex is PrintIndex + 1 },
     plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
         NextPrintIndex).
+% `END { print $N }` and `END { print "n=" c["x"] }` beside an assoc read -- a field read and
+% a concatenation, both reusing the scalar route's emitters
+% (plawk_end_lastrec_field_lines//3, plawk_end_concat_parts//5) rather than growing copies.
+%
+% These cost two clauses each because the CAPABILITY was threaded by the NF change: a field
+% read in END needs the retained last record, exactly as NF does, and `EndRecord` is now in
+% scope here. That is the layering claim paying off in the small -- thread a capability into a
+% route once and the remaining cells of that route's row fill in for the price of a clause,
+% whereas the same cells before it were unreachable at any price.
+%
+% Placed BEFORE the generic scalar-expression clause below, which would otherwise capture
+% `field(N)` and lower it as an in-loop field read -- against a record that no longer exists.
+% The scalar walker orders these the same way and for the same reason.
+plawk_mixed_end_print_lines([field(Index) | Rest], ScalarPlan, AssocPlan, OutputSeparator,
+        EndRecord, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_lastrec_field_lines(Index, EndRecord, PrintIndex),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
+plawk_mixed_end_print_lines([concat(Parts) | Rest], ScalarPlan, AssocPlan, OutputSeparator,
+        EndRecord, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_concat_parts(Parts, ScalarPlan, EndRecord, PrintIndex, 0),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
 plawk_mixed_end_print_lines([Expr | Rest], ScalarPlan, AssocPlan, OutputSeparator, EndRecord, PrintIndex) -->
     { plawk_end_scalar_expr(Expr) },
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
