@@ -262,6 +262,26 @@ test(a_field_keyed_update_on_a_positional_table_is_untouched,
     run("{ split($0, a, \" \"); a[$1,$2]++; print a[1] }\n", "5\n5\n7\n"),
     !.
 
+% --- two adjacent assoc END fields keep their OFS -----------------------
+%
+% Adding the positional clause meant rewriting the string clause's head, and the
+% `plawk_scalar_end_separator_lines//2` goal was dropped in the process -- so
+% `END { print c["a"], c["b"] }` printed `48` instead of `4 8`. A one-space failure from a
+% clause-head edit, caught by an unrelated suite (tests/test_plawk_literal_assoc_key.pl),
+% not by anything in this one. Pinned here, in both key spaces, because this suite owns the
+% clauses that were rewritten.
+test(two_adjacent_assoc_end_fields_keep_the_separator,
+        [condition(clang_available)]) :-
+    run("{ c[$1]++ } END { print c[\"5\"], c[\"7\"] }\n", "2 1\n"),
+    !,
+    run("{ split($0, a, \" \") } END { print a[\"1\"], a[\"2\"] }\n", "7 disk\n"),
+    !,
+    run("{ split($0, a, \" \") } END { print a[1], a[2] }\n", "7 disk\n"),
+    !,
+    % ...and mixed with a literal, which used a different clause and always worked.
+    run("{ c[$1]++ } END { print c[\"5\"], \"x\" }\n", "2 x\n"),
+    !.
+
 % --- the rule has ONE home ----------------------------------------------
 %
 % The three sites emit different IR (a value read, an occupancy probe, a delete call), so

@@ -14395,6 +14395,12 @@ plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], AssocPl
     plawk_assoc_end_print_lines([assoc(var(ArrayName), int(N)) | Rest], AssocPlan,
         Descriptor, OutputSeparator, PrintIndex).
 plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
+    % The OFS separator BEFORE the value, for every field after the first. Adding the guard
+    % below meant rewriting this clause's head, and this goal was dropped in the process:
+    % the whole failure was a missing space -- `END { print c["a"], c["b"] }` printed `48`
+    % instead of `4 8`. Caught by an unrelated suite's expectation, nothing in the key-space
+    % work. When a clause head is rewritten, its BODY needs re-reading too.
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     % Guarded against the positional clause above rather than cut, so the two stay
     % mutually exclusive however the emitter is entered.
     { \+ plawk_assoc_plan_posarray_array(AssocPlan, ArrayName),
