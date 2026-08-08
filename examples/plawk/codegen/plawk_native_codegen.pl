@@ -14528,17 +14528,15 @@ plawk_mixed_end_print_lines([], _ScalarPlan, AssocPlan, _OutputSeparator, _) -->
     },
     TermLines,
     plawk_assoc_free_lines(AssocPlan).
+% `END { print n }` where a rule also touches an assoc table. Shares the ONE bare-scalar
+% print emitter with the scalar-only route -- see plawk_end_scalar_var_print_lines/4 for
+% what this clause used to be and what that cost.
 plawk_mixed_end_print_lines([var(Name) | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    { plawk_state_slot_index(ScalarPlan, scalar_counter(Name), SlotIndex),
-      format(atom(FmtVar), 'end_i64_fmt_~w', [PrintIndex]),
-      format(atom(PrintVar), 'printed_end_i64_~w', [PrintIndex]),
-      format(atom(ValueIR), '%final_slot_~w', [SlotIndex]),
-      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
-          [FmtPtr, PrintCall]),
+    { plawk_end_scalar_var_print_lines(ScalarPlan, Name, PrintIndex, Lines),
       NextPrintIndex is PrintIndex + 1
     },
-    [FmtPtr, PrintCall],
+    Lines,
     plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
 plawk_mixed_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
@@ -19246,33 +19244,68 @@ plawk_scalar_end_print_lines([], _StatePlan, _OutputSeparator, _EndRecord, _) --
           TermLines)
     },
     TermLines.
+%% plawk_end_scalar_var_print_lines(+StatePlan, +Name, +PrintIndex, -Lines) is semidet.
+%
+%  `END { print NAME }` for a bare scalar variable -- the ONE emitter, shared by every END
+%  driver. Resolves NAME to its slot, then prints by SLOT KIND: a string/strnum slot holds
+%  an interned atom id, so it resolves to text with unset (id 0) rendering EMPTY; a counter
+%  or double slot goes through plawk_end_numeric_print_lines/6, which renders unset empty
+%  for both. Fails (so the program declines) when NAME has no slot.
+%
+%  WHY THIS EXISTS AS A PREDICATE, which is the interesting part. It was written twice --
+%  once in the scalar-only END walker and once in the mixed (scalar + assoc) walker -- and
+%  the two drifted, because only the scalar copy was taught anything after the split. At
+%  the point of extraction the mixed copy still read:
+%
+%      plawk_state_slot_index(ScalarPlan, scalar_counter(Name), SlotIndex),
+%      llvm_emit_printf_i64(...)
+%
+%  i.e. counters only, printed as a plain i64. So the SAME surface construct behaved
+%  differently depending on whether the program happened to touch an assoc table:
+%
+%      { if ($1=="ZZZ") n++ } END { print n }               -> empty   (correct)
+%      { if ($1=="ZZZ") n++; c[$1]++ } END { print n, ... }  -> 0       (WRONG, gawk: empty)
+%      { s = $1 } END { print s }                            -> the text (correct)
+%      { s = $1; c[$1]++ } END { print s, ... }              -> DECLINE (gawk prints it)
+%
+%  Neither divergence was a missing feature: both features existed, ten lines away, in the
+%  other copy. The unset-renders-empty behaviour in particular was designed and landed
+%  deliberately, and the mixed route never received it.
+%
+%  That is the argument for generalising rather than patching: the second copy did not just
+%  fail to gain new behaviour, it silently un-did shipped behaviour for a subset of
+%  programs, and no test in either suite could see it because each suite exercises the
+%  route it owns. One emitter cannot drift from itself.
+plawk_end_scalar_var_print_lines(StatePlan, Name, PrintIndex, Lines) :-
+    plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
+    format(atom(ValueIR), '%final_slot_~w', [SlotIndex]),
+    (   ( Slot = scalar_string(_Name) ; Slot = scalar_strnum(_Name) )
+    ->  % resolve the atom id to text; id 0 (unset) prints as empty (the `%s\0`
+        % global's trailing NUL is a ready-made empty C string). A strnum slot
+        % holds an atom id too, so it prints identically.
+        format(atom(StrS), '  %end_str_s_~w = call i8* @wam_atom_to_string(i64 ~w)',
+            [PrintIndex, ValueIR]),
+        format(atom(StrE), '  %end_str_empty_~w = icmp eq i64 ~w, 0',
+            [PrintIndex, ValueIR]),
+        format(atom(StrSel),
+            '  %end_str_ptr_~w = select i1 %end_str_empty_~w, i8* getelementptr ([3 x i8], [3 x i8]* @.plawk_surface_print_string, i64 0, i64 2), i8* %end_str_s_~w',
+            [PrintIndex, PrintIndex, PrintIndex]),
+        format(atom(FmtPtr),
+            '  %end_str_fmt_~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0',
+            [PrintIndex]),
+        format(atom(PrintCall),
+            '  %printed_end_str_~w = call i32 (i8*, ...) @printf(i8* %end_str_fmt_~w, i8* %end_str_ptr_~w)',
+            [PrintIndex, PrintIndex, PrintIndex]),
+        Lines = [StrS, StrE, StrSel, FmtPtr, PrintCall]
+    ;   % counter AND double: one emitter, unset renders empty for both
+        plawk_end_numeric_print_lines(StatePlan, Slot, SlotIndex, ValueIR,
+            PrintIndex, Lines)
+    ).
+
 plawk_scalar_end_print_lines([var(Name) | Rest], StatePlan, OutputSeparator,
         EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    { plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
-      format(atom(ValueIR), '%final_slot_~w', [SlotIndex]),
-      ( ( Slot = scalar_string(_Name) ; Slot = scalar_strnum(_Name) )
-      -> % resolve the atom id to text; id 0 (unset) prints as empty (the `%s\0`
-         % global's trailing NUL is a ready-made empty C string). A strnum slot
-         % holds an atom id too, so it prints identically.
-         format(atom(StrS), '  %end_str_s_~w = call i8* @wam_atom_to_string(i64 ~w)',
-             [PrintIndex, ValueIR]),
-         format(atom(StrE), '  %end_str_empty_~w = icmp eq i64 ~w, 0',
-             [PrintIndex, ValueIR]),
-         format(atom(StrSel),
-             '  %end_str_ptr_~w = select i1 %end_str_empty_~w, i8* getelementptr ([3 x i8], [3 x i8]* @.plawk_surface_print_string, i64 0, i64 2), i8* %end_str_s_~w',
-             [PrintIndex, PrintIndex, PrintIndex]),
-         format(atom(FmtPtr),
-             '  %end_str_fmt_~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0',
-             [PrintIndex]),
-         format(atom(PrintCall),
-             '  %printed_end_str_~w = call i32 (i8*, ...) @printf(i8* %end_str_fmt_~w, i8* %end_str_ptr_~w)',
-             [PrintIndex, PrintIndex, PrintIndex]),
-         Lines = [StrS, StrE, StrSel, FmtPtr, PrintCall]
-      ;  % counter AND double: one emitter, unset renders empty for both
-         plawk_end_numeric_print_lines(StatePlan, Slot, SlotIndex, ValueIR,
-             PrintIndex, Lines)
-      ),
+    { plawk_end_scalar_var_print_lines(StatePlan, Name, PrintIndex, Lines),
       NextPrintIndex is PrintIndex + 1
     },
     Lines,

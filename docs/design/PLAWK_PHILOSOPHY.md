@@ -139,3 +139,109 @@ target compiles Prolog *into* awk scripts — the opposite data-flow direction
 from `plawk`, which compiles an awk-like surface *down to* Prolog→LLVM. They are
 complementary, not competing: one emits awk for portability, the other consumes
 an awk-like surface for native performance.
+
+---
+
+## 6. Philosophy of layering: templates below, Prolog above
+
+*Forward-looking; recorded so the direction is not re-derived. Nothing here asks for a
+rewrite.*
+
+### 6.1 The rule
+
+**Low-level, mechanical emission belongs in templates. Abstraction and decision-making
+belong in Prolog.** This is the same split the other transpiler targets use, and the
+reason is the same: Prolog is the portable part. A rule expressed as Prolog clauses can be
+re-hosted; a rule expressed as a hand-written string `format/3` inside one of twenty-nine
+driver clauses cannot.
+
+The practical test for which layer a thing belongs in: *does it decide, or does it
+render?* Choosing a key space from a table's kind decides — Prolog. Turning
+`(table, key, delta)` into a `call i64 @wam_assoc_i64_inc(...)` line renders — a template.
+
+### 6.2 Why portability is the point, not tidiness
+
+A future re-host of the compiler — a Go implementation for faster builds is the concrete
+candidate — has to carry every decision the compiler makes. Decisions living in Prolog
+clauses port as data and logic. Decisions living in the *arrangement* of format strings
+across near-duplicate emitters have to be rediscovered by reading them all, which is
+precisely how this codebase's recurring defect gets in.
+
+The compile-time motivation is real and measured, not hypothetical: **~5.2 s per program**
+for a 20-program corpus, dominated by loading the 21 761-line codegen module before any
+work starts, plus `clang`. That cost is why a faster host is attractive, and it is also
+why the split matters — a re-host is only cheap if the logic is already separable from the
+rendering.
+
+### 6.3 Structural templates: `pattern_stache`
+
+Two template dialects exist, and they are complementary rather than competing:
+
+| | `.mustache` (`template_system.pl`) | `.stache` (`pattern_stache`) |
+|---|---|---|
+| `{{case v}}` matches | literal text, string-compared | a **Prolog term**, matched by unification |
+| variables bound by a match | no such concept | visible to the case body |
+| fit | fixed boilerplate with holes | dispatch on the **shape** of a term |
+
+plawk's emitters dispatch on the shape of a term constantly — `var(Name)`, `field(N)`,
+`special('NF')`, `assoc(var(A), string(K))`, `concat(Parts)` — which is exactly what
+`.stache` is for, and exactly where the duplication lives. So the natural target is *one*
+`{{match}}` over the print-field term with one `{{case}}` per field kind, rendered by every
+driver, instead of a per-driver clause set that can silently differ.
+
+**Not adopted yet, deliberately.** `pattern_stache` lives on an unmerged branch
+(`claude/pattern-stache-dispatcher-prototype-dizes2`,
+[`SPEC_pattern_stache.md`](SPEC_pattern_stache.md)) and its spec says it implements *only
+what two witnessed consumers needed*. Making plawk a third consumer is a coordination
+decision, not a refactor to slip into an unrelated PR — see §6.5.
+
+### 6.4 What the layering would have prevented, concretely
+
+The bare-scalar `END { print NAME }` emitter existed twice, once per END walker. The two
+drifted: only one learned string/strnum slots and unset-renders-empty. The same program
+text therefore behaved differently depending on whether it happened to also touch an assoc
+table — printing `0` where gawk prints empty, and declining where gawk prints the text.
+
+Neither was a missing feature. Both behaviours sat ten lines away in the other copy.
+**Deleting the duplicate closed both gaps without implementing either.** That is the
+argument in one example: a duplicate does not merely fail to gain behaviour, it *un-does
+shipped behaviour* for a subset of programs, silently, and no per-route test suite can see
+it because each suite exercises the route it owns.
+
+The measurement that makes this actionable: the END print-field vocabulary is six kinds
+(`assoc`, `concat`, `field`, `special`, `string`, `var`) across three walkers — eighteen
+cells, about eleven filled. **Every END-shaped gap this campaign has closed was a missing
+cell.** A coverage matrix with holes is a defect generator; the holes should be explicit
+capability declarations, so a driver that cannot support a kind *declines* rather than
+accidentally lacking a clause.
+
+### 6.5 Note for whoever is working on `pattern_stache`
+
+plawk is a plausible **third consumer**, and this is a heads-up rather than a request.
+What plawk would need beyond the two witnessed consumers:
+
+- **Byte-identical rendering.** plawk's regression tool is a golden-IR diff — build a
+  corpus with `--keep-ll` before and after and require the emitted `.ll` to be unchanged.
+  Templates that reformat whitespace or reorder lines break that tool, so line-for-line
+  fidelity matters more here than readability of the template.
+- **Emission of *lists* of lines**, sometimes conditionally (a string slot emits five
+  instructions, a numeric slot a different set), with a caller-supplied index threaded
+  into every generated SSA name.
+- **Selection only, as specified.** The slot-kind and key-space decisions must stay in
+  Prolog; the template should receive an already-resolved kind. This matches the spec's
+  "it selects; it does not prove" and is the right division anyway per §6.1.
+
+If any of that argues for a dialect change, plawk is not urgent — the duplication is being
+removed incrementally in plain Prolog first, which is a prerequisite either way: a template
+can only replace emitters that already agree.
+
+### 6.6 Sequencing
+
+1. **Now, in Prolog:** collapse duplicated emitters onto one predicate each, proving
+   byte-identity with the golden-IR corpus. Each collapse tends to close real gaps for free
+   (§6.4), so this pays its own way and does not depend on any template decision.
+2. **Then:** make the coverage matrix explicit — capabilities as data, so a hole is a
+   declared decline.
+3. **Only then, and only where it helps:** move the *rendering* of agreed emitters into
+   `.stache` templates. Rendering that no longer varies between callers is a template;
+   rendering that still varies is a decision that has not been factored yet.
