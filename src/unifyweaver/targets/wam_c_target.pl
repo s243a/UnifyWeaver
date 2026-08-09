@@ -2616,7 +2616,23 @@ compile_step_wam_to_c(_Options, CCode) :-
             case INSTR_UNIFY_VARIABLE: {
                 WamValue *cell = resolve_reg(state, instr->as.reg.reg, instr->as.reg.is_y_reg);
                 if (state->mode == MODE_READ) {
-                    *cell = state->H_array[state->S];
+                    if (state->H_array[state->S].tag == VAL_UNBOUND) {
+                        /* Keep the register tied to the heap cell. Copying an
+                           unbound cell by value gives the register its OWN
+                           variable, so a later binding through the register
+                           never reaches the caller''s term -- which is what a
+                           repeated head variable does: `csame(p(X, X), X)`
+                           matched against `p(_, _)` aliased X with the second
+                           slot only, leaving the first slot unbound. Bound
+                           cells stay a plain copy (REF/ATOM/STR/LIST all
+                           already carry their own identity). */
+                        WamValue ref;
+                        ref.tag = VAL_REF;
+                        ref.data.ref_addr = state->S;
+                        *cell = ref;
+                    } else {
+                        *cell = state->H_array[state->S];
+                    }
                     state->S++;
                     wam_consume_arg_ctx(state);
                 } else {

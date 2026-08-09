@@ -61,6 +61,18 @@ Both are fixed by a `WamArgCtx` stack that saves and restores the
 enclosing term's argument pointer around nested terms; the depth is
 restored on backtracking. Found by the `nested` conformance program.
 
+**Read-mode variable identity (fixed 2026-08-09, CONF-FIX-C-EQ-DEREF).**
+`unify_variable` in READ mode copied the heap cell into the register by
+value. That is correct for a bound cell — `VAL_REF`/`VAL_ATOM`/`VAL_STR`/
+`VAL_LIST` each carry their own identity — but `VAL_UNBOUND` carries no
+address, so the register ended up holding its own detached variable. A
+head with a repeated variable inside a structure (`csame(p(X, X), X)`)
+then aliased `X` with the *second* slot and bound only that one, leaving
+the caller's first slot unbound. Read mode now installs a `VAL_REF` at
+`S` when the cell is unbound, mirroring the write branch. Found by the
+`repeatvar` conformance program; `=/2` hides this class of bug because it
+re-unifies, so only an identity comparison exposes it.
+
 ## Gaps (relative to Rust / Haskell / F#)
 
 - **No ISO three-form contract adoption** — not a reference adopter
@@ -74,8 +86,9 @@ restored on backtracking. Found by the `nested` conformance program.
   Tier-A kernel benches.
 - **Two pre-existing failures in `tests/test_wam_c_target.pl`**
   (`transitive_closure2` / `transitive_distance3` native kernel helpers
-  reported missing). Present on an unmodified tree as of 2026-08-06 and
-  unrelated to the nested-term fix; not yet triaged.
+  reported missing). Present on an unmodified tree as of 2026-08-09 and
+  unrelated to the unification fixes (re-confirmed against a stashed
+  baseline); not yet triaged.
 
 ## Path forward
 
@@ -91,5 +104,6 @@ restored on backtracking. Found by the `nested` conformance program.
 
 Fleet-aligned snapshot; source-verified line/kernel/LMDB/conformance
 facts against `wam_c_target.pl`, the conformance harness, and the
-parser-capability module (2026-07-11). Update the living checklist
-first when milestones land, then refresh here.
+parser-capability module (2026-07-11). Refreshed 2026-08-09 after
+CONF-FIX-C-EQ-DEREF; the C arm now carries no `ct_xfail` at all. Update
+the living checklist first when milestones land, then refresh here.

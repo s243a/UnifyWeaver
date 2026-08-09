@@ -31,7 +31,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | CONF-FIX-C-NESTED ✅ | Conformance gap fix | C | M | done — nested read *and* write contexts; segfault + two silent wrong-answer classes |
 | CONF-FIX-RUST-NESTED ✅ | Conformance gap fix | Rust | M | done — deref-before-mode-test + arity-qualified functor key |
 | CONF-FIX-RUST-EMPTYLIST ✅ | Conformance gap fix | Rust | S | done — unify_constant routed through unify(); a 4th bug (unify_value) found alongside |
-| CONF-FIX-C-EQ-DEREF | Conformance gap fix | C | S | — (found by the new `repeatvar` program; `==/2` compares undereferenced slots) |
+| CONF-FIX-C-EQ-DEREF ✅ | Conformance gap fix | C | S | done — read-mode `unify_variable` copied unbound heap cells by value; `==/2` was innocent |
 | CONF-LLVM | Conformance adapter | LLVM | L | — |
 | CONF-R ✅ | Conformance adapter | R | M | done — opt-in; all classic programs green (R-SWITCH-INDEX-CONFORMANCE) |
 | R-SWITCH-INDEX-CONFORMANCE ✅ | Conformance gap fix | R | S | done — fallthrough/A2 reuse existing SwitchOnTerm no-op |
@@ -251,28 +251,46 @@ external toolchain.
   query failed while every individual step "succeeded". Also routed
   through `unify()`. Guarded by the new `repeatvar` conformance program.
 
-### CONF-FIX-C-EQ-DEREF: WAM-C `==/2` compares undereferenced slots
+### CONF-FIX-C-EQ-DEREF: WAM-C read-mode `unify_variable` loses heap identity ✅
 - **Lever:** Conformance gap fix  **Target:** C  **Size:** S  **Depends on:** —
 - **Found by:** the `repeatvar` conformance program, added 2026-08-06.
   **Not** the nested-head class fixed in CONF-FIX-C-NESTED — C passes all
-  of `nested`.
-- **Symptom:** `crepeat(a)` returns false. Narrowed with a three-way probe
-  over `T = p(_,_), csame(T, a)`:
+  of `nested`. The card name records where the symptom pointed; the bug
+  was one layer down.
+- **Symptom:** `crepeat(a)` returns false, while both `csame/2` queries
+  pass. Narrowed by binding each slot separately after
+  `T = p(A,B), user:csame(T, a)`:
 
   | probe | expression | result |
   |---|---|---|
-  | v1 | the call alone | true |
-  | v2 | `..., T = p(a,a)` | true |
-  | v3 | `..., T == p(a,a)` | **false** (should be true) |
+  | w1 | `A == a` | **false** (first slot never bound) |
+  | w2 | `B == a` | true |
+  | w3 | `A == B` | **false** |
 
-  So head unification and the bindings are correct; `==/2` is comparing
-  the raw term — whose slots still hold bound-but-uncollapsed references
-  — against the literal.
-- **Where to look:** the C `==/2` / term-identity path, not unification.
-  Contrast `=/2`, which goes through `wam_unify` and derefs correctly.
+  So `==/2` was innocent — `wam_term_strict_equal` dereferences correctly
+  and the slot really was unbound.
+- **Root cause:** `INSTR_UNIFY_VARIABLE`'s READ branch did
+  `*cell = state->H_array[state->S]` — a by-value copy. For a bound cell
+  that is fine (`VAL_REF`/`VAL_ATOM`/`VAL_STR`/`VAL_LIST` each carry their
+  own identity), but `VAL_UNBOUND` carries no address, so the register got
+  its **own** fresh variable instead of an alias of the heap slot.
+  `csame(p(X, X), X)` against `p(_, _)` then went: `unify_variable X1`
+  copies slot 0's unbound marker into X1; `unify_value X1` var-var unifies
+  that detached register with slot 1, so X1 becomes a `VAL_REF` **to slot
+  1**; `get_value X1, A2` binds slot 1 to `a`. Slot 0 is never touched.
+- **Fix:** read mode now installs a `VAL_REF` pointing at `S` when the
+  heap cell is unbound, mirroring what the write branch (`dest >= 0`)
+  already did. Bound cells keep the plain copy.
+  (`src/unifyweaver/targets/wam_c_target.pl`, `INSTR_UNIFY_VARIABLE`.)
+- **Why only `==/2` exposed it:** `T = p(a,a)` re-unifies, so it happily
+  binds the still-unbound first slot and succeeds. Only an identity
+  comparison shows that the head unification never bound it — which is
+  exactly why `crepeat/1` is written with `==/2`.
 - **Acceptance:** `CONFORMANCE_TARGETS=c CONFORMANCE_PROGRAMS=repeatvar
   swipl -q -g run_tests -t halt tests/test_wam_cross_target_conformance.pl`
-  passes with `ct_xfail(c, repeatvar)` removed.
+  passes with `ct_xfail(c, repeatvar)` removed. ✅ — and the full C arm is
+  green with **no xfails left**, which was not true for any other target
+  when its head-unification bugs were first found.
 
 ### CONF-LLVM: Register LLVM in the cross-target conformance harness
 - **Lever:** Conformance adapters  **Target:** LLVM  **Size:** L  **Depends on:** —
