@@ -188,6 +188,13 @@ Case bodies include the literal text between markers, newlines included. The eng
 trim; the caller owns whitespace policy (both witnessed consumers trimmed per-rendering with
 `normalize_space/2`). Mustache "standalone line" semantics are an exclusion, below.
 
+One byte is deleted rather than rendered, and this document was silent on it until a prospective
+consumer needed byte fidelity: text between `{{match key}}` and the **first** `{{case ...}}` is
+**discarded** — not rendered, not an error. It is what lets a template put the match tag on its
+own line without emitting that newline, and it is the only place the engine drops text it was
+handed. Line and byte fidelity, including this row, is pinned by
+[`tests/core/test_pattern_stache_whitespace.pl`](../../tests/core/test_pattern_stache_whitespace.pl).
+
 ## Deliberate exclusions
 
 Each exclusion records a **revisit condition** (PROJECT_PHILOSOPHY §3: a condition to check, not
@@ -207,6 +214,24 @@ extending the grammar in place.
 | **multi-key dispatch** | absent | a consumer that cannot state the second key in the case body (both witnessed consumers could) |
 | **partials / delegation** (`{{> name}}`) | absent | the two-live-files divergence hazard in the philosophy doc materializes |
 | **`.mustache` → `.stache` converter** | not built | per [`docs/TODO_STACHE_CONVERTER.md`](../TODO_STACHE_CONVERTER.md): a match-using library grows to the low tens of cases |
+
+### Prospective-consumer constraints on record
+
+Two exclusion rows above now have a **named prospective consumer and a stated reason**, recorded
+so that whoever next opens this table starts from the record rather than rediscovering them.
+Neither row is reopened here and no dialect change has been requested; see
+[`RECORD_prospective_consumer_plawk.md`](../../prototypes/mu_cosine/RECORD_prospective_consumer_plawk.md)
+for the measurements.
+
+- **missing-key / unbound-placeholder.** A consumer whose only oracle is a byte diff against a
+  golden file gets no local symptom from an unbound placeholder: the render succeeds and the
+  output is well-formed text containing a template marker. That is the first concrete instance of
+  this row's revisit condition ("a consumer needs fail-on-unbound rendering"), and the cost is
+  already stated — a new dialect version, since it changes output.
+- **list patterns / store iteration.** A conditional list of lines whose *membership* depends on
+  a resolved kind is expressible today and is **not** this row; only a list whose *length* is
+  decided inside the template would be, and that is this row's existing revisit condition ("a
+  consumer that cannot iterate outside the template"), unchanged.
 
 ### Why non-linearity is refused while nesting is tolerated
 

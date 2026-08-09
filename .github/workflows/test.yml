@@ -80,6 +80,7 @@ jobs:
         run: |
           swipl -g "use_module('prototypes/mu_cosine/pattern_stache/pe_registry_mirror'), pe_registry_mirror:pe_mirror_verify" -t halt
           swipl -q -g run_tests -t halt tests/core/test_pattern_stache.pl
+          swipl -q -g run_tests -t halt tests/core/test_pattern_stache_whitespace.pl
           swipl -q -g run_tests -t halt prototypes/mu_cosine/pattern_stache/test_pattern_stache.pl
           swipl -q -g run_tests -t halt prototypes/mu_cosine/pattern_stache/test_constraint_dispatch.pl
           swipl -q -g run_tests -t halt prototypes/mu_cosine/pattern_stache/test_pe_number.pl
