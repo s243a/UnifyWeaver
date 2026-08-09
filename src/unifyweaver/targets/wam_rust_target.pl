@@ -2593,19 +2593,40 @@ compile_execute_term_builtin_to_rust(Code) :-
             "retractall/1" => { self.execute_retractall_builtin() }
             "predicate_property/2" => { self.execute_predicate_property_builtin() }
             "term_variables/2" => {
-                let term = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let term = match self.get_reg_raw("A1") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let output = match self.get_reg_raw("A2") {
+                    Some(value) => value,
+                    None => return false,
+                };
                 let variables = self.variables_from_term(&term);
-                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                if self.unify(&output, &variables) { self.pc += 1; true }
-                else { false }
+                let mark = self.trail.len();
+                if self.unify(&output, &variables) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
             }
             "numbervars/3" => {
-                let start = match self.get_reg_raw("A2")
-                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
-                    Some(Value::Integer(n)) => n,
+                let term = match self.get_reg_raw("A1") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let start_raw = match self.get_reg_raw("A2") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let output = match self.get_reg_raw("A3") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let start = match self.deref_heap(&self.deref_var(&start_raw)) {
+                    Value::Integer(n) => n,
                     _ => return false,
                 };
-                let term = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
                 let variables = match self.variables_from_term(&term) {
                     Value::List(items) => items,
                     _ => return false,
@@ -2627,7 +2648,6 @@ compile_execute_term_builtin_to_rust(Code) :-
                     }
                     next_number = following;
                 }
-                let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                 if self.unify(&output, &Value::Integer(next_number)) {
                     self.pc += 1; true
                 } else {

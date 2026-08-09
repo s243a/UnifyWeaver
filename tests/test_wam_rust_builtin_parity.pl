@@ -2711,6 +2711,22 @@ fn test_term_variables_direct() {
     assert!(ground_ok);
     assert_eq!(read_var(&ground_vm, "Vars"), Value::List(vec![]));
     assert!(!call2("term_variables/2", ub("X"), Value::List(vec![])).0);
+
+    let (rollback_ok, rollback_vm) = call2(
+        "term_variables/2",
+        Value::Str("pair/2".to_string(), vec![ub("Source"), a("ground")]),
+        Value::List(vec![ub("Captured"), a("wrong")]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "Captured"), ub("Captured"));
+
+    let mut missing_term = vmnew();
+    missing_term.set_reg("A2", ub("Vars"));
+    assert!(!missing_term.execute_builtin("term_variables/2", 2));
+
+    let mut missing_output = vmnew();
+    missing_output.set_reg("A1", a("ground"));
+    assert!(!missing_output.execute_builtin("term_variables/2", 2));
 }
 
 #[test]
@@ -2754,6 +2770,23 @@ fn test_numbervars_direct() {
         call3("numbervars/3", ub("X"), i(i64::MAX), ub("End"));
     assert!(!overflow_ok);
     assert_eq!(read_var(&overflow_vm, "X"), ub("X"));
+
+    let mut missing_term = vmnew();
+    missing_term.set_reg("A2", i(0));
+    missing_term.set_reg("A3", ub("End"));
+    assert!(!missing_term.execute_builtin("numbervars/3", 3));
+
+    let mut missing_start = vmnew();
+    missing_start.set_reg("A1", ub("X"));
+    missing_start.set_reg("A3", ub("End"));
+    assert!(!missing_start.execute_builtin("numbervars/3", 3));
+    assert_eq!(read_var(&missing_start, "X"), ub("X"));
+
+    let mut missing_end = vmnew();
+    missing_end.set_reg("A1", ub("X"));
+    missing_end.set_reg("A2", i(0));
+    assert!(!missing_end.execute_builtin("numbervars/3", 3));
+    assert_eq!(read_var(&missing_end, "X"), ub("X"));
 }
 
 #[test]
