@@ -39,7 +39,8 @@ import re
 # safe to drop (pure noise removal).
 _JUNK = re.compile(r"catautotoc|navseasoncats|navbox|wikipedia|wikidata|^articles?[ _]|^pages?[ _]|^categor|"
                    r"[ _]stubs?\b|templates?|redirects?|hidden|tracking|maintenance|disambiguation|"
-                   r"\b\w+-class[ _]|unassessed|-importance[ _]", re.I)
+                   r"\b\w+-class[ _]|unassessed|-importance[ _]|wikiproject|^cs1|^all[ _]|"
+                   r"noindexed|clean-up|cleanup|automatic[ _]category|^use[ _]\w+[ _]dates", re.I)
 # TIER 2 — loosely semantic: structural / temporal / by-X groupings (years, places, nationalities). These DO
 # carry meaning (just lower semantic density), so dropping them makes the eval EASIER on valid-but-hard targets.
 # Keep by default; down-SAMPLE (not drop) in training. Drop only with --drop-structural (to decompose the gain).

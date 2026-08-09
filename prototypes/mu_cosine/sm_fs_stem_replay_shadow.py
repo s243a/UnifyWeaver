@@ -13,9 +13,9 @@ import sm_fs_ranking_pipeline as pl
 from fine_tune_channel_heads import mu_batch
 from mu_attention import CORPORA, E5_REVISION, JUDGES, NODETYPE, OPS, Tokenizer, build_e5_tables
 
-DATA = os.path.expanduser("~/mu_data/enwiki_transitive_v1/targets_clean.tsv")
+DATA = os.path.expanduser(os.environ.get("SM_DATA", "~/mu_data/enwiki_transitive_v1/targets_clean.tsv"))
 REPLAY = os.path.expanduser("~/mu_data/wiki_lineage_v2/targets.tsv")
-WARM = os.path.expanduser("~/mu_data/wiki_lineage_v2/trunk_wiki_40000.pt")
+WARM = os.path.expanduser(os.environ.get("SM_WARM", "~/mu_data/wiki_lineage_v2/trunk_wiki_40000.pt"))
 ARM = os.environ.get("ARM", "replay")
 SEED = int(os.environ.get("SEED", "3997001"))
 OUT = os.environ.get("OUT", os.path.expanduser(
