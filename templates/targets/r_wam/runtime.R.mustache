@@ -4171,19 +4171,25 @@ WamRuntime$try_scalar_aggregate_fastpath <- function(program, state, instr) {
       assign(as.character(r), as.numeric(v$val), envir = base_vals)
   }
 
-  template_reg <- as.integer(instr$template)
-  tkey <- as.character(template_reg)
-  stream_n <- 0L
-  stream_total <- 0.0
-  stream_saw_float <- FALSE
-  stream_best_n <- NULL
-  stream_best_float <- FALSE
+  if (!isTRUE(WamRuntime$finalize_bulk_scalar_reduce(
+      program, state, kind, as.integer(instr$bag), as.integer(instr$template),
+      compiled, out_aliases, base_vals, sols, bulk_cap$output_regs)))
+    return(FALSE)
+  state$pc <- as.integer(end_pc + 1L)
+  TRUE
+}
 
+# Shared bulk scalar reduce + bag unify (AGG-BATCH / PLAN-1).
+WamRuntime$finalize_bulk_scalar_reduce <- function(
+    program, state, kind, bag_reg, template_reg, compiled, out_aliases,
+    base_vals, sols, output_regs) {
+  tkey <- as.character(as.integer(template_reg))
+  stream_n <- 0L; stream_total <- 0.0; stream_saw_float <- FALSE
+  stream_best_n <- NULL; stream_best_float <- FALSE
   is_typed_batch <- is.list(sols) && identical(sols$type, "numeric_batch")
-  batch <- WamRuntime$as_bulk_numeric_batch(sols, bulk_cap$output_regs)
+  batch <- WamRuntime$as_bulk_numeric_batch(sols, output_regs)
   if (is_typed_batch && is.null(batch)) return(FALSE)
   if (!is.null(batch)) {
-    # Vectorized closed is_lax template over a typed numeric batch.
     env <- new.env(parent = emptyenv())
     for (k in ls(base_vals, all.names = TRUE))
       assign(k, get(k, envir = base_vals, inherits = FALSE), envir = env)
@@ -4192,22 +4198,17 @@ WamRuntime$try_scalar_aggregate_fastpath <- function(program, state, instr) {
     out_key <- as.character(out_reg)
     aliases <- if (exists(out_key, envir = out_aliases, inherits = FALSE))
       get(out_key, envir = out_aliases, inherits = FALSE) else integer(0)
-    for (a in aliases)
-      assign(as.character(a), batch$val, envir = env)
+    for (a in aliases) assign(as.character(a), batch$val, envir = env)
     env2 <- WamRuntime$eval_scalar_aggregate_arith(program, compiled, env)
-    if (is.null(env2) || !exists(tkey, envir = env2, inherits = FALSE))
-      return(FALSE)
+    if (is.null(env2) || !exists(tkey, envir = env2, inherits = FALSE)) return(FALSE)
     nvals <- get(tkey, envir = env2, inherits = FALSE)
     if (!is.numeric(nvals)) return(FALSE)
     stream_n <- length(nvals)
     if (identical(kind, "sum")) {
       if (stream_n > 0L) {
         stream_total <- sum(nvals)
-        # Vector form of arith_to_term's float tag (avoid per-element terms).
-        stream_saw_float <- any(
-          !is.finite(nvals) |
-          abs(nvals) >= .Machine$integer.max |
-          nvals != trunc(nvals))
+        stream_saw_float <- any(!is.finite(nvals) | abs(nvals) >= .Machine$integer.max |
+                                  nvals != trunc(nvals))
       }
     } else if (!identical(kind, "count") && stream_n > 0L) {
       idx <- if (identical(kind, "min")) which.min(nvals) else which.max(nvals)
@@ -4215,7 +4216,6 @@ WamRuntime$try_scalar_aggregate_fastpath <- function(program, state, instr) {
       stream_best_float <- WamRuntime$arith_num_is_float_tag(stream_best_n)
     }
   } else {
-    # Legacy per-solution record path (non-batch / multi-reg shapes).
     for (sol in sols) {
       env <- new.env(parent = emptyenv())
       for (k in ls(base_vals, all.names = TRUE))
@@ -4228,42 +4228,113 @@ WamRuntime$try_scalar_aggregate_fastpath <- function(program, state, instr) {
       for (a in aliases)
         assign(as.character(a), as.numeric(sol$val), envir = env)
       env2 <- WamRuntime$eval_scalar_aggregate_arith(program, compiled, env)
-      if (is.null(env2)) next
-      if (!exists(tkey, envir = env2, inherits = FALSE)) next
+      if (is.null(env2) || !exists(tkey, envir = env2, inherits = FALSE)) next
       nval <- get(tkey, envir = env2, inherits = FALSE)
       nterm <- WamRuntime$arith_to_term(nval)
       if (is.null(nterm)) next
       n_is_float <- identical(nterm$tag, "float")
-      if (identical(kind, "count")) {
-        stream_n <- stream_n + 1L
-      } else if (identical(kind, "sum")) {
-        stream_total <- stream_total + nval
-        stream_n <- stream_n + 1L
+      if (identical(kind, "count")) stream_n <- stream_n + 1L
+      else if (identical(kind, "sum")) {
+        stream_total <- stream_total + nval; stream_n <- stream_n + 1L
         if (n_is_float) stream_saw_float <- TRUE
       } else {
         if (is.null(stream_best_n) ||
             (identical(kind, "min") && nval < stream_best_n) ||
             (identical(kind, "max") && nval > stream_best_n)) {
-          stream_best_n <- nval
-          stream_best_float <- n_is_float
+          stream_best_n <- nval; stream_best_float <- n_is_float
         }
         stream_n <- stream_n + 1L
       }
     }
   }
-
   bag <- WamRuntime$scalar_aggregate_bag_term(
-    kind, stream_n, stream_total, stream_saw_float, stream_best_n,
-    stream_best_float)
+    kind, stream_n, stream_total, stream_saw_float, stream_best_n, stream_best_float)
   if (is.null(bag)) return(FALSE)
-  bag_reg <- as.integer(instr$bag)
-  cur <- WamRuntime$get_reg(state, bag_reg)
-  if (is.null(cur)) {
-    WamRuntime$put_reg(state, bag_reg, bag)
-  } else if (!WamRuntime$unify(state, cur, bag)) {
-    return(FALSE)
+  cur <- WamRuntime$get_reg(state, as.integer(bag_reg))
+  if (is.null(cur)) WamRuntime$put_reg(state, as.integer(bag_reg), bag)
+  else if (!WamRuntime$unify(state, cur, bag)) return(FALSE)
+  TRUE
+}
+
+# PERF-R-BULK-REDUCE-PLAN-1: execute generate-time fused bulk-reduce plan.
+WamRuntime$exec_bulk_reduce_plan <- function(program, state, plan, key) {
+  snap <- as.list.environment(state, all.names = TRUE); snap_trail <- length(state$trail)
+  fb <- function() {
+    WamRuntime$undo_trail_to(state, snap_trail); for (nm in names(snap)) assign(nm, snap[[nm]], envir = state)
+    tgt <- program$labels[[key]]; if (is.null(tgt)) return(FALSE)
+    sp <- state$pc; sc <- state$cp; sh <- state$halt
+    ss <- length(state$stack); scps <- length(state$cps); sf <- state$shadow_frame
+    state$pc <- as.integer(tgt); state$cp <- 0L; state$halt <- FALSE
+    ok <- isTRUE(WamRuntime$run(program, state, min_cps = scps))
+    state$pc <- sp; state$cp <- sc; state$halt <- sh
+    if (length(state$stack) > ss) state$stack <- state$stack[seq_len(ss)]
+    if (length(state$cps) > scps) state$cps <- state$cps[seq_len(scps)]
+    state$shadow_frame <- sf; ok
   }
-  state$pc <- as.integer(end_pc + 1L)
+  if (!is.list(plan) || is.null(plan$kind) || is.null(plan$bulk_key)) return(fb())
+  kind <- as.character(plan$kind)
+  if (!(kind %in% c("sum", "count", "min", "max"))) return(fb())
+  be <- WamRuntime$bulk_collect_env(program); bkey <- as.character(plan$bulk_key)
+  if (is.null(be) || !exists(bkey, envir = be, inherits = FALSE) ||
+      !WamRuntime$lowered_path_ok(program, bkey)) return(fb())
+  bulk_cap <- get(bkey, envir = be, inherits = FALSE)
+  if (!is.list(bulk_cap) || !is.function(bulk_cap$fn) || is.null(bulk_cap$output_regs))
+    return(fb())
+  for (ai in as.integer(plan$nonvar_ais)) {
+    v <- WamRuntime$deref(state, WamRuntime$get_reg(state, ai))
+    if (is.null(v) || identical(v$tag, "unbound")) return(FALSE)
+  }
+  bag_ai <- as.integer(plan$bag_ai); bag_saved <- WamRuntime$get_reg(state, bag_ai)
+  entry <- new.env(parent = emptyenv())
+  for (p in plan$puts) if (!is.null(p$f)) {
+    fi <- as.integer(p$f); fk <- as.character(fi)
+    if (!exists(fk, envir = entry, inherits = FALSE))
+      assign(fk, WamRuntime$get_reg(state, fi), envir = entry)
+  }
+  base_vals <- new.env(parent = emptyenv()); ef <- as.character(plan$exp_fact)
+  if (nzchar(ef)) {
+    slash <- regexpr("/", ef, fixed = TRUE)[1]; if (slash < 2L) return(fb())
+    WamRuntime$put_reg(state, 1L, Unbound(paste0("V", state$var_counter)))
+    state$var_counter <- state$var_counter + 1L
+    if (!isTRUE(WamRuntime$dispatch_call(program, state, substr(ef, 1L, slash - 1L),
+        as.integer(substr(ef, slash + 1L, nchar(ef)))))) return(FALSE)
+    nv <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    if (is.null(nv) || !(nv$tag %in% c("int", "float"))) return(fb())
+    nval <- as.numeric(nv$val); if (isTRUE(plan$uminus)) nval <- -nval
+    assign(as.character(as.integer(plan$exp_y)), nval, envir = base_vals)
+  }
+  for (p in plan$puts) {
+    k <- as.character(p$k); ai <- as.integer(p$a)
+    if (identical(k, "c"))
+      WamRuntime$put_reg(state, ai, get(as.character(as.integer(p$f)), envir = entry))
+    else if (identical(k, "f")) {
+      u <- Unbound(paste0("V", state$var_counter)); state$var_counter <- state$var_counter + 1L
+      WamRuntime$put_reg(state, ai, u)
+    } else if (identical(k, "l"))
+      WamRuntime$put_reg(state, ai, WamRuntime$wam_list_build(
+        list(get(as.character(as.integer(p$f)), envir = entry)), program$intern_table))
+    else return(fb())
+  }
+  sols <- bulk_cap$fn(program, state)
+  if (is.null(sols) || !is.list(plan$compiled) || !length(plan$compiled)) return(fb())
+  out_aliases <- new.env(parent = emptyenv())
+  for (al in plan$aliases) {
+    ak <- as.character(as.integer(al[[1]]))
+    prev <- if (exists(ak, envir = out_aliases, inherits = FALSE))
+      get(ak, envir = out_aliases, inherits = FALSE) else integer(0)
+    assign(ak, c(prev, as.integer(al[[2]])), envir = out_aliases)
+  }
+  for (out_reg in bulk_cap$output_regs)
+    if (!exists(as.character(out_reg), envir = out_aliases, inherits = FALSE)) return(fb())
+  WamRuntime$put_reg(state, bag_ai, bag_saved)
+  if (!isTRUE(WamRuntime$finalize_bulk_scalar_reduce(
+      program, state, kind, bag_ai, as.integer(plan$tkey), plan$compiled,
+      out_aliases, base_vals, sols, bulk_cap$output_regs))) return(FALSE)
+  if (isTRUE(plan$gt0)) {
+    bv <- WamRuntime$deref(state, WamRuntime$get_reg(state, bag_ai))
+    if (is.null(bv) || !(bv$tag %in% c("int", "float")) || !(as.numeric(bv$val) > 0))
+      return(FALSE)
+  }
   TRUE
 }
 
