@@ -87,17 +87,20 @@ default 4096), and explicit `auto` (codegen resolves via shared
   ≈2.04×; thin step-driver ≈0.97×; direct-fusion five-repetition smoke
   ≈1.20× but ≈320 LOC (>180 soft-stop) — reverted, docs-only. The
   official two-sequence gate was not run after the soft-stop fired.
+  PERF-R-BULK-REDUCE-PLAN-1: compact generate-time plans + generic
+  executor, **180** net production LOC after fail-closed review hardening; official 7×2 gate ≈1.24× query
+  both sequences, no total regression, 271-row parity; hosted 3-rep
+  median query_ms=160 / total_ms=687 — **retained**.
 
 ## Path forward
 
 1. Optional follow-up: three-form keys for additional audited builtins
    beyond `is`/compares/`succ` (same class of work as ISO-PYTHON/ISO-FSHARP).
-2. Next ED performance lever: retain shape-gated direct bulk-reduce
-   fusion under LOC discipline (generate-time plan packing or raised
-   budget) — thin step-drivers do not clear ≥1.05×.
+2. Further ED gains likely need broader region fusion or `put_reg`/`step`
+   infrastructure — thin step-drivers remain not useful.
 
 ## Document status
 
-Fleet-aligned snapshot updated for PERF-R-BULK-REDUCE-REGION-0
-(2026-08-05): hosted NATIVE-HOPS-0 row unchanged at 270/776; fused
-bulk-reduce declined on LOC soft-stop despite a ≥1.05× smoke result.
+Fleet-aligned snapshot updated for PERF-R-BULK-REDUCE-PLAN-1
+(2026-08-09): hosted row 160/687 (PLAN-1); official fresh-process gate
+≈1.24× query retained under the 180-LOC hard stop.

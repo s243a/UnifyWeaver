@@ -1137,6 +1137,14 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, IsoConfig, BasePC
         % per-pred wrapper. Internal calls keep going through the
         % WAM array, matching the pre-PR behaviour.
         NewLoweredDispAcc = LoweredDispAcc
+    ;   should_try_lower(EmitMode, P, Arity),  % PERF-R-BULK-REDUCE-PLAN-1
+        WamCodeForLower \= "",
+        r_pack_bulk_reduce_plan(WamCodeForLower, Plan),
+        emit_bulk_reduce_plan_fusion(P, Arity, Plan, FuncName, FusedR),
+        emit_r_lowered_wrapper(P, Arity, FuncName, WrapperCode),
+        emit_lowered_dispatch_entry(P, Arity, FuncName, DispEntry)
+    ->  NewLoweredAcc = [FusedR | LoweredAcc],
+        NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
     ;   NewLoweredAcc = LoweredAcc,
         NewLoweredDispAcc = LoweredDispAcc,
         emit_r_wrapper(P, Arity, BasePC, WrapperCode)
@@ -1195,6 +1203,107 @@ emit_bulk_collect_entry(Pred, 4, recursive_kernel(category_ancestor, _, ConfigOp
   WamRuntime$category_ancestor_bulk_collect(program, state, "~w", "~w/2", ~wL)
 }, 3L)',
            [Pred, EdgePred, EdgePred, MaxDepth]).
+
+r_pack_bulk_reduce_plan(WamCode, Plan) :-
+    atom_string(WamCode, S), split_string(S, "\n", " \t", Ls0),
+    exclude([L]>>(L == "" ; sub_string(L, _, 1, 0, ":")), Ls0, Ls),
+    maplist(tokenize_wam_line, Ls, Ps),
+    include([X]>>(X = ["begin_aggregate"|_]), Ps, [_]),
+    include([X]>>(X = ["end_aggregate"|_]), Ps, [_]),
+    forall(member([H|_], Ps), memberchk(H, ["allocate","deallocate","proceed","get_variable","put_value",
+      "put_variable","put_structure","put_list","put_constant","set_value","set_constant","builtin_call","call","begin_aggregate","end_aggregate"])),
+    append(Before, [Begin|Rest], Ps),
+    Begin = ["begin_aggregate", KindS, TRegS, BagYS],
+    atom_string(Kind, KindS), memberchk(Kind, [sum, count, min, max]),
+    reg_to_int(TRegS, TReg), reg_to_int(BagYS, BagY),
+    append(Body, [End|After], Rest), End = ["end_aggregate"|_],
+    include([C]>>(C = ["call",_,_]), Body, [Call]), Call = ["call", BulkKey, _],
+    findall(Y-Ai, (member(["get_variable", Ys, As], Before),
+                   reg_to_int(Ys, Y), reg_to_int(As, Ai)), Y2A),
+    ( member(BagY-BagAi, Y2A) -> true ; BagAi = BagY ),
+    findall(Ai, (append(_, [["put_value", Ys, _], ["builtin_call", "nonvar/1", _]|_], Before),
+                 reg_to_int(Ys, Y), (member(Y-Ai, Y2A) -> true ; Ai = Y)), Nonvars),
+    r_br_exp(Before, ExpFact, ExpY, UMinus),
+    findall(C, (member(C, Before), C=["call"|_]), Cs), (ExpFact == '' -> Cs=[] ; Cs=[["call",ExpFact,"1"]]),
+    findall(B, member(["builtin_call",B,_], Before), Bs),
+    include([B]>>(B == "nonvar/1"), Bs, NBs), length(NBs, N), length(Nonvars, N),
+    exclude([B]>>(B == "nonvar/1"), Bs, OB), (ExpFact=='' -> OB=[] ; OB=[Is],memberchk(Is,["is/2","is_lax/2"])),
+    append(Pre, [Call|Post], Body),
+    findall(Ai-Y, (member(["put_variable", Ys, As], Pre),
+                   reg_to_int(Ys, Y), reg_to_int(As, Ai)), Aliases),
+    r_br_puts(Pre, Y2A, Puts), Puts \= [],
+    r_br_compile(Post, TReg, Compiled), Compiled \= [],
+    r_br_after(After, BagYS, Gt0),
+    Plan = br_plan(Kind, BagAi, BulkKey, Nonvars, ExpFact, ExpY, UMinus,
+                   Gt0, TReg, Compiled, Aliases, Puts).
+
+r_br_exp(Before, Fact, ExpY, true) :-
+    append(_, [["put_variable", _, "A1"], ["call", Fact, "1"],
+               ["put_variable", EYs, "A1"], ["put_structure", "-/1", "A2"],
+               ["set_value", _], ["builtin_call", Is, _]|_], Before),
+    (Is == "is/2" ; Is == "is_lax/2"), !, reg_to_int(EYs, ExpY).
+r_br_exp(_, '', 0, false).
+r_br_after([["deallocate"],["proceed"]], _, false).
+r_br_after([["proceed"]], _, false).
+r_br_after([["put_value",B,_],["put_constant","0",_],["builtin_call",C,_],["deallocate"],["proceed"]], B, true) :- memberchk(C, [">/2",">_lax/2"]).
+
+r_br_puts([], _, []).
+r_br_puts([["put_value", Ys, As]|Rest], Y2A, [put(copy, Ai, From)|Puts]) :- !,
+    reg_to_int(As, Ai), reg_to_int(Ys, Y),
+    (member(Y-From, Y2A) -> true ; From = Y), r_br_puts(Rest, Y2A, Puts).
+r_br_puts([["put_variable", _, As]|Rest], Y2A, [put(fresh, Ai, 0)|Puts]) :- !,
+    reg_to_int(As, Ai), r_br_puts(Rest, Y2A, Puts).
+r_br_puts([["put_list", As], ["set_value", Ys], ["set_constant", "[]"]|Rest],
+          Y2A, [put(list1, Ai, From)|Puts]) :- !,
+    reg_to_int(As, Ai), reg_to_int(Ys, Y),
+    (member(Y-From, Y2A) -> true ; From = Y), r_br_puts(Rest, Y2A, Puts).
+
+r_br_compile([], _, []).
+r_br_compile([Target, ["put_structure", FA, "A2"]|Rest0], TReg,
+             [step(Dest, Op, Arity, Args)|More]) :-
+    ( Target = ["put_variable", Ds, "A1"], reg_to_int(Ds, Dest)
+    ; Target = ["put_value", Ds, "A1"], reg_to_int(Ds, Dest), Dest =:= TReg ),
+    split_string(FA, "/", "", [Op, ArS]), number_string(Arity, ArS),
+    memberchk(Op, ["+", "-", "*", "/", "//", "**", "^"]), !,
+    length(SetLits, Arity), append(SetLits, [["builtin_call", Is, _]|Tail], Rest0),
+    (Is == "is/2" ; Is == "is_lax/2"),
+    maplist(r_br_arg, SetLits, Args), r_br_compile(Tail, TReg, More).
+r_br_arg(["set_value", Rs], arg(reg, R)) :- !, reg_to_int(Rs, R).
+r_br_arg(["set_constant", Ns], arg(const, N)) :- number_string(N, Ns), !.
+
+emit_bulk_reduce_plan_fusion(Pred, Arity, Plan, FuncName, FusedR) :-
+    format(atom(Func0), 'fused_br_~w_~w', [Pred, Arity]),
+    atom_string(Func0, S0), split_string(S0, "$", "", Parts),
+    atomic_list_concat(Parts, "_", FuncName),
+    r_br_plan_to_r(Plan, PlanLit),
+    format(string(FusedR),
+"~w_plan <- ~w
+~w <- function(program, state) {
+  WamRuntime$exec_bulk_reduce_plan(program, state, ~w_plan, \"~w/~w\")
+}
+", [FuncName, PlanLit, FuncName, FuncName, Pred, Arity]).
+
+r_br_plan_to_r(br_plan(Kind, BagAi, BulkKey, Nonvars, ExpFact, ExpY, UMinus,
+                       Gt0, TReg, Compiled, Aliases, Puts), Lit) :-
+    ( Nonvars == [] -> NV = "integer(0)"
+    ; atomic_list_concat(Nonvars, "L, ", NV0), format(string(NV), "c(~wL)", [NV0]) ),
+    maplist(r_br_step_r, Compiled, Ss), atomic_list_concat(Ss, ", ", Steps),
+    maplist([Ai-Y, L]>>format(string(L), 'c(~wL, ~wL)', [Ai, Y]), Aliases, As),
+    atomic_list_concat(As, ", ", Als),
+    maplist(r_br_put_r, Puts, Ps), atomic_list_concat(Ps, ", ", PutsS),
+    ( UMinus == true -> UM = "TRUE" ; UM = "FALSE" ),
+    ( Gt0 == true -> G = "TRUE" ; G = "FALSE" ),
+    format(string(Lit),
+'list(kind="~w",bag_ai=~wL,bulk_key="~w",nonvar_ais=~w,exp_fact="~w",exp_y=~wL,uminus=~w,gt0=~w,tkey="~w",compiled=list(~w),aliases=list(~w),puts=list(~w))',
+           [Kind, BagAi, BulkKey, NV, ExpFact, ExpY, UM, G, TReg, Steps, Als, PutsS]).
+r_br_step_r(step(D,O,A,Args), L) :-
+    maplist(r_br_arg_r, Args, AL), atomic_list_concat(AL, ", ", AS),
+    format(string(L), 'list(dest=~wL,opname="~w",arity=~wL,args=list(~w))', [D,O,A,AS]).
+r_br_arg_r(arg(reg,R), X) :- format(string(X), 'list(kind="reg",reg=~wL)', [R]).
+r_br_arg_r(arg(const,N), X) :- format(string(X), 'list(kind="const",val=~w)', [N]).
+r_br_put_r(put(copy,Ai,F), L) :- format(string(L), 'list(k="c",a=~wL,f=~wL)', [Ai,F]).
+r_br_put_r(put(fresh,Ai,_), L) :- format(string(L), 'list(k="f",a=~wL)', [Ai]).
+r_br_put_r(put(list1,Ai,F), L) :- format(string(L), 'list(k="l",a=~wL,f=~wL)', [Ai,F]).
 
 offset_label_entry(Offset, Entry0, Entry) :-
     atom_string(Entry0, S),
