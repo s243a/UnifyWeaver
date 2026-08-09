@@ -127,10 +127,29 @@ unbound cell, mirroring what the write branch already did. Fixed
 2026-08-09; also guarded by `tests/test_wam_c_var_alias.pl`, which now
 reaches the same aliasing requirement through a head rather than `=/2`.
 
+### Round scorecard
+
 Three of the four programs added in this round found a live bug in a
-different backend — the fourth (`wide`) found none. Go, Rust and C were
-each green on the six classic programs while carrying a silent
-head-unification defect.
+different backend — the fourth (`wide`) found none. **Five of the eight
+backends buildable here were green on the six classic programs while
+carrying a silent head-unification defect:**
+
+| Backend | Programs that failed | Defect |
+|---|---|---|
+| go | nested, emptylist | nested write contexts, get_structure deref, get_list cons, A-regs > A8, atom-intern init order |
+| rust | nested, emptylist | get_structure deref + arity-qualified functor key; unify_constant/unify_value bypassing `unify()` |
+| c | nested | single S register lost the enclosing term's argument pointer (SIGSEGV in read, silent drop in write) |
+| c | repeatvar | read-mode `unify_variable` copied unbound heap cells by value, losing identity |
+| elixir | repeatvar | `unify/3` did not dereference, and `deref_var` stopped on an alias as readily as on a self-reference |
+| scala | nested | single `unifyQueue` discarded the enclosing term's pending arguments |
+| scala | repeatvar | `==/2` and `\==/2` absent from the builtin table — failed closed |
+
+`scala` and `elixir` are the two **default-CI** arms, so their entries
+were live breakage rather than latent gaps: the widened suite ran
+against them on the next push. They are also the two hardest to check
+locally — Scala's emitted runtime needs 2.13+ (`String.toIntOption`), and
+a 2.11 toolchain fails to *compile* the project rather than diverging,
+which reads as a harness error rather than a conformance one.
 
 ### Ground queries hide construction bugs
 

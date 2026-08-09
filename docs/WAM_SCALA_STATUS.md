@@ -46,6 +46,25 @@ LMDB** (validated end-to-end); auto-inline ≤128 rows.
 **Conformance.** `ct_default_target(scala)` — one of only two
 backends (with Elixir) that run conformance by default, not opt-in.
 
+**Nested head terms + strict (in)equality (fixed 2026-08-09,
+CONF-FIX-SCALA-NESTED / CONF-FIX-SCALA-EQ).** Two defects that the
+six classic conformance programs could not see, because every query in
+them is ground — a head is always *matched*, never used to *bind*:
+
+- The runtime carried a single `unifyQueue`, but the compiler emits a
+  nested term interleaved with the enclosing term's arguments, so
+  `get_structure` on a list element discarded the pending cons tail
+  and the following `unify_variable` failed the clause. A
+  `unifyStack` of enclosing queues now restores them when the nested
+  term's arguments run out — the counterpart of the C runtime's
+  `WamArgCtx` stack, and applied to both the interpreter and the
+  lowered `lo*` helpers.
+- `==/2` and `\==/2` were absent from the builtin table entirely, so
+  the shared compiler's `builtin_call` fell through and failed
+  closed. Added via a read-only `termIdentical` traversal (never
+  binds; two distinct unbound variables are not identical). Same
+  class-7 gap the C and Haskell runtimes carried.
+
 ## Gaps (relative to Rust / Haskell / F#)
 
 - **No ISO three-form contract adoption** (low ISO surface in source).
@@ -54,6 +73,15 @@ backends (with Elixir) that run conformance by default, not opt-in.
 - **No two-level lazy/cached LMDB policies** — the LMDB backend is
   arity-N but flat, without F#-style eager/lazy/cached tiers.
 - Cross-target effective-distance bench vs Elixir/Haskell still open.
+- **`test(nqueens)` in `tests/test_wam_scala_classic_programs.pl` does
+  not terminate** on the failing query `queens_q(4, [1,2,3,4])` — the
+  generated program runs past 600 s of CPU with `Qs` fully ground, where
+  the search is finite (24 permutations). Present on an unmodified tree
+  and unrelated to the 2026-08-09 unification fixes (re-confirmed
+  against a stashed baseline). Every other Scala suite passes, and the
+  rest of the classic-programs suite passes when that test is skipped.
+  Not yet triaged; suspect the backtracking path rather than the
+  program.
 
 ## Path forward
 
@@ -67,4 +95,7 @@ backends (with Elixir) that run conformance by default, not opt-in.
 Fleet-aligned snapshot; source-verified line/kernel/LMDB facts and the
 `ct_default_target(scala)` default-CI registration against
 `wam_scala_target.pl` and the conformance harness (2026-07-11). Perf
-figures cited from the mode bench, not re-run.
+figures cited from the mode bench, not re-run. Refreshed 2026-08-09
+after CONF-FIX-SCALA-NESTED / CONF-FIX-SCALA-EQ; note that the emitted
+runtime needs **Scala 2.13+** (it uses `String.toIntOption`), so a 2.11
+toolchain fails to compile the project rather than diverging.

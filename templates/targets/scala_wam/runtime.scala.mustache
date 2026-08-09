@@ -562,7 +562,21 @@ final class WamState(
   // cons/struct (unifyQueue is populated), write when the target reg
   // held an unbound Ref (a BuildFrame is pushed and the unify_*
   // instructions append into it). Defaults to read.
-  var unifyMode: Boolean = true
+  var unifyMode: Boolean = true,
+  // Saved argument queues of ENCLOSING terms, innermost first. The WAM
+  // compiler emits a nested term interleaved with the enclosing term's
+  // arguments:
+  //     get_list A1        % queue = [head, tail]
+  //     unify_variable X1  % X1 := head,  queue = [tail]
+  //     get_structure tk/1, X1
+  //     unify_variable X2  % tk's argument
+  //     unify_variable X3  % <- the enclosing list's TAIL
+  // With a single queue, get_structure overwrote [tail] and the last
+  // unify_variable found an empty queue and failed the clause. Each
+  // read-mode get_structure/get_list pushes the unfinished enclosing
+  // queue here; it is restored when the nested term's arguments run
+  // out. Counterpart of the C runtime's WamArgCtx stack.
+  var unifyStack: List[List[WamTerm]] = Nil
 )
 
 // ============================================================
@@ -713,6 +727,27 @@ object WamRuntime {
     }
   }
 
+  /** Strict structural identity (==/2). unify's traversal made
+   *  READ-ONLY: it never binds, and two distinct unbound variables are
+   *  NOT identical -- only the same Ref is. Both sides are dereferenced
+   *  first, so a bound variable compares as its value. */
+  def termIdentical(s: WamState, a: WamTerm, b: WamTerm): Boolean = {
+    val da = deref(s.bindings, a)
+    val db = deref(s.bindings, b)
+    if (da == db) return true
+    (da, db) match {
+      case (Struct(f1, ar1, args1), Struct(f2, ar2, args2))
+          if f1 == f2 && ar1 == ar2 =>
+        var i = 0
+        while (i < ar1) {
+          if (!termIdentical(s, args1(i), args2(i))) return false
+          i += 1
+        }
+        true
+      case _ => false
+    }
+  }
+
   def freshVar(s: WamState): Ref = {
     val id = s.nextVarId
     s.nextVarId += 1
@@ -739,6 +774,7 @@ object WamRuntime {
     s.cutBar     = cutBar
     s.nextVarId  = varId
     s.unifyQueue = Nil
+    s.unifyStack = Nil
     s.buildStack = Nil
   }
 
@@ -779,6 +815,7 @@ object WamRuntime {
       s.cutBar     = cp.cutBar
       s.nextVarId  = cp.nextVarId
       s.unifyQueue = Nil
+      s.unifyStack = Nil
       s.buildStack = Nil
       s.pc         = cp.pc
       s.status     = Running
@@ -896,6 +933,40 @@ object WamRuntime {
     // earlier components before the caller retries or reports failure.
     if (!matched) unwindTrail(s, trailMark)
     matched
+  }
+
+  // ----------------------------------------------------------
+  // Nested read-mode argument contexts
+  // ----------------------------------------------------------
+
+  /** Enter read mode over `args`. If the enclosing term still has
+   *  arguments pending, stash them so they resume once this term's
+   *  arguments are exhausted. Nothing is stashed when the nested term
+   *  is the enclosing term's LAST argument (queue already empty) --
+   *  there is nothing to come back to. */
+  def enterUnifyCtx(s: WamState, args: List[WamTerm]): Unit = {
+    if (s.unifyMode && s.unifyQueue.nonEmpty) {
+      s.unifyStack = s.unifyQueue :: s.unifyStack
+    }
+    s.unifyMode  = true
+    s.unifyQueue = args
+  }
+
+  /** Consume one argument: `rest` is what is left of the current term.
+   *  When it runs out, pop back to the enclosing term's remaining
+   *  arguments. */
+  def advanceUnifyCtx(s: WamState, rest: List[WamTerm]): Unit = {
+    if (rest.isEmpty) {
+      s.unifyStack match {
+        case outer :: tail =>
+          s.unifyQueue = outer
+          s.unifyStack = tail
+          s.unifyMode  = true
+        case Nil => s.unifyQueue = Nil
+      }
+    } else {
+      s.unifyQueue = rest
+    }
   }
 
   // ----------------------------------------------------------
@@ -1154,9 +1225,10 @@ object WamRuntime {
         val v = deref(s.bindings, s.regs(reg))
         v match {
           case Struct(f, _, args) if f == functorId =>
-            // Read mode — unify against existing args.
-            s.unifyMode  = true
-            s.unifyQueue = args.toList
+            // Read mode — unify against existing args. enterUnifyCtx
+            // stashes the enclosing term's remaining arguments so a
+            // nested term does not clobber them.
+            enterUnifyCtx(s, args.toList)
             s.pc += 1
           case Ref(_) =>
             // Write mode — bind reg to a new struct that the
@@ -1181,8 +1253,7 @@ object WamRuntime {
         val v = deref(s.bindings, s.regs(reg))
         v match {
           case Struct(f, 2, args) if f == functorId =>
-            s.unifyMode  = true
-            s.unifyQueue = args.toList
+            enterUnifyCtx(s, args.toList)
             s.pc += 1
           case Ref(_) =>
             // Write mode for a 2-arg cons cell.
@@ -1199,7 +1270,7 @@ object WamRuntime {
             case Nil => backtrack(s)
             case item :: rest =>
               setReg(s, varReg, item)
-              s.unifyQueue = rest
+              advanceUnifyCtx(s, rest)
               s.pc += 1
           }
         } else {
@@ -1217,7 +1288,7 @@ object WamRuntime {
             case Nil => backtrack(s)
             case item :: rest =>
               val ok = unify(s, deref(s.bindings, getReg(s, varReg)), item)
-              s.unifyQueue = rest
+              advanceUnifyCtx(s, rest)
               if (ok) s.pc += 1 else backtrack(s)
           }
         } else {
@@ -1231,7 +1302,7 @@ object WamRuntime {
             case Nil => backtrack(s)
             case item :: rest =>
               val ok = unify(s, deref(s.bindings, item), value)
-              s.unifyQueue = rest
+              advanceUnifyCtx(s, rest)
               if (ok) s.pc += 1 else backtrack(s)
           }
         } else {
@@ -1355,6 +1426,15 @@ object WamRuntime {
           val b = deref(s.bindings, s.regs(2))
           val ok = unify(s, a, b)
           if (ok) s.pc += 1 else backtrack(s)
+        // Strict (in)equality. Previously absent from this table
+        // entirely, so builtin_call ==/2 fell through and FAILED
+        // CLOSED -- even `X = a, X == a` was false. Same class-7 gap
+        // the C and Haskell runtimes carried; surfaced here by the
+        // `repeatvar` conformance program.
+        case "==/2" =>
+          if (termIdentical(s, s.regs(1), s.regs(2))) s.pc += 1 else backtrack(s)
+        case "\\==/2" =>
+          if (termIdentical(s, s.regs(1), s.regs(2))) backtrack(s) else s.pc += 1
         case "true/0" =>
           s.pc += 1
         case "fail/0" =>
@@ -2361,6 +2441,7 @@ object WamRuntime {
         val savedCutBar    = s.cutBar
         val savedStatus    = s.status
         val savedUnifyQ    = s.unifyQueue
+        val savedUnifyStk  = s.unifyStack
         val savedBuildStk  = s.buildStack
 
         // Set up sub-call. Goal's args go into A1..An; callStack is
@@ -2371,6 +2452,7 @@ object WamRuntime {
         s.choicePoints = mutable.ArrayBuffer.empty[ChoicePoint]
         s.envStack     = Nil
         s.unifyQueue   = Nil
+        s.unifyStack   = Nil
         s.buildStack   = Nil
         s.cutBar       = 0
         s.pc           = startPc
@@ -2399,6 +2481,7 @@ object WamRuntime {
         s.nextVarId    = savedNextVarId
         s.cutBar       = savedCutBar
         s.unifyQueue   = savedUnifyQ
+        s.unifyStack   = savedUnifyStk
         s.buildStack   = savedBuildStk
         s.pc           = savedPc
         s.status       = savedStatus
@@ -2474,6 +2557,7 @@ object WamRuntime {
     val savedCutBar    = s.cutBar
     val savedStatus    = s.status
     val savedUnifyQ    = s.unifyQueue
+    val savedUnifyStk  = s.unifyStack
     val savedBuildStk  = s.buildStack
 
     val result = program.dispatch.get(key) match {
@@ -2487,6 +2571,7 @@ object WamRuntime {
         s.choicePoints = mutable.ArrayBuffer.empty[ChoicePoint]
         s.envStack     = Nil
         s.unifyQueue   = Nil
+        s.unifyStack   = Nil
         s.buildStack   = Nil
         s.cutBar       = 0
         s.pc           = startPc
@@ -2507,6 +2592,7 @@ object WamRuntime {
     s.nextVarId    = savedNextVarId
     s.cutBar       = savedCutBar
     s.unifyQueue   = savedUnifyQ
+    s.unifyStack   = savedUnifyStk
     s.buildStack   = savedBuildStk
     s.pc           = savedPc
     s.status       = savedStatus
@@ -2574,7 +2660,7 @@ object WamRuntime {
   def loGetStructure(s: WamState, program: WamProgram, functorId: Int, reg: Int, arity: Int): Boolean = {
     deref(s.bindings, s.regs(reg)) match {
       case Struct(f, _, args) if f == functorId =>
-        s.unifyMode = true; s.unifyQueue = args.toList; true
+        enterUnifyCtx(s, args.toList); true
       case Ref(_) =>
         s.buildStack = BuildFrame(reg, functorId, arity, Nil) :: s.buildStack
         s.unifyMode = false; true
@@ -2586,7 +2672,7 @@ object WamRuntime {
   def loGetList(s: WamState, program: WamProgram, reg: Int, consId: Int): Boolean = {
     deref(s.bindings, s.regs(reg)) match {
       case Struct(f, 2, args) if f == consId =>
-        s.unifyMode = true; s.unifyQueue = args.toList; true
+        enterUnifyCtx(s, args.toList); true
       case Ref(_) =>
         s.buildStack = BuildFrame(reg, consId, 2, Nil) :: s.buildStack
         s.unifyMode = false; true
@@ -2599,7 +2685,7 @@ object WamRuntime {
   def loUnifyVariable(s: WamState, reg: Int): Boolean = {
     if (s.unifyMode) s.unifyQueue match {
       case Nil => false
-      case item :: rest => setReg(s, reg, item); s.unifyQueue = rest; true
+      case item :: rest => setReg(s, reg, item); advanceUnifyCtx(s, rest); true
     } else {
       val v = freshVar(s); setReg(s, reg, v); appendBuildArg(s, v); true
     }
@@ -2612,7 +2698,7 @@ object WamRuntime {
       case Nil => false
       case item :: rest =>
         val ok = unify(s, deref(s.bindings, getReg(s, reg)), item)
-        s.unifyQueue = rest; ok
+        advanceUnifyCtx(s, rest); ok
     } else {
       appendBuildArg(s, deref(s.bindings, getReg(s, reg))); true
     }
@@ -2625,7 +2711,7 @@ object WamRuntime {
       case Nil => false
       case item :: rest =>
         val ok = unify(s, deref(s.bindings, item), value)
-        s.unifyQueue = rest; ok
+        advanceUnifyCtx(s, rest); ok
     } else {
       appendBuildArg(s, value); true
     }
@@ -2677,6 +2763,8 @@ object WamRuntime {
       }
     pred match {
       case "=/2"    => unify(s, deref(s.bindings, s.regs(1)), deref(s.bindings, s.regs(2)))
+      case "==/2"   => termIdentical(s, s.regs(1), s.regs(2))
+      case "\\==/2"  => !termIdentical(s, s.regs(1), s.regs(2))
       case "true/0" => true
       case "fail/0" => false
       case "!/0" =>

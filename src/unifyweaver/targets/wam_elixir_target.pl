@@ -830,9 +830,16 @@ compile_utility_helpers_to_elixir(Code) :-
     {%{state | heap: Map.put(state.heap, addr, val), heap_len: addr + 1}, addr}
   end
 
+  # An unbound heap cell holds a SELF-reference: heap[addr] is
+  # {:unbound, {:heap_ref, addr}}. A cell holding a heap_ref to a
+  # DIFFERENT address is a var-var alias and must be followed --
+  # the old `_addr` wildcard stopped on both, so an aliased variable
+  # reported itself as unbound and the next binding overwrote the
+  # alias instead of reaching its partner.
   def deref_var(state, {:unbound, {:heap_ref, addr}} = ref) do
     case Map.get(state.heap, addr) do
-      {:unbound, {:heap_ref, _addr}} -> ref
+      {:unbound, {:heap_ref, ^addr}} -> ref
+      nil -> ref
       val -> deref_var(state, val)
     end
   end
@@ -961,7 +968,19 @@ compile_utility_helpers_to_elixir(Code) :-
   defp constant_lookup_key(v), do: v
 
   @doc "Unify two WAM values"
-  def unify(state, v1, v2) do
+  # Both operands are DEREFERENCED first. Without this, unify saw the
+  # caller''s raw value -- typically a register still holding
+  # {:unbound, {:heap_ref, addr}} for a cell that has since been
+  # aliased to another variable -- and the first unbound branch
+  # overwrote heap[addr] directly, silently discarding the alias. A
+  # repeated variable in a head structure (csame(p(X, X), X)) is the
+  # shape that exposes it: unify_value aliases slot 0 with slot 1, then
+  # get_value binds slot 0 over the alias and slot 1 stays unbound.
+  # unify_arg_list already derefd its args before recursing; doing it
+  # here makes that redundant rather than load-bearing.
+  def unify(state, v1_raw, v2_raw) do
+    v1 = deref_var(state, v1_raw)
+    v2 = deref_var(state, v2_raw)
     cond do
       v1 == v2 -> {:ok, state}
       constant_match?(v1, v2) -> {:ok, state}

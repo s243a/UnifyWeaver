@@ -32,6 +32,9 @@ self-contained so a single coding agent can pick it up in isolation.
 | CONF-FIX-RUST-NESTED ✅ | Conformance gap fix | Rust | M | done — deref-before-mode-test + arity-qualified functor key |
 | CONF-FIX-RUST-EMPTYLIST ✅ | Conformance gap fix | Rust | S | done — unify_constant routed through unify(); a 4th bug (unify_value) found alongside |
 | CONF-FIX-C-EQ-DEREF ✅ | Conformance gap fix | C | S | done — read-mode `unify_variable` copied unbound heap cells by value; `==/2` was innocent |
+| CONF-FIX-ELIXIR-REPEATVAR ✅ | Conformance gap fix | Elixir | S | done — `unify/3` now derefs; `deref_var` stops only on a self-reference (**default-CI arm**) |
+| CONF-FIX-SCALA-NESTED ✅ | Conformance gap fix | Scala | M | done — `unifyStack` of enclosing argument queues, interpreter + lowered (**default-CI arm**) |
+| CONF-FIX-SCALA-EQ ✅ | Conformance gap fix | Scala | S | done — `==/2` and `\==/2` were missing from the builtin table and failed closed |
 | CONF-LLVM | Conformance adapter | LLVM | L | — |
 | CONF-R ✅ | Conformance adapter | R | M | done — opt-in; all classic programs green (R-SWITCH-INDEX-CONFORMANCE) |
 | R-SWITCH-INDEX-CONFORMANCE ✅ | Conformance gap fix | R | S | done — fallthrough/A2 reuse existing SwitchOnTerm no-op |
@@ -291,6 +294,88 @@ external toolchain.
   passes with `ct_xfail(c, repeatvar)` removed. ✅ — and the full C arm is
   green with **no xfails left**, which was not true for any other target
   when its head-unification bugs were first found.
+
+### CONF-FIX-ELIXIR-REPEATVAR: WAM-Elixir `unify/3` discarded var-var aliases ✅
+- **Lever:** Conformance gap fix  **Target:** Elixir  **Size:** S  **Depends on:** —
+- **Why it mattered more than the others:** Elixir is one of only two
+  **default-CI** conformance arms. This was live breakage from the
+  widened suite, not a latent opt-in gap.
+- **Symptom:** `crepeat(a)` false; `csame/2` and every other program
+  green. Probing each slot after `T = p(A,B), csame(T, a)` gave
+  `A == a` true but `B == a` **false** — the mirror image of the C bug.
+- **Root cause, two halves:**
+  1. `unify/3` acted on the operands the caller passed, with no
+     dereference. Those were typically a register still holding
+     `{:unbound, {:heap_ref, addr}}` for a cell that had since been
+     aliased, so the first unbound branch wrote `heap[addr]` directly
+     and the alias was silently discarded.
+  2. `deref_var/2`'s heap-ref clause matched
+     `{:unbound, {:heap_ref, _addr}}` with a **wildcard**. An unbound
+     cell is marked by a SELF-reference; a heap_ref to a *different*
+     address is a var-var alias and must be followed. Stopping on both
+     made an aliased variable report itself as unbound.
+- **Fix:** deref both operands at the top of `unify/3`; narrow
+  `deref_var/2`'s stop condition to `{:unbound, {:heap_ref, ^addr}}`
+  (plus an explicit `nil` guard for an absent cell).
+  `unify_arg_list` already derefd its args before recursing — that is
+  now redundant rather than load-bearing.
+- **Acceptance:** `CONFORMANCE_TARGETS=elixir` conformance green ✅;
+  `repeated_head_variable_aliases_both_slots` in
+  `tests/test_wam_elixir_classic_programs.pl` fails on the unfixed tree
+  and passes with the fix ✅.
+
+### CONF-FIX-SCALA-NESTED: WAM-Scala single `unifyQueue` lost the enclosing term ✅
+- **Lever:** Conformance gap fix  **Target:** Scala  **Size:** M  **Depends on:** —
+- **Why it mattered more than the others:** Scala is the other
+  **default-CI** arm, and the harness's original reference backend.
+- **Symptom:** 7 of the `nested` queries false (`cnest/2`, `ctail/3`,
+  `ckind/2`). Narrowed to `k2([tk(X)|_], X)` false while both
+  `k1(tk(X), X)` (no nesting) and `k3([H|_], X) :- H = tk(X)` (same
+  match as an explicit body goal) were true.
+- **Root cause:** the WAM emits a nested term interleaved with the
+  enclosing term's arguments:
+
+      get_list A1        % queue = [head, tail]
+      unify_variable X1  % X1 := head,  queue = [tail]
+      get_structure tk/1, X1
+      unify_variable X2  % tk's argument
+      unify_variable X3  % <- the enclosing list's TAIL
+
+  `GetStructure` overwrote `unifyQueue` wholesale, so `[tail]` was gone
+  and the final `unify_variable` hit `Nil` and backtracked.
+- **Fix:** a `unifyStack: List[List[WamTerm]]` of enclosing queues.
+  `enterUnifyCtx` stashes the unfinished enclosing queue (nothing to
+  stash when the nested term is the last argument); `advanceUnifyCtx`
+  restores it when the current term's arguments run out. Applied to
+  the interpreter *and* the lowered `loGetStructure`/`loGetList`/
+  `loUnify*` helpers, saved and restored alongside `unifyQueue` at
+  every call boundary and reset with it on backtrack. Counterpart of
+  the C runtime's `WamArgCtx` stack (CONF-FIX-C-NESTED).
+- **Also fixed here:** heads whose caller slots are unbound. Even
+  `one_slot(q(U), U)` called with `T = q(A)` failed to bind `A` —
+  because the check needed `==/2`, see the next card.
+- **Acceptance:** `CONFORMANCE_TARGETS=scala` conformance green ✅
+  (needs a Scala **2.13+** toolchain; 2.11 fails to compile the emitted
+  runtime because of `String.toIntOption`).
+
+### CONF-FIX-SCALA-EQ: WAM-Scala had no `==/2` or `\==/2` ✅
+- **Lever:** Conformance gap fix  **Target:** Scala  **Size:** S  **Depends on:** —
+- **Symptom:** `crepeat(a)` false. Not a unification bug at all —
+  neither operator appeared anywhere in the Scala runtime, so the
+  shared compiler's `builtin_call ==/2` fell through the dispatch
+  `match` and **failed closed**. Even `X = a, X == a` was false.
+- **Fix:** a read-only `termIdentical` traversal (dereferences both
+  sides, never binds, two distinct unbound variables are not
+  identical), wired into both the interpreter's `BuiltinCall` table and
+  the lowered `loBuiltin` table. Verified against the emitted key
+  spelling — codegen writes `BuiltinCall("\\==/2")`.
+- **Same class-7 gap** the C runtime carried (see the `==/2` comment in
+  `wam_c_target.pl`) and Haskell before it. Three of the fleet's
+  backends shipped without strict equality.
+- **Acceptance:** covered by `repeatvar` in the conformance suite, plus
+  `nested_heads_and_strict_equality` in
+  `tests/test_wam_scala_classic_programs.pl`, which checks atomic and
+  compound `==/2` and `\==/2` in both polarities.
 
 ### CONF-LLVM: Register LLVM in the cross-target conformance harness
 - **Lever:** Conformance adapters  **Target:** LLVM  **Size:** L  **Depends on:** —
