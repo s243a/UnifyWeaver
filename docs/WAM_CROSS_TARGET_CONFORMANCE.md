@@ -89,12 +89,30 @@ diagnosis, and `WAM_FLEET_GAP_TASKS.md` for the fix cards:
   (CONF-FIX-C-NESTED): a single `S` register with no save/restore around
   nested terms. Fixing it also exposed the same bug in the *write* path,
   which the ground-query design had hidden entirely — see below.
-- **Rust / `nested`** — three-way clause discrimination on the inner
+- ~~**Rust / `nested`** — three-way clause discrimination on the inner
   functor matches nothing, and `cnest([tk(a)], z)` returns **true** when
-  it must be false (a silent wrong answer, not a missed solution).
-- **Rust / `emptylist`** — both `cone/2` queries come back **inverted**.
+  it must be false (a silent wrong answer, not a missed solution).~~
+  **Fixed** (CONF-FIX-RUST-NESTED): `get_structure` tested `is_unbound`
+  before dereferencing, and its read branch re-appended the arity to a
+  functor key that already carried one.
+- ~~**Rust / `emptylist`** — both `cone/2` queries come back
+  **inverted**.~~ **Fixed** (CONF-FIX-RUST-EMPTYLIST): `unify_constant`
+  used raw equality plus an unbound short-circuit instead of `unify()`.
+  A fourth bug in the same family — `unify_value` accepting an unbound
+  heap argument without binding it — was found and fixed alongside.
 
-`go`, `python`, `c`, `cpp` and `wat` pass all three.
+All six backends buildable here — `go`, `python`, `c`, `cpp`, `rust`,
+`wat` — now pass all three.
+
+A fourth program, `repeatvar`, covers a head with a *repeated* variable
+inside a structure (`csame(p(X,X), X)`): matching it against a term whose
+slots are both unbound must **bind** the second slot, not merely accept
+it. Detecting that needs `==/2` rather than `=/2` — with the bug the term
+was left as `p(_, a)`, and `T = p(a,a)` would happily bind the remaining
+slot and succeed. It is a separate program precisely because it leans on
+`==/2`: C diverges here for a term-comparison reason unrelated to the
+nested-head shapes (see `CONF-FIX-C-EQ-DEREF`), and a shared program
+would let one xfail blanket both.
 
 ### Ground queries hide construction bugs
 

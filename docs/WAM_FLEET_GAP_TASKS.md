@@ -29,8 +29,9 @@ self-contained so a single coding agent can pick it up in isolation.
 | FS-ARITH-INT-DIV ✅ | Conformance gap fix | F# | S | done — `//` in evalArith (`37debf71`) |
 | FS-FUNCTIONS-BUILTINS-LOWER ✅ | Conformance gap fix | F# | M | done — last-slash `parse_functor_fs` for `///2` (`cursor/fs-functions-builtins-lower-f421`); fsharp_functions/builtins green |
 | CONF-FIX-C-NESTED ✅ | Conformance gap fix | C | M | done — nested read *and* write contexts; segfault + two silent wrong-answer classes |
-| CONF-FIX-RUST-NESTED | Conformance gap fix | Rust | M | — (found by the new `nested` program; **includes a silent wrong answer**) |
-| CONF-FIX-RUST-EMPTYLIST | Conformance gap fix | Rust | S | — (found by the new `emptylist` program) |
+| CONF-FIX-RUST-NESTED ✅ | Conformance gap fix | Rust | M | done — deref-before-mode-test + arity-qualified functor key |
+| CONF-FIX-RUST-EMPTYLIST ✅ | Conformance gap fix | Rust | S | done — unify_constant routed through unify(); a 4th bug (unify_value) found alongside |
+| CONF-FIX-C-EQ-DEREF | Conformance gap fix | C | S | — (found by the new `repeatvar` program; `==/2` compares undereferenced slots) |
 | CONF-LLVM | Conformance adapter | LLVM | L | — |
 | CONF-R ✅ | Conformance adapter | R | M | done — opt-in; all classic programs green (R-SWITCH-INDEX-CONFORMANCE) |
 | R-SWITCH-INDEX-CONFORMANCE ✅ | Conformance gap fix | R | S | done — fallthrough/A2 reuse existing SwitchOnTerm no-op |
@@ -182,7 +183,7 @@ external toolchain.
   Verified ASan-clean at `-O1`. C now passes all nine conformance
   programs with **no xfail entries**.
 
-### CONF-FIX-RUST-NESTED: WAM-Rust fails inner-functor clause discrimination and returns a false positive
+### CONF-FIX-RUST-NESTED: WAM-Rust fails inner-functor clause discrimination and returns a false positive ✅
 - **Lever:** Conformance gap fix  **Target:** Rust  **Size:** M  **Depends on:** —
 - **Found by:** the `nested` conformance program, added 2026-08-06.
 - **Symptoms:** two distinct failures.
@@ -201,8 +202,24 @@ external toolchain.
 - **Acceptance:** `CONFORMANCE_TARGETS=rust CONFORMANCE_PROGRAMS=nested
   swipl -q -g run_tests -t halt tests/test_wam_cross_target_conformance.pl`
   passes with `ct_xfail(rust, nested)` removed.
+- **Status:** Done. Two causes, both confirmed by tracing the generated
+  Rust rather than by inspection:
+    1. **`get_structure` tested `is_unbound` on the RAW register.** A
+       variable that is already bound is still *typed* `Unbound`, so an
+       already-bound argument went down the write branch, which builds a
+       fresh structure over the incoming value and reports success —
+       hence `cnest([tk(a)], z)` returning true. `GetList` already
+       carried exactly this fix, comment and all; `GetStructure` had
+       never been given it. (Same defect as WAM-Go's, fixed in PARSE-GO.)
+    2. **The read branch for a compound held directly in a register
+       rebuilt the functor key** as `format!("{}/{}", f, args.len())`.
+       `Value::Str` already stores the functor arity-qualified
+       (`put_structure` builds `Str("s/1", ..)`, and `is_cons_functor`
+       matches `"[|]/2"`), so the key came out `"s/1/1"` and never
+       matched. That is what made `ckind/2`'s three-way discrimination
+       match nothing.
 
-### CONF-FIX-RUST-EMPTYLIST: WAM-Rust inverts a literal `[X|[]]` head spine
+### CONF-FIX-RUST-EMPTYLIST: WAM-Rust inverts a literal `[X|[]]` head spine ✅
 - **Lever:** Conformance gap fix  **Target:** Rust  **Size:** S  **Depends on:** —
 - **Found by:** the `emptylist` conformance program, added 2026-08-06.
 - **Symptom:** `cone(X, [X|[]])` — an explicit nil tail written in the
@@ -217,6 +234,45 @@ external toolchain.
 - **Acceptance:** `CONFORMANCE_TARGETS=rust CONFORMANCE_PROGRAMS=emptylist
   swipl -q -g run_tests -t halt tests/test_wam_cross_target_conformance.pl`
   passes with `ct_xfail(rust, emptylist)` removed.
+- **Status:** Done. `unify_constant` used raw equality plus an
+  `is_unbound` short-circuit, and both halves were wrong for a list tail:
+  `Value::List([])` and `Atom("[]")` are the same term written two ways
+  (so `cone(a,[a])` failed), and the short-circuit accepted *any* unbound
+  tail without dereferencing or binding it (so `cone(a,[a,b])`
+  succeeded). Now routed through `unify()`, which already knows the
+  `[]`-atom/empty-`List` aliasing and the `List`/cons-`Str` aliasing —
+  the same treatment `GetValue` had already been given.
+
+  **A fourth bug turned up in the same family.** `unify_value`'s last
+  match arm, `(_, a) if a.is_unbound() => true`, accepted an unbound
+  *heap* argument without binding it. A head with a repeated variable
+  inside a structure (`csame(p(X,X), X)`) then matched but left the
+  second slot unbound, so the caller's term never became `p(a,a)` — the
+  query failed while every individual step "succeeded". Also routed
+  through `unify()`. Guarded by the new `repeatvar` conformance program.
+
+### CONF-FIX-C-EQ-DEREF: WAM-C `==/2` compares undereferenced slots
+- **Lever:** Conformance gap fix  **Target:** C  **Size:** S  **Depends on:** —
+- **Found by:** the `repeatvar` conformance program, added 2026-08-06.
+  **Not** the nested-head class fixed in CONF-FIX-C-NESTED — C passes all
+  of `nested`.
+- **Symptom:** `crepeat(a)` returns false. Narrowed with a three-way probe
+  over `T = p(_,_), csame(T, a)`:
+
+  | probe | expression | result |
+  |---|---|---|
+  | v1 | the call alone | true |
+  | v2 | `..., T = p(a,a)` | true |
+  | v3 | `..., T == p(a,a)` | **false** (should be true) |
+
+  So head unification and the bindings are correct; `==/2` is comparing
+  the raw term — whose slots still hold bound-but-uncollapsed references
+  — against the literal.
+- **Where to look:** the C `==/2` / term-identity path, not unification.
+  Contrast `=/2`, which goes through `wam_unify` and derefs correctly.
+- **Acceptance:** `CONFORMANCE_TARGETS=c CONFORMANCE_PROGRAMS=repeatvar
+  swipl -q -g run_tests -t halt tests/test_wam_cross_target_conformance.pl`
+  passes with `ct_xfail(c, repeatvar)` removed.
 
 ### CONF-LLVM: Register LLVM in the cross-target conformance harness
 - **Lever:** Conformance adapters  **Target:** LLVM  **Size:** L  **Depends on:** —

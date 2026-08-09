@@ -156,7 +156,21 @@ wam_instruction_arm('Instruction::GetValue(xn, ai)', Body) :-
                 }'.
 
 wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
-    Body = '                if let Some(val) = self.get_reg_raw(ai) {
+    Body = '                if let Some(raw) = self.get_reg_raw(ai) {
+                    // Deref BEFORE the unbound test, for the same reason
+                    // GetList does (see below): a variable that is already
+                    // bound is still *typed* Unbound, so testing the raw
+                    // register sent an already-bound argument down the
+                    // write branch, which built a fresh structure over the
+                    // top of the incoming value and then reported success.
+                    //
+                    // A head like `p([tk(X)|_], X)` matched ANY list whose
+                    // head was a bound variable, whatever it held -- a
+                    // silent wrong answer, not a missed solution. It also
+                    // broke multi-clause discrimination on a nested functor
+                    // (`[cnum(V)|_]` / `[csym(V)|_]` / ...), because the
+                    // first clause always "matched" by construction.
+                    let val = self.deref_var(&raw);
                     if val.is_unbound() {
                         // Write mode
                         let addr = self.heap.len();
@@ -185,9 +199,21 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                             } else { false }
                         } else { false }
                     } else if let Some((f, args)) = val.univ() {
-                        // Read mode on Prolog compound
-                        let check = format!("{}/{}", f, args.len());
-                        if check == *fn_str {
+                        // Read mode on a Prolog compound held directly in a
+                        // register (as opposed to behind a heap Ref).
+                        //
+                        // Value::Str carries its functor ALREADY qualified
+                        // with the arity -- put_structure builds
+                        // Str("s/1", ..) and is_cons_functor matches
+                        // "[|]/2" -- so re-appending args.len() here
+                        // produced "s/1/1", which never matched and made
+                        // get_structure fail against a perfectly good
+                        // structure. Accept the qualified form, and keep
+                        // the built form for any bare-name Str.
+                        let matches_functor =
+                            f == fn_str.as_str()
+                            || format!("{}/{}", f, args.len()) == *fn_str;
+                        if matches_functor {
                             self.smut().push(StackEntry::UnifyCtx(args.to_vec()));
                             self.pc += 1; true
                         } else { false }
@@ -258,16 +284,18 @@ wam_instruction_arm('Instruction::UnifyVariable(xn)', Body) :-
 wam_instruction_arm('Instruction::UnifyValue(xn)', Body) :-
     Body = '                if let Some(StackEntry::UnifyCtx(args)) = self.stack.last().cloned() {
                     if let Some(arg) = args.first().cloned() {
-                        let val = self.get_reg(xn);
-                        let ok = match (&val, &arg) {
-                            (Some(v), a) if v == a => true,
-                            (Some(v), _) if v.is_unbound() => {
-                                self.trail_binding(xn);
-                                self.put_reg(xn, arg.clone());
-                                true
-                            }
-                            (_, a) if a.is_unbound() => true,
-                            _ => false,
+                        // Route through unify() for the same reasons as
+                        // GetValue and UnifyConstant. The hand-rolled
+                        // version''s last arm -- `(_, a) if a.is_unbound()
+                        // => true` -- accepted an unbound HEAP argument
+                        // without binding it, so a head with a repeated
+                        // variable inside a structure (`p(X,X)`) matched
+                        // but left the second slot unbound: the caller''s
+                        // term never became p(a,a). unify() binds both
+                        // directions and knows the list/cons aliasings.
+                        let ok = match self.get_reg(xn) {
+                            Some(v) => self.unify(&arg, &v),
+                            None => false,
                         };
                         if ok {
                             let rest: Vec<Value> = args[1..].to_vec();
@@ -288,7 +316,22 @@ wam_instruction_arm('Instruction::UnifyValue(xn)', Body) :-
 wam_instruction_arm('Instruction::UnifyConstant(c)', Body) :-
     Body = '                if let Some(StackEntry::UnifyCtx(args)) = self.stack.last().cloned() {
                     if let Some(arg) = args.first().cloned() {
-                        if arg == *c || arg.is_unbound() {
+                        // Route through unify() rather than raw equality
+                        // plus an unbound short-circuit, for the same
+                        // reasons GetValue does.
+                        //
+                        // The old test failed both ways on a list tail:
+                        //   - `arg == *c` compared Value::List([]) against
+                        //     Atom("[]"), which are the same term written
+                        //     two ways, so `p(X, [X|[]])` did not match [a];
+                        //   - `arg.is_unbound()` succeeded for ANY still
+                        //     unbound tail without dereferencing it and
+                        //     without binding it, so the same clause also
+                        //     matched [a,b].
+                        // unify() derefs, knows the []-atom/empty-List
+                        // aliasing and the List/cons-Str aliasing, and
+                        // binds when the argument really is unbound.
+                        if self.unify(&arg, c) {
                             let rest: Vec<Value> = args[1..].to_vec();
                             self.smut().pop();
                             if !rest.is_empty() {

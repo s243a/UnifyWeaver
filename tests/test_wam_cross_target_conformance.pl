@@ -342,24 +342,44 @@ ct_default_target(elixir).
 %  backtracking so a clause that fails mid-head leaves nothing behind.
 %  Same class as the WAM-Go write-context bug fixed in PARSE-GO.
 
-%  Rust / nested — XFAIL. Two distinct failures:
-%   - ckind/2 discriminates on the *inner* functor across three clauses
-%     (`[cnum(V)|_]` / `[csym(V)|_]` / `[cwd(V)|_]`). All three correct
-%     queries return false, so no clause matches at all.
-%   - cnest/2([[tk(a)],z]) returns TRUE when it must be false — a silent
-%     wrong answer, not a missed solution. cnest recurses down the tail;
-%     with a one-element list the recursive clause should hit `[]` and
-%     fail.
-%  See CONF-FIX-RUST-NESTED.
-ct_xfail(rust, nested).
+%  Rust / nested + emptylist — FIXED 2026-08-06 (CONF-FIX-RUST-NESTED,
+%  CONF-FIX-RUST-EMPTYLIST). Three separate defects, all in head
+%  unification and none list-specific:
+%
+%   1. get_structure tested is_unbound on the RAW register. A variable
+%      that is already bound is still *typed* Unbound, so an already-bound
+%      argument went down the write branch, which builds a fresh structure
+%      over the incoming value and reports success. `cnest([tk(a)], z)`
+%      therefore returned TRUE -- a head matched a list whose element it
+%      should have rejected. GetList already carried this fix and its
+%      comment; get_structure had never been given it.
+%
+%   2. The get_structure read branch for a compound held directly in a
+%      register rebuilt the functor key as format!("{}/{}", f, len).
+%      Value::Str already stores the functor arity-qualified (put_structure
+%      builds Str("s/1", ..)), so the key came out "s/1/1" and never
+%      matched. This is what made ckind/2's three-way discrimination on the
+%      inner functor match nothing at all.
+%
+%   3. unify_constant used raw equality plus an is_unbound short-circuit.
+%      Both halves were wrong for a list tail: Value::List([]) and
+%      Atom("[]") are the same term written two ways (so `cone(a,[a])`
+%      failed), and the short-circuit accepted ANY unbound tail without
+%      dereferencing or binding it (so `cone(a,[a,b])` succeeded). Now
+%      routed through unify(), which already knows both aliasings --
+%      the same treatment GetValue was given earlier.
 
-%  Rust / emptylist — XFAIL. cone/2 is `cone(X, [X|[]])` — an explicit
-%  nil tail written in the head. Both queries come back INVERTED:
-%  `cone(a,[a])` false (should be true) and `cone(a,[a,b])` true (should
-%  be false). cnil_tail/2 passes, so `[]` reached as a tail is fine; it
-%  is the literal `[X|[]]` spine in the head that mis-unifies.
-%  See CONF-FIX-RUST-EMPTYLIST.
-ct_xfail(rust, emptylist).
+%  C / repeatvar — XFAIL (CONF-FIX-C-EQ-DEREF, found 2026-08-06). This
+%  is NOT the nested-head class fixed in CONF-FIX-C-NESTED; C passes all
+%  of `nested`. Narrowed with a three-way probe:
+%    v1: `T = p(_,_), csame(T, a)`               -> true  (call succeeds)
+%    v2: `..., T = p(a,a)`                       -> true  (binding IS right)
+%    v3: `..., T == p(a,a)`                      -> FALSE (should be true)
+%  So head unification and the bindings are correct; ==/2 is comparing the
+%  raw term, whose slots still hold bound-but-uncollapsed references,
+%  against the literal. Fix is in the C ==/2 / term-identity path, not in
+%  unification.
+ct_xfail(c, repeatvar).
 
 %  R (CONF-R). Adapter registered (opt-in via CONFORMANCE_TARGETS=r[,r_functions]).
 %  runtime_parser(off) is pinned so generation is deterministic: classic
