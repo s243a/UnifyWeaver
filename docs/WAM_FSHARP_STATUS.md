@@ -93,6 +93,22 @@ classic `wam_conformance_smoke` matrix with Scala/Elixir.
   (GetValue→unifyVal); builtins also green under functions after
   **FS-FUNCTIONS-BUILTINS-LOWER** (last-slash `parse_functor_fs` for
   `///2`). No remaining fsharp ct_xfail/ct_skip.
+- Head-shape conformance (**CONF-FIX-FSHARP-LOWERED-GETVALUE**,
+  2026-08-09): the four head-shape programs (`wide`, `nested`,
+  `emptylist`, `repeatvar`) were run for the first time. The
+  **interpreter arm was green outright**; `fsharp_functions` failed
+  three queries because the lowered emitter kept its own inlined
+  `get_value` — shallow `a = x` equality — and so had **never received
+  the FS-LIST-PARTIAL-TAIL fix that the interpreter documents in a
+  comment right next to its `unifyVal` call**. A list reached as a cons
+  tail is `Str("[|]", [h; t])` while the same list as an argument is a
+  compact `VList`; shallow equality rejects the two spellings, and an
+  empty tail happens to match either way, which is exactly why only the
+  multi-element cases failed. `emit_one_fs(get_value(...))` now
+  delegates to `unifyVal`, as the interpreter does. **Standing lesson:**
+  every unification fix has to be applied to both the interpreter and
+  the lowered emitter — the two conformance arms exist to catch when it
+  is not.
 - Dynamic database partial (facts via lowered mutation; prefer Python
   for full dynamic-DB semantics — target doc).
 - LMDB scan-mode / workload-segregation wait on Rust R9/R10 reference.

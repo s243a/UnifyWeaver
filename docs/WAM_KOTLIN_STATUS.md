@@ -57,6 +57,21 @@ module in the fleet.
   Registered via `WamProgram.registerNative`. `functions` / `mixed`
   modes route lowerable preds through this path.
 
+**Nested head terms (fixed 2026-08-09, CONF-FIX-KOTLIN-NESTED).** The
+runtime carried a single `var context: WamContext?`, which
+`beginStructure` replaced outright. A term nested inside another — the
+`[tk(X)|R]` shape every tokenizer uses — therefore discarded the
+enclosing list's pending arguments, and the `unify_variable` that should
+have taken the cons tail got `null` and failed the clause. The write
+path had it too: building `[tk(X)|[]]`, the nested `tk/1` frame
+completed and cleared the context, so the tail was never written.
+`WamContext` now carries an `abstract val parent`, and
+`nextReadArg`/`pushWriteArg` restore it. Because `ChoicePoint`,
+`CallFrame` and `WamNativeSnapshot` already carry `context`, the whole
+chain is saved and restored by the existing machinery. Both emit modes
+share these helpers, which is why `kotlin` and `kotlin_functions` failed
+identically and are fixed together.
+
 ## Perf signal
 
 See [`WAM_KOTLIN_BENCH.md`](WAM_KOTLIN_BENCH.md). After dispatch/snapshot
@@ -73,8 +88,10 @@ opts + EMIT-KOTLIN-5: append_500 ~**28×**, fib_15 ~**1.85×**, ack_23
   `ack(2,3)` are fine; prefer decline over wrong answers if a workload
   would overflow.
 - **Conformance (opt-in)** — `conformance_target(kotlin)` /
-  `kotlin_functions` registered. **All classic programs green** (append,
-  member, reverse, builtins, fib, ack) — no remaining `ct_xfail`s.
+  `kotlin_functions` registered. **All programs green** — the six
+  classics (append, member, reverse, builtins, fib, ack) plus the four
+  head-shape programs (`wide`, `nested`, `emptylist`, `repeatvar`) — no
+  remaining `ct_xfail`s.
 - **No foreign kernels, no LMDB / fact source, no ISO contract.**
 - **No runtime-parser capability entry.**
 

@@ -37,13 +37,39 @@ data class EnvironmentFrame(
     val slots: MutableMap<String, Value?> = linkedMapOf(),
 )
 
+// `parent` makes the argument context a STACK rather than a single slot.
+// The WAM compiler emits a nested term interleaved with the enclosing
+// term's arguments:
+//     get_list A1              // Read([tk(a), [tk(b)]])
+//     unify_variable X1        // X1 := tk(a), one arg still pending
+//     get_structure tk/1, X1   // used to REPLACE the context outright
+//     unify_variable X2        // tk's argument
+//     unify_variable X3        // <- the enclosing list's TAIL
+// Overwriting the context lost `[tk(b)]`, so the last unify_variable
+// found no context and failed the clause -- every `nested` conformance
+// query. The same held in write mode: building `[tk(X)|[]]` lost the
+// cons frame while the nested tk/1 was being filled, so the tail was
+// never written.
+//
+// Threading the enclosing context through `parent` rather than through a
+// separate stack field is deliberate: ChoicePoint, CallFrame and
+// WamNativeSnapshot all already carry `context`, so the whole chain is
+// saved and restored by the existing machinery with no further changes.
 sealed class WamContext {
-    data class Read(val args: List<Value?>, var index: Int = 0) : WamContext()
+    abstract val parent: WamContext?
+
+    data class Read(
+        val args: List<Value?>,
+        var index: Int = 0,
+        override val parent: WamContext? = null,
+    ) : WamContext()
+
     data class Write(
         val targetRegister: String,
         val functor: String,
         val arity: Int,
         val args: MutableList<Value?> = mutableListOf(),
+        override val parent: WamContext? = null,
     ) : WamContext()
 }
 
@@ -195,11 +221,11 @@ class WamState(
         val arity = functorArity(functor) ?: return false
         val current = deref(readRegister(register))
         if (current == null || current is Value.Var) {
-            context = WamContext.Write(register, functor, arity)
+            context = WamContext.Write(register, functor, arity, parent = context)
             return true
         }
         if (current is Value.Struct && current.functor == functor && current.args.size == arity) {
-            context = WamContext.Read(current.args)
+            context = WamContext.Read(current.args, parent = context)
             return true
         }
         return false
@@ -213,7 +239,7 @@ class WamState(
         // the register still held a constant, e.g. a clause-head
         // argument about to be replaced by the goal argument.
         val arity = functorArity(functor) ?: return false
-        context = WamContext.Write(register, functor, arity)
+        context = WamContext.Write(register, functor, arity, parent = context)
         return true
     }
 
@@ -222,7 +248,11 @@ class WamState(
         ctx.args.add(value)
         if (ctx.args.size == ctx.arity) {
             bindTarget(ctx.targetRegister, Value.Struct(ctx.functor, ctx.args.toList()))
-            context = null
+            // Resume the enclosing term instead of dropping to no context.
+            // The finished struct reaches the parent through the register
+            // it was just bound to, which the parent already holds as its
+            // pending argument.
+            context = ctx.parent
         }
         return true
     }
@@ -232,7 +262,7 @@ class WamState(
         if (ctx.index !in ctx.args.indices) return null
         val value = ctx.args[ctx.index]
         ctx.index += 1
-        if (ctx.index >= ctx.args.size) context = null
+        if (ctx.index >= ctx.args.size) context = ctx.parent
         return value
     }
 
