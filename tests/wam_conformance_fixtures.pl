@@ -146,6 +146,22 @@ user:ckind([cwd(V)|_],  w(V)).
 :- dynamic user:cbuild_chk/1.
 user:cbuild_one(X, [tk(X)|[]]).
 user:cbuild_chk(X) :- user:cbuild_one(X, L), L = [tk(X)].
+% A head with a REPEATED variable inside a structure. Matching
+% `csame(p(X,X), X)` against a term whose slots are both unbound has to
+% bind the second slot, not merely accept it. WAM-Rust's unify_value
+% short-circuited on an unbound heap argument and returned success
+% without binding, so the caller's term never became p(a,a) — the query
+% failed while every individual step "succeeded".
+%
+% crepeat/1 has to use ==/2 rather than =/2: with the bug, T was left as
+% p(_, a), and `T = p(a,a)` would happily bind the remaining slot and
+% succeed. Only an identity comparison shows that the binding never
+% happened. That does mean crepeat/1 depends on the backend's ==/2
+% dereferencing correctly — which is why it lives in its own program.
+:- dynamic user:csame/2.
+:- dynamic user:crepeat/1.
+user:csame(p(X, X), X).
+user:crepeat(X) :- T = p(_, _), user:csame(T, X), T == p(X, X).
 
 % --- empty-list identity ---
 %     `[]` reached as a cons tail must unify with a literal `[]`. These
@@ -173,6 +189,7 @@ conformance_program(builtins, [user:cbi_arith/1, user:cbi_cmp/1, user:cbi_eq/1])
 conformance_program(wide,      [user:cwide/10]).
 conformance_program(nested,    [user:cnest/2, user:ctail/3, user:ckind/2,
                                 user:cbuild_one/2, user:cbuild_chk/1]).
+conformance_program(repeatvar, [user:csame/2, user:crepeat/1]).
 conformance_program(emptylist, [user:cnil_tail/2, user:cone/2]).
 
 % member/2 — the regression that motivated the harness; the preferred
@@ -237,6 +254,15 @@ conformance_query(nested, 'ckind/2', [[csym(x)], n(x)], false).
 % Write mode: build `[tk(X)|[]]` with an unbound output, then check it.
 conformance_query(nested, 'cbuild_chk/1', [a], true).
 conformance_query(nested, 'cbuild_chk/1', [b], true).
+
+% repeatvar — a repeated variable inside a structure. Kept as its own
+% program because detecting the bug needs ==/2 (see crepeat/1 below), so
+% a backend can diverge here for a term-comparison reason that has
+% nothing to do with the nested-head shapes above; a shared program
+% would make one xfail blanket both.
+conformance_query(repeatvar, 'csame/2',   [p(a,a), a], true).
+conformance_query(repeatvar, 'csame/2',   [p(a,b), a], false).
+conformance_query(repeatvar, 'crepeat/1', [a], true).
 
 % emptylist — `[]` as a cons tail must equal a literal `[]`.
 conformance_query(emptylist, 'cnil_tail/2', [[a],   []],  true).

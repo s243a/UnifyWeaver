@@ -87,6 +87,20 @@ default path in tests.
 
 ## Known issues / gaps
 
+- **Head-unification fixes landed 2026-08-06** (CONF-FIX-RUST-NESTED,
+  CONF-FIX-RUST-EMPTYLIST) — four defects, all silent wrong answers,
+  found by the new `nested`/`emptylist`/`repeatvar` conformance
+  programs: `get_structure` deciding read-vs-write mode before
+  dereferencing (so a bound argument got a fresh structure built over
+  it, and a head matched a list element it should have rejected); its
+  read branch re-appending the arity to an already-qualified functor key
+  (`"s/1/1"`), which broke inner-functor clause discrimination;
+  `unify_constant` using raw equality plus an unbound short-circuit
+  instead of `unify()`; and `unify_value` accepting an unbound heap
+  argument without binding it. Rust now passes all ten conformance
+  programs with no xfail. **These were live in a Primary-band target and
+  the six classic programs caught none of them** — worth remembering when
+  sizing "is this target conformant?" for the remaining backends.
 - Wire `lmdb_materialisation(...)` into default project writer (today
   mainly matrix-bench path).
 - LMDB scan/segregation (R9/R10) still open.
