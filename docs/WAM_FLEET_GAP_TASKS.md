@@ -28,7 +28,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | FS-LIST-PARTIAL-TAIL ✅ | Conformance gap fix | F# | M | done — GetValue→unifyVal (`cursor/fs-list-partial-tail-f421`); append/reverse green on fsharp + fsharp_functions |
 | FS-ARITH-INT-DIV ✅ | Conformance gap fix | F# | S | done — `//` in evalArith (`37debf71`) |
 | FS-FUNCTIONS-BUILTINS-LOWER ✅ | Conformance gap fix | F# | M | done — last-slash `parse_functor_fs` for `///2` (`cursor/fs-functions-builtins-lower-f421`); fsharp_functions/builtins green |
-| CONF-FIX-C-NESTED | Conformance gap fix | C | M | — (found by the new `nested` program; **includes a SIGSEGV**) |
+| CONF-FIX-C-NESTED ✅ | Conformance gap fix | C | M | done — nested read *and* write contexts; segfault + two silent wrong-answer classes |
 | CONF-FIX-RUST-NESTED | Conformance gap fix | Rust | M | — (found by the new `nested` program; **includes a silent wrong answer**) |
 | CONF-FIX-RUST-EMPTYLIST | Conformance gap fix | Rust | S | — (found by the new `emptylist` program) |
 | CONF-LLVM | Conformance adapter | LLVM | L | — |
@@ -126,7 +126,7 @@ external toolchain.
 - **Goal:** Lowering builtins completes without hanging; suite green under `fsharp_functions`.
 - **Acceptance:** Remove the skip; builtins lowers cleanly; suite completes under `CONFORMANCE_TARGETS=fsharp_functions`.
 
-### CONF-FIX-C-NESTED: WAM-C mis-unifies (and crashes on) a cons tail after a nested structure
+### CONF-FIX-C-NESTED: WAM-C mis-unifies (and crashes on) a cons tail after a nested structure ✅
 - **Lever:** Conformance gap fix  **Target:** C  **Size:** M  **Depends on:** —
 - **Found by:** the `nested` conformance program, added 2026-08-06. C was
   registered and green on all six classic programs; they are all arity
@@ -151,6 +151,36 @@ external toolchain.
   swipl -q -g run_tests -t halt tests/test_wam_cross_target_conformance.pl`
   passes with the `ct_xfail(c, nested)` entry removed. The SIGSEGV case
   is the priority — a crash is worse than a wrong answer.
+- **Status:** Done. Root cause was exactly the predicted one: the C
+  runtime carried a single `S` register, and the compiler emits a nested
+  term *interleaved* with the enclosing term's arguments, so the nested
+  `get_structure` destroyed the pointer to the cons tail. The final
+  `unify_variable` then read at `S=4` with `H=4` — past the heap top —
+  which is a wrong answer at `-O0` and a fault at `-O1`.
+
+  Fixed with a `WamArgCtx` stack (`wam_runtime.h`): each nested
+  read-mode `get_structure`/`get_list` saves the `S` it is about to
+  overwrite plus a countdown of the arguments the new term owns, and the
+  `unify_*` that exhausts that countdown restores the enclosing `S`. The
+  depth is saved in the choicepoint and restored on backtracking, so a
+  clause that fails mid-head leaves nothing behind.
+
+  **Chasing it turned up a second, larger bug in the WRITE path.** Every
+  conformance query is ground, so heads are matched and never *built* —
+  construction bugs were completely invisible to this harness. Building
+  the same head with an unbound output (`mk(X, [tk(X)|[]])`), the cons
+  cell reserved two heap slots but the nested `get_structure` then
+  allocated at `H`, on top of them; the following `unify_*` appended
+  *after* the nested term and the cons tail was never written. Every such
+  query silently failed — and `foo(X, [tag(X)|Rest])` is an ordinary
+  constructor shape, so this was not an exotic case. Write contexts now
+  carry the destination address of their next argument cell, and the
+  `get_*` instructions claim their argument cells up front.
+
+  A `cbuild_chk/1` query was added to the `nested` fixture to cover the
+  write direction, since the ground-query design otherwise hides it.
+  Verified ASan-clean at `-O1`. C now passes all nine conformance
+  programs with **no xfail entries**.
 
 ### CONF-FIX-RUST-NESTED: WAM-Rust fails inner-functor clause discrimination and returns a false positive
 - **Lever:** Conformance gap fix  **Target:** Rust  **Size:** M  **Depends on:** —

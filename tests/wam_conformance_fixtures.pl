@@ -135,6 +135,17 @@ user:ctail([tk(X)|R], X, R).
 user:ckind([cnum(V)|_], n(V)).
 user:ckind([csym(V)|_], s(V)).
 user:ckind([cwd(V)|_],  w(V)).
+% Same shape in WRITE mode. Every query in this harness is ground, so a
+% head is normally matched, never built — which hides construction bugs
+% completely. cbuild_chk/1 calls cbuild_one/2 with its second argument
+% UNBOUND, so the runtime has to *build* `[tk(X)|[]]`, and then checks
+% the result. WAM-C reserved the cons cells but allocated the nested
+% tk/1 structure on top of them, so the tail slot was never written and
+% every such query silently failed.
+:- dynamic user:cbuild_one/2.
+:- dynamic user:cbuild_chk/1.
+user:cbuild_one(X, [tk(X)|[]]).
+user:cbuild_chk(X) :- user:cbuild_one(X, L), L = [tk(X)].
 
 % --- empty-list identity ---
 %     `[]` reached as a cons tail must unify with a literal `[]`. These
@@ -160,7 +171,8 @@ conformance_program(fib,      [user:cfib/2]).
 conformance_program(ack,      [user:cack/3]).
 conformance_program(builtins, [user:cbi_arith/1, user:cbi_cmp/1, user:cbi_eq/1]).
 conformance_program(wide,      [user:cwide/10]).
-conformance_program(nested,    [user:cnest/2, user:ctail/3, user:ckind/2]).
+conformance_program(nested,    [user:cnest/2, user:ctail/3, user:ckind/2,
+                                user:cbuild_one/2, user:cbuild_chk/1]).
 conformance_program(emptylist, [user:cnil_tail/2, user:cone/2]).
 
 % member/2 — the regression that motivated the harness; the preferred
@@ -222,6 +234,9 @@ conformance_query(nested, 'ckind/2', [[cnum(7)], n(7)], true).
 conformance_query(nested, 'ckind/2', [[csym(x)], s(x)], true).
 conformance_query(nested, 'ckind/2', [[cwd(m)],  w(m)], true).
 conformance_query(nested, 'ckind/2', [[csym(x)], n(x)], false).
+% Write mode: build `[tk(X)|[]]` with an unbound output, then check it.
+conformance_query(nested, 'cbuild_chk/1', [a], true).
+conformance_query(nested, 'cbuild_chk/1', [b], true).
 
 % emptylist — `[]` as a cons tail must equal a literal `[]`.
 conformance_query(emptylist, 'cnil_tail/2', [[a],   []],  true).

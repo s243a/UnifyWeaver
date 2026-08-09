@@ -84,14 +84,32 @@ run — see the `ct_xfail` block in
 `tests/test_wam_cross_target_conformance.pl` for the per-backend
 diagnosis, and `WAM_FLEET_GAP_TASKS.md` for the fix cards:
 
-- **C / `nested`** — `ctail/3` returns the wrong answer on one query and
-  **segfaults the generated binary** (exit 139) on another.
+- **C / `nested`** — ~~`ctail/3` returns the wrong answer on one query and
+  **segfaults the generated binary** (exit 139) on another.~~ **Fixed**
+  (CONF-FIX-C-NESTED): a single `S` register with no save/restore around
+  nested terms. Fixing it also exposed the same bug in the *write* path,
+  which the ground-query design had hidden entirely — see below.
 - **Rust / `nested`** — three-way clause discrimination on the inner
   functor matches nothing, and `cnest([tk(a)], z)` returns **true** when
   it must be false (a silent wrong answer, not a missed solution).
 - **Rust / `emptylist`** — both `cone/2` queries come back **inverted**.
 
-`go`, `python`, `cpp` and `wat` pass all three.
+`go`, `python`, `c`, `cpp` and `wat` pass all three.
+
+### Ground queries hide construction bugs
+
+Every query in this harness is ground, so a predicate head is always
+*matched* and never *built*. That makes write-mode (construction) bugs
+invisible. Fixing the C read-mode bug above surfaced a second one in the
+write path: building `[tk(X)|[]]` with an unbound output left the cons
+tail slot unwritten, so every such query silently failed — and
+`foo(X, [tag(X)|Rest])` is an ordinary constructor shape, not an exotic
+one.
+
+The `nested` program therefore also carries `cbuild_chk/1`, which calls a
+constructor with an unbound argument and then checks the result. New
+programs that exercise a head shape should include a build-then-check
+query for the same reason.
 
 Environment knobs:
 
