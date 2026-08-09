@@ -2557,23 +2557,30 @@ compile_execute_term_builtin_to_rust(Code) :-
                 }
             }
             "copy_term/2" => {
-                let t_val = self.get_reg_raw("A1")
-                    .map(|v| self.deref_heap(&self.deref_var(&v)));
-                if let Some(t) = t_val {
-                    // Sharing is preserved via a var_map from source
-                    // variable name to the single fresh name used for
-                    // ALL occurrences of that source variable. The
-                    // counter is bumped once per distinct source var.
-                    let mut var_map: std::collections::HashMap<String, String>
-                        = std::collections::HashMap::new();
-                    let copy = Self::copy_term_walk(
-                        &mut self.var_counter, &mut var_map, &t);
-                    if let Some(a2) = self.get_reg_raw("A2") {
-                        let derefed = self.deref_var(&self.deref_heap(&a2));
-                        if self.unify(&derefed, &copy) { self.pc += 1; true }
-                        else { false }
-                    } else { false }
-                } else { false }
+                let term_raw = match self.get_reg_raw("A1") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let output_raw = match self.get_reg_raw("A2") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let term = self.deref_heap(&self.deref_var(&term_raw));
+                // Sharing is preserved via a var_map from source
+                // variable name to the single fresh name used for
+                // ALL occurrences of that source variable. The
+                // counter is bumped once per distinct source var.
+                let mut var_map: std::collections::HashMap<String, String>
+                    = std::collections::HashMap::new();
+                let copy = Self::copy_term_walk(
+                    &mut self.var_counter, &mut var_map, &term);
+                let mark = self.trail.len();
+                if self.unify(&output_raw, &copy) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
             }
             "reverse/2" => { self.execute_reverse_builtin() }
             "atom_codes/2" | "string_codes/2" => { self.execute_atom_codes_builtin() }

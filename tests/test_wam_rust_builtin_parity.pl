@@ -2181,6 +2181,59 @@ fn test_univ_direct_modes_and_rollback() {
 }
 
 #[test]
+fn test_copy_term_direct_sharing_and_rollback() {
+    let (copy_ok, copy_vm) = call2(
+        "copy_term/2",
+        Value::Str("pair/2".to_string(), vec![ub("Source"), ub("Source")]),
+        ub("Copy"),
+    );
+    assert!(copy_ok);
+    match read_var(&copy_vm, "Copy") {
+        Value::Str(name, args) => {
+            assert_eq!(name, "pair");
+            assert_eq!(args.len(), 2);
+            assert!(args[0].is_unbound());
+            assert_eq!(args[0], args[1]);
+            assert_ne!(args[0], ub("Source"));
+        }
+        other => panic!("expected copied pair, got {other:?}"),
+    }
+    assert_eq!(read_var(&copy_vm, "Source"), ub("Source"));
+
+    let (ground_ok, ground_vm) = call2(
+        "copy_term/2",
+        Value::Str("pair/2".to_string(), vec![a("left"), i(7)]),
+        ub("Copy"),
+    );
+    assert!(ground_ok);
+    assert_eq!(read_var(&ground_vm, "Copy"),
+        Value::Str("pair".to_string(), vec![a("left"), i(7)]));
+
+    let (rollback_ok, rollback_vm) = call2(
+        "copy_term/2",
+        Value::Str("outer/2".to_string(), vec![
+            Value::Str("pair/2".to_string(), vec![ub("Source"), a("right")]),
+            a("tail"),
+        ]),
+        Value::Str("outer/2".to_string(), vec![
+            Value::Str("pair/2".to_string(), vec![ub("Captured"), a("wrong")]),
+            a("tail"),
+        ]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "Captured"), ub("Captured"));
+    assert_eq!(read_var(&rollback_vm, "Source"), ub("Source"));
+
+    let mut missing_term = vmnew();
+    missing_term.set_reg("A2", ub("Copy"));
+    assert!(!missing_term.execute_builtin("copy_term/2", 2));
+
+    let mut missing_output = vmnew();
+    missing_output.set_reg("A1", a("ground"));
+    assert!(!missing_output.execute_builtin("copy_term/2", 2));
+}
+
+#[test]
 fn test_standard_order() {
     assert!(call2("@</2", a("a"), a("b")).0);
     assert!(!call2("@</2", a("b"), a("a")).0);
