@@ -7,6 +7,11 @@
 % `X = Y, X = 42, Y =:= 42` failed. wam_runtime.h's unbound-unbound
 % case now installs a VAL_REF to the partner's heap slot.
 %
+% Extended 2026-08-09 (CONF-FIX-C-EQ-DEREF) with the same requirement
+% reached through a *head* instead of `=/2`: read-mode `unify_variable`
+% copied unbound heap cells by value, so a repeated head variable
+% (`c_same_slots(p(X, X), X)`) bound only the second slot.
+%
 % Gated on gcc; compiles the probes + runtime with gcc and runs them,
 % mirroring run_real_prolog_builtin_executable_smoke in
 % tests/test_wam_c_target.pl.
@@ -21,6 +26,9 @@
 :- dynamic user:c_alias_conflict/1.
 :- dynamic user:c_alias_chain3/1.
 :- dynamic user:c_alias_backtrack/1.
+:- dynamic user:c_same_slots/2.
+:- dynamic user:c_repeat_head/1.
+:- dynamic user:c_repeat_head_first/1.
 
 % Binding through a var-var alias must propagate to both.
 user:c_alias_chain(R)    :- X = Y, X = 42, ( Y =:= 42 -> R is 1 ; R is 0 ).
@@ -35,6 +43,25 @@ user:c_alias_backtrack(R) :-
     ; Y = 7, X = 5, ( Y =:= 7, X =:= 5 -> R is 1 ; R is 0 )
     ).
 
+% CONF-FIX-C-EQ-DEREF: the same aliasing requirement, but reached through
+% a *head* rather than through `=/2`. `unify_variable` in READ mode used
+% to copy the heap cell into the register by value; an unbound cell has
+% no address, so the register got its own detached variable and the
+% caller's slot was never bound. A repeated variable inside the head
+% structure is the shape that exposes it: X aliased with the SECOND slot
+% only, so the first slot stayed unbound.
+%
+% Both probes use ==/2 deliberately. `T = p(7,7)` would re-unify and
+% happily bind the still-unbound slot, hiding the bug — which is exactly
+% how it survived every earlier C conformance run.
+user:c_same_slots(p(X, X), X).
+user:c_repeat_head(R) :-
+    T = p(_, _), user:c_same_slots(T, 7),
+    ( T == p(7, 7) -> R is 1 ; R is 0 ).
+user:c_repeat_head_first(R) :-
+    T = p(A, _), user:c_same_slots(T, 7),
+    ( A == 7 -> R is 1 ; R is 0 ).
+
 gcc_available :-
     catch(( process_create(path(gcc), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -46,11 +73,13 @@ test(var_alias_exec_parity) :-
     Dir = 'output/test_wam_c_var_alias',
     ( exists_directory(Dir) -> delete_directory_and_contents(Dir) ; true ),
     make_directory_path(Dir),
-    Preds = [c_alias_chain, c_alias_conflict, c_alias_chain3, c_alias_backtrack],
+    Preds = [c_alias_chain/1, c_alias_conflict/1, c_alias_chain3/1,
+             c_alias_backtrack/1, c_same_slots/2, c_repeat_head/1,
+             c_repeat_head_first/1],
     findall(PredCode,
-            ( member(P, Preds),
-              compile_predicate_to_wam(user:P/1, [], WamCode),
-              compile_wam_predicate_to_c(user:P/1, WamCode, [], PredCode)
+            ( member(P/A, Preds),
+              compile_predicate_to_wam(user:P/A, [], WamCode),
+              compile_wam_predicate_to_c(user:P/A, WamCode, [], PredCode)
             ),
             PredCodes),
     compile_wam_runtime_to_c([], RuntimeCode),
@@ -74,7 +103,7 @@ test(var_alias_exec_parity) :-
                    [stdout(pipe(Out)), stderr(std), process(Pid)]),
     read_string(Out, _, OutStr), close(Out),
     process_wait(Pid, Status),
-    ( Status == exit(0), sub_string(OutStr, _, _, _, "ALL 6 PASS")
+    ( Status == exit(0), sub_string(OutStr, _, _, _, "ALL 10 PASS")
     ->  true
     ;   format(user_error, "~n[c var-alias test output]~n~w~n", [OutStr]),
         throw(c_var_alias_test_failed(Status))
@@ -97,6 +126,9 @@ void setup_c_alias_chain_1(WamState* state);
 void setup_c_alias_conflict_1(WamState* state);
 void setup_c_alias_chain3_1(WamState* state);
 void setup_c_alias_backtrack_1(WamState* state);
+void setup_c_same_slots_2(WamState* state);
+void setup_c_repeat_head_1(WamState* state);
+void setup_c_repeat_head_first_1(WamState* state);
 
 static int check(WamState *state, const char *pred, int argval, int expect_true) {
     WamValue args[1] = { val_int(argval) };
@@ -114,6 +146,9 @@ int main(void) {
     setup_c_alias_conflict_1(&state);
     setup_c_alias_chain3_1(&state);
     setup_c_alias_backtrack_1(&state);
+    setup_c_same_slots_2(&state);
+    setup_c_repeat_head_1(&state);
+    setup_c_repeat_head_first_1(&state);
     int n = 0;
     n += check(&state, "c_alias_chain/1", 1, 1);
     n += check(&state, "c_alias_chain/1", 0, 0);
@@ -121,8 +156,12 @@ int main(void) {
     n += check(&state, "c_alias_chain3/1", 1, 1);
     n += check(&state, "c_alias_chain3/1", 0, 0);
     n += check(&state, "c_alias_backtrack/1", 1, 1);
-    if (n == 6) printf("ALL 6 PASS\\n");
+    n += check(&state, "c_repeat_head/1", 1, 1);
+    n += check(&state, "c_repeat_head/1", 0, 0);
+    n += check(&state, "c_repeat_head_first/1", 1, 1);
+    n += check(&state, "c_repeat_head_first/1", 0, 0);
+    if (n == 10) printf("ALL 10 PASS\\n");
     wam_free_state(&state);
-    return n == 6 ? 0 : 1;
+    return n == 10 ? 0 : 1;
 }
 ').

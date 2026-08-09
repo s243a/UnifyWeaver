@@ -110,9 +110,27 @@ slots are both unbound must **bind** the second slot, not merely accept
 it. Detecting that needs `==/2` rather than `=/2` — with the bug the term
 was left as `p(_, a)`, and `T = p(a,a)` would happily bind the remaining
 slot and succeed. It is a separate program precisely because it leans on
-`==/2`: C diverges here for a term-comparison reason unrelated to the
-nested-head shapes (see `CONF-FIX-C-EQ-DEREF`), and a shared program
+`==/2`, so a backend can diverge here for a term-comparison reason that
+has nothing to do with the nested-head shapes above; a shared program
 would let one xfail blanket both.
+
+That separation earned its keep immediately: C failed `repeatvar` while
+passing every `nested` query, and the symptom pointed at `==/2`
+(`CONF-FIX-C-EQ-DEREF`). `==/2` turned out to be innocent. The defect was
+in read-mode `unify_variable`, which copied the heap cell into the
+register **by value** — correct for a bound cell, since `VAL_REF`,
+`VAL_ATOM`, `VAL_STR` and `VAL_LIST` each carry their own identity, but
+`VAL_UNBOUND` carries no address, so the register got its own detached
+variable. `csame(p(X,X), X)` then aliased X with the *second* slot and
+bound only that one. Read mode now installs a `VAL_REF` at `S` for an
+unbound cell, mirroring what the write branch already did. Fixed
+2026-08-09; also guarded by `tests/test_wam_c_var_alias.pl`, which now
+reaches the same aliasing requirement through a head rather than `=/2`.
+
+Three of the four programs added in this round found a live bug in a
+different backend — the fourth (`wide`) found none. Go, Rust and C were
+each green on the six classic programs while carrying a silent
+head-unification defect.
 
 ### Ground queries hide construction bugs
 

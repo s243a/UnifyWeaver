@@ -369,17 +369,29 @@ ct_default_target(elixir).
 %      routed through unify(), which already knows both aliasings --
 %      the same treatment GetValue was given earlier.
 
-%  C / repeatvar — XFAIL (CONF-FIX-C-EQ-DEREF, found 2026-08-06). This
-%  is NOT the nested-head class fixed in CONF-FIX-C-NESTED; C passes all
-%  of `nested`. Narrowed with a three-way probe:
-%    v1: `T = p(_,_), csame(T, a)`               -> true  (call succeeds)
-%    v2: `..., T = p(a,a)`                       -> true  (binding IS right)
-%    v3: `..., T == p(a,a)`                      -> FALSE (should be true)
-%  So head unification and the bindings are correct; ==/2 is comparing the
-%  raw term, whose slots still hold bound-but-uncollapsed references,
-%  against the literal. Fix is in the C ==/2 / term-identity path, not in
-%  unification.
-ct_xfail(c, repeatvar).
+%  C / repeatvar — FIXED 2026-08-09 (card CONF-FIX-C-EQ-DEREF; the card
+%  name records where the symptom pointed, not where the bug was). It is
+%  not the nested-head class fixed in CONF-FIX-C-NESTED either — C passed
+%  all of `nested` throughout. Narrowed by binding each slot separately
+%  after `T = p(A,B), csame(T, a)`:
+%    A == a   -> FALSE      (first slot never bound)
+%    B == a   -> true
+%    A == B   -> FALSE
+%  ==/2 was innocent: `wam_term_strict_equal` derefs correctly, and the
+%  slot really was unbound. The defect was in INSTR_UNIFY_VARIABLE's READ
+%  branch, which did `*cell = H_array[S]` — a by-value copy. For a bound
+%  cell that is fine (REF/ATOM/STR/LIST each carry their own identity),
+%  but VAL_UNBOUND carries no address, so the register ended up holding
+%  its OWN fresh variable instead of an alias of the heap slot. The
+%  repeated head variable in `csame(p(X, X), X)` then aliased X with the
+%  SECOND slot (via unify_value) and bound that one from `get_value X, A2`,
+%  leaving the first slot untouched. Read mode now installs a VAL_REF at S
+%  when the cell is unbound, mirroring what the write branch already did.
+%
+%  Why `=/2` hid it and only `==/2` exposed it: `T = p(a,a)` re-unifies,
+%  so it happily binds the still-unbound first slot and succeeds. Only an
+%  identity comparison shows the binding never happened — which is exactly
+%  why crepeat/1 is written with ==/2.
 
 %  R (CONF-R). Adapter registered (opt-in via CONFORMANCE_TARGETS=r[,r_functions]).
 %  runtime_parser(off) is pinned so generation is deterministic: classic
