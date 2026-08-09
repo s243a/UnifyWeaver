@@ -35,6 +35,9 @@ self-contained so a single coding agent can pick it up in isolation.
 | CONF-FIX-ELIXIR-REPEATVAR ✅ | Conformance gap fix | Elixir | S | done — `unify/3` now derefs; `deref_var` stops only on a self-reference (**default-CI arm**) |
 | CONF-FIX-SCALA-NESTED ✅ | Conformance gap fix | Scala | M | done — `unifyStack` of enclosing argument queues, interpreter + lowered (**default-CI arm**) |
 | CONF-FIX-SCALA-EQ ✅ | Conformance gap fix | Scala | S | done — `==/2` and `\==/2` were missing from the builtin table and failed closed |
+| CONF-FIX-KOTLIN-NESTED ✅ | Conformance gap fix | Kotlin | M | done — `WamContext` gained a `parent` chain; fixes both `kotlin` and `kotlin_functions` |
+| CONF-FIX-FSHARP-LOWERED-GETVALUE ✅ | Conformance gap fix | F# | S | done — lowered `get_value` now uses `unifyVal`; the interpreter's FS-LIST-PARTIAL-TAIL fix had never reached the lowered path |
+| CONF-SWEEP-ALL-ARMS ✅ | Conformance coverage | multi | M | done — all 15 registered arms run against the four head-shape programs; 8 fixes across 7 backends |
 | CONF-LLVM | Conformance adapter | LLVM | L | — |
 | CONF-R ✅ | Conformance adapter | R | M | done — opt-in; all classic programs green (R-SWITCH-INDEX-CONFORMANCE) |
 | R-SWITCH-INDEX-CONFORMANCE ✅ | Conformance gap fix | R | S | done — fallthrough/A2 reuse existing SwitchOnTerm no-op |
@@ -376,6 +379,72 @@ external toolchain.
   `nested_heads_and_strict_equality` in
   `tests/test_wam_scala_classic_programs.pl`, which checks atomic and
   compound `==/2` and `\==/2` in both polarities.
+
+### CONF-FIX-KOTLIN-NESTED: WAM-Kotlin single `context` slot lost the enclosing term ✅
+- **Lever:** Conformance gap fix  **Target:** Kotlin  **Size:** M  **Depends on:** —
+- **Symptom:** 9 `nested` queries false — `cnest/2`, `ctail/3`, `ckind/2`
+  and the write-mode `cbuild_chk/1` — **identically on both `kotlin` and
+  `kotlin_functions`**, which is what pinned it to the shared runtime
+  rather than either emit mode. `wide`, `emptylist` and `repeatvar` all
+  passed, so Kotlin already had a working `==/2`.
+- **Root cause:** the same single-argument-context defect found in C
+  (`S` register) and Scala (`unifyQueue`), spelled here as
+  `var context: WamContext?`. `beginStructure` replaced it outright, so
+  a nested `get_structure` discarded the enclosing list's pending
+  arguments and the following `unify_variable` got `null` from
+  `nextReadArg()` and failed the clause. The write path had it too:
+  building `[tk(X)|[]]`, the nested `tk/1` frame completed, set
+  `context = null`, and the cons tail was never written.
+- **Fix:** `WamContext` gained an `abstract val parent: WamContext?`.
+  `beginStructure`/`beginStructurePut` nest via `parent = context`;
+  `nextReadArg` and `pushWriteArg` restore `ctx.parent` instead of
+  `null`. Threading the chain through the context object rather than a
+  separate stack field is deliberate — `ChoicePoint`, `CallFrame` and
+  `WamNativeSnapshot` all already carry `context`, so the whole chain is
+  saved and restored by the existing machinery untouched.
+- **Acceptance:** `CONFORMANCE_TARGETS=kotlin` and `=kotlin_functions`
+  both green ✅; `tests/test_wam_kotlin_target.pl` unchanged ✅.
+
+### CONF-FIX-FSHARP-LOWERED-GETVALUE: the lowered path never got the interpreter's fix ✅
+- **Lever:** Conformance gap fix  **Target:** F#  **Size:** S  **Depends on:** —
+- **Symptom:** `fsharp` (interpreter) **green**; `fsharp_functions`
+  (lowered) failed exactly three queries —
+  `cnil_tail/2([[a,b],[b]])`, `ctail/3([[tk(a),tk(b)],a,[tk(b)]])` and
+  `crepeat/1([a])`. The single-element forms of the first two passed.
+- **Root cause:** `emit_one_fs(get_value(...))` inlined shallow `a = x`
+  equality plus one Unbound-on-Ai binding branch. A list reached as a
+  cons **tail** materialises as `Str("[|]", [h; t])` while the same list
+  arriving as an argument is a compact `VList`, so shallow equality
+  rejects two spellings of one term — an empty tail happens to have the
+  same spelling either way, which is why only the multi-element cases
+  failed. Shallow equality also cannot bind through an already-aliased
+  variable, which is what broke the repeated-variable head.
+- **This is FS-LIST-PARTIAL-TAIL again.** That card fixed the
+  interpreter's `GetValue` to use `unifyVal` and left an explanatory
+  comment there; the lowered emitter kept its own copy and never
+  received it. One line of delegation now, no re-derivation.
+- **Generalisation worth keeping:** backends with dual lowering — Scala,
+  Kotlin, F#, R, Elixir — need every unification fix applied to *both*
+  paths. The conformance arms are registered separately (`fsharp` vs
+  `fsharp_functions`) precisely so the divergence surfaces.
+- **Acceptance:** `CONFORMANCE_TARGETS=fsharp_functions` green ✅; the
+  F# lowered/parser/runtime smoke suites unchanged ✅.
+
+### CONF-SWEEP-ALL-ARMS: run every registered arm against the head-shape programs ✅
+- **Lever:** Conformance coverage  **Target:** multi  **Size:** M
+- **Why:** the four head-shape programs were added on a machine with six
+  buildable toolchains. Nine arms — including both **default-CI** arms —
+  had never run them.
+- **Result:** all 15 registered arms green. Eight fixes across seven
+  backends; see the scorecard in `WAM_CROSS_TARGET_CONFORMANCE.md`.
+  Clean on first run with no fix needed: `python`, `cpp`, `wat`,
+  `haskell`, `r`, `r_functions`, `fsharp`.
+- **Toolchains required** (none present at the start): `elixir` (apt),
+  Scala **2.13** (tarball — apt carries only 2.11, which cannot compile
+  the emitted runtime), `ghc` + `cabal-install` (apt), `r-base-core`
+  (apt with `--no-install-recommends`; the default recommends pull a
+  broken mesa dependency), `dotnet-sdk-8.0` (apt). Kotlin needed only
+  the `gradle` already on the image.
 
 ### CONF-LLVM: Register LLVM in the cross-target conformance harness
 - **Lever:** Conformance adapters  **Target:** LLVM  **Size:** L  **Depends on:** —

@@ -7,7 +7,8 @@
 
 A single set of classic Prolog programs (`member`, `append`, `reverse`,
 `fib`, `ack`, and a `builtins` arithmetic/comparison/unification pack),
-plus three **head-shape** programs (`wide`, `nested`, `emptylist`)
+plus four **head-shape** programs (`wide`, `nested`, `emptylist`,
+`repeatvar`)
 with one shared table of expected query results. The harness compiles
 that *same* spec to every WAM backend whose toolchain is on `PATH`, runs
 each backend, and asserts the answers match.
@@ -80,7 +81,7 @@ Three programs now cover those shapes:
 | `emptylist` | `[]` as a cons tail, and a literal `[X|[]]` spine in a head | `[]` represented two different ways inside one runtime |
 
 They found live divergences in two more mature backends on the first
-run — see the `ct_xfail` block in
+run — see the narrative block where the `ct_xfail` entries used to sit in
 `tests/test_wam_cross_target_conformance.pl` for the per-backend
 diagnosis, and `WAM_FLEET_GAP_TASKS.md` for the fix cards:
 
@@ -101,8 +102,10 @@ diagnosis, and `WAM_FLEET_GAP_TASKS.md` for the fix cards:
   A fourth bug in the same family — `unify_value` accepting an unbound
   heap argument without binding it — was found and fixed alongside.
 
-All six backends buildable here — `go`, `python`, `c`, `cpp`, `rust`,
-`wat` — now pass all three.
+All six backends buildable at the time — `go`, `python`, `c`, `cpp`,
+`rust`, `wat` — passed all three after those fixes. The remaining nine
+arms were swept later, once their toolchains could be installed; see the
+scorecard below.
 
 A fourth program, `repeatvar`, covers a head with a *repeated* variable
 inside a structure (`csame(p(X,X), X)`): matching it against a term whose
@@ -127,12 +130,14 @@ unbound cell, mirroring what the write branch already did. Fixed
 2026-08-09; also guarded by `tests/test_wam_c_var_alias.pl`, which now
 reaches the same aliasing requirement through a head rather than `=/2`.
 
-### Round scorecard
+### Round scorecard — the whole fleet, swept
 
-Three of the four programs added in this round found a live bug in a
-different backend — the fourth (`wide`) found none. **Five of the eight
-backends buildable here were green on the six classic programs while
-carrying a silent head-unification defect:**
+Every registered arm has now been run against the four new programs. All
+15 are green; getting there took eight fixes across seven backends.
+
+Three of the four programs found live bugs; the fourth (`wide`) found
+none anywhere. **Seven of the fifteen registered arms were green on the
+six classic programs while carrying a silent head-unification defect:**
 
 | Backend | Programs that failed | Defect |
 |---|---|---|
@@ -143,6 +148,26 @@ carrying a silent head-unification defect:**
 | elixir | repeatvar | `unify/3` did not dereference, and `deref_var` stopped on an alias as readily as on a self-reference |
 | scala | nested | single `unifyQueue` discarded the enclosing term's pending arguments |
 | scala | repeatvar | `==/2` and `\==/2` absent from the builtin table — failed closed |
+| kotlin, kotlin_functions | nested | single `context` slot, same shape as Scala's — fixed by giving `WamContext` a `parent` chain |
+| fsharp_functions | nested, emptylist, repeatvar | the **lowered** emitter inlined shallow `a = x` for `get_value` — the FS-LIST-PARTIAL-TAIL fix had only ever been applied to the interpreter |
+
+Clean on the first run, no fix needed: **python, cpp, wat, haskell, r,
+r_functions, fsharp** (interpreter).
+
+Two structural lessons fall out of the table:
+
+- **The same defect recurs independently.** A single argument-context
+  slot, overwritten by a nested `get_structure`, was found separately in
+  C (`S` register), Scala (`unifyQueue`), Kotlin (`context`) and Go
+  (write contexts). Four runtimes, four spellings, one bug. It is worth
+  checking any new backend for it directly rather than waiting for the
+  suite.
+- **A fix applied to one execution mode is not applied to the other.**
+  `fsharp` (interpreter) was green while `fsharp_functions` (lowered)
+  failed on a bug whose fix comment was sitting in the interpreter
+  source. Backends with dual lowering — Scala, Kotlin, F#, R, Elixir —
+  need both paths touched, and the conformance arms are registered
+  separately precisely so that shows up.
 
 `scala` and `elixir` are the two **default-CI** arms, so their entries
 were live breakage rather than latent gaps: the widened suite ran
@@ -150,6 +175,13 @@ against them on the next push. They are also the two hardest to check
 locally — Scala's emitted runtime needs 2.13+ (`String.toIntOption`), and
 a 2.11 toolchain fails to *compile* the project rather than diverging,
 which reads as a harness error rather than a conformance one.
+
+Toolchains this sweep needed, none of which were present at the start:
+`elixir` (apt), Scala **2.13** (tarball — apt only carries 2.11),
+`ghc`+`cabal-install` (apt), `r-base-core` (apt,
+`--no-install-recommends`; the default recommends pull in a broken mesa
+dependency), `dotnet-sdk-8.0` (apt). Kotlin needed only the `gradle`
+already on the image.
 
 ### Ground queries hide construction bugs
 
