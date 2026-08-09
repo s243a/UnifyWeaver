@@ -147,13 +147,17 @@ test(nf_without_an_assoc_end_field_declines) :-
     build_status("{ n++; c[$1]++ } END { print NF }\n", 3),
     !.
 
-% The ASSOC-ONLY route (no scalar slots) has no `special` clauses at all -- the whole row of
-% the matrix is empty there, for NR as much as NF, so this is not an NF gap. Pinned as a
-% trio so the row moves together when it moves.
-test(the_assoc_only_route_declines_every_special) :-
-    build_status("{ c[$1]++ } END { print NF, c[\"5\"] }\n", 3),
-    build_status("{ c[$1]++ } END { print NR, c[\"5\"] }\n", 3),
-    build_status("{ c[$1]++ } END { print RT, c[\"5\"] }\n", 3),
+% WAS a trio of declines: the assoc-only route had no `special` clauses at all, and this was
+% pinned as a trio "so the row moves together when it moves". It moved together, and the pin
+% failed as one -- which is the pin working, not a surprise. All three now land; see
+% tests/test_plawk_assoc_end_record.pl for that row.
+%
+% Kept here, inverted, because the ATTRIBUTION was the point: NF's absence from the assoc route
+% was never an NF gap, and the trio is what made that checkable rather than asserted.
+test(the_assoc_only_route_now_has_every_special, [condition(clang_available)]) :-
+    run("{ c[$1]++ } END { print NF, c[\"5\"] }\n", "2 2\n"),
+    run("{ c[$1]++ } END { print NR, c[\"5\"] }\n", "3 2\n"),
+    run("{ c[$1]++ } END { print RT, c[\"5\"] }\n", "\n 2\n"),
     !.
 
 :- end_tests(plawk_mixed_end_nf).
