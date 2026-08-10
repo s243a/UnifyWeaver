@@ -69,6 +69,12 @@ sealed class WamContext {
         val functor: String,
         val arity: Int,
         val args: MutableList<Value?> = mutableListOf(),
+        // put_structure/put_list (false) stage a BODY argument and must
+        // not bind an A register's previous occupant (M139/M140 cyclic
+        // term). get_structure/get_list (true) match a clause HEAD in
+        // write mode, where the A register holds the CALLER's output
+        // variable and binding it is the entire point.
+        val bindThrough: Boolean = false,
         override val parent: WamContext? = null,
     ) : WamContext()
 }
@@ -171,7 +177,7 @@ class WamState(
         bindingBank(register)[register] = value
     }
 
-    fun bindTarget(register: String, value: Value?) {
+    fun bindTarget(register: String, value: Value?, bindThrough: Boolean = false) {
         // A-REGISTER EXCEPTION (M139/M140 bind-through class): A
         // registers are argument staging — their old occupant is an
         // unrelated variable (often a clause-head argument), and
@@ -180,7 +186,13 @@ class WamState(
         // structure-chaining placeholders only ever live in X/Y
         // registers, so the bind-through is conditioned on the register
         // class — the same fix the Rust, Go, Scala and LLVM targets carry.
-        if (!register.startsWith("A")) {
+        //
+        // ...EXCEPT for get_structure/get_list write mode, where the A
+        // register holds the caller's unbound OUTPUT argument. Skipping
+        // the bind there let a clause head build a term and never hand
+        // it back: cbuild_one(X, [tk(X)|[]]) left the caller's L
+        // unbound. `bindThrough` distinguishes the two families.
+        if (bindThrough || !register.startsWith("A")) {
             val current = deref(readRegister(register))
             if (current is Value.Var) {
                 bind(current.name, value)
@@ -221,7 +233,8 @@ class WamState(
         val arity = functorArity(functor) ?: return false
         val current = deref(readRegister(register))
         if (current == null || current is Value.Var) {
-            context = WamContext.Write(register, functor, arity, parent = context)
+            context = WamContext.Write(register, functor, arity,
+                                       bindThrough = true, parent = context)
             return true
         }
         if (current is Value.Struct && current.functor == functor && current.args.size == arity) {
@@ -247,7 +260,8 @@ class WamState(
         val ctx = context as? WamContext.Write ?: return false
         ctx.args.add(value)
         if (ctx.args.size == ctx.arity) {
-            bindTarget(ctx.targetRegister, Value.Struct(ctx.functor, ctx.args.toList()))
+            bindTarget(ctx.targetRegister, Value.Struct(ctx.functor, ctx.args.toList()),
+                       ctx.bindThrough)
             // Resume the enclosing term instead of dropping to no context.
             // The finished struct reaches the parent through the register
             // it was just bound to, which the parent already holds as its

@@ -393,6 +393,42 @@ ct_default_target(elixir).
 %  identity comparison shows the binding never happened — which is exactly
 %  why crepeat/1 is written with ==/2.
 
+%  Elixir + R / buildnest — XFAIL (2026-08-09). `buildnest` is the
+%  suite's only WRITE-mode program, and it only became a real check on
+%  2026-08-09: `cbuild_chk/1` used `=/2`, which re-unifies and therefore
+%  reported success even when the head never bound the caller's output at
+%  all. Switched to `==/2` while root-causing the WAM-Scala nqueens hang
+%  (see WAM_SCALA_STATUS.md), and three arms went red immediately.
+%
+%  Elixir was TWO bugs, one fixed here and one not:
+%    fixed  — get_structure/get_list write mode overwrote the register
+%             slot without binding the variable it held. In a clause head
+%             that slot is the callee A register while the variable is the
+%             CALLER's output, so the built term was discarded. Both the
+%             interpreter runtime and the lowered emitter had it (the
+%             conformance arm runs `emit_mode(lowered)`); both now bind
+%             through `unify/3`. Flat construction — `b(X, [X|[]])` and
+%             `b(X, tk(X))` — went from false to true on that fix alone.
+%    open   — a term NESTED inside another still fails. Write mode
+%             allocates the nested term at `heap_len`, which by then is
+%             past the enclosing term's reserved argument cells, so the
+%             enclosing cons tail is never written. This is precisely the
+%             WAM-C write-path defect CONF-FIX-C-NESTED fixed with a
+%             reserved-cell WamArgCtx stack; Elixir needs the same
+%             treatment. Isolated with a three-way probe: cons-only true,
+%             struct-only true, struct-inside-cons FALSE.
+%
+%  R and r_functions fail the same query and are untriaged — the two arms
+%  share a runtime, so it is one defect, not two.
+%
+%  Scoped to `buildnest` on purpose. All three arms pass every read-mode
+%  `nested` query, so folding these back into `nested` would blanket
+%  working coverage — the same mistake `repeatvar` was split out to avoid.
+%  Cards: CONF-FIX-ELIXIR-BUILDNEST, CONF-FIX-R-BUILDNEST.
+ct_xfail(elixir, buildnest).
+ct_xfail(r, buildnest).
+ct_xfail(r_functions, buildnest).
+
 %  R (CONF-R). Adapter registered (opt-in via CONFORMANCE_TARGETS=r[,r_functions]).
 %  runtime_parser(off) is pinned so generation is deterministic: classic
 %  queries use 0-arity wrappers (no CLI term parsing); R's default is

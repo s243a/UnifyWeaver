@@ -311,11 +311,15 @@ wam_parts_to_scala(["put_list", Reg], Lit) :-
     intern_scala_atom("[|]", FId),
     format(string(Lit), 'PutList(~w, ~w)', [RegIdx, FId]).
 
+% The arity was parsed and thrown away here; the runtime then recovered
+% it by counting the unify_* ops that follow, which over-counts whenever
+% a nested term is interleaved with the enclosing term's arguments. Emit
+% it instead.
 wam_parts_to_scala(["get_structure", Functor, Reg], Lit) :-
     reg_to_int(Reg, RegIdx),
-    parse_functor_arity(Functor, FName, _),
+    parse_functor_arity(Functor, FName, FArity),
     intern_scala_atom(FName, FId),
-    format(string(Lit), 'GetStructure(~w, ~w)', [FId, RegIdx]).
+    format(string(Lit), 'GetStructure(~w, ~w, ~w)', [FId, RegIdx, FArity]).
 
 wam_parts_to_scala(["get_list", Reg], Lit) :-
     reg_to_int(Reg, RegIdx),

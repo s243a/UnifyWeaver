@@ -65,6 +65,34 @@ them is ground — a head is always *matched*, never used to *bind*:
   binds; two distinct unbound variables are not identical). Same
   class-7 gap the C and Haskell runtimes carried.
 
+**Head-constructed output arguments (fixed 2026-08-10,
+CONF-FIX-SCALA-BUILD).** `test(nqueens)` had never terminated on a
+*failing* query — `queens_q(4, [1,2,3,4])` ran past 600 s where the
+search is 24 permutations. It was not a search problem; every failing
+`queens_q` hung, down to N=2. Two independent defects in the write path:
+
+1. **`finalizeBuild` skipped the bind-through for A registers.** That
+   rule is right for `put_structure`/`put_list` (body staging — the
+   M139/M140 cyclic-term fix) and wrong for `get_structure`/`get_list`
+   in write mode, where the A register holds the *caller's* output
+   variable. `select_uw(H, [X|T], [X|T2])` therefore never bound the
+   caller's `Rest`, so `permutation_uw` recursed with an unbound list
+   and `select_uw` became an infinite generator. `BuildFrame` now
+   carries a `bindThrough` flag set by the get-family only.
+2. **`GetStructure` had no arity and guessed it** by counting the
+   `unify_*` instructions that follow. That over-counts exactly when a
+   nested term is interleaved with the enclosing term's arguments: in
+   `cbuild_one(X, [tk(X)|[]])` the `tk/1` frame counted 2, swallowed the
+   cons tail, and the cons frame never completed — so `finalizeBuild`
+   never ran for it. The instruction now carries `sArity` (the emitter
+   was already parsing it and throwing it away), and the read branch
+   checks arity too, since the interned functor id is the name only.
+
+Both were invisible to the conformance suite because its one write-mode
+check used `=/2`, which re-unifies and so succeeds whether or not the
+head did the construction. It now uses `==/2`; see the `buildnest`
+program.
+
 ## Gaps (relative to Rust / Haskell / F#)
 
 - **No ISO three-form contract adoption** (low ISO surface in source).
@@ -73,15 +101,8 @@ them is ground — a head is always *matched*, never used to *bind*:
 - **No two-level lazy/cached LMDB policies** — the LMDB backend is
   arity-N but flat, without F#-style eager/lazy/cached tiers.
 - Cross-target effective-distance bench vs Elixir/Haskell still open.
-- **`test(nqueens)` in `tests/test_wam_scala_classic_programs.pl` does
-  not terminate** on the failing query `queens_q(4, [1,2,3,4])` — the
-  generated program runs past 600 s of CPU with `Qs` fully ground, where
-  the search is finite (24 permutations). Present on an unmodified tree
-  and unrelated to the 2026-08-09 unification fixes (re-confirmed
-  against a stashed baseline). Every other Scala suite passes, and the
-  rest of the classic-programs suite passes when that test is skipped.
-  Not yet triaged; suspect the backtracking path rather than the
-  program.
+- ~~`test(nqueens)` does not terminate~~ — **fixed 2026-08-10**, see
+  below. The whole classic-programs suite now runs to completion.
 
 ## Path forward
 

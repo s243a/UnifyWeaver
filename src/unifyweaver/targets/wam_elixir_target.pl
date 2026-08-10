@@ -152,12 +152,26 @@ wam_elixir_case(get_structure,
           match?({:unbound, _}, val) ->
             addr = state.heap_len
             new_heap = Map.put(state.heap, addr, {:str, fn_name})
-            state
+            base =
+              state
+              |> Map.put(:heap, new_heap)
+              |> Map.put(:heap_len, addr + 1)
+            # Bind the VARIABLE the register held, not merely the
+            # register slot. In a clause head, ai is the callee A slot
+            # while the variable inside it belongs to the CALLER, so
+            # overwriting only the register left the caller output
+            # unbound: cbuild_one(X, [tk(X)|[]]) built the term and
+            # threw it away. unify handles both unbound spellings
+            # (heap_ref cell and register id) and trails the binding.
+            bound =
+              case unify(base, val, {:ref, addr}) do
+                {:ok, st} -> st
+                :fail -> base
+              end
+            bound
             |> trail_binding(ai)
-            |> Map.put(:regs, Map.put(state.regs, ai, {:ref, addr}))
-            |> Map.put(:heap, new_heap)
-            |> Map.put(:heap_len, addr + 1)
-            |> Map.put(:stack, [{:write_ctx, arity} | state.stack])
+            |> Map.put(:regs, Map.put(bound.regs, ai, {:ref, addr}))
+            |> Map.put(:stack, [{:write_ctx, arity} | bound.stack])
             |> Map.put(:pc, state.pc + 1)
           match?({:ref, _}, val) ->
             {:ref, addr} = val
@@ -172,12 +186,20 @@ wam_elixir_case(get_list,
           match?({:unbound, _}, val) ->
             addr = state.heap_len
             new_heap = Map.put(state.heap, addr, {:str, "./2"})
-            state
+            base =
+              state
+              |> Map.put(:heap, new_heap)
+              |> Map.put(:heap_len, addr + 1)
+            # Same caller-output binding as get_structure above.
+            bound =
+              case unify(base, val, {:ref, addr}) do
+                {:ok, st} -> st
+                :fail -> base
+              end
+            bound
             |> trail_binding(ai)
-            |> Map.put(:regs, Map.put(state.regs, ai, {:ref, addr}))
-            |> Map.put(:heap, new_heap)
-            |> Map.put(:heap_len, addr + 1)
-            |> Map.put(:stack, [{:write_ctx, 2} | state.stack])
+            |> Map.put(:regs, Map.put(bound.regs, ai, {:ref, addr}))
+            |> Map.put(:stack, [{:write_ctx, 2} | bound.stack])
             |> Map.put(:pc, state.pc + 1)
           match?({:ref, _}, val) ->
             {:ref, addr} = val
