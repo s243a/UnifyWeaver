@@ -88,9 +88,11 @@ default 4096), and explicit `auto` (codegen resolves via shared
   ≈1.20× but ≈320 LOC (>180 soft-stop) — reverted, docs-only. The
   official two-sequence gate was not run after the soft-stop fired.
   PERF-R-BULK-REDUCE-PLAN-1: compact generate-time plans + generic
-  executor, **180** net production LOC after fail-closed review hardening; official 7×2 gate ≈1.24× query
-  both sequences, no total regression, 271-row parity; hosted 3-rep
-  median query_ms=160 / total_ms=687 — **retained**.
+  executor, **180** net production LOC after fail-closed review hardening.
+  REGATE on hardened head `9071b8a8c` (transactional fallback): official
+  7×2 gate ≈1.23× / ≈1.21× query, no total regression, 271-row parity;
+  hosted 3-rep median query_ms=161 / total_ms=685 — **retained**.
+  Pre-review `da50306b` 160/687 evidence superseded.
 
 ## Path forward
 
@@ -101,6 +103,6 @@ default 4096), and explicit `auto` (codegen resolves via shared
 
 ## Document status
 
-Fleet-aligned snapshot updated for PERF-R-BULK-REDUCE-PLAN-1
-(2026-08-09): hosted row 160/687 (PLAN-1); official fresh-process gate
-≈1.24× query retained under the 180-LOC hard stop.
+Fleet-aligned snapshot updated for PERF-R-BULK-REDUCE-PLAN-1-REGATE
+(2026-08-10): hosted row 161/685 on hardened head `9071b8a8c`; official
+fresh-process gate ≈1.21–1.23× query retained under the 180-LOC hard stop.

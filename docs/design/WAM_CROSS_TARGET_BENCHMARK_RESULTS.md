@@ -22,7 +22,7 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
 | **F# LMDB cached (two-level L1/L2)** | **2** | -- | **1** | **Yes** | Fact-access only (no WAM overhead); see below |
 | Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
-| R WAM (functions, kernels_on) | 160 | 687 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + PLAN-1 fused bulk-reduce plans (post NATIVE-HOPS-0); 3-rep median query (samples 772,160,159) |
+| R WAM (functions, kernels_on) | 161 | 685 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; PLAN-1 hardened head `9071b8a8c` (fail-closed + transactional fallback); REGATE 3-rep median query (samples 772,158,161). Historical pre-review `da50306b` 160/687 superseded. |
 | Go WAM (accumulated, kernels_on) | 898 | 898 | 1 | Yes | Hosted Ubuntu 24.04 CI, go 1.24.7; 5-rep median; facts compiled in (load_ms=0) |
 
 **Key takeaway:** Atom interning (replacing `HashMap<String, Vec<String>>` with
@@ -675,13 +675,21 @@ PERF-R-BULK-REDUCE-PLAN-1 retains shape-gated fusion via compact
 generate-time plans (WAM-token packer → `br_plan` → one
 `exec_bulk_reduce_plan` entry; shared `finalize_bulk_scalar_reduce` with
 AGG-BATCH). Net production LOC **180** after fail-closed review hardening
-(≤180 hard stop). Official two
-independent interleaved fresh-process sequences × 7 reps: seq1 query
-median 929→751 (**1.237×**), total 1446→1277; seq2 query 933→747
-(**1.249×**), total 1453→1262; exact 271-row six-decimal parity every
-run. Single fused `power_sum_bound` call: steps 25→0, BeginAggregate
-1→0, bulk_collect 1→1. Hosted 3-rep harness after retain: samples
-772, 160, 159 (median **160** / total **687**). Decision: **retain**.
+(≤180 hard stop).
+
+Historical pre-review evidence (`da50306b`, before transactional
+fallback): official 7×2 ≈1.24×/1.25×; hosted 160/687 — **superseded**
+and must not be used for retain.
+
+PERF-R-BULK-REDUCE-PLAN-1-REGATE on hardened head **`9071b8a8c`**
+(fail-closed recognition + late classic-WAM fallback with pre-fusion
+state restore). Candidate = `9071b8a8c`; baseline = same generated tree
+with fused `lowered_dispatch` assign stripped. Official two independent
+interleaved fresh-process sequences × 7 reps: seq1 query median 945→766
+(**1.234×**), total 1468→1293; seq2 query 918→756 (**1.214×**), total
+1429→1274; exact 271-row six-decimal parity every run. Hosted 3-rep
+after REGATE gate: samples 772, 158, 161 (median **161** / total
+**685**). Decision: **retain** (no production code change in REGATE).
 
 #### Reproduction
 
