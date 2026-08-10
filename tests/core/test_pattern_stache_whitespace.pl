@@ -8,21 +8,23 @@
 %
 % WHY THIS SUITE EXISTS.  Both witnessed v1 consumers normalized
 % whitespace per rendering (normalize_space/2), so nothing pinned what
-% the engine does to bytes it is handed.  A PROSPECTIVE consumer whose
-% regression tool is a golden-IR diff (plawk; see
-% prototypes/mu_cosine/RECORD_prospective_consumer_plawk.md) depends on
-% exactly that unpinned behaviour.  These tests characterize what the
-% engine measurably does today.
+% the engine does to bytes it is handed — including the three
+% properties the SPEC's Whitespace section already declares normative
+% (bodies are literal, nothing is trimmed, the caller owns policy).
+% This suite is their home.
 %
-% They are CHARACTERIZATION, with one exception.  The SPEC's Whitespace
-% section is normative for the three properties named there — bodies
-% are literal, nothing is trimmed, the caller owns policy — and those
-% rows below are its home.  Everything else here records observed
-% behaviour so that a change to it is visible in a diff rather than
-% discovered by a downstream byte comparison.
+% THIS IS NOT WHITESPACE-EXACTNESS MACHINERY, and no prospective
+% consumer asked for any.  plawk (see
+% prototypes/mu_cosine/RECORD_prospective_consumer_plawk.md) needs
+% marker-adjacent whitespace to be CONTROLLABLE — byte-identity is a
+% property of their regression tool, not of this dialect, and they
+% explicitly asked that nothing be built on its account.  The
+% marker_adjacency unit below answers the controllability question;
+% the rest characterizes behaviour so a change to it shows up in a
+% diff rather than downstream.
 %
 % Three rows are HAZARDS, not features, and are marked so at the test:
-% the preamble discard is unmentioned in the SPEC until now, unknown
+% the preamble discard was unmentioned in the SPEC until now, unknown
 % keys are silently left verbatim by design, and interpolated values
 % are rescanned by later dict keys.
 
@@ -133,15 +135,64 @@ test(discard_applies_on_the_default_path_too) :-
 :- end_tests(preamble_discard).
 
 %% ============================================
+%% Marker adjacency: is the whitespace controllable?
+%% ============================================
+%
+% The question a prospective consumer actually has (plawk record,
+% requirement 3): can a template author reach an exact target text, or
+% does the dialect impose whitespace it cannot control?  Answer: every
+% marker-adjacent newline is the author's, but only {{match}} gets a
+% free line.  The other three markers are literal boundaries, so a tag
+% must share a line with the body character next to it.  That is a
+% layout cost, not a capability limit — and it is exactly what
+% standalone-line semantics would remove (SPEC, exclusions).
+
+:- begin_tests(marker_adjacency).
+
+test(case_tag_sharing_its_line_reaches_the_target_exactly) :-
+    render_stache(stache(1, "{{match k}}\n{{case a}}X\n{{/match}}"), [k=a], R),
+    R == "X\n".
+
+test(case_tag_on_its_own_line_costs_a_leading_newline) :-
+    render_stache(stache(1, "{{match k}}\n{{case a}}\nX\n{{/match}}"), [k=a], R),
+    R == "\nX\n".
+
+test(close_tag_on_its_own_line_costs_a_trailing_newline) :-
+    render_stache(stache(1, "{{match k}}\n{{case a}}X\n{{/match}}\n"), [k=a], R),
+    R == "X\n\n".
+
+test(default_tag_obeys_the_same_rule) :-
+    render_stache(stache(1, "{{match k}}\n{{case a}}A{{default}}D\n{{/match}}"), [k=zzz], R),
+    R == "D\n".
+
+test(default_tag_on_its_own_line_costs_a_leading_newline) :-
+    render_stache(stache(1, "{{match k}}\n{{case a}}A{{default}}\nD\n{{/match}}"), [k=zzz], R),
+    R == "\nD\n".
+
+test(consecutive_cases_compose_without_extra_cost) :-
+    T = "{{match k}}\n{{case a}}A1\nA2\n{{case b}}B1\n{{/match}}",
+    render_stache(stache(1, T), [k=a], Ra),
+    render_stache(stache(1, T), [k=b], Rb),
+    Ra == "A1\nA2\n",
+    Rb == "B1\n".
+
+test(a_block_may_occupy_whole_lines_without_contributing_any) :-
+    render_stache(stache(1, "PRE\n{{match k}}\n{{case a}}X\n{{/match}}POST"), [k=a], R),
+    R == "PRE\nX\nPOST".
+
+:- end_tests(marker_adjacency).
+
+%% ============================================
 %% HAZARD: silent verbatim on an unbound key
 %% ============================================
 %
 % SPEC, deliberate exclusions: "missing-key / unbound-placeholder
 % changes — left verbatim, matching template_system.pl", revisit when
-% "a consumer needs fail-on-unbound rendering".  For a consumer that
-% diffs rendered bytes against a golden file, this is the failure mode
-% with no local symptom: the output is well-formed text that happens to
-% contain a template marker.
+% "a consumer needs fail-on-unbound rendering".  The failure has no
+% local symptom — the render succeeds and the output is well-formed
+% text that happens to contain a template marker.  Pinned as a property
+% of the engine; NO consumer has claimed this row, prospective or
+% otherwise, and the revisit condition stays unclaimed.
 
 :- begin_tests(unbound_is_silent).
 
