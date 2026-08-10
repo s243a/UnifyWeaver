@@ -2663,8 +2663,14 @@ compile_execute_term_builtin_to_rust(Code) :-
                 }
             }
             "=@=/2" | "\\\\=@=/2" => {
-                let left_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-                let right_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let left_raw = match self.get_reg_raw("A1") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let right_raw = match self.get_reg_raw("A2") {
+                    Some(value) => value,
+                    None => return false,
+                };
                 let left = self.deref_heap(&self.deref_var(&left_raw));
                 let right = self.deref_heap(&self.deref_var(&right_raw));
                 let mut left_vars = std::collections::HashMap::new();
@@ -2679,8 +2685,18 @@ compile_execute_term_builtin_to_rust(Code) :-
                 if succeeds { self.pc += 1; true } else { false }
             }
             "unifiable/3" => {
-                let left = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-                let right = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let left = match self.get_reg_raw("A1") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let right = match self.get_reg_raw("A2") {
+                    Some(value) => value,
+                    None => return false,
+                };
+                let output = match self.get_reg_raw("A3") {
+                    Some(value) => value,
+                    None => return false,
+                };
                 let mark = self.trail.len();
                 if !self.unify(&left, &right) {
                     self.unwind_trail_to(mark);
@@ -2696,10 +2712,9 @@ compile_execute_term_builtin_to_rust(Code) :-
                             "=/2".to_string(),
                             vec![Value::Unbound(name.to_string()), bound],
                         ))
-                    })
+                })
                     .collect();
                 self.unwind_trail_to(mark);
-                let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                 if self.unify(&output, &Value::List(pairs)) {
                     self.pc += 1; true
                 } else {
