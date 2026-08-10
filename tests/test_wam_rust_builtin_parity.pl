@@ -2924,6 +2924,22 @@ fn test_unifiable_direct() {
     assert_eq!(read_var(&mismatch_vm, "X"), ub("X"));
     assert_eq!(read_var(&mismatch_vm, "Y"), ub("Y"));
     assert_eq!(read_var(&mismatch_vm, "Capture"), ub("Capture"));
+
+    let mut missing_left = vmnew();
+    missing_left.set_reg("A2", a("term"));
+    missing_left.set_reg("A3", ub("Bindings"));
+    assert!(!missing_left.execute_builtin("unifiable/3", 3));
+
+    let mut missing_right = vmnew();
+    missing_right.set_reg("A1", a("term"));
+    missing_right.set_reg("A3", ub("Bindings"));
+    assert!(!missing_right.execute_builtin("unifiable/3", 3));
+
+    let mut missing_output = vmnew();
+    missing_output.set_reg("A1", ub("X"));
+    missing_output.set_reg("A2", a("term"));
+    assert!(!missing_output.execute_builtin("unifiable/3", 3));
+    assert_eq!(read_var(&missing_output, "X"), ub("X"));
 }
 
 #[test]
@@ -2965,6 +2981,18 @@ fn test_variant_equivalence_direct() {
         Value::List(vec![ub("X")]),
         Value::Str("[|]/2".to_string(), vec![ub("Y"), a("[]")]),
     ).0);
+
+    let mut missing_left = vmnew();
+    missing_left.set_reg("A2", a("term"));
+    assert!(!missing_left.execute_builtin("=@=/2", 2));
+
+    let mut missing_right = vmnew();
+    missing_right.set_reg("A1", a("term"));
+    assert!(!missing_right.execute_builtin("=@=/2", 2));
+
+    let mut missing_not_right = vmnew();
+    missing_not_right.set_reg("A1", a("term"));
+    assert!(!missing_not_right.execute_builtin("\\\\=@=/2", 2));
 }
 
 #[test]
