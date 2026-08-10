@@ -226,7 +226,7 @@ test(chain_print_body_omits_table_frees) :-
     plawk_native_codegen:plawk_assoc_end_print_ir([string("x")], Plan, 32, [32],
         no_end_record, WithFrees),
     plawk_native_codegen:plawk_assoc_end_print_body_ir([string("x")], Plan, 32,
-        [32], WithoutFrees),
+        [32], no_end_record, WithoutFrees),
     assertion(once(sub_atom(WithFrees, _, _, _, '@wam_assoc_i64_free'))),
     assertion(\+ sub_atom(WithoutFrees, _, _, _, '@wam_assoc_i64_free')),
     !.

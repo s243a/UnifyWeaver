@@ -178,12 +178,19 @@ test(a_concat_containing_an_assoc_read_declines) :-
     build_status("{ c[$1]++ } END { print \"k=\" c[\"5\"] }\n", 3),
     !.
 
-% The STATEMENT-LIST form, for both a field read and NF -- one boundary
-% (plawk_end_list_bodies/8 carries no token), pinned as a trio with the mixed route's copy so
-% all of it moves together.
-test(the_statement_list_form_still_declines) :-
-    build_status("{ c[$1]++ } END { print $1; print c[\"5\"] }\n", 3),
-    build_status("{ c[$1]++ } END { print NF; print c[\"5\"] }\n", 3),
+% WAS a pair of declines: plawk_end_list_bodies/8 carried no token. It does now --
+% the statement-list dispatcher threads EndRecord from the driver, which also
+% splices the retain IR and emits its globals. Pinned as the same pair, inverted,
+% and the per-statement rename disambiguates the two projections' SSA names, which
+% the two-record-reads case below exercises directly.
+test(the_statement_list_form_now_works, [condition(clang_available)]) :-
+    run("{ c[$1]++ } END { print $1; print c[\"5\"] }\n", "7\n2\n"),
+    !,
+    run("{ c[$1]++ } END { print NF; print c[\"5\"] }\n", "2\n2\n"),
+    !,
+    % Two record-reading statements in one list: both projections must resolve, each
+    % under its own statement-renamed names.
+    run("{ c[$1]++ } END { print $1; print $2 }\n", "7\ndisk\n"),
     !.
 
 :- end_tests(plawk_assoc_end_record).

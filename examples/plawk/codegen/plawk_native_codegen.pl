@@ -682,7 +682,11 @@ plawk_program_native_driver_ir(
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_field_separator(BeginClauses, FieldSeparator),
-    plawk_end_list_statement_globals(Items, ScalarPlan, StringGlobalIR,
+    % The retained-last-record capability for the whole statement list: the source
+    % walks every statement, so a field / NF / record-reading printf argument in ANY
+    % of them retains, and a list that reads no record stays pay-per-use free.
+    plawk_end_record_source(FieldSeparator, Items, EndRecord, RetainIR),
+    plawk_end_list_statement_globals(Items, ScalarPlan, EndRecord, StringGlobalIR,
         AssocGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
     plawk_mixed_rule_chain_ir(MixedPlan, FieldSeparator, OutputSeparator,
@@ -695,16 +699,21 @@ plawk_program_native_driver_ir(
         RecordLoopPhiIR, RecordCounterIR),
     plawk_state_loop_phi_ir(ScalarPlan, StateLoopPhiIR),
     plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
-    plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
+    % RetainIR first: each record must be copied before the rule chain can `next`
+    % past it.
+    plawk_join_nonempty_ir([RetainIR, RecordCounterIR, RuleChainIR], RecordIR),
     plawk_mixed_rule_controls(MixedPlan, MixedRuleControls),
     plawk_mixed_scalar_next_phi_ir(ScalarPlan, RuleCount, MixedRuleControls,
         BranchControlExits, NextPhiIR),
     plawk_break_close_ir(ScalarPlan, RuleCount, MixedRuleControls,
         BranchControlExits, done, BreakCloseIR, FinalStatePhiIR),
     plawk_end_list_statements_ir(mixed, Items, ScalarPlan, AssocPlan,
-        FieldSeparator, OutputSeparator, EndPrintIR),
-    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+        FieldSeparator, OutputSeparator, EndRecord, EndPrintIR),
+    format(atom(SurfaceGlobalIR0), '~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, RuleGlobalIR]),
+    plawk_end_lastrec_globals_ir(EndRecord, LastRecGlobalIR),
+    plawk_append_surface_global_ir(SurfaceGlobalIR0, LastRecGlobalIR,
+        SurfaceGlobalIR),
     plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
     plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
@@ -1523,8 +1532,12 @@ plawk_program_native_driver_ir(
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_record_descriptor(BeginClauses, FieldSeparator),
     plawk_assoc_record_program_ok(FieldSeparator, Rules, PrintFields),
-    plawk_end_list_statement_globals(Items, state_plan([], []), StringGlobalIR,
-        AssocGlobalIR),
+    % Same capability as the mixed list driver. plawk_end_record_source/4 requires an
+    % integer FS, so a binfmt descriptor yields `no_end_record` automatically and a
+    % binary-mode field read still declines rather than slicing a record as text.
+    plawk_end_record_source(FieldSeparator, Items, EndRecord, RetainIR),
+    plawk_end_list_statement_globals(Items, state_plan([], []), EndRecord,
+        StringGlobalIR, AssocGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
     plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR,
         AssocChainIR),
@@ -1534,13 +1547,17 @@ plawk_program_native_driver_ir(
     append(PrintExprs, ScalarExprs, RecordCounterExprs),
     plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR,
         RecordCounterIR),
-    plawk_join_nonempty_ir([RecordCounterIR, AssocChainIR], RecordIR),
+    % RetainIR first, as everywhere: copy the record before the chain can skip it.
+    plawk_join_nonempty_ir([RetainIR, RecordCounterIR, AssocChainIR], RecordIR),
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
     plawk_end_list_statements_ir(assoc, Items, state_plan([], []), AssocPlan,
-        FieldSeparator, OutputSeparator, EndPrintIR),
-    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+        FieldSeparator, OutputSeparator, EndRecord, EndPrintIR),
+    format(atom(SurfaceGlobalIR0), '~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, AssocRuleGlobalIR]),
+    plawk_end_lastrec_globals_ir(EndRecord, LastRecGlobalIR),
+    plawk_append_surface_global_ir(SurfaceGlobalIR0, LastRecGlobalIR,
+        SurfaceGlobalIR),
     plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
     plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
@@ -6693,8 +6710,12 @@ plawk_end_chain_blocks([plain(print(Fields)) | Rest], Index, _PrevLabel, AssocPl
         Descriptor, OutputSeparator, [IR | More]) :-
     !,
     plawk_end_chain_entry_label(plain(print(Fields)), Index, Label),
+    % `no_end_record`: the for-in CHAIN driver has not been threaded with the retain
+    % capability, so a field/NF statement in a chain declines rather than projecting
+    % from a store the driver never emitted. The loop-free LIST drivers carry the
+    % token; this boundary is the chain's own follow-on.
     plawk_assoc_end_print_body_ir(Fields, AssocPlan, Descriptor, OutputSeparator,
-        RawBody),
+        no_end_record, RawBody),
     % Uniquify this statement's names by index -- the same rename applied to its
     % globals, so body and globals agree.
     plawk_end_chain_stmt_rename(Index, RawBody, Body),
@@ -14225,19 +14246,34 @@ plawk_end_list_statement(Kind, printf(string(Format), Args),
         printf(string(Format), Args)) :-
     maplist(plawk_end_list_printf_arg_ok(Kind), Args).
 
-% ASSOC chain: LITERAL arguments only. It has no scalar state plan, so a `var`
-% argument has no slot to read; and `NR` would emit a reference to a counter this
-% driver does not define -- invalid IR rather than a decline.
+% ASSOC chain: literals, plus RECORD arguments (`$N`, `NF`) -- the latter read the
+% RETAINED last record via the EndRecord token the driver now threads, not a scalar
+% slot, so the no-state-plan restriction does not apply to them. A `var` argument
+% still has no slot to read here, and `NR` would still reference a counter this
+% driver does not define -- both stay out.
+plawk_end_list_printf_arg_ok(assoc, field(N)) :-
+    !,
+    integer(N),
+    N >= 0.
+plawk_end_list_printf_arg_ok(assoc, special('NF')) :-
+    !.
 plawk_end_list_printf_arg_ok(assoc, string(_Value)) :-
     !.
 plawk_end_list_printf_arg_ok(assoc, Expr) :-
     plawk_begin_const_expr(Expr).
 % MIXED chain: scalar slots DO exist, so a `var` argument reads its final slot,
-% exactly as in the scalar END printf. `NR` is still excluded -- this driver's
-% record counter is not the one the END printf emitter would reference.
+% exactly as in the scalar END printf; record arguments ride the same EndRecord
+% token as in the assoc chain. `NR` is still excluded -- this driver's record
+% counter is not the one the END printf emitter would reference.
 plawk_end_list_printf_arg_ok(mixed, special('NR')) :-
     !,
     fail.
+plawk_end_list_printf_arg_ok(mixed, field(N)) :-
+    !,
+    integer(N),
+    N >= 0.
+plawk_end_list_printf_arg_ok(mixed, special('NF')) :-
+    !.
 plawk_end_list_printf_arg_ok(mixed, var(_Name)) :-
     !.
 plawk_end_list_printf_arg_ok(mixed, string(_Value)) :-
@@ -14257,7 +14293,9 @@ plawk_end_list_statements(Kind, Statements, Items) :-
 %% plawk_end_list_statement_fields(+Items, -Fields) is det.
 %  Every print field across the statements -- the table plan, the program-shape
 %  gate and the globals all key off this. printf arguments contribute nothing:
-%  they are literals by the gate above, so they reference no table.
+%  by the gate above they are literals, scalar vars or RECORD reads, none of which
+%  reference a table. (Record reads DO reach plawk_end_record_source/4, which walks
+%  the whole Items term -- printf arguments included -- so they retain correctly.)
 plawk_end_list_statement_fields(Items, Fields) :-
     findall(F,
         ( member(print(FL), Items),
@@ -14271,13 +14309,15 @@ plawk_end_list_statement_fields(Items, Fields) :-
 %  statement's body -- both the `end_`-prefixed string literals and the
 %  `plawk_assoc_print_key_N` literal keys, which the string rename alone does not
 %  reach (two literal-key lookups would otherwise share one key global).
-plawk_end_list_statement_globals(Items, StatePlan, StringGlobalIR, KeyGlobalIR) :-
-    plawk_end_list_statement_globals_(Items, 0, StatePlan, StringParts, KeyParts),
+plawk_end_list_statement_globals(Items, StatePlan, EndRecord, StringGlobalIR,
+        KeyGlobalIR) :-
+    plawk_end_list_statement_globals_(Items, 0, StatePlan, EndRecord, StringParts,
+        KeyParts),
     plawk_join_nonempty_ir(StringParts, StringGlobalIR),
     plawk_join_nonempty_ir(KeyParts, KeyGlobalIR).
 
-plawk_end_list_statement_globals_([], _Index, _StatePlan, [], []).
-plawk_end_list_statement_globals_([print(Fields) | Rest], Index, StatePlan,
+plawk_end_list_statement_globals_([], _Index, _StatePlan, _EndRecord, [], []).
+plawk_end_list_statement_globals_([print(Fields) | Rest], Index, StatePlan, EndRecord,
         [StringIR | StringParts], [KeyIR | KeyParts]) :-
     !,
     plawk_end_print_string_globals(Fields, RawString),
@@ -14285,32 +14325,39 @@ plawk_end_list_statement_globals_([print(Fields) | Rest], Index, StatePlan,
     plawk_end_chain_stmt_rename(Index, RawString, StringIR),
     plawk_end_chain_stmt_rename(Index, RawKey, KeyIR),
     NextIndex is Index + 1,
-    plawk_end_list_statement_globals_(Rest, NextIndex, StatePlan, StringParts,
-        KeyParts).
+    plawk_end_list_statement_globals_(Rest, NextIndex, StatePlan, EndRecord,
+        StringParts, KeyParts).
 plawk_end_list_statement_globals_([printf(string(Format), Args) | Rest], Index,
-        StatePlan, [PrintfGlobalIR | StringParts], KeyParts) :-
+        StatePlan, EndRecord, [PrintfGlobalIR | StringParts], KeyParts) :-
     !,
-    plawk_end_list_printf_pair(Format, Args, StatePlan, RawGlobal-_Body),
+    % The SAME EndRecord as the dispatcher's Body-half call, or the printf's globals
+    % and instructions would be derived under different capabilities.
+    plawk_end_list_printf_pair(Format, Args, StatePlan, EndRecord, RawGlobal-_Body),
     plawk_end_chain_stmt_rename(Index, RawGlobal, PrintfGlobalIR),
     NextIndex is Index + 1,
-    plawk_end_list_statement_globals_(Rest, NextIndex, StatePlan, StringParts,
-        KeyParts).
-plawk_end_list_statement_globals_([_Item | Rest], Index, StatePlan, StringParts,
-        KeyParts) :-
+    plawk_end_list_statement_globals_(Rest, NextIndex, StatePlan, EndRecord,
+        StringParts, KeyParts).
+plawk_end_list_statement_globals_([_Item | Rest], Index, StatePlan, EndRecord,
+        StringParts, KeyParts) :-
     NextIndex is Index + 1,
-    plawk_end_list_statement_globals_(Rest, NextIndex, StatePlan, StringParts,
-        KeyParts).
+    plawk_end_list_statement_globals_(Rest, NextIndex, StatePlan, EndRecord,
+        StringParts, KeyParts).
 
 % One END printf in a loop-free list. StatePlan is the chain's scalar plan --
 % `state_plan([])` for the assoc chain, whose gate admits only literals so the
 % plan is never consulted, and the real plan for the mixed chain, whose `var`
 % arguments read their final slots. Either way this is the SAME printf emitter
 % every other context uses, so the awk->C format rewrite cannot diverge.
-plawk_end_list_printf_pair(Format, Args, StatePlan, Pair) :-
-    % The assoc / mixed END chain is a different driver and wires no retain, so a
-    % field or NF argument there declines rather than projecting from a store that
-    % was never emitted. Its own follow-on.
-    plawk_end_printf_ir(Format, Args, StatePlan, no_end_record, Pair).
+plawk_end_list_printf_pair(Format, Args, StatePlan, EndRecord, Pair) :-
+    % EndRecord comes from the driver, which issues it TOGETHER with the retain IR
+    % (plawk_end_record_source/4 over the whole statement list), so a field or NF
+    % printf argument projects from a store that provably exists. This predicate is
+    % called TWICE per statement -- once for the Global half at driver level and once
+    % for the Body half in the dispatcher -- and both calls now receive the same
+    % token; the earlier hardcoded `no_end_record` here was the fifth site of the
+    % statement-list boundary, and its comment ("wires no retain ... its own
+    % follow-on") described exactly the threading that has now happened.
+    plawk_end_printf_ir(Format, Args, StatePlan, EndRecord, Pair).
 
 %% plawk_assoc_end_statements_ir(+Items, +AssocPlan, +Descriptor,
 %%     +OutputSeparator, -IR) is semidet.
@@ -14320,42 +14367,42 @@ plawk_end_list_printf_pair(Format, Args, StatePlan, Pair) :-
 %  TRUNCATES, so later statements are never emitted; the frees still follow,
 %  because control reaches the single `ret` either way.
 plawk_end_list_statements_ir(Kind, Items, ScalarPlan, AssocPlan, Descriptor,
-        OutputSeparator, IR) :-
+        OutputSeparator, EndRecord, IR) :-
     plawk_end_list_bodies(Kind, Items, 0, ScalarPlan, AssocPlan, Descriptor,
-        OutputSeparator, Bodies),
+        OutputSeparator, EndRecord, Bodies),
     phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
     atomic_list_concat(FreeLines, '\n', FreeIR),
     append(Bodies, [FreeIR], Parts),
     plawk_join_nonempty_ir(Parts, IR).
 
 plawk_end_list_bodies(_Kind, [], _Index, _ScalarPlan, _AssocPlan, _Descriptor,
-        _OutputSeparator, []).
+        _OutputSeparator, _EndRecord, []).
 plawk_end_list_bodies(_Kind, [exit(int(Code)) | _Rest], _Index, _ScalarPlan,
-        _AssocPlan, _Descriptor, _OutputSeparator, [Body]) :-
+        _AssocPlan, _Descriptor, _OutputSeparator, _EndRecord, [Body]) :-
     !,
     format(atom(Body), '  store i32 ~w, i32* @plawk_exit_code', [Code]).
 % The one place the two chains differ: which print emitter resolves a field. The
 % assoc chain reads tables only; the mixed chain also reads scalar slots.
 plawk_end_list_bodies(Kind, [print(Fields) | Rest], Index, ScalarPlan, AssocPlan,
-        Descriptor, OutputSeparator, [Body | Bodies]) :-
+        Descriptor, OutputSeparator, EndRecord, [Body | Bodies]) :-
     !,
     (   Kind == mixed
     ->  plawk_mixed_end_print_body_ir(Fields, ScalarPlan, AssocPlan,
-            OutputSeparator, RawBody)
+            OutputSeparator, EndRecord, RawBody)
     ;   plawk_assoc_end_print_body_ir(Fields, AssocPlan, Descriptor,
-            OutputSeparator, RawBody)
+            OutputSeparator, EndRecord, RawBody)
     ),
     plawk_end_chain_stmt_rename(Index, RawBody, Body),
     NextIndex is Index + 1,
     plawk_end_list_bodies(Kind, Rest, NextIndex, ScalarPlan, AssocPlan, Descriptor,
-        OutputSeparator, Bodies).
+        OutputSeparator, EndRecord, Bodies).
 plawk_end_list_bodies(Kind, [printf(string(Format), Args) | Rest], Index,
-        ScalarPlan, AssocPlan, Descriptor, OutputSeparator, [Body | Bodies]) :-
-    plawk_end_list_printf_pair(Format, Args, ScalarPlan, _Global-RawBody),
+        ScalarPlan, AssocPlan, Descriptor, OutputSeparator, EndRecord, [Body | Bodies]) :-
+    plawk_end_list_printf_pair(Format, Args, ScalarPlan, EndRecord, _Global-RawBody),
     plawk_end_chain_stmt_rename(Index, RawBody, Body),
     NextIndex is Index + 1,
     plawk_end_list_bodies(Kind, Rest, NextIndex, ScalarPlan, AssocPlan, Descriptor,
-        OutputSeparator, Bodies).
+        OutputSeparator, EndRecord, Bodies).
 
 %% plawk_mixed_end_print_body_ir(+PrintFields, +ScalarPlan, +AssocPlan,
 %%     +OutputSeparator, -IR) is det.
@@ -14363,16 +14410,14 @@ plawk_end_list_bodies(Kind, [printf(string(Format), Args) | Rest], Index,
 %  plawk_assoc_end_print_body_ir/5 below: in a statement list the frees belong at
 %  the end, once, not after every statement. Both emitters append
 %  plawk_assoc_free_lines//1 in their base case, so both need this treatment.
-%  EndRecord is `no_end_record` here on purpose: this is the STATEMENT-LIST form, reached
-%  through plawk_end_list_bodies/8, which serves the assoc chain as well and does not carry
-%  the token. So `END { print NF; print x }` still declines while `END { print NF, x }`
-%  works -- a route boundary, pinned in tests/test_plawk_mixed_end_nf.pl rather than left to
-%  be discovered. Widening it means threading the capability through that shared
-%  dispatcher, which is its own change.
+%  EndRecord is a parameter now: the statement-list dispatcher threads the driver's
+%  token through (this used to be a hardcoded `no_end_record`, which is why
+%  `END { print NF; print x }` declined while `END { print NF, x }` worked -- that
+%  boundary is retired, and the pins that recorded it are inverted in their suites).
 plawk_mixed_end_print_body_ir(PrintFields, ScalarPlan, AssocPlan, OutputSeparator,
-        IR) :-
+        EndRecord, IR) :-
     phrase(plawk_mixed_end_print_lines(PrintFields, ScalarPlan, AssocPlan,
-        OutputSeparator, no_end_record, 0), Lines),
+        OutputSeparator, EndRecord, 0), Lines),
     plawk_end_strip_free_lines(Lines, AssocPlan, BodyLines),
     atomic_list_concat(BodyLines, '\n', IR).
 
@@ -14403,14 +14448,14 @@ plawk_end_strip_free_lines(Lines, AssocPlan, BodyLines) :-
 %  The frees are the emitted line list's exact tail, so they are split off by
 %  length rather than by matching -- an arithmetic split cannot strip the wrong
 %  occurrence the way a suffix search could.
-%  EndRecord is `no_end_record` here, matching the mixed route's statement-list wrapper and
-%  for the same reason: this form is reached through plawk_end_list_bodies/8, which carries no
-%  token. So `END { print $1; print x }` declines while `END { print $1, x }` works. One
-%  boundary, both routes, pinned in both suites.
+%  EndRecord is a parameter now, matching the mixed wrapper: the statement-list
+%  dispatcher threads the driver's token, so `END { print $1; print x }` compiles.
+%  The for-in CHAIN caller still passes `no_end_record` explicitly -- that driver has
+%  not been threaded, and its record-reading statements decline there, pinned.
 plawk_assoc_end_print_body_ir(PrintFields, AssocPlan, Descriptor, OutputSeparator,
-        IR) :-
+        EndRecord, IR) :-
     phrase(plawk_assoc_end_print_lines(PrintFields, AssocPlan, Descriptor, OutputSeparator,
-        no_end_record, 0), Lines),
+        EndRecord, 0), Lines),
     plawk_end_strip_free_lines(Lines, AssocPlan, BodyLines),
     atomic_list_concat(BodyLines, '\n', IR).
 

@@ -154,8 +154,12 @@ test(printf_nr_argument_declines) :-
     build_status("{ c[$1]++; n++ } END { print c[\"a\"]; printf \"%d\\n\", NR }\n", 3),
     !.
 
-test(printf_field_argument_declines) :-
-    build_status("{ c[$1]++; n++ } END { print c[\"a\"]; printf \"%s\\n\", $1 }\n", 3),
+% WAS a decline. The statement-list driver threads the EndRecord token now, so a
+% `$N` printf argument projects from the retained last record. The NR pin above did
+% not move -- that exclusion is about this driver's counter naming, not the record.
+test(printf_field_argument_now_works, [condition(clang_available)]) :-
+    run("{ c[$1]++; n++ } END { print c[\"a\"]; printf \"%s\\n\", $1 }\n",
+        "1\nc\n", 0),
     !.
 
 % INHERITED: the mixed driver requires the END to reference a table. A single
@@ -210,7 +214,7 @@ test(both_print_emitters_have_a_non_freeing_variant) :-
     plawk_native_codegen:plawk_assoc_end_print_ir([string("x")], Plan, 32, [32],
         no_end_record, AssocWith),
     plawk_native_codegen:plawk_assoc_end_print_body_ir([string("x")], Plan, 32,
-        [32], AssocWithout),
+        [32], no_end_record, AssocWithout),
     assertion(once(sub_atom(AssocWith, _, _, _, '@wam_assoc_i64_free'))),
     assertion(\+ sub_atom(AssocWithout, _, _, _, '@wam_assoc_i64_free')),
     % The mixed emitter takes an EndRecord capability token now (it grew NF-in-END support,
@@ -220,7 +224,7 @@ test(both_print_emitters_have_a_non_freeing_variant) :-
     plawk_native_codegen:plawk_mixed_end_print_ir([string("x")],
         state_plan([]), Plan, [32], no_end_record, MixedWith),
     plawk_native_codegen:plawk_mixed_end_print_body_ir([string("x")],
-        state_plan([]), Plan, [32], MixedWithout),
+        state_plan([]), Plan, [32], no_end_record, MixedWithout),
     assertion(once(sub_atom(MixedWith, _, _, _, '@wam_assoc_i64_free'))),
     assertion(\+ sub_atom(MixedWithout, _, _, _, '@wam_assoc_i64_free')),
     !.
