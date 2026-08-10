@@ -220,10 +220,26 @@ accidentally lacking a clause.
 plawk is a plausible **third consumer**, and this is a heads-up rather than a request.
 What plawk would need beyond the two witnessed consumers:
 
-- **Byte-identical rendering.** plawk's regression tool is a golden-IR diff — build a
-  corpus with `--keep-ll` before and after and require the emitted `.ll` to be unchanged.
-  Templates that reformat whitespace or reorder lines break that tool, so line-for-line
-  fidelity matters more here than readability of the template.
+- **Whitespace *control*, not byte-identity.** An earlier draft of this bullet demanded
+  byte-identical rendering, because plawk's regression tool is a byte-level golden-IR diff
+  (a corpus built with `--keep-ll`, compared with `cmp`). That overstated it — the
+  constraint belongs to plawk's cheapest verification instrument, not to the dialect:
+  clang is indifferent to formatting outside string constants. What the dialect must
+  actually provide is *controllable* whitespace around `{{match}}`/`{{case}}`, so an
+  author who chooses a byte-faithful migration can have one. Where natural template
+  formatting differs cosmetically, plawk has two sanctioned outs, so do not contort a
+  template to reproduce a legacy emitter's accidental formatting — fossilizing quirks is
+  worse than one verified re-baseline:
+  1. **Normalize the diff**: round-trip both sides through `llvm-as | llvm-dis` before
+     comparing (verified working on the corpus; formatting-only perturbations vanish).
+     The reason naive text normalization is wrong and the round-trip is right: whitespace
+     inside `c"..."` string-constant globals is *data* — OFS separators and printf format
+     strings live there — and only a parser-aware normalizer preserves it. Renames and
+     reorders still show; they are neutral but visible, and fall to the second out.
+  2. **Re-baseline deliberately**: verify behaviourally (corpus binaries on fixed inputs,
+     the full suite sweep, gawk probes) and re-capture the golden baseline once. Precedent:
+     the unset-scalar shared-globals change, recorded in the campaign handoff, which could
+     not be byte-identical and was verified on program output instead.
 - **Emission of *lists* of lines**, sometimes conditionally (a string slot emits five
   instructions, a numeric slot a different set), with a caller-supplied index threaded
   into every generated SSA name.
@@ -234,6 +250,38 @@ What plawk would need beyond the two witnessed consumers:
 If any of that argues for a dialect change, plawk is not urgent — the duplication is being
 removed incrementally in plain Prolog first, which is a prerequisite either way: a template
 can only replace emitters that already agree.
+
+**Assessment outcome (recorded by the `pattern_stache` lane in
+`prototypes/mu_cosine/RECORD_prospective_consumer_plawk.md`; authoritative details there).**
+All three requirements were answered without any dialect change, and two answers carry
+obligations back onto plawk's side of a future migration:
+
+- **Requirement 3 is resolved, measured.** Only `{{match}}` gets a free line (preamble
+  discard); `{{case}}` and `{{/match}}` are literal boundaries, so
+  `{{match k}}\n{{case a}}X\n{{/match}}` renders exactly `"X\n"`. A byte-faithful
+  migration is therefore possible, with a residue of one shared line per case — layout
+  cost, not gymnastics. No whitespace-exactness machinery was added; the `c"..."` caveat
+  above is recorded there as a constraint on any *future* whitespace feature (marker-local
+  only, never content-scanning). Their `marker_adjacency` test unit answers this directly.
+- **Requirement 2 is expressible.** `{{Key}}` substitutes mid-token with no delimiter
+  requirement, so `%end_field_{{I}}_len` works as written. Only a list whose *length* is
+  decided inside the template is excluded — which requirement 1 rules out anyway, since
+  membership per kind is fixed by the planner.
+- **Requirement 1 is structurally enforced, with ONE identified leak path that becomes
+  plawk's obligation.** There is no expression sublanguage, so a plan-time set-membership
+  test cannot be written in a template, and an unresolved dispatch value is an error, not a
+  wildcard. But the dialect permits *priority*: case order is load-bearing under their
+  overlap rules, so `{{case interned(K)}}` above `{{case position(K)}}` would encode a
+  key-space resolution policy in file order — indistinguishable, by shape, from legitimate
+  specific-before-general refinement. **plawk's counter-constraint, for whoever migrates:**
+  the planner must hand templates terms whose decision is already a distinguishable tag —
+  today's planned vocabulary satisfies this (`lookup_int` / `lookupn` / `strlit` / … are
+  functor-distinct) — and no plawk template may contain two cases whose patterns overlap on
+  terms plawk emits, *except* pure refinement on a planner-resolved tag value (e.g.
+  `lookup_int(T, N, str)` before `lookup_int(T, N, K)`, which branches on a decided `Kind`
+  rather than choosing an interpretation). If writing a template ever seems to require
+  ordering two cases to pick between interpretations of the same data, the decision has
+  leaked out of the planner — fix the planner, not the case order.
 
 ### 6.6 Sequencing
 
