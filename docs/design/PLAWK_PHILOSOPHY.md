@@ -220,10 +220,26 @@ accidentally lacking a clause.
 plawk is a plausible **third consumer**, and this is a heads-up rather than a request.
 What plawk would need beyond the two witnessed consumers:
 
-- **Byte-identical rendering.** plawk's regression tool is a golden-IR diff — build a
-  corpus with `--keep-ll` before and after and require the emitted `.ll` to be unchanged.
-  Templates that reformat whitespace or reorder lines break that tool, so line-for-line
-  fidelity matters more here than readability of the template.
+- **Whitespace *control*, not byte-identity.** An earlier draft of this bullet demanded
+  byte-identical rendering, because plawk's regression tool is a byte-level golden-IR diff
+  (a corpus built with `--keep-ll`, compared with `cmp`). That overstated it — the
+  constraint belongs to plawk's cheapest verification instrument, not to the dialect:
+  clang is indifferent to formatting outside string constants. What the dialect must
+  actually provide is *controllable* whitespace around `{{match}}`/`{{case}}`, so an
+  author who chooses a byte-faithful migration can have one. Where natural template
+  formatting differs cosmetically, plawk has two sanctioned outs, so do not contort a
+  template to reproduce a legacy emitter's accidental formatting — fossilizing quirks is
+  worse than one verified re-baseline:
+  1. **Normalize the diff**: round-trip both sides through `llvm-as | llvm-dis` before
+     comparing (verified working on the corpus; formatting-only perturbations vanish).
+     The reason naive text normalization is wrong and the round-trip is right: whitespace
+     inside `c"..."` string-constant globals is *data* — OFS separators and printf format
+     strings live there — and only a parser-aware normalizer preserves it. Renames and
+     reorders still show; they are neutral but visible, and fall to the second out.
+  2. **Re-baseline deliberately**: verify behaviourally (corpus binaries on fixed inputs,
+     the full suite sweep, gawk probes) and re-capture the golden baseline once. Precedent:
+     the unset-scalar shared-globals change, recorded in the campaign handoff, which could
+     not be byte-identical and was verified on program output instead.
 - **Emission of *lists* of lines**, sometimes conditionally (a string slot emits five
   instructions, a numeric slot a different set), with a caller-supplied index threaded
   into every generated SSA name.
