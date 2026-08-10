@@ -151,11 +151,28 @@ wam_elixir_case(get_structure,
         cond do
           match?({:unbound, _}, val) ->
             addr = state.heap_len
-            new_heap = Map.put(state.heap, addr, {:str, fn_name})
+            args_at = addr + 1
+            # RESERVE the argument cells up front. Write mode used to
+            # append each argument at heap_len as it arrived, which
+            # assumes the term stays contiguous. A NESTED term breaks
+            # that: its own functor cell is allocated at heap_len, in
+            # the middle of the enclosing term arg region, so the
+            # enclosing tail landed above the nested term and the cons
+            # cell was never completed. Reserving means a nested term
+            # allocated later goes ABOVE these cells and every argument
+            # still lands in its own slot. Same fix as the C runtime
+            # WamArgCtx stack.
+            reserved =
+              Enum.reduce(0..(arity - 1)//1,
+                          Map.put(state.heap, addr, {:str, fn_name}),
+                          fn i, h ->
+                            Map.put(h, args_at + i,
+                                    {:unbound, {:heap_ref, args_at + i}})
+                          end)
             base =
               state
-              |> Map.put(:heap, new_heap)
-              |> Map.put(:heap_len, addr + 1)
+              |> Map.put(:heap, reserved)
+              |> Map.put(:heap_len, args_at + arity)
             # Bind the VARIABLE the register held, not merely the
             # register slot. In a clause head, ai is the callee A slot
             # while the variable inside it belongs to the CALLER, so
@@ -171,7 +188,7 @@ wam_elixir_case(get_structure,
             bound
             |> trail_binding(ai)
             |> Map.put(:regs, Map.put(bound.regs, ai, {:ref, addr}))
-            |> Map.put(:stack, [{:write_ctx, arity} | bound.stack])
+            |> Map.put(:stack, [{:write_ctx, args_at, arity} | bound.stack])
             |> Map.put(:pc, state.pc + 1)
           match?({:ref, _}, val) ->
             {:ref, addr} = val
@@ -185,11 +202,17 @@ wam_elixir_case(get_list,
         cond do
           match?({:unbound, _}, val) ->
             addr = state.heap_len
-            new_heap = Map.put(state.heap, addr, {:str, "./2"})
+            args_at = addr + 1
+            # Head and tail cells reserved up front; see get_structure.
+            reserved =
+              state.heap
+              |> Map.put(addr, {:str, "./2"})
+              |> Map.put(args_at, {:unbound, {:heap_ref, args_at}})
+              |> Map.put(args_at + 1, {:unbound, {:heap_ref, args_at + 1}})
             base =
               state
-              |> Map.put(:heap, new_heap)
-              |> Map.put(:heap_len, addr + 1)
+              |> Map.put(:heap, reserved)
+              |> Map.put(:heap_len, args_at + 2)
             # Same caller-output binding as get_structure above.
             bound =
               case unify(base, val, {:ref, addr}) do
@@ -199,7 +222,7 @@ wam_elixir_case(get_list,
             bound
             |> trail_binding(ai)
             |> Map.put(:regs, Map.put(bound.regs, ai, {:ref, addr}))
-            |> Map.put(:stack, [{:write_ctx, 2} | bound.stack])
+            |> Map.put(:stack, [{:write_ctx, args_at, 2} | bound.stack])
             |> Map.put(:pc, state.pc + 1)
           match?({:ref, _}, val) ->
             {:ref, addr} = val
@@ -914,6 +937,19 @@ compile_utility_helpers_to_elixir(Code) :-
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         state |> trail_binding(xn) |> put_reg(xn, arg)
         |> Map.put(:stack, new_stack) |> Map.put(:pc, new_pc)
+      # Reserved-cell form, pushed by get_structure / get_list write
+      # mode: the destination address is carried so a nested term
+      # allocated in between cannot displace the remaining arguments.
+      [{:write_ctx, dest, n} | stack_rest] when n > 0 ->
+        fresh = {:unbound, {:heap_ref, dest}}
+        new_stack =
+          if n == 1, do: stack_rest, else: [{:write_ctx, dest + 1, n - 1} | stack_rest]
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        state |> put_reg(xn, fresh)
+        |> Map.put(:heap, Map.put(state.heap, dest, fresh))
+        |> Map.put(:stack, new_stack) |> Map.put(:pc, new_pc)
+      # Legacy append form, still used by put_structure / put_list. The
+      # compiler emits nested puts args-first, so contiguity holds there.
       [{:write_ctx, n} | stack_rest] when n > 0 ->
         addr = state.heap_len
         fresh = {:unbound, {:heap_ref, addr}}
@@ -938,6 +974,11 @@ compile_utility_helpers_to_elixir(Code) :-
             %{new_state | stack: new_stack, pc: new_pc}
           :fail -> :fail
         end
+      [{:write_ctx, dest, n} | stack_rest] when n > 0 ->
+        new_stack =
+          if n == 1, do: stack_rest, else: [{:write_ctx, dest + 1, n - 1} | stack_rest]
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        %{state | heap: Map.put(state.heap, dest, val), stack: new_stack, pc: new_pc}
       [{:write_ctx, n} | stack_rest] when n > 0 ->
         new_stack = if n == 1, do: stack_rest, else: [{:write_ctx, n - 1} | stack_rest]
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
@@ -957,6 +998,11 @@ compile_utility_helpers_to_elixir(Code) :-
             %{new_state | stack: new_stack, pc: new_pc}
           :fail -> :fail
         end
+      [{:write_ctx, dest, n} | stack_rest] when n > 0 ->
+        new_stack =
+          if n == 1, do: stack_rest, else: [{:write_ctx, dest + 1, n - 1} | stack_rest]
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        %{state | heap: Map.put(state.heap, dest, c), stack: new_stack, pc: new_pc}
       [{:write_ctx, n} | stack_rest] when n > 0 ->
         new_stack = if n == 1, do: stack_rest, else: [{:write_ctx, n - 1} | stack_rest]
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc

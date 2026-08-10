@@ -205,8 +205,20 @@ Four arms went red the moment it became a real check:
 | scala | `finalizeBuild` skipped the bind-through for A registers, **and** `GetStructure` guessed its arity by counting trailing `unify_*` ops | fixed |
 | kotlin, kotlin_functions | the identical A-register guard in `bindTarget` | fixed |
 | elixir | write mode overwrote the register without binding the variable it held — in the interpreter *and* the lowered emitter | fixed |
-| elixir | a term NESTED inside another still fails: the nested term is allocated past the enclosing term's reserved cells (the CONF-FIX-C-NESTED class) | **xfail** |
-| r, r_functions | same query, untriaged; the two arms share a runtime | **xfail** |
+| elixir | a term NESTED inside another: the nested term was allocated in the middle of the enclosing term's argument region (the CONF-FIX-C-NESTED class), so get-family write mode now RESERVES its argument cells | fixed |
+| r, r_functions | the same A-register guard in `append_build_arg`; one fix, both arms | fixed |
+
+**All fixed — the harness carries no `ct_xfail` again.** Five backends
+had the A-register bind-through asymmetry (Scala, Kotlin, Elixir, R, and
+Go's write contexts earlier), which makes it the single most-repeated
+defect this suite has found.
+
+R is worth calling out as the counter-example to assuming a diagnosis
+transfers. Its card was filed as the nesting defect by analogy with
+Elixir; the three-way probe came back cons-only FALSE, struct-only
+FALSE, struct-inside-cons FALSE — even *flat* construction failed, so it
+was the binding half and nesting had never been broken there at all. It
+was an S, not the M the card estimated. Run the probe; do not infer.
 
 The A-register story is worth stating carefully, because both halves are
 real. `put_structure`/`put_list` must **not** bind an A register's
@@ -276,10 +288,12 @@ the recorded seed.
 
 ## Known divergences (tracked as `ct_xfail/2`)
 
-The harness is green today and **every registered backend — scala,
-elixir, wat, haskell, python, go, rust, c, and c++ — passes the whole
-spec** (there are no live `ct_xfail/2` or `ct_skip/2` entries; both are
-declared `dynamic` so they may have zero clauses). The oracle is the hand-specified
+The harness is green today and **all fifteen registered arms — scala,
+elixir, wat, haskell, python, go, rust, c, c++, kotlin,
+kotlin_functions, fsharp, fsharp_functions, r, and r_functions — pass
+the whole spec**, including the five head-shape programs (there are no
+live `ct_xfail/2` or `ct_skip/2` entries; both are declared `dynamic` so
+they may have zero clauses). The oracle is the hand-specified
 expected-results table in `wam_conformance_fixtures.pl` (standard Prolog
 semantics), not any backend's output; Scala was the original reference.
 A tolerated divergence would be logged via a new `ct_xfail/2`, with an

@@ -390,12 +390,23 @@ WamRuntime$reset_state <- function(s) {
 # the write-mode branch of GetStructure/GetList (when matching against
 # an unbound variable). Nested PutStructure (arithmetic, list cons,
 # etc.) just push more frames; finalization cascades up the stack.
-WamRuntime$begin_build <- function(state, fid, arity, target_reg) {
+# `bind_through` separates the two families that both open a build frame.
+# PutStructure/PutList (FALSE) stage a BODY argument: the A register is
+# being overwritten and binding its previous occupant aliases an
+# unrelated live variable (the M139/M140 class). GetStructure/GetList in
+# write mode (TRUE) match a clause HEAD: the A register holds the
+# CALLER's output variable, and binding it is the whole point. Gating on
+# register class alone conflated the two, so a clause head that builds an
+# output argument never handed it back -- cbuild_one(X, [tk(X)|[]]) left
+# the caller with an unbound L.
+WamRuntime$begin_build <- function(state, fid, arity, target_reg,
+                                   bind_through = FALSE) {
   state$mode <- "write"
-  frame <- list(target_reg = as.integer(target_reg),
-                fid        = as.integer(fid),
-                arity      = as.integer(arity),
-                args       = list())
+  frame <- list(target_reg   = as.integer(target_reg),
+                fid          = as.integer(fid),
+                arity        = as.integer(arity),
+                bind_through = isTRUE(bind_through),
+                args         = list())
   state$build_stack <- c(state$build_stack, list(frame))
   invisible(NULL)
 }
@@ -433,7 +444,7 @@ WamRuntime$append_build_arg <- function(state, val) {
     # `p(X) :- q(g(7)), var(X)` wrong-failed). Build placeholders only
     # ever live in X/Y registers, so the bind is additionally gated on
     # the register class -- the same fix the other targets carry.
-    if (top$target_reg >= 101L &&
+    if ((isTRUE(top$bind_through) || top$target_reg >= 101L) &&
         !is.null(cur) && is.list(cur) && !is.null(cur$tag) && cur$tag == "unbound") {
       # Skip the bind if cur appears anywhere inside new_struct -- the
       # bind would create a self-cycle. This happens when the WAM
@@ -1776,7 +1787,8 @@ WamRuntime$step <- function(program, state, instr) {
           # scaffold; the codegen can be tightened to emit arity later.
           arity <- WamRuntime$count_following_unify(program, state$pc)
         }
-        WamRuntime$begin_build(state, instr$fid, arity, instr$ai)
+        WamRuntime$begin_build(state, instr$fid, arity, instr$ai,
+                               bind_through = TRUE)
       } else if (v$tag == "struct" && identical(v$fid, as.integer(instr$fid))) {
         WamRuntime$begin_read(state, v$args)
       } else {
@@ -1788,7 +1800,8 @@ WamRuntime$step <- function(program, state, instr) {
       v <- WamRuntime$deref(state, WamRuntime$get_reg(state, instr$ai))
       if (is.null(v)) return(FALSE)
       if (v$tag == "unbound") {
-        WamRuntime$begin_build(state, instr$fid, 2L, instr$ai)
+        WamRuntime$begin_build(state, instr$fid, 2L, instr$ai,
+                               bind_through = TRUE)
       } else if (v$tag == "struct" && identical(v$fid, as.integer(instr$fid))
                  && length(v$args) == 2L) {
         WamRuntime$begin_read(state, v$args)

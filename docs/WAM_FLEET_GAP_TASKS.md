@@ -42,8 +42,8 @@ self-contained so a single coding agent can pick it up in isolation.
 | CONF-FIX-KOTLIN-BUILD ✅ | Conformance gap fix | Kotlin | S | done — `bindTarget` bind-through for get-family write mode |
 | CONF-FIX-ELIXIR-BUILD ✅ | Conformance gap fix | Elixir | S | done — write mode binds the caller variable, not just the register (interpreter **and** lowered) |
 | BUILDNEST-STRENGTHEN ✅ | Conformance coverage | test | S | done — the only write-mode check now uses `==/2` and is its own program |
-| CONF-FIX-ELIXIR-BUILDNEST | Conformance gap fix | Elixir | M | — nested write contexts (the CONF-FIX-C-NESTED class); xfailed |
-| CONF-FIX-R-BUILDNEST | Conformance gap fix | R | M | — same query fails on `r` and `r_functions`; untriaged; xfailed |
+| CONF-FIX-ELIXIR-BUILDNEST ✅ | Conformance gap fix | Elixir | M | done — get-family write mode reserves its argument cells; `{:write_ctx, dest, n}` |
+| CONF-FIX-R-BUILDNEST ✅ | Conformance gap fix | R | S (was M) | done — it was the binding half, not the nesting half; `bind_through` on the build frame |
 | CONF-FIX-C-KERNEL-SYMBOLS ✅ | Test fix | C | S | done — two kernel-generation tests asserted symbol names that never existed |
 | CONF-LLVM | Conformance adapter | LLVM | L | — |
 | CONF-R ✅ | Conformance adapter | R | M | done — opt-in; all classic programs green (R-SWITCH-INDEX-CONFORMANCE) |
@@ -519,27 +519,54 @@ external toolchain.
 - **Measured:** flat construction (`b(X, [X|[]])`, `b(X, tk(X))`) went
   from false to true on this fix alone.
 
-### CONF-FIX-ELIXIR-BUILDNEST: nested write contexts (open, xfailed)
+### CONF-FIX-ELIXIR-BUILDNEST: nested write contexts ✅
 - **Lever:** Conformance gap fix  **Target:** Elixir  **Size:** M
-- After CONF-FIX-ELIXIR-BUILD, flat construction works and a term
-  **nested** inside another still fails. Isolated with a three-way
-  probe: cons-only `true`, struct-only `true`, struct-inside-cons
-  `false`.
-- **Cause:** write mode allocates the nested term at `heap_len`, which
-  by then is past the enclosing term's reserved argument cells, so the
-  enclosing cons tail is never written. This is precisely the WAM-C
-  write-path defect that **CONF-FIX-C-NESTED** fixed with a
-  reserved-cell `WamArgCtx` stack — Elixir needs the same treatment,
-  in the interpreter *and* the lowered emitter.
-- **Status:** `ct_xfail(elixir, buildnest)`.
+- After CONF-FIX-ELIXIR-BUILD, flat construction worked and a term
+  **nested** inside another still failed. Three-way probe: cons-only
+  `true`, struct-only `true`, struct-inside-cons `false`.
+- **Cause:** write mode appended each argument at `heap_len` as it
+  arrived, which assumes the term stays contiguous. A nested term
+  allocates its own functor cell at `heap_len`, in the middle of the
+  enclosing term's argument region, so the enclosing cons tail landed
+  above the nested term and the cons cell was never completed. The same
+  write-path defect **CONF-FIX-C-NESTED** fixed with a reserved-cell
+  `WamArgCtx` stack.
+- **Fix:** `get_structure`/`get_list` write mode now RESERVE their
+  argument cells up front and push `{:write_ctx, dest, n}` carrying the
+  destination address; `step_unify_variable`/`_value`/`_constant` write
+  at `dest` and advance it. A nested term allocated later goes above the
+  reserved cells and every argument still lands in its own slot.
+- **Scoped on purpose:** the reserved form is a THIRD `write_ctx` shape
+  and only the get-family emits it. `put_structure`/`put_list` keep the
+  appending `{:write_ctx, n}` form, because their `set_*` handlers never
+  consume the counter at all and the compiler emits nested puts
+  args-first, so contiguity does hold there. Both consumer clauses sit
+  side by side in each `step_unify_*`.
+- **Applied twice** — interpreter runtime and lowered emitter — because
+  the conformance arm builds with `emit_mode(lowered)`. Fixing only the
+  interpreter changed nothing observable, exactly as
+  CONF-FIX-FSHARP-LOWERED-GETVALUE warned.
+- **Acceptance:** `CONFORMANCE_TARGETS=elixir` green with no xfail ✅.
 
-### CONF-FIX-R-BUILDNEST: buildnest fails on both R arms (open, xfailed)
-- **Lever:** Conformance gap fix  **Target:** R  **Size:** M
-- `r` and `r_functions` fail the same `cbuild_chk/1` queries. They share
-  a runtime, so this is one defect, not two. Untriaged — start by
-  running the cons-only / struct-only / struct-inside-cons probe used
-  for Elixir to see whether it is the binding half or the nesting half.
-- **Status:** `ct_xfail(r, buildnest)`, `ct_xfail(r_functions, buildnest)`.
+### CONF-FIX-R-BUILDNEST: it was the binding half, not the nesting half ✅
+- **Lever:** Conformance gap fix  **Target:** R  **Size:** S (estimated M)
+- Triaged with the same three-way probe, which came back **cons-only
+  FALSE, struct-only FALSE, struct-inside-cons FALSE** — even *flat*
+  construction failed, so this was never the nesting defect the card
+  assumed. R already had a `read_stack`/`build_stack` pair; nesting was
+  fine all along.
+- **Cause:** `append_build_arg` gated its bind-through on
+  `target_reg >= 101L` (X/Y only) — the same A-register asymmetry found
+  in Scala, Kotlin and Elixir. Right for `put_structure`/`put_list`
+  (body staging; binding an A register's previous occupant aliases an
+  unrelated live variable — the `aliasfree/1` probe in the comment
+  there), wrong for `get_structure`/`get_list` write mode, where the A
+  register holds the caller's output variable.
+- **Fix:** build frames carry `bind_through`, set by the get-family
+  only. The existing self-cycle guard (`wam_term_contains_var`) is kept
+  and still applies.
+- **One fix, both arms** — `r` and `r_functions` share the runtime.
+- **Acceptance:** both arms green with no xfail ✅.
 
 ### CONF-FIX-C-KERNEL-SYMBOLS: two kernel tests asserted names that never existed ✅
 - **Lever:** Test fix  **Target:** C  **Size:** S
