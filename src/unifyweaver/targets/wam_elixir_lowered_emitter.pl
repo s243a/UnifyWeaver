@@ -1849,12 +1849,15 @@ wam_elixir_lower_instr(get_structure(F, AiName), _PC, _Labels, _FuncName, _Suffi
       match?({:unbound, _}, val) ->
         addr = state.heap_len
         new_heap = Map.put(state.heap, addr, {:str, "~w"})
-        state
+        base = state |> Map.put(:heap, new_heap) |> Map.put(:heap_len, addr + 1)
+        bound = case WamRuntime.unify(base, val, {:ref, addr}) do
+          {:ok, st} -> st
+          :fail -> base
+        end
+        bound
         |> WamRuntime.trail_binding(~w)
-        |> Map.put(:regs, Map.put(state.regs, ~w, {:ref, addr}))
-        |> Map.put(:heap, new_heap)
-        |> Map.put(:heap_len, addr + 1)
-        |> Map.put(:stack, [{:write_ctx, ~w} | state.stack])
+        |> Map.put(:regs, Map.put(bound.regs, ~w, {:ref, addr}))
+        |> Map.put(:stack, [{:write_ctx, ~w} | bound.stack])
       match?({:ref, _}, val) ->
         {:ref, addr} = val
         case WamRuntime.step_get_structure_ref(state, "~w", ~w, addr) do
@@ -2021,12 +2024,15 @@ wam_elixir_lower_instr(get_list(AiName), _PC, _Labels, _FuncName, _Suffix, Code)
       match?({:unbound, _}, val) ->
         addr = state.heap_len
         new_heap = Map.put(state.heap, addr, {:str, "./2"})
-        state
+        base = state |> Map.put(:heap, new_heap) |> Map.put(:heap_len, addr + 1)
+        bound = case WamRuntime.unify(base, val, {:ref, addr}) do
+          {:ok, st} -> st
+          :fail -> base
+        end
+        bound
         |> WamRuntime.trail_binding(~w)
-        |> Map.put(:regs, Map.put(state.regs, ~w, {:ref, addr}))
-        |> Map.put(:heap, new_heap)
-        |> Map.put(:heap_len, addr + 1)
-        |> Map.put(:stack, [{:write_ctx, 2} | state.stack])
+        |> Map.put(:regs, Map.put(bound.regs, ~w, {:ref, addr}))
+        |> Map.put(:stack, [{:write_ctx, 2} | bound.stack])
       match?({:ref, _}, val) ->
         {:ref, addr} = val
         case WamRuntime.step_get_structure_ref(state, "./2", 2, addr) do

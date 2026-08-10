@@ -159,7 +159,21 @@ case class PutVariable(varReg: Int, argReg: Int)        extends Instruction
 case class PutValue(varReg: Int, argReg: Int)           extends Instruction
 // Structure/list building
 case class PutStructure(functorId: Int, reg: Int, sArity: Int) extends Instruction
-case class GetStructure(functorId: Int, reg: Int)       extends Instruction
+// sArity is REQUIRED. It used to be absent, and the write-mode branch
+// recovered it by counting the unify_* instructions that follow. That
+// heuristic breaks on exactly the shape the `nested` conformance program
+// uses: the compiler emits a nested term interleaved with the enclosing
+// term's arguments, so
+//     get_list A2          % cons, 2 args
+//     unify_variable X2    % cons arg 1
+//     get_structure tk/1, X2
+//     unify_value X1       % tk's only argument
+//     unify_constant []    % <- the CONS tail, not tk's
+// counted 2 trailing unify ops for tk/1. The tk frame then swallowed the
+// cons tail, the cons frame never reached its arity, and finalizeBuild
+// never ran for it -- so a head that CONSTRUCTS an output argument never
+// bound the caller's variable at all.
+case class GetStructure(functorId: Int, reg: Int, sArity: Int) extends Instruction
 // PutList/GetList carry the cons functor id explicitly so they agree
 // with PutStructure([|]/2,...)/GetStructure([|]/2,...) on the same list.
 case class PutList(reg: Int, functorId: Int)            extends Instruction
@@ -506,7 +520,21 @@ case object Running   extends WamStatus
 case object Succeeded extends WamStatus
 case object Failed    extends WamStatus
 
-final case class BuildFrame(targetReg: Int, functorId: Int, sArity: Int, args: List[WamTerm])
+// `bindThrough` separates the two families that both open a build frame:
+//
+//   put_structure / put_list  (bindThrough = false) -- BODY construction.
+//     The target register is being OVERWRITTEN with a freshly built goal
+//     argument. Binding an A register's previous occupant here creates a
+//     cyclic term (the M139/M140 bind-through class), so A registers are
+//     left alone and only the X/Y threading placeholders are bound.
+//
+//   get_structure / get_list  (bindThrough = true) -- HEAD matching in
+//     write mode. The register holds the CALLER'S unbound variable and
+//     the whole point is to bind it to the term being built. Skipping
+//     that for A registers means an output argument constructed by a
+//     clause head never reaches the caller.
+final case class BuildFrame(targetReg: Int, functorId: Int, sArity: Int,
+                            args: List[WamTerm], bindThrough: Boolean = false)
 final case class TrailEntry(varId: Int, oldValue: Option[WamTerm])
 final case class EnvFrame(savedRegs: Array[WamTerm]) // Y-register save/restore
 
@@ -878,11 +906,13 @@ object WamRuntime {
   }
 
   /** Count consecutive UnifyVariable / UnifyValue / UnifyConstant
-   *  instructions starting at `from`. Used by GetStructure's write-
-   *  mode path: GetStructure carries no explicit arity (only the
-   *  functor id), so we infer it from the trailing unify_* count.
-   *  The WAM compiler always emits exactly `arity` consecutive
-   *  unify_* instructions after a get_structure. */
+   *  instructions starting at `from`.
+   *
+   *  NO LONGER USED for GetStructure arity — that instruction now
+   *  carries sArity, because the count is wrong whenever a nested term
+   *  is interleaved with the enclosing term's arguments (the trailing
+   *  unify_* ops then belong to the OUTER term). Kept for diagnostics;
+   *  do not reintroduce it as an arity source. */
   def countTrailingUnifyOps(program: WamProgram, from: Int): Int = {
     var i = from
     var count = 0
@@ -1004,7 +1034,7 @@ object WamRuntime {
       // set_variable threading placeholders only ever live in X/Y
       // registers, so the bind-through is conditioned on the register
       // class — the same fix the Rust, Go, and LLVM targets carry.
-      if (top.targetReg >= 100) {
+      if (top.bindThrough || top.targetReg >= 100) {
         val current = s.regs(top.targetReg)
         val derefedRef = if (current == null) None
                          else deref(s.bindings, current) match {
@@ -1221,29 +1251,22 @@ object WamRuntime {
         appendBuildArg(s, value)
         if (s.status == Running) s.pc += 1
 
-      case GetStructure(functorId, reg) =>
+      case GetStructure(functorId, reg, sArity) =>
         val v = deref(s.bindings, s.regs(reg))
         v match {
-          case Struct(f, _, args) if f == functorId =>
+          // functorId interns the NAME only, so the arity has to be
+          // checked here or `f(a)` would match a `f(a,b)` head.
+          case Struct(f, ar, args) if f == functorId && ar == sArity =>
             // Read mode — unify against existing args. enterUnifyCtx
             // stashes the enclosing term's remaining arguments so a
             // nested term does not clobber them.
             enterUnifyCtx(s, args.toList)
             s.pc += 1
           case Ref(_) =>
-            // Write mode — bind reg to a new struct that the
-            // following unify_* instructions will fill in. We don't
-            // know the arity from this opcode alone (PutStructure
-            // carries it; GetStructure historically didn't). The
-            // BuildFrame's sArity is set at finalizeBuild time when
-            // the args list reaches its expected count.
-            //
-            // Workaround: peek ahead to count consecutive unify_*
-            // instructions and use that as the arity. This relies on
-            // the WAM compiler always emitting exactly arity unify_*
-            // ops after a get_structure.
-            val arity = countTrailingUnifyOps(program, s.pc + 1)
-            s.buildStack = BuildFrame(reg, functorId, arity, Nil) :: s.buildStack
+            // Write mode — bind reg to a new struct that the following
+            // sArity unify_* instructions fill in.
+            s.buildStack = BuildFrame(reg, functorId, sArity, Nil,
+                                      bindThrough = true) :: s.buildStack
             s.unifyMode  = false
             s.pc += 1
           case _ => backtrack(s)
@@ -1257,7 +1280,8 @@ object WamRuntime {
             s.pc += 1
           case Ref(_) =>
             // Write mode for a 2-arg cons cell.
-            s.buildStack = BuildFrame(reg, functorId, 2, Nil) :: s.buildStack
+            s.buildStack = BuildFrame(reg, functorId, 2, Nil,
+                                      bindThrough = true) :: s.buildStack
             s.unifyMode  = false
             s.pc += 1
           case _ => backtrack(s)
@@ -2662,7 +2686,8 @@ object WamRuntime {
       case Struct(f, _, args) if f == functorId =>
         enterUnifyCtx(s, args.toList); true
       case Ref(_) =>
-        s.buildStack = BuildFrame(reg, functorId, arity, Nil) :: s.buildStack
+        s.buildStack = BuildFrame(reg, functorId, arity, Nil,
+                                  bindThrough = true) :: s.buildStack
         s.unifyMode = false; true
       case _ => false
     }
@@ -2674,7 +2699,8 @@ object WamRuntime {
       case Struct(f, 2, args) if f == consId =>
         enterUnifyCtx(s, args.toList); true
       case Ref(_) =>
-        s.buildStack = BuildFrame(reg, consId, 2, Nil) :: s.buildStack
+        s.buildStack = BuildFrame(reg, consId, 2, Nil,
+                                  bindThrough = true) :: s.buildStack
         s.unifyMode = false; true
       case _ => false
     }

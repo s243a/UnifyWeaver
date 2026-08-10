@@ -144,8 +144,24 @@ user:ckind([cwd(V)|_],  w(V)).
 % every such query silently failed.
 :- dynamic user:cbuild_one/2.
 :- dynamic user:cbuild_chk/1.
+% NOTE the `==/2`. This check used `=/2` originally, which made it blind
+% to the very bug it was written for: if the head never binds the
+% caller's L at all, `L = [tk(X)]` simply binds it on the spot and
+% reports success. Only an identity comparison proves the head did the
+% construction. WAM-Scala passed this query for months while
+% `finalizeBuild` skipped the bind-through for A registers, so a clause
+% head that builds an output argument never reached its caller — which
+% turned `select_uw(H, [X|T], [X|T2])` into a non-terminating generator.
+% Same trap `crepeat/1` documents below; same fix.
+%
+% These two live in their OWN program (`buildnest`), not in `nested`.
+% They are the only write-mode queries in the suite, and a backend can
+% match nested heads perfectly while failing to build them — Elixir and
+% R do exactly that today. Sharing a program would let one xfail blanket
+% the read-mode queries too, which is the mistake `repeatvar` was split
+% out to avoid.
 user:cbuild_one(X, [tk(X)|[]]).
-user:cbuild_chk(X) :- user:cbuild_one(X, L), L = [tk(X)].
+user:cbuild_chk(X) :- user:cbuild_one(X, L), L == [tk(X)].
 % A head with a REPEATED variable inside a structure. Matching
 % `csame(p(X,X), X)` against a term whose slots are both unbound has to
 % bind the second slot, not merely accept it. WAM-Rust's unify_value
@@ -187,8 +203,8 @@ conformance_program(fib,      [user:cfib/2]).
 conformance_program(ack,      [user:cack/3]).
 conformance_program(builtins, [user:cbi_arith/1, user:cbi_cmp/1, user:cbi_eq/1]).
 conformance_program(wide,      [user:cwide/10]).
-conformance_program(nested,    [user:cnest/2, user:ctail/3, user:ckind/2,
-                                user:cbuild_one/2, user:cbuild_chk/1]).
+conformance_program(nested,    [user:cnest/2, user:ctail/3, user:ckind/2]).
+conformance_program(buildnest, [user:cbuild_one/2, user:cbuild_chk/1]).
 conformance_program(repeatvar, [user:csame/2, user:crepeat/1]).
 conformance_program(emptylist, [user:cnil_tail/2, user:cone/2]).
 
@@ -251,9 +267,10 @@ conformance_query(nested, 'ckind/2', [[cnum(7)], n(7)], true).
 conformance_query(nested, 'ckind/2', [[csym(x)], s(x)], true).
 conformance_query(nested, 'ckind/2', [[cwd(m)],  w(m)], true).
 conformance_query(nested, 'ckind/2', [[csym(x)], n(x)], false).
-% Write mode: build `[tk(X)|[]]` with an unbound output, then check it.
-conformance_query(nested, 'cbuild_chk/1', [a], true).
-conformance_query(nested, 'cbuild_chk/1', [b], true).
+% buildnest — write mode: build `[tk(X)|[]]` with an unbound output, then
+% check it with ==/2. Its own program; see the fixture note above.
+conformance_query(buildnest, 'cbuild_chk/1', [a], true).
+conformance_query(buildnest, 'cbuild_chk/1', [b], true).
 
 % repeatvar — a repeated variable inside a structure. Kept as its own
 % program because detecting the bug needs ==/2 (see crepeat/1 below), so

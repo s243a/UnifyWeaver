@@ -38,6 +38,13 @@ self-contained so a single coding agent can pick it up in isolation.
 | CONF-FIX-KOTLIN-NESTED ✅ | Conformance gap fix | Kotlin | M | done — `WamContext` gained a `parent` chain; fixes both `kotlin` and `kotlin_functions` |
 | CONF-FIX-FSHARP-LOWERED-GETVALUE ✅ | Conformance gap fix | F# | S | done — lowered `get_value` now uses `unifyVal`; the interpreter's FS-LIST-PARTIAL-TAIL fix had never reached the lowered path |
 | CONF-SWEEP-ALL-ARMS ✅ | Conformance coverage | multi | M | done — all 15 registered arms run against the four head-shape programs; 8 fixes across 7 backends |
+| CONF-FIX-SCALA-BUILD ✅ | Conformance gap fix | Scala | M | done — get-family bind-through + `GetStructure` carries its arity; closes the nqueens non-termination |
+| CONF-FIX-KOTLIN-BUILD ✅ | Conformance gap fix | Kotlin | S | done — `bindTarget` bind-through for get-family write mode |
+| CONF-FIX-ELIXIR-BUILD ✅ | Conformance gap fix | Elixir | S | done — write mode binds the caller variable, not just the register (interpreter **and** lowered) |
+| BUILDNEST-STRENGTHEN ✅ | Conformance coverage | test | S | done — the only write-mode check now uses `==/2` and is its own program |
+| CONF-FIX-ELIXIR-BUILDNEST | Conformance gap fix | Elixir | M | — nested write contexts (the CONF-FIX-C-NESTED class); xfailed |
+| CONF-FIX-R-BUILDNEST | Conformance gap fix | R | M | — same query fails on `r` and `r_functions`; untriaged; xfailed |
+| CONF-FIX-C-KERNEL-SYMBOLS ✅ | Test fix | C | S | done — two kernel-generation tests asserted symbol names that never existed |
 | CONF-LLVM | Conformance adapter | LLVM | L | — |
 | CONF-R ✅ | Conformance adapter | R | M | done — opt-in; all classic programs green (R-SWITCH-INDEX-CONFORMANCE) |
 | R-SWITCH-INDEX-CONFORMANCE ✅ | Conformance gap fix | R | S | done — fallthrough/A2 reuse existing SwitchOnTerm no-op |
@@ -445,6 +452,111 @@ external toolchain.
   (apt with `--no-install-recommends`; the default recommends pull a
   broken mesa dependency), `dotnet-sdk-8.0` (apt). Kotlin needed only
   the `gradle` already on the image.
+
+### BUILDNEST-STRENGTHEN: the suite's only write-mode check was a no-op ✅
+- **Lever:** Conformance coverage  **Target:** test  **Size:** S
+- Every conformance query is ground, so a head is always *matched*,
+  never *built*. `cbuild_chk/1` existed to cover the write path — but it
+  checked with `=/2`, which **re-unifies**: if the head never bound the
+  caller's output at all, `L = [tk(X)]` binds it on the spot and reports
+  success. The check could not fail for the bug it was written for.
+- Now `==/2`, and moved into its own program `buildnest` — a backend can
+  match nested heads perfectly and still fail to build them, so sharing
+  a program with `nested` would let one xfail blanket working coverage.
+  Same reasoning that split `repeatvar` out.
+- **Immediate yield:** four arms went red. Scala, Kotlin and Elixir are
+  fixed (cards below); R remains open and xfailed.
+
+### CONF-FIX-SCALA-BUILD: head-constructed output arguments ✅
+- **Lever:** Conformance gap fix  **Target:** Scala  **Size:** M
+- **Found by:** the WAM-Scala `nqueens` non-termination, not the suite —
+  `test(nqueens)` had never terminated on a *failing* query. Bisecting
+  showed every failing `queens_q` hung, down to N=2, so it was not
+  search size; a step trace showed the choicepoint stack growing without
+  bound while `select_uw` regenerated forever.
+- **Root cause 1 — bind-through conditioned on register class.**
+  `finalizeBuild` skipped binding the target register's previous
+  occupant for A registers. Correct for `put_structure`/`put_list`
+  (body staging; the M139/M140 cyclic-term fix) and wrong for
+  `get_structure`/`get_list` write mode, where the A register holds the
+  **caller's** output variable. `select_uw(H, [X|T], [X|T2])` never
+  bound the caller's `Rest`, so `permutation_uw` recursed on an unbound
+  list and `select_uw` turned into an infinite generator.
+  `BuildFrame` now carries `bindThrough`, set by the get-family only.
+- **Root cause 2 — `GetStructure` guessed its arity.** The instruction
+  carried only a functor id, and write mode recovered the arity with
+  `countTrailingUnifyOps`. That over-counts exactly when a nested term
+  is interleaved with the enclosing term's arguments: in
+  `cbuild_one(X, [tk(X)|[]])` the `tk/1` frame counted 2, swallowed the
+  cons tail, and the cons frame never reached its arity — so
+  `finalizeBuild` never ran for it and the caller's `L` stayed unbound.
+  `GetStructure` now carries `sArity` (the emitter already parsed it and
+  discarded it), and the read branch checks arity too, since the
+  interned functor id is the **name** only and `f(a)` would otherwise
+  match an `f(a,b)` head.
+- **Acceptance:** `queens_q(4, [1,2,3,4])` returns false promptly; the
+  full `tests/test_wam_scala_classic_programs.pl` suite completes for
+  the first time; `CONFORMANCE_TARGETS=scala` green including
+  `buildnest`.
+
+### CONF-FIX-KOTLIN-BUILD: same bind-through asymmetry ✅
+- **Lever:** Conformance gap fix  **Target:** Kotlin  **Size:** S
+- `bindTarget` carried the identical `if (!register.startsWith("A"))`
+  guard. `WamContext.Write` gained a `bindThrough` flag, set true by
+  `beginStructure` (get-family) and left false by `beginStructurePut`
+  (put-family). Fixes `kotlin` and `kotlin_functions` together.
+
+### CONF-FIX-ELIXIR-BUILD: write mode bound the register, not the variable ✅
+- **Lever:** Conformance gap fix  **Target:** Elixir  **Size:** S
+- `get_structure`/`get_list` write mode overwrote `state.regs[ai]` with
+  a fresh `{:ref, addr}` and trailed the *register*. In a clause head
+  `ai` is the callee's A slot while the variable inside it belongs to
+  the **caller**, so the built term was discarded. Both the interpreter
+  runtime and the lowered emitter had it — the conformance arm runs
+  `emit_mode(lowered)`, so fixing only the interpreter changed nothing.
+  Both now bind through `unify/3`, which already handles the two
+  unbound spellings and trails.
+- **Measured:** flat construction (`b(X, [X|[]])`, `b(X, tk(X))`) went
+  from false to true on this fix alone.
+
+### CONF-FIX-ELIXIR-BUILDNEST: nested write contexts (open, xfailed)
+- **Lever:** Conformance gap fix  **Target:** Elixir  **Size:** M
+- After CONF-FIX-ELIXIR-BUILD, flat construction works and a term
+  **nested** inside another still fails. Isolated with a three-way
+  probe: cons-only `true`, struct-only `true`, struct-inside-cons
+  `false`.
+- **Cause:** write mode allocates the nested term at `heap_len`, which
+  by then is past the enclosing term's reserved argument cells, so the
+  enclosing cons tail is never written. This is precisely the WAM-C
+  write-path defect that **CONF-FIX-C-NESTED** fixed with a
+  reserved-cell `WamArgCtx` stack — Elixir needs the same treatment,
+  in the interpreter *and* the lowered emitter.
+- **Status:** `ct_xfail(elixir, buildnest)`.
+
+### CONF-FIX-R-BUILDNEST: buildnest fails on both R arms (open, xfailed)
+- **Lever:** Conformance gap fix  **Target:** R  **Size:** M
+- `r` and `r_functions` fail the same `cbuild_chk/1` queries. They share
+  a runtime, so this is one defect, not two. Untriaged — start by
+  running the cons-only / struct-only / struct-inside-cons probe used
+  for Elixir to see whether it is the binding half or the nesting half.
+- **Status:** `ct_xfail(r, buildnest)`, `ct_xfail(r_functions, buildnest)`.
+
+### CONF-FIX-C-KERNEL-SYMBOLS: two kernel tests asserted names that never existed ✅
+- **Lever:** Test fix  **Target:** C  **Size:** S
+- `tests/test_wam_c_target.pl` had been red since the repository import
+  on `transitive_closure2` / `transitive_distance3` "native kernel
+  helpers missing". The helpers are there and work — the executable
+  smoke tests for both kernels pass — but the generation tests asserted
+  `wam_transitive_closure_dfs` / `wam_transitive_distance_bfs`, while
+  the runtime spells them `wam_collect_transitive_closure` /
+  `wam_collect_transitive_distance`. The sibling kernels really do use
+  `_dfs` suffixes, which is how the wrong names stayed plausible.
+- The `_dfs` suffix would also have been wrong on the merits: the
+  closure collector is a BFS worklist. That is contract-conformant —
+  `WAM_TRANSITIVE_CLOSURE2_CONTRACT.md` leaves enumeration order
+  unspecified and compares targets as normalized sorted sets.
+- Assertions corrected and the stream-binding entry point pinned as
+  well. `tests/test_wam_c_target.pl` is now fully green (119 passes).
 
 ### CONF-LLVM: Register LLVM in the cross-target conformance harness
 - **Lever:** Conformance adapters  **Target:** LLVM  **Size:** L  **Depends on:** —

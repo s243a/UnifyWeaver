@@ -364,6 +364,21 @@ test_bidirectional_ancestor_kernel_generation :-
     ;   fail_test(Test, 'bidirectional_ancestor native kernel helpers missing')
     ).
 
+% The traversal helper is `wam_collect_transitive_closure`, NOT
+% `wam_transitive_closure_dfs`. This test asserted the latter and had
+% been red since the repository import — the name never existed in the
+% emitted runtime. Its sibling kernels really do spell theirs `_dfs`
+% (`wam_category_ancestor_dfs`, `wam_bidirectional_ancestor_dfs`), which
+% is how the wrong name looked plausible for so long.
+%
+% The `_dfs` suffix would also have been wrong on the merits: the
+% collector is a BFS worklist (head/tail queue over `category_edges`).
+% That is contract-conformant — WAM_TRANSITIVE_CLOSURE2_CONTRACT.md
+% leaves enumeration order unspecified and compares targets as
+% normalized sorted sets — so the traversal is fine and only the
+% assertion was wrong. Executable proof that the kernel works is the
+% `detected transitive_closure2 executable smoke` test below; these two
+% only pin the emitted surface.
 test_transitive_closure_kernel_generation :-
     Test = 'WAM-C: transitive_closure2 native kernel helpers generated',
     (   compile_wam_runtime_to_c([], RuntimeCode),
@@ -371,18 +386,26 @@ test_transitive_closure_kernel_generation :-
         sub_string(S, _, _, _, 'void wam_register_transitive_edge'),
         sub_string(S, _, _, _, 'void wam_register_transitive_closure_kernel'),
         sub_string(S, _, _, _, 'bool wam_transitive_closure_handler'),
-        sub_string(S, _, _, _, 'wam_transitive_closure_dfs')
+        sub_string(S, _, _, _, 'wam_collect_transitive_closure'),
+        % tc(+Source,-Target) is stream-valued through the ordinary
+        % choice-point stack, per the contract's "no parallel retry
+        % protocol" rule.
+        sub_string(S, _, _, _, 'wam_bind_foreign_atom_stream')
     ->  pass(Test)
     ;   fail_test(Test, 'transitive_closure2 native kernel helpers missing')
     ).
 
+% Same stale-name story as above: the helper is
+% `wam_collect_transitive_distance`, not `wam_transitive_distance_bfs`.
+% Here the algorithm genuinely is a BFS (see the dist+ note in
+% WAM_TRANSITIVE_DISTANCE3_CONTRACT.md) — only the symbol differs.
 test_transitive_distance_kernel_generation :-
     Test = 'WAM-C: transitive_distance3 native kernel helpers generated',
     (   compile_wam_runtime_to_c([], RuntimeCode),
         atom_string(RuntimeCode, S),
         sub_string(S, _, _, _, 'void wam_register_transitive_distance_kernel'),
         sub_string(S, _, _, _, 'bool wam_transitive_distance_handler'),
-        sub_string(S, _, _, _, 'wam_transitive_distance_bfs')
+        sub_string(S, _, _, _, 'wam_collect_transitive_distance')
     ->  pass(Test)
     ;   fail_test(Test, 'transitive_distance3 native kernel helpers missing')
     ).

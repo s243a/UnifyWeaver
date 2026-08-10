@@ -7,9 +7,9 @@
 
 A single set of classic Prolog programs (`member`, `append`, `reverse`,
 `fib`, `ack`, and a `builtins` arithmetic/comparison/unification pack),
-plus four **head-shape** programs (`wide`, `nested`, `emptylist`,
-`repeatvar`)
-with one shared table of expected query results. The harness compiles
+plus five **head-shape** programs (`wide`, `nested`, `buildnest`,
+`repeatvar`, `emptylist`) with one shared table of expected query
+results. The harness compiles
 that *same* spec to every WAM backend whose toolchain is on `PATH`, runs
 each backend, and asserts the answers match.
 
@@ -54,8 +54,7 @@ so the harness is built to stay cheap:
   but far cheaper than a generic recursive algorithm;
 - the query set can be **random-sampled** so any single CI run is bounded
   while coverage accumulates across runs;
-- the head-shape programs (`wide`, `nested`, `emptylist`) are near-zero
-  compute by design — they exist to hit argument-passing and unification
+- the head-shape programs are near-zero compute by design — they exist to hit argument-passing and unification
   edges, not to do work.
 
 ## Head-shape programs (added 2026-08-06)
@@ -72,7 +71,8 @@ green on all six classics — including argument registers above A8 being
 dropped at every choicepoint, and two distinct `[]` atoms that made
 `get_constant []` fail against a genuinely empty list.
 
-Three programs now cover those shapes:
+Three programs covered those shapes initially (`buildnest` and
+`repeatvar` were split out later, see below):
 
 | Program | Shape | What it catches |
 |---|---|---|
@@ -182,6 +182,48 @@ Toolchains this sweep needed, none of which were present at the start:
 `--no-install-recommends`; the default recommends pull in a broken mesa
 dependency), `dotnet-sdk-8.0` (apt). Kotlin needed only the `gradle`
 already on the image.
+
+### The write-mode check that could not fail (2026-08-10)
+
+`cbuild_chk/1` was written to cover construction — it calls
+`cbuild_one/2` with an unbound second argument so the runtime has to
+*build* `[tk(X)|[]]`. But it verified the result with `=/2`, which
+**re-unifies**: if the head never bound the caller's output at all,
+`L = [tk(X)]` binds it on the spot and reports success. The one query
+guarding the entire write path could not fail for the bug it existed to
+catch. It is now `==/2` — the same trap `crepeat/1` already documented,
+one program over.
+
+The check also moved into its own program, `buildnest`. A backend can
+match nested heads perfectly and still fail to build them, so leaving it
+inside `nested` would let one xfail blanket working read-mode coverage.
+
+Four arms went red the moment it became a real check:
+
+| Backend | Cause | Status |
+|---|---|---|
+| scala | `finalizeBuild` skipped the bind-through for A registers, **and** `GetStructure` guessed its arity by counting trailing `unify_*` ops | fixed |
+| kotlin, kotlin_functions | the identical A-register guard in `bindTarget` | fixed |
+| elixir | write mode overwrote the register without binding the variable it held — in the interpreter *and* the lowered emitter | fixed |
+| elixir | a term NESTED inside another still fails: the nested term is allocated past the enclosing term's reserved cells (the CONF-FIX-C-NESTED class) | **xfail** |
+| r, r_functions | same query, untriaged; the two arms share a runtime | **xfail** |
+
+The A-register story is worth stating carefully, because both halves are
+real. `put_structure`/`put_list` must **not** bind an A register's
+previous occupant — that is body staging, and binding it builds a cyclic
+term (the M139/M140 class, fixed across Rust, Go, LLVM, Scala, Kotlin).
+`get_structure`/`get_list` in write mode **must** bind it — that is head
+matching, and the A register holds the caller's output variable. Four
+runtimes had generalised the first rule over both families. The fix is
+the same shape everywhere: carry a flag on the build frame saying which
+family opened it.
+
+Scala's second defect is a different lesson: an instruction that does
+not carry the information it needs will get it from somewhere wrong.
+`GetStructure` recovered its arity by counting the `unify_*` ops that
+follow it, which is correct only when nothing is nested — and the whole
+point of the `nested` program is that things nest. The emitter had the
+arity all along and was discarding it.
 
 ### Ground queries hide construction bugs
 
