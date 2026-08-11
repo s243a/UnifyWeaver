@@ -159,10 +159,54 @@ test(assoc_end_print_unchanged, [condition(clang_available)]) :-
     run_sorted("{ c[$1]++ } END { print c[\"a\"] }\n", ["1"], 0),
     !.
 
+% --- record reads in a chain ---------------------------------------------
+%
+% WAS declines (never pinned as such -- the behaviour-grep found no pin, so these are
+% first-time coverage rather than flips): the chain driver now obtains the EndRecord
+% token, splices the retain IR ahead of its rule chain, and threads the token through
+% plawk_end_chain_blocks//8 to the same assoc END walker the list drivers use. Input's
+% last record is "c 3", so $1 is "c", NF is 2.
+
+test(a_field_statement_after_a_loop, [condition(clang_available)]) :-
+    run_sorted("{ c[$1]++ } END { for (k in c) print k; print $1 }\n",
+        ["a", "b", "c", "c"], 0),
+    !.
+
+test(a_field_statement_before_a_loop, [condition(clang_available)]) :-
+    run_sorted("{ c[$1]++ } END { print $1; for (k in c) print k }\n",
+        ["a", "b", "c", "c"], 0),
+    !.
+
+test(an_nf_statement_in_a_chain, [condition(clang_available)]) :-
+    run_sorted("{ c[$1]++ } END { for (k in c) print k; print NF }\n",
+        ["2", "a", "b", "c"], 0),
+    !.
+
+% `exit` after a record read still truncates and returns the status.
+test(a_field_statement_then_exit, [condition(clang_available)]) :-
+    run_sorted("{ c[$1]++ } END { for (k in c) print k; print $1; exit 3 }\n",
+        ["a", "b", "c", "c"], 3),
+    !.
+
+% Pay-per-use: a chain reading no record carries no retain buffer; one that does
+% carries the buffer AND its store, together.
+test(chain_retain_is_pay_per_use) :-
+    plawk_parse_string("{ c[$1]++ } END { for (k in c) print k; print \"x\" }\n", P1),
+    plawk_native_codegen:plawk_program_native_driver_ir(P1, 'input.txt', IR1),
+    assertion(\+ sub_atom(IR1, _, _, _, '@plawk_lastrec_buf')),
+    plawk_parse_string("{ c[$1]++ } END { for (k in c) print k; print $1 }\n", P2),
+    plawk_native_codegen:plawk_program_native_driver_ir(P2, 'input.txt', IR2),
+    assertion(sub_atom(IR2, _, _, _, '@plawk_lastrec_buf')),
+    assertion(sub_atom(IR2, _, _, _, 'call void @plawk_lastrec_store')),
+    !.
+
 % --- clean declines ------------------------------------------------------
 
-% `printf` is not in the chain's statement vocabulary yet (the assoc chain has no
-% scalar state plan for its arguments) -- declines rather than dropping output.
+% `printf` is not in the chain's ITEM VOCABULARY at all -- plawk_end_chain_blocks//8
+% has no plain(printf(...)) clause -- so this declines at admission, not at emission.
+% Distinct from the LIST drivers, whose printf now takes record arguments via the
+% same token this chain carries: adding printf here is a vocabulary addition, not a
+% capability one.
 test(forin_then_printf_declines) :-
     build_status("{ c[$1]++ } END { for (k in c) print k; printf \"n=%d\\n\", 1 }\n", 3),
     !.
@@ -171,10 +215,11 @@ test(forin_then_printf_declines) :-
 % capability, only a state plan to ask, and plawk_end_nr_value/2 falls back to `%plawk_nr`,
 % which this driver already emits when a print mentions NR.
 %
-% `printf` above still declines, and a field read / NF in this chain still declines, because
-% those DO need something threaded (scalar argument state, and the retained-record token
-% respectively). The boundary is per-capability, not per-route -- which is why one of these
-% pins could flip while its neighbour stayed put.
+% `printf` above still declines (it is not in the chain's item vocabulary at all -- a
+% different boundary from the LIST drivers, whose printf now takes record arguments). The
+% field / NF half of this comment has since flipped too: the chain driver threads the
+% retained-record token now, pinned below. The boundary is per-capability, not per-route --
+% which is why each of these pins moved on its own schedule.
 test(nr_in_plain_chain_statement_now_works, [condition(clang_available)]) :-
     run_sorted("{ c[$1]++ } END { for (k in c) print k; print NR }\n",
         ["3", "a", "b", "c"], 0),

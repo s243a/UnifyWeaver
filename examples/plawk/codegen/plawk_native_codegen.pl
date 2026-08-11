@@ -1898,20 +1898,30 @@ plawk_program_native_driver_ir(
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_record_descriptor(BeginClauses, FieldSeparator),
     plawk_assoc_record_program_ok(FieldSeparator, Rules, AllPrintFields),
+    % The retained-last-record capability for the whole chain: the source walks every
+    % item, so a field / NF plain statement anywhere in it retains, and a chain that
+    % reads no record stays pay-per-use free. A binfmt descriptor yields
+    % `no_end_record` automatically (integer FS required).
+    plawk_end_record_source(FieldSeparator, Items, EndRecord, RetainIR),
     plawk_end_chain_globals(Items, StringGlobalIR, AssocKeyGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, CacheEntries, EntrySetupIR),
     plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR,
         AssocChainIR),
     plawk_assoc_record_counter(Rules, AllPrintFields, AssocChainIR,
-        RecordLoopPhiIR, RecordIR),
+        RecordLoopPhiIR, RecordIR0),
+    % RetainIR first, as everywhere: copy the record before the chain can skip it.
+    plawk_join_nonempty_ir([RetainIR, RecordIR0], RecordIR),
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
     plawk_end_chain_ir(Items, AssocPlan, FieldSeparator, OutputSeparator,
-        EndPrintIR),
+        EndRecord, EndPrintIR),
     plawk_cache_commit_lines(CacheEntries, CommitIR),
-    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w~n~w',
+    format(atom(SurfaceGlobalIR0), '~w~n~w~n~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, AssocKeyGlobalIR, AssocRuleGlobalIR,
          CachePathGlobals]),
+    plawk_end_lastrec_globals_ir(EndRecord, LastRecGlobalIR),
+    plawk_append_surface_global_ir(SurfaceGlobalIR0, LastRecGlobalIR,
+        SurfaceGlobalIR),
     plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
     plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
@@ -6683,21 +6693,21 @@ plawk_end_chain_globals_([_Item | Rest], Index, StringParts, KeyParts) :-
 
 %% plawk_end_chain_ir(+Items, +AssocPlan, +Descriptor, +OutputSeparator, -IR)
 %  The whole END block: enter the first item, then every item's blocks in order.
-plawk_end_chain_ir(Items, AssocPlan, Descriptor, OutputSeparator, IR) :-
+plawk_end_chain_ir(Items, AssocPlan, Descriptor, OutputSeparator, EndRecord, IR) :-
     Items = [FirstItem | _],
     plawk_end_chain_entry_label(FirstItem, 0, FirstLabel),
     plawk_end_chain_blocks(Items, 0, end_print, AssocPlan, Descriptor,
-        OutputSeparator, BlockIRs),
+        OutputSeparator, EndRecord, BlockIRs),
     atomic_list_concat(BlockIRs, '\n\n', BlocksIR),
     format(atom(IR), '  br label %~w\n\n~w', [FirstLabel, BlocksIR]).
 
 plawk_end_chain_blocks([], _Index, _PrevLabel, _AssocPlan, _Descriptor,
-        _OutputSeparator, []).
+        _OutputSeparator, _EndRecord, []).
 % `exit [N]`: store the status, free the tables, return it. TRUNCATES -- the
 % recursion stops, so later statements are never emitted, matching awk and the
 % scalar chain's behaviour.
 plawk_end_chain_blocks([plain(exit(int(Code))) | _Rest], Index, _PrevLabel,
-        AssocPlan, _Descriptor, _OutputSeparator, [IR]) :-
+        AssocPlan, _Descriptor, _OutputSeparator, _EndRecord, [IR]) :-
     !,
     plawk_end_chain_entry_label(plain(exit(int(Code))), Index, Label),
     plawk_forin_end_tail_ir(free_ret_exit_code, AssocPlan, TailIR),
@@ -6707,15 +6717,15 @@ plawk_end_chain_blocks([plain(exit(int(Code))) | _Rest], Index, _PrevLabel,
 ~w',
         [Label, Code, TailIR]).
 plawk_end_chain_blocks([plain(print(Fields)) | Rest], Index, _PrevLabel, AssocPlan,
-        Descriptor, OutputSeparator, [IR | More]) :-
+        Descriptor, OutputSeparator, EndRecord, [IR | More]) :-
     !,
     plawk_end_chain_entry_label(plain(print(Fields)), Index, Label),
-    % `no_end_record`: the for-in CHAIN driver has not been threaded with the retain
-    % capability, so a field/NF statement in a chain declines rather than projecting
-    % from a store the driver never emitted. The loop-free LIST drivers carry the
-    % token; this boundary is the chain's own follow-on.
+    % EndRecord is the driver's token -- the retain capability, threaded here exactly
+    % as in the loop-free list dispatcher, which was this boundary's "own follow-on"
+    % in the previous comment at this site. A chain whose statements read no record
+    % still gets `no_end_record` from the source predicate and stays pay-per-use.
     plawk_assoc_end_print_body_ir(Fields, AssocPlan, Descriptor, OutputSeparator,
-        no_end_record, RawBody),
+        EndRecord, RawBody),
     % Uniquify this statement's names by index -- the same rename applied to its
     % globals, so body and globals agree.
     plawk_end_chain_stmt_rename(Index, RawBody, Body),
@@ -6724,9 +6734,9 @@ plawk_end_chain_blocks([plain(print(Fields)) | Rest], Index, _PrevLabel, AssocPl
     % (the tail is the branch to the next item, or free-and-return when last)
     format(atom(IR), '~w:\n~w\n~w', [Label, Body, TailIR]),
     plawk_end_chain_blocks(Rest, NextIndex, Label, AssocPlan, Descriptor,
-        OutputSeparator, More).
+        OutputSeparator, EndRecord, More).
 plawk_end_chain_blocks([loop(LoopVar, ArrayName, Fields) | Rest], Index, PrevLabel,
-        AssocPlan, Descriptor, OutputSeparator, [IR | More]) :-
+        AssocPlan, Descriptor, OutputSeparator, EndRecord, [IR | More]) :-
     plawk_forin_index_suffix(Index, Suffix),
     NextIndex is Index + 1,
     plawk_end_chain_loop_tail(Rest, NextIndex, Tail),
@@ -6734,7 +6744,7 @@ plawk_end_chain_blocks([loop(LoopVar, ArrayName, Fields) | Rest], Index, PrevLab
         Fields, AssocPlan, Descriptor, OutputSeparator, IR),
     plawk_end_chain_exit_label(loop(LoopVar, ArrayName, Fields), Index, ExitLabel),
     plawk_end_chain_blocks(Rest, NextIndex, ExitLabel, AssocPlan, Descriptor,
-        OutputSeparator, More).
+        OutputSeparator, EndRecord, More).
 
 % The tail an item hands to the next one: branch to its entry label, or -- when
 % nothing follows -- free the tables and return the exit status.
