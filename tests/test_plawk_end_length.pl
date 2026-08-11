@@ -180,43 +180,47 @@ test(nf_in_an_end_loop_body_unchanged, [condition(clang_available)]) :-
     run("{ n++ } END { while (n > 0) { print NF; n-- } }\n", "2\n2\n2\n"),
     !.
 
-% --- a KNOWN DEFECT this change does not fix, pinned so it is not lost ---
+% --- the known defect this suite pinned has now been FIXED ------------
 %
-% `length` as a COMPARISON operand is a different surface spelling with a different
-% producer, and it is WRONG rather than declining -- in rule bodies as much as in END:
+% These two were written to pin the CURRENT WRONG behaviour of `length` as a COMPARISON
+% operand -- deliberately red-in-waiting, so the follow-up would have to flip them
+% rather than quietly add to a green suite. It did, so they are rewritten to assert what
+% replaced them (never deleted, per the campaign's rule for a pin whose cause is gone).
 %
-%     { if (length > 3) print $1 }   prints nothing; gawk prints 3 records
-%     END { if (length == 6) … }     takes the else branch for a 6-byte last record
+% What was wrong: `{ if (length > 3) print $1 }` printed nothing where gawk prints three
+% records, and `END { if (length == 6) … }` took the else branch for a 6-byte last
+% record -- while the bare-pattern spelling `length > 3 { print $1 }` was correct all
+% along. The condition grammar captured bare `length` as an ordinary variable named
+% `length`, worth 0.
 %
-% Cause: the if/while condition grammar's special-operand list (match_special_name//1)
-% omits `length` while special_cmp_operand//1 -- used by BARE patterns, where
-% `length > 3 { print $1 }` works correctly -- includes it. So the condition grammar's
-% identifier fallback captures bare `length` as an ordinary variable named `length`,
-% which resolves to an unassigned slot worth 0. The same set of comparison specials
-% written down twice, and the fallback has no reserved-name guard to turn the
-% disagreement into a decline, so it became a silent capture.
+% The handoff worked as intended and is worth noting as a practice: a pin that states a
+% known defect AS the current behaviour, with its cause and its sizing in the comment,
+% costs one test and makes the follow-up impossible to forget. The alternative -- a note
+% in a doc -- does not fail when the code changes.
 %
-% Not fixed here because it is not an END gap: it is a parser capture affecting every
-% condition, it needs its own tests, and folding it in would hide it inside a change
-% about END printing. These assertions pin the CURRENT WRONG behaviour deliberately, so
-% the follow-up flips them rather than adding to a green suite -- and so nobody reads
-% this suite as evidence that `length` is finished.
-test(length_as_a_comparison_operand_is_still_wrong_a_known_defect,
+% tests/test_plawk_cond_specials.pl owns the row now (it turned out to be four lists of
+% one set, not two, and every special on the RIGHT of a condition was wrong the same
+% way, not just `length`).
+test(length_as_a_comparison_operand_now_agrees_with_the_bare_pattern,
         [condition(clang_available)]) :-
-    % the bare-pattern spelling is correct today
     run("length > 3 { print $1 }\n", "5\n5\n7\n"),
     !,
-    % ...and the condition spelling silently reads a phantom variable instead
-    run("{ if (length > 3) print $1 }\n", ""),
+    run("{ if (length > 3) print $1 }\n", "5\n5\n7\n"),
     !.
 
-test(the_condition_grammar_parses_bare_length_as_a_variable_a_known_defect) :-
+test(the_condition_grammar_now_parses_bare_length_as_the_special) :-
     plawk_parse_string("{ n++ } END { if (length == 6) print \"six\" }\n", Program),
     Program = program(_, _, [end([if(scalar_if(Cond), _, _)])]),
-    % This is the defect, stated at the level it happens: `var(length)`, not
-    % `special(length)`. When the parser is fixed this assertion fails and the
-    % expectation moves to special(length).
-    assertion(Cond == cmp(var(length), eq, int(6))),
+    % WAS cmp(var(length), eq, int(6)) -- the defect, stated at the level it happened.
+    assertion(Cond == cmp(special(length), eq, int(6))),
+    !.
+
+% ...and in END that special now DECLINES rather than measuring the EOF sentinel, which
+% is where `NF` already was. The END print of `length` (every test above) is unaffected:
+% it is the CONDITION that cannot reach the retained record, not the branch.
+test(length_in_an_end_condition_declines_like_nf) :-
+    build_status("{ n++ } END { if (length == 6) print \"six\"; else print \"no\" }\n", 3),
+    build_status("{ n++ } END { if (NF == 2) print \"two\"; else print \"no\" }\n", 3),
     !.
 
 % --- the in-loop form is untouched -------------------------------------

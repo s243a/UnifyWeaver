@@ -111,39 +111,73 @@ declined either way, exactly as `zz == 0` still does.
 
 ## Prioritised gaps (recommended order)
 
-0. **`length` as a COMPARISON operand is WRONG, not declining — OPEN, and the next
-   thing to fix.** In rule bodies as much as in END:
+0. **Numeric specials as condition operands — LANDED.** A row of silent wrong outputs,
+   none of which declined:
 
    ```
-   { if (length > 3) print $1 }     prints nothing;  gawk prints 3 records
-   END { if (length == 6) … }        takes the else branch for a 6-byte last record
-   length > 3 { print $1 }          correct today
+   { if (length > 3) print $1 }         printed nothing;  gawk prints 3 records
+   { n = 3; if (n < length) print $1 }  printed nothing;  gawk prints 3 records
+   { n = 1; if (n < NF) print $1 }      printed nothing;  gawk prints 3 records
+   { n = 1; if (n < NR) print $1 }      printed nothing;  gawk prints 2 records
+   { n = 0; if (n < ARGC) print $1 }    printed nothing;  gawk prints 3 records
+   END { if (length == 6) … }           took the else branch for a 6-byte record
    ```
 
-   The condition grammar's special-operand list (`match_special_name//1`, which has
-   NF/NR/FNR/RSTART/RLENGTH/ARGC) omits `length`, while the BARE-PATTERN list
-   (`special_cmp_operand//1`, which has NF/NR/FNR/length) includes it — the same set
-   of comparison specials written down twice. The condition grammar's identifier
-   fallback then captures bare `length` as an ordinary variable named `length`, which
-   resolves to an unassigned slot worth 0, so `length > 3` is `0 > 3`. And unlike its
-   sibling productions, that fallback carries **no `scalar_cmp_reserved_name/1`
-   guard**, which is what turns the disagreement into a silent capture instead of a
-   decline — defect variant 0b (a bare-identifier production shadowing a keyword one),
-   the parser-resident shape, second confirmed instance after the `TAG == 1` case.
+   while the BARE-PATTERN spelling of the same comparison was correct throughout
+   (`length > 3 { print $1 }`, `NF > 1 { print $1 }`).
 
-   Sizing: `plawk_while_cond_build/8` already has `special('NF')` rows on BOTH operand
-   sides, so a `length` row mirroring them makes `if (length > 3)` genuinely WORK
-   rather than merely decline, matching the bare-pattern form. In END it should
-   decline, exactly where `NF` already does. The reserved-name guard is the durable
-   half: it makes the next omission from either list a decline rather than a phantom
-   variable, and it also fixes `{ if (int > 2) … }`, which gawk rejects as a syntax
-   error and plawk silently accepts. Pinned AS the current wrong behaviour in
-   `tests/test_plawk_end_length.pl` so the fix flips those assertions.
+   **FOUR lists of one set**, and no two agreed: the parser's `match_special_name//1`
+   (NF/NR/FNR/RSTART/RLENGTH/ARGC — no `length`), the parser's `special_cmp_operand//1`
+   used by bare patterns (NF/NR/FNR/`length` — no RSTART/RLENGTH/ARGC), the emitter rows
+   in `plawk_while_cond_build/8` (NF only, both operand sides), and the loop-condition
+   validator `plawk_match_special/1` (everything but `length`). Which spelling of
+   `length > 3` worked depended on which grammar read it, and `if (n < length)` worked
+   while `while (n < length)` declined, because only the loop path consults the
+   validator.
 
-   Noticed alongside and unrelated: `END { if (NR == 3) print "x" }` fails with
-   **exit 4** (a clang failure — malformed IR), not a clean decline. An unclean
-   failure mode, worth its own look.
+   **The right-hand operand was a contract with only one side implemented, and that is
+   the sharpest form of this defect class yet.** The codegen was ready and waiting:
+   `plawk_while_cond_build/8` carries a `cmp(Lhs, Op, special('NF'))` row for the
+   reversed order, `plawk_while_cond_operand/8` resolves RSTART/RLENGTH/ARGC/NR on
+   *either* side (it takes a `Side` argument), and `plawk_while_cond_rhs_ok/1` already
+   deferred to the validator for a `special(_)`. The parser never produced a special on
+   the right at all. Nothing in the codegen looked wrong; nothing in the parser looked
+   incomplete, because a fallback covered the case. **Reading either file alone showed no
+   defect.**
 
+   What turned the disagreement into wrong output rather than a decline: the identifier
+   fallbacks carried **no `scalar_cmp_reserved_name/1` guard**, though every sibling
+   production in the bare-pattern grammar did. Any special the grammar had not been
+   taught was captured as a variable, resolved to an unassigned slot worth 0, and the
+   comparison went quietly false. The guard is the durable half of the fix — the next
+   omission from any of the four lists is now a decline — and it also makes
+   `{ if (int > 2) … }` a parse error, which is what gawk does with a builtin name.
+
+   Fix: one `while_cmp` clause for `length` reusing `special_cmp_operand//1`'s own two
+   spellings (bare and `length($0)`) rather than copying them; two `while_cmp_rhs`
+   clauses so a special on the right parses as one; the reserved-name guard on both
+   identifier fallbacks; one row in `plawk_match_special/1`; and `length` rows in the
+   cond builder mirroring NF's, factored with them into
+   `plawk_record_cond_lhs_build/11` + `_rhs_build/11` parameterised on the
+   `plawk_record_i64_read/5` entry and a name fragment — so the four clauses NF and
+   `length` would otherwise need are two.
+
+   In END these DECLINE, where `NF` already was: there is no current record, and no
+   condition emitter knows about the retained record (the END *print* path does;
+   conditions never go through `plawk_end_lastrec_rewrite/2`). `length` previously
+   compiled there and measured the 11-byte `end_of_file` sentinel.
+
+   **Note for the next sweep: this class is invisible to build status.** All four
+   affected corpus programs built *before and after* — only the IR and the output
+   changed. 37 pre-existing golden programs stayed byte-identical. A status-only check
+   could never have found it; only gawk output comparison did.
+
+   *Still a follow-on:* `length($N)` for N > 0 is a parse error as a comparison operand —
+   equally in a condition and in a bare pattern, so the two spellings refuse it
+   identically rather than one silently diverging. Admitting it means carrying a field
+   index on the special term. Also unrelated but noticed alongside:
+   `END { if (NR == 3) print "x" }` fails with **exit 4** (a clang failure) rather than
+   declining cleanly. Tests: `tests/test_plawk_cond_specials.pl`.
 
 1. **`while` / `do-while` loop runtime — LANDED (PR 2).** The loop iterates its
    mutable scalar state via **loop-header phis** (reusing `foreach_loop`'s head

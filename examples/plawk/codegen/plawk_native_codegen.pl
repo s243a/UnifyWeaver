@@ -6041,11 +6041,24 @@ plawk_while_cond_ok(cmp(special(Name), Op, Rhs)) :-
     plawk_icmp_pred(Op, _Pred),
     plawk_while_cond_rhs_ok(Rhs).
 
+% The numeric specials admitted as a LOOP condition operand, on either side
+% (plawk_while_cond_rhs_ok/1 defers here for the right-hand one).
+%
+% This is the FOURTH list of essentially one set, after the parser's
+% match_special_name//1 and special_cmp_operand//1 and the emitter rows in
+% plawk_while_cond_build/8 -- and, like two of the others, it was missing `length`. The
+% symptom was that `if (n < length)` worked while `while (n < length)` declined, because
+% only the loop path consults this validator (see plawk_scalar_rule_body_action/1). The
+% name is historical: it began as "specials set by match()" (RSTART/RLENGTH) and has
+% since accumulated the record specials, so it no longer describes what it holds --
+% which is the campaign's variant-0 shape (a name describing the implementation rather
+% than the property) sitting on top of the duplication.
 plawk_match_special('RSTART').
 plawk_match_special('RLENGTH').
 plawk_match_special('NR').
 plawk_match_special('ARGC').
 plawk_match_special('NF').
+plawk_match_special(length).
 
 plawk_while_cond_rhs_ok(int(N)) :- integer(N).
 plawk_while_cond_rhs_ok(var(_W)).
@@ -6109,26 +6122,71 @@ plawk_while_cond_build(or(A, B), Slots, CV, FS, Base, Path, CondVar, Lines) :-
 % either side; the RHS is an integer literal or a loop variable.
 plawk_while_cond_build(cmp(special('NF'), Op, Rhs), Slots, CondValues, FS, Base,
         Path, CondVar, Lines) :-
-    \+ sub_atom(Base, 0, _, _, plawk_endif),
-    !,
-    format(atom(NfBase), '~w_nf~w', [Base, Path]),
-    llvm_emit_atom_field_count('%line', FS, NfBase, CountLine),
-    plawk_while_cond_operand(Rhs, Slots, CondValues, Base, Path, r, ROperand, RLines),
-    plawk_icmp_pred(Op, Pred),
-    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
-    format(atom(Line), '  ~w = icmp ~w i64 %~w, ~w', [CondVar, Pred, NfBase, ROperand]),
-    append([[CountLine], RLines, [Line]], Lines).
+    plawk_record_cond_lhs_build(nf, nf, Op, Rhs, Slots, CondValues, FS, Base, Path,
+        CondVar, Lines).
 plawk_while_cond_build(cmp(Lhs, Op, special('NF')), Slots, CondValues, FS, Base,
+        Path, CondVar, Lines) :-
+    plawk_record_cond_rhs_build(nf, nf, Lhs, Op, Slots, CondValues, FS, Base, Path,
+        CondVar, Lines).
+% `length` / `length($0)` as a comparison operand, on either side. The SAME two shapes
+% NF has, differing only in which plawk_record_i64_read/5 entry they name and in the
+% name fragment their temporary uses -- so they are the same two clauses with two
+% parameters, not four clauses.
+%
+% This closes WRONG OUTPUT, and the parser half is the other piece: the condition
+% grammar captured bare `length` as a variable named `length`, worth 0, so
+% `{ if (length > 3) print $1 }` printed nothing where gawk prints three records, while
+% the bare-pattern spelling `length > 3 { print $1 }` was correct all along.
+plawk_while_cond_build(cmp(special(length), Op, Rhs), Slots, CondValues, FS, Base,
+        Path, CondVar, Lines) :-
+    plawk_record_cond_lhs_build(length(0), len, Op, Rhs, Slots, CondValues, FS, Base,
+        Path, CondVar, Lines).
+plawk_while_cond_build(cmp(Lhs, Op, special(length)), Slots, CondValues, FS, Base,
+        Path, CondVar, Lines) :-
+    plawk_record_cond_rhs_build(length(0), len, Lhs, Op, Slots, CondValues, FS, Base,
+        Path, CondVar, Lines).
+
+%% plawk_record_cond_lhs_build(+Kind, +NameFragment, +Op, +Rhs, …) is semidet.
+%% plawk_record_cond_rhs_build(+Kind, +NameFragment, +Lhs, +Op, …) is semidet.
+%
+%  A record-reading i64 leaf (plawk_record_i64_read/5) as the left or right operand of a
+%  condition comparison. Kind selects the leaf; NameFragment names its temporary, so NF
+%  keeps `_nf` and `length` gets `_len` and the IR of each stays readable and distinct.
+%
+%  `\+ sub_atom(Base, 0, _, _, plawk_endif)` is what keeps these out of an END
+%  condition: there is no current record there, `%line` holds the `end_of_file` sentinel,
+%  and no condition emitter knows about the RETAINED record (the END *print* path does,
+%  but conditions never go through plawk_end_lastrec_rewrite/2). So an END condition
+%  DECLINES. That is a Base-NAME test standing in for "am I in END", which is implicit
+%  coupling worth retiring in favour of an explicit gate at the driver -- recorded here
+%  rather than changed, because it is pre-existing, it is what NF already relies on, and
+%  a length row that did not mirror it would put `length` ahead of NF in a route where
+%  neither works.
+plawk_record_cond_lhs_build(Kind, NameFragment, Op, Rhs, Slots, CondValues, FS, Base,
         Path, CondVar, Lines) :-
     \+ sub_atom(Base, 0, _, _, plawk_endif),
     !,
-    format(atom(NfBase), '~w_nf~w', [Base, Path]),
-    llvm_emit_atom_field_count('%line', FS, NfBase, CountLine),
+    format(atom(ReadBase), '~w_~w~w', [Base, NameFragment, Path]),
+    plawk_record_i64_read(Kind, '%line', FS, ReadBase, ReadLine),
+    plawk_while_cond_operand(Rhs, Slots, CondValues, Base, Path, r, ROperand, RLines),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(Line), '  ~w = icmp ~w i64 %~w, ~w',
+        [CondVar, Pred, ReadBase, ROperand]),
+    append([[ReadLine], RLines, [Line]], Lines).
+
+plawk_record_cond_rhs_build(Kind, NameFragment, Lhs, Op, Slots, CondValues, FS, Base,
+        Path, CondVar, Lines) :-
+    \+ sub_atom(Base, 0, _, _, plawk_endif),
+    !,
+    format(atom(ReadBase), '~w_~w~w', [Base, NameFragment, Path]),
+    plawk_record_i64_read(Kind, '%line', FS, ReadBase, ReadLine),
     plawk_while_cond_operand(Lhs, Slots, CondValues, Base, Path, l, LOperand, LLines),
     plawk_icmp_pred(Op, Pred),
     format(atom(CondVar), '%~w_cond~w', [Base, Path]),
-    format(atom(Line), '  ~w = icmp ~w i64 ~w, %~w', [CondVar, Pred, LOperand, NfBase]),
-    append([[CountLine], LLines, [Line]], Lines).
+    format(atom(Line), '  ~w = icmp ~w i64 ~w, %~w',
+        [CondVar, Pred, LOperand, ReadBase]),
+    append([[ReadLine], LLines, [Line]], Lines).
 % strnum-vs-integer-literal comparison (step 3b): resolve the strnum id to text
 % and dispatch to @wam_strnum_cmp_int, which decides numeric (strnum looks
 % numeric) vs lexical (against the integer formatted as a decimal string) by the
