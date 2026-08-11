@@ -491,6 +491,19 @@ def _vary(row: pc.Node, variant: int, protect=None,
     extensions. The parent's resolved kwarg pattern is untouched — changing
     it would change the component, and therefore the pair."""
     sig = pc.REGISTRY[row.name]
+    # MIXED-RADIX variation. Indexing every axis with the same `variant`
+    # couples them: `walk` and `weight` both have two values, so they rotate
+    # in lockstep and the combination that breaks the per-node kwarg cap is
+    # always paired with the same walk -- leaving 4 distinct rows where the
+    # grammar admits dozens. Each axis gets its own stride, so the variant
+    # counts through the product of the axes instead of their diagonal.
+    stride = [1]
+
+    def _pick(values):
+        index = (variant // stride[0]) % len(values)
+        stride[0] *= len(values)
+        return values[index]
+
     args = []
     for index, child in enumerate(row.args):
         if isinstance(child, pc.Node):
@@ -512,7 +525,7 @@ def _vary(row: pc.Node, variant: int, protect=None,
                 continue
             alternatives = _sibling_alternatives(pc.REGISTRY[child.name].output)
             if alternatives and en._is_leaf(child):
-                args.append(alternatives[(variant + index) % len(alternatives)])
+                args.append(_pick(alternatives))
             else:
                 args.append(_vary(child, variant + index + 1,
                                   hold_values=hold_values))
@@ -521,7 +534,7 @@ def _vary(row: pc.Node, variant: int, protect=None,
                     else sig.variadic_arg_type)
         kinds = [alt for alt in declared.split("|") if alt in pc.VALUE_KINDS]
         values = _literal_values(kinds[0]) if kinds else []
-        args.append(values[variant % len(values)] if values else child)
+        args.append(_pick(values) if values else child)
     kwargs = []
     for key, value in row.kwargs:
         if isinstance(value, pc.Node):
@@ -532,7 +545,7 @@ def _vary(row: pc.Node, variant: int, protect=None,
                 continue
             alternatives = _sibling_alternatives(pc.REGISTRY[value.name].output)
             if alternatives and en._is_leaf(value):
-                kwargs.append((key, alternatives[variant % len(alternatives)]))
+                kwargs.append((key, _pick(alternatives)))
             else:
                 kwargs.append((key, _vary(value, variant + 1,
                                           hold_values=hold_values)))
@@ -555,7 +568,38 @@ def _vary(row: pc.Node, variant: int, protect=None,
             kwargs.append((key, value))
             continue
         values = _literal_values(sig.kwargs[key].kind)
-        kwargs.append((key, values[variant % len(values)] if values else value))
+        kwargs.append((key, _pick(values) if values else value))
+    # A defaulted kwarg that is ABSENT can be supplied at a NON-default
+    # value without changing the component: `_resolved_pattern` counts every
+    # defaulted key as present either way, so the pair is untouched while the
+    # row is distinct. Without this axis `cowalk/1{impl,walk,weight}` had only
+    # impl x walk to vary and could not reach k -- under-exploration that
+    # reads exactly like a cap making the composition unreachable.
+    if not freeze and variant:
+        present = {key for key, _ in kwargs}
+        for key in sorted(sig.kwargs):
+            spec = sig.kwargs[key]
+            if key in present or spec.default is None:
+                continue
+            if spec.kind == "string":
+                continue
+            if spec.kind in pc.OUTPUT_TYPES:
+                # A defaulted NODE-valued kwarg (`mu=`) is the same axis: the
+                # resolved pattern carries it either way, so supplying a judge
+                # leaves the component -- and the pair -- untouched. Skipping
+                # it left `cowalk` with only impl x walk and short of k.
+                options = [leaf for leaf in _sibling_alternatives(spec.kind)
+                           if leaf.name != spec.default]
+            else:
+                options = [v for v in _literal_values(spec.kind)
+                           if v != spec.default]
+            if not options:
+                continue
+            if _pick((False, True)) is False:
+                continue
+            kwargs.append((key, _pick(options)))
+        kwargs.sort(key=lambda item: item[0])
+
     # A witness row opened for `synthetic:pin@X` already CARRIES the pin
     # that made it the witness; regenerating pins by variant would drop it
     # on six variants out of seven and starve that host.
