@@ -118,10 +118,27 @@
 % registry declares each walk's shape (v0.5: sibling and cousin are
 % both "palindromic"; WALK_SHAPES also admits "non_palindromic").
 % READ THE DECLARED SHAPE from the registry — never infer it from the
-% walk's name.  This lane does not consume the classification today,
-% and the mirror consequently does not carry it; a consumer that needs
-% it should extend gen_registry_mirror.py to emit the declared shape
-% rather than deriving one here.
+% walk's name.  The generated mirror now carries the declarations
+% (pe_walk_shape/2, pe_walk_shape_kind/1, pe_weight_value/1), so a
+% consumer reads them rather than extending the generator first.
+%
+% RULED — walk and weight are SEMANTIC fields, not representation
+% constraints.  The test is §7.2's own candidate criterion: two
+% representations may share a candidate set only if they prove
+% identical *observable behaviour under the declared domain*.
+% Changing walk=sibling to cousin changes which targets are in the
+% set; changing weight=uniform to idf_node_size changes the scores.
+% Both change the estimand's VALUE — unlike `impl`, which changes only
+% the route to the same value.  The sealed v0.5 surface already agrees:
+% walk and weight live in the canonical semantic bytes.
+%
+% So when a cowalk coarse family is eventually written, it maps
+% walk/weight into the SEMANTIC request and transfers only `impl` to
+% the representation options — the same partition lineage_op uses
+% (pe_interpret.pl).  The coarse family is NOT built yet: its own
+% registration questions (what §7.2's equivalence criteria contain for
+% cowalk) remain open.  This note exists so that work starts from the
+% ruling instead of rediscovering it.
 
 %% ============================================
 %% TEMPLATE LOADING (once, cached)

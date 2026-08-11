@@ -96,6 +96,41 @@ test(family_spec_digest_is_stable) :-
     family_spec_digest(_, D2),
     D1 == D2.
 
+%% ---- the ruled meaning of "fully defaulted" ----
+%
+% RULED: "fully defaulted" means fully grounded by the spec's own
+% content, not by registry defaults alone — a family-spec entry must
+% expand to a COMPLETE explicit request.  That is a well-formedness
+% property of the RULESET, and this is where it is enforced: every
+% entry of every spec must expand to a request that actually
+% interprets.  An entry naming an estimand with required fields but
+% omitting their values fails here rather than producing a quietly
+% empty candidate set downstream.
+test(every_family_spec_entry_expands_to_a_complete_request) :-
+    subject(S),
+    forall(known_family_spec(SpecId),
+           ( dispatch(lineage_op(S, [family_spec(SpecId)]),
+                      family(SpecId, _, Requests)),
+             Requests \== [],
+             forall(member(Req, Requests),
+                    interpretation(Req, _, _))
+           )).
+
+% ...and the ruled consequence for v1 specifically: exactly the bare
+% hop_decay entry.  structural_score enters only via a future spec
+% VERSION carrying all nine required values (a new content digest).
+test(v1_contains_exactly_the_bare_hop_decay_entry) :-
+    subject(S),
+    dispatch(lineage_op(S, [family_spec(lineage_interpretations_v1)]),
+             family(_, _, Requests)),
+    Requests = [lineage_op(_, Opts)],
+    Opts == [estimand(hop_decay)].
+
+% The specs this suite knows about.  A spec added to the ruleset
+% without being named here is not exercised by the completeness
+% property above, so keep this list in step with the ruleset.
+known_family_spec(lineage_interpretations_v1).
+
 :- end_tests(dispatch_prepass).
 
 %% ============================================

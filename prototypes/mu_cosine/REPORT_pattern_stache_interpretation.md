@@ -63,11 +63,11 @@ many (`no_candidates` vs `not_unique(N)`) rather than both being bare failure.
 
 ## Test counts and refusal coverage
 
-`test_pe_interpret.pl`: **49 tests** in seven units.
+`test_pe_interpret.pl`: **51 tests** in seven units.
 
 | unit | tests | of which refusals |
 |---|---:|---:|
-| `dispatch_prepass` | 8 | 4 |
+| `dispatch_prepass` | 10 | 4 |
 | `interpretation_rules` | 6 | 1 |
 | `option_consumption_refusals` | 7 | **7** |
 | `option_helpers` | 6 | 4 (embedded negative cases) |
@@ -80,11 +80,13 @@ many (`no_candidates` vs `not_unique(N)`) rather than both being bare failure.
 entirely about what must be rejected, so a suite weighted toward acceptance would have been
 testing the easy half.
 
-Full regression: **545 tests across thirteen suites**, 21/21 tutorial blocks, mirror hash green.
+Full regression: **547 tests across thirteen suites**, 21/21 tutorial blocks, mirror hash green.
 
 ## Underdetermination (stop-clause: recorded, not ruled)
 
-Five places where §7 does not determine behaviour. Each is named in the module and left open.
+*Five places where §7 did not determine behaviour. **Two have since been ruled** (items 2–3
+below, marked RULED and encoded); three remain parked with their fail-closed handling
+endorsed.*
 
 1. **No registry backs the §7.2 equivalence check.** §7.2 says the three precise forms "enter
    one candidate set only if the registry proves identical" on seven listed properties — but
@@ -92,14 +94,18 @@ Five places where §7 does not determine behaviour. Each is named in the module 
    all**; they are the patterns doc's own illustrative names. There is nothing to consult. The
    module admits all three into one set on the spec's say-so and marks that as a stand-in. **A
    registration question for the coordinator**, and the largest gap here.
-2. **`lineage_interpretations_v1`'s contents are never listed.** The spec names the family spec
-   but not what it expands to, so the prototype's is a construction.
-3. **"Fully defaulted" and `required_options` pull against each other.** A family spec cannot
-   fully-default an interpretation whose fields are *required*, as `structural_score`'s nine
-   are. Two readings are available — (a) a spec lists only fully-defaultable interpretations, or
-   (b) a spec may carry explicit values for required fields — and §7.1 chooses neither. The
-   ruleset file exercises **both**, so whichever the owner rules, the tests pinning the other
-   will say so rather than the choice being made by accident.
+2. **`lineage_interpretations_v1`'s contents are never listed.** — **RULED**: v1 contains
+   exactly the bare `hop_decay` entry. The ruleset is collapsed to that; `structural_score`
+   enters only via a future spec *version* grounding all nine fields, which is a new content
+   digest. (The *entry* remains a prototype construction; what is no longer open is the rule it
+   must satisfy.)
+3. **"Fully defaulted" vs `required_options`.** — **RULED**: "fully defaulted" means fully
+   grounded by the spec's own content, not by registry defaults alone; a spec entry must expand
+   to a complete explicit request. Encoded as a ruleset **well-formedness property** rather than
+   only prose: every entry of every spec must expand to a request that actually interprets, so
+   an entry naming a required-field estimand without its values fails a test instead of
+   producing a quietly empty candidate set. Verified non-vacuous — a deliberately violating
+   entry fails it.
 4. **No canonical encoding exists for semantic-request ASTs.** §8.1 step 7 sorts groups "by
    canonical typed-AST bytes" and step 8 hashes that; §9's receipt wants four typed-AST digests.
    Neither is computable: `pe-typed-ast-v1` has not frozen an encoding for these terms. The
@@ -130,8 +136,16 @@ it**. What one would need, as a registration question:
 | the declared shape | `WALKS` declares each walk's shape (`sibling`/`cousin` → `palindromic`; `WALK_SHAPES` also admits `non_palindromic`). If a coarse family dispatches on the *family* rather than the walk, it must **read** the declared shape — never infer it from the name |
 | precise forms | no representation candidates exist for a cowalk semantic; the §7.2 equivalence list would need cowalk-specific criteria (the seven properties mention direction and hop convention, which a palindromic walk may satisfy differently) |
 
-The cheapest first question for the coordinator is the third row: **are `walk`/`weight`
-semantic or representational?** It decides the shape of everything above it.
+The cheapest first question for the coordinator was the third row — and it has been **RULED:
+`walk` and `weight` are SEMANTIC fields; only `impl` is a representation constraint.** The
+criterion is §7.2's own: representations may share a candidate set only if they prove identical
+observable behaviour, and changing the walk changes which targets are in the set while changing
+the weight changes the scores — both change the estimand's value, unlike `impl`, which changes
+only the route to the same value. So a future cowalk coarse family maps `walk`/`weight` into the
+semantic request and transfers only `impl`, the same partition `lineage_op` uses. Recorded in
+`pe_emit.pl`'s header beside the walk-shape rule so that work starts from the ruling. The
+remaining rows stay open: **the coarse family is not built**, and what §7.2's equivalence
+criteria contain for cowalk is still a registration question.
 
 ## Rider: declared walk shapes reach the mirror
 

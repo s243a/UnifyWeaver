@@ -188,6 +188,27 @@ Case bodies include the literal text between markers, newlines included. The eng
 trim; the caller owns whitespace policy (both witnessed consumers trimmed per-rendering with
 `normalize_space/2`). Mustache "standalone line" semantics are an exclusion, below.
 
+One byte is deleted rather than rendered, and this document was silent on it: text between
+`{{match key}}` and the **first** `{{case ...}}` is **discarded** — not rendered, not an error. It
+is the only place the engine drops text it was handed, and it is what lets the `{{match}}` tag sit
+on its own line without emitting that newline.
+
+**Marker-adjacent whitespace is fully controllable, at one cost in layout.** Every newline
+adjacent to a marker is decided by the template author, so any target text is reachable exactly —
+but only the `{{match}}` tag gets a free line. The other three markers are literal boundaries:
+
+| to emit | the tag must | otherwise |
+|---|---|---|
+| a body starting at its first character | `{{case P}}` shares a line with that character | a leading `\n` enters the body |
+| a body ending at its last character | `{{/match}}` follows that character directly | a trailing `\n` enters the body |
+| a default body likewise | `{{default}}` shares a line with its first character | a leading `\n` enters the body |
+
+Consecutive cases compose without extra cost: the newline before the next `{{case}}` is the
+previous body's own line terminator, which is what line-oriented emission wants. Mustache
+"standalone line" semantics — which would remove the shared-line requirement — are an exclusion,
+below. All of this is pinned by
+[`tests/core/test_pattern_stache_whitespace.pl`](../../tests/core/test_pattern_stache_whitespace.pl).
+
 ## Deliberate exclusions
 
 Each exclusion records a **revisit condition** (PROJECT_PHILOSOPHY §3: a condition to check, not
@@ -201,12 +222,34 @@ extending the grammar in place.
 | **guards** (conditions on a case beyond its shape) | not expressible; the one guard-shaped question — groundness — is owned by the caller's discharge ordering | a consumer's dispatch decision provably cannot be expressed as a term shape plus caller-side routing |
 | **nested `{{match}}` blocks** | outside the v1 contract; the implementation's scanner is depth-aware and current behaviour is characterized by tests, but v1 does not promise nesting semantics | a witnessed consumer template needs a second dispatch key |
 | **missing-key / unbound-placeholder changes** | left verbatim, matching `template_system.pl` | a consumer needs fail-on-unbound rendering; would then be a new dialect version, since it changes output |
+| **mustache "standalone line" semantics** | absent: a marker never swallows its own line, except the free `{{match}}` preamble (see Whitespace) | a consumer's target text cannot be reached, or the shared-line layout it forces measurably harms template legibility at scale |
 | **pattern arithmetic** | not expressible | never expected: numeric constraints are property-test obligations by design, not matcher work |
 | **list patterns / store iteration** | the caller iterates; the template dispatches one term | a consumer that cannot iterate outside the template |
 | **regex / glob cases** | absent | orthogonal to structure; would be its own extension per `template_system.pl`'s notes |
 | **multi-key dispatch** | absent | a consumer that cannot state the second key in the case body (both witnessed consumers could) |
 | **partials / delegation** (`{{> name}}`) | absent | the two-live-files divergence hazard in the philosophy doc materializes |
 | **`.mustache` → `.stache` converter** | not built | per [`docs/TODO_STACHE_CONVERTER.md`](../TODO_STACHE_CONVERTER.md): a match-using library grows to the low tens of cases |
+
+### Prospective-consumer constraints on record
+
+One exclusion row above has a **named prospective consumer**, recorded so that whoever next opens
+this table starts from the record rather than rediscovering it. No row is reopened here and no
+dialect change has been requested; see
+[`RECORD_prospective_consumer_plawk.md`](../../prototypes/mu_cosine/RECORD_prospective_consumer_plawk.md)
+for the measurements and for what that consumer explicitly asked *not* be built.
+
+- **standalone line semantics.** plawk (prospective) needs marker-adjacent whitespace to be
+  *controllable*, which it is; the residue is the shared-line layout the Whitespace table
+  describes. That is a legibility cost, not a capability limit, and it is this row's revisit
+  condition — not a reason to act now.
+- **list patterns / store iteration** — *not* this consumer's row, recorded to prevent a
+  misreading. A conditional list of lines whose *membership* depends on a resolved kind is
+  expressible today; only a list whose *length* is decided inside the template would be this row,
+  and its revisit condition ("a consumer that cannot iterate outside the template") is unchanged.
+- **missing-key / unbound-placeholder** — deliberately *not* claimed here. An earlier version of
+  this section named this row on plawk's account, reasoning from a golden-byte oracle. That
+  oracle belongs to their regression tool, not to this dialect; the row keeps its original,
+  unclaimed revisit condition.
 
 ### Why non-linearity is refused while nesting is tolerated
 
