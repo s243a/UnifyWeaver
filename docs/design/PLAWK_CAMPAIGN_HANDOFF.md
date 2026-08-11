@@ -410,15 +410,26 @@ on top.
 
 ## Baseline
 
-**All 193 plawk suites sweep clean: 2644 tests passed, 0 failed** (185 report the
-`All N tests passed` form; 8 use the single-test form). All five LMDB suites now RUN
-— `liblmdb-dev` is installed in the container, so the durable-store paths are
-genuinely exercised rather than skipped; a gated suite reporting zero tests was
-always evidence about the machine, never about the code.
+**On the merged feature line (`d6cf0c9f1`, #4162) plus the literal-builtin fold: all
+192 suites sweep clean, 2622 tests passed, 0 failed** (184 report the `All N tests
+passed` form; 8 use the single-test form).
+
+**Say which tree a baseline describes.** A sweep of 193 suites / 2644 tests was also
+recorded, and it is *not* the feature line — it was measured on #4164's stacked tip,
+which carries two suites the merged line does not (`end_length` 32 tests from #4163,
+`cond_specials` 26 from #4164, both unmerged at the time of writing). The two numbers
+reconcile exactly: 2644 − 32 − 26 + 36 (the new suite) = 2622, and 193 − 2 + 1 = 192.
+A total that is *lower* than the recorded baseline is not automatically a regression —
+check what the baseline was measured on first, because with stacked branches the
+answer is often that it was a different tree.
+
+All five LMDB suites RUN — `liblmdb-dev` is installed in the container, so the
+durable-store paths are genuinely exercised rather than skipped; a gated suite
+reporting zero tests was always evidence about the machine, never about the code.
 
 *(Earlier in the campaign this read "180 suites, 2323 tests" and went stale for
-several PRs. If the number below does not match your sweep, re-derive it rather than
-trusting it — and update it here.)*
+several PRs. Re-derive it rather than trusting it — and record the commit you
+measured, which is what made the discrepancy above diagnosable in one step.)*
 
 This was the first fully green plawk base in the
 campaign — worth keeping that way, because twice a change landed on top of a red
