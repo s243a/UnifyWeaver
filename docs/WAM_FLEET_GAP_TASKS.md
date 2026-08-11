@@ -45,6 +45,8 @@ self-contained so a single coding agent can pick it up in isolation.
 | CONF-FIX-ELIXIR-BUILDNEST ✅ | Conformance gap fix | Elixir | M | done — get-family write mode reserves its argument cells; `{:write_ctx, dest, n}` |
 | CONF-FIX-R-BUILDNEST ✅ | Conformance gap fix | R | S (was M) | done — it was the binding half, not the nesting half; `bind_through` on the build frame |
 | CONF-FIX-C-KERNEL-SYMBOLS ✅ | Test fix | C | S | done — two kernel-generation tests asserted symbol names that never existed |
+| R-NEG-BACKTRACK ✅ | Correctness | R (shared compiler) | M | done — `\+`'s hard-cut rewrite needs an env frame; the allocate test never saw it |
+| CONF-ADD-NEGATION | Conformance coverage | test | M | — the shared spec has no `\+`/`once`/`forall`/`catch` coverage at all |
 | CONF-LLVM | Conformance adapter | LLVM | L | — |
 | CONF-R ✅ | Conformance adapter | R | M | done — opt-in; all classic programs green (R-SWITCH-INDEX-CONFORMANCE) |
 | R-SWITCH-INDEX-CONFORMANCE ✅ | Conformance gap fix | R | S | done — fallthrough/A2 reuse existing SwitchOnTerm no-op |
@@ -585,72 +587,106 @@ external toolchain.
 - Assertions corrected and the stream-binding entry point pinned as
   well. `tests/test_wam_c_target.pl` is now fully green (119 passes).
 
-### R-NEG-BACKTRACK: `\\+/1` gives wrong answers on some succeeding goals (open)
-- **Lever:** Correctness  **Target:** R  **Size:** M  **Depends on:** —
-- **Found:** 2026-08-10, while triaging the pre-existing failures in
-  `tests/test_wam_r_generator.pl`. Four of its e2e tests fail on an
-  unmodified tree; this is the root cause of at least
-  `negation_meta_call_e2e_rscript`.
-- **Symptom:** `\+ G` returns **true** for some goals G that succeed.
-  Minimal reproducer — `f/1` with three facts `a`, `b`, `c`:
+### R-NEG-BACKTRACK: `\\+/1` gave wrong answers on some succeeding goals ✅
+- **Lever:** Correctness  **Target:** R (fix is in the shared compiler)  **Size:** M
+- **Symptom:** `\+ G` returned **true** for some goals G that succeed.
+  Truth table before the fix, with `f/1` = `f(a). f(b). f(c).`:
 
-  | query | expected | R gives |
-  |---|---|---|
-  | `\+ f(a)` | false | **true** ✗ |
-  | `\+ f(b)` | false | false ✓ |
-  | `\+ f(c)` | false | false ✓ |
-  | `\+ f(z)` | true | true ✓ |
-  | `call(f(b))` | true | true ✓ |
-  | `\+ member(b, [a,b,c])` | false | **true** ✗ |
-  | `\+ member(c, [a,b,c])` | false | false ✓ |
+  | query | expected | before | after |
+  |---|---|---|---|
+  | `\+ f(a)` | false | **true** ✗ | false ✓ |
+  | `\+ f(b)` | false | false | false ✓ |
+  | `\+ f(c)` | false | false | false ✓ |
+  | `\+ f(z)` | true | true | true ✓ |
+  | `\+ member(b, [a,b,c])` | false | **true** ✗ | false ✓ |
+  | `\+ member(c, [a,b,c])` | false | false | false ✓ |
 
-- **Not yet root-caused, and the obvious hypothesis is wrong.** "Only
-  the first solution is tried" does not fit: `\+ f(a)` is wrong while
-  `\+ f(b)` and `\+ f(c)` are right on the *same* three-clause
-  predicate, and `\+ member(b, ...)` is wrong while
-  `\+ member(c, ...)` is right on the same list. Whatever it is,
-  it depends on *which* alternative succeeds, not merely on whether one
-  does.
-- **Also note:** a two-clause predicate behaves differently from a
-  three-clause one in the same position — `\+ f(a)` was CORRECT when
-  `f/1` had only the facts `a` and `b`. First-argument indexing
-  (`switch_on_constant` vs the try/retry/trust chain) is the obvious
-  thing to look at, since clause count changes which dispatch shape the
-  compiler emits.
-- **Where to look:** the `\+/1` / `not/1` arm of the builtin dispatcher
-  in `templates/targets/r_wam/runtime.R.mustache` (search
-  `negation as failure`). It snapshots the trail, build stack and
-  choice-point depth, calls `WamRuntime$call_goal`, then truncates
-  `state$cps` back to `cps0` and inverts. Suspect the interaction
-  between that truncation and a `call_goal` that returns while
-  alternatives are still live.
-- **Acceptance:** the truth table above matches standard Prolog, and
-  `negation_meta_call_e2e_rscript` in `tests/test_wam_r_generator.pl`
-  passes. Check the other three failing e2e tests in that file at the
-  same time — `bagof_setof_once_forall_e2e_rscript`,
-  `enumerable_builtins_e2e_rscript` and
-  `catch_throw_dyn_aggregator_e2e_rscript` all fail the same way (a
-  negative case returning true) and may share this cause.
+- **Why the earlier hypothesis was wrong.** The card originally noted
+  that "only the first solution is tried" does not fit, since `\+ f(a)`
+  was wrong while `\+ f(b)` and `\+ f(c)` were right. The real
+  discriminator is **whether the negated goal leaves a choicepoint**.
+  First-argument indexing sends the FIRST key to `default` — falling
+  through to the `try_me_else` chain, which pushes a CP — and later keys
+  to a direct clause-body label, which pushes none. Same for
+  `member`: `b` leaves list still to scan, `c` does not.
+- **Root cause (shared compiler, not the R runtime).** `\+ G` lowers on
+  legacy targets to `((G, !, fail) ; true)`. That rewrite's own comment
+  states the contract: the `builtin_call !/0` "cuts to the env frame's
+  cut_barrier (set by allocate to the cpn at clause entry)". **Nothing
+  ensured the clause had an env frame.** A body of just `\+ G` is one
+  goal; `\+` is in `is_builtin_goal/1` so
+  `goals_contain_call_or_aggregate/1` skips it; and the `!` does not
+  exist yet when the allocate test runs — so all three arms of the test
+  missed, and the clause was emitted frameless. WAM-R keeps the cut
+  barrier only on the frame, so its `!/0` fell back to "drop the topmost
+  choice point" — which is the wrong one exactly when G left a CP.
+- **Proof it was the frame, not the runtime:** the identical negation
+  compiled correctly once the clause was given a permanent variable.
+  `n_bare :- \+ g3(a).` returned true (wrong); `n_env :- Y = 1, \+
+  g3(a), Y == 1.` returned false (right), because the latter emits
+  `allocate`.
+- **Fix:** `goals_contain_hard_cut_negation/1` in `wam_target.pl`, added
+  to the allocate test on both the single-clause and multi-clause paths.
+  Gated on the hard-cut path actually being taken — no effect under
+  `inline_not_as_failure(false)`, and none on M17 targets
+  (`ite_use_y_level`, currently LLVM), whose soft-cut `(G -> fail ;
+  true)` form carries its own barrier in `cut Yn` and needs no frame.
+- **Why fix the compiler rather than the R runtime:** the rewrite
+  depends on a frame by its own documented contract; emitting one makes
+  the code satisfy its own precondition. It also repairs any other
+  legacy target that keeps the barrier on the frame, rather than
+  patching one runtime. C was already correct here because it keeps a
+  separate `call_bases` stack, so it simply gains a harmless frame.
+- **Regression tests:** `test_wam_bare_negation_emits_allocate` and
+  `test_wam_nested_negation_emits_allocate` in `tests/test_wam_target.pl`
+  — both fail on the unfixed compiler.
+- **Acceptance:** truth table matches standard Prolog ✅;
+  `negation_meta_call_e2e_rscript` passes ✅; all 15 conformance arms
+  green ✅.
 
 ### R-GENERATOR-E2E-BACKLOG: remaining red tests in test_wam_r_generator.pl (open)
-- **Lever:** Correctness  **Target:** R  **Size:** L  **Depends on:** R-NEG-BACKTRACK
-- Red on an unmodified tree (verified against a stashed baseline), so
-  these predate the 2026-08-09/10 conformance work:
+- **Lever:** Correctness  **Target:** R  **Size:** L
+- Red on an unmodified tree, so these predate the 2026-08-09/10 work.
+  ~~`negation_meta_call_e2e_rscript`~~ is now fixed (R-NEG-BACKTRACK);
+  the remaining ten are:
   `r_interpreter_uses_items_ir_policy`,
   `mode_analysis_phase4_multiclause_n_e2e_rscript`,
-  `negation_meta_call_e2e_rscript`,
   `bagof_setof_once_forall_e2e_rscript`,
   `enumerable_builtins_e2e_rscript`,
   `catch_throw_dyn_aggregator_e2e_rscript`,
-  `operator_parser_e2e_rscript`.
-- Four of them fail with a negative case returning `true`; start with
-  R-NEG-BACKTRACK and re-measure before treating the rest as separate.
-  `operator_parser_e2e_rscript` is the odd one out — it fails the other
-  direction (a positive case returning `false`).
-- **Note:** none of this is caught by the cross-target conformance
-  harness, which is green on both R arms. The conformance spec has no
-  negation, `once/1`, `forall/2` or operator-parsing coverage — a real
-  gap in the shared spec, not just in R.
+  `operator_parser_e2e_rscript`,
+  `fact_in_range_e2e_rscript`,
+  `fact_table_e2e_rscript`,
+  `fact_table_multi_arg_index_e2e_rscript`,
+  `findall_template_in_struct_arg_e2e_rscript`,
+  `kernel_astar4_e2e_rscript`.
+- Fixing R-NEG-BACKTRACK did **not** clear the other three that fail the
+  same way (a negative case returning `true`), so they are separate
+  causes rather than one shared defect. Re-triage each with its own
+  minimal reproducer; the three-way probe pattern used for
+  R-NEG-BACKTRACK works well.
+- **Coverage note:** none of this is caught by the cross-target
+  conformance harness, which is green on both R arms. The shared spec
+  has no negation, `once/1`, `forall/2`, `catch/3` or operator-parsing
+  coverage. Adding a `negation` program would have caught
+  R-NEG-BACKTRACK on every arm at once — see CONF-ADD-NEGATION.
+
+### CONF-ADD-NEGATION: the shared spec has no negation coverage (open)
+- **Lever:** Conformance coverage  **Target:** test  **Size:** M
+- R-NEG-BACKTRACK was a **wrong answer**, not a crash: `\+ G` returned
+  true for a goal that succeeds. The conformance harness was green on
+  both R arms throughout, because the shared spec contains no `\+`,
+  `not/1`, `once/1`, `forall/2` or `catch/3` at all.
+- The bug lived in the **shared compiler**, so every legacy target whose
+  cut barrier lives on the environment frame was exposed. A single
+  `negation` program would have caught it fleet-wide.
+- Suggested shape, following `repeatvar`'s lesson that the check must be
+  able to fail: include a negated goal that succeeds via a clause
+  reached through the **try/retry chain** (first-argument-indexed first
+  key) as well as one reached by direct dispatch — those are the two
+  cases that differ, and only the former was broken.
+- Expect it to red some arms on first run; that is the point. Budget for
+  triage the way the `nested` / `repeatvar` / `buildnest` rounds did.
 
 ### CONF-LLVM: Register LLVM in the cross-target conformance harness
 - **Lever:** Conformance adapters  **Target:** LLVM  **Size:** L  **Depends on:** —

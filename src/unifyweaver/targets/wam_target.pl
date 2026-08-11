@@ -1275,6 +1275,7 @@ compile_single_clause_wam(Head-Body, Options, Code) :-
     expand_aggregate_goals_for_perm_vars(Goals, ExpandedGoals),
     (   ( length(ExpandedGoals, N), N > 1
         ; goals_contain_call_or_aggregate(Goals)
+        ; goals_contain_hard_cut_negation(Goals)
         )
     ->  % Pre-assign Yi registers, emit allocate before head so Yi
         % registers can be stored in the environment frame immediately.
@@ -1303,6 +1304,49 @@ goals_contain_call_or_aggregate(Goals) :-
     ; wam_inline_bagof_setof_enabled, G = bagof(_, _, _)
     ; wam_inline_bagof_setof_enabled, G = setof(_, _, _)
     ; callable(G), functor(G, F, _), \+ is_builtin_goal(F)
+    ),
+    !.
+
+%% goals_contain_hard_cut_negation(+Goals)
+%  True when some goal is, or contains, a `\+` that will be lowered
+%  through the ((G, !, fail) ; true) rewrite below.
+%
+%  That rewrite emits a CLAUSE-SCOPE `builtin_call !/0`, whose runtime
+%  contract is "cut back to the environment frame''s barrier, captured
+%  by allocate at clause entry". So the clause MUST have an environment
+%  frame — but nothing was ensuring one. `p :- \+ q(a).` has a single
+%  goal, no visible call (`\+` is in is_builtin_goal/1) and no visible
+%  `!` (the cut does not exist until the rewrite runs), so every arm of
+%  the allocate test missed it and the clause came out frameless.
+%
+%  A runtime that keeps the barrier only on the frame then has nothing
+%  to cut back to. WAM-R fell back to "drop the topmost choice point",
+%  which is the WRONG one whenever the negated goal left a choice point
+%  of its own: `\+ g(a)` returned true where g/1 is `g(a). g(b). g(c).`,
+%  because first-argument indexing sends the first key through the
+%  try/retry chain (pushing a CP) while later keys jump straight to a
+%  clause body (pushing none). Hence the tell-tale shape where
+%  `\+ g(a)` was wrong and `\+ g(b)` / `\+ g(c)` were right.
+%
+%  Gated on the hard-cut path actually being taken: with
+%  inline_not_as_failure(false) there is no rewrite, and M17 targets
+%  (ite_use_y_level) get the soft-cut `(G -> fail ; true)` form whose
+%  `cut Yn` carries its own barrier and needs no frame.
+goals_contain_hard_cut_negation(Goals) :-
+    wam_inline_not_enabled,
+    \+ wam_ite_use_y_level_enabled,
+    member(G, Goals),
+    goal_contains_negation(G),
+    !.
+
+%% goal_contains_negation(+Goal)
+%  Walks the control constructs a body goal can nest a `\+` inside.
+goal_contains_negation(Goal) :-
+    nonvar(Goal),
+    (   Goal = \+(_)
+    ;   Goal = not(_)
+    ;   ( Goal = (A, B) ; Goal = (A ; B) ; Goal = (A -> B) ),
+        ( goal_contains_negation(A) -> true ; goal_contains_negation(B) )
     ),
     !.
 
@@ -1459,6 +1503,7 @@ compile_clauses_fragments([Head-Body|Rest], I, N, Pred, Arity, Options,
     (   ( length(ExpandedGoals, NG), NG > 1
         ; goals_contain_call_or_aggregate(Goals)
         ; member(builtin_call('!/0', _), Goals)
+        ; goals_contain_hard_cut_negation(Goals)
         )
     ->  pre_assign_permanent_vars(ExpandedGoals, V0, V0a),
         compile_head_arguments(Args, 1, V0a, V1, HeadCode0),
