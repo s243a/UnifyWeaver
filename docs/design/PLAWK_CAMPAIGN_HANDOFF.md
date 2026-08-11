@@ -197,6 +197,48 @@ in all three END walkers at once and the 29 pre-existing golden-corpus programs 
 byte-identical — none of them had a string scalar in a concat either, which is the
 same coverage gap in a third place.
 
+**When N walkers wrap one shared emitter, the walkers ARE the duplicated list.** The
+strongest instance so far, and the one that paid best. Three END print walkers
+(scalar / mixed / assoc) each enumerated the print-field vocabulary as clause heads,
+and every clause was the same three steps — emit the separator, make ONE per-kind call,
+recurse — where that per-kind call was *already exactly* what
+`plawk_end_field_print_lines/4` makes for the same kind inside a concatenation. No
+logic was duplicated. What was duplicated was the LIST of what may be printed, four
+times, with nothing keeping the copies equal — and they had already drifted twice (a
+string scalar in a concat printed its atom id; `NF` reached the routes one at a time).
+
+Collapsing them to one delegating clause each took **24 clauses to 13** and turned every
+future cell from "one clause per route" into "one clause, everywhere". `length` in END
+was the first to land that way: a single row in the shared emitter appeared in the
+straight-line print, in a concatenation, in a statement list and in all three routes at
+once.
+
+Three things generalise from it:
+
+- **The tell is shape, not size.** A clause that is `Prelude, OneCall(Kind), Recurse`
+  where `OneCall` already exists elsewhere for the same `Kind` is not code — it is a
+  vocabulary entry. Count those, not lines: a walker with eight such clauses is an
+  eight-item list that some other predicate also maintains.
+- **A collapse must be provable as a collapse.** 32 golden-corpus programs came out
+  byte-identical across this one; only the newly-admitted programs changed. Without that
+  check "collapse" and "rewrite" are the same diff.
+- **Expect a bonus cell, and pin it.** Delegating the assoc walker meant passing the
+  EMPTY scalar plan (which it already did for concat parts), which made the shared
+  generic-expression clause reachable, so `END { print 1 + 2, c["x"] }` went from decline
+  to correct. An A/B over a 25-program matrix found it; it is now pinned in the tests,
+  because an unintended behaviour change nobody wrote down is indistinguishable later
+  from a defect.
+
+**The same collapse one level down, and why it is the more useful half.** `NF` had an
+`end_lastrec_nf` expression row that was its in-loop `nf` row with `%line` swapped for
+the retained record Value; `length` had no such row, and that absence *was* the reason
+every END form of `length` declined. Both are now entries in one table of
+record-reading i64 leaves parameterised on **which record they read**, with one
+retained-record wrapper covering every entry. The pattern is worth naming: when two
+contexts differ only in **where a value comes from**, make the source a parameter of
+one table rather than writing a second row per operation — otherwise every operation
+pays the difference again, and the ones that never do quietly stay unreachable.
+
 **Prescriptions that worked:** one shared producer/emitter with callers
 parameterised (a *name flavour* parameter can preserve byte-identity — see
 #4094); when adding a fast path, check what the general walker's **base case**
