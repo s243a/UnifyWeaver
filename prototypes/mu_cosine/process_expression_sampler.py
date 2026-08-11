@@ -486,7 +486,7 @@ def _sibling_alternatives(output: str) -> list:
 
 
 def _vary(row: pc.Node, variant: int, protect=None,
-          freeze: bool = False) -> pc.Node:
+          freeze: bool = False, hold_values: bool = False) -> pc.Node:
     """A structurally identical row with different literals and synthetic
     extensions. The parent's resolved kwarg pattern is untouched — changing
     it would change the component, and therefore the pair."""
@@ -507,13 +507,15 @@ def _vary(row: pc.Node, variant: int, protect=None,
                 # and the stream would stop covering the identity it was
                 # opened for — the defect this flag exists to prevent.
                 args.append(child if (freeze or en._is_leaf(child))
-                            else _vary(child, variant + index + 1))
+                            else _vary(child, variant + index + 1,
+                                       hold_values=hold_values))
                 continue
             alternatives = _sibling_alternatives(pc.REGISTRY[child.name].output)
             if alternatives and en._is_leaf(child):
                 args.append(alternatives[(variant + index) % len(alternatives)])
             else:
-                args.append(_vary(child, variant + index + 1))
+                args.append(_vary(child, variant + index + 1,
+                                  hold_values=hold_values))
             continue
         declared = (sig.arg_types[index] if index < len(sig.arg_types)
                     else sig.variadic_arg_type)
@@ -525,21 +527,31 @@ def _vary(row: pc.Node, variant: int, protect=None,
         if isinstance(value, pc.Node):
             if protect == ("kw", key):
                 kwargs.append((key, value if (freeze or en._is_leaf(value))
-                               else _vary(value, variant + 1)))
+                               else _vary(value, variant + 1,
+                                          hold_values=hold_values)))
                 continue
             alternatives = _sibling_alternatives(pc.REGISTRY[value.name].output)
             if alternatives and en._is_leaf(value):
                 kwargs.append((key, alternatives[variant % len(alternatives)]))
             else:
-                kwargs.append((key, _vary(value, variant + 1)))
+                kwargs.append((key, _vary(value, variant + 1,
+                                          hold_values=hold_values)))
             continue
-        if sig.kwargs[key].kind in _IDENTITY_KINDS:
+        if hold_values and sig.kwargs[key].kind in _IDENTITY_KINDS:
             # The value IS the identity being covered — `estimand:subtopic`,
             # `walk:cousin`, §3.2's three manifest classes. Rotating it makes
             # each variant witness a DIFFERENT item, so a stream opened for
             # one of them dilutes across all of them and none reaches k.
             # Held verbatim; breadth comes from the catalogue offering a
             # witness row per value, not from rotation inside one stream.
+            #
+            # `hold_values` scopes this to the ITEM phase, where such a value
+            # IS the target. In the pair phase the target is an edge, and the
+            # component identity records kwarg KINDS rather than values — so
+            # rotating estimand/impl leaves the pair intact and supplies the
+            # variation it needs. Holding them there instead collapsed
+            # `blend/2{estimand,impl}` from ~270 distinct spellings to 30 and
+            # made a reachable k look infeasible.
             kwargs.append((key, value))
             continue
         values = _literal_values(sig.kwargs[key].kind)
@@ -554,13 +566,13 @@ def _vary(row: pc.Node, variant: int, protect=None,
 
 
 def _stream(row: pc.Node, scenario: str, wanted: int, protect=None,
-            freeze: bool = False) -> list:
+            freeze: bool = False, hold_values: bool = False) -> list:
     """Up to `wanted` DISTINCT admissible rows sharing one structure."""
     out: list = []
     seen: set = set()
     variant = 0
     while len(out) < wanted and variant < wanted * 12 + 64:
-        candidate = _vary(row, variant, protect, freeze)
+        candidate = _vary(row, variant, protect, freeze, hold_values)
         variant += 1
         if _admissible(candidate, scenario) is not None:
             continue
@@ -774,7 +786,8 @@ def sample(coverage_minimum_k: int = 100,
             expression, slot = catalogue[item]
             witness = pc.parse(expression)
             needed = coverage_minimum_k - item_rows[item]
-            for candidate in _stream(witness, scenario, needed * 8, slot):
+            for candidate in _stream(witness, scenario, needed * 8, slot,
+                                     hold_values=True):
                 if item_rows[item] >= coverage_minimum_k:
                     break
                 if admit(candidate):
