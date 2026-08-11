@@ -218,6 +218,70 @@ structural (same walk as the gate); a rewritten `end_lastrec_field(N)` reaching 
 *condition* emitter finds no clause and **declines**. Rewrite indiscriminately and
 let the missing clauses be the gate.
 
+**Before adding a row per route, ask whether the form has a COMPILE-TIME answer.**
+Every gap this campaign closed before the literal-builtin one was closed by teaching
+an emitter a new cell, paid for one at a time — six field kinds across three END
+walkers. `length("abc")` looked like more of the same: five builtins refused a string
+literal in every route while accepting a field in all of them, which reads as a row
+of missing cells. It was not. The *answer* to a builtin over a literal is itself a
+literal, and literals were already in the vocabulary of every route, so folding at
+parse time landed the whole family everywhere at once **with the codegen untouched**
+— 41/41 golden-corpus programs byte-identical.
+
+The generalisable question is not "is this foldable" but **what does the answer's
+representation cost**. Here it cost nothing because the representation was already
+universal. Two things make that check worth running explicitly:
+
+- The check is cheap and mechanical. Build the answer's term by hand and ask the
+  driver whether it compiles, in each route. That is what turned this from an
+  estimated row of cells into a measurement — and it caught the one position where
+  `int(N)` was *not* accepted (an END print field) before any code was written.
+- Do it on the SURFACE, not on hand-built ASTs, once the routes involve a plan.
+  Hand-building `program([], [rule(always, [inc(var(n)), inc_assoc(c-field(1))])], …)`
+  produced a *decline* for a program whose surface equivalent compiles fine, because
+  the hand-written term did not take the mixed route at all. Two conclusions were
+  drawn from that before it was noticed. Hand-built terms are fine for the scalar
+  routes and lie about anything plan-selected.
+
+**Watch for the third statement of a vocabulary — the one that restricts by choosing
+a narrow nonterminal instead of by a guard.** The literal-builtin refusal was eight
+copies of `Field = field(_)` across two nonterminals, which is the familiar shape, and
+they were found and replaced in one pass. The change then *half* worked:
+`print length("abc")` compiled and `print length("abc") + 1` did not, because the
+arithmetic-operand family stated the same vocabulary a third way — it passed a narrow
+nonterminal (`simple_field_expr//1`, `$N` only) as the argument parser. Widening the
+guards could not reach it.
+
+Two lessons, and the second is the useful one. First, `grep` for the *guard text* finds
+guard-shaped copies only; a restriction can also be spelled as a choice of production,
+and that spelling leaves no text in common with the others. Second, the reason it was
+easy to miss is that **its name described what it accepted rather than the role it
+filled** — `simple_field_expr` names a shape, so nothing connected it to the
+vocabulary it was a copy of. That is variant 0 of this campaign's defect class showing
+up in a *nonterminal* rather than a gate, and the remedy is the same: it is now
+`builtin_string_arg//1`, and it defers to the same `plawk_builtin_string_arg/1` the
+other two families use. When hunting N copies of one decision, enumerate by the
+decision's *role*, and treat every narrow nonterminal passed as an argument parser as
+a candidate copy.
+
+**A widened vocabulary can expose a shadowing producer that was harmless while the
+vocabulary was narrow.** Relaxing the builtin argument guard made `length("abc")`
+parseable — and revealed that the generic `name(args)` production had been capturing
+any reserved builtin name whose arguments happened to be foreign-argument shaped, so
+`length("abc")` parsed as a call to a *user Prolog predicate named `length`*. This was
+pre-existing and it explained an exit-code split that had looked arbitrary:
+`length("abc")` failed as a clean decline (exit 3 — it parsed as a prolog_call the
+codegen refused) while `length(v)` failed as a parse error (exit 2 — `v` is not a
+foreign argument either, so even the generic clause could not match). It also meant two
+paths disagreed about identical text, since a bare print field reached the builtin
+production first and an arithmetic operand reached the generic call first.
+
+The tell was an **exit code that did not match the story**: a form outside the
+supported surface should decline, but a form outside the *grammar* should be a parse
+error, and `length("abc")` was giving the wrong one of the two. When a refusal's exit
+code is surprising, the refusal is probably not coming from where you think — read the
+parse, not the gate you expected to fire.
+
 ## Verification practices (do not skip)
 
 - **gawk 5.2 is the oracle.** Compare output *and* exit status. Probe harness
@@ -263,6 +327,37 @@ let the missing clauses be the gate.
   flaky. It cost a wrong diagnosis (two tests reported broken that were fine). Run
   them sequentially, and when a failure looks surprising, re-run that suite by
   itself before believing it.
+- **A broken harness looks exactly like a mass regression — prove the toolchain works
+  before believing 13 red suites.** A sweep reported 13 suites failing en masse
+  (`absent_key_read` 23 failed / 0 passed, `assoc_body_print` 15/2, `bare_print` 20/5,
+  and ten more). Every one passed in isolation at the *same commit*. The cause was
+  `TMPDIR` pointing at a directory deleted just before launch: clang writes its
+  intermediates there, so every build died with `clang: error: unable to make
+  temporary file`, and the suites faithfully reported the missing binaries as failures.
+
+  The shape to recognise: **the failures cluster in the suites that BUILD**, the
+  pass/fail split inside each looks arbitrary, and parse-only suites are untouched.
+  A real regression in an END emitter does not also take out `argv` and
+  `begin_printf`. The sweep now creates its temp roots and compiles a two-line C file
+  as a preflight, failing loudly instead of producing 190 suites of plausible red.
+  **Preflight the harness, not just the code.**
+- **`TMPDIR` does not isolate the suites — SWI-Prolog's `tmp_dir` flag is `/tmp`
+  regardless.** Two temp roots need redirecting and only one follows the environment:
+  clang honours `TMPDIR`, while every suite's build directory comes from
+  `current_prolog_flag(tmp_dir, …)`, which is `/tmp` whether or not `TMPDIR` is set
+  (verified directly — `TMPDIR=/tmp/x swipl -g "current_prolog_flag(tmp_dir,D)"`
+  prints `/tmp`). So the "isolated worktree sweep with its own TMPDIR" was isolated in
+  **source** and never in **artifacts**: every suite wrote `/tmp/uw_plawk_<suite>/`,
+  the same absolute paths a main-tree run uses.
+
+  That is the actual mechanism behind the phantom failures recorded just above, and it
+  means the remedy recorded for them ("run suites sequentially") was working for the
+  wrong reason — sequential execution *avoids* the collision rather than isolating
+  anything, so it was load-bearing in a way nobody knew. `sweep3.sh` moves both roots
+  (`TMPDIR` for clang, `set_prolog_flag(tmp_dir, …)` prepended to each suite's goal)
+  and **asserts the flag actually moved** before running anything, so a future SWI
+  change cannot silently put the artifacts back in `/tmp` while the script still
+  claims isolation. Verify what a flag *does*, not what its name suggests it reads.
 - **Match every plunit summary form.** A sweep grepping
   `"All N tests passed|tests failed"` silently misses the single-test form
   (`% test passed`) *and* the singular failure (`% 1 test failed`) — twelve failing
@@ -315,8 +410,17 @@ on top.
 
 ## Baseline
 
-**All 180 plawk suites sweep clean: 2323 tests passed, 0 failed** (176 suites run
-tests; 4 run none, LMDB-gated). This is the first fully green plawk base in the
+**All 193 plawk suites sweep clean: 2644 tests passed, 0 failed** (185 report the
+`All N tests passed` form; 8 use the single-test form). All five LMDB suites now RUN
+— `liblmdb-dev` is installed in the container, so the durable-store paths are
+genuinely exercised rather than skipped; a gated suite reporting zero tests was
+always evidence about the machine, never about the code.
+
+*(Earlier in the campaign this read "180 suites, 2323 tests" and went stale for
+several PRs. If the number below does not match your sweep, re-derive it rather than
+trusting it — and update it here.)*
+
+This was the first fully green plawk base in the
 campaign — worth keeping that way, because twice a change landed on top of a red
 suite and the breakage went unnoticed for several PRs (`bare_print` from #4108, and
 seven broken `plawk_dyncall_support_ir` ladder rungs). Sweep before claiming a
@@ -402,9 +506,14 @@ the implementation changed about the design. The load-bearing facts:
 `tests/test_plawk_end_field_reads.pl`. A field or `NF` in a loop / `if`
 **condition** (a fail-safe decline: the rewrite reaches conditions, and no
 condition emitter has a clause for `end_lastrec_field(_)` / `end_lastrec_nf`) ·
-**`length`** in END (already in the gate, not yet emitted) · **builtins over the
+**`length`** in END (already in the gate, not yet emitted) — this means `length` over
+the RECORD, i.e. bare `END { print length }` and `END { print length($0) }`, which
+still decline; **not** `END { print length("abc") }`, which the literal fold answers
+at parse time and which is done. The two share a spelling and nothing else: one needs
+the retained record, the other needs no runtime at all · **builtins over the
 record** in END (`substr($0, …)`, `toupper($1)` — the gate retains for them, the
-emitters have no clause) · **END-only** programs (a driver with no retain) ·
+emitters have no clause; the *literal* forms of all five are done) · **END-only**
+programs (a driver with no retain) ·
 `printf` field args in the **assoc / mixed END chain** (a different driver, passes
 `no_end_record`) · the **associative** END-`if` branch (refused by
 `plawk_assoc_end_if_branch_prints_ok/2`, which allows only string literals there —
@@ -422,3 +531,22 @@ the dead `@.plawk_surface_print_line` global (removal costs byte-identity on eve
 program, so its own PR) · `printf`/`NR` as plain statements in the for-in END
 chain · `NR` in a loop-free END list · `printf "%c"` on a string ·
 autovivification on read · scalar-var SUBSEP components · empty-string subscripts.
+
+**The string-builtin argument vocabulary, what is left** — pinned in
+`tests/test_plawk_literal_builtin_fold.pl`, and the three are genuinely different
+problems despite reading as one list. A **variable** argument (`v = $2; length(v)`)
+is the one that actually needs codegen: the value is not known until runtime, so no
+fold can answer it and it wants the runtime projection a field argument already gets
+— probably the largest of the three and the most useful. A **nested** call
+(`length(toupper("ab"))`) needs only the vocabulary to admit a call, because
+`plawk_fold_literal_builtins/2` is written bottom-up and would collapse it in one
+pass; the fold is already correct for it, so this is a parser-side change with no
+emitter work. `int("3.7")` is deliberately excluded rather than merely unimplemented:
+int-over-a-string is numeric coercion with strtod prefix semantics ("3.7abc" is 3,
+"abc" is 0, leading whitespace and sign allowed) and belongs with a
+string→number fold of its own, tested against those edges, not bolted onto the
+string-builtin vocabulary. Also open: **non-ASCII literals**, which decline today
+because the fold refuses anything above code point 127 to stay byte-exact with the
+runtime — closing it means computing UTF-8 byte offsets in the fold (exact and easy
+for `length`, fiddlier for `substr`, whose byte slice can split a character exactly
+as the runtime's does).
