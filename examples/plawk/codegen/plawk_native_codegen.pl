@@ -19642,15 +19642,43 @@ plawk_end_field_print_lines(field(Index), _StatePlan, EndRecord, PrintIndex) -->
     plawk_end_lastrec_field_lines(Index, EndRecord, PrintIndex).
 plawk_end_field_print_lines(special('NF'), _StatePlan, EndRecord, PrintIndex) -->
     plawk_end_lastrec_nf_lines(EndRecord, PrintIndex).
+% A bare scalar variable inside a concatenation: THE shared emitter, the same one
+% every standalone END print of a scalar goes through.
+%
+% It used to be a third copy of the slot-kind dispatch, and it read:
+%
+%     plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
+%     format(atom(ValueIR), '%final_slot_~w', [SlotIndex]),
+%     plawk_end_numeric_print_lines(StatePlan, Slot, SlotIndex, ValueIR, ...)
+%
+% i.e. it resolved the slot and then rendered it NUMERICALLY whatever its kind was.
+% Its comment claimed it used "the SAME numeric render the standalone END print
+% uses, so a counter or double in a concatenation cannot disagree with one printed
+% on its own" -- true of the numeric half, and that is exactly why it read as
+% finished. The dispatch has THREE arms, and the copy had one:
+%
+%     { s = $1 } END { print s }              -> 7      (correct)
+%     { s = $1 } END { print "s=" s }         -> s=25   WRONG (gawk: s=7)
+%     { s = $1 } END { print s "!" }          -> 25!    WRONG (gawk: 7!)
+%     { if (0) s = $1 } END { print "s=" s }  -> s=0    WRONG (gawk: s=)
+%
+% 25 is the interned ATOM ID of the text, printed as an i64: a string slot took the
+% counter arm, and the unset id 0 printed as the number 0 for the same reason. The
+% divergence was confined to string / strnum slots -- counters and doubles were
+% already right, because plawk_end_numeric_print_lines/6 was the arm the copy DID
+% call, tracked-slot handling included. That is what made it survive: the two arms
+% the comment reasoned about were the two that worked.
+%
+% This is the second time this exact emitter was found duplicated (see
+% plawk_end_scalar_var_print_lines/4's own docstring for the first, in the mixed
+% walker), and the failure mode was identical both times: the copy did not merely
+% lag behind on new behaviour, it silently un-did SHIPPED behaviour for a subset of
+% programs, and no suite could see it because each suite exercises one route. The
+% new lesson is narrower and worth stating: a comment asserting agreement with a
+% shared emitter is not evidence of it. This one named the property it wanted and
+% then achieved it for one arm of three.
 plawk_end_field_print_lines(var(Name), StatePlan, _EndRecord, PrintIndex) -->
-    { plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
-      format(atom(ValueIR), '%final_slot_~w', [SlotIndex]),
-      % the SAME numeric render the standalone END print uses, so a counter or
-      % double in a concatenation cannot disagree with one printed on its own about
-      % whether an unset value is empty
-      plawk_end_numeric_print_lines(StatePlan, Slot, SlotIndex, ValueIR, PrintIndex,
-          Lines)
-    },
+    { plawk_end_scalar_var_print_lines(StatePlan, Name, PrintIndex, Lines) },
     plawk_emit_lines(Lines).
 plawk_end_field_print_lines(string(Value), _StatePlan, _EndRecord, PrintIndex) -->
     plawk_end_string_print_lines(Value, PrintIndex).
