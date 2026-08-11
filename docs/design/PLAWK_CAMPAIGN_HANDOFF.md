@@ -197,6 +197,47 @@ in all three END walkers at once and the 29 pre-existing golden-corpus programs 
 byte-identical — none of them had a string scalar in a concat either, which is the
 same coverage gap in a third place.
 
+**A contract with only one side implemented — the variant where reading either file
+alone shows no defect.** The strongest instance yet, and the one hardest to find by
+inspection. Every numeric special on the RIGHT of an `if` / `while` condition
+(`if (n < NF)`, `n < NR`, `n < ARGC`, `n < length`) silently compared against a phantom
+variable worth 0, so those programs printed nothing where gawk printed records.
+
+The codegen was **already correct and already complete** for that case:
+`plawk_while_cond_build/8` carried a `cmp(Lhs, Op, special('NF'))` row for the reversed
+operand order, `plawk_while_cond_operand/8` resolved RSTART/RLENGTH/ARGC/NR on *either*
+side (it takes a `Side` argument), and `plawk_while_cond_rhs_ok/1` already deferred to
+the validator for a `special(_)`. The parser simply never emitted a special on the
+right. So the row sat unreachable while the identifier fallback manufactured a phantom.
+
+This is not two implementations of one property disagreeing about a value — it is one
+side of a contract never producing what the other side already handles. Neither file
+reads as defective: the codegen looks complete, and the parser looks complete because a
+fallback covers the case. Two things follow:
+
+- **When you find a codegen row, check that something produces its term.** An emitter
+  clause for a shape is evidence of intent, not of reachability. A grep for the term
+  constructor on the *producing* side is the check, and it is cheap.
+- **A fallback that cannot fail is what converts the gap into wrong output.** Every
+  sibling production in the bare-pattern grammar guarded its identifier clause with
+  `scalar_cmp_reserved_name/1`; the condition grammar's did not, so an untaught special
+  became a variable rather than a decline. **Guard the catch-all**, and the next omission
+  reports itself.
+
+It also turned out to be **four** lists of one set, no two agreeing — two in the parser
+(`match_special_name//1`, `special_cmp_operand//1`), the emitter rows, and the loop
+validator `plawk_match_special/1` (whose name still says "specials set by `match()`",
+variant 0 sitting on top of the duplication). The tell that there were four rather than
+two: `if (n < length)` worked while `while (n < length)` declined, because only the loop
+path consults the validator. **When two spellings of one construct disagree, keep
+probing sibling contexts until they all agree** — the count of disagreeing lists is not
+knowable from the first two.
+
+**And a verification note this cost real time to learn: this class is invisible to build
+status.** All four affected golden programs built *before and after*; only the IR and the
+output changed. A sweep that watches exit codes cannot see it. Only gawk output
+comparison can.
+
 **When N walkers wrap one shared emitter, the walkers ARE the duplicated list.** The
 strongest instance so far, and the one that paid best. Three END print walkers
 (scalar / mixed / assoc) each enumerated the print-field vocabulary as clause heads,
@@ -305,6 +346,17 @@ let the missing clauses be the gate.
   flaky. It cost a wrong diagnosis (two tests reported broken that were fine). Run
   them sequentially, and when a failure looks surprising, re-run that suite by
   itself before believing it.
+
+  **Third occurrence, and a fixed path is not the whole mechanism.**
+  `test_plawk_end_length` reported **5** failures while a 192-suite sweep was running,
+  and **2** failures on two consecutive re-runs alone — 2 being the number the change
+  predicted (the pins it was designed to flip). The two runs did *not* share build
+  paths: the sweep sets its own `TMPDIR` and lives in a separate worktree precisely to
+  avoid that, so **load alone was enough** to produce three phantom failures. So the rule
+  is stronger than "don't share paths": a suite count produced while any other heavy run
+  is in flight is not a result. Re-run in isolation before believing it, and never
+  diagnose from the contended number — the three extra failures would have sent the next
+  hour into imaginary defects.
 - **Match every plunit summary form.** A sweep grepping
   `"All N tests passed|tests failed"` silently misses the single-test form
   (`% test passed`) *and* the singular failure (`% 1 test failed`) — twelve failing
