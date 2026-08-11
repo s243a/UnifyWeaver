@@ -506,11 +506,27 @@ the implementation changed about the design. The load-bearing facts:
 `tests/test_plawk_end_field_reads.pl`. A field or `NF` in a loop / `if`
 **condition** (a fail-safe decline: the rewrite reaches conditions, and no
 condition emitter has a clause for `end_lastrec_field(_)` / `end_lastrec_nf`) ·
-**`length`** in END (already in the gate, not yet emitted) — this means `length` over
-the RECORD, i.e. bare `END { print length }` and `END { print length($0) }`, which
-still decline; **not** `END { print length("abc") }`, which the literal fold answers
-at parse time and which is done. The two share a spelling and nothing else: one needs
-the retained record, the other needs no runtime at all · **builtins over the
+**`length`** in END — bare `END { print length }` and `END { print length($0) }`,
+which still decline. **Not** `END { print length("abc") }`, which the literal fold
+answers at parse time and which is done; the two share a spelling and nothing else,
+since one needs the retained record and the other needs no runtime at all.
+
+  This row said "already in the gate, not yet emitted" for most of the campaign and
+  **that was wrong** — a correction worth keeping, because it is a defect shape of its
+  own. The gate clause is `plawk_end_term_reads_record(special(length))`, and
+  `special(length)` occurs in **exactly one place in the repository**: that clause. No
+  producer emits it. Both END spellings parse to `length(field(0))`, and the `length`
+  *pattern* form uses the bare atom (`special_cmp(length, gt, 3)`), so the clause
+  matches nothing and the record is **not** retained for `END { print length }`.
+
+  So the work is not "add an emitter to a gate that already fires" but "teach the gate
+  the shape the parser actually produces, then emit" — a different and larger job than
+  the row advertised. The general lesson: a gate clause written for a term shape no
+  producer emits **reads as done** and sizes the follow-on wrongly, and no test can
+  catch it because there is no program that reaches it. `grep` for the *producer* of a
+  shape before believing a gate covers it — the campaign's "grep for the behaviour,
+  not recollection" rule applies to audit rows as much as to test pins, and this row
+  was written by reading the gate rather than probing the program. · **builtins over the
 record** in END (`substr($0, …)`, `toupper($1)` — the gate retains for them, the
 emitters have no clause; the *literal* forms of all five are done) · **END-only**
 programs (a driver with no retain) ·
