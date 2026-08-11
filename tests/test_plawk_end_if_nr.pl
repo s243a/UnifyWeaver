@@ -16,7 +16,7 @@
 % Explicit OUT-OF-SCOPE declines (exit 3), pinned with their owning boundary:
 %   * reversed `if (3 == NR)` -- not in END-if condition vocabulary
 %   * END-only (no rule) -- separate driver gap
-%   * assoc END-if -- plawk_assoc_end_if_branch_prints_ok/2 restriction
+%   * assoc rules + scalar END-if -- no driver admits that condition/route pairing
 %
 % gawk 5.2 is the oracle for every expectation here.
 
@@ -126,7 +126,8 @@ test(end_only_nr_if_declines) :-
     build_status("END { if (NR == 3) print \"yes\" }\n", 3),
     !.
 
-% Assoc route declines the whole END-if via plawk_assoc_end_if_branch_prints_ok/2.
+% Assoc rules plus this scalar END-if select no driver: the assoc END-if route admits
+% membership conditions, while the scalar END-if route does not admit the assoc rules.
 test(assoc_end_if_with_nr_condition_declines) :-
     build_status(
         "{ c[$1]++ } END { if (NR == 3) print \"yes\"; else print \"no\" }\n",
