@@ -131,13 +131,20 @@ test(both_routes_emit_the_same_nf_instructions) :-
 
 % --- the route boundaries, pinned with their reasons ------------------
 
-% The STATEMENT-LIST form still declines. `plawk_mixed_end_print_body_ir/5` passes
-% `no_end_record` on purpose: it is reached through plawk_end_list_bodies/8, which serves the
-% assoc chain too and does not carry the token. Widening it means threading the capability
-% through that shared dispatcher -- its own change. Pinned so the boundary is stated rather
-% than discovered.
-test(the_statement_list_form_still_declines) :-
+% This STILL declines, but its reason changed underneath it: the statement-list
+% dispatcher now threads EndRecord (the "its own change" the old comment deferred
+% to), so the token boundary is retired. What remains is the driver-SELECTION
+% boundary pinned two tests up -- an END that reads no table never reaches the mixed
+% driver, in the single-print and statement-list forms alike. The token half is
+% shown retired by the paired positive: the same NF statement compiles once a
+% statement in the list reads a table.
+test(the_statement_list_form_without_an_assoc_read_still_declines) :-
     build_status("{ n++; c[$1]++ } END { print NF; print n }\n", 3),
+    !.
+
+test(nf_in_a_statement_list_with_an_assoc_read_works,
+        [condition(clang_available)]) :-
+    run("{ n++; c[$1]++ } END { print NF; print c[\"5\"] }\n", "2\n2\n"),
     !.
 
 % NF with NO assoc field in the END print declines -- a driver-SELECTION boundary, not this

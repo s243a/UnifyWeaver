@@ -149,9 +149,15 @@ test(printf_nr_arg_declines) :-
     build_status("{ c[$1]++ } END { print c[\"a\"]; printf \"%d\\n\", NR }\n", 3),
     !.
 
-% A field argument: END has no current record.
-test(printf_field_arg_declines) :-
-    build_status("{ c[$1]++ } END { print c[\"a\"]; printf \"%s\\n\", $1 }\n", 3),
+% WAS a decline -- "END has no current record". It has a RETAINED one now: the
+% statement-list driver threads the EndRecord token, and the printf arg gate admits
+% `$N`/`NF`, which project from the retained last record rather than reading a slot.
+% The `var` and `NR` pins above did NOT move -- those exclusions are about this
+% driver's missing scalar plan and counter, not about the record, and the boundary
+% is per-capability. `$1` of the last record ("c 3") is "c".
+test(printf_field_arg_now_works, [condition(clang_available)]) :-
+    run("{ c[$1]++ } END { print c[\"a\"]; printf \"%s\\n\", $1 }\n",
+        "1\nc\n", 0),
     !.
 
 % WAS a decline -- "not wired to the record counter here either". It is now, and the reason it
@@ -205,8 +211,14 @@ test(printf_arg_gate) :-
     assertion(\+ plawk_native_codegen:plawk_end_list_printf_arg_ok(assoc, var(n))),
     assertion(\+ plawk_native_codegen:plawk_end_list_printf_arg_ok(assoc,
         special('NR'))),
-    assertion(\+ plawk_native_codegen:plawk_end_list_printf_arg_ok(assoc,
+    % WAS negative: a field argument is admitted now -- it reads the RETAINED last
+    % record via the threaded EndRecord token, not runtime scalar state, so the
+    % gate's dividing line ("everything that needs runtime state out") is unchanged
+    % even though this row flipped sides of it.
+    assertion(plawk_native_codegen:plawk_end_list_printf_arg_ok(assoc,
         field(1))),
+    assertion(plawk_native_codegen:plawk_end_list_printf_arg_ok(assoc,
+        special('NF'))),
     % the MIXED chain admits a `var` (its slots exist) but still not NR
     assertion(plawk_native_codegen:plawk_end_list_printf_arg_ok(mixed, var(n))),
     assertion(\+ plawk_native_codegen:plawk_end_list_printf_arg_ok(mixed,

@@ -142,12 +142,24 @@ test(no_retain_buffer_when_no_field_is_read) :-
 
 % --- the boundary, unchanged and still pinned ---------------------------
 
-% The STATEMENT-LIST form declines for a field read exactly as it does for NF, and for the
-% same reason: plawk_end_list_bodies/8 serves the assoc chain too and does not carry the
-% token. Pinned as a PAIR with NF so the boundary moves as one when it moves.
-test(the_statement_list_form_still_declines) :-
+% These two STILL decline, but the reason CHANGED and this comment must change with
+% it or it protects a stale attribution. The old reason -- plawk_end_list_bodies/8
+% carried no token -- is retired: the dispatcher threads EndRecord now, and the same
+% programs WITH an assoc read in the END list compile (pinned below). What remains
+% is the driver-SELECTION boundary this suite already pins for the single-print
+% form: an END that reads no table never reaches the mixed driver at all.
+test(the_statement_list_form_without_an_assoc_read_still_declines) :-
     build_status("{ n++; c[$1]++ } END { print $1; print n }\n", 3),
     build_status("{ n++; c[$1]++ } END { print NF; print n }\n", 3),
+    !.
+
+% ...and the token half is retired: the same statements compile once any statement
+% in the list reads a table.
+test(the_statement_list_form_with_an_assoc_read_works,
+        [condition(clang_available)]) :-
+    run("{ n++; c[$1]++ } END { print $1; print n, c[\"5\"] }\n", "7\n3 2\n"),
+    !,
+    run("{ n++; c[$1]++ } END { print NF; print c[\"5\"] }\n", "2\n2\n"),
     !.
 
 :- end_tests(plawk_mixed_end_field_reads).
