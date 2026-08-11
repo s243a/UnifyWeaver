@@ -144,6 +144,14 @@ In rough priority order:
 
 **args-first emission is the safer default.** The WAM compiler's pre-PR-#2285 nested-compound emission interleaved outer-arg `set_variable` instructions with nested `put_structure` emission, breaking heap contiguity for any target that assumes args follow the functor cell. Defaulting args-first prevents the class of bug prospectively on Rust and Haskell too — even though no existing test exercised the shape.
 
+**A test that asserts emitted source text rots silently.** All six long-standing failures in `tests/test_wam_elixir_target.pl` were fixed on 2026-08-10 without touching the target at all — every one was the test, not the product:
+
+- two asserted an older spelling of `unify/3`'s functor check (`{{:str, fn_name}, {:str, fn_name}}`, a repeated variable requiring identical functors). Adding cons-tag aliasing replaced that with distinct binders plus `fn1 == fn2 or step_get_structure_matches?/2` — strictly stronger, and the assertion was never updated;
+- three asserted `val == "hello"` for `get_constant`, which now routes through `WamRuntime.constant_match?/2` (the change that added native-`[]` ↔ WAM-`"[]"` aliasing). The interning behaviour under test was correct throughout;
+- one was a skip-detection bug: the real-LMDB e2e script *does* print `[SKIP] real Elmdb dependency unavailable: ...`, but Mix emits its `Shall I install Hex? ... [Yn] ` prompt with no trailing newline, so the marker lands mid-line and a `string_concat/3` anchored at line start never matched. A correct skip was reported as `status=exit(0) pass=0 fail=0`.
+
+The lesson generalises past Elixir — the same class made two WAM-C kernel-generation tests red since the repository import. A test that greps generated source is only as good as its last update, and it fails *closed*, so it looks like a product defect forever. Prefer asserting behaviour; when asserting text is genuinely the point, expect to update it with the code it mirrors.
+
 **Ground conformance queries hide binding bugs.** Every query in the shared conformance spec is ground, so a clause head is always *matched* and never used to *bind* the caller's term. Elixir was green on all six classic programs while `unify/3` silently discarded var-var aliases. The bug only surfaced once a program was added whose check needs `==/2` — `=/2` re-unifies and happily binds the leftover slot, reporting success either way.
 
 **The lowered emitter has two copies of `allocate`/`deallocate`.** The runtime template version (`wam_elixir_target.pl`) is used by the interpreter mode; the inline-emitted version (`wam_elixir_lowered_emitter.pl`) is what lowered mode actually runs. Changes to env-frame discipline must touch both.
