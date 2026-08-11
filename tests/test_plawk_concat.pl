@@ -106,6 +106,26 @@ test(concat_in_end, [condition(clang_available)]) :-
     assertion(Out == "total: 30 done\n"),
     !.
 
+% ...and the same thing with a STRING-valued scalar, which is a different arm of the
+% END scalar render and was WRONG for as long as this suite existed: the concat part
+% emitter rendered every slot kind numerically, so a string slot printed its interned
+% ATOM ID (`total: 25 done`) instead of its text.
+%
+% `s += $1` above picks a counter slot, and a counter was one of the two arms that
+% worked -- so this suite exercised concat-in-END from the start and could not see the
+% defect. That is the case worth adding here rather than only in the suite that fixed
+% it: the construct this file owns has more than one arm.
+%
+% tests/test_plawk_end_concat_scalar.pl walks the full slot-kind row (string, strnum,
+% counter, double; set and unset) across every END route.
+test(concat_in_end_with_a_string_scalar, [condition(clang_available)]) :-
+    cdir(Dir),
+    Src = "{ s = $2 }\nEND { print \"last: \" s \" done\" }\n",
+    build_run(Dir, 'ces', Src, "a one\nb two\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "last: two done\n"),
+    !.
+
 :- end_tests(plawk_concat).
 
 % --- helpers ---------------------------------------------------------------

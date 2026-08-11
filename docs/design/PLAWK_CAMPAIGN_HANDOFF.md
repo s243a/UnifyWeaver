@@ -168,6 +168,35 @@ Two details in it are worth keeping:
 The update side is not a resolution problem and does not get a key space: a positional
 table's keys are integers, so `a["x"]++` cannot be represented and declines.
 
+**A comment asserting agreement with a shared emitter is not evidence of it — and
+two of three arms covered reads as covered.** Variant 2 again, third copy of the same
+END scalar print, but the interesting part is entirely about why it survived. The
+concat part emitter (`plawk_end_field_print_lines(var(Name), …)`) resolved a scalar's
+slot itself and then called the **numeric** render whatever the slot kind was, so
+`{ s = $2 } END { print "s=" s }` printed `s=25` — the interned **atom id** as an
+i64 — where gawk prints `s=disk`, and an unset string slot printed `s=0` instead of
+`s=`. Standalone `END { print s }` was correct throughout, ten lines away.
+
+Two things kept it alive for as long as the emitter existed:
+
+- **The comment on it was true and read as an audit.** It said it used "the SAME
+  numeric render the standalone END print uses, so a counter or double in a
+  concatenation cannot disagree with one printed on its own about whether an unset
+  value is empty." Every word correct — and it names *two of the three arms* of a
+  three-arm dispatch. A note about what is shared should say what is **not** shared;
+  otherwise it certifies the cases that work and is silent exactly where the risk is.
+- **The construct looked tested from every angle except the broken one.** Two suites
+  already exercised a scalar in an END concat and both picked a working arm:
+  `test_plawk_concat.pl`'s `concat_in_end` uses `s += $1` (a counter), and
+  `test_plawk_unset_scalar.pl` pins the unset render for a counter and a double. When
+  a construct dispatches on a kind, **walk the kinds as a row**; picking a
+  representative is what hides this, and which representative you pick is arbitrary.
+
+The fix was a deletion (defer to `plawk_end_scalar_var_print_lines/4`), so it landed
+in all three END walkers at once and the 29 pre-existing golden-corpus programs stayed
+byte-identical — none of them had a string scalar in a concat either, which is the
+same coverage gap in a third place.
+
 **Prescriptions that worked:** one shared producer/emitter with callers
 parameterised (a *name flavour* parameter can preserve byte-identity — see
 #4094); when adding a fast path, check what the general walker's **base case**
