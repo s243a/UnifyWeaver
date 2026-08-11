@@ -48,7 +48,19 @@ default 4096), and explicit `auto` (codegen resolves via shared
 ## Gaps (relative to Rust / Haskell / F#)
 
 - **Classic conformance (CONF-R):** opt-in adapter (`r` / `r_functions`).
-  All classic programs green. Indexing hints — including remaining A2
+  All programs green — the six classics plus the five head-shape
+  programs (`wide`, `nested`, `buildnest`, `repeatvar`, `emptylist`).
+  `buildnest` needed a fix (CONF-FIX-R-BUILDNEST, 2026-08-10):
+  `append_build_arg` gated its bind-through on `target_reg >= 101L`,
+  i.e. X/Y registers only. That is right for `put_structure`/`put_list`,
+  where an A register is body staging and binding its previous occupant
+  aliases an unrelated live variable, and wrong for
+  `get_structure`/`get_list` write mode, where the A register holds the
+  **caller's** output variable — so a clause head could build an output
+  argument and never hand it back. Build frames now carry
+  `bind_through`, set by the get-family only; the self-cycle guard is
+  unchanged. Nesting was never broken here (R already had a
+  `read_stack`/`build_stack` pair), and one fix covered both arms. Indexing hints — including remaining A2
   forms (`switch_on_constant_a2`, `_a2_fallthrough`, `switch_on_structure_a2`)
   — map to the existing `SwitchOnTerm()` linear no-op (not optimized A2
   dispatch), preserving the full try/retry/trust chain.

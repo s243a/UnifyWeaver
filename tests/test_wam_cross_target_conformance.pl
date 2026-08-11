@@ -393,41 +393,52 @@ ct_default_target(elixir).
 %  identity comparison shows the binding never happened — which is exactly
 %  why crepeat/1 is written with ==/2.
 
-%  Elixir + R / buildnest — XFAIL (2026-08-09). `buildnest` is the
-%  suite's only WRITE-mode program, and it only became a real check on
+%  Elixir + R / buildnest — FIXED 2026-08-10. `buildnest` is the suite's
+%  only WRITE-mode program, and it only became a real check on
 %  2026-08-09: `cbuild_chk/1` used `=/2`, which re-unifies and therefore
 %  reported success even when the head never bound the caller's output at
-%  all. Switched to `==/2` while root-causing the WAM-Scala nqueens hang
-%  (see WAM_SCALA_STATUS.md), and three arms went red immediately.
+%  all. Switched to `==/2` while root-causing the WAM-Scala nqueens hang,
+%  and four arms went red. Scala and Kotlin were fixed then; Elixir and R
+%  are fixed now, so the harness carries no xfail again.
 %
-%  Elixir was TWO bugs, one fixed here and one not:
-%    fixed  — get_structure/get_list write mode overwrote the register
-%             slot without binding the variable it held. In a clause head
-%             that slot is the callee A register while the variable is the
-%             CALLER's output, so the built term was discarded. Both the
-%             interpreter runtime and the lowered emitter had it (the
-%             conformance arm runs `emit_mode(lowered)`); both now bind
-%             through `unify/3`. Flat construction — `b(X, [X|[]])` and
-%             `b(X, tk(X))` — went from false to true on that fix alone.
-%    open   — a term NESTED inside another still fails. Write mode
-%             allocates the nested term at `heap_len`, which by then is
-%             past the enclosing term's reserved argument cells, so the
-%             enclosing cons tail is never written. This is precisely the
-%             WAM-C write-path defect CONF-FIX-C-NESTED fixed with a
-%             reserved-cell WamArgCtx stack; Elixir needs the same
-%             treatment. Isolated with a three-way probe: cons-only true,
-%             struct-only true, struct-inside-cons FALSE.
+%  R was ONE bug, and it was the binding half, not the nesting half —
+%  the three-way probe came back cons-only FALSE, struct-only FALSE,
+%  struct-inside-cons FALSE, i.e. even flat construction failed.
+%  `append_build_arg` gated its bind-through on `target_reg >= 101L`
+%  (X/Y only). Correct for put_structure/put_list, where an A register is
+%  body staging and binding its previous occupant aliases an unrelated
+%  live variable; wrong for get_structure/get_list write mode, where the
+%  A register holds the caller's output variable. Build frames now carry
+%  `bind_through`, set by the get-family only. R already had a
+%  `read_stack`/`build_stack` pair, so nesting was never the problem —
+%  both arms share the runtime and both went green on the one fix.
 %
-%  R and r_functions fail the same query and are untriaged — the two arms
-%  share a runtime, so it is one defect, not two.
+%  Elixir was TWO bugs in sequence:
+%    1. the same caller-binding defect (fixed 2026-08-09): write mode
+%       overwrote `state.regs[ai]` without binding the variable it held.
+%       Flat construction went false -> true on that alone.
+%    2. nested write contexts. Write mode appended each argument at
+%       `heap_len` as it arrived, which assumes the term stays
+%       contiguous. A nested term allocates its own functor cell at
+%       `heap_len`, in the middle of the enclosing term's argument
+%       region, so the enclosing cons tail landed above the nested term
+%       and the cons cell was never completed. get_structure/get_list now
+%       RESERVE their argument cells up front and the write context
+%       carries the destination address — the C runtime's WamArgCtx
+%       treatment, expressed in Elixir's map-heap terms.
 %
-%  Scoped to `buildnest` on purpose. All three arms pass every read-mode
-%  `nested` query, so folding these back into `nested` would blanket
-%  working coverage — the same mistake `repeatvar` was split out to avoid.
-%  Cards: CONF-FIX-ELIXIR-BUILDNEST, CONF-FIX-R-BUILDNEST.
-ct_xfail(elixir, buildnest).
-ct_xfail(r, buildnest).
-ct_xfail(r_functions, buildnest).
+%  Scoped deliberately: the reserved-cell form is a THIRD write_ctx
+%  shape, `{:write_ctx, dest, n}`, and only the get-family emits it.
+%  put_structure/put_list keep the appending `{:write_ctx, n}` form,
+%  because their `set_*` handlers never consume the counter at all and
+%  the compiler emits nested puts args-first, so contiguity does hold
+%  there. Both consumer clauses live side by side in step_unify_*.
+%
+%  Both fixes had to be applied twice — once in the interpreter runtime
+%  and once in the lowered emitter — because the Elixir conformance arm
+%  builds with `emit_mode(lowered)`. Fixing only the interpreter changed
+%  nothing observable, which is the same trap CONF-FIX-FSHARP-LOWERED-
+%  GETVALUE recorded.
 
 %  R (CONF-R). Adapter registered (opt-in via CONFORMANCE_TARGETS=r[,r_functions]).
 %  runtime_parser(off) is pinned so generation is deterministic: classic
