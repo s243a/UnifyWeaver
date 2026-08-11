@@ -572,14 +572,24 @@ test(end_printf_field_on_empty_input, [condition(clang_available)]) :-
 
 % --- more declines that stay declines -----------------------------------
 
-% `length` (bare, i.e. length($0)) reads the record and is in the gate, but no END
-% form of it is admitted yet. Pinned so admitting it has to go through the gate.
-test(end_length_declines) :-
-    build_status("{ n++ } END { print length }\n", 3),
+% WAS two declines. `length` in END is now admitted -- as a print field, in a
+% concatenation, as a printf argument, in an `if` branch and in a loop body -- so both
+% pins have been rewritten to assert the behaviour that replaced them rather than
+% deleted. See tests/test_plawk_end_length.pl for the row.
+%
+% The ATTRIBUTION is what these two were protecting, and it held: admitting `length`
+% did go through the gate. It went through it for free, in fact, because
+% plawk_end_term_reads_record/1 is a STRUCTURAL walk and already admitted
+% `length(field(N))` by recursing into its `field(_)` argument -- which is also why the
+% `special(length)` clause asserted just above turned out not to be the clause that
+% mattered. The bet those pins encoded was that a later change could not admit `length`
+% without the gate noticing; the structural walk made that true by construction.
+test(end_length_now_builds, [condition(clang_available)]) :-
+    run("{ n++ } END { print length }\n", "3\n"),
     !.
 
-test(end_length_in_a_loop_declines) :-
-    build_status("{ n++ } END { while (n > 0) { print length; n-- } }\n", 3),
+test(end_length_in_a_loop_now_builds, [condition(clang_available)]) :-
+    run("{ n++ } END { while (n > 0) { print length; n-- } }\n", "3\n3\n3\n"),
     !.
 
 % `NF` in a CONDITION: the rewrite reaches it, no condition emitter has a clause,
