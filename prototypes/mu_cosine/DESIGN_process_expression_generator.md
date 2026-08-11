@@ -1042,3 +1042,63 @@ Following the standing rule that caps are measured and recorded, never asserted 
   independent evaluator.
 - Any downstream claim whatsoever. This specification produces a corpus and a sampler; it does not
   authorize training, and training does not authorize deployment.
+
+## 11. Grammar-boundary rulings — the v0.5 uptake arc
+
+Rulings issued while the three lanes took up registry v0.5, recorded here so no ruling lives
+only in a relay. Each names what it decides, the criterion that decides it, and what it parks.
+
+### 11.1 Membership needs no operator
+
+**Ruled: membership is spelled `lineage(SUBSTRATE, mu=…, estimand="element_of")`; no `elem`
+operator is registered.** The operator axis names the process shape and the estimand axis names
+what is estimated; membership is a one-hop terminating walk on the containment relation, and
+`element_of` already names it on the axis where it belongs. A dedicated operator would be a
+second spelling for one meaning — the ambiguity the version discipline exists to prevent.
+Verified against the sealed registry: the form parses, and its canonical identity resolves the
+default to `lineage(enwiki,decay=0.85,estimand="element_of",mu=graph)` — consumers pin headers
+to the canonical bytes, resolved defaults included.
+
+**Parked for the next registry bump:** `lineage` accepts an explicit `depth=` alongside a
+terminating estimand, which parses today but is incoherent — a terminating estimand implies its
+own hop count, and a separate kwarg that could disagree is the same defect class as the rejected
+`terminating=`. A coherence constraint is queued, credited to the training lane's migration
+delta report.
+
+### 11.2 `walk` and `weight` are semantic, `impl` is representation
+
+**Ruled: in any future coarse-family treatment of `cowalk`, `walk` and `weight` map into the
+semantic request; only `impl` transfers as a representation constraint.** The criterion is the
+patterns spec's own §7.2 candidate test — representations may share a candidate set only if they
+prove identical observable behavior under the declared domain. Changing `walk` changes which
+targets are in the set; changing `weight` changes the scores; both change the estimand's
+*value*, unlike `impl`, which changes only the route to it. The sealed v0.5 surface already
+agrees: walk and weight sit in canonical semantic bytes, are enumerated value kinds in the
+witness universe, and the symmetry family derives from walk's *declared* shape (`pc.WALKS`;
+shapes are registered facts, never inferred from walk names). Also recorded at the consumer
+side in `pattern_stache/pe_emit.pl`'s header. The cowalk coarse family itself is **not built**;
+its §7.2 equivalence content remains an open registration question.
+
+### 11.3 "Fully defaulted" means grounded by the spec's own content
+
+**Ruled: a family-spec entry must expand to a complete explicit request grounded by the spec's
+own content, not by registry defaults alone.** Estimands whose fields all carry defaults may be
+listed bare; estimands with required fields may appear only with every required value explicitly
+carried in the spec entry, where the content digest then covers them. Consequently
+`lineage_interpretations_v1` contains exactly the bare hop-decay entry; `structural_score`
+enters only via a future spec version that grounds its nine required fields — a new content
+digest, as it should be. Encoded in the pattern_stache ruleset with an enforcement test
+(`every_family_spec_entry_expands_to_a_complete_request`) verified non-vacuous by deliberate
+violation.
+
+### 11.4 Discipline: a recorded tension must arm a tripwire
+
+The dual-reading device that carried §11.3's open question lived in ruleset *data*, one layer
+below where tests could see it — so no test would have failed under either ruling. Recorded as
+lane discipline: **a recorded tension must pin each reading with a test that fails when the
+other is ruled.** Data-level dual encodings record honestly but announce nothing. The template
+is the §11.3 fix: a well-formedness guard plus the ruled consequence pinned directly, and the
+guard's non-vacuity demonstrated by temporarily violating the ruling and watching it fire. The
+same disease has a comment-shaped form — a note at one site reasoning locally about a property
+that spans several ("no `EndRecord` here, its own follow-on") — and the tell is identical: the
+property has no home, so nothing announces when it changes.
