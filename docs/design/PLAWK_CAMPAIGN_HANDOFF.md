@@ -357,6 +357,24 @@ let the missing clauses be the gate.
   is in flight is not a result. Re-run in isolation before believing it, and never
   diagnose from the contended number — the three extra failures would have sent the next
   hour into imaginary defects.
+- **A broken harness looks exactly like a mass regression — check that the toolchain
+  can build before believing 13 red suites.** A sweep reported 13 suites failing en
+  masse (`absent_key_read` 23 failed / 0 passed, `assoc_body_print` 15/2, `bare_print`
+  20/5 …). Every one of them passed 23/23 when re-run alone at the *same commit*. The
+  cause was `TMPDIR` pointing at a directory that had been deleted just before launch:
+  clang writes its intermediates there, so every build died with
+  `clang: error: unable to make temporary file: No such file or directory`, and the
+  suites dutifully reported the resulting non-binaries as test failures.
+
+  The shape to recognise: **the failures cluster in the suites that BUILD**, the
+  pass/fail split inside each looks arbitrary, and suites that only parse are untouched.
+  Nothing about the pattern resembles a code change — a real regression in an END
+  emitter does not take out `argv` and `begin_printf` as well.
+
+  `sweep2.sh` now `mkdir -p`s its TMPDIR and, before running anything, compiles a
+  two-line C file to prove clang works there — failing loudly instead of producing 190
+  suites of plausible red. **Preflight the harness, not just the code**: a verification
+  run that cannot fail for harness reasons is worth the four lines it costs.
 - **Match every plunit summary form.** A sweep grepping
   `"All N tests passed|tests failed"` silently misses the single-test form
   (`% test passed`) *and* the singular failure (`% 1 test failed`) — twelve failing
