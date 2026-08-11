@@ -2808,13 +2808,24 @@ compile_execute_term_builtin_to_rust(Code) :-
     }
 
     fn execute_reverse_builtin(&mut self) -> bool {
-        let src = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-        let dst = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let src = match self.get_reg_raw("A1") {
+            Some(value) => value,
+            None => return false,
+        };
+        let dst = match self.get_reg_raw("A2") {
+            Some(value) => value,
+            None => return false,
+        };
         match self.value_as_list(&src) {
             Some(mut items) => {
                 items.reverse();
-                if self.unify(&dst, &Value::List(items)) { self.pc += 1; true }
-                else { false }
+                let mark = self.trail.len();
+                if self.unify(&dst, &Value::List(items)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
             }
             None => false,
         }

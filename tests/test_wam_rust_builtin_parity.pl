@@ -2234,6 +2234,38 @@ fn test_copy_term_direct_sharing_and_rollback() {
 }
 
 #[test]
+fn test_reverse_direct_modes_and_rollback() {
+    let (forward_ok, forward_vm) = call2(
+        "reverse/2", Value::List(vec![a("a"), a("b"), a("c")]), ub("Reversed"));
+    assert!(forward_ok);
+    assert_eq!(read_var(&forward_vm, "Reversed"),
+        Value::List(vec![a("c"), a("b"), a("a")]));
+
+    let (inverse_ok, inverse_vm) = call2(
+        "reverse/2", a("[]"), Value::List(vec![]));
+    assert!(inverse_ok);
+    assert_eq!(read_var(&inverse_vm, "Reversed"), ub("Reversed"));
+
+    assert!(!call2("reverse/2", a("not_a_list"), ub("Reversed")).0);
+
+    let (rollback_ok, rollback_vm) = call2(
+        "reverse/2",
+        Value::List(vec![a("a"), a("b")]),
+        Value::List(vec![ub("Captured"), a("wrong")]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "Captured"), ub("Captured"));
+
+    let mut missing_source = vmnew();
+    missing_source.set_reg("A2", ub("Reversed"));
+    assert!(!missing_source.execute_builtin("reverse/2", 2));
+
+    let mut missing_output = vmnew();
+    missing_output.set_reg("A1", Value::List(vec![]));
+    assert!(!missing_output.execute_builtin("reverse/2", 2));
+}
+
+#[test]
 fn test_standard_order() {
     assert!(call2("@</2", a("a"), a("b")).0);
     assert!(!call2("@</2", a("b"), a("a")).0);
