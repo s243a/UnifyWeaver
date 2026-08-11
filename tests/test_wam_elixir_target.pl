@@ -608,8 +608,16 @@ test_unify_compound_clause_present :-
         % The compound-unify guard.
         sub_string(S, _, _, _,
                    'match?({:ref, _}, v1) and match?({:ref, _}, v2)'),
-        % Same-functor pattern check (variable repeated in both halves of the tuple).
-        sub_string(S, _, _, _, '{{:str, fn_name}, {:str, fn_name}}'),
+        % Functor agreement. This used to assert the literal tuple pattern
+        % '{{:str, fn_name}, {:str, fn_name}}' — a repeated variable, so
+        % the two functors had to be IDENTICAL. Adding cons-tag aliasing
+        % replaced that with distinct binders plus an explicit test, and
+        % the assertion was never updated, leaving this test red since
+        % the aliasing landed. Assert the current shape, which is
+        % strictly stronger: same functor OR a recognised cons alias.
+        sub_string(S, _, _, _, '{{:str, fn1}, {:str, fn2}}'),
+        sub_string(S, _, _, _,
+                   'fn1 == fn2 or step_get_structure_matches?({:str, fn1}, fn2)'),
         % Recursive arg walker.
         sub_string(S, _, _, _, 'defp unify_arg_list(state, [a | as], [b | bs])')
     ->  pass(Test)
@@ -1522,8 +1530,16 @@ run_lmdb_int_ids_real_lmdb_e2e(Test) :-
     close(Out),
     close(Err),
     split_string(StdOut, "\n", "", Lines),
+    % Match the marker ANYWHERE in the line, not only at its start. Mix
+    % prints its "Shall I install Hex? ... [Yn] " prompt WITHOUT a
+    % trailing newline when stdout is a pipe, so the script's own
+    % "[SKIP] real Elmdb dependency unavailable: ..." gets appended to
+    % that same line. string_concat/3 anchored at the start therefore
+    % never matched, and a correct skip was reported as
+    % `status=exit(0) pass=0 fail=0` — this test has been red on every
+    % machine without a Hex install and a NIF toolchain.
     (   member(SkipLine, Lines),
-        string_concat("[SKIP] ", _, SkipLine)
+        sub_string(SkipLine, _, _, _, "[SKIP] ")
     ->  format('[SKIP] ~w: ~s~n', [Test, SkipLine])
     ;   findall(L, (member(L, Lines), string_concat("[PASS] ", _, L)), PassLines),
         findall(L, (member(L, Lines), string_concat("[FAIL] ", _, L)), FailLines),
@@ -2360,8 +2376,15 @@ test_intern_atoms_default_off :-
         (   wam_target:compile_predicate_to_wam(intern_test:p/1, [], WamCode),
             lower_predicate_to_elixir(p/1, WamCode, [module_name('TestMod')], Code),
             atom_string(Code, S),
-            sub_string(S, _, _, _, 'val == "hello"'),
-            \+ sub_string(S, _, _, _, 'val == :hello')
+            % These three tests asserted a raw `val == <literal>`
+            % comparison. get_constant no longer emits one: it routes
+            % through WamRuntime.constant_match?/2, which is what added
+            % the native-[] <-> WAM-"[]" aliasing. The interning
+            % behaviour under test is unchanged and still correct — only
+            % the spelling moved, and the assertions were never updated,
+            % so all three have been red since that change.
+            sub_string(S, _, _, _, 'constant_match?(val, "hello")'),
+            \+ sub_string(S, _, _, _, 'constant_match?(val, :hello)')
         ->  pass(Test)
         ;   fail_test(Test, 'default mode wrongly emitted atom literal')
         ),
@@ -2378,8 +2401,8 @@ test_intern_atoms_on_emits_atom_literals :-
         (   wam_target:compile_predicate_to_wam(intern_test:p/1, [], WamCode),
             lower_predicate_to_elixir(p/1, WamCode, [module_name('TestMod')], Code),
             atom_string(Code, S),
-            sub_string(S, _, _, _, 'val == :hello'),
-            \+ sub_string(S, _, _, _, 'val == "hello"')
+            sub_string(S, _, _, _, 'constant_match?(val, :hello)'),
+            \+ sub_string(S, _, _, _, 'constant_match?(val, "hello")')
         ->  pass(Test)
         ;   fail_test(Test, 'intern_atoms mode failed to emit atom literal')
         ),
@@ -2399,10 +2422,10 @@ test_intern_atoms_keeps_non_identifiers_as_strings :-
         (   wam_target:compile_predicate_to_wam(intern_test:p/1, [], WamCode),
             lower_predicate_to_elixir(p/1, WamCode, [module_name('TestMod')], Code),
             atom_string(Code, S),
-            sub_string(S, _, _, _, 'val == "Foo"'),
-            sub_string(S, _, _, _, 'val == "hello world"'),
+            sub_string(S, _, _, _, 'constant_match?(val, "Foo")'),
+            sub_string(S, _, _, _, 'constant_match?(val, "hello world")'),
             % Sanity: did NOT emit `:Foo` (would parse as a module name).
-            \+ sub_string(S, _, _, _, 'val == :Foo')
+            \+ sub_string(S, _, _, _, 'constant_match?(val, :Foo)')
         ->  pass(Test)
         ;   fail_test(Test, 'non-identifier constants wrongly emitted as atoms')
         ),
@@ -2986,7 +3009,20 @@ test_runtime_structural_unify_aliases_cons_tags :-
     Test = 'Runtime: structural unification aliases ./2 and [|]/2 cons tags',
     wam_elixir_target:compile_wam_runtime_to_elixir([], Code),
     atom_string(Code, S),
-    (   sub_string(S, _, _, _, 'step_get_structure_matches?({:str, fn_name1}, fn_name2)'),
+    % The first assertion here named a head that never existed --
+    % 'step_get_structure_matches?({:str, fn_name1}, fn_name2)'. The real
+    % predicate binds ONE variable for the identical-functor clause and
+    % adds a clause per cons spelling. Assert those, plus the call site
+    % in the structural-unify path, which is the property this test is
+    % actually about.
+    (   sub_string(S, _, _, _,
+                   'defp step_get_structure_matches?({:str, fn_name}, fn_name), do: true'),
+        sub_string(S, _, _, _,
+                   'defp step_get_structure_matches?({:str, "./2"}, "[|]/2"), do: true'),
+        sub_string(S, _, _, _,
+                   'defp step_get_structure_matches?({:str, "[|]/2"}, "./2"), do: true'),
+        sub_string(S, _, _, _,
+                   'fn1 == fn2 or step_get_structure_matches?({:str, fn1}, fn2)'),
         sub_string(S, _, _, _, 'args1 = heap_slice(state, addr1 + 1, arity)'),
         sub_string(S, _, _, _, 'args2 = heap_slice(state, addr2 + 1, arity)')
     ->  pass(Test)

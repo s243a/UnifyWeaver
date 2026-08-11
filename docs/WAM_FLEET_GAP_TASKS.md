@@ -585,6 +585,73 @@ external toolchain.
 - Assertions corrected and the stream-binding entry point pinned as
   well. `tests/test_wam_c_target.pl` is now fully green (119 passes).
 
+### R-NEG-BACKTRACK: `\\+/1` gives wrong answers on some succeeding goals (open)
+- **Lever:** Correctness  **Target:** R  **Size:** M  **Depends on:** —
+- **Found:** 2026-08-10, while triaging the pre-existing failures in
+  `tests/test_wam_r_generator.pl`. Four of its e2e tests fail on an
+  unmodified tree; this is the root cause of at least
+  `negation_meta_call_e2e_rscript`.
+- **Symptom:** `\+ G` returns **true** for some goals G that succeed.
+  Minimal reproducer — `f/1` with three facts `a`, `b`, `c`:
+
+  | query | expected | R gives |
+  |---|---|---|
+  | `\+ f(a)` | false | **true** ✗ |
+  | `\+ f(b)` | false | false ✓ |
+  | `\+ f(c)` | false | false ✓ |
+  | `\+ f(z)` | true | true ✓ |
+  | `call(f(b))` | true | true ✓ |
+  | `\+ member(b, [a,b,c])` | false | **true** ✗ |
+  | `\+ member(c, [a,b,c])` | false | false ✓ |
+
+- **Not yet root-caused, and the obvious hypothesis is wrong.** "Only
+  the first solution is tried" does not fit: `\+ f(a)` is wrong while
+  `\+ f(b)` and `\+ f(c)` are right on the *same* three-clause
+  predicate, and `\+ member(b, ...)` is wrong while
+  `\+ member(c, ...)` is right on the same list. Whatever it is,
+  it depends on *which* alternative succeeds, not merely on whether one
+  does.
+- **Also note:** a two-clause predicate behaves differently from a
+  three-clause one in the same position — `\+ f(a)` was CORRECT when
+  `f/1` had only the facts `a` and `b`. First-argument indexing
+  (`switch_on_constant` vs the try/retry/trust chain) is the obvious
+  thing to look at, since clause count changes which dispatch shape the
+  compiler emits.
+- **Where to look:** the `\+/1` / `not/1` arm of the builtin dispatcher
+  in `templates/targets/r_wam/runtime.R.mustache` (search
+  `negation as failure`). It snapshots the trail, build stack and
+  choice-point depth, calls `WamRuntime$call_goal`, then truncates
+  `state$cps` back to `cps0` and inverts. Suspect the interaction
+  between that truncation and a `call_goal` that returns while
+  alternatives are still live.
+- **Acceptance:** the truth table above matches standard Prolog, and
+  `negation_meta_call_e2e_rscript` in `tests/test_wam_r_generator.pl`
+  passes. Check the other three failing e2e tests in that file at the
+  same time — `bagof_setof_once_forall_e2e_rscript`,
+  `enumerable_builtins_e2e_rscript` and
+  `catch_throw_dyn_aggregator_e2e_rscript` all fail the same way (a
+  negative case returning true) and may share this cause.
+
+### R-GENERATOR-E2E-BACKLOG: remaining red tests in test_wam_r_generator.pl (open)
+- **Lever:** Correctness  **Target:** R  **Size:** L  **Depends on:** R-NEG-BACKTRACK
+- Red on an unmodified tree (verified against a stashed baseline), so
+  these predate the 2026-08-09/10 conformance work:
+  `r_interpreter_uses_items_ir_policy`,
+  `mode_analysis_phase4_multiclause_n_e2e_rscript`,
+  `negation_meta_call_e2e_rscript`,
+  `bagof_setof_once_forall_e2e_rscript`,
+  `enumerable_builtins_e2e_rscript`,
+  `catch_throw_dyn_aggregator_e2e_rscript`,
+  `operator_parser_e2e_rscript`.
+- Four of them fail with a negative case returning `true`; start with
+  R-NEG-BACKTRACK and re-measure before treating the rest as separate.
+  `operator_parser_e2e_rscript` is the odd one out — it fails the other
+  direction (a positive case returning `false`).
+- **Note:** none of this is caught by the cross-target conformance
+  harness, which is green on both R arms. The conformance spec has no
+  negation, `once/1`, `forall/2` or operator-parsing coverage — a real
+  gap in the shared spec, not just in R.
+
 ### CONF-LLVM: Register LLVM in the cross-target conformance harness
 - **Lever:** Conformance adapters  **Target:** LLVM  **Size:** L  **Depends on:** —
 - **Goal:** Add an LLVM adapter that emits IR, compiles it to a native binary, and runs the shared spec.
