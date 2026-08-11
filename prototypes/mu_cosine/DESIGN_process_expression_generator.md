@@ -464,24 +464,51 @@ therefore composition coverage, not component coverage — and composition pairs
 twice as many rows as components at every `k`. Component coverage is not a separate input: at
 `pair-k = 100` every component is witnessed a few hundred times as a by-product.
 
-*Provisional scale.* The figures below are **provisional**, not measured: they come from a
-scratch sampler that is not committed, so no test reproduces them. They firm up — and the row
-count likely falls — when the sampler lands as its own artifact. Token statistics use the
-sealed `tok-v2` vocabulary (393 terms) over sampled rows.
+*Measured scale.* The figures below are **measured** by `process_expression_sampler.py`
+(`sampler-v1`), which is committed, deterministic, and reproduced by
+`test_process_expression_sampler.py`. They replace the earlier provisional table, which came
+from an uncommitted scratch sampler no test reproduced. Token statistics use the sealed
+`tok-v3` vocabulary (401 terms) over the emitted rows.
 
-| quantity | provisional value |
+| quantity | measured value |
 |---|---:|
-| rows for `pair-k = 100` | ~200,000 |
-| distinct structural templates at that size | ~7,000 (of 96,196) |
-| tokens per row | mean 38.1, median 30, p99 107, max 156 |
-| corpus size | ~7.6M tokens per epoch |
+| rows emitted at `pair-k = 100` | 98,710 |
+| distinct structural templates at that size | 3,848 |
+| required witness items / realizable pairs | 201 / 1,393 |
+| refused pair candidates (with reasons) | 295 |
+| tokens per row | mean 90.8, median 89, p99 143, max 164 |
+| corpus size | 8,963,611 tokens per epoch |
 
-Treat 200,000 as an **upper bound** for this `k`. It assumes uniform-ish sampling; §2.5's tail
-is dominated by root-only methodology-bearing operator shapes and a handful of rare pairs, and
-a coverage-directed sampler that flattens that tail reaches the same `k` with fewer rows. This
-is also why `k` was not set higher: past roughly 100, additional rows drawn from the *same*
-distribution buy only the rarest few compositions, so the next increment of effort belongs in
-the sampler's shape, not in the corpus's volume.
+The prediction held: 200,000 was named an **upper bound**, and coverage-directed sampling
+reaches this `k` in roughly half that. The token total moved the other way (7.6M → 9.0M)
+because directed rows are *larger* than uniform ones — the tail is reached by composing, not by
+drawing more.
+
+*What is not yet reached, stated as a bound rather than a claim.* At `k = 100` the sampler
+leaves **8 required items and 75 pairs short**, all of them variation-poor shapes:
+`cowalk/1{impl,walk,weight}` admits 16 direct spellings and 86 counting embeddings, against a
+`k` of 100. This is a **lower bound on reachability, not a proof of infeasibility**: the
+embedding search wraps only in positional slots, takes one binding per wrapper, and never nests
+two levels, all of which the depth cap permits. Whether `k = 100` is reachable for these pairs,
+or whether the ruling or the caps must move, is the open question this artifact hands to
+review — and it is a real question rather than an assumption, which is what the measurement was
+for.
+
+*A hazard the build surfaced, recorded because a future sampler author will meet it.* Four
+separate defects all had one shape: **coverage silently going somewhere other than where it was
+aimed.** Rotating a value that IS the identity being covered (`estimand:subtopic`, the three
+§3.2 manifest classes) makes each variant witness a different item, so a stream opened for one
+dilutes across all. Varying an embedded witness swaps the endpoint of the pair it was opened
+for. Indexing every axis off one counter couples independent axes, so `walk=sibling` was always
+paired with the `weight` value that breaks the kwarg cap. Each defect produced a **green suite
+at small `k`** and a plausible infeasibility claim at the ruled `k` — twice the shortfall was
+nearly reported as a cap-induced impossibility before a per-identity reachability count showed
+it was the generator. A sampler suite therefore needs at least one assertion that is
+`k`-sensitive; cheap coverage tests are structurally unable to see this class.
+
+`k` was not set higher for the original reason: past roughly 100, additional rows drawn from the
+*same* distribution buy only the rarest few compositions, so the next increment of effort
+belongs in the sampler's shape, not in the corpus's volume.
 
 *Two anti-shortcut diagnostics, required before any result is trusted.* A sufficiently strong
 decoder can reconstruct from grammar priors rather than from the embedding — emitting
