@@ -514,18 +514,28 @@ on top.
 
 ## Baseline
 
-**On the merged feature line (`d6cf0c9f1`, #4162) plus the literal-builtin fold: all
-192 suites sweep clean, 2622 tests passed, 0 failed** (184 report the `All N tests
-passed` form; 8 use the single-test form).
+**Measured on `5009181d5` — the feature line with #4171, #4170 and the literal-builtin
+fold: all 195 suites sweep clean, 2694 tests passed, 0 failed** (187 report the
+`All N tests passed` form; 8 use the single-test form).
 
-**Say which tree a baseline describes.** A sweep of 193 suites / 2644 tests was also
-recorded, and it is *not* the feature line — it was measured on #4164's stacked tip,
-which carries two suites the merged line does not (`end_length` 32 tests from #4163,
-`cond_specials` 26 from #4164, both unmerged at the time of writing). The two numbers
-reconcile exactly: 2644 − 32 − 26 + 36 (the new suite) = 2622, and 193 − 2 + 1 = 192.
-A total that is *lower* than the recorded baseline is not automatically a regression —
-check what the baseline was measured on first, because with stacked branches the
-answer is often that it was a different tree.
+Composition, so the next total can be checked rather than trusted:
+
+| tree | suites | tests |
+|---|---|---|
+| `d6cf0c9f1` (#4162) | 191 | 2586 |
+| +#4171 (`end_length` 32, `cond_specials` 26) | 193 | 2644 |
+| +#4170 (`end_if_nr` 14) | 194 | 2658 |
+| +#4169 (`literal_builtin_fold` 36) | 195 | 2694 |
+
+**Say which tree a baseline describes, and name the commit.** Three different totals
+were quoted across four PRs in one day — 193/2644, 192/2622 and 195/2694 — all correct,
+all for different trees, and the confusion cost real time. 193/2644 was measured on
+#4164's *stacked tip* while the feature line still lacked those two suites, so PRs based
+on the line reported totals *below* the recorded baseline and looked like regressions.
+A total lower than the baseline is not automatically a regression: check what the
+baseline was measured on first, because with stacked branches the answer is usually that
+it was a different tree. The table above is the reconciliation; keep it updated with the
+commit rather than replacing the number and losing the audit trail.
 
 All five LMDB suites RUN — `liblmdb-dev` is installed in the container, so the
 durable-store paths are genuinely exercised rather than skipped; a gated suite
