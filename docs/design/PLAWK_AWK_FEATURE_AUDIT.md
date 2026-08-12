@@ -17,7 +17,7 @@ only (runtime pending) · ❌ missing.
 
 | Feature | Status | Notes |
 |---|---|---|
-| `BEGIN` / `END` | ✅ | incl. constant `print` (BEGIN/END literal print). **`$0` / `$N` in END now read the LAST RECORD** (`END { print $1 }` → `c` on `a 1/b 2/c 3`, like gawk), in a straight-line END print, a statement list (`END { print $1; print $2 }`) and a concatenation (`print $1 " / " $2`). The last record is *gone* by END — at `end_print` the transient buffer holds the `end_of_file` sentinel — so retention is explicit: the record loop copies each record into a reused, geometrically grown buffer (`@plawk_lastrec_store`, the same shape as `@wam_rt_set`, so **constant memory and one memcpy per record**; interning per record would grow the atom table with every distinct record), and END re-materialises those bytes in the shared transient buffer and hands the reserved transient atom id to `llvm_emit_atom_field_slice/5` — the *same* slicer every in-loop field read uses. Honours FS/OFS/ORS/RS; `$N` past NF is empty; empty input gives an empty `$0`. **Pay-per-use**: the globals and defines are emitted as program-level IR only when `plawk_end_term_mentions_field/1` (the #4100 END-loop safety gate, *inverted* rather than restated) fires, so every program without an END field read is byte-identical (15/15 golden corpus). **Also in an END `if` branch** (`END { if (n == 3) print $1 }` — which had been silently printing `end_of_file`, a pre-existing wrong output surfaced and fixed by this line) **and an END loop body** (`while` / `do-while` / C-`for`, nested, inside an `if` inside a loop, with `break` — flipping #4100's gate). Those two needed no emitter parameterisation: `plawk_end_lastrec_rewrite/2` rewrites `field(N)` → `end_lastrec_field(N)` in the END actions (a structural walk, matching the gate) and **two clauses** on the shared `plawk_emit_print_expr_for_context/6` know the record source, so the rule-body print emitter and `plawk_scalar_action_sequence_pairs//15` are untouched. The rewrite covers conditions too, which is fail-safe: no condition emitter has a clause for `end_lastrec_field(_)`, so `END { if ($1 == "c") … }` declines rather than miscompiling. **`NF` in END counts the retained record** (`END { print NF }` → 2), in all three contexts — and in the `if`-branch and loop-body ones it had been printing **1**, the field count of the `end_of_file` sentinel, since those drivers existed: the gate was named `plawk_end_term_mentions_field/1` and matched `field(_)` only, so `NF` walked past the gate built to catch record reads. It is now `plawk_end_term_reads_record/1`, named for the property, matching `field(_)`, `special('NF')` and `special(length)` (`NR`/`RT` are process state and stay out). **`printf` arguments too** — `printf "%s\n", $1`, `printf "%s\n", $0`, `printf "%d\n", NF`, and mixes with scalars — producing the same `string_ptr` / `slice_len`+`slice_ptr` / `i64` call-argument vocabulary a record-context printf produces, so the format rewriter needed no new cases. Still declined: a field or `NF` in a loop/`if` **condition**, **`length`** in END (in the gate, not emitted), **builtins over the record** (`substr($0, …)`, `toupper($1)`), an **END-only** program (different driver, no retain), `printf` field args in the **assoc/mixed END chain** (different driver, no retain), the **associative** END-`if` branch (`plawk_assoc_end_if_branch_prints_ok/2` allows only string literals there — an unrelated pre-existing restriction), and under a **binary descriptor** |
+| `BEGIN` / `END` | ✅ | incl. constant `print` (BEGIN/END literal print). **`$0` / `$N` in END now read the LAST RECORD** (`END { print $1 }` → `c` on `a 1/b 2/c 3`, like gawk), in a straight-line END print, a statement list (`END { print $1; print $2 }`) and a concatenation (`print $1 " / " $2`). The last record is *gone* by END — at `end_print` the transient buffer holds the `end_of_file` sentinel — so retention is explicit: the record loop copies each record into a reused, geometrically grown buffer (`@plawk_lastrec_store`, the same shape as `@wam_rt_set`, so **constant memory and one memcpy per record**; interning per record would grow the atom table with every distinct record), and END re-materialises those bytes in the shared transient buffer and hands the reserved transient atom id to `llvm_emit_atom_field_slice/5` — the *same* slicer every in-loop field read uses. Honours FS/OFS/ORS/RS; `$N` past NF is empty; empty input gives an empty `$0`. **Pay-per-use**: the globals and defines are emitted as program-level IR only when `plawk_end_term_mentions_field/1` (the #4100 END-loop safety gate, *inverted* rather than restated) fires, so every program without an END field read is byte-identical (15/15 golden corpus). **Also in an END `if` branch** (`END { if (n == 3) print $1 }` — which had been silently printing `end_of_file`, a pre-existing wrong output surfaced and fixed by this line) **and an END loop body** (`while` / `do-while` / C-`for`, nested, inside an `if` inside a loop, with `break` — flipping #4100's gate). Those two needed no emitter parameterisation: `plawk_end_lastrec_rewrite/2` rewrites `field(N)` → `end_lastrec_field(N)` in the END actions (a structural walk, matching the gate) and **two clauses** on the shared `plawk_emit_print_expr_for_context/6` know the record source, so the rule-body print emitter and `plawk_scalar_action_sequence_pairs//15` are untouched. The rewrite covers conditions too, which is fail-safe: no condition emitter has a clause for `end_lastrec_field(_)`, so `END { if ($1 == "c") … }` declines rather than miscompiling. **`NF` in END counts the retained record** (`END { print NF }` → 2), in all three contexts — and in the `if`-branch and loop-body ones it had been printing **1**, the field count of the `end_of_file` sentinel, since those drivers existed: the gate was named `plawk_end_term_mentions_field/1` and matched `field(_)` only, so `NF` walked past the gate built to catch record reads. It is now `plawk_end_term_reads_record/1`, named for the property, matching `field(_)`, `special('NF')` and `special(length)` (`NR`/`RT` are process state and stay out). **`printf` arguments too** — `printf "%s\n", $1`, `printf "%s\n", $0`, `printf "%d\n", NF`, and mixes with scalars — producing the same `string_ptr` / `slice_len`+`slice_ptr` / `i64` call-argument vocabulary a record-context printf produces, so the format rewriter needed no new cases. **`length` / `length($N)` in END counts the retained record too**, in every route at once — a straight-line print, a concatenation (`print "L=" length`), a statement list, the mixed and assoc routes, a `printf` argument, an `if` branch and a loop body. It cost ONE clause, because the change that carried it first collapsed the duplication that had been making every previous cell cost one per route. Two collapses: (a) `NF` had an `end_lastrec_nf` expression row that was its in-loop `nf` row with `%line` swapped for the retained record Value — `length` had no such row, which is the whole reason every END form of it declined — so both became entries in `plawk_record_i64_read/5`, ONE table of record-reading i64 leaves parameterised on *which record they read*, with ONE retained-record wrapper (`end_lastrec_read(Kind)`) covering every entry, and `plawk_end_lastrec_nf_lines//2` generalised to `plawk_end_lastrec_i64_lines//4` with a NameBase parameter so NF keeps its own temporaries and its IR stays byte-identical; (b) the THREE END print walkers each enumerated the print-field vocabulary as clause heads, and each clause was three steps — separator, one per-kind call, recurse — around exactly the call `plawk_end_field_print_lines/4` already makes for that kind inside a concat, so "what may be printed in END" was FOUR lists with nothing keeping them equal (they had already drifted twice: a string scalar in a concat printed its atom id, and NF reached the routes one at a time). **24 clauses became 13**, each walker keeping only what is genuinely its own — `concat`, the one kind that is not a single value, and for the assoc route the table reads. Two smaller instances of the same shape went with it: `plawk_end_list_printf_arg_ok/2`'s two chains each listed the record-reading printf arguments (they differ only in `var` and `NR`), factored so `length` was one row not two; and `plawk_rule_body_print_field/1`, a THIRD list reached by an END loop body, needed one row. **32 pre-existing golden-corpus programs are byte-identical** across both collapses, which is the check that says a collapse was a collapse and not a rewrite. Bare `length` needed no case of its own: it parses to `length(field(0))` and field 0 measures the whole record, so the awk shorthand is already the arity-1 instance of the general form. One unintended-but-correct side effect, pinned rather than left unremarked: delegating the assoc walker passes the EMPTY scalar plan (as it already did for concat parts), which makes the shared generic expression clause reachable, so `END { print 1 + 2, c["x"] }` now builds and agrees with gawk. Tests: `tests/test_plawk_end_length.pl`. Still declined: a field or `NF` in a loop/`if` **condition**, **builtins over the record** (`substr($0, …)`, `toupper($1)`), an **END-only** program (different driver, no retain), a record read in a **for-in CHAIN** body (`END { for (k in c) print k, NF }` — `NF` and `length` decline there alike, so it is the chain body's print vocabulary rather than either feature), the **associative** END-`if` branch (`plawk_assoc_end_if_branch_prints_ok/2` allows only string literals there — an unrelated pre-existing restriction), and under a **binary descriptor** |
 | `/regex/` | ✅ | a bare `/re/` pattern matches the whole record with **full POSIX ERE**: a body with metacharacters lowers to `field_match(0, Regex)` and runs through the same regex engine as `~`/`!~` (`/foo.*bar/`, `/^(err\|warn):/`, character classes, alternation, groups). A metachar-free body keeps its fast native lowering (`^prefix` → `prefix/1`, all-literal → `contains/1`); `\/` is a literal slash |
 | `$N == "v"`, `$3 > 100` | ✅ | field-equality + numeric field guards; **string inequality `$N != "v"`** now parses too (the skip-a-value idiom `$1 != "header"`) — rewritten to `not_pat(field_eq(N,"v"))`, so it reuses the `==` guard codegen and composes with `!`/`&&`/`||`, `if` conditions, and for-in-END group-by. Numeric `$N != K` keeps the integer path. **Field string ordering `$N < "v"` / `<=` / `>` / `>=` landed too** — awk compares a field against a string constant lexically (never numeric, so `$1 < "10"` is byte-wise while `$1 < 10` stays the numeric path); lowered to a memcmp of the field slice against the interned literal (`@wam_atom_field_str_cmp_value`), composing with `!`/`&&`/`||`, `if` conditions, and for-in-END group-by |
 | `&& \|\| !` combinators | ✅ | awk precedence, parens, single-block lowering |
@@ -110,6 +110,74 @@ narrowed: an unassigned scalar has no slot, so `TAG == 0` in a non-union program
 declined either way, exactly as `zz == 0` still does.
 
 ## Prioritised gaps (recommended order)
+
+0. **Numeric specials as condition operands — LANDED.** A row of silent wrong outputs,
+   none of which declined:
+
+   ```
+   { if (length > 3) print $1 }         printed nothing;  gawk prints 3 records
+   { n = 3; if (n < length) print $1 }  printed nothing;  gawk prints 3 records
+   { n = 1; if (n < NF) print $1 }      printed nothing;  gawk prints 3 records
+   { n = 1; if (n < NR) print $1 }      printed nothing;  gawk prints 2 records
+   { n = 0; if (n < ARGC) print $1 }    printed nothing;  gawk prints 3 records
+   END { if (length == 6) … }           took the else branch for a 6-byte record
+   ```
+
+   while the BARE-PATTERN spelling of the same comparison was correct throughout
+   (`length > 3 { print $1 }`, `NF > 1 { print $1 }`).
+
+   **FOUR lists of one set**, and no two agreed: the parser's `match_special_name//1`
+   (NF/NR/FNR/RSTART/RLENGTH/ARGC — no `length`), the parser's `special_cmp_operand//1`
+   used by bare patterns (NF/NR/FNR/`length` — no RSTART/RLENGTH/ARGC), the emitter rows
+   in `plawk_while_cond_build/8` (NF only, both operand sides), and the loop-condition
+   validator `plawk_match_special/1` (everything but `length`). Which spelling of
+   `length > 3` worked depended on which grammar read it, and `if (n < length)` worked
+   while `while (n < length)` declined, because only the loop path consults the
+   validator.
+
+   **The right-hand operand was a contract with only one side implemented, and that is
+   the sharpest form of this defect class yet.** The codegen was ready and waiting:
+   `plawk_while_cond_build/8` carries a `cmp(Lhs, Op, special('NF'))` row for the
+   reversed order, `plawk_while_cond_operand/8` resolves RSTART/RLENGTH/ARGC/NR on
+   *either* side (it takes a `Side` argument), and `plawk_while_cond_rhs_ok/1` already
+   deferred to the validator for a `special(_)`. The parser never produced a special on
+   the right at all. Nothing in the codegen looked wrong; nothing in the parser looked
+   incomplete, because a fallback covered the case. **Reading either file alone showed no
+   defect.**
+
+   What turned the disagreement into wrong output rather than a decline: the identifier
+   fallbacks carried **no `scalar_cmp_reserved_name/1` guard**, though every sibling
+   production in the bare-pattern grammar did. Any special the grammar had not been
+   taught was captured as a variable, resolved to an unassigned slot worth 0, and the
+   comparison went quietly false. The guard is the durable half of the fix — the next
+   omission from any of the four lists is now a decline — and it also makes
+   `{ if (int > 2) … }` a parse error, which is what gawk does with a builtin name.
+
+   Fix: one `while_cmp` clause for `length` reusing `special_cmp_operand//1`'s own two
+   spellings (bare and `length($0)`) rather than copying them; two `while_cmp_rhs`
+   clauses so a special on the right parses as one; the reserved-name guard on both
+   identifier fallbacks; one row in `plawk_match_special/1`; and `length` rows in the
+   cond builder mirroring NF's, factored with them into
+   `plawk_record_cond_lhs_build/11` + `_rhs_build/11` parameterised on the
+   `plawk_record_i64_read/5` entry and a name fragment — so the four clauses NF and
+   `length` would otherwise need are two.
+
+   In END these DECLINE, where `NF` already was: there is no current record, and no
+   condition emitter knows about the retained record (the END *print* path does;
+   conditions never go through `plawk_end_lastrec_rewrite/2`). `length` previously
+   compiled there and measured the 11-byte `end_of_file` sentinel.
+
+   **Note for the next sweep: this class is invisible to build status.** All four
+   affected corpus programs built *before and after* — only the IR and the output
+   changed. 37 pre-existing golden programs stayed byte-identical. A status-only check
+   could never have found it; only gawk output comparison did.
+
+   *Still a follow-on:* `length($N)` for N > 0 is a parse error as a comparison operand —
+   equally in a condition and in a bare pattern, so the two spellings refuse it
+   identically rather than one silently diverging. Admitting it means carrying a field
+   index on the special term. Also unrelated but noticed alongside:
+   `END { if (NR == 3) print "x" }` fails with **exit 4** (a clang failure) rather than
+   declining cleanly. Tests: `tests/test_plawk_cond_specials.pl`.
 
 1. **`while` / `do-while` loop runtime — LANDED (PR 2).** The loop iterates its
    mutable scalar state via **loop-header phis** (reusing `foreach_loop`'s head

@@ -2945,8 +2945,29 @@ while_cond_and_rest(Cond, Cond) -->
 while_cmp(cmp(special(Name), Op, Rhs)) -->
     match_special_name(Name), identifier_boundary,
     ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
+% `length` / `length($0)` -- the record byte length is a comparison special exactly as
+% NF is, and it was MISSING from match_special_name//1 while being present in
+% special_cmp_operand//1, the list the BARE patterns use. Two lists of one set, so
+% `length > 3 { … }` was correct while `if (length > 3)` silently read a variable named
+% `length`. This clause reuses special_cmp_operand//1's own two spellings (bare, and the
+% parenthesised `length($0)`) rather than becoming a third copy of them.
+while_cmp(cmp(special(length), Op, Rhs)) -->
+    special_cmp_operand(length),
+    ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
+% The identifier fallback. The reserved-name guard is what makes the two lists above
+% FAIL SAFE rather than silently disagree: without it, any special this grammar has not
+% been taught is captured here as an ordinary variable, resolves to an unassigned slot
+% worth 0, and the comparison is quietly false instead of declining. That is exactly how
+% `if (length > 3)` came to print nothing. Every sibling production in the bare-pattern
+% grammar already carried this guard; this one did not.
+%
+% It also makes `if (int > 2)` decline. gawk rejects that outright as a syntax error --
+% `int` is a builtin, not a variable name -- while plawk silently accepted it and
+% compared a phantom.
 while_cmp(cmp(var(V), Op, Rhs)) -->
-    identifier(V), ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
+    identifier(V),
+    { \+ scalar_cmp_reserved_name(V) },
+    ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
 
 match_special_name('RSTART') --> "RSTART".
 match_special_name('RLENGTH') --> "RLENGTH".
@@ -2975,8 +2996,32 @@ while_cmp_rhs(string(Value)) -->
     quoted_string(Codes),
     { string_codes(Value, Codes) },
     !.
+% A SPECIAL on the RIGHT -- `if (n < NF)`, `if (n < NR)`, `if (n < ARGC)`,
+% `if (n < length)`. Every one of these was WRONG OUTPUT, not a decline: with no special
+% path here, `identifier//1` captured the name as a variable and the comparison read a
+% phantom slot worth 0, so `{ n = 1; if (n < NF) print $1 }` printed nothing where gawk
+% prints every record.
+%
+% The codegen had been ready the whole time. plawk_while_cond_build/8 carries a
+% `cmp(Lhs, Op, special('NF'))` row for the reversed operand order, and
+% plawk_while_cond_operand/8 resolves RSTART / RLENGTH / ARGC / NR on EITHER side (it
+% takes a Side argument). The parser simply never produced the term those were written
+% for -- the row waited and the fallback manufactured a phantom instead. That is the
+% sharpest form of this defect class: not two lists disagreeing about a value, but one
+% side of a contract never emitting what the other side already handles.
+%
+% Ordered before the identifier clause, with a cut, so a reserved name cannot fall
+% through to it; identifier_boundary//0 keeps `NRX` an ordinary identifier.
+while_cmp_rhs(special(Name)) -->
+    match_special_name(Name),
+    identifier_boundary,
+    !.
+while_cmp_rhs(special(length)) -->
+    special_cmp_operand(length),
+    !.
 while_cmp_rhs(var(W)) -->
-    identifier(W).
+    identifier(W),
+    { \+ scalar_cmp_reserved_name(W) }.
 
 %% if_condition(-Cond)//
 %
