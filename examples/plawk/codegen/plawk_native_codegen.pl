@@ -14532,7 +14532,7 @@ plawk_end_strip_free_lines(Lines, AssocPlan, BodyLines) :-
     append(BodyLines, FreeLines, Lines).
 
 %% plawk_assoc_end_print_body_ir(+PrintFields, +AssocPlan, +Descriptor,
-%%     +OutputSeparator, -IR) is det.
+%%     +OutputSeparator, +EndRecord, -IR) is det.
 %
 %  As plawk_assoc_end_print_ir/5 but WITHOUT the table frees.
 %
@@ -14547,8 +14547,8 @@ plawk_end_strip_free_lines(Lines, AssocPlan, BodyLines) :-
 %  occurrence the way a suffix search could.
 %  EndRecord is a parameter now, matching the mixed wrapper: the statement-list
 %  dispatcher threads the driver's token, so `END { print $1; print x }` compiles.
-%  The for-in CHAIN caller still passes `no_end_record` explicitly -- that driver has
-%  not been threaded, and its record-reading statements decline there, pinned.
+%  The for-in CHAIN caller also threads EndRecord (#4158); record-reading
+%  statements in that chain are no longer hardcoded to no_end_record.
 plawk_assoc_end_print_body_ir(PrintFields, AssocPlan, Descriptor, OutputSeparator,
         EndRecord, IR) :-
     phrase(plawk_assoc_end_print_lines(PrintFields, AssocPlan, Descriptor, OutputSeparator,
@@ -19138,8 +19138,8 @@ plawk_end_printf_arg_pairs([Arg | Args], StatePlan, EndRecord, Prefix, Index) --
     [GlobalIR-(SetupIR-CallArgs)],
     plawk_end_printf_arg_pairs(Args, StatePlan, EndRecord, Prefix, NextIndex).
 
-%% plawk_end_printf_arg(+Arg, +StatePlan, +Prefix, +Index, -Globals, -Setup,
-%%     -CallArgs) is semidet.
+%% plawk_end_printf_arg(+Arg, +StatePlan, +EndRecord, +Prefix, +Index,
+%%     -Globals, -Setup, -CallArgs) is semidet.
 %  One END printf argument, lowered to the printf call-argument vocabulary
 %  (`i64(IR)` / `f64(IR)` / `string_ptr(IR)`). Fails for anything END cannot
 %  reach (a field read, say), so the driver declines rather than emitting a
@@ -19188,9 +19188,10 @@ plawk_end_printf_arg(special('NR'), StatePlan, _EndRecord, _Prefix, _Index, [], 
 % `i64` for NF) -- so the format rewriter and the call renderer need no new cases
 % and cannot disagree with the in-loop printf about how a field argument is passed.
 %
-% Only reachable under end_record(FS): the assoc / mixed END chain passes
-% no_end_record, so a field argument there declines rather than projecting from a
-% store that was never emitted.
+% Only reachable under end_record(FS): pay-per-use retention. Drivers that have
+% not retained a last record (no_end_record) decline a field argument rather
+% than projecting from a store that was never emitted. The for-in / mixed END
+% chain threads EndRecord when retention is live (#4158).
 plawk_end_printf_arg(field(0), _StatePlan, end_record(_FieldSeparator), Prefix,
         Index, [], Lines, [string_ptr(PtrIR)]) :-
     !,
@@ -19360,12 +19361,19 @@ plawk_assoc_end_if_plan(Rules, Cond, AssocPlan) :-
 % The scalar fields the state plan must see: the branch print fields (so a
 % printed scalar gets a slot) plus the condition variables. String literals need
 % no slot, but leaving them in is harmless -- the state plan ignores non-vars.
+% When the condition mentions NR, contribute special('NR') so record-counter
+% discovery (plawk_fields_include_nr/1) emits %plawk_nr -- the END-if condition
+% operand already resolves NR to that SSA (plawk_while_cond_operand/8).
 plawk_end_if_print_fields(Cond, ThenActions, ElseActions, Fields) :-
     plawk_end_if_branch_fields(ThenActions, ThenFields),
     plawk_end_if_branch_fields(ElseActions, ElseFields),
     plawk_while_cond_vars(Cond, CondVars),
     plawk_vars_as_fields(CondVars, CondFields),
-    append([ThenFields, ElseFields, CondFields], Fields).
+    append([ThenFields, ElseFields, CondFields], Fields0),
+    (   plawk_cond_expr_uses_nr(Cond)
+    ->  Fields = [special('NR') | Fields0]
+    ;   Fields = Fields0
+    ).
 
 plawk_end_if_branch_fields([print(Fields)], Fields).
 plawk_end_if_branch_fields([], []).
