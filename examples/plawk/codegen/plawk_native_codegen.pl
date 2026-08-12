@@ -1167,9 +1167,21 @@ plawk_end_loop_actions_ok(Actions, EndRecord) :-
 %  clauses. The name now states the property, so the next record-reading term has
 %  an obvious home.
 %
-%  `length` (bare, i.e. `length($0)`) reads the record too and is listed even
-%  though every END form of it currently declines: if a later change admits it, the
-%  gate must already know, or it silently measures the EOF sentinel.
+%  `length` reads the record too. This clause was added SPECULATIVELY, while every END
+%  form of `length` still declined, on the reasoning that a later change admitting it
+%  must not have to remember to teach the gate -- or it would silently measure the EOF
+%  sentinel. That change has now landed, and the outcome is worth recording because the
+%  clause turned out not to be the one that mattered: `length` in an END print does not
+%  parse to `special(length)` at all, but to `length(field(N))`, which the STRUCTURAL
+%  clause below already admitted by recursing into its `field(_)` argument. The gate was
+%  therefore already correct for the shape that arrived, and the structural walk is what
+%  made it so -- a per-shape walker would have needed the speculation to guess right.
+%
+%  `special(length)` is what special_cmp_operand//1 produces for a bare PATTERN
+%  (`length > 3 { … }`), which never reaches an END term, so this clause is not yet
+%  reachable. It is kept rather than removed because the END-`if` condition grammar
+%  ought to produce this shape and currently does not -- it captures bare `length` as an
+%  ordinary variable named `length`, which is its own defect and its own change.
 %
 %  NOT here: `NR` and `RT` are process state that legitimately survives to END,
 %  and an assoc END-`if` CONDITION on a record-shaped key synthesises its own
@@ -6029,11 +6041,24 @@ plawk_while_cond_ok(cmp(special(Name), Op, Rhs)) :-
     plawk_icmp_pred(Op, _Pred),
     plawk_while_cond_rhs_ok(Rhs).
 
+% The numeric specials admitted as a LOOP condition operand, on either side
+% (plawk_while_cond_rhs_ok/1 defers here for the right-hand one).
+%
+% This is the FOURTH list of essentially one set, after the parser's
+% match_special_name//1 and special_cmp_operand//1 and the emitter rows in
+% plawk_while_cond_build/8 -- and, like two of the others, it was missing `length`. The
+% symptom was that `if (n < length)` worked while `while (n < length)` declined, because
+% only the loop path consults this validator (see plawk_scalar_rule_body_action/1). The
+% name is historical: it began as "specials set by match()" (RSTART/RLENGTH) and has
+% since accumulated the record specials, so it no longer describes what it holds --
+% which is the campaign's variant-0 shape (a name describing the implementation rather
+% than the property) sitting on top of the duplication.
 plawk_match_special('RSTART').
 plawk_match_special('RLENGTH').
 plawk_match_special('NR').
 plawk_match_special('ARGC').
 plawk_match_special('NF').
+plawk_match_special(length).
 
 plawk_while_cond_rhs_ok(int(N)) :- integer(N).
 plawk_while_cond_rhs_ok(var(_W)).
@@ -6097,26 +6122,71 @@ plawk_while_cond_build(or(A, B), Slots, CV, FS, Base, Path, CondVar, Lines) :-
 % either side; the RHS is an integer literal or a loop variable.
 plawk_while_cond_build(cmp(special('NF'), Op, Rhs), Slots, CondValues, FS, Base,
         Path, CondVar, Lines) :-
-    \+ sub_atom(Base, 0, _, _, plawk_endif),
-    !,
-    format(atom(NfBase), '~w_nf~w', [Base, Path]),
-    llvm_emit_atom_field_count('%line', FS, NfBase, CountLine),
-    plawk_while_cond_operand(Rhs, Slots, CondValues, Base, Path, r, ROperand, RLines),
-    plawk_icmp_pred(Op, Pred),
-    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
-    format(atom(Line), '  ~w = icmp ~w i64 %~w, ~w', [CondVar, Pred, NfBase, ROperand]),
-    append([[CountLine], RLines, [Line]], Lines).
+    plawk_record_cond_lhs_build(nf, nf, Op, Rhs, Slots, CondValues, FS, Base, Path,
+        CondVar, Lines).
 plawk_while_cond_build(cmp(Lhs, Op, special('NF')), Slots, CondValues, FS, Base,
+        Path, CondVar, Lines) :-
+    plawk_record_cond_rhs_build(nf, nf, Lhs, Op, Slots, CondValues, FS, Base, Path,
+        CondVar, Lines).
+% `length` / `length($0)` as a comparison operand, on either side. The SAME two shapes
+% NF has, differing only in which plawk_record_i64_read/5 entry they name and in the
+% name fragment their temporary uses -- so they are the same two clauses with two
+% parameters, not four clauses.
+%
+% This closes WRONG OUTPUT, and the parser half is the other piece: the condition
+% grammar captured bare `length` as a variable named `length`, worth 0, so
+% `{ if (length > 3) print $1 }` printed nothing where gawk prints three records, while
+% the bare-pattern spelling `length > 3 { print $1 }` was correct all along.
+plawk_while_cond_build(cmp(special(length), Op, Rhs), Slots, CondValues, FS, Base,
+        Path, CondVar, Lines) :-
+    plawk_record_cond_lhs_build(length(0), len, Op, Rhs, Slots, CondValues, FS, Base,
+        Path, CondVar, Lines).
+plawk_while_cond_build(cmp(Lhs, Op, special(length)), Slots, CondValues, FS, Base,
+        Path, CondVar, Lines) :-
+    plawk_record_cond_rhs_build(length(0), len, Lhs, Op, Slots, CondValues, FS, Base,
+        Path, CondVar, Lines).
+
+%% plawk_record_cond_lhs_build(+Kind, +NameFragment, +Op, +Rhs, …) is semidet.
+%% plawk_record_cond_rhs_build(+Kind, +NameFragment, +Lhs, +Op, …) is semidet.
+%
+%  A record-reading i64 leaf (plawk_record_i64_read/5) as the left or right operand of a
+%  condition comparison. Kind selects the leaf; NameFragment names its temporary, so NF
+%  keeps `_nf` and `length` gets `_len` and the IR of each stays readable and distinct.
+%
+%  `\+ sub_atom(Base, 0, _, _, plawk_endif)` is what keeps these out of an END
+%  condition: there is no current record there, `%line` holds the `end_of_file` sentinel,
+%  and no condition emitter knows about the RETAINED record (the END *print* path does,
+%  but conditions never go through plawk_end_lastrec_rewrite/2). So an END condition
+%  DECLINES. That is a Base-NAME test standing in for "am I in END", which is implicit
+%  coupling worth retiring in favour of an explicit gate at the driver -- recorded here
+%  rather than changed, because it is pre-existing, it is what NF already relies on, and
+%  a length row that did not mirror it would put `length` ahead of NF in a route where
+%  neither works.
+plawk_record_cond_lhs_build(Kind, NameFragment, Op, Rhs, Slots, CondValues, FS, Base,
         Path, CondVar, Lines) :-
     \+ sub_atom(Base, 0, _, _, plawk_endif),
     !,
-    format(atom(NfBase), '~w_nf~w', [Base, Path]),
-    llvm_emit_atom_field_count('%line', FS, NfBase, CountLine),
+    format(atom(ReadBase), '~w_~w~w', [Base, NameFragment, Path]),
+    plawk_record_i64_read(Kind, '%line', FS, ReadBase, ReadLine),
+    plawk_while_cond_operand(Rhs, Slots, CondValues, Base, Path, r, ROperand, RLines),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(Line), '  ~w = icmp ~w i64 %~w, ~w',
+        [CondVar, Pred, ReadBase, ROperand]),
+    append([[ReadLine], RLines, [Line]], Lines).
+
+plawk_record_cond_rhs_build(Kind, NameFragment, Lhs, Op, Slots, CondValues, FS, Base,
+        Path, CondVar, Lines) :-
+    \+ sub_atom(Base, 0, _, _, plawk_endif),
+    !,
+    format(atom(ReadBase), '~w_~w~w', [Base, NameFragment, Path]),
+    plawk_record_i64_read(Kind, '%line', FS, ReadBase, ReadLine),
     plawk_while_cond_operand(Lhs, Slots, CondValues, Base, Path, l, LOperand, LLines),
     plawk_icmp_pred(Op, Pred),
     format(atom(CondVar), '%~w_cond~w', [Base, Path]),
-    format(atom(Line), '  ~w = icmp ~w i64 ~w, %~w', [CondVar, Pred, LOperand, NfBase]),
-    append([[CountLine], LLines, [Line]], Lines).
+    format(atom(Line), '  ~w = icmp ~w i64 ~w, %~w',
+        [CondVar, Pred, LOperand, ReadBase]),
+    append([[ReadLine], LLines, [Line]], Lines).
 % strnum-vs-integer-literal comparison (step 3b): resolve the strnum id to text
 % and dispatch to @wam_strnum_cmp_int, which decides numeric (strnum looks
 % numeric) vs lexical (against the integer formatted as a decimal string) by the
@@ -14256,16 +14326,35 @@ plawk_end_list_statement(Kind, printf(string(Format), Args),
         printf(string(Format), Args)) :-
     maplist(plawk_end_list_printf_arg_ok(Kind), Args).
 
-% ASSOC chain: literals, plus RECORD arguments (`$N`, `NF`) -- the latter read the
-% RETAINED last record via the EndRecord token the driver now threads, not a scalar
-% slot, so the no-state-plan restriction does not apply to them. A `var` argument
-% still has no slot to read here, and `NR` would still reference a counter this
-% driver does not define -- both stay out.
-plawk_end_list_printf_arg_ok(assoc, field(N)) :-
-    !,
+%% plawk_end_list_printf_record_arg(+Arg) is semidet.
+%
+%  The RECORD-READING printf arguments, admitted by BOTH chains. They read the
+%  RETAINED last record via the EndRecord token the drivers thread, not a scalar slot,
+%  so the no-state-plan restriction does not apply to any of them.
+%
+%  Named once because the two chains differ ONLY in `var` and `NR`; everything else
+%  they admit is this set plus a literal plus a constant expression. It was written out
+%  per chain, which made a new record-reading argument two rows that nothing kept
+%  equal -- the campaign's recurring shape, and `length` was about to be the second
+%  instance of it here.
+%
+%  Falling through instead of committing on a malformed operand (`field(x)`) is
+%  equivalent to the per-chain clauses' cut-then-fail: the only remaining clause is
+%  plawk_begin_const_expr/1, which admits integer and float literals and binary trees
+%  of those, so no record shape can reach it.
+plawk_end_list_printf_record_arg(field(N)) :-
     integer(N),
     N >= 0.
-plawk_end_list_printf_arg_ok(assoc, special('NF')) :-
+plawk_end_list_printf_record_arg(special('NF')).
+plawk_end_list_printf_record_arg(length(field(N))) :-
+    integer(N),
+    N >= 0.
+
+% ASSOC chain: literals, constant expressions, and the record arguments above. A `var`
+% argument has no slot to read here, and `NR` would reference a counter this driver
+% does not define -- both stay out.
+plawk_end_list_printf_arg_ok(assoc, Arg) :-
+    plawk_end_list_printf_record_arg(Arg),
     !.
 plawk_end_list_printf_arg_ok(assoc, string(_Value)) :-
     !.
@@ -14274,15 +14363,13 @@ plawk_end_list_printf_arg_ok(assoc, Expr) :-
 % MIXED chain: scalar slots DO exist, so a `var` argument reads its final slot,
 % exactly as in the scalar END printf; record arguments ride the same EndRecord
 % token as in the assoc chain. `NR` is still excluded -- this driver's record
-% counter is not the one the END printf emitter would reference.
+% counter is not the one the END printf emitter would reference -- and it is checked
+% FIRST, because it must fail rather than be retried as anything else.
 plawk_end_list_printf_arg_ok(mixed, special('NR')) :-
     !,
     fail.
-plawk_end_list_printf_arg_ok(mixed, field(N)) :-
-    !,
-    integer(N),
-    N >= 0.
-plawk_end_list_printf_arg_ok(mixed, special('NF')) :-
+plawk_end_list_printf_arg_ok(mixed, Arg) :-
+    plawk_end_list_printf_record_arg(Arg),
     !.
 plawk_end_list_printf_arg_ok(mixed, var(_Name)) :-
     !.
@@ -14445,7 +14532,7 @@ plawk_end_strip_free_lines(Lines, AssocPlan, BodyLines) :-
     append(BodyLines, FreeLines, Lines).
 
 %% plawk_assoc_end_print_body_ir(+PrintFields, +AssocPlan, +Descriptor,
-%%     +OutputSeparator, -IR) is det.
+%%     +OutputSeparator, +EndRecord, -IR) is det.
 %
 %  As plawk_assoc_end_print_ir/5 but WITHOUT the table frees.
 %
@@ -14460,8 +14547,8 @@ plawk_end_strip_free_lines(Lines, AssocPlan, BodyLines) :-
 %  occurrence the way a suffix search could.
 %  EndRecord is a parameter now, matching the mixed wrapper: the statement-list
 %  dispatcher threads the driver's token, so `END { print $1; print x }` compiles.
-%  The for-in CHAIN caller still passes `no_end_record` explicitly -- that driver has
-%  not been threaded, and its record-reading statements decline there, pinned.
+%  The for-in CHAIN caller also threads EndRecord (#4158); record-reading
+%  statements in that chain are no longer hardcoded to no_end_record.
 plawk_assoc_end_print_body_ir(PrintFields, AssocPlan, Descriptor, OutputSeparator,
         EndRecord, IR) :-
     phrase(plawk_assoc_end_print_lines(PrintFields, AssocPlan, Descriptor, OutputSeparator,
@@ -14600,34 +14687,6 @@ plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], AssocPl
 % resolves against the slots, and this route has none, so such a concat declines -- which is
 % correct rather than a limitation, since a program with a scalar var is a MIXED program and
 % goes to the other walker.
-plawk_assoc_end_print_lines([field(Index) | Rest], AssocPlan, Descriptor, OutputSeparator,
-        EndRecord, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_lastrec_field_lines(Index, EndRecord, PrintIndex),
-    { NextPrintIndex is PrintIndex + 1 },
-    plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, EndRecord,
-        NextPrintIndex).
-plawk_assoc_end_print_lines([special('NF') | Rest], AssocPlan, Descriptor, OutputSeparator,
-        EndRecord, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_lastrec_nf_lines(EndRecord, PrintIndex),
-    { NextPrintIndex is PrintIndex + 1 },
-    plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, EndRecord,
-        NextPrintIndex).
-plawk_assoc_end_print_lines([special('NR') | Rest], AssocPlan, Descriptor, OutputSeparator,
-        EndRecord, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_nr_print_lines(state_plan([], []), PrintIndex),
-    { NextPrintIndex is PrintIndex + 1 },
-    plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, EndRecord,
-        NextPrintIndex).
-plawk_assoc_end_print_lines([special('RT') | Rest], AssocPlan, Descriptor, OutputSeparator,
-        EndRecord, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_rt_print_lines(PrintIndex),
-    { NextPrintIndex is PrintIndex + 1 },
-    plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, EndRecord,
-        NextPrintIndex).
 plawk_assoc_end_print_lines([concat(Parts) | Rest], AssocPlan, Descriptor, OutputSeparator,
         EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
@@ -14635,9 +14694,21 @@ plawk_assoc_end_print_lines([concat(Parts) | Rest], AssocPlan, Descriptor, Outpu
     { NextPrintIndex is PrintIndex + 1 },
     plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, EndRecord,
         NextPrintIndex).
-plawk_assoc_end_print_lines([string(Value) | Rest], AssocPlan, Descriptor, OutputSeparator, EndRecord, PrintIndex) -->
+% Every non-assoc, non-concat field kind: separator, THE per-kind emitter, recurse --
+% was five clauses (field, NF, NR, RT, string) around the same calls
+% plawk_end_field_print_lines/4 already makes.
+%
+% `state_plan([], [])` is the EMPTY scalar plan, which this route already passed to the
+% shared concat driver on the clause above, and for the same reason: a program with a
+% scalar variable is a MIXED program and goes to the other walker, so this route has no
+% slots. Passing the empty plan is not a narrowing -- a `var` reaching here finds no
+% slot and the program declines, exactly as it did when there was no `var` clause at all
+% -- and it keeps the refusal a property of the plan rather than of a missing clause
+% head, so it cannot be mistaken for an unimplemented cell later.
+plawk_assoc_end_print_lines([Field | Rest], AssocPlan, Descriptor, OutputSeparator,
+        EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_string_print_lines(Value, PrintIndex),
+    plawk_end_field_print_lines(Field, state_plan([], []), EndRecord, PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
     plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, EndRecord,
         NextPrintIndex).
@@ -14738,14 +14809,6 @@ plawk_mixed_end_print_lines([], _ScalarPlan, AssocPlan, _OutputSeparator, _EndRe
 % `END { print n }` where a rule also touches an assoc table. Shares the ONE bare-scalar
 % print emitter with the scalar-only route -- see plawk_end_scalar_var_print_lines/4 for
 % what this clause used to be and what that cost.
-plawk_mixed_end_print_lines([var(Name) | Rest], ScalarPlan, AssocPlan, OutputSeparator, EndRecord, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    { plawk_end_scalar_var_print_lines(ScalarPlan, Name, PrintIndex, Lines),
-      NextPrintIndex is PrintIndex + 1
-    },
-    Lines,
-    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
-        NextPrintIndex).
 plawk_mixed_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], ScalarPlan, AssocPlan, OutputSeparator, EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     { plawk_assoc_key_codes(Key, Codes),
@@ -14777,54 +14840,9 @@ plawk_mixed_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], ScalarP
     plawk_emit_lines(ValueLines),
     plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
         NextPrintIndex).
-plawk_mixed_end_print_lines([special('NR') | Rest], ScalarPlan, AssocPlan, OutputSeparator, EndRecord, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_nr_print_lines(ScalarPlan, PrintIndex),
-    { NextPrintIndex is PrintIndex + 1 },
-    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
-        NextPrintIndex).
-% `END { print NF }` beside an assoc read. Shares plawk_end_lastrec_nf_lines//2 with the
-% scalar-only route rather than copying it -- the copy is what went stale for the bare-scalar
-% print, and NF's `%s\0`-style details are exactly the kind that drift.
-%
-% Unlike the bare-scalar case this was NOT a stale duplicate: the clause was absent because
-% the CAPABILITY was absent. NF in END needs the last record, which is gone by then, so it
-% needs `EndRecord` -- the token plawk_end_record_source/4 issues together with the retain IR
-% that makes it true. The mixed driver never asked for it. So this is a threaded capability,
-% not a deleted duplicate, and it is additive work rather than free.
-plawk_mixed_end_print_lines([special('NF') | Rest], ScalarPlan, AssocPlan, OutputSeparator,
-        EndRecord, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_lastrec_nf_lines(EndRecord, PrintIndex),
-    { NextPrintIndex is PrintIndex + 1 },
-    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
-        NextPrintIndex).
-plawk_mixed_end_print_lines([special('RT') | Rest], ScalarPlan, AssocPlan, OutputSeparator, EndRecord, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_rt_print_lines(PrintIndex),
-    { NextPrintIndex is PrintIndex + 1 },
-    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
-        NextPrintIndex).
-% `END { print $N }` and `END { print "n=" c["x"] }` beside an assoc read -- a field read and
-% a concatenation, both reusing the scalar route's emitters
-% (plawk_end_lastrec_field_lines//3, plawk_end_concat_parts//5) rather than growing copies.
-%
-% These cost two clauses each because the CAPABILITY was threaded by the NF change: a field
-% read in END needs the retained last record, exactly as NF does, and `EndRecord` is now in
-% scope here. That is the layering claim paying off in the small -- thread a capability into a
-% route once and the remaining cells of that route's row fill in for the price of a clause,
-% whereas the same cells before it were unreachable at any price.
-%
-% Placed BEFORE the generic scalar-expression clause below, which would otherwise capture
-% `field(N)` and lower it as an in-loop field read -- against a record that no longer exists.
-% The scalar walker orders these the same way and for the same reason.
-plawk_mixed_end_print_lines([field(Index) | Rest], ScalarPlan, AssocPlan, OutputSeparator,
-        EndRecord, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_lastrec_field_lines(Index, EndRecord, PrintIndex),
-    { NextPrintIndex is PrintIndex + 1 },
-    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
-        NextPrintIndex).
+% concatenation beside an assoc read. The one field kind this walker still handles
+% itself, because it is the one kind that is not a single value: it drives
+% plawk_end_concat_parts//5 over its operands.
 plawk_mixed_end_print_lines([concat(Parts) | Rest], ScalarPlan, AssocPlan, OutputSeparator,
         EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
@@ -14832,16 +14850,22 @@ plawk_mixed_end_print_lines([concat(Parts) | Rest], ScalarPlan, AssocPlan, Outpu
     { NextPrintIndex is PrintIndex + 1 },
     plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
         NextPrintIndex).
-plawk_mixed_end_print_lines([Expr | Rest], ScalarPlan, AssocPlan, OutputSeparator, EndRecord, PrintIndex) -->
-    { plawk_end_scalar_expr(Expr) },
+% Every non-assoc, non-concat field kind: separator, THE per-kind emitter, recurse.
+%
+% This was six clauses -- var, NR, NF, RT, field, a generic scalar expression, string --
+% each of which was those three steps around the same one-line call that
+% plawk_end_field_print_lines/4 already makes for the same kind. Collapsing them means
+% the mixed route's vocabulary is no longer a second copy of the scalar route's: both
+% ask the same emitter, so `length` in END (and whatever comes after it) reaches this
+% route without a clause here, and the two routes cannot drift again the way the
+% bare-scalar print and the concat `var` part both did.
+%
+% ScalarPlan is threaded through, so a var / expression resolves against this route's
+% slots exactly as before.
+plawk_mixed_end_print_lines([Field | Rest], ScalarPlan, AssocPlan, OutputSeparator,
+        EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_expr_print_lines(Expr, ScalarPlan, PrintIndex),
-    { NextPrintIndex is PrintIndex + 1 },
-    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
-        NextPrintIndex).
-plawk_mixed_end_print_lines([string(Value) | Rest], ScalarPlan, AssocPlan, OutputSeparator, EndRecord, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_string_print_lines(Value, PrintIndex),
+    plawk_end_field_print_lines(Field, ScalarPlan, EndRecord, PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
     plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, EndRecord,
         NextPrintIndex).
@@ -15264,6 +15288,13 @@ plawk_rule_body_print_field(field(_)).
 % is accepted on exactly the same terms as a rule body.
 plawk_rule_body_print_field(end_lastrec_field(_)).
 plawk_rule_body_print_field(end_lastrec_nf).
+% `length` of the retained record, same reasoning as end_lastrec_nf above. This row is
+% what an END LOOP BODY needs: `END { while (n > 0) { print length; n-- } }` reaches
+% the shared sequence emitter, and without a row here it declined while the identical
+% NF form worked. The in-loop `length(field(_))` row further down is the other half of
+% the pair -- one measures `%line`, one the retained record, and this gate is the third
+% place that has to know both.
+plawk_rule_body_print_field(end_lastrec_read(length(_))).
 plawk_rule_body_print_field(string(_)).
 % a ternary `COND ? A : B`: the condition operands and both branches must be
 % i64-valued (field / NR / NF / int literal / length / i64 arithmetic); lowered
@@ -18039,19 +18070,54 @@ plawk_i64_expr_ir(nf, binfmt(Types), _Base, _GlobalBase, ValueIR, [], []) :-
     !,
     length(Types, NFields),
     format(atom(ValueIR), '~w', [NFields]).
-plawk_i64_expr_ir(nf, FieldSeparator, Base, _GlobalBase, ValueIR, [], [CountIR]) :-
-    llvm_emit_atom_field_count('%line', FieldSeparator, Base, CountIR),
+plawk_i64_expr_ir(nf, FieldSeparator, Base, _GlobalBase, ValueIR, [], [CallIR]) :-
+    plawk_record_i64_read(nf, '%line', FieldSeparator, Base, CallIR),
     format(atom(ValueIR), '%~w', [Base]).
-% `NF` of the RETAINED last record, in an expression that runs in END. The same
-% field counter, differing only in which record Value it is handed -- so END's NF
-% and a rule body's NF cannot come to disagree about how fields are counted.
-plawk_i64_expr_ir(end_lastrec_nf, FieldSeparator, Base, _GlobalBase, ValueIR, [],
-        Lines) :-
+%% plawk_record_i64_read(+Kind, +RecValueIR, +FieldSeparator, +Base, -CallIR) is semidet.
+%
+%  THE table of i64 leaves that read a record, parameterised on WHICH record they
+%  read. Each entry names an operation over an atom-backed text record and nothing
+%  about where that record came from.
+%
+%  This exists because "the same leaf over the retained record instead of the
+%  current one" was being written out once per leaf. `NF` had an `end_lastrec_nf`
+%  row that was its `nf` row with `%line` swapped for the retained Value and three
+%  lines of materialisation prepended; `length` had no such row, so every END form
+%  of `length` declined. With the table, the retained-record form is ONE clause
+%  (`end_lastrec_read(Kind)`, below) that works for every entry -- so the next
+%  record-reading i64 leaf gets its END form for free, and the in-loop and END forms
+%  of a leaf cannot come to disagree about how the operation itself is computed,
+%  because there is only one call site per operation.
+%
+%  Adding an entry here is the whole cost of a new record-reading i64 leaf. Note
+%  what an entry must NOT do: mention `%line`, or assume a record exists.
+plawk_record_i64_read(nf, RecValueIR, FieldSeparator, Base, CallIR) :-
+    llvm_emit_atom_field_count(RecValueIR, FieldSeparator, Base, CallIR).
+plawk_record_i64_read(length(FieldIndex), RecValueIR, FieldSeparator, Base, CallIR) :-
+    llvm_emit_atom_field_length(RecValueIR, FieldIndex, FieldSeparator, Base, CallIR).
+% A record-reading i64 leaf over the RETAINED last record, in an expression that runs
+% in END. ONE clause for every entry in plawk_record_i64_read/5: materialise the
+% retained bytes, then apply the leaf to that Value instead of to `%line`. So END's
+% NF and a rule body's NF cannot disagree about how fields are counted, and the same
+% now holds for `length` and for whatever is added next.
+%
+% `integer(FieldSeparator)` keeps a binary descriptor out: there is no retained text
+% record to measure, so a binfmt program declines rather than measuring nothing.
+plawk_i64_expr_ir(end_lastrec_read(Kind), FieldSeparator, Base, _GlobalBase, ValueIR,
+        [], Lines) :-
     integer(FieldSeparator),
     plawk_lastrec_value_lines(Base, RecValueIR, ValueLines),
-    llvm_emit_atom_field_count(RecValueIR, FieldSeparator, Base, CountIR),
+    plawk_record_i64_read(Kind, RecValueIR, FieldSeparator, Base, CallIR),
     format(atom(ValueIR), '%~w', [Base]),
-    append(ValueLines, [CountIR], Lines).
+    append(ValueLines, [CallIR], Lines).
+% The pre-existing spelling of the NF case, kept as an alias rather than rewritten
+% away: `end_lastrec_nf` is also the KIND passed to plawk_print_expr_value_base/3 and
+% plawk_print_expr_output_names/4, so it names generated temporaries in the prefixed
+% print path. Retiring the spelling would rename IR for no behavioural gain.
+plawk_i64_expr_ir(end_lastrec_nf, FieldSeparator, Base, GlobalBase, ValueIR,
+        GlobalParts, SetupParts) :-
+    plawk_i64_expr_ir(end_lastrec_read(nf), FieldSeparator, Base, GlobalBase, ValueIR,
+        GlobalParts, SetupParts).
 plawk_i64_expr_ir(special('NR'), FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts) :-
     plawk_i64_expr_ir(nr, FieldSeparator, Base, GlobalBase,
@@ -18064,8 +18130,8 @@ plawk_i64_expr_ir(length(field(FieldIndex)), FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts) :-
     plawk_i64_expr_ir(length(FieldIndex), FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts).
-plawk_i64_expr_ir(length(FieldIndex), FieldSeparator, Base, _GlobalBase, ValueIR, [], [LengthIR]) :-
-    llvm_emit_atom_field_length('%line', FieldIndex, FieldSeparator, Base, LengthIR),
+plawk_i64_expr_ir(length(FieldIndex), FieldSeparator, Base, _GlobalBase, ValueIR, [], [CallIR]) :-
+    plawk_record_i64_read(length(FieldIndex), '%line', FieldSeparator, Base, CallIR),
     format(atom(ValueIR), '%~w', [Base]).
 plawk_i64_expr_ir(int(field(FieldIndex)), FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts) :-
@@ -19072,8 +19138,8 @@ plawk_end_printf_arg_pairs([Arg | Args], StatePlan, EndRecord, Prefix, Index) --
     [GlobalIR-(SetupIR-CallArgs)],
     plawk_end_printf_arg_pairs(Args, StatePlan, EndRecord, Prefix, NextIndex).
 
-%% plawk_end_printf_arg(+Arg, +StatePlan, +Prefix, +Index, -Globals, -Setup,
-%%     -CallArgs) is semidet.
+%% plawk_end_printf_arg(+Arg, +StatePlan, +EndRecord, +Prefix, +Index,
+%%     -Globals, -Setup, -CallArgs) is semidet.
 %  One END printf argument, lowered to the printf call-argument vocabulary
 %  (`i64(IR)` / `f64(IR)` / `string_ptr(IR)`). Fails for anything END cannot
 %  reach (a field read, say), so the driver declines rather than emitting a
@@ -19122,9 +19188,10 @@ plawk_end_printf_arg(special('NR'), StatePlan, _EndRecord, _Prefix, _Index, [], 
 % `i64` for NF) -- so the format rewriter and the call renderer need no new cases
 % and cannot disagree with the in-loop printf about how a field argument is passed.
 %
-% Only reachable under end_record(FS): the assoc / mixed END chain passes
-% no_end_record, so a field argument there declines rather than projecting from a
-% store that was never emitted.
+% Only reachable under end_record(FS): pay-per-use retention. Drivers that have
+% not retained a last record (no_end_record) decline a field argument rather
+% than projecting from a store that was never emitted. The for-in / mixed END
+% chain threads EndRecord when retention is live (#4158).
 plawk_end_printf_arg(field(0), _StatePlan, end_record(_FieldSeparator), Prefix,
         Index, [], Lines, [string_ptr(PtrIR)]) :-
     !,
@@ -19144,6 +19211,18 @@ plawk_end_printf_arg(special('NF'), _StatePlan, end_record(FieldSeparator), Pref
     format(atom(Base), '~w_arg~w_nf', [Prefix, Index]),
     plawk_i64_expr_ir(end_lastrec_nf, FieldSeparator, Base, Base, ValueIR, [],
         Lines).
+% `length` / `length($N)` as a printf argument: the same retained-record leaf, differing
+% from NF only in which entry of plawk_record_i64_read/5 it names. Placed before the
+% generic value-expression clause below, which would otherwise try to lower it as
+% in-loop arithmetic against a record that no longer exists.
+plawk_end_printf_arg(length(field(FieldIndex)), _StatePlan, end_record(FieldSeparator),
+        Prefix, Index, [], Lines, [i64(ValueIR)]) :-
+    integer(FieldIndex),
+    FieldIndex >= 0,
+    !,
+    format(atom(Base), '~w_arg~w_len', [Prefix, Index]),
+    plawk_i64_expr_ir(end_lastrec_read(length(FieldIndex)), FieldSeparator, Base, Base,
+        ValueIR, [], Lines).
 % A string literal argument gets its own module global.
 plawk_end_printf_arg(string(Value), _StatePlan, _EndRecord, Prefix, Index, [GlobalIR], [PtrLine],
         [string_ptr(PtrIR)]) :-
@@ -19244,6 +19323,7 @@ plawk_end_branch_field_read_ok(end_record(_FieldSeparator), _Actions) :-
 plawk_end_branch_field_read_ok(no_end_record, Actions) :-
     \+ plawk_end_term_reads_record(Actions).
 
+
 plawk_end_if_branch_shape_ok([print(_)], []).
 plawk_end_if_branch_shape_ok([print(_)], [print(_)]).
 
@@ -19281,12 +19361,19 @@ plawk_assoc_end_if_plan(Rules, Cond, AssocPlan) :-
 % The scalar fields the state plan must see: the branch print fields (so a
 % printed scalar gets a slot) plus the condition variables. String literals need
 % no slot, but leaving them in is harmless -- the state plan ignores non-vars.
+% When the condition mentions NR, contribute special('NR') so record-counter
+% discovery (plawk_fields_include_nr/1) emits %plawk_nr -- the END-if condition
+% operand already resolves NR to that SSA (plawk_while_cond_operand/8).
 plawk_end_if_print_fields(Cond, ThenActions, ElseActions, Fields) :-
     plawk_end_if_branch_fields(ThenActions, ThenFields),
     plawk_end_if_branch_fields(ElseActions, ElseFields),
     plawk_while_cond_vars(Cond, CondVars),
     plawk_vars_as_fields(CondVars, CondFields),
-    append([ThenFields, ElseFields, CondFields], Fields).
+    append([ThenFields, ElseFields, CondFields], Fields0),
+    (   plawk_cond_expr_uses_nr(Cond)
+    ->  Fields = [special('NR') | Fields0]
+    ;   Fields = Fields0
+    ).
 
 plawk_end_if_branch_fields([print(Fields)], Fields).
 plawk_end_if_branch_fields([], []).
@@ -19558,72 +19645,44 @@ plawk_end_scalar_var_print_lines(StatePlan, Name, PrintIndex, Lines) :-
             PrintIndex, Lines)
     ).
 
-plawk_scalar_end_print_lines([var(Name) | Rest], StatePlan, OutputSeparator,
-        EndRecord, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    { plawk_end_scalar_var_print_lines(StatePlan, Name, PrintIndex, Lines),
-      NextPrintIndex is PrintIndex + 1
-    },
-    Lines,
-    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, EndRecord,
-        NextPrintIndex).
-plawk_scalar_end_print_lines([special('NR') | Rest], StatePlan, OutputSeparator,
-        EndRecord, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_nr_print_lines(StatePlan, PrintIndex),
-    { NextPrintIndex is PrintIndex + 1 },
-    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, EndRecord,
-        NextPrintIndex).
-plawk_scalar_end_print_lines([special('RT') | Rest], StatePlan, OutputSeparator,
-        EndRecord, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_rt_print_lines(PrintIndex),
-    { NextPrintIndex is PrintIndex + 1 },
-    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, EndRecord,
-        NextPrintIndex).
-% `$0` / `$N` in END -- projected from the RETAINED last record. Reachable only
-% under end_record(FS): that term is produced by the driver clause that also
-% emits the retain call, so the projection cannot be emitted without its store
-% (see plawk_end_record_source/4).
-plawk_scalar_end_print_lines([field(Index) | Rest], StatePlan, OutputSeparator,
-        EndRecord, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_lastrec_field_lines(Index, EndRecord, PrintIndex),
-    { NextPrintIndex is PrintIndex + 1 },
-    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, EndRecord,
-        NextPrintIndex).
-% `NF` in END -- the field count of the RETAINED record. Same gating as a field
-% read: end_record(FS) only, so it cannot count the EOF sentinel. Placed before the
-% generic scalar-expression clause, which has no NF row anyway.
-plawk_scalar_end_print_lines([special('NF') | Rest], StatePlan, OutputSeparator,
-        EndRecord, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_lastrec_nf_lines(EndRecord, PrintIndex),
-    { NextPrintIndex is PrintIndex + 1 },
-    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, EndRecord,
-        NextPrintIndex).
-plawk_scalar_end_print_lines([Expr | Rest], StatePlan, OutputSeparator, EndRecord,
-        PrintIndex) -->
-    { plawk_end_scalar_expr(Expr) },
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_expr_print_lines(Expr, StatePlan, PrintIndex),
-    { NextPrintIndex is PrintIndex + 1 },
-    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, EndRecord,
-        NextPrintIndex).
-plawk_scalar_end_print_lines([string(Value) | Rest], StatePlan, OutputSeparator,
-        EndRecord, PrintIndex) -->
-    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_string_print_lines(Value, PrintIndex),
-    { NextPrintIndex is PrintIndex + 1 },
-    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, EndRecord,
-        NextPrintIndex).
 % concatenation in END (`print "total: " sum`): one leading separator, then each
 % operand printed adjacently (no separator between). Each part uses a unique
 % index (PrintIndex*1000 + part) so the fixed-name emitters don't collide.
+%
+% The only field kind this walker still handles itself, because it is the one kind
+% that is not a single value: it drives plawk_end_concat_parts//5 over its operands.
 plawk_scalar_end_print_lines([concat(Parts) | Rest], StatePlan, OutputSeparator,
         EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     plawk_end_concat_parts(Parts, StatePlan, EndRecord, PrintIndex, 0),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, EndRecord,
+        NextPrintIndex).
+% Every other field kind: separator, then THE per-kind emitter, then recurse.
+%
+% This was eight clauses -- var, NR, RT, field, NF, a generic scalar expression,
+% string, concat -- and seven of them were the same three steps around a different
+% one-line call, each of those calls being exactly what plawk_end_field_print_lines/4
+% already does for the same kind inside a concatenation. So the vocabulary of "what
+% may be printed in END" was written down twice: once as this walker's clause heads
+% and once as that emitter's, with nothing keeping the two lists equal.
+%
+% They had already drifted, which is what prompted the collapse: `length` in END had
+% to be added in both places, and the scalar route's `var` clause and the concat
+% part's `var` clause had disagreed for as long as both existed (see
+% plawk_end_field_print_lines/4's own note -- a string scalar in a concat printed its
+% atom id). Now a kind added to plawk_end_field_print_lines/4 is printable BOTH on its
+% own and inside a concatenation, with no second edit and no possibility of the two
+% disagreeing.
+%
+% Clause order inside plawk_end_field_print_lines/4 carries the same obligation this
+% walker's order carried: `field(N)` and `NF` must precede the generic
+% scalar-expression clause, or a field read lowers as an IN-LOOP read against a record
+% that no longer exists by END. It does, and that is pinned in the tests.
+plawk_scalar_end_print_lines([Field | Rest], StatePlan, OutputSeparator, EndRecord,
+        PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_field_print_lines(Field, StatePlan, EndRecord, PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
     plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, EndRecord,
         NextPrintIndex).
@@ -19642,6 +19701,16 @@ plawk_end_field_print_lines(field(Index), _StatePlan, EndRecord, PrintIndex) -->
     plawk_end_lastrec_field_lines(Index, EndRecord, PrintIndex).
 plawk_end_field_print_lines(special('NF'), _StatePlan, EndRecord, PrintIndex) -->
     plawk_end_lastrec_nf_lines(EndRecord, PrintIndex).
+% `length` / `length($N)` in END, over the retained record. `integer(FieldIndex)` is
+% checked here rather than in plawk_record_i64_read/5: the in-loop `length` row has
+% never required it, so guarding the table would narrow a shipped path, while guarding
+% the entry point keeps the new surface strict.
+plawk_end_field_print_lines(length(field(FieldIndex)), _StatePlan, EndRecord,
+        PrintIndex) -->
+    { integer(FieldIndex),
+      FieldIndex >= 0
+    },
+    plawk_end_lastrec_length_lines(FieldIndex, EndRecord, PrintIndex).
 % A bare scalar variable inside a concatenation: THE shared emitter, the same one
 % every standalone END print of a scalar goes through.
 %
@@ -19765,22 +19834,44 @@ plawk_end_lastrec_field_lines(Index, end_record(FieldSeparator), PrintIndex) -->
     },
     plawk_emit_lines(Lines).
 
-%% plawk_end_lastrec_nf_lines(+EndRecord, +PrintIndex)//
+%% plawk_end_lastrec_i64_lines(+Kind, +NameBase, +EndRecord, +PrintIndex)//
 %
-%  `NF` of the retained record in a straight-line END print. Goes through the same
-%  plawk_i64_expr_ir(end_lastrec_nf, …) row the prefixed print emitter uses, so the
-%  two contexts share one field counter.
-plawk_end_lastrec_nf_lines(end_record(FieldSeparator), PrintIndex) -->
-    { format(atom(Base), 'end_nf_~w', [PrintIndex]),
-      plawk_i64_expr_ir(end_lastrec_nf, FieldSeparator, Base, Base, ValueIR, [],
-          SetupLines),
-      format(atom(FmtVar), 'end_nf_fmt_~w', [PrintIndex]),
-      format(atom(PrintVar), 'printed_end_nf_~w', [PrintIndex]),
+%  Print a record-reading i64 leaf (plawk_record_i64_read/5) over the RETAINED record
+%  in a straight-line END print. Goes through the same
+%  plawk_i64_expr_ir(end_lastrec_read(Kind), …) row the prefixed print emitter uses,
+%  so the two contexts share one computation per leaf.
+%
+%  NameBase parameterises the generated temporaries (`end_nf` / `end_len`) so each
+%  leaf keeps its own readable names and NF's IR stays byte-identical to what it was
+%  before this became shared -- the *name flavour* parameter the campaign's handoff
+%  recommends for exactly this, instead of a second copy of the emitter.
+plawk_end_lastrec_i64_lines(Kind, NameBase, end_record(FieldSeparator), PrintIndex) -->
+    { format(atom(Base), '~w_~w', [NameBase, PrintIndex]),
+      plawk_i64_expr_ir(end_lastrec_read(Kind), FieldSeparator, Base, Base, ValueIR,
+          [], SetupLines),
+      format(atom(FmtVar), '~w_fmt_~w', [NameBase, PrintIndex]),
+      format(atom(PrintVar), 'printed_~w_~w', [NameBase, PrintIndex]),
       llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
           PrintLines),
       append(SetupLines, PrintLines, Lines)
     },
     plawk_emit_lines(Lines).
+
+%% plawk_end_lastrec_nf_lines(+EndRecord, +PrintIndex)//
+%
+%  `NF` of the retained record. Kept as a named entry point because it has callers in
+%  all three END walkers and in the concat part emitter.
+plawk_end_lastrec_nf_lines(EndRecord, PrintIndex) -->
+    plawk_end_lastrec_i64_lines(nf, end_nf, EndRecord, PrintIndex).
+
+%% plawk_end_lastrec_length_lines(+FieldIndex, +EndRecord, +PrintIndex)//
+%
+%  `length` / `length($N)` of the retained record. Bare `length` parses to
+%  `length(field(0))`, and field 0 measures the whole record, so the bare form needs
+%  no separate case -- the awk shorthand is already the arity-1 case of the general
+%  one, which is why this row cost a name and nothing else.
+plawk_end_lastrec_length_lines(FieldIndex, EndRecord, PrintIndex) -->
+    plawk_end_lastrec_i64_lines(length(FieldIndex), end_len, EndRecord, PrintIndex).
 
 %% plawk_lastrec_text_ptr_lines(+Base, -PtrIR, -Lines) is det.
 %
@@ -21898,6 +21989,19 @@ plawk_emit_print_expr_for_context(end_lastrec_nf, FieldSeparator, Context,
     plawk_i64_expr_ir(end_lastrec_nf, FieldSeparator, Base, Base, ValueIR,
         GlobalParts, SetupParts).
 
+% `length` / `length($N)` in a PREFIXED print -- an END `if` branch. Named
+% `end_lastrec_len` for its temporaries, so the two retained-record i64 leaves stay
+% distinguishable in the IR while sharing plawk_i64_expr_ir(end_lastrec_read(…), …).
+plawk_emit_print_expr_for_context(end_lastrec_read(length(FieldIndex)), FieldSeparator,
+        Context, i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
+    Context = print_context(prefixed, _Prefix, _Index),
+    integer(FieldIndex),
+    FieldIndex >= 0,
+    plawk_print_expr_value_base(Context, end_lastrec_len, Base),
+    plawk_print_expr_output_names(Context, end_lastrec_len, FmtPrefix, PrintPrefix),
+    plawk_i64_expr_ir(end_lastrec_read(length(FieldIndex)), FieldSeparator, Base, Base,
+        ValueIR, GlobalParts, SetupParts).
+
 %% plawk_end_lastrec_rewrite(+Term0, -Term) is det.
 %
 %  Rewrite every read of the current record in an END action term to a read of the
@@ -21919,6 +22023,14 @@ plawk_emit_print_expr_for_context(end_lastrec_nf, FieldSeparator, Context,
 plawk_end_lastrec_rewrite(field(Index), end_lastrec_field(Index)) :-
     !.
 plawk_end_lastrec_rewrite(special('NF'), end_lastrec_nf) :-
+    !.
+% `length` / `length($N)`. This clause must come before the generic compound walk
+% below, or `length(field(0))` would be rewritten INSIDE OUT to
+% `length(end_lastrec_field(0))` -- a term no emitter has a row for, so the program
+% declined. That was the fail-safe working, and it is why every END form of `length`
+% declined while NF worked: the rewrite reached the argument and stopped there.
+plawk_end_lastrec_rewrite(length(field(Index)), end_lastrec_read(length(Index))) :-
+    integer(Index),
     !.
 plawk_end_lastrec_rewrite(Term0, Term) :-
     compound(Term0),
