@@ -67,7 +67,8 @@ plawk_parse_source(Source, Program, PrologClauses) :-
     string_codes(Stripped, Codes),
     phrase(plawk_program(Program0, FunctionClauses, DynEntries), Codes),
     plawk_normalise_c_for(Program0, Program1),
-    plawk_normalise_getline_loops(Program1, Program),
+    plawk_normalise_getline_loops(Program1, Program2),
+    plawk_fold_literal_builtins(Program2, Program),
     append(BlockClauses, FunctionClauses, PrologClauses),
     plawk_dynentry_reserved_check(DynEntries, PrologClauses).
 
@@ -195,6 +196,212 @@ plawk_normalise_getline_loops(program(Begin, Rules0, End),
 % and the like) has no plain rule bodies to rewrite; pass it through unchanged.
 % (getline inside a pass block is a follow-on.)
 plawk_normalise_getline_loops(Program, Program).
+
+%% plawk_builtin_string_arg(+Arg) is semidet.
+%
+%  The argument shapes a string builtin -- length / substr / index / tolower /
+%  toupper -- accepts: a bare field, which the runtime projects, or a string
+%  LITERAL, which plawk_fold_literal_builtins/2 answers at compile time so that the
+%  call is gone before codegen sees it.
+%
+%  This replaced EIGHT copies of the goal `Field = field(_)`, one per builtin
+%  production, spread across two nonterminals -- `field_expr//1` for general use and
+%  `scalar_delta_expr//1` for the `+=` right-hand side -- with `length` and `index`
+%  written out in both. Eight copies of a refusal is the same defect as eight copies
+%  of a capability: the argument vocabulary could not widen anywhere without being
+%  widened in eight places, and nothing named the vocabulary, so nothing showed that
+%  the eight were meant to agree.
+%
+%  Note what the copies were refusing. `field_expr//1` already parses literals,
+%  variables, concatenations and nested calls; the guard ran AFTER a fully general
+%  argument had been parsed and threw it away. The narrowness was never in the
+%  grammar -- it was eight post-hoc assertions that the parsed argument be a field.
+%  That is also why the refusal surfaced as a PARSE error (exit 2) rather than a
+%  clean decline (exit 3): the guard failed, so the production failed, so the parse
+%  failed, and `length("abc")` looked like a syntax error rather than an
+%  unimplemented argument kind.
+%
+%  `int_field_expr//1` deliberately still takes a field only. `int("3.7")` is not
+%  this vocabulary: it is numeric coercion of a string, with strtod prefix
+%  semantics ("3.7abc" is 3, "abc" is 0) that the folds below do not implement. It
+%  keeps the narrow guard so the refusal stays honest rather than being widened to
+%  something no fold answers.
+plawk_builtin_string_arg(field(_)).
+plawk_builtin_string_arg(string(_)).
+
+%% plawk_fold_literal_builtins(+Term0, -Term)
+%
+%  Answer a string builtin applied to a string LITERAL at compile time:
+%
+%      length("abc")         -> int(3)
+%      toupper("abc")        -> string("ABC")
+%      tolower("ABC")        -> string("abc")
+%      substr("hello", 2, 3) -> string("ell")
+%      index("abcd", "bc")   -> int(2)
+%
+%  Why fold instead of emitting code. The answer is a LITERAL, and literals are
+%  already in the vocabulary of every route -- rule-body print, printf arguments,
+%  concatenation parts, arithmetic operands, `+=` deltas, and the END walkers. So
+%  folding buys the whole family in every context without a row per route, which is
+%  the opposite of how this campaign has had to close most gaps. Nothing new reaches
+%  the backend at all: `print length("abc")` compiles to what `print 3` compiles to.
+%
+%  The walk is GENERIC -- it recurses through any compound term rather than through
+%  the program's known shape. Both existing normalisations here are structural and
+%  both show what that costs: plawk_normalise_c_for/2 originally rewrote only Rules
+%  and left a `c_for/4` sitting in END for the driver to reject, and
+%  plawk_normalise_getline_loops/2 still passes `program_passes` through untouched.
+%  A rewrite that knows no sites cannot miss one.
+%
+%  Bottom-up: arguments fold before the call above them, so nesting collapses in a
+%  single pass (`length(toupper("ab"))` -> `length(string("AB"))` -> `int(2)`).
+%  plawk_builtin_string_arg/1 does not admit a nested call as an argument yet, so
+%  that surface is unreachable today; the fold is written for it so that admitting
+%  it later costs nothing here.
+%
+%  ASCII only, deliberately. plawk's runtime counts and slices BYTES and maps case
+%  over ASCII alone -- `toupper("café")` leaves the accented byte pair untouched --
+%  which agrees with gawk in a POSIX locale and was verified against it. For code
+%  points 0..127 one code point is one byte, so a fold restricted to ASCII is
+%  byte-exact by construction. A literal carrying any code point above 127 is left
+%  UNFOLDED, and codegen then declines it; that is honest, where a count computed in
+%  code points while the runtime counts bytes would be the one failure this campaign
+%  treats as worst -- silent wrong output.
+plawk_fold_literal_builtins(Term0, Term) :-
+    (   compound(Term0)
+    ->  Term0 =.. [Name | Args0],
+        maplist(plawk_fold_literal_builtins, Args0, Args),
+        Rebuilt =.. [Name | Args],
+        (   plawk_fold_literal_builtin(Rebuilt, Folded)
+        ->  Term = Folded
+        ;   Term = Rebuilt
+        )
+    ;   Term = Term0
+    ).
+
+%% plawk_fold_literal_builtin(+Call, -Literal) is semidet.
+%
+%  One clause per foldable shape. Each FAILS rather than guessing when it cannot
+%  answer exactly -- a non-ASCII literal, a non-integer position -- leaving the call
+%  standing for codegen to decline. Failing is the safe direction: a decline is
+%  visible, a wrong constant is not.
+%
+%  length and index answer a NUMBER, so they fold to `int(N)`, which is what the
+%  parser already produces for a numeric literal in an arithmetic operand
+%  (`add_i64(int(3), int(1))`) and in a `+=` delta. toupper, tolower and substr
+%  answer a STRING and fold to `string(S)`.
+plawk_fold_literal_builtin(length(string(Value)), int(Length)) :-
+    plawk_ascii_literal_codes(Value, Codes),
+    length(Codes, Length).
+plawk_fold_literal_builtin(toupper(string(Value)), string(Upper)) :-
+    plawk_ascii_literal_codes(Value, Codes),
+    maplist(plawk_ascii_upper_code, Codes, UpperCodes),
+    string_codes(Upper, UpperCodes).
+plawk_fold_literal_builtin(tolower(string(Value)), string(Lower)) :-
+    plawk_ascii_literal_codes(Value, Codes),
+    maplist(plawk_ascii_lower_code, Codes, LowerCodes),
+    string_codes(Lower, LowerCodes).
+plawk_fold_literal_builtin(substr(string(Value), Start, LengthSpec), string(Sub)) :-
+    plawk_ascii_literal_codes(Value, Codes),
+    plawk_substr_codes(Codes, Start, LengthSpec, SubCodes),
+    string_codes(Sub, SubCodes).
+plawk_fold_literal_builtin(index(string(Value), string(Needle)), int(Position)) :-
+    plawk_ascii_literal_codes(Value, Codes),
+    plawk_ascii_literal_codes(Needle, NeedleCodes),
+    plawk_index_codes(Codes, NeedleCodes, Position).
+
+%  An integer literal in a PRINTED position is its decimal text.
+%
+%  This is not a new convention. The grammar already produces `string("3")` for
+%  `print 3` and `int(3)` for `3 + 1`, because a printed position and a computed one
+%  want different spellings of the same number. The folds above answer length and
+%  index as `int(N)`, which is right for an arithmetic operand and for a `+=` delta;
+%  a folded answer that lands directly in a print field or a concatenation part
+%  needs the printed spelling instead, and gets it here. Because the walk is
+%  bottom-up, the arguments have already folded by the time the enclosing `print/1`
+%  is rebuilt, so `print length("abc")` arrives here as `print([int(3)])` and leaves
+%  as `print([string("3")])` -- byte-identical to what `print 3` compiles to.
+%
+%  Why rewrite here rather than teach the END walkers an int field kind: the END
+%  string printer references a c-string constant that a SEPARATE globals walker
+%  declares from the field list alone, so an int clause added to the emitter would
+%  reference a global nobody emitted -- an undefined symbol, which is precisely the
+%  exit-4 clang failure this campaign hit when the NF cell was threaded without its
+%  globals. plawk_assoc_end_int_key_rewrite/4 in the codegen reaches the same
+%  conclusion for `arr[5]` -> `arr["5"]` and states the reason at length: rewriting
+%  the term upstream leaves every walker, and every globals walker, exactly as it is.
+%
+%  Only a TOP-LEVEL field is rewritten. `print 3 + 1` is ONE field whose operands are
+%  int(3) and int(1) and must stay that way -- inside the arithmetic term the
+%  position is computed, not printed. maplist over the list only, never into it.
+plawk_fold_literal_builtin(print(Fields0), print(Fields)) :-
+    is_list(Fields0),
+    maplist(plawk_printed_literal_field, Fields0, Fields),
+    Fields0 \== Fields.
+plawk_fold_literal_builtin(concat(Parts0), concat(Parts)) :-
+    is_list(Parts0),
+    maplist(plawk_printed_literal_field, Parts0, Parts),
+    Parts0 \== Parts.
+
+plawk_printed_literal_field(int(Value), string(Text)) :-
+    integer(Value),
+    !,
+    number_string(Value, Text).
+plawk_printed_literal_field(Field, Field).
+
+%  A literal every code point of which is ASCII, so that its code-point count and
+%  its slices equal the runtime's byte count and byte slices exactly.
+plawk_ascii_literal_codes(Value, Codes) :-
+    string(Value),
+    string_codes(Value, Codes),
+    forall(member(Code, Codes), Code =< 127).
+
+plawk_ascii_upper_code(Code, Upper) :-
+    (   Code >= 0'a, Code =< 0'z
+    ->  Upper is Code - 32
+    ;   Upper = Code
+    ).
+
+plawk_ascii_lower_code(Code, Lower) :-
+    (   Code >= 0'A, Code =< 0'Z
+    ->  Lower is Code + 32
+    ;   Lower = Code
+    ).
+
+%  awk's substr(s, m, n): m is 1-based and n is a count, both clamped to the string.
+%  The productions already require m >= 1 and n >= 0, so the only clamping left is
+%  at the far end. `to_end` is the two-argument form's length.
+plawk_substr_codes(Codes, Start, LengthSpec, Sub) :-
+    integer(Start),
+    Start >= 1,
+    Skip is Start - 1,
+    length(Codes, Total),
+    (   Skip >= Total
+    ->  Sub = []
+    ;   length(Prefix, Skip),
+        append(Prefix, Rest, Codes),
+        (   LengthSpec == to_end
+        ->  Sub = Rest
+        ;   integer(LengthSpec),
+            LengthSpec >= 0,
+            Available is Total - Skip,
+            (   LengthSpec >= Available
+            ->  Sub = Rest
+            ;   length(Sub, LengthSpec),
+                append(Sub, _, Rest)
+            )
+        )
+    ).
+
+%  index(s, t): the 1-based position of the leftmost occurrence, 0 when absent.
+%  append/3 enumerates prefixes shortest-first, so the first solution is leftmost.
+plawk_index_codes(Codes, NeedleCodes, Position) :-
+    (   append(Prefix, Suffix, Codes),
+        append(NeedleCodes, _, Suffix)
+    ->  length(Prefix, Skip),
+        Position is Skip + 1
+    ;   Position = 0
+    ).
 
 plawk_norm_getline_rules(Rules0, Rules) :-
     is_list(Rules0),
@@ -3777,7 +3984,7 @@ scalar_delta_expr(length(Field)) -->
     field_expr(Field),
     ws,
     ")",
-    { Field = field(_) }.
+    { plawk_builtin_string_arg(Field) }.
 scalar_delta_expr(length(field(0))) -->
     "length",
     length_no_argument.
@@ -3793,7 +4000,7 @@ scalar_delta_expr(index(Field, string(Needle))) -->
     quoted_string(NeedleCodes),
     ws,
     ")",
-    { Field = field(_),
+    { plawk_builtin_string_arg(Field),
       NeedleCodes \== [],
       string_codes(Needle, NeedleCodes) }.
 scalar_delta_expr(Expr) -->
@@ -4213,7 +4420,7 @@ field_expr(length(Field)) -->
     field_expr(Field),
     ws,
     ")",
-    { Field = field(_) }.
+    { plawk_builtin_string_arg(Field) }.
 field_expr(length(field(0))) -->
     "length",
     length_no_argument.
@@ -4233,7 +4440,7 @@ field_expr(substr(Field, Start, Len)) -->
     integer_codes(LenCodes),
     ws,
     ")",
-    { Field = field(_),
+    { plawk_builtin_string_arg(Field),
       StartCodes \== [], LenCodes \== [],
       number_codes(Start, StartCodes), Start >= 1,
       number_codes(Len, LenCodes), Len >= 0 }.
@@ -4253,7 +4460,7 @@ field_expr(substr(Field, Start, to_end)) -->
     integer_codes(StartCodes),
     ws,
     ")",
-    { Field = field(_),
+    { plawk_builtin_string_arg(Field),
       StartCodes \== [],
       number_codes(Start, StartCodes), Start >= 1 }.
 field_expr(index(Field, string(Needle))) -->
@@ -4268,7 +4475,7 @@ field_expr(index(Field, string(Needle))) -->
     quoted_string(NeedleCodes),
     ws,
     ")",
-    { Field = field(_),
+    { plawk_builtin_string_arg(Field),
       NeedleCodes \== [],
       string_codes(Needle, NeedleCodes) }.
 field_expr(tolower(Field)) -->
@@ -4279,7 +4486,7 @@ field_expr(tolower(Field)) -->
     field_expr(Field),
     ws,
     ")",
-    { Field = field(_) }.
+    { plawk_builtin_string_arg(Field) }.
 field_expr(toupper(Field)) -->
     "toupper",
     ws,
@@ -4288,7 +4495,7 @@ field_expr(toupper(Field)) -->
     field_expr(Field),
     ws,
     ")",
-    { Field = field(_) }.
+    { plawk_builtin_string_arg(Field) }.
 field_expr(assoc(var(Name), KeyExpr)) -->
     table_ident(Name),
     ws,
@@ -4620,6 +4827,19 @@ prolog_call_expr(dyncall(Args)) -->
     ws,
     ")",
     !.
+% A surface builtin name is never a Prolog call. Without this check the generic
+% `name(args)` production shadows the builtin productions wherever it is tried first,
+% and the two paths disagree: a bare print field reached `length(...)` first and
+% parsed the builtin, while an arithmetic operand reached this clause first and
+% parsed `length("abc")` as a call to a user predicate named `length`. That is why
+% `length("abc")` used to fail as a clean DECLINE (exit 3 -- it parsed as a
+% prolog_call that codegen refused) while `length(v)` failed as a PARSE error (exit 2
+% -- `v` is not a foreign argument either, so even this clause could not match).
+%
+% plawk_surface_reserved_name/1 is the existing statement of which names the surface
+% owns; it already guards DYNENTRY names against the same collision. The builtins
+% whose own productions sit earlier in this nonterminal (dyncall, compile, ...) are
+% consumed before this clause and are unaffected.
 prolog_call_expr(prolog_call(Name, Args)) -->
     identifier(Name),
     ws,
@@ -4627,7 +4847,8 @@ prolog_call_expr(prolog_call(Name, Args)) -->
     ws,
     foreign_args(Args),
     ws,
-    ")".
+    ")",
+    { \+ plawk_surface_reserved_name(Name) }.
 
 %% float_literal_expr(-Expr)//
 %
@@ -4841,7 +5062,7 @@ i64_binary_primary_expr(length(Field)) -->
     ws,
     "(",
     ws,
-    simple_field_expr(Field),
+    builtin_string_arg(Field),
     ws,
     ")".
 i64_binary_primary_expr(length(field(0))) -->
@@ -4852,7 +5073,7 @@ i64_binary_primary_expr(index(Field, string(Needle))) -->
     ws,
     "(",
     ws,
-    simple_field_expr(Field),
+    builtin_string_arg(Field),
     ws,
     ",",
     ws,
@@ -4862,12 +5083,39 @@ i64_binary_primary_expr(index(Field, string(Needle))) -->
     { NeedleCodes \== [],
       string_codes(Needle, NeedleCodes) }.
 
-simple_field_expr(field(Index)) -->
+%% builtin_string_arg(-Arg)//
+%
+%  A string builtin's argument where the argument is PARSED directly rather than
+%  parsed generally and then filtered: the arithmetic-operand family
+%  (i64_binary_primary_expr//1, which carries `length` and `index`).
+%
+%  This was `simple_field_expr//1`, accepting `$N` and nothing else -- the third and
+%  narrowest of three separate statements of one vocabulary. The other two are guards
+%  (plawk_builtin_string_arg/1 in field_expr//1 and scalar_delta_expr//1); this one
+%  restricted by choosing a narrow nonterminal instead, so widening the guard left it
+%  behind and `print length("abc") + 1` still failed while `print length("abc")`
+%  worked. Its old name is why it was easy to miss: it described what it accepted
+%  ($N) rather than the role it filled (a builtin's argument), so nothing connected
+%  it to the vocabulary it was a copy of.
+%
+%  The trailing plawk_builtin_string_arg/1 call makes that predicate the single
+%  authority: these productions only offer candidates. Adding a production here
+%  without teaching the predicate makes the parse FAIL rather than silently widening
+%  one family's vocabulary past the other two.
+builtin_string_arg(Arg) -->
+    builtin_string_arg_candidate(Arg),
+    { plawk_builtin_string_arg(Arg) }.
+
+builtin_string_arg_candidate(field(Index)) -->
     "$",
     integer_codes(IndexCodes),
     { IndexCodes \== [],
       number_codes(Index, IndexCodes),
       Index >= 0
+    }.
+builtin_string_arg_candidate(string(Value)) -->
+    quoted_string(ValueCodes),
+    { string_codes(Value, ValueCodes)
     }.
 
 % A subscript is either one expression, or a comma-separated list
