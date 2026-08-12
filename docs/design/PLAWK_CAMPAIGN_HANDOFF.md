@@ -11,7 +11,7 @@ probing or reading code in-session, not inferred.
 - Exit codes: **0** built · **2** parse error · **3** parses but outside the
   compilable surface (a clean decline) · **4** clang failure (a miscompile).
 - Key files: parser `examples/plawk/parser/plawk_parser.pl`; codegen
-  `examples/plawk/codegen/plawk_native_codegen.pl` (~20k lines); runtime IR as a
+  `examples/plawk/codegen/llvm/plawk_native_codegen.pl` (~20k lines); runtime IR as a
   single-quoted atom in `src/unifyweaver/targets/wam_llvm_target.pl`.
 - Docs kept current: `PLAWK_AWK_FEATURE_AUDIT.md` (a row per feature),
   `PLAWK_SPEC_PLAN_DRIFT_AUDIT.md` (the defect class),
@@ -631,27 +631,39 @@ the implementation changed about the design. The load-bearing facts:
 `tests/test_plawk_end_field_reads.pl`. A field or `NF` in a loop / `if`
 **condition** (a fail-safe decline: the rewrite reaches conditions, and no
 condition emitter has a clause for `end_lastrec_field(_)` / `end_lastrec_nf`) ·
-**`length`** in END — bare `END { print length }` and `END { print length($0) }`,
-which still decline. **Not** `END { print length("abc") }`, which the literal fold
-answers at parse time and which is done; the two share a spelling and nothing else,
-since one needs the retained record and the other needs no runtime at all.
+~~**`length`** in END~~ — **DONE**, landed with #4163 via #4171.
+`END { print length }` prints 6 on a 6-byte last record, matching gawk.
 
-  This row said "already in the gate, not yet emitted" for most of the campaign and
-  **that was wrong** — a correction worth keeping, because it is a defect shape of its
-  own. The gate clause is `plawk_end_term_reads_record(special(length))`, and
-  `special(length)` occurs in **exactly one place in the repository**: that clause. No
-  producer emits it. Both END spellings parse to `length(field(0))`, and the `length`
-  *pattern* form uses the bare atom (`special_cmp(length, gt, 3)`), so the clause
-  matches nothing and the record is **not** retained for `END { print length }`.
+  **A correction to a correction, and the second one was mine.** This row said "already
+  in the gate, not yet emitted" for most of the campaign. I called that wrong, on the
+  grounds that the gate clause `plawk_end_term_reads_record(special(length))` matches a
+  term no producer emits (true — `length` in an END print parses to `length(field(0))`,
+  and the bare *pattern* form uses `special_cmp(length, …)`), and concluded that the
+  record was therefore **not retained** and the follow-on was larger than advertised.
 
-  So the work is not "add an emitter to a gate that already fires" but "teach the gate
-  the shape the parser actually produces, then emit" — a different and larger job than
-  the row advertised. The general lesson: a gate clause written for a term shape no
-  producer emits **reads as done** and sizes the follow-on wrongly, and no test can
-  catch it because there is no program that reaches it. `grep` for the *producer* of a
-  shape before believing a gate covers it — the campaign's "grep for the behaviour,
-  not recollection" rule applies to audit rows as much as to test pins, and this row
-  was written by reading the gate rather than probing the program. · **builtins over the
+  That conclusion was wrong. `plawk_end_term_reads_record/1`'s last clause is a
+  **structural recursion** — `compound(Term), arg(_, Term, Sub)` — so `length(field(0))`
+  was admitted all along by recursing into its `field(_)` argument. The gate was already
+  correct for the shape that arrived; the decline came from the *emitter* having no
+  `length` row, which is exactly what #4163 added. The work was smaller than the row
+  advertised, not larger.
+
+  The mistake is worth more than the finding: I grepped for a term shape, found no
+  producer, and concluded the predicate failed — **without checking whether another
+  clause of the same predicate already covered the case**. A structural or catch-all
+  clause is invisible to a name-based grep, and it is precisely the clause that makes a
+  gate robust. So the rule is: when a grep for a shape finds no producer, read the
+  predicate's *other* clauses before sizing anything. The code at
+  `plawk_end_term_reads_record/1` now documents all of this at the clause itself, which
+  is where it belongs — and it notes that the speculative clause is kept deliberately,
+  because the END-`if` condition grammar ought to produce `special(length)` and instead
+  captures bare `length` as an ordinary variable. (Since #4164 the *condition* grammar
+  does produce `special(length)` via `while_cmp`, so the clause is no longer dead code,
+  just not yet reachable from an END term.)
+
+  Not to be confused with `END { print length("abc") }`, which the literal fold answers
+  at parse time (#4169). The two share a spelling and nothing else: one needs the
+  retained record, the other needs no runtime at all. · **builtins over the
 record** in END (`substr($0, …)`, `toupper($1)` — the gate retains for them, the
 emitters have no clause; the *literal* forms of all five are done) · **END-only**
 programs (a driver with no retain) ·

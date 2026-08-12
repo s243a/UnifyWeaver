@@ -12,7 +12,7 @@ Copyright (c) 2026 John William Creighton (@s243a)
   numeric/non-numeric/blank-padded/empty inputs, and the comparison over the
   POSIX kind table incl. the `10 9` vs `10 9x` divergence).
 - **Step 2** (origin analysis): `plawk_scalar_strnum_names/2` in
-  `examples/plawk/codegen/plawk_native_codegen.pl` decides which names are
+  `examples/plawk/codegen/llvm/plawk_native_codegen.pl` decides which names are
   strnum by provenance (assigned only from a field copy, never from a literal /
   arithmetic / concat / string builtin).
 - **Step 3** (activation, scoped): the type inferencer now **produces**
@@ -128,7 +128,7 @@ nothing left over.
 
 plawk types every scalar **statically, at compile time**, into one of three
 disjoint slot kinds (`plawk_scalar_typed_slot/4` in
-`examples/plawk/codegen/plawk_native_codegen.pl`):
+`examples/plawk/codegen/llvm/plawk_native_codegen.pl`):
 
 | slot kind | LLVM repr | inferred when |
 |---|---|---|

@@ -8,7 +8,7 @@
 :- use_module('helpers/smoke_paths', [tmp_root/1, clean_dir/1]).
 :- use_module('../src/unifyweaver/targets/wam_llvm_target').
 :- use_module('../examples/plawk/parser/plawk_parser').
-:- use_module('../examples/plawk/codegen/plawk_native_codegen').
+:- use_module('../examples/plawk/codegen/llvm/plawk_native_codegen').
 
 % A DCG over payload bytes, written as its difference-list expansion so
 % the WAM compiler sees plain clauses: parses "12,7,100"-style
