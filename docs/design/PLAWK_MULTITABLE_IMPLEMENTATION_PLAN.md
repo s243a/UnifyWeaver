@@ -19,7 +19,7 @@ driver rejects multi-table programs before storage is ever reached.
 
 - **The multi-pass driver was hardwired to one shared table — FIXED (PR 1).**
   The no-END reader driver in
-  `examples/plawk/codegen/plawk_native_codegen.pl` now threads N tables (see PR
+  `examples/plawk/codegen/llvm/plawk_native_codegen.pl` now threads N tables (see PR
   1 below); a program with several `declare`s / row tables builds and runs
   in-memory. The END-for-in driver still assumes its single END-loop table,
   which is fine — a multi-table program takes the reader driver. (Before PR 1 a

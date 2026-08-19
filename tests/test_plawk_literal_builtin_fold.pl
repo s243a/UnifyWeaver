@@ -18,7 +18,7 @@
 % "ABC" -- and literals were already in the vocabulary of every route: rule-body
 % print, END print, the mixed and assoc END walkers, printf arguments,
 % concatenation parts, arithmetic operands, `+=` deltas. So the whole family landed
-% in every context at once, and `examples/plawk/codegen/plawk_native_codegen.pl` was
+% in every context at once, and `examples/plawk/codegen/llvm/plawk_native_codegen.pl` was
 % not touched. All 41 golden-corpus programs stayed byte-identical.
 %
 % That is worth generalising from: when a refused form has a COMPILE-TIME answer,
@@ -60,7 +60,7 @@
 :- use_module(library(process)).
 :- use_module(library(filesex), [make_directory_path/1]).
 :- use_module('../examples/plawk/parser/plawk_parser').
-:- use_module('../examples/plawk/codegen/plawk_native_codegen').
+:- use_module('../examples/plawk/codegen/llvm/plawk_native_codegen').
 
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
