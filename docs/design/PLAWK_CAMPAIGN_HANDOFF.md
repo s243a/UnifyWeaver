@@ -462,6 +462,22 @@ parse, not the gate you expected to fire.
   and **asserts the flag actually moved** before running anything, so a future SWI
   change cannot silently put the artifacts back in `/tmp` while the script still claims
   isolation. Verify what a flag *does*, not what its name suggests it reads from.
+- **A stricter toolchain is an oracle: clang 14 rejected IR that clang 18 shipped by
+  ABI accident.** Two emitter sites called `@wam_atom_field_i64_value` as
+  `call i64 ...` while the runtime defines it returning `%WamI64Parse = {i64, i1}`.
+  clang 18's opaque pointers tolerate a mismatched direct call, and it *worked*: the
+  struct's value field rides in the return register and the fail path returns
+  `{0, false}`, so the untyped read happened to yield exactly awk's
+  non-numeric-field→0. clang 14's typed pointers reject the module — 13 suites failed
+  on one signature the first day the sweep ran on a clang-14 machine. The fix
+  (parse → extractvalue ×2 → `select ok, value, 0`) reproduces the shipped behaviour
+  bit-for-bit in well-typed IR, and `test_plawk_normalise` now pins the call type on
+  the emitted IR so the mismatch cannot return invisibly on a tolerant toolchain.
+  Audit method worth keeping: list every struct-returning runtime `define`, then
+  compare each one's call sites' return types — one command, and it proved the class
+  had exactly one member. **When a new environment fails N suites at once, diff the
+  toolchain before diffing the code** — and treat the stricter tool's complaint as a
+  latent bug found, not an environment problem to paper over.
 - **Match every plunit summary form.** A sweep grepping
   `"All N tests passed|tests failed"` silently misses the single-test form
   (`% test passed`) *and* the singular failure (`% 1 test failed`) — twelve failing
@@ -469,6 +485,15 @@ parse, not the gate you expected to fire.
   *third* form: `% PL-Unit: <name>  passed 0.2 sec` with **no test count and no
   dots**, which means `% No tests to run` — every test filtered out by a
   `condition/1`.
+
+  **Fourth instance, and the version-proof fix.** swipl 9.2.9's plunit prints
+  failures as `ERROR: N tests failed` — no leading `%` — so the `^% ` grep missed
+  them entirely and 13 failing suites masqueraded as partial passes ("17 tests
+  passed" from an 18-test suite). Stop chasing formats: `run_tests` failing makes
+  the `-g` goal fail, which triggers `-t halt(1)`, so **judge each suite by its
+  exit code** and keep the summary grep only as a label. The sweep script does
+  this now. A pass/fail signal that depends on parsing a tool's prose will break
+  on every tool upgrade; the exit code is the contract.
 - **A `condition/1`-gated suite that reports zero tests is not evidence about the
   feature — it is evidence about the machine.** Five suites
   (`cache_lmdb`, `multitable_lmdb`, `row_durable_lmdb`, `use_table_lmdb`,
