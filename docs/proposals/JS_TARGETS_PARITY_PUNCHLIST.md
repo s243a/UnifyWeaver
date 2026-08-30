@@ -43,6 +43,7 @@ in-flight parity analyses — see §6).
 | D15 | wam_javascript | Switch-indexing cross-target matrix row added (G-W5): full coverage of all 5 tracked columns (const_ft/const_a2/const_a2_ft/term_a2/struct_a2), residuals documented. | (this branch) |
 | D16 | typescript (→AJS/VJS) | Component emission (G-P4): `compile_module` now calls `compile_component` (was collected-but-dropped); revived orphaned `custom_chart` (+ fixed its unevaluated-`format` bug). Component-free modules unchanged. | (this branch) |
 | D17 | clojurescript | Wired the `clojurescript` binding key (G-P11): `resolve_binding([clojurescript, clojure], …)` fallback-with-override; loaded both catalogues; call-head rewrite after interop (no double-transform); bb skips it. `parse_double→js/parseFloat` proof, nbb-verified, JVM regression green. Bindings 67→68. | (this branch) |
+| D18 | typescript (→AJS/VJS) | Aggregate compilation (G-P3): `aggregate_all` (count/sum/max/min/bag/set) + `findall` as goals (was 0 refs → 50); node-verified vs SWI. Follow-up: bagof/setof at pattern level + non-extensional inner goals. | (this branch) |
 
 ---
 
@@ -52,7 +53,7 @@ in-flight parity analyses — see §6).
 |---|---|---|---|---|
 | G-W1 | wam_javascript | Tier-2 lowered emitter + `functions`/`mixed` emit modes | grok | prompt sent |
 
-**Done since last update:** G-W5 (D15) + G-P4 component emission (D16) — ✅ merged to this branch (batch PR pending). Remaining pattern gaps: G-P3 aggregates, G-P5 clojure/CLJS components, G-P6 constraints, G-P7 data sources, G-P8 TS streaming, G-P9 data-source consumers, G-P11 CLJS dead-bindings (verify), G-P13 tests. WAM tail: G-W1 (grok), G-W2 parser, G-W3 builtin breadth, G-W4 fact sources, G-W6 parallelism (deferred).
+**Done since last update:** G-P11 (D17) + G-P3 aggregates (D18) — ✅ merged to this branch (batch PR pending). Remaining pattern gaps: G-P5 clojure/CLJS components, G-P6 constraints, G-P7/G-P9 data sources & consumers, G-P8 TS streaming, G-P13 tests; bagof/setof + non-extensional aggregates (G-P3 follow-up). WAM tail: G-W1 (grok), G-W2 parser, G-W3 builtin breadth, G-W4 fact sources, G-W6 parallelism (deferred).
 
 **Done since last update:** P1 first-arg indexing (Grok, `grok/wamjs-indexing`) — ✅ merged (see D12). Analyses A1/A2/census — ✅ folded in.
 
