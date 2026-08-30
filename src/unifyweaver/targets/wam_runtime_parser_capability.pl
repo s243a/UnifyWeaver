@@ -160,6 +160,7 @@ target_runtime_parser_default(wam_rust, none).
 % the parser predicates; `runtime_parser(compiled)` is opt-in. Same
 % stance as F#/Haskell/Rust. See docs/WAM_RUNTIME_PARSER_STATUS.md.
 target_runtime_parser_default(wam_go, none).
+target_runtime_parser_default(wam_javascript, native(parse_term)).
 
 target_runtime_parser_mode_(wam_r, native(parse_term)).
 target_runtime_parser_mode_(wam_r, compiled(prolog_term_parser)).
@@ -170,6 +171,7 @@ target_runtime_parser_mode_(wam_fsharp, compiled(prolog_term_parser)).
 target_runtime_parser_mode_(wam_haskell, compiled(prolog_term_parser)).
 target_runtime_parser_mode_(wam_rust, compiled(prolog_term_parser)).
 target_runtime_parser_mode_(wam_go, compiled(prolog_term_parser)).
+target_runtime_parser_mode_(wam_javascript, native(parse_term)).
 
 normalize_runtime_parser_target(r, wam_r) :- !.
 normalize_runtime_parser_target(wam_r, wam_r) :- !.
@@ -182,6 +184,8 @@ normalize_runtime_parser_target(wam_haskell, wam_haskell) :- !.
 normalize_runtime_parser_target(rust, wam_rust) :- !.
 normalize_runtime_parser_target(wam_rust, wam_rust) :- !.
 normalize_runtime_parser_target(go, wam_go) :- !.
+normalize_runtime_parser_target(javascript, wam_javascript) :- !.
+normalize_runtime_parser_target(wam_javascript, wam_javascript) :- !.
 normalize_runtime_parser_target(wam_go, wam_go) :- !.
 normalize_runtime_parser_target(Target, Target).
 
