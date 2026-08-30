@@ -69,7 +69,7 @@ in-flight parity analyses — see §6).
 _(nothing in flight — both lanes at practical parity)_
 
 **Remaining tail** (all low-priority polish / out-of-scope — no active work):
-- **Pattern:** bagof/setof-with-witness-grouping at pattern level (G-P3 follow-up — the minimal slice is marginal over aggregate_all(bag/set)); JSON `schema` mode (blocked-upstream — Option-B query-plan model, D31; CSV subset projection now landed via `project_columns`, D33); bare positive `match` batch-guard (optional 2-line `is_guard_goal` patch, D28); test depth (G-P13).
+- **Pattern:** bagof/setof-with-witness-grouping at pattern level (G-P3 follow-up — the minimal slice is marginal over aggregate_all(bag/set)); JSON `schema` mode (blocked-upstream — Option-B query-plan model, D31; CSV subset projection now landed via `project_columns`, D33); bare positive `match` batch-guard (**not** a clean 2-liner after all — adding `match` to the shared `clause_body_analysis:is_guard_goal/2` regresses two targets: `python_guard_condition/3` has no `match` clause and no catch-all so the guard `maplist` fails (python renders `match` via the output-goal path, not as a guard), and wam's `is_builtin_pred/2` derives builtin-ness from `is_guard_goal` so `match` would emit `builtin_call match/2` that no WAM runtime implements. Only clojure+ts have `match` guard renderers. Proper fix = add `match` guard renderers to python + gate wam's builtin path, i.e. a cross-target change, not polish. D28's deferral stands.); test depth (G-P13).
 - **WAM (lane nearly exhausted):** user `op/3`/postfix ops (G-W2 follow-up); real string tag; AVL assoc; LMDB/CSR fact sources (out of scope, matches Lua peer); G-W6 parallelism (deferred).
 
 ---
