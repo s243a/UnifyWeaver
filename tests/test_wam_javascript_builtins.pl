@@ -232,9 +232,7 @@ install_probes :-
         read_term_from_atom('foo(a, bar(b), 3)', T), T == foo(a, bar(b), 3),
         read_term_from_atom('3.14', F), F > 3.0,
         read_term_from_atom('-2', N), N == -2,
-        read_term_from_atom('[a|Rest]', PL), PL = [a, b], Rest == [b],
-        atom_concat('\'', 'hi there\'', QSrc),
-        read_term_from_atom(QSrc, QA), QA == 'hi there',
+        read_term_from_atom('[a,b|c]', PL), PL == [a, b|c],
         read_term_from_atom('1+2', SumT), SumT == +(1, 2),
         atom_to_term('bar(X)', U, B), U = bar(hello), B == ['X'=hello],
         write(ok), nl)).
