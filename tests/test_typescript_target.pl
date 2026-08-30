@@ -1,6 +1,7 @@
 :- encoding(utf8).
 % Test suite for TypeScript target
-% Usage: swipl -g run_tests -t halt tests/test_typescript_target.pl
+% Usage: swipl -q -g test_typescript_target -t halt tests/test_typescript_target.pl
+%    or: swipl -g run_tests -t halt tests/test_typescript_target.pl
 
 :- use_module('../src/unifyweaver/targets/typescript_target').
 
@@ -8,11 +9,18 @@
 test_person(tom, 25).
 test_person(bob, 30).
 
+%% Fact data used by the fact-array regression test.
+tsfact_edge(alice, bob).
+tsfact_edge(bob, carol).
+
+:- dynamic test_failed/0.
+
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
 
 fail_test(Test, Reason) :-
-    format('[FAIL] ~w: ~w~n', [Test, Reason]).
+    format('[FAIL] ~w: ~w~n', [Test, Reason]),
+    assertz(test_failed).
 
 %% Tests
 test_typescript_target_info :-
@@ -65,20 +73,72 @@ test_typescript_module :-
     ;   fail_test(Test, 'Missing module or functions')
     ).
 
+%% Regression: compile_facts must emit populated fact rows (was empty due to
+%% length/2 never being evaluated in format_ts_tuple/2 -> field names []).
+test_typescript_facts_populated :-
+    Test = 'TypeScript: compile_facts emits populated rows',
+    (   typescript_target:compile_facts(tsfact_edge, 2, Code),
+        % Both fact rows present
+        sub_string(Code, _, _, _, 'arg1: "alice"'),
+        sub_string(Code, _, _, _, 'arg1: "bob"'),
+        sub_string(Code, _, _, _, 'arg2: "carol"'),
+        % The array literal must not be empty
+        \+ sub_string(Code, _, _, _, "[\n  \n]")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Fact array is empty or rows missing')
+    ).
+
+%% Regression: the isXxx membership helper must contain a real JS match
+%% expression, not the leaked Prolog term generate_match_expr([...]).
+test_typescript_facts_no_leaked_term :-
+    Test = 'TypeScript: membership helper has no leaked Prolog term',
+    (   typescript_target:compile_facts(tsfact_edge, 2, Code),
+        \+ sub_string(Code, _, _, _, 'generate_match_expr'),
+        sub_string(Code, _, _, _, 'f.arg1 === arg1 && f.arg2 === arg2')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Leaked generate_match_expr term or missing match expr')
+    ).
+
+%% Regression: transitive_closure must emit real closure logic, not fall
+%% through to the tail_recursion branch.
+test_typescript_transitive_closure :-
+    Test = 'TypeScript: transitive_closure emits real closure logic',
+    (   typescript_target:compile_recursion(path/2, [pattern(transitive_closure)], Code),
+        sub_string(Code, _, _, _, 'Pattern: transitive_closure'),
+        sub_string(Code, _, _, _, 'export const pathClosure'),
+        sub_string(Code, _, _, _, 'Map<string, string[]>'),
+        sub_string(Code, _, _, _, 'queue.shift()'),
+        % must NOT be the tail-recursion fallthrough
+        \+ sub_string(Code, _, _, _, 'Pattern: tail_recursion'),
+        \+ sub_string(Code, _, _, _, 'acc + n')
+    ->  pass(Test)
+    ;   fail_test(Test, 'transitive_closure fell through or missing BFS logic')
+    ).
+
 %% Run all tests
 run_tests :-
+    retractall(test_failed),
     format('~n========================================~n'),
     format('TypeScript Target Test Suite~n'),
     format('========================================~n~n'),
-    
+
     test_typescript_target_info,
     test_typescript_tail_recursion,
     test_typescript_list_fold,
     test_typescript_linear_recursion,
     test_typescript_module,
-    
-    format('~n========================================~n'),
-    format('All tests completed~n'),
-    format('========================================~n').
+    test_typescript_facts_populated,
+    test_typescript_facts_no_leaked_term,
+    test_typescript_transitive_closure,
 
-:- initialization(run_tests, main).
+    format('~n========================================~n'),
+    (   test_failed
+    ->  format('SOME TESTS FAILED~n'),
+        format('========================================~n'),
+        fail
+    ;   format('All tests passed~n'),
+        format('========================================~n')
+    ).
+
+%% Named entry point used by the acceptance command.
+test_typescript_target :- run_tests.
