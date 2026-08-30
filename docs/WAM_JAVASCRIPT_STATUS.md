@@ -74,7 +74,8 @@ Assoc (`library(assoc)` shape, list-of-pairs not AVL): **`empty_assoc/1`**,
 **`assoc_to_list/2`**, **`assoc_to_keys/2`**.
 
 Term: **`functor/3`**, **`arg/3`**, **`=../2`**, **`copy_term/2`**,
-**`read_term_from_atom/2` `/3`**, **`atom_to_term/3`**, **`term_to_atom/2`**.
+**`read_term_from_atom/2` `/3`**, **`atom_to_term/3`**, **`term_to_atom/2`**,
+**`term_variables/2`**, **`numbervars/3`**, **`=@=/2`**, **`\=@=/2`**.
 
 Metacall: **`\+/1`**, **`call/1`** (re-enter the same instruction loop /
 builtin dispatch).
@@ -123,7 +124,9 @@ parser, not the bundled portable `compiled(prolog_term_parser)`.
 |---|---|
 | `bagof/3` | **Implemented.** ISO witness grouping (one bag per distinct free-var binding, SWI encounter order), `Var^Goal` / nested `V1^V2^Goal` stripped from the witness set, fails when Goal has no solutions. |
 | `setof/3` | **Implemented.** `bagof` then per-group standard-order sort + dedup. Order: Var < Number < Atom < String < Compound; compounds by arity, functor **name**, then args L-to-R (matches SWI mixed-type lists). |
-| `term_variables/2`, `numbervars/3`, `=@=/2` | Not ported. |
+| `term_variables/2` | **Implemented.** Distinct unbound vars, first-occurrence L-to-R depth-first. Cyclic compounds are visited once (same `seen` walk as `copy_term`). |
+| `numbervars/3` | **Implemented.** Binds+trails each distinct unbound var to `'$VAR'(N)` from Start; End is Start+count. `write/1` prints `'$VAR'(N)` literally — it does **not** letter-style SWI rendering (`A`, `B`, …). |
+| `=@=/2` / `\=@=/2` | **Implemented.** Variant equality: ground as `==`; vars match via a consistent bijection. Cyclic struct pairs are treated as already-equal once seen. |
 | `format/2` `/3` | **Implemented** for `~w ~a ~d ~p ~q ~n ~s ~t ~~`. Not ported: `~f`, `~r`, `~D`, positioning (`~N|`, `~+`, `t~`), aliases, and stream sinks other than stdout / `atom(A)` / `string(S)`. |
 | `sub_atom/5` | **Implemented** when Atom is ground; enumerates unbound Before/Length/After (and filters a ground SubAtom). |
 | `atom_string/2` / `split_string/4` | **Implemented** but the runtime has no distinct string tag — results intern as atoms (write/== match SWI for the probe suite). |
@@ -153,19 +156,21 @@ CONFORMANCE_TARGETS=javascript swipl -q -g run_tests -t halt \
   tests/test_wam_cross_target_conformance.pl
 ```
 
-Residual ISO corners not covered: `term_variables/2` / `numbervars/3` /
-`=@=/2` are still unported; bagof/setof of *unbound* free vars (two
+Residual ISO corners not covered: bagof/setof of *unbound* free vars (two
 solutions that leave the same witness unbound) is grouped by copied
 variable name rather than `@=`; the runtime has no distinct string tag,
 so String vs Atom order is unused and `atom_string`/`split_string`
 intern results as atoms; `^/2` as a standalone metacall just
 runs the RHS; `format` does not implement `~f` / `~r` / column
-positioning; assoc is a list-of-pairs, not SWI's AVL tree.
+positioning; assoc is a list-of-pairs, not SWI's AVL tree;
+`numbervars` does not letter-render `'$VAR'(N)` on `write/1`.
 
 ## Document status
 
 Initial JS WAM bring-up + builtin port from Lua, ISO bagof/3 and setof/3,
 first-argument indexing, the Tier-2 lowered emitter, ISO/library builtin
 breadth (sort, lists, atom/string, format, assoc), the G-W2 runtime term
-parser, then G-W4 file-backed fact sources (TSV/CSV/JSONL; LMDB/CSR out
-of scope). Source-verified against SWI-Prolog as the oracle (2026-08-30).
+parser, G-W4 file-backed fact sources (TSV/CSV/JSONL; LMDB/CSR out of
+scope), then the G-W3 term-meta family (`term_variables/2`,
+`numbervars/3`, `=@=/2`, `\=@=/2`). Source-verified against SWI-Prolog
+as the oracle (2026-08-30).

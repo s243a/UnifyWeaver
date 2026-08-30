@@ -674,6 +674,95 @@ function builtin_copy_term(_program, state) {
   return bind_or_compare(state, 2, copied);
 }
 
+function collect_term_variables(state, term, acc, seenNames, seenStructs) {
+  term = Runtime.deref(state, term);
+  if (typeof term !== "object" || term === null) return;
+  if (term.tag === "unbound") {
+    if (!Object.prototype.hasOwnProperty.call(seenNames, term.name)) {
+      seenNames[term.name] = true;
+      acc.push(term);
+    }
+    return;
+  }
+  if (term.tag !== "struct") return;
+  if (seenStructs.has(term)) return;
+  seenStructs.add(term);
+  const args = term.args || [];
+  for (let i = 0; i < args.length; i++) {
+    collect_term_variables(state, args[i], acc, seenNames, seenStructs);
+  }
+}
+
+function builtin_term_variables(program, state) {
+  const vars = [];
+  collect_term_variables(
+    state, Runtime.get_reg(state, 1), vars, Object.create(null), new Set()
+  );
+  return bind_or_compare(
+    state, 2, Runtime.list_from_terms(vars, program.intern_table), program
+  );
+}
+
+function builtin_numbervars(program, state) {
+  const startV = Runtime.deref(state, Runtime.get_reg(state, 2));
+  if (typeof startV !== "object" || startV === null || startV.tag !== "int") {
+    return false;
+  }
+  const vars = [];
+  collect_term_variables(
+    state, Runtime.get_reg(state, 1), vars, Object.create(null), new Set()
+  );
+  const fid = Runtime.intern(program.intern_table, "$VAR");
+  let n = startV.val;
+  for (let i = 0; i < vars.length; i++) {
+    if (Runtime.unify(state, vars[i], V.Struct(fid, [V.Int(n)]), program) !== true) {
+      return false;
+    }
+    n += 1;
+  }
+  return bind_or_compare(state, 3, V.Int(n), program);
+}
+
+function variant_equal(program, state, a, b, leftToRight, rightToLeft, seen) {
+  a = Runtime.deref(state, a);
+  b = Runtime.deref(state, b);
+  if (typeof a !== "object" || a === null || typeof b !== "object" || b === null) {
+    return a === b;
+  }
+  if (a.tag === "unbound" && b.tag === "unbound") {
+    if (Object.prototype.hasOwnProperty.call(leftToRight, a.name)) {
+      return leftToRight[a.name] === b.name;
+    }
+    if (Object.prototype.hasOwnProperty.call(rightToLeft, b.name)) return false;
+    leftToRight[a.name] = b.name;
+    rightToLeft[b.name] = a.name;
+    return true;
+  }
+  if (a.tag === "unbound" || b.tag === "unbound") return false;
+  if (a.tag !== "struct") return same_atomic(a, b);
+  if (b.tag !== "struct") return false;
+  if (seen.has(a)) return seen.get(a) === b;
+  const aArity = (a.args || []).length;
+  const bArity = (b.args || []).length;
+  if (!same_functor(program, a.fid, aArity, b.fid, bArity)) return false;
+  seen.set(a, b);
+  for (let i = 0; i < aArity; i++) {
+    if (!variant_equal(program, state, a.args[i], b.args[i], leftToRight, rightToLeft, seen)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function builtin_variant(program, state, wantEqual) {
+  const ok = variant_equal(
+    program, state,
+    Runtime.get_reg(state, 1), Runtime.get_reg(state, 2),
+    Object.create(null), Object.create(null), new Map()
+  );
+  return wantEqual ? ok === true : ok !== true;
+}
+
 let invoke_goal;
 let collect_goal_solutions;
 let collect_goal_rows;
@@ -2376,6 +2465,10 @@ Runtime.builtin_call = function (program, state, inst) {
   if (name === "arg") return builtin_arg(program, state);
   if (name === "=..") return builtin_univ(program, state);
   if (name === "copy_term") return builtin_copy_term(program, state);
+  if (name === "term_variables") return builtin_term_variables(program, state);
+  if (name === "numbervars") return builtin_numbervars(program, state);
+  if (name === "=@=") return builtin_variant(program, state, true);
+  if (name === "\\=@=") return builtin_variant(program, state, false);
   if (name === "between") return builtin_between(program, state);
   if (name === "is") {
     const n = eval_arith(program, state, Runtime.get_reg(state, 2));
