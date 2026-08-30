@@ -543,4 +543,142 @@ test(agg_findall_runs_under_node,
     atom_json_term(Got, GotJson, []),
     GotJson == Exp.
 
+% ============================================================================
+% G-P8: STREAMING / GENERATOR EMIT MODE
+%
+% The TS pattern target previously had NO streaming/pipeline/generator mode
+% (0 refs vs python ~432 / go ~390 / rust ~325). These tests assert that a
+% single-clause filter/transform predicate now compiles, under mode(generator)/
+% mode(pipeline) (and the clojure-style aliases generator_mode/pipeline_input),
+% to a TS program that reads stdin line-by-line via Node's built-in `readline`,
+% applies the predicate, and streams results to stdout. Default (non-streaming)
+% compiles must be unchanged.
+% ============================================================================
+
+% Pipe Input (an atom/string, newline-separated) to a compiled streaming TS
+% program under node, returning the non-empty stdout lines as a list of strings.
+ts_write_run_stdin(Code, Input, Lines) :-
+    tmp_file_stream(text, Base, S0), close(S0),
+    atom_concat(Base, '.ts', File),
+    setup_call_cleanup(
+        ( open(File, write, W), write(W, Code), close(W) ),
+        ts_node_exec_stdin(File, Input, Lines),
+        catch(delete_file(File), _, true)).
+
+ts_node_exec_stdin(File, Input, Lines) :-
+    process_create(path(node), ['--experimental-strip-types', File],
+                   [stdin(pipe(In)), stdout(pipe(O)), stderr(null), process(P)]),
+    format(In, '~w', [Input]), close(In),
+    read_string(O, _, Str), close(O), process_wait(P, _),
+    split_string(Str, "\n", " \t\r", Parts),
+    exclude(==(""), Parts, Lines).
+
+assert_stream_big :-
+    assertz((user:big(X) :- X > 5)).
+retract_stream_big :- retractall(user:big(_)).
+
+assert_stream_posdoub :-
+    assertz((user:posdoub(X, Y) :- X > 0, Y is X * 2)).
+retract_stream_posdoub :- retractall(user:posdoub(_, _)).
+
+assert_stream_doub :-
+    assertz((user:doub(X, Y) :- Y is X * 2)).
+retract_stream_doub :- retractall(user:doub(_, _)).
+
+% -- Structural recognition ---------------------------------------------------
+
+test(stream_filter_pipeline_shape,
+     [setup(assert_stream_big), cleanup(retract_stream_big)]) :-
+    typescript_target:compile_predicate(big/1, [mode(pipeline)], Code),
+    has(Code, "Streaming (pipeline mode)"),
+    has(Code, "import { createInterface } from \"node:readline\""),
+    has(Code, "export function bigTest(x: number): boolean"),
+    has(Code, "return (x > 5);"),
+    has(Code, "createInterface({ input: process.stdin"),
+    has(Code, "if (bigTest(x)) {"),
+    % pipeline mode passes the original line through
+    has(Code, "console.log(trimmed);").
+
+test(stream_filter_generator_emits_value,
+     [setup(assert_stream_big), cleanup(retract_stream_big)]) :-
+    typescript_target:compile_predicate(big/1, [mode(generator)], Code),
+    has(Code, "Streaming (generator mode)"),
+    % generator mode emits the derived numeric value
+    has(Code, "console.log(String(x));"),
+    hasnt(Code, "console.log(trimmed);").
+
+test(stream_transform_generator_shape,
+     [setup(assert_stream_posdoub), cleanup(retract_stream_posdoub)]) :-
+    typescript_target:compile_predicate(posdoub/2, [mode(generator)], Code),
+    % transform yields an array of 0+ results (rewrite-safe `number[]`)
+    has(Code, "export function posdoubTransform(x: number): number[]"),
+    % guard lowered into an early empty-array return (drops the record)
+    has(Code, "if (!(x > 0)) return [];"),
+    has(Code, "return [(x * 2)];"),
+    has(Code, "for (const result of posdoubTransform(x)) {").
+
+test(stream_transform_unguarded_has_no_guard_line,
+     [setup(assert_stream_doub), cleanup(retract_stream_doub)]) :-
+    typescript_target:compile_predicate(doub/2, [mode(pipeline)], Code),
+    has(Code, "export function doubTransform(x: number): number[]"),
+    has(Code, "return [(x * 2)];"),
+    hasnt(Code, "return [];").
+
+% clojure-style option aliases select the same modes
+test(stream_alias_generator_mode,
+     [setup(assert_stream_doub), cleanup(retract_stream_doub)]) :-
+    typescript_target:compile_predicate(doub/2, [generator_mode(true)], Code),
+    has(Code, "Streaming (generator mode)"),
+    has(Code, "doubTransform").
+
+test(stream_alias_pipeline_input,
+     [setup(assert_stream_big), cleanup(retract_stream_big)]) :-
+    typescript_target:compile_predicate(big/1, [pipeline_input(true)], Code),
+    has(Code, "Streaming (pipeline mode)"),
+    has(Code, "bigTest").
+
+% Default (no streaming option) is UNCHANGED: batch native-clause lowering,
+% never the streaming readline scaffold.
+test(stream_default_compile_unchanged,
+     [setup(assert_stream_doub), cleanup(retract_stream_doub)]) :-
+    typescript_target:compile_predicate(doub/2, [], Code),
+    has(Code, "Native Clause Lowering"),
+    hasnt(Code, "readline"),
+    hasnt(Code, "Streaming (").
+
+% Multi-clause / non-qualifying predicate falls back to batch even WITH a
+% streaming option (behavior-preserving: streaming never emits wrong code).
+test(stream_multiclause_falls_back_to_batch,
+     [setup(assert_stream_multi), cleanup(retract_stream_multi)]) :-
+    typescript_target:compile_predicate(sgn/2, [mode(generator)], Code),
+    hasnt(Code, "readline"),
+    hasnt(Code, "Streaming (").
+
+assert_stream_multi :-
+    assertz((user:sgn(X, 1)  :- X > 0)),
+    assertz((user:sgn(X, -1) :- X < 0)).
+retract_stream_multi :- retractall(user:sgn(_, _)).
+
+% -- Node execution vs SWI oracle ---------------------------------------------
+
+test(stream_filter_pipeline_runs_under_node,
+     [setup(assert_stream_big), cleanup(retract_stream_big), condition(node_available)]) :-
+    typescript_target:compile_predicate(big/1, [mode(pipeline)], Code),
+    Input = "3\n7\n10\n2\n6\n",
+    Xs = [3,7,10,2,6],
+    ts_write_run_stdin(Code, Input, GotLines),
+    % SWI oracle over the SAME input: lines that satisfy big/1, passed through
+    findall(S, (member(X, Xs), user:big(X), number_string(X, S)), ExpLines),
+    GotLines == ExpLines.
+
+test(stream_transform_generator_runs_under_node,
+     [setup(assert_stream_posdoub), cleanup(retract_stream_posdoub), condition(node_available)]) :-
+    typescript_target:compile_predicate(posdoub/2, [mode(generator)], Code),
+    Input = "-3\n4\n0\n5\n8\n",
+    Xs = [-3,4,0,5,8],
+    ts_write_run_stdin(Code, Input, GotLines),
+    % SWI oracle: derived Y=X*2 for each X>0, in stream order
+    findall(S, (member(X, Xs), user:posdoub(X, Y), number_string(Y, S)), ExpLines),
+    GotLines == ExpLines.
+
 :- end_tests(typescript_target).
