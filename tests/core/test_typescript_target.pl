@@ -837,4 +837,88 @@ test(gp7m_negation_match_runs_under_node,
     findall(L, (member(L, Lines), \+ re_match("^a", L)), ExpLines),
     GotLines == ExpLines.
 
+% ============================================================================
+% G-P-dedup: UNIQUENESS / ORDER CONSTRAINT HANDLING
+%
+% compile_facts previously emitted the raw fact array regardless of any
+% declared unique/unordered constraint, so a predicate declared unique still
+% carried duplicate rows. It now consults constraint_analyzer:get_constraints/2
+% (declaration merged over the global defaults unique=true/unordered=true) and,
+% mirroring the rust/go dedup semantics, wraps the fact array:
+%   - unique(false)           -> raw array (no dedup)
+%   - unique(true), ordered   -> order-preserving dedup (Set over JSON keys)
+%   - unique(true), unordered -> dedup + sort (sort-based dedup)
+% queryX/isX read that array, so the whole facts surface inherits it.
+% Oracle: SWI setof/sort over the same clauses.
+% ============================================================================
+
+:- use_module('../../src/unifyweaver/core/constraint_analyzer',
+              [ declare_constraint/2, clear_constraints/1 ]).
+
+% Facts with a genuine duplicate (dup(a,b) asserted twice), in the
+% typescript_target module (compile_facts gathers via a bare call/1 there).
+assert_dup_facts :-
+    assertz(typescript_target:dup(a, b)),
+    assertz(typescript_target:dup(a, b)),
+    assertz(typescript_target:dup(c, d)).
+retract_dup_facts :-
+    retractall(typescript_target:dup(_, _)),
+    clear_constraints(dup/2).
+
+% -- Structural recognition ---------------------------------------------------
+
+% Default (no declaration) => unique(true), unordered(true) => sort-based dedup.
+test(dedup_default_emits_sort_dedup,
+     [setup(assert_dup_facts), cleanup(retract_dup_facts)]) :-
+    typescript_target:compile_facts(dup, 2, Code),
+    % Set-over-JSON-keys dedup + .sort() (sort-based), reading back with JSON.parse
+    has(Code, "new Set("),
+    has(Code, "JSON.stringify(f)"),
+    has(Code, ".sort()"),
+    has(Code, "JSON.parse(s)").
+
+% unique(false) => raw array, byte-for-byte the historical shape (no dedup expr).
+test(dedup_unique_false_leaves_raw_array,
+     [setup(assert_dup_facts), cleanup(retract_dup_facts)]) :-
+    declare_constraint(dup/2, [unique(false)]),
+    typescript_target:compile_facts(dup, 2, Code),
+    has(Code, "export const dupFacts: DupFact[] = ["),
+    hasnt(Code, "new Set("),
+    hasnt(Code, "JSON.stringify").
+
+% unique(true), ordered => order-preserving dedup, NO sort.
+test(dedup_ordered_emits_order_preserving,
+     [setup(assert_dup_facts), cleanup(retract_dup_facts)]) :-
+    declare_constraint(dup/2, [unique(true), ordered]),
+    typescript_target:compile_facts(dup, 2, Code),
+    has(Code, "a.indexOf(s) === i"),
+    hasnt(Code, ".sort()").
+
+% -- Node execution vs SWI oracle ---------------------------------------------
+
+% Default: duplicates removed. Compare the emitted set against SWI setof.
+test(dedup_default_runs_under_node,
+     [setup(assert_dup_facts), cleanup(retract_dup_facts), condition(node_available)]) :-
+    typescript_target:compile_facts(dup, 2, Code0),
+    string_concat(Code0,
+        "\nconsole.log(JSON.stringify(dupFacts.map(f => [f.arg1, f.arg2])));\n",
+        Code),
+    ts_write_run(Code, [], Got),
+    atom_json_term(Got, GotJson, []),   % JSON strings decode to atoms
+    % SWI oracle: the DISTINCT (a,b) pairs, sorted (setof gives sorted, no dups)
+    setof([A, B], typescript_target:dup(A, B), Pairs),
+    GotJson == Pairs.
+
+% unique(false): duplicates retained (the raw multiset, in assertion order).
+test(dedup_unique_false_runs_under_node,
+     [setup(assert_dup_facts), cleanup(retract_dup_facts), condition(node_available)]) :-
+    declare_constraint(dup/2, [unique(false)]),
+    typescript_target:compile_facts(dup, 2, Code0),
+    string_concat(Code0,
+        "\nconsole.log(dupFacts.length);\n", Code),
+    ts_write_run(Code, [], Got),
+    atom_number(Got, N),
+    % three asserted facts, one a duplicate -> raw length is 3
+    N =:= 3.
+
 :- end_tests(typescript_target).
