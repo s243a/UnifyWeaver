@@ -48,6 +48,9 @@ const shared_program = {
 };
 Runtime.resolve_program(shared_program);
 
+const lowered_dispatch = {};
+{{lowered_functions}}
+
 {{wrappers}}
 
 M.program = shared_program;
@@ -66,7 +69,8 @@ if (is_main()) {
     process.exit(0);
   }
   const startPc = shared_labels[predArity];
-  if (startPc === undefined) {
+  const loweredFn = lowered_dispatch[predArity];
+  if (startPc === undefined && typeof loweredFn !== "function") {
     process.stdout.write("unknown predicate: " + predArity + "\n");
     process.exit(1);
   }
@@ -76,8 +80,19 @@ if (is_main()) {
   }
   const state = Runtime.new_state();
   for (let i = 0; i < parsed.length; i++) Runtime.put_reg(state, i + 1, parsed[i]);
-  state.pc = startPc;
-  const ok = Runtime.run(shared_program, state) === true;
+  state.program = shared_program;
+  let ok;
+  if (typeof loweredFn === "function") {
+    const slash = String(predArity).lastIndexOf("/");
+    const arity = slash >= 0 ? Number(predArity.slice(slash + 1)) : parsed.length;
+    for (let i = parsed.length; i < arity; i++) {
+      Runtime.put_reg(state, i + 1, Runtime.new_var(state));
+    }
+    ok = loweredFn(shared_program, state) === true;
+  } else {
+    state.pc = startPc;
+    ok = Runtime.run(shared_program, state) === true;
+  }
   if (ok) {
     const keys = Object.keys(state.regs).map(Number).filter(function (n) { return n >= 1 && n <= 16; }).sort(function (a, b) { return a - b; });
     if (keys.length > 0) {

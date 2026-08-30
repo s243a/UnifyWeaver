@@ -44,7 +44,8 @@ in-flight parity analyses — see §6).
 | D16 | typescript (→AJS/VJS) | Component emission (G-P4): `compile_module` now calls `compile_component` (was collected-but-dropped); revived orphaned `custom_chart` (+ fixed its unevaluated-`format` bug). Component-free modules unchanged. | (this branch) |
 | D17 | clojurescript | Wired the `clojurescript` binding key (G-P11): `resolve_binding([clojurescript, clojure], …)` fallback-with-override; loaded both catalogues; call-head rewrite after interop (no double-transform); bb skips it. `parse_double→js/parseFloat` proof, nbb-verified, JVM regression green. Bindings 67→68. | (this branch) |
 | D18 | typescript (→AJS/VJS) | Aggregate compilation (G-P3): `aggregate_all` (count/sum/max/min/bag/set) + `findall` as goals (was 0 refs → 50); node-verified vs SWI. Follow-up: bagof/setof at pattern level + non-extensional inner goals. | PR #4184 |
-| D19 | clojure + clojurescript | Component pattern wired into the clojure base (G-P5): loads `component_registry` + revived orphaned `custom_clojure`, emits declared components (both JVM Clojure and CLJS via interop rewrite). CLJS `compile_module/3` added (G-P6). nbb-verified (module + component); JVM regression green. | (this branch) |
+| D19 | clojure + clojurescript | Component pattern wired into the clojure base (G-P5): loads `component_registry` + revived orphaned `custom_clojure`, emits declared components (both JVM Clojure and CLJS via interop rewrite). CLJS `compile_module/3` added (G-P6). nbb-verified (module + component); JVM regression green. | PR #4185 |
+| D20 | wam_javascript | **Tier-2 lowered emitter (G-W1, Grok):** new `wam_javascript_lowered_emitter.pl` + `functions`/`mixed` emit modes. Lowers single-clause det bodies, T4 inline, T5 first-arg dispatch, T6 hash dispatch (≥8 keys), ITE/negation/once; falls back to interpreter for aggregates/cuts/unsupported (never wrong code). Interpreter mode unchanged → conformance still 48/48. JS is no longer one of the 4 WAM targets without a lowered emitter. | (this branch) |
 
 ---
 
@@ -52,9 +53,7 @@ in-flight parity analyses — see §6).
 
 | ID | Target | Item | Owner | Branch |
 |---|---|---|---|---|
-| G-W1 | wam_javascript | Tier-2 lowered emitter + `functions`/`mixed` emit modes | grok | prompt sent |
-
-**Done since last update:** G-P5/G-P6 Clojure/CLJS components + CLJS module (D19) — ✅ merged. Remaining pattern gaps: G-P6-constraints (G-P7 in earlier numbering), data sources & consumers, TS streaming, test depth; bagof/setof + non-extensional aggregates (G-P3 follow-up). WAM tail: G-W1 (grok), G-W2 parser, G-W3 builtin breadth, G-W4 fact sources, G-W6 parallelism (deferred).
+**Done since last update:** G-P5/G-P6 (D19) + G-W1 lowered emitter (D20, Grok) — ✅ merged. WAM tail remaining: G-W2 parser, G-W3 builtin breadth, G-W4 fact sources, G-W6 parallelism (deferred). Pattern tail: constraints, data sources/consumers, TS streaming, test depth, bagof/setof pattern follow-up. Remaining pattern gaps: G-P6-constraints (G-P7 in earlier numbering), data sources & consumers, TS streaming, test depth; bagof/setof + non-extensional aggregates (G-P3 follow-up). WAM tail: G-W1 (grok), G-W2 parser, G-W3 builtin breadth, G-W4 fact sources, G-W6 parallelism (deferred).
 
 **Done since last update:** P1 first-arg indexing (Grok, `grok/wamjs-indexing`) — ✅ merged (see D12). Analyses A1/A2/census — ✅ folded in.
 
