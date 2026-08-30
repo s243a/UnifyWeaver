@@ -48,7 +48,8 @@ in-flight parity analyses — see §6).
 | D20 | wam_javascript | **Tier-2 lowered emitter (G-W1, Grok):** new `wam_javascript_lowered_emitter.pl` + `functions`/`mixed` emit modes. Lowers single-clause det bodies, T4 inline, T5 first-arg dispatch, T6 hash dispatch (≥8 keys), ITE/negation/once; falls back to interpreter for aggregates/cuts/unsupported (never wrong code). Interpreter mode unchanged → conformance still 48/48. JS is no longer one of the 4 WAM targets without a lowered emitter. | PR #4186 |
 | D21 | typescript (→AJS/VJS) | Streaming/generator emit mode (G-P8): `mode(generator)`/`mode(pipeline)` (+ clojure-style aliases) via Node built-in `readline` (no deps); incremental stdin→stdout. Batch mode unchanged; falls back to batch for non-qualifying shapes. node-verified across TS/AJS/VJS vs SWI. | PR #4188 |
 | D22 | annotated_js, vanilla_js | Rewriter hardening (G-P14): vanilla strips union types (incl. `\| null`); annotated keeps `import * as`/named-alias imports intact + strips inline arrow-param annotations; union return → `@returns` JSDoc. node + `tsc --checkJs` verified; base TS suite unaffected. | PR #4189 |
-| D23 | wam_javascript | ISO/library builtin breadth (G-W3, Grok): sort family (sort/2,4, msort, keysort, compare, predsort), list lib (append/reverse/nth0/nth1/last/sum_list/max_list/min_list/list_to_set/select/include/exclude), atom/string (atom_concat/length/chars/codes, char_code, sub_atom, up/downcase, atom_string/split_string/string_concat), format/2,3 (~w~a~d~p~q~n~s~t~~), tab, writeln, assoc (list-based). node-verified vs SWI; conformance 48/48. Follow-up: term_variables/numbervars/=@=, ~f/~r, real string tag, AVL assoc. | (this branch) |
+| D23 | wam_javascript | ISO/library builtin breadth (G-W3, Grok): sort family (sort/2,4, msort, keysort, compare, predsort), list lib (append/reverse/nth0/nth1/last/sum_list/max_list/min_list/list_to_set/select/include/exclude), atom/string (atom_concat/length/chars/codes, char_code, sub_atom, up/downcase, atom_string/split_string/string_concat), format/2,3 (~w~a~d~p~q~n~s~t~~), tab, writeln, assoc (list-based). node-verified vs SWI; conformance 48/48. Follow-up: term_variables/numbervars/=@=, ~f/~r, real string tag, AVL assoc. | PR #4190 |
+| D24 | typescript + clojure (→AJS/VJS/CLJS) | Guard-goal codegen (G-P7): added negation (`\+`/`not`) and type-check preds (integer/float/number/atom/is_list/compound/var/nonvar/ground) to `ts_guard_condition/3` + `clojure_guard_condition/3` (+ `member/2` under negation). Was: classified as guard upstream then render-failed. node+nbb verified vs SWI; 5 suites green (TS 57/AJS 17/VJS 22/CLJS 26/JVM 12). Regex `match` = follow-up. | (this branch) |
 
 ---
 
@@ -56,9 +57,11 @@ in-flight parity analyses — see §6).
 
 | ID | Target | Item | Owner | Branch |
 |---|---|---|---|---|
-**Done since last update:** G-P8 TS streaming (D21) — ✅ merged. In flight: G-W3 builtin breadth (Grok). WAM tail: G-W2 parser, G-W4 fact sources, G-W6 parallelism (deferred). Pattern tail: constraints (G-P6/7), data sources/consumers (G-P7/9), test depth (G-P13), rewrite-robustness (G-P14), bagof/setof pattern follow-up. Remaining pattern gaps: G-P6-constraints (G-P7 in earlier numbering), data sources & consumers, TS streaming, test depth; bagof/setof + non-extensional aggregates (G-P3 follow-up). WAM tail: G-W1 (grok), G-W2 parser, G-W3 builtin breadth, G-W4 fact sources, G-W6 parallelism (deferred).
+| G-W2 | wam_javascript | Richer runtime term parser (floats/lists/compounds) + register runtime-parser capability | grok | prompt sent |
 
-**Done since last update:** P1 first-arg indexing (Grok, `grok/wamjs-indexing`) — ✅ merged (see D12). Analyses A1/A2/census — ✅ folded in.
+**Remaining tail** (all lower-priority than what's landed):
+- **Pattern:** G-P9 data-source consumers (re-scoped: mirror PowerShell-pure, JSON/CSV — S–M); regex `match` guards (G-P7 follow-up); `constraint_analyzer` unique/unordered dedup for TS/CLJS; bagof/setof + non-extensional aggregates at pattern level (G-P3 follow-up); test depth (G-P13).
+- **WAM:** G-W2 (in flight); G-W4 external fact sources (mirror `wam_lua` `lua_fact_sources`); G-W3 follow-ups (term_variables/numbervars/=@=, real string tag, AVL assoc); G-W6 parallelism (deferred).
 
 ---
 
