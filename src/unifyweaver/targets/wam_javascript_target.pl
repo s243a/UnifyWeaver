@@ -9,6 +9,8 @@
 % lowered-function path. Architecture mirrors wam_lua_target.pl
 % (closest dynamically typed model). emit_mode is interpreter | functions
 % | mixed(List); default remains interpreter.
+% javascript_wam_fact_sources([source(P/2, file(Path))]) streams binary
+% facts from a TSV/CSV or JSONL file (Lua-style; no LMDB/CSR).
 
 :- module(wam_javascript_target, [
     write_wam_javascript_project/3,
@@ -498,25 +500,37 @@ wam_items_to_data([Item|Rest], Options, PC, [Lit|I2], LabelEntries) :-
 
 compile_wam_predicate_to_javascript(_Pred, _WamCode, _Options, "").
 
-compile_predicates_for_project(Predicates, Options, AllInstrs, TopLabels, AllLabels, WrapperCode, LoweredCode) :-
+compile_predicates_for_project(Predicates, Options, AllInstrs, TopLabels, AllLabels, WrapperCode, LoweredCode, FactSourcesCode) :-
     init_js_atom_intern_table,
     option(intern_atoms(ExtraAtoms), Options, []),
     forall(member(A, ExtraAtoms), (atom_string(A, S), intern_js_atom(S, _))),
     wam_javascript_resolve_emit_mode(Options, EmitMode),
     compile_all_predicates(Predicates, Options, EmitMode, 1,
-        [], [], [], [], [],
-        AllInstrs, TopLabels, AllLabels, Wrappers, LoweredEntries),
+        [], [], [], [], [], [],
+        AllInstrs, TopLabels, AllLabels, Wrappers, LoweredEntries, FactSources),
     atomic_list_concat(Wrappers, '\n', WrapperCode),
-    atomic_list_concat(LoweredEntries, '\n', LoweredCode).
+    atomic_list_concat(LoweredEntries, '\n', LoweredCode),
+    atomic_list_concat(FactSources, ',\n', FactSourcesCode).
 
-compile_all_predicates([], _, _, _, Instrs, TopLabels, AllLabels, Wrappers, Lowered,
-                       Instrs, TopLabels, AllLabels, Wrappers, Lowered).
+compile_all_predicates([], _, _, _, Instrs, TopLabels, AllLabels, Wrappers, Lowered, FactSources,
+                       Instrs, TopLabels, AllLabels, Wrappers, Lowered, FactSources).
 compile_all_predicates([Pred|Rest], Options, EmitMode, BasePC,
-                       InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc,
-                       AllInstrs, TopLabels, AllLabels, Wrappers, Lowered) :-
+                       InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc, FactSourceAcc,
+                       AllInstrs, TopLabels, AllLabels, Wrappers, Lowered, FactSources) :-
     (Pred = _M:P/Arity -> true ; Pred = P/Arity),
-    compile_js_predicate_wam(P/Arity, WamCode),
-    wam_code_to_js_data(WamCode, Options, PredInstrs, PredSubLabelEntries0),
+    (   javascript_wam_fact_source_spec(P, Arity, Options, SourceSpec)
+    ->  format(string(MainKey), '~w/~w', [P, Arity]),
+        js_string_literal(MainKey, KeyQ),
+        format(string(FLit), 'I.CallFactStream(~w, ~w)', [KeyQ, Arity]),
+        PredInstrs = [FLit, 'I.Proceed()'],
+        PredSubLabelEntries0 = [],
+        javascript_wam_fact_source_entry(MainKey, SourceSpec, FactSourceEntry),
+        SkipLower = true
+    ;   compile_js_predicate_wam(P/Arity, WamCode),
+        wam_code_to_js_data(WamCode, Options, PredInstrs, PredSubLabelEntries0),
+        FactSourceEntry = none,
+        SkipLower = false
+    ),
     length(PredInstrs, PredLen),
     append(InstrAcc, PredInstrs, NewInstrs),
     NewPC is BasePC + PredLen,
@@ -528,7 +542,8 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, BasePC,
     format(string(MainEntry), '  ~w: ~w', [KeyQ, BasePC]),
     NewTopLabels = [MainEntry|TopLabelAcc],
     append([MainEntry|PredSubLabelEntries], AllLabelAcc, NewAllLabels),
-    (   should_try_lower(EmitMode, P, Arity),
+    (   SkipLower \== true,
+        should_try_lower(EmitMode, P, Arity),
         compile_js_predicate_wam_text(P/Arity, WamText),
         WamText \= "",
         catch(wam_javascript_lowerable(Pred, WamText, _), _, fail),
@@ -540,9 +555,39 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, BasePC,
     ;   NewLoweredAcc = LoweredAcc,
         emit_js_wrapper(P, Arity, BasePC, Wrapper)
     ),
+    (FactSourceEntry == none -> NewFactSourceAcc = FactSourceAcc ; NewFactSourceAcc = [FactSourceEntry|FactSourceAcc]),
     compile_all_predicates(Rest, Options, EmitMode, NewPC,
-        NewInstrs, NewTopLabels, NewAllLabels, [Wrapper|WrapperAcc], NewLoweredAcc,
-        AllInstrs, TopLabels, AllLabels, Wrappers, Lowered).
+        NewInstrs, NewTopLabels, NewAllLabels, [Wrapper|WrapperAcc], NewLoweredAcc, NewFactSourceAcc,
+        AllInstrs, TopLabels, AllLabels, Wrappers, Lowered, FactSources).
+
+%% javascript_wam_fact_sources([source(P/A, file(Path)), ...])
+%  Lightweight file-backed binary facts (Lua's lua_fact_sources/1).
+%  Only P/2 is streamed; other arities keep compiled inline WAM.
+javascript_wam_fact_source_spec(P, Arity, Options, Spec) :-
+    Arity =:= 2,
+    (   option(javascript_wam_fact_sources(Sources), Options)
+    ->  true
+    ;   option(js_fact_sources(Sources), Options)
+    ->  true
+    ;   Sources = []
+    ),
+    member(source(PI, Spec), Sources),
+    javascript_wam_fact_source_pi_match(PI, P, Arity).
+
+javascript_wam_fact_source_pi_match(_:Name/Ar, P, Arity) :- !,
+    Name == P, Ar =:= Arity.
+javascript_wam_fact_source_pi_match(Name/Ar, P, Arity) :-
+    Name == P, Ar =:= Arity.
+
+javascript_wam_fact_source_entry(Key, file(Path), Entry) :-
+    atom_string(Path, PathStr),
+    (   absolute_file_name(PathStr, AbsPath, [access(read), file_errors(fail)])
+    ->  SourcePath = AbsPath
+    ;   SourcePath = PathStr
+    ),
+    js_string_literal(Key, KeyQ),
+    js_string_literal(SourcePath, PathQ),
+    format(string(Entry), '  ~w: { path: ~w }', [KeyQ, PathQ]).
 
 compile_js_predicate_wam(PredIndicator, WamCode) :-
     CompileOpts = [ite_use_y_level(true), inline_bagof_setof(true)],
@@ -685,7 +730,7 @@ write_wam_javascript_project(Predicates, Options, ProjectDir) :-
     directory_file_path(ProjectDir, 'js', JsDir),
     make_directory_path(JsDir),
     compile_predicates_for_project(Predicates, Options,
-        AllInstrs, TopLabels, AllLabels, WrapperCode, LoweredCode),
+        AllInstrs, TopLabels, AllLabels, WrapperCode, LoweredCode, FactSourcesCode),
     emit_js_intern_table(InternSeed),
     maplist([I, Line]>>(format(string(Line), '  ~w', [I])), AllInstrs, InstrLines),
     atomic_list_concat(InstrLines, ',\n', InstrBody),
@@ -693,7 +738,7 @@ write_wam_javascript_project(Predicates, Options, ProjectDir) :-
     atomic_list_concat(AllLabels, ',\n', LabelBody),
     write_runtime_source(JsDir),
     write_program_source(JsDir, InstrBody, LabelBody, DispatchBody,
-                         WrapperCode, InternSeed, "", LoweredCode).
+                         WrapperCode, InternSeed, "", LoweredCode, FactSourcesCode).
 
 write_runtime_source(JsDir) :-
     find_template('templates/targets/javascript_wam/runtime.js.mustache', Template),
@@ -703,7 +748,7 @@ write_runtime_source(JsDir) :-
     write_file(Path, Content).
 
 write_program_source(JsDir, InstrBody, LabelBody, DispatchBody,
-                     WrapperCode, InternSeed, ForeignHandlers, LoweredCode) :-
+                     WrapperCode, InternSeed, ForeignHandlers, LoweredCode, FactSourcesCode) :-
     find_template('templates/targets/javascript_wam/program.js.mustache', Template),
     get_time(T), format_time(string(Date), "%Y-%m-%d", T),
     render_template(Template,
@@ -714,7 +759,8 @@ write_program_source(JsDir, InstrBody, LabelBody, DispatchBody,
          'wrappers'=WrapperCode,
          'intern_id_to_string'=InternSeed,
          'foreign_handlers'=ForeignHandlers,
-         'lowered_functions'=LoweredCode], Content),
+         'lowered_functions'=LoweredCode,
+         'fact_sources'=FactSourcesCode], Content),
     directory_file_path(JsDir, 'generated_program.js', Path),
     write_file(Path, Content).
 
