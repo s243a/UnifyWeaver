@@ -142,6 +142,12 @@ generate_json_bash(PredStr, Arity, Filter, JsonFile, InputMode,
     % Generate output processing based on format
     generate_output_processing(OutputFormat, OutputProcessing),
 
+    % Build the column projection literal for the TypeScript/Node templates.
+    % The bash/PS templates ignore {{projection}} (jq does projection via the
+    % jq_filter), so their behaviour is unchanged; only the `_typescript`
+    % templates consume it. See json_projection_js/2.
+    json_projection_js(Options, Projection),
+
     % Select template based on input mode and template_suffix option
     (   InputMode = file ->
         BaseTemplate = json_file_source
@@ -159,9 +165,61 @@ generate_json_bash(PredStr, Arity, Filter, JsonFile, InputMode,
         [pred=PredStr, filter=EscapedFilter, json_file=JsonFile,
          jq_flags=JqFlags, error_code=ErrorCode,
          output_processing=OutputProcessing, output_format=OutputFormat,
-         arity=Arity, input_mode=InputMode],
+         arity=Arity, input_mode=InputMode, projection=Projection],
         [source_order([file, generated])],
         BashCode).
+
+%% json_projection_js(+Options, -Projection)
+%  Build a JS array-literal of the requested column key paths, e.g.
+%  columns([id, name, price]) -> '["id","name","price"]'. This is the same
+%  `columns` list that sources.pl requires for a JSON source (count == arity)
+%  and that csharp_target feeds to JsonStreamReader.ColumnSelectors. The
+%  TypeScript/Node templates read each key from the object (dotted paths
+%  supported at runtime), giving true selection/ordering rather than relying on
+%  object insertion order. When no columns are declared the literal is `[]` and
+%  the template falls back to Object.values.
+json_projection_js(Options, Projection) :-
+    (   member(columns(Cols), Options),
+        is_list(Cols),
+        Cols \= []
+    ->  maplist(json_column_key, Cols, Keys),
+        maplist(js_string_literal, Keys, Literals),
+        atomic_list_concat(Literals, ',', Inner),
+        format(atom(Projection), '[~w]', [Inner])
+    ;   Projection = '[]'
+    ).
+
+%% json_column_key(+ColumnEntry, -KeyAtom)
+%  Normalise a columns/1 entry to an atom key path. Accepts atoms, strings and
+%  jsonpath(Path) wrappers (the leading `$.`/`$` is stripped so a plain object
+%  lookup works in the pure-Node template).
+json_column_key(jsonpath(Path), Key) :- !,
+    json_column_key(Path, Key).
+json_column_key(Entry, Key) :-
+    (   atom(Entry) -> atom_string(Entry, S)
+    ;   string(Entry) -> S = Entry
+    ;   term_to_atom(Entry, A), atom_string(A, S)
+    ),
+    (   sub_string(S, 0, 2, _, "$.")
+    ->  sub_string(S, 2, _, 0, S1)
+    ;   sub_string(S, 0, 1, _, "$")
+    ->  sub_string(S, 1, _, 0, S1)
+    ;   S1 = S
+    ),
+    atom_string(Key, S1).
+
+%% js_string_literal(+Atom, -Literal)
+%  Wrap an atom in double quotes, escaping backslash and double-quote so the
+%  emitted JS source is a valid string literal.
+js_string_literal(Atom, Literal) :-
+    atom_string(Atom, S0),
+    % Escape backslashes first, then double quotes.
+    split_string(S0, "\\", "", BParts),
+    atomic_list_concat(BParts, '\\\\', S1),
+    atom_string(S1, S1s),
+    split_string(S1s, "\"", "", QParts),
+    atomic_list_concat(QParts, '\\"', S2),
+    format(atom(Literal), '"~w"', [S2]).
 
 %% generate_jq_flags(+RawOutput, +CompactOutput, +NullInput, -Flags)
 %  Generate jq command line flags
@@ -366,17 +424,34 @@ if ($MyInvocation.InvocationName -ne ''.'') {
 %% ============================================
 %% Self-contained Node scripts (no npm deps): fs + JSON.parse. Mirror the
 %% pure-PowerShell semantics (read the JSON array, join each item''s property
-%% values with '':''; arity 1 emits the first value). Uses only the template
-%% variables generate_json_bash/12 already provides (pred, json_file, arity),
-%% so json_source''s existing behaviour is unchanged. Runs under either
-%% `node --experimental-strip-types file.ts` or plain `node file.js` (the
-%% CommonJS require works in both).
+%% values with '':''; arity 1 emits the first value). Uses the template
+%% variables generate_json_bash/12 provides (pred, json_file, arity) plus
+%% projection (G-P9 polish), so json_source''s existing bash/PS behaviour is
+%% unchanged. Runs under either `node --experimental-strip-types file.ts` or
+%% plain `node file.js` (the CommonJS require works in both).
+%% PROJECTION (G-P9 polish): when the source declares columns([...]) (which
+%% sources.pl requires for JSON, count == arity), {{projection}} is a JS array
+%% of those key paths and the emitted script selects/orders exactly those keys
+%% (dotted paths traversed at runtime) instead of relying on object insertion
+%% order. With no columns the literal is [] and it falls back to Object.values.
 
 % TypeScript/Node template for JSON file source
 template_system:template(json_file_source_typescript, '#!/usr/bin/env node
 // {{pred}} - JSON file source - self-contained Node (no npm deps)
 // Generated by UnifyWeaver - TypeScript/Node data-source consumer
 const fs = require("fs");
+
+// projection: declared columns([...]) key paths, in order (empty => all values)
+const {{pred}}_projection = {{projection}};
+
+function {{pred}}_pick(obj, path) {
+    let cur = obj;
+    for (const part of String(path).split(".")) {
+        if (cur === null || cur === undefined) { return ""; }
+        cur = cur[part];
+    }
+    return cur === null || cur === undefined ? "" : String(cur);
+}
 
 function {{pred}}(key) {
     const raw = fs.readFileSync("{{json_file}}", "utf8");
@@ -386,7 +461,9 @@ function {{pred}}(key) {
     const out = [];
     for (const item of data) {
         let values;
-        if (item !== null && typeof item === "object") {
+        if ({{pred}}_projection.length > 0) {
+            values = {{pred}}_projection.map((p) => {{pred}}_pick(item, p));
+        } else if (item !== null && typeof item === "object") {
             values = Object.values(item).map((v) => String(v));
         } else {
             values = [String(item)];
@@ -421,6 +498,18 @@ template_system:template(json_stdin_source_typescript, '#!/usr/bin/env node
 // Generated by UnifyWeaver - TypeScript/Node data-source consumer
 const fs = require("fs");
 
+// projection: declared columns([...]) key paths, in order (empty => all values)
+const {{pred}}_projection = {{projection}};
+
+function {{pred}}_pick(obj, path) {
+    let cur = obj;
+    for (const part of String(path).split(".")) {
+        if (cur === null || cur === undefined) { return ""; }
+        cur = cur[part];
+    }
+    return cur === null || cur === undefined ? "" : String(cur);
+}
+
 function {{pred}}FromString(raw, key) {
     let data = JSON.parse(raw);
     if (!Array.isArray(data)) { data = [data]; }
@@ -428,7 +517,9 @@ function {{pred}}FromString(raw, key) {
     const out = [];
     for (const item of data) {
         let values;
-        if (item !== null && typeof item === "object") {
+        if ({{pred}}_projection.length > 0) {
+            values = {{pred}}_projection.map((p) => {{pred}}_pick(item, p));
+        } else if (item !== null && typeof item === "object") {
             values = Object.values(item).map((v) => String(v));
         } else {
             values = [String(item)];
