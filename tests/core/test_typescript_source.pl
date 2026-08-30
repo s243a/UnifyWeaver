@@ -205,4 +205,53 @@ test(json_projection_subset, [ condition(node_available),
     ts_write_run(Code, [], Out),
     Out == 'Laptop Mouse Keyboard'.
 
+% ============================================================================
+% CSV project_columns() column-subset projection (G-P9 residual)
+% ============================================================================
+% Header: name,age,city  ->  indices name=0, age=1, city=2.
+
+% The emitted binary script selects/reorders exactly the projected fields.
+% project_columns([city, name]) -> [fields[2], fields[0]].join(":").
+test(csv_project_in_code, [setup(cleanup_proj), cleanup(cleanup_proj)]) :-
+    write_csv_fixture(CF),
+    source(csv, ts_proj, [ csv_file(CF), has_header(true),
+                           project_columns([city, name]), arity(2) ]),
+    once(is_dynamic_source(ts_proj/2)),
+    once(typescript_target:compile_predicate_to_typescript(ts_proj/2, [], Code)),
+    has(Code, '[fields[2], fields[0]].join(":")'),
+    catch(delete_file(CF), _, true).
+
+% Running it reorders the emitted rows to city:name.
+test(csv_project_node_execution, [ condition(node_available),
+                                   setup(cleanup_proj), cleanup(cleanup_proj) ]) :-
+    write_csv_fixture(CF),
+    source(csv, ts_proj, [ csv_file(CF), has_header(true),
+                           project_columns([city, name]), arity(2) ]),
+    once(typescript_target:compile_predicate_to_typescript(ts_proj/2, [], Code)),
+    ts_write_run(Code, [], Out),
+    Out == 'nyc:alice sf:bob la:charlie',
+    catch(delete_file(CF), _, true).
+
+% Single-column subset (arity 1): pick just the city column.
+test(csv_project_subset_single, [ condition(node_available),
+                                  setup(cleanup_proj), cleanup(cleanup_proj) ]) :-
+    write_csv_fixture(CF),
+    source(csv, ts_proj, [ csv_file(CF), has_header(true),
+                           project_columns([city]), arity(1) ]),
+    once(typescript_target:compile_predicate_to_typescript(ts_proj/1, [], Code)),
+    has(Code, 'fields[2]'),
+    ts_write_run(Code, [], Out),
+    Out == 'nyc sf la',
+    catch(delete_file(CF), _, true).
+
+% An unknown projected column name fails compilation with a clear error.
+test(csv_project_unknown_name_fails, [setup(cleanup_proj), cleanup(cleanup_proj)]) :-
+    write_csv_fixture(CF),
+    source(csv, ts_proj, [ csv_file(CF), has_header(true),
+                           project_columns([nope, name]), arity(2) ]),
+    \+ catch(typescript_target:compile_predicate_to_typescript(ts_proj/2, [], _), _, fail),
+    catch(delete_file(CF), _, true).
+
+cleanup_proj :- retractall(dynamic_source_compiler:dynamic_source_def(ts_proj/_, _, _)).
+
 :- end_tests(typescript_source).
