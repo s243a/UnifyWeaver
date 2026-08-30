@@ -40,7 +40,7 @@ points, and BeginAggregate / EndAggregate collection.
 | 3 | Nested terms built outer-first; `put_*` must bind+trail the X/Y placeholder (A-register exception). | Yes — `push_built_term` bind-through for `target >= 101`. |
 | 4 | `deref` before every type test. | Yes. |
 | 5 | `is/2` yields an integer for integral results. | Yes — `eval_arith` + `as_arith_result` (`Number.isInteger` → `V.Int`). |
-| 6 | Unhandled instruction ⇒ a real one-slot NoOp (`I.Raw` / default), never drop/throw. | Yes. `EndAggregate` still returns fail on purpose (collect then backtrack). |
+| 6 | Unhandled instruction ⇒ a real one-slot NoOp (`I.Raw` / default), never drop/throw. | Yes. Implemented switches consume exactly one slot and jump or fall through; unknown ops stay `I.Raw`. `EndAggregate` still returns fail on purpose (collect then backtrack). |
 
 ## Implemented builtins
 
@@ -71,6 +71,8 @@ I/O (probe dumps): `write/1`, `nl/0`, `writeln/1`.
 | `bagof/3` | **Implemented.** ISO witness grouping (one bag per distinct free-var binding, SWI encounter order), `Var^Goal` / nested `V1^V2^Goal` stripped from the witness set, fails when Goal has no solutions. |
 | `setof/3` | **Implemented.** `bagof` then per-group standard-order sort + dedup. Order: Var < Number < Atom < String < Compound; compounds by arity, functor **name**, then args L-to-R (matches SWI mixed-type lists). |
 | `term_variables/2`, `numbervars/3`, `=@=/2` | Not ported. |
+| First-arg indexing | **Implemented.** `switch_on_constant` / `_fallthrough` / `_a2`, `switch_on_structure` / `_a2`, and `switch_on_term` / `_a2` jump to the matching clause group. Ground first-arg with a unique clause leaves no choice point (`deterministic/0`). Unbound first arg falls through to the try/retry/trust chain (no lost solutions). Exclusive miss fails; fallthrough variants keep the chain for variable-headed clauses. Dedicated `try`/`retry`/`trust` dispatch chains are emitted for multi-clause groups. |
+| Second-arg / deep indexing | A2 switches are implemented; deep (argument >2) indexing is not. |
 | Lowered / functions emit mode | Interpreter only. |
 | Conformance harness adapter | See `INTEGRATION_PATCH.md` (coordinator applies `conformance_target(javascript)`). |
 
@@ -95,6 +97,7 @@ runs the RHS.
 
 ## Document status
 
-Initial JS WAM bring-up + builtin port from Lua, then ISO bagof/3 and
-setof/3 (witness grouping, `^/2`, empty-goal failure, SWI standard-order
-sort). Source-verified against SWI-Prolog as the oracle (2026-08-30).
+Initial JS WAM bring-up + builtin port from Lua, ISO bagof/3 and setof/3,
+then first-argument indexing (`switch_on_constant` / `structure` / `term`
+and fallthrough / A2 variants). Source-verified against SWI-Prolog as the
+oracle (2026-08-30).

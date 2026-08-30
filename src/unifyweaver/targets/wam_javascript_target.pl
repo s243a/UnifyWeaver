@@ -148,6 +148,15 @@ wam_parts_to_js(["retry_me_else", Label], Lit) :-
     js_string_literal(Label, L),
     format(string(Lit), 'I.RetryMeElse(~w)', [L]).
 wam_parts_to_js(["trust_me"], 'I.TrustMe()').
+wam_parts_to_js(["try", Label], Lit) :-
+    js_string_literal(Label, L),
+    format(string(Lit), 'I.Try(~w)', [L]).
+wam_parts_to_js(["retry", Label], Lit) :-
+    js_string_literal(Label, L),
+    format(string(Lit), 'I.Retry(~w)', [L]).
+wam_parts_to_js(["trust", Label], Lit) :-
+    js_string_literal(Label, L),
+    format(string(Lit), 'I.Trust(~w)', [L]).
 wam_parts_to_js(["allocate"], 'I.Allocate()').
 wam_parts_to_js(["deallocate"], 'I.Deallocate()').
 wam_parts_to_js(["get_constant", C, Reg], Lit) :-
@@ -215,20 +224,63 @@ wam_parts_to_js(["arg", NStr, RegStr, OutRegStr], Lit) :-
     number_string(N, NStr), reg_to_int(RegStr, R), reg_to_int(OutRegStr, O),
     format(string(Lit), 'I.ArgInstr(~w, ~w, ~w)', [N, R, O]).
 wam_parts_to_js(["switch_on_constant" | Cases], Lit) :-
-    normalize_switch_case_tokens(Cases, Norm),
-    parse_switch_cases(Norm, CaseLits),
-    atomic_list_concat(CaseLits, ', ', CasesStr),
-    format(string(Lit), 'I.SwitchOnConstant([~w])', [CasesStr]).
+    emit_js_switch_constant(Cases, false, 1, Lit).
+wam_parts_to_js(["switch_on_constant_fallthrough" | Cases], Lit) :-
+    emit_js_switch_constant(Cases, true, 1, Lit).
 wam_parts_to_js(["switch_on_constant_a2" | Cases], Lit) :-
+    emit_js_switch_constant(Cases, false, 2, Lit).
+wam_parts_to_js(["switch_on_constant_a2_fallthrough" | Cases], Lit) :-
+    emit_js_switch_constant(Cases, true, 2, Lit).
+wam_parts_to_js(["switch_on_structure" | Cases], Lit) :-
+    emit_js_switch_structure(Cases, 1, Lit).
+wam_parts_to_js(["switch_on_structure_a2" | Cases], Lit) :-
+    emit_js_switch_structure(Cases, 2, Lit).
+wam_parts_to_js(["switch_on_term" | Tokens], Lit) :-
+    emit_js_switch_term(Tokens, 1, Lit).
+wam_parts_to_js(["switch_on_term_a2" | Tokens], Lit) :-
+    emit_js_switch_term(Tokens, 2, Lit).
+
+emit_js_switch_constant(Cases, Fallthrough, Reg, Lit) :-
     normalize_switch_case_tokens(Cases, Norm),
     parse_switch_cases(Norm, CaseLits),
     atomic_list_concat(CaseLits, ', ', CasesStr),
-    format(string(Lit), 'I.SwitchOnConstantA2([~w])', [CasesStr]).
-wam_parts_to_js(["switch_on_structure" | Cases], Lit) :-
+    (   Fallthrough == true -> FT = true ; FT = false ),
+    (   Reg =:= 2
+    ->  format(string(Lit), 'I.SwitchOnConstantA2([~w], ~w)', [CasesStr, FT])
+    ;   format(string(Lit), 'I.SwitchOnConstant([~w], ~w)', [CasesStr, FT])
+    ).
+
+emit_js_switch_structure(Cases, Reg, Lit) :-
     normalize_switch_case_tokens(Cases, Norm),
     parse_struct_switch_cases(Norm, CaseLits),
     atomic_list_concat(CaseLits, ', ', CasesStr),
-    format(string(Lit), 'I.SwitchOnStructure([~w])', [CasesStr]).
+    (   Reg =:= 2
+    ->  format(string(Lit), 'I.SwitchOnStructureA2([~w])', [CasesStr])
+    ;   format(string(Lit), 'I.SwitchOnStructure([~w])', [CasesStr])
+    ).
+
+emit_js_switch_term(Tokens, Reg, Lit) :-
+    parse_switch_term_tokens(Tokens, ConstLits, StructLits, ListLabel),
+    atomic_list_concat(ConstLits, ', ', ConstStr),
+    atomic_list_concat(StructLits, ', ', StructStr),
+    js_string_literal(ListLabel, LQ),
+    format(string(Lit), 'I.SwitchOnTerm([~w], [~w], ~w, ~w)',
+           [ConstStr, StructStr, LQ, Reg]).
+
+parse_switch_term_tokens(Tokens, ConstLits, StructLits, ListLabel) :-
+    Tokens = [NCStr|Rest1],
+    number_string(NC, NCStr),
+    length(ConstToks, NC),
+    append(ConstToks, Rest2, Rest1),
+    Rest2 = [NSStr|Rest3],
+    number_string(NS, NSStr),
+    length(StructToks, NS),
+    append(StructToks, [ListLabel0], Rest3),
+    text_to_string(ListLabel0, ListLabel),
+    normalize_switch_case_tokens(ConstToks, ConstNorm),
+    parse_switch_cases(ConstNorm, ConstLits),
+    normalize_switch_case_tokens(StructToks, StructNorm),
+    parse_struct_switch_cases(StructNorm, StructLits).
 wam_parts_to_js(["cut_ite"], 'I.CutIte()').
 wam_parts_to_js(["get_level", Yn], Lit) :-
     reg_to_int(Yn, R),
@@ -261,9 +313,9 @@ wam_parts_to_js(Parts, Lit) :-
 parse_switch_cases([], []).
 parse_switch_cases([Token|Rest], [Lit|More]) :-
     split_at_first_colon(Token, ValStr, LabelStr),
-    intern_js_atom(ValStr, AtomId),
+    constant_to_js_term(ValStr, ValLit),
     js_string_literal(LabelStr, L),
-    format(string(Lit), '{value: V.Atom(~w), label: ~w}', [AtomId, L]),
+    format(string(Lit), '{value: ~w, label: ~w}', [ValLit, L]),
     parse_switch_cases(Rest, More).
 
 parse_struct_switch_cases([], []).
@@ -499,6 +551,9 @@ wam_item_parts(call_indexed_atom_fact2(Pred), ["call_indexed_atom_fact2", Pred])
 wam_item_parts(try_me_else(L), ["try_me_else", L]).
 wam_item_parts(retry_me_else(L), ["retry_me_else", L]).
 wam_item_parts(trust_me, ["trust_me"]).
+wam_item_parts(try(L), ["try", L]).
+wam_item_parts(retry(L), ["retry", L]).
+wam_item_parts(trust(L), ["trust", L]).
 wam_item_parts(jump(L), ["jump", L]).
 wam_item_parts(cut_ite, ["cut_ite"]).
 wam_item_parts(get_level(Yn), ["get_level", Yn]).
@@ -506,9 +561,14 @@ wam_item_parts(cut(Yn), ["cut", Yn]).
 wam_item_parts(begin_aggregate(K, V, R), ["begin_aggregate", K, V, R]).
 wam_item_parts(begin_aggregate(K, V, R, W), ["begin_aggregate", K, V, R, W]).
 wam_item_parts(end_aggregate(R), ["end_aggregate", R]).
-wam_item_parts(switch_on_constant(Es), ["switch_on_constant"|Es]).
-wam_item_parts(switch_on_constant_a2(Es), ["switch_on_constant_a2"|Es]).
-wam_item_parts(switch_on_structure(Es), ["switch_on_structure"|Es]).
+wam_item_parts(switch_on_constant(Es), ["switch_on_constant"|Es]) :- !.
+wam_item_parts(switch_on_constant_fallthrough(Es), ["switch_on_constant_fallthrough"|Es]) :- !.
+wam_item_parts(switch_on_constant_a2(Es), ["switch_on_constant_a2"|Es]) :- !.
+wam_item_parts(switch_on_constant_a2_fallthrough(Es), ["switch_on_constant_a2_fallthrough"|Es]) :- !.
+wam_item_parts(switch_on_structure(Es), ["switch_on_structure"|Es]) :- !.
+wam_item_parts(switch_on_structure_a2(Es), ["switch_on_structure_a2"|Es]) :- !.
+wam_item_parts(switch_on_term(Ts), ["switch_on_term"|Ts]) :- is_list(Ts), !.
+wam_item_parts(switch_on_term_a2(Ts), ["switch_on_term_a2"|Ts]) :- is_list(Ts), !.
 wam_item_parts(Item, Parts) :-
     Item =.. [Name|Args],
     atom_string(Name, NameStr),
