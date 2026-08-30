@@ -361,6 +361,10 @@ normalize_switch_case_tokens([Value, Label0|Rest], [Token|More]) :-
 normalize_switch_case_tokens([Token|Rest], [Token|More]) :-
     normalize_switch_case_tokens(Rest, More).
 
+constant_to_js_term(string(S), Lit) :-
+    !,
+    js_string_literal(S, Q),
+    format(string(Lit), 'V.String(~w)', [Q]).
 constant_to_js_term(C, Lit) :-
     wam_classify_constant_token(C, Class),
     (   Class = integer(N)
@@ -603,6 +607,7 @@ compile_js_predicate_wam_text(PredIndicator, WamText) :-
     CompileOpts = [ite_use_y_level(true), inline_bagof_setof(true)],
     compile_predicate_to_wam_text(PredIndicator, CompileOpts, WamText).
 
+wam_item_parts(get_constant(C, Ai), ["get_constant", string(C), Ai]) :- string(C), !.
 wam_item_parts(get_constant(C, Ai), ["get_constant", C, Ai]).
 wam_item_parts(get_variable(Xn, Ai), ["get_variable", Xn, Ai]).
 wam_item_parts(get_value(Xn, Ai), ["get_value", Xn, Ai]).
@@ -612,14 +617,17 @@ wam_item_parts(get_nil(Ai), ["get_nil", Ai]).
 wam_item_parts(get_integer(N, Ai), ["get_integer", N, Ai]).
 wam_item_parts(unify_variable(Xn), ["unify_variable", Xn]).
 wam_item_parts(unify_value(Xn), ["unify_value", Xn]).
+wam_item_parts(unify_constant(C), ["unify_constant", string(C)]) :- string(C), !.
 wam_item_parts(unify_constant(C), ["unify_constant", C]).
 wam_item_parts(put_variable(Xn, Ai), ["put_variable", Xn, Ai]).
 wam_item_parts(put_value(Xn, Ai), ["put_value", Xn, Ai]).
+wam_item_parts(put_constant(C, Ai), ["put_constant", string(C), Ai]) :- string(C), !.
 wam_item_parts(put_constant(C, Ai), ["put_constant", C, Ai]).
 wam_item_parts(put_structure(F, Ai), ["put_structure", F, Ai]).
 wam_item_parts(put_list(Ai), ["put_list", Ai]).
 wam_item_parts(set_variable(Xn), ["set_variable", Xn]).
 wam_item_parts(set_value(Xn), ["set_value", Xn]).
+wam_item_parts(set_constant(C), ["set_constant", string(C)]) :- string(C), !.
 wam_item_parts(set_constant(C), ["set_constant", C]).
 wam_item_parts(call(P, N), ["call", P, N]).
 wam_item_parts(execute(P), ["execute", P]).
