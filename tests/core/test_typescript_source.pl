@@ -58,6 +58,22 @@ write_csv_fixture(File) :-
     write(W, 'name,age,city\nalice,25,nyc\nbob,30,sf\ncharlie,35,la\n'),
     close(W).
 
+% Tab-delimited fixture (same data, TAB separators).
+write_tsv_fixture(File) :-
+    tmp_file_stream(text, Base, S0), close(S0),
+    atom_concat(Base, '.tsv', File),
+    open(File, write, W),
+    write(W, 'name\tage\tcity\nalice\t25\tnyc\nbob\t30\tsf\ncharlie\t35\tla\n'),
+    close(W).
+
+% Pipe-delimited fixture (same data, '|' separators).
+write_psv_fixture(File) :-
+    tmp_file_stream(text, Base, S0), close(S0),
+    atom_concat(Base, '.psv', File),
+    open(File, write, W),
+    write(W, 'name|age|city\nalice|25|nyc\nbob|30|sf\ncharlie|35|la\n'),
+    close(W).
+
 % ============================================================================
 % JSON source -> Node
 % ============================================================================
@@ -112,5 +128,81 @@ test(csv_node_execution, [ condition(node_available),
     catch(delete_file(CF), _, true).
 
 cleanup_csv :- retractall(dynamic_source_compiler:dynamic_source_def(ts_person/_, _, _)).
+
+% ============================================================================
+% CSV non-comma delimiters (G-P9 polish)
+% ============================================================================
+
+% Tab: the emitted script must split on a real tab ("\t"), not a comma.
+test(csv_tab_in_code, [setup(cleanup_tsv), cleanup(cleanup_tsv)]) :-
+    write_tsv_fixture(TF),
+    source(csv, ts_tab, [ csv_file(TF), has_header(true), delimiter('\t') ]),
+    once(is_dynamic_source(ts_tab/3)),
+    once(typescript_target:compile_predicate_to_typescript(ts_tab/3, [], Code)),
+    has(Code, '.split("\\t")'),
+    catch(delete_file(TF), _, true).
+
+test(csv_tab_node_execution, [ condition(node_available),
+                               setup(cleanup_tsv), cleanup(cleanup_tsv) ]) :-
+    write_tsv_fixture(TF),
+    source(csv, ts_tab, [ csv_file(TF), has_header(true), delimiter('\t') ]),
+    once(typescript_target:compile_predicate_to_typescript(ts_tab/3, [], Code)),
+    ts_write_run(Code, [], OutAll),
+    OutAll == 'alice:25:nyc bob:30:sf charlie:35:la',
+    ts_write_run(Code, [bob], OutBob),
+    OutBob == 'bob:30:sf',
+    catch(delete_file(TF), _, true).
+
+cleanup_tsv :- retractall(dynamic_source_compiler:dynamic_source_def(ts_tab/_, _, _)).
+
+% Pipe: split on the literal "|" (string split, not RegExp, so no escaping).
+test(csv_pipe_in_code, [setup(cleanup_psv), cleanup(cleanup_psv)]) :-
+    write_psv_fixture(PF),
+    source(csv, ts_pipe, [ csv_file(PF), has_header(true), delimiter('|') ]),
+    once(is_dynamic_source(ts_pipe/3)),
+    once(typescript_target:compile_predicate_to_typescript(ts_pipe/3, [], Code)),
+    has(Code, '.split("|")'),
+    catch(delete_file(PF), _, true).
+
+test(csv_pipe_node_execution, [ condition(node_available),
+                                setup(cleanup_psv), cleanup(cleanup_psv) ]) :-
+    write_psv_fixture(PF),
+    source(csv, ts_pipe, [ csv_file(PF), has_header(true), delimiter('|') ]),
+    once(typescript_target:compile_predicate_to_typescript(ts_pipe/3, [], Code)),
+    ts_write_run(Code, [], OutAll),
+    OutAll == 'alice:25:nyc bob:30:sf charlie:35:la',
+    catch(delete_file(PF), _, true).
+
+cleanup_psv :- retractall(dynamic_source_compiler:dynamic_source_def(ts_pipe/_, _, _)).
+
+% ============================================================================
+% JSON columns() projection (G-P9 polish)
+% ============================================================================
+
+% The emitted script carries the projection array in declared order.
+test(json_projection_in_code, [setup(cleanup_json), cleanup(cleanup_json)]) :-
+    abs('test_data/test_products.json', JF),
+    once(source(json, ts_product, [ json_file(JF), columns([price, name, id]), arity(3) ])),
+    once(typescript_target:compile_predicate_to_typescript(ts_product/3, [], Code)),
+    has(Code, '["price","name","id"]').
+
+% Reordering columns() reorders the emitted rows (before/after: the default
+% [id,name,price] order is covered by json_node_execution above).
+test(json_projection_reorder, [ condition(node_available),
+                                setup(cleanup_json), cleanup(cleanup_json) ]) :-
+    abs('test_data/test_products.json', JF),
+    once(source(json, ts_product, [ json_file(JF), columns([price, name, id]), arity(3) ])),
+    once(typescript_target:compile_predicate_to_typescript(ts_product/3, [], Code)),
+    ts_write_run(Code, [], Out),
+    Out == '999:Laptop:P001 25:Mouse:P002 75:Keyboard:P003'.
+
+% Subset projection: pick a single key (arity 1) out of the objects.
+test(json_projection_subset, [ condition(node_available),
+                               setup(cleanup_json), cleanup(cleanup_json) ]) :-
+    abs('test_data/test_products.json', JF),
+    once(source(json, ts_product, [ json_file(JF), columns([name]), arity(1) ])),
+    once(typescript_target:compile_predicate_to_typescript(ts_product/1, [], Code)),
+    ts_write_run(Code, [], Out),
+    Out == 'Laptop Mouse Keyboard'.
 
 :- end_tests(typescript_source).
