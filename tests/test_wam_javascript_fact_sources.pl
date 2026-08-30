@@ -34,7 +34,6 @@ install_fs_preds :-
         js_fs_edge(x, z),
         js_fs_edge(1, 2),
         \+ js_fs_edge(a, z),
-        js_fs_has(a, c),
         write(ok), nl)),
     assertz(user:js_fs_inline(red, 1)),
     assertz(user:js_fs_inline(green, 2)).
