@@ -45,7 +45,8 @@ in-flight parity analyses — see §6).
 | D17 | clojurescript | Wired the `clojurescript` binding key (G-P11): `resolve_binding([clojurescript, clojure], …)` fallback-with-override; loaded both catalogues; call-head rewrite after interop (no double-transform); bb skips it. `parse_double→js/parseFloat` proof, nbb-verified, JVM regression green. Bindings 67→68. | (this branch) |
 | D18 | typescript (→AJS/VJS) | Aggregate compilation (G-P3): `aggregate_all` (count/sum/max/min/bag/set) + `findall` as goals (was 0 refs → 50); node-verified vs SWI. Follow-up: bagof/setof at pattern level + non-extensional inner goals. | PR #4184 |
 | D19 | clojure + clojurescript | Component pattern wired into the clojure base (G-P5): loads `component_registry` + revived orphaned `custom_clojure`, emits declared components (both JVM Clojure and CLJS via interop rewrite). CLJS `compile_module/3` added (G-P6). nbb-verified (module + component); JVM regression green. | PR #4185 |
-| D20 | wam_javascript | **Tier-2 lowered emitter (G-W1, Grok):** new `wam_javascript_lowered_emitter.pl` + `functions`/`mixed` emit modes. Lowers single-clause det bodies, T4 inline, T5 first-arg dispatch, T6 hash dispatch (≥8 keys), ITE/negation/once; falls back to interpreter for aggregates/cuts/unsupported (never wrong code). Interpreter mode unchanged → conformance still 48/48. JS is no longer one of the 4 WAM targets without a lowered emitter. | (this branch) |
+| D20 | wam_javascript | **Tier-2 lowered emitter (G-W1, Grok):** new `wam_javascript_lowered_emitter.pl` + `functions`/`mixed` emit modes. Lowers single-clause det bodies, T4 inline, T5 first-arg dispatch, T6 hash dispatch (≥8 keys), ITE/negation/once; falls back to interpreter for aggregates/cuts/unsupported (never wrong code). Interpreter mode unchanged → conformance still 48/48. JS is no longer one of the 4 WAM targets without a lowered emitter. | PR #4186 |
+| D21 | typescript (→AJS/VJS) | Streaming/generator emit mode (G-P8): `mode(generator)`/`mode(pipeline)` (+ clojure-style aliases) via Node built-in `readline` (no deps); incremental stdin→stdout. Batch mode unchanged; falls back to batch for non-qualifying shapes. node-verified across TS/AJS/VJS vs SWI. | (this branch) |
 
 ---
 
@@ -53,7 +54,7 @@ in-flight parity analyses — see §6).
 
 | ID | Target | Item | Owner | Branch |
 |---|---|---|---|---|
-**Done since last update:** G-P5/G-P6 (D19) + G-W1 lowered emitter (D20, Grok) — ✅ merged. WAM tail remaining: G-W2 parser, G-W3 builtin breadth, G-W4 fact sources, G-W6 parallelism (deferred). Pattern tail: constraints, data sources/consumers, TS streaming, test depth, bagof/setof pattern follow-up. Remaining pattern gaps: G-P6-constraints (G-P7 in earlier numbering), data sources & consumers, TS streaming, test depth; bagof/setof + non-extensional aggregates (G-P3 follow-up). WAM tail: G-W1 (grok), G-W2 parser, G-W3 builtin breadth, G-W4 fact sources, G-W6 parallelism (deferred).
+**Done since last update:** G-P8 TS streaming (D21) — ✅ merged. In flight: G-W3 builtin breadth (Grok). WAM tail: G-W2 parser, G-W4 fact sources, G-W6 parallelism (deferred). Pattern tail: constraints (G-P6/7), data sources/consumers (G-P7/9), test depth (G-P13), rewrite-robustness (G-P14), bagof/setof pattern follow-up. Remaining pattern gaps: G-P6-constraints (G-P7 in earlier numbering), data sources & consumers, TS streaming, test depth; bagof/setof + non-extensional aggregates (G-P3 follow-up). WAM tail: G-W1 (grok), G-W2 parser, G-W3 builtin breadth, G-W4 fact sources, G-W6 parallelism (deferred).
 
 **Done since last update:** P1 first-arg indexing (Grok, `grok/wamjs-indexing`) — ✅ merged (see D12). Analyses A1/A2/census — ✅ folded in.
 
@@ -81,6 +82,7 @@ suspicions (see §3b N/A): bindings are **not** a gap (JS leads), and TS/AJS reg
 | G-P11 | clojurescript | **FIXED.** Wired the `clojurescript` binding key via `resolve_binding([clojurescript, clojure], …)` — CLJS bindings override, clojure is fallback. Loaded both catalogues (`ensure_cljs_bindings/0`), added a call-head rewrite ordered after the interop rewrite (disjoint tokens, no double-transform); bb runtime skips it. Proven with `parse_double/2 → js/parseFloat`, nbb-verified, JVM Clojure regression green. Bindings 67→68. | ✅ D17 | — | — | done |
 | G-P12 | annotated_js, vanilla_js | **PAR-1 arm activation** — arms exist but skip until the harness loads the targets; needs a real tsc/node run (fine in an agent env). | ⬜ | — | S | opus |
 | G-P13 | JS pattern targets | **Thin test depth** — 8/3/3/5 referencing files (TS/AJS/VJS/CLJS) vs python 204/rust 155/go 78; no aggregate/negation/service/data-source tests. Grow as G-P1..G-P9 land. | ⬜ | those suites | M (ongoing) | opus |
+| G-P14 | annotated_js, vanilla_js | **Rewrite-robustness gaps** (found during G-P8): `vanilla_js_type_strip/2` doesn't strip union return types (`: number \| null`); annotated_js JSDoc rewrite mangles `import * as X from` and doesn't strip inline arrow-param annotations (`(line: string)`). Worked around in templates so far. Harden the strippers. | ⬜ | — | S | opus/main |
 
 ### 3b. Pattern-side N/A / not-a-gap (per A1)
 - **Bindings** — JS family LEADS: TS **179** (most in the repo), CLJS 67, vs python 106, go 161, rust 29. Not a gap. (Earlier G-P8 "bindings depth" dropped.)
