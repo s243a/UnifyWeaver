@@ -73,7 +73,8 @@ Assoc (`library(assoc)` shape, list-of-pairs not AVL): **`empty_assoc/1`**,
 **`list_to_assoc/2`**, **`get_assoc/3`**, **`put_assoc/4`**,
 **`assoc_to_list/2`**, **`assoc_to_keys/2`**.
 
-Term: **`functor/3`**, **`arg/3`**, **`=../2`**, **`copy_term/2`**.
+Term: **`functor/3`**, **`arg/3`**, **`=../2`**, **`copy_term/2`**,
+**`read_term_from_atom/2` `/3`**, **`atom_to_term/3`**, **`term_to_atom/2`**.
 
 Metacall: **`\+/1`**, **`call/1`** (re-enter the same instruction loop /
 builtin dispatch).
@@ -85,6 +86,36 @@ for `count` / `sum(X)` / `bag(X)` / `set(X)`.
 
 Types: `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `var/1`,
 `nonvar/1`, `is_list/1`, `ground/1`.
+
+## Runtime term parser (G-W2)
+
+The Node runtime ships a **hand-written recursive-descent / Pratt reader**
+(`Runtime.parse_term` / `tokenize_term` in `runtime.js.mustache`). CLI argv
+goes through `parse_cli_atom_or_int`, which now calls the same reader
+(unreadable text still interned as an atom).
+
+**Full:** integers (including a leading `-` after start/`(`/`[`/`,`/`|`),
+floats (`3.14`, `-1.5`, `1.0e2`), bare atoms, quoted atoms (`'hi there'`
+with `\'` / `\\` escapes), variables (`X`, `_`, shared names), `[]`,
+proper lists `[a,b,c]`, partial lists `[H|T]`, compounds
+`foo(a, bar(b), 3)`, and parentheses. Cons intern as `[|]/2` + the `[]`
+atom (same functor as `put_list`).
+
+**Partial:** ISO default operator table (`+ - * / //`, comparisons, `,`,
+`\+`, prefix `+/-`, …) so `1+2` reads as `+(1,2)`. User `op/3` and
+postfix operators are not implemented. Fall back rather than invent a
+term when the token stream is leftover or illegal.
+
+Capability (coordinator applies `INTEGRATION_PATCH.md` §7; the shared
+capability file is not edited here):
+
+```prolog
+target_runtime_parser_default(wam_javascript, native(parse_term)).
+target_runtime_parser_mode_(wam_javascript, native(parse_term)).
+```
+
+This matches C++/R (`native(parse_term)`): an in-runtime host-language
+parser, not the bundled portable `compiled(prolog_term_parser)`.
 
 ## Remaining / partial
 
@@ -100,6 +131,7 @@ Types: `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `var/1`,
 | First-arg indexing | **Implemented.** `switch_on_constant` / `_fallthrough` / `_a2`, `switch_on_structure` / `_a2`, and `switch_on_term` / `_a2` jump to the matching clause group. Ground first-arg with a unique clause leaves no choice point (`deterministic/0`). Unbound first arg falls through to the try/retry/trust chain (no lost solutions). Exclusive miss fails; fallthrough variants keep the chain for variable-headed clauses. Dedicated `try`/`retry`/`trust` dispatch chains are emitted for multi-clause groups. |
 | Second-arg / deep indexing | A2 switches are implemented; deep (argument >2) indexing is not. |
 | Lowered / functions emit mode | **Implemented.** `javascript_wam_resolve_emit_mode/2` accepts `interpreter` (default), `functions` (lower every eligible predicate), and `mixed([P/A, ...])` (lower only the named ones). Eligible shapes: single-clause deterministic bodies; T4 all-clauses-inline; T5 first-arg constant dispatch; T6 hash dispatch (≥8 atom keys); structured ITE / negation / once. Unsupported ops (`begin_aggregate`, bagof/setof, cuts/jumps the planner rejects) fall back to the interpreter rather than emitting wrong code. Interpreter-mode bytecode and wrappers are unchanged. |
+| CLI / runtime term parser | **Implemented.** Pratt reader: int/float/atom (incl. quoted)/var/list/`[H\|T]`/compound. CLI argv + `read_term_from_atom` / `atom_to_term` / `term_to_atom`. Capability `native(parse_term)` via `INTEGRATION_PATCH.md` §7. |
 | Conformance harness adapter | See `INTEGRATION_PATCH.md` (coordinator applies `conformance_target(javascript)`). |
 
 ## How to run
@@ -129,6 +161,7 @@ positioning; assoc is a list-of-pairs, not SWI's AVL tree.
 ## Document status
 
 Initial JS WAM bring-up + builtin port from Lua, ISO bagof/3 and setof/3,
-first-argument indexing, the Tier-2 lowered emitter, then ISO/library
-builtin breadth (sort, lists, atom/string, format, assoc). Source-verified
-against SWI-Prolog as the oracle (2026-08-30).
+first-argument indexing, the Tier-2 lowered emitter, ISO/library builtin
+breadth (sort, lists, atom/string, format, assoc), then the G-W2 runtime
+term parser (floats, lists, compounds; `native(parse_term)`).
+Source-verified against SWI-Prolog as the oracle (2026-08-30).
