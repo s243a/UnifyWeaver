@@ -137,7 +137,7 @@ parser, not the bundled portable `compiled(prolog_term_parser)`.
 | Builtin | Status |
 |---|---|
 | `bagof/3` | **Implemented.** ISO witness grouping (one bag per distinct free-var binding, SWI encounter order), `Var^Goal` / nested `V1^V2^Goal` stripped from the witness set, fails when Goal has no solutions. |
-| `setof/3` | **Implemented.** `bagof` then per-group standard-order sort + dedup. Order: Var < Number < Atom < String < Compound; compounds by arity, functor **name**, then args L-to-R (matches SWI mixed-type lists). |
+| `setof/3` | **Implemented.** `bagof` then per-group standard-order sort + dedup. Order: Var < Number < **String** < Atom < Compound (SWI 9.0.4); compounds by arity, functor **name**, then args L-to-R (matches SWI mixed-type lists). |
 | `term_variables/2` | **Implemented.** Distinct unbound vars, first-occurrence L-to-R depth-first. Cyclic compounds are visited once (same `seen` walk as `copy_term`). |
 | `numbervars/3` | **Implemented.** Binds+trails each distinct unbound var to `'$VAR'(N)` from Start; End is Start+count. `write/1` prints `'$VAR'(N)` literally — it does **not** letter-style SWI rendering (`A`, `B`, …). |
 | `=@=/2` / `\=@=/2` | **Implemented.** Variant equality: ground as `==`; vars match via a consistent bijection. Cyclic struct pairs are treated as already-equal once seen. |
