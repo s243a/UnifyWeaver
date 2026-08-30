@@ -2,12 +2,13 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
-% wam_javascript_target.pl - WAM-to-JavaScript hybrid target (interpreter tier)
+% wam_javascript_target.pl - WAM-to-JavaScript hybrid target
 %
 % Consumes shared WAM bytecode from wam_target.pl and emits a Node project
-% with an instruction-array WAM interpreter. Architecture mirrors
-% wam_lua_target.pl (closest dynamically typed model). emit_mode is
-% interpreter only.
+% with an instruction-array WAM interpreter plus an optional Tier-2
+% lowered-function path. Architecture mirrors wam_lua_target.pl
+% (closest dynamically typed model). emit_mode is interpreter | functions
+% | mixed(List); default remains interpreter.
 
 :- module(wam_javascript_target, [
     write_wam_javascript_project/3,
@@ -17,7 +18,8 @@
     parse_functor_arity/3,
     reg_to_int/2,
     wam_parts_to_js/3,
-    wam_javascript_resolve_emit_mode/2
+    wam_javascript_resolve_emit_mode/2,
+    javascript_wam_resolve_emit_mode/2
 ]).
 
 :- use_module(library(lists)).
@@ -34,8 +36,18 @@
     wam_recognise_instruction/2,
     wam_classify_constant_token/2
 ]).
+:- use_module(wam_javascript_lowered_emitter, [
+    wam_javascript_lowerable/3,
+    lower_predicate_to_javascript/4
+]).
 
 :- multifile user:wam_javascript_emit_mode/1.
+
+%% javascript_wam_resolve_emit_mode(+Options, -Mode)
+%  Public emit-mode resolver (Lua/Haskell naming). Alias of
+%  wam_javascript_resolve_emit_mode/2.
+javascript_wam_resolve_emit_mode(Options, Mode) :-
+    wam_javascript_resolve_emit_mode(Options, Mode).
 
 wam_javascript_resolve_emit_mode(Options, Mode) :-
     (   option(emit_mode(M0), Options)
@@ -46,9 +58,16 @@ wam_javascript_resolve_emit_mode(Options, Mode) :-
     ).
 
 validate_emit_mode(interpreter, interpreter) :- !.
+validate_emit_mode(functions, functions) :- !.
+validate_emit_mode(mixed(L), mixed(L)) :- is_list(L), !.
 validate_emit_mode(Other, _) :-
     throw(error(domain_error(wam_javascript_emit_mode, Other),
                 wam_javascript_resolve_emit_mode/2)).
+
+should_try_lower(functions, _, _) :- !.
+should_try_lower(mixed(HotPreds), P, A) :-
+    member(P/A, HotPreds), !.
+should_try_lower(_, _, _) :- fail.
 
 % ============================================================================
 % Atom interning
@@ -479,20 +498,22 @@ wam_items_to_data([Item|Rest], Options, PC, [Lit|I2], LabelEntries) :-
 
 compile_wam_predicate_to_javascript(_Pred, _WamCode, _Options, "").
 
-compile_predicates_for_project(Predicates, Options, AllInstrs, TopLabels, AllLabels, WrapperCode) :-
+compile_predicates_for_project(Predicates, Options, AllInstrs, TopLabels, AllLabels, WrapperCode, LoweredCode) :-
     init_js_atom_intern_table,
     option(intern_atoms(ExtraAtoms), Options, []),
     forall(member(A, ExtraAtoms), (atom_string(A, S), intern_js_atom(S, _))),
-    compile_all_predicates(Predicates, Options, 1,
-        [], [], [], [],
-        AllInstrs, TopLabels, AllLabels, Wrappers),
-    atomic_list_concat(Wrappers, '\n', WrapperCode).
+    wam_javascript_resolve_emit_mode(Options, EmitMode),
+    compile_all_predicates(Predicates, Options, EmitMode, 1,
+        [], [], [], [], [],
+        AllInstrs, TopLabels, AllLabels, Wrappers, LoweredEntries),
+    atomic_list_concat(Wrappers, '\n', WrapperCode),
+    atomic_list_concat(LoweredEntries, '\n', LoweredCode).
 
-compile_all_predicates([], _, _, Instrs, TopLabels, AllLabels, Wrappers,
-                       Instrs, TopLabels, AllLabels, Wrappers).
-compile_all_predicates([Pred|Rest], Options, BasePC,
-                       InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc,
-                       AllInstrs, TopLabels, AllLabels, Wrappers) :-
+compile_all_predicates([], _, _, _, Instrs, TopLabels, AllLabels, Wrappers, Lowered,
+                       Instrs, TopLabels, AllLabels, Wrappers, Lowered).
+compile_all_predicates([Pred|Rest], Options, EmitMode, BasePC,
+                       InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc,
+                       AllInstrs, TopLabels, AllLabels, Wrappers, Lowered) :-
     (Pred = _M:P/Arity -> true ; Pred = P/Arity),
     compile_js_predicate_wam(P/Arity, WamCode),
     wam_code_to_js_data(WamCode, Options, PredInstrs, PredSubLabelEntries0),
@@ -507,10 +528,21 @@ compile_all_predicates([Pred|Rest], Options, BasePC,
     format(string(MainEntry), '  ~w: ~w', [KeyQ, BasePC]),
     NewTopLabels = [MainEntry|TopLabelAcc],
     append([MainEntry|PredSubLabelEntries], AllLabelAcc, NewAllLabels),
-    emit_js_wrapper(P, Arity, BasePC, Wrapper),
-    compile_all_predicates(Rest, Options, NewPC,
-        NewInstrs, NewTopLabels, NewAllLabels, [Wrapper|WrapperAcc],
-        AllInstrs, TopLabels, AllLabels, Wrappers).
+    (   should_try_lower(EmitMode, P, Arity),
+        compile_js_predicate_wam_text(P/Arity, WamText),
+        WamText \= "",
+        catch(wam_javascript_lowerable(Pred, WamText, _), _, fail),
+        catch(lower_predicate_to_javascript(Pred, WamText, [],
+                                           lowered(_, FuncName, LoweredJs)), _, fail)
+    ->  format(string(DispatchLine), 'lowered_dispatch[~w] = ~w;', [KeyQ, FuncName]),
+        NewLoweredAcc = [LoweredJs, DispatchLine|LoweredAcc],
+        emit_js_lowered_wrapper(P, Arity, FuncName, Wrapper)
+    ;   NewLoweredAcc = LoweredAcc,
+        emit_js_wrapper(P, Arity, BasePC, Wrapper)
+    ),
+    compile_all_predicates(Rest, Options, EmitMode, NewPC,
+        NewInstrs, NewTopLabels, NewAllLabels, [Wrapper|WrapperAcc], NewLoweredAcc,
+        AllInstrs, TopLabels, AllLabels, Wrappers, Lowered).
 
 compile_js_predicate_wam(PredIndicator, WamCode) :-
     CompileOpts = [ite_use_y_level(true), inline_bagof_setof(true)],
@@ -519,6 +551,10 @@ compile_js_predicate_wam(PredIndicator, WamCode) :-
     ->  WamCode = Items
     ;   compile_predicate_to_wam_text(PredIndicator, CompileOpts, WamCode)
     ).
+
+compile_js_predicate_wam_text(PredIndicator, WamText) :-
+    CompileOpts = [ite_use_y_level(true), inline_bagof_setof(true)],
+    compile_predicate_to_wam_text(PredIndicator, CompileOpts, WamText).
 
 wam_item_parts(get_constant(C, Ai), ["get_constant", C, Ai]).
 wam_item_parts(get_variable(Xn, Ai), ["get_variable", Xn, Ai]).
@@ -604,6 +640,21 @@ emit_js_wrapper(Pred, Arity, StartPc, Code) :-
 M.~w = ~w;
 ', [Name, ArgDecl, StartPc, ArgList, Name, Name]).
 
+emit_js_lowered_wrapper(Pred, Arity, FuncName, Code) :-
+    pred_arg_strings(Arity, ArgDecl, ArgList),
+    js_pred_name(Pred, Name),
+    format(string(Code),
+'function ~w(~w) {
+  const state = Runtime.new_state();
+  const args = ~w;
+  for (let i = 0; i < args.length; i++) Runtime.put_reg(state, i + 1, args[i]);
+  state.cp = 0;
+  state.program = shared_program;
+  return ~w(shared_program, state) === true;
+}
+M.~w = ~w;
+', [Name, ArgDecl, ArgList, FuncName, Name, Name]).
+
 pred_arg_strings(0, '', '[]') :- !.
 pred_arg_strings(Arity, ArgDecl, ArgList) :-
     numlist(1, Arity, Ns),
@@ -632,7 +683,7 @@ write_wam_javascript_project(Predicates, Options, ProjectDir) :-
     directory_file_path(ProjectDir, 'js', JsDir),
     make_directory_path(JsDir),
     compile_predicates_for_project(Predicates, Options,
-        AllInstrs, TopLabels, AllLabels, WrapperCode),
+        AllInstrs, TopLabels, AllLabels, WrapperCode, LoweredCode),
     emit_js_intern_table(InternSeed),
     maplist([I, Line]>>(format(string(Line), '  ~w', [I])), AllInstrs, InstrLines),
     atomic_list_concat(InstrLines, ',\n', InstrBody),
@@ -640,7 +691,7 @@ write_wam_javascript_project(Predicates, Options, ProjectDir) :-
     atomic_list_concat(AllLabels, ',\n', LabelBody),
     write_runtime_source(JsDir),
     write_program_source(JsDir, InstrBody, LabelBody, DispatchBody,
-                         WrapperCode, InternSeed, "").
+                         WrapperCode, InternSeed, "", LoweredCode).
 
 write_runtime_source(JsDir) :-
     find_template('templates/targets/javascript_wam/runtime.js.mustache', Template),
@@ -650,7 +701,7 @@ write_runtime_source(JsDir) :-
     write_file(Path, Content).
 
 write_program_source(JsDir, InstrBody, LabelBody, DispatchBody,
-                     WrapperCode, InternSeed, ForeignHandlers) :-
+                     WrapperCode, InternSeed, ForeignHandlers, LoweredCode) :-
     find_template('templates/targets/javascript_wam/program.js.mustache', Template),
     get_time(T), format_time(string(Date), "%Y-%m-%d", T),
     render_template(Template,
@@ -660,7 +711,8 @@ write_program_source(JsDir, InstrBody, LabelBody, DispatchBody,
          'dispatch'=DispatchBody,
          'wrappers'=WrapperCode,
          'intern_id_to_string'=InternSeed,
-         'foreign_handlers'=ForeignHandlers], Content),
+         'foreign_handlers'=ForeignHandlers,
+         'lowered_functions'=LoweredCode], Content),
     directory_file_path(JsDir, 'generated_program.js', Path),
     write_file(Path, Content).
 

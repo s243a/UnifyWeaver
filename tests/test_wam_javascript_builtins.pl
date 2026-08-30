@@ -16,7 +16,8 @@
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module(library(process)).
 :- use_module('../src/unifyweaver/targets/wam_javascript_target',
-              [write_wam_javascript_project/3]).
+              [write_wam_javascript_project/3,
+               javascript_wam_resolve_emit_mode/2]).
 :- use_module('wam_conformance_fixtures',
               [conformance_program/2, conformance_query/4]).
 
@@ -201,8 +202,11 @@ conformance_preds(Preds) :-
     findall(P, (conformance_program(_, Ps), member(P, Ps)), Preds).
 
 run_node(Dir, Key, Exit, Out) :-
+    run_node_args(Dir, [Key], Exit, Out).
+
+run_node_args(Dir, Args, Exit, Out) :-
     directory_file_path(Dir, 'js', JsDir),
-    process_create(path(node), ['generated_program.js', Key],
+    process_create(path(node), ['generated_program.js'|Args],
         [cwd(JsDir), stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
     read_string(O, _, OS),
     read_string(E, _, ES),
@@ -262,3 +266,95 @@ test(compile_and_probes, [setup(install_probes)]) :-
            )).
 
 :- end_tests(js_wam_builtins).
+
+% ---------------------------------------------------------------------------
+% Tier-2 lowered / mixed emit modes (interpreter suite above is unchanged)
+% ---------------------------------------------------------------------------
+
+:- dynamic user:hello/1.
+:- dynamic user:probe_lowered_hello/0.
+
+install_lowered_probes :-
+    retractall(user:hello/1),
+    retractall(user:probe_lowered_hello),
+    retractall(user:color/2),
+    retractall(user:probe_color_det),
+    retractall(user:age/2),
+    assertz(user:hello(world)),
+    assertz((user:probe_lowered_hello :-
+        hello(world), deterministic)),
+    assertz(user:color(red, 1)),
+    assertz(user:color(green, 2)),
+    assertz(user:color(blue, 3)),
+    assertz((user:probe_color_det :-
+        color(green, X), write(X), nl, X == 2, deterministic)),
+    assertz(user:age(alice, 30)),
+    assertz(user:age(bob, 25)).
+
+read_generated_js(Dir, Text) :-
+    directory_file_path(Dir, 'js', JsDir),
+    directory_file_path(JsDir, 'generated_program.js', Path),
+    read_file_to_string(Path, Text, []).
+
+:- begin_tests(js_wam_lowered).
+
+test(emit_mode_resolver) :-
+    javascript_wam_resolve_emit_mode([], interpreter),
+    javascript_wam_resolve_emit_mode([emit_mode(interpreter)], interpreter),
+    javascript_wam_resolve_emit_mode([emit_mode(functions)], functions),
+    javascript_wam_resolve_emit_mode([emit_mode(mixed([color/2, hello/1]))],
+                                    mixed([color/2, hello/1])),
+    catch(javascript_wam_resolve_emit_mode([emit_mode(bogus)], _),
+          error(domain_error(wam_javascript_emit_mode, bogus), _),
+          true).
+
+test(functions_mode_direct_function, [setup(install_lowered_probes)]) :-
+    Dir = 'output/js_wam_lowered_functions',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:hello/1, user:probe_lowered_hello/0,
+         user:color/2, user:probe_color_det/0],
+        [emit_mode(functions)], Dir),
+    read_generated_js(Dir, Code),
+    assertion(sub_string(Code, _, _, _, "function lowered_hello_1")),
+    assertion(sub_string(Code, _, _, _, "function lowered_color_2")),
+    assertion(sub_string(Code, _, _, _, "return lowered_hello_1(shared_program, state) === true")),
+    assertion(\+ sub_string(Code, _, _, _, "function lowered_hello_1()")),
+    run_node_args(Dir, ['hello/1', 'world'], HelloExit, HelloOut),
+    assertion(HelloExit =:= 0),
+    assertion(node_succeeded(HelloOut)),
+    run_node(Dir, 'probe_lowered_hello/0', DetExit, DetOut),
+    assertion(DetExit =:= 0),
+    assertion(node_succeeded(DetOut)),
+    run_node(Dir, 'probe_color_det/0', ColorExit, ColorOut),
+    assertion(ColorExit =:= 0),
+    assertion(node_succeeded(ColorOut)),
+    assertion(sub_string(ColorOut, _, _, _, "2")).
+
+test(mixed_lowers_only_named, [setup(install_lowered_probes)]) :-
+    Dir = 'output/js_wam_lowered_mixed',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:hello/1, user:color/2, user:age/2],
+        [emit_mode(mixed([color/2]))], Dir),
+    read_generated_js(Dir, Code),
+    assertion(sub_string(Code, _, _, _, "function lowered_color_2")),
+    assertion(\+ sub_string(Code, _, _, _, "function lowered_hello_1")),
+    assertion(\+ sub_string(Code, _, _, _, "function lowered_age_2")),
+    assertion(sub_string(Code, _, _, _, "Runtime.run_predicate(shared_program")),
+    run_node_args(Dir, ['color/2', 'green'], Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Out)),
+    assertion(sub_string(Out, _, _, _, "2")).
+
+test(interpreter_mode_has_no_lowered, [setup(install_lowered_probes)]) :-
+    Dir = 'output/js_wam_lowered_interpreter',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:hello/1, user:color/2],
+        [emit_mode(interpreter)], Dir),
+    read_generated_js(Dir, Code),
+    assertion(\+ sub_string(Code, _, _, _, "function lowered_")),
+    assertion(sub_string(Code, _, _, _, "Runtime.run_predicate(shared_program")).
+
+:- end_tests(js_wam_lowered).
