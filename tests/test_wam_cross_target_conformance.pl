@@ -55,6 +55,8 @@
               [write_wam_haskell_project/3]).
 :- use_module('../src/unifyweaver/targets/wam_python_target',
               [write_wam_python_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_javascript_target',
+              [write_wam_javascript_project/3]).
 :- use_module('../src/unifyweaver/targets/wam_go_target',
               [write_wam_go_project/3]).
 :- use_module('../src/unifyweaver/targets/wam_rust_target',
@@ -85,6 +87,7 @@ conformance_target(elixir).
 conformance_target(wat).
 conformance_target(haskell).
 conformance_target(python).
+conformance_target(javascript).
 conformance_target(go).
 conformance_target(rust).
 conformance_target(c).
@@ -460,6 +463,7 @@ ct_toolchain(elixir, [elixir]).
 ct_toolchain(wat,    [wat2wasm, node]).
 ct_toolchain(haskell, [ghc, cabal]).
 ct_toolchain(python, [python3]).
+ct_toolchain(javascript, [node]).
 ct_toolchain(go,     [go]).
 ct_toolchain(rust,   [cargo]).
 ct_toolchain(c,      [gcc]).
@@ -507,6 +511,7 @@ test(scala,  [condition(ct_available(scala))])  :- run_target_conformance(scala)
 test(elixir, [condition(ct_available(elixir))]) :- run_target_conformance(elixir).
 test(wat,    [condition(ct_available(wat))])    :- run_target_conformance(wat).
 test(python, [condition(ct_available(python))]) :- run_target_conformance(python).
+test(javascript, [condition(ct_available(javascript))]) :- run_target_conformance(javascript).
 test(go,     [condition(ct_available(go))])     :- run_target_conformance(go).
 test(rust,   [condition(ct_available(rust))])   :- run_target_conformance(rust).
 test(c,      [condition(ct_available(c))])      :- run_target_conformance(c).
@@ -926,6 +931,34 @@ ct_run(python, python_ctx(Dir, Map), K, A, Bool) :-
     ).
 
 ct_teardown(python, python_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: JavaScript / Node
+%   (0-arity wrapper -> `node generated_program.js <key>` -> true/false)
+%
+% write_wam_javascript_project/3 emits js/wam_runtime.js + js/generated_program.js.
+% Node is interpreted, so there is NO build step — ct_build is pure generation,
+% ct_run is a fast `node generated_program.js <wrapper>/0` per query. The CLI
+% shim prints true/false and exits 0/1. Opt-in via CONFORMANCE_TARGETS=javascript.
+% ============================================================
+
+ct_build(javascript, Preds, Queries, js_ctx(Dir, Map)) :-
+    ct_tmp_dir('tmp_ct_javascript', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_javascript_project(AllPreds, [module_name(wam_ct)], Dir).
+
+ct_run(javascript, js_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    directory_file_path(Dir, js, JsDir),
+    run_proc_out(node, ['generated_program.js', KeyStr], JsDir, _Exit, OutStr),
+    normalize_space(string(Out), OutStr), bool_of_string(Out, Bool).
+
+ct_teardown(javascript, js_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
 
 % ============================================================
