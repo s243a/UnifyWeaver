@@ -177,6 +177,11 @@ generate_csv_bash(PredStr, Arity, File, Delimiter, SkipLines,
     % Escape delimiter for awk
     escape_delimiter(Delimiter, EscapedDelimiter),
 
+    % Escape delimiter for a JS double-quoted string literal (TypeScript/Node
+    % templates split on this via String.prototype.split with a *string*
+    % argument, so no RegExp escaping is needed - only string-literal escaping).
+    js_escape_delimiter(Delimiter, JsDelimiter),
+
     % Create column list for comments
     atomic_list_concat(Columns, ', ', ColumnList),
 
@@ -192,12 +197,14 @@ generate_csv_bash(PredStr, Arity, File, Delimiter, SkipLines,
     (   Arity =:= 1 ->
         render_named_template(UnaryTemplate,
             [pred=PredStr, file=File, delimiter=EscapedDelimiter,
+             js_delimiter=JsDelimiter,
              skip_lines=TotalSkip, quote_code=QuoteCode,
              columns=ColumnList],
             [source_order([file, generated])],
             Code)
     ;   render_named_template(BinaryTemplate,
             [pred=PredStr, file=File, delimiter=EscapedDelimiter,
+             js_delimiter=JsDelimiter,
              skip_lines=TotalSkip, quote_code=QuoteCode,
              output_format=OutputFormat, columns=ColumnList, arity=Arity],
             [source_order([file, generated])],
@@ -230,6 +237,23 @@ escape_delimiter('\t', '\\t') :- !.  % Tab
 escape_delimiter('|', '\\|') :- !.   % Pipe
 escape_delimiter('\\', '\\\\') :- !. % Backslash
 escape_delimiter(D, D).              % Others pass through
+
+%% js_escape_delimiter(+Delimiter, -JsLiteral)
+%  Escape the raw delimiter for embedding inside a JS double-quoted string
+%  literal used with String.prototype.split(<string>). Because split receives
+%  a plain string (not a RegExp), metacharacters such as `|` need NO escaping;
+%  only characters that are special *inside a double-quoted JS string* do.
+%    tab      -> \t   (so the emitted source reads "\t")
+%    CR / LF  -> \r / \n
+%    backslash-> \\   (emitted "\\")
+%    dquote   -> \"   (emitted "\"")
+%    others   -> pass through (comma, pipe, semicolon, colon, space, ...)
+js_escape_delimiter('\t', '\\t') :- !.  % Tab  -> "\t"
+js_escape_delimiter('\r', '\\r') :- !.  % CR   -> "\r"
+js_escape_delimiter('\n', '\\n') :- !.  % LF   -> "\n"
+js_escape_delimiter('\\', '\\\\') :- !. % \\    -> "\\"
+js_escape_delimiter('"', '\\"') :- !.   % "    -> "\""
+js_escape_delimiter(D, D).              % pipe, semicolon, comma, ... pass through
 
 %% ============================================
 %% HARDCODED TEMPLATES (fallback)
@@ -366,10 +390,14 @@ if ($MyInvocation.InvocationName -ne ''.'') {
 %% stream all rows; arity 1 emits the first field, arity 2+ joins the first
 %% <arity> fields with '':''). Uses only the template variables
 %% generate_csv_bash/11 already provides (pred, file, delimiter, skip_lines,
-%% arity), so csv_source''s existing behaviour is unchanged. Runs under either
+%% arity) plus js_delimiter (G-P9 polish), so csv_source''s existing bash/PS
+%% behaviour is unchanged. Runs under either
 %% `node --experimental-strip-types file.ts` or plain `node file.js`.
-%% NOTE (minimal slice): delimiter is embedded literally; the comma default
-%% works as-is. Non-comma delimiters (tab/pipe) are a documented follow-up.
+%% DELIMITERS (G-P9 polish): the `_typescript` templates split on
+%% {{js_delimiter}}, the raw delimiter escaped for a JS double-quoted string
+%% literal (see js_escape_delimiter/2). split() is given a *string*, not a
+%% RegExp, so `|` needs no escaping; tab becomes "\t", etc. Comma, tab, pipe,
+%% semicolon all work.
 
 % TypeScript/Node template for arity 1: pred(X)
 template_system:template(csv_source_unary_typescript, '#!/usr/bin/env node
@@ -384,7 +412,7 @@ function {{pred}}(value) {
     const out = [];
     for (const line of lines) {
         if (line === "") { continue; }
-        const fields = line.split("{{delimiter}}");
+        const fields = line.split("{{js_delimiter}}");
         if (fields.length < 1) { continue; }
         if (value !== undefined && value !== "") {
             if (fields[0] === value) { out.push(fields[0]); }
@@ -424,7 +452,7 @@ function {{pred}}(key) {
     const out = [];
     for (const line of lines) {
         if (line === "") { continue; }
-        const fields = line.split("{{delimiter}}");
+        const fields = line.split("{{js_delimiter}}");
         if (fields.length < arity) { continue; }
         if (key !== undefined && key !== "" && fields[0] !== key) { continue; }
         out.push(fields.slice(0, arity).join(":"));
