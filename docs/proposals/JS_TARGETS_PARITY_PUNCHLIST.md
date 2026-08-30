@@ -70,23 +70,20 @@ Two extension mechanisms apply here: **bindings** (`declare_binding/6`) and the
 
 ---
 
-## 4. Open gaps — WAM (`wam_javascript`) ⬜/❓
+## 4. Open gaps — WAM (`wam_javascript`) ⬜ — CONFIRMED by analysis A2
 
-Mature WAM targets have three perf tiers (interpreter → lowered emitter → FFI kernels);
-`wam_javascript` is interpreter-tier only.
+Mature WAM targets have up to three tiers (interpreter → lowered emitter → FFI kernels);
+`wam_javascript` is interpreter-tier only. Reference peer is `wam_lua` (interpreter-only,
+dynamically typed); `wam_rust`/`wam_haskell` are the full-stack exemplars. Evidence
+cited is from A2 (file:line in the analysis).
 
 | ID | Gap | Status | Copy-from | Size | Collision | Owner |
 |---|---|---|---|---|---|---|
-| G-W1 | **Lowered-emitter tier (Tier 2)** — per-predicate native fast paths (`wam_*_lowered_emitter.pl`); JS has none. | ⬜ | wam_lua / wam_haskell lowered emitters | L | ⚠️ emitter | grok |
-| G-W2 | **FFI graph kernels (Tier 3)** — `recursive_kernel_detection` + per-kernel templates; JS has none. | ⬜ | rust_wam / haskell_wam kernels | L | ⚠️ | grok |
-| G-W3 | **Emit modes** — mature targets resolve `interpreter\|functions\|mixed`; JS is interpreter-only. | ❓ | `*_wam_resolve_emit_mode` | M | ⚠️ | grok |
-| G-W4 | **Runtime-parser capability** (`wam_runtime_parser_capability.pl`) — JS CLI parses only ground atoms/ints/lists/compounds. | ❓ | targets registering native/compiled/read_term | M | partial ⚠️ | grok |
-| G-W5 | **External fact sources / data tier** — LMDB, CSR graph, TSV/CSV, materialization/boundary_cache; JS has none. | ❓ | rust_wam / haskell_wam / wam_clojure LMDB tier | L | mostly disjoint (templates + emitter) | grok |
-| G-W6 | **Builtin breadth** — beyond the done set: structural list ops, atom/string ops, format/IO, term-order, assoc, etc. | ❓ | rust_wam / haskell_wam / lua bindings | M | ⚠️ runtime | grok |
-| G-W7 | **Parallelism / cost model** — `parallel_gate.pl`, cost_function templates. | ❓ | rust_wam / haskell_wam | L | ⚠️ | grok |
-| G-W8 | **ISO residual corners** (from bagof/setof work): `term_variables/2`, `numbervars/3`, `=@=/2`; variant-equality witness grouping; distinct string tag. | ⬜ | SWI semantics; lua/haskell | S–M | ⚠️ runtime | grok |
-| G-W9 | **Switch-indexing conformance** registration (`docs/WAM_SWITCH_INDEXING_CROSS_TARGET.md`) — after P1 (indexing) lands. | ⬜ | that harness | S | disjoint (test) | main/opus |
-| G-W10 | **Perf cross-target** (`WAM_PERF_CROSS_TARGET.md`) — is JS in the perf suite? | ❓ | that harness | S | disjoint | opus |
+| G-W1 | **Tier-2 lowered emitter + `functions`/`mixed` emit modes** — every peer incl. `wam_lua` has `wam_*_lowered_emitter.pl`; JS is interpreter-only (`wam_javascript_target.pl:48-51` throws on other modes). Subsumes the old "emit modes" row. | ⬜ | `wam_lua_lowered_emitter.pl` (closest) | L | ⚠️ emitter + runtime | grok — **after P1 indexing lands** |
+| G-W2 | **Runtime term parser** — CLI parses **ints + atoms only** (`runtime.js.mustache:1862-1866`) — no floats/lists/compounds; JS absent from `wam_runtime_parser_capability.pl`. Blocks structured-arg queries + `read_term`. | ⬜ | register `runtime_parser(compiled)` like go/haskell/rust; or extend `parse_cli_atom_or_int` | S–M | low (distinct runtime region) — **parallel-safe** | grok or opus |
+| G-W3 | **ISO/library builtin breadth** — missing `term_variables/2`, `numbervars/3`, `=@=/2`; sort family (`sort/2,4`, `msort`, `keysort`, `predsort`); structural list lib (`append`, `reverse`, `nth0/1`, `last`, `sum_list/max_list/min_list`, `select`); atom/string ops (`atom_concat`, `sub_atom`, `atom_length`, `atom_chars/codes`, `char_code`, `split_string`); `format/2,3`, `tab/1`; assoc lib. (NB: JS is *ahead* of Lua on aggregates/findall — not a peer gap there.) | ⬜ | `rust_wam_bindings.pl` for breadth | M | bindings file disjoint; runtime `builtin_*` shares file (low-mod) | grok |
+| G-W4 | **External fact-source / data tier** — no LMDB/CSR/TSV/JSON consumption; JS has no fact-source options. | ⬜ | `wam_lua_target.pl:475,545` (lightweight `lua_fact_sources`); rust/haskell for full LMDB+CSR | L | new templates disjoint; some `_target.pl` options | grok — **premature until G-W1** |
+| G-W5 | **Switch-indexing conformance row** — runtime wires `SwitchOn*` (`runtime.js.mustache:70-73,1146-1149`) but JS is absent from `WAM_SWITCH_INDEXING_CROSS_TARGET.md:86-99` and its harness. | ⬜ | that harness (rust/haskell/lua rows) | S | disjoint (docs + test) — **follow-on to P1** | main/opus |
 
 ---
 
@@ -99,9 +96,18 @@ Mature WAM targets have three perf tiers (interpreter → lowered emitter → FF
 
 ---
 
+## 5b. Explicitly N/A or premature for `wam_javascript` (do NOT file as near-term gaps)
+
+Per A2 — recorded so they aren't re-raised:
+- **Tier-3 FFI graph kernels** — the reference peer `wam_lua` has none either; not a peer-parity gap. Only after Tier-2 (G-W1).
+- **Parallelism gate / cost model** (`parallel_gate.pl`, cost templates) — used by **only** `wam_rust` (haskell uses parMap); not a peer gap.
+- **Perf cross-target row** (`WAM_PERF_CROSS_TARGET.md`) — meaningless until a lowered/kernel path exists; add after G-W1.
+- **Distinct string type tag / String-vs-Atom standard order** — low-value ISO corner (`WAM_JAVASCRIPT_STATUS.md:93`).
+
 ## 6. Pending analysis (populate on completion)
 
-- **A1 (pattern parity)** → will confirm/refute G-P1…G-P10 with file:line evidence, add a capability matrix, and a ranked list. Fold confirmed items in; drop any that turn out N/A.
-- **A2 (WAM parity)** → will confirm/refute G-W1…G-W10, quantify the tier gap, and flag which items collide with P1. Fold in.
+- **A1 (pattern parity + component axis)** → 🔄 running. Will confirm/refute G-P1…G-P10 with file:line evidence, add a capability matrix incl. the component pattern, and a ranked list.
+- **A2 (WAM parity)** → ✅ landed; folded into §4 and §5b (WAM rows collapsed 10→5 confirmed gaps; Tier-3/parallelism/perf reclassified N/A; builtin-surface reframed as ISO breadth since JS is ahead of Lua on aggregates).
+- **Census (Sonnet)** → 🔄 running. Fleet-wide capability denominator (per-target tier/binding/component counts) to firm up "copy-from" references and headline numbers.
 
-Once both land: reconcile IDs, set sizes/owners firmly, and schedule the next wave.
+Once A1 + census land: reconcile IDs, set sizes/owners firmly, and schedule the next wave.
