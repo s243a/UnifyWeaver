@@ -153,6 +153,58 @@ test(absval_math_interop, [condition(nbb_available), setup(setup_preds)]) :-
     compile_and_run(absval/2, 7, Out),
     assertion(Out == '7').
 
+% --- Numeric recursion under nbb (the CLJSFIX cases). These exercise the ---
+% --- native clause-lowering recursion path: doubly-recursive (fib), linear ---
+% --- recursion with an accumulating op (factorial, sum), and list_fold     ---
+% --- (listsum, a cons-head destructured recursion). Each must match the    ---
+% --- Prolog oracle when actually executed under the sci Node runtime.      ---
+setup_recursion :-
+    retractall(user:rfib(_,_)),
+    retractall(user:rfac(_,_)),
+    retractall(user:rsum(_,_)),
+    retractall(user:rlistsum(_,_)),
+    assertz(user:rfib(0,0)),
+    assertz(user:rfib(1,1)),
+    assertz(user:(rfib(N,R) :- N>1, N1 is N-1, N2 is N-2,
+                               rfib(N1,R1), rfib(N2,R2), R is R1+R2)),
+    assertz(user:rfac(0,1)),
+    assertz(user:(rfac(N,R) :- N>0, N1 is N-1, rfac(N1,R1), R is N*R1)),
+    assertz(user:rsum(0,0)),
+    assertz(user:(rsum(N,R) :- N>0, N1 is N-1, rsum(N1,R1), R is R1+N)),
+    assertz(user:rlistsum([],0)),
+    assertz(user:(rlistsum([H|T],R) :- rlistsum(T,R1), R is R1+H)).
+
+teardown_recursion :-
+    retractall(user:rfib(_,_)),
+    retractall(user:rfac(_,_)),
+    retractall(user:rsum(_,_)),
+    retractall(user:rlistsum(_,_)).
+
+test(recursion_fib, [condition(nbb_available),
+                     setup(setup_recursion), cleanup(teardown_recursion)]) :-
+    compile_and_run(rfib/2, 10, Out),
+    assertion(Out == '55').
+
+test(recursion_factorial, [condition(nbb_available),
+                           setup(setup_recursion), cleanup(teardown_recursion)]) :-
+    compile_and_run(rfac/2, 6, Out),
+    assertion(Out == '720').
+
+test(recursion_sum, [condition(nbb_available),
+                     setup(setup_recursion), cleanup(teardown_recursion)]) :-
+    compile_and_run(rsum/2, 10, Out),
+    assertion(Out == '55').
+
+test(recursion_listsum, [condition(nbb_available),
+                         setup(setup_recursion), cleanup(teardown_recursion)]) :-
+    compile_and_run(rlistsum/2, '1,2,3,4', Out),
+    assertion(Out == '10').
+
+test(recursion_listsum_empty, [condition(nbb_available),
+                               setup(setup_recursion), cleanup(teardown_recursion)]) :-
+    compile_and_run(rlistsum/2, '', Out),
+    assertion(Out == '0').
+
 % Transitive closure compiled via recursive_compiler actually runs in CLJS:
 % find-all returns the descendants, check-path answers reachability. This is
 % the runtime half of the "Prolog generates ClojureScript" demo.
@@ -188,5 +240,22 @@ test(bb_classify_large_branch, [condition(bb_available), setup(setup_preds)]) :-
 test(bb_absval_jvm_interop, [condition(bb_available), setup(setup_preds)]) :-
     compile_and_run_bb(absval/2, 7, Out),
     assertion(Out == '7').
+
+% Numeric recursion under bb (Clojure/JVM sci host). The same native-lowered
+% recursion runs on the JVM host with JVM interop retained.
+test(bb_recursion_fib, [condition(bb_available),
+                        setup(setup_recursion), cleanup(teardown_recursion)]) :-
+    compile_and_run_bb(rfib/2, 10, Out),
+    assertion(Out == '55').
+
+test(bb_recursion_factorial, [condition(bb_available),
+                              setup(setup_recursion), cleanup(teardown_recursion)]) :-
+    compile_and_run_bb(rfac/2, 6, Out),
+    assertion(Out == '720').
+
+test(bb_recursion_listsum, [condition(bb_available),
+                            setup(setup_recursion), cleanup(teardown_recursion)]) :-
+    compile_and_run_bb(rlistsum/2, '1,2,3,4', Out),
+    assertion(Out == '10').
 
 :- end_tests(clojurescript_runtime_smoke).

@@ -100,16 +100,14 @@ ja_supported_family(vanilla_js,    structural).
 %  and build/run errors are tolerated (logged, not failed); an unexpected
 %  full match (xpass) is logged so the entry can be retired.
 %
-%  clojurescript numeric: the CLJS pattern target inherits clojure_target's
-%  native-clause lowering, which does not yet emit clean recursive numeric
-%  code (recursion currently reaches the shared TypeScript recursion-pattern
-%  clause, not a ClojureScript one). Tracked here so the arm stays green if
-%  an nbb runtime is present, until a ClojureScript recursion path lands.
+%  clojurescript numeric: FIXED (CLJSFIX). clojure_target's native clause
+%  lowering now emits clean recursive numeric/list-fold code -- fib, factorial,
+%  sum and listsum compile to a properly closed Clojure (let [...] ...) form and
+%  run correctly under nbb, matching the Prolog oracle. The former xfail entries
+%  for those programs have been removed so the clojurescript numeric arm now
+%  asserts correctness for real (see
+%  docs/proposals/integration_patches/CLJSFIX_INTEGRATION_PATCH.md).
 :- dynamic ja_xfail/2.
-ja_xfail(clojurescript, fib).
-ja_xfail(clojurescript, factorial).
-ja_xfail(clojurescript, sum).
-ja_xfail(clojurescript, listsum).
 
 % ============================================================
 % Availability: enabled + target present + runtime present
