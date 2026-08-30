@@ -16,19 +16,23 @@ Companion docs:
 
 ## Role
 
-**Interpreter-tier Node WAM.** Consumes shared bytecode from `wam_target.pl`
-(`emit_mode(interpreter)`) and runs it on a stock Node (v22) VM. No extra
-runtime dependency. Closest sibling is the Lua WAM: same term tags, register
-encoding (A1→1, X1→101, Y1→201), 1-based instruction PCs, trail + choice
-points, and BeginAggregate / EndAggregate collection.
+**Interpreter-tier Node WAM** with an optional **Tier-2 lowered emitter**.
+Consumes shared bytecode from `wam_target.pl` and runs it on a stock Node
+(v22) VM. `emit_mode(interpreter)` (default) is unchanged. `functions`
+and `mixed([P/A, ...])` emit direct JS functions for eligible predicates
+and keep the interpreter as fallback. No extra runtime dependency.
+Closest sibling is the Lua WAM: same term tags, register encoding
+(A1→1, X1→101, Y1→201), 1-based instruction PCs, trail + choice points,
+and BeginAggregate / EndAggregate collection.
 
 ## Codegen surface
 
 | Module | Role |
 |---|---|
-| `src/unifyweaver/targets/wam_javascript_target.pl` | Emitter (WAM items → `I.*` instruction vector + intern seed) |
+| `src/unifyweaver/targets/wam_javascript_target.pl` | Emitter (WAM items → `I.*` instruction vector + intern seed; emit-mode resolver) |
+| `src/unifyweaver/targets/wam_javascript_lowered_emitter.pl` | Tier-2 lowered JS functions (`deterministic` / T4 / T5 / T6 / ITE) |
 | `templates/targets/javascript_wam/runtime.js.mustache` | Node WAM VM |
-| `templates/targets/javascript_wam/program.js.mustache` | Instruction vector + labels + CLI shim |
+| `templates/targets/javascript_wam/program.js.mustache` | Instruction vector + labels + `lowered_dispatch` + CLI shim |
 | `src/unifyweaver/bindings/javascript_wam_bindings.pl` | Builtin catalogue |
 
 ## Six-conventions checklist
@@ -73,7 +77,7 @@ I/O (probe dumps): `write/1`, `nl/0`, `writeln/1`.
 | `term_variables/2`, `numbervars/3`, `=@=/2` | Not ported. |
 | First-arg indexing | **Implemented.** `switch_on_constant` / `_fallthrough` / `_a2`, `switch_on_structure` / `_a2`, and `switch_on_term` / `_a2` jump to the matching clause group. Ground first-arg with a unique clause leaves no choice point (`deterministic/0`). Unbound first arg falls through to the try/retry/trust chain (no lost solutions). Exclusive miss fails; fallthrough variants keep the chain for variable-headed clauses. Dedicated `try`/`retry`/`trust` dispatch chains are emitted for multi-clause groups. |
 | Second-arg / deep indexing | A2 switches are implemented; deep (argument >2) indexing is not. |
-| Lowered / functions emit mode | Interpreter only. |
+| Lowered / functions emit mode | **Implemented.** `javascript_wam_resolve_emit_mode/2` accepts `interpreter` (default), `functions` (lower every eligible predicate), and `mixed([P/A, ...])` (lower only the named ones). Eligible shapes: single-clause deterministic bodies; T4 all-clauses-inline; T5 first-arg constant dispatch; T6 hash dispatch (≥8 atom keys); structured ITE / negation / once. Unsupported ops (`begin_aggregate`, bagof/setof, cuts/jumps the planner rejects) fall back to the interpreter rather than emitting wrong code. Interpreter-mode bytecode and wrappers are unchanged. |
 | Conformance harness adapter | See `INTEGRATION_PATCH.md` (coordinator applies `conformance_target(javascript)`). |
 
 ## How to run
@@ -82,6 +86,9 @@ I/O (probe dumps): `write/1`, `nl/0`, `writeln/1`.
 mkdir -p output/advanced
 # Dedicated probe + local 48-query suite (does not edit the shared harness):
 swipl -q -g run_tests -t halt tests/test_wam_javascript_builtins.pl
+
+# Tier-2 lowered / mixed emit-mode suite:
+swipl -q -g run_tests -t halt tests/test_wam_javascript_lowered.pl
 
 # After INTEGRATION_PATCH.md is applied:
 CONFORMANCE_TARGETS=javascript swipl -q -g run_tests -t halt \
@@ -98,6 +105,9 @@ runs the RHS.
 ## Document status
 
 Initial JS WAM bring-up + builtin port from Lua, ISO bagof/3 and setof/3,
-then first-argument indexing (`switch_on_constant` / `structure` / `term`
-and fallthrough / A2 variants). Source-verified against SWI-Prolog as the
-oracle (2026-08-30).
+first-argument indexing (`switch_on_constant` / `structure` / `term`
+and fallthrough / A2 variants), then the Tier-2 lowered emitter
+(`functions` / `mixed(List)`). Residuals: aggregates and bagof/setof
+stay on the interpreter path; T6 only kicks in at ≥8 distinct atom
+keys (override with `t6_min_clauses(N)`). Source-verified against
+SWI-Prolog as the oracle (2026-08-30).
