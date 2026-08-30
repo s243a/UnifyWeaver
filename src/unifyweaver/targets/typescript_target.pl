@@ -52,6 +52,11 @@
 :- use_module('typescript_runtime/custom_chart', []).
 :- use_module('../core/clause_body_analysis').
 
+% Data-source consumer path (G-P9): detect registered JSON/CSV sources and
+% emit a self-contained Node script. Independent of the native clause machinery.
+:- use_module('../core/dynamic_source_compiler', []).
+:- use_module('typescript_source_compiler', []).
+
 % Track required imports from bindings
 :- dynamic required_binding_import/1.
 :- dynamic collected_component/2.
@@ -253,6 +258,19 @@ if (process.argv.length > 2) {
     console.log(~w(parseInt(process.argv[2])));
 }
 ', [PredStr, Arity, PredStr, ArgList, FuncBody, PredStr]).
+
+% Dynamic data-source consumer (G-P9). If the predicate was declared as a
+% registered JSON/CSV data source (via source/3), route to the TypeScript
+% source compiler, which emits a self-contained Node script (fs + JSON.parse,
+% no npm deps) from the `_typescript` templates. Parallel, independent path
+% that mirrors PowerShell-pure — the native clause / guard / recursion
+% machinery is left untouched. Placed before the fallback so it fires only for
+% dynamic sources; predicates defined as Prolog clauses never match
+% is_dynamic_source/1 and fall through to the paths above.
+compile_predicate_to_typescript(Pred/Arity, Options, Code) :-
+    dynamic_source_compiler:is_dynamic_source(Pred/Arity),
+    typescript_source_compiler:compile_to_typescript_source(Pred/Arity, Options, Code),
+    !.
 
 % Fallback to type-based dispatch
 compile_predicate_to_typescript(Pred/Arity, Options, Code) :-
