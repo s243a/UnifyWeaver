@@ -1,0 +1,606 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 John William Creighton (@s243a)
+//
+// UnifyWeaver JavaScript (Node) WAM interpreter runtime.
+// Generated at: {{date}}
+//
+// This is the "interpreter" emit-tier runtime: it executes the shared WAM
+// instruction stream produced by wam_target:compile_predicate_to_wam/3.
+//
+// The design honours the six WAM backend conventions
+// (docs/WAM_BACKEND_CONVENTIONS.md):
+//   1. cons cells have two spellings (put_list AND put_structure [|]/2);
+//      both intern the SAME functor id, and the empty list is the atom "[]".
+//   2. functor strings are name/arity where the name may contain '/'
+//      (///2 is //, //2 is /); arity is parsed as the trailing /<digits>
+//      on the Prolog side, so the runtime receives an interned name.
+//   3. nested terms are built outer-first via placeholder vars; put_*/get_*
+//      in write mode BIND (trail) the placeholder they overwrite.
+//   4. deref before every type test.
+//   5. is/2 yields an integer for integral results.
+//   6. unimplemented instructions become a real NoOp (one slot), never
+//      dropped or thrown — label PCs stay aligned.
+
+'use strict';
+
+var STEP_LIMIT = 5000000;
+
+// ---------------------------------------------------------------------------
+// Value constructors. Every WAM value is a tagged object.
+// Register indexing (matches every WAM backend): A_n -> n, X_n -> n+100,
+// Y_n -> n+200. Y registers live in the current environment frame.
+// ---------------------------------------------------------------------------
+var V = {
+  Atom: function (id) { return { tag: 'atom', id: id }; },
+  Int: function (n) { return { tag: 'int', val: n }; },
+  Float: function (n) { return { tag: 'float', val: n }; },
+  Unbound: function (name) { return { tag: 'unbound', name: name }; },
+  Struct: function (fid, args) { return { tag: 'struct', fid: fid, args: args || [] }; }
+};
+
+var Runtime = {};
+
+// ---------------------------------------------------------------------------
+// Atom interning. The seed array (id -> string) is emitted by the compiler so
+// atom ids in the instruction stream match the runtime's list detection.
+// ---------------------------------------------------------------------------
+Runtime.newInternTable = function (seed) {
+  var t = { idToString: {}, stringToId: {}, nextId: 0 };
+  seed = seed || [];
+  for (var i = 0; i < seed.length; i++) {
+    t.idToString[i] = seed[i];
+    t.stringToId[seed[i]] = i;
+    t.nextId = i + 1;
+  }
+  return t;
+};
+
+Runtime.intern = function (tab, s) {
+  s = String(s);
+  var id = tab.stringToId[s];
+  if (id !== undefined) return id;
+  id = tab.nextId;
+  tab.idToString[id] = s;
+  tab.stringToId[s] = id;
+  tab.nextId = id + 1;
+  return id;
+};
+
+Runtime.stringOf = function (tab, id) {
+  var s = tab.idToString[id];
+  return s === undefined ? ('<atom:' + id + '>') : s;
+};
+
+Runtime.makeProgram = function (code, labels, internSeed) {
+  return {
+    code: code,          // 1-based array (index 0 is null)
+    labels: labels,      // "name/arity" -> pc
+    internTable: Runtime.newInternTable(internSeed)
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Machine state
+// ---------------------------------------------------------------------------
+Runtime.newState = function () {
+  return {
+    pc: 1,
+    cp: 0,               // return address (0 == none / top level)
+    regs: {},            // A (n) and X (n+100) registers
+    env: null,           // current environment frame (Y registers)
+    cps: [],             // choice points
+    trail: [],           // variable names to unbind on backtrack
+    bindings: {},        // var name -> value
+    varCounter: 0,
+    halt: false,
+    mode: null,          // 'read' | 'write' | null
+    build: [],           // write-mode frames (nested term construction)
+    readStack: []        // read-mode frames (nested term matching)
+  };
+};
+
+// Y registers (index >= 201) resolve against the current environment frame;
+// A/X registers use the flat regs table.
+Runtime.getReg = function (state, idx) {
+  if (idx >= 201) {
+    return state.env ? state.env.slots[idx] : state.regs[idx];
+  }
+  return state.regs[idx];
+};
+
+Runtime.putReg = function (state, idx, val) {
+  if (idx >= 201) {
+    if (state.env) { state.env.slots[idx] = val; return; }
+  }
+  state.regs[idx] = val;
+};
+
+Runtime.newVar = function (state) {
+  var v = V.Unbound('V' + state.varCounter);
+  state.varCounter += 1;
+  return v;
+};
+
+Runtime.copyRegs = function (regs) {
+  var out = {};
+  for (var k in regs) { if (Object.prototype.hasOwnProperty.call(regs, k)) out[k] = regs[k]; }
+  return out;
+};
+
+// ---------------------------------------------------------------------------
+// Dereference / unify (§4: deref before every type test)
+// ---------------------------------------------------------------------------
+Runtime.deref = function (state, v) {
+  while (v && typeof v === 'object' && v.tag === 'unbound') {
+    var b = state.bindings[v.name];
+    if (b === undefined) return v;
+    v = b;
+  }
+  return v;
+};
+
+function bindVar(state, varTerm, val) {
+  state.trail.push(varTerm.name);
+  state.bindings[varTerm.name] = val;
+  return true;
+}
+
+function sameAtomic(a, b) {
+  if (a.tag !== b.tag) return false;
+  if (a.tag === 'atom') return a.id === b.id;
+  if (a.tag === 'int' || a.tag === 'float') return a.val === b.val;
+  return false;
+}
+
+// §1: both cons spellings intern to the same functor id, so a put_list cell
+// and a put_structure [|]/2 cell are the SAME struct here and unify directly.
+Runtime.unify = function (state, a, b) {
+  a = Runtime.deref(state, a);
+  b = Runtime.deref(state, b);
+  if (a.tag === 'unbound' && b.tag === 'unbound' && a.name === b.name) return true;
+  if (a.tag === 'unbound') return bindVar(state, a, b);
+  if (b.tag === 'unbound') return bindVar(state, b, a);
+  if (a.tag === 'struct' && b.tag === 'struct') {
+    if (a.fid !== b.fid || a.args.length !== b.args.length) return false;
+    for (var i = 0; i < a.args.length; i++) {
+      if (Runtime.unify(state, a.args[i], b.args[i]) !== true) return false;
+    }
+    return true;
+  }
+  return sameAtomic(a, b);
+}
+
+function exactEqual(state, a, b) {
+  a = Runtime.deref(state, a);
+  b = Runtime.deref(state, b);
+  if (a.tag !== b.tag) return false;
+  if (a.tag === 'unbound') return a.name === b.name;
+  if (a.tag === 'atom') return a.id === b.id;
+  if (a.tag === 'int' || a.tag === 'float') return a.val === b.val;
+  if (a.tag === 'struct') {
+    if (a.fid !== b.fid || a.args.length !== b.args.length) return false;
+    for (var i = 0; i < a.args.length; i++) {
+      if (exactEqual(state, a.args[i], b.args[i]) !== true) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Write mode: reserve-slot construction (§3).
+// get_structure/put_structure/get_list/put_list allocate the struct with N
+// placeholder vars up front, bind the target register's placeholder, and push
+// a frame. set_*/unify_* fill successive slots by position. A nested put_*/get_*
+// into a slot's placeholder BINDS that placeholder to the new term, so the
+// outer term sees the nested one — the "outer-first placeholder" pattern.
+// ---------------------------------------------------------------------------
+function beginWrite(state, ai, fid, arity, isGetFamily) {
+  var args = new Array(arity);
+  for (var i = 0; i < arity; i++) args[i] = Runtime.newVar(state);
+  var s = V.Struct(fid, args);
+  var target = Runtime.deref(state, Runtime.getReg(state, ai));
+  // §3 bind-through: the get-family (read/write of a caller output arg) always
+  // binds the target's placeholder; the put-family only binds X/Y placeholders
+  // (index >= 101), never A registers (those are body-staging temporaries whose
+  // old occupant is unrelated — binding them would build a cyclic term).
+  var bindThrough = isGetFamily || (ai >= 101);
+  if (bindThrough && target && typeof target === 'object' && target.tag === 'unbound') {
+    bindVar(state, target, s);
+  }
+  Runtime.putReg(state, ai, s);
+  state.build.push({ struct: s, cursor: 0 });
+  state.mode = 'write';
+}
+
+function writeSlot(state, value) {
+  var top = state.build[state.build.length - 1];
+  if (top === undefined) return; // defensive: nothing to fill
+  top.struct.args[top.cursor] = value;
+  top.cursor += 1;
+  while (state.build.length > 0) {
+    var t = state.build[state.build.length - 1];
+    if (t.cursor >= t.struct.args.length) state.build.pop();
+    else break;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Read mode: a stack of (args, cursor) frames so a get_structure nested inside
+// a get_list resumes the outer cons TAIL afterwards (the interleaved-nested
+// head shape; §4).
+// ---------------------------------------------------------------------------
+function beginRead(state, args) {
+  state.readStack.push({ args: args, cursor: 0 });
+  state.mode = 'read';
+}
+
+function readNext(state) {
+  while (state.readStack.length > 0) {
+    var top = state.readStack[state.readStack.length - 1];
+    if (top.cursor >= top.args.length) state.readStack.pop();
+    else break;
+  }
+  if (state.readStack.length === 0) return undefined;
+  var f = state.readStack[state.readStack.length - 1];
+  var v = f.args[f.cursor];
+  f.cursor += 1;
+  return v;
+}
+
+// ---------------------------------------------------------------------------
+// Arithmetic evaluation (§2 functor names with '/', §5 integer result typing).
+// Numbers carry an isInt flag so integral results stay integers.
+// ---------------------------------------------------------------------------
+function evalArith(program, state, term) {
+  var d = Runtime.deref(state, term);
+  if (!d || typeof d !== 'object') return null;
+  if (d.tag === 'int') return { isInt: true, val: d.val };
+  if (d.tag === 'float') return { isInt: false, val: d.val };
+  if (d.tag === 'struct') {
+    var op = Runtime.stringOf(program.internTable, d.fid);
+    var n = d.args.length;
+    if (n === 2) {
+      var a = evalArith(program, state, d.args[0]);
+      var b = evalArith(program, state, d.args[1]);
+      if (a === null || b === null) return null;
+      var bothInt = a.isInt && b.isInt;
+      switch (op) {
+        case '+': return { isInt: bothInt, val: a.val + b.val };
+        case '-': return { isInt: bothInt, val: a.val - b.val };
+        case '*': return { isInt: bothInt, val: a.val * b.val };
+        case '//': return { isInt: true, val: Math.trunc(a.val / b.val) };
+        case 'div': return { isInt: true, val: Math.floor(a.val / b.val) };
+        case '/':
+          if (bothInt && b.val !== 0 && a.val % b.val === 0) return { isInt: true, val: a.val / b.val };
+          return { isInt: false, val: a.val / b.val };
+        case 'mod': return { isInt: true, val: ((a.val % b.val) + b.val) % b.val };
+        case 'rem': return { isInt: true, val: a.val % b.val };
+        case 'min': return (a.val <= b.val) ? a : b;
+        case 'max': return (a.val >= b.val) ? a : b;
+        case '**':
+        case '^': {
+          var p = Math.pow(a.val, b.val);
+          return { isInt: bothInt && Number.isInteger(p), val: p };
+        }
+        default: return null;
+      }
+    }
+    if (n === 1) {
+      var x = evalArith(program, state, d.args[0]);
+      if (x === null) return null;
+      switch (op) {
+        case '-': return { isInt: x.isInt, val: -x.val };
+        case '+': return x;
+        case 'abs': return { isInt: x.isInt, val: Math.abs(x.val) };
+        default: return null;
+      }
+    }
+  }
+  return null;
+}
+
+function arithBool(program, state, cmp) {
+  var a = evalArith(program, state, Runtime.getReg(state, 1));
+  var b = evalArith(program, state, Runtime.getReg(state, 2));
+  if (a === null || b === null) return false;
+  return cmp(a.val, b.val);
+}
+
+// ---------------------------------------------------------------------------
+// Builtins. pred is the parsed functor NAME (arity already stripped on the
+// Prolog side), so operators containing '/' arrive intact.
+// ---------------------------------------------------------------------------
+Runtime.builtinCall = function (program, state, instr) {
+  var p = instr.pred;
+  switch (p) {
+    case 'true': return true;
+    case 'fail': case 'false': return false;
+    case '!': state.cps = []; return true;
+    case '=': return Runtime.unify(state, Runtime.getReg(state, 1), Runtime.getReg(state, 2));
+    case '==': return exactEqual(state, Runtime.getReg(state, 1), Runtime.getReg(state, 2));
+    case '\\==': return !exactEqual(state, Runtime.getReg(state, 1), Runtime.getReg(state, 2));
+    case 'is': {
+      var r = evalArith(program, state, Runtime.getReg(state, 2));
+      if (r === null) return false;
+      var val = r.isInt ? V.Int(r.val) : V.Float(r.val);
+      var cur = Runtime.getReg(state, 1);
+      if (cur === undefined || cur === null) { Runtime.putReg(state, 1, val); return true; }
+      return Runtime.unify(state, cur, val);
+    }
+    case '=:=': return arithBool(program, state, function (a, b) { return a === b; });
+    case '=\\=': return arithBool(program, state, function (a, b) { return a !== b; });
+    case '>': return arithBool(program, state, function (a, b) { return a > b; });
+    case '<': return arithBool(program, state, function (a, b) { return a < b; });
+    case '>=': return arithBool(program, state, function (a, b) { return a >= b; });
+    case '=<': return arithBool(program, state, function (a, b) { return a <= b; });
+    case 'var': return Runtime.deref(state, Runtime.getReg(state, 1)).tag === 'unbound';
+    case 'nonvar': return Runtime.deref(state, Runtime.getReg(state, 1)).tag !== 'unbound';
+    case 'atom': return Runtime.deref(state, Runtime.getReg(state, 1)).tag === 'atom';
+    case 'integer': return Runtime.deref(state, Runtime.getReg(state, 1)).tag === 'int';
+    case 'float': return Runtime.deref(state, Runtime.getReg(state, 1)).tag === 'float';
+    case 'number': {
+      var t = Runtime.deref(state, Runtime.getReg(state, 1)).tag;
+      return t === 'int' || t === 'float';
+    }
+    case 'compound': return Runtime.deref(state, Runtime.getReg(state, 1)).tag === 'struct';
+    default: return false;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Backtracking
+// ---------------------------------------------------------------------------
+Runtime.backtrack = function (state) {
+  var n = state.cps.length;
+  if (n === 0) return false;
+  var cp = state.cps[n - 1];
+  while (state.trail.length > cp.trailLen) {
+    delete state.bindings[state.trail.pop()];
+  }
+  state.regs = Runtime.copyRegs(cp.regs);
+  state.cp = cp.cp;
+  state.env = cp.env;
+  state.varCounter = cp.varCounter;
+  state.pc = cp.nextPc;
+  state.halt = false;
+  // Transient term-construction/matching state never survives a backtrack:
+  // the next clause head re-establishes it before any set_*/unify_*.
+  state.mode = null;
+  state.build = [];
+  state.readStack = [];
+  return true;
+};
+
+function pushChoicePoint(state, nextPc) {
+  state.cps.push({
+    nextPc: nextPc,
+    regs: Runtime.copyRegs(state.regs),
+    cp: state.cp,
+    env: state.env,
+    trailLen: state.trail.length,
+    varCounter: state.varCounter
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Instruction dispatch
+// ---------------------------------------------------------------------------
+Runtime.step = function (program, state, instr) {
+  var op = instr.op;
+  switch (op) {
+    case 'NoOp':
+      // §6: indexing hints (switch_on_*) and any unimplemented instruction
+      // degrade to a real one-slot no-op; falling through to the try_me_else
+      // chain is always correct.
+      state.pc += 1; return true;
+
+    case 'Proceed':
+      if (state.cp === 0) { state.halt = true; }
+      else { state.pc = state.cp; state.cp = 0; }
+      return true;
+    case 'Fail':
+      return false;
+
+    case 'Allocate':
+      state.env = { slots: {}, prevE: state.env, savedCP: state.cp };
+      state.pc += 1; return true;
+    case 'Deallocate':
+      if (state.env) { state.cp = state.env.savedCP; state.env = state.env.prevE; }
+      state.pc += 1; return true;
+
+    case 'PutConstant':
+      Runtime.putReg(state, instr.ai, instr.c); state.pc += 1; return true;
+    case 'PutVariable': {
+      var v = Runtime.newVar(state);
+      Runtime.putReg(state, instr.xn, v);
+      Runtime.putReg(state, instr.ai, v);
+      state.pc += 1; return true;
+    }
+    case 'PutValue':
+      Runtime.putReg(state, instr.ai, Runtime.getReg(state, instr.xn)); state.pc += 1; return true;
+
+    case 'GetVariable':
+      Runtime.putReg(state, instr.xn, Runtime.getReg(state, instr.ai)); state.pc += 1; return true;
+    case 'GetConstant':
+      if (Runtime.unify(state, Runtime.getReg(state, instr.ai), instr.c) !== true) return false;
+      state.pc += 1; return true;
+    case 'GetValue':
+      if (Runtime.unify(state, Runtime.getReg(state, instr.ai), Runtime.getReg(state, instr.xn)) !== true) return false;
+      state.pc += 1; return true;
+
+    case 'PutStructure':
+      beginWrite(state, instr.ai, instr.fid, instr.arity || 2, false);
+      state.pc += 1; return true;
+    case 'PutList':
+      beginWrite(state, instr.ai, instr.fid, 2, false);
+      state.pc += 1; return true;
+
+    case 'SetVariable':
+    case 'UnifyVariable':
+      if (state.mode === 'read') {
+        Runtime.putReg(state, instr.xn, readNext(state));
+      } else {
+        var fresh = Runtime.newVar(state);
+        Runtime.putReg(state, instr.xn, fresh);
+        writeSlot(state, fresh);
+      }
+      state.pc += 1; return true;
+    case 'SetValue':
+    case 'UnifyValue':
+      if (state.mode === 'read') {
+        if (Runtime.unify(state, Runtime.getReg(state, instr.xn), readNext(state)) !== true) return false;
+      } else {
+        writeSlot(state, Runtime.getReg(state, instr.xn));
+      }
+      state.pc += 1; return true;
+    case 'SetConstant':
+    case 'UnifyConstant':
+      if (state.mode === 'read') {
+        if (Runtime.unify(state, instr.c, readNext(state)) !== true) return false;
+      } else {
+        writeSlot(state, instr.c);
+      }
+      state.pc += 1; return true;
+
+    case 'GetStructure':
+    case 'GetList': {
+      var arity = instr.arity || 2;
+      var val = Runtime.deref(state, Runtime.getReg(state, instr.ai)); // §4 deref first
+      if (val.tag === 'unbound') {
+        beginWrite(state, instr.ai, instr.fid, arity, true); // get-family: bind-through
+        state.pc += 1; return true;
+      }
+      if (val.tag === 'struct' && val.fid === instr.fid && val.args.length === arity) {
+        beginRead(state, val.args);
+        state.pc += 1; return true;
+      }
+      return false;
+    }
+
+    case 'TryMeElse':
+      pushChoicePoint(state, program.labels[instr.label]);
+      state.pc += 1; return true;
+    case 'RetryMeElse': {
+      var cp = state.cps[state.cps.length - 1];
+      if (cp === undefined) { state.pc += 1; return true; }
+      while (state.trail.length > cp.trailLen) { delete state.bindings[state.trail.pop()]; }
+      state.regs = Runtime.copyRegs(cp.regs);
+      state.env = cp.env;
+      cp.nextPc = program.labels[instr.label];
+      state.pc += 1; return true;
+    }
+    case 'TrustMe':
+      if (state.cps.length > 0) state.cps.pop();
+      state.pc += 1; return true;
+
+    case 'Jump':
+      state.pc = program.labels[instr.label];
+      return state.pc !== undefined && state.pc !== null;
+
+    case 'Call': {
+      var target = program.labels[instr.pred];
+      if (target === undefined || target === null) return false;
+      state.cp = state.pc + 1;
+      state.pc = target;
+      return true;
+    }
+    case 'Execute': {
+      var t2 = program.labels[instr.pred];
+      if (t2 === undefined || t2 === null) return false;
+      state.pc = t2;
+      return true;
+    }
+
+    case 'BuiltinCall':
+      if (Runtime.builtinCall(program, state, instr) !== true) return false;
+      state.pc += 1; return true;
+
+    case 'CutIte':
+      if (state.cps.length > 0) state.cps.pop();
+      state.pc += 1; return true;
+    case 'GetLevel':
+      Runtime.putReg(state, instr.yn, state.cps.length);
+      state.pc += 1; return true;
+    case 'Cut': {
+      var lvl = Runtime.getReg(state, instr.yn);
+      if (typeof lvl !== 'number') lvl = 0;
+      while (state.cps.length > lvl) state.cps.pop();
+      state.pc += 1; return true;
+    }
+
+    default:
+      // Unknown instruction: real no-op, never dropped/thrown (§6).
+      state.pc += 1; return true;
+  }
+};
+
+Runtime.run = function (program, state) {
+  state.halt = false;
+  var steps = 0;
+  while (!state.halt) {
+    if (++steps > STEP_LIMIT) return false;
+    var instr = program.code[state.pc];
+    if (instr === undefined || instr === null) return false;
+    var before = state.pc;
+    if (Runtime.step(program, state, instr) !== true) {
+      if (Runtime.backtrack(state) !== true) return false;
+    } else if (state.pc === before && !state.halt) {
+      state.pc += 1;
+    }
+  }
+  return true;
+};
+
+Runtime.runPredicate = function (program, startPc, args) {
+  var state = Runtime.newState();
+  args = args || [];
+  for (var i = 0; i < args.length; i++) Runtime.putReg(state, i + 1, args[i]);
+  state.pc = startPc;
+  return Runtime.run(program, state) === true;
+};
+
+// CLI argument parsing: integers as ints, "[a,b,c]" as cons lists, else atoms.
+Runtime.parseCliArg = function (program, text) {
+  text = String(text).trim();
+  return parseTerm(program, text);
+};
+
+function parseTerm(program, text) {
+  text = text.trim();
+  if (text.length >= 2 && text.charAt(0) === '[' && text.charAt(text.length - 1) === ']') {
+    var inner = text.substring(1, text.length - 1).trim();
+    var items = inner === '' ? [] : splitTopLevel(inner);
+    var out = V.Atom(Runtime.intern(program.internTable, '[]'));
+    for (var i = items.length - 1; i >= 0; i--) {
+      out = V.Struct(Runtime.intern(program.internTable, '[|]'), [parseTerm(program, items[i]), out]);
+    }
+    return out;
+  }
+  if (/^-?\d+$/.test(text)) return V.Int(parseInt(text, 10));
+  if (/^-?\d+\.\d+$/.test(text)) return V.Float(parseFloat(text));
+  // compound term: name(arg, arg, ...)
+  var m = text.match(/^([^()\[\],\s]+)\((.*)\)$/);
+  if (m) {
+    var args = m[2].trim() === '' ? [] : splitTopLevel(m[2]);
+    var built = [];
+    for (var j = 0; j < args.length; j++) built.push(parseTerm(program, args[j]));
+    return V.Struct(Runtime.intern(program.internTable, m[1]), built);
+  }
+  return V.Atom(Runtime.intern(program.internTable, text));
+}
+
+function splitTopLevel(s) {
+  var parts = [];
+  var depth = 0, start = 0;
+  for (var i = 0; i < s.length; i++) {
+    var c = s.charAt(i);
+    if (c === '[' || c === '(') depth++;
+    else if (c === ']' || c === ')') depth--;
+    else if (c === ',' && depth === 0) { parts.push(s.substring(start, i)); start = i + 1; }
+  }
+  parts.push(s.substring(start));
+  return parts;
+}
+
+module.exports = { Runtime: Runtime, V: V };
