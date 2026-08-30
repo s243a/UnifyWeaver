@@ -454,6 +454,17 @@ Runtime.backtrack = function (state) {
     state.halt = false;
     return true;
   }
+  if (cp.kind === "enum_unify") {
+    restore_cp_frame(state, cp);
+    const sol = cp.sols.shift();
+    if (cp.sols.length === 0) state.cps.pop();
+    if (apply_enum_sol(state.program, state, sol) !== true) {
+      return Runtime.backtrack(state);
+    }
+    state.pc = cp.next_pc;
+    state.halt = false;
+    return true;
+  }
   if (cp.kind === "between") {
     restore_cp_frame(state, cp);
     const n = cp.next;
@@ -1355,6 +1366,805 @@ function pred_name(p) {
   return strip_trailing_arity(String(p));
 }
 
+function pred_arity(inst) {
+  if (inst && typeof inst.arity === "number") return inst.arity;
+  const p = String(inst && inst.pred || "");
+  const slash = p.lastIndexOf("/");
+  if (slash >= 0) {
+    const n = Number(p.slice(slash + 1));
+    if (Number.isInteger(n)) return n;
+  }
+  return null;
+}
+
+function is_unbound_term(v) {
+  return typeof v === "object" && v !== null && v.tag === "unbound";
+}
+
+function intern_atom(program, text) {
+  return V.Atom(Runtime.intern(program.intern_table, String(text)));
+}
+
+function pair_term(program, key, val) {
+  const fid = Runtime.intern(program.intern_table, "-");
+  return V.Struct(fid, [key, val]);
+}
+
+function hyphen_pair(program, state, term) {
+  term = Runtime.deref(state, term);
+  if (typeof term !== "object" || term === null || term.tag !== "struct") return null;
+  if ((term.args || []).length !== 2) return null;
+  const name = Runtime.functor_name(program.intern_table, term.fid);
+  if (name !== "-") return null;
+  return { key: term.args[0], val: term.args[1] };
+}
+
+function atomic_text(program, state, term) {
+  term = Runtime.deref(state, term);
+  if (typeof term !== "object" || term === null) return null;
+  if (term.tag === "atom") return Runtime.string_of(program.intern_table, term.id);
+  if (term.tag === "string") return String(term.val);
+  if (term.tag === "int" || term.tag === "float") return String(term.val);
+  return null;
+}
+
+function codes_to_string(program, state, items) {
+  let out = "";
+  for (let i = 0; i < items.length; i++) {
+    const c = Runtime.deref(state, items[i]);
+    if (typeof c !== "object" || c === null || c.tag !== "int") return null;
+    out += String.fromCharCode(c.val);
+  }
+  return out;
+}
+
+function string_to_codes(text) {
+  const items = [];
+  for (let i = 0; i < text.length; i++) items.push(V.Int(text.charCodeAt(i)));
+  return items;
+}
+
+function string_to_chars(program, text) {
+  const items = [];
+  for (let i = 0; i < text.length; i++) items.push(intern_atom(program, text.charAt(i)));
+  return items;
+}
+
+function chars_to_string(program, state, items) {
+  let out = "";
+  for (let i = 0; i < items.length; i++) {
+    const t = atomic_text(program, state, items[i]);
+    if (t === null || t.length !== 1) return null;
+    out += t;
+  }
+  return out;
+}
+
+function apply_enum_sol(program, state, sol) {
+  for (let i = 0; i < sol.length; i++) {
+    const spec = sol[i];
+    if (Runtime.unify(state, Runtime.get_reg(state, spec[0]), spec[1], program) !== true) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function dispatch_enum(program, state, sols) {
+  if (!sols || sols.length === 0) return false;
+  const rest = sols.slice(1);
+  if (rest.length > 0) {
+    state.cps.push(snapshot_cp(state, { kind: "enum_unify", sols: rest }));
+  }
+  return apply_enum_sol(program, state, sols[0]);
+}
+
+function bind_list(program, state, reg, items) {
+  return bind_or_compare(state, reg, Runtime.list_from_terms(items, program.intern_table), program);
+}
+
+function builtin_compare3(program, state) {
+  const c = compare_terms(program.intern_table, state,
+    Runtime.get_reg(state, 2), Runtime.get_reg(state, 3));
+  let atom = "=";
+  if (c < 0) atom = "<";
+  else if (c > 0) atom = ">";
+  return bind_or_compare(state, 1, intern_atom(program, atom), program);
+}
+
+function sort_items(program, state, items, dedup) {
+  const copy = items.slice();
+  copy.sort(function (x, y) {
+    return compare_terms(program.intern_table, state, x, y);
+  });
+  if (!dedup) return copy;
+  const out = [];
+  for (let i = 0; i < copy.length; i++) {
+    if (i === 0 || compare_terms(program.intern_table, state, copy[i], copy[i - 1]) !== 0) {
+      out.push(copy[i]);
+    }
+  }
+  return out;
+}
+
+function sort_key_of(program, state, term, key) {
+  if (key === 0) return term;
+  term = Runtime.deref(state, term);
+  if (typeof term !== "object" || term === null || term.tag !== "struct") return term;
+  const arg = (term.args || [])[key - 1];
+  return arg === undefined ? term : arg;
+}
+
+function builtin_sort_family(program, state, name) {
+  if (name === "sort" || name === "msort") {
+    const items = list_items(program, state, Runtime.get_reg(state, 1));
+    if (items === null) return false;
+    return bind_list(program, state, 2, sort_items(program, state, items, name === "sort"));
+  }
+  if (name === "keysort") {
+    const items = list_items(program, state, Runtime.get_reg(state, 1));
+    if (items === null) return false;
+    const keyed = [];
+    for (let i = 0; i < items.length; i++) {
+      const p = hyphen_pair(program, state, items[i]);
+      if (!p) return false;
+      keyed.push({ key: p.key, term: items[i], i: i });
+    }
+    keyed.sort(function (a, b) {
+      const c = compare_terms(program.intern_table, state, a.key, b.key);
+      if (c !== 0) return c;
+      return a.i - b.i;
+    });
+    const out = [];
+    for (let i = 0; i < keyed.length; i++) out.push(keyed[i].term);
+    return bind_list(program, state, 2, out);
+  }
+  return false;
+}
+
+function builtin_sort4(program, state) {
+  const keyTerm = Runtime.deref(state, Runtime.get_reg(state, 1));
+  const orderTerm = Runtime.deref(state, Runtime.get_reg(state, 2));
+  const items = list_items(program, state, Runtime.get_reg(state, 3));
+  if (items === null) return false;
+  if (typeof keyTerm !== "object" || keyTerm === null || keyTerm.tag !== "int") return false;
+  const key = keyTerm.val;
+  const orderName = atomic_text(program, state, orderTerm);
+  if (orderName === null) return false;
+  const desc = orderName === "@>" || orderName === ">";
+  const unique = orderName === "@<" || orderName === "@>";
+  const keyed = [];
+  for (let i = 0; i < items.length; i++) {
+    keyed.push({ key: sort_key_of(program, state, items[i], key), term: items[i], i: i });
+  }
+  keyed.sort(function (a, b) {
+    const c = compare_terms(program.intern_table, state, a.key, b.key);
+    if (c !== 0) return desc ? -c : c;
+    return a.i - b.i;
+  });
+  let out = [];
+  for (let i = 0; i < keyed.length; i++) out.push(keyed[i].term);
+  if (unique) {
+    const uniq = [];
+    for (let i = 0; i < out.length; i++) {
+      if (i === 0 || compare_terms(program.intern_table, state,
+          sort_key_of(program, state, out[i], key),
+          sort_key_of(program, state, out[i - 1], key)) !== 0) {
+        uniq.push(out[i]);
+      }
+    }
+    out = uniq;
+  }
+  return bind_list(program, state, 4, out);
+}
+
+function builtin_predsort(program, state) {
+  const pred = Runtime.deref(state, Runtime.get_reg(state, 1));
+  const items = list_items(program, state, Runtime.get_reg(state, 2));
+  if (items === null) return false;
+  const predName = pred && pred.tag === "atom"
+    ? strip_trailing_arity(Runtime.string_of(program.intern_table, pred.id))
+    : null;
+  const copy = items.slice();
+  copy.sort(function (x, y) {
+    if (predName === "compare") {
+      return compare_terms(program.intern_table, state, x, y);
+    }
+    const fid = pred.tag === "atom" ? pred.id : (pred.tag === "struct" ? pred.fid : null);
+    if (fid === null) return 0;
+    const order = Runtime.new_var(state);
+    const goal = V.Struct(fid, [order, x, y]);
+    if (invoke_goal(program, state, goal, true) !== true) return 0;
+    const o = atomic_text(program, state, order);
+    if (o === "<") return -1;
+    if (o === ">") return 1;
+    return 0;
+  });
+  return bind_list(program, state, 3, copy);
+}
+
+function builtin_append(program, state) {
+  const a = list_items(program, state, Runtime.get_reg(state, 1));
+  const b = list_items(program, state, Runtime.get_reg(state, 2));
+  const c = list_items(program, state, Runtime.get_reg(state, 3));
+  if (a !== null && b !== null) {
+    return bind_list(program, state, 3, a.concat(b));
+  }
+  if (c === null) return false;
+  if (a !== null) {
+    if (c.length < a.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (Runtime.unify(state, a[i], c[i], program) !== true) return false;
+    }
+    return bind_list(program, state, 2, c.slice(a.length));
+  }
+  if (b !== null) {
+    if (c.length < b.length) return false;
+    const prefixLen = c.length - b.length;
+    const suffix = c.slice(prefixLen);
+    for (let i = 0; i < b.length; i++) {
+      if (Runtime.unify(state, b[i], suffix[i], program) !== true) return false;
+    }
+    return bind_list(program, state, 1, c.slice(0, prefixLen));
+  }
+  const sols = [];
+  for (let i = 0; i <= c.length; i++) {
+    sols.push([
+      [1, Runtime.list_from_terms(c.slice(0, i), program.intern_table)],
+      [2, Runtime.list_from_terms(c.slice(i), program.intern_table)]
+    ]);
+  }
+  return dispatch_enum(program, state, sols);
+}
+
+function builtin_reverse(program, state) {
+  const a = list_items(program, state, Runtime.get_reg(state, 1));
+  if (a !== null) return bind_list(program, state, 2, a.slice().reverse());
+  const b = list_items(program, state, Runtime.get_reg(state, 2));
+  if (b === null) return false;
+  return bind_list(program, state, 1, b.slice().reverse());
+}
+
+function builtin_nth(program, state, oneBased) {
+  const nTerm = Runtime.deref(state, Runtime.get_reg(state, 1));
+  const items = list_items(program, state, Runtime.get_reg(state, 2));
+  if (items === null) return false;
+  if (typeof nTerm === "object" && nTerm !== null && nTerm.tag === "int") {
+    const idx = oneBased ? nTerm.val - 1 : nTerm.val;
+    if (idx < 0 || idx >= items.length) return false;
+    return bind_or_compare(state, 3, items[idx], program);
+  }
+  if (!is_unbound_term(nTerm)) return false;
+  const sols = [];
+  for (let i = 0; i < items.length; i++) {
+    const n = oneBased ? i + 1 : i;
+    sols.push([[1, V.Int(n)], [3, items[i]]]);
+  }
+  return dispatch_enum(program, state, sols);
+}
+
+function builtin_last(program, state) {
+  const items = list_items(program, state, Runtime.get_reg(state, 1));
+  if (items === null || items.length === 0) return false;
+  return bind_or_compare(state, 2, items[items.length - 1], program);
+}
+
+function builtin_sum_list(program, state) {
+  const items = list_items(program, state, Runtime.get_reg(state, 1));
+  if (items === null) return false;
+  let total = 0;
+  let sawFloat = false;
+  for (let i = 0; i < items.length; i++) {
+    const n = numeric_value(Runtime.deref(state, items[i]));
+    if (n === null) return false;
+    total += n;
+    if (typeof n === "number" && !Number.isInteger(n)) sawFloat = true;
+  }
+  const boxed = sawFloat ? V.Float(total) : V.Int(total);
+  return bind_or_compare(state, 2, boxed, program);
+}
+
+function builtin_minmax_list(program, state, wantMax) {
+  const items = list_items(program, state, Runtime.get_reg(state, 1));
+  if (items === null || items.length === 0) return false;
+  let best = items[0];
+  let bestN = numeric_value(Runtime.deref(state, best));
+  if (bestN === null) return false;
+  for (let i = 1; i < items.length; i++) {
+    const n = numeric_value(Runtime.deref(state, items[i]));
+    if (n === null) return false;
+    if ((wantMax && n > bestN) || (!wantMax && n < bestN)) {
+      best = items[i];
+      bestN = n;
+    }
+  }
+  return bind_or_compare(state, 2, best, program);
+}
+
+function builtin_list_to_set(program, state) {
+  const items = list_items(program, state, Runtime.get_reg(state, 1));
+  if (items === null) return false;
+  const out = [];
+  for (let i = 0; i < items.length; i++) {
+    let seen = false;
+    for (let j = 0; j < out.length; j++) {
+      if (compare_terms(program.intern_table, state, items[i], out[j]) === 0) {
+        seen = true;
+        break;
+      }
+    }
+    if (!seen) out.push(items[i]);
+  }
+  return bind_list(program, state, 2, out);
+}
+
+function builtin_select(program, state) {
+  const items = list_items(program, state, Runtime.get_reg(state, 2));
+  if (items === null || items.length === 0) return false;
+  const x = Runtime.get_reg(state, 1);
+  const sols = [];
+  for (let i = 0; i < items.length; i++) {
+    const rest = items.slice(0, i).concat(items.slice(i + 1));
+    sols.push([
+      [1, items[i]],
+      [3, Runtime.list_from_terms(rest, program.intern_table)]
+    ]);
+  }
+  const xd = Runtime.deref(state, x);
+  if (!is_unbound_term(xd)) {
+    const filtered = [];
+    for (let i = 0; i < sols.length; i++) {
+      const probe = Runtime.new_state();
+      probe.bindings = Runtime.copy_table(state.bindings);
+      probe.trail = state.trail.slice();
+      probe.var_counter = state.var_counter;
+      Runtime.put_reg(probe, 1, x);
+      if (Runtime.unify(probe, x, sols[i][0][1], program) === true) filtered.push(sols[i]);
+    }
+    return dispatch_enum(program, state, filtered);
+  }
+  return dispatch_enum(program, state, sols);
+}
+
+function pred1_goal(program, predTerm, arg) {
+  predTerm = predTerm;
+  if (typeof predTerm !== "object" || predTerm === null) return null;
+  if (predTerm.tag === "atom") {
+    return V.Struct(predTerm.id, [arg]);
+  }
+  if (predTerm.tag === "struct") {
+    const args = (predTerm.args || []).concat([arg]);
+    return V.Struct(predTerm.fid, args);
+  }
+  return null;
+}
+
+function builtin_include_exclude(program, state, keep) {
+  const pred = Runtime.deref(state, Runtime.get_reg(state, 1));
+  const items = list_items(program, state, Runtime.get_reg(state, 2));
+  if (items === null) return false;
+  const out = [];
+  for (let i = 0; i < items.length; i++) {
+    const goal = pred1_goal(program, pred, items[i]);
+    if (!goal) return false;
+    const ok = goal_succeeds(program, state, goal) === true;
+    if (ok === keep) out.push(items[i]);
+  }
+  return bind_list(program, state, 3, out);
+}
+
+function builtin_atom_concat(program, state) {
+  const a = atomic_text(program, state, Runtime.get_reg(state, 1));
+  const b = atomic_text(program, state, Runtime.get_reg(state, 2));
+  const c = atomic_text(program, state, Runtime.get_reg(state, 3));
+  if (a !== null && b !== null) {
+    return bind_or_compare(state, 3, intern_atom(program, a + b), program);
+  }
+  if (c === null) return false;
+  if (a !== null) {
+    if (c.indexOf(a) !== 0) return false;
+    return bind_or_compare(state, 2, intern_atom(program, c.slice(a.length)), program);
+  }
+  if (b !== null) {
+    if (c.length < b.length || c.slice(c.length - b.length) !== b) return false;
+    return bind_or_compare(state, 1, intern_atom(program, c.slice(0, c.length - b.length)), program);
+  }
+  const sols = [];
+  for (let i = 0; i <= c.length; i++) {
+    sols.push([
+      [1, intern_atom(program, c.slice(0, i))],
+      [2, intern_atom(program, c.slice(i))]
+    ]);
+  }
+  return dispatch_enum(program, state, sols);
+}
+
+function builtin_atom_length(program, state) {
+  const t = atomic_text(program, state, Runtime.get_reg(state, 1));
+  if (t === null) return false;
+  return bind_or_compare(state, 2, V.Int(t.length), program);
+}
+
+function builtin_atom_chars(program, state) {
+  const t = atomic_text(program, state, Runtime.get_reg(state, 1));
+  if (t !== null) return bind_list(program, state, 2, string_to_chars(program, t));
+  const items = list_items(program, state, Runtime.get_reg(state, 2));
+  if (items === null) return false;
+  const s = chars_to_string(program, state, items);
+  if (s === null) return false;
+  return bind_or_compare(state, 1, intern_atom(program, s), program);
+}
+
+function builtin_atom_codes(program, state) {
+  const t = atomic_text(program, state, Runtime.get_reg(state, 1));
+  if (t !== null) {
+    return bind_list(program, state, 2, string_to_codes(t));
+  }
+  const items = list_items(program, state, Runtime.get_reg(state, 2));
+  if (items === null) return false;
+  const s = codes_to_string(program, state, items);
+  if (s === null) return false;
+  return bind_or_compare(state, 1, intern_atom(program, s), program);
+}
+
+function builtin_char_code(program, state) {
+  const ch = atomic_text(program, state, Runtime.get_reg(state, 1));
+  const code = Runtime.deref(state, Runtime.get_reg(state, 2));
+  if (ch !== null) {
+    if (ch.length !== 1) return false;
+    return bind_or_compare(state, 2, V.Int(ch.charCodeAt(0)), program);
+  }
+  if (typeof code === "object" && code !== null && code.tag === "int") {
+    return bind_or_compare(state, 1, intern_atom(program, String.fromCharCode(code.val)), program);
+  }
+  return false;
+}
+
+function builtin_sub_atom(program, state) {
+  const atom = atomic_text(program, state, Runtime.get_reg(state, 1));
+  if (atom === null) return false;
+  const n = atom.length;
+  const before = Runtime.deref(state, Runtime.get_reg(state, 2));
+  const length = Runtime.deref(state, Runtime.get_reg(state, 3));
+  const after = Runtime.deref(state, Runtime.get_reg(state, 4));
+  const sub = atomic_text(program, state, Runtime.get_reg(state, 5));
+  function asInt(v) {
+    if (typeof v === "object" && v !== null && v.tag === "int") return v.val;
+    return null;
+  }
+  const b0 = asInt(before);
+  const l0 = asInt(length);
+  const a0 = asInt(after);
+  const sols = [];
+  const bLo = b0 === null ? 0 : b0;
+  const bHi = b0 === null ? n : b0;
+  for (let b = bLo; b <= bHi; b++) {
+    if (b < 0 || b > n) continue;
+    const lLo = l0 === null ? 0 : l0;
+    const lHi = l0 === null ? (n - b) : l0;
+    for (let l = lLo; l <= lHi; l++) {
+      if (l < 0 || b + l > n) continue;
+      const a = n - b - l;
+      if (a0 !== null && a !== a0) continue;
+      const piece = atom.slice(b, b + l);
+      if (sub !== null && piece !== sub) continue;
+      sols.push([
+        [2, V.Int(b)],
+        [3, V.Int(l)],
+        [4, V.Int(a)],
+        [5, intern_atom(program, piece)]
+      ]);
+    }
+  }
+  return dispatch_enum(program, state, sols);
+}
+
+function builtin_atom_string(program, state) {
+  const a = atomic_text(program, state, Runtime.get_reg(state, 1));
+  const b = atomic_text(program, state, Runtime.get_reg(state, 2));
+  if (a !== null) return bind_or_compare(state, 2, intern_atom(program, a), program);
+  if (b !== null) return bind_or_compare(state, 1, intern_atom(program, b), program);
+  return false;
+}
+
+function builtin_number_codes(program, state) {
+  const n = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (typeof n === "object" && n !== null && (n.tag === "int" || n.tag === "float")) {
+    return bind_list(program, state, 2, string_to_codes(String(n.val)));
+  }
+  const items = list_items(program, state, Runtime.get_reg(state, 2));
+  if (items === null) return false;
+  const s = codes_to_string(program, state, items);
+  if (s === null) return false;
+  const num = Number(s);
+  if (s === "" || Number.isNaN(num)) return false;
+  const boxed = Number.isInteger(num) && String(num) === s ? V.Int(num) : (
+    /[.eE]/.test(s) ? V.Float(num) : (Number.isInteger(num) ? V.Int(num) : V.Float(num))
+  );
+  return bind_or_compare(state, 1, boxed, program);
+}
+
+function builtin_number_string(program, state) {
+  const n = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (typeof n === "object" && n !== null && (n.tag === "int" || n.tag === "float")) {
+    return bind_or_compare(state, 2, intern_atom(program, String(n.val)), program);
+  }
+  const s = atomic_text(program, state, Runtime.get_reg(state, 2));
+  if (s === null) return false;
+  const num = Number(s);
+  if (s === "" || Number.isNaN(num)) return false;
+  const boxed = Number.isInteger(num) && String(num) === s ? V.Int(num) : (
+    /[.eE]/.test(s) ? V.Float(num) : (Number.isInteger(num) ? V.Int(num) : V.Float(num))
+  );
+  return bind_or_compare(state, 1, boxed, program);
+}
+
+function builtin_split_string(program, state) {
+  const src = atomic_text(program, state, Runtime.get_reg(state, 1));
+  const sep = atomic_text(program, state, Runtime.get_reg(state, 2));
+  const pad = atomic_text(program, state, Runtime.get_reg(state, 3));
+  if (src === null || sep === null || pad === null) return false;
+  function trimPad(s) {
+    let lo = 0;
+    let hi = s.length;
+    while (lo < hi && pad.indexOf(s.charAt(lo)) >= 0) lo++;
+    while (hi > lo && pad.indexOf(s.charAt(hi - 1)) >= 0) hi--;
+    return s.slice(lo, hi);
+  }
+  let parts;
+  if (sep === "") {
+    parts = [trimPad(src)];
+  } else {
+    parts = [];
+    let buf = "";
+    for (let i = 0; i < src.length; i++) {
+      const ch = src.charAt(i);
+      if (sep.indexOf(ch) >= 0) {
+        parts.push(trimPad(buf));
+        buf = "";
+      } else {
+        buf += ch;
+      }
+    }
+    parts.push(trimPad(buf));
+  }
+  const atoms = [];
+  for (let i = 0; i < parts.length; i++) atoms.push(intern_atom(program, parts[i]));
+  return bind_list(program, state, 4, atoms);
+}
+
+function builtin_case_atom(program, state, up) {
+  const t = atomic_text(program, state, Runtime.get_reg(state, 1));
+  if (t === null) return false;
+  const out = up ? t.toUpperCase() : t.toLowerCase();
+  return bind_or_compare(state, 2, intern_atom(program, out), program);
+}
+
+function quote_atom_text(s) {
+  if (/^[a-z][a-zA-Z0-9_]*$/.test(s)) return s;
+  return "'" + String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+}
+
+function format_write_term(program, state, term, quoted) {
+  term = Runtime.deref(state, term);
+  if (quoted && term && term.tag === "atom") {
+    return quote_atom_text(Runtime.string_of(program.intern_table, term.id));
+  }
+  return term_to_string(program, state, term);
+}
+
+function format_render(program, state, fmtText, args) {
+  let out = "";
+  let ai = 0;
+  for (let i = 0; i < fmtText.length; i++) {
+    const ch = fmtText.charAt(i);
+    if (ch !== "~") {
+      out += ch;
+      continue;
+    }
+    i++;
+    if (i >= fmtText.length) break;
+    const d = fmtText.charAt(i);
+    if (d === "~") {
+      out += "~";
+    } else if (d === "n") {
+      out += "\n";
+    } else if (d === "t") {
+      out += "\t";
+    } else if (d === "w" || d === "p") {
+      if (ai >= args.length) return null;
+      out += format_write_term(program, state, args[ai++], false);
+    } else if (d === "q") {
+      if (ai >= args.length) return null;
+      out += format_write_term(program, state, args[ai++], true);
+    } else if (d === "a") {
+      if (ai >= args.length) return null;
+      const t = atomic_text(program, state, args[ai++]);
+      if (t === null) return null;
+      out += t;
+    } else if (d === "d") {
+      if (ai >= args.length) return null;
+      const n = Runtime.deref(state, args[ai++]);
+      if (!n || (n.tag !== "int" && n.tag !== "float")) return null;
+      out += String(n.tag === "int" ? (n.val | 0) : n.val);
+    } else if (d === "s") {
+      if (ai >= args.length) return null;
+      const txt = atomic_text(program, state, args[ai]);
+      if (txt !== null) {
+        out += txt;
+        ai++;
+      } else {
+        const codes = list_items(program, state, args[ai++]);
+        if (codes === null) return null;
+        const s = codes_to_string(program, state, codes);
+        if (s === null) return null;
+        out += s;
+      }
+    } else {
+      return null;
+    }
+  }
+  return out;
+}
+
+function format_fmt_text(program, state, fmtTerm) {
+  const t = atomic_text(program, state, fmtTerm);
+  if (t !== null) return t;
+  const codes = list_items(program, state, fmtTerm);
+  if (codes === null) return null;
+  return codes_to_string(program, state, codes);
+}
+
+function builtin_format2(program, state) {
+  const fmt = format_fmt_text(program, state, Runtime.get_reg(state, 1));
+  const args = list_items(program, state, Runtime.get_reg(state, 2));
+  if (fmt === null || args === null) return false;
+  const text = format_render(program, state, fmt, args);
+  if (text === null) return false;
+  process.stdout.write(text);
+  return true;
+}
+
+function builtin_format3(program, state) {
+  const sink = Runtime.deref(state, Runtime.get_reg(state, 1));
+  const fmt = format_fmt_text(program, state, Runtime.get_reg(state, 2));
+  const args = list_items(program, state, Runtime.get_reg(state, 3));
+  if (fmt === null || args === null) return false;
+  const text = format_render(program, state, fmt, args);
+  if (text === null) return false;
+  const boxed = intern_atom(program, text);
+  if (typeof sink === "object" && sink !== null && sink.tag === "struct"
+      && (sink.args || []).length === 1) {
+    const fname = Runtime.functor_name(program.intern_table, sink.fid);
+    if (fname === "atom" || fname === "string") {
+      return Runtime.unify(state, sink.args[0], boxed, program);
+    }
+  }
+  if (is_unbound_term(sink) || (sink && sink.tag === "atom")) {
+    return bind_or_compare(state, 1, boxed, program);
+  }
+  return false;
+}
+
+function builtin_tab(program, state) {
+  const n = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (typeof n !== "object" || n === null || n.tag !== "int" || n.val < 0) return false;
+  let s = "";
+  for (let i = 0; i < n.val; i++) s += " ";
+  process.stdout.write(s);
+  return true;
+}
+
+function assoc_pairs(program, state, assoc) {
+  assoc = Runtime.deref(state, assoc);
+  if (typeof assoc !== "object" || assoc === null || assoc.tag !== "struct") return null;
+  if (Runtime.functor_name(program.intern_table, assoc.fid) !== "assoc") return null;
+  if ((assoc.args || []).length !== 1) return null;
+  const items = list_items(program, state, assoc.args[0]);
+  if (items === null) return null;
+  const pairs = [];
+  for (let i = 0; i < items.length; i++) {
+    const p = hyphen_pair(program, state, items[i]);
+    if (!p) return null;
+    pairs.push(p);
+  }
+  return pairs;
+}
+
+function assoc_term(program, pairs) {
+  const items = [];
+  for (let i = 0; i < pairs.length; i++) {
+    items.push(pair_term(program, pairs[i].key, pairs[i].val));
+  }
+  const fid = Runtime.intern(program.intern_table, "assoc");
+  return V.Struct(fid, [Runtime.list_from_terms(items, program.intern_table)]);
+}
+
+function builtin_empty_assoc(program, state) {
+  return bind_or_compare(state, 1, assoc_term(program, []), program);
+}
+
+function builtin_list_to_assoc(program, state) {
+  const items = list_items(program, state, Runtime.get_reg(state, 1));
+  if (items === null) return false;
+  const pairs = [];
+  for (let i = 0; i < items.length; i++) {
+    const p = hyphen_pair(program, state, items[i]);
+    if (!p) return false;
+    pairs.push(p);
+  }
+  pairs.sort(function (a, b) {
+    return compare_terms(program.intern_table, state, a.key, b.key);
+  });
+  for (let i = 1; i < pairs.length; i++) {
+    if (compare_terms(program.intern_table, state, pairs[i].key, pairs[i - 1].key) === 0) {
+      return false;
+    }
+  }
+  return bind_or_compare(state, 2, assoc_term(program, pairs), program);
+}
+
+function builtin_get_assoc(program, state) {
+  const pairs = assoc_pairs(program, state, Runtime.get_reg(state, 2));
+  if (pairs === null) return false;
+  const key = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (is_unbound_term(key)) {
+    const sols = [];
+    for (let i = 0; i < pairs.length; i++) {
+      sols.push([[1, pairs[i].key], [3, pairs[i].val]]);
+    }
+    return dispatch_enum(program, state, sols);
+  }
+  for (let i = 0; i < pairs.length; i++) {
+    if (compare_terms(program.intern_table, state, key, pairs[i].key) === 0) {
+      return bind_or_compare(state, 3, pairs[i].val, program);
+    }
+  }
+  return false;
+}
+
+function builtin_put_assoc(program, state) {
+  const key = Runtime.get_reg(state, 1);
+  const pairs0 = assoc_pairs(program, state, Runtime.get_reg(state, 2));
+  const val = Runtime.get_reg(state, 3);
+  if (pairs0 === null) return false;
+  const pairs = [];
+  let replaced = false;
+  for (let i = 0; i < pairs0.length; i++) {
+    const c = compare_terms(program.intern_table, state, key, pairs0[i].key);
+    if (!replaced && c === 0) {
+      pairs.push({ key: key, val: val });
+      replaced = true;
+    } else if (!replaced && c < 0) {
+      pairs.push({ key: key, val: val });
+      pairs.push(pairs0[i]);
+      replaced = true;
+    } else {
+      pairs.push(pairs0[i]);
+    }
+  }
+  if (!replaced) pairs.push({ key: key, val: val });
+  return bind_or_compare(state, 4, assoc_term(program, pairs), program);
+}
+
+function builtin_assoc_to_list(program, state) {
+  const pairs = assoc_pairs(program, state, Runtime.get_reg(state, 1));
+  if (pairs === null) return false;
+  const items = [];
+  for (let i = 0; i < pairs.length; i++) {
+    items.push(pair_term(program, pairs[i].key, pairs[i].val));
+  }
+  return bind_list(program, state, 2, items);
+}
+
+function builtin_assoc_to_keys(program, state) {
+  const pairs = assoc_pairs(program, state, Runtime.get_reg(state, 1));
+  if (pairs === null) return false;
+  const items = [];
+  for (let i = 0; i < pairs.length; i++) items.push(pairs[i].key);
+  return bind_list(program, state, 2, items);
+}
+
 function snapshot_cp(state, extra) {
   const cp = snapshot_machine(state);
   cp.next_pc = state.pc + 1;
@@ -1468,6 +2278,47 @@ Runtime.builtin_call = function (program, state, inst) {
     return true;
   }
   if (name === "nl") { process.stdout.write("\n"); return true; }
+  if (name === "tab") return builtin_tab(program, state);
+  if (name === "format") {
+    if (pred_arity(inst) === 3) return builtin_format3(program, state);
+    return builtin_format2(program, state);
+  }
+  if (name === "compare") return builtin_compare3(program, state);
+  if (name === "sort" && pred_arity(inst) === 4) return builtin_sort4(program, state);
+  if (name === "sort" || name === "msort" || name === "keysort") {
+    return builtin_sort_family(program, state, name);
+  }
+  if (name === "predsort") return builtin_predsort(program, state);
+  if (name === "append") return builtin_append(program, state);
+  if (name === "reverse") return builtin_reverse(program, state);
+  if (name === "nth0") return builtin_nth(program, state, false);
+  if (name === "nth1") return builtin_nth(program, state, true);
+  if (name === "last") return builtin_last(program, state);
+  if (name === "sum_list" || name === "sumlist") return builtin_sum_list(program, state);
+  if (name === "max_list") return builtin_minmax_list(program, state, true);
+  if (name === "min_list") return builtin_minmax_list(program, state, false);
+  if (name === "list_to_set") return builtin_list_to_set(program, state);
+  if (name === "select") return builtin_select(program, state);
+  if (name === "include") return builtin_include_exclude(program, state, true);
+  if (name === "exclude") return builtin_include_exclude(program, state, false);
+  if (name === "atom_concat" || name === "string_concat") return builtin_atom_concat(program, state);
+  if (name === "atom_length") return builtin_atom_length(program, state);
+  if (name === "atom_chars" || name === "string_chars") return builtin_atom_chars(program, state);
+  if (name === "atom_codes") return builtin_atom_codes(program, state);
+  if (name === "char_code") return builtin_char_code(program, state);
+  if (name === "sub_atom") return builtin_sub_atom(program, state);
+  if (name === "atom_string") return builtin_atom_string(program, state);
+  if (name === "number_codes") return builtin_number_codes(program, state);
+  if (name === "number_string") return builtin_number_string(program, state);
+  if (name === "split_string") return builtin_split_string(program, state);
+  if (name === "upcase_atom") return builtin_case_atom(program, state, true);
+  if (name === "downcase_atom") return builtin_case_atom(program, state, false);
+  if (name === "empty_assoc") return builtin_empty_assoc(program, state);
+  if (name === "list_to_assoc") return builtin_list_to_assoc(program, state);
+  if (name === "get_assoc") return builtin_get_assoc(program, state);
+  if (name === "put_assoc") return builtin_put_assoc(program, state);
+  if (name === "assoc_to_list") return builtin_assoc_to_list(program, state);
+  if (name === "assoc_to_keys") return builtin_assoc_to_keys(program, state);
   if (name === "=") return Runtime.unify(state, Runtime.get_reg(state, 1), Runtime.get_reg(state, 2), program);
   if (name === "==") return exact_equal(state, Runtime.get_reg(state, 1), Runtime.get_reg(state, 2));
   if (name === "\\==") return exact_equal(state, Runtime.get_reg(state, 1), Runtime.get_reg(state, 2)) !== true;
