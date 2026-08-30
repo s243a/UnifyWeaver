@@ -191,7 +191,8 @@ Runtime.new_state = function () {
     mode: null,
     build_stack: [],
     read_args: [],
-    read_cursor: 0
+    read_cursor: 0,
+    read_stack: []
   };
 };
 
@@ -293,9 +294,26 @@ function begin_write(state, target, fid, arity, existing) {
 }
 
 function begin_read(state, args) {
+  if (state.mode === "read") {
+    state.read_stack = state.read_stack || [];
+    state.read_stack.push({ args: state.read_args, cursor: state.read_cursor });
+  }
   state.mode = "read";
   state.read_args = args || [];
   state.read_cursor = 0;
+}
+
+function finish_read_if_done(state) {
+  if (state.mode !== "read") return;
+  if (state.read_cursor < (state.read_args || []).length) return;
+  if (state.read_stack && state.read_stack.length > 0) {
+    const prev = state.read_stack.pop();
+    state.read_args = prev.args;
+    state.read_cursor = prev.cursor;
+    state.mode = "read";
+  } else {
+    state.mode = null;
+  }
 }
 
 function undo_trail(state, mark) {
@@ -334,7 +352,10 @@ function snapshot_machine(state) {
     var_counter: state.var_counter,
     mode: state.mode,
     build_stack: state.build_stack.slice(),
-    stack: state.stack.slice()
+    stack: state.stack.slice(),
+    read_stack: (state.read_stack || []).slice(),
+    read_args: state.read_args,
+    read_cursor: state.read_cursor
   };
 }
 
@@ -346,6 +367,9 @@ function restore_machine(state, snap) {
   state.mode = snap.mode;
   state.build_stack = snap.build_stack || [];
   if (snap.stack) state.stack = snap.stack.slice();
+  state.read_stack = (snap.read_stack || []).slice();
+  if (snap.read_args !== undefined) state.read_args = snap.read_args;
+  if (snap.read_cursor !== undefined) state.read_cursor = snap.read_cursor;
 }
 
 function restore_cp_frame(state, cp) {
@@ -1288,6 +1312,7 @@ Runtime.step = function (program, state, inst) {
     if (state.mode === "read") {
       Runtime.put_reg(state, inst.xn, state.read_args[state.read_cursor]);
       state.read_cursor += 1;
+      finish_read_if_done(state);
     } else {
       const v = Runtime.new_var(state);
       Runtime.put_reg(state, inst.xn, v);
@@ -1301,6 +1326,7 @@ Runtime.step = function (program, state, inst) {
     if (state.mode === "read") {
       if (Runtime.unify(state, v, state.read_args[state.read_cursor], program) !== true) return false;
       state.read_cursor += 1;
+      finish_read_if_done(state);
     } else {
       push_built_term(state, v);
     }
@@ -1311,6 +1337,7 @@ Runtime.step = function (program, state, inst) {
     if (state.mode === "read") {
       if (Runtime.unify(state, inst.c, state.read_args[state.read_cursor], program) !== true) return false;
       state.read_cursor += 1;
+      finish_read_if_done(state);
     } else {
       push_built_term(state, inst.c);
     }
