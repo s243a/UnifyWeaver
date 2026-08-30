@@ -5,7 +5,7 @@
 % test_wam_javascript_builtins.pl
 %
 % Compiles JS WAM probes (findall, functor, arg, =.., copy_term, \+,
-% call, bagof, setof, aggregate_all) plus the shared classic-program
+% call, bagof, setof, aggregate_all, op/3) plus the shared classic-program
 % fixtures, runs them under Node, and checks SWI-Prolog answers.
 %
 %   swipl -q -g run_tests -t halt tests/test_wam_javascript_builtins.pl
@@ -59,6 +59,8 @@
 :- dynamic user:qatom/1.
 :- dynamic user:probe_parse_atom/0.
 :- dynamic user:probe_term_meta/0.
+:- dynamic user:probe_op3/0.
+:- dynamic user:probe_parse_likes/0.
 
 install_probes :-
     retractall(user:probe_findall),
@@ -99,6 +101,8 @@ install_probes :-
     retractall(user:qatom/1),
     retractall(user:probe_parse_atom),
     retractall(user:probe_term_meta),
+    retractall(user:probe_op3),
+    retractall(user:probe_parse_likes),
     assertz((user:probe_findall :-
         findall(X, member(X, [1,2,3]), L), write(L), nl, L == [1,2,3])),
     assertz((user:probe_functor :-
@@ -247,6 +251,24 @@ install_probes :-
         f(T, T) \=@= f(U, V),
         \+ (f(T, T) =@= f(U, V)),
         foo(a) =@= foo(a),
+        write(ok), nl)),
+    assertz((user:probe_op3 :-
+        op(700, xfx, likes),
+        read_term_from_atom('alice likes bob', T),
+        T == likes(alice, bob),
+        op(900, fy, please),
+        read_term_from_atom('please hello', P),
+        P == please(hello),
+        op(400, xf, km),
+        read_term_from_atom('3 km', U),
+        U == km(3),
+        op(700, xfx, [loves, adores]),
+        read_term_from_atom('alice loves bob', T2),
+        T2 == loves(alice, bob),
+        write(ok), nl)),
+    assertz((user:probe_parse_likes :-
+        read_term_from_atom('alice likes bob', T),
+        T == likes(alice, bob),
         write(ok), nl)).
 
 probe_preds([
@@ -283,7 +305,8 @@ probe_preds([
     user:probe_format/0,
     user:probe_assoc/0,
     user:probe_parse_atom/0,
-    user:probe_term_meta/0
+    user:probe_term_meta/0,
+    user:probe_op3/0
 ]).
 
 :- dynamic user:ctw_js/0.
@@ -394,6 +417,21 @@ test(cli_structured_args, [setup(install_probes)]) :-
     run_node_args(Dir, ['qatom/1', '\'hello world\''], QExit, QOut),
     assertion(QExit =:= 0),
     assertion(node_succeeded(QOut)).
+
+test(emitted_op_decls, [setup(install_probes)]) :-
+    Dir = 'output/js_wam_op_decls',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:probe_parse_likes/0],
+        [emit_mode(interpreter),
+         javascript_wam_ops([op(700, xfx, likes)])],
+        Dir),
+    read_generated_js(Dir, Code),
+    assertion(sub_string(Code, _, _, _, "install_declared_ops")),
+    assertion(sub_string(Code, _, _, _, "likes")),
+    run_node(Dir, 'probe_parse_likes/0', Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Out)).
 
 :- end_tests(js_wam_builtins).
 
