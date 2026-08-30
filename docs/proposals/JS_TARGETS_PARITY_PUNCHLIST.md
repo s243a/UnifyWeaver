@@ -50,23 +50,34 @@ in-flight parity analyses — see §6).
 
 ---
 
-## 3. Open gaps — PATTERN targets ⬜/❓
+## 3. Open gaps — PATTERN targets ⬜ — CONFIRMED by analysis A1
 
-Two extension mechanisms apply here: **bindings** (`declare_binding/6`) and the
-**component pattern** (`component_registry` + per-target `custom_*.pl`).
+Two extension mechanisms apply: **bindings** (`declare_binding/6`) and the **component
+pattern** (`component_registry` + per-target `custom_*.pl`). A1 corrected two of my
+suspicions (see §3b N/A): bindings are **not** a gap (JS leads), and TS/AJS register
+**all 7** recursion hooks (more than python's 4) — the gap is hook *quality*, not count.
 
 | ID | Target(s) | Gap | Status | Copy-from | Size | Owner |
 |---|---|---|---|---|---|---|
-| G-P1 | typescript, annotated_js, vanilla_js, clojurescript | **Missing recursion patterns** — target_info declares only `[tail_recursion, linear_recursion, list_fold, transitive_closure]`; theory defines ~6. Likely missing: **tree recursion**, **mutual recursion (SCC)**, **multi-call linear (memoized fib)**. | ❓ | python/rust/go multifile `target(...)` clauses in `core/advanced/*_recursion.pl` | M–L | opus |
-| G-P2 | clojurescript | **Stream / pipeline / generator modes** — module header calls these "best-effort" (assume nbb Node runtime, not browser). | ❓ | python/go stream compilation | M | opus |
-| G-P3 | annotated_js, vanilla_js | **Component pattern coverage** — do they inherit TS's `collect_declared_component/2` integration correctly? Any JS-specific component types? | ❓ | `typescript_runtime/custom_typescript.pl`, `custom_chart.pl` | S–M | opus |
-| G-P4 | clojurescript | **Component pattern** — CLJS-specific component, or only inherited `custom_clojure`? | ❓ | `clojure_runtime/custom_clojure.pl` | S | opus |
-| G-P5 | typescript, annotated_js, vanilla_js, clojurescript | **Aggregate compilation** (aggregate_all/findall/bagof at the pattern level) — do the mature targets compile these where the JS ones don't? | ❓ | `docs/proposals/AGGREGATE_ALL_*`, python/go | M | opus |
-| G-P6 | JS pattern targets | **Constraint compilation** (`docs/CONSTRAINT_SYSTEM.md`, `PROLOG_CONSTRAINTS.md`). | ❓ | python/rust | M–L | opus |
-| G-P7 | JS pattern targets | **External / data-source consumption** (`src/unifyweaver/sources/`). | ❓ | python/go | M | opus |
-| G-P8 | annotated_js, vanilla_js, clojurescript | **Bindings depth** — TS 179; CLJS 67; annotated/vanilla inherit TS. Any category holes vs python(106)? | ❓ | python/go bindings | S–M | grok-friendly |
-| G-P9 | annotated_js, vanilla_js | **PAR-1 arm activation** — arms exist but skip until the harness loads the targets; needs a real tsc/node run (killed in the local shell, fine in an agent env). | ⬜ | — | S | opus |
-| G-P10 | JS pattern targets | **Test-coverage depth** vs python/rust/go suites. | ❓ | those suites | S–M | opus |
+| G-P1 | typescript (→ AJS/VJS) | **"Supported" recursion hooks are canned Fibonacci** — `compile_tree_pattern`/`compile_multicall_pattern`/`compile_direct_multicall_pattern(typescript,…)` all emit `const result = pred(n-1)+pred(n-2)` regardless of the real clause (`typescript_target.pl:~1402,1435,1468`; tail arity-2 stubs `return items.length` `:1228`). | ⬜ | extend TS's own partial `native_ts_clause_body` (`:736`); generality from python/go native lowering | L | opus |
+| G-P2 | all JS pattern targets | **No structural recursion** (member/append/reverse) — none compile it (`docs/JS_PATTERN_CONFORMANCE.md`); python/rust/go do via native clause lowering. | ⬜ | python_target / go_target native lowering | L | opus |
+| G-P3 | all JS pattern targets | **No aggregate compilation** — 0 `aggregate_all/findall/bagof/setof` goal refs in TS/CLJS vs go 36, python 10, rust 10. Core datalog surface. | ⬜ | `go_target.pl` (richest) | L | opus |
+| G-P4 | typescript (→ AJS/VJS) | **Components collected but never emitted** — `compile_module/3` (`:414-436`) never calls `component_registry:compile_component` (python `:198`/rust `:378`/go `:14951` do). Also `custom_chart.pl` is orphaned (self-registers at `:219` but no module `use_module`s it → dead). | ⬜ | python_target.pl:198 emit loop | M | opus |
+| G-P5 | clojure + clojurescript | **No component support at all** — `clojure_target.pl` has zero `component_registry` refs; `custom_clojure.pl:79` self-registers but is never loaded; no CLJS component. | ⬜ | mirror python_target.pl:96-97,198 | M | opus |
+| G-P6 | clojurescript | **No `compile_module/3`** (module decl `clojurescript_target.pl:58-71` omits it; clojure base also lacks it). Structural recursion also unsupported (part of G-P2). NB: numeric recursion now WORKS (CLJSFIX); the old xfail is gone. | ⬜ | python/go module compile | M | opus |
+| G-P7 | all JS pattern targets | **No constraint compilation** (`prolog_constraints`) — python 23 refs, rust/go present; JS none. (`docs/PROLOG_CONSTRAINTS.md`; note `CONSTRAINT_SYSTEM.md` does not exist.) | ⬜ | rust_target / python_target | M–L | opus |
+| G-P8 | typescript (→ AJS/VJS) | **No streaming/pipeline/generator mode** — 0 refs vs python 432/go 390/rust 325. CLJS inherits clojure's `generator_mode`/`pipeline_mode` best-effort. | ⬜ | clojure_target (closest paradigm) or python | M | opus |
+| G-P9 | JS pattern targets | **Not wired as data-source consumers** — `sources/semantic_source.pl:215,287` dispatch only on `target(bash\|python\|rust)`. | ⬜ | python/go source consumption | M | opus |
+| G-P10 | vanilla_js | **Inheritance asymmetry** — registers **0** `compile_*_pattern` clauses (annotated_js registered all 7); a caller driving the advanced compiler with `target(vanilla_js)` gets no clause and fails. **Verified.** | ⬜ | copy annotated_js:886-911 (delegate to TS then `vanilla_js_type_strip/2`) | S | opus |
+| G-P11 | clojurescript | **Possible dead bindings** — 67 bindings declared under key `clojurescript`, but compile goes via `compile_predicate_to_clojure` (key `clojure`). Whether the CLJS bindings are ever consulted is **unverified**. | ❓ verify | — | S | opus/main |
+| G-P12 | annotated_js, vanilla_js | **PAR-1 arm activation** — arms exist but skip until the harness loads the targets; needs a real tsc/node run (fine in an agent env). | ⬜ | — | S | opus |
+| G-P13 | JS pattern targets | **Thin test depth** — 8/3/3/5 referencing files (TS/AJS/VJS/CLJS) vs python 204/rust 155/go 78; no aggregate/negation/service/data-source tests. Grow as G-P1..G-P9 land. | ⬜ | those suites | M (ongoing) | opus |
+
+### 3b. Pattern-side N/A / not-a-gap (per A1)
+- **Bindings** — JS family LEADS: TS **179** (most in the repo), CLJS 67, vs python 106, go 161, rust 29. Not a gap. (Earlier G-P8 "bindings depth" dropped.)
+- **Recursion-hook count** — TS/AJS register all 7 multifile hooks (python registers 4). Coverage is fine; quality is the issue (G-P1/G-P2).
+- **Unix-socket / TCP service generation** — mostly N/A for a browser/Node JS target; TS's Express HTTP server/router/client (`typescript_target.pl:517-669`) is the right analogue and is present.
+- **AJS/VJS lacking own bindings/components** — by design they inherit TS; not a gap except the concrete bugs G-P4 (emission) and G-P10 (hooks).
 
 ---
 
@@ -106,7 +117,7 @@ Per A2 — recorded so they aren't re-raised:
 
 ## 6. Pending analysis (populate on completion)
 
-- **A1 (pattern parity + component axis)** → 🔄 running. Will confirm/refute G-P1…G-P10 with file:line evidence, add a capability matrix incl. the component pattern, and a ranked list.
+- **A1 (pattern parity + component axis)** → ✅ landed; folded into §3 (rewritten as 13 confirmed gaps G-P1..G-P13) and §3b (N/A). Headline: canned-fib recursion hooks, no structural recursion, no aggregates, component collect-but-never-emit, clojure/CLJS component void, vanilla_js hook asymmetry. Corrected: bindings are not a gap (JS leads), hook *count* is fine.
 - **A2 (WAM parity)** → ✅ landed; folded into §4 and §5b (WAM rows collapsed 10→5 confirmed gaps; Tier-3/parallelism/perf reclassified N/A; builtin-surface reframed as ISO breadth since JS is ahead of Lua on aggregates).
 - **Census (Sonnet)** → 🔄 running. Fleet-wide capability denominator (per-target tier/binding/component counts) to firm up "copy-from" references and headline numbers.
 
