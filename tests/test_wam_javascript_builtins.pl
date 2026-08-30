@@ -244,8 +244,8 @@ install_probes :-
         numbervars(g(A, B), 0, E), E == 2,
         A == '$VAR'(0), B == '$VAR'(1),
         f(P, Q) =@= f(R, S),
-        \+ (f(T, T) =@= f(U, V)),
         f(T, T) \=@= f(U, V),
+        \+ (f(T, T) =@= f(U, V)),
         foo(a) =@= foo(a),
         write(ok), nl)).
 
