@@ -192,6 +192,20 @@ compile_collected_components(Code) :-
 compile_predicate(Pred/Arity, Options, Code) :-
     compile_predicate_to_typescript(Pred/Arity, Options, Code).
 
+% Streaming / generator emit mode (G-P8). When a streaming option is present
+% (`mode(generator)` / `mode(pipeline)`, or the clojure-style aliases
+% `generator_mode(true)` / `pipeline_input(true)`) and the predicate is a
+% recognised transform/filter shape, emit a TS program that reads stdin line by
+% line (Node's built-in `readline`, no npm dependency), applies the predicate,
+% and streams results to stdout. Tried first so streaming wins over the batch
+% paths; if the shape does NOT qualify, compile_streaming_typescript/3 fails and
+% we fall through to the normal (batch) clauses below — so predicates compiled
+% WITHOUT a streaming option are byte-for-byte unchanged.
+compile_predicate_to_typescript(Pred/Arity, Options, Code) :-
+    ts_streaming_option(Options, Mode),
+    compile_streaming_typescript(Pred/Arity, Mode, Code),
+    !.
+
 % Aggregate compilation (G-P3): recognise aggregate_all/3, aggregate/3 and
 % findall/3 goals in a clause body and lower them into a self-contained TS
 % reducer over the solution set of the inner goal. Tried first so aggregate
@@ -251,6 +265,163 @@ compile_predicate_to_typescript(Pred/Arity, Options, Code) :-
     ->  compile_module([pred(Pred, Arity, facts)], Options, Code)
     ;   compile_facts(Pred, Arity, Code)
     ).
+
+%% ============================================
+%% STREAMING / GENERATOR EMIT MODE (G-P8)
+%% ============================================
+%%
+%% Emits a self-contained TypeScript CLI that reads input incrementally from
+%% stdin (one record per line) using Node's built-in `readline`, applies the
+%% predicate to each record, and streams matching/derived results to stdout —
+%% instead of the batch/all-at-once form. Runs on stock node
+%% (`node --experimental-strip-types`, node >= 22) with no npm dependency.
+%%
+%% Option shapes (the first that matches wins):
+%%   mode(generator) / generator_mode(true)  -> generator mode
+%%   mode(pipeline)  / pipeline_input(true)  -> pipeline mode
+%% (`mode/1` is the primary spelling; the `*_mode`/`*_input` aliases match the
+%%  option names clojure_target already uses so a pipeline spec can target
+%%  either family with the same options.)
+%%
+%% Qualifying shapes (single-clause; anything else FALLS BACK to batch):
+%%   - Filter  pred(X)    :- Guard1, Guard2, ...     (0+ comparison guards)
+%%       generator: emits the numeric value when all guards hold.
+%%       pipeline : passes the original input line through when all guards hold.
+%%   - Transform pred(X, Y) :- [Guards,] Y is Expr   (or Y = Expr)
+%%       both modes: emits String(Expr) for each X for which the guards hold
+%%       (a guard failure drops the record — generator yields nothing / pipeline
+%%        filters it out).
+%% Numeric records are the target (input parsed with Number()); non-numeric or
+%% multi-clause / nondeterministic predicates deliberately fall back to batch.
+
+%% ts_streaming_option(+Options, -Mode)
+%  Extract the streaming mode from the options, or fail if none is present.
+ts_streaming_option(Options, Mode) :-
+    (   option(mode(M), Options), memberchk(M, [generator, pipeline])
+    ->  Mode = M
+    ;   option(generator_mode(true), Options)
+    ->  Mode = generator
+    ;   option(pipeline_input(true), Options)
+    ->  Mode = pipeline
+    ;   fail
+    ).
+
+%% compile_streaming_typescript(+Pred/Arity, +Mode, -Code)
+%  Fails (→ batch fallback) unless the predicate is a single-clause filter
+%  (arity 1) or transform (arity 2) as described above.
+compile_streaming_typescript(Pred/Arity, Mode, Code) :-
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    Clauses = [SingleHead-SingleBody],
+    atom_string(Pred, PredStr),
+    (   Arity =:= 1
+    ->  ts_streaming_filter(SingleHead, SingleBody, TestExpr),
+        ts_streaming_filter_module(PredStr, Mode, TestExpr, Code)
+    ;   Arity =:= 2
+    ->  ts_streaming_transform(SingleHead, SingleBody, GuardExpr, RetExpr),
+        ts_streaming_transform_module(PredStr, Mode, GuardExpr, RetExpr, Code)
+    ;   fail
+    ).
+
+%% ts_streaming_filter(+Head, +Body, -TestExpr)
+%  Arity-1 filter: the body must be a (possibly empty) conjunction of comparison
+%  guards over the single input variable. TestExpr is the combined TS boolean.
+ts_streaming_filter(Head, Body, TestExpr) :-
+    Head =.. [_, In],
+    var(In),
+    VM = [In-"x"],
+    normalize_goals(Body, Goals),
+    (   Goals == []
+    ->  TestExpr = "true"
+    ;   maplist(ts_guard_condition(VM), Goals, Conds),
+        atomic_list_concat(Conds, ' && ', TestExpr)
+    ).
+
+%% ts_streaming_transform(+Head, +Body, -GuardExpr, -RetExpr)
+%  Arity-2 transform: body = guards + exactly one output goal binding the head's
+%  second (output) argument via `is`/`=`. GuardExpr is `none` or `guard(TS)`.
+ts_streaming_transform(Head, Body, GuardExpr, RetExpr) :-
+    Head =.. [_, In, Out],
+    var(In), var(Out),
+    VM = [In-"x"],
+    normalize_goals(Body, Goals),
+    clause_guard_output_split(Goals, VM, Guards, Outputs),
+    Outputs = [OutGoal],
+    goal_output_var(OutGoal, OV), OV == Out,
+    ts_output_goal_last(OutGoal, VM, RetExpr),
+    (   Guards == []
+    ->  GuardExpr = none
+    ;   maplist(ts_guard_condition(VM), Guards, Conds),
+        atomic_list_concat(Conds, ' && ', GStr),
+        GuardExpr = guard(GStr)
+    ).
+
+%% ts_streaming_emit(+Mode, -EmitExpr)
+%  What a passing filter record writes to stdout: the derived value (generator)
+%  or the untouched input line (pipeline, record pass-through).
+ts_streaming_emit(generator, "String(x)").
+ts_streaming_emit(pipeline, "trimmed").
+
+%% ts_mode_label(+Mode, -Label)
+ts_mode_label(generator, "generator").
+ts_mode_label(pipeline, "pipeline").
+
+%% ts_streaming_filter_module(+PredStr, +Mode, +TestExpr, -Code)
+ts_streaming_filter_module(PredStr, Mode, TestExpr, Code) :-
+    ts_mode_label(Mode, Label),
+    ts_streaming_emit(Mode, EmitExpr),
+    format(string(Code),
+'// Generated by UnifyWeaver TypeScript Target - Streaming (~w mode)
+// Predicate: ~w/1  (filter over an input stream)
+
+import { createInterface } from "node:readline";
+
+export function ~wTest(x: number): boolean {
+  return (~w);
+}
+
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on("line", (line) => {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return;
+  const x = Number(trimmed);
+  if (~wTest(x)) {
+    console.log(~w);
+  }
+});
+', [Label, PredStr, PredStr, TestExpr, PredStr, EmitExpr]).
+
+%% ts_streaming_transform_module(+PredStr, +Mode, +GuardExpr, +RetExpr, -Code)
+ts_streaming_transform_module(PredStr, Mode, GuardExpr, RetExpr, Code) :-
+    ts_mode_label(Mode, Label),
+    (   GuardExpr = guard(GStr)
+    ->  format(string(GuardLine), '  if (!(~w)) return [];\n', [GStr])
+    ;   GuardLine = ""
+    ),
+    % Transform yields an array of 0+ results (empty when a guard fails), so the
+    % same shape covers generator (mapcat/flatMap) and pipeline (keep/drop)
+    % semantics. `: number[]` also survives the vanilla_js type-strip and the
+    % annotated_js JSDoc rewrite, so streaming flows cleanly by inheritance.
+    format(string(Code),
+'// Generated by UnifyWeaver TypeScript Target - Streaming (~w mode)
+// Predicate: ~w/2  (transform over an input stream)
+
+import { createInterface } from "node:readline";
+
+export function ~wTransform(x: number): number[] {
+~w  return [~w];
+}
+
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on("line", (line) => {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return;
+  const x = Number(trimmed);
+  for (const result of ~wTransform(x)) {
+    console.log(String(result));
+  }
+});
+', [Label, PredStr, PredStr, GuardLine, RetExpr, PredStr]).
 
 %% ============================================
 %% FACTS → TYPED ARRAYS
