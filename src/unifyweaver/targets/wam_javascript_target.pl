@@ -239,6 +239,34 @@ wam_parts_to_js(["switch_on_term" | Tokens], Lit) :-
     emit_js_switch_term(Tokens, 1, Lit).
 wam_parts_to_js(["switch_on_term_a2" | Tokens], Lit) :-
     emit_js_switch_term(Tokens, 2, Lit).
+wam_parts_to_js(["cut_ite"], 'I.CutIte()').
+wam_parts_to_js(["get_level", Yn], Lit) :-
+    reg_to_int(Yn, R),
+    format(string(Lit), 'I.GetLevel(~w)', [R]).
+wam_parts_to_js(["cut", Yn], Lit) :-
+    reg_to_int(Yn, R),
+    format(string(Lit), 'I.Cut(~w)', [R]).
+wam_parts_to_js(["begin_aggregate", Kind, TemplateReg, BagReg], Lit) :-
+    reg_to_int(TemplateReg, TIdx),
+    reg_to_int(BagReg, BIdx),
+    js_string_literal(Kind, K),
+    format(string(Lit), 'I.BeginAggregate(~w, ~w, ~w, [])', [K, TIdx, BIdx]).
+wam_parts_to_js(["begin_aggregate", Kind, TemplateReg, BagReg, Witness], Lit) :-
+    reg_to_int(TemplateReg, TIdx),
+    reg_to_int(BagReg, BIdx),
+    parse_witness_regs(Witness, WRegs),
+    atomic_list_concat(WRegs, ', ', WStr),
+    js_string_literal(Kind, K),
+    format(string(Lit), 'I.BeginAggregate(~w, ~w, ~w, [~w])', [K, TIdx, BIdx, WStr]).
+wam_parts_to_js(["end_aggregate", TemplateReg], Lit) :-
+    reg_to_int(TemplateReg, TIdx),
+    format(string(Lit), 'I.EndAggregate(~w)', [TIdx]).
+% Convention 6: unrecognised WAM text becomes a real one-slot NoOp
+% (I.Raw), never dropped, so later label PCs stay aligned.
+wam_parts_to_js(Parts, Lit) :-
+    atomic_list_concat(Parts, ' ', Text),
+    js_string_literal(Text, Q),
+    format(string(Lit), 'I.Raw(~w)', [Q]).
 
 emit_js_switch_constant(Cases, Fallthrough, Reg, Lit) :-
     normalize_switch_case_tokens(Cases, Norm),
@@ -281,34 +309,6 @@ parse_switch_term_tokens(Tokens, ConstLits, StructLits, ListLabel) :-
     parse_switch_cases(ConstNorm, ConstLits),
     normalize_switch_case_tokens(StructToks, StructNorm),
     parse_struct_switch_cases(StructNorm, StructLits).
-wam_parts_to_js(["cut_ite"], 'I.CutIte()').
-wam_parts_to_js(["get_level", Yn], Lit) :-
-    reg_to_int(Yn, R),
-    format(string(Lit), 'I.GetLevel(~w)', [R]).
-wam_parts_to_js(["cut", Yn], Lit) :-
-    reg_to_int(Yn, R),
-    format(string(Lit), 'I.Cut(~w)', [R]).
-wam_parts_to_js(["begin_aggregate", Kind, TemplateReg, BagReg], Lit) :-
-    reg_to_int(TemplateReg, TIdx),
-    reg_to_int(BagReg, BIdx),
-    js_string_literal(Kind, K),
-    format(string(Lit), 'I.BeginAggregate(~w, ~w, ~w, [])', [K, TIdx, BIdx]).
-wam_parts_to_js(["begin_aggregate", Kind, TemplateReg, BagReg, Witness], Lit) :-
-    reg_to_int(TemplateReg, TIdx),
-    reg_to_int(BagReg, BIdx),
-    parse_witness_regs(Witness, WRegs),
-    atomic_list_concat(WRegs, ', ', WStr),
-    js_string_literal(Kind, K),
-    format(string(Lit), 'I.BeginAggregate(~w, ~w, ~w, [~w])', [K, TIdx, BIdx, WStr]).
-wam_parts_to_js(["end_aggregate", TemplateReg], Lit) :-
-    reg_to_int(TemplateReg, TIdx),
-    format(string(Lit), 'I.EndAggregate(~w)', [TIdx]).
-% Convention 6: unrecognised WAM text becomes a real one-slot NoOp
-% (I.Raw), never dropped, so later label PCs stay aligned.
-wam_parts_to_js(Parts, Lit) :-
-    atomic_list_concat(Parts, ' ', Text),
-    js_string_literal(Text, Q),
-    format(string(Lit), 'I.Raw(~w)', [Q]).
 
 parse_switch_cases([], []).
 parse_switch_cases([Token|Rest], [Lit|More]) :-
