@@ -192,6 +192,18 @@ compile_collected_components(Code) :-
 compile_predicate(Pred/Arity, Options, Code) :-
     compile_predicate_to_typescript(Pred/Arity, Options, Code).
 
+% Aggregate compilation (G-P3): recognise aggregate_all/3, aggregate/3 and
+% findall/3 goals in a clause body and lower them into a self-contained TS
+% reducer over the solution set of the inner goal. Tried first so aggregate
+% bodies are handled specially rather than falling through to the generic
+% native clause path (which cannot express fold-over-solutions).
+compile_predicate_to_typescript(Pred/Arity, _Options, Code) :-
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    Clauses \= [],
+    ts_aggregate_predicate(Pred/Arity, Clauses, Code),
+    !.
+
 % Structural (list) recursion lowering — derive real TS from list-shaped
 % clauses (member/append/reverse/list-length etc.). This is DERIVED from the
 % actual clause heads/bodies, not a canned template (G-P2). Tried before the
@@ -1218,6 +1230,241 @@ branches_to_ts_elif_lines([branch(Condition, ClauseCode)|Rest], PredSpec, [ElifL
     format(string(ElifLine), '    } else if (~w) {', [Condition]),
     format(string(RetLine), '        return ~w;', [ClauseCode]),
     branches_to_ts_elif_lines(Rest, PredSpec, RestLines).
+
+%% ============================================
+%% AGGREGATE COMPILATION (G-P3)
+%% ============================================
+%%
+%% Compiles aggregate GOALS in a clause body into self-contained TypeScript
+%% reducers over the solution set of the inner goal. Supported templates:
+%%
+%%   aggregate_all(count,      Goal, N)   -> number
+%%   aggregate_all(sum(Expr),  Goal, S)   -> number
+%%   aggregate_all(max(Expr),  Goal, M)   -> number
+%%   aggregate_all(min(Expr),  Goal, M)   -> number
+%%   aggregate_all(bag(Tmpl),  Goal, L)   -> any[]
+%%   aggregate_all(set(Tmpl),  Goal, L)   -> any[] (sorted, deduped)
+%%   aggregate(...)                       -> normalised to aggregate_all
+%%   findall(Tmpl, Goal, L)               -> any[]
+%%
+%% The inner Goal is a single extensional relation goal, optionally followed by
+%% arithmetic (`V is Expr`) computations and comparison guards. Bound head
+%% inputs act as group/filter keys (the ordinary free-variable grouping case).
+%% The inner relation's facts are embedded as a function-local const so the
+%% emitted function is fully self-contained and runs on stock node.
+
+%% ts_aggregate_predicate(+Pred/Arity, +Clauses, -Code)
+%  Succeeds only when the predicate is a single clause whose body is an
+%  aggregate/findall goal binding the head's output argument.
+ts_aggregate_predicate(Pred/_Arity, [Head-Body], Code) :-
+    ts_extract_aggregate(Body, agg(Op, Template, InnerGoal, Result)),
+    Head =.. [_|HeadArgs],
+    append(InputArgs, [OutArg], HeadArgs),
+    var(OutArg),
+    Result == OutArg,
+    ts_aggregate_code(Pred, InputArgs, Op, Template, InnerGoal, Code).
+
+%% ts_extract_aggregate(+Body, -Agg)
+%  Body must be exactly one aggregate/findall goal.
+ts_extract_aggregate(Body, Agg) :-
+    normalize_goals(Body, [Goal]),
+    ts_normalize_aggregate(Goal, Agg).
+
+ts_normalize_aggregate(_Module:Goal, Agg) :-
+    !, ts_normalize_aggregate(Goal, Agg).
+ts_normalize_aggregate(aggregate_all(Template, Goal, Result),
+                       agg(Op, VTemplate, Goal, Result)) :-
+    ts_agg_template(Template, Op, VTemplate).
+ts_normalize_aggregate(aggregate(Template, Goal, Result), Agg) :-
+    ts_normalize_aggregate(aggregate_all(Template, Goal, Result), Agg).
+ts_normalize_aggregate(findall(Template, Goal, Result),
+                       agg(findall, Template, Goal, Result)).
+
+%% ts_agg_template(+Template, -Op, -ValueExpr)
+ts_agg_template(count,  count, 1) :- !.
+ts_agg_template(sum(E), sum,   E) :- !.
+ts_agg_template(max(E), max,   E) :- !.
+ts_agg_template(min(E), min,   E) :- !.
+ts_agg_template(bag(E), bag,   E) :- !.
+ts_agg_template(set(E), set,   E) :- !.
+
+%% ts_aggregate_code(+Pred, +InputArgs, +Op, +Template, +InnerGoal, -Code)
+ts_aggregate_code(Pred, InputArgs, Op, Template, InnerGoal, Code) :-
+    atom_string(Pred, PredStr),
+    normalize_goals(InnerGoal, InnerGoals),
+    InnerGoals = [RelGoal0|PostGoals],
+    ts_strip_module(RelGoal0, RelGoal),
+    RelGoal =.. [RelPred|RelArgs],
+    length(RelArgs, RelArity),
+    % Embed the inner relation's facts as a local const array.
+    ts_agg_fact_array(RelPred, RelArity, FactsInner),
+    ts_agg_field_type(RelArity, FieldType),
+    % Bound inputs -> equality filters; free vars -> value bindings.
+    ts_inner_bindings(RelArgs, InputArgs, VarMap0, KeyFilters),
+    % Post goals (arithmetic + guards) become in-loop statements.
+    ts_agg_post_stmts(PostGoals, VarMap0, PostStmts, VarMap1),
+    % Bound-key filters render as continue-guards at the top of the loop.
+    findall(FLine,
+            ( member(Cond, KeyFilters),
+              format(string(FLine), '        if (!(~w)) continue;', [Cond]) ),
+            KeyLines),
+    append(KeyLines, PostStmts, LoopHead),
+    % Fold fragments for this aggregate operator.
+    ts_agg_fold(Op, Template, VarMap1, RetType, InitLine, UpdateLine, FinishLine),
+    atomic_list_concat(LoopHead, '\n', LoopHeadStr),
+    ts_agg_params(InputArgs, ParamStr),
+    ( LoopHeadStr == ''
+    ->  format(string(LoopBody), '~w', [UpdateLine])
+    ;   format(string(LoopBody), '~w\n~w', [LoopHeadStr, UpdateLine])
+    ),
+    format(string(Code),
+'// Generated by UnifyWeaver TypeScript Target - Aggregate Lowering (G-P3)
+// Predicate: ~w  (~w)
+
+export function ~w(~w): ~w {
+    const facts: ~w[] = [~w];
+~w
+    for (const f of facts) {
+~w
+    }
+~w
+}
+
+// CLI entry point
+console.log(JSON.stringify(~w(...process.argv.slice(2))));
+', [PredStr, Op, PredStr, ParamStr, RetType, FieldType, FactsInner,
+    InitLine, LoopBody, FinishLine, PredStr]).
+
+%% ts_strip_module(+Goal, -Goal)
+ts_strip_module(_Module:Goal, Goal) :- !.
+ts_strip_module(Goal, Goal).
+
+%% ts_agg_fact_array(+RelPred, +RelArity, -FactsInner)
+%  Collect the inner relation's extensional facts from `user` as a TS array
+%  literal body (comma-separated object literals). Empty when no facts exist.
+ts_agg_fact_array(RelPred, RelArity, FactsInner) :-
+    functor(RelTemplate, RelPred, RelArity),
+    findall(Tuple,
+            ( user:clause(RelTemplate, true),
+              RelTemplate =.. [_|FArgs],
+              format_ts_tuple(FArgs, Tuple) ),
+            Tuples),
+    atomic_list_concat(Tuples, ', ', FactsInner).
+
+%% ts_agg_field_type(+Arity, -TypeStr) — object type for a fact row
+ts_agg_field_type(Arity, TypeStr) :-
+    generate_field_names(Arity, Names),
+    maplist([N, F]>>format(string(F), '~w: any', [N]), Names, Fields),
+    atomic_list_concat(Fields, ', ', Inner),
+    format(string(TypeStr), '{ ~w }', [Inner]).
+
+%% ts_agg_params(+InputArgs, -ParamStr) — function parameter list
+ts_agg_params(InputArgs, ParamStr) :-
+    length(InputArgs, N),
+    findall(P, ( between(1, N, I), format(string(P), 'arg~w: any', [I]) ), Params),
+    atomic_list_concat(Params, ', ', ParamStr).
+
+%% ts_inner_bindings(+RelArgs, +InputArgs, -VarMap, -KeyFilters)
+%  Map each inner relation argument: bound head inputs and constants become
+%  equality filters; free variables are bound to their `f.argN` field ref so
+%  post-goals and the value template can reference them.
+ts_inner_bindings(RelArgs, InputArgs, VarMap, KeyFilters) :-
+    ts_inner_bindings_(RelArgs, 1, InputArgs, [], VarMap, [], KeyFilters).
+
+ts_inner_bindings_([], _, _, VM, VM, KF, KF).
+ts_inner_bindings_([A|As], I, InputArgs, VM0, VM, KF0, KF) :-
+    (   var(A)
+    ->  format(string(FieldRef), 'f.arg~w', [I]),
+        VM1 = [A-FieldRef|VM0],
+        (   ts_input_index(A, InputArgs, K)
+        ->  format(string(Cond), 'String(f.arg~w) === String(arg~w)', [I, K]),
+            KF1 = [Cond|KF0]
+        ;   KF1 = KF0
+        )
+    ;   VM1 = VM0,
+        format_ts_arg(A, Lit),
+        format(string(Cond), 'String(f.arg~w) === String(~w)', [I, Lit]),
+        KF1 = [Cond|KF0]
+    ),
+    I1 is I + 1,
+    ts_inner_bindings_(As, I1, InputArgs, VM1, VM, KF1, KF).
+
+%% ts_input_index(+Var, +InputArgs, -Index) — position of Var among head inputs
+ts_input_index(Var, InputArgs, K) :-
+    nth1(K, InputArgs, A), A == Var, !.
+
+%% ts_agg_post_stmts(+PostGoals, +VarMap0, -Stmts, -VarMapOut)
+%  Lower `V is Expr` to a const line and comparison guards to continue-guards,
+%  preserving order and threading the VarMap.
+ts_agg_post_stmts([], VM, [], VM).
+ts_agg_post_stmts([G0|Gs], VM0, [Stmt|Rest], VM) :-
+    ts_strip_module(G0, G),
+    (   G = is(V, Expr), var(V)
+    ->  ensure_var(VM0, V, Name, VM1),
+        ts_expr(Expr, VM0, TExpr),
+        format(string(Stmt), '        const ~w = ~w;', [Name, TExpr])
+    ;   ts_guard_condition(VM0, G, Cond),
+        VM1 = VM0,
+        format(string(Stmt), '        if (!(~w)) continue;', [Cond])
+    ),
+    ts_agg_post_stmts(Gs, VM1, Rest, VM).
+
+%% ts_agg_fold(+Op, +Template, +VarMap, -RetType, -Init, -Update, -Finish)
+ts_agg_fold(count, _Template, _VM, "number",
+            "    let acc = 0;",
+            "        acc += 1;",
+            "    return acc;") :- !.
+ts_agg_fold(sum, Template, VM, "number",
+            "    let acc = 0;",
+            Update,
+            "    return acc;") :- !,
+    ts_expr(Template, VM, ValExpr),
+    format(string(Update), '        acc += Number(~w);', [ValExpr]).
+ts_agg_fold(max, Template, VM, "number",
+            "    let acc: number | undefined = undefined;",
+            Update,
+            "    if (acc === undefined) throw new Error(\"aggregate_all(max): no solutions\");\n    return acc;") :- !,
+    ts_expr(Template, VM, ValExpr),
+    format(string(Update),
+'        { const _v = Number(~w); if (acc === undefined || _v > acc) acc = _v; }',
+           [ValExpr]).
+ts_agg_fold(min, Template, VM, "number",
+            "    let acc: number | undefined = undefined;",
+            Update,
+            "    if (acc === undefined) throw new Error(\"aggregate_all(min): no solutions\");\n    return acc;") :- !,
+    ts_expr(Template, VM, ValExpr),
+    format(string(Update),
+'        { const _v = Number(~w); if (acc === undefined || _v < acc) acc = _v; }',
+           [ValExpr]).
+ts_agg_fold(bag, Template, VM, "any[]",
+            "    const acc: any[] = [];",
+            Update,
+            "    return acc;") :- !,
+    ts_agg_value_expr(Template, VM, ValExpr),
+    format(string(Update), '        acc.push(~w);', [ValExpr]).
+ts_agg_fold(findall, Template, VM, "any[]",
+            "    const acc: any[] = [];",
+            Update,
+            "    return acc;") :- !,
+    ts_agg_value_expr(Template, VM, ValExpr),
+    format(string(Update), '        acc.push(~w);', [ValExpr]).
+ts_agg_fold(set, Template, VM, "any[]",
+            "    const acc: any[] = [];",
+            Update,
+            "    acc.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));\n    return acc;") :- !,
+    ts_agg_value_expr(Template, VM, ValExpr),
+    format(string(Update),
+'        { const _v = ~w; if (!acc.some(x => x === _v)) acc.push(_v); }',
+           [ValExpr]).
+
+%% ts_agg_value_expr(+Template, +VarMap, -Expr)
+%  Resolve a collection template (bag/set/findall) to a TS value expression.
+%  A bound variable resolves to its field ref; a constant to a literal.
+ts_agg_value_expr(Template, VM, Expr) :-
+    (   var(Template), lookup_var(Template, VM, Expr)
+    ->  true
+    ;   ts_expr(Template, VM, Expr)
+    ).
 
 %% ============================================
 %% FILE OUTPUT
