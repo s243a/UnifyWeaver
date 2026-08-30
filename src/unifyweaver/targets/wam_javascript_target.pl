@@ -11,6 +11,8 @@
 % | mixed(List); default remains interpreter.
 % javascript_wam_fact_sources([source(P/2, file(Path))]) streams binary
 % facts from a TSV/CSV or JSONL file (Lua-style; no LMDB/CSR).
+% javascript_wam_ops([op(Prec, Type, Name), ...]) (alias js_op_decls/1)
+% seeds the runtime Pratt op table at program startup (R's r_op_decls/1).
 
 :- module(wam_javascript_target, [
     write_wam_javascript_project/3,
@@ -732,13 +734,15 @@ write_wam_javascript_project(Predicates, Options, ProjectDir) :-
     compile_predicates_for_project(Predicates, Options,
         AllInstrs, TopLabels, AllLabels, WrapperCode, LoweredCode, FactSourcesCode),
     emit_js_intern_table(InternSeed),
+    javascript_wam_op_decls_code(Options, OpDeclsCode),
     maplist([I, Line]>>(format(string(Line), '  ~w', [I])), AllInstrs, InstrLines),
     atomic_list_concat(InstrLines, ',\n', InstrBody),
     atomic_list_concat(TopLabels, ',\n', DispatchBody),
     atomic_list_concat(AllLabels, ',\n', LabelBody),
     write_runtime_source(JsDir),
     write_program_source(JsDir, InstrBody, LabelBody, DispatchBody,
-                         WrapperCode, InternSeed, "", LoweredCode, FactSourcesCode).
+                         WrapperCode, InternSeed, "", LoweredCode, FactSourcesCode,
+                         OpDeclsCode).
 
 write_runtime_source(JsDir) :-
     find_template('templates/targets/javascript_wam/runtime.js.mustache', Template),
@@ -748,7 +752,8 @@ write_runtime_source(JsDir) :-
     write_file(Path, Content).
 
 write_program_source(JsDir, InstrBody, LabelBody, DispatchBody,
-                     WrapperCode, InternSeed, ForeignHandlers, LoweredCode, FactSourcesCode) :-
+                     WrapperCode, InternSeed, ForeignHandlers, LoweredCode, FactSourcesCode,
+                     OpDeclsCode) :-
     find_template('templates/targets/javascript_wam/program.js.mustache', Template),
     get_time(T), format_time(string(Date), "%Y-%m-%d", T),
     render_template(Template,
@@ -760,9 +765,48 @@ write_program_source(JsDir, InstrBody, LabelBody, DispatchBody,
          'intern_id_to_string'=InternSeed,
          'foreign_handlers'=ForeignHandlers,
          'lowered_functions'=LoweredCode,
-         'fact_sources'=FactSourcesCode], Content),
+         'fact_sources'=FactSourcesCode,
+         'op_decls'=OpDeclsCode], Content),
     directory_file_path(JsDir, 'generated_program.js', Path),
     write_file(Path, Content).
+
+%% javascript_wam_ops([op(Prec, Type, Name), ...])
+%  Alias: js_op_decls/1. Emits Runtime.install_declared_ops([...]) so
+%  the Pratt reader sees :- op/3 declarations before CLI / read_term.
+javascript_wam_op_decls_code(Options, Code) :-
+    (   option(javascript_wam_ops(Decls), Options)
+    ->  true
+    ;   option(js_op_decls(Decls), Options)
+    ->  true
+    ;   Decls = []
+    ),
+    javascript_wam_op_decl_lines(Decls, Lines),
+    (   Lines == []
+    ->  Code = ""
+    ;   atomic_list_concat(Lines, ',\n', Body),
+        format(string(Code),
+               'Runtime.install_declared_ops([\n~w\n]);', [Body])
+    ).
+
+javascript_wam_op_decl_lines([], []).
+javascript_wam_op_decl_lines([op(Prec, Type, Name)|Rest], Lines) :-
+    integer(Prec), Prec >= 0, Prec =< 1200,
+    memberchk(Type, [xfx, xfy, yfx, fx, fy, xf, yf]),
+    (   atom(Name)
+    ->  javascript_wam_op_decl_one(Prec, Type, Name, Line),
+        javascript_wam_op_decl_lines(Rest, RestLines),
+        Lines = [Line|RestLines]
+    ;   is_list(Name)
+    ->  maplist(javascript_wam_op_decl_one(Prec, Type), Name, Sub),
+        javascript_wam_op_decl_lines(Rest, RestLines),
+        append(Sub, RestLines, Lines)
+    ).
+
+javascript_wam_op_decl_one(Prec, Type, Name, Line) :-
+    atom(Name),
+    js_string_literal(Name, NameQ),
+    format(string(Line), '  { name: ~w, prec: ~d, type: "~w" }',
+           [NameQ, Prec, Type]).
 
 write_file(Path, Content) :-
     setup_call_cleanup(open(Path, write, Stream, [encoding(utf8)]),

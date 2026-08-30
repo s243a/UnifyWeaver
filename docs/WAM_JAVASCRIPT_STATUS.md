@@ -75,7 +75,8 @@ Assoc (`library(assoc)` shape, list-of-pairs not AVL): **`empty_assoc/1`**,
 
 Term: **`functor/3`**, **`arg/3`**, **`=../2`**, **`copy_term/2`**,
 **`read_term_from_atom/2` `/3`**, **`atom_to_term/3`**, **`term_to_atom/2`**,
-**`term_variables/2`**, **`numbervars/3`**, **`=@=/2`**, **`\=@=/2`**.
+**`term_variables/2`**, **`numbervars/3`**, **`=@=/2`**, **`\=@=/2`**,
+**`op/3`**.
 
 Metacall: **`\+/1`**, **`call/1`** (re-enter the same instruction loop /
 builtin dispatch).
@@ -102,10 +103,19 @@ proper lists `[a,b,c]`, partial lists `[H|T]`, compounds
 `foo(a, bar(b), 3)`, and parentheses. Cons intern as `[|]/2` + the `[]`
 atom (same functor as `put_list`).
 
-**Partial:** ISO default operator table (`+ - * / //`, comparisons, `,`,
-`\+`, prefix `+/-`, …) so `1+2` reads as `+(1,2)`. User `op/3` and
-postfix operators are not implemented. Fall back rather than invent a
-term when the token stream is leftover or illegal.
+**Operators:** ISO default infix + prefix table (`1+2` → `+(1,2)`).
+**`op/3`** mutates the live table (declared ops override/extend defaults
+at their priority/associativity). Types: `xfx`/`xfy`/`yfx` infix, `fx`/`fy`
+prefix, `xf`/`yf` postfix. Priority 0 removes that specifier. Name may be
+an atom or a list of atoms. Infix and postfix of the same name cannot
+coexist (ISO); prefix may share a name with infix. Compile-time `:- op/3`
+declarations are threaded via `javascript_wam_ops([op(P,T,N), ...])`
+(alias `js_op_decls/1`) into `Runtime.install_declared_ops` at program
+startup.
+
+**Partial:** User `op/3` is process-global (like SWI), not module-local.
+`current_op/3` is not implemented. Fall back rather than invent a term
+when the token stream is leftover or illegal.
 
 Capability (coordinator applies `INTEGRATION_PATCH.md` §7; the shared
 capability file is not edited here):
@@ -134,7 +144,8 @@ parser, not the bundled portable `compiled(prolog_term_parser)`.
 | First-arg indexing | **Implemented.** `switch_on_constant` / `_fallthrough` / `_a2`, `switch_on_structure` / `_a2`, and `switch_on_term` / `_a2` jump to the matching clause group. Ground first-arg with a unique clause leaves no choice point (`deterministic/0`). Unbound first arg falls through to the try/retry/trust chain (no lost solutions). Exclusive miss fails; fallthrough variants keep the chain for variable-headed clauses. Dedicated `try`/`retry`/`trust` dispatch chains are emitted for multi-clause groups. |
 | Second-arg / deep indexing | A2 switches are implemented; deep (argument >2) indexing is not. |
 | Lowered / functions emit mode | **Implemented.** `javascript_wam_resolve_emit_mode/2` accepts `interpreter` (default), `functions` (lower every eligible predicate), and `mixed([P/A, ...])` (lower only the named ones). Eligible shapes: single-clause deterministic bodies; T4 all-clauses-inline; T5 first-arg constant dispatch; T6 hash dispatch (≥8 atom keys); structured ITE / negation / once. Unsupported ops (`begin_aggregate`, bagof/setof, cuts/jumps the planner rejects) fall back to the interpreter rather than emitting wrong code. Interpreter-mode bytecode and wrappers are unchanged. |
-| CLI / runtime term parser | **Implemented.** Pratt reader: int/float/atom (incl. quoted)/var/list/`[H\|T]`/compound. CLI argv + `read_term_from_atom` / `atom_to_term` / `term_to_atom`. Capability `native(parse_term)` via `INTEGRATION_PATCH.md` §7. |
+| CLI / runtime term parser | **Implemented.** Pratt reader: int/float/atom (incl. quoted)/var/list/`[H\|T]`/compound. CLI argv + `read_term_from_atom` / `atom_to_term` / `term_to_atom`. **`op/3`** updates the live infix/prefix/postfix tables (defaults cloned from ISO). Compile-time ops via `javascript_wam_ops/1`. Capability `native(parse_term)` via `INTEGRATION_PATCH.md` §7. |
+| `op/3` | **Implemented.** Infix `xfx`/`xfy`/`yfx`, prefix `fx`/`fy`, postfix `xf`/`yf`. Priority 0 removes. Name = atom or list of atoms. `current_op/3` is not implemented; ops are process-global. |
 | External fact sources | **Implemented.** `javascript_wam_fact_sources([source(P/2, file(Path))])` (alias `js_fact_sources/1`) emits `CallFactStream` and a Node `fs` reader for TSV/CSV and JSONL. First-arg index when A1 is bound. Same lightweight file-backed model as Lua. **LMDB / CSR are out of scope.** Inline facts (no option) are unchanged. |
 | Conformance harness adapter | See `INTEGRATION_PATCH.md` (coordinator applies `conformance_target(javascript)`). |
 
@@ -163,7 +174,9 @@ so String vs Atom order is unused and `atom_string`/`split_string`
 intern results as atoms; `^/2` as a standalone metacall just
 runs the RHS; `format` does not implement `~f` / `~r` / column
 positioning; assoc is a list-of-pairs, not SWI's AVL tree;
-`numbervars` does not letter-render `'$VAR'(N)` on `write/1`.
+`numbervars` does not letter-render `'$VAR'(N)` on `write/1`;
+`op/3` is process-global (no module-local ops) and `current_op/3` is
+not implemented.
 
 ## Document status
 
@@ -171,6 +184,7 @@ Initial JS WAM bring-up + builtin port from Lua, ISO bagof/3 and setof/3,
 first-argument indexing, the Tier-2 lowered emitter, ISO/library builtin
 breadth (sort, lists, atom/string, format, assoc), the G-W2 runtime term
 parser, G-W4 file-backed fact sources (TSV/CSV/JSONL; LMDB/CSR out of
-scope), then the G-W3 term-meta family (`term_variables/2`,
-`numbervars/3`, `=@=/2`, `\=@=/2`). Source-verified against SWI-Prolog
+scope), the G-W3 term-meta family (`term_variables/2`,
+`numbervars/3`, `=@=/2`, `\=@=/2`), then G-W2 `op/3` (dynamic Pratt
+table: infix + prefix + postfix). Source-verified against SWI-Prolog
 as the oracle (2026-08-30).

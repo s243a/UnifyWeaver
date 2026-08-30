@@ -2388,6 +2388,48 @@ function builtin_term_to_atom(program, state) {
   return Runtime.unify(state, rawT, parsed, program);
 }
 
+function op_resolve_names(program, state, nameV) {
+  nameV = Runtime.deref(state, nameV);
+  if (typeof nameV !== "object" || nameV === null) return null;
+  if (nameV.tag === "atom") {
+    return [Runtime.string_of(program.intern_table, nameV.id)];
+  }
+  const items = list_items(program, state, nameV);
+  if (items === null) return null;
+  const out = [];
+  for (let i = 0; i < items.length; i++) {
+    const e = Runtime.deref(state, items[i]);
+    if (typeof e !== "object" || e === null || e.tag !== "atom") return null;
+    out.push(Runtime.string_of(program.intern_table, e.id));
+  }
+  return out;
+}
+
+function builtin_op(program, state) {
+  const precV = Runtime.deref(state, Runtime.get_reg(state, 1));
+  const typeV = Runtime.deref(state, Runtime.get_reg(state, 2));
+  const nameV = Runtime.get_reg(state, 3);
+  if (typeof precV !== "object" || precV === null || precV.tag !== "int") {
+    return false;
+  }
+  if (typeof typeV !== "object" || typeV === null || typeV.tag !== "atom") {
+    return false;
+  }
+  const prec = precV.val;
+  if (prec < 0 || prec > 1200) return false;
+  const typeStr = Runtime.string_of(program.intern_table, typeV.id);
+  const known = {
+    xfx: true, xfy: true, yfx: true, fx: true, fy: true, xf: true, yf: true
+  };
+  if (!known[typeStr]) return false;
+  const names = op_resolve_names(program, state, nameV);
+  if (names === null) return false;
+  for (let i = 0; i < names.length; i++) {
+    Runtime.op_set(names[i], prec, typeStr);
+  }
+  return true;
+}
+
 Runtime.builtin_call = function (program, state, inst) {
   const p = inst.pred;
   const name = pred_name(p);
@@ -2469,6 +2511,7 @@ Runtime.builtin_call = function (program, state, inst) {
   if (name === "numbervars") return builtin_numbervars(program, state);
   if (name === "=@=") return builtin_variant(program, state, true);
   if (name === "\\=@=") return builtin_variant(program, state, false);
+  if (name === "op") return builtin_op(program, state);
   if (name === "between") return builtin_between(program, state);
   if (name === "is") {
     const n = eval_arith(program, state, Runtime.get_reg(state, 2));
@@ -3184,8 +3227,10 @@ Runtime.run_predicate = function (program, startPc, args) {
 };
 
 // ISO-ish operator tables (same coverage as the R WAM native reader).
-// Format: name -> { prec, assoc }. Postfix is empty by default.
-Runtime.OP_INFIX = {
+// Format: name -> { prec, assoc }. Defaults are cloned into the live
+// tables; op/3 and install_declared_ops mutate the live copies.
+// Postfix starts empty; users add xf/yf via op/3.
+Runtime.OP_INFIX_DEFAULT = {
   ":-": { prec: 1200, assoc: "xfx" },
   "-->": { prec: 1200, assoc: "xfx" },
   ";": { prec: 1100, assoc: "xfy" },
@@ -3225,7 +3270,7 @@ Runtime.OP_INFIX = {
   "^": { prec: 200, assoc: "xfy" }
 };
 
-Runtime.OP_PREFIX = {
+Runtime.OP_PREFIX_DEFAULT = {
   ":-": { prec: 1200, assoc: "fx" },
   "?-": { prec: 1200, assoc: "fx" },
   "\\+": { prec: 900, assoc: "fy" },
@@ -3234,7 +3279,57 @@ Runtime.OP_PREFIX = {
   "\\": { prec: 200, assoc: "fy" }
 };
 
-Runtime.OP_POSTFIX = {};
+Runtime.OP_POSTFIX_DEFAULT = {};
+
+function copy_op_table(src) {
+  const out = {};
+  const keys = Object.keys(src);
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    out[k] = { prec: src[k].prec, assoc: src[k].assoc };
+  }
+  return out;
+}
+
+Runtime.reset_op_tables = function () {
+  Runtime.OP_INFIX = copy_op_table(Runtime.OP_INFIX_DEFAULT);
+  Runtime.OP_PREFIX = copy_op_table(Runtime.OP_PREFIX_DEFAULT);
+  Runtime.OP_POSTFIX = copy_op_table(Runtime.OP_POSTFIX_DEFAULT);
+};
+
+// SWI op/3: Priority 0 removes the specifier. Infix and postfix of the
+// same name cannot coexist (ISO 6.3.4.3); prefix may share a name with
+// infix (e.g. + / - / :-).
+Runtime.op_set = function (name, prec, typeStr) {
+  const isInfix = typeStr === "xfx" || typeStr === "xfy" || typeStr === "yfx";
+  const isPrefix = typeStr === "fx" || typeStr === "fy";
+  const isPostfix = typeStr === "xf" || typeStr === "yf";
+  if (prec === 0) {
+    if (isInfix) delete Runtime.OP_INFIX[name];
+    if (isPrefix) delete Runtime.OP_PREFIX[name];
+    if (isPostfix) delete Runtime.OP_POSTFIX[name];
+    return;
+  }
+  if (isInfix) {
+    Runtime.OP_INFIX[name] = { prec: prec, assoc: typeStr };
+    delete Runtime.OP_POSTFIX[name];
+  } else if (isPrefix) {
+    Runtime.OP_PREFIX[name] = { prec: prec, assoc: typeStr };
+  } else if (isPostfix) {
+    Runtime.OP_POSTFIX[name] = { prec: prec, assoc: typeStr };
+    delete Runtime.OP_INFIX[name];
+  }
+};
+
+Runtime.install_declared_ops = function (decls) {
+  const list = decls || [];
+  for (let i = 0; i < list.length; i++) {
+    const d = list[i];
+    Runtime.op_set(d.name, d.prec | 0, d.type);
+  }
+};
+
+Runtime.reset_op_tables();
 
 function term_is_digit(ch) {
   return ch >= "0" && ch <= "9";
