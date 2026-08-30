@@ -193,6 +193,53 @@ strip_generics_fixpoint(In, Out) :-
     ).
 
 %% ============================================
+%% ADVANCED RECURSION — inherit TS, then strip types
+%% ============================================
+%
+% The advanced recursion compiler (core/advanced/advanced_recursive_compiler.pl)
+% dispatches on the target atom via these multifile hook predicates. Mirror the
+% annotated_js target exactly: register a clause per pattern that delegates to
+% the `typescript` clause at runtime (so we inherit every TS recursion fix) and
+% then applies our TS->JS type-strip. Without these clauses any caller driving
+% the advanced compiler with target(vanilla_js) finds no clause and fails.
+
+:- multifile tail_recursion:compile_tail_pattern/9.
+:- multifile linear_recursion:compile_linear_pattern/8.
+:- multifile tree_recursion:compile_tree_pattern/6.
+:- multifile multicall_linear_recursion:compile_multicall_pattern/6.
+:- multifile direct_multi_call_recursion:compile_direct_multicall_pattern/5.
+:- multifile mutual_recursion:compile_mutual_pattern/5.
+:- multifile advanced_recursive_compiler:compile_general_recursive_pattern/6.
+
+tail_recursion:compile_tail_pattern(vanilla_js, PredStr, Arity, Base, Rec, AccPos, StepOp, Exit, Code) :-
+    tail_recursion:compile_tail_pattern(typescript, PredStr, Arity, Base, Rec, AccPos, StepOp, Exit, TSCode),
+    vanilla_js_target:vanilla_js_type_strip(TSCode, Code).
+
+linear_recursion:compile_linear_pattern(vanilla_js, PredStr, Arity, Base, Rec, Memo, Strat, Code) :-
+    linear_recursion:compile_linear_pattern(typescript, PredStr, Arity, Base, Rec, Memo, Strat, TSCode),
+    vanilla_js_target:vanilla_js_type_strip(TSCode, Code).
+
+tree_recursion:compile_tree_pattern(vanilla_js, Pattern, Pred, Arity, UseMemo, Code) :-
+    tree_recursion:compile_tree_pattern(typescript, Pattern, Pred, Arity, UseMemo, TSCode),
+    vanilla_js_target:vanilla_js_type_strip(TSCode, Code).
+
+multicall_linear_recursion:compile_multicall_pattern(vanilla_js, PredStr, Base, Rec, Memo, Code) :-
+    multicall_linear_recursion:compile_multicall_pattern(typescript, PredStr, Base, Rec, Memo, TSCode),
+    vanilla_js_target:vanilla_js_type_strip(TSCode, Code).
+
+direct_multi_call_recursion:compile_direct_multicall_pattern(vanilla_js, PredStr, Base, Rec, Code) :-
+    direct_multi_call_recursion:compile_direct_multicall_pattern(typescript, PredStr, Base, Rec, TSCode),
+    vanilla_js_target:vanilla_js_type_strip(TSCode, Code).
+
+mutual_recursion:compile_mutual_pattern(vanilla_js, Preds, Memo, Strat, Code) :-
+    mutual_recursion:compile_mutual_pattern(typescript, Preds, Memo, Strat, TSCode),
+    vanilla_js_target:vanilla_js_type_strip(TSCode, Code).
+
+advanced_recursive_compiler:compile_general_recursive_pattern(vanilla_js, PredStr, Arity, Base, Rec, Code) :-
+    advanced_recursive_compiler:compile_general_recursive_pattern(typescript, PredStr, Arity, Base, Rec, TSCode),
+    vanilla_js_target:vanilla_js_type_strip(TSCode, Code).
+
+%% ============================================
 %% FILE OUTPUT
 %% ============================================
 

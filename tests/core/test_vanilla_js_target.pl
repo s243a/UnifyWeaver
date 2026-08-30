@@ -11,8 +11,14 @@
 
 :- module(test_vanilla_js_target, [test_vanilla_js_target/0]).
 :- use_module(library(plunit)).
+:- use_module(library(process)).
+:- use_module(library(readutil)).
 :- use_module('../../src/unifyweaver/targets/vanilla_js_target').
 :- use_module('../../src/unifyweaver/core/recursive_compiler').
+% Loading the advanced recursion compiler makes the multifile hook modules
+% (tail_recursion, tree_recursion, ...) available so the G-P10 dispatch tests
+% below can call and inspect the compile_*_pattern(vanilla_js, ...) clauses.
+:- use_module('../../src/unifyweaver/core/advanced/advanced_recursive_compiler', []).
 
 test_vanilla_js_target :-
     (   run_tests([vanilla_js_target])
@@ -139,5 +145,152 @@ test(transitive_closure) :-
     no_ts_syntax(Code),
     valid_js(Code),
     retractall(user:edge(_, _)).
+
+% ===========================================================================
+% G-P10: advanced-pattern dispatch for target(vanilla_js)
+%
+% Regression coverage for the bug where vanilla_js_target registered ZERO
+% compile_*_pattern multifile clauses. The advanced recursion compiler
+% dispatches on the target atom, so target(vanilla_js) previously found NO
+% clause and FAILED (while the sibling annotated_js worked). vanilla_js now
+% registers a clause per pattern that delegates to the `typescript` clause and
+% then applies vanilla_js_type_strip/2, exactly mirroring annotated_js_target.
+% ===========================================================================
+
+%% run_node(+Code, +Arg, -Output) — write vanilla JS to a temp file and run it
+%  under stock node with a single CLI argument, returning trimmed stdout.
+run_node(Code, Arg, Output) :-
+    tmp_file(vanilla_js_node, Base),
+    atom_concat(Base, '.mjs', File),
+    setup_call_cleanup(
+        ( open(File, write, S), write(S, Code), close(S) ),
+        run_node_file(File, Arg, Output),
+        catch(delete_file(File), _, true)
+    ).
+
+run_node_file(File, Arg, Output) :-
+    ( number(Arg) -> term_to_atom(Arg, ArgA) ; ArgA = Arg ),
+    process_create(path(node), [File, ArgA],
+                   [stdout(pipe(Out)), stderr(pipe(Err)), process(PID)]),
+    read_string(Out, _, OutStr),
+    read_string(Err, _, ErrStr),
+    close(Out), close(Err),
+    process_wait(PID, _Status),
+    ( ErrStr == "" -> true
+    ; format(user_error, "node stderr: ~w~n", [ErrStr]) ),
+    normalize_space(atom(Output), OutStr).
+
+%% fib_oracle(+N, -F) — the Prolog oracle for the tree/fibonacci case.
+fib_oracle(0, 0) :- !.
+fib_oracle(1, 1) :- !.
+fib_oracle(N, F) :- N > 1, N1 is N-1, N2 is N-2,
+    fib_oracle(N1, F1), fib_oracle(N2, F2), F is F1+F2.
+
+% --- proof the dispatch clauses are now REGISTERED (previously ALL absent) --
+
+test(advanced_hooks_registered) :-
+    clause(tail_recursion:compile_tail_pattern(vanilla_js,_,_,_,_,_,_,_,_), _),
+    clause(linear_recursion:compile_linear_pattern(vanilla_js,_,_,_,_,_,_,_), _),
+    clause(tree_recursion:compile_tree_pattern(vanilla_js,_,_,_,_,_), _),
+    clause(multicall_linear_recursion:compile_multicall_pattern(vanilla_js,_,_,_,_,_), _),
+    clause(direct_multi_call_recursion:compile_direct_multicall_pattern(vanilla_js,_,_,_,_), _),
+    clause(mutual_recursion:compile_mutual_pattern(vanilla_js,_,_,_,_), _),
+    clause(advanced_recursive_compiler:compile_general_recursive_pattern(vanilla_js,_,_,_,_,_), _).
+
+% --- each pattern: target(vanilla_js) now DISPATCHES and yields valid JS -----
+
+% tail / accumulator: sum-of-list loop with `acc += item`.
+test(advanced_tail_dispatch) :-
+    tail_recursion:compile_tail_pattern(vanilla_js, "sumTail", 3,
+        [], [], 2, arithmetic(_ + _), false, Code),
+    has(Code, "const sumTail = (items) =>"),
+    has(Code, "acc += item"),
+    no_ts_syntax(Code),
+    valid_js(Code).
+
+% linear (numeric, memoized): reads user:clause for the recursive body.
+test(advanced_linear_dispatch) :-
+    assertz(user:tri(0, 0)),
+    assertz((user:tri(N, R) :- N > 0, N1 is N-1, tri(N1, R1), R is R1+N)),
+    linear_recursion:compile_linear_pattern(vanilla_js, "tri", 2,
+        [clause(tri(0,0), true)], [], false, none, Code),
+    has(Code, "const tri = (n) =>"),
+    has(Code, "new Map()"),
+    no_ts_syntax(Code),
+    valid_js(Code),
+    retractall(user:tri(_, _)).
+
+% tree (fibonacci, memoized).
+test(advanced_tree_dispatch) :-
+    tree_recursion:compile_tree_pattern(vanilla_js, fib, fib, 2, false, Code),
+    has(Code, "const fib = (n) =>"),
+    has(Code, "new Map()"),
+    no_ts_syntax(Code),
+    valid_js(Code).
+
+% multi-call linear (two base cases, two recursive calls).
+test(advanced_multicall_dispatch) :-
+    multicall_linear_recursion:compile_multicall_pattern(vanilla_js, "mfib",
+        [clause(mfib(0,0), true), clause(mfib(1,1), true)], [], false, Code),
+    has(Code, "const mfib = (n) =>"),
+    has(Code, "new Map()"),
+    no_ts_syntax(Code),
+    valid_js(Code).
+
+% direct multi-call.
+test(advanced_direct_multicall_dispatch) :-
+    direct_multi_call_recursion:compile_direct_multicall_pattern(vanilla_js, "dfib",
+        [clause(dfib(0,0), true), clause(dfib(1,1), true)], [], Code),
+    has(Code, "const dfib = (n) =>"),
+    has(Code, "new Map()"),
+    no_ts_syntax(Code),
+    valid_js(Code).
+
+% mutual recursion (is_even / is_odd): reads user:clause.
+test(advanced_mutual_dispatch) :-
+    assertz(user:is_even(0)),
+    assertz((user:is_even(N) :- N > 0, N1 is N-1, is_odd(N1))),
+    assertz((user:is_odd(N) :- N > 0, N1 is N-1, is_even(N1))),
+    mutual_recursion:compile_mutual_pattern(vanilla_js,
+        [is_even/1, is_odd/1], true, none, Code),
+    has(Code, "const is_even = (n) =>"),
+    has(Code, "const is_odd = (n) =>"),
+    has(Code, "new Map()"),
+    no_ts_syntax(Code),
+    valid_js(Code),
+    retractall(user:is_even(_)),
+    retractall(user:is_odd(_)).
+
+% general / visited-set traversal (transitive closure shape).
+test(advanced_general_dispatch) :-
+    advanced_recursive_compiler:compile_general_recursive_pattern(vanilla_js,
+        "reaches", 2,
+        [(reaches(a, b), true)],
+        [(reaches(X, Y), (edge(X, Z), reaches(Z, Y)))],
+        Code),
+    has(Code, "function reaches(arg1)"),
+    no_ts_syntax(Code),
+    valid_js(Code).
+
+% --- run two dispatched patterns under node and match the Prolog oracle ------
+
+% tail/accumulator sum: sumTail([2,4,6,8]) === 20 (oracle: sum_list/2).
+test(advanced_tail_runs_on_node) :-
+    tail_recursion:compile_tail_pattern(vanilla_js, "sumTail", 3,
+        [], [], 2, arithmetic(_ + _), false, Code),
+    no_ts_syntax(Code),
+    run_node(Code, '2,4,6,8', Output),
+    sum_list([2,4,6,8], Expected),
+    atom_number(Output, Got),
+    Got =:= Expected.
+
+% tree/fibonacci: fib(10) === 55 (oracle: fib_oracle/2).
+test(advanced_tree_runs_on_node) :-
+    tree_recursion:compile_tree_pattern(vanilla_js, fib, fib, 2, false, Code),
+    no_ts_syntax(Code),
+    run_node(Code, 10, Output),
+    fib_oracle(10, Expected),
+    atom_number(Output, Got),
+    Got =:= Expected.
 
 :- end_tests(vanilla_js_target).
