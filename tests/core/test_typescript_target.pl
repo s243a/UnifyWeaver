@@ -11,14 +11,14 @@
 %   - modules      -> multi-predicate compile_module/3
 %   - bindings     -> registration + import lookup (typescript_bindings.pl)
 %
-% Run: swipl -q -g test_typescript_target -t halt tests/core/test_typescript_target.pl
+% Run: swipl -q -g test_typescript_target_core -t halt tests/core/test_typescript_target.pl
 
-:- module(test_typescript_target, [test_typescript_target/0]).
+:- module(test_typescript_target_core, [test_typescript_target_core/0]).
 :- use_module(library(plunit)).
 :- use_module('../../src/unifyweaver/targets/typescript_target').
 :- use_module('../../src/unifyweaver/bindings/typescript_bindings').
 
-test_typescript_target :-
+test_typescript_target_core :-
     run_tests([typescript_target]).
 
 :- begin_tests(typescript_target).
