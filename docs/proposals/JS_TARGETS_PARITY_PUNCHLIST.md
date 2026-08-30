@@ -81,7 +81,15 @@ suspicions (see §3b N/A): bindings are **not** a gap (JS leads), and TS/AJS reg
 
 ---
 
-## 4. Open gaps — WAM (`wam_javascript`) ⬜ — CONFIRMED by analysis A2
+### Fleet denominators (census — how common each capability is, out of 18 WAM target modules)
+- **Lowered emitter:** 14/18 have one; the only 4 without are `wam_c`, `wam_ilasm`, `wam_jvm`, **`wam_javascript`** → G-W1 is the fleet norm, not exotic.
+- **External fact sources (LMDB/CSR/TSV):** 14/18; the 4 without are `wam_ilasm`, `wam_jvm`, `wam_kotlin`, **`wam_javascript`** (JS has an empty `fact_sources:{}` scaffold only) → G-W4.
+- **Runtime-parser capability:** 7/18 registered (`wam_r/cpp/python/fsharp/haskell/rust/go`); JS not among them → G-W2.
+- **Dedicated kernel templates:** only 2/18 (Haskell, F#, 8 each); 8 more drive kernels via the shared `recursive_kernel_detection.pl`; **JS does neither** → kernels are the deferred tail (see §5b), the reference peer `wam_lua` also has neither.
+- **WAM bindings file:** 7/18 have none at all; among those that use `declare_binding`, counts run 19–49. JS has a 39-entry catalogue in a different scheme → not a gap.
+- **Conformance arm:** JS is registered (16 arms total); `wam_lua` and `wam_clojure` are NOT.
+
+## 4. Open gaps — WAM (`wam_javascript`) ⬜ — CONFIRMED by analyses A2 + census
 
 Mature WAM targets have up to three tiers (interpreter → lowered emitter → FFI kernels);
 `wam_javascript` is interpreter-tier only. Reference peer is `wam_lua` (interpreter-only,
@@ -95,6 +103,7 @@ cited is from A2 (file:line in the analysis).
 | G-W3 | **ISO/library builtin breadth** — missing `term_variables/2`, `numbervars/3`, `=@=/2`; sort family (`sort/2,4`, `msort`, `keysort`, `predsort`); structural list lib (`append`, `reverse`, `nth0/1`, `last`, `sum_list/max_list/min_list`, `select`); atom/string ops (`atom_concat`, `sub_atom`, `atom_length`, `atom_chars/codes`, `char_code`, `split_string`); `format/2,3`, `tab/1`; assoc lib. (NB: JS is *ahead* of Lua on aggregates/findall — not a peer gap there.) | ⬜ | `rust_wam_bindings.pl` for breadth | M | bindings file disjoint; runtime `builtin_*` shares file (low-mod) | grok |
 | G-W4 | **External fact-source / data tier** — no LMDB/CSR/TSV/JSON consumption; JS has no fact-source options. | ⬜ | `wam_lua_target.pl:475,545` (lightweight `lua_fact_sources`); rust/haskell for full LMDB+CSR | L | new templates disjoint; some `_target.pl` options | grok — **premature until G-W1** |
 | G-W5 | **Switch-indexing conformance row** — runtime wires `SwitchOn*` (`runtime.js.mustache:70-73,1146-1149`) but JS is absent from `WAM_SWITCH_INDEXING_CROSS_TARGET.md:86-99` and its harness. | ⬜ | that harness (rust/haskell/lua rows) | S | disjoint (docs + test) — **follow-on to P1** | main/opus |
+| G-W6 | **Parallelism + cost model** — a real fleet capability, present in **≥3 backends** each with its own mechanism: `wam_rust` (rayon / `parallel_gate.pl`, 86 hits), `wam_haskell` (`parMap` + `cost_function.hs.mustache`, 76 hits), `wam_elixir` (actor/Task-based, 23 hits + its own lowered emitter). `wam_javascript` has none. Node analogue = Worker threads. **DEFERRED — low priority: comes after G-W1 (lowered emitter), P1 (indexing), and other single-thread perf.** | ⬜ (deferred) | wam_haskell cost model; wam_elixir for actor style | L | ⚠️ runtime + emitter | — (later) |
 
 ---
 
@@ -119,6 +128,19 @@ Per A2 — recorded so they aren't re-raised:
 
 - **A1 (pattern parity + component axis)** → ✅ landed; folded into §3 (rewritten as 13 confirmed gaps G-P1..G-P13) and §3b (N/A). Headline: canned-fib recursion hooks, no structural recursion, no aggregates, component collect-but-never-emit, clojure/CLJS component void, vanilla_js hook asymmetry. Corrected: bindings are not a gap (JS leads), hook *count* is fine.
 - **A2 (WAM parity)** → ✅ landed; folded into §4 and §5b (WAM rows collapsed 10→5 confirmed gaps; Tier-3/parallelism/perf reclassified N/A; builtin-surface reframed as ISO breadth since JS is ahead of Lua on aggregates).
-- **Census (Sonnet)** → 🔄 running. Fleet-wide capability denominator (per-target tier/binding/component counts) to firm up "copy-from" references and headline numbers.
+- **Census (Sonnet)** → ✅ landed; denominators added above §4. Key: lowered emitter 14/18 (JS one of 4 without), external fact sources 14/18, runtime-parser 7/18, dedicated kernels 2/18. Also confirmed annotated_js/vanilla_js have NO own bindings/runtime/template dirs — by design (inherit TS); not a gap. And 10 WAM modules exist on disk but aren't registry-registered (invoked directly by tests) — an architecture note, not a gap.
 
-Once A1 + census land: reconcile IDs, set sizes/owners firmly, and schedule the next wave.
+All three analyses (A1, A2, census) are now folded in. Next: schedule the wave (see §7).
+
+## 7. Proposed next wave (post-analysis)
+
+Grok stays in the WAM runtime/emitter lane; Opus takes disjoint pattern work; both avoid the files the other is editing.
+
+**Highest impact first:**
+1. **G-P1 + G-P2 (real recursion)** — replace canned-fib hooks + add structural recursion. Opus. Large. The most important pattern fix (current output is partly fake).
+2. **G-P10 (vanilla_js hooks)** — quick correctness fix. Opus/main. Small.
+3. **G-P4 (component emission)** — wire `compile_component` into TS `compile_module`; load orphaned `custom_chart`. Opus. Medium.
+4. **G-W5 (switch-indexing conformance row)** — after Grok's P1 indexing lands. Small.
+5. **G-W1 (lowered emitter)** — Grok, after indexing. Large; fleet norm (14/18).
+6. Then: G-P3 aggregates, G-W2 parser, G-W3 builtin breadth, G-P5/G-P6/G-P7/G-P8/G-P9, G-W4 fact sources.
+**Deferred (low priority):** G-W6 parallelism/cost, dedicated kernels, perf row.
