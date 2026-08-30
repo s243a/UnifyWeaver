@@ -38,6 +38,7 @@ in-flight parity analyses — see §6).
 | D10 | wam_javascript | Full ISO bagof/3 + setof/3 (witness grouping, `^`, empty-fail, std order) | PR #4178 |
 | D11 | (infra) | Registry wiring + BINDING_MATRIX rows for the new targets | #4177/#4178 |
 | D12 | wam_javascript | First-argument indexing (`switch_on_constant/structure/term`; ground dispatch leaves no CP, var-first-arg falls back to try/retry/trust) | Grok `grok/wamjs-indexing` |
+| D13 | vanilla_js | Registered all 7 advanced-pattern hooks (delegate to TS + type-strip); `target(vanilla_js)` now dispatches (was: no clause → fail). G-P10. | (this branch) |
 
 ---
 
@@ -46,8 +47,9 @@ in-flight parity analyses — see §6).
 | ID | Target | Item | Owner | Branch |
 |---|---|---|---|---|
 | G-P1/G-P2 | typescript (→AJS/VJS) | Real (non-canned) recursion + structural recursion | opus | worktree |
-| G-P10 | vanilla_js | Register missing advanced-pattern hooks | opus | worktree |
-| G-W1 | wam_javascript | Tier-2 lowered emitter + `functions`/`mixed` emit modes | grok | (next) |
+| G-W1 | wam_javascript | Tier-2 lowered emitter + `functions`/`mixed` emit modes | grok | prompt sent |
+
+**Done since last update:** G-P10 vanilla_js hooks — ✅ merged (D13). Next after G-P1 merges: G-P4 (component emission), G-W5 (switch-indexing conformance row, now unblocked).
 
 **Done since last update:** P1 first-arg indexing (Grok, `grok/wamjs-indexing`) — ✅ merged (see D12). Analyses A1/A2/census — ✅ folded in.
 
