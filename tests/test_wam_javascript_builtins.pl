@@ -43,6 +43,10 @@
 :- dynamic user:probe_agg_sum/0.
 :- dynamic user:probe_agg_bag/0.
 :- dynamic user:probe_agg_set/0.
+:- dynamic user:color/2.
+:- dynamic user:probe_color_det/0.
+:- dynamic user:probe_color_enum/0.
+:- dynamic user:probe_color_miss/0.
 
 install_probes :-
     retractall(user:probe_findall),
@@ -68,6 +72,10 @@ install_probes :-
     retractall(user:probe_agg_sum),
     retractall(user:probe_agg_bag),
     retractall(user:probe_agg_set),
+    retractall(user:color/2),
+    retractall(user:probe_color_det),
+    retractall(user:probe_color_enum),
+    retractall(user:probe_color_miss),
     assertz((user:probe_findall :-
         findall(X, member(X, [1,2,3]), L), write(L), nl, L == [1,2,3])),
     assertz((user:probe_functor :-
@@ -130,7 +138,17 @@ install_probes :-
         aggregate_all(bag(X), member(X, [1,2,1]), L), write(L), nl, L == [1,2,1])),
     assertz((user:probe_agg_set :-
         aggregate_all(set(X), member(X, [1,2,1]), L), write(L), nl,
-        (L == [1,2] ; L == [2,1]))).
+        (L == [1,2] ; L == [2,1]))),
+    assertz(user:color(red, 1)),
+    assertz(user:color(green, 2)),
+    assertz(user:color(blue, 3)),
+    assertz((user:probe_color_det :-
+        color(green, X), write(X), nl, X == 2, deterministic)),
+    assertz((user:probe_color_enum :-
+        findall(C-N, color(C, N), L), write(L), nl,
+        L == [red-1, green-2, blue-3])),
+    assertz((user:probe_color_miss :-
+        \+ color(yellow, _))).
 
 probe_preds([
     user:probe_findall/0,
@@ -155,7 +173,11 @@ probe_preds([
     user:probe_agg_count/0,
     user:probe_agg_sum/0,
     user:probe_agg_bag/0,
-    user:probe_agg_set/0
+    user:probe_agg_set/0,
+    user:color/2,
+    user:probe_color_det/0,
+    user:probe_color_enum/0,
+    user:probe_color_miss/0
 ]).
 
 :- dynamic user:ctw_js/0.
