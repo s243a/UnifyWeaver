@@ -75,10 +75,35 @@
 % Inherit the JVM Clojure target. Everything not overridden below is reused.
 :- use_module(clojure_target).
 
+% Binding registry + the two Clojure(Script) binding catalogues. The catalogues
+% register through init_*_bindings/0 (direct declare_binding calls), so a plain
+% use_module does NOT populate the registry -- ensure_cljs_bindings/0 below runs
+% the initializers exactly once so both the `clojurescript` and the fallback
+% `clojure` binding keys are available to resolve_binding/4.
+:- use_module('../core/binding_registry').
+:- use_module('../bindings/clojure_bindings').
+:- use_module('../bindings/clojurescript_bindings').
+
+:- dynamic cljs_bindings_loaded/0.
+
+%% ensure_cljs_bindings
+%  Idempotently populate the registry with the JVM `clojure` bindings (the
+%  fallback layer) and the `clojurescript` bindings (the override layer). Safe to
+%  call from every compile entry point: declare_binding/6 is retract-then-assert,
+%  and the guard flag skips the work after the first successful load.
+ensure_cljs_bindings :-
+    ( cljs_bindings_loaded -> true
+    ; clojure_bindings:init_clojure_bindings,
+      clojurescript_bindings:init_clojurescript_bindings,
+      assertz(cljs_bindings_loaded)
+    ).
+
 %% init_clojurescript_target
-%  Initialize the ClojureScript target (delegates to the Clojure base).
+%  Initialize the ClojureScript target (delegates to the Clojure base) and load
+%  the Clojure(Script) binding catalogues.
 init_clojurescript_target :-
-    init_clojure_target.
+    init_clojure_target,
+    ensure_cljs_bindings.
 
 %% ============================================
 %% PUBLIC API
@@ -112,8 +137,9 @@ clojurescript_from_clojure(ClojureCode, CljsCode) :-
 clojurescript_from_clojure(ClojureCode, Options, CljsCode) :-
     cljs_runtime(Options, Runtime),
     (   cljs_runtime_js_interop(Runtime)
-    ->  clojurescript_interop_rewrite(ClojureCode, Body)      % JS host
-    ;   ( string(ClojureCode) -> Body = ClojureCode ; atom_string(ClojureCode, Body) )  % bb: keep JVM interop
+    ->  clojurescript_interop_rewrite(ClojureCode, Body0),    % JS host: token translate
+        cljs_binding_name_rewrite(Body0, Body)                % then apply CLJS name overrides
+    ;   ( string(ClojureCode) -> Body = ClojureCode ; atom_string(ClojureCode, Body) )  % bb: keep JVM interop + JVM names
     ),
     cljs_runtime_shebang(Runtime, Shebang),
     cljs_runtime_banner(Runtime, Banner),
@@ -228,6 +254,72 @@ cljs_replace_all(In, From, To, Out) :-
 sub_atom_icasechk_safe(In, From) :-
     ( string(In) -> S = In ; atom_string(In, S) ),
     sub_string(S, _, _, _, From).
+
+%% ============================================
+%% BINDING NAME REWRITE (the `clojurescript` binding key -> CLJS names)
+%% ============================================
+
+%% cljs_binding_name_rewrite(+In, -Out)
+%  Consult the binding registry with the preference list [clojurescript, clojure]
+%  via the existing resolve_binding/4 fallback (a `clojurescript` binding wins;
+%  the 64 shared `clojure` bindings are the fallback) and rewrite each bound
+%  predicate's *call head* to its resolved target-language name.
+%
+%  Ordering vs the interop rewrite (avoids double-transformation): this pass runs
+%  AFTER clojurescript_interop_rewrite/2, so the CLJS function names it introduces
+%  (which may be `js/...` host calls, e.g. js/parseFloat) are the final text and
+%  are never re-seen -- hence never double-transformed -- by the JVM->JS interop
+%  pass. Conversely this pass's *source* tokens are the raw Prolog functors the
+%  base codegen emits, which the interop pass leaves untouched. The two passes
+%  thus act on disjoint tokens; the fixed order is documented and guaranteed safe.
+cljs_binding_name_rewrite(In, Out) :-
+    ensure_cljs_bindings,
+    cljs_name_override_rules(Rules),
+    foldl(apply_cljs_rule, Rules, In, Out0),
+    ( string(Out0) -> Out = Out0 ; atom_string(Out0, Out) ).
+
+%% cljs_name_override_rules(-Rules)
+%  One From-To substring pair per bound predicate whose resolved CLJS name
+%  differs from the functor the base codegen emits. Each predicate contributes
+%  boundary-anchored rules -- `(fn ` and `(fn)` -- so only *call heads* (a name
+%  immediately after an open paren) are rewritten; `(defn fn ...)` headers and
+%  substrings of other tokens are never touched.
+cljs_name_override_rules(Rules) :-
+    findall(Pred,
+            ( binding_registry:binding(clojurescript, Pred, _, _, _, _)
+            ; binding_registry:binding(clojure, Pred, _, _, _, _) ),
+            Preds0),
+    sort(Preds0, Preds),
+    findall(Rule, ( member(Pred, Preds), cljs_pred_override_rule(Pred, Rule) ), Rules0),
+    sort(Rules0, Rules).
+
+%% cljs_pred_override_rule(+Pred, -Rule)
+%  Yields the call-head rewrite rules for Pred when its resolved CLJS target name
+%  differs from an emitted functor spelling (raw or underscores->hyphens).
+cljs_pred_override_rule(Pred, Rule) :-
+    Pred = Name/_Arity,
+    resolve_binding([clojurescript, clojure], Pred, _Key,
+                    binding(_, _, TargetName, _, _, _)),
+    atom_string(TargetName, TargetStr),
+    atom_string(Name, RawStr),
+    cljs_hyphenate(RawStr, HyphenStr),
+    member(FromStr, [RawStr, HyphenStr]),
+    FromStr \== TargetStr,
+    (   atomic_list_concat(['(', FromStr, ' '], OpenFrom),
+        atomic_list_concat(['(', TargetStr, ' '], OpenTo),
+        Rule = OpenFrom-OpenTo
+    ;   atomic_list_concat(['(', FromStr, ')'], CloseFrom),
+        atomic_list_concat(['(', TargetStr, ')'], CloseTo),
+        Rule = CloseFrom-CloseTo
+    ).
+
+%% cljs_hyphenate(+In, -Out) - underscore->hyphen (Clojure naming convention).
+cljs_hyphenate(In, Out) :-
+    ( sub_string(In, _, _, _, "_")
+    ->  split_string(In, "_", "", Parts),
+        atomic_list_concat(Parts, '-', OutAtom),
+        atom_string(OutAtom, Out)
+    ;   Out = In ).
 
 %% cljs_banner(-Banner)
 %  Header noting the output is ClojureScript (runs under Scittle/SCI or nbb).
