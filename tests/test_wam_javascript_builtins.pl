@@ -48,6 +48,11 @@
 :- dynamic user:probe_color_det/0.
 :- dynamic user:probe_color_enum/0.
 :- dynamic user:probe_color_miss/0.
+:- dynamic user:probe_sort/0.
+:- dynamic user:probe_lists/0.
+:- dynamic user:probe_atoms/0.
+:- dynamic user:probe_format/0.
+:- dynamic user:probe_assoc/0.
 
 install_probes :-
     retractall(user:probe_findall),
@@ -77,6 +82,11 @@ install_probes :-
     retractall(user:probe_color_det),
     retractall(user:probe_color_enum),
     retractall(user:probe_color_miss),
+    retractall(user:probe_sort),
+    retractall(user:probe_lists),
+    retractall(user:probe_atoms),
+    retractall(user:probe_format),
+    retractall(user:probe_assoc),
     assertz((user:probe_findall :-
         findall(X, member(X, [1,2,3]), L), write(L), nl, L == [1,2,3])),
     assertz((user:probe_functor :-
@@ -149,7 +159,60 @@ install_probes :-
         findall(C-N, color(C, N), L), write(L), nl,
         L == [red-1, green-2, blue-3])),
     assertz((user:probe_color_miss :-
-        \+ color(yellow, _))).
+        \+ color(yellow, _))),
+    assertz((user:probe_sort :-
+        sort([c, a, c, b], S), S == [a, b, c],
+        msort([c, a, c, b], M), M == [a, b, c, c],
+        keysort([c-1, a-2, c-0], K), K == [a-2, c-1, c-0],
+        sort(0, @<, [c, a, c, b], S4), S4 == [a, b, c],
+        predsort(compare, [c, a, b], P), P == [a, b, c],
+        write(ok), nl)),
+    assertz((user:probe_lists :-
+        append([1, 2], [3], L), L == [1, 2, 3],
+        reverse([1, 2, 3], R), R == [3, 2, 1],
+        nth0(1, [a, b, c], X), X == b,
+        nth1(1, [a, b, c], Y), Y == a,
+        last([1, 2, 3], Z), Z == 3,
+        sum_list([1, 2, 3], Sum), Sum == 6,
+        max_list([1, 8, 3], Mx), Mx == 8,
+        min_list([1, 8, 3], Mn), Mn == 1,
+        list_to_set([c, a, c, b], Set), Set == [c, a, b],
+        select(b, [a, b, c], Rest), Rest == [a, c],
+        include(atom, [a, 1, b], In), In == [a, b],
+        exclude(atom, [a, 1, b], Ex), Ex == [1],
+        write(ok), nl)),
+    assertz((user:probe_atoms :-
+        atom_concat(foo, bar, C), C == foobar,
+        atom_length(hello, N), N == 5,
+        atom_chars(ab, Ch), Ch == [a, b],
+        atom_codes(ab, Co), Co == [97, 98],
+        char_code(a, Cc), Cc == 97,
+        sub_atom(hello, 1, 3, After, Sub), After == 1, Sub == ell,
+        atom_string(foo, Str), atom_length(Str, 3),
+        number_codes(12, Nc), Nc == [49, 50],
+        number_string(12, Ns), atom_concat('', Ns, '12'),
+        split_string('a,b,c', ',', '', Parts),
+        Parts = [P1, P2, P3],
+        atom_string(a, P1), atom_string(b, P2), atom_string(c, P3),
+        string_concat(foo, bar, SC), atom_concat('', SC, foobar),
+        upcase_atom(hi, U), U == 'HI',
+        downcase_atom('HI', D), D == hi,
+        write(ok), nl)),
+    assertz((user:probe_format :-
+        format(atom(A), '~w-~d', [hi, 2]),
+        A == 'hi-2',
+        format('~w ~d~n', [ok, 7]),
+        tab(2), writeln(done))),
+    assertz((user:probe_assoc :-
+        empty_assoc(A0),
+        put_assoc(b, A0, 2, A1),
+        put_assoc(a, A1, 1, A2),
+        get_assoc(a, A2, V), V == 1,
+        assoc_to_keys(A2, Ks), Ks == [a, b],
+        assoc_to_list(A2, AL), AL == [a-1, b-2],
+        list_to_assoc([a-1, b-2], A3),
+        get_assoc(b, A3, W), W == 2,
+        write(ok), nl)).
 
 probe_preds([
     user:probe_findall/0,
@@ -178,7 +241,12 @@ probe_preds([
     user:color/2,
     user:probe_color_det/0,
     user:probe_color_enum/0,
-    user:probe_color_miss/0
+    user:probe_color_miss/0,
+    user:probe_sort/0,
+    user:probe_lists/0,
+    user:probe_atoms/0,
+    user:probe_format/0,
+    user:probe_assoc/0
 ]).
 
 :- dynamic user:ctw_js/0.
