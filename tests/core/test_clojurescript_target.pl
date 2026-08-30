@@ -374,4 +374,92 @@ test(gp7m_negation_match_runs_under_nbb,
         GotS == ExpS
     )).
 
+% ============================================================================
+% G-P-dedup: UNIQUENESS / ORDER CONSTRAINT HANDLING (inherited from clojure base)
+%
+% compile_facts_to_clojure previously emitted the raw fact vector regardless of
+% any declared unique/unordered constraint. It now consults
+% constraint_analyzer:get_constraints/2 (declaration merged over the global
+% defaults unique=true/unordered=true) and wraps the vector, mirroring rust/go:
+%   - unique(false)           -> raw vector [ ... ]              (no dedup)
+%   - unique(true), ordered   -> (vec (distinct [ ... ]))        order-preserving
+%   - unique(true), unordered -> (vec (sort (distinct [ ... ]))) sort-based dedup
+% CLJS reuses compile_facts_to_clojure/3, so it inherits this with no interop
+% rewrite (distinct/sort/vec are portable clojure.core). get-all/-main read
+% `facts`, so the whole facts surface inherits the dedup. Oracle: SWI setof/sort.
+% ============================================================================
+
+:- use_module('../../src/unifyweaver/core/constraint_analyzer',
+              [ declare_constraint/2, clear_constraints/1 ]).
+
+% Facts with a genuine duplicate. compile_facts_to_clojure gathers via clause/2,
+% which resolves user:dup here.
+assert_dup_facts :-
+    assertz(user:dup(a, b)),
+    assertz(user:dup(a, b)),
+    assertz(user:dup(c, d)).
+retract_dup_facts :-
+    retractall(user:dup(_, _)),
+    clear_constraints(dup/2).
+
+% -- Structural recognition ---------------------------------------------------
+
+test(dedup_default_emits_sort_dedup,
+     [setup(assert_dup_facts), cleanup(retract_dup_facts)]) :-
+    clojurescript_target:compile_facts_to_clojurescript(dup, 2, Code),
+    % default constraints -> dedup + sort
+    has(Code, "(vec (sort (distinct ["),
+    hasnt(Code, "(str ").   % nothing spurious
+
+test(dedup_unique_false_leaves_raw_vector,
+     [setup(assert_dup_facts), cleanup(retract_dup_facts)]) :-
+    declare_constraint(dup/2, [unique(false)]),
+    clojurescript_target:compile_facts_to_clojurescript(dup, 2, Code),
+    hasnt(Code, "distinct"),
+    hasnt(Code, "(sort "),
+    has(Code, "(def facts").
+
+test(dedup_ordered_emits_distinct_no_sort,
+     [setup(assert_dup_facts), cleanup(retract_dup_facts)]) :-
+    declare_constraint(dup/2, [unique(true), ordered]),
+    clojurescript_target:compile_facts_to_clojurescript(dup, 2, Code),
+    has(Code, "(vec (distinct ["),
+    hasnt(Code, "(sort ").
+
+% -- nbb execution vs SWI oracle ----------------------------------------------
+
+% Default: -main prints one line per fact ("a:b"), duplicates removed, sorted.
+test(dedup_default_runs_under_nbb,
+     [setup(assert_dup_facts), cleanup(retract_dup_facts), condition(nbb_available)]) :-
+    clojurescript_target:compile_facts_to_clojurescript(dup, 2, Code0),
+    string_concat(Code0, "\n(-main)\n", Code),
+    cljs_run_lines(Code, GotLines),
+    % SWI oracle: distinct pairs, sorted, joined "A:B"
+    setof(L, A^B^(user:dup(A, B), format(atom(L), '~w:~w', [A, B])), ExpLines),
+    GotLines == ExpLines.
+
+% unique(false): duplicates retained -> three printed lines.
+test(dedup_unique_false_runs_under_nbb,
+     [setup(assert_dup_facts), cleanup(retract_dup_facts), condition(nbb_available)]) :-
+    declare_constraint(dup/2, [unique(false)]),
+    clojurescript_target:compile_facts_to_clojurescript(dup, 2, Code0),
+    string_concat(Code0, "\n(-main)\n", Code),
+    cljs_run_lines(Code, GotLines),
+    length(GotLines, N),
+    N =:= 3.
+
+% Run CLJS under nbb, returning the non-empty stdout lines as a list of strings.
+cljs_run_lines(Code, Lines) :-
+    tmp_file_stream(text, Base, S0), close(S0),
+    atom_concat(Base, '.cljs', File),
+    setup_call_cleanup(
+        ( open(File, write, W), write(W, Code), close(W) ),
+        ( process_create(path(nbb), [File],
+                         [stdout(pipe(O)), stderr(null), process(P)]),
+          read_string(O, _, Str), close(O), process_wait(P, _),
+          split_string(Str, "\n", " \t\r", Parts),
+          exclude(==(""), Parts, LinesS),
+          maplist(atom_string, Lines, LinesS) ),
+        catch(delete_file(File), _, true)).
+
 :- end_tests(clojurescript_target).
