@@ -1,5 +1,7 @@
 :- module(test_clojurescript_target, [test_clojurescript_target/0]).
 :- use_module(library(plunit)).
+:- use_module(library(process)).
+:- use_module(library(lists)).
 :- use_module('../../src/unifyweaver/targets/clojurescript_target').
 :- use_module('../../src/unifyweaver/core/component_registry').
 % clojure_target is loaded transitively by clojurescript_target; it is NOT
@@ -19,6 +21,28 @@ compile_cljs(Pred/Arity, Code) :-
 % Helper: deterministic substring check
 has(Code, Substr) :- once(sub_string(Code, _, _, _, Substr)).
 hasnt(Code, Substr) :- \+ sub_string(Code, _, _, _, Substr).
+
+% nbb availability gate (Node sci ClojureScript runtime)
+nbb_available :-
+    catch(( process_create(path(nbb), ['--version'],
+                           [stdout(null), stderr(null), process(P)]),
+            process_wait(P, exit(0)) ), _, fail).
+
+% Write CLJS Code to a temp .cljs file, run it under nbb with Argv, return
+% trimmed stdout as an atom.
+cljs_write_run(Code, Argv, Out) :-
+    tmp_file_stream(text, Base, S0), close(S0),
+    atom_concat(Base, '.cljs', File),
+    setup_call_cleanup(
+        ( open(File, write, W), write(W, Code), close(W) ),
+        cljs_nbb_exec(File, Argv, Out),
+        catch(delete_file(File), _, true)).
+
+cljs_nbb_exec(File, Argv, Out) :-
+    process_create(path(nbb), [File|Argv],
+                   [stdout(pipe(O)), stderr(null), process(P)]),
+    read_string(O, _, Str), close(O), process_wait(P, _),
+    normalize_space(atom(Out), Str).
 
 % ============================================================================
 % Interop rewrite: JVM host calls -> JS host calls
@@ -223,5 +247,61 @@ test(cljs_component_free_module_unchanged,
     has(Code, "(defn dbl [arg1]"),
     hasnt(Code, "Custom Component"),
     retractall(user:dbl(_, _)).
+
+% ============================================================================
+% G-P7: NEGATION + TYPE-CHECK GUARD CODEGEN (inherited from clojure base)
+%
+% clojure_guard_condition/3 previously handled ONLY binary comparisons. Guards
+% the shared classifier routes to the guard renderer -- negation (\+/not) and
+% type-check predicates (integer/1, atom/1, is_list/1, ...) -- had NO clause and
+% FAILED at render. CLJS inherits the clojure clause compilation, so these tests
+% assert the new clause families render (with the JS interop rewrite) and run
+% under nbb matching the SWI oracle.
+% ============================================================================
+
+assert_gp7_tc :- assertz((user:tc(X, R) :- (integer(X) -> R = yes ; R = no))).
+retract_gp7_tc :- retractall(user:tc(_, _)).
+
+assert_gp7_nm :- assertz((user:nm(X, R) :- (\+ member(X, [1,2,3]) -> R = out ; R = in))).
+retract_gp7_nm :- retractall(user:nm(_, _)).
+
+% -- Structural: the guards now render into the CLJS defn ----------------------
+
+test(gp7_typecheck_renders, [setup(assert_gp7_tc), cleanup(retract_gp7_tc)]) :-
+    compile_cljs(tc/2, Code),
+    % integer/1 -> (integer? arg1) inside the if-then-else
+    has(Code, "(if (integer? arg1)"),
+    has(Code, "\"yes\""),
+    has(Code, "\"no\""),
+    hasnt(Code, "Integer/parseInt").   % JVM interop rewritten to js/
+
+test(gp7_negation_member_renders, [setup(assert_gp7_nm), cleanup(retract_gp7_nm)]) :-
+    compile_cljs(nm/2, Code),
+    % \+ member(X, [1,2,3]) -> (not (some #(= % arg1) [1 2 3]))
+    has(Code, "(not (some #(= % arg1) [1 2 3]))"),
+    has(Code, "\"out\""),
+    has(Code, "\"in\"").
+
+% -- nbb execution vs SWI oracle ----------------------------------------------
+
+test(gp7_typecheck_runs_under_nbb,
+     [setup(assert_gp7_tc), cleanup(retract_gp7_tc), condition(nbb_available)]) :-
+    compile_cljs(tc/2, Code),
+    forall(member(X, [5, 0, -3]), (
+        once((user:tc(X, RExp) -> atom_string(RExp, ExpS) ; ExpS = "no")),
+        cljs_write_run(Code, [X], Got),
+        atom_string(Got, GotS),
+        GotS == ExpS
+    )).
+
+test(gp7_negation_member_runs_under_nbb,
+     [setup(assert_gp7_nm), cleanup(retract_gp7_nm), condition(nbb_available)]) :-
+    compile_cljs(nm/2, Code),
+    forall(member(X, [1, 2, 4, 7]), (
+        once((user:nm(X, RExp) -> atom_string(RExp, ExpS) ; ExpS = "in")),
+        cljs_write_run(Code, [X], Got),
+        atom_string(Got, GotS),
+        GotS == ExpS
+    )).
 
 :- end_tests(clojurescript_target).

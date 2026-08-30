@@ -681,4 +681,84 @@ test(stream_transform_generator_runs_under_node,
     findall(S, (member(X, Xs), user:posdoub(X, Y), number_string(Y, S)), ExpLines),
     GotLines == ExpLines.
 
+% ============================================================================
+% G-P7: NEGATION + TYPE-CHECK GUARD CODEGEN
+%
+% ts_guard_condition/3 previously handled ONLY binary comparisons. Guards that
+% the shared clause_body_analysis classifier routes to the guard renderer —
+% negation (\+/not) and type-check predicates (integer/1, atom/1, is_list/1,
+% ...) — had NO clause and FAILED at render, aborting compilation. These tests
+% assert the two new clause families render correctly and run under node
+% matching the SWI oracle.
+% ============================================================================
+
+assert_gp7_qpos :- assertz((user:qpos(X) :- integer(X), X > 0)).
+retract_gp7_qpos :- retractall(user:qpos(_)).
+
+assert_gp7_pnm :- assertz((user:pnm(X) :- \+ member(X, [1,2,3]))).
+retract_gp7_pnm :- retractall(user:pnm(_)).
+
+assert_gp7_pgt :- assertz((user:pgt(X) :- \+ (X > 5))).
+retract_gp7_pgt :- retractall(user:pgt(_)).
+
+% -- Structural: the guards now render (batch path no longer fails) -----------
+
+test(gp7_typecheck_renders_in_batch,
+     [setup(assert_gp7_qpos), cleanup(retract_gp7_qpos)]) :-
+    % integer/1 → Number.isInteger; comparison guard still works alongside it
+    typescript_target:compile_predicate(qpos/1, [], Code),
+    has(Code, "Number.isInteger(arg1)"),
+    has(Code, "arg1 > 0").
+
+test(gp7_negation_member_renders_in_batch,
+     [setup(assert_gp7_pnm), cleanup(retract_gp7_pnm)]) :-
+    % \+ member(X, [1,2,3]) → !( [1, 2, 3].includes(arg1) )
+    typescript_target:compile_predicate(pnm/1, [], Code),
+    has(Code, "!([1, 2, 3].includes(arg1))").
+
+test(gp7_negation_comparison_renders_in_batch,
+     [setup(assert_gp7_pgt), cleanup(retract_gp7_pgt)]) :-
+    % \+ (X > 5) → !(arg1 > 5)
+    typescript_target:compile_predicate(pgt/1, [], Code),
+    has(Code, "!(arg1 > 5)").
+
+% -- Pipeline (filter) shape: clean boolean function over the guards ----------
+
+test(gp7_typecheck_pipeline_shape,
+     [setup(assert_gp7_qpos), cleanup(retract_gp7_qpos)]) :-
+    typescript_target:compile_predicate(qpos/1, [mode(pipeline)], Code),
+    has(Code, "export function qposTest(x: number): boolean"),
+    has(Code, "return (Number.isInteger(x) && x > 0);").
+
+test(gp7_negation_member_pipeline_shape,
+     [setup(assert_gp7_pnm), cleanup(retract_gp7_pnm)]) :-
+    typescript_target:compile_predicate(pnm/1, [mode(pipeline)], Code),
+    has(Code, "return (!([1, 2, 3].includes(x)));").
+
+% -- Node execution vs SWI oracle --------------------------------------------
+
+test(gp7_typecheck_runs_under_node,
+     [setup(assert_gp7_qpos), cleanup(retract_gp7_qpos), condition(node_available)]) :-
+    typescript_target:compile_predicate(qpos/1, [mode(pipeline)], Code),
+    Input = "3\n-1\n7\n0\n", Xs = [3,-1,7,0],
+    ts_write_run_stdin(Code, Input, GotLines),
+    findall(S, (member(X, Xs), user:qpos(X), number_string(X, S)), ExpLines),
+    GotLines == ExpLines.
+
+test(gp7_negation_member_runs_under_node,
+     [setup(assert_gp7_pnm), cleanup(retract_gp7_pnm), condition(node_available)]) :-
+    typescript_target:compile_predicate(pnm/1, [mode(pipeline)], Code),
+    Input = "1\n2\n4\n7\n", Xs = [1,2,4,7],
+    ts_write_run_stdin(Code, Input, GotLines),
+    findall(S, (member(X, Xs), user:pnm(X), number_string(X, S)), ExpLines),
+    GotLines == ExpLines.
+
+test(gp7_negation_comparison_runs_under_node,
+     [setup(assert_gp7_pgt), cleanup(retract_gp7_pgt), condition(node_available)]) :-
+    typescript_target:compile_predicate(pgt/1, [mode(generator)], Code),
+    Input = "3\n5\n6\n10\n", Xs = [3,5,6,10],
+    ts_write_run_stdin(Code, Input, GotLines),
+    findall(S, (member(X, Xs), user:pgt(X), number_string(X, S)), ExpLines),
+    GotLines == ExpLines.
+
 :- end_tests(typescript_target).
