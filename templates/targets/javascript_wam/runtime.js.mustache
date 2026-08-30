@@ -867,8 +867,8 @@ function term_ord(state, v) {
   if (typeof v !== "object" || v === null) return [0, String(v)];
   if (v.tag === "unbound") return [1, v.name];
   if (v.tag === "int" || v.tag === "float") return [2, v.val];
-  if (v.tag === "atom") return [3, v.id];
-  if (v.tag === "string") return [4, v.val];
+  if (v.tag === "string") return [3, v.val];
+  if (v.tag === "atom") return [4, v.id];
   if (v.tag === "struct") {
     const args = v.args || [];
     const inner = [];
@@ -941,13 +941,14 @@ function term_class_rank(v) {
   if (typeof v !== "object" || v === null) return 5;
   if (v.tag === "unbound") return 0;
   if (v.tag === "int" || v.tag === "float") return 1;
-  if (v.tag === "atom") return 2;
-  if (v.tag === "string") return 3;
+  // SWI 9.0.4: String @< Atom (compare(foo,"foo") = >). Match the oracle.
+  if (v.tag === "string") return 2;
+  if (v.tag === "atom") return 3;
   if (v.tag === "struct") return 4;
   return 5;
 }
 
-// ISO §7.2 / SWI standard order: Var < Number < Atom < String < Compound.
+// SWI 9.x standard order (oracle): Var < Number < String < Atom < Compound.
 // Atoms compare by name (not intern id). Compounds compare by arity,
 // then functor name, then arguments left-to-right.
 function compare_terms(intern, state, a, b) {
@@ -965,14 +966,14 @@ function compare_terms(intern, state, a, b) {
     return a.val < b.val ? -1 : 1;
   }
   if (ca === 2) {
+    if (a.val === b.val) return 0;
+    return a.val < b.val ? -1 : 1;
+  }
+  if (ca === 3) {
     const na = Runtime.string_of(intern, a.id);
     const nb = Runtime.string_of(intern, b.id);
     if (na === nb) return 0;
     return na < nb ? -1 : 1;
-  }
-  if (ca === 3) {
-    if (a.val === b.val) return 0;
-    return a.val < b.val ? -1 : 1;
   }
   if (ca === 4) {
     const aa = (a.args || []).length;

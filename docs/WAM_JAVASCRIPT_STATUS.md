@@ -143,7 +143,7 @@ parser, not the bundled portable `compiled(prolog_term_parser)`.
 | `=@=/2` / `\=@=/2` | **Implemented.** Variant equality: ground as `==`; vars match via a consistent bijection. Cyclic struct pairs are treated as already-equal once seen. |
 | `format/2` `/3` | **Implemented** for `~w ~a ~d ~p ~q ~n ~s ~t ~~`. Not ported: `~f`, `~r`, `~D`, positioning (`~N|`, `~+`, `t~`), aliases, and stream sinks other than stdout / `atom(A)` / `string(S)`. |
 | `sub_atom/5` | **Implemented** when Atom is ground; enumerates unbound Before/Length/After (and filters a ground SubAtom). |
-| String term tag | **Implemented.** `V.String` is a distinct tag. Unify/`==` require equal strings (not atoms). Standard order / `compare/3` / `sort`: Var < Number < Atom < **String** < Compound. `atom_string/2`, `string_concat/3`, `string_chars/2` (construct), `string_to_atom/2`, `number_string/2`, `split_string/4` produce strings. `string/1` is true only for the tag. `write/1` prints text; `~q` quotes with `"`. Fact-source JSON/TSV values still intern as atoms. |
+| String term tag | **Implemented.** `V.String` is a distinct tag. Unify/`==` require equal strings (not atoms). Standard order / `compare/3` / `sort` matches SWI 9.0.4: Var < Number < **String** < Atom < Compound (`"foo" @< foo`). `atom_string/2`, `string_concat/3`, `string_chars/2` (construct), `string_to_atom/2`, `number_string/2`, `split_string/4` produce strings. `string/1` is true only for the tag. `write/1` prints text; `~q` quotes with `"`. The shared WAM tokeniser stores constants as text, so compiled `"foo"` literals collapse to atoms; construct strings via builtins or the Pratt `"..."` reader. Fact-source JSON/TSV values still intern as atoms. |
 | `library(assoc)` | **Implemented** as a Prolog `assoc/1` list of Key-Value pairs (not SWI's AVL tree). get/put/list/keys match SWI for unique-key maps. |
 | First-arg indexing | **Implemented.** `switch_on_constant` / `_fallthrough` / `_a2`, `switch_on_structure` / `_a2`, and `switch_on_term` / `_a2` jump to the matching clause group. Ground first-arg with a unique clause leaves no choice point (`deterministic/0`). Unbound first arg falls through to the try/retry/trust chain (no lost solutions). Exclusive miss fails; fallthrough variants keep the chain for variable-headed clauses. Dedicated `try`/`retry`/`trust` dispatch chains are emitted for multi-clause groups. |
 | Second-arg / deep indexing | A2 switches are implemented; deep (argument >2) indexing is not. |
@@ -179,8 +179,9 @@ positioning; assoc is a list-of-pairs, not SWI's AVL tree;
 `numbervars` does not letter-render `'$VAR'(N)` on `write/1`;
 `op/3` is process-global (no module-local ops) and `current_op/3` is
 not implemented; `writeq/1` as a standalone builtin is not registered
-(quoted string rendering is via `format` `~q`); fact-source cells stay
-atoms even when the host file looks like a quoted string.
+(quoted string rendering is via `format` `~q`); compiled `"foo"`
+literals become atoms (shared WAM constant tokens); fact-source cells
+stay atoms even when the host file looks like a quoted string.
 
 ## Document status
 
