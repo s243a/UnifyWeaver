@@ -36,6 +36,8 @@
 :- dynamic user:probe_bagof_empty/0.
 :- dynamic user:probe_setof_mixed/0.
 :- dynamic user:probe_setof_group/0.
+:- dynamic user:probe_bagof_first/0.
+:- dynamic user:probe_bagof_second/0.
 :- dynamic user:age/2.
 :- dynamic user:probe_agg_count/0.
 :- dynamic user:probe_agg_sum/0.
@@ -59,6 +61,8 @@ install_probes :-
     retractall(user:probe_bagof_empty),
     retractall(user:probe_setof_mixed),
     retractall(user:probe_setof_group),
+    retractall(user:probe_bagof_first),
+    retractall(user:probe_bagof_second),
     retractall(user:age/2),
     retractall(user:probe_agg_count),
     retractall(user:probe_agg_sum),
@@ -109,6 +113,15 @@ install_probes :-
         findall(N-Cs, setof(C, age(N, C), Cs), All),
         write(All), nl,
         All == [alice-[30], bob-[25], carol-[30]])),
+    assertz((user:probe_bagof_first :-
+        bagof(C, age(N, C), Cs),
+        write(N-Cs), nl,
+        N-Cs == alice-[30])),
+    assertz((user:probe_bagof_second :-
+        bagof(C, age(N, C), Cs),
+        N \== alice,
+        write(N-Cs), nl,
+        N-Cs == bob-[25])),
     assertz((user:probe_agg_count :-
         aggregate_all(count, member(_, [1,2,3]), N), write(N), nl, N == 3)),
     assertz((user:probe_agg_sum :-
@@ -136,6 +149,8 @@ probe_preds([
     user:probe_bagof_empty/0,
     user:probe_setof_mixed/0,
     user:probe_setof_group/0,
+    user:probe_bagof_first/0,
+    user:probe_bagof_second/0,
     user:age/2,
     user:probe_agg_count/0,
     user:probe_agg_sum/0,
