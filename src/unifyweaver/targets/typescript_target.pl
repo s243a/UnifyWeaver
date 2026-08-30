@@ -1177,6 +1177,84 @@ ts_guard_condition(VarMap, Goal, Condition) :-
     ts_expr(Right, VarMap, TRight),
     ts_op(StdOp, TOp),
     format(string(Condition), '~w ~w ~w', [TLeft, TOp, TRight]).
+%% Negation-as-failure: \+ Inner / not(Inner) → !(<render Inner>) (G-P7).
+%% Recurses into ts_guard_condition for Inner (comparison / type-check /
+%% membership / nested negation). If Inner is a non-guard goal with no guard
+%% rendering, the recursive call FAILS, so ts_guard_condition fails cleanly
+%% (no code emitted) rather than emitting wrong code.
+ts_guard_condition(VarMap, \+(Inner), Condition) :-
+    !,
+    ts_guard_condition(VarMap, Inner, InnerCond),
+    format(string(Condition), '!(~w)', [InnerCond]).
+ts_guard_condition(VarMap, not(Inner), Condition) :-
+    !,
+    ts_guard_condition(VarMap, Inner, InnerCond),
+    format(string(Condition), '!(~w)', [InnerCond]).
+%% Membership: member(X, List) → List.includes(x) (G-P7). Positive member is
+%% not classified as a guard upstream, so this is reached via `\+ member(...)`.
+ts_guard_condition(VarMap, member(X, List), Condition) :-
+    !,
+    ts_expr(X, VarMap, TX),
+    ts_member_list(List, VarMap, TList),
+    format(string(Condition), '~w.includes(~w)', [TList, TX]).
+%% Type-check predicates (integer/1, atom/1, is_list/1, ...) (G-P7).
+ts_guard_condition(VarMap, Goal, Condition) :-
+    compound(Goal),
+    Goal =.. [Pred, Arg],
+    ts_type_check(Pred, Arg, VarMap, Condition),
+    !.
+
+%% ts_member_list(+List, +VarMap, -TsListExpr)
+%  Render the second argument of member/2: a proper list becomes a TS array
+%  literal, a variable resolves to its bound name (assumed to be an array).
+ts_member_list(List, VarMap, TList) :-
+    is_list(List),
+    !,
+    maplist(ts_member_elem(VarMap), List, Elems),
+    atomic_list_concat(Elems, ', ', Inner),
+    format(string(TList), '[~w]', [Inner]).
+ts_member_list(Var, VarMap, TList) :-
+    var(Var),
+    !,
+    ts_expr(Var, VarMap, TList).
+
+ts_member_elem(VarMap, Elem, TElem) :- ts_expr(Elem, VarMap, TElem).
+
+%% ts_type_check(+Pred, +Arg, +VarMap, -Condition)
+%  Map Prolog type-check predicates (clause_body_analysis:type_check_pred/1) to
+%  TypeScript runtime checks. In this target atoms are strings, unbound vars are
+%  `undefined`, and lists/compounds are arrays/objects. Fails for a non
+%  type-check predicate so the caller can fail cleanly.
+ts_type_check(integer, Arg, VarMap, Cond) :- !,
+    ts_expr(Arg, VarMap, X),
+    format(string(Cond), 'Number.isInteger(~w)', [X]).
+ts_type_check(float, Arg, VarMap, Cond) :- !,
+    ts_expr(Arg, VarMap, X),
+    format(string(Cond), '(typeof ~w === "number" && !Number.isInteger(~w))', [X, X]).
+ts_type_check(number, Arg, VarMap, Cond) :- !,
+    ts_expr(Arg, VarMap, X),
+    format(string(Cond), 'typeof ~w === "number"', [X]).
+ts_type_check(atom, Arg, VarMap, Cond) :- !,
+    ts_expr(Arg, VarMap, X),
+    format(string(Cond), 'typeof ~w === "string"', [X]).
+ts_type_check(atomic, Arg, VarMap, Cond) :- !,
+    ts_expr(Arg, VarMap, X),
+    format(string(Cond), '(typeof ~w !== "object" && ~w !== undefined)', [X, X]).
+ts_type_check(is_list, Arg, VarMap, Cond) :- !,
+    ts_expr(Arg, VarMap, X),
+    format(string(Cond), 'Array.isArray(~w)', [X]).
+ts_type_check(compound, Arg, VarMap, Cond) :- !,
+    ts_expr(Arg, VarMap, X),
+    format(string(Cond), '(typeof ~w === "object" && ~w !== null)', [X, X]).
+ts_type_check(var, Arg, VarMap, Cond) :- !,
+    ts_expr(Arg, VarMap, X),
+    format(string(Cond), '(~w === undefined)', [X]).
+ts_type_check(nonvar, Arg, VarMap, Cond) :- !,
+    ts_expr(Arg, VarMap, X),
+    format(string(Cond), '(~w !== undefined)', [X]).
+ts_type_check(ground, Arg, VarMap, Cond) :- !,
+    ts_expr(Arg, VarMap, X),
+    format(string(Cond), '(~w !== undefined)', [X]).
 
 %% ts_output_goals(+Goals, +VarMap, -Code)
 ts_output_goals([], _VarMap, '"error"') :- !.

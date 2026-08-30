@@ -1099,6 +1099,74 @@ clojure_guard_condition(VarMap, Goal, Condition) :-
     clojure_expr(Right, VarMap, CRight),
     clojure_op(StdOp, COp),
     format(string(Condition), '(~w ~w ~w)', [COp, CLeft, CRight]).
+%% Negation-as-failure: \+ Inner / not(Inner) → (not <render Inner>) (G-P7).
+%% Recurses into clojure_guard_condition for Inner (comparison / type-check /
+%% membership / nested negation). If Inner is a non-guard goal with no guard
+%% rendering, the recursive call FAILS, so clojure_guard_condition fails cleanly
+%% (no code emitted) rather than emitting wrong code.
+clojure_guard_condition(VarMap, \+(Inner), Condition) :-
+    !,
+    clojure_guard_condition(VarMap, Inner, InnerCond),
+    format(string(Condition), '(not ~w)', [InnerCond]).
+clojure_guard_condition(VarMap, not(Inner), Condition) :-
+    !,
+    clojure_guard_condition(VarMap, Inner, InnerCond),
+    format(string(Condition), '(not ~w)', [InnerCond]).
+%% Membership: member(X, List) → (some #(= % x) list) (G-P7). Positive member
+%% is not classified as a guard upstream, so this is reached via `\+ member`.
+clojure_guard_condition(VarMap, member(X, List), Condition) :-
+    !,
+    clojure_expr(X, VarMap, CX),
+    clojure_member_list(List, VarMap, CList),
+    format(string(Condition), '(some #(= % ~w) ~w)', [CX, CList]).
+%% Type-check predicates (integer/1, atom/1, is_list/1, ...) (G-P7).
+clojure_guard_condition(VarMap, Goal, Condition) :-
+    compound(Goal),
+    Goal =.. [Pred, Arg],
+    clojure_type_check(Pred, Arg, VarMap, Condition),
+    !.
+
+%% clojure_member_list(+List, +VarMap, -CljListExpr)
+%  Render the second argument of member/2: a proper list becomes a Clojure
+%  vector literal, a variable resolves to its bound name (assumed seqable).
+clojure_member_list(List, VarMap, CList) :-
+    is_list(List),
+    !,
+    maplist(clojure_member_elem(VarMap), List, Elems),
+    atomic_list_concat(Elems, ' ', Inner),
+    format(string(CList), '[~w]', [Inner]).
+clojure_member_list(Var, VarMap, CList) :-
+    var(Var),
+    !,
+    clojure_expr(Var, VarMap, CList).
+
+clojure_member_elem(VarMap, Elem, CElem) :- clojure_expr(Elem, VarMap, CElem).
+
+%% clojure_type_check(+Pred, +Arg, +VarMap, -Condition)
+%  Map Prolog type-check predicates (clause_body_analysis:type_check_pred/1) to
+%  Clojure runtime predicates. Atoms are strings in this target, unbound vars
+%  are nil, and lists/compounds are collections. Fails for a non type-check
+%  predicate so the caller can fail cleanly.
+clojure_type_check(integer, Arg, VarMap, Cond) :- !,
+    clojure_expr(Arg, VarMap, X), format(string(Cond), '(integer? ~w)', [X]).
+clojure_type_check(float, Arg, VarMap, Cond) :- !,
+    clojure_expr(Arg, VarMap, X), format(string(Cond), '(float? ~w)', [X]).
+clojure_type_check(number, Arg, VarMap, Cond) :- !,
+    clojure_expr(Arg, VarMap, X), format(string(Cond), '(number? ~w)', [X]).
+clojure_type_check(atom, Arg, VarMap, Cond) :- !,
+    clojure_expr(Arg, VarMap, X), format(string(Cond), '(string? ~w)', [X]).
+clojure_type_check(atomic, Arg, VarMap, Cond) :- !,
+    clojure_expr(Arg, VarMap, X), format(string(Cond), '(not (coll? ~w))', [X]).
+clojure_type_check(is_list, Arg, VarMap, Cond) :- !,
+    clojure_expr(Arg, VarMap, X), format(string(Cond), '(sequential? ~w)', [X]).
+clojure_type_check(compound, Arg, VarMap, Cond) :- !,
+    clojure_expr(Arg, VarMap, X), format(string(Cond), '(coll? ~w)', [X]).
+clojure_type_check(var, Arg, VarMap, Cond) :- !,
+    clojure_expr(Arg, VarMap, X), format(string(Cond), '(nil? ~w)', [X]).
+clojure_type_check(nonvar, Arg, VarMap, Cond) :- !,
+    clojure_expr(Arg, VarMap, X), format(string(Cond), '(some? ~w)', [X]).
+clojure_type_check(ground, Arg, VarMap, Cond) :- !,
+    clojure_expr(Arg, VarMap, X), format(string(Cond), '(some? ~w)', [X]).
 
 %% clojure_output_goals(+Goals, +VarMap, -Code)
 clojure_output_goals([], _VarMap, 'nil') :- !.
