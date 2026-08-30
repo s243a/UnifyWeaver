@@ -1,6 +1,11 @@
 :- module(test_clojurescript_target, [test_clojurescript_target/0]).
 :- use_module(library(plunit)).
 :- use_module('../../src/unifyweaver/targets/clojurescript_target').
+:- use_module('../../src/unifyweaver/core/component_registry').
+% clojure_target is loaded transitively by clojurescript_target; it is NOT
+% use_module'd here because it also exports compile_module/3 (the CLJS variant
+% is the one imported above). Its collect_declared_component/2 is reached via a
+% module-qualified call (clojure_target:...).
 
 test_clojurescript_target :-
     run_tests([clojurescript_target]).
@@ -132,5 +137,91 @@ test(from_clojure_3_nbb) :-
     clojurescript_target:clojurescript_from_clojure("(Math/abs x)", [runtime(nbb)], Out),
     has(Out, "#!/usr/bin/env nbb"),
     has(Out, "js/Math.abs").
+
+% ============================================================================
+% G-P6: compile_module/3 -- multiple predicates into ONE CLJS module
+%
+% The ClojureScript target previously had no compile_module/3 (module decl
+% omitted it; the clojure base also lacked one). These tests assert that
+% compile_module/3 emits a single (ns ...) namespace form followed by each
+% predicate's (defn ...), with the JVM->JS interop applied to the whole module.
+% ============================================================================
+
+test(compile_module_multi_predicate) :-
+    clojurescript_target:init_clojurescript_target,
+    assert(user:(dbl(X, R) :- R is X * 2)),
+    assert(user:(trp(X, R) :- R is X * 3)),
+    clojurescript_target:compile_module(
+        [dbl/2, trp/2],
+        [namespace('generated.multi')],
+        Code),
+    % single ns form for the whole module
+    has(Code, "(ns generated.multi)"),
+    % each predicate present as its own defn (no per-predicate CLI entry / header)
+    has(Code, "(defn dbl [arg1]"),
+    has(Code, "(* arg1 2)"),
+    has(Code, "(defn trp [arg1]"),
+    has(Code, "(* arg1 3)"),
+    % ClojureScript banner from clojurescript_from_clojure
+    has(Code, "ClojureScript"),
+    retractall(user:dbl(_, _)),
+    retractall(user:trp(_, _)).
+
+% pred(Name,Arity,Type) spec shape (matches typescript_target's compile_module).
+test(compile_module_accepts_pred_terms) :-
+    clojurescript_target:init_clojurescript_target,
+    assert(user:(dbl(X, R) :- R is X * 2)),
+    clojurescript_target:compile_module(
+        [pred(dbl, 2, native)],
+        [namespace('generated.pt')],
+        Code),
+    has(Code, "(ns generated.pt)"),
+    has(Code, "(defn dbl [arg1]"),
+    retractall(user:dbl(_, _)).
+
+% ============================================================================
+% G-P5: component emission -- a declared custom_clojure component is emitted
+% INTO the CLJS module (and interop-rewritten), where before it was dropped.
+% ============================================================================
+
+setup_cljs_component :-
+    clojurescript_target:init_clojurescript_target,   % clears collected_component/2
+    assert(user:(dbl(X, R) :- R is X * 2)),
+    component_registry:declare_component(source, cljs_greet, custom_clojure,
+        [ code("(str \"hi \" input)") ]),
+    clojure_target:collect_declared_component(source, cljs_greet).
+
+cleanup_cljs_component :-
+    retractall(clojure_target:collected_component(_, _)),
+    catch(component_registry:retract_component(source, cljs_greet), _, true),
+    retractall(user:dbl(_, _)).
+
+test(cljs_component_emission_includes_declared,
+     [setup(setup_cljs_component), cleanup(cleanup_cljs_component)]) :-
+    clojurescript_target:compile_module(
+        [dbl/2],
+        [namespace('generated.withcomp')],
+        Code),
+    % predicate still emitted alongside the component
+    has(Code, "(defn dbl [arg1]"),
+    % custom_clojure component now present (previously dropped)
+    has(Code, "Custom Component: cljs_greet"),
+    has(Code, "(defn comp-cljs_greet-invoke"),
+    has(Code, "(str \"hi \" input)"),
+    % no JVM host call leaked into the CLJS module
+    hasnt(Code, "Integer/parseInt").
+
+% A CLJS module that declares NO components stays component-marker-free.
+test(cljs_component_free_module_unchanged,
+     [setup(clojurescript_target:init_clojurescript_target)]) :-
+    assert(user:(dbl(X, R) :- R is X * 2)),
+    clojurescript_target:compile_module(
+        [dbl/2],
+        [namespace('generated.nocomp')],
+        Code),
+    has(Code, "(ns generated.nocomp)"),
+    has(Code, "(defn dbl [arg1]"),
+    hasnt(Code, "Custom Component"),
+    retractall(user:dbl(_, _)).
 
 :- end_tests(clojurescript_target).

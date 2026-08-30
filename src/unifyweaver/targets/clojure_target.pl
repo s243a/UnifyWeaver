@@ -11,6 +11,10 @@
     compile_predicate_to_clojure/3,    % +Predicate, +Options, -ClojureCode
     compile_clojure_pipeline/3,        % +Predicates, +Options, -ClojureCode
     compile_facts_to_clojure/3,        % +Pred, +Arity, -ClojureCode  -- NEW
+    compile_module/3,                  % +Predicates, +Options, -ClojureCode
+    clojure_predicate_defn/3,          % +Pred/Arity, +Options, -DefnCode
+    collect_declared_component/2,      % +Category, +Name (record component to emit)
+    compile_collected_components/1,    % -Code (emit all collected components)
     generate_deps_edn/2,               % +Options, -DepsFile
     write_clojure_program/2,           % +ClojureCode, +FilePath
     init_clojure_target/0,             % Initialize Clojure target
@@ -23,12 +27,24 @@
 :- use_module('../core/binding_registry').
 :- use_module('../core/clause_body_analysis').
 
+% Component pattern integration (G-P5). Load the component registry and the
+% custom_clojure component type. custom_clojure self-registers via a
+% ':- initialization(..., now)' directive, so loading it here (empty import
+% list) triggers that registration and makes the type available to
+% declare_component/4. Without this the module was orphaned and dead.
+:- use_module('../core/component_registry').
+:- use_module('clojure_runtime/custom_clojure', []).
+
 % Track required imports
 :- dynamic required_clojure_require/1.
 
+% Track collected components for module emission (G-P5)
+:- dynamic collected_component/2.
+
 %% init_clojure_target
 init_clojure_target :-
-    retractall(required_clojure_require(_)).
+    retractall(required_clojure_require(_)),
+    retractall(collected_component(_, _)).
 
 %% clear_clojure_requires
 clear_clojure_requires :-
@@ -211,6 +227,111 @@ format_clojure_fact_entry(Args, Entry) :-
     ), FormattedArgs),
     atomic_list_concat(FormattedArgs, ' ', ArgsStr),
     format(string(Entry), '   [~w]', [ArgsStr]).
+
+%% ============================================
+%% COMPONENT COLLECTION + MODULE COMPILATION (G-P5 / G-P6)
+%% ============================================
+
+%% collect_declared_component(+Category, +Name)
+%  Record that a declared component instance is used in this module, so
+%  compile_module/3 will emit its compiled code. Mirrors the python/typescript
+%  emit-loop model (python_target.pl:~187, typescript_target.pl:~165).
+collect_declared_component(Category, Name) :-
+    (   collected_component(Category, Name)
+    ->  true
+    ;   assertz(collected_component(Category, Name))
+    ).
+
+%% compile_collected_components(-Code)
+%  Compile every collected component to Clojure source by delegating to
+%  component_registry:compile_component/4 for each. Returns '' when no
+%  components were collected, so component-free modules are unchanged.
+compile_collected_components(Code) :-
+    findall(CompCode, (
+        collected_component(Category, Name),
+        component_registry:compile_component(Category, Name, [], CompCode)
+    ), CompCodes),
+    (   CompCodes = []
+    ->  Code = ''
+    ;   atomic_list_concat(CompCodes, '\n\n', Code)
+    ).
+
+%% clojure_predicate_defn(+Pred/Arity, +Options, -DefnCode)
+%  Produce just the top-level (defn ...) form for a predicate (no file header
+%  and no CLI entry point), suitable for inclusion inside a multi-predicate
+%  module. Uses the same native clause-body lowering as the single-predicate
+%  path; falls back to a stub defn when the predicate cannot be lowered.
+clojure_predicate_defn(PredIndicator, _Options, DefnCode) :-
+    (   PredIndicator = _Module:Pred/Arity -> true
+    ;   PredIndicator = Pred/Arity
+    ),
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    Clauses \= [],
+    native_clojure_clause_body(Pred/Arity, Clauses, FuncBody),
+    !,
+    atom_string(Pred, PredStr),
+    Arity1 is Arity - 1,
+    build_clojure_arg_list(Arity1, ArgList),
+    format(string(DefnCode),
+'(defn ~w [~w]
+~w)', [PredStr, ArgList, FuncBody]).
+clojure_predicate_defn(PredIndicator, _Options, DefnCode) :-
+    (   PredIndicator = _Module:Pred/Arity -> true
+    ;   PredIndicator = Pred/Arity
+    ),
+    atom_string(Pred, PredStr),
+    format(string(DefnCode),
+'(defn ~w
+  "Predicate ~w/~w"
+  [& args]
+  ;; TODO: Implement ~w logic
+  nil)', [PredStr, Pred, Arity, Pred]).
+
+%% normalize_module_preds(+In, -Out)
+%  Accept both `Name/Arity` and `pred(Name, Arity, _Type)` predicate specs in a
+%  module list (the latter matches typescript_target's compile_module/3 shape),
+%  normalising to a list of Name/Arity.
+normalize_module_preds([], []).
+normalize_module_preds([pred(Name, Arity, _Type)|T], [Name/Arity|T2]) :- !,
+    normalize_module_preds(T, T2).
+normalize_module_preds([Name/Arity|T], [Name/Arity|T2]) :- !,
+    normalize_module_preds(T, T2).
+normalize_module_preds([Other|T], [Other|T2]) :-
+    normalize_module_preds(T, T2).
+
+%% compile_module(+Predicates, +Options, -ClojureCode)
+%  Compile several predicates into a single Clojure namespace: an (ns ...) form,
+%  each predicate's (defn ...), then any declared components. This is the base
+%  multi-predicate module compiler; clojurescript_target reuses it (then applies
+%  its JVM->JS interop rewrite + banner). Predicates may be `Name/Arity` or
+%  `pred(Name, Arity, Type)` terms.
+%
+%  Options:
+%    - namespace(NS) : the module namespace (default 'generated.module')
+compile_module(Predicates, Options, Code) :-
+    option(namespace(Namespace), Options, 'generated.module'),
+    normalize_module_preds(Predicates, PredList),
+    findall(DefnCode, (
+        member(P, PredList),
+        clojure_predicate_defn(P, Options, DefnCode)
+    ), DefnCodes),
+    atomic_list_concat(DefnCodes, '\n\n', PredsSection),
+    % Emit any declared components (G-P5). '' when none were collected, so a
+    % component-free module carries no component markers.
+    compile_collected_components(ComponentsCode),
+    (   ComponentsCode == ''
+    ->  Body = PredsSection
+    ;   format(string(Body), '~w\n\n~w', [PredsSection, ComponentsCode])
+    ),
+    format(string(Code),
+';; Generated by UnifyWeaver Clojure Target - Module
+;; Namespace: ~w
+
+(ns ~w)
+
+~w
+', [Namespace, Namespace, Body]).
 
 %% ============================================
 %% GENERATOR MODE (Clojure's lazy-seq)
