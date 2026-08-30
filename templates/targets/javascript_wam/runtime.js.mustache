@@ -18,6 +18,7 @@ const Runtime = {};
 V.Atom = function (id) { return { tag: "atom", id: id }; };
 V.Int = function (n) { return { tag: "int", val: n | 0 }; };
 V.Float = function (n) { return { tag: "float", val: +n }; };
+V.String = function (s) { return { tag: "string", val: String(s) }; };
 V.Unbound = function (name) { return { tag: "unbound", name: name }; };
 V.Struct = function (fid, args) { return { tag: "struct", fid: fid, args: args || [] }; };
 
@@ -208,6 +209,7 @@ Runtime.copy_term = function (state, v, seen) {
   if (v.tag === "atom") return V.Atom(v.id);
   if (v.tag === "int") return V.Int(v.val);
   if (v.tag === "float") return V.Float(v.val);
+  if (v.tag === "string") return V.String(v.val);
   if (v.tag === "unbound") return V.Unbound(v.name);
   return v;
 };
@@ -253,6 +255,7 @@ function same_atomic(a, b) {
   if (a.tag !== b.tag) return false;
   if (a.tag === "atom") return a.id === b.id;
   if (a.tag === "int" || a.tag === "float") return a.val === b.val;
+  if (a.tag === "string") return a.val === b.val;
   return false;
 }
 
@@ -549,6 +552,7 @@ function term_to_string(program, state, term) {
   if (typeof term !== "object" || term === null) return String(term);
   if (term.tag === "atom") return Runtime.string_of(program.intern_table, term.id);
   if (term.tag === "int" || term.tag === "float") return String(term.val);
+  if (term.tag === "string") return String(term.val);
   if (term.tag === "unbound") return "_" + String(term.name);
   if (term.tag === "struct") {
     const items = list_items(program, state, term);
@@ -594,7 +598,8 @@ function builtin_functor(program, state) {
     name = V.Atom(term.fid);
     arity = (term.args || []).length;
   } else if (typeof term === "object" && term !== null
-      && (term.tag === "atom" || term.tag === "int" || term.tag === "float")) {
+      && (term.tag === "atom" || term.tag === "int" || term.tag === "float"
+          || term.tag === "string")) {
     name = term;
     arity = 0;
   } else {
@@ -634,7 +639,8 @@ function builtin_univ(program, state) {
     const items = [V.Atom(term.fid)].concat(term.args || []);
     out = Runtime.list_from_terms(items, program.intern_table);
   } else if (typeof term === "object" && term !== null
-      && (term.tag === "atom" || term.tag === "int" || term.tag === "float")) {
+      && (term.tag === "atom" || term.tag === "int" || term.tag === "float"
+          || term.tag === "string")) {
     out = Runtime.list_from_terms([term], program.intern_table);
   } else {
     return false;
@@ -664,6 +670,7 @@ function copy_term_fresh(state, term, varMap, seen) {
   if (term.tag === "atom") return V.Atom(term.id);
   if (term.tag === "int") return V.Int(term.val);
   if (term.tag === "float") return V.Float(term.val);
+  if (term.tag === "string") return V.String(term.val);
   return term;
 }
 
@@ -792,6 +799,7 @@ function exact_equal(state, a, b) {
   if (a.tag === "unbound") return a.name === b.name;
   if (a.tag === "atom") return a.id === b.id;
   if (a.tag === "int" || a.tag === "float") return a.val === b.val;
+  if (a.tag === "string") return a.val === b.val;
   if (a.tag === "struct") {
     if (a.fid !== b.fid || (a.args || []).length !== (b.args || []).length) return false;
     for (let i = 0; i < a.args.length; i++) {
@@ -805,7 +813,7 @@ function exact_equal(state, a, b) {
 function type_builtin(program, state, pred) {
   const p = strip_trailing_arity(pred);
   const known = {
-    atom: true, integer: true, float: true, number: true,
+    atom: true, integer: true, float: true, number: true, string: true,
     compound: true, var: true, nonvar: true, is_list: true, ground: true
   };
   if (!known[p]) return null;
@@ -813,6 +821,7 @@ function type_builtin(program, state, pred) {
   if (p === "ground") return is_ground(state, val);
   if (typeof val !== "object" || val === null) return false;
   if (p === "atom") return val.tag === "atom";
+  if (p === "string") return val.tag === "string";
   if (p === "integer") return val.tag === "int";
   if (p === "float") return val.tag === "float";
   if (p === "number") return val.tag === "int" || val.tag === "float";
@@ -842,6 +851,7 @@ function term_key(state, v) {
   if (v.tag === "atom") return "a:" + String(v.id);
   if (v.tag === "int") return "i:" + String(v.val);
   if (v.tag === "float") return "f:" + String(v.val);
+  if (v.tag === "string") return "str:" + String(v.val);
   if (v.tag === "unbound") return "u:" + String(v.name);
   if (v.tag === "struct") {
     const parts = ["s:" + String(v.fid) + "/" + String((v.args || []).length)];
@@ -857,12 +867,13 @@ function term_ord(state, v) {
   if (typeof v !== "object" || v === null) return [0, String(v)];
   if (v.tag === "unbound") return [1, v.name];
   if (v.tag === "int" || v.tag === "float") return [2, v.val];
-  if (v.tag === "atom") return [3, v.id];
+  if (v.tag === "string") return [3, v.val];
+  if (v.tag === "atom") return [4, v.id];
   if (v.tag === "struct") {
     const args = v.args || [];
     const inner = [];
     for (let i = 0; i < args.length; i++) inner.push(term_ord(state, args[i]));
-    return [4, v.fid, args.length, inner];
+    return [5, v.fid, args.length, inner];
   }
   return [9, String(v)];
 }
@@ -930,13 +941,14 @@ function term_class_rank(v) {
   if (typeof v !== "object" || v === null) return 5;
   if (v.tag === "unbound") return 0;
   if (v.tag === "int" || v.tag === "float") return 1;
-  if (v.tag === "atom") return 2;
-  if (v.tag === "string") return 3;
+  // SWI 9.0.4: String @< Atom (compare(foo,"foo") = >). Match the oracle.
+  if (v.tag === "string") return 2;
+  if (v.tag === "atom") return 3;
   if (v.tag === "struct") return 4;
   return 5;
 }
 
-// ISO §7.2 / SWI standard order: Var < Number < Atom < String < Compound.
+// SWI 9.x standard order (oracle): Var < Number < String < Atom < Compound.
 // Atoms compare by name (not intern id). Compounds compare by arity,
 // then functor name, then arguments left-to-right.
 function compare_terms(intern, state, a, b) {
@@ -954,14 +966,14 @@ function compare_terms(intern, state, a, b) {
     return a.val < b.val ? -1 : 1;
   }
   if (ca === 2) {
+    if (a.val === b.val) return 0;
+    return a.val < b.val ? -1 : 1;
+  }
+  if (ca === 3) {
     const na = Runtime.string_of(intern, a.id);
     const nb = Runtime.string_of(intern, b.id);
     if (na === nb) return 0;
     return na < nb ? -1 : 1;
-  }
-  if (ca === 3) {
-    if (a.val === b.val) return 0;
-    return a.val < b.val ? -1 : 1;
   }
   if (ca === 4) {
     const aa = (a.args || []).length;
@@ -1186,7 +1198,8 @@ function find_matching_end_aggregate(program, startPc) {
 
 function is_switch_constant(v) {
   return typeof v === "object" && v !== null
-    && (v.tag === "atom" || v.tag === "int" || v.tag === "float");
+    && (v.tag === "atom" || v.tag === "int" || v.tag === "float"
+        || v.tag === "string");
 }
 
 function switch_values_equal(a, b) {
@@ -1199,6 +1212,7 @@ function switch_values_equal(a, b) {
   }
   if (a.tag === "atom") return a.id === b.id;
   if (a.tag === "int" || a.tag === "float") return a.val === b.val;
+  if (a.tag === "string") return a.val === b.val;
   return false;
 }
 
@@ -1842,30 +1856,42 @@ function builtin_include_exclude(program, state, keep) {
   return bind_list(program, state, 3, out);
 }
 
-function builtin_atom_concat(program, state) {
+function concat_box(program, text, asString) {
+  return asString ? V.String(text) : intern_atom(program, text);
+}
+
+function builtin_concat_family(program, state, asString) {
   const a = atomic_text(program, state, Runtime.get_reg(state, 1));
   const b = atomic_text(program, state, Runtime.get_reg(state, 2));
   const c = atomic_text(program, state, Runtime.get_reg(state, 3));
   if (a !== null && b !== null) {
-    return bind_or_compare(state, 3, intern_atom(program, a + b), program);
+    return bind_or_compare(state, 3, concat_box(program, a + b, asString), program);
   }
   if (c === null) return false;
   if (a !== null) {
     if (c.indexOf(a) !== 0) return false;
-    return bind_or_compare(state, 2, intern_atom(program, c.slice(a.length)), program);
+    return bind_or_compare(state, 2, concat_box(program, c.slice(a.length), asString), program);
   }
   if (b !== null) {
     if (c.length < b.length || c.slice(c.length - b.length) !== b) return false;
-    return bind_or_compare(state, 1, intern_atom(program, c.slice(0, c.length - b.length)), program);
+    return bind_or_compare(state, 1, concat_box(program, c.slice(0, c.length - b.length), asString), program);
   }
   const sols = [];
   for (let i = 0; i <= c.length; i++) {
     sols.push([
-      [1, intern_atom(program, c.slice(0, i))],
-      [2, intern_atom(program, c.slice(i))]
+      [1, concat_box(program, c.slice(0, i), asString)],
+      [2, concat_box(program, c.slice(i), asString)]
     ]);
   }
   return dispatch_enum(program, state, sols);
+}
+
+function builtin_atom_concat(program, state) {
+  return builtin_concat_family(program, state, false);
+}
+
+function builtin_string_concat(program, state) {
+  return builtin_concat_family(program, state, true);
 }
 
 function builtin_atom_length(program, state) {
@@ -1882,6 +1908,16 @@ function builtin_atom_chars(program, state) {
   const s = chars_to_string(program, state, items);
   if (s === null) return false;
   return bind_or_compare(state, 1, intern_atom(program, s), program);
+}
+
+function builtin_string_chars(program, state) {
+  const t = atomic_text(program, state, Runtime.get_reg(state, 1));
+  if (t !== null) return bind_list(program, state, 2, string_to_chars(program, t));
+  const items = list_items(program, state, Runtime.get_reg(state, 2));
+  if (items === null) return false;
+  const s = chars_to_string(program, state, items);
+  if (s === null) return false;
+  return bind_or_compare(state, 1, V.String(s), program);
 }
 
 function builtin_atom_codes(program, state) {
@@ -1949,10 +1985,20 @@ function builtin_sub_atom(program, state) {
 }
 
 function builtin_atom_string(program, state) {
-  const a = atomic_text(program, state, Runtime.get_reg(state, 1));
-  const b = atomic_text(program, state, Runtime.get_reg(state, 2));
-  if (a !== null) return bind_or_compare(state, 2, intern_atom(program, a), program);
-  if (b !== null) return bind_or_compare(state, 1, intern_atom(program, b), program);
+  const aText = atomic_text(program, state, Runtime.get_reg(state, 1));
+  const bText = atomic_text(program, state, Runtime.get_reg(state, 2));
+  if (aText !== null && bText !== null) return aText === bText;
+  if (aText !== null) return bind_or_compare(state, 2, V.String(aText), program);
+  if (bText !== null) return bind_or_compare(state, 1, intern_atom(program, bText), program);
+  return false;
+}
+
+function builtin_string_to_atom(program, state) {
+  const sText = atomic_text(program, state, Runtime.get_reg(state, 1));
+  const aText = atomic_text(program, state, Runtime.get_reg(state, 2));
+  if (sText !== null && aText !== null) return sText === aText;
+  if (sText !== null) return bind_or_compare(state, 2, intern_atom(program, sText), program);
+  if (aText !== null) return bind_or_compare(state, 1, V.String(aText), program);
   return false;
 }
 
@@ -1976,7 +2022,7 @@ function builtin_number_codes(program, state) {
 function builtin_number_string(program, state) {
   const n = Runtime.deref(state, Runtime.get_reg(state, 1));
   if (typeof n === "object" && n !== null && (n.tag === "int" || n.tag === "float")) {
-    return bind_or_compare(state, 2, intern_atom(program, String(n.val)), program);
+    return bind_or_compare(state, 2, V.String(String(n.val)), program);
   }
   const s = atomic_text(program, state, Runtime.get_reg(state, 2));
   if (s === null) return false;
@@ -2017,9 +2063,9 @@ function builtin_split_string(program, state) {
     }
     parts.push(trimPad(buf));
   }
-  const atoms = [];
-  for (let i = 0; i < parts.length; i++) atoms.push(intern_atom(program, parts[i]));
-  return bind_list(program, state, 4, atoms);
+  const strs = [];
+  for (let i = 0; i < parts.length; i++) strs.push(V.String(parts[i]));
+  return bind_list(program, state, 4, strs);
 }
 
 function builtin_case_atom(program, state, up) {
@@ -2034,10 +2080,17 @@ function quote_atom_text(s) {
   return "'" + String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
 }
 
+function quote_string_text(s) {
+  return "\"" + String(s).replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"";
+}
+
 function format_write_term(program, state, term, quoted) {
   term = Runtime.deref(state, term);
   if (quoted && term && term.tag === "atom") {
     return quote_atom_text(Runtime.string_of(program.intern_table, term.id));
+  }
+  if (quoted && term && term.tag === "string") {
+    return quote_string_text(term.val);
   }
   return term_to_string(program, state, term);
 }
@@ -2477,13 +2530,16 @@ Runtime.builtin_call = function (program, state, inst) {
   if (name === "select") return builtin_select(program, state);
   if (name === "include") return builtin_include_exclude(program, state, true);
   if (name === "exclude") return builtin_include_exclude(program, state, false);
-  if (name === "atom_concat" || name === "string_concat") return builtin_atom_concat(program, state);
+  if (name === "atom_concat") return builtin_atom_concat(program, state);
+  if (name === "string_concat") return builtin_string_concat(program, state);
   if (name === "atom_length") return builtin_atom_length(program, state);
-  if (name === "atom_chars" || name === "string_chars") return builtin_atom_chars(program, state);
+  if (name === "atom_chars") return builtin_atom_chars(program, state);
+  if (name === "string_chars") return builtin_string_chars(program, state);
   if (name === "atom_codes") return builtin_atom_codes(program, state);
   if (name === "char_code") return builtin_char_code(program, state);
   if (name === "sub_atom") return builtin_sub_atom(program, state);
   if (name === "atom_string") return builtin_atom_string(program, state);
+  if (name === "string_to_atom") return builtin_string_to_atom(program, state);
   if (name === "number_codes") return builtin_number_codes(program, state);
   if (name === "number_string") return builtin_number_string(program, state);
   if (name === "split_string") return builtin_split_string(program, state);
@@ -3392,6 +3448,23 @@ Runtime.tokenize_term = function (text) {
       toks.push({ type: "atom", value: buf });
       continue;
     }
+    if (c === "\"") {
+      i += 1;
+      let buf = "";
+      while (i < n && s.charAt(i) !== "\"") {
+        if (s.charAt(i) === "\\" && i + 1 < n) {
+          buf += s.charAt(i + 1);
+          i += 2;
+        } else {
+          buf += s.charAt(i);
+          i += 1;
+        }
+      }
+      if (i >= n) return null;
+      i += 1;
+      toks.push({ type: "string", value: buf });
+      continue;
+    }
     const after_sep = last_type() === null ||
       last_type() === "comma" || last_type() === "semicolon" ||
       last_type() === "lparen" || last_type() === "lbracket" ||
@@ -3495,6 +3568,10 @@ Runtime.wam_parse_primary = function (p, maxPrec) {
     if (tok.is_float) return V.Float(num);
     return V.Int(num);
   }
+  if (tok.type === "string") {
+    p.pos += 1;
+    return V.String(tok.value);
+  }
   if (tok.type === "var") {
     p.pos += 1;
     const name = tok.value;
@@ -3525,7 +3602,8 @@ Runtime.wam_parse_primary = function (p, maxPrec) {
     if (op && op.prec <= maxPrec && p.pos < p.tokens.length) {
       const next = p.tokens[p.pos];
       const starts = next.type === "number" || next.type === "var" ||
-        next.type === "atom" || next.type === "lparen" || next.type === "lbracket";
+        next.type === "atom" || next.type === "string" ||
+        next.type === "lparen" || next.type === "lbracket";
       if (starts) {
         const rhsMax = op.assoc === "fy" ? op.prec : op.prec - 1;
         const operand = Runtime.wam_parse_expr(p, rhsMax);

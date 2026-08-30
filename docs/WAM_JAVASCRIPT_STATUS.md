@@ -63,8 +63,11 @@ Key, `@<`/`@>`/`<`/`>`), **`predsort/3`** (`compare/3` and 3-arg callables),
 Atom/string: **`atom_concat/3`**, **`string_concat/3`**, **`atom_length/2`**,
 **`atom_chars/2`**, **`string_chars/2`**, **`atom_codes/2`**, **`char_code/2`**,
 **`sub_atom/5`** (ground-Atom; enumerates unbound Before/Length/After),
-**`atom_string/2`**, **`number_codes/2`**, **`number_string/2`**,
-**`split_string/4`**, **`upcase_atom/2`**, **`downcase_atom/2`**.
+**`atom_string/2`**, **`string_to_atom/2`**, **`string/1`**,
+**`number_codes/2`**, **`number_string/2`**, **`split_string/4`**,
+**`upcase_atom/2`**, **`downcase_atom/2`**. Distinct **`string` tag**
+(`V.String`): string-producing builtins yield strings; `atom/1` is
+false for them. `write/1` prints the text; `format` `~q` quotes with `"`.
 
 I/O: `write/1`, `nl/0`, `writeln/1`, **`format/2`**, **`format/3`**
 (`~w ~a ~d ~p ~q ~n ~s ~t ~~`; `atom(A)` / `string(S)` sinks), **`tab/1`**.
@@ -86,8 +89,8 @@ builtin metacall), **`bagof/3`** / **`setof/3`** (ISO free-var grouping,
 `^/2` existential quantification, empty-goal failure), **`aggregate_all/3`**
 for `count` / `sum(X)` / `bag(X)` / `set(X)`.
 
-Types: `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `var/1`,
-`nonvar/1`, `is_list/1`, `ground/1`.
+Types: `atom/1`, `integer/1`, `float/1`, `number/1`, `string/1`, `compound/1`,
+`var/1`, `nonvar/1`, `is_list/1`, `ground/1`.
 
 ## Runtime term parser (G-W2)
 
@@ -97,7 +100,8 @@ goes through `parse_cli_atom_or_int`, which now calls the same reader
 (unreadable text still interned as an atom).
 
 **Full:** integers (including a leading `-` after start/`(`/`[`/`,`/`|`),
-floats (`3.14`, `-1.5`, `1.0e2`), bare atoms, quoted atoms (`'hi there'`
+floats (`3.14`, `-1.5`, `1.0e2`), bare atoms, quoted atoms (`'hi there'`),
+double-quoted strings (`"hi"` → string tag),
 with `\'` / `\\` escapes), variables (`X`, `_`, shared names), `[]`,
 proper lists `[a,b,c]`, partial lists `[H|T]`, compounds
 `foo(a, bar(b), 3)`, and parentheses. Cons intern as `[|]/2` + the `[]`
@@ -133,13 +137,13 @@ parser, not the bundled portable `compiled(prolog_term_parser)`.
 | Builtin | Status |
 |---|---|
 | `bagof/3` | **Implemented.** ISO witness grouping (one bag per distinct free-var binding, SWI encounter order), `Var^Goal` / nested `V1^V2^Goal` stripped from the witness set, fails when Goal has no solutions. |
-| `setof/3` | **Implemented.** `bagof` then per-group standard-order sort + dedup. Order: Var < Number < Atom < String < Compound; compounds by arity, functor **name**, then args L-to-R (matches SWI mixed-type lists). |
+| `setof/3` | **Implemented.** `bagof` then per-group standard-order sort + dedup. Order: Var < Number < **String** < Atom < Compound (SWI 9.0.4); compounds by arity, functor **name**, then args L-to-R (matches SWI mixed-type lists). |
 | `term_variables/2` | **Implemented.** Distinct unbound vars, first-occurrence L-to-R depth-first. Cyclic compounds are visited once (same `seen` walk as `copy_term`). |
 | `numbervars/3` | **Implemented.** Binds+trails each distinct unbound var to `'$VAR'(N)` from Start; End is Start+count. `write/1` prints `'$VAR'(N)` literally — it does **not** letter-style SWI rendering (`A`, `B`, …). |
 | `=@=/2` / `\=@=/2` | **Implemented.** Variant equality: ground as `==`; vars match via a consistent bijection. Cyclic struct pairs are treated as already-equal once seen. |
 | `format/2` `/3` | **Implemented** for `~w ~a ~d ~p ~q ~n ~s ~t ~~`. Not ported: `~f`, `~r`, `~D`, positioning (`~N|`, `~+`, `t~`), aliases, and stream sinks other than stdout / `atom(A)` / `string(S)`. |
 | `sub_atom/5` | **Implemented** when Atom is ground; enumerates unbound Before/Length/After (and filters a ground SubAtom). |
-| `atom_string/2` / `split_string/4` | **Implemented** but the runtime has no distinct string tag — results intern as atoms (write/== match SWI for the probe suite). |
+| String term tag | **Implemented.** `V.String` is a distinct tag. Unify/`==` require equal strings (not atoms). Standard order / `compare/3` / `sort` matches SWI 9.0.4: Var < Number < **String** < Atom < Compound (`"foo" @< foo`). `atom_string/2`, `string_concat/3`, `string_chars/2` (construct), `string_to_atom/2`, `number_string/2`, `split_string/4` produce strings. `string/1` is true only for the tag. `write/1` prints text; `~q` quotes with `"`. The shared WAM tokeniser stores constants as text, so compiled `"foo"` literals collapse to atoms; construct strings via builtins or the Pratt `"..."` reader. Fact-source JSON/TSV values still intern as atoms. |
 | `library(assoc)` | **Implemented** as a Prolog `assoc/1` list of Key-Value pairs (not SWI's AVL tree). get/put/list/keys match SWI for unique-key maps. |
 | First-arg indexing | **Implemented.** `switch_on_constant` / `_fallthrough` / `_a2`, `switch_on_structure` / `_a2`, and `switch_on_term` / `_a2` jump to the matching clause group. Ground first-arg with a unique clause leaves no choice point (`deterministic/0`). Unbound first arg falls through to the try/retry/trust chain (no lost solutions). Exclusive miss fails; fallthrough variants keep the chain for variable-headed clauses. Dedicated `try`/`retry`/`trust` dispatch chains are emitted for multi-clause groups. |
 | Second-arg / deep indexing | A2 switches are implemented; deep (argument >2) indexing is not. |
@@ -169,14 +173,15 @@ CONFORMANCE_TARGETS=javascript swipl -q -g run_tests -t halt \
 
 Residual ISO corners not covered: bagof/setof of *unbound* free vars (two
 solutions that leave the same witness unbound) is grouped by copied
-variable name rather than `@=`; the runtime has no distinct string tag,
-so String vs Atom order is unused and `atom_string`/`split_string`
-intern results as atoms; `^/2` as a standalone metacall just
+variable name rather than `@=`; `^/2` as a standalone metacall just
 runs the RHS; `format` does not implement `~f` / `~r` / column
 positioning; assoc is a list-of-pairs, not SWI's AVL tree;
 `numbervars` does not letter-render `'$VAR'(N)` on `write/1`;
 `op/3` is process-global (no module-local ops) and `current_op/3` is
-not implemented.
+not implemented; `writeq/1` as a standalone builtin is not registered
+(quoted string rendering is via `format` `~q`); compiled `"foo"`
+literals become atoms (shared WAM constant tokens); fact-source cells
+stay atoms even when the host file looks like a quoted string.
 
 ## Document status
 
@@ -186,5 +191,6 @@ breadth (sort, lists, atom/string, format, assoc), the G-W2 runtime term
 parser, G-W4 file-backed fact sources (TSV/CSV/JSONL; LMDB/CSR out of
 scope), the G-W3 term-meta family (`term_variables/2`,
 `numbervars/3`, `=@=/2`, `\=@=/2`), then G-W2 `op/3` (dynamic Pratt
-table: infix + prefix + postfix). Source-verified against SWI-Prolog
-as the oracle (2026-08-30).
+table: infix + prefix + postfix), then a distinct string term tag
+(`V.String`; string-producing builtins + standard order).
+Source-verified against SWI-Prolog as the oracle (2026-08-30).
