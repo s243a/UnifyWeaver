@@ -52,7 +52,8 @@ in-flight parity analyses — see §6).
 | D24 | typescript + clojure (→AJS/VJS/CLJS) | Guard-goal codegen (G-P7): added negation (`\+`/`not`) and type-check preds (integer/float/number/atom/is_list/compound/var/nonvar/ground) to `ts_guard_condition/3` + `clojure_guard_condition/3` (+ `member/2` under negation). Was: classified as guard upstream then render-failed. node+nbb verified vs SWI; 5 suites green (TS 57/AJS 17/VJS 22/CLJS 26/JVM 12). Regex `match` = follow-up. | PR #4192 |
 | D25 | wam_javascript | Richer runtime term parser (G-W2, Grok): Pratt reader for ints/floats/atoms (bare+quoted)/vars/lists (`[H\|T]`)/compounds, ISO default op table (`1+2`→`+(1,2)`); CLI pads missing args with unbound vars; `read_term_from_atom`/`atom_to_term`/`term_to_atom` builtins. Registered `native(parse_term)` in `wam_runtime_parser_capability.pl` (INT-0). node-vs-SWI CLI (list→S=6, compound→X=a, float 3.14>3.0); conformance 48/48. Follow-up: user `op/3`, postfix ops. | PR #4193 |
 | D26 | typescript (→AJS/VJS) | Data-source consumer (G-P9, Option A): TS now consumes JSON + CSV sources via `_typescript` templates (`json_source.pl`/`csv_source.pl`) + new `typescript_source_compiler.pl` wrapper + one routing clause on `is_dynamic_source/1`. Self-contained Node (fs, no npm). node output matches jq/awk; existing bash/PowerShell-pure paths untouched. Follow-up: non-comma CSV delimiters, columns/schema projection. | PR #4194 |
-| D27 | wam_javascript | External fact sources (G-W4, Grok): `javascript_wam_fact_sources([source(P/2, file(Path))])` (alias `js_fact_sources/1`) emits `CallFactStream` instead of inline WAM; Node runtime reads TSV/CSV/JSONL via `fs` (no npm), first-arg indexed when A1 bound; cells parsed via `parse_term`. Inline-facts unchanged. node-vs-SWI on shared triples; conformance 48/48. LMDB/CSR out of scope (matches Lua peer). | (this branch) |
+| D27 | wam_javascript | External fact sources (G-W4, Grok): `javascript_wam_fact_sources([source(P/2, file(Path))])` (alias `js_fact_sources/1`) emits `CallFactStream` instead of inline WAM; Node runtime reads TSV/CSV/JSONL via `fs` (no npm), first-arg indexed when A1 bound; cells parsed via `parse_term`. Inline-facts unchanged. node-vs-SWI on shared triples; conformance 48/48. LMDB/CSR out of scope (matches Lua peer). | PR #4196 |
+| D28 | typescript + clojure (→AJS/VJS/CLJS) | Regex `match/2,3` guard codegen (G-P7 completion): `match(Subject,Pattern)` → TS `new RegExp(pat).test(x)`, Clojure `(re-find (re-pattern pat) x)`; `match/3` regex-type arg advisory (uses host engine). String-input typing for match-on-arg1; `\+ match` composes. node/nbb-vs-SWI (pcre oracle). Optional INT-0 follow-up (in patch): a 2-line `is_guard_goal` addition to make bare positive `match` a batch guard. | (this branch) |
 
 ---
 
@@ -60,11 +61,11 @@ in-flight parity analyses — see §6).
 
 | ID | Target | Item | Owner | Branch |
 |---|---|---|---|---|
-_(no items in flight — both lanes idle; all high/medium-value gaps closed)_
+| G-W3f | wam_javascript | Term-meta builtins: `term_variables/2`, `numbervars/3`, `=@=/2`/`\=@=/2` | grok | prompt sent |
 
 **Remaining tail** (all low-priority polish):
-- **Pattern:** regex `match` guards (G-P7 follow-up); `constraint_analyzer` unique/unordered dedup for TS/CLJS; bagof/setof + non-extensional aggregates at pattern level (G-P3 follow-up); non-comma CSV delimiters + columns/schema projection (G-P9 follow-up); test depth (G-P13).
-- **WAM:** G-W3 follow-ups (term_variables/numbervars/=@=, real string tag, AVL assoc); user `op/3`/postfix ops (G-W2 follow-up); LMDB/CSR fact sources (out of scope, matches Lua peer); G-W6 parallelism (deferred).
+- **Pattern:** `constraint_analyzer` unique/unordered dedup for TS/CLJS; bagof/setof + non-extensional aggregates at pattern level (G-P3 follow-up); non-comma CSV delimiters + columns/schema projection (G-P9 follow-up); bare positive `match` batch-guard (optional 2-line `is_guard_goal` patch, D28); test depth (G-P13).
+- **WAM:** G-W3f (in flight); real string tag, AVL assoc; user `op/3`/postfix ops (G-W2 follow-up); LMDB/CSR fact sources (out of scope, matches Lua peer); G-W6 parallelism (deferred).
 
 ---
 
