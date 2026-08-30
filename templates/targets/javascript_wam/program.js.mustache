@@ -83,6 +83,11 @@ if (is_main()) {
   state.program = shared_program;
   let ok;
   if (typeof loweredFn === "function") {
+    const slash = String(predArity).lastIndexOf("/");
+    const arity = slash >= 0 ? Number(predArity.slice(slash + 1)) : parsed.length;
+    for (let i = parsed.length; i < arity; i++) {
+      Runtime.put_reg(state, i + 1, Runtime.new_var(state));
+    }
     ok = loweredFn(shared_program, state) === true;
   } else {
     state.pc = startPc;

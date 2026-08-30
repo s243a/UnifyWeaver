@@ -647,13 +647,15 @@ emit_js_lowered_wrapper(Pred, Arity, FuncName, Code) :-
 'function ~w(~w) {
   const state = Runtime.new_state();
   const args = ~w;
-  for (let i = 0; i < args.length; i++) Runtime.put_reg(state, i + 1, args[i]);
+  for (let i = 0; i < ~w; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
   state.cp = 0;
   state.program = shared_program;
   return ~w(shared_program, state) === true;
 }
 M.~w = ~w;
-', [Name, ArgDecl, ArgList, FuncName, Name, Name]).
+', [Name, ArgDecl, ArgList, Arity, FuncName, Name, Name]).
 
 pred_arg_strings(0, '', '[]') :- !.
 pred_arg_strings(Arity, ArgDecl, ArgList) :-

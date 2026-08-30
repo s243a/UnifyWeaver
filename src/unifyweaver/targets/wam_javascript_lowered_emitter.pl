@@ -29,7 +29,11 @@ tokenize_line(Line, Parts) :-
 build_emission_plan(WamCode, plan(Mode, AltLabel, ClauseLines)) :-
     atom_string(WamCode, S),
     split_string(S, "\n", "", Lines),
-    skip_to_first_real_instr(Lines, Filtered),
+    skip_to_first_real_instr(Lines, Filtered0),
+    % JS first-arg indexing re-emits each clause once per dispatch group
+    % and appends try/retry/trust chains. Collapse back to a unique-A1
+    % linear chain so T5 / deterministic classification still fires.
+    normalize_js_indexed_clauses(Filtered0, Filtered),
     classify_clause_shape(Filtered, plan(Mode, AltLabel, ClauseLines)).
 
 skip_to_first_real_instr([], []).
@@ -50,6 +54,78 @@ skippable_prefix_line(["switch_on_structure"|_]).
 skippable_prefix_line(["switch_on_structure_a2"|_]).
 skippable_prefix_line(["switch_on_term"|_]).
 skippable_prefix_line(["switch_on_term_a2"|_]).
+skippable_prefix_line(["try"|_]).
+skippable_prefix_line(["retry"|_]).
+skippable_prefix_line(["trust"|_]).
+
+% Drop dedicated try/retry/trust dispatch ops and collapse duplicate
+% first-arg clauses produced by JS indexing into a unique-A1 try-chain.
+normalize_js_indexed_clauses(Lines, Out) :-
+    exclude(js_index_dispatch_line, Lines, Kept),
+    js_split_choice_clauses(Kept, Clauses0),
+    Clauses0 = [_, _ | _],
+    maplist(js_clause_a1_key, Clauses0, Keys),
+    \+ member(none, Keys),
+    js_first_unique_pairs(Keys, Clauses0, Unique),
+    Unique \== [],
+    js_first_alt_label(Kept, Alt),
+    js_rebuild_try_chain(Unique, Alt, Out), !.
+normalize_js_indexed_clauses(Lines, Lines).
+
+js_first_alt_label([Line|_], Alt) :-
+    tokenize_line(Line, ["try_me_else", Alt]), !.
+js_first_alt_label([_|Rest], Alt) :-
+    js_first_alt_label(Rest, Alt).
+js_first_alt_label([], "L_js_lowered_alt").
+
+js_index_dispatch_line(Line) :-
+    tokenize_line(Line, Parts),
+    Parts = [Op|_],
+    member(Op, ["try", "retry", "trust"]).
+
+js_split_choice_clauses(Lines, Clauses) :-
+    js_take_choice_clause(Lines, Clause, Rest),
+    (   Rest == []
+    ->  (Clause == [] -> Clauses = [] ; Clauses = [Clause])
+    ;   js_split_choice_clauses(Rest, More),
+        (Clause == [] -> Clauses = More ; Clauses = [Clause|More])
+    ).
+
+js_take_choice_clause([], [], []).
+js_take_choice_clause([Line|Rest], [], Rest) :-
+    tokenize_line(Line, Parts),
+    ( Parts = ["try_me_else"|_] ; Parts = ["retry_me_else"|_] ; Parts == ["trust_me"] ), !.
+js_take_choice_clause([Line|Rest], [Line|More], After) :-
+    js_take_choice_clause(Rest, More, After).
+
+js_clause_a1_key(ClauseLines, Key) :-
+    member(Line, ClauseLines),
+    tokenize_line(Line, ["get_constant", V, A1]),
+    ( A1 == "A1" ; A1 == 'A1' ), !,
+    Key = V.
+js_clause_a1_key(_, none).
+
+js_first_unique_pairs(Keys, Clauses, Unique) :-
+    js_first_unique_pairs_(Keys, Clauses, [], Unique).
+
+js_first_unique_pairs_([], [], _, []).
+js_first_unique_pairs_([K|Ks], [C|Cs], Seen, [C|Out]) :-
+    \+ memberchk(K, Seen), !,
+    js_first_unique_pairs_(Ks, Cs, [K|Seen], Out).
+js_first_unique_pairs_([_|Ks], [_|Cs], Seen, Out) :-
+    js_first_unique_pairs_(Ks, Cs, Seen, Out).
+
+js_rebuild_try_chain([Only], _Alt, Only) :- !.
+js_rebuild_try_chain([C1|Rest], Alt, Lines) :-
+    format(string(Try), 'try_me_else ~w', [Alt]),
+    append([Try|C1], Mid, Lines),
+    js_rebuild_try_rest(Rest, Alt, Mid).
+
+js_rebuild_try_rest([Last], _Alt, ["trust_me"|Last]) :- !.
+js_rebuild_try_rest([C|Rest], Alt, [Retry|Lines]) :-
+    format(string(Retry), 'retry_me_else ~w', [Alt]),
+    append(C, Mid, Lines),
+    js_rebuild_try_rest(Rest, Alt, Mid).
 
 % T5: distinct first-argument constants. Bound A1 dispatches natively;
 % unbound A1 falls back to clause-1 inline + interpreter from the alt label.
@@ -150,6 +226,7 @@ js_t4_instr_line(Line) :-
     Parts = [F|_],
     \+ sub_string(F, _, 1, 0, ":"),
     \+ member(F, ["try_me_else", "retry_me_else", "trust_me",
+                  "try", "retry", "trust",
                   "switch_on_constant", "switch_on_constant_fallthrough",
                   "switch_on_constant_a2", "switch_on_constant_a2_fallthrough",
                   "switch_on_structure", "switch_on_structure_a2",
@@ -546,6 +623,8 @@ emit_line_parts(Parts, I) :-
 
 emit_call(PredArity, I) :-
     wam_javascript_target:js_string_literal(PredArity, Q),
+    parse_call_pred_arity(PredArity, PredName, Arity),
+    wam_javascript_target:js_string_literal(PredName, PQ),
     format("~w{~n", [I]),
     format("~w  const saved_cp = state.cp;~n", [I]),
     format("~w  const _lf = (typeof lowered_dispatch !== \"undefined\") ? lowered_dispatch[~w] : undefined;~n", [I, Q]),
@@ -553,27 +632,48 @@ emit_call(PredArity, I) :-
     format("~w    if (_lf(program, state) !== true) return false;~n", [I]),
     format("~w  } else {~n", [I]),
     format("~w    const target = program.labels[~w];~n", [I, Q]),
-    format("~w    if (target === undefined || target === null) return false;~n", [I]),
-    format("~w    state.cp = 0;~n", [I]),
-    format("~w    state.pc = target;~n", [I]),
-    format("~w    state.program = program;~n", [I]),
-    format("~w    if (Runtime.run(program, state) !== true) return false;~n", [I]),
-    format("~w    state.halt = false;~n", [I]),
+    format("~w    if (target !== undefined && target !== null) {~n", [I]),
+    format("~w      state.cp = 0;~n", [I]),
+    format("~w      state.pc = target;~n", [I]),
+    format("~w      state.program = program;~n", [I]),
+    format("~w      if (Runtime.run(program, state) !== true) return false;~n", [I]),
+    format("~w      state.halt = false;~n", [I]),
+    format("~w    } else if (Runtime.step(program, state, I.Call(~w, ~w)) !== true) {~n", [I, PQ, Arity]),
+    format("~w      return false;~n", [I]),
+    format("~w    }~n", [I]),
     format("~w  }~n", [I]),
     format("~w  state.cp = saved_cp;~n", [I]),
     format("~w}~n", [I]).
 
 emit_execute(PredArity, I) :-
     wam_javascript_target:js_string_literal(PredArity, Q),
+    parse_call_pred_arity(PredArity, PredName, Arity),
+    wam_javascript_target:js_string_literal(PredName, PQ),
     format("~w{~n", [I]),
     format("~w  const _lf = (typeof lowered_dispatch !== \"undefined\") ? lowered_dispatch[~w] : undefined;~n", [I, Q]),
     format("~w  if (typeof _lf === \"function\") return _lf(program, state) === true;~n", [I]),
     format("~w  const target = program.labels[~w];~n", [I, Q]),
-    format("~w  if (target === undefined || target === null) return false;~n", [I]),
-    format("~w  state.pc = target;~n", [I]),
+    format("~w  if (target !== undefined && target !== null) {~n", [I]),
+    format("~w    state.pc = target;~n", [I]),
+    format("~w    state.program = program;~n", [I]),
+    format("~w    return Runtime.run(program, state) === true;~n", [I]),
+    format("~w  }~n", [I]),
+    format("~w  if (Runtime.step(program, state, I.Execute(~w, ~w)) !== true) return false;~n", [I, PQ, Arity]),
+    format("~w  if (state.halt) return true;~n", [I]),
     format("~w  state.program = program;~n", [I]),
     format("~w  return Runtime.run(program, state) === true;~n", [I]),
     format("~w}~n", [I]).
+
+parse_call_pred_arity(PredArity, PredName, Arity) :-
+    atom_string(PredArity, S),
+    (   sub_string(S, B, 1, After, "/"),
+        sub_string(S, 0, B, _, PredName0),
+        sub_string(S, _, After, 0, ArStr),
+        number_string(Arity, ArStr)
+    ->  PredName = PredName0
+    ;   PredName = S,
+        Arity = 0
+    ).
 
 strip_arity_local(Tok, Name) :-
     (sub_string(Tok, B, 1, _, "/") -> sub_string(Tok, 0, B, _, Name) ; Name = Tok).
