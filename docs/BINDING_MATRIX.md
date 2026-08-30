@@ -20,7 +20,7 @@ This document tracks which bindings are implemented for each target language.
 | **TypeScript** | 179 | 13 (Built-ins, String, List, Math, I/O, JSON, Regex, Async, DOM, Collections/Map-Set, Number formatting, +2) |
 | **AnnotatedJS** | 179 | 13 (inherits TypeScript bindings) |
 | **VanillaJS** | 179 | 13 (inherits TypeScript bindings) |
-| **ClojureScript** | 67 | 5 (Core, Collections, Sequences, Strings, Threading Macros) |
+| **ClojureScript** | 68 | 5 (Core, Collections, Sequences, Strings, Threading Macros) |
 | **R** | 58 | 7 (Built-ins, Math, String, Type Conversion, Vector/List, File I/O, DataFrame/Pipelines) |
 | **Lua** | 65 | 7 (Built-ins, Math, String, Table, I/O, Type Conversion, OS) |
 | **PowerShell** | 68 | 4 (Cmdlets, Automation, .NET, C# Hosting) |

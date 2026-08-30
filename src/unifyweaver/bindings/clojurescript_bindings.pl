@@ -36,7 +36,8 @@ init_clojurescript_bindings :-
     register_collection_bindings,
     register_sequence_bindings,
     register_string_bindings,
-    register_threading_bindings.
+    register_threading_bindings,
+    register_divergent_bindings.
 
 %% cljs_binding(?Pred, ?TargetName, ?Inputs, ?Outputs, ?Options)
 cljs_binding(Pred, TargetName, Inputs, Outputs, Options) :-
@@ -232,8 +233,30 @@ register_threading_bindings :-
         [expr, clauses], [any], [pure, deterministic, total, pattern(macro)]).
 
 % ============================================================================
-% TESTS
+% HOST-DIVERGENT BINDINGS
 % ============================================================================
+%
+% Unlike the sections above (which mirror clojure_bindings.pl verbatim -- the
+% core/seq/collection/string/threading surface is identical between JVM Clojure
+% and ClojureScript), these bindings map a predicate to a ClojureScript name that
+% genuinely DIFFERS from the JVM Clojure default, and whose difference is NOT
+% expressible by the runtime-variant interop rewrite (which only translates fixed
+% host-call tokens such as Integer/parseInt or Math/abs).
+%
+% They exist to be routed through the `clojurescript` binding key: the CLJS
+% compile path resolves predicate names with the preference list
+% [clojurescript, clojure] (clojurescript_target:cljs_binding_name_rewrite/2), so
+% a `clojurescript` binding here overrides the JVM `clojure` default while the 64
+% shared bindings fall back to it.
+
+register_divergent_bindings :-
+    % ClojureScript's cljs.core has no `parse-double` (a JVM Clojure 1.11
+    % addition backed by java.lang.Double); the idiomatic CLJS equivalent is the
+    % JS global parseFloat. The JVM Clojure default for this predicate is the
+    % plain function name; the interop rewrite does not touch `parse-double`, so
+    % this override can only take effect via the `clojurescript` binding key.
+    declare_binding(clojurescript, parse_double/2, 'js/parseFloat',
+        [string], [number], [pure, deterministic, partial]).
 
 test_clojurescript_bindings :-
     format('~n=== ClojureScript Bindings Tests ===~n~n'),

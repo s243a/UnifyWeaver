@@ -42,6 +42,8 @@ in-flight parity analyses — see §6).
 | D14 | typescript (→AJS/VJS) | Real recursion (G-P1): tree/multicall/direct/tail hooks now derive base cases + offsets + aggregation from the actual clause (was: hardcoded fib for any predicate). Structural recursion (G-P2): native list lowering for member/append/reverse/length, node-verified vs SWI. | PR #4182 |
 | D15 | wam_javascript | Switch-indexing cross-target matrix row added (G-W5): full coverage of all 5 tracked columns (const_ft/const_a2/const_a2_ft/term_a2/struct_a2), residuals documented. | (this branch) |
 | D16 | typescript (→AJS/VJS) | Component emission (G-P4): `compile_module` now calls `compile_component` (was collected-but-dropped); revived orphaned `custom_chart` (+ fixed its unevaluated-`format` bug). Component-free modules unchanged. | (this branch) |
+| D17 | clojurescript | Wired the `clojurescript` binding key (G-P11): `resolve_binding([clojurescript, clojure], …)` fallback-with-override; loaded both catalogues; call-head rewrite after interop (no double-transform); bb skips it. `parse_double→js/parseFloat` proof, nbb-verified, JVM regression green. Bindings 67→68. | (this branch) |
+| D18 | typescript (→AJS/VJS) | Aggregate compilation (G-P3): `aggregate_all` (count/sum/max/min/bag/set) + `findall` as goals (was 0 refs → 50); node-verified vs SWI. Follow-up: bagof/setof at pattern level + non-extensional inner goals. | (this branch) |
 
 ---
 
@@ -51,7 +53,7 @@ in-flight parity analyses — see §6).
 |---|---|---|---|---|
 | G-W1 | wam_javascript | Tier-2 lowered emitter + `functions`/`mixed` emit modes | grok | prompt sent |
 
-**Done since last update:** G-W5 (D15) + G-P4 component emission (D16) — ✅ merged to this branch (batch PR pending). Remaining pattern gaps: G-P3 aggregates, G-P5 clojure/CLJS components, G-P6 constraints, G-P7 data sources, G-P8 TS streaming, G-P9 data-source consumers, G-P11 CLJS dead-bindings (verify), G-P13 tests. WAM tail: G-W1 (grok), G-W2 parser, G-W3 builtin breadth, G-W4 fact sources, G-W6 parallelism (deferred).
+**Done since last update:** G-P11 (D17) + G-P3 aggregates (D18) — ✅ merged to this branch (batch PR pending). Remaining pattern gaps: G-P5 clojure/CLJS components, G-P6 constraints, G-P7/G-P9 data sources & consumers, G-P8 TS streaming, G-P13 tests; bagof/setof + non-extensional aggregates (G-P3 follow-up). WAM tail: G-W1 (grok), G-W2 parser, G-W3 builtin breadth, G-W4 fact sources, G-W6 parallelism (deferred).
 
 **Done since last update:** P1 first-arg indexing (Grok, `grok/wamjs-indexing`) — ✅ merged (see D12). Analyses A1/A2/census — ✅ folded in.
 
@@ -76,7 +78,7 @@ suspicions (see §3b N/A): bindings are **not** a gap (JS leads), and TS/AJS reg
 | G-P8 | typescript (→ AJS/VJS) | **No streaming/pipeline/generator mode** — 0 refs vs python 432/go 390/rust 325. CLJS inherits clojure's `generator_mode`/`pipeline_mode` best-effort. | ⬜ | clojure_target (closest paradigm) or python | M | opus |
 | G-P9 | JS pattern targets | **Not wired as data-source consumers** — `sources/semantic_source.pl:215,287` dispatch only on `target(bash\|python\|rust)`. | ⬜ | python/go source consumption | M | opus |
 | G-P10 | vanilla_js | **Inheritance asymmetry** — registers **0** `compile_*_pattern` clauses (annotated_js registered all 7); a caller driving the advanced compiler with `target(vanilla_js)` gets no clause and fails. **Verified.** | ⬜ | copy annotated_js:886-911 (delegate to TS then `vanilla_js_type_strip/2`) | S | opus |
-| G-P11 | clojurescript | **Possible dead bindings** — 67 bindings declared under key `clojurescript`, but compile goes via `compile_predicate_to_clojure` (key `clojure`). Whether the CLJS bindings are ever consulted is **unverified**. | ❓ verify | — | S | opus/main |
+| G-P11 | clojurescript | **FIXED.** Wired the `clojurescript` binding key via `resolve_binding([clojurescript, clojure], …)` — CLJS bindings override, clojure is fallback. Loaded both catalogues (`ensure_cljs_bindings/0`), added a call-head rewrite ordered after the interop rewrite (disjoint tokens, no double-transform); bb runtime skips it. Proven with `parse_double/2 → js/parseFloat`, nbb-verified, JVM Clojure regression green. Bindings 67→68. | ✅ D17 | — | — | done |
 | G-P12 | annotated_js, vanilla_js | **PAR-1 arm activation** — arms exist but skip until the harness loads the targets; needs a real tsc/node run (fine in an agent env). | ⬜ | — | S | opus |
 | G-P13 | JS pattern targets | **Thin test depth** — 8/3/3/5 referencing files (TS/AJS/VJS/CLJS) vs python 204/rust 155/go 78; no aggregate/negation/service/data-source tests. Grow as G-P1..G-P9 land. | ⬜ | those suites | M (ongoing) | opus |
 
