@@ -44,6 +44,9 @@
 :- use_module('../../targets/rust_target', []).
 :- use_module('../../targets/go_target', []).
 :- use_module('../../targets/clojure_target', []).
+:- use_module('../../targets/clojurescript_target', []).
+:- use_module('../../targets/annotated_js_target', []).
+:- use_module('../../targets/vanilla_js_target', []).
 
 %% Main test runner
 test_all_advanced :-

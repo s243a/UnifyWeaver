@@ -24,22 +24,44 @@
 %                    of deps.edn.
 %   - build artifact: a JS bundle / browser page instead of a JVM jar.
 %
-% Runtime: the recommended v1 runtime is Scittle/SCI (borkdude's Small Clojure
-% Interpreter) embedded in the SciREPL ClojureScript kernel. The simple /
-% native-clause-lowering path and the recursion patterns are the
-% browser-supported surface. The stdin/stream pipeline modes (generator /
-% pipeline) assume an nbb-style Node runtime rather than browser Scittle and
-% are passed through best-effort.
+% Runtime variants (select with the runtime(Kind) option):
+%   - scittle : Scittle/SCI (borkdude's Small Clojure Interpreter) in the
+%               browser -- the SciREPL ClojureScript kernel surface. JS host
+%               interop (js/parseInt, js/Math.abs). No shebang (browser page).
+%   - nbb     : nbb, the Node ClojureScript runtime (sci-based). JS host
+%               interop, same rewrite as scittle. Emits a `#!/usr/bin/env nbb`
+%               shebang so the .cljs file is a standalone executable script.
+%   - bb      : Babashka (bb), borkdude's native Clojure sci interpreter run as
+%               an external binary (no npm dependency -- the peerhailer
+%               `shell:bb` idea). bb is *Clojure*, not ClojureScript: its host
+%               is the JVM, so it keeps the JVM-style interop (Integer/parseInt,
+%               Math/abs, (catch Exception e), (.getMessage e)) UNCHANGED --
+%               the JVM->JS rewrite is deliberately *not* applied for bb. Emits
+%               a `#!/usr/bin/env bb` shebang.
+%   - default : no runtime(...) option -- preserves the historical output
+%               exactly (JS interop rewrite + generic Scittle/SCI-or-nbb
+%               banner, no shebang). This is what existing callers get.
+%
+% The one JVM->JS rewrite (clojurescript_interop_rewrite/2) stays centralized;
+% the runtime variant only chooses *whether* to apply it (JS hosts yes, bb no)
+% and which entrypoint banner/shebang to prepend.
+%
+% Future work: a `squint` build-based cljs->js path (npx squint compile) is out
+% of scope for this card -- see docs/CLOJURESCRIPT_TARGET.md.
 %
 % Example:
-%   ?- compile_predicate_to_clojurescript(double/2, [], Code).
+%   ?- compile_predicate_to_clojurescript(double/2, [], Code).            % default
+%   ?- compile_predicate_to_clojurescript(double/2, [runtime(nbb)], Code). % nbb script
+%   ?- compile_predicate_to_clojurescript(double/2, [runtime(bb)], Code).  % bb script
 %   ?- generate_scittle_html("Demo", [main_ns('generated.demo'), cljs(Code)], HTML).
 
 :- module(clojurescript_target, [
     compile_predicate_to_clojurescript/3,   % +Pred/Arity, +Options, -CljsCode
     compile_predicate/3,                     % +Pred/Arity, +Options, -Code (registry dispatch)
     compile_facts_to_clojurescript/3,        % +Pred, +Arity, -CljsCode
-    clojurescript_from_clojure/2,            % +ClojureCode, -CljsCode (rewrite + banner)
+    clojurescript_from_clojure/2,            % +ClojureCode, -CljsCode (rewrite + banner, default runtime)
+    clojurescript_from_clojure/3,            % +ClojureCode, +Options, -CljsCode (runtime-variant aware)
+    cljs_runtime/2,                          % +Options, -Runtime (scittle|nbb|bb|default)
     clojurescript_interop_rewrite/2,         % +ClojureCode, -CljsCode
     generate_shadow_cljs_edn/2,              % +Options, -ShadowFile
     generate_scittle_html/3,                 % +Title, +Options, -HTML
@@ -67,18 +89,79 @@ init_clojurescript_target :-
 %  target and rewriting the JVM host interop into JS host interop.
 compile_predicate_to_clojurescript(PredIndicator, Options, CljsCode) :-
     compile_predicate_to_clojure(PredIndicator, Options, ClojureCode),
-    clojurescript_from_clojure(ClojureCode, CljsCode).
+    clojurescript_from_clojure(ClojureCode, Options, CljsCode).
 
 %% clojurescript_from_clojure(+ClojureCode, -CljsCode)
-%  Turn JVM-Clojure source into ClojureScript: rewrite host interop, then
-%  prepend the CLJS banner. Shared by the single-predicate path above and the
-%  recursive_compiler's transitive-closure path (which reuses the JVM Clojure
-%  templates and post-processes them here), keeping the JVM->JS translation in
-%  one place.
+%  Backwards-compatible entry (default runtime): rewrite host interop, then
+%  prepend the generic CLJS banner. Kept for callers (e.g. recursive_compiler)
+%  that don't pass Options.
 clojurescript_from_clojure(ClojureCode, CljsCode) :-
-    clojurescript_interop_rewrite(ClojureCode, Rewritten),
-    cljs_banner(Banner),
-    string_concat(Banner, Rewritten, CljsCode).
+    clojurescript_from_clojure(ClojureCode, [], CljsCode).
+
+%% clojurescript_from_clojure(+ClojureCode, +Options, -CljsCode)
+%  Turn JVM-Clojure source into a runnable script for the selected runtime.
+%  Shared by the single-predicate path above and the recursive_compiler's
+%  transitive-closure path, keeping the JVM->JS translation in one place.
+%
+%  Runtime selection (runtime(Kind) in Options):
+%    - scittle / nbb / default : JS host (rewrite JVM interop -> JS interop)
+%    - bb                      : Babashka is Clojure on the JVM host, so the
+%                                JVM interop is left UNCHANGED (no rewrite)
+%  A runtime-specific banner (and shebang, for the executable nbb/bb scripts)
+%  is prepended.
+clojurescript_from_clojure(ClojureCode, Options, CljsCode) :-
+    cljs_runtime(Options, Runtime),
+    (   cljs_runtime_js_interop(Runtime)
+    ->  clojurescript_interop_rewrite(ClojureCode, Body)      % JS host
+    ;   ( string(ClojureCode) -> Body = ClojureCode ; atom_string(ClojureCode, Body) )  % bb: keep JVM interop
+    ),
+    cljs_runtime_shebang(Runtime, Shebang),
+    cljs_runtime_banner(Runtime, Banner),
+    atomics_to_string([Shebang, Banner, Body], CljsCode).
+
+%% cljs_runtime(+Options, -Runtime)
+%  Resolve the runtime variant from Options. An unrecognised runtime(...) value
+%  falls back to `default` (preserving historical JS-interop output).
+cljs_runtime(Options, Runtime) :-
+    (   member(runtime(R), Options), cljs_known_runtime(R)
+    ->  Runtime = R
+    ;   Runtime = default
+    ).
+
+cljs_known_runtime(default).
+cljs_known_runtime(scittle).
+cljs_known_runtime(nbb).
+cljs_known_runtime(bb).
+
+%% cljs_runtime_js_interop(+Runtime)
+%  True for runtimes whose host is JavaScript (so the JVM->JS rewrite applies).
+%  Babashka (bb) is Clojure-on-JVM and is deliberately absent here.
+cljs_runtime_js_interop(default).
+cljs_runtime_js_interop(scittle).
+cljs_runtime_js_interop(nbb).
+
+%% cljs_runtime_shebang(+Runtime, -Shebang)
+%  Shebang line for the executable script runtimes; empty for browser/default.
+cljs_runtime_shebang(nbb, "#!/usr/bin/env nbb\n").
+cljs_runtime_shebang(bb,  "#!/usr/bin/env bb\n").
+cljs_runtime_shebang(scittle, "").
+cljs_runtime_shebang(default, "").
+
+%% cljs_runtime_banner(+Runtime, -Banner)
+%  Runtime-specific header comment.
+cljs_runtime_banner(default, Banner) :- cljs_banner(Banner).
+cljs_runtime_banner(scittle,
+    ";; Target: ClojureScript (Scittle/SCI, browser)\n;; Generated by UnifyWeaver ClojureScript Target (variant of clojure_target)\n").
+cljs_runtime_banner(nbb,
+    ";; Target: ClojureScript (nbb, Node sci runtime)\n;; Generated by UnifyWeaver ClojureScript Target (variant of clojure_target)\n").
+cljs_runtime_banner(bb,
+    ";; Target: Clojure (Babashka/bb, sci runtime -- JVM host interop retained)\n;; Generated by UnifyWeaver ClojureScript Target (variant of clojure_target)\n").
+
+%% atomics_to_string(+List, -String)
+%  Concatenate a list of atoms/strings into one string.
+atomics_to_string(List, String) :-
+    atomic_list_concat(List, Atom),
+    atom_string(Atom, String).
 
 %% compile_predicate(+Pred/Arity, +Options, -Code)
 %  Thin wrapper so target_registry's compile_to_target/4 can dispatch here.

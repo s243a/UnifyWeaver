@@ -77,4 +77,60 @@ test(scittle_html_wrapper) :-
     has(HTML, "application/x-scittle"),
     has(HTML, "(println :hi)").
 
+% ============================================================================
+% Runtime variants (scittle / nbb / bb) -- runtime(Kind) option
+% ============================================================================
+
+% Runtime resolution: default when unspecified/unknown, else the named runtime.
+test(runtime_resolves_default) :-
+    clojurescript_target:cljs_runtime([], R), R == default.
+test(runtime_resolves_nbb) :-
+    clojurescript_target:cljs_runtime([runtime(nbb)], R), R == nbb.
+test(runtime_resolves_bb) :-
+    clojurescript_target:cljs_runtime([runtime(bb)], R), R == bb.
+test(runtime_unknown_falls_back_to_default) :-
+    clojurescript_target:cljs_runtime([runtime(wat)], R), R == default.
+
+% Default runtime preserves the historical output: JS interop, no shebang.
+test(default_runtime_js_interop_no_shebang) :-
+    assert(user:(dbl(X, R) :- R is X * 2)),
+    clojurescript_target:compile_predicate_to_clojurescript(dbl/2, [], Code),
+    has(Code, "js/parseInt"),
+    hasnt(Code, "Integer/parseInt"),
+    hasnt(Code, "#!/usr/bin/env"),
+    retractall(user:dbl(_, _)).
+
+% nbb runtime: JS interop plus an executable shebang.
+test(nbb_runtime_shebang_and_js_interop) :-
+    assert(user:(dbl(X, R) :- R is X * 2)),
+    clojurescript_target:compile_predicate_to_clojurescript(dbl/2, [runtime(nbb)], Code),
+    has(Code, "#!/usr/bin/env nbb"),
+    has(Code, "js/parseInt"),
+    has(Code, "nbb, Node sci"),
+    hasnt(Code, "Integer/parseInt"),
+    retractall(user:dbl(_, _)).
+
+% bb runtime: Babashka is Clojure-on-JVM -- JVM interop is retained (NO rewrite),
+% and a bb shebang is emitted.
+test(bb_runtime_keeps_jvm_interop) :-
+    assert(user:(dbl(X, R) :- R is X * 2)),
+    clojurescript_target:compile_predicate_to_clojurescript(dbl/2, [runtime(bb)], Code),
+    has(Code, "#!/usr/bin/env bb"),
+    has(Code, "Integer/parseInt"),
+    hasnt(Code, "js/parseInt"),
+    has(Code, "Babashka/bb"),
+    retractall(user:dbl(_, _)).
+
+% bb runtime retains Math/abs (not rewritten to js/Math.abs).
+test(bb_runtime_keeps_math_abs) :-
+    clojurescript_target:clojurescript_from_clojure("(Math/abs x)", [runtime(bb)], Out),
+    has(Out, "(Math/abs x)"),
+    hasnt(Out, "js/Math.abs").
+
+% clojurescript_from_clojure/3 with nbb rewrites and adds shebang.
+test(from_clojure_3_nbb) :-
+    clojurescript_target:clojurescript_from_clojure("(Math/abs x)", [runtime(nbb)], Out),
+    has(Out, "#!/usr/bin/env nbb"),
+    has(Out, "js/Math.abs").
+
 :- end_tests(clojurescript_target).
