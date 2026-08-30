@@ -761,4 +761,80 @@ test(gp7_negation_comparison_runs_under_node,
     findall(S, (member(X, Xs), user:pgt(X), number_string(X, S)), ExpLines),
     GotLines == ExpLines.
 
+% ============================================================================
+% G-P7 follow-up: REGEX match/2[,3] GUARD CODEGEN
+%
+% ts_guard_condition/3 now renders match/2 and match/3 (UnifyWeaver's regex-match
+% predicate: subject FIRST, pattern SECOND, optional 3rd = regex type) as
+% `new RegExp("<pattern>").test(x)`. Boolean truthiness mirrors Python's
+% unanchored re.search. The arity-1 streaming filter reads its input line as a
+% string when the body match-tests it, so text lines flow correctly under node.
+% \+ match(...) composes via the existing negation clause. Oracle: library(pcre)
+% re_match/2 (match/2 is a compile-time DSL marker, not executable in SWI).
+% ============================================================================
+
+:- use_module(library(pcre)).
+
+assert_gp7m_starts_a  :- assertz((user:starts_a(X)  :- match(X, '^a'))).
+retract_gp7m_starts_a :- retractall(user:starts_a(_)).
+
+assert_gp7m_not_a  :- assertz((user:not_a(X)  :- \+ match(X, '^a'))).
+retract_gp7m_not_a :- retractall(user:not_a(_)).
+
+assert_gp7m_digit  :- assertz((user:has_digit(X) :- match(X, '\\d+'))).
+retract_gp7m_digit :- retractall(user:has_digit(_)).
+
+assert_gp7m_typed  :- assertz((user:typed(X, R) :- (match(X, 'foo', pcre) -> R = 'yes' ; R = 'no'))).
+retract_gp7m_typed :- retractall(user:typed(_, _)).
+
+% -- Structural: match renders as a RegExp test (batch had no RegExp before) ---
+
+test(gp7m_match_renders_in_pipeline,
+     [setup(assert_gp7m_starts_a), cleanup(retract_gp7m_starts_a)]) :-
+    typescript_target:compile_predicate(starts_a/1, [mode(pipeline)], Code),
+    % match(X, '^a') → new RegExp("^a").test(x); input line typed as string
+    has(Code, "new RegExp(\"^a\").test(x)"),
+    has(Code, "export function starts_aTest(x: string): boolean"),
+    has(Code, "const x = trimmed;").
+
+test(gp7m_negation_match_renders_in_pipeline,
+     [setup(assert_gp7m_not_a), cleanup(retract_gp7m_not_a)]) :-
+    % \+ match(X, '^a') → !(new RegExp("^a").test(x)) (negation composes)
+    typescript_target:compile_predicate(not_a/1, [mode(pipeline)], Code),
+    has(Code, "!(new RegExp(\"^a\").test(x))").
+
+test(gp7m_match_backslash_escaped,
+     [setup(assert_gp7m_digit), cleanup(retract_gp7m_digit)]) :-
+    % '\d+' must survive as the JS regex \d+  →  string literal "\\d+" (two
+    % literal backslashes in the emitted code = four in this Prolog literal)
+    typescript_target:compile_predicate(has_digit/1, [mode(pipeline)], Code),
+    has(Code, "new RegExp(\"\\\\d+\").test(x)").
+
+test(gp7m_match3_renders,
+     [setup(assert_gp7m_typed), cleanup(retract_gp7m_typed)]) :-
+    % match/3 (regex type advisory) renders the same RegExp test, here inside
+    % a batch if-then-else guard position (composes with control flow)
+    typescript_target:compile_predicate(typed/2, [], Code),
+    has(Code, "new RegExp(\"foo\").test(").
+
+% -- Node execution vs pcre oracle -------------------------------------------
+
+test(gp7m_match_runs_under_node,
+     [setup(assert_gp7m_starts_a), cleanup(retract_gp7m_starts_a), condition(node_available)]) :-
+    typescript_target:compile_predicate(starts_a/1, [mode(pipeline)], Code),
+    Input = "apple\nbanana\navocado\ncherry\n",
+    Lines = ["apple","banana","avocado","cherry"],
+    ts_write_run_stdin(Code, Input, GotLines),
+    findall(L, (member(L, Lines), re_match("^a", L)), ExpLines),
+    GotLines == ExpLines.
+
+test(gp7m_negation_match_runs_under_node,
+     [setup(assert_gp7m_not_a), cleanup(retract_gp7m_not_a), condition(node_available)]) :-
+    typescript_target:compile_predicate(not_a/1, [mode(pipeline)], Code),
+    Input = "apple\nbanana\navocado\ncherry\n",
+    Lines = ["apple","banana","avocado","cherry"],
+    ts_write_run_stdin(Code, Input, GotLines),
+    findall(L, (member(L, Lines), \+ re_match("^a", L)), ExpLines),
+    GotLines == ExpLines.
+
 :- end_tests(typescript_target).
