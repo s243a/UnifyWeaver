@@ -157,12 +157,31 @@ clojure_native_cli_entry(Pred, Arity, PredStr, CliEntry) :-
         xs (if (or (nil? s) (= s "")) [] (mapv #(Integer/parseInt %) (.split s ",")))]
     (println (~w xs))))
 ', [PredStr])
+    ;   clojure_pred_string_input(Pred, Arity)
+    ->  format(string(CliEntry),
+';; CLI entry point
+(when *command-line-args*
+  (println (~w (first *command-line-args*))))
+', [PredStr])
     ;   format(string(CliEntry),
 ';; CLI entry point
 (when *command-line-args*
   (println (~w (Integer/parseInt (first *command-line-args*)))))
 ', [PredStr])
     ).
+
+%% clojure_pred_string_input(+Pred, +Arity)
+%  True when some clause of the predicate regex-matches its first argument, so
+%  the standalone CLI must pass that argv through as a string rather than
+%  parsing it as an integer.
+clojure_pred_string_input(Pred, Arity) :-
+    functor(Head, Pred, Arity),
+    user:clause(Head, Body),
+    Head =.. [_|Args],
+    Args = [First|_],
+    var(First),
+    clojure_body_match_subject(Body, First),
+    !.
 
 %% clojure_pred_list_input(+Pred, +Arity)
 %  True when the predicate takes a list as its first argument (some clause head
@@ -1119,6 +1138,23 @@ clojure_guard_condition(VarMap, member(X, List), Condition) :-
     clojure_expr(X, VarMap, CX),
     clojure_member_list(List, VarMap, CList),
     format(string(Condition), '(some #(= % ~w) ~w)', [CX, CList]).
+%% Regex match: match(Var, Pattern) / match(Var, Pattern, Type) (G-P7 follow-up).
+%% match/2,3 is UnifyWeaver's regex-match predicate: subject FIRST, pattern
+%% SECOND, optional 3rd arg the regex TYPE (auto/ere/pcre/...). The type is
+%% advisory here — the generated code uses the host's native regex engine
+%% (java.util.regex on the JVM, JS RegExp under ClojureScript) rather than
+%% translating dialects. Boolean truthiness mirrors Python's unanchored
+%% re.search: re-find returns the matched substring (truthy) or nil (falsy),
+%% hence `(re-find (re-pattern "<pattern>") x)`. Anchoring lives in the pattern
+%% (e.g. '^a.*'). re-find/re-pattern are portable across JVM and CLJS, so this
+%% flows to ClojureScript unchanged. Composes under negation via the \+/not
+%% clauses above (\+ match(...) → (not (re-find ...))).
+clojure_guard_condition(VarMap, match(Var, Pattern), Condition) :-
+    !,
+    clojure_match_condition(Var, Pattern, VarMap, Condition).
+clojure_guard_condition(VarMap, match(Var, Pattern, _Type), Condition) :-
+    !,
+    clojure_match_condition(Var, Pattern, VarMap, Condition).
 %% Type-check predicates (integer/1, atom/1, is_list/1, ...) (G-P7).
 clojure_guard_condition(VarMap, Goal, Condition) :-
     compound(Goal),
@@ -1141,6 +1177,45 @@ clojure_member_list(Var, VarMap, CList) :-
     clojure_expr(Var, VarMap, CList).
 
 clojure_member_elem(VarMap, Elem, CElem) :- clojure_expr(Elem, VarMap, CElem).
+
+%% clojure_match_condition(+Var, +Pattern, +VarMap, -Condition)
+%  Render a boolean regex test: (re-find (re-pattern "<escaped>") <subject>).
+clojure_match_condition(Var, Pattern, VarMap, Condition) :-
+    clojure_expr(Var, VarMap, CVar),
+    clojure_regex_pattern_string(Pattern, PatStr),
+    format(string(Condition), '(re-find (re-pattern "~w") ~w)', [PatStr, CVar]).
+
+%% clojure_regex_pattern_string(+Pattern, -EscapedForCljStringLiteral)
+%  Accept an atom or string regex pattern and escape it for a Clojure
+%  double-quoted string literal, preserving regex backslash escapes (\d → "\\d")
+%  and quotes. re-pattern then compiles the string into a regex.
+clojure_regex_pattern_string(Pattern, Escaped) :-
+    ( atom(Pattern) -> atom_string(Pattern, S) ; S = Pattern ),
+    string_chars(S, Chars),
+    clojure_regex_escape_chars(Chars, EChars),
+    string_chars(Escaped, EChars).
+
+clojure_regex_escape_chars([], []).
+clojure_regex_escape_chars([C|Cs], Out) :-
+    (   C == '\\' -> Out = ['\\','\\'|Rest]
+    ;   C == '"'  -> Out = ['\\','"'|Rest]
+    ;   Out = [C|Rest]
+    ),
+    clojure_regex_escape_chars(Cs, Rest).
+
+%% clojure_body_match_subject(+Body, +Var)
+%  True when the clause body applies a regex match/2,3 to Var (possibly under
+%  \+/not or inside control-flow). Used to decide that a standalone CLI takes a
+%  string argv (the regex subject) rather than parsing it as an integer.
+clojure_body_match_subject(G, _) :- var(G), !, fail.
+clojure_body_match_subject(_Module:G, V) :- !, clojure_body_match_subject(G, V).
+clojure_body_match_subject((A, B), V) :- !, ( clojure_body_match_subject(A, V) ; clojure_body_match_subject(B, V) ).
+clojure_body_match_subject((A ; B), V) :- !, ( clojure_body_match_subject(A, V) ; clojure_body_match_subject(B, V) ).
+clojure_body_match_subject((A -> B), V) :- !, ( clojure_body_match_subject(A, V) ; clojure_body_match_subject(B, V) ).
+clojure_body_match_subject(\+(A), V) :- !, clojure_body_match_subject(A, V).
+clojure_body_match_subject(not(A), V) :- !, clojure_body_match_subject(A, V).
+clojure_body_match_subject(match(S, _), V) :- S == V, !.
+clojure_body_match_subject(match(S, _, _), V) :- S == V, !.
 
 %% clojure_type_check(+Pred, +Arg, +VarMap, -Condition)
 %  Map Prolog type-check predicates (clause_body_analysis:type_check_pred/1) to

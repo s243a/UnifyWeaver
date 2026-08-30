@@ -304,4 +304,74 @@ test(gp7_negation_member_runs_under_nbb,
         GotS == ExpS
     )).
 
+% ============================================================================
+% G-P7 follow-up: REGEX match/2[,3] GUARD CODEGEN (inherited from clojure base)
+%
+% clojure_guard_condition/3 now renders match/2 and match/3 (subject FIRST,
+% pattern SECOND, optional 3rd = regex type) as `(re-find (re-pattern "<pat>") x)`.
+% re-find is unanchored (mirrors Python re.search) and returns the matched
+% substring (truthy) or nil, so it works directly as a boolean guard and under
+% (not ...). CLJS inherits the clojure clause compilation; re-find/re-pattern are
+% portable, needing no JS interop rewrite. The standalone CLI passes its argv as
+% a string (not Integer/parseInt) when the predicate match-tests its first arg.
+% Oracle: library(pcre) re_match/2 (match/2 is a DSL marker, not executable).
+% ============================================================================
+
+:- use_module(library(pcre)).
+
+assert_gp7m_mfa  :- assertz((user:mfa(X, R) :- (match(X, '^a') -> R = yes ; R = no))).
+retract_gp7m_mfa :- retractall(user:mfa(_, _)).
+
+assert_gp7m_mfn  :- assertz((user:mfn(X, R) :- (\+ match(X, '^a') -> R = out ; R = in))).
+retract_gp7m_mfn :- retractall(user:mfn(_, _)).
+
+assert_gp7m_m3  :- assertz((user:m3(X, R) :- (match(X, 'foo', pcre) -> R = yes ; R = no))).
+retract_gp7m_m3 :- retractall(user:m3(_, _)).
+
+% -- Structural: match renders into the CLJS defn -----------------------------
+
+test(gp7m_match_renders, [setup(assert_gp7m_mfa), cleanup(retract_gp7m_mfa)]) :-
+    compile_cljs(mfa/2, Code),
+    % match(X, '^a') -> (re-find (re-pattern "^a") arg1)
+    has(Code, "(re-find (re-pattern \"^a\") arg1)"),
+    has(Code, "\"yes\""),
+    has(Code, "\"no\""),
+    % CLI passes the argv string through (no int parse), enabling text matching
+    has(Code, "(println (mfa (first *command-line-args*)))"),
+    hasnt(Code, "Integer/parseInt").
+
+test(gp7m_negation_match_renders, [setup(assert_gp7m_mfn), cleanup(retract_gp7m_mfn)]) :-
+    compile_cljs(mfn/2, Code),
+    % \+ match(X, '^a') -> (not (re-find (re-pattern "^a") arg1))
+    has(Code, "(not (re-find (re-pattern \"^a\") arg1))"),
+    has(Code, "\"out\""),
+    has(Code, "\"in\"").
+
+test(gp7m_match3_renders, [setup(assert_gp7m_m3), cleanup(retract_gp7m_m3)]) :-
+    % match/3 (regex type advisory) renders the same re-find test
+    compile_cljs(m3/2, Code),
+    has(Code, "(re-find (re-pattern \"foo\") arg1)").
+
+% -- nbb execution vs pcre oracle ---------------------------------------------
+
+test(gp7m_match_runs_under_nbb,
+     [setup(assert_gp7m_mfa), cleanup(retract_gp7m_mfa), condition(nbb_available)]) :-
+    compile_cljs(mfa/2, Code),
+    forall(member(X, ["apple","banana","avocado","cherry"]), (
+        ( re_match("^a", X) -> ExpS = "yes" ; ExpS = "no" ),
+        cljs_write_run(Code, [X], Got),
+        atom_string(Got, GotS),
+        GotS == ExpS
+    )).
+
+test(gp7m_negation_match_runs_under_nbb,
+     [setup(assert_gp7m_mfn), cleanup(retract_gp7m_mfn), condition(nbb_available)]) :-
+    compile_cljs(mfn/2, Code),
+    forall(member(X, ["apple","banana","avocado","cherry"]), (
+        ( \+ re_match("^a", X) -> ExpS = "out" ; ExpS = "in" ),
+        cljs_write_run(Code, [X], Got),
+        atom_string(Got, GotS),
+        GotS == ExpS
+    )).
+
 :- end_tests(clojurescript_target).
