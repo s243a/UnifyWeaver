@@ -37,6 +37,7 @@ in-flight parity analyses — see §6).
 | D9 | wam_javascript | Builtins: findall/functor/arg/=../copy_term/\+/call/aggregate_all | #4177 |
 | D10 | wam_javascript | Full ISO bagof/3 + setof/3 (witness grouping, `^`, empty-fail, std order) | PR #4178 |
 | D11 | (infra) | Registry wiring + BINDING_MATRIX rows for the new targets | #4177/#4178 |
+| D12 | wam_javascript | First-argument indexing (`switch_on_constant/structure/term`; ground dispatch leaves no CP, var-first-arg falls back to try/retry/trust) | Grok `grok/wamjs-indexing` |
 
 ---
 
@@ -44,9 +45,11 @@ in-flight parity analyses — see §6).
 
 | ID | Target | Item | Owner | Branch |
 |---|---|---|---|---|
-| P1 | wam_javascript | First-argument indexing (`switch_on_constant/structure/term` → real indexed dispatch, var-first-arg fallback) | grok | `grok/wamjs-indexing` |
-| A1 | pattern targets | Parity gap analysis (recursion patterns, bindings, components, compilation surface, tests) | opus (analysis) | — |
-| A2 | wam_javascript | WAM parity gap analysis (tiers, emit modes, runtime-parser, fact sources, builtins, parallelism) | opus (analysis) | — |
+| G-P1/G-P2 | typescript (→AJS/VJS) | Real (non-canned) recursion + structural recursion | opus | worktree |
+| G-P10 | vanilla_js | Register missing advanced-pattern hooks | opus | worktree |
+| G-W1 | wam_javascript | Tier-2 lowered emitter + `functions`/`mixed` emit modes | grok | (next) |
+
+**Done since last update:** P1 first-arg indexing (Grok, `grok/wamjs-indexing`) — ✅ merged (see D12). Analyses A1/A2/census — ✅ folded in.
 
 ---
 
