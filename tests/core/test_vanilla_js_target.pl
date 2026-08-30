@@ -86,6 +86,49 @@ test(type_strip_synthetic) :-
     has(Js, "m.get(n)"),
     valid_js(Js).
 
+% --- G-P14: union types / namespace import / inline arrow param ------------
+%
+% Rewrite-robustness cases found during G-P8 streaming. Union return/param
+% types (`: number | null`) must be stripped whole (no leftover `| null` in
+% type position); namespace imports and inline arrow-param annotations must
+% come out as valid JS.
+
+test(type_strip_union_return_and_param) :-
+    TS = "export const f = (n: number, m: string | null): number | null => {\n  return n > 0 ? n : null;\n};\n",
+    vanilla_js_target:vanilla_js_type_strip(TS, Js),
+    has(Js, "const f = (n, m) =>"),
+    hasnt(Js, "| null"),
+    hasnt(Js, ": string"),
+    hasnt(Js, ": number"),
+    % the ternary `: null` (not a type annotation) must be preserved
+    has(Js, "n > 0 ? n : null"),
+    no_ts_syntax(Js),
+    valid_js(Js).
+
+test(type_strip_namespace_import) :-
+    TS = "import * as readline from \"readline\";\nconst rl = readline.createInterface({ input: process.stdin });\n",
+    vanilla_js_target:vanilla_js_type_strip(TS, Js),
+    has(Js, "import * as readline from \"readline\";"),
+    no_ts_syntax(Js),
+    valid_js(Js).
+
+test(type_strip_inline_arrow_param) :-
+    TS = "rl.on(\"line\", (line: string) => {\n  addFact(line);\n});\n",
+    vanilla_js_target:vanilla_js_type_strip(TS, Js),
+    has(Js, "(line) =>"),
+    hasnt(Js, ": string"),
+    no_ts_syntax(Js),
+    valid_js(Js).
+
+% the stripped union-return shape parses and runs under stock node
+test(union_return_runs_on_node) :-
+    TSu = "export const f = (n: number): number | null => (n > 0 ? n : null);\nconsole.log(f(5));\n",
+    vanilla_js_target:vanilla_js_type_strip(TSu, Js),
+    hasnt(Js, "| null"),
+    hasnt(Js, ": number"),
+    run_node(Js, 'x', Output),
+    atom_number(Output, 5).
+
 % --- a fact ----------------------------------------------------------------
 
 test(fact) :-
