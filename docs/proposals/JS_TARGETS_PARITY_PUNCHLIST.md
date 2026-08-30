@@ -55,7 +55,8 @@ in-flight parity analyses — see §6).
 | D27 | wam_javascript | External fact sources (G-W4, Grok): `javascript_wam_fact_sources([source(P/2, file(Path))])` (alias `js_fact_sources/1`) emits `CallFactStream` instead of inline WAM; Node runtime reads TSV/CSV/JSONL via `fs` (no npm), first-arg indexed when A1 bound; cells parsed via `parse_term`. Inline-facts unchanged. node-vs-SWI on shared triples; conformance 48/48. LMDB/CSR out of scope (matches Lua peer). | PR #4196 |
 | D28 | typescript + clojure (→AJS/VJS/CLJS) | Regex `match/2,3` guard codegen (G-P7 completion): `match(Subject,Pattern)` → TS `new RegExp(pat).test(x)`, Clojure `(re-find (re-pattern pat) x)`; `match/3` regex-type arg advisory (uses host engine). String-input typing for match-on-arg1; `\+ match` composes. node/nbb-vs-SWI (pcre oracle). Optional INT-0 follow-up (in patch): a 2-line `is_guard_goal` addition to make bare positive `match` a batch guard. | PR #4198 |
 | D29 | wam_javascript | Term-meta builtins (G-W3 follow-up, Grok): `term_variables/2` (distinct unbound, first-occurrence order), `numbervars/3` (`'$VAR'(N)` from Start, End=Start+count), `=@=/2`/`\=@=/2` (variant equality). Reuses `copy_term`'s deref/seen-struct walk. node-vs-SWI matched; conformance 48/48. Residual: `write` prints `'$VAR'(N)` literally (no A/B letter-render), no `numbervars/4` options/attvars. | PR #4199 |
-| D30 | typescript + clojure (→AJS/VJS/CLJS) | Uniqueness/order constraints (G-P-dedup): `compile_facts` now consults `constraint_analyzer:get_constraints/2` — `unique(true)` emits order-preserving/sorted dedup (TS `Set`+`JSON.stringify`; Clojure `distinct`/`sort`), `unique(false)` raw; mirrors rust/go. Covers the facts/query-helper shape (inherited by AJS/VJS/CLJS); recursion/aggregate/streaming shapes deferred (no single materialized site). node/nbb-vs-SWI `setof`; 5 suites green. | (this branch) |
+| D30 | typescript + clojure (→AJS/VJS/CLJS) | Uniqueness/order constraints (G-P-dedup): `compile_facts` now consults `constraint_analyzer:get_constraints/2` — `unique(true)` emits order-preserving/sorted dedup (TS `Set`+`JSON.stringify`; Clojure `distinct`/`sort`), `unique(false)` raw; mirrors rust/go. Covers the facts/query-helper shape (inherited by AJS/VJS/CLJS); recursion/aggregate/streaming shapes deferred (no single materialized site). node/nbb-vs-SWI `setof`; 5 suites green. | PR #4201 |
+| D31 | typescript (→AJS/VJS) | Data-source polish (G-P9 follow-up): non-comma CSV delimiters (tab/pipe/… via `String.split` string-literal, `js_escape_delimiter/2` — no regex pitfalls; bash/PS `delimiter` unchanged) + JSON `columns()` projection with reorder (dotted/`jsonpath` paths). node-vs-`awk` verified. Deferred (blocked-upstream, documented): CSV subset/reorder projection + JSON `schema` (need `sources.pl`/`compile_source` changes that'd alter bash/PS output). | (this branch) |
 
 ---
 
@@ -65,8 +66,8 @@ in-flight parity analyses — see §6).
 |---|---|---|---|---|
 | G-W-op3 | wam_javascript | User-defined operators (`op/3`) for the term parser | grok | prompt sent |
 
-**Remaining tail** (all low-priority polish):
-- **Pattern:** bagof/setof + non-extensional aggregates at pattern level (G-P3 follow-up); non-comma CSV delimiters + columns/schema projection (G-P9 follow-up); bare positive `match` batch-guard (optional 2-line `is_guard_goal` patch, D28); test depth (G-P13).
+**Remaining tail** (all low-priority polish — pattern lane nearly exhausted):
+- **Pattern:** bagof/setof-with-witness-grouping at pattern level (G-P3 follow-up — the minimal slice is marginal over aggregate_all(bag/set)); CSV subset projection + JSON `schema` (blocked-upstream, D31); bare positive `match` batch-guard (optional 2-line `is_guard_goal` patch, D28); test depth (G-P13).
 - **WAM (lane nearly exhausted):** user `op/3`/postfix ops (G-W2 follow-up); real string tag; AVL assoc; LMDB/CSR fact sources (out of scope, matches Lua peer); G-W6 parallelism (deferred).
 
 ---
