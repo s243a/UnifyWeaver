@@ -2567,6 +2567,160 @@ function try_builtin_fallback(program, state, pred, arity) {
   return Runtime.builtin_call(program, state, { pred: pred, arity: arity }) === true;
 }
 
+function fact_trim(s) {
+  return String(s).replace(/^\s+|\s+$/g, "");
+}
+
+function fact_term_key(v) {
+  if (typeof v !== "object" || v === null) return String(v);
+  if (v.tag === "atom") return "a:" + String(v.id);
+  if (v.tag === "int") return "i:" + String(v.val);
+  if (v.tag === "float") return "f:" + String(v.val);
+  return term_key({ bindings: {} }, v);
+}
+
+function parse_fact_source_value(program, text) {
+  const parsed = Runtime.parse_term(program, fact_trim(text));
+  if (parsed !== null) return parsed;
+  return V.Atom(Runtime.intern(program.intern_table, fact_trim(text)));
+}
+
+function parse_json_fact_value(program, val) {
+  if (typeof val === "number") {
+    return Number.isInteger(val) ? V.Int(val) : V.Float(val);
+  }
+  if (typeof val === "boolean") {
+    return V.Atom(Runtime.intern(program.intern_table, val ? "true" : "false"));
+  }
+  if (val === null) return V.Atom(Runtime.intern(program.intern_table, "[]"));
+  if (typeof val === "string") return parse_fact_source_value(program, val);
+  return null;
+}
+
+function parse_delimited_fact_row(program, line) {
+  const sep = line.indexOf("\t") >= 0 ? "\t" : ",";
+  const parts = line.split(sep);
+  if (parts.length < 2) return null;
+  return [
+    parse_fact_source_value(program, parts[0]),
+    parse_fact_source_value(program, parts[1])
+  ];
+}
+
+function parse_jsonl_fact_row(program, line) {
+  let obj;
+  try { obj = JSON.parse(line); } catch (e) { return null; }
+  if (Array.isArray(obj) && obj.length >= 2) {
+    const a = parse_json_fact_value(program, obj[0]);
+    const b = parse_json_fact_value(program, obj[1]);
+    if (a === null || b === null) return null;
+    return [a, b];
+  }
+  if (obj && typeof obj === "object") {
+    const args = obj.args;
+    if (Array.isArray(args) && args.length >= 2) {
+      const a = parse_json_fact_value(program, args[0]);
+      const b = parse_json_fact_value(program, args[1]);
+      if (a === null || b === null) return null;
+      return [a, b];
+    }
+    if (obj.a1 !== undefined && obj.a2 !== undefined) {
+      const a = parse_json_fact_value(program, obj.a1);
+      const b = parse_json_fact_value(program, obj.a2);
+      if (a === null || b === null) return null;
+      return [a, b];
+    }
+  }
+  return null;
+}
+
+function first_data_line_looks_json(lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const cleaned = fact_trim(lines[i]);
+    if (cleaned === "" || cleaned.charAt(0) === "#") continue;
+    const c = cleaned.charAt(0);
+    return c === "{" || c === "[";
+  }
+  return false;
+}
+
+Runtime.read_facts_file = function (program, path) {
+  const rows = [];
+  const arg1_index = {};
+  let text;
+  try {
+    text = require("fs").readFileSync(path, "utf8");
+  } catch (e) {
+    return { rows: rows, arg1_index: arg1_index };
+  }
+  const lines = String(text).split(/\r?\n/);
+  const jsonl = /\.jsonl$/i.test(path) || /\.ndjson$/i.test(path) ||
+    first_data_line_looks_json(lines);
+  for (let i = 0; i < lines.length; i++) {
+    const cleaned = fact_trim(lines[i]);
+    if (cleaned === "" || cleaned.charAt(0) === "#") continue;
+    const pair = jsonl
+      ? parse_jsonl_fact_row(program, cleaned)
+      : parse_delimited_fact_row(program, cleaned);
+    if (!pair) continue;
+    rows.push(pair);
+    const key = fact_term_key(pair[0]);
+    if (!arg1_index[key]) arg1_index[key] = [];
+    arg1_index[key].push(pair);
+  }
+  return { rows: rows, arg1_index: arg1_index };
+};
+
+function fact_source_rows(program, pred, state) {
+  const source = program.fact_sources && program.fact_sources[pred];
+  if (!source) return null;
+  if (!source.cache) source.cache = Runtime.read_facts_file(program, source.path);
+  const a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (typeof a1 === "object" && a1 !== null && a1.tag !== "unbound") {
+    return source.cache.arg1_index[fact_term_key(a1)] || [];
+  }
+  return source.cache.rows;
+}
+
+function fact_row_matches(state, row) {
+  const a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  const a2 = Runtime.deref(state, Runtime.get_reg(state, 2));
+  if (typeof a1 === "object" && a1 !== null && a1.tag !== "unbound" &&
+      same_atomic(a1, row[0]) !== true) return false;
+  if (typeof a2 === "object" && a2 !== null && a2.tag !== "unbound" &&
+      same_atomic(a2, row[1]) !== true) return false;
+  return true;
+}
+
+function filter_fact_rows(state, rows) {
+  const out = [];
+  const list = rows || [];
+  for (let i = 0; i < list.length; i++) {
+    if (fact_row_matches(state, list[i])) out.push(list[i]);
+  }
+  return out;
+}
+
+function call_fact_stream(program, state, inst) {
+  let rows = program.inline_facts && program.inline_facts[inst.pred];
+  if (!rows || rows.length === 0) {
+    rows = fact_source_rows(program, inst.pred, state);
+  }
+  rows = filter_fact_rows(state, rows);
+  if (!rows || rows.length === 0) return false;
+  if (rows.length > 1) {
+    state.cps.push(snapshot_cp(state, { kind: "fact_stream", rows: rows.slice(1) }));
+  }
+  if (Runtime.unify(state, Runtime.get_reg(state, 1), rows[0][0], program) !== true) {
+    return false;
+  }
+  if (Runtime.unify(state, Runtime.get_reg(state, 2), rows[0][1], program) !== true) {
+    return false;
+  }
+  state.pc += 1;
+  return true;
+}
+
 Runtime.step = function (program, state, inst) {
   const op = inst.op;
   if (op === "Proceed") {
@@ -2798,7 +2952,7 @@ Runtime.step = function (program, state, inst) {
     return true;
   }
   if (op === "CallIndexedAtomFact2") return false;
-  if (op === "CallFactStream") return false;
+  if (op === "CallFactStream") return call_fact_stream(program, state, inst);
   if (op === "CallPc") {
     state.cp = state.pc + 1;
     state.pc = inst.pc;

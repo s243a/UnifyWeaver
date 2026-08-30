@@ -132,6 +132,7 @@ parser, not the bundled portable `compiled(prolog_term_parser)`.
 | Second-arg / deep indexing | A2 switches are implemented; deep (argument >2) indexing is not. |
 | Lowered / functions emit mode | **Implemented.** `javascript_wam_resolve_emit_mode/2` accepts `interpreter` (default), `functions` (lower every eligible predicate), and `mixed([P/A, ...])` (lower only the named ones). Eligible shapes: single-clause deterministic bodies; T4 all-clauses-inline; T5 first-arg constant dispatch; T6 hash dispatch (≥8 atom keys); structured ITE / negation / once. Unsupported ops (`begin_aggregate`, bagof/setof, cuts/jumps the planner rejects) fall back to the interpreter rather than emitting wrong code. Interpreter-mode bytecode and wrappers are unchanged. |
 | CLI / runtime term parser | **Implemented.** Pratt reader: int/float/atom (incl. quoted)/var/list/`[H\|T]`/compound. CLI argv + `read_term_from_atom` / `atom_to_term` / `term_to_atom`. Capability `native(parse_term)` via `INTEGRATION_PATCH.md` §7. |
+| External fact sources | **Implemented.** `javascript_wam_fact_sources([source(P/2, file(Path))])` (alias `js_fact_sources/1`) emits `CallFactStream` and a Node `fs` reader for TSV/CSV and JSONL. First-arg index when A1 is bound. Same lightweight file-backed model as Lua. **LMDB / CSR are out of scope.** Inline facts (no option) are unchanged. |
 | Conformance harness adapter | See `INTEGRATION_PATCH.md` (coordinator applies `conformance_target(javascript)`). |
 
 ## How to run
@@ -140,6 +141,9 @@ parser, not the bundled portable `compiled(prolog_term_parser)`.
 mkdir -p output/advanced
 # Dedicated probe + local 48-query suite (does not edit the shared harness):
 swipl -q -g run_tests -t halt tests/test_wam_javascript_builtins.pl
+
+# File-backed P/2 fact sources (CSV/TSV/JSONL):
+swipl -q -g run_tests -t halt tests/test_wam_javascript_fact_sources.pl
 
 # Tier-2 lowered / mixed emit-mode suite:
 swipl -q -g run_tests -t halt tests/test_wam_javascript_lowered.pl
@@ -162,6 +166,6 @@ positioning; assoc is a list-of-pairs, not SWI's AVL tree.
 
 Initial JS WAM bring-up + builtin port from Lua, ISO bagof/3 and setof/3,
 first-argument indexing, the Tier-2 lowered emitter, ISO/library builtin
-breadth (sort, lists, atom/string, format, assoc), then the G-W2 runtime
-term parser (floats, lists, compounds; `native(parse_term)`).
-Source-verified against SWI-Prolog as the oracle (2026-08-30).
+breadth (sort, lists, atom/string, format, assoc), the G-W2 runtime term
+parser, then G-W4 file-backed fact sources (TSV/CSV/JSONL; LMDB/CSR out
+of scope). Source-verified against SWI-Prolog as the oracle (2026-08-30).
