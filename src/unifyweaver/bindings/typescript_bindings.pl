@@ -55,7 +55,9 @@ init_typescript_bindings :-
     register_node_fs_bindings,
     register_node_path_bindings,
     register_promise_bindings,
-    register_date_bindings.
+    register_date_bindings,
+    register_collection_bindings,
+    register_number_bindings.
 
 % ============================================================================
 % CONVENIENCE PREDICATES
@@ -846,6 +848,134 @@ register_date_bindings :-
     declare_binding(typescript, date_get_seconds/2, '.getSeconds()',
         [date], [number],
         [pure, deterministic, total, pattern(method_call)]).
+
+% ============================================================================
+% COLLECTION BINDINGS (Map / Set)
+% ============================================================================
+%
+%  JavaScript's Map and Set are the natural targets for Prolog's keyed-store
+%  and ordered-set idioms. Constructors and read accessors are pure/total;
+%  mutating operations carry effect(mutation).
+
+register_collection_bindings :-
+    % -------------------------------------------
+    % Map construction and read access
+    % -------------------------------------------
+    declare_binding(typescript, map_new/1, 'new Map',
+        [], [map],
+        [pure, deterministic, total]),
+
+    declare_binding(typescript, map_from/2, 'new Map',
+        [array], [map],
+        [pure, deterministic, total]),
+
+    declare_binding(typescript, map_get/3, '.get',
+        [map, any], [any],
+        [pure, deterministic, total, pattern(method_call)]),
+
+    declare_binding(typescript, map_has/3, '.has',
+        [map, any], [boolean],
+        [pure, deterministic, total, pattern(method_call)]),
+
+    declare_binding(typescript, map_size/2, '.size',
+        [map], [number],
+        [pure, deterministic, total, pattern(property_access)]),
+
+    declare_binding(typescript, map_keys/2, '.keys()',
+        [map], [iterable],
+        [pure, deterministic, total, pattern(method_call)]),
+
+    declare_binding(typescript, map_values/2, '.values()',
+        [map], [iterable],
+        [pure, deterministic, total, pattern(method_call)]),
+
+    declare_binding(typescript, map_entries/2, '.entries()',
+        [map], [iterable],
+        [pure, deterministic, total, pattern(method_call)]),
+
+    % -------------------------------------------
+    % Map mutation
+    % -------------------------------------------
+    declare_binding(typescript, map_set/4, '.set',
+        [map, any, any], [map],
+        [effect(mutation), deterministic, total, pattern(method_call)]),
+
+    declare_binding(typescript, map_delete/3, '.delete',
+        [map, any], [boolean],
+        [effect(mutation), deterministic, total, pattern(method_call)]),
+
+    declare_binding(typescript, map_clear/1, '.clear()',
+        [map], [void],
+        [effect(mutation), deterministic, total, pattern(method_call)]),
+
+    % -------------------------------------------
+    % Set construction and read access
+    % -------------------------------------------
+    declare_binding(typescript, set_new/1, 'new Set',
+        [], [set],
+        [pure, deterministic, total]),
+
+    declare_binding(typescript, set_from/2, 'new Set',
+        [iterable], [set],
+        [pure, deterministic, total]),
+
+    declare_binding(typescript, set_has/3, '.has',
+        [set, any], [boolean],
+        [pure, deterministic, total, pattern(method_call)]),
+
+    declare_binding(typescript, set_size/2, '.size',
+        [set], [number],
+        [pure, deterministic, total, pattern(property_access)]),
+
+    % -------------------------------------------
+    % Set mutation
+    % -------------------------------------------
+    declare_binding(typescript, set_add/3, '.add',
+        [set, any], [set],
+        [effect(mutation), deterministic, total, pattern(method_call)]),
+
+    declare_binding(typescript, set_delete/3, '.delete',
+        [set, any], [boolean],
+        [effect(mutation), deterministic, total, pattern(method_call)]),
+
+    declare_binding(typescript, set_clear/1, '.clear()',
+        [set], [void],
+        [effect(mutation), deterministic, total, pattern(method_call)]).
+
+% ============================================================================
+% NUMBER FORMATTING BINDINGS
+% ============================================================================
+%
+%  Number instance methods for formatting and radix conversion. All pure.
+
+register_number_bindings :-
+    declare_binding(typescript, number_to_fixed/3, '.toFixed',
+        [number, number], [string],
+        [pure, deterministic, total, pattern(method_call)]),
+
+    declare_binding(typescript, number_to_precision/3, '.toPrecision',
+        [number, number], [string],
+        [pure, deterministic, total, pattern(method_call)]),
+
+    declare_binding(typescript, number_to_string_radix/3, '.toString',
+        [number, number], [string],
+        [pure, deterministic, total, pattern(method_call)]),
+
+    declare_binding(typescript, number_is_integer/2, 'Number.isInteger',
+        [any], [boolean],
+        [pure, deterministic, total]),
+
+    declare_binding(typescript, number_is_safe_integer/2, 'Number.isSafeInteger',
+        [any], [boolean],
+        [pure, deterministic, total]),
+
+    declare_binding(typescript, number_parse_int/3, 'Number.parseInt',
+        [string, number], [number],
+        [pure, deterministic, total]),
+
+    declare_binding(typescript, number_parse_float/2, 'Number.parseFloat',
+        [string], [number],
+        [pure, deterministic, total]).
 
 % ============================================================================
 % TESTING
