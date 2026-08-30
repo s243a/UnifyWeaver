@@ -180,6 +180,8 @@ npx tsc --checkJs --noEmit --allowJs generated.js
 
 There is no transpile step. Generated `.js` is the source of truth.
 
+If you run that command from a checkout that already has a root `tsconfig.json`, TypeScript 5.8+/7 reports `TS5112` (config present but unused when files are listed). Add `--ignoreConfig`, or run `tsc` from the directory that holds the generated file.
+
 ## See Also
 
 - [TYPESCRIPT_TARGET.md](TYPESCRIPT_TARGET.md) — base target this inherits
