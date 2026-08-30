@@ -58,6 +58,7 @@
 :- dynamic user:gt_float/1.
 :- dynamic user:qatom/1.
 :- dynamic user:probe_parse_atom/0.
+:- dynamic user:probe_term_meta/0.
 
 install_probes :-
     retractall(user:probe_findall),
@@ -97,6 +98,7 @@ install_probes :-
     retractall(user:gt_float/1),
     retractall(user:qatom/1),
     retractall(user:probe_parse_atom),
+    retractall(user:probe_term_meta),
     assertz((user:probe_findall :-
         findall(X, member(X, [1,2,3]), L), write(L), nl, L == [1,2,3])),
     assertz((user:probe_functor :-
@@ -235,6 +237,16 @@ install_probes :-
         read_term_from_atom('[a,b|c]', PL), PL == [a, b|c],
         read_term_from_atom('1+2', SumT), SumT == +(1, 2),
         atom_to_term('bar(X)', U, B), U = bar(hello), B == ['X'=hello],
+        write(ok), nl)),
+    assertz((user:probe_term_meta :-
+        term_variables(f(X, Y, X), L), L == [X, Y],
+        term_variables(foo(a), Empty), Empty == [],
+        numbervars(g(A, B), 0, E), E == 2,
+        A == '$VAR'(0), B == '$VAR'(1),
+        f(P, Q) =@= f(R, S),
+        \+ (f(T, T) =@= f(U, V)),
+        f(T, T) \=@= f(U, V),
+        foo(a) =@= foo(a),
         write(ok), nl)).
 
 probe_preds([
@@ -270,7 +282,8 @@ probe_preds([
     user:probe_atoms/0,
     user:probe_format/0,
     user:probe_assoc/0,
-    user:probe_parse_atom/0
+    user:probe_parse_atom/0,
+    user:probe_term_meta/0
 ]).
 
 :- dynamic user:ctw_js/0.
