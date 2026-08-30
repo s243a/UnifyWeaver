@@ -731,25 +731,111 @@ ws_char('\r').
 strip_residual_ts(In, Out) :-
     strip_as_casts(In, S1),
     strip_nonnull_assertions(S1, S2),
-    strip_new_generics(S2, Out).
+    strip_new_generics(S2, S3),
+    strip_inline_arrow_params(S3, Out).
 
 %% (expr as T) → (/** @type {T} */ (expr))
+%
+%  Only a genuine value-cast `expr as Type` is rewritten. Occurrences of ` as `
+%  that are part of an import/export binding — a namespace import
+%  `import * as fs from '...'` or an aliased specifier `{ foo as bar }` — are
+%  NOT casts and must survive untouched. is_real_as_cast/2 discriminates: a cast
+%  has an expression on the left (ends in an identifier char / `)` / `]`, never
+%  the `*` of a namespace import) and a type on the right (starts uppercase or
+%  with a primitive-type keyword — an import alias like `as fs` / `as bar` does
+%  not). Non-cast ` as ` is copied through and scanning continues past it.
 strip_as_casts(In, Out) :-
-    (   sub_string(In, Before, 4, After, " as ")
+    strip_as_casts_scan(In, "", Out).
+
+strip_as_casts_scan(In, Acc, Out) :-
+    (   sub_string(In, Before, 4, _, " as ")
     ->  sub_string(In, 0, Before, _, Left),
-        sub_string(In, _, After, 0, Right0),
-        string_chars(Right0, RChars),
-        skip_ws(RChars, RC1),
-        read_type(RC1, TypeChars, RC2),
-        string_chars(Type0, TypeChars),
-        normalize_space(string(Type), Type0),
-        string_chars(Left, LChars),
-        wrap_as_cast(LChars, Type, CastLeft),
-        string_chars(RightRest, RC2),
-        string_concat(CastLeft, RightRest, Mid),
-        strip_as_casts(Mid, Out)
-    ;   Out = In
+        AfterStart is Before + 4,
+        sub_string(In, AfterStart, _, 0, Right0),
+        (   is_real_as_cast(Left, Right0)
+        ->  string_chars(Right0, RChars),
+            skip_ws(RChars, RC1),
+            read_type(RC1, TypeChars, RC2),
+            string_chars(Type0, TypeChars),
+            normalize_space(string(Type), Type0),
+            string_chars(Left, LChars),
+            wrap_as_cast(LChars, Type, CastLeft),
+            string_chars(RightRest, RC2),
+            string_concat(Acc, CastLeft, Acc1),
+            strip_as_casts_scan(RightRest, Acc1, Out)
+        ;   string_concat(Acc, Left, Acc1),
+            string_concat(Acc1, " as ", Acc2),
+            strip_as_casts_scan(Right0, Acc2, Out)
+        )
+    ;   string_concat(Acc, In, Out)
     ).
+
+%% is_real_as_cast(+Left, +Right)
+%  True when the ` as ` between Left and Right is a value cast rather than an
+%  import/export alias.
+is_real_as_cast(Left, Right) :-
+    string_chars(Left, LChars),
+    reverse(LChars, LRev),
+    skip_ws(LRev, [LastC|_]),
+    ( ident_char(LastC) ; LastC == ')' ; LastC == ']' ),
+    string_chars(Right, RChars),
+    skip_ws(RChars, [FirstC|More]),
+    ( char_type(FirstC, upper)
+    ; type_keyword_start([FirstC|More])
+    ).
+
+%% type_keyword_start(+Chars)
+%  Chars begin with a primitive-type keyword as a whole word.
+type_keyword_start(Chars) :-
+    member(Kw, [any,unknown,number,string,boolean,void,null,undefined,
+                object,never,symbol,bigint]),
+    atom_chars(Kw, KwChars),
+    append(KwChars, Rest, Chars),
+    ( Rest == [] ; Rest = [B|_], \+ ident_char(B) ),
+    !.
+
+%% strip_inline_arrow_params(+In, -Out)
+%  Strip TypeScript type annotations from inline arrow-function parameter lists
+%  that the line-level signature parser does not own, e.g. a callback
+%  `rl.on("line", (line: string) => {...})` → `(line) => {...}`, and an inline
+%  return type `(x): number => x` → `(x) => x`. Only a `(...)` group immediately
+%  followed (modulo one return-type annotation) by `=>` is treated as an arrow
+%  param list; ordinary calls `foo(a, b)` are left alone. Reuses parse_params/3
+%  to reproduce the cleaned, comma-joined parameter names.
+strip_inline_arrow_params(In, Out) :-
+    string_chars(In, Chars),
+    saip(Chars, OutChars),
+    string_chars(Out, OutChars).
+
+saip([], []) :- !.
+saip(['('|T], Out) :-
+    read_balanced(T, '(', ')', Inner, After0),
+    arrow_tail(After0, AfterArrow),
+    !,
+    (   parse_params(Inner, JsParams, _Docs),
+        atomic_list_concat(JsParams, ', ', ParamStr)
+    ->  string_chars(ParamStr, ParamChars)
+    ;   ParamChars = Inner
+    ),
+    saip(AfterArrow, RestOut),
+    append([')',' ','=','>'|RestOut], [], Tail0),
+    append(ParamChars, Tail0, Body),
+    Out = ['('|Body].
+saip([C|T], [C|Out]) :-
+    saip(T, Out).
+
+%% arrow_tail(+AfterCloseParen, -AfterArrow)
+%  Succeeds when what follows a `)` is (optional `: RetType`) then `=>`;
+%  AfterArrow is the remainder after the `=>`.
+arrow_tail(After0, AfterArrow) :-
+    skip_ws(After0, A1),
+    (   A1 = [':'|A2]
+    ->  skip_ws(A2, A3),
+        read_return_type(A3, _RetChars, A4),
+        skip_ws(A4, A5)
+    ;   A5 = A1
+    ),
+    A5 = ['=','>'|AfterArrow].
 
 wrap_as_cast(LChars, Type, CastLeft) :-
     reverse(LChars, Rev),

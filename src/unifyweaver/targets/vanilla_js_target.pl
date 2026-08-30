@@ -172,8 +172,14 @@ js_strip_rules([
     re(":\\s*\\[[^\\]]*\\](?:\\[\\])?(?=\\s*(?:=>|[,);{=]))"/g, ""),
 
     % 6. Remove keyword / named type annotations, e.g. `: number`, `: string[]`,
-    %    `: Set<string>`, `: Partial<FooFact>`, `: Promise<...>`, return types.
-    re(":\\s*(?:number|string|boolean|void|unknown|any|T|R|Request|Response|Partial|Promise|Set|Map|ApiResponse|[A-Z][A-Za-z0-9_]*Fact)(?:<[^;{}()]*>)?(?:\\[\\])?(?=\\s*(?:=>|[,);{=]))"/g, ""),
+    %    `: Set<string>`, `: Partial<FooFact>`, `: Promise<...>`, return types,
+    %    AND union types `: T1 | T2 | ...` (e.g. `: number | null`,
+    %    `: string | undefined`, `: A<X> | B[]`). The leading type atom uses the
+    %    unambiguous named set (never bare `null`/`undefined`, so a ternary
+    %    `cond ? a : null` is untouched); subsequent union members after a `|`
+    %    additionally admit `null`/`undefined`. Applies in both param position
+    %    (lookahead `,`/`)`) and return position (lookahead `=>`/`{`/`=`/`;`).
+    re(":\\s*(?:number|string|boolean|void|unknown|any|T|R|Request|Response|Partial|Promise|Set|Map|ApiResponse|[A-Z][A-Za-z0-9_]*Fact)(?:<[^;{}()]*>)?(?:\\[\\])?(?:\\s*\\|\\s*(?:number|string|boolean|void|unknown|any|null|undefined|T|R|Request|Response|Partial|Promise|Set|Map|ApiResponse|[A-Z][A-Za-z0-9_]*Fact)(?:<[^;{}()]*>)?(?:\\[\\])?)*(?=\\s*(?:=>|[,);{=]))"/g, ""),
 
     % 7. Remove non-null assertions: `x.get(n)!` -> `x.get(n)`.
     re("\\)!"/g, ")")
