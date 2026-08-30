@@ -12,6 +12,7 @@
 %                 plus the native Pratt parse_term reader
 %                 (read_term_from_atom, atom_to_term, term_to_atom)
 %                 and term-meta (term_variables, numbervars, =@=, \=@=)
+%                 plus op/3 (dynamic Pratt operator table)
 
 :- module(javascript_wam_bindings, [
     javascript_wam_builtin/3,          % Name, Arity, Status
@@ -115,6 +116,7 @@ javascript_wam_builtin(term_variables, 2, implemented).
 javascript_wam_builtin(numbervars, 3, implemented).
 javascript_wam_builtin((=@=), 2, implemented).
 javascript_wam_builtin((\=@=), 2, implemented).
+javascript_wam_builtin(op, 3, implemented).
 
 javascript_wam_builtins(List) :-
     findall(Name/Arity, javascript_wam_builtin(Name, Arity, _), List).
