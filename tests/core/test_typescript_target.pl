@@ -18,6 +18,7 @@
 :- use_module(library(plunit)).
 :- use_module(library(process)).
 :- use_module(library(lists)).
+:- use_module(library(http/json)).
 :- use_module('../../src/unifyweaver/targets/typescript_target').
 :- use_module('../../src/unifyweaver/bindings/typescript_bindings').
 :- use_module('../../src/unifyweaver/core/advanced/tree_recursion',
@@ -398,5 +399,148 @@ test(component_free_module_unchanged,
     has(Code, "export const fact"),
     hasnt(Code, "Custom Chart Component"),
     hasnt(Code, "export const ts_validator").
+
+% ============================================================================
+% G-P3: AGGREGATE COMPILATION — aggregate_all/3 and findall/3 goals
+%
+% The TS pattern target previously compiled ZERO aggregate goals (vs go 36 /
+% python 10 / rust 10). These tests assert that aggregate_all(count/sum/max/
+% min/bag/set, ...) and findall/3 now lower to a self-contained TS reducer over
+% the inner goal's solution set, whose result matches the SWI oracle when run
+% under node.
+% ============================================================================
+
+assert_agg_parent :-
+    assertz(user:parent(tom, bob)),
+    assertz(user:parent(tom, liz)),
+    assertz(user:parent(bob, ann)),
+    assertz(user:parent(bob, pat)),
+    assertz((user:count_children(P, N) :- aggregate_all(count, parent(P, _), N))),
+    assertz((user:children_of(P, L)   :- findall(C, parent(P, C), L))),
+    assertz((user:kids_bag(P, L)      :- aggregate_all(bag(C), parent(P, C), L))).
+retract_agg_parent :-
+    retractall(user:parent(_, _)),
+    retractall(user:count_children(_, _)),
+    retractall(user:children_of(_, _)),
+    retractall(user:kids_bag(_, _)).
+
+assert_agg_person :-
+    assertz(user:person(alice, 30)),
+    assertz(user:person(bob,   25)),
+    assertz(user:person(carol, 40)),
+    assertz((user:total_age(T)  :- aggregate_all(sum(A), person(_, A), T))),
+    assertz((user:double_sum(T) :- aggregate_all(sum(W), (person(_, A), W is A * 2), T))),
+    assertz((user:max_age(M)    :- aggregate_all(max(A), person(_, A), M))),
+    assertz((user:min_age(M)    :- aggregate_all(min(A), person(_, A), M))).
+retract_agg_person :-
+    retractall(user:person(_, _)),
+    retractall(user:total_age(_)),
+    retractall(user:double_sum(_)),
+    retractall(user:max_age(_)),
+    retractall(user:min_age(_)).
+
+assert_agg_color :-
+    assertz(user:col(red)),
+    assertz(user:col(blue)),
+    assertz(user:col(red)),
+    assertz(user:col(green)),
+    assertz((user:uniq_colors(L) :- aggregate_all(set(X), col(X), L))).
+retract_agg_color :-
+    retractall(user:col(_)),
+    retractall(user:uniq_colors(_)).
+
+% -- Structural (non-node) recognition: the emitted TS is a real reducer -------
+
+test(agg_count_lowers_to_reducer, [setup(assert_agg_parent), cleanup(retract_agg_parent)]) :-
+    typescript_target:compile_predicate(count_children/2, [], Code),
+    has(Code, "export function count_children(arg1: any): number"),
+    has(Code, "for (const f of facts)"),
+    has(Code, "acc += 1;"),
+    % grouped by the bound head input
+    has(Code, "String(f.arg1) === String(arg1)").
+
+test(agg_sum_lowers_to_reducer, [setup(assert_agg_person), cleanup(retract_agg_person)]) :-
+    typescript_target:compile_predicate(total_age/1, [], Code),
+    has(Code, "export function total_age(): number"),
+    has(Code, "acc += Number(f.arg2);").
+
+test(agg_sum_with_arithmetic_expr, [setup(assert_agg_person), cleanup(retract_agg_person)]) :-
+    typescript_target:compile_predicate(double_sum/1, [], Code),
+    % the `W is A * 2` post-goal is lowered into the loop body
+    has(Code, "const v1 = (f.arg2 * 2);"),
+    has(Code, "acc += Number(v1);").
+
+test(agg_findall_lowers_to_array, [setup(assert_agg_parent), cleanup(retract_agg_parent)]) :-
+    typescript_target:compile_predicate(children_of/2, [], Code),
+    has(Code, "export function children_of(arg1: any): any[]"),
+    has(Code, "acc.push(f.arg2);").
+
+% -- Node execution vs SWI oracle ---------------------------------------------
+
+test(agg_count_runs_under_node,
+     [setup(assert_agg_parent), cleanup(retract_agg_parent), condition(node_available)]) :-
+    typescript_target:compile_predicate(count_children/2, [], Code),
+    forall(member(P, [tom, bob]), (
+        aggregate_all(count, user:parent(P, _), Exp),
+        ts_write_run(Code, [P], Got),
+        atom_number(Got, GotN),
+        GotN =:= Exp
+    )).
+
+test(agg_sum_runs_under_node,
+     [setup(assert_agg_person), cleanup(retract_agg_person), condition(node_available)]) :-
+    typescript_target:compile_predicate(total_age/1, [], Code),
+    aggregate_all(sum(A), user:person(_, A), Exp),
+    ts_write_run(Code, [], Got),
+    atom_number(Got, GotN),
+    GotN =:= Exp.
+
+test(agg_sum_arith_runs_under_node,
+     [setup(assert_agg_person), cleanup(retract_agg_person), condition(node_available)]) :-
+    typescript_target:compile_predicate(double_sum/1, [], Code),
+    aggregate_all(sum(W), (user:person(_, A), W is A * 2), Exp),
+    ts_write_run(Code, [], Got),
+    atom_number(Got, GotN),
+    GotN =:= Exp.
+
+test(agg_max_runs_under_node,
+     [setup(assert_agg_person), cleanup(retract_agg_person), condition(node_available)]) :-
+    typescript_target:compile_predicate(max_age/1, [], Code),
+    aggregate_all(max(A), user:person(_, A), Exp),
+    ts_write_run(Code, [], Got),
+    atom_number(Got, GotN),
+    GotN =:= Exp.
+
+test(agg_min_runs_under_node,
+     [setup(assert_agg_person), cleanup(retract_agg_person), condition(node_available)]) :-
+    typescript_target:compile_predicate(min_age/1, [], Code),
+    aggregate_all(min(A), user:person(_, A), Exp),
+    ts_write_run(Code, [], Got),
+    atom_number(Got, GotN),
+    GotN =:= Exp.
+
+test(agg_bag_runs_under_node,
+     [setup(assert_agg_parent), cleanup(retract_agg_parent), condition(node_available)]) :-
+    typescript_target:compile_predicate(kids_bag/2, [], Code),
+    aggregate_all(bag(C), user:parent(bob, C), Exp),
+    ts_write_run(Code, [bob], Got),
+    atom_json_term(Got, GotJson, []),
+    GotJson == Exp.
+
+test(agg_set_runs_under_node,
+     [setup(assert_agg_color), cleanup(retract_agg_color), condition(node_available)]) :-
+    typescript_target:compile_predicate(uniq_colors/1, [], Code),
+    aggregate_all(set(X), user:col(X), Exp),
+    ts_write_run(Code, [], Got),
+    atom_json_term(Got, GotJson, []),
+    GotJson == Exp.
+
+test(agg_findall_runs_under_node,
+     [setup(assert_agg_parent), cleanup(retract_agg_parent), condition(node_available)]) :-
+    typescript_target:compile_predicate(children_of/2, [], Code),
+    findall(C, user:parent(tom, C), Exp),
+    ts_write_run(Code, [tom], Got),
+    atom_json_term(Got, GotJson, []),
+    GotJson == Exp.
 
 :- end_tests(typescript_target).
