@@ -50,7 +50,8 @@ in-flight parity analyses — see §6).
 | D22 | annotated_js, vanilla_js | Rewriter hardening (G-P14): vanilla strips union types (incl. `\| null`); annotated keeps `import * as`/named-alias imports intact + strips inline arrow-param annotations; union return → `@returns` JSDoc. node + `tsc --checkJs` verified; base TS suite unaffected. | PR #4189 |
 | D23 | wam_javascript | ISO/library builtin breadth (G-W3, Grok): sort family (sort/2,4, msort, keysort, compare, predsort), list lib (append/reverse/nth0/nth1/last/sum_list/max_list/min_list/list_to_set/select/include/exclude), atom/string (atom_concat/length/chars/codes, char_code, sub_atom, up/downcase, atom_string/split_string/string_concat), format/2,3 (~w~a~d~p~q~n~s~t~~), tab, writeln, assoc (list-based). node-verified vs SWI; conformance 48/48. Follow-up: term_variables/numbervars/=@=, ~f/~r, real string tag, AVL assoc. | PR #4190 |
 | D24 | typescript + clojure (→AJS/VJS/CLJS) | Guard-goal codegen (G-P7): added negation (`\+`/`not`) and type-check preds (integer/float/number/atom/is_list/compound/var/nonvar/ground) to `ts_guard_condition/3` + `clojure_guard_condition/3` (+ `member/2` under negation). Was: classified as guard upstream then render-failed. node+nbb verified vs SWI; 5 suites green (TS 57/AJS 17/VJS 22/CLJS 26/JVM 12). Regex `match` = follow-up. | PR #4192 |
-| D25 | wam_javascript | Richer runtime term parser (G-W2, Grok): Pratt reader for ints/floats/atoms (bare+quoted)/vars/lists (`[H\|T]`)/compounds, ISO default op table (`1+2`→`+(1,2)`); CLI pads missing args with unbound vars; `read_term_from_atom`/`atom_to_term`/`term_to_atom` builtins. Registered `native(parse_term)` in `wam_runtime_parser_capability.pl` (INT-0). node-vs-SWI CLI (list→S=6, compound→X=a, float 3.14>3.0); conformance 48/48. Follow-up: user `op/3`, postfix ops. | (this branch) |
+| D25 | wam_javascript | Richer runtime term parser (G-W2, Grok): Pratt reader for ints/floats/atoms (bare+quoted)/vars/lists (`[H\|T]`)/compounds, ISO default op table (`1+2`→`+(1,2)`); CLI pads missing args with unbound vars; `read_term_from_atom`/`atom_to_term`/`term_to_atom` builtins. Registered `native(parse_term)` in `wam_runtime_parser_capability.pl` (INT-0). node-vs-SWI CLI (list→S=6, compound→X=a, float 3.14>3.0); conformance 48/48. Follow-up: user `op/3`, postfix ops. | PR #4193 |
+| D26 | typescript (→AJS/VJS) | Data-source consumer (G-P9, Option A): TS now consumes JSON + CSV sources via `_typescript` templates (`json_source.pl`/`csv_source.pl`) + new `typescript_source_compiler.pl` wrapper + one routing clause on `is_dynamic_source/1`. Self-contained Node (fs, no npm). node output matches jq/awk; existing bash/PowerShell-pure paths untouched. Follow-up: non-comma CSV delimiters, columns/schema projection. | (this branch) |
 
 ---
 
@@ -58,11 +59,11 @@ in-flight parity analyses — see §6).
 
 | ID | Target | Item | Owner | Branch |
 |---|---|---|---|---|
-| G-P9 | typescript (→AJS/VJS) | Data-source consumer (JSON/CSV, Option A mirror PowerShell-pure) | opus | worktree |
+| G-W4 | wam_javascript | External fact sources (TSV/CSV/JSONL, mirror `wam_lua`) | grok | prompt sent |
 
 **Remaining tail** (all lower-priority than what's landed):
-- **Pattern:** regex `match` guards (G-P7 follow-up); `constraint_analyzer` unique/unordered dedup for TS/CLJS; bagof/setof + non-extensional aggregates at pattern level (G-P3 follow-up); test depth (G-P13).
-- **WAM:** G-W4 external fact sources (mirror `wam_lua` `lua_fact_sources`); G-W3 follow-ups (term_variables/numbervars/=@=, real string tag, AVL assoc); G-W6 parallelism (deferred).
+- **Pattern:** regex `match` guards (G-P7 follow-up); `constraint_analyzer` unique/unordered dedup for TS/CLJS; bagof/setof + non-extensional aggregates at pattern level (G-P3 follow-up); non-comma CSV delimiters + columns/schema projection (G-P9 follow-up); test depth (G-P13).
+- **WAM:** G-W4 (in flight); G-W3 follow-ups (term_variables/numbervars/=@=, real string tag, AVL assoc); user `op/3`/postfix ops (G-W2 follow-up); G-W6 parallelism (deferred).
 
 ---
 
