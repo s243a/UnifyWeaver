@@ -88,6 +88,54 @@ test(rewrite_nonnull_and_map) :-
     hasnt(Out, ": number").
 
 % ============================================================================
+% G-P14: rewrite-robustness (union types, namespace imports, inline arrows)
+% ============================================================================
+
+% Namespace imports are NOT type annotations: `import * as X from '...'` must
+% survive intact (the old `strip_as_casts` fired on `* as X` and mangled it).
+test(namespace_import_intact) :-
+    annotated_js_target:ts_to_annotated_js(
+        "import * as readline from \"readline\";\nconst rl = readline.createInterface({ input: process.stdin });\n",
+        Out),
+    has(Out, "import * as readline from \"readline\";"),
+    hasnt(Out, "@type {readline"),
+    hasnt(Out, "import *;").
+
+% Aliased named imports/exports also survive.
+test(named_import_alias_intact) :-
+    annotated_js_target:ts_to_annotated_js(
+        "import { readFile as rf } from \"node:fs\";\n",
+        Out),
+    has(Out, "import { readFile as rf } from \"node:fs\";").
+
+% A genuine value cast still becomes a JSDoc @type cast (regression).
+test(genuine_as_cast_still_rewritten) :-
+    annotated_js_target:ts_to_annotated_js(
+        "  return (fact as any).arg1;\n",
+        Out),
+    has(Out, "@type {any}"),
+    has(Out, "(fact)"),
+    hasnt(Out, " as any").
+
+% Inline arrow-parameter annotation is stripped cleanly (callback position).
+test(inline_arrow_param_stripped) :-
+    annotated_js_target:ts_to_annotated_js(
+        "rl.on(\"line\", (line: string) => {\n  addFact(line);\n});\n",
+        Out),
+    has(Out, "(line) =>"),
+    hasnt(Out, ": string").
+
+% Union return type → JSDoc union; signature body carries no type.
+test(union_return_to_jsdoc) :-
+    annotated_js_target:ts_to_annotated_js(
+        "export const f = (n: number): number | null => {\n  return n;\n};\n",
+        Out),
+    has(Out, "@returns {number | null}"),
+    has(Out, "export const f = (n) => {"),
+    hasnt(Out, ": number"),
+    hasnt(Out, ": null =>").
+
+% ============================================================================
 % Fact compilation
 % ============================================================================
 
