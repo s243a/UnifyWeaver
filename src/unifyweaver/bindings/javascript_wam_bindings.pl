@@ -8,7 +8,9 @@
 % dispatches these names from BuiltinCall (and as a Call/Execute fallback
 % when no user label exists). Status:
 %   implemented - full for the conformance + probe suite, including
-%                 ISO bagof/3 / setof/3 witness grouping and ^/2
+%                 ISO bagof/3 / setof/3 witness grouping and ^/2,
+%                 plus the native Pratt parse_term reader
+%                 (read_term_from_atom, atom_to_term, term_to_atom)
 
 :- module(javascript_wam_bindings, [
     javascript_wam_builtin/3,          % Name, Arity, Status
@@ -104,6 +106,10 @@ javascript_wam_builtin(get_assoc, 3, implemented).
 javascript_wam_builtin(put_assoc, 4, implemented).
 javascript_wam_builtin(assoc_to_list, 2, implemented).
 javascript_wam_builtin(assoc_to_keys, 2, implemented).
+javascript_wam_builtin(read_term_from_atom, 2, implemented).
+javascript_wam_builtin(read_term_from_atom, 3, implemented).
+javascript_wam_builtin(atom_to_term, 3, implemented).
+javascript_wam_builtin(term_to_atom, 2, implemented).
 
 javascript_wam_builtins(List) :-
     findall(Name/Arity, javascript_wam_builtin(Name, Arity, _), List).

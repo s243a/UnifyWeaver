@@ -2254,6 +2254,51 @@ function builtin_between(program, state) {
   return bind_or_compare(state, 3, V.Int(lo.val), program);
 }
 
+function builtin_read_term_from_atom(program, state) {
+  const text = atomic_text(program, state, Runtime.get_reg(state, 1));
+  if (text === null) return false;
+  const parsed = Runtime.parse_term(program, text, state);
+  if (parsed === null) return false;
+  return Runtime.unify(state, Runtime.get_reg(state, 2), parsed, program);
+}
+
+function builtin_atom_to_term(program, state) {
+  const text = atomic_text(program, state, Runtime.get_reg(state, 1));
+  if (text === null) return false;
+  const parsed = Runtime.parse_term_with_vars(program, text, state);
+  if (parsed === null) return false;
+  if (Runtime.unify(state, Runtime.get_reg(state, 2), parsed.term, program) !== true) {
+    return false;
+  }
+  const eqId = Runtime.intern(program.intern_table, "=");
+  const pairs = [];
+  const names = Object.keys(parsed.vars);
+  for (let i = 0; i < names.length; i++) {
+    const n = names[i];
+    pairs.push(V.Struct(eqId, [intern_atom(program, n), parsed.vars[n]]));
+  }
+  return Runtime.unify(
+    state,
+    Runtime.get_reg(state, 3),
+    Runtime.list_from_terms(pairs, program.intern_table),
+    program
+  );
+}
+
+function builtin_term_to_atom(program, state) {
+  const rawT = Runtime.get_reg(state, 1);
+  const t = Runtime.deref(state, rawT);
+  if (t && typeof t === "object" && t.tag && t.tag !== "unbound") {
+    const s = term_to_string(program, state, rawT);
+    return bind_or_compare(state, 2, intern_atom(program, s), program);
+  }
+  const text = atomic_text(program, state, Runtime.get_reg(state, 2));
+  if (text === null) return false;
+  const parsed = Runtime.parse_term(program, text, state);
+  if (parsed === null) return false;
+  return Runtime.unify(state, rawT, parsed, program);
+}
+
 Runtime.builtin_call = function (program, state, inst) {
   const p = inst.pred;
   const name = pred_name(p);
@@ -2319,6 +2364,9 @@ Runtime.builtin_call = function (program, state, inst) {
   if (name === "put_assoc") return builtin_put_assoc(program, state);
   if (name === "assoc_to_list") return builtin_assoc_to_list(program, state);
   if (name === "assoc_to_keys") return builtin_assoc_to_keys(program, state);
+  if (name === "read_term_from_atom") return builtin_read_term_from_atom(program, state);
+  if (name === "atom_to_term") return builtin_atom_to_term(program, state);
+  if (name === "term_to_atom") return builtin_term_to_atom(program, state);
   if (name === "=") return Runtime.unify(state, Runtime.get_reg(state, 1), Runtime.get_reg(state, 2), program);
   if (name === "==") return exact_equal(state, Runtime.get_reg(state, 1), Runtime.get_reg(state, 2));
   if (name === "\\==") return exact_equal(state, Runtime.get_reg(state, 1), Runtime.get_reg(state, 2)) !== true;
@@ -2888,10 +2936,341 @@ Runtime.run_predicate = function (program, startPc, args) {
   return Runtime.run(program, state) === true;
 };
 
+// ISO-ish operator tables (same coverage as the R WAM native reader).
+// Format: name -> { prec, assoc }. Postfix is empty by default.
+Runtime.OP_INFIX = {
+  ":-": { prec: 1200, assoc: "xfx" },
+  "-->": { prec: 1200, assoc: "xfx" },
+  ";": { prec: 1100, assoc: "xfy" },
+  "->": { prec: 1050, assoc: "xfy" },
+  "*->": { prec: 1050, assoc: "xfy" },
+  ",": { prec: 1000, assoc: "xfy" },
+  "=": { prec: 700, assoc: "xfx" },
+  "\\=": { prec: 700, assoc: "xfx" },
+  "==": { prec: 700, assoc: "xfx" },
+  "\\==": { prec: 700, assoc: "xfx" },
+  "=..": { prec: 700, assoc: "xfx" },
+  "is": { prec: 700, assoc: "xfx" },
+  "=:=": { prec: 700, assoc: "xfx" },
+  "=\\=": { prec: 700, assoc: "xfx" },
+  "<": { prec: 700, assoc: "xfx" },
+  ">": { prec: 700, assoc: "xfx" },
+  "=<": { prec: 700, assoc: "xfx" },
+  ">=": { prec: 700, assoc: "xfx" },
+  "@<": { prec: 700, assoc: "xfx" },
+  "@>": { prec: 700, assoc: "xfx" },
+  "@=<": { prec: 700, assoc: "xfx" },
+  "@>=": { prec: 700, assoc: "xfx" },
+  "+": { prec: 500, assoc: "yfx" },
+  "-": { prec: 500, assoc: "yfx" },
+  "/\\": { prec: 500, assoc: "yfx" },
+  "\\/": { prec: 500, assoc: "yfx" },
+  "xor": { prec: 500, assoc: "yfx" },
+  "*": { prec: 400, assoc: "yfx" },
+  "/": { prec: 400, assoc: "yfx" },
+  "//": { prec: 400, assoc: "yfx" },
+  "mod": { prec: 400, assoc: "yfx" },
+  "rem": { prec: 400, assoc: "yfx" },
+  "div": { prec: 400, assoc: "yfx" },
+  "<<": { prec: 400, assoc: "yfx" },
+  ">>": { prec: 400, assoc: "yfx" },
+  "**": { prec: 200, assoc: "xfx" },
+  "^": { prec: 200, assoc: "xfy" }
+};
+
+Runtime.OP_PREFIX = {
+  ":-": { prec: 1200, assoc: "fx" },
+  "?-": { prec: 1200, assoc: "fx" },
+  "\\+": { prec: 900, assoc: "fy" },
+  "-": { prec: 200, assoc: "fy" },
+  "+": { prec: 200, assoc: "fy" },
+  "\\": { prec: 200, assoc: "fy" }
+};
+
+Runtime.OP_POSTFIX = {};
+
+function term_is_digit(ch) {
+  return ch >= "0" && ch <= "9";
+}
+
+function term_is_lower(ch) {
+  return ch >= "a" && ch <= "z";
+}
+
+function term_is_var_start(ch) {
+  return (ch >= "A" && ch <= "Z") || ch === "_";
+}
+
+function term_is_alnum(ch) {
+  return term_is_digit(ch) || term_is_lower(ch) ||
+    (ch >= "A" && ch <= "Z") || ch === "_";
+}
+
+function term_is_sym(ch) {
+  return "+-*/\\^<>=:@.?~#$&".indexOf(ch) >= 0;
+}
+
+Runtime.tokenize_term = function (text) {
+  const s = String(text);
+  const n = s.length;
+  const toks = [];
+  let i = 0;
+  function last_type() {
+    return toks.length === 0 ? null : toks[toks.length - 1].type;
+  }
+  while (i < n) {
+    const c = s.charAt(i);
+    if (c === " " || c === "\t" || c === "\n" || c === "\r") { i += 1; continue; }
+    if (c === "(") { toks.push({ type: "lparen" }); i += 1; continue; }
+    if (c === ")") { toks.push({ type: "rparen" }); i += 1; continue; }
+    if (c === "[") { toks.push({ type: "lbracket" }); i += 1; continue; }
+    if (c === "]") { toks.push({ type: "rbracket" }); i += 1; continue; }
+    if (c === ",") { toks.push({ type: "comma" }); i += 1; continue; }
+    if (c === ";") { toks.push({ type: "semicolon" }); i += 1; continue; }
+    if (c === "|") { toks.push({ type: "pipe" }); i += 1; continue; }
+    if (c === "!") {
+      toks.push({ type: "atom", value: "!", is_symbol: true });
+      i += 1;
+      continue;
+    }
+    if (c === "'") {
+      i += 1;
+      let buf = "";
+      while (i < n && s.charAt(i) !== "'") {
+        if (s.charAt(i) === "\\" && i + 1 < n) {
+          buf += s.charAt(i + 1);
+          i += 2;
+        } else {
+          buf += s.charAt(i);
+          i += 1;
+        }
+      }
+      if (i >= n) return null;
+      i += 1;
+      toks.push({ type: "atom", value: buf });
+      continue;
+    }
+    const after_sep = last_type() === null ||
+      last_type() === "comma" || last_type() === "semicolon" ||
+      last_type() === "lparen" || last_type() === "lbracket" ||
+      last_type() === "pipe";
+    if (term_is_digit(c) ||
+        (c === "-" && i + 1 < n && term_is_digit(s.charAt(i + 1)) && after_sep)) {
+      let j = c === "-" ? i + 1 : i;
+      let sawDot = false;
+      while (j < n && (term_is_digit(s.charAt(j)) ||
+          (!sawDot && s.charAt(j) === "." && j + 1 < n &&
+           term_is_digit(s.charAt(j + 1))))) {
+        if (s.charAt(j) === ".") sawDot = true;
+        j += 1;
+      }
+      if (j < n && (s.charAt(j) === "e" || s.charAt(j) === "E")) {
+        let k = j + 1;
+        if (k < n && (s.charAt(k) === "+" || s.charAt(k) === "-")) k += 1;
+        if (k < n && term_is_digit(s.charAt(k))) {
+          sawDot = true;
+          j = k + 1;
+          while (j < n && term_is_digit(s.charAt(j))) j += 1;
+        }
+      }
+      toks.push({ type: "number", value: s.slice(i, j), is_float: sawDot });
+      i = j;
+      continue;
+    }
+    if (term_is_var_start(c)) {
+      let j = i + 1;
+      while (j < n && term_is_alnum(s.charAt(j))) j += 1;
+      toks.push({ type: "var", value: s.slice(i, j) });
+      i = j;
+      continue;
+    }
+    if (term_is_lower(c)) {
+      let j = i + 1;
+      while (j < n && term_is_alnum(s.charAt(j))) j += 1;
+      toks.push({ type: "atom", value: s.slice(i, j) });
+      i = j;
+      continue;
+    }
+    if (term_is_sym(c)) {
+      let j = i + 1;
+      while (j < n && term_is_sym(s.charAt(j))) j += 1;
+      toks.push({ type: "atom", value: s.slice(i, j), is_symbol: true });
+      i = j;
+      continue;
+    }
+    return null;
+  }
+  return toks;
+};
+
+Runtime.wam_parse_expr = function (p, maxPrec) {
+  const left0 = Runtime.wam_parse_primary(p, maxPrec);
+  if (left0 === null) return null;
+  let left = left0;
+  let leftPrec = p.last_prec;
+  while (true) {
+    if (p.pos >= p.tokens.length) return left;
+    const tok = p.tokens[p.pos];
+    let opName = null;
+    if (tok.type === "atom") opName = tok.value;
+    else if (tok.type === "comma") opName = ",";
+    else if (tok.type === "semicolon") opName = ";";
+    if (opName === null) return left;
+    const iop = Runtime.OP_INFIX[opName];
+    if (iop && iop.prec <= maxPrec) {
+      const lhsOk = iop.assoc === "yfx" ? leftPrec <= iop.prec : leftPrec < iop.prec;
+      if (lhsOk) {
+        p.pos += 1;
+        const rhsMax = iop.assoc === "xfy" ? iop.prec : iop.prec - 1;
+        const rhs = Runtime.wam_parse_expr(p, rhsMax);
+        if (rhs === null) return null;
+        left = V.Struct(Runtime.intern(p.table, opName), [left, rhs]);
+        leftPrec = iop.prec;
+        continue;
+      }
+    }
+    const pop = Runtime.OP_POSTFIX[opName];
+    if (pop && pop.prec <= maxPrec) {
+      const lhsOk = pop.assoc === "yf" ? leftPrec <= pop.prec : leftPrec < pop.prec;
+      if (lhsOk) {
+        p.pos += 1;
+        left = V.Struct(Runtime.intern(p.table, opName), [left]);
+        leftPrec = pop.prec;
+        continue;
+      }
+    }
+    return left;
+  }
+};
+
+Runtime.wam_parse_primary = function (p, maxPrec) {
+  p.last_prec = 0;
+  if (p.pos >= p.tokens.length) return null;
+  const tok = p.tokens[p.pos];
+  if (tok.type === "number") {
+    p.pos += 1;
+    const num = Number(tok.value);
+    if (tok.is_float) return V.Float(num);
+    return V.Int(num);
+  }
+  if (tok.type === "var") {
+    p.pos += 1;
+    const name = tok.value;
+    if (name === "_") return Runtime.new_var(p.state);
+    if (Object.prototype.hasOwnProperty.call(p.vars, name)) return p.vars[name];
+    const v = Runtime.new_var(p.state);
+    p.vars[name] = v;
+    return v;
+  }
+  if (tok.type === "atom") {
+    p.pos += 1;
+    if (p.pos < p.tokens.length && p.tokens[p.pos].type === "lparen") {
+      p.pos += 1;
+      const args = [];
+      while (true) {
+        const a = Runtime.wam_parse_expr(p, 999);
+        if (a === null) return null;
+        args.push(a);
+        if (p.pos >= p.tokens.length) return null;
+        const sep = p.tokens[p.pos].type;
+        if (sep === "rparen") { p.pos += 1; break; }
+        if (sep !== "comma") return null;
+        p.pos += 1;
+      }
+      return V.Struct(Runtime.intern(p.table, tok.value), args);
+    }
+    const op = Runtime.OP_PREFIX[tok.value];
+    if (op && op.prec <= maxPrec && p.pos < p.tokens.length) {
+      const next = p.tokens[p.pos];
+      const starts = next.type === "number" || next.type === "var" ||
+        next.type === "atom" || next.type === "lparen" || next.type === "lbracket";
+      if (starts) {
+        const rhsMax = op.assoc === "fy" ? op.prec : op.prec - 1;
+        const operand = Runtime.wam_parse_expr(p, rhsMax);
+        if (operand === null) return null;
+        p.last_prec = op.prec;
+        return V.Struct(Runtime.intern(p.table, tok.value), [operand]);
+      }
+    }
+    return V.Atom(Runtime.intern(p.table, tok.value));
+  }
+  if (tok.type === "lparen") {
+    p.pos += 1;
+    const inner = Runtime.wam_parse_expr(p, 1200);
+    if (inner === null) return null;
+    if (p.pos >= p.tokens.length || p.tokens[p.pos].type !== "rparen") return null;
+    p.pos += 1;
+    return inner;
+  }
+  if (tok.type === "lbracket") {
+    p.pos += 1;
+    if (p.pos < p.tokens.length && p.tokens[p.pos].type === "rbracket") {
+      p.pos += 1;
+      return V.Atom(Runtime.intern(p.table, "[]"));
+    }
+    const elems = [];
+    while (true) {
+      const a = Runtime.wam_parse_expr(p, 999);
+      if (a === null) return null;
+      elems.push(a);
+      if (p.pos >= p.tokens.length) return null;
+      const sep = p.tokens[p.pos].type;
+      if (sep === "rbracket") {
+        p.pos += 1;
+        return Runtime.list_from_terms(elems, p.table);
+      }
+      if (sep === "comma") { p.pos += 1; continue; }
+      if (sep === "pipe") {
+        p.pos += 1;
+        const tail = Runtime.wam_parse_expr(p, 999);
+        if (tail === null) return null;
+        if (p.pos >= p.tokens.length || p.tokens[p.pos].type !== "rbracket") return null;
+        p.pos += 1;
+        const consId = Runtime.intern(p.table, "[|]");
+        let result = tail;
+        for (let i = elems.length - 1; i >= 0; i--) {
+          result = V.Struct(consId, [elems[i], result]);
+        }
+        return result;
+      }
+      return null;
+    }
+  }
+  return null;
+};
+
+// Recursive-descent / Pratt term reader. Interns cons as [|]/2 + [] atom,
+// compounds as put_structure-style structs, floats as V.Float.
+Runtime.parse_term_with_vars = function (program, text, state) {
+  if (state === undefined || state === null) state = Runtime.new_state();
+  const toks = Runtime.tokenize_term(text);
+  if (toks === null || toks.length === 0) return null;
+  const p = {
+    tokens: toks,
+    pos: 0,
+    table: program.intern_table,
+    state: state,
+    vars: {},
+    last_prec: 0
+  };
+  const result = Runtime.wam_parse_expr(p, 1200);
+  if (result === null) return null;
+  if (p.pos < toks.length) return null;
+  return { term: result, vars: p.vars };
+};
+
+Runtime.parse_term = function (program, text, state) {
+  const parsed = Runtime.parse_term_with_vars(program, text, state);
+  return parsed === null ? null : parsed.term;
+};
+
+// CLI / argv reader. Full term syntax (int/float/atom/list/compound);
+// unreadable text still interned as an atom so existing argv atoms keep working.
 Runtime.parse_cli_atom_or_int = function (program, text) {
-  const n = Number(text);
-  if (text !== "" && Number.isInteger(n) && String(n) === text) return V.Int(n);
-  return V.Atom(Runtime.intern(program.intern_table, text));
+  const state = Runtime.new_state();
+  const parsed = Runtime.parse_term(program, String(text), state);
+  if (parsed !== null) return parsed;
+  return V.Atom(Runtime.intern(program.intern_table, String(text)));
 };
 
 Runtime.term_to_string = term_to_string;

@@ -38,7 +38,7 @@ Add a row for the JS WAM catalogue (see
 
 | Target | Bindings | Notes |
 |---|---|---|
-| `wam_javascript` | 41 (`javascript_wam_builtin/3`) | Interpreter-tier Node WAM. findall/functor/arg/=../copy_term/\+/call/aggregate_all/bagof/setof implemented (ISO witness grouping + standard-order setof). |
+| `wam_javascript` | catalogue in `javascript_wam_bindings.pl` | Interpreter-tier Node WAM. findall/functor/arg/=../copy_term/\+/call/aggregate_all/bagof/setof + ISO/library breadth + native Pratt `parse_term`. |
 
 ## 3. `tests/test_advanced.pl`
 
@@ -164,4 +164,38 @@ green. The dedicated runner that does **not** need this patch:
 
 ```bash
 swipl -q -g run_tests -t halt tests/test_wam_javascript_builtins.pl
+```
+
+## 7. `src/unifyweaver/targets/wam_runtime_parser_capability.pl`
+
+The JS WAM ships a hand-written recursive-descent / Pratt reader in
+`templates/targets/javascript_wam/runtime.js.mustache`
+(`Runtime.parse_term`). That is the same kind of in-runtime host parser
+as C++/R (`native(parse_term)`), **not** the bundled portable
+`compiled(prolog_term_parser)`. Do **not** also claim `compiled(...)`
+until the portable parser is actually prepended.
+
+Add next to the other `target_runtime_parser_default/2` clauses:
+
+```prolog
+% JavaScript WAM: hand-written Pratt reader in the Node runtime
+% (Runtime.parse_term). Powers CLI argv, read_term_from_atom/2,3,
+% atom_to_term/3, and term_to_atom/2 reverse mode. ISO default
+% operator table is included; user op/3 is not. Same default as
+% C++/R because the parser always ships with the generated runtime.
+target_runtime_parser_default(wam_javascript, native(parse_term)).
+```
+
+Add next to the other `target_runtime_parser_mode_/2` clauses:
+
+```prolog
+target_runtime_parser_mode_(wam_javascript, native(parse_term)).
+```
+
+Add next to the other `normalize_runtime_parser_target/2` clauses
+(before the catch-all `normalize_runtime_parser_target(Target, Target)`):
+
+```prolog
+normalize_runtime_parser_target(javascript, wam_javascript) :- !.
+normalize_runtime_parser_target(wam_javascript, wam_javascript) :- !.
 ```
