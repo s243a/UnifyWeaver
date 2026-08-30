@@ -58,6 +58,7 @@
 :- module(clojurescript_target, [
     compile_predicate_to_clojurescript/3,   % +Pred/Arity, +Options, -CljsCode
     compile_predicate/3,                     % +Pred/Arity, +Options, -Code (registry dispatch)
+    compile_module/3,                        % +Predicates, +Options, -CljsCode (multi-predicate module)
     compile_facts_to_clojurescript/3,        % +Pred, +Arity, -CljsCode
     clojurescript_from_clojure/2,            % +ClojureCode, -CljsCode (rewrite + banner, default runtime)
     clojurescript_from_clojure/3,            % +ClojureCode, +Options, -CljsCode (runtime-variant aware)
@@ -73,7 +74,10 @@
 :- use_module(library(lists)).
 
 % Inherit the JVM Clojure target. Everything not overridden below is reused.
-:- use_module(clojure_target).
+% compile_module/3 is excluded from the import because this module defines and
+% exports its own CLJS variant (G-P6); it reuses the base via a module-qualified
+% call (clojure_target:compile_module/3). All other base predicates are imported.
+:- use_module(clojure_target, except([compile_module/3])).
 
 % Binding registry + the two Clojure(Script) binding catalogues. The catalogues
 % register through init_*_bindings/0 (direct declare_binding calls), so a plain
@@ -193,6 +197,18 @@ atomics_to_string(List, String) :-
 %  Thin wrapper so target_registry's compile_to_target/4 can dispatch here.
 compile_predicate(PredIndicator, Options, Code) :-
     compile_predicate_to_clojurescript(PredIndicator, Options, Code).
+
+%% compile_module(+Predicates, +Options, -CljsCode)
+%  Compile several predicates into ONE ClojureScript module (G-P6). Reuses the
+%  base clojure_target:compile_module/3 (namespace/ns form + each predicate's
+%  defn + any declared components), then applies the same JVM->JS interop
+%  rewrite + runtime banner used by the single-predicate path. This keeps the
+%  emitted component/module code free of JVM host calls (no Integer/parseInt
+%  etc. leak into CLJS output) and consistent with typescript/python multi-
+%  predicate modules. Predicates may be `Name/Arity` or `pred(Name,Arity,Type)`.
+compile_module(Predicates, Options, CljsCode) :-
+    clojure_target:compile_module(Predicates, Options, ClojureCode),
+    clojurescript_from_clojure(ClojureCode, Options, CljsCode).
 
 %% compile_facts_to_clojurescript(+Pred, +Arity, -CljsCode)
 %  Facts export, reusing the Clojure base then rewriting interop.
