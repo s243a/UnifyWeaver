@@ -53,6 +53,10 @@
 :- dynamic user:probe_atoms/0.
 :- dynamic user:probe_format/0.
 :- dynamic user:probe_assoc/0.
+:- dynamic user:sum3/2.
+:- dynamic user:unwrap/2.
+:- dynamic user:gt_float/1.
+:- dynamic user:probe_parse_atom/0.
 
 install_probes :-
     retractall(user:probe_findall),
@@ -87,6 +91,10 @@ install_probes :-
     retractall(user:probe_atoms),
     retractall(user:probe_format),
     retractall(user:probe_assoc),
+    retractall(user:sum3/2),
+    retractall(user:unwrap/2),
+    retractall(user:gt_float/1),
+    retractall(user:probe_parse_atom),
     assertz((user:probe_findall :-
         findall(X, member(X, [1,2,3]), L), write(L), nl, L == [1,2,3])),
     assertz((user:probe_functor :-
@@ -212,6 +220,19 @@ install_probes :-
         assoc_to_list(A2, AL), AL == [a-1, b-2],
         list_to_assoc([a-1, b-2], A3),
         get_assoc(b, A3, W), W == 2,
+        write(ok), nl)),
+    assertz((user:sum3(L, S) :- sum_list(L, S))),
+    assertz(user:unwrap(foo(X, bar(b), 3), X)),
+    assertz((user:gt_float(X) :- X > 3.0)),
+    assertz((user:probe_parse_atom :-
+        read_term_from_atom('[1,2,3]', L), L == [1,2,3],
+        read_term_from_atom('foo(a, bar(b), 3)', T), T == foo(a, bar(b), 3),
+        read_term_from_atom('3.14', F), F > 3.0,
+        read_term_from_atom('-2', N), N == -2,
+        read_term_from_atom('[a|Rest]', PL), PL = [a, b], Rest == [b],
+        read_term_from_atom('\'hi there\'', QA), QA == 'hi there',
+        read_term_from_atom('1+2', SumT), SumT == +(1, 2),
+        atom_to_term('bar(X)', U, B), U = bar(hello), B == ['X'=hello],
         write(ok), nl)).
 
 probe_preds([
@@ -246,7 +267,8 @@ probe_preds([
     user:probe_lists/0,
     user:probe_atoms/0,
     user:probe_format/0,
-    user:probe_assoc/0
+    user:probe_assoc/0,
+    user:probe_parse_atom/0
 ]).
 
 :- dynamic user:ctw_js/0.
@@ -332,6 +354,28 @@ test(compile_and_probes, [setup(install_probes)]) :-
                    )
                )
            )).
+
+test(cli_structured_args, [setup(install_probes)]) :-
+    % SWI oracle for the same shapes the CLI parser must intern.
+    assertion((sum_list([1, 2, 3], S0), S0 == 6)),
+    assertion((foo(a, bar(b), 3) = foo(X0, bar(b), 3), X0 == a)),
+    assertion(3.14 > 3.0),
+    Dir = 'output/js_wam_parser_cli',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:sum3/2, user:unwrap/2, user:gt_float/1],
+        [emit_mode(interpreter)], Dir),
+    run_node_args(Dir, ['sum3/2', '[1,2,3]'], ListExit, ListOut),
+    assertion(ListExit =:= 0),
+    assertion(node_succeeded(ListOut)),
+    assertion(sub_string(ListOut, _, _, _, "A2 = 6")),
+    run_node_args(Dir, ['unwrap/2', 'foo(a,bar(b),3)'], CompExit, CompOut),
+    assertion(CompExit =:= 0),
+    assertion(node_succeeded(CompOut)),
+    assertion(sub_string(CompOut, _, _, _, "A2 = a")),
+    run_node_args(Dir, ['gt_float/1', '3.14'], FloatExit, FloatOut),
+    assertion(FloatExit =:= 0),
+    assertion(node_succeeded(FloatOut)).
 
 :- end_tests(js_wam_builtins).
 
