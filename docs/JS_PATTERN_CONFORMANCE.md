@@ -40,7 +40,7 @@ reported *skipped*, never failed.
 | `typescript` | `compile_recursion/3` (linear/tail/list-fold canned templates) and `compile_module/3` (factorial) | `tsc` (or `npx tsc`) then `node` | The robust, runnable pattern-target path today. |
 | `annotated_js` | registry `compile_predicate/3` | `node` | Fuller JS pattern target being built in parallel. Skips cleanly when not registered in this worktree. |
 | `vanilla_js` | registry `compile_predicate/3` | `node` | Same as `annotated_js`. |
-| `clojurescript` | `compile_predicate_to_clojurescript/3` | `nbb` (node-babashka) | Numeric programs are currently `xfail` (the CLJS pattern recursion path is not yet clean); with `nbb` absent the whole arm skips. |
+| `clojurescript` | `compile_predicate_to_clojurescript/3` | `nbb` (node-babashka) | Numeric programs pass under `nbb` (CLJSFIX cleaned the shared clojure native-lowering recursion path; the former `xfail` entries were removed). Structural programs (member/append/reverse) remain unsupported. With `nbb` absent the whole arm skips. |
 
 ### The value oracle (contract difference from the WAM harness)
 

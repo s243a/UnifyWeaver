@@ -17,6 +17,17 @@ This document captures ideas for future development of UnifyWeaver targets and f
 
 ### Go Target Enhancements
 
+### Parallelism (TODO — from cross-target recon)
+
+Go is a strong parallelism candidate (goroutines/channels), but the WAM Go target
+currently has minimal parallel codegen (~5 parallelism-related references in
+`wam_go_target.pl`) compared with `wam_rust` (rayon / `parallel_gate.pl`, ~86),
+`wam_haskell` (`parMap` + `cost_function.hs.mustache`, ~76), and `wam_elixir`
+(actor/Task-based, ~23, plus its own lowered emitter). Build out goroutine-based
+parallel aggregation / kernel execution for the Go (and `wam_go`) target, using the
+Rust cost-gated `parallel_gate` approach and the Haskell cost model as references.
+_(Surfaced 2026-08-30 during JS-family parity recon; not part of that workstream — for a separate agent.)_
+
 ### Database Integration (Completed)
 
 ✅ **Implemented**: `bbolt` support is now available in the Go target.
@@ -70,6 +81,17 @@ See [docs/RUST_TARGET.md](docs/RUST_TARGET.md) for details.
 
 
 ## Other Target Ideas
+
+### Lua Target: Aggregate Pattern Support (TODO — from cross-target recon)
+
+The `wam_lua` runtime dispatch lacks the aggregate / all-solutions builtins that other
+targets carry — no `findall`, `bagof`, `setof`, or `aggregate_all` in
+`templates/targets/lua_wam/runtime.lua.mustache` (by contrast the newer `wam_javascript`
+runtime implements all of these). Porting the aggregate family into the Lua WAM runtime
+would close a real gap. Reference: the `wam_javascript` runtime
+(`templates/targets/javascript_wam/runtime.js.mustache`) — Lua and JS are both
+dynamically typed, so its findall/bagof/setof/aggregate_all implementation is the closest
+model. _(Surfaced 2026-08-30 during JS-family parity recon; for a separate agent.)_
 
 ### WebAssembly (WASM / WAT) ✅ COMPLETE
 

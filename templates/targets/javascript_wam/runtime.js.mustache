@@ -60,6 +60,12 @@ I.TryMeElsePc = function (pc) { return instr("TryMeElsePc", { pc: pc }); };
 I.RetryMeElse = function (label) { return instr("RetryMeElse", { label: label }); };
 I.RetryMeElsePc = function (pc) { return instr("RetryMeElsePc", { pc: pc }); };
 I.TrustMe = function () { return instr("TrustMe"); };
+I.Try = function (label) { return instr("Try", { label: label }); };
+I.TryPc = function (pc) { return instr("TryPc", { pc: pc }); };
+I.Retry = function (label) { return instr("Retry", { label: label }); };
+I.RetryPc = function (pc) { return instr("RetryPc", { pc: pc }); };
+I.Trust = function (label) { return instr("Trust", { label: label }); };
+I.TrustPc = function (pc) { return instr("TrustPc", { pc: pc }); };
 I.Jump = function (label) { return instr("Jump", { label: label }); };
 I.JumpPc = function (pc) { return instr("JumpPc", { pc: pc }); };
 I.CutIte = function () { return instr("CutIte"); };
@@ -67,12 +73,39 @@ I.GetLevel = function (yn) { return instr("GetLevel", { yn: yn }); };
 I.Cut = function (yn) { return instr("Cut", { yn: yn }); };
 I.BuiltinCall = function (p, n) { return instr("BuiltinCall", { pred: p, arity: n }); };
 I.ArgInstr = function (n, ai, out) { return instr("ArgInstr", { n: n, ai: ai, out: out }); };
-I.SwitchOnConstant = function (cases) { return instr("SwitchOnConstant", { cases: cases }); };
-I.SwitchOnConstantPc = function (cases) { return instr("SwitchOnConstantPc", { cases: cases }); };
-I.SwitchOnConstantA2 = function (cases) { return instr("SwitchOnConstantA2", { cases: cases }); };
-I.SwitchOnConstantA2Pc = function (cases) { return instr("SwitchOnConstantA2Pc", { cases: cases }); };
+I.SwitchOnConstant = function (cases, fallthrough) {
+  return instr("SwitchOnConstant", { cases: cases, fallthrough: fallthrough === true });
+};
+I.SwitchOnConstantPc = function (cases, fallthrough) {
+  return instr("SwitchOnConstantPc", { cases: cases, fallthrough: fallthrough === true });
+};
+I.SwitchOnConstantA2 = function (cases, fallthrough) {
+  return instr("SwitchOnConstantA2", { cases: cases, fallthrough: fallthrough === true });
+};
+I.SwitchOnConstantA2Pc = function (cases, fallthrough) {
+  return instr("SwitchOnConstantA2Pc", { cases: cases, fallthrough: fallthrough === true });
+};
 I.SwitchOnStructure = function (cases) { return instr("SwitchOnStructure", { cases: cases }); };
 I.SwitchOnStructurePc = function (cases) { return instr("SwitchOnStructurePc", { cases: cases }); };
+I.SwitchOnStructureA2 = function (cases) { return instr("SwitchOnStructureA2", { cases: cases }); };
+I.SwitchOnStructureA2Pc = function (cases) { return instr("SwitchOnStructureA2Pc", { cases: cases }); };
+I.SwitchOnTerm = function (consts, structs, listLabel, reg) {
+  return instr("SwitchOnTerm", {
+    consts: consts || [],
+    structs: structs || [],
+    listLabel: listLabel || "none",
+    reg: reg || 1
+  });
+};
+I.SwitchOnTermPc = function (consts, structs, listLabel, listPc, reg) {
+  return instr("SwitchOnTermPc", {
+    consts: consts || [],
+    structs: structs || [],
+    listLabel: listLabel || "none",
+    listPc: listPc,
+    reg: reg || 1
+  });
+};
 I.BeginAggregate = function (kind, template, bag, witnesses) {
   return instr("BeginAggregate", {
     kind: kind, template: template, bag: bag, witnesses: witnesses || []
@@ -1051,43 +1084,113 @@ function find_matching_end_aggregate(program, startPc) {
   return null;
 }
 
-function switch_constant(program, state, inst, reg) {
-  const v = Runtime.deref(state, Runtime.get_reg(state, reg));
-  let target = null;
-  let targetPc = null;
-  if (typeof v === "object" && v !== null && v.tag === "atom") {
-    const cases = inst.cases || [];
-    for (let i = 0; i < cases.length; i++) {
-      const c = cases[i];
-      if (c.value && c.value.tag === "atom" && c.value.id === v.id) {
-        target = c.label;
-        targetPc = c.pc;
-        break;
-      }
+function is_switch_constant(v) {
+  return typeof v === "object" && v !== null
+    && (v.tag === "atom" || v.tag === "int" || v.tag === "float");
+}
+
+function switch_values_equal(a, b) {
+  if (!a || !b || a.tag !== b.tag) {
+    if (a && b && (a.tag === "int" || a.tag === "float")
+        && (b.tag === "int" || b.tag === "float")) {
+      return a.val === b.val;
     }
+    return false;
   }
-  const pc = targetPc || (target && target !== "default" ? program.labels[target] : null);
-  state.pc = pc || (state.pc + 1);
+  if (a.tag === "atom") return a.id === b.id;
+  if (a.tag === "int" || a.tag === "float") return a.val === b.val;
+  return false;
+}
+
+function switch_jump(program, state, label, pc) {
+  if (!label || label === "default" || label === "none") {
+    state.pc += 1;
+    return true;
+  }
+  const dest = (pc !== undefined && pc !== null) ? pc : program.labels[label];
+  if (dest === undefined || dest === null) {
+    state.pc += 1;
+    return true;
+  }
+  state.indexed_entry = true;
+  state.pc = dest;
   return true;
 }
 
-function switch_structure(program, state, inst) {
-  const v = Runtime.deref(state, Runtime.get_reg(state, 1));
-  let target = null;
-  let targetPc = null;
+function switch_constant(program, state, inst, reg) {
+  const v = Runtime.deref(state, Runtime.get_reg(state, reg));
+  if (typeof v === "object" && v !== null && v.tag === "unbound") {
+    state.pc += 1;
+    return true;
+  }
+  if (!is_switch_constant(v)) {
+    state.pc += 1;
+    return true;
+  }
+  const cases = inst.cases || [];
+  for (let i = 0; i < cases.length; i++) {
+    const c = cases[i];
+    if (c.value && switch_values_equal(c.value, v)) {
+      return switch_jump(program, state, c.label, c.pc);
+    }
+  }
+  if (inst.fallthrough === true) {
+    state.pc += 1;
+    return true;
+  }
+  return false;
+}
+
+function switch_structure(program, state, inst, reg) {
+  const v = Runtime.deref(state, Runtime.get_reg(state, reg || 1));
+  if (typeof v === "object" && v !== null && v.tag === "unbound") {
+    state.pc += 1;
+    return true;
+  }
+  if (typeof v !== "object" || v === null || v.tag !== "struct") {
+    state.pc += 1;
+    return true;
+  }
+  const cases = inst.cases || [];
+  for (let i = 0; i < cases.length; i++) {
+    const c = cases[i];
+    if (same_functor(program, c.fid, c.arity, v.fid, (v.args || []).length)) {
+      return switch_jump(program, state, c.label, c.pc);
+    }
+  }
+  return false;
+}
+
+function switch_term(program, state, inst, reg) {
+  const v = Runtime.deref(state, Runtime.get_reg(state, reg || 1));
+  if (typeof v === "object" && v !== null && v.tag === "unbound") {
+    state.pc += 1;
+    return true;
+  }
+  if (is_switch_constant(v)) {
+    const cases = inst.consts || inst.cases || [];
+    for (let i = 0; i < cases.length; i++) {
+      const c = cases[i];
+      if (c.value && switch_values_equal(c.value, v)) {
+        return switch_jump(program, state, c.label, c.pc);
+      }
+    }
+    return false;
+  }
   if (typeof v === "object" && v !== null && v.tag === "struct") {
-    const cases = inst.cases || [];
+    if (is_cons_fid(program, v.fid)) {
+      return switch_jump(program, state, inst.listLabel, inst.listPc);
+    }
+    const cases = inst.structs || [];
     for (let i = 0; i < cases.length; i++) {
       const c = cases[i];
       if (same_functor(program, c.fid, c.arity, v.fid, (v.args || []).length)) {
-        target = c.label;
-        targetPc = c.pc;
-        break;
+        return switch_jump(program, state, c.label, c.pc);
       }
     }
+    return false;
   }
-  const pc = targetPc || (target && target !== "default" ? program.labels[target] : null);
-  state.pc = pc || (state.pc + 1);
+  state.pc += 1;
   return true;
 }
 
@@ -1110,12 +1213,21 @@ function resolve_switch_cases(labels, cases) {
   const list = cases || [];
   for (let i = 0; i < list.length; i++) {
     const c = list[i];
-    const pc = c.label && c.label !== "default" ? labels[c.label] : null;
-    if (pc !== undefined && pc !== null) {
-      const next = Runtime.copy_table(c);
-      next.pc = pc;
+    const next = Runtime.copy_table(c);
+    if (!c.label || c.label === "default" || c.label === "none") {
+      next.pc = null;
       resolved.push(next);
       any = true;
+    } else {
+      const pc = labels[c.label];
+      if (pc !== undefined && pc !== null) {
+        next.pc = pc;
+        resolved.push(next);
+        any = true;
+      } else {
+        resolved.push(next);
+        any = true;
+      }
     }
   }
   return any ? resolved : null;
@@ -1145,13 +1257,32 @@ Runtime.resolve_program = function (program) {
       if (pc !== undefined) inst = I.RetryMeElsePc(pc);
     } else if (inst0.op === "SwitchOnConstant") {
       const cases = resolve_switch_cases(labels, inst0.cases);
-      if (cases !== null) inst = I.SwitchOnConstantPc(cases);
+      if (cases !== null) inst = I.SwitchOnConstantPc(cases, inst0.fallthrough);
     } else if (inst0.op === "SwitchOnConstantA2") {
       const cases = resolve_switch_cases(labels, inst0.cases);
-      if (cases !== null) inst = I.SwitchOnConstantA2Pc(cases);
+      if (cases !== null) inst = I.SwitchOnConstantA2Pc(cases, inst0.fallthrough);
     } else if (inst0.op === "SwitchOnStructure") {
       const cases = resolve_switch_cases(labels, inst0.cases);
       if (cases !== null) inst = I.SwitchOnStructurePc(cases);
+    } else if (inst0.op === "SwitchOnStructureA2") {
+      const cases = resolve_switch_cases(labels, inst0.cases);
+      if (cases !== null) inst = I.SwitchOnStructureA2Pc(cases);
+    } else if (inst0.op === "SwitchOnTerm") {
+      const consts = resolve_switch_cases(labels, inst0.consts);
+      const structs = resolve_switch_cases(labels, inst0.structs);
+      const listPc = inst0.listLabel && inst0.listLabel !== "default"
+        && inst0.listLabel !== "none" ? labels[inst0.listLabel] : null;
+      inst = I.SwitchOnTermPc(consts || inst0.consts, structs || inst0.structs,
+        inst0.listLabel, listPc, inst0.reg);
+    } else if (inst0.op === "Try") {
+      const pc = labels[inst0.label];
+      if (pc !== undefined) inst = I.TryPc(pc);
+    } else if (inst0.op === "Retry") {
+      const pc = labels[inst0.label];
+      if (pc !== undefined) inst = I.RetryPc(pc);
+    } else if (inst0.op === "Trust") {
+      const pc = labels[inst0.label];
+      if (pc !== undefined) inst = I.TrustPc(pc);
     }
     resolved[i] = inst;
   }
@@ -1320,6 +1451,7 @@ Runtime.builtin_call = function (program, state, inst) {
   if (typeOk !== null) return typeOk;
   if (name === "true") return true;
   if (name === "fail" || name === "false") return false;
+  if (name === "deterministic") return state.cps.length === 0;
   if (name === "!") { state.cps = []; return true; }
   if (name === "\\+" || name === "not") return builtin_naf(program, state);
   if (name === "call") return builtin_call1(program, state);
@@ -1539,6 +1671,7 @@ function try_builtin_fallback(program, state, pred, arity) {
 Runtime.step = function (program, state, inst) {
   const op = inst.op;
   if (op === "Proceed") {
+    state.indexed_entry = false;
     if (state.cp === 0) state.halt = true;
     else { state.pc = state.cp; state.cp = 0; }
     return true;
@@ -1656,6 +1789,7 @@ Runtime.step = function (program, state, inst) {
     return false;
   }
   if (op === "TryMeElse" || op === "TryMeElsePc") {
+    state.indexed_entry = false;
     const cp = snapshot_machine(state);
     cp.next_pc = inst.pc || program.labels[inst.label];
     state.cps.push(cp);
@@ -1663,20 +1797,62 @@ Runtime.step = function (program, state, inst) {
     return true;
   }
   if (op === "RetryMeElse" || op === "RetryMeElsePc") {
+    const dest = inst.pc || program.labels[inst.label];
+    if (state.indexed_entry) {
+      state.indexed_entry = false;
+      const cp = snapshot_machine(state);
+      cp.next_pc = dest;
+      state.cps.push(cp);
+      state.pc += 1;
+      return true;
+    }
     const cp = state.cps[state.cps.length - 1];
     if (cp === undefined || cp.kind === "aggregate") {
       state.pc += 1;
       return true;
     }
     restore_machine(state, cp);
-    cp.next_pc = inst.pc || program.labels[inst.label];
+    cp.next_pc = dest;
     state.pc += 1;
     return true;
   }
   if (op === "TrustMe") {
+    if (state.indexed_entry) {
+      state.indexed_entry = false;
+      state.pc += 1;
+      return true;
+    }
     const cp = state.cps[state.cps.length - 1];
     if (cp !== undefined && cp.kind !== "aggregate") state.cps.pop();
     state.pc += 1;
+    return true;
+  }
+  if (op === "Try" || op === "TryPc") {
+    state.indexed_entry = false;
+    const cp = snapshot_machine(state);
+    cp.next_pc = state.pc + 1;
+    state.cps.push(cp);
+    const dest = inst.pc || program.labels[inst.label];
+    if (dest === undefined || dest === null) return false;
+    state.pc = dest;
+    return true;
+  }
+  if (op === "Retry" || op === "RetryPc") {
+    const cp = state.cps[state.cps.length - 1];
+    if (cp === undefined || cp.kind === "aggregate") return false;
+    restore_machine(state, cp);
+    cp.next_pc = state.pc + 1;
+    const dest = inst.pc || program.labels[inst.label];
+    if (dest === undefined || dest === null) return false;
+    state.pc = dest;
+    return true;
+  }
+  if (op === "Trust" || op === "TrustPc") {
+    const cp = state.cps[state.cps.length - 1];
+    if (cp !== undefined && cp.kind !== "aggregate") state.cps.pop();
+    const dest = inst.pc || program.labels[inst.label];
+    if (dest === undefined || dest === null) return false;
+    state.pc = dest;
     return true;
   }
   if (op === "CutIte") {
@@ -1706,7 +1882,9 @@ Runtime.step = function (program, state, inst) {
   }
   if (op === "SwitchOnConstant" || op === "SwitchOnConstantPc") return switch_constant(program, state, inst, 1);
   if (op === "SwitchOnConstantA2" || op === "SwitchOnConstantA2Pc") return switch_constant(program, state, inst, 2);
-  if (op === "SwitchOnStructure" || op === "SwitchOnStructurePc") return switch_structure(program, state, inst);
+  if (op === "SwitchOnStructure" || op === "SwitchOnStructurePc") return switch_structure(program, state, inst, 1);
+  if (op === "SwitchOnStructureA2" || op === "SwitchOnStructureA2Pc") return switch_structure(program, state, inst, 2);
+  if (op === "SwitchOnTerm" || op === "SwitchOnTermPc") return switch_term(program, state, inst, inst.reg || 1);
   if (op === "Call") {
     const target = program.labels[call_key(inst)];
     if (target === undefined || target === null) {

@@ -60,6 +60,7 @@ javascript_wam_builtin(var, 1, implemented).
 javascript_wam_builtin(nonvar, 1, implemented).
 javascript_wam_builtin(is_list, 1, implemented).
 javascript_wam_builtin(ground, 1, implemented).
+javascript_wam_builtin(deterministic, 0, implemented).
 
 javascript_wam_builtins(List) :-
     findall(Name/Arity, javascript_wam_builtin(Name, Arity, _), List).
