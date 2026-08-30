@@ -62,7 +62,7 @@ in-flight parity analyses — see §6).
 
 | ID | Target | Item | Owner | Branch |
 |---|---|---|---|---|
-| G-P-dedup | typescript + clojure | `constraint_analyzer` unique/unordered dedup (wire `get_constraints/2`) | opus | worktree |
+| G-P-dedup | typescript + clojure | **DONE (this branch).** Wired `constraint_analyzer:get_constraints/2` into TS `compile_facts/3` (helper `ts_facts_rhs/3`) and clojure `compile_facts_to_clojure/3` (helper `clojure_facts_expr/3`) — the facts/query-helper output shape now honors unique/unordered, mirroring rust/go: `unique(true)` dedups the emitted collection, `unordered(true)` additionally sorts (sort-based dedup), `unique(false)` unchanged. AJS/VJS inherit via TS `compile_facts`; CLJS inherits via the shared clojure base (portable `distinct`/`sort`/`vec`, no interop rewrite). Recursion/aggregate/streaming shapes (single value / generator, no materialised multiset) + a runtime-option override merge are documented follow-ups. node+nbb verified vs SWI `setof`; all 5 target suites green (TS/AJS/VJS/CLJS/clj-native). See `integration_patches/GPDEDUP_INTEGRATION_PATCH.md`. | opus | worktree |
 
 **Remaining tail** (all low-priority polish):
 - **Pattern:** bagof/setof + non-extensional aggregates at pattern level (G-P3 follow-up); non-comma CSV delimiters + columns/schema projection (G-P9 follow-up); bare positive `match` batch-guard (optional 2-line `is_guard_goal` patch, D28); test depth (G-P13).
