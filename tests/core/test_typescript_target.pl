@@ -338,4 +338,65 @@ test(structural_length_runs_under_node,
     ts_write_run(Code, ['["x","y","z","w"]'], O),
     O == '4'.
 
+% ============================================================================
+% G-P4: COMPONENT EMISSION — declared components are compiled INTO the module
+%
+% Before this fix, compile_module/3 collected declared components (via
+% collect_declared_component/2) but never called
+% component_registry:compile_component/4, so the component code was silently
+% dropped. These tests assert the emitted module now CONTAINS the component
+% output, and that a component-free module is unaffected (behavior-preserving).
+% ============================================================================
+
+% Declare + collect a raw-inject custom_typescript component and a custom_chart
+% component, so compile_module has something to emit.
+setup_component_emission :-
+    typescript_target:init_typescript_target,   % clears collected_component/2
+    component_registry:declare_component(source, ts_validator, custom_typescript,
+        [ code("return input * 2;"),
+          input_type('number'),
+          output_type('number') ]),
+    typescript_target:collect_declared_component(source, ts_validator),
+    component_registry:declare_component(source, sine_chart, custom_chart,
+        [ chart_type(line), title("Sine") ]),
+    typescript_target:collect_declared_component(source, sine_chart).
+
+cleanup_component_emission :-
+    retractall(typescript_target:collected_component(_, _)),
+    catch(component_registry:retract_component(source, ts_validator), _, true),
+    catch(component_registry:retract_component(source, sine_chart), _, true).
+
+test(component_emission_includes_declared,
+     [setup(setup_component_emission), cleanup(cleanup_component_emission)]) :-
+    typescript_target:compile_module(
+        [pred(fact, 1, factorial)],
+        [module_name('WithComponents')],
+        Code),
+    % predicate code still emitted alongside components
+    has(Code, "export const fact"),
+    % custom_typescript raw-inject component now present (previously dropped)
+    has(Code, "export const ts_validator = ("),
+    has(Code, "input: number"),
+    has(Code, "return input * 2;"),
+    % custom_chart component now present (previously orphaned + dropped)
+    has(Code, "Custom Chart Component: sine_chart"),
+    has(Code, "export function createsine_chartChart("),
+    has(Code, "type: 'line'"),
+    % title-display flag is a real boolean, not the old unevaluated term
+    has(Code, "display: true"),
+    hasnt(Code, "-> true;false").
+
+% A module that declares NO components must be byte-for-byte unchanged:
+% no component markers leak in, and the plain predicate output is intact.
+test(component_free_module_unchanged,
+     [setup(typescript_target:init_typescript_target)]) :-
+    typescript_target:compile_module(
+        [pred(fact, 1, factorial)],
+        [module_name('NoComponents')],
+        Code),
+    has(Code, "// Module: NoComponents"),
+    has(Code, "export const fact"),
+    hasnt(Code, "Custom Chart Component"),
+    hasnt(Code, "export const ts_validator").
+
 :- end_tests(typescript_target).
