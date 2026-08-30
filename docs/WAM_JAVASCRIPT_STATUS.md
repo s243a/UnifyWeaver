@@ -55,8 +55,9 @@ Metacall: **`\+/1`**, **`call/1`** (re-enter the same instruction loop /
 builtin dispatch).
 
 Collections: **`findall/3`** (compiler `BeginAggregate`/`EndAggregate` *and*
-builtin metacall), **`aggregate_all/3`** for `count` / `sum(X)` / `bag(X)` /
-`set(X)`.
+builtin metacall), **`bagof/3`** / **`setof/3`** (ISO free-var grouping,
+`^/2` existential quantification, empty-goal failure), **`aggregate_all/3`**
+for `count` / `sum(X)` / `bag(X)` / `set(X)`.
 
 Types: `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `var/1`,
 `nonvar/1`, `is_list/1`, `ground/1`.
@@ -67,8 +68,8 @@ I/O (probe dumps): `write/1`, `nl/0`, `writeln/1`.
 
 | Builtin | Status |
 |---|---|
-| `bagof/3` | **Partial.** Collects like findall but fails on empty. **No ISO free-variable grouping** (`Y^Goal` witness bags). |
-| `setof/3` | **Partial.** Unique + approximate standard-order sort. **No free-var grouping.** Order of mixed-type terms may differ from SWI. |
+| `bagof/3` | **Implemented.** ISO witness grouping (one bag per distinct free-var binding, SWI encounter order), `Var^Goal` / nested `V1^V2^Goal` stripped from the witness set, fails when Goal has no solutions. |
+| `setof/3` | **Implemented.** `bagof` then per-group standard-order sort + dedup. Order: Var < Number < Atom < String < Compound; compounds by arity, functor **name**, then args L-to-R (matches SWI mixed-type lists). |
 | `term_variables/2`, `numbervars/3`, `=@=/2` | Not ported. |
 | Lowered / functions emit mode | Interpreter only. |
 | Conformance harness adapter | See `INTEGRATION_PATCH.md` (coordinator applies `conformance_target(javascript)`). |
@@ -85,8 +86,15 @@ CONFORMANCE_TARGETS=javascript swipl -q -g run_tests -t halt \
   tests/test_wam_cross_target_conformance.pl
 ```
 
+Residual ISO corners not covered: `term_variables/2` / `numbervars/3` /
+`=@=/2` are still unported; bagof/setof of *unbound* free vars (two
+solutions that leave the same witness unbound) is grouped by copied
+variable name rather than `@=`; the runtime has no distinct string tag,
+so String vs Atom order is unused; `^/2` as a standalone metacall just
+runs the RHS.
+
 ## Document status
 
-Initial JS WAM bring-up + builtin port from Lua (findall/functor/arg/univ/
-copy_term/NAF/call/aggregate_all). Source-verified against
-`wam_lua_target.pl` and `docs/WAM_BACKEND_CONVENTIONS.md` (2026-08-30).
+Initial JS WAM bring-up + builtin port from Lua, then ISO bagof/3 and
+setof/3 (witness grouping, `^/2`, empty-goal failure, SWI standard-order
+sort). Source-verified against SWI-Prolog as the oracle (2026-08-30).
