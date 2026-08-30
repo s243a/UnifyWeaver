@@ -943,22 +943,29 @@ ct_teardown(python, python_ctx(Dir, Map)) :-
 % shim prints true/false and exits 0/1. Opt-in via CONFORMANCE_TARGETS=javascript.
 % ============================================================
 
-ct_build(javascript, Preds, Queries, js_ctx(Dir, Map)) :-
+ct_build(javascript, Preds, Queries, javascript_ctx(Dir, Map)) :-
     ct_tmp_dir('tmp_ct_javascript', Dir),
     synth_wrappers(Queries, WPreds, Map),
     maplist(strip_pred, Preds, BarePreds),
     append(WPreds, BarePreds, AllPreds0),
     maplist(qualify_user, AllPreds0, AllPreds),
-    write_wam_javascript_project(AllPreds, [module_name(wam_ct)], Dir).
+    write_wam_javascript_project(AllPreds,
+        [emit_mode(interpreter), module_name(wam_ct)], Dir).
 
-ct_run(javascript, js_ctx(Dir, Map), K, A, Bool) :-
+ct_run(javascript, javascript_ctx(Dir, Map), K, A, Bool) :-
     memberchk((K-A)-WName, Map),
     format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
-    directory_file_path(Dir, js, JsDir),
+    directory_file_path(Dir, 'js', JsDir),
     run_proc_out(node, ['generated_program.js', KeyStr], JsDir, _Exit, OutStr),
-    normalize_space(string(Out), OutStr), bool_of_string(Out, Bool).
+    (   sub_string(OutStr, _, _, _, "unknown predicate")
+    ->  Bool = error(unknown_predicate)
+    ;   split_string(OutStr, "\n", " \t\r", Lines0),
+        exclude([L]>>(L == ""), Lines0, Lines),
+        last(Lines, Last),
+        (   Last == "true" ->  Bool = true ;   Bool = false )
+    ).
 
-ct_teardown(javascript, js_ctx(Dir, Map)) :-
+ct_teardown(javascript, javascript_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
 
 % ============================================================
