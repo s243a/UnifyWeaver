@@ -240,12 +240,14 @@ wam_parts_to_js(["begin_aggregate", Kind, TemplateReg, BagReg], Lit) :-
     reg_to_int(TemplateReg, TIdx),
     reg_to_int(BagReg, BIdx),
     js_string_literal(Kind, K),
-    format(string(Lit), 'I.BeginAggregate(~w, ~w, ~w)', [K, TIdx, BIdx]).
-wam_parts_to_js(["begin_aggregate", Kind, TemplateReg, BagReg, _Witness], Lit) :-
+    format(string(Lit), 'I.BeginAggregate(~w, ~w, ~w, [])', [K, TIdx, BIdx]).
+wam_parts_to_js(["begin_aggregate", Kind, TemplateReg, BagReg, Witness], Lit) :-
     reg_to_int(TemplateReg, TIdx),
     reg_to_int(BagReg, BIdx),
+    parse_witness_regs(Witness, WRegs),
+    atomic_list_concat(WRegs, ', ', WStr),
     js_string_literal(Kind, K),
-    format(string(Lit), 'I.BeginAggregate(~w, ~w, ~w)', [K, TIdx, BIdx]).
+    format(string(Lit), 'I.BeginAggregate(~w, ~w, ~w, [~w])', [K, TIdx, BIdx, WStr]).
 wam_parts_to_js(["end_aggregate", TemplateReg], Lit) :-
     reg_to_int(TemplateReg, TIdx),
     format(string(Lit), 'I.EndAggregate(~w)', [TIdx]).
@@ -331,6 +333,24 @@ last_slash_index_str(Str, Index) :-
     findall(B, sub_string(Str, B, 1, _, "/"), Bs),
     Bs \= [],
     last(Bs, Index).
+
+% 4th begin_aggregate operand is "'Y1;Y2'" (ISO bagof/setof witnesses).
+parse_witness_regs(Raw, Regs) :-
+    text_to_string(Raw, S0),
+    strip_witness_quotes(S0, S),
+    (   S == ""
+    ->  Regs = []
+    ;   split_string(S, ";", " \t", Parts0),
+        exclude([P]>>(P == ""), Parts0, Parts),
+        maplist(reg_to_int, Parts, Regs)
+    ).
+
+strip_witness_quotes(S0, S) :-
+    (   string_concat("'", Rest, S0),
+        string_concat(Mid, "'", Rest)
+    ->  S = Mid
+    ;   S = S0
+    ).
 
 js_string_literal(Raw, Quoted) :-
     text_to_string(Raw, S),

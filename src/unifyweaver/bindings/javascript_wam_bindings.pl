@@ -7,9 +7,8 @@
 % The interpreter in templates/targets/javascript_wam/runtime.js.mustache
 % dispatches these names from BuiltinCall (and as a Call/Execute fallback
 % when no user label exists). Status:
-%   implemented - full for the conformance + probe suite
-%   partial     - works for ground/simple goals; ISO free-var grouping
-%                 (bagof/setof witnesses) is not implemented
+%   implemented - full for the conformance + probe suite, including
+%                 ISO bagof/3 / setof/3 witness grouping and ^/2
 
 :- module(javascript_wam_bindings, [
     javascript_wam_builtin/3,          % Name, Arity, Status
@@ -48,8 +47,9 @@ javascript_wam_builtin(copy_term, 2, implemented).
 javascript_wam_builtin((\+), 1, implemented).
 javascript_wam_builtin(call, 1, implemented).
 javascript_wam_builtin(findall, 3, implemented).
-javascript_wam_builtin(bagof, 3, partial).
-javascript_wam_builtin(setof, 3, partial).
+javascript_wam_builtin(bagof, 3, implemented).
+javascript_wam_builtin(setof, 3, implemented).
+javascript_wam_builtin('^', 2, implemented).
 javascript_wam_builtin(aggregate_all, 3, implemented).
 javascript_wam_builtin(atom, 1, implemented).
 javascript_wam_builtin(integer, 1, implemented).

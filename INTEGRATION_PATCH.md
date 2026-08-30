@@ -38,7 +38,7 @@ Add a row for the JS WAM catalogue (see
 
 | Target | Bindings | Notes |
 |---|---|---|
-| `wam_javascript` | 40 (`javascript_wam_builtin/3`) | Interpreter-tier Node WAM. findall/functor/arg/=../copy_term/\+/call/aggregate_all implemented; bagof/setof partial (no ISO free-var grouping). |
+| `wam_javascript` | 41 (`javascript_wam_builtin/3`) | Interpreter-tier Node WAM. findall/functor/arg/=../copy_term/\+/call/aggregate_all/bagof/setof implemented (ISO witness grouping + standard-order setof). |
 
 ## 3. `tests/test_advanced.pl`
 

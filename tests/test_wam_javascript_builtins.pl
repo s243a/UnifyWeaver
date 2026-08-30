@@ -29,6 +29,16 @@
 :- dynamic user:probe_call/0.
 :- dynamic user:probe_bagof/0.
 :- dynamic user:probe_setof/0.
+:- dynamic user:probe_bagof_group/0.
+:- dynamic user:probe_bagof_anon/0.
+:- dynamic user:probe_bagof_exist/0.
+:- dynamic user:probe_setof_exist/0.
+:- dynamic user:probe_bagof_empty/0.
+:- dynamic user:probe_setof_mixed/0.
+:- dynamic user:probe_setof_group/0.
+:- dynamic user:probe_bagof_first/0.
+:- dynamic user:probe_bagof_second/0.
+:- dynamic user:age/2.
 :- dynamic user:probe_agg_count/0.
 :- dynamic user:probe_agg_sum/0.
 :- dynamic user:probe_agg_bag/0.
@@ -44,6 +54,16 @@ install_probes :-
     retractall(user:probe_call),
     retractall(user:probe_bagof),
     retractall(user:probe_setof),
+    retractall(user:probe_bagof_group),
+    retractall(user:probe_bagof_anon),
+    retractall(user:probe_bagof_exist),
+    retractall(user:probe_setof_exist),
+    retractall(user:probe_bagof_empty),
+    retractall(user:probe_setof_mixed),
+    retractall(user:probe_setof_group),
+    retractall(user:probe_bagof_first),
+    retractall(user:probe_bagof_second),
+    retractall(user:age/2),
     retractall(user:probe_agg_count),
     retractall(user:probe_agg_sum),
     retractall(user:probe_agg_bag),
@@ -64,10 +84,44 @@ install_probes :-
         \+ member(9, [1,2,3]))),
     assertz((user:probe_call :-
         call(member(2, [1,2,3])))),
+    assertz(user:age(alice, 30)),
+    assertz(user:age(bob, 25)),
+    assertz(user:age(carol, 30)),
     assertz((user:probe_bagof :-
         bagof(X, member(X, [1,2,1]), L), write(L), nl, L == [1,2,1])),
     assertz((user:probe_setof :-
         setof(X, member(X, [1,2,1]), L), write(L), nl, L == [1,2])),
+    assertz((user:probe_bagof_group :-
+        findall(N-Cs, bagof(C, age(N, C), Cs), All),
+        write(All), nl,
+        All == [alice-[30], bob-[25], carol-[30]])),
+    assertz((user:probe_bagof_anon :-
+        findall(Cs, bagof(C, age(_, C), Cs), All),
+        write(All), nl,
+        All == [[30], [25], [30]])),
+    assertz((user:probe_bagof_exist :-
+        bagof(C, N^age(N, C), Cs), write(Cs), nl, Cs == [30, 25, 30])),
+    assertz((user:probe_setof_exist :-
+        setof(C, N^age(N, C), Cs), write(Cs), nl, Cs == [25, 30])),
+    assertz((user:probe_bagof_empty :-
+        \+ bagof(x, fail, _))),
+    assertz((user:probe_setof_mixed :-
+        setof(X, member(X, [foo, 1, bar, 1, z(a), 3.5]), L),
+        write(L), nl,
+        L == [1, 3.5, bar, foo, z(a)])),
+    assertz((user:probe_setof_group :-
+        findall(N-Cs, setof(C, age(N, C), Cs), All),
+        write(All), nl,
+        All == [alice-[30], bob-[25], carol-[30]])),
+    assertz((user:probe_bagof_first :-
+        bagof(C, age(N, C), Cs),
+        write(N-Cs), nl,
+        N-Cs == alice-[30])),
+    assertz((user:probe_bagof_second :-
+        bagof(C, age(N, C), Cs),
+        N \== alice,
+        write(N-Cs), nl,
+        N-Cs == bob-[25])),
     assertz((user:probe_agg_count :-
         aggregate_all(count, member(_, [1,2,3]), N), write(N), nl, N == 3)),
     assertz((user:probe_agg_sum :-
@@ -88,6 +142,16 @@ probe_preds([
     user:probe_call/0,
     user:probe_bagof/0,
     user:probe_setof/0,
+    user:probe_bagof_group/0,
+    user:probe_bagof_anon/0,
+    user:probe_bagof_exist/0,
+    user:probe_setof_exist/0,
+    user:probe_bagof_empty/0,
+    user:probe_setof_mixed/0,
+    user:probe_setof_group/0,
+    user:probe_bagof_first/0,
+    user:probe_bagof_second/0,
+    user:age/2,
     user:probe_agg_count/0,
     user:probe_agg_sum/0,
     user:probe_agg_bag/0,
