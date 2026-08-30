@@ -56,6 +56,7 @@
 :- dynamic user:sum3/2.
 :- dynamic user:unwrap/2.
 :- dynamic user:gt_float/1.
+:- dynamic user:qatom/1.
 :- dynamic user:probe_parse_atom/0.
 
 install_probes :-
@@ -94,6 +95,7 @@ install_probes :-
     retractall(user:sum3/2),
     retractall(user:unwrap/2),
     retractall(user:gt_float/1),
+    retractall(user:qatom/1),
     retractall(user:probe_parse_atom),
     assertz((user:probe_findall :-
         findall(X, member(X, [1,2,3]), L), write(L), nl, L == [1,2,3])),
@@ -224,13 +226,15 @@ install_probes :-
     assertz((user:sum3(L, S) :- sum_list(L, S))),
     assertz(user:unwrap(foo(X, bar(b), 3), X)),
     assertz((user:gt_float(X) :- X > 3.0)),
+    assertz(user:qatom('hello world')),
     assertz((user:probe_parse_atom :-
         read_term_from_atom('[1,2,3]', L), L == [1,2,3],
         read_term_from_atom('foo(a, bar(b), 3)', T), T == foo(a, bar(b), 3),
         read_term_from_atom('3.14', F), F > 3.0,
         read_term_from_atom('-2', N), N == -2,
         read_term_from_atom('[a|Rest]', PL), PL = [a, b], Rest == [b],
-        read_term_from_atom('\'hi there\'', QA), QA == 'hi there',
+        atom_concat('\'', 'hi there\'', QSrc),
+        read_term_from_atom(QSrc, QA), QA == 'hi there',
         read_term_from_atom('1+2', SumT), SumT == +(1, 2),
         atom_to_term('bar(X)', U, B), U = bar(hello), B == ['X'=hello],
         write(ok), nl)).
@@ -363,7 +367,7 @@ test(cli_structured_args, [setup(install_probes)]) :-
     Dir = 'output/js_wam_parser_cli',
     make_directory_path(Dir),
     write_wam_javascript_project(
-        [user:sum3/2, user:unwrap/2, user:gt_float/1],
+        [user:sum3/2, user:unwrap/2, user:gt_float/1, user:qatom/1],
         [emit_mode(interpreter)], Dir),
     run_node_args(Dir, ['sum3/2', '[1,2,3]'], ListExit, ListOut),
     assertion(ListExit =:= 0),
@@ -375,7 +379,10 @@ test(cli_structured_args, [setup(install_probes)]) :-
     assertion(sub_string(CompOut, _, _, _, "A2 = a")),
     run_node_args(Dir, ['gt_float/1', '3.14'], FloatExit, FloatOut),
     assertion(FloatExit =:= 0),
-    assertion(node_succeeded(FloatOut)).
+    assertion(node_succeeded(FloatOut)),
+    run_node_args(Dir, ['qatom/1', '\'hello world\''], QExit, QOut),
+    assertion(QExit =:= 0),
+    assertion(node_succeeded(QOut)).
 
 :- end_tests(js_wam_builtins).
 
