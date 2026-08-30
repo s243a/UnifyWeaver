@@ -51,7 +51,27 @@ and BeginAggregate / EndAggregate collection.
 Control / unify / arith: `true/0`, `fail/0`, `!/0`, `=/2`, `==/2`, `\==/2`,
 `is/2` (recursive `evalArith` on `+ - * / // mod`), `=:= =\= > < >= =<`.
 
-Lists: `member/2`, `length/2`, `between/3`.
+Lists: `member/2`, `length/2`, `between/3`, **`append/3`**, **`reverse/2`**,
+**`nth0/3`**, **`nth1/3`**, **`last/2`**, **`sum_list/2`** (`sumlist/2`),
+**`max_list/2`**, **`min_list/2`**, **`list_to_set/2`**, **`select/3`**,
+**`include/3`**, **`exclude/3`**.
+
+Sort: **`sort/2`**, **`msort/2`**, **`keysort/2`**, **`sort/4`** (integer
+Key, `@<`/`@>`/`<`/`>`), **`predsort/3`** (`compare/3` and 3-arg callables),
+**`compare/3`**.
+
+Atom/string: **`atom_concat/3`**, **`string_concat/3`**, **`atom_length/2`**,
+**`atom_chars/2`**, **`string_chars/2`**, **`atom_codes/2`**, **`char_code/2`**,
+**`sub_atom/5`** (ground-Atom; enumerates unbound Before/Length/After),
+**`atom_string/2`**, **`number_codes/2`**, **`number_string/2`**,
+**`split_string/4`**, **`upcase_atom/2`**, **`downcase_atom/2`**.
+
+I/O: `write/1`, `nl/0`, `writeln/1`, **`format/2`**, **`format/3`**
+(`~w ~a ~d ~p ~q ~n ~s ~t ~~`; `atom(A)` / `string(S)` sinks), **`tab/1`**.
+
+Assoc (`library(assoc)` shape, list-of-pairs not AVL): **`empty_assoc/1`**,
+**`list_to_assoc/2`**, **`get_assoc/3`**, **`put_assoc/4`**,
+**`assoc_to_list/2`**, **`assoc_to_keys/2`**.
 
 Term: **`functor/3`**, **`arg/3`**, **`=../2`**, **`copy_term/2`**.
 
@@ -66,8 +86,6 @@ for `count` / `sum(X)` / `bag(X)` / `set(X)`.
 Types: `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `var/1`,
 `nonvar/1`, `is_list/1`, `ground/1`.
 
-I/O (probe dumps): `write/1`, `nl/0`, `writeln/1`.
-
 ## Remaining / partial
 
 | Builtin | Status |
@@ -75,6 +93,10 @@ I/O (probe dumps): `write/1`, `nl/0`, `writeln/1`.
 | `bagof/3` | **Implemented.** ISO witness grouping (one bag per distinct free-var binding, SWI encounter order), `Var^Goal` / nested `V1^V2^Goal` stripped from the witness set, fails when Goal has no solutions. |
 | `setof/3` | **Implemented.** `bagof` then per-group standard-order sort + dedup. Order: Var < Number < Atom < String < Compound; compounds by arity, functor **name**, then args L-to-R (matches SWI mixed-type lists). |
 | `term_variables/2`, `numbervars/3`, `=@=/2` | Not ported. |
+| `format/2` `/3` | **Implemented** for `~w ~a ~d ~p ~q ~n ~s ~t ~~`. Not ported: `~f`, `~r`, `~D`, positioning (`~N|`, `~+`, `t~`), aliases, and stream sinks other than stdout / `atom(A)` / `string(S)`. |
+| `sub_atom/5` | **Implemented** when Atom is ground; enumerates unbound Before/Length/After (and filters a ground SubAtom). |
+| `atom_string/2` / `split_string/4` | **Implemented** but the runtime has no distinct string tag — results intern as atoms (write/== match SWI for the probe suite). |
+| `library(assoc)` | **Implemented** as a Prolog `assoc/1` list of Key-Value pairs (not SWI's AVL tree). get/put/list/keys match SWI for unique-key maps. |
 | First-arg indexing | **Implemented.** `switch_on_constant` / `_fallthrough` / `_a2`, `switch_on_structure` / `_a2`, and `switch_on_term` / `_a2` jump to the matching clause group. Ground first-arg with a unique clause leaves no choice point (`deterministic/0`). Unbound first arg falls through to the try/retry/trust chain (no lost solutions). Exclusive miss fails; fallthrough variants keep the chain for variable-headed clauses. Dedicated `try`/`retry`/`trust` dispatch chains are emitted for multi-clause groups. |
 | Second-arg / deep indexing | A2 switches are implemented; deep (argument >2) indexing is not. |
 | Lowered / functions emit mode | **Implemented.** `javascript_wam_resolve_emit_mode/2` accepts `interpreter` (default), `functions` (lower every eligible predicate), and `mixed([P/A, ...])` (lower only the named ones). Eligible shapes: single-clause deterministic bodies; T4 all-clauses-inline; T5 first-arg constant dispatch; T6 hash dispatch (≥8 atom keys); structured ITE / negation / once. Unsupported ops (`begin_aggregate`, bagof/setof, cuts/jumps the planner rejects) fall back to the interpreter rather than emitting wrong code. Interpreter-mode bytecode and wrappers are unchanged. |
@@ -99,15 +121,14 @@ Residual ISO corners not covered: `term_variables/2` / `numbervars/3` /
 `=@=/2` are still unported; bagof/setof of *unbound* free vars (two
 solutions that leave the same witness unbound) is grouped by copied
 variable name rather than `@=`; the runtime has no distinct string tag,
-so String vs Atom order is unused; `^/2` as a standalone metacall just
-runs the RHS.
+so String vs Atom order is unused and `atom_string`/`split_string`
+intern results as atoms; `^/2` as a standalone metacall just
+runs the RHS; `format` does not implement `~f` / `~r` / column
+positioning; assoc is a list-of-pairs, not SWI's AVL tree.
 
 ## Document status
 
 Initial JS WAM bring-up + builtin port from Lua, ISO bagof/3 and setof/3,
-first-argument indexing (`switch_on_constant` / `structure` / `term`
-and fallthrough / A2 variants), then the Tier-2 lowered emitter
-(`functions` / `mixed(List)`). Residuals: aggregates and bagof/setof
-stay on the interpreter path; T6 only kicks in at ≥8 distinct atom
-keys (override with `t6_min_clauses(N)`). Source-verified against
-SWI-Prolog as the oracle (2026-08-30).
+first-argument indexing, the Tier-2 lowered emitter, then ISO/library
+builtin breadth (sort, lists, atom/string, format, assoc). Source-verified
+against SWI-Prolog as the oracle (2026-08-30).
