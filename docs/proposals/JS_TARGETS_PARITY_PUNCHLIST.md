@@ -41,6 +41,7 @@ in-flight parity analyses — see §6).
 | D13 | vanilla_js | Registered all 7 advanced-pattern hooks (delegate to TS + type-strip); `target(vanilla_js)` now dispatches (was: no clause → fail). G-P10. | (this branch) |
 | D14 | typescript (→AJS/VJS) | Real recursion (G-P1): tree/multicall/direct/tail hooks now derive base cases + offsets + aggregation from the actual clause (was: hardcoded fib for any predicate). Structural recursion (G-P2): native list lowering for member/append/reverse/length, node-verified vs SWI. | PR #4182 |
 | D15 | wam_javascript | Switch-indexing cross-target matrix row added (G-W5): full coverage of all 5 tracked columns (const_ft/const_a2/const_a2_ft/term_a2/struct_a2), residuals documented. | (this branch) |
+| D16 | typescript (→AJS/VJS) | Component emission (G-P4): `compile_module` now calls `compile_component` (was collected-but-dropped); revived orphaned `custom_chart` (+ fixed its unevaluated-`format` bug). Component-free modules unchanged. | (this branch) |
 
 ---
 
@@ -48,10 +49,9 @@ in-flight parity analyses — see §6).
 
 | ID | Target | Item | Owner | Branch |
 |---|---|---|---|---|
-| G-P4 | typescript (→AJS/VJS) | Component emission — wire `compile_component` into `compile_module`; revive orphaned `custom_chart` | opus | worktree |
 | G-W1 | wam_javascript | Tier-2 lowered emitter + `functions`/`mixed` emit modes | grok | prompt sent |
 
-**Done since last update:** G-P10 (D13), G-P1/G-P2 (D14) — ✅ merged; G-W5 switch-indexing matrix row (D15) — ✅ (this branch).
+**Done since last update:** G-W5 (D15) + G-P4 component emission (D16) — ✅ merged to this branch (batch PR pending). Remaining pattern gaps: G-P3 aggregates, G-P5 clojure/CLJS components, G-P6 constraints, G-P7 data sources, G-P8 TS streaming, G-P9 data-source consumers, G-P11 CLJS dead-bindings (verify), G-P13 tests. WAM tail: G-W1 (grok), G-W2 parser, G-W3 builtin breadth, G-W4 fact sources, G-W6 parallelism (deferred).
 
 **Done since last update:** P1 first-arg indexing (Grok, `grok/wamjs-indexing`) — ✅ merged (see D12). Analyses A1/A2/census — ✅ folded in.
 
