@@ -574,6 +574,11 @@ function builtin_write(program, state) {
   return true;
 }
 
+function builtin_writeq(program, state) {
+  process.stdout.write(quoted_term_to_string(program, state, Runtime.get_reg(state, 1)));
+  return true;
+}
+
 function builtin_functor(program, state) {
   const term = Runtime.deref(state, Runtime.get_reg(state, 1));
   if (typeof term === "object" && term !== null && term.tag === "unbound") {
@@ -1900,6 +1905,18 @@ function builtin_atom_length(program, state) {
   return bind_or_compare(state, 2, V.Int(t.length), program);
 }
 
+function text_char_length(s) {
+  let n = 0;
+  for (const _ch of String(s)) n++;
+  return n;
+}
+
+function builtin_string_length(program, state) {
+  const t = atomic_text(program, state, Runtime.get_reg(state, 1));
+  if (t === null) return false;
+  return bind_or_compare(state, 2, V.Int(text_char_length(t)), program);
+}
+
 function builtin_atom_chars(program, state) {
   const t = atomic_text(program, state, Runtime.get_reg(state, 1));
   if (t !== null) return bind_list(program, state, 2, string_to_chars(program, t));
@@ -2075,23 +2092,74 @@ function builtin_case_atom(program, state, up) {
   return bind_or_compare(state, 2, intern_atom(program, out), program);
 }
 
+// SWI-like needs-quoting (pragmatic subset):
+// unquoted: []  !  ;  {}  ;  a-z[A-Za-z0-9_]*  ;  ISO graphic
+// (# $ & * + - . / : < = > ? @ ^ ~ \) except the lone atom '.'
+// (end-of-term). Quoted otherwise (empty, spaces, uppercase, digits,
+// '|', ',', mixed graphic+letter). Escapes \\ and \' only.
+function atom_needs_quote(s) {
+  s = String(s);
+  if (s === "[]" || s === "!" || s === ";" || s === "{}") return false;
+  if (/^[a-z][a-zA-Z0-9_]*$/.test(s)) return false;
+  if (s !== "." && /^[#\$&*+\-./:<=>?@^~\\]+$/.test(s)) return false;
+  return true;
+}
+
 function quote_atom_text(s) {
-  if (/^[a-z][a-zA-Z0-9_]*$/.test(s)) return s;
-  return "'" + String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+  s = String(s);
+  if (!atom_needs_quote(s)) return s;
+  return "'" + s.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
 }
 
 function quote_string_text(s) {
   return "\"" + String(s).replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"";
 }
 
-function format_write_term(program, state, term, quoted) {
+function quoted_list_to_string(program, state, term, nilId) {
+  const parts = [];
+  let cur = term;
+  while (typeof cur === "object" && cur !== null
+         && cur.tag === "struct"
+         && is_cons_fid(program, cur.fid)
+         && (cur.args || []).length === 2) {
+    parts.push(quoted_term_to_string(program, state, cur.args[0]));
+    cur = Runtime.deref(state, cur.args[1]);
+  }
+  if (typeof cur === "object" && cur !== null
+      && cur.tag === "atom" && cur.id === nilId) {
+    return "[" + parts.join(",") + "]";
+  }
+  return "[" + parts.join(",") + "|"
+    + quoted_term_to_string(program, state, cur) + "]";
+}
+
+function quoted_term_to_string(program, state, term) {
   term = Runtime.deref(state, term);
-  if (quoted && term && term.tag === "atom") {
+  if (typeof term !== "object" || term === null) return String(term);
+  if (term.tag === "string") return quote_string_text(term.val);
+  if (term.tag === "int" || term.tag === "float") return String(term.val);
+  if (term.tag === "unbound") return "_" + String(term.name);
+  if (term.tag === "atom") {
     return quote_atom_text(Runtime.string_of(program.intern_table, term.id));
   }
-  if (quoted && term && term.tag === "string") {
-    return quote_string_text(term.val);
+  if (term.tag === "struct") {
+    const nilId = Runtime.intern(program.intern_table, "[]");
+    if (is_cons_fid(program, term.fid) && (term.args || []).length === 2) {
+      return quoted_list_to_string(program, state, term, nilId);
+    }
+    const fname = Runtime.functor_name(program.intern_table, term.fid);
+    const args = term.args || [];
+    const parts = [];
+    for (let i = 0; i < args.length; i++) {
+      parts.push(quoted_term_to_string(program, state, args[i]));
+    }
+    return quote_atom_text(fname) + "(" + parts.join(",") + ")";
   }
+  return String(term);
+}
+
+function format_write_term(program, state, term, quoted) {
+  if (quoted) return quoted_term_to_string(program, state, term);
   return term_to_string(program, state, term);
 }
 
@@ -2501,6 +2569,7 @@ Runtime.builtin_call = function (program, state, inst) {
     return builtin_findall_family(program, state, p);
   }
   if (name === "write" || name === "display" || name === "print") return builtin_write(program, state);
+  if (name === "writeq") return builtin_writeq(program, state);
   if (name === "writeln") {
     builtin_write(program, state);
     process.stdout.write("\n");
@@ -2533,6 +2602,7 @@ Runtime.builtin_call = function (program, state, inst) {
   if (name === "atom_concat") return builtin_atom_concat(program, state);
   if (name === "string_concat") return builtin_string_concat(program, state);
   if (name === "atom_length") return builtin_atom_length(program, state);
+  if (name === "string_length") return builtin_string_length(program, state);
   if (name === "atom_chars") return builtin_atom_chars(program, state);
   if (name === "string_chars") return builtin_string_chars(program, state);
   if (name === "atom_codes") return builtin_atom_codes(program, state);
