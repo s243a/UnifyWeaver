@@ -573,7 +573,7 @@ test(profile_table_stdout_identical, [setup(install_profile_preds)]) :-
     assertion(node_succeeded(OnOut)),
     assertion(OffErr == ""),
     assertion(sub_string(OnErr, _, _, _, "UW profile")),
-    assertion(profile_table_calls(OnErr, "fib/2", Calls)),
+    profile_table_calls(OnErr, "fib/2", Calls),
     assertion(Calls >= 20).
 
 test(profile_json_schema, [setup(install_profile_preds)]) :-
@@ -586,7 +586,7 @@ test(profile_json_schema, [setup(install_profile_preds)]) :-
     assertion(OffErr == ""),
     atom_string(ErrAtom, OnErr),
     atom_json_dict(ErrAtom, Dict, []),
-    assertion(profile_json_pred(Dict, "fib/2", Row)),
+    profile_json_pred(Dict, "fib/2", Row),
     get_dict(calls, Row, Calls),
     assertion(Calls >= 1),
     get_dict(global, Dict, G),
@@ -612,11 +612,11 @@ test(profile_lowered_call_counts, [setup(install_profile_preds)]) :-
     assertion(node_succeeded(Stdout)),
     atom_string(ErrAtom, Stderr),
     atom_json_dict(ErrAtom, Dict, []),
-    assertion(profile_json_pred(Dict, "hello/1", Row)),
+    profile_json_pred(Dict, "hello/1", Row),
     get_dict(calls, Row, Calls),
     assertion(Calls >= 1),
     get_dict(lowered, Row, Lowered),
-    assertion(Lowered == true).
+    assertion((Lowered == true ; Lowered == @(true))).
 
 :- end_tests(js_wam_builtins).
 
