@@ -1043,12 +1043,13 @@ native_ts_clause_body(PredSpec, [Head-Body], Code) :-
     native_ts_clause(PredSpec, Head, Body, Condition, ClauseCode),
     !,
     (   Condition == "true"
-    ->  format(string(Code), '    return ~w;', [ClauseCode])
-    ;   format(string(Code),
+    ->  ts_clause_body_text(ClauseCode, '    ', Code)
+    ;   ts_clause_body_text(ClauseCode, '        ', Inner),
+        format(string(Code),
 '    if (~w) {
-        return ~w;
+~w
     }
-    throw new Error("No matching clause for ~w");', [Condition, ClauseCode, PredSpec])
+    throw new Error("No matching clause for ~w");', [Condition, Inner, PredSpec])
     ).
 
 % Multi-clause → if/else if/else
@@ -1061,6 +1062,61 @@ native_ts_clause_body(PredSpec, Clauses, Code) :-
 native_ts_clause_pair(PredSpec, Head-Body, branch(Condition, ClauseCode)) :-
     native_ts_clause(PredSpec, Head, Body, Condition, ClauseCode),
     !.
+
+%% ============================================
+%% STATEMENT-vs-EXPRESSION CLAUSE CODE (G-A3-2)
+%% ============================================
+%%
+%% native_ts_clause/5 hands its callers a clause body that is EITHER a
+%% TypeScript expression (produced by ts_expr / ts_literal / a ternary) OR a
+%% block of statements (const-assignments, an if/else chain, a `return`).
+%% The emitters used to wrap both in `return ~w;`, which turns every block into
+%% syntactically invalid TypeScript --
+%%
+%%     p(X, Y) :- Y is X * 2.   ->   return const arg2 = (arg1 * 2);
+%%                                     return arg2;;
+%%
+%% -- and node rejects the whole module at parse time. ts_clause_body_text/3
+%% asks which form it was handed and emits accordingly: an expression becomes
+%% `return <expr>;`, a block is re-indented and emitted as-is.
+%%
+%% A block that renders NO `return` means some goal of the clause could not be
+%% lowered and was dropped by the classified-goal catch-alls; rather than let
+%% the function silently fall off the end returning `undefined`, an explicit
+%% throw is appended so the incomplete lowering fails loudly at runtime.
+
+%% ts_clause_code_form(+Code, -Form)
+%  Expressions never end in `;` and never span lines; statement blocks do both.
+ts_clause_code_form(Code, Form) :-
+    (   ( sub_string(Code, _, _, 0, ";") ; sub_string(Code, _, _, _, "\n") )
+    ->  Form = block
+    ;   Form = expr
+    ).
+
+%% ts_clause_body_text(+ClauseCode, +Indent, -Text)
+ts_clause_body_text(ClauseCode, Indent, Text) :-
+    ts_clause_code_form(ClauseCode, Form),
+    (   Form == expr
+    ->  format(string(Text), '~wreturn ~w;', [Indent, ClauseCode])
+    ;   ts_clause_block_text(ClauseCode, Indent, Text)
+    ).
+
+ts_clause_block_text(ClauseCode, Indent, Text) :-
+    atom_string(ClauseCode, CodeStr),
+    split_string(CodeStr, "\n", "", RawLines),
+    maplist(ts_reindent_line(Indent), RawLines, Lines0),
+    (   sub_string(CodeStr, _, _, _, "return ")
+    ->  Lines = Lines0
+    ;   format(string(Throw),
+               '~wthrow new Error("incomplete lowering: unrendered goals");',
+               [Indent]),
+        append(Lines0, [Throw], Lines)
+    ),
+    atomic_list_concat(Lines, '\n', Text).
+
+ts_reindent_line(_Indent, "", "") :- !.
+ts_reindent_line(Indent, Line, Out) :-
+    format(string(Out), '~w~w', [Indent, Line]).
 
 %% native_ts_clause(+PredSpec, +Head, +Body, -Condition, -Code)
 native_ts_clause(_PredSpec, Head, Body, Condition, Code) :-
@@ -1124,12 +1180,20 @@ ts_render_classified_goals([], _VarMap, [], []).
 ts_render_classified_goals([Classified], VarMap, Conds, Lines) :-
     !,
     ts_render_classified_last(Classified, VarMap, Conds, Lines).
-%% Guarded tail: output followed by guard(s)
+%% Guarded tail: output followed by guard(s) — and NOTHING after those guards.
+%% The `Remaining == []` check (G-A3-5) is load-bearing: this clause renders the
+%% guards as the function's exit test and returns, so any classified goal after
+%% them would be silently discarded. `starts_with/2` is exactly that shape
+%% (length, length, >=, sub_string, ==) and used to compile to a function that
+%% returned the prefix length and never looked at the substring at all. When
+%% something follows the guards we fall through to the general sequence clause
+%% below instead.
 ts_render_classified_goals([output(Goal, _, _)|Rest], VarMap, [], Lines) :-
     Rest = [guard(_, _)|_],
-    !,
     ts_output_goal(Goal, VarMap, AssignLine, VarMap1),
-    ts_collect_trailing_guards(Rest, VarMap1, GuardGoals, _Remaining),
+    ts_collect_trailing_guards(Rest, VarMap1, GuardGoals, Remaining),
+    Remaining == [],
+    !,
     maplist(ts_guard_condition(VarMap1), GuardGoals, GuardConds),
     atomic_list_concat(GuardConds, ' && ', GuardExpr),
     (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
@@ -1147,11 +1211,23 @@ ts_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
     append(MidLines, RestLines, Lines).
 
 %% ts_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
-ts_render_classified_mid(guard(Goal, _), VarMap, [Cond], [], VarMap) :-
+%  Deterministic dispatcher. Committing with `->` matters twice: it stops the
+%  renderers from being re-tried on backtracking (a guard-only sequence must
+%  keep yielding zero Lines so native_ts_goal_sequence/4 falls through to the
+%  guard/output split), and it makes the unrendered-goal fallback below reachable
+%  ONLY when the real renderer genuinely has nothing for this goal (G-A3-4).
+ts_render_classified_mid(Classified, VarMap0, Conds, Lines, VarMapOut) :-
+    (   ts_render_classified_mid_(Classified, VarMap0, C0, L0, VM0)
+    ->  Conds = C0, Lines = L0, VarMapOut = VM0
+    ;   ts_unrendered_goal_line(Classified, Line),
+        Conds = [], Lines = [Line], VarMapOut = VarMap0
+    ).
+
+ts_render_classified_mid_(guard(Goal, _), VarMap, [Cond], [], VarMap) :-
     ts_guard_condition(VarMap, Goal, Cond).
-ts_render_classified_mid(output(Goal, _, _), VarMap0, [], [Line], VarMapOut) :-
+ts_render_classified_mid_(output(Goal, _, _), VarMap0, [], [Line], VarMapOut) :-
     ts_output_goal(Goal, VarMap0, Line, VarMapOut).
-ts_render_classified_mid(output_ite(If, Then, Else, _SharedVars), VarMap0, [], Lines, VarMap0) :-
+ts_render_classified_mid_(output_ite(If, Then, Else, _SharedVars), VarMap0, [], Lines, VarMap0) :-
     ts_guard_condition(VarMap0, If, Cond),
     ts_branch_value(Then, VarMap0, ThenExpr),
     ts_branch_value(Else, VarMap0, ElseExpr),
@@ -1160,16 +1236,23 @@ ts_render_classified_mid(output_ite(If, Then, Else, _SharedVars), VarMap0, [], L
     ElseLine = '  } else {',
     format(string(ElseRetLine), '    return ~w;', [ElseExpr]),
     Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, '  }'].
-ts_render_classified_mid(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
+ts_render_classified_mid_(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
     ts_output_goal(Goal, VarMap0, Line, VarMapOut).
-ts_render_classified_mid(_, VarMap, [], [], VarMap).
 
 %% ts_render_classified_last(+Classified, +VarMap, -Conds, -Lines)
-ts_render_classified_last(guard(Goal, _), VarMap, [Cond], []) :-
+%  Deterministic dispatcher — see ts_render_classified_mid/5.
+ts_render_classified_last(Classified, VarMap, Conds, Lines) :-
+    (   ts_render_classified_last_(Classified, VarMap, C0, L0)
+    ->  Conds = C0, Lines = L0
+    ;   ts_unrendered_goal_line(Classified, Line),
+        Conds = [], Lines = [Line]
+    ).
+
+ts_render_classified_last_(guard(Goal, _), VarMap, [Cond], []) :-
     ts_guard_condition(VarMap, Goal, Cond).
-ts_render_classified_last(output(Goal, _, _), VarMap, [], Lines) :-
+ts_render_classified_last_(output(Goal, _, _), VarMap, [], Lines) :-
     ts_output_goal_last_lines(Goal, VarMap, Lines).
-ts_render_classified_last(output_ite(If, Then, Else, _), VarMap, [], Lines) :-
+ts_render_classified_last_(output_ite(If, Then, Else, _), VarMap, [], Lines) :-
     ts_guard_condition(VarMap, If, Cond),
     ts_branch_value(Then, VarMap, ThenExpr),
     ts_branch_value(Else, VarMap, ElseExpr),
@@ -1178,13 +1261,47 @@ ts_render_classified_last(output_ite(If, Then, Else, _), VarMap, [], Lines) :-
     ElseLine = '  } else {',
     format(string(ElseRetLine), '    return ~w;', [ElseExpr]),
     Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, '  }'].
-ts_render_classified_last(output_disj(Alternatives, _SharedVars), VarMap, [], Lines) :-
+ts_render_classified_last_(output_disj(Alternatives, _SharedVars), VarMap, [], Lines) :-
     ts_disj_if_chain(Alternatives, VarMap, Lines).
-ts_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
+ts_render_classified_last_(passthrough(Goal), VarMap, [], Lines) :-
     ts_output_goal_last_lines(Goal, VarMap, Lines).
-ts_render_classified_last(_, _, [], []).
+
+%% ts_unrendered_goal_line(+Classified, -Line)
+%  A `throw` naming the goal shape that could not be lowered. Only the functor
+%  and arity are embedded, so nothing from the Prolog term can break out of the
+%  generated JavaScript string literal.
+ts_unrendered_goal_line(Classified, Line) :-
+    ts_classified_goal(Classified, Goal),
+    ts_goal_label(Goal, Label),
+    format(string(Line),
+           '  throw new Error("incomplete lowering: unrendered goal ~w");',
+           [Label]).
+
+ts_classified_goal(guard(G, _), G).
+ts_classified_goal(output(G, _, _), G).
+ts_classified_goal(output_ite(If, _, _, _), If).
+ts_classified_goal(output_if_then(If, _, _), If).
+ts_classified_goal(output_disj(_, _), disjunction).
+ts_classified_goal(passthrough(G), G).
+
+ts_goal_label(Goal, Label) :-
+    compound(Goal), !,
+    functor(Goal, Name, Arity),
+    format(string(Label), '~w/~w', [Name, Arity]).
+ts_goal_label(Goal, Label) :-
+    atom(Goal), !,
+    format(string(Label), '~w', [Goal]).
+ts_goal_label(_, "?").
 
 %% ts_output_goal_last_lines(+Goal, +VarMap, -Lines)
+%% String/char builtin (G-A3-1) first: its output variable is not always the
+%% goal's LAST argument (string_chars(-S, +Cs) builds the text in argument 1),
+%% so goal_output_var/2 would return the wrong variable to `return`.
+ts_output_goal_last_lines(Goal, VarMap, [Line]) :-
+    ts_string_builtin(Goal, VarMap, OutVar, TExpr),
+    !,
+    ensure_var(VarMap, OutVar, VarName, _VarMap1),
+    format(string(Line), 'const ~w = ~w;\n  return ~w;', [VarName, TExpr, VarName]).
 ts_output_goal_last_lines(Goal, VarMap, [Line]) :-
     ts_output_goal(Goal, VarMap, AssignLine, VarMapOut),
     (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, OutName)
@@ -1246,6 +1363,36 @@ ts_disj_else_if_chain([Alt|Rest], VarMap, [ElseIfLine, RetLine|RestLines]) :-
 %% ts_guard_condition(+VarMap, +Goal, -Condition)
 ts_guard_condition(VarMap, _Module:Goal, Condition) :-
     !, ts_guard_condition(VarMap, Goal, Condition).
+%% Control-flow inside a GUARD position (G-A3-3). A boolean test built out of
+%% `,` / `;` / `->` is first-order Prolog with an exact JS reading, and both of
+%% cli_args' character classifiers are written that way:
+%%
+%%     js_flag_char(C) :- char_code(C, X),
+%%         ( X >= 0'a, X =< 0'z -> true ; ... ; X =:= 0'- ).
+%%
+%% Before this, the conjunction inside the condition had no rendering, so the
+%% whole if-then-else was dropped by the classified-goal catch-all. Each sub
+%% condition still goes through ts_guard_condition, so an unrenderable inner
+%% goal makes the whole render fail cleanly rather than emit wrong code.
+ts_guard_condition(_VarMap, true,  "true")  :- !.
+ts_guard_condition(_VarMap, fail,  "false") :- !.
+ts_guard_condition(_VarMap, false, "false") :- !.
+ts_guard_condition(VarMap, Goal, Condition) :-
+    nonvar(Goal), Goal = (A, B), !,
+    ts_guard_condition(VarMap, A, CA),
+    ts_guard_condition(VarMap, B, CB),
+    format(string(Condition), '(~w && ~w)', [CA, CB]).
+ts_guard_condition(VarMap, Goal, Condition) :-
+    nonvar(Goal), if_then_else_goal(Goal, If, Then, Else), !,
+    ts_guard_condition(VarMap, If, CI),
+    ts_guard_condition(VarMap, Then, CT),
+    ts_guard_condition(VarMap, Else, CE),
+    format(string(Condition), '((~w) ? (~w) : (~w))', [CI, CT, CE]).
+ts_guard_condition(VarMap, Goal, Condition) :-
+    nonvar(Goal), Goal = (A ; B), !,
+    ts_guard_condition(VarMap, A, CA),
+    ts_guard_condition(VarMap, B, CB),
+    format(string(Condition), '(~w || ~w)', [CA, CB]).
 ts_guard_condition(VarMap, Goal, Condition) :-
     compound(Goal),
     Goal =.. [Op, Left, Right],
@@ -1389,12 +1536,21 @@ ts_type_check(ground, Arg, VarMap, Cond) :- !,
     format(string(Cond), '(~w !== undefined)', [X]).
 
 %% ts_output_goals(+Goals, +VarMap, -Code)
+%  A single output goal yields a return EXPRESSION; several yield a statement
+%  BLOCK. Keeping the intermediate assignment lines (G-A3-17) is the point: this
+%  path used to thread only the VarMap and throw the `const ...;` lines away, so
+%  a clause like `p(Cs, Out) :- string_chars(S, Cs), Out = S.` compiled to
+%  `return v3;` with v3 declared nowhere.
 ts_output_goals([], _VarMap, '"error"') :- !.
 ts_output_goals([Goal], VarMap, Code) :-
     !, ts_output_goal_last(Goal, VarMap, Code).
 ts_output_goals([Goal|Rest], VarMap0, Code) :-
-    ts_output_goal(Goal, VarMap0, _Line, VarMap1),
-    ts_output_goals(Rest, VarMap1, Code).
+    ts_output_goal(Goal, VarMap0, Line, VarMap1),
+    ts_output_goals(Rest, VarMap1, RestCode),
+    (   ts_clause_code_form(RestCode, block)
+    ->  format(string(Code), '~w\n~w', [Line, RestCode])
+    ;   format(string(Code), '~w\n  return ~w;', [Line, RestCode])
+    ).
 
 %% ts_output_goal_last — produce the return expression
 ts_output_goal_last(_Module:Goal, VarMap, Code) :-
@@ -1409,6 +1565,12 @@ ts_output_goal_last(=(Var, Expr), VarMap, Code) :-
 ts_output_goal_last(is(Var, Expr), VarMap, Code) :-
     var(Var), !,
     ts_expr(Expr, VarMap, Code).
+%% Deterministic string/char builtins (G-A3-1): render the goal as the value
+%% expression it computes. Tried last, so nothing that already had a rendering
+%% changes shape.
+ts_output_goal_last(Goal, VarMap, Code) :-
+    ts_string_builtin(Goal, VarMap, _OutVar, Code),
+    !.
 
 %% ts_output_goal — produce a const assignment (not used as return)
 ts_output_goal(_Module:Goal, VarMap0, Line, VarMapOut) :-
@@ -1423,6 +1585,151 @@ ts_output_goal(is(Var, Expr), VarMap0, Line, VarMapOut) :-
     ensure_var(VarMap0, Var, VarName, VarMapOut),
     ts_expr(Expr, VarMap0, TExpr),
     format(string(Line), 'const ~w = ~w;', [VarName, TExpr]).
+%% Deterministic string/char builtins (G-A3-1) as an assignment statement.
+ts_output_goal(Goal, VarMap0, Line, VarMapOut) :-
+    ts_string_builtin(Goal, VarMap0, OutVar, TExpr),
+    !,
+    ensure_var(VarMap0, OutVar, VarName, VarMapOut),
+    format(string(Line), 'const ~w = ~w;', [VarName, TExpr]).
+
+%% ============================================
+%% STRING / CHAR BUILTIN LOWERING (G-A3-1)
+%% ============================================
+%%
+%% SWI's deterministic text builtins have exact JavaScript equivalents; before
+%% this table the native clause path had no rendering for any of them, so the
+%% classified-goal catch-alls dropped them silently and the clause compiled to
+%% code that referenced variables nothing ever assigned.
+%%
+%% ts_string_builtin(+Goal, +VarMap, -OutVar, -TsExpr)
+%%   OutVar is the goal's output variable and TsExpr the TypeScript expression
+%%   computing it. Mode selection is by VarMap: a rule only applies when every
+%%   INPUT term is already resolvable (a mapped variable or a ground literal),
+%%   so the same builtin lowers in either direction --
+%%     string_chars(S, Cs)  with S known -> Cs = Array.from(S)
+%%     string_chars(S, Cs)  with Cs known -> S  = Cs.join("")
+%%   In this target Prolog text (atom or string) is a JS string and a char is a
+%%   one-character JS string, so the atom_*/string_* pairs share a rendering.
+%%
+%%   Two passes disambiguate the reversible builtins. `strict` demands that the
+%%   chosen output be a variable the VarMap has NOT seen yet — the honest
+%%   "this goal produces a new value" reading. Only if no rule qualifies does
+%%   `loose` allow an output the map already names, which is the normal case
+%%   for a goal writing straight into the clause head's output argument
+%%   (`substring_from(S, Start, Sub) :- ..., sub_string(S, Start, Len, 0, Sub)`
+%%   — Sub is head argument 3 and therefore already mapped).
+ts_string_builtin(Goal, VarMap, Out, Expr) :-
+    (   ts_sb_rule(Goal, VarMap, strict, Out, Expr)
+    ->  true
+    ;   ts_sb_rule(Goal, VarMap, loose, Out, Expr)
+    ).
+
+%% ts_sb_in(+Term, +VarMap, -TsExpr) — an already-known input term.
+ts_sb_in(Term, VarMap, Expr) :-
+    var(Term), !,
+    lookup_var(Term, VarMap, Expr).
+ts_sb_in(Term, VarMap, Expr) :-
+    ground(Term),
+    ts_expr(Term, VarMap, Expr).
+
+%% ts_sb_out(+Term, +VarMap, +Mode) — the rule's output variable.
+ts_sb_out(Term, VarMap, strict) :-
+    var(Term),
+    \+ lookup_var(Term, VarMap, _).
+ts_sb_out(Term, _VarMap, loose) :-
+    var(Term).
+
+% --- length ---------------------------------------------------------------
+ts_sb_rule(Goal, VM, Mode, Out, Expr) :-
+    ts_sb_functor(Goal, F, [S, Out]), ts_sb_len_pred(F),
+    ts_sb_out(Out, VM, Mode), ts_sb_in(S, VM, SE),
+    format(string(Expr), '~w.length', [SE]).
+
+% --- concatenation (forward mode only; split mode is nondeterministic) -----
+ts_sb_rule(Goal, VM, Mode, Out, Expr) :-
+    ts_sb_functor(Goal, F, [A, B, Out]), ts_sb_concat_pred(F),
+    ts_sb_out(Out, VM, Mode), ts_sb_in(A, VM, AE), ts_sb_in(B, VM, BE),
+    format(string(Expr), '(~w + ~w)', [AE, BE]).
+
+% --- sub_string/sub_atom in the fully-indexed mode (Before+Len known) ------
+ts_sb_rule(Goal, VM, Mode, Out, Expr) :-
+    ts_sb_functor(Goal, F, [S, B, L, _After, Out]), ts_sb_sub_pred(F),
+    ts_sb_out(Out, VM, Mode), ts_sb_in(S, VM, SE), ts_sb_in(B, VM, BE), ts_sb_in(L, VM, LE),
+    format(string(Expr), '~w.slice(~w, ~w + ~w)', [SE, BE, BE, LE]).
+
+% --- text <-> char list, both directions -----------------------------------
+ts_sb_rule(Goal, VM, Mode, Out, Expr) :-
+    ts_sb_functor(Goal, F, [S, Out]), ts_sb_chars_pred(F),
+    ts_sb_out(Out, VM, Mode), ts_sb_in(S, VM, SE),
+    format(string(Expr), 'Array.from(~w)', [SE]).
+ts_sb_rule(Goal, VM, Mode, Out, Expr) :-
+    ts_sb_functor(Goal, F, [Out, Cs]), ts_sb_chars_pred(F),
+    ts_sb_out(Out, VM, Mode), ts_sb_in(Cs, VM, CE),
+    format(string(Expr), '~w.join("")', [CE]).
+
+% --- text <-> code list, both directions -----------------------------------
+ts_sb_rule(Goal, VM, Mode, Out, Expr) :-
+    ts_sb_functor(Goal, F, [S, Out]), ts_sb_codes_pred(F),
+    ts_sb_out(Out, VM, Mode), ts_sb_in(S, VM, SE),
+    format(string(Expr), 'Array.from(~w).map(c => c.charCodeAt(0))', [SE]).
+ts_sb_rule(Goal, VM, Mode, Out, Expr) :-
+    ts_sb_functor(Goal, F, [Out, Cs]), ts_sb_codes_pred(F),
+    ts_sb_out(Out, VM, Mode), ts_sb_in(Cs, VM, CE),
+    format(string(Expr), 'String.fromCharCode(...~w)', [CE]).
+
+% --- char_code/2, both directions ------------------------------------------
+ts_sb_rule(char_code(C, Out), VM, Mode, Out, Expr) :-
+    ts_sb_out(Out, VM, Mode), ts_sb_in(C, VM, CE),
+    format(string(Expr), '~w.charCodeAt(0)', [CE]).
+ts_sb_rule(char_code(Out, X), VM, Mode, Out, Expr) :-
+    ts_sb_out(Out, VM, Mode), ts_sb_in(X, VM, XE),
+    format(string(Expr), 'String.fromCharCode(~w)', [XE]).
+
+% --- number <-> text, both directions --------------------------------------
+ts_sb_rule(Goal, VM, Mode, Out, Expr) :-
+    ts_sb_functor(Goal, F, [N, Out]), ts_sb_numtext_pred(F),
+    ts_sb_out(Out, VM, Mode), ts_sb_in(N, VM, NE),
+    format(string(Expr), 'String(~w)', [NE]).
+ts_sb_rule(Goal, VM, Mode, Out, Expr) :-
+    ts_sb_functor(Goal, F, [Out, S]), ts_sb_numtext_pred(F),
+    ts_sb_out(Out, VM, Mode), ts_sb_in(S, VM, SE),
+    format(string(Expr), 'Number(~w)', [SE]).
+
+% --- atom <-> string (identity in this target's representation) ------------
+ts_sb_rule(Goal, VM, Mode, Out, Expr) :-
+    ts_sb_functor(Goal, F, [A, Out]), ts_sb_textid_pred(F),
+    ts_sb_out(Out, VM, Mode), ts_sb_in(A, VM, Expr).
+ts_sb_rule(Goal, VM, Mode, Out, Expr) :-
+    ts_sb_functor(Goal, F, [Out, S]), ts_sb_textid_pred(F),
+    ts_sb_out(Out, VM, Mode), ts_sb_in(S, VM, Expr).
+
+% --- case folding -----------------------------------------------------------
+ts_sb_rule(Goal, VM, Mode, Out, Expr) :-
+    ts_sb_functor(Goal, F, [S, Out]), ts_sb_case_pred(F, Method),
+    ts_sb_out(Out, VM, Mode), ts_sb_in(S, VM, SE),
+    format(string(Expr), '~w.~w()', [SE, Method]).
+
+%% ts_sb_functor(+Goal, -Name, -Args) — module-qualification tolerant.
+ts_sb_functor(_M:Goal, F, Args) :- !, ts_sb_functor(Goal, F, Args).
+ts_sb_functor(Goal, F, Args) :- compound(Goal), Goal =.. [F|Args].
+
+ts_sb_len_pred(string_length).
+ts_sb_len_pred(atom_length).
+ts_sb_concat_pred(string_concat).
+ts_sb_concat_pred(atom_concat).
+ts_sb_sub_pred(sub_string).
+ts_sb_sub_pred(sub_atom).
+ts_sb_chars_pred(string_chars).
+ts_sb_chars_pred(atom_chars).
+ts_sb_codes_pred(string_codes).
+ts_sb_codes_pred(atom_codes).
+ts_sb_numtext_pred(number_string).
+ts_sb_textid_pred(atom_string).
+ts_sb_textid_pred(string_to_atom).
+ts_sb_case_pred(string_lower, 'toLowerCase').
+ts_sb_case_pred(string_upper, 'toUpperCase').
+ts_sb_case_pred(downcase_atom, 'toLowerCase').
+ts_sb_case_pred(upcase_atom, 'toUpperCase').
 
 %% ts_if_then_else_output — generate ternary expressions
 ts_if_then_else_output(IfGoal, ThenGoal, ElseGoal, VarMap, Code) :-
@@ -1466,6 +1773,10 @@ ts_branch_value(=(_, Expr), VarMap, Value) :-
     !, ts_expr(Expr, VarMap, Value).
 ts_branch_value(is(_, Expr), VarMap, Value) :-
     !, ts_expr(Expr, VarMap, Value).
+%% String/char builtin used as a branch value (G-A3-1).
+ts_branch_value(Goal, VarMap, Value) :-
+    ts_string_builtin(Goal, VarMap, _OutVar, Value),
+    !.
 ts_branch_value(Goal, VarMap, Value) :-
     ts_expr(Goal, VarMap, Value).
 
@@ -1591,25 +1902,25 @@ branches_to_ts_if_chain(Branches, PredSpec, Code) :-
 branches_to_ts_if_lines([branch(Condition, ClauseCode)], PredSpec, [IfLine, RetLine, ElseLine, ErrLine, CloseLine]) :-
     !,
     format(string(IfLine), '    if (~w) {', [Condition]),
-    format(string(RetLine), '        return ~w;', [ClauseCode]),
+    ts_clause_body_text(ClauseCode, '        ', RetLine),
     ElseLine = '    } else {',
     format(string(ErrLine), '        throw new Error("No matching clause for ~w");', [PredSpec]),
     CloseLine = '    }'.
 branches_to_ts_if_lines([branch(Condition, ClauseCode)|Rest], PredSpec, [IfLine, RetLine|RestLines]) :-
     format(string(IfLine), '    if (~w) {', [Condition]),
-    format(string(RetLine), '        return ~w;', [ClauseCode]),
+    ts_clause_body_text(ClauseCode, '        ', RetLine),
     branches_to_ts_elif_lines(Rest, PredSpec, RestLines).
 
 branches_to_ts_elif_lines([branch(Condition, ClauseCode)], PredSpec, [ElifLine, RetLine, ElseLine, ErrLine, CloseLine]) :-
     !,
     format(string(ElifLine), '    } else if (~w) {', [Condition]),
-    format(string(RetLine), '        return ~w;', [ClauseCode]),
+    ts_clause_body_text(ClauseCode, '        ', RetLine),
     ElseLine = '    } else {',
     format(string(ErrLine), '        throw new Error("No matching clause for ~w");', [PredSpec]),
     CloseLine = '    }'.
 branches_to_ts_elif_lines([branch(Condition, ClauseCode)|Rest], PredSpec, [ElifLine, RetLine|RestLines]) :-
     format(string(ElifLine), '    } else if (~w) {', [Condition]),
-    format(string(RetLine), '        return ~w;', [ClauseCode]),
+    ts_clause_body_text(ClauseCode, '        ', RetLine),
     branches_to_ts_elif_lines(Rest, PredSpec, RestLines).
 
 %% ============================================

@@ -252,7 +252,16 @@ signature_start(Line) :-
     ;   sub_string(T, 0, _, _, "function ")
     ),
     (   sub_string(T, _, _, _, " = <")
-    ;   sub_string(T, _, _, _, " = (")
+    ;   % `const x = (...)` is only a SIGNATURE when an arrow follows on the
+        % same line. Without the `=>` check (G-A3-7) an ordinary generated
+        % assignment whose right-hand side is parenthesised --
+        %     const v5 = (v4 - arg2);
+        % -- was taken for the opening line of a multi-line arrow signature.
+        % rewrite_lines/2 then swallowed the whole rest of the file looking for
+        % a closing `=> {` that never came and the entire TS->JSDoc rewrite
+        % FAILED, so annotated_js refused predicates vanilla_js compiled fine.
+        sub_string(T, _, _, _, " = ("),
+        sub_string(T, _, _, _, "=>")
     ;   sub_string(T, 0, _, _, "function ")
     ;   sub_string(T, _, _, _, " function ")
     ).
