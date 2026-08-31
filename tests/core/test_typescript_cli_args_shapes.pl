@@ -11,15 +11,22 @@
 % It has two halves:
 %
 %   1. REGRESSION tests for the A3 fixes that landed in typescript_target.pl and
-%      annotated_js_target.pl (G-A3-1..G-A3-5, G-A3-7, G-A3-17). These assert
-%      CORRECT lowering and must stay green.
+%      annotated_js_target.pl (G-A3-1..G-A3-5, G-A3-7, G-A3-8, G-A3-11,
+%      G-A3-13..G-A3-15, G-A3-17). These assert CORRECT lowering and must stay
+%      green.
 %
 %   2. GAP PROBES for the constructs the pattern targets still cannot lower
-%      (G-A3-6, G-A3-8..G-A3-16). Each probe is an executable minimal
-%      reproduction that pins the CURRENT behaviour and carries a comment
+%      (G-A3-6, G-A3-9, G-A3-10, G-A3-12, G-A3-16). Each probe is an executable
+%      minimal reproduction that pins the CURRENT behaviour and carries a comment
 %      saying what correct lowering would be. They are written so that CLOSING
 %      the gap makes the probe FAIL -- that is the cue to come back here and
 %      promote the probe into a real assertion.
+%
+% Where a fix changes the SHAPE of the emitted JavaScript, the test runs
+% `node --check` over the whole emitted module (and, where an oracle is cheap,
+% runs it and compares against SWI). A3's headline lesson was that substring
+% assertions let unparseable output ship: `return const arg2 = ...;;` passed
+% every has/2 check in the suite for as long as it existed.
 %
 % See docs/proposals/A3_PATTERN_TRANSPILE_REPORT.md for the full catalogue.
 %
@@ -47,14 +54,48 @@ node_available :-
                            [stdout(null), stderr(null), process(P)]),
             process_wait(P, exit(0)) ), _, fail).
 
+%% node_check(+Src)
+%  True when node can PARSE Src as an ES module. The point of every
+%  `node --check` in this file: a has/2 assertion cannot tell correct output from
+%  output node refuses to load.
+node_check(Src) :-
+    tmp_file_stream(text, Base, S0), close(S0),
+    atom_concat(Base, '.mjs', File),
+    setup_call_cleanup(
+        ( open(File, write, W), write(W, Src), close(W) ),
+        ( process_create(path(node), ['--check', File],
+                         [stdout(null), stderr(null), process(P)]),
+          process_wait(P, exit(0)) ),
+        catch(delete_file(File), _, true)).
+
+%% node_run(+Src, +Argv, -Output)
+%  Run Src under node with Argv and capture stdout verbatim.
+node_run(Src, Argv, Output) :-
+    tmp_file_stream(text, Base, S0), close(S0),
+    atom_concat(Base, '.mjs', File),
+    setup_call_cleanup(
+        ( open(File, write, W), write(W, Src), close(W) ),
+        ( process_create(path(node), [File|Argv],
+                         [stdout(pipe(O)), stderr(null), process(P)]),
+          read_string(O, _, Output), close(O), process_wait(P, _) ),
+        catch(delete_file(File), _, true)).
+
+%% node_run_lines(+Src, +Argv, -Lines)
+node_run_lines(Src, Argv, Lines) :-
+    node_run(Src, Argv, Out),
+    split_string(Out, "\n", "", Raw),
+    exclude(==(""), Raw, Lines).
+
 %% native_body(+Pred/Arity, -Code)
 %  Compile ONLY through typescript_target's native clause-body path.
 %
-%  Never route a gap probe through compile_predicate/3: when every native path
-%  refuses, the dispatcher falls back to compile_facts/3, which EXECUTES the
-%  predicate to enumerate its solutions (G-A3-8). For a rule predicate that is
-%  an instantiation error, a stack overflow, or an unbounded findall that eats
-%  memory until the process dies -- so the probes call the path directly.
+%  Historically this existed because routing a probe through compile_predicate/3
+%  was unsafe: when every native path refused, the dispatcher fell back to
+%  compile_facts/3, which EXECUTED the predicate to enumerate its solutions
+%  (G-A3-8) -- an instantiation error at best, an unbounded findall that ate the
+%  test runner's memory at worst. G-A3-8 is closed and compile_predicate/3 is now
+%  safe on any shape; this helper stays because it isolates ONE lowering path,
+%  which is what most of these assertions are about.
 native_body(Pred/Arity, Code) :-
     functor(Head, Pred, Arity),
     findall(Head-Body, user:clause(Head, Body), Clauses),
@@ -324,14 +365,17 @@ test(inheritance_annotated_js_matches_typescript_body,
 % ---------------------------------------------------------------------------
 % End-to-end: the emitted substring functions run under node and agree with SWI
 % ---------------------------------------------------------------------------
-% NOTE: the emitted CLI entry point only ever passes `process.argv[2]`, so it
-% cannot drive a 3-argument predicate (G-A3-11). The driver below is written by
-% the test; every line of the FUNCTION under test is compiler output.
+% This drives the compiled function directly, over more cases than the CLI can
+% conveniently express (including "" -producing ones). The compiler's OWN entry
+% point is exercised separately by
+% g_a3_11_compiler_emitted_cli_entry_drives_substring_from, which no longer
+% needs a hand-written driver now that G-A3-11.2 is closed.
 
 test(compiled_substring_from_runs_under_node,
      [setup(assert_a3_substr), cleanup(retract_a3_substr),
       condition(node_available)]) :-
     vanilla_js_target:compile_predicate_to_vanilla_js(a3_substring_from/3, [], C1),
+    node_check(C1),
     drop_cli_entry(C1, Body),
     Cases = ["--state=alpha"-2, "hello"-0, "hello"-5, "--"-2, "abcdef"-3],
     findall(Line,
@@ -371,6 +415,431 @@ unquote_json_string(In, Out) :-
     string_length(In, L), L >= 2, L1 is L - 2,
     sub_string(In, 1, L1, 1, Out).
 
+% ---------------------------------------------------------------------------
+% G-A3-8 : the last-resort fallback must NEVER execute the predicate
+% ---------------------------------------------------------------------------
+% compile_predicate/3's last resort was compile_facts/3, which enumerates rows
+% with `findall(..., (functor(G,...), call(G), ...), Facts)` -- it RUNS the
+% predicate with every argument unbound. Measured over the 17 cli_args
+% predicates that reached it: 4 semantically wrong fact tables, 10
+% instantiation_error / resource_error(stack), and 3 unbounded findalls killed
+% at a 20 s / 1.5 GB cap.
+%
+% The fallback now applies only to genuine fact predicates (every clause a
+% ground fact, decided SYNTACTICALLY from the clause database), and refuses
+% loudly otherwise. These are the shapes that used to hang or lie.
+
+% The three that had to be killed, verbatim from cli_args.pl, plus the two that
+% produced wrong output.
+assert_a3_hazards :-
+    assertz(user:a3_flags_put([], K, V, [K-V])),
+    assertz((user:a3_flags_put([K0-V0|R], K, V, Out) :-
+                (   K0 == K
+                ->  Out = [K0-V|R]
+                ;   Out = [K0-V0|R1], a3_flags_put(R, K, V, R1)
+                ))),
+    assertz(user:a3_merge_flags([], Base, Base)),
+    assertz((user:a3_merge_flags([K-V|Rest], Base, Merged) :-
+                a3_flags_set(Base, K, V, Base1),
+                a3_merge_flags(Rest, Base1, Merged))),
+    assertz(user:a3_drop_brackets([], [])),
+    assertz((user:a3_drop_brackets([C|Cs], Kept) :-
+                (   ( C == '[' ; C == ']' )
+                ->  Kept = Kept1
+                ;   Kept = [C|Kept1]
+                ),
+                a3_drop_brackets(Cs, Kept1))),
+    assertz((user:a3_string_member(S, [X|Xs]) :-
+                ( S == X -> true ; a3_string_member(S, Xs) ))),
+    assertz((user:a3_is_global_key(Key) :-
+                ( a3_globals(G), a3_pair_lookup(G, Key, _) -> true
+                ; a3_proto_key(Key) ))).
+retract_a3_hazards :-
+    retractall(user:a3_flags_put(_, _, _, _)),
+    retractall(user:a3_merge_flags(_, _, _)),
+    retractall(user:a3_drop_brackets(_, _)),
+    retractall(user:a3_string_member(_, _)),
+    retractall(user:a3_is_global_key(_)).
+
+a3_hazard_shapes([a3_flags_put/4, a3_merge_flags/3, a3_drop_brackets/2,
+                  a3_string_member/2, a3_is_global_key/1]).
+
+%% a3_compile_outcome(+PredSpec, -Outcome)
+%  refused(Spec, Shape, Msg) | compiled(Code) | failed. Never lets a refusal
+%  escape as an exception, so a test can assert on WHICH outcome happened.
+a3_compile_outcome(PredSpec, Outcome) :-
+    catch(
+        (   typescript_target:compile_predicate(PredSpec, [], Code)
+        ->  Outcome = compiled(Code)
+        ;   Outcome = failed
+        ),
+        error(unsupported_lowering(typescript, Spec, Shape), Msg),
+        Outcome = refused(Spec, Shape, Msg)).
+
+% The headline: the shapes that hung the compiler now refuse, and do it fast.
+% 5 s for all five is three orders of magnitude clear of the 20 s at which the
+% original runaways were killed, while staying insensitive to machine speed.
+test(g_a3_8_runaway_shapes_refuse_fast,
+     [setup(assert_a3_hazards), cleanup(retract_a3_hazards)]) :-
+    a3_hazard_shapes(Shapes),
+    get_time(T0),
+    forall(member(P/A, Shapes),
+           (   a3_compile_outcome(P/A, Outcome),
+               Outcome = refused(P/A, _Shape, Msg),
+               has(Msg, "cannot compile"),
+               has(Msg, "must never execute it")
+           )),
+    get_time(T1),
+    Elapsed is T1 - T0,
+    Elapsed < 5.0.
+
+% The diagnostic has to be actionable: it names the predicate AND the clause
+% shape that disqualified it.
+test(g_a3_8_refusal_names_the_predicate_and_the_body_shape,
+     [setup(assert_a3_hazards), cleanup(retract_a3_hazards)]) :-
+    a3_compile_outcome(a3_drop_brackets/2, refused(Spec, Shape, Msg)),
+    Spec == a3_drop_brackets/2,
+    has(Shape, "clause 2 of 2 is a RULE, not a fact"),
+    has(Shape, "if-then-else"),
+    has(Msg, "a3_drop_brackets/2").
+
+% A single-clause rule predicate (no fact clause at all) is refused too.
+assert_a3_ruleonly :-
+    assertz((user:a3_rule_only(X, Y) :- a3_rule_helper(X, Y))).
+retract_a3_ruleonly :- retractall(user:a3_rule_only(_, _)).
+
+test(g_a3_8_rule_only_predicate_is_refused,
+     [setup(assert_a3_ruleonly), cleanup(retract_a3_ruleonly)]) :-
+    % Ask the guard directly, so the assertion is about the guard rather than
+    % about which lowering path happens to claim the predicate first. It decides
+    % from the clause database and never calls a3_rule_only/2.
+    catch(typescript_target:ts_require_fact_predicate(a3_rule_only, 2),
+          error(unsupported_lowering(typescript, Spec, Shape), _),
+          true),
+    Spec == a3_rule_only/2,
+    has(Shape, "is a RULE, not a fact"),
+    has(Shape, "a3_rule_helper/2").
+
+% A non-ground fact would make compile_facts/3 emit rows containing internal
+% `_G` names, so it is refused as well.
+assert_a3_nonground :- assertz(user:a3_nonground(_X, b)).
+retract_a3_nonground :- retractall(user:a3_nonground(_, _)).
+
+test(g_a3_8_non_ground_fact_is_refused,
+     [setup(assert_a3_nonground), cleanup(retract_a3_nonground)]) :-
+    catch(typescript_target:compile_facts(a3_nonground, 2, _),
+          error(unsupported_lowering(typescript, Spec, Shape), _),
+          true),
+    Spec == a3_nonground/2,
+    has(Shape, "non-ground fact").
+
+% A built-in's clauses cannot be inspected, so facts cannot be told from rules
+% without running it -- refused rather than executed. (compile_facts(atom_length,
+% 2) would otherwise have called atom_length/2 with both arguments unbound.)
+test(g_a3_8_uninspectable_builtin_is_refused) :-
+    catch(typescript_target:compile_facts(atom_length, 2, _),
+          error(unsupported_lowering(typescript, Spec, Shape), _),
+          true),
+    Spec == atom_length/2,
+    has(Shape, "cannot be inspected").
+
+% An undefined predicate is refused too: the old fallback called it and got an
+% existence_error out of findall/3, or, worse, silently emitted an empty table.
+test(g_a3_8_undefined_predicate_is_refused) :-
+    catch(typescript_target:compile_facts(a3_no_such_predicate, 2, _),
+          error(unsupported_lowering(typescript, Spec, Shape), _),
+          true),
+    Spec == a3_no_such_predicate/2,
+    has(Shape, "no clauses at all").
+
+% ...and a genuine fact predicate is untouched.
+assert_a3_realfacts :-
+    assertz(user:a3_colour(red)),
+    assertz(user:a3_colour(blue)).
+retract_a3_realfacts :- retractall(user:a3_colour(_)).
+
+test(g_a3_8_genuine_fact_predicate_still_compiles,
+     [setup(assert_a3_realfacts), cleanup(retract_a3_realfacts)]) :-
+    typescript_target:compile_facts(a3_colour, 1, Code),
+    has(Code, "export const a3_colourFacts"),
+    has(Code, "\"red\""),
+    has(Code, "\"blue\"").
+
+% Inheritance: annotated_js and vanilla_js re-export typescript_target's
+% compile_facts/3 and compile_predicate/3 verbatim, so the guard has to reach
+% them too -- checked per target rather than assumed (that assumption is how
+% G-A3-7 got in).
+test(g_a3_8_vanilla_js_inherits_the_guard,
+     [setup(assert_a3_hazards), cleanup(retract_a3_hazards)]) :-
+    catch(vanilla_js_target:compile_facts(a3_drop_brackets, 2, _),
+          error(unsupported_lowering(typescript, Spec1, _), _), true),
+    Spec1 == a3_drop_brackets/2,
+    catch(vanilla_js_target:compile_predicate_to_vanilla_js(a3_string_member/2, [], _),
+          error(unsupported_lowering(typescript, Spec2, _), _), true),
+    Spec2 == a3_string_member/2.
+
+test(g_a3_8_annotated_js_inherits_the_guard,
+     [setup(assert_a3_hazards), cleanup(retract_a3_hazards)]) :-
+    catch(annotated_js_target:compile_facts(a3_drop_brackets, 2, _),
+          error(unsupported_lowering(typescript, Spec1, _), _), true),
+    Spec1 == a3_drop_brackets/2,
+    catch(annotated_js_target:compile_predicate(a3_string_member/2, [], _),
+          error(unsupported_lowering(typescript, Spec2, _), _), true),
+    Spec2 == a3_string_member/2.
+
+% ---------------------------------------------------------------------------
+% G-A3-13 : the boolean atoms lower to JS booleans
+% ---------------------------------------------------------------------------
+% Every other Prolog atom is a JS string in this target, so `true`/`false` used
+% to collapse into the strings "true"/"false". cli_args' corpus asserts
+% flags["include-key"] === true -- a boolean that must stay distinct from the
+% string "true" a `--x=true` value produces.
+
+test(g_a3_13_boolean_atoms_are_js_booleans) :-
+    typescript_target:ts_literal(true, LitT),
+    typescript_target:ts_literal(false, LitF),
+    LitT == 'true',
+    LitF == 'false'.
+
+assert_a3_boolout :-
+    assertz((user:a3_boolout(X, Y) :- ( X > 0 -> Y = true ; Y = false ))).
+retract_a3_boolout :- retractall(user:a3_boolout(_, _)).
+
+test(g_a3_13_boolean_branch_values_are_unquoted,
+     [setup(assert_a3_boolout), cleanup(retract_a3_boolout)]) :-
+    native_body(a3_boolout/2, Code),
+    has(Code, "return true;"),
+    has(Code, "return false;"),
+    hasnt(Code, "\"true\""),
+    hasnt(Code, "\"false\"").
+
+% The distinction only matters if it survives to runtime: JSON.stringify of the
+% result must be `true`, not `"true"`.
+test(g_a3_13_boolean_result_is_a_boolean_under_node,
+     [setup(assert_a3_boolout), cleanup(retract_a3_boolout),
+      condition(node_available)]) :-
+    vanilla_js_target:compile_predicate_to_vanilla_js(a3_boolout/2, [], Code),
+    node_check(Code),
+    drop_cli_entry(Code, Body),
+    atomic_list_concat(
+        [Body, '\nconsole.log(JSON.stringify(a3_boolout(4)));',
+               '\nconsole.log(JSON.stringify(a3_boolout(-4)));\n'], Src),
+    node_run_lines(Src, [], Lines),
+    Lines == ["true", "false"].
+
+% A boolean-valued FACT cell is unquoted too, exactly as a numeric cell already
+% was.
+assert_a3_boolfact :-
+    assertz(user:a3_boolfact(alpha, true)),
+    assertz(user:a3_boolfact(beta, false)).
+retract_a3_boolfact :- retractall(user:a3_boolfact(_, _)).
+
+test(g_a3_13_boolean_fact_cell_is_unquoted,
+     [setup(assert_a3_boolfact), cleanup(retract_a3_boolfact)]) :-
+    typescript_target:compile_facts(a3_boolfact, 2, Code),
+    has(Code, "arg2: true"),
+    has(Code, "arg2: false"),
+    hasnt(Code, "arg2: \"true\"").
+
+% ---------------------------------------------------------------------------
+% G-A3-14 : no internal `_G` name ever reaches the emitted JavaScript
+% ---------------------------------------------------------------------------
+% ts_expr/3's last resort for an unmapped variable was term_string/2, which put
+% SWI's `_41598` -- declared nowhere, different on every run -- straight into
+% the output. The variable that triggered it in the wild was one bound inside an
+% if-then-else chain and read afterwards; the mid-sequence ITE renderer threw
+% its VarMap away and emitted `return` instead of an assignment.
+
+test(g_a3_14_unmapped_variable_is_refused_not_leaked) :-
+    \+ typescript_target:ts_expr(_Free, [], _).
+
+assert_a3_itechain :-
+    assertz((user:a3_itechain(X, Y) :-
+                ( X > 10 -> T = big ; X > 5 -> T = mid ; T = small ),
+                Y = T)).
+retract_a3_itechain :- retractall(user:a3_itechain(_, _)).
+
+test(g_a3_14_ite_binding_is_named_and_assigned,
+     [setup(assert_a3_itechain), cleanup(retract_a3_itechain)]) :-
+    native_body(a3_itechain/2, Code),
+    has(Code, "let v3;"),          % declared once ...
+    has(Code, "v3 = \"big\";"),    % ... assigned in the branches ...
+    has(Code, "const arg2 = v3;"), % ... and read afterwards by NAME
+    hasnt(Code, "= _"),            % no internal _NNNNN identifier
+    hasnt(Code, "incomplete lowering").
+
+test(g_a3_14_ite_chain_runs_under_node,
+     [setup(assert_a3_itechain), cleanup(retract_a3_itechain),
+      condition(node_available)]) :-
+    vanilla_js_target:compile_predicate_to_vanilla_js(a3_itechain/2, [], Code),
+    node_check(Code),
+    Inputs = [12, 7, 1],
+    findall(Got, ( member(I, Inputs),
+                   number_string(I, S),
+                   node_run_lines(Code, [S], [Got]) ), GotList),
+    findall(Exp, ( member(I2, Inputs),
+                   user:a3_itechain(I2, E), atom_string(E, Exp) ), ExpList),
+    GotList == ExpList.
+
+% ---------------------------------------------------------------------------
+% G-A3-15 : a reversible text builtin picks the right direction
+% ---------------------------------------------------------------------------
+% `p(Cs, S) :- string_chars(S, Cs).` must BUILD the text. Both variables are
+% head arguments so both are mapped, the "output must be a fresh variable" pass
+% finds nothing, and the fallback pass used to take the first matching rule --
+% decompose -- emitting `const arg1 = Array.from(arg2);`, which assigns over the
+% function's own parameter and returns it. The emitted calling convention makes
+% arg<N> the RETURN value, not an input, so that slot is the one to prefer.
+
+test(g_a3_15_reversible_builtin_prefers_the_head_output_slot,
+     [setup(assert_a3_strings), cleanup(retract_a3_strings)]) :-
+    native_body(a3_unchars/2, Code),
+    has(Code, "const arg2 = arg1.join(\"\");"),
+    has(Code, "return arg2;"),
+    hasnt(Code, "Array.from(arg2)").
+
+% The forward direction is unaffected: with the output in the head's own slot
+% and the input a parameter, decompose is still what `p(S, Cs)` means.
+test(g_a3_15_forward_direction_is_unchanged,
+     [setup(assert_a3_strings), cleanup(retract_a3_strings)]) :-
+    native_body(a3_chars/2, Code),
+    has(Code, "Array.from(arg1)"),
+    hasnt(Code, "join(\"\")").
+
+% When BOTH arguments are genuinely known and neither is an output, the goal is
+% a check, not a binding -- so it renders as a comparison rather than assigning
+% over a value the clause already holds.
+test(g_a3_15_both_known_renders_a_check) :-
+    typescript_target:ts_guard_condition([S-"s", Cs-"cs"],
+                                         string_chars(S, Cs), Cond),
+    has(Cond, "==="),
+    has(Cond, "cs"),
+    has(Cond, "Array.from(s)").
+
+% ---------------------------------------------------------------------------
+% G-A3-11 : the generated scaffolding matches the predicate
+% ---------------------------------------------------------------------------
+% (1) An arity-1 predicate has NO output argument. build_ts_arg_list(Arity-1)
+%     gave it ZERO parameters, so js_alpha/1 compiled to
+%     `function js_alpha(): string { ... arg1 ... }` -- a body reading a
+%     parameter that does not exist -- and returned the char code it had just
+%     computed instead of a boolean.
+
+test(g_a3_11_arity1_takes_its_argument_and_returns_a_boolean,
+     [setup(assert_a3_flagchar), cleanup(retract_a3_flagchar)]) :-
+    typescript_target:compile_predicate_to_typescript(a3_flag_char/1, [], Code),
+    has(Code, "function a3_flag_char(arg1: any): boolean"),
+    has(Code, "return true;"),
+    has(Code, "return false;"),
+    hasnt(Code, "function a3_flag_char()").
+
+test(g_a3_11_arity1_module_parses_and_runs_under_node,
+     [setup(assert_a3_flagchar), cleanup(retract_a3_flagchar),
+      condition(node_available)]) :-
+    vanilla_js_target:compile_predicate_to_vanilla_js(a3_flag_char/1, [], Code),
+    node_check(Code),
+    % No digit characters here: see the G-A3-11.3 probe in Part 2 -- without
+    % parameter types the CLI entry cannot tell the CHARACTER '7' from the
+    % NUMBER 7.
+    Chars = ['q', 'Q', 'z', '-', '#'],
+    findall(Got, ( member(C, Chars), node_run_lines(Code, [C], [Got]) ), GotList),
+    findall(Exp, ( member(C2, Chars),
+                   ( user:a3_flag_char(C2) -> Exp = "true" ; Exp = "false" ) ),
+            ExpList),
+    GotList == ExpList.
+
+% The two inheritors carry the new signature too -- checked per target, because
+% assuming inheritance is how G-A3-7 got in.
+test(g_a3_11_vanilla_js_inherits_the_semidet_signature,
+     [setup(assert_a3_flagchar), cleanup(retract_a3_flagchar),
+      condition(node_available)]) :-
+    vanilla_js_target:compile_predicate_to_vanilla_js(a3_flag_char/1, [], Code),
+    has(Code, "function a3_flag_char(arg1)"),
+    hasnt(Code, "arg1: any"),
+    node_check(Code).
+
+test(g_a3_11_annotated_js_inherits_the_semidet_signature,
+     [setup(assert_a3_flagchar), cleanup(retract_a3_flagchar),
+      condition(node_available)]) :-
+    annotated_js_target:compile_predicate(a3_flag_char/1, [], Code),
+    has(Code, "@param {any} arg1"),
+    has(Code, "@returns {boolean}"),
+    has(Code, "function a3_flag_char(arg1)"),
+    node_check(Code).
+
+% (2) The CLI entry point used to pass exactly one argument, always through
+%     parseInt, whatever the predicate's arity or argument types -- which is why
+%     the end-to-end check below used to need a hand-written driver.
+
+test(g_a3_11_cli_entry_passes_every_argument,
+     [setup(assert_a3_substr), cleanup(retract_a3_substr)]) :-
+    typescript_target:compile_predicate_to_typescript(a3_substring_from/3, [], Code),
+    % a3_substring_from/3 -> two parameters -> argv[2..3]
+    has(Code, "process.argv.length >= 4"),
+    has(Code, "process.argv.slice(2, 4)"),
+    has(Code, "a3_substring_from(...argv)"),
+    hasnt(Code, "parseInt(process.argv[2])").
+
+% The A3 report had to disclose that its node run used a hand-written driver.
+% It no longer does: this drives the compiled module through the entry point the
+% compiler emitted, and compares against the SWI oracle.
+test(g_a3_11_compiler_emitted_cli_entry_drives_substring_from,
+     [setup(assert_a3_substr), cleanup(retract_a3_substr),
+      condition(node_available)]) :-
+    vanilla_js_target:compile_predicate_to_vanilla_js(a3_substring_from/3, [], Code),
+    node_check(Code),
+    Cases = ["--state=alpha"-2, "hello"-0, "abcdef"-3],
+    findall(Got,
+            ( member(S-I, Cases),
+              number_string(I, IS),
+              node_run_lines(Code, [S, IS], [Got]) ),
+            GotList),
+    findall(Exp,
+            ( member(S2-I2, Cases), user:a3_substring_from(S2, I2, Exp) ),
+            ExpList),
+    GotList == ExpList.
+
+% (4) compile_module/3 dispatched on four canned recursion patterns and let
+%     findall/3 SILENTLY DROP everything else, so a module of otherwise-fine
+%     predicates compiled to a header and two blank lines with no error.
+
+assert_a3_modpreds :-
+    assertz(user:a3_mod_colour(red)),
+    assertz(user:a3_mod_colour(blue)),
+    assertz(user:a3_mod_bad(a, b)),
+    assertz((user:a3_mod_bad(X, Y) :- a3_mod_helper(X, Y))).
+retract_a3_modpreds :-
+    retractall(user:a3_mod_colour(_)),
+    retractall(user:a3_mod_bad(_, _)).
+
+test(g_a3_11_compile_module_refuses_an_all_unsupported_module,
+     [setup(assert_a3_modpreds), cleanup(retract_a3_modpreds)]) :-
+    catch(typescript_target:compile_module([pred(a3_mod_bad, 2, facts)],
+                                           [module_name(a3ModA)], _),
+          error(unsupported_lowering(typescript, module(Mod), Detail), Msg),
+          true),
+    Mod == a3ModA,
+    has(Detail, "a3_mod_bad/2"),
+    has(Msg, "refusing to emit module").
+
+test(g_a3_11_compile_module_emits_the_supported_subset_with_a_warning,
+     [setup(assert_a3_modpreds), cleanup(retract_a3_modpreds)]) :-
+    typescript_target:compile_module([pred(a3_mod_colour, 1, facts),
+                                      pred(a3_mod_bad, 2, facts)],
+                                     [module_name(a3ModB)], Code),
+    has(Code, "// WARNING: 1 predicate(s) omitted"),
+    has(Code, "a3_mod_bad/2"),
+    has(Code, "export const a3_mod_colourFacts"),
+    has(Code, "\"red\"").
+
+% A module whose predicates ARE all supported carries no warning banner.
+test(g_a3_11_supported_module_has_no_warning_banner,
+     [setup(assert_a3_modpreds), cleanup(retract_a3_modpreds)]) :-
+    typescript_target:compile_module([pred(a3_mod_colour, 1, facts)],
+                                     [module_name(a3ModC)], Code),
+    has(Code, "export const a3_mod_colourFacts"),
+    hasnt(Code, "// WARNING").
+
 % ============================================================================
 % PART 2 -- GAP PROBES (executable reproductions, still open)
 % ============================================================================
@@ -394,26 +863,31 @@ test(gap_g_a3_6_guard_hoisted_above_its_own_definitions,
     IfAt < DeclAt.          % <-- the bug: the test precedes the declaration
 
 % ---------------------------------------------------------------------------
-% G-A3-8 (M) : with no native path, the dispatcher EXECUTES the predicate
+% G-A3-11.3 (S) : parameter and return types are still hardcoded
 % ---------------------------------------------------------------------------
-% compile_predicate_to_typescript/3's last resort is compile_facts/3, which
-% enumerates the predicate's solutions by CALLING it. For a rule predicate that
-% is an instantiation error at best and, for a generator such as `flags_put/4`
-% or `string_member/2`, an unbounded findall that grows until the process dies.
+% ts_native_signature/4 emits `arg<N>: number` for every parameter of an
+% arity > 1 predicate and `: string` for its return, regardless of what the body
+% actually does; the arity-1 shape uses `any` because a semidet test is as
+% likely to be over text. The emitted CLI entry inherits the same blindness: it
+% coerces an argument to a number when the token parses as one, which is the
+% best a compiler with no parameter types can do -- and is why it cannot pass
+% the CHARACTER '7' to a predicate that wants a character.
 %
-% This probe pins the SHAPE the fallback cannot represent: a predicate with no
-% fact clauses at all. It deliberately does not call compile_predicate/3 --
-% doing so is the bug. The fix is a guard on the fallback (take the facts path
-% only when EVERY clause body is `true`), not a change to compile_facts/3.
-assert_a3_ruleonly :-
-    assertz((user:a3_rule_only(X, Y) :- a3_rule_helper(X, Y))).
-retract_a3_ruleonly :- retractall(user:a3_rule_only(_, _)).
+% CORRECT lowering needs real type inference from the goals of the body
+% (char_code/2 implies text, `is`/2 implies numeric, sub_string/5 implies text +
+% integers), which then drives both the signature and the argv conversion.
+assert_a3_charclass :-
+    assertz((user:a3_charclass(C) :- char_code(C, X), X >= 0'0, X =< 0'9)).
+retract_a3_charclass :- retractall(user:a3_charclass(_)).
 
-test(gap_g_a3_8_fact_fallback_is_offered_a_rule_predicate,
-     [setup(assert_a3_ruleonly), cleanup(retract_a3_ruleonly)]) :-
-    functor(H, a3_rule_only, 2),
-    findall(B, user:clause(H, B), Bodies),
-    \+ memberchk(true, Bodies).
+test(gap_g_a3_11_3_cli_entry_cannot_pass_a_numeric_looking_character,
+     [setup(assert_a3_charclass), cleanup(retract_a3_charclass),
+      condition(node_available)]) :-
+    vanilla_js_target:compile_predicate_to_vanilla_js(a3_charclass/1, [], Code),
+    node_check(Code),                       % it PARSES -- the gap is semantic
+    user:a3_charclass('7'),                 % SWI: '7' is a digit character
+    node_run_lines(Code, ['7'], Got),
+    Got \== ["true"].                       % <-- the gap: '7' arrived as 7
 
 % ---------------------------------------------------------------------------
 % G-A3-9 (L) : multi-accumulator loops keep only ONE output
@@ -454,6 +928,11 @@ test(gap_g_a3_10_ite_in_a_recursive_body_refuses,
     \+ catch(native_structural(a3_iteloop/3, _), _, fail).
 
 % ---------------------------------------------------------------------------
+% G-A3-9 / G-A3-10 remain OPEN; their probes are above. Everything below this
+% line was a probe and is now an assertion.
+% ---------------------------------------------------------------------------
+
+% ---------------------------------------------------------------------------
 % G-A3-12 (M) : compound terms as values are stringified, not built
 % ---------------------------------------------------------------------------
 % cli_args returns ok(Positional, Flags) / err(Message) / some(V) / none and
@@ -463,44 +942,6 @@ test(gap_g_a3_12_compound_term_becomes_a_string_literal) :-
     typescript_target:ts_literal(ok([a], [b-c]), Lit),
     has(Lit, "\"ok("),                 % a JS string literal, not an object
     hasnt(Lit, "{ tag:").
-
-% ---------------------------------------------------------------------------
-% G-A3-13 (S) : the atom `true` is lowered to the STRING "true"
-% ---------------------------------------------------------------------------
-% cli_args' corpus asserts flags["include-key"] === true (boolean), which must
-% stay distinct from the string "true" that a `--x=true` value would produce.
-test(gap_g_a3_13_boolean_atoms_are_stringified) :-
-    typescript_target:ts_literal(true, LitT),
-    typescript_target:ts_literal(false, LitF),
-    LitT == '"true"',
-    LitF == '"false"'.
-
-% ---------------------------------------------------------------------------
-% G-A3-14 (S) : an unmapped variable is printed as its raw _G name
-% ---------------------------------------------------------------------------
-% ts_expr/3's last resort for an unbound variable is term_string/2, which emits
-% the internal `_12345` name straight into the generated JavaScript.
-test(gap_g_a3_14_unmapped_variable_leaks_into_output) :-
-    typescript_target:ts_expr(_Free, [], Expr),
-    once(sub_string(Expr, 0, 1, _, "_")).
-
-% ---------------------------------------------------------------------------
-% G-A3-15 (S) : a reversible text builtin picks the decompose direction when
-%               BOTH of its arguments are already in the VarMap
-% ---------------------------------------------------------------------------
-% `p(Cs, S) :- string_chars(S, Cs).` should BUILD the text (S = Cs.join("")).
-% Both variables are head arguments, so both are mapped, the "output must be a
-% fresh variable" pass finds nothing, and the fallback pass takes the first
-% matching rule -- decompose.
-%
-% CORRECT lowering would prefer the direction whose output is the clause head's
-% own output argument; that needs the head's output slot threaded into
-% ts_string_builtin/4.
-test(gap_g_a3_15_reversible_builtin_picks_decompose_when_ambiguous,
-     [setup(assert_a3_strings), cleanup(retract_a3_strings)]) :-
-    native_body(a3_unchars/2, Code),
-    has(Code, "Array.from(arg2)"),   % <-- the wrong direction
-    hasnt(Code, "join(\"\")").
 
 % ---------------------------------------------------------------------------
 % G-A3-16 (M) : a compound / list head argument becomes a STRING comparison

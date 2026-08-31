@@ -18,6 +18,30 @@ enough to be a punchlist. The catalogue in §4 is the deliverable.
 
 ---
 
+> **STATUS UPDATE (post-A3 follow-up run).** A second run closed five of the open
+> gaps; the sections below are the original A3 snapshot and are NOT rewritten.
+> Now **CLOSED** (fixes + regression tests in `test_typescript_cli_args_shapes.pl`,
+> 55 tests): **G-A3-8** (fact fallback no longer executes the predicate — genuine
+> ground-fact predicates only, everything else refuses fast (≤12 ms, was 20 s/1.5 GB)
+> with an actionable `unsupported_lowering` error; guard inside `compile_facts/3`,
+> inherited by AJS/VJS), **G-A3-13** (`true`/`false` emit as JS booleans),
+> **G-A3-14** (mid-sequence ITE bindings get stable `v<N>` names via let+assign;
+> unmapped variables refuse loudly instead of leaking `_G…`), **G-A3-15**
+> (reversible builtins honour the head output slot; both-known renders a check),
+> **G-A3-11.1/.2/.4** (arity-1 semidet signature `('arg1: any') → boolean` with
+> fall-through `return false`; CLI entry passes every argument with per-token
+> coercion; `compile_module/3` refuses an all-unsupported module and emits a
+> WARNING banner for partial ones).
+> Still OPEN: **G-A3-6** (guard hoisting, M), **G-A3-9** (multi-output loops, L),
+> **G-A3-10** (ITE in recursive bodies, M), **G-A3-12** (compound terms, M),
+> **G-A3-16** (list/pair head patterns, M), and NEW **G-A3-11.3** (parameter/CLI
+> types are hardcoded guesses; needs body-driven type inference — probe
+> `gap_g_a3_11_3_cli_entry_cannot_pass_a_numeric_looking_character` pins it).
+> Priority order stands: G-A3-10 → G-A3-9 (then all four parse mechanisms become
+> expressible and A4's differential becomes a live gate).
+
+---
+
 ## 0. Headline
 
 | | |
