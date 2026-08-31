@@ -63,6 +63,9 @@
 :- dynamic user:probe_parse_likes/0.
 :- dynamic user:probe_string_tag/0.
 :- dynamic user:probe_string_polish/0.
+:- dynamic user:probe_string_literal/0.
+:- dynamic user:lit_hi/1.
+:- dynamic user:eq_str/1.
 
 install_probes :-
     retractall(user:probe_findall),
@@ -107,6 +110,9 @@ install_probes :-
     retractall(user:probe_parse_likes),
     retractall(user:probe_string_tag),
     retractall(user:probe_string_polish),
+    retractall(user:probe_string_literal),
+    retractall(user:lit_hi/1),
+    retractall(user:eq_str/1),
     assertz((user:probe_findall :-
         findall(X, member(X, [1,2,3]), L), write(L), nl, L == [1,2,3])),
     assertz((user:probe_functor :-
@@ -301,7 +307,14 @@ install_probes :-
         atom_string(x, SX),
         format('~q', [SX]), nl,
         format('~q', [[SX, y]]), nl,
-        write(ok), nl)).
+        write(ok), nl)),
+    assertz(user:lit_hi("hi")),
+    assertz((user:eq_str(X) :- X = "hi")),
+    assertz((user:probe_string_literal :-
+        lit_hi(X), string(X), \+ atom(X),
+        atom_string(hi, Expected), X == Expected,
+        eq_str(Y), string(Y), Y == Expected,
+        writeq(X), nl)).
 
 probe_preds([
     user:probe_findall/0,
@@ -340,7 +353,10 @@ probe_preds([
     user:probe_term_meta/0,
     user:probe_op3/0,
     user:probe_string_tag/0,
-    user:probe_string_polish/0
+    user:probe_string_polish/0,
+    user:lit_hi/1,
+    user:eq_str/1,
+    user:probe_string_literal/0
 ]).
 
 :- dynamic user:ctw_js/0.
@@ -483,6 +499,20 @@ test(string_polish_output, [setup(install_probes)]) :-
     split_string(Out, "\n", "", Lines),
     assertion(member("ab", Lines)),
     assertion(member("\"x\"", Lines)).
+
+test(string_literal_output, [setup(install_probes)]) :-
+    Dir = 'output/js_wam_string_literal',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:lit_hi/1, user:eq_str/1, user:probe_string_literal/0],
+        [emit_mode(interpreter)], Dir),
+    read_generated_js(Dir, Code),
+    assertion(sub_string(Code, _, _, _, 'V.String("hi")')),
+    run_node(Dir, 'probe_string_literal/0', Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Out)),
+    split_string(Out, "\n", "", Lines),
+    assertion(member("\"hi\"", Lines)).
 
 :- end_tests(js_wam_builtins).
 

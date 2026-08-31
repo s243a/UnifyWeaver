@@ -38,7 +38,8 @@
     wam_tokenize_line/2,
     wam_recognise_label/2,
     wam_recognise_instruction/2,
-    wam_classify_constant_token/2
+    wam_classify_constant_token/2,
+    wam_constant_token_is_string/1
 ]).
 :- use_module(wam_javascript_lowered_emitter, [
     wam_javascript_lowerable/3,
@@ -362,14 +363,19 @@ normalize_switch_case_tokens([Token|Rest], [Token|More]) :-
     normalize_switch_case_tokens(Rest, More).
 
 constant_to_js_term(C, Lit) :-
-    wam_classify_constant_token(C, Class),
-    (   Class = integer(N)
-    ->  format(string(Lit), 'V.Int(~w)', [N])
-    ;   Class = float(F)
-    ->  format(string(Lit), 'V.Float(~w)', [F])
-    ;   Class = atom(Name),
-        intern_js_atom(Name, Id),
-        format(string(Lit), 'V.Atom(~w)', [Id])
+    (   wam_constant_token_is_string(C)
+    ->  wam_classify_constant_token(C, atom(Name)),
+        js_string_literal(Name, SLit),
+        format(string(Lit), 'V.String(~w)', [SLit])
+    ;   wam_classify_constant_token(C, Class),
+        (   Class = integer(N)
+        ->  format(string(Lit), 'V.Int(~w)', [N])
+        ;   Class = float(F)
+        ->  format(string(Lit), 'V.Float(~w)', [F])
+        ;   Class = atom(Name),
+            intern_js_atom(Name, Id),
+            format(string(Lit), 'V.Atom(~w)', [Id])
+        )
     ).
 
 % Convention 2: arity is the trailing /<digits> segment so names that
