@@ -70,7 +70,32 @@ in-flight parity analyses — see §6).
 
 | ID | Target | Item | Owner | Branch |
 |---|---|---|---|---|
-_(nothing in flight — both lanes at practical parity)_
+| A1 | (SWI spec) | **peerhailer argparser in Prolog** — `examples/cli_args/cli_args.pl` mirroring `oracle/cliArgs.js` exactly (`parse_args(Argv, R)`, `R = ok(Positional, Flags) \| error(Message)`; schemas as facts; strict + verbatim lenient + leading globals). Verified by a plunit port of the 17-test corpus AND a seeded differential harness vs the node oracle over the token alphabet (lines len 2–7). All 17 tests in scope (design keeps the lenient fallback). | opus | (worktree) |
+| GP-PROF | wam_javascript | **Runtime profiling** (user-named gap): opt-in instrumentation in the JS WAM runtime — per-predicate call counts, instruction counts, choice points, wall time; off by default, zero behavior change when off. | grok | grok/wamjs-profiling |
+
+### Phase 2 — the argparser maturity demonstration (A-series)
+
+Goal: transpile a REAL program — peerhailer's CLI arg parser — through the JS-family
+targets, as the maturity proof. Oracle = `examples/cli_args/oracle/cliArgs.js` +
+its 17-test corpus `oracle/cliArgs.test.mjs` (copied from peerhailer @ `08ad35e`,
+verified 17/17 green under `node --test`). A usage error is a thrown `CliError` at
+the JS boundary; the Prolog spec returns `error(Message)` and the transpile maps it
+to `throw new CliError(Message)` at the edge, so the same corpus drives both.
+
+| ID | Step | Depends | Owner |
+|---|---|---|---|
+| A1 | Prolog reference implementation + plunit corpus port + differential harness vs node oracle | — | opus (running) |
+| A2 | Compile via **wam_javascript**; emitted module passes `cliArgs.test.mjs` with only the import swapped (thin `parseArgs`/`CliError` shim over the WAM entry) | A1 | grok |
+| A3 | Compile via **typescript → AJS/VJS** pattern targets; every shape the compiler can't lower becomes a NAMED new gap item here (expected: this surfaces the next real punchlist) | A1 | opus |
+| A4 | Differential fuzz (seeded, len 2–7 alphabet lines): transpiled JS vs oracle agree on `{positional, flags}` / both-throw with matching messages; any deliberate delta named in a contract table | A2/A3 | main |
+
+### Phase 2 — further gap items (user-named)
+
+| ID | Target(s) | Gap | Status | Notes |
+|---|---|---|---|---|
+| GP-PROF | wam_javascript | Runtime profiling/instrumentation (see In-progress) | 🔄 | Grok prompt out |
+| GP-PAR | wam_javascript (+pattern) | Parallelism — WAM-level (haskell/elixir/rust precedent) and/or pattern-level | ⬜ | deferred earlier as G-W6; revisit after profiling gives a baseline |
+| GP-LMDB | wam_javascript | LMDB-backed fact sources | ⬜ | needs a native/npm dep (`lmdb`), conflicting with the no-deps ethos peer targets follow (Lua skipped it) — needs a decision: allow an optional dep tier, or an mmap-free file index instead |
 
 **Remaining tail** (all low-priority polish / out-of-scope — no active work):
 - **Pattern:** bagof/setof-with-witness-grouping at pattern level (G-P3 follow-up — the minimal slice is marginal over aggregate_all(bag/set)); (JSON `schema` mode now landed for the Node consumer, D36; CSV subset projection via `project_columns`, D33); bare positive `match` batch-guard (**not** a clean 2-liner after all — adding `match` to the shared `clause_body_analysis:is_guard_goal/2` regresses two targets: `python_guard_condition/3` has no `match` clause and no catch-all so the guard `maplist` fails (python renders `match` via the output-goal path, not as a guard), and wam's `is_builtin_pred/2` derives builtin-ness from `is_guard_goal` so `match` would emit `builtin_call match/2` that no WAM runtime implements. Only clojure+ts have `match` guard renderers. Proper fix = add `match` guard renderers to python + gate wam's builtin path, i.e. a cross-target change, not polish. D28's deferral stands.); test depth (G-P13).
