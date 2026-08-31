@@ -50,9 +50,18 @@ JS-only: `wam_javascript_target:constant_to_js_term/2` builds
 runtimes never consult the new predicate, so they intern the stripped
 name as an atom — today's behavior.
 
-Full-fleet conformance (all default targets, plus
-`CONFORMANCE_TARGETS=javascript`) is the guardrail that this spelling
-did not break rust/haskell/lua/elixir/go/python/etc.
+### Full-fleet conformance (this branch)
+
+Local (toolchains on PATH):
+`CONFORMANCE_TARGETS=python,go,rust,c,cpp` → **green**, no xfail/skip
+on those five (each 48-query classic suite). Default scala/elixir and
+the other registered targets (wat, haskell, kotlin, fsharp, r) were
+**skipped** here because their compilers are not installed; CI covers
+them.
+
+`CONFORMANCE_TARGETS=javascript` exits 0 (adapter still unpatched;
+local 48-query stand-in in `tests/test_wam_javascript_builtins.pl`
+stays 48/48).
 
 ## 1. `src/unifyweaver/core/target_registry.pl`
 
