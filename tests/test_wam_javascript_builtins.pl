@@ -15,6 +15,7 @@
 :- use_module(library(plunit)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module(library(process)).
+:- use_module(library(http/json)).
 :- use_module('../src/unifyweaver/targets/wam_javascript_target',
               [write_wam_javascript_project/3,
                javascript_wam_resolve_emit_mode/2]).
@@ -66,6 +67,8 @@
 :- dynamic user:probe_string_literal/0.
 :- dynamic user:lit_hi/1.
 :- dynamic user:eq_str/1.
+:- dynamic user:fib/2.
+:- dynamic user:hello/1.
 
 install_probes :-
     retractall(user:probe_findall),
@@ -383,14 +386,57 @@ run_node(Dir, Key, Exit, Out) :-
     run_node_args(Dir, [Key], Exit, Out).
 
 run_node_args(Dir, Args, Exit, Out) :-
-    directory_file_path(Dir, 'js', JsDir),
-    process_create(path(node), ['generated_program.js'|Args],
-        [cwd(JsDir), stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
-    read_string(O, _, OS),
-    read_string(E, _, ES),
-    close(O), close(E),
-    process_wait(Pid, exit(Exit)),
+    run_node_split(Dir, [], Args, Exit, OS, ES),
     atomic_list_concat([OS, ES], Out).
+
+% Split stdout/stderr. EnvPairs are NAME=VALUE atoms prepended to `env`.
+run_node_split(Dir, EnvPairs, Args, Exit, Stdout, Stderr) :-
+    directory_file_path(Dir, 'js', JsDir),
+    append(EnvPairs, [node, 'generated_program.js'|Args], EnvArgs),
+    process_create(path(env), EnvArgs,
+        [cwd(JsDir), stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
+    read_string(O, _, Stdout),
+    read_string(E, _, Stderr),
+    close(O), close(E),
+    process_wait(Pid, exit(Exit)).
+
+profile_table_calls(Stderr, Pred, Calls) :-
+    split_string(Stderr, "\n", "", Lines),
+    once((
+        member(Line, Lines),
+        split_string(Line, " \t", " \t", Toks),
+        Toks = [Pred, CallsStr|_],
+        number_string(Calls, CallsStr)
+    )).
+
+profile_json_pred(Dict, Pred, Row) :-
+    get_dict(predicates, Dict, Preds),
+    once((
+        member(Row0, Preds),
+        get_dict(pred, Row0, Name),
+        format(string(S), '~w', [Name]),
+        S == Pred,
+        Row = Row0
+    )).
+
+install_profile_preds :-
+    retractall(user:fib/2),
+    retractall(user:hello/1),
+    assertz(user:fib(0, 0)),
+    assertz(user:fib(1, 1)),
+    assertz((user:fib(N, F) :-
+        N > 1,
+        N1 is N - 1,
+        N2 is N - 2,
+        fib(N1, F1),
+        fib(N2, F2),
+        F is F1 + F2)),
+    assertz(user:hello(world)).
+
+compile_profile_fib(Dir) :-
+    Dir = 'output/js_wam_profile_probes',
+    make_directory_path(Dir),
+    write_wam_javascript_project([user:fib/2], [emit_mode(interpreter)], Dir).
 
 node_succeeded(Out) :-
     split_string(Out, "\n", " \t\r", Lines0),
@@ -513,6 +559,69 @@ test(string_literal_output, [setup(install_probes)]) :-
     assertion(node_succeeded(Out)),
     split_string(Out, "\n", "", Lines),
     assertion(member("\"hi\"", Lines)).
+
+test(profile_default_silent, [setup(install_profile_preds)]) :-
+    compile_profile_fib(Dir),
+    run_node_split(Dir, ['UW_PROFILE='], ['fib/2', '8'], Exit, Stdout, Stderr),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Stdout)),
+    assertion(Stderr == ""),
+    assertion(\+ sub_string(Stdout, _, _, _, "UW profile")).
+
+test(profile_table_stdout_identical, [setup(install_profile_preds)]) :-
+    compile_profile_fib(Dir),
+    run_node_split(Dir, ['UW_PROFILE='], ['fib/2', '8'], OffExit, OffOut, OffErr),
+    run_node_split(Dir, ['UW_PROFILE=1'], ['fib/2', '8'], OnExit, OnOut, OnErr),
+    assertion(OffExit =:= 0),
+    assertion(OnExit =:= 0),
+    assertion(OffOut == OnOut),
+    assertion(node_succeeded(OnOut)),
+    assertion(OffErr == ""),
+    assertion(sub_string(OnErr, _, _, _, "UW profile")),
+    profile_table_calls(OnErr, "fib/2", Calls),
+    assertion(Calls >= 20).
+
+test(profile_json_schema, [setup(install_profile_preds)]) :-
+    compile_profile_fib(Dir),
+    run_node_split(Dir, ['UW_PROFILE='], ['fib/2', '8'], OffExit, OffOut, OffErr),
+    run_node_split(Dir, ['UW_PROFILE=json'], ['fib/2', '8'], OnExit, OnOut, OnErr),
+    assertion(OffExit =:= 0),
+    assertion(OnExit =:= 0),
+    assertion(OffOut == OnOut),
+    assertion(OffErr == ""),
+    atom_string(ErrAtom, OnErr),
+    atom_json_dict(ErrAtom, Dict, []),
+    profile_json_pred(Dict, "fib/2", Row),
+    get_dict(calls, Row, Calls),
+    assertion(Calls >= 1),
+    get_dict(global, Dict, G),
+    get_dict(instructions, G, Instr),
+    assertion(Instr >= 1),
+    get_dict(unify_calls, G, _),
+    get_dict(trail_pushes, G, _),
+    get_dict(heap_cells, G, _),
+    get_dict(backtracks, G, _),
+    get_dict(trail_undos, G, _),
+    get_dict(wall_ns, G, Wall),
+    assertion(Wall >= 0),
+    get_dict(tier_note, Dict, _).
+
+test(profile_lowered_call_counts, [setup(install_profile_preds)]) :-
+    Dir = 'output/js_wam_profile_lowered',
+    make_directory_path(Dir),
+    write_wam_javascript_project([user:hello/1], [emit_mode(functions)], Dir),
+    read_generated_js(Dir, Code),
+    assertion(sub_string(Code, _, _, _, "Runtime.prof_lowered_call")),
+    run_node_split(Dir, ['UW_PROFILE=json'], ['hello/1', 'world'], Exit, Stdout, Stderr),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Stdout)),
+    atom_string(ErrAtom, Stderr),
+    atom_json_dict(ErrAtom, Dict, []),
+    profile_json_pred(Dict, "hello/1", Row),
+    get_dict(calls, Row, Calls),
+    assertion(Calls >= 1),
+    get_dict(lowered, Row, Lowered),
+    assertion((Lowered == true ; Lowered == @(true))).
 
 :- end_tests(js_wam_builtins).
 

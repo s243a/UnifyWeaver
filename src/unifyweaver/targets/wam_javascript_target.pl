@@ -13,6 +13,7 @@
 % facts from a TSV/CSV or JSONL file (Lua-style; no LMDB/CSR).
 % javascript_wam_ops([op(Prec, Type, Name), ...]) (alias js_op_decls/1)
 % seeds the runtime Pratt op table at program startup (R's r_op_decls/1).
+% Lowered dispatch wraps each function with a UW_PROFILE call counter.
 
 :- module(wam_javascript_target, [
     write_wam_javascript_project/3,
@@ -557,7 +558,9 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, BasePC,
         catch(wam_javascript_lowerable(Pred, WamText, _), _, fail),
         catch(lower_predicate_to_javascript(Pred, WamText, [],
                                            lowered(_, FuncName, LoweredJs)), _, fail)
-    ->  format(string(DispatchLine), 'lowered_dispatch[~w] = ~w;', [KeyQ, FuncName]),
+    ->  format(string(DispatchLine),
+               'lowered_dispatch[~w] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call(~w); return ~w(program, state); };',
+               [KeyQ, KeyQ, FuncName]),
         NewLoweredAcc = [LoweredJs, DispatchLine|LoweredAcc],
         emit_js_lowered_wrapper(P, Arity, FuncName, Wrapper)
     ;   NewLoweredAcc = LoweredAcc,
@@ -696,6 +699,8 @@ M.~w = ~w;
 emit_js_lowered_wrapper(Pred, Arity, FuncName, Code) :-
     pred_arg_strings(Arity, ArgDecl, ArgList),
     js_pred_name(Pred, Name),
+    format(string(MainKey), '~w/~w', [Pred, Arity]),
+    js_string_literal(MainKey, KeyQ),
     format(string(Code),
 'function ~w(~w) {
   const state = Runtime.new_state();
@@ -705,10 +710,11 @@ emit_js_lowered_wrapper(Pred, Arity, FuncName, Code) :-
   }
   state.cp = 0;
   state.program = shared_program;
+  if (Runtime._prof) Runtime.prof_lowered_call(~w);
   return ~w(shared_program, state) === true;
 }
 M.~w = ~w;
-', [Name, ArgDecl, ArgList, Arity, FuncName, Name, Name]).
+', [Name, ArgDecl, ArgList, Arity, KeyQ, FuncName, Name, Name]).
 
 pred_arg_strings(0, '', '[]') :- !.
 pred_arg_strings(Arity, ArgDecl, ArgList) :-
