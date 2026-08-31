@@ -91,13 +91,21 @@ if (is_main()) {
     Runtime.put_reg(state, i + 1, Runtime.new_var(state));
   }
   state.program = shared_program;
+  const profiling = !!Runtime._prof;
   let ok;
   if (typeof loweredFn === "function") {
+    // Dispatch wrapper increments call counts; enter without a second count
+    // so exclusive wall time still attributes to this predicate.
+    if (profiling) Runtime.prof_enter(predArity, false);
     ok = loweredFn(shared_program, state) === true;
+    if (profiling) Runtime.prof_leave();
   } else {
+    if (profiling) Runtime.prof_enter(predArity, true);
     state.pc = startPc;
     ok = Runtime.run(shared_program, state) === true;
+    if (profiling) Runtime.prof_leave();
   }
+  if (profiling) Runtime.profileReport();
   if (ok) {
     const keys = Object.keys(state.regs).map(Number).filter(function (n) { return n >= 1 && n <= 16; }).sort(function (a, b) { return a - b; });
     if (keys.length > 0) {

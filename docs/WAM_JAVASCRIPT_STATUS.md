@@ -133,6 +133,90 @@ target_runtime_parser_mode_(wam_javascript, native(parse_term)).
 This matches C++/R (`native(parse_term)`): an in-runtime host-language
 parser, not the bundled portable `compiled(prolog_term_parser)`.
 
+## Profiling (GP-PROF)
+
+Opt-in interpreter instrumentation. **Off by default:** `Runtime._prof` is
+`null` and every hook is a single falsy check (no allocation). When off,
+stdout and stderr are byte-identical to an uninstrumented run.
+
+### Activation
+
+| Mechanism | Effect |
+|---|---|
+| env `UW_PROFILE=1` (also `true` / `yes`) | Table report on stderr at process exit |
+| env `UW_PROFILE=json` | One JSON object on stderr at process exit |
+| `Runtime.profile(true)` | Same as `UW_PROFILE=1` |
+| `Runtime.profile("json")` | Same as `UW_PROFILE=json` |
+| `Runtime.profile(false)` | Disable |
+| `Runtime.profileReport()` | Write the report now (also hooked on `process.exit`) |
+
+Reports go to **stderr only**. Stdout stays program output (the conformance
+harness reads it).
+
+### Per-predicate metrics
+
+Exclusive while the predicate is on top of the profiler stack:
+
+| Field | Meaning |
+|---|---|
+| `calls` | Enter count (`Call` / `Execute` / CLI / lowered dispatch) |
+| `instr` | Instructions executed (interpreter tier only) |
+| `ns` | Exclusive wall time via `process.hrtime.bigint()` |
+| `cps` | Choice points created while on top |
+| `max_cp_depth` | Max `state.cps.length` seen while on top |
+| `lowered` | `true` if the row came from a lowered-function call |
+
+Predicates are sorted by `ns` descending, then `calls` descending. Lowered
+names get a trailing `*` in the table. Instruction / CP / exclusive-time
+detail is **interpreter-tier only**; lowered functions increment `calls`
+(and set `lowered`) through the `lowered_dispatch` wrapper.
+
+### Global metrics
+
+`instructions`, `unify_calls`, `trail_pushes`, `heap_cells`, `backtracks`,
+`trail_undos` (each `undo_trail` that actually popped), `wall_ns` (process
+span from `Runtime.profile()`).
+
+### `UW_PROFILE=json` schema
+
+One object, one line (plus newline). Stable keys:
+
+```json
+{
+  "tier_note": "Lowered predicates: call counts only; instruction/CP/time detail is interpreter-tier.",
+  "predicates": [
+    {
+      "pred": "fib/2",
+      "calls": 67,
+      "instr": 1234,
+      "ns": 89012,
+      "cps": 3,
+      "max_cp_depth": 2,
+      "lowered": false
+    }
+  ],
+  "global": {
+    "instructions": 1234,
+    "unify_calls": 56,
+    "trail_pushes": 40,
+    "heap_cells": 30,
+    "backtracks": 12,
+    "trail_undos": 8,
+    "wall_ns": 100000
+  }
+}
+```
+
+Table shape (stderr):
+
+```
+UW profile  (interpreter instr/CP/time; lowered = calls only)
+pred                          calls       instr       CPs   maxCP            ns
+fib/2                            67        1234         3       2         89012
+--
+instr=1234 unify=56 trail=40 heap=30 backtracks=12 undos=8 wall_ns=100000
+```
+
 ## Remaining / partial
 
 | Builtin | Status |
@@ -150,6 +234,7 @@ parser, not the bundled portable `compiled(prolog_term_parser)`.
 | Second-arg / deep indexing | A2 switches are implemented; deep (argument >2) indexing is not. |
 | Lowered / functions emit mode | **Implemented.** `javascript_wam_resolve_emit_mode/2` accepts `interpreter` (default), `functions` (lower every eligible predicate), and `mixed([P/A, ...])` (lower only the named ones). Eligible shapes: single-clause deterministic bodies; T4 all-clauses-inline; T5 first-arg constant dispatch; T6 hash dispatch (≥8 atom keys); structured ITE / negation / once. Unsupported ops (`begin_aggregate`, bagof/setof, cuts/jumps the planner rejects) fall back to the interpreter rather than emitting wrong code. Interpreter-mode bytecode and wrappers are unchanged. |
 | CLI / runtime term parser | **Implemented.** Pratt reader: int/float/atom (incl. quoted)/var/list/`[H\|T]`/compound. CLI argv + `read_term_from_atom` / `atom_to_term` / `term_to_atom`. **`op/3`** updates the live infix/prefix/postfix tables (defaults cloned from ISO). Compile-time ops via `javascript_wam_ops/1`. Capability `native(parse_term)` via `INTEGRATION_PATCH.md` §7. |
+| Interpreter profiling | **Implemented.** Off by default (`Runtime._prof === null`). `UW_PROFILE=1` / `json` or `Runtime.profile(...)` writes a per-predicate table or JSON to **stderr**. Lowered tier: call counts only. See [Profiling (GP-PROF)](#profiling-gp-prof). |
 | `op/3` | **Implemented.** Infix `xfx`/`xfy`/`yfx`, prefix `fx`/`fy`, postfix `xf`/`yf`. Priority 0 removes. Name = atom or list of atoms. `current_op/3` is not implemented; ops are process-global. |
 | External fact sources | **Implemented.** `javascript_wam_fact_sources([source(P/2, file(Path))])` (alias `js_fact_sources/1`) emits `CallFactStream` and a Node `fs` reader for TSV/CSV and JSONL. First-arg index when A1 is bound. Same lightweight file-backed model as Lua. **LMDB / CSR are out of scope.** Inline facts (no option) are unchanged. |
 | Conformance harness adapter | See `INTEGRATION_PATCH.md` (coordinator applies `conformance_target(javascript)`). |
@@ -199,5 +284,6 @@ table: infix + prefix + postfix), then a distinct string term tag
 (`V.String`; string-producing builtins + standard order), then
 `string_length/2` and `writeq/1` / recursive `~q` quoting, then
 compiled `"foo"` literals as `V.String` (double-quoted WAM spelling;
-classifier still returns `atom(_)`).
+classifier still returns `atom(_)`), then opt-in interpreter profiling
+(`UW_PROFILE=1` / `json`, stderr-only table or JSON; lowered = call counts).
 Source-verified against SWI-Prolog as the oracle (2026-08-31).
