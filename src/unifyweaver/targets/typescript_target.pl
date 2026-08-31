@@ -3066,23 +3066,34 @@ ts_struct_param(Clauses, Pos, Decl) :-
     format(string(Decl), "a~w: ~w", [Pos, Ty]).
 
 %% ts_struct_clause(+Pred, +Arity, +Mode, +Head-Body, -Block)
+%
+%  `Tail == returned` (G-A3-10) means the body already emitted `return` on every
+%  path — a tail if-then-else whose branches each end in a recursive call or a
+%  final value. The clause block then carries NO trailing return: appending one
+%  would be dead code whose value we could not compute anyway.
 ts_struct_clause(Pred, _Arity, Mode, Head-Body, Block) :-
     Head =.. [_|HeadArgs],
-    ( Mode = function(OutPos) -> true ; OutPos = 0 ),
+    (   Mode = function(OutPos0)
+    ->  OutPos = OutPos0, nth1(OutPos, HeadArgs, OutArg)
+    ;   OutPos = 0, OutArg = '$no_output'
+    ),
     ts_head_positions(HeadArgs, 1, OutPos, [], Bind1, [], Conds0),
     reverse(Conds0, HeadConds),
-    ts_struct_body(Body, Pred, Mode, Bind1, Bind2, GuardConds, StmtLines, Tail),
+    ts_struct_body(Body, Pred, Mode, OutArg, Bind1, Bind2, GuardConds, StmtLines, Tail),
     append(HeadConds, GuardConds, AllConds),
     ( AllConds == [] -> CondStr = "true" ; atomic_list_concat(AllConds, ' && ', CondStr) ),
-    (   Mode = test
-    ->  ( Tail = yes(R) -> RetExpr = R ; RetExpr = "true" )
-    ;   nth1(OutPos, HeadArgs, OutArg),
-        ts_term_expr(OutArg, Bind2, RetExpr)
-    ),
-    (   StmtLines == []
-    ->  format(string(Block), '  if (~w) {\n    return ~w;\n  }', [CondStr, RetExpr])
-    ;   atomic_list_concat(StmtLines, '\n', StmtBlock),
-        format(string(Block), '  if (~w) {\n~w\n    return ~w;\n  }', [CondStr, StmtBlock, RetExpr])
+    (   Tail == returned
+    ->  atomic_list_concat(StmtLines, '\n', StmtBlock),
+        format(string(Block), '  if (~w) {\n~w\n  }', [CondStr, StmtBlock])
+    ;   (   Mode = test
+        ->  ( Tail = yes(R) -> RetExpr = R ; RetExpr = "true" )
+        ;   ts_term_expr(OutArg, Bind2, RetExpr)
+        ),
+        (   StmtLines == []
+        ->  format(string(Block), '  if (~w) {\n    return ~w;\n  }', [CondStr, RetExpr])
+        ;   atomic_list_concat(StmtLines, '\n', StmtBlock),
+            format(string(Block), '  if (~w) {\n~w\n    return ~w;\n  }', [CondStr, StmtBlock, RetExpr])
+        )
     ).
 
 %% ts_head_positions(+HeadArgs, +Idx, +OutPos, +Bind0, -Bind, +Conds0, -Conds)
@@ -3119,7 +3130,13 @@ ts_bget(V, [V0-E|_], E) :- V0 == V, !.
 ts_bget(V, [_|T], E) :- ts_bget(V, T, E).
 
 %% ts_term_expr(+Term, +Bind, -Expr) — Prolog term (list/var/atom/number) -> TS.
-ts_term_expr(V, B, E) :- var(V), !, ( ts_bget(V, B, E0) -> E = E0 ; E = "undefined" ).
+%
+%  An unbound variable FAILS here rather than rendering `undefined` (G-A3-10,
+%  same principle as G-A3-14's ts_expr/3). A variable with no binding is a
+%  variable this path cannot lower; emitting `undefined` produced code that ran
+%  and was wrong. Failing makes the structural path refuse the predicate, which
+%  is the honest answer.
+ts_term_expr(V, B, E) :- var(V), !, ts_bget(V, B, E).
 ts_term_expr([], _, "[]") :- !.
 ts_term_expr([H|T], B, E) :- !,
     ts_term_expr(H, B, HE), ts_term_expr(T, B, TE),
@@ -3127,23 +3144,179 @@ ts_term_expr([H|T], B, E) :- !,
 ts_term_expr(N, _, E) :- number(N), !, format(string(E), "~w", [N]).
 ts_term_expr(A, _, E) :- atom(A), !, format(string(E), '"~w"', [A]).
 
-%% ts_struct_body(+Body, +Pred, +Mode, +B0, -B, -GuardConds, -StmtLines, -Tail)
-ts_struct_body(Body, Pred, Mode, B0, B, Guards, Stmts, Tail) :-
-    ts_extract_goals(Body, Goals0),
-    maplist(ts_strip_mod, Goals0, Goals),
-    ts_struct_goals(Goals, Pred, Mode, B0, B, [], GuardsR, [], StmtsR, no, Tail),
+%% ts_struct_body(+Body, +Pred, +Mode, +OutArg, +B0, -B, -GuardConds, -StmtLines, -Tail)
+ts_struct_body(Body, Pred, Mode, OutArg, B0, B, Guards, Stmts, Tail) :-
+    ts_branch_goals(Body, Goals),
+    ts_struct_seq(Goals, Pred, Mode, OutArg, tail,
+                  B0, B, [], GuardsR, [], StmtsR, no, Tail, 0, _),
     reverse(GuardsR, Guards),
     reverse(StmtsR, Stmts).
 
-ts_struct_goals(Goals, Pred, Mode, B0, B, G0, G, S0, S, T0, T) :-
-    ts_struct_goals(Goals, Pred, Mode, B0, B, G0, G, S0, S, T0, T, 0).
-ts_struct_goals([], _, _, B, B, G, G, S, S, T, T, _).
-ts_struct_goals([Goal|Rest], Pred, Mode, B0, B, G0, G, S0, S, T0, T, N0) :-
+%% ts_branch_goals(+Body, -Goals) — flatten a conjunction, stripping Module:.
+ts_branch_goals(Body, Goals) :-
+    ts_extract_goals(Body, Goals0),
+    maplist(ts_strip_mod, Goals0, Goals).
+
+%% ts_struct_seq(+Goals, +Pred, +Mode, +OutArg, +Ctx,
+%%               +B0,-B, +G0,-G, +S0,-S, +T0,-T, +N0,-N)
+%
+%  Ctx is `tail` when the LAST goal of Goals sits in return position (the end of
+%  a clause body, or the end of a branch that itself returns) and `inner` when it
+%  does not (inside a value if-then-else, where a `return` would abandon the
+%  enclosing clause). The distinction is what decides whether an if-then-else is
+%  lowered as a BRANCHING RETURN or as a let+assign VALUE (G-A3-10).
+ts_struct_seq([], _, _, _, _, B, B, G, G, S, S, T, T, N, N).
+ts_struct_seq([Goal|Rest], Pred, Mode, OutArg, Ctx,
+              B0, B, G0, G, S0, S, _T0, T, N0, N) :-
+    Rest == [], Ctx == tail,
+    ts_is_ite(Goal, If, Then, Else),
+    ts_struct_tail_ite(If, Then, Else, Pred, Mode, OutArg, B0, S0, S1, N0, N1),
+    !,
+    B = B0, G = G0, S = S1, T = returned, N = N1.
+ts_struct_seq([Goal|Rest], Pred, Mode, OutArg, Ctx,
+              B0, B, G0, G, S0, S, T0, T, N0, N) :-
     ts_struct_goal(Goal, Pred, Mode, B0, B1, G0, G1, S0, S1, T0, T1, N0, N1),
-    ts_struct_goals(Rest, Pred, Mode, B1, B, G1, G, S1, S, T1, T, N1).
+    ts_struct_seq(Rest, Pred, Mode, OutArg, Ctx, B1, B, G1, G, S1, S, T1, T, N1, N).
+
+%% ts_is_ite(+Goal, -If, -Then, -Else)
+%  Reuses clause_body_analysis' control-flow matcher so the structural path and
+%  the clause-body renderer agree on what an if-then-else IS. A bare `(A ; B)`
+%  and a bare `(C -> T)` do NOT match here and therefore keep refusing.
+ts_is_ite(Goal, If, Then, Else) :-
+    nonvar(Goal),
+    if_then_else_goal(Goal, If, Then, Else).
+
+% ---------------------------------------------------------------------------
+% G-A3-10 — if-then-else composed with structural recursion
+% ---------------------------------------------------------------------------
+%
+% Two lowerings, chosen by position:
+%
+%   TAIL   `loop([X|Xs], A0, A) :- ( C -> ..., loop(Xs, A1, A) ; A = final ).`
+%          The if-then-else is the last goal of the clause. Each branch is
+%          rendered to its own `return`: a branch that ends in the recursive
+%          call becomes `return loop(...)` (the loop continues), a branch that
+%          binds the output becomes `return <value>` (the loop exits). Nested
+%          else-if chains compose because the else branch is itself rendered in
+%          tail context.
+%
+%   VALUE  `loop([X|Xs], A0, A) :- ( C -> A1 is A0+X ; A1 = A0 ), loop(Xs,A1,A).`
+%          The if-then-else is followed by more goals, so it must produce a
+%          VALUE, not a return. clause_body_analysis' shared-output analysis
+%          (if_then_else_shared_output_vars/4 — the same predicate G-A3-14's
+%          mid-sequence renderer uses) names the variables both branches bind;
+%          each gets a `let _sN;` declared before the block and an assignment at
+%          the end of each branch, so the goals after the block read it by name.
+%
+% Everything else keeps refusing: a branch that emits a GUARD (a bare test that
+% could make the clause fail — not expressible as a straight-line block), a
+% branch that binds nothing both branches share, a condition ts_guard_condition/3
+% cannot render, a bare disjunction, a bare if-then. In each case the renderer
+% fails, the structural path declines the predicate, and the caller falls
+% through to the loud G-A3-4 refusal rather than emitting plausible-looking
+% JavaScript with the wrong control flow.
+
+%% ts_struct_tail_ite(+If,+Then,+Else,+Pred,+Mode,+OutArg,+B0,+S0,-S,+N0,-N)
+ts_struct_tail_ite(If, Then, Else, Pred, Mode, OutArg, B0, S0, S, N0, N) :-
+    ts_guard_condition(B0, If, Cond),
+    ts_struct_branch_return(Then, Pred, Mode, OutArg, B0, ThenLines, N0, N1),
+    ts_struct_branch_return(Else, Pred, Mode, OutArg, B0, ElseLines, N1, N),
+    atomic_list_concat(ThenLines, '\n', ThenBlock),
+    atomic_list_concat(ElseLines, '\n', ElseBlock),
+    format(string(Stmt),
+           "    if (~w) {\n~w\n    } else {\n~w\n    }",
+           [Cond, ThenBlock, ElseBlock]),
+    S = [Stmt|S0].
+
+%% ts_struct_branch_return(+Branch,+Pred,+Mode,+OutArg,+B0,-Lines,+N0,-N)
+%  Render one branch of a tail if-then-else so that it returns on every path.
+ts_struct_branch_return(Branch, Pred, Mode, OutArg, B0, Lines, N0, N) :-
+    ts_branch_goals(Branch, Goals),
+    ts_struct_seq(Goals, Pred, Mode, OutArg, tail,
+                  B0, B1, [], [], [], StmtsR, no, Tail, N0, N),
+    reverse(StmtsR, Stmts0),
+    ts_struct_indent(Stmts0, "  ", Stmts),
+    (   Tail == returned
+    ->  Lines = Stmts
+    ;   ts_struct_branch_ret(Mode, OutArg, B1, Tail, RetExpr),
+        format(string(RetLine), "      return ~w;", [RetExpr]),
+        append(Stmts, [RetLine], Lines)
+    ).
+
+ts_struct_branch_ret(function(_), OutArg, B, _Tail, RetExpr) :- !,
+    ts_term_expr(OutArg, B, RetExpr).
+ts_struct_branch_ret(test, _OutArg, _B, yes(R), R) :- !.
+ts_struct_branch_ret(test, _OutArg, _B, no, "true").
+
+%% ts_struct_value_ite(+If,+Then,+Else,+Pred,+Mode,+B0,-B,+S0,-S,+N0,-N)
+ts_struct_value_ite(If, Then, Else, Pred, Mode, B0, B, S0, S, N0, N) :-
+    ts_guard_condition(B0, If, Cond),
+    % Classification comes from clause_body_analysis, not from a second
+    % implementation here: these are the variables BOTH branches bind and that
+    % are not already inputs.
+    if_then_else_shared_output_vars(Then, Else, B0, SharedVars),
+    SharedVars \== [],
+    ts_branch_goals(Then, ThenGoals),
+    ts_branch_goals(Else, ElseGoals),
+    % `[], []` for the guard accumulator and `no, no` for the tail: a branch
+    % that wants to emit a clause-level guard, or to return, is not a value.
+    ts_struct_seq(ThenGoals, Pred, Mode, '$no_output', inner,
+                  B0, BT, [], [], [], ThenStmtsR, no, no, N0, N1),
+    ts_struct_seq(ElseGoals, Pred, Mode, '$no_output', inner,
+                  B0, BE, [], [], [], ElseStmtsR, no, no, N1, N2),
+    length(SharedVars, K),
+    ts_struct_slots(N2, K, Slots),
+    N is N2 + K,
+    maplist(ts_struct_ite_assign(BT), SharedVars, Slots, ThenAssigns),
+    maplist(ts_struct_ite_assign(BE), SharedVars, Slots, ElseAssigns),
+    reverse(ThenStmtsR, ThenStmts0), ts_struct_indent(ThenStmts0, "  ", ThenStmts),
+    reverse(ElseStmtsR, ElseStmts0), ts_struct_indent(ElseStmts0, "  ", ElseStmts),
+    append(ThenStmts, ThenAssigns, ThenBody),
+    append(ElseStmts, ElseAssigns, ElseBody),
+    atomic_list_concat(ThenBody, '\n', ThenBlock),
+    atomic_list_concat(ElseBody, '\n', ElseBlock),
+    maplist(ts_struct_let_decl, Slots, LetLines),
+    atomic_list_concat(LetLines, '\n', LetBlock),
+    format(string(Stmt),
+           "~w\n    if (~w) {\n~w\n    } else {\n~w\n    }",
+           [LetBlock, Cond, ThenBlock, ElseBlock]),
+    S = [Stmt|S0],
+    foldl(ts_struct_bind_slot, SharedVars, Slots, B0, B).
+
+ts_struct_slots(_, 0, []) :- !.
+ts_struct_slots(Idx, K, [Name|Rest]) :-
+    format(string(Name), "_s~w", [Idx]),
+    Idx1 is Idx + 1, K1 is K - 1,
+    ts_struct_slots(Idx1, K1, Rest).
+
+ts_struct_let_decl(Slot, Line) :- format(string(Line), "    let ~w;", [Slot]).
+
+ts_struct_ite_assign(Bind, Var, Slot, Line) :-
+    ts_term_expr(Var, Bind, Expr),
+    format(string(Line), "      ~w = ~w;", [Slot, Expr]).
+
+ts_struct_bind_slot(Var, Slot, Bin, [Var-Slot|Bin]).
+
+%% ts_struct_indent(+Lines, +Prefix, -Indented)
+%  Prefix EVERY physical line, so a nested if-then-else block (a single
+%  multi-line "statement") indents as a unit. Distinct from ts_indent_lines/3,
+%  which is the clause-body renderer's fixed four-space helper.
+ts_struct_indent(Lines, Prefix, Out) :- maplist(ts_struct_indent_line(Prefix), Lines, Out).
+ts_struct_indent_line(Prefix, Line, Out) :-
+    split_string(Line, "\n", "", Parts),
+    maplist(ts_struct_prefix_str(Prefix), Parts, Parts2),
+    atomic_list_concat(Parts2, '\n', Out).
+ts_struct_prefix_str(Prefix, S, O) :- format(string(O), "~w~w", [Prefix, S]).
 
 %% ts_struct_goal(+Goal, +Pred, +Mode, +B0,-B, +G0,-G, +S0,-S, +T0,-T, +N0,-N)
 ts_struct_goal(true, _, _, B, B, G, G, S, S, T, T, N, N) :- !.
+%% if-then-else in VALUE position (G-A3-10). Cut on recognition: if the value
+%% lowering does not apply, the whole structural path must refuse rather than
+%% try some other reading of the same goal.
+ts_struct_goal(Goal, Pred, Mode, B0, B, G, G, S0, S, T, T, N0, N) :-
+    ts_is_ite(Goal, If, Then, Else),
+    !,
+    ts_struct_value_ite(If, Then, Else, Pred, Mode, B0, B, S0, S, N0, N).
 ts_struct_goal(Goal, _Pred, _Mode, B, B, G0, [Cond|G0], S, S, T, T, N, N) :-
     Goal =.. [Op, L, R], ts_cmp_op(Op, JsOp), !,
     ts_arith(L, B, LS), ts_arith(R, B, RS),
@@ -3187,7 +3360,9 @@ ts_cmp_op(==, "===").
 ts_cmp_op(\==, "!==").
 
 %% ts_arith(+Expr, +Bind, -TsExpr)
-ts_arith(V, B, S) :- var(V), !, ( ts_bget(V, B, S) -> true ; term_string(V, S) ).
+%  As with ts_term_expr/3: an unbound variable fails instead of leaking SWI's
+%  internal `_41598` name into the emitted JavaScript (G-A3-10 / G-A3-14).
+ts_arith(V, B, S) :- var(V), !, ts_bget(V, B, S).
 ts_arith(N, _, S) :- number(N), !, format(string(S), "~w", [N]).
 ts_arith(A+B, Bi, S) :- !, ts_arith(A, Bi, SA), ts_arith(B, Bi, SB), format(string(S), "(~w + ~w)", [SA, SB]).
 ts_arith(A-B, Bi, S) :- !, ts_arith(A, Bi, SA), ts_arith(B, Bi, SB), format(string(S), "(~w - ~w)", [SA, SB]).

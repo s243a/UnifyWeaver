@@ -32,13 +32,27 @@ enough to be a punchlist. The catalogue in §4 is the deliverable.
 > fall-through `return false`; CLI entry passes every argument with per-token
 > coercion; `compile_module/3` refuses an all-unsupported module and emits a
 > WARNING banner for partial ones).
-> Still OPEN: **G-A3-6** (guard hoisting, M), **G-A3-9** (multi-output loops, L),
-> **G-A3-10** (ITE in recursive bodies, M), **G-A3-12** (compound terms, M),
-> **G-A3-16** (list/pair head patterns, M), and NEW **G-A3-11.3** (parameter/CLI
-> types are hardcoded guesses; needs body-driven type inference — probe
-> `gap_g_a3_11_3_cli_entry_cannot_pass_a_numeric_looking_character` pins it).
-> Priority order stands: G-A3-10 → G-A3-9 (then all four parse mechanisms become
-> expressible and A4's differential becomes a live gate).
+> **G-A3-10 is now also CLOSED** (third run): if-then-else composes with the
+> structural-recursion path via two lowerings chosen by position — TAIL (each
+> branch gets its own `return`: recursive branch = loop continuation, exit
+> branch = value; nested else-if composes; no dead trailing return) and VALUE
+> (`let _sN` + per-branch assignment, read by the following goals). Conditions
+> render via `ts_guard_condition/3`; classification reuses
+> `clause_body_analysis`'s `if_then_else_goal/4` + shared-output-vars (core
+> unmodified). `ts_term_expr/3`/`ts_arith/3` now REFUSE on unbound variables
+> (were emitting `undefined`/`_G…`). `string_member/2` and `first_char_index/4`
+> from cli_args now compile oracle-correct (lowers-correctly count 2 → 4).
+> Shapes suite 55 → 67 tests.
+> Still OPEN: **G-A3-6** (guard hoisting, M — now concretely includes
+> cross-predicate calls in guard position, e.g. `starts_with/2` as an ITE
+> condition, which blocks the lenient loop + globals scan), **G-A3-9**
+> (multi-output loops, L — THE remaining blocker for all four parse mechanisms;
+> its blast radius widened now that ITE loops reach the structural path, pinned
+> by probe `gap_g_a3_9_now_reached_by_ite_loops_too`), **G-A3-12** (compound
+> terms `some(V)`/`ok`/`err(M)`/`group(_)`, M), **G-A3-16** (K-V head patterns,
+> M), **G-A3-11.3** (type inference, probe-pinned). By-design refusal: a branch
+> containing a bare failable test (needs clause-level fall-through from inside a
+> branch). Priority: G-A3-9, then G-A3-12/16 for the parse mechanisms.
 
 ---
 

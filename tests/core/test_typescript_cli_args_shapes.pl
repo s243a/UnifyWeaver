@@ -461,8 +461,14 @@ retract_a3_hazards :-
     retractall(user:a3_string_member(_, _)),
     retractall(user:a3_is_global_key(_)).
 
+% a3_string_member/2 was in this list until G-A3-10 closed. It is a semidet
+% list walk whose single clause is `( S == X -> true ; recurse )` -- exactly the
+% ITE+recursion shape the structural path now lowers, so it COMPILES rather than
+% refuses. Its correctness is asserted in the G-A3-10 section below; the four
+% left here still have no lowering path (list-BUILDING recursion, an accumulator
+% loop through a helper, and an arity-1 ITE over two helper calls).
 a3_hazard_shapes([a3_flags_put/4, a3_merge_flags/3, a3_drop_brackets/2,
-                  a3_string_member/2, a3_is_global_key/1]).
+                  a3_is_global_key/1]).
 
 %% a3_compile_outcome(+PredSpec, -Outcome)
 %  refused(Spec, Shape, Msg) | compiled(Code) | failed. Never lets a refusal
@@ -574,18 +580,18 @@ test(g_a3_8_vanilla_js_inherits_the_guard,
     catch(vanilla_js_target:compile_facts(a3_drop_brackets, 2, _),
           error(unsupported_lowering(typescript, Spec1, _), _), true),
     Spec1 == a3_drop_brackets/2,
-    catch(vanilla_js_target:compile_predicate_to_vanilla_js(a3_string_member/2, [], _),
+    catch(vanilla_js_target:compile_predicate_to_vanilla_js(a3_flags_put/4, [], _),
           error(unsupported_lowering(typescript, Spec2, _), _), true),
-    Spec2 == a3_string_member/2.
+    Spec2 == a3_flags_put/4.
 
 test(g_a3_8_annotated_js_inherits_the_guard,
      [setup(assert_a3_hazards), cleanup(retract_a3_hazards)]) :-
     catch(annotated_js_target:compile_facts(a3_drop_brackets, 2, _),
           error(unsupported_lowering(typescript, Spec1, _), _), true),
     Spec1 == a3_drop_brackets/2,
-    catch(annotated_js_target:compile_predicate(a3_string_member/2, [], _),
+    catch(annotated_js_target:compile_predicate(a3_flags_put/4, [], _),
           error(unsupported_lowering(typescript, Spec2, _), _), true),
-    Spec2 == a3_string_member/2.
+    Spec2 == a3_flags_put/4.
 
 % ---------------------------------------------------------------------------
 % G-A3-13 : the boolean atoms lower to JS booleans
@@ -910,12 +916,77 @@ test(gap_g_a3_9_second_output_becomes_an_input,
     % ... and is then compared against the accumulator instead of assigned.
     has(Code, "a4 === a2").
 
+% Closing G-A3-10 WIDENS G-A3-9's blast radius, and that is worth pinning
+% rather than discovering later: a two-output loop whose step is an
+% if-then-else used to be refused (no ITE lowering at all); it now reaches the
+% structural path and lands on exactly the same wrong shape. Nothing about
+% G-A3-9 changed -- only the set of predicates that get to hit it. cli_args'
+% lenient_loop/5 and scan_leading_globals/4 are this shape.
+assert_a3_twoacc_ite :-
+    assertz(user:a3_twoacc_ite([], A, B, A, B)),
+    assertz((user:a3_twoacc_ite([X|Xs], A0, B0, A, B) :-
+                (   X > 0
+                ->  A1 is A0 + X, a3_twoacc_ite(Xs, A1, B0, A, B)
+                ;   B1 is B0 + 1, a3_twoacc_ite(Xs, A0, B1, A, B)
+                ))).
+retract_a3_twoacc_ite :- retractall(user:a3_twoacc_ite(_, _, _, _, _)).
+
+test(gap_g_a3_9_now_reached_by_ite_loops_too,
+     [setup(assert_a3_twoacc_ite), cleanup(retract_a3_twoacc_ite)]) :-
+    native_structural(a3_twoacc_ite/5, Code),
+    has(Code, "a4: any"),
+    has(Code, "a4 === a2"),
+    % the if-then-else itself lowered correctly -- both branches tail-call
+    aggregate_all(count, sub_string(Code, _, _, _, "a3_twoacc_ite(a1.slice(1)"), N),
+    N =:= 2.
+
 % ---------------------------------------------------------------------------
-% G-A3-10 (M) : bodies containing if-then-else defeat the structural path
+% G-A3-10 (CLOSED) : if-then-else composes with structural recursion
 % ---------------------------------------------------------------------------
-% Every cli_args loop dispatches on an if-then-else chain; ts_struct_goal/13 has
-% no clause for `;`/`->`, so the structural path refuses the whole predicate and
-% the dispatcher drops to the fact fallback.
+% Every cli_args loop dispatches on an if-then-else chain. ts_struct_goal/13 had
+% no clause for `;`/`->`, so ONE if-then-else anywhere in the body made the
+% structural path refuse the whole predicate and the dispatcher dropped to the
+% fact fallback.
+%
+% The fix splits the lowering by POSITION of the if-then-else:
+%
+%   * VALUE position (goals follow it) -- clause_body_analysis'
+%     if_then_else_shared_output_vars/4 names the variables both branches bind;
+%     each gets `let _sN;` before the block and an assignment at the end of each
+%     branch, so the goals after it read the value by name.
+%   * TAIL position (it is the last goal) -- each branch renders its own
+%     `return`: a branch ending in the recursive call continues the loop, a
+%     branch binding the output exits it. Nested else-if chains compose because
+%     the else branch is rendered in tail context too.
+%
+% Refusals kept: a branch that emits a clause-level guard, branches that bind
+% no common variable, a bare `(A ; B)`, a bare `(C -> T)`, a condition
+% ts_guard_condition/3 cannot render. Each of these fails the renderer, so the
+% structural path declines and the caller reaches the loud G-A3-4/G-A3-8
+% refusal instead of receiving JavaScript with the wrong control flow.
+
+%% vanilla_structural(+Pred/Arity, -Code)
+%  The same structural lowering, emitted through vanilla_js so node can RUN it:
+%  the TypeScript module carries `a1: any[]` annotations node will not parse.
+%  Assertions about the emitted TypeScript use native_structural/2; assertions
+%  about behaviour use this.
+vanilla_structural(PredSpec, Code) :-
+    vanilla_js_target:compile_predicate_to_vanilla_js(PredSpec, [], Code).
+
+%% run_struct(+Code, +CallSrc, -Line)
+%  Append a driver to a structural module (it has no CLI entry of its own) and
+%  run it under node, returning the single line it prints.
+run_struct(Code, CallSrc, Line) :-
+    format(string(Src), "~w\nconsole.log(JSON.stringify(~w));\n", [Code, CallSrc]),
+    node_run_lines(Src, [], [Line]).
+
+%% js_atom_list(+Atoms, -JsArrayLiteral) — [a,b] -> ["a", "b"]
+js_atom_list(Atoms, Literal) :-
+    findall(Q, ( member(A, Atoms), format(string(Q), "\"~w\"", [A]) ), Quoted),
+    atomic_list_concat(Quoted, ', ', Inner),
+    format(string(Literal), "[~w]", [Inner]).
+
+% --- the canonical case from the report ------------------------------------
 assert_a3_iteloop :-
     assertz(user:a3_iteloop([], Acc, Acc)),
     assertz((user:a3_iteloop([X|Xs], Acc0, Acc) :-
@@ -923,13 +994,245 @@ assert_a3_iteloop :-
                 a3_iteloop(Xs, Acc1, Acc))).
 retract_a3_iteloop :- retractall(user:a3_iteloop(_, _, _)).
 
-test(gap_g_a3_10_ite_in_a_recursive_body_refuses,
+test(g_a3_10_ite_in_a_recursive_body_lowers,
      [setup(assert_a3_iteloop), cleanup(retract_a3_iteloop)]) :-
-    \+ catch(native_structural(a3_iteloop/3, _), _, fail).
+    native_structural(a3_iteloop/3, Code),
+    % the if-then-else is a VALUE: declared once with `let`, assigned per branch
+    has(Code, "let _s"),
+    has(Code, "if (a1[0] > 0) {"),
+    has(Code, "} else {"),
+    % ... and the recursive call comes AFTER the block, reading it by name
+    has(Code, "a3_iteloop(a1.slice(1), _s"),
+    % no internal SWI variable name leaked, no `undefined` placeholder
+    hasnt(Code, "undefined"),
+    hasnt(Code, "= _G").
+
+test(g_a3_10_ite_loop_parses_and_matches_swi,
+     [setup(assert_a3_iteloop), cleanup(retract_a3_iteloop),
+      condition(node_available)]) :-
+    vanilla_structural(a3_iteloop/3, Code),
+    node_check(Code),
+    forall(member(L, [[], [1], [-1], [1,-2,3], [5,5,-5,5], [-1,-2,-3], [0,7,-7,2]]),
+           ( user:a3_iteloop(L, 0, R),
+             format(string(Expect), "~w", [R]),
+             term_string(L, LS),
+             format(string(Call), "a3_iteloop(~w, 0)", [LS]),
+             run_struct(Code, Call, Got),
+             Got == Expect )).
+
+% --- nested else-if chain (value position) ---------------------------------
+assert_a3_itechainloop :-
+    assertz(user:a3_itechainloop([], Acc, Acc)),
+    assertz((user:a3_itechainloop([X|Xs], Acc0, Acc) :-
+                ( X > 10 -> Acc1 is Acc0 + 2
+                ; X > 0  -> Acc1 is Acc0 + 1
+                ; Acc1 = Acc0 ),
+                a3_itechainloop(Xs, Acc1, Acc))).
+retract_a3_itechainloop :- retractall(user:a3_itechainloop(_, _, _)).
+
+test(g_a3_10_nested_else_if_chain_composes,
+     [setup(assert_a3_itechainloop), cleanup(retract_a3_itechainloop),
+      condition(node_available)]) :-
+    vanilla_structural(a3_itechainloop/3, Code),
+    node_check(Code),
+    % two `let` slots: the inner chain's value feeds the outer one
+    aggregate_all(count, sub_string(Code, _, _, _, "let _s"), Lets),
+    Lets >= 2,
+    forall(member(L, [[], [11], [5], [-5], [11,5,-5], [20,20,1,0,-1]]),
+           ( user:a3_itechainloop(L, 0, R),
+             format(string(Expect), "~w", [R]),
+             term_string(L, LS),
+             format(string(Call), "a3_itechainloop(~w, 0)", [LS]),
+             run_struct(Code, Call, Got),
+             Got == Expect )).
+
+% --- both branches recurse (tail position) ---------------------------------
+assert_a3_bothrec :-
+    assertz(user:a3_bothrec([], Acc, Acc)),
+    assertz((user:a3_bothrec([X|Xs], Acc0, Acc) :-
+                (   X > 0
+                ->  Acc1 is Acc0 + X, a3_bothrec(Xs, Acc1, Acc)
+                ;   a3_bothrec(Xs, Acc0, Acc)
+                ))).
+retract_a3_bothrec :- retractall(user:a3_bothrec(_, _, _)).
+
+test(g_a3_10_both_branches_recurse_become_branching_returns,
+     [setup(assert_a3_bothrec), cleanup(retract_a3_bothrec),
+      condition(node_available)]) :-
+    vanilla_structural(a3_bothrec/3, Code),
+    node_check(Code),
+    % a TAIL if-then-else: each branch returns, so there is no let/assign and no
+    % trailing `return` after the block.
+    hasnt(Code, "let _s"),
+    aggregate_all(count, sub_string(Code, _, _, _, "a3_bothrec(a1.slice(1)"), Calls),
+    Calls =:= 2,
+    forall(member(L, [[], [1,2], [-1,-2], [1,-2,3,-4], [0,0,5]]),
+           ( user:a3_bothrec(L, 0, R),
+             format(string(Expect), "~w", [R]),
+             term_string(L, LS),
+             format(string(Call), "a3_bothrec(~w, 0)", [LS]),
+             run_struct(Code, Call, Got),
+             Got == Expect )).
+
+% --- one branch exits, the other continues the loop ------------------------
+% This is the shape of cli_args' pair_lookup/3 and string_member/2: the then
+% branch returns a final value, the else branch tail-calls.
+assert_a3_findpos :-
+    assertz(user:a3_findpos([], _I, none)),
+    assertz((user:a3_findpos([X|Xs], I, R) :-
+                ( X > 0 -> R = I ; I1 is I + 1, a3_findpos(Xs, I1, R) ))).
+retract_a3_findpos :- retractall(user:a3_findpos(_, _, _)).
+
+test(g_a3_10_exit_branch_returns_recursive_branch_continues,
+     [setup(assert_a3_findpos), cleanup(retract_a3_findpos),
+      condition(node_available)]) :-
+    vanilla_structural(a3_findpos/3, Code),
+    node_check(Code),
+    has(Code, "return a2;"),                  % the exit branch
+    has(Code, "a3_findpos(a1.slice(1)"),      % the continuation branch
+    forall(member(L, [[], [-1,-2], [3], [-1,-2,7,-3], [0,0,1]]),
+           ( user:a3_findpos(L, 0, R),
+             ( R == none -> Expect = "\"none\"" ; format(string(Expect), "~w", [R]) ),
+             term_string(L, LS),
+             format(string(Call), "a3_findpos(~w, 0)", [LS]),
+             run_struct(Code, Call, Got),
+             Got == Expect )).
+
+% --- if-then-else followed by MORE goals (composes with let+assign) --------
+assert_a3_itethenmore :-
+    assertz(user:a3_itethenmore([], Acc, Acc)),
+    assertz((user:a3_itethenmore([X|Xs], Acc0, Acc) :-
+                ( X > 0 -> D is X * 2 ; D = 0 ),
+                Acc1 is Acc0 + D,
+                a3_itethenmore(Xs, Acc1, Acc))).
+retract_a3_itethenmore :- retractall(user:a3_itethenmore(_, _, _)).
+
+test(g_a3_10_ite_value_is_read_by_the_goals_after_it,
+     [setup(assert_a3_itethenmore), cleanup(retract_a3_itethenmore),
+      condition(node_available)]) :-
+    vanilla_structural(a3_itethenmore/3, Code),
+    node_check(Code),
+    % the `is/2` AFTER the block reads the slot the block assigned
+    has(Code, "let _s1;"),
+    has(Code, "const _s2 = (a2 + _s1);"),
+    forall(member(L, [[], [3], [-3], [1,-1,2], [4,0,-4,6]]),
+           ( user:a3_itethenmore(L, 0, R),
+             format(string(Expect), "~w", [R]),
+             term_string(L, LS),
+             format(string(Call), "a3_itethenmore(~w, 0)", [LS]),
+             run_struct(Code, Call, Got),
+             Got == Expect )).
+
+% --- a semidet ITE walk: the shape that moved out of G-A3-8's hazard list ---
+assert_a3_strmember :-
+    assertz((user:a3_strmember(S, [X|Xs]) :-
+                ( S == X -> true ; a3_strmember(S, Xs) ))).
+retract_a3_strmember :- retractall(user:a3_strmember(_, _)).
+
+test(g_a3_10_semidet_ite_walk_lowers_and_matches_swi,
+     [setup(assert_a3_strmember), cleanup(retract_a3_strmember),
+      condition(node_available)]) :-
+    native_structural(a3_strmember/2, TsCode),
+    has(TsCode, "): boolean {"),         % semidet -> boolean, not `any`
+    vanilla_structural(a3_strmember/2, Code),
+    node_check(Code),
+    has(Code, "return true;"),
+    has(Code, "return a3_strmember(a1, a2.slice(1));"),
+    has(Code, "return false;"),          % no clause matched -> fails
+    forall(member(S-L, [b-[a,b,c], z-[a,b,c], a-[a], q-[]]),
+           ( ( user:a3_strmember(S, L) -> Expect = "true" ; Expect = "false" ),
+             js_atom_list(L, LS),
+             format(string(Call), "a3_strmember(\"~w\", ~w)", [S, LS]),
+             run_struct(Code, Call, Got),
+             Got == Expect )).
+
+% --- the two cli_args predicates this gap actually unblocks -----------------
+% Verbatim from examples/cli_args/cli_args.pl (renamed so the suite stays
+% self-contained). first_char_index/4 is the index walk behind
+% first_equals_index/2, which split_flag_token/3 uses to split `--k=v`.
+assert_a3_firstcharindex :-
+    assertz(user:a3_first_char_index([], _Target, _I, -1)),
+    assertz((user:a3_first_char_index([C|Cs], Target, I, Index) :-
+                (   C == Target
+                ->  Index = I
+                ;   I1 is I + 1,
+                    a3_first_char_index(Cs, Target, I1, Index)
+                ))).
+retract_a3_firstcharindex :- retractall(user:a3_first_char_index(_, _, _, _)).
+
+test(g_a3_10_cli_args_first_char_index_lowers_and_matches_swi,
+     [setup(assert_a3_firstcharindex), cleanup(retract_a3_firstcharindex),
+      condition(node_available)]) :-
+    native_structural(a3_first_char_index/4, TsCode),
+    has(TsCode, "return -1;"),                       % base clause
+    has(TsCode, "if (a1[0] === a2) {"),              % the ITE condition
+    has(TsCode, "return a3;"),                       % exit branch
+    has(TsCode, "a3_first_char_index(a1.slice(1), a2, _s"),  % continuation
+    vanilla_structural(a3_first_char_index/4, Code),
+    node_check(Code),
+    forall(member(Cs, [[], [a], ['=' ], [a,'=',b], [a,b,c], ['=','=']]),
+           ( user:a3_first_char_index(Cs, '=', 0, R),
+             format(string(Expect), "~w", [R]),
+             js_atom_list(Cs, LS),
+             format(string(Call), "a3_first_char_index(~w, \"=\", 0)", [LS]),
+             run_struct(Code, Call, Got),
+             Got == Expect )).
+
+% --- REFUSAL: a branch that carries a bare test is not a straight-line block -
+% `( X > 0 -> X < 100, Acc1 is Acc0 + X ; Acc1 = Acc0 )` can FAIL inside the
+% then branch, which no let/assign block expresses. Lowering it as an assignment
+% would silently drop the `X < 100` test, so the structural path declines and
+% the caller gets the loud refusal instead.
+assert_a3_guardbranch :-
+    assertz(user:a3_guardbranch([], Acc, Acc)),
+    assertz((user:a3_guardbranch([X|Xs], Acc0, Acc) :-
+                ( X > 0 -> X < 100, Acc1 is Acc0 + X ; Acc1 = Acc0 ),
+                a3_guardbranch(Xs, Acc1, Acc))).
+retract_a3_guardbranch :- retractall(user:a3_guardbranch(_, _, _)).
+
+test(g_a3_10_semidet_branch_still_refuses,
+     [setup(assert_a3_guardbranch), cleanup(retract_a3_guardbranch)]) :-
+    \+ catch(native_structural(a3_guardbranch/3, _), _, fail),
+    % and it refuses LOUDLY through the dispatcher rather than emitting anything
+    a3_compile_outcome(a3_guardbranch/3, Outcome),
+    Outcome = refused(a3_guardbranch/3, Shape, _),
+    has(Shape, "if-then-else").
+
+% --- REFUSAL: branches that bind different variables ------------------------
+assert_a3_diffvars :-
+    assertz(user:a3_diffvars([], Acc, Acc)),
+    assertz((user:a3_diffvars([X|Xs], Acc0, Acc) :-
+                ( X > 0 -> Acc1 is Acc0 + X ; _B1 is Acc0 - X ),
+                a3_diffvars(Xs, Acc1, Acc))).
+retract_a3_diffvars :- retractall(user:a3_diffvars(_, _, _)).
+
+test(g_a3_10_branches_with_no_shared_output_still_refuse,
+     [setup(assert_a3_diffvars), cleanup(retract_a3_diffvars)]) :-
+    \+ catch(native_structural(a3_diffvars/3, _), _, fail).
+
+% --- REFUSAL: a bare disjunction is not an if-then-else ---------------------
+assert_a3_baredisj :-
+    assertz(user:a3_baredisj([], Acc, Acc)),
+    assertz((user:a3_baredisj([X|Xs], Acc0, Acc) :-
+                ( Acc1 is Acc0 + X ; Acc1 = Acc0 ),
+                a3_baredisj(Xs, Acc1, Acc))).
+retract_a3_baredisj :- retractall(user:a3_baredisj(_, _, _)).
+
+test(g_a3_10_bare_disjunction_still_refuses,
+     [setup(assert_a3_baredisj), cleanup(retract_a3_baredisj)]) :-
+    \+ catch(native_structural(a3_baredisj/3, _), _, fail).
+
+% --- an unbound variable is refused, never rendered as `undefined` ----------
+% cli_args' drop_brackets/2 binds `Kept = Kept1` where Kept1 is an OUTPUT of the
+% later recursive call -- list-BUILDING recursion, which this path cannot
+% express. It used to be a candidate for `return undefined;`.
+test(g_a3_10_unbound_term_is_refused_not_undefined) :-
+    \+ typescript_target:ts_term_expr(_Free, [], _),
+    \+ typescript_target:ts_arith(_Free2, [], _).
 
 % ---------------------------------------------------------------------------
-% G-A3-9 / G-A3-10 remain OPEN; their probes are above. Everything below this
-% line was a probe and is now an assertion.
+% G-A3-9 remains OPEN; its probe is above. Everything below this line was a
+% probe and is now an assertion.
 % ---------------------------------------------------------------------------
 
 % ---------------------------------------------------------------------------
