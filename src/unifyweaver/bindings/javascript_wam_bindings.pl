@@ -13,7 +13,8 @@
 %                 (read_term_from_atom, atom_to_term, term_to_atom)
 %                 and term-meta (term_variables, numbervars, =@=, \=@=)
 %                 plus op/3 (dynamic Pratt operator table)
-%                 and a distinct string term tag (atom_string, split_string, …)
+%                 and a distinct string term tag (atom_string, split_string,
+%                 string_length, writeq / ~q nested quoting)
 
 :- module(javascript_wam_bindings, [
     javascript_wam_builtin/3,          % Name, Arity, Status
@@ -44,6 +45,7 @@ javascript_wam_builtin(member, 2, implemented).
 javascript_wam_builtin(length, 2, implemented).
 javascript_wam_builtin(between, 3, implemented).
 javascript_wam_builtin(write, 1, implemented).
+javascript_wam_builtin(writeq, 1, implemented).
 javascript_wam_builtin(nl, 0, implemented).
 javascript_wam_builtin(functor, 3, implemented).
 javascript_wam_builtin(arg, 3, implemented).
@@ -88,6 +90,7 @@ javascript_wam_builtin(include, 3, implemented).
 javascript_wam_builtin(exclude, 3, implemented).
 javascript_wam_builtin(atom_concat, 3, implemented).
 javascript_wam_builtin(atom_length, 2, implemented).
+javascript_wam_builtin(string_length, 2, implemented).
 javascript_wam_builtin(atom_chars, 2, implemented).
 javascript_wam_builtin(atom_codes, 2, implemented).
 javascript_wam_builtin(char_code, 2, implemented).
