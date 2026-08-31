@@ -104,6 +104,131 @@ enough to be a punchlist. The catalogue in §4 is the deliverable.
 
 ---
 
+> ## STATUS UPDATE (sixth run — the ENDGAME). **The pattern lane now transpiles the entire real-world program.**
+>
+> `examples/cli_args/cli_args.pl` — all 43 predicates, `parse_args/2` included —
+> compiles into ONE JavaScript module through `compile_module/3` with
+> `include_dependencies(true)`. `node --check` clean, no WARNING banner, no
+> dropped goal. Measured against the same oracle the Prolog reference was
+> measured against in step A1:
+>
+> | | |
+> | --- | --- |
+> | peerhailer's contract corpus (`oracle/cliArgs.test.mjs`, import swapped) | **17 / 17** |
+> | differential vs the JS oracle — the harness's own generator, same seed | **5067 lines, 0 divergences, 0 message mismatches** |
+> | mechanisms end-to-end | **4 of 4** (lenient, strict, leading-globals scan, schemaFor) |
+> | predicates lowering with no dropped goal | **40 of 40** rule predicates; the other 3 are ground-fact CONSTANT TABLES, inlined at their call sites |
+>
+> The deliverables live in `examples/cli_args/patternjs/` — `build.sh` (one
+> command), the generated module, a term↔JS edge shim carrying no parse logic,
+> the corpus with only its import changed, and the differential runner.
+>
+> Four new gaps were closed, and two pre-existing correctness bugs were found and
+> fixed on the way.
+>
+> * **G-A3-18 — a semidet callee WITH outputs.** The shape that stopped three
+>   mechanisms. THE CONVENTION: a predicate that has outputs AND can fail returns
+>   its answer (or G-A3-9's tuple) or the module-private sentinel `_uwFail`;
+>   callers test `x !== _uwFail`. In CONDITION position the call is made inside
+>   the condition, into a `let` the block declares just above the `if` — so `&&`
+>   still short-circuits and the payload is bound into the THEN branch only,
+>   which is Prolog's scope rule. In BODY-GOAL position it is a `const` plus an
+>   in-block test, so a failing call falls through to the caller's next clause.
+>   WHY A `Symbol` AND NOT `null`: nothing this target lowers a Prolog term to is
+>   ever null or undefined, so `null` would work *today* — but that is a property
+>   of the current term renderer, not of the convention, and a JS value crossing
+>   the module edge (a registry handed to `parseArgs(argv, registry)`) is outside
+>   it entirely. A module-private Symbol cannot be produced by any term and
+>   cannot be forged by data.
+>   WHICH predicates get it: `ts_pred_can_fail/2`, a LEAST fixpoint over the call
+>   graph. A predicate can fail when (1) some INPUT position's clause heads do not
+>   cover the value space — no clause has a variable there and the shapes are not
+>   exactly `{[], [_|_]}` (`pair_lookup([K-V|Rest], ...)` has no clause for `[]`;
+>   `parse_strict(_, schema(O,P), _, _)` matches only a `schema/2` term) — or
+>   (2) a fallible call, a `\+`, or a bare comparison sits in BODY-GOAL position.
+>   Condition position does not count: a condition is *allowed* to fail.
+>   In `cli_args` that names exactly nine predicates: `pair_lookup/3`,
+>   `last_element/2`, `option_kind/3`, `registry_entry/3`, `action_entry/3`,
+>   `schema_for/5`, `parse_strict/4`, `parse_args/3`, `parse_args/2`. Every other
+>   predicate keeps the exit line it had, so the whole lenient mechanism is
+>   byte-identical.
+>   THE STATED LIMIT, probe-pinned rather than papered over
+>   (`gap_g_a3_18_bare_body_match_does_not_make_a_predicate_semidet`): a bare
+>   `=` MATCH in body-goal position is NOT taken as evidence of fallibility.
+>   Counting it would make `strict_option/11` semidet on the strength of
+>   `Rest = [_Consumed|Rest1]` — a match the preceding `next_value/2` has already
+>   guaranteed — and cascade the sentinel through `strict_loop/8`,
+>   `parse_strict/4` and `parse_args/3`, wrapping every call site in a test that
+>   can never be true. The cost is bounded and LOUD: such a predicate keeps the
+>   det exit, so a match that does fail throws `no matching clause for p/n` — a
+>   crash naming the predicate, never a wrong answer. The 5067-line differential
+>   is the evidence that it never fires.
+>   G-A3-18 also carries two things the fixpoint forced: the OUTPUT analysis is
+>   now a GREATEST fixpoint over the same graph (the single visited-set walk
+>   declined on every cycle, so `nth0_default/4` self-recursion answered "no
+>   outputs" and the mutual `strict_loop/8` ⇄ `strict_option/11` pair settled for
+>   one output where there are three), and an output BUILT IN THE HEAD
+>   (`lenient_result(Argv, ok(Positional, Flags))`) is recognised. Plus ARITY
+>   MANGLING: JavaScript has no overloading, so `parse_args/2` and `parse_args/3`
+>   become `parse_args_2` and `parse_args_3`; an un-overloaded name is untouched.
+> * **G-A3-19 — a ground-fact predicate used as a CONSTANT TABLE.**
+>   `global_options/1`, `default_registry/1`, `js_object_prototype_keys/1`: every
+>   clause is a ground fact, so the output analysis sees no variable in any head
+>   and answered "no outputs" — and the cross-call lowering then read the goal as
+>   a boolean test and emitted `global_options([...])`, a call to a function
+>   nothing declares. The lowering is a MATCH against the table, not a call: with
+>   one fact each argument is matched against the constant (an unbound argument
+>   BINDS to it, a bound one becomes an equality test), with several facts and all
+>   arguments known it is a membership test over the emitted rows. Such a
+>   predicate is not a module member at all, so `ts_pred_callees/2` keeps it out of
+>   the closure. Calling a multi-row table with an unbound argument would be an
+>   enumeration, which this target has no form for; that is refused.
+> * **G-A3-20 — list-BUILDING recursion, and a continuation duplicated into
+>   branches.** Two lowerings, both for an if-then-else the VALUE form cannot take.
+>   (a) DEFERRAL: `drop_brackets([C|Cs], Kept) :- (... -> Kept = Kept1 ; Kept =
+>   [C|Kept1]), drop_brackets(Cs, Kept1).` describes its output in terms of a
+>   value the call AFTER it produces. JavaScript has no such hole, so the
+>   if-then-else is rendered AFTER the rest of the sequence, against the bindings
+>   that come out of it. Guarded twice — the in-place lowering must have failed,
+>   and the CONDITION must be renderable against the bindings available before the
+>   rest runs — so nothing that reads a value the rest produces can be hoisted over
+>   it. (b) CONTINUATION DUPLICATION: a tail-context if-then-else whose branch
+>   opens with a failable test has no `let` form, because a slot cannot express
+>   "and if that test fails, the clause fails". Prolog COMMITS to a branch, so the
+>   continuation is appended to both branches and the whole thing becomes a TAIL
+>   if-then-else, where a failing branch reaches no return and falls through to the
+>   clause's exit. That closes the by-design refusal the fifth run recorded ("a
+>   branch containing a bare failable test") and is what lets `parse_args/3`
+>   compile. A branch may now also open with a failable test inside
+>   `ts_struct_branch_return/8`, nested as an `if` around the branch.
+> * **Two pre-existing correctness bugs, found while probing and fixed.**
+>   (1) A `V = Term` goal where the clause ALREADY holds a value for `V` was a
+>   silent re-binding, dropping the test: `string_concat(S,"!",T), T = "hi!"`
+>   compiled to the concatenation with no comparison at all. It is now the
+>   comparison it is. (2) `vanilla_js_target`'s tuple-annotation strip rule matched
+>   `args: [` inside an OBJECT LITERAL — G-A3-12's compound representation — and
+>   ate it, so `{$: "-", args, ["name"]]}` reached node: a syntax error inside an
+>   otherwise-correct module. The rule now matches the bracket contents as a TYPE
+>   LIST rather than as "anything up to the first `]`".
+>   Also hardened: `ts_pred_outputs/3` now FAILS for a predicate with no visible
+>   clauses. The reachability walk keeps such a predicate in the table with an
+>   empty output set, which reads identically to a genuine semidet test — so an
+>   UNDEFINED callee was briefly lowered as a boolean call to a function no module
+>   declares. That failure is load-bearing: it is what makes an unknown callee
+>   refuse out loud.
+> * **Byte discipline.** 26 shapes × 3 targets = 78 outputs, diffed against the
+>   fifth-run compiler. **72 byte-identical; 6 changed, all required**, and all in
+>   the two shapes G-A3-18 exists for: `a3_wrap(V, some(V))` (an answer built in
+>   the head — was compiled as a 2-parameter boolean TEST, so the caller had to
+>   supply the answer; now `a3_wrap(a1) -> {$: "some", args: [a1]}`) and
+>   `a3_unwrap(some(V), V)` (semidet by head coverage — was a throw, now the
+>   sentinel). Both changes are the gap closing, not a side effect.
+> * Shapes suite 103 → 116 tests, including two ENDGAME tests that read the real
+>   `examples/cli_args/cli_args.pl` from the repository, compile it whole, and run
+>   the compiled `parse_args/2` under node against SWI running the same clauses.
+
+---
+
 ## 0. Headline
 
 > **Fifth-run census** (the table below is the original A3 snapshot and is not
@@ -962,19 +1087,50 @@ the `console.log(...)` calls around them are not. This is pinned as a test:
 *(Original A3 snapshot — every row read "no". Revised after the fifth run; the
 original wording is preserved beneath the table.)*
 
-| mechanism | status now | what each still needs |
+*(Revised again after the SIXTH run. All four rows are now "yes", and so is the
+whole program: `parse_args/2` compiles into one module of 40 functions. The
+fifth-run wording is kept beneath.)*
+
+| mechanism | status after the sixth run | evidence |
+| --- | --- | --- |
+| **lenient loop** (`parse_lenient/3` + 13) | **YES** — 14 predicates, one module | byte-identical to the fifth run |
+| **strict parse** (`parse_strict/4` + `strict_loop/8` + `strict_option/11` + `option_kind/3` + `check_arity/3` + `count_required/3` + `strip_brackets/2` + `drop_brackets/2` + `nth0_default/4` + `last_element/2` + `next_value/2` + `is_long_flag/1` …) | **YES** — 27 predicates, one module, no banner, no dropped goal | G-A3-18 (`option_kind/3`, `last_element/2` in condition position), G-A3-19 (`global_options/1`), G-A3-20 (`drop_brackets/2`) |
+| **leading-globals scan** (`scan_leading_globals/4` + `is_global_key/1` + …) | **YES** — 18 predicates | G-A3-18 + G-A3-19: `( global_options(G), pair_lookup(G, Key, _) -> true ; … )` is a constant-table read followed by a semidet-with-outputs test |
+| **`schemaFor`** (`schema_for/5` + `registry_entry/3` + `action_entry/3` + `js_object_prototype_key/1`) | **YES** — 6 predicates; `schema_for/5` is 2 outputs behind a sentinel test | G-A3-18 (all three lookups) + G-A3-19 (`js_object_prototype_keys/1`) |
+| **`parse_args/2` — the whole program** | **YES** — 40 functions in one module, `node --check` clean, 17/17 corpus, 0 divergences over 5067 lines | `examples/cli_args/patternjs/` |
+
+The fifth-run table, kept for the record:
+
+| mechanism | status then | what each still needed |
 | --- | --- | --- |
 | **lenient loop** (`parse_lenient/3` + `lenient_loop/5` + `starts_with/2`, `split_flag_token/3`, `flags_set/4`, `flags_put/4`, `looks_like_legacy_flag/1`, `legacy_flag_tail/1`, `js_alpha/1`, `js_flag_char/1`, `first_equals_index/2`, `first_char_index/4`, `substring_from/3`, `substring_range/4`) | **YES — compiles whole and matches SWI under node.** 14 predicates, one module, `node --check` clean. | nothing |
 | strict loop (`parse_strict/4` + `strict_loop/8` + `strict_option/11`) | **partial.** `strict_option/11` (the 11-argument, 3-output half), `next_value/2`, `is_long_flag/1`, `long_flag_tail/1`, `pair_lookup/3` all compile. | `strict_loop/8` and `option_kind/3` need a **semidet callee with outputs in condition position** — `( option_kind(Options, Key, Kind) -> ... ; ... )` must both fail and bind. `check_arity/3` needs the same, plus `last_element/2` in a condition. |
 | leading-globals scan (`scan_leading_globals/4`) | **near.** `scan_leading_globals/4` itself compiles — 2 outputs, four nested if-then-elses, `some(V)` matching, three cross-calls — and so does `next_value/2`. | only `is_global_key/1`, which is `( pair_lookup(Globals, Key, _) -> true ; ... )`: the same semidet-with-outputs condition. |
 | `schemaFor` (`schema_for/5` + `registry_entry/3` + `action_entry/3`) | **partial.** `pair_lookup/3`, `string_member/2`, `default_registry/1` and `js_object_prototype_keys/1` compile. | `registry_entry/3` and `action_entry/3` are the same semidet-with-outputs condition. `js_object_prototype_key/1` additionally needs a **ground-fact predicate used as a constant table** to be recognised as having an output (no clause of `js_object_prototype_keys/1` has a variable in its head, so the output analysis sees none). `schema_for/5` needs both. |
 
-One shape accounts for every remaining "partial": a call that is **semidet AND
-produces a value**, used as an if-then-else condition. The current convention
-gives a callee with outputs no way to say "no" other than throwing, so the
-condition cannot be tested. Closing it means a failure sentinel for that class of
-callee (and the determinacy analysis to know which callees need one) — the
-natural next gap.
+One shape accounted for every fifth-run "partial": a call that is **semidet AND
+produces a value**, used as an if-then-else condition. That shape is G-A3-18 and
+it is closed; see the STATUS UPDATE at the top for the sentinel convention and
+the determinacy analysis that decides which callees get it.
+
+### 5.3 The endgame run (sixth), and what it is honestly claiming
+
+`examples/cli_args/patternjs/` holds the transpiled build. The claim is narrow
+and checkable:
+
+* `build.sh` is one command. It reads the FROZEN `cli_args.pl`, compiles
+  `parse_args/2` with `include_dependencies(true)`, and `node --check`s the
+  result. 40 functions, no WARNING banner, no `incomplete lowering`.
+* `cliArgs.patternjs.test.mjs` is `oracle/cliArgs.test.mjs` with **one line
+  changed** — the import. **17 / 17 under `node --test`.**
+* `run_differential_patternjs.sh` is `run_differential.sh` with the Prolog
+  reference replaced by the transpiled parser: the same `gen_cases.mjs`, the same
+  seed, the same `compare_jsonl.mjs`. **5067 argv-lines, 0 divergences, 0 message
+  mismatches** (4150 ok results, 917 errors — the error MESSAGES match too).
+* The only hand-written JavaScript in the path is `cliArgs.mjs`, and it does
+  three things: argv array in, `ok(P, F)` → `{positional, flags}` out (unwrapping
+  `{$: "-", args: [k, v]}` pairs in order), `err(M)` → `throw new CliError(M)`.
+  It carries no branch that depends on an argv token.
 
 The original A3 wording, kept for the record:
 
@@ -982,7 +1138,9 @@ The original A3 wording, kept for the record:
 report will not claim otherwise.** The compiled pieces are two substring
 helpers.<!-- (as of the fifth run: the lenient mechanism in full, with no shim —
 the only hand-written JavaScript in the milestone test is the `console.log` that
-prints what the compiled `parse_lenient` returned.) --> Everything that makes `cli_args.pl` a *parser* — the loops, the assoc
+prints what the compiled `parse_lenient` returned. As of the SIXTH run: the whole
+program, with a term↔JS conversion shim at the edge and no parse logic in it.) -->
+Everything that makes `cli_args.pl` a *parser* — the loops, the assoc
 lookups, the tagged results — is either refused or absent. Writing the loops in
 JavaScript by hand and calling `substring_from` from them would produce a
 working parser that demonstrates nothing about the compiler.
@@ -994,6 +1152,54 @@ hand-filling the gaps would defeat the measurement. The differential harness
 becomes the acceptance gate the moment G-A3-9 + G-A3-10 + G-A3-12 land; until
 then the meaningful gate is the shape suite in
 `tests/core/test_typescript_cli_args_shapes.pl`.
+<!-- Sixth run: G-A3-9, -10, -12, -18, -19 and -20 all landed, the build exists,
+and the harness IS now the acceptance gate — see §5.3. -->
+
+---
+
+## 5.4 Census after the sixth run
+
+| | |
+| --- | --- |
+| Predicates in `cli_args.pl` | **43** |
+| Lower to a correct FUNCTION with no dropped goal | **40** |
+| Ground-fact CONSTANT TABLES, inlined at their call sites (G-A3-19) — not module members | **3** (`global_options/1`, `default_registry/1`, `js_object_prototype_keys/1`) |
+| Refuse | **0** |
+| Mechanisms end-to-end | **4 of 4**, plus `parse_args/2` itself |
+| Fraction of the parser transpilable | **100 %** by predicate count and by mechanism |
+
+One honest footnote on the three constant tables: asked to compile one of them
+*standalone*, the dispatcher still routes it to `compile_facts/3`, which
+stringifies a nested-term argument into one row
+(`{ arg1: "[state-string,name-string]" }`) — the original §3 grading, unchanged.
+That output is never reached from the module, because G-A3-19 inlines the table
+at its call sites and `ts_pred_callees/2` keeps it out of the dependency closure.
+It is a defect of `compile_facts/3`'s row renderer for non-scalar arguments, not
+of the program's lowering, and it is left open.
+
+### Still open after the sixth run
+
+* **`compile_facts/3` stringifies a non-scalar fact argument** (above). Harmless
+  for this program; wrong in isolation.
+* **G-A3-11.3** — parameter and return types are still hardcoded on the
+  clause-body path (`arg<N>: number`, `: string`). Probe-pinned.
+* **Variable-to-variable `==`** is JS identity: `p(A, B) :- A == B.` emits `===`
+  because the structural comparison is chosen from the SOURCE shape, not from a
+  runtime type test. Probe-pinned
+  (`gap_g_a3_12_variable_to_variable_equality_is_identity`).
+* **A bare `=` MATCH in body-goal position does not mark a predicate semidet**
+  (G-A3-18's stated limit). Such a predicate keeps the det exit, so a match that
+  does fail throws by name instead of failing. Probe-pinned
+  (`gap_g_a3_18_bare_body_match_does_not_make_a_predicate_semidet`); the
+  5067-line differential is the evidence it never fires here.
+* **A DET callee with outputs in CONDITION position** still refuses. It is a call
+  that always succeeds and produces a value, used where a test is expected; no
+  `cli_args` shape needs it, so it was not built.
+* **A multi-row ground-fact table called with an unbound argument** is an
+  enumeration — nondeterminism this target has no form for — and is refused.
+* **`ts_head_conditions/4`** inside `native_ts_clause/5` still stringifies a
+  non-variable head argument. Unreachable for anything the dispatcher routes
+  elsewhere; probe kept, pointed at that path directly.
 
 ---
 
@@ -1055,6 +1261,15 @@ S-sized cleanups **G-A3-11**, **G-A3-13**, **G-A3-14**, **G-A3-15**.
 | `tests/core/test_typescript_cli_args_shapes.pl` | **new** — 30 tests: regressions for the 7 fixes, an end-to-end node run of the compiled `substring_from/3`, and 8 executable gap probes |
 
 `vanilla_js_target.pl` needed no change; it inherits all of the above.
+
+### Changes landed in the SIXTH (endgame) run
+
+| file | change |
+| --- | --- |
+| `src/unifyweaver/targets/typescript_target.pl` | G-A3-18: the output analysis becomes a GREATEST FIXPOINT over the call graph (`ts_out_table/2`, `ts_out_graph/5`, `ts_out_iterate/3`, `ts_out_meet/3`, cached on `variant_sha1/2` of the reachable clause set); an output BUILT IN THE HEAD; the reversible-text-builtin direction rule; `ts_pred_can_fail/2`, a LEAST fixpoint, and the `_uwFail` sentinel it drives (`ts_struct_fail_line/1`, the semidet forms in `ts_struct_goal/13` and `ts_cond/7`, `ts_fail_out_exprs/3`, a second on-demand runtime block); `ts_js_name/3` arity mangling; `ts_is_self/2` so a self-call is matched by name AND arity. G-A3-19: `ts_fact_pred/2`, `ts_fact_call/5`, and their goal / condition clauses. G-A3-20: `ts_struct_seq/15`'s deferral clause and its continuation-duplication clause; `ts_struct_branch_return/8` accepts a branch-opening guard. Two correctness fixes: a re-binding `=`/2 no longer drops its test; `ts_pred_outputs/3` fails for a predicate with no visible clauses; `ts_clause_body_defective/2` also routes a block that declares the same name twice |
+| `src/unifyweaver/targets/vanilla_js_target.pl` | the tuple-annotation strip rule matches its bracket contents as a TYPE LIST, so it no longer eats `args: [` inside G-A3-12's compound object literal |
+| `tests/core/test_typescript_cli_args_shapes.pl` | 103 → 116 tests: regressions for G-A3-18/-19/-20, the two stated-limit probes, and two ENDGAME tests that read the real `examples/cli_args/cli_args.pl`, compile it whole, and run the compiled `parse_args/2` under node against SWI |
+| `examples/cli_args/patternjs/` | **new** — `build.sh`, `build.pl`, `cliArgs.generated.mjs`, the edge shim `cliArgs.mjs`, the corpus with its import swapped, `diff_runner_patternjs.mjs`, `run_differential_patternjs.sh`, `README.md` |
 
 ### Regression results (verbatim)
 

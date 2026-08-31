@@ -482,12 +482,17 @@ retract_a3_hazards :-
 % lowered to `{$: "-", args: [k, v]}` the head destructures and the predicate
 % compiles; see g_a3_12_pair_walk_compiles_and_matches_swi below.
 %
-% The three left here still have no lowering path: list-BUILDING recursion
-% (a3_drop_brackets/2), an accumulator loop through a helper that is not defined
-% (a3_merge_flags/3 -- an unknown callee makes the cross-call analysis decline,
-% which is the conservative answer), and an arity-1 if-then-else over two
-% undefined helper calls (a3_is_global_key/1).
-a3_hazard_shapes([a3_merge_flags/3, a3_drop_brackets/2, a3_is_global_key/1]).
+% a3_drop_brackets/2 left the list when G-A3-20 closed: it is list-BUILDING
+% recursion, whose if-then-else describes the output in terms of a value the call
+% AFTER it produces. The if-then-else is now DEFERRED past that call and rendered
+% against the bindings that come out of it, so the predicate compiles; see
+% g_a3_20_list_building_recursion_defers_its_ite below.
+%
+% The two left here still have no lowering path: an accumulator loop through a
+% helper that is not defined (a3_merge_flags/3 -- an unknown callee makes the
+% cross-call analysis decline, which is the conservative answer) and an arity-1
+% if-then-else over two undefined helper calls (a3_is_global_key/1).
+a3_hazard_shapes([a3_merge_flags/3, a3_is_global_key/1]).
 
 %% a3_compile_outcome(+PredSpec, -Outcome)
 %  refused(Spec, Shape, Msg) | compiled(Code) | failed. Never lets a refusal
@@ -522,11 +527,11 @@ test(g_a3_8_runaway_shapes_refuse_fast,
 % shape that disqualified it.
 test(g_a3_8_refusal_names_the_predicate_and_the_body_shape,
      [setup(assert_a3_hazards), cleanup(retract_a3_hazards)]) :-
-    a3_compile_outcome(a3_drop_brackets/2, refused(Spec, Shape, Msg)),
-    Spec == a3_drop_brackets/2,
+    a3_compile_outcome(a3_merge_flags/3, refused(Spec, Shape, Msg)),
+    Spec == a3_merge_flags/3,
     has(Shape, "clause 2 of 2 is a RULE, not a fact"),
-    has(Shape, "if-then-else"),
-    has(Msg, "a3_drop_brackets/2").
+    has(Shape, "a call to a3_flags_set/4"),
+    has(Msg, "a3_merge_flags/3").
 
 % A single-clause rule predicate (no fact clause at all) is refused too.
 assert_a3_ruleonly :-
@@ -596,21 +601,21 @@ test(g_a3_8_genuine_fact_predicate_still_compiles,
 % G-A3-7 got in).
 test(g_a3_8_vanilla_js_inherits_the_guard,
      [setup(assert_a3_hazards), cleanup(retract_a3_hazards)]) :-
-    catch(vanilla_js_target:compile_facts(a3_drop_brackets, 2, _),
+    catch(vanilla_js_target:compile_facts(a3_merge_flags, 3, _),
           error(unsupported_lowering(typescript, Spec1, _), _), true),
-    Spec1 == a3_drop_brackets/2,
-    catch(vanilla_js_target:compile_predicate_to_vanilla_js(a3_drop_brackets/2, [], _),
+    Spec1 == a3_merge_flags/3,
+    catch(vanilla_js_target:compile_predicate_to_vanilla_js(a3_merge_flags/3, [], _),
           error(unsupported_lowering(typescript, Spec2, _), _), true),
-    Spec2 == a3_drop_brackets/2.
+    Spec2 == a3_merge_flags/3.
 
 test(g_a3_8_annotated_js_inherits_the_guard,
      [setup(assert_a3_hazards), cleanup(retract_a3_hazards)]) :-
-    catch(annotated_js_target:compile_facts(a3_drop_brackets, 2, _),
+    catch(annotated_js_target:compile_facts(a3_merge_flags, 3, _),
           error(unsupported_lowering(typescript, Spec1, _), _), true),
-    Spec1 == a3_drop_brackets/2,
-    catch(annotated_js_target:compile_predicate(a3_drop_brackets/2, [], _),
+    Spec1 == a3_merge_flags/3,
+    catch(annotated_js_target:compile_predicate(a3_merge_flags/3, [], _),
           error(unsupported_lowering(typescript, Spec2, _), _), true),
-    Spec2 == a3_drop_brackets/2.
+    Spec2 == a3_merge_flags/3.
 
 % ---------------------------------------------------------------------------
 % G-A3-13 : the boolean atoms lower to JS booleans
@@ -1010,16 +1015,22 @@ test(g_a3_6_semidet_callee_as_a_body_goal_nests,
       condition(node_available)]) :-
     typescript_target:compile_predicate(a3_even_double/2, [], TsCode),
     has(TsCode, "if (a3_even(a1)) {"),
-    % a FALSE answer reaches no return, so the function falls through to its
-    % no-matching-clause tail rather than returning undefined
-    has(TsCode, "throw new Error(\"no matching clause for a3_even_double/2\");"),
+    % G-A3-18 CHANGED THIS ONE LINE. a3_even_double/2 HAS an output and calls a
+    % semidet test in body position, so the determinacy analysis marks it semidet
+    % and its exit line is the failure SENTINEL. A false answer from a3_even/1
+    % reaches no return and falls through to `return _uwFail` -- Prolog's "the
+    % goal failed", where the previous convention could only throw.
+    has(TsCode, "return _uwFail;"),
+    hasnt(TsCode, "no matching clause for a3_even_double/2"),
     vanilla_js_target:compile_module(
         [pred(a3_even_double, 2, facts)],
         [module_name('EvenDouble'), include_dependencies(true)], Js),
     node_check(Js),
     run_struct(Js, "a3_even_double(4)", "8"),
-    run_struct(Js, "(() => { try { return a3_even_double(3); } catch (e) { return \"threw\"; } })()",
-               "\"threw\"").
+    % JSON.stringify of the sentinel Symbol is undefined, which run_struct prints
+    % as the empty string -- so the check is made explicit instead.
+    run_struct(Js, "(typeof a3_even_double(3) === \"symbol\" ? \"failed\" : \"value\")",
+               "\"failed\"").
 
 % --- a DET single-output callee as a body goal -------------------------------
 assert_a3_detcall :-
@@ -1714,11 +1725,15 @@ test(g_a3_10_cli_args_first_char_index_lowers_and_matches_swi,
              run_struct(Code, Call, Got),
              Got == Expect )).
 
-% --- REFUSAL: a branch that carries a bare test is not a straight-line block -
-% `( X > 0 -> X < 100, Acc1 is Acc0 + X ; Acc1 = Acc0 )` can FAIL inside the
-% then branch, which no let/assign block expresses. Lowering it as an assignment
-% would silently drop the `X < 100` test, so the structural path declines and
-% the caller gets the loud refusal instead.
+% --- a branch that carries a bare test (was a refusal; closed by G-A3-20) -----
+% `( X > 0 -> X < 100, Acc1 is Acc0 + X ; Acc1 = Acc0 ), loop(...)` can FAIL
+% inside the then branch, which no let/assign VALUE block expresses -- lowering
+% it as an assignment would silently drop the `X < 100` test.
+%
+% G-A3-20's answer is not an assignment: Prolog COMMITS to a branch, so the
+% continuation is appended to both branches and the if-then-else becomes a TAIL
+% one. The failing test then reaches no return, and G-A3-18 makes the exit line
+% the failure sentinel -- so the compiled predicate FAILS exactly where SWI does.
 assert_a3_guardbranch :-
     assertz(user:a3_guardbranch([], Acc, Acc)),
     assertz((user:a3_guardbranch([X|Xs], Acc0, Acc) :-
@@ -1726,13 +1741,34 @@ assert_a3_guardbranch :-
                 a3_guardbranch(Xs, Acc1, Acc))).
 retract_a3_guardbranch :- retractall(user:a3_guardbranch(_, _, _)).
 
-test(g_a3_10_semidet_branch_still_refuses,
-     [setup(assert_a3_guardbranch), cleanup(retract_a3_guardbranch)]) :-
-    \+ catch(native_structural(a3_guardbranch/3, _), _, fail),
-    % and it refuses LOUDLY through the dispatcher rather than emitting anything
-    a3_compile_outcome(a3_guardbranch/3, Outcome),
-    Outcome = refused(a3_guardbranch/3, Shape, _),
-    has(Shape, "if-then-else").
+test(g_a3_20_semidet_branch_duplicates_the_continuation,
+     [setup(assert_a3_guardbranch), cleanup(retract_a3_guardbranch),
+      condition(node_available)]) :-
+    typescript_target:compile_predicate(a3_guardbranch/3, [], TsCode),
+    hasnt(TsCode, "incomplete lowering"),
+    % the continuation appears in BOTH branches ...
+    aggregate_all(count,
+                  sub_string(TsCode, _, _, _, "a3_guardbranch(a1.slice(1)"),
+                  NCalls),
+    NCalls >= 2,
+    % ... and the semidet test nests, with the sentinel as the fall-through
+    has(TsCode, "return _uwFail;"),
+    vanilla_js_target:compile_module(
+        [pred(a3_guardbranch, 3, facts)],
+        [module_name('GuardBranch'), include_dependencies(true)], Js),
+    node_check(Js),
+    forall(member(L, [[], [1,2], [1,200], [-1,3], [200]]),
+           (   user:a3_guardbranch(L, 0, R)
+           ->  format(string(Expect), "~w", [R]),
+               term_string(L, LS),
+               format(string(Call), "a3_guardbranch(~w, 0)", [LS]),
+               run_struct(Js, Call, Got), Got == Expect
+           ;   term_string(L, LS2),
+               format(string(Call2),
+                      "(typeof a3_guardbranch(~w, 0) === \"symbol\" ? \"failed\" : \"value\")",
+                      [LS2]),
+               run_struct(Js, Call2, Got2), Got2 == "\"failed\""
+           )).
 
 % --- REFUSAL: branches that bind different variables ------------------------
 assert_a3_diffvars :-
@@ -2031,13 +2067,16 @@ test(g_a3_16_list_head_pattern_destructures,
                format(string(Call), "a3_pair_lookup(~w, ~q)", [PsJs, K]),
                format(string(Expect), "~q", [V]),
                run_struct(Code, Call, Got), Got == Expect
-           ;   true          % SWI fails; the compiled form throws, checked below
+           ;   true          % SWI fails; the compiled form answers the sentinel
            )),
-    % failure IS a throw for a callee with outputs -- the convention this gap's
-    % sibling (G-A3-6) states, not silence
+    % G-A3-18 CHANGED THIS. a3_pair_lookup/3 has an output AND a head-coverage
+    % gap (no clause matches `[]`), so it is semidet: failure is the SENTINEL,
+    % not a throw. That is what makes `( pair_lookup(L, K, V) -> ... ; ... )`
+    % expressible -- the caller can test it and still read V in the then-branch.
+    has(TsCode, "return _uwFail;"),
     run_struct(Code,
-        "(() => { try { return a3_pair_lookup([], \"a\"); } catch (e) { return \"threw\"; } })()",
-        "\"threw\"").
+        "(typeof a3_pair_lookup([], \"a\") === \"symbol\" ? \"failed\" : \"value\")",
+        "\"failed\"").
 
 % The clause-body path's OWN head renderer is unchanged: it is now unreachable
 % for anything the dispatcher routes elsewhere, but wrong in isolation, so the
@@ -2315,5 +2354,371 @@ a3_lenient_json(Pos, Flags, Json) :-
 a3_json_scalar(true,  "true")  :- !.
 a3_json_scalar(false, "false") :- !.
 a3_json_scalar(V, S) :- format(string(S), "~q", [V]).
+
+% ===========================================================================
+% G-A3-18 : A SEMIDET CALLEE WITH OUTPUTS -- the failure sentinel
+% ===========================================================================
+%
+% The one shape that stopped three of the four mechanisms. A call that must both
+% FAIL (selecting the else branch) and BIND (so the then branch can read what it
+% produced):
+%
+%     ( pair_lookup(Options, Key, Kind) -> ... uses Kind ... ; ... )
+%
+% The convention: a predicate that HAS outputs and CAN FAIL returns its value (or
+% G-A3-9's tuple) or the module-private Symbol `_uwFail`. Callers test
+% `x !== _uwFail`; in condition position the call is made into a `let` declared
+% just above the `if`, so `&&` still short-circuits and the payload is in hand for
+% the then branch only.
+
+assert_a3_sd :-
+    % semidet WITH an output: no clause matches [], so it can fail
+    assertz((user:a3_sd_lookup([K-V|Rest], Key, Value) :-
+                ( K == Key -> Value = V ; a3_sd_lookup(Rest, Key, Value) ))),
+    % the caller: the shape the gap is named for
+    assertz((user:a3_sd_kind(Pairs, Key, Kind) :-
+                ( a3_sd_lookup(Pairs, Key, K1) -> Kind = K1 ; Kind = "none" ))),
+    % ... and the same call in BODY-GOAL position
+    assertz((user:a3_sd_must(Pairs, Key, Out) :-
+                a3_sd_lookup(Pairs, Key, V), Out = V)),
+    % a DET predicate with an output keeps the exit line it always had
+    assertz(user:a3_sd_det([], 0)),
+    assertz((user:a3_sd_det([_|T], N) :- a3_sd_det(T, N0), N is N0 + 1)).
+retract_a3_sd :-
+    retractall(user:a3_sd_lookup(_, _, _)),
+    retractall(user:a3_sd_kind(_, _, _)),
+    retractall(user:a3_sd_must(_, _, _)),
+    retractall(user:a3_sd_det(_, _)).
+
+test(g_a3_18_semidet_callee_with_outputs_in_a_condition,
+     [setup(assert_a3_sd), cleanup(retract_a3_sd), condition(node_available)]) :-
+    typescript_target:compile_predicate(a3_sd_kind/3, [], TsCode),
+    % the call is made into a `let` declared before the `if` ...
+    has(TsCode, "let _t0;"),
+    has(TsCode, "if ((_t0 = a3_sd_lookup(a1, a2)) !== _uwFail) {"),
+    % ... and the then-branch reads the payload out of it
+    has(TsCode, "return _t0;"),
+    hasnt(TsCode, "incomplete lowering"),
+    vanilla_js_target:compile_module(
+        [pred(a3_sd_kind, 3, facts)],
+        [module_name('SdKind'), include_dependencies(true)], Js),
+    node_check(Js),
+    forall(member(Ps-K, [ ["a"-"1"]-"a", ["a"-"1"]-"z",
+                          ["a"-"1","b"-"2"]-"b", []-"a" ]),
+           ( user:a3_sd_kind(Ps, K, Expect0),
+             a3_pairs_json(Ps, PsJs),
+             format(string(Call), "a3_sd_kind(~w, ~q)", [PsJs, K]),
+             format(string(Expect), "~q", [Expect0]),
+             run_struct(Js, Call, Got), Got == Expect )).
+
+% In BODY-GOAL position the same callee gets an in-block test, so a failing call
+% falls through to the caller's own exit -- which is the sentinel again, because
+% a caller of a fallible goal is itself fallible.
+test(g_a3_18_semidet_callee_with_outputs_as_a_body_goal,
+     [setup(assert_a3_sd), cleanup(retract_a3_sd), condition(node_available)]) :-
+    typescript_target:compile_predicate(a3_sd_must/3, [], TsCode),
+    has(TsCode, "const _s0 = a3_sd_lookup(a1, a2);"),
+    has(TsCode, "if (_s0 !== _uwFail) {"),
+    has(TsCode, "return _uwFail;"),
+    vanilla_js_target:compile_module(
+        [pred(a3_sd_must, 3, facts)],
+        [module_name('SdMust'), include_dependencies(true)], Js),
+    node_check(Js),
+    run_struct(Js, "a3_sd_must([{\"$\":\"-\",\"args\":[\"a\",\"1\"]}], \"a\")", "\"1\""),
+    run_struct(Js, "(typeof a3_sd_must([], \"a\") === \"symbol\" ? \"failed\" : \"value\")",
+               "\"failed\"").
+
+% The determinacy analysis has to be a DECISION, not a blanket: a det predicate
+% with an output keeps the exit line it always had, so nothing that compiled
+% before grows a sentinel it never returns.
+test(g_a3_18_a_det_predicate_with_an_output_keeps_the_throw,
+     [setup(assert_a3_sd), cleanup(retract_a3_sd)]) :-
+    \+ typescript_target:ts_pred_can_fail(a3_sd_det, 2),
+    typescript_target:ts_pred_can_fail(a3_sd_lookup, 3),
+    typescript_target:compile_predicate(a3_sd_det/2, [], Code),
+    has(Code, "no matching clause for a3_sd_det/2"),
+    hasnt(Code, "_uwFail").
+
+% A MULTI-OUTPUT semidet callee: the sentinel replaces the whole tuple, and the
+% then branch reads the outputs out of the one slot positionally. This is
+% `schema_for/5` (Schema + ActionConsumed) reduced to its skeleton.
+assert_a3_sd2 :-
+    assertz((user:a3_sd_two(Pairs, Key, V, W) :-
+                a3_sd_lookup(Pairs, Key, V), W = true)),
+    assertz((user:a3_sd_use(Pairs, Key, Out) :-
+                ( a3_sd_two(Pairs, Key, V, W) -> Out = f(V, W) ; Out = none ))).
+retract_a3_sd2 :-
+    retractall(user:a3_sd_two(_, _, _, _)), retractall(user:a3_sd_use(_, _, _)).
+
+test(g_a3_18_multi_output_semidet_condition_binds_every_output,
+     [setup((assert_a3_sd, assert_a3_sd2)),
+      cleanup((retract_a3_sd2, retract_a3_sd)), condition(node_available)]) :-
+    typescript_target:compile_predicate(a3_sd_use/3, [], TsCode),
+    has(TsCode, ") !== _uwFail) {"),
+    has(TsCode, "[0]"), has(TsCode, "[1]"),
+    hasnt(TsCode, "incomplete lowering"),
+    vanilla_js_target:compile_module(
+        [pred(a3_sd_use, 3, facts)],
+        [module_name('SdUse'), include_dependencies(true)], Js),
+    node_check(Js),
+    run_struct(Js,
+        "a3_sd_use([{\"$\":\"-\",\"args\":[\"a\",\"1\"]}], \"a\").$", "\"f\""),
+    run_struct(Js, "a3_sd_use([], \"a\")", "\"none\"").
+
+% THE STATED LIMIT, pinned rather than papered over. A bare `=` MATCH in
+% body-goal position is not taken as evidence of fallibility. Counting it would
+% make `strict_option/11` semidet on the strength of `Rest = [_|Rest1]` -- a
+% match the preceding `next_value/2` has already guaranteed -- and cascade the
+% sentinel through every caller. The cost is bounded and LOUD: such a predicate
+% keeps the det exit, so a match that does fail throws by name.
+% (The match is against a BODY-LOCAL value on purpose: SWI's clause indexer
+% hoists `L = [X|_]` into the head, which would make this a head-coverage gap --
+% a different rule -- rather than the body-position test the probe is about.)
+assert_a3_bodymatch :-
+    assertz((user:a3_bm(S, K, Out) :-
+                string_concat(S, "!", T), T = "hi!", Out is K * 2)).
+retract_a3_bodymatch :- retractall(user:a3_bm(_, _, _)).
+
+test(gap_g_a3_18_bare_body_match_does_not_make_a_predicate_semidet,
+     [setup(assert_a3_bodymatch), cleanup(retract_a3_bodymatch)]) :-
+    \+ typescript_target:ts_pred_can_fail(a3_bm, 3),
+    typescript_target:compile_predicate(a3_bm/3, [], Code),
+    % SWI FAILS on a3_bm("zz", 2, _); the compiled form throws instead. Loud, and
+    % wrong only in which of the two "no answer" shapes it uses.
+    has(Code, "no matching clause for a3_bm/3"),
+    hasnt(Code, "_uwFail").
+
+% Arity overloading. JavaScript has none, so `parse_args/2` and `parse_args/3`
+% cannot both be `function parse_args` -- the second declaration would silently
+% replace the first. A name that IS overloaded gets its arity appended; a name
+% that is not keeps the name it always had.
+assert_a3_overload :-
+    assertz((user:a3_ov(X, Y) :- a3_ov(X, 2, Y))),
+    assertz((user:a3_ov(X, K, Y) :- Y is X * K)).
+retract_a3_overload :-
+    retractall(user:a3_ov(_, _)), retractall(user:a3_ov(_, _, _)).
+
+test(g_a3_18_arity_overloaded_names_get_distinct_functions,
+     [setup(assert_a3_overload), cleanup(retract_a3_overload),
+      condition(node_available)]) :-
+    vanilla_js_target:compile_module(
+        [pred(a3_ov, 2, facts)],
+        [module_name('Ov'), include_dependencies(true)], Js),
+    has(Js, "function a3_ov_2("),
+    has(Js, "function a3_ov_3("),
+    node_check(Js),
+    run_struct(Js, "a3_ov_2(21)", "42").
+
+% ===========================================================================
+% G-A3-19 : a ground-fact predicate used as a CONSTANT TABLE
+% ===========================================================================
+% Every clause is a ground fact, so the output analysis sees no variable in any
+% head and answers "no outputs" -- and the cross-call lowering then read the goal
+% as a boolean test and emitted a call to a function nothing declares. The
+% lowering is a MATCH against the table, not a call.
+
+assert_a3_ct :-
+    assertz(user:a3_ct_globals(["state"-string, "name"-string])),
+    assertz(user:a3_ct_row(a, 1)),
+    assertz(user:a3_ct_row(b, 2)),
+    assertz((user:a3_ct_kind(Key, Kind) :-
+                a3_ct_globals(G), a3_sd_lookup(G, Key, Kind))),
+    assertz((user:a3_ct_has(K, N) :- a3_ct_row(K, N))).
+retract_a3_ct :-
+    retractall(user:a3_ct_globals(_)),
+    retractall(user:a3_ct_row(_, _)),
+    retractall(user:a3_ct_kind(_, _)),
+    retractall(user:a3_ct_has(_, _)).
+
+test(g_a3_19_single_fact_table_binds_its_constant,
+     [setup((assert_a3_sd, assert_a3_ct)),
+      cleanup((retract_a3_ct, retract_a3_sd)), condition(node_available)]) :-
+    typescript_target:compile_predicate(a3_ct_kind/2, [], TsCode),
+    % the constant is INLINED -- there is no a3_ct_globals function to call
+    hasnt(TsCode, "a3_ct_globals("),
+    has(TsCode, "{$: \"-\", args: [\"state\", \"string\"]}"),
+    hasnt(TsCode, "incomplete lowering"),
+    vanilla_js_target:compile_module(
+        [pred(a3_ct_kind, 2, facts)],
+        [module_name('CtKind'), include_dependencies(true)], Js),
+    % ... and the fact table is NOT a module member: nothing calls it
+    hasnt(Js, "function a3_ct_globals"),
+    hasnt(Js, "a3_ct_globalsFacts"),
+    node_check(Js),
+    run_struct(Js, "a3_ct_kind(\"state\")", "\"string\""),
+    run_struct(Js, "(typeof a3_ct_kind(\"zzz\") === \"symbol\" ? \"failed\" : \"value\")",
+               "\"failed\"").
+
+% A MULTI-ROW table called with every argument known is a membership test over
+% the rows. Called with an unbound argument it would be an ENUMERATION, which
+% this target has no form for, so that is refused rather than guessed.
+test(g_a3_19_multi_row_fact_table_is_a_membership_test,
+     [setup(assert_a3_ct), cleanup(retract_a3_ct), condition(node_available)]) :-
+    typescript_target:compile_predicate(a3_ct_has/2, [], TsCode),
+    has(TsCode, ".some((r) => _uwEq(r,"),
+    vanilla_js_target:compile_predicate_to_vanilla_js(a3_ct_has/2, [], Js),
+    node_check(Js),
+    run_struct(Js, "a3_ct_has(\"a\", 1)", "true"),
+    run_struct(Js, "a3_ct_has(\"a\", 2)", "false").
+
+% ===========================================================================
+% G-A3-20 : list-BUILDING recursion, and a continuation duplicated into branches
+% ===========================================================================
+% `drop_brackets/2` describes its output in terms of a value the call AFTER the
+% if-then-else produces. JavaScript has no such hole, so the if-then-else is
+% DEFERRED past that call and rendered against the bindings that come out of it.
+
+assert_a3_db :-
+    assertz(user:a3_db([], [])),
+    assertz((user:a3_db([C|Cs], Kept) :-
+                ( ( C == '[' ; C == ']' ) -> Kept = Kept1 ; Kept = [C|Kept1] ),
+                a3_db(Cs, Kept1))).
+retract_a3_db :- retractall(user:a3_db(_, _)).
+
+test(g_a3_20_list_building_recursion_defers_its_ite,
+     [setup(assert_a3_db), cleanup(retract_a3_db), condition(node_available)]) :-
+    typescript_target:compile_predicate(a3_db/2, [], TsCode),
+    hasnt(TsCode, "incomplete lowering"),
+    % the recursive call is emitted BEFORE the if-then-else that reads its answer
+    once(sub_string(TsCode, CallAt, _, _, "const _s0 = a3_db(a1.slice(1));")),
+    once(sub_string(TsCode, IteAt, _, _, "let _s1;")),
+    CallAt < IteAt,
+    has(TsCode, "_s1 = [a1[0], ..._s0];"),
+    vanilla_js_target:compile_predicate_to_vanilla_js(a3_db/2, [], Js),
+    node_check(Js),
+    forall(member(Cs, [[], ['[',a,']'], [a,b], ['[',']'], [a,'[',b,']',c]]),
+           ( user:a3_db(Cs, Kept),
+             js_atom_list(Cs, LS), js_json_atom_list(Kept, KS),
+             format(string(Call), "a3_db(~w)", [LS]),
+             run_struct(Js, Call, Got), Got == KS )).
+
+%% js_json_atom_list(+Atoms, -Literal) -- what JSON.stringify prints for the list
+%% (no spaces after the commas, unlike js_atom_list/2's readable literal).
+js_json_atom_list(Atoms, Literal) :-
+    findall(Q, ( member(A, Atoms), format(string(Q), "\"~w\"", [A]) ), Quoted),
+    atomic_list_concat(Quoted, ',', Inner),
+    format(string(Literal), "[~w]", [Inner]).
+
+% ===========================================================================
+% THE ENDGAME : the WHOLE of examples/cli_args/cli_args.pl, as one module
+% ===========================================================================
+% Not a reduced skeleton this time -- the real file, read from the repository and
+% pushed through compile_module/3 with include_dependencies(true). 41 predicates
+% (every one `parse_args/2` transitively calls), one module, node --check clean,
+% no WARNING banner, no dropped goal; and the compiled `parse_args/2` agrees with
+% SWI running the same clauses on every argv line tried.
+%
+% The clauses are READ and asserted into `user` rather than the file consulted,
+% because the pattern compilers read a predicate through user:clause/2 and
+% cli_args.pl is a module. Nothing is executed at compile time (G-A3-8's rule).
+
+a3_cli_args_file(File) :-
+    source_file(a3_cli_args_file(_), Here),
+    file_directory_name(Here, TestDir),
+    atomic_list_concat([TestDir, '/../../examples/cli_args/cli_args.pl'], File0),
+    absolute_file_name(File0, File),
+    exists_file(File).
+
+a3_cli_args_preds([parse_args/2, parse_args/3, scan_leading_globals/4,
+                   schema_for/5, registry_entry/3, action_entry/3,
+                   option_kind/3, pair_lookup/3, strict_loop/8, strict_option/11,
+                   parse_strict/4, check_arity/3, count_required/3,
+                   strip_brackets/2, drop_brackets/2, last_element/2,
+                   nth0_default/4, next_value/2, is_global_key/1,
+                   js_object_prototype_key/1, string_member/2, merge_flags/3,
+                   parse_lenient/3, lenient_loop/5, lenient_result/2,
+                   flags_set/4, flags_put/4, split_flag_token/3, starts_with/2,
+                   is_long_flag/1, looks_like_legacy_flag/1]).
+
+load_a3_cli_args :-
+    a3_cli_args_file(File),
+    setup_call_cleanup(open(File, read, S), a3_read_into_user(S), close(S)).
+
+a3_read_into_user(S) :-
+    read_term(S, T, []),
+    (   T == end_of_file
+    ->  true
+    ;   ( T = (:- _) -> true ; assertz(user:T) ),
+        a3_read_into_user(S)
+    ).
+
+unload_a3_cli_args :-
+    a3_cli_args_all(Specs),
+    forall(member(P/A, Specs),
+           ( functor(H, P, A), retractall(user:H) )).
+
+a3_cli_args_all([parse_args/2, parse_args/3, default_registry/1, global_options/1,
+                 js_object_prototype_keys/1, js_object_prototype_key/1,
+                 is_long_flag/1, long_flag_tail/1, looks_like_legacy_flag/1,
+                 legacy_flag_tail/1, js_alpha/1, js_flag_char/1, starts_with/2,
+                 substring_from/3, substring_range/4, first_equals_index/2,
+                 first_char_index/4, split_flag_token/3, string_member/2,
+                 pair_lookup/3, nth0_default/4, last_element/2, flags_set/4,
+                 flags_put/4, merge_flags/3, merge_flags_/3, schema_for/5,
+                 registry_entry/3, action_entry/3, parse_lenient/3,
+                 lenient_loop/5, parse_strict/4, strict_loop/8, strict_option/11,
+                 next_value/2, option_kind/3, check_arity/3, count_required/3,
+                 strip_brackets/2, drop_brackets/2, lenient_result/2,
+                 scan_leading_globals/4, is_global_key/1]).
+
+test(endgame_whole_cli_args_program_compiles_into_one_module,
+     [setup(load_a3_cli_args), cleanup(unload_a3_cli_args)]) :-
+    typescript_target:compile_module([pred(parse_args, 2, facts)],
+        [module_name('CliArgs'), include_dependencies(true)], Code),
+    hasnt(Code, "WARNING"),
+    hasnt(Code, "incomplete lowering"),
+    a3_cli_args_preds(Preds),
+    forall(member(P/A, Preds),
+           (   typescript_target:ts_js_name(P, A, Name),
+               format(string(Marker), "function ~w(", [Name]),
+               ( has(Code, Marker) -> true
+               ; throw(missing_predicate(P/A, Name)) )
+           )),
+    % the two runtimes are each emitted exactly ONCE
+    aggregate_all(count, sub_string(Code, _, _, _, "function _uwEq("), 1),
+    aggregate_all(count, sub_string(Code, _, _, _, "const _uwFail ="), 1).
+
+a3_endgame_argv([ ["block", "--include-key", "bob"],
+                  ["block", "bob", "--include-key=false"],
+                  ["block", "bob", "--include-keey"],
+                  ["block"],
+                  ["--state", "P", "block", "bob"],
+                  ["commands", "add", "deploy", "--", "./run.sh", "--env", "prod"],
+                  ["add", "bob", "--key", "-----BEGIN-PUBLIC-KEY-----"],
+                  ["daemon", "--debug"],
+                  ["daemon", "--debug", "2"],
+                  ["daemon", "--debug=2"],
+                  ["profiles", "pin", "trusted", "--force"],
+                  ["profiles", "remove", "temp", "--force"],
+                  ["add", "bob", "--profile"],
+                  ["unblock", "--key", "ABCDEF12"],
+                  ["tunnels", "add", "acp", "--anything", "here"],
+                  ["tunnels", "--a", "--b=c"],
+                  ["route", "send", "--dest", "x", "hello", "world"],
+                  [] ]).
+
+test(endgame_compiled_parse_args_matches_swi_under_node,
+     [setup(load_a3_cli_args), cleanup(unload_a3_cli_args),
+      condition(node_available)]) :-
+    vanilla_js_target:compile_module([pred(parse_args, 2, facts)],
+        [module_name('CliArgs'), include_dependencies(true)], Code),
+    node_check(Code),
+    a3_endgame_argv(Cases),
+    forall(member(Argv, Cases),
+           ( user:parse_args(Argv, Result),
+             a3_endgame_json(Result, Expect),
+             a3_js_string_list(Argv, ArgvJs),
+             format(string(Call), "parse_args_2(~w)", [ArgvJs]),
+             run_struct(Code, Call, Got),
+             ( Got == Expect -> true ; throw(mismatch(Argv, Expect, Got)) ) )).
+
+%% a3_endgame_json(+Result, -Json) — what JSON.stringify prints for the compiled
+%% answer: a tagged object whose args carry the term representation.
+a3_endgame_json(ok(Pos, Flags), Json) :- !,
+    a3_js_string_list(Pos, PosJs),
+    a3_pairs_json(Flags, FlagsJs),
+    format(string(Json), "{\"$\":\"ok\",\"args\":[~w,~w]}", [PosJs, FlagsJs]).
+a3_endgame_json(error(Msg), Json) :-
+    format(string(Json), "{\"$\":\"error\",\"args\":[~q]}", [Msg]).
 
 :- end_tests(typescript_cli_args_shapes).
