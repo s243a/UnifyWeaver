@@ -61,6 +61,7 @@
 :- dynamic user:probe_term_meta/0.
 :- dynamic user:probe_op3/0.
 :- dynamic user:probe_parse_likes/0.
+:- dynamic user:probe_string_tag/0.
 
 install_probes :-
     retractall(user:probe_findall),
@@ -103,6 +104,7 @@ install_probes :-
     retractall(user:probe_term_meta),
     retractall(user:probe_op3),
     retractall(user:probe_parse_likes),
+    retractall(user:probe_string_tag),
     assertz((user:probe_findall :-
         findall(X, member(X, [1,2,3]), L), write(L), nl, L == [1,2,3])),
     assertz((user:probe_functor :-
@@ -269,6 +271,20 @@ install_probes :-
     assertz((user:probe_parse_likes :-
         read_term_from_atom('alice likes bob', T),
         T == likes(alice, bob),
+        write(ok), nl)),
+    assertz((user:probe_string_tag :-
+        atom_string(a, S), string(S), \+ atom(S),
+        string_to_atom(S, A0), A0 == a,
+        split_string('a,b,c', ',', '', Parts),
+        Parts = [P1, P2, P3],
+        string(P1), string(P2), string(P3),
+        atom_string(a, EA), atom_string(b, EB), atom_string(c, EC),
+        P1 == EA, P2 == EB, P3 == EC,
+        string_concat(x, y, Z), string(Z),
+        atom_string(xy, EZ), Z == EZ,
+        atom_string(foo, SFoo),
+        sort([foo, SFoo, 1, bar], Ord),
+        Ord == [1, SFoo, bar, foo],
         write(ok), nl)).
 
 probe_preds([
@@ -306,7 +322,8 @@ probe_preds([
     user:probe_assoc/0,
     user:probe_parse_atom/0,
     user:probe_term_meta/0,
-    user:probe_op3/0
+    user:probe_op3/0,
+    user:probe_string_tag/0
 ]).
 
 :- dynamic user:ctw_js/0.
