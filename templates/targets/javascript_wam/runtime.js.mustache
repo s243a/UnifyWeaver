@@ -3535,6 +3535,20 @@ Runtime.run = function (program, state) {
   state.halt = false;
   let steps = 0;
   const limit = 2000000;
+  if (!Runtime._prof) {
+    while (!state.halt) {
+      if (++steps > limit) return false;
+      const inst = program.instructions[state.pc];
+      if (inst === undefined || inst === null) return false;
+      const pcBefore = state.pc;
+      if (Runtime.step(program, state, inst) !== true) {
+        if (Runtime.backtrack(state) !== true) return false;
+      } else if (state.pc === pcBefore && !state.halt) {
+        state.pc += 1;
+      }
+    }
+    return true;
+  }
   while (!state.halt) {
     if (++steps > limit) return false;
     const r = run_one_instruction(program, state);
@@ -3549,6 +3563,30 @@ Runtime.collect_run = function (program, state, onSolution) {
   state.halt = false;
   let steps = 0;
   const limit = 2000000;
+  if (!Runtime._prof) {
+    while (true) {
+      while (!state.halt) {
+        if (++steps > limit) return;
+        const inst = program.instructions[state.pc];
+        if (inst === undefined || inst === null) {
+          state.halt = true;
+          break;
+        }
+        const pcBefore = state.pc;
+        if (Runtime.step(program, state, inst) !== true) {
+          if (Runtime.backtrack(state) !== true) {
+            return;
+          }
+        } else if (state.pc === pcBefore && !state.halt) {
+          state.pc += 1;
+        }
+      }
+      if (!state.halt) return;
+      onSolution(state);
+      if (Runtime.backtrack(state) !== true) return;
+      state.halt = false;
+    }
+  }
   while (true) {
     while (!state.halt) {
       if (++steps > limit) return;
@@ -3561,7 +3599,7 @@ Runtime.collect_run = function (program, state, onSolution) {
     }
     if (!state.halt) return;
     onSolution(state);
-    if (Runtime._prof) Runtime._prof.backtracks += 1;
+    Runtime._prof.backtracks += 1;
     if (Runtime.backtrack(state) !== true) return;
     state.halt = false;
   }

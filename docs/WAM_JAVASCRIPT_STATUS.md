@@ -137,7 +137,8 @@ parser, not the bundled portable `compiled(prolog_term_parser)`.
 
 Opt-in interpreter instrumentation. **Off by default:** `Runtime._prof` is
 `null` and every hook is a single falsy check (no allocation). When off,
-stdout and stderr are byte-identical to an uninstrumented run.
+`Runtime.run` / `collect_run` take the same instruction loop as before this
+change; stdout and stderr are byte-identical to an uninstrumented run.
 
 ### Activation
 

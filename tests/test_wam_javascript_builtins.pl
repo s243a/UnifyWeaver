@@ -402,17 +402,22 @@ run_node_split(Dir, EnvPairs, Args, Exit, Stdout, Stderr) :-
 
 profile_table_calls(Stderr, Pred, Calls) :-
     split_string(Stderr, "\n", "", Lines),
-    member(Line, Lines),
-    split_string(Line, " \t", " \t", Toks),
-    Toks = [Pred, CallsStr|_],
-    number_string(Calls, CallsStr).
+    once((
+        member(Line, Lines),
+        split_string(Line, " \t", " \t", Toks),
+        Toks = [Pred, CallsStr|_],
+        number_string(Calls, CallsStr)
+    )).
 
 profile_json_pred(Dict, Pred, Row) :-
     get_dict(predicates, Dict, Preds),
-    member(Row, Preds),
-    get_dict(pred, Row, Name),
-    format(string(S), '~w', [Name]),
-    S == Pred.
+    once((
+        member(Row0, Preds),
+        get_dict(pred, Row0, Name),
+        format(string(S), '~w', [Name]),
+        S == Pred,
+        Row = Row0
+    )).
 
 install_profile_preds :-
     retractall(user:fib/2),
