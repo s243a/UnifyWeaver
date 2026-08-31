@@ -62,6 +62,7 @@
 :- dynamic user:probe_op3/0.
 :- dynamic user:probe_parse_likes/0.
 :- dynamic user:probe_string_tag/0.
+:- dynamic user:probe_string_polish/0.
 
 install_probes :-
     retractall(user:probe_findall),
@@ -105,6 +106,7 @@ install_probes :-
     retractall(user:probe_op3),
     retractall(user:probe_parse_likes),
     retractall(user:probe_string_tag),
+    retractall(user:probe_string_polish),
     assertz((user:probe_findall :-
         findall(X, member(X, [1,2,3]), L), write(L), nl, L == [1,2,3])),
     assertz((user:probe_functor :-
@@ -285,6 +287,20 @@ install_probes :-
         atom_string(foo, SFoo),
         sort([foo, SFoo, 1, bar], Ord),
         Ord == [1, SFoo, bar, foo],
+        write(ok), nl)),
+    assertz((user:probe_string_polish :-
+        atom_string(abc, Sabc), string_length(Sabc, N), N == 3,
+        string_length(abc, N2), N2 == 3,
+        string_length(123, N3), N3 == 3,
+        atom_string(ab, SAB),
+        writeq([SAB, foo]), nl,
+        writeq('hello world'), nl,
+        writeq(foo), nl,
+        writeq([]), nl,
+        atom_string(ab, S2), write(S2), nl,
+        atom_string(x, SX),
+        format('~q', [SX]), nl,
+        format('~q', [[SX, y]]), nl,
         write(ok), nl)).
 
 probe_preds([
@@ -323,7 +339,8 @@ probe_preds([
     user:probe_parse_atom/0,
     user:probe_term_meta/0,
     user:probe_op3/0,
-    user:probe_string_tag/0
+    user:probe_string_tag/0,
+    user:probe_string_polish/0
 ]).
 
 :- dynamic user:ctw_js/0.
@@ -449,6 +466,23 @@ test(emitted_op_decls, [setup(install_probes)]) :-
     run_node(Dir, 'probe_parse_likes/0', Exit, Out),
     assertion(Exit =:= 0),
     assertion(node_succeeded(Out)).
+
+test(string_polish_output, [setup(install_probes)]) :-
+    Dir = 'output/js_wam_string_polish',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:probe_string_polish/0],
+        [emit_mode(interpreter)], Dir),
+    run_node(Dir, 'probe_string_polish/0', Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Out)),
+    assertion(sub_string(Out, _, _, _, '["ab",foo]')),
+    assertion(sub_string(Out, _, _, _, "'hello world'")),
+    assertion(sub_string(Out, _, _, _, "foo")),
+    assertion(sub_string(Out, _, _, _, '["x",y]')),
+    split_string(Out, "\n", "", Lines),
+    assertion(member("ab", Lines)),
+    assertion(member("\"x\"", Lines)).
 
 :- end_tests(js_wam_builtins).
 
