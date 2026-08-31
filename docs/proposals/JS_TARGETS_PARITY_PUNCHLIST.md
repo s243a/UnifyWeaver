@@ -70,7 +70,7 @@ in-flight parity analyses — see §6).
 
 | ID | Target | Item | Owner | Branch |
 |---|---|---|---|---|
-| A1 | (SWI spec) | **peerhailer argparser in Prolog** — `examples/cli_args/cli_args.pl` mirroring `oracle/cliArgs.js` exactly (`parse_args(Argv, R)`, `R = ok(Positional, Flags) \| error(Message)`; schemas as facts; strict + verbatim lenient + leading globals). Verified by a plunit port of the 17-test corpus AND a seeded differential harness vs the node oracle over the token alphabet (lines len 2–7). All 17 tests in scope (design keeps the lenient fallback). | opus | (worktree) |
+| A1 ✅ | (SWI spec) | **peerhailer argparser in Prolog — DONE** (`examples/cli_args/`): `cli_args.pl` mirrors the oracle exactly — schemas as `Name-schema(Options,Positionals)\|group(Actions)` data, strict + verbatim lenient + leading globals, `ok(Positional,Flags)`/`err(Message)` tagged results (no throw; the JS edge maps `err→CliError`), flags as insertion-ordered KV pairs. Even the JS prototype-chain lookup quirks (`--toString` as a truthy global, `--__proto__` no-op assignment) are modelled. **17/17 plunit** + **5067-line seeded differential vs node oracle: 0 divergences, 0 message mismatches**. Pure/det/tail-recursive, no cuts/throws/pcre — transpilation-ready. A2/A3 re-point `run_differential.sh`'s Prolog leg at the transpiled build (same seed, same bar). | opus | merged |
 | GP-PROF | wam_javascript | **Runtime profiling** (user-named gap): opt-in instrumentation in the JS WAM runtime — per-predicate call counts, instruction counts, choice points, wall time; off by default, zero behavior change when off. | grok | grok/wamjs-profiling |
 
 ### Phase 2 — the argparser maturity demonstration (A-series)
