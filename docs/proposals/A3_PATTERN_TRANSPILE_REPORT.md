@@ -52,19 +52,67 @@ enough to be a punchlist. The catalogue in §4 is the deliverable.
 > harness. Multi-output modules get a JSON CLI entry. Shapes suite 67 → 81.
 > Payoff: `lenient_loop/5`'s and `scan_leading_globals/4`'s exact loop skeletons
 > now compile and match SWI; G-A3-9 is no longer the blocker for ANY mechanism.
-> Still OPEN — the shared blocker is now **G-A3-6** (cross-predicate calls in
-> bodies and guard positions: `starts_with/2`, `flags_set/4`, `split_flag_token/3`
-> etc.; includes calls to multi-output predicates — the clause-body path holds
-> one output slot — and `strict_loop/8`'s mutual recursion through
-> `strict_option/11`, which the output analysis deliberately does not classify),
-> **G-A3-12** (compound terms `some(V)`/`ok`/`err(M)`/`group(_)`, M), **G-A3-16**
-> (K-V head patterns, M), **G-A3-11.3** (type inference, probe-pinned).
-> By-design refusal: a branch containing a bare failable test. Priority:
-> G-A3-6 → G-A3-12/16 (then the lenient loop + globals scan should compile whole).
+> **G-A3-6, G-A3-12 and G-A3-16 are now also CLOSED** (fifth run), and with them
+> the step's milestone: **peerhailer's LENIENT parse compiles whole and matches
+> the SWI oracle under node.** `parse_lenient/3` plus the 13 predicates it
+> transitively calls become ONE module through `compile_module/3`
+> (`include_dependencies(true)`), `node --check`s clean, and agrees with SWI on
+> every argv line tried — including the greedy legacy read
+> (`tunnels --a --b=c` → `flags.a === "--b=c"`), the bare flag
+> (`--x` → the BOOLEAN `true`), the inline value, the empty argv and the
+> `__proto__` assignment JavaScript silently drops.
+> * **G-A3-6** — two halves. (1) GUARD PLACEMENT: a guard that reads a value a
+>   preceding statement declared is no longer hoisted into the clause header
+>   (a TDZ `ReferenceError`); it becomes a nested in-block `if`, so a failing
+>   guard falls through to the next clause. (2) CROSS-PREDICATE CALLS, lowered by
+>   the CALLEE's output count, which `ts_pred_outputs/3` reads from its clauses:
+>   0 outputs → the callee returns a boolean and the call IS a condition
+>   (`starts_with(t, "--")`, and `\+` composes to `!`); 1 output →
+>   `const _sN = q(ins);`; N outputs → `const [_sN, _sN1] = q(ins);`, G-A3-9's
+>   tuple destructured. FAILURE SEMANTICS: only the 0-output form carries failure,
+>   as `false`; a callee with outputs is a det function that THROWS when no clause
+>   matches. Carried by a new **general clause lowering** (`native_ts_general/3`)
+>   built on the structural path's machinery, whose MODE comes from
+>   `ts_pred_outputs/3` instead of a decomposition argument — so a predicate needs
+>   neither recursion nor a cons pattern, and an arity > 1 SEMIDET test
+>   (`starts_with/2`) finally has a signature (`(a1, a2) => boolean`). It is a
+>   RESCUE path: it runs only where the clause-body path's own answer would be
+>   defective, so everything that compiled correctly still compiles there.
+> * **G-A3-12** — `f(A1..An)` → `{$: "f", args: [...]}`. Not a tagged array: a
+>   Prolog list is already a JS array, so `["f", e1]` could not be told from the
+>   list `[f, e1]`, and that distinction is the gap. Construction, clause-head
+>   matching, matching in an if-then-else CONDITION (which BINDS the payload into
+>   the then-branch), and structural `==`/`\==` via an emitted `_uwEq` all use it.
+>   Atoms stay strings, `true`/`false` stay booleans, lists stay arrays; the four
+>   are pairwise distinguishable at run time and no test throws.
+> * **G-A3-16** falls out of G-A3-12: `[K-V|Rest]` is a cons test plus a `-`/2 tag
+>   test plus a destructure, so `flags_put/4` and `pair_lookup/3` compile.
+> Byte-identity of every previously-working shape re-proven over a 26-shape ×
+> 3-target harness (78 outputs, 0 diffs). Shapes suite 81 → 103 tests.
+> Still OPEN — the one shared blocker left is a **semidet callee WITH outputs in
+> if-then-else CONDITION position** (`( pair_lookup(L,K,V) -> ... ; ... )`,
+> `( option_kind(O,K,Kind) -> ... ; ... )`): it must both fail and bind, which
+> needs a failure sentinel in the calling convention rather than the current
+> throw. That single shape is what still stops `strict_loop/8`, `option_kind/3`,
+> `registry_entry/3`, `action_entry/3` and `is_global_key/1` — see the revised
+> §5.2. Also open: a ground-fact predicate used as a CONSTANT TABLE
+> (`js_object_prototype_keys/1` — no clause has a variable in its head, so the
+> output analysis sees no output), list-BUILDING recursion (`drop_brackets/2`),
+> **G-A3-11.3** (type inference, probe-pinned) and variable-to-variable `==`,
+> which is still JS identity (probe-pinned). By-design refusal: a branch
+> containing a bare failable test.
 
 ---
 
 ## 0. Headline
+
+> **Fifth-run census** (the table below is the original A3 snapshot and is not
+> rewritten). Of the 43 predicates: **30 now compile with no dropped goal**
+> (was 2), 9 compile partially, 4 refuse loudly. The 14 that make up the lenient
+> mechanism are verified RUNNING under node against the SWI oracle, as one module.
+> Fraction of the parser transpilable: **≈70 %** by predicate count; **1 of 4**
+> mechanisms end-to-end, with a second (the leading-globals scan) needing one
+> more predicate and a third (strict) needing two.
 
 | | |
 | --- | --- |
@@ -457,7 +505,7 @@ the remaining goals are rendered. (What that exposes next is G-A3-6.)
 
 ---
 
-### G-A3-6 — Guards are hoisted above the assignments that define them · **M** · OPEN
+### G-A3-6 — Guards hoisted above their definitions; no cross-predicate calls · **M** · CLOSED (fifth run)
 
 **Extends:** `native_ts_clause/5` — the split between "clause condition" and
 "clause body".
@@ -489,7 +537,27 @@ in-block `if (!(…)) …` tests or as a nested `if`.
 `(condition, position)` rather than one conjunction), not new machinery, but it
 touches every emitter that consumes `Condition`.
 
-Probe: `gap_g_a3_6_guard_hoisted_above_its_own_definitions`.
+**Fix landed (fifth run), and it is wider than the entry above.** The gap turned
+out to have a second half — a compiled clause body could not CALL another
+compiled predicate at all — and the two were fixed together; see the STATUS
+UPDATE at the top for the design. `native_ts_clause/5` was left alone: instead a
+general clause lowering (`native_ts_general/3`) picks up any predicate whose
+clause-body answer would be defective, which is exactly the set with a hoisted
+guard, a dropped goal, or a read of the unassigned output slot. Guards inside it
+are placed in clause order — header while nothing has been emitted, nested
+in-block `if` afterwards — so a failing guard falls through to the next clause.
+
+Regressions: `g_a3_6_guard_follows_the_assignments_it_reads`,
+`g_a3_6_starts_with_matches_swi_under_node`,
+`g_a3_6_semidet_callee_is_a_boolean_condition`,
+`g_a3_6_negated_semidet_callee_composes`,
+`g_a3_6_semidet_callee_as_a_body_goal_nests`,
+`g_a3_6_det_single_output_callee_is_a_const`,
+`g_a3_6_multi_output_callee_is_destructured`,
+`g_a3_6_compile_module_pulls_in_the_dependency_closure`,
+`g_a3_6_mutual_recursion_runs_through_declaration_hoisting`, plus the refusals
+`g_a3_6_unknown_callee_still_refuses` and
+`g_a3_6_output_of_a_call_may_not_be_a_bound_variable`.
 
 ---
 
@@ -646,7 +714,7 @@ regression pass.
 
 ---
 
-### G-A3-12 — Compound terms as values become string literals · **M** · OPEN
+### G-A3-12 — Compound terms as values become string literals · **M** · CLOSED (fifth run)
 
 **Extends:** `ts_literal/2`, `ts_expr/3`, `ts_term_expr/3`.
 
@@ -667,7 +735,29 @@ compiled core' design rests on."*
 **Size M**: a value representation decision plus renderers on both the
 construct and the match side.
 
-Probe: `gap_g_a3_12_compound_term_becomes_a_string_literal`.
+**Fix landed (fifth run).** `f(A1..An)` → `{$: "f", args: [...]}`, chosen over a
+tagged array because a Prolog list is already a JS array (`["f", e1]` could not
+be told from the list `[f, e1]`, and that distinction is the gap). Emitted on
+construction (`ts_compound_expr/3`), in clause heads and `=`/2 matches
+(`ts_match/6` — a tag test plus a positional destructure of `args`), in
+if-then-else CONDITIONS (`ts_cond/4`, which binds the payload into the
+then-branch only, as Prolog's scope rule requires), and in `==`/`\==` through an
+emitted `_uwEq` that compares structurally. Atoms stay strings, `true`/`false`
+stay booleans (G-A3-13) and lists stay arrays; `x != null && x.$ === "f"` tells
+all four apart and never throws.
+
+Known limit, pinned rather than papered over: the structural comparison is chosen
+from the SOURCE, so `p(A, B) :- A == B.` still emits `===`
+(`gap_g_a3_12_variable_to_variable_equality_is_identity`).
+
+Regressions: `g_a3_12_compound_is_constructed_as_a_tagged_object`,
+`g_a3_12_compound_head_pattern_is_a_tag_test_and_destructure`,
+`g_a3_12_compound_in_an_ite_condition_binds_its_payload`,
+`g_a3_12_equality_on_compounds_is_structural`,
+`g_a3_12_compound_atom_list_boolean_are_distinguishable`,
+`g_a3_12_compound_survives_a_cross_predicate_call`,
+`g_a3_12_pair_walk_compiles_and_matches_swi` (which is G-A3-16 falling out of
+this one).
 
 ---
 
@@ -753,7 +843,7 @@ Probe: `gap_g_a3_15_reversible_builtin_picks_decompose_when_ambiguous`.
 
 ---
 
-### G-A3-16 — A compound/list head argument becomes a string comparison · **M** · OPEN
+### G-A3-16 — A compound/list head argument becomes a string comparison · **M** · CLOSED at the dispatcher (fifth run)
 
 **Extends:** `ts_head_conditions/4` (via `ts_literal/2`).
 
@@ -781,7 +871,20 @@ because their bodies contain if-then-else (G-A3-10).
 
 **Size M**: reuse `ts_match/6`'s pattern binder from `native_ts_clause/5`.
 
-Probe: `gap_g_a3_16_list_head_pattern_becomes_a_string_literal`.
+**Fix landed (fifth run), by routing rather than by rewriting.** `ts_match/6` was
+already right; what was missing was a compound clause (G-A3-12) and a path that
+reaches it. Both landed with G-A3-6/G-A3-12: a predicate with a compound or list
+head pattern is now claimed by the structural path or by the new general clause
+lowering, both of which destructure. `pair_lookup/3`, `flags_put/4`,
+`string_member/2` and `last_element/2` all compile and match SWI
+(`g_a3_12_pair_walk_compiles_and_matches_swi`).
+
+**Not fixed:** `ts_head_conditions/4` itself, inside `native_ts_clause/5`, still
+sends a non-variable head argument through `ts_literal/2`. That is now
+unreachable for anything the dispatcher routes elsewhere, but it is still the
+wrong rendering in isolation, so the probe is kept — pointed at the clause-body
+path directly — rather than deleted:
+`gap_g_a3_16_clause_body_path_still_stringifies_a_list_head_pattern`.
 
 ---
 
@@ -854,18 +957,32 @@ string predicate. Every line of the two **functions** is compiler output; only
 the `console.log(...)` calls around them are not. This is pinned as a test:
 `compiled_substring_from_runs_under_node`.
 
-### 5.2 The four mechanisms: none of them runs
+### 5.2 The four mechanisms
 
-| mechanism | status |
-| --- | --- |
-| lenient loop (`parse_lenient/3` + `lenient_loop/5`) | **no.** `lenient_loop/5` reaches no lowering path (G-A3-9, G-A3-10); the wrapper refuses loudly. |
-| strict loop (`parse_strict/4` + `strict_loop/8` + `strict_option/11`) | **no.** Same, plus 3 outputs and a tagged status (G-A3-12). |
-| leading-globals scan (`scan_leading_globals/4`) | **no.** 2 outputs, nested if-then-else. |
-| `schemaFor` (`schema_for/5` + `registry_entry/3` + `action_entry/3`) | **no.** Depends on `pair_lookup/3` (G-A3-16), compound terms (G-A3-12) and 2 outputs (G-A3-9). |
+*(Original A3 snapshot — every row read "no". Revised after the fifth run; the
+original wording is preserved beneath the table.)*
+
+| mechanism | status now | what each still needs |
+| --- | --- | --- |
+| **lenient loop** (`parse_lenient/3` + `lenient_loop/5` + `starts_with/2`, `split_flag_token/3`, `flags_set/4`, `flags_put/4`, `looks_like_legacy_flag/1`, `legacy_flag_tail/1`, `js_alpha/1`, `js_flag_char/1`, `first_equals_index/2`, `first_char_index/4`, `substring_from/3`, `substring_range/4`) | **YES — compiles whole and matches SWI under node.** 14 predicates, one module, `node --check` clean. | nothing |
+| strict loop (`parse_strict/4` + `strict_loop/8` + `strict_option/11`) | **partial.** `strict_option/11` (the 11-argument, 3-output half), `next_value/2`, `is_long_flag/1`, `long_flag_tail/1`, `pair_lookup/3` all compile. | `strict_loop/8` and `option_kind/3` need a **semidet callee with outputs in condition position** — `( option_kind(Options, Key, Kind) -> ... ; ... )` must both fail and bind. `check_arity/3` needs the same, plus `last_element/2` in a condition. |
+| leading-globals scan (`scan_leading_globals/4`) | **near.** `scan_leading_globals/4` itself compiles — 2 outputs, four nested if-then-elses, `some(V)` matching, three cross-calls — and so does `next_value/2`. | only `is_global_key/1`, which is `( pair_lookup(Globals, Key, _) -> true ; ... )`: the same semidet-with-outputs condition. |
+| `schemaFor` (`schema_for/5` + `registry_entry/3` + `action_entry/3`) | **partial.** `pair_lookup/3`, `string_member/2`, `default_registry/1` and `js_object_prototype_keys/1` compile. | `registry_entry/3` and `action_entry/3` are the same semidet-with-outputs condition. `js_object_prototype_key/1` additionally needs a **ground-fact predicate used as a constant table** to be recognised as having an output (no clause of `js_object_prototype_keys/1` has a variable in its head, so the output analysis sees none). `schema_for/5` needs both. |
+
+One shape accounts for every remaining "partial": a call that is **semidet AND
+produces a value**, used as an if-then-else condition. The current convention
+gives a callee with outputs no way to say "no" other than throwing, so the
+condition cannot be tested. Closing it means a failure sentinel for that class of
+callee (and the determinacy analysis to know which callees need one) — the
+natural next gap.
+
+The original A3 wording, kept for the record:
 
 **A hand-written JS shim around the compiled pieces would be cheating, and this
 report will not claim otherwise.** The compiled pieces are two substring
-helpers. Everything that makes `cli_args.pl` a *parser* — the loops, the assoc
+helpers.<!-- (as of the fifth run: the lenient mechanism in full, with no shim —
+the only hand-written JavaScript in the milestone test is the `console.log` that
+prints what the compiled `parse_lenient` returned.) --> Everything that makes `cli_args.pl` a *parser* — the loops, the assoc
 lookups, the tagged results — is either refused or absent. Writing the loops in
 JavaScript by hand and calling `substring_from` from them would produce a
 working parser that demonstrates nothing about the compiler.

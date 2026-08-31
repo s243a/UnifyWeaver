@@ -243,6 +243,21 @@ compile_predicate_to_typescript(Pred/Arity, _Options, Code) :-
     native_ts_structural(Pred/Arity, Clauses, Code),
     !.
 
+% General clause lowering (G-A3-6 cross-predicate calls, G-A3-12 compound terms).
+% A RESCUE path: it runs only for a predicate whose clause-body lowering would be
+% defective -- goals dropped, or a guard hoisted above the assignments it reads.
+% Every predicate the clause-body path lowers correctly falls straight past this
+% clause and compiles exactly as before. A predicate with no rule clause at all is
+% excluded too, so genuine fact tables keep going to compile_facts/3.
+compile_predicate_to_typescript(Pred/Arity, _Options, Code) :-
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    Clauses \= [],
+    \+ ts_ground_fact_predicate(Clauses),
+    ts_clause_body_defective(Pred/Arity, Clauses),
+    native_ts_general(Pred/Arity, Clauses, Code),
+    !.
+
 % Try native clause body lowering first
 compile_predicate_to_typescript(Pred/Arity, _Options, Code) :-
     functor(Head, Pred, Arity),
@@ -839,8 +854,16 @@ export const ~w = (edges: [string, string][], start: string, target: string): bo
 %% MODULE COMPILATION
 %% ============================================
 
-compile_module(Predicates, Options, Code) :-
+compile_module(Predicates0, Options, Code) :-
     option(module_name(ModName), Options, 'Generated'),
+
+    % G-A3-6: with include_dependencies(true) the module is named by its ENTRY
+    % predicate and every predicate it transitively calls is pulled in, callees
+    % first. Off by default, so an explicit predicate list is untouched.
+    (   option(include_dependencies(true), Options)
+    ->  ts_dep_closure(Predicates0, Predicates)
+    ;   Predicates = Predicates0
+    ),
 
     % Generate exports (future use for explicit export statements)
     findall(Export, (
@@ -859,13 +882,18 @@ compile_module(Predicates, Options, Code) :-
     % through the real dispatcher (which itself refuses loudly on an unsupported
     % shape, G-A3-8); whatever still cannot be compiled is reported, and a module
     % in which NOTHING compiles is refused rather than emitted empty.
-    ts_module_pred_codes(Predicates, Options, PredCodes, Unsupported),
-    (   PredCodes == []
+    ts_module_pred_codes(Predicates, Options, PredCodes0, Unsupported),
+    (   PredCodes0 == []
     ->  ts_refuse_empty_module(ModName, Unsupported)
     ;   true
     ),
     ts_module_skipped_note(Unsupported, SkipNote),
-    atomic_list_concat(PredCodes, '\n\n', PredsSection),
+    % G-A3-12: each predicate that needs the compound-term runtime carries a copy;
+    % a module may not declare the same function twice, so they are lifted out and
+    % emitted once, ahead of everything.
+    ts_module_runtime(PredCodes0, PredCodes, RuntimeSection),
+    atomic_list_concat(PredCodes, '\n\n', PredsSection0),
+    format(string(PredsSection), '~w~w', [RuntimeSection, PredsSection0]),
 
     % Emit any declared components (G-P4). compile_collected_components/1
     % yields '' when none were collected, keeping component-free modules
@@ -882,6 +910,18 @@ compile_module(Predicates, Options, Code) :-
 ~w
 ~w
 ', [ModName, SkipNote, Body]).
+
+%% ts_module_runtime(+Codes0, -Codes, -RuntimeSection)
+ts_module_runtime(Codes0, Codes, Section) :-
+    maplist(ts_split_runtime_pair, Codes0, Pairs),
+    findall(C, member(C-_, Pairs), Codes),
+    (   memberchk(_-true, Pairs)
+    ->  ts_compound_runtime(RT),
+        format(string(Section), '~w\n', [RT])
+    ;   Section = ""
+    ).
+
+ts_split_runtime_pair(Code0, Code-Had) :- ts_split_runtime(Code0, Code, Had).
 
 %% ts_module_pred_codes(+Predicates, +Options, -Codes, -Unsupported)
 %  Codes are the successfully compiled predicates, in order; Unsupported is a
@@ -1872,6 +1912,53 @@ ts_guard_condition(VarMap, Goal, Condition) :-
 ts_guard_condition(VarMap, Goal, Condition) :-
     ts_string_check(Goal, VarMap, Condition),
     !.
+%% A cross-predicate call in GUARD / CONDITION position (G-A3-6). A callee with
+%% NO output arguments compiles to a function that returns a boolean (the semidet
+%% signature G-A3-11.1 introduced, which ts_struct_ret_type/2 keeps), so the call
+%% IS a JavaScript condition:  starts_with(token, "--").
+%% Negation composes for free — the `\+` / `not` clauses above recurse into this
+%% one, giving `!looks_like_legacy_flag(next)`.
+%% Tried LAST, and only for a predicate whose clauses are visible and whose output
+%% set is empty, so no goal that already had a rendering changes shape.
+ts_guard_condition(VarMap, Goal, Condition) :-
+    ts_cross_call('$no_self', Goal, Q, Args, []),
+    ts_call_expr(Q, Args, VarMap, Condition).
+
+%% ts_cond(+Goal, +B0, -BThen, -Cond)
+%
+%  An if-then-else CONDITION, which in Prolog may BIND as well as test:
+%
+%      ( Inline = some(Value) -> ... uses Value ... ; ... )
+%      ( Rest = [Next|Rest1], \+ looks_like_legacy_flag(Next) -> ... )
+%
+%  ts_guard_condition/3 answers only the pure-test case, so it is tried FIRST and
+%  its output is unchanged wherever it applies. When it declines, the condition is
+%  re-read as a sequence that may bind: the tests become the JS condition and the
+%  bindings become plain EXPRESSIONS (`_s1.args[0]`, `a1.slice(1)[0]`) added to
+%  the bind map used for the THEN branch only — which is exactly Prolog's scope
+%  rule, since a failed condition undoes its own bindings. `&&` short-circuits, so
+%  a binding expression is never evaluated before the test that licenses it.
+ts_cond(Goal, B0, B, Cond) :-
+    ts_guard_condition(B0, Goal, Cond), !, B = B0.
+ts_cond(Goal, B0, B, Cond) :-
+    nonvar(Goal), Goal = (A, C), !,
+    ts_cond(A, B0, B1, CA),
+    ts_cond(C, B1, B, CC),
+    format(string(Cond), "~w && ~w", [CA, CC]).
+ts_cond(Goal, B0, B, Cond) :-
+    nonvar(Goal), Goal = (L = R), !,
+    ts_unify_match(L, R, B0, B, Conds),
+    ( Conds == [] -> Cond = "true" ; atomic_list_concat(Conds, ' && ', Cond) ).
+%  A comparison ts_guard_condition/3 declined: `X == []` and `X == f(...)` are
+%  DATA comparisons, which ts_cmp_cond/5 renders structurally.
+ts_cond(Goal, B, B, Cond) :-
+    nonvar(Goal), Goal =.. [Op, L, R], ts_cmp_op(Op, _), !,
+    ts_cmp_cond(Op, L, R, B, Cond).
+%  Negation. Bindings made inside it are discarded, as in Prolog.
+ts_cond(Goal, B, B, Cond) :-
+    nonvar(Goal), ( Goal = \+(Inner) ; Goal = not(Inner) ), !,
+    ts_cond(Inner, B, _, CI),
+    format(string(Cond), "!(~w)", [CI]).
 
 %% ts_string_check(+Goal, +VarMap, -Condition)
 %  Succeeds only when EVERY argument of the reversible builtin is resolvable, so
@@ -3048,14 +3135,16 @@ ts_num_agg(A/B, M, IV, S) :- !, ts_num_agg(A, M, IV, SA), ts_num_agg(B, M, IV, S
 %  convention, which is precisely the wrong code this gap is about. So it is
 %  refused here, by name.
 native_ts_structural(Pred/Arity, Clauses, Code) :-
+    ts_set_output_slot(none),
     ts_struct_detect(Pred, Clauses, Arity, _DPos, Mode),
     (   Mode = function_multi(Outs)
-    ->  (   ts_struct_emit(Pred, Arity, Clauses, Mode, Code)
+    ->  (   ts_struct_emit(Pred, Arity, Clauses, Mode, Code0)
         ->  true
         ;   ts_refuse_multi_output(Pred/Arity, Outs, Pred, Clauses)
         )
-    ;   ts_struct_emit(Pred, Arity, Clauses, Mode, Code)
-    ).
+    ;   ts_struct_emit(Pred, Arity, Clauses, Mode, Code0)
+    ),
+    ts_attach_runtime(Code0, Code).
 
 %% ts_struct_emit(+Pred, +Arity, +Clauses, +Mode, -Code)
 ts_struct_emit(Pred, Arity, Clauses, Mode, Code) :-
@@ -3343,22 +3432,47 @@ ts_struct_clause(Pred, _Arity, Mode, Head-Body, Block) :-
     ),
     ts_head_positions(HeadArgs, 1, OutPositions, [], Bind1, [], Conds0),
     reverse(Conds0, HeadConds),
-    ts_struct_body(Body, Pred, Mode, OutArg, Bind1, Bind2, GuardConds, StmtLines, Tail),
+    ts_set_head_bind(Bind1),
+    ts_struct_body(Body, Pred, Mode, OutArg, Bind1, Bind2, GuardConds, StmtLines0, Tail),
     append(HeadConds, GuardConds, AllConds),
     ( AllConds == [] -> CondStr = "true" ; atomic_list_concat(AllConds, ' && ', CondStr) ),
     (   Tail == returned
-    ->  atomic_list_concat(StmtLines, '\n', StmtBlock),
+    ->  ts_assemble(StmtLines0, [], StmtLines),
+        atomic_list_concat(StmtLines, '\n', StmtBlock),
         format(string(Block), '  if (~w) {\n~w\n  }', [CondStr, StmtBlock])
     ;   (   Mode = test
         ->  ( Tail = yes(R) -> RetExpr = R ; RetExpr = "true" )
         ;   ts_struct_ret_expr(Mode, OutArg, Bind2, RetExpr)
         ),
-        (   StmtLines == []
+        format(string(RetLine), "    return ~w;", [RetExpr]),
+        ts_assemble(StmtLines0, [RetLine], StmtLines),
+        (   StmtLines0 == []
         ->  format(string(Block), '  if (~w) {\n    return ~w;\n  }', [CondStr, RetExpr])
         ;   atomic_list_concat(StmtLines, '\n', StmtBlock),
-            format(string(Block), '  if (~w) {\n~w\n    return ~w;\n  }', [CondStr, StmtBlock, RetExpr])
+            format(string(Block), '  if (~w) {\n~w\n  }', [CondStr, StmtBlock])
         )
     ).
+
+%% ts_assemble(+Stmts, +TailLines, -Lines)
+%
+%  Turns the flat statement list into the clause's block, giving every in-block
+%  guard (`gopen(Cond)`, produced by ts_struct_goal/13 for a guard that reads a
+%  value a preceding statement declared, and for a semidet cross-predicate call)
+%  the NESTED scope Prolog gives it: everything after the guard — the trailing
+%  `return` included — moves inside `if (Cond) { ... }`. A clause whose guard
+%  fails then reaches no return and falls through to the next clause block.
+%
+%  With no gopen in the list this is the identity plus the trailing lines, so
+%  every predicate that compiled before compiles byte-for-byte the same way.
+ts_assemble([], Tail, Tail).
+ts_assemble([gopen(Cond)|Rest], Tail, [Open|Lines]) :-
+    !,
+    format(string(Open), "    if (~w) {", [Cond]),
+    ts_assemble(Rest, Tail, Inner0),
+    ts_struct_indent(Inner0, "  ", Inner),
+    append(Inner, ["    }"], Lines).
+ts_assemble([S|Rest], Tail, [S|Lines]) :-
+    ts_assemble(Rest, Tail, Lines).
 
 %% ts_nth_arg(+HeadArgs, +Pos, -Arg)
 ts_nth_arg(HeadArgs, Pos, Arg) :- nth1(Pos, HeadArgs, Arg).
@@ -3390,10 +3504,39 @@ ts_match(Expr, [H|T], B0, B, C0, C) :- !,
     format(string(TailE), "~w.slice(1)", [Expr]),
     ts_match(HeadE, H, B0, B1, [NonEmpty|C0], C1),
     ts_match(TailE, T, B1, B, C1, C).
+%  A COMPOUND pattern (G-A3-12): a TAG TEST plus a positional destructure of
+%  `args`. `f(some(V), X)` in a clause head becomes
+%      a1 != null && a1.$ === "some" && a1.args.length === 1
+%  with V bound to `a1.args[0]`. The `!= null` guards both null and undefined and
+%  makes the test total: reading `.$` off a string, number, boolean or array is
+%  `undefined`, never a throw, so a compound is distinguishable from every other
+%  value this target produces.
+ts_match(Expr, P, B0, B, C0, C) :- compound(P), !,
+    P =.. [F|Args], length(Args, N),
+    format(string(Cond),
+           '~w != null && ~w.$ === "~w" && ~w.args.length === ~w',
+           [Expr, Expr, F, Expr, N]),
+    ts_match_args(Args, 1, Expr, B0, B, [Cond|C0], C).
 ts_match(Expr, N, B, B, C0, [Cond|C0]) :- number(N), !,
     format(string(Cond), "~w === ~w", [Expr, N]).
+ts_match(Expr, true, B, B, C0, [Cond|C0]) :- !,
+    format(string(Cond), "~w === true", [Expr]).
+ts_match(Expr, false, B, B, C0, [Cond|C0]) :- !,
+    format(string(Cond), "~w === false", [Expr]).
 ts_match(Expr, A, B, B, C0, [Cond|C0]) :- atom(A), !,
     format(string(Cond), '~w === "~w"', [Expr, A]).
+ts_match(Expr, S, B, B, C0, [Cond|C0]) :- string(S), !,
+    ts_literal(S, Lit),
+    format(string(Cond), '~w === ~w', [Expr, Lit]).
+
+%% ts_match_args(+Args, +Idx, +Expr, +B0, -B, +C0, -C)
+ts_match_args([], _, _, B, B, C, C).
+ts_match_args([A|As], Idx, Expr, B0, B, C0, C) :-
+    I0 is Idx - 1,
+    format(string(Sub), "~w.args[~w]", [Expr, I0]),
+    ts_match(Sub, A, B0, B1, C0, C1),
+    Idx1 is Idx + 1,
+    ts_match_args(As, Idx1, Expr, B1, B, C1, C).
 
 ts_bget(V, [V0-E|_], E) :- V0 == V, !.
 ts_bget(V, [_|T], E) :- ts_bget(V, T, E).
@@ -3435,13 +3578,21 @@ ts_struct_ret_expr(_Mode, OutArg, Bind, Expr) :-
 %  variable this path cannot lower; emitting `undefined` produced code that ran
 %  and was wrong. Failing makes the structural path refuse the predicate, which
 %  is the honest answer.
+%  A COMPOUND term (G-A3-12) becomes the tagged object `{$: "f", args: [...]}` —
+%  see ts_compound_expr/3 for why that representation and not a tagged array.
 ts_term_expr(V, B, E) :- var(V), !, ts_bget(V, B, E).
 ts_term_expr([], _, "[]") :- !.
 ts_term_expr([H|T], B, E) :- !,
     ts_term_expr(H, B, HE), ts_term_expr(T, B, TE),
     format(string(E), "[~w, ...~w]", [HE, TE]).
+ts_term_expr(T, B, E) :- compound(T), !, ts_compound_expr(T, B, E).
 ts_term_expr(N, _, E) :- number(N), !, format(string(E), "~w", [N]).
+ts_term_expr(true,  _, "true")  :- !.
+ts_term_expr(false, _, "false") :- !.
 ts_term_expr(A, _, E) :- atom(A), !, format(string(E), '"~w"', [A]).
+%  A SWI string constant. Without this clause `starts_with(Token, "--")` could not
+%  render its own second argument (strings are neither atom/1 nor number/1).
+ts_term_expr(S, _, E) :- string(S), !, ts_literal(S, E).
 
 %% ts_struct_body(+Body, +Pred, +Mode, +OutArg, +B0, -B, -GuardConds, -StmtLines, -Tail)
 ts_struct_body(Body, Pred, Mode, OutArg, B0, B, Guards, Stmts, Tail) :-
@@ -3493,6 +3644,27 @@ ts_struct_seq([Goal|Rest], Pred, Mode, OutArg, Ctx,
     atom_string(Pred, PredStr),
     format(string(Stmt), "    return ~w(~w);", [PredStr, ArgStr]),
     B = B0, G = G0, S = [Stmt|S0], T = returned, N = N0.
+%% A BINDING whose right-hand side a LATER goal produces (G-A3-6). Prolog's
+%% conjunction is not evaluation order for a pure `=`/2:
+%%
+%%     flags_put([K-V|Rest], Key, Value, Out) :-
+%%         ..., Out = [K-V|Rest1], flags_put(Rest, Key, Value, Rest1).
+%%
+%% `Out` is described in terms of `Rest1`, which the call after it computes.
+%% JavaScript has no such hole, so the goal is DEFERRED: the rest of the sequence
+%% is rendered first, and the binding is made against the bindings that come out
+%% of it. Nothing is emitted for the deferred goal itself — it only names a value
+%% — so no statement can be reordered past a side effect.
+ts_struct_seq([Goal|Rest], Pred, Mode, OutArg, Ctx,
+              B0, B, G0, G, S0, S, T0, T, N0, N) :-
+    Rest \== [],
+    nonvar(Goal), Goal = (V = Term), var(V), nonvar(Term),
+    \+ ts_bget(V, B0, _),
+    \+ ts_term_expr(Term, B0, _),
+    !,
+    ts_struct_seq(Rest, Pred, Mode, OutArg, Ctx, B0, B1, G0, G, S0, S, T0, T, N0, N),
+    ts_term_expr(Term, B1, E),
+    B = [V-E|B1].
 ts_struct_seq([Goal|Rest], Pred, Mode, OutArg, Ctx,
               B0, B, G0, G, S0, S, T0, T, N0, N) :-
     ts_struct_goal(Goal, Pred, Mode, B0, B1, G0, G1, S0, S1, T0, T1, N0, N1),
@@ -3559,8 +3731,8 @@ ts_is_ite(Goal, If, Then, Else) :-
 
 %% ts_struct_tail_ite(+If,+Then,+Else,+Pred,+Mode,+OutArg,+B0,+S0,-S,+N0,-N)
 ts_struct_tail_ite(If, Then, Else, Pred, Mode, OutArg, B0, S0, S, N0, N) :-
-    ts_guard_condition(B0, If, Cond),
-    ts_struct_branch_return(Then, Pred, Mode, OutArg, B0, ThenLines, N0, N1),
+    ts_cond(If, B0, BThen, Cond),
+    ts_struct_branch_return(Then, Pred, Mode, OutArg, BThen, ThenLines, N0, N1),
     ts_struct_branch_return(Else, Pred, Mode, OutArg, B0, ElseLines, N1, N),
     atomic_list_concat(ThenLines, '\n', ThenBlock),
     atomic_list_concat(ElseLines, '\n', ElseBlock),
@@ -3576,13 +3748,13 @@ ts_struct_branch_return(Branch, Pred, Mode, OutArg, B0, Lines, N0, N) :-
     ts_struct_seq(Goals, Pred, Mode, OutArg, tail,
                   B0, B1, [], [], [], StmtsR, no, Tail, N0, N),
     reverse(StmtsR, Stmts0),
-    ts_struct_indent(Stmts0, "  ", Stmts),
     (   Tail == returned
-    ->  Lines = Stmts
+    ->  ts_assemble(Stmts0, [], Stmts1)
     ;   ts_struct_branch_ret(Mode, OutArg, B1, Tail, RetExpr),
-        format(string(RetLine), "      return ~w;", [RetExpr]),
-        append(Stmts, [RetLine], Lines)
-    ).
+        format(string(RetLine), "    return ~w;", [RetExpr]),
+        ts_assemble(Stmts0, [RetLine], Stmts1)
+    ),
+    ts_struct_indent(Stmts1, "  ", Lines).
 
 ts_struct_branch_ret(function_multi(_), OutArg, B, _Tail, RetExpr) :- !,
     ts_struct_ret_expr(function_multi(_), OutArg, B, RetExpr).
@@ -3593,7 +3765,7 @@ ts_struct_branch_ret(test, _OutArg, _B, no, "true").
 
 %% ts_struct_value_ite(+If,+Then,+Else,+Pred,+Mode,+B0,-B,+S0,-S,+N0,-N)
 ts_struct_value_ite(If, Then, Else, Pred, Mode, B0, B, S0, S, N0, N) :-
-    ts_guard_condition(B0, If, Cond),
+    ts_cond(If, B0, BThen, Cond),
     % Classification comes from clause_body_analysis, not from a second
     % implementation here: these are the variables BOTH branches bind and that
     % are not already inputs.
@@ -3604,7 +3776,7 @@ ts_struct_value_ite(If, Then, Else, Pred, Mode, B0, B, S0, S, N0, N) :-
     % `[], []` for the guard accumulator and `no, no` for the tail: a branch
     % that wants to emit a clause-level guard, or to return, is not a value.
     ts_struct_seq(ThenGoals, Pred, Mode, '$no_output', inner,
-                  B0, BT, [], [], [], ThenStmtsR, no, no, N0, N1),
+                  BThen, BT, [], [], [], ThenStmtsR, no, no, N0, N1),
     ts_struct_seq(ElseGoals, Pred, Mode, '$no_output', inner,
                   B0, BE, [], [], [], ElseStmtsR, no, no, N1, N2),
     length(SharedVars, K),
@@ -3612,8 +3784,10 @@ ts_struct_value_ite(If, Then, Else, Pred, Mode, B0, B, S0, S, N0, N) :-
     N is N2 + K,
     maplist(ts_struct_ite_assign(BT), SharedVars, Slots, ThenAssigns),
     maplist(ts_struct_ite_assign(BE), SharedVars, Slots, ElseAssigns),
-    reverse(ThenStmtsR, ThenStmts0), ts_struct_indent(ThenStmts0, "  ", ThenStmts),
-    reverse(ElseStmtsR, ElseStmts0), ts_struct_indent(ElseStmts0, "  ", ElseStmts),
+    reverse(ThenStmtsR, ThenStmtsA), ts_assemble(ThenStmtsA, [], ThenStmts0),
+    ts_struct_indent(ThenStmts0, "  ", ThenStmts),
+    reverse(ElseStmtsR, ElseStmtsA), ts_assemble(ElseStmtsA, [], ElseStmts0),
+    ts_struct_indent(ElseStmts0, "  ", ElseStmts),
     append(ThenStmts, ThenAssigns, ThenBody),
     append(ElseStmts, ElseAssigns, ElseBody),
     atomic_list_concat(ThenBody, '\n', ThenBlock),
@@ -3643,9 +3817,13 @@ ts_struct_value_ite(If, Then, Else, Pred, Mode, B0, B, S0, S, N0, N) :-
 %  Guarded on argv length, so importing the module (or appending a driver, as
 %  the tests do) never triggers it.
 ts_struct_cli_entry(PredStr, ParamCount, Code) :-
+    ts_struct_cli_entry(PredStr, ParamCount, "multi-output: the tuple is printed as JSON", Code).
+
+%% ts_struct_cli_entry(+PredStr, +ParamCount, +Label, -Code)
+ts_struct_cli_entry(PredStr, ParamCount, Label, Code) :-
     Needed is ParamCount + 2,
     format(string(Code),
-'// CLI entry point (multi-output: the tuple is printed as JSON)
+'// CLI entry point (~w)
 // Each argument is JSON.parsed when it parses as JSON (so `[1,2]` is a list),
 // and kept as a raw string otherwise.
 if (process.argv.length >= ~w) {
@@ -3653,7 +3831,7 @@ if (process.argv.length >= ~w) {
         (s) => { try { return JSON.parse(s); } catch { return s; } });
     console.log(JSON.stringify(~w(...argv)));
 }
-', [Needed, Needed, PredStr]).
+', [Label, Needed, Needed, PredStr]).
 
 ts_struct_slots(_, 0, []) :- !.
 ts_struct_slots(Idx, K, [Name|Rest]) :-
@@ -3689,18 +3867,65 @@ ts_struct_goal(Goal, Pred, Mode, B0, B, G, G, S0, S, T, T, N0, N) :-
     ts_is_ite(Goal, If, Then, Else),
     !,
     ts_struct_value_ite(If, Then, Else, Pred, Mode, B0, B, S0, S, N0, N).
-ts_struct_goal(Goal, _Pred, _Mode, B, B, G0, [Cond|G0], S, S, T, T, N, N) :-
-    Goal =.. [Op, L, R], ts_cmp_op(Op, JsOp), !,
-    ts_arith(L, B, LS), ts_arith(R, B, RS),
-    format(string(Cond), "~w ~w ~w", [LS, JsOp, RS]).
+%% A comparison. Two things decide where it goes (G-A3-6, guard placement):
+%%
+%%   * A guard whose variables are ALL bound by the head match, or that appears
+%%     before any statement has been emitted, is a CLAUSE CONDITION and joins the
+%%     block's `if (...)` header — the historical placement, byte-for-byte.
+%%   * A guard that reads a variable a preceding statement declared cannot go in
+%%     the header: `if (v3 >= v4) { const v3 = ...; }` is a temporal-dead-zone
+%%     ReferenceError under node. It becomes an IN-BLOCK test instead — a
+%%     `gopen(Cond)` marker that ts_assemble/3 turns into a nested
+%%     `if (Cond) { <everything after it> }`, so a failing guard falls through to
+%%     the next clause exactly as Prolog's clause selection does.
+ts_struct_goal(Goal, _Pred, _Mode, B, B, G0, G, S0, S, T, T, N, N) :-
+    Goal =.. [Op, L, R], ts_cmp_op(Op, _), !,
+    ts_cmp_cond(Op, L, R, B, Cond),
+    (   ( S0 == [] ; ts_guard_head_only(Goal) )
+    ->  G = [Cond|G0], S = S0
+    ;   G = G0, S = [gopen(Cond)|S0]
+    ).
 ts_struct_goal(is(V, Expr), _Pred, _Mode, B0, [V-Nm|B0], G, G, S0, [Stmt|S0], T, T, N0, N1) :-
     var(V), !,
     ts_arith(Expr, B0, ES),
     format(string(Nm), "_s~w", [N0]), N1 is N0 + 1,
     format(string(Stmt), "    const ~w = ~w;", [Nm, ES]).
+%% `V = Term` as a BINDING. The cut is after the render, not before it: when
+%% ts_term_expr/3 cannot yet name every variable of Term the goal may still be a
+%% MATCH (the clause below) or a goal whose right-hand side a LATER goal produces
+%% (ts_struct_seq/15's deferral clause).
 ts_struct_goal(=(V, Term), _Pred, _Mode, B0, [V-E|B0], G, G, S, S, T, T, N, N) :-
-    var(V), !,
-    ts_term_expr(Term, B0, E).
+    var(V), ts_term_expr(Term, B0, E), !.
+%% `L = R` as a MATCH (G-A3-12 / G-A3-16). One side is already known, the other
+%% is a pattern — a list, a compound, a constant — so the goal is a test that may
+%% also bind: `Chars = ['-','-',First|Rest]` tests the first two elements and
+%% binds First and Rest. Conditions go in-block for the same reason comparisons
+%% do (they read the statement that produced the known side).
+ts_struct_goal(=(L, R), _Pred, _Mode, B0, B, G0, G, S0, S, T, T, N, N) :-
+    ts_unify_match(L, R, B0, B, Conds), !,
+    (   Conds == []
+    ->  G = G0, S = S0
+    ;   atomic_list_concat(Conds, ' && ', Cond),
+        (   S0 == []
+        ->  G = [Cond|G0], S = S0
+        ;   G = G0, S = [gopen(Cond)|S0]
+        )
+    ).
+%% A deterministic string / char / list builtin (G-A3-1's table, reused). It
+%% produces one value, so it becomes one `const`.
+ts_struct_goal(Goal, _Pred, _Mode, B0, [Out-Nm|B0], G, G, S0, [Stmt|S0], T, T, N0, N1) :-
+    ts_struct_builtin(Goal, B0, Out, Expr), !,
+    format(string(Nm), "_s~w", [N0]), N1 is N0 + 1,
+    format(string(Stmt), "    const ~w = ~w;", [Nm, Expr]).
+%% Negation-as-failure as a body GOAL. It is a test, so it goes wherever a
+%% comparison would: the header while nothing has been emitted, in-block after.
+ts_struct_goal(Goal, _Pred, _Mode, B, B, G0, G, S0, S, T, T, N, N) :-
+    nonvar(Goal), ( Goal = \+(_) ; Goal = not(_) ),
+    ts_cond(Goal, B, _, Cond), !,
+    (   S0 == []
+    ->  G = [Cond|G0], S = S0
+    ;   G = G0, S = [gopen(Cond)|S0]
+    ).
 %% A recursive call in a multi-output predicate that is NOT the tail call: it
 %% returns the tuple, so it is DESTRUCTURED into one slot per output and those
 %% slots become the bindings of the call's output variables (G-A3-9). This is
@@ -3744,7 +3969,179 @@ ts_struct_goal(Goal, Pred, test, B, B, G, G, S, S, _T0, yes(R), N, N) :-
     atom_string(Pred, PredStr),
     format(string(R), "~w(~w)", [PredStr, ArgStr]).
 
+% ---------------------------------------------------------------------------
+% G-A3-6 — a call to ANOTHER compiled predicate, in body-goal position
+% ---------------------------------------------------------------------------
+%
+% The callee's shape decides the lowering, and its shape is read from its own
+% clauses by ts_pred_outputs/3 (the same output analysis that gives this path its
+% own Mode), so caller and callee agree on one calling convention:
+%
+%   0 outputs (semidet)  the emitted function answers a boolean, so the call IS a
+%                        test: `gopen("q(x)")`, which ts_assemble/3 nests as
+%                        `if (q(x)) { <rest of the clause> }`. A FALSE answer
+%                        falls through to the next clause of the caller — exactly
+%                        Prolog's semantics for a failing semidet goal.
+%   1 output             `const _sN = q(ins);` and the output variable is bound to
+%                        `_sN`.
+%   N > 1 outputs        `const [_sN, _sN+1] = q(ins);` — the positional tuple of
+%                        G-A3-9's convention, destructured. This is the same
+%                        lowering the non-tail SELF call already used, generalised
+%                        to any callee.
+%
+% FAILURE SEMANTICS, stated once. A callee WITH outputs is called as a
+% deterministic function: it returns its answer, and if none of its clauses
+% matched it THROWS (ts_struct_default_line/4's `no matching clause`), which
+% propagates out of the caller. A callee with outputs that can legitimately FAIL
+% therefore has no honest lowering here and is refused (below) rather than given
+% a sentinel the caller would have to test. Only the 0-output form carries
+% failure, and it carries it as `false`. Every call in cli_args' lenient
+% mechanism is one of these two.
+ts_struct_goal(Goal, Pred, _Mode, B, B, G, G, S0, [gopen(Call)|S0], T, T, N, N) :-
+    ts_cross_call(Pred, Goal, Q, Args, []), !,
+    ts_call_expr(Q, Args, B, Call).
+ts_struct_goal(Goal, Pred, _Mode, B0, B, G, G, S0, [Stmt|S0], T, T, N0, N) :-
+    ts_cross_call(Pred, Goal, Q, Args, Outs), Outs = [_|_], !,
+    ts_split_out_args(Args, 1, Outs, InArgs, CallOutArgs),
+    ts_distinct_vars(CallOutArgs),
+    forall(member(OV, CallOutArgs), \+ ts_bget(OV, B0, _)),
+    ts_call_expr(Q, InArgs, B0, Call),
+    length(CallOutArgs, K),
+    ts_struct_slots(N0, K, Slots),
+    N is N0 + K,
+    (   K =:= 1
+    ->  Slots = [Slot],
+        format(string(Stmt), "    const ~w = ~w;", [Slot, Call])
+    ;   atomic_list_concat(Slots, ', ', SlotStr),
+        format(string(Stmt), "    const [~w] = ~w;", [SlotStr, Call])
+    ),
+    foldl(ts_struct_bind_slot, CallOutArgs, Slots, B0, B).
+
+%% ts_cross_call(+SelfPred, +Goal, -Callee, -Args, -OutPositions)
+%  Goal is a call to a DIFFERENT user predicate whose clauses are visible, and
+%  OutPositions is that predicate's output set. Self-calls are excluded: the
+%  clauses above own them (they know about tail position and the loop).
+ts_cross_call(SelfPred, Goal, Q, Args, Outs) :-
+    compound(Goal),
+    Goal \= (_:_),
+    functor(Goal, Q, QA),
+    Q \== SelfPred,
+    \+ ts_control_functor(Q),
+    ts_pred_outputs(Q, QA, Outs),
+    Goal =.. [_|Args].
+
+ts_control_functor(',').
+ts_control_functor(';').
+ts_control_functor('->').
+ts_control_functor('\\+').
+ts_control_functor(not).
+ts_control_functor(=).
+ts_control_functor(is).
+
+%% ts_call_expr(+Pred, +Args, +Bind, -Expr)
+ts_call_expr(Pred, Args, Bind, Expr) :-
+    maplist(ts_term_expr_b(Bind), Args, Es),
+    atomic_list_concat(Es, ', ', ArgStr),
+    atom_string(Pred, PredStr),
+    format(string(Expr), "~w(~w)", [PredStr, ArgStr]).
+
 ts_term_expr_b(B, T, E) :- ts_term_expr(T, B, E).
+
+%% ts_cmp_cond(+Op, +L, +R, +Bind, -Cond)
+%  `==`/`\==` over a COMPOUND or a LIST is structural equality, not JS `===`
+%  (which compares object identity and would answer false for two equal terms).
+%  Everything else keeps the scalar comparison it always had.
+ts_cmp_cond(Op, L, R, B, Cond) :-
+    ( Op == (==) ; Op == (\==) ),
+    ( ts_structural_term(L) ; ts_structural_term(R) ),
+    !,
+    ts_term_expr(L, B, LS), ts_term_expr(R, B, RS),
+    ( Op == (==) -> Fmt = "_uwEq(~w, ~w)" ; Fmt = "!_uwEq(~w, ~w)" ),
+    format(string(Cond), Fmt, [LS, RS]).
+ts_cmp_cond(Op, L, R, B, Cond) :-
+    ts_cmp_op(Op, JsOp),
+    ts_arith(L, B, LS), ts_arith(R, B, RS),
+    format(string(Cond), "~w ~w ~w", [LS, JsOp, RS]).
+
+ts_structural_term(T) :- T == [], !.
+ts_structural_term(T) :- nonvar(T), compound(T).
+
+%% ts_guard_head_only(+Goal) — every variable of Goal is bound by the head match.
+ts_guard_head_only(Goal) :-
+    ts_head_bind(HB),
+    term_variables(Goal, Vs),
+    forall(member(V, Vs), ts_bget(V, HB, _)).
+
+%% ts_head_bind(-Bind) / ts_set_head_bind(+Bind)
+%  The bindings the CLAUSE HEAD produced, kept in a backtrackable global for the
+%  same reason G-A3-15's output slot is: ts_struct_goal/13's arity is already the
+%  widest thing in this file and the value is per-clause, not per-goal.
+ts_set_head_bind(B) :- b_setval(ts_struct_head_bind, B).
+ts_head_bind(B) :-
+    (   catch(b_getval(ts_struct_head_bind, V), _, fail)
+    ->  B = V
+    ;   B = []
+    ).
+
+%% ts_struct_builtin(+Goal, +Bind, -Out, -Expr)
+%  The deterministic builtins the structural / general paths may call. The text
+%  ones are G-A3-1's table verbatim (ts_string_builtin/4 takes the same Var-Name
+%  map this path calls `Bind`); the list ones are here because they have no
+%  clause-body-path equivalent.
+ts_struct_builtin(Goal, Bind, Out, Expr) :-
+    ts_list_builtin(Goal, Bind, Out, Expr), !.
+ts_struct_builtin(Goal, Bind, Out, Expr) :-
+    ts_string_builtin(Goal, Bind, Out, Expr).
+
+%% ts_list_builtin(+Goal, +Bind, -Out, -Expr)
+ts_list_builtin(reverse(L, Out), B, Out, Expr) :-
+    var(Out), \+ ts_bget(Out, B, _),
+    ts_term_expr(L, B, LE),
+    format(string(Expr), "[...~w].reverse()", [LE]).
+ts_list_builtin(length(L, Out), B, Out, Expr) :-
+    var(Out), \+ ts_bget(Out, B, _),
+    ts_term_expr(L, B, LE),
+    format(string(Expr), "~w.length", [LE]).
+ts_list_builtin(append(A, Bl, Out), B, Out, Expr) :-
+    var(Out), \+ ts_bget(Out, B, _),
+    ts_term_expr(A, B, AE), ts_term_expr(Bl, B, BE),
+    format(string(Expr), "[...~w, ...~w]", [AE, BE]).
+
+%% ts_unify_match(+L, +R, +B0, -B, -Conds)
+%  `=`/2 where one side is already known: match the other side against it as a
+%  pattern. Conds is in source order.
+ts_unify_match(L, R, B0, B, Conds) :-
+    ts_term_expr(L, B0, LE), !,
+    ts_match(LE, R, B0, B, [], Cs), reverse(Cs, Conds).
+ts_unify_match(L, R, B0, B, Conds) :-
+    ts_term_expr(R, B0, RE),
+    ts_match(RE, L, B0, B, [], Cs), reverse(Cs, Conds).
+
+%% ts_compound_expr(+Term, +Bind, -Expr)
+%
+%  THE COMPOUND-TERM REPRESENTATION (G-A3-12)
+%
+%  `f(A1, ..., An)` becomes `{$: "f", args: [e1, ..., en]}`.
+%
+%  Why this and not a tagged array `["f", e1, ...]`: in this target a Prolog list
+%  IS a JS array, so a tagged array would be indistinguishable from the list
+%  `[f, e1]` at runtime, and G-A3-12 exists precisely so that a compound can be
+%  told apart from every other value. With the object form the four
+%  representations are pairwise distinguishable with no ambiguity —
+%
+%      atom / string   a JS string          typeof x === "string"
+%      true / false    a JS boolean         (G-A3-13)
+%      list            a JS array           Array.isArray(x)
+%      compound        {$, args}            x != null && typeof x.$ === "string"
+%
+%  — and `$` is a legal identifier, so the tag reads as `x.$` with no quoting.
+%  `args` is positional because Prolog's arguments are: the argument NAMES do not
+%  exist at this layer, only their positions.
+ts_compound_expr(Term, Bind, Expr) :-
+    Term =.. [F|Args],
+    maplist(ts_term_expr_b(Bind), Args, Es),
+    atomic_list_concat(Es, ', ', Inner),
+    format(string(Expr), '{$: "~w", args: [~w]}', [F, Inner]).
 
 ts_cmp_op(>, ">").
 ts_cmp_op(<, "<").
@@ -3765,7 +4162,400 @@ ts_arith(A-B, Bi, S) :- !, ts_arith(A, Bi, SA), ts_arith(B, Bi, SB), format(stri
 ts_arith(A*B, Bi, S) :- !, ts_arith(A, Bi, SA), ts_arith(B, Bi, SB), format(string(S), "(~w * ~w)", [SA, SB]).
 ts_arith(A/B, Bi, S) :- !, ts_arith(A, Bi, SA), ts_arith(B, Bi, SB), format(string(S), "(~w / ~w)", [SA, SB]).
 ts_arith(A mod B, Bi, S) :- !, ts_arith(A, Bi, SA), ts_arith(B, Bi, SB), format(string(S), "(~w % ~w)", [SA, SB]).
+ts_arith(true,  _, "true")  :- !.
+ts_arith(false, _, "false") :- !.
 ts_arith(A, _, S) :- atom(A), !, format(string(S), '"~w"', [A]).
+%  Non-arithmetic operands of a comparison — a string constant, a list, a
+%  compound (G-A3-12) — are DATA, so they render through ts_term_expr/3.
+ts_arith(T, B, S) :- ts_term_expr(T, B, S).
+
+% ============================================================================
+% GENERAL CLAUSE LOWERING (G-A3-6 · G-A3-12)
+%
+% The structural path above compiles a LIST RECURSION. This one compiles the
+% predicates such a recursion calls — `starts_with/2`, `split_flag_token/3`,
+% `flags_set/4`, `parse_lenient/3` — by reusing the same machinery (ts_match/6
+% for heads, ts_struct_seq/15 for bodies, ts_struct_clause/5 for the first-match
+% clause chain) with two things replaced:
+%
+%   * the MODE comes from ts_pred_outputs/3 rather than from a decomposition
+%     argument, so a predicate needs no cons pattern and no recursion to qualify;
+%   * there is no loop, so nothing is threaded.
+%
+% WHERE IT SITS. It is a RESCUE path, tried only when the clause-body path's own
+% output would be defective — it dropped goals (`incomplete lowering`) or it
+% hoisted a guard above the assignments the guard reads (the original G-A3-6:
+% a temporal-dead-zone ReferenceError under node). Everything the clause-body
+% path lowers correctly still goes there, byte-for-byte; see
+% ts_clause_body_defective/2.
+% ============================================================================
+
+%% native_ts_general(+Pred/Arity, +Clauses, -Code)
+native_ts_general(Pred/Arity, Clauses, Code) :-
+    ts_set_output_slot(none),
+    ts_general_mode(Pred, Arity, Clauses, Mode),
+    ts_struct_emit(Pred, Arity, Clauses, Mode, Code0),
+    (   Mode = function_multi(_)
+    ->  Code1 = Code0                       % ts_struct_emit already added its entry
+    ;   ts_struct_inputs(Arity, Mode, InPositions),
+        length(InPositions, ParamCount),
+        ParamCount > 0,
+        atom_string(Pred, PredStr),
+        ts_struct_cli_entry(PredStr, ParamCount,
+                            "the answer is printed as JSON", CliEntry),
+        format(string(Code1), '~w\n~w', [Code0, CliEntry])
+    ),
+    ts_attach_runtime(Code1, Code).
+
+%% ts_general_mode(+Pred, +Arity, +Clauses, -Mode)
+ts_general_mode(Pred, Arity, Clauses, Mode) :-
+    ts_general_outputs(Arity, Clauses, [Pred/Arity], Outs),
+    (   Outs == []  -> Mode = test
+    ;   Outs = [P]  -> Mode = function(P)
+    ;   Mode = function_multi(Outs)
+    ).
+
+% ---------------------------------------------------------------------------
+% Which arguments does a predicate ANSWER with?
+% ---------------------------------------------------------------------------
+%
+% The historical convention — "the last argument, full stop" — is wrong for both
+% halves of the lenient mechanism: `starts_with(String, Prefix)` has NO output
+% (it is a semidet test over two inputs, and lowering it as `(arg1) => string`
+% produced a function that returned the matched substring), and
+% `split_flag_token(Token, Key, Inline)` has TWO.
+%
+% A position P is an output when, in every clause, its head argument is PRODUCED
+% and never READ:
+%
+%   produced   bound by `=`/`is`, by a deterministic builtin whose output it is,
+%              or by another predicate's call at one of THAT predicate's output
+%              positions (recursively — which is how `Flags` in
+%              `parse_lenient/3` is known to be an output: `lenient_loop/5`
+%              answers with arguments 4 and 5);
+%   read       anything else — an argument of a comparison, the right-hand side
+%              of a binding, an input position of a call, or nested inside a term.
+%
+% At least one clause must actually produce it, so a constant head argument that
+% is really an INPUT PATTERN (`p("--", X) :- ...`) is not mistaken for an answer.
+% A cycle in the call graph makes the analysis DECLINE (the visited set), and a
+% declined callee makes every occurrence in it a read — conservative, so the
+% caller loses an output rather than gaining a wrong one.
+
+%% ts_pred_outputs(+Pred, +Arity, -Outs)
+ts_pred_outputs(Pred, Arity, Outs) :- ts_pred_outputs_(Pred, Arity, [], Outs).
+
+%% ts_pred_outputs_(+Pred, +Arity, +Seen, -Outs)
+ts_pred_outputs_(Pred, Arity, Seen, Outs) :-
+    atom(Pred), integer(Arity), Arity >= 0,
+    \+ memberchk(Pred/Arity, Seen),
+    functor(Head, Pred, Arity),
+    catch(findall(Head-Body, user:clause(Head, Body), Clauses), _, fail),
+    Clauses \== [],
+    (   once(ts_struct_detect(Pred, Clauses, Arity, _DPos, Mode))
+    ->  ts_mode_outputs(Mode, Outs)
+    ;   ts_general_outputs(Arity, Clauses, [Pred/Arity|Seen], Outs)
+    ).
+
+ts_mode_outputs(test, []).
+ts_mode_outputs(function(P), [P]).
+ts_mode_outputs(function_multi(Ps), Ps).
+
+%% ts_general_outputs(+Arity, +Clauses, +Seen, -Outs)
+%
+%  The outputs are the maximal TRAILING RUN of qualifying positions. Restricting
+%  them to a suffix is this target's convention everywhere else (head arguments
+%  1..N-1 are parameters, N is the answer — build_ts_arg_list/2), and it is what
+%  separates a genuine answer from a goal that merely happens to LOOK like one:
+%
+%      a3_or_else(M, D, Out) :- ( M = some(V) -> Out = V ; Out = D ).
+%
+%  `M = some(V)` reads syntactically as "M is bound here", so position 1 passes
+%  the produced/never-read test — but M is the predicate's INPUT and the goal is a
+%  match against it. A suffix cannot contain 1 without containing 2, and position
+%  2 (D) is plainly read, so the run stops at {3}: the right answer.
+ts_general_outputs(Arity, Clauses, Seen, Outs) :-
+    findall(P,
+            ( between(1, Arity, P),
+              forall(member(H-B, Clauses), ts_gout_ok(P, H, B, Seen)),
+              % At least one clause must carry a VARIABLE there. Without this an
+              % argument that is a constant INPUT PATTERN in every clause
+              % (`p("--", X) :- ...`) would read as a constant ANSWER.
+              once(( member(H2-_, Clauses), arg(P, H2, A2), var(A2) ))
+            ),
+            Candidates),
+    ts_trailing_run(Arity, Candidates, Outs).
+
+%% ts_trailing_run(+Arity, +Candidates, -Suffix)
+ts_trailing_run(Arity, Candidates, Suffix) :-
+    ts_trailing_run_(Arity, Candidates, [], Suffix).
+ts_trailing_run_(P, Candidates, Acc, Suffix) :-
+    (   P >= 1, memberchk(P, Candidates)
+    ->  P1 is P - 1, ts_trailing_run_(P1, Candidates, [P|Acc], Suffix)
+    ;   Suffix = Acc
+    ).
+
+%% ts_gout_ok(+P, +Head, +Body, +Seen)
+ts_gout_ok(P, Head, Body, Seen) :-
+    arg(P, Head, A),
+    (   nonvar(A)
+    ->  ground(A)                       % a constant answer
+    ;   ts_count_var(A, Head, NOcc), NOcc >= 2,
+        Head =.. [_|HArgs],
+        nth1(Q, HArgs, Earlier), Q < P, ts_var_in(A, Earlier)
+    ->  true                            % handed back from an EARLIER head argument,
+                                        % which the head match has already bound
+                                        % (`a3_unwrap(some(V), V)`)
+    ;   ts_count_var(A, Head, 1),
+        ts_all_goals(Body, Goals),
+        forall(member(G, Goals), ts_gout_goal_ok(A, G, Seen)),
+        once(( member(G2, Goals), ts_gout_produces(A, G2, Seen) ))
+    ).
+
+ts_gout_goal_ok(V, Goal, Seen) :-
+    (   \+ ts_var_in(V, Goal)
+    ->  true
+    ;   ts_gout_produces(V, Goal, Seen)
+    ).
+
+%% ts_gout_produces(+V, +Goal, +Seen)
+ts_gout_produces(V, Goal0, Seen) :-
+    ts_strip_mod(Goal0, Goal),
+    compound(Goal),
+    (   ts_binds_var(Goal, V, Rhs)
+    ->  \+ ts_var_in(V, Rhs)
+    ;   ts_goal_out_positions(Goal, Seen, Outs),
+        Outs \== [],
+        Goal =.. [_|Args],
+        forall(nth1(I, Args, A),
+               (   ts_var_in(V, A)
+               ->  ( memberchk(I, Outs), A == V )
+               ;   true
+               ))
+    ).
+
+%% ts_goal_out_positions(+Goal, +Seen, -Outs)
+%  A deterministic builtin answers with its LAST argument; a user predicate
+%  answers with whatever ts_pred_outputs_/4 says.
+ts_goal_out_positions(Goal, _Seen, [Arity]) :-
+    functor(Goal, F, Arity),
+    ts_known_builtin(F, Arity),
+    !.
+ts_goal_out_positions(Goal, Seen, Outs) :-
+    functor(Goal, F, Arity),
+    \+ ts_control_functor(F),
+    ts_pred_outputs_(F, Arity, Seen, Outs).
+
+%% ts_known_builtin(+Name, +Arity)
+ts_known_builtin(F, 2) :- ts_sb_len_pred(F).
+ts_known_builtin(F, 3) :- ts_sb_concat_pred(F).
+ts_known_builtin(F, 5) :- ts_sb_sub_pred(F).
+ts_known_builtin(F, 2) :- ts_sb_chars_pred(F).
+ts_known_builtin(F, 2) :- ts_sb_codes_pred(F).
+ts_known_builtin(F, 2) :- ts_sb_numtext_pred(F).
+ts_known_builtin(F, 2) :- ts_sb_textid_pred(F).
+ts_known_builtin(F, 2) :- ts_sb_case_pred(F, _).
+ts_known_builtin(char_code, 2).
+ts_known_builtin(reverse, 2).
+ts_known_builtin(length, 2).
+ts_known_builtin(append, 3).
+
+% ---------------------------------------------------------------------------
+% Is the clause-body path's answer defective?
+% ---------------------------------------------------------------------------
+%
+% Two ways it can be, and both produce something that node accepts and then gets
+% wrong or refuses at run time:
+%
+%   1. a goal was DROPPED, and the emitted block says `incomplete lowering`;
+%   2. the clause's `if (...)` header reads a name the block DECLARES — the
+%      original G-A3-6. `native_ts_clause/5` collects every guard into one
+%      condition and the emitters put that condition ahead of the block, which is
+%      right for a guard over head arguments and a ReferenceError for a guard
+%      over a body-local value.
+%   3. the clause READS `arg<Arity>` without ever assigning it. `arg<Arity>` is
+%      the emitted function's RETURN VALUE, not a parameter, so reading it means
+%      the predicate has no output argument at all — an arity > 1 SEMIDET test
+%      such as `starts_with(String, Prefix)` or `p(A, B) :- A == B`, which the
+%      one-output convention cannot express and which the general path answers
+%      with a boolean.
+%
+% Either way the general path gets a turn. Neither test looks at a predicate the
+% clause-body path handles correctly, so its output is untouched.
+
+%% ts_clause_body_defective(+PredSpec, +Clauses)
+ts_clause_body_defective(PredSpec, Clauses) :-
+    (   member(_-FB, Clauses), FB == true
+    ->  true          % the dispatcher never offers a fact clause to that path
+    ;   member(H-B, Clauses),
+        catch(ts_clause_tdz(PredSpec, H, B), _, fail)
+    ->  true
+    ;   \+ catch(once(native_ts_clause_body(PredSpec, Clauses, _)), _, fail)
+    ->  true
+    ;   once(native_ts_clause_body(PredSpec, Clauses, Code)),
+        sub_string(Code, _, _, _, "incomplete lowering")
+    ).
+
+%% ts_ground_fact_predicate(+Clauses) — a genuine fact table (compile_facts/3's
+%% territory, which the general path must not take over).
+ts_ground_fact_predicate(Clauses) :-
+    forall(member(H-B, Clauses), ( B == true, ground(H) )).
+
+%% ts_clause_tdz(+PredSpec, +Head, +Body)
+ts_clause_tdz(PredSpec, Head, Body) :-
+    native_ts_clause(PredSpec, Head, Body, Condition, Code),
+    ts_decl_names(Code, Names),
+    (   Condition \== "true",
+        member(Nm, Names),
+        sub_string(Condition, _, _, _, Nm)
+    ->  true
+    ;   PredSpec = _/Arity,
+        Arity > 1,
+        format(string(Slot), "arg~w", [Arity]),
+        \+ memberchk(Slot, Names),
+        (   sub_string(Code, _, _, _, Slot)
+        ;   sub_string(Condition, _, _, _, Slot)
+        )
+    ),
+    !.
+
+%% ts_decl_names(+Code, -Names) — the identifiers the block declares.
+ts_decl_names(Code, Names) :-
+    atom_string(Code, S),
+    split_string(S, "\n", " \t", Lines),
+    findall(Nm,
+            ( member(L, Lines),
+              ( sub_string(L, 0, _, _, "const ") ; sub_string(L, 0, _, _, "let ") ),
+              split_string(L, " ", " \t", Parts),
+              Parts = [_, Nm|_],
+              Nm \== "",
+              \+ sub_string(Nm, _, _, _, "[")
+            ),
+            Names0),
+    sort(Names0, Names).
+
+% ---------------------------------------------------------------------------
+% The compound-term runtime (G-A3-12)
+% ---------------------------------------------------------------------------
+%
+% Exactly one function, and it is emitted ONLY into modules that use it, so no
+% predicate that compiled before grows a prelude. `compile_module/3` lifts it out
+% of the individual predicate codes and emits it once (a module may not declare
+% the same function twice).
+
+ts_runtime_begin("// --- UnifyWeaver compound-term runtime (G-A3-12) --- BEGIN").
+ts_runtime_end("// --- UnifyWeaver compound-term runtime (G-A3-12) --- END").
+
+ts_compound_runtime(RT) :-
+    ts_runtime_begin(Begin), ts_runtime_end(End),
+    format(string(RT),
+'~w
+// A Prolog compound f(A1..An) is { $: "f", args: [...] }; an atom is a string,
+// true/false are booleans (G-A3-13) and a list is an array -- so `x.$` tells a
+// compound from all three without ever throwing. _uwEq is Prolog ==/2: structural.
+function _uwEq(a, b) {
+    if (a === b) return true;
+    if (a == null || b == null) return false;
+    if (Array.isArray(a) || Array.isArray(b)) {
+        return Array.isArray(a) && Array.isArray(b) && a.length === b.length &&
+               a.every((x, i) => _uwEq(x, b[i]));
+    }
+    if (typeof a === "object" && typeof b === "object") {
+        return a.$ === b.$ && Array.isArray(a.args) && Array.isArray(b.args) &&
+               a.args.length === b.args.length &&
+               a.args.every((x, i) => _uwEq(x, b.args[i]));
+    }
+    return false;
+}
+~w
+', [Begin, End]).
+
+%% ts_attach_runtime(+Code0, -Code)
+ts_attach_runtime(Code0, Code) :-
+    (   sub_string(Code0, _, _, _, "_uwEq(")
+    ->  ts_compound_runtime(RT),
+        format(string(Code), '~w~w', [RT, Code0])
+    ;   Code = Code0
+    ).
+
+%% ts_split_runtime(+Code0, -Code, -HadRuntime)
+%  Remove the runtime block from one predicate's code so a module can carry it
+%  once. Returns the code unchanged when there is none.
+ts_split_runtime(Code0, Code, HadRuntime) :-
+    atom_string(Code0, S),
+    ts_runtime_begin(Begin), ts_runtime_end(End),
+    (   sub_string(S, Before, _, _, Begin),
+        sub_string(S, EndAt, EndLen, After, End)
+    ->  HadRuntime = true,
+        sub_string(S, 0, Before, _, Head),
+        Skip is EndAt + EndLen,
+        sub_string(S, Skip, After, 0, Tail0),
+        ( sub_string(Tail0, 0, 1, _, "\n") -> sub_string(Tail0, 1, _, 0, Tail) ; Tail = Tail0 ),
+        string_concat(Head, Tail, Code)
+    ;   HadRuntime = false,
+        Code = Code0
+    ).
+
+% ---------------------------------------------------------------------------
+% Module dependency closure (G-A3-6)
+% ---------------------------------------------------------------------------
+%
+% With `include_dependencies(true)` a module named by its ENTRY predicate pulls
+% in everything that entry transitively calls, so `parse_lenient/3` compiles to a
+% module that also contains `lenient_loop/5`, `starts_with/2`, `flags_set/4` and
+% the rest.
+%
+% ORDER. Callees are listed before callers, but the order is not load-bearing:
+% every emitted predicate is a `function` DECLARATION, and function declarations
+% are hoisted to the top of the module scope, so a caller may appear first and a
+% pair of MUTUALLY recursive predicates may appear in either order. That is what
+% makes mutual recursion work here at all — nothing else in this file arranges
+% it, and the test suite pins it (see the compile_module tests).
+
+%% ts_dep_closure(+Predicates, -Expanded)
+ts_dep_closure(Predicates, Expanded) :-
+    findall(Name/Arity, member(pred(Name, Arity, _), Predicates), Roots),
+    ts_dep_walk(Roots, [], Ordered),
+    findall(pred(N, A, T),
+            ( member(N/A, Ordered),
+              ( member(pred(N, A, T0), Predicates) -> T = T0 ; T = facts )
+            ),
+            Expanded).
+
+%% ts_dep_walk(+Queue, +Seen, -Ordered) — callees first, depth-first.
+ts_dep_walk([], _, []).
+ts_dep_walk([P|Ps], Seen, Ordered) :-
+    (   memberchk(P, Seen)
+    ->  ts_dep_walk(Ps, Seen, Ordered)
+    ;   ts_pred_callees(P, Callees),
+        ts_dep_walk(Callees, [P|Seen], Sub),
+        append([P|Seen], Sub, Seen1),
+        ts_dep_walk(Ps, Seen1, Rest),
+        append(Sub, [P|Rest], Ordered)
+    ).
+
+%% ts_pred_callees(+Pred/Arity, -Callees)
+ts_pred_callees(Pred/Arity, Callees) :-
+    functor(Head, Pred, Arity),
+    (   catch(findall(Body, user:clause(Head, Body), Bodies), _, fail)
+    ->  true
+    ;   Bodies = []
+    ),
+    findall(Q/QA,
+            ( member(Body, Bodies),
+              ts_all_goals(Body, Goals),
+              member(G0, Goals),
+              ts_strip_mod(G0, G),
+              compound(G),
+              functor(G, Q, QA),
+              Q \== Pred,
+              \+ ts_control_functor(Q),
+              \+ ts_known_builtin(Q, QA),
+              functor(QH, Q, QA),
+              catch(( user:clause(QH, _) -> true ; fail ), _, fail)
+            ),
+            Callees0),
+    sort(Callees0, Callees).
 
 % ============================================================================
 % TREE RECURSION - TypeScript target delegation (multifile)
