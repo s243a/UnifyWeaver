@@ -42,8 +42,29 @@ ts_source_dispatch(csv, PredArity, Config, Options, TsCode) :- !,
     csv_source:compile_source(PredArity, SrcOptions, [], TsCode).
 ts_source_dispatch(json, PredArity, Config, Options, TsCode) :- !,
     ensure_json_defaults(Config, Config1),
-    ts_source_options(Config1, Options, SrcOptions),
-    json_source:compile_source(PredArity, SrcOptions, [], TsCode).
+    (   json_schema_fields(PredArity, Fields)
+    ->  % Schema mode: emit a typed JSON object per record (see json_source.pl
+        % `_typescript_schema` templates). Route via a distinct template suffix
+        % and thread the declared field descriptors through as schema_fields/1.
+        append(Options, Config1, Merged),
+        append(Merged,
+               [schema_fields(Fields), template_suffix('_typescript_schema')],
+               SrcOptions),
+        json_source:compile_source(PredArity, SrcOptions, [], TsCode)
+    ;   ts_source_options(Config1, Options, SrcOptions),
+        json_source:compile_source(PredArity, SrcOptions, [], TsCode)
+    ).
+
+%% json_schema_fields(+Pred/Arity, -Fields)
+%  Succeeds when dynamic_source_metadata carries a non-empty declared schema for
+%  this JSON source predicate, unifying Fields with the flat root field list
+%  (the same `schema_fields` dict list csharp_target reads). Fails cleanly for a
+%  plain flat-`columns` JSON source, so the caller falls through to the existing
+%  projection path.
+json_schema_fields(PredArity, Fields) :-
+    dynamic_source_compiler:dynamic_source_metadata(PredArity, Meta),
+    get_dict(schema_fields, Meta, Fields),
+    Fields \= [].
 
 %% ts_source_options(+Config, +Options, -SrcOptions)
 %  Merge runtime Options ahead of the stored Config (runtime wins) and append
