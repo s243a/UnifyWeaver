@@ -20,7 +20,8 @@
 :- use_module(wam_clause_chain, [clause_chain/2]).
 :- use_module(wam_text_parser, [
     wam_tokenize_line/2,
-    wam_classify_constant_token/2
+    wam_classify_constant_token/2,
+    wam_constant_token_is_string/1
 ]).
 
 tokenize_line(Line, Parts) :-
@@ -534,6 +535,7 @@ js_t6_min_clauses(Options, N) :-
     ( member(t6_min_clauses(N), Options) -> true ; N = 8 ).
 
 js_t6_atom_id(V, Id) :-
+    \+ wam_constant_token_is_string(V),
     wam_classify_constant_token(V, atom(Name)),
     wam_javascript_target:intern_js_atom(Name, Id).
 
@@ -565,14 +567,21 @@ js_emit_chain_term(get_constant(C, R), Ind) :- !, emit_line_parts(["get_constant
 js_emit_chain_term(line(Parts), Ind) :- !, emit_line_parts(Parts, Ind).
 
 js_chain_eq_expr(VStr, Var, Expr) :-
-    wam_classify_constant_token(VStr, Class),
-    (   Class = integer(N)
-    ->  format(string(Expr), '~w && ~w.tag === "int" && ~w.val === ~w', [Var, Var, Var, N])
-    ;   Class = float(F)
-    ->  format(string(Expr), '~w && ~w.tag === "float" && ~w.val === ~w', [Var, Var, Var, F])
-    ;   Class = atom(Name),
-        wam_javascript_target:intern_js_atom(Name, Id),
-        format(string(Expr), '~w && ~w.tag === "atom" && ~w.id === ~w', [Var, Var, Var, Id])
+    (   wam_constant_token_is_string(VStr)
+    ->  wam_classify_constant_token(VStr, atom(Name)),
+        wam_javascript_target:js_string_literal(Name, Lit),
+        format(string(Expr),
+               '~w && ~w.tag === "string" && ~w.val === ~w',
+               [Var, Var, Var, Lit])
+    ;   wam_classify_constant_token(VStr, Class),
+        (   Class = integer(N)
+        ->  format(string(Expr), '~w && ~w.tag === "int" && ~w.val === ~w', [Var, Var, Var, N])
+        ;   Class = float(F)
+        ->  format(string(Expr), '~w && ~w.tag === "float" && ~w.val === ~w', [Var, Var, Var, F])
+        ;   Class = atom(Name),
+            wam_javascript_target:intern_js_atom(Name, Id),
+            format(string(Expr), '~w && ~w.tag === "atom" && ~w.id === ~w', [Var, Var, Var, Id])
+        )
     ).
 
 emit_lines([], _).

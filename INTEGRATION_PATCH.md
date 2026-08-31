@@ -3,12 +3,56 @@
 
 # INTEGRATION_PATCH — JS WAM (`wam_javascript`)
 
-Coordinator-only edits. This change set does **not** modify these shared
-files; apply the clauses below when registering the target.
+This branch **does** modify two shared files (`wam_target.pl`,
+`wam_text_parser.pl`) so compiled Prolog **string** literals keep a
+distinct spelling. Sections 1–7 remain coordinator-only (do **not**
+edit `target_registry.pl`, `BINDING_MATRIX.md`, `tests/test_advanced.pl`,
+`glue/js_glue.pl`, or the conformance harness except via those
+clauses).
 
-Do **not** edit: `src/unifyweaver/core/target_registry.pl`,
-`docs/BINDING_MATRIX.md`, `tests/test_advanced.pl`, `glue/js_glue.pl`,
-or the conformance harness/fixtures, except via this patch.
+## 0. Applied shared-file changes (string-literal tokens)
+
+No new `string(_)` Class. The classifier still returns
+`atom | integer | float`. Double-quoted tokens classify as `atom(Name)`
+(quotes stripped) so every existing consumer is unchanged. The only new
+signal is `wam_constant_token_is_string/1`, which **only the JS path
+reads**.
+
+### `src/unifyweaver/targets/wam_target.pl` — `quote_wam_constant/2`
+
+When `string(Value)` (and not a number), emit a **double-quoted** token
+`"..."`, escaping `\\` and `"`. Atoms stay bare or single-quoted exactly
+as before; numbers unchanged.
+
+```prolog
+quote_wam_constant(Value, Quoted) :-
+    (   number(Value)
+    ->  format(string(Quoted), "~w", [Value])
+    ;   string(Value)
+    ->  escape_for_wam_dquoting(Value, Escaped),
+        format(string(Quoted), '"~w"', [Escaped])
+    ;   ( atom(Value) -> atom_string(Value, Str) ; Str = Value ),
+        ... existing single-quote path ...
+    ).
+```
+
+### `src/unifyweaver/targets/wam_text_parser.pl`
+
+1. Tokenizer: `"..."` is a quoted region (escapes like single quotes);
+   outer `"` stay attached to the token.
+2. `wam_classify_constant_token/2`: outer double quotes → strip →
+   **`atom(Name)`** (same Class as a single-quoted or bare atom).
+3. New exported semidet `wam_constant_token_is_string(+Token)` — true
+   iff the raw token has outer double quotes.
+
+JS-only: `wam_javascript_target:constant_to_js_term/2` builds
+`V.String(...)` when `wam_constant_token_is_string/1` succeeds. Other
+runtimes never consult the new predicate, so they intern the stripped
+name as an atom — today's behavior.
+
+Full-fleet conformance (all default targets, plus
+`CONFORMANCE_TARGETS=javascript`) is the guardrail that this spelling
+did not break rust/haskell/lua/elixir/go/python/etc.
 
 ## 1. `src/unifyweaver/core/target_registry.pl`
 
