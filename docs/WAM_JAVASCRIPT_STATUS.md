@@ -252,6 +252,9 @@ swipl -q -g run_tests -t halt tests/test_wam_javascript_fact_sources.pl
 # Tier-2 lowered / mixed emit-mode suite:
 swipl -q -g run_tests -t halt tests/test_wam_javascript_lowered.pl
 
+# Opt-in profiler (stderr only; stdout unchanged). 1 = table, json = JSON:
+# UW_PROFILE=1 node output/js_wam_profile_probes/js/generated_program.js fib/2 20
+
 # After INTEGRATION_PATCH.md is applied:
 CONFORMANCE_TARGETS=javascript swipl -q -g run_tests -t halt \
   tests/test_wam_cross_target_conformance.pl
