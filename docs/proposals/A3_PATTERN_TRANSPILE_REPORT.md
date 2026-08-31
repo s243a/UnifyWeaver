@@ -43,16 +43,24 @@ enough to be a punchlist. The catalogue in §4 is the deliverable.
 > (were emitting `undefined`/`_G…`). `string_member/2` and `first_char_index/4`
 > from cli_args now compile oracle-correct (lowers-correctly count 2 → 4).
 > Shapes suite 55 → 67 tests.
-> Still OPEN: **G-A3-6** (guard hoisting, M — now concretely includes
-> cross-predicate calls in guard position, e.g. `starts_with/2` as an ITE
-> condition, which blocks the lenient loop + globals scan), **G-A3-9**
-> (multi-output loops, L — THE remaining blocker for all four parse mechanisms;
-> its blast radius widened now that ITE loops reach the structural path, pinned
-> by probe `gap_g_a3_9_now_reached_by_ite_loops_too`), **G-A3-12** (compound
-> terms `some(V)`/`ok`/`err(M)`/`group(_)`, M), **G-A3-16** (K-V head patterns,
-> M), **G-A3-11.3** (type inference, probe-pinned). By-design refusal: a branch
-> containing a bare failable test (needs clause-level fall-through from inside a
-> branch). Priority: G-A3-9, then G-A3-12/16 for the parse mechanisms.
+> **G-A3-9 is now also CLOSED** (fourth run): multi-output structural loops
+> return a positional tuple `[out1,…,outN]` — output positions found by a
+> both-halves accumulator-discipline analysis (recursive clauses only thread,
+> base clauses produce), tail calls stay `return pred(...)` (the tuple flows
+> through), non-tail calls destructure `const [_s0,_s1] = pred(...)`, ITE
+> branches compose. Single-output path proven BYTE-IDENTICAL over a 12-shape
+> harness. Multi-output modules get a JSON CLI entry. Shapes suite 67 → 81.
+> Payoff: `lenient_loop/5`'s and `scan_leading_globals/4`'s exact loop skeletons
+> now compile and match SWI; G-A3-9 is no longer the blocker for ANY mechanism.
+> Still OPEN — the shared blocker is now **G-A3-6** (cross-predicate calls in
+> bodies and guard positions: `starts_with/2`, `flags_set/4`, `split_flag_token/3`
+> etc.; includes calls to multi-output predicates — the clause-body path holds
+> one output slot — and `strict_loop/8`'s mutual recursion through
+> `strict_option/11`, which the output analysis deliberately does not classify),
+> **G-A3-12** (compound terms `some(V)`/`ok`/`err(M)`/`group(_)`, M), **G-A3-16**
+> (K-V head patterns, M), **G-A3-11.3** (type inference, probe-pinned).
+> By-design refusal: a branch containing a bare failable test. Priority:
+> G-A3-6 → G-A3-12/16 (then the lenient loop + globals scan should compile whole).
 
 ---
 

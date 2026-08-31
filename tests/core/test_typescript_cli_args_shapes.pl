@@ -896,32 +896,51 @@ test(gap_g_a3_11_3_cli_entry_cannot_pass_a_numeric_looking_character,
     Got \== ["true"].                       % <-- the gap: '7' arrived as 7
 
 % ---------------------------------------------------------------------------
-% G-A3-9 (L) : multi-accumulator loops keep only ONE output
+% G-A3-9 (CLOSED) : a loop may keep as many outputs as it has
 % ---------------------------------------------------------------------------
 % cli_args' two engines are lenient_loop/5 (2 accumulators) and strict_loop/8
-% (3 accumulators + a status). The structural path accepts an arity-5 loop but
-% treats argument 5 as the sole output and argument 4 -- the OTHER output -- as
-% a required INPUT parameter, so the caller must already know the answer.
+% (3 accumulators + a status). The structural path used to accept an arity-5
+% loop but treat argument 5 as the sole output and argument 4 -- the OTHER
+% output -- as a required INPUT parameter, then COMPARE it against the
+% accumulator (`a4 === a2`): code that compiles, runs, and requires the caller
+% to already know half the answer.
+%
+% THE CALLING CONVENTION. A predicate with N > 1 outputs returns one value: a
+% positional array `[out1, ..., outN]` in the predicate's own argument order,
+% typed `[any, any]` / `[any, any, any]`, destructured by callers. Positional
+% because Prolog's outputs are positional and no stable KEY names exist at this
+% layer (the base clause and the recursive clause name the same output
+% differently); an array also lets the recursive tail call stay literally
+% `return loop(...)` -- the callee's tuple IS this clause's answer, so nothing
+% is unpacked and rebuilt.
+%
+% Single-output and semidet predicates are untouched: the output analysis has to
+% positively find TWO OR MORE outputs before anything changes, so every shape
+% that compiled before compiles byte-for-byte the same way (pinned by
+% g_a3_9_single_output_shape_is_unchanged below and by every G-A3-10 test).
 assert_a3_twoacc :-
     assertz(user:a3_twoacc([], A, B, A, B)),
     assertz((user:a3_twoacc([X|Xs], A0, B0, A, B) :-
                 A1 is A0 + X, B1 is B0 + 1, a3_twoacc(Xs, A1, B1, A, B))).
 retract_a3_twoacc :- retractall(user:a3_twoacc(_, _, _, _, _)).
 
-test(gap_g_a3_9_second_output_becomes_an_input,
+test(g_a3_9_second_output_is_returned_not_taken_as_an_input,
      [setup(assert_a3_twoacc), cleanup(retract_a3_twoacc)]) :-
     native_structural(a3_twoacc/5, Code),
-    % a4 -- the FIRST output argument -- is emitted as a function parameter ...
-    has(Code, "a4: any"),
-    % ... and is then compared against the accumulator instead of assigned.
-    has(Code, "a4 === a2").
+    % a4 -- the first output argument -- is no longer a parameter at all ...
+    hasnt(Code, "a4"),
+    % ... the signature drops it and declares the tuple it returns instead ...
+    has(Code, "export function a3_twoacc(a1: any[], a2: any, a3: any): [any, any] {"),
+    % ... the base clause returns BOTH exit values, unconditionally ...
+    has(Code, "if (a1.length === 0) {"),
+    has(Code, "return [a2, a3];"),
+    % ... and the tail call passes the tuple straight through.
+    has(Code, "return a3_twoacc(a1.slice(1), _s0, _s1);"),
+    hasnt(Code, "=== a2").
 
-% Closing G-A3-10 WIDENS G-A3-9's blast radius, and that is worth pinning
-% rather than discovering later: a two-output loop whose step is an
-% if-then-else used to be refused (no ITE lowering at all); it now reaches the
-% structural path and lands on exactly the same wrong shape. Nothing about
-% G-A3-9 changed -- only the set of predicates that get to hit it. cli_args'
-% lenient_loop/5 and scan_leading_globals/4 are this shape.
+% Closing G-A3-10 widened this gap's blast radius: a two-output loop whose step
+% is an if-then-else reaches the structural path too. Both branches continue the
+% loop, so both are tail calls returning the tuple.
 assert_a3_twoacc_ite :-
     assertz(user:a3_twoacc_ite([], A, B, A, B)),
     assertz((user:a3_twoacc_ite([X|Xs], A0, B0, A, B) :-
@@ -931,14 +950,297 @@ assert_a3_twoacc_ite :-
                 ))).
 retract_a3_twoacc_ite :- retractall(user:a3_twoacc_ite(_, _, _, _, _)).
 
-test(gap_g_a3_9_now_reached_by_ite_loops_too,
+test(g_a3_9_ite_loop_returns_the_tuple_too,
      [setup(assert_a3_twoacc_ite), cleanup(retract_a3_twoacc_ite)]) :-
     native_structural(a3_twoacc_ite/5, Code),
-    has(Code, "a4: any"),
-    has(Code, "a4 === a2"),
-    % the if-then-else itself lowered correctly -- both branches tail-call
-    aggregate_all(count, sub_string(Code, _, _, _, "a3_twoacc_ite(a1.slice(1)"), N),
+    hasnt(Code, "a4"),
+    has(Code, "): [any, any] {"),
+    has(Code, "return [a2, a3];"),
+    hasnt(Code, "=== a2"),
+    % the if-then-else still lowers as branching returns -- now BOTH are the
+    % tuple-passing tail call, not a `const _sN = ...; return _sN;` pair.
+    aggregate_all(count,
+                  sub_string(Code, _, _, _, "return a3_twoacc_ite(a1.slice(1)"), N),
     N =:= 2.
+
+test(g_a3_9_two_output_loop_matches_swi_under_node,
+     [setup(assert_a3_twoacc), cleanup(retract_a3_twoacc),
+      condition(node_available)]) :-
+    vanilla_structural(a3_twoacc/5, Code),
+    node_check(Code),
+    forall(member(L, [[], [1], [1,2,3], [-4,5], [10,20,30,40], [0,0,0]]),
+           ( user:a3_twoacc(L, 0, 0, S, C),
+             format(string(Expect), "[~w,~w]", [S, C]),
+             term_string(L, LS),
+             format(string(Call), "a3_twoacc(~w, 0, 0)", [LS]),
+             run_struct(Code, Call, Got),
+             Got == Expect )).
+
+% --- the canonical case from the G-A3-9 report entry -----------------------
+% `split/5`: one list in, two accumulated lists out, dispatched by an
+% if-then-else whose branches each continue the loop with a different
+% accumulator updated. (The report writes the condition as a helper call
+% `starts(X)`; a cross-predicate call in guard position is G-A3-6 and still
+% refuses, so this uses a comparison the guard renderer can express. Nothing
+% else about the shape changes.)
+assert_a3_split :-
+    assertz(user:a3_split([], Ps, Fs, Ps, Fs)),
+    assertz((user:a3_split([X|Xs], P0, F0, Ps, Fs) :-
+                (   X > 0
+                ->  F1 = [X|F0], a3_split(Xs, P0, F1, Ps, Fs)
+                ;   P1 = [X|P0], a3_split(Xs, P1, F0, Ps, Fs)
+                ))),
+    assertz((user:a3_split_all(Xs, Ps, Fs) :- a3_split(Xs, [], [], Ps, Fs))).
+retract_a3_split :-
+    retractall(user:a3_split(_, _, _, _, _)),
+    retractall(user:a3_split_all(_, _, _)).
+
+%% json_int_list(+Ints, -Json) / json_int_pair(+A, +B, -Json)
+%  JSON.stringify's exact spelling for a list / a pair of lists of integers:
+%  no spaces, so the oracle string compares byte-for-byte with node's stdout.
+json_int_list(L, S) :- atomic_list_concat(L, ',', I), format(string(S), "[~w]", [I]).
+json_int_pair(A, B, S) :-
+    json_int_list(A, SA), json_int_list(B, SB),
+    format(string(S), "[~w,~w]", [SA, SB]).
+
+test(g_a3_9_canonical_split_lowers,
+     [setup(assert_a3_split), cleanup(retract_a3_split)]) :-
+    native_structural(a3_split/5, Code),
+    has(Code, "export function a3_split(a1: any[], a2: any, a3: any): [any, any] {"),
+    has(Code, "return [a2, a3];"),
+    % each branch continues the loop, consing onto its own accumulator
+    has(Code, "return a3_split(a1.slice(1), a2, [a1[0], ...a3]);"),
+    has(Code, "return a3_split(a1.slice(1), [a1[0], ...a2], a3);"),
+    hasnt(Code, "a4"),
+    hasnt(Code, "undefined").
+
+test(g_a3_9_canonical_split_matches_swi_under_node,
+     [setup(assert_a3_split), cleanup(retract_a3_split),
+      condition(node_available)]) :-
+    vanilla_structural(a3_split/5, Code),
+    node_check(Code),
+    forall(member(L, [[], [1], [-1], [1,-2,3], [5,-5,4,-4], [0,7,-7,2], [3,2,1]]),
+           ( user:a3_split(L, [], [], Ps, Fs),
+             json_int_pair(Ps, Fs, Expect),
+             term_string(L, LS),
+             format(string(Call), "a3_split(~w, [], [])", [LS]),
+             run_struct(Code, Call, Got),
+             Got == Expect )).
+
+% The compiler-emitted CLI entry, driven exactly as a user would: the tuple is
+% printed as JSON, and a `[1,-2,3]` argument survives as a list.
+test(g_a3_9_multi_output_cli_entry_prints_the_tuple,
+     [setup(assert_a3_split), cleanup(retract_a3_split),
+      condition(node_available)]) :-
+    vanilla_structural(a3_split/5, Code),
+    has(Code, "JSON.stringify(a3_split(...argv))"),
+    node_check(Code),
+    user:a3_split([1,-2,3], [], [], Ps, Fs),
+    json_int_pair(Ps, Fs, Expect),
+    node_run_lines(Code, ['[1,-2,3]', '[]', '[]'], Lines),
+    Lines == [Expect].
+
+% --- three outputs ---------------------------------------------------------
+% strict_loop/8 keeps two accumulators plus a status; nothing about the
+% convention is specific to two.
+assert_a3_three :-
+    assertz(user:a3_three([], A, B, C, A, B, C)),
+    assertz((user:a3_three([X|Xs], A0, B0, C0, A, B, C) :-
+                A1 is A0 + X, B1 is B0 + 1, C1 is C0 * 2,
+                a3_three(Xs, A1, B1, C1, A, B, C))).
+retract_a3_three :- retractall(user:a3_three(_, _, _, _, _, _, _)).
+
+test(g_a3_9_three_output_loop_lowers_and_matches_swi,
+     [setup(assert_a3_three), cleanup(retract_a3_three),
+      condition(node_available)]) :-
+    native_structural(a3_three/7, TsCode),
+    has(TsCode, "export function a3_three(a1: any[], a2: any, a3: any, a4: any): [any, any, any] {"),
+    has(TsCode, "return [a2, a3, a4];"),
+    has(TsCode, "return a3_three(a1.slice(1), _s0, _s1, _s2);"),
+    vanilla_structural(a3_three/7, Code),
+    node_check(Code),
+    forall(member(L, [[], [1], [1,2], [3,-3,3], [1,1,1,1]]),
+           ( user:a3_three(L, 0, 0, 1, A, B, C),
+             format(string(Expect), "[~w,~w,~w]", [A, B, C]),
+             term_string(L, LS),
+             format(string(Call), "a3_three(~w, 0, 0, 1)", [LS]),
+             run_struct(Code, Call, Got),
+             Got == Expect )).
+
+% --- an exit branch that binds BOTH outputs (scan_leading_globals' shape) ---
+% cli_args' scan_leading_globals/4 stops on the first non-global token and binds
+% RestOut AND Globals right there. The tail if-then-else has to compose: the
+% continuing branch returns the recursive call, the exit branch returns the
+% tuple it just built.
+assert_a3_scan :-
+    assertz(user:a3_scan([], Acc, [], Acc)),
+    assertz((user:a3_scan([T|R], Acc, RestOut, Globals) :-
+                (   T > 0
+                ->  Acc1 is Acc + T, a3_scan(R, Acc1, RestOut, Globals)
+                ;   RestOut = [T|R], Globals = Acc
+                ))).
+retract_a3_scan :- retractall(user:a3_scan(_, _, _, _)).
+
+test(g_a3_9_exit_branch_returns_the_tuple_it_built,
+     [setup(assert_a3_scan), cleanup(retract_a3_scan),
+      condition(node_available)]) :-
+    native_structural(a3_scan/4, TsCode),
+    has(TsCode, "): [any, any] {"),
+    has(TsCode, "return [[], a2];"),                        % the base clause
+    has(TsCode, "return a3_scan(a1.slice(1), _s0);"),       % keep scanning
+    has(TsCode, "return [[a1[0], ...a1.slice(1)], a2];"),   % stop, hand both back
+    vanilla_structural(a3_scan/4, Code),
+    node_check(Code),
+    forall(member(L, [[], [1,2,3], [-1,2], [1,2,-3,4], [0], [5,-5]]),
+           ( user:a3_scan(L, 0, Rest, G),
+             json_int_list(Rest, RS),
+             format(string(Expect), "[~w,~w]", [RS, G]),
+             term_string(L, LS),
+             format(string(Call), "a3_scan(~w, 0)", [LS]),
+             run_struct(Code, Call, Got),
+             Got == Expect )).
+
+% --- a NON-tail multi-output recursion: the tuple is destructured -----------
+% Not every multi-output loop is tail recursive. When the recursive call is
+% mid-body its tuple is unpacked into one slot per output, and the goals after
+% it read those slots by name.
+assert_a3_sumcount :-
+    assertz(user:a3_sumcount([], 0, 0)),
+    assertz((user:a3_sumcount([X|Xs], S, N) :-
+                a3_sumcount(Xs, S0, N0), S is S0 + X, N is N0 + 1)).
+retract_a3_sumcount :- retractall(user:a3_sumcount(_, _, _)).
+
+test(g_a3_9_non_tail_call_is_destructured,
+     [setup(assert_a3_sumcount), cleanup(retract_a3_sumcount),
+      condition(node_available)]) :-
+    native_structural(a3_sumcount/3, TsCode),
+    has(TsCode, "export function a3_sumcount(a1: any[]): [any, any] {"),
+    has(TsCode, "const [_s0, _s1] = a3_sumcount(a1.slice(1));"),
+    has(TsCode, "return [_s2, _s3];"),
+    vanilla_structural(a3_sumcount/3, Code),
+    node_check(Code),
+    forall(member(L, [[], [7], [1,2,3], [-1,-2], [4,0,4]]),
+           ( user:a3_sumcount(L, S, N),
+             format(string(Expect), "[~w,~w]", [S, N]),
+             term_string(L, LS),
+             format(string(Call), "a3_sumcount(~w)", [LS]),
+             run_struct(Code, Call, Got),
+             Got == Expect )).
+
+% --- lenient_loop/5's own control-flow skeleton -----------------------------
+% cli_args' lenient_loop/5 is: 2 accumulators, 2 outputs, a THREE-way
+% if-then-else chain, every branch a tail call with a different accumulator
+% advanced. That skeleton is reproduced here verbatim with the cross-predicate
+% calls in its branches replaced by comparisons -- so what this pins is exactly
+% the part G-A3-9 owns. (The real predicate still refuses, on `starts_with/2`
+% and friends: G-A3-6 / G-A3-12. That refusal now NAMES the goal, not the
+% output count.)
+assert_a3_lenient_skel :-
+    assertz(user:a3_lenient_skel([], PosAcc, FlagsAcc, PosAcc, FlagsAcc)),
+    assertz((user:a3_lenient_skel([T|Rest], PosAcc, FlagsAcc, PosOut, FlagsOut) :-
+                (   T > 100
+                ->  F1 = [T|FlagsAcc],
+                    a3_lenient_skel(Rest, PosAcc, F1, PosOut, FlagsOut)
+                ;   T > 0
+                ->  F2 = [0|FlagsAcc],
+                    a3_lenient_skel(Rest, PosAcc, F2, PosOut, FlagsOut)
+                ;   a3_lenient_skel(Rest, [T|PosAcc], FlagsAcc, PosOut, FlagsOut)
+                ))).
+retract_a3_lenient_skel :- retractall(user:a3_lenient_skel(_, _, _, _, _)).
+
+test(g_a3_9_lenient_loop_skeleton_lowers_and_matches_swi,
+     [setup(assert_a3_lenient_skel), cleanup(retract_a3_lenient_skel),
+      condition(node_available)]) :-
+    native_structural(a3_lenient_skel/5, TsCode),
+    has(TsCode, "): [any, any] {"),
+    % three branches, three tail calls, one shared tuple
+    aggregate_all(count,
+                  sub_string(TsCode, _, _, _, "return a3_lenient_skel(a1.slice(1)"), N),
+    N =:= 3,
+    vanilla_structural(a3_lenient_skel/5, Code),
+    node_check(Code),
+    forall(member(L, [[], [5], [500], [-5], [500,5,-5], [1,2,3,101,-1], [0,0]]),
+           ( user:a3_lenient_skel(L, [], [], Ps, Fs),
+             json_int_pair(Ps, Fs, Expect),
+             term_string(L, LS),
+             format(string(Call), "a3_lenient_skel(~w, [], [])", [LS]),
+             run_struct(Code, Call, Got),
+             Got == Expect )).
+
+% --- the single-output path is untouched ------------------------------------
+% The whole point of gating on "two or more": a one-output loop must still
+% return a bare value with a bare `any` return type, and an arity-1 semidet test
+% must still be a `boolean`. Byte-identity for the rest is pinned by the G-A3-10
+% assertions above, which all assert on single-output output.
+test(g_a3_9_single_output_shape_is_unchanged,
+     [setup(assert_a3_iteloop), cleanup(retract_a3_iteloop)]) :-
+    native_structural(a3_iteloop/3, Code),
+    has(Code, "export function a3_iteloop(a1: any[], a2: any): any {"),
+    hasnt(Code, "[any, any]"),
+    has(Code, "return _s2;"),            % a bare value, not a tuple
+    hasnt(Code, "return [").
+
+test(g_a3_9_semidet_arity1_shape_is_unchanged,
+     [setup(assert_a3_strmember), cleanup(retract_a3_strmember)]) :-
+    native_structural(a3_strmember/2, Code),
+    has(Code, "): boolean {"),
+    hasnt(Code, "[any").
+
+% --- REFUSAL: an output that is not fed by the tuple discipline -------------
+% `B = A` makes one output an alias of the other AFTER the recursive call has
+% already been handed both. There is no tuple to return from the exit and no
+% honest single-output reading either, so the structural path refuses BY NAME
+% rather than falling back to the one-output convention (which is exactly the
+% wrong code this gap is about).
+assert_a3_badout :-
+    assertz(user:a3_badout([], A, B, A, B)),
+    assertz((user:a3_badout([X|Xs], A0, B0, A, B) :-
+                A1 is A0 + X, a3_badout(Xs, A1, B0, A, B), B = A)).
+retract_a3_badout :- retractall(user:a3_badout(_, _, _, _, _)).
+
+test(g_a3_9_undisciplined_output_refuses_loudly,
+     [setup(assert_a3_badout), cleanup(retract_a3_badout)]) :-
+    a3_compile_outcome(a3_badout/5, Outcome),
+    Outcome = refused(Spec, Shape, Msg),
+    Spec == a3_badout/5,
+    has(Shape, "output arguments"),
+    has(Msg, "a3_badout/5"),
+    has(Msg, "multi-output calling convention"),
+    % and it never quietly re-reads the predicate as single-output
+    hasnt(Msg, "no matching clause").
+
+% --- REFUSAL: calling a multi-output predicate from a clause body -----------
+% Cross-predicate calls in a clause body are G-A3-6 territory and stay
+% unsupported; what changes is that the diagnostic now NAMES the callee's
+% convention instead of reporting an unknown goal, so the reader is pointed at
+% the tuple rather than at a missing builtin. (`parse_lenient/3` is exactly this
+% wrapper around `lenient_loop/5`.)
+test(g_a3_9_caller_of_a_multi_output_loop_refuses_loudly,
+     [setup(assert_a3_split), cleanup(retract_a3_split),
+      condition(node_available)]) :-
+    native_body(a3_split_all/3, Code),
+    has(Code, "incomplete lowering: unrendered goal a3_split/5"),
+    has(Code, "multi-output predicate returning a 2-element tuple"),
+    % the emitted module still PARSES: the refusal is a runtime throw, not a
+    % syntax error, and nothing plausible-but-wrong was emitted in its place.
+    vanilla_js_target:compile_predicate_to_vanilla_js(a3_split_all/3, [], Js),
+    node_check(Js),
+    hasnt(Js, "return a3_split(").
+
+% --- inheritance: both JS targets carry the tuple through -------------------
+test(g_a3_9_vanilla_js_strips_the_tuple_return_type,
+     [setup(assert_a3_split), cleanup(retract_a3_split)]) :-
+    vanilla_structural(a3_split/5, Code),
+    has(Code, "export function a3_split(a1, a2, a3) {"),
+    hasnt(Code, ": [any, any]"),
+    has(Code, "return [a2, a3];").
+
+test(g_a3_9_annotated_js_documents_the_tuple_return_type,
+     [setup(assert_a3_split), cleanup(retract_a3_split)]) :-
+    annotated_js_target:compile_predicate(a3_split/5, [], Code),
+    has(Code, "@returns {[any, any]}"),
+    has(Code, "export function a3_split(a1, a2, a3) {"),
+    has(Code, "return [a2, a3];").
 
 % ---------------------------------------------------------------------------
 % G-A3-10 (CLOSED) : if-then-else composes with structural recursion
@@ -1231,8 +1533,8 @@ test(g_a3_10_unbound_term_is_refused_not_undefined) :-
     \+ typescript_target:ts_arith(_Free2, [], _).
 
 % ---------------------------------------------------------------------------
-% G-A3-9 remains OPEN; its probe is above. Everything below this line was a
-% probe and is now an assertion.
+% G-A3-9 is CLOSED; its assertions are above, in the section that used to hold
+% its probes.
 % ---------------------------------------------------------------------------
 
 % ---------------------------------------------------------------------------
