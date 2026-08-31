@@ -14,6 +14,9 @@
 const V = {};
 const I = {};
 const Runtime = {};
+// Opt-in profiler handle. Stay null (falsy) unless UW_PROFILE / Runtime.profile()
+// turns it on, so the hot path pays one property check and no allocation.
+Runtime._prof = null;
 
 V.Atom = function (id) { return { tag: "atom", id: id }; };
 V.Int = function (n) { return { tag: "int", val: n | 0 }; };
@@ -237,6 +240,7 @@ Runtime.get_reg = function (state, idx) { return state.regs[idx]; };
 Runtime.put_reg = function (state, idx, val) { state.regs[idx] = val; };
 
 Runtime.new_var = function (state) {
+  if (Runtime._prof) Runtime._prof.heapCells += 1;
   const v = V.Unbound("V" + String(state.var_counter));
   state.var_counter += 1;
   return v;
@@ -260,12 +264,14 @@ function same_atomic(a, b) {
 }
 
 function bind_var(state, variable, val) {
+  if (Runtime._prof) Runtime._prof.trailPushes += 1;
   state.trail.push(variable.name);
   state.bindings[variable.name] = val;
   return true;
 }
 
 Runtime.unify = function (state, a, b, program) {
+  if (Runtime._prof) Runtime._prof.unifyCalls += 1;
   a = Runtime.deref(state, a);
   b = Runtime.deref(state, b);
   if (typeof a === "object" && a !== null && typeof b === "object" && b !== null
@@ -324,6 +330,7 @@ function begin_write(state, target, fid, arity, existing) {
   let built = existing;
   if (!built) {
     built = V.Struct(fid, []);
+    if (Runtime._prof) Runtime._prof.heapCells += 1;
     bind_placeholder(state, target, built);
     Runtime.put_reg(state, target, built);
   }
@@ -355,10 +362,12 @@ function finish_read_if_done(state) {
 }
 
 function undo_trail(state, mark) {
+  const n = state.trail.length - mark;
   while (state.trail.length > mark) {
     const name = state.trail.pop();
     delete state.bindings[name];
   }
+  if (Runtime._prof && n > 0) Runtime._prof.trailUndos += 1;
 }
 
 function snapshot_yregs(state) {
@@ -2983,10 +2992,223 @@ function call_fact_stream(program, state, inst) {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Opt-in profiler (UW_PROFILE=1 | json). OFF by default: Runtime._prof is
+// null and every hook is a single falsy check. Reports go to stderr only.
+// ---------------------------------------------------------------------------
+Runtime._prof = null;
+Runtime._prof_exit_hooked = false;
+
+function prof_now() {
+  return process.hrtime.bigint();
+}
+
+function prof_pred(p, key) {
+  let r = p.preds[key];
+  if (!r) {
+    r = { calls: 0, instr: 0, ns: 0, cps: 0, maxCp: 0, lowered: false };
+    p.preds[key] = r;
+  }
+  return r;
+}
+
+function prof_enter(key, countCalls) {
+  const p = Runtime._prof;
+  if (!p) return;
+  const now = prof_now();
+  const st = p.stack;
+  if (st.length) {
+    const top = st[st.length - 1];
+    prof_pred(p, top.key).ns += Number(now - top.t0);
+  }
+  const rec = prof_pred(p, key);
+  if (countCalls !== false) rec.calls += 1;
+  st.push({ key: key, t0: now });
+}
+
+function prof_leave() {
+  const p = Runtime._prof;
+  if (!p || p.stack.length === 0) return;
+  const now = prof_now();
+  const fr = p.stack.pop();
+  prof_pred(p, fr.key).ns += Number(now - fr.t0);
+  if (p.stack.length) p.stack[p.stack.length - 1].t0 = now;
+}
+
+function prof_flush() {
+  const p = Runtime._prof;
+  if (!p) return;
+  while (p.stack.length) prof_leave();
+}
+
+function pred_key_from_pc(program, pc) {
+  const labels = program.labels || {};
+  const keys = Object.keys(labels);
+  let fallback = null;
+  for (let i = 0; i < keys.length; i++) {
+    if (labels[keys[i]] !== pc) continue;
+    if (/\/\d+$/.test(keys[i])) return keys[i];
+    if (fallback === null) fallback = keys[i];
+  }
+  return fallback !== null ? fallback : ("#" + String(pc));
+}
+
+function prof_pad(s, n) {
+  s = String(s);
+  if (s.length >= n) return s;
+  return s + new Array(n - s.length + 1).join(" ");
+}
+
+function prof_padl(s, n) {
+  s = String(s);
+  if (s.length >= n) return s;
+  return new Array(n - s.length + 1).join(" ") + s;
+}
+
+Runtime.prof_enter = function (key, countCalls) { prof_enter(key, countCalls); };
+Runtime.prof_leave = function () { prof_leave(); };
+
+Runtime.prof_lowered_call = function (key) {
+  const p = Runtime._prof;
+  if (!p) return;
+  const rec = prof_pred(p, key);
+  rec.calls += 1;
+  rec.lowered = true;
+};
+
+Runtime.profile = function (on) {
+  if (!on) {
+    Runtime._prof = null;
+    return;
+  }
+  const mode = (on === "json" || on === "JSON") ? "json" : "table";
+  Runtime._prof = {
+    mode: mode,
+    t0: prof_now(),
+    totalInstr: 0,
+    unifyCalls: 0,
+    trailPushes: 0,
+    heapCells: 0,
+    backtracks: 0,
+    trailUndos: 0,
+    stack: [],
+    preds: Object.create(null),
+    reported: false
+  };
+  if (!Runtime._prof_exit_hooked) {
+    Runtime._prof_exit_hooked = true;
+    process.on("exit", function () {
+      if (Runtime._prof) Runtime.profileReport();
+    });
+  }
+};
+
+Runtime.profileReport = function () {
+  const p = Runtime._prof;
+  if (!p || p.reported) return;
+  p.reported = true;
+  prof_flush();
+  const wall = Number(prof_now() - p.t0);
+  const names = Object.keys(p.preds);
+  names.sort(function (a, b) {
+    const da = p.preds[b].ns - p.preds[a].ns;
+    if (da !== 0) return da;
+    return p.preds[b].calls - p.preds[a].calls;
+  });
+  const rows = [];
+  for (let i = 0; i < names.length; i++) {
+    const k = names[i];
+    const r = p.preds[k];
+    rows.push({
+      pred: k,
+      calls: r.calls,
+      instr: r.instr,
+      ns: r.ns,
+      cps: r.cps,
+      max_cp_depth: r.maxCp,
+      lowered: r.lowered === true
+    });
+  }
+  const global = {
+    instructions: p.totalInstr,
+    unify_calls: p.unifyCalls,
+    trail_pushes: p.trailPushes,
+    heap_cells: p.heapCells,
+    backtracks: p.backtracks,
+    trail_undos: p.trailUndos,
+    wall_ns: wall
+  };
+  if (p.mode === "json") {
+    process.stderr.write(JSON.stringify({
+      tier_note: "Lowered predicates: call counts only; instruction/CP/time detail is interpreter-tier.",
+      predicates: rows,
+      global: global
+    }) + "\n");
+    return;
+  }
+  process.stderr.write("UW profile  (interpreter instr/CP/time; lowered = calls only)\n");
+  process.stderr.write(
+    prof_pad("pred", 28) + prof_padl("calls", 10) + prof_padl("instr", 12)
+    + prof_padl("CPs", 8) + prof_padl("maxCP", 8) + prof_padl("ns", 14) + "\n");
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const name = r.lowered ? r.pred + "*" : r.pred;
+    process.stderr.write(
+      prof_pad(name, 28) + prof_padl(r.calls, 10) + prof_padl(r.instr, 12)
+      + prof_padl(r.cps, 8) + prof_padl(r.max_cp_depth, 8) + prof_padl(r.ns, 14) + "\n");
+  }
+  process.stderr.write("--\n");
+  process.stderr.write(
+    "instr=" + global.instructions
+    + " unify=" + global.unify_calls
+    + " trail=" + global.trail_pushes
+    + " heap=" + global.heap_cells
+    + " backtracks=" + global.backtracks
+    + " undos=" + global.trail_undos
+    + " wall_ns=" + global.wall_ns + "\n");
+};
+
+(function uw_profile_boot() {
+  const v = process.env && process.env.UW_PROFILE;
+  if (v === "1" || v === "true" || v === "yes") Runtime.profile("table");
+  else if (v === "json") Runtime.profile("json");
+})();
+
+function run_one_instruction(program, state) {
+  const inst = program.instructions[state.pc];
+  if (inst === undefined || inst === null) return "missing";
+  const prof = Runtime._prof;
+  const d0 = prof ? state.cps.length : 0;
+  if (prof) {
+    prof.totalInstr += 1;
+    if (prof.stack.length) {
+      prof_pred(prof, prof.stack[prof.stack.length - 1].key).instr += 1;
+    }
+  }
+  const pcBefore = state.pc;
+  const ok = Runtime.step(program, state, inst);
+  if (prof && prof.stack.length) {
+    const rec = prof_pred(prof, prof.stack[prof.stack.length - 1].key);
+    const d1 = state.cps.length;
+    if (d1 > d0) {
+      rec.cps += (d1 - d0);
+      if (d1 > rec.maxCp) rec.maxCp = d1;
+    }
+  }
+  if (ok !== true) {
+    if (prof) prof.backtracks += 1;
+    if (Runtime.backtrack(state) !== true) return "fail";
+    return "backtracked";
+  }
+  if (state.pc === pcBefore && !state.halt) state.pc += 1;
+  return "ok";
+}
+
 Runtime.step = function (program, state, inst) {
   const op = inst.op;
   if (op === "Proceed") {
     state.indexed_entry = false;
+    if (Runtime._prof) prof_leave();
     if (state.cp === 0) state.halt = true;
     else { state.pc = state.cp; state.cp = 0; }
     return true;
@@ -3211,6 +3433,7 @@ Runtime.step = function (program, state, inst) {
     }
     state.cp = state.pc + 1;
     state.pc = target;
+    if (Runtime._prof) prof_enter(call_key(inst), true);
     return true;
   }
   if (op === "CallIndexedAtomFact2") return false;
@@ -3218,6 +3441,9 @@ Runtime.step = function (program, state, inst) {
   if (op === "CallPc") {
     state.cp = state.pc + 1;
     state.pc = inst.pc;
+    if (Runtime._prof && state.pc !== undefined && state.pc !== null) {
+      prof_enter(pred_key_from_pc(program, state.pc), true);
+    }
     return state.pc !== undefined && state.pc !== null;
   }
   if (op === "Execute") {
@@ -3230,10 +3456,18 @@ Runtime.step = function (program, state, inst) {
       return false;
     }
     state.pc = target;
+    if (Runtime._prof) {
+      prof_leave();
+      prof_enter(call_key(inst), true);
+    }
     return true;
   }
   if (op === "ExecutePc") {
     state.pc = inst.pc;
+    if (Runtime._prof && state.pc !== undefined && state.pc !== null) {
+      prof_leave();
+      prof_enter(pred_key_from_pc(program, state.pc), true);
+    }
     return state.pc !== undefined && state.pc !== null;
   }
   if (op === "BuiltinCall") {
@@ -3301,16 +3535,25 @@ Runtime.run = function (program, state) {
   state.halt = false;
   let steps = 0;
   const limit = 2000000;
+  if (!Runtime._prof) {
+    while (!state.halt) {
+      if (++steps > limit) return false;
+      const inst = program.instructions[state.pc];
+      if (inst === undefined || inst === null) return false;
+      const pcBefore = state.pc;
+      if (Runtime.step(program, state, inst) !== true) {
+        if (Runtime.backtrack(state) !== true) return false;
+      } else if (state.pc === pcBefore && !state.halt) {
+        state.pc += 1;
+      }
+    }
+    return true;
+  }
   while (!state.halt) {
     if (++steps > limit) return false;
-    const inst = program.instructions[state.pc];
-    if (inst === undefined || inst === null) return false;
-    const pcBefore = state.pc;
-    if (Runtime.step(program, state, inst) !== true) {
-      if (Runtime.backtrack(state) !== true) return false;
-    } else if (state.pc === pcBefore && !state.halt) {
-      state.pc += 1;
-    }
+    const r = run_one_instruction(program, state);
+    if (r === "missing") return false;
+    if (r === "fail") return false;
   }
   return true;
 };
@@ -3320,25 +3563,43 @@ Runtime.collect_run = function (program, state, onSolution) {
   state.halt = false;
   let steps = 0;
   const limit = 2000000;
+  if (!Runtime._prof) {
+    while (true) {
+      while (!state.halt) {
+        if (++steps > limit) return;
+        const inst = program.instructions[state.pc];
+        if (inst === undefined || inst === null) {
+          state.halt = true;
+          break;
+        }
+        const pcBefore = state.pc;
+        if (Runtime.step(program, state, inst) !== true) {
+          if (Runtime.backtrack(state) !== true) {
+            return;
+          }
+        } else if (state.pc === pcBefore && !state.halt) {
+          state.pc += 1;
+        }
+      }
+      if (!state.halt) return;
+      onSolution(state);
+      if (Runtime.backtrack(state) !== true) return;
+      state.halt = false;
+    }
+  }
   while (true) {
     while (!state.halt) {
       if (++steps > limit) return;
-      const inst = program.instructions[state.pc];
-      if (inst === undefined || inst === null) {
+      const r = run_one_instruction(program, state);
+      if (r === "missing") {
         state.halt = true;
         break;
       }
-      const pcBefore = state.pc;
-      if (Runtime.step(program, state, inst) !== true) {
-        if (Runtime.backtrack(state) !== true) {
-          return;
-        }
-      } else if (state.pc === pcBefore && !state.halt) {
-        state.pc += 1;
-      }
+      if (r === "fail") return;
     }
     if (!state.halt) return;
     onSolution(state);
+    Runtime._prof.backtracks += 1;
     if (Runtime.backtrack(state) !== true) return;
     state.halt = false;
   }
@@ -3349,7 +3610,12 @@ Runtime.run_predicate = function (program, startPc, args) {
   const list = args || [];
   for (let i = 0; i < list.length; i++) Runtime.put_reg(state, i + 1, list[i]);
   state.pc = startPc;
-  return Runtime.run(program, state) === true;
+  if (Runtime._prof) {
+    prof_enter(pred_key_from_pc(program, startPc), true);
+  }
+  const ok = Runtime.run(program, state) === true;
+  if (Runtime._prof) prof_leave();
+  return ok;
 };
 
 // ISO-ish operator tables (same coverage as the R WAM native reader).
