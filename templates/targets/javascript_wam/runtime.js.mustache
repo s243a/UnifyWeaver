@@ -3263,9 +3263,272 @@ Runtime.read_facts_file = function (program, path) {
   return { rows: rows, arg1_index: arg1_index };
 };
 
+// ---------------------------------------------------------------------------
+// Persistent indexed stores (GP-LMDB). file(Path) above is unchanged.
+// indexed(Path) = backend B (our format, zero deps). lmdb(Path) = backend A
+// (opt-in npm package `lmdb`; missing package is a loud error, never a
+// silent fallback to B).
+// ---------------------------------------------------------------------------
+Runtime._fact_io_bytes = 0;
+Runtime._fact_io_data_size = 0;
+Runtime._fact_io_reads = 0;
+Runtime._lmdb_force_missing = false;
+
+const UWFI_MAGIC = Buffer.from("UWFI");
+const UWIX_MAGIC = Buffer.from("UWIX");
+const UWFI_HEADER = 16;
+const UWIX_HEADER = 24;
+const UWIX_ENTRY = 16;
+
+function fact_io_read(fd, length, position) {
+  if (length <= 0) return Buffer.alloc(0);
+  const buf = Buffer.alloc(length);
+  const n = require("fs").readSync(fd, buf, {
+    offset: 0,
+    length: length,
+    position: position
+  });
+  Runtime._fact_io_bytes = (Runtime._fact_io_bytes || 0) + n;
+  Runtime._fact_io_reads = (Runtime._fact_io_reads || 0) + 1;
+  return n === length ? buf : buf.subarray(0, n);
+}
+
+function encode_store_key(program, v) {
+  if (!v || typeof v !== "object") return Buffer.from([0x3f]);
+  if (v.tag === "int") {
+    const b = Buffer.alloc(9);
+    b[0] = 0x49;
+    b.writeBigInt64BE(BigInt(v.val), 1);
+    return b;
+  }
+  if (v.tag === "float") {
+    const b = Buffer.alloc(9);
+    b[0] = 0x46;
+    b.writeDoubleBE(v.val, 1);
+    return b;
+  }
+  if (v.tag === "string") {
+    return Buffer.concat([Buffer.from([0x53]), Buffer.from(String(v.val), "utf8")]);
+  }
+  if (v.tag === "atom") {
+    const name = Runtime.string_of(program.intern_table, v.id);
+    return Buffer.concat([Buffer.from([0x41]), Buffer.from(String(name), "utf8")]);
+  }
+  return Buffer.from([0x3f]);
+}
+
+function parse_store_payload(program, buf) {
+  if (!buf || buf.length < 4) return null;
+  const a1Len = buf.readUInt16LE(0);
+  const a2Len = buf.readUInt16LE(2);
+  if (buf.length < 4 + a1Len + a2Len) return null;
+  const a1Text = buf.subarray(4, 4 + a1Len).toString("utf8");
+  const a2Text = buf.subarray(4 + a1Len, 4 + a1Len + a2Len).toString("utf8");
+  return [
+    parse_fact_source_value(program, a1Text),
+    parse_fact_source_value(program, a2Text)
+  ];
+}
+
+function open_indexed_store(source) {
+  if (source._idx_fd !== undefined) return;
+  const fs = require("fs");
+  const prefix = source.path;
+  source._data_fd = fs.openSync(prefix + ".data", "r");
+  source._idx_fd = fs.openSync(prefix + ".idx", "r");
+  const st = fs.fstatSync(source._data_fd);
+  source._data_size = st.size;
+  Runtime._fact_io_data_size = st.size;
+  const ih = fact_io_read(source._idx_fd, UWIX_HEADER, 0);
+  if (ih.length < UWIX_HEADER || ih.subarray(0, 4).compare(UWIX_MAGIC) !== 0) {
+    throw new Error("JS WAM indexed store: bad index magic at " + prefix + ".idx");
+  }
+  source._n_keys = ih.readUInt32LE(8);
+  source._keyblob_off = ih.readUInt32LE(12);
+  source._hits_off = ih.readUInt32LE(16);
+  source._n_records = ih.readUInt32LE(20);
+  const dh = fact_io_read(source._data_fd, UWFI_HEADER, 0);
+  if (dh.length < UWFI_HEADER || dh.subarray(0, 4).compare(UWFI_MAGIC) !== 0) {
+    throw new Error("JS WAM indexed store: bad data magic at " + prefix + ".data");
+  }
+}
+
+function indexed_read_entry(source, i) {
+  const pos = UWIX_HEADER + i * UWIX_ENTRY;
+  const e = fact_io_read(source._idx_fd, UWIX_ENTRY, pos);
+  return {
+    key_rel: e.readUInt32LE(0),
+    key_len: e.readUInt16LE(4),
+    n_hits: e.readUInt16LE(6),
+    hits_rel: e.readUInt32LE(8)
+  };
+}
+
+function indexed_read_key(source, ent) {
+  return fact_io_read(source._idx_fd, ent.key_len, source._keyblob_off + ent.key_rel);
+}
+
+function indexed_lookup_offsets(source, targetKey) {
+  let lo = 0;
+  let hi = source._n_keys - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const ent = indexed_read_entry(source, mid);
+    const k = indexed_read_key(source, ent);
+    const cmp = Buffer.compare(k, targetKey);
+    if (cmp === 0) {
+      const hits = fact_io_read(source._idx_fd, ent.n_hits * 4, source._hits_off + ent.hits_rel);
+      const offs = [];
+      for (let i = 0; i < ent.n_hits; i++) offs.push(hits.readUInt32LE(i * 4));
+      return offs;
+    }
+    if (cmp < 0) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return [];
+}
+
+function indexed_read_record(program, source, dataOff) {
+  const lenBuf = fact_io_read(source._data_fd, 4, dataOff);
+  const payloadLen = lenBuf.readUInt32LE(0);
+  const payload = fact_io_read(source._data_fd, payloadLen, dataOff + 4);
+  return parse_store_payload(program, payload);
+}
+
+function indexed_scan_all(program, source) {
+  const rows = [];
+  let pos = UWFI_HEADER;
+  for (let i = 0; i < source._n_records; i++) {
+    const pair = indexed_read_record(program, source, pos);
+    if (pair) rows.push(pair);
+    const lenBuf = fact_io_read(source._data_fd, 4, pos);
+    pos += 4 + lenBuf.readUInt32LE(0);
+  }
+  return rows;
+}
+
+function indexed_fact_source_rows(program, source, state) {
+  open_indexed_store(source);
+  Runtime._fact_io_data_size = source._data_size || 0;
+  const a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (typeof a1 === "object" && a1 !== null && a1.tag !== "unbound") {
+    const offs = indexed_lookup_offsets(source, encode_store_key(program, a1));
+    const rows = [];
+    for (let i = 0; i < offs.length; i++) {
+      const pair = indexed_read_record(program, source, offs[i]);
+      if (pair) rows.push(pair);
+    }
+    return rows;
+  }
+  return indexed_scan_all(program, source);
+}
+
+function lmdb_missing_error(predKey, storePath) {
+  return (
+    "JS WAM fact source " + JSON.stringify(String(predKey || "")) +
+    " is declared as lmdb(" + JSON.stringify(String(storePath || "")) +
+    ") but the 'lmdb' npm package is not installed. " +
+    "Install it in this environment with: npm install lmdb " +
+    "This backend is opt-in; default builds do not require it. " +
+    "The indexed(...) store is a different format and is not used as a fallback."
+  );
+}
+Runtime.lmdb_missing_error = lmdb_missing_error;
+
+function require_lmdb_package(predKey, storePath) {
+  if (Runtime._lmdb_force_missing === true ||
+      (process.env && process.env.UW_LMDB_FORCE_MISSING === "1")) {
+    throw new Error(lmdb_missing_error(predKey, storePath));
+  }
+  try {
+    const { createRequire } = require("module");
+    const req = createRequire(__filename);
+    return req("lmdb");
+  } catch (err) {
+    throw new Error(lmdb_missing_error(predKey, storePath));
+  }
+}
+
+function open_lmdb_store(source, predKey) {
+  if (source._lmdb) return source._lmdb;
+  const lmdb = require_lmdb_package(predKey, source.path);
+  const open = lmdb.open || (lmdb.default && lmdb.default.open);
+  if (typeof open !== "function") {
+    throw new Error("JS WAM lmdb store: package has no open()");
+  }
+  // keyEncoding binary: our 0x00/0x01 tagged keys are raw bytes (D34 tags
+  // live inside encode_store_key). encoding binary: payload is the same
+  // length-prefixed cell text as backend B. Never open an indexed(...) file.
+  source._lmdb = open({
+    path: source.path,
+    encoding: "binary",
+    keyEncoding: "binary",
+    readOnly: true,
+    noSubdir: false
+  });
+  return source._lmdb;
+}
+
+function lmdb_payload_row(program, value) {
+  if (value == null) return null;
+  let buf = value;
+  if (!Buffer.isBuffer(buf)) {
+    if (value instanceof Uint8Array) buf = Buffer.from(value);
+    else if (typeof value === "string") buf = Buffer.from(value, "latin1");
+    else buf = Buffer.from(value);
+  }
+  return parse_store_payload(program, buf);
+}
+
+function lmdb_range_rows(program, db, start, end) {
+  if (typeof db.getRange !== "function") {
+    throw new Error("JS WAM lmdb store: package has no getRange()");
+  }
+  const rows = [];
+  const it = db.getRange({ start: start, end: end });
+  for (const entry of it) {
+    const pair = lmdb_payload_row(program, entry.value);
+    if (pair) rows.push(pair);
+  }
+  return rows;
+}
+
+function lmdb_fact_source_rows(program, source, state, predKey) {
+  const db = open_lmdb_store(source, predKey);
+  const a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (typeof a1 === "object" && a1 !== null && a1.tag !== "unbound") {
+    const keyBytes = encode_store_key(program, a1);
+    const start = Buffer.alloc(3 + keyBytes.length + 8);
+    start[0] = 0x01;
+    start.writeUInt16BE(keyBytes.length, 1);
+    keyBytes.copy(start, 3);
+    const end = Buffer.from(start);
+    for (let i = 3 + keyBytes.length; i < end.length; i++) end[i] = 0xff;
+    return lmdb_range_rows(program, db, start, end);
+  }
+  // seq keys are 0x00||uint64; A1 keys are 0x01||… — [0x00, 0x01) is exclusive-end
+  return lmdb_range_rows(program, db, Buffer.from([0x00]), Buffer.from([0x01]));
+}
+
+if (process.env && process.env.UW_FACT_IO_STATS) {
+  process.on("exit", function () {
+    process.stderr.write(
+      "fact_io bytes_read=" + String(Runtime._fact_io_bytes || 0) +
+      " data_size=" + String(Runtime._fact_io_data_size || 0) +
+      " n_reads=" + String(Runtime._fact_io_reads || 0) + "\n"
+    );
+  });
+}
+
 function fact_source_rows(program, pred, state) {
   const source = program.fact_sources && program.fact_sources[pred];
   if (!source) return null;
+  if (source.kind === "indexed") {
+    return indexed_fact_source_rows(program, source, state);
+  }
+  if (source.kind === "lmdb") {
+    return lmdb_fact_source_rows(program, source, state, pred);
+  }
   if (!source.cache) source.cache = Runtime.read_facts_file(program, source.path);
   const a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
   if (typeof a1 === "object" && a1 !== null && a1.tag !== "unbound") {
