@@ -68,6 +68,26 @@ test_multi_findall('a') :- findall(_, test_multi_inner(_), _).
 test_multi_findall('b') :- findall(_, test_multi_inner(_), _).
 test_multi_findall('c') :- findall(_, test_multi_inner(_), _).
 
+%% Negation whose clause has NO permanent variables — regression for
+%  R-NEG-BACKTRACK. `\+ G` lowers to ((G, !, fail) ; true) on legacy
+%  targets, and that rewrite's `builtin_call !/0` cuts back to the
+%  ENVIRONMENT FRAME's barrier. Nothing was ensuring the clause had a
+%  frame: a single `\+` goal is one goal, `\+` is in is_builtin_goal/1
+%  so goals_contain_call_or_aggregate/1 skips it, and the `!` does not
+%  exist yet when the allocate test runs. The clause came out
+%  frameless, and a runtime that keeps the barrier only on the frame
+%  (WAM-R) fell back to dropping the topmost choice point — the wrong
+%  one whenever the negated goal left one of its own.
+:- dynamic test_neg_fact/1.
+test_neg_fact(a).
+test_neg_fact(b).
+test_neg_fact(c).
+:- dynamic test_neg_bare/0.
+test_neg_bare :- \+ test_neg_fact(a).
+%% Same, nested inside a conjunction, to pin the goal walker.
+:- dynamic test_neg_nested/0.
+test_neg_nested :- ( true, \+ test_neg_fact(a) ).
+
 %% Nested compound body arg — exercises recursive put_structure
 :- dynamic test_nested_check/1.
 test_nested_check(box(inner(_, _))).
@@ -743,6 +763,32 @@ test_wam_items_a2_structure_term_indexes_still_bridge :-
     ;   fail_test(Test, 'A2 structure/term indexed predicates did not remain on bridge')
     ).
 
+test_wam_bare_negation_emits_allocate :-
+    Test = 'WAM: clause whose only goal is \\+ still gets an env frame',
+    (   wam_target:compile_predicate_to_wam(user:test_neg_bare/0, [], Code),
+        atom_string(Code, S),
+        % The hard-cut rewrite must be there...
+        sub_string(S, _, _, _, 'builtin_call !/0'),
+        % ...and so must the frame its cut barrier lives on.
+        sub_string(S, _, _, _, 'allocate'),
+        sub_string(S, _, _, _, 'deallocate')
+    ->  pass(Test)
+    ;   wam_target:compile_predicate_to_wam(user:test_neg_bare/0, [], Code2),
+        format(user_error, 'DEBUG: bare negation output:~n~w~n', [Code2]),
+        fail_test(Test, 'negation clause emitted without an environment frame')
+    ).
+
+test_wam_nested_negation_emits_allocate :-
+    Test = 'WAM: \\+ nested in a conjunction still gets an env frame',
+    (   wam_target:compile_predicate_to_wam(user:test_neg_nested/0, [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'builtin_call !/0'),
+        sub_string(S, _, _, _, 'allocate'),
+        sub_string(S, _, _, _, 'deallocate')
+    ->  pass(Test)
+    ;   fail_test(Test, 'nested negation clause emitted without an environment frame')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -772,6 +818,8 @@ run_tests :-
     test_wam_items_native_switch_on_constant_a2_fallthrough_index,
     test_wam_items_a2_structure_term_indexes_still_bridge,
     test_wam_multi_clause_findall_emits_allocate,
+    test_wam_bare_negation_emits_allocate,
+    test_wam_nested_negation_emits_allocate,
     test_wam_a2_indexing,
     test_wam_mixed_mode_a1_indexing,
     test_wam_mixed_mode_a2_indexing,
