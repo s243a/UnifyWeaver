@@ -36,6 +36,8 @@
 :- dynamic user:probe_memo/0.
 :- dynamic user:wrap_tail/1.
 :- dynamic user:wrap_helper/1.
+:- dynamic user:wrap_len/2.
+:- dynamic user:probe_wrap_len/0.
 
 install_lowered_preds :-
     retractall(user:hello/1),
@@ -62,6 +64,8 @@ install_lowered_preds :-
     retractall(user:probe_memo/0),
     retractall(user:wrap_tail/1),
     retractall(user:wrap_helper/1),
+    retractall(user:wrap_len/2),
+    retractall(user:probe_wrap_len/0),
     % T4+ITE list recursion (first_char_index/4 shape).
     assertz(user:char_idx([], _, _, -1)),
     assertz((user:char_idx([C|Cs], T, I, Index) :-
@@ -82,9 +86,13 @@ install_lowered_preds :-
         Y = g(a, [1, 2, 3]),
         X == Y,
         write(ok), nl)),
-    % Last-goal Execute of a different predicate: must stay interpreted.
+    % Last-goal Execute of a different *user* predicate: must stay interpreted.
     assertz(user:wrap_helper(ok)),
-    assertz((user:wrap_tail(X) :- wrap_helper(X))).
+    assertz((user:wrap_tail(X) :- wrap_helper(X))),
+    % Last-goal Execute of a JS WAM builtin: now lowers (direct op_builtin).
+    assertz((user:wrap_len(A, N) :- atom_length(A, N))),
+    assertz((user:probe_wrap_len :-
+        wrap_len(hello, N), write(N), nl, N =:= 5)).
 
 read_generated_js(Dir, Text) :-
     directory_file_path(Dir, 'js', JsDir),
@@ -238,6 +246,24 @@ test(execute_other_stays_interpreted, [setup(install_lowered_preds)]) :-
     wam_javascript_explain_lower(user:wrap_tail/1, Wam, Decision),
     assertion(Decision = fallback(_)),
     \+ wam_javascript_lowerable(user:wrap_tail/1, Wam, _).
+
+test(execute_builtin_lowers, [setup(install_lowered_preds)]) :-
+    compile_predicate_to_wam_text(wrap_len/2,
+        [ite_use_y_level(true), inline_bagof_setof(true)], Wam),
+    wam_javascript_lowerable(user:wrap_len/2, Wam, Reason),
+    assertion((Reason == deterministic ; Reason == multi_clause_n)),
+    Dir = 'output/js_wam_lowered_builtin_exec',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:wrap_len/2, user:probe_wrap_len/0],
+        [emit_mode(functions)], Dir),
+    read_generated_js(Dir, Code),
+    assertion(sub_string(Code, _, _, _, "function lowered_wrap_len_2")),
+    assertion(sub_string(Code, _, _, _, "op_builtin")),
+    run_node_args(Dir, ['probe_wrap_len/0'], Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Out)),
+    assertion(sub_string(Out, _, _, _, "5")).
 
 test(mixed_auto_lowers_eligible, [setup(install_lowered_preds)]) :-
     Dir = 'output/js_wam_lowered_mixed_auto',
