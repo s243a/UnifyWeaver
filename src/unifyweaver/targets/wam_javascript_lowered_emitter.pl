@@ -481,15 +481,32 @@ lower_predicate_to_javascript(PI, WamCode, Options, lowered(PredName, FuncName, 
     js_lowered_func_name(Pred/Arity, FuncName),
     build_emission_plan(WamCode, plan(Mode, AltLabel, Payload)),
     (   Mode == deterministic
-    ->  emit_deterministic_function(PredName, FuncName, Payload, Code)
+    ->  emit_deterministic_function(PredName, FuncName, Payload, Code0)
     ;   Mode == ite
-    ->  emit_ite_function(PredName, FuncName, Payload, Code)
+    ->  emit_ite_function(PredName, FuncName, Payload, Code0)
     ;   Mode == clause_chain
     ->  Payload = chain_payload(Guards, Clause1Lines),
-        emit_clause_chain_function(PredName, FuncName, AltLabel, Guards, Clause1Lines, Options, Code)
+        emit_clause_chain_function(PredName, FuncName, AltLabel, Guards, Clause1Lines, Options, Code0)
     ;   Mode == multi_clause_n
-    ->  emit_multi_clause_n_function(PredName, FuncName, Payload, Code)
-    ;   emit_multi_clause_function(PredName, FuncName, AltLabel, Payload, Code)
+    ->  emit_multi_clause_n_function(PredName, FuncName, Payload, Code0)
+    ;   emit_multi_clause_function(PredName, FuncName, AltLabel, Payload, Code0)
+    ),
+    js_inject_prof_enter(PredName, FuncName, Code0, Code).
+
+%% Direct Call/Execute skips lowered_dispatch, so the call counter lives
+%% on the inner function (one falsy check when UW_PROFILE is off).
+js_inject_prof_enter(PredName, FuncName, Code0, Code) :-
+    wam_javascript_target:js_string_literal(PredName, Q),
+    format(string(Old), "function ~w(program, state) {", [FuncName]),
+    format(string(New),
+           "function ~w(program, state) {~n  if (Runtime._prof) Runtime.prof_lowered_call(~w);",
+           [FuncName, Q]),
+    (   sub_string(Code0, B, _, A, Old)
+    ->  sub_string(Code0, 0, B, _, Pref),
+        sub_string(Code0, _, A, 0, Suff),
+        string_concat(Pref, New, T),
+        string_concat(T, Suff, Code)
+    ;   Code = Code0
     ).
 
 emit_multi_clause_n_function(PredName, FuncName, Clauses, Code) :-

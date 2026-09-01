@@ -561,9 +561,9 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, BasePC,
         catch(wam_javascript_lowerable(Pred, WamText, _), _, fail),
         catch(lower_predicate_to_javascript(Pred, WamText, [],
                                            lowered(_, FuncName, LoweredJs)), _, fail)
-    ->  format(string(DispatchLine),
-               'lowered_dispatch[~w] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call(~w); return ~w(program, state); };',
-               [KeyQ, KeyQ, FuncName]),
+    ->          format(string(DispatchLine),
+               'lowered_dispatch[~w] = function (program, state) { return ~w(program, state); };',
+               [KeyQ, FuncName]),
         NewLoweredAcc = [LoweredJs, DispatchLine|LoweredAcc],
         emit_js_lowered_wrapper(P, Arity, FuncName, Wrapper)
     ;   (   SkipLower \== true,
@@ -710,8 +710,6 @@ M.~w = ~w;
 emit_js_lowered_wrapper(Pred, Arity, FuncName, Code) :-
     pred_arg_strings(Arity, ArgDecl, ArgList),
     js_pred_name(Pred, Name),
-    format(string(MainKey), '~w/~w', [Pred, Arity]),
-    js_string_literal(MainKey, KeyQ),
     format(string(Code),
 'function ~w(~w) {
   const state = Runtime.new_state();
@@ -721,11 +719,10 @@ emit_js_lowered_wrapper(Pred, Arity, FuncName, Code) :-
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call(~w);
   return ~w(shared_program, state) === true;
 }
 M.~w = ~w;
-', [Name, ArgDecl, ArgList, Arity, KeyQ, FuncName, Name, Name]).
+', [Name, ArgDecl, ArgList, Arity, FuncName, Name, Name]).
 
 pred_arg_strings(0, '', '[]') :- !.
 pred_arg_strings(Arity, ArgDecl, ArgList) :-
