@@ -62,7 +62,10 @@ if (typeof open !== "function") {
 const db = open({
   path: storeDir,
   encoding: "binary",
-  keyEncoding: "binary"
+  keyEncoding: "binary",
+  // lmdb-js defaults noSubdir when the path has an extension (e.g. edges.lmdb).
+  // GP-LMDB A is always an environment *directory*.
+  noSubdir: false
 });
 
 function putAll(store, list) {

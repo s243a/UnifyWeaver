@@ -3271,6 +3271,7 @@ Runtime.read_facts_file = function (program, path) {
 // ---------------------------------------------------------------------------
 Runtime._fact_io_bytes = 0;
 Runtime._fact_io_data_size = 0;
+Runtime._fact_io_reads = 0;
 Runtime._lmdb_force_missing = false;
 
 const UWFI_MAGIC = Buffer.from("UWFI");
@@ -3282,8 +3283,13 @@ const UWIX_ENTRY = 16;
 function fact_io_read(fd, length, position) {
   if (length <= 0) return Buffer.alloc(0);
   const buf = Buffer.alloc(length);
-  const n = require("fs").readSync(fd, buf, 0, length, position);
+  const n = require("fs").readSync(fd, buf, {
+    offset: 0,
+    length: length,
+    position: position
+  });
   Runtime._fact_io_bytes = (Runtime._fact_io_bytes || 0) + n;
+  Runtime._fact_io_reads = (Runtime._fact_io_reads || 0) + 1;
   return n === length ? buf : buf.subarray(0, n);
 }
 
@@ -3457,7 +3463,8 @@ function open_lmdb_store(source, predKey) {
     path: source.path,
     encoding: "binary",
     keyEncoding: "binary",
-    readOnly: true
+    readOnly: true,
+    noSubdir: false
   });
   return source._lmdb;
 }
@@ -3507,7 +3514,8 @@ if (process.env && process.env.UW_FACT_IO_STATS) {
   process.on("exit", function () {
     process.stderr.write(
       "fact_io bytes_read=" + String(Runtime._fact_io_bytes || 0) +
-      " data_size=" + String(Runtime._fact_io_data_size || 0) + "\n"
+      " data_size=" + String(Runtime._fact_io_data_size || 0) +
+      " n_reads=" + String(Runtime._fact_io_reads || 0) + "\n"
     );
   });
 }
