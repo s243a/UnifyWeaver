@@ -71,6 +71,28 @@ density and effective-distance matrix presence lag Rust/Haskell/C.
 - ISO implementation lives in C++ rather than solely in the shared
   `iso_errors.pl` Prolog module used by F#/Python/Elixir.
 
+## Whole-program exercise (A2, 2026-09): known / suspected deficiencies
+
+The peerhailer CLI-parser exercise (see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md)) found three JS-WAM runtime bug
+classes that are fleet-wide suspects. C++ audits as the best-prepared
+sibling — two of the three classes are already handled:
+
+| # | Deficiency | Status | Evidence / reason |
+|---|---|---|---|
+| A1 | `sub_string/5` builtin missing | **handled (as an atom alias)** | `sub_string/5` dispatches to the `sub_atom/5` walk in both the `Call` and `Execute` arms (`wam_cpp_target.pl:7935,7998`) — the only sibling that has it. Results intern as atoms (see A4), so SWI `string/1`-typed programs still diverge on type tests |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **absent (aliasing form)** | registers are string-named and Y regs live in per-frame `y_regs` (`:3321-3336`) — `"X101"` cannot collide with `"Y1"` |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **handled** | the `Execute` arm ends in a general builtin fallback followed by the Proceed protocol (`:8035-8040`), after routing catch/throw, aggregates, sub_atom/sub_string, retract/clause, `^`, phrase and `call/N` — with R, the fleet's reference implementation |
+| A4 | String fidelity | **rung 0** | `Value::Tag` is Uninit/Atom/Integer/Float/Unbound/Compound (`:3039`) — no string tag; D37's double-quoted literals intern as atoms |
+
+C++ is therefore the natural **second target** for the
+`examples/cli_args/` whole-program benchmark (Class C in the fleet
+doc): the known blockers are the string-type rung, not control flow.
+
+Pattern lane: `cpp_target.pl` compiles facts from `clause(Head, true)`
+— the G-A3-8 execute-at-compile-time hazard is absent; the G-A3
+machinery has no analogue there.
+
 ## Path forward
 
 1. Keep ISO contract as the shared reference; sync Elixir/F#/Python
@@ -95,4 +117,7 @@ axes: C leads on kernels/CSR; C++ leads on ISO + runtime parser.
 ## Document status
 
 Snapshot for the hybrid comparison branch. Update when ISO, LMDB,
-kernel, or parser-compile milestones land.
+kernel, or parser-compile milestones land. 2026-09-01: added the
+whole-program (A2) deficiency audit — Execute-builtin fallback and
+`sub_string/5` alias verified handled; see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).

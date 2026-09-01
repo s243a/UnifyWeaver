@@ -78,6 +78,24 @@ non-WAM dataflow/stream compiler, not the WAM pipeline. Stays opt-in
   Rust's 17 ms): the benchmark runs `category_ancestor/4` through the
   shared bytecode loop rather than the FFI kernel path.
 
+## Whole-program exercise (A2, 2026-09): known / suspected deficiencies
+
+The peerhailer CLI-parser exercise (see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md)) found three JS-WAM runtime bug
+classes that are fleet-wide suspects. Go's audit:
+
+| # | Deficiency | Status | Evidence / reason |
+|---|---|---|---|
+| A1 | `sub_string/5` builtin missing | **verified missing** | Go has `sub_atom/5` (`state.go.mustache:2792`) but no `sub_string/5` |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **verified (structural)** | encoding `X_n→n+99 / Y_n→n+199` (`wam_go_target.pl:2103-2105`), so **X101 ≡ index 200 ≡ Y1**; registers are one flat `vm.Regs` array, and the Y range 200..299 is saved/restored only across the *callee's own* `Allocate`/`Deallocate` (`:2558-2598`) — a no-`Allocate` fact with >99 X placeholders scribbles over the caller's live Y values with nothing to restore them |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **handled for known builtins** | Go already solved the class with a dedicated `BuiltinExecute` instruction that runs the builtin then takes Proceed's return path (`instructions.go.mustache:130-143`, `wam_go_target.pl:2729-2738`) — the fleet's reference implementation. Residual: the builtin-vs-predicate decision is made at translation time (`:1000-1008,1907-1908`); a builtin the classifier misses falls into `Execute`'s label→foreign→indexed-fact chain and silently fails (`:2661-2669`) |
+| A4 | String fidelity | **rung 0** | `value.go.mustache` has Integer/Float/Atom/Compound/Structure/List/Ref/Unbound — no string type; D37's double-quoted literals intern as atoms |
+
+Pattern lane: `go_target.pl` compiles facts from `clause(Head, true)`
+(`:6790-6798`) — the G-A3-8 execute-at-compile-time hazard is absent.
+The G-A3 machinery has no analogue; presume those gaps present until
+`examples/cli_args/` is attempted through the Go pattern lane.
+
 ## Path forward
 
 1. Decide whether the WAM route should become a first-class Go product
@@ -94,4 +112,6 @@ Fleet-aligned snapshot; source-verified against `wam_go_target.pl`,
 the parity audit, and the conformance harness (`prefer_wam(true)`
 requirement confirmed) on 2026-07-11. Refreshed 2026-08-06 after all four Go
 gap cards (LMDB-GO, ISO-GO, BENCH-GO, PARSE-GO) landed. Update the parity audit first,
-then refresh here.
+then refresh here. 2026-09-01: added the whole-program (A2) deficiency
+audit — X→Y aliasing and the `BuiltinExecute` mitigation verified by
+source reading; see [`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).

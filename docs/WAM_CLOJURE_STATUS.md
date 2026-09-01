@@ -52,6 +52,29 @@ emitting a switch table (it is not "no switch handling").
 - **No runtime-parser capability entry.**
 - **No emitted switch tables** for T4.
 
+## Whole-program exercise (A2, 2026-09): known / suspected deficiencies
+
+The peerhailer CLI-parser exercise (see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md)) found three JS-WAM runtime bug
+classes that are fleet-wide suspects. Clojure's audit:
+
+| # | Deficiency | Status | Evidence / reason |
+|---|---|---|---|
+| A1 | `sub_string/5` builtin missing | **verified missing** | `sub_atom` appears in the builtin table but `sub_string/5` nowhere |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **suspected (low)** | registers are string-named and env frames are per-`Allocate` maps (`runtime.clj.mustache:2846-2855`), so the numeric X→Y aliasing form is absent; the frameless-Y-write form was not fully audited |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **verified** | the `:execute` arm special-cases only `variant/2`; any other unresolved name → `backtrack` = silent goal failure (`runtime.clj.mustache:3275-3283`) |
+| A4 | String fidelity | **rung 0** | no string term tag; D37's double-quoted literals intern as atoms |
+
+Compounding A3/B-H2: `wam_clojure` has **no conformance arm**
+(CONF-CLOJURE still open in
+[`WAM_FLEET_GAP_TASKS.md`](WAM_FLEET_GAP_TASKS.md)) — with Lua, one of
+only two WAM backends whose emitted output the shared harness never
+executes.
+
+Pattern lane: `clojure_target.pl` compiles facts from
+`clause(Head, true)` — the G-A3-8 execute-at-compile-time hazard is
+absent; the G-A3 machinery has no analogue there.
+
 ## Path forward
 
 1. Extend the lowered emitter to non-deterministic prefixes and emit
@@ -66,4 +89,6 @@ emitting a switch table (it is not "no switch handling").
 Fleet-aligned snapshot; source-verified line counts (lowered > target),
 the LMDB-JNI + cache-policy surface, the foreign category handlers, the
 `switch_on_constant` prefix-stripping T4 behavior, and the absence of
-conformance registration (2026-07-11).
+conformance registration (2026-07-11). 2026-09-01: added the
+whole-program (A2) deficiency audit; see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).

@@ -104,6 +104,23 @@ default 4096), and explicit `auto` (codegen resolves via shared
   both sequences, no total regression, 271-row parity; hosted 3-rep
   median query_ms=160 / total_ms=687 — **retained**.
 
+## Whole-program exercise (A2, 2026-09): known / suspected deficiencies
+
+The peerhailer CLI-parser exercise (see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md)) found three JS-WAM runtime bug
+classes that are fleet-wide suspects. R's audit:
+
+| # | Deficiency | Status | Evidence / reason |
+|---|---|---|---|
+| A1 | `sub_string/5` builtin missing | **verified missing** | `sub_atom/5` exists in the library dispatch; `sub_string/5` does not |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **verified (structural)** | encoding `X→+100 / Y→+200` (`wam_r_target.pl:208-209`), so X101 ≡ Y1; ids ≥ 201 read/write the topmost frame's `ys` (with the shadow-frame fallthrough, `runtime.R.mustache:289-299`) — a no-`Allocate` fact with >99 X placeholders writes into the *caller's* frame. The shadow-frame machinery protects Y reads *after the callee's own Deallocate*, not against this clobber |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **handled** | `Execute` falls through lowered → label → dynamic → `call_library`, and on library success takes the Proceed protocol (return to CP, halt only when CP = 0) (`runtime.R.mustache:1424-1467`) — one of the two fleet reference implementations (with C++). A builtin outside `call_library` still silently fails |
+| A4 | String fidelity | **rung 0** | no string term tag; D37's double-quoted literals intern as atoms |
+
+Pattern lane: `r_target.pl` compiles facts from `clause(Head, true)` —
+the G-A3-8 execute-at-compile-time hazard is absent; the G-A3 machinery
+has no analogue there.
+
 ## Path forward
 
 1. Optional follow-up: three-form keys for additional audited builtins
@@ -115,4 +132,6 @@ default 4096), and explicit `auto` (codegen resolves via shared
 
 Fleet-aligned snapshot updated for PERF-R-BULK-REDUCE-PLAN-1
 (2026-08-09): hosted row 160/687 (PLAN-1); official fresh-process gate
-≈1.24× query retained under the 180-LOC hard stop.
+≈1.24× query retained under the 180-LOC hard stop. 2026-09-01: added
+the whole-program (A2) deficiency audit; see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).

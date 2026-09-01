@@ -109,6 +109,33 @@ default path in tests.
 - Simplewiki-scale bidirectional vs F# still an open measurement.
 - Lowered TODO stub remains for some instruction shapes.
 
+## Whole-program exercise (A2, 2026-09): known / suspected deficiencies
+
+The peerhailer CLI-parser exercise (see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md)) found three JS-WAM runtime bug
+classes that are fleet-wide suspects. Rust's audit:
+
+| # | Deficiency | Status | Evidence / reason |
+|---|---|---|---|
+| A1 | `sub_string/5` builtin missing | **verified missing** | no `sub_string/5` *or* `sub_atom/5` anywhere in the Rust runtime — a real string-processing program cannot run today |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **absent (aliasing form)** | registers are string-named (`"X101"` can never collide with `"Y1"`); Y registers live in the topmost env frame (`state.rs.mustache:2398-2406`). The residual frameless-Y-write form would need bytecode that names Y outside `Allocate`, which the fact compiler doesn't emit |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **verified partial** | the `Execute` arm routes only `catch/3`, `throw/1`, `succ/2` through builtin dispatch with proper `pc = cp` return (`wam_rust_target.pl:795-838`, `is_iso_meta_builtin` `:6733-6735`); any *other* runtime-implemented builtin reached as a last goal silently **fails** (falls off the arm's `else { false }`) rather than running |
+| A4 | String fidelity | **rung 0** | `Value` has no string variant (`value.rs.mustache:9-23`); D37's double-quoted literals intern as atoms |
+
+Worth re-reading alongside the 2026-08-06 head-unification entry above:
+that episode already demonstrated this doc's central caution — four
+silent-wrong-answer defects lived in a Primary-band target that was
+green on the six classic conformance programs. The whole-program
+benchmark (`examples/cli_args/`, Class C in the fleet doc) is the
+stronger gate.
+
+Pattern lane: `rust_target.pl` compiles facts from `clause(Head, true)`
+(`:7364-7372`) — the G-A3-8 execute-at-compile-time hazard is absent.
+The G-A3 machinery (cross-predicate calls by callee output count,
+multi-output tuple returns, semidet failure sentinel, compound terms as
+runtime data) has no analogue; presume those gaps present until the
+benchmark is attempted.
+
 ## Path forward
 
 1. Simplewiki-scale bidirectional benchmark vs F#.
@@ -122,4 +149,5 @@ default path in tests.
 
 Snapshot for the hybrid comparison branch. Prefer updating this file
 when kernel, LMDB, or conformance milestones land rather than only
-adding one-off report files.
+adding one-off report files. 2026-09-01: added the whole-program (A2)
+deficiency audit; see [`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).

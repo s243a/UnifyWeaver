@@ -113,6 +113,28 @@ classic `wam_conformance_smoke` matrix with Scala/Elixir.
   for full dynamic-DB semantics — target doc).
 - LMDB scan-mode / workload-segregation wait on Rust R9/R10 reference.
 
+## Whole-program exercise (A2, 2026-09): known / suspected deficiencies
+
+The peerhailer CLI-parser exercise (see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md)) found three JS-WAM runtime bug
+classes that are fleet-wide suspects. F#'s audit:
+
+| # | Deficiency | Status | Evidence / reason |
+|---|---|---|---|
+| A1 | `sub_string/5` builtin missing | **verified missing** | not in the step dispatch |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **suspected (strong)** | same design as the verified Haskell case: numeric `X→+100 / Y→+200` encoding (`wam_fsharp_target.pl:4190-4191`) plus per-frame `EfYRegs` (`:1136-1143`), which puts X101 ≡ Y1 into the *caller's* frame when the callee never allocates. The exact getReg/putReg Y-threshold was not directly confirmed, hence suspected rather than verified |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **verified partial** | `isIsoMetaBuiltin` (catch/throw/succ) routes through `BuiltinCall` with the correct PC→CP conversion (`:1041-1070`) — the pattern the Rust arm mirrors — but any other unlabelled builtin falls through label lookup to `None` = silent goal failure (`:1072-1083`) |
+| A4 | String fidelity | **rung 0** | no string term tag; D37's double-quoted literals intern as atoms |
+
+The standing lesson recorded above (every unification fix must land in
+both the interpreter and the lowered emitter) applies to these classes
+too: an A2/A3 fix in the interpreter arm needs a matching audit of
+`emit_mode(functions)`.
+
+Pattern lane: `fsharp_target.pl` compiles facts from
+`clause(Head, true)` — the G-A3-8 execute-at-compile-time hazard is
+absent; the G-A3 machinery has no analogue there.
+
 ## Performance notes
 
 - Scale-300 functions mode: **~11 ms query** / ~159 ms total (.NET
@@ -132,4 +154,5 @@ classic `wam_conformance_smoke` matrix with Scala/Elixir.
 Status extract over `WAM_FSHARP_TARGET.md` +
 `WAM_FSHARP_PARITY_AUDIT.md`. Prefer updating those for API detail;
 update **this** file for milestone checkboxes and cross-target
-ranking.
+ranking. 2026-09-01: added the whole-program (A2) deficiency audit; see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).

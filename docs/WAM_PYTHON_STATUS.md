@@ -54,6 +54,26 @@ opt-in mode; no native default.
   three-form keys before Python is "fully ISO-compatible".
 - No native runtime-parser default (compiled opt-in only).
 
+## Whole-program exercise (A2, 2026-09): known / suspected deficiencies
+
+The peerhailer CLI-parser exercise (see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md)) found three JS-WAM runtime bug
+classes that are fleet-wide suspects. Python's audit:
+
+| # | Deficiency | Status | Evidence / reason |
+|---|---|---|---|
+| A1 | `sub_string/5` builtin missing | **verified missing** | not in `_execute_builtin` or any dispatch arm |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **verified (structural)** | X window is 128 slots (`A=1..128, X=129..256, Y=301..428`, `wam_python_target.pl:2205-2208`), so with X_k→128+k, **X173 aliases Y1**; ids ≥ 301 are written into the *current env frame's* `perm_vars` (`wam_python_runtime/WamRuntime.py:171-194`) — i.e. the caller's frame when the callee is a no-`Allocate` fact. The 128-slot window is wider than JS/Lua/Go's 100, so the cli_args registry (~X120) squeaks by, but the class is the same and a slightly larger fact trips it |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **verified** | `execute` with no label simply `return False` — no builtin fallback, and unlike `call` not even the foreign-predicate fallback (`wam_python_target.pl:400-406`); a last-goal builtin outside `is_builtin_pred/2` silently fails |
+| A4 | String fidelity | **rung 0** | the term model (`WamRuntime.py:16-52`) has Atom/Compound/Var/Int/Float/Ref — no string type; D37's double-quoted literals intern as atoms |
+
+Pattern lane: `python_target.pl` compiles facts from
+`clause(Head, true)` (`:2923-2931`) — the G-A3-8 execute-at-compile-time
+hazard is absent. The G-A3 machinery (cross-calls by output count,
+multi-output tuples, semidet sentinel, compound runtime data) has no
+analogue; presume those gaps present until `examples/cli_args/` is
+attempted through the Python pattern lane.
+
 ## Path forward
 
 1. Complete ISO three-form adoption across remaining builtins.
@@ -67,4 +87,7 @@ opt-in mode; no native default.
 Fleet-aligned snapshot; source-verified line counts, the
 interpreter-only kernel story, partial-ISO surface, and opt-in
 conformance registration against `wam_python_target.pl`, the parity
-audit, and the conformance harness (2026-07-11).
+audit, and the conformance harness (2026-07-11). 2026-09-01: added the
+whole-program (A2) deficiency audit — Y-aliasing threshold, silent
+`execute` failure and `sub_string/5` verified by source reading; see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).

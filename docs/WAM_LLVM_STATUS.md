@@ -67,6 +67,24 @@ countdown / list_suffix.
 - Hybrid clause-1 trail-rollback for partial bindings still called out
   as follow-up in the roadmap.
 
+## Whole-program exercise (A2, 2026-09): known / suspected deficiencies
+
+The peerhailer CLI-parser exercise (see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md)) found three JS-WAM runtime bug
+classes that are fleet-wide suspects. LLVM's audit (light pass —
+suspected entries were not source-confirmed here):
+
+| # | Deficiency | Status | Evidence / reason |
+|---|---|---|---|
+| A1 | `sub_string/5` builtin missing | **verified missing** | fleet grep: `sub_string/5` is dispatched only by C++ and (post-A2) JS |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **suspected** | register layout not audited for X→Y aliasing / window overflow |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **suspected** | the shared emitter's `deallocate` + `execute <builtin>` shape reaches this backend like every other; the `execute` lowering was not audited |
+| A4 | String fidelity | **rung 0** | no string term tag in `value.ll`; D37's double-quoted literals intern as atoms |
+
+With no conformance registration either (see Gaps above), emitted LLVM
+output currently has *no* executed acceptance gate — resolve the
+suspected rows as the first step of any conformance-adapter work.
+
 ## Path forward
 
 1. Register a conformance adapter (`CONFORMANCE_TARGETS=llvm`).
@@ -80,4 +98,6 @@ countdown / list_suffix.
 
 Derived from the transpilation trilogy, roadmap Table 1, perf notes,
 and the hybrid comparison branch. Update when arena, kernel, or
-conformance milestones land.
+conformance milestones land. 2026-09-01: added the whole-program (A2)
+deficiency audit (light pass); see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).
