@@ -362,6 +362,111 @@ function finish_read_if_done(state) {
   }
 }
 
+// Direct op helpers for the lowered emitter: same semantics as Runtime.step
+// minus instruction-object allocation, the interpreter if-chain, and pc++.
+// GetList with a missing fid intern [|] here so interpreter and lowered
+// share one write-mode path (convention 1).
+Runtime.op_allocate = function (state) {
+  state.stack.push({ cp: state.cp, yregs: snapshot_yregs(state) });
+  return true;
+};
+Runtime.op_deallocate = function (state) {
+  const f = state.stack.pop();
+  if (f) {
+    state.cp = f.cp;
+    restore_yregs(state, f.yregs);
+  }
+  return true;
+};
+Runtime.op_get_level = function (state, yn) {
+  Runtime.put_reg(state, yn, state.cps.length);
+  return true;
+};
+Runtime.op_get_constant = function (program, state, ai, c) {
+  return Runtime.unify(state, Runtime.get_reg(state, ai), c, program) === true;
+};
+Runtime.op_get_value = function (program, state, xn, ai) {
+  return Runtime.unify(state, Runtime.get_reg(state, ai), Runtime.get_reg(state, xn), program) === true;
+};
+Runtime.op_get_structure = function (program, state, fid, ai, arity) {
+  const val = Runtime.deref(state, Runtime.get_reg(state, ai));
+  const useFid = fid !== undefined ? fid : Runtime.intern(program.intern_table, "[|]");
+  const ar = arity || 2;
+  if (typeof val === "object" && val !== null && val.tag === "unbound") {
+    const s = V.Struct(useFid, []);
+    bind_var(state, val, s);
+    Runtime.put_reg(state, ai, s);
+    begin_write(state, ai, useFid, ar, s);
+    return true;
+  }
+  if (typeof val === "object" && val !== null && val.tag === "struct"
+      && same_functor(program, val.fid, (val.args || []).length, useFid, ar)) {
+    begin_read(state, val.args);
+    return true;
+  }
+  return false;
+};
+Runtime.op_get_list = function (program, state, ai, fid) {
+  return Runtime.op_get_structure(program, state, fid, ai, 2);
+};
+Runtime.op_put_structure = function (program, state, fid, ai, arity) {
+  const useFid = fid !== undefined ? fid : Runtime.intern(program.intern_table, "[|]");
+  begin_write(state, ai, useFid, arity || 2, null);
+  return true;
+};
+Runtime.op_put_list = function (program, state, ai, fid) {
+  return Runtime.op_put_structure(program, state, fid, ai, 2);
+};
+Runtime.op_unify_variable = function (state, xn) {
+  if (state.mode === "read") {
+    Runtime.put_reg(state, xn, state.read_args[state.read_cursor]);
+    state.read_cursor += 1;
+    finish_read_if_done(state);
+  } else {
+    const v = Runtime.new_var(state);
+    Runtime.put_reg(state, xn, v);
+    push_built_term(state, v);
+  }
+  return true;
+};
+Runtime.op_unify_value = function (program, state, xn) {
+  const v = Runtime.get_reg(state, xn);
+  if (state.mode === "read") {
+    if (Runtime.unify(state, v, state.read_args[state.read_cursor], program) !== true) return false;
+    state.read_cursor += 1;
+    finish_read_if_done(state);
+  } else {
+    push_built_term(state, v);
+  }
+  return true;
+};
+Runtime.op_unify_constant = function (program, state, c) {
+  if (state.mode === "read") {
+    if (Runtime.unify(state, c, state.read_args[state.read_cursor], program) !== true) return false;
+    state.read_cursor += 1;
+    finish_read_if_done(state);
+  } else {
+    push_built_term(state, c);
+  }
+  return true;
+};
+Runtime.op_builtin = function (program, state, pred, arity) {
+  return Runtime.builtin_call(program, state, { pred: pred, arity: arity }) === true;
+};
+Runtime.capture_a_regs = function (state, n) {
+  const a = new Array((n || 8) + 1);
+  const r = state.regs;
+  for (let i = 1; i <= n; i++) a[i] = r[i];
+  return a;
+};
+Runtime.restore_a_regs = function (state, a) {
+  const r = state.regs;
+  for (let i = 1; i < a.length; i++) {
+    if (a[i] === undefined) delete r[i];
+    else r[i] = a[i];
+  }
+};
+
 function undo_trail(state, mark) {
   const n = state.trail.length - mark;
   while (state.trail.length > mark) {
@@ -370,6 +475,7 @@ function undo_trail(state, mark) {
   }
   if (Runtime._prof && n > 0) Runtime._prof.trailUndos += 1;
 }
+Runtime.undo_trail = undo_trail;
 
 function snapshot_yregs(state) {
   const y = {};
@@ -412,6 +518,96 @@ function proceed_to_cp(state) {
   else { state.pc = state.cp; state.cp = 0; }
 }
 
+Runtime.push_y_save = push_y_save;
+Runtime.pop_y_save = pop_y_save;
+Runtime.snapshot_machine = snapshot_machine;
+Runtime.restore_machine = restore_machine;
+
+function term_is_ground(state, v, seen) {
+  v = Runtime.deref(state, v);
+  if (typeof v !== "object" || v === null) return true;
+  if (v.tag === "unbound") return false;
+  if (v.tag !== "struct") return true;
+  seen = seen || new Set();
+  if (seen.has(v)) return true;
+  seen.add(v);
+  const args = v.args || [];
+  for (let i = 0; i < args.length; i++) {
+    if (!term_is_ground(state, args[i], seen)) return false;
+  }
+  return true;
+}
+
+Runtime.term_is_ground = term_is_ground;
+
+// Mixed-mode: an interpreted Call/Execute whose target has a lowered
+// function must run that function, not the bytecode (otherwise helpers
+// stay on the slow path). Call pushes Y (convention from A2); Execute
+// is a tail call and proceeds to CP after the function returns.
+function lowered_fn_for_key(program, key) {
+  const table = program && program.lowered_dispatch;
+  if (!table) return null;
+  const fn = table[key];
+  return typeof fn === "function" ? fn : null;
+}
+
+function lowered_fn_at_pc(program, pc) {
+  if (pc === undefined || pc === null) return null;
+  const table = program && program.lowered_dispatch;
+  if (!table) return null;
+  if (!program._lowered_by_pc) {
+    const map = Object.create(null);
+    const labels = program.labels || {};
+    const keys = Object.keys(table);
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const entry = labels[k];
+      if (entry !== undefined && entry !== null) map[entry] = table[k];
+    }
+    program._lowered_by_pc = map;
+  }
+  const fn = program._lowered_by_pc[pc];
+  return typeof fn === "function" ? fn : null;
+}
+
+function run_lowered_body(program, state, fn) {
+  const savedPc = state.pc;
+  const mode = state.mode;
+  const build_stack = state.build_stack.slice();
+  const read_stack = (state.read_stack || []).slice();
+  const read_args = state.read_args;
+  const read_cursor = state.read_cursor;
+  const ok = fn(program, state) === true;
+  state.pc = savedPc;
+  state.mode = mode;
+  state.build_stack = build_stack;
+  state.read_stack = read_stack;
+  state.read_args = read_args;
+  state.read_cursor = read_cursor;
+  state.halt = false;
+  return ok === true;
+}
+
+function invoke_lowered_call(program, state, fn) {
+  const retPc = state.pc + 1;
+  const savedCp = state.cp;
+  push_y_save(state);
+  const ok = run_lowered_body(program, state, fn);
+  pop_y_save(state);
+  state.cp = savedCp;
+  if (ok !== true) return false;
+  state.pc = retPc;
+  return true;
+}
+
+function invoke_lowered_execute(program, state, fn) {
+  const ok = run_lowered_body(program, state, fn);
+  if (ok !== true) return false;
+  state.indexed_entry = false;
+  proceed_to_cp(state);
+  return true;
+}
+
 function snapshot_machine(state) {
   return {
     regs: Runtime.copy_table(state.regs),
@@ -449,6 +645,10 @@ function restore_cp_frame(state, cp) {
 let aggregate_result;
 
 Runtime.backtrack = function (state) {
+  // Nested Runtime.run from a lowered Call must not consume the caller's
+  // choice points (GP-PERF mixed mode). cp_barrier is the cps.length at
+  // the isolated call; refuse to pop at or below it.
+  if (typeof state.cp_barrier === "number" && state.cps.length <= state.cp_barrier) return false;
   if (state.cps.length === 0) return false;
   const cp = state.cps[state.cps.length - 1];
   if (!cp) return false;
@@ -3287,16 +3487,12 @@ Runtime.step = function (program, state, inst) {
   }
   if (op === "Fail") return false;
   if (op === "Allocate") {
-    state.stack.push({ cp: state.cp, yregs: snapshot_yregs(state) });
+    Runtime.op_allocate(state);
     state.pc += 1;
     return true;
   }
   if (op === "Deallocate") {
-    const f = state.stack.pop();
-    if (f) {
-      state.cp = f.cp;
-      restore_yregs(state, f.yregs);
-    }
+    Runtime.op_deallocate(state);
     state.pc += 1;
     return true;
   }
@@ -3323,79 +3519,39 @@ Runtime.step = function (program, state, inst) {
     return true;
   }
   if (op === "GetConstant") {
-    if (Runtime.unify(state, Runtime.get_reg(state, inst.ai), inst.c, program) !== true) return false;
+    if (Runtime.op_get_constant(program, state, inst.ai, inst.c) !== true) return false;
     state.pc += 1;
     return true;
   }
   if (op === "GetValue") {
-    if (Runtime.unify(state, Runtime.get_reg(state, inst.ai), Runtime.get_reg(state, inst.xn), program) !== true) {
-      return false;
-    }
+    if (Runtime.op_get_value(program, state, inst.xn, inst.ai) !== true) return false;
     state.pc += 1;
     return true;
   }
   if (op === "PutStructure" || op === "PutList") {
-    const fid = inst.fid !== undefined ? inst.fid : Runtime.intern(program.intern_table, "[|]");
-    const arity = inst.arity || 2;
-    begin_write(state, inst.ai, fid, arity, null);
+    if (Runtime.op_put_structure(program, state, inst.fid, inst.ai, inst.arity || 2) !== true) return false;
     state.pc += 1;
     return true;
   }
   if (op === "SetVariable" || op === "UnifyVariable") {
-    if (state.mode === "read") {
-      Runtime.put_reg(state, inst.xn, state.read_args[state.read_cursor]);
-      state.read_cursor += 1;
-      finish_read_if_done(state);
-    } else {
-      const v = Runtime.new_var(state);
-      Runtime.put_reg(state, inst.xn, v);
-      push_built_term(state, v);
-    }
+    if (Runtime.op_unify_variable(state, inst.xn) !== true) return false;
     state.pc += 1;
     return true;
   }
   if (op === "SetValue" || op === "UnifyValue") {
-    const v = Runtime.get_reg(state, inst.xn);
-    if (state.mode === "read") {
-      if (Runtime.unify(state, v, state.read_args[state.read_cursor], program) !== true) return false;
-      state.read_cursor += 1;
-      finish_read_if_done(state);
-    } else {
-      push_built_term(state, v);
-    }
+    if (Runtime.op_unify_value(program, state, inst.xn) !== true) return false;
     state.pc += 1;
     return true;
   }
   if (op === "SetConstant" || op === "UnifyConstant") {
-    if (state.mode === "read") {
-      if (Runtime.unify(state, inst.c, state.read_args[state.read_cursor], program) !== true) return false;
-      state.read_cursor += 1;
-      finish_read_if_done(state);
-    } else {
-      push_built_term(state, inst.c);
-    }
+    if (Runtime.op_unify_constant(program, state, inst.c) !== true) return false;
     state.pc += 1;
     return true;
   }
   if (op === "GetStructure" || op === "GetList") {
-    const val = Runtime.deref(state, Runtime.get_reg(state, inst.ai));
-    const fid = inst.fid !== undefined ? inst.fid : Runtime.intern(program.intern_table, "[|]");
-    const arity = inst.arity || 2;
-    if (typeof val === "object" && val !== null && val.tag === "unbound") {
-      const s = V.Struct(fid, []);
-      bind_var(state, val, s);
-      Runtime.put_reg(state, inst.ai, s);
-      begin_write(state, inst.ai, fid, arity, s);
-      state.pc += 1;
-      return true;
-    }
-    if (typeof val === "object" && val !== null && val.tag === "struct"
-        && same_functor(program, val.fid, (val.args || []).length, fid, arity)) {
-      begin_read(state, val.args);
-      state.pc += 1;
-      return true;
-    }
-    return false;
+    if (Runtime.op_get_structure(program, state, inst.fid, inst.ai, inst.arity || 2) !== true) return false;
+    state.pc += 1;
+    return true;
   }
   if (op === "TryMeElse" || op === "TryMeElsePc") {
     state.indexed_entry = false;
@@ -3470,7 +3626,7 @@ Runtime.step = function (program, state, inst) {
     return true;
   }
   if (op === "GetLevel") {
-    Runtime.put_reg(state, inst.yn, state.cps.length);
+    Runtime.op_get_level(state, inst.yn);
     state.pc += 1;
     return true;
   }
@@ -3495,7 +3651,10 @@ Runtime.step = function (program, state, inst) {
   if (op === "SwitchOnStructureA2" || op === "SwitchOnStructureA2Pc") return switch_structure(program, state, inst, 2);
   if (op === "SwitchOnTerm" || op === "SwitchOnTermPc") return switch_term(program, state, inst, inst.reg || 1);
   if (op === "Call") {
-    const target = program.labels[call_key(inst)];
+    const key = call_key(inst);
+    const lowered = lowered_fn_for_key(program, key);
+    if (lowered) return invoke_lowered_call(program, state, lowered);
+    const target = program.labels[key];
     if (target === undefined || target === null) {
       if (try_builtin_fallback(program, state, inst.pred, inst.arity)) {
         state.pc += 1;
@@ -3512,6 +3671,8 @@ Runtime.step = function (program, state, inst) {
   if (op === "CallIndexedAtomFact2") return false;
   if (op === "CallFactStream") return call_fact_stream(program, state, inst);
   if (op === "CallPc") {
+    const lowered = lowered_fn_at_pc(program, inst.pc);
+    if (lowered) return invoke_lowered_call(program, state, lowered);
     state.cp = state.pc + 1;
     state.pc = inst.pc;
     if (state.pc !== undefined && state.pc !== null) push_y_save(state);
@@ -3521,7 +3682,10 @@ Runtime.step = function (program, state, inst) {
     return state.pc !== undefined && state.pc !== null;
   }
   if (op === "Execute") {
-    const target = program.labels[call_key(inst)];
+    const key = call_key(inst);
+    const lowered = lowered_fn_for_key(program, key);
+    if (lowered) return invoke_lowered_execute(program, state, lowered);
+    const target = program.labels[key];
     if (target === undefined || target === null) {
       if (try_builtin_fallback(program, state, inst.pred, inst.arity)) {
         // Tail-call to a builtin: same as Proceed, not halt. Helpers such
@@ -3542,6 +3706,8 @@ Runtime.step = function (program, state, inst) {
     return true;
   }
   if (op === "ExecutePc") {
+    const lowered = lowered_fn_at_pc(program, inst.pc);
+    if (lowered) return invoke_lowered_execute(program, state, lowered);
     state.pc = inst.pc;
     if (Runtime._prof && state.pc !== undefined && state.pc !== null) {
       prof_leave();
@@ -3550,7 +3716,7 @@ Runtime.step = function (program, state, inst) {
     return state.pc !== undefined && state.pc !== null;
   }
   if (op === "BuiltinCall") {
-    if (Runtime.builtin_call(program, state, inst) !== true) return false;
+    if (Runtime.op_builtin(program, state, inst.pred, inst.arity) !== true) return false;
     state.pc += 1;
     return true;
   }
@@ -3635,6 +3801,17 @@ Runtime.run = function (program, state) {
     if (r === "fail") return false;
   }
   return true;
+};
+
+// Call of an interpreted predicate from a lowered body: same cps stack,
+// but backtrack must stop at the pre-call length (see cp_barrier).
+Runtime.run_isolated = function (program, state) {
+  const prev = state.cp_barrier;
+  state.cp_barrier = state.cps.length;
+  const ok = Runtime.run(program, state) === true;
+  if (prev === undefined) delete state.cp_barrier;
+  else state.cp_barrier = prev;
+  return ok === true;
 };
 
 Runtime.collect_run = function (program, state, onSolution) {

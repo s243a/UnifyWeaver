@@ -8,7 +8,7 @@
 % with an instruction-array WAM interpreter plus an optional Tier-2
 % lowered-function path. Architecture mirrors wam_lua_target.pl
 % (closest dynamically typed model). emit_mode is interpreter | functions
-% | mixed(List); default remains interpreter.
+% | mixed (every eligible predicate) | mixed(List); default remains interpreter.
 % javascript_wam_fact_sources([source(P/2, file(Path))]) streams binary
 % facts from a TSV/CSV or JSONL file (Lua-style; no LMDB/CSR).
 % javascript_wam_ops([op(Prec, Type, Name), ...]) (alias js_op_decls/1)
@@ -44,6 +44,7 @@
 ]).
 :- use_module(wam_javascript_lowered_emitter, [
     wam_javascript_lowerable/3,
+    wam_javascript_explain_lower/3,
     lower_predicate_to_javascript/4
 ]).
 
@@ -65,12 +66,14 @@ wam_javascript_resolve_emit_mode(Options, Mode) :-
 
 validate_emit_mode(interpreter, interpreter) :- !.
 validate_emit_mode(functions, functions) :- !.
+validate_emit_mode(mixed, mixed) :- !.
 validate_emit_mode(mixed(L), mixed(L)) :- is_list(L), !.
 validate_emit_mode(Other, _) :-
     throw(error(domain_error(wam_javascript_emit_mode, Other),
                 wam_javascript_resolve_emit_mode/2)).
 
 should_try_lower(functions, _, _) :- !.
+should_try_lower(mixed, _, _) :- !.
 should_try_lower(mixed(HotPreds), P, A) :-
     member(P/A, HotPreds), !.
 should_try_lower(_, _, _) :- fail.
@@ -563,7 +566,15 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, BasePC,
                [KeyQ, KeyQ, FuncName]),
         NewLoweredAcc = [LoweredJs, DispatchLine|LoweredAcc],
         emit_js_lowered_wrapper(P, Arity, FuncName, Wrapper)
-    ;   NewLoweredAcc = LoweredAcc,
+    ;   (   SkipLower \== true,
+            should_try_lower(EmitMode, P, Arity)
+        ->  compile_js_predicate_wam_text(P/Arity, WamText0),
+            wam_javascript_explain_lower(Pred, WamText0, Decision),
+            format("wamjs lower fallback: ~w  ~w~n", [MainKey, Decision]),
+            format(string(FbLine), '// wamjs lower fallback: ~w  ~w', [MainKey, Decision]),
+            NewLoweredAcc = [FbLine|LoweredAcc]
+        ;   NewLoweredAcc = LoweredAcc
+        ),
         emit_js_wrapper(P, Arity, BasePC, Wrapper)
     ),
     (FactSourceEntry == none -> NewFactSourceAcc = FactSourceAcc ; NewFactSourceAcc = [FactSourceEntry|FactSourceAcc]),

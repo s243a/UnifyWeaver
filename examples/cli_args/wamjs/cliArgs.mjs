@@ -166,11 +166,17 @@ function runParse(argvTerm, registryTerm) {
     label = "parse_args/3";
   }
   const startPc = program.labels[label];
-  if (startPc === undefined) {
+  const lowered = program.lowered_dispatch && program.lowered_dispatch[label];
+  if (startPc === undefined && typeof lowered !== "function") {
     throw new Error(`cliArgs shim: missing label ${label}`);
   }
-  state.pc = startPc;
-  const ok = Runtime.run(program, state) === true;
+  let ok;
+  if (typeof lowered === "function") {
+    ok = lowered(program, state) === true;
+  } else {
+    state.pc = startPc;
+    ok = Runtime.run(program, state) === true;
+  }
   if (!ok) {
     throw new Error("cliArgs shim: parse_args failed in the WAM");
   }

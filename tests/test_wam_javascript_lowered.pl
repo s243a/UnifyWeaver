@@ -19,6 +19,7 @@
                javascript_wam_resolve_emit_mode/2]).
 :- use_module('../src/unifyweaver/targets/wam_javascript_lowered_emitter',
               [wam_javascript_lowerable/3,
+               wam_javascript_explain_lower/3,
                js_lowered_func_name/2]).
 :- use_module('../src/unifyweaver/targets/wam_target',
               [compile_predicate_to_wam_text/3]).
@@ -29,6 +30,13 @@
 :- dynamic user:probe_color_det/0.
 :- dynamic user:age/2.
 :- dynamic user:pick/2.
+:- dynamic user:char_idx/4.
+:- dynamic user:probe_char_idx/0.
+:- dynamic user:memo_fact/1.
+:- dynamic user:probe_memo/0.
+:- dynamic user:wrap_tail/1.
+:- dynamic user:wrap_helper/1.
+:- dynamic user:wrap_sub/3.
 
 install_lowered_preds :-
     retractall(user:hello/1),
@@ -48,7 +56,40 @@ install_lowered_preds :-
     assertz(user:age(alice, 30)),
     assertz(user:age(bob, 25)),
     assertz((user:pick(a, X) :- X = apple)),
-    assertz((user:pick(b, X) :- X = banana)).
+    assertz((user:pick(b, X) :- X = banana)),
+    retractall(user:char_idx/4),
+    retractall(user:probe_char_idx/0),
+    retractall(user:memo_fact/1),
+    retractall(user:probe_memo/0),
+    retractall(user:wrap_tail/1),
+    retractall(user:wrap_helper/1),
+    retractall(user:wrap_sub/3),
+    % T4+ITE list recursion (first_char_index/4 shape).
+    assertz(user:char_idx([], _, _, -1)),
+    assertz((user:char_idx([C|Cs], T, I, Index) :-
+        (   C == T
+        ->  Index = I
+        ;   I1 is I + 1,
+            char_idx(Cs, T, I1, Index)
+        ))),
+    assertz((user:probe_char_idx :-
+        char_idx([a,b,=,c], =, 0, I), write(I), nl, I =:= 2)),
+    % Ground fact: interned after first success; two callers do not alias.
+    % A named compound on A1 is duplicated by switch_on_structure; the
+    % classifier collapses identical ground copies onto the memo path.
+    assertz(user:memo_fact(g(a, [1, 2, 3]))),
+    assertz((user:probe_memo :-
+        memo_fact(X), memo_fact(Y),
+        X = g(a, [1, 2, 3]),
+        Y = g(a, [1, 2, 3]),
+        X == Y,
+        write(ok), nl)),
+    % Last-goal Execute of a different *user* predicate: now lowers via
+    % emit_execute's lowered-fn / run_isolated path.
+    assertz(user:wrap_helper(ok)),
+    assertz((user:wrap_tail(X) :- wrap_helper(X))),
+    % Last-goal Execute of a JS WAM builtin: must stay interpreted.
+    assertz((user:wrap_sub(S, N, Sub) :- sub_string(S, 0, N, _, Sub))).
 
 read_generated_js(Dir, Text) :-
     directory_file_path(Dir, 'js', JsDir),
@@ -79,6 +120,7 @@ test_wam_javascript_lowered :-
 test(resolve_emit_mode) :-
     javascript_wam_resolve_emit_mode([], interpreter),
     javascript_wam_resolve_emit_mode([emit_mode(functions)], functions),
+    javascript_wam_resolve_emit_mode([emit_mode(mixed)], mixed),
     javascript_wam_resolve_emit_mode([emit_mode(mixed([p/1]))], mixed([p/1])).
 
 test(func_name) :-
@@ -151,6 +193,71 @@ test(interpreter_unchanged, [setup(install_lowered_preds)]) :-
     read_generated_js(Dir, Code),
     assertion(\+ sub_string(Code, _, _, _, "function lowered_")),
     assertion(sub_string(Code, _, _, _, "Runtime.run_predicate(shared_program")),
+    run_node_args(Dir, ['hello/1', 'world'], Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Out)).
+
+test(t4_ite_char_idx_node_vs_swi, [setup(install_lowered_preds)]) :-
+    compile_predicate_to_wam_text(char_idx/4,
+        [ite_use_y_level(true), inline_bagof_setof(true)], Wam),
+    wam_javascript_lowerable(user:char_idx/4, Wam, Reason),
+    assertion(Reason == multi_clause_n),
+    Dir = 'output/js_wam_lowered_t4_ite',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:char_idx/4, user:probe_char_idx/0],
+        [emit_mode(functions)], Dir),
+    read_generated_js(Dir, Code),
+    assertion(sub_string(Code, _, _, _, "function lowered_char_idx_4")),
+    assertion(sub_string(Code, _, _, _, "T4 all-clauses inline")),
+    assertion(sub_string(Code, _, _, _, "Runtime.op_get_list")),
+    assertion(sub_string(Code, _, _, _, "Runtime.op_builtin")),
+    assertion(sub_string(Code, _, _, _, "capture_a_regs")),
+    run_node_args(Dir, ['probe_char_idx/0'], Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Out)),
+    assertion(sub_string(Out, _, _, _, "2")).
+
+test(ground_fact_memo_independent, [setup(install_lowered_preds)]) :-
+    compile_predicate_to_wam_text(memo_fact/1,
+        [ite_use_y_level(true), inline_bagof_setof(true)], Wam),
+    wam_javascript_lowerable(user:memo_fact/1, Wam, Reason),
+    assertion(Reason == deterministic),
+    Dir = 'output/js_wam_lowered_memo',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:memo_fact/1, user:probe_memo/0],
+        [emit_mode(functions)], Dir),
+    read_generated_js(Dir, Code),
+    assertion(sub_string(Code, _, _, _, "ground_memo")),
+    assertion(sub_string(Code, _, _, _, "Trail-safety")),
+    run_node_args(Dir, ['probe_memo/0'], Exit1, Out1),
+    assertion(Exit1 =:= 0),
+    assertion(node_succeeded(Out1)),
+    assertion(sub_string(Out1, _, _, _, "ok")),
+    run_node_args(Dir, ['probe_memo/0'], Exit2, Out2),
+    assertion(Exit2 =:= 0),
+    assertion(node_succeeded(Out2)),
+    assertion(sub_string(Out2, _, _, _, "ok")).
+
+test(execute_builtin_stays_interpreted, [setup(install_lowered_preds)]) :-
+    compile_predicate_to_wam_text(wrap_sub/3,
+        [ite_use_y_level(true), inline_bagof_setof(true)], Wam),
+    wam_javascript_explain_lower(user:wrap_sub/3, Wam, Decision),
+    assertion(Decision = fallback(_)),
+    \+ wam_javascript_lowerable(user:wrap_sub/3, Wam, _).
+
+test(mixed_auto_lowers_eligible, [setup(install_lowered_preds)]) :-
+    Dir = 'output/js_wam_lowered_mixed_auto',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:hello/1, user:wrap_tail/1, user:wrap_helper/1, user:wrap_sub/3],
+        [emit_mode(mixed)], Dir),
+    read_generated_js(Dir, Code),
+    assertion(sub_string(Code, _, _, _, "function lowered_hello_1")),
+    assertion(sub_string(Code, _, _, _, "function lowered_wrap_helper_1")),
+    assertion(\+ sub_string(Code, _, _, _, "function lowered_wrap_sub_3")),
+    assertion(sub_string(Code, _, _, _, "wamjs lower fallback: wrap_sub/3")),
     run_node_args(Dir, ['hello/1', 'world'], Exit, Out),
     assertion(Exit =:= 0),
     assertion(node_succeeded(Out)).

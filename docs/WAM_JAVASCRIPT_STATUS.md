@@ -223,19 +223,86 @@ instr=1234 unify=56 trail=40 heap=30 backtracks=12 undos=8 wall_ns=100000
 
 **Runs the peerhailer argparser (A2).** `examples/cli_args/cli_args.pl` (module
 `cli_args`, `parse_args/2,3`) compiles through `wam_javascript`
-(`emit_mode(interpreter)`) into `examples/cli_args/wamjs/js/`. A thin ESM shim
-(`cliArgs.mjs`) converts JS `argv` ↔ WAM terms and maps `ok/2` /
+(`emit_mode(mixed)`) into `examples/cli_args/wamjs/js/`. Eligible helpers
+lower to direct JS functions; the rest stay on the interpreter. A thin ESM
+shim (`cliArgs.mjs`) converts JS `argv` ↔ WAM terms and maps `ok/2` /
 `error/1`; it implements no parse rule.
 
 | Check | Result |
 |---|---|
 | Contract corpus (`cliArgs.wamjs.test.mjs`, oracle tests, import swapped) | **17 / 17** |
-| Differential vs JS oracle (`run_differential_wamjs.sh`, same seed) | **5067 lines, 0 divergences, 0 message mismatches** (oracle 0.048s, wamjs 4.639s) |
+| Differential vs JS oracle (`run_differential_wamjs.sh`, same seed) | **5067 lines, 0 divergences, 0 message mismatches** |
+
+A2 interpreter baseline (parent `grok/wamjs-cli-args`, this machine): oracle
+**0.048s**, wamjs **4.639s**. Mixed + intern + direct ops (this branch):
+oracle **0.054s**, wamjs **3.144s** (**1.48×** vs 4.639s). Stretch ≥5× was
+not met; see [GP-PERF](#gp-perf-mixed-mode-and-ground-intern).
 
 Runtime gaps this program forced: `sub_string/5`; Y-register save/restore
 across `Call` of a non-`Allocate` fact; `Execute` of a builtin `Proceed`s to
 CP instead of halting. Probes: `probe_sub_string/0`, `probe_y_preserve/0`,
 `probe_tail_builtin/0` in `tests/test_wam_javascript_builtins.pl`.
+
+## GP-PERF mixed mode and ground intern
+
+Loud fallback (stdout + `// wamjs lower fallback:` comments) lists every
+predicate that stays interpreted and why. Wrong-but-fast is refused: a
+shape that cannot match interpreter semantics keeps falling back.
+
+### Memoization rule
+
+If every clause of a predicate is a **ground fact**, the lowered function
+builds the answer once, `copy_term`s it into `program.ground_memo[P/N]`,
+and later calls unify against that snapshot. Indexed `switch_on_*` copies
+of the same fact are collapsed onto this path.
+
+Trail-safety: the interned value contains **no unbound cells**, so it is
+never trailed. Unify only binds the caller's registers (or compares
+ground-to-ground). Read-mode `get_structure` / unify do not mutate `args`
+arrays. A later trail undo only deletes caller bindings. Sharing the live
+constructed term (no `copy_term`) is unsound: a later write-mode `GetList`
+can alias into the interned object and build cyclic lists.
+
+### Argparser: lower vs interpret
+
+**Lowered (hot path):** `first_char_index/4`, `starts_with/2`,
+`string_member/2`, `pair_lookup/3`, `split_flag_token/3`,
+`default_registry/1` (ground memo), `lenient_loop/5`, `strict_loop/8`,
+`parse_args/3`, `next_value/2`, `flags_*`, `scan_leading_globals/4`,
+`option_kind/3`, `registry_entry/3`, `schema_for/5`, `parse_strict/4`,
+`parse_lenient/3`, `count_required/3`, `check_arity/3`, `merge_flags_/3`,
+`nth0_default/4`, `strict_option/11`, …
+
+**Still interpret:**
+
+| Predicate | Why |
+|---|---|
+| `parse_args/2` | Execute of non-self (`parse_args/3`). Nested `Runtime.run` with `cp=0` steals the query continuation. |
+| `drop_brackets/2` | `multi_clause_1`; T4+ITE did not match. |
+| `first_equals_index/2`, `is_long_flag/1`, `js_object_prototype_key/1`, `lenient_result/2`, `looks_like_legacy_flag/1`, `merge_flags/3` | Execute of a non-self user predicate. |
+| `substring_from/3`, `substring_range/4` | Execute of a JS WAM builtin (`sub_string/5`). |
+
+### 200-line `UW_PROFILE=1` (same cases)
+
+A2 interpreter (parent JS): `first_char_index/4` 3910 calls / 3910 CPs /
+96k instr; `default_registry/1` 200 calls / 96k instr / 0 CPs;
+`string_member/2` 1804 calls / 1821 CPs.
+
+After mixed + intern + `Runtime.op_*` + cheap `==/2` ITE + nested-ITE
+fold: interpreter instr drop to **20,667** (almost only `drop_brackets/2`).
+Lowered preds report calls-only (`*`): `first_char_index/4*` 3910,
+`string_member/2*` 1804, `lenient_loop/5*` 588, `parse_args/3*` 200,
+`default_registry/1*` 200. Call counts match A2 (no runaway recursion).
+
+### Residual
+
+Lowered helpers still `copy_table` the full register file on every T4
+clause fail and `snapshot_machine` on ITE whose condition unifies
+(`=/2`, `put_structure`). Direct `Runtime.op_*` removed `I.*` allocation
+but not those copies. Next lever: a **correct** Execute-of-user path
+(so `parse_args/2` / `looks_like_legacy_flag/1` / `substring_from/3`
+wrappers lower) without the `cp=0` steal; then, if the loop is the cost,
+skip full-register T4 snapshots for helpers that only touch A1–AN.
 
 ## Remaining / partial
 
@@ -249,12 +316,12 @@ CP instead of halting. Probes: `probe_sub_string/0`, `probe_y_preserve/0`,
 | `format/2` `/3` | **Implemented** for `~w ~a ~d ~p ~q ~n ~s ~t ~~`. Not ported: `~f`, `~r`, `~D`, positioning (`~N|`, `~+`, `t~`), aliases, and stream sinks other than stdout / `atom(A)` / `string(S)`. |
 | `sub_atom/5` | **Implemented** when Atom is ground; enumerates unbound Before/Length/After (and filters a ground SubAtom). |
 | `sub_string/5` | **Implemented.** Same enumeration as `sub_atom/5`; Sub is a `V.String`. |
-| Peerhailer argparser (A2) | **Implemented.** `examples/cli_args/wamjs/` compiles `cli_args.pl` through `wam_javascript` (interpreter) and matches the JS oracle: **17/17** corpus, **5067-line** differential with **0 divergences, 0 message mismatches**. |
+| Peerhailer argparser (A2) | **Implemented.** `examples/cli_args/wamjs/` compiles `cli_args.pl` through `wam_javascript` (`emit_mode(mixed)`) and matches the JS oracle: **17/17** corpus, **5067-line** differential with **0 divergences, 0 message mismatches**. A2 interpreter baseline 4.639s → mixed 3.144s (**1.48×**). |
 | String term tag | **Implemented.** `V.String` is a distinct tag. Unify/`==` require equal strings (not atoms). Standard order / `compare/3` / `sort` matches SWI 9.0.4: Var < Number < **String** < Atom < Compound (`"foo" @< foo`). `atom_string/2`, `string_concat/3`, `string_chars/2` (construct), `string_to_atom/2`, `number_string/2`, `split_string/4` produce strings. `string/1` is true only for the tag. `string_length/2` accepts a string, atom, or number (code-point length). `write/1` prints text unquoted; `writeq/1` and `format` `~q` recurse through lists/compounds, double-quote strings, and quote atoms only when needed (see quoting subset below). **Compiled `"foo"` literals** are spelled with outer double quotes in WAM text (`quote_wam_constant/2`); the shared classifier still returns `atom(foo)` (no `string(_)` Class). JS consults `wam_constant_token_is_string/1` and builds `V.String`. Other runtimes intern the atom as before. Fact-source JSON/TSV values still intern as atoms. |
 | `library(assoc)` | **Implemented** as a Prolog `assoc/1` list of Key-Value pairs (not SWI's AVL tree). get/put/list/keys match SWI for unique-key maps. |
 | First-arg indexing | **Implemented.** `switch_on_constant` / `_fallthrough` / `_a2`, `switch_on_structure` / `_a2`, and `switch_on_term` / `_a2` jump to the matching clause group. Ground first-arg with a unique clause leaves no choice point (`deterministic/0`). Unbound first arg falls through to the try/retry/trust chain (no lost solutions). Exclusive miss fails; fallthrough variants keep the chain for variable-headed clauses. Dedicated `try`/`retry`/`trust` dispatch chains are emitted for multi-clause groups. |
 | Second-arg / deep indexing | A2 switches are implemented; deep (argument >2) indexing is not. |
-| Lowered / functions emit mode | **Implemented.** `javascript_wam_resolve_emit_mode/2` accepts `interpreter` (default), `functions` (lower every eligible predicate), and `mixed([P/A, ...])` (lower only the named ones). Eligible shapes: single-clause deterministic bodies; T4 all-clauses-inline; T5 first-arg constant dispatch; T6 hash dispatch (≥8 atom keys); structured ITE / negation / once. Unsupported ops (`begin_aggregate`, bagof/setof, cuts/jumps the planner rejects) fall back to the interpreter rather than emitting wrong code. Interpreter-mode bytecode and wrappers are unchanged. |
+| Lowered / functions emit mode | **Implemented.** `javascript_wam_resolve_emit_mode/2` accepts `interpreter` (default), `functions` (lower every eligible predicate), `mixed` (lower every eligible predicate, interpret the rest), and `mixed([P/A, ...])` (lower only the named ones). Eligible shapes: single-clause deterministic bodies; T4 all-clauses-inline (including nested `\+` via a depth-aware ITE fold); T5 first-arg constant dispatch; T6 hash dispatch (≥8 atom keys); structured ITE / negation / once. Ground facts intern via `copy_term` into `program.ground_memo`. Unsupported ops and Execute-of-other fall back to the interpreter rather than emitting wrong code. Interpreter-mode bytecode and wrappers are unchanged. |
 | CLI / runtime term parser | **Implemented.** Pratt reader: int/float/atom (incl. quoted)/var/list/`[H\|T]`/compound. CLI argv + `read_term_from_atom` / `atom_to_term` / `term_to_atom`. **`op/3`** updates the live infix/prefix/postfix tables (defaults cloned from ISO). Compile-time ops via `javascript_wam_ops/1`. Capability `native(parse_term)` via `INTEGRATION_PATCH.md` §7. |
 | Interpreter profiling | **Implemented.** Off by default (`Runtime._prof === null`). `UW_PROFILE=1` / `json` or `Runtime.profile(...)` writes a per-predicate table or JSON to **stderr**. Lowered tier: call counts only. See [Profiling (GP-PROF)](#profiling-gp-prof). |
 | `op/3` | **Implemented.** Infix `xfx`/`xfy`/`yfx`, prefix `fx`/`fy`, postfix `xf`/`yf`. Priority 0 removes. Name = atom or list of atoms. `current_op/3` is not implemented; ops are process-global. |
@@ -316,7 +383,7 @@ table: infix + prefix + postfix), then a distinct string term tag
 compiled `"foo"` literals as `V.String` (double-quoted WAM spelling;
 classifier still returns `atom(_)`), then opt-in interpreter profiling
 (`UW_PROFILE=1` / `json`, stderr-only table or JSON; lowered = call counts),
-then the peerhailer CLI argparser through the interpreter (A2:
+then the peerhailer CLI argparser through mixed emit (A2 + GP-PERF:
 `examples/cli_args/wamjs/`, 17/17 corpus + 5067-line differential vs the
-JS oracle, 0 divergences).
+JS oracle, 0 divergences, 1.48× vs the interpreter baseline).
 Source-verified against SWI-Prolog as the oracle (2026-09-01).
