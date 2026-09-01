@@ -73,6 +73,8 @@ install_lowered_preds :-
     assertz((user:probe_char_idx :-
         char_idx([a,b,=,c], =, 0, I), write(I), nl, I =:= 2)),
     % Ground fact: interned after first success; two callers do not alias.
+    % A named compound on A1 is duplicated by switch_on_structure; the
+    % classifier collapses identical ground copies onto the memo path.
     assertz(user:memo_fact(g(a, [1, 2, 3]))),
     assertz((user:probe_memo :-
         memo_fact(X), memo_fact(Y),

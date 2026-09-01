@@ -139,6 +139,21 @@ classify_clause_shape([FirstLine|Rest], plan(clause_chain, AltAtom, chain_payloa
     !,
     atom_string(AltAtom, AltStr),
     take_clause1_lines(Rest, ClauseLines).
+% Indexed single ground fact: switch_on_* re-emits the same clause
+% along a try/retry/trust chain. Collapse to one deterministic body so
+% the intern-once memo path still fires (GP-PERF item 2).
+classify_clause_shape([FirstLine|Rest], plan(deterministic, none, Unique)) :-
+    tokenize_line(FirstLine, ["try_me_else", _AltStr]),
+    js_split_clause_lines([FirstLine|Rest], Clauses),
+    Clauses = [C1|_],
+    C1 \== [],
+    forall(member(Cl, Clauses),
+           ( Cl \== [],
+             forall(member(Line, Cl), js_ground_fact_line(Line)) )),
+    maplist(js_clause_op_fingerprint, Clauses, FPs),
+    sort(FPs, [_]),
+    !,
+    Unique = C1.
 % T4: every clause is a supported deterministic body, including inner
 % if-then-else (structure_ite). Used for list-recursion helpers such as
 % first_char_index/4 (nil vs cons + ITE) that would otherwise become
@@ -853,6 +868,21 @@ js_ground_fact_line(Line) :-
                        "put_structure", "put_list",
                        "set_variable", "set_value", "set_constant"])
     ).
+
+%% js_clause_op_fingerprint(+Lines, -Fingerprint)
+%  Opcode sequence of a clause body, labels and empty lines stripped.
+%  Used to collapse switch_on_* duplicate copies of the same ground fact
+%  into one intern-once deterministic body.
+js_clause_op_fingerprint(Lines, Fingerprint) :-
+    findall(Op, (
+        member(Line, Lines),
+        tokenize_line(Line, Tokens),
+        Tokens \= [],
+        Tokens = [Tok|_],
+        \+ sub_string(Tok, _, 1, 0, ":"),
+        Op = Tok
+    ), Ops),
+    atomic_list_concat(Ops, '|', Fingerprint).
 
 js_pred_arity_from_name(PredName, Arity) :-
     atom_string(PredName, S),
