@@ -10,7 +10,9 @@
 % (closest dynamically typed model). emit_mode is interpreter | functions
 % | mixed (every eligible predicate) | mixed(List); default remains interpreter.
 % javascript_wam_fact_sources([source(P/2, file(Path))]) streams binary
-% facts from a TSV/CSV or JSONL file (Lua-style; no LMDB/CSR).
+% facts from a TSV/CSV or JSONL file (Lua-style). Persistent indexed
+% stores: source(P/2, indexed(Prefix)) (dependency-free seek index) and
+% source(P/2, lmdb(Dir)) (opt-in npm `lmdb`; loud error if missing).
 % javascript_wam_ops([op(Prec, Type, Name), ...]) (alias js_op_decls/1)
 % seeds the runtime Pratt op table at program startup (R's r_op_decls/1).
 % Lowered dispatch wraps each function with a UW_PROFILE call counter.
@@ -582,8 +584,10 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, BasePC,
         NewInstrs, NewTopLabels, NewAllLabels, [Wrapper|WrapperAcc], NewLoweredAcc, NewFactSourceAcc,
         AllInstrs, TopLabels, AllLabels, Wrappers, Lowered, FactSources).
 
-%% javascript_wam_fact_sources([source(P/A, file(Path)), ...])
-%  Lightweight file-backed binary facts (Lua's lua_fact_sources/1).
+%% javascript_wam_fact_sources([source(P/A, Spec), ...])
+%  Spec = file(Path)           % D27: load whole TSV/CSV/JSONL into memory
+%       | indexed(Prefix)      % GP-LMDB B: Prefix.data + Prefix.idx, seek lookup
+%       | lmdb(Dir)            % GP-LMDB A: opt-in LMDB env; never silent-fallback
 %  Only P/2 is streamed; other arities keep compiled inline WAM.
 javascript_wam_fact_source_spec(P, Arity, Options, Spec) :-
     Arity =:= 2,
@@ -610,6 +614,25 @@ javascript_wam_fact_source_entry(Key, file(Path), Entry) :-
     js_string_literal(Key, KeyQ),
     js_string_literal(SourcePath, PathQ),
     format(string(Entry), '  ~w: { path: ~w }', [KeyQ, PathQ]).
+javascript_wam_fact_source_entry(Key, indexed(Path), Entry) :-
+    javascript_wam_store_path(Path, SourcePath),
+    js_string_literal(Key, KeyQ),
+    js_string_literal(SourcePath, PathQ),
+    format(string(Entry), '  ~w: { kind: "indexed", path: ~w }', [KeyQ, PathQ]).
+javascript_wam_fact_source_entry(Key, lmdb(Path), Entry) :-
+    javascript_wam_store_path(Path, SourcePath),
+    js_string_literal(Key, KeyQ),
+    js_string_literal(SourcePath, PathQ),
+    format(string(Entry), '  ~w: { kind: "lmdb", path: ~w }', [KeyQ, PathQ]).
+
+javascript_wam_store_path(Path, SourcePath) :-
+    atom_string(Path, PathStr),
+    working_directory(Cwd, Cwd),
+    (   catch(absolute_file_name(PathStr, AbsPath, [relative_to(Cwd)]), _, fail),
+        AbsPath \== []
+    ->  SourcePath = AbsPath
+    ;   SourcePath = PathStr
+    ).
 
 compile_js_predicate_wam(PredIndicator, WamCode) :-
     CompileOpts = [ite_use_y_level(true), inline_bagof_setof(true)],
