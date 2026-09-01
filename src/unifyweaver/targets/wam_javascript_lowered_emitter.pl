@@ -11,12 +11,13 @@
 
 :- module(wam_javascript_lowered_emitter, [
     wam_javascript_lowerable/3,
+    wam_javascript_explain_lower/3,
     lower_predicate_to_javascript/4,
     js_lowered_func_name/2
 ]).
 
 :- use_module(library(lists)).
-:- use_module(wam_ite_structurer, [structure_ite/2]).
+:- use_module(wam_ite_structurer, [is_commit/1]).
 :- use_module(wam_clause_chain, [clause_chain/2]).
 :- use_module(wam_text_parser, [
     wam_tokenize_line/2,
@@ -138,8 +139,30 @@ classify_clause_shape([FirstLine|Rest], plan(clause_chain, AltAtom, chain_payloa
     !,
     atom_string(AltAtom, AltStr),
     take_clause1_lines(Rest, ClauseLines).
-% T4: every clause is a supported deterministic body (no distinct A1 key).
-% Try each clause inline with trail/register restore; never enter the interpreter.
+% Indexed single ground fact: switch_on_* re-emits the same clause
+% along a try/retry/trust chain. Collapse to one deterministic body so
+% the intern-once memo path still fires (GP-PERF item 2).
+classify_clause_shape([FirstLine|Rest], plan(deterministic, none, Unique)) :-
+    tokenize_line(FirstLine, ["try_me_else", _AltStr]),
+    js_split_clause_lines([FirstLine|Rest], Clauses),
+    Clauses = [C1|_],
+    C1 \== [],
+    forall(member(Cl, Clauses),
+           ( Cl \== [],
+             forall(member(Line, Cl), js_ground_fact_line(Line)) )),
+    maplist(js_clause_op_fingerprint, Clauses, FPs),
+    sort(FPs, [_]),
+    !,
+    Unique = C1.
+% T4: every clause is a supported deterministic body, including inner
+% if-then-else (structure_ite). Used for list-recursion helpers such as
+% first_char_index/4 (nil vs cons + ITE) that would otherwise become
+% multi_clause_1 and keep a choice point per recursive step.
+classify_clause_shape([FirstLine|Rest], plan(multi_clause_n, none, Structured)) :-
+    tokenize_line(FirstLine, ["try_me_else", _AltStr]),
+    js_t4_structured_clauses([FirstLine|Rest], Structured),
+    !.
+% T4 (flat): no inner ITE; every remaining line is a supported instr.
 classify_clause_shape([FirstLine|Rest], plan(multi_clause_n, none, Clauses)) :-
     tokenize_line(FirstLine, ["try_me_else", _AltStr]),
     js_split_clause_lines([FirstLine|Rest], Clauses),
@@ -154,7 +177,7 @@ classify_clause_shape([FirstLine|Rest], plan(multi_clause_1, AltAtom, ClauseLine
     take_clause1_lines(Rest, ClauseLines).
 classify_clause_shape(Lines, plan(ite, none, Structured)) :-
     js_parse_terms(Lines, Terms),
-    structure_ite(Terms, Structured),
+    js_structure_ite(Terms, Structured),
     member(ite(_, _, _), Structured),
     \+ member(try_me_else(_), Structured),
     \+ member(trust_me, Structured),
@@ -217,6 +240,99 @@ take_clause1_lines([Line|Rest], Out) :-
         take_clause1_lines(Rest, More)
     ).
 
+js_prefix_switch_line(Line) :-
+    tokenize_line(Line, Parts),
+    Parts = [Op|_],
+    member(Op, ["switch_on_constant", "switch_on_constant_fallthrough",
+                "switch_on_constant_a2", "switch_on_constant_a2_fallthrough",
+                "switch_on_structure", "switch_on_structure_a2",
+                "switch_on_term", "switch_on_term_a2"]).
+
+js_t4_structured_clauses(Lines, Structured) :-
+    exclude(js_index_dispatch_line, Lines, K1),
+    exclude(js_prefix_switch_line, K1, Kept),
+    js_skip_clause_sep(Kept, Bodies),
+    js_split_try_trust_bodies(Bodies, Clauses),
+    Clauses = [_, _ | _],
+    maplist(js_clause_to_structured, Clauses, Structured).
+
+js_clause_to_structured(ClauseLines, Structured) :-
+    js_parse_terms(ClauseLines, Terms),
+    js_structure_ite(Terms, Structured),
+    Structured \== [],
+    forall(member(I, Structured), js_struct_supported(I)).
+
+%% js_structure_ite(+Flat, -Structured)
+%  Same fold as structure_ite/2, but split_commit ignores commits that
+%  sit inside a nested try_me_else (the `\+ Goal` fail-commit). The
+%  shared structurer splits on the first cut/cut_ite and then fails to
+%  match the leftover nested block — that is why lenient_loop/5 stayed
+%  on multi_clause_1.
+js_structure_ite([], []).
+js_structure_ite([try_me_else(LE)|Rest0], [ite(CondS, ThenS, ElseS)|Out]) :-
+    !,
+    append(ThenWithJump, [label(LE), trust_me | ElseAndRest], Rest0),
+    \+ member(label(LE), ThenWithJump),
+    append(ThenPath, [jump(LC)], ThenWithJump),
+    append(ElsePath, [label(LC) | AfterCont], ElseAndRest),
+    \+ member(label(LC), ElsePath),
+    js_split_commit(ThenPath, Cond, Then),
+    js_structure_ite(Cond, CondS),
+    js_structure_ite(Then, ThenS),
+    js_structure_ite(ElsePath, ElseS),
+    js_structure_ite(AfterCont, Out).
+js_structure_ite([label(_)|Rest], Out) :- !,
+    js_structure_ite(Rest, Out).
+js_structure_ite([I|Rest], [I|Out]) :-
+    js_structure_ite(Rest, Out).
+
+js_split_commit(Path, Cond, Then) :-
+    js_split_commit_(Path, 0, [], CondR, Then),
+    reverse(CondR, Cond).
+
+js_split_commit_([try_me_else(L)|R], D, Acc, Cond, Then) :- !,
+    D1 is D + 1,
+    js_split_commit_(R, D1, [try_me_else(L)|Acc], Cond, Then).
+js_split_commit_([trust_me|R], D, Acc, Cond, Then) :-
+    D > 0, !,
+    D1 is D - 1,
+    js_split_commit_(R, D1, [trust_me|Acc], Cond, Then).
+js_split_commit_([Commit|Then], 0, Acc, Acc, Then) :-
+    is_commit(Commit), !.
+js_split_commit_([I|R], D, Acc, Cond, Then) :-
+    js_split_commit_(R, D, [I|Acc], Cond, Then).
+
+% Split a try_me_else/trust_me chain on *clause* proceed/fail, leaving
+% inner ITE try_me_else blocks intact for structure_ite/2.
+js_split_try_trust_bodies([], []).
+js_split_try_trust_bodies(Lines, [Clause|More]) :-
+    js_take_to_proceed(Lines, Clause, After0),
+    Clause \== [],
+    js_skip_clause_sep(After0, After1),
+    js_split_try_trust_bodies(After1, More).
+
+js_take_to_proceed([Line|Rest], [Line], Rest) :-
+    tokenize_line(Line, Parts),
+    ( Parts == ["proceed"] ; Parts == ["fail"] ), !.
+js_take_to_proceed([Line|Rest], More, After) :-
+    tokenize_line(Line, []), !,
+    js_take_to_proceed(Rest, More, After).
+js_take_to_proceed([Line|Rest], [Line|More], After) :-
+    js_take_to_proceed(Rest, More, After).
+js_take_to_proceed([], [], []).
+
+js_skip_clause_sep([], []).
+js_skip_clause_sep([Line|Rest], Out) :-
+    tokenize_line(Line, Parts),
+    (   Parts == []
+    ->  js_skip_clause_sep(Rest, Out)
+    ;   Parts = [F|_], sub_string(F, _, 1, 0, ":")
+    ->  js_skip_clause_sep(Rest, Out)
+    ;   ( Parts = ["trust_me"] ; Parts = ["retry_me_else"|_] ; Parts = ["try_me_else"|_] )
+    ->  Out = Rest
+    ;   Out = [Line|Rest]
+    ).
+
 js_split_clause_lines(AllLines, Clauses) :-
     include(js_t4_instr_line, AllLines, InstrLines),
     js_split_at_terminal(InstrLines, Clauses).
@@ -255,8 +371,17 @@ js_t4_terminal_line(Line) :-
     tokenize_line(Line, Parts),
     ( Parts == ["proceed"] ; Parts == ["fail"] ).
 
-wam_javascript_lowerable(_PI, WamCode, Reason) :-
+wam_javascript_lowerable(PI, WamCode, Reason) :-
+    js_pi_key(PI, PredName),
+    % Execute of a *different* predicate cannot be a nested Runtime.run
+    % (cp=0 steals the query continuation; GP-PERF mixed-mode). Keep
+    % those wrappers on the interpreter; Call of a lowered helper is fine.
+    \+ js_wam_has_foreign_execute(WamCode, PredName),
     catch(build_emission_plan(WamCode, plan(Reason, _, Payload)), _, fail),
+    % multi_clause_1 inlines clause 1 then Runtime.run from pc+1, which is
+    % the caller's next instruction rather than the alt clause. Wrong-but-
+    % fast is a failure; leave these on the interpreter until T4+ITE fits.
+    Reason \== multi_clause_1,
     (   Reason == ite
     ->  forall(member(I, Payload), js_struct_supported(I))
     ;   Reason == clause_chain
@@ -264,8 +389,13 @@ wam_javascript_lowerable(_PI, WamCode, Reason) :-
         forall(member(guard(_, Rem), Guards), js_chain_rem_supported(Rem)),
         forall(member(Line, ClauseLines), line_supported(Line))
     ;   Reason == multi_clause_n
-    ->  forall(member(Cl, Payload),
-               forall(member(Line, Cl), line_supported(Line)))
+    ->  Payload = [C1|_],
+        (   C1 = [S|_], string(S)
+        ->  forall(member(Cl, Payload),
+                   forall(member(Line, Cl), line_supported(Line)))
+        ;   forall(member(Cl, Payload),
+                   forall(member(I, Cl), js_struct_supported(I)))
+        )
     ;   forall(member(Line, Payload), line_supported(Line))
     ).
 
@@ -342,27 +472,47 @@ lower_predicate_to_javascript(PI, WamCode, Options, lowered(PredName, FuncName, 
     ).
 
 emit_multi_clause_n_function(PredName, FuncName, Clauses, Code) :-
-    with_output_to(string(ClausesBody), emit_js_t4_clauses(Clauses)),
+    with_output_to(string(ClausesBody), emit_js_t4_payload(Clauses)),
     format(string(Code),
 '// Lowered: ~w (T4 all-clauses inline)
 function ~w(program, state) {
   const _t4_trail = state.trail.length;
   const _t4_regs = Runtime.copy_table(state.regs);
   const _t4_vc = state.var_counter;
+  const _t4_stack = state.stack.slice();
+  const _t4_ysave = (state.y_save || []).slice();
+  const _t4_mode = state.mode;
+  const _t4_build = state.build_stack.slice();
+  const _t4_rstack = (state.read_stack || []).slice();
+  const _t4_rargs = state.read_args;
+  const _t4_rcur = state.read_cursor;
 ~w  return false;
 }
 ', [PredName, FuncName, ClausesBody]).
 
-emit_js_t4_clauses([]).
-emit_js_t4_clauses([Clause|Rest]) :-
+emit_js_t4_payload([]).
+emit_js_t4_payload([Clause|Rest]) :-
     format("  if ((function () {~n"),
-    emit_lines(Clause, "    "),
+    (   Clause = [S|_], string(S)
+    ->  emit_lines(Clause, "    ")
+    ;   emit_struct_js(Clause, "    ")
+    ),
     format("    return false;~n"),
     format("  })()) return true;~n"),
     format("  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }~n"),
     format("  state.regs = Runtime.copy_table(_t4_regs);~n"),
     format("  state.var_counter = _t4_vc;~n"),
-    emit_js_t4_clauses(Rest).
+    format("  state.stack = _t4_stack.slice();~n"),
+    format("  state.y_save = _t4_ysave.slice();~n"),
+    format("  state.mode = _t4_mode;~n"),
+    format("  state.build_stack = _t4_build.slice();~n"),
+    format("  state.read_stack = _t4_rstack.slice();~n"),
+    format("  state.read_args = _t4_rargs;~n"),
+    format("  state.read_cursor = _t4_rcur;~n"),
+    emit_js_t4_payload(Rest).
+
+emit_js_t4_clauses(Clauses) :-
+    emit_js_t4_payload(Clauses).
 
 emit_ite_function(PredName, FuncName, Structured, Code) :-
     with_output_to(string(Body), emit_struct_js(Structured, "  ")),
@@ -378,10 +528,12 @@ emit_struct_js([Item|Rest], Ind) :-
     emit_struct_item_js(Item, Ind),
     emit_struct_js(Rest, Ind).
 
-emit_struct_item_js(ite(Cond, Then, Else), Ind) :- !,
+emit_struct_item_js(ite(Cond, Then, Else), Ind) :-
+    js_ite_pure_test_cond(Cond), !,
     string_concat(Ind, "    ", Ind4),
     format("~w{~n", [Ind]),
-    format("~w  const _ite_mark = state.trail.length;~n", [Ind]),
+    format("~w  const _ite_trail = state.trail.length;~n", [Ind]),
+    format("~w  const _ite_args = Runtime.capture_a_regs(state, 8);~n", [Ind]),
     format("~w  const _ite_cond = (function () {~n", [Ind]),
     emit_struct_js(Cond, Ind4),
     format("~w    return true;~n", [Ind]),
@@ -389,7 +541,27 @@ emit_struct_item_js(ite(Cond, Then, Else), Ind) :- !,
     format("~w  if (_ite_cond) {~n", [Ind]),
     emit_struct_js(Then, Ind4),
     format("~w  } else {~n", [Ind]),
-    format("~w    while (state.trail.length > _ite_mark) { const _n = state.trail.pop(); delete state.bindings[_n]; }~n", [Ind]),
+    format("~w    Runtime.undo_trail(state, _ite_trail);~n", [Ind]),
+    format("~w    Runtime.restore_a_regs(state, _ite_args);~n", [Ind]),
+    emit_struct_js(Else, Ind4),
+    format("~w  }~n", [Ind]),
+    format("~w}~n", [Ind]).
+% Condition may Allocate / unify / Call: restore a full machine snapshot.
+% Trail + A-registers is not enough when the condition builds a structure.
+emit_struct_item_js(ite(Cond, Then, Else), Ind) :- !,
+    string_concat(Ind, "    ", Ind4),
+    format("~w{~n", [Ind]),
+    format("~w  const _ite_snap = Runtime.snapshot_machine(state);~n", [Ind]),
+    format("~w  const _ite_cps = state.cps.length;~n", [Ind]),
+    format("~w  const _ite_cond = (function () {~n", [Ind]),
+    emit_struct_js(Cond, Ind4),
+    format("~w    return true;~n", [Ind]),
+    format("~w  })();~n", [Ind]),
+    format("~w  if (_ite_cond) {~n", [Ind]),
+    emit_struct_js(Then, Ind4),
+    format("~w  } else {~n", [Ind]),
+    format("~w    Runtime.restore_machine(state, _ite_snap);~n", [Ind]),
+    format("~w    while (state.cps.length > _ite_cps) state.cps.pop();~n", [Ind]),
     emit_struct_js(Else, Ind4),
     format("~w  }~n", [Ind]),
     format("~w}~n", [Ind]).
@@ -398,6 +570,39 @@ emit_struct_item_js(builtin_call(Op, Ar), Ind) :- !,
 emit_struct_item_js(line(Parts), Ind) :- !,
     emit_line_parts(Parts, Ind).
 
+emit_deterministic_function(PredName, FuncName, Lines, Code) :-
+    wam_javascript_target:js_string_literal(PredName, PredQ),
+    js_pred_arity_from_name(PredName, Arity),
+    js_ground_fact_lines(Lines), !,
+    with_output_to(string(Body), emit_lines_skip_proceed(Lines, "  ")),
+    format(string(Code),
+'// Lowered: ~w (deterministic ground fact; interned after first success)
+function ~w(program, state) {
+  const _gk = ~w;
+  const _gm = program.ground_memo || (program.ground_memo = Object.create(null));
+  const _cached = _gm[_gk];
+  if (_cached !== undefined) {
+    // Trail-safety: _cached is a copy_term snapshot of a fully ground
+    // answer. It contains no unbound cells, so it is never trailed;
+    // unify only binds the caller''s registers (or compares ground-to-ground).
+    // Sharing the interned object across calls is sound because get_structure
+    // / unify in read mode do not mutate args arrays, and a later trail undo
+    // only deletes caller bindings.
+    for (let _i = 0; _i < _cached.length; _i++) {
+      if (Runtime.unify(state, Runtime.get_reg(state, _i + 1), _cached[_i], program) !== true) return false;
+    }
+    return true;
+  }
+~w  const _snap = [];
+  for (let _i = 0; _i < ~w; _i++) {
+    const _ti = Runtime.deref(state, Runtime.get_reg(state, _i + 1));
+    if (!Runtime.term_is_ground(state, _ti)) return true;
+    _snap.push(Runtime.copy_term(state, _ti));
+  }
+  _gm[_gk] = _snap;
+  return true;
+}
+', [PredName, FuncName, PredQ, Body, Arity]).
 emit_deterministic_function(PredName, FuncName, Lines, Code) :-
     with_output_to(string(Body), emit_lines(Lines, "  ")),
     format(string(Code),
@@ -426,18 +631,19 @@ function ~w(program, state) {
     stack: state.stack.slice(),
     read_stack: (state.read_stack || []).slice(),
     read_args: state.read_args,
-    read_cursor: state.read_cursor
+    read_cursor: state.read_cursor,
+    y_save: (state.y_save || []).slice()
   };
   state.cps.push(_cp);
   const ok = (function () {
 ~w    return false;
   })();
-  if (ok === true) return true;
-  if (Runtime.backtrack(state) !== true) return false;
-  state.pc = state.pc + 1;
-  state.halt = false;
-  state.program = program;
-  return Runtime.run(program, state) === true;
+    if (ok === true) return true;
+    if (Runtime.backtrack(state) !== true) return false;
+    // backtrack already set pc to next_pc (the alt clause).
+    state.halt = false;
+    state.program = program;
+    return Runtime.run(program, state) === true;
 }
 ', [PredName, FuncName, AltQ, Body]).
 
@@ -472,7 +678,8 @@ const ~w = (function () {
       stack: state.stack.slice(),
       read_stack: (state.read_stack || []).slice(),
       read_args: state.read_args,
-      read_cursor: state.read_cursor
+      read_cursor: state.read_cursor,
+      y_save: (state.y_save || []).slice()
     };
     state.cps.push(_cp);
     const ok = (function () {
@@ -480,7 +687,7 @@ const ~w = (function () {
     })();
     if (ok === true) return true;
     if (Runtime.backtrack(state) !== true) return false;
-    state.pc = state.pc + 1;
+    // backtrack already set pc to next_pc (the alt clause).
     state.halt = false;
     state.program = program;
     return Runtime.run(program, state) === true;
@@ -511,7 +718,8 @@ function ~w(program, state) {
     stack: state.stack.slice(),
     read_stack: (state.read_stack || []).slice(),
     read_args: state.read_args,
-    read_cursor: state.read_cursor
+    read_cursor: state.read_cursor,
+    y_save: (state.y_save || []).slice()
   };
   state.cps.push(_cp);
   const ok = (function () {
@@ -519,7 +727,7 @@ function ~w(program, state) {
   })();
   if (ok === true) return true;
   if (Runtime.backtrack(state) !== true) return false;
-  state.pc = state.pc + 1;
+  // backtrack already set pc to next_pc (the alt clause).
   state.halt = false;
   state.program = program;
   return Runtime.run(program, state) === true;
@@ -601,15 +809,16 @@ emit_line_parts(["call", Pred, ArityStr], I) :- !,
 emit_line_parts(["execute", PredArity], I) :- !, emit_execute(PredArity, I).
 emit_line_parts(["execute", Pred, ArityStr], I) :- !,
     strip_arity_local(Pred, Name), format(string(PA), "~w/~w", [Name, ArityStr]), emit_execute(PA, I).
-% Allocate / Deallocate / GetLevel go through Runtime.step so the JS
-% Y-register snapshot convention (not Lua's locals = {}) is preserved.
+% Allocate / Deallocate go through Runtime.op_* so the JS Y-register
+% snapshot convention (not Lua's locals = {}) is preserved, without
+% allocating an I.Allocate() instruction object per call.
 emit_line_parts(["allocate"], I) :- !,
-    format("~wif (Runtime.step(program, state, I.Allocate()) !== true) return false;~n", [I]).
+    format("~wif (Runtime.op_allocate(state) !== true) return false;~n", [I]).
 emit_line_parts(["deallocate"], I) :- !,
-    format("~wif (Runtime.step(program, state, I.Deallocate()) !== true) return false;~n", [I]).
+    format("~wif (Runtime.op_deallocate(state) !== true) return false;~n", [I]).
 emit_line_parts(["get_level", Yn], I) :- !,
-    wam_javascript_target:wam_parts_to_js(["get_level", Yn], [], Lit),
-    format("~wif (Runtime.step(program, state, ~w) !== true) return false;~n", [I, Lit]).
+    wam_javascript_target:reg_to_int(Yn, YI),
+    format("~wif (Runtime.op_get_level(state, ~w) !== true) return false;~n", [I, YI]).
 emit_line_parts(["put_constant", C, R], I) :- !,
     wam_javascript_target:reg_to_int(R, RI),
     wam_javascript_target:constant_to_js_term(C, T),
@@ -626,6 +835,65 @@ emit_line_parts(["get_variable", X, A], I) :- !,
     wam_javascript_target:reg_to_int(X, XI),
     wam_javascript_target:reg_to_int(A, AI),
     format("~wRuntime.put_reg(state, ~w, Runtime.get_reg(state, ~w));~n", [I, XI, AI]).
+emit_line_parts(["get_constant", C, R], I) :- !,
+    wam_javascript_target:reg_to_int(R, RI),
+    wam_javascript_target:constant_to_js_term(C, T),
+    format("~wif (Runtime.op_get_constant(program, state, ~w, ~w) !== true) return false;~n", [I, RI, T]).
+emit_line_parts(["get_nil", R], I) :- !,
+    wam_javascript_target:intern_js_atom("[]", Id),
+    wam_javascript_target:reg_to_int(R, RI),
+    format("~wif (Runtime.op_get_constant(program, state, ~w, V.Atom(~w)) !== true) return false;~n", [I, RI, Id]).
+emit_line_parts(["get_integer", NStr, R], I) :- !,
+    (number_string(N, NStr) -> true ; N = NStr),
+    wam_javascript_target:reg_to_int(R, RI),
+    format("~wif (Runtime.op_get_constant(program, state, ~w, V.Int(~w)) !== true) return false;~n", [I, RI, N]).
+emit_line_parts(["get_value", X, A], I) :- !,
+    wam_javascript_target:reg_to_int(X, XI),
+    wam_javascript_target:reg_to_int(A, AI),
+    format("~wif (Runtime.op_get_value(program, state, ~w, ~w) !== true) return false;~n", [I, XI, AI]).
+emit_line_parts(["get_list", R], I) :- !,
+    wam_javascript_target:reg_to_int(R, RI),
+    wam_javascript_target:intern_js_atom("[|]", Id),
+    format("~wif (Runtime.op_get_list(program, state, ~w, ~w) !== true) return false;~n", [I, RI, Id]).
+emit_line_parts(["get_structure", F, R], I) :- !,
+    wam_javascript_target:reg_to_int(R, RI),
+    wam_javascript_target:parse_functor_arity(F, Name, Arity),
+    wam_javascript_target:intern_js_atom(Name, Id),
+    format("~wif (Runtime.op_get_structure(program, state, ~w, ~w, ~w) !== true) return false;~n", [I, Id, RI, Arity]).
+emit_line_parts(["put_structure", F, R], I) :- !,
+    wam_javascript_target:reg_to_int(R, RI),
+    wam_javascript_target:parse_functor_arity(F, Name, Arity),
+    wam_javascript_target:intern_js_atom(Name, Id),
+    format("~wif (Runtime.op_put_structure(program, state, ~w, ~w, ~w) !== true) return false;~n", [I, Id, RI, Arity]).
+emit_line_parts(["put_list", R], I) :- !,
+    wam_javascript_target:reg_to_int(R, RI),
+    wam_javascript_target:intern_js_atom("[|]", Id),
+    format("~wif (Runtime.op_put_list(program, state, ~w, ~w) !== true) return false;~n", [I, RI, Id]).
+emit_line_parts(["unify_variable", X], I) :- !,
+    wam_javascript_target:reg_to_int(X, XI),
+    format("~wif (Runtime.op_unify_variable(state, ~w) !== true) return false;~n", [I, XI]).
+emit_line_parts(["unify_value", X], I) :- !,
+    wam_javascript_target:reg_to_int(X, XI),
+    format("~wif (Runtime.op_unify_value(program, state, ~w) !== true) return false;~n", [I, XI]).
+emit_line_parts(["unify_constant", C], I) :- !,
+    wam_javascript_target:constant_to_js_term(C, T),
+    format("~wif (Runtime.op_unify_constant(program, state, ~w) !== true) return false;~n", [I, T]).
+emit_line_parts(["set_variable", X], I) :- !,
+    wam_javascript_target:reg_to_int(X, XI),
+    format("~wif (Runtime.op_unify_variable(state, ~w) !== true) return false;~n", [I, XI]).
+emit_line_parts(["set_value", X], I) :- !,
+    wam_javascript_target:reg_to_int(X, XI),
+    format("~wif (Runtime.op_unify_value(program, state, ~w) !== true) return false;~n", [I, XI]).
+emit_line_parts(["set_constant", C], I) :- !,
+    wam_javascript_target:constant_to_js_term(C, T),
+    format("~wif (Runtime.op_unify_constant(program, state, ~w) !== true) return false;~n", [I, T]).
+emit_line_parts(["builtin_call", Pred, ArityStr], I) :- !,
+    (   number(ArityStr)
+    ->  Arity = ArityStr
+    ;   number_string(Arity, ArityStr)
+    ),
+    wam_javascript_target:js_string_literal(Pred, P),
+    format("~wif (Runtime.op_builtin(program, state, ~w, ~w) !== true) return false;~n", [I, P, Arity]).
 emit_line_parts(Parts, I) :-
     wam_javascript_target:wam_parts_to_js(Parts, [], Lit),
     format("~wif (Runtime.step(program, state, ~w) !== true) return false;~n", [I, Lit]).
@@ -636,22 +904,28 @@ emit_call(PredArity, I) :-
     wam_javascript_target:js_string_literal(PredName, PQ),
     format("~w{~n", [I]),
     format("~w  const saved_cp = state.cp;~n", [I]),
-    format("~w  const _lf = (typeof lowered_dispatch !== \"undefined\") ? lowered_dispatch[~w] : undefined;~n", [I, Q]),
+    format("~w  const saved_pc = state.pc;~n", [I]),
+    format("~w  const _lf = (program.lowered_dispatch && program.lowered_dispatch[~w]) || ((typeof lowered_dispatch !== \"undefined\") ? lowered_dispatch[~w] : undefined);~n", [I, Q, Q]),
+    format("~w  let _ok = true;~n", [I]),
     format("~w  if (typeof _lf === \"function\") {~n", [I]),
-    format("~w    if (_lf(program, state) !== true) return false;~n", [I]),
+    format("~w    _ok = _lf(program, state) === true;~n", [I]),
     format("~w  } else {~n", [I]),
     format("~w    const target = program.labels[~w];~n", [I, Q]),
     format("~w    if (target !== undefined && target !== null) {~n", [I]),
+    format("~w      Runtime.push_y_save(state);~n", [I]),
     format("~w      state.cp = 0;~n", [I]),
     format("~w      state.pc = target;~n", [I]),
     format("~w      state.program = program;~n", [I]),
-    format("~w      if (Runtime.run(program, state) !== true) return false;~n", [I]),
+    format("~w      _ok = Runtime.run_isolated(program, state) === true;~n", [I]),
     format("~w      state.halt = false;~n", [I]),
     format("~w    } else if (Runtime.step(program, state, I.Call(~w, ~w)) !== true) {~n", [I, PQ, Arity]),
-    format("~w      return false;~n", [I]),
+    format("~w      _ok = false;~n", [I]),
     format("~w    }~n", [I]),
     format("~w  }~n", [I]),
     format("~w  state.cp = saved_cp;~n", [I]),
+    format("~w  state.pc = saved_pc;~n", [I]),
+    format("~w  state.halt = false;~n", [I]),
+    format("~w  if (!_ok) return false;~n", [I]),
     format("~w}~n", [I]).
 
 emit_execute(PredArity, I) :-
@@ -659,18 +933,18 @@ emit_execute(PredArity, I) :-
     parse_call_pred_arity(PredArity, PredName, Arity),
     wam_javascript_target:js_string_literal(PredName, PQ),
     format("~w{~n", [I]),
-    format("~w  const _lf = (typeof lowered_dispatch !== \"undefined\") ? lowered_dispatch[~w] : undefined;~n", [I, Q]),
+    format("~w  const _lf = (program.lowered_dispatch && program.lowered_dispatch[~w]) || ((typeof lowered_dispatch !== \"undefined\") ? lowered_dispatch[~w] : undefined);~n", [I, Q, Q]),
     format("~w  if (typeof _lf === \"function\") return _lf(program, state) === true;~n", [I]),
     format("~w  const target = program.labels[~w];~n", [I, Q]),
     format("~w  if (target !== undefined && target !== null) {~n", [I]),
     format("~w    state.pc = target;~n", [I]),
     format("~w    state.program = program;~n", [I]),
-    format("~w    return Runtime.run(program, state) === true;~n", [I]),
+    format("~w    return Runtime.run_isolated(program, state) === true;~n", [I]),
     format("~w  }~n", [I]),
     format("~w  if (Runtime.step(program, state, I.Execute(~w, ~w)) !== true) return false;~n", [I, PQ, Arity]),
     format("~w  if (state.halt) return true;~n", [I]),
     format("~w  state.program = program;~n", [I]),
-    format("~w  return Runtime.run(program, state) === true;~n", [I]),
+    format("~w  return Runtime.run_isolated(program, state) === true;~n", [I]),
     format("~w}~n", [I]).
 
 parse_call_pred_arity(PredArity, PredName, Arity) :-
@@ -686,3 +960,125 @@ parse_call_pred_arity(PredArity, PredName, Arity) :-
 
 strip_arity_local(Tok, Name) :-
     (sub_string(Tok, B, 1, _, "/") -> sub_string(Tok, 0, B, _, Name) ; Name = Tok).
+
+emit_lines_skip_proceed([], _).
+emit_lines_skip_proceed([Line|Rest], Ind) :-
+    tokenize_line(Line, Parts),
+    (   Parts == ["proceed"] -> true
+    ;   Parts == [] -> true
+    ;   Parts = [F|_], sub_string(F, _, 1, 0, ":") -> true
+    ;   emit_line_parts(Parts, Ind)
+    ),
+    emit_lines_skip_proceed(Rest, Ind).
+
+js_ground_fact_lines(Lines) :-
+    Lines \== [],
+    forall(member(Line, Lines), js_ground_fact_line(Line)).
+
+js_ground_fact_line(Line) :-
+    tokenize_line(Line, Parts),
+    (   Parts == [] -> true
+    ;   Parts = [F|_], sub_string(F, _, 1, 0, ":") -> true
+    ;   Parts = [Op|_],
+        memberchk(Op, ["proceed",
+                       "get_constant", "get_variable", "get_value",
+                       "get_structure", "get_list", "get_nil", "get_integer",
+                       "unify_variable", "unify_value", "unify_constant",
+                       "put_constant", "put_variable", "put_value",
+                       "put_structure", "put_list",
+                       "set_variable", "set_value", "set_constant"])
+    ).
+
+%% js_clause_op_fingerprint(+Lines, -Fingerprint)
+%  Opcode sequence of a clause body, labels and empty lines stripped.
+%  Used to collapse switch_on_* duplicate copies of the same ground fact
+%  into one intern-once deterministic body.
+js_clause_op_fingerprint(Lines, Fingerprint) :-
+    findall(Op, (
+        member(Line, Lines),
+        tokenize_line(Line, Tokens),
+        Tokens \= [],
+        Tokens = [Tok|_],
+        \+ sub_string(Tok, _, 1, 0, ":"),
+        Op = Tok
+    ), Ops),
+    atomic_list_concat(Ops, '|', Fingerprint).
+
+js_pred_arity_from_name(PredName, Arity) :-
+    atom_string(PredName, S),
+    split_string(S, "/", "", Parts),
+    last(Parts, ArStr),
+    number_string(Arity, ArStr).
+
+%% wam_javascript_explain_lower(+PI, +WamCode, -Decision)
+%  Decision = lower(Reason) | fallback(Why). Never fails.
+wam_javascript_explain_lower(PI, WamCode, fallback('execute of a non-self callee (nested Runtime.run would steal CP)')) :-
+    js_pi_key(PI, Key),
+    js_wam_has_foreign_execute(WamCode, Key), !.
+wam_javascript_explain_lower(PI, WamCode, lower(Reason)) :-
+    catch(wam_javascript_lowerable(PI, WamCode, Reason), _, fail), !.
+wam_javascript_explain_lower(_PI, WamCode, fallback(Why)) :-
+    catch(build_emission_plan(WamCode, plan(Mode, _, Payload)), E,
+          (Why = error(E), !)),
+    (   Mode == ite
+    ->  (   member(I, Payload), \+ js_struct_supported(I)
+        ->  Why = 'ite: unsupported structured instruction'
+        ;   Why = 'ite: structure_ite leftover'
+        )
+    ;   Mode == deterministic
+    ->  (   member(Line, Payload), \+ line_supported(Line)
+        ->  Why = 'deterministic: unsupported instruction (jump/try/cut/...)'
+        ;   Why = 'deterministic: emit failed'
+        )
+    ;   Mode == multi_clause_1
+    ->  Why = 'multi_clause_1 would keep interpreter CPs; T4+ITE did not match'
+    ;   Why = Mode
+    ), !.
+wam_javascript_explain_lower(_, _, fallback('not classified')).
+
+js_pi_key(_M:Pred/Arity, Key) :- !,
+    format(atom(Key), '~w/~w', [Pred, Arity]).
+js_pi_key(Pred/Arity, Key) :-
+    format(atom(Key), '~w/~w', [Pred, Arity]).
+
+%% js_wam_has_foreign_execute(+WamCode, +SelfKey)
+%  True when some Execute targets a predicate other than SelfKey.
+%  Nested Runtime.run with cp=0 steals the query continuation
+%  (parse_args/2 Executes parse_args/3). Self-recursive last-goal
+%  Execute (T4 merge_flags_/3) is allowed. Execute of a JS WAM builtin
+%  is also rejected (that path aliased live ground terms).
+js_wam_has_foreign_execute(WamCode, Self) :-
+    atom_string(Self, SelfS),
+    atom_string(WamCode, S),
+    split_string(S, "\n", "", Lines),
+    member(Line, Lines),
+    tokenize_line(Line, Parts),
+    js_execute_target(Parts, TargetS),
+    TargetS \== SelfS.
+
+js_execute_target(["execute", PA], TargetS) :-
+    atom_string(PA, TargetS).
+js_execute_target(["execute", Pred, ArityStr], TargetS) :-
+    format(string(TargetS), "~w/~w", [Pred, ArityStr]).
+
+%% js_ite_pure_test_cond(+Structured)
+%  Condition is register moves + a comparison builtin (==, =:=, ...).
+%  Those builtins never trail or Allocate, so ITE else restores A1-A8
+%  and the trail mark instead of snapshot_machine (full register copy).
+js_ite_pure_test_cond(Items) :-
+    Items \== [],
+    forall(member(I, Items), js_ite_pure_test_item(I)).
+
+js_ite_pure_test_item(ite(_, _, _)) :- !, fail.
+js_ite_pure_test_item(builtin_call(Op, _)) :-
+    js_pure_compare_builtin(Op).
+js_ite_pure_test_item(line(Parts)) :-
+    Parts = [Op|_],
+    memberchk(Op, ["put_value", "put_constant", "put_variable",
+                   "get_variable", "get_value"]).
+
+js_pure_compare_builtin(Op) :-
+    atom_string(Op, S),
+    memberchk(S, ["==/2", "\\==/2", "=:=/2", "=\\=/2",
+                  ">/2", "</2", ">=/2", "=</2",
+                  "==", "\\==", "=:=", "=\\=", ">", "<", ">=", "=<"]).

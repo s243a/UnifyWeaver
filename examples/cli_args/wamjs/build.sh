@@ -3,7 +3,8 @@
 # Copyright (c) 2026 John William Creighton (s243a)
 #
 # build.sh -- ONE command that turns examples/cli_args/cli_args.pl into a
-# JavaScript WAM project node can run (interpreter tier).
+# JavaScript WAM project node can run (mixed emit mode: lower what the
+# Tier-2 emitter accepts, interpret the rest).
 #
 #   bash examples/cli_args/wamjs/build.sh
 #

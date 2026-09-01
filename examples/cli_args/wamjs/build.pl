@@ -3,7 +3,8 @@
 % Copyright (c) 2026 John William Creighton (s243a)
 %
 % build.pl -- compile examples/cli_args/cli_args.pl into a JS WAM project
-% (interpreter tier) via write_wam_javascript_project/3.
+% (mixed emit mode: lower every eligible predicate, interpret the rest)
+% via write_wam_javascript_project/3.
 %
 % Clauses are re-asserted into `user` rather than consulting the module:
 % the WAM compiler reads user:clause/2, and cli_args.pl is a module.
@@ -41,5 +42,5 @@ main :-
     length(Preds, N),
     format("build.pl: compiling ~w predicates from ~w~n", [N, Src]),
     forall(member(P/A, Preds), format("  ~w/~w~n", [P, A])),
-    write_wam_javascript_project(Preds, [emit_mode(interpreter)], OutDir),
+    write_wam_javascript_project(Preds, [emit_mode(mixed)], OutDir),
     format("build.pl: wrote JS WAM project under ~w/js/~n", [OutDir]).

@@ -48,13 +48,15 @@ const shared_program = {
   inline_facts: {},
   fact_sources: fact_sources,
   indexed_atom_fact2: {},
-  intern_table: intern_table
+  intern_table: intern_table,
+  ground_memo: Object.create(null)
 };
 Runtime.resolve_program(shared_program);
 {{op_decls}}
 
 const lowered_dispatch = {};
 {{lowered_functions}}
+shared_program.lowered_dispatch = lowered_dispatch;
 
 {{wrappers}}
 
