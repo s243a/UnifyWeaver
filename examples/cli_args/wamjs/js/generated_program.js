@@ -731,7 +731,7 @@ const shared_instructions = [
   I.GetVariable(202, 3),
   I.GetVariable(206, 4),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_19"),
+  I.TryMeElse("L_ite_else_17"),
   I.PutValue(201, 1),
   I.PutValue(204, 2),
   I.BuiltinCall("==/2", 2),
@@ -739,7 +739,7 @@ const shared_instructions = [
   I.PutValue(206, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_19"),
+  I.Jump("L_ite_cont_17"),
   I.TrustMe(),
   I.PutVariable(205, 1),
   I.PutStructure(10, 2, 2),
@@ -789,7 +789,7 @@ const shared_instructions = [
   I.GetVariable(206, 3),
   I.GetVariable(201, 4),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_21"),
+  I.TryMeElse("L_ite_else_19"),
   I.PutValue(202, 1),
   I.PutValue(205, 2),
   I.BuiltinCall("==/2", 2),
@@ -802,7 +802,7 @@ const shared_instructions = [
   I.SetValue(202),
   I.SetValue(206),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_21"),
+  I.Jump("L_ite_cont_19"),
   I.TrustMe(),
   I.PutValue(201, 1),
   I.PutStructure(5, 2, 2),
@@ -825,7 +825,7 @@ const shared_instructions = [
   I.GetVariable(203, 3),
   I.GetVariable(204, 4),
   I.GetLevel(205),
-  I.TryMeElse("L_ite_else_23"),
+  I.TryMeElse("L_ite_else_21"),
   I.PutValue(202, 1),
   I.PutConstant(V.String("__proto__"), 2),
   I.BuiltinCall("==/2", 2),
@@ -833,7 +833,7 @@ const shared_instructions = [
   I.PutValue(204, 1),
   I.PutValue(201, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_23"),
+  I.Jump("L_ite_cont_21"),
   I.TrustMe(),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
@@ -858,7 +858,7 @@ const shared_instructions = [
   I.Allocate(),
   I.GetVariable(203, 1),
   I.GetLevel(204),
-  I.TryMeElse("L_ite_else_25"),
+  I.TryMeElse("L_ite_else_23"),
   I.PutVariable(201, 1),
   I.Call("global_options", 1),
   I.PutValue(201, 1),
@@ -867,7 +867,7 @@ const shared_instructions = [
   I.Call("pair_lookup", 3),
   I.Cut(204),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_25"),
+  I.Jump("L_ite_cont_23"),
   I.TrustMe(),
   I.PutValue(203, 1),
   I.Call("js_object_prototype_key", 1),
@@ -896,7 +896,7 @@ const shared_instructions = [
   I.PutVariable(201, 2),
   I.BuiltinCall("char_code/2", 2),
   I.GetLevel(202),
-  I.TryMeElse("L_ite_else_27"),
+  I.TryMeElse("L_ite_else_25"),
   I.PutValue(201, 1),
   I.PutConstant(V.Int(97), 2),
   I.BuiltinCall(">=/2", 2),
@@ -905,7 +905,7 @@ const shared_instructions = [
   I.BuiltinCall("=</2", 2),
   I.Cut(202),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_27"),
+  I.Jump("L_ite_cont_25"),
   I.TrustMe(),
   I.PutValue(201, 1),
   I.PutConstant(V.Int(65), 2),
@@ -919,7 +919,7 @@ const shared_instructions = [
   I.PutVariable(201, 2),
   I.BuiltinCall("char_code/2", 2),
   I.GetLevel(202),
-  I.TryMeElse("L_ite_else_29"),
+  I.TryMeElse("L_ite_else_27"),
   I.PutValue(201, 1),
   I.PutConstant(V.Int(97), 2),
   I.BuiltinCall(">=/2", 2),
@@ -928,10 +928,10 @@ const shared_instructions = [
   I.BuiltinCall("=</2", 2),
   I.Cut(202),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_29"),
+  I.Jump("L_ite_cont_27"),
   I.TrustMe(),
   I.GetLevel(203),
-  I.TryMeElse("L_ite_else_30"),
+  I.TryMeElse("L_ite_else_28"),
   I.PutValue(201, 1),
   I.PutConstant(V.Int(65), 2),
   I.BuiltinCall(">=/2", 2),
@@ -940,10 +940,10 @@ const shared_instructions = [
   I.BuiltinCall("=</2", 2),
   I.Cut(203),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_30"),
+  I.Jump("L_ite_cont_28"),
   I.TrustMe(),
   I.GetLevel(204),
-  I.TryMeElse("L_ite_else_31"),
+  I.TryMeElse("L_ite_else_29"),
   I.PutValue(201, 1),
   I.PutConstant(V.Int(48), 2),
   I.BuiltinCall(">=/2", 2),
@@ -952,7 +952,7 @@ const shared_instructions = [
   I.BuiltinCall("=</2", 2),
   I.Cut(204),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_31"),
+  I.Jump("L_ite_cont_29"),
   I.TrustMe(),
   I.PutValue(201, 1),
   I.PutConstant(V.Int(45), 2),
@@ -1010,7 +1010,7 @@ const shared_instructions = [
   I.UnifyVariable(202),
   I.GetVariable(203, 2),
   I.GetLevel(204),
-  I.TryMeElse("L_ite_else_35"),
+  I.TryMeElse("L_ite_else_33"),
   I.PutValue(202, 1),
   I.PutConstant(V.Atom(2), 2),
   I.BuiltinCall("==/2", 2),
@@ -1018,7 +1018,7 @@ const shared_instructions = [
   I.PutValue(203, 1),
   I.PutValue(201, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_35"),
+  I.Jump("L_ite_cont_33"),
   I.TrustMe(),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
@@ -1057,7 +1057,7 @@ const shared_instructions = [
   I.GetVariable(211, 4),
   I.GetVariable(212, 5),
   I.GetLevel(213),
-  I.TryMeElse("L_ite_else_37"),
+  I.TryMeElse("L_ite_else_35"),
   I.PutValue(208, 1),
   I.PutConstant(V.String("--"), 2),
   I.Call("starts_with", 2),
@@ -1067,7 +1067,7 @@ const shared_instructions = [
   I.PutVariable(201, 3),
   I.Call("split_flag_token", 3),
   I.GetLevel(214),
-  I.TryMeElse("L_ite_else_38"),
+  I.TryMeElse("L_ite_else_36"),
   I.PutValue(201, 1),
   I.PutStructure(19, 2, 1),
   I.SetVariable(202),
@@ -1084,22 +1084,22 @@ const shared_instructions = [
   I.PutValue(211, 4),
   I.PutValue(212, 5),
   I.Call("lenient_loop", 5),
-  I.Jump("L_ite_cont_38"),
+  I.Jump("L_ite_cont_36"),
   I.TrustMe(),
   I.GetLevel(215),
-  I.TryMeElse("L_ite_else_39"),
+  I.TryMeElse("L_ite_else_37"),
   I.PutValue(207, 1),
   I.PutStructure(5, 2, 2),
   I.SetVariable(205),
   I.SetVariable(206),
   I.BuiltinCall("=/2", 2),
   I.GetLevel(216),
-  I.TryMeElse("L_ite_else_40"),
+  I.TryMeElse("L_ite_else_38"),
   I.PutValue(205, 1),
   I.Call("looks_like_legacy_flag", 1),
   I.Cut(216),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_40"),
+  I.Jump("L_ite_cont_38"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.Cut(215),
@@ -1114,7 +1114,7 @@ const shared_instructions = [
   I.PutValue(211, 4),
   I.PutValue(212, 5),
   I.Call("lenient_loop", 5),
-  I.Jump("L_ite_cont_39"),
+  I.Jump("L_ite_cont_37"),
   I.TrustMe(),
   I.PutValue(210, 1),
   I.PutValue(203, 2),
@@ -1127,7 +1127,7 @@ const shared_instructions = [
   I.PutValue(211, 4),
   I.PutValue(212, 5),
   I.Call("lenient_loop", 5),
-  I.Jump("L_ite_cont_37"),
+  I.Jump("L_ite_cont_35"),
   I.TrustMe(),
   I.PutValue(207, 1),
   I.PutStructure(5, 2, 2),
@@ -1159,13 +1159,13 @@ const shared_instructions = [
   I.UnifyVariable(201),
   I.UnifyVariable(202),
   I.GetLevel(203),
-  I.TryMeElse("L_ite_else_45"),
+  I.TryMeElse("L_ite_else_43"),
   I.PutValue(201, 1),
   I.PutConstant(V.Atom(18), 2),
   I.BuiltinCall("==/2", 2),
   I.Cut(203),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_45"),
+  I.Jump("L_ite_cont_43"),
   I.TrustMe(),
   I.PutValue(201, 1),
   I.Call("js_flag_char", 1),
@@ -1239,17 +1239,17 @@ const shared_instructions = [
   I.UnifyVariable(103),
   I.GetVariable(202, 2),
   I.GetLevel(203),
-  I.TryMeElse("L_ite_else_47"),
+  I.TryMeElse("L_ite_else_45"),
   I.PutValue(201, 1),
   I.PutConstant(V.String("--"), 2),
   I.BuiltinCall("\\==/2", 2),
   I.GetLevel(204),
-  I.TryMeElse("L_ite_else_48"),
+  I.TryMeElse("L_ite_else_46"),
   I.PutValue(201, 1),
   I.Call("is_long_flag", 1),
   I.Cut(204),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_48"),
+  I.Jump("L_ite_cont_46"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.Cut(203),
@@ -1257,7 +1257,7 @@ const shared_instructions = [
   I.PutStructure(19, 2, 1),
   I.SetValue(201),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_47"),
+  I.Jump("L_ite_cont_45"),
   I.TrustMe(),
   I.PutValue(202, 1),
   I.PutConstant(V.Atom(20), 2),
@@ -1270,7 +1270,7 @@ const shared_instructions = [
   I.GetVariable(207, 3),
   I.GetVariable(206, 4),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_51"),
+  I.TryMeElse("L_ite_else_49"),
   I.PutValue(201, 1),
   I.PutStructure(5, 2, 2),
   I.SetVariable(203),
@@ -1278,7 +1278,7 @@ const shared_instructions = [
   I.BuiltinCall("=/2", 2),
   I.Cut(208),
   I.GetLevel(209),
-  I.TryMeElse("L_ite_else_52"),
+  I.TryMeElse("L_ite_else_50"),
   I.PutValue(202, 1),
   I.PutConstant(V.Int(0), 2),
   I.BuiltinCall("=:=/2", 2),
@@ -1286,7 +1286,7 @@ const shared_instructions = [
   I.PutValue(206, 1),
   I.PutValue(203, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_52"),
+  I.Jump("L_ite_cont_50"),
   I.TrustMe(),
   I.PutVariable(204, 1),
   I.PutStructure(10, 2, 2),
@@ -1298,7 +1298,7 @@ const shared_instructions = [
   I.PutValue(207, 3),
   I.PutValue(206, 4),
   I.Call("nth0_default", 4),
-  I.Jump("L_ite_cont_51"),
+  I.Jump("L_ite_cont_49"),
   I.TrustMe(),
   I.PutValue(206, 1),
   I.PutValue(207, 2),
@@ -1310,7 +1310,7 @@ const shared_instructions = [
   I.GetVariable(204, 2),
   I.GetVariable(206, 3),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_55"),
+  I.TryMeElse("L_ite_else_53"),
   I.PutValue(201, 1),
   I.PutValue(204, 2),
   I.PutVariable(202, 3),
@@ -1319,10 +1319,10 @@ const shared_instructions = [
   I.PutValue(206, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_55"),
+  I.Jump("L_ite_cont_53"),
   I.TrustMe(),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_56"),
+  I.TryMeElse("L_ite_else_54"),
   I.PutVariable(203, 1),
   I.Call("global_options", 1),
   I.PutValue(203, 1),
@@ -1333,7 +1333,7 @@ const shared_instructions = [
   I.PutValue(206, 1),
   I.PutValue(205, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_56"),
+  I.Jump("L_ite_cont_54"),
   I.TrustMe(),
   I.PutValue(204, 1),
   I.Call("js_object_prototype_key", 1),
@@ -1352,7 +1352,7 @@ const shared_instructions = [
   I.GetVariable(204, 2),
   I.GetVariable(205, 3),
   I.GetLevel(206),
-  I.TryMeElse("L_ite_else_59"),
+  I.TryMeElse("L_ite_else_57"),
   I.PutValue(201, 1),
   I.PutValue(204, 2),
   I.BuiltinCall("==/2", 2),
@@ -1360,7 +1360,7 @@ const shared_instructions = [
   I.PutValue(205, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_59"),
+  I.Jump("L_ite_cont_57"),
   I.TrustMe(),
   I.PutValue(203, 1),
   I.PutValue(204, 2),
@@ -1388,25 +1388,25 @@ const shared_instructions = [
   I.PutVariable(217, 4),
   I.Call("scan_leading_globals", 4),
   I.GetLevel(222),
-  I.TryMeElse("L_ite_else_61"),
+  I.TryMeElse("L_ite_else_59"),
   I.PutValue(201, 1),
   I.PutStructure(5, 2, 2),
   I.SetVariable(204),
   I.SetVariable(210),
   I.BuiltinCall("=/2", 2),
   I.GetLevel(223),
-  I.TryMeElse("L_ite_else_62"),
+  I.TryMeElse("L_ite_else_60"),
   I.PutValue(204, 1),
   I.PutConstant(V.String("--"), 2),
   I.Call("starts_with", 2),
   I.Cut(223),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_62"),
+  I.Jump("L_ite_cont_60"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.Cut(222),
   I.GetLevel(224),
-  I.TryMeElse("L_ite_else_63"),
+  I.TryMeElse("L_ite_else_61"),
   I.PutValue(210, 1),
   I.PutStructure(5, 2, 2),
   I.SetVariable(202),
@@ -1417,13 +1417,13 @@ const shared_instructions = [
   I.PutStructure(19, 2, 1),
   I.SetValue(202),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_63"),
+  I.Jump("L_ite_cont_61"),
   I.TrustMe(),
   I.PutVariable(205, 1),
   I.PutConstant(V.Atom(20), 2),
   I.BuiltinCall("=/2", 2),
   I.GetLevel(225),
-  I.TryMeElse("L_ite_else_64"),
+  I.TryMeElse("L_ite_else_62"),
   I.PutValue(204, 1),
   I.PutValue(205, 2),
   I.PutValue(206, 3),
@@ -1432,7 +1432,7 @@ const shared_instructions = [
   I.Call("schema_for", 5),
   I.Cut(225),
   I.GetLevel(226),
-  I.TryMeElse("L_ite_else_65"),
+  I.TryMeElse("L_ite_else_63"),
   I.PutValue(208, 1),
   I.PutConstant(V.Atom(0), 2),
   I.BuiltinCall("==/2", 2),
@@ -1454,7 +1454,7 @@ const shared_instructions = [
   I.SetValue(209),
   I.SetConstant(V.Atom(2)),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_65"),
+  I.Jump("L_ite_cont_63"),
   I.TrustMe(),
   I.PutVariable(212, 1),
   I.PutValue(210, 2),
@@ -1470,7 +1470,7 @@ const shared_instructions = [
   I.PutVariable(214, 4),
   I.Call("parse_strict", 4),
   I.GetLevel(227),
-  I.TryMeElse("L_ite_else_66"),
+  I.TryMeElse("L_ite_else_64"),
   I.PutValue(214, 1),
   I.PutStructure(9, 2, 2),
   I.SetVariable(215),
@@ -1486,7 +1486,7 @@ const shared_instructions = [
   I.SetValue(215),
   I.SetValue(218),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_66"),
+  I.Jump("L_ite_cont_64"),
   I.TrustMe(),
   I.PutValue(214, 1),
   I.PutStructure(8, 2, 1),
@@ -1496,12 +1496,12 @@ const shared_instructions = [
   I.PutStructure(22, 2, 1),
   I.SetValue(219),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_64"),
+  I.Jump("L_ite_cont_62"),
   I.TrustMe(),
   I.PutValue(220, 1),
   I.PutValue(221, 2),
   I.Call("lenient_result", 2),
-  I.Jump("L_ite_cont_61"),
+  I.Jump("L_ite_cont_59"),
   I.TrustMe(),
   I.PutValue(220, 1),
   I.PutValue(221, 2),
@@ -1540,7 +1540,7 @@ const shared_instructions = [
   I.PutVariable(201, 8),
   I.Call("strict_loop", 8),
   I.GetLevel(212),
-  I.TryMeElse("L_ite_else_73"),
+  I.TryMeElse("L_ite_else_71"),
   I.PutValue(201, 1),
   I.PutStructure(8, 2, 1),
   I.SetVariable(202),
@@ -1550,7 +1550,7 @@ const shared_instructions = [
   I.PutStructure(8, 2, 1),
   I.SetValue(202),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_73"),
+  I.Jump("L_ite_cont_71"),
   I.TrustMe(),
   I.PutValue(203, 1),
   I.PutVariable(209, 2),
@@ -1560,7 +1560,7 @@ const shared_instructions = [
   I.PutVariable(205, 3),
   I.Call("check_arity", 3),
   I.GetLevel(213),
-  I.TryMeElse("L_ite_else_74"),
+  I.TryMeElse("L_ite_else_72"),
   I.PutValue(205, 1),
   I.PutStructure(8, 2, 1),
   I.SetVariable(206),
@@ -1570,7 +1570,7 @@ const shared_instructions = [
   I.PutStructure(8, 2, 1),
   I.SetValue(206),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_74"),
+  I.Jump("L_ite_cont_72"),
   I.TrustMe(),
   I.PutValue(208, 1),
   I.PutValue(209, 2),
@@ -1588,7 +1588,7 @@ const shared_instructions = [
   I.GetVariable(203, 2),
   I.GetVariable(204, 3),
   I.GetLevel(205),
-  I.TryMeElse("L_ite_else_77"),
+  I.TryMeElse("L_ite_else_75"),
   I.PutValue(201, 1),
   I.PutValue(203, 2),
   I.PutVariable(202, 3),
@@ -1597,7 +1597,7 @@ const shared_instructions = [
   I.PutValue(204, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_77"),
+  I.Jump("L_ite_cont_75"),
   I.TrustMe(),
   I.PutValue(203, 1),
   I.Call("js_object_prototype_key", 1),
@@ -1624,7 +1624,7 @@ const shared_instructions = [
   I.GetVariable(209, 3),
   I.GetVariable(212, 4),
   I.GetLevel(214),
-  I.TryMeElse("L_ite_else_79"),
+  I.TryMeElse("L_ite_else_77"),
   I.PutValue(210, 1),
   I.PutConstant(V.String("--"), 2),
   I.Call("starts_with", 2),
@@ -1637,12 +1637,12 @@ const shared_instructions = [
   I.PutVariable(202, 3),
   I.Call("split_flag_token", 3),
   I.GetLevel(215),
-  I.TryMeElse("L_ite_else_80"),
+  I.TryMeElse("L_ite_else_78"),
   I.PutValue(201, 1),
   I.Call("is_global_key", 1),
   I.Cut(215),
   I.GetLevel(216),
-  I.TryMeElse("L_ite_else_81"),
+  I.TryMeElse("L_ite_else_79"),
   I.PutValue(202, 1),
   I.PutStructure(19, 2, 1),
   I.SetVariable(203),
@@ -1658,13 +1658,13 @@ const shared_instructions = [
   I.PutValue(209, 3),
   I.PutValue(212, 4),
   I.Call("scan_leading_globals", 4),
-  I.Jump("L_ite_cont_81"),
+  I.Jump("L_ite_cont_79"),
   I.TrustMe(),
   I.PutValue(211, 1),
   I.PutVariable(205, 2),
   I.Call("next_value", 2),
   I.GetLevel(217),
-  I.TryMeElse("L_ite_else_82"),
+  I.TryMeElse("L_ite_else_80"),
   I.PutValue(205, 1),
   I.PutStructure(19, 2, 1),
   I.SetVariable(206),
@@ -1685,7 +1685,7 @@ const shared_instructions = [
   I.PutValue(209, 3),
   I.PutValue(212, 4),
   I.Call("scan_leading_globals", 4),
-  I.Jump("L_ite_cont_82"),
+  I.Jump("L_ite_cont_80"),
   I.TrustMe(),
   I.PutValue(213, 1),
   I.PutValue(201, 2),
@@ -1697,7 +1697,7 @@ const shared_instructions = [
   I.PutValue(209, 3),
   I.PutValue(212, 4),
   I.Call("scan_leading_globals", 4),
-  I.Jump("L_ite_cont_80"),
+  I.Jump("L_ite_cont_78"),
   I.TrustMe(),
   I.PutValue(209, 1),
   I.PutStructure(5, 2, 2),
@@ -1707,7 +1707,7 @@ const shared_instructions = [
   I.PutValue(212, 1),
   I.PutValue(213, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_79"),
+  I.Jump("L_ite_cont_77"),
   I.TrustMe(),
   I.PutValue(209, 1),
   I.PutStructure(5, 2, 2),
@@ -1730,7 +1730,7 @@ const shared_instructions = [
   I.PutVariable(205, 3),
   I.Call("registry_entry", 3),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_87"),
+  I.TryMeElse("L_ite_else_85"),
   I.PutValue(205, 1),
   I.PutStructure(15, 2, 1),
   I.SetVariable(202),
@@ -1750,7 +1750,7 @@ const shared_instructions = [
   I.PutValue(206, 1),
   I.PutConstant(V.Atom(0), 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_87"),
+  I.Jump("L_ite_cont_85"),
   I.TrustMe(),
   I.PutValue(204, 1),
   I.PutValue(205, 2),
@@ -1768,7 +1768,7 @@ const shared_instructions = [
   I.PutVariable(201, 2),
   I.Call("first_equals_index", 2),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_89"),
+  I.TryMeElse("L_ite_else_87"),
   I.PutValue(201, 1),
   I.PutConstant(V.Int(0), 2),
   I.BuiltinCall(">=/2", 2),
@@ -1791,7 +1791,7 @@ const shared_instructions = [
   I.PutStructure(19, 2, 1),
   I.SetValue(203),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_89"),
+  I.Jump("L_ite_cont_87"),
   I.TrustMe(),
   I.PutValue(204, 1),
   I.PutConstant(V.Int(2), 2),
@@ -1849,7 +1849,7 @@ const shared_instructions = [
   I.GetVariable(207, 7),
   I.GetVariable(208, 8),
   I.GetLevel(214),
-  I.TryMeElse("L_ite_else_91"),
+  I.TryMeElse("L_ite_else_89"),
   I.PutValue(209, 1),
   I.PutConstant(V.Atom(0), 2),
   I.BuiltinCall("==/2", 2),
@@ -1865,10 +1865,10 @@ const shared_instructions = [
   I.PutValue(207, 7),
   I.PutValue(208, 8),
   I.Call("strict_loop", 8),
-  I.Jump("L_ite_cont_91"),
+  I.Jump("L_ite_cont_89"),
   I.TrustMe(),
   I.GetLevel(215),
-  I.TryMeElse("L_ite_else_92"),
+  I.TryMeElse("L_ite_else_90"),
   I.PutValue(201, 1),
   I.PutConstant(V.String("--"), 2),
   I.BuiltinCall("==/2", 2),
@@ -1882,18 +1882,18 @@ const shared_instructions = [
   I.PutValue(207, 7),
   I.PutValue(208, 8),
   I.Call("strict_loop", 8),
-  I.Jump("L_ite_cont_92"),
+  I.Jump("L_ite_cont_90"),
   I.TrustMe(),
   I.GetLevel(216),
-  I.TryMeElse("L_ite_else_93"),
+  I.TryMeElse("L_ite_else_91"),
   I.GetLevel(217),
-  I.TryMeElse("L_ite_else_94"),
+  I.TryMeElse("L_ite_else_92"),
   I.PutValue(201, 1),
   I.PutConstant(V.String("--"), 2),
   I.Call("starts_with", 2),
   I.Cut(217),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_94"),
+  I.Jump("L_ite_cont_92"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.Cut(216),
@@ -1908,14 +1908,14 @@ const shared_instructions = [
   I.PutValue(207, 7),
   I.PutValue(208, 8),
   I.Call("strict_loop", 8),
-  I.Jump("L_ite_cont_93"),
+  I.Jump("L_ite_cont_91"),
   I.TrustMe(),
   I.PutValue(201, 1),
   I.PutVariable(210, 2),
   I.PutVariable(211, 3),
   I.Call("split_flag_token", 3),
   I.GetLevel(217),
-  I.TryMeElse("L_ite_else_95"),
+  I.TryMeElse("L_ite_else_93"),
   I.PutValue(203, 1),
   I.PutValue(210, 2),
   I.PutVariable(212, 3),
@@ -1933,7 +1933,7 @@ const shared_instructions = [
   I.PutValue(207, 10),
   I.PutValue(208, 11),
   I.Call("strict_option", 11),
-  I.Jump("L_ite_cont_95"),
+  I.Jump("L_ite_cont_93"),
   I.TrustMe(),
   I.PutConstant(V.String("unknown option --"), 1),
   I.PutValue(210, 2),
@@ -1964,20 +1964,20 @@ const shared_instructions = [
   I.GetVariable(213, 10),
   I.GetVariable(214, 11),
   I.GetLevel(225),
-  I.TryMeElse("L_ite_else_101"),
+  I.TryMeElse("L_ite_else_99"),
   I.PutValue(216, 1),
   I.PutConstant(V.Atom(12), 2),
   I.BuiltinCall("==/2", 2),
   I.Cut(225),
   I.GetLevel(226),
-  I.TryMeElse("L_ite_else_102"),
+  I.TryMeElse("L_ite_else_100"),
   I.PutValue(203, 1),
   I.PutStructure(19, 2, 1),
   I.SetVariable(201),
   I.BuiltinCall("=/2", 2),
   I.Cut(226),
   I.GetLevel(227),
-  I.TryMeElse("L_ite_else_103"),
+  I.TryMeElse("L_ite_else_101"),
   I.PutValue(201, 1),
   I.PutConstant(V.String("false"), 2),
   I.BuiltinCall("==/2", 2),
@@ -1985,12 +1985,12 @@ const shared_instructions = [
   I.PutVariable(202, 1),
   I.PutConstant(V.Atom(7), 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_103"),
+  I.Jump("L_ite_cont_101"),
   I.TrustMe(),
   I.PutVariable(202, 1),
   I.PutConstant(V.Atom(0), 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_102"),
+  I.Jump("L_ite_cont_100"),
   I.TrustMe(),
   I.PutVariable(202, 1),
   I.PutConstant(V.Atom(0), 2),
@@ -2009,10 +2009,10 @@ const shared_instructions = [
   I.PutValue(213, 7),
   I.PutValue(214, 8),
   I.Call("strict_loop", 8),
-  I.Jump("L_ite_cont_101"),
+  I.Jump("L_ite_cont_99"),
   I.TrustMe(),
   I.GetLevel(226),
-  I.TryMeElse("L_ite_else_104"),
+  I.TryMeElse("L_ite_else_102"),
   I.PutValue(203, 1),
   I.PutStructure(19, 2, 1),
   I.SetVariable(204),
@@ -2032,19 +2032,19 @@ const shared_instructions = [
   I.PutValue(213, 7),
   I.PutValue(214, 8),
   I.Call("strict_loop", 8),
-  I.Jump("L_ite_cont_104"),
+  I.Jump("L_ite_cont_102"),
   I.TrustMe(),
   I.PutValue(208, 1),
   I.PutVariable(215, 2),
   I.Call("next_value", 2),
   I.GetLevel(227),
-  I.TryMeElse("L_ite_else_105"),
+  I.TryMeElse("L_ite_else_103"),
   I.PutValue(216, 1),
   I.PutConstant(V.Atom(13), 2),
   I.BuiltinCall("==/2", 2),
   I.Cut(227),
   I.GetLevel(228),
-  I.TryMeElse("L_ite_else_106"),
+  I.TryMeElse("L_ite_else_104"),
   I.PutValue(215, 1),
   I.PutStructure(19, 2, 1),
   I.SetVariable(217),
@@ -2069,7 +2069,7 @@ const shared_instructions = [
   I.PutValue(213, 7),
   I.PutValue(214, 8),
   I.Call("strict_loop", 8),
-  I.Jump("L_ite_cont_106"),
+  I.Jump("L_ite_cont_104"),
   I.TrustMe(),
   I.PutConstant(V.String("--"), 1),
   I.PutValue(206, 2),
@@ -2089,10 +2089,10 @@ const shared_instructions = [
   I.PutStructure(8, 2, 1),
   I.SetValue(221),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_105"),
+  I.Jump("L_ite_cont_103"),
   I.TrustMe(),
   I.GetLevel(228),
-  I.TryMeElse("L_ite_else_107"),
+  I.TryMeElse("L_ite_else_105"),
   I.PutValue(215, 1),
   I.PutStructure(19, 2, 1),
   I.SetVariable(222),
@@ -2117,7 +2117,7 @@ const shared_instructions = [
   I.PutValue(213, 7),
   I.PutValue(214, 8),
   I.Call("strict_loop", 8),
-  I.Jump("L_ite_cont_107"),
+  I.Jump("L_ite_cont_105"),
   I.TrustMe(),
   I.PutValue(205, 1),
   I.PutValue(206, 2),
@@ -2141,13 +2141,13 @@ const shared_instructions = [
   I.UnifyVariable(201),
   I.UnifyVariable(203),
   I.GetLevel(204),
-  I.TryMeElse("L_ite_else_115"),
+  I.TryMeElse("L_ite_else_113"),
   I.PutValue(202, 1),
   I.PutValue(201, 2),
   I.BuiltinCall("==/2", 2),
   I.Cut(204),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_115"),
+  I.Jump("L_ite_cont_113"),
   I.TrustMe(),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
@@ -2211,97 +2211,97 @@ const shared_labels = {
   "substring_from/3": 2126,
   "strip_brackets/2": 2112,
   "string_member/2": 2093,
-  "L_ite_else_115": 2106,
-  "L_ite_cont_115": 2110,
+  "L_ite_else_113": 2106,
+  "L_ite_cont_113": 2110,
   "strict_option/11": 1909,
-  "L_ite_else_103": 1944,
-  "L_ite_cont_103": 1948,
-  "L_ite_else_102": 1949,
-  "L_ite_cont_102": 1953,
-  "L_ite_else_101": 1968,
-  "L_ite_else_104": 1991,
-  "L_ite_else_106": 2028,
-  "L_ite_cont_106": 2047,
-  "L_ite_else_105": 2048,
-  "L_ite_else_107": 2076,
-  "L_ite_cont_107": 2091,
+  "L_ite_else_101": 1944,
+  "L_ite_cont_101": 1948,
+  "L_ite_else_100": 1949,
+  "L_ite_cont_100": 1953,
+  "L_ite_else_99": 1968,
+  "L_ite_else_102": 1991,
+  "L_ite_else_104": 2028,
+  "L_ite_cont_104": 2047,
+  "L_ite_else_103": 2048,
+  "L_ite_else_105": 2076,
   "L_ite_cont_105": 2091,
-  "L_ite_cont_104": 2091,
-  "L_ite_cont_101": 2091,
+  "L_ite_cont_103": 2091,
+  "L_ite_cont_102": 2091,
+  "L_ite_cont_99": 2091,
   "strict_loop/8": 1783,
   "L_strict_loop_8_2": 1794,
   "L_strict_loop_8_2_body": 1795,
-  "L_ite_else_91": 1824,
-  "L_ite_else_92": 1841,
-  "L_ite_else_94": 1852,
-  "L_ite_cont_94": 1854,
-  "L_ite_else_93": 1867,
-  "L_ite_else_95": 1892,
-  "L_ite_cont_95": 1907,
+  "L_ite_else_89": 1824,
+  "L_ite_else_90": 1841,
+  "L_ite_else_92": 1852,
+  "L_ite_cont_92": 1854,
+  "L_ite_else_91": 1867,
+  "L_ite_else_93": 1892,
   "L_ite_cont_93": 1907,
-  "L_ite_cont_92": 1907,
   "L_ite_cont_91": 1907,
+  "L_ite_cont_90": 1907,
+  "L_ite_cont_89": 1907,
   "starts_with/2": 1760,
   "split_flag_token/3": 1718,
-  "L_ite_else_89": 1750,
-  "L_ite_cont_89": 1758,
+  "L_ite_else_87": 1750,
+  "L_ite_cont_87": 1758,
   "schema_for/5": 1677,
-  "L_ite_else_87": 1709,
-  "L_ite_cont_87": 1716,
+  "L_ite_else_85": 1709,
+  "L_ite_cont_85": 1716,
   "scan_leading_globals/4": 1566,
   "L_scan_leading_globals_4_2": 1573,
   "L_scan_leading_globals_4_2_body": 1574,
-  "L_ite_else_81": 1617,
-  "L_ite_else_82": 1644,
-  "L_ite_cont_82": 1655,
-  "L_ite_cont_81": 1655,
-  "L_ite_else_80": 1656,
-  "L_ite_cont_80": 1665,
-  "L_ite_else_79": 1666,
-  "L_ite_cont_79": 1675,
+  "L_ite_else_79": 1617,
+  "L_ite_else_80": 1644,
+  "L_ite_cont_80": 1655,
+  "L_ite_cont_79": 1655,
+  "L_ite_else_78": 1656,
+  "L_ite_cont_78": 1665,
+  "L_ite_else_77": 1666,
+  "L_ite_cont_77": 1675,
   "registry_entry/3": 1541,
-  "L_ite_else_77": 1556,
-  "L_ite_cont_77": 1564,
+  "L_ite_else_75": 1556,
+  "L_ite_cont_75": 1564,
   "parse_strict/4": 1481,
-  "L_ite_else_73": 1509,
-  "L_ite_else_74": 1529,
-  "L_ite_cont_74": 1539,
-  "L_ite_cont_73": 1539,
+  "L_ite_else_71": 1509,
+  "L_ite_else_72": 1529,
+  "L_ite_cont_72": 1539,
+  "L_ite_cont_71": 1539,
   "parse_lenient/3": 1466,
   "parse_args/3": 1336,
-  "L_ite_else_62": 1360,
-  "L_ite_cont_62": 1362,
-  "L_ite_else_63": 1376,
-  "L_ite_cont_63": 1380,
-  "L_ite_else_65": 1413,
-  "L_ite_cont_65": 1422,
-  "L_ite_else_66": 1445,
-  "L_ite_cont_66": 1454,
-  "L_ite_else_64": 1455,
-  "L_ite_cont_64": 1459,
-  "L_ite_else_61": 1460,
-  "L_ite_cont_61": 1464,
+  "L_ite_else_60": 1360,
+  "L_ite_cont_60": 1362,
+  "L_ite_else_61": 1376,
+  "L_ite_cont_61": 1380,
+  "L_ite_else_63": 1413,
+  "L_ite_cont_63": 1422,
+  "L_ite_else_64": 1445,
+  "L_ite_cont_64": 1454,
+  "L_ite_else_62": 1455,
+  "L_ite_cont_62": 1459,
+  "L_ite_else_59": 1460,
+  "L_ite_cont_59": 1464,
   "parse_args/2": 1326,
   "pair_lookup/3": 1300,
-  "L_ite_else_59": 1319,
-  "L_ite_cont_59": 1324,
+  "L_ite_else_57": 1319,
+  "L_ite_cont_57": 1324,
   "option_kind/3": 1263,
-  "L_ite_else_55": 1278,
-  "L_ite_else_56": 1292,
-  "L_ite_cont_56": 1298,
-  "L_ite_cont_55": 1298,
+  "L_ite_else_53": 1278,
+  "L_ite_else_54": 1292,
+  "L_ite_cont_54": 1298,
+  "L_ite_cont_53": 1298,
   "nth0_default/4": 1222,
-  "L_ite_else_52": 1245,
-  "L_ite_cont_52": 1256,
-  "L_ite_else_51": 1257,
-  "L_ite_cont_51": 1261,
+  "L_ite_else_50": 1245,
+  "L_ite_cont_50": 1256,
+  "L_ite_else_49": 1257,
+  "L_ite_cont_49": 1261,
   "next_value/2": 1185,
   "L_next_value_2_2": 1190,
   "L_next_value_2_2_body": 1191,
-  "L_ite_else_48": 1208,
-  "L_ite_cont_48": 1210,
-  "L_ite_else_47": 1216,
-  "L_ite_cont_47": 1220,
+  "L_ite_else_46": 1208,
+  "L_ite_cont_46": 1210,
+  "L_ite_else_45": 1216,
+  "L_ite_cont_45": 1220,
   "merge_flags_/3": 1159,
   "L_merge_flags__3_2": 1165,
   "L_merge_flags__3_2_body": 1166,
@@ -2310,57 +2310,57 @@ const shared_labels = {
   "long_flag_tail/1": 1107,
   "L_long_flag_tail_1_2": 1111,
   "L_long_flag_tail_1_2_body": 1112,
-  "L_ite_else_45": 1124,
-  "L_ite_cont_45": 1129,
+  "L_ite_else_43": 1124,
+  "L_ite_cont_43": 1129,
   "lenient_result/2": 1097,
   "lenient_loop/5": 997,
   "L_lenient_loop_5_2": 1005,
   "L_lenient_loop_5_2_body": 1006,
-  "L_ite_else_38": 1043,
-  "L_ite_else_40": 1058,
-  "L_ite_cont_40": 1060,
-  "L_ite_else_39": 1073,
-  "L_ite_cont_39": 1085,
-  "L_ite_cont_38": 1085,
-  "L_ite_else_37": 1086,
-  "L_ite_cont_37": 1095,
+  "L_ite_else_36": 1043,
+  "L_ite_else_38": 1058,
+  "L_ite_cont_38": 1060,
+  "L_ite_else_37": 1073,
+  "L_ite_cont_37": 1085,
+  "L_ite_cont_36": 1085,
+  "L_ite_else_35": 1086,
+  "L_ite_cont_35": 1095,
   "legacy_flag_tail/1": 983,
   "L_legacy_flag_tail_1_2": 987,
   "L_legacy_flag_tail_1_2_body": 988,
   "last_element/2": 962,
-  "L_ite_else_35": 977,
-  "L_ite_cont_35": 981,
+  "L_ite_else_33": 977,
+  "L_ite_cont_33": 981,
   "js_object_prototype_keys/1": 925,
   "js_object_prototype_key/1": 917,
   "js_flag_char/1": 873,
-  "L_ite_else_29": 887,
-  "L_ite_else_30": 899,
-  "L_ite_else_31": 911,
-  "L_ite_cont_31": 915,
-  "L_ite_cont_30": 915,
+  "L_ite_else_27": 887,
+  "L_ite_else_28": 899,
+  "L_ite_else_29": 911,
   "L_ite_cont_29": 915,
+  "L_ite_cont_28": 915,
+  "L_ite_cont_27": 915,
   "js_alpha/1": 850,
-  "L_ite_else_27": 864,
-  "L_ite_cont_27": 871,
+  "L_ite_else_25": 864,
+  "L_ite_cont_25": 871,
   "is_long_flag/1": 831,
   "is_global_key/1": 813,
-  "L_ite_else_25": 826,
-  "L_ite_cont_25": 829,
+  "L_ite_else_23": 826,
+  "L_ite_cont_23": 829,
   "global_options/1": 800,
   "flags_set/4": 777,
-  "L_ite_else_23": 792,
-  "L_ite_cont_23": 798,
+  "L_ite_else_21": 792,
+  "L_ite_cont_21": 798,
   "flags_put/4": 723,
   "L_flags_put_4_2": 735,
   "L_flags_put_4_2_body": 736,
-  "L_ite_else_21": 761,
-  "L_ite_cont_21": 775,
+  "L_ite_else_19": 761,
+  "L_ite_cont_19": 775,
   "first_equals_index/2": 711,
   "first_char_index/4": 673,
   "L_first_char_index_4_2": 680,
   "L_first_char_index_4_2_body": 681,
-  "L_ite_else_19": 698,
-  "L_ite_cont_19": 709,
+  "L_ite_else_17": 698,
+  "L_ite_cont_17": 709,
   "drop_brackets/2": 636,
   "L_drop_brackets_2_2": 641,
   "L_drop_brackets_2_2_body": 642,
@@ -2457,10 +2457,59 @@ Runtime.resolve_program(shared_program);
 
 
 const lowered_dispatch = {};
-// wamjs lower fallback: substring_range/4  fallback(execute of a non-self callee (nested Runtime.run would steal CP))
-// wamjs lower fallback: substring_from/3  fallback(execute of a non-self callee (nested Runtime.run would steal CP))
+// Lowered: substring_range/4 (deterministic)
+function lowered_substring_range_4(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("substring_range/4");
+  if (Runtime.op_allocate(state) !== true) return false;
+  Runtime.put_reg(state, 201, Runtime.get_reg(state, 1));
+  Runtime.put_reg(state, 202, Runtime.get_reg(state, 2));
+  Runtime.put_reg(state, 106, Runtime.get_reg(state, 3));
+  Runtime.put_reg(state, 205, Runtime.get_reg(state, 4));
+  { const v = Runtime.new_var(state); Runtime.put_reg(state, 203, v); Runtime.put_reg(state, 1, v); }
+  if (Runtime.op_put_structure(program, state, 11, 2, 2) !== true) return false;
+  if (Runtime.op_unify_value(program, state, 106) !== true) return false;
+  if (Runtime.op_unify_value(program, state, 202) !== true) return false;
+  if (Runtime.op_builtin(program, state, "is/2", 2) !== true) return false;
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+  Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
+  Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
+  { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
+  Runtime.put_reg(state, 5, Runtime.get_reg(state, 205));
+  if (Runtime.op_deallocate(state) !== true) return false;
+  return Runtime.op_builtin(program, state, "sub_string", 5) === true;
+  return true;
+}
+
+lowered_dispatch["substring_range/4"] = function (program, state) { return lowered_substring_range_4(program, state); };
+// Lowered: substring_from/3 (deterministic)
+function lowered_substring_from_3(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("substring_from/3");
+  if (Runtime.op_allocate(state) !== true) return false;
+  Runtime.put_reg(state, 202, Runtime.get_reg(state, 1));
+  Runtime.put_reg(state, 203, Runtime.get_reg(state, 2));
+  Runtime.put_reg(state, 205, Runtime.get_reg(state, 3));
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+  { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 2, v); }
+  if (Runtime.op_builtin(program, state, "string_length/2", 2) !== true) return false;
+  { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 1, v); }
+  if (Runtime.op_put_structure(program, state, 11, 2, 2) !== true) return false;
+  if (Runtime.op_unify_value(program, state, 201) !== true) return false;
+  if (Runtime.op_unify_value(program, state, 203) !== true) return false;
+  if (Runtime.op_builtin(program, state, "is/2", 2) !== true) return false;
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+  Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
+  Runtime.put_reg(state, 3, Runtime.get_reg(state, 204));
+  Runtime.put_reg(state, 4, V.Int(0));
+  Runtime.put_reg(state, 5, Runtime.get_reg(state, 205));
+  if (Runtime.op_deallocate(state) !== true) return false;
+  return Runtime.op_builtin(program, state, "sub_string", 5) === true;
+  return true;
+}
+
+lowered_dispatch["substring_from/3"] = function (program, state) { return lowered_substring_from_3(program, state); };
 // Lowered: strip_brackets/2 (deterministic)
 function lowered_strip_brackets_2(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("strip_brackets/2");
   if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 104, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 202, Runtime.get_reg(state, 2));
@@ -2469,25 +2518,25 @@ function lowered_strip_brackets_2(program, state) {
   if (Runtime.op_builtin(program, state, "string_chars/2", 2) !== true) return false;
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 203, v); Runtime.put_reg(state, 2, v); }
-  {
+  if (typeof lowered_drop_brackets_2 === "function") {
+    Runtime.push_y_save(state);
+    const _ok = Runtime.run_lowered_body(program, state, lowered_drop_brackets_2);
+    Runtime.pop_y_save(state);
+    if (_ok !== true) return false;
+  } else {
     const saved_cp = state.cp;
     const saved_pc = state.pc;
-    const _lf = (program.lowered_dispatch && program.lowered_dispatch["drop_brackets/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["drop_brackets/2"] : undefined);
+    const target = program.labels["drop_brackets/2"];
     let _ok = true;
-    if (typeof _lf === "function") {
-      _ok = _lf(program, state) === true;
-    } else {
-      const target = program.labels["drop_brackets/2"];
-      if (target !== undefined && target !== null) {
-        Runtime.push_y_save(state);
-        state.cp = 0;
-        state.pc = target;
-        state.program = program;
-        _ok = Runtime.run_isolated(program, state) === true;
-        state.halt = false;
-      } else if (Runtime.step(program, state, I.Call("drop_brackets", 2)) !== true) {
-        _ok = false;
-      }
+    if (target !== undefined && target !== null) {
+      Runtime.push_y_save(state);
+      state.cp = 0;
+      state.pc = target;
+      state.program = program;
+      _ok = Runtime.run_isolated(program, state) === true;
+      state.halt = false;
+    } else if (Runtime.step(program, state, I.Call("drop_brackets", 2)) !== true) {
+      _ok = false;
     }
     state.cp = saved_cp;
     state.pc = saved_pc;
@@ -2502,9 +2551,10 @@ function lowered_strip_brackets_2(program, state) {
   return true;
 }
 
-lowered_dispatch["strip_brackets/2"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("strip_brackets/2"); return lowered_strip_brackets_2(program, state); };
+lowered_dispatch["strip_brackets/2"] = function (program, state) { return lowered_strip_brackets_2(program, state); };
 // Lowered: string_member/2 (if-then-else / negation / once)
 function lowered_string_member_2(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("string_member/2");
   if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 202, Runtime.get_reg(state, 1));
   if (Runtime.op_get_list(program, state, 2, 5) !== true) return false;
@@ -2527,25 +2577,22 @@ function lowered_string_member_2(program, state) {
       Runtime.restore_a_regs(state, _ite_args);
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
-      {
+      if (typeof lowered_string_member_2 === "function") {
+        if (lowered_string_member_2(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["string_member/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["string_member/2"] : undefined);
+        const target = program.labels["string_member/2"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["string_member/2"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("string_member", 2)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("string_member", 2)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -2559,9 +2606,10 @@ function lowered_string_member_2(program, state) {
   return true;
 }
 
-lowered_dispatch["string_member/2"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("string_member/2"); return lowered_string_member_2(program, state); };
+lowered_dispatch["string_member/2"] = function (program, state) { return lowered_string_member_2(program, state); };
 // Lowered: strict_option/11 (if-then-else / negation / once)
 function lowered_strict_option_11(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("strict_option/11");
   if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 216, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 206, Runtime.get_reg(state, 2));
@@ -2587,8 +2635,7 @@ function lowered_strict_option_11(program, state) {
     if (_ite_cond) {
       if (Runtime.op_get_level(state, 226) !== true) return false;
       {
-        const _ite_snap = Runtime.snapshot_machine(state);
-        const _ite_cps = state.cps.length;
+        const _ite_lite = Runtime.snapshot_lite(state);
         const _ite_cond = (function () {
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
           if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
@@ -2620,8 +2667,7 @@ function lowered_strict_option_11(program, state) {
             }
           }
         } else {
-          Runtime.restore_machine(state, _ite_snap);
-          while (state.cps.length > _ite_cps) state.cps.pop();
+          Runtime.restore_lite(state, _ite_lite);
           { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 1, v); }
           Runtime.put_reg(state, 2, V.Atom(0));
           if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
@@ -2631,25 +2677,22 @@ function lowered_strict_option_11(program, state) {
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 206));
       Runtime.put_reg(state, 3, Runtime.get_reg(state, 202));
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 207, v); Runtime.put_reg(state, 4, v); }
-      {
+      if (typeof lowered_flags_set_4 === "function") {
+        if (lowered_flags_set_4(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_set/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_set/4"] : undefined);
+        const target = program.labels["flags_set/4"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["flags_set/4"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -2664,25 +2707,22 @@ function lowered_strict_option_11(program, state) {
       Runtime.put_reg(state, 6, Runtime.get_reg(state, 212));
       Runtime.put_reg(state, 7, Runtime.get_reg(state, 213));
       Runtime.put_reg(state, 8, Runtime.get_reg(state, 214));
-      {
+      if (typeof lowered_strict_loop_8 === "function") {
+        if (lowered_strict_loop_8(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["strict_loop/8"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["strict_loop/8"] : undefined);
+        const target = program.labels["strict_loop/8"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["strict_loop/8"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -2694,8 +2734,7 @@ function lowered_strict_option_11(program, state) {
       Runtime.restore_a_regs(state, _ite_args);
       if (Runtime.op_get_level(state, 226) !== true) return false;
       {
-        const _ite_snap = Runtime.snapshot_machine(state);
-        const _ite_cps = state.cps.length;
+        const _ite_lite = Runtime.snapshot_lite(state);
         const _ite_cond = (function () {
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
           if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
@@ -2708,25 +2747,22 @@ function lowered_strict_option_11(program, state) {
           Runtime.put_reg(state, 2, Runtime.get_reg(state, 206));
           Runtime.put_reg(state, 3, Runtime.get_reg(state, 204));
           { const v = Runtime.new_var(state); Runtime.put_reg(state, 207, v); Runtime.put_reg(state, 4, v); }
-          {
+          if (typeof lowered_flags_set_4 === "function") {
+            if (lowered_flags_set_4(program, state) !== true) return false;
+          } else {
             const saved_cp = state.cp;
             const saved_pc = state.pc;
-            const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_set/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_set/4"] : undefined);
+            const target = program.labels["flags_set/4"];
             let _ok = true;
-            if (typeof _lf === "function") {
-              _ok = _lf(program, state) === true;
-            } else {
-              const target = program.labels["flags_set/4"];
-              if (target !== undefined && target !== null) {
-                Runtime.push_y_save(state);
-                state.cp = 0;
-                state.pc = target;
-                state.program = program;
-                _ok = Runtime.run_isolated(program, state) === true;
-                state.halt = false;
-              } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
-                _ok = false;
-              }
+            if (target !== undefined && target !== null) {
+              Runtime.push_y_save(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+            } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+              _ok = false;
             }
             state.cp = saved_cp;
             state.pc = saved_pc;
@@ -2741,25 +2777,22 @@ function lowered_strict_option_11(program, state) {
           Runtime.put_reg(state, 6, Runtime.get_reg(state, 212));
           Runtime.put_reg(state, 7, Runtime.get_reg(state, 213));
           Runtime.put_reg(state, 8, Runtime.get_reg(state, 214));
-          {
+          if (typeof lowered_strict_loop_8 === "function") {
+            if (lowered_strict_loop_8(program, state) !== true) return false;
+          } else {
             const saved_cp = state.cp;
             const saved_pc = state.pc;
-            const _lf = (program.lowered_dispatch && program.lowered_dispatch["strict_loop/8"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["strict_loop/8"] : undefined);
+            const target = program.labels["strict_loop/8"];
             let _ok = true;
-            if (typeof _lf === "function") {
-              _ok = _lf(program, state) === true;
-            } else {
-              const target = program.labels["strict_loop/8"];
-              if (target !== undefined && target !== null) {
-                Runtime.push_y_save(state);
-                state.cp = 0;
-                state.pc = target;
-                state.program = program;
-                _ok = Runtime.run_isolated(program, state) === true;
-                state.halt = false;
-              } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
-                _ok = false;
-              }
+            if (target !== undefined && target !== null) {
+              Runtime.push_y_save(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+            } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
+              _ok = false;
             }
             state.cp = saved_cp;
             state.pc = saved_pc;
@@ -2767,29 +2800,25 @@ function lowered_strict_option_11(program, state) {
             if (!_ok) return false;
           }
         } else {
-          Runtime.restore_machine(state, _ite_snap);
-          while (state.cps.length > _ite_cps) state.cps.pop();
+          Runtime.restore_lite(state, _ite_lite);
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
           { const v = Runtime.new_var(state); Runtime.put_reg(state, 215, v); Runtime.put_reg(state, 2, v); }
-          {
+          if (typeof lowered_next_value_2 === "function") {
+            if (lowered_next_value_2(program, state) !== true) return false;
+          } else {
             const saved_cp = state.cp;
             const saved_pc = state.pc;
-            const _lf = (program.lowered_dispatch && program.lowered_dispatch["next_value/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["next_value/2"] : undefined);
+            const target = program.labels["next_value/2"];
             let _ok = true;
-            if (typeof _lf === "function") {
-              _ok = _lf(program, state) === true;
-            } else {
-              const target = program.labels["next_value/2"];
-              if (target !== undefined && target !== null) {
-                Runtime.push_y_save(state);
-                state.cp = 0;
-                state.pc = target;
-                state.program = program;
-                _ok = Runtime.run_isolated(program, state) === true;
-                state.halt = false;
-              } else if (Runtime.step(program, state, I.Call("next_value", 2)) !== true) {
-                _ok = false;
-              }
+            if (target !== undefined && target !== null) {
+              Runtime.push_y_save(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+            } else if (Runtime.step(program, state, I.Call("next_value", 2)) !== true) {
+              _ok = false;
             }
             state.cp = saved_cp;
             state.pc = saved_pc;
@@ -2809,8 +2838,7 @@ function lowered_strict_option_11(program, state) {
             if (_ite_cond) {
               if (Runtime.op_get_level(state, 228) !== true) return false;
               {
-                const _ite_snap = Runtime.snapshot_machine(state);
-                const _ite_cps = state.cps.length;
+                const _ite_lite = Runtime.snapshot_lite(state);
                 const _ite_cond = (function () {
                   Runtime.put_reg(state, 1, Runtime.get_reg(state, 215));
                   if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
@@ -2823,25 +2851,22 @@ function lowered_strict_option_11(program, state) {
                   Runtime.put_reg(state, 2, Runtime.get_reg(state, 206));
                   Runtime.put_reg(state, 3, Runtime.get_reg(state, 217));
                   { const v = Runtime.new_var(state); Runtime.put_reg(state, 207, v); Runtime.put_reg(state, 4, v); }
-                  {
+                  if (typeof lowered_flags_set_4 === "function") {
+                    if (lowered_flags_set_4(program, state) !== true) return false;
+                  } else {
                     const saved_cp = state.cp;
                     const saved_pc = state.pc;
-                    const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_set/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_set/4"] : undefined);
+                    const target = program.labels["flags_set/4"];
                     let _ok = true;
-                    if (typeof _lf === "function") {
-                      _ok = _lf(program, state) === true;
-                    } else {
-                      const target = program.labels["flags_set/4"];
-                      if (target !== undefined && target !== null) {
-                        Runtime.push_y_save(state);
-                        state.cp = 0;
-                        state.pc = target;
-                        state.program = program;
-                        _ok = Runtime.run_isolated(program, state) === true;
-                        state.halt = false;
-                      } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
-                        _ok = false;
-                      }
+                    if (target !== undefined && target !== null) {
+                      Runtime.push_y_save(state);
+                      state.cp = 0;
+                      state.pc = target;
+                      state.program = program;
+                      _ok = Runtime.run_isolated(program, state) === true;
+                      state.halt = false;
+                    } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                      _ok = false;
                     }
                     state.cp = saved_cp;
                     state.pc = saved_pc;
@@ -2861,25 +2886,22 @@ function lowered_strict_option_11(program, state) {
                   Runtime.put_reg(state, 6, Runtime.get_reg(state, 212));
                   Runtime.put_reg(state, 7, Runtime.get_reg(state, 213));
                   Runtime.put_reg(state, 8, Runtime.get_reg(state, 214));
-                  {
+                  if (typeof lowered_strict_loop_8 === "function") {
+                    if (lowered_strict_loop_8(program, state) !== true) return false;
+                  } else {
                     const saved_cp = state.cp;
                     const saved_pc = state.pc;
-                    const _lf = (program.lowered_dispatch && program.lowered_dispatch["strict_loop/8"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["strict_loop/8"] : undefined);
+                    const target = program.labels["strict_loop/8"];
                     let _ok = true;
-                    if (typeof _lf === "function") {
-                      _ok = _lf(program, state) === true;
-                    } else {
-                      const target = program.labels["strict_loop/8"];
-                      if (target !== undefined && target !== null) {
-                        Runtime.push_y_save(state);
-                        state.cp = 0;
-                        state.pc = target;
-                        state.program = program;
-                        _ok = Runtime.run_isolated(program, state) === true;
-                        state.halt = false;
-                      } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
-                        _ok = false;
-                      }
+                    if (target !== undefined && target !== null) {
+                      Runtime.push_y_save(state);
+                      state.cp = 0;
+                      state.pc = target;
+                      state.program = program;
+                      _ok = Runtime.run_isolated(program, state) === true;
+                      state.halt = false;
+                    } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
+                      _ok = false;
                     }
                     state.cp = saved_cp;
                     state.pc = saved_pc;
@@ -2887,8 +2909,7 @@ function lowered_strict_option_11(program, state) {
                     if (!_ok) return false;
                   }
                 } else {
-                  Runtime.restore_machine(state, _ite_snap);
-                  while (state.cps.length > _ite_cps) state.cps.pop();
+                  Runtime.restore_lite(state, _ite_lite);
                   Runtime.put_reg(state, 1, V.String("--"));
                   Runtime.put_reg(state, 2, Runtime.get_reg(state, 206));
                   { const v = Runtime.new_var(state); Runtime.put_reg(state, 220, v); Runtime.put_reg(state, 3, v); }
@@ -2914,8 +2935,7 @@ function lowered_strict_option_11(program, state) {
               Runtime.restore_a_regs(state, _ite_args);
               if (Runtime.op_get_level(state, 228) !== true) return false;
               {
-                const _ite_snap = Runtime.snapshot_machine(state);
-                const _ite_cps = state.cps.length;
+                const _ite_lite = Runtime.snapshot_lite(state);
                 const _ite_cond = (function () {
                   Runtime.put_reg(state, 1, Runtime.get_reg(state, 215));
                   if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
@@ -2928,25 +2948,22 @@ function lowered_strict_option_11(program, state) {
                   Runtime.put_reg(state, 2, Runtime.get_reg(state, 206));
                   Runtime.put_reg(state, 3, Runtime.get_reg(state, 222));
                   { const v = Runtime.new_var(state); Runtime.put_reg(state, 207, v); Runtime.put_reg(state, 4, v); }
-                  {
+                  if (typeof lowered_flags_set_4 === "function") {
+                    if (lowered_flags_set_4(program, state) !== true) return false;
+                  } else {
                     const saved_cp = state.cp;
                     const saved_pc = state.pc;
-                    const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_set/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_set/4"] : undefined);
+                    const target = program.labels["flags_set/4"];
                     let _ok = true;
-                    if (typeof _lf === "function") {
-                      _ok = _lf(program, state) === true;
-                    } else {
-                      const target = program.labels["flags_set/4"];
-                      if (target !== undefined && target !== null) {
-                        Runtime.push_y_save(state);
-                        state.cp = 0;
-                        state.pc = target;
-                        state.program = program;
-                        _ok = Runtime.run_isolated(program, state) === true;
-                        state.halt = false;
-                      } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
-                        _ok = false;
-                      }
+                    if (target !== undefined && target !== null) {
+                      Runtime.push_y_save(state);
+                      state.cp = 0;
+                      state.pc = target;
+                      state.program = program;
+                      _ok = Runtime.run_isolated(program, state) === true;
+                      state.halt = false;
+                    } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                      _ok = false;
                     }
                     state.cp = saved_cp;
                     state.pc = saved_pc;
@@ -2966,25 +2983,22 @@ function lowered_strict_option_11(program, state) {
                   Runtime.put_reg(state, 6, Runtime.get_reg(state, 212));
                   Runtime.put_reg(state, 7, Runtime.get_reg(state, 213));
                   Runtime.put_reg(state, 8, Runtime.get_reg(state, 214));
-                  {
+                  if (typeof lowered_strict_loop_8 === "function") {
+                    if (lowered_strict_loop_8(program, state) !== true) return false;
+                  } else {
                     const saved_cp = state.cp;
                     const saved_pc = state.pc;
-                    const _lf = (program.lowered_dispatch && program.lowered_dispatch["strict_loop/8"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["strict_loop/8"] : undefined);
+                    const target = program.labels["strict_loop/8"];
                     let _ok = true;
-                    if (typeof _lf === "function") {
-                      _ok = _lf(program, state) === true;
-                    } else {
-                      const target = program.labels["strict_loop/8"];
-                      if (target !== undefined && target !== null) {
-                        Runtime.push_y_save(state);
-                        state.cp = 0;
-                        state.pc = target;
-                        state.program = program;
-                        _ok = Runtime.run_isolated(program, state) === true;
-                        state.halt = false;
-                      } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
-                        _ok = false;
-                      }
+                    if (target !== undefined && target !== null) {
+                      Runtime.push_y_save(state);
+                      state.cp = 0;
+                      state.pc = target;
+                      state.program = program;
+                      _ok = Runtime.run_isolated(program, state) === true;
+                      state.halt = false;
+                    } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
+                      _ok = false;
                     }
                     state.cp = saved_cp;
                     state.pc = saved_pc;
@@ -2992,31 +3006,27 @@ function lowered_strict_option_11(program, state) {
                     if (!_ok) return false;
                   }
                 } else {
-                  Runtime.restore_machine(state, _ite_snap);
-                  while (state.cps.length > _ite_cps) state.cps.pop();
+                  Runtime.restore_lite(state, _ite_lite);
                   Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
                   Runtime.put_reg(state, 2, Runtime.get_reg(state, 206));
                   Runtime.put_reg(state, 3, V.Atom(0));
                   { const v = Runtime.new_var(state); Runtime.put_reg(state, 207, v); Runtime.put_reg(state, 4, v); }
-                  {
+                  if (typeof lowered_flags_set_4 === "function") {
+                    if (lowered_flags_set_4(program, state) !== true) return false;
+                  } else {
                     const saved_cp = state.cp;
                     const saved_pc = state.pc;
-                    const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_set/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_set/4"] : undefined);
+                    const target = program.labels["flags_set/4"];
                     let _ok = true;
-                    if (typeof _lf === "function") {
-                      _ok = _lf(program, state) === true;
-                    } else {
-                      const target = program.labels["flags_set/4"];
-                      if (target !== undefined && target !== null) {
-                        Runtime.push_y_save(state);
-                        state.cp = 0;
-                        state.pc = target;
-                        state.program = program;
-                        _ok = Runtime.run_isolated(program, state) === true;
-                        state.halt = false;
-                      } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
-                        _ok = false;
-                      }
+                    if (target !== undefined && target !== null) {
+                      Runtime.push_y_save(state);
+                      state.cp = 0;
+                      state.pc = target;
+                      state.program = program;
+                      _ok = Runtime.run_isolated(program, state) === true;
+                      state.halt = false;
+                    } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                      _ok = false;
                     }
                     state.cp = saved_cp;
                     state.pc = saved_pc;
@@ -3031,25 +3041,22 @@ function lowered_strict_option_11(program, state) {
                   Runtime.put_reg(state, 6, Runtime.get_reg(state, 212));
                   Runtime.put_reg(state, 7, Runtime.get_reg(state, 213));
                   Runtime.put_reg(state, 8, Runtime.get_reg(state, 214));
-                  {
+                  if (typeof lowered_strict_loop_8 === "function") {
+                    if (lowered_strict_loop_8(program, state) !== true) return false;
+                  } else {
                     const saved_cp = state.cp;
                     const saved_pc = state.pc;
-                    const _lf = (program.lowered_dispatch && program.lowered_dispatch["strict_loop/8"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["strict_loop/8"] : undefined);
+                    const target = program.labels["strict_loop/8"];
                     let _ok = true;
-                    if (typeof _lf === "function") {
-                      _ok = _lf(program, state) === true;
-                    } else {
-                      const target = program.labels["strict_loop/8"];
-                      if (target !== undefined && target !== null) {
-                        Runtime.push_y_save(state);
-                        state.cp = 0;
-                        state.pc = target;
-                        state.program = program;
-                        _ok = Runtime.run_isolated(program, state) === true;
-                        state.halt = false;
-                      } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
-                        _ok = false;
-                      }
+                    if (target !== undefined && target !== null) {
+                      Runtime.push_y_save(state);
+                      state.cp = 0;
+                      state.pc = target;
+                      state.program = program;
+                      _ok = Runtime.run_isolated(program, state) === true;
+                      state.halt = false;
+                    } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
+                      _ok = false;
                     }
                     state.cp = saved_cp;
                     state.pc = saved_pc;
@@ -3069,9 +3076,326 @@ function lowered_strict_option_11(program, state) {
   return true;
 }
 
-lowered_dispatch["strict_option/11"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("strict_option/11"); return lowered_strict_option_11(program, state); };
-// Lowered: strict_loop/8 (T4 all-clauses inline)
+lowered_dispatch["strict_option/11"] = function (program, state) { return lowered_strict_option_11(program, state); };
+// Lowered: strict_loop/8 (T4 nil/cons dispatch; no snapshot on bound A1)
 function lowered_strict_loop_8(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("strict_loop/8");
+  const _a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (Runtime.term_is_nil(program, _a1)) {
+    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 102, Runtime.get_reg(state, 3));
+    Runtime.put_reg(state, 103, Runtime.get_reg(state, 4));
+    Runtime.put_reg(state, 104, Runtime.get_reg(state, 5));
+    if (Runtime.op_get_value(program, state, 103, 6) !== true) return false;
+    if (Runtime.op_get_value(program, state, 104, 7) !== true) return false;
+    if (Runtime.op_get_constant(program, state, 8, V.Atom(9)) !== true) return false;
+    return true;
+    return true;
+  }
+  if (Runtime.term_is_cons(program, _a1)) {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 201) !== true) return false;
+    if (Runtime.op_unify_variable(state, 202) !== true) return false;
+    Runtime.put_reg(state, 209, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 203, Runtime.get_reg(state, 3));
+    Runtime.put_reg(state, 204, Runtime.get_reg(state, 4));
+    Runtime.put_reg(state, 205, Runtime.get_reg(state, 5));
+    Runtime.put_reg(state, 206, Runtime.get_reg(state, 6));
+    Runtime.put_reg(state, 207, Runtime.get_reg(state, 7));
+    Runtime.put_reg(state, 208, Runtime.get_reg(state, 8));
+    if (Runtime.op_get_level(state, 214) !== true) return false;
+    {
+      const _ite_trail = state.trail.length;
+      const _ite_args = Runtime.capture_a_regs(state, 8);
+      const _ite_cond = (function () {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 209));
+        Runtime.put_reg(state, 2, V.Atom(0));
+        if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
+        return true;
+      })();
+      if (_ite_cond) {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+        Runtime.put_reg(state, 2, V.Atom(0));
+        Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
+        if (Runtime.op_put_structure(program, state, 5, 4, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 201) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 204) !== true) return false;
+        Runtime.put_reg(state, 5, Runtime.get_reg(state, 205));
+        Runtime.put_reg(state, 6, Runtime.get_reg(state, 206));
+        Runtime.put_reg(state, 7, Runtime.get_reg(state, 207));
+        Runtime.put_reg(state, 8, Runtime.get_reg(state, 208));
+        if (typeof lowered_strict_loop_8 === "function") {
+          if (lowered_strict_loop_8(program, state) !== true) return false;
+        } else {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const target = program.labels["strict_loop/8"];
+          let _ok = true;
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
+            _ok = false;
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+      } else {
+        Runtime.undo_trail(state, _ite_trail);
+        Runtime.restore_a_regs(state, _ite_args);
+        if (Runtime.op_get_level(state, 215) !== true) return false;
+        {
+          const _ite_trail = state.trail.length;
+          const _ite_args = Runtime.capture_a_regs(state, 8);
+          const _ite_cond = (function () {
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+            Runtime.put_reg(state, 2, V.String("--"));
+            if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
+            return true;
+          })();
+          if (_ite_cond) {
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+            Runtime.put_reg(state, 2, V.Atom(0));
+            Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
+            Runtime.put_reg(state, 4, Runtime.get_reg(state, 204));
+            Runtime.put_reg(state, 5, Runtime.get_reg(state, 205));
+            Runtime.put_reg(state, 6, Runtime.get_reg(state, 206));
+            Runtime.put_reg(state, 7, Runtime.get_reg(state, 207));
+            Runtime.put_reg(state, 8, Runtime.get_reg(state, 208));
+            if (typeof lowered_strict_loop_8 === "function") {
+              if (lowered_strict_loop_8(program, state) !== true) return false;
+            } else {
+              const saved_cp = state.cp;
+              const saved_pc = state.pc;
+              const target = program.labels["strict_loop/8"];
+              let _ok = true;
+              if (target !== undefined && target !== null) {
+                Runtime.push_y_save(state);
+                state.cp = 0;
+                state.pc = target;
+                state.program = program;
+                _ok = Runtime.run_isolated(program, state) === true;
+                state.halt = false;
+              } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
+                _ok = false;
+              }
+              state.cp = saved_cp;
+              state.pc = saved_pc;
+              state.halt = false;
+              if (!_ok) return false;
+            }
+          } else {
+            Runtime.undo_trail(state, _ite_trail);
+            Runtime.restore_a_regs(state, _ite_args);
+            if (Runtime.op_get_level(state, 216) !== true) return false;
+            {
+              const _ite_snap = Runtime.snapshot_machine(state);
+              const _ite_cps = state.cps.length;
+              const _ite_cond = (function () {
+                if (Runtime.op_get_level(state, 217) !== true) return false;
+                {
+                  const _ite_snap = Runtime.snapshot_machine(state);
+                  const _ite_cps = state.cps.length;
+                  const _ite_cond = (function () {
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+                    Runtime.put_reg(state, 2, V.String("--"));
+                    if (typeof lowered_starts_with_2 === "function") {
+                      if (lowered_starts_with_2(program, state) !== true) return false;
+                    } else {
+                      const saved_cp = state.cp;
+                      const saved_pc = state.pc;
+                      const target = program.labels["starts_with/2"];
+                      let _ok = true;
+                      if (target !== undefined && target !== null) {
+                        Runtime.push_y_save(state);
+                        state.cp = 0;
+                        state.pc = target;
+                        state.program = program;
+                        _ok = Runtime.run_isolated(program, state) === true;
+                        state.halt = false;
+                      } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
+                        _ok = false;
+                      }
+                      state.cp = saved_cp;
+                      state.pc = saved_pc;
+                      state.halt = false;
+                      if (!_ok) return false;
+                    }
+                    return true;
+                  })();
+                  if (_ite_cond) {
+                    if (Runtime.op_builtin(program, state, "fail/0", 0) !== true) return false;
+                  } else {
+                    Runtime.restore_machine(state, _ite_snap);
+                    while (state.cps.length > _ite_cps) state.cps.pop();
+                    if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
+                  }
+                }
+                return true;
+              })();
+              if (_ite_cond) {
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+                Runtime.put_reg(state, 2, Runtime.get_reg(state, 209));
+                Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
+                if (Runtime.op_put_structure(program, state, 5, 4, 2) !== true) return false;
+                if (Runtime.op_unify_value(program, state, 201) !== true) return false;
+                if (Runtime.op_unify_value(program, state, 204) !== true) return false;
+                Runtime.put_reg(state, 5, Runtime.get_reg(state, 205));
+                Runtime.put_reg(state, 6, Runtime.get_reg(state, 206));
+                Runtime.put_reg(state, 7, Runtime.get_reg(state, 207));
+                Runtime.put_reg(state, 8, Runtime.get_reg(state, 208));
+                if (typeof lowered_strict_loop_8 === "function") {
+                  if (lowered_strict_loop_8(program, state) !== true) return false;
+                } else {
+                  const saved_cp = state.cp;
+                  const saved_pc = state.pc;
+                  const target = program.labels["strict_loop/8"];
+                  let _ok = true;
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
+                    _ok = false;
+                  }
+                  state.cp = saved_cp;
+                  state.pc = saved_pc;
+                  state.halt = false;
+                  if (!_ok) return false;
+                }
+              } else {
+                Runtime.restore_machine(state, _ite_snap);
+                while (state.cps.length > _ite_cps) state.cps.pop();
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+                { const v = Runtime.new_var(state); Runtime.put_reg(state, 210, v); Runtime.put_reg(state, 2, v); }
+                { const v = Runtime.new_var(state); Runtime.put_reg(state, 211, v); Runtime.put_reg(state, 3, v); }
+                if (typeof lowered_split_flag_token_3 === "function") {
+                  if (lowered_split_flag_token_3(program, state) !== true) return false;
+                } else {
+                  const saved_cp = state.cp;
+                  const saved_pc = state.pc;
+                  const target = program.labels["split_flag_token/3"];
+                  let _ok = true;
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("split_flag_token", 3)) !== true) {
+                    _ok = false;
+                  }
+                  state.cp = saved_cp;
+                  state.pc = saved_pc;
+                  state.halt = false;
+                  if (!_ok) return false;
+                }
+                if (Runtime.op_get_level(state, 217) !== true) return false;
+                {
+                  const _ite_snap = Runtime.snapshot_machine(state);
+                  const _ite_cps = state.cps.length;
+                  const _ite_cond = (function () {
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
+                    Runtime.put_reg(state, 2, Runtime.get_reg(state, 210));
+                    { const v = Runtime.new_var(state); Runtime.put_reg(state, 212, v); Runtime.put_reg(state, 3, v); }
+                    if (typeof lowered_option_kind_3 === "function") {
+                      if (lowered_option_kind_3(program, state) !== true) return false;
+                    } else {
+                      const saved_cp = state.cp;
+                      const saved_pc = state.pc;
+                      const target = program.labels["option_kind/3"];
+                      let _ok = true;
+                      if (target !== undefined && target !== null) {
+                        Runtime.push_y_save(state);
+                        state.cp = 0;
+                        state.pc = target;
+                        state.program = program;
+                        _ok = Runtime.run_isolated(program, state) === true;
+                        state.halt = false;
+                      } else if (Runtime.step(program, state, I.Call("option_kind", 3)) !== true) {
+                        _ok = false;
+                      }
+                      state.cp = saved_cp;
+                      state.pc = saved_pc;
+                      state.halt = false;
+                      if (!_ok) return false;
+                    }
+                    return true;
+                  })();
+                  if (_ite_cond) {
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 212));
+                    Runtime.put_reg(state, 2, Runtime.get_reg(state, 210));
+                    Runtime.put_reg(state, 3, Runtime.get_reg(state, 211));
+                    Runtime.put_reg(state, 4, Runtime.get_reg(state, 202));
+                    Runtime.put_reg(state, 5, Runtime.get_reg(state, 209));
+                    Runtime.put_reg(state, 6, Runtime.get_reg(state, 203));
+                    Runtime.put_reg(state, 7, Runtime.get_reg(state, 204));
+                    Runtime.put_reg(state, 8, Runtime.get_reg(state, 205));
+                    Runtime.put_reg(state, 9, Runtime.get_reg(state, 206));
+                    Runtime.put_reg(state, 10, Runtime.get_reg(state, 207));
+                    Runtime.put_reg(state, 11, Runtime.get_reg(state, 208));
+                    if (typeof lowered_strict_option_11 === "function") {
+                      if (lowered_strict_option_11(program, state) !== true) return false;
+                    } else {
+                      const saved_cp = state.cp;
+                      const saved_pc = state.pc;
+                      const target = program.labels["strict_option/11"];
+                      let _ok = true;
+                      if (target !== undefined && target !== null) {
+                        Runtime.push_y_save(state);
+                        state.cp = 0;
+                        state.pc = target;
+                        state.program = program;
+                        _ok = Runtime.run_isolated(program, state) === true;
+                        state.halt = false;
+                      } else if (Runtime.step(program, state, I.Call("strict_option", 11)) !== true) {
+                        _ok = false;
+                      }
+                      state.cp = saved_cp;
+                      state.pc = saved_pc;
+                      state.halt = false;
+                      if (!_ok) return false;
+                    }
+                  } else {
+                    Runtime.restore_machine(state, _ite_snap);
+                    while (state.cps.length > _ite_cps) state.cps.pop();
+                    Runtime.put_reg(state, 1, V.String("unknown option --"));
+                    Runtime.put_reg(state, 2, Runtime.get_reg(state, 210));
+                    { const v = Runtime.new_var(state); Runtime.put_reg(state, 213, v); Runtime.put_reg(state, 3, v); }
+                    if (Runtime.op_builtin(program, state, "string_concat/3", 3) !== true) return false;
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
+                    Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
+                    if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 207));
+                    Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
+                    if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
+                    if (Runtime.op_put_structure(program, state, 8, 2, 1) !== true) return false;
+                    if (Runtime.op_unify_value(program, state, 213) !== true) return false;
+                    if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    if (Runtime.op_deallocate(state) !== true) return false;
+    return true;
+    return true;
+  }
   const _t4_trail = state.trail.length;
   const _t4_regs = Runtime.copy_table(state.regs);
   const _t4_vc = state.var_counter;
@@ -3137,25 +3461,22 @@ function lowered_strict_loop_8(program, state) {
         Runtime.put_reg(state, 6, Runtime.get_reg(state, 206));
         Runtime.put_reg(state, 7, Runtime.get_reg(state, 207));
         Runtime.put_reg(state, 8, Runtime.get_reg(state, 208));
-        {
+        if (typeof lowered_strict_loop_8 === "function") {
+          if (lowered_strict_loop_8(program, state) !== true) return false;
+        } else {
           const saved_cp = state.cp;
           const saved_pc = state.pc;
-          const _lf = (program.lowered_dispatch && program.lowered_dispatch["strict_loop/8"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["strict_loop/8"] : undefined);
+          const target = program.labels["strict_loop/8"];
           let _ok = true;
-          if (typeof _lf === "function") {
-            _ok = _lf(program, state) === true;
-          } else {
-            const target = program.labels["strict_loop/8"];
-            if (target !== undefined && target !== null) {
-              Runtime.push_y_save(state);
-              state.cp = 0;
-              state.pc = target;
-              state.program = program;
-              _ok = Runtime.run_isolated(program, state) === true;
-              state.halt = false;
-            } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
-              _ok = false;
-            }
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
+            _ok = false;
           }
           state.cp = saved_cp;
           state.pc = saved_pc;
@@ -3184,25 +3505,22 @@ function lowered_strict_loop_8(program, state) {
             Runtime.put_reg(state, 6, Runtime.get_reg(state, 206));
             Runtime.put_reg(state, 7, Runtime.get_reg(state, 207));
             Runtime.put_reg(state, 8, Runtime.get_reg(state, 208));
-            {
+            if (typeof lowered_strict_loop_8 === "function") {
+              if (lowered_strict_loop_8(program, state) !== true) return false;
+            } else {
               const saved_cp = state.cp;
               const saved_pc = state.pc;
-              const _lf = (program.lowered_dispatch && program.lowered_dispatch["strict_loop/8"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["strict_loop/8"] : undefined);
+              const target = program.labels["strict_loop/8"];
               let _ok = true;
-              if (typeof _lf === "function") {
-                _ok = _lf(program, state) === true;
-              } else {
-                const target = program.labels["strict_loop/8"];
-                if (target !== undefined && target !== null) {
-                  Runtime.push_y_save(state);
-                  state.cp = 0;
-                  state.pc = target;
-                  state.program = program;
-                  _ok = Runtime.run_isolated(program, state) === true;
-                  state.halt = false;
-                } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
-                  _ok = false;
-                }
+              if (target !== undefined && target !== null) {
+                Runtime.push_y_save(state);
+                state.cp = 0;
+                state.pc = target;
+                state.program = program;
+                _ok = Runtime.run_isolated(program, state) === true;
+                state.halt = false;
+              } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
+                _ok = false;
               }
               state.cp = saved_cp;
               state.pc = saved_pc;
@@ -3224,25 +3542,22 @@ function lowered_strict_loop_8(program, state) {
                   const _ite_cond = (function () {
                     Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
                     Runtime.put_reg(state, 2, V.String("--"));
-                    {
+                    if (typeof lowered_starts_with_2 === "function") {
+                      if (lowered_starts_with_2(program, state) !== true) return false;
+                    } else {
                       const saved_cp = state.cp;
                       const saved_pc = state.pc;
-                      const _lf = (program.lowered_dispatch && program.lowered_dispatch["starts_with/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["starts_with/2"] : undefined);
+                      const target = program.labels["starts_with/2"];
                       let _ok = true;
-                      if (typeof _lf === "function") {
-                        _ok = _lf(program, state) === true;
-                      } else {
-                        const target = program.labels["starts_with/2"];
-                        if (target !== undefined && target !== null) {
-                          Runtime.push_y_save(state);
-                          state.cp = 0;
-                          state.pc = target;
-                          state.program = program;
-                          _ok = Runtime.run_isolated(program, state) === true;
-                          state.halt = false;
-                        } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
-                          _ok = false;
-                        }
+                      if (target !== undefined && target !== null) {
+                        Runtime.push_y_save(state);
+                        state.cp = 0;
+                        state.pc = target;
+                        state.program = program;
+                        _ok = Runtime.run_isolated(program, state) === true;
+                        state.halt = false;
+                      } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
+                        _ok = false;
                       }
                       state.cp = saved_cp;
                       state.pc = saved_pc;
@@ -3272,25 +3587,22 @@ function lowered_strict_loop_8(program, state) {
                 Runtime.put_reg(state, 6, Runtime.get_reg(state, 206));
                 Runtime.put_reg(state, 7, Runtime.get_reg(state, 207));
                 Runtime.put_reg(state, 8, Runtime.get_reg(state, 208));
-                {
+                if (typeof lowered_strict_loop_8 === "function") {
+                  if (lowered_strict_loop_8(program, state) !== true) return false;
+                } else {
                   const saved_cp = state.cp;
                   const saved_pc = state.pc;
-                  const _lf = (program.lowered_dispatch && program.lowered_dispatch["strict_loop/8"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["strict_loop/8"] : undefined);
+                  const target = program.labels["strict_loop/8"];
                   let _ok = true;
-                  if (typeof _lf === "function") {
-                    _ok = _lf(program, state) === true;
-                  } else {
-                    const target = program.labels["strict_loop/8"];
-                    if (target !== undefined && target !== null) {
-                      Runtime.push_y_save(state);
-                      state.cp = 0;
-                      state.pc = target;
-                      state.program = program;
-                      _ok = Runtime.run_isolated(program, state) === true;
-                      state.halt = false;
-                    } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
-                      _ok = false;
-                    }
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
+                    _ok = false;
                   }
                   state.cp = saved_cp;
                   state.pc = saved_pc;
@@ -3303,25 +3615,22 @@ function lowered_strict_loop_8(program, state) {
                 Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
                 { const v = Runtime.new_var(state); Runtime.put_reg(state, 210, v); Runtime.put_reg(state, 2, v); }
                 { const v = Runtime.new_var(state); Runtime.put_reg(state, 211, v); Runtime.put_reg(state, 3, v); }
-                {
+                if (typeof lowered_split_flag_token_3 === "function") {
+                  if (lowered_split_flag_token_3(program, state) !== true) return false;
+                } else {
                   const saved_cp = state.cp;
                   const saved_pc = state.pc;
-                  const _lf = (program.lowered_dispatch && program.lowered_dispatch["split_flag_token/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["split_flag_token/3"] : undefined);
+                  const target = program.labels["split_flag_token/3"];
                   let _ok = true;
-                  if (typeof _lf === "function") {
-                    _ok = _lf(program, state) === true;
-                  } else {
-                    const target = program.labels["split_flag_token/3"];
-                    if (target !== undefined && target !== null) {
-                      Runtime.push_y_save(state);
-                      state.cp = 0;
-                      state.pc = target;
-                      state.program = program;
-                      _ok = Runtime.run_isolated(program, state) === true;
-                      state.halt = false;
-                    } else if (Runtime.step(program, state, I.Call("split_flag_token", 3)) !== true) {
-                      _ok = false;
-                    }
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("split_flag_token", 3)) !== true) {
+                    _ok = false;
                   }
                   state.cp = saved_cp;
                   state.pc = saved_pc;
@@ -3336,25 +3645,22 @@ function lowered_strict_loop_8(program, state) {
                     Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
                     Runtime.put_reg(state, 2, Runtime.get_reg(state, 210));
                     { const v = Runtime.new_var(state); Runtime.put_reg(state, 212, v); Runtime.put_reg(state, 3, v); }
-                    {
+                    if (typeof lowered_option_kind_3 === "function") {
+                      if (lowered_option_kind_3(program, state) !== true) return false;
+                    } else {
                       const saved_cp = state.cp;
                       const saved_pc = state.pc;
-                      const _lf = (program.lowered_dispatch && program.lowered_dispatch["option_kind/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["option_kind/3"] : undefined);
+                      const target = program.labels["option_kind/3"];
                       let _ok = true;
-                      if (typeof _lf === "function") {
-                        _ok = _lf(program, state) === true;
-                      } else {
-                        const target = program.labels["option_kind/3"];
-                        if (target !== undefined && target !== null) {
-                          Runtime.push_y_save(state);
-                          state.cp = 0;
-                          state.pc = target;
-                          state.program = program;
-                          _ok = Runtime.run_isolated(program, state) === true;
-                          state.halt = false;
-                        } else if (Runtime.step(program, state, I.Call("option_kind", 3)) !== true) {
-                          _ok = false;
-                        }
+                      if (target !== undefined && target !== null) {
+                        Runtime.push_y_save(state);
+                        state.cp = 0;
+                        state.pc = target;
+                        state.program = program;
+                        _ok = Runtime.run_isolated(program, state) === true;
+                        state.halt = false;
+                      } else if (Runtime.step(program, state, I.Call("option_kind", 3)) !== true) {
+                        _ok = false;
                       }
                       state.cp = saved_cp;
                       state.pc = saved_pc;
@@ -3375,25 +3681,22 @@ function lowered_strict_loop_8(program, state) {
                     Runtime.put_reg(state, 9, Runtime.get_reg(state, 206));
                     Runtime.put_reg(state, 10, Runtime.get_reg(state, 207));
                     Runtime.put_reg(state, 11, Runtime.get_reg(state, 208));
-                    {
+                    if (typeof lowered_strict_option_11 === "function") {
+                      if (lowered_strict_option_11(program, state) !== true) return false;
+                    } else {
                       const saved_cp = state.cp;
                       const saved_pc = state.pc;
-                      const _lf = (program.lowered_dispatch && program.lowered_dispatch["strict_option/11"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["strict_option/11"] : undefined);
+                      const target = program.labels["strict_option/11"];
                       let _ok = true;
-                      if (typeof _lf === "function") {
-                        _ok = _lf(program, state) === true;
-                      } else {
-                        const target = program.labels["strict_option/11"];
-                        if (target !== undefined && target !== null) {
-                          Runtime.push_y_save(state);
-                          state.cp = 0;
-                          state.pc = target;
-                          state.program = program;
-                          _ok = Runtime.run_isolated(program, state) === true;
-                          state.halt = false;
-                        } else if (Runtime.step(program, state, I.Call("strict_option", 11)) !== true) {
-                          _ok = false;
-                        }
+                      if (target !== undefined && target !== null) {
+                        Runtime.push_y_save(state);
+                        state.cp = 0;
+                        state.pc = target;
+                        state.program = program;
+                        _ok = Runtime.run_isolated(program, state) === true;
+                        state.halt = false;
+                      } else if (Runtime.step(program, state, I.Call("strict_option", 11)) !== true) {
+                        _ok = false;
                       }
                       state.cp = saved_cp;
                       state.pc = saved_pc;
@@ -3429,22 +3732,13 @@ function lowered_strict_loop_8(program, state) {
     return true;
     return false;
   })()) return true;
-  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
-  state.regs = Runtime.copy_table(_t4_regs);
-  state.var_counter = _t4_vc;
-  state.stack = _t4_stack.slice();
-  state.y_save = _t4_ysave.slice();
-  state.mode = _t4_mode;
-  state.build_stack = _t4_build.slice();
-  state.read_stack = _t4_rstack.slice();
-  state.read_args = _t4_rargs;
-  state.read_cursor = _t4_rcur;
   return false;
 }
 
-lowered_dispatch["strict_loop/8"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("strict_loop/8"); return lowered_strict_loop_8(program, state); };
+lowered_dispatch["strict_loop/8"] = function (program, state) { return lowered_strict_loop_8(program, state); };
 // Lowered: starts_with/2 (deterministic)
 function lowered_starts_with_2(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("starts_with/2");
   if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 202, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 206, Runtime.get_reg(state, 2));
@@ -3462,31 +3756,7 @@ function lowered_starts_with_2(program, state) {
   Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 205, v); Runtime.put_reg(state, 5, v); }
-  {
-    const saved_cp = state.cp;
-    const saved_pc = state.pc;
-    const _lf = (program.lowered_dispatch && program.lowered_dispatch["sub_string/5"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["sub_string/5"] : undefined);
-    let _ok = true;
-    if (typeof _lf === "function") {
-      _ok = _lf(program, state) === true;
-    } else {
-      const target = program.labels["sub_string/5"];
-      if (target !== undefined && target !== null) {
-        Runtime.push_y_save(state);
-        state.cp = 0;
-        state.pc = target;
-        state.program = program;
-        _ok = Runtime.run_isolated(program, state) === true;
-        state.halt = false;
-      } else if (Runtime.step(program, state, I.Call("sub_string", 5)) !== true) {
-        _ok = false;
-      }
-    }
-    state.cp = saved_cp;
-    state.pc = saved_pc;
-    state.halt = false;
-    if (!_ok) return false;
-  }
+  if (Runtime.op_builtin(program, state, "sub_string", 5) !== true) return false;
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
   Runtime.put_reg(state, 2, Runtime.get_reg(state, 206));
   if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
@@ -3495,34 +3765,32 @@ function lowered_starts_with_2(program, state) {
   return true;
 }
 
-lowered_dispatch["starts_with/2"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("starts_with/2"); return lowered_starts_with_2(program, state); };
+lowered_dispatch["starts_with/2"] = function (program, state) { return lowered_starts_with_2(program, state); };
 // Lowered: split_flag_token/3 (if-then-else / negation / once)
 function lowered_split_flag_token_3(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("split_flag_token/3");
   if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 204, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 205, Runtime.get_reg(state, 2));
   Runtime.put_reg(state, 206, Runtime.get_reg(state, 3));
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 2, v); }
-  {
+  if (typeof lowered_first_equals_index_2 === "function") {
+    if (lowered_first_equals_index_2(program, state) !== true) return false;
+  } else {
     const saved_cp = state.cp;
     const saved_pc = state.pc;
-    const _lf = (program.lowered_dispatch && program.lowered_dispatch["first_equals_index/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["first_equals_index/2"] : undefined);
+    const target = program.labels["first_equals_index/2"];
     let _ok = true;
-    if (typeof _lf === "function") {
-      _ok = _lf(program, state) === true;
-    } else {
-      const target = program.labels["first_equals_index/2"];
-      if (target !== undefined && target !== null) {
-        Runtime.push_y_save(state);
-        state.cp = 0;
-        state.pc = target;
-        state.program = program;
-        _ok = Runtime.run_isolated(program, state) === true;
-        state.halt = false;
-      } else if (Runtime.step(program, state, I.Call("first_equals_index", 2)) !== true) {
-        _ok = false;
-      }
+    if (target !== undefined && target !== null) {
+      Runtime.push_y_save(state);
+      state.cp = 0;
+      state.pc = target;
+      state.program = program;
+      _ok = Runtime.run_isolated(program, state) === true;
+      state.halt = false;
+    } else if (Runtime.step(program, state, I.Call("first_equals_index", 2)) !== true) {
+      _ok = false;
     }
     state.cp = saved_cp;
     state.pc = saved_pc;
@@ -3544,25 +3812,22 @@ function lowered_split_flag_token_3(program, state) {
       Runtime.put_reg(state, 2, V.Int(2));
       Runtime.put_reg(state, 3, Runtime.get_reg(state, 201));
       Runtime.put_reg(state, 4, Runtime.get_reg(state, 205));
-      {
+      if (typeof lowered_substring_range_4 === "function") {
+        if (lowered_substring_range_4(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["substring_range/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["substring_range/4"] : undefined);
+        const target = program.labels["substring_range/4"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["substring_range/4"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("substring_range", 4)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("substring_range", 4)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -3577,25 +3842,22 @@ function lowered_split_flag_token_3(program, state) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 203, v); Runtime.put_reg(state, 3, v); }
-      {
+      if (typeof lowered_substring_from_3 === "function") {
+        if (lowered_substring_from_3(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["substring_from/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["substring_from/3"] : undefined);
+        const target = program.labels["substring_from/3"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["substring_from/3"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("substring_from", 3)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("substring_from", 3)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -3612,25 +3874,22 @@ function lowered_split_flag_token_3(program, state) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
       Runtime.put_reg(state, 2, V.Int(2));
       Runtime.put_reg(state, 3, Runtime.get_reg(state, 205));
-      {
+      if (typeof lowered_substring_from_3 === "function") {
+        if (lowered_substring_from_3(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["substring_from/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["substring_from/3"] : undefined);
+        const target = program.labels["substring_from/3"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["substring_from/3"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("substring_from", 3)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("substring_from", 3)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -3647,9 +3906,10 @@ function lowered_split_flag_token_3(program, state) {
   return true;
 }
 
-lowered_dispatch["split_flag_token/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("split_flag_token/3"); return lowered_split_flag_token_3(program, state); };
+lowered_dispatch["split_flag_token/3"] = function (program, state) { return lowered_split_flag_token_3(program, state); };
 // Lowered: schema_for/5 (if-then-else / negation / once)
 function lowered_schema_for_5(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("schema_for/5");
   if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 107, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 201, Runtime.get_reg(state, 2));
@@ -3659,25 +3919,22 @@ function lowered_schema_for_5(program, state) {
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 108));
   Runtime.put_reg(state, 2, Runtime.get_reg(state, 107));
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 205, v); Runtime.put_reg(state, 3, v); }
-  {
+  if (typeof lowered_registry_entry_3 === "function") {
+    if (lowered_registry_entry_3(program, state) !== true) return false;
+  } else {
     const saved_cp = state.cp;
     const saved_pc = state.pc;
-    const _lf = (program.lowered_dispatch && program.lowered_dispatch["registry_entry/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["registry_entry/3"] : undefined);
+    const target = program.labels["registry_entry/3"];
     let _ok = true;
-    if (typeof _lf === "function") {
-      _ok = _lf(program, state) === true;
-    } else {
-      const target = program.labels["registry_entry/3"];
-      if (target !== undefined && target !== null) {
-        Runtime.push_y_save(state);
-        state.cp = 0;
-        state.pc = target;
-        state.program = program;
-        _ok = Runtime.run_isolated(program, state) === true;
-        state.halt = false;
-      } else if (Runtime.step(program, state, I.Call("registry_entry", 3)) !== true) {
-        _ok = false;
-      }
+    if (target !== undefined && target !== null) {
+      Runtime.push_y_save(state);
+      state.cp = 0;
+      state.pc = target;
+      state.program = program;
+      _ok = Runtime.run_isolated(program, state) === true;
+      state.halt = false;
+    } else if (Runtime.step(program, state, I.Call("registry_entry", 3)) !== true) {
+      _ok = false;
     }
     state.cp = saved_cp;
     state.pc = saved_pc;
@@ -3686,8 +3943,7 @@ function lowered_schema_for_5(program, state) {
   }
   if (Runtime.op_get_level(state, 207) !== true) return false;
   {
-    const _ite_snap = Runtime.snapshot_machine(state);
-    const _ite_cps = state.cps.length;
+    const _ite_lite = Runtime.snapshot_lite(state);
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
       if (Runtime.op_put_structure(program, state, 15, 2, 1) !== true) return false;
@@ -3706,25 +3962,22 @@ function lowered_schema_for_5(program, state) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
       Runtime.put_reg(state, 3, Runtime.get_reg(state, 204));
-      {
+      if (typeof lowered_action_entry_3 === "function") {
+        if (lowered_action_entry_3(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["action_entry/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["action_entry/3"] : undefined);
+        const target = program.labels["action_entry/3"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["action_entry/3"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("action_entry", 3)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("action_entry", 3)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -3735,8 +3988,7 @@ function lowered_schema_for_5(program, state) {
       Runtime.put_reg(state, 2, V.Atom(0));
       if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     } else {
-      Runtime.restore_machine(state, _ite_snap);
-      while (state.cps.length > _ite_cps) state.cps.pop();
+      Runtime.restore_lite(state, _ite_lite);
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
       if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
@@ -3750,9 +4002,362 @@ function lowered_schema_for_5(program, state) {
   return true;
 }
 
-lowered_dispatch["schema_for/5"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("schema_for/5"); return lowered_schema_for_5(program, state); };
-// Lowered: scan_leading_globals/4 (T4 all-clauses inline)
+lowered_dispatch["schema_for/5"] = function (program, state) { return lowered_schema_for_5(program, state); };
+// Lowered: scan_leading_globals/4 (T4 nil/cons dispatch; no snapshot on bound A1)
 function lowered_scan_leading_globals_4(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("scan_leading_globals/4");
+  const _a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (Runtime.term_is_nil(program, _a1)) {
+    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
+    if (Runtime.op_get_constant(program, state, 3, V.Atom(2)) !== true) return false;
+    if (Runtime.op_get_value(program, state, 101, 4) !== true) return false;
+    return true;
+    return true;
+  }
+  if (Runtime.term_is_cons(program, _a1)) {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 210) !== true) return false;
+    if (Runtime.op_unify_variable(state, 211) !== true) return false;
+    Runtime.put_reg(state, 213, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 209, Runtime.get_reg(state, 3));
+    Runtime.put_reg(state, 212, Runtime.get_reg(state, 4));
+    if (Runtime.op_get_level(state, 214) !== true) return false;
+    {
+      const _ite_snap = Runtime.snapshot_machine(state);
+      const _ite_cps = state.cps.length;
+      const _ite_cond = (function () {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 210));
+        Runtime.put_reg(state, 2, V.String("--"));
+        if (typeof lowered_starts_with_2 === "function") {
+          if (lowered_starts_with_2(program, state) !== true) return false;
+        } else {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const target = program.labels["starts_with/2"];
+          let _ok = true;
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
+            _ok = false;
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 210));
+        Runtime.put_reg(state, 2, V.String("--"));
+        if (Runtime.op_builtin(program, state, "\\==/2", 2) !== true) return false;
+        return true;
+      })();
+      if (_ite_cond) {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 210));
+        { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 2, v); }
+        { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 3, v); }
+        if (typeof lowered_split_flag_token_3 === "function") {
+          if (lowered_split_flag_token_3(program, state) !== true) return false;
+        } else {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const target = program.labels["split_flag_token/3"];
+          let _ok = true;
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("split_flag_token", 3)) !== true) {
+            _ok = false;
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+        if (Runtime.op_get_level(state, 215) !== true) return false;
+        {
+          const _ite_snap = Runtime.snapshot_machine(state);
+          const _ite_cps = state.cps.length;
+          const _ite_cond = (function () {
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+            if (typeof lowered_is_global_key_1 === "function") {
+              if (lowered_is_global_key_1(program, state) !== true) return false;
+            } else {
+              const saved_cp = state.cp;
+              const saved_pc = state.pc;
+              const target = program.labels["is_global_key/1"];
+              let _ok = true;
+              if (target !== undefined && target !== null) {
+                Runtime.push_y_save(state);
+                state.cp = 0;
+                state.pc = target;
+                state.program = program;
+                _ok = Runtime.run_isolated(program, state) === true;
+                state.halt = false;
+              } else if (Runtime.step(program, state, I.Call("is_global_key", 1)) !== true) {
+                _ok = false;
+              }
+              state.cp = saved_cp;
+              state.pc = saved_pc;
+              state.halt = false;
+              if (!_ok) return false;
+            }
+            return true;
+          })();
+          if (_ite_cond) {
+            if (Runtime.op_get_level(state, 216) !== true) return false;
+            {
+              const _ite_lite = Runtime.snapshot_lite(state);
+              const _ite_cond = (function () {
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+                if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
+                if (Runtime.op_unify_variable(state, 203) !== true) return false;
+                if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+                return true;
+              })();
+              if (_ite_cond) {
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 213));
+                Runtime.put_reg(state, 2, Runtime.get_reg(state, 201));
+                Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
+                { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
+                if (typeof lowered_flags_set_4 === "function") {
+                  if (lowered_flags_set_4(program, state) !== true) return false;
+                } else {
+                  const saved_cp = state.cp;
+                  const saved_pc = state.pc;
+                  const target = program.labels["flags_set/4"];
+                  let _ok = true;
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                    _ok = false;
+                  }
+                  state.cp = saved_cp;
+                  state.pc = saved_pc;
+                  state.halt = false;
+                  if (!_ok) return false;
+                }
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 211));
+                Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
+                Runtime.put_reg(state, 3, Runtime.get_reg(state, 209));
+                Runtime.put_reg(state, 4, Runtime.get_reg(state, 212));
+                if (typeof lowered_scan_leading_globals_4 === "function") {
+                  if (lowered_scan_leading_globals_4(program, state) !== true) return false;
+                } else {
+                  const saved_cp = state.cp;
+                  const saved_pc = state.pc;
+                  const target = program.labels["scan_leading_globals/4"];
+                  let _ok = true;
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("scan_leading_globals", 4)) !== true) {
+                    _ok = false;
+                  }
+                  state.cp = saved_cp;
+                  state.pc = saved_pc;
+                  state.halt = false;
+                  if (!_ok) return false;
+                }
+              } else {
+                Runtime.restore_lite(state, _ite_lite);
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 211));
+                { const v = Runtime.new_var(state); Runtime.put_reg(state, 205, v); Runtime.put_reg(state, 2, v); }
+                if (typeof lowered_next_value_2 === "function") {
+                  if (lowered_next_value_2(program, state) !== true) return false;
+                } else {
+                  const saved_cp = state.cp;
+                  const saved_pc = state.pc;
+                  const target = program.labels["next_value/2"];
+                  let _ok = true;
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("next_value", 2)) !== true) {
+                    _ok = false;
+                  }
+                  state.cp = saved_cp;
+                  state.pc = saved_pc;
+                  state.halt = false;
+                  if (!_ok) return false;
+                }
+                if (Runtime.op_get_level(state, 217) !== true) return false;
+                {
+                  const _ite_lite = Runtime.snapshot_lite(state);
+                  const _ite_cond = (function () {
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
+                    if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
+                    if (Runtime.op_unify_variable(state, 206) !== true) return false;
+                    if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+                    return true;
+                  })();
+                  if (_ite_cond) {
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 213));
+                    Runtime.put_reg(state, 2, Runtime.get_reg(state, 201));
+                    Runtime.put_reg(state, 3, Runtime.get_reg(state, 206));
+                    { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
+                    if (typeof lowered_flags_set_4 === "function") {
+                      if (lowered_flags_set_4(program, state) !== true) return false;
+                    } else {
+                      const saved_cp = state.cp;
+                      const saved_pc = state.pc;
+                      const target = program.labels["flags_set/4"];
+                      let _ok = true;
+                      if (target !== undefined && target !== null) {
+                        Runtime.push_y_save(state);
+                        state.cp = 0;
+                        state.pc = target;
+                        state.program = program;
+                        _ok = Runtime.run_isolated(program, state) === true;
+                        state.halt = false;
+                      } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                        _ok = false;
+                      }
+                      state.cp = saved_cp;
+                      state.pc = saved_pc;
+                      state.halt = false;
+                      if (!_ok) return false;
+                    }
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 211));
+                    if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+                    if (Runtime.op_unify_variable(state, 207) !== true) return false;
+                    if (Runtime.op_unify_variable(state, 208) !== true) return false;
+                    if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
+                    Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
+                    Runtime.put_reg(state, 3, Runtime.get_reg(state, 209));
+                    Runtime.put_reg(state, 4, Runtime.get_reg(state, 212));
+                    if (typeof lowered_scan_leading_globals_4 === "function") {
+                      if (lowered_scan_leading_globals_4(program, state) !== true) return false;
+                    } else {
+                      const saved_cp = state.cp;
+                      const saved_pc = state.pc;
+                      const target = program.labels["scan_leading_globals/4"];
+                      let _ok = true;
+                      if (target !== undefined && target !== null) {
+                        Runtime.push_y_save(state);
+                        state.cp = 0;
+                        state.pc = target;
+                        state.program = program;
+                        _ok = Runtime.run_isolated(program, state) === true;
+                        state.halt = false;
+                      } else if (Runtime.step(program, state, I.Call("scan_leading_globals", 4)) !== true) {
+                        _ok = false;
+                      }
+                      state.cp = saved_cp;
+                      state.pc = saved_pc;
+                      state.halt = false;
+                      if (!_ok) return false;
+                    }
+                  } else {
+                    Runtime.restore_lite(state, _ite_lite);
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 213));
+                    Runtime.put_reg(state, 2, Runtime.get_reg(state, 201));
+                    Runtime.put_reg(state, 3, V.Atom(0));
+                    { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
+                    if (typeof lowered_flags_set_4 === "function") {
+                      if (lowered_flags_set_4(program, state) !== true) return false;
+                    } else {
+                      const saved_cp = state.cp;
+                      const saved_pc = state.pc;
+                      const target = program.labels["flags_set/4"];
+                      let _ok = true;
+                      if (target !== undefined && target !== null) {
+                        Runtime.push_y_save(state);
+                        state.cp = 0;
+                        state.pc = target;
+                        state.program = program;
+                        _ok = Runtime.run_isolated(program, state) === true;
+                        state.halt = false;
+                      } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                        _ok = false;
+                      }
+                      state.cp = saved_cp;
+                      state.pc = saved_pc;
+                      state.halt = false;
+                      if (!_ok) return false;
+                    }
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 211));
+                    Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
+                    Runtime.put_reg(state, 3, Runtime.get_reg(state, 209));
+                    Runtime.put_reg(state, 4, Runtime.get_reg(state, 212));
+                    if (typeof lowered_scan_leading_globals_4 === "function") {
+                      if (lowered_scan_leading_globals_4(program, state) !== true) return false;
+                    } else {
+                      const saved_cp = state.cp;
+                      const saved_pc = state.pc;
+                      const target = program.labels["scan_leading_globals/4"];
+                      let _ok = true;
+                      if (target !== undefined && target !== null) {
+                        Runtime.push_y_save(state);
+                        state.cp = 0;
+                        state.pc = target;
+                        state.program = program;
+                        _ok = Runtime.run_isolated(program, state) === true;
+                        state.halt = false;
+                      } else if (Runtime.step(program, state, I.Call("scan_leading_globals", 4)) !== true) {
+                        _ok = false;
+                      }
+                      state.cp = saved_cp;
+                      state.pc = saved_pc;
+                      state.halt = false;
+                      if (!_ok) return false;
+                    }
+                  }
+                }
+              }
+            }
+          } else {
+            Runtime.restore_machine(state, _ite_snap);
+            while (state.cps.length > _ite_cps) state.cps.pop();
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 209));
+            if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+            if (Runtime.op_unify_value(program, state, 210) !== true) return false;
+            if (Runtime.op_unify_value(program, state, 211) !== true) return false;
+            if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 212));
+            Runtime.put_reg(state, 2, Runtime.get_reg(state, 213));
+            if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+          }
+        }
+      } else {
+        Runtime.restore_machine(state, _ite_snap);
+        while (state.cps.length > _ite_cps) state.cps.pop();
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 209));
+        if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 210) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 211) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 212));
+        Runtime.put_reg(state, 2, Runtime.get_reg(state, 213));
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      }
+    }
+    if (Runtime.op_deallocate(state) !== true) return false;
+    return true;
+    return true;
+  }
   const _t4_trail = state.trail.length;
   const _t4_regs = Runtime.copy_table(state.regs);
   const _t4_vc = state.var_counter;
@@ -3796,25 +4401,22 @@ function lowered_scan_leading_globals_4(program, state) {
       const _ite_cond = (function () {
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 210));
         Runtime.put_reg(state, 2, V.String("--"));
-        {
+        if (typeof lowered_starts_with_2 === "function") {
+          if (lowered_starts_with_2(program, state) !== true) return false;
+        } else {
           const saved_cp = state.cp;
           const saved_pc = state.pc;
-          const _lf = (program.lowered_dispatch && program.lowered_dispatch["starts_with/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["starts_with/2"] : undefined);
+          const target = program.labels["starts_with/2"];
           let _ok = true;
-          if (typeof _lf === "function") {
-            _ok = _lf(program, state) === true;
-          } else {
-            const target = program.labels["starts_with/2"];
-            if (target !== undefined && target !== null) {
-              Runtime.push_y_save(state);
-              state.cp = 0;
-              state.pc = target;
-              state.program = program;
-              _ok = Runtime.run_isolated(program, state) === true;
-              state.halt = false;
-            } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
-              _ok = false;
-            }
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
+            _ok = false;
           }
           state.cp = saved_cp;
           state.pc = saved_pc;
@@ -3830,25 +4432,22 @@ function lowered_scan_leading_globals_4(program, state) {
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 210));
         { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 2, v); }
         { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 3, v); }
-        {
+        if (typeof lowered_split_flag_token_3 === "function") {
+          if (lowered_split_flag_token_3(program, state) !== true) return false;
+        } else {
           const saved_cp = state.cp;
           const saved_pc = state.pc;
-          const _lf = (program.lowered_dispatch && program.lowered_dispatch["split_flag_token/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["split_flag_token/3"] : undefined);
+          const target = program.labels["split_flag_token/3"];
           let _ok = true;
-          if (typeof _lf === "function") {
-            _ok = _lf(program, state) === true;
-          } else {
-            const target = program.labels["split_flag_token/3"];
-            if (target !== undefined && target !== null) {
-              Runtime.push_y_save(state);
-              state.cp = 0;
-              state.pc = target;
-              state.program = program;
-              _ok = Runtime.run_isolated(program, state) === true;
-              state.halt = false;
-            } else if (Runtime.step(program, state, I.Call("split_flag_token", 3)) !== true) {
-              _ok = false;
-            }
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("split_flag_token", 3)) !== true) {
+            _ok = false;
           }
           state.cp = saved_cp;
           state.pc = saved_pc;
@@ -3861,25 +4460,22 @@ function lowered_scan_leading_globals_4(program, state) {
           const _ite_cps = state.cps.length;
           const _ite_cond = (function () {
             Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
-            {
+            if (typeof lowered_is_global_key_1 === "function") {
+              if (lowered_is_global_key_1(program, state) !== true) return false;
+            } else {
               const saved_cp = state.cp;
               const saved_pc = state.pc;
-              const _lf = (program.lowered_dispatch && program.lowered_dispatch["is_global_key/1"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["is_global_key/1"] : undefined);
+              const target = program.labels["is_global_key/1"];
               let _ok = true;
-              if (typeof _lf === "function") {
-                _ok = _lf(program, state) === true;
-              } else {
-                const target = program.labels["is_global_key/1"];
-                if (target !== undefined && target !== null) {
-                  Runtime.push_y_save(state);
-                  state.cp = 0;
-                  state.pc = target;
-                  state.program = program;
-                  _ok = Runtime.run_isolated(program, state) === true;
-                  state.halt = false;
-                } else if (Runtime.step(program, state, I.Call("is_global_key", 1)) !== true) {
-                  _ok = false;
-                }
+              if (target !== undefined && target !== null) {
+                Runtime.push_y_save(state);
+                state.cp = 0;
+                state.pc = target;
+                state.program = program;
+                _ok = Runtime.run_isolated(program, state) === true;
+                state.halt = false;
+              } else if (Runtime.step(program, state, I.Call("is_global_key", 1)) !== true) {
+                _ok = false;
               }
               state.cp = saved_cp;
               state.pc = saved_pc;
@@ -3891,8 +4487,7 @@ function lowered_scan_leading_globals_4(program, state) {
           if (_ite_cond) {
             if (Runtime.op_get_level(state, 216) !== true) return false;
             {
-              const _ite_snap = Runtime.snapshot_machine(state);
-              const _ite_cps = state.cps.length;
+              const _ite_lite = Runtime.snapshot_lite(state);
               const _ite_cond = (function () {
                 Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
                 if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
@@ -3905,25 +4500,22 @@ function lowered_scan_leading_globals_4(program, state) {
                 Runtime.put_reg(state, 2, Runtime.get_reg(state, 201));
                 Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
                 { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
-                {
+                if (typeof lowered_flags_set_4 === "function") {
+                  if (lowered_flags_set_4(program, state) !== true) return false;
+                } else {
                   const saved_cp = state.cp;
                   const saved_pc = state.pc;
-                  const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_set/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_set/4"] : undefined);
+                  const target = program.labels["flags_set/4"];
                   let _ok = true;
-                  if (typeof _lf === "function") {
-                    _ok = _lf(program, state) === true;
-                  } else {
-                    const target = program.labels["flags_set/4"];
-                    if (target !== undefined && target !== null) {
-                      Runtime.push_y_save(state);
-                      state.cp = 0;
-                      state.pc = target;
-                      state.program = program;
-                      _ok = Runtime.run_isolated(program, state) === true;
-                      state.halt = false;
-                    } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
-                      _ok = false;
-                    }
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                    _ok = false;
                   }
                   state.cp = saved_cp;
                   state.pc = saved_pc;
@@ -3934,25 +4526,22 @@ function lowered_scan_leading_globals_4(program, state) {
                 Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
                 Runtime.put_reg(state, 3, Runtime.get_reg(state, 209));
                 Runtime.put_reg(state, 4, Runtime.get_reg(state, 212));
-                {
+                if (typeof lowered_scan_leading_globals_4 === "function") {
+                  if (lowered_scan_leading_globals_4(program, state) !== true) return false;
+                } else {
                   const saved_cp = state.cp;
                   const saved_pc = state.pc;
-                  const _lf = (program.lowered_dispatch && program.lowered_dispatch["scan_leading_globals/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["scan_leading_globals/4"] : undefined);
+                  const target = program.labels["scan_leading_globals/4"];
                   let _ok = true;
-                  if (typeof _lf === "function") {
-                    _ok = _lf(program, state) === true;
-                  } else {
-                    const target = program.labels["scan_leading_globals/4"];
-                    if (target !== undefined && target !== null) {
-                      Runtime.push_y_save(state);
-                      state.cp = 0;
-                      state.pc = target;
-                      state.program = program;
-                      _ok = Runtime.run_isolated(program, state) === true;
-                      state.halt = false;
-                    } else if (Runtime.step(program, state, I.Call("scan_leading_globals", 4)) !== true) {
-                      _ok = false;
-                    }
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("scan_leading_globals", 4)) !== true) {
+                    _ok = false;
                   }
                   state.cp = saved_cp;
                   state.pc = saved_pc;
@@ -3960,29 +4549,25 @@ function lowered_scan_leading_globals_4(program, state) {
                   if (!_ok) return false;
                 }
               } else {
-                Runtime.restore_machine(state, _ite_snap);
-                while (state.cps.length > _ite_cps) state.cps.pop();
+                Runtime.restore_lite(state, _ite_lite);
                 Runtime.put_reg(state, 1, Runtime.get_reg(state, 211));
                 { const v = Runtime.new_var(state); Runtime.put_reg(state, 205, v); Runtime.put_reg(state, 2, v); }
-                {
+                if (typeof lowered_next_value_2 === "function") {
+                  if (lowered_next_value_2(program, state) !== true) return false;
+                } else {
                   const saved_cp = state.cp;
                   const saved_pc = state.pc;
-                  const _lf = (program.lowered_dispatch && program.lowered_dispatch["next_value/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["next_value/2"] : undefined);
+                  const target = program.labels["next_value/2"];
                   let _ok = true;
-                  if (typeof _lf === "function") {
-                    _ok = _lf(program, state) === true;
-                  } else {
-                    const target = program.labels["next_value/2"];
-                    if (target !== undefined && target !== null) {
-                      Runtime.push_y_save(state);
-                      state.cp = 0;
-                      state.pc = target;
-                      state.program = program;
-                      _ok = Runtime.run_isolated(program, state) === true;
-                      state.halt = false;
-                    } else if (Runtime.step(program, state, I.Call("next_value", 2)) !== true) {
-                      _ok = false;
-                    }
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("next_value", 2)) !== true) {
+                    _ok = false;
                   }
                   state.cp = saved_cp;
                   state.pc = saved_pc;
@@ -3991,8 +4576,7 @@ function lowered_scan_leading_globals_4(program, state) {
                 }
                 if (Runtime.op_get_level(state, 217) !== true) return false;
                 {
-                  const _ite_snap = Runtime.snapshot_machine(state);
-                  const _ite_cps = state.cps.length;
+                  const _ite_lite = Runtime.snapshot_lite(state);
                   const _ite_cond = (function () {
                     Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
                     if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
@@ -4005,25 +4589,22 @@ function lowered_scan_leading_globals_4(program, state) {
                     Runtime.put_reg(state, 2, Runtime.get_reg(state, 201));
                     Runtime.put_reg(state, 3, Runtime.get_reg(state, 206));
                     { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
-                    {
+                    if (typeof lowered_flags_set_4 === "function") {
+                      if (lowered_flags_set_4(program, state) !== true) return false;
+                    } else {
                       const saved_cp = state.cp;
                       const saved_pc = state.pc;
-                      const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_set/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_set/4"] : undefined);
+                      const target = program.labels["flags_set/4"];
                       let _ok = true;
-                      if (typeof _lf === "function") {
-                        _ok = _lf(program, state) === true;
-                      } else {
-                        const target = program.labels["flags_set/4"];
-                        if (target !== undefined && target !== null) {
-                          Runtime.push_y_save(state);
-                          state.cp = 0;
-                          state.pc = target;
-                          state.program = program;
-                          _ok = Runtime.run_isolated(program, state) === true;
-                          state.halt = false;
-                        } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
-                          _ok = false;
-                        }
+                      if (target !== undefined && target !== null) {
+                        Runtime.push_y_save(state);
+                        state.cp = 0;
+                        state.pc = target;
+                        state.program = program;
+                        _ok = Runtime.run_isolated(program, state) === true;
+                        state.halt = false;
+                      } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                        _ok = false;
                       }
                       state.cp = saved_cp;
                       state.pc = saved_pc;
@@ -4039,25 +4620,22 @@ function lowered_scan_leading_globals_4(program, state) {
                     Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
                     Runtime.put_reg(state, 3, Runtime.get_reg(state, 209));
                     Runtime.put_reg(state, 4, Runtime.get_reg(state, 212));
-                    {
+                    if (typeof lowered_scan_leading_globals_4 === "function") {
+                      if (lowered_scan_leading_globals_4(program, state) !== true) return false;
+                    } else {
                       const saved_cp = state.cp;
                       const saved_pc = state.pc;
-                      const _lf = (program.lowered_dispatch && program.lowered_dispatch["scan_leading_globals/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["scan_leading_globals/4"] : undefined);
+                      const target = program.labels["scan_leading_globals/4"];
                       let _ok = true;
-                      if (typeof _lf === "function") {
-                        _ok = _lf(program, state) === true;
-                      } else {
-                        const target = program.labels["scan_leading_globals/4"];
-                        if (target !== undefined && target !== null) {
-                          Runtime.push_y_save(state);
-                          state.cp = 0;
-                          state.pc = target;
-                          state.program = program;
-                          _ok = Runtime.run_isolated(program, state) === true;
-                          state.halt = false;
-                        } else if (Runtime.step(program, state, I.Call("scan_leading_globals", 4)) !== true) {
-                          _ok = false;
-                        }
+                      if (target !== undefined && target !== null) {
+                        Runtime.push_y_save(state);
+                        state.cp = 0;
+                        state.pc = target;
+                        state.program = program;
+                        _ok = Runtime.run_isolated(program, state) === true;
+                        state.halt = false;
+                      } else if (Runtime.step(program, state, I.Call("scan_leading_globals", 4)) !== true) {
+                        _ok = false;
                       }
                       state.cp = saved_cp;
                       state.pc = saved_pc;
@@ -4065,31 +4643,27 @@ function lowered_scan_leading_globals_4(program, state) {
                       if (!_ok) return false;
                     }
                   } else {
-                    Runtime.restore_machine(state, _ite_snap);
-                    while (state.cps.length > _ite_cps) state.cps.pop();
+                    Runtime.restore_lite(state, _ite_lite);
                     Runtime.put_reg(state, 1, Runtime.get_reg(state, 213));
                     Runtime.put_reg(state, 2, Runtime.get_reg(state, 201));
                     Runtime.put_reg(state, 3, V.Atom(0));
                     { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
-                    {
+                    if (typeof lowered_flags_set_4 === "function") {
+                      if (lowered_flags_set_4(program, state) !== true) return false;
+                    } else {
                       const saved_cp = state.cp;
                       const saved_pc = state.pc;
-                      const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_set/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_set/4"] : undefined);
+                      const target = program.labels["flags_set/4"];
                       let _ok = true;
-                      if (typeof _lf === "function") {
-                        _ok = _lf(program, state) === true;
-                      } else {
-                        const target = program.labels["flags_set/4"];
-                        if (target !== undefined && target !== null) {
-                          Runtime.push_y_save(state);
-                          state.cp = 0;
-                          state.pc = target;
-                          state.program = program;
-                          _ok = Runtime.run_isolated(program, state) === true;
-                          state.halt = false;
-                        } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
-                          _ok = false;
-                        }
+                      if (target !== undefined && target !== null) {
+                        Runtime.push_y_save(state);
+                        state.cp = 0;
+                        state.pc = target;
+                        state.program = program;
+                        _ok = Runtime.run_isolated(program, state) === true;
+                        state.halt = false;
+                      } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                        _ok = false;
                       }
                       state.cp = saved_cp;
                       state.pc = saved_pc;
@@ -4100,25 +4674,22 @@ function lowered_scan_leading_globals_4(program, state) {
                     Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
                     Runtime.put_reg(state, 3, Runtime.get_reg(state, 209));
                     Runtime.put_reg(state, 4, Runtime.get_reg(state, 212));
-                    {
+                    if (typeof lowered_scan_leading_globals_4 === "function") {
+                      if (lowered_scan_leading_globals_4(program, state) !== true) return false;
+                    } else {
                       const saved_cp = state.cp;
                       const saved_pc = state.pc;
-                      const _lf = (program.lowered_dispatch && program.lowered_dispatch["scan_leading_globals/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["scan_leading_globals/4"] : undefined);
+                      const target = program.labels["scan_leading_globals/4"];
                       let _ok = true;
-                      if (typeof _lf === "function") {
-                        _ok = _lf(program, state) === true;
-                      } else {
-                        const target = program.labels["scan_leading_globals/4"];
-                        if (target !== undefined && target !== null) {
-                          Runtime.push_y_save(state);
-                          state.cp = 0;
-                          state.pc = target;
-                          state.program = program;
-                          _ok = Runtime.run_isolated(program, state) === true;
-                          state.halt = false;
-                        } else if (Runtime.step(program, state, I.Call("scan_leading_globals", 4)) !== true) {
-                          _ok = false;
-                        }
+                      if (target !== undefined && target !== null) {
+                        Runtime.push_y_save(state);
+                        state.cp = 0;
+                        state.pc = target;
+                        state.program = program;
+                        _ok = Runtime.run_isolated(program, state) === true;
+                        state.halt = false;
+                      } else if (Runtime.step(program, state, I.Call("scan_leading_globals", 4)) !== true) {
+                        _ok = false;
                       }
                       state.cp = saved_cp;
                       state.pc = saved_pc;
@@ -4159,22 +4730,13 @@ function lowered_scan_leading_globals_4(program, state) {
     return true;
     return false;
   })()) return true;
-  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
-  state.regs = Runtime.copy_table(_t4_regs);
-  state.var_counter = _t4_vc;
-  state.stack = _t4_stack.slice();
-  state.y_save = _t4_ysave.slice();
-  state.mode = _t4_mode;
-  state.build_stack = _t4_build.slice();
-  state.read_stack = _t4_rstack.slice();
-  state.read_args = _t4_rargs;
-  state.read_cursor = _t4_rcur;
   return false;
 }
 
-lowered_dispatch["scan_leading_globals/4"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("scan_leading_globals/4"); return lowered_scan_leading_globals_4(program, state); };
+lowered_dispatch["scan_leading_globals/4"] = function (program, state) { return lowered_scan_leading_globals_4(program, state); };
 // Lowered: registry_entry/3 (if-then-else / negation / once)
 function lowered_registry_entry_3(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("registry_entry/3");
   if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 201, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 203, Runtime.get_reg(state, 2));
@@ -4187,25 +4749,22 @@ function lowered_registry_entry_3(program, state) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 3, v); }
-      {
+      if (typeof lowered_pair_lookup_3 === "function") {
+        if (lowered_pair_lookup_3(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["pair_lookup/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["pair_lookup/3"] : undefined);
+        const target = program.labels["pair_lookup/3"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["pair_lookup/3"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("pair_lookup", 3)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("pair_lookup", 3)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -4222,25 +4781,22 @@ function lowered_registry_entry_3(program, state) {
       Runtime.restore_machine(state, _ite_snap);
       while (state.cps.length > _ite_cps) state.cps.pop();
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
-      {
+      if (typeof lowered_js_object_prototype_key_1 === "function") {
+        if (lowered_js_object_prototype_key_1(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["js_object_prototype_key/1"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["js_object_prototype_key/1"] : undefined);
+        const target = program.labels["js_object_prototype_key/1"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["js_object_prototype_key/1"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("js_object_prototype_key", 1)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("js_object_prototype_key", 1)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -4259,9 +4815,10 @@ function lowered_registry_entry_3(program, state) {
   return true;
 }
 
-lowered_dispatch["registry_entry/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("registry_entry/3"); return lowered_registry_entry_3(program, state); };
+lowered_dispatch["registry_entry/3"] = function (program, state) { return lowered_registry_entry_3(program, state); };
 // Lowered: parse_strict/4 (if-then-else / negation / once)
 function lowered_parse_strict_4(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("parse_strict/4");
   if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 112, Runtime.get_reg(state, 1));
   if (Runtime.op_get_structure(program, state, 6, 2, 2) !== true) return false;
@@ -4277,25 +4834,22 @@ function lowered_parse_strict_4(program, state) {
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 203, v); Runtime.put_reg(state, 6, v); }
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 211, v); Runtime.put_reg(state, 7, v); }
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 8, v); }
-  {
+  if (typeof lowered_strict_loop_8 === "function") {
+    if (lowered_strict_loop_8(program, state) !== true) return false;
+  } else {
     const saved_cp = state.cp;
     const saved_pc = state.pc;
-    const _lf = (program.lowered_dispatch && program.lowered_dispatch["strict_loop/8"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["strict_loop/8"] : undefined);
+    const target = program.labels["strict_loop/8"];
     let _ok = true;
-    if (typeof _lf === "function") {
-      _ok = _lf(program, state) === true;
-    } else {
-      const target = program.labels["strict_loop/8"];
-      if (target !== undefined && target !== null) {
-        Runtime.push_y_save(state);
-        state.cp = 0;
-        state.pc = target;
-        state.program = program;
-        _ok = Runtime.run_isolated(program, state) === true;
-        state.halt = false;
-      } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
-        _ok = false;
-      }
+    if (target !== undefined && target !== null) {
+      Runtime.push_y_save(state);
+      state.cp = 0;
+      state.pc = target;
+      state.program = program;
+      _ok = Runtime.run_isolated(program, state) === true;
+      state.halt = false;
+    } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
+      _ok = false;
     }
     state.cp = saved_cp;
     state.pc = saved_pc;
@@ -4304,8 +4858,7 @@ function lowered_parse_strict_4(program, state) {
   }
   if (Runtime.op_get_level(state, 212) !== true) return false;
   {
-    const _ite_snap = Runtime.snapshot_machine(state);
-    const _ite_cps = state.cps.length;
+    const _ite_lite = Runtime.snapshot_lite(state);
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
       if (Runtime.op_put_structure(program, state, 8, 2, 1) !== true) return false;
@@ -4319,33 +4872,29 @@ function lowered_parse_strict_4(program, state) {
       if (Runtime.op_unify_value(program, state, 202) !== true) return false;
       if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     } else {
-      Runtime.restore_machine(state, _ite_snap);
-      while (state.cps.length > _ite_cps) state.cps.pop();
+      Runtime.restore_lite(state, _ite_lite);
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 209, v); Runtime.put_reg(state, 2, v); }
       if (Runtime.op_builtin(program, state, "reverse/2", 2) !== true) return false;
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 209));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 205, v); Runtime.put_reg(state, 3, v); }
-      {
+      if (typeof lowered_check_arity_3 === "function") {
+        if (lowered_check_arity_3(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["check_arity/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["check_arity/3"] : undefined);
+        const target = program.labels["check_arity/3"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["check_arity/3"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("check_arity", 3)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("check_arity", 3)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -4354,8 +4903,7 @@ function lowered_parse_strict_4(program, state) {
       }
       if (Runtime.op_get_level(state, 213) !== true) return false;
       {
-        const _ite_snap = Runtime.snapshot_machine(state);
-        const _ite_cps = state.cps.length;
+        const _ite_lite = Runtime.snapshot_lite(state);
         const _ite_cond = (function () {
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
           if (Runtime.op_put_structure(program, state, 8, 2, 1) !== true) return false;
@@ -4369,8 +4917,7 @@ function lowered_parse_strict_4(program, state) {
           if (Runtime.op_unify_value(program, state, 206) !== true) return false;
           if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
         } else {
-          Runtime.restore_machine(state, _ite_snap);
-          while (state.cps.length > _ite_cps) state.cps.pop();
+          Runtime.restore_lite(state, _ite_lite);
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
           Runtime.put_reg(state, 2, Runtime.get_reg(state, 209));
           { const v = Runtime.new_var(state); Runtime.put_reg(state, 210, v); Runtime.put_reg(state, 3, v); }
@@ -4389,9 +4936,10 @@ function lowered_parse_strict_4(program, state) {
   return true;
 }
 
-lowered_dispatch["parse_strict/4"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("parse_strict/4"); return lowered_parse_strict_4(program, state); };
+lowered_dispatch["parse_strict/4"] = function (program, state) { return lowered_parse_strict_4(program, state); };
 // Lowered: parse_lenient/3 (deterministic)
 function lowered_parse_lenient_3(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("parse_lenient/3");
   if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 103, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 202, Runtime.get_reg(state, 2));
@@ -4401,25 +4949,25 @@ function lowered_parse_lenient_3(program, state) {
   Runtime.put_reg(state, 3, V.Atom(2));
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 4, v); }
   Runtime.put_reg(state, 5, Runtime.get_reg(state, 104));
-  {
+  if (typeof lowered_lenient_loop_5 === "function") {
+    Runtime.push_y_save(state);
+    const _ok = Runtime.run_lowered_body(program, state, lowered_lenient_loop_5);
+    Runtime.pop_y_save(state);
+    if (_ok !== true) return false;
+  } else {
     const saved_cp = state.cp;
     const saved_pc = state.pc;
-    const _lf = (program.lowered_dispatch && program.lowered_dispatch["lenient_loop/5"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["lenient_loop/5"] : undefined);
+    const target = program.labels["lenient_loop/5"];
     let _ok = true;
-    if (typeof _lf === "function") {
-      _ok = _lf(program, state) === true;
-    } else {
-      const target = program.labels["lenient_loop/5"];
-      if (target !== undefined && target !== null) {
-        Runtime.push_y_save(state);
-        state.cp = 0;
-        state.pc = target;
-        state.program = program;
-        _ok = Runtime.run_isolated(program, state) === true;
-        state.halt = false;
-      } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
-        _ok = false;
-      }
+    if (target !== undefined && target !== null) {
+      Runtime.push_y_save(state);
+      state.cp = 0;
+      state.pc = target;
+      state.program = program;
+      _ok = Runtime.run_isolated(program, state) === true;
+      state.halt = false;
+    } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
+      _ok = false;
     }
     state.cp = saved_cp;
     state.pc = saved_pc;
@@ -4434,9 +4982,10 @@ function lowered_parse_lenient_3(program, state) {
   return true;
 }
 
-lowered_dispatch["parse_lenient/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("parse_lenient/3"); return lowered_parse_lenient_3(program, state); };
+lowered_dispatch["parse_lenient/3"] = function (program, state) { return lowered_parse_lenient_3(program, state); };
 // Lowered: parse_args/3 (if-then-else / negation / once)
 function lowered_parse_args_3(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("parse_args/3");
   if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 220, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 206, Runtime.get_reg(state, 2));
@@ -4445,25 +4994,22 @@ function lowered_parse_args_3(program, state) {
   Runtime.put_reg(state, 2, V.Atom(2));
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 3, v); }
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 217, v); Runtime.put_reg(state, 4, v); }
-  {
+  if (typeof lowered_scan_leading_globals_4 === "function") {
+    if (lowered_scan_leading_globals_4(program, state) !== true) return false;
+  } else {
     const saved_cp = state.cp;
     const saved_pc = state.pc;
-    const _lf = (program.lowered_dispatch && program.lowered_dispatch["scan_leading_globals/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["scan_leading_globals/4"] : undefined);
+    const target = program.labels["scan_leading_globals/4"];
     let _ok = true;
-    if (typeof _lf === "function") {
-      _ok = _lf(program, state) === true;
-    } else {
-      const target = program.labels["scan_leading_globals/4"];
-      if (target !== undefined && target !== null) {
-        Runtime.push_y_save(state);
-        state.cp = 0;
-        state.pc = target;
-        state.program = program;
-        _ok = Runtime.run_isolated(program, state) === true;
-        state.halt = false;
-      } else if (Runtime.step(program, state, I.Call("scan_leading_globals", 4)) !== true) {
-        _ok = false;
-      }
+    if (target !== undefined && target !== null) {
+      Runtime.push_y_save(state);
+      state.cp = 0;
+      state.pc = target;
+      state.program = program;
+      _ok = Runtime.run_isolated(program, state) === true;
+      state.halt = false;
+    } else if (Runtime.step(program, state, I.Call("scan_leading_globals", 4)) !== true) {
+      _ok = false;
     }
     state.cp = saved_cp;
     state.pc = saved_pc;
@@ -4487,25 +5033,22 @@ function lowered_parse_args_3(program, state) {
         const _ite_cond = (function () {
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
           Runtime.put_reg(state, 2, V.String("--"));
-          {
+          if (typeof lowered_starts_with_2 === "function") {
+            if (lowered_starts_with_2(program, state) !== true) return false;
+          } else {
             const saved_cp = state.cp;
             const saved_pc = state.pc;
-            const _lf = (program.lowered_dispatch && program.lowered_dispatch["starts_with/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["starts_with/2"] : undefined);
+            const target = program.labels["starts_with/2"];
             let _ok = true;
-            if (typeof _lf === "function") {
-              _ok = _lf(program, state) === true;
-            } else {
-              const target = program.labels["starts_with/2"];
-              if (target !== undefined && target !== null) {
-                Runtime.push_y_save(state);
-                state.cp = 0;
-                state.pc = target;
-                state.program = program;
-                _ok = Runtime.run_isolated(program, state) === true;
-                state.halt = false;
-              } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
-                _ok = false;
-              }
+            if (target !== undefined && target !== null) {
+              Runtime.push_y_save(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+            } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
+              _ok = false;
             }
             state.cp = saved_cp;
             state.pc = saved_pc;
@@ -4527,8 +5070,7 @@ function lowered_parse_args_3(program, state) {
     if (_ite_cond) {
       if (Runtime.op_get_level(state, 224) !== true) return false;
       {
-        const _ite_snap = Runtime.snapshot_machine(state);
-        const _ite_cps = state.cps.length;
+        const _ite_lite = Runtime.snapshot_lite(state);
         const _ite_cond = (function () {
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 210));
           if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
@@ -4543,8 +5085,7 @@ function lowered_parse_args_3(program, state) {
           if (Runtime.op_unify_value(program, state, 202) !== true) return false;
           if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
         } else {
-          Runtime.restore_machine(state, _ite_snap);
-          while (state.cps.length > _ite_cps) state.cps.pop();
+          Runtime.restore_lite(state, _ite_lite);
           { const v = Runtime.new_var(state); Runtime.put_reg(state, 205, v); Runtime.put_reg(state, 1, v); }
           Runtime.put_reg(state, 2, V.Atom(20));
           if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
@@ -4560,25 +5101,22 @@ function lowered_parse_args_3(program, state) {
           Runtime.put_reg(state, 3, Runtime.get_reg(state, 206));
           { const v = Runtime.new_var(state); Runtime.put_reg(state, 207, v); Runtime.put_reg(state, 4, v); }
           { const v = Runtime.new_var(state); Runtime.put_reg(state, 208, v); Runtime.put_reg(state, 5, v); }
-          {
+          if (typeof lowered_schema_for_5 === "function") {
+            if (lowered_schema_for_5(program, state) !== true) return false;
+          } else {
             const saved_cp = state.cp;
             const saved_pc = state.pc;
-            const _lf = (program.lowered_dispatch && program.lowered_dispatch["schema_for/5"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["schema_for/5"] : undefined);
+            const target = program.labels["schema_for/5"];
             let _ok = true;
-            if (typeof _lf === "function") {
-              _ok = _lf(program, state) === true;
-            } else {
-              const target = program.labels["schema_for/5"];
-              if (target !== undefined && target !== null) {
-                Runtime.push_y_save(state);
-                state.cp = 0;
-                state.pc = target;
-                state.program = program;
-                _ok = Runtime.run_isolated(program, state) === true;
-                state.halt = false;
-              } else if (Runtime.step(program, state, I.Call("schema_for", 5)) !== true) {
-                _ok = false;
-              }
+            if (target !== undefined && target !== null) {
+              Runtime.push_y_save(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+            } else if (Runtime.step(program, state, I.Call("schema_for", 5)) !== true) {
+              _ok = false;
             }
             state.cp = saved_cp;
             state.pc = saved_pc;
@@ -4633,25 +5171,22 @@ function lowered_parse_args_3(program, state) {
           Runtime.put_reg(state, 2, Runtime.get_reg(state, 207));
           Runtime.put_reg(state, 3, Runtime.get_reg(state, 213));
           { const v = Runtime.new_var(state); Runtime.put_reg(state, 214, v); Runtime.put_reg(state, 4, v); }
-          {
+          if (typeof lowered_parse_strict_4 === "function") {
+            if (lowered_parse_strict_4(program, state) !== true) return false;
+          } else {
             const saved_cp = state.cp;
             const saved_pc = state.pc;
-            const _lf = (program.lowered_dispatch && program.lowered_dispatch["parse_strict/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["parse_strict/4"] : undefined);
+            const target = program.labels["parse_strict/4"];
             let _ok = true;
-            if (typeof _lf === "function") {
-              _ok = _lf(program, state) === true;
-            } else {
-              const target = program.labels["parse_strict/4"];
-              if (target !== undefined && target !== null) {
-                Runtime.push_y_save(state);
-                state.cp = 0;
-                state.pc = target;
-                state.program = program;
-                _ok = Runtime.run_isolated(program, state) === true;
-                state.halt = false;
-              } else if (Runtime.step(program, state, I.Call("parse_strict", 4)) !== true) {
-                _ok = false;
-              }
+            if (target !== undefined && target !== null) {
+              Runtime.push_y_save(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+            } else if (Runtime.step(program, state, I.Call("parse_strict", 4)) !== true) {
+              _ok = false;
             }
             state.cp = saved_cp;
             state.pc = saved_pc;
@@ -4660,8 +5195,7 @@ function lowered_parse_args_3(program, state) {
           }
           if (Runtime.op_get_level(state, 227) !== true) return false;
           {
-            const _ite_snap = Runtime.snapshot_machine(state);
-            const _ite_cps = state.cps.length;
+            const _ite_lite = Runtime.snapshot_lite(state);
             const _ite_cond = (function () {
               Runtime.put_reg(state, 1, Runtime.get_reg(state, 214));
               if (Runtime.op_put_structure(program, state, 9, 2, 2) !== true) return false;
@@ -4674,25 +5208,22 @@ function lowered_parse_args_3(program, state) {
               Runtime.put_reg(state, 1, Runtime.get_reg(state, 217));
               Runtime.put_reg(state, 2, Runtime.get_reg(state, 216));
               { const v = Runtime.new_var(state); Runtime.put_reg(state, 218, v); Runtime.put_reg(state, 3, v); }
-              {
+              if (typeof lowered_merge_flags_3 === "function") {
+                if (lowered_merge_flags_3(program, state) !== true) return false;
+              } else {
                 const saved_cp = state.cp;
                 const saved_pc = state.pc;
-                const _lf = (program.lowered_dispatch && program.lowered_dispatch["merge_flags/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["merge_flags/3"] : undefined);
+                const target = program.labels["merge_flags/3"];
                 let _ok = true;
-                if (typeof _lf === "function") {
-                  _ok = _lf(program, state) === true;
-                } else {
-                  const target = program.labels["merge_flags/3"];
-                  if (target !== undefined && target !== null) {
-                    Runtime.push_y_save(state);
-                    state.cp = 0;
-                    state.pc = target;
-                    state.program = program;
-                    _ok = Runtime.run_isolated(program, state) === true;
-                    state.halt = false;
-                  } else if (Runtime.step(program, state, I.Call("merge_flags", 3)) !== true) {
-                    _ok = false;
-                  }
+                if (target !== undefined && target !== null) {
+                  Runtime.push_y_save(state);
+                  state.cp = 0;
+                  state.pc = target;
+                  state.program = program;
+                  _ok = Runtime.run_isolated(program, state) === true;
+                  state.halt = false;
+                } else if (Runtime.step(program, state, I.Call("merge_flags", 3)) !== true) {
+                  _ok = false;
                 }
                 state.cp = saved_cp;
                 state.pc = saved_pc;
@@ -4705,8 +5236,7 @@ function lowered_parse_args_3(program, state) {
               if (Runtime.op_unify_value(program, state, 218) !== true) return false;
               if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
             } else {
-              Runtime.restore_machine(state, _ite_snap);
-              while (state.cps.length > _ite_cps) state.cps.pop();
+              Runtime.restore_lite(state, _ite_lite);
               Runtime.put_reg(state, 1, Runtime.get_reg(state, 214));
               if (Runtime.op_put_structure(program, state, 8, 2, 1) !== true) return false;
               if (Runtime.op_unify_variable(state, 219) !== true) return false;
@@ -4722,25 +5252,22 @@ function lowered_parse_args_3(program, state) {
           while (state.cps.length > _ite_cps) state.cps.pop();
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 220));
           Runtime.put_reg(state, 2, Runtime.get_reg(state, 221));
-          {
+          if (typeof lowered_lenient_result_2 === "function") {
+            if (lowered_lenient_result_2(program, state) !== true) return false;
+          } else {
             const saved_cp = state.cp;
             const saved_pc = state.pc;
-            const _lf = (program.lowered_dispatch && program.lowered_dispatch["lenient_result/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["lenient_result/2"] : undefined);
+            const target = program.labels["lenient_result/2"];
             let _ok = true;
-            if (typeof _lf === "function") {
-              _ok = _lf(program, state) === true;
-            } else {
-              const target = program.labels["lenient_result/2"];
-              if (target !== undefined && target !== null) {
-                Runtime.push_y_save(state);
-                state.cp = 0;
-                state.pc = target;
-                state.program = program;
-                _ok = Runtime.run_isolated(program, state) === true;
-                state.halt = false;
-              } else if (Runtime.step(program, state, I.Call("lenient_result", 2)) !== true) {
-                _ok = false;
-              }
+            if (target !== undefined && target !== null) {
+              Runtime.push_y_save(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+            } else if (Runtime.step(program, state, I.Call("lenient_result", 2)) !== true) {
+              _ok = false;
             }
             state.cp = saved_cp;
             state.pc = saved_pc;
@@ -4754,25 +5281,22 @@ function lowered_parse_args_3(program, state) {
       while (state.cps.length > _ite_cps) state.cps.pop();
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 220));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 221));
-      {
+      if (typeof lowered_lenient_result_2 === "function") {
+        if (lowered_lenient_result_2(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["lenient_result/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["lenient_result/2"] : undefined);
+        const target = program.labels["lenient_result/2"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["lenient_result/2"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("lenient_result", 2)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("lenient_result", 2)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -4786,10 +5310,58 @@ function lowered_parse_args_3(program, state) {
   return true;
 }
 
-lowered_dispatch["parse_args/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("parse_args/3"); return lowered_parse_args_3(program, state); };
-// wamjs lower fallback: parse_args/2  fallback(execute of a non-self callee (nested Runtime.run would steal CP))
+lowered_dispatch["parse_args/3"] = function (program, state) { return lowered_parse_args_3(program, state); };
+// Lowered: parse_args/2 (deterministic)
+function lowered_parse_args_2(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("parse_args/2");
+  if (Runtime.op_allocate(state) !== true) return false;
+  Runtime.put_reg(state, 201, Runtime.get_reg(state, 1));
+  Runtime.put_reg(state, 203, Runtime.get_reg(state, 2));
+  { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 1, v); }
+  if (typeof lowered_default_registry_1 === "function") {
+    Runtime.push_y_save(state);
+    const _ok = Runtime.run_lowered_body(program, state, lowered_default_registry_1);
+    Runtime.pop_y_save(state);
+    if (_ok !== true) return false;
+  } else {
+    const saved_cp = state.cp;
+    const saved_pc = state.pc;
+    const target = program.labels["default_registry/1"];
+    let _ok = true;
+    if (target !== undefined && target !== null) {
+      Runtime.push_y_save(state);
+      state.cp = 0;
+      state.pc = target;
+      state.program = program;
+      _ok = Runtime.run_isolated(program, state) === true;
+      state.halt = false;
+    } else if (Runtime.step(program, state, I.Call("default_registry", 1)) !== true) {
+      _ok = false;
+    }
+    state.cp = saved_cp;
+    state.pc = saved_pc;
+    state.halt = false;
+    if (!_ok) return false;
+  }
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+  Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
+  Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
+  if (Runtime.op_deallocate(state) !== true) return false;
+  if (typeof lowered_parse_args_3 === "function") return lowered_parse_args_3(program, state) === true;
+  {
+    const target = program.labels["parse_args/3"];
+    if (target !== undefined && target !== null) {
+      return Runtime.execute_user_isolated(program, state, target) === true;
+    }
+    return Runtime.op_builtin(program, state, "parse_args", 3) === true;
+  }
+  return true;
+}
+
+lowered_dispatch["parse_args/2"] = function (program, state) { return lowered_parse_args_2(program, state); };
 // Lowered: pair_lookup/3 (if-then-else / negation / once)
 function lowered_pair_lookup_3(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("pair_lookup/3");
   if (Runtime.op_allocate(state) !== true) return false;
   if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
   if (Runtime.op_unify_variable(state, 106) !== true) return false;
@@ -4819,25 +5391,22 @@ function lowered_pair_lookup_3(program, state) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
       Runtime.put_reg(state, 3, Runtime.get_reg(state, 205));
-      {
+      if (typeof lowered_pair_lookup_3 === "function") {
+        if (lowered_pair_lookup_3(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["pair_lookup/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["pair_lookup/3"] : undefined);
+        const target = program.labels["pair_lookup/3"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["pair_lookup/3"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("pair_lookup", 3)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("pair_lookup", 3)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -4851,9 +5420,10 @@ function lowered_pair_lookup_3(program, state) {
   return true;
 }
 
-lowered_dispatch["pair_lookup/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("pair_lookup/3"); return lowered_pair_lookup_3(program, state); };
+lowered_dispatch["pair_lookup/3"] = function (program, state) { return lowered_pair_lookup_3(program, state); };
 // Lowered: option_kind/3 (if-then-else / negation / once)
 function lowered_option_kind_3(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("option_kind/3");
   if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 201, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 204, Runtime.get_reg(state, 2));
@@ -4866,25 +5436,22 @@ function lowered_option_kind_3(program, state) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 3, v); }
-      {
+      if (typeof lowered_pair_lookup_3 === "function") {
+        if (lowered_pair_lookup_3(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["pair_lookup/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["pair_lookup/3"] : undefined);
+        const target = program.labels["pair_lookup/3"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["pair_lookup/3"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("pair_lookup", 3)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("pair_lookup", 3)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -4906,25 +5473,22 @@ function lowered_option_kind_3(program, state) {
         const _ite_cps = state.cps.length;
         const _ite_cond = (function () {
           { const v = Runtime.new_var(state); Runtime.put_reg(state, 203, v); Runtime.put_reg(state, 1, v); }
-          {
+          if (typeof lowered_global_options_1 === "function") {
+            if (lowered_global_options_1(program, state) !== true) return false;
+          } else {
             const saved_cp = state.cp;
             const saved_pc = state.pc;
-            const _lf = (program.lowered_dispatch && program.lowered_dispatch["global_options/1"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["global_options/1"] : undefined);
+            const target = program.labels["global_options/1"];
             let _ok = true;
-            if (typeof _lf === "function") {
-              _ok = _lf(program, state) === true;
-            } else {
-              const target = program.labels["global_options/1"];
-              if (target !== undefined && target !== null) {
-                Runtime.push_y_save(state);
-                state.cp = 0;
-                state.pc = target;
-                state.program = program;
-                _ok = Runtime.run_isolated(program, state) === true;
-                state.halt = false;
-              } else if (Runtime.step(program, state, I.Call("global_options", 1)) !== true) {
-                _ok = false;
-              }
+            if (target !== undefined && target !== null) {
+              Runtime.push_y_save(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+            } else if (Runtime.step(program, state, I.Call("global_options", 1)) !== true) {
+              _ok = false;
             }
             state.cp = saved_cp;
             state.pc = saved_pc;
@@ -4934,25 +5498,22 @@ function lowered_option_kind_3(program, state) {
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
           Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
           { const v = Runtime.new_var(state); Runtime.put_reg(state, 205, v); Runtime.put_reg(state, 3, v); }
-          {
+          if (typeof lowered_pair_lookup_3 === "function") {
+            if (lowered_pair_lookup_3(program, state) !== true) return false;
+          } else {
             const saved_cp = state.cp;
             const saved_pc = state.pc;
-            const _lf = (program.lowered_dispatch && program.lowered_dispatch["pair_lookup/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["pair_lookup/3"] : undefined);
+            const target = program.labels["pair_lookup/3"];
             let _ok = true;
-            if (typeof _lf === "function") {
-              _ok = _lf(program, state) === true;
-            } else {
-              const target = program.labels["pair_lookup/3"];
-              if (target !== undefined && target !== null) {
-                Runtime.push_y_save(state);
-                state.cp = 0;
-                state.pc = target;
-                state.program = program;
-                _ok = Runtime.run_isolated(program, state) === true;
-                state.halt = false;
-              } else if (Runtime.step(program, state, I.Call("pair_lookup", 3)) !== true) {
-                _ok = false;
-              }
+            if (target !== undefined && target !== null) {
+              Runtime.push_y_save(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+            } else if (Runtime.step(program, state, I.Call("pair_lookup", 3)) !== true) {
+              _ok = false;
             }
             state.cp = saved_cp;
             state.pc = saved_pc;
@@ -4969,25 +5530,22 @@ function lowered_option_kind_3(program, state) {
           Runtime.restore_machine(state, _ite_snap);
           while (state.cps.length > _ite_cps) state.cps.pop();
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
-          {
+          if (typeof lowered_js_object_prototype_key_1 === "function") {
+            if (lowered_js_object_prototype_key_1(program, state) !== true) return false;
+          } else {
             const saved_cp = state.cp;
             const saved_pc = state.pc;
-            const _lf = (program.lowered_dispatch && program.lowered_dispatch["js_object_prototype_key/1"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["js_object_prototype_key/1"] : undefined);
+            const target = program.labels["js_object_prototype_key/1"];
             let _ok = true;
-            if (typeof _lf === "function") {
-              _ok = _lf(program, state) === true;
-            } else {
-              const target = program.labels["js_object_prototype_key/1"];
-              if (target !== undefined && target !== null) {
-                Runtime.push_y_save(state);
-                state.cp = 0;
-                state.pc = target;
-                state.program = program;
-                _ok = Runtime.run_isolated(program, state) === true;
-                state.halt = false;
-              } else if (Runtime.step(program, state, I.Call("js_object_prototype_key", 1)) !== true) {
-                _ok = false;
-              }
+            if (target !== undefined && target !== null) {
+              Runtime.push_y_save(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+            } else if (Runtime.step(program, state, I.Call("js_object_prototype_key", 1)) !== true) {
+              _ok = false;
             }
             state.cp = saved_cp;
             state.pc = saved_pc;
@@ -5006,9 +5564,10 @@ function lowered_option_kind_3(program, state) {
   return true;
 }
 
-lowered_dispatch["option_kind/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("option_kind/3"); return lowered_option_kind_3(program, state); };
+lowered_dispatch["option_kind/3"] = function (program, state) { return lowered_option_kind_3(program, state); };
 // Lowered: nth0_default/4 (if-then-else / negation / once)
 function lowered_nth0_default_4(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("nth0_default/4");
   if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 202, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 201, Runtime.get_reg(state, 2));
@@ -5016,8 +5575,7 @@ function lowered_nth0_default_4(program, state) {
   Runtime.put_reg(state, 206, Runtime.get_reg(state, 4));
   if (Runtime.op_get_level(state, 208) !== true) return false;
   {
-    const _ite_snap = Runtime.snapshot_machine(state);
-    const _ite_cps = state.cps.length;
+    const _ite_lite = Runtime.snapshot_lite(state);
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
       if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
@@ -5053,25 +5611,22 @@ function lowered_nth0_default_4(program, state) {
           Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
           Runtime.put_reg(state, 3, Runtime.get_reg(state, 207));
           Runtime.put_reg(state, 4, Runtime.get_reg(state, 206));
-          {
+          if (typeof lowered_nth0_default_4 === "function") {
+            if (lowered_nth0_default_4(program, state) !== true) return false;
+          } else {
             const saved_cp = state.cp;
             const saved_pc = state.pc;
-            const _lf = (program.lowered_dispatch && program.lowered_dispatch["nth0_default/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["nth0_default/4"] : undefined);
+            const target = program.labels["nth0_default/4"];
             let _ok = true;
-            if (typeof _lf === "function") {
-              _ok = _lf(program, state) === true;
-            } else {
-              const target = program.labels["nth0_default/4"];
-              if (target !== undefined && target !== null) {
-                Runtime.push_y_save(state);
-                state.cp = 0;
-                state.pc = target;
-                state.program = program;
-                _ok = Runtime.run_isolated(program, state) === true;
-                state.halt = false;
-              } else if (Runtime.step(program, state, I.Call("nth0_default", 4)) !== true) {
-                _ok = false;
-              }
+            if (target !== undefined && target !== null) {
+              Runtime.push_y_save(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+            } else if (Runtime.step(program, state, I.Call("nth0_default", 4)) !== true) {
+              _ok = false;
             }
             state.cp = saved_cp;
             state.pc = saved_pc;
@@ -5081,8 +5636,7 @@ function lowered_nth0_default_4(program, state) {
         }
       }
     } else {
-      Runtime.restore_machine(state, _ite_snap);
-      while (state.cps.length > _ite_cps) state.cps.pop();
+      Runtime.restore_lite(state, _ite_lite);
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 207));
       if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
@@ -5093,9 +5647,87 @@ function lowered_nth0_default_4(program, state) {
   return true;
 }
 
-lowered_dispatch["nth0_default/4"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("nth0_default/4"); return lowered_nth0_default_4(program, state); };
-// Lowered: next_value/2 (T4 all-clauses inline)
+lowered_dispatch["nth0_default/4"] = function (program, state) { return lowered_nth0_default_4(program, state); };
+// Lowered: next_value/2 (T4 nil/cons dispatch; no snapshot on bound A1)
 function lowered_next_value_2(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("next_value/2");
+  const _a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (Runtime.term_is_nil(program, _a1)) {
+    if (Runtime.op_get_constant(program, state, 2, V.Atom(20)) !== true) return false;
+    return true;
+    return true;
+  }
+  if (Runtime.term_is_cons(program, _a1)) {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 201) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    Runtime.put_reg(state, 202, Runtime.get_reg(state, 2));
+    if (Runtime.op_get_level(state, 203) !== true) return false;
+    {
+      const _ite_snap = Runtime.snapshot_machine(state);
+      const _ite_cps = state.cps.length;
+      const _ite_cond = (function () {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+        Runtime.put_reg(state, 2, V.String("--"));
+        if (Runtime.op_builtin(program, state, "\\==/2", 2) !== true) return false;
+        if (Runtime.op_get_level(state, 204) !== true) return false;
+        {
+          const _ite_snap = Runtime.snapshot_machine(state);
+          const _ite_cps = state.cps.length;
+          const _ite_cond = (function () {
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+            if (typeof lowered_is_long_flag_1 === "function") {
+              if (lowered_is_long_flag_1(program, state) !== true) return false;
+            } else {
+              const saved_cp = state.cp;
+              const saved_pc = state.pc;
+              const target = program.labels["is_long_flag/1"];
+              let _ok = true;
+              if (target !== undefined && target !== null) {
+                Runtime.push_y_save(state);
+                state.cp = 0;
+                state.pc = target;
+                state.program = program;
+                _ok = Runtime.run_isolated(program, state) === true;
+                state.halt = false;
+              } else if (Runtime.step(program, state, I.Call("is_long_flag", 1)) !== true) {
+                _ok = false;
+              }
+              state.cp = saved_cp;
+              state.pc = saved_pc;
+              state.halt = false;
+              if (!_ok) return false;
+            }
+            return true;
+          })();
+          if (_ite_cond) {
+            if (Runtime.op_builtin(program, state, "fail/0", 0) !== true) return false;
+          } else {
+            Runtime.restore_machine(state, _ite_snap);
+            while (state.cps.length > _ite_cps) state.cps.pop();
+            if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
+          }
+        }
+        return true;
+      })();
+      if (_ite_cond) {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+        if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 201) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      } else {
+        Runtime.restore_machine(state, _ite_snap);
+        while (state.cps.length > _ite_cps) state.cps.pop();
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+        Runtime.put_reg(state, 2, V.Atom(20));
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      }
+    }
+    if (Runtime.op_deallocate(state) !== true) return false;
+    return true;
+    return true;
+  }
   const _t4_trail = state.trail.length;
   const _t4_regs = Runtime.copy_table(state.regs);
   const _t4_vc = state.var_counter;
@@ -5142,25 +5774,22 @@ function lowered_next_value_2(program, state) {
           const _ite_cps = state.cps.length;
           const _ite_cond = (function () {
             Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
-            {
+            if (typeof lowered_is_long_flag_1 === "function") {
+              if (lowered_is_long_flag_1(program, state) !== true) return false;
+            } else {
               const saved_cp = state.cp;
               const saved_pc = state.pc;
-              const _lf = (program.lowered_dispatch && program.lowered_dispatch["is_long_flag/1"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["is_long_flag/1"] : undefined);
+              const target = program.labels["is_long_flag/1"];
               let _ok = true;
-              if (typeof _lf === "function") {
-                _ok = _lf(program, state) === true;
-              } else {
-                const target = program.labels["is_long_flag/1"];
-                if (target !== undefined && target !== null) {
-                  Runtime.push_y_save(state);
-                  state.cp = 0;
-                  state.pc = target;
-                  state.program = program;
-                  _ok = Runtime.run_isolated(program, state) === true;
-                  state.halt = false;
-                } else if (Runtime.step(program, state, I.Call("is_long_flag", 1)) !== true) {
-                  _ok = false;
-                }
+              if (target !== undefined && target !== null) {
+                Runtime.push_y_save(state);
+                state.cp = 0;
+                state.pc = target;
+                state.program = program;
+                _ok = Runtime.run_isolated(program, state) === true;
+                state.halt = false;
+              } else if (Runtime.step(program, state, I.Call("is_long_flag", 1)) !== true) {
+                _ok = false;
               }
               state.cp = saved_cp;
               state.pc = saved_pc;
@@ -5196,22 +5825,70 @@ function lowered_next_value_2(program, state) {
     return true;
     return false;
   })()) return true;
-  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
-  state.regs = Runtime.copy_table(_t4_regs);
-  state.var_counter = _t4_vc;
-  state.stack = _t4_stack.slice();
-  state.y_save = _t4_ysave.slice();
-  state.mode = _t4_mode;
-  state.build_stack = _t4_build.slice();
-  state.read_stack = _t4_rstack.slice();
-  state.read_args = _t4_rargs;
-  state.read_cursor = _t4_rcur;
   return false;
 }
 
-lowered_dispatch["next_value/2"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("next_value/2"); return lowered_next_value_2(program, state); };
-// Lowered: merge_flags_/3 (T4 all-clauses inline)
+lowered_dispatch["next_value/2"] = function (program, state) { return lowered_next_value_2(program, state); };
+// Lowered: merge_flags_/3 (T4 nil/cons dispatch; no snapshot on bound A1)
 function lowered_merge_flags__3(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("merge_flags_/3");
+  const _a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (Runtime.term_is_nil(program, _a1)) {
+    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
+    if (Runtime.op_get_value(program, state, 101, 3) !== true) return false;
+    return true;
+    return true;
+  }
+  if (Runtime.term_is_cons(program, _a1)) {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 104) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 11, 104, 2) !== true) return false;
+    if (Runtime.op_unify_variable(state, 105) !== true) return false;
+    if (Runtime.op_unify_variable(state, 106) !== true) return false;
+    if (Runtime.op_unify_variable(state, 201) !== true) return false;
+    Runtime.put_reg(state, 107, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 203, Runtime.get_reg(state, 3));
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 107));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 105));
+    Runtime.put_reg(state, 3, Runtime.get_reg(state, 106));
+    { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 4, v); }
+    if (typeof lowered_flags_set_4 === "function") {
+      if (lowered_flags_set_4(program, state) !== true) return false;
+    } else {
+      const saved_cp = state.cp;
+      const saved_pc = state.pc;
+      const target = program.labels["flags_set/4"];
+      let _ok = true;
+      if (target !== undefined && target !== null) {
+        Runtime.push_y_save(state);
+        state.cp = 0;
+        state.pc = target;
+        state.program = program;
+        _ok = Runtime.run_isolated(program, state) === true;
+        state.halt = false;
+      } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+        _ok = false;
+      }
+      state.cp = saved_cp;
+      state.pc = saved_pc;
+      state.halt = false;
+      if (!_ok) return false;
+    }
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
+    Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_merge_flags__3 === "function") return lowered_merge_flags__3(program, state) === true;
+    {
+      const target = program.labels["merge_flags_/3"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "merge_flags_", 3) === true;
+    }
+    return true;
+  }
   const _t4_trail = state.trail.length;
   const _t4_regs = Runtime.copy_table(state.regs);
   const _t4_vc = state.var_counter;
@@ -5253,25 +5930,22 @@ function lowered_merge_flags__3(program, state) {
     Runtime.put_reg(state, 2, Runtime.get_reg(state, 105));
     Runtime.put_reg(state, 3, Runtime.get_reg(state, 106));
     { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 4, v); }
-    {
+    if (typeof lowered_flags_set_4 === "function") {
+      if (lowered_flags_set_4(program, state) !== true) return false;
+    } else {
       const saved_cp = state.cp;
       const saved_pc = state.pc;
-      const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_set/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_set/4"] : undefined);
+      const target = program.labels["flags_set/4"];
       let _ok = true;
-      if (typeof _lf === "function") {
-        _ok = _lf(program, state) === true;
-      } else {
-        const target = program.labels["flags_set/4"];
-        if (target !== undefined && target !== null) {
-          Runtime.push_y_save(state);
-          state.cp = 0;
-          state.pc = target;
-          state.program = program;
-          _ok = Runtime.run_isolated(program, state) === true;
-          state.halt = false;
-        } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
-          _ok = false;
-        }
+      if (target !== undefined && target !== null) {
+        Runtime.push_y_save(state);
+        state.cp = 0;
+        state.pc = target;
+        state.program = program;
+        _ok = Runtime.run_isolated(program, state) === true;
+        state.halt = false;
+      } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+        _ok = false;
       }
       state.cp = saved_cp;
       state.pc = saved_pc;
@@ -5282,40 +5956,180 @@ function lowered_merge_flags__3(program, state) {
     Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
     Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
     if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_merge_flags__3 === "function") return lowered_merge_flags__3(program, state) === true;
     {
-      const _lf = (program.lowered_dispatch && program.lowered_dispatch["merge_flags_/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["merge_flags_/3"] : undefined);
-      if (typeof _lf === "function") return _lf(program, state) === true;
       const target = program.labels["merge_flags_/3"];
       if (target !== undefined && target !== null) {
-        state.pc = target;
-        state.program = program;
-        return Runtime.run_isolated(program, state) === true;
+        return Runtime.execute_user_isolated(program, state, target) === true;
       }
-      if (Runtime.step(program, state, I.Execute("merge_flags_", 3)) !== true) return false;
-      if (state.halt) return true;
-      state.program = program;
-      return Runtime.run_isolated(program, state) === true;
+      return Runtime.op_builtin(program, state, "merge_flags_", 3) === true;
     }
     return false;
   })()) return true;
-  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
-  state.regs = Runtime.copy_table(_t4_regs);
-  state.var_counter = _t4_vc;
-  state.stack = _t4_stack.slice();
-  state.y_save = _t4_ysave.slice();
-  state.mode = _t4_mode;
-  state.build_stack = _t4_build.slice();
-  state.read_stack = _t4_rstack.slice();
-  state.read_args = _t4_rargs;
-  state.read_cursor = _t4_rcur;
   return false;
 }
 
-lowered_dispatch["merge_flags_/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("merge_flags_/3"); return lowered_merge_flags__3(program, state); };
-// wamjs lower fallback: merge_flags/3  fallback(execute of a non-self callee (nested Runtime.run would steal CP))
-// wamjs lower fallback: looks_like_legacy_flag/1  fallback(execute of a non-self callee (nested Runtime.run would steal CP))
-// Lowered: long_flag_tail/1 (T4 all-clauses inline)
+lowered_dispatch["merge_flags_/3"] = function (program, state) { return lowered_merge_flags__3(program, state); };
+// Lowered: merge_flags/3 (deterministic)
+function lowered_merge_flags_3(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("merge_flags/3");
+  if (Runtime.op_allocate(state) !== true) return false;
+  Runtime.put_reg(state, 101, Runtime.get_reg(state, 1));
+  Runtime.put_reg(state, 102, Runtime.get_reg(state, 2));
+  Runtime.put_reg(state, 103, Runtime.get_reg(state, 3));
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 102));
+  Runtime.put_reg(state, 2, Runtime.get_reg(state, 101));
+  Runtime.put_reg(state, 3, Runtime.get_reg(state, 103));
+  if (Runtime.op_deallocate(state) !== true) return false;
+  if (typeof lowered_merge_flags__3 === "function") return lowered_merge_flags__3(program, state) === true;
+  {
+    const target = program.labels["merge_flags_/3"];
+    if (target !== undefined && target !== null) {
+      return Runtime.execute_user_isolated(program, state, target) === true;
+    }
+    return Runtime.op_builtin(program, state, "merge_flags_", 3) === true;
+  }
+  return true;
+}
+
+lowered_dispatch["merge_flags/3"] = function (program, state) { return lowered_merge_flags_3(program, state); };
+// Lowered: looks_like_legacy_flag/1 (deterministic)
+function lowered_looks_like_legacy_flag_1(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("looks_like_legacy_flag/1");
+  if (Runtime.op_allocate(state) !== true) return false;
+  { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 2, v); }
+  if (Runtime.op_builtin(program, state, "string_chars/2", 2) !== true) return false;
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+  if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(11)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 106) !== true) return false;
+  if (Runtime.op_put_structure(program, state, 5, 106, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(11)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 107) !== true) return false;
+  if (Runtime.op_put_structure(program, state, 5, 107, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 202) !== true) return false;
+  if (Runtime.op_unify_variable(state, 203) !== true) return false;
+  if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+  if (typeof lowered_js_alpha_1 === "function") {
+    Runtime.push_y_save(state);
+    const _ok = Runtime.run_lowered_body(program, state, lowered_js_alpha_1);
+    Runtime.pop_y_save(state);
+    if (_ok !== true) return false;
+  } else {
+    const saved_cp = state.cp;
+    const saved_pc = state.pc;
+    const target = program.labels["js_alpha/1"];
+    let _ok = true;
+    if (target !== undefined && target !== null) {
+      Runtime.push_y_save(state);
+      state.cp = 0;
+      state.pc = target;
+      state.program = program;
+      _ok = Runtime.run_isolated(program, state) === true;
+      state.halt = false;
+    } else if (Runtime.step(program, state, I.Call("js_alpha", 1)) !== true) {
+      _ok = false;
+    }
+    state.cp = saved_cp;
+    state.pc = saved_pc;
+    state.halt = false;
+    if (!_ok) return false;
+  }
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
+  if (Runtime.op_deallocate(state) !== true) return false;
+  if (typeof lowered_legacy_flag_tail_1 === "function") return lowered_legacy_flag_tail_1(program, state) === true;
+  {
+    const target = program.labels["legacy_flag_tail/1"];
+    if (target !== undefined && target !== null) {
+      return Runtime.execute_user_isolated(program, state, target) === true;
+    }
+    return Runtime.op_builtin(program, state, "legacy_flag_tail", 1) === true;
+  }
+  return true;
+}
+
+lowered_dispatch["looks_like_legacy_flag/1"] = function (program, state) { return lowered_looks_like_legacy_flag_1(program, state); };
+// Lowered: long_flag_tail/1 (T4 nil/cons dispatch; no snapshot on bound A1)
 function lowered_long_flag_tail_1(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("long_flag_tail/1");
+  const _a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (Runtime.term_is_nil(program, _a1)) {
+    return true;
+    return true;
+  }
+  if (Runtime.term_is_cons(program, _a1)) {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 201) !== true) return false;
+    if (Runtime.op_unify_variable(state, 202) !== true) return false;
+    if (Runtime.op_get_level(state, 203) !== true) return false;
+    {
+      const _ite_trail = state.trail.length;
+      const _ite_args = Runtime.capture_a_regs(state, 8);
+      const _ite_cond = (function () {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+        Runtime.put_reg(state, 2, V.Atom(18));
+        if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
+        return true;
+      })();
+      if (_ite_cond) {
+        if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
+      } else {
+        Runtime.undo_trail(state, _ite_trail);
+        Runtime.restore_a_regs(state, _ite_args);
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+        if (typeof lowered_js_flag_char_1 === "function") {
+          if (lowered_js_flag_char_1(program, state) !== true) return false;
+        } else {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const target = program.labels["js_flag_char/1"];
+          let _ok = true;
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("js_flag_char", 1)) !== true) {
+            _ok = false;
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+        if (typeof lowered_long_flag_tail_1 === "function") {
+          if (lowered_long_flag_tail_1(program, state) !== true) return false;
+        } else {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const target = program.labels["long_flag_tail/1"];
+          let _ok = true;
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("long_flag_tail", 1)) !== true) {
+            _ok = false;
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+      }
+    }
+    if (Runtime.op_deallocate(state) !== true) return false;
+    return true;
+    return true;
+  }
   const _t4_trail = state.trail.length;
   const _t4_regs = Runtime.copy_table(state.regs);
   const _t4_vc = state.var_counter;
@@ -5362,25 +6176,22 @@ function lowered_long_flag_tail_1(program, state) {
         Runtime.undo_trail(state, _ite_trail);
         Runtime.restore_a_regs(state, _ite_args);
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
-        {
+        if (typeof lowered_js_flag_char_1 === "function") {
+          if (lowered_js_flag_char_1(program, state) !== true) return false;
+        } else {
           const saved_cp = state.cp;
           const saved_pc = state.pc;
-          const _lf = (program.lowered_dispatch && program.lowered_dispatch["js_flag_char/1"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["js_flag_char/1"] : undefined);
+          const target = program.labels["js_flag_char/1"];
           let _ok = true;
-          if (typeof _lf === "function") {
-            _ok = _lf(program, state) === true;
-          } else {
-            const target = program.labels["js_flag_char/1"];
-            if (target !== undefined && target !== null) {
-              Runtime.push_y_save(state);
-              state.cp = 0;
-              state.pc = target;
-              state.program = program;
-              _ok = Runtime.run_isolated(program, state) === true;
-              state.halt = false;
-            } else if (Runtime.step(program, state, I.Call("js_flag_char", 1)) !== true) {
-              _ok = false;
-            }
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("js_flag_char", 1)) !== true) {
+            _ok = false;
           }
           state.cp = saved_cp;
           state.pc = saved_pc;
@@ -5388,25 +6199,22 @@ function lowered_long_flag_tail_1(program, state) {
           if (!_ok) return false;
         }
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
-        {
+        if (typeof lowered_long_flag_tail_1 === "function") {
+          if (lowered_long_flag_tail_1(program, state) !== true) return false;
+        } else {
           const saved_cp = state.cp;
           const saved_pc = state.pc;
-          const _lf = (program.lowered_dispatch && program.lowered_dispatch["long_flag_tail/1"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["long_flag_tail/1"] : undefined);
+          const target = program.labels["long_flag_tail/1"];
           let _ok = true;
-          if (typeof _lf === "function") {
-            _ok = _lf(program, state) === true;
-          } else {
-            const target = program.labels["long_flag_tail/1"];
-            if (target !== undefined && target !== null) {
-              Runtime.push_y_save(state);
-              state.cp = 0;
-              state.pc = target;
-              state.program = program;
-              _ok = Runtime.run_isolated(program, state) === true;
-              state.halt = false;
-            } else if (Runtime.step(program, state, I.Call("long_flag_tail", 1)) !== true) {
-              _ok = false;
-            }
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("long_flag_tail", 1)) !== true) {
+            _ok = false;
           }
           state.cp = saved_cp;
           state.pc = saved_pc;
@@ -5419,23 +6227,380 @@ function lowered_long_flag_tail_1(program, state) {
     return true;
     return false;
   })()) return true;
-  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
-  state.regs = Runtime.copy_table(_t4_regs);
-  state.var_counter = _t4_vc;
-  state.stack = _t4_stack.slice();
-  state.y_save = _t4_ysave.slice();
-  state.mode = _t4_mode;
-  state.build_stack = _t4_build.slice();
-  state.read_stack = _t4_rstack.slice();
-  state.read_args = _t4_rargs;
-  state.read_cursor = _t4_rcur;
   return false;
 }
 
-lowered_dispatch["long_flag_tail/1"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("long_flag_tail/1"); return lowered_long_flag_tail_1(program, state); };
-// wamjs lower fallback: lenient_result/2  fallback(execute of a non-self callee (nested Runtime.run would steal CP))
-// Lowered: lenient_loop/5 (T4 all-clauses inline)
+lowered_dispatch["long_flag_tail/1"] = function (program, state) { return lowered_long_flag_tail_1(program, state); };
+// Lowered: lenient_result/2 (deterministic)
+function lowered_lenient_result_2(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("lenient_result/2");
+  if (Runtime.op_allocate(state) !== true) return false;
+  Runtime.put_reg(state, 101, Runtime.get_reg(state, 1));
+  if (Runtime.op_get_structure(program, state, 9, 2, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 102) !== true) return false;
+  if (Runtime.op_unify_variable(state, 103) !== true) return false;
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 101));
+  Runtime.put_reg(state, 2, Runtime.get_reg(state, 102));
+  Runtime.put_reg(state, 3, Runtime.get_reg(state, 103));
+  if (Runtime.op_deallocate(state) !== true) return false;
+  if (typeof lowered_parse_lenient_3 === "function") return lowered_parse_lenient_3(program, state) === true;
+  {
+    const target = program.labels["parse_lenient/3"];
+    if (target !== undefined && target !== null) {
+      return Runtime.execute_user_isolated(program, state, target) === true;
+    }
+    return Runtime.op_builtin(program, state, "parse_lenient", 3) === true;
+  }
+  return true;
+}
+
+lowered_dispatch["lenient_result/2"] = function (program, state) { return lowered_lenient_result_2(program, state); };
+// Lowered: lenient_loop/5 (T4 nil/cons dispatch; no snapshot on bound A1)
 function lowered_lenient_loop_5(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("lenient_loop/5");
+  const _a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (Runtime.term_is_nil(program, _a1)) {
+    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 102, Runtime.get_reg(state, 3));
+    if (Runtime.op_get_value(program, state, 101, 4) !== true) return false;
+    if (Runtime.op_get_value(program, state, 102, 5) !== true) return false;
+    return true;
+    return true;
+  }
+  if (Runtime.term_is_cons(program, _a1)) {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 208) !== true) return false;
+    if (Runtime.op_unify_variable(state, 207) !== true) return false;
+    Runtime.put_reg(state, 209, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 210, Runtime.get_reg(state, 3));
+    Runtime.put_reg(state, 211, Runtime.get_reg(state, 4));
+    Runtime.put_reg(state, 212, Runtime.get_reg(state, 5));
+    if (Runtime.op_get_level(state, 213) !== true) return false;
+    {
+      const _ite_snap = Runtime.snapshot_machine(state);
+      const _ite_cps = state.cps.length;
+      const _ite_cond = (function () {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
+        Runtime.put_reg(state, 2, V.String("--"));
+        if (typeof lowered_starts_with_2 === "function") {
+          if (lowered_starts_with_2(program, state) !== true) return false;
+        } else {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const target = program.labels["starts_with/2"];
+          let _ok = true;
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
+            _ok = false;
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+        return true;
+      })();
+      if (_ite_cond) {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
+        { const v = Runtime.new_var(state); Runtime.put_reg(state, 203, v); Runtime.put_reg(state, 2, v); }
+        { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 3, v); }
+        if (typeof lowered_split_flag_token_3 === "function") {
+          if (lowered_split_flag_token_3(program, state) !== true) return false;
+        } else {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const target = program.labels["split_flag_token/3"];
+          let _ok = true;
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("split_flag_token", 3)) !== true) {
+            _ok = false;
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+        if (Runtime.op_get_level(state, 214) !== true) return false;
+        {
+          const _ite_lite = Runtime.snapshot_lite(state);
+          const _ite_cond = (function () {
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+            if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
+            if (Runtime.op_unify_variable(state, 202) !== true) return false;
+            if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+            return true;
+          })();
+          if (_ite_cond) {
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 210));
+            Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
+            Runtime.put_reg(state, 3, Runtime.get_reg(state, 202));
+            { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
+            if (typeof lowered_flags_set_4 === "function") {
+              if (lowered_flags_set_4(program, state) !== true) return false;
+            } else {
+              const saved_cp = state.cp;
+              const saved_pc = state.pc;
+              const target = program.labels["flags_set/4"];
+              let _ok = true;
+              if (target !== undefined && target !== null) {
+                Runtime.push_y_save(state);
+                state.cp = 0;
+                state.pc = target;
+                state.program = program;
+                _ok = Runtime.run_isolated(program, state) === true;
+                state.halt = false;
+              } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                _ok = false;
+              }
+              state.cp = saved_cp;
+              state.pc = saved_pc;
+              state.halt = false;
+              if (!_ok) return false;
+            }
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 207));
+            Runtime.put_reg(state, 2, Runtime.get_reg(state, 209));
+            Runtime.put_reg(state, 3, Runtime.get_reg(state, 204));
+            Runtime.put_reg(state, 4, Runtime.get_reg(state, 211));
+            Runtime.put_reg(state, 5, Runtime.get_reg(state, 212));
+            if (typeof lowered_lenient_loop_5 === "function") {
+              if (lowered_lenient_loop_5(program, state) !== true) return false;
+            } else {
+              const saved_cp = state.cp;
+              const saved_pc = state.pc;
+              const target = program.labels["lenient_loop/5"];
+              let _ok = true;
+              if (target !== undefined && target !== null) {
+                Runtime.push_y_save(state);
+                state.cp = 0;
+                state.pc = target;
+                state.program = program;
+                _ok = Runtime.run_isolated(program, state) === true;
+                state.halt = false;
+              } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
+                _ok = false;
+              }
+              state.cp = saved_cp;
+              state.pc = saved_pc;
+              state.halt = false;
+              if (!_ok) return false;
+            }
+          } else {
+            Runtime.restore_lite(state, _ite_lite);
+            if (Runtime.op_get_level(state, 215) !== true) return false;
+            {
+              const _ite_snap = Runtime.snapshot_machine(state);
+              const _ite_cps = state.cps.length;
+              const _ite_cond = (function () {
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 207));
+                if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+                if (Runtime.op_unify_variable(state, 205) !== true) return false;
+                if (Runtime.op_unify_variable(state, 206) !== true) return false;
+                if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+                if (Runtime.op_get_level(state, 216) !== true) return false;
+                {
+                  const _ite_snap = Runtime.snapshot_machine(state);
+                  const _ite_cps = state.cps.length;
+                  const _ite_cond = (function () {
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
+                    if (typeof lowered_looks_like_legacy_flag_1 === "function") {
+                      if (lowered_looks_like_legacy_flag_1(program, state) !== true) return false;
+                    } else {
+                      const saved_cp = state.cp;
+                      const saved_pc = state.pc;
+                      const target = program.labels["looks_like_legacy_flag/1"];
+                      let _ok = true;
+                      if (target !== undefined && target !== null) {
+                        Runtime.push_y_save(state);
+                        state.cp = 0;
+                        state.pc = target;
+                        state.program = program;
+                        _ok = Runtime.run_isolated(program, state) === true;
+                        state.halt = false;
+                      } else if (Runtime.step(program, state, I.Call("looks_like_legacy_flag", 1)) !== true) {
+                        _ok = false;
+                      }
+                      state.cp = saved_cp;
+                      state.pc = saved_pc;
+                      state.halt = false;
+                      if (!_ok) return false;
+                    }
+                    return true;
+                  })();
+                  if (_ite_cond) {
+                    if (Runtime.op_builtin(program, state, "fail/0", 0) !== true) return false;
+                  } else {
+                    Runtime.restore_machine(state, _ite_snap);
+                    while (state.cps.length > _ite_cps) state.cps.pop();
+                    if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
+                  }
+                }
+                return true;
+              })();
+              if (_ite_cond) {
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 210));
+                Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
+                Runtime.put_reg(state, 3, Runtime.get_reg(state, 205));
+                { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
+                if (typeof lowered_flags_set_4 === "function") {
+                  if (lowered_flags_set_4(program, state) !== true) return false;
+                } else {
+                  const saved_cp = state.cp;
+                  const saved_pc = state.pc;
+                  const target = program.labels["flags_set/4"];
+                  let _ok = true;
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                    _ok = false;
+                  }
+                  state.cp = saved_cp;
+                  state.pc = saved_pc;
+                  state.halt = false;
+                  if (!_ok) return false;
+                }
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
+                Runtime.put_reg(state, 2, Runtime.get_reg(state, 209));
+                Runtime.put_reg(state, 3, Runtime.get_reg(state, 204));
+                Runtime.put_reg(state, 4, Runtime.get_reg(state, 211));
+                Runtime.put_reg(state, 5, Runtime.get_reg(state, 212));
+                if (typeof lowered_lenient_loop_5 === "function") {
+                  if (lowered_lenient_loop_5(program, state) !== true) return false;
+                } else {
+                  const saved_cp = state.cp;
+                  const saved_pc = state.pc;
+                  const target = program.labels["lenient_loop/5"];
+                  let _ok = true;
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
+                    _ok = false;
+                  }
+                  state.cp = saved_cp;
+                  state.pc = saved_pc;
+                  state.halt = false;
+                  if (!_ok) return false;
+                }
+              } else {
+                Runtime.restore_machine(state, _ite_snap);
+                while (state.cps.length > _ite_cps) state.cps.pop();
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 210));
+                Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
+                Runtime.put_reg(state, 3, V.Atom(0));
+                { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
+                if (typeof lowered_flags_set_4 === "function") {
+                  if (lowered_flags_set_4(program, state) !== true) return false;
+                } else {
+                  const saved_cp = state.cp;
+                  const saved_pc = state.pc;
+                  const target = program.labels["flags_set/4"];
+                  let _ok = true;
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                    _ok = false;
+                  }
+                  state.cp = saved_cp;
+                  state.pc = saved_pc;
+                  state.halt = false;
+                  if (!_ok) return false;
+                }
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 207));
+                Runtime.put_reg(state, 2, Runtime.get_reg(state, 209));
+                Runtime.put_reg(state, 3, Runtime.get_reg(state, 204));
+                Runtime.put_reg(state, 4, Runtime.get_reg(state, 211));
+                Runtime.put_reg(state, 5, Runtime.get_reg(state, 212));
+                if (typeof lowered_lenient_loop_5 === "function") {
+                  if (lowered_lenient_loop_5(program, state) !== true) return false;
+                } else {
+                  const saved_cp = state.cp;
+                  const saved_pc = state.pc;
+                  const target = program.labels["lenient_loop/5"];
+                  let _ok = true;
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
+                    _ok = false;
+                  }
+                  state.cp = saved_cp;
+                  state.pc = saved_pc;
+                  state.halt = false;
+                  if (!_ok) return false;
+                }
+              }
+            }
+          }
+        }
+      } else {
+        Runtime.restore_machine(state, _ite_snap);
+        while (state.cps.length > _ite_cps) state.cps.pop();
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 207));
+        if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 208) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 209) !== true) return false;
+        Runtime.put_reg(state, 3, Runtime.get_reg(state, 210));
+        Runtime.put_reg(state, 4, Runtime.get_reg(state, 211));
+        Runtime.put_reg(state, 5, Runtime.get_reg(state, 212));
+        if (typeof lowered_lenient_loop_5 === "function") {
+          if (lowered_lenient_loop_5(program, state) !== true) return false;
+        } else {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const target = program.labels["lenient_loop/5"];
+          let _ok = true;
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
+            _ok = false;
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+      }
+    }
+    if (Runtime.op_deallocate(state) !== true) return false;
+    return true;
+    return true;
+  }
   const _t4_trail = state.trail.length;
   const _t4_regs = Runtime.copy_table(state.regs);
   const _t4_vc = state.var_counter;
@@ -5481,25 +6646,22 @@ function lowered_lenient_loop_5(program, state) {
       const _ite_cond = (function () {
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
         Runtime.put_reg(state, 2, V.String("--"));
-        {
+        if (typeof lowered_starts_with_2 === "function") {
+          if (lowered_starts_with_2(program, state) !== true) return false;
+        } else {
           const saved_cp = state.cp;
           const saved_pc = state.pc;
-          const _lf = (program.lowered_dispatch && program.lowered_dispatch["starts_with/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["starts_with/2"] : undefined);
+          const target = program.labels["starts_with/2"];
           let _ok = true;
-          if (typeof _lf === "function") {
-            _ok = _lf(program, state) === true;
-          } else {
-            const target = program.labels["starts_with/2"];
-            if (target !== undefined && target !== null) {
-              Runtime.push_y_save(state);
-              state.cp = 0;
-              state.pc = target;
-              state.program = program;
-              _ok = Runtime.run_isolated(program, state) === true;
-              state.halt = false;
-            } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
-              _ok = false;
-            }
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
+            _ok = false;
           }
           state.cp = saved_cp;
           state.pc = saved_pc;
@@ -5512,25 +6674,22 @@ function lowered_lenient_loop_5(program, state) {
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
         { const v = Runtime.new_var(state); Runtime.put_reg(state, 203, v); Runtime.put_reg(state, 2, v); }
         { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 3, v); }
-        {
+        if (typeof lowered_split_flag_token_3 === "function") {
+          if (lowered_split_flag_token_3(program, state) !== true) return false;
+        } else {
           const saved_cp = state.cp;
           const saved_pc = state.pc;
-          const _lf = (program.lowered_dispatch && program.lowered_dispatch["split_flag_token/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["split_flag_token/3"] : undefined);
+          const target = program.labels["split_flag_token/3"];
           let _ok = true;
-          if (typeof _lf === "function") {
-            _ok = _lf(program, state) === true;
-          } else {
-            const target = program.labels["split_flag_token/3"];
-            if (target !== undefined && target !== null) {
-              Runtime.push_y_save(state);
-              state.cp = 0;
-              state.pc = target;
-              state.program = program;
-              _ok = Runtime.run_isolated(program, state) === true;
-              state.halt = false;
-            } else if (Runtime.step(program, state, I.Call("split_flag_token", 3)) !== true) {
-              _ok = false;
-            }
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("split_flag_token", 3)) !== true) {
+            _ok = false;
           }
           state.cp = saved_cp;
           state.pc = saved_pc;
@@ -5539,8 +6698,7 @@ function lowered_lenient_loop_5(program, state) {
         }
         if (Runtime.op_get_level(state, 214) !== true) return false;
         {
-          const _ite_snap = Runtime.snapshot_machine(state);
-          const _ite_cps = state.cps.length;
+          const _ite_lite = Runtime.snapshot_lite(state);
           const _ite_cond = (function () {
             Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
             if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
@@ -5553,25 +6711,22 @@ function lowered_lenient_loop_5(program, state) {
             Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
             Runtime.put_reg(state, 3, Runtime.get_reg(state, 202));
             { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
-            {
+            if (typeof lowered_flags_set_4 === "function") {
+              if (lowered_flags_set_4(program, state) !== true) return false;
+            } else {
               const saved_cp = state.cp;
               const saved_pc = state.pc;
-              const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_set/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_set/4"] : undefined);
+              const target = program.labels["flags_set/4"];
               let _ok = true;
-              if (typeof _lf === "function") {
-                _ok = _lf(program, state) === true;
-              } else {
-                const target = program.labels["flags_set/4"];
-                if (target !== undefined && target !== null) {
-                  Runtime.push_y_save(state);
-                  state.cp = 0;
-                  state.pc = target;
-                  state.program = program;
-                  _ok = Runtime.run_isolated(program, state) === true;
-                  state.halt = false;
-                } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
-                  _ok = false;
-                }
+              if (target !== undefined && target !== null) {
+                Runtime.push_y_save(state);
+                state.cp = 0;
+                state.pc = target;
+                state.program = program;
+                _ok = Runtime.run_isolated(program, state) === true;
+                state.halt = false;
+              } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                _ok = false;
               }
               state.cp = saved_cp;
               state.pc = saved_pc;
@@ -5583,25 +6738,22 @@ function lowered_lenient_loop_5(program, state) {
             Runtime.put_reg(state, 3, Runtime.get_reg(state, 204));
             Runtime.put_reg(state, 4, Runtime.get_reg(state, 211));
             Runtime.put_reg(state, 5, Runtime.get_reg(state, 212));
-            {
+            if (typeof lowered_lenient_loop_5 === "function") {
+              if (lowered_lenient_loop_5(program, state) !== true) return false;
+            } else {
               const saved_cp = state.cp;
               const saved_pc = state.pc;
-              const _lf = (program.lowered_dispatch && program.lowered_dispatch["lenient_loop/5"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["lenient_loop/5"] : undefined);
+              const target = program.labels["lenient_loop/5"];
               let _ok = true;
-              if (typeof _lf === "function") {
-                _ok = _lf(program, state) === true;
-              } else {
-                const target = program.labels["lenient_loop/5"];
-                if (target !== undefined && target !== null) {
-                  Runtime.push_y_save(state);
-                  state.cp = 0;
-                  state.pc = target;
-                  state.program = program;
-                  _ok = Runtime.run_isolated(program, state) === true;
-                  state.halt = false;
-                } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
-                  _ok = false;
-                }
+              if (target !== undefined && target !== null) {
+                Runtime.push_y_save(state);
+                state.cp = 0;
+                state.pc = target;
+                state.program = program;
+                _ok = Runtime.run_isolated(program, state) === true;
+                state.halt = false;
+              } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
+                _ok = false;
               }
               state.cp = saved_cp;
               state.pc = saved_pc;
@@ -5609,8 +6761,7 @@ function lowered_lenient_loop_5(program, state) {
               if (!_ok) return false;
             }
           } else {
-            Runtime.restore_machine(state, _ite_snap);
-            while (state.cps.length > _ite_cps) state.cps.pop();
+            Runtime.restore_lite(state, _ite_lite);
             if (Runtime.op_get_level(state, 215) !== true) return false;
             {
               const _ite_snap = Runtime.snapshot_machine(state);
@@ -5627,25 +6778,22 @@ function lowered_lenient_loop_5(program, state) {
                   const _ite_cps = state.cps.length;
                   const _ite_cond = (function () {
                     Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
-                    {
+                    if (typeof lowered_looks_like_legacy_flag_1 === "function") {
+                      if (lowered_looks_like_legacy_flag_1(program, state) !== true) return false;
+                    } else {
                       const saved_cp = state.cp;
                       const saved_pc = state.pc;
-                      const _lf = (program.lowered_dispatch && program.lowered_dispatch["looks_like_legacy_flag/1"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["looks_like_legacy_flag/1"] : undefined);
+                      const target = program.labels["looks_like_legacy_flag/1"];
                       let _ok = true;
-                      if (typeof _lf === "function") {
-                        _ok = _lf(program, state) === true;
-                      } else {
-                        const target = program.labels["looks_like_legacy_flag/1"];
-                        if (target !== undefined && target !== null) {
-                          Runtime.push_y_save(state);
-                          state.cp = 0;
-                          state.pc = target;
-                          state.program = program;
-                          _ok = Runtime.run_isolated(program, state) === true;
-                          state.halt = false;
-                        } else if (Runtime.step(program, state, I.Call("looks_like_legacy_flag", 1)) !== true) {
-                          _ok = false;
-                        }
+                      if (target !== undefined && target !== null) {
+                        Runtime.push_y_save(state);
+                        state.cp = 0;
+                        state.pc = target;
+                        state.program = program;
+                        _ok = Runtime.run_isolated(program, state) === true;
+                        state.halt = false;
+                      } else if (Runtime.step(program, state, I.Call("looks_like_legacy_flag", 1)) !== true) {
+                        _ok = false;
                       }
                       state.cp = saved_cp;
                       state.pc = saved_pc;
@@ -5669,25 +6817,22 @@ function lowered_lenient_loop_5(program, state) {
                 Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
                 Runtime.put_reg(state, 3, Runtime.get_reg(state, 205));
                 { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
-                {
+                if (typeof lowered_flags_set_4 === "function") {
+                  if (lowered_flags_set_4(program, state) !== true) return false;
+                } else {
                   const saved_cp = state.cp;
                   const saved_pc = state.pc;
-                  const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_set/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_set/4"] : undefined);
+                  const target = program.labels["flags_set/4"];
                   let _ok = true;
-                  if (typeof _lf === "function") {
-                    _ok = _lf(program, state) === true;
-                  } else {
-                    const target = program.labels["flags_set/4"];
-                    if (target !== undefined && target !== null) {
-                      Runtime.push_y_save(state);
-                      state.cp = 0;
-                      state.pc = target;
-                      state.program = program;
-                      _ok = Runtime.run_isolated(program, state) === true;
-                      state.halt = false;
-                    } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
-                      _ok = false;
-                    }
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                    _ok = false;
                   }
                   state.cp = saved_cp;
                   state.pc = saved_pc;
@@ -5699,25 +6844,22 @@ function lowered_lenient_loop_5(program, state) {
                 Runtime.put_reg(state, 3, Runtime.get_reg(state, 204));
                 Runtime.put_reg(state, 4, Runtime.get_reg(state, 211));
                 Runtime.put_reg(state, 5, Runtime.get_reg(state, 212));
-                {
+                if (typeof lowered_lenient_loop_5 === "function") {
+                  if (lowered_lenient_loop_5(program, state) !== true) return false;
+                } else {
                   const saved_cp = state.cp;
                   const saved_pc = state.pc;
-                  const _lf = (program.lowered_dispatch && program.lowered_dispatch["lenient_loop/5"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["lenient_loop/5"] : undefined);
+                  const target = program.labels["lenient_loop/5"];
                   let _ok = true;
-                  if (typeof _lf === "function") {
-                    _ok = _lf(program, state) === true;
-                  } else {
-                    const target = program.labels["lenient_loop/5"];
-                    if (target !== undefined && target !== null) {
-                      Runtime.push_y_save(state);
-                      state.cp = 0;
-                      state.pc = target;
-                      state.program = program;
-                      _ok = Runtime.run_isolated(program, state) === true;
-                      state.halt = false;
-                    } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
-                      _ok = false;
-                    }
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
+                    _ok = false;
                   }
                   state.cp = saved_cp;
                   state.pc = saved_pc;
@@ -5731,25 +6873,22 @@ function lowered_lenient_loop_5(program, state) {
                 Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
                 Runtime.put_reg(state, 3, V.Atom(0));
                 { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
-                {
+                if (typeof lowered_flags_set_4 === "function") {
+                  if (lowered_flags_set_4(program, state) !== true) return false;
+                } else {
                   const saved_cp = state.cp;
                   const saved_pc = state.pc;
-                  const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_set/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_set/4"] : undefined);
+                  const target = program.labels["flags_set/4"];
                   let _ok = true;
-                  if (typeof _lf === "function") {
-                    _ok = _lf(program, state) === true;
-                  } else {
-                    const target = program.labels["flags_set/4"];
-                    if (target !== undefined && target !== null) {
-                      Runtime.push_y_save(state);
-                      state.cp = 0;
-                      state.pc = target;
-                      state.program = program;
-                      _ok = Runtime.run_isolated(program, state) === true;
-                      state.halt = false;
-                    } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
-                      _ok = false;
-                    }
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                    _ok = false;
                   }
                   state.cp = saved_cp;
                   state.pc = saved_pc;
@@ -5761,25 +6900,22 @@ function lowered_lenient_loop_5(program, state) {
                 Runtime.put_reg(state, 3, Runtime.get_reg(state, 204));
                 Runtime.put_reg(state, 4, Runtime.get_reg(state, 211));
                 Runtime.put_reg(state, 5, Runtime.get_reg(state, 212));
-                {
+                if (typeof lowered_lenient_loop_5 === "function") {
+                  if (lowered_lenient_loop_5(program, state) !== true) return false;
+                } else {
                   const saved_cp = state.cp;
                   const saved_pc = state.pc;
-                  const _lf = (program.lowered_dispatch && program.lowered_dispatch["lenient_loop/5"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["lenient_loop/5"] : undefined);
+                  const target = program.labels["lenient_loop/5"];
                   let _ok = true;
-                  if (typeof _lf === "function") {
-                    _ok = _lf(program, state) === true;
-                  } else {
-                    const target = program.labels["lenient_loop/5"];
-                    if (target !== undefined && target !== null) {
-                      Runtime.push_y_save(state);
-                      state.cp = 0;
-                      state.pc = target;
-                      state.program = program;
-                      _ok = Runtime.run_isolated(program, state) === true;
-                      state.halt = false;
-                    } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
-                      _ok = false;
-                    }
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
+                    _ok = false;
                   }
                   state.cp = saved_cp;
                   state.pc = saved_pc;
@@ -5800,25 +6936,22 @@ function lowered_lenient_loop_5(program, state) {
         Runtime.put_reg(state, 3, Runtime.get_reg(state, 210));
         Runtime.put_reg(state, 4, Runtime.get_reg(state, 211));
         Runtime.put_reg(state, 5, Runtime.get_reg(state, 212));
-        {
+        if (typeof lowered_lenient_loop_5 === "function") {
+          if (lowered_lenient_loop_5(program, state) !== true) return false;
+        } else {
           const saved_cp = state.cp;
           const saved_pc = state.pc;
-          const _lf = (program.lowered_dispatch && program.lowered_dispatch["lenient_loop/5"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["lenient_loop/5"] : undefined);
+          const target = program.labels["lenient_loop/5"];
           let _ok = true;
-          if (typeof _lf === "function") {
-            _ok = _lf(program, state) === true;
-          } else {
-            const target = program.labels["lenient_loop/5"];
-            if (target !== undefined && target !== null) {
-              Runtime.push_y_save(state);
-              state.cp = 0;
-              state.pc = target;
-              state.program = program;
-              _ok = Runtime.run_isolated(program, state) === true;
-              state.halt = false;
-            } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
-              _ok = false;
-            }
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
+            _ok = false;
           }
           state.cp = saved_cp;
           state.pc = saved_pc;
@@ -5831,22 +6964,58 @@ function lowered_lenient_loop_5(program, state) {
     return true;
     return false;
   })()) return true;
-  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
-  state.regs = Runtime.copy_table(_t4_regs);
-  state.var_counter = _t4_vc;
-  state.stack = _t4_stack.slice();
-  state.y_save = _t4_ysave.slice();
-  state.mode = _t4_mode;
-  state.build_stack = _t4_build.slice();
-  state.read_stack = _t4_rstack.slice();
-  state.read_args = _t4_rargs;
-  state.read_cursor = _t4_rcur;
   return false;
 }
 
-lowered_dispatch["lenient_loop/5"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("lenient_loop/5"); return lowered_lenient_loop_5(program, state); };
-// Lowered: legacy_flag_tail/1 (T4 all-clauses inline)
+lowered_dispatch["lenient_loop/5"] = function (program, state) { return lowered_lenient_loop_5(program, state); };
+// Lowered: legacy_flag_tail/1 (T4 nil/cons dispatch; no snapshot on bound A1)
 function lowered_legacy_flag_tail_1(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("legacy_flag_tail/1");
+  const _a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (Runtime.term_is_nil(program, _a1)) {
+    return true;
+    return true;
+  }
+  if (Runtime.term_is_cons(program, _a1)) {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 102) !== true) return false;
+    if (Runtime.op_unify_variable(state, 201) !== true) return false;
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 102));
+    if (typeof lowered_js_flag_char_1 === "function") {
+      if (lowered_js_flag_char_1(program, state) !== true) return false;
+    } else {
+      const saved_cp = state.cp;
+      const saved_pc = state.pc;
+      const target = program.labels["js_flag_char/1"];
+      let _ok = true;
+      if (target !== undefined && target !== null) {
+        Runtime.push_y_save(state);
+        state.cp = 0;
+        state.pc = target;
+        state.program = program;
+        _ok = Runtime.run_isolated(program, state) === true;
+        state.halt = false;
+      } else if (Runtime.step(program, state, I.Call("js_flag_char", 1)) !== true) {
+        _ok = false;
+      }
+      state.cp = saved_cp;
+      state.pc = saved_pc;
+      state.halt = false;
+      if (!_ok) return false;
+    }
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_legacy_flag_tail_1 === "function") return lowered_legacy_flag_tail_1(program, state) === true;
+    {
+      const target = program.labels["legacy_flag_tail/1"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "legacy_flag_tail", 1) === true;
+    }
+    return true;
+  }
   const _t4_trail = state.trail.length;
   const _t4_regs = Runtime.copy_table(state.regs);
   const _t4_vc = state.var_counter;
@@ -5878,25 +7047,22 @@ function lowered_legacy_flag_tail_1(program, state) {
     if (Runtime.op_unify_variable(state, 102) !== true) return false;
     if (Runtime.op_unify_variable(state, 201) !== true) return false;
     Runtime.put_reg(state, 1, Runtime.get_reg(state, 102));
-    {
+    if (typeof lowered_js_flag_char_1 === "function") {
+      if (lowered_js_flag_char_1(program, state) !== true) return false;
+    } else {
       const saved_cp = state.cp;
       const saved_pc = state.pc;
-      const _lf = (program.lowered_dispatch && program.lowered_dispatch["js_flag_char/1"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["js_flag_char/1"] : undefined);
+      const target = program.labels["js_flag_char/1"];
       let _ok = true;
-      if (typeof _lf === "function") {
-        _ok = _lf(program, state) === true;
-      } else {
-        const target = program.labels["js_flag_char/1"];
-        if (target !== undefined && target !== null) {
-          Runtime.push_y_save(state);
-          state.cp = 0;
-          state.pc = target;
-          state.program = program;
-          _ok = Runtime.run_isolated(program, state) === true;
-          state.halt = false;
-        } else if (Runtime.step(program, state, I.Call("js_flag_char", 1)) !== true) {
-          _ok = false;
-        }
+      if (target !== undefined && target !== null) {
+        Runtime.push_y_save(state);
+        state.cp = 0;
+        state.pc = target;
+        state.program = program;
+        _ok = Runtime.run_isolated(program, state) === true;
+        state.halt = false;
+      } else if (Runtime.step(program, state, I.Call("js_flag_char", 1)) !== true) {
+        _ok = false;
       }
       state.cp = saved_cp;
       state.pc = saved_pc;
@@ -5905,38 +7071,23 @@ function lowered_legacy_flag_tail_1(program, state) {
     }
     Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
     if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_legacy_flag_tail_1 === "function") return lowered_legacy_flag_tail_1(program, state) === true;
     {
-      const _lf = (program.lowered_dispatch && program.lowered_dispatch["legacy_flag_tail/1"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["legacy_flag_tail/1"] : undefined);
-      if (typeof _lf === "function") return _lf(program, state) === true;
       const target = program.labels["legacy_flag_tail/1"];
       if (target !== undefined && target !== null) {
-        state.pc = target;
-        state.program = program;
-        return Runtime.run_isolated(program, state) === true;
+        return Runtime.execute_user_isolated(program, state, target) === true;
       }
-      if (Runtime.step(program, state, I.Execute("legacy_flag_tail", 1)) !== true) return false;
-      if (state.halt) return true;
-      state.program = program;
-      return Runtime.run_isolated(program, state) === true;
+      return Runtime.op_builtin(program, state, "legacy_flag_tail", 1) === true;
     }
     return false;
   })()) return true;
-  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
-  state.regs = Runtime.copy_table(_t4_regs);
-  state.var_counter = _t4_vc;
-  state.stack = _t4_stack.slice();
-  state.y_save = _t4_ysave.slice();
-  state.mode = _t4_mode;
-  state.build_stack = _t4_build.slice();
-  state.read_stack = _t4_rstack.slice();
-  state.read_args = _t4_rargs;
-  state.read_cursor = _t4_rcur;
   return false;
 }
 
-lowered_dispatch["legacy_flag_tail/1"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("legacy_flag_tail/1"); return lowered_legacy_flag_tail_1(program, state); };
+lowered_dispatch["legacy_flag_tail/1"] = function (program, state) { return lowered_legacy_flag_tail_1(program, state); };
 // Lowered: last_element/2 (if-then-else / negation / once)
 function lowered_last_element_2(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("last_element/2");
   if (Runtime.op_allocate(state) !== true) return false;
   if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
   if (Runtime.op_unify_variable(state, 201) !== true) return false;
@@ -5961,25 +7112,22 @@ function lowered_last_element_2(program, state) {
       Runtime.restore_a_regs(state, _ite_args);
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
-      {
+      if (typeof lowered_last_element_2 === "function") {
+        if (lowered_last_element_2(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["last_element/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["last_element/2"] : undefined);
+        const target = program.labels["last_element/2"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["last_element/2"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("last_element", 2)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("last_element", 2)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -5993,9 +7141,10 @@ function lowered_last_element_2(program, state) {
   return true;
 }
 
-lowered_dispatch["last_element/2"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("last_element/2"); return lowered_last_element_2(program, state); };
+lowered_dispatch["last_element/2"] = function (program, state) { return lowered_last_element_2(program, state); };
 // Lowered: js_object_prototype_keys/1 (deterministic ground fact; interned after first success)
 function lowered_js_object_prototype_keys_1(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("js_object_prototype_keys/1");
   const _gk = "js_object_prototype_keys/1";
   const _gm = program.ground_memo || (program.ground_memo = Object.create(null));
   const _cached = _gm[_gk];
@@ -6057,10 +7206,56 @@ function lowered_js_object_prototype_keys_1(program, state) {
   return true;
 }
 
-lowered_dispatch["js_object_prototype_keys/1"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("js_object_prototype_keys/1"); return lowered_js_object_prototype_keys_1(program, state); };
-// wamjs lower fallback: js_object_prototype_key/1  fallback(execute of a non-self callee (nested Runtime.run would steal CP))
+lowered_dispatch["js_object_prototype_keys/1"] = function (program, state) { return lowered_js_object_prototype_keys_1(program, state); };
+// Lowered: js_object_prototype_key/1 (deterministic)
+function lowered_js_object_prototype_key_1(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("js_object_prototype_key/1");
+  if (Runtime.op_allocate(state) !== true) return false;
+  Runtime.put_reg(state, 201, Runtime.get_reg(state, 1));
+  { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 1, v); }
+  if (typeof lowered_js_object_prototype_keys_1 === "function") {
+    Runtime.push_y_save(state);
+    const _ok = Runtime.run_lowered_body(program, state, lowered_js_object_prototype_keys_1);
+    Runtime.pop_y_save(state);
+    if (_ok !== true) return false;
+  } else {
+    const saved_cp = state.cp;
+    const saved_pc = state.pc;
+    const target = program.labels["js_object_prototype_keys/1"];
+    let _ok = true;
+    if (target !== undefined && target !== null) {
+      Runtime.push_y_save(state);
+      state.cp = 0;
+      state.pc = target;
+      state.program = program;
+      _ok = Runtime.run_isolated(program, state) === true;
+      state.halt = false;
+    } else if (Runtime.step(program, state, I.Call("js_object_prototype_keys", 1)) !== true) {
+      _ok = false;
+    }
+    state.cp = saved_cp;
+    state.pc = saved_pc;
+    state.halt = false;
+    if (!_ok) return false;
+  }
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+  Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
+  if (Runtime.op_deallocate(state) !== true) return false;
+  if (typeof lowered_string_member_2 === "function") return lowered_string_member_2(program, state) === true;
+  {
+    const target = program.labels["string_member/2"];
+    if (target !== undefined && target !== null) {
+      return Runtime.execute_user_isolated(program, state, target) === true;
+    }
+    return Runtime.op_builtin(program, state, "string_member", 2) === true;
+  }
+  return true;
+}
+
+lowered_dispatch["js_object_prototype_key/1"] = function (program, state) { return lowered_js_object_prototype_key_1(program, state); };
 // Lowered: js_flag_char/1 (if-then-else / negation / once)
 function lowered_js_flag_char_1(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("js_flag_char/1");
   if (Runtime.op_allocate(state) !== true) return false;
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 2, v); }
   if (Runtime.op_builtin(program, state, "char_code/2", 2) !== true) return false;
@@ -6132,9 +7327,10 @@ function lowered_js_flag_char_1(program, state) {
   return true;
 }
 
-lowered_dispatch["js_flag_char/1"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("js_flag_char/1"); return lowered_js_flag_char_1(program, state); };
+lowered_dispatch["js_flag_char/1"] = function (program, state) { return lowered_js_flag_char_1(program, state); };
 // Lowered: js_alpha/1 (if-then-else / negation / once)
 function lowered_js_alpha_1(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("js_alpha/1");
   if (Runtime.op_allocate(state) !== true) return false;
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 2, v); }
   if (Runtime.op_builtin(program, state, "char_code/2", 2) !== true) return false;
@@ -6169,10 +7365,67 @@ function lowered_js_alpha_1(program, state) {
   return true;
 }
 
-lowered_dispatch["js_alpha/1"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("js_alpha/1"); return lowered_js_alpha_1(program, state); };
-// wamjs lower fallback: is_long_flag/1  fallback(execute of a non-self callee (nested Runtime.run would steal CP))
+lowered_dispatch["js_alpha/1"] = function (program, state) { return lowered_js_alpha_1(program, state); };
+// Lowered: is_long_flag/1 (deterministic)
+function lowered_is_long_flag_1(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("is_long_flag/1");
+  if (Runtime.op_allocate(state) !== true) return false;
+  { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 2, v); }
+  if (Runtime.op_builtin(program, state, "string_chars/2", 2) !== true) return false;
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+  if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(11)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 106) !== true) return false;
+  if (Runtime.op_put_structure(program, state, 5, 106, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(11)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 107) !== true) return false;
+  if (Runtime.op_put_structure(program, state, 5, 107, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 202) !== true) return false;
+  if (Runtime.op_unify_variable(state, 203) !== true) return false;
+  if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+  if (typeof lowered_js_alpha_1 === "function") {
+    Runtime.push_y_save(state);
+    const _ok = Runtime.run_lowered_body(program, state, lowered_js_alpha_1);
+    Runtime.pop_y_save(state);
+    if (_ok !== true) return false;
+  } else {
+    const saved_cp = state.cp;
+    const saved_pc = state.pc;
+    const target = program.labels["js_alpha/1"];
+    let _ok = true;
+    if (target !== undefined && target !== null) {
+      Runtime.push_y_save(state);
+      state.cp = 0;
+      state.pc = target;
+      state.program = program;
+      _ok = Runtime.run_isolated(program, state) === true;
+      state.halt = false;
+    } else if (Runtime.step(program, state, I.Call("js_alpha", 1)) !== true) {
+      _ok = false;
+    }
+    state.cp = saved_cp;
+    state.pc = saved_pc;
+    state.halt = false;
+    if (!_ok) return false;
+  }
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
+  if (Runtime.op_deallocate(state) !== true) return false;
+  if (typeof lowered_long_flag_tail_1 === "function") return lowered_long_flag_tail_1(program, state) === true;
+  {
+    const target = program.labels["long_flag_tail/1"];
+    if (target !== undefined && target !== null) {
+      return Runtime.execute_user_isolated(program, state, target) === true;
+    }
+    return Runtime.op_builtin(program, state, "long_flag_tail", 1) === true;
+  }
+  return true;
+}
+
+lowered_dispatch["is_long_flag/1"] = function (program, state) { return lowered_is_long_flag_1(program, state); };
 // Lowered: is_global_key/1 (if-then-else / negation / once)
 function lowered_is_global_key_1(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("is_global_key/1");
   if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 203, Runtime.get_reg(state, 1));
   if (Runtime.op_get_level(state, 204) !== true) return false;
@@ -6181,25 +7434,22 @@ function lowered_is_global_key_1(program, state) {
     const _ite_cps = state.cps.length;
     const _ite_cond = (function () {
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 1, v); }
-      {
+      if (typeof lowered_global_options_1 === "function") {
+        if (lowered_global_options_1(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["global_options/1"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["global_options/1"] : undefined);
+        const target = program.labels["global_options/1"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["global_options/1"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("global_options", 1)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("global_options", 1)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -6209,25 +7459,22 @@ function lowered_is_global_key_1(program, state) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 3, v); }
-      {
+      if (typeof lowered_pair_lookup_3 === "function") {
+        if (lowered_pair_lookup_3(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["pair_lookup/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["pair_lookup/3"] : undefined);
+        const target = program.labels["pair_lookup/3"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["pair_lookup/3"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("pair_lookup", 3)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("pair_lookup", 3)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -6242,25 +7489,22 @@ function lowered_is_global_key_1(program, state) {
       Runtime.restore_machine(state, _ite_snap);
       while (state.cps.length > _ite_cps) state.cps.pop();
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
-      {
+      if (typeof lowered_js_object_prototype_key_1 === "function") {
+        if (lowered_js_object_prototype_key_1(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["js_object_prototype_key/1"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["js_object_prototype_key/1"] : undefined);
+        const target = program.labels["js_object_prototype_key/1"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["js_object_prototype_key/1"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("js_object_prototype_key", 1)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("js_object_prototype_key", 1)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -6274,9 +7518,10 @@ function lowered_is_global_key_1(program, state) {
   return true;
 }
 
-lowered_dispatch["is_global_key/1"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("is_global_key/1"); return lowered_is_global_key_1(program, state); };
+lowered_dispatch["is_global_key/1"] = function (program, state) { return lowered_is_global_key_1(program, state); };
 // Lowered: global_options/1 (deterministic ground fact; interned after first success)
 function lowered_global_options_1(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("global_options/1");
   const _gk = "global_options/1";
   const _gm = program.ground_memo || (program.ground_memo = Object.create(null));
   const _cached = _gm[_gk];
@@ -6314,9 +7559,10 @@ function lowered_global_options_1(program, state) {
   return true;
 }
 
-lowered_dispatch["global_options/1"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("global_options/1"); return lowered_global_options_1(program, state); };
+lowered_dispatch["global_options/1"] = function (program, state) { return lowered_global_options_1(program, state); };
 // Lowered: flags_set/4 (if-then-else / negation / once)
 function lowered_flags_set_4(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("flags_set/4");
   if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 201, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 202, Runtime.get_reg(state, 2));
@@ -6343,25 +7589,22 @@ function lowered_flags_set_4(program, state) {
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
       Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
       Runtime.put_reg(state, 4, Runtime.get_reg(state, 204));
-      {
+      if (typeof lowered_flags_put_4 === "function") {
+        if (lowered_flags_put_4(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_put/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_put/4"] : undefined);
+        const target = program.labels["flags_put/4"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["flags_put/4"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("flags_put", 4)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("flags_put", 4)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -6375,9 +7618,96 @@ function lowered_flags_set_4(program, state) {
   return true;
 }
 
-lowered_dispatch["flags_set/4"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("flags_set/4"); return lowered_flags_set_4(program, state); };
-// Lowered: flags_put/4 (T4 all-clauses inline)
+lowered_dispatch["flags_set/4"] = function (program, state) { return lowered_flags_set_4(program, state); };
+// Lowered: flags_put/4 (T4 nil/cons dispatch; no snapshot on bound A1)
 function lowered_flags_put_4(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("flags_put/4");
+  const _a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (Runtime.term_is_nil(program, _a1)) {
+    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 102, Runtime.get_reg(state, 3));
+    if (Runtime.op_get_list(program, state, 4, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 11, 103, 2) !== true) return false;
+    if (Runtime.op_unify_value(program, state, 101) !== true) return false;
+    if (Runtime.op_unify_value(program, state, 102) !== true) return false;
+    if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+    return true;
+    return true;
+  }
+  if (Runtime.term_is_cons(program, _a1)) {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 108) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 11, 108, 2) !== true) return false;
+    if (Runtime.op_unify_variable(state, 202) !== true) return false;
+    if (Runtime.op_unify_variable(state, 203) !== true) return false;
+    if (Runtime.op_unify_variable(state, 204) !== true) return false;
+    Runtime.put_reg(state, 205, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 206, Runtime.get_reg(state, 3));
+    Runtime.put_reg(state, 201, Runtime.get_reg(state, 4));
+    if (Runtime.op_get_level(state, 208) !== true) return false;
+    {
+      const _ite_trail = state.trail.length;
+      const _ite_args = Runtime.capture_a_regs(state, 8);
+      const _ite_cond = (function () {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+        Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
+        if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
+        return true;
+      })();
+      if (_ite_cond) {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+        if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+        if (Runtime.op_unify_variable(state, 110) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 204) !== true) return false;
+        if (Runtime.op_put_structure(program, state, 11, 110, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 202) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 206) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      } else {
+        Runtime.undo_trail(state, _ite_trail);
+        Runtime.restore_a_regs(state, _ite_args);
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+        if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+        if (Runtime.op_unify_variable(state, 110) !== true) return false;
+        if (Runtime.op_unify_variable(state, 207) !== true) return false;
+        if (Runtime.op_put_structure(program, state, 11, 110, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 202) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 203) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
+        Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
+        Runtime.put_reg(state, 3, Runtime.get_reg(state, 206));
+        Runtime.put_reg(state, 4, Runtime.get_reg(state, 207));
+        if (typeof lowered_flags_put_4 === "function") {
+          if (lowered_flags_put_4(program, state) !== true) return false;
+        } else {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const target = program.labels["flags_put/4"];
+          let _ok = true;
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("flags_put", 4)) !== true) {
+            _ok = false;
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+      }
+    }
+    if (Runtime.op_deallocate(state) !== true) return false;
+    return true;
+    return true;
+  }
   const _t4_trail = state.trail.length;
   const _t4_regs = Runtime.copy_table(state.regs);
   const _t4_vc = state.var_counter;
@@ -6456,25 +7786,22 @@ function lowered_flags_put_4(program, state) {
         Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
         Runtime.put_reg(state, 3, Runtime.get_reg(state, 206));
         Runtime.put_reg(state, 4, Runtime.get_reg(state, 207));
-        {
+        if (typeof lowered_flags_put_4 === "function") {
+          if (lowered_flags_put_4(program, state) !== true) return false;
+        } else {
           const saved_cp = state.cp;
           const saved_pc = state.pc;
-          const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_put/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_put/4"] : undefined);
+          const target = program.labels["flags_put/4"];
           let _ok = true;
-          if (typeof _lf === "function") {
-            _ok = _lf(program, state) === true;
-          } else {
-            const target = program.labels["flags_put/4"];
-            if (target !== undefined && target !== null) {
-              Runtime.push_y_save(state);
-              state.cp = 0;
-              state.pc = target;
-              state.program = program;
-              _ok = Runtime.run_isolated(program, state) === true;
-              state.halt = false;
-            } else if (Runtime.step(program, state, I.Call("flags_put", 4)) !== true) {
-              _ok = false;
-            }
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("flags_put", 4)) !== true) {
+            _ok = false;
           }
           state.cp = saved_cp;
           state.pc = saved_pc;
@@ -6487,23 +7814,109 @@ function lowered_flags_put_4(program, state) {
     return true;
     return false;
   })()) return true;
-  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
-  state.regs = Runtime.copy_table(_t4_regs);
-  state.var_counter = _t4_vc;
-  state.stack = _t4_stack.slice();
-  state.y_save = _t4_ysave.slice();
-  state.mode = _t4_mode;
-  state.build_stack = _t4_build.slice();
-  state.read_stack = _t4_rstack.slice();
-  state.read_args = _t4_rargs;
-  state.read_cursor = _t4_rcur;
   return false;
 }
 
-lowered_dispatch["flags_put/4"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("flags_put/4"); return lowered_flags_put_4(program, state); };
-// wamjs lower fallback: first_equals_index/2  fallback(execute of a non-self callee (nested Runtime.run would steal CP))
-// Lowered: first_char_index/4 (T4 all-clauses inline)
+lowered_dispatch["flags_put/4"] = function (program, state) { return lowered_flags_put_4(program, state); };
+// Lowered: first_equals_index/2 (deterministic)
+function lowered_first_equals_index_2(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("first_equals_index/2");
+  if (Runtime.op_allocate(state) !== true) return false;
+  Runtime.put_reg(state, 103, Runtime.get_reg(state, 1));
+  Runtime.put_reg(state, 202, Runtime.get_reg(state, 2));
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 103));
+  { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 2, v); }
+  if (Runtime.op_builtin(program, state, "string_chars/2", 2) !== true) return false;
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+  Runtime.put_reg(state, 2, V.Atom(18));
+  Runtime.put_reg(state, 3, V.Int(0));
+  Runtime.put_reg(state, 4, Runtime.get_reg(state, 202));
+  if (Runtime.op_deallocate(state) !== true) return false;
+  if (typeof lowered_first_char_index_4 === "function") return lowered_first_char_index_4(program, state) === true;
+  {
+    const target = program.labels["first_char_index/4"];
+    if (target !== undefined && target !== null) {
+      return Runtime.execute_user_isolated(program, state, target) === true;
+    }
+    return Runtime.op_builtin(program, state, "first_char_index", 4) === true;
+  }
+  return true;
+}
+
+lowered_dispatch["first_equals_index/2"] = function (program, state) { return lowered_first_equals_index_2(program, state); };
+// Lowered: first_char_index/4 (T4 nil/cons dispatch; no snapshot on bound A1)
 function lowered_first_char_index_4(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("first_char_index/4");
+  const _a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (Runtime.term_is_nil(program, _a1)) {
+    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 102, Runtime.get_reg(state, 3));
+    if (Runtime.op_get_constant(program, state, 4, V.Int(-1)) !== true) return false;
+    return true;
+    return true;
+  }
+  if (Runtime.term_is_cons(program, _a1)) {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 201) !== true) return false;
+    if (Runtime.op_unify_variable(state, 203) !== true) return false;
+    Runtime.put_reg(state, 204, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 202, Runtime.get_reg(state, 3));
+    Runtime.put_reg(state, 206, Runtime.get_reg(state, 4));
+    if (Runtime.op_get_level(state, 207) !== true) return false;
+    {
+      const _ite_trail = state.trail.length;
+      const _ite_args = Runtime.capture_a_regs(state, 8);
+      const _ite_cond = (function () {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+        Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
+        if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
+        return true;
+      })();
+      if (_ite_cond) {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
+        Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      } else {
+        Runtime.undo_trail(state, _ite_trail);
+        Runtime.restore_a_regs(state, _ite_args);
+        { const v = Runtime.new_var(state); Runtime.put_reg(state, 205, v); Runtime.put_reg(state, 1, v); }
+        if (Runtime.op_put_structure(program, state, 10, 2, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 202) !== true) return false;
+        if (Runtime.op_unify_constant(program, state, V.Int(1)) !== true) return false;
+        if (Runtime.op_builtin(program, state, "is/2", 2) !== true) return false;
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
+        Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
+        Runtime.put_reg(state, 3, Runtime.get_reg(state, 205));
+        Runtime.put_reg(state, 4, Runtime.get_reg(state, 206));
+        if (typeof lowered_first_char_index_4 === "function") {
+          if (lowered_first_char_index_4(program, state) !== true) return false;
+        } else {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const target = program.labels["first_char_index/4"];
+          let _ok = true;
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("first_char_index", 4)) !== true) {
+            _ok = false;
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+      }
+    }
+    if (Runtime.op_deallocate(state) !== true) return false;
+    return true;
+    return true;
+  }
   const _t4_trail = state.trail.length;
   const _t4_regs = Runtime.copy_table(state.regs);
   const _t4_vc = state.var_counter;
@@ -6566,25 +7979,22 @@ function lowered_first_char_index_4(program, state) {
         Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
         Runtime.put_reg(state, 3, Runtime.get_reg(state, 205));
         Runtime.put_reg(state, 4, Runtime.get_reg(state, 206));
-        {
+        if (typeof lowered_first_char_index_4 === "function") {
+          if (lowered_first_char_index_4(program, state) !== true) return false;
+        } else {
           const saved_cp = state.cp;
           const saved_pc = state.pc;
-          const _lf = (program.lowered_dispatch && program.lowered_dispatch["first_char_index/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["first_char_index/4"] : undefined);
+          const target = program.labels["first_char_index/4"];
           let _ok = true;
-          if (typeof _lf === "function") {
-            _ok = _lf(program, state) === true;
-          } else {
-            const target = program.labels["first_char_index/4"];
-            if (target !== undefined && target !== null) {
-              Runtime.push_y_save(state);
-              state.cp = 0;
-              state.pc = target;
-              state.program = program;
-              _ok = Runtime.run_isolated(program, state) === true;
-              state.halt = false;
-            } else if (Runtime.step(program, state, I.Call("first_char_index", 4)) !== true) {
-              _ok = false;
-            }
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("first_char_index", 4)) !== true) {
+            _ok = false;
           }
           state.cp = saved_cp;
           state.pc = saved_pc;
@@ -6594,6 +8004,93 @@ function lowered_first_char_index_4(program, state) {
       }
     }
     if (Runtime.op_deallocate(state) !== true) return false;
+    return true;
+    return false;
+  })()) return true;
+  return false;
+}
+
+lowered_dispatch["first_char_index/4"] = function (program, state) { return lowered_first_char_index_4(program, state); };
+// Lowered: drop_brackets/2 (T4 nil/cons dispatch; no snapshot on bound A1)
+function lowered_drop_brackets_2(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("drop_brackets/2");
+  const _a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (Runtime.term_is_nil(program, _a1)) {
+    if (Runtime.op_get_constant(program, state, 2, V.Atom(2)) !== true) return false;
+    return true;
+    return true;
+  }
+  if (Runtime.term_is_cons(program, _a1)) {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 202) !== true) return false;
+    if (Runtime.op_unify_variable(state, 203) !== true) return false;
+    Runtime.put_reg(state, 201, Runtime.get_reg(state, 2));
+    if (Runtime.op_get_level(state, 205) !== true) return false;
+    {
+      const _ite_trail = state.trail.length;
+      const _ite_args = Runtime.capture_a_regs(state, 8);
+      const _ite_cond = (function () {
+        {
+          const _ite_trail = state.trail.length;
+          const _ite_args = Runtime.capture_a_regs(state, 8);
+          const _ite_cond = (function () {
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+            Runtime.put_reg(state, 2, V.Atom(16));
+            if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
+            return true;
+          })();
+          if (_ite_cond) {
+          } else {
+            Runtime.undo_trail(state, _ite_trail);
+            Runtime.restore_a_regs(state, _ite_args);
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+            Runtime.put_reg(state, 2, V.Atom(17));
+            if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
+          }
+        }
+        return true;
+      })();
+      if (_ite_cond) {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+        { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 2, v); }
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      } else {
+        Runtime.undo_trail(state, _ite_trail);
+        Runtime.restore_a_regs(state, _ite_args);
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+        if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 202) !== true) return false;
+        if (Runtime.op_unify_variable(state, 204) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      }
+    }
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_drop_brackets_2 === "function") return lowered_drop_brackets_2(program, state) === true;
+    {
+      const target = program.labels["drop_brackets/2"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "drop_brackets", 2) === true;
+    }
+    return true;
+  }
+  const _t4_trail = state.trail.length;
+  const _t4_regs = Runtime.copy_table(state.regs);
+  const _t4_vc = state.var_counter;
+  const _t4_stack = state.stack.slice();
+  const _t4_ysave = (state.y_save || []).slice();
+  const _t4_mode = state.mode;
+  const _t4_build = state.build_stack.slice();
+  const _t4_rstack = (state.read_stack || []).slice();
+  const _t4_rargs = state.read_args;
+  const _t4_rcur = state.read_cursor;
+  if ((function () {
+    if (Runtime.op_get_constant(program, state, 1, V.Atom(2)) !== true) return false;
+    if (Runtime.op_get_constant(program, state, 2, V.Atom(2)) !== true) return false;
     return true;
     return false;
   })()) return true;
@@ -6607,13 +8104,71 @@ function lowered_first_char_index_4(program, state) {
   state.read_stack = _t4_rstack.slice();
   state.read_args = _t4_rargs;
   state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 202) !== true) return false;
+    if (Runtime.op_unify_variable(state, 203) !== true) return false;
+    Runtime.put_reg(state, 201, Runtime.get_reg(state, 2));
+    if (Runtime.op_get_level(state, 205) !== true) return false;
+    {
+      const _ite_trail = state.trail.length;
+      const _ite_args = Runtime.capture_a_regs(state, 8);
+      const _ite_cond = (function () {
+        {
+          const _ite_trail = state.trail.length;
+          const _ite_args = Runtime.capture_a_regs(state, 8);
+          const _ite_cond = (function () {
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+            Runtime.put_reg(state, 2, V.Atom(16));
+            if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
+            return true;
+          })();
+          if (_ite_cond) {
+          } else {
+            Runtime.undo_trail(state, _ite_trail);
+            Runtime.restore_a_regs(state, _ite_args);
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+            Runtime.put_reg(state, 2, V.Atom(17));
+            if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
+          }
+        }
+        return true;
+      })();
+      if (_ite_cond) {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+        { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 2, v); }
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      } else {
+        Runtime.undo_trail(state, _ite_trail);
+        Runtime.restore_a_regs(state, _ite_args);
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+        if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 202) !== true) return false;
+        if (Runtime.op_unify_variable(state, 204) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      }
+    }
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_drop_brackets_2 === "function") return lowered_drop_brackets_2(program, state) === true;
+    {
+      const target = program.labels["drop_brackets/2"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "drop_brackets", 2) === true;
+    }
+    return false;
+  })()) return true;
   return false;
 }
 
-lowered_dispatch["first_char_index/4"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("first_char_index/4"); return lowered_first_char_index_4(program, state); };
-// wamjs lower fallback: drop_brackets/2  fallback(multi_clause_1 would keep interpreter CPs; T4+ITE did not match)
+lowered_dispatch["drop_brackets/2"] = function (program, state) { return lowered_drop_brackets_2(program, state); };
 // Lowered: default_registry/1 (deterministic ground fact; interned after first success)
 function lowered_default_registry_1(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("default_registry/1");
   const _gk = "default_registry/1";
   const _gm = program.ground_memo || (program.ground_memo = Object.create(null));
   const _cached = _gm[_gk];
@@ -7119,9 +8674,123 @@ function lowered_default_registry_1(program, state) {
   return true;
 }
 
-lowered_dispatch["default_registry/1"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("default_registry/1"); return lowered_default_registry_1(program, state); };
-// Lowered: count_required/3 (T4 all-clauses inline)
+lowered_dispatch["default_registry/1"] = function (program, state) { return lowered_default_registry_1(program, state); };
+// Lowered: count_required/3 (T4 nil/cons dispatch; no snapshot on bound A1)
 function lowered_count_required_3(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("count_required/3");
+  const _a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (Runtime.term_is_nil(program, _a1)) {
+    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
+    if (Runtime.op_get_value(program, state, 101, 3) !== true) return false;
+    return true;
+    return true;
+  }
+  if (Runtime.term_is_cons(program, _a1)) {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 201) !== true) return false;
+    if (Runtime.op_unify_variable(state, 203) !== true) return false;
+    Runtime.put_reg(state, 202, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 205, Runtime.get_reg(state, 3));
+    if (Runtime.op_get_level(state, 206) !== true) return false;
+    {
+      const _ite_snap = Runtime.snapshot_machine(state);
+      const _ite_cps = state.cps.length;
+      const _ite_cond = (function () {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+        Runtime.put_reg(state, 2, V.String("["));
+        if (typeof lowered_starts_with_2 === "function") {
+          if (lowered_starts_with_2(program, state) !== true) return false;
+        } else {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const target = program.labels["starts_with/2"];
+          let _ok = true;
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
+            _ok = false;
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+        return true;
+      })();
+      if (_ite_cond) {
+        { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 1, v); }
+        Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      } else {
+        Runtime.restore_machine(state, _ite_snap);
+        while (state.cps.length > _ite_cps) state.cps.pop();
+        if (Runtime.op_get_level(state, 207) !== true) return false;
+        {
+          const _ite_snap = Runtime.snapshot_machine(state);
+          const _ite_cps = state.cps.length;
+          const _ite_cond = (function () {
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+            Runtime.put_reg(state, 2, V.String("..."));
+            if (typeof lowered_starts_with_2 === "function") {
+              if (lowered_starts_with_2(program, state) !== true) return false;
+            } else {
+              const saved_cp = state.cp;
+              const saved_pc = state.pc;
+              const target = program.labels["starts_with/2"];
+              let _ok = true;
+              if (target !== undefined && target !== null) {
+                Runtime.push_y_save(state);
+                state.cp = 0;
+                state.pc = target;
+                state.program = program;
+                _ok = Runtime.run_isolated(program, state) === true;
+                state.halt = false;
+              } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
+                _ok = false;
+              }
+              state.cp = saved_cp;
+              state.pc = saved_pc;
+              state.halt = false;
+              if (!_ok) return false;
+            }
+            return true;
+          })();
+          if (_ite_cond) {
+            { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 1, v); }
+            Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
+            if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+          } else {
+            Runtime.restore_machine(state, _ite_snap);
+            while (state.cps.length > _ite_cps) state.cps.pop();
+            { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 1, v); }
+            if (Runtime.op_put_structure(program, state, 10, 2, 2) !== true) return false;
+            if (Runtime.op_unify_value(program, state, 202) !== true) return false;
+            if (Runtime.op_unify_constant(program, state, V.Int(1)) !== true) return false;
+            if (Runtime.op_builtin(program, state, "is/2", 2) !== true) return false;
+          }
+        }
+      }
+    }
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
+    Runtime.put_reg(state, 3, Runtime.get_reg(state, 205));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_count_required_3 === "function") return lowered_count_required_3(program, state) === true;
+    {
+      const target = program.labels["count_required/3"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "count_required", 3) === true;
+    }
+    return true;
+  }
   const _t4_trail = state.trail.length;
   const _t4_regs = Runtime.copy_table(state.regs);
   const _t4_vc = state.var_counter;
@@ -7163,25 +8832,22 @@ function lowered_count_required_3(program, state) {
       const _ite_cond = (function () {
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
         Runtime.put_reg(state, 2, V.String("["));
-        {
+        if (typeof lowered_starts_with_2 === "function") {
+          if (lowered_starts_with_2(program, state) !== true) return false;
+        } else {
           const saved_cp = state.cp;
           const saved_pc = state.pc;
-          const _lf = (program.lowered_dispatch && program.lowered_dispatch["starts_with/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["starts_with/2"] : undefined);
+          const target = program.labels["starts_with/2"];
           let _ok = true;
-          if (typeof _lf === "function") {
-            _ok = _lf(program, state) === true;
-          } else {
-            const target = program.labels["starts_with/2"];
-            if (target !== undefined && target !== null) {
-              Runtime.push_y_save(state);
-              state.cp = 0;
-              state.pc = target;
-              state.program = program;
-              _ok = Runtime.run_isolated(program, state) === true;
-              state.halt = false;
-            } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
-              _ok = false;
-            }
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
+            _ok = false;
           }
           state.cp = saved_cp;
           state.pc = saved_pc;
@@ -7204,25 +8870,22 @@ function lowered_count_required_3(program, state) {
           const _ite_cond = (function () {
             Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
             Runtime.put_reg(state, 2, V.String("..."));
-            {
+            if (typeof lowered_starts_with_2 === "function") {
+              if (lowered_starts_with_2(program, state) !== true) return false;
+            } else {
               const saved_cp = state.cp;
               const saved_pc = state.pc;
-              const _lf = (program.lowered_dispatch && program.lowered_dispatch["starts_with/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["starts_with/2"] : undefined);
+              const target = program.labels["starts_with/2"];
               let _ok = true;
-              if (typeof _lf === "function") {
-                _ok = _lf(program, state) === true;
-              } else {
-                const target = program.labels["starts_with/2"];
-                if (target !== undefined && target !== null) {
-                  Runtime.push_y_save(state);
-                  state.cp = 0;
-                  state.pc = target;
-                  state.program = program;
-                  _ok = Runtime.run_isolated(program, state) === true;
-                  state.halt = false;
-                } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
-                  _ok = false;
-                }
+              if (target !== undefined && target !== null) {
+                Runtime.push_y_save(state);
+                state.cp = 0;
+                state.pc = target;
+                state.program = program;
+                _ok = Runtime.run_isolated(program, state) === true;
+                state.halt = false;
+              } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
+                _ok = false;
               }
               state.cp = saved_cp;
               state.pc = saved_pc;
@@ -7251,38 +8914,23 @@ function lowered_count_required_3(program, state) {
     Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
     Runtime.put_reg(state, 3, Runtime.get_reg(state, 205));
     if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_count_required_3 === "function") return lowered_count_required_3(program, state) === true;
     {
-      const _lf = (program.lowered_dispatch && program.lowered_dispatch["count_required/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["count_required/3"] : undefined);
-      if (typeof _lf === "function") return _lf(program, state) === true;
       const target = program.labels["count_required/3"];
       if (target !== undefined && target !== null) {
-        state.pc = target;
-        state.program = program;
-        return Runtime.run_isolated(program, state) === true;
+        return Runtime.execute_user_isolated(program, state, target) === true;
       }
-      if (Runtime.step(program, state, I.Execute("count_required", 3)) !== true) return false;
-      if (state.halt) return true;
-      state.program = program;
-      return Runtime.run_isolated(program, state) === true;
+      return Runtime.op_builtin(program, state, "count_required", 3) === true;
     }
     return false;
   })()) return true;
-  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
-  state.regs = Runtime.copy_table(_t4_regs);
-  state.var_counter = _t4_vc;
-  state.stack = _t4_stack.slice();
-  state.y_save = _t4_ysave.slice();
-  state.mode = _t4_mode;
-  state.build_stack = _t4_build.slice();
-  state.read_stack = _t4_rstack.slice();
-  state.read_args = _t4_rargs;
-  state.read_cursor = _t4_rcur;
   return false;
 }
 
-lowered_dispatch["count_required/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("count_required/3"); return lowered_count_required_3(program, state); };
+lowered_dispatch["count_required/3"] = function (program, state) { return lowered_count_required_3(program, state); };
 // Lowered: check_arity/3 (if-then-else / negation / once)
 function lowered_check_arity_3(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("check_arity/3");
   if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 210, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 203, Runtime.get_reg(state, 2));
@@ -7300,25 +8948,22 @@ function lowered_check_arity_3(program, state) {
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 2, v); }
-      {
+      if (typeof lowered_last_element_2 === "function") {
+        if (lowered_last_element_2(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["last_element/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["last_element/2"] : undefined);
+        const target = program.labels["last_element/2"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["last_element/2"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("last_element", 2)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("last_element", 2)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -7327,25 +8972,22 @@ function lowered_check_arity_3(program, state) {
       }
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
       Runtime.put_reg(state, 2, V.String("..."));
-      {
+      if (typeof lowered_starts_with_2 === "function") {
+        if (lowered_starts_with_2(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["starts_with/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["starts_with/2"] : undefined);
+        const target = program.labels["starts_with/2"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["starts_with/2"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -7369,25 +9011,22 @@ function lowered_check_arity_3(program, state) {
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
   Runtime.put_reg(state, 2, V.Int(0));
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 3, v); }
-  {
+  if (typeof lowered_count_required_3 === "function") {
+    if (lowered_count_required_3(program, state) !== true) return false;
+  } else {
     const saved_cp = state.cp;
     const saved_pc = state.pc;
-    const _lf = (program.lowered_dispatch && program.lowered_dispatch["count_required/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["count_required/3"] : undefined);
+    const target = program.labels["count_required/3"];
     let _ok = true;
-    if (typeof _lf === "function") {
-      _ok = _lf(program, state) === true;
-    } else {
-      const target = program.labels["count_required/3"];
-      if (target !== undefined && target !== null) {
-        Runtime.push_y_save(state);
-        state.cp = 0;
-        state.pc = target;
-        state.program = program;
-        _ok = Runtime.run_isolated(program, state) === true;
-        state.halt = false;
-      } else if (Runtime.step(program, state, I.Call("count_required", 3)) !== true) {
-        _ok = false;
-      }
+    if (target !== undefined && target !== null) {
+      Runtime.push_y_save(state);
+      state.cp = 0;
+      state.pc = target;
+      state.program = program;
+      _ok = Runtime.run_isolated(program, state) === true;
+      state.halt = false;
+    } else if (Runtime.step(program, state, I.Call("count_required", 3)) !== true) {
+      _ok = false;
     }
     state.cp = saved_cp;
     state.pc = saved_pc;
@@ -7409,25 +9048,22 @@ function lowered_check_arity_3(program, state) {
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
       Runtime.put_reg(state, 3, V.String("argument"));
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
-      {
+      if (typeof lowered_nth0_default_4 === "function") {
+        if (lowered_nth0_default_4(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["nth0_default/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["nth0_default/4"] : undefined);
+        const target = program.labels["nth0_default/4"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["nth0_default/4"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("nth0_default", 4)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("nth0_default", 4)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -7436,25 +9072,22 @@ function lowered_check_arity_3(program, state) {
       }
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 205, v); Runtime.put_reg(state, 2, v); }
-      {
+      if (typeof lowered_strip_brackets_2 === "function") {
+        if (lowered_strip_brackets_2(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["strip_brackets/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["strip_brackets/2"] : undefined);
+        const target = program.labels["strip_brackets/2"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["strip_brackets/2"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("strip_brackets", 2)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("strip_brackets", 2)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -7490,25 +9123,22 @@ function lowered_check_arity_3(program, state) {
           Runtime.put_reg(state, 2, Runtime.get_reg(state, 210));
           Runtime.put_reg(state, 3, V.String(""));
           { const v = Runtime.new_var(state); Runtime.put_reg(state, 211, v); Runtime.put_reg(state, 4, v); }
-          {
+          if (typeof lowered_nth0_default_4 === "function") {
+            if (lowered_nth0_default_4(program, state) !== true) return false;
+          } else {
             const saved_cp = state.cp;
             const saved_pc = state.pc;
-            const _lf = (program.lowered_dispatch && program.lowered_dispatch["nth0_default/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["nth0_default/4"] : undefined);
+            const target = program.labels["nth0_default/4"];
             let _ok = true;
-            if (typeof _lf === "function") {
-              _ok = _lf(program, state) === true;
-            } else {
-              const target = program.labels["nth0_default/4"];
-              if (target !== undefined && target !== null) {
-                Runtime.push_y_save(state);
-                state.cp = 0;
-                state.pc = target;
-                state.program = program;
-                _ok = Runtime.run_isolated(program, state) === true;
-                state.halt = false;
-              } else if (Runtime.step(program, state, I.Call("nth0_default", 4)) !== true) {
-                _ok = false;
-              }
+            if (target !== undefined && target !== null) {
+              Runtime.push_y_save(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+            } else if (Runtime.step(program, state, I.Call("nth0_default", 4)) !== true) {
+              _ok = false;
             }
             state.cp = saved_cp;
             state.pc = saved_pc;
@@ -7538,9 +9168,10 @@ function lowered_check_arity_3(program, state) {
   return true;
 }
 
-lowered_dispatch["check_arity/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("check_arity/3"); return lowered_check_arity_3(program, state); };
+lowered_dispatch["check_arity/3"] = function (program, state) { return lowered_check_arity_3(program, state); };
 // Lowered: action_entry/3 (if-then-else / negation / once)
 function lowered_action_entry_3(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("action_entry/3");
   if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 201, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 203, Runtime.get_reg(state, 2));
@@ -7553,25 +9184,22 @@ function lowered_action_entry_3(program, state) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 3, v); }
-      {
+      if (typeof lowered_pair_lookup_3 === "function") {
+        if (lowered_pair_lookup_3(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["pair_lookup/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["pair_lookup/3"] : undefined);
+        const target = program.labels["pair_lookup/3"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["pair_lookup/3"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("pair_lookup", 3)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("pair_lookup", 3)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -7588,25 +9216,22 @@ function lowered_action_entry_3(program, state) {
       Runtime.restore_machine(state, _ite_snap);
       while (state.cps.length > _ite_cps) state.cps.pop();
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
-      {
+      if (typeof lowered_js_object_prototype_key_1 === "function") {
+        if (lowered_js_object_prototype_key_1(program, state) !== true) return false;
+      } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
-        const _lf = (program.lowered_dispatch && program.lowered_dispatch["js_object_prototype_key/1"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["js_object_prototype_key/1"] : undefined);
+        const target = program.labels["js_object_prototype_key/1"];
         let _ok = true;
-        if (typeof _lf === "function") {
-          _ok = _lf(program, state) === true;
-        } else {
-          const target = program.labels["js_object_prototype_key/1"];
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("js_object_prototype_key", 1)) !== true) {
-            _ok = false;
-          }
+        if (target !== undefined && target !== null) {
+          Runtime.push_y_save(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+        } else if (Runtime.step(program, state, I.Call("js_object_prototype_key", 1)) !== true) {
+          _ok = false;
         }
         state.cp = saved_cp;
         state.pc = saved_pc;
@@ -7625,16 +9250,30 @@ function lowered_action_entry_3(program, state) {
   return true;
 }
 
-lowered_dispatch["action_entry/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("action_entry/3"); return lowered_action_entry_3(program, state); };
+lowered_dispatch["action_entry/3"] = function (program, state) { return lowered_action_entry_3(program, state); };
 shared_program.lowered_dispatch = lowered_dispatch;
 
 function substring_range(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 2145, [a1, a2, a3, a4]);
+  const state = Runtime.new_state();
+  const args = [a1, a2, a3, a4];
+  for (let i = 0; i < 4; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_substring_range_4(shared_program, state) === true;
 }
 M.substring_range = substring_range;
 
 function substring_from(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 2126, [a1, a2, a3]);
+  const state = Runtime.new_state();
+  const args = [a1, a2, a3];
+  for (let i = 0; i < 3; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_substring_from_3(shared_program, state) === true;
 }
 M.substring_from = substring_from;
 
@@ -7646,7 +9285,6 @@ function strip_brackets(a1, a2) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("strip_brackets/2");
   return lowered_strip_brackets_2(shared_program, state) === true;
 }
 M.strip_brackets = strip_brackets;
@@ -7659,7 +9297,6 @@ function string_member(a1, a2) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("string_member/2");
   return lowered_string_member_2(shared_program, state) === true;
 }
 M.string_member = string_member;
@@ -7672,7 +9309,6 @@ function strict_option(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("strict_option/11");
   return lowered_strict_option_11(shared_program, state) === true;
 }
 M.strict_option = strict_option;
@@ -7685,7 +9321,6 @@ function strict_loop(a1, a2, a3, a4, a5, a6, a7, a8) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("strict_loop/8");
   return lowered_strict_loop_8(shared_program, state) === true;
 }
 M.strict_loop = strict_loop;
@@ -7698,7 +9333,6 @@ function starts_with(a1, a2) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("starts_with/2");
   return lowered_starts_with_2(shared_program, state) === true;
 }
 M.starts_with = starts_with;
@@ -7711,7 +9345,6 @@ function split_flag_token(a1, a2, a3) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("split_flag_token/3");
   return lowered_split_flag_token_3(shared_program, state) === true;
 }
 M.split_flag_token = split_flag_token;
@@ -7724,7 +9357,6 @@ function schema_for(a1, a2, a3, a4, a5) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("schema_for/5");
   return lowered_schema_for_5(shared_program, state) === true;
 }
 M.schema_for = schema_for;
@@ -7737,7 +9369,6 @@ function scan_leading_globals(a1, a2, a3, a4) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("scan_leading_globals/4");
   return lowered_scan_leading_globals_4(shared_program, state) === true;
 }
 M.scan_leading_globals = scan_leading_globals;
@@ -7750,7 +9381,6 @@ function registry_entry(a1, a2, a3) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("registry_entry/3");
   return lowered_registry_entry_3(shared_program, state) === true;
 }
 M.registry_entry = registry_entry;
@@ -7763,7 +9393,6 @@ function parse_strict(a1, a2, a3, a4) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("parse_strict/4");
   return lowered_parse_strict_4(shared_program, state) === true;
 }
 M.parse_strict = parse_strict;
@@ -7776,7 +9405,6 @@ function parse_lenient(a1, a2, a3) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("parse_lenient/3");
   return lowered_parse_lenient_3(shared_program, state) === true;
 }
 M.parse_lenient = parse_lenient;
@@ -7789,13 +9417,19 @@ function parse_args(a1, a2, a3) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("parse_args/3");
   return lowered_parse_args_3(shared_program, state) === true;
 }
 M.parse_args = parse_args;
 
 function parse_args(a1, a2) {
-  return Runtime.run_predicate(shared_program, 1326, [a1, a2]);
+  const state = Runtime.new_state();
+  const args = [a1, a2];
+  for (let i = 0; i < 2; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_parse_args_2(shared_program, state) === true;
 }
 M.parse_args = parse_args;
 
@@ -7807,7 +9441,6 @@ function pair_lookup(a1, a2, a3) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("pair_lookup/3");
   return lowered_pair_lookup_3(shared_program, state) === true;
 }
 M.pair_lookup = pair_lookup;
@@ -7820,7 +9453,6 @@ function option_kind(a1, a2, a3) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("option_kind/3");
   return lowered_option_kind_3(shared_program, state) === true;
 }
 M.option_kind = option_kind;
@@ -7833,7 +9465,6 @@ function nth0_default(a1, a2, a3, a4) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("nth0_default/4");
   return lowered_nth0_default_4(shared_program, state) === true;
 }
 M.nth0_default = nth0_default;
@@ -7846,7 +9477,6 @@ function next_value(a1, a2) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("next_value/2");
   return lowered_next_value_2(shared_program, state) === true;
 }
 M.next_value = next_value;
@@ -7859,18 +9489,31 @@ function merge_flags_(a1, a2, a3) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("merge_flags_/3");
   return lowered_merge_flags__3(shared_program, state) === true;
 }
 M.merge_flags_ = merge_flags_;
 
 function merge_flags(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 1150, [a1, a2, a3]);
+  const state = Runtime.new_state();
+  const args = [a1, a2, a3];
+  for (let i = 0; i < 3; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_merge_flags_3(shared_program, state) === true;
 }
 M.merge_flags = merge_flags;
 
 function looks_like_legacy_flag(a1) {
-  return Runtime.run_predicate(shared_program, 1131, [a1]);
+  const state = Runtime.new_state();
+  const args = [a1];
+  for (let i = 0; i < 1; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_looks_like_legacy_flag_1(shared_program, state) === true;
 }
 M.looks_like_legacy_flag = looks_like_legacy_flag;
 
@@ -7882,13 +9525,19 @@ function long_flag_tail(a1) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("long_flag_tail/1");
   return lowered_long_flag_tail_1(shared_program, state) === true;
 }
 M.long_flag_tail = long_flag_tail;
 
 function lenient_result(a1, a2) {
-  return Runtime.run_predicate(shared_program, 1097, [a1, a2]);
+  const state = Runtime.new_state();
+  const args = [a1, a2];
+  for (let i = 0; i < 2; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_lenient_result_2(shared_program, state) === true;
 }
 M.lenient_result = lenient_result;
 
@@ -7900,7 +9549,6 @@ function lenient_loop(a1, a2, a3, a4, a5) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("lenient_loop/5");
   return lowered_lenient_loop_5(shared_program, state) === true;
 }
 M.lenient_loop = lenient_loop;
@@ -7913,7 +9561,6 @@ function legacy_flag_tail(a1) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("legacy_flag_tail/1");
   return lowered_legacy_flag_tail_1(shared_program, state) === true;
 }
 M.legacy_flag_tail = legacy_flag_tail;
@@ -7926,7 +9573,6 @@ function last_element(a1, a2) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("last_element/2");
   return lowered_last_element_2(shared_program, state) === true;
 }
 M.last_element = last_element;
@@ -7939,13 +9585,19 @@ function js_object_prototype_keys(a1) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("js_object_prototype_keys/1");
   return lowered_js_object_prototype_keys_1(shared_program, state) === true;
 }
 M.js_object_prototype_keys = js_object_prototype_keys;
 
 function js_object_prototype_key(a1) {
-  return Runtime.run_predicate(shared_program, 917, [a1]);
+  const state = Runtime.new_state();
+  const args = [a1];
+  for (let i = 0; i < 1; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_js_object_prototype_key_1(shared_program, state) === true;
 }
 M.js_object_prototype_key = js_object_prototype_key;
 
@@ -7957,7 +9609,6 @@ function js_flag_char(a1) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("js_flag_char/1");
   return lowered_js_flag_char_1(shared_program, state) === true;
 }
 M.js_flag_char = js_flag_char;
@@ -7970,13 +9621,19 @@ function js_alpha(a1) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("js_alpha/1");
   return lowered_js_alpha_1(shared_program, state) === true;
 }
 M.js_alpha = js_alpha;
 
 function is_long_flag(a1) {
-  return Runtime.run_predicate(shared_program, 831, [a1]);
+  const state = Runtime.new_state();
+  const args = [a1];
+  for (let i = 0; i < 1; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_is_long_flag_1(shared_program, state) === true;
 }
 M.is_long_flag = is_long_flag;
 
@@ -7988,7 +9645,6 @@ function is_global_key(a1) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("is_global_key/1");
   return lowered_is_global_key_1(shared_program, state) === true;
 }
 M.is_global_key = is_global_key;
@@ -8001,7 +9657,6 @@ function global_options(a1) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("global_options/1");
   return lowered_global_options_1(shared_program, state) === true;
 }
 M.global_options = global_options;
@@ -8014,7 +9669,6 @@ function flags_set(a1, a2, a3, a4) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("flags_set/4");
   return lowered_flags_set_4(shared_program, state) === true;
 }
 M.flags_set = flags_set;
@@ -8027,13 +9681,19 @@ function flags_put(a1, a2, a3, a4) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("flags_put/4");
   return lowered_flags_put_4(shared_program, state) === true;
 }
 M.flags_put = flags_put;
 
 function first_equals_index(a1, a2) {
-  return Runtime.run_predicate(shared_program, 711, [a1, a2]);
+  const state = Runtime.new_state();
+  const args = [a1, a2];
+  for (let i = 0; i < 2; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_first_equals_index_2(shared_program, state) === true;
 }
 M.first_equals_index = first_equals_index;
 
@@ -8045,13 +9705,19 @@ function first_char_index(a1, a2, a3, a4) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("first_char_index/4");
   return lowered_first_char_index_4(shared_program, state) === true;
 }
 M.first_char_index = first_char_index;
 
 function drop_brackets(a1, a2) {
-  return Runtime.run_predicate(shared_program, 636, [a1, a2]);
+  const state = Runtime.new_state();
+  const args = [a1, a2];
+  for (let i = 0; i < 2; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_drop_brackets_2(shared_program, state) === true;
 }
 M.drop_brackets = drop_brackets;
 
@@ -8063,7 +9729,6 @@ function default_registry(a1) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("default_registry/1");
   return lowered_default_registry_1(shared_program, state) === true;
 }
 M.default_registry = default_registry;
@@ -8076,7 +9741,6 @@ function count_required(a1, a2, a3) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("count_required/3");
   return lowered_count_required_3(shared_program, state) === true;
 }
 M.count_required = count_required;
@@ -8089,7 +9753,6 @@ function check_arity(a1, a2, a3) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("check_arity/3");
   return lowered_check_arity_3(shared_program, state) === true;
 }
 M.check_arity = check_arity;
@@ -8102,7 +9765,6 @@ function action_entry(a1, a2, a3) {
   }
   state.cp = 0;
   state.program = shared_program;
-  if (Runtime._prof) Runtime.prof_lowered_call("action_entry/3");
   return lowered_action_entry_3(shared_program, state) === true;
 }
 M.action_entry = action_entry;
