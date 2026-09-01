@@ -18,7 +18,7 @@ measured against the same oracle.
 | | |
 | --- | --- |
 | contract corpus (`../oracle/cliArgs.test.mjs`, import swapped) | **17 / 17** |
-| differential vs the JS oracle, same generator and seed | **≥5000 lines, 0 divergences, 0 message mismatches** |
+| differential vs the JS oracle, same generator and seed | **5067 lines, 0 divergences, 0 message mismatches** |
 | `node --check` on the generated module | clean |
 | predicates omitted / goals dropped | none |
 

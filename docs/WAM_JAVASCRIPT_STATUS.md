@@ -230,7 +230,7 @@ instr=1234 unify=56 trail=40 heap=30 backtracks=12 undos=8 wall_ns=100000
 | Check | Result |
 |---|---|
 | Contract corpus (`cliArgs.wamjs.test.mjs`, oracle tests, import swapped) | **17 / 17** |
-| Differential vs JS oracle (`run_differential_wamjs.sh`, same seed) | **≥5000 lines, 0 divergences, 0 message mismatches** |
+| Differential vs JS oracle (`run_differential_wamjs.sh`, same seed) | **5067 lines, 0 divergences, 0 message mismatches** (oracle 0.048s, wamjs 4.639s) |
 
 Runtime gaps this program forced: `sub_string/5`; Y-register save/restore
 across `Call` of a non-`Allocate` fact; `Execute` of a builtin `Proceed`s to
@@ -249,7 +249,7 @@ CP instead of halting. Probes: `probe_sub_string/0`, `probe_y_preserve/0`,
 | `format/2` `/3` | **Implemented** for `~w ~a ~d ~p ~q ~n ~s ~t ~~`. Not ported: `~f`, `~r`, `~D`, positioning (`~N|`, `~+`, `t~`), aliases, and stream sinks other than stdout / `atom(A)` / `string(S)`. |
 | `sub_atom/5` | **Implemented** when Atom is ground; enumerates unbound Before/Length/After (and filters a ground SubAtom). |
 | `sub_string/5` | **Implemented.** Same enumeration as `sub_atom/5`; Sub is a `V.String`. |
-| Peerhailer argparser (A2) | **Implemented.** `examples/cli_args/wamjs/` compiles `cli_args.pl` through `wam_javascript` (interpreter) and matches the JS oracle: **17/17** corpus, **≥5000-line** differential with **0 divergences, 0 message mismatches**. |
+| Peerhailer argparser (A2) | **Implemented.** `examples/cli_args/wamjs/` compiles `cli_args.pl` through `wam_javascript` (interpreter) and matches the JS oracle: **17/17** corpus, **5067-line** differential with **0 divergences, 0 message mismatches**. |
 | String term tag | **Implemented.** `V.String` is a distinct tag. Unify/`==` require equal strings (not atoms). Standard order / `compare/3` / `sort` matches SWI 9.0.4: Var < Number < **String** < Atom < Compound (`"foo" @< foo`). `atom_string/2`, `string_concat/3`, `string_chars/2` (construct), `string_to_atom/2`, `number_string/2`, `split_string/4` produce strings. `string/1` is true only for the tag. `string_length/2` accepts a string, atom, or number (code-point length). `write/1` prints text unquoted; `writeq/1` and `format` `~q` recurse through lists/compounds, double-quote strings, and quote atoms only when needed (see quoting subset below). **Compiled `"foo"` literals** are spelled with outer double quotes in WAM text (`quote_wam_constant/2`); the shared classifier still returns `atom(foo)` (no `string(_)` Class). JS consults `wam_constant_token_is_string/1` and builds `V.String`. Other runtimes intern the atom as before. Fact-source JSON/TSV values still intern as atoms. |
 | `library(assoc)` | **Implemented** as a Prolog `assoc/1` list of Key-Value pairs (not SWI's AVL tree). get/put/list/keys match SWI for unique-key maps. |
 | First-arg indexing | **Implemented.** `switch_on_constant` / `_fallthrough` / `_a2`, `switch_on_structure` / `_a2`, and `switch_on_term` / `_a2` jump to the matching clause group. Ground first-arg with a unique clause leaves no choice point (`deterministic/0`). Unbound first arg falls through to the try/retry/trust chain (no lost solutions). Exclusive miss fails; fallthrough variants keep the chain for variable-headed clauses. Dedicated `try`/`retry`/`trust` dispatch chains are emitted for multi-clause groups. |
@@ -317,6 +317,6 @@ compiled `"foo"` literals as `V.String` (double-quoted WAM spelling;
 classifier still returns `atom(_)`), then opt-in interpreter profiling
 (`UW_PROFILE=1` / `json`, stderr-only table or JSON; lowered = call counts),
 then the peerhailer CLI argparser through the interpreter (A2:
-`examples/cli_args/wamjs/`, 17/17 corpus + seeded differential vs the
-JS oracle).
+`examples/cli_args/wamjs/`, 17/17 corpus + 5067-line differential vs the
+JS oracle, 0 divergences).
 Source-verified against SWI-Prolog as the oracle (2026-09-01).
