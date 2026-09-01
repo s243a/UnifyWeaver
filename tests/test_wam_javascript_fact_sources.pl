@@ -337,7 +337,7 @@ parse_fact_io_stats(Err, Bytes, DataSize) :-
     sub_string(Line, _, _, _, "fact_io bytes_read="),
     split_string(Line, " ", "", Parts),
     member(BPart, Parts), sub_string(BPart, 0, _, _, "bytes_read="),
-    sub_string(BPart, 12, _, 0, BStr), number_string(Bytes, BStr),
+    sub_string(BPart, 11, _, 0, BStr), number_string(Bytes, BStr),
     member(DPart, Parts), sub_string(DPart, 0, _, _, "data_size="),
     sub_string(DPart, 10, _, 0, DStr), number_string(DataSize, DStr),
     !.
@@ -399,8 +399,8 @@ test(indexed_store_bytes_read_proof, [setup(install_idx_preds)]) :-
     assertion(Bytes > 0),
     assertion(Bytes * 20 < DataSize),
     assertion(Bytes < 16384),
-    format(user_error, '~n[bytes-read proof] bytes_read=~w data_size=~w~n',
-           [Bytes, DataSize]).
+    format(user_error, '~n[bytes-read proof] bytes_read=~w data_size=~w~n[bytes-read proof raw stderr]~n~w~n',
+           [Bytes, DataSize, Err]).
 
 test(lmdb_missing_package_is_loud, [setup(install_idx_preds)]) :-
     Dir = 'output/js_wam_fact_lmdb_missing',
