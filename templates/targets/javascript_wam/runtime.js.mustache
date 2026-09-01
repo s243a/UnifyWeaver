@@ -362,6 +362,111 @@ function finish_read_if_done(state) {
   }
 }
 
+// Direct op helpers for the lowered emitter: same semantics as Runtime.step
+// minus instruction-object allocation, the interpreter if-chain, and pc++.
+// GetList with a missing fid intern [|] here so interpreter and lowered
+// share one write-mode path (convention 1).
+Runtime.op_allocate = function (state) {
+  state.stack.push({ cp: state.cp, yregs: snapshot_yregs(state) });
+  return true;
+};
+Runtime.op_deallocate = function (state) {
+  const f = state.stack.pop();
+  if (f) {
+    state.cp = f.cp;
+    restore_yregs(state, f.yregs);
+  }
+  return true;
+};
+Runtime.op_get_level = function (state, yn) {
+  Runtime.put_reg(state, yn, state.cps.length);
+  return true;
+};
+Runtime.op_get_constant = function (program, state, ai, c) {
+  return Runtime.unify(state, Runtime.get_reg(state, ai), c, program) === true;
+};
+Runtime.op_get_value = function (program, state, xn, ai) {
+  return Runtime.unify(state, Runtime.get_reg(state, ai), Runtime.get_reg(state, xn), program) === true;
+};
+Runtime.op_get_structure = function (program, state, fid, ai, arity) {
+  const val = Runtime.deref(state, Runtime.get_reg(state, ai));
+  const useFid = fid !== undefined ? fid : Runtime.intern(program.intern_table, "[|]");
+  const ar = arity || 2;
+  if (typeof val === "object" && val !== null && val.tag === "unbound") {
+    const s = V.Struct(useFid, []);
+    bind_var(state, val, s);
+    Runtime.put_reg(state, ai, s);
+    begin_write(state, ai, useFid, ar, s);
+    return true;
+  }
+  if (typeof val === "object" && val !== null && val.tag === "struct"
+      && same_functor(program, val.fid, (val.args || []).length, useFid, ar)) {
+    begin_read(state, val.args);
+    return true;
+  }
+  return false;
+};
+Runtime.op_get_list = function (program, state, ai, fid) {
+  return Runtime.op_get_structure(program, state, fid, ai, 2);
+};
+Runtime.op_put_structure = function (program, state, fid, ai, arity) {
+  const useFid = fid !== undefined ? fid : Runtime.intern(program.intern_table, "[|]");
+  begin_write(state, ai, useFid, arity || 2, null);
+  return true;
+};
+Runtime.op_put_list = function (program, state, ai, fid) {
+  return Runtime.op_put_structure(program, state, fid, ai, 2);
+};
+Runtime.op_unify_variable = function (state, xn) {
+  if (state.mode === "read") {
+    Runtime.put_reg(state, xn, state.read_args[state.read_cursor]);
+    state.read_cursor += 1;
+    finish_read_if_done(state);
+  } else {
+    const v = Runtime.new_var(state);
+    Runtime.put_reg(state, xn, v);
+    push_built_term(state, v);
+  }
+  return true;
+};
+Runtime.op_unify_value = function (program, state, xn) {
+  const v = Runtime.get_reg(state, xn);
+  if (state.mode === "read") {
+    if (Runtime.unify(state, v, state.read_args[state.read_cursor], program) !== true) return false;
+    state.read_cursor += 1;
+    finish_read_if_done(state);
+  } else {
+    push_built_term(state, v);
+  }
+  return true;
+};
+Runtime.op_unify_constant = function (program, state, c) {
+  if (state.mode === "read") {
+    if (Runtime.unify(state, c, state.read_args[state.read_cursor], program) !== true) return false;
+    state.read_cursor += 1;
+    finish_read_if_done(state);
+  } else {
+    push_built_term(state, c);
+  }
+  return true;
+};
+Runtime.op_builtin = function (program, state, pred, arity) {
+  return Runtime.builtin_call(program, state, { pred: pred, arity: arity }) === true;
+};
+Runtime.capture_a_regs = function (state, n) {
+  const a = new Array((n || 8) + 1);
+  const r = state.regs;
+  for (let i = 1; i <= n; i++) a[i] = r[i];
+  return a;
+};
+Runtime.restore_a_regs = function (state, a) {
+  const r = state.regs;
+  for (let i = 1; i < a.length; i++) {
+    if (a[i] === undefined) delete r[i];
+    else r[i] = a[i];
+  }
+};
+
 function undo_trail(state, mark) {
   const n = state.trail.length - mark;
   while (state.trail.length > mark) {
@@ -370,6 +475,7 @@ function undo_trail(state, mark) {
   }
   if (Runtime._prof && n > 0) Runtime._prof.trailUndos += 1;
 }
+Runtime.undo_trail = undo_trail;
 
 function snapshot_yregs(state) {
   const y = {};
@@ -3381,16 +3487,12 @@ Runtime.step = function (program, state, inst) {
   }
   if (op === "Fail") return false;
   if (op === "Allocate") {
-    state.stack.push({ cp: state.cp, yregs: snapshot_yregs(state) });
+    Runtime.op_allocate(state);
     state.pc += 1;
     return true;
   }
   if (op === "Deallocate") {
-    const f = state.stack.pop();
-    if (f) {
-      state.cp = f.cp;
-      restore_yregs(state, f.yregs);
-    }
+    Runtime.op_deallocate(state);
     state.pc += 1;
     return true;
   }
@@ -3417,79 +3519,39 @@ Runtime.step = function (program, state, inst) {
     return true;
   }
   if (op === "GetConstant") {
-    if (Runtime.unify(state, Runtime.get_reg(state, inst.ai), inst.c, program) !== true) return false;
+    if (Runtime.op_get_constant(program, state, inst.ai, inst.c) !== true) return false;
     state.pc += 1;
     return true;
   }
   if (op === "GetValue") {
-    if (Runtime.unify(state, Runtime.get_reg(state, inst.ai), Runtime.get_reg(state, inst.xn), program) !== true) {
-      return false;
-    }
+    if (Runtime.op_get_value(program, state, inst.xn, inst.ai) !== true) return false;
     state.pc += 1;
     return true;
   }
   if (op === "PutStructure" || op === "PutList") {
-    const fid = inst.fid !== undefined ? inst.fid : Runtime.intern(program.intern_table, "[|]");
-    const arity = inst.arity || 2;
-    begin_write(state, inst.ai, fid, arity, null);
+    if (Runtime.op_put_structure(program, state, inst.fid, inst.ai, inst.arity || 2) !== true) return false;
     state.pc += 1;
     return true;
   }
   if (op === "SetVariable" || op === "UnifyVariable") {
-    if (state.mode === "read") {
-      Runtime.put_reg(state, inst.xn, state.read_args[state.read_cursor]);
-      state.read_cursor += 1;
-      finish_read_if_done(state);
-    } else {
-      const v = Runtime.new_var(state);
-      Runtime.put_reg(state, inst.xn, v);
-      push_built_term(state, v);
-    }
+    if (Runtime.op_unify_variable(state, inst.xn) !== true) return false;
     state.pc += 1;
     return true;
   }
   if (op === "SetValue" || op === "UnifyValue") {
-    const v = Runtime.get_reg(state, inst.xn);
-    if (state.mode === "read") {
-      if (Runtime.unify(state, v, state.read_args[state.read_cursor], program) !== true) return false;
-      state.read_cursor += 1;
-      finish_read_if_done(state);
-    } else {
-      push_built_term(state, v);
-    }
+    if (Runtime.op_unify_value(program, state, inst.xn) !== true) return false;
     state.pc += 1;
     return true;
   }
   if (op === "SetConstant" || op === "UnifyConstant") {
-    if (state.mode === "read") {
-      if (Runtime.unify(state, inst.c, state.read_args[state.read_cursor], program) !== true) return false;
-      state.read_cursor += 1;
-      finish_read_if_done(state);
-    } else {
-      push_built_term(state, inst.c);
-    }
+    if (Runtime.op_unify_constant(program, state, inst.c) !== true) return false;
     state.pc += 1;
     return true;
   }
   if (op === "GetStructure" || op === "GetList") {
-    const val = Runtime.deref(state, Runtime.get_reg(state, inst.ai));
-    const fid = inst.fid !== undefined ? inst.fid : Runtime.intern(program.intern_table, "[|]");
-    const arity = inst.arity || 2;
-    if (typeof val === "object" && val !== null && val.tag === "unbound") {
-      const s = V.Struct(fid, []);
-      bind_var(state, val, s);
-      Runtime.put_reg(state, inst.ai, s);
-      begin_write(state, inst.ai, fid, arity, s);
-      state.pc += 1;
-      return true;
-    }
-    if (typeof val === "object" && val !== null && val.tag === "struct"
-        && same_functor(program, val.fid, (val.args || []).length, fid, arity)) {
-      begin_read(state, val.args);
-      state.pc += 1;
-      return true;
-    }
-    return false;
+    if (Runtime.op_get_structure(program, state, inst.fid, inst.ai, inst.arity || 2) !== true) return false;
+    state.pc += 1;
+    return true;
   }
   if (op === "TryMeElse" || op === "TryMeElsePc") {
     state.indexed_entry = false;
@@ -3564,7 +3626,7 @@ Runtime.step = function (program, state, inst) {
     return true;
   }
   if (op === "GetLevel") {
-    Runtime.put_reg(state, inst.yn, state.cps.length);
+    Runtime.op_get_level(state, inst.yn);
     state.pc += 1;
     return true;
   }
@@ -3654,7 +3716,7 @@ Runtime.step = function (program, state, inst) {
     return state.pc !== undefined && state.pc !== null;
   }
   if (op === "BuiltinCall") {
-    if (Runtime.builtin_call(program, state, inst) !== true) return false;
+    if (Runtime.op_builtin(program, state, inst.pred, inst.arity) !== true) return false;
     state.pc += 1;
     return true;
   }

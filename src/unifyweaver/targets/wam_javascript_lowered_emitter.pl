@@ -488,6 +488,26 @@ emit_struct_js([Item|Rest], Ind) :-
     emit_struct_item_js(Item, Ind),
     emit_struct_js(Rest, Ind).
 
+emit_struct_item_js(ite(Cond, Then, Else), Ind) :-
+    js_ite_pure_test_cond(Cond), !,
+    string_concat(Ind, "    ", Ind4),
+    format("~w{~n", [Ind]),
+    format("~w  const _ite_trail = state.trail.length;~n", [Ind]),
+    format("~w  const _ite_args = Runtime.capture_a_regs(state, 8);~n", [Ind]),
+    format("~w  const _ite_cond = (function () {~n", [Ind]),
+    emit_struct_js(Cond, Ind4),
+    format("~w    return true;~n", [Ind]),
+    format("~w  })();~n", [Ind]),
+    format("~w  if (_ite_cond) {~n", [Ind]),
+    emit_struct_js(Then, Ind4),
+    format("~w  } else {~n", [Ind]),
+    format("~w    Runtime.undo_trail(state, _ite_trail);~n", [Ind]),
+    format("~w    Runtime.restore_a_regs(state, _ite_args);~n", [Ind]),
+    emit_struct_js(Else, Ind4),
+    format("~w  }~n", [Ind]),
+    format("~w}~n", [Ind]).
+% Condition may Allocate / unify / Call: restore a full machine snapshot.
+% Trail + A-registers is not enough when the condition builds a structure.
 emit_struct_item_js(ite(Cond, Then, Else), Ind) :- !,
     string_concat(Ind, "    ", Ind4),
     format("~w{~n", [Ind]),
@@ -749,15 +769,16 @@ emit_line_parts(["call", Pred, ArityStr], I) :- !,
 emit_line_parts(["execute", PredArity], I) :- !, emit_execute(PredArity, I).
 emit_line_parts(["execute", Pred, ArityStr], I) :- !,
     strip_arity_local(Pred, Name), format(string(PA), "~w/~w", [Name, ArityStr]), emit_execute(PA, I).
-% Allocate / Deallocate / GetLevel go through Runtime.step so the JS
-% Y-register snapshot convention (not Lua's locals = {}) is preserved.
+% Allocate / Deallocate go through Runtime.op_* so the JS Y-register
+% snapshot convention (not Lua's locals = {}) is preserved, without
+% allocating an I.Allocate() instruction object per call.
 emit_line_parts(["allocate"], I) :- !,
-    format("~wif (Runtime.step(program, state, I.Allocate()) !== true) return false;~n", [I]).
+    format("~wif (Runtime.op_allocate(state) !== true) return false;~n", [I]).
 emit_line_parts(["deallocate"], I) :- !,
-    format("~wif (Runtime.step(program, state, I.Deallocate()) !== true) return false;~n", [I]).
+    format("~wif (Runtime.op_deallocate(state) !== true) return false;~n", [I]).
 emit_line_parts(["get_level", Yn], I) :- !,
-    wam_javascript_target:wam_parts_to_js(["get_level", Yn], [], Lit),
-    format("~wif (Runtime.step(program, state, ~w) !== true) return false;~n", [I, Lit]).
+    wam_javascript_target:reg_to_int(Yn, YI),
+    format("~wif (Runtime.op_get_level(state, ~w) !== true) return false;~n", [I, YI]).
 emit_line_parts(["put_constant", C, R], I) :- !,
     wam_javascript_target:reg_to_int(R, RI),
     wam_javascript_target:constant_to_js_term(C, T),
@@ -774,6 +795,65 @@ emit_line_parts(["get_variable", X, A], I) :- !,
     wam_javascript_target:reg_to_int(X, XI),
     wam_javascript_target:reg_to_int(A, AI),
     format("~wRuntime.put_reg(state, ~w, Runtime.get_reg(state, ~w));~n", [I, XI, AI]).
+emit_line_parts(["get_constant", C, R], I) :- !,
+    wam_javascript_target:reg_to_int(R, RI),
+    wam_javascript_target:constant_to_js_term(C, T),
+    format("~wif (Runtime.op_get_constant(program, state, ~w, ~w) !== true) return false;~n", [I, RI, T]).
+emit_line_parts(["get_nil", R], I) :- !,
+    wam_javascript_target:intern_js_atom("[]", Id),
+    wam_javascript_target:reg_to_int(R, RI),
+    format("~wif (Runtime.op_get_constant(program, state, ~w, V.Atom(~w)) !== true) return false;~n", [I, RI, Id]).
+emit_line_parts(["get_integer", NStr, R], I) :- !,
+    (number_string(N, NStr) -> true ; N = NStr),
+    wam_javascript_target:reg_to_int(R, RI),
+    format("~wif (Runtime.op_get_constant(program, state, ~w, V.Int(~w)) !== true) return false;~n", [I, RI, N]).
+emit_line_parts(["get_value", X, A], I) :- !,
+    wam_javascript_target:reg_to_int(X, XI),
+    wam_javascript_target:reg_to_int(A, AI),
+    format("~wif (Runtime.op_get_value(program, state, ~w, ~w) !== true) return false;~n", [I, XI, AI]).
+emit_line_parts(["get_list", R], I) :- !,
+    wam_javascript_target:reg_to_int(R, RI),
+    wam_javascript_target:intern_js_atom("[|]", Id),
+    format("~wif (Runtime.op_get_list(program, state, ~w, ~w) !== true) return false;~n", [I, RI, Id]).
+emit_line_parts(["get_structure", F, R], I) :- !,
+    wam_javascript_target:reg_to_int(R, RI),
+    wam_javascript_target:parse_functor_arity(F, Name, Arity),
+    wam_javascript_target:intern_js_atom(Name, Id),
+    format("~wif (Runtime.op_get_structure(program, state, ~w, ~w, ~w) !== true) return false;~n", [I, Id, RI, Arity]).
+emit_line_parts(["put_structure", F, R], I) :- !,
+    wam_javascript_target:reg_to_int(R, RI),
+    wam_javascript_target:parse_functor_arity(F, Name, Arity),
+    wam_javascript_target:intern_js_atom(Name, Id),
+    format("~wif (Runtime.op_put_structure(program, state, ~w, ~w, ~w) !== true) return false;~n", [I, Id, RI, Arity]).
+emit_line_parts(["put_list", R], I) :- !,
+    wam_javascript_target:reg_to_int(R, RI),
+    wam_javascript_target:intern_js_atom("[|]", Id),
+    format("~wif (Runtime.op_put_list(program, state, ~w, ~w) !== true) return false;~n", [I, RI, Id]).
+emit_line_parts(["unify_variable", X], I) :- !,
+    wam_javascript_target:reg_to_int(X, XI),
+    format("~wif (Runtime.op_unify_variable(state, ~w) !== true) return false;~n", [I, XI]).
+emit_line_parts(["unify_value", X], I) :- !,
+    wam_javascript_target:reg_to_int(X, XI),
+    format("~wif (Runtime.op_unify_value(program, state, ~w) !== true) return false;~n", [I, XI]).
+emit_line_parts(["unify_constant", C], I) :- !,
+    wam_javascript_target:constant_to_js_term(C, T),
+    format("~wif (Runtime.op_unify_constant(program, state, ~w) !== true) return false;~n", [I, T]).
+emit_line_parts(["set_variable", X], I) :- !,
+    wam_javascript_target:reg_to_int(X, XI),
+    format("~wif (Runtime.op_unify_variable(state, ~w) !== true) return false;~n", [I, XI]).
+emit_line_parts(["set_value", X], I) :- !,
+    wam_javascript_target:reg_to_int(X, XI),
+    format("~wif (Runtime.op_unify_value(program, state, ~w) !== true) return false;~n", [I, XI]).
+emit_line_parts(["set_constant", C], I) :- !,
+    wam_javascript_target:constant_to_js_term(C, T),
+    format("~wif (Runtime.op_unify_constant(program, state, ~w) !== true) return false;~n", [I, T]).
+emit_line_parts(["builtin_call", Pred, ArityStr], I) :- !,
+    (   number(ArityStr)
+    ->  Arity = ArityStr
+    ;   number_string(Arity, ArityStr)
+    ),
+    wam_javascript_target:js_string_literal(Pred, P),
+    format("~wif (Runtime.op_builtin(program, state, ~w, ~w) !== true) return false;~n", [I, P, Arity]).
 emit_line_parts(Parts, I) :-
     wam_javascript_target:wam_parts_to_js(Parts, [], Lit),
     format("~wif (Runtime.step(program, state, ~w) !== true) return false;~n", [I, Lit]).
@@ -937,3 +1017,25 @@ js_execute_target(["execute", PA], TargetS) :-
     atom_string(PA, TargetS).
 js_execute_target(["execute", Pred, ArityStr], TargetS) :-
     format(string(TargetS), "~w/~w", [Pred, ArityStr]).
+
+%% js_ite_pure_test_cond(+Structured)
+%  Condition is register moves + a comparison builtin (==, =:=, ...).
+%  Those builtins never trail or Allocate, so ITE else restores A1-A8
+%  and the trail mark instead of snapshot_machine (full register copy).
+js_ite_pure_test_cond(Items) :-
+    Items \== [],
+    forall(member(I, Items), js_ite_pure_test_item(I)).
+
+js_ite_pure_test_item(ite(_, _, _)) :- !, fail.
+js_ite_pure_test_item(builtin_call(Op, _)) :-
+    js_pure_compare_builtin(Op).
+js_ite_pure_test_item(line(Parts)) :-
+    Parts = [Op|_],
+    memberchk(Op, ["put_value", "put_constant", "put_variable",
+                   "get_variable", "get_value"]).
+
+js_pure_compare_builtin(Op) :-
+    atom_string(Op, S),
+    memberchk(S, ["==/2", "\\==/2", "=:=/2", "=\\=/2",
+                  ">/2", "</2", ">=/2", "=</2",
+                  "==", "\\==", "=:=", "=\\=", ">", "<", ">=", "=<"]).
