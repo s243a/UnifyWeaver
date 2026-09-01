@@ -65,6 +65,11 @@
 :- dynamic user:probe_string_tag/0.
 :- dynamic user:probe_string_polish/0.
 :- dynamic user:probe_string_literal/0.
+:- dynamic user:probe_sub_string/0.
+:- dynamic user:probe_tail_builtin/0.
+:- dynamic user:probe_y_preserve/0.
+:- dynamic user:tail_sub/2.
+:- dynamic user:wide_list/1.
 :- dynamic user:lit_hi/1.
 :- dynamic user:eq_str/1.
 :- dynamic user:fib/2.
@@ -114,6 +119,11 @@ install_probes :-
     retractall(user:probe_string_tag),
     retractall(user:probe_string_polish),
     retractall(user:probe_string_literal),
+    retractall(user:probe_sub_string),
+    retractall(user:probe_tail_builtin),
+    retractall(user:probe_y_preserve),
+    retractall(user:tail_sub/2),
+    retractall(user:wide_list/1),
     retractall(user:lit_hi/1),
     retractall(user:eq_str/1),
     assertz((user:probe_findall :-
@@ -317,7 +327,29 @@ install_probes :-
         lit_hi(X), string(X), \+ atom(X),
         atom_string(hi, Expected), X == Expected,
         eq_str(Y), string(Y), Y == Expected,
-        writeq(X), nl)).
+        writeq(X), nl)),
+    assertz((user:probe_sub_string :-
+        sub_string("hello", 0, 2, After, Sub),
+        string(Sub), Sub == "he", After == 3,
+        sub_string("--flag", 0, 2, _, Pref), Pref == "--",
+        \+ sub_string("ab", 0, 3, _, _),
+        write(ok), nl)),
+    % Tail-call a builtin (compiler emits Deallocate+Execute sub_string/5).
+    % Execute-to-builtin must Proceed to CP, not halt the machine.
+    assertz((user:tail_sub(In, Out) :-
+        sub_string(In, 0, 2, _, Out))),
+    assertz((user:probe_tail_builtin :-
+        tail_sub("hello", S),
+        string(S), S == "he",
+        write(ok), nl)),
+    % A long ground list fact compiles as GetList/Unify* with no Allocate,
+    % so it would clobber the caller's Y. Call must save/restore Y.
+    assertz(user:wide_list([0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79])),
+    assertz((user:probe_y_preserve :-
+        Marker = kept,
+        wide_list(_),
+        Marker == kept,
+        write(ok), nl)).
 
 probe_preds([
     user:probe_findall/0,
@@ -359,7 +391,12 @@ probe_preds([
     user:probe_string_polish/0,
     user:lit_hi/1,
     user:eq_str/1,
-    user:probe_string_literal/0
+    user:probe_string_literal/0,
+    user:probe_sub_string/0,
+    user:tail_sub/2,
+    user:probe_tail_builtin/0,
+    user:wide_list/1,
+    user:probe_y_preserve/0
 ]).
 
 :- dynamic user:ctw_js/0.

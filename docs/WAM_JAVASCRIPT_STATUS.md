@@ -63,6 +63,7 @@ Key, `@<`/`@>`/`<`/`>`), **`predsort/3`** (`compare/3` and 3-arg callables),
 Atom/string: **`atom_concat/3`**, **`string_concat/3`**, **`atom_length/2`**,
 **`string_length/2`**, **`atom_chars/2`**, **`string_chars/2`**, **`atom_codes/2`**, **`char_code/2`**,
 **`sub_atom/5`** (ground-Atom; enumerates unbound Before/Length/After),
+**`sub_string/5`** (same walk; Sub is a `V.String`),
 **`atom_string/2`**, **`string_to_atom/2`**, **`string/1`**,
 **`number_codes/2`**, **`number_string/2`**, **`split_string/4`**,
 **`upcase_atom/2`**, **`downcase_atom/2`**. Distinct **`string` tag**
@@ -218,6 +219,24 @@ fib/2                            67        1234         3       2         89012
 instr=1234 unify=56 trail=40 heap=30 backtracks=12 undos=8 wall_ns=100000
 ```
 
+## Peerhailer argparser (A2)
+
+**Runs the peerhailer argparser (A2).** `examples/cli_args/cli_args.pl` (module
+`cli_args`, `parse_args/2,3`) compiles through `wam_javascript`
+(`emit_mode(interpreter)`) into `examples/cli_args/wamjs/js/`. A thin ESM shim
+(`cliArgs.mjs`) converts JS `argv` ↔ WAM terms and maps `ok/2` /
+`error/1`; it implements no parse rule.
+
+| Check | Result |
+|---|---|
+| Contract corpus (`cliArgs.wamjs.test.mjs`, oracle tests, import swapped) | **17 / 17** |
+| Differential vs JS oracle (`run_differential_wamjs.sh`, same seed) | **5067 lines, 0 divergences, 0 message mismatches** (oracle 0.048s, wamjs 4.639s) |
+
+Runtime gaps this program forced: `sub_string/5`; Y-register save/restore
+across `Call` of a non-`Allocate` fact; `Execute` of a builtin `Proceed`s to
+CP instead of halting. Probes: `probe_sub_string/0`, `probe_y_preserve/0`,
+`probe_tail_builtin/0` in `tests/test_wam_javascript_builtins.pl`.
+
 ## Remaining / partial
 
 | Builtin | Status |
@@ -229,6 +248,8 @@ instr=1234 unify=56 trail=40 heap=30 backtracks=12 undos=8 wall_ns=100000
 | `=@=/2` / `\=@=/2` | **Implemented.** Variant equality: ground as `==`; vars match via a consistent bijection. Cyclic struct pairs are treated as already-equal once seen. |
 | `format/2` `/3` | **Implemented** for `~w ~a ~d ~p ~q ~n ~s ~t ~~`. Not ported: `~f`, `~r`, `~D`, positioning (`~N|`, `~+`, `t~`), aliases, and stream sinks other than stdout / `atom(A)` / `string(S)`. |
 | `sub_atom/5` | **Implemented** when Atom is ground; enumerates unbound Before/Length/After (and filters a ground SubAtom). |
+| `sub_string/5` | **Implemented.** Same enumeration as `sub_atom/5`; Sub is a `V.String`. |
+| Peerhailer argparser (A2) | **Implemented.** `examples/cli_args/wamjs/` compiles `cli_args.pl` through `wam_javascript` (interpreter) and matches the JS oracle: **17/17** corpus, **5067-line** differential with **0 divergences, 0 message mismatches**. |
 | String term tag | **Implemented.** `V.String` is a distinct tag. Unify/`==` require equal strings (not atoms). Standard order / `compare/3` / `sort` matches SWI 9.0.4: Var < Number < **String** < Atom < Compound (`"foo" @< foo`). `atom_string/2`, `string_concat/3`, `string_chars/2` (construct), `string_to_atom/2`, `number_string/2`, `split_string/4` produce strings. `string/1` is true only for the tag. `string_length/2` accepts a string, atom, or number (code-point length). `write/1` prints text unquoted; `writeq/1` and `format` `~q` recurse through lists/compounds, double-quote strings, and quote atoms only when needed (see quoting subset below). **Compiled `"foo"` literals** are spelled with outer double quotes in WAM text (`quote_wam_constant/2`); the shared classifier still returns `atom(foo)` (no `string(_)` Class). JS consults `wam_constant_token_is_string/1` and builds `V.String`. Other runtimes intern the atom as before. Fact-source JSON/TSV values still intern as atoms. |
 | `library(assoc)` | **Implemented** as a Prolog `assoc/1` list of Key-Value pairs (not SWI's AVL tree). get/put/list/keys match SWI for unique-key maps. |
 | First-arg indexing | **Implemented.** `switch_on_constant` / `_fallthrough` / `_a2`, `switch_on_structure` / `_a2`, and `switch_on_term` / `_a2` jump to the matching clause group. Ground first-arg with a unique clause leaves no choice point (`deterministic/0`). Unbound first arg falls through to the try/retry/trust chain (no lost solutions). Exclusive miss fails; fallthrough variants keep the chain for variable-headed clauses. Dedicated `try`/`retry`/`trust` dispatch chains are emitted for multi-clause groups. |
@@ -259,6 +280,11 @@ swipl -q -g run_tests -t halt tests/test_wam_javascript_lowered.pl
 # After INTEGRATION_PATCH.md is applied:
 CONFORMANCE_TARGETS=javascript swipl -q -g run_tests -t halt \
   tests/test_wam_cross_target_conformance.pl
+
+# Peerhailer CLI parser (A2) — compile, 17-test corpus, differential vs oracle:
+bash examples/cli_args/wamjs/build.sh
+node --test examples/cli_args/wamjs/cliArgs.wamjs.test.mjs
+bash examples/cli_args/wamjs/run_differential_wamjs.sh
 ```
 
 Residual ISO corners not covered: bagof/setof of *unbound* free vars (two
@@ -289,5 +315,8 @@ table: infix + prefix + postfix), then a distinct string term tag
 `string_length/2` and `writeq/1` / recursive `~q` quoting, then
 compiled `"foo"` literals as `V.String` (double-quoted WAM spelling;
 classifier still returns `atom(_)`), then opt-in interpreter profiling
-(`UW_PROFILE=1` / `json`, stderr-only table or JSON; lowered = call counts).
-Source-verified against SWI-Prolog as the oracle (2026-08-31).
+(`UW_PROFILE=1` / `json`, stderr-only table or JSON; lowered = call counts),
+then the peerhailer CLI argparser through the interpreter (A2:
+`examples/cli_args/wamjs/`, 17/17 corpus + 5067-line differential vs the
+JS oracle, 0 divergences).
+Source-verified against SWI-Prolog as the oracle (2026-09-01).

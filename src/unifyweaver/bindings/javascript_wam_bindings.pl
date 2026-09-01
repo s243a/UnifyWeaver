@@ -95,6 +95,7 @@ javascript_wam_builtin(atom_chars, 2, implemented).
 javascript_wam_builtin(atom_codes, 2, implemented).
 javascript_wam_builtin(char_code, 2, implemented).
 javascript_wam_builtin(sub_atom, 5, implemented).
+javascript_wam_builtin(sub_string, 5, implemented).
 javascript_wam_builtin(atom_string, 2, implemented).
 javascript_wam_builtin(string_to_atom, 2, implemented).
 javascript_wam_builtin(string, 1, implemented).
