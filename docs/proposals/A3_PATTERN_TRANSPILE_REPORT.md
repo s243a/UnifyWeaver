@@ -5,6 +5,166 @@ Copyright (c) 2026 John William Creighton (s243a)
 
 # A3 — Pushing a real Prolog program through the pattern targets
 
+> ## STATUS UPDATE (seventh run — the CLOJURESCRIPT port). **ClojureScript is now the third pattern target carrying the entire real-world program.**
+>
+> `examples/cli_args/cli_args.pl` — all 43 predicates, `parse_args/2` included —
+> compiles into ONE ClojureScript namespace through `clojure_target`'s new A3
+> whole-program lowering and `clojurescript_target`'s JVM→JS interop rewrite.
+> Measured against the same oracle, with the same generator and the same seed:
+>
+> | | |
+> | --- | --- |
+> | nbb loads the generated namespace (the `node --check` analogue) | **clean** |
+> | predicates lowering with no dropped goal | **40 of 40** rule predicates; the other 3 are ground-fact CONSTANT TABLES, inlined at their call sites |
+> | peerhailer's contract corpus | **17 / 17** contract points, **25 / 25** argv-lines, error messages included |
+> | differential vs the JS oracle | **5067 lines, 0 divergences, 0 message mismatches, 0 crashes** |
+>
+> Deliverables live in `examples/cli_args/cljs/`; the shape suite is
+> `tests/core/test_clojurescript_cli_args_shapes.pl` (66 tests).
+>
+> ### What transferred UNCHANGED
+>
+> Every *design* in §G-A3-6/9/10/12/16/18/19/20 transferred as-is. The two
+> call-graph fixpoints are ports of the TypeScript ones down to the clause
+> structure — the GREATEST fixpoint for outputs (`clj_out_table/2`, optimistic
+> start, `clj_out_meet/3` keeping the shorter suffix) and the LEAST fixpoint for
+> fallibility (`clj_fail_table/2`, head-coverage gap plus a fallible call in
+> body-goal position, condition position exempt). Both reproduce the TS lane's
+> answers on the real program *exactly*, which is the strongest evidence the port
+> is a port and not an approximation, and it is pinned as a test: the output
+> analysis finds `lenient_loop/5` → {4,5}, `strict_loop/8` → {6,7,8},
+> `scan_leading_globals/4` → {3,4}, `split_flag_token/3` → {2,3},
+> `starts_with/2` → {}; and the sentinel set is the *same nine* predicates
+> (`endgame_sentinel_set_is_the_same_nine_as_the_ts_lane`). Arity mangling,
+> head-built outputs, the reversible-text-builtin direction rule, the
+> constant-table inline and the dependency closure all came across unchanged.
+>
+> ### What Clojure made EASIER — the expression language pays off four times
+>
+> TypeScript is a statement language, so the TS lowering accumulates statement
+> strings, threads a `return` through every branch, and needs `ts_assemble/3` to
+> re-nest in-block guards plus a manual indentation walker. Clojure is an
+> expression language, so a clause body is ONE expression built by folding an
+> ordered item list from the inside out — `bind(N,E)` → `(let [N E] …)`,
+> `gopen(C)` → `(if C … Fall)`. That single change collapses four TS mechanisms:
+>
+> * **G-A3-10's VALUE form.** TS declares `let _s0, _s1;` ahead of the block and
+>   assigns at the end of each branch because a JS `if` is a statement. Here the
+>   `if` IS the value: `(let [_s0 (if C then else)] …)`, and with several shared
+>   outputs `(let [[_s0 _s1] (if C [t0 t1] [e0 e1])] …)`.
+> * **G-A3-18 in CONDITION position.** TS needs a mutable `let _t0;` assigned
+>   *inside* the condition to smuggle a value out. Here the call is an ordinary
+>   `bind` item and the condition reads the name.
+> * **`ts_assemble/3` and the indentation walker** have no analogue: nesting IS
+>   the structure.
+> * **Structural equality.** Clojure's `=` is already structural, so the emitted
+>   `_uwEq` helper is simply **not ported**. Verified against every distinction
+>   the program depends on — `(= true "true")` is false (G-A3-13 survives),
+>   nested tagged maps compare structurally, and vectors compare equal to seqs,
+>   which is what lets `first`/`rest`/`cons` be used without a `vec` round-trip.
+>
+> Clojure also forced one thing to be MORE explicit, and better for it: in TS a
+> failing in-block guard reaches no `return` and drops off the end of the block.
+> An expression has no such escape, so the alternative must be named — the fold
+> threads a `Fall` expression, which is the next clause's chain or the
+> predicate's exit. Where a clause body actually uses it, the successor is bound
+> to a zero-argument thunk so it is written once; where it does not — every
+> multi-clause predicate in `cli_args`, all first-argument-indexed — the chain
+> stays a plain nest of `if`s.
+>
+> ### What needed a DIFFERENT design
+>
+> * **Tuple** — a Clojure **vector** `[out1 out2]`, destructured with
+>   `(let [[a b] (f …)])`. Same positional convention, native syntax.
+> * **Compound** — a **map** `{:$ "f" :args […]}`. The TS lane rejected a tagged
+>   array because a Prolog list is already a JS array; in Clojure a list is
+>   already a vector, so the same argument rejects a tagged vector and the map is
+>   the analogous safe choice.
+> * **Sentinel** — `(def ^:private uw-fail (Object.))`, rewritten to
+>   `(js/Object.)` for the JS host, tested with `identical?`. A namespaced keyword
+>   would work *today* (nothing this target lowers a term to is a keyword) but
+>   that is a property of the current term renderer, not of the convention; a
+>   freshly allocated object has reference identity no term can produce and no
+>   data crossing the module edge can forge. Same forgery argument as the TS
+>   `Symbol`, same strength.
+> * **Forward declarations.** The one place Clojure needs something JavaScript
+>   gets free: a JS `function` declaration is hoisted, so the TS lane may emit a
+>   caller before its callee and a mutually recursive pair in either order. A
+>   Clojure var must exist before it is referenced, so a multi-predicate module
+>   opens with `(declare …)` naming every function it defines.
+> * **Chars.** A Prolog char is a ONE-CHARACTER STRING on both hosts, so
+>   `string_chars/2` decomposes with `(mapv str (seq s))`, not `(vec s)` — `vec`
+>   answers JVM characters on the JVM and one-character strings under CLJS, and
+>   only one of those compares equal to the atom `'='` the program tests against.
+>   Exactly three runtime helper lines are host-specific and they go through the
+>   existing interop-rewrite mechanism.
+> * **Recursion: direct calls, not `recur`.** The faithful analogue of the TS
+>   lane's `return pred(…)`, and the same risk — neither JS nor nbb eliminates
+>   tail calls. `recur` would give real TCO but only for calls the generator can
+>   *prove* are in tail position with a matching binding vector. The risk is
+>   measured rather than asserted (`examples/cli_args/cljs/probe_depth.cljs`):
+>   the character walks run to a ~2000-character token against a 26-character
+>   bound (~77×) and the argv walks to ~700 tokens against a 7-token bound
+>   (~100×), and the differential records 0 crashes. Pointed at an input whose
+>   size is not bounded by a command line, `recur` would stop being optional —
+>   that is the stated limit.
+>
+> ### Routing, and the byte discipline
+>
+> The A3 paths are a RESCUE, exactly as `native_ts_general/3` is: they claim only
+> a predicate whose historical `clojure_target` answer would be defective — it
+> failed, it leaked an internal `_NNN` variable name, it stringified a compound,
+> it emitted a call to a Prolog builtin Clojure does not have (`(string_length s)`
+> — G-A3-1 in its Clojure incarnation), it is arity-overloaded, it has two or
+> more outputs (G-A3-9's hazard), or one of its callees speaks a different
+> calling convention. **26 shapes × 2 emitters = 46 outputs diffed against the
+> pre-port compiler: 45 byte-identical, 1 changed, and the change is required** —
+> a multi-predicate module gains its `(declare …)` line.
+>
+> Three things the port had to get right that the TS lane never faces, each found
+> by a gate rather than by reading:
+>
+> * **ONE MODULE, ONE SET OF NAMES.** A module can mix the two lowerings and they
+>   spell a function differently (`merge-flags-` vs `merge_flags_`). The A3 set is
+>   now fixed ONCE per module and published, so a call site, a `(declare …)` entry
+>   and a `(defn …)` header cannot disagree; the closure runs in BOTH directions,
+>   because a historical-path predicate calling an A3 one is the same bug
+>   mirrored. Found by nbb refusing the namespace with "Unable to resolve symbol:
+>   `merge_flags_`".
+> * **A fact clause is NOT a defect here.** `ts_clause_body_defective/2` treats one
+>   as such because the TS clause-body path is guarded against fact clauses
+>   upstream; Clojure's historical path lowers a mixed fact+rule predicate
+>   correctly. Porting the branch verbatim moved four passing runtime-smoke tests
+>   onto the new path.
+> * **An empty output set has two causes.** A genuine semidet TEST, and a CONSTANT
+>   ANSWER (`positive(X, yes) :- X > 0.`) where the last head argument is ground
+>   in every clause. The historical path renders the constant answer correctly, so
+>   only *two or more* outputs force the A3 path.
+>
+> Also fixed on the way: `clj_arith/3` distinguishes `/` from `//` (the old
+> `clojure_op/2` mapped `/` to `quot`, which silently turns a division into a
+> truncation), and the runtime block is emitted once rather than once per
+> occurrence of its own name (`sub_string/5` is nondeterministic inside
+> `findall/3`).
+>
+> ### Still open
+>
+> * **`recur`** — see above. Direct calls, bounded by input size, measured.
+> * **The reversible-text-builtin direction between two HEAD arguments.**
+>   `p(Cs, S) :- string_chars(S, Cs).` compiles as a semidet test that computes a
+>   value and answers `true`, because the direction rule requires the known side to
+>   come from a PRECEDING GOAL. This is the TypeScript lane's behaviour for the
+>   same clause, reproduced exactly, and it is probe-pinned in both suites
+>   (`gap_reversible_builtin_direction_is_ambiguous_between_head_arguments`).
+> * **The `bb` (JVM host) runtime for the A3 path.** The three host-specific
+>   runtime lines are written in JVM form and rewritten for the JS host, so the
+>   JVM spelling exists — but the A3 lowering has only been exercised under nbb.
+>   Every path `bb` already served is untouched.
+> * **The corpus gate is an equivalence, not an import swap** — see
+>   `examples/cli_args/cljs/README.md`, which states the difference rather than
+>   glossing it.
+
+
 **Step A3 of the UnifyWeaver transpilation maturity demonstration.**
 Subject: `examples/cli_args/cli_args.pl` — the oracle-verified Prolog
 reimplementation of peerhailer's `src/cliArgs.js` produced in step A1
