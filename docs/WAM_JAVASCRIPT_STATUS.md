@@ -368,7 +368,7 @@ emit time so the first `parse_args/2` is not a full construction.
 | CLI / runtime term parser | **Implemented.** Pratt reader: int/float/atom (incl. quoted)/var/list/`[H\|T]`/compound. CLI argv + `read_term_from_atom` / `atom_to_term` / `term_to_atom`. **`op/3`** updates the live infix/prefix/postfix tables (defaults cloned from ISO). Compile-time ops via `javascript_wam_ops/1`. Capability `native(parse_term)` via `INTEGRATION_PATCH.md` §7. |
 | Interpreter profiling | **Implemented.** Off by default (`Runtime._prof === null`). `UW_PROFILE=1` / `json` or `Runtime.profile(...)` writes a per-predicate table or JSON to **stderr**. Lowered tier: call counts only. See [Profiling (GP-PROF)](#profiling-gp-prof). |
 | `op/3` | **Implemented.** Infix `xfx`/`xfy`/`yfx`, prefix `fx`/`fy`, postfix `xf`/`yf`. Priority 0 removes. Name = atom or list of atoms. `current_op/3` is not implemented; ops are process-global. |
-| External fact sources | **Implemented.** `javascript_wam_fact_sources([source(P/2, file(Path))])` (alias `js_fact_sources/1`) emits `CallFactStream` and a Node `fs` reader for TSV/CSV and JSONL. First-arg index when A1 is bound. Same lightweight file-backed model as Lua. **LMDB / CSR are out of scope.** Inline facts (no option) are unchanged. |
+| External fact sources | **Implemented.** One `CallFactStream` path, three source forms (P/2 only). `file(Path)` is D27 and is **byte-for-byte unchanged**: whole-file TSV/CSV/JSONL into memory, first-arg index after parse. `indexed(Prefix)` is backend B (dependency-free on-disk index; see [Persistent indexed stores](#persistent-indexed-stores-gp-lmdb)). `lmdb(Dir)` is backend A (opt-in npm `lmdb`; see same section). Inline facts (no option) are unchanged. CSR remains out of scope. `docs/WAM_FLEET_GAPS.md` still lists LMDB as Lua-matching out-of-scope; **this target** now has it. |
 | Conformance harness adapter | See `INTEGRATION_PATCH.md` (coordinator applies `conformance_target(javascript)`). |
 
 ## How to run
@@ -378,8 +378,11 @@ mkdir -p output/advanced
 # Dedicated probe + local 48-query suite (does not edit the shared harness):
 swipl -q -g run_tests -t halt tests/test_wam_javascript_builtins.pl
 
-# File-backed P/2 fact sources (CSV/TSV/JSONL):
+# File-backed P/2 fact sources (CSV/TSV/JSONL) + indexed/lmdb stores:
 swipl -q -g run_tests -t halt tests/test_wam_javascript_fact_sources.pl
+# Backend B builder (zero deps):  node scripts/js_wam/uw_fact_index.js build edges.tsv store_prefix
+# Backend A loader (needs `npm install lmdb`): node scripts/js_wam/uw_fact_lmdb.js build edges.tsv lmdb_dir
+# Bound-lookup I/O proof (stderr): UW_FACT_IO_STATS=1 node js/generated_program.js js_idx_probe_bound/0
 
 # Tier-2 lowered / mixed emit-mode suite:
 swipl -q -g run_tests -t halt tests/test_wam_javascript_lowered.pl
@@ -410,15 +413,175 @@ ISO graphic atoms (`#$&*+-./:<=>?@^~\`) except the lone atom `.`;
 quoted otherwise, escaping `\\` and `\'` only (no `\n`/`\t` escapes).
 Brace terms `{a}` are written as `'{}'(a)` / `{}(a)`, not SWI `{a}`.
 `write/1` list spacing is unchanged (`", "`). Fact-source cells stay
-atoms even when the host file looks like a quoted string.
+atoms even when the host file looks like a quoted string, except a TSV/CSV
+field wrapped in `"..."` (or a JSON string that `parse_term` reads as a
+string) which follows the D34 string tag through `parse_term`.
+
+## Persistent indexed stores (GP-LMDB)
+
+D27 `file(Path)` still loads and parses the **whole** file at first use.
+That is the right default for small fixtures and is **unchanged**. GP-LMDB
+adds stores that answer a **bound first argument** by seeking, without
+scanning the data file.
+
+### Option syntax
+
+```prolog
+javascript_wam_fact_sources([
+  source(edge/2, file('edges.tsv')),          % D27: in-memory
+  source(edge/2, indexed('stores/edges')),    % B: stores/edges.data + stores/edges.idx
+  source(edge/2, lmdb('stores/edges.lmdb'))   % A: LMDB environment directory
+]).
+```
+
+Alias `js_fact_sources/1` is unchanged. Emitted JS:
+
+- `file`: `{ path: "..." }` — **no** `kind` field (D27 byte-for-byte).
+- `indexed`: `{ kind: "indexed", path: "..." }` (`path` is the file prefix).
+- `lmdb`: `{ kind: "lmdb", path: "..." }` (`path` is the env directory).
+
+Identical `CallFactStream` semantics for every form:
+
+- Unbound A1 → enumerate **all** facts in **source-file order**.
+- Bound A1 → only matching facts (B: binary search of the key table; A: LMDB range get).
+- Other-args bound → filter the streamed candidates (same as D27).
+- Cells go through `parse_fact_source_value` → `parse_term` (D34 string tag, D37 literals).
+
+### Backend B — `indexed(Prefix)` (default capability, zero deps)
+
+This is **LMDB-style** (persistent + indexed + seek-based). It is **not**
+LMDB. The format is our own, read-oriented, **single-writer at build time**.
+There is no write path and no multi-arg secondary index (both out of scope).
+
+Builder:
+
+```bash
+node scripts/js_wam/uw_fact_index.js build <tsv|csv|jsonl> <store-prefix>
+```
+
+Writes `<store-prefix>.data` and `<store-prefix>.idx`. Input parsing matches
+D27 (tab vs comma; JSONL array / `{args}` / `{a1,a2}`; `#` and blank lines
+skipped). Reproducible from the same flat files `file(Path)` reads.
+
+**Why a sorted key table + binary search** (not a hash bucket table):
+O(log n) `fs.readSync` seeks with a fully specified total order
+(`Buffer.compare` on the encoded key). No hash function, no collision
+buckets, and the bytes-read proof is a handful of 16-byte entry reads plus
+the matching records. Hash buckets would need a documented hash and a
+worst-case scan of a bucket; they are not worth it for a read-only
+build-time index.
+
+#### `Prefix.data` (little-endian)
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 4 | magic `UWFI` |
+| 4 | 1 | version `1` |
+| 5 | 3 | pad |
+| 8 | 4 | `n_records` (u32le) |
+| 12 | 4 | reserved |
+| 16 | … | records |
+
+Each record: `u32le payload_len`, then payload `u16le a1_len`, `u16le a2_len`,
+A1 UTF-8, A2 UTF-8. Payloads are the **original cell text** (TSV field /
+JSON-serialized number or string) so the runtime `parse_term` round-trip
+matches D27. Enumeration is a sequential scan from offset 16.
+
+The runtime must **not** `readFileSync` the data file. Bound lookup reads
+only the matching records (plus index probes). `UW_FACT_IO_STATS=1` prints
+`fact_io bytes_read=N data_size=M` on stderr at process exit.
+
+#### `Prefix.idx` (little-endian)
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 4 | magic `UWIX` |
+| 4 | 1 | version `1` |
+| 5 | 3 | pad |
+| 8 | 4 | `n_keys` (u32le) |
+| 12 | 4 | `keyblob_off` (u32le) |
+| 16 | 4 | `hits_off` (u32le) |
+| 20 | 4 | `n_records` (u32le) |
+| 24 | `n_keys × 16` | `KeyEnt` table |
+| `keyblob_off` | … | concatenated keys, sorted by `Buffer.compare` |
+| `hits_off` | … | per key: `n_hits × u32le` data-file offsets, encounter order |
+
+`KeyEnt` (16 bytes): `u32le key_rel`, `u16le key_len`, `u16le n_hits`,
+`u32le hits_rel`, 4 bytes pad.
+
+Bound lookup: binary-search the table (read 16-byte `KeyEnt` + key bytes
+per probe), then read only those data-file records.
+
+#### Index key encoding (intern-id independent; preserves D34)
+
+Shared by B and A (`scripts/js_wam/uw_fact_codec.js` / runtime
+`encode_store_key`):
+
+| Tag byte | Payload | Term |
+|---|---|---|
+| `0x49` (`I`) | int64 big-endian | integer |
+| `0x46` (`F`) | float64 big-endian | float |
+| `0x53` (`S`) | UTF-8 | string (`V.String`) |
+| `0x41` (`A`) | UTF-8 atom name | atom |
+| `0x3F` | (none) | anything else (no index hit) |
+
+Quoted TSV `"strkey"` is a string; bare `strkey` is an atom. JSON numbers
+are ints/floats; JSON strings go through the same cell classifier as TSV
+so `"a"` in JSON (unquoted Prolog atom text) is still atom `a`.
+
+### Backend A — `lmdb(Dir)` (opt-in, real LMDB)
+
+Loader:
+
+```bash
+npm install lmdb          # user action; not a repo package.json dependency
+node scripts/js_wam/uw_fact_lmdb.js build <tsv|csv|jsonl> <lmdb-dir>
+```
+
+The runtime loads the package **lazily** (`createRequire(__filename)("lmdb")`)
+only when a `lmdb(...)` source is actually used. `encoding: "binary"` and
+`keyEncoding: "binary"`.
+
+**LMDB key encoding** (same cell payload as B):
+
+| Kind | Key | Value |
+|---|---|---|
+| seq (unbound enum) | `0x00` \|\| uint64be(seq) | payload (u16le a1_len, u16le a2_len, bytes) |
+| A1 (bound lookup) | `0x01` \|\| uint16be(key_len) \|\| `encodeIndexKey(A1)` \|\| uint64be(seq) | same payload |
+
+Range get for a bound A1 uses start seq=0 and end seq=`0xff…ff` (end is
+exclusive in `lmdb-js` `getRange`; keys may contain `0x00`, so a
+length-prefix sits in front of the encoded A1 rather than a NUL delimiter).
+Unbound enumeration is `getRange({start: [0x00], end: [0x01]})` over seq
+keys, which is source-file order.
+
+Missing package: **one** error naming the store, the missing package, and
+`npm install lmdb`. It states that `indexed(...)` is a different format
+and is **not** used as a fallback. Test seam: `UW_LMDB_FORCE_MISSING=1`.
+
+### Optional-dependency policy
+
+`lmdb` is opt-in **per source declaration**. Absence is a loud error at
+the moment that source is used. Default builds, `file(...)`, and
+`indexed(...)` do not require any npm package and must not grow a repo
+`package.json` dependency. Different store formats are never silently
+swapped.
+
+### Out of scope this round
+
+Multi-arg secondary indexes, write paths / live updates, and CSR. Backend
+B has no writer after `uw_fact_index build`. Backend A is loaded
+read-only at runtime.
 
 ## Document status
 
 Initial JS WAM bring-up + builtin port from Lua, ISO bagof/3 and setof/3,
 first-argument indexing, the Tier-2 lowered emitter, ISO/library builtin
 breadth (sort, lists, atom/string, format, assoc), the G-W2 runtime term
-parser, G-W4 file-backed fact sources (TSV/CSV/JSONL; LMDB/CSR out of
-scope), the G-W3 term-meta family (`term_variables/2`,
+parser, G-W4 file-backed fact sources (TSV/CSV/JSONL), GP-LMDB persistent
+indexed stores on **this** target (`indexed/1` zero-dep + opt-in `lmdb/1`;
+fleet-gaps still lists LMDB as Lua-matching out-of-scope), the G-W3
+term-meta family (`term_variables/2`,
 `numbervars/3`, `=@=/2`, `\=@=/2`), then G-W2 `op/3` (dynamic Pratt
 table: infix + prefix + postfix), then a distinct string term tag
 (`V.String`; string-producing builtins + standard order), then
