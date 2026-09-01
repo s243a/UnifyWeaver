@@ -17,7 +17,7 @@
 ]).
 
 :- use_module(library(lists)).
-:- use_module(wam_ite_structurer, [structure_ite/2]).
+:- use_module(wam_ite_structurer, [is_commit/1]).
 :- use_module(wam_clause_chain, [clause_chain/2]).
 :- use_module(wam_text_parser, [
     wam_tokenize_line/2,
@@ -177,7 +177,7 @@ classify_clause_shape([FirstLine|Rest], plan(multi_clause_1, AltAtom, ClauseLine
     take_clause1_lines(Rest, ClauseLines).
 classify_clause_shape(Lines, plan(ite, none, Structured)) :-
     js_parse_terms(Lines, Terms),
-    structure_ite(Terms, Structured),
+    js_structure_ite(Terms, Structured),
     member(ite(_, _, _), Structured),
     \+ member(try_me_else(_), Structured),
     \+ member(trust_me, Structured),
@@ -258,9 +258,49 @@ js_t4_structured_clauses(Lines, Structured) :-
 
 js_clause_to_structured(ClauseLines, Structured) :-
     js_parse_terms(ClauseLines, Terms),
-    structure_ite(Terms, Structured),
+    js_structure_ite(Terms, Structured),
     Structured \== [],
     forall(member(I, Structured), js_struct_supported(I)).
+
+%% js_structure_ite(+Flat, -Structured)
+%  Same fold as structure_ite/2, but split_commit ignores commits that
+%  sit inside a nested try_me_else (the `\+ Goal` fail-commit). The
+%  shared structurer splits on the first cut/cut_ite and then fails to
+%  match the leftover nested block — that is why lenient_loop/5 stayed
+%  on multi_clause_1.
+js_structure_ite([], []).
+js_structure_ite([try_me_else(LE)|Rest0], [ite(CondS, ThenS, ElseS)|Out]) :-
+    !,
+    append(ThenWithJump, [label(LE), trust_me | ElseAndRest], Rest0),
+    \+ member(label(LE), ThenWithJump),
+    append(ThenPath, [jump(LC)], ThenWithJump),
+    append(ElsePath, [label(LC) | AfterCont], ElseAndRest),
+    \+ member(label(LC), ElsePath),
+    js_split_commit(ThenPath, Cond, Then),
+    js_structure_ite(Cond, CondS),
+    js_structure_ite(Then, ThenS),
+    js_structure_ite(ElsePath, ElseS),
+    js_structure_ite(AfterCont, Out).
+js_structure_ite([label(_)|Rest], Out) :- !,
+    js_structure_ite(Rest, Out).
+js_structure_ite([I|Rest], [I|Out]) :-
+    js_structure_ite(Rest, Out).
+
+js_split_commit(Path, Cond, Then) :-
+    js_split_commit_(Path, 0, [], CondR, Then),
+    reverse(CondR, Cond).
+
+js_split_commit_([try_me_else(L)|R], D, Acc, Cond, Then) :- !,
+    D1 is D + 1,
+    js_split_commit_(R, D1, [try_me_else(L)|Acc], Cond, Then).
+js_split_commit_([trust_me|R], D, Acc, Cond, Then) :-
+    D > 0, !,
+    D1 is D - 1,
+    js_split_commit_(R, D1, [trust_me|Acc], Cond, Then).
+js_split_commit_([Commit|Then], 0, Acc, Acc, Then) :-
+    is_commit(Commit), !.
+js_split_commit_([I|R], D, Acc, Cond, Then) :-
+    js_split_commit_(R, D, [I|Acc], Cond, Then).
 
 % Split a try_me_else/trust_me chain on *clause* proceed/fail, leaving
 % inner ITE try_me_else blocks intact for structure_ite/2.
@@ -1003,7 +1043,10 @@ js_pi_key(Pred/Arity, Key) :-
 
 %% js_wam_has_foreign_execute(+WamCode, +SelfKey)
 %  True when some Execute targets a predicate other than SelfKey.
-%  Self-recursive last-goal Execute (T4 merge_flags_/3) is allowed.
+%  Nested Runtime.run with cp=0 steals the query continuation
+%  (parse_args/2 Executes parse_args/3). Self-recursive last-goal
+%  Execute (T4 merge_flags_/3) is allowed. Execute of a JS WAM builtin
+%  is also rejected (that path aliased live ground terms).
 js_wam_has_foreign_execute(WamCode, Self) :-
     atom_string(Self, SelfS),
     atom_string(WamCode, S),

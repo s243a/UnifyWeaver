@@ -36,6 +36,7 @@
 :- dynamic user:probe_memo/0.
 :- dynamic user:wrap_tail/1.
 :- dynamic user:wrap_helper/1.
+:- dynamic user:wrap_sub/3.
 
 install_lowered_preds :-
     retractall(user:hello/1),
@@ -62,6 +63,7 @@ install_lowered_preds :-
     retractall(user:probe_memo/0),
     retractall(user:wrap_tail/1),
     retractall(user:wrap_helper/1),
+    retractall(user:wrap_sub/3),
     % T4+ITE list recursion (first_char_index/4 shape).
     assertz(user:char_idx([], _, _, -1)),
     assertz((user:char_idx([C|Cs], T, I, Index) :-
@@ -82,9 +84,12 @@ install_lowered_preds :-
         Y = g(a, [1, 2, 3]),
         X == Y,
         write(ok), nl)),
-    % Last-goal Execute of a different predicate: must stay interpreted.
+    % Last-goal Execute of a different *user* predicate: now lowers via
+    % emit_execute's lowered-fn / run_isolated path.
     assertz(user:wrap_helper(ok)),
-    assertz((user:wrap_tail(X) :- wrap_helper(X))).
+    assertz((user:wrap_tail(X) :- wrap_helper(X))),
+    % Last-goal Execute of a JS WAM builtin: must stay interpreted.
+    assertz((user:wrap_sub(S, N, Sub) :- sub_string(S, 0, N, _, Sub))).
 
 read_generated_js(Dir, Text) :-
     directory_file_path(Dir, 'js', JsDir),
@@ -235,24 +240,24 @@ test(ground_fact_memo_independent, [setup(install_lowered_preds)]) :-
     assertion(node_succeeded(Out2)),
     assertion(sub_string(Out2, _, _, _, "ok")).
 
-test(execute_other_stays_interpreted, [setup(install_lowered_preds)]) :-
-    compile_predicate_to_wam_text(wrap_tail/1,
+test(execute_builtin_stays_interpreted, [setup(install_lowered_preds)]) :-
+    compile_predicate_to_wam_text(wrap_sub/3,
         [ite_use_y_level(true), inline_bagof_setof(true)], Wam),
-    wam_javascript_explain_lower(user:wrap_tail/1, Wam, Decision),
+    wam_javascript_explain_lower(user:wrap_sub/3, Wam, Decision),
     assertion(Decision = fallback(_)),
-    \+ wam_javascript_lowerable(user:wrap_tail/1, Wam, _).
+    \+ wam_javascript_lowerable(user:wrap_sub/3, Wam, _).
 
 test(mixed_auto_lowers_eligible, [setup(install_lowered_preds)]) :-
     Dir = 'output/js_wam_lowered_mixed_auto',
     make_directory_path(Dir),
     write_wam_javascript_project(
-        [user:hello/1, user:wrap_tail/1, user:wrap_helper/1],
+        [user:hello/1, user:wrap_tail/1, user:wrap_helper/1, user:wrap_sub/3],
         [emit_mode(mixed)], Dir),
     read_generated_js(Dir, Code),
     assertion(sub_string(Code, _, _, _, "function lowered_hello_1")),
     assertion(sub_string(Code, _, _, _, "function lowered_wrap_helper_1")),
-    assertion(\+ sub_string(Code, _, _, _, "function lowered_wrap_tail_1")),
-    assertion(sub_string(Code, _, _, _, "wamjs lower fallback: wrap_tail/1")),
+    assertion(\+ sub_string(Code, _, _, _, "function lowered_wrap_sub_3")),
+    assertion(sub_string(Code, _, _, _, "wamjs lower fallback: wrap_sub/3")),
     run_node_args(Dir, ['hello/1', 'world'], Exit, Out),
     assertion(Exit =:= 0),
     assertion(node_succeeded(Out)).

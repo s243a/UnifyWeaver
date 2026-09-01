@@ -1159,13 +1159,13 @@ const shared_instructions = [
   I.UnifyVariable(201),
   I.UnifyVariable(202),
   I.GetLevel(203),
-  I.TryMeElse("L_ite_else_49"),
+  I.TryMeElse("L_ite_else_45"),
   I.PutValue(201, 1),
   I.PutConstant(V.Atom(18), 2),
   I.BuiltinCall("==/2", 2),
   I.Cut(203),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_49"),
+  I.Jump("L_ite_cont_45"),
   I.TrustMe(),
   I.PutValue(201, 1),
   I.Call("js_flag_char", 1),
@@ -1239,17 +1239,17 @@ const shared_instructions = [
   I.UnifyVariable(103),
   I.GetVariable(202, 2),
   I.GetLevel(203),
-  I.TryMeElse("L_ite_else_51"),
+  I.TryMeElse("L_ite_else_47"),
   I.PutValue(201, 1),
   I.PutConstant(V.String("--"), 2),
   I.BuiltinCall("\\==/2", 2),
   I.GetLevel(204),
-  I.TryMeElse("L_ite_else_52"),
+  I.TryMeElse("L_ite_else_48"),
   I.PutValue(201, 1),
   I.Call("is_long_flag", 1),
   I.Cut(204),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_52"),
+  I.Jump("L_ite_cont_48"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.Cut(203),
@@ -1257,7 +1257,7 @@ const shared_instructions = [
   I.PutStructure(19, 2, 1),
   I.SetValue(201),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_51"),
+  I.Jump("L_ite_cont_47"),
   I.TrustMe(),
   I.PutValue(202, 1),
   I.PutConstant(V.Atom(20), 2),
@@ -1270,7 +1270,7 @@ const shared_instructions = [
   I.GetVariable(207, 3),
   I.GetVariable(206, 4),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_57"),
+  I.TryMeElse("L_ite_else_51"),
   I.PutValue(201, 1),
   I.PutStructure(5, 2, 2),
   I.SetVariable(203),
@@ -1278,7 +1278,7 @@ const shared_instructions = [
   I.BuiltinCall("=/2", 2),
   I.Cut(208),
   I.GetLevel(209),
-  I.TryMeElse("L_ite_else_58"),
+  I.TryMeElse("L_ite_else_52"),
   I.PutValue(202, 1),
   I.PutConstant(V.Int(0), 2),
   I.BuiltinCall("=:=/2", 2),
@@ -1286,7 +1286,7 @@ const shared_instructions = [
   I.PutValue(206, 1),
   I.PutValue(203, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_58"),
+  I.Jump("L_ite_cont_52"),
   I.TrustMe(),
   I.PutVariable(204, 1),
   I.PutStructure(10, 2, 2),
@@ -1298,7 +1298,7 @@ const shared_instructions = [
   I.PutValue(207, 3),
   I.PutValue(206, 4),
   I.Call("nth0_default", 4),
-  I.Jump("L_ite_cont_57"),
+  I.Jump("L_ite_cont_51"),
   I.TrustMe(),
   I.PutValue(206, 1),
   I.PutValue(207, 2),
@@ -1310,7 +1310,7 @@ const shared_instructions = [
   I.GetVariable(204, 2),
   I.GetVariable(206, 3),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_61"),
+  I.TryMeElse("L_ite_else_55"),
   I.PutValue(201, 1),
   I.PutValue(204, 2),
   I.PutVariable(202, 3),
@@ -1319,10 +1319,10 @@ const shared_instructions = [
   I.PutValue(206, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_61"),
+  I.Jump("L_ite_cont_55"),
   I.TrustMe(),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_62"),
+  I.TryMeElse("L_ite_else_56"),
   I.PutVariable(203, 1),
   I.Call("global_options", 1),
   I.PutValue(203, 1),
@@ -1333,7 +1333,7 @@ const shared_instructions = [
   I.PutValue(206, 1),
   I.PutValue(205, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_62"),
+  I.Jump("L_ite_cont_56"),
   I.TrustMe(),
   I.PutValue(204, 1),
   I.Call("js_object_prototype_key", 1),
@@ -1352,7 +1352,7 @@ const shared_instructions = [
   I.GetVariable(204, 2),
   I.GetVariable(205, 3),
   I.GetLevel(206),
-  I.TryMeElse("L_ite_else_65"),
+  I.TryMeElse("L_ite_else_59"),
   I.PutValue(201, 1),
   I.PutValue(204, 2),
   I.BuiltinCall("==/2", 2),
@@ -1360,7 +1360,7 @@ const shared_instructions = [
   I.PutValue(205, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_65"),
+  I.Jump("L_ite_cont_59"),
   I.TrustMe(),
   I.PutValue(203, 1),
   I.PutValue(204, 2),
@@ -1388,25 +1388,25 @@ const shared_instructions = [
   I.PutVariable(217, 4),
   I.Call("scan_leading_globals", 4),
   I.GetLevel(222),
-  I.TryMeElse("L_ite_else_67"),
+  I.TryMeElse("L_ite_else_61"),
   I.PutValue(201, 1),
   I.PutStructure(5, 2, 2),
   I.SetVariable(204),
   I.SetVariable(210),
   I.BuiltinCall("=/2", 2),
   I.GetLevel(223),
-  I.TryMeElse("L_ite_else_68"),
+  I.TryMeElse("L_ite_else_62"),
   I.PutValue(204, 1),
   I.PutConstant(V.String("--"), 2),
   I.Call("starts_with", 2),
   I.Cut(223),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_68"),
+  I.Jump("L_ite_cont_62"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.Cut(222),
   I.GetLevel(224),
-  I.TryMeElse("L_ite_else_69"),
+  I.TryMeElse("L_ite_else_63"),
   I.PutValue(210, 1),
   I.PutStructure(5, 2, 2),
   I.SetVariable(202),
@@ -1417,13 +1417,13 @@ const shared_instructions = [
   I.PutStructure(19, 2, 1),
   I.SetValue(202),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_69"),
+  I.Jump("L_ite_cont_63"),
   I.TrustMe(),
   I.PutVariable(205, 1),
   I.PutConstant(V.Atom(20), 2),
   I.BuiltinCall("=/2", 2),
   I.GetLevel(225),
-  I.TryMeElse("L_ite_else_70"),
+  I.TryMeElse("L_ite_else_64"),
   I.PutValue(204, 1),
   I.PutValue(205, 2),
   I.PutValue(206, 3),
@@ -1432,7 +1432,7 @@ const shared_instructions = [
   I.Call("schema_for", 5),
   I.Cut(225),
   I.GetLevel(226),
-  I.TryMeElse("L_ite_else_71"),
+  I.TryMeElse("L_ite_else_65"),
   I.PutValue(208, 1),
   I.PutConstant(V.Atom(0), 2),
   I.BuiltinCall("==/2", 2),
@@ -1454,7 +1454,7 @@ const shared_instructions = [
   I.SetValue(209),
   I.SetConstant(V.Atom(2)),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_71"),
+  I.Jump("L_ite_cont_65"),
   I.TrustMe(),
   I.PutVariable(212, 1),
   I.PutValue(210, 2),
@@ -1470,7 +1470,7 @@ const shared_instructions = [
   I.PutVariable(214, 4),
   I.Call("parse_strict", 4),
   I.GetLevel(227),
-  I.TryMeElse("L_ite_else_72"),
+  I.TryMeElse("L_ite_else_66"),
   I.PutValue(214, 1),
   I.PutStructure(9, 2, 2),
   I.SetVariable(215),
@@ -1486,7 +1486,7 @@ const shared_instructions = [
   I.SetValue(215),
   I.SetValue(218),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_72"),
+  I.Jump("L_ite_cont_66"),
   I.TrustMe(),
   I.PutValue(214, 1),
   I.PutStructure(8, 2, 1),
@@ -1496,12 +1496,12 @@ const shared_instructions = [
   I.PutStructure(22, 2, 1),
   I.SetValue(219),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_70"),
+  I.Jump("L_ite_cont_64"),
   I.TrustMe(),
   I.PutValue(220, 1),
   I.PutValue(221, 2),
   I.Call("lenient_result", 2),
-  I.Jump("L_ite_cont_67"),
+  I.Jump("L_ite_cont_61"),
   I.TrustMe(),
   I.PutValue(220, 1),
   I.PutValue(221, 2),
@@ -1540,7 +1540,7 @@ const shared_instructions = [
   I.PutVariable(201, 8),
   I.Call("strict_loop", 8),
   I.GetLevel(212),
-  I.TryMeElse("L_ite_else_85"),
+  I.TryMeElse("L_ite_else_73"),
   I.PutValue(201, 1),
   I.PutStructure(8, 2, 1),
   I.SetVariable(202),
@@ -1550,7 +1550,7 @@ const shared_instructions = [
   I.PutStructure(8, 2, 1),
   I.SetValue(202),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_85"),
+  I.Jump("L_ite_cont_73"),
   I.TrustMe(),
   I.PutValue(203, 1),
   I.PutVariable(209, 2),
@@ -1560,7 +1560,7 @@ const shared_instructions = [
   I.PutVariable(205, 3),
   I.Call("check_arity", 3),
   I.GetLevel(213),
-  I.TryMeElse("L_ite_else_86"),
+  I.TryMeElse("L_ite_else_74"),
   I.PutValue(205, 1),
   I.PutStructure(8, 2, 1),
   I.SetVariable(206),
@@ -1570,7 +1570,7 @@ const shared_instructions = [
   I.PutStructure(8, 2, 1),
   I.SetValue(206),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_86"),
+  I.Jump("L_ite_cont_74"),
   I.TrustMe(),
   I.PutValue(208, 1),
   I.PutValue(209, 2),
@@ -1588,7 +1588,7 @@ const shared_instructions = [
   I.GetVariable(203, 2),
   I.GetVariable(204, 3),
   I.GetLevel(205),
-  I.TryMeElse("L_ite_else_89"),
+  I.TryMeElse("L_ite_else_77"),
   I.PutValue(201, 1),
   I.PutValue(203, 2),
   I.PutVariable(202, 3),
@@ -1597,7 +1597,7 @@ const shared_instructions = [
   I.PutValue(204, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_89"),
+  I.Jump("L_ite_cont_77"),
   I.TrustMe(),
   I.PutValue(203, 1),
   I.Call("js_object_prototype_key", 1),
@@ -1624,7 +1624,7 @@ const shared_instructions = [
   I.GetVariable(209, 3),
   I.GetVariable(212, 4),
   I.GetLevel(214),
-  I.TryMeElse("L_ite_else_91"),
+  I.TryMeElse("L_ite_else_79"),
   I.PutValue(210, 1),
   I.PutConstant(V.String("--"), 2),
   I.Call("starts_with", 2),
@@ -1637,12 +1637,12 @@ const shared_instructions = [
   I.PutVariable(202, 3),
   I.Call("split_flag_token", 3),
   I.GetLevel(215),
-  I.TryMeElse("L_ite_else_92"),
+  I.TryMeElse("L_ite_else_80"),
   I.PutValue(201, 1),
   I.Call("is_global_key", 1),
   I.Cut(215),
   I.GetLevel(216),
-  I.TryMeElse("L_ite_else_93"),
+  I.TryMeElse("L_ite_else_81"),
   I.PutValue(202, 1),
   I.PutStructure(19, 2, 1),
   I.SetVariable(203),
@@ -1658,13 +1658,13 @@ const shared_instructions = [
   I.PutValue(209, 3),
   I.PutValue(212, 4),
   I.Call("scan_leading_globals", 4),
-  I.Jump("L_ite_cont_93"),
+  I.Jump("L_ite_cont_81"),
   I.TrustMe(),
   I.PutValue(211, 1),
   I.PutVariable(205, 2),
   I.Call("next_value", 2),
   I.GetLevel(217),
-  I.TryMeElse("L_ite_else_94"),
+  I.TryMeElse("L_ite_else_82"),
   I.PutValue(205, 1),
   I.PutStructure(19, 2, 1),
   I.SetVariable(206),
@@ -1685,7 +1685,7 @@ const shared_instructions = [
   I.PutValue(209, 3),
   I.PutValue(212, 4),
   I.Call("scan_leading_globals", 4),
-  I.Jump("L_ite_cont_94"),
+  I.Jump("L_ite_cont_82"),
   I.TrustMe(),
   I.PutValue(213, 1),
   I.PutValue(201, 2),
@@ -1697,7 +1697,7 @@ const shared_instructions = [
   I.PutValue(209, 3),
   I.PutValue(212, 4),
   I.Call("scan_leading_globals", 4),
-  I.Jump("L_ite_cont_92"),
+  I.Jump("L_ite_cont_80"),
   I.TrustMe(),
   I.PutValue(209, 1),
   I.PutStructure(5, 2, 2),
@@ -1707,7 +1707,7 @@ const shared_instructions = [
   I.PutValue(212, 1),
   I.PutValue(213, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_91"),
+  I.Jump("L_ite_cont_79"),
   I.TrustMe(),
   I.PutValue(209, 1),
   I.PutStructure(5, 2, 2),
@@ -1730,7 +1730,7 @@ const shared_instructions = [
   I.PutVariable(205, 3),
   I.Call("registry_entry", 3),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_99"),
+  I.TryMeElse("L_ite_else_87"),
   I.PutValue(205, 1),
   I.PutStructure(15, 2, 1),
   I.SetVariable(202),
@@ -1750,7 +1750,7 @@ const shared_instructions = [
   I.PutValue(206, 1),
   I.PutConstant(V.Atom(0), 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_99"),
+  I.Jump("L_ite_cont_87"),
   I.TrustMe(),
   I.PutValue(204, 1),
   I.PutValue(205, 2),
@@ -1768,7 +1768,7 @@ const shared_instructions = [
   I.PutVariable(201, 2),
   I.Call("first_equals_index", 2),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_101"),
+  I.TryMeElse("L_ite_else_89"),
   I.PutValue(201, 1),
   I.PutConstant(V.Int(0), 2),
   I.BuiltinCall(">=/2", 2),
@@ -1791,7 +1791,7 @@ const shared_instructions = [
   I.PutStructure(19, 2, 1),
   I.SetValue(203),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_101"),
+  I.Jump("L_ite_cont_89"),
   I.TrustMe(),
   I.PutValue(204, 1),
   I.PutConstant(V.Int(2), 2),
@@ -1849,7 +1849,7 @@ const shared_instructions = [
   I.GetVariable(207, 7),
   I.GetVariable(208, 8),
   I.GetLevel(214),
-  I.TryMeElse("L_ite_else_103"),
+  I.TryMeElse("L_ite_else_91"),
   I.PutValue(209, 1),
   I.PutConstant(V.Atom(0), 2),
   I.BuiltinCall("==/2", 2),
@@ -1865,10 +1865,10 @@ const shared_instructions = [
   I.PutValue(207, 7),
   I.PutValue(208, 8),
   I.Call("strict_loop", 8),
-  I.Jump("L_ite_cont_103"),
+  I.Jump("L_ite_cont_91"),
   I.TrustMe(),
   I.GetLevel(215),
-  I.TryMeElse("L_ite_else_104"),
+  I.TryMeElse("L_ite_else_92"),
   I.PutValue(201, 1),
   I.PutConstant(V.String("--"), 2),
   I.BuiltinCall("==/2", 2),
@@ -1882,18 +1882,18 @@ const shared_instructions = [
   I.PutValue(207, 7),
   I.PutValue(208, 8),
   I.Call("strict_loop", 8),
-  I.Jump("L_ite_cont_104"),
+  I.Jump("L_ite_cont_92"),
   I.TrustMe(),
   I.GetLevel(216),
-  I.TryMeElse("L_ite_else_105"),
+  I.TryMeElse("L_ite_else_93"),
   I.GetLevel(217),
-  I.TryMeElse("L_ite_else_106"),
+  I.TryMeElse("L_ite_else_94"),
   I.PutValue(201, 1),
   I.PutConstant(V.String("--"), 2),
   I.Call("starts_with", 2),
   I.Cut(217),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_106"),
+  I.Jump("L_ite_cont_94"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.Cut(216),
@@ -1908,14 +1908,14 @@ const shared_instructions = [
   I.PutValue(207, 7),
   I.PutValue(208, 8),
   I.Call("strict_loop", 8),
-  I.Jump("L_ite_cont_105"),
+  I.Jump("L_ite_cont_93"),
   I.TrustMe(),
   I.PutValue(201, 1),
   I.PutVariable(210, 2),
   I.PutVariable(211, 3),
   I.Call("split_flag_token", 3),
   I.GetLevel(217),
-  I.TryMeElse("L_ite_else_107"),
+  I.TryMeElse("L_ite_else_95"),
   I.PutValue(203, 1),
   I.PutValue(210, 2),
   I.PutVariable(212, 3),
@@ -1933,7 +1933,7 @@ const shared_instructions = [
   I.PutValue(207, 10),
   I.PutValue(208, 11),
   I.Call("strict_option", 11),
-  I.Jump("L_ite_cont_107"),
+  I.Jump("L_ite_cont_95"),
   I.TrustMe(),
   I.PutConstant(V.String("unknown option --"), 1),
   I.PutValue(210, 2),
@@ -1964,20 +1964,20 @@ const shared_instructions = [
   I.GetVariable(213, 10),
   I.GetVariable(214, 11),
   I.GetLevel(225),
-  I.TryMeElse("L_ite_else_118"),
+  I.TryMeElse("L_ite_else_101"),
   I.PutValue(216, 1),
   I.PutConstant(V.Atom(12), 2),
   I.BuiltinCall("==/2", 2),
   I.Cut(225),
   I.GetLevel(226),
-  I.TryMeElse("L_ite_else_119"),
+  I.TryMeElse("L_ite_else_102"),
   I.PutValue(203, 1),
   I.PutStructure(19, 2, 1),
   I.SetVariable(201),
   I.BuiltinCall("=/2", 2),
   I.Cut(226),
   I.GetLevel(227),
-  I.TryMeElse("L_ite_else_120"),
+  I.TryMeElse("L_ite_else_103"),
   I.PutValue(201, 1),
   I.PutConstant(V.String("false"), 2),
   I.BuiltinCall("==/2", 2),
@@ -1985,12 +1985,12 @@ const shared_instructions = [
   I.PutVariable(202, 1),
   I.PutConstant(V.Atom(7), 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_120"),
+  I.Jump("L_ite_cont_103"),
   I.TrustMe(),
   I.PutVariable(202, 1),
   I.PutConstant(V.Atom(0), 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_119"),
+  I.Jump("L_ite_cont_102"),
   I.TrustMe(),
   I.PutVariable(202, 1),
   I.PutConstant(V.Atom(0), 2),
@@ -2009,10 +2009,10 @@ const shared_instructions = [
   I.PutValue(213, 7),
   I.PutValue(214, 8),
   I.Call("strict_loop", 8),
-  I.Jump("L_ite_cont_118"),
+  I.Jump("L_ite_cont_101"),
   I.TrustMe(),
   I.GetLevel(226),
-  I.TryMeElse("L_ite_else_121"),
+  I.TryMeElse("L_ite_else_104"),
   I.PutValue(203, 1),
   I.PutStructure(19, 2, 1),
   I.SetVariable(204),
@@ -2032,19 +2032,19 @@ const shared_instructions = [
   I.PutValue(213, 7),
   I.PutValue(214, 8),
   I.Call("strict_loop", 8),
-  I.Jump("L_ite_cont_121"),
+  I.Jump("L_ite_cont_104"),
   I.TrustMe(),
   I.PutValue(208, 1),
   I.PutVariable(215, 2),
   I.Call("next_value", 2),
   I.GetLevel(227),
-  I.TryMeElse("L_ite_else_122"),
+  I.TryMeElse("L_ite_else_105"),
   I.PutValue(216, 1),
   I.PutConstant(V.Atom(13), 2),
   I.BuiltinCall("==/2", 2),
   I.Cut(227),
   I.GetLevel(228),
-  I.TryMeElse("L_ite_else_123"),
+  I.TryMeElse("L_ite_else_106"),
   I.PutValue(215, 1),
   I.PutStructure(19, 2, 1),
   I.SetVariable(217),
@@ -2069,7 +2069,7 @@ const shared_instructions = [
   I.PutValue(213, 7),
   I.PutValue(214, 8),
   I.Call("strict_loop", 8),
-  I.Jump("L_ite_cont_123"),
+  I.Jump("L_ite_cont_106"),
   I.TrustMe(),
   I.PutConstant(V.String("--"), 1),
   I.PutValue(206, 2),
@@ -2089,10 +2089,10 @@ const shared_instructions = [
   I.PutStructure(8, 2, 1),
   I.SetValue(221),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_122"),
+  I.Jump("L_ite_cont_105"),
   I.TrustMe(),
   I.GetLevel(228),
-  I.TryMeElse("L_ite_else_124"),
+  I.TryMeElse("L_ite_else_107"),
   I.PutValue(215, 1),
   I.PutStructure(19, 2, 1),
   I.SetVariable(222),
@@ -2117,7 +2117,7 @@ const shared_instructions = [
   I.PutValue(213, 7),
   I.PutValue(214, 8),
   I.Call("strict_loop", 8),
-  I.Jump("L_ite_cont_124"),
+  I.Jump("L_ite_cont_107"),
   I.TrustMe(),
   I.PutValue(205, 1),
   I.PutValue(206, 2),
@@ -2141,13 +2141,13 @@ const shared_instructions = [
   I.UnifyVariable(201),
   I.UnifyVariable(203),
   I.GetLevel(204),
-  I.TryMeElse("L_ite_else_132"),
+  I.TryMeElse("L_ite_else_115"),
   I.PutValue(202, 1),
   I.PutValue(201, 2),
   I.BuiltinCall("==/2", 2),
   I.Cut(204),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_132"),
+  I.Jump("L_ite_cont_115"),
   I.TrustMe(),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
@@ -2211,97 +2211,97 @@ const shared_labels = {
   "substring_from/3": 2126,
   "strip_brackets/2": 2112,
   "string_member/2": 2093,
-  "L_ite_else_132": 2106,
-  "L_ite_cont_132": 2110,
+  "L_ite_else_115": 2106,
+  "L_ite_cont_115": 2110,
   "strict_option/11": 1909,
-  "L_ite_else_120": 1944,
-  "L_ite_cont_120": 1948,
-  "L_ite_else_119": 1949,
-  "L_ite_cont_119": 1953,
-  "L_ite_else_118": 1968,
-  "L_ite_else_121": 1991,
-  "L_ite_else_123": 2028,
-  "L_ite_cont_123": 2047,
-  "L_ite_else_122": 2048,
-  "L_ite_else_124": 2076,
-  "L_ite_cont_124": 2091,
-  "L_ite_cont_122": 2091,
-  "L_ite_cont_121": 2091,
-  "L_ite_cont_118": 2091,
+  "L_ite_else_103": 1944,
+  "L_ite_cont_103": 1948,
+  "L_ite_else_102": 1949,
+  "L_ite_cont_102": 1953,
+  "L_ite_else_101": 1968,
+  "L_ite_else_104": 1991,
+  "L_ite_else_106": 2028,
+  "L_ite_cont_106": 2047,
+  "L_ite_else_105": 2048,
+  "L_ite_else_107": 2076,
+  "L_ite_cont_107": 2091,
+  "L_ite_cont_105": 2091,
+  "L_ite_cont_104": 2091,
+  "L_ite_cont_101": 2091,
   "strict_loop/8": 1783,
   "L_strict_loop_8_2": 1794,
   "L_strict_loop_8_2_body": 1795,
-  "L_ite_else_103": 1824,
-  "L_ite_else_104": 1841,
-  "L_ite_else_106": 1852,
-  "L_ite_cont_106": 1854,
-  "L_ite_else_105": 1867,
-  "L_ite_else_107": 1892,
-  "L_ite_cont_107": 1907,
-  "L_ite_cont_105": 1907,
-  "L_ite_cont_104": 1907,
-  "L_ite_cont_103": 1907,
+  "L_ite_else_91": 1824,
+  "L_ite_else_92": 1841,
+  "L_ite_else_94": 1852,
+  "L_ite_cont_94": 1854,
+  "L_ite_else_93": 1867,
+  "L_ite_else_95": 1892,
+  "L_ite_cont_95": 1907,
+  "L_ite_cont_93": 1907,
+  "L_ite_cont_92": 1907,
+  "L_ite_cont_91": 1907,
   "starts_with/2": 1760,
   "split_flag_token/3": 1718,
-  "L_ite_else_101": 1750,
-  "L_ite_cont_101": 1758,
+  "L_ite_else_89": 1750,
+  "L_ite_cont_89": 1758,
   "schema_for/5": 1677,
-  "L_ite_else_99": 1709,
-  "L_ite_cont_99": 1716,
+  "L_ite_else_87": 1709,
+  "L_ite_cont_87": 1716,
   "scan_leading_globals/4": 1566,
   "L_scan_leading_globals_4_2": 1573,
   "L_scan_leading_globals_4_2_body": 1574,
-  "L_ite_else_93": 1617,
-  "L_ite_else_94": 1644,
-  "L_ite_cont_94": 1655,
-  "L_ite_cont_93": 1655,
-  "L_ite_else_92": 1656,
-  "L_ite_cont_92": 1665,
-  "L_ite_else_91": 1666,
-  "L_ite_cont_91": 1675,
+  "L_ite_else_81": 1617,
+  "L_ite_else_82": 1644,
+  "L_ite_cont_82": 1655,
+  "L_ite_cont_81": 1655,
+  "L_ite_else_80": 1656,
+  "L_ite_cont_80": 1665,
+  "L_ite_else_79": 1666,
+  "L_ite_cont_79": 1675,
   "registry_entry/3": 1541,
-  "L_ite_else_89": 1556,
-  "L_ite_cont_89": 1564,
+  "L_ite_else_77": 1556,
+  "L_ite_cont_77": 1564,
   "parse_strict/4": 1481,
-  "L_ite_else_85": 1509,
-  "L_ite_else_86": 1529,
-  "L_ite_cont_86": 1539,
-  "L_ite_cont_85": 1539,
+  "L_ite_else_73": 1509,
+  "L_ite_else_74": 1529,
+  "L_ite_cont_74": 1539,
+  "L_ite_cont_73": 1539,
   "parse_lenient/3": 1466,
   "parse_args/3": 1336,
-  "L_ite_else_68": 1360,
-  "L_ite_cont_68": 1362,
-  "L_ite_else_69": 1376,
-  "L_ite_cont_69": 1380,
-  "L_ite_else_71": 1413,
-  "L_ite_cont_71": 1422,
-  "L_ite_else_72": 1445,
-  "L_ite_cont_72": 1454,
-  "L_ite_else_70": 1455,
-  "L_ite_cont_70": 1459,
-  "L_ite_else_67": 1460,
-  "L_ite_cont_67": 1464,
+  "L_ite_else_62": 1360,
+  "L_ite_cont_62": 1362,
+  "L_ite_else_63": 1376,
+  "L_ite_cont_63": 1380,
+  "L_ite_else_65": 1413,
+  "L_ite_cont_65": 1422,
+  "L_ite_else_66": 1445,
+  "L_ite_cont_66": 1454,
+  "L_ite_else_64": 1455,
+  "L_ite_cont_64": 1459,
+  "L_ite_else_61": 1460,
+  "L_ite_cont_61": 1464,
   "parse_args/2": 1326,
   "pair_lookup/3": 1300,
-  "L_ite_else_65": 1319,
-  "L_ite_cont_65": 1324,
+  "L_ite_else_59": 1319,
+  "L_ite_cont_59": 1324,
   "option_kind/3": 1263,
-  "L_ite_else_61": 1278,
-  "L_ite_else_62": 1292,
-  "L_ite_cont_62": 1298,
-  "L_ite_cont_61": 1298,
+  "L_ite_else_55": 1278,
+  "L_ite_else_56": 1292,
+  "L_ite_cont_56": 1298,
+  "L_ite_cont_55": 1298,
   "nth0_default/4": 1222,
-  "L_ite_else_58": 1245,
-  "L_ite_cont_58": 1256,
-  "L_ite_else_57": 1257,
-  "L_ite_cont_57": 1261,
+  "L_ite_else_52": 1245,
+  "L_ite_cont_52": 1256,
+  "L_ite_else_51": 1257,
+  "L_ite_cont_51": 1261,
   "next_value/2": 1185,
   "L_next_value_2_2": 1190,
   "L_next_value_2_2_body": 1191,
-  "L_ite_else_52": 1208,
-  "L_ite_cont_52": 1210,
-  "L_ite_else_51": 1216,
-  "L_ite_cont_51": 1220,
+  "L_ite_else_48": 1208,
+  "L_ite_cont_48": 1210,
+  "L_ite_else_47": 1216,
+  "L_ite_cont_47": 1220,
   "merge_flags_/3": 1159,
   "L_merge_flags__3_2": 1165,
   "L_merge_flags__3_2_body": 1166,
@@ -2310,8 +2310,8 @@ const shared_labels = {
   "long_flag_tail/1": 1107,
   "L_long_flag_tail_1_2": 1111,
   "L_long_flag_tail_1_2_body": 1112,
-  "L_ite_else_49": 1124,
-  "L_ite_cont_49": 1129,
+  "L_ite_else_45": 1124,
+  "L_ite_cont_45": 1129,
   "lenient_result/2": 1097,
   "lenient_loop/5": 997,
   "L_lenient_loop_5_2": 1005,
@@ -2461,12 +2461,12 @@ const lowered_dispatch = {};
 // wamjs lower fallback: substring_from/3  fallback(execute of a non-self callee (nested Runtime.run would steal CP))
 // Lowered: strip_brackets/2 (deterministic)
 function lowered_strip_brackets_2(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 104, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 202, Runtime.get_reg(state, 2));
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 104));
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 2, v); }
-  if (Runtime.step(program, state, I.BuiltinCall("string_chars/2", 2)) !== true) return false;
+  if (Runtime.op_builtin(program, state, "string_chars/2", 2) !== true) return false;
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 203, v); Runtime.put_reg(state, 2, v); }
   {
@@ -2496,8 +2496,8 @@ function lowered_strip_brackets_2(program, state) {
   }
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
   Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
-  if (Runtime.step(program, state, I.BuiltinCall("string_chars/2", 2)) !== true) return false;
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_builtin(program, state, "string_chars/2", 2) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
@@ -2505,26 +2505,26 @@ function lowered_strip_brackets_2(program, state) {
 lowered_dispatch["strip_brackets/2"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("strip_brackets/2"); return lowered_strip_brackets_2(program, state); };
 // Lowered: string_member/2 (if-then-else / negation / once)
 function lowered_string_member_2(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 202, Runtime.get_reg(state, 1));
-  if (Runtime.step(program, state, I.GetList(2, 5)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(201)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(203)) !== true) return false;
-  if (Runtime.step(program, state, I.GetLevel(204)) !== true) return false;
+  if (Runtime.op_get_list(program, state, 2, 5) !== true) return false;
+  if (Runtime.op_unify_variable(state, 201) !== true) return false;
+  if (Runtime.op_unify_variable(state, 203) !== true) return false;
+  if (Runtime.op_get_level(state, 204) !== true) return false;
   {
-    const _ite_snap = Runtime.snapshot_machine(state);
-    const _ite_cps = state.cps.length;
+    const _ite_trail = state.trail.length;
+    const _ite_args = Runtime.capture_a_regs(state, 8);
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 201));
-      if (Runtime.step(program, state, I.BuiltinCall("==/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
       return true;
     })();
     if (_ite_cond) {
-      if (Runtime.step(program, state, I.BuiltinCall("true/0", 0)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
     } else {
-      Runtime.restore_machine(state, _ite_snap);
-      while (state.cps.length > _ite_cps) state.cps.pop();
+      Runtime.undo_trail(state, _ite_trail);
+      Runtime.restore_a_regs(state, _ite_args);
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
       {
@@ -2554,7 +2554,7 @@ function lowered_string_member_2(program, state) {
       }
     }
   }
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
@@ -2562,7 +2562,7 @@ function lowered_string_member_2(program, state) {
 lowered_dispatch["string_member/2"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("string_member/2"); return lowered_string_member_2(program, state); };
 // Lowered: strict_option/11 (if-then-else / negation / once)
 function lowered_strict_option_11(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 216, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 206, Runtime.get_reg(state, 2));
   Runtime.put_reg(state, 203, Runtime.get_reg(state, 3));
@@ -2574,49 +2574,49 @@ function lowered_strict_option_11(program, state) {
   Runtime.put_reg(state, 212, Runtime.get_reg(state, 9));
   Runtime.put_reg(state, 213, Runtime.get_reg(state, 10));
   Runtime.put_reg(state, 214, Runtime.get_reg(state, 11));
-  if (Runtime.step(program, state, I.GetLevel(225)) !== true) return false;
+  if (Runtime.op_get_level(state, 225) !== true) return false;
   {
-    const _ite_snap = Runtime.snapshot_machine(state);
-    const _ite_cps = state.cps.length;
+    const _ite_trail = state.trail.length;
+    const _ite_args = Runtime.capture_a_regs(state, 8);
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 216));
       Runtime.put_reg(state, 2, V.Atom(12));
-      if (Runtime.step(program, state, I.BuiltinCall("==/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
       return true;
     })();
     if (_ite_cond) {
-      if (Runtime.step(program, state, I.GetLevel(226)) !== true) return false;
+      if (Runtime.op_get_level(state, 226) !== true) return false;
       {
         const _ite_snap = Runtime.snapshot_machine(state);
         const _ite_cps = state.cps.length;
         const _ite_cond = (function () {
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
-          if (Runtime.step(program, state, I.PutStructure(19, 2, 1)) !== true) return false;
-          if (Runtime.step(program, state, I.SetVariable(201)) !== true) return false;
-          if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+          if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
+          if (Runtime.op_unify_variable(state, 201) !== true) return false;
+          if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
           return true;
         })();
         if (_ite_cond) {
-          if (Runtime.step(program, state, I.GetLevel(227)) !== true) return false;
+          if (Runtime.op_get_level(state, 227) !== true) return false;
           {
-            const _ite_snap = Runtime.snapshot_machine(state);
-            const _ite_cps = state.cps.length;
+            const _ite_trail = state.trail.length;
+            const _ite_args = Runtime.capture_a_regs(state, 8);
             const _ite_cond = (function () {
               Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
               Runtime.put_reg(state, 2, V.String("false"));
-              if (Runtime.step(program, state, I.BuiltinCall("==/2", 2)) !== true) return false;
+              if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
               return true;
             })();
             if (_ite_cond) {
               { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 1, v); }
               Runtime.put_reg(state, 2, V.Atom(7));
-              if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+              if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
             } else {
-              Runtime.restore_machine(state, _ite_snap);
-              while (state.cps.length > _ite_cps) state.cps.pop();
+              Runtime.undo_trail(state, _ite_trail);
+              Runtime.restore_a_regs(state, _ite_args);
               { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 1, v); }
               Runtime.put_reg(state, 2, V.Atom(0));
-              if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+              if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
             }
           }
         } else {
@@ -2624,7 +2624,7 @@ function lowered_strict_option_11(program, state) {
           while (state.cps.length > _ite_cps) state.cps.pop();
           { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 1, v); }
           Runtime.put_reg(state, 2, V.Atom(0));
-          if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+          if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
         }
       }
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
@@ -2690,17 +2690,17 @@ function lowered_strict_option_11(program, state) {
         if (!_ok) return false;
       }
     } else {
-      Runtime.restore_machine(state, _ite_snap);
-      while (state.cps.length > _ite_cps) state.cps.pop();
-      if (Runtime.step(program, state, I.GetLevel(226)) !== true) return false;
+      Runtime.undo_trail(state, _ite_trail);
+      Runtime.restore_a_regs(state, _ite_args);
+      if (Runtime.op_get_level(state, 226) !== true) return false;
       {
         const _ite_snap = Runtime.snapshot_machine(state);
         const _ite_cps = state.cps.length;
         const _ite_cond = (function () {
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
-          if (Runtime.step(program, state, I.PutStructure(19, 2, 1)) !== true) return false;
-          if (Runtime.step(program, state, I.SetVariable(204)) !== true) return false;
-          if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+          if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
+          if (Runtime.op_unify_variable(state, 204) !== true) return false;
+          if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
           return true;
         })();
         if (_ite_cond) {
@@ -2796,26 +2796,26 @@ function lowered_strict_option_11(program, state) {
             state.halt = false;
             if (!_ok) return false;
           }
-          if (Runtime.step(program, state, I.GetLevel(227)) !== true) return false;
+          if (Runtime.op_get_level(state, 227) !== true) return false;
           {
-            const _ite_snap = Runtime.snapshot_machine(state);
-            const _ite_cps = state.cps.length;
+            const _ite_trail = state.trail.length;
+            const _ite_args = Runtime.capture_a_regs(state, 8);
             const _ite_cond = (function () {
               Runtime.put_reg(state, 1, Runtime.get_reg(state, 216));
               Runtime.put_reg(state, 2, V.Atom(13));
-              if (Runtime.step(program, state, I.BuiltinCall("==/2", 2)) !== true) return false;
+              if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
               return true;
             })();
             if (_ite_cond) {
-              if (Runtime.step(program, state, I.GetLevel(228)) !== true) return false;
+              if (Runtime.op_get_level(state, 228) !== true) return false;
               {
                 const _ite_snap = Runtime.snapshot_machine(state);
                 const _ite_cps = state.cps.length;
                 const _ite_cond = (function () {
                   Runtime.put_reg(state, 1, Runtime.get_reg(state, 215));
-                  if (Runtime.step(program, state, I.PutStructure(19, 2, 1)) !== true) return false;
-                  if (Runtime.step(program, state, I.SetVariable(217)) !== true) return false;
-                  if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+                  if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
+                  if (Runtime.op_unify_variable(state, 217) !== true) return false;
+                  if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
                   return true;
                 })();
                 if (_ite_cond) {
@@ -2849,10 +2849,10 @@ function lowered_strict_option_11(program, state) {
                     if (!_ok) return false;
                   }
                   Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
-                  if (Runtime.step(program, state, I.PutStructure(5, 2, 2)) !== true) return false;
-                  if (Runtime.step(program, state, I.SetVariable(218)) !== true) return false;
-                  if (Runtime.step(program, state, I.SetVariable(219)) !== true) return false;
-                  if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+                  if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+                  if (Runtime.op_unify_variable(state, 218) !== true) return false;
+                  if (Runtime.op_unify_variable(state, 219) !== true) return false;
+                  if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
                   Runtime.put_reg(state, 1, Runtime.get_reg(state, 219));
                   Runtime.put_reg(state, 2, Runtime.get_reg(state, 209));
                   Runtime.put_reg(state, 3, Runtime.get_reg(state, 210));
@@ -2892,35 +2892,35 @@ function lowered_strict_option_11(program, state) {
                   Runtime.put_reg(state, 1, V.String("--"));
                   Runtime.put_reg(state, 2, Runtime.get_reg(state, 206));
                   { const v = Runtime.new_var(state); Runtime.put_reg(state, 220, v); Runtime.put_reg(state, 3, v); }
-                  if (Runtime.step(program, state, I.BuiltinCall("string_concat/3", 3)) !== true) return false;
+                  if (Runtime.op_builtin(program, state, "string_concat/3", 3) !== true) return false;
                   Runtime.put_reg(state, 1, Runtime.get_reg(state, 220));
                   Runtime.put_reg(state, 2, V.String(" needs a value"));
                   { const v = Runtime.new_var(state); Runtime.put_reg(state, 221, v); Runtime.put_reg(state, 3, v); }
-                  if (Runtime.step(program, state, I.BuiltinCall("string_concat/3", 3)) !== true) return false;
+                  if (Runtime.op_builtin(program, state, "string_concat/3", 3) !== true) return false;
                   Runtime.put_reg(state, 1, Runtime.get_reg(state, 212));
                   Runtime.put_reg(state, 2, Runtime.get_reg(state, 211));
-                  if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+                  if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
                   Runtime.put_reg(state, 1, Runtime.get_reg(state, 213));
                   Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
-                  if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+                  if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
                   Runtime.put_reg(state, 1, Runtime.get_reg(state, 214));
-                  if (Runtime.step(program, state, I.PutStructure(8, 2, 1)) !== true) return false;
-                  if (Runtime.step(program, state, I.SetValue(221)) !== true) return false;
-                  if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+                  if (Runtime.op_put_structure(program, state, 8, 2, 1) !== true) return false;
+                  if (Runtime.op_unify_value(program, state, 221) !== true) return false;
+                  if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
                 }
               }
             } else {
-              Runtime.restore_machine(state, _ite_snap);
-              while (state.cps.length > _ite_cps) state.cps.pop();
-              if (Runtime.step(program, state, I.GetLevel(228)) !== true) return false;
+              Runtime.undo_trail(state, _ite_trail);
+              Runtime.restore_a_regs(state, _ite_args);
+              if (Runtime.op_get_level(state, 228) !== true) return false;
               {
                 const _ite_snap = Runtime.snapshot_machine(state);
                 const _ite_cps = state.cps.length;
                 const _ite_cond = (function () {
                   Runtime.put_reg(state, 1, Runtime.get_reg(state, 215));
-                  if (Runtime.step(program, state, I.PutStructure(19, 2, 1)) !== true) return false;
-                  if (Runtime.step(program, state, I.SetVariable(222)) !== true) return false;
-                  if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+                  if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
+                  if (Runtime.op_unify_variable(state, 222) !== true) return false;
+                  if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
                   return true;
                 })();
                 if (_ite_cond) {
@@ -2954,10 +2954,10 @@ function lowered_strict_option_11(program, state) {
                     if (!_ok) return false;
                   }
                   Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
-                  if (Runtime.step(program, state, I.PutStructure(5, 2, 2)) !== true) return false;
-                  if (Runtime.step(program, state, I.SetVariable(223)) !== true) return false;
-                  if (Runtime.step(program, state, I.SetVariable(224)) !== true) return false;
-                  if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+                  if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+                  if (Runtime.op_unify_variable(state, 223) !== true) return false;
+                  if (Runtime.op_unify_variable(state, 224) !== true) return false;
+                  if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
                   Runtime.put_reg(state, 1, Runtime.get_reg(state, 224));
                   Runtime.put_reg(state, 2, Runtime.get_reg(state, 209));
                   Runtime.put_reg(state, 3, Runtime.get_reg(state, 210));
@@ -3064,27 +3064,399 @@ function lowered_strict_option_11(program, state) {
       }
     }
   }
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
 
 lowered_dispatch["strict_option/11"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("strict_option/11"); return lowered_strict_option_11(program, state); };
-// wamjs lower fallback: strict_loop/8  fallback(multi_clause_1 would keep interpreter CPs; T4+ITE did not match)
+// Lowered: strict_loop/8 (T4 all-clauses inline)
+function lowered_strict_loop_8(program, state) {
+  const _t4_trail = state.trail.length;
+  const _t4_regs = Runtime.copy_table(state.regs);
+  const _t4_vc = state.var_counter;
+  const _t4_stack = state.stack.slice();
+  const _t4_ysave = (state.y_save || []).slice();
+  const _t4_mode = state.mode;
+  const _t4_build = state.build_stack.slice();
+  const _t4_rstack = (state.read_stack || []).slice();
+  const _t4_rargs = state.read_args;
+  const _t4_rcur = state.read_cursor;
+  if ((function () {
+    if (Runtime.op_get_constant(program, state, 1, V.Atom(2)) !== true) return false;
+    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 102, Runtime.get_reg(state, 3));
+    Runtime.put_reg(state, 103, Runtime.get_reg(state, 4));
+    Runtime.put_reg(state, 104, Runtime.get_reg(state, 5));
+    if (Runtime.op_get_value(program, state, 103, 6) !== true) return false;
+    if (Runtime.op_get_value(program, state, 104, 7) !== true) return false;
+    if (Runtime.op_get_constant(program, state, 8, V.Atom(9)) !== true) return false;
+    return true;
+    return false;
+  })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 201) !== true) return false;
+    if (Runtime.op_unify_variable(state, 202) !== true) return false;
+    Runtime.put_reg(state, 209, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 203, Runtime.get_reg(state, 3));
+    Runtime.put_reg(state, 204, Runtime.get_reg(state, 4));
+    Runtime.put_reg(state, 205, Runtime.get_reg(state, 5));
+    Runtime.put_reg(state, 206, Runtime.get_reg(state, 6));
+    Runtime.put_reg(state, 207, Runtime.get_reg(state, 7));
+    Runtime.put_reg(state, 208, Runtime.get_reg(state, 8));
+    if (Runtime.op_get_level(state, 214) !== true) return false;
+    {
+      const _ite_trail = state.trail.length;
+      const _ite_args = Runtime.capture_a_regs(state, 8);
+      const _ite_cond = (function () {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 209));
+        Runtime.put_reg(state, 2, V.Atom(0));
+        if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
+        return true;
+      })();
+      if (_ite_cond) {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+        Runtime.put_reg(state, 2, V.Atom(0));
+        Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
+        if (Runtime.op_put_structure(program, state, 5, 4, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 201) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 204) !== true) return false;
+        Runtime.put_reg(state, 5, Runtime.get_reg(state, 205));
+        Runtime.put_reg(state, 6, Runtime.get_reg(state, 206));
+        Runtime.put_reg(state, 7, Runtime.get_reg(state, 207));
+        Runtime.put_reg(state, 8, Runtime.get_reg(state, 208));
+        {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const _lf = (program.lowered_dispatch && program.lowered_dispatch["strict_loop/8"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["strict_loop/8"] : undefined);
+          let _ok = true;
+          if (typeof _lf === "function") {
+            _ok = _lf(program, state) === true;
+          } else {
+            const target = program.labels["strict_loop/8"];
+            if (target !== undefined && target !== null) {
+              Runtime.push_y_save(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+            } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
+              _ok = false;
+            }
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+      } else {
+        Runtime.undo_trail(state, _ite_trail);
+        Runtime.restore_a_regs(state, _ite_args);
+        if (Runtime.op_get_level(state, 215) !== true) return false;
+        {
+          const _ite_trail = state.trail.length;
+          const _ite_args = Runtime.capture_a_regs(state, 8);
+          const _ite_cond = (function () {
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+            Runtime.put_reg(state, 2, V.String("--"));
+            if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
+            return true;
+          })();
+          if (_ite_cond) {
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+            Runtime.put_reg(state, 2, V.Atom(0));
+            Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
+            Runtime.put_reg(state, 4, Runtime.get_reg(state, 204));
+            Runtime.put_reg(state, 5, Runtime.get_reg(state, 205));
+            Runtime.put_reg(state, 6, Runtime.get_reg(state, 206));
+            Runtime.put_reg(state, 7, Runtime.get_reg(state, 207));
+            Runtime.put_reg(state, 8, Runtime.get_reg(state, 208));
+            {
+              const saved_cp = state.cp;
+              const saved_pc = state.pc;
+              const _lf = (program.lowered_dispatch && program.lowered_dispatch["strict_loop/8"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["strict_loop/8"] : undefined);
+              let _ok = true;
+              if (typeof _lf === "function") {
+                _ok = _lf(program, state) === true;
+              } else {
+                const target = program.labels["strict_loop/8"];
+                if (target !== undefined && target !== null) {
+                  Runtime.push_y_save(state);
+                  state.cp = 0;
+                  state.pc = target;
+                  state.program = program;
+                  _ok = Runtime.run_isolated(program, state) === true;
+                  state.halt = false;
+                } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
+                  _ok = false;
+                }
+              }
+              state.cp = saved_cp;
+              state.pc = saved_pc;
+              state.halt = false;
+              if (!_ok) return false;
+            }
+          } else {
+            Runtime.undo_trail(state, _ite_trail);
+            Runtime.restore_a_regs(state, _ite_args);
+            if (Runtime.op_get_level(state, 216) !== true) return false;
+            {
+              const _ite_snap = Runtime.snapshot_machine(state);
+              const _ite_cps = state.cps.length;
+              const _ite_cond = (function () {
+                if (Runtime.op_get_level(state, 217) !== true) return false;
+                {
+                  const _ite_snap = Runtime.snapshot_machine(state);
+                  const _ite_cps = state.cps.length;
+                  const _ite_cond = (function () {
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+                    Runtime.put_reg(state, 2, V.String("--"));
+                    {
+                      const saved_cp = state.cp;
+                      const saved_pc = state.pc;
+                      const _lf = (program.lowered_dispatch && program.lowered_dispatch["starts_with/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["starts_with/2"] : undefined);
+                      let _ok = true;
+                      if (typeof _lf === "function") {
+                        _ok = _lf(program, state) === true;
+                      } else {
+                        const target = program.labels["starts_with/2"];
+                        if (target !== undefined && target !== null) {
+                          Runtime.push_y_save(state);
+                          state.cp = 0;
+                          state.pc = target;
+                          state.program = program;
+                          _ok = Runtime.run_isolated(program, state) === true;
+                          state.halt = false;
+                        } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
+                          _ok = false;
+                        }
+                      }
+                      state.cp = saved_cp;
+                      state.pc = saved_pc;
+                      state.halt = false;
+                      if (!_ok) return false;
+                    }
+                    return true;
+                  })();
+                  if (_ite_cond) {
+                    if (Runtime.op_builtin(program, state, "fail/0", 0) !== true) return false;
+                  } else {
+                    Runtime.restore_machine(state, _ite_snap);
+                    while (state.cps.length > _ite_cps) state.cps.pop();
+                    if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
+                  }
+                }
+                return true;
+              })();
+              if (_ite_cond) {
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+                Runtime.put_reg(state, 2, Runtime.get_reg(state, 209));
+                Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
+                if (Runtime.op_put_structure(program, state, 5, 4, 2) !== true) return false;
+                if (Runtime.op_unify_value(program, state, 201) !== true) return false;
+                if (Runtime.op_unify_value(program, state, 204) !== true) return false;
+                Runtime.put_reg(state, 5, Runtime.get_reg(state, 205));
+                Runtime.put_reg(state, 6, Runtime.get_reg(state, 206));
+                Runtime.put_reg(state, 7, Runtime.get_reg(state, 207));
+                Runtime.put_reg(state, 8, Runtime.get_reg(state, 208));
+                {
+                  const saved_cp = state.cp;
+                  const saved_pc = state.pc;
+                  const _lf = (program.lowered_dispatch && program.lowered_dispatch["strict_loop/8"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["strict_loop/8"] : undefined);
+                  let _ok = true;
+                  if (typeof _lf === "function") {
+                    _ok = _lf(program, state) === true;
+                  } else {
+                    const target = program.labels["strict_loop/8"];
+                    if (target !== undefined && target !== null) {
+                      Runtime.push_y_save(state);
+                      state.cp = 0;
+                      state.pc = target;
+                      state.program = program;
+                      _ok = Runtime.run_isolated(program, state) === true;
+                      state.halt = false;
+                    } else if (Runtime.step(program, state, I.Call("strict_loop", 8)) !== true) {
+                      _ok = false;
+                    }
+                  }
+                  state.cp = saved_cp;
+                  state.pc = saved_pc;
+                  state.halt = false;
+                  if (!_ok) return false;
+                }
+              } else {
+                Runtime.restore_machine(state, _ite_snap);
+                while (state.cps.length > _ite_cps) state.cps.pop();
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+                { const v = Runtime.new_var(state); Runtime.put_reg(state, 210, v); Runtime.put_reg(state, 2, v); }
+                { const v = Runtime.new_var(state); Runtime.put_reg(state, 211, v); Runtime.put_reg(state, 3, v); }
+                {
+                  const saved_cp = state.cp;
+                  const saved_pc = state.pc;
+                  const _lf = (program.lowered_dispatch && program.lowered_dispatch["split_flag_token/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["split_flag_token/3"] : undefined);
+                  let _ok = true;
+                  if (typeof _lf === "function") {
+                    _ok = _lf(program, state) === true;
+                  } else {
+                    const target = program.labels["split_flag_token/3"];
+                    if (target !== undefined && target !== null) {
+                      Runtime.push_y_save(state);
+                      state.cp = 0;
+                      state.pc = target;
+                      state.program = program;
+                      _ok = Runtime.run_isolated(program, state) === true;
+                      state.halt = false;
+                    } else if (Runtime.step(program, state, I.Call("split_flag_token", 3)) !== true) {
+                      _ok = false;
+                    }
+                  }
+                  state.cp = saved_cp;
+                  state.pc = saved_pc;
+                  state.halt = false;
+                  if (!_ok) return false;
+                }
+                if (Runtime.op_get_level(state, 217) !== true) return false;
+                {
+                  const _ite_snap = Runtime.snapshot_machine(state);
+                  const _ite_cps = state.cps.length;
+                  const _ite_cond = (function () {
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
+                    Runtime.put_reg(state, 2, Runtime.get_reg(state, 210));
+                    { const v = Runtime.new_var(state); Runtime.put_reg(state, 212, v); Runtime.put_reg(state, 3, v); }
+                    {
+                      const saved_cp = state.cp;
+                      const saved_pc = state.pc;
+                      const _lf = (program.lowered_dispatch && program.lowered_dispatch["option_kind/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["option_kind/3"] : undefined);
+                      let _ok = true;
+                      if (typeof _lf === "function") {
+                        _ok = _lf(program, state) === true;
+                      } else {
+                        const target = program.labels["option_kind/3"];
+                        if (target !== undefined && target !== null) {
+                          Runtime.push_y_save(state);
+                          state.cp = 0;
+                          state.pc = target;
+                          state.program = program;
+                          _ok = Runtime.run_isolated(program, state) === true;
+                          state.halt = false;
+                        } else if (Runtime.step(program, state, I.Call("option_kind", 3)) !== true) {
+                          _ok = false;
+                        }
+                      }
+                      state.cp = saved_cp;
+                      state.pc = saved_pc;
+                      state.halt = false;
+                      if (!_ok) return false;
+                    }
+                    return true;
+                  })();
+                  if (_ite_cond) {
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 212));
+                    Runtime.put_reg(state, 2, Runtime.get_reg(state, 210));
+                    Runtime.put_reg(state, 3, Runtime.get_reg(state, 211));
+                    Runtime.put_reg(state, 4, Runtime.get_reg(state, 202));
+                    Runtime.put_reg(state, 5, Runtime.get_reg(state, 209));
+                    Runtime.put_reg(state, 6, Runtime.get_reg(state, 203));
+                    Runtime.put_reg(state, 7, Runtime.get_reg(state, 204));
+                    Runtime.put_reg(state, 8, Runtime.get_reg(state, 205));
+                    Runtime.put_reg(state, 9, Runtime.get_reg(state, 206));
+                    Runtime.put_reg(state, 10, Runtime.get_reg(state, 207));
+                    Runtime.put_reg(state, 11, Runtime.get_reg(state, 208));
+                    {
+                      const saved_cp = state.cp;
+                      const saved_pc = state.pc;
+                      const _lf = (program.lowered_dispatch && program.lowered_dispatch["strict_option/11"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["strict_option/11"] : undefined);
+                      let _ok = true;
+                      if (typeof _lf === "function") {
+                        _ok = _lf(program, state) === true;
+                      } else {
+                        const target = program.labels["strict_option/11"];
+                        if (target !== undefined && target !== null) {
+                          Runtime.push_y_save(state);
+                          state.cp = 0;
+                          state.pc = target;
+                          state.program = program;
+                          _ok = Runtime.run_isolated(program, state) === true;
+                          state.halt = false;
+                        } else if (Runtime.step(program, state, I.Call("strict_option", 11)) !== true) {
+                          _ok = false;
+                        }
+                      }
+                      state.cp = saved_cp;
+                      state.pc = saved_pc;
+                      state.halt = false;
+                      if (!_ok) return false;
+                    }
+                  } else {
+                    Runtime.restore_machine(state, _ite_snap);
+                    while (state.cps.length > _ite_cps) state.cps.pop();
+                    Runtime.put_reg(state, 1, V.String("unknown option --"));
+                    Runtime.put_reg(state, 2, Runtime.get_reg(state, 210));
+                    { const v = Runtime.new_var(state); Runtime.put_reg(state, 213, v); Runtime.put_reg(state, 3, v); }
+                    if (Runtime.op_builtin(program, state, "string_concat/3", 3) !== true) return false;
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
+                    Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
+                    if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 207));
+                    Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
+                    if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
+                    if (Runtime.op_put_structure(program, state, 8, 2, 1) !== true) return false;
+                    if (Runtime.op_unify_value(program, state, 213) !== true) return false;
+                    if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    if (Runtime.op_deallocate(state) !== true) return false;
+    return true;
+    return false;
+  })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  return false;
+}
+
+lowered_dispatch["strict_loop/8"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("strict_loop/8"); return lowered_strict_loop_8(program, state); };
 // Lowered: starts_with/2 (deterministic)
 function lowered_starts_with_2(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 202, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 206, Runtime.get_reg(state, 2));
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 2, v); }
-  if (Runtime.step(program, state, I.BuiltinCall("string_length/2", 2)) !== true) return false;
+  if (Runtime.op_builtin(program, state, "string_length/2", 2) !== true) return false;
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 203, v); Runtime.put_reg(state, 2, v); }
-  if (Runtime.step(program, state, I.BuiltinCall("string_length/2", 2)) !== true) return false;
+  if (Runtime.op_builtin(program, state, "string_length/2", 2) !== true) return false;
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
   Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
-  if (Runtime.step(program, state, I.BuiltinCall(">=/2", 2)) !== true) return false;
+  if (Runtime.op_builtin(program, state, ">=/2", 2) !== true) return false;
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
   Runtime.put_reg(state, 2, V.Int(0));
   Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
@@ -3117,8 +3489,8 @@ function lowered_starts_with_2(program, state) {
   }
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
   Runtime.put_reg(state, 2, Runtime.get_reg(state, 206));
-  if (Runtime.step(program, state, I.BuiltinCall("==/2", 2)) !== true) return false;
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
@@ -3126,7 +3498,7 @@ function lowered_starts_with_2(program, state) {
 lowered_dispatch["starts_with/2"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("starts_with/2"); return lowered_starts_with_2(program, state); };
 // Lowered: split_flag_token/3 (if-then-else / negation / once)
 function lowered_split_flag_token_3(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 204, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 205, Runtime.get_reg(state, 2));
   Runtime.put_reg(state, 206, Runtime.get_reg(state, 3));
@@ -3157,14 +3529,14 @@ function lowered_split_flag_token_3(program, state) {
     state.halt = false;
     if (!_ok) return false;
   }
-  if (Runtime.step(program, state, I.GetLevel(207)) !== true) return false;
+  if (Runtime.op_get_level(state, 207) !== true) return false;
   {
-    const _ite_snap = Runtime.snapshot_machine(state);
-    const _ite_cps = state.cps.length;
+    const _ite_trail = state.trail.length;
+    const _ite_args = Runtime.capture_a_regs(state, 8);
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
       Runtime.put_reg(state, 2, V.Int(0));
-      if (Runtime.step(program, state, I.BuiltinCall(">=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, ">=/2", 2) !== true) return false;
       return true;
     })();
     if (_ite_cond) {
@@ -3198,10 +3570,10 @@ function lowered_split_flag_token_3(program, state) {
         if (!_ok) return false;
       }
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 1, v); }
-      if (Runtime.step(program, state, I.PutStructure(10, 2, 2)) !== true) return false;
-      if (Runtime.step(program, state, I.SetValue(201)) !== true) return false;
-      if (Runtime.step(program, state, I.SetConstant(V.Int(1))) !== true) return false;
-      if (Runtime.step(program, state, I.BuiltinCall("is/2", 2)) !== true) return false;
+      if (Runtime.op_put_structure(program, state, 10, 2, 2) !== true) return false;
+      if (Runtime.op_unify_value(program, state, 201) !== true) return false;
+      if (Runtime.op_unify_constant(program, state, V.Int(1)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "is/2", 2) !== true) return false;
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 203, v); Runtime.put_reg(state, 3, v); }
@@ -3231,12 +3603,12 @@ function lowered_split_flag_token_3(program, state) {
         if (!_ok) return false;
       }
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
-      if (Runtime.step(program, state, I.PutStructure(19, 2, 1)) !== true) return false;
-      if (Runtime.step(program, state, I.SetValue(203)) !== true) return false;
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
+      if (Runtime.op_unify_value(program, state, 203) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     } else {
-      Runtime.restore_machine(state, _ite_snap);
-      while (state.cps.length > _ite_cps) state.cps.pop();
+      Runtime.undo_trail(state, _ite_trail);
+      Runtime.restore_a_regs(state, _ite_args);
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
       Runtime.put_reg(state, 2, V.Int(2));
       Runtime.put_reg(state, 3, Runtime.get_reg(state, 205));
@@ -3267,10 +3639,10 @@ function lowered_split_flag_token_3(program, state) {
       }
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
       Runtime.put_reg(state, 2, V.Atom(20));
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     }
   }
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
@@ -3278,7 +3650,7 @@ function lowered_split_flag_token_3(program, state) {
 lowered_dispatch["split_flag_token/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("split_flag_token/3"); return lowered_split_flag_token_3(program, state); };
 // Lowered: schema_for/5 (if-then-else / negation / once)
 function lowered_schema_for_5(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 107, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 201, Runtime.get_reg(state, 2));
   Runtime.put_reg(state, 108, Runtime.get_reg(state, 3));
@@ -3312,25 +3684,25 @@ function lowered_schema_for_5(program, state) {
     state.halt = false;
     if (!_ok) return false;
   }
-  if (Runtime.step(program, state, I.GetLevel(207)) !== true) return false;
+  if (Runtime.op_get_level(state, 207) !== true) return false;
   {
     const _ite_snap = Runtime.snapshot_machine(state);
     const _ite_cps = state.cps.length;
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
-      if (Runtime.step(program, state, I.PutStructure(15, 2, 1)) !== true) return false;
-      if (Runtime.step(program, state, I.SetVariable(202)) !== true) return false;
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_put_structure(program, state, 15, 2, 1) !== true) return false;
+      if (Runtime.op_unify_variable(state, 202) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
       return true;
     })();
     if (_ite_cond) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
-      if (Runtime.step(program, state, I.PutStructure(19, 2, 1)) !== true) return false;
-      if (Runtime.step(program, state, I.SetVariable(203)) !== true) return false;
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
+      if (Runtime.op_unify_variable(state, 203) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
       Runtime.put_reg(state, 2, V.String(""));
-      if (Runtime.step(program, state, I.BuiltinCall("\\==/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "\\==/2", 2) !== true) return false;
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
       Runtime.put_reg(state, 3, Runtime.get_reg(state, 204));
@@ -3361,19 +3733,19 @@ function lowered_schema_for_5(program, state) {
       }
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
       Runtime.put_reg(state, 2, V.Atom(0));
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     } else {
       Runtime.restore_machine(state, _ite_snap);
       while (state.cps.length > _ite_cps) state.cps.pop();
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
       Runtime.put_reg(state, 2, V.Atom(7));
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     }
   }
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
@@ -3392,10 +3764,10 @@ function lowered_scan_leading_globals_4(program, state) {
   const _t4_rargs = state.read_args;
   const _t4_rcur = state.read_cursor;
   if ((function () {
-    if (Runtime.step(program, state, I.GetConstant(V.Atom(2), 1)) !== true) return false;
+    if (Runtime.op_get_constant(program, state, 1, V.Atom(2)) !== true) return false;
     Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
-    if (Runtime.step(program, state, I.GetConstant(V.Atom(2), 3)) !== true) return false;
-    if (Runtime.step(program, state, I.GetValue(101, 4)) !== true) return false;
+    if (Runtime.op_get_constant(program, state, 3, V.Atom(2)) !== true) return false;
+    if (Runtime.op_get_value(program, state, 101, 4) !== true) return false;
     return true;
     return false;
   })()) return true;
@@ -3410,14 +3782,14 @@ function lowered_scan_leading_globals_4(program, state) {
   state.read_args = _t4_rargs;
   state.read_cursor = _t4_rcur;
   if ((function () {
-    if (Runtime.step(program, state, I.Allocate()) !== true) return false;
-    if (Runtime.step(program, state, I.GetList(1, 5)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(210)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(211)) !== true) return false;
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 210) !== true) return false;
+    if (Runtime.op_unify_variable(state, 211) !== true) return false;
     Runtime.put_reg(state, 213, Runtime.get_reg(state, 2));
     Runtime.put_reg(state, 209, Runtime.get_reg(state, 3));
     Runtime.put_reg(state, 212, Runtime.get_reg(state, 4));
-    if (Runtime.step(program, state, I.GetLevel(214)) !== true) return false;
+    if (Runtime.op_get_level(state, 214) !== true) return false;
     {
       const _ite_snap = Runtime.snapshot_machine(state);
       const _ite_cps = state.cps.length;
@@ -3451,7 +3823,7 @@ function lowered_scan_leading_globals_4(program, state) {
         }
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 210));
         Runtime.put_reg(state, 2, V.String("--"));
-        if (Runtime.step(program, state, I.BuiltinCall("\\==/2", 2)) !== true) return false;
+        if (Runtime.op_builtin(program, state, "\\==/2", 2) !== true) return false;
         return true;
       })();
       if (_ite_cond) {
@@ -3483,7 +3855,7 @@ function lowered_scan_leading_globals_4(program, state) {
           state.halt = false;
           if (!_ok) return false;
         }
-        if (Runtime.step(program, state, I.GetLevel(215)) !== true) return false;
+        if (Runtime.op_get_level(state, 215) !== true) return false;
         {
           const _ite_snap = Runtime.snapshot_machine(state);
           const _ite_cps = state.cps.length;
@@ -3517,15 +3889,15 @@ function lowered_scan_leading_globals_4(program, state) {
             return true;
           })();
           if (_ite_cond) {
-            if (Runtime.step(program, state, I.GetLevel(216)) !== true) return false;
+            if (Runtime.op_get_level(state, 216) !== true) return false;
             {
               const _ite_snap = Runtime.snapshot_machine(state);
               const _ite_cps = state.cps.length;
               const _ite_cond = (function () {
                 Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
-                if (Runtime.step(program, state, I.PutStructure(19, 2, 1)) !== true) return false;
-                if (Runtime.step(program, state, I.SetVariable(203)) !== true) return false;
-                if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+                if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
+                if (Runtime.op_unify_variable(state, 203) !== true) return false;
+                if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
                 return true;
               })();
               if (_ite_cond) {
@@ -3617,15 +3989,15 @@ function lowered_scan_leading_globals_4(program, state) {
                   state.halt = false;
                   if (!_ok) return false;
                 }
-                if (Runtime.step(program, state, I.GetLevel(217)) !== true) return false;
+                if (Runtime.op_get_level(state, 217) !== true) return false;
                 {
                   const _ite_snap = Runtime.snapshot_machine(state);
                   const _ite_cps = state.cps.length;
                   const _ite_cond = (function () {
                     Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
-                    if (Runtime.step(program, state, I.PutStructure(19, 2, 1)) !== true) return false;
-                    if (Runtime.step(program, state, I.SetVariable(206)) !== true) return false;
-                    if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+                    if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
+                    if (Runtime.op_unify_variable(state, 206) !== true) return false;
+                    if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
                     return true;
                   })();
                   if (_ite_cond) {
@@ -3659,10 +4031,10 @@ function lowered_scan_leading_globals_4(program, state) {
                       if (!_ok) return false;
                     }
                     Runtime.put_reg(state, 1, Runtime.get_reg(state, 211));
-                    if (Runtime.step(program, state, I.PutStructure(5, 2, 2)) !== true) return false;
-                    if (Runtime.step(program, state, I.SetVariable(207)) !== true) return false;
-                    if (Runtime.step(program, state, I.SetVariable(208)) !== true) return false;
-                    if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+                    if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+                    if (Runtime.op_unify_variable(state, 207) !== true) return false;
+                    if (Runtime.op_unify_variable(state, 208) !== true) return false;
+                    if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
                     Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
                     Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
                     Runtime.put_reg(state, 3, Runtime.get_reg(state, 209));
@@ -3761,29 +4133,29 @@ function lowered_scan_leading_globals_4(program, state) {
             Runtime.restore_machine(state, _ite_snap);
             while (state.cps.length > _ite_cps) state.cps.pop();
             Runtime.put_reg(state, 1, Runtime.get_reg(state, 209));
-            if (Runtime.step(program, state, I.PutStructure(5, 2, 2)) !== true) return false;
-            if (Runtime.step(program, state, I.SetValue(210)) !== true) return false;
-            if (Runtime.step(program, state, I.SetValue(211)) !== true) return false;
-            if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+            if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+            if (Runtime.op_unify_value(program, state, 210) !== true) return false;
+            if (Runtime.op_unify_value(program, state, 211) !== true) return false;
+            if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
             Runtime.put_reg(state, 1, Runtime.get_reg(state, 212));
             Runtime.put_reg(state, 2, Runtime.get_reg(state, 213));
-            if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+            if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
           }
         }
       } else {
         Runtime.restore_machine(state, _ite_snap);
         while (state.cps.length > _ite_cps) state.cps.pop();
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 209));
-        if (Runtime.step(program, state, I.PutStructure(5, 2, 2)) !== true) return false;
-        if (Runtime.step(program, state, I.SetValue(210)) !== true) return false;
-        if (Runtime.step(program, state, I.SetValue(211)) !== true) return false;
-        if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+        if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 210) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 211) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 212));
         Runtime.put_reg(state, 2, Runtime.get_reg(state, 213));
-        if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
       }
     }
-    if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+    if (Runtime.op_deallocate(state) !== true) return false;
     return true;
     return false;
   })()) return true;
@@ -3803,11 +4175,11 @@ function lowered_scan_leading_globals_4(program, state) {
 lowered_dispatch["scan_leading_globals/4"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("scan_leading_globals/4"); return lowered_scan_leading_globals_4(program, state); };
 // Lowered: registry_entry/3 (if-then-else / negation / once)
 function lowered_registry_entry_3(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 201, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 203, Runtime.get_reg(state, 2));
   Runtime.put_reg(state, 204, Runtime.get_reg(state, 3));
-  if (Runtime.step(program, state, I.GetLevel(205)) !== true) return false;
+  if (Runtime.op_get_level(state, 205) !== true) return false;
   {
     const _ite_snap = Runtime.snapshot_machine(state);
     const _ite_cps = state.cps.length;
@@ -3845,7 +4217,7 @@ function lowered_registry_entry_3(program, state) {
     if (_ite_cond) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     } else {
       Runtime.restore_machine(state, _ite_snap);
       while (state.cps.length > _ite_cps) state.cps.pop();
@@ -3876,13 +4248,13 @@ function lowered_registry_entry_3(program, state) {
         if (!_ok) return false;
       }
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
-      if (Runtime.step(program, state, I.PutStructure(6, 2, 2)) !== true) return false;
-      if (Runtime.step(program, state, I.SetConstant(V.Atom(2))) !== true) return false;
-      if (Runtime.step(program, state, I.SetConstant(V.Atom(2))) !== true) return false;
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_put_structure(program, state, 6, 2, 2) !== true) return false;
+      if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+      if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     }
   }
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
@@ -3890,11 +4262,11 @@ function lowered_registry_entry_3(program, state) {
 lowered_dispatch["registry_entry/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("registry_entry/3"); return lowered_registry_entry_3(program, state); };
 // Lowered: parse_strict/4 (if-then-else / negation / once)
 function lowered_parse_strict_4(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 112, Runtime.get_reg(state, 1));
-  if (Runtime.step(program, state, I.GetStructure(6, 2, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(113)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(204)) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 2, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 113) !== true) return false;
+  if (Runtime.op_unify_variable(state, 204) !== true) return false;
   Runtime.put_reg(state, 208, Runtime.get_reg(state, 3));
   Runtime.put_reg(state, 207, Runtime.get_reg(state, 4));
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 112));
@@ -3930,28 +4302,28 @@ function lowered_parse_strict_4(program, state) {
     state.halt = false;
     if (!_ok) return false;
   }
-  if (Runtime.step(program, state, I.GetLevel(212)) !== true) return false;
+  if (Runtime.op_get_level(state, 212) !== true) return false;
   {
     const _ite_snap = Runtime.snapshot_machine(state);
     const _ite_cps = state.cps.length;
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
-      if (Runtime.step(program, state, I.PutStructure(8, 2, 1)) !== true) return false;
-      if (Runtime.step(program, state, I.SetVariable(202)) !== true) return false;
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_put_structure(program, state, 8, 2, 1) !== true) return false;
+      if (Runtime.op_unify_variable(state, 202) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
       return true;
     })();
     if (_ite_cond) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 207));
-      if (Runtime.step(program, state, I.PutStructure(8, 2, 1)) !== true) return false;
-      if (Runtime.step(program, state, I.SetValue(202)) !== true) return false;
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_put_structure(program, state, 8, 2, 1) !== true) return false;
+      if (Runtime.op_unify_value(program, state, 202) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     } else {
       Runtime.restore_machine(state, _ite_snap);
       while (state.cps.length > _ite_cps) state.cps.pop();
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 209, v); Runtime.put_reg(state, 2, v); }
-      if (Runtime.step(program, state, I.BuiltinCall("reverse/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "reverse/2", 2) !== true) return false;
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 209));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 205, v); Runtime.put_reg(state, 3, v); }
@@ -3980,39 +4352,39 @@ function lowered_parse_strict_4(program, state) {
         state.halt = false;
         if (!_ok) return false;
       }
-      if (Runtime.step(program, state, I.GetLevel(213)) !== true) return false;
+      if (Runtime.op_get_level(state, 213) !== true) return false;
       {
         const _ite_snap = Runtime.snapshot_machine(state);
         const _ite_cps = state.cps.length;
         const _ite_cond = (function () {
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
-          if (Runtime.step(program, state, I.PutStructure(8, 2, 1)) !== true) return false;
-          if (Runtime.step(program, state, I.SetVariable(206)) !== true) return false;
-          if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+          if (Runtime.op_put_structure(program, state, 8, 2, 1) !== true) return false;
+          if (Runtime.op_unify_variable(state, 206) !== true) return false;
+          if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
           return true;
         })();
         if (_ite_cond) {
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 207));
-          if (Runtime.step(program, state, I.PutStructure(8, 2, 1)) !== true) return false;
-          if (Runtime.step(program, state, I.SetValue(206)) !== true) return false;
-          if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+          if (Runtime.op_put_structure(program, state, 8, 2, 1) !== true) return false;
+          if (Runtime.op_unify_value(program, state, 206) !== true) return false;
+          if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
         } else {
           Runtime.restore_machine(state, _ite_snap);
           while (state.cps.length > _ite_cps) state.cps.pop();
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
           Runtime.put_reg(state, 2, Runtime.get_reg(state, 209));
           { const v = Runtime.new_var(state); Runtime.put_reg(state, 210, v); Runtime.put_reg(state, 3, v); }
-          if (Runtime.step(program, state, I.BuiltinCall("append/3", 3)) !== true) return false;
+          if (Runtime.op_builtin(program, state, "append/3", 3) !== true) return false;
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 207));
-          if (Runtime.step(program, state, I.PutStructure(9, 2, 2)) !== true) return false;
-          if (Runtime.step(program, state, I.SetValue(210)) !== true) return false;
-          if (Runtime.step(program, state, I.SetValue(211)) !== true) return false;
-          if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+          if (Runtime.op_put_structure(program, state, 9, 2, 2) !== true) return false;
+          if (Runtime.op_unify_value(program, state, 210) !== true) return false;
+          if (Runtime.op_unify_value(program, state, 211) !== true) return false;
+          if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
         }
       }
     }
   }
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
@@ -4020,7 +4392,7 @@ function lowered_parse_strict_4(program, state) {
 lowered_dispatch["parse_strict/4"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("parse_strict/4"); return lowered_parse_strict_4(program, state); };
 // Lowered: parse_lenient/3 (deterministic)
 function lowered_parse_lenient_3(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 103, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 202, Runtime.get_reg(state, 2));
   Runtime.put_reg(state, 104, Runtime.get_reg(state, 3));
@@ -4056,43 +4428,394 @@ function lowered_parse_lenient_3(program, state) {
   }
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
   Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
-  if (Runtime.step(program, state, I.BuiltinCall("reverse/2", 2)) !== true) return false;
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_builtin(program, state, "reverse/2", 2) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
 
 lowered_dispatch["parse_lenient/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("parse_lenient/3"); return lowered_parse_lenient_3(program, state); };
-// wamjs lower fallback: parse_args/3  fallback(deterministic: unsupported instruction (jump/try/cut/...))
-// wamjs lower fallback: parse_args/2  fallback(execute of a non-self callee (nested Runtime.run would steal CP))
-// Lowered: pair_lookup/3 (if-then-else / negation / once)
-function lowered_pair_lookup_3(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
-  if (Runtime.step(program, state, I.GetList(1, 5)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(106)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 106, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(201)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(202)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(203)) !== true) return false;
-  Runtime.put_reg(state, 204, Runtime.get_reg(state, 2));
-  Runtime.put_reg(state, 205, Runtime.get_reg(state, 3));
-  if (Runtime.step(program, state, I.GetLevel(206)) !== true) return false;
+// Lowered: parse_args/3 (if-then-else / negation / once)
+function lowered_parse_args_3(program, state) {
+  if (Runtime.op_allocate(state) !== true) return false;
+  Runtime.put_reg(state, 220, Runtime.get_reg(state, 1));
+  Runtime.put_reg(state, 206, Runtime.get_reg(state, 2));
+  Runtime.put_reg(state, 221, Runtime.get_reg(state, 3));
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 220));
+  Runtime.put_reg(state, 2, V.Atom(2));
+  { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 3, v); }
+  { const v = Runtime.new_var(state); Runtime.put_reg(state, 217, v); Runtime.put_reg(state, 4, v); }
+  {
+    const saved_cp = state.cp;
+    const saved_pc = state.pc;
+    const _lf = (program.lowered_dispatch && program.lowered_dispatch["scan_leading_globals/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["scan_leading_globals/4"] : undefined);
+    let _ok = true;
+    if (typeof _lf === "function") {
+      _ok = _lf(program, state) === true;
+    } else {
+      const target = program.labels["scan_leading_globals/4"];
+      if (target !== undefined && target !== null) {
+        Runtime.push_y_save(state);
+        state.cp = 0;
+        state.pc = target;
+        state.program = program;
+        _ok = Runtime.run_isolated(program, state) === true;
+        state.halt = false;
+      } else if (Runtime.step(program, state, I.Call("scan_leading_globals", 4)) !== true) {
+        _ok = false;
+      }
+    }
+    state.cp = saved_cp;
+    state.pc = saved_pc;
+    state.halt = false;
+    if (!_ok) return false;
+  }
+  if (Runtime.op_get_level(state, 222) !== true) return false;
   {
     const _ite_snap = Runtime.snapshot_machine(state);
     const _ite_cps = state.cps.length;
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+      if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+      if (Runtime.op_unify_variable(state, 204) !== true) return false;
+      if (Runtime.op_unify_variable(state, 210) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      if (Runtime.op_get_level(state, 223) !== true) return false;
+      {
+        const _ite_snap = Runtime.snapshot_machine(state);
+        const _ite_cps = state.cps.length;
+        const _ite_cond = (function () {
+          Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
+          Runtime.put_reg(state, 2, V.String("--"));
+          {
+            const saved_cp = state.cp;
+            const saved_pc = state.pc;
+            const _lf = (program.lowered_dispatch && program.lowered_dispatch["starts_with/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["starts_with/2"] : undefined);
+            let _ok = true;
+            if (typeof _lf === "function") {
+              _ok = _lf(program, state) === true;
+            } else {
+              const target = program.labels["starts_with/2"];
+              if (target !== undefined && target !== null) {
+                Runtime.push_y_save(state);
+                state.cp = 0;
+                state.pc = target;
+                state.program = program;
+                _ok = Runtime.run_isolated(program, state) === true;
+                state.halt = false;
+              } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
+                _ok = false;
+              }
+            }
+            state.cp = saved_cp;
+            state.pc = saved_pc;
+            state.halt = false;
+            if (!_ok) return false;
+          }
+          return true;
+        })();
+        if (_ite_cond) {
+          if (Runtime.op_builtin(program, state, "fail/0", 0) !== true) return false;
+        } else {
+          Runtime.restore_machine(state, _ite_snap);
+          while (state.cps.length > _ite_cps) state.cps.pop();
+          if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
+        }
+      }
+      return true;
+    })();
+    if (_ite_cond) {
+      if (Runtime.op_get_level(state, 224) !== true) return false;
+      {
+        const _ite_snap = Runtime.snapshot_machine(state);
+        const _ite_cps = state.cps.length;
+        const _ite_cond = (function () {
+          Runtime.put_reg(state, 1, Runtime.get_reg(state, 210));
+          if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+          if (Runtime.op_unify_variable(state, 202) !== true) return false;
+          if (Runtime.op_unify_variable(state, 203) !== true) return false;
+          if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+          return true;
+        })();
+        if (_ite_cond) {
+          { const v = Runtime.new_var(state); Runtime.put_reg(state, 205, v); Runtime.put_reg(state, 1, v); }
+          if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
+          if (Runtime.op_unify_value(program, state, 202) !== true) return false;
+          if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+        } else {
+          Runtime.restore_machine(state, _ite_snap);
+          while (state.cps.length > _ite_cps) state.cps.pop();
+          { const v = Runtime.new_var(state); Runtime.put_reg(state, 205, v); Runtime.put_reg(state, 1, v); }
+          Runtime.put_reg(state, 2, V.Atom(20));
+          if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+        }
+      }
+      if (Runtime.op_get_level(state, 225) !== true) return false;
+      {
+        const _ite_snap = Runtime.snapshot_machine(state);
+        const _ite_cps = state.cps.length;
+        const _ite_cond = (function () {
+          Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
+          Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
+          Runtime.put_reg(state, 3, Runtime.get_reg(state, 206));
+          { const v = Runtime.new_var(state); Runtime.put_reg(state, 207, v); Runtime.put_reg(state, 4, v); }
+          { const v = Runtime.new_var(state); Runtime.put_reg(state, 208, v); Runtime.put_reg(state, 5, v); }
+          {
+            const saved_cp = state.cp;
+            const saved_pc = state.pc;
+            const _lf = (program.lowered_dispatch && program.lowered_dispatch["schema_for/5"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["schema_for/5"] : undefined);
+            let _ok = true;
+            if (typeof _lf === "function") {
+              _ok = _lf(program, state) === true;
+            } else {
+              const target = program.labels["schema_for/5"];
+              if (target !== undefined && target !== null) {
+                Runtime.push_y_save(state);
+                state.cp = 0;
+                state.pc = target;
+                state.program = program;
+                _ok = Runtime.run_isolated(program, state) === true;
+                state.halt = false;
+              } else if (Runtime.step(program, state, I.Call("schema_for", 5)) !== true) {
+                _ok = false;
+              }
+            }
+            state.cp = saved_cp;
+            state.pc = saved_pc;
+            state.halt = false;
+            if (!_ok) return false;
+          }
+          return true;
+        })();
+        if (_ite_cond) {
+          if (Runtime.op_get_level(state, 226) !== true) return false;
+          {
+            const _ite_trail = state.trail.length;
+            const _ite_args = Runtime.capture_a_regs(state, 8);
+            const _ite_cond = (function () {
+              Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
+              Runtime.put_reg(state, 2, V.Atom(0));
+              if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
+              return true;
+            })();
+            if (_ite_cond) {
+              Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
+              if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
+              if (Runtime.op_unify_variable(state, 209) !== true) return false;
+              if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+              Runtime.put_reg(state, 1, Runtime.get_reg(state, 210));
+              if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+              if (Runtime.op_unify_variable(state, 211) !== true) return false;
+              if (Runtime.op_unify_variable(state, 212) !== true) return false;
+              if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+              { const v = Runtime.new_var(state); Runtime.put_reg(state, 213, v); Runtime.put_reg(state, 1, v); }
+              if (Runtime.op_put_list(program, state, 2, 5) !== true) return false;
+              if (Runtime.op_unify_value(program, state, 204) !== true) return false;
+              if (Runtime.op_unify_variable(state, 128) !== true) return false;
+              if (Runtime.op_put_structure(program, state, 5, 128, 2) !== true) return false;
+              if (Runtime.op_unify_value(program, state, 209) !== true) return false;
+              if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+              if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+            } else {
+              Runtime.undo_trail(state, _ite_trail);
+              Runtime.restore_a_regs(state, _ite_args);
+              { const v = Runtime.new_var(state); Runtime.put_reg(state, 212, v); Runtime.put_reg(state, 1, v); }
+              Runtime.put_reg(state, 2, Runtime.get_reg(state, 210));
+              if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+              { const v = Runtime.new_var(state); Runtime.put_reg(state, 213, v); Runtime.put_reg(state, 1, v); }
+              if (Runtime.op_put_list(program, state, 2, 5) !== true) return false;
+              if (Runtime.op_unify_value(program, state, 204) !== true) return false;
+              if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+              if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+            }
+          }
+          Runtime.put_reg(state, 1, Runtime.get_reg(state, 212));
+          Runtime.put_reg(state, 2, Runtime.get_reg(state, 207));
+          Runtime.put_reg(state, 3, Runtime.get_reg(state, 213));
+          { const v = Runtime.new_var(state); Runtime.put_reg(state, 214, v); Runtime.put_reg(state, 4, v); }
+          {
+            const saved_cp = state.cp;
+            const saved_pc = state.pc;
+            const _lf = (program.lowered_dispatch && program.lowered_dispatch["parse_strict/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["parse_strict/4"] : undefined);
+            let _ok = true;
+            if (typeof _lf === "function") {
+              _ok = _lf(program, state) === true;
+            } else {
+              const target = program.labels["parse_strict/4"];
+              if (target !== undefined && target !== null) {
+                Runtime.push_y_save(state);
+                state.cp = 0;
+                state.pc = target;
+                state.program = program;
+                _ok = Runtime.run_isolated(program, state) === true;
+                state.halt = false;
+              } else if (Runtime.step(program, state, I.Call("parse_strict", 4)) !== true) {
+                _ok = false;
+              }
+            }
+            state.cp = saved_cp;
+            state.pc = saved_pc;
+            state.halt = false;
+            if (!_ok) return false;
+          }
+          if (Runtime.op_get_level(state, 227) !== true) return false;
+          {
+            const _ite_snap = Runtime.snapshot_machine(state);
+            const _ite_cps = state.cps.length;
+            const _ite_cond = (function () {
+              Runtime.put_reg(state, 1, Runtime.get_reg(state, 214));
+              if (Runtime.op_put_structure(program, state, 9, 2, 2) !== true) return false;
+              if (Runtime.op_unify_variable(state, 215) !== true) return false;
+              if (Runtime.op_unify_variable(state, 216) !== true) return false;
+              if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+              return true;
+            })();
+            if (_ite_cond) {
+              Runtime.put_reg(state, 1, Runtime.get_reg(state, 217));
+              Runtime.put_reg(state, 2, Runtime.get_reg(state, 216));
+              { const v = Runtime.new_var(state); Runtime.put_reg(state, 218, v); Runtime.put_reg(state, 3, v); }
+              {
+                const saved_cp = state.cp;
+                const saved_pc = state.pc;
+                const _lf = (program.lowered_dispatch && program.lowered_dispatch["merge_flags/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["merge_flags/3"] : undefined);
+                let _ok = true;
+                if (typeof _lf === "function") {
+                  _ok = _lf(program, state) === true;
+                } else {
+                  const target = program.labels["merge_flags/3"];
+                  if (target !== undefined && target !== null) {
+                    Runtime.push_y_save(state);
+                    state.cp = 0;
+                    state.pc = target;
+                    state.program = program;
+                    _ok = Runtime.run_isolated(program, state) === true;
+                    state.halt = false;
+                  } else if (Runtime.step(program, state, I.Call("merge_flags", 3)) !== true) {
+                    _ok = false;
+                  }
+                }
+                state.cp = saved_cp;
+                state.pc = saved_pc;
+                state.halt = false;
+                if (!_ok) return false;
+              }
+              Runtime.put_reg(state, 1, Runtime.get_reg(state, 221));
+              if (Runtime.op_put_structure(program, state, 9, 2, 2) !== true) return false;
+              if (Runtime.op_unify_value(program, state, 215) !== true) return false;
+              if (Runtime.op_unify_value(program, state, 218) !== true) return false;
+              if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+            } else {
+              Runtime.restore_machine(state, _ite_snap);
+              while (state.cps.length > _ite_cps) state.cps.pop();
+              Runtime.put_reg(state, 1, Runtime.get_reg(state, 214));
+              if (Runtime.op_put_structure(program, state, 8, 2, 1) !== true) return false;
+              if (Runtime.op_unify_variable(state, 219) !== true) return false;
+              if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+              Runtime.put_reg(state, 1, Runtime.get_reg(state, 221));
+              if (Runtime.op_put_structure(program, state, 22, 2, 1) !== true) return false;
+              if (Runtime.op_unify_value(program, state, 219) !== true) return false;
+              if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+            }
+          }
+        } else {
+          Runtime.restore_machine(state, _ite_snap);
+          while (state.cps.length > _ite_cps) state.cps.pop();
+          Runtime.put_reg(state, 1, Runtime.get_reg(state, 220));
+          Runtime.put_reg(state, 2, Runtime.get_reg(state, 221));
+          {
+            const saved_cp = state.cp;
+            const saved_pc = state.pc;
+            const _lf = (program.lowered_dispatch && program.lowered_dispatch["lenient_result/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["lenient_result/2"] : undefined);
+            let _ok = true;
+            if (typeof _lf === "function") {
+              _ok = _lf(program, state) === true;
+            } else {
+              const target = program.labels["lenient_result/2"];
+              if (target !== undefined && target !== null) {
+                Runtime.push_y_save(state);
+                state.cp = 0;
+                state.pc = target;
+                state.program = program;
+                _ok = Runtime.run_isolated(program, state) === true;
+                state.halt = false;
+              } else if (Runtime.step(program, state, I.Call("lenient_result", 2)) !== true) {
+                _ok = false;
+              }
+            }
+            state.cp = saved_cp;
+            state.pc = saved_pc;
+            state.halt = false;
+            if (!_ok) return false;
+          }
+        }
+      }
+    } else {
+      Runtime.restore_machine(state, _ite_snap);
+      while (state.cps.length > _ite_cps) state.cps.pop();
+      Runtime.put_reg(state, 1, Runtime.get_reg(state, 220));
+      Runtime.put_reg(state, 2, Runtime.get_reg(state, 221));
+      {
+        const saved_cp = state.cp;
+        const saved_pc = state.pc;
+        const _lf = (program.lowered_dispatch && program.lowered_dispatch["lenient_result/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["lenient_result/2"] : undefined);
+        let _ok = true;
+        if (typeof _lf === "function") {
+          _ok = _lf(program, state) === true;
+        } else {
+          const target = program.labels["lenient_result/2"];
+          if (target !== undefined && target !== null) {
+            Runtime.push_y_save(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+          } else if (Runtime.step(program, state, I.Call("lenient_result", 2)) !== true) {
+            _ok = false;
+          }
+        }
+        state.cp = saved_cp;
+        state.pc = saved_pc;
+        state.halt = false;
+        if (!_ok) return false;
+      }
+    }
+  }
+  if (Runtime.op_deallocate(state) !== true) return false;
+  return true;
+  return true;
+}
+
+lowered_dispatch["parse_args/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("parse_args/3"); return lowered_parse_args_3(program, state); };
+// wamjs lower fallback: parse_args/2  fallback(execute of a non-self callee (nested Runtime.run would steal CP))
+// Lowered: pair_lookup/3 (if-then-else / negation / once)
+function lowered_pair_lookup_3(program, state) {
+  if (Runtime.op_allocate(state) !== true) return false;
+  if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+  if (Runtime.op_unify_variable(state, 106) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 106, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 201) !== true) return false;
+  if (Runtime.op_unify_variable(state, 202) !== true) return false;
+  if (Runtime.op_unify_variable(state, 203) !== true) return false;
+  Runtime.put_reg(state, 204, Runtime.get_reg(state, 2));
+  Runtime.put_reg(state, 205, Runtime.get_reg(state, 3));
+  if (Runtime.op_get_level(state, 206) !== true) return false;
+  {
+    const _ite_trail = state.trail.length;
+    const _ite_args = Runtime.capture_a_regs(state, 8);
+    const _ite_cond = (function () {
+      Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
-      if (Runtime.step(program, state, I.BuiltinCall("==/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
       return true;
     })();
     if (_ite_cond) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     } else {
-      Runtime.restore_machine(state, _ite_snap);
-      while (state.cps.length > _ite_cps) state.cps.pop();
+      Runtime.undo_trail(state, _ite_trail);
+      Runtime.restore_a_regs(state, _ite_args);
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
       Runtime.put_reg(state, 3, Runtime.get_reg(state, 205));
@@ -4123,7 +4846,7 @@ function lowered_pair_lookup_3(program, state) {
       }
     }
   }
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
@@ -4131,11 +4854,11 @@ function lowered_pair_lookup_3(program, state) {
 lowered_dispatch["pair_lookup/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("pair_lookup/3"); return lowered_pair_lookup_3(program, state); };
 // Lowered: option_kind/3 (if-then-else / negation / once)
 function lowered_option_kind_3(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 201, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 204, Runtime.get_reg(state, 2));
   Runtime.put_reg(state, 206, Runtime.get_reg(state, 3));
-  if (Runtime.step(program, state, I.GetLevel(207)) !== true) return false;
+  if (Runtime.op_get_level(state, 207) !== true) return false;
   {
     const _ite_snap = Runtime.snapshot_machine(state);
     const _ite_cps = state.cps.length;
@@ -4173,11 +4896,11 @@ function lowered_option_kind_3(program, state) {
     if (_ite_cond) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     } else {
       Runtime.restore_machine(state, _ite_snap);
       while (state.cps.length > _ite_cps) state.cps.pop();
-      if (Runtime.step(program, state, I.GetLevel(208)) !== true) return false;
+      if (Runtime.op_get_level(state, 208) !== true) return false;
       {
         const _ite_snap = Runtime.snapshot_machine(state);
         const _ite_cps = state.cps.length;
@@ -4241,7 +4964,7 @@ function lowered_option_kind_3(program, state) {
         if (_ite_cond) {
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
           Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
-          if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+          if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
         } else {
           Runtime.restore_machine(state, _ite_snap);
           while (state.cps.length > _ite_cps) state.cps.pop();
@@ -4273,12 +4996,12 @@ function lowered_option_kind_3(program, state) {
           }
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
           Runtime.put_reg(state, 2, V.Atom(21));
-          if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+          if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
         }
       }
     }
   }
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
@@ -4286,46 +5009,46 @@ function lowered_option_kind_3(program, state) {
 lowered_dispatch["option_kind/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("option_kind/3"); return lowered_option_kind_3(program, state); };
 // Lowered: nth0_default/4 (if-then-else / negation / once)
 function lowered_nth0_default_4(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 202, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 201, Runtime.get_reg(state, 2));
   Runtime.put_reg(state, 207, Runtime.get_reg(state, 3));
   Runtime.put_reg(state, 206, Runtime.get_reg(state, 4));
-  if (Runtime.step(program, state, I.GetLevel(208)) !== true) return false;
+  if (Runtime.op_get_level(state, 208) !== true) return false;
   {
     const _ite_snap = Runtime.snapshot_machine(state);
     const _ite_cps = state.cps.length;
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
-      if (Runtime.step(program, state, I.PutStructure(5, 2, 2)) !== true) return false;
-      if (Runtime.step(program, state, I.SetVariable(203)) !== true) return false;
-      if (Runtime.step(program, state, I.SetVariable(205)) !== true) return false;
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+      if (Runtime.op_unify_variable(state, 203) !== true) return false;
+      if (Runtime.op_unify_variable(state, 205) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
       return true;
     })();
     if (_ite_cond) {
-      if (Runtime.step(program, state, I.GetLevel(209)) !== true) return false;
+      if (Runtime.op_get_level(state, 209) !== true) return false;
       {
-        const _ite_snap = Runtime.snapshot_machine(state);
-        const _ite_cps = state.cps.length;
+        const _ite_trail = state.trail.length;
+        const _ite_args = Runtime.capture_a_regs(state, 8);
         const _ite_cond = (function () {
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
           Runtime.put_reg(state, 2, V.Int(0));
-          if (Runtime.step(program, state, I.BuiltinCall("=:=/2", 2)) !== true) return false;
+          if (Runtime.op_builtin(program, state, "=:=/2", 2) !== true) return false;
           return true;
         })();
         if (_ite_cond) {
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
           Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
-          if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+          if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
         } else {
-          Runtime.restore_machine(state, _ite_snap);
-          while (state.cps.length > _ite_cps) state.cps.pop();
+          Runtime.undo_trail(state, _ite_trail);
+          Runtime.restore_a_regs(state, _ite_args);
           { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 1, v); }
-          if (Runtime.step(program, state, I.PutStructure(10, 2, 2)) !== true) return false;
-          if (Runtime.step(program, state, I.SetValue(202)) !== true) return false;
-          if (Runtime.step(program, state, I.SetConstant(V.Int(-1))) !== true) return false;
-          if (Runtime.step(program, state, I.BuiltinCall("is/2", 2)) !== true) return false;
+          if (Runtime.op_put_structure(program, state, 10, 2, 2) !== true) return false;
+          if (Runtime.op_unify_value(program, state, 202) !== true) return false;
+          if (Runtime.op_unify_constant(program, state, V.Int(-1)) !== true) return false;
+          if (Runtime.op_builtin(program, state, "is/2", 2) !== true) return false;
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
           Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
           Runtime.put_reg(state, 3, Runtime.get_reg(state, 207));
@@ -4362,18 +5085,17 @@ function lowered_nth0_default_4(program, state) {
       while (state.cps.length > _ite_cps) state.cps.pop();
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 207));
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     }
   }
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
 
 lowered_dispatch["nth0_default/4"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("nth0_default/4"); return lowered_nth0_default_4(program, state); };
-// wamjs lower fallback: next_value/2  fallback(multi_clause_1 would keep interpreter CPs; T4+ITE did not match)
-// Lowered: merge_flags_/3 (T4 all-clauses inline)
-function lowered_merge_flags__3(program, state) {
+// Lowered: next_value/2 (T4 all-clauses inline)
+function lowered_next_value_2(program, state) {
   const _t4_trail = state.trail.length;
   const _t4_regs = Runtime.copy_table(state.regs);
   const _t4_vc = state.var_counter;
@@ -4385,9 +5107,8 @@ function lowered_merge_flags__3(program, state) {
   const _t4_rargs = state.read_args;
   const _t4_rcur = state.read_cursor;
   if ((function () {
-    if (Runtime.step(program, state, I.GetConstant(V.Atom(2), 1)) !== true) return false;
-    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
-    if (Runtime.step(program, state, I.GetValue(101, 3)) !== true) return false;
+    if (Runtime.op_get_constant(program, state, 1, V.Atom(2)) !== true) return false;
+    if (Runtime.op_get_constant(program, state, 2, V.Atom(20)) !== true) return false;
     return true;
     return false;
   })()) return true;
@@ -4402,13 +5123,130 @@ function lowered_merge_flags__3(program, state) {
   state.read_args = _t4_rargs;
   state.read_cursor = _t4_rcur;
   if ((function () {
-    if (Runtime.step(program, state, I.Allocate()) !== true) return false;
-    if (Runtime.step(program, state, I.GetList(1, 5)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(104)) !== true) return false;
-    if (Runtime.step(program, state, I.GetStructure(11, 104, 2)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(105)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(106)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(201)) !== true) return false;
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 201) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    Runtime.put_reg(state, 202, Runtime.get_reg(state, 2));
+    if (Runtime.op_get_level(state, 203) !== true) return false;
+    {
+      const _ite_snap = Runtime.snapshot_machine(state);
+      const _ite_cps = state.cps.length;
+      const _ite_cond = (function () {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+        Runtime.put_reg(state, 2, V.String("--"));
+        if (Runtime.op_builtin(program, state, "\\==/2", 2) !== true) return false;
+        if (Runtime.op_get_level(state, 204) !== true) return false;
+        {
+          const _ite_snap = Runtime.snapshot_machine(state);
+          const _ite_cps = state.cps.length;
+          const _ite_cond = (function () {
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+            {
+              const saved_cp = state.cp;
+              const saved_pc = state.pc;
+              const _lf = (program.lowered_dispatch && program.lowered_dispatch["is_long_flag/1"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["is_long_flag/1"] : undefined);
+              let _ok = true;
+              if (typeof _lf === "function") {
+                _ok = _lf(program, state) === true;
+              } else {
+                const target = program.labels["is_long_flag/1"];
+                if (target !== undefined && target !== null) {
+                  Runtime.push_y_save(state);
+                  state.cp = 0;
+                  state.pc = target;
+                  state.program = program;
+                  _ok = Runtime.run_isolated(program, state) === true;
+                  state.halt = false;
+                } else if (Runtime.step(program, state, I.Call("is_long_flag", 1)) !== true) {
+                  _ok = false;
+                }
+              }
+              state.cp = saved_cp;
+              state.pc = saved_pc;
+              state.halt = false;
+              if (!_ok) return false;
+            }
+            return true;
+          })();
+          if (_ite_cond) {
+            if (Runtime.op_builtin(program, state, "fail/0", 0) !== true) return false;
+          } else {
+            Runtime.restore_machine(state, _ite_snap);
+            while (state.cps.length > _ite_cps) state.cps.pop();
+            if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
+          }
+        }
+        return true;
+      })();
+      if (_ite_cond) {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+        if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 201) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      } else {
+        Runtime.restore_machine(state, _ite_snap);
+        while (state.cps.length > _ite_cps) state.cps.pop();
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+        Runtime.put_reg(state, 2, V.Atom(20));
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      }
+    }
+    if (Runtime.op_deallocate(state) !== true) return false;
+    return true;
+    return false;
+  })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  return false;
+}
+
+lowered_dispatch["next_value/2"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("next_value/2"); return lowered_next_value_2(program, state); };
+// Lowered: merge_flags_/3 (T4 all-clauses inline)
+function lowered_merge_flags__3(program, state) {
+  const _t4_trail = state.trail.length;
+  const _t4_regs = Runtime.copy_table(state.regs);
+  const _t4_vc = state.var_counter;
+  const _t4_stack = state.stack.slice();
+  const _t4_ysave = (state.y_save || []).slice();
+  const _t4_mode = state.mode;
+  const _t4_build = state.build_stack.slice();
+  const _t4_rstack = (state.read_stack || []).slice();
+  const _t4_rargs = state.read_args;
+  const _t4_rcur = state.read_cursor;
+  if ((function () {
+    if (Runtime.op_get_constant(program, state, 1, V.Atom(2)) !== true) return false;
+    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
+    if (Runtime.op_get_value(program, state, 101, 3) !== true) return false;
+    return true;
+    return false;
+  })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 104) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 11, 104, 2) !== true) return false;
+    if (Runtime.op_unify_variable(state, 105) !== true) return false;
+    if (Runtime.op_unify_variable(state, 106) !== true) return false;
+    if (Runtime.op_unify_variable(state, 201) !== true) return false;
     Runtime.put_reg(state, 107, Runtime.get_reg(state, 2));
     Runtime.put_reg(state, 203, Runtime.get_reg(state, 3));
     Runtime.put_reg(state, 1, Runtime.get_reg(state, 107));
@@ -4443,7 +5281,7 @@ function lowered_merge_flags__3(program, state) {
     Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
     Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
     Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
-    if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+    if (Runtime.op_deallocate(state) !== true) return false;
     {
       const _lf = (program.lowered_dispatch && program.lowered_dispatch["merge_flags_/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["merge_flags_/3"] : undefined);
       if (typeof _lf === "function") return _lf(program, state) === true;
@@ -4489,7 +5327,7 @@ function lowered_long_flag_tail_1(program, state) {
   const _t4_rargs = state.read_args;
   const _t4_rcur = state.read_cursor;
   if ((function () {
-    if (Runtime.step(program, state, I.GetConstant(V.Atom(2), 1)) !== true) return false;
+    if (Runtime.op_get_constant(program, state, 1, V.Atom(2)) !== true) return false;
     return true;
     return false;
   })()) return true;
@@ -4504,25 +5342,25 @@ function lowered_long_flag_tail_1(program, state) {
   state.read_args = _t4_rargs;
   state.read_cursor = _t4_rcur;
   if ((function () {
-    if (Runtime.step(program, state, I.Allocate()) !== true) return false;
-    if (Runtime.step(program, state, I.GetList(1, 5)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(201)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(202)) !== true) return false;
-    if (Runtime.step(program, state, I.GetLevel(203)) !== true) return false;
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 201) !== true) return false;
+    if (Runtime.op_unify_variable(state, 202) !== true) return false;
+    if (Runtime.op_get_level(state, 203) !== true) return false;
     {
-      const _ite_snap = Runtime.snapshot_machine(state);
-      const _ite_cps = state.cps.length;
+      const _ite_trail = state.trail.length;
+      const _ite_args = Runtime.capture_a_regs(state, 8);
       const _ite_cond = (function () {
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
         Runtime.put_reg(state, 2, V.Atom(18));
-        if (Runtime.step(program, state, I.BuiltinCall("==/2", 2)) !== true) return false;
+        if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
         return true;
       })();
       if (_ite_cond) {
-        if (Runtime.step(program, state, I.BuiltinCall("true/0", 0)) !== true) return false;
+        if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
       } else {
-        Runtime.restore_machine(state, _ite_snap);
-        while (state.cps.length > _ite_cps) state.cps.pop();
+        Runtime.undo_trail(state, _ite_trail);
+        Runtime.restore_a_regs(state, _ite_args);
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
         {
           const saved_cp = state.cp;
@@ -4577,7 +5415,7 @@ function lowered_long_flag_tail_1(program, state) {
         }
       }
     }
-    if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+    if (Runtime.op_deallocate(state) !== true) return false;
     return true;
     return false;
   })()) return true;
@@ -4596,9 +5434,8 @@ function lowered_long_flag_tail_1(program, state) {
 
 lowered_dispatch["long_flag_tail/1"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("long_flag_tail/1"); return lowered_long_flag_tail_1(program, state); };
 // wamjs lower fallback: lenient_result/2  fallback(execute of a non-self callee (nested Runtime.run would steal CP))
-// wamjs lower fallback: lenient_loop/5  fallback(multi_clause_1 would keep interpreter CPs; T4+ITE did not match)
-// Lowered: legacy_flag_tail/1 (T4 all-clauses inline)
-function lowered_legacy_flag_tail_1(program, state) {
+// Lowered: lenient_loop/5 (T4 all-clauses inline)
+function lowered_lenient_loop_5(program, state) {
   const _t4_trail = state.trail.length;
   const _t4_regs = Runtime.copy_table(state.regs);
   const _t4_vc = state.var_counter;
@@ -4610,7 +5447,11 @@ function lowered_legacy_flag_tail_1(program, state) {
   const _t4_rargs = state.read_args;
   const _t4_rcur = state.read_cursor;
   if ((function () {
-    if (Runtime.step(program, state, I.GetConstant(V.Atom(2), 1)) !== true) return false;
+    if (Runtime.op_get_constant(program, state, 1, V.Atom(2)) !== true) return false;
+    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 102, Runtime.get_reg(state, 3));
+    if (Runtime.op_get_value(program, state, 101, 4) !== true) return false;
+    if (Runtime.op_get_value(program, state, 102, 5) !== true) return false;
     return true;
     return false;
   })()) return true;
@@ -4625,10 +5466,417 @@ function lowered_legacy_flag_tail_1(program, state) {
   state.read_args = _t4_rargs;
   state.read_cursor = _t4_rcur;
   if ((function () {
-    if (Runtime.step(program, state, I.Allocate()) !== true) return false;
-    if (Runtime.step(program, state, I.GetList(1, 5)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(102)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(201)) !== true) return false;
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 208) !== true) return false;
+    if (Runtime.op_unify_variable(state, 207) !== true) return false;
+    Runtime.put_reg(state, 209, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 210, Runtime.get_reg(state, 3));
+    Runtime.put_reg(state, 211, Runtime.get_reg(state, 4));
+    Runtime.put_reg(state, 212, Runtime.get_reg(state, 5));
+    if (Runtime.op_get_level(state, 213) !== true) return false;
+    {
+      const _ite_snap = Runtime.snapshot_machine(state);
+      const _ite_cps = state.cps.length;
+      const _ite_cond = (function () {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
+        Runtime.put_reg(state, 2, V.String("--"));
+        {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const _lf = (program.lowered_dispatch && program.lowered_dispatch["starts_with/2"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["starts_with/2"] : undefined);
+          let _ok = true;
+          if (typeof _lf === "function") {
+            _ok = _lf(program, state) === true;
+          } else {
+            const target = program.labels["starts_with/2"];
+            if (target !== undefined && target !== null) {
+              Runtime.push_y_save(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+            } else if (Runtime.step(program, state, I.Call("starts_with", 2)) !== true) {
+              _ok = false;
+            }
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+        return true;
+      })();
+      if (_ite_cond) {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
+        { const v = Runtime.new_var(state); Runtime.put_reg(state, 203, v); Runtime.put_reg(state, 2, v); }
+        { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 3, v); }
+        {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const _lf = (program.lowered_dispatch && program.lowered_dispatch["split_flag_token/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["split_flag_token/3"] : undefined);
+          let _ok = true;
+          if (typeof _lf === "function") {
+            _ok = _lf(program, state) === true;
+          } else {
+            const target = program.labels["split_flag_token/3"];
+            if (target !== undefined && target !== null) {
+              Runtime.push_y_save(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+            } else if (Runtime.step(program, state, I.Call("split_flag_token", 3)) !== true) {
+              _ok = false;
+            }
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+        if (Runtime.op_get_level(state, 214) !== true) return false;
+        {
+          const _ite_snap = Runtime.snapshot_machine(state);
+          const _ite_cps = state.cps.length;
+          const _ite_cond = (function () {
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+            if (Runtime.op_put_structure(program, state, 19, 2, 1) !== true) return false;
+            if (Runtime.op_unify_variable(state, 202) !== true) return false;
+            if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+            return true;
+          })();
+          if (_ite_cond) {
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 210));
+            Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
+            Runtime.put_reg(state, 3, Runtime.get_reg(state, 202));
+            { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
+            {
+              const saved_cp = state.cp;
+              const saved_pc = state.pc;
+              const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_set/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_set/4"] : undefined);
+              let _ok = true;
+              if (typeof _lf === "function") {
+                _ok = _lf(program, state) === true;
+              } else {
+                const target = program.labels["flags_set/4"];
+                if (target !== undefined && target !== null) {
+                  Runtime.push_y_save(state);
+                  state.cp = 0;
+                  state.pc = target;
+                  state.program = program;
+                  _ok = Runtime.run_isolated(program, state) === true;
+                  state.halt = false;
+                } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                  _ok = false;
+                }
+              }
+              state.cp = saved_cp;
+              state.pc = saved_pc;
+              state.halt = false;
+              if (!_ok) return false;
+            }
+            Runtime.put_reg(state, 1, Runtime.get_reg(state, 207));
+            Runtime.put_reg(state, 2, Runtime.get_reg(state, 209));
+            Runtime.put_reg(state, 3, Runtime.get_reg(state, 204));
+            Runtime.put_reg(state, 4, Runtime.get_reg(state, 211));
+            Runtime.put_reg(state, 5, Runtime.get_reg(state, 212));
+            {
+              const saved_cp = state.cp;
+              const saved_pc = state.pc;
+              const _lf = (program.lowered_dispatch && program.lowered_dispatch["lenient_loop/5"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["lenient_loop/5"] : undefined);
+              let _ok = true;
+              if (typeof _lf === "function") {
+                _ok = _lf(program, state) === true;
+              } else {
+                const target = program.labels["lenient_loop/5"];
+                if (target !== undefined && target !== null) {
+                  Runtime.push_y_save(state);
+                  state.cp = 0;
+                  state.pc = target;
+                  state.program = program;
+                  _ok = Runtime.run_isolated(program, state) === true;
+                  state.halt = false;
+                } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
+                  _ok = false;
+                }
+              }
+              state.cp = saved_cp;
+              state.pc = saved_pc;
+              state.halt = false;
+              if (!_ok) return false;
+            }
+          } else {
+            Runtime.restore_machine(state, _ite_snap);
+            while (state.cps.length > _ite_cps) state.cps.pop();
+            if (Runtime.op_get_level(state, 215) !== true) return false;
+            {
+              const _ite_snap = Runtime.snapshot_machine(state);
+              const _ite_cps = state.cps.length;
+              const _ite_cond = (function () {
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 207));
+                if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+                if (Runtime.op_unify_variable(state, 205) !== true) return false;
+                if (Runtime.op_unify_variable(state, 206) !== true) return false;
+                if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+                if (Runtime.op_get_level(state, 216) !== true) return false;
+                {
+                  const _ite_snap = Runtime.snapshot_machine(state);
+                  const _ite_cps = state.cps.length;
+                  const _ite_cond = (function () {
+                    Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
+                    {
+                      const saved_cp = state.cp;
+                      const saved_pc = state.pc;
+                      const _lf = (program.lowered_dispatch && program.lowered_dispatch["looks_like_legacy_flag/1"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["looks_like_legacy_flag/1"] : undefined);
+                      let _ok = true;
+                      if (typeof _lf === "function") {
+                        _ok = _lf(program, state) === true;
+                      } else {
+                        const target = program.labels["looks_like_legacy_flag/1"];
+                        if (target !== undefined && target !== null) {
+                          Runtime.push_y_save(state);
+                          state.cp = 0;
+                          state.pc = target;
+                          state.program = program;
+                          _ok = Runtime.run_isolated(program, state) === true;
+                          state.halt = false;
+                        } else if (Runtime.step(program, state, I.Call("looks_like_legacy_flag", 1)) !== true) {
+                          _ok = false;
+                        }
+                      }
+                      state.cp = saved_cp;
+                      state.pc = saved_pc;
+                      state.halt = false;
+                      if (!_ok) return false;
+                    }
+                    return true;
+                  })();
+                  if (_ite_cond) {
+                    if (Runtime.op_builtin(program, state, "fail/0", 0) !== true) return false;
+                  } else {
+                    Runtime.restore_machine(state, _ite_snap);
+                    while (state.cps.length > _ite_cps) state.cps.pop();
+                    if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
+                  }
+                }
+                return true;
+              })();
+              if (_ite_cond) {
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 210));
+                Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
+                Runtime.put_reg(state, 3, Runtime.get_reg(state, 205));
+                { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
+                {
+                  const saved_cp = state.cp;
+                  const saved_pc = state.pc;
+                  const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_set/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_set/4"] : undefined);
+                  let _ok = true;
+                  if (typeof _lf === "function") {
+                    _ok = _lf(program, state) === true;
+                  } else {
+                    const target = program.labels["flags_set/4"];
+                    if (target !== undefined && target !== null) {
+                      Runtime.push_y_save(state);
+                      state.cp = 0;
+                      state.pc = target;
+                      state.program = program;
+                      _ok = Runtime.run_isolated(program, state) === true;
+                      state.halt = false;
+                    } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                      _ok = false;
+                    }
+                  }
+                  state.cp = saved_cp;
+                  state.pc = saved_pc;
+                  state.halt = false;
+                  if (!_ok) return false;
+                }
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
+                Runtime.put_reg(state, 2, Runtime.get_reg(state, 209));
+                Runtime.put_reg(state, 3, Runtime.get_reg(state, 204));
+                Runtime.put_reg(state, 4, Runtime.get_reg(state, 211));
+                Runtime.put_reg(state, 5, Runtime.get_reg(state, 212));
+                {
+                  const saved_cp = state.cp;
+                  const saved_pc = state.pc;
+                  const _lf = (program.lowered_dispatch && program.lowered_dispatch["lenient_loop/5"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["lenient_loop/5"] : undefined);
+                  let _ok = true;
+                  if (typeof _lf === "function") {
+                    _ok = _lf(program, state) === true;
+                  } else {
+                    const target = program.labels["lenient_loop/5"];
+                    if (target !== undefined && target !== null) {
+                      Runtime.push_y_save(state);
+                      state.cp = 0;
+                      state.pc = target;
+                      state.program = program;
+                      _ok = Runtime.run_isolated(program, state) === true;
+                      state.halt = false;
+                    } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
+                      _ok = false;
+                    }
+                  }
+                  state.cp = saved_cp;
+                  state.pc = saved_pc;
+                  state.halt = false;
+                  if (!_ok) return false;
+                }
+              } else {
+                Runtime.restore_machine(state, _ite_snap);
+                while (state.cps.length > _ite_cps) state.cps.pop();
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 210));
+                Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
+                Runtime.put_reg(state, 3, V.Atom(0));
+                { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 4, v); }
+                {
+                  const saved_cp = state.cp;
+                  const saved_pc = state.pc;
+                  const _lf = (program.lowered_dispatch && program.lowered_dispatch["flags_set/4"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["flags_set/4"] : undefined);
+                  let _ok = true;
+                  if (typeof _lf === "function") {
+                    _ok = _lf(program, state) === true;
+                  } else {
+                    const target = program.labels["flags_set/4"];
+                    if (target !== undefined && target !== null) {
+                      Runtime.push_y_save(state);
+                      state.cp = 0;
+                      state.pc = target;
+                      state.program = program;
+                      _ok = Runtime.run_isolated(program, state) === true;
+                      state.halt = false;
+                    } else if (Runtime.step(program, state, I.Call("flags_set", 4)) !== true) {
+                      _ok = false;
+                    }
+                  }
+                  state.cp = saved_cp;
+                  state.pc = saved_pc;
+                  state.halt = false;
+                  if (!_ok) return false;
+                }
+                Runtime.put_reg(state, 1, Runtime.get_reg(state, 207));
+                Runtime.put_reg(state, 2, Runtime.get_reg(state, 209));
+                Runtime.put_reg(state, 3, Runtime.get_reg(state, 204));
+                Runtime.put_reg(state, 4, Runtime.get_reg(state, 211));
+                Runtime.put_reg(state, 5, Runtime.get_reg(state, 212));
+                {
+                  const saved_cp = state.cp;
+                  const saved_pc = state.pc;
+                  const _lf = (program.lowered_dispatch && program.lowered_dispatch["lenient_loop/5"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["lenient_loop/5"] : undefined);
+                  let _ok = true;
+                  if (typeof _lf === "function") {
+                    _ok = _lf(program, state) === true;
+                  } else {
+                    const target = program.labels["lenient_loop/5"];
+                    if (target !== undefined && target !== null) {
+                      Runtime.push_y_save(state);
+                      state.cp = 0;
+                      state.pc = target;
+                      state.program = program;
+                      _ok = Runtime.run_isolated(program, state) === true;
+                      state.halt = false;
+                    } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
+                      _ok = false;
+                    }
+                  }
+                  state.cp = saved_cp;
+                  state.pc = saved_pc;
+                  state.halt = false;
+                  if (!_ok) return false;
+                }
+              }
+            }
+          }
+        }
+      } else {
+        Runtime.restore_machine(state, _ite_snap);
+        while (state.cps.length > _ite_cps) state.cps.pop();
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 207));
+        if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 208) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 209) !== true) return false;
+        Runtime.put_reg(state, 3, Runtime.get_reg(state, 210));
+        Runtime.put_reg(state, 4, Runtime.get_reg(state, 211));
+        Runtime.put_reg(state, 5, Runtime.get_reg(state, 212));
+        {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const _lf = (program.lowered_dispatch && program.lowered_dispatch["lenient_loop/5"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["lenient_loop/5"] : undefined);
+          let _ok = true;
+          if (typeof _lf === "function") {
+            _ok = _lf(program, state) === true;
+          } else {
+            const target = program.labels["lenient_loop/5"];
+            if (target !== undefined && target !== null) {
+              Runtime.push_y_save(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+            } else if (Runtime.step(program, state, I.Call("lenient_loop", 5)) !== true) {
+              _ok = false;
+            }
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+      }
+    }
+    if (Runtime.op_deallocate(state) !== true) return false;
+    return true;
+    return false;
+  })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  return false;
+}
+
+lowered_dispatch["lenient_loop/5"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("lenient_loop/5"); return lowered_lenient_loop_5(program, state); };
+// Lowered: legacy_flag_tail/1 (T4 all-clauses inline)
+function lowered_legacy_flag_tail_1(program, state) {
+  const _t4_trail = state.trail.length;
+  const _t4_regs = Runtime.copy_table(state.regs);
+  const _t4_vc = state.var_counter;
+  const _t4_stack = state.stack.slice();
+  const _t4_ysave = (state.y_save || []).slice();
+  const _t4_mode = state.mode;
+  const _t4_build = state.build_stack.slice();
+  const _t4_rstack = (state.read_stack || []).slice();
+  const _t4_rargs = state.read_args;
+  const _t4_rcur = state.read_cursor;
+  if ((function () {
+    if (Runtime.op_get_constant(program, state, 1, V.Atom(2)) !== true) return false;
+    return true;
+    return false;
+  })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 102) !== true) return false;
+    if (Runtime.op_unify_variable(state, 201) !== true) return false;
     Runtime.put_reg(state, 1, Runtime.get_reg(state, 102));
     {
       const saved_cp = state.cp;
@@ -4656,7 +5904,7 @@ function lowered_legacy_flag_tail_1(program, state) {
       if (!_ok) return false;
     }
     Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
-    if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+    if (Runtime.op_deallocate(state) !== true) return false;
     {
       const _lf = (program.lowered_dispatch && program.lowered_dispatch["legacy_flag_tail/1"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["legacy_flag_tail/1"] : undefined);
       if (typeof _lf === "function") return _lf(program, state) === true;
@@ -4689,28 +5937,28 @@ function lowered_legacy_flag_tail_1(program, state) {
 lowered_dispatch["legacy_flag_tail/1"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("legacy_flag_tail/1"); return lowered_legacy_flag_tail_1(program, state); };
 // Lowered: last_element/2 (if-then-else / negation / once)
 function lowered_last_element_2(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
-  if (Runtime.step(program, state, I.GetList(1, 5)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(201)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(202)) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
+  if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+  if (Runtime.op_unify_variable(state, 201) !== true) return false;
+  if (Runtime.op_unify_variable(state, 202) !== true) return false;
   Runtime.put_reg(state, 203, Runtime.get_reg(state, 2));
-  if (Runtime.step(program, state, I.GetLevel(204)) !== true) return false;
+  if (Runtime.op_get_level(state, 204) !== true) return false;
   {
-    const _ite_snap = Runtime.snapshot_machine(state);
-    const _ite_cps = state.cps.length;
+    const _ite_trail = state.trail.length;
+    const _ite_args = Runtime.capture_a_regs(state, 8);
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
       Runtime.put_reg(state, 2, V.Atom(2));
-      if (Runtime.step(program, state, I.BuiltinCall("==/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
       return true;
     })();
     if (_ite_cond) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 201));
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     } else {
-      Runtime.restore_machine(state, _ite_snap);
-      while (state.cps.length > _ite_cps) state.cps.pop();
+      Runtime.undo_trail(state, _ite_trail);
+      Runtime.restore_a_regs(state, _ite_args);
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
       {
@@ -4740,7 +5988,7 @@ function lowered_last_element_2(program, state) {
       }
     }
   }
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
@@ -4763,42 +6011,42 @@ function lowered_js_object_prototype_keys_1(program, state) {
     }
     return true;
   }
-  if (Runtime.step(program, state, I.GetList(1, 5)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("constructor"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(101)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 101, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("hasOwnProperty"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(102)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 102, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("isPrototypeOf"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(103)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 103, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("propertyIsEnumerable"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(104)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 104, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("toLocaleString"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(105)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 105, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("toString"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(106)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 106, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("valueOf"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(107)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 107, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("__defineGetter__"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(108)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 108, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("__defineSetter__"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(109)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 109, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("__lookupGetter__"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(110)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 110, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("__lookupSetter__"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(111)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 111, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("__proto__"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
+  if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("constructor")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 101) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 101, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("hasOwnProperty")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 102) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 102, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("isPrototypeOf")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 103) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 103, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("propertyIsEnumerable")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 104) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 104, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("toLocaleString")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 105) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 105, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("toString")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 106) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 106, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("valueOf")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 107) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 107, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("__defineGetter__")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 108) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 108, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("__defineSetter__")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 109) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 109, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("__lookupGetter__")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 110) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 110, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("__lookupSetter__")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 111) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 111, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("__proto__")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
   const _snap = [];
   for (let _i = 0; _i < 1; _i++) {
     const _ti = Runtime.deref(state, Runtime.get_reg(state, _i + 1));
@@ -4813,73 +6061,73 @@ lowered_dispatch["js_object_prototype_keys/1"] = function (program, state) { if 
 // wamjs lower fallback: js_object_prototype_key/1  fallback(execute of a non-self callee (nested Runtime.run would steal CP))
 // Lowered: js_flag_char/1 (if-then-else / negation / once)
 function lowered_js_flag_char_1(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 2, v); }
-  if (Runtime.step(program, state, I.BuiltinCall("char_code/2", 2)) !== true) return false;
-  if (Runtime.step(program, state, I.GetLevel(202)) !== true) return false;
+  if (Runtime.op_builtin(program, state, "char_code/2", 2) !== true) return false;
+  if (Runtime.op_get_level(state, 202) !== true) return false;
   {
-    const _ite_snap = Runtime.snapshot_machine(state);
-    const _ite_cps = state.cps.length;
+    const _ite_trail = state.trail.length;
+    const _ite_args = Runtime.capture_a_regs(state, 8);
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
       Runtime.put_reg(state, 2, V.Int(97));
-      if (Runtime.step(program, state, I.BuiltinCall(">=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, ">=/2", 2) !== true) return false;
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
       Runtime.put_reg(state, 2, V.Int(122));
-      if (Runtime.step(program, state, I.BuiltinCall("=</2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=</2", 2) !== true) return false;
       return true;
     })();
     if (_ite_cond) {
-      if (Runtime.step(program, state, I.BuiltinCall("true/0", 0)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
     } else {
-      Runtime.restore_machine(state, _ite_snap);
-      while (state.cps.length > _ite_cps) state.cps.pop();
-      if (Runtime.step(program, state, I.GetLevel(203)) !== true) return false;
+      Runtime.undo_trail(state, _ite_trail);
+      Runtime.restore_a_regs(state, _ite_args);
+      if (Runtime.op_get_level(state, 203) !== true) return false;
       {
-        const _ite_snap = Runtime.snapshot_machine(state);
-        const _ite_cps = state.cps.length;
+        const _ite_trail = state.trail.length;
+        const _ite_args = Runtime.capture_a_regs(state, 8);
         const _ite_cond = (function () {
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
           Runtime.put_reg(state, 2, V.Int(65));
-          if (Runtime.step(program, state, I.BuiltinCall(">=/2", 2)) !== true) return false;
+          if (Runtime.op_builtin(program, state, ">=/2", 2) !== true) return false;
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
           Runtime.put_reg(state, 2, V.Int(90));
-          if (Runtime.step(program, state, I.BuiltinCall("=</2", 2)) !== true) return false;
+          if (Runtime.op_builtin(program, state, "=</2", 2) !== true) return false;
           return true;
         })();
         if (_ite_cond) {
-          if (Runtime.step(program, state, I.BuiltinCall("true/0", 0)) !== true) return false;
+          if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
         } else {
-          Runtime.restore_machine(state, _ite_snap);
-          while (state.cps.length > _ite_cps) state.cps.pop();
-          if (Runtime.step(program, state, I.GetLevel(204)) !== true) return false;
+          Runtime.undo_trail(state, _ite_trail);
+          Runtime.restore_a_regs(state, _ite_args);
+          if (Runtime.op_get_level(state, 204) !== true) return false;
           {
-            const _ite_snap = Runtime.snapshot_machine(state);
-            const _ite_cps = state.cps.length;
+            const _ite_trail = state.trail.length;
+            const _ite_args = Runtime.capture_a_regs(state, 8);
             const _ite_cond = (function () {
               Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
               Runtime.put_reg(state, 2, V.Int(48));
-              if (Runtime.step(program, state, I.BuiltinCall(">=/2", 2)) !== true) return false;
+              if (Runtime.op_builtin(program, state, ">=/2", 2) !== true) return false;
               Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
               Runtime.put_reg(state, 2, V.Int(57));
-              if (Runtime.step(program, state, I.BuiltinCall("=</2", 2)) !== true) return false;
+              if (Runtime.op_builtin(program, state, "=</2", 2) !== true) return false;
               return true;
             })();
             if (_ite_cond) {
-              if (Runtime.step(program, state, I.BuiltinCall("true/0", 0)) !== true) return false;
+              if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
             } else {
-              Runtime.restore_machine(state, _ite_snap);
-              while (state.cps.length > _ite_cps) state.cps.pop();
+              Runtime.undo_trail(state, _ite_trail);
+              Runtime.restore_a_regs(state, _ite_args);
               Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
               Runtime.put_reg(state, 2, V.Int(45));
-              if (Runtime.step(program, state, I.BuiltinCall("=:=/2", 2)) !== true) return false;
+              if (Runtime.op_builtin(program, state, "=:=/2", 2) !== true) return false;
             }
           }
         }
       }
     }
   }
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
@@ -4887,36 +6135,36 @@ function lowered_js_flag_char_1(program, state) {
 lowered_dispatch["js_flag_char/1"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("js_flag_char/1"); return lowered_js_flag_char_1(program, state); };
 // Lowered: js_alpha/1 (if-then-else / negation / once)
 function lowered_js_alpha_1(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 2, v); }
-  if (Runtime.step(program, state, I.BuiltinCall("char_code/2", 2)) !== true) return false;
-  if (Runtime.step(program, state, I.GetLevel(202)) !== true) return false;
+  if (Runtime.op_builtin(program, state, "char_code/2", 2) !== true) return false;
+  if (Runtime.op_get_level(state, 202) !== true) return false;
   {
-    const _ite_snap = Runtime.snapshot_machine(state);
-    const _ite_cps = state.cps.length;
+    const _ite_trail = state.trail.length;
+    const _ite_args = Runtime.capture_a_regs(state, 8);
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
       Runtime.put_reg(state, 2, V.Int(97));
-      if (Runtime.step(program, state, I.BuiltinCall(">=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, ">=/2", 2) !== true) return false;
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
       Runtime.put_reg(state, 2, V.Int(122));
-      if (Runtime.step(program, state, I.BuiltinCall("=</2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=</2", 2) !== true) return false;
       return true;
     })();
     if (_ite_cond) {
-      if (Runtime.step(program, state, I.BuiltinCall("true/0", 0)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
     } else {
-      Runtime.restore_machine(state, _ite_snap);
-      while (state.cps.length > _ite_cps) state.cps.pop();
+      Runtime.undo_trail(state, _ite_trail);
+      Runtime.restore_a_regs(state, _ite_args);
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
       Runtime.put_reg(state, 2, V.Int(65));
-      if (Runtime.step(program, state, I.BuiltinCall(">=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, ">=/2", 2) !== true) return false;
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
       Runtime.put_reg(state, 2, V.Int(90));
-      if (Runtime.step(program, state, I.BuiltinCall("=</2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=</2", 2) !== true) return false;
     }
   }
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
@@ -4925,9 +6173,9 @@ lowered_dispatch["js_alpha/1"] = function (program, state) { if (Runtime._prof) 
 // wamjs lower fallback: is_long_flag/1  fallback(execute of a non-self callee (nested Runtime.run would steal CP))
 // Lowered: is_global_key/1 (if-then-else / negation / once)
 function lowered_is_global_key_1(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 203, Runtime.get_reg(state, 1));
-  if (Runtime.step(program, state, I.GetLevel(204)) !== true) return false;
+  if (Runtime.op_get_level(state, 204) !== true) return false;
   {
     const _ite_snap = Runtime.snapshot_machine(state);
     const _ite_cps = state.cps.length;
@@ -4989,7 +6237,7 @@ function lowered_is_global_key_1(program, state) {
       return true;
     })();
     if (_ite_cond) {
-      if (Runtime.step(program, state, I.BuiltinCall("true/0", 0)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
     } else {
       Runtime.restore_machine(state, _ite_snap);
       while (state.cps.length > _ite_cps) state.cps.pop();
@@ -5021,7 +6269,7 @@ function lowered_is_global_key_1(program, state) {
       }
     }
   }
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
@@ -5044,18 +6292,18 @@ function lowered_global_options_1(program, state) {
     }
     return true;
   }
-  if (Runtime.step(program, state, I.GetList(1, 5)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(101)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 101, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("state"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(102)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 102, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(103)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 103, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("name"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
+  if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+  if (Runtime.op_unify_variable(state, 101) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 101, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("state")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 102) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 102, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 103) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 103, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("name")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
   const _snap = [];
   for (let _i = 0; _i < 1; _i++) {
     const _ti = Runtime.deref(state, Runtime.get_reg(state, _i + 1));
@@ -5069,28 +6317,28 @@ function lowered_global_options_1(program, state) {
 lowered_dispatch["global_options/1"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("global_options/1"); return lowered_global_options_1(program, state); };
 // Lowered: flags_set/4 (if-then-else / negation / once)
 function lowered_flags_set_4(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 201, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 202, Runtime.get_reg(state, 2));
   Runtime.put_reg(state, 203, Runtime.get_reg(state, 3));
   Runtime.put_reg(state, 204, Runtime.get_reg(state, 4));
-  if (Runtime.step(program, state, I.GetLevel(205)) !== true) return false;
+  if (Runtime.op_get_level(state, 205) !== true) return false;
   {
-    const _ite_snap = Runtime.snapshot_machine(state);
-    const _ite_cps = state.cps.length;
+    const _ite_trail = state.trail.length;
+    const _ite_args = Runtime.capture_a_regs(state, 8);
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
       Runtime.put_reg(state, 2, V.String("__proto__"));
-      if (Runtime.step(program, state, I.BuiltinCall("==/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
       return true;
     })();
     if (_ite_cond) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 201));
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     } else {
-      Runtime.restore_machine(state, _ite_snap);
-      while (state.cps.length > _ite_cps) state.cps.pop();
+      Runtime.undo_trail(state, _ite_trail);
+      Runtime.restore_a_regs(state, _ite_args);
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
       Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
@@ -5122,7 +6370,7 @@ function lowered_flags_set_4(program, state) {
       }
     }
   }
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
@@ -5141,15 +6389,15 @@ function lowered_flags_put_4(program, state) {
   const _t4_rargs = state.read_args;
   const _t4_rcur = state.read_cursor;
   if ((function () {
-    if (Runtime.step(program, state, I.GetConstant(V.Atom(2), 1)) !== true) return false;
+    if (Runtime.op_get_constant(program, state, 1, V.Atom(2)) !== true) return false;
     Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
     Runtime.put_reg(state, 102, Runtime.get_reg(state, 3));
-    if (Runtime.step(program, state, I.GetList(4, 5)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(103)) !== true) return false;
-    if (Runtime.step(program, state, I.GetStructure(11, 103, 2)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyValue(101)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyValue(102)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
+    if (Runtime.op_get_list(program, state, 4, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 11, 103, 2) !== true) return false;
+    if (Runtime.op_unify_value(program, state, 101) !== true) return false;
+    if (Runtime.op_unify_value(program, state, 102) !== true) return false;
+    if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
     return true;
     return false;
   })()) return true;
@@ -5164,46 +6412,46 @@ function lowered_flags_put_4(program, state) {
   state.read_args = _t4_rargs;
   state.read_cursor = _t4_rcur;
   if ((function () {
-    if (Runtime.step(program, state, I.Allocate()) !== true) return false;
-    if (Runtime.step(program, state, I.GetList(1, 5)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(108)) !== true) return false;
-    if (Runtime.step(program, state, I.GetStructure(11, 108, 2)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(202)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(203)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(204)) !== true) return false;
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 108) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 11, 108, 2) !== true) return false;
+    if (Runtime.op_unify_variable(state, 202) !== true) return false;
+    if (Runtime.op_unify_variable(state, 203) !== true) return false;
+    if (Runtime.op_unify_variable(state, 204) !== true) return false;
     Runtime.put_reg(state, 205, Runtime.get_reg(state, 2));
     Runtime.put_reg(state, 206, Runtime.get_reg(state, 3));
     Runtime.put_reg(state, 201, Runtime.get_reg(state, 4));
-    if (Runtime.step(program, state, I.GetLevel(208)) !== true) return false;
+    if (Runtime.op_get_level(state, 208) !== true) return false;
     {
-      const _ite_snap = Runtime.snapshot_machine(state);
-      const _ite_cps = state.cps.length;
+      const _ite_trail = state.trail.length;
+      const _ite_args = Runtime.capture_a_regs(state, 8);
       const _ite_cond = (function () {
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
         Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
-        if (Runtime.step(program, state, I.BuiltinCall("==/2", 2)) !== true) return false;
+        if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
         return true;
       })();
       if (_ite_cond) {
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
-        if (Runtime.step(program, state, I.PutStructure(5, 2, 2)) !== true) return false;
-        if (Runtime.step(program, state, I.SetVariable(110)) !== true) return false;
-        if (Runtime.step(program, state, I.SetValue(204)) !== true) return false;
-        if (Runtime.step(program, state, I.PutStructure(11, 110, 2)) !== true) return false;
-        if (Runtime.step(program, state, I.SetValue(202)) !== true) return false;
-        if (Runtime.step(program, state, I.SetValue(206)) !== true) return false;
-        if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+        if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+        if (Runtime.op_unify_variable(state, 110) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 204) !== true) return false;
+        if (Runtime.op_put_structure(program, state, 11, 110, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 202) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 206) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
       } else {
-        Runtime.restore_machine(state, _ite_snap);
-        while (state.cps.length > _ite_cps) state.cps.pop();
+        Runtime.undo_trail(state, _ite_trail);
+        Runtime.restore_a_regs(state, _ite_args);
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
-        if (Runtime.step(program, state, I.PutStructure(5, 2, 2)) !== true) return false;
-        if (Runtime.step(program, state, I.SetVariable(110)) !== true) return false;
-        if (Runtime.step(program, state, I.SetVariable(207)) !== true) return false;
-        if (Runtime.step(program, state, I.PutStructure(11, 110, 2)) !== true) return false;
-        if (Runtime.step(program, state, I.SetValue(202)) !== true) return false;
-        if (Runtime.step(program, state, I.SetValue(203)) !== true) return false;
-        if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+        if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+        if (Runtime.op_unify_variable(state, 110) !== true) return false;
+        if (Runtime.op_unify_variable(state, 207) !== true) return false;
+        if (Runtime.op_put_structure(program, state, 11, 110, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 202) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 203) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
         Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
         Runtime.put_reg(state, 3, Runtime.get_reg(state, 206));
@@ -5235,7 +6483,7 @@ function lowered_flags_put_4(program, state) {
         }
       }
     }
-    if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+    if (Runtime.op_deallocate(state) !== true) return false;
     return true;
     return false;
   })()) return true;
@@ -5267,10 +6515,10 @@ function lowered_first_char_index_4(program, state) {
   const _t4_rargs = state.read_args;
   const _t4_rcur = state.read_cursor;
   if ((function () {
-    if (Runtime.step(program, state, I.GetConstant(V.Atom(2), 1)) !== true) return false;
+    if (Runtime.op_get_constant(program, state, 1, V.Atom(2)) !== true) return false;
     Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
     Runtime.put_reg(state, 102, Runtime.get_reg(state, 3));
-    if (Runtime.step(program, state, I.GetConstant(V.Int(-1), 4)) !== true) return false;
+    if (Runtime.op_get_constant(program, state, 4, V.Int(-1)) !== true) return false;
     return true;
     return false;
   })()) return true;
@@ -5285,35 +6533,35 @@ function lowered_first_char_index_4(program, state) {
   state.read_args = _t4_rargs;
   state.read_cursor = _t4_rcur;
   if ((function () {
-    if (Runtime.step(program, state, I.Allocate()) !== true) return false;
-    if (Runtime.step(program, state, I.GetList(1, 5)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(201)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(203)) !== true) return false;
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 201) !== true) return false;
+    if (Runtime.op_unify_variable(state, 203) !== true) return false;
     Runtime.put_reg(state, 204, Runtime.get_reg(state, 2));
     Runtime.put_reg(state, 202, Runtime.get_reg(state, 3));
     Runtime.put_reg(state, 206, Runtime.get_reg(state, 4));
-    if (Runtime.step(program, state, I.GetLevel(207)) !== true) return false;
+    if (Runtime.op_get_level(state, 207) !== true) return false;
     {
-      const _ite_snap = Runtime.snapshot_machine(state);
-      const _ite_cps = state.cps.length;
+      const _ite_trail = state.trail.length;
+      const _ite_args = Runtime.capture_a_regs(state, 8);
       const _ite_cond = (function () {
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
         Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
-        if (Runtime.step(program, state, I.BuiltinCall("==/2", 2)) !== true) return false;
+        if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
         return true;
       })();
       if (_ite_cond) {
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
         Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
-        if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
       } else {
-        Runtime.restore_machine(state, _ite_snap);
-        while (state.cps.length > _ite_cps) state.cps.pop();
+        Runtime.undo_trail(state, _ite_trail);
+        Runtime.restore_a_regs(state, _ite_args);
         { const v = Runtime.new_var(state); Runtime.put_reg(state, 205, v); Runtime.put_reg(state, 1, v); }
-        if (Runtime.step(program, state, I.PutStructure(10, 2, 2)) !== true) return false;
-        if (Runtime.step(program, state, I.SetValue(202)) !== true) return false;
-        if (Runtime.step(program, state, I.SetConstant(V.Int(1))) !== true) return false;
-        if (Runtime.step(program, state, I.BuiltinCall("is/2", 2)) !== true) return false;
+        if (Runtime.op_put_structure(program, state, 10, 2, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 202) !== true) return false;
+        if (Runtime.op_unify_constant(program, state, V.Int(1)) !== true) return false;
+        if (Runtime.op_builtin(program, state, "is/2", 2) !== true) return false;
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
         Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
         Runtime.put_reg(state, 3, Runtime.get_reg(state, 205));
@@ -5345,7 +6593,7 @@ function lowered_first_char_index_4(program, state) {
         }
       }
     }
-    if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+    if (Runtime.op_deallocate(state) !== true) return false;
     return true;
     return false;
   })()) return true;
@@ -5381,486 +6629,486 @@ function lowered_default_registry_1(program, state) {
     }
     return true;
   }
-  if (Runtime.step(program, state, I.GetList(1, 5)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(101)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 101, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("block"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(102)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(6, 102, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(103)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 103, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(104)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 104, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("include-key"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(12))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(105)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 105, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("name"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(106)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 106, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(107)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 107, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("unblock"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(108)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(6, 108, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(109)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 109, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(110)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 110, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("key"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(111)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 111, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("[name]"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(112)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 112, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(113)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 113, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("add"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(114)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(6, 114, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(115)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 115, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(116)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 116, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("profile"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(117)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 117, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(118)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 118, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("until"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(119)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 119, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(120)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 120, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("key"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(121)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 121, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(122)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 122, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("key-file"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(123)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 123, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(124)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 124, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("transport"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(125)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 125, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("name"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(126)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 126, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("[address]"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(127)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 127, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(128)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 128, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("daemon"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(129)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(6, 129, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(130)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 130, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(131)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 131, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("debug"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(14))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(132)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 132, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(133)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 133, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("port"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(134)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 134, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(135)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 135, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("host"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(136)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 136, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(137)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 137, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("hail-on"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(138)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 138, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(139)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 139, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("hail-on-encrypted"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(140)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 140, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(141)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 141, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("hail-on-tls"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(142)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 142, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(143)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 143, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("tls-cert"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(144)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 144, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(145)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 145, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("tls-key"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(146)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 146, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(147)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 147, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("allow-origin"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(148)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 148, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(149)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 149, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("chat"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(12))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(150)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 150, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(151)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 151, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("route"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(12))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(152)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 152, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(153)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 153, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("ui"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(12))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(154)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 154, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(155)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 155, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("require-target-binding"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(12))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(156)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 156, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(157)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 157, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("require-sealed"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(12))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(158)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 158, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(159)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 159, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("commands"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(160)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(15, 160, 1)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(161)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 161, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(162)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 162, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("add"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(163)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(6, 163, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(164)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 164, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("name"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(165)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 165, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("...command"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(166)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 166, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(167)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 167, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("remove"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(168)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(6, 168, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(169)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 169, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("name"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(170)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 170, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(171)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 171, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("list"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(172)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(6, 172, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(173)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 173, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(174)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 174, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("route"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(175)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(15, 175, 1)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(176)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 176, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(177)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 177, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("discover"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(178)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(6, 178, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(179)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 179, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(180)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 180, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("dest"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(181)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 181, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(182)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 182, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("dest-file"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(183)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 183, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(184)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 184, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("control"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(185)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 185, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(186)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 186, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("port"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(187)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 187, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(188)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 188, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("status"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(189)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(6, 189, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(190)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 190, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(191)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 191, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("dest"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(192)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 192, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(193)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 193, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("dest-file"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(194)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 194, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(195)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 195, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("control"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(196)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 196, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(197)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 197, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("port"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(198)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 198, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(199)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 199, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("approve"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(200)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(6, 200, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(201)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 201, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(202)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 202, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("dest"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(203)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 203, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(204)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 204, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("dest-file"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(205)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 205, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(206)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 206, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("seal-key"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(207)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 207, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(208)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 208, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("seal-key-file"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(209)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 209, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(210)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 210, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("control"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(211)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 211, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(212)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 212, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("port"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(213)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 213, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(214)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 214, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("send"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(215)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(6, 215, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(216)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 216, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(217)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 217, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("dest"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(218)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 218, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(219)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 219, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("dest-file"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(220)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 220, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(221)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 221, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("public"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(12))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(222)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 222, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(223)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 223, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("ttl"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(224)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 224, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(225)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 225, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("budget"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(226)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 226, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(227)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 227, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("control"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(228)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 228, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(229)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 229, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("port"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(230)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 230, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("...message"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(231)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 231, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(232)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 232, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("profiles"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(233)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(15, 233, 1)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(234)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 234, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(235)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 235, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("add"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(236)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(6, 236, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(237)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 237, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(238)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 238, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("allows"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(239)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 239, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(240)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 240, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("description"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(241)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 241, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("name"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(242)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 242, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(243)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 243, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("remove"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(244)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(6, 244, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(245)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 245, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(246)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 246, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("force"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(12))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(247)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 247, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(248)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 248, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("reassign"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(13))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(249)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 249, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("name"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(250)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 250, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(251)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 251, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("pin"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(252)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(6, 252, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(253)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 253, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("name"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(254)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 254, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(255)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 255, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("unpin"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(256)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(6, 256, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(257)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 257, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("name"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(258)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(5, 258, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(259)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(11, 259, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.String("list"))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyVariable(260)) !== true) return false;
-  if (Runtime.step(program, state, I.GetStructure(6, 260, 2)) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
-  if (Runtime.step(program, state, I.UnifyConstant(V.Atom(2))) !== true) return false;
+  if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+  if (Runtime.op_unify_variable(state, 101) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 101, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("block")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 102) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 102, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 103) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 103, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 104) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 104, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("include-key")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(12)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 105) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 105, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("name")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 106) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 106, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 107) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 107, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("unblock")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 108) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 108, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 109) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 109, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 110) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 110, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("key")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 111) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 111, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("[name]")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 112) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 112, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 113) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 113, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("add")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 114) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 114, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 115) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 115, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 116) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 116, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("profile")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 117) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 117, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 118) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 118, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("until")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 119) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 119, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 120) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 120, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("key")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 121) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 121, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 122) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 122, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("key-file")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 123) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 123, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 124) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 124, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("transport")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 125) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 125, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("name")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 126) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 126, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("[address]")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 127) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 127, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 128) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 128, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("daemon")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 129) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 129, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 130) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 130, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 131) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 131, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("debug")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(14)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 132) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 132, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 133) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 133, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("port")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 134) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 134, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 135) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 135, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("host")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 136) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 136, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 137) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 137, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("hail-on")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 138) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 138, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 139) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 139, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("hail-on-encrypted")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 140) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 140, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 141) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 141, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("hail-on-tls")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 142) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 142, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 143) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 143, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("tls-cert")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 144) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 144, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 145) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 145, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("tls-key")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 146) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 146, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 147) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 147, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("allow-origin")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 148) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 148, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 149) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 149, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("chat")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(12)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 150) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 150, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 151) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 151, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("route")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(12)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 152) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 152, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 153) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 153, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("ui")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(12)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 154) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 154, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 155) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 155, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("require-target-binding")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(12)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 156) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 156, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 157) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 157, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("require-sealed")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(12)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 158) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 158, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 159) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 159, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("commands")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 160) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 15, 160, 1) !== true) return false;
+  if (Runtime.op_unify_variable(state, 161) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 161, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 162) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 162, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("add")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 163) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 163, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 164) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 164, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("name")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 165) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 165, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("...command")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 166) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 166, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 167) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 167, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("remove")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 168) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 168, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 169) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 169, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("name")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 170) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 170, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 171) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 171, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("list")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 172) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 172, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 173) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 173, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 174) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 174, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("route")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 175) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 15, 175, 1) !== true) return false;
+  if (Runtime.op_unify_variable(state, 176) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 176, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 177) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 177, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("discover")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 178) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 178, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 179) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 179, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 180) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 180, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("dest")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 181) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 181, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 182) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 182, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("dest-file")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 183) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 183, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 184) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 184, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("control")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 185) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 185, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 186) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 186, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("port")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 187) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 187, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 188) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 188, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("status")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 189) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 189, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 190) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 190, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 191) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 191, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("dest")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 192) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 192, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 193) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 193, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("dest-file")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 194) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 194, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 195) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 195, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("control")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 196) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 196, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 197) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 197, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("port")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 198) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 198, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 199) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 199, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("approve")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 200) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 200, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 201) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 201, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 202) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 202, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("dest")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 203) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 203, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 204) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 204, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("dest-file")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 205) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 205, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 206) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 206, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("seal-key")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 207) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 207, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 208) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 208, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("seal-key-file")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 209) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 209, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 210) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 210, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("control")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 211) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 211, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 212) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 212, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("port")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 213) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 213, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 214) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 214, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("send")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 215) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 215, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 216) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 216, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 217) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 217, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("dest")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 218) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 218, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 219) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 219, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("dest-file")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 220) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 220, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 221) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 221, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("public")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(12)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 222) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 222, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 223) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 223, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("ttl")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 224) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 224, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 225) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 225, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("budget")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 226) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 226, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 227) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 227, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("control")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 228) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 228, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 229) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 229, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("port")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 230) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 230, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("...message")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 231) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 231, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 232) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 232, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("profiles")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 233) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 15, 233, 1) !== true) return false;
+  if (Runtime.op_unify_variable(state, 234) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 234, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 235) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 235, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("add")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 236) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 236, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 237) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 237, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 238) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 238, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("allows")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 239) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 239, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 240) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 240, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("description")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 241) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 241, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("name")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 242) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 242, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 243) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 243, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("remove")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 244) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 244, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 245) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 245, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 246) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 246, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("force")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(12)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 247) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 247, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 248) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 248, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("reassign")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 249) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 249, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("name")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 250) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 250, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 251) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 251, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("pin")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 252) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 252, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 253) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 253, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("name")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 254) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 254, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 255) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 255, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("unpin")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 256) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 256, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 257) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 257, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("name")) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_variable(state, 258) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 5, 258, 2) !== true) return false;
+  if (Runtime.op_unify_variable(state, 259) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 11, 259, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.String("list")) !== true) return false;
+  if (Runtime.op_unify_variable(state, 260) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 6, 260, 2) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+  if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
   const _snap = [];
   for (let _i = 0; _i < 1; _i++) {
     const _ti = Runtime.deref(state, Runtime.get_reg(state, _i + 1));
@@ -5885,9 +7133,9 @@ function lowered_count_required_3(program, state) {
   const _t4_rargs = state.read_args;
   const _t4_rcur = state.read_cursor;
   if ((function () {
-    if (Runtime.step(program, state, I.GetConstant(V.Atom(2), 1)) !== true) return false;
+    if (Runtime.op_get_constant(program, state, 1, V.Atom(2)) !== true) return false;
     Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
-    if (Runtime.step(program, state, I.GetValue(101, 3)) !== true) return false;
+    if (Runtime.op_get_value(program, state, 101, 3) !== true) return false;
     return true;
     return false;
   })()) return true;
@@ -5902,13 +7150,13 @@ function lowered_count_required_3(program, state) {
   state.read_args = _t4_rargs;
   state.read_cursor = _t4_rcur;
   if ((function () {
-    if (Runtime.step(program, state, I.Allocate()) !== true) return false;
-    if (Runtime.step(program, state, I.GetList(1, 5)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(201)) !== true) return false;
-    if (Runtime.step(program, state, I.UnifyVariable(203)) !== true) return false;
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 201) !== true) return false;
+    if (Runtime.op_unify_variable(state, 203) !== true) return false;
     Runtime.put_reg(state, 202, Runtime.get_reg(state, 2));
     Runtime.put_reg(state, 205, Runtime.get_reg(state, 3));
-    if (Runtime.step(program, state, I.GetLevel(206)) !== true) return false;
+    if (Runtime.op_get_level(state, 206) !== true) return false;
     {
       const _ite_snap = Runtime.snapshot_machine(state);
       const _ite_cps = state.cps.length;
@@ -5945,11 +7193,11 @@ function lowered_count_required_3(program, state) {
       if (_ite_cond) {
         { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 1, v); }
         Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
-        if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
       } else {
         Runtime.restore_machine(state, _ite_snap);
         while (state.cps.length > _ite_cps) state.cps.pop();
-        if (Runtime.step(program, state, I.GetLevel(207)) !== true) return false;
+        if (Runtime.op_get_level(state, 207) !== true) return false;
         {
           const _ite_snap = Runtime.snapshot_machine(state);
           const _ite_cps = state.cps.length;
@@ -5986,15 +7234,15 @@ function lowered_count_required_3(program, state) {
           if (_ite_cond) {
             { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 1, v); }
             Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
-            if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+            if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
           } else {
             Runtime.restore_machine(state, _ite_snap);
             while (state.cps.length > _ite_cps) state.cps.pop();
             { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 1, v); }
-            if (Runtime.step(program, state, I.PutStructure(10, 2, 2)) !== true) return false;
-            if (Runtime.step(program, state, I.SetValue(202)) !== true) return false;
-            if (Runtime.step(program, state, I.SetConstant(V.Int(1))) !== true) return false;
-            if (Runtime.step(program, state, I.BuiltinCall("is/2", 2)) !== true) return false;
+            if (Runtime.op_put_structure(program, state, 10, 2, 2) !== true) return false;
+            if (Runtime.op_unify_value(program, state, 202) !== true) return false;
+            if (Runtime.op_unify_constant(program, state, V.Int(1)) !== true) return false;
+            if (Runtime.op_builtin(program, state, "is/2", 2) !== true) return false;
           }
         }
       }
@@ -6002,7 +7250,7 @@ function lowered_count_required_3(program, state) {
     Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
     Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
     Runtime.put_reg(state, 3, Runtime.get_reg(state, 205));
-    if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+    if (Runtime.op_deallocate(state) !== true) return false;
     {
       const _lf = (program.lowered_dispatch && program.lowered_dispatch["count_required/3"]) || ((typeof lowered_dispatch !== "undefined") ? lowered_dispatch["count_required/3"] : undefined);
       if (typeof _lf === "function") return _lf(program, state) === true;
@@ -6035,17 +7283,17 @@ function lowered_count_required_3(program, state) {
 lowered_dispatch["count_required/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("count_required/3"); return lowered_count_required_3(program, state); };
 // Lowered: check_arity/3 (if-then-else / negation / once)
 function lowered_check_arity_3(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 210, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 203, Runtime.get_reg(state, 2));
   Runtime.put_reg(state, 213, Runtime.get_reg(state, 3));
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 210));
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 208, v); Runtime.put_reg(state, 2, v); }
-  if (Runtime.step(program, state, I.BuiltinCall("length/2", 2)) !== true) return false;
+  if (Runtime.op_builtin(program, state, "length/2", 2) !== true) return false;
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
   { const v = Runtime.new_var(state); Runtime.put_reg(state, 209, v); Runtime.put_reg(state, 2, v); }
-  if (Runtime.step(program, state, I.BuiltinCall("length/2", 2)) !== true) return false;
-  if (Runtime.step(program, state, I.GetLevel(214)) !== true) return false;
+  if (Runtime.op_builtin(program, state, "length/2", 2) !== true) return false;
+  if (Runtime.op_get_level(state, 214) !== true) return false;
   {
     const _ite_snap = Runtime.snapshot_machine(state);
     const _ite_cps = state.cps.length;
@@ -6109,13 +7357,13 @@ function lowered_check_arity_3(program, state) {
     if (_ite_cond) {
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 207, v); Runtime.put_reg(state, 1, v); }
       Runtime.put_reg(state, 2, V.Atom(0));
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     } else {
       Runtime.restore_machine(state, _ite_snap);
       while (state.cps.length > _ite_cps) state.cps.pop();
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 207, v); Runtime.put_reg(state, 1, v); }
       Runtime.put_reg(state, 2, V.Atom(7));
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     }
   }
   Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
@@ -6146,14 +7394,14 @@ function lowered_check_arity_3(program, state) {
     state.halt = false;
     if (!_ok) return false;
   }
-  if (Runtime.step(program, state, I.GetLevel(215)) !== true) return false;
+  if (Runtime.op_get_level(state, 215) !== true) return false;
   {
-    const _ite_snap = Runtime.snapshot_machine(state);
-    const _ite_cps = state.cps.length;
+    const _ite_trail = state.trail.length;
+    const _ite_args = Runtime.capture_a_regs(state, 8);
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
-      if (Runtime.step(program, state, I.BuiltinCall("</2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "</2", 2) !== true) return false;
       return true;
     })();
     if (_ite_cond) {
@@ -6216,25 +7464,25 @@ function lowered_check_arity_3(program, state) {
       Runtime.put_reg(state, 1, V.String("missing argument: "));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 206, v); Runtime.put_reg(state, 3, v); }
-      if (Runtime.step(program, state, I.BuiltinCall("string_concat/3", 3)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "string_concat/3", 3) !== true) return false;
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 213));
-      if (Runtime.step(program, state, I.PutStructure(8, 2, 1)) !== true) return false;
-      if (Runtime.step(program, state, I.SetValue(206)) !== true) return false;
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_put_structure(program, state, 8, 2, 1) !== true) return false;
+      if (Runtime.op_unify_value(program, state, 206) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     } else {
-      Runtime.restore_machine(state, _ite_snap);
-      while (state.cps.length > _ite_cps) state.cps.pop();
-      if (Runtime.step(program, state, I.GetLevel(216)) !== true) return false;
+      Runtime.undo_trail(state, _ite_trail);
+      Runtime.restore_a_regs(state, _ite_args);
+      if (Runtime.op_get_level(state, 216) !== true) return false;
       {
-        const _ite_snap = Runtime.snapshot_machine(state);
-        const _ite_cps = state.cps.length;
+        const _ite_trail = state.trail.length;
+        const _ite_args = Runtime.capture_a_regs(state, 8);
         const _ite_cond = (function () {
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 207));
           Runtime.put_reg(state, 2, V.Atom(7));
-          if (Runtime.step(program, state, I.BuiltinCall("==/2", 2)) !== true) return false;
+          if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
           Runtime.put_reg(state, 2, Runtime.get_reg(state, 209));
-          if (Runtime.step(program, state, I.BuiltinCall(">/2", 2)) !== true) return false;
+          if (Runtime.op_builtin(program, state, ">/2", 2) !== true) return false;
           return true;
         })();
         if (_ite_cond) {
@@ -6270,22 +7518,22 @@ function lowered_check_arity_3(program, state) {
           Runtime.put_reg(state, 1, V.String("unexpected extra argument: "));
           Runtime.put_reg(state, 2, Runtime.get_reg(state, 211));
           { const v = Runtime.new_var(state); Runtime.put_reg(state, 212, v); Runtime.put_reg(state, 3, v); }
-          if (Runtime.step(program, state, I.BuiltinCall("string_concat/3", 3)) !== true) return false;
+          if (Runtime.op_builtin(program, state, "string_concat/3", 3) !== true) return false;
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 213));
-          if (Runtime.step(program, state, I.PutStructure(8, 2, 1)) !== true) return false;
-          if (Runtime.step(program, state, I.SetValue(212)) !== true) return false;
-          if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+          if (Runtime.op_put_structure(program, state, 8, 2, 1) !== true) return false;
+          if (Runtime.op_unify_value(program, state, 212) !== true) return false;
+          if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
         } else {
-          Runtime.restore_machine(state, _ite_snap);
-          while (state.cps.length > _ite_cps) state.cps.pop();
+          Runtime.undo_trail(state, _ite_trail);
+          Runtime.restore_a_regs(state, _ite_args);
           Runtime.put_reg(state, 1, Runtime.get_reg(state, 213));
           Runtime.put_reg(state, 2, V.Atom(9));
-          if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+          if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
         }
       }
     }
   }
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
@@ -6293,11 +7541,11 @@ function lowered_check_arity_3(program, state) {
 lowered_dispatch["check_arity/3"] = function (program, state) { if (Runtime._prof) Runtime.prof_lowered_call("check_arity/3"); return lowered_check_arity_3(program, state); };
 // Lowered: action_entry/3 (if-then-else / negation / once)
 function lowered_action_entry_3(program, state) {
-  if (Runtime.step(program, state, I.Allocate()) !== true) return false;
+  if (Runtime.op_allocate(state) !== true) return false;
   Runtime.put_reg(state, 201, Runtime.get_reg(state, 1));
   Runtime.put_reg(state, 203, Runtime.get_reg(state, 2));
   Runtime.put_reg(state, 204, Runtime.get_reg(state, 3));
-  if (Runtime.step(program, state, I.GetLevel(205)) !== true) return false;
+  if (Runtime.op_get_level(state, 205) !== true) return false;
   {
     const _ite_snap = Runtime.snapshot_machine(state);
     const _ite_cps = state.cps.length;
@@ -6335,7 +7583,7 @@ function lowered_action_entry_3(program, state) {
     if (_ite_cond) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     } else {
       Runtime.restore_machine(state, _ite_snap);
       while (state.cps.length > _ite_cps) state.cps.pop();
@@ -6366,13 +7614,13 @@ function lowered_action_entry_3(program, state) {
         if (!_ok) return false;
       }
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
-      if (Runtime.step(program, state, I.PutStructure(6, 2, 2)) !== true) return false;
-      if (Runtime.step(program, state, I.SetConstant(V.Atom(2))) !== true) return false;
-      if (Runtime.step(program, state, I.SetConstant(V.Atom(2))) !== true) return false;
-      if (Runtime.step(program, state, I.BuiltinCall("=/2", 2)) !== true) return false;
+      if (Runtime.op_put_structure(program, state, 6, 2, 2) !== true) return false;
+      if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+      if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
     }
   }
-  if (Runtime.step(program, state, I.Deallocate()) !== true) return false;
+  if (Runtime.op_deallocate(state) !== true) return false;
   return true;
   return true;
 }
@@ -6430,7 +7678,15 @@ function strict_option(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11) {
 M.strict_option = strict_option;
 
 function strict_loop(a1, a2, a3, a4, a5, a6, a7, a8) {
-  return Runtime.run_predicate(shared_program, 1783, [a1, a2, a3, a4, a5, a6, a7, a8]);
+  const state = Runtime.new_state();
+  const args = [a1, a2, a3, a4, a5, a6, a7, a8];
+  for (let i = 0; i < 8; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  if (Runtime._prof) Runtime.prof_lowered_call("strict_loop/8");
+  return lowered_strict_loop_8(shared_program, state) === true;
 }
 M.strict_loop = strict_loop;
 
@@ -6526,7 +7782,15 @@ function parse_lenient(a1, a2, a3) {
 M.parse_lenient = parse_lenient;
 
 function parse_args(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 1336, [a1, a2, a3]);
+  const state = Runtime.new_state();
+  const args = [a1, a2, a3];
+  for (let i = 0; i < 3; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  if (Runtime._prof) Runtime.prof_lowered_call("parse_args/3");
+  return lowered_parse_args_3(shared_program, state) === true;
 }
 M.parse_args = parse_args;
 
@@ -6575,7 +7839,15 @@ function nth0_default(a1, a2, a3, a4) {
 M.nth0_default = nth0_default;
 
 function next_value(a1, a2) {
-  return Runtime.run_predicate(shared_program, 1185, [a1, a2]);
+  const state = Runtime.new_state();
+  const args = [a1, a2];
+  for (let i = 0; i < 2; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  if (Runtime._prof) Runtime.prof_lowered_call("next_value/2");
+  return lowered_next_value_2(shared_program, state) === true;
 }
 M.next_value = next_value;
 
@@ -6621,7 +7893,15 @@ function lenient_result(a1, a2) {
 M.lenient_result = lenient_result;
 
 function lenient_loop(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 997, [a1, a2, a3, a4, a5]);
+  const state = Runtime.new_state();
+  const args = [a1, a2, a3, a4, a5];
+  for (let i = 0; i < 5; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  if (Runtime._prof) Runtime.prof_lowered_call("lenient_loop/5");
+  return lowered_lenient_loop_5(shared_program, state) === true;
 }
 M.lenient_loop = lenient_loop;
 
