@@ -396,7 +396,7 @@ test(indexed_store_bytes_read_proof, [setup(install_idx_preds)]) :-
     assertion(node_succeeded(Out)),
     parse_fact_io_stats(Err, Bytes, DataSize),
     assertion(DataSize > 100000),
-    assertion(Bytes > 0),
+    assertion(Bytes > 200),
     assertion(Bytes * 20 < DataSize),
     assertion(Bytes < 16384),
     format(user_error, '~n[bytes-read proof] bytes_read=~w data_size=~w~n[bytes-read proof raw stderr]~n~w~n',
