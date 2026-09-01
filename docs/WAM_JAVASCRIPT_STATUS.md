@@ -540,7 +540,9 @@ node scripts/js_wam/uw_fact_lmdb.js build <tsv|csv|jsonl> <lmdb-dir>
 
 The runtime loads the package **lazily** (`createRequire(__filename)("lmdb")`)
 only when a `lmdb(...)` source is actually used. `encoding: "binary"` and
-`keyEncoding: "binary"`.
+`keyEncoding: "binary"`. `noSubdir: false` is set explicitly: lmdb-js
+otherwise treats a path with an extension (e.g. `edges.lmdb`) as the
+data *file* and throws `EISDIR` if that path is a directory.
 
 **LMDB key encoding** (same cell payload as B):
 
