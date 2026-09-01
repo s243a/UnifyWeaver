@@ -248,14 +248,11 @@ Runtime.new_var = function (state) {
 };
 
 Runtime.deref = function (state, v) {
-  if (!v || v.tag !== "unbound") return v;
-  const b = state.bindings;
-  for (;;) {
-    const n = b[v.name];
-    if (n === undefined) return v;
-    v = n;
-    if (!v || v.tag !== "unbound") return v;
+  while (typeof v === "object" && v !== null && v.tag === "unbound") {
+    if (!Object.prototype.hasOwnProperty.call(state.bindings, v.name)) return v;
+    v = state.bindings[v.name];
   }
+  return v;
 };
 
 function same_atomic(a, b) {
@@ -365,106 +362,6 @@ function finish_read_if_done(state) {
   }
 }
 
-// Direct op helpers for the lowered emitter: same semantics as Runtime.step
-// minus instruction-object allocation, the interpreter if-chain, and pc++.
-Runtime.op_allocate = function (state) {
-  state.stack.push({ cp: state.cp, yregs: snapshot_yregs(state) });
-  return true;
-};
-Runtime.op_deallocate = function (state) {
-  const f = state.stack.pop();
-  if (f) {
-    state.cp = f.cp;
-    restore_yregs(state, f.yregs);
-  }
-  return true;
-};
-Runtime.op_get_constant = function (program, state, ai, c) {
-  return Runtime.unify(state, Runtime.get_reg(state, ai), c, program) === true;
-};
-Runtime.op_get_value = function (program, state, xn, ai) {
-  return Runtime.unify(state, Runtime.get_reg(state, ai), Runtime.get_reg(state, xn), program) === true;
-};
-Runtime.op_get_structure = function (program, state, fid, ai, arity) {
-  const val = Runtime.deref(state, Runtime.get_reg(state, ai));
-  const ar = arity || 2;
-  if (typeof val === "object" && val !== null && val.tag === "unbound") {
-    const s = V.Struct(fid, []);
-    bind_var(state, val, s);
-    Runtime.put_reg(state, ai, s);
-    begin_write(state, ai, fid, ar, s);
-    return true;
-  }
-  if (typeof val === "object" && val !== null && val.tag === "struct"
-      && same_functor(program, val.fid, (val.args || []).length, fid, ar)) {
-    begin_read(state, val.args);
-    return true;
-  }
-  return false;
-};
-Runtime.op_get_list = function (program, state, ai, fid) {
-  const useFid = fid !== undefined ? fid : Runtime.intern(program.intern_table, "[|]");
-  return Runtime.op_get_structure(program, state, useFid, ai, 2);
-};
-Runtime.op_put_structure = function (program, state, fid, ai, arity) {
-  const useFid = fid !== undefined ? fid : Runtime.intern(program.intern_table, "[|]");
-  begin_write(state, ai, useFid, arity || 2, null);
-  return true;
-};
-Runtime.op_put_list = function (program, state, ai, fid) {
-  return Runtime.op_put_structure(program, state, fid, ai, 2);
-};
-Runtime.op_unify_variable = function (state, xn) {
-  if (state.mode === "read") {
-    Runtime.put_reg(state, xn, state.read_args[state.read_cursor]);
-    state.read_cursor += 1;
-    finish_read_if_done(state);
-  } else {
-    const v = Runtime.new_var(state);
-    Runtime.put_reg(state, xn, v);
-    push_built_term(state, v);
-  }
-  return true;
-};
-Runtime.op_unify_value = function (program, state, xn) {
-  const v = Runtime.get_reg(state, xn);
-  if (state.mode === "read") {
-    if (Runtime.unify(state, v, state.read_args[state.read_cursor], program) !== true) return false;
-    state.read_cursor += 1;
-    finish_read_if_done(state);
-  } else {
-    push_built_term(state, v);
-  }
-  return true;
-};
-Runtime.op_unify_constant = function (program, state, c) {
-  if (state.mode === "read") {
-    if (Runtime.unify(state, c, state.read_args[state.read_cursor], program) !== true) return false;
-    state.read_cursor += 1;
-    finish_read_if_done(state);
-  } else {
-    push_built_term(state, c);
-  }
-  return true;
-};
-Runtime.op_builtin = function (program, state, pred, arity) {
-  return Runtime.builtin_call(program, state, { pred: pred, arity: arity }) === true;
-};
-Runtime.undo_trail = undo_trail;
-Runtime.capture_a_regs = function (state, n) {
-  const a = new Array((n || 8) + 1);
-  const r = state.regs;
-  for (let i = 1; i <= n; i++) a[i] = r[i];
-  return a;
-};
-Runtime.restore_a_regs = function (state, a) {
-  const r = state.regs;
-  for (let i = 1; i < a.length; i++) {
-    if (a[i] === undefined) delete r[i];
-    else r[i] = a[i];
-  }
-};
-
 function undo_trail(state, mark) {
   const n = state.trail.length - mark;
   while (state.trail.length > mark) {
@@ -476,22 +373,23 @@ function undo_trail(state, mark) {
 
 function snapshot_yregs(state) {
   const y = {};
-  const r = state.regs;
-  for (const k in r) {
-    if (k >= 201) y[k] = r[k];
+  const keys = Object.keys(state.regs);
+  for (let i = 0; i < keys.length; i++) {
+    const k = Number(keys[i]);
+    if (k >= 201) y[k] = state.regs[k];
   }
   return y;
 }
 
 function restore_yregs(state, y) {
-  const r = state.regs;
-  const drop = [];
-  for (const k in r) {
-    if (k >= 201) drop.push(k);
+  const keys = Object.keys(state.regs);
+  for (let i = 0; i < keys.length; i++) {
+    const k = Number(keys[i]);
+    if (k >= 201) delete state.regs[k];
   }
-  for (let i = 0; i < drop.length; i++) delete r[drop[i]];
   if (!y) return;
-  for (const k in y) r[k] = y[k];
+  const yk = Object.keys(y);
+  for (let i = 0; i < yk.length; i++) state.regs[yk[i]] = y[yk[i]];
 }
 
 function push_y_save(state) {
@@ -3483,12 +3381,16 @@ Runtime.step = function (program, state, inst) {
   }
   if (op === "Fail") return false;
   if (op === "Allocate") {
-    Runtime.op_allocate(state);
+    state.stack.push({ cp: state.cp, yregs: snapshot_yregs(state) });
     state.pc += 1;
     return true;
   }
   if (op === "Deallocate") {
-    Runtime.op_deallocate(state);
+    const f = state.stack.pop();
+    if (f) {
+      state.cp = f.cp;
+      restore_yregs(state, f.yregs);
+    }
     state.pc += 1;
     return true;
   }
@@ -3515,39 +3417,79 @@ Runtime.step = function (program, state, inst) {
     return true;
   }
   if (op === "GetConstant") {
-    if (Runtime.op_get_constant(program, state, inst.ai, inst.c) !== true) return false;
+    if (Runtime.unify(state, Runtime.get_reg(state, inst.ai), inst.c, program) !== true) return false;
     state.pc += 1;
     return true;
   }
   if (op === "GetValue") {
-    if (Runtime.op_get_value(program, state, inst.xn, inst.ai) !== true) return false;
+    if (Runtime.unify(state, Runtime.get_reg(state, inst.ai), Runtime.get_reg(state, inst.xn), program) !== true) {
+      return false;
+    }
     state.pc += 1;
     return true;
   }
   if (op === "PutStructure" || op === "PutList") {
-    if (Runtime.op_put_structure(program, state, inst.fid, inst.ai, inst.arity || 2) !== true) return false;
+    const fid = inst.fid !== undefined ? inst.fid : Runtime.intern(program.intern_table, "[|]");
+    const arity = inst.arity || 2;
+    begin_write(state, inst.ai, fid, arity, null);
     state.pc += 1;
     return true;
   }
   if (op === "SetVariable" || op === "UnifyVariable") {
-    if (Runtime.op_unify_variable(state, inst.xn) !== true) return false;
+    if (state.mode === "read") {
+      Runtime.put_reg(state, inst.xn, state.read_args[state.read_cursor]);
+      state.read_cursor += 1;
+      finish_read_if_done(state);
+    } else {
+      const v = Runtime.new_var(state);
+      Runtime.put_reg(state, inst.xn, v);
+      push_built_term(state, v);
+    }
     state.pc += 1;
     return true;
   }
   if (op === "SetValue" || op === "UnifyValue") {
-    if (Runtime.op_unify_value(program, state, inst.xn) !== true) return false;
+    const v = Runtime.get_reg(state, inst.xn);
+    if (state.mode === "read") {
+      if (Runtime.unify(state, v, state.read_args[state.read_cursor], program) !== true) return false;
+      state.read_cursor += 1;
+      finish_read_if_done(state);
+    } else {
+      push_built_term(state, v);
+    }
     state.pc += 1;
     return true;
   }
   if (op === "SetConstant" || op === "UnifyConstant") {
-    if (Runtime.op_unify_constant(program, state, inst.c) !== true) return false;
+    if (state.mode === "read") {
+      if (Runtime.unify(state, inst.c, state.read_args[state.read_cursor], program) !== true) return false;
+      state.read_cursor += 1;
+      finish_read_if_done(state);
+    } else {
+      push_built_term(state, inst.c);
+    }
     state.pc += 1;
     return true;
   }
   if (op === "GetStructure" || op === "GetList") {
-    if (Runtime.op_get_structure(program, state, inst.fid, inst.ai, inst.arity || 2) !== true) return false;
-    state.pc += 1;
-    return true;
+    const val = Runtime.deref(state, Runtime.get_reg(state, inst.ai));
+    const fid = inst.fid !== undefined ? inst.fid : Runtime.intern(program.intern_table, "[|]");
+    const arity = inst.arity || 2;
+    if (typeof val === "object" && val !== null && val.tag === "unbound") {
+      const s = V.Struct(fid, []);
+      bind_var(state, val, s);
+      Runtime.put_reg(state, inst.ai, s);
+      begin_write(state, inst.ai, fid, arity, s);
+      state.pc += 1;
+      return true;
+    }
+    if (typeof val === "object" && val !== null && val.tag === "struct"
+        && same_functor(program, val.fid, (val.args || []).length, fid, arity)) {
+      begin_read(state, val.args);
+      state.pc += 1;
+      return true;
+    }
+    return false;
   }
   if (op === "TryMeElse" || op === "TryMeElsePc") {
     state.indexed_entry = false;
