@@ -540,6 +540,53 @@ function term_is_ground(state, v, seen) {
 
 Runtime.term_is_ground = term_is_ground;
 
+Runtime.term_is_nil = function (program, v) {
+  if (!v || typeof v !== "object") return false;
+  if (v.tag !== "atom") return false;
+  return Runtime.string_of(program.intern_table, v.id) === "[]";
+};
+
+Runtime.term_is_cons = function (program, v) {
+  if (!v || typeof v !== "object" || v.tag !== "struct") return false;
+  if ((v.args || []).length !== 2) return false;
+  return is_cons_fid(program, v.fid);
+};
+
+Runtime.snapshot_lite = function (state) {
+  const x = {};
+  const r = state.regs;
+  for (let i = 101; i <= 160; i++) {
+    if (r[i] !== undefined) x[i] = r[i];
+  }
+  return {
+    trail_len: state.trail.length,
+    var_counter: state.var_counter,
+    mode: state.mode,
+    build_stack: state.build_stack.slice(),
+    read_stack: (state.read_stack || []).slice(),
+    read_args: state.read_args,
+    read_cursor: state.read_cursor,
+    a: Runtime.capture_a_regs(state, 16),
+    x: x
+  };
+};
+
+Runtime.restore_lite = function (state, snap) {
+  undo_trail(state, snap.trail_len);
+  state.var_counter = snap.var_counter;
+  state.mode = snap.mode;
+  state.build_stack = snap.build_stack || [];
+  state.read_stack = (snap.read_stack || []).slice();
+  if (snap.read_args !== undefined) state.read_args = snap.read_args;
+  if (snap.read_cursor !== undefined) state.read_cursor = snap.read_cursor;
+  Runtime.restore_a_regs(state, snap.a);
+  const r = state.regs;
+  for (let i = 101; i <= 160; i++) delete r[i];
+  const x = snap.x || {};
+  const xk = Object.keys(x);
+  for (let i = 0; i < xk.length; i++) r[xk[i]] = x[xk[i]];
+};
+
 // Mixed-mode: an interpreted Call/Execute whose target has a lowered
 // function must run that function, not the bytecode (otherwise helpers
 // stay on the slow path). Call pushes Y (convention from A2); Execute
@@ -587,6 +634,7 @@ function run_lowered_body(program, state, fn) {
   state.halt = false;
   return ok === true;
 }
+Runtime.run_lowered_body = run_lowered_body;
 
 function invoke_lowered_call(program, state, fn) {
   const retPc = state.pc + 1;
@@ -3811,6 +3859,26 @@ Runtime.run_isolated = function (program, state) {
   const ok = Runtime.run(program, state) === true;
   if (prev === undefined) delete state.cp_barrier;
   else state.cp_barrier = prev;
+  return ok === true;
+};
+
+// Lowered last-goal Execute of an *interpreted* user predicate.
+// WAM Execute does not modify CP; the callee's Proceed returns to the
+// CP that was live at the Execute. A lowered frame's Proceed is
+// `return true` from JS, so the isolated interpreter must NOT resume
+// at that CP (that would steal the query continuation — GP-PERF round 1
+// corpus test 1). Setting cp=0 makes the callee's Proceed halt the
+// isolated run; restoring the saved CP makes this function's caller
+// (the lowered wrapper, or invoke_lowered_execute) the actual Proceed.
+Runtime.execute_user_isolated = function (program, state, target) {
+  const saved_cp = state.cp;
+  state.cp = 0;
+  state.pc = target;
+  state.program = program;
+  state.halt = false;
+  const ok = Runtime.run_isolated(program, state) === true;
+  state.halt = false;
+  state.cp = saved_cp;
   return ok === true;
 };
 
