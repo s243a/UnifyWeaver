@@ -91,6 +91,31 @@ choice**:
   the catalog; the dependency-free backend for bare machines, the LMDB backend
   where the native dep is acceptable).
 
+## 2d. The concretizing case: frozen-base (Puppy-style) resolution
+
+Post-proposal context (TrixiePup64 / Woof-CE discussion) sharpened P0 into a
+specific unsolved problem. Frugal/layered distros assemble an **immutable
+curated base** (SFS layers, `apt-mark hold` on its packages) under a writable
+save layer. Stock apt then structurally cannot answer the questions users
+actually have:
+
+1. *Is X installable **without touching the base**?* (apt proposes upgrading
+   held foundations, or refuses unhelpfully)
+2. *If not — which held package is the ceiling, and what would have to move?*
+   (the version-ceiling **explanation**; apt reports "held broken packages")
+3. *Then give me X + its non-base dependency closure as a **self-contained
+   layer** (SFS-style) instead* — install without evolving the base at all.
+4. *If I remove X, which of its separately-installed deps become orphans?*
+   (PPM's lifecycle-aware trim, done relationally)
+
+All four are the SAME clauses queried differently — `base/1` facts partition
+the package universe, resolution closes over non-base candidates, a failure
+branch names the blocking held package, and the closure-minus-base IS the
+layer manifest. This is the P0 contract-corpus scenario set, and it is why
+this resolver is not redundant with apt: it reasons about a boundary apt is
+built to ignore. (Historical echo: Puppy's abandoned `Pkg` project and PPM's
+dependency heuristics were circling exactly this in bash.)
+
 ## 3. Why Prolog is the right spec language here (concretely)
 
 | resolver need | Prolog form |
