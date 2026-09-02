@@ -398,6 +398,11 @@ js_clause_terminal_parts(["execute"|_]).
 
 wam_javascript_lowerable(PI, WamCode, Reason) :-
     js_pi_key(PI, _PredName),
+    % Lowered JS functions are first-solution: they cannot retry a callee.
+    % Predicates that enumerate via member/2 (directly or through a user
+    % callee, including under \+) stay on the interpreter. findall/bagof/
+    % setof/once wrap enumeration, so those inners do not taint the caller.
+    \+ js_pi_needs_naked_member_cps(PI),
     catch(build_emission_plan(WamCode, plan(Reason, _, Payload)), _, fail),
     % multi_clause_1 inlines clause 1 then Runtime.run from pc+1, which is
     % the caller's next instruction rather than the alt clause. Wrong-but-
@@ -1172,8 +1177,14 @@ js_ground_fact_line(Line) :-
     (   Parts == [] -> true
     ;   Parts = [F|_], sub_string(F, _, 1, 0, ":") -> true
     ;   Parts = [Op|_],
+        % Intern-once is sound only for a unit ground fact (one answer,
+        % independent of inputs). get_value / get_variable alias a head
+        % variable across arguments — packages(catalog(Ps,_,_,_,_,_), Ps)
+        % — and must not intern the first call's registers as *the* answer.
+        % Nested ground compounds (default_registry/1, memo_fact(g(a,[1,2,3])))
+        % use unify_variable as a temp then get_structure/get_list on it.
         memberchk(Op, ["proceed",
-                       "get_constant", "get_variable", "get_value",
+                       "get_constant",
                        "get_structure", "get_list", "get_nil", "get_integer",
                        "unify_variable", "unify_value", "unify_constant",
                        "put_constant", "put_variable", "put_value",
@@ -1206,6 +1217,9 @@ js_pred_arity_from_name(PredName, Arity) :-
 %  Decision = lower(Reason) | fallback(Why). Never fails.
 wam_javascript_explain_lower(PI, WamCode, lower(Reason)) :-
     catch(wam_javascript_lowerable(PI, WamCode, Reason), _, fail), !.
+wam_javascript_explain_lower(PI, _WamCode, fallback(Why)) :-
+    js_pi_needs_naked_member_cps(PI), !,
+    Why = 'naked member/2 (or callee) needs interpreter choice points'.
 wam_javascript_explain_lower(_PI, WamCode, fallback(Why)) :-
     catch(build_emission_plan(WamCode, plan(Mode, _, Payload)), E,
           (Why = error(E), !)),
@@ -1224,6 +1238,83 @@ wam_javascript_explain_lower(_PI, WamCode, fallback(Why)) :-
     ;   Why = Mode
     ), !.
 wam_javascript_explain_lower(_, _, fallback('not classified')).
+
+%% js_pi_needs_naked_member_cps(+PI)
+%  True when this predicate (or a user callee) uses member/2 outside
+%  findall/bagof/setof/once. Lowering would keep only the first witness.
+js_pi_needs_naked_member_cps(PI) :-
+    js_pi_functor_arity(PI, F, A),
+    js_functor_needs_naked_member(F, A, []).
+
+js_pi_functor_arity(_M:F/A, F, A) :- !.
+js_pi_functor_arity(F/A, F, A).
+
+js_functor_needs_naked_member(F, A, Visited) :-
+    \+ memberchk(F/A, Visited),
+    functor(Head, F, A),
+    catch(clause(user:Head, Body), _, fail),
+    js_body_naked_member(Body, [F/A|Visited]).
+
+js_body_naked_member(Goal, _) :-
+    var(Goal), !, fail.
+js_body_naked_member(_Mod:G, V) :-
+    !,
+    js_body_naked_member(G, V).
+js_body_naked_member(member(_, _), _) :- !.
+js_body_naked_member(lists:member(_, _), _) :- !.
+js_body_naked_member(findall(_, _, _), _) :- !, fail.
+js_body_naked_member(bagof(_, _, _), _) :- !, fail.
+js_body_naked_member(setof(_, _, _), _) :- !, fail.
+js_body_naked_member(once(_), _) :- !, fail.
+js_body_naked_member((A, B), V) :- !,
+    (   js_body_naked_member(A, V)
+    ;   js_body_naked_member(B, V)
+    ).
+js_body_naked_member((A; B), V) :- !,
+    (   js_body_naked_member(A, V)
+    ;   js_body_naked_member(B, V)
+    ).
+js_body_naked_member((A -> B), V) :- !,
+    (   js_body_naked_member(A, V)
+    ;   js_body_naked_member(B, V)
+    ).
+js_body_naked_member(\+ A, V) :- !,
+    js_body_naked_member(A, V).
+js_body_naked_member(G, V) :-
+    functor(G, F, A),
+    A > 0,
+    \+ js_body_skip_functor(F),
+    js_functor_needs_naked_member(F, A, V).
+
+js_body_skip_functor(',').
+js_body_skip_functor(';').
+js_body_skip_functor('->').
+js_body_skip_functor(\+).
+js_body_skip_functor(!).
+js_body_skip_functor(=).
+js_body_skip_functor(==).
+js_body_skip_functor(\==).
+js_body_skip_functor(is).
+js_body_skip_functor(=:=).
+js_body_skip_functor(=\=).
+js_body_skip_functor(<).
+js_body_skip_functor(>).
+js_body_skip_functor(=<).
+js_body_skip_functor(>=).
+js_body_skip_functor(true).
+js_body_skip_functor(fail).
+js_body_skip_functor(member).
+js_body_skip_functor(findall).
+js_body_skip_functor(bagof).
+js_body_skip_functor(setof).
+js_body_skip_functor(write).
+js_body_skip_functor(nl).
+js_body_skip_functor(sub_string).
+js_body_skip_functor(sub_atom).
+js_body_skip_functor(sort).
+js_body_skip_functor(reverse).
+js_body_skip_functor(append).
+js_body_skip_functor(length).
 
 js_pi_key(_M:Pred/Arity, Key) :- !,
     format(atom(Key), '~w/~w', [Pred, Arity]).
