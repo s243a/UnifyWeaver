@@ -1,7 +1,16 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 <!-- Copyright (c) 2026 John William Creighton (@s243a) -->
 
-# uw-resolve P0.5 — holds get reasons; mining adoptions land
+# uw-resolve P2 — store-backed resolution
+
+P0.5 (term catalog) is unchanged and still the API. P2 adds **store-backed**
+resolution: packages / depends / conflicts / reverse-deps live in D43
+indexed fact stores; the machine-local environment stays a term. Bytes
+read on a bound query are proportional to the query, not the catalog.
+
+Debian epoch/tilde, `Provides:`/virtual packages, write paths, incremental
+store updates, and a `pkg`-style CLI remain deferred.
+
 
 Layered / frugal distros (Puppy, Woof-CE) run an **immutable curated base**
 under a writable layer. Stock apt cannot reason about that boundary: it will
@@ -11,9 +20,9 @@ is the oracle; the same spec is compiled through `wam_javascript`
 (`emit_mode(mixed)`) and gated by the contract corpus plus a seeded
 differential.
 
-Debian epoch/tilde version semantics, `Provides:`/virtual packages, a GP-LMDB
-catalog backend, and a `pkg`-style CLI (via `examples/cli_args`) remain
-deferred.
+Debian epoch/tilde version semantics, `Provides:`/virtual packages, write
+paths, incremental store updates, and a `pkg`-style CLI remain deferred.
+The GP-LMDB / D43 indexed catalog path is P2 (this document).
 
 ## The model
 
@@ -190,41 +199,112 @@ that version or held in a loaded layer at that version.
   `dependents/3`, `dependents_installed/3` each return one sorted /
   ground answer.
 
+## P2: store-backed resolution
+
+Real catalogs cannot be an in-memory term per query. The **big three**
+(packages, depends, conflicts) plus a **precomputed reverse-deps** index
+are D43 P/2 fact stores. The **environment** (base / layers / installed /
+requested / excluded / aliases) is machine-local and tiny — it stays a
+term, passed per query:
+
+```
+env(CatId, Base, Installed, Requested, Layers, Excluded, Aliases)
+```
+
+`resolver.pl`'s catalog-as-term API is untouched. `resolver_store.pl`
+exposes the same 10 queries as `*_store` predicates. Lookups always bind
+`CatId|Name` (seek, not scan).
+
+### JSONL dump schema
+
+One JSON object per fact (`kind` discriminates). `catalog` is the store
+key prefix so many catalogs can share one index.
+
+```jsonl
+{"kind":"package","catalog":"linear","name":"a","ver":[1,0,0]}
+{"kind":"depends","catalog":"linear","name":"a","ver":[1,0,0],"dep":"b","constraint":"any"}
+{"kind":"depends","catalog":"blocked_base","name":"app","ver":[1,0,0],"dep":"lib","constraint":{"op":"gte","v":[2,0,0]}}
+{"kind":"conflicts","catalog":"conflict_pair","name":"foo","ver":[1,0,0],"other":"bar"}
+{"kind":"base","catalog":"upgradeable_base","name":"lib","ver":[1,0,0],"reason":"blanket"}
+{"kind":"layer","catalog":"named_devx","layer":"devx","name":"gcc","ver":[1,0,0]}
+{"kind":"installed","catalog":"removal_basic","name":"app","ver":[1,0,0]}
+{"kind":"requested","catalog":"removal_basic","name":"app"}
+{"kind":"excluded","catalog":"excluded_select","name":"bad"}
+{"kind":"alias","catalog":"alias_rxvt","alias":"urxvt","canonical":"rxvt"}
+```
+
+Only `package` / `depends` / `conflicts` are indexed. Env rows stay
+term-side. `depends` also emits a reverse-dep posting at build time.
+
+### Store key layout (D43 P/2)
+
+D43 stores are scalar P/2 (atom/int/float/string). Compounds are packed:
+
+| Store prefix | a1 (index key) | a2 (packed atom) |
+| --- | --- | --- |
+| `pkg` | `CatId\|Name` | `Major.Minor.Patch` |
+| `dep` | `CatId\|Name` | `Ver#Dep#Constraint` |
+| `conflict` | `CatId\|Name` | `Ver#Other` |
+| `revdep` | `CatId\|DepName` | `Name#Ver#Constraint` |
+
+Constraint packing: `any` · `eq:1.0.0` · `gte:1.0.0` · `lt:2.0.0` ·
+`range:1.0.0:2.0.0`. Builder: `store/rich_to_p2.mjs` then
+`store/build_stores.sh` (`scripts/js_wam/uw_fact_index.js`). `lmdb(Dir)`
+uses the same P/2 JSONL via `uw_fact_lmdb.js` (opt-in; no repo
+`package.json` dependency).
+
+### SWI-side data
+
+SWI (the oracle) reads the **same P/2 JSONL files** the indexer consumes
+(`load_p2_jsonl/1`), not the binary `.data`/`.idx`. SWI has no UWFI
+reader; the JSONL is the canonical row encoding, so both engines see
+identical keys and packed cells. WAM seeks `indexed(Prefix)` built from
+those rows.
+
 ## Files
 
 | path | what |
 | --- | --- |
-| `resolver.pl` | the spec (pure relations) |
-| `test_resolver.pl` | contract corpus (plunit + `corpus_case/4`) |
-| `dump_corpus.pl` | SWI → JSONL for the wamjs runner |
-| `wamjs/` | P1 build, argparser-playbook style |
-| `wamjs/build.sh` | `swipl` → `wam_javascript`, `emit_mode(mixed)` |
-| `wamjs/resolver.mjs` | term ↔ JSON **only** — no resolver logic |
-| `wamjs/run_corpus_wamjs.sh` | the same corpus through node vs SWI |
-| `gen_catalogs.mjs` | mulberry32, 2400 catalogs (seed `0xa5b6c7d8`) |
-| `run_differential.sh` | SWI vs wamjs, 0-divergence gate |
+| `resolver.pl` | the spec (pure relations); API unchanged in P2 |
+| `resolver_store.pl` | store adapter (same 10 queries; env term + P/2 facts) |
+| `test_resolver.pl` | P0.5 contract corpus (append-only; unchanged) |
+| `test_resolver_store.pl` | store vs term identity |
+| `dump_corpus.pl` | SWI → JSONL for the term-catalog wamjs runner |
+| `dump_store_data.pl` | rich JSONL + P/2 JSONL + store corpus cases |
+| `wamjs/` | term-catalog JS WAM build |
+| `wamjs_store/` | store-backed JS WAM build (D43 fact sources) |
+| `store/` | dump schema helpers, indexer wrapper, 5k generator |
+| `gen_catalogs.mjs` | mulberry32, 2400 term catalogs (seed `0xa5b6c7d8`) |
+| `run_differential.sh` | term-catalog SWI vs wamjs, 0-divergence gate |
+| `run_store_differential.sh` | store-backed 5k catalog, ≥500 cases, 0 divergences |
+| `run_scale_demo.sh` | bytes-read proof + term-vs-store timings |
 
 ## Build / run
 
 From the repo root (SWI-Prolog 9.x, Node v18+, `mkdir -p output/advanced`):
 
 ```bash
-# contract corpus (SWI oracle)
+# P0.5 term-catalog contract
 swipl -q -g test_resolver -t halt examples/pkg_resolver/test_resolver.pl
-
-# regenerate the JS WAM project, then drive the same corpus through node
 bash examples/pkg_resolver/wamjs/build.sh
 bash examples/pkg_resolver/wamjs/run_corpus_wamjs.sh
-
-# ≥2200 seeded catalogs, all queries, 0 divergences
 bash examples/pkg_resolver/run_differential.sh
+
+# P2 store adapter (identity + indexed corpus)
+swipl -q -g test_resolver_store -t halt examples/pkg_resolver/test_resolver_store.pl
+bash examples/pkg_resolver/wamjs_store/build.sh
+bash examples/pkg_resolver/wamjs_store/run_corpus_wamjs.sh
+
+# 5k catalog: bytes-read + timings + ≥500-case store differential
+bash examples/pkg_resolver/run_scale_demo.sh
+bash examples/pkg_resolver/run_store_differential.sh
 ```
 
-## Deferred (not P0.5)
+## Deferred (not P2)
 
 - Debian epoch / tilde / letter version semantics
 - `Provides:` / virtual packages / alternatives
-- GP-LMDB catalog backend (P2 — the `indexed` / `lmdb` fact-source path)
-- `pkg`-style CLI on top of `examples/cli_args`
+- `pkg`-style CLI on top of `examples/cli_args` (concurrent round owns `cli/`)
 - write paths (install / remove / commit a layer)
 - per-file / per-SFS modeling inside a named layer
+- incremental store updates (rebuild the four indexes from a full dump)

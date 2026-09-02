@@ -1,2 +1,5 @@
 # Regenerated harness artifacts.
 .diff_out/
+store/.out/
+wamjs_store/js/
+wamjs_store/.corpus_out/
