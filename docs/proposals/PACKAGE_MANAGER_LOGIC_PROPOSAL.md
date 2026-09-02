@@ -211,6 +211,35 @@ The full manual flow compiles to one query chain:
 `missing_sonames` → `soname_provider` (multi-snapshot Contents facts) →
 `resolve_layered` (candidate pinned) → `layer_closure`.
 
+### 2h. The symbol level, and the fact sources nobody's solver reads
+
+Snapshots answered: the archives EXIST — snapshot.debian.org (whole archive,
+several captures daily, since ~2005; apt can install FROM one dated snapshot
+but cannot search ACROSS them), snapshot.ubuntu.com, Launchpad's every-built-
+.deb, archive.debian.org. §2g's time-indexed catalog is published data
+awaiting its first relational consumer.
+
+Below the soname graph sits a third: **symbols**. A soname can match while a
+versioned symbol doesn't (`version 'GLIBC_2.34' not found`). Facts:
+`needs_symbol(Bin, Sym, SymVer)` / `exports_symbol(Lib-Ver, Sym, SymVer)` —
+and Debian already publishes the database: per-library **`.symbols` files**
+(symbol → minimal introducing version; what dpkg-shlibdeps consumes). This
+transforms §2e's `upgrade_set`: a base-lib upgrade is safe for a dependent iff
+the new version exports a SUPERSET of the symbols that dependent actually
+uses — usually a stable subset, so the true coordinated set is far smaller
+than declared reverse-deps (the pessimism that makes TrixiePup over-freeze).
+When blocked, the explanation is exact: *installed X links foo_frob@LIBFOO_2.35,
+absent from the proposed version.* Set containment over facts — native Prolog.
+
+Further published sources for the spec's fact schema: libabigail/abidiff ABI
+diffs (`abi_breaks/4`, stricter than symbols); the Debian security tracker's
+CVE JSON (§2g's advisory annotation); file conflicts derived from the Contents
+index already ingested; Provides/virtual packages; Essential/priority flags.
+Lineage note, honestly: Debian's EDOS/Mancoosi work and `dose-debcheck`
+formalized installability long ago — our contribution is unifying ALL layers
+(declared / soname / symbol / ABI / time / advisories) in ONE queryable,
+explaining, transpilable spec rather than one standalone checker per layer.
+
 ## 3. Why Prolog is the right spec language here (concretely)
 
 | resolver need | Prolog form |
