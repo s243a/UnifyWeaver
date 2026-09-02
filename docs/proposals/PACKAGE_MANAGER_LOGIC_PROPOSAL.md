@@ -116,6 +116,36 @@ this resolver is not redundant with apt: it reasons about a boundary apt is
 built to ignore. (Historical echo: Puppy's abandoned `Pkg` project and PPM's
 dependency heuristics were circling exactly this in bash.)
 
+### 2e. Graduated freeze semantics: holds have REASONS (P0.5 direction)
+
+Follow-on insight (from the TrixiePup discussion): a hold is a boolean, but
+freezing is not — and the reason determines upgrade safety. TrixiePup's
+practical problem is arguably that it freezes too much precisely because apt
+cannot represent WHY anything is frozen. Model it: `base(Pkg-Ver, Reason)`,
+
+| Reason | meaning | safe to upgrade? |
+|---|---|---|
+| `layer_shadow` | files live in read-only SFS; save-layer upgrade duplicates/shadows | yes, at a computable cost (shadow bytes) |
+| `abi_anchor` | other base packages built against this version | only as a **coordinated set** |
+| `puppy_modified` | Woof-CE patched/trimmed/replaced it | not without re-applying modifications |
+| `footprint` | held only for savefile size | yes, if cost accepted |
+| `blanket` | held with no specific constraint | probably — the over-freezing category |
+
+New queries from the same clauses: `safe_upgrade(Pkg, NewVer, Cost)` and
+`upgrade_set(Pkg, NewVer, Set)` — the minimal reverse-dependency closure that
+must move together (apt's `full-upgrade` computed minimally + explainably).
+"Why is this frozen?" becomes a query instead of forum lore.
+
+Crucially, most reasons are **derivable, not hand-annotated**: `abi_anchor`
+from reverse-dep degree + constraint tightness over the catalog; `layer_shadow`
+from the SFS manifest; only `puppy_modified` needs Woof-CE build metadata
+(`DISTRO_PKGS_SPECS`, trim lists). A blanket hold is then detectable as "held
+with no derivable reason" — the over-freezing diagnosis, computed.
+
+Related bounded task: mine the dormant `Pkg` project (`sc0ttj/Pkg` upstream)
+as a REQUIREMENTS source — its command vocabulary, PET/SFS workflows, and
+dependency heuristics encode years of real Puppy user needs, in bash.
+
 ## 3. Why Prolog is the right spec language here (concretely)
 
 | resolver need | Prolog form |
