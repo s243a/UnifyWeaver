@@ -240,6 +240,44 @@ formalized installability long ago — our contribution is unifying ALL layers
 (declared / soname / symbol / ABI / time / advisories) in ONE queryable,
 explaining, transpilable spec rather than one standalone checker per layer.
 
+### 2i. Maintainer scripts and platform seams: classify the imperative residue
+
+Two places the declarative model meets imperative reality (user-raised):
+pre/post-install scripts, and platform-assumption seams (graphics, audio,
+IPC/dbus, init — Xorg/Wayland, systemd-vs-not).
+
+**Maintainer scripts.** Stripping them when upgrading frozen packages is
+sometimes right and sometimes breaks things — because "the script" bundles
+distinct EFFECTS. Most content is debhelper-generated boilerplate from a small
+template vocabulary, so it classifies: `maintscript(Pkg-Ver, Phase, Class)`,
+Class ∈ ldconfig | alternatives(N) | sysusers(U) | systemd_enable(Unit) |
+cache(Kind) | conffile_move | custom(Hash). The strip/keep decision becomes a
+relation `script_action(Class, Platform, Action)`:
+- **bake_at_build** — file-producing effects run once in a chroot against the
+  target base while BUILDING the layer; outputs baked into the SFS. Scripts
+  belong to layer-build time, not live-install time, in the layered model.
+- **noop_on_platform** — e.g. systemd_enable with no systemd; but the class
+  lets us check whether the package's FUNCTION needs the unit → conflict, not
+  silent no-op.
+- **run_on_target** — genuinely environmental (user creation).
+- **needs_review(custom)** — unrecognized code surfaces for review/sandbox,
+  never silently stripped NOR silently trusted. The irreducible residue,
+  explicit.
+
+**Platform seams.** `platform_provides(Platform, Capability)` facts (Puppy:
+no systemd; init flavor; display/audio stacks) vs derived package
+assumptions — from deps (systemd-sysv → hard), Contents artifacts (.service
+units, udev rules, dbus activation — weak alone), and maintscript classes.
+`platform_conflicts(Pkg, Platform, Assumptions)` grades each assumption WITH
+ITS EVIDENCE: `assumes(P, systemd, evidence(depends(systemd_sysv)))` strong;
+`evidence(ships_unit_file)` weak (inert without systemd). Evidence-graded
+facts let decisions demand strong evidence while surfacing weak signals —
+heuristics that admit they are heuristics.
+
+Feedback into §2e: much base over-freezing is platform divergence, not ABI —
+freezing was the blunt instrument for "this package's assumptions don't hold
+here." With 2i's facts, that reason becomes explicit and per-package.
+
 ## 3. Why Prolog is the right spec language here (concretely)
 
 | resolver need | Prolog form |
