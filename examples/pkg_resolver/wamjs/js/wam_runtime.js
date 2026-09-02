@@ -508,14 +508,49 @@ function pop_y_save(state) {
   restore_yregs(state, state.y_save.pop());
 }
 
-// Neck-cut barrier: Call (and lowered Call) records cps.length so !/0
-// prunes only this predicate's alternatives, not the caller's member/2
-// (or other) choice points. A previous implementation did state.cps = []
-// which made every lowered helper with a neck cut (satisfies/2) steal
-// search from the interpreter.
+// ---------------------------------------------------------------------
+// Choice-point barrier model (see docs/WAM_JAVASCRIPT_STATUS.md §"Cut and
+// choice-point barriers").
+//
+//   state.cut_barrier  -- the WAM B0 of the CURRENT predicate activation:
+//                         the cps.length recorded when this predicate was
+//                         entered. `!` prunes back to it. Saved on
+//                         state.cut_stack by Call, restored by Proceed,
+//                         REPLACED (not stacked) by Execute, because a
+//                         last-call reuses the caller's frame slot but
+//                         still gets its own B0 (WAM: both call and
+//                         execute do B0 <- B).
+//   state.cp_barrier   -- a HARD isolation floor: a nested Runtime.run
+//                         driven from a lowered body (run_isolated) must
+//                         neither backtrack below it nor cut below it.
+//
+// The effective floor for any cut is max(cut_barrier, cp_barrier): a
+// stale (lower) cut_barrier inherited from an outer frame must never let
+// an isolated sub-run destroy its caller's choice points.
+//
+// A previous implementation did state.cps = [] for `!`, which made every
+// lowered helper with a neck cut (satisfies/2) steal search from the
+// interpreter.
+function cut_floor(state) {
+  let bar = 0;
+  if (typeof state.cut_barrier === "number") bar = state.cut_barrier;
+  if (typeof state.cp_barrier === "number" && state.cp_barrier > bar) {
+    bar = state.cp_barrier;
+  }
+  return bar;
+}
+
 function push_cut_barrier(state) {
   state.cut_stack = state.cut_stack || [];
   state.cut_stack.push(state.cut_barrier);
+  state.cut_barrier = state.cps.length;
+}
+
+// WAM `execute P`: B0 <- B without pushing a frame. The callee reuses the
+// caller's cut_stack slot (its Proceed pops the entry the caller's Call
+// pushed) but must get its OWN barrier, or a `!` in the tail-called
+// predicate prunes the CALLER's clause alternatives.
+function enter_execute(state) {
   state.cut_barrier = state.cps.length;
 }
 
@@ -541,9 +576,7 @@ function pop_call_frame(state) {
 }
 
 function neck_cut(state) {
-  let bar = 0;
-  if (typeof state.cut_barrier === "number") bar = state.cut_barrier;
-  else if (typeof state.cp_barrier === "number") bar = state.cp_barrier;
+  const bar = cut_floor(state);
   while (state.cps.length > bar) state.cps.pop();
   return true;
 }
@@ -560,6 +593,35 @@ function proceed_to_cp(state) {
 
 Runtime.push_y_save = push_y_save;
 Runtime.pop_y_save = pop_y_save;
+Runtime.push_cut_barrier = push_cut_barrier;
+Runtime.pop_cut_barrier = pop_cut_barrier;
+Runtime.push_call_frame = push_call_frame;
+Runtime.pop_call_frame = pop_call_frame;
+Runtime.enter_execute = enter_execute;
+Runtime.cut_floor = cut_floor;
+
+// Frame-stack repair for nested interpreter runs driven from a lowered
+// body. The callee's Proceed does pop_call_frame unconditionally; when a
+// lowered frame drove that run, the pop can consume an entry the nested
+// call never pushed, leaving state.cut_barrier restored to the LOWERED
+// CALLER'S caller. A `!` after the call then prunes choice points the
+// caller still owns (probe P28: `findall(Y, (e(_), p28_h(Y)), L)` lost
+// e/1's second solution). Mark before the nested run, release after.
+Runtime.call_frame_mark = function (state) {
+  return {
+    y: (state.y_save || []).length,
+    c: (state.cut_stack || []).length,
+    b: state.cut_barrier
+  };
+};
+Runtime.call_frame_release = function (state, m) {
+  const ys = state.y_save || (state.y_save = []);
+  while (ys.length > m.y) ys.pop();
+  const cs = state.cut_stack || (state.cut_stack = []);
+  while (cs.length > m.c) cs.pop();
+  if (m.b === undefined) delete state.cut_barrier;
+  else state.cut_barrier = m.b;
+};
 Runtime.snapshot_machine = snapshot_machine;
 Runtime.restore_machine = restore_machine;
 
@@ -679,6 +741,13 @@ Runtime.run_lowered_body = run_lowered_body;
 function invoke_lowered_call(program, state, fn) {
   const retPc = state.pc + 1;
   const savedCp = state.cp;
+  // Interpreter Call sets cp to the return address before entering the
+  // callee. Do the same for a lowered callee: a choice point the lowered
+  // body pushes (T5/T6 unbound-A1 dispatch) snapshots state.cp, and on
+  // backtrack the alt clause's Proceed jumps there. With the caller's
+  // OLD cp it returned past this call site entirely, printing garbage
+  // for the second solution of a lowered fact predicate (probe P01).
+  state.cp = retPc;
   push_call_frame(state);
   const ok = run_lowered_body(program, state, fn);
   pop_call_frame(state);
@@ -689,6 +758,7 @@ function invoke_lowered_call(program, state, fn) {
 }
 
 function invoke_lowered_execute(program, state, fn) {
+  enter_execute(state);
   const ok = run_lowered_body(program, state, fn);
   if (ok !== true) return false;
   state.indexed_entry = false;
@@ -3064,7 +3134,68 @@ function run_builtin_or_label(program, parent, goal, shareBindings) {
   if (pred === "true") return true;
   if (pred === "fail" || pred === "false") return false;
   if (pred === "^" && arity >= 2) {
-    return invoke_goal(program, parent, args[1], share === true);
+    return invoke_goal(program, parent, args[1], shareBindings === true);
+  }
+  // Control constructs reached through call/1 (and through \+ /1, which
+  // shares this entry point). ISO: a cut inside call/1 is LOCAL to the
+  // call, so `!` here commits the metacall and does not touch the
+  // caller's choice points. `call((G, !))` used to fail outright because
+  // ,/2 has no label and no builtin (probe P10).
+  if (pred === "," && arity === 2) {
+    if (invoke_goal(program, parent, args[0], shareBindings) !== true) return false;
+    return invoke_goal(program, parent, args[1], shareBindings) === true;
+  }
+  if (pred === ";" && arity === 2) {
+    const left = Runtime.deref(parent, args[0]);
+    const lname = (typeof left === "object" && left !== null && left.tag === "struct")
+      ? strip_trailing_arity(Runtime.string_of(intern, left.fid)) : null;
+    const largs = (left && left.args) || [];
+    if ((lname === "->" || lname === "*->") && largs.length === 2) {
+      if (goal_succeeds(program, parent, largs[0]) === true) {
+        // Re-run the condition for its bindings, then the then-branch.
+        if (invoke_goal(program, parent, largs[0], shareBindings) !== true) return false;
+        return invoke_goal(program, parent, largs[1], shareBindings) === true;
+      }
+      return invoke_goal(program, parent, args[1], shareBindings) === true;
+    }
+    if (invoke_goal(program, parent, args[0], shareBindings) === true) return true;
+    return invoke_goal(program, parent, args[1], shareBindings) === true;
+  }
+  if ((pred === "->" || pred === "*->") && arity === 2) {
+    if (invoke_goal(program, parent, args[0], shareBindings) !== true) return false;
+    return invoke_goal(program, parent, args[1], shareBindings) === true;
+  }
+  if ((pred === "\\+" || pred === "not") && arity === 1) {
+    return goal_succeeds(program, parent, args[0]) !== true;
+  }
+  if (pred === "!" && arity === 0) {
+    // Opaque: the metacall is already first-solution, so committing is a
+    // no-op. It must NOT prune the caller's choice points.
+    return true;
+  }
+  if (pred === "once" && arity === 1) {
+    return invoke_goal(program, parent, args[0], shareBindings) === true;
+  }
+  if (pred === "ignore" && arity === 1) {
+    invoke_goal(program, parent, args[0], shareBindings);
+    return true;
+  }
+  if (pred === "call" && arity >= 1) {
+    const inner = Runtime.deref(parent, args[0]);
+    if (arity === 1) return invoke_goal(program, parent, inner, shareBindings) === true;
+    const extra = args.slice(1);
+    let fid;
+    let base = [];
+    if (typeof inner === "object" && inner !== null && inner.tag === "struct") {
+      fid = inner.fid;
+      base = (inner.args || []).slice();
+    } else if (typeof inner === "object" && inner !== null && inner.tag === "atom") {
+      fid = inner.id;
+    } else {
+      return false;
+    }
+    const built = V.Struct(fid, base.concat(extra));
+    return invoke_goal(program, parent, built, shareBindings) === true;
   }
 
   function fresh_sub() {
@@ -3987,8 +4118,14 @@ Runtime.step = function (program, state, inst) {
     return true;
   }
   if (op === "Cut") {
+    // Y-level (soft) cut: prune back to the level get_level recorded.
+    // Clamp at cp_barrier so an isolated sub-run can never destroy the
+    // choice points of the lowered frame that drove it.
     let lvl = Runtime.get_reg(state, inst.yn);
     if (typeof lvl !== "number") lvl = 0;
+    if (typeof state.cp_barrier === "number" && state.cp_barrier > lvl) {
+      lvl = state.cp_barrier;
+    }
     while (state.cps.length > lvl) state.cps.pop();
     state.pc += 1;
     return true;
@@ -4055,6 +4192,10 @@ Runtime.step = function (program, state, inst) {
       return false;
     }
     state.pc = target;
+    // WAM: execute does B0 <- B. Without this the tail-called predicate
+    // inherits the caller's barrier and its `!` prunes the CALLER's
+    // clause alternatives (probes P01/P04/P22/P33/P34/P35).
+    enter_execute(state);
     if (Runtime._prof) {
       prof_leave();
       prof_enter(call_key(inst), true);
@@ -4065,6 +4206,7 @@ Runtime.step = function (program, state, inst) {
     const lowered = lowered_fn_at_pc(program, inst.pc);
     if (lowered) return invoke_lowered_execute(program, state, lowered);
     state.pc = inst.pc;
+    if (state.pc !== undefined && state.pc !== null) enter_execute(state);
     if (Runtime._prof && state.pc !== undefined && state.pc !== null) {
       prof_leave();
       prof_enter(pred_key_from_pc(program, state.pc), true);
@@ -4101,6 +4243,14 @@ Runtime.step = function (program, state, inst) {
     });
     agg.next_pc = endPc + 1;
     state.cps.push(agg);
+    // The inner goal of findall/bagof/setof/aggregate_all is an opaque
+    // cut scope (ISO: like call/1). Raise the barrier above the aggregate
+    // choice point so a `!` in the inner goal prunes only the inner
+    // goal's own alternatives and cannot destroy the aggregate CP itself
+    // (which would strand EndAggregate). The barrier and cut_stack are
+    // restored by restore_cp_frame when backtrack reaches `agg` -- its
+    // snapshot was taken before this push.
+    push_cut_barrier(state);
     state.pc += 1;
     return true;
   }
@@ -4163,8 +4313,18 @@ Runtime.run = function (program, state) {
 // but backtrack must stop at the pre-call length (see cp_barrier).
 Runtime.run_isolated = function (program, state) {
   const prev = state.cp_barrier;
-  state.cp_barrier = state.cps.length;
+  const floor = state.cps.length;
+  state.cp_barrier = floor;
   const ok = Runtime.run(program, state) === true;
+  // Choice points the isolated run leaves behind are NOT resumable: the
+  // lowered frame that drove this run returns through JS, so a later
+  // backtrack into one of them would restart the interpreter at a pc
+  // inside the callee with a cp captured mid-isolation (it was forced to
+  // 0), producing an incoherent resume rather than a solution -- probe
+  // P20 printed `0 a 2 a 3` for `between(1,3,X), X > 1, !`. Dropping them
+  // makes an isolated call honestly first-solution, which is the lowered
+  // contract, instead of silently wrong.
+  while (state.cps.length > floor) state.cps.pop();
   if (prev === undefined) delete state.cp_barrier;
   else state.cp_barrier = prev;
   return ok === true;
@@ -4180,12 +4340,19 @@ Runtime.run_isolated = function (program, state) {
 // (the lowered wrapper, or invoke_lowered_execute) the actual Proceed.
 Runtime.execute_user_isolated = function (program, state, target) {
   const saved_cp = state.cp;
+  // The isolated callee's Proceed runs pop_call_frame; balance it with a
+  // frame of our own (and repair on the failure path) so it cannot pop
+  // the lowered caller's barrier. cut_barrier = cps.length here is also
+  // exactly the WAM `execute` B0 <- B for the tail-called predicate.
+  const mark = Runtime.call_frame_mark(state);
+  push_call_frame(state);
   state.cp = 0;
   state.pc = target;
   state.program = program;
   state.halt = false;
   const ok = Runtime.run_isolated(program, state) === true;
   state.halt = false;
+  Runtime.call_frame_release(state, mark);
   state.cp = saved_cp;
   return ok === true;
 };
