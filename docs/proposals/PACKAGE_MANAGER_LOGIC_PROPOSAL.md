@@ -187,6 +187,30 @@ Model additions (P0.5/P2 direction):
 `/usr/local/petget/check_deps.sh`, not the Pkg repo — a separate targeted
 recon if we want its exact aggregation/exclusion rules.)
 
+### 2g. Time-indexed catalogs: version selection UNDER the ceiling
+
+The manual workflow that motivated this (user report): see the missing `.so`,
+search Debian's **Contents index** for the exact package containing it, then
+install a version *behind* the current snapshot that still fits the frozen
+base — two things apt structurally cannot do:
+
+1. **Soname → package reverse lookup**: apt doesn't do it (separate
+   `apt-file` tooling; PPM users did it in a browser). For us it's
+   `soname_provider/2`, and Debian's `Contents-<arch>.gz` (path → package,
+   huge, queried by bound key) is its ingestion source — exactly the shape of
+   the D43 seek-indexed fact store. Ingest once; the browser session becomes
+   an O(log n) seek.
+2. **Cross-snapshot resolution**: apt reasons over ONE Packages snapshot.
+   Debian keeps every version (snapshot.debian.org). Give catalog facts a
+   snapshot dimension — `package(Name, Ver, Snap)`, `depends(..., Snap)` —
+   and "newest version of P satisfying C whose closure fits under `base/1`"
+   ranges over history. The §2d ceiling explanation gains its natural
+   follow-up: *blocked at today's version — but snapshot 2024-06's fits.*
+
+The full manual flow compiles to one query chain:
+`missing_sonames` → `soname_provider` (multi-snapshot Contents facts) →
+`resolve_layered` (candidate pinned) → `layer_closure`.
+
 ## 3. Why Prolog is the right spec language here (concretely)
 
 | resolver need | Prolog form |
