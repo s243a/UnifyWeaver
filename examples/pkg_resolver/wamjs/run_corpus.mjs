@@ -14,6 +14,13 @@ if (!src || !dest) {
   process.exit(2);
 }
 
+function stableStringify(x) {
+  if (x === null || typeof x !== "object") return JSON.stringify(x);
+  if (Array.isArray(x)) return "[" + x.map(stableStringify).join(",") + "]";
+  const keys = Object.keys(x).sort();
+  return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(x[k])).join(",") + "}";
+}
+
 const lines = readFileSync(src, "utf8").split("\n").filter((l) => l !== "");
 const out = [];
 let divergences = 0;
@@ -27,7 +34,7 @@ for (const line of lines) {
   }
   out.push(JSON.stringify({ id: row.id, got }));
   const exp = row.expected;
-  if (JSON.stringify(got) !== JSON.stringify(exp)) {
+  if (stableStringify(got) !== stableStringify(exp)) {
     divergences += 1;
     console.error("DIVERGE", row.id);
     console.error("  expected", JSON.stringify(exp));

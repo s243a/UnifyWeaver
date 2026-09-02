@@ -26,12 +26,19 @@ if (swi.length !== cases.length || wam.length !== cases.length) {
   process.exit(2);
 }
 
+function stableStringify(x) {
+  if (x === null || typeof x !== "object") return JSON.stringify(x);
+  if (Array.isArray(x)) return "[" + x.map(stableStringify).join(",") + "]";
+  const keys = Object.keys(x).sort();
+  return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(x[k])).join(",") + "}";
+}
+
 function canon(obj) {
   if (obj && typeof obj === "object" && obj.id !== undefined) {
     const { id: _id, ...rest } = obj;
-    return JSON.stringify(rest);
+    return stableStringify(rest);
   }
-  return JSON.stringify(obj);
+  return stableStringify(obj);
 }
 
 let divergences = 0;

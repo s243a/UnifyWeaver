@@ -161,10 +161,11 @@ function normalizeConstraint(c) {
 
 function normalizeBlocked(b) {
   if (b && typeof b === "object" && b.name) {
+    // Key order matches SWI json_write_dict (alpha) so corpus stringify compares.
     return {
+      base_has: b.base_has,
       name: b.name,
-      needs: normalizeConstraint(b.needs),
-      base_has: b.base_has
+      needs: normalizeConstraint(b.needs)
     };
   }
   return b;
