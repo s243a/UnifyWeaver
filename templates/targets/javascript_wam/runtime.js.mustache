@@ -508,12 +508,52 @@ function pop_y_save(state) {
   restore_yregs(state, state.y_save.pop());
 }
 
+// Neck-cut barrier: Call (and lowered Call) records cps.length so !/0
+// prunes only this predicate's alternatives, not the caller's member/2
+// (or other) choice points. A previous implementation did state.cps = []
+// which made every lowered helper with a neck cut (satisfies/2) steal
+// search from the interpreter.
+function push_cut_barrier(state) {
+  state.cut_stack = state.cut_stack || [];
+  state.cut_stack.push(state.cut_barrier);
+  state.cut_barrier = state.cps.length;
+}
+
+function pop_cut_barrier(state) {
+  const stack = state.cut_stack;
+  if (!stack || stack.length === 0) {
+    delete state.cut_barrier;
+    return;
+  }
+  const prev = stack.pop();
+  if (prev === undefined) delete state.cut_barrier;
+  else state.cut_barrier = prev;
+}
+
+function push_call_frame(state) {
+  push_y_save(state);
+  push_cut_barrier(state);
+}
+
+function pop_call_frame(state) {
+  pop_cut_barrier(state);
+  pop_y_save(state);
+}
+
+function neck_cut(state) {
+  let bar = 0;
+  if (typeof state.cut_barrier === "number") bar = state.cut_barrier;
+  else if (typeof state.cp_barrier === "number") bar = state.cp_barrier;
+  while (state.cps.length > bar) state.cps.pop();
+  return true;
+}
+
 // Return from the current predicate: restore the Caller's Y (if Call
 // pushed a save) and jump to CP. Used by Proceed and by Execute of a
 // builtin (the compiler emits Deallocate+Execute for a last-goal builtin
 // with no user label; that must return, not halt the machine).
 function proceed_to_cp(state) {
-  pop_y_save(state);
+  pop_call_frame(state);
   if (state.cp === 0) state.halt = true;
   else { state.pc = state.cp; state.cp = 0; }
 }
@@ -639,9 +679,9 @@ Runtime.run_lowered_body = run_lowered_body;
 function invoke_lowered_call(program, state, fn) {
   const retPc = state.pc + 1;
   const savedCp = state.cp;
-  push_y_save(state);
+  push_call_frame(state);
   const ok = run_lowered_body(program, state, fn);
-  pop_y_save(state);
+  pop_call_frame(state);
   state.cp = savedCp;
   if (ok !== true) return false;
   state.pc = retPc;
@@ -668,7 +708,9 @@ function snapshot_machine(state) {
     read_stack: (state.read_stack || []).slice(),
     read_args: state.read_args,
     read_cursor: state.read_cursor,
-    y_save: (state.y_save || []).slice()
+    y_save: (state.y_save || []).slice(),
+    cut_barrier: state.cut_barrier,
+    cut_stack: (state.cut_stack || []).slice()
   };
 }
 
@@ -684,6 +726,9 @@ function restore_machine(state, snap) {
   if (snap.read_args !== undefined) state.read_args = snap.read_args;
   if (snap.read_cursor !== undefined) state.read_cursor = snap.read_cursor;
   state.y_save = (snap.y_save || []).slice();
+  if (snap.cut_barrier === undefined) delete state.cut_barrier;
+  else state.cut_barrier = snap.cut_barrier;
+  state.cut_stack = (snap.cut_stack || []).slice();
 }
 
 function restore_cp_frame(state, cp) {
@@ -2888,7 +2933,7 @@ Runtime.builtin_call = function (program, state, inst) {
   if (name === "true") return true;
   if (name === "fail" || name === "false") return false;
   if (name === "deterministic") return state.cps.length === 0;
-  if (name === "!") { state.cps = []; return true; }
+  if (name === "!") return neck_cut(state);
   if (name === "\\+" || name === "not") return builtin_naf(program, state);
   if (name === "call") return builtin_call1(program, state);
   if (name === "^") {
@@ -3975,7 +4020,7 @@ Runtime.step = function (program, state, inst) {
     }
     state.cp = state.pc + 1;
     state.pc = target;
-    push_y_save(state);
+    push_call_frame(state);
     if (Runtime._prof) prof_enter(call_key(inst), true);
     return true;
   }
@@ -3986,7 +4031,7 @@ Runtime.step = function (program, state, inst) {
     if (lowered) return invoke_lowered_call(program, state, lowered);
     state.cp = state.pc + 1;
     state.pc = inst.pc;
-    if (state.pc !== undefined && state.pc !== null) push_y_save(state);
+    if (state.pc !== undefined && state.pc !== null) push_call_frame(state);
     if (Runtime._prof && state.pc !== undefined && state.pc !== null) {
       prof_enter(pred_key_from_pc(program, state.pc), true);
     }

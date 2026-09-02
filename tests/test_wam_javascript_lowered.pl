@@ -43,6 +43,16 @@
 :- dynamic user:probe_nested_exec/0.
 :- dynamic user:call_sub/3.
 :- dynamic user:probe_call_sub/0.
+:- dynamic user:proj_head/2.
+:- dynamic user:probe_proj_head/0.
+:- dynamic user:cands/1.
+:- dynamic user:cand/1.
+:- dynamic user:sel/2.
+:- dynamic user:need_one/1.
+:- dynamic user:probe_search_cp/0.
+:- dynamic user:marker_cut/1.
+:- dynamic user:need_after_cut/1.
+:- dynamic user:probe_neck_cut_cps/0.
 
 install_lowered_preds :-
     retractall(user:hello/1),
@@ -111,7 +121,38 @@ install_lowered_preds :-
     assertz((user:probe_wrap_sub :- wrap_sub("abcd", 2, S), write(S), nl, S == "ab")),
     % Call (not Execute) of sub_string/5 then continue — corpus starts_with/2 shape.
     assertz((user:call_sub(S, N, Sub) :- sub_string(S, 0, N, _, Sub), true)),
-    assertz((user:probe_call_sub :- call_sub("abcd", 2, S), write(S), nl, S == "ab")).
+    assertz((user:probe_call_sub :- call_sub("abcd", 2, S), write(S), nl, S == "ab")),
+    % Projection, not a unit ground fact: intern-once would pin A2 to the
+    % first call's H (packages/2 catalog accessors).
+    retractall(user:proj_head/2),
+    retractall(user:probe_proj_head/0),
+    assertz((user:proj_head(pair(H, _), H))),
+    assertz((user:probe_proj_head :-
+        proj_head(pair(a, x), X),
+        proj_head(pair(b, y), Y),
+        write(X), write(' '), write(Y), nl,
+        X == a, Y == b)),
+    % Search that must backtrack: cand enumerates via member/2. Lowering
+    % sel/need_one would isolate that member with cp=0 and never reach 1.
+    retractall(user:cands/1),
+    retractall(user:cand/1),
+    retractall(user:sel/2),
+    retractall(user:need_one/1),
+    retractall(user:probe_search_cp/0),
+    assertz(user:cands([2, 1])),
+    assertz((user:cand(X) :- cands(L), member(X, L))),
+    assertz((user:sel(classic, X) :- cand(X))),
+    assertz((user:need_one(X) :- sel(classic, X), X =:= 1)),
+    assertz((user:probe_search_cp :- need_one(X), write(X), nl, X =:= 1)),
+    % A lowered helper with a neck cut (satisfies/2 shape) must not wipe
+    % the caller's member/2 choice points. state.cps = [] used to make
+    % need_after_cut fail even though 1 is in the list.
+    retractall(user:marker_cut/1),
+    retractall(user:need_after_cut/1),
+    retractall(user:probe_neck_cut_cps/0),
+    assertz((user:marker_cut(X) :- X = X, !)),
+    assertz((user:need_after_cut(X) :- cands(L), member(X, L), marker_cut(X), X =:= 1)),
+    assertz((user:probe_neck_cut_cps :- need_after_cut(X), write(X), nl, X =:= 1)).
 
 read_generated_js(Dir, Text) :-
     directory_file_path(Dir, 'js', JsDir),
@@ -366,5 +407,55 @@ test(execute_user_interpreted_callee, [setup(install_lowered_preds)]) :-
     assertion(Exit =:= 0),
     assertion(node_succeeded(Out)),
     assertion(sub_string(Out, _, _, _, "ok")).
+
+test(projection_not_ground_fact_memo, [setup(install_lowered_preds)]) :-
+    compile_predicate_to_wam_text(proj_head/2,
+        [ite_use_y_level(true), inline_bagof_setof(true)], Wam),
+    wam_javascript_lowerable(user:proj_head/2, Wam, Reason),
+    assertion(Reason == deterministic),
+    Dir = 'output/js_wam_lowered_proj_head',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:proj_head/2, user:probe_proj_head/0],
+        [emit_mode(functions)], Dir),
+    read_generated_js(Dir, Code),
+    assertion(sub_string(Code, _, _, _, "function lowered_proj_head_2")),
+    assertion(\+ sub_string(Code, _, _, _,
+                            "Lowered: proj_head/2 (deterministic ground fact")),
+    run_node_args(Dir, ['probe_proj_head/0'], Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Out)),
+    assertion(sub_string(Out, _, _, _, "a b")).
+
+test(t4_does_not_steal_search_cps, [setup(install_lowered_preds)]) :-
+    Dir = 'output/js_wam_lowered_search_cp',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:cands/1, user:cand/1, user:sel/2, user:need_one/1, user:probe_search_cp/0],
+        [emit_mode(mixed)], Dir),
+    read_generated_js(Dir, Code),
+    assertion(\+ sub_string(Code, _, _, _, "function lowered_sel_2")),
+    assertion(\+ sub_string(Code, _, _, _, "function lowered_need_one_1")),
+    assertion(sub_string(Code, _, _, _,
+                         "naked member/2 (or callee) needs interpreter choice points")),
+    run_node_args(Dir, ['probe_search_cp/0'], Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Out)),
+    assertion(sub_string(Out, _, _, _, "1")).
+
+test(neck_cut_does_not_steal_caller_cps, [setup(install_lowered_preds)]) :-
+    Dir = 'output/js_wam_lowered_neck_cut',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:cands/1, user:marker_cut/1, user:need_after_cut/1,
+         user:probe_neck_cut_cps/0],
+        [emit_mode(mixed)], Dir),
+    read_generated_js(Dir, Code),
+    assertion(sub_string(Code, _, _, _, "function lowered_marker_cut_1")),
+    assertion(\+ sub_string(Code, _, _, _, "function lowered_need_after_cut_1")),
+    run_node_args(Dir, ['probe_neck_cut_cps/0'], Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Out)),
+    assertion(sub_string(Out, _, _, _, "1")).
 
 :- end_tests(js_wam_lowered_standalone).
