@@ -66,14 +66,44 @@ run_query(removal_orphans, Cat, Args, Exp) :-
     removal_orphans(Cat, Pkg, Orphans),
     sel_json(Orphans, Js),
     Exp = _{ok: Js}.
+run_query(safe_upgrade, Cat, Args, Exp) :-
+    json_to_pkg_ver(Args, Pkg, Ver),
+    safe_upgrade(Cat, Pkg, Ver, Verdict),
+    verdict_json(Verdict, Js),
+    Exp = _{ok: Js}.
+run_query(upgrade_set, Cat, Args, Exp) :-
+    json_to_pkg_ver(Args, Pkg, Ver),
+    upgrade_set_result(Cat, Pkg, Ver, R),
+    upgrade_json(R, Exp).
+run_query(freeze_audit, Cat, _, Exp) :-
+    freeze_audit(Cat, Audit),
+    maplist(audit_json, Audit, Js),
+    Exp = _{ok: Js}.
+run_query(dependents, Cat, Args, Exp) :-
+    json_to_pkg(Args, Pkg),
+    dependents(Cat, Pkg, Deps),
+    sel_json(Deps, Js),
+    Exp = _{ok: Js}.
+run_query(dependents_installed, Cat, Args, Exp) :-
+    json_to_pkg(Args, Pkg),
+    dependents_installed(Cat, Pkg, Deps),
+    sel_json(Deps, Js),
+    Exp = _{ok: Js}.
 
-json_to_catalog(D, catalog(Ps, Ds, Cs, Bs, Is, Rs)) :-
+json_to_catalog(D, Cat) :-
     maplist(json_pkg, D.packages, Ps),
     maplist(json_dep, D.depends, Ds),
     maplist(json_conf, D.conflicts, Cs),
-    maplist(json_pair, D.base, Bs),
+    maplist(json_hold, D.base, Bs),
     maplist(json_pair, D.installed, Is),
-    maplist(json_atom, D.requested, Rs).
+    maplist(json_atom, D.requested, Rs),
+    (   get_dict(layers, D, L0) -> maplist(json_layer, L0, Ls) ; Ls = [] ),
+    (   get_dict(excluded, D, E0) -> maplist(json_atom, E0, Es) ; Es = [] ),
+    (   get_dict(aliases, D, A0) -> maplist(json_alias, A0, As) ; As = [] ),
+    (   Ls == [], Es == [], As == []
+    ->  Cat = catalog(Ps, Ds, Cs, Bs, Is, Rs)
+    ;   Cat = catalog(Ps, Ds, Cs, Bs, Is, Rs, Ls, Es, As)
+    ).
 
 json_pkg([N, V], package(Name, Ver)) :-
     json_atom(N, Name), json_ver(V, Ver).
@@ -84,6 +114,19 @@ json_conf([N, V, O], conflicts(Name, Ver, Other)) :-
     json_atom(N, Name), json_ver(V, Ver), json_atom(O, Other).
 json_pair([N, V], Name-Ver) :-
     json_atom(N, Name), json_ver(V, Ver).
+json_hold([N, V], Name-Ver) :-
+    json_atom(N, Name), json_ver(V, Ver).
+json_hold([N, V, R], base(Name-Ver, Reason)) :-
+    json_atom(N, Name), json_ver(V, Ver), json_atom(R, Reason).
+json_layer(D, layer(Name, Pkgs)) :-
+    is_dict(D),
+    json_atom(D.name, Name),
+    maplist(json_hold, D.packages, Pkgs).
+json_alias([A, C], alias(Alias, Canon)) :-
+    json_atom(A, Alias), json_atom(C, Canon).
+
+json_to_pkg_ver([P, V], Pkg, Ver) :-
+    json_atom(P, Pkg), json_ver(V, Ver).
 
 json_ver([A, B, C], v(A, B, C)).
 
@@ -130,6 +173,26 @@ blocked_list_json([blocked(N, needs(C), base_has(V))|Rest],
     constraint_json(C, CJ),
     ver_json(V, VJ),
     blocked_list_json(Rest, Js).
+
+verdict_json(safe(cost(R)), _{cost: RS, verdict: "safe"}) :-
+    atom_string(R, RS).
+verdict_json(coordinated(Set), _{set: SJ, verdict: "coordinated"}) :-
+    sel_json(Set, SJ).
+verdict_json(unsafe(modified), _{reason: "modified", verdict: "unsafe"}).
+verdict_json(no_candidate, _{verdict: "no_candidate"}).
+
+upgrade_json(ok(Set), _{ok: Js}) :-
+    sel_json(Set, Js).
+upgrade_json(no_candidate, _{fail: true}).
+upgrade_json(blocked(N, needs(C), base_has(V)), _{ok: _{blocked: BJ}}) :-
+    blocked_list_json([blocked(N, needs(C), base_has(V))], [BJ]).
+
+audit_json(audit(N, over_frozen), _{kind: "over_frozen", name: NS}) :-
+    atom_string(N, NS).
+audit_json(audit(N, suggest(R)), _{kind: "suggest", name: NS, reason: RS}) :-
+    atom_string(N, NS), atom_string(R, RS).
+audit_json(audit(N, held(R)), _{kind: "held", name: NS, reason: RS}) :-
+    atom_string(N, NS), atom_string(R, RS).
 
 constraint_json(any, any).
 constraint_json(eq(V), _{op: "eq", v: J}) :- ver_json(V, J).
