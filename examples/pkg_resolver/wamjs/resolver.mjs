@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 John William Creighton (@s243a)
 //
-// resolver.mjs -- EDGE of the JS-WAM compiled uw-resolve P0.
+// resolver.mjs -- EDGE of the JS-WAM compiled uw-resolve P0.5.
 //
 // WHAT IS IN HERE, exhaustively: conversion between JSON catalogs/requests
 // and WAM terms, plus driving Runtime.run / lowered_dispatch. There is NO
@@ -68,6 +68,24 @@ function pairTerm(name, ver) {
   return V.Struct(functorId("-"), [internAtom(name), vTerm(ver)]);
 }
 
+function holdTerm(row) {
+  if (!row) return internAtom("[]");
+  if (row.length >= 3) {
+    return V.Struct(functorId("base"), [pairTerm(row[0], row[1]), internAtom(row[2])]);
+  }
+  return pairTerm(row[0], row[1]);
+}
+
+function layerTerm(row) {
+  const name = (row && row.name) || row[0];
+  const pkgs = (row && row.packages) || row[1] || [];
+  return V.Struct(functorId("layer"), [internAtom(name), jsListToTerm(pkgs, holdTerm)]);
+}
+
+function aliasTerm(row) {
+  return V.Struct(functorId("alias"), [internAtom(row[0]), internAtom(row[1])]);
+}
+
 function pkgTerm(row) {
   return V.Struct(functorId("package"), [internAtom(row[0]), vTerm(row[1])]);
 }
@@ -93,13 +111,28 @@ function requestTerm(req) {
 
 export function catalogToTerm(cat) {
   const c = cat || {};
-  return V.Struct(functorId("catalog"), [
+  const base = jsListToTerm(c.base || [], holdTerm);
+  const installed = jsListToTerm(c.installed || [], (p) => pairTerm(p[0], p[1]));
+  const requested = jsListToTerm(c.requested || [], internAtom);
+  const core = [
     jsListToTerm(c.packages || [], pkgTerm),
     jsListToTerm(c.depends || [], depTerm),
     jsListToTerm(c.conflicts || [], confTerm),
-    jsListToTerm(c.base || [], (p) => pairTerm(p[0], p[1])),
-    jsListToTerm(c.installed || [], (p) => pairTerm(p[0], p[1])),
-    jsListToTerm(c.requested || [], internAtom)
+    base,
+    installed,
+    requested
+  ];
+  const layers = c.layers || [];
+  const excluded = c.excluded || [];
+  const aliases = c.aliases || [];
+  if (layers.length === 0 && excluded.length === 0 && aliases.length === 0) {
+    return V.Struct(functorId("catalog"), core);
+  }
+  return V.Struct(functorId("catalog"), [
+    ...core,
+    jsListToTerm(layers, layerTerm),
+    jsListToTerm(excluded, internAtom),
+    jsListToTerm(aliases, aliasTerm)
   ]);
 }
 
@@ -135,12 +168,26 @@ function termToJs(state, term0) {
     if (n === "v" && args.length === 3) return args;
     if (n === "-" && args.length === 2) return [args[0], args[1]];
     if (n === "blocked" && args.length === 3) {
-      // blocked(Name, needs(C), base_has(V))
       const needs = args[1] && args[1][0] === "needs" ? args[1][1] : args[1];
       const bh = args[2] && args[2][0] === "base_has" ? args[2][1] : args[2];
       return { name: args[0], needs: needs, base_has: bh };
     }
-    if (n === "needs" || n === "base_has" || n === "eq" || n === "gte" || n === "lt") {
+    if (n === "safe" && args.length === 1) {
+      const cost = Array.isArray(args[0]) && args[0][0] === "cost" ? args[0][1] : args[0];
+      return { cost: cost, verdict: "safe" };
+    }
+    if (n === "coordinated" && args.length === 1) {
+      return { set: args[0], verdict: "coordinated" };
+    }
+    if (n === "unsafe" && args.length === 1) {
+      return { reason: args[0], verdict: "unsafe" };
+    }
+    if (n === "audit" && args.length === 2) {
+      return normalizeAuditTerm(args[0], args[1]);
+    }
+    if (n === "ok" && args.length === 1) return { __ok_set: args[0] };
+    if (n === "needs" || n === "base_has" || n === "eq" || n === "gte" || n === "lt"
+        || n === "cost" || n === "held" || n === "suggest") {
       return [n, args[0]];
     }
     if (n === "range") return { op: "range", lo: args[0], hi: args[1] };
@@ -157,6 +204,34 @@ function normalizeConstraint(c) {
   if (c && typeof c === "object" && c.op) return c;
   if (Array.isArray(c) && c[0] === "range") return { op: "range", lo: c[1], hi: c[2] };
   return c;
+}
+
+function normalizeAuditTerm(name, payload) {
+  if (payload === "over_frozen") return { kind: "over_frozen", name: name };
+  if (Array.isArray(payload) && payload[0] === "suggest") {
+    return { kind: "suggest", name: name, reason: payload[1] };
+  }
+  if (Array.isArray(payload) && payload[0] === "held") {
+    return { kind: "held", name: name, reason: payload[1] };
+  }
+  if (payload && typeof payload === "object" && payload.kind) return payload;
+  return { kind: "held", name: name, reason: payload };
+}
+
+function normalizeVerdict(v) {
+  if (v === "no_candidate") return { verdict: "no_candidate" };
+  if (v && typeof v === "object" && v.verdict) return v;
+  return v;
+}
+
+function normalizeUpgrade(r) {
+  if (r === "no_candidate") return { fail: true };
+  if (r && typeof r === "object" && r.__ok_set) return { ok: r.__ok_set };
+  if (Array.isArray(r)) return { ok: r };
+  if (r && typeof r === "object" && r.name && r.base_has !== undefined) {
+    return { ok: { blocked: normalizeBlocked(r) } };
+  }
+  return r;
 }
 
 function normalizeBlocked(b) {
@@ -245,6 +320,45 @@ export function removalOrphans(catalog, pkg) {
   return { ok: readSaved(state, saved, 3) };
 }
 
+export function safeUpgrade(catalog, pkg, ver) {
+  const cat = catalogToTerm(catalog);
+  const { ok, state, saved } = runPred("safe_upgrade/4", [cat, internAtom(pkg), vTerm(ver), undefined]);
+  if (!ok) return { fail: true };
+  return { ok: normalizeVerdict(readSaved(state, saved, 4)) };
+}
+
+export function upgradeSet(catalog, pkg, ver) {
+  const cat = catalogToTerm(catalog);
+  const { ok, state, saved } = runPred("upgrade_set_result/4", [cat, internAtom(pkg), vTerm(ver), undefined]);
+  if (!ok) return { fail: true };
+  return normalizeUpgrade(readSaved(state, saved, 4));
+}
+
+export function freezeAudit(catalog) {
+  const cat = catalogToTerm(catalog);
+  const { ok, state, saved } = runPred("freeze_audit/2", [cat, undefined]);
+  if (!ok) return { fail: true };
+  return { ok: readSaved(state, saved, 2) || [] };
+}
+
+export function dependents(catalog, pkg) {
+  const cat = catalogToTerm(catalog);
+  const { ok, state, saved } = runPred("dependents/3", [cat, internAtom(pkg), undefined]);
+  if (!ok) return { fail: true };
+  return { ok: readSaved(state, saved, 3) };
+}
+
+export function dependentsInstalled(catalog, pkg) {
+  const cat = catalogToTerm(catalog);
+  const { ok, state, saved } = runPred("dependents_installed/3", [cat, internAtom(pkg), undefined]);
+  if (!ok) return { fail: true };
+  return { ok: readSaved(state, saved, 3) };
+}
+
+function pkgVerArgs(args) {
+  return { pkg: args[0], ver: args[1] };
+}
+
 export function runCase(row) {
   const cat = row.catalog;
   const q = row.query;
@@ -254,5 +368,16 @@ export function runCase(row) {
   if (q === "explain_blocked") return explainBlocked(cat, args);
   if (q === "layer_closure") return layerClosure(cat, args);
   if (q === "removal_orphans") return removalOrphans(cat, args);
+  if (q === "safe_upgrade") {
+    const a = pkgVerArgs(args);
+    return safeUpgrade(cat, a.pkg, a.ver);
+  }
+  if (q === "upgrade_set") {
+    const a = pkgVerArgs(args);
+    return upgradeSet(cat, a.pkg, a.ver);
+  }
+  if (q === "freeze_audit") return freezeAudit(cat);
+  if (q === "dependents") return dependents(cat, args);
+  if (q === "dependents_installed") return dependentsInstalled(cat, args);
   throw new Error("unknown query " + q);
 }

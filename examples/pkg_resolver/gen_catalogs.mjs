@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 John William Creighton (@s243a)
 //
-// gen_catalogs.mjs -- seeded random catalogs for the uw-resolve P0
+// gen_catalogs.mjs -- seeded random catalogs for the uw-resolve P0.5
 // differential. mulberry32, same construction as examples/cli_args/gen_cases.mjs.
 //
 // Each line is one JSON object:
@@ -10,8 +10,8 @@
 //
 //   node examples/pkg_resolver/gen_catalogs.mjs > cases.jsonl
 
-const SEED = 0x91a2b3c4;
-const CASES = 2200;
+const SEED = 0xa5b6c7d8;
+const CASES = 2400;
 
 function mulberry32(a) {
   return function () {
@@ -101,18 +101,32 @@ function genCatalog(rng) {
     conflicts.push([names[a], va, names[b]]);
   }
 
+  const REASONS = ["layer_shadow", "abi_anchor", "modified", "footprint", "blanket"];
   const base = [];
   const installed = [];
   const requested = [];
+  const layerPkgs = [];
+  const excluded = [];
+  const aliases = [];
   for (let i = 0; i < nPkgs; i += 1) {
     const name = names[i];
     const ver = versions[name][0];
-    if (rng() < 0.2) base.push([name, ver]);
+    if (rng() < 0.2) {
+      if (rng() < 0.55) base.push([name, ver, pickOne(rng, REASONS)]);
+      else base.push([name, ver]);
+    } else if (rng() < 0.08) {
+      layerPkgs.push([name, ver]);
+    }
     if (rng() < 0.35) {
       installed.push([name, ver]);
       if (rng() < 0.5) requested.push(name);
     }
+    if (rng() < 0.04) excluded.push(name);
+    if (rng() < 0.05) aliases.push(["alias_" + name, name]);
   }
+
+  const layers = [];
+  if (layerPkgs.length > 0) layers.push({ name: "devx", packages: layerPkgs });
 
   return {
     packages,
@@ -120,7 +134,10 @@ function genCatalog(rng) {
     conflicts,
     base,
     installed,
-    requested
+    requested,
+    layers,
+    excluded,
+    aliases
   };
 }
 
@@ -157,15 +174,51 @@ function removalPkg(rng, cat) {
   return "ghost";
 }
 
-const QUERIES = ["resolve", "resolve_layered", "explain_blocked", "layer_closure", "removal_orphans"];
+function safeUpgradeArgs(rng, cat) {
+  if (cat.base.length > 0) {
+    const b = pickOne(rng, cat.base);
+    const name = b[0];
+    const vers = cat.packages.filter((p) => p[0] === name).map((p) => p[1]);
+    const ver = vers.length > 0 ? pickOne(rng, vers) : b[1];
+    return [name, ver];
+  }
+  if (cat.packages.length > 0) {
+    const p = pickOne(rng, cat.packages);
+    return [p[0], p[1]];
+  }
+  return ["ghost", [1, 0, 0]];
+}
+
+function dependentsPkg(rng, cat) {
+  if (cat.packages.length > 0) return pickOne(rng, cat.packages)[0];
+  return "ghost";
+}
+
+function aliasOrName(rng, cat, name) {
+  const hits = (cat.aliases || []).filter((a) => a[1] === name);
+  if (hits.length > 0 && rng() < 0.5) return hits[0][0];
+  return name;
+}
+
+const QUERIES = [
+  "resolve", "resolve_layered", "explain_blocked", "layer_closure", "removal_orphans",
+  "safe_upgrade", "upgrade_set", "freeze_audit", "dependents", "dependents_installed"
+];
 
 const rng = mulberry32(SEED);
 for (let i = 0; i < CASES; i += 1) {
   const catalog = genCatalog(rng);
   const query = QUERIES[i % QUERIES.length];
   let args;
-  if (query === "resolve" || query === "resolve_layered") args = requestsFor(rng, catalog);
-  else if (query === "removal_orphans") args = removalPkg(rng, catalog);
+  if (query === "resolve" || query === "resolve_layered") {
+    args = requestsFor(rng, catalog).map((r) => {
+      if (typeof r === "string") return aliasOrName(rng, catalog, r);
+      return { ...r, req: aliasOrName(rng, catalog, r.req) };
+    });
+  } else if (query === "removal_orphans") args = removalPkg(rng, catalog);
+  else if (query === "safe_upgrade" || query === "upgrade_set") args = safeUpgradeArgs(rng, catalog);
+  else if (query === "freeze_audit") args = [];
+  else if (query === "dependents" || query === "dependents_installed") args = dependentsPkg(rng, catalog);
   else args = requestFor(rng, catalog);
   process.stdout.write(JSON.stringify({ id: "g" + i, catalog, query, args }) + "\n");
 }
