@@ -1,0 +1,29 @@
+{
+  "base": [ ["libc",  [1, 0, 0 ] ] ],
+  "conflicts": [],
+  "depends": [
+    ["editor",  [1, 0, 0 ], "syntax",  {"op":"gte", "v": [1, 0, 0 ]} ],
+    ["editor",  [1, 0, 0 ], "libc",  {"op":"gte", "v": [1, 0, 0 ]} ],
+    ["editor",  [1, 1, 0 ], "syntax",  {"op":"gte", "v": [2, 0, 0 ]} ],
+    ["editor",  [1, 1, 0 ], "libc",  {"op":"gte", "v": [1, 0, 0 ]} ],
+    ["syntax",  [1, 0, 0 ], "libc",  {"op":"gte", "v": [1, 0, 0 ]} ],
+    ["syntax",  [2, 0, 0 ], "libc",  {"op":"gte", "v": [2, 0, 0 ]} ],
+    ["theme",  [1, 0, 0 ], "editor",  {"op":"gte", "v": [1, 0, 0 ]} ]
+  ],
+  "installed": [
+    ["editor",  [1, 1, 0 ] ],
+    ["syntax",  [2, 0, 0 ] ],
+    ["libc",  [2, 0, 0 ] ],
+    ["theme",  [1, 0, 0 ] ]
+  ],
+  "packages": [
+    ["editor",  [1, 0, 0 ] ],
+    ["editor",  [1, 1, 0 ] ],
+    ["syntax",  [1, 0, 0 ] ],
+    ["syntax",  [2, 0, 0 ] ],
+    ["libc",  [1, 0, 0 ] ],
+    ["libc",  [2, 0, 0 ] ],
+    ["theme",  [1, 0, 0 ] ]
+  ],
+  "requested": ["theme" ]
+}
