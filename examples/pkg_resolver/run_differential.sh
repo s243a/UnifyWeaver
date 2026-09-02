@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 John William Creighton (@s243a)
 #
-# run_differential.sh -- ≥2000 seeded catalogs through SWI and the wamjs
-# build; exit non-zero on any divergence of the four queries.
+# run_differential.sh -- ≥2200 seeded catalogs through SWI and the wamjs
+# build; exit non-zero on any divergence of any query (P0 four + P0.5).
 #
 #   bash examples/pkg_resolver/run_differential.sh
 

@@ -52,12 +52,38 @@ run_query(removal_orphans, Cat, Args, Exp) :-
     removal_orphans(Cat, Args, Orphans),
     sel_json(Orphans, Js),
     Exp = _{ok: Js}.
+run_query(safe_upgrade, Cat, [Pkg, Ver], Exp) :-
+    safe_upgrade(Cat, Pkg, Ver, Verdict),
+    verdict_json(Verdict, Js),
+    Exp = _{ok: Js}.
+run_query(upgrade_set, Cat, [Pkg, Ver], Exp) :-
+    upgrade_set_result(Cat, Pkg, Ver, R),
+    upgrade_json(R, Exp).
+run_query(freeze_audit, Cat, _, Exp) :-
+    freeze_audit(Cat, Audit),
+    maplist(audit_json, Audit, Js),
+    Exp = _{ok: Js}.
+run_query(dependents, Cat, Args, Exp) :-
+    dependents(Cat, Args, Deps),
+    sel_json(Deps, Js),
+    Exp = _{ok: Js}.
+run_query(dependents_installed, Cat, Args, Exp) :-
+    dependents_installed(Cat, Args, Deps),
+    sel_json(Deps, Js),
+    Exp = _{ok: Js}.
 
 args_json(resolve, Reqs, Js) :- reqs_json(Reqs, Js).
 args_json(resolve_layered, Reqs, Js) :- reqs_json(Reqs, Js).
 args_json(explain_blocked, Req, Js) :- req_json(Req, Js).
 args_json(layer_closure, Req, Js) :- req_json(Req, Js).
 args_json(removal_orphans, Pkg, Js) :- atom_string(Pkg, Js).
+args_json(safe_upgrade, [Pkg, Ver], [NS, VJ]) :-
+    atom_string(Pkg, NS), ver_json(Ver, VJ).
+args_json(upgrade_set, [Pkg, Ver], [NS, VJ]) :-
+    atom_string(Pkg, NS), ver_json(Ver, VJ).
+args_json(freeze_audit, _, []).
+args_json(dependents, Pkg, Js) :- atom_string(Pkg, Js).
+args_json(dependents_installed, Pkg, Js) :- atom_string(Pkg, Js).
 
 reqs_json([], []).
 reqs_json([R|Rs], [J|Js]) :-
@@ -77,9 +103,22 @@ catalog_json(catalog(Ps, Ds, Cs, Bs, Is, Rs),
     maplist(pkg_json, Ps, PJ),
     maplist(dep_json, Ds, DJ),
     maplist(conf_json, Cs, CJ),
-    maplist(pair_json, Bs, BJ),
+    maplist(hold_json, Bs, BJ),
     maplist(pair_json, Is, IJ),
     maplist(atom_string, Rs, RJ).
+catalog_json(catalog(Ps, Ds, Cs, Bs, Is, Rs, Ls, Es, As),
+             _{packages: PJ, depends: DJ, conflicts: CJ,
+               base: BJ, installed: IJ, requested: RJ,
+               layers: LJ, excluded: EJ, aliases: AJ}) :-
+    maplist(pkg_json, Ps, PJ),
+    maplist(dep_json, Ds, DJ),
+    maplist(conf_json, Cs, CJ),
+    maplist(hold_json, Bs, BJ),
+    maplist(pair_json, Is, IJ),
+    maplist(atom_string, Rs, RJ),
+    maplist(layer_json, Ls, LJ),
+    maplist(atom_string, Es, EJ),
+    maplist(alias_json, As, AJ).
 
 pkg_json(package(N, V), [NS, VJ]) :-
     atom_string(N, NS), ver_json(V, VJ).
@@ -90,6 +129,15 @@ conf_json(conflicts(N, V, O), [NS, VJ, OS]) :-
     atom_string(N, NS), ver_json(V, VJ), atom_string(O, OS).
 pair_json(N-V, [NS, VJ]) :-
     atom_string(N, NS), ver_json(V, VJ).
+hold_json(N-V, [NS, VJ]) :-
+    atom_string(N, NS), ver_json(V, VJ).
+hold_json(base(N-V, R), [NS, VJ, RS]) :-
+    atom_string(N, NS), ver_json(V, VJ), atom_string(R, RS).
+layer_json(layer(N, Pkgs), _{name: NS, packages: PJ}) :-
+    atom_string(N, NS),
+    maplist(hold_json, Pkgs, PJ).
+alias_json(alias(A, C), [AS, CS]) :-
+    atom_string(A, AS), atom_string(C, CS).
 
 ver_json(v(A, B, C), [A, B, C]).
 
@@ -112,3 +160,23 @@ blocked_list_json([blocked(N, needs(C), base_has(V))|Rest],
     constraint_json(C, CJ),
     ver_json(V, VJ),
     blocked_list_json(Rest, Js).
+
+verdict_json(safe(cost(R)), _{cost: RS, verdict: "safe"}) :-
+    atom_string(R, RS).
+verdict_json(coordinated(Set), _{set: SJ, verdict: "coordinated"}) :-
+    sel_json(Set, SJ).
+verdict_json(unsafe(modified), _{reason: "modified", verdict: "unsafe"}).
+verdict_json(no_candidate, _{verdict: "no_candidate"}).
+
+upgrade_json(ok(Set), _{ok: Js}) :-
+    sel_json(Set, Js).
+upgrade_json(no_candidate, _{fail: true}).
+upgrade_json(blocked(N, needs(C), base_has(V)), _{ok: _{blocked: BJ}}) :-
+    blocked_list_json([blocked(N, needs(C), base_has(V))], [BJ]).
+
+audit_json(audit(N, over_frozen), _{kind: "over_frozen", name: NS}) :-
+    atom_string(N, NS).
+audit_json(audit(N, suggest(R)), _{kind: "suggest", name: NS, reason: RS}) :-
+    atom_string(N, NS), atom_string(R, RS).
+audit_json(audit(N, held(R)), _{kind: "held", name: NS, reason: RS}) :-
+    atom_string(N, NS), atom_string(R, RS).
