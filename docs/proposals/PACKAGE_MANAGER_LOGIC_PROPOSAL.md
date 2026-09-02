@@ -146,6 +146,40 @@ Related bounded task: mine the dormant `Pkg` project (`sc0ttj/Pkg` upstream)
 as a REQUIREMENTS source — its command vocabulary, PET/SFS workflows, and
 dependency heuristics encode years of real Puppy user needs, in bash.
 
+### 2f. Two dependency graphs: declared vs linked (check_deps/ListDD lineage)
+
+Further Puppy research (check_deps.sh, ListDD, ldd, resolvedeps.sh) shows the
+ecosystem always ran on TWO graphs, and P0 models only the first:
+
+1. **Declared** — package-level metadata (`depends/4`): human-curated, often
+   incomplete or wrong; what apt reasons over.
+2. **Linked** — what binaries actually require: ELF `DT_NEEDED` sonames,
+   mechanically extractable (`readelf -d`), ground truth for dynamic linkage;
+   what Puppy's checkers worked from when metadata failed.
+
+Model additions (P0.5/P2 direction):
+- `needs_soname(Pkg-Ver, Soname)` / `provides_soname(Pkg-Ver, Soname)` —
+  derivable at scan/build time; natural rows for the GP-LMDB catalog store.
+- `soname_provider(Soname, Candidates)` — the "libXfixes.so.3 → which
+  package?" lookup Puppy users did by forum search, as a join.
+- `verify_closure(Layer, Report)` — cross-check a declared-deps
+  `layer_closure` at soname level: declared-but-unlinked (trimmable bloat)
+  and linked-but-undeclared (the metadata bugs check_deps existed to catch).
+  The graphs audit each other; neither alone suffices.
+- **Named layers, not one base**: resolvedeps.sh's filter chain
+  (`no_dupes_no_builtins_no_devx_no_blacklisted`) shows the exclusion set is
+  layered — base SFS, devx SFS, blacklist. Generalize `base/1` to
+  `in_layer(PkgOrSoname, LayerName)` with closures computed relative to the
+  loaded-layer set.
+- **Honest limits, modeled**: ELF analysis misses dlopen, plugins
+  (GStreamer/GTK/Python), data files, exec'd helpers, and symbol-version ABI
+  breaks. Soname facts are labeled *detected dynamic linkage* — never claimed
+  as the complete runtime closure.
+
+(check_deps.sh source lives in the Woof-CE rootfs skeleton
+`/usr/local/petget/check_deps.sh`, not the Pkg repo — a separate targeted
+recon if we want its exact aggregation/exclusion rules.)
+
 ## 3. Why Prolog is the right spec language here (concretely)
 
 | resolver need | Prolog form |
