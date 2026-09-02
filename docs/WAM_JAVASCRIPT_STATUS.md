@@ -347,7 +347,92 @@ large term on first construction. Next lever: skip `snapshot_lite` when
 the ITE condition is read-only, and/or intern `default_registry/1` at
 emit time so the first `parse_args/2` is not a full construction.
 
-## Remaining / partial
+## Cut and choice-point barriers
+
+This section is normative for the JS WAM backend. It is pinned down by
+`tests/test_wam_javascript_cut_semantics.pl` (35 probes, each run against
+SWI-Prolog as the oracle in four emit modes).
+
+### What a barrier is
+
+`state.cps` is one flat array of choice points, shared by the
+interpreter, the lowered JS functions and every nested run. A **barrier**
+is an index into that array below which a given operation may not
+truncate. Two barriers exist and they mean different things:
+
+| field | meaning | set by | consumed by |
+|---|---|---|---|
+| `state.cut_barrier` | the WAM **B0** of the *current predicate activation*: `cps.length` recorded when this predicate was entered. `!` prunes back to it. | `push_cut_barrier` (Call), `enter_execute` (Execute) | `neck_cut` |
+| `state.cp_barrier` | a **hard isolation floor**: a nested `Runtime.run` driven from a lowered frame may neither backtrack below it nor cut below it. | `Runtime.run_isolated` | `Runtime.backtrack`, `neck_cut`, `Cut Yn` |
+
+`state.cut_stack` is the saved-B0 stack: Call pushes the caller's
+`cut_barrier`, Proceed pops it. `snapshot_machine` captures **both**
+`cut_barrier` and `cut_stack`, and `restore_machine` restores them, so
+backtracking into any choice point restores the barrier regime that was
+live when the choice point was created. **Any hand-rolled choice-point
+object must therefore be built by `Runtime.snapshot_machine`** — a
+literal that omits those two fields makes `restore_machine` delete the
+barrier and empty the stack.
+
+The effective floor for a cut is
+
+```js
+cut_floor(state) = max(state.cut_barrier ?? 0, state.cp_barrier ?? 0)
+```
+
+The `max` matters: an isolated sub-run inherits a *lower* `cut_barrier`
+from an outer frame, and without the clamp a `!` inside it would destroy
+choice points its caller still owns.
+
+### Barrier discipline per context
+
+| context | barrier |
+|---|---|
+| Query top level | No frame is pushed; `cut_barrier` is undefined, so `cut_floor` is 0. A top-level `!` prunes everything, which is correct — nothing outside the query owns a choice point. |
+| Interpreted `Call` | `push_call_frame` = Y-save + `push_cut_barrier`. `cut_barrier := cps.length` **before** the callee's `try_me_else`, so `!` leaves the caller's alternatives and cuts the callee's own clause choice point. `state.cp` is set to the return address first. |
+| Interpreted `Execute` (LCO) | `enter_execute`: `cut_barrier := cps.length` **without** pushing. WAM does `B0 <- B` on `execute` as well as on `call`; the callee reuses the caller's `cut_stack` slot (its Proceed pops the entry the caller's Call pushed) but still gets its own B0. |
+| Lowered `Call` (JS return = Proceed) | `Runtime.push_cut_barrier` / `pop_cut_barrier` around the direct JS call (`push_call_frame` / `pop_call_frame` when the caller's Y is live across it). Choice points the callee leaves above the entry mark are dropped — see *first-solution contract* below. |
+| Lowered `Execute` | `Runtime.enter_execute` before the tail call, then `return`. |
+| `Runtime.execute_user_isolated` | `cp := 0` so the interpreted callee's Proceed halts the isolated run rather than jumping the lowered caller's continuation. It pushes a call frame (so the callee's `pop_call_frame` is balanced) and repairs with `call_frame_mark` / `call_frame_release` on the failure path. |
+| `Runtime.run_isolated` / `cp_barrier` | Raises the hard floor to `cps.length`, runs, then **drops every choice point left above the floor**. Those choice points are not resumable — their snapshot carries `cp = 0` and a pc inside the callee — so keeping them produced incoherent resumes. Dropping them makes an isolated call honestly first-solution. |
+| `\+ G` | Compiled (`inline_not_as_failure`, default) to the soft-cut form `(G -> fail ; true)` with `get_level`/`cut Yn`, so it is an opaque barrier scoped to the negation alone. Metacalled `\+ /1` runs `G` in a **fresh sub-state** with its own empty `cps`, which is opaque by construction. |
+| `findall` / `bagof` / `setof` / `aggregate_all` inner goal | `BeginAggregate` pushes the aggregate choice point and then `push_cut_barrier`, so `cut_barrier` sits **above** the aggregate CP. A `!` in the inner goal prunes only the inner goal's own alternatives and can never destroy the aggregate CP (which would strand `EndAggregate`). The barrier and `cut_stack` are restored by `restore_cp_frame` when `backtrack` reaches the aggregate — its snapshot was taken before the push. This is the ISO "inner goal is call/1-like" rule. |
+| `once/1` | Compiled to `(G -> true ; fail)`. Entering the then-branch commits: the condition's choice points are cut. `once` therefore does **not** cut the enclosing predicate's clause alternatives. |
+| `( C -> T ; E )` | `get_level Yn` before `try_me_else`, `cut Yn` at the commit. Entering the then-branch cuts **C's** choice points only; T's and E's belong to the enclosing clause and are **not** cut. A `!` written *in* C is opaque to the clause — the compiler retargets it to a second Y holding the condition's own entry level. A `!` in T or E cuts the **enclosing clause** (ISO). |
+| `call/1` | ISO: a cut inside `call/1` is **local**. The metacall builds a fresh sub-state whose `cps` is empty, so `!` there cannot reach the caller. Control constructs (`,`, `;`, `->`, `\+`, `!`, `once`, `ignore`, `call/N`, `^`) are interpreted structurally inside the metacall. |
+| `-> ` inside `\+` | Two nested opaque scopes; each gets its own Y level. Verified by probe P23. |
+| `catch/3` | **Not implemented** in this backend (no `catch`/`throw`), so it has no barrier. Listed here so the omission is explicit rather than assumed. |
+| `Cut Yn` (Y-level soft cut) | Truncates to the level `get_level` recorded, clamped at `cp_barrier`. |
+
+### The first-solution contract (and what the emitter refuses)
+
+A lowered JS function yields **at most one solution**: its body is
+straight-line, so when a goal fails there is no machinery to retry an
+earlier goal, and any choice point a callee leaves is not resumable from
+a lowered frame. The emitter enforces the contract by *declining to
+lower* rather than by emitting first-solution code where more is needed:
+
+- a predicate whose body reaches a **CP-creating builtin** outside a
+  commit wrapper (`member/2`, `between/3` — exactly the builtins that
+  push onto `state.cps`; every other library predicate in this runtime is
+  semi-deterministic and cannot leak one);
+- a predicate whose body **calls a user predicate with more than one
+  distinct clause** (counted up to variant equality) outside a commit
+  wrapper — the caller could never reach that callee's second solution;
+- a predicate that can itself **yield more than one solution**: more than
+  one distinct clause, heads not first-argument mutually exclusive, and
+  not every clause but the last committed by a top-level `!`. T5/T6
+  (`clause_chain`) are exempt — their unbound-A1 path pushes a real
+  interpreter choice point and hands the alternatives back;
+- a **plain disjunction** `( A ; B )`. It compiles to a commit-less
+  `try_me_else` block; folding that into `ite(A, [], B)` silently deletes
+  B as a retry alternative and makes A first-solution.
+
+Commit wrappers that *do not* taint the caller: `findall`, `bagof`,
+`setof`, `aggregate_all`, `once`, `forall`, `\+`, and the **condition**
+of an if-then-else.
+
+
 
 | Builtin | Status |
 |---|---|
@@ -364,7 +449,7 @@ emit time so the first `parse_args/2` is not a full construction.
 | `library(assoc)` | **Implemented** as a Prolog `assoc/1` list of Key-Value pairs (not SWI's AVL tree). get/put/list/keys match SWI for unique-key maps. |
 | First-arg indexing | **Implemented.** `switch_on_constant` / `_fallthrough` / `_a2`, `switch_on_structure` / `_a2`, and `switch_on_term` / `_a2` jump to the matching clause group. Ground first-arg with a unique clause leaves no choice point (`deterministic/0`). Unbound first arg falls through to the try/retry/trust chain (no lost solutions). Exclusive miss fails; fallthrough variants keep the chain for variable-headed clauses. Dedicated `try`/`retry`/`trust` dispatch chains are emitted for multi-clause groups. |
 | Second-arg / deep indexing | A2 switches are implemented; deep (argument >2) indexing is not. |
-| Lowered / functions emit mode | **Implemented.** `javascript_wam_resolve_emit_mode/2` accepts `interpreter` (default), `functions` (lower every eligible predicate), `mixed` (lower every eligible predicate, interpret the rest), and `mixed([P/A, ...])` (lower only the named ones). Eligible shapes: single-clause deterministic bodies; T4 all-clauses-inline (including nested `\+` via a depth-aware ITE fold, and nil/cons list recursion without a bound-A1 snapshot); T5 first-arg constant dispatch; T6 hash dispatch (≥8 atom keys); structured ITE / negation / once. Ground facts intern via `copy_term` into `program.ground_memo`. Execute of a user predicate preserves CP (`execute_user_isolated` or JS `return`). Execute/Call of a JS WAM builtin is `op_builtin`. Unsupported ops fall back to the interpreter rather than emitting wrong code. Interpreter-mode bytecode and wrappers are unchanged. |
+| Lowered / functions emit mode | **Implemented.** `javascript_wam_resolve_emit_mode/2` accepts `interpreter` (default), `functions` (lower every eligible predicate), `mixed` (lower every eligible predicate, interpret the rest), and `mixed([P/A, ...])` (lower only the named ones). Eligible shapes: single-clause deterministic bodies; T4 all-clauses-inline (including nested `\+` via a depth-aware ITE fold, and nil/cons list recursion without a bound-A1 snapshot); T5 first-arg constant dispatch; T6 hash dispatch (≥8 atom keys); structured ITE / negation / once. Ground facts intern via `copy_term` into `program.ground_memo`. Execute of a user predicate preserves CP (`execute_user_isolated` or JS `return`). Execute/Call of a JS WAM builtin is `op_builtin`. Unsupported ops fall back to the interpreter rather than emitting wrong code. Interpreter-mode bytecode and wrappers are unchanged. Shapes that would need a resumable choice point are **refused** (CP-creating builtin, multi-clause user callee, self can-yield-many, plain disjunction) — see [Cut and choice-point barriers](#cut-and-choice-point-barriers). |
 | CLI / runtime term parser | **Implemented.** Pratt reader: int/float/atom (incl. quoted)/var/list/`[H\|T]`/compound. CLI argv + `read_term_from_atom` / `atom_to_term` / `term_to_atom`. **`op/3`** updates the live infix/prefix/postfix tables (defaults cloned from ISO). Compile-time ops via `javascript_wam_ops/1`. Capability `native(parse_term)` via `INTEGRATION_PATCH.md` §7. |
 | Interpreter profiling | **Implemented.** Off by default (`Runtime._prof === null`). `UW_PROFILE=1` / `json` or `Runtime.profile(...)` writes a per-predicate table or JSON to **stderr**. Lowered tier: call counts only. See [Profiling (GP-PROF)](#profiling-gp-prof). |
 | `op/3` | **Implemented.** Infix `xfx`/`xfy`/`yfx`, prefix `fx`/`fy`, postfix `xf`/`yf`. Priority 0 removes. Name = atom or list of atoms. `current_op/3` is not implemented; ops are process-global. |
@@ -377,6 +462,10 @@ emit time so the first `parse_args/2` is not a full construction.
 mkdir -p output/advanced
 # Dedicated probe + local 48-query suite (does not edit the shared harness):
 swipl -q -g run_tests -t halt tests/test_wam_javascript_builtins.pl
+
+# Cut / choice-point barrier conformance: 35 probes x 4 emit modes,
+# every probe's stdout compared byte-for-byte with SWI-Prolog.
+swipl -q -g run_tests -t halt tests/test_wam_javascript_cut_semantics.pl
 
 # File-backed P/2 fact sources (CSV/TSV/JSONL) + indexed/lmdb stores:
 swipl -q -g run_tests -t halt tests/test_wam_javascript_fact_sources.pl

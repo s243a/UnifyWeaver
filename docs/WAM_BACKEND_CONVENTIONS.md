@@ -352,3 +352,63 @@ expression (the conformance fixtures do both):
 The first backend that hits a *new* class of divergence should add a row
 to the table in `WAM_CROSS_TARGET_CONFORMANCE.md` and, if it is a general
 convention rather than a one-off, a section here.
+
+### §9 — Cut is a barrier, never a stack wipe
+
+*(Adopted 2026-09 from the JS-backend cut-semantics audit: twelve divergences,
+every one invisible to the 48-query conformance set.)*
+
+A cut prunes choice points back to a **barrier**, never to zero. Every backend
+must maintain an explicit barrier and every runtime that can nest one execution
+inside another must maintain two:
+
+1. **`cut_barrier` (WAM `B0`)** — the choice-point-stack height recorded when
+   the current predicate activation was entered. `!` truncates back to it and
+   no further.
+2. **`cp_barrier` (isolation floor)** — the height at which a nested run driven
+   from host code begins. Neither backtracking nor cutting may cross it.
+
+The effective floor for any cut is `max(cut_barrier, cp_barrier)`. Implementing
+`!` as "clear the choice-point stack" is a defect even when the test suite
+passes: it only shows up once a nondeterministic caller sits below a cutting
+callee.
+
+**Both `call` and `execute` set `B0 <- B`.** Last-call optimization reuses the
+caller's frame slot, so `execute` must *replace* the barrier rather than push a
+new one — but it must still replace it. A backend that rebases on `call` only
+will let a `!` in a tail-called predicate destroy its caller's clause
+alternatives.
+
+**Every choice point must snapshot and restore the barrier state**
+(`cut_barrier` and the saved-`B0` stack) alongside the trail mark and
+registers. A hand-written choice-point record that omits them silently deletes
+the barrier regime on backtrack. Backends should funnel all choice-point
+creation through a single snapshot routine rather than open-coding the record.
+
+**Barrier-raising contexts.** The condition of `( C -> T ; E )`, the argument
+of `\+`, the goal of `call/1`, and the inner goal of
+`findall`/`bagof`/`setof`/`aggregate_all` are each opaque cut scopes: a `!`
+inside one may prune only that scope's own choice points. In particular,
+entering the *then* branch of an if-then-else must cut the condition's choice
+points, and an inlined aggregate must raise the barrier above its own aggregate
+choice point so an inner `!` cannot strand the collection. The *then* and
+*else* branches are **not** opaque — a `!` there cuts the enclosing clause
+(ISO).
+
+**Lowered tiers are first-solution.** A lowered host function that returns
+through the host stack cannot resume a callee's choice point. A backend with a
+lowered tier must therefore *decline to lower* any predicate that (a) reaches a
+choice-point-creating builtin outside a commit wrapper, (b) calls a user
+predicate that can succeed more than once outside a commit wrapper, (c) can
+itself succeed more than once, or (d) contains a commit-less disjunction. The
+set in (a) is the set of builtins that actually push on that backend's
+choice-point stack — it is backend-specific and must be derived from the
+runtime, not copied. Where a lowered call cannot avoid leaving a choice point
+behind, the leftover must be **dropped**, not left to be resumed incoherently:
+honestly first-solution beats silently wrong.
+
+**Conformance.** A backend claiming §9 must ship a cut-semantics probe corpus
+run against a reference Prolog, covering each context above in *both* the
+interpreted and lowered tiers and at the boundary between them.
+Forty-eight-query conformance suites do not exercise this: the JS backend
+passed all of them while `!` was wiping the entire choice-point stack.

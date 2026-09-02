@@ -800,7 +800,7 @@ const shared_instructions = [
   I.UnifyVariable(202),
   I.UnifyVariable(206),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_32"),
+  I.TryMeElse("L_ite_else_33"),
   I.PutValue(203, 1),
   I.PutValue(204, 2),
   I.PutValue(205, 3),
@@ -808,11 +808,11 @@ const shared_instructions = [
   I.Call("conflicts_in", 4),
   I.Cut(207),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_32"),
+  I.Jump("L_ite_cont_33"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_33"),
+  I.TryMeElse("L_ite_else_34"),
   I.PutValue(203, 1),
   I.PutValue(201, 2),
   I.PutValue(202, 3),
@@ -820,7 +820,7 @@ const shared_instructions = [
   I.Call("conflicts_in", 4),
   I.Cut(208),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_33"),
+  I.Jump("L_ite_cont_34"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.PutValue(203, 1),
@@ -878,7 +878,7 @@ const shared_instructions = [
   I.GetVariable(205, 6),
   I.GetVariable(206, 7),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_38"),
+  I.TryMeElse("L_ite_else_39"),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
   I.PutVariable(201, 3),
@@ -893,7 +893,7 @@ const shared_instructions = [
   I.PutValue(206, 1),
   I.PutConstant(V.Atom(18), 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_38"),
+  I.Jump("L_ite_cont_39"),
   I.TrustMe(),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
@@ -913,20 +913,20 @@ const shared_instructions = [
   I.PutVariable(206, 2),
   I.Call("installed_list", 2),
   I.GetLevel(213),
-  I.TryMeElse("L_ite_else_41"),
+  I.TryMeElse("L_ite_else_42"),
   I.PutValue(210, 1),
   I.PutValue(207, 2),
   I.PutVariable(201, 3),
   I.Call("installed_ver", 3),
   I.Cut(213),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_41"),
+  I.Jump("L_ite_cont_42"),
   I.TrustMe(),
   I.PutVariable(201, 1),
   I.PutConstant(V.Atom(19), 2),
   I.BuiltinCall("=/2", 2),
   I.GetLevel(214),
-  I.TryMeElse("L_ite_else_42"),
+  I.TryMeElse("L_ite_else_43"),
   I.PutValue(201, 1),
   I.PutConstant(V.Atom(19), 2),
   I.BuiltinCall("==/2", 2),
@@ -934,7 +934,7 @@ const shared_instructions = [
   I.PutValue(212, 1),
   I.PutConstant(V.Atom(2), 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_42"),
+  I.Jump("L_ite_cont_43"),
   I.TrustMe(),
   I.PutValue(210, 1),
   I.PutValue(206, 2),
@@ -970,23 +970,23 @@ const shared_instructions = [
   I.PutValue(208, 2),
   I.BuiltinCall("member/2", 2),
   I.GetLevel(215),
-  I.TryMeElse("L_ite_else_43"),
+  I.TryMeElse("L_ite_else_44"),
   I.PutValue(204, 1),
   I.PutValue(209, 2),
   I.BuiltinCall("member/2", 2),
   I.Cut(215),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_43"),
+  I.Jump("L_ite_cont_44"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.GetLevel(216),
-  I.TryMeElse("L_ite_else_44"),
+  I.TryMeElse("L_ite_else_45"),
   I.PutValue(210, 1),
   I.PutValue(204, 2),
   I.Call("base_name", 2),
   I.Cut(216),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_44"),
+  I.Jump("L_ite_cont_45"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.PutStructure(7, 1, 2),
@@ -1005,7 +1005,7 @@ const shared_instructions = [
   I.UnifyVariable(201),
   I.UnifyVariable(203),
   I.GetLevel(204),
-  I.TryMeElse("L_ite_else_53"),
+  I.TryMeElse("L_ite_else_54"),
   I.PutValue(202, 1),
   I.PutStructure(8, 2, 2),
   I.SetValue(201),
@@ -1013,7 +1013,7 @@ const shared_instructions = [
   I.BuiltinCall("=/2", 2),
   I.Cut(204),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_53"),
+  I.Jump("L_ite_cont_54"),
   I.TrustMe(),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
@@ -1090,7 +1090,7 @@ const shared_instructions = [
   I.GetVariable(208, 4),
   I.GetVariable(209, 5),
   I.GetLevel(212),
-  I.TryMeElse("L_ite_else_55"),
+  I.TryMeElse("L_ite_else_56"),
   I.PutValue(208, 1),
   I.PutValue(210, 2),
   I.PutVariable(211, 3),
@@ -1105,7 +1105,7 @@ const shared_instructions = [
   I.PutValue(208, 4),
   I.PutValue(209, 5),
   I.Call("resolve_pending", 5),
-  I.Jump("L_ite_cont_55"),
+  I.Jump("L_ite_cont_56"),
   I.TrustMe(),
   I.PutValue(205, 1),
   I.PutValue(206, 2),
@@ -1125,7 +1125,7 @@ const shared_instructions = [
   I.PutVariable(207, 3),
   I.BuiltinCall("append/3", 3),
   I.GetLevel(213),
-  I.TryMeElse("L_ite_else_56"),
+  I.TryMeElse("L_ite_else_57"),
   I.PutValue(204, 1),
   I.PutConstant(V.Atom(18), 2),
   I.BuiltinCall("=/2", 2),
@@ -1136,7 +1136,7 @@ const shared_instructions = [
   I.PutValue(208, 4),
   I.PutValue(209, 5),
   I.Call("resolve_pending", 5),
-  I.Jump("L_ite_cont_56"),
+  I.Jump("L_ite_cont_57"),
   I.TrustMe(),
   I.PutValue(206, 1),
   I.PutValue(210, 2),
@@ -1217,13 +1217,13 @@ const shared_instructions = [
   I.GetStructure(22, 2, 1),
   I.UnifyVariable(102),
   I.GetLevel(201),
-  I.TryMeElse("L_ite_else_61"),
+  I.TryMeElse("L_ite_else_62"),
   I.PutValue(101, 1),
   I.PutValue(102, 2),
   I.Call("version_lt", 2),
   I.Cut(201),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_61"),
+  I.Jump("L_ite_cont_62"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.Proceed(),
@@ -1243,13 +1243,13 @@ const shared_instructions = [
   I.UnifyVariable(103),
   I.UnifyVariable(202),
   I.GetLevel(203),
-  I.TryMeElse("L_ite_else_62"),
+  I.TryMeElse("L_ite_else_63"),
   I.PutValue(201, 1),
   I.PutValue(103, 2),
   I.Call("version_lt", 2),
   I.Cut(203),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_62"),
+  I.Jump("L_ite_cont_63"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.PutValue(201, 1),
@@ -1262,13 +1262,13 @@ const shared_instructions = [
   I.UnifyVariable(202),
   I.GetVariable(203, 2),
   I.GetLevel(204),
-  I.TryMeElse("L_ite_else_65"),
+  I.TryMeElse("L_ite_else_68"),
   I.PutValue(201, 1),
   I.PutValue(203, 2),
   I.BuiltinCall("==/2", 2),
   I.Cut(204),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_65"),
+  I.Jump("L_ite_cont_68"),
   I.TrustMe(),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
@@ -1282,7 +1282,7 @@ const shared_instructions = [
   I.GetVariable(203, 2),
   I.GetVariable(204, 3),
   I.GetLevel(205),
-  I.TryMeElse("L_ite_else_67"),
+  I.TryMeElse("L_ite_else_70"),
   I.PutValue(201, 1),
   I.PutStructure(7, 2, 2),
   I.SetValue(203),
@@ -1290,7 +1290,7 @@ const shared_instructions = [
   I.BuiltinCall("=/2", 2),
   I.Cut(205),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_67"),
+  I.Jump("L_ite_cont_70"),
   I.TrustMe(),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
@@ -1361,7 +1361,7 @@ const shared_instructions = [
   I.GetVariable(214, 6),
   I.GetVariable(213, 7),
   I.GetLevel(215),
-  I.TryMeElse("L_ite_else_69"),
+  I.TryMeElse("L_ite_else_72"),
   I.PutStructure(7, 1, 2),
   I.SetValue(211),
   I.SetVariable(207),
@@ -1402,7 +1402,7 @@ const shared_instructions = [
   I.PutValue(210, 1),
   I.PutValue(209, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_69"),
+  I.Jump("L_ite_cont_72"),
   I.TrustMe(),
   I.PutValue(210, 1),
   I.PutStructure(5, 2, 2),
@@ -1457,16 +1457,16 @@ const shared_instructions = [
   I.UnifyVariable(204),
   I.UnifyVariable(206),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_72"),
+  I.TryMeElse("L_ite_else_75"),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("</2", 2),
   I.Cut(207),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_72"),
+  I.Jump("L_ite_cont_75"),
   I.TrustMe(),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_73"),
+  I.TryMeElse("L_ite_else_76"),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("=:=/2", 2),
@@ -1475,7 +1475,7 @@ const shared_instructions = [
   I.BuiltinCall("</2", 2),
   I.Cut(208),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_73"),
+  I.Jump("L_ite_cont_76"),
   I.TrustMe(),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
@@ -1492,40 +1492,40 @@ const shared_instructions = [
 
 const shared_labels = {
   "version_lt/2": 1402,
-  "L_ite_else_72": 1419,
-  "L_ite_else_73": 1431,
-  "L_ite_cont_73": 1441,
-  "L_ite_cont_72": 1441,
+  "L_ite_else_75": 1419,
+  "L_ite_else_76": 1431,
+  "L_ite_cont_76": 1441,
+  "L_ite_cont_75": 1441,
   "topo_sort_sel/3": 1369,
   "L_topo_sort_sel_3_2": 1378,
   "L_topo_sort_sel_3_2_body": 1379,
   "topo_one/7": 1291,
   "L_topo_one_7_2": 1306,
   "L_topo_one_7_2_body": 1307,
-  "L_ite_else_69": 1358,
-  "L_ite_cont_69": 1367,
+  "L_ite_else_72": 1358,
+  "L_ite_cont_72": 1367,
   "topo_all/7": 1253,
   "L_topo_all_7_2": 1263,
   "L_topo_all_7_2_body": 1264,
   "selected_ver/3": 1230,
-  "L_ite_else_67": 1246,
-  "L_ite_cont_67": 1251,
+  "L_ite_else_70": 1246,
+  "L_ite_cont_70": 1251,
   "seen_name/2": 1211,
-  "L_ite_else_65": 1224,
-  "L_ite_cont_65": 1228,
+  "L_ite_else_68": 1224,
+  "L_ite_cont_68": 1228,
   "satisfies/2": 1154,
   "L_satisfies_2_2": 1159,
   "L_satisfies_2_2_body": 1160,
   "L_satisfies_2_3": 1167,
   "L_satisfies_2_3_body": 1168,
-  "L_ite_else_61": 1179,
-  "L_ite_cont_61": 1181,
+  "L_ite_else_62": 1179,
+  "L_ite_cont_62": 1181,
   "L_satisfies_2_4": 1182,
   "L_satisfies_2_4_body": 1183,
   "L_satisfies_2_5": 1191,
   "L_satisfies_2_5_body": 1192,
-  "L_ite_else_62": 1205,
-  "L_ite_cont_62": 1207,
+  "L_ite_else_63": 1205,
+  "L_ite_cont_63": 1207,
   "roots_to_pairs/3": 1111,
   "L_roots_to_pairs_3_2": 1117,
   "L_roots_to_pairs_3_2_body": 1118,
@@ -1535,39 +1535,39 @@ const shared_labels = {
   "resolve_pending/5": 1025,
   "L_resolve_pending_5_2": 1032,
   "L_resolve_pending_5_2_body": 1033,
-  "L_ite_else_55": 1061,
-  "L_ite_else_56": 1092,
+  "L_ite_else_56": 1061,
+  "L_ite_else_57": 1092,
+  "L_ite_cont_57": 1109,
   "L_ite_cont_56": 1109,
-  "L_ite_cont_55": 1109,
   "resolve_layered/3": 1006,
   "resolve/3": 987,
   "requested_list/2": 978,
   "request_to_req/2": 954,
-  "L_ite_else_53": 969,
-  "L_ite_cont_53": 976,
+  "L_ite_else_54": 969,
+  "L_ite_cont_54": 976,
   "removal_orphans/3": 860,
-  "L_ite_else_41": 876,
-  "L_ite_cont_41": 880,
-  "L_ite_else_42": 890,
-  "L_ite_else_43": 932,
-  "L_ite_cont_43": 934,
-  "L_ite_else_44": 942,
-  "L_ite_cont_44": 944,
-  "L_ite_cont_42": 951,
+  "L_ite_else_42": 876,
+  "L_ite_cont_42": 880,
+  "L_ite_else_43": 890,
+  "L_ite_else_44": 932,
+  "L_ite_cont_44": 934,
+  "L_ite_else_45": 942,
+  "L_ite_cont_45": 944,
+  "L_ite_cont_43": 951,
   "pick/7": 807,
   "L_pick_7_2": 823,
   "L_pick_7_2_body": 824,
-  "L_ite_else_38": 849,
-  "L_ite_cont_38": 858,
+  "L_ite_else_39": 849,
+  "L_ite_cont_39": 858,
   "packages/2": 798,
   "package_in/3": 784,
   "no_acc_conflicts/4": 737,
   "L_no_acc_conflicts_4_2": 743,
   "L_no_acc_conflicts_4_2_body": 744,
-  "L_ite_else_32": 764,
-  "L_ite_cont_32": 766,
-  "L_ite_else_33": 776,
-  "L_ite_cont_33": 778,
+  "L_ite_else_33": 764,
+  "L_ite_cont_33": 766,
+  "L_ite_else_34": 776,
+  "L_ite_cont_34": 778,
   "needed_names/4": 713,
   "L_needed_names_4_2": 719,
   "L_needed_names_4_2_body": 720,
@@ -1809,19 +1809,29 @@ function lowered_selected_ver_3(program, state) {
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
       Runtime.put_reg(state, 3, Runtime.get_reg(state, 204));
       if (typeof lowered_selected_ver_3 === "function") {
-        if (lowered_selected_ver_3(program, state) !== true) return false;
+        const _cpd = state.cps.length;
+        Runtime.push_cut_barrier(state);
+        if (lowered_selected_ver_3(program, state) !== true) {
+          Runtime.pop_cut_barrier(state);
+          while (state.cps.length > _cpd) state.cps.pop();
+          return false;
+        }
+        Runtime.pop_cut_barrier(state);
+        while (state.cps.length > _cpd) state.cps.pop();
       } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
         const target = program.labels["selected_ver/3"];
         let _ok = true;
         if (target !== undefined && target !== null) {
-          Runtime.push_y_save(state);
+          const _fm = Runtime.call_frame_mark(state);
+          Runtime.push_call_frame(state);
           state.cp = 0;
           state.pc = target;
           state.program = program;
           _ok = Runtime.run_isolated(program, state) === true;
           state.halt = false;
+          Runtime.call_frame_release(state, _fm);
         } else if (Runtime.step(program, state, I.Call("selected_ver", 3)) !== true) {
           _ok = false;
         }
@@ -1864,19 +1874,29 @@ function lowered_seen_name_2(program, state) {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
       if (typeof lowered_seen_name_2 === "function") {
-        if (lowered_seen_name_2(program, state) !== true) return false;
+        const _cpd = state.cps.length;
+        Runtime.push_cut_barrier(state);
+        if (lowered_seen_name_2(program, state) !== true) {
+          Runtime.pop_cut_barrier(state);
+          while (state.cps.length > _cpd) state.cps.pop();
+          return false;
+        }
+        Runtime.pop_cut_barrier(state);
+        while (state.cps.length > _cpd) state.cps.pop();
       } else {
         const saved_cp = state.cp;
         const saved_pc = state.pc;
         const target = program.labels["seen_name/2"];
         let _ok = true;
         if (target !== undefined && target !== null) {
-          Runtime.push_y_save(state);
+          const _fm = Runtime.call_frame_mark(state);
+          Runtime.push_call_frame(state);
           state.cp = 0;
           state.pc = target;
           state.program = program;
           _ok = Runtime.run_isolated(program, state) === true;
           state.halt = false;
+          Runtime.call_frame_release(state, _fm);
         } else if (Runtime.step(program, state, I.Call("seen_name", 2)) !== true) {
           _ok = false;
         }
@@ -1893,201 +1913,7 @@ function lowered_seen_name_2(program, state) {
 }
 
 lowered_dispatch["seen_name/2"] = function (program, state) { return lowered_seen_name_2(program, state); };
-// Lowered: satisfies/2 (T4 all-clauses inline)
-function lowered_satisfies_2(program, state) {
-  if (Runtime._prof) Runtime.prof_lowered_call("satisfies/2");
-  const _t4_trail = state.trail.length;
-  const _t4_regs = Runtime.copy_table(state.regs);
-  const _t4_vc = state.var_counter;
-  const _t4_stack = state.stack.slice();
-  const _t4_ysave = (state.y_save || []).slice();
-  const _t4_mode = state.mode;
-  const _t4_build = state.build_stack.slice();
-  const _t4_rstack = (state.read_stack || []).slice();
-  const _t4_rargs = state.read_args;
-  const _t4_rcur = state.read_cursor;
-  if ((function () {
-    Runtime.put_reg(state, 101, Runtime.get_reg(state, 1));
-    if (Runtime.op_get_constant(program, state, 2, V.Atom(20)) !== true) return false;
-    return true;
-    return false;
-  })()) return true;
-  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
-  state.regs = Runtime.copy_table(_t4_regs);
-  state.var_counter = _t4_vc;
-  state.stack = _t4_stack.slice();
-  state.y_save = _t4_ysave.slice();
-  state.mode = _t4_mode;
-  state.build_stack = _t4_build.slice();
-  state.read_stack = _t4_rstack.slice();
-  state.read_args = _t4_rargs;
-  state.read_cursor = _t4_rcur;
-  if ((function () {
-    Runtime.put_reg(state, 101, Runtime.get_reg(state, 1));
-    if (Runtime.op_get_structure(program, state, 21, 2, 1) !== true) return false;
-    if (Runtime.op_unify_variable(state, 102) !== true) return false;
-    Runtime.put_reg(state, 1, Runtime.get_reg(state, 101));
-    Runtime.put_reg(state, 2, Runtime.get_reg(state, 102));
-    if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
-    return true;
-    return false;
-  })()) return true;
-  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
-  state.regs = Runtime.copy_table(_t4_regs);
-  state.var_counter = _t4_vc;
-  state.stack = _t4_stack.slice();
-  state.y_save = _t4_ysave.slice();
-  state.mode = _t4_mode;
-  state.build_stack = _t4_build.slice();
-  state.read_stack = _t4_rstack.slice();
-  state.read_args = _t4_rargs;
-  state.read_cursor = _t4_rcur;
-  if ((function () {
-    Runtime.put_reg(state, 101, Runtime.get_reg(state, 1));
-    if (Runtime.op_get_structure(program, state, 22, 2, 1) !== true) return false;
-    if (Runtime.op_unify_variable(state, 102) !== true) return false;
-    if (Runtime.op_get_level(state, 201) !== true) return false;
-    {
-      const _ite_snap = Runtime.snapshot_machine(state);
-      const _ite_cps = state.cps.length;
-      const _ite_cond = (function () {
-        Runtime.put_reg(state, 1, Runtime.get_reg(state, 101));
-        Runtime.put_reg(state, 2, Runtime.get_reg(state, 102));
-        if (typeof lowered_version_lt_2 === "function") {
-          if (lowered_version_lt_2(program, state) !== true) return false;
-        } else {
-          const saved_cp = state.cp;
-          const saved_pc = state.pc;
-          const target = program.labels["version_lt/2"];
-          let _ok = true;
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("version_lt", 2)) !== true) {
-            _ok = false;
-          }
-          state.cp = saved_cp;
-          state.pc = saved_pc;
-          state.halt = false;
-          if (!_ok) return false;
-        }
-        return true;
-      })();
-      if (_ite_cond) {
-        if (Runtime.op_builtin(program, state, "fail/0", 0) !== true) return false;
-      } else {
-        Runtime.restore_machine(state, _ite_snap);
-        while (state.cps.length > _ite_cps) state.cps.pop();
-        if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
-      }
-    }
-    return true;
-    return false;
-  })()) return true;
-  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
-  state.regs = Runtime.copy_table(_t4_regs);
-  state.var_counter = _t4_vc;
-  state.stack = _t4_stack.slice();
-  state.y_save = _t4_ysave.slice();
-  state.mode = _t4_mode;
-  state.build_stack = _t4_build.slice();
-  state.read_stack = _t4_rstack.slice();
-  state.read_args = _t4_rargs;
-  state.read_cursor = _t4_rcur;
-  if ((function () {
-    if (Runtime.op_allocate(state) !== true) return false;
-    Runtime.put_reg(state, 101, Runtime.get_reg(state, 1));
-    if (Runtime.op_get_structure(program, state, 23, 2, 1) !== true) return false;
-    if (Runtime.op_unify_variable(state, 102) !== true) return false;
-    Runtime.put_reg(state, 1, Runtime.get_reg(state, 101));
-    Runtime.put_reg(state, 2, Runtime.get_reg(state, 102));
-    if (Runtime.op_deallocate(state) !== true) return false;
-    if (typeof lowered_version_lt_2 === "function") return lowered_version_lt_2(program, state) === true;
-    {
-      const target = program.labels["version_lt/2"];
-      if (target !== undefined && target !== null) {
-        return Runtime.execute_user_isolated(program, state, target) === true;
-      }
-      return Runtime.op_builtin(program, state, "version_lt", 2) === true;
-    }
-    return false;
-  })()) return true;
-  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
-  state.regs = Runtime.copy_table(_t4_regs);
-  state.var_counter = _t4_vc;
-  state.stack = _t4_stack.slice();
-  state.y_save = _t4_ysave.slice();
-  state.mode = _t4_mode;
-  state.build_stack = _t4_build.slice();
-  state.read_stack = _t4_rstack.slice();
-  state.read_args = _t4_rargs;
-  state.read_cursor = _t4_rcur;
-  if ((function () {
-    if (Runtime.op_allocate(state) !== true) return false;
-    Runtime.put_reg(state, 201, Runtime.get_reg(state, 1));
-    if (Runtime.op_get_structure(program, state, 24, 2, 2) !== true) return false;
-    if (Runtime.op_unify_variable(state, 103) !== true) return false;
-    if (Runtime.op_unify_variable(state, 202) !== true) return false;
-    if (Runtime.op_get_level(state, 203) !== true) return false;
-    {
-      const _ite_snap = Runtime.snapshot_machine(state);
-      const _ite_cps = state.cps.length;
-      const _ite_cond = (function () {
-        Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
-        Runtime.put_reg(state, 2, Runtime.get_reg(state, 103));
-        if (typeof lowered_version_lt_2 === "function") {
-          if (lowered_version_lt_2(program, state) !== true) return false;
-        } else {
-          const saved_cp = state.cp;
-          const saved_pc = state.pc;
-          const target = program.labels["version_lt/2"];
-          let _ok = true;
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("version_lt", 2)) !== true) {
-            _ok = false;
-          }
-          state.cp = saved_cp;
-          state.pc = saved_pc;
-          state.halt = false;
-          if (!_ok) return false;
-        }
-        return true;
-      })();
-      if (_ite_cond) {
-        if (Runtime.op_builtin(program, state, "fail/0", 0) !== true) return false;
-      } else {
-        Runtime.restore_machine(state, _ite_snap);
-        while (state.cps.length > _ite_cps) state.cps.pop();
-        if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
-      }
-    }
-    Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
-    Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
-    if (Runtime.op_deallocate(state) !== true) return false;
-    if (typeof lowered_version_lt_2 === "function") return lowered_version_lt_2(program, state) === true;
-    {
-      const target = program.labels["version_lt/2"];
-      if (target !== undefined && target !== null) {
-        return Runtime.execute_user_isolated(program, state, target) === true;
-      }
-      return Runtime.op_builtin(program, state, "version_lt", 2) === true;
-    }
-    return false;
-  })()) return true;
-  return false;
-}
-
-lowered_dispatch["satisfies/2"] = function (program, state) { return lowered_satisfies_2(program, state); };
+// wamjs lower fallback: satisfies/2  fallback(multi_clause_n)
 // wamjs lower fallback: roots_to_pairs/3  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: resolve_pending/5  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: resolve_layered/3  fallback(naked member/2 (or callee) needs interpreter choice points)
@@ -2189,7 +2015,10 @@ function lowered_names_of_2(program, state) {
     Runtime.put_reg(state, 1, Runtime.get_reg(state, 104));
     Runtime.put_reg(state, 2, Runtime.get_reg(state, 105));
     if (Runtime.op_deallocate(state) !== true) return false;
-    if (typeof lowered_names_of_2 === "function") return lowered_names_of_2(program, state) === true;
+    if (typeof lowered_names_of_2 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_names_of_2(program, state) === true;
+    }
     {
       const target = program.labels["names_of/2"];
       if (target !== undefined && target !== null) {
@@ -2239,7 +2068,10 @@ function lowered_names_of_2(program, state) {
     Runtime.put_reg(state, 1, Runtime.get_reg(state, 104));
     Runtime.put_reg(state, 2, Runtime.get_reg(state, 105));
     if (Runtime.op_deallocate(state) !== true) return false;
-    if (typeof lowered_names_of_2 === "function") return lowered_names_of_2(program, state) === true;
+    if (typeof lowered_names_of_2 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_names_of_2(program, state) === true;
+    }
     {
       const target = program.labels["names_of/2"];
       if (target !== undefined && target !== null) {
@@ -2254,197 +2086,7 @@ function lowered_names_of_2(program, state) {
 
 lowered_dispatch["names_of/2"] = function (program, state) { return lowered_names_of_2(program, state); };
 // wamjs lower fallback: member_selected/3  fallback(naked member/2 (or callee) needs interpreter choice points)
-// Lowered: matching_versions/4 (T4 nil/cons dispatch; no snapshot on bound A1)
-function lowered_matching_versions_4(program, state) {
-  if (Runtime._prof) Runtime.prof_lowered_call("matching_versions/4");
-  const _a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
-  if (Runtime.term_is_nil(program, _a1)) {
-    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
-    Runtime.put_reg(state, 102, Runtime.get_reg(state, 3));
-    if (Runtime.op_get_constant(program, state, 4, V.Atom(2)) !== true) return false;
-    return true;
-    return true;
-  }
-  if (Runtime.term_is_cons(program, _a1)) {
-    if (Runtime.op_allocate(state) !== true) return false;
-    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
-    if (Runtime.op_unify_variable(state, 108) !== true) return false;
-    if (Runtime.op_get_structure(program, state, 14, 108, 2) !== true) return false;
-    if (Runtime.op_unify_variable(state, 201) !== true) return false;
-    if (Runtime.op_unify_variable(state, 202) !== true) return false;
-    if (Runtime.op_unify_variable(state, 204) !== true) return false;
-    Runtime.put_reg(state, 205, Runtime.get_reg(state, 2));
-    Runtime.put_reg(state, 206, Runtime.get_reg(state, 3));
-    Runtime.put_reg(state, 203, Runtime.get_reg(state, 4));
-    if (Runtime.op_get_level(state, 208) !== true) return false;
-    {
-      const _ite_snap = Runtime.snapshot_machine(state);
-      const _ite_cps = state.cps.length;
-      const _ite_cond = (function () {
-        Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
-        Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
-        if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
-        Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
-        Runtime.put_reg(state, 2, Runtime.get_reg(state, 206));
-        if (typeof lowered_satisfies_2 === "function") {
-          if (lowered_satisfies_2(program, state) !== true) return false;
-        } else {
-          const saved_cp = state.cp;
-          const saved_pc = state.pc;
-          const target = program.labels["satisfies/2"];
-          let _ok = true;
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("satisfies", 2)) !== true) {
-            _ok = false;
-          }
-          state.cp = saved_cp;
-          state.pc = saved_pc;
-          state.halt = false;
-          if (!_ok) return false;
-        }
-        return true;
-      })();
-      if (_ite_cond) {
-        Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
-        if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
-        if (Runtime.op_unify_value(program, state, 202) !== true) return false;
-        if (Runtime.op_unify_variable(state, 207) !== true) return false;
-        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
-      } else {
-        Runtime.restore_machine(state, _ite_snap);
-        while (state.cps.length > _ite_cps) state.cps.pop();
-        Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
-        { const v = Runtime.new_var(state); Runtime.put_reg(state, 207, v); Runtime.put_reg(state, 2, v); }
-        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
-      }
-    }
-    Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
-    Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
-    Runtime.put_reg(state, 3, Runtime.get_reg(state, 206));
-    Runtime.put_reg(state, 4, Runtime.get_reg(state, 207));
-    if (Runtime.op_deallocate(state) !== true) return false;
-    if (typeof lowered_matching_versions_4 === "function") return lowered_matching_versions_4(program, state) === true;
-    {
-      const target = program.labels["matching_versions/4"];
-      if (target !== undefined && target !== null) {
-        return Runtime.execute_user_isolated(program, state, target) === true;
-      }
-      return Runtime.op_builtin(program, state, "matching_versions", 4) === true;
-    }
-    return true;
-  }
-  const _t4_trail = state.trail.length;
-  const _t4_regs = Runtime.copy_table(state.regs);
-  const _t4_vc = state.var_counter;
-  const _t4_stack = state.stack.slice();
-  const _t4_ysave = (state.y_save || []).slice();
-  const _t4_mode = state.mode;
-  const _t4_build = state.build_stack.slice();
-  const _t4_rstack = (state.read_stack || []).slice();
-  const _t4_rargs = state.read_args;
-  const _t4_rcur = state.read_cursor;
-  if ((function () {
-    if (Runtime.op_get_constant(program, state, 1, V.Atom(2)) !== true) return false;
-    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
-    Runtime.put_reg(state, 102, Runtime.get_reg(state, 3));
-    if (Runtime.op_get_constant(program, state, 4, V.Atom(2)) !== true) return false;
-    return true;
-    return false;
-  })()) return true;
-  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
-  state.regs = Runtime.copy_table(_t4_regs);
-  state.var_counter = _t4_vc;
-  state.stack = _t4_stack.slice();
-  state.y_save = _t4_ysave.slice();
-  state.mode = _t4_mode;
-  state.build_stack = _t4_build.slice();
-  state.read_stack = _t4_rstack.slice();
-  state.read_args = _t4_rargs;
-  state.read_cursor = _t4_rcur;
-  if ((function () {
-    if (Runtime.op_allocate(state) !== true) return false;
-    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
-    if (Runtime.op_unify_variable(state, 108) !== true) return false;
-    if (Runtime.op_get_structure(program, state, 14, 108, 2) !== true) return false;
-    if (Runtime.op_unify_variable(state, 201) !== true) return false;
-    if (Runtime.op_unify_variable(state, 202) !== true) return false;
-    if (Runtime.op_unify_variable(state, 204) !== true) return false;
-    Runtime.put_reg(state, 205, Runtime.get_reg(state, 2));
-    Runtime.put_reg(state, 206, Runtime.get_reg(state, 3));
-    Runtime.put_reg(state, 203, Runtime.get_reg(state, 4));
-    if (Runtime.op_get_level(state, 208) !== true) return false;
-    {
-      const _ite_snap = Runtime.snapshot_machine(state);
-      const _ite_cps = state.cps.length;
-      const _ite_cond = (function () {
-        Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
-        Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
-        if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
-        Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
-        Runtime.put_reg(state, 2, Runtime.get_reg(state, 206));
-        if (typeof lowered_satisfies_2 === "function") {
-          if (lowered_satisfies_2(program, state) !== true) return false;
-        } else {
-          const saved_cp = state.cp;
-          const saved_pc = state.pc;
-          const target = program.labels["satisfies/2"];
-          let _ok = true;
-          if (target !== undefined && target !== null) {
-            Runtime.push_y_save(state);
-            state.cp = 0;
-            state.pc = target;
-            state.program = program;
-            _ok = Runtime.run_isolated(program, state) === true;
-            state.halt = false;
-          } else if (Runtime.step(program, state, I.Call("satisfies", 2)) !== true) {
-            _ok = false;
-          }
-          state.cp = saved_cp;
-          state.pc = saved_pc;
-          state.halt = false;
-          if (!_ok) return false;
-        }
-        return true;
-      })();
-      if (_ite_cond) {
-        Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
-        if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
-        if (Runtime.op_unify_value(program, state, 202) !== true) return false;
-        if (Runtime.op_unify_variable(state, 207) !== true) return false;
-        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
-      } else {
-        Runtime.restore_machine(state, _ite_snap);
-        while (state.cps.length > _ite_cps) state.cps.pop();
-        Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
-        { const v = Runtime.new_var(state); Runtime.put_reg(state, 207, v); Runtime.put_reg(state, 2, v); }
-        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
-      }
-    }
-    Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
-    Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
-    Runtime.put_reg(state, 3, Runtime.get_reg(state, 206));
-    Runtime.put_reg(state, 4, Runtime.get_reg(state, 207));
-    if (Runtime.op_deallocate(state) !== true) return false;
-    if (typeof lowered_matching_versions_4 === "function") return lowered_matching_versions_4(program, state) === true;
-    {
-      const target = program.labels["matching_versions/4"];
-      if (target !== undefined && target !== null) {
-        return Runtime.execute_user_isolated(program, state, target) === true;
-      }
-      return Runtime.op_builtin(program, state, "matching_versions", 4) === true;
-    }
-    return false;
-  })()) return true;
-  return false;
-}
-
-lowered_dispatch["matching_versions/4"] = function (program, state) { return lowered_matching_versions_4(program, state); };
+// wamjs lower fallback: matching_versions/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 // Lowered: matching_deps/4 (T4 nil/cons dispatch; no snapshot on bound A1)
 function lowered_matching_deps_4(program, state) {
   if (Runtime._prof) Runtime.prof_lowered_call("matching_deps/4");
@@ -2504,7 +2146,10 @@ function lowered_matching_deps_4(program, state) {
     Runtime.put_reg(state, 3, Runtime.get_reg(state, 208));
     Runtime.put_reg(state, 4, Runtime.get_reg(state, 209));
     if (Runtime.op_deallocate(state) !== true) return false;
-    if (typeof lowered_matching_deps_4 === "function") return lowered_matching_deps_4(program, state) === true;
+    if (typeof lowered_matching_deps_4 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_matching_deps_4(program, state) === true;
+    }
     {
       const target = program.labels["matching_deps/4"];
       if (target !== undefined && target !== null) {
@@ -2590,7 +2235,10 @@ function lowered_matching_deps_4(program, state) {
     Runtime.put_reg(state, 3, Runtime.get_reg(state, 208));
     Runtime.put_reg(state, 4, Runtime.get_reg(state, 209));
     if (Runtime.op_deallocate(state) !== true) return false;
-    if (typeof lowered_matching_deps_4 === "function") return lowered_matching_deps_4(program, state) === true;
+    if (typeof lowered_matching_deps_4 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_matching_deps_4(program, state) === true;
+    }
     {
       const target = program.labels["matching_deps/4"];
       if (target !== undefined && target !== null) {
@@ -2624,19 +2272,29 @@ function lowered_map_requests_2(program, state) {
     Runtime.put_reg(state, 1, Runtime.get_reg(state, 103));
     Runtime.put_reg(state, 2, Runtime.get_reg(state, 104));
     if (typeof lowered_request_to_req_2 === "function") {
-      if (lowered_request_to_req_2(program, state) !== true) return false;
+      const _cpd = state.cps.length;
+      Runtime.push_cut_barrier(state);
+      if (lowered_request_to_req_2(program, state) !== true) {
+        Runtime.pop_cut_barrier(state);
+        while (state.cps.length > _cpd) state.cps.pop();
+        return false;
+      }
+      Runtime.pop_cut_barrier(state);
+      while (state.cps.length > _cpd) state.cps.pop();
     } else {
       const saved_cp = state.cp;
       const saved_pc = state.pc;
       const target = program.labels["request_to_req/2"];
       let _ok = true;
       if (target !== undefined && target !== null) {
-        Runtime.push_y_save(state);
+        const _fm = Runtime.call_frame_mark(state);
+        Runtime.push_call_frame(state);
         state.cp = 0;
         state.pc = target;
         state.program = program;
         _ok = Runtime.run_isolated(program, state) === true;
         state.halt = false;
+        Runtime.call_frame_release(state, _fm);
       } else if (Runtime.step(program, state, I.Call("request_to_req", 2)) !== true) {
         _ok = false;
       }
@@ -2648,7 +2306,10 @@ function lowered_map_requests_2(program, state) {
     Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
     Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
     if (Runtime.op_deallocate(state) !== true) return false;
-    if (typeof lowered_map_requests_2 === "function") return lowered_map_requests_2(program, state) === true;
+    if (typeof lowered_map_requests_2 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_map_requests_2(program, state) === true;
+    }
     {
       const target = program.labels["map_requests/2"];
       if (target !== undefined && target !== null) {
@@ -2695,19 +2356,29 @@ function lowered_map_requests_2(program, state) {
     Runtime.put_reg(state, 1, Runtime.get_reg(state, 103));
     Runtime.put_reg(state, 2, Runtime.get_reg(state, 104));
     if (typeof lowered_request_to_req_2 === "function") {
-      if (lowered_request_to_req_2(program, state) !== true) return false;
+      const _cpd = state.cps.length;
+      Runtime.push_cut_barrier(state);
+      if (lowered_request_to_req_2(program, state) !== true) {
+        Runtime.pop_cut_barrier(state);
+        while (state.cps.length > _cpd) state.cps.pop();
+        return false;
+      }
+      Runtime.pop_cut_barrier(state);
+      while (state.cps.length > _cpd) state.cps.pop();
     } else {
       const saved_cp = state.cp;
       const saved_pc = state.pc;
       const target = program.labels["request_to_req/2"];
       let _ok = true;
       if (target !== undefined && target !== null) {
-        Runtime.push_y_save(state);
+        const _fm = Runtime.call_frame_mark(state);
+        Runtime.push_call_frame(state);
         state.cp = 0;
         state.pc = target;
         state.program = program;
         _ok = Runtime.run_isolated(program, state) === true;
         state.halt = false;
+        Runtime.call_frame_release(state, _fm);
       } else if (Runtime.step(program, state, I.Call("request_to_req", 2)) !== true) {
         _ok = false;
       }
@@ -2719,7 +2390,10 @@ function lowered_map_requests_2(program, state) {
     Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
     Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
     if (Runtime.op_deallocate(state) !== true) return false;
-    if (typeof lowered_map_requests_2 === "function") return lowered_map_requests_2(program, state) === true;
+    if (typeof lowered_map_requests_2 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_map_requests_2(program, state) === true;
+    }
     {
       const target = program.labels["map_requests/2"];
       if (target !== undefined && target !== null) {
@@ -2756,95 +2430,7 @@ lowered_dispatch["installed_list/2"] = function (program, state) { return lowere
 // wamjs lower fallback: inst_closure_names/5  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: explain_blocked_list/3  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: explain_blocked/3  fallback(naked member/2 (or callee) needs interpreter choice points)
-// Lowered: exclude_name/3 (T4 all-clauses inline)
-function lowered_exclude_name_3(program, state) {
-  if (Runtime._prof) Runtime.prof_lowered_call("exclude_name/3");
-  const _t4_trail = state.trail.length;
-  const _t4_regs = Runtime.copy_table(state.regs);
-  const _t4_vc = state.var_counter;
-  const _t4_stack = state.stack.slice();
-  const _t4_ysave = (state.y_save || []).slice();
-  const _t4_mode = state.mode;
-  const _t4_build = state.build_stack.slice();
-  const _t4_rstack = (state.read_stack || []).slice();
-  const _t4_rargs = state.read_args;
-  const _t4_rcur = state.read_cursor;
-  if ((function () {
-    Runtime.put_reg(state, 101, Runtime.get_reg(state, 1));
-    if (Runtime.op_get_constant(program, state, 2, V.Atom(2)) !== true) return false;
-    if (Runtime.op_get_constant(program, state, 3, V.Atom(2)) !== true) return false;
-    return true;
-    return false;
-  })()) return true;
-  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
-  state.regs = Runtime.copy_table(_t4_regs);
-  state.var_counter = _t4_vc;
-  state.stack = _t4_stack.slice();
-  state.y_save = _t4_ysave.slice();
-  state.mode = _t4_mode;
-  state.build_stack = _t4_build.slice();
-  state.read_stack = _t4_rstack.slice();
-  state.read_args = _t4_rargs;
-  state.read_cursor = _t4_rcur;
-  if ((function () {
-    if (Runtime.op_allocate(state) !== true) return false;
-    Runtime.put_reg(state, 201, Runtime.get_reg(state, 1));
-    if (Runtime.op_get_list(program, state, 2, 5) !== true) return false;
-    if (Runtime.op_unify_value(program, state, 201) !== true) return false;
-    if (Runtime.op_unify_variable(state, 202) !== true) return false;
-    Runtime.put_reg(state, 203, Runtime.get_reg(state, 3));
-    if (Runtime.op_builtin(program, state, "!/0", 0) !== true) return false;
-    Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
-    Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
-    Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
-    if (Runtime.op_deallocate(state) !== true) return false;
-    if (typeof lowered_exclude_name_3 === "function") return lowered_exclude_name_3(program, state) === true;
-    {
-      const target = program.labels["exclude_name/3"];
-      if (target !== undefined && target !== null) {
-        return Runtime.execute_user_isolated(program, state, target) === true;
-      }
-      return Runtime.op_builtin(program, state, "exclude_name", 3) === true;
-    }
-    return false;
-  })()) return true;
-  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
-  state.regs = Runtime.copy_table(_t4_regs);
-  state.var_counter = _t4_vc;
-  state.stack = _t4_stack.slice();
-  state.y_save = _t4_ysave.slice();
-  state.mode = _t4_mode;
-  state.build_stack = _t4_build.slice();
-  state.read_stack = _t4_rstack.slice();
-  state.read_args = _t4_rargs;
-  state.read_cursor = _t4_rcur;
-  if ((function () {
-    if (Runtime.op_allocate(state) !== true) return false;
-    Runtime.put_reg(state, 101, Runtime.get_reg(state, 1));
-    if (Runtime.op_get_list(program, state, 2, 5) !== true) return false;
-    if (Runtime.op_unify_variable(state, 102) !== true) return false;
-    if (Runtime.op_unify_variable(state, 103) !== true) return false;
-    if (Runtime.op_get_list(program, state, 3, 5) !== true) return false;
-    if (Runtime.op_unify_value(program, state, 102) !== true) return false;
-    if (Runtime.op_unify_variable(state, 104) !== true) return false;
-    Runtime.put_reg(state, 1, Runtime.get_reg(state, 101));
-    Runtime.put_reg(state, 2, Runtime.get_reg(state, 103));
-    Runtime.put_reg(state, 3, Runtime.get_reg(state, 104));
-    if (Runtime.op_deallocate(state) !== true) return false;
-    if (typeof lowered_exclude_name_3 === "function") return lowered_exclude_name_3(program, state) === true;
-    {
-      const target = program.labels["exclude_name/3"];
-      if (target !== undefined && target !== null) {
-        return Runtime.execute_user_isolated(program, state, target) === true;
-      }
-      return Runtime.op_builtin(program, state, "exclude_name", 3) === true;
-    }
-    return false;
-  })()) return true;
-  return false;
-}
-
-lowered_dispatch["exclude_name/3"] = function (program, state) { return lowered_exclude_name_3(program, state); };
+// wamjs lower fallback: exclude_name/3  fallback(multi_clause_n)
 // Lowered: depends_list/2 (deterministic)
 function lowered_depends_list_2(program, state) {
   if (Runtime._prof) Runtime.prof_lowered_call("depends_list/2");
@@ -2879,58 +2465,7 @@ function lowered_conflicts_list_2(program, state) {
 
 lowered_dispatch["conflicts_list/2"] = function (program, state) { return lowered_conflicts_list_2(program, state); };
 // wamjs lower fallback: conflicts_in/4  fallback(naked member/2 (or callee) needs interpreter choice points)
-// Lowered: collect_deps/4 (deterministic)
-function lowered_collect_deps_4(program, state) {
-  if (Runtime._prof) Runtime.prof_lowered_call("collect_deps/4");
-  if (Runtime.op_allocate(state) !== true) return false;
-  Runtime.put_reg(state, 105, Runtime.get_reg(state, 1));
-  Runtime.put_reg(state, 202, Runtime.get_reg(state, 2));
-  Runtime.put_reg(state, 203, Runtime.get_reg(state, 3));
-  Runtime.put_reg(state, 204, Runtime.get_reg(state, 4));
-  Runtime.put_reg(state, 1, Runtime.get_reg(state, 105));
-  { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 2, v); }
-  if (typeof lowered_depends_list_2 === "function") {
-    Runtime.push_y_save(state);
-    const _ok = Runtime.run_lowered_body(program, state, lowered_depends_list_2);
-    Runtime.pop_y_save(state);
-    if (_ok !== true) return false;
-  } else {
-    const saved_cp = state.cp;
-    const saved_pc = state.pc;
-    const target = program.labels["depends_list/2"];
-    let _ok = true;
-    if (target !== undefined && target !== null) {
-      Runtime.push_y_save(state);
-      state.cp = 0;
-      state.pc = target;
-      state.program = program;
-      _ok = Runtime.run_isolated(program, state) === true;
-      state.halt = false;
-    } else if (Runtime.step(program, state, I.Call("depends_list", 2)) !== true) {
-      _ok = false;
-    }
-    state.cp = saved_cp;
-    state.pc = saved_pc;
-    state.halt = false;
-    if (!_ok) return false;
-  }
-  Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
-  Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
-  Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
-  Runtime.put_reg(state, 4, Runtime.get_reg(state, 204));
-  if (Runtime.op_deallocate(state) !== true) return false;
-  if (typeof lowered_matching_deps_4 === "function") return lowered_matching_deps_4(program, state) === true;
-  {
-    const target = program.labels["matching_deps/4"];
-    if (target !== undefined && target !== null) {
-      return Runtime.execute_user_isolated(program, state, target) === true;
-    }
-    return Runtime.op_builtin(program, state, "matching_deps", 4) === true;
-  }
-  return true;
-}
-
-lowered_dispatch["collect_deps/4"] = function (program, state) { return lowered_collect_deps_4(program, state); };
+// wamjs lower fallback: collect_deps/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: candidates_high_first/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: blocked_from/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: blocked_acc_list/5  fallback(naked member/2 (or callee) needs interpreter choice points)
@@ -3008,14 +2543,7 @@ function seen_name(a1, a2) {
 M.seen_name = seen_name;
 
 function satisfies(a1, a2) {
-  const state = Runtime.new_state();
-  const args = [a1, a2];
-  for (let i = 0; i < 2; i++) {
-    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
-  }
-  state.cp = 0;
-  state.program = shared_program;
-  return lowered_satisfies_2(shared_program, state) === true;
+  return Runtime.run_predicate(shared_program, 1154, [a1, a2]);
 }
 M.satisfies = satisfies;
 
@@ -3118,14 +2646,7 @@ function member_selected(a1, a2, a3) {
 M.member_selected = member_selected;
 
 function matching_versions(a1, a2, a3, a4) {
-  const state = Runtime.new_state();
-  const args = [a1, a2, a3, a4];
-  for (let i = 0; i < 4; i++) {
-    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
-  }
-  state.cp = 0;
-  state.program = shared_program;
-  return lowered_matching_versions_4(shared_program, state) === true;
+  return Runtime.run_predicate(shared_program, 641, [a1, a2, a3, a4]);
 }
 M.matching_versions = matching_versions;
 
@@ -3201,14 +2722,7 @@ function explain_blocked(a1, a2, a3) {
 M.explain_blocked = explain_blocked;
 
 function exclude_name(a1, a2, a3) {
-  const state = Runtime.new_state();
-  const args = [a1, a2, a3];
-  for (let i = 0; i < 3; i++) {
-    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
-  }
-  state.cp = 0;
-  state.program = shared_program;
-  return lowered_exclude_name_3(shared_program, state) === true;
+  return Runtime.run_predicate(shared_program, 348, [a1, a2, a3]);
 }
 M.exclude_name = exclude_name;
 
@@ -3247,14 +2761,7 @@ function conflicts_in(a1, a2, a3, a4) {
 M.conflicts_in = conflicts_in;
 
 function collect_deps(a1, a2, a3, a4) {
-  const state = Runtime.new_state();
-  const args = [a1, a2, a3, a4];
-  for (let i = 0; i < 4; i++) {
-    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
-  }
-  state.cp = 0;
-  state.program = shared_program;
-  return lowered_collect_deps_4(shared_program, state) === true;
+  return Runtime.run_predicate(shared_program, 282, [a1, a2, a3, a4]);
 }
 M.collect_deps = collect_deps;
 
