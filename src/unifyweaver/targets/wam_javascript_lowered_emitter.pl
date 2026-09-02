@@ -314,9 +314,15 @@ js_split_commit_([trust_me|R], D, Acc, Cond, Then) :-
     js_split_commit_(R, D1, [trust_me|Acc], Cond, Then).
 js_split_commit_([Commit|Then], 0, Acc, Acc, Then) :-
     is_commit(Commit), !.
-% Disjunction (A ; B) has no cut on the then-path. Treat the whole
-% path as the condition and an empty then — ite(A, [], B).
-js_split_commit_([], 0, Acc, Acc, []) :- !.
+% A try_me_else block with NO commit on the then-path is a plain
+% disjunction (A ; B), not an if-then-else. It used to be folded into
+% ite(A, [], B) — i.e. compiled as (A -> true ; B) — which silently
+% deleted B as a retry alternative and made A first-solution-only.
+% `( Goal, write(X), nl, fail ; true )` (the standard failure-driven
+% enumeration loop) then printed only the first solution. Cut-semantics
+% probe D-DISJ. Refuse: js_split_commit_/5 now fails on a commit-less
+% path, js_structure_ite/2 fails with it, and the predicate falls back
+% to the interpreter, which has real choice points.
 js_split_commit_([I|R], D, Acc, Cond, Then) :-
     js_split_commit_(R, D, [I|Acc], Cond, Then).
 
@@ -408,6 +414,18 @@ wam_javascript_lowerable(PI, WamCode, Reason) :-
     % the caller's next instruction rather than the alt clause. Wrong-but-
     % fast is a failure; leave these on the interpreter until T4+ITE fits.
     Reason \== multi_clause_1,
+    % Every lowered plan except clause_chain returns the FIRST clause that
+    % succeeds and pushes no choice point, so it is only sound when at
+    % most one clause CAN succeed: either the heads are first-argument
+    % mutually exclusive, or every clause but the last commits with a
+    % top-level cut. `p(X) :- once(d(X)). p(9).` is neither, and a caller
+    % could never reach the second solution (probes P10/P18). T5/T6
+    % (clause_chain) are exempt: their unbound-A1 path pushes a real
+    % interpreter choice point and hands the alternatives back.
+    (   Reason == clause_chain
+    ->  true
+    ;   \+ js_pi_may_yield_many(PI)
+    ),
     (   Reason == ite
     ->  forall(member(I, Payload), js_struct_supported(I))
     ;   Reason == clause_chain
@@ -697,6 +715,14 @@ emit_struct_item_js(ite(Cond, Then, Else), Ind) :- !,
     format("~w    return true;~n", [Ind]),
     format("~w  })();~n", [Ind]),
     format("~w  if (_ite_cond) {~n", [Ind]),
+    % ISO: entering the then-branch COMMITS to the condition. The
+    % condition is a once-like scope, so its choice points must be cut
+    % here. Without this, `once(d(X))` (compiled to (d(X) -> true ; fail))
+    % left d/1's clause choice point live and the caller backtracked into
+    % it -- probe P18 produced 1, 2, 3 where SWI gives 1. The then- and
+    % else-branches' own choice points are NOT cut (they belong to the
+    % enclosing clause).
+    format("~w    while (state.cps.length > _ite_cps) state.cps.pop();~n", [Ind]),
     emit_struct_js(Then, Ind4),
     format("~w  } else {~n", [Ind]),
     format("~w    Runtime.restore_machine(state, _ite_snap);~n", [Ind]),
@@ -759,20 +785,12 @@ emit_multi_clause_function(PredName, FuncName, AltLabel, Lines, Code) :-
 function ~w(program, state) {
   const alt_pc = program.labels[~w];
   if (alt_pc === undefined || alt_pc === null) return false;
-  const _cp = {
-    next_pc: alt_pc,
-    regs: Runtime.copy_table(state.regs),
-    cp: state.cp,
-    trail_len: state.trail.length,
-    var_counter: state.var_counter,
-    mode: state.mode,
-    build_stack: state.build_stack.slice(),
-    stack: state.stack.slice(),
-    read_stack: (state.read_stack || []).slice(),
-    read_args: state.read_args,
-    read_cursor: state.read_cursor,
-    y_save: (state.y_save || []).slice()
-  };
+  // Runtime.snapshot_machine (not a hand-rolled literal): it also
+  // captures cut_barrier / cut_stack. Without them restore_machine
+  // DELETED the barrier and emptied the stack on backtrack into this
+  // choice point, so the alt clause ran with no cut barrier at all.
+  const _cp = Runtime.snapshot_machine(state);
+  _cp.next_pc = alt_pc;
   state.cps.push(_cp);
   const ok = (function () {
 ~w    return false;
@@ -806,20 +824,10 @@ const ~w = (function () {
     if (t5a1 && typeof t5a1 === "object" && t5a1.tag !== "unbound") return false;
     const alt_pc = program.labels[~w];
     if (alt_pc === undefined || alt_pc === null) return false;
-    const _cp = {
-      next_pc: alt_pc,
-      regs: Runtime.copy_table(state.regs),
-      cp: state.cp,
-      trail_len: state.trail.length,
-      var_counter: state.var_counter,
-      mode: state.mode,
-      build_stack: state.build_stack.slice(),
-      stack: state.stack.slice(),
-      read_stack: (state.read_stack || []).slice(),
-      read_args: state.read_args,
-      read_cursor: state.read_cursor,
-      y_save: (state.y_save || []).slice()
-    };
+    // snapshot_machine also captures cut_barrier / cut_stack; a literal
+    // omitting them made restore_machine wipe the barrier stack.
+    const _cp = Runtime.snapshot_machine(state);
+    _cp.next_pc = alt_pc;
     state.cps.push(_cp);
     const ok = (function () {
 ~w      return false;
@@ -846,20 +854,12 @@ function ~w(program, state) {
   }
   const alt_pc = program.labels[~w];
   if (alt_pc === undefined || alt_pc === null) return false;
-  const _cp = {
-    next_pc: alt_pc,
-    regs: Runtime.copy_table(state.regs),
-    cp: state.cp,
-    trail_len: state.trail.length,
-    var_counter: state.var_counter,
-    mode: state.mode,
-    build_stack: state.build_stack.slice(),
-    stack: state.stack.slice(),
-    read_stack: (state.read_stack || []).slice(),
-    read_args: state.read_args,
-    read_cursor: state.read_cursor,
-    y_save: (state.y_save || []).slice()
-  };
+  // Runtime.snapshot_machine (not a hand-rolled literal): it also
+  // captures cut_barrier / cut_stack. Without them restore_machine
+  // DELETED the barrier and emptied the stack on backtrack into this
+  // choice point, so the alt clause ran with no cut barrier at all.
+  const _cp = Runtime.snapshot_machine(state);
+  _cp.next_pc = alt_pc;
   state.cps.push(_cp);
   const ok = (function () {
 ~w    return false;
@@ -1061,15 +1061,36 @@ emit_call(PredArity, I, Protect) :-
     % Direct JS call: the callee's Proceed is `return`, so Call does not
     % touch cp/pc. typeof is false when mixed([subset]) left it interpreted.
     format("~wif (typeof ~w === \"function\") {~n", [I, FuncName]),
+    % Choice points a lowered callee leaves (T5/T6 unbound-A1 dispatch)
+    % are not resumable from a lowered frame: their snapshot carries the
+    % LOWERED CALLER's cp, so backtracking into one resumes the
+    % interpreter past this call site and prints garbage (probe P01 in
+    % emit_mode(mixed) gave `r(1,one) _V2 _V2`). Drop them, matching
+    % Runtime.run_isolated: an inner lowered call is honestly
+    % first-solution rather than silently wrong.
+    format("~w  const _cpd = state.cps.length;~n", [I]),
     (   Protect == true
     ->  % Caller's Y is live across this Call (parse_args/2 after
         % default_registry). Match invoke_lowered_call: Y-snapshot +
         % mode/build/read restore so intern write-mode cannot clobber Y.
-        format("~w  Runtime.push_y_save(state);~n", [I]),
+        % push_call_frame = Y-save + cut barrier (WAM call: B0 <- B), so
+        % a `!` in the callee prunes only the callee's alternatives.
+        format("~w  Runtime.push_call_frame(state);~n", [I]),
         format("~w  const _ok = Runtime.run_lowered_body(program, state, ~w);~n", [I, FuncName]),
-        format("~w  Runtime.pop_y_save(state);~n", [I]),
+        format("~w  Runtime.pop_call_frame(state);~n", [I]),
+        format("~w  while (state.cps.length > _cpd) state.cps.pop();~n", [I]),
         format("~w  if (_ok !== true) return false;~n", [I])
-    ;   format("~w  if (~w(program, state) !== true) return false;~n", [I, FuncName])
+    ;   % WAM call: B0 <- B. Without the barrier a neck cut in the callee
+        % prunes the CALLER's choice points (the D44 bug shape, lowered
+        % side). Two array ops; the interpreter Call pays the same.
+        format("~w  Runtime.push_cut_barrier(state);~n", [I]),
+        format("~w  if (~w(program, state) !== true) {~n", [I, FuncName]),
+        format("~w    Runtime.pop_cut_barrier(state);~n", [I]),
+        format("~w    while (state.cps.length > _cpd) state.cps.pop();~n", [I]),
+        format("~w    return false;~n", [I]),
+        format("~w  }~n", [I]),
+        format("~w  Runtime.pop_cut_barrier(state);~n", [I]),
+        format("~w  while (state.cps.length > _cpd) state.cps.pop();~n", [I])
     ),
     format("~w} else {~n", [I]),
     format("~w  const saved_cp = state.cp;~n", [I]),
@@ -1077,12 +1098,18 @@ emit_call(PredArity, I, Protect) :-
     format("~w  const target = program.labels[~w];~n", [I, Q]),
     format("~w  let _ok = true;~n", [I]),
     format("~w  if (target !== undefined && target !== null) {~n", [I]),
-    format("~w    Runtime.push_y_save(state);~n", [I]),
+    % push_call_frame (not bare push_y_save): the interpreted callee's
+    % Proceed runs pop_call_frame, which pops a cut_stack entry too. With
+    % only a Y-save pushed it popped THIS frame's barrier, so a `!` after
+    % the call pruned the caller's choice points (probe P28).
+    format("~w    const _fm = Runtime.call_frame_mark(state);~n", [I]),
+    format("~w    Runtime.push_call_frame(state);~n", [I]),
     format("~w    state.cp = 0;~n", [I]),
     format("~w    state.pc = target;~n", [I]),
     format("~w    state.program = program;~n", [I]),
     format("~w    _ok = Runtime.run_isolated(program, state) === true;~n", [I]),
     format("~w    state.halt = false;~n", [I]),
+    format("~w    Runtime.call_frame_release(state, _fm);~n", [I]),
     format("~w  } else if (Runtime.step(program, state, I.Call(~w, ~w)) !== true) {~n", [I, PQ, Arity]),
     format("~w    _ok = false;~n", [I]),
     format("~w  }~n", [I]),
@@ -1130,8 +1157,13 @@ emit_execute(PredArity, I) :-
     wam_javascript_target:js_string_literal(PredName, PQ),
     % Lowered-to-lowered Execute: JS return IS Proceed. Do not proceed_to_cp
     % and do not touch cp (the caller's continuation stays in state.cp).
-    format("~wif (typeof ~w === \"function\") return ~w(program, state) === true;~n",
-           [I, FuncName, FuncName]),
+    % WAM execute still does B0 <- B: enter_execute rebases the cut
+    % barrier onto the tail-called predicate so its `!` cannot prune the
+    % choice points the CALLER left behind (probes P01/P33/P34).
+    format("~wif (typeof ~w === \"function\") {~n", [I, FuncName]),
+    format("~w  Runtime.enter_execute(state);~n", [I]),
+    format("~w  return ~w(program, state) === true;~n", [I, FuncName]),
+    format("~w}~n", [I]),
     format("~w{~n", [I]),
     format("~w  const target = program.labels[~w];~n", [I, Q]),
     format("~w  if (target !== undefined && target !== null) {~n", [I]),
@@ -1240,8 +1272,18 @@ wam_javascript_explain_lower(_PI, WamCode, fallback(Why)) :-
 wam_javascript_explain_lower(_, _, fallback('not classified')).
 
 %% js_pi_needs_naked_member_cps(+PI)
-%  True when this predicate (or a user callee) uses member/2 outside
-%  findall/bagof/setof/once. Lowering would keep only the first witness.
+%  True when this predicate (or a user callee) uses a NONDETERMINISTIC
+%  BUILTIN outside findall/bagof/setof/once/aggregate_all/forall.
+%  Lowering would keep only the first witness.
+%
+%  A lowered JS body is straight-line: when a goal fails there is no
+%  machinery to retry an earlier goal's choice point, and any choice
+%  point the goal left on state.cps is unreachable from the lowered
+%  frame (Runtime.run_isolated now drops those rather than letting a
+%  later backtrack resume the interpreter incoherently). The rule used
+%  to name member/2 only; every builtin in js_nondet_builtin/2 has the
+%  same shape, and `between(1, 3, X), X > 1, !` was the probe (P20) that
+%  showed member/2 was not special.
 js_pi_needs_naked_member_cps(PI) :-
     js_pi_functor_arity(PI, F, A),
     js_functor_needs_naked_member(F, A, []).
@@ -1249,23 +1291,113 @@ js_pi_needs_naked_member_cps(PI) :-
 js_pi_functor_arity(_M:F/A, F, A) :- !.
 js_pi_functor_arity(F/A, F, A).
 
+% A CALLEE with more than one distinct clause can succeed more than once,
+% so calling it leaves a choice point. A lowered body cannot resume one:
+% either the callee is itself lowered and its T5/T6 unbound-A1 choice
+% point snapshots the LOWERED CALLER's continuation, or it is interpreted
+% and Runtime.run_isolated drops what it left. Either way the caller only
+% ever sees the first solution, so the caller must stay on the
+% interpreter. Visited == [] is the predicate being classified: its own
+% clause count is fine (T4/T5/T6 dispatch it), only its CALLEES matter.
+%
+% Clauses are counted up to variant equality: a fixture that re-asserts
+% the same fact must not look nondeterministic.
+js_functor_needs_naked_member(F, A, Visited) :-
+    Visited \== [],
+    \+ memberchk(F/A, Visited),
+    js_distinct_clause_count(F, A, N),
+    N > 1, !.
 js_functor_needs_naked_member(F, A, Visited) :-
     \+ memberchk(F/A, Visited),
     functor(Head, F, A),
     catch(clause(user:Head, Body), _, fail),
     js_body_naked_member(Body, [F/A|Visited]).
 
+js_distinct_clause_count(F, A, N) :-
+    js_distinct_clauses(F, A, Uniq),
+    length(Uniq, N).
+
+% Deduplicated but ORDER-PRESERVING: js_clauses_cut_committed/1 reads
+% "every clause but the last", which is only meaningful in source order.
+js_distinct_clauses(F, A, Uniq) :-
+    functor(Head, F, A),
+    findall(C,
+            (   catch(clause(user:Head, Body), _, fail),
+                copy_term(Head-Body, C),
+                numbervars(C, 0, _)
+            ), Cs),
+    js_dedupe_ordered(Cs, [], Uniq).
+
+js_dedupe_ordered([], _, []).
+js_dedupe_ordered([C|Cs], Seen, Out) :-
+    (   memberchk(C, Seen)
+    ->  js_dedupe_ordered(Cs, Seen, Out)
+    ;   Out = [C|More],
+        js_dedupe_ordered(Cs, [C|Seen], More)
+    ).
+
+%% js_pi_may_yield_many(+PI)
+%  True when more than one clause of PI can succeed for the same call, so
+%  a first-solution lowering would hide answers. False (safe to lower)
+%  when the heads are first-argument mutually exclusive, or when every
+%  clause but the last commits with a top-level cut.
+js_pi_may_yield_many(PI) :-
+    js_pi_functor_arity(PI, F, A),
+    js_distinct_clauses(F, A, Clauses),
+    Clauses = [_, _ | _],
+    \+ js_clauses_first_arg_exclusive(Clauses),
+    \+ js_clauses_cut_committed(Clauses).
+
+js_clauses_first_arg_exclusive(Clauses) :-
+    findall(K, ( member(H-_, Clauses), js_first_arg_key(H, K) ), Keys),
+    length(Clauses, N),
+    length(Keys, N),
+    sort(Keys, Sorted),
+    length(Sorted, N).
+
+js_first_arg_key(Head, Key) :-
+    compound(Head),
+    arg(1, Head, A1),
+    nonvar(A1),
+    % js_distinct_clauses/3 numbervars its output, so a clause-head
+    % variable arrives as '$VAR'(N) -- still a variable for indexing.
+    A1 \= '$VAR'(_),
+    (   compound(A1)
+    ->  functor(A1, KF, KA), Key = KF/KA
+    ;   Key = c(A1)
+    ).
+
+% Every clause but the last reaches a top-level `!` (a conjunction chain
+% cut, not one buried in call/1, \+ or an if-then-else branch).
+js_clauses_cut_committed(Clauses) :-
+    append(AllButLast, [_], Clauses),
+    AllButLast \== [],
+    forall(member(_-B, AllButLast), js_body_top_level_cut(B)).
+
+js_body_top_level_cut(B) :- var(B), !, fail.
+js_body_top_level_cut(!) :- !.
+js_body_top_level_cut((A, B)) :- !,
+    (   js_body_top_level_cut(A)
+    ;   js_body_top_level_cut(B)
+    ).
+js_body_top_level_cut(_) :- fail.
+
 js_body_naked_member(Goal, _) :-
     var(Goal), !, fail.
 js_body_naked_member(_Mod:G, V) :-
     !,
     js_body_naked_member(G, V).
-js_body_naked_member(member(_, _), _) :- !.
-js_body_naked_member(lists:member(_, _), _) :- !.
 js_body_naked_member(findall(_, _, _), _) :- !, fail.
 js_body_naked_member(bagof(_, _, _), _) :- !, fail.
 js_body_naked_member(setof(_, _, _), _) :- !, fail.
+js_body_naked_member(aggregate_all(_, _, _), _) :- !, fail.
+js_body_naked_member(aggregate_all(_, _, _, _), _) :- !, fail.
 js_body_naked_member(once(_), _) :- !, fail.
+js_body_naked_member(forall(_, _), _) :- !, fail.
+js_body_naked_member(G, _) :-
+    nonvar(G),
+    functor(G, F, A),
+    js_nondet_builtin(F, A), !.
 js_body_naked_member((A, B), V) :- !,
     (   js_body_naked_member(A, V)
     ;   js_body_naked_member(B, V)
@@ -1285,6 +1417,19 @@ js_body_naked_member(G, V) :-
     A > 0,
     \+ js_body_skip_functor(F),
     js_functor_needs_naked_member(F, A, V).
+
+%% js_nondet_builtin(+Name, +Arity)
+%  Library builtins that can leave a choice point on state.cps. A lowered
+%  body cannot resume one, so any predicate reaching one of these outside
+%  a commit wrapper stays on the interpreter.
+%  The list is exactly the builtins that push onto state.cps in
+%  runtime.js.mustache. Every other library predicate there is
+%  implemented semi-deterministically (select/3, nth0/3, append/3,
+%  sub_atom/5, ... return one solution and push nothing), so they cannot
+%  leak a choice point into a lowered body and must NOT be listed --
+%  listing them only refuses lowering that is in fact safe.
+js_nondet_builtin(member, 2).
+js_nondet_builtin(between, 3).
 
 js_body_skip_functor(',').
 js_body_skip_functor(';').
