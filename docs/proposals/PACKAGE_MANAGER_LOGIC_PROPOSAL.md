@@ -116,6 +116,168 @@ this resolver is not redundant with apt: it reasons about a boundary apt is
 built to ignore. (Historical echo: Puppy's abandoned `Pkg` project and PPM's
 dependency heuristics were circling exactly this in bash.)
 
+### 2e. Graduated freeze semantics: holds have REASONS (P0.5 direction)
+
+Follow-on insight (from the TrixiePup discussion): a hold is a boolean, but
+freezing is not — and the reason determines upgrade safety. TrixiePup's
+practical problem is arguably that it freezes too much precisely because apt
+cannot represent WHY anything is frozen. Model it: `base(Pkg-Ver, Reason)`,
+
+| Reason | meaning | safe to upgrade? |
+|---|---|---|
+| `layer_shadow` | files live in read-only SFS; save-layer upgrade duplicates/shadows | yes, at a computable cost (shadow bytes) |
+| `abi_anchor` | other base packages built against this version | only as a **coordinated set** |
+| `puppy_modified` | Woof-CE patched/trimmed/replaced it | not without re-applying modifications |
+| `footprint` | held only for savefile size | yes, if cost accepted |
+| `blanket` | held with no specific constraint | probably — the over-freezing category |
+
+New queries from the same clauses: `safe_upgrade(Pkg, NewVer, Cost)` and
+`upgrade_set(Pkg, NewVer, Set)` — the minimal reverse-dependency closure that
+must move together (apt's `full-upgrade` computed minimally + explainably).
+"Why is this frozen?" becomes a query instead of forum lore.
+
+Crucially, most reasons are **derivable, not hand-annotated**: `abi_anchor`
+from reverse-dep degree + constraint tightness over the catalog; `layer_shadow`
+from the SFS manifest; only `puppy_modified` needs Woof-CE build metadata
+(`DISTRO_PKGS_SPECS`, trim lists). A blanket hold is then detectable as "held
+with no derivable reason" — the over-freezing diagnosis, computed.
+
+Related bounded task — **done**: the dormant `Pkg` project was mined as a
+requirements source; see `PKG_MINING_NOTES.md` (485 lines, code-cited: 8
+adopt / 3 adapt / 3 already-covered / 1 out-of-scope, top-10 ranked list).
+Headline finds: Pkg's own orphan-cleanup was DEAD CODE because its flat
+install record never distinguished requested-vs-dependency (validating our
+`requested/1`/`installed/1` split); its blacklist accidentally blocked
+REMOVAL of blacklisted-but-installed packages (why `excluded/1` must stay
+decoupled from removal safety); DEVX-layer detection via a `which gcc` proxy
+(validating mount-table-driven `in_layer/2`, §2f); repo federation is a
+priority-ordered per-repo fallback chain, not a flat bag.
+
+### 2f. Two dependency graphs: declared vs linked (check_deps/ListDD lineage)
+
+Further Puppy research (check_deps.sh, ListDD, ldd, resolvedeps.sh) shows the
+ecosystem always ran on TWO graphs, and P0 models only the first:
+
+1. **Declared** — package-level metadata (`depends/4`): human-curated, often
+   incomplete or wrong; what apt reasons over.
+2. **Linked** — what binaries actually require: ELF `DT_NEEDED` sonames,
+   mechanically extractable (`readelf -d`), ground truth for dynamic linkage;
+   what Puppy's checkers worked from when metadata failed.
+
+Model additions (P0.5/P2 direction):
+- `needs_soname(Pkg-Ver, Soname)` / `provides_soname(Pkg-Ver, Soname)` —
+  derivable at scan/build time; natural rows for the GP-LMDB catalog store.
+- `soname_provider(Soname, Candidates)` — the "libXfixes.so.3 → which
+  package?" lookup Puppy users did by forum search, as a join.
+- `verify_closure(Layer, Report)` — cross-check a declared-deps
+  `layer_closure` at soname level: declared-but-unlinked (trimmable bloat)
+  and linked-but-undeclared (the metadata bugs check_deps existed to catch).
+  The graphs audit each other; neither alone suffices.
+- **Named layers, not one base**: resolvedeps.sh's filter chain
+  (`no_dupes_no_builtins_no_devx_no_blacklisted`) shows the exclusion set is
+  layered — base SFS, devx SFS, blacklist. Generalize `base/1` to
+  `in_layer(PkgOrSoname, LayerName)` with closures computed relative to the
+  loaded-layer set.
+- **Honest limits, modeled**: ELF analysis misses dlopen, plugins
+  (GStreamer/GTK/Python), data files, exec'd helpers, and symbol-version ABI
+  breaks. Soname facts are labeled *detected dynamic linkage* — never claimed
+  as the complete runtime closure.
+
+(check_deps.sh source lives in the Woof-CE rootfs skeleton
+`/usr/local/petget/check_deps.sh`, not the Pkg repo — a separate targeted
+recon if we want its exact aggregation/exclusion rules.)
+
+### 2g. Time-indexed catalogs: version selection UNDER the ceiling
+
+The manual workflow that motivated this (user report): see the missing `.so`,
+search Debian's **Contents index** for the exact package containing it, then
+install a version *behind* the current snapshot that still fits the frozen
+base — two things apt structurally cannot do:
+
+1. **Soname → package reverse lookup**: apt doesn't do it (separate
+   `apt-file` tooling; PPM users did it in a browser). For us it's
+   `soname_provider/2`, and Debian's `Contents-<arch>.gz` (path → package,
+   huge, queried by bound key) is its ingestion source — exactly the shape of
+   the D43 seek-indexed fact store. Ingest once; the browser session becomes
+   an O(log n) seek.
+2. **Cross-snapshot resolution**: apt reasons over ONE Packages snapshot.
+   Debian keeps every version (snapshot.debian.org). Give catalog facts a
+   snapshot dimension — `package(Name, Ver, Snap)`, `depends(..., Snap)` —
+   and "newest version of P satisfying C whose closure fits under `base/1`"
+   ranges over history. The §2d ceiling explanation gains its natural
+   follow-up: *blocked at today's version — but snapshot 2024-06's fits.*
+
+The full manual flow compiles to one query chain:
+`missing_sonames` → `soname_provider` (multi-snapshot Contents facts) →
+`resolve_layered` (candidate pinned) → `layer_closure`.
+
+### 2h. The symbol level, and the fact sources nobody's solver reads
+
+Snapshots answered: the archives EXIST — snapshot.debian.org (whole archive,
+several captures daily, since ~2005; apt can install FROM one dated snapshot
+but cannot search ACROSS them), snapshot.ubuntu.com, Launchpad's every-built-
+.deb, archive.debian.org. §2g's time-indexed catalog is published data
+awaiting its first relational consumer.
+
+Below the soname graph sits a third: **symbols**. A soname can match while a
+versioned symbol doesn't (`version 'GLIBC_2.34' not found`). Facts:
+`needs_symbol(Bin, Sym, SymVer)` / `exports_symbol(Lib-Ver, Sym, SymVer)` —
+and Debian already publishes the database: per-library **`.symbols` files**
+(symbol → minimal introducing version; what dpkg-shlibdeps consumes). This
+transforms §2e's `upgrade_set`: a base-lib upgrade is safe for a dependent iff
+the new version exports a SUPERSET of the symbols that dependent actually
+uses — usually a stable subset, so the true coordinated set is far smaller
+than declared reverse-deps (the pessimism that makes TrixiePup over-freeze).
+When blocked, the explanation is exact: *installed X links foo_frob@LIBFOO_2.35,
+absent from the proposed version.* Set containment over facts — native Prolog.
+
+Further published sources for the spec's fact schema: libabigail/abidiff ABI
+diffs (`abi_breaks/4`, stricter than symbols); the Debian security tracker's
+CVE JSON (§2g's advisory annotation); file conflicts derived from the Contents
+index already ingested; Provides/virtual packages; Essential/priority flags.
+Lineage note, honestly: Debian's EDOS/Mancoosi work and `dose-debcheck`
+formalized installability long ago — our contribution is unifying ALL layers
+(declared / soname / symbol / ABI / time / advisories) in ONE queryable,
+explaining, transpilable spec rather than one standalone checker per layer.
+
+### 2i. Maintainer scripts and platform seams: classify the imperative residue
+
+Two places the declarative model meets imperative reality (user-raised):
+pre/post-install scripts, and platform-assumption seams (graphics, audio,
+IPC/dbus, init — Xorg/Wayland, systemd-vs-not).
+
+**Maintainer scripts.** Stripping them when upgrading frozen packages is
+sometimes right and sometimes breaks things — because "the script" bundles
+distinct EFFECTS. Most content is debhelper-generated boilerplate from a small
+template vocabulary, so it classifies: `maintscript(Pkg-Ver, Phase, Class)`,
+Class ∈ ldconfig | alternatives(N) | sysusers(U) | systemd_enable(Unit) |
+cache(Kind) | conffile_move | custom(Hash). The strip/keep decision becomes a
+relation `script_action(Class, Platform, Action)`:
+- **bake_at_build** — file-producing effects run once in a chroot against the
+  target base while BUILDING the layer; outputs baked into the SFS. Scripts
+  belong to layer-build time, not live-install time, in the layered model.
+- **noop_on_platform** — e.g. systemd_enable with no systemd; but the class
+  lets us check whether the package's FUNCTION needs the unit → conflict, not
+  silent no-op.
+- **run_on_target** — genuinely environmental (user creation).
+- **needs_review(custom)** — unrecognized code surfaces for review/sandbox,
+  never silently stripped NOR silently trusted. The irreducible residue,
+  explicit.
+
+**Platform seams.** `platform_provides(Platform, Capability)` facts (Puppy:
+no systemd; init flavor; display/audio stacks) vs derived package
+assumptions — from deps (systemd-sysv → hard), Contents artifacts (.service
+units, udev rules, dbus activation — weak alone), and maintscript classes.
+`platform_conflicts(Pkg, Platform, Assumptions)` grades each assumption WITH
+ITS EVIDENCE: `assumes(P, systemd, evidence(depends(systemd_sysv)))` strong;
+`evidence(ships_unit_file)` weak (inert without systemd). Evidence-graded
+facts let decisions demand strong evidence while surfacing weak signals —
+heuristics that admit they are heuristics.
+
+Feedback into §2e: much base over-freezing is platform divergence, not ABI —
+freezing was the blunt instrument for "this package's assumptions don't hold
+here." With 2i's facts, that reason becomes explicit and per-package.
+
 ## 3. Why Prolog is the right spec language here (concretely)
 
 | resolver need | Prolog form |
