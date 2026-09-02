@@ -2,31 +2,26 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
-% resolver.pl -- uw-resolve P0. Pure relations over a frozen catalog term.
+% resolver.pl -- uw-resolve P0.5. Pure relations over a frozen catalog term.
 %
-% Catalog:
+% Catalog (P0, still accepted):
 %   catalog(Packages, Depends, Conflicts, Base, Installed, Requested)
-%     Packages  = [package(Name, v(M,I,P)), ...]
-%     Depends   = [depends(Name, Ver, DepName, Constraint), ...]
-%     Conflicts = [conflicts(Name, Ver, OtherName), ...]
-%     Base/Installed = [Name-Ver, ...]
-%     Requested = [Name, ...]          % manual/root installs (removal_orphans)
+%
+% Catalog (P0.5 extras; Layers / Excluded / Aliases):
+%   catalog(Packages, Depends, Conflicts, Base, Installed, Requested,
+%           Layers, Excluded, Aliases)
+%
+% Base entries (back-compat):
+%   Name-Ver                         % Reason = blanket
+%   base(Name-Ver, Reason)           % Reason ∈ layer_shadow | abi_anchor
+%                                    %          | modified | footprint | blanket
+%   layer(LayerName, [Entry...])     % also accepted in Base; base = layer `base`
+% Layers: [layer(Name, [Entry...]), ...]
+% Excluded: [Name, ...]              % candidate-generation blacklist only
+% Aliases:  [alias(Alias, Canonical), ...]   % request edge only
 %
 % Constraints: any | eq(V) | gte(V) | lt(V) | range(Lo, Hi)
-%   Lo inclusive, Hi exclusive. Versions compared lexicographically.
-%   Debian epoch/tilde semantics are deferred.
-%
-% Queries (Catalog is data; no assert/retract):
-%   resolve(+Cat, +Requests, -Selection)
-%   resolve_layered(+Cat, +Requests, -Selection)
-%   explain_blocked(+Cat, +Request, -Blocked)     % nondet
-%   layer_closure(+Cat, +Request, -Layer)
-%   removal_orphans(+Cat, +Pkg, -Orphans)
-%
-% Determinism: resolve* commit to the FIRST search solution (prefer a
-% base-satisfied dependency, else highest version). Selections are sorted
-% by Name-Ver. explain_blocked enumerates; callers findall+sort at the
-% API edge. removal_orphans returns a sorted list.
+% Debian epoch/tilde, Provides/virtual, GP-LMDB catalog, CLI: deferred.
 %
 %   swipl -q -g test_resolver -t halt examples/pkg_resolver/test_resolver.pl
 
@@ -37,20 +32,38 @@
     explain_blocked_list/3,
     layer_closure/3,
     removal_orphans/3,
+    safe_upgrade/4,
+    upgrade_set/4,
+    upgrade_set_result/4,
+    freeze_audit/2,
+    dependents/3,
+    dependents_installed/3,
     satisfies/2,
     version_lt/2
 ]).
 
 % ---------------------------------------------------------------------------
-% Catalog accessors
+% Catalog accessors — catalog/6 (P0) and catalog/9 (P0.5)
 % ---------------------------------------------------------------------------
 
 packages(catalog(Ps, _, _, _, _, _), Ps).
+packages(catalog(Ps, _, _, _, _, _, _, _, _), Ps).
 depends_list(catalog(_, Ds, _, _, _, _), Ds).
+depends_list(catalog(_, Ds, _, _, _, _, _, _, _), Ds).
 conflicts_list(catalog(_, _, Cs, _, _, _), Cs).
+conflicts_list(catalog(_, _, Cs, _, _, _, _, _, _), Cs).
 base_list(catalog(_, _, _, Bs, _, _), Bs).
+base_list(catalog(_, _, _, Bs, _, _, _, _, _), Bs).
 installed_list(catalog(_, _, _, _, Is, _), Is).
+installed_list(catalog(_, _, _, _, Is, _, _, _, _), Is).
 requested_list(catalog(_, _, _, _, _, Rs), Rs).
+requested_list(catalog(_, _, _, _, _, Rs, _, _, _), Rs).
+layers_list(catalog(_, _, _, _, _, _), []).
+layers_list(catalog(_, _, _, _, _, _, Ls, _, _), Ls).
+excluded_list(catalog(_, _, _, _, _, _), []).
+excluded_list(catalog(_, _, _, _, _, _, _, Es, _), Es).
+alias_list(catalog(_, _, _, _, _, _), []).
+alias_list(catalog(_, _, _, _, _, _, _, _, As), As).
 
 package_in(Cat, Name, Ver) :-
     packages(Cat, Ps),
@@ -64,9 +77,13 @@ conflicts_in(Cat, Name, Ver, Other) :-
     conflicts_list(Cat, Cs),
     member(conflicts(Name, Ver, Other), Cs).
 
+% A package in ANY loaded layer (base list + named layers), first match.
+% Bare Name-Ver is the P0 shape; base/2 and nested layer/2 are P0.5.
 base_ver(Cat, Name, Ver) :-
     base_list(Cat, Bs),
-    member(Name-Ver, Bs).
+    layers_list(Cat, Ls),
+    append(Bs, Ls, All),
+    lookup_held(All, Name, Ver).
 
 base_name(Cat, Name) :-
     base_ver(Cat, Name, _).
@@ -74,6 +91,23 @@ base_name(Cat, Name) :-
 installed_ver(Cat, Name, Ver) :-
     installed_list(Cat, Is),
     member(Name-Ver, Is).
+
+excluded_name(Cat, Name) :-
+    excluded_list(Cat, Es),
+    member(Name, Es).
+
+lookup_held([H|T], Name, Ver) :-
+    (   item_ver(H, Name, V0)
+    ->  Ver = V0
+    ;   lookup_held(T, Name, Ver)
+    ).
+
+item_ver(N-V, Name, V) :-
+    N == Name.
+item_ver(base(N-V, _R), Name, V) :-
+    N == Name.
+item_ver(layer(_L, Pkgs), Name, V) :-
+    lookup_held(Pkgs, Name, V).
 
 % ---------------------------------------------------------------------------
 % Versions and constraints
@@ -95,10 +129,13 @@ satisfies(Ver, range(Lo, Hi)) :-
     \+ version_lt(Ver, Lo),
     version_lt(Ver, Hi).
 
-% Highest version first (standard order on v/3 is lexicographic).
-% Collected without findall so the JS WAM interpreter does not have to
-% run a lowered helper inside BeginAggregate (that path drops answers).
+tight_constraint(C) :-
+    C \== any.
+
+% Highest version first. Excluded names produce no candidates (blacklist
+% filters generation only — never removal).
 candidates_high_first(Cat, Name, C, Ver) :-
+    \+ excluded_name(Cat, Name),
     packages(Cat, Ps),
     matching_versions(Ps, Name, C, Vs),
     sort(Vs, Asc),
@@ -115,20 +152,31 @@ matching_versions([package(N, V)|Rest], Name, C, Out) :-
     matching_versions(Rest, Name, C, Vs).
 
 % ---------------------------------------------------------------------------
-% Requests
+% Requests (aliases applied here only; catalog names stay canonical)
 % ---------------------------------------------------------------------------
 
-request_to_req(R, req(Name, C)) :-
-    (   R = req(Name, C)
-    ->  true
-    ;   Name = R,
+canonicalize_name(Cat, In, Out) :-
+    alias_list(Cat, As),
+    alias_lookup(As, In, Out).
+
+alias_lookup([], N, N).
+alias_lookup([alias(A, Canon)|Rest], In, Out) :-
+    (   In == A
+    ->  Out = Canon
+    ;   alias_lookup(Rest, In, Out)
+    ).
+
+request_to_req(Cat, R, req(Name, C)) :-
+    (   R = req(Raw, C)
+    ->  canonicalize_name(Cat, Raw, Name)
+    ;   canonicalize_name(Cat, R, Name),
         C = any
     ).
 
-map_requests([], []).
-map_requests([R|Rs], [Q|Qs]) :-
-    request_to_req(R, Q),
-    map_requests(Rs, Qs).
+map_requests(_Cat, [], []).
+map_requests(Cat, [R|Rs], [Q|Qs]) :-
+    request_to_req(Cat, R, Q),
+    map_requests(Cat, Rs, Qs).
 
 selected_ver([H|Rest], Name, Ver) :-
     (   H = Name-Ver
@@ -140,7 +188,7 @@ member_selected(Acc, Name, Ver) :-
     member(Name-Ver, Acc).
 
 % ---------------------------------------------------------------------------
-% Conflicts: either direction, against a selected OtherName (any version).
+% Conflicts
 % ---------------------------------------------------------------------------
 
 acc_conflicts(Cat, Name, Ver, Acc) :-
@@ -149,8 +197,6 @@ acc_conflicts(Cat, Name, Ver, Acc) :-
     ;   conflicts_in(Cat, Other, OtherVer, Name)
     ).
 
-% Deterministic scan — no leftover CPs, so a later failure can still
-% retry candidate versions. Used by resolve_pending instead of \+/1.
 no_acc_conflicts(_Cat, _Name, _Ver, []).
 no_acc_conflicts(Cat, Name, Ver, [Other-OtherVer|Rest]) :-
     \+ conflicts_in(Cat, Name, Ver, Other),
@@ -158,21 +204,17 @@ no_acc_conflicts(Cat, Name, Ver, [Other-OtherVer|Rest]) :-
     no_acc_conflicts(Cat, Name, Ver, Rest).
 
 % ---------------------------------------------------------------------------
-% Classic resolve — first solution, highest version, may "upgrade" a base pkg.
+% Classic / layered resolve
 % ---------------------------------------------------------------------------
 
 resolve(Cat, Requests, Selection) :-
-    map_requests(Requests, Pending),
+    map_requests(Cat, Requests, Pending),
     resolve_pending(classic, Cat, Pending, [], Acc),
     !,
     sort(Acc, Selection).
 
-% ---------------------------------------------------------------------------
-% Layered resolve — never re-select or upgrade a base package.
-% ---------------------------------------------------------------------------
-
 resolve_layered(Cat, Requests, Selection) :-
-    map_requests(Requests, Pending),
+    map_requests(Cat, Requests, Pending),
     resolve_pending(layered, Cat, Pending, [], Acc),
     !,
     sort(Acc, Selection).
@@ -205,13 +247,12 @@ matching_deps([depends(N, V, D, C)|Rest], Name, Ver, Out) :-
     ),
     matching_deps(Rest, Name, Ver, Rs).
 
-% Classic: catalog versions, highest first. Backtracks.
 pick(classic, Cat, Name, C, _Acc, Ver, from_catalog) :-
     candidates_high_first(Cat, Name, C, Ver).
 
-% Layered: a base package that satisfies is used in-place (not selected).
-% A base package that does not satisfy is a hard fail (no upgrade).
-% Names not in the base are chosen from the catalog, highest first.
+% Layered: a loaded-layer package that satisfies is used in-place
+% (never re-selected). A loaded-layer package that does not satisfy is
+% a hard fail. Names not in any loaded layer come from the catalog.
 pick(layered, Cat, Name, C, _Acc, Ver, Origin) :-
     (   base_ver(Cat, Name, BV)
     ->  satisfies(BV, C),
@@ -222,15 +263,15 @@ pick(layered, Cat, Name, C, _Acc, Ver, Origin) :-
     ).
 
 % ---------------------------------------------------------------------------
-% explain_blocked — same layered pick, failure branch yields blocked/3.
+% explain_blocked
 % ---------------------------------------------------------------------------
 
 explain_blocked(Cat, Request, Blocked) :-
-    request_to_req(Request, Req),
+    request_to_req(Cat, Request, Req),
     blocked_from(Cat, Req, [], Blocked).
 
 explain_blocked_list(Cat, Request, List) :-
-    request_to_req(Request, Req),
+    request_to_req(Cat, Request, Req),
     blocked_acc(Cat, Req, [], [], Acc),
     sort(Acc, List),
     !.
@@ -247,7 +288,6 @@ blocked_from(Cat, req(Name, C), Seen, Blocked) :-
     member(Dep, DepReqs),
     blocked_from(Cat, Dep, [Name|Seen], Blocked).
 
-% Deterministic walk used by explain_blocked_list/3 (no findall).
 blocked_acc(_Cat, req(Name, _C), Seen, Acc, Acc) :-
     seen_name(Seen, Name), !.
 blocked_acc(Cat, req(Name, C), Seen, Acc0, Acc) :-
@@ -273,8 +313,6 @@ seen_name([H|Rest], Name) :-
     ;   seen_name(Rest, Name)
     ).
 
-% The version layered resolution would use, if any (no conflict check —
-% version-ceiling explanations are independent of sibling conflicts).
 layered_walk_ver(Cat, Name, C, Ver) :-
     (   base_ver(Cat, Name, BV)
     ->  satisfies(BV, C),
@@ -284,7 +322,7 @@ layered_walk_ver(Cat, Name, C, Ver) :-
     !.
 
 % ---------------------------------------------------------------------------
-% layer_closure — non-base closure, dependencies before dependents.
+% layer_closure
 % ---------------------------------------------------------------------------
 
 layer_closure(Cat, Request, Layer) :-
@@ -323,10 +361,11 @@ topo_one(Cat, Name, Sel, Seen0, Seen, Acc0, Acc) :-
     ).
 
 % ---------------------------------------------------------------------------
-% removal_orphans — PPM-style trim. Base packages are never orphans.
+% removal_orphans — exclusion is NOT consulted (Pkg bug we refuse to copy)
 % ---------------------------------------------------------------------------
 
-removal_orphans(Cat, Pkg, Orphans) :-
+removal_orphans(Cat, Pkg0, Orphans) :-
+    canonicalize_name(Cat, Pkg0, Pkg),
     installed_list(Cat, Inst),
     (   installed_ver(Cat, Pkg, Ver)
     ->  true
@@ -382,3 +421,194 @@ roots_to_pairs([N|Ns], Inst, [N-V|Ps]) :-
     roots_to_pairs(Ns, Inst, Ps).
 roots_to_pairs([_|Ns], Inst, Ps) :-
     roots_to_pairs(Ns, Inst, Ps).
+
+% ---------------------------------------------------------------------------
+% Base holds with reasons (P0 Name-Ver ⇒ blanket). Named layers other
+% than `base` are not freeze-audited.
+% ---------------------------------------------------------------------------
+
+base_holds(Cat, Holds) :-
+    base_list(Cat, Bs),
+    scan_base_holds(Bs, [], Acc),
+    sort(Acc, Holds).
+
+scan_base_holds([], Acc, Acc).
+scan_base_holds([H|T], Acc0, Acc) :-
+    (   H = layer(base, Pkgs)
+    ->  scan_base_holds(Pkgs, Acc0, Acc1)
+    ;   H = layer(_, _)
+    ->  Acc1 = Acc0
+    ;   H = base(N-V, R)
+    ->  Acc1 = [hold(N, V, R)|Acc0]
+    ;   H = N-V
+    ->  Acc1 = [hold(N, V, blanket)|Acc0]
+    ;   Acc1 = Acc0
+    ),
+    scan_base_holds(T, Acc1, Acc).
+
+base_reason(Cat, Name, Reason) :-
+    base_holds(Cat, Holds),
+    hold_reason(Holds, Name, Reason).
+
+hold_reason([hold(N, _V, R)|T], Name, Reason) :-
+    (   N == Name
+    ->  Reason = R
+    ;   hold_reason(T, Name, Reason)
+    ).
+
+% ---------------------------------------------------------------------------
+% safe_upgrade / upgrade_set
+% ---------------------------------------------------------------------------
+
+safe_upgrade(Cat, Pkg0, NewVer, Verdict) :-
+    canonicalize_name(Cat, Pkg0, Pkg),
+    (   \+ package_in(Cat, Pkg, NewVer)
+    ->  Verdict = no_candidate
+    ;   \+ base_reason(Cat, Pkg, _)
+    ->  Verdict = no_candidate
+    ;   base_reason(Cat, Pkg, Reason),
+        safe_upgrade_reason(Cat, Pkg, NewVer, Reason, Verdict)
+    ),
+    !.
+
+safe_upgrade_reason(_Cat, _Pkg, _NewVer, modified, unsafe(modified)).
+safe_upgrade_reason(_Cat, _Pkg, _NewVer, footprint, safe(cost(footprint))).
+safe_upgrade_reason(_Cat, _Pkg, _NewVer, blanket, safe(cost(blanket))).
+safe_upgrade_reason(_Cat, _Pkg, _NewVer, layer_shadow, safe(cost(layer_shadow))).
+safe_upgrade_reason(Cat, Pkg, NewVer, abi_anchor, coordinated(Set)) :-
+    upgrade_set_result(Cat, Pkg, NewVer, ok(Set)).
+
+upgrade_set(Cat, Pkg, NewVer, Set) :-
+    upgrade_set_result(Cat, Pkg, NewVer, ok(Set)),
+    !.
+
+upgrade_set_result(Cat, Pkg0, NewVer, Result) :-
+    canonicalize_name(Cat, Pkg0, Pkg),
+    (   package_in(Cat, Pkg, NewVer)
+    ->  close_moving(Cat, [Pkg-NewVer], Result)
+    ;   Result = no_candidate
+    ),
+    !.
+
+close_moving(Cat, Acc, Result) :-
+    base_holds(Cat, Holds),
+    first_broken(Holds, Cat, Acc, Broken),
+    (   Broken = none
+    ->  sort(Acc, Sorted),
+        Result = ok(Sorted)
+    ;   Broken = broken(N, V, C),
+        (   pick_repair(Cat, N, Acc, NewV)
+        ->  close_moving(Cat, [N-NewV|Acc], Result)
+        ;   Result = blocked(N, needs(C), base_has(V))
+        )
+    ).
+
+first_broken([], _Cat, _Acc, none).
+first_broken([hold(N, V, _R)|Rest], Cat, Acc, Broken) :-
+    (   selected_ver(Acc, N, _)
+    ->  first_broken(Rest, Cat, Acc, Broken)
+    ;   dep_breaks_moving(Cat, N, V, Acc, C)
+    ->  Broken = broken(N, V, C)
+    ;   first_broken(Rest, Cat, Acc, Broken)
+    ).
+
+dep_breaks_moving(Cat, N, V, Acc, C) :-
+    depends_list(Cat, Ds),
+    dep_breaks(Ds, N, V, Acc, C).
+
+dep_breaks([depends(HN, HV, D, C)|Rest], N, V, Acc, COut) :-
+    (   HN == N,
+        HV == V,
+        selected_ver(Acc, D, MV),
+        \+ satisfies(MV, C)
+    ->  COut = C
+    ;   dep_breaks(Rest, N, V, Acc, COut)
+    ).
+
+pick_repair(Cat, Name, Acc, NewV) :-
+    candidates_high_first(Cat, Name, any, NewV),
+    repairs_moving(Cat, Name, NewV, Acc).
+
+repairs_moving(Cat, Name, NewV, Acc) :-
+    collect_deps(Cat, Name, NewV, Reqs),
+    reqs_ok_moving(Reqs, Acc).
+
+reqs_ok_moving([], _).
+reqs_ok_moving([req(D, C)|Rest], Acc) :-
+    (   selected_ver(Acc, D, MV)
+    ->  satisfies(MV, C)
+    ;   true
+    ),
+    reqs_ok_moving(Rest, Acc).
+
+% ---------------------------------------------------------------------------
+% freeze_audit
+% ---------------------------------------------------------------------------
+
+freeze_audit(Cat, Audit) :-
+    base_holds(Cat, Holds),
+    audit_holds(Holds, Cat, [], Acc),
+    sort(Acc, Audit),
+    !.
+
+audit_holds([], _Cat, Acc, Acc).
+audit_holds([hold(N, _V, R)|Rest], Cat, Acc0, Acc) :-
+    (   R == blanket
+    ->  (   tight_base_revdep(Cat, N)
+        ->  Item = audit(N, suggest(abi_anchor))
+        ;   Item = audit(N, over_frozen)
+        )
+    ;   Item = audit(N, held(R))
+    ),
+    audit_holds(Rest, Cat, [Item|Acc0], Acc).
+
+tight_base_revdep(Cat, Pkg) :-
+    base_holds(Cat, Holds),
+    tight_rev_in(Holds, Cat, Pkg).
+
+tight_rev_in([hold(N, V, _R)|Rest], Cat, Pkg) :-
+    (   N \== Pkg,
+        depends_in(Cat, N, V, Pkg, C),
+        tight_constraint(C)
+    ->  true
+    ;   tight_rev_in(Rest, Cat, Pkg)
+    ).
+
+% ---------------------------------------------------------------------------
+% dependents / dependents_installed  (what-needs)
+% ---------------------------------------------------------------------------
+
+dependents(Cat, Pkg0, Deps) :-
+    canonicalize_name(Cat, Pkg0, Pkg),
+    depends_list(Cat, Ds),
+    direct_on(Ds, Pkg, [], Acc),
+    sort(Acc, Deps),
+    !.
+
+dependents_installed(Cat, Pkg0, Deps) :-
+    dependents(Cat, Pkg0, All),
+    keep_installed_or_base(All, Cat, [], Acc),
+    sort(Acc, Deps),
+    !.
+
+direct_on([], _Pkg, Acc, Acc).
+direct_on([depends(N, V, D, _C)|Rest], Pkg, Acc0, Acc) :-
+    (   D == Pkg
+    ->  Acc1 = [N-V|Acc0]
+    ;   Acc1 = Acc0
+    ),
+    direct_on(Rest, Pkg, Acc1, Acc).
+
+keep_installed_or_base([], _Cat, Acc, Acc).
+keep_installed_or_base([N-V|Rest], Cat, Acc0, Acc) :-
+    (   installed_or_base(Cat, N, V)
+    ->  Acc1 = [N-V|Acc0]
+    ;   Acc1 = Acc0
+    ),
+    keep_installed_or_base(Rest, Cat, Acc1, Acc).
+
+installed_or_base(Cat, N, V) :-
+    installed_ver(Cat, N, V).
+installed_or_base(Cat, N, V) :-
+    base_ver(Cat, N, BV),
+    V == BV.
