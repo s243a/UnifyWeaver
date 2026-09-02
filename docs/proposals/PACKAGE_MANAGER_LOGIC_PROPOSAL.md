@@ -142,9 +142,16 @@ from the SFS manifest; only `puppy_modified` needs Woof-CE build metadata
 (`DISTRO_PKGS_SPECS`, trim lists). A blanket hold is then detectable as "held
 with no derivable reason" — the over-freezing diagnosis, computed.
 
-Related bounded task: mine the dormant `Pkg` project (`sc0ttj/Pkg` upstream)
-as a REQUIREMENTS source — its command vocabulary, PET/SFS workflows, and
-dependency heuristics encode years of real Puppy user needs, in bash.
+Related bounded task — **done**: the dormant `Pkg` project was mined as a
+requirements source; see `PKG_MINING_NOTES.md` (485 lines, code-cited: 8
+adopt / 3 adapt / 3 already-covered / 1 out-of-scope, top-10 ranked list).
+Headline finds: Pkg's own orphan-cleanup was DEAD CODE because its flat
+install record never distinguished requested-vs-dependency (validating our
+`requested/1`/`installed/1` split); its blacklist accidentally blocked
+REMOVAL of blacklisted-but-installed packages (why `excluded/1` must stay
+decoupled from removal safety); DEVX-layer detection via a `which gcc` proxy
+(validating mount-table-driven `in_layer/2`, §2f); repo federation is a
+priority-ordered per-repo fallback chain, not a flat bag.
 
 ### 2f. Two dependency graphs: declared vs linked (check_deps/ListDD lineage)
 
