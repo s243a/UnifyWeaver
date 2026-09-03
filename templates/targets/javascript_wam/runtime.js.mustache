@@ -3448,7 +3448,33 @@ Runtime.read_facts_file = function (program, path) {
 Runtime._fact_io_bytes = 0;
 Runtime._fact_io_data_size = 0;
 Runtime._fact_io_reads = 0;
+Runtime._lmdb_ops = 0;
+Runtime._lmdb_entries = 0;
 Runtime._lmdb_force_missing = false;
+// Fleet LMDB materialisation tiers (docs/WAM_GO_STATUS.md, WAM_FSHARP_STATUS.md,
+// Rust LookupSource). Same names as F#/Go/Rust so a later round can plumb
+// lmdb_materialisation(...) through write_wam_javascript_project:
+//   eager  — scan once at first use; serve from an arg1 index
+//   lazy   — fetch per lookup (no memo)
+//   cached — bounded L1 LRU (this is the JS "cache on" path). L2 is a residual.
+//   auto   — residual: JS does not call core/cost_model.pl; falls back to cached.
+// Default is cached, matching F#/Go. Catalogs are read-only: no invalidation.
+// A future write path MUST call Runtime.fact_cache_reset() after mutation
+// (clears L1 and bumps the eager epoch).
+// Env UW_LMDB_MATERIALISATION / UW_FACT_CACHE wins over source.materialisation
+// so the 2×2 stays valid after compile-time plumbing. D43 bytes-read proof
+// (Bytes>200, Bytes<16384) still holds on cached: first miss seeks. eager
+// would scan and fail that bound — do not default eager.
+//
+// Measurement alias (unchanged protocol): UW_FACT_CACHE=0 → lazy, =1 → cached.
+Runtime._lmdb_materialisation = null;
+Runtime._fact_cache_on = null;
+Runtime._fact_cache_cap = 0;
+Runtime._fact_l1 = null;
+Runtime._fact_cache_hits = 0;
+Runtime._fact_cache_misses = 0;
+Runtime._lmdb_auto_warned = false;
+Runtime._eager_epoch = 0;
 
 const UWFI_MAGIC = Buffer.from("UWFI");
 const UWIX_MAGIC = Buffer.from("UWIX");
@@ -3660,12 +3686,14 @@ function lmdb_range_rows(program, db, start, end) {
   if (typeof db.getRange !== "function") {
     throw new Error("JS WAM lmdb store: package has no getRange()");
   }
+  Runtime._lmdb_ops = (Runtime._lmdb_ops || 0) + 1;
   const rows = [];
   const it = db.getRange({ start: start, end: end });
   for (const entry of it) {
     const pair = lmdb_payload_row(program, entry.value);
     if (pair) rows.push(pair);
   }
+  Runtime._lmdb_entries = (Runtime._lmdb_entries || 0) + rows.length;
   return rows;
 }
 
@@ -3688,17 +3716,197 @@ function lmdb_fact_source_rows(program, source, state, predKey) {
 
 if (process.env && process.env.UW_FACT_IO_STATS) {
   process.on("exit", function () {
+    const cache = Runtime.fact_cache_stats();
     process.stderr.write(
       "fact_io bytes_read=" + String(Runtime._fact_io_bytes || 0) +
       " data_size=" + String(Runtime._fact_io_data_size || 0) +
-      " n_reads=" + String(Runtime._fact_io_reads || 0) + "\n"
+      " n_reads=" + String(Runtime._fact_io_reads || 0) +
+      " lmdb_ops=" + String(Runtime._lmdb_ops || 0) +
+      " lmdb_entries=" + String(Runtime._lmdb_entries || 0) +
+      " materialisation=" + String(cache.materialisation) +
+      " cache_on=" + String(cache.on) +
+      " cache_hits=" + String(cache.hits) +
+      " cache_misses=" + String(cache.misses) +
+      " cache_size=" + String(cache.size) +
+      " cache_cap=" + String(cache.cap) + "\n"
     );
   });
 }
 
-function fact_source_rows(program, pred, state) {
-  const source = program.fact_sources && program.fact_sources[pred];
-  if (!source) return null;
+function lmdb_l2_capacity_from_env() {
+  // Residual: JS has no L2. Fleet lmdb_l2_capacity default 4096 is reused
+  // as the L1 bound (Go sizes L1 as L2/8; we keep one bounded map).
+  const raw = (process.env && (process.env.UW_LMDB_L2_CAPACITY || process.env.UW_FACT_CACHE_CAP)) || "";
+  const n = parseInt(raw === "" ? "4096" : raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 4096;
+}
+
+function normalize_materialisation(raw) {
+  if (raw == null || raw === "") return null;
+  const s = String(raw).toLowerCase();
+  if (s === "eager" || s === "lazy" || s === "cached" || s === "auto") return s;
+  if (s === "1" || s === "on" || s === "true" || s === "yes") return "cached";
+  if (s === "0" || s === "off" || s === "false" || s === "no") return "lazy";
+  return null;
+}
+
+function materialisation_from_env() {
+  const named = process.env && process.env.UW_LMDB_MATERIALISATION;
+  const fromNamed = normalize_materialisation(named);
+  if (fromNamed) return fromNamed;
+  const alias = process.env && process.env.UW_FACT_CACHE;
+  const fromAlias = normalize_materialisation(alias);
+  if (fromAlias) return fromAlias;
+  return "cached";
+}
+
+function resolve_materialisation(source) {
+  // Precedence: configure_* > env (UW_LMDB_MATERIALISATION / UW_FACT_CACHE
+  // measurement alias) > optional source.materialisation > fleet default
+  // cached. Env wins over a future compile-time source field so the 2×2
+  // (UW_FACT_CACHE=0|1) stays valid after option plumbing lands.
+  if (Runtime._lmdb_materialisation) return Runtime._lmdb_materialisation;
+  if (Runtime._fact_cache_on === true) return "cached";
+  if (Runtime._fact_cache_on === false) return "lazy";
+  const fromEnv = materialisation_from_env();
+  if (process.env && (process.env.UW_LMDB_MATERIALISATION || process.env.UW_FACT_CACHE)) {
+    return realise_materialisation(fromEnv);
+  }
+  if (source && source.materialisation) {
+    const m = normalize_materialisation(source.materialisation);
+    if (m) return realise_materialisation(m);
+  }
+  return realise_materialisation(fromEnv);
+}
+
+function realise_materialisation(mode) {
+  if (mode === "auto") {
+    if (!Runtime._lmdb_auto_warned) {
+      Runtime._lmdb_auto_warned = true;
+      process.stderr.write(
+        "JS WAM lmdb_materialisation(auto) is a residual (no cost_model.pl hookup); using cached\n"
+      );
+    }
+    return "cached";
+  }
+  if (mode === "eager" || mode === "lazy" || mode === "cached") return mode;
+  return "cached";
+}
+
+function fact_cache_cap() {
+  if (Runtime._fact_cache_cap > 0) return Runtime._fact_cache_cap;
+  return lmdb_l2_capacity_from_env();
+}
+
+function fact_cache_is_on() {
+  return resolve_materialisation(null) === "cached";
+}
+
+function fact_l1_lookup_key(program, pred, state) {
+  const a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (typeof a1 === "object" && a1 !== null && a1.tag !== "unbound") {
+    return pred + "\0" + encode_store_key(program, a1).toString("hex");
+  }
+  return pred + "\0*";
+}
+
+function fact_cache_get(key) {
+  const m = Runtime._fact_l1;
+  if (!m || !m.has(key)) return undefined;
+  const rows = m.get(key);
+  m.delete(key);
+  m.set(key, rows);
+  Runtime._fact_cache_hits = (Runtime._fact_cache_hits || 0) + 1;
+  return rows;
+}
+
+function fact_cache_put(key, rows) {
+  let m = Runtime._fact_l1;
+  if (!m) {
+    m = new Map();
+    Runtime._fact_l1 = m;
+  }
+  if (m.has(key)) m.delete(key);
+  m.set(key, rows);
+  Runtime._fact_cache_misses = (Runtime._fact_cache_misses || 0) + 1;
+  const cap = fact_cache_cap();
+  while (m.size > cap) {
+    const oldest = m.keys().next().value;
+    m.delete(oldest);
+  }
+}
+
+Runtime.fact_cache_reset = function () {
+  Runtime._fact_l1 = new Map();
+  Runtime._fact_cache_hits = 0;
+  Runtime._fact_cache_misses = 0;
+  Runtime._eager_epoch = (Runtime._eager_epoch || 0) + 1;
+};
+
+Runtime.configure_lmdb_materialisation = function (mode, cap) {
+  const m = realise_materialisation(normalize_materialisation(mode) || "cached");
+  Runtime._lmdb_materialisation = m;
+  Runtime._fact_cache_on = m === "cached" ? true : (m === "lazy" ? false : null);
+  if (cap !== undefined && cap !== null && cap !== "") {
+    const n = Number(cap);
+    Runtime._fact_cache_cap = Number.isFinite(n) && n > 0 ? n : 4096;
+  } else if (!(Runtime._fact_cache_cap > 0)) {
+    Runtime._fact_cache_cap = lmdb_l2_capacity_from_env();
+  }
+  Runtime.fact_cache_reset();
+};
+
+Runtime.configure_fact_cache = function (on, cap) {
+  const mode = (on === true || on === 1 || on === "on" || on === "1") ? "cached" : "lazy";
+  Runtime.configure_lmdb_materialisation(mode, cap);
+};
+
+Runtime.fact_cache_stats = function () {
+  const m = Runtime._fact_l1;
+  const mode = resolve_materialisation(null);
+  return {
+    materialisation: mode,
+    on: mode === "cached",
+    hits: Runtime._fact_cache_hits || 0,
+    misses: Runtime._fact_cache_misses || 0,
+    size: m ? m.size : 0,
+    cap: fact_cache_cap()
+  };
+};
+
+function eager_materialise(program, pred, source) {
+  const epoch = Runtime._eager_epoch || 0;
+  if (source._eager_all && source._eager_epoch === epoch) return;
+  let rows = [];
+  if (source.kind === "indexed") {
+    open_indexed_store(source);
+    rows = indexed_scan_all(program, source);
+  } else if (source.kind === "lmdb") {
+    const db = open_lmdb_store(source, pred);
+    rows = lmdb_range_rows(program, db, Buffer.from([0x00]), Buffer.from([0x01]));
+  }
+  const byA1 = Object.create(null);
+  for (let i = 0; i < rows.length; i++) {
+    const k = encode_store_key(program, rows[i][0]).toString("hex");
+    if (!byA1[k]) byA1[k] = [];
+    byA1[k].push(rows[i]);
+  }
+  source._eager_all = rows;
+  source._eager_by_a1 = byA1;
+  source._eager_epoch = epoch;
+}
+
+function fact_source_rows_eager(program, pred, state, source) {
+  eager_materialise(program, pred, source);
+  const a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (typeof a1 === "object" && a1 !== null && a1.tag !== "unbound") {
+    const k = encode_store_key(program, a1).toString("hex");
+    return source._eager_by_a1[k] || [];
+  }
+  return source._eager_all || [];
+}
+
+function fact_source_rows_uncached(program, pred, state, source) {
   if (source.kind === "indexed") {
     return indexed_fact_source_rows(program, source, state);
   }
@@ -3711,6 +3919,27 @@ function fact_source_rows(program, pred, state) {
     return source.cache.arg1_index[fact_term_key(a1)] || [];
   }
   return source.cache.rows;
+}
+
+function fact_source_rows(program, pred, state) {
+  const source = program.fact_sources && program.fact_sources[pred];
+  if (!source) return null;
+  if (source.kind !== "indexed" && source.kind !== "lmdb") {
+    return fact_source_rows_uncached(program, pred, state, source);
+  }
+  const mode = resolve_materialisation(source);
+  if (mode === "eager") {
+    return fact_source_rows_eager(program, pred, state, source);
+  }
+  if (mode === "cached") {
+    const ckey = fact_l1_lookup_key(program, pred, state);
+    const hit = fact_cache_get(ckey);
+    if (hit) return hit;
+    const rows = fact_source_rows_uncached(program, pred, state, source);
+    fact_cache_put(ckey, rows || []);
+    return rows;
+  }
+  return fact_source_rows_uncached(program, pred, state, source);
 }
 
 function fact_row_matches(state, row) {
