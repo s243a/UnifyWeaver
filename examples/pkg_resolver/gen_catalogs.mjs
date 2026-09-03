@@ -146,7 +146,8 @@ function requestFor(rng, cat) {
   const name = pickOne(rng, cat.packages)[0];
   if (rng() < 0.25) {
     const vers = cat.packages.filter((p) => p[0] === name).map((p) => p[1]);
-    return { req: name, constraint: constraintFor(rng, vers) };
+    const c = vers[0] && vers[0].deb ? constraintForDeb(rng, vers) : constraintFor(rng, vers);
+    return { req: name, constraint: c };
   }
   return name;
 }

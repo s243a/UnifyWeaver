@@ -52,7 +52,7 @@ export function packDep(ver, dep, c) {
       const n = a.dep || a.name;
       return n + "=" + packConstraint(a.constraint);
     }).join("+");
-    return packVer(ver) + "#@alts:" + cells + "#" + packConstraint(c);
+    return packVer(ver) + "#ALTS/" + cells + "#" + packConstraint(c);
   }
   return packVer(ver) + "#" + dep + "#" + packConstraint(c);
 }

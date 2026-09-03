@@ -404,7 +404,7 @@ key prefix so many catalogs can share one index.
 term-side. `depends` also emits a reverse-dep posting at build time
 (one per alternative member). `deb` versions pack as
 `d:Epoch:order|num;…:order|num;…`. Alternative deps pack as
-`Ver#@alts:name=cstr+name=cstr#Constraint`. Provides pack as
+`Ver#ALTS/name=cstr+name=cstr#Constraint`. Provides pack as
 `Pkg#Ver#-` (unversioned) or `Pkg#Ver#VirtualVer` keyed by
 `CatId|Virtual`.
 
@@ -415,7 +415,7 @@ D43 stores are scalar P/2 (atom/int/float/string). Compounds are packed:
 | Store prefix | a1 (index key) | a2 (packed atom) |
 | --- | --- | --- |
 | `pkg` | `CatId\|Name` | `Major.Minor.Patch` or `d:Epoch:Up:Rev` |
-| `dep` | `CatId\|Name` | `Ver#Dep#Constraint` or `Ver#@alts:…#Constraint` |
+| `dep` | `CatId\|Name` | `Ver#Dep#Constraint` or `Ver#ALTS/…#Constraint` |
 | `conflict` | `CatId\|Name` | `Ver#Other` |
 | `revdep` | `CatId\|DepName` | `Name#Ver#Constraint` |
 | `provide` | `CatId\|Virtual` | `Pkg#Ver#-` or `Pkg#Ver#VirtualVer` |

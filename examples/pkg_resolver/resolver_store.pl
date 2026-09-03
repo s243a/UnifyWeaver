@@ -15,7 +15,7 @@
 %
 % Packed a2 cells (atoms; D43 stores are scalars only):
 %   store_pkg      a2 = Major.Minor.Patch | d:Epoch:UpSegs:RevSegs
-%   store_dep      a2 = Ver#Dep#Constraint | Ver#@alts:dep=c+dep=c#Constraint
+%   store_dep      a2 = Ver#Dep#Constraint | Ver#ALTS/dep=c+dep=c#Constraint
 %   store_conflict a2 = Ver#Other
 %   store_revdep   a2 = Name#Ver#Constraint   (dependents of the key)
 %   store_provides a2 = Pkg#Ver#- | Pkg#Ver#VirtualVer   (key = CatId|Virtual)
@@ -106,16 +106,25 @@ unpack_deb(Rest, deb(E, Up, Rev)) :-
     unpack_segs(US, Up),
     unpack_segs(RS, Rev).
 
-unpack_segs(S, []) :-
-    (   S == '' ; S == "" ),
-    !.
 unpack_segs(S, Segs) :-
     split_string(S, ';', '', Parts),
-    maplist(unpack_one_seg, Parts, Segs).
+    (   Parts = [P],
+        string_length(P, 0)
+    ->  Segs = []
+    ;   unpack_seg_list(Parts, Segs)
+    ).
+
+unpack_seg_list([], []).
+unpack_seg_list([P|Ps], [Seg|Rest]) :-
+    unpack_one_seg(P, Seg),
+    unpack_seg_list(Ps, Rest).
 
 unpack_one_seg(Part, s(Codes, N)) :-
     split_string(Part, '|', '', [OS, NS]),
-    string_codes(OS, Codes),
+    (   string_length(OS, 0)
+    ->  Codes = []
+    ;   string_codes(OS, Codes)
+    ),
     number_string(N, NS).
 
 pack_constraint(any, any).
@@ -168,7 +177,7 @@ pack_dep(Ver, alternatives(Alts), C, Atom) :-
     pack_constraint(C, CA),
     maplist(pack_alt_cell, Alts, Cells),
     atomic_list_concat(Cells, '+', Body),
-    format(atom(Atom), '~w#@alts:~w#~w', [VA, Body, CA]).
+    format(atom(Atom), '~w#ALTS/~w#~w', [VA, Body, CA]).
 pack_dep(Ver, Dep, C, Atom) :-
     pack_ver(Ver, VA),
     pack_constraint(C, CA),
@@ -186,17 +195,22 @@ unpack_dep(Packed0, Ver, Dep, C) :-
     split_string(Packed, '#', '', Parts),
     (   Parts = [VA, DepS, CA],
         atom_string(DepA, DepS),
-        atom_concat('@alts:', Body, DepA)
-    ->  unpack_ver(VA, Ver),
+        atom_concat('ALTS/', Body, DepA)
+    ->          unpack_ver(VA, Ver),
         unpack_constraint(CA, C),
         split_string(Body, '+', '', Cells),
-        maplist(unpack_alt_cell, Cells, Alts),
+        unpack_alt_cells(Cells, Alts),
         Dep = alternatives(Alts)
     ;   Parts = [VA, DepS, CA],
         unpack_ver(VA, Ver),
         to_atom(DepS, Dep),
         unpack_constraint(CA, C)
     ).
+
+unpack_alt_cells([], []).
+unpack_alt_cells([Cell|Rest], [Alt|Alts]) :-
+    unpack_alt_cell(Cell, Alt),
+    unpack_alt_cells(Rest, Alts).
 
 unpack_alt_cell(Cell, dep(D, C)) :-
     split_string(Cell, '=', '', [DS, CS]),

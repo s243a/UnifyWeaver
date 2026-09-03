@@ -71,7 +71,7 @@ base_list(catalog(_, _, _, Bs, _, _, _, _, _), Bs).
 base_list(catalog(_, _, _, Bs, _, _, _, _, _, _), Bs).
 installed_list(catalog(_, _, _, _, Is, _), Is).
 installed_list(catalog(_, _, _, _, Is, _, _, _, _), Is).
-installed_list(catalog(_, _, _, _, Is, _, _, _, _), Is).
+installed_list(catalog(_, _, _, _, Is, _, _, _, _, _), Is).
 requested_list(catalog(_, _, _, _, _, Rs), Rs).
 requested_list(catalog(_, _, _, _, _, Rs, _, _, _), Rs).
 requested_list(catalog(_, _, _, _, _, Rs, _, _, _, _), Rs).
@@ -80,7 +80,7 @@ layers_list(catalog(_, _, _, _, _, _, Ls, _, _), Ls).
 layers_list(catalog(_, _, _, _, _, _, Ls, _, _, _), Ls).
 excluded_list(catalog(_, _, _, _, _, _), []).
 excluded_list(catalog(_, _, _, _, _, _, _, Es, _), Es).
-excluded_list(catalog(_, _, _, _, _, _, _, Es, _), Es).
+excluded_list(catalog(_, _, _, _, _, _, _, Es, _, _), Es).
 alias_list(catalog(_, _, _, _, _, _), []).
 alias_list(catalog(_, _, _, _, _, _, _, _, As), As).
 alias_list(catalog(_, _, _, _, _, _, _, _, As, _), As).
