@@ -500,7 +500,11 @@ is_ffi_owned_fact(Module, Pred, Arity, Options) :-
 %  keys in every existing Go project for no gain, so Go opts in
 %  instead.)
 go_compile_predicate_to_wam(PI, Options, WamCode) :-
-    wam_target:compile_predicate_to_wam(PI, Options, WamCode0),
+    % inline_bagof_setof: bagof/setof otherwise emit `call bagof/3`
+    % (not a Go builtin) and fail silently. Required for the cut-
+    % semantics probes (p14/p15) and any program that uses bagof/setof.
+    wam_target:compile_predicate_to_wam(PI,
+        [inline_bagof_setof(true)|Options], WamCode0),
     (   go_iso_configured(Options)
     ->  iso_errors_resolve_options(Options, Config),
         iso_errors_audit_normalise_pi(PI, NormPI),
@@ -697,6 +701,13 @@ wam_go_direct_builtin("numlist/3", 3, 'numlist/3').
 wam_go_direct_builtin(between/3, 3, 'between/3').
 wam_go_direct_builtin('between/3', 3, 'between/3').
 wam_go_direct_builtin("between/3", 3, 'between/3').
+% call/1 is compiled as `call call/1` (not is_builtin_pred), so without
+% this rewrite the Go Call misses the label and fails. Opaque: a cut
+% inside the metacall prunes only choice points created during it.
+wam_go_direct_builtin(call, 1, 'call/1').
+wam_go_direct_builtin(call/1, 1, 'call/1').
+wam_go_direct_builtin('call/1', 1, 'call/1').
+wam_go_direct_builtin("call/1", 1, 'call/1').
 wam_go_direct_builtin(writeln/1, 1, 'writeln/1').
 wam_go_direct_builtin('writeln/1', 1, 'writeln/1').
 wam_go_direct_builtin("writeln/1", 1, 'writeln/1').
@@ -1927,6 +1938,13 @@ wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg], GoLit)
     go_reg_index(CResultReg, ResultRegIdx),
     format(atom(GoLit), '&BeginAggregate{AggType: "~w", ValueReg: ~w, ResultReg: ~w}',
         [CAggType, ValueRegIdx, ResultRegIdx]).
+% bagof/setof emit a 4th witness-register argument
+% (`begin_aggregate bagof, Y1, X2, ''`). Dropping it as `// TODO`
+% skipped the instruction, so EndAggregate was a no-op and L stayed
+% unbound (`__R200`). Witness grouping is not implemented; the 3-arg
+% runtime path is correct when the witness list is empty.
+wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg, _Witnesses], GoLit) :-
+    wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg], GoLit).
 wam_line_to_go_literal(["end_aggregate", ValueReg], GoLit) :-
     clean_comma(ValueReg, CValueReg),
     go_reg_index(CValueReg, ValueRegIdx),
@@ -2031,7 +2049,7 @@ wam_line_to_go_literal(["switch_on_constant" | Table], GoLit) :-
     format_switch_table(Table, CaseStr),
     format(atom(GoLit), '&SwitchOnConstant{Cases: []ConstCase{~w}}', [CaseStr]).
 wam_line_to_go_literal(["switch_on_structure" | Table], GoLit) :-
-    format_switch_table(Table, CaseStr),
+    format_struct_switch_table(Table, CaseStr),
     format(atom(GoLit), '&SwitchOnStructure{Cases: []StructCase{~w}}', [CaseStr]).
 
 wam_line_to_go_literal(Parts, GoLit) :-
@@ -2096,6 +2114,25 @@ format_switch_case(Entry, Case) :-
         format(atom(Case), '{Val: ~w, Label: "~w"}', [GoVal, Label])
     ;   % Robustness fallback for malformed entries
         format(atom(Case), '{Val: internAtom("malformed"), Label: "~w"}', [Entry])
+    ).
+
+% switch_on_structure table entries are Functor/Arity:Label. StructCase
+% carries a functor STRING (the runtime compares fmt.Sprintf("%s/%d",
+% f, len(args))), not a Value. Reusing format_switch_case interned the
+% functor as an atom and emitted `{Val: wamAtom_...}`, which does not
+% compile (StructCase has Functor, not Val). Forced by catalog/6 vs
+% catalog/9 first-arg indexing in uw-resolve.
+format_struct_switch_table(Table, CaseStr) :-
+    maplist(format_struct_switch_case, Table, Cases),
+    atomic_list_concat(Cases, ", ", CaseStr).
+
+format_struct_switch_case(Entry, Case) :-
+    (   split_string(Entry, ":", " ", [FunStr, LabelStr])
+    ->  clean_comma(LabelStr, Label),
+        clean_comma(FunStr, Fun),
+        escape_go_string(Fun, EscFun),
+        format(atom(Case), '{Functor: "~w", Label: "~w"}', [EscFun, Label])
+    ;   format(atom(Case), '{Functor: "malformed", Label: "~w"}', [Entry])
     ).
 
 % --- Register index encoding ---
@@ -2599,7 +2636,7 @@ wam_go_case('Deallocate', '        if vm.E >= 0 && vm.E < len(vm.Stack) {
 
 wam_go_case('Call', '        vm.CP = vm.PC + 1
         if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
-            vm.PendingB0 = len(vm.ChoicePoints)
+            vm.pushCallFrame()
             vm.PC = pc
             return true
         }
@@ -2654,12 +2691,12 @@ wam_go_case('CallForeign', '        return vm.executeForeignPredicate(i.Pred, i.
 wam_go_case('CallIndexedAtomFact2', '        return vm.executeIndexedAtomFact2(i.Pred)').
 
 wam_go_case('CallPc', '        vm.CP = vm.PC + 1
-        vm.PendingB0 = len(vm.ChoicePoints)
+        vm.pushCallFrame()
         vm.PC = i.TargetPC
         return true').
 
 wam_go_case('Execute', '        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
-            vm.PendingB0 = len(vm.ChoicePoints)
+            vm.enterExecute()
             vm.PC = pc
             return true
         }
@@ -2668,7 +2705,7 @@ wam_go_case('Execute', '        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
         }
         return vm.executeIndexedAtomFact2(i.Pred)').
 
-wam_go_case('ExecutePc', '        vm.PendingB0 = len(vm.ChoicePoints)
+wam_go_case('ExecutePc', '        vm.enterExecute()
         vm.PC = i.TargetPC
         return true').
 
@@ -2710,7 +2747,8 @@ wam_go_case('BeginAggregate', '        return vm.executeAggregate(i.AggType, i.V
 wam_go_case('EndAggregate', '        vm.PC++
         return true').
 
-wam_go_case('Proceed', '        if vm.CP > 0 {
+wam_go_case('Proceed', '        vm.popCallFrame()
+        if vm.CP > 0 {
             vm.PC = vm.CP
         } else {
             vm.Halted = true
@@ -2730,6 +2768,7 @@ wam_go_case('BuiltinExecute', '        result := vm.executeBuiltin(i.Op, i.Arity
         if !result {
             return false
         }
+        vm.popCallFrame()
         if vm.CP > 0 {
             vm.PC = vm.CP
         } else {
@@ -3145,11 +3184,17 @@ func (vm *WamState) executeAggregate(aggType string, valueReg int, resultReg int
             if val == nil {
                 return false
             }
-            values = append(values, sub.deref(val))
+            values = append(values, sub.freezeTerm(val))
         }
         if !sub.backtrackAbove(baseChoicePoints) {
             break
         }
+    }
+
+    if aggType == "set" || aggType == "setof" {
+        sort.SliceStable(values, func(i, j int) bool {
+            return sub.compareTerms(values[i], values[j]) < 0
+        })
     }
 
     result, ok := aggregateResultValue(aggType, values, count)
@@ -3221,10 +3266,20 @@ func aggregateResultValue(aggType string, values []Value, count int) (Value, boo
     case "count":
         return &Integer{Val: int64(count)}, true
     case "collect":
-        return &List{Elements: append([]Value(nil), values...)}, true
-    case "bag", "bagof":
-        return &List{Elements: append([]Value(nil), values...)}, true
-    case "set", "setof":
+        return listFromItems(append([]Value(nil), values...)), true
+    case "bag":
+        return listFromItems(append([]Value(nil), values...)), true
+    case "bagof":
+        if len(values) == 0 {
+            return nil, false
+        }
+        return listFromItems(append([]Value(nil), values...)), true
+    case "set":
+        return &List{Elements: uniqueAggregateValues(values)}, true
+    case "setof":
+        if len(values) == 0 {
+            return nil, false
+        }
         return &List{Elements: uniqueAggregateValues(values)}, true
     case "sum":
         total := 0.0
@@ -3729,6 +3784,10 @@ func (vm *WamState) finishStreamResults(predKey string, resultRegs []int, result
                 ForeignPredKey: predKey,
                 ForeignResultRegs: append([]int(nil), resultRegs...),
                 ForeignResults: remaining,
+                PendingB0: vm.PendingB0,
+                CutB0Stack: vm.copyCutB0Stack(),
+                YSaves: vm.copyYSaveStack(),
+                YSaveLen: len(vm.YSaves),
             })
         }
         vm.PC = resumePC
