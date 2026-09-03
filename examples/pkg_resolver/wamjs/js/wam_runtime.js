@@ -509,7 +509,7 @@ function pop_y_save(state) {
 }
 
 // ---------------------------------------------------------------------
-// Choice-point barrier model (see docs/WAM_JAVASCRIPT_STATUS.md ��"Cut and
+// Choice-point barrier model (see docs/WAM_JAVASCRIPT_STATUS.md §"Cut and
 // choice-point barriers").
 //
 //   state.cut_barrier  -- the WAM B0 of the CURRENT predicate activation:
@@ -3682,7 +3682,7 @@ function lmdb_fact_source_rows(program, source, state, predKey) {
     for (let i = 3 + keyBytes.length; i < end.length; i++) end[i] = 0xff;
     return lmdb_range_rows(program, db, start, end);
   }
-  // seq keys are 0x00||uint64; A1 keys are 0x01||��� ��� [0x00, 0x01) is exclusive-end
+  // seq keys are 0x00||uint64; A1 keys are 0x01||… — [0x00, 0x01) is exclusive-end
   return lmdb_range_rows(program, db, Buffer.from([0x00]), Buffer.from([0x01]));
 }
 
@@ -4334,7 +4334,7 @@ Runtime.run_isolated = function (program, state) {
 // WAM Execute does not modify CP; the callee's Proceed returns to the
 // CP that was live at the Execute. A lowered frame's Proceed is
 // `return true` from JS, so the isolated interpreter must NOT resume
-// at that CP (that would steal the query continuation ��� GP-PERF round 1
+// at that CP (that would steal the query continuation — GP-PERF round 1
 // corpus test 1). Setting cp=0 makes the callee's Proceed halt the
 // isolated run; restoring the saved CP makes this function's caller
 // (the lowered wrapper, or invoke_lowered_execute) the actual Proceed.
