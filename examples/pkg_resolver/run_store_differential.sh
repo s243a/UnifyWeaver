@@ -62,6 +62,8 @@ elif [[ "$BACKEND" == "lmdb" ]] && ! grep -q 'kind: "lmdb"' "$WAM/js/generated_p
   NEED_BUILD=1
 elif [[ "$BACKEND" == "indexed" ]] && ! grep -q 'kind: "indexed"' "$WAM/js/generated_program.js"; then
   NEED_BUILD=1
+elif ! grep -q 'configure_fact_cache' "$WAM/js/wam_runtime.js" 2>/dev/null; then
+  NEED_BUILD=1
 fi
 if [[ "$NEED_BUILD" -eq 1 ]]; then
   UW_STORE_BACKEND="$BACKEND" swipl -q -g main -t halt "$HERE/wamjs_store/build.pl" -- \

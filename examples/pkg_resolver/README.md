@@ -259,6 +259,22 @@ call `Runtime.fact_cache_reset()` after any store mutation. `store/test_cache_eq
 asserts cache on/off produce identical corpus results (indexed ungated;
 lmdb gated).
 
+### 5k measurement (seed `0xc0ffee01`, this VM)
+
+Same 10-package `resolve_layered` selection in every cell. WAM interpret
+time dominates store I/O, so cache/lmdb do not move wall much; they do
+move I/O on repeated queries.
+
+| backend | cache | 1× wall | 1× I/O | 100× wall | 100× I/O | 500-case diff |
+| --- | --- | ---: | --- | ---: | --- | ---: |
+| indexed | off | 90.9 ms | 8242 B / 650 reads | 6073 ms | 812320 B / 64406 reads | 4.885 s / 0 div |
+| indexed | on | 89.1 ms | 7321 B / 578 reads (83 hits) | 5900 ms | 7321 B / 578 reads (11369 hits) | 4.911 s / 0 div |
+| lmdb | off | 103.6 ms | 114 ops / 45 entries | 6026 ms | 11400 ops / 4500 entries | 4.816 s / 0 div |
+| lmdb | on | 108.7 ms | 31 ops / 45 entries (83 hits) | 5850 ms | 31 ops / 45 entries (11369 hits) | 4.722 s / 0 div |
+
+LMDB does not beat indexed on this catalog. The cache's value is repeated
+queries in one process (~111× fewer indexed reads; lmdb_ops 11400→31).
+
 ### JSONL dump schema
 
 One JSON object per fact (`kind` discriminates). `catalog` is the store

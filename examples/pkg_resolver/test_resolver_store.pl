@@ -15,7 +15,7 @@
 :- use_module(test_resolver, [scenario_catalog/2, corpus_case/4]).
 
 test_resolver_store :-
-    run_tests(pkg_resolver_store),
+    run_tests([pkg_resolver_store, pkg_resolver_store_js_cache]),
     format("pkg_resolver store-backed corpus: tests finished~n", []).
 
 term_result(resolve, Cat, Args, ok(Sel)) :-
