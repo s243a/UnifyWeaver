@@ -925,7 +925,7 @@ fn main() {
             vm.set_reg("A1", Value::Atom(cat.clone()));
             vm.set_reg("A2", Value::Atom(root.clone()));
             vm.set_reg("A3", Value::Unbound("Hops".to_string()));
-            vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
+            vm.set_reg("A4", Value::list(vec![Value::Atom(cat.clone())]));
             let cat_id = vm.intern_atom(cat);
             let root_id = vm.intern_atom(&root);
             let visited_ids = vec![cat_id];
@@ -942,7 +942,7 @@ fn main() {
             vm.set_reg("A1", Value::Atom(cat.clone()));
             vm.set_reg("A2", Value::Atom(root.clone()));
             vm.set_reg("A3", Value::Unbound("Hops".to_string()));
-            vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
+            vm.set_reg("A4", Value::list(vec![Value::Atom(cat.clone())]));
             let mut solutions = 0u32;
             let mut first = true;
             loop {

@@ -15,14 +15,19 @@ absolute times vary by machine — the *ratios* are the result.
 |---|---:|---:|---:|
 | SWI-Prolog (oracle) | ~0.1 s | 2.8 s | 0.64 s / **0.011 s** |
 | **Go WAM** | **0.034 s** | 19.5 s | 0.095 s / 11.0 s |
-| **Rust WAM** | 0.102 s | 301.7 s | — / **OOM** (8.5 GB)¹ |
+| **Rust WAM** | **0.036 s** | 16.5 s | 0.023 s / **4.73 s** (680 MB peak RSS)¹ |
 | **wamjs** (mixed/lowered) | ~0.5 s | 5.7 s | — / 0.154 s² |
 | **ClojureScript WAM** (nbb) | 1.55 s | 76.7 s | 0.35 s / 39.0 s³ |
 
-¹ Rust B3 measured on the contributor box; not reproduced here (deliberate —
-an 8.5 GB allocation). Rust also wins B1 compile-excluded small-scale runs on
-that box (93–103 ms) and its ladder shows quadratic blowup: 3.5 s at 54
-packages → 79 s at 363 → OOM at 5k.
+¹ Rust row re-measured on the contributor box (4-core) after `Value` gained
+structural sharing (D55); the SWI leg on that same box is B2 2.12 s and B3
+0.031 s load / 0.017 s resolve, so the ratios are B2 ≈ 7.8× and B3 resolve
+≈ 279× SWI. **B3 now completes the 5000-package catalog** — it previously
+OOM-killed at 8.5 GB. The ladder is linear where it used to be quadratic:
+resolve 62 ms at 54 packages → 274 ms at 363 → 4.73 s at 7514, with peak RSS
+13.8 MB → 43.5 MB → 680 MB. Before/after on the same box: B1 102→36 ms,
+B2 332.6→16.5 s, 363-package resolve 79.2 s→0.27 s. Details and the full
+ladder: `rust/README.md`.
 ³ ClojureScript re-measured after first-argument indexing landed in its
 runtime. Before/after on the contributor box: B1 1.611 s → 1.58 s (unchanged;
 it is nbb start-up), B2 111.0 s → 79.0 s (**1.3–1.4×**), B3 resolve
@@ -40,14 +45,21 @@ selection.
 - **SWI wins resolution outright** (first-argument indexing + decades of WAM
   engineering). Every transpiled leg is an interpreter-shaped runtime hosting
   the same bytecode; none has clause indexing on par with SWI yet.
-- **Go is the best small-scale transpiled leg and the only native one that
-  finishes B3.** Its flat register file copies cheaply; its 5k resolve
-  (11 s) is bounded by linear clause scans, not memory.
-- **Rust is fastest when it fits and dies when it doesn't.** `save_regs()`
-  deep-clones every live register into every choice point and `Value` has no
-  structural sharing, so a register holding the catalog is copied per CP.
-  `Rc`/`Arc` argument vectors are the recorded prerequisite
-  (`docs/WAM_RUST_STATUS.md`) for any Rust speed claim on symbolic loads.
+- **Go is the best small-scale transpiled leg** and finishes B3 at 11 s;
+  its flat register file copies cheaply and its 5k resolve is bounded by
+  linear clause scans, not memory. (It is no longer the only native B3
+  finisher — see the Rust bullet.)
+- **Rust is now the fastest transpiled leg across the board.**
+  Giving `Value` structural sharing — one refcounted spine per compound/list,
+  and a list tail that is the same spine one element along — made
+  `Value::clone` O(1) and list peeling allocation-free, so choice points cost
+  O(live registers) instead of O(term size). That turned the quadratic into a
+  linear and the OOM into 680 MB. It is still ~280× SWI on the 5k resolve:
+  the remaining cost is interpreter machinery — instruction dispatch,
+  register file, trail, binding hash — not copying, and the lowered tier
+  that would remove it is not reachable from the interpreter yet
+  (`docs/WAM_RUST_STATUS.md`). Cross-leg comparisons in this table mix two
+  boxes; only the SWI/Rust ratios in the footnote are same-box.
 - **wamjs is the best all-around leg**: near-Go differential speed, the only
   store-backed catalog path, and the only leg with a bytes-read proof.
 - **ClojureScript is correct, not fast — and indexing was not the reason.**

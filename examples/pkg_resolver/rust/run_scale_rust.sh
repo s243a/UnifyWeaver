@@ -8,11 +8,14 @@
 #
 #   bash examples/pkg_resolver/rust/run_scale_rust.sh [maxPackages ...]
 #
-# With no arguments it sweeps 100 250 500 1000 2500 5000 so the scaling curve
-# is visible; the 5000 point is the SWI reference size used by
-# examples/pkg_resolver/run_scale_demo.sh. Peak RSS is reported per point --
-# the WAM interpreter deep-copies register contents into every choice point,
-# so memory, not time, is the first thing that gives out.
+# With no arguments it sweeps the documented ladder (40 50 60 100 150 250 500
+# 1000) plus the full 5000-package catalog, so the scaling curve is visible;
+# the 5000 point is the SWI reference size used by
+# examples/pkg_resolver/run_scale_demo.sh.
+#
+# Since Value gained structural sharing (D52) both curves are LINEAR in
+# catalog size and the 5000 point fits in ~680 MB; the address-space cap
+# below is a guard rail, not the binding constraint it used to be.
 
 set -uo pipefail
 
@@ -33,13 +36,13 @@ fi
 
 SIZES=("$@")
 if [ ${#SIZES[@]} -eq 0 ]; then
-  SIZES=(10 20 30 40 60 80 5000)
+  SIZES=(40 50 60 100 150 250 500 1000 5000)
 fi
 
-# The WAM interpreter deep-copies every register value into every choice
-# point, and A1 holds the WHOLE catalog term, so memory grows as
-# (#choice points x catalog size). Cap address space and wall time so an
-# oversized point fails fast instead of thrashing the machine.
+# Cap address space and wall time so a regression (or an oversized point)
+# fails fast instead of thrashing the machine. Before structural sharing the
+# 5000-package point needed 8.5 GB and was OOM-killed here; it now peaks at
+# ~680 MB, so a point that hits this cap means something regressed.
 MEM_KB="${UW_SCALE_MEM_KB:-4194304}"   # 4 GiB
 SECS="${UW_SCALE_TIMEOUT:-120}"
 

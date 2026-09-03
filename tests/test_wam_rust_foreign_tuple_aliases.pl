@@ -74,7 +74,7 @@ fn atom(name: &str) -> Value {
 }
 
 fn tuple(left: &str, right: &str, distance: i64) -> Value {
-    Value::Str(
+    Value::strv(
         \"__tuple__\".to_string(),
         vec![atom(left), atom(right), Value::Integer(distance)],
     )

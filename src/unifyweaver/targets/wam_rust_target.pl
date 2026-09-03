@@ -176,7 +176,7 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                         let addr = self.heap.len();
                         let arity = fn_str.split(\'/\').nth(1)
                             .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
-                        self.heap.push(Value::Str(fn_str.clone(), vec![]));
+                        self.heap.push(Value::strv(fn_str.clone(), vec![]));
                         for _ in 0..arity {
                             self.heap.push(Value::Atom("__struct_arg__".to_string()));
                         }
@@ -228,7 +228,7 @@ wam_instruction_arm('Instruction::GetList(ai)', Body) :-
                     let val = self.deref_var(&raw);
                     if val.is_unbound() {
                         let addr = self.heap.len();
-                        self.heap.push(Value::Str("./2".to_string(), vec![]));
+                        self.heap.push(Value::strv("./2".to_string(), vec![]));
                         self.heap.push(Value::Atom("__struct_arg__".to_string()));
                         self.heap.push(Value::Atom("__struct_arg__".to_string()));
                         self.trail_binding(ai);
@@ -239,15 +239,19 @@ wam_instruction_arm('Instruction::GetList(ai)', Body) :-
                         self.smut().push(StackEntry::WriteCtx(addr));
                         self.pc += 1; true
                     } else if let Value::List(items) = &val {
-                        if let Some((head, tail)) = items.split_first() {
+                        if let Some(head) = items.first() {
+                            // STRUCTURAL SHARING: the tail is the SAME spine
+                            // one element along, so peeling an N-element list
+                            // costs O(N) rather than N copies of the remaining
+                            // list that every choice point then retains.
                             self.smut().push(StackEntry::UnifyCtx(
-                                vec![head.clone(), Value::List(tail.to_vec())]));
+                                vec![head.clone(), Value::List(items.tail())]));
                             self.pc += 1; true
                         } else { false }
                     } else if let Value::Str(s, args) = &val {
                         // Materialised cons cell, e.g. "[|]/2"/"./2".
                         if self.is_cons_functor(s) && args.len() == 2 {
-                            self.smut().push(StackEntry::UnifyCtx(args.clone()));
+                            self.smut().push(StackEntry::UnifyCtx(args.to_vec()));
                             self.pc += 1; true
                         } else { false }
                     } else if let Value::Ref(addr) = &val {
@@ -374,7 +378,7 @@ wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
                     .and_then(|s| s.parse().ok()).unwrap_or(0);
                 // Reserve heap slots for the structure header + args
                 let addr = self.heap.len();
-                self.heap.push(Value::Str(fn_str.clone(), vec![])); // placeholder
+                self.heap.push(Value::strv(fn_str.clone(), vec![])); // placeholder
                 for _ in 0..arity {
                     self.heap.push(Value::Atom("__struct_arg__".to_string()));
                 }
@@ -450,8 +454,8 @@ wam_instruction_arm('Instruction::Cons(head_reg, tail_reg, out_reg, skip)', Body
                     self.heap.push(head.clone());
                     self.heap.push(tail.clone());
                     let list = match tail {
-                        Value::List(mut items) => { items.insert(0, head); Value::List(items) }
-                        tail_val => Value::List(vec![head, tail_val]),
+                        Value::List(items) => Value::List(items.cons(head)),
+                        tail_val => Value::list(vec![head, tail_val]),
                     };
                     self.set_reg_str(&out_reg, list);
                     self.pc += *skip; true
@@ -619,11 +623,8 @@ wam_instruction_arm('Instruction::RecurseCategoryAncestorPc(mid_reg, root_reg, c
                 let child_hops = Value::Unbound(format!("_V{}", self.var_counter));
                 self.var_counter += 1;
                 let next_visited = match visited {
-                    Value::List(mut items) => {
-                        items.insert(0, mid.clone());
-                        Value::List(items)
-                    }
-                    tail => Value::List(vec![mid.clone(), tail]),
+                    Value::List(items) => Value::List(items.cons(mid.clone())),
+                    tail => Value::list(vec![mid.clone(), tail]),
                 };
                 self.trail_binding(child_hops_reg);
                 self.trail_binding("A1");
@@ -1065,7 +1066,7 @@ wam_instruction_arm('Instruction::ParAggregate(agg_type, enum_label, body_label,
                                 },
                             };
                         }
-                        best.unwrap_or(Value::List(vec![]))
+                        best.unwrap_or(Value::list(vec![]))
                     }
                     "min" => {
                         let mut best: Option<Value> = None;
@@ -1082,9 +1083,9 @@ wam_instruction_arm('Instruction::ParAggregate(agg_type, enum_label, body_label,
                                 },
                             };
                         }
-                        best.unwrap_or(Value::List(vec![]))
+                        best.unwrap_or(Value::list(vec![]))
                     }
-                    _ => Value::List(__vals),
+                    _ => Value::list(__vals),
                 };
                 // Bind through the Y-aware accessors (get_reg/put_reg): an
                 // embedded aggregate''s result register is a permanent (Y)
@@ -1604,7 +1605,7 @@ compile_execute_io_builtin_to_rust(Code) :-
         let args = match args_raw {
             None => Vec::new(),
             Some(raw) => match self.deref_heap(&self.deref_var(raw)) {
-                Value::List(items) => items,
+                Value::List(items) => items.to_vec(),
                 Value::Atom(name) if name == "[]" => Vec::new(),
                 _ => return None,
             },
@@ -2156,7 +2157,7 @@ compile_execute_io_builtin_to_rust(Code) :-
 
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::List(files)) {
+                if self.unify(&output, &Value::list(files)) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -2408,7 +2409,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                         items.push(Value::Unbound(format!("_L{}", self.var_counter)));
                     }
                     let mark = self.trail.len();
-                    if self.unify(&list_raw, &Value::List(items)) {
+                    if self.unify(&list_raw, &Value::list(items)) {
                         self.pc += 1; true
                     } else {
                         self.unwind_trail_to(mark);
@@ -2437,7 +2438,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                     let mut appended = left.clone();
                     appended.extend(right.iter().cloned());
                     let mark = self.trail.len();
-                    if self.unify(&a3, &Value::List(appended)) {
+                    if self.unify(&a3, &Value::list(appended)) {
                         self.pc += 1; true
                     } else {
                         self.unwind_trail_to(mark);
@@ -2450,7 +2451,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                     };
                     if let Some(left) = left {
                         if whole.starts_with(&left) {
-                            let suffix = Value::List(whole[left.len()..].to_vec());
+                            let suffix = Value::list(whole[left.len()..].to_vec());
                             let mark = self.trail.len();
                             if self.unify(&a2, &suffix) {
                                 self.pc += 1; true
@@ -2463,7 +2464,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                         }
                     } else if let Some(right) = right {
                         if whole.ends_with(&right) {
-                            let prefix = Value::List(whole[..whole.len() - right.len()].to_vec());
+                            let prefix = Value::list(whole[..whole.len() - right.len()].to_vec());
                             let mark = self.trail.len();
                             if self.unify(&a1, &prefix) {
                                 self.pc += 1; true
@@ -2521,7 +2522,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                                 self.var_counter += 1;
                                 args.push(Value::Unbound(format!("_F{}", self.var_counter)));
                             }
-                            Value::Str(functor, args)
+                            Value::strv(functor, args)
                         } else {
                             return false;
                         };
@@ -2582,7 +2583,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                             Value::List(items) if n == 1 && !items.is_empty() =>
                                 Some(items[0].clone()),
                             Value::List(items) if n == 2 && !items.is_empty() =>
-                                Some(Value::List(items[1..].to_vec())),
+                                Some(Value::list(items[1..].to_vec())),
                             _ => None,
                         };
                         match arg {
@@ -2626,7 +2627,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                                 _ => return false,
                             }
                         } else if let Value::Atom(fname) = head {
-                            Value::Str(fname, items[1..].to_vec())
+                            Value::strv(fname, items[1..].to_vec())
                         } else {
                             return false;
                         };
@@ -2644,19 +2645,19 @@ compile_execute_term_builtin_to_rust(Code) :-
                             Value::Str(f, args) => {
                                 let mut items = vec![Value::Atom(f.clone())];
                                 items.extend(args.iter().cloned());
-                                Value::List(items)
+                                Value::list(items)
                             }
                             Value::Atom(_) | Value::Integer(_)
                             | Value::Float(_) | Value::Bool(_) => {
-                                Value::List(vec![t.clone()])
+                                Value::list(vec![t.clone()])
                             }
                             Value::List(items) if items.is_empty() => {
-                                Value::List(vec![Value::Atom("[]".to_string())])
+                                Value::list(vec![Value::Atom("[]".to_string())])
                             }
-                            Value::List(items) => Value::List(vec![
+                            Value::List(items) => Value::list(vec![
                                 Value::Atom(".".to_string()),
                                 items[0].clone(),
-                                Value::List(items[1..].to_vec()),
+                                Value::list(items[1..].to_vec()),
                             ]),
                             _ => return false,
                         };
@@ -2754,16 +2755,16 @@ compile_execute_term_builtin_to_rust(Code) :-
                 };
                 let mark = self.trail.len();
                 let mut next_number = start;
-                for variable in variables {
+                for variable in variables.iter() {
                     let following = match next_number.checked_add(1) {
                         Some(n) => n,
                         None => { self.unwind_trail_to(mark); return false; }
                     };
-                    let numbered = Value::Str(
+                    let numbered = Value::strv(
                         "$VAR/1".to_string(),
                         vec![Value::Integer(next_number)],
                     );
-                    if !self.unify(&variable, &numbered) {
+                    if !self.unify(variable, &numbered) {
                         self.unwind_trail_to(mark);
                         return false;
                     }
@@ -2822,14 +2823,14 @@ compile_execute_term_builtin_to_rust(Code) :-
                     .filter_map(|entry| {
                         let name = entry.key.strip_prefix("__binding__")?;
                         let bound = self.bindings.get(name)?.clone();
-                        Some(Value::Str(
+                        Some(Value::strv(
                             "=/2".to_string(),
                             vec![Value::Unbound(name.to_string()), bound],
                         ))
                 })
                     .collect();
                 self.unwind_trail_to(mark);
-                if self.unify(&output, &Value::List(pairs)) {
+                if self.unify(&output, &Value::list(pairs)) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -2864,13 +2865,13 @@ compile_execute_term_builtin_to_rust(Code) :-
                 let new_args: Vec<Value> = args.iter()
                     .map(|a| Self::copy_term_walk(counter, var_map, a))
                     .collect();
-                Value::Str(f.clone(), new_args)
+                Value::strv(f.clone(), new_args)
             }
             Value::List(items) => {
                 let new_items: Vec<Value> = items.iter()
                     .map(|i| Self::copy_term_walk(counter, var_map, i))
                     .collect();
-                Value::List(new_items)
+                Value::list(new_items)
             }
             _ => v.clone(),
         }
@@ -2934,7 +2935,7 @@ compile_execute_term_builtin_to_rust(Code) :-
             Some(mut items) => {
                 items.reverse();
                 let mark = self.trail.len();
-                if self.unify(&dst, &Value::List(items)) {
+                if self.unify(&dst, &Value::list(items)) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -3017,7 +3018,7 @@ compile_execute_term_builtin_to_rust(Code) :-
         let chars = self.deref_heap(&self.deref_var(&chars_raw));
         match (num, chars) {
             (Value::Integer(n), _) => {
-                let list = Value::List(
+                let list = Value::list(
                     n.to_string()
                         .chars()
                         .map(|ch| Value::Atom(ch.to_string()))
@@ -3027,7 +3028,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                 else { false }
             }
             (Value::Float(f), _) => {
-                let list = Value::List(
+                let list = Value::list(
                     f.to_string()
                         .chars()
                         .map(|ch| Value::Atom(ch.to_string()))
@@ -3038,7 +3039,7 @@ compile_execute_term_builtin_to_rust(Code) :-
             }
             (Value::Unbound(_), Value::List(items)) => {
                 let mut text = String::new();
-                for item in &items {
+                for item in items.iter() {
                     match self.deref_heap(&self.deref_var(item)) {
                         Value::Atom(atom) if atom.chars().count() == 1 => {
                             text.push(atom.chars().next().unwrap());
@@ -3069,7 +3070,7 @@ compile_execute_term_builtin_to_rust(Code) :-
         let atom = self.get_reg_raw("A1")
             .map(|value| self.deref_heap(&self.deref_var(&value)));
         let bindings = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-        let options = Value::List(vec![Value::Str(
+        let options = Value::list(vec![Value::strv(
             "variable_names".to_string(),
             vec![bindings],
         )]);
@@ -3249,13 +3250,13 @@ compile_execute_term_builtin_to_rust(Code) :-
                 let copied_args: Vec<Value> = args.iter()
                     .map(|a| self.copy_external_term_from(source, a, var_map))
                     .collect();
-                Value::Str(Self::display_functor_name(&f, copied_args.len()), copied_args)
+                Value::strv(Self::display_functor_name(&f, copied_args.len()), copied_args)
             }
             Value::List(items) => {
                 let copied_items: Vec<Value> = items.iter()
                     .map(|i| self.copy_external_term_from(source, i, var_map))
                     .collect();
-                Value::List(copied_items)
+                Value::list(copied_items)
             }
             other => other,
         }
@@ -3264,7 +3265,7 @@ compile_execute_term_builtin_to_rust(Code) :-
     fn value_as_list(&self, value: &Value) -> Option<Vec<Value>> {
         let derefed = self.deref_heap(&self.deref_var(value));
         match derefed {
-            Value::List(items) => Some(items),
+            Value::List(items) => Some(items.to_vec()),
             Value::Atom(s) if s == "[]" => Some(Vec::new()),
             Value::Str(f, args) if self.is_cons_functor(&f) && args.len() == 2 => {
                 let mut tail = self.value_as_list(&args[1])?;
@@ -3288,9 +3289,17 @@ compile_execute_term_builtin_to_rust(Code) :-
     /// non-list argument is returned deref-ed and unchanged, so callers keep
     /// their existing "not a list" arms.
     fn deref_list_arg(&self, value: &Value) -> Value {
-        match self.value_as_list(value) {
-            Some(items) => Value::List(items),
-            None => self.deref_heap(&self.deref_var(value)),
+        // STRUCTURAL SHARING: when the argument ALREADY derefs to a native
+        // Value::List, hand back that very list -- going through
+        // value_as_list would copy the whole spine (and a builtin argument
+        // is routinely the entire catalog).
+        let derefed = self.deref_heap(&self.deref_var(value));
+        if let Value::List(_) = derefed {
+            return derefed;
+        }
+        match self.value_as_list(&derefed) {
+            Some(items) => Value::list(items),
+            None => derefed,
         }
     }
 
@@ -3303,7 +3312,7 @@ compile_execute_term_builtin_to_rust(Code) :-
         let items = self.value_as_list(value)?;
         let mut keys = if take_keys { Vec::with_capacity(items.len()) } else { Vec::new() };
         let mut values = if take_values { Vec::with_capacity(items.len()) } else { Vec::new() };
-        for item in &items {
+        for item in items.iter() {
             match self.deref_heap(&self.deref_var(item)) {
                 Value::Str(functor, args)
                     if args.len() == 2
@@ -3318,7 +3327,7 @@ compile_execute_term_builtin_to_rust(Code) :-
     }
 
     fn string_to_codes_value(text: &str) -> Value {
-        Value::List(text.chars()
+        Value::list(text.chars()
             .map(|c| Value::Integer(c as i64))
             .collect())
     }
@@ -3440,7 +3449,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     return false;
                 }
                 let results: Vec<Value> = hops.into_iter().map(|hop| {
-                    Value::Str("__tuple__".to_string(), vec![Value::Integer(hop)])
+                    Value::strv("__tuple__".to_string(), vec![Value::Integer(hop)])
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![hops_reg], results)
             }
@@ -3498,7 +3507,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     return false;
                 }
                 let results: Vec<Value> = hops.into_iter().map(|(t, p, c)| {
-                    Value::Str("__tuple__".to_string(), vec![
+                    Value::strv("__tuple__".to_string(), vec![
                         Value::Integer(t),
                         Value::Integer(p),
                         Value::Integer(c),
@@ -3520,7 +3529,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     None => return false,
                 };
                 self.finish_foreign_results(&pred_key, vec![sum_reg], vec![
-                    Value::Str("__tuple__".to_string(), vec![Value::Integer(sum)])
+                    Value::strv("__tuple__".to_string(), vec![Value::Integer(sum)])
                 ])
             }
             "list_suffix2" => {
@@ -3546,7 +3555,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     return false;
                 }
                 let results: Vec<Value> = suffixes.into_iter().map(|suffix| {
-                    Value::Str("__tuple__".to_string(), vec![suffix])
+                    Value::strv("__tuple__".to_string(), vec![suffix])
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![suffix_reg], results)
             }
@@ -3561,7 +3570,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 };
                 let mut suffixes: Vec<Value> = Vec::new();
                 self.collect_native_list_suffixes(&items, &mut suffixes);
-                let result = Value::Str("__tuple__".to_string(), vec![Value::List(suffixes)]);
+                let result = Value::strv("__tuple__".to_string(), vec![Value::list(suffixes)]);
                 self.finish_foreign_results(&pred_key, vec![suffixes_reg], vec![result])
             }
             "transitive_closure2" => {
@@ -3591,7 +3600,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     return false;
                 }
                 let results: Vec<Value> = nodes.into_iter().map(|node| {
-                    Value::Str("__tuple__".to_string(), vec![Value::Atom(node)])
+                    Value::strv("__tuple__".to_string(), vec![Value::Atom(node)])
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![target_reg], results)
             }
@@ -3634,7 +3643,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     return false;
                 }
                 let packed_results: Vec<Value> = results.into_iter().map(|(node, dist)| {
-                    Value::Str("__tuple__".to_string(), vec![
+                    Value::strv("__tuple__".to_string(), vec![
                         Value::Atom(node),
                         Value::Integer(dist),
                     ])
@@ -3692,7 +3701,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     return false;
                 }
                 let packed_results: Vec<Value> = results.into_iter().map(|(node, parent, dist)| {
-                    Value::Str("__tuple__".to_string(), vec![
+                    Value::strv("__tuple__".to_string(), vec![
                         Value::Atom(node),
                         Value::Atom(parent),
                         Value::Integer(dist),
@@ -3739,7 +3748,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     return false;
                 }
                 let packed_results: Vec<Value> = results.into_iter().map(|(node, step, parent, dist)| {
-                    Value::Str("__tuple__".to_string(), vec![
+                    Value::strv("__tuple__".to_string(), vec![
                         Value::Atom(node),
                         Value::Atom(step),
                         Value::Atom(parent),
@@ -3779,7 +3788,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     return false;
                 }
                 let packed_results: Vec<Value> = results.into_iter().map(|(node, dist)| {
-                    Value::Str("__tuple__".to_string(), vec![
+                    Value::strv("__tuple__".to_string(), vec![
                         Value::Atom(node),
                         Value::Float(dist),
                     ])
@@ -3853,7 +3862,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }
                 let results: Vec<Value> = value_ints.iter().filter_map(|vid| {
                     source.atom_for_key(*vid).map(|s| {
-                        Value::Str("__tuple__".to_string(), vec![Value::Atom(s)])
+                        Value::strv("__tuple__".to_string(), vec![Value::Atom(s)])
                     })
                 }).collect();
                 if results.is_empty() {
@@ -3917,7 +3926,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                             .map(|(l, &c)| c as f64 * (l as f64).powf(-n)).sum()
                     };
                     match extractor.as_str() {
-                        "distribution" => Value::List(
+                        "distribution" => Value::list(
                             hist.iter().map(|&c| Value::Integer(c as i64)).collect()),
                         "effective_distance" => {
                             let ws = weight_sum();
@@ -3929,7 +3938,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 };
                 self.finish_foreign_results(
                     &pred_key, vec![out_reg],
-                    vec![Value::Str("__tuple__".to_string(), vec![result])])
+                    vec![Value::strv("__tuple__".to_string(), vec![result])])
             }
             "category_bridge_score" => {
                 // category_bridge_score(Node, Class): Node atom in (A1), Class atom out (A2). Builds
@@ -3963,7 +3972,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     None => return false,
                 };
                 self.finish_foreign_results(&pred_key, vec![class_reg], vec![
-                    Value::Str("__tuple__".to_string(), vec![Value::Atom(class.to_string())])
+                    Value::strv("__tuple__".to_string(), vec![Value::Atom(class.to_string())])
                 ])
             }
             "bridge" => {
@@ -4000,7 +4009,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }
                 let results: Vec<Value> = candidates.into_iter().map(|(id, class, neff)| {
                     let name = self.atom_name(id).unwrap_or("").to_string();
-                    Value::Str("__tuple__".to_string(), vec![
+                    Value::strv("__tuple__".to_string(), vec![
                         Value::Atom(name),
                         Value::Atom(class.to_string()),
                         Value::Float(neff),
@@ -4044,7 +4053,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     None => return false,
                 };
                 self.finish_foreign_results(&pred_key, vec![id_reg], vec![
-                    Value::Str("__tuple__".to_string(), vec![Value::Integer(cluster as i64)])
+                    Value::strv("__tuple__".to_string(), vec![Value::Integer(cluster as i64)])
                 ])
             }
             "cluster_members" => {
@@ -4084,7 +4093,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }
                 let results: Vec<Value> = members.into_iter().map(|id| {
                     let name = self.atom_name(id).unwrap_or("").to_string();
-                    Value::Str("__tuple__".to_string(), vec![Value::Atom(name)])
+                    Value::strv("__tuple__".to_string(), vec![Value::Atom(name)])
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![member_reg], results)
             }
@@ -4527,7 +4536,7 @@ compile_collect_native_list_suffixes_to_rust(Code) :-
         out: &mut Vec<Value>,
     ) {
         for idx in 0..=items.len() {
-            out.push(Value::List(items[idx..].to_vec()));
+            out.push(Value::list(items[idx..].to_vec()));
         }
     }'.
 
@@ -4970,7 +4979,7 @@ compile_resume_builtin_to_rust(Code) :-
                         if saw_float { Value::Float(sum_f) } else { Value::Integer(sum_i) }
                     }
                     "count" => Value::Integer(self.aggregate_acc.len() as i64),
-                    "collect" => Value::List(self.aggregate_acc.clone()),
+                    "collect" => Value::list(self.aggregate_acc.clone()),
                     // bagof/setof differ from findall in exactly two ways at
                     // this (witness-free) level: they FAIL on an empty
                     // solution set, and setof sorts + dedups. The 4-operand
@@ -4979,7 +4988,7 @@ compile_resume_builtin_to_rust(Code) :-
                     // and the whole clause failed.
                     "bagof" | "bag" => {
                         if self.aggregate_acc.is_empty() { return false; }
-                        Value::List(self.aggregate_acc.clone())
+                        Value::list(self.aggregate_acc.clone())
                     }
                     "setof" | "set" => {
                         if self.aggregate_acc.is_empty() { return false; }
@@ -4989,7 +4998,7 @@ compile_resume_builtin_to_rust(Code) :-
                             .collect();
                         items.sort_by(|a, b| self.term_compare(a, b));
                         items.dedup_by(|a, b| self.term_compare(a, b) == Ordering::Equal);
-                        Value::List(items)
+                        Value::list(items)
                     }
                     "max" => {
                         let mut best: Option<Value> = None;
@@ -5008,7 +5017,7 @@ compile_resume_builtin_to_rust(Code) :-
                                 }
                             };
                         }
-                        best.unwrap_or(Value::List(vec![]))
+                        best.unwrap_or(Value::list(vec![]))
                     }
                     "min" => {
                         let mut best: Option<Value> = None;
@@ -5027,7 +5036,7 @@ compile_resume_builtin_to_rust(Code) :-
                                 }
                             };
                         }
-                        best.unwrap_or(Value::List(vec![]))
+                        best.unwrap_or(Value::list(vec![]))
                     }
                     _ => return false,
                 };
@@ -5248,7 +5257,7 @@ compile_resume_builtin_to_rust(Code) :-
             }
             "current_predicate" => {
                 let keys = match state.args.get(0) {
-                    Some(Value::List(keys)) => keys.clone(),
+                    Some(Value::List(keys)) => keys.to_vec(),
                     _ => return false,
                 };
                 let name = match state.args.get(1) {
@@ -5324,7 +5333,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
             (Value::List(l), Value::Str(f, args)) | (Value::Str(f, args), Value::List(l))
                 if self.is_cons_functor(f) && args.len() == 2 && !l.is_empty() => {
                 self.terms_identical(&l[0], &args[0])
-                    && self.terms_identical(&Value::List(l[1..].to_vec()), &args[1])
+                    && self.terms_identical(&Value::list(l[1..].to_vec()), &args[1])
             }
             (Value::List(l1), Value::List(l2)) => {
                 l1.len() == l2.len()
@@ -5424,13 +5433,13 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     if self.is_cons_functor(f) && args.len() == 2 && !l.is_empty() => {
                     let o = self.term_compare(&l[0], &args[0]);
                     if o != Ordering::Equal { return o; }
-                    self.term_compare(&Value::List(l[1..].to_vec()), &args[1])
+                    self.term_compare(&Value::list(l[1..].to_vec()), &args[1])
                 }
                 (Value::Str(f, args), Value::List(l))
                     if self.is_cons_functor(f) && args.len() == 2 && !l.is_empty() => {
                     let o = self.term_compare(&args[0], &l[0]);
                     if o != Ordering::Equal { return o; }
-                    self.term_compare(&args[1], &Value::List(l[1..].to_vec()))
+                    self.term_compare(&args[1], &Value::list(l[1..].to_vec()))
                 }
                 (Value::Str(f1, a1), Value::Str(f2, a2)) => {
                     match a1.len().cmp(&a2.len()) {
@@ -5471,7 +5480,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
     fn raise_builtin_error(&mut self, formal: Value) -> bool {
         self.var_counter += 1;
         let context = Value::Unbound(format!("_MB{}", self.var_counter));
-        self.thrown_ball = Some(Value::Str(
+        self.thrown_ball = Some(Value::strv(
             "error".to_string(), vec![formal, context]));
         false
     }
@@ -5490,7 +5499,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 Some(self.deref_heap(&self.deref_var(&items[0])))
             }
             Value::List(items) if !items.is_empty() && position == 2 => {
-                Some(Value::List(items[1..].to_vec()))
+                Some(Value::list(items[1..].to_vec()))
             }
             _ => None,
         }
@@ -5546,7 +5555,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 heap_len: self.heap.len(),
                 builtin_state: Some(BuiltinState {
                     name: "select/3".to_string(),
-                    args: vec![x_raw.clone(), Value::List(items.to_vec()), rest_raw.clone()],
+                    args: vec![x_raw.clone(), Value::list(items.to_vec()), rest_raw.clone()],
                     data: vec![Value::Integer((idx + 1) as i64)],
                 }),
                 cut_barrier: self.cut_barrier,
@@ -5555,7 +5564,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
         }
         let mut rest: Vec<Value> = items.to_vec();
         rest.remove(idx);
-        if self.unify(x_raw, &items[idx]) && self.unify(rest_raw, &Value::List(rest)) {
+        if self.unify(x_raw, &items[idx]) && self.unify(rest_raw, &Value::list(rest)) {
             self.pc += 1; true
         } else { false }
     }
@@ -5574,7 +5583,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 heap_len: self.heap.len(),
                 builtin_state: Some(BuiltinState {
                     name: name.to_string(),
-                    args: vec![n_raw.clone(), Value::List(items.to_vec()), elem_raw.clone()],
+                    args: vec![n_raw.clone(), Value::list(items.to_vec()), elem_raw.clone()],
                     data: vec![Value::Integer((idx + 1) as i64)],
                 }),
                 cut_barrier: self.cut_barrier,
@@ -5675,7 +5684,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     sorted.dedup_by(|a, b| self.term_compare(a, b) == Ordering::Equal);
                 }
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                if self.unify(&a2, &Value::List(sorted)) { self.pc += 1; true } else { false }
+                if self.unify(&a2, &Value::list(sorted)) { self.pc += 1; true } else { false }
             }
             "sort/4" => {
                 let key_position = match self.get_reg_raw("A1")
@@ -5706,7 +5715,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     _ => return false,
                 };
                 let mut keyed = Vec::with_capacity(list.len());
-                for item in &list {
+                for item in list.iter() {
                     let value = self.deref_heap(&self.deref_var(item));
                     let key = self.builtin_sort_key(&value, key_position);
                     keyed.push((value, key));
@@ -5729,7 +5738,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     .collect::<Vec<_>>();
                 let output = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::List(sorted)) {
+                if self.unify(&output, &Value::list(sorted)) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -5742,7 +5751,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     _ => return false,
                 };
                 let mut keyed: Vec<(Value, Value)> = Vec::with_capacity(list.len());
-                for item in &list {
+                for item in list.iter() {
                     match self.deref_heap(&self.deref_var(item)) {
                         Value::Str(f, args)
                             if args.len() == 2 && Self::display_functor_name(&f, 2) == "-" =>
@@ -5753,7 +5762,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 keyed.sort_by(|a, b| self.term_compare(&a.0, &b.0));
                 let sorted: Vec<Value> = keyed.into_iter().map(|kv| kv.1).collect();
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                if self.unify(&a2, &Value::List(sorted)) { self.pc += 1; true } else { false }
+                if self.unify(&a2, &Value::list(sorted)) { self.pc += 1; true } else { false }
             }
             "pairs_keys/2" | "pairs_values/2" => {
                 let pairs = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
@@ -5765,7 +5774,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let projected = if op == "pairs_keys/2" { keys } else { values };
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::List(projected)) {
+                if self.unify(&output, &Value::list(projected)) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -5787,10 +5796,10 @@ compile_execute_ext_builtin_to_rust(Code) :-
                         _ => return false,
                     };
                     let zipped: Vec<Value> = keys.into_iter().zip(values)
-                        .map(|(key, value)| Value::Str("-".to_string(), vec![key, value]))
+                        .map(|(key, value)| Value::strv("-".to_string(), vec![key, value]))
                         .collect();
                     let mark = self.trail.len();
-                    if self.unify(&pairs_raw, &Value::List(zipped)) {
+                    if self.unify(&pairs_raw, &Value::list(zipped)) {
                         self.pc += 1; true
                     } else {
                         self.unwind_trail_to(mark);
@@ -5802,11 +5811,11 @@ compile_execute_ext_builtin_to_rust(Code) :-
                         None => return false,
                     };
                     let mark = self.trail.len();
-                    if !self.unify(&keys_raw, &Value::List(keys)) {
+                    if !self.unify(&keys_raw, &Value::list(keys)) {
                         self.unwind_trail_to(mark);
                         return false;
                     }
-                    if self.unify(&values_raw, &Value::List(values)) {
+                    if self.unify(&values_raw, &Value::list(values)) {
                         self.pc += 1; true
                     } else {
                         self.unwind_trail_to(mark);
@@ -5822,7 +5831,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
-                for item in &list {
+                for item in list.iter() {
                     let mark = self.trail.len();
                     if self.unify(&x, item) { self.pc += 1; return true; }
                     self.unwind_trail_to(mark);
@@ -5869,7 +5878,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 if low > high { return false; }
                 let items: Vec<Value> = (low..=high).map(Value::Integer).collect();
                 let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                if self.unify(&a3, &Value::List(items)) { self.pc += 1; true } else { false }
+                if self.unify(&a3, &Value::list(items)) { self.pc += 1; true } else { false }
             }
             "delete/3" => {
                 // Keep elements that do NOT unify with A2 (trial-unify,
@@ -5880,14 +5889,14 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 };
                 let pat = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 let mut kept: Vec<Value> = Vec::new();
-                for item in &list {
+                for item in list.iter() {
                     let mark = self.trail.len();
                     let matched = self.unify(&pat, item);
                     self.unwind_trail_to(mark);
                     if !matched { kept.push(item.clone()); }
                 }
                 let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                if self.unify(&a3, &Value::List(kept)) { self.pc += 1; true } else { false }
+                if self.unify(&a3, &Value::list(kept)) { self.pc += 1; true } else { false }
             }
             "subtract/3" => {
                 let list = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
@@ -5898,11 +5907,12 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
-                let kept: Vec<Value> = list.into_iter()
+                let kept: Vec<Value> = list.iter()
                     .filter(|item| !excluded.contains(item))
+                    .cloned()
                     .collect();
                 let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                if self.unify(&a3, &Value::List(kept)) { self.pc += 1; true } else { false }
+                if self.unify(&a3, &Value::list(kept)) { self.pc += 1; true } else { false }
             }
             "intersection/3" => {
                 let left = match self.get_reg_raw("A1")
@@ -5917,13 +5927,13 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 };
                 let mark = self.trail.len();
                 let mut common = Vec::with_capacity(left.len());
-                for item in &left {
+                for item in left.iter() {
                     if self.builtin_unify_member(item, &right) {
                         common.push(item.clone());
                     }
                 }
                 let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                if self.unify(&output, &Value::List(common)) {
+                if self.unify(&output, &Value::list(common)) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -5944,13 +5954,13 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let mark = self.trail.len();
                 let mut union = Vec::with_capacity(left.len() + right.len());
                 union.extend(left.iter().cloned());
-                for item in &right {
+                for item in right.iter() {
                     if !self.builtin_unify_member(item, &left) {
                         union.push(item.clone());
                     }
                 }
                 let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                if self.unify(&output, &Value::List(union)) {
+                if self.unify(&output, &Value::list(union)) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -5965,13 +5975,13 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 };
                 let mark = self.trail.len();
                 let mut unique = Vec::with_capacity(items.len());
-                for item in &items {
+                for item in items.iter() {
                     if !self.builtin_unify_member(item, &unique) {
                         unique.push(item.clone());
                     }
                 }
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                if self.unify(&output, &Value::List(unique)) {
+                if self.unify(&output, &Value::list(unique)) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -6056,7 +6066,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let mut nums: Vec<f64> = Vec::with_capacity(list.len());
                 let mut all_int = true;
                 let mut ints: Vec<i64> = Vec::with_capacity(list.len());
-                for item in &list {
+                for item in list.iter() {
                     match self.deref_var(item) {
                         Value::Integer(n) => { nums.push(n as f64); ints.push(n); }
                         Value::Float(f) => { nums.push(f); all_int = false; }
@@ -6119,7 +6129,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     .collect::<Vec<_>>();
                 let output = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::List(parts)) {
+                if self.unify(&output, &Value::list(parts)) {
                     self.pc += 1;
                     true
                 } else {
@@ -6149,7 +6159,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     .collect::<Vec<_>>();
                 let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::List(parts)) {
+                if self.unify(&output, &Value::list(parts)) {
                     self.pc += 1;
                     true
                 } else {
@@ -6294,14 +6304,14 @@ compile_execute_ext_builtin_to_rust(Code) :-
                         .map(|c| Value::Atom(c.to_string()))
                         .collect();
                     let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                    return if self.unify(&a2, &Value::List(chars)) { self.pc += 1; true } else { false };
+                    return if self.unify(&a2, &Value::list(chars)) { self.pc += 1; true } else { false };
                 }
                 let list = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let mut text = String::new();
-                for item in &list {
+                for item in list.iter() {
                     match self.deref_var(item) {
                         Value::Atom(s) => text.push_str(&s),
                         _ => return false,
@@ -6364,7 +6374,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     _ => return false,
                 };
                 let mut text = String::new();
-                for item in &items {
+                for item in items.iter() {
                     match Self::value_atomic_text(&self.deref_var(item)) {
                         Some(t) => text.push_str(&t),
                         None => return false,
@@ -6385,7 +6395,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 match v1 {
                     Value::List(items) => {
                         let mut parts: Vec<String> = Vec::with_capacity(items.len());
-                        for item in &items {
+                        for item in items.iter() {
                             match Self::value_atomic_text(&self.deref_var(item)) {
                                 Some(t) => parts.push(t),
                                 None => return false,
@@ -6406,7 +6416,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                             .map(|p| Value::Atom(p.to_string()))
                             .collect();
                         let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-                        if self.unify(&a1, &Value::List(parts)) { self.pc += 1; true } else { false }
+                        if self.unify(&a1, &Value::list(parts)) { self.pc += 1; true } else { false }
                     }
                     _ => false,
                 }
@@ -6522,7 +6532,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 }
                 let type_name = match Self::value_atom_name(&type_value) {
                     Some(name) => name,
-                    None => return self.raise_builtin_error(Value::Str(
+                    None => return self.raise_builtin_error(Value::strv(
                         "type_error".to_string(),
                         vec![Value::Atom("atom".to_string()), type_value],
                     )),
@@ -6561,7 +6571,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                         }
                         true
                     }
-                    _ => return self.raise_builtin_error(Value::Str(
+                    _ => return self.raise_builtin_error(Value::strv(
                         "domain_error".to_string(),
                         vec![Value::Atom("type".to_string()), type_value],
                     )),
@@ -6569,7 +6579,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 if ok {
                     self.pc += 1; true
                 } else {
-                    self.raise_builtin_error(Value::Str(
+                    self.raise_builtin_error(Value::strv(
                         "type_error".to_string(),
                         vec![Value::Atom(type_name), value],
                     ))
@@ -6804,7 +6814,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                                 Some(len) if len != items.len() => return false,
                                 _ => n = Some(items.len()),
                             }
-                            elems.push(Some(items));
+                            elems.push(Some(items.to_vec()));
                         }
                         Value::Unbound(_) => elems.push(None),
                         _ => return false,
@@ -6817,7 +6827,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 for j in 0..nlists {
                     if elems[j].is_none() {
                         let fresh: Vec<Value> = (0..n).map(|_| self.fresh_meta_var()).collect();
-                        if !self.unify(&raw_lists[j], &Value::List(fresh.clone())) {
+                        if !self.unify(&raw_lists[j], &Value::list(fresh.clone())) {
                             return false;
                         }
                         elems[j] = Some(fresh);
@@ -6848,7 +6858,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 };
                 let keep_on = op == "include/3";
                 let mut kept: Vec<Value> = Vec::new();
-                for item in &items {
+                for item in items.iter() {
                     let g = match self.extend_goal(&goal, &[self.deref_var(item)]) {
                         Some(g) => g,
                         None => return false,
@@ -6860,7 +6870,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                     if ok == keep_on { kept.push(item.clone()); }
                 }
                 let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                if self.unify(&a3, &Value::List(kept)) { self.pc += 1; true } else { false }
+                if self.unify(&a3, &Value::list(kept)) { self.pc += 1; true } else { false }
             }
             "partition/4" => {
                 let goal = self.get_reg_raw("A1")
@@ -6872,7 +6882,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 };
                 let mut incl: Vec<Value> = Vec::new();
                 let mut excl: Vec<Value> = Vec::new();
-                for item in &items {
+                for item in items.iter() {
                     let g = match self.extend_goal(&goal, &[self.deref_var(item)]) {
                         Some(g) => g,
                         None => return false,
@@ -6885,7 +6895,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 }
                 let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                 let a4 = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
-                if self.unify(&a3, &Value::List(incl)) && self.unify(&a4, &Value::List(excl)) {
+                if self.unify(&a3, &Value::list(incl)) && self.unify(&a4, &Value::list(excl)) {
                     self.pc += 1; true
                 } else { false }
             }
@@ -6902,7 +6912,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 };
                 let l2: Option<Vec<Value>> = if two_lists {
                     match self.get_reg_raw("A3").map(|v| self.deref_list_arg(&v)) {
-                        Some(Value::List(items)) if items.len() == l1.len() => Some(items),
+                        Some(Value::List(items)) if items.len() == l1.len() => Some(items.to_vec()),
                         _ => return false,
                     }
                 } else { None };
@@ -6938,12 +6948,12 @@ compile_execute_meta_builtin_to_rust(Code) :-
     /// goals get the extra arguments appended after their own.
     fn extend_goal(&self, base: &Value, extra: &[Value]) -> Option<Value> {
         match base {
-            Value::Atom(name) => Some(Value::Str(name.clone(), extra.to_vec())),
+            Value::Atom(name) => Some(Value::strv(name.clone(), extra.to_vec())),
             Value::Str(f, args) => {
                 let name = Self::display_functor_name(f, args.len());
-                let mut all = args.clone();
+                let mut all = args.to_vec();
                 all.extend_from_slice(extra);
-                Some(Value::Str(name, all))
+                Some(Value::strv(name, all))
             }
             _ => None,
         }
@@ -7387,7 +7397,7 @@ rust_ext_clone_args([V|Vs], Args, [Clone|Rest]) :-
 
 % Reduce the collected per-branch values by aggregate type (mirrors the
 % aggregate_frame finalisation in the interpreter).
-rust_agg_reduce(collect, "Value::List(__vals)") :- !.
+rust_agg_reduce(collect, "Value::list(__vals)") :- !.
 rust_agg_reduce(count, "Value::Integer(__vals.len() as i64)") :- !.
 rust_agg_reduce(sum, Expr) :- !,
     Expr = "{ let mut si: i64 = 0; let mut sf: f64 = 0.0; let mut isf = false; for v in &__vals { match v { Value::Integer(n) => { si += *n; sf += *n as f64; }, Value::Float(f) => { isf = true; sf += *f; }, _ => {} } } if isf { Value::Float(sf) } else { Value::Integer(si) } }".
@@ -7396,13 +7406,13 @@ rust_agg_reduce(min, Expr) :- !, rust_agg_minmax_reduce("<", Expr).
 % set: sorted, duplicate-free (standard order of terms via the runtime's
 % term_compare; dedup adjacent equals after sort).
 rust_agg_reduce(set, Expr) :- !,
-    Expr = "{ let mut __s = __vals; __s.sort_by(|a, b| vm.term_compare(a, b)); __s.dedup_by(|a, b| vm.term_compare(a, b) == std::cmp::Ordering::Equal); Value::List(__s) }".
+    Expr = "{ let mut __s = __vals; __s.sort_by(|a, b| vm.term_compare(a, b)); __s.dedup_by(|a, b| vm.term_compare(a, b) == std::cmp::Ordering::Equal); Value::list(__s) }".
 
 % max/min share a fold; Cmp is the Rust comparison operator (">" or "<").
 % Mirrors the interpreter's aggregate_frame max/min (Integer/Float mixed).
 rust_agg_minmax_reduce(Cmp, Expr) :-
     format(string(Expr),
-"{ let mut __best: Option<Value> = None; for v in &__vals { let __take = match &__best { None => true, Some(p) => match (v, p) { (Value::Integer(a), Value::Integer(b)) => a ~w b, (Value::Float(a), Value::Float(b)) => a ~w b, (Value::Integer(a), Value::Float(b)) => (*a as f64) ~w *b, (Value::Float(a), Value::Integer(b)) => *a ~w (*b as f64), _ => false } }; if __take { __best = Some(v.clone()); } } __best.unwrap_or(Value::List(vec![])) }",
+"{ let mut __best: Option<Value> = None; for v in &__vals { let __take = match &__best { None => true, Some(p) => match (v, p) { (Value::Integer(a), Value::Integer(b)) => a ~w b, (Value::Float(a), Value::Float(b)) => a ~w b, (Value::Integer(a), Value::Float(b)) => (*a as f64) ~w *b, (Value::Float(a), Value::Integer(b)) => *a ~w (*b as f64), _ => false } }; if __take { __best = Some(v.clone()); } } __best.unwrap_or(Value::list(vec![])) }",
            [Cmp, Cmp, Cmp, Cmp]).
 
 % Partition the project predicate list: predicates whose body is a
@@ -7741,8 +7751,8 @@ fn ~w_run(vm: &mut WamState, args: Vec<Value>, cont_pc: usize) -> bool {
     let (__rows, __idx) = ~w_table();
     // Bound atomic first arg -> that index bucket; otherwise full scan.
     let __cands: Vec<Value> = match __args[0].fact_index_key() {
-        Some(k) => __idx.get(&k).map(|is| is.iter().map(|&i| Value::List(__rows[i].clone())).collect()).unwrap_or_default(),
-        None => __rows.iter().map(|r| Value::List(r.clone())).collect(),
+        Some(k) => __idx.get(&k).map(|is| is.iter().map(|&i| Value::list(__rows[i].clone())).collect()).unwrap_or_default(),
+        None => __rows.iter().map(|r| Value::list(r.clone())).collect(),
     };
     vm.fact_table_attempt(__args, __cands, cont_pc)
 }
@@ -7770,7 +7780,7 @@ rust_term_to_value_literal(T, Lit) :- float(T), !,
 rust_term_to_value_literal(T, Lit) :- is_list(T), !,
     maplist(rust_term_to_value_literal, T, Es),
     atomic_list_concat(Es, ', ', Inner),
-    format(string(Lit), 'Value::List(vec![~w])', [Inner]).
+    format(string(Lit), 'Value::list(vec![~w])', [Inner]).
 rust_term_to_value_literal(T, Lit) :- atom(T), !,
     escape_rust_string(T, E),
     format(string(Lit), 'Value::Atom("~w".to_string())', [E]).
@@ -7782,7 +7792,7 @@ rust_term_to_value_literal(T, Lit) :- compound(T), !,
     escape_rust_string(F, EF),
     maplist(rust_term_to_value_literal, Args, Es),
     atomic_list_concat(Es, ', ', Inner),
-    format(string(Lit), 'Value::Str("~w".to_string(), vec![~w])', [EF, Inner]).
+    format(string(Lit), 'Value::strv("~w".to_string(), vec![~w])', [EF, Inner]).
 
 % --- T7 embedded-aggregate wiring, step 1: pure clause-lifting pass ----------
 %

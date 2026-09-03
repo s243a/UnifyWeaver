@@ -32,7 +32,7 @@ fn atom(name: &str) -> Value {
 
 fn s(functor: &str, args: Vec<Value>) -> Value {
     let arity = args.len();
-    Value::Str(format!("{}/{}", functor, arity), args)
+    Value::strv(format!("{}/{}", functor, arity), args)
 }
 
 fn ver_term(v: &J) -> Value {
@@ -97,7 +97,7 @@ fn layer_term(row: &J) -> Value {
         "layer",
         vec![
             atom(name),
-            Value::List(pkgs.as_arr().iter().map(hold_term).collect()),
+            Value::list(pkgs.as_arr().iter().map(hold_term).collect()),
         ],
     )
 }
@@ -180,12 +180,12 @@ fn catalog_term(cat: &J) -> Value {
     let empty = J::Arr(vec![]);
     let list = |key: &str| cat.get(key).unwrap_or(&empty).as_arr().to_vec();
     let core = vec![
-        Value::List(list("packages").iter().map(pkg_term).collect()),
-        Value::List(list("depends").iter().map(dep_term).collect()),
-        Value::List(list("conflicts").iter().map(conf_term).collect()),
-        Value::List(list("base").iter().map(hold_term).collect()),
-        Value::List(list("installed").iter().map(installed_term).collect()),
-        Value::List(
+        Value::list(list("packages").iter().map(pkg_term).collect()),
+        Value::list(list("depends").iter().map(dep_term).collect()),
+        Value::list(list("conflicts").iter().map(conf_term).collect()),
+        Value::list(list("base").iter().map(hold_term).collect()),
+        Value::list(list("installed").iter().map(installed_term).collect()),
+        Value::list(
             list("requested")
                 .iter()
                 .map(|r| atom(r.as_str()))
@@ -196,15 +196,15 @@ fn catalog_term(cat: &J) -> Value {
     let excluded = list("excluded");
     let aliases = list("aliases");
     if layers.is_empty() && excluded.is_empty() && aliases.is_empty() {
-        return Value::Str("catalog/6".to_string(), core);
+        return Value::strv("catalog/6".to_string(), core);
     }
     let mut args = core;
-    args.push(Value::List(layers.iter().map(layer_term).collect()));
-    args.push(Value::List(
+    args.push(Value::list(layers.iter().map(layer_term).collect()));
+    args.push(Value::list(
         excluded.iter().map(|e| atom(e.as_str())).collect(),
     ));
-    args.push(Value::List(aliases.iter().map(alias_term).collect()));
-    Value::Str("catalog/9".to_string(), args)
+    args.push(Value::list(aliases.iter().map(alias_term).collect()));
+    Value::strv("catalog/9".to_string(), args)
 }
 
 // ---------------------------------------------------------------------------
@@ -263,7 +263,7 @@ fn constraint_json(v: &Value) -> J {
 
 fn list_items(v: &Value) -> Vec<Value> {
     match v {
-        Value::List(items) => items.clone(),
+        Value::List(items) => items.to_vec(),
         Value::Atom(a) if a == "[]" => vec![],
         _ => match functor_of(v) {
             Some((name, args)) if (name == "[|]" || name == ".") && args.len() == 2 => {
@@ -436,7 +436,7 @@ fn run_case(vm: &mut WamState, row: &J) -> J {
             } else {
                 "resolve_layered/3"
             };
-            let reqs = Value::List(args.as_arr().iter().map(request_term).collect());
+            let reqs = Value::list(args.as_arr().iter().map(request_term).collect());
             ok_or_fail(call_pred(vm, pred, vec![cat, reqs]), &sel_json)
         }
         "explain_blocked" => {
@@ -524,7 +524,7 @@ fn main() {
         let t_load = Instant::now();
         let empty = J::Null;
         let cat = catalog_term(row.get("catalog").unwrap_or(&empty));
-        let reqs = Value::List(
+        let reqs = Value::list(
             row.get("args")
                 .unwrap_or(&empty)
                 .as_arr()

@@ -41,7 +41,7 @@ pub type FxSet<K> = std::collections::HashSet<K, FxBuildHasher>;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-use crate::value::Value;
+use crate::value::{Args, Value};
 use crate::instructions::Instruction;
 
 /// Lazy edge-lookup interface used by the `lazy_lmdb_lookup` foreign
@@ -2461,8 +2461,8 @@ impl WamState {
                 let head = self.heap[marker].clone();
                 let tail = self.heap[marker + 1].clone();
                 let list = match tail {
-                    Value::List(mut items) => { items.insert(0, head); Value::List(items) }
-                    Value::Atom(ref s) if s == "[]" => Value::List(vec![head]),
+                    Value::List(items) => Value::List(items.cons(head)),
+                    Value::Atom(ref s) if s == "[]" => Value::list(vec![head]),
                     // Partial list: the tail is still an unbound
                     // variable (or a ref/cons) that a later
                     // put_structure will fill — e.g. building
@@ -2474,7 +2474,7 @@ impl WamState {
                     // and wrongly succeeded. Keep it as a cons cell
                     // so the tail var derefs to the rest of the
                     // list. get_list/unify already alias [|]/2.
-                    _ => Value::Str("[|]/2".to_string(), vec![head, tail]),
+                    _ => Value::strv("[|]/2".to_string(), vec![head, tail]),
                 };
                 // Update the register holding Ref(marker) or Integer(marker)
                 let ref_val = Value::Ref(marker);
@@ -2506,11 +2506,11 @@ impl WamState {
                                     let args: Vec<Value> = (1..=arity)
                                         .map(|j| self.heap[marker + j].clone())
                                         .collect();
-                                    self.heap[marker] = Value::Str(functor.clone(), args.clone());
+                                    self.heap[marker] = Value::strv(functor.clone(), args.clone());
                                     // Update register holding Ref(marker)
                                     let ref_val = Value::Ref(marker);
                                     if let Some(idx) = self.regs.iter().position(|v| *v == ref_val) {
-                                        self.regs[idx] = Value::Str(functor.clone(), args);
+                                        self.regs[idx] = Value::strv(functor.clone(), args);
                                     }
                                     self.smut().pop();
                                 }
@@ -2619,7 +2619,7 @@ impl WamState {
             (Value::List(l), Value::Str(f, a)) | (Value::Str(f, a), Value::List(l))
                 if self.is_cons_functor(f) && a.len() == 2 && !l.is_empty() => {
                 let h = l[0].clone();
-                let t = Value::List(l[1..].to_vec());
+                let t = Value::list(l[1..].to_vec());
                 let (a0, a1v) = (a[0].clone(), a[1].clone());
                 self.unify(&h, &a0) && self.unify(&t, &a1v)
             }
@@ -2652,7 +2652,38 @@ impl WamState {
             .collect()
     }
 
+    /// Cell-level identity: are these two values the SAME term cell, so that a
+    /// caller holding `a` may keep it instead of storing `b`?
+    ///
+    /// Used by `deref_heap` to decide whether a sub-term actually changed. A
+    /// compound or list is "the same cell" only when its shared spine is the
+    /// same allocation and window (`Args::same_ref`) — exactly the condition
+    /// under which reusing that spine is free. Answering `false` is always
+    /// safe (it only costs a rebuild), so the test stays cheap and
+    /// conservative.
+    fn same_cell(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Atom(x), Value::Atom(y)) => x == y,
+            (Value::Integer(x), Value::Integer(y)) => x == y,
+            (Value::Float(x), Value::Float(y)) => x == y,
+            (Value::Bool(x), Value::Bool(y)) => x == y,
+            (Value::Ref(x), Value::Ref(y)) => x == y,
+            (Value::Unbound(x), Value::Unbound(y)) => x == y,
+            (Value::Uninit, Value::Uninit) => true,
+            (Value::Str(f1, a1), Value::Str(f2, a2)) => f1 == f2 && Args::same_ref(a1, a2),
+            (Value::List(l1), Value::List(l2)) => Args::same_ref(l1, l2),
+            _ => false,
+        }
+    }
+
     /// Dereference a heap reference or unbound variable back to its concrete value.
+    ///
+    /// STRUCTURAL SHARING: this walks the whole term, so it used to REBUILD it
+    /// — a fresh spine at every level on every call, even when no sub-term had
+    /// changed. Since `unify` derefs both of its arguments, a register holding
+    /// the catalog was deep-copied on essentially every unification. The
+    /// argument spine is now reused whenever every sub-term dereferenced to the
+    /// same cell, so an already-resolved term costs a walk and no allocation.
     pub fn deref_heap(&self, val: &Value) -> Value {
         match val {
             Value::Unbound(name) => {
@@ -2662,9 +2693,15 @@ impl WamState {
                 val.clone()
             }
             Value::Str(full_str, args) => {
-                let derefed: Vec<Value> = args.iter()
-                    .map(|a| self.deref_heap(&self.deref_var(a)))
-                    .collect();
+                let mut changed = false;
+                let mut derefed: Vec<Value> = Vec::with_capacity(args.len());
+                for a in args.iter() {
+                    let d = self.deref_heap(&self.deref_var(a));
+                    if !changed && !Self::same_cell(&d, a) {
+                        changed = true;
+                    }
+                    derefed.push(d);
+                }
                 let inner = if full_str.starts_with("str(") && full_str.ends_with(')') {
                     &full_str[4..full_str.len() - 1]
                 } else {
@@ -2682,22 +2719,40 @@ impl WamState {
                     let head = derefed[0].clone();
                     let tail = derefed[1].clone();
                     match tail {
-                        Value::List(mut items) => {
-                            items.insert(0, head);
-                            return Value::List(items);
+                        Value::List(items) => {
+                            return Value::List(items.cons(head));
                         }
                         Value::Atom(ref s) if s == "[]" => {
-                            return Value::List(vec![head]);
+                            return Value::list(vec![head]);
                         }
-                        _ => return Value::Str("[|]/2".to_string(), vec![head, tail]),
+                        _ => return Value::strv("[|]/2".to_string(), vec![head, tail]),
                     }
                 }
-                Value::Str(functor.to_string(), derefed)
+                if !changed {
+                    // Nothing under this node moved: keep the existing spine.
+                    // (The functor may still be normalised from "f/N" to "f",
+                    // which costs one small string, never the arguments.)
+                    if functor == full_str.as_str() {
+                        return val.clone();
+                    }
+                    return Value::Str(functor.to_string(), args.clone());
+                }
+                Value::strv(functor.to_string(), derefed)
             }
             Value::List(items) => {
-                Value::List(items.iter()
-                    .map(|i| self.deref_heap(&self.deref_var(i)))
-                    .collect())
+                let mut changed = false;
+                let mut derefed: Vec<Value> = Vec::with_capacity(items.len());
+                for i in items.iter() {
+                    let d = self.deref_heap(&self.deref_var(i));
+                    if !changed && !Self::same_cell(&d, i) {
+                        changed = true;
+                    }
+                    derefed.push(d);
+                }
+                if !changed {
+                    return val.clone();
+                }
+                Value::list(derefed)
             }
             Value::Ref(addr) => {
                 if let Some(Value::Str(full_str, _)) = self.heap.get(*addr) {
@@ -2720,18 +2775,17 @@ impl WamState {
                                     let head = derefed[0].clone();
                                     let tail = derefed[1].clone();
                                     match tail {
-                                        Value::List(mut items) => {
-                                            items.insert(0, head);
-                                            return Value::List(items);
+                                        Value::List(items) => {
+                                            return Value::List(items.cons(head));
                                         }
                                         Value::Atom(ref s) if s == "[]" => {
-                                            return Value::List(vec![head]);
+                                            return Value::list(vec![head]);
                                         }
-                                        _ => return Value::Str("[|]/2".to_string(), vec![head, tail]),
+                                        _ => return Value::strv("[|]/2".to_string(), vec![head, tail]),
                                     }
                                 }
                             }
-                            return Value::Str(functor.to_string(), derefed);
+                            return Value::strv(functor.to_string(), derefed);
                         }
                     }
                 }

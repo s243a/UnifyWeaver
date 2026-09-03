@@ -221,7 +221,7 @@
 
     fn raise_iso_error(&mut self, formal: Value) -> bool {
         self.var_counter += 1;
-        self.thrown_ball = Some(Value::Str(
+        self.thrown_ball = Some(Value::strv(
             "error/2".to_string(),
             vec![
                 formal,
@@ -234,10 +234,10 @@
     fn raise_read_syntax_error(&mut self) -> bool {
         self.var_counter += 1;
         let context = Value::Unbound(format!("_SE{}", self.var_counter));
-        self.thrown_ball = Some(Value::Str(
+        self.thrown_ball = Some(Value::strv(
             "error/2".to_string(),
             vec![
-                Value::Str(
+                Value::strv(
                     "syntax_error/1".to_string(),
                     vec![Value::Atom("end_of_clause".to_string())],
                 ),
@@ -248,7 +248,7 @@
     }
 
     fn bind_empty_read_term_options(&mut self, options: &Value) -> bool {
-        let empty = Value::List(Vec::new());
+        let empty = Value::list(Vec::new());
         for name in ["variable_names", "variables", "singletons"] {
             if let Some(target) = self.read_term_option_arg(options, name) {
                 if !self.unify(&target, &empty) {
@@ -293,11 +293,11 @@
         env: &Value,
         var_map: &mut std::collections::HashMap<String, String>,
     ) -> Value {
-        Value::List(
+        Value::list(
             self.copy_named_variables_from_env(source, env, var_map)
                 .into_iter()
                 .map(|(name, variable)| {
-                    Value::Str(
+                    Value::strv(
                         "=".to_string(),
                         vec![Value::Atom(name), variable],
                     )
@@ -311,13 +311,13 @@
         match term {
             Value::Unbound(name) => out.push(name),
             Value::Str(_, args) => {
-                for arg in args {
-                    self.collect_term_variable_names(&arg, out);
+                for arg in args.iter() {
+                    self.collect_term_variable_names(arg, out);
                 }
             }
             Value::List(items) => {
-                for item in items {
-                    self.collect_term_variable_names(&item, out);
+                for item in items.iter() {
+                    self.collect_term_variable_names(item, out);
                 }
             }
             _ => {}
@@ -328,7 +328,7 @@
         let mut occurrences = Vec::new();
         self.collect_term_variable_names(term, &mut occurrences);
         let mut seen = std::collections::HashSet::new();
-        Value::List(
+        Value::list(
             occurrences
                 .into_iter()
                 .filter(|name| seen.insert(name.clone()))
@@ -379,12 +379,12 @@
             if source_name != "_" && source_name.starts_with('_') {
                 continue;
             }
-            pairs.push(Value::Str(
+            pairs.push(Value::strv(
                 "=".to_string(),
                 vec![Value::Atom(source_name), Value::Unbound(runtime_name)],
             ));
         }
-        Value::List(pairs)
+        Value::list(pairs)
     }
 
     fn execute_assert_builtin(&mut self, op: &str) -> bool {
@@ -437,7 +437,7 @@
         let key = match self.dynamic_head_key(&head) {
             Some(key) => key,
             None => {
-                return self.raise_iso_error(Value::Str(
+                return self.raise_iso_error(Value::strv(
                     "type_error/2".to_string(),
                     vec![Value::Atom("callable".to_string()), head],
                 ));
@@ -458,7 +458,7 @@
                 "dynamic" => dynamic_count.is_some(),
                 "static" => in_labels && dynamic_count.is_none(),
                 _ => {
-                    return self.raise_iso_error(Value::Str(
+                    return self.raise_iso_error(Value::strv(
                         "domain_error/2".to_string(),
                         vec![
                             Value::Atom("predicate_property".to_string()),
@@ -479,7 +479,7 @@
                 self.unify(&args[0], &Value::Integer(count as i64))
             }
             _ => {
-                return self.raise_iso_error(Value::Str(
+                return self.raise_iso_error(Value::strv(
                     "domain_error/2".to_string(),
                     vec![
                         Value::Atom("predicate_property".to_string()),
@@ -759,7 +759,7 @@
                 )
             }
             _ => {
-                return self.raise_iso_error(Value::Str(
+                return self.raise_iso_error(Value::strv(
                     "type_error/2".to_string(),
                     vec![
                         Value::Atom("predicate_indicator".to_string()),
@@ -769,13 +769,13 @@
             }
         };
         if !matches!(&name, Value::Atom(_) | Value::Unbound(_)) {
-            return self.raise_iso_error(Value::Str(
+            return self.raise_iso_error(Value::strv(
                 "type_error/2".to_string(),
                 vec![Value::Atom("atom".to_string()), name],
             ));
         }
         if !matches!(&arity, Value::Integer(_) | Value::Unbound(_)) {
-            return self.raise_iso_error(Value::Str(
+            return self.raise_iso_error(Value::strv(
                 "type_error/2".to_string(),
                 vec![Value::Atom("integer".to_string()), arity],
             ));
@@ -849,7 +849,7 @@
                         builtin_state: Some(BuiltinState {
                             name: "current_predicate".to_string(),
                             args: vec![
-                                Value::List(keys.clone()),
+                                Value::list(keys.clone()),
                                 name_pattern.clone(),
                                 arity_pattern.clone(),
                             ],
@@ -884,7 +884,7 @@
         let key = match self.dynamic_head_key(&head) {
             Some(key) => key,
             None => {
-                return self.raise_iso_error(Value::Str(
+                return self.raise_iso_error(Value::strv(
                     "type_error/2".to_string(),
                     vec![
                         Value::Atom("callable".to_string()),
@@ -974,7 +974,7 @@
                 Value::Str(f, args) if (f == ":-" || f == ":-/2") && args.len() == 2 => {
                     Some(Value::Str(functor.clone(), args.clone()))
                 }
-                fact => Some(Value::Str(
+                fact => Some(Value::strv(
                     functor.clone(),
                     vec![fact.clone(), Value::Atom("true".to_string())],
                 )),

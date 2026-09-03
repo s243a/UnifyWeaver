@@ -108,13 +108,25 @@ default path in tests.
   parity only).
 - Simplewiki-scale bidirectional vs F# still an open measurement.
 - Lowered TODO stub remains for some instruction shapes.
-- **`Value` has no structural sharing**, and `save_regs()` deep-clones every
-  live register into every choice point. A register holding a large term is
-  copied per choice point, so symbolic workloads cost
-  O(choice points x term size) in both time and memory. This is why the
-  uw-resolve exercise measures ~163x slower than SWI and OOMs at 5000
-  packages (see below). Prerequisite for any symbolic-workload performance
-  claim.
+- ~~`Value` has no structural sharing~~ — **fixed 2026-09-03 (D52).**
+  `Value::Str` and `Value::List` now carry a shared `Args` spine
+  (`Arc<Vec<Value>>` plus an offset), so `Value::clone` is O(1) and a list
+  tail is the same allocation one element along. Choice-point creation costs
+  O(live registers) instead of O(term size), and walking an N-element list is
+  O(N) instead of N retained copies of the remainder. Numbers below.
+- **The lowered tier is not reachable from the interpreter.** Lowered
+  predicates keep their WAM label and no name-keyed call-site hook routes
+  `Execute`/`Call` to a lowered function, so a project built with
+  `emit_mode(functions)` runs entirely interpreted and the lowered functions
+  are dead code. Measured, and scoped, below.
+- **`arg/3` over a body-constructed compound returns the construction-time
+  placeholder** instead of the argument: `T = k(5,2), arg(1,T,V)` leaves `V`
+  unbound where SWI gives 5. Head unification of the same term
+  (`T = k(V,_)`) is correct, which is why the uw-resolve differential — the
+  resolver never calls `arg/3` — does not see it. Reproduces identically
+  before and after the structural-sharing change, so it is an independent,
+  pre-existing silent-wrong-answer defect; found while writing
+  `tests/test_wam_rust_term_sharing.pl`, not yet fixed.
 - `call/1` is first-solution (the `call_goal_once` contract). A conjunction
   under `call/1` whose left conjunct is nondeterministic and whose right
   conjunct fails is refused loudly rather than answered incompletely.
@@ -220,28 +232,149 @@ minimal probe for each non-cut defect above.
 `unsupported_wam_instruction(bagof_setof_witness_grouping(...))` rather than
 emitting an ungrouped answer.
 
-### Performance: the interpreter is memory-bound, and it is severe
+### Performance: structural sharing landed (D52)
 
-On this workload wam_rust is **~163× slower than SWI-Prolog** (2400
-differential cases: 306.9 s vs 1.88 s), and it **cannot run the 5000-package
-scale catalog at all** — 8.5 GB RSS and still running after four minutes,
-then OOM-killed, against SWI's 9.4 ms. Resolve time grows quadratically with
-catalog size (3.5 s at 54 packages → 79 s at 363), while *load* (term
-construction) is ~5× faster than SWI.
+`Value` now has structural sharing, and the memory blocker is gone.
 
-Cause: `save_regs()` clones every live register into every choice point, and
-`Value` has no structural sharing — `Value::List(Vec<Value>)` and
-`Value::Str(String, Vec<Value>)` deep-copy on clone. A register holding a
-whole catalog term is therefore deep-copied per choice point, so cost and
-memory scale as (choice points × term size). **Giving `Value` structural
-sharing (`Rc`/`Arc` around the argument vectors) is the single highest-value
-change available to this backend** and is a prerequisite for any
-"single-core kernel king" claim on symbolic (as opposed to FFI-kernel)
-workloads. Numbers and the full sweep:
+| | before | after |
+|---|---:|---:|
+| B1 corpus (39 scenarios) | 102 ms | **34 ms** |
+| B2 differential (2400 cases) | 306.9 s | **16.5 s** |
+| B3 resolve, 363 packages | 79.2 s | **0.27 s** |
+| B3 resolve, 7514 packages | OOM at 8.5 GB | **4.73 s, 680 MB peak RSS** |
+
+SWI on the same box: B2 2.12 s, B3 5k load 31.1 ms / resolve 16.9 ms. The gap
+to SWI on B2 fell from ~163x to ~7.8x; the 5k resolve is ~280x and now
+finishes at all. Both B3 curves are linear in catalog size where they used to
+be quadratic. Full ladder:
 [`../examples/pkg_resolver/rust/README.md`](../examples/pkg_resolver/rust/README.md).
+
+**The representation** (`templates/targets/rust_wam/value.rs.mustache`):
+
+```rust
+pub struct Args { spine: Arc<Vec<Value>>, off: usize }   // Deref -> [Value]
+pub enum Value { .., Str(String, Args), List(Args), .. }
+```
+
+`Args::tail()` is O(1) — the same allocation viewed one element further along
+— and `Deref<Target = [Value]>` keeps every read site (`len`, `iter`,
+indexing, slicing, `split_first`, `to_vec`) source-compatible, so the change
+touched construction sites and three mutation sites rather than the ~320
+pattern matches across the target.
+
+**Why sharing needs no trail cooperation.** Terms in this runtime are
+immutable: a variable binding lives in `WamState::bindings` keyed by the
+variable's *name*, never inside the term cell, and `unwind_trail_to` restores
+bindings (and register slots), never cells. Nothing can mutate a spine that
+another snapshot observes, so aliasing is unobservable and the trail did not
+change. The one place that used to mutate a spine in place — prepending, in
+`set_heap_or_list` and in `deref_heap`'s cons reconstruction — copies instead
+(`Args::cons`), because the slot before a shared window may belong to another
+view of the same allocation. `Arc` rather than `Rc` because `WamState` must
+stay `Send` for the T7 parallel-aggregate substrate (the static assertion in
+`state.rs` pins it).
+
+**Two costs, not one.** Making `Value::clone` cheap did not on its own rescue
+the 5k case: it got *faster*, so it allocated further before dying — 13.6 GB
+peak RSS and still OOM-killed, versus 8.5 GB before. Memory was still
+quadratic (cap-1000 peaked at 4.8 GB). The larger offender was `get_list`,
+which built `Value::list(tail.to_vec())` at every
+list step, so peeling an N-element list allocated N copies of the remainder
+and every choice point retained one. Sharing the tail is what made the curve
+linear. A third, smaller fix: `deref_heap` used to rebuild every compound and
+list it walked, on every call; it now returns the same spine when no sub-term
+dereferenced to a different cell.
+
+`tests/test_wam_rust_term_sharing.pl` (9 probes, SWI-oracled) pins the
+observable consequences: peeling under backtracking, a tail handed out as a
+term in its own right, trail restore of a binding made inside a shared spine,
+list builtins over a shared tail, nested spines, a register holding a shared
+term across choice points, and consing two lists onto one tail.
+
+### Where the remaining time goes, and what would remove it
+
+A callgrind profile of the 363-package resolve, after sharing, attributes the
+run entirely to interpreter machinery. There is no arithmetic or constraint
+hot spot to capture — `execute_builtin` covers ALL builtins and is 5.6%:
+
+| | inclusive Ir |
+|---|---:|
+| `WamState::step` (instruction dispatch) | 65% |
+| `WamState::backtrack` | 21% |
+| `restore_regs` | 12% |
+| `deref_var` + `deref_heap` | 12% |
+| `get_reg` | 11% |
+| `trail_binding` | 8% |
+| `unify` | 7% |
+| `put_reg` | 6% |
+| `execute_builtin` (every builtin) | 5.6% |
+| malloc/free (flat) | 31% |
+| binding / Y-register hashing (flat) | 6.5% |
+
+That profile says the lever is the **lowered tier** — running predicates as
+direct Rust functions instead of interpreting their bytecode — not
+hand-written leaf builtins. (One cheap allocation win is still on the table
+inside `deref_heap`: it builds the `derefed` vector eagerly and throws it away
+when nothing changed, so an already-resolved N-element list still costs one
+N-element allocation per call. Deferring that vector until the first changed
+child removes it; worth ~5% on the profile above, and independent of the
+lowered-tier work.)
+
+**Lowered-tier scoping (the wamjs D41/D42 analogue).** Rebuilt with
+`emit_mode(functions)`, 74 of the resolver's 79 predicates lower —
+27 `deterministic`, 20 `multi_clause_n`, 15 `multi_clause_1`, 12
+`ite_lowered` — and the crate compiles. It also changes nothing measurable:
+answers are byte-identical and the 363-package resolve takes 267 ms against
+244 ms interpreted, peak RSS 43.4 MB either way. Three things stand between
+that and the wamjs result:
+
+1. **No Execute-of-user protocol.** `collect_wam_entries/6` emits a WAM label
+   for `lowered` entries exactly as for `wam` entries, and the only
+   name-keyed call-site hook the generated `lib.rs` exposes is
+   `fact_table_call(vm, pred, cont_pc) -> Option<bool>` (T9), which is empty
+   for this program. `Execute`/`Call` therefore always take the interpreter
+   path. That T9 hook is the shape to copy: a
+   `lowered_call(vm, pred, cont_pc) -> Option<bool>` consulted from both arms
+   before label lookup.
+2. **T4's contract is first-solution.** `emit_multi_clause_n_rust` tries each
+   clause inline and returns `bool` at the first success
+   (`lo_clause_snapshot` / `lo_restore_clause` in between), leaving no choice
+   point for the caller to retry. The resolver is genuinely nondeterministic
+   — `candidates_high_first/4` enumerates versions through `member/2`,
+   `pick/7` and `blocked_from/4` backtrack — so wiring dispatch without
+   fixing this would silently drop solutions. A resumable protocol is needed:
+   the lowered function pushes a choice point carrying its clause index and
+   is re-entered on backtracking. The runtime already has that shape twice —
+   `fact_table_attempt` for T9 and `finish_foreign_results` + `BuiltinState`
+   for foreign results. Until it exists, the honest behaviour is to refuse to
+   lower a predicate whose caller may retry it.
+3. **Five predicates do not lower at all**, and the missing shapes are
+   specific:
+   * `acc_conflicts/4` — a solution-producing disjunction `(A ; B)`;
+     `rust_structured_clause1` folds only ITE / `\+` / `once`.
+   * `pick/7`, `safe_upgrade/4`, `dep_breaks/5`, `blocked_from/4` — a
+     *multi-clause* predicate with an ITE or a negation inside a clause.
+     `rust_all_clauses_lowerable` rejects any clause containing
+     `try_me_else`, and the `ite_lowered` path is gated on the predicate
+     being single-clause.
+
+   The two front-end extensions are therefore: apply the ITE structurer
+   per clause rather than only to clause 1 of a single-clause predicate, and
+   treat `(A ; B)` as an alternatives block (which needs item 2 anyway).
+
+Order matters: item 1 alone is unsound without item 2. The sound intermediate
+available today is to dispatch only predicates classified `deterministic` or
+`clause_chain` — for this program 27+ of 79 — and leave the rest interpreted:
+a mixed tier with no semantic risk, measurable before the resumable protocol
+exists.
 
 ## Path forward
 
+0. **Make the lowered tier reachable** — the three-step scoping above
+   (`lowered_call` call-site hook, a resumable multi-clause protocol, ITE
+   per clause + `(A ; B)`). This is now the largest single lever on symbolic
+   workloads; the sound intermediate (dispatch only `deterministic` /
+   `clause_chain` predicates) can land and be measured first.
 1. Simplewiki-scale bidirectional benchmark vs F#.
 2. Promote LMDB lazy/cached into default project options + FactSource
    generalisation.
@@ -258,4 +391,7 @@ deficiency audit; see [`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).
 2026-09-03: uw-resolve exercise — A3 closed with a class fix, A2 reopened
 and closed in its frameless-Y form, six further silent-defect classes
 fixed, §9 claimed with a 35-probe corpus, and the deep-copy `Value`
-performance blocker recorded.
+performance blocker recorded. 2026-09-03 (D52): that blocker **closed** —
+`Value` gained structural sharing, B2 fell 306.9 s → 16.5 s and B3 went from
+OOM-at-8.5 GB to 4.73 s / 680 MB peak RSS; a 9-probe sharing suite added; the
+lowered tier measured to be unreachable from the interpreter, and scoped.

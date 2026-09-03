@@ -673,7 +673,7 @@ fn integer_value(value: &Value) -> i64 {
 
 fn date_args(value: Value) -> Vec<Value> {
     match value {
-        Value::Str(functor, args) if functor == "date" && args.len() == 9 => args,
+        Value::Str(functor, args) if functor == "date" && args.len() == 9 => args.to_vec(),
         other => panic!("expected date/9 value, got {:?}", other),
     }
 }
@@ -711,19 +711,19 @@ fn test_msort_sort_compiled() {
     let mut vm = vmnew();
     assert!(t_msort_1(&mut vm, ub("S")));
     assert_eq!(read_var(&vm, "S"),
-        Value::List(vec![a("apple"), a("apple"), a("banana"), a("cherry")]),
+        Value::list(vec![a("apple"), a("apple"), a("banana"), a("cherry")]),
         "msort keeps duplicates in standard order");
     let mut vm2 = vmnew();
     assert!(t_sort_1(&mut vm2, ub("S")));
-    assert_eq!(read_var(&vm2, "S"), Value::List(vec![a("a"), a("b")]),
+    assert_eq!(read_var(&vm2, "S"), Value::list(vec![a("a"), a("b")]),
         "sort dedupes");
 
     let mut vm3 = vmnew();
     assert!(t_sort4_1(&mut vm3, ub("S")));
-    assert_eq!(read_var(&vm3, "S"), Value::List(vec![
-        Value::Str("row".to_string(), vec![a("b"), i(1)]),
-        Value::Str("row".to_string(), vec![a("a"), i(2)]),
-        Value::Str("row".to_string(), vec![a("c"), i(2)]),
+    assert_eq!(read_var(&vm3, "S"), Value::list(vec![
+        Value::strv("row".to_string(), vec![a("b"), i(1)]),
+        Value::strv("row".to_string(), vec![a("a"), i(2)]),
+        Value::strv("row".to_string(), vec![a("c"), i(2)]),
     ]), "sort/4 keeps equal keys stable for @=<");
 }
 
@@ -777,7 +777,7 @@ fn test_atomic_compiled() {
     assert!(t_atomic_1(&mut number_vm, i(42)));
     let mut compound_vm = vmnew();
     assert!(!t_atomic_1(&mut compound_vm,
-        Value::Str("f".to_string(), vec![a("x")])));
+        Value::strv("f".to_string(), vec![a("x")])));
     let mut var_vm = vmnew();
     assert!(!t_atomic_1(&mut var_vm, ub("X")));
 
@@ -792,11 +792,11 @@ fn test_string_codes_chars_compiled() {
     let mut codes_vm = vmnew();
     assert!(t_string_codes_1(&mut codes_vm, ub("Codes")));
     assert_eq!(read_var(&codes_vm, "Codes"),
-        Value::List(vec![i(104), i(101), i(108), i(108), i(111)]));
+        Value::list(vec![i(104), i(101), i(108), i(108), i(111)]));
 
     let mut chars_vm = vmnew();
     assert!(t_string_chars_1(&mut chars_vm, ub("Chars")));
-    assert_eq!(read_var(&chars_vm, "Chars"), Value::List(vec![a("h"), a("i")]));
+    assert_eq!(read_var(&chars_vm, "Chars"), Value::list(vec![a("h"), a("i")]));
 
     let mut code_vm = vmnew();
     assert!(t_string_code_1(&mut code_vm, ub("Code")));
@@ -823,14 +823,14 @@ fn test_format_capture_compiled() {
         a(&format!("X=node(1) hello 42 ok{}~", char::from(10))));
     assert_eq!(read_var(&vm, "String"),
         a(&format!("foo(bar){}done", char::from(9))));
-    assert_eq!(read_var(&vm, "Codes"), Value::List(vec![i(97), i(98)]));
+    assert_eq!(read_var(&vm, "Codes"), Value::list(vec![i(97), i(98)]));
 }
 
 #[test]
 fn test_filesystem_query_compiled() {
     let mut vm = vmnew();
     assert!(t_filesystem_query_1(&mut vm, ub("Files")));
-    assert_eq!(read_var(&vm, "Files"), Value::List(vec![
+    assert_eq!(read_var(&vm, "Files"), Value::list(vec![
         a("."), a(".."), a("output_probe.rs")
     ]));
 }
@@ -1035,7 +1035,7 @@ fn test_random_builtins_compiled_and_direct() {
     let _ = integer_var(&wide_vm, "Wide");
     assert!(!vmnew().execute_builtin("random_between/3", 3));
 
-    let seed = Value::Str("seed".to_string(), vec![i(7)]);
+    let seed = Value::strv("seed".to_string(), vec![i(7)]);
     assert!(call1("set_random/1", seed.clone()).0);
     let (first_ok, first_vm) = call1("random/1", ub("Random"));
     assert!(first_ok);
@@ -1043,9 +1043,9 @@ fn test_random_builtins_compiled_and_direct() {
     assert!(call1("set_random/1", seed).0);
     assert!(call1("random/1", Value::Float(first)).0);
     assert!(!call1(
-        "set_random/1", Value::Str("other".to_string(), vec![i(7)])).0);
+        "set_random/1", Value::strv("other".to_string(), vec![i(7)])).0);
     assert!(!call1(
-        "set_random/1", Value::Str("seed".to_string(), vec![a("random")])).0);
+        "set_random/1", Value::strv("seed".to_string(), vec![a("random")])).0);
     assert!(!call1("set_random/1", i(7)).0);
     assert!(!call1("set_random/1", ub("Option")).0);
     assert!(!vmnew().execute_builtin("random/1", 1));
@@ -1058,7 +1058,7 @@ fn test_random_builtins_unavailable_direct() {
     assert!(!call1("random/1", ub("Random")).0);
     assert!(!call3("random_between/3", i(1), i(2), ub("Random")).0);
     assert!(!call1(
-        "set_random/1", Value::Str("seed".to_string(), vec![i(7)])).0);
+        "set_random/1", Value::strv("seed".to_string(), vec![i(7)])).0);
 }
 
 #[cfg(unix)]
@@ -1232,13 +1232,13 @@ fn test_environment_mutation_compiled() {
 fn test_text_utility_family_compiled() {
     let mut split_vm = vmnew();
     assert!(t_split_string_1(&mut split_vm, ub("Parts")));
-    assert_eq!(read_var(&split_vm, "Parts"), Value::List(vec![
+    assert_eq!(read_var(&split_vm, "Parts"), Value::list(vec![
         a("alpha"), a("beta"), a(""), a("gamma")
     ]));
 
     let mut atom_split_vm = vmnew();
     assert!(t_atom_split_1(&mut atom_split_vm, ub("Parts")));
-    assert_eq!(read_var(&atom_split_vm, "Parts"), Value::List(vec![
+    assert_eq!(read_var(&atom_split_vm, "Parts"), Value::list(vec![
         a("a"), a(""), a("b")
     ]));
 
@@ -1457,19 +1457,19 @@ fn test_file_links_truncate_direct() {
 fn test_pairs_family_compiled() {
     let mut project_vm = vmnew();
     assert!(t_pairs_project_2(&mut project_vm, ub("Keys"), ub("Values")));
-    assert_eq!(read_var(&project_vm, "Keys"), Value::List(vec![a("a"), a("b")]));
-    assert_eq!(read_var(&project_vm, "Values"), Value::List(vec![i(1), i(2)]));
+    assert_eq!(read_var(&project_vm, "Keys"), Value::list(vec![a("a"), a("b")]));
+    assert_eq!(read_var(&project_vm, "Values"), Value::list(vec![i(1), i(2)]));
 
     let mut split_vm = vmnew();
     assert!(t_pairs_split_2(&mut split_vm, ub("Keys"), ub("Values")));
-    assert_eq!(read_var(&split_vm, "Keys"), Value::List(vec![a("a"), a("b")]));
-    assert_eq!(read_var(&split_vm, "Values"), Value::List(vec![i(1), i(2)]));
+    assert_eq!(read_var(&split_vm, "Keys"), Value::list(vec![a("a"), a("b")]));
+    assert_eq!(read_var(&split_vm, "Values"), Value::list(vec![i(1), i(2)]));
 
     let mut zip_vm = vmnew();
     assert!(t_pairs_zip_1(&mut zip_vm, ub("Pairs")));
-    assert_eq!(read_var(&zip_vm, "Pairs"), Value::List(vec![
-        Value::Str("-".to_string(), vec![a("a"), i(1)]),
-        Value::Str("-".to_string(), vec![a("b"), i(2)]),
+    assert_eq!(read_var(&zip_vm, "Pairs"), Value::list(vec![
+        Value::strv("-".to_string(), vec![a("a"), i(1)]),
+        Value::strv("-".to_string(), vec![a("b"), i(2)]),
     ]));
 }
 
@@ -1479,7 +1479,7 @@ fn test_catch_matching_catcher_runs_recovery() {
     assert!(t_catch_match_1(&mut vm, ub("R")),
         "catch(throw(oops(42)), oops(X), R = caught(X)) must succeed");
     assert_eq!(read_var(&vm, "R"),
-        Value::Str("caught".to_string(), vec![i(42)]));
+        Value::strv("caught".to_string(), vec![i(42)]));
     assert!(vm.thrown_ball.is_none(), "ball consumed");
 }
 
@@ -1560,7 +1560,7 @@ fn test_maplist_transform_compiled() {
     let mut vm = vmnew();
     assert!(t_maplist_1(&mut vm, ub("L")),
         "maplist(double, [1,2,3], L) must succeed");
-    assert_eq!(read_var(&vm, "L"), Value::List(vec![i(2), i(4), i(6)]));
+    assert_eq!(read_var(&vm, "L"), Value::list(vec![i(2), i(4), i(6)]));
 }
 
 #[test]
@@ -1575,14 +1575,14 @@ fn test_maplist_check_and_fail_compiled() {
 fn test_include_exclude_partition_compiled() {
     let mut vm = vmnew();
     assert!(t_include_1(&mut vm, ub("I")));
-    assert_eq!(read_var(&vm, "I"), Value::List(vec![i(1), i(3)]));
+    assert_eq!(read_var(&vm, "I"), Value::list(vec![i(1), i(3)]));
     let mut vm2 = vmnew();
     assert!(t_exclude_1(&mut vm2, ub("E")));
-    assert_eq!(read_var(&vm2, "E"), Value::List(vec![i(-2)]));
+    assert_eq!(read_var(&vm2, "E"), Value::list(vec![i(-2)]));
     let mut vm3 = vmnew();
     assert!(t_partition_2(&mut vm3, ub("I"), ub("E")));
-    assert_eq!(read_var(&vm3, "I"), Value::List(vec![i(1), i(3)]));
-    assert_eq!(read_var(&vm3, "E"), Value::List(vec![i(-2)]));
+    assert_eq!(read_var(&vm3, "I"), Value::list(vec![i(1), i(3)]));
+    assert_eq!(read_var(&vm3, "E"), Value::list(vec![i(-2)]));
 }
 
 #[test]
@@ -1600,19 +1600,19 @@ fn test_atomic_list_concat_compiled() {
     assert_eq!(read_var(&vm, "A"), a("a-b-c"));
     let mut vm2 = vmnew();
     assert!(t_alc_split_1(&mut vm2, ub("L")));
-    assert_eq!(read_var(&vm2, "L"), Value::List(vec![a("x"), a("y"), a("z")]));
+    assert_eq!(read_var(&vm2, "L"), Value::list(vec![a("x"), a("y"), a("z")]));
 }
 
 #[test]
 fn test_atomic_list_concat_direct() {
     let (ok, vm) = call2("atomic_list_concat/2",
-        Value::List(vec![a("foo"), i(7), a("bar")]), ub("A"));
+        Value::list(vec![a("foo"), i(7), a("bar")]), ub("A"));
     assert!(ok);
     assert_eq!(read_var(&vm, "A"), a("foo7bar"));
     assert!(call3("atomic_list_concat/3",
-        Value::List(vec![a("x"), a("y")]), a(","), a("x,y")).0);
+        Value::list(vec![a("x"), a("y")]), a(","), a("x,y")).0);
     assert!(!call3("atomic_list_concat/3",
-        Value::List(vec![a("x"), a("y")]), a(","), a("x;y")).0);
+        Value::list(vec![a("x"), a("y")]), a(","), a("x;y")).0);
     // Split with empty separator must fail (would not terminate).
     assert!(!call3("atomic_list_concat/3", ub("L"), a(""), a("xyz")).0);
 }
@@ -1628,19 +1628,19 @@ fn test_char_type_direct() {
     assert!(call2("char_type/2", a("A"), a("upper")).0);
     assert!(!call2("char_type/2", a("a"), a("upper")).0);
     let (ok, vm) = call2("char_type/2", a("7"),
-        Value::Str("digit/1".to_string(), vec![ub("W")]));
+        Value::strv("digit/1".to_string(), vec![ub("W")]));
     assert!(ok);
     assert_eq!(read_var(&vm, "W"), i(7));
     let (ok2, vm2) = call2("char_type/2", a("B"),
-        Value::Str("to_lower/1".to_string(), vec![ub("L")]));
+        Value::strv("to_lower/1".to_string(), vec![ub("L")]));
     assert!(ok2);
     assert_eq!(read_var(&vm2, "L"), a("b"));
     let (ok3, vm3) = call2("char_type/2", a("Q"),
-        Value::Str("upper/1".to_string(), vec![ub("L")]));
+        Value::strv("upper/1".to_string(), vec![ub("L")]));
     assert!(ok3);
     assert_eq!(read_var(&vm3, "L"), a("q"));
     assert!(!call2("char_type/2", a("q"),
-        Value::Str("upper/1".to_string(), vec![ub("L")])).0);
+        Value::strv("upper/1".to_string(), vec![ub("L")])).0);
 }
 
 #[test]
@@ -1707,34 +1707,34 @@ fn test_must_be_direct() {
     assert!(call2("must_be/2", a("float"), Value::Float(2.5)).0);
     assert!(call2("must_be/2", a("number"), i(7)).0);
     assert!(call2("must_be/2", a("compound"),
-        Value::Str("node".to_string(), vec![i(1)])).0);
-    assert!(call2("must_be/2", a("compound"), Value::List(vec![i(1)])).0);
-    assert!(call2("must_be/2", a("atomic"), Value::List(vec![])).0);
-    assert!(call2("must_be/2", a("callable"), Value::List(vec![i(1)])).0);
+        Value::strv("node".to_string(), vec![i(1)])).0);
+    assert!(call2("must_be/2", a("compound"), Value::list(vec![i(1)])).0);
+    assert!(call2("must_be/2", a("atomic"), Value::list(vec![])).0);
+    assert!(call2("must_be/2", a("callable"), Value::list(vec![i(1)])).0);
     assert!(call2("must_be/2", a("boolean"), Value::Bool(true)).0);
-    assert!(call2("must_be/2", a("list"), Value::List(vec![a("x")])).0);
+    assert!(call2("must_be/2", a("list"), Value::list(vec![a("x")])).0);
     assert!(call2("must_be/2", a("ground"),
-        Value::Str("node".to_string(), vec![a("x"), i(1)])).0);
+        Value::strv("node".to_string(), vec![a("x"), i(1)])).0);
     assert!(call2("must_be/2", a("var"), ub("X")).0);
     assert!(call2("must_be/2", a("nonvar"), i(1)).0);
 
     let (type_ok, type_vm) = call2("must_be/2", a("atom"), i(5));
     assert!(!type_ok);
-    assert_eq!(thrown_formal(&type_vm), Value::Str(
+    assert_eq!(thrown_formal(&type_vm), Value::strv(
         "type_error".to_string(), vec![a("atom"), i(5)]));
 
     let (inst_ok, inst_vm) = call2("must_be/2", a("integer"), ub("X"));
     assert!(!inst_ok);
     assert_eq!(thrown_formal(&inst_vm), a("instantiation_error"));
 
-    let nested = Value::Str("node".to_string(), vec![ub("X"), i(2)]);
+    let nested = Value::strv("node".to_string(), vec![ub("X"), i(2)]);
     let (ground_ok, ground_vm) = call2("must_be/2", a("ground"), nested);
     assert!(!ground_ok);
     assert_eq!(thrown_formal(&ground_vm), a("instantiation_error"));
 
     let (domain_ok, domain_vm) = call2("must_be/2", a("unknown_type"), i(5));
     assert!(!domain_ok);
-    assert_eq!(thrown_formal(&domain_vm), Value::Str(
+    assert_eq!(thrown_formal(&domain_vm), Value::strv(
         "domain_error".to_string(), vec![a("type"), a("unknown_type")]));
 
     let (type_inst_ok, type_inst_vm) = call2("must_be/2", ub("Type"), i(5));
@@ -1743,12 +1743,12 @@ fn test_must_be_direct() {
 
     let (type_atom_ok, type_atom_vm) = call2("must_be/2", i(7), i(5));
     assert!(!type_atom_ok);
-    assert_eq!(thrown_formal(&type_atom_vm), Value::Str(
+    assert_eq!(thrown_formal(&type_atom_vm), Value::strv(
         "type_error".to_string(), vec![a("atom"), i(7)]));
 
     let (nonvar_ok, nonvar_vm) = call2("must_be/2", a("nonvar"), ub("X"));
     assert!(!nonvar_ok);
-    assert_eq!(thrown_formal(&nonvar_vm), Value::Str(
+    assert_eq!(thrown_formal(&nonvar_vm), Value::strv(
         "type_error".to_string(), vec![a("nonvar"), ub("X")]));
 }
 
@@ -1812,7 +1812,7 @@ fn test_not_unify_and_not_equal() {
 #[test]
 fn test_arithmetic_evaluation_direct() {
     let bin = |op: &str, left: Value, right: Value| {
-        Value::Str(format!("{op}/2"), vec![left, right])
+        Value::strv(format!("{op}/2"), vec![left, right])
     };
 
     let nested = bin("*", bin("+", i(2), i(3)), i(4));
@@ -1865,7 +1865,7 @@ fn test_arithmetic_evaluation_direct() {
 #[test]
 fn test_arithmetic_comparisons_direct() {
     let bin = |op: &str, left: Value, right: Value| {
-        Value::Str(format!("{op}/2"), vec![left, right])
+        Value::strv(format!("{op}/2"), vec![left, right])
     };
 
     assert!(call2(">/2", i(4), i(3)).0);
@@ -1895,12 +1895,12 @@ fn test_arithmetic_comparisons_direct() {
 #[test]
 fn test_length_direct_modes() {
     let (measure_ok, measure_vm) =
-        call2("length/2", Value::List(vec![a("a"), a("b"), a("c")]), ub("N"));
+        call2("length/2", Value::list(vec![a("a"), a("b"), a("c")]), ub("N"));
     assert!(measure_ok);
     assert_eq!(read_var(&measure_vm, "N"), i(3));
 
-    assert!(call2("length/2", Value::List(vec![a("a"), a("b")]), i(2)).0);
-    assert!(!call2("length/2", Value::List(vec![a("a"), a("b")]), i(3)).0);
+    assert!(call2("length/2", Value::list(vec![a("a"), a("b")]), i(2)).0);
+    assert!(!call2("length/2", Value::list(vec![a("a"), a("b")]), i(3)).0);
     assert!(call2("length/2", a("[]"), i(0)).0);
 
     let (construct_ok, construct_vm) = call2("length/2", ub("List"), i(3));
@@ -1918,7 +1918,7 @@ fn test_length_direct_modes() {
 
     let (empty_ok, empty_vm) = call2("length/2", ub("List"), i(0));
     assert!(empty_ok);
-    assert_eq!(read_var(&empty_vm, "List"), Value::List(vec![]));
+    assert_eq!(read_var(&empty_vm, "List"), Value::list(vec![]));
 
     let mut aliased_length = vmnew();
     assert!(aliased_length.unify(&ub("N"), &i(2)));
@@ -1929,7 +1929,7 @@ fn test_length_direct_modes() {
     assert!(matches!(read_var(&aliased_length, "List"), Value::List(items) if items.len() == 2));
 
     let (shared_ok, shared_vm) =
-        call2("length/2", Value::List(vec![ub("X")]), ub("X"));
+        call2("length/2", Value::list(vec![ub("X")]), ub("X"));
     assert!(shared_ok);
     assert_eq!(read_var(&shared_vm, "X"), i(1));
 
@@ -1943,7 +1943,7 @@ fn test_length_direct_modes() {
     assert!(!missing_list.execute_builtin("length/2", 2));
 
     let mut missing_length = vmnew();
-    missing_length.set_reg("A1", Value::List(vec![]));
+    missing_length.set_reg("A1", Value::list(vec![]));
     assert!(!missing_length.execute_builtin("length/2", 2));
 }
 
@@ -1951,70 +1951,70 @@ fn test_length_direct_modes() {
 fn test_append_direct_modes_and_rollback() {
     let (forward_ok, forward_vm) = call3(
         "append/3",
-        Value::List(vec![a("a"), a("b")]),
-        Value::List(vec![a("c"), a("d")]),
+        Value::list(vec![a("a"), a("b")]),
+        Value::list(vec![a("c"), a("d")]),
         ub("Whole"),
     );
     assert!(forward_ok);
     assert_eq!(
         read_var(&forward_vm, "Whole"),
-        Value::List(vec![a("a"), a("b"), a("c"), a("d")]),
+        Value::list(vec![a("a"), a("b"), a("c"), a("d")]),
     );
 
     let (suffix_ok, suffix_vm) = call3(
         "append/3",
-        Value::List(vec![a("a"), a("b")]),
+        Value::list(vec![a("a"), a("b")]),
         ub("Suffix"),
-        Value::List(vec![a("a"), a("b"), a("c")]),
+        Value::list(vec![a("a"), a("b"), a("c")]),
     );
     assert!(suffix_ok);
-    assert_eq!(read_var(&suffix_vm, "Suffix"), Value::List(vec![a("c")]));
+    assert_eq!(read_var(&suffix_vm, "Suffix"), Value::list(vec![a("c")]));
 
     let (prefix_ok, prefix_vm) = call3(
         "append/3",
         ub("Prefix"),
-        Value::List(vec![a("c"), a("d")]),
-        Value::List(vec![a("a"), a("b"), a("c"), a("d")]),
+        Value::list(vec![a("c"), a("d")]),
+        Value::list(vec![a("a"), a("b"), a("c"), a("d")]),
     );
     assert!(prefix_ok);
-    assert_eq!(read_var(&prefix_vm, "Prefix"), Value::List(vec![a("a"), a("b")]));
+    assert_eq!(read_var(&prefix_vm, "Prefix"), Value::list(vec![a("a"), a("b")]));
 
     let (alias_ok, alias_vm) = call3(
         "append/3",
-        Value::List(vec![ub("X")]),
-        Value::List(vec![a("b")]),
-        Value::List(vec![a("a"), a("b")]),
+        Value::list(vec![ub("X")]),
+        Value::list(vec![a("b")]),
+        Value::list(vec![a("a"), a("b")]),
     );
     assert!(alias_ok);
     assert_eq!(read_var(&alias_vm, "X"), a("a"));
 
-    assert!(call3("append/3", a("[]"), ub("Tail"), Value::List(vec![a("a")])).0);
+    assert!(call3("append/3", a("[]"), ub("Tail"), Value::list(vec![a("a")])).0);
     assert!(!call3(
         "append/3",
-        Value::List(vec![a("a"), a("b")]),
+        Value::list(vec![a("a"), a("b")]),
         ub("Tail"),
-        Value::List(vec![a("a"), a("c")]),
+        Value::list(vec![a("a"), a("c")]),
     ).0);
     assert!(!call3("append/3", a("not_a_list"), a("[]"), ub("Whole")).0);
 
     let (rollback_ok, rollback_vm) = call3(
         "append/3",
-        Value::List(vec![a("a"), a("b")]),
-        Value::List(vec![a("c")]),
-        Value::List(vec![a("a"), ub("X"), a("wrong")]),
+        Value::list(vec![a("a"), a("b")]),
+        Value::list(vec![a("c")]),
+        Value::list(vec![a("a"), ub("X"), a("wrong")]),
     );
     assert!(!rollback_ok);
     assert_eq!(read_var(&rollback_vm, "X"), ub("X"));
 
     let mut missing_output = vmnew();
-    missing_output.set_reg("A1", Value::List(vec![]));
-    missing_output.set_reg("A2", Value::List(vec![]));
+    missing_output.set_reg("A1", Value::list(vec![]));
+    missing_output.set_reg("A2", Value::list(vec![]));
     assert!(!missing_output.execute_builtin("append/3", 3));
 }
 
 #[test]
 fn test_functor_direct_modes_and_rollback() {
-    let compound = Value::Str("pair/2".to_string(), vec![a("left"), i(7)]);
+    let compound = Value::strv("pair/2".to_string(), vec![a("left"), i(7)]);
     let (read_ok, read_vm) = call3("functor/3", compound, ub("Name"), ub("Arity"));
     assert!(read_ok);
     assert_eq!(read_var(&read_vm, "Name"), a("pair"));
@@ -2051,7 +2051,7 @@ fn test_functor_direct_modes_and_rollback() {
 
     let (rollback_ok, rollback_vm) = call3(
         "functor/3",
-        Value::Str("f/2".to_string(), vec![a("a"), a("b")]),
+        Value::strv("f/2".to_string(), vec![a("a"), a("b")]),
         ub("Name"),
         i(1),
     );
@@ -2071,7 +2071,7 @@ fn test_functor_direct_modes_and_rollback() {
 
 #[test]
 fn test_arg_direct_modes_and_rollback() {
-    let term = Value::Str("pair/2".to_string(), vec![a("left"), i(7)]);
+    let term = Value::strv("pair/2".to_string(), vec![a("left"), i(7)]);
     let (first_ok, first_vm) = call3("arg/3", i(1), term.clone(), ub("Arg"));
     assert!(first_ok);
     assert_eq!(read_var(&first_vm, "Arg"), a("left"));
@@ -2080,7 +2080,7 @@ fn test_arg_direct_modes_and_rollback() {
     assert!(second_ok);
     assert_eq!(read_var(&second_vm, "Arg"), i(7));
 
-    let list = Value::List(vec![a("head"), a("middle"), a("tail")]);
+    let list = Value::list(vec![a("head"), a("middle"), a("tail")]);
     let (head_ok, head_vm) = call3("arg/3", i(1), list.clone(), ub("Arg"));
     assert!(head_ok);
     assert_eq!(read_var(&head_vm, "Arg"), a("head"));
@@ -2088,29 +2088,29 @@ fn test_arg_direct_modes_and_rollback() {
     assert!(tail_ok);
     assert_eq!(
         read_var(&tail_vm, "Arg"),
-        Value::List(vec![a("middle"), a("tail")]),
+        Value::list(vec![a("middle"), a("tail")]),
     );
 
     assert!(!call3("arg/3", i(0), a("atom"), ub("Arg")).0);
     assert!(!call3("arg/3", i(-1), a("atom"), ub("Arg")).0);
-    assert!(!call3("arg/3", i(3), Value::Str("f/2".to_string(), vec![a("a"), a("b")]), ub("Arg")).0);
-    assert!(!call3("arg/3", i(i64::MAX), Value::List(vec![a("a")]), ub("Arg")).0);
-    assert!(!call3("arg/3", i(1), Value::List(vec![]), ub("Arg")).0);
+    assert!(!call3("arg/3", i(3), Value::strv("f/2".to_string(), vec![a("a"), a("b")]), ub("Arg")).0);
+    assert!(!call3("arg/3", i(i64::MAX), Value::list(vec![a("a")]), ub("Arg")).0);
+    assert!(!call3("arg/3", i(1), Value::list(vec![]), ub("Arg")).0);
 
     let (rollback_ok, rollback_vm) = call3(
         "arg/3",
         i(1),
-        Value::Str(
+        Value::strv(
             "wrapper/1".to_string(),
-            vec![Value::Str("pair/2".to_string(), vec![a("a"), a("b")])],
+            vec![Value::strv("pair/2".to_string(), vec![a("a"), a("b")])],
         ),
-        Value::Str("pair/2".to_string(), vec![ub("X"), a("wrong")]),
+        Value::strv("pair/2".to_string(), vec![ub("X"), a("wrong")]),
     );
     assert!(!rollback_ok);
     assert_eq!(read_var(&rollback_vm, "X"), ub("X"));
 
     let mut bound_term = vmnew();
-    assert!(bound_term.unify(&ub("Term"), &Value::Str("one/1".to_string(), vec![a("value")])));
+    assert!(bound_term.unify(&ub("Term"), &Value::strv("one/1".to_string(), vec![a("value")])));
     bound_term.set_reg("A1", i(1));
     bound_term.set_reg("A2", ub("Term"));
     bound_term.set_reg("A3", ub("Arg"));
@@ -2119,60 +2119,60 @@ fn test_arg_direct_modes_and_rollback() {
 
     let mut missing_output = vmnew();
     missing_output.set_reg("A1", i(1));
-    missing_output.set_reg("A2", Value::Str("one/1".to_string(), vec![a("value")]));
+    missing_output.set_reg("A2", Value::strv("one/1".to_string(), vec![a("value")]));
     assert!(!missing_output.execute_builtin("arg/3", 3));
 }
 
 #[test]
 fn test_univ_direct_modes_and_rollback() {
-    let compound = Value::Str("pair/2".to_string(), vec![a("left"), i(7)]);
+    let compound = Value::strv("pair/2".to_string(), vec![a("left"), i(7)]);
     let (decompose_ok, decompose_vm) = call2("=../2", compound, ub("Parts"));
     assert!(decompose_ok);
     assert_eq!(read_var(&decompose_vm, "Parts"),
-        Value::List(vec![a("pair"), a("left"), i(7)]));
+        Value::list(vec![a("pair"), a("left"), i(7)]));
 
     let (compose_ok, compose_vm) = call2(
-        "=../2", ub("Term"), Value::List(vec![a("node"), a("a"), i(7)]));
+        "=../2", ub("Term"), Value::list(vec![a("node"), a("a"), i(7)]));
     assert!(compose_ok);
     assert_eq!(read_var(&compose_vm, "Term"),
-        Value::Str("node".to_string(), vec![a("a"), i(7)]));
+        Value::strv("node".to_string(), vec![a("a"), i(7)]));
 
     let (atom_ok, atom_vm) = call2("=../2", a("atom"), ub("Parts"));
     assert!(atom_ok);
-    assert_eq!(read_var(&atom_vm, "Parts"), Value::List(vec![a("atom")]));
+    assert_eq!(read_var(&atom_vm, "Parts"), Value::list(vec![a("atom")]));
 
-    let (number_ok, number_vm) = call2("=../2", ub("Term"), Value::List(vec![i(42)]));
+    let (number_ok, number_vm) = call2("=../2", ub("Term"), Value::list(vec![i(42)]));
     assert!(number_ok);
     assert_eq!(read_var(&number_vm, "Term"), i(42));
 
-    let (empty_ok, empty_vm) = call2("=../2", Value::List(vec![]), ub("Parts"));
+    let (empty_ok, empty_vm) = call2("=../2", Value::list(vec![]), ub("Parts"));
     assert!(empty_ok);
-    assert_eq!(read_var(&empty_vm, "Parts"), Value::List(vec![a("[]")]));
+    assert_eq!(read_var(&empty_vm, "Parts"), Value::list(vec![a("[]")]));
 
     let (list_ok, list_vm) = call2(
-        "=../2", Value::List(vec![a("head"), a("tail")]), ub("Parts"));
+        "=../2", Value::list(vec![a("head"), a("tail")]), ub("Parts"));
     assert!(list_ok);
-    assert_eq!(read_var(&list_vm, "Parts"), Value::List(vec![
-        a("."), a("head"), Value::List(vec![a("tail")]),
+    assert_eq!(read_var(&list_vm, "Parts"), Value::list(vec![
+        a("."), a("head"), Value::list(vec![a("tail")]),
     ]));
 
-    assert!(!call2("=../2", ub("Term"), Value::List(vec![])).0);
-    assert!(!call2("=../2", ub("Term"), Value::List(vec![ub("Head")])).0);
-    assert!(!call2("=../2", ub("Term"), Value::List(vec![
-        Value::Str("not_atomic/0".to_string(), vec![]),
+    assert!(!call2("=../2", ub("Term"), Value::list(vec![])).0);
+    assert!(!call2("=../2", ub("Term"), Value::list(vec![ub("Head")])).0);
+    assert!(!call2("=../2", ub("Term"), Value::list(vec![
+        Value::strv("not_atomic/0".to_string(), vec![]),
     ])).0);
     assert!(!call2("=../2", ub("Term"), a("not_a_list")).0);
 
     let (rollback_ok, rollback_vm) = call2(
         "=../2",
-        Value::Str("pair/2".to_string(), vec![a("left"), a("right")]),
-        Value::List(vec![ub("Name"), a("wrong"), a("right")]),
+        Value::strv("pair/2".to_string(), vec![a("left"), a("right")]),
+        Value::list(vec![ub("Name"), a("wrong"), a("right")]),
     );
     assert!(!rollback_ok);
     assert_eq!(read_var(&rollback_vm, "Name"), ub("Name"));
 
     let mut missing_term = vmnew();
-    missing_term.set_reg("A2", Value::List(vec![a("atom")]));
+    missing_term.set_reg("A2", Value::list(vec![a("atom")]));
     assert!(!missing_term.execute_builtin("=../2", 2));
 
     let mut missing_list = vmnew();
@@ -2184,7 +2184,7 @@ fn test_univ_direct_modes_and_rollback() {
 fn test_copy_term_direct_sharing_and_rollback() {
     let (copy_ok, copy_vm) = call2(
         "copy_term/2",
-        Value::Str("pair/2".to_string(), vec![ub("Source"), ub("Source")]),
+        Value::strv("pair/2".to_string(), vec![ub("Source"), ub("Source")]),
         ub("Copy"),
     );
     assert!(copy_ok);
@@ -2202,21 +2202,21 @@ fn test_copy_term_direct_sharing_and_rollback() {
 
     let (ground_ok, ground_vm) = call2(
         "copy_term/2",
-        Value::Str("pair/2".to_string(), vec![a("left"), i(7)]),
+        Value::strv("pair/2".to_string(), vec![a("left"), i(7)]),
         ub("Copy"),
     );
     assert!(ground_ok);
     assert_eq!(read_var(&ground_vm, "Copy"),
-        Value::Str("pair".to_string(), vec![a("left"), i(7)]));
+        Value::strv("pair".to_string(), vec![a("left"), i(7)]));
 
     let (rollback_ok, rollback_vm) = call2(
         "copy_term/2",
-        Value::Str("outer/2".to_string(), vec![
-            Value::Str("pair/2".to_string(), vec![ub("Source"), a("right")]),
+        Value::strv("outer/2".to_string(), vec![
+            Value::strv("pair/2".to_string(), vec![ub("Source"), a("right")]),
             a("tail"),
         ]),
-        Value::Str("outer/2".to_string(), vec![
-            Value::Str("pair/2".to_string(), vec![ub("Captured"), a("wrong")]),
+        Value::strv("outer/2".to_string(), vec![
+            Value::strv("pair/2".to_string(), vec![ub("Captured"), a("wrong")]),
             a("tail"),
         ]),
     );
@@ -2236,13 +2236,13 @@ fn test_copy_term_direct_sharing_and_rollback() {
 #[test]
 fn test_reverse_direct_modes_and_rollback() {
     let (forward_ok, forward_vm) = call2(
-        "reverse/2", Value::List(vec![a("a"), a("b"), a("c")]), ub("Reversed"));
+        "reverse/2", Value::list(vec![a("a"), a("b"), a("c")]), ub("Reversed"));
     assert!(forward_ok);
     assert_eq!(read_var(&forward_vm, "Reversed"),
-        Value::List(vec![a("c"), a("b"), a("a")]));
+        Value::list(vec![a("c"), a("b"), a("a")]));
 
     let (inverse_ok, inverse_vm) = call2(
-        "reverse/2", a("[]"), Value::List(vec![]));
+        "reverse/2", a("[]"), Value::list(vec![]));
     assert!(inverse_ok);
     assert_eq!(read_var(&inverse_vm, "Reversed"), ub("Reversed"));
 
@@ -2250,8 +2250,8 @@ fn test_reverse_direct_modes_and_rollback() {
 
     let (rollback_ok, rollback_vm) = call2(
         "reverse/2",
-        Value::List(vec![a("a"), a("b")]),
-        Value::List(vec![ub("Captured"), a("wrong")]),
+        Value::list(vec![a("a"), a("b")]),
+        Value::list(vec![ub("Captured"), a("wrong")]),
     );
     assert!(!rollback_ok);
     assert_eq!(read_var(&rollback_vm, "Captured"), ub("Captured"));
@@ -2261,7 +2261,7 @@ fn test_reverse_direct_modes_and_rollback() {
     assert!(!missing_source.execute_builtin("reverse/2", 2));
 
     let mut missing_output = vmnew();
-    missing_output.set_reg("A1", Value::List(vec![]));
+    missing_output.set_reg("A1", Value::list(vec![]));
     assert!(!missing_output.execute_builtin("reverse/2", 2));
 }
 
@@ -2270,10 +2270,10 @@ fn test_standard_order() {
     assert!(call2("@</2", a("a"), a("b")).0);
     assert!(!call2("@</2", a("b"), a("a")).0);
     assert!(call2("@</2", i(99), a("a")).0, "numbers precede atoms");
-    assert!(call2("@</2", a("zzz"), Value::Str("f/1".to_string(), vec![i(1)])).0,
+    assert!(call2("@</2", a("zzz"), Value::strv("f/1".to_string(), vec![i(1)])).0,
         "atoms precede compounds");
     assert!(call2("@=</2", a("a"), a("a")).0);
-    assert!(call2("@>/2", Value::List(vec![i(1), i(2)]), Value::List(vec![i(1), i(1)])).0);
+    assert!(call2("@>/2", Value::list(vec![i(1), i(2)]), Value::list(vec![i(1), i(1)])).0);
     assert!(call2("@>=/2", a("b"), a("b")).0);
     let (ok, vm) = call3("compare/3", ub("O"), i(1), i(2));
     assert!(ok);
@@ -2285,15 +2285,15 @@ fn test_standard_order() {
 
 #[test]
 fn test_keysort() {
-    let pair = |k: Value, v: Value| Value::Str("-/2".to_string(), vec![k, v]);
+    let pair = |k: Value, v: Value| Value::strv("-/2".to_string(), vec![k, v]);
     // read_var goes through deref_heap, which normalizes the functor
     // spelling "-/2" to the display name "-" — compare against that.
-    let dpair = |k: Value, v: Value| Value::Str("-".to_string(), vec![k, v]);
+    let dpair = |k: Value, v: Value| Value::strv("-".to_string(), vec![k, v]);
     let (ok, vm) = call2("keysort/2",
-        Value::List(vec![pair(a("b"), i(1)), pair(a("a"), i(2)), pair(a("b"), i(0))]),
+        Value::list(vec![pair(a("b"), i(1)), pair(a("a"), i(2)), pair(a("b"), i(0))]),
         ub("S"));
     assert!(ok);
-    assert_eq!(read_var(&vm, "S"), Value::List(vec![
+    assert_eq!(read_var(&vm, "S"), Value::list(vec![
         dpair(a("a"), i(2)), dpair(a("b"), i(1)), dpair(a("b"), i(0)),
     ]), "stable by key, payload order preserved");
 }
@@ -2301,81 +2301,81 @@ fn test_keysort() {
 #[test]
 fn test_sort4_modes_and_keys() {
     let row = |name: &str, key: i64| {
-        Value::Str("row/2".to_string(), vec![a(name), i(key)])
+        Value::strv("row/2".to_string(), vec![a(name), i(key)])
     };
     let drow = |name: &str, key: i64| {
-        Value::Str("row".to_string(), vec![a(name), i(key)])
+        Value::strv("row".to_string(), vec![a(name), i(key)])
     };
-    let rows = Value::List(vec![row("a", 2), row("b", 1), row("c", 2)]);
+    let rows = Value::list(vec![row("a", 2), row("b", 1), row("c", 2)]);
 
     let (ascending_ok, ascending_vm) = call4(
         "sort/4", i(2), a("@=<"), rows.clone(), ub("Sorted"));
     assert!(ascending_ok);
-    assert_eq!(read_var(&ascending_vm, "Sorted"), Value::List(vec![
+    assert_eq!(read_var(&ascending_vm, "Sorted"), Value::list(vec![
         drow("b", 1), drow("a", 2), drow("c", 2),
     ]));
 
     let (ascending_unique_ok, ascending_unique_vm) = call4(
         "sort/4", i(2), a("@<"), rows.clone(), ub("Sorted"));
     assert!(ascending_unique_ok);
-    assert_eq!(read_var(&ascending_unique_vm, "Sorted"), Value::List(vec![
+    assert_eq!(read_var(&ascending_unique_vm, "Sorted"), Value::list(vec![
         drow("b", 1), drow("a", 2),
     ]));
 
     let (descending_ok, descending_vm) = call4(
         "sort/4", i(2), a("@>="), rows.clone(), ub("Sorted"));
     assert!(descending_ok);
-    assert_eq!(read_var(&descending_vm, "Sorted"), Value::List(vec![
+    assert_eq!(read_var(&descending_vm, "Sorted"), Value::list(vec![
         drow("a", 2), drow("c", 2), drow("b", 1),
     ]));
 
     let (descending_unique_ok, descending_unique_vm) = call4(
         "sort/4", i(2), a("@>"), rows, ub("Sorted"));
     assert!(descending_unique_ok);
-    assert_eq!(read_var(&descending_unique_vm, "Sorted"), Value::List(vec![
+    assert_eq!(read_var(&descending_unique_vm, "Sorted"), Value::list(vec![
         drow("a", 2), drow("b", 1),
     ]));
 
     let (whole_ok, whole_vm) = call4(
         "sort/4", i(0), a("@<"),
-        Value::List(vec![a("b"), a("a"), a("b")]), ub("Sorted"));
+        Value::list(vec![a("b"), a("a"), a("b")]), ub("Sorted"));
     assert!(whole_ok);
-    assert_eq!(read_var(&whole_vm, "Sorted"), Value::List(vec![a("a"), a("b")]));
+    assert_eq!(read_var(&whole_vm, "Sorted"), Value::list(vec![a("a"), a("b")]));
 
     let (list_key_ok, list_key_vm) = call4(
         "sort/4", i(1), a("@=<"),
-        Value::List(vec![
-            Value::List(vec![i(2), a("two")]),
-            Value::List(vec![i(1), a("one")]),
+        Value::list(vec![
+            Value::list(vec![i(2), a("two")]),
+            Value::list(vec![i(1), a("one")]),
         ]),
         ub("Sorted"),
     );
     assert!(list_key_ok);
-    assert_eq!(read_var(&list_key_vm, "Sorted"), Value::List(vec![
-        Value::List(vec![i(1), a("one")]),
-        Value::List(vec![i(2), a("two")]),
+    assert_eq!(read_var(&list_key_vm, "Sorted"), Value::list(vec![
+        Value::list(vec![i(1), a("one")]),
+        Value::list(vec![i(2), a("two")]),
     ]));
 }
 
 #[test]
 fn test_sort4_validation_and_rollback() {
-    let list = Value::List(vec![a("b"), a("a")]);
+    let list = Value::list(vec![a("b"), a("a")]);
     assert!(!call4("sort/4", i(-1), a("@<"), list.clone(), ub("Sorted")).0);
     assert!(!call4("sort/4", a("key"), a("@<"), list.clone(), ub("Sorted")).0);
     assert!(!call4("sort/4", i(0), a("ascending"), list.clone(), ub("Sorted")).0);
     assert!(!call4("sort/4", i(0), a("@<"), a("not-a-list"), ub("Sorted")).0);
 
     let (empty_ok, empty_vm) = call4(
-        "sort/4", i(0), a("@=<"), Value::List(vec![]), ub("Sorted"));
+        "sort/4", i(0), a("@=<"), Value::list(vec![]), ub("Sorted"));
     assert!(empty_ok);
-    assert_eq!(read_var(&empty_vm, "Sorted"), Value::List(vec![]));
+    assert_eq!(read_var(&empty_vm, "Sorted"), Value::list(vec![]));
 
     let (rollback_ok, rollback_vm) = call4(
         "sort/4",
         i(0),
         a("@=<"),
         list,
-        Value::List(vec![ub("First"), a("wrong")]),
+        Value::list(vec![ub("First"), a("wrong")]),
     );
     assert!(!rollback_ok);
     assert_eq!(read_var(&rollback_vm, "First"), ub("First"));
@@ -2383,57 +2383,57 @@ fn test_sort4_validation_and_rollback() {
 
 #[test]
 fn test_pairs_family_direct() {
-    let pair = |k: Value, v: Value| Value::Str("-/2".to_string(), vec![k, v]);
-    let pairs = Value::List(vec![pair(a("a"), i(1)), pair(a("b"), i(2))]);
+    let pair = |k: Value, v: Value| Value::strv("-/2".to_string(), vec![k, v]);
+    let pairs = Value::list(vec![pair(a("a"), i(1)), pair(a("b"), i(2))]);
 
     let (keys_ok, keys_vm) = call2("pairs_keys/2", pairs.clone(), ub("Keys"));
     assert!(keys_ok);
-    assert_eq!(read_var(&keys_vm, "Keys"), Value::List(vec![a("a"), a("b")]));
+    assert_eq!(read_var(&keys_vm, "Keys"), Value::list(vec![a("a"), a("b")]));
 
     let (values_ok, values_vm) = call2("pairs_values/2", pairs.clone(), ub("Values"));
     assert!(values_ok);
-    assert_eq!(read_var(&values_vm, "Values"), Value::List(vec![i(1), i(2)]));
+    assert_eq!(read_var(&values_vm, "Values"), Value::list(vec![i(1), i(2)]));
 
     let (split_ok, split_vm) = call3(
         "pairs_keys_values/3", pairs, ub("Keys"), ub("Values"));
     assert!(split_ok);
-    assert_eq!(read_var(&split_vm, "Keys"), Value::List(vec![a("a"), a("b")]));
-    assert_eq!(read_var(&split_vm, "Values"), Value::List(vec![i(1), i(2)]));
+    assert_eq!(read_var(&split_vm, "Keys"), Value::list(vec![a("a"), a("b")]));
+    assert_eq!(read_var(&split_vm, "Values"), Value::list(vec![i(1), i(2)]));
 
     let (zip_ok, zip_vm) = call3(
         "pairs_keys_values/3",
         ub("Pairs"),
-        Value::List(vec![a("a"), a("b")]),
-        Value::List(vec![i(1), i(2)]),
+        Value::list(vec![a("a"), a("b")]),
+        Value::list(vec![i(1), i(2)]),
     );
     assert!(zip_ok);
-    assert_eq!(read_var(&zip_vm, "Pairs"), Value::List(vec![
-        Value::Str("-".to_string(), vec![a("a"), i(1)]),
-        Value::Str("-".to_string(), vec![a("b"), i(2)]),
+    assert_eq!(read_var(&zip_vm, "Pairs"), Value::list(vec![
+        Value::strv("-".to_string(), vec![a("a"), i(1)]),
+        Value::strv("-".to_string(), vec![a("b"), i(2)]),
     ]));
 
     let (empty_ok, empty_vm) = call3(
-        "pairs_keys_values/3", ub("Pairs"), Value::List(vec![]), Value::List(vec![]));
+        "pairs_keys_values/3", ub("Pairs"), Value::list(vec![]), Value::list(vec![]));
     assert!(empty_ok);
-    assert_eq!(read_var(&empty_vm, "Pairs"), Value::List(vec![]));
+    assert_eq!(read_var(&empty_vm, "Pairs"), Value::list(vec![]));
 
     assert!(!call3(
         "pairs_keys_values/3",
         ub("Pairs"),
-        Value::List(vec![a("a")]),
-        Value::List(vec![i(1), i(2)]),
+        Value::list(vec![a("a")]),
+        Value::list(vec![i(1), i(2)]),
     ).0);
     assert!(!call2(
         "pairs_keys/2",
-        Value::List(vec![Value::Str("other/2".to_string(), vec![a("a"), i(1)])]),
+        Value::list(vec![Value::strv("other/2".to_string(), vec![a("a"), i(1)])]),
         ub("Keys"),
     ).0);
 
     let (rollback_ok, rollback_vm) = call3(
         "pairs_keys_values/3",
-        Value::List(vec![pair(ub("X"), i(1))]),
-        Value::List(vec![a("bound")]),
-        Value::List(vec![i(2)]),
+        Value::list(vec![pair(ub("X"), i(1))]),
+        Value::list(vec![a("bound")]),
+        Value::list(vec![i(2)]),
     );
     assert!(!rollback_ok);
     assert_eq!(read_var(&rollback_vm, "X"), ub("X"));
@@ -2441,52 +2441,52 @@ fn test_pairs_family_direct() {
 
 #[test]
 fn test_list_utilities() {
-    assert!(call2("memberchk/2", a("b"), Value::List(vec![a("a"), a("b")])).0);
-    assert!(!call2("memberchk/2", a("z"), Value::List(vec![a("a"), a("b")])).0);
-    let (ok, vm) = call2("last/2", Value::List(vec![i(1), i(2), i(3)]), ub("L"));
+    assert!(call2("memberchk/2", a("b"), Value::list(vec![a("a"), a("b")])).0);
+    assert!(!call2("memberchk/2", a("z"), Value::list(vec![a("a"), a("b")])).0);
+    let (ok, vm) = call2("last/2", Value::list(vec![i(1), i(2), i(3)]), ub("L"));
     assert!(ok);
     assert_eq!(read_var(&vm, "L"), i(3));
-    let (ok2, vm2) = call3("nth0/3", i(1), Value::List(vec![a("x"), a("y")]), ub("E"));
+    let (ok2, vm2) = call3("nth0/3", i(1), Value::list(vec![a("x"), a("y")]), ub("E"));
     assert!(ok2);
     assert_eq!(read_var(&vm2, "E"), a("y"));
-    let (ok3, vm3) = call3("nth1/3", i(1), Value::List(vec![a("x"), a("y")]), ub("E"));
+    let (ok3, vm3) = call3("nth1/3", i(1), Value::list(vec![a("x"), a("y")]), ub("E"));
     assert!(ok3);
     assert_eq!(read_var(&vm3, "E"), a("x"));
-    assert!(!call3("nth0/3", i(5), Value::List(vec![a("x")]), ub("E")).0);
+    assert!(!call3("nth0/3", i(5), Value::list(vec![a("x")]), ub("E")).0);
     let (ok4, vm4) = call3("numlist/3", i(2), i(5), ub("L"));
     assert!(ok4);
-    assert_eq!(read_var(&vm4, "L"), Value::List(vec![i(2), i(3), i(4), i(5)]));
+    assert_eq!(read_var(&vm4, "L"), Value::list(vec![i(2), i(3), i(4), i(5)]));
     assert!(!call3("numlist/3", i(5), i(2), ub("L")).0);
     let (ok5, vm5) = call3("delete/3",
-        Value::List(vec![a("a"), a("b"), a("a"), a("c")]), a("a"), ub("R"));
+        Value::list(vec![a("a"), a("b"), a("a"), a("c")]), a("a"), ub("R"));
     assert!(ok5);
-    assert_eq!(read_var(&vm5, "R"), Value::List(vec![a("b"), a("c")]));
+    assert_eq!(read_var(&vm5, "R"), Value::list(vec![a("b"), a("c")]));
     let (ok6, vm6) = call3(
         "subtract/3",
-        Value::List(vec![a("a"), a("b"), a("a"), a("c"), a("d")]),
-        Value::List(vec![a("a"), a("d")]),
+        Value::list(vec![a("a"), a("b"), a("a"), a("c"), a("d")]),
+        Value::list(vec![a("a"), a("d")]),
         ub("R"),
     );
     assert!(ok6);
-    assert_eq!(read_var(&vm6, "R"), Value::List(vec![a("b"), a("c")]));
-    let pair = Value::Str("pair/2".to_string(), vec![a("x"), i(1)]);
+    assert_eq!(read_var(&vm6, "R"), Value::list(vec![a("b"), a("c")]));
+    let pair = Value::strv("pair/2".to_string(), vec![a("x"), i(1)]);
     let (ok7, vm7) = call3(
         "subtract/3",
-        Value::List(vec![pair.clone(), a("keep")]),
-        Value::List(vec![pair]),
+        Value::list(vec![pair.clone(), a("keep")]),
+        Value::list(vec![pair]),
         ub("R"),
     );
     assert!(ok7);
-    assert_eq!(read_var(&vm7, "R"), Value::List(vec![a("keep")]));
-    assert!(!call3("subtract/3", a("not_a_list"), Value::List(vec![]), ub("R")).0);
-    assert!(!call3("subtract/3", Value::List(vec![]), a("not_a_list"), ub("R")).0);
+    assert_eq!(read_var(&vm7, "R"), Value::list(vec![a("keep")]));
+    assert!(!call3("subtract/3", a("not_a_list"), Value::list(vec![]), ub("R")).0);
+    assert!(!call3("subtract/3", Value::list(vec![]), a("not_a_list"), ub("R")).0);
 }
 
 #[test]
 fn test_nth_unbound_index_enumerates() {
     let mut vm = vmnew();
     vm.set_reg("A1", ub("N"));
-    vm.set_reg("A2", Value::List(vec![a("x"), a("y")]));
+    vm.set_reg("A2", Value::list(vec![a("x"), a("y")]));
     vm.set_reg("A3", ub("E"));
     assert!(vm.execute_builtin("nth1/3", 3));
     let mut got = Vec::new();
@@ -2518,7 +2518,7 @@ fn test_between_check_and_plus() {
 
 #[test]
 fn test_numeric_list_folds() {
-    let nums = Value::List(vec![i(3), i(1), i(2)]);
+    let nums = Value::list(vec![i(3), i(1), i(2)]);
     let (ok, vm) = call2("sum_list/2", nums.clone(), ub("S"));
     assert!(ok);
     assert_eq!(read_var(&vm, "S"), i(6));
@@ -2528,7 +2528,7 @@ fn test_numeric_list_folds() {
     let (ok3, vm3) = call2("min_list/2", nums, ub("M"));
     assert!(ok3);
     assert_eq!(read_var(&vm3, "M"), i(1));
-    assert!(!call2("max_list/2", Value::List(vec![]), ub("M")).0);
+    assert!(!call2("max_list/2", Value::list(vec![]), ub("M")).0);
 }
 
 #[test]
@@ -2558,22 +2558,22 @@ fn test_atom_text_ops() {
     assert!(!call3("string_code/3", i(1), a("abc"), i(98)).0);
     let (ok5, vm5) = call2("atom_chars/2", a("hi"), ub("Cs"));
     assert!(ok5);
-    assert_eq!(read_var(&vm5, "Cs"), Value::List(vec![a("h"), a("i")]));
-    let (ok6, vm6) = call2("atom_chars/2", ub("A"), Value::List(vec![a("h"), a("i")]));
+    assert_eq!(read_var(&vm5, "Cs"), Value::list(vec![a("h"), a("i")]));
+    let (ok6, vm6) = call2("atom_chars/2", ub("A"), Value::list(vec![a("h"), a("i")]));
     assert!(ok6);
     assert_eq!(read_var(&vm6, "A"), a("hi"));
     let (string_codes_ok, string_codes_vm) = call2("string_codes/2", a("hi"), ub("Codes"));
     assert!(string_codes_ok);
-    assert_eq!(read_var(&string_codes_vm, "Codes"), Value::List(vec![i(104), i(105)]));
+    assert_eq!(read_var(&string_codes_vm, "Codes"), Value::list(vec![i(104), i(105)]));
     let (string_codes_rev_ok, string_codes_rev_vm) = call2(
-        "string_codes/2", ub("String"), Value::List(vec![i(111), i(107)]));
+        "string_codes/2", ub("String"), Value::list(vec![i(111), i(107)]));
     assert!(string_codes_rev_ok);
     assert_eq!(read_var(&string_codes_rev_vm, "String"), a("ok"));
     let (string_chars_ok, string_chars_vm) = call2("string_chars/2", a("hi"), ub("Chars"));
     assert!(string_chars_ok);
-    assert_eq!(read_var(&string_chars_vm, "Chars"), Value::List(vec![a("h"), a("i")]));
+    assert_eq!(read_var(&string_chars_vm, "Chars"), Value::list(vec![a("h"), a("i")]));
     let (string_chars_rev_ok, string_chars_rev_vm) = call2(
-        "string_chars/2", ub("String"), Value::List(vec![a("o"), a("k")]));
+        "string_chars/2", ub("String"), Value::list(vec![a("o"), a("k")]));
     assert!(string_chars_rev_ok);
     assert_eq!(read_var(&string_chars_rev_vm, "String"), a("ok"));
     let (ok7, vm7) = call2("upcase_atom/2", a("aBc"), ub("U"));
@@ -2593,18 +2593,18 @@ fn test_atom_text_ops() {
     assert!(ok_chars);
     assert_eq!(
         read_var(&vm_chars, "Cs"),
-        Value::List(vec![a("-"), a("4"), a("2")]),
+        Value::list(vec![a("-"), a("4"), a("2")]),
     );
     let (ok_float, vm_float) = call2(
         "number_chars/2",
         ub("N"),
-        Value::List(vec![a("3"), a("."), a("5")]),
+        Value::list(vec![a("3"), a("."), a("5")]),
     );
     assert!(ok_float);
     assert_eq!(read_var(&vm_float, "N"), Value::Float(3.5));
-    assert!(!call2("number_chars/2", ub("N"), Value::List(vec![])).0);
-    assert!(!call2("number_chars/2", ub("N"), Value::List(vec![a("12")])).0);
-    assert!(!call2("number_chars/2", ub("N"), Value::List(vec![a("x")])).0);
+    assert!(!call2("number_chars/2", ub("N"), Value::list(vec![])).0);
+    assert!(!call2("number_chars/2", ub("N"), Value::list(vec![a("12")])).0);
+    assert!(!call2("number_chars/2", ub("N"), Value::list(vec![a("x")])).0);
     let (ok11, vm11) = call2("atom_string/2", a("x"), ub("S"));
     assert!(ok11);
     assert_eq!(read_var(&vm11, "S"), a("x"));
@@ -2618,19 +2618,19 @@ fn test_text_decomposition_direct() {
     let (split_ok, split_vm) = call4(
         "split_string/4", a(" alpha; beta,,gamma "), a(";,"), a(" "), ub("Parts"));
     assert!(split_ok);
-    assert_eq!(read_var(&split_vm, "Parts"), Value::List(vec![
+    assert_eq!(read_var(&split_vm, "Parts"), Value::list(vec![
         a("alpha"), a("beta"), a(""), a("gamma")
     ]));
 
     let (no_sep_ok, no_sep_vm) = call4(
         "split_string/4", a("  hello  "), a(""), a(" "), ub("Parts"));
     assert!(no_sep_ok);
-    assert_eq!(read_var(&no_sep_vm, "Parts"), Value::List(vec![a("hello")]));
+    assert_eq!(read_var(&no_sep_vm, "Parts"), Value::list(vec![a("hello")]));
 
     let (unicode_ok, unicode_vm) = call4(
         "split_string/4", a(" α·β·γ "), a("·"), a(" "), ub("Parts"));
     assert!(unicode_ok);
-    assert_eq!(read_var(&unicode_vm, "Parts"), Value::List(vec![
+    assert_eq!(read_var(&unicode_vm, "Parts"), Value::list(vec![
         a("α"), a("β"), a("γ")
     ]));
     assert!(!call4("split_string/4", ub("Text"), a(","), a(""), ub("Parts")).0);
@@ -2640,7 +2640,7 @@ fn test_text_decomposition_direct() {
         a("a,b"),
         a(","),
         a(""),
-        Value::List(vec![ub("First"), a("wrong")]),
+        Value::list(vec![ub("First"), a("wrong")]),
     );
     assert!(!rollback_ok);
     assert_eq!(read_var(&rollback_vm, "First"), ub("First"));
@@ -2648,18 +2648,18 @@ fn test_text_decomposition_direct() {
     let (atom_split_ok, atom_split_vm) = call3(
         "atom_split/3", a("a,,b"), a(","), ub("Parts"));
     assert!(atom_split_ok);
-    assert_eq!(read_var(&atom_split_vm, "Parts"), Value::List(vec![
+    assert_eq!(read_var(&atom_split_vm, "Parts"), Value::list(vec![
         a("a"), a(""), a("b")
     ]));
 
     let (empty_ok, empty_vm) = call3("atom_split/3", a(""), a(","), ub("Parts"));
     assert!(empty_ok);
-    assert_eq!(read_var(&empty_vm, "Parts"), Value::List(vec![a("")]));
+    assert_eq!(read_var(&empty_vm, "Parts"), Value::list(vec![a("")]));
 
     let (unicode_split_ok, unicode_split_vm) = call3(
         "atom_split/3", a("left·right"), a("·"), ub("Parts"));
     assert!(unicode_split_ok);
-    assert_eq!(read_var(&unicode_split_vm, "Parts"), Value::List(vec![
+    assert_eq!(read_var(&unicode_split_vm, "Parts"), Value::list(vec![
         a("left"), a("right")
     ]));
     assert!(!call3("atom_split/3", a("a--b"), a("--"), ub("Parts")).0);
@@ -2774,33 +2774,33 @@ fn test_path_queries_and_join_direct() {
 
 #[test]
 fn test_term_variables_direct() {
-    let term = Value::Str(
+    let term = Value::strv(
         "outer/3".to_string(),
         vec![
             ub("X"),
-            Value::Str("inner/3".to_string(), vec![ub("Y"), ub("X"), ub("Z")]),
-            Value::List(vec![ub("Z"), ub("Y")]),
+            Value::strv("inner/3".to_string(), vec![ub("Y"), ub("X"), ub("Z")]),
+            Value::list(vec![ub("Z"), ub("Y")]),
         ],
     );
     let (ok, vm) = call2("term_variables/2", term, ub("Vars"));
     assert!(ok);
     assert_eq!(
         read_var(&vm, "Vars"),
-        Value::List(vec![ub("X"), ub("Y"), ub("Z")]),
+        Value::list(vec![ub("X"), ub("Y"), ub("Z")]),
     );
     let (ground_ok, ground_vm) = call2(
         "term_variables/2",
-        Value::Str("ground/2".to_string(), vec![a("x"), i(1)]),
+        Value::strv("ground/2".to_string(), vec![a("x"), i(1)]),
         ub("Vars"),
     );
     assert!(ground_ok);
-    assert_eq!(read_var(&ground_vm, "Vars"), Value::List(vec![]));
-    assert!(!call2("term_variables/2", ub("X"), Value::List(vec![])).0);
+    assert_eq!(read_var(&ground_vm, "Vars"), Value::list(vec![]));
+    assert!(!call2("term_variables/2", ub("X"), Value::list(vec![])).0);
 
     let (rollback_ok, rollback_vm) = call2(
         "term_variables/2",
-        Value::Str("pair/2".to_string(), vec![ub("Source"), a("ground")]),
-        Value::List(vec![ub("Captured"), a("wrong")]),
+        Value::strv("pair/2".to_string(), vec![ub("Source"), a("ground")]),
+        Value::list(vec![ub("Captured"), a("wrong")]),
     );
     assert!(!rollback_ok);
     assert_eq!(read_var(&rollback_vm, "Captured"), ub("Captured"));
@@ -2816,24 +2816,24 @@ fn test_term_variables_direct() {
 
 #[test]
 fn test_numbervars_direct() {
-    let term = Value::Str(
+    let term = Value::strv(
         "outer/3".to_string(),
         vec![
             ub("X"),
-            Value::Str("inner/2".to_string(), vec![ub("Y"), ub("X")]),
+            Value::strv("inner/2".to_string(), vec![ub("Y"), ub("X")]),
             ub("Z"),
         ],
     );
     let (ok, vm) = call3("numbervars/3", term, i(3), ub("End"));
     assert!(ok);
-    assert_eq!(read_var(&vm, "X"), Value::Str("$VAR".to_string(), vec![i(3)]));
-    assert_eq!(read_var(&vm, "Y"), Value::Str("$VAR".to_string(), vec![i(4)]));
-    assert_eq!(read_var(&vm, "Z"), Value::Str("$VAR".to_string(), vec![i(5)]));
+    assert_eq!(read_var(&vm, "X"), Value::strv("$VAR".to_string(), vec![i(3)]));
+    assert_eq!(read_var(&vm, "Y"), Value::strv("$VAR".to_string(), vec![i(4)]));
+    assert_eq!(read_var(&vm, "Z"), Value::strv("$VAR".to_string(), vec![i(5)]));
     assert_eq!(read_var(&vm, "End"), i(6));
 
     let (ground_ok, ground_vm) = call3(
         "numbervars/3",
-        Value::Str("ground/2".to_string(), vec![a("x"), i(1)]),
+        Value::strv("ground/2".to_string(), vec![a("x"), i(1)]),
         i(7),
         ub("End"),
     );
@@ -2843,7 +2843,7 @@ fn test_numbervars_direct() {
 
     let (mismatch_ok, mismatch_vm) = call3(
         "numbervars/3",
-        Value::Str("pair/2".to_string(), vec![ub("X"), ub("Y")]),
+        Value::strv("pair/2".to_string(), vec![ub("X"), ub("Y")]),
         i(0),
         i(9),
     );
@@ -2877,38 +2877,38 @@ fn test_numbervars_direct() {
 #[test]
 fn test_unifiable_direct() {
     let display_eq = |left: Value, right: Value| {
-        Value::Str("=".to_string(), vec![left, right])
+        Value::strv("=".to_string(), vec![left, right])
     };
     let raw_eq = |left: Value, right: Value| {
-        Value::Str("=/2".to_string(), vec![left, right])
+        Value::strv("=/2".to_string(), vec![left, right])
     };
 
     let (simple_ok, simple_vm) = call3(
         "unifiable/3",
         ub("X"),
-        Value::Str("foo/1".to_string(), vec![a("a")]),
+        Value::strv("foo/1".to_string(), vec![a("a")]),
         ub("Bindings"),
     );
     assert!(simple_ok);
     assert_eq!(read_var(&simple_vm, "X"), ub("X"));
     assert_eq!(
         read_var(&simple_vm, "Bindings"),
-        Value::List(vec![display_eq(
+        Value::list(vec![display_eq(
             ub("X"),
-            Value::Str("foo".to_string(), vec![a("a")]),
+            Value::strv("foo".to_string(), vec![a("a")]),
         )]),
     );
 
     let (two_ok, two_vm) = call3(
         "unifiable/3",
-        Value::Str("p/2".to_string(), vec![ub("X"), ub("Y")]),
-        Value::Str("p/2".to_string(), vec![i(1), i(2)]),
+        Value::strv("p/2".to_string(), vec![ub("X"), ub("Y")]),
+        Value::strv("p/2".to_string(), vec![i(1), i(2)]),
         ub("Bindings"),
     );
     assert!(two_ok);
     assert_eq!(
         read_var(&two_vm, "Bindings"),
-        Value::List(vec![display_eq(ub("X"), i(1)), display_eq(ub("Y"), i(2))]),
+        Value::list(vec![display_eq(ub("X"), i(1)), display_eq(ub("Y"), i(2))]),
     );
     assert_eq!(read_var(&two_vm, "X"), ub("X"));
     assert_eq!(read_var(&two_vm, "Y"), ub("Y"));
@@ -2917,39 +2917,39 @@ fn test_unifiable_direct() {
     assert!(alias_ok);
     assert_eq!(
         read_var(&alias_vm, "Bindings"),
-        Value::List(vec![display_eq(ub("X"), ub("Y"))]),
+        Value::list(vec![display_eq(ub("X"), ub("Y"))]),
     );
     assert_eq!(read_var(&alias_vm, "X"), ub("X"));
     assert_eq!(read_var(&alias_vm, "Y"), ub("Y"));
 
     let (ground_ok, ground_vm) = call3("unifiable/3", a("same"), a("same"), ub("B"));
     assert!(ground_ok);
-    assert_eq!(read_var(&ground_vm, "B"), Value::List(vec![]));
+    assert_eq!(read_var(&ground_vm, "B"), Value::list(vec![]));
 
     let (fail_ok, fail_vm) = call3(
         "unifiable/3",
-        Value::Str("p/2".to_string(), vec![ub("X"), a("a")]),
-        Value::Str("p/2".to_string(), vec![i(1), a("b")]),
+        Value::strv("p/2".to_string(), vec![ub("X"), a("a")]),
+        Value::strv("p/2".to_string(), vec![i(1), a("b")]),
         ub("Bindings"),
     );
     assert!(!fail_ok);
     assert_eq!(read_var(&fail_vm, "X"), ub("X"));
 
-    let constrained = Value::List(vec![raw_eq(ub("X"), a("foo"))]);
+    let constrained = Value::list(vec![raw_eq(ub("X"), a("foo"))]);
     let (constrained_ok, constrained_vm) =
         call3("unifiable/3", ub("X"), ub("Y"), constrained);
     assert!(constrained_ok);
     assert_eq!(read_var(&constrained_vm, "X"), ub("X"));
     assert_eq!(read_var(&constrained_vm, "Y"), a("foo"));
 
-    let mismatched = Value::List(vec![
+    let mismatched = Value::list(vec![
         raw_eq(ub("Capture"), i(1)),
         raw_eq(ub("Y"), i(9)),
     ]);
     let (mismatch_ok, mismatch_vm) = call3(
         "unifiable/3",
-        Value::Str("p/2".to_string(), vec![ub("X"), ub("Y")]),
-        Value::Str("p/2".to_string(), vec![i(1), i(2)]),
+        Value::strv("p/2".to_string(), vec![ub("X"), ub("Y")]),
+        Value::strv("p/2".to_string(), vec![i(1), i(2)]),
         mismatched,
     );
     assert!(!mismatch_ok);
@@ -2980,9 +2980,9 @@ fn test_variant_equivalence_direct() {
     assert!(call2("=@=/2", a("same"), a("same")).0);
     assert!(!call2("=@=/2", a("left"), a("right")).0);
 
-    let shared_left = Value::Str("f/2".to_string(), vec![ub("X"), ub("X")]);
-    let shared_right = Value::Str("f/2".to_string(), vec![ub("A"), ub("A")]);
-    let distinct_right = Value::Str("f/2".to_string(), vec![ub("A"), ub("B")]);
+    let shared_left = Value::strv("f/2".to_string(), vec![ub("X"), ub("X")]);
+    let shared_right = Value::strv("f/2".to_string(), vec![ub("A"), ub("A")]);
+    let distinct_right = Value::strv("f/2".to_string(), vec![ub("A"), ub("B")]);
     let (shared_ok, shared_vm) = call2("=@=/2", shared_left.clone(), shared_right);
     assert!(shared_ok);
     assert_eq!(read_var(&shared_vm, "X"), ub("X"));
@@ -2990,28 +2990,28 @@ fn test_variant_equivalence_direct() {
     assert!(!call2("=@=/2", shared_left.clone(), distinct_right.clone()).0);
     assert!(!call2("=@=/2", distinct_right, shared_left).0);
 
-    let nested_left = Value::Str(
+    let nested_left = Value::strv(
         "outer/2".to_string(),
-        vec![ub("X"), Value::List(vec![ub("Y"), ub("X")])],
+        vec![ub("X"), Value::list(vec![ub("Y"), ub("X")])],
     );
-    let nested_right = Value::Str(
+    let nested_right = Value::strv(
         "outer/2".to_string(),
-        vec![ub("A"), Value::List(vec![ub("B"), ub("A")])],
+        vec![ub("A"), Value::list(vec![ub("B"), ub("A")])],
     );
     assert!(call2("=@=/2", nested_left.clone(), nested_right.clone()).0);
     assert!(!call2(
         "=@=/2",
         nested_left.clone(),
-        Value::Str("other/2".to_string(), vec![ub("A"), ub("B")]),
+        Value::strv("other/2".to_string(), vec![ub("A"), ub("B")]),
     ).0);
     assert!(call2("\\\\=@=/2", nested_left, a("different")).0);
     assert!(!call2("\\\\=@=/2", nested_right.clone(), nested_right).0);
 
-    assert!(call2("=@=/2", Value::List(vec![]), a("[]")).0);
+    assert!(call2("=@=/2", Value::list(vec![]), a("[]")).0);
     assert!(call2(
         "=@=/2",
-        Value::List(vec![ub("X")]),
-        Value::Str("[|]/2".to_string(), vec![ub("Y"), a("[]")]),
+        Value::list(vec![ub("X")]),
+        Value::strv("[|]/2".to_string(), vec![ub("Y"), a("[]")]),
     ).0);
 
     let mut missing_left = vmnew();
@@ -3031,41 +3031,41 @@ fn test_variant_equivalence_direct() {
 fn test_intersection_direct() {
     let (ok, vm) = call3(
         "intersection/3",
-        Value::List(vec![a("a"), a("b"), a("c"), a("b")]),
-        Value::List(vec![a("b"), a("d")]),
+        Value::list(vec![a("a"), a("b"), a("c"), a("b")]),
+        Value::list(vec![a("b"), a("d")]),
         ub("Common"),
     );
     assert!(ok);
-    assert_eq!(read_var(&vm, "Common"), Value::List(vec![a("b"), a("b")]));
+    assert_eq!(read_var(&vm, "Common"), Value::list(vec![a("b"), a("b")]));
 
     let (empty_ok, empty_vm) = call3(
         "intersection/3",
-        Value::List(vec![]),
-        Value::List(vec![a("a")]),
+        Value::list(vec![]),
+        Value::list(vec![a("a")]),
         ub("Common"),
     );
     assert!(empty_ok);
-    assert_eq!(read_var(&empty_vm, "Common"), Value::List(vec![]));
-    assert!(!call3("intersection/3", a("bad"), Value::List(vec![]), ub("R")).0);
-    assert!(!call3("intersection/3", Value::List(vec![]), a("bad"), ub("R")).0);
+    assert_eq!(read_var(&empty_vm, "Common"), Value::list(vec![]));
+    assert!(!call3("intersection/3", a("bad"), Value::list(vec![]), ub("R")).0);
+    assert!(!call3("intersection/3", Value::list(vec![]), a("bad"), ub("R")).0);
 
     let (vars_ok, vars_vm) = call3(
         "intersection/3",
-        Value::List(vec![ub("X"), ub("Y")]),
-        Value::List(vec![a("a")]),
+        Value::list(vec![ub("X"), ub("Y")]),
+        Value::list(vec![a("a")]),
         ub("Common"),
     );
     assert!(vars_ok);
     assert_eq!(read_var(&vars_vm, "X"), a("a"));
     assert_eq!(read_var(&vars_vm, "Y"), a("a"));
-    assert_eq!(read_var(&vars_vm, "Common"), Value::List(vec![a("a"), a("a")]));
+    assert_eq!(read_var(&vars_vm, "Common"), Value::list(vec![a("a"), a("a")]));
 
     let (retry_ok, retry_vm) = call3(
         "intersection/3",
-        Value::List(vec![Value::Str("f/1".to_string(), vec![ub("X")])]),
-        Value::List(vec![
-            Value::Str("g/1".to_string(), vec![a("wrong")]),
-            Value::Str("f/1".to_string(), vec![a("right")]),
+        Value::list(vec![Value::strv("f/1".to_string(), vec![ub("X")])]),
+        Value::list(vec![
+            Value::strv("g/1".to_string(), vec![a("wrong")]),
+            Value::strv("f/1".to_string(), vec![a("right")]),
         ]),
         ub("Common"),
     );
@@ -3074,19 +3074,19 @@ fn test_intersection_direct() {
 
     let (miss_ok, miss_vm) = call3(
         "intersection/3",
-        Value::List(vec![Value::Str("f/2".to_string(), vec![ub("X"), a("a")])]),
-        Value::List(vec![Value::Str("f/2".to_string(), vec![a("bound"), a("b")])]),
+        Value::list(vec![Value::strv("f/2".to_string(), vec![ub("X"), a("a")])]),
+        Value::list(vec![Value::strv("f/2".to_string(), vec![a("bound"), a("b")])]),
         ub("Common"),
     );
     assert!(miss_ok);
     assert_eq!(read_var(&miss_vm, "X"), ub("X"));
-    assert_eq!(read_var(&miss_vm, "Common"), Value::List(vec![]));
+    assert_eq!(read_var(&miss_vm, "Common"), Value::list(vec![]));
 
     let (mismatch_ok, mismatch_vm) = call3(
         "intersection/3",
-        Value::List(vec![ub("X")]),
-        Value::List(vec![a("a")]),
-        Value::List(vec![]),
+        Value::list(vec![ub("X")]),
+        Value::list(vec![a("a")]),
+        Value::list(vec![]),
     );
     assert!(!mismatch_ok);
     assert_eq!(read_var(&mismatch_vm, "X"), ub("X"));
@@ -3096,54 +3096,54 @@ fn test_intersection_direct() {
 fn test_union_direct() {
     let (ok, vm) = call3(
         "union/3",
-        Value::List(vec![a("a"), a("b"), a("c")]),
-        Value::List(vec![a("b"), a("d"), a("e")]),
+        Value::list(vec![a("a"), a("b"), a("c")]),
+        Value::list(vec![a("b"), a("d"), a("e")]),
         ub("Union"),
     );
     assert!(ok);
     assert_eq!(
         read_var(&vm, "Union"),
-        Value::List(vec![a("a"), a("b"), a("c"), a("d"), a("e")]),
+        Value::list(vec![a("a"), a("b"), a("c"), a("d"), a("e")]),
     );
 
     let (dupes_ok, dupes_vm) = call3(
         "union/3",
-        Value::List(vec![a("a"), a("a"), a("b")]),
-        Value::List(vec![a("a"), a("c")]),
+        Value::list(vec![a("a"), a("a"), a("b")]),
+        Value::list(vec![a("a"), a("c")]),
         ub("Union"),
     );
     assert!(dupes_ok);
     assert_eq!(
         read_var(&dupes_vm, "Union"),
-        Value::List(vec![a("a"), a("a"), a("b"), a("c")]),
+        Value::list(vec![a("a"), a("a"), a("b"), a("c")]),
     );
 
     let (empty_ok, empty_vm) = call3(
         "union/3",
-        Value::List(vec![]),
-        Value::List(vec![a("x"), a("y")]),
+        Value::list(vec![]),
+        Value::list(vec![a("x"), a("y")]),
         ub("Union"),
     );
     assert!(empty_ok);
-    assert_eq!(read_var(&empty_vm, "Union"), Value::List(vec![a("x"), a("y")]));
-    assert!(!call3("union/3", a("bad"), Value::List(vec![]), ub("R")).0);
-    assert!(!call3("union/3", Value::List(vec![]), a("bad"), ub("R")).0);
+    assert_eq!(read_var(&empty_vm, "Union"), Value::list(vec![a("x"), a("y")]));
+    assert!(!call3("union/3", a("bad"), Value::list(vec![]), ub("R")).0);
+    assert!(!call3("union/3", Value::list(vec![]), a("bad"), ub("R")).0);
 
     let (vars_ok, vars_vm) = call3(
         "union/3",
-        Value::List(vec![ub("X")]),
-        Value::List(vec![a("a"), a("b")]),
+        Value::list(vec![ub("X")]),
+        Value::list(vec![a("a"), a("b")]),
         ub("Union"),
     );
     assert!(vars_ok);
     assert_eq!(read_var(&vars_vm, "X"), a("a"));
-    assert_eq!(read_var(&vars_vm, "Union"), Value::List(vec![a("a"), a("b")]));
+    assert_eq!(read_var(&vars_vm, "Union"), Value::list(vec![a("a"), a("b")]));
 
     let (miss_ok, miss_vm) = call3(
         "union/3",
-        Value::List(vec![Value::Str("f/2".to_string(), vec![ub("X"), a("a")])]),
-        Value::List(vec![
-            Value::Str("f/2".to_string(), vec![a("bound"), a("b")]),
+        Value::list(vec![Value::strv("f/2".to_string(), vec![ub("X"), a("a")])]),
+        Value::list(vec![
+            Value::strv("f/2".to_string(), vec![a("bound"), a("b")]),
             a("keep"),
         ]),
         ub("Union"),
@@ -3152,18 +3152,18 @@ fn test_union_direct() {
     assert_eq!(read_var(&miss_vm, "X"), ub("X"));
     assert_eq!(
         read_var(&miss_vm, "Union"),
-        Value::List(vec![
-            Value::Str("f".to_string(), vec![ub("X"), a("a")]),
-            Value::Str("f".to_string(), vec![a("bound"), a("b")]),
+        Value::list(vec![
+            Value::strv("f".to_string(), vec![ub("X"), a("a")]),
+            Value::strv("f".to_string(), vec![a("bound"), a("b")]),
             a("keep"),
         ]),
     );
 
     let (mismatch_ok, mismatch_vm) = call3(
         "union/3",
-        Value::List(vec![ub("X")]),
-        Value::List(vec![a("a")]),
-        Value::List(vec![]),
+        Value::list(vec![ub("X")]),
+        Value::list(vec![a("a")]),
+        Value::list(vec![]),
     );
     assert!(!mismatch_ok);
     assert_eq!(read_var(&mismatch_vm, "X"), ub("X"));
@@ -3173,50 +3173,50 @@ fn test_union_direct() {
 fn test_list_to_set_direct() {
     let (ok, vm) = call2(
         "list_to_set/2",
-        Value::List(vec![a("a"), a("b"), a("c"), a("a"), a("b"), a("d")]),
+        Value::list(vec![a("a"), a("b"), a("c"), a("a"), a("b"), a("d")]),
         ub("Set"),
     );
     assert!(ok);
     assert_eq!(
         read_var(&vm, "Set"),
-        Value::List(vec![a("a"), a("b"), a("c"), a("d")]),
+        Value::list(vec![a("a"), a("b"), a("c"), a("d")]),
     );
 
     let (empty_ok, empty_vm) =
-        call2("list_to_set/2", Value::List(vec![]), ub("Set"));
+        call2("list_to_set/2", Value::list(vec![]), ub("Set"));
     assert!(empty_ok);
-    assert_eq!(read_var(&empty_vm, "Set"), Value::List(vec![]));
+    assert_eq!(read_var(&empty_vm, "Set"), Value::list(vec![]));
     assert!(!call2("list_to_set/2", a("bad"), ub("Set")).0);
 
-    let pair = Value::Str("pair/2".to_string(), vec![a("x"), i(1)]);
+    let pair = Value::strv("pair/2".to_string(), vec![a("x"), i(1)]);
     let (compound_ok, compound_vm) = call2(
         "list_to_set/2",
-        Value::List(vec![pair.clone(), a("keep"), pair]),
+        Value::list(vec![pair.clone(), a("keep"), pair]),
         ub("Set"),
     );
     assert!(compound_ok);
     assert_eq!(
         read_var(&compound_vm, "Set"),
-        Value::List(vec![
-            Value::Str("pair".to_string(), vec![a("x"), i(1)]),
+        Value::list(vec![
+            Value::strv("pair".to_string(), vec![a("x"), i(1)]),
             a("keep"),
         ]),
     );
 
     let (vars_ok, vars_vm) = call2(
         "list_to_set/2",
-        Value::List(vec![ub("X"), a("a"), a("b")]),
+        Value::list(vec![ub("X"), a("a"), a("b")]),
         ub("Set"),
     );
     assert!(vars_ok);
     assert_eq!(read_var(&vars_vm, "X"), a("a"));
-    assert_eq!(read_var(&vars_vm, "Set"), Value::List(vec![a("a"), a("b")]));
+    assert_eq!(read_var(&vars_vm, "Set"), Value::list(vec![a("a"), a("b")]));
 
     let (miss_ok, miss_vm) = call2(
         "list_to_set/2",
-        Value::List(vec![
-            Value::Str("f/2".to_string(), vec![ub("X"), a("a")]),
-            Value::Str("f/2".to_string(), vec![a("bound"), a("b")]),
+        Value::list(vec![
+            Value::strv("f/2".to_string(), vec![ub("X"), a("a")]),
+            Value::strv("f/2".to_string(), vec![a("bound"), a("b")]),
         ]),
         ub("Set"),
     );
@@ -3224,16 +3224,16 @@ fn test_list_to_set_direct() {
     assert_eq!(read_var(&miss_vm, "X"), ub("X"));
     assert_eq!(
         read_var(&miss_vm, "Set"),
-        Value::List(vec![
-            Value::Str("f".to_string(), vec![ub("X"), a("a")]),
-            Value::Str("f".to_string(), vec![a("bound"), a("b")]),
+        Value::list(vec![
+            Value::strv("f".to_string(), vec![ub("X"), a("a")]),
+            Value::strv("f".to_string(), vec![a("bound"), a("b")]),
         ]),
     );
 
     let (mismatch_ok, mismatch_vm) = call2(
         "list_to_set/2",
-        Value::List(vec![ub("X"), a("a")]),
-        Value::List(vec![]),
+        Value::list(vec![ub("X"), a("a")]),
+        Value::list(vec![]),
     );
     assert!(!mismatch_ok);
     assert_eq!(read_var(&mismatch_vm, "X"), ub("X"));
@@ -3242,10 +3242,10 @@ fn test_list_to_set_direct() {
 #[test]
 fn test_ground() {
     assert!(call1("ground/1", a("x")).0);
-    assert!(call1("ground/1", Value::List(vec![i(1), a("b")])).0);
+    assert!(call1("ground/1", Value::list(vec![i(1), a("b")])).0);
     assert!(!call1("ground/1", ub("V")).0);
-    assert!(!call1("ground/1", Value::List(vec![i(1), ub("V")])).0);
-    assert!(!call1("ground/1", Value::Str("f/1".to_string(), vec![ub("V")])).0);
+    assert!(!call1("ground/1", Value::list(vec![i(1), ub("V")])).0);
+    assert!(!call1("ground/1", Value::strv("f/1".to_string(), vec![ub("V")])).0);
 }
 
 #[test]
@@ -3253,9 +3253,9 @@ fn test_atomic_direct() {
     assert!(call1("atomic/1", a("x")).0);
     assert!(call1("atomic/1", i(1)).0);
     assert!(call1("atomic/1", Value::Float(1.5)).0);
-    assert!(call1("atomic/1", Value::List(vec![])).0);
-    assert!(!call1("atomic/1", Value::List(vec![a("x")])).0);
-    assert!(!call1("atomic/1", Value::Str("f".to_string(), vec![a("x")])).0);
+    assert!(call1("atomic/1", Value::list(vec![])).0);
+    assert!(!call1("atomic/1", Value::list(vec![a("x")])).0);
+    assert!(!call1("atomic/1", Value::strv("f".to_string(), vec![a("x")])).0);
     assert!(!call1("atomic/1", ub("X")).0);
 }
 
@@ -3263,7 +3263,7 @@ fn test_atomic_direct() {
 fn test_type_predicates_direct() {
     assert!(call1("atom/1", a("x")).0);
     assert!(!call1("atom/1", i(1)).0);
-    assert!(!call1("atom/1", Value::List(vec![])).0);
+    assert!(!call1("atom/1", Value::list(vec![])).0);
 
     assert!(call1("integer/1", i(1)).0);
     assert!(!call1("integer/1", Value::Float(1.0)).0);
@@ -3274,17 +3274,17 @@ fn test_type_predicates_direct() {
     assert!(!call1("number/1", a("one")).0);
 
     assert!(call1(
-        "compound/1", Value::Str("node/1".to_string(), vec![a("x")])).0);
-    assert!(call1("compound/1", Value::List(vec![a("x")])).0);
-    assert!(!call1("compound/1", Value::List(vec![])).0);
+        "compound/1", Value::strv("node/1".to_string(), vec![a("x")])).0);
+    assert!(call1("compound/1", Value::list(vec![a("x")])).0);
+    assert!(!call1("compound/1", Value::list(vec![])).0);
     assert!(!call1("compound/1", a("x")).0);
 
     assert!(call1("var/1", ub("X")).0);
     assert!(!call1("var/1", a("x")).0);
     assert!(call1("nonvar/1", a("x")).0);
     assert!(!call1("nonvar/1", ub("X")).0);
-    assert!(call1("is_list/1", Value::List(vec![])).0);
-    assert!(call1("is_list/1", Value::List(vec![a("x")])).0);
+    assert!(call1("is_list/1", Value::list(vec![])).0);
+    assert!(call1("is_list/1", Value::list(vec![a("x")])).0);
     assert!(!call1("is_list/1", a("x")).0);
 
     let (bind_ok, mut bound_atom_vm) = call2("=/2", ub("X"), a("bound"));
@@ -3297,7 +3297,7 @@ fn test_type_predicates_direct() {
     assert!(!bound_atom_vm.execute_builtin("var/1", 1));
 
     let (list_bind_ok, mut bound_list_vm) = call2(
-        "=/2", ub("X"), Value::List(vec![a("item")]));
+        "=/2", ub("X"), Value::list(vec![a("item")]));
     assert!(list_bind_ok);
     for op in ["compound/1", "is_list/1"] {
         bound_list_vm.set_reg("A1", ub("X"));
@@ -3338,48 +3338,48 @@ fn test_single_term_output_direct() {
     assert!(!call1("put_code/1", ub("Code")).0);
 
     assert!(call1("write_canonical/1",
-        Value::Str("node/2".to_string(), vec![a("has space"), i(7)])).0);
+        Value::strv("node/2".to_string(), vec![a("has space"), i(7)])).0);
     let mut vm = vmnew();
     assert!(!vm.execute_builtin("write_canonical/1", 1));
 }
 
 #[test]
 fn test_format_direct() {
-    let args = Value::List(vec![
-        Value::Str("node".to_string(), vec![i(1)]),
+    let args = Value::list(vec![
+        Value::strv("node".to_string(), vec![i(1)]),
         a("hello"),
         i(42),
-        Value::List(vec![i(111), i(107)]),
+        Value::list(vec![i(111), i(107)]),
     ]);
-    let destination = Value::Str("atom".to_string(), vec![ub("Out")]);
+    let destination = Value::strv("atom".to_string(), vec![ub("Out")]);
     let (ok, vm) = call3("format/3", destination,
         a("~w|~a|~d|~s|~t|~~"), args);
     assert!(ok);
     assert_eq!(read_var(&vm, "Out"),
         a(&format!("node(1)|hello|42|ok|{}|~", char::from(9))));
 
-    let string_dest = Value::Str("string/1".to_string(), vec![ub("Out")]);
+    let string_dest = Value::strv("string/1".to_string(), vec![ub("Out")]);
     let (string_ok, string_vm) = call3("format/3", string_dest,
-        a("~p"), Value::List(vec![Value::List(vec![a("a"), i(2)])]));
+        a("~p"), Value::list(vec![Value::list(vec![a("a"), i(2)])]));
     assert!(string_ok);
     assert_eq!(read_var(&string_vm, "Out"), a("[a, 2]"));
 
-    let codes_dest = Value::Str("codes".to_string(), vec![ub("Codes")]);
+    let codes_dest = Value::strv("codes".to_string(), vec![ub("Codes")]);
     let (codes_ok, codes_vm) = call3("format/3", codes_dest,
-        a("ab"), Value::List(vec![]));
+        a("ab"), Value::list(vec![]));
     assert!(codes_ok);
-    assert_eq!(read_var(&codes_vm, "Codes"), Value::List(vec![i(97), i(98)]));
+    assert_eq!(read_var(&codes_vm, "Codes"), Value::list(vec![i(97), i(98)]));
 
     assert!(call3("format/3",
-        Value::Str("atom".to_string(), vec![a("ok")]),
-        a("ok"), Value::List(vec![])).0);
+        Value::strv("atom".to_string(), vec![a("ok")]),
+        a("ok"), Value::list(vec![])).0);
     assert!(!call3("format/3",
-        Value::Str("atom".to_string(), vec![a("wrong")]),
-        a("ok"), Value::List(vec![])).0);
-    assert!(!call3("format/3", a("unknown"), a("ok"), Value::List(vec![])).0);
-    assert!(!call2("format/2", a("~w"), Value::List(vec![])).0);
+        Value::strv("atom".to_string(), vec![a("wrong")]),
+        a("ok"), Value::list(vec![])).0);
+    assert!(!call3("format/3", a("unknown"), a("ok"), Value::list(vec![])).0);
+    assert!(!call2("format/2", a("~w"), Value::list(vec![])).0);
     assert!(!call2("format/2", a("ok"), i(7)).0);
-    assert!(!call2("format/2", Value::Float(2.5), Value::List(vec![])).0);
+    assert!(!call2("format/2", Value::Float(2.5), Value::list(vec![])).0);
 }
 
 #[test]
@@ -3396,7 +3396,7 @@ fn test_filesystem_query_direct() {
     assert!(!call1("exists_directory/1", ub("Path")).0);
     assert!(!call1("exists_directory/1", i(7)).0);
 
-    let expected = Value::List(vec![a("."), a(".."), a("output_probe.rs")]);
+    let expected = Value::list(vec![a("."), a(".."), a("output_probe.rs")]);
     let (ok, vm) = call2("directory_files/2", a("src/bin"), ub("Files"));
     assert!(ok);
     assert_eq!(read_var(&vm, "Files"), expected);
@@ -3408,7 +3408,7 @@ fn test_filesystem_query_direct() {
     let (matched, _) = call2("directory_files/2", a("src/bin"), expected.clone());
     assert!(matched);
     let (mismatched, mismatch_vm) = call2("directory_files/2", a("src/bin"),
-        Value::List(vec![ub("Head"), a("wrong"), ub("Tail")]));
+        Value::list(vec![ub("Head"), a("wrong"), ub("Tail")]));
     assert!(!mismatched);
     assert_eq!(read_var(&mismatch_vm, "Head"), ub("Head"));
 }
@@ -3875,16 +3875,16 @@ fn test_time_conversions_direct() {
     assert!(!call2("date_time_stamp/2", a("not_a_date"), ub("Stamp")).0);
     assert!(!call2(
         "date_time_stamp/2",
-        Value::Str("date".to_string(), vec![i(2024)]), ub("Stamp")).0);
+        Value::strv("date".to_string(), vec![i(2024)]), ub("Stamp")).0);
     let mut bad_seconds = args.clone();
     bad_seconds[5] = Value::Float(0.0);
     assert!(!call2(
-        "date_time_stamp/2", Value::Str("date".to_string(), bad_seconds),
+        "date_time_stamp/2", Value::strv("date".to_string(), bad_seconds),
         ub("Stamp")).0);
     let mut bad_timezone = args.clone();
     bad_timezone[7] = i(0);
     assert!(!call2(
-        "date_time_stamp/2", Value::Str("date".to_string(), bad_timezone),
+        "date_time_stamp/2", Value::strv("date".to_string(), bad_timezone),
         ub("Stamp")).0);
     assert!(!vmnew().execute_builtin("date_time_stamp/2", 2));
     let mut missing_stamp_vm = vmnew();
@@ -3918,7 +3918,7 @@ fn test_time_conversions_unavailable_direct() {
         "stamp_date_time/3", i(0), ub("DateTime"), a("local")).0);
     assert!(!call2(
         "date_time_stamp/2",
-        Value::Str("date".to_string(), vec![i(0); 9]), ub("Stamp")).0);
+        Value::strv("date".to_string(), vec![i(0); 9]), ub("Stamp")).0);
     assert!(!call3("format_time/3", ub("Formatted"), a("%Y"), i(0)).0);
 }
 

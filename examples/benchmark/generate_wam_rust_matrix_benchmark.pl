@@ -835,7 +835,7 @@ fn main() {
             vm.set_reg("A1", Value::Atom(cat.clone()));
             vm.set_reg("A2", Value::Atom(root.clone()));
             vm.set_reg("A3", Value::Unbound("Hops".to_string()));
-            vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
+            vm.set_reg("A4", Value::list(vec![Value::Atom(cat.clone())]));
             let mut first = true;
             let mut solutions = 0usize;
             loop {
@@ -1572,7 +1572,7 @@ fn main() {
             vm.set_reg("A1", Value::Atom(cat.clone()));
             vm.set_reg("A2", Value::Atom(root.clone()));
             vm.set_reg("A3", Value::Unbound("Hops".to_string()));
-            vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
+            vm.set_reg("A4", Value::list(vec![Value::Atom(cat.clone())]));
             let mut first = true;
             let mut solutions = 0usize;
             loop {
