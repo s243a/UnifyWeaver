@@ -376,7 +376,46 @@ clojure_structured_clause1(WamCode, Structured) :-
     \+ member(try_me_else(_), Structured),
     \+ member(trust_me, Structured),
     \+ member(retry_me_else(_), Structured),
+    \+ clj_structured_transfers_control(Structured),
     once(member(ite(_, _, _), Structured)).     % must actually contain an ITE
+
+%% clj_structured_transfers_control(+Structured) is semidet.
+%  True when the folded clause contains an instruction that leaves this
+%  predicate's straight line -- a call to another predicate, a last-call, or a
+%  jump.
+%
+%  Such a clause CANNOT use the structured-ITE lowering, and this guard is the
+%  whole reason it exists. The lowered body threads states through a flat
+%  `(let [s1 (if (= :running (:status s0)) <step> s0) ...])`, and a call leaves
+%  the state :running with :pc pointing at the CALLEE. Every following step then
+%  ran against the callee's program counter and against registers the callee had
+%  not filled in yet, and the body reached its own `proceed` and reported a
+%  success the predicate never had -- with its output argument still unbound.
+%  (`upgrade_set_result/4` in examples/pkg_resolver answered true with an empty
+%  answer.) Stopping at the call is not a fix either: the structurer has already
+%  folded away the `try_me_else L_ite_else_N` that pushes the ELSE alternative,
+%  so a half-emitted condition would run with nothing to fall back to.
+%
+%  Falling through leaves the sound no-op stub, and run-wam interprets the
+%  predicate from its start-pc. Clauses whose conditions and branches are pure
+%  builtins (arithmetic and comparison tests -- the hot ones) still lower.
+clj_structured_transfers_control(Structured) :-
+    member(Item, Structured),
+    (   Item = ite(C, T, E)
+    ->  (   clj_structured_transfers_control(C)
+        ;   clj_structured_transfers_control(T)
+        ;   clj_structured_transfers_control(E)
+        )
+    ;   clj_transfers_control(Item)
+    ),
+    !.
+
+%% clj_transfers_control(+Instr) is semidet.
+clj_transfers_control(call(Pred, Arity)) :-
+    \+ clojure_pred_key_direct_builtin(Pred, _, Arity).
+clj_transfers_control(execute(Pred)) :-
+    \+ clojure_pred_key_direct_builtin(Pred, _, _).
+clj_transfers_control(jump(_)).
 
 %% emit_struct_clj_body(+Structured, +Indent)
 emit_struct_clj_body(Structured, Indent) :-
@@ -879,10 +918,13 @@ emit_lowered_expr(call(Pred, CallArity), S, Expr) :-
     clojure_pred_key_direct_builtin(Pred, Op, CallArity),
     !,
     emit_lowered_expr(builtin_call(Op, CallArity), S, Expr).
+% A lowered call must establish the callee's cut barrier (the WAM B0) exactly
+% as the interpreter's :call-pc does, or a `!` in the callee prunes against
+% whatever barrier the caller happened to leave behind.
 emit_lowered_expr(call(Pred, _Arity), S, Expr) :-
     clj_lowered_string_literal(Pred, PredLit),
     format(atom(Expr),
-           '(if-let [target-pc (get (:labels ~w) ~w)] (-> ~w (update :stack conj (inc (:pc ~w))) (assoc :pc target-pc)) (runtime/backtrack ~w))',
+           '(if-let [target-pc (get (:labels ~w) ~w)] (-> ~w (runtime/enter-call-barrier) (update :stack conj (inc (:pc ~w))) (assoc :pc target-pc)) (runtime/backtrack ~w))',
            [S, PredLit, S, S, S]).
 emit_lowered_expr(execute(Pred), S, Expr) :-
     clojure_pred_key_direct_builtin(Pred, Op, Arity),
@@ -894,7 +936,7 @@ emit_lowered_expr(execute(Pred), S, Expr) :-
 emit_lowered_expr(execute(Pred), S, Expr) :-
     clj_lowered_string_literal(Pred, PredLit),
     format(atom(Expr),
-           '(if-let [target-pc (get (:labels ~w) ~w)] (assoc ~w :pc target-pc) (runtime/backtrack ~w))',
+           '(if-let [target-pc (get (:labels ~w) ~w)] (-> ~w (runtime/enter-execute-barrier) (assoc :pc target-pc)) (runtime/backtrack ~w))',
            [S, PredLit, S, S]).
 emit_lowered_expr(jump(Label), S, Expr) :-
     clj_lowered_string_literal(Label, LabelLit),
@@ -920,15 +962,18 @@ emit_lowered_expr(get_integer(N, Ai), S, Expr) :-
            [N, S, Ai, S, S, Ai, S, S, S]).
 emit_lowered_expr(get_nil(Ai), S, Expr) :-
     emit_lowered_expr(get_constant("[]", Ai), S, Expr).
+% get_structure / get_list delegate to the runtime helpers the interpreter's
+% own step/1 uses. Inlining a SECOND copy of the read-mode logic here is how
+% the missing WRITE mode survived the interpreter being fixed: a predicate
+% whose OUTPUT argument is a compound failed in its own head, but only on the
+% lowered path.
 emit_lowered_expr(get_structure(F, Ai), S, Expr) :-
     clj_lowered_literal(F, Lit),
     format(atom(Expr),
-           '(let [functor (runtime/normalize-literal-term (:intern-context ~w) ~w) reg-val (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w ~q) ::lowered-unbound))] (cond (and (runtime/structure-term? reg-val) (runtime/interned-equal? (:functor reg-val) functor)) (-> ~w (runtime/enter-unify-mode (:args reg-val)) runtime/advance) :else (runtime/backtrack ~w)))',
-           [S, Lit, S, S, Ai, S, S]).
+           '(runtime/op-get-structure ~w (runtime/normalize-literal-term (:intern-context ~w) ~w) ~q)',
+           [S, S, Lit, Ai]).
 emit_lowered_expr(get_list(Ai), S, Expr) :-
-    format(atom(Expr),
-           '(let [reg-val (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w ~q) ::lowered-unbound)) list-functor (runtime/list-functor-term (:intern-context ~w))] (cond (and (runtime/structure-term? reg-val) (runtime/interned-equal? (:functor reg-val) list-functor)) (-> ~w (runtime/enter-unify-mode (:args reg-val)) runtime/advance) :else (runtime/backtrack ~w)))',
-           [S, S, Ai, S, S, S]).
+    format(atom(Expr), '(runtime/op-get-list ~w ~q)', [S, Ai]).
 emit_lowered_expr(unify_constant(C), S, Expr) :-
     clj_lowered_literal(C, Lit),
     format(atom(Expr),

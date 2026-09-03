@@ -504,6 +504,14 @@ compile_wam_predicate_to_clojure(PredIndicator, WamCode, _Options, ClojureCode) 
 ~w
 ', [AtomSeedsCode, FunctorSeedsCode, RawBody, LabelBody, WrapperCode]).
 
+%% compile_wam_predicate_to_clojure_shared(+Pred/Arity, +StartPC, -Code)
+%  Two wrappers per predicate:
+%    <name>-state : the SUCCEEDING WAM state, or nil. A caller that passed an
+%                   unbound variable in an argument register reads its answer
+%                   out of this state's :bindings -- the state is immutable, so
+%                   a boolean answer throws the binding away and a predicate
+%                   with OUTPUT arguments becomes unusable.
+%    <name>       : the boolean, unchanged in meaning.
 compile_wam_predicate_to_clojure_shared(Pred/Arity, StartPC, Code) :-
     predicate_clojure_name(Pred, CljName),
     build_clojure_wam_arg_list(Arity, ArgList),
@@ -511,9 +519,16 @@ compile_wam_predicate_to_clojure_shared(Pred/Arity, StartPC, Code) :-
     format(atom(Code),
 '(def ~w-start-pc ~w)
 
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+(defn ~w-state [~w]
+  (runtime/run-wam-state
+    (runtime/new-state shared-wam-code shared-wam-labels ~w-start-pc ~w foreign-handlers atom-intern-context)))
+
 (defn ~w [~w]
-  (runtime/run-wam-predicate shared-wam-code shared-wam-labels ~w-start-pc ~w foreign-handlers atom-intern-context))
-', [CljName, StartPC, CljName, ArgList, CljName, RegMap]).
+  (some? (~w-state ~w)))
+', [CljName, StartPC,
+    CljName, ArgList, CljName, RegMap,
+    CljName, ArgList, CljName, ArgList]).
 
 compile_wam_predicate_to_clojure_lowered(Pred/Arity, StartPC, Code) :-
     predicate_clojure_name(Pred, CljName),
@@ -523,11 +538,19 @@ compile_wam_predicate_to_clojure_lowered(Pred/Arity, StartPC, Code) :-
     format(atom(Code),
 '(def ~w-start-pc ~w)
 
-(defn ~w [~w]
-  (runtime/run-wam
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn ~w-state [~w]
+  (runtime/run-wam-state
     (~w
       (runtime/new-state shared-wam-code shared-wam-labels ~w-start-pc ~w foreign-handlers atom-intern-context))))
-', [CljName, StartPC, CljName, ArgList, LoweredName, CljName, RegMap]).
+
+(defn ~w [~w]
+  (some? (~w-state ~w)))
+', [CljName, StartPC,
+    CljName, ArgList, LoweredName, CljName, RegMap,
+    CljName, ArgList, CljName, ArgList]).
 
 wam_code_to_clojure_data(WamCode, BasePC, Entries, LabelPairs, NextPC) :-
     atom_string(WamCode, WamStr),
