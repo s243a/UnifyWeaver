@@ -26,7 +26,11 @@
                             (distinct functor-seeds))]
      {:atom-intern atom-intern
       :atom-deintern ordered-seeds
-      :functor-arity functor-arity})))
+      :functor-arity functor-arity
+      ;; `[|]/2` and `[]` are looked up on every get_list and every list walk;
+      ;; they are well-known seeds, so their terms can be built once here.
+      :list-functor {:tag :atom :id (get atom-intern "[|]/2")}
+      :empty-list {:tag :atom :id (get atom-intern "[]")}})))
 
 (defn intern-atom [ctx atom]
   (if-let [id (get (:atom-intern ctx) atom)]
@@ -46,8 +50,15 @@
 (defn atom-term? [v]
   (and (map? v) (= :atom (:tag v)) (contains? v :id)))
 
+;; Interned atoms are `{:tag :atom :id n}`; two of them are equal exactly when
+;; their ids are. Comparing the id first skips the generic map comparison on
+;; the busiest equality test in the runtime, and falls back to `=` for anything
+;; that is not an interned atom (integers, structures).
 (defn interned-equal? [left right]
-  (= left right))
+  (let [id (:id left)]
+    (if (nil? id)
+      (= left right)
+      (and (= id (:id right)) (= (:tag left) (:tag right))))))
 
 (defn normalize-literal-atom [ctx atom]
   (let [[_ctx id] (intern-atom ctx atom)]
@@ -88,6 +99,33 @@
 
 (defn ite-else-label? [label]
   (and (string? label) (str/starts-with? label "L_ite_else_")))
+
+;; --- first-argument indexing ----------------------------------------------
+;;
+;; wam_target emits the standard-WAM switch family (switch_on_constant /
+;; switch_on_structure / switch_on_term, on A1 or A2, plus the dedicated
+;; try / retry / trust dispatch chains) ahead of every multi-clause chain.
+;; Each entry is Key -> Label. A label of "default" or "none", or one with no
+;; address, means "fall through to the clause chain"; anything else is the
+;; address of a clause body (or of a chain entry point) to jump to directly.
+;;
+;; Resolving the entries ONCE, at load time, into a map from the dispatch key
+;; to the destination is what makes the dispatch a hash lookup rather than a
+;; scan -- and jumping straight at a clause body is what stops a list walk from
+;; pushing (and immediately backtracking through) a choice point per element.
+(defn switch-entry-target [labels label]
+  (let [pc (when (and (string? label)
+                      (not= "default" label)
+                      (not= "none" label))
+             (get labels label))]
+    (if (some? pc) pc :fallthrough)))
+
+;; Two entries may carry the same key (wam_target emits `req/2:default
+;; req/2:L_..._2` for a predicate whose clauses share a functor). The FIRST
+;; wins, exactly as a linear scan of the entry list would -- which is what
+;; keeps the indexed answer order identical to the unindexed one.
+(defn switch-entry-map [pairs]
+  (reduce (fn [m [k v]] (if (contains? m k) m (assoc m k v))) {} pairs))
 
 (defn resolve-instruction [labels instr ctx]
   (case (:op instr)
@@ -151,12 +189,61 @@
            (some (fn [entry]
                    (and (= "default" (:label entry))
                         (not (contains? entry :target-pc))))
-                 resolved-cases))]
+                 resolved-cases))
+          dispatch-map
+          (switch-entry-map
+           (keep (fn [entry]
+                   (when (contains? entry :value)
+                     [(normalize-literal-term ctx (:value entry))
+                      (switch-entry-target labels (:label entry))]))
+                 (:cases instr)))]
       (assoc instr
              :cases resolved-cases
              :case-map case-map
+             :dispatch-map dispatch-map
              :default-target-pc default-target-pc
              :default-fallthrough? default-fallthrough?))
+
+    :switch-on-structure
+    (assoc instr
+           :functor-map
+           (switch-entry-map
+            (map (fn [entry]
+                   [(normalize-literal-atom ctx (:functor entry))
+                    (switch-entry-target labels (:label entry))])
+                 (:cases instr))))
+
+    :switch-on-term
+    (assoc instr
+           :const-map
+           (switch-entry-map
+            (map (fn [entry]
+                   [(normalize-literal-term ctx (:value entry))
+                    (switch-entry-target labels (:label entry))])
+                 (:consts instr)))
+           :struct-map
+           (switch-entry-map
+            (map (fn [entry]
+                   [(normalize-literal-atom ctx (:functor entry))
+                    (switch-entry-target labels (:label entry))])
+                 (:structs instr)))
+           :list-target (switch-entry-target labels (:list-label instr))
+           :list-functor (normalize-literal-atom ctx "[|]/2"))
+
+    :try
+    (if-let [pc (get labels (:label instr))]
+      (assoc instr :op :try-pc :target-pc pc)
+      instr)
+
+    :retry
+    (if-let [pc (get labels (:label instr))]
+      (assoc instr :op :retry-pc :target-pc pc)
+      instr)
+
+    :trust
+    (if-let [pc (get labels (:label instr))]
+      (assoc instr :op :trust-pc :target-pc pc)
+      instr)
 
     :get-constant
     (update instr :constant #(normalize-literal-term ctx %))
@@ -223,8 +310,11 @@
 (defn succeed-state [state]
   (assoc state :status :succeeded))
 
+;; Hot path: every instruction that does not transfer control ends here, so
+;; this is executed once per WAM instruction. `assoc` with the incremented
+;; value is measurably cheaper under nbb than `update` with a function.
 (defn advance [state]
-  (update state :pc inc))
+  (assoc state :pc (inc (:pc state))))
 
 (defn lowered-step-advanced? [continue? before after]
   (and continue?
@@ -284,20 +374,22 @@
          sorted-unique-terms
          term-compare)
 
+;; A choice point records the machine registers as they stand now, so that
+;; `backtrack` can put them back. The state is already a persistent map holding
+;; exactly those values, so the snapshot IS that map with the four
+;; choice-point-only fields written over it: three `assoc`s instead of building
+;; a thirteen-entry map literal, which under nbb's interpreter was the single
+;; most expensive instruction in the resolver (every `->` and `\+` pushes one).
+;;
+;; restore-choice-state reads only the fields listed below, and the extra keys
+;; the state carries (:bindings, :trail, :choice-points, :code, ...) are never
+;; read back out of a choice point -- the trail is what undoes bindings.
 (defn choice-snapshot [state target-pc]
-  {:kind :wam
-   :pc target-pc
-   :stack (:stack state)
-   :regs (:regs state)
-   :env-stack (:env-stack state)
-   :trail-len (count (:trail state))
-   :heap-len (count (:heap state))
-   :unify-queue (:unify-queue state)
-   :unify-stack (:unify-stack state)
-   :build-stack (:build-stack state)
-   :cut-bar (:cut-bar state)
-   :cut-bars (:cut-bars state)
-   :next-var-id (:next-var-id state)})
+  (assoc state
+         :kind :wam
+         :pc target-pc
+         :trail-len (count (:trail state))
+         :heap-len (count (:heap state))))
 
 (defn foreign-choice-snapshot [state target-pc results]
   {:pc target-pc
@@ -485,9 +577,9 @@
   ([state target-pc]
    (push-choice-point state target-pc false))
   ([state target-pc ite?]
-   (update state :choice-points conj
-           (cond-> (choice-snapshot state target-pc)
-             ite? (assoc :ite true)))))
+   (let [cp (choice-snapshot state target-pc)
+         cp (if ite? (assoc cp :ite true) cp)]
+     (assoc state :choice-points (conj (:choice-points state) cp)))))
 
 ;; `(Cond -> Then ; Else)` lowers to try_me_else L_ite_else_N / Cond / cut_ite,
 ;; and the commit must remove the ELSE alternative TOGETHER WITH every choice
@@ -568,11 +660,15 @@
 (defn y-slot? [reg]
   (and (string? reg) (.startsWith reg "Y")))
 
+;; Register access is the busiest pair of functions in the runtime -- a WAM
+;; instruction reads or writes one or two registers. `get`/`assoc` on the
+;; already-extracted :regs map is cheaper under nbb than the `get-in`/`assoc-in`
+;; path walk these used to take.
 (defn reg-get-raw [state reg]
   (if (y-slot? reg)
     (let [env (peek (:env-stack state))]
       (get env reg))
-    (get-in state [:regs reg])))
+    (get (:regs state) reg)))
 
 (defn reg-set-raw [state reg value]
   (if (y-slot? reg)
@@ -581,21 +677,30 @@
         (assoc state :env-stack
                (conj (pop stk) (assoc (peek stk) reg value)))
         (assoc state :env-stack [{reg value}])))
-    (assoc-in state [:regs reg] value)))
+    (assoc state :regs (assoc (:regs state) reg value))))
 
 (defn var-term [id]
   {:var id})
 
+;; A variable cell is `{:var id}` and nothing else carries a :var key, so the
+;; keyword lookup alone decides it -- and it answers nil for the numbers and
+;; non-map values that also reach here, where `map?` + `contains?` cost two
+;; calls apiece.
 (defn logic-var? [v]
-  (and (map? v) (contains? v :var)))
+  (some? (:var v)))
 
+;; The overwhelmingly common case is a value that is not a variable at all
+;; (an atom, an integer, a structure): answer it without entering the loop.
 (defn deref-value [bindings v]
-  (loop [cur v]
-    (if (logic-var? cur)
-      (if-let [bound (get bindings (:var cur))]
-        (recur bound)
-        cur)
-      cur)))
+  (if (nil? (:var v))
+    v
+    (loop [cur v]
+      (let [bound (get bindings (:var cur))]
+        (if (nil? bound)
+          cur
+          (if (nil? (:var bound))
+            bound
+            (recur bound)))))))
 
 (defn bind-var [state var-term value]
   (let [var-id (:var var-term)
@@ -636,7 +741,22 @@
 (defn unifiable? [state left right]
   (first (unify-values state left right)))
 
+(declare term-identical-deep?)
+
 (defn term-identical? [state left right]
+  (let [bindings (:bindings state)
+        l0 (deref-value bindings left)
+        r0 (deref-value bindings right)]
+    ;; `==/2` on two atoms is the whole of `matching_deps/4`'s test, and it runs
+    ;; once per catalog row: answer it without building the recursive closure.
+    (if (and (not (structure-term? l0)) (not (structure-term? r0)))
+      (cond
+        (logic-var? l0) (and (logic-var? r0) (= (:var l0) (:var r0)))
+        (logic-var? r0) false
+        :else (interned-equal? l0 r0))
+      (term-identical-deep? state l0 r0))))
+
+(defn term-identical-deep? [state left right]
   (let [bindings (:bindings state)]
     (letfn [(identical* [l r]
               (let [l* (deref-value bindings l)
@@ -913,11 +1033,16 @@
   (and (map? v) (= :struct (:tag v))))
 
 (defn list-functor-term [ctx]
-  (normalize-literal-atom ctx "[|]/2"))
+  (or (:list-functor ctx)
+      (normalize-literal-atom ctx "[|]/2")))
+
+(defn empty-list-term [ctx]
+  (or (:empty-list ctx)
+      (normalize-literal-atom ctx "[]")))
 
 (defn proper-list-term? [state value]
   (let [bindings (:bindings state)
-        empty-list (normalize-literal-atom (:intern-context state) "[]")
+        empty-list (empty-list-term (:intern-context state))
         list-functor (list-functor-term (:intern-context state))]
     (loop [cur (deref-value bindings value)
            seen #{}]
@@ -933,7 +1058,7 @@
 
 (defn proper-list-length [state value]
   (let [bindings (:bindings state)
-        empty-list (normalize-literal-atom (:intern-context state) "[]")
+        empty-list (empty-list-term (:intern-context state))
         list-functor (list-functor-term (:intern-context state))]
     (loop [cur (deref-value bindings value)
            seen #{}
@@ -950,7 +1075,7 @@
 
 (defn proper-list-items [state value]
   (let [bindings (:bindings state)
-        empty-list (normalize-literal-atom (:intern-context state) "[]")
+        empty-list (empty-list-term (:intern-context state))
         list-functor (list-functor-term (:intern-context state))]
     (loop [cur (deref-value bindings value)
            seen #{}
@@ -2380,7 +2505,7 @@
 (defn list->term [ctx items]
   (reduce (fn [tail item]
             (structure-term (list-functor-term ctx) [item tail]))
-          (normalize-literal-atom ctx "[]")
+          (empty-list-term ctx)
           (reverse items)))
 
 (defn length-count-value [state value]
@@ -2532,11 +2657,14 @@
         (assoc :unify-queue (vec items)))
     (assoc state :unify-queue (vec items))))
 
+;; The read-mode cursor advances once per unify_* instruction -- 1.5 million
+;; times in one 5000-package resolve. `(vec (rest q))` rebuilt the remaining
+;; queue each time; `subvec` shares it.
 (defn pop-unify-item [state]
   (loop [s state]
     (let [q (:unify-queue s)]
       (if (seq q)
-        [(first q) (assoc s :unify-queue (vec (rest q)))]
+        [(nth q 0) (assoc s :unify-queue (subvec q 1))]
         (let [stk (:unify-stack s)]
           (if (seq stk)
             (recur (-> s
@@ -2665,25 +2793,84 @@
           (recur next-state)))
       s)))
 
+;; A dispatch destination is either an address (jump there, entering the clause
+;; DETERMINISTICALLY -- no choice point is pushed, and none is expected) or
+;; :fallthrough (run the clause chain from the next instruction, exactly as an
+;; unindexed predicate does).
+(defn switch-jump [state target]
+  (if (integer? target)
+    (assoc state :pc target)
+    (advance state)))
+
+(defn switch-reg-value [state instr]
+  (deref-value (:bindings state) (reg-get-raw state (or (:reg instr) "A1"))))
+
+(defn switch-unbound-value? [v]
+  (or (nil? v) (= v ::unbound) (logic-var? v)))
+
+;; An unbound dispatch register, and any key the index does not mention, fall
+;; through to the full clause chain: indexing may only ever REMOVE work that
+;; could not have produced an answer, never an alternative.
 (defn switch-target [state instr]
-  (let [reg-val (normalize-dispatch-value
-                 (:intern-context state)
-                 (deref-value (:bindings state) (reg-get-raw state "A1")))
-        case-map (:case-map instr)
-        default-target-pc (:default-target-pc instr)
-        default-fallthrough? (:default-fallthrough? instr)]
+  (let [raw (switch-reg-value state instr)]
+    (if (switch-unbound-value? raw)
+      (advance state)
+      (let [reg-val (normalize-dispatch-value (:intern-context state) raw)
+            dispatch-map (:dispatch-map instr)
+            case-map (:case-map instr)
+            default-target-pc (:default-target-pc instr)
+            default-fallthrough? (:default-fallthrough? instr)]
+        (cond
+          (contains? dispatch-map reg-val)
+          (switch-jump state (get dispatch-map reg-val))
+
+          (contains? case-map reg-val)
+          (assoc state :pc (get case-map reg-val))
+
+          default-target-pc
+          (assoc state :pc default-target-pc)
+
+          default-fallthrough?
+          (advance state)
+
+          :else
+          (backtrack state))))))
+
+(defn switch-structure-target [state instr]
+  (let [v (switch-reg-value state instr)]
+    (if (structure-term? v)
+      (let [target (get (:functor-map instr) (:functor v) ::miss)]
+        (if (= target ::miss)
+          (advance state)
+          (switch-jump state target)))
+      (advance state))))
+
+;; switch_on_term is the type-based form: constants take the constant table,
+;; a cons cell takes the dedicated list label, any other compound takes the
+;; structure table. This is the one that matters for `resolver.pl` -- every
+;; list-walking predicate is `p([], ...)` / `p([H|T], ...)`, and without it
+;; each of the 5000 elements of a catalog list pushed a choice point, failed
+;; clause 1's `get_constant []`, and backtracked into clause 2.
+(defn switch-term-target [state instr]
+  (let [v (switch-reg-value state instr)]
     (cond
-      (contains? case-map reg-val)
-      (assoc state :pc (get case-map reg-val))
+      (structure-term? v)
+      (if (interned-equal? (:functor v) (:list-functor instr))
+        (switch-jump state (:list-target instr))
+        (let [target (get (:struct-map instr) (:functor v) ::miss)]
+          (if (= target ::miss)
+            (advance state)
+            (switch-jump state target))))
 
-      default-target-pc
-      (assoc state :pc default-target-pc)
-
-      default-fallthrough?
+      (switch-unbound-value? v)
       (advance state)
 
       :else
-      (backtrack state))))
+      (let [key (normalize-dispatch-value (:intern-context state) v)
+            target (get (:const-map instr) key ::miss)]
+        (if (= target ::miss)
+          (advance state)
+          (switch-jump state target))))))
 
 (defn foreign-key [pred arity]
   (str pred "/" arity))
@@ -2990,6 +3177,28 @@
 
         :switch-on-constant
         (switch-target state instr)
+
+        :switch-on-structure
+        (switch-structure-target state instr)
+
+        :switch-on-term
+        (switch-term-target state instr)
+
+        ;; A dispatch chain (`try L / retry L' / trust L''`) is the group form
+        ;; of try_me_else / retry_me_else / trust_me: the alternative it leaves
+        ;; behind is the NEXT chain entry, and the clause body is jumped to.
+        :try-pc
+        (-> state
+            (push-choice-point (inc (:pc state)))
+            (assoc :pc (:target-pc instr)))
+
+        :retry-pc
+        (-> state
+            (push-choice-point (inc (:pc state)))
+            (assoc :pc (:target-pc instr)))
+
+        :trust-pc
+        (assoc state :pc (:target-pc instr))
 
         :try-me-else-pc
         (-> state

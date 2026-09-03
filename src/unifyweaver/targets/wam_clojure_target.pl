@@ -572,9 +572,8 @@ wam_lines_intern_seeds([Line|Rest], AtomSeeds, FunctorSeeds) :-
     ;   split_string(Trimmed, " ", "", [Op|ArgParts]),
         atomic_list_concat(ArgParts, ' ', ArgText0),
         normalize_space(string(ArgText), ArgText0),
-        (   Op == "switch_on_constant"
-        ->  switch_case_atom_values(ArgText, LocalAtomSeeds),
-            LocalFunctorSeeds = []
+        (   switch_index_op(Op)
+        ->  switch_index_intern_seeds(Op, ArgText, LocalAtomSeeds, LocalFunctorSeeds)
         ;   wam_args(ArgText, Args),
             wam_op_intern_seeds(Op, Args, LocalAtomSeeds, LocalFunctorSeeds)
         ),
@@ -592,6 +591,94 @@ switch_case_atom_values(CasesText, AtomSeeds) :-
               wam_atom_token_text(Const, AtomText)
             ),
             AtomSeeds).
+
+% =====================================================================
+% First-argument (and second-argument) indexing
+%
+% wam_target.pl emits the whole standard-WAM switch family as space-separated
+% `Key:Label` entries.  The entry text is NOT comma-separated, so these ops
+% keep their argument text whole instead of going through wam_args/2.
+%
+%   switch_on_constant                E...        dispatch A1 on a constant
+%   switch_on_constant_fallthrough    E...        ... falling through on a miss
+%   switch_on_constant_a2[_fallthrough]           the same, on A2
+%   switch_on_structure[_a2]          F/N:L ...   dispatch on the functor
+%   switch_on_term[_a2]  CLen C... SLen S... List type-based dispatch
+%
+% and, for a dispatch group holding more than one clause, a dedicated
+% `try / retry / trust` chain (distinct from the linear chain's
+% try_me_else / retry_me_else / trust_me).
+% =====================================================================
+
+switch_index_op(Op) :- switch_constant_op(Op, _, _), !.
+switch_index_op(Op) :- switch_structure_op(Op, _), !.
+switch_index_op(Op) :- switch_term_op(Op, _).
+
+switch_constant_op("switch_on_constant",                "A1", "false").
+switch_constant_op("switch_on_constant_fallthrough",    "A1", "true").
+switch_constant_op("switch_on_constant_a2",             "A2", "false").
+switch_constant_op("switch_on_constant_a2_fallthrough", "A2", "true").
+
+switch_structure_op("switch_on_structure",    "A1").
+switch_structure_op("switch_on_structure_a2", "A2").
+
+switch_term_op("switch_on_term",    "A1").
+switch_term_op("switch_on_term_a2", "A2").
+
+%% switch_index_intern_seeds(+Op, +ArgText, -AtomSeeds, -FunctorSeeds)
+%  Dispatch keys must be interned in the SAME table the executing code uses,
+%  or the runtime compares an atom id against a freshly minted one and never
+%  matches. Structure keys are seeded as functors too (that is what carries
+%  their arity).
+switch_index_intern_seeds(Op, ArgText, AtomSeeds, []) :-
+    switch_constant_op(Op, _, _),
+    !,
+    switch_case_atom_values(ArgText, AtomSeeds).
+switch_index_intern_seeds(Op, ArgText, [], FunctorSeeds) :-
+    switch_structure_op(Op, _),
+    !,
+    switch_case_entries(ArgText, Entries),
+    findall(Key, member(Key-_, Entries), FunctorSeeds).
+switch_index_intern_seeds(Op, ArgText, AtomSeeds, FunctorSeeds) :-
+    switch_term_op(Op, _),
+    parse_switch_on_term_text(ArgText, ConstEntries, StructEntries, _ListLabel),
+    !,
+    findall(AtomText,
+            ( member(Const-_, ConstEntries),
+              wam_atom_token_text(Const, AtomText) ),
+            AtomSeeds),
+    findall(Key, member(Key-_, StructEntries), FunctorSeeds).
+switch_index_intern_seeds(_, _, [], []).
+
+%% switch_case_entries(+Text, -Entries) — split `K1:L1 K2:L2 ...`.
+switch_case_entries(Text, Entries) :-
+    split_string(Text, " ", " ", RawCases),
+    exclude(==(""), RawCases, Cases),
+    maplist(switch_case_entry, Cases, Entries).
+
+switch_case_entry(RawCase, Key-Label) :-
+    normalize_space(string(Case), RawCase),
+    (   split_string(Case, ":", "", [Key, Label])
+    ->  true
+    ;   Key = Case, Label = "default"
+    ).
+
+%% parse_switch_on_term_text(+Text, -ConstEntries, -StructEntries, -ListLabel)
+%  `CLen <CLen entries> SLen <SLen entries> ListLabel`. The counts are what
+%  makes this unambiguous: with zero structure entries the two count fields
+%  sit next to each other and a positional split would misread them.
+parse_switch_on_term_text(Text, ConstEntries, StructEntries, ListLabel) :-
+    split_string(Text, " ", " ", Raw0),
+    exclude(==(""), Raw0, Tokens),
+    Tokens = [CLenS|Rest0],
+    number_string(CLen, CLenS),
+    length(ConstToks, CLen),
+    append(ConstToks, [SLenS|Rest1], Rest0),
+    number_string(SLen, SLenS),
+    length(StructToks, SLen),
+    append(StructToks, [ListLabel], Rest1),
+    maplist(switch_case_entry, ConstToks, ConstEntries),
+    maplist(switch_case_entry, StructToks, StructEntries).
 
 wam_atom_token_text("''", "") :- !.
 wam_atom_token_text(Token, AtomText) :-
@@ -643,7 +730,7 @@ wam_line_to_clojure_literal(Line, Literal) :-
     split_string(Line, " ", "", [Op|ArgParts]),
     atomic_list_concat(ArgParts, ' ', ArgText0),
     normalize_space(string(ArgText), ArgText0),
-    (   Op == "switch_on_constant"
+    (   switch_index_op(Op)
     ->  Args = [ArgText]
     ;   wam_args(ArgText, Args)
     ),
@@ -738,10 +825,48 @@ wam_op_to_clojure_literal("unify_value", [Var], _, Literal) :-
 wam_op_to_clojure_literal("unify_constant", [Const], _, Literal) :-
     wam_atom_token_literal(Const, ConstLit),
     format(atom(Literal), '{:op :unify-constant :constant ~w}', [ConstLit]).
-wam_op_to_clojure_literal("switch_on_constant", [CasesText], _, Literal) :-
+wam_op_to_clojure_literal(Op, [CasesText], _, Literal) :-
+    switch_constant_op(Op, Reg, Fallthrough),
     parse_switch_cases(CasesText, CaseEntries),
     atomic_list_concat(CaseEntries, ' ', CasesBody),
-    format(atom(Literal), '{:op :switch-on-constant :cases [~w]}', [CasesBody]).
+    clj_string_literal(Reg, RegLit),
+    format(atom(Literal),
+           '{:op :switch-on-constant :cases [~w] :reg ~w :fallthrough? ~w}',
+           [CasesBody, RegLit, Fallthrough]).
+wam_op_to_clojure_literal(Op, [CasesText], _, Literal) :-
+    switch_structure_op(Op, Reg),
+    switch_case_entries(CasesText, Entries),
+    maplist(switch_structure_entry_literal, Entries, EntryLits),
+    atomic_list_concat(EntryLits, ' ', CasesBody),
+    clj_string_literal(Reg, RegLit),
+    format(atom(Literal),
+           '{:op :switch-on-structure :cases [~w] :reg ~w}',
+           [CasesBody, RegLit]).
+wam_op_to_clojure_literal(Op, [ArgText], _, Literal) :-
+    switch_term_op(Op, Reg),
+    parse_switch_on_term_text(ArgText, ConstEntries, StructEntries, ListLabel),
+    maplist(switch_constant_entry_literal, ConstEntries, ConstLits),
+    maplist(switch_structure_entry_literal, StructEntries, StructLits),
+    atomic_list_concat(ConstLits, ' ', ConstBody),
+    atomic_list_concat(StructLits, ' ', StructBody),
+    clj_string_literal(ListLabel, ListLit),
+    clj_string_literal(Reg, RegLit),
+    format(atom(Literal),
+           '{:op :switch-on-term :consts [~w] :structs [~w] :list-label ~w :reg ~w}',
+           [ConstBody, StructBody, ListLit, RegLit]).
+% Dedicated dispatch chains (try / retry / trust) — the group form of the
+% linear chain's try_me_else / retry_me_else / trust_me. `backtrack` in this
+% runtime POPS the choice point it resumes, so retry (like retry_me_else)
+% pushes the next alternative rather than rewriting the top one.
+wam_op_to_clojure_literal("try", [Label], _, Literal) :-
+    clj_string_literal(Label, LabelLit),
+    format(atom(Literal), '{:op :try :label ~w}', [LabelLit]).
+wam_op_to_clojure_literal("retry", [Label], _, Literal) :-
+    clj_string_literal(Label, LabelLit),
+    format(atom(Literal), '{:op :retry :label ~w}', [LabelLit]).
+wam_op_to_clojure_literal("trust", [Label], _, Literal) :-
+    clj_string_literal(Label, LabelLit),
+    format(atom(Literal), '{:op :trust :label ~w}', [LabelLit]).
 wam_op_to_clojure_literal("builtin_call", [Pred, ArityStr], _, Literal) :-
     clj_string_literal(Pred, PredLit),
     number_string(Arity, ArityStr),
@@ -770,6 +895,16 @@ wam_op_to_clojure_literal(_Op, _Args, Line, Literal) :-
 parse_switch_cases(CasesText, CaseEntries) :-
     split_string(CasesText, " ", " ", RawCases),
     maplist(parse_switch_case, RawCases, CaseEntries).
+
+switch_constant_entry_literal(Const-Label, Entry) :-
+    wam_atom_token_literal(Const, ConstLit),
+    clj_string_literal(Label, LabelLit),
+    format(atom(Entry), '{:value ~w :label ~w}', [ConstLit, LabelLit]).
+
+switch_structure_entry_literal(Functor-Label, Entry) :-
+    clj_string_literal(Functor, FunctorLit),
+    clj_string_literal(Label, LabelLit),
+    format(atom(Entry), '{:functor ~w :label ~w}', [FunctorLit, LabelLit]).
 
 parse_switch_case(RawCase, Entry) :-
     normalize_space(string(Case), RawCase),

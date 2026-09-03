@@ -17,12 +17,19 @@ absolute times vary by machine — the *ratios* are the result.
 | **Go WAM** | **0.034 s** | 19.5 s | 0.095 s / 11.0 s |
 | **Rust WAM** | 0.102 s | 301.7 s | — / **OOM** (8.5 GB)¹ |
 | **wamjs** (mixed/lowered) | ~0.5 s | 5.7 s | — / 0.154 s² |
-| **ClojureScript WAM** (nbb) | 1.20 s | 76.7 s | 0.265 s / 41.8 s |
+| **ClojureScript WAM** (nbb) | 1.55 s | 76.7 s | 0.35 s / 39.0 s³ |
 
 ¹ Rust B3 measured on the contributor box; not reproduced here (deliberate —
 an 8.5 GB allocation). Rust also wins B1 compile-excluded small-scale runs on
 that box (93–103 ms) and its ladder shows quadratic blowup: 3.5 s at 54
 packages → 79 s at 363 → OOM at 5k.
+³ ClojureScript re-measured after first-argument indexing landed in its
+runtime. Before/after on the contributor box: B1 1.611 s → 1.58 s (unchanged;
+it is nbb start-up), B2 111.0 s → 79.0 s (**1.3–1.4×**), B3 resolve
+58.22 s → 38.6 s (**1.47×**). On this table's reference box the B3 gain was
+smaller: 41.8 s → 39.0 s (~7%; corpus B1 1.55 s). Same answers throughout on
+both. The gap between boxes is unexplained (nbb/node version suspected) and
+recorded rather than averaged away.
 ² wamjs B3 is the **store-backed** run (D48): the catalog is seek-read from
 D43 indexed stores, 8,242 of 1,645,394 bytes touched (0.50%). The other legs
 load the full term catalog. All legs return the identical 10-package
@@ -43,10 +50,18 @@ selection.
   (`docs/WAM_RUST_STATUS.md`) for any Rust speed claim on symbolic loads.
 - **wamjs is the best all-around leg**: near-Go differential speed, the only
   store-backed catalog path, and the only leg with a bytes-read proof.
-- **ClojureScript is correct, not fast**: immutable-map snapshots make choice
-  points cheap but every lookup scans all clauses — `switch_on_term` is
-  unimplemented in the Clojure runtime (its top residual, see
-  `cljs/README.md`).
+- **ClojureScript is correct, not fast — and indexing was not the reason.**
+  The Clojure runtime now executes the whole switch family it used to skip
+  (`switch_on_term` / `switch_on_constant` / `switch_on_structure`, A1 and A2,
+  plus `try`/`retry`/`trust` dispatch chains), and its list walks are
+  choice-point-free. That bought 1.47× on B3, not the order of magnitude
+  expected. A step census of the 5k resolve says why: the query is 7.56 M WAM
+  instructions — *fourteen honest scans of a 15,000-row `depends` list*, which
+  SWI performs too — and each instruction costs ~5 µs under nbb's SCI
+  interpreter. `resolver.pl`'s 5,000 packages live in lists inside a `catalog/9`
+  term, not in 5,000 clauses, so there was never a clause scan to index away.
+  The lane's top residual is now per-instruction interpretation cost; see
+  `cljs/README.md` for the measurements and the next lever.
 - **The cut-semantics probe corpus (35 probes) now passes on JavaScript, Go,
   and Rust** (`tests/test_wam_{javascript,go,rust}_cut_semantics.pl`), per
   `docs/WAM_BACKEND_CONVENTIONS.md` §9. The Clojure lane carries its own

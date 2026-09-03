@@ -38,7 +38,7 @@
   {:op :call :pred "conflicts_in/4" :arity 4}
   {:op :deallocate}
   {:op :proceed}
-  {:op :raw :text "switch_on_structure catalog/6:default catalog/9:L_alias_list_2_2_body"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_alias_list_2_2_body"}] :reg "A1"}
   {:op :try-me-else :label "L_alias_list_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -62,7 +62,7 @@
   {:op :unify-variable :var "X9"}
   {:op :get-value :var "X9" :reg "A2"}
   {:op :proceed}
-  {:op :raw :text "switch_on_term 1 []:default 0 L_alias_lookup_3_2_body"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_alias_lookup_3_2_body" :reg "A1"}
   {:op :try-me-else :label "L_alias_lookup_3_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
   {:op :get-variable :var "X1" :reg "A2"}
@@ -94,7 +94,7 @@
   {:op :call :pred "alias_lookup/3" :arity 3}
   {:op :deallocate}
   {:op :proceed}
-  {:op :raw :text "switch_on_term 1 []:default 0 L_audit_holds_4_2_body"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_audit_holds_4_2_body" :reg "A1"}
   {:op :try-me-else :label "L_audit_holds_4_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
   {:op :get-variable :var "X1" :reg "A2"}
@@ -169,7 +169,7 @@
   {:op :builtin-call :pred "sort/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
-  {:op :raw :text "switch_on_structure catalog/6:default catalog/9:L_base_list_2_2_body"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_base_list_2_2_body"}] :reg "A1"}
   {:op :try-me-else :label "L_base_list_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -232,7 +232,7 @@
   {:op :put-value :var "Y6" :reg "A3"}
   {:op :deallocate}
   {:op :execute :pred "lookup_held/3"}
-  {:op :raw :text "switch_on_structure_a2 req/2:default req/2:L_blocked_acc_5_2"}
+  {:op :switch-on-structure :cases [{:functor "req/2" :label "default"} {:functor "req/2" :label "L_blocked_acc_5_2"}] :reg "A2"}
   {:op :try-me-else :label "L_blocked_acc_5_2"}
   {:op :allocate}
   {:op :get-variable :var "X1" :reg "A1"}
@@ -317,7 +317,7 @@
   {:op :builtin-call :pred "=/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
-  {:op :raw :text "switch_on_term_a2 1 []:default 0 L_blocked_acc_list_5_2"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_blocked_acc_list_5_2" :reg "A2"}
   {:op :try-me-else :label "L_blocked_acc_list_5_2"}
   {:op :get-variable :var "X1" :reg "A1"}
   {:op :get-constant :constant "[]" :reg "A2"}
@@ -347,7 +347,7 @@
   {:op :put-value :var "Y5" :reg "A5"}
   {:op :deallocate}
   {:op :execute :pred "blocked_acc_list/5"}
-  {:op :raw :text "switch_on_structure_a2 req/2:default req/2:L_blocked_from_4_2"}
+  {:op :switch-on-structure :cases [{:functor "req/2" :label "default"} {:functor "req/2" :label "L_blocked_from_4_2"}] :reg "A2"}
   {:op :try-me-else :label "L_blocked_from_4_2"}
   {:op :allocate}
   {:op :get-variable :var "Y1" :reg "A1"}
@@ -565,7 +565,7 @@
   {:op :builtin-call :pred "member/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
-  {:op :raw :text "switch_on_structure catalog/6:default catalog/9:L_conflicts_list_2_2_body"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_conflicts_list_2_2_body"}] :reg "A1"}
   {:op :try-me-else :label "L_conflicts_list_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -711,7 +711,7 @@
   {:op :builtin-call :pred "member/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
-  {:op :raw :text "switch_on_structure catalog/6:default catalog/9:L_depends_list_2_2_body"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_depends_list_2_2_body"}] :reg "A1"}
   {:op :try-me-else :label "L_depends_list_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -735,7 +735,7 @@
   {:op :unify-variable :var "X9"}
   {:op :get-value :var "X2" :reg "A2"}
   {:op :proceed}
-  {:op :raw :text "switch_on_term 1 []:default 0 L_direct_on_4_2_body"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_direct_on_4_2_body" :reg "A1"}
   {:op :try-me-else :label "L_direct_on_4_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
   {:op :get-variable :var "X1" :reg "A2"}
@@ -779,7 +779,7 @@
   {:op :put-value :var "Y8" :reg "A4"}
   {:op :deallocate}
   {:op :execute :pred "direct_on/4"}
-  {:op :raw :text "switch_on_term_a2 1 []:default 0 L_exclude_name_3_2"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_exclude_name_3_2" :reg "A2"}
   {:op :try-me-else :label "L_exclude_name_3_2"}
   {:op :get-variable :var "X1" :reg "A1"}
   {:op :get-constant :constant "[]" :reg "A2"}
@@ -812,7 +812,7 @@
   {:op :put-value :var "X4" :reg "A3"}
   {:op :deallocate}
   {:op :execute :pred "exclude_name/3"}
-  {:op :raw :text "switch_on_structure catalog/6:default catalog/9:L_excluded_list_2_2_body"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_excluded_list_2_2_body"}] :reg "A1"}
   {:op :try-me-else :label "L_excluded_list_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -881,7 +881,7 @@
   {:op :builtin-call :pred "!/0" :arity 0}
   {:op :deallocate}
   {:op :proceed}
-  {:op :raw :text "switch_on_term 1 []:default 0 L_first_broken_4_2_body"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_first_broken_4_2_body" :reg "A1"}
   {:op :try-me-else :label "L_first_broken_4_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
   {:op :get-variable :var "X1" :reg "A2"}
@@ -998,7 +998,7 @@
   {:op :put-value :var "X5" :reg "A6"}
   {:op :deallocate}
   {:op :execute :pred "inst_walk/6"}
-  {:op :raw :text "switch_on_term 1 []:default 0 L_inst_walk_6_2_body"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_inst_walk_6_2_body" :reg "A1"}
   {:op :try-me-else :label "L_inst_walk_6_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
   {:op :get-variable :var "X1" :reg "A2"}
@@ -1070,7 +1070,7 @@
   {:op :call :pred "inst_walk/6" :arity 6}
   {:op :deallocate}
   {:op :proceed}
-  {:op :raw :text "switch_on_structure catalog/6:default catalog/9:L_installed_list_2_2_body"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_installed_list_2_2_body"}] :reg "A1"}
   {:op :try-me-else :label "L_installed_list_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -1132,7 +1132,7 @@
   {:op :builtin-call :pred "member/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
-  {:op :raw :text "switch_on_structure -/2:default base/2:L_item_ver_3_2_body layer/2:L_item_ver_3_3_body"}
+  {:op :switch-on-structure :cases [{:functor "-/2" :label "default"} {:functor "base/2" :label "L_item_ver_3_2_body"} {:functor "layer/2" :label "L_item_ver_3_3_body"}] :reg "A1"}
   {:op :try-me-else :label "L_item_ver_3_2"}
   {:op :allocate}
   {:op :get-structure :functor "-/2" :reg "A1"}
@@ -1172,7 +1172,7 @@
   {:op :put-value :var "X4" :reg "A3"}
   {:op :deallocate}
   {:op :execute :pred "lookup_held/3"}
-  {:op :raw :text "switch_on_term 1 []:default 0 L_keep_installed_or_base_4_2_body"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_keep_installed_or_base_4_2_body" :reg "A1"}
   {:op :try-me-else :label "L_keep_installed_or_base_4_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
   {:op :get-variable :var "X1" :reg "A2"}
@@ -1259,7 +1259,7 @@
   {:op :builtin-call :pred "!/0" :arity 0}
   {:op :deallocate}
   {:op :proceed}
-  {:op :raw :text "switch_on_structure catalog/6:default catalog/9:L_layers_list_2_2_body"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_layers_list_2_2_body"}] :reg "A1"}
   {:op :try-me-else :label "L_layers_list_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -1306,7 +1306,7 @@
   {:op :call :pred "lookup_held/3" :arity 3}
   {:op :deallocate}
   {:op :proceed}
-  {:op :raw :text "switch_on_term_a2 1 []:default 0 L_map_requests_3_2"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_map_requests_3_2" :reg "A2"}
   {:op :try-me-else :label "L_map_requests_3_2"}
   {:op :get-variable :var "X1" :reg "A1"}
   {:op :get-constant :constant "[]" :reg "A2"}
@@ -1330,7 +1330,7 @@
   {:op :put-value :var "Y3" :reg "A3"}
   {:op :deallocate}
   {:op :execute :pred "map_requests/3"}
-  {:op :raw :text "switch_on_term 1 []:default 0 L_matching_deps_4_2_body"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_matching_deps_4_2_body" :reg "A1"}
   {:op :try-me-else :label "L_matching_deps_4_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
   {:op :get-variable :var "X1" :reg "A2"}
@@ -1377,7 +1377,7 @@
   {:op :put-value :var "Y9" :reg "A4"}
   {:op :deallocate}
   {:op :execute :pred "matching_deps/4"}
-  {:op :raw :text "switch_on_term 1 []:default 0 L_matching_versions_4_2_body"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_matching_versions_4_2_body" :reg "A1"}
   {:op :try-me-else :label "L_matching_versions_4_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
   {:op :get-variable :var "X1" :reg "A2"}
@@ -1428,7 +1428,7 @@
   {:op :put-value :var "X1" :reg "A2"}
   {:op :builtin-call :pred "member/2" :arity 2}
   {:op :proceed}
-  {:op :raw :text "switch_on_term 1 []:default 0 L_names_of_2_2_body"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_names_of_2_2_body" :reg "A1"}
   {:op :try-me-else :label "L_names_of_2_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
   {:op :get-constant :constant "[]" :reg "A2"}
@@ -1531,7 +1531,7 @@
   {:op :builtin-call :pred "member/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
-  {:op :raw :text "switch_on_structure catalog/6:default catalog/9:L_packages_2_2_body"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_packages_2_2_body"}] :reg "A1"}
   {:op :try-me-else :label "L_packages_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -1555,7 +1555,7 @@
   {:op :unify-variable :var "X9"}
   {:op :get-value :var "X1" :reg "A2"}
   {:op :proceed}
-  {:op :switch-on-constant :cases [{:value "classic" :label "default"} {:value "layered" :label "L_pick_7_2_body"}]}
+  {:op :switch-on-constant :cases [{:value "classic" :label "default"} {:value "layered" :label "L_pick_7_2_body"}] :reg "A1" :fallthrough? false}
   {:op :try-me-else :label "L_pick_7_2"}
   {:op :allocate}
   {:op :get-constant :constant "classic" :reg "A1"}
@@ -1731,7 +1731,7 @@
   {:op :put-value :var "Y2" :reg "A2"}
   {:op :deallocate}
   {:op :execute :pred "reqs_ok_moving/2"}
-  {:op :raw :text "switch_on_term 1 []:default 0 L_reqs_ok_moving_2_2_body"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_reqs_ok_moving_2_2_body" :reg "A1"}
   {:op :try-me-else :label "L_reqs_ok_moving_2_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
   {:op :get-variable :var "X1" :reg "A2"}
@@ -1789,7 +1789,7 @@
   {:op :builtin-call :pred "=/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
-  {:op :raw :text "switch_on_structure catalog/6:default catalog/9:L_requested_list_2_2_body"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_requested_list_2_2_body"}] :reg "A1"}
   {:op :try-me-else :label "L_requested_list_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -1937,7 +1937,7 @@
   {:op :call :pred "resolve_pending/5" :arity 5}
   {:op :deallocate}
   {:op :proceed}
-  {:op :raw :text "switch_on_term 1 []:default 0 L_roots_to_pairs_3_list_dispatch"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_roots_to_pairs_3_list_dispatch" :reg "A1"}
   {:op :try-me-else :label "L_roots_to_pairs_3_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
   {:op :get-variable :var "X1" :reg "A2"}
@@ -1978,8 +1978,8 @@
   {:op :put-value :var "X4" :reg "A3"}
   {:op :deallocate}
   {:op :execute :pred "roots_to_pairs/3"}
-  {:op :raw :text "try L_roots_to_pairs_3_2_body"}
-  {:op :raw :text "trust L_roots_to_pairs_3_3_body"}
+  {:op :try :label "L_roots_to_pairs_3_2_body"}
+  {:op :trust :label "L_roots_to_pairs_3_3_body"}
   {:op :allocate}
   {:op :get-variable :var "Y1" :reg "A1"}
   {:op :get-variable :var "X7" :reg "A2"}
@@ -2089,7 +2089,7 @@
   {:op :set-value :var "X4"}
   {:op :deallocate}
   {:op :execute :pred "upgrade_set_result/4"}
-  {:op :raw :text "switch_on_term_a2 1 any:default 4 eq/1:L_satisfies_2_2 gte/1:L_satisfies_2_3 lt/1:L_satisfies_2_4 range/2:L_satisfies_2_5 none"}
+  {:op :switch-on-term :consts [{:value "any" :label "default"}] :structs [{:functor "eq/1" :label "L_satisfies_2_2"} {:functor "gte/1" :label "L_satisfies_2_3"} {:functor "lt/1" :label "L_satisfies_2_4"} {:functor "range/2" :label "L_satisfies_2_5"}] :list-label "none" :reg "A2"}
   {:op :try-me-else :label "L_satisfies_2_2"}
   {:op :get-variable :var "X1" :reg "A1"}
   {:op :get-constant :constant "any" :reg "A2"}
@@ -2144,7 +2144,7 @@
   {:op :put-value :var "Y2" :reg "A2"}
   {:op :deallocate}
   {:op :execute :pred "version_lt/2"}
-  {:op :raw :text "switch_on_term 1 []:default 0 L_scan_base_holds_3_2_body"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_scan_base_holds_3_2_body" :reg "A1"}
   {:op :try-me-else :label "L_scan_base_holds_3_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
   {:op :get-variable :var "X1" :reg "A2"}
@@ -2317,7 +2317,7 @@
   {:op :call :pred "tight_rev_in/3" :arity 3}
   {:op :deallocate}
   {:op :proceed}
-  {:op :raw :text "switch_on_term_a2 1 []:default 0 L_topo_all_7_2"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_topo_all_7_2" :reg "A2"}
   {:op :try-me-else :label "L_topo_all_7_2"}
   {:op :get-variable :var "X1" :reg "A1"}
   {:op :get-constant :constant "[]" :reg "A2"}
@@ -2432,7 +2432,7 @@
   {:op :builtin-call :pred "=/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
-  {:op :raw :text "switch_on_constant_a2_fallthrough []:default"}
+  {:op :switch-on-constant :cases [{:value "[]" :label "default"}] :reg "A2" :fallthrough? true}
   {:op :try-me-else :label "L_topo_sort_sel_3_2"}
   {:op :allocate}
   {:op :get-variable :var "X1" :reg "A1"}

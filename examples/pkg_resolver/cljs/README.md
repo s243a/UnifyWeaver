@@ -40,6 +40,10 @@ node --test examples/pkg_resolver/cljs/test_pkg_cli_cljs.mjs   # the CLI gate
 bash examples/pkg_resolver/run_differential_cljs.sh # the 2400-case gate
 bash examples/pkg_resolver/cljs/bench_scale.sh      # B3, the 5k-package catalog
 
+# the two runtime probe suites (compile a minimal program, run it under nbb)
+swipl -g 'test_clojurescript_wam_backtracking,halt' tests/core/test_clojurescript_wam_backtracking.pl
+swipl -g 'test_clojurescript_wam_indexing,halt'     tests/core/test_clojurescript_wam_indexing.pl
+
 nbb --classpath examples/cli_args/cljs:examples/pkg_resolver/cljs \
     examples/pkg_resolver/cljs/pkg.cljs resolve editor \
     --catalog examples/pkg_resolver/cli/generated/catalogs/teaching.json
@@ -214,19 +218,145 @@ name `op-get-structure`/`op-get-list`. Nothing else in the suite changed.
 
 ---
 
+## First-argument indexing
+
+`wam_target.pl` has always emitted the standard-WAM switch family ahead of
+every multi-clause chain. The Clojure runtime used to **skip all of it**: the
+instructions arrived as `:raw` text, `step` matched `^switch_on_` and fell
+through, so every clause chain ran unindexed. That was this lane's recorded top
+residual. It is now implemented.
+
+What the resolver's own WAM text actually contains (grep `generated/resolver/core.cljs`):
+
+| instruction | count | where |
+| --- | ---: | --- |
+| `switch_on_term CLen C… SLen S… ListLabel` | 12 | every `p([], …) / p([H\|T], …)` list walk |
+| `switch_on_term_a2` | 5 | dispatch on A2 (`satisfies/2` on its constraint, `map_requests/3`) |
+| `switch_on_structure F/N:L …` | 10 | `catalog/6` vs `catalog/9`, `base/2` vs `layer/2` |
+| `switch_on_structure_a2` | 2 | `req/2` in A2 |
+| `switch_on_constant_a2_fallthrough` | 1 | `[]` in A2 |
+| `try L` / `trust L` | 1 + 1 | the dedicated dispatch **chain** for `roots_to_pairs/3`, whose *two* list clauses share one index entry |
+
+No plain `switch_on_constant` and no `switch_on_constant_fallthrough` on A1 —
+`resolver.pl` has no fact tables keyed on a first-argument atom; its 5000
+packages live in **lists inside a `catalog/9` term**, not in 5000 clauses. That
+matters for what indexing could buy, and is the first half of the B3 reading
+below.
+
+Where it landed:
+
+* `src/unifyweaver/targets/wam_clojure_target.pl` — the switch family and the
+  `try`/`retry`/`trust` chain instructions now become Clojure data
+  (`:switch-on-constant` / `:switch-on-structure` / `:switch-on-term` with a
+  `:reg` of `"A1"` or `"A2"`, and `:try` / `:retry` / `:trust`) instead of
+  falling through to the `:raw` catch-all. `switch_on_term`'s argument text is
+  parsed **by its own two count fields** — with zero structure entries the
+  counts sit next to each other and a positional split misreads them. Dispatch
+  keys are added to the intern seeds, atoms and functors both: a key interned
+  in a different table than the executing code compares against a freshly
+  minted id and never matches.
+* `templates/targets/clojure_wam/runtime.clj.mustache` — `resolve-instruction`
+  turns each entry list into a map from dispatch key to target address, once,
+  at load time; `switch-target` / `switch-structure-target` /
+  `switch-term-target` do a hash lookup and jump.
+
+Two properties carry the correctness:
+
+* **First-match-wins.** `wam_target` emits repeated keys —
+  `switch_on_structure_a2 req/2:default req/2:L_blocked_acc_5_2` is real output,
+  and so is `a:default b:L_…_2 a:L_…_3` for a predicate with two `a` clauses.
+  The entry list is a *scan*, and the first match is the answer. Building the
+  map last-wins instead silently drops the earlier clause: the probe
+  `order_preserved` answers `[3,9]` where SWI answers `[1,3,9]`.
+* **Fall through on anything unknown.** An unbound dispatch register, and any
+  key the table does not mention, run the full chain. Indexing may only ever
+  remove work that could not have produced an answer.
+
+A dispatch hit jumps straight at a clause body and pushes **no** choice point.
+That is sound here without the `indexed_entry` flag the JS runtime carries,
+because this runtime's `backtrack` *pops* the choice point it resumes, so
+`retry_me_else` pushes the next alternative rather than rewriting the top one
+and `trust_me` is already a no-op — a chain entered part-way is balanced either
+way. The new `try L / retry L / trust L` chain instructions follow the same
+protocol.
+
+Pinned by `tests/core/test_clojurescript_wam_indexing.pl` — five probes,
+compiled and executed under nbb: order preservation across a repeated key,
+dispatch on a key built at run time rather than seeded from the switch text,
+an unbound first argument still enumerating every clause, the list/structure
+labels, and a pruning if-then-else run inside a backtracking enumeration of the
+indexed predicate.
+
 ## Benchmarks
 
 One machine, `nbb v1.5.212` on `node v22.22.2`, SWI-Prolog 9.0.4 for x86_64-linux.
-Every figure is the harness's own timer, not a hand measurement.
+Every figure is the harness's own timer, not a hand measurement. **before** and
+**after** are the same box, same catalogs, same seeds — the box is slower than
+the one the D49 figures were taken on, so compare the two columns to each other,
+not to the older absolute numbers.
 
-| | ClojureScript (nbb) | SWI (reference) | ratio |
+| | before | after | SWI (reference) |
 | --- | --- | --- | --- |
-| **B1** contract corpus (39 scenarios), one nbb process, `run_corpus_cljs.sh` | **1.30 s** (1.296 / 1.310 / 1.335 s over three quiet runs; 2.3–2.8 s when the box is busy) | — | — |
-| **B2** differential, **2400 cases**, one process per leg, `run_differential_cljs.sh` | **77.13 s** (79.60 s on an earlier run) | **1.88 s** | **41×** |
-| **B3** one `resolve_layered` on the seeded 5000-package catalog, `bench_scale.sh` | load **0.211 s**, resolve **42.093 s**, total **42.304 s** | load **0.598 s**, resolve **0.010 s**, total **0.608 s** | resolve **≈4200×** |
+| **B1** contract corpus (39 scenarios), one nbb process, `run_corpus_cljs.sh` | **1.611 s** | **1.58 s** (1.581 / 1.616 / 1.782 over three runs) | — |
+| **B2** differential, **2400 cases**, one process per leg, `run_differential_cljs.sh` | **111.01 s** | **78.96 s** (85.05 s on an earlier run) | **2.16 s** |
+| **B3** one `resolve_layered` on the seeded 5000-package catalog, `bench_scale.sh` | load 0.263 s, resolve **58.22 s** | load 0.27 s, resolve **38.59 s** (38.59 / 39.66 / 39.77) | load 0.68 s, resolve **0.014 s** |
 
-B1 includes nbb's own start-up (~1 s), which dominates a 39-case corpus; the
-per-case cost is well under 10 ms.
+B1 is unchanged because it is nbb's own start-up (~1.3 s of the 1.6 s); the
+39 scenarios are small and their per-case cost is well under 10 ms either way.
+B2 improves **1.3–1.4×** and B3 **1.47×**. Both answer exactly what they
+answered before — B2 is still 2400 cases / 0 divergences / 0 crashes, and B3
+still returns the same ten packages at the same ten versions as SWI.
+
+### Why indexing did not buy an order of magnitude — measured, not argued
+
+`bench_scale.cljs` was re-run with `run-wam-state` replaced by a counting loop
+over `runtime/step` (same state, same program), which reports what the machine
+actually executes:
+
+```
+status :succeeded  steps 7,559,597  backtracks 285,668  max choice points 81
+  :put-value       1,998,237     :try-me-else-pc    285,753   (the ITE, not a clause chain)
+  :unify-variable  1,562,125     :switch-on-term    285,196
+  :get-variable      856,860     :execute-pc matching_deps/4    210,014
+  :builtin-call      570,802     :execute-pc matching_versions/4  75,140
+```
+
+Two readings, both of which had to be measured rather than assumed:
+
+1. **The indexing works, and the choice points it removes were never the
+   cost.** `L_matching_deps_4_2_body` is reached by the switch 285,196 times
+   and the clause chain's own `try_me_else` at that predicate never runs — the
+   list walk is now deterministic. But 210,014 of those iterations are simply
+   *fourteen full scans of the 15,000-row `depends` list*, which is what
+   `resolver.pl` asks for and what SWI also does. There was no redundant search
+   to index away; the catalog is a term, not a fact table.
+
+2. **The cost is per-instruction interpretation.** 7.56 M WAM instructions in
+   ~40 s is ~5 µs each. nbb runs ClojureScript through SCI, and each WAM
+   instruction is a fetch, a `case`, several helper calls and a handful of
+   persistent-map updates. Measured on this box, one interpreted `assoc` is
+   ~0.2 µs and one `get` ~0.15 µs, so ~25 such operations per instruction *is*
+   the 5 µs. SWI answers the same query in 15 ms because its WAM instruction
+   costs nanoseconds, not because it searches less.
+
+The four runtime changes shipped alongside the indexing all come from that
+measurement, and each was verified in isolation before it was made:
+
+| change | measured before → after |
+| --- | --- |
+| a choice point is the state map with four fields written over it, not a fresh thirteen-entry map literal (`choice-snapshot`) | 5.48 µs → 2.42 µs per snapshot; `try_me_else` 11.4 µs → ~5 µs |
+| `deref-value` answers non-variables without entering its loop; `logic-var?` is one keyword lookup, not `map?` + `contains?` | 0.66 µs → ~0.2 µs, on ~3 M calls |
+| the read-mode cursor advances with `subvec`, not `(vec (rest q))` | 1.56 M `unify_variable`s stop rebuilding the queue |
+| `reg-get-raw` / `reg-set-raw` use `get`/`assoc` on the extracted `:regs` map rather than `get-in`/`assoc-in`; `advance` assocs instead of `update`; `==/2` on two atoms skips building the recursive closure | 0.54 → 0.39 µs, 0.28 → 0.15 µs, `==/2` 8.1 → ~4 µs |
+
+**What is left, and what it is worth.** The floor this shape can reach is the
+fixed per-instruction cost: fetch + `case` + one state update measures 1.45 µs,
+so 7.56 M instructions cannot go below ~11 s however good each instruction
+gets. Beating that needs *fewer interpreted steps per WAM instruction*:
+compile each instruction into a closure at load time (no `case`, no
+per-instruction field lookups) and fuse straight-line runs so a block updates
+`:regs` and `:pc` once instead of once per instruction. That is the recorded
+next lever; it is real work and it is not done here.
 
 B2 is the semantics gate, not only a timing: **2400 cases, 0 divergences,
 0 crashes**, across all ten queries, against the same seeded generator
@@ -248,12 +378,14 @@ request and frozen base.
 
 ## Residuals — the honest list
 
-1. **Speed at scale.** B3 above. `resolver.pl` scans the whole package list per
-   candidate pick, and this lane executes that scan as interpreted WAM
-   instructions over persistent Clojure maps. Nothing is wrong with the answer;
-   this is a correctness-and-portability demonstration, not a production
-   resolver on a 5k catalog. The corpus and the differential catalogs are small
-   and finish in seconds.
+1. **Speed at scale.** B3 above: 58.2 s → 38.6 s, which is 1.47×, not the order
+   of magnitude first-argument indexing was expected to buy. The step census in
+   the benchmark section is why: `resolver.pl` scans the whole package list per
+   candidate pick, that scan is what SWI does too, and this lane executes it as
+   7.56 M interpreted WAM instructions over persistent Clojure maps at ~5 µs
+   each. Nothing is wrong with the answer; this is a correctness-and-portability
+   demonstration, not a production resolver on a 5k catalog. The corpus and the
+   differential catalogs are small and finish in seconds.
 
 2. **The structured-ITE lowering is now off for any clause containing a call** —
    which is most of `resolver.pl`. That is fix #5, and it is a *retreat to
@@ -262,11 +394,17 @@ request and frozen base.
    structured emitter *and* keeping the program counter aligned across the
    `try_me_else`/`cut_ite`/`jump` the structurer folds away. Real work, not done.
 
-3. **First-argument indexing is still unimplemented** in the Clojure runtime:
-   `switch_on_term` arrives as a `:raw` instruction and is skipped, so every
-   clause chain runs unindexed. Correct but slower — and it leaves choice points
-   the JS lane's real `SwitchOnTerm` does not, which is exactly why defect #4
-   (`cut_ite`) mattered here and never surfaced there.
+3. **First-argument indexing is implemented for the interpreted path only.**
+   The lowered T4 path (`clojure_strip_switch_prefix`) still drops the switch
+   prefix and tries every clause inline — that is unchanged, and sound, but it
+   is not indexed. Nor does the runtime index anything the *shared* WAM text
+   does not already carry a switch for: `wam_target.pl` decides that, and it is
+   frozen. What it emits for `resolver.pl` is listed above; it does not, for
+   instance, emit a switch for `satisfies/2` on A1 (every clause takes a
+   variable there, so it indexes on A2 instead) — that is a shared-emitter
+   question, not a Clojure one.
+   The per-instruction interpretation cost is now the lane's top residual, and
+   the benchmark section records the measurements and the next lever.
 
 4. **The probes pin the fixed behaviour; they do not reproduce the old wrong
    answers on demand.** Before `run-wam-state` existed there was no way to read
@@ -290,3 +428,9 @@ request and frozen base.
 7. **Environment, not this port:** `tests/test_wam_clojure_generator.pl` and
    `tests/test_wam_clojure_benchmark_generator.pl` fail here because `lmdb.h` is
    absent. Verified identical on the pristine files.
+   `tests/test_wam_clojure_runtime_smoke.pl` also never terminates in an
+   environment without the Clojure JVM jars it looks for: `find_clojure_classpath/1`
+   fails, and the script backtracks into `write_wam_clojure_project/3` and
+   regenerates the project forever (8,350 regenerations in 900 s). Verified on
+   the **pristine** sources at the same commit, with the same count — it is not
+   this change, and it is not a Clojure-lane defect this work introduced.
