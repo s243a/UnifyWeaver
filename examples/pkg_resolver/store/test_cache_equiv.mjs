@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 John William Creighton (@s243a)
 //
-// test_cache_equiv.mjs -- L1 cache is semantics-invisible.
-// Same results, same order, cache on or off, in one process.
+// test_cache_equiv.mjs -- fleet materialisation tiers are semantics-invisible.
+// Same results, same order for lazy / cached / eager, in one process.
 //
 //   node test_cache_equiv.mjs <wam-project-dir> <cases.jsonl>
 //
@@ -47,31 +47,49 @@ function runAll() {
   });
 }
 
-Runtime.configure_fact_cache(false);
+Runtime.configure_lmdb_materialisation("lazy");
 const off = runAll();
 const offStats = Runtime.fact_cache_stats();
 
-Runtime.configure_fact_cache(true, 4096);
+Runtime.configure_lmdb_materialisation("cached", 4096);
 const on = runAll();
 const onStats = Runtime.fact_cache_stats();
 const replay = runAll();
 const replayStats = Runtime.fact_cache_stats();
+
+Runtime.configure_lmdb_materialisation("eager");
+const eager = runAll();
+const eagerStats = Runtime.fact_cache_stats();
 
 let divergences = 0;
 for (let i = 0; i < cases.length; i++) {
   const a = stableStringify(off[i]);
   const b = stableStringify(on[i]);
   const d = stableStringify(replay[i]);
-  if (a !== b || a !== d) {
+  const e = stableStringify(eager[i]);
+  if (a !== b || a !== d || a !== e) {
     divergences += 1;
     process.stderr.write("CACHE_DIVERGE " + String(cases[i].id) + "\n");
     process.stderr.write("  off    " + a + "\n");
     process.stderr.write("  on     " + b + "\n");
+    process.stderr.write("  eager  " + e + "\n");
   }
 }
 
 if (offStats.hits !== 0) {
-  process.stderr.write("cache_equiv: cache-off must not record hits, got " + offStats.hits + "\n");
+  process.stderr.write("cache_equiv: lazy must not record L1 hits, got " + offStats.hits + "\n");
+  process.exit(1);
+}
+if (offStats.materialisation !== "lazy") {
+  process.stderr.write("cache_equiv: expected materialisation=lazy, got " + offStats.materialisation + "\n");
+  process.exit(1);
+}
+if (onStats.materialisation !== "cached") {
+  process.stderr.write("cache_equiv: expected materialisation=cached, got " + onStats.materialisation + "\n");
+  process.exit(1);
+}
+if (eagerStats.materialisation !== "eager") {
+  process.stderr.write("cache_equiv: expected materialisation=eager, got " + eagerStats.materialisation + "\n");
   process.exit(1);
 }
 if (onStats.misses < 1) {
@@ -95,5 +113,6 @@ process.stdout.write(
   " off_hits=" + offStats.hits +
   " on_hits=" + onStats.hits +
   " on_misses=" + onStats.misses +
-  " replay_hits=" + replayStats.hits + "\n"
+  " replay_hits=" + replayStats.hits +
+  " eager=" + eagerStats.materialisation + "\n"
 );

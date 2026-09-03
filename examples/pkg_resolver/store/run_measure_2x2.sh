@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 John William Creighton (@s243a)
 #
-# run_measure_2x2.sh -- {indexed, lmdb} × {cache off, cache on} on the
+# run_measure_2x2.sh -- {indexed, lmdb} × {lazy, cached} on the
 # 5k catalog (seed 0xc0ffee01): one bound resolve_layered + 100× repeat
 # in one process + 500-case store differential wall.
+# UW_FACT_CACHE=0 → lazy, =1 → cached (measurement alias; fleet names).
 #
 #   bash examples/pkg_resolver/store/run_measure_2x2.sh
 
@@ -80,7 +81,7 @@ repeat_one() {
 diff_one() {
   local backend="$1"
   local cache="$2"
-  echo "== differential $backend cache=$cache =="
+  echo "== differential $backend materialisation=$([[ $cache == 0 ]] && echo lazy || echo cached) =="
   UW_STORE_BACKEND="$backend" UW_FACT_CACHE="$cache" \
     bash examples/pkg_resolver/run_store_differential.sh
 }

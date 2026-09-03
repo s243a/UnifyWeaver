@@ -8,6 +8,10 @@
 #   bash examples/pkg_resolver/run_store_differential.sh
 #   UW_STORE_BACKEND=lmdb bash examples/pkg_resolver/run_store_differential.sh
 #   UW_FACT_CACHE=1 bash examples/pkg_resolver/run_store_differential.sh
+#   UW_LMDB_MATERIALISATION=lazy bash examples/pkg_resolver/run_store_differential.sh
+#
+# Materialisation default is `cached` (fleet). UW_FACT_CACHE=0|1 is the
+# measurement alias for lazy|cached.
 #
 # Default backend is indexed. lmdb is opt-in and fails loudly if the
 # npm package is missing (never silently uses indexed).
@@ -62,7 +66,7 @@ elif [[ "$BACKEND" == "lmdb" ]] && ! grep -q 'kind: "lmdb"' "$WAM/js/generated_p
   NEED_BUILD=1
 elif [[ "$BACKEND" == "indexed" ]] && ! grep -q 'kind: "indexed"' "$WAM/js/generated_program.js"; then
   NEED_BUILD=1
-elif ! grep -q 'configure_fact_cache' "$WAM/js/wam_runtime.js" 2>/dev/null; then
+elif ! grep -q 'configure_lmdb_materialisation' "$WAM/js/wam_runtime.js" 2>/dev/null; then
   NEED_BUILD=1
 fi
 if [[ "$NEED_BUILD" -eq 1 ]]; then
@@ -79,15 +83,23 @@ STORE_DIR="$SCALE" swipl -q -g main -t halt "$HERE/store_diff_runner.pl" \
   < "$SCALE/cases.jsonl" > "$OUT/swi.jsonl"
 END_SWI=$(date +%s%N)
 
-echo "== wamjs_store backend=$BACKEND cache=${UW_FACT_CACHE:-0} =="
+MAT_LABEL="${UW_LMDB_MATERIALISATION:-}"
+if [[ -z "$MAT_LABEL" ]]; then
+  case "${UW_FACT_CACHE:-}" in
+    0|off|false|no) MAT_LABEL=lazy ;;
+    1|on|true|yes) MAT_LABEL=cached ;;
+    *) MAT_LABEL="cached (default)" ;;
+  esac
+fi
+echo "== wamjs_store backend=$BACKEND materialisation=$MAT_LABEL =="
 START_WAM=$(date +%s%N)
 node "$WAM/diff_runner_wamjs.mjs" < "$SCALE/cases.jsonl" > "$OUT/wamjs.jsonl"
 END_WAM=$(date +%s%N)
 
 python3 - <<PY
 o0, o1, w0, w1 = $START_SWI, $END_SWI, $START_WAM, $END_WAM
-print("timing: swi {:.3f}s  wamjs {:.3f}s  backend={} cache={}".format(
-    (o1-o0)/1e9, (w1-w0)/1e9, "$BACKEND", "${UW_FACT_CACHE:-0}"))
+print("timing: swi {:.3f}s  wamjs {:.3f}s  backend={} materialisation={}".format(
+    (o1-o0)/1e9, (w1-w0)/1e9, "$BACKEND", "$MAT_LABEL"))
 PY
 
 echo "== comparing =="

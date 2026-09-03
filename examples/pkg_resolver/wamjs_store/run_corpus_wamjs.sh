@@ -26,14 +26,16 @@ if [[ "$BACKEND" == "lmdb" ]]; then
   uw_require_lmdb
   WAM="${WAM_OUT:-$HERE/../store/.out/corpus_wam_lmdb}"
   mkdir -p "$WAM"
-  if [[ ! -f "$WAM/js/generated_program.js" ]] || ! grep -q 'kind: "lmdb"' "$WAM/js/generated_program.js"; then
+  if [[ ! -f "$WAM/js/generated_program.js" ]] ||
+     ! grep -q 'kind: "lmdb"' "$WAM/js/generated_program.js" ||
+     ! grep -q 'configure_lmdb_materialisation' "$WAM/js/wam_runtime.js" 2>/dev/null; then
     WAM_OUT="$WAM" UW_STORE_BACKEND=lmdb STORE_DIR="$STORE" \
       bash "$HERE/build.sh"
     cp "$HERE/resolver_store.mjs" "$WAM/resolver_store.mjs"
     cp "$HERE/run_corpus.mjs" "$WAM/run_corpus.mjs"
   fi
 elif [[ ! -f "$HERE/js/generated_program.js" ]] ||
-     ! grep -q 'configure_fact_cache' "$HERE/js/wam_runtime.js" 2>/dev/null; then
+     ! grep -q 'configure_lmdb_materialisation' "$HERE/js/wam_runtime.js" 2>/dev/null; then
   bash "$HERE/build.sh"
 fi
 

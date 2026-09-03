@@ -6,8 +6,9 @@
 // Must be launched with cwd or imports resolving generated_program.js
 // next to resolver_store.mjs inside the wam project dir.
 //
-// UW_PROBE_REPEAT overrides --repeat. Same process: L1 cache (if on)
-// warms on the first query.
+// UW_PROBE_REPEAT overrides --repeat. Same process: cached L1 (if
+// UW_LMDB_MATERIALISATION=cached or UW_FACT_CACHE=1) warms on the first
+// query. lazy = per-lookup; eager = one scan then memory.
 
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";

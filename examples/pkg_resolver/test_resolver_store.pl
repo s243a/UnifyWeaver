@@ -104,6 +104,7 @@ test(store_env_split_ignores_big_lists) :-
 
 % JS L1 cache + lmdb missing-package (append-only). Indexed cache
 % equivalence is ungated; the lmdb arm is gated like D43.
+% Tiers: lazy / cached / eager (fleet lmdb_materialisation names).
 :- use_module(library(process)).
 :- use_module(library(filesex)).
 

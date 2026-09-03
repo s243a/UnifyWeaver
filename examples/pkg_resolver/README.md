@@ -242,28 +242,57 @@ Builder: `store/rich_to_p2.mjs` then either `store/build_stores.sh`
 (`uw_fact_index.js`) or `store/build_lmdb_stores.sh` (`uw_fact_lmdb.js
 build-all`). Same P/2 JSONL; same key layout as the table above.
 
-### L1 read-through cache
+### Materialisation tiers (fleet vocabulary)
 
-The JS fact-source layer memos **bound** (and unbound-scan) lookups for
-both backends. Default **OFF**.
+JS fact sources use the same `lmdb_materialisation` names as the graph-kernel
+fleet (`docs/WAM_GO_STATUS.md`, `docs/WAM_FSHARP_STATUS.md`, Rust
+`LookupSource`):
+
+| tier | JS meaning |
+| --- | --- |
+| `eager` | scan each store once at first use; serve from an in-memory A1 index |
+| `lazy` | fetch per lookup, no memo (D48 bytes-read proof; 2×2 "cache off") |
+| `cached` | bounded L1 LRU over both backends. **Fleet and JS default.** |
+| `auto` | residual: no `core/cost_model.pl` hookup; falls back to `cached` (stderr once) |
+
+`cached` here is the fleet L1. Go/F#/Rust also have an L2 (`lmdb_l2_capacity`,
+Go default 4096, L1 = L2/8). JS has one bounded map; `UW_LMDB_L2_CAPACITY`
+sizes that L1. L2, `auto`/cost-model, and compile-time
+`lmdb_materialisation(...)` on `write_wam_javascript_project` are residuals
+(`wam_javascript_target.pl` is frozen this round). Optional
+`source.materialisation` is accepted on a fact-source entry for later plumbing.
+
+Env (process-lifetime; env wins over a future `source.materialisation` so the
+measurement 2×2 stays valid):
 
 | knob | default | meaning |
 | --- | --- | --- |
-| `UW_FACT_CACHE` | off (`0`/`off`/`false`/`""`) | `1`/`on`/`true` enables L1 |
-| `UW_FACT_CACHE_CAP` | `4096` | max entries (LRU) |
+| `UW_LMDB_MATERIALISATION` | `cached` | `eager` / `lazy` / `cached` / `auto` |
+| `UW_FACT_CACHE` | (unset → `cached`) | **alias:** `0`/`off` → `lazy`, `1`/`on` → `cached` |
+| `UW_LMDB_L2_CAPACITY` | `4096` | L1 entry cap (L2 not built) |
+| `UW_FACT_CACHE_CAP` | (same) | alias for the L1 cap |
 
 Keying: `pred + "\\0" + hex(encode_store_key(A1))`, or `pred + "\\0*"` for
 an unbound scan. Hits return the same row list (same order). Catalogs are
 **read-only**: the cache is never invalidated. A future write path **must**
-call `Runtime.fact_cache_reset()` after any store mutation. `store/test_cache_equiv.mjs`
-asserts cache on/off produce identical corpus results (indexed ungated;
-lmdb gated).
+call `Runtime.fact_cache_reset()` after any store mutation (also bumps the
+eager epoch). `store/test_cache_equiv.mjs` asserts `lazy` / `cached` / `eager`
+produce identical corpus results (indexed ungated; lmdb gated).
+`Runtime.configure_lmdb_materialisation(mode, cap)` is the fleet-named API;
+`Runtime.configure_fact_cache(on, cap)` remains as the 2×2 alias.
+
+Rust graph kernels (`docs/reports/wam_rust_cached_scaling_sweep_2026-06-14.md`)
+measure **cached vs lazy at 2.25–3.17×** as fixtures grow (6k–25k edges),
+because compiled lookup cost dominates. This resolver is the opposite shape:
+the JS WAM interpreter dominates store I/O, so the same `cached` tier saves
+repeats (~111× fewer indexed reads on 100×) but only ~3% wall. That is why
+the 2×2 still reports I/O counts, not just wall.
 
 ### 5k measurement (seed `0xc0ffee01`, this VM)
 
-Same 10-package `resolve_layered` selection in every cell. WAM interpret
-time dominates store I/O, so cache/lmdb do not move wall much; they do
-move I/O on repeated queries.
+Same 10-package `resolve_layered` selection in every cell. `cache off` = `lazy`,
+`cache on` = `cached` (`UW_FACT_CACHE=0|1`). WAM interpret time dominates store
+I/O, so cache/lmdb do not move wall much; they do move I/O on repeated queries.
 
 | backend | cache | 1× wall | 1× I/O | 100× wall | 100× I/O | 500-case diff |
 | --- | --- | ---: | --- | ---: | --- | ---: |
@@ -333,7 +362,7 @@ identical keys and packed cells. WAM seeks `indexed(Prefix)` or `lmdb(Dir)` buil
 | `wamjs/` | term-catalog JS WAM build |
 | `wamjs_store/` | store-backed JS WAM build (D43 fact sources; `UW_STORE_BACKEND`) |
 | `store/` | dump schema helpers, indexer + LMDB builder, 5k generator, cache equiv |
-| `store/run_measure_2x2.sh` | `{indexed,lmdb}×{cache off,on}` + 100× repeat |
+| `store/run_measure_2x2.sh` | `{indexed,lmdb}×{lazy,cached}` (`UW_FACT_CACHE=0|1`) + 100× repeat |
 | `gen_catalogs.mjs` | mulberry32, 2400 term catalogs (seed `0xa5b6c7d8`) |
 | `run_differential.sh` | term-catalog SWI vs wamjs, 0-divergence gate |
 | `run_store_differential.sh` | store-backed 5k catalog, ≥500 cases, 0 divergences |
@@ -363,9 +392,10 @@ UW_STORE_BACKEND=lmdb bash examples/pkg_resolver/run_store_differential.sh
 bash examples/pkg_resolver/store/run_cache_equiv.sh lmdb
 
 # 5k catalog: bytes-read + timings + ≥500-case store differential
-bash examples/pkg_resolver/run_scale_demo.sh          # indexed, cache off
-bash examples/pkg_resolver/run_store_differential.sh  # indexed, cache off
-bash examples/pkg_resolver/store/run_measure_2x2.sh   # 2×2 + 100× repeat
+bash examples/pkg_resolver/run_scale_demo.sh          # indexed, lazy (D48 bytes ∝ query)
+bash examples/pkg_resolver/run_store_differential.sh  # indexed, default cached
+UW_FACT_CACHE=0 bash examples/pkg_resolver/run_store_differential.sh  # lazy
+bash examples/pkg_resolver/store/run_measure_2x2.sh   # 2×2 lazy/cached + 100× repeat
 ```
 
 ## Deferred (not P2)
@@ -377,4 +407,10 @@ bash examples/pkg_resolver/store/run_measure_2x2.sh   # 2×2 + 100× repeat
 - per-file / per-SFS modeling inside a named layer
 - incremental store updates (rebuild the four indexes from a full dump;
   a write path must `Runtime.fact_cache_reset()`)
+- JS L2 two-level cache (`lmdb_l2_capacity` as a real L2; Go L1 = L2/8)
+- `lmdb_materialisation(auto)` + `core/cost_model.pl` (JS currently warns
+  and uses `cached`)
+- compile-time `lmdb_materialisation(...)` / `lmdb_l2_capacity(...)` on
+  `write_wam_javascript_project` (runtime env + optional
+  `source.materialisation` until `wam_javascript_target.pl` can emit them)
 - secondary indexes / CSR layouts beyond the four P/2 stores

@@ -20,7 +20,8 @@ if [[ ! -f "$SCALE/pkg.data" ]]; then
   node "$HERE/store/rich_to_p2.mjs" "$SCALE/rich.jsonl" "$SCALE"
   bash "$HERE/store/build_stores.sh" "$SCALE"
 fi
-if [[ ! -f "$WAM/js/generated_program.js" ]]; then
+if [[ ! -f "$WAM/js/generated_program.js" ]] ||
+   ! grep -q 'configure_lmdb_materialisation' "$WAM/js/wam_runtime.js" 2>/dev/null; then
   swipl -q -g main -t halt "$HERE/wamjs_store/build.pl" -- \
     "$HERE/resolver_store.pl" "$WAM" "$SCALE"
   cp "$HERE/wamjs_store/resolver_store.mjs" "$WAM/resolver_store.mjs"
@@ -42,8 +43,11 @@ print(f"  total_store_bytes: {total}")
 open(os.path.join(d, "store_size.txt"), "w").write(str(total) + "\n")
 PY
 
-echo "== WAM bound resolve_layered (UW_FACT_IO_STATS, cache off) =="
-UW_FACT_IO_STATS=1 node "$HERE/store/run_probe.mjs" "$WAM" "$SCALE/probe.json" \
+echo "== WAM bound resolve_layered (UW_FACT_IO_STATS, lazy) =="
+# D48 bytes-read proof: bytes ∝ query. Force the fleet `lazy` tier
+# (UW_FACT_CACHE=0 alias). Default is `cached`; eager would scan the store.
+UW_LMDB_MATERIALISATION=lazy UW_FACT_CACHE=0 UW_FACT_IO_STATS=1 \
+  node "$HERE/store/run_probe.mjs" "$WAM" "$SCALE/probe.json" \
   2> "$SCALE/probe_wamjs.err" | tee "$SCALE/probe_wamjs.log"
 echo "--- fact_io stderr ---"
 tee -a "$SCALE/probe_wamjs.log" < "$SCALE/probe_wamjs.err"
