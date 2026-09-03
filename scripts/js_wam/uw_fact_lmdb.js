@@ -7,8 +7,8 @@
 //   node scripts/js_wam/uw_fact_lmdb.js build <tsv|csv|jsonl> <lmdb-dir>
 //   node scripts/js_wam/uw_fact_lmdb.js build-all <jsonl-dir> <lmdb-parent-dir>
 //
-// build-all writes <lmdb-parent-dir>/{pkg,dep,conflict,revdep}/ from the
-// matching JSONL files in <jsonl-dir> (resolver four-store layout).
+// build-all writes <lmdb-parent-dir>/{pkg,dep,conflict,revdep,provide}/ from the
+// matching JSONL files in <jsonl-dir> (resolver store layout).
 //
 // Requires the `lmdb` npm package (opt-in; not a repo dependency):
 //   npm install lmdb
@@ -25,7 +25,7 @@ const fs = require("fs");
 const path = require("path");
 const codec = require(path.join(__dirname, "uw_fact_codec.js"));
 
-const RESOLVER_STORES = ["pkg", "dep", "conflict", "revdep"];
+const RESOLVER_STORES = ["pkg", "dep", "conflict", "revdep", "provide"];
 
 function usage() {
   process.stderr.write(

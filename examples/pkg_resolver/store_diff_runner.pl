@@ -61,7 +61,18 @@ json_layer(D, layer(Name, Pkgs)) :-
     maplist(json_hold, D.packages, Pkgs).
 json_alias([A, C], alias(Alias, Canon)) :-
     json_atom(A, Alias), json_atom(C, Canon).
-json_ver([X, Y, Z], v(X, Y, Z)).
+json_ver([X, Y, Z], v(X, Y, Z)) :- !.
+json_ver(D, deb(E, Up, Rev)) :-
+    is_dict(D),
+    get_dict(deb, D, [E, UpJ, RevJ]),
+    maplist(json_seg, UpJ, Up),
+    maplist(json_seg, RevJ, Rev).
+
+json_seg([Order, N], s(Codes, N)) :-
+    (   atom(Order)
+    ->  atom_codes(Order, Codes)
+    ;   string_codes(Order, Codes)
+    ).
 json_atom(A, A) :- atom(A), !.
 json_atom(S, A) :- string(S), atom_string(A, S).
 
@@ -121,23 +132,52 @@ json_constraint(D, C) :-
     is_dict(D), json_atom(D.op, Op), json_constraint_op(Op, D, C).
 json_constraint_op(eq, D, eq(V)) :- json_ver(D.v, V).
 json_constraint_op(gte, D, gte(V)) :- json_ver(D.v, V).
+json_constraint_op(lte, D, lte(V)) :- json_ver(D.v, V).
+json_constraint_op(gt, D, gt(V)) :- json_ver(D.v, V).
 json_constraint_op(lt, D, lt(V)) :- json_ver(D.v, V).
 json_constraint_op(range, D, range(Lo, Hi)) :- json_ver(D.lo, Lo), json_ver(D.hi, Hi).
 
 sel_json([], []).
 sel_json([N-V|Rest], [[NS, VJ]|Js]) :-
     atom_string(N, NS), ver_json(V, VJ), sel_json(Rest, Js).
-ver_json(v(A, B, C), [A, B, C]).
+ver_json(v(A, B, C), [A, B, C]) :- !.
+ver_json(deb(E, Up, Rev), _{deb: [E, UJ, RJ]}) :-
+    maplist(seg_json, Up, UJ),
+    maplist(seg_json, Rev, RJ).
+
+seg_json(s(Codes, N), [S, N]) :-
+    string_codes(S, Codes).
 
 blocked_list_json([], []).
 blocked_list_json([blocked(N, needs(C), base_has(V))|Rest],
                   [_{name: NS, needs: CJ, base_has: VJ}|Js]) :-
+    atom(N),
+    !,
     atom_string(N, NS), constraint_json(C, CJ), ver_json(V, VJ),
     blocked_list_json(Rest, Js).
+blocked_list_json([blocked(N, needs(C), providers(Ps))|Rest],
+                  [_{name: NS, needs: CJ, providers: PJ}|Js]) :-
+    !,
+    atom_string(N, NS), constraint_json(C, CJ),
+    blocked_list_json(Ps, PJ),
+    blocked_list_json(Rest, Js).
+blocked_list_json([blocked(alternatives(Rs))|Rest],
+                  [_{alternatives: AJ}|Js]) :-
+    !,
+    maplist(alt_reason_json, Rs, AJ),
+    blocked_list_json(Rest, Js).
+
+alt_reason_json(alt(N, unsatisfiable), _{dep: NS, reason: "unsatisfiable"}) :-
+    atom_string(N, NS).
+alt_reason_json(alt(N, B), _{dep: NS, reason: BJ}) :-
+    atom_string(N, NS),
+    blocked_list_json([B], [BJ]).
 
 constraint_json(any, any).
 constraint_json(eq(V), _{op: "eq", v: J}) :- ver_json(V, J).
 constraint_json(gte(V), _{op: "gte", v: J}) :- ver_json(V, J).
+constraint_json(lte(V), _{op: "lte", v: J}) :- ver_json(V, J).
+constraint_json(gt(V), _{op: "gt", v: J}) :- ver_json(V, J).
 constraint_json(lt(V), _{op: "lt", v: J}) :- ver_json(V, J).
 constraint_json(range(Lo, Hi), _{op: "range", lo: LJ, hi: HJ}) :-
     ver_json(Lo, LJ), ver_json(Hi, HJ).

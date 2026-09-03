@@ -3,7 +3,8 @@
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
 % build.pl -- compile resolver.pl + resolver_store.pl with D43 fact
-% sources for store_pkg/2, store_dep/2, store_conflict/2, store_revdep/2.
+% sources for store_pkg/2, store_dep/2, store_conflict/2, store_revdep/2,
+% store_provides/2.
 %
 % Declaration-level switch (UW_STORE_BACKEND or 4th argv):
 %   indexed  — source(P/2, indexed(Prefix))   default; Prefix.data+.idx
@@ -56,22 +57,26 @@ store_sources(indexed, StoreDir, Sources) :-
     store_prefix(StoreDir, dep, DepP),
     store_prefix(StoreDir, conflict, ConfP),
     store_prefix(StoreDir, revdep, RevP),
+    store_prefix(StoreDir, provide, ProvP),
     Sources = [
         source(store_pkg/2, indexed(PkgP)),
         source(store_dep/2, indexed(DepP)),
         source(store_conflict/2, indexed(ConfP)),
-        source(store_revdep/2, indexed(RevP))
+        source(store_revdep/2, indexed(RevP)),
+        source(store_provides/2, indexed(ProvP))
     ].
 store_sources(lmdb, StoreDir, Sources) :-
     store_prefix(StoreDir, 'lmdb/pkg', PkgD),
     store_prefix(StoreDir, 'lmdb/dep', DepD),
     store_prefix(StoreDir, 'lmdb/conflict', ConfD),
     store_prefix(StoreDir, 'lmdb/revdep', RevD),
+    store_prefix(StoreDir, 'lmdb/provide', ProvD),
     Sources = [
         source(store_pkg/2, lmdb(PkgD)),
         source(store_dep/2, lmdb(DepD)),
         source(store_conflict/2, lmdb(ConfD)),
-        source(store_revdep/2, lmdb(RevD))
+        source(store_revdep/2, lmdb(RevD)),
+        source(store_provides/2, lmdb(ProvD))
     ].
 
 main :-
@@ -88,7 +93,7 @@ main :-
     load_into_user(SrcRes, PredsR),
     load_into_user(SrcStore, PredsS),
     append(PredsR, PredsS, Preds0),
-    StorePreds = [store_pkg/2, store_dep/2, store_conflict/2, store_revdep/2],
+    StorePreds = [store_pkg/2, store_dep/2, store_conflict/2, store_revdep/2, store_provides/2],
     append(Preds0, StorePreds, Preds1),
     sort(Preds1, Preds),
     store_sources(Kind, StoreDir, Sources),
