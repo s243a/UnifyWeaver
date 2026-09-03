@@ -1,0 +1,6 @@
+# Regenerated harness artifacts and the local binary at this directory.
+.diff_out/
+.corpus_out/
+.scale_out/
+/uwresolve
+*.exe
