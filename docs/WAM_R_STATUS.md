@@ -113,7 +113,9 @@ classes that are fleet-wide suspects. R's audit:
 | # | Deficiency | Status | Evidence / reason |
 |---|---|---|---|
 | A1 | `sub_string/5` builtin missing | **verified missing** | `sub_atom/5` exists in the library dispatch; `sub_string/5` does not |
-| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **verified (structural)** | encoding `X→+100 / Y→+200` (`wam_r_target.pl:208-209`), so X101 ≡ Y1; ids ≥ 201 read/write the topmost frame's `ys` (with the shadow-frame fallthrough, `runtime.R.mustache:289-299`) — a no-`Allocate` fact with >99 X placeholders writes into the *caller's* frame. The shadow-frame machinery protects Y reads *after the callee's own Deallocate*, not against this clobber |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` callee | **aliasing form: verified (structural), open. Frameless-Y form: UNREACHABLE on this target's emitter path (2026-09)** | see the two sub-rows below |
+| A2a | …*aliasing form* (a big ground fact's X100+ spilling into the Y range) | **verified (structural)**, unchanged | encoding `X→+100 / Y→+200` (`wam_r_target.pl:208-209`), so X101 ≡ Y1; ids ≥ 201 read/write the topmost frame's `ys` (with the shadow-frame fallthrough, `runtime.R.mustache:289-299`) — a no-`Allocate` fact with >99 X placeholders writes into the *caller's* frame. The shadow-frame machinery protects Y reads *after the callee's own Deallocate*, not against this clobber |
+| A2b | …*frameless-Y-write form* (a callee with no frame naming a Y) | **unreachable on wam_r's own emitter path (2026-09)** | the form that broke wam_rust (D50), wam_python and wam_haskell comes from `compile_if_then_else/7` reserving the barrier Y **after** the has-environment decision — but only under `ite_use_y_level(true)`. **wam_r never enables it**: every WAM compile passes a literal `[]` (`wam_r_target.pl:1045` project writer, `:1167` items bridge, `:2541-2543` ISO audit), so the barrier branch is `BarrierReg = none`, no Y is reserved, and `->/2` compiles to the legacy `cut_ite` (`\+` doesn't even reach that path — it takes the `((G,!,fail);true)` hard-cut rewrite). Corpus evidence: compiling all 79 predicates of `examples/pkg_resolver/resolver.pl` and all 43 of `examples/cli_args/cli_args.pl` with `[]` yields **zero** `allocate`-less clauses naming a Y register; the same scan with `ite_use_y_level(true)` flags `satisfies/2` — the exact clause wam_rust tripped on. Second line of defence: `wam_parts_to_r/2` has no `get_level` clause, so the tokens become `Raw(...)`, which the dispatcher answers with `stop("unrecognized WAM instruction: ...")` — loud, never a silent frame write. **This is routing immunity, not structural immunity**: `WamRuntime$put_reg` does send every `idx >= 201` into the topmost frame's `ys`, so if wam_r ever opts into `ite_use_y_level(true)` it inherits the hazard and must first adopt the choice-point model (`ChoicePoint::levels` in wam_rust, `cpLevels` in wam_haskell, `ChoicePoint.levels` in the Python runtime). Probe: `tests/test_wam_r_frameless_ite_level.pl` (no Rscript needed) |
 | A3 | `Execute` of a builtin doesn't return to the continuation | **handled** | `Execute` falls through lowered → label → dynamic → `call_library`, and on library success takes the Proceed protocol (return to CP, halt only when CP = 0) (`runtime.R.mustache:1424-1467`) — one of the two fleet reference implementations (with C++). A builtin outside `call_library` still silently fails |
 | A4 | String fidelity | **rung 0** | no string term tag; D37's double-quoted literals intern as atoms |
 
@@ -134,4 +136,11 @@ Fleet-aligned snapshot updated for PERF-R-BULK-REDUCE-PLAN-1
 (2026-08-09): hosted row 160/687 (PLAN-1); official fresh-process gate
 ≈1.24× query retained under the 180-LOC hard stop. 2026-09-01: added
 the whole-program (A2) deficiency audit; see
-[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md). 2026-09-03: A2 split into its
+aliasing and frameless-Y forms after the wam_rust D50 finding; the
+frameless-Y form is **unreachable on wam_r's own emitter path** (M17
+barrier never enabled, decoder refuses `get_level` loudly) and is now
+pinned by `tests/test_wam_r_frameless_ite_level.pl`. No wam_r source
+changed. Pre-existing suite state at that date: `test_wam_r_generator.pl`
+has one failure (`r_interpreter_uses_items_ir_policy`) that reproduces
+identically on the untouched tree; sampled R suites otherwise green.

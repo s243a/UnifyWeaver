@@ -220,16 +220,16 @@ source-confirmed) · **absent** (structurally immune; reason cited).
 | **javascript** | fixed | fixed (Call snapshots Y, Proceed restores) | fixed (proceeds to CP) | **2** | n/a (TS family lane; G-A3-8 closed) |
 | **cpp** | **handled** — alias of `sub_atom/5` (`wam_cpp_target.pl:7935,7998`); results are atoms | absent — string-named regs, per-frame `y_regs` (`:3321-3336`) | **handled** — general builtin fallback then proceed-to-CP (`:8035-8040`) | 0 | absent — `clause(Head,true)` |
 | **rust** | **verified missing** — no `sub_atom` either | absent (aliasing form) — string-named regs; Y in topmost env frame (`state.rs.mustache:2398-2406`) | **verified partial** — only `catch/3`,`throw/1`,`succ/2` route (`wam_rust_target.pl:795-838,6733-6735`); anything else silently fails | 0 | absent — `clause(Head,true)` |
-| **haskell** | verified missing | **verified** — `+100/+200` encoding (`wam_haskell_target.pl:6806-6807`); `putReg` treats id ≥ 200 as Y in the *topmost env frame* (`:5406-5416`), so a big fact's X100+ writes land in the caller's frame; with no frame the write is *silently dropped* | verified partial — ISO meta subset only (`:2231-2245,3497-3516`); else silent fail | 0 | **verified PRESENT** — `haskell_target.pl:104-114` falls back to `compile_facts_to_haskell`, which `call(Goal)`s the predicate (`:127-132`) |
+| **haskell** | verified missing | **verified (aliasing form, open)** — `+100/+200` encoding (`wam_haskell_target.pl:6806-6807`); `putReg` treats id ≥ 200 as Y in the *topmost env frame*, so a big fact's X100+ writes land in the caller's frame; with no frame the write is *silently dropped*. **Frameless-Y form: verified broken → fixed 2026-09** (ITE barrier levels moved onto the choice point in BOTH interpreters; GHC verification pending) | verified partial — ISO meta subset only (`:2231-2245,3497-3516`); else silent fail | 0 | **verified PRESENT** — `haskell_target.pl:104-114` falls back to `compile_facts_to_haskell`, which `call(Goal)`s the predicate (`:127-132`) |
 | **lua** | verified missing (no `sub_atom`; ~10-builtin dispatch) | **verified** — `+100/+200` (`wam_lua_target.pl:136-137`); flat `state.regs` (`runtime.lua.mustache:158-159`); `Allocate` frame stores only `cp` (`:1023`); no Y save on `Call` (`:1127-1133`) | **verified** — `Execute`/`Call` have *no* builtin fallback: unresolved label = silent goal failure (`:1141-1148`) | 0 | absent — `clause(Head,true)` |
-| **python** | verified missing | **verified** — X window 128 (`wam_python_target.pl:2205-2208`, X_k→128+k so **X173 ≡ Y1**); Y ≥ 301 written into the *current env frame* (`wam_python_runtime/WamRuntime.py:171-194`) | **verified** — `execute` with no label returns `False`, no builtin/foreign fallback (`wam_python_target.pl:400-406`) | 0 | absent — `clause(Head,true)` |
+| **python** | verified missing | **verified (aliasing form, open)** — X window 128 (`wam_python_target.pl:2205-2208`, X_k→128+k so **X173 ≡ Y1**); Y ≥ 301 written into the *current env frame* (`wam_python_runtime/WamRuntime.py:171-194`). **Frameless-Y form: REPRODUCED as a live wrong answer → fixed 2026-09** (`ChoicePoint.levels`; probe `tests/test_wam_python_frameless_ite_level.pl`) | **verified** — `execute` with no label returns `False`, no builtin/foreign fallback (`wam_python_target.pl:400-406`) | 0 | absent — `clause(Head,true)` |
 | **go** | verified missing (has `sub_atom`, `state.go.mustache:2792`) | **verified** — X_n→n+99 / Y_n→n+199 (`wam_go_target.pl:2103-2105`, **X101 ≡ Y1**); flat `vm.Regs`; Y saved only across the *callee's own* `Allocate` (`:2558-2598`) | **handled for known builtins** — dedicated `BuiltinExecute` proceeds to CP (`instructions.go.mustache:130-143`, `wam_go_target.pl:2729-2738`); a builtin missed by translation-time classification silently fails (`:2661-2669`) | 0 | absent — `clause(Head,true)` |
 | **scala** | verified missing (has `sub_atom` intercept) | **verified** — `+100/+200` (`wam_scala_target.pl:106-107`); flat `s.regs`; `Allocate` *copies* Y 201–299 into the frame but `Deallocate` never restores (`runtime.scala.mustache:1185-1196`) | **handled for its 14-builtin intercept** — `interceptedExecuteBuiltin` routed from both `Call` and `Execute` with return plumbing (`:1158-1175,1846-1870`); outside the set → silent backtrack | 0 | absent — `clause(Head,true)` |
-| **r** | verified missing (has `sub_atom` in `call_library`) | **verified** — `+100/+200` (`wam_r_target.pl:208-209`); Y ≥ 201 in the topmost frame's `ys` (`runtime.R.mustache:289-299`) | **handled** — `Execute` falls through label → dynamic → `call_library` with the Proceed protocol (`runtime.R.mustache:1424-1467`) | 0 | absent — `clause(Head,true)` |
+| **r** | verified missing (has `sub_atom` in `call_library`) | **verified (aliasing form, open)** — `+100/+200` (`wam_r_target.pl:208-209`); Y ≥ 201 in the topmost frame's `ys` (`runtime.R.mustache:289-299`). **Frameless-Y form: unreachable 2026-09** — wam_r never passes `ite_use_y_level(true)` (all compiles use `[]`), and `wam_parts_to_r/2` has no `get_level` clause so the shape would `stop()` loudly as `Raw`. Routing immunity only: `put_reg` does write the topmost frame. Probe `tests/test_wam_r_frameless_ite_level.pl` | **handled** — `Execute` falls through label → dynamic → `call_library` with the Proceed protocol (`runtime.R.mustache:1424-1467`) | 0 | absent — `clause(Head,true)` |
 | **elixir** | verified missing | **verified** — X→+100 / Y→+200 (`wam_elixir_utils.pl:46-52`, **X101 ≡ Y1** despite the "avoid aliasing" comment); `y_regs` swapped *only* at `Allocate` (`wam_elixir_target.pl:376-382`) | verified partial — `call/N`, `catch/3`, `throw/1` route; else `:fail` (`wam_elixir_target.pl:346-370`) | 0 | absent — `clause(Head,true)` |
 | **clojure** | verified missing | suspected-low — registers are string-named, env-stack of maps (`runtime.clj.mustache:2846-2855`); aliasing form absent, frameless-Y-write form unverified | **verified** — `:execute` special-cases only `variant/2`; unresolved label → backtrack (`runtime.clj.mustache:3275-3283`) | 0 | absent — `clause(Head,true)` |
 | **kotlin** | verified missing | absent (aliasing form) — string-named regs, per-frame env slots (`WamRuntime.kt.mustache:104-110`) | suspected — native/bytecode dispatch not audited for the tail-builtin shape | 0 | absent — `clause(Head,true)` |
-| **fsharp** | verified missing | **suspected (strong)** — same design as Haskell: `+100/+200` (`wam_fsharp_target.pl:4190-4191`) + per-frame `EfYRegs` (`:1136-1143`); getReg/putReg threshold not directly confirmed | verified partial — `isIsoMetaBuiltin` (catch/throw/succ) with correct tail return (`:1041-1070`); else silent fail (`:1072-1083`) | 0 | absent — `clause(Head,true)` |
+| **fsharp** | verified missing | **verified (aliasing form, open — was "suspected")** — `+100/+200` (`wam_fsharp_target.pl:4190-4191`) + per-frame `EfYRegs` (`:1136-1143`); the missing threshold is in `bindings/fsharp_wam_bindings.pl:546-592` — `getReg`/`putReg` branch on `n >= 201` and hit `s.WsStack`'s head frame. **Frameless-Y form: unreachable 2026-09** — wam_fsharp never passes `ite_use_y_level(true)` (all compiles use `[]`), and the emitter has no `get_level` clause so the shape becomes a warned `(* UNKNOWN *) Proceed` stub. Routing immunity only. Probe `tests/test_wam_fsharp_frameless_ite_level.pl` | verified partial — `isIsoMetaBuiltin` (catch/throw/succ) with correct tail return (`:1041-1070`); else silent fail (`:1072-1083`) | 0 | absent — `clause(Head,true)` |
 | **c** | verified missing | absent (aliasing form) — segregated A/X/Y banks via `is_y` flags (`wam_c_target.pl:1684-1710`); **suspected overflow hazard**: fixed 256-slot arrays (`wam_runtime.h.mustache:11,81-82`), a >256-X-register fact would index out of bounds (no bounds check found) | **verified** — `INSTR_EXECUTE` special-cases aggregates, else label or `return false` (`wam_c_target.pl:2257-2270`) | 0 | absent — `clause(Head,true)` |
 | **wat** | verified missing | suspected — memory-banked registers not audited | **verified (worst form)** — `resolve_label` falls back to **PC = 0** for an unknown label (`wam_wat_target.pl:1204-1209,348-351`): `execute <unlabelled builtin>` silently jumps to instruction 0. Fused `builtin_proceed`/`deallocate_builtin_proceed` cover only `is_builtin_pred` last-goals (`:760-817`) | 0 | not audited |
 | **llvm** | verified missing | suspected | suspected | 0 | not audited |
@@ -247,8 +247,61 @@ Notes on the matrix:
   spills into the Y range — the exact cli_args failure) from the
   **frameless-Y-write form** (a callee without a frame writing Y names
   into the caller's frame). Named-register runtimes are immune to the
-  first; the second requires bytecode that names Y registers outside an
-  `Allocate` body, which the current fact compiler does not emit.
+  first.
+
+  **Correction (2026-09-03).** This document originally dismissed the
+  second form on the grounds that it "requires bytecode that names Y
+  registers outside an `Allocate` body, which the current fact compiler
+  does not emit". The fact compiler indeed does not — but
+  **`compile_if_then_else/7` does.** The shared emitter reserves a
+  permanent Y for the if-then-else barrier *after* it has decided whether
+  the clause needs an environment, so under `ite_use_y_level(true)` it
+  emits `get_level Yn` … `cut Yn` into `Allocate`-less clauses. wam_rust
+  hit it on `examples/pkg_resolver/resolver.pl` (15 differential
+  divergences, ledger D50); this round reproduced it as a **live wrong
+  answer on wam_python** and verified it from the emitted bytecode on
+  **wam_haskell**. Both are fixed the way wam_rust was — the barrier level
+  lives on the if-then-else's own choice point, never in a register.
+
+  Which targets are exposed is decided by one flag: `ite_use_y_level(true)`
+  is passed by **cpp, go, haskell, javascript, llvm, lua, python, rust**
+  and *not* by **r, fsharp** (both compile with a literal `[]`), which is
+  why those two are unreachable rather than immune — their runtimes do
+  route Y writes to the topmost frame. A minimal reproduction of the shape
+  (usable against any target) is:
+
+  ```prolog
+  lt(A, B) :- A < B.
+  sat(_V, any).
+  sat(V, gte(G)) :- \+ lt(V, G).            % Allocate-less, emits get_level Y1
+  pick(Ver, C, Tag, Out) :- sat(Ver, C), Tag = Out.   % caller HAS a frame
+  ```
+
+  `pick(3, gte(1), tagX, Out)` must give `Out = tagX`; a runtime with the
+  defect returns a small integer (the choice-point depth) or fails. A scan
+  of every predicate in `examples/pkg_resolver/resolver.pl` (79) and
+  `examples/cli_args/cli_args.pl` (43) finds **zero** `Allocate`-less
+  clauses naming a Y register under `[]`, and exactly one under
+  `ite_use_y_level(true)` — `satisfies/2`, the clause wam_rust tripped on.
+
+  Still to check for this form — every one of these passes the flag and
+  none has been re-audited against the ITE barrier specifically:
+  **lua, llvm, go, cpp, javascript**. Two of them look worth doing first:
+  `wam_lua` writes Y into a flat `state.regs` with no save on `Call` at
+  all *and* has no conformance arm (B-H2), and `wam_go` looks positively
+  exposed on a read: Y registers live in the flat `vm.Regs[200:300]`, and
+  the only protection is `Allocate` copying that range into
+  `env.SavedYRegs` and `Deallocate` copying it back
+  (`wam_go_target.pl` `Allocate`/`Deallocate` cases) — which an
+  `Allocate`-less if-then-else clause never executes, so its `GetLevel Yn`
+  writes straight over the caller's live `vm.Regs[200+n]`. Not verified by
+  execution here (wam_go is owned by a concurrent round); flagged for
+  whoever holds it. (`wam_javascript` snapshots the Y range at `Call` and
+  restores at `Proceed`, so the caller's frame is repaired on return even
+  if the callee scribbles on it; `wam_rust` is fixed; `wam_cpp` uses
+  string-named per-frame `y_regs`.) Beyond those, **clojure / kotlin / c /
+  wat / jvm / ilasm** were scored on the aliasing form alone, though none
+  of them enables the flag today.
 - The B column records only the two grep-able hazards. The full G-A3
   machinery gap (cross-calls, multi-output tuples, semidet sentinel,
   compound tags) should be presumed **absent outside the TS family**
@@ -270,7 +323,18 @@ Notes on the matrix:
    fact. The JS Call-snapshot workaround ports directly to the
    flat-register runtimes; the frame-based ones (haskell, python, r,
    fsharp) instead need the X window widened or the encoding made
-   non-aliasing (see `WAM_BACKEND_CONVENTIONS.md` §8).
+   non-aliasing (see `WAM_BACKEND_CONVENTIONS.md` §8). That is the
+   **aliasing** form and it is still open everywhere it is marked
+   verified.
+2b. **A2's frameless-Y form is the one that has actually bitten**, three
+   times now (rust D50, python, haskell) — and it needs *no* big ground
+   fact, just an if-then-else or a `\+` in a clause with no permanent
+   variables. Its fix is not the X window: it is to stop putting the
+   barrier in a register at all (the wam_rust `ChoicePoint::levels`
+   model). **Highest-value remaining audit: `wam_lua` and `wam_llvm`**,
+   which pass `ite_use_y_level(true)` and have not been re-checked for
+   this shape (lua also has no conformance arm at all — see B-H2). Use
+   the four-line reproduction under the matrix notes.
 3. **A3 elsewhere**: silent failure of last-goal builtins. Runtimes with
    partial routing (rust, haskell, fsharp, elixir) have the pattern to
    extend; go's `BuiltinExecute` and cpp's fallback-then-proceed are the
@@ -290,3 +354,21 @@ source-verified against the tree at that date where a file:line is
 cited, and marked suspected otherwise; deep reads were done on the lua,
 rust, haskell, python, go, scala, r, elixir, c, cpp and wat runtimes.
 Update the matrix as targets are put through the Class-C benchmark.
+
+2026-09-03 — **A2 frameless-Y re-audit (haskell / python / r / fsharp)**,
+prompted by the wam_rust D50 finding that this document's
+"unreachable" note was wrong. Verdicts: **python broken → fixed**
+(reproduced as a live wrong answer against SWI), **haskell broken →
+fixed** (verified from the emitted bytecode and both interpreter
+sources; execution pending GHC, which the audit environment lacks),
+**r unreachable** and **fsharp unreachable** (neither enables
+`ite_use_y_level(true)`; both refuse the instruction loudly if it ever
+arrives — routing immunity, not structural). Each verdict is pinned by
+a probe: `tests/test_wam_{python,haskell,r,fsharp}_frameless_ite_level.pl`.
+Two side findings recorded in the per-target docs: F#'s A2 aliasing cell
+is upgraded from *suspected* to *verified* (the getReg/putReg threshold
+the first audit could not find lives in
+`src/unifyweaver/bindings/fsharp_wam_bindings.pl`, not in the target),
+and wam_haskell's pure interpreter truncated its NEWEST-FIRST
+choice-point list with `take n` instead of `drop (len - n)` — right only
+when `n == 0` — which is fixed alongside.

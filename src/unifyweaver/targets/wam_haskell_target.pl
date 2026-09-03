@@ -823,6 +823,7 @@ emit_stream_binding_single(OutRegN, OutType, Indent) :-
     format('~w          , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s~n', [Indent]),
     format('~w          , cpCutBar = wsCutBar s, cpAggFrame = Nothing~n', [Indent]),
     format('~w          , cpBuiltin = Just (HopsRetry outVar (map fromIntegral restResults) retPC)~n', [Indent]),
+    format('~w          , cpLevels = IM.empty~n', [Indent]),
     format('~w          }~n', [Indent]),
     format('~w    in Just (s1 { wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })~n', [Indent]).
 
@@ -884,6 +885,7 @@ emit_stream_binding_multi(OutputRegs, Indent) :-
     format('~w          , cpBuiltin = Just (FFIStreamRetry ', [Indent]),
     emit_outregs_list(OutputRegs),
     format(' outVars restWrapped retPC)~n', []),
+    format('~w          , cpLevels = IM.empty~n', [Indent]),
     format('~w          }~n', [Indent]),
     format('~w    in Just (s1 { wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })~n', [Indent]).
 
@@ -1212,9 +1214,11 @@ wam_to_haskell(try_me_else(Label), Code) :-
         , cpHeapLen  = length (wsHeap s)
         , cpBindings = wsBindings s   -- O(1): shared reference
         , cpCutBar   = wsCutBar s
+        , cpLevels   = pendingLevelMap (wsPendingLevel s)
         }
   in Just (s { wsPC = wsPC s + 1
              , wsCPs = cp : wsCPs s
+             , wsPendingLevel = Nothing
              })', [Label]).
 
 wam_to_haskell(trust_me, Code) :-
@@ -1318,6 +1322,10 @@ backtrack s = case wsCPs s of
               , wsHeapLen  = cpHeapLen cp
               , wsBindings = restoredBindings
               , wsCutBar   = cpCutBar cp
+              -- A `get_level` parked between the last choice point and this
+              -- failure never reached its try_me_else; it must not attach to
+              -- an unrelated choice point pushed later.
+              , wsPendingLevel = Nothing
               } } }
   where
     undoBinding bindings (TrailEntry vid mOld) =
@@ -1535,7 +1543,12 @@ forkOrSequential !ctx s elseTarget =
       in if elsePC > 0
          then let branches = enumerateParBranches ctx (wsPC s) elsePC
               in if length branches >= forkMinBranches
-                 then Just (forkParBranches ctx s ms elsePC)
+                 -- The fork path pushes no guard choice point, so a level
+                 -- parked by a preceding `get_level` has nothing to attach
+                 -- to; drop it rather than let an unrelated later
+                 -- try_me_else adopt it.
+                 then Just ((forkParBranches ctx s ms elsePC)
+                              { wsPendingLevel = Nothing })
                  else fallback  -- too few branches; overhead > benefit
          else fallback
     _ -> fallback
@@ -1812,6 +1825,7 @@ callIndexedFact2 !ctx pred s =
                             , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s
                             , cpCutBar = wsCutBar s, cpAggFrame = Nothing
                             , cpBuiltin = Just (FactRetry vid restIds retPC)
+                            , cpLevels = IM.empty
                             } : wsCPs s
                   newCPsLen = case restIds of { [] -> wsCPsLen s; _ -> wsCPsLen s + 1 }
               in Just (s { wsPC = retPC, wsRegs = newRegs, wsBindings = newBindings
@@ -1883,6 +1897,7 @@ streamFactRows rows s =
                     , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s
                     , cpCutBar = wsCutBar s, cpAggFrame = Nothing
                     , cpBuiltin = Just (FactStream var1 var2 rest retPC)
+                    , cpLevels = IM.empty
                     } : wsCPs s
           newCPsLen = case rest of { [] -> wsCPsLen s; _ -> wsCPsLen s + 1 }
       in Just (s { wsPC = retPC, wsRegs = newRegs, wsBindings = newBindings
@@ -2273,8 +2288,10 @@ step !ctx s (TryMeElse label) =
         , cpBindings = wsBindings s
         , cpCutBar   = wsCutBar s
         , cpAggFrame = Nothing, cpBuiltin = Nothing
+        , cpLevels   = pendingLevelMap (wsPendingLevel s)
         }
-  in Just (s { wsPC = wsPC s + 1, wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })
+  in Just (s { wsPC = wsPC s + 1, wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1
+             , wsPendingLevel = Nothing })
 
 -- TrustMe / RetryMeElse: when an indexed SwitchOnConstantPc jumps
 -- directly to a clause that begins with one of these (the WAM
@@ -2309,8 +2326,10 @@ step !ctx s (TryMeElsePc nextPC) =
         , cpBindings = wsBindings s
         , cpCutBar   = wsCutBar s
         , cpAggFrame = Nothing, cpBuiltin = Nothing
+        , cpLevels   = pendingLevelMap (wsPendingLevel s)
         }
-  in Just (s { wsPC = wsPC s + 1, wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })
+  in Just (s { wsPC = wsPC s + 1, wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1
+             , wsPendingLevel = Nothing })
 
 -- See TrustMe above for the rationale for the empty-CP no-op-advance.
 step !ctx s (RetryMeElsePc nextPC) =
@@ -2391,12 +2410,47 @@ step !ctx s CutIte =
 -- register (before an if-then-else / negation try_me_else); Cut truncates
 -- the CP stack back to that depth at the commit site, removing the
 -- ITE/negation CP AND any CPs the condition pushed above it.
+-- The level is recorded on the if-then-else''s own CHOICE POINT, never in
+-- register `reg` -- see ChoicePoint.cpLevels for why a Y write here lands in
+-- the CALLER''s environment frame. Two emission shapes come out of
+-- compile_if_then_else/7:
+--   1. `get_level BarrierReg` immediately BEFORE the ITE `try_me_else` --
+--      park it so that TryMeElse records it on the guard CP it pushes;
+--   2. `get_level CondBarrierReg` immediately AFTER the try_me_else (only
+--      when the condition holds a top-level `!`) -- attach it to the guard CP
+--      that already exists, so a cut in the condition prunes only the
+--      condition''s own choice points.
+-- In both shapes the level itself is just wsCPsLen at this instant.
 step !ctx s (GetLevel reg) =
-  Just (s { wsPC = wsPC s + 1, wsRegs = IM.insert reg (Integer (wsCPsLen s)) (wsRegs s) })
+  let nextIsTry = case fetchInstr (wsPC s + 1) (wcCode ctx) of
+        Just (TryMeElse _)      -> True
+        Just (TryMeElsePc _)    -> True
+        -- The forkable variants are what the emitter actually plants in a
+        -- fork-eligible predicate; sequentially they route straight into
+        -- TryMeElse(Pc), which is where the parked level is consumed.
+        Just (ParTryMeElse _)   -> True
+        Just (ParTryMeElsePc _) -> True
+        _                       -> False
+  in if nextIsTry
+       then Just (s { wsPC = wsPC s + 1
+                    , wsPendingLevel = Just (reg, wsCPsLen s) })
+       else case wsCPs s of
+         (cp : rest) ->
+           Just (s { wsPC = wsPC s + 1
+                   , wsCPs = cp { cpLevels = IM.insert reg (wsCPsLen s)
+                                                        (cpLevels cp) } : rest })
+         [] -> Just (s { wsPC = wsPC s + 1 })
 
+-- `wsCPs` is NEWEST-FIRST, so truncating the stack back to depth `n` drops
+-- the (len - n) youngest choice points -- `drop`, not `take` (the old arm
+-- kept the n youngest and called the result depth n, which only coincided
+-- with the right answer for the n == 0 case).
 step !ctx s (Cut reg) =
-  case IM.lookup reg (wsRegs s) of
-    Just (Integer n) -> Just (s { wsPC = wsPC s + 1, wsCPs = take n (wsCPs s), wsCPsLen = n })
+  case lookupIteLevel reg (wsCPs s) of
+    Just n | n < wsCPsLen s ->
+      Just (s { wsPC = wsPC s + 1
+              , wsCPs = drop (wsCPsLen s - n) (wsCPs s)
+              , wsCPsLen = n })
     _ -> Just (s { wsPC = wsPC s + 1 })
 
 -- Type-checking builtins
@@ -2820,6 +2874,7 @@ step !ctx s (BeginAggregate typ valReg resReg) =
         , cpAggFrame = Just (AggFrame typ valReg resReg 0
                                       (inferMergeStrategy typ))
         , cpBuiltin = Nothing
+        , cpLevels = IM.empty
         }
   in Just (s { wsPC = wsPC s + 1
              , wsCPs = cp : wsCPs s
@@ -3273,10 +3328,12 @@ stepST _ regs !pw (TryMeElsePc nextPC) = do
         , mcpTrailLen = pwTrailLen pw, mcpHeapLen = pwHeapLen pw
         , mcpBindings = pwBindings pw, mcpCutBar = pwCutBar pw
         , mcpAggFrame = Nothing, mcpBuiltin = Nothing
+        , mcpLevels = pendingLevelMap (pwPendingLevel pw)
         }
   return $ Just pw { pwPC = pwPC pw + 1
                    , pwCPs = mcp : pwCPs pw
-                   , pwCPsLen = pwCPsLen pw + 1 }
+                   , pwCPsLen = pwCPsLen pw + 1
+                   , pwPendingLevel = Nothing }
 
 stepST _ _ !pw TrustMe =
   case pwCPs pw of
@@ -3334,20 +3391,39 @@ stepST _ _ !pw CutIte =
     [] -> return $ Just pw { pwPC = pwPC pw + 1 }
 
 -- M17 soft cut (see the pure `step` GetLevel/Cut for semantics).
--- M145: route the register access through putRegST/getRegST. GetLevel''s
--- operand is a Y register (id 201+), which lives in the topmost env
--- frame on the ST path -- the old raw writeArray/readArray hit the
--- STArray sized (1, maxRegId=199) and crashed every if-then-else
--- predicate with an index error.
-stepST _ regs !pw (GetLevel reg) = do
-  pw'' <- putRegST regs reg (Integer (pwCPsLen pw)) pw
-  return $ Just pw'' { pwPC = pwPC pw + 1 }
+-- M145: the operand is a Y register (id 201+), so the original raw
+-- writeArray/readArray hit the STArray sized (1, maxRegId=199) and crashed
+-- every if-then-else predicate with an index error. Routing it through
+-- putRegST/getRegST fixed the crash but moved the write into the TOPMOST env
+-- frame -- the CALLER''s, for the `Allocate`-less if-then-else clauses the
+-- shared emitter also emits `get_level` into. The barrier now lives on the
+-- ITE''s own choice point instead and touches no register at all.
+stepST !ctx _ !pw (GetLevel reg) =
+  let nextIsTry = case fetchInstr (pwPC pw + 1) (wcCode ctx) of
+        Just (TryMeElse _)      -> True
+        Just (TryMeElsePc _)    -> True
+        -- The forkable variants are what the emitter actually plants in a
+        -- fork-eligible predicate; sequentially they route straight into
+        -- TryMeElse(Pc), which is where the parked level is consumed.
+        Just (ParTryMeElse _)   -> True
+        Just (ParTryMeElsePc _) -> True
+        _                       -> False
+  in if nextIsTry
+       then return $ Just pw { pwPC = pwPC pw + 1
+                             , pwPendingLevel = Just (reg, pwCPsLen pw) }
+       else case pwCPs pw of
+         (mcp : rest) ->
+           return $ Just pw { pwPC = pwPC pw + 1
+                            , pwCPs = mcp { mcpLevels = IM.insert reg (pwCPsLen pw)
+                                                                  (mcpLevels mcp) } : rest }
+         [] -> return $ Just pw { pwPC = pwPC pw + 1 }
 
-stepST _ regs !pw (Cut reg) = do
-  mv <- getRegST regs reg pw
-  case mv of
-    Just (Integer n) -> return $ Just pw { pwPC = pwPC pw + 1
-                                         , pwCPs = take n (pwCPs pw), pwCPsLen = n }
+stepST _ _ !pw (Cut reg) =
+  case lookupIteLevelST reg (pwCPs pw) of
+    Just n | n < pwCPsLen pw ->
+      return $ Just pw { pwPC = pwPC pw + 1
+                       , pwCPs = drop (pwCPsLen pw - n) (pwCPs pw)
+                       , pwCPsLen = n }
     _ -> return $ Just pw { pwPC = pwPC pw + 1 }
 
 -- Type-checking builtins
@@ -3438,7 +3514,8 @@ stepST _ regs !pw (SetValue xn) = do
                             , pwBindings = pwBindings pw, pwCutBar = pwCutBar pw
                             , pwBuilder = pwBuilder pw, pwBuilderStack = pwBuilderStack pw
                             , pwVarCounter = pwVarCounter pw
-                            , pwAggAccum = pwAggAccum pw }
+                            , pwAggAccum = pwAggAccum pw
+                            , pwPendingLevel = pwPendingLevel pw }
       -- addToBuilder is pure: only modifies wsBuilder and wsRegs (for struct/list finalize)
       regMap <- freezeRegsToIntMap regs
       let ws = pureToWamState s0 regMap
@@ -3873,6 +3950,8 @@ backtrackST regs pw = case pwCPs pw of
         , pwCutBar = mcpCutBar mcp
         , pwCPs = rest
         , pwCPsLen = pwCPsLen pw - 1
+        -- See backtrack: drop a get_level that never reached its try_me_else.
+        , pwPendingLevel = Nothing
         }
     | otherwise -> do
       -- Complex case: aggregate/builtin. Delegate to pure bridge.
@@ -5598,6 +5677,7 @@ wamStateToPure s = PureWamState
   , pwBuilder = wsBuilder s, pwBuilderStack = wsBuilderStack s
   , pwVarCounter = wsVarCounter s
   , pwAggAccum = wsAggAccum s
+  , pwPendingLevel = wsPendingLevel s
   }
 
 pureToWamState :: PureWamState -> IM.IntMap Value -> WamState
@@ -5610,7 +5690,35 @@ pureToWamState pw regMap = WamState
   , wsBuilder = pwBuilder pw, wsBuilderStack = pwBuilderStack pw
   , wsVarCounter = pwVarCounter pw
   , wsAggAccum = pwAggAccum pw
+  , wsPendingLevel = pwPendingLevel pw
   }
+
+-- | Wrap a parked `get_level` into the level map its choice point carries.
+-- `Nothing` (the overwhelmingly common case) costs an empty IntMap.
+{-# INLINE pendingLevelMap #-}
+pendingLevelMap :: Maybe (Int, Int) -> IM.IntMap Int
+pendingLevelMap Nothing        = IM.empty
+pendingLevelMap (Just (r, lv)) = IM.singleton r lv
+
+-- | `cut Yn` — find the level `get_level Yn` recorded, innermost choice point
+-- first. Looking it up on the CP stack (rather than in a Y register) makes it
+-- per-activation for free, and a callee can never clobber a caller''s.
+-- `Nothing` means the guard was already cut away by an inner commit, in which
+-- case the stack is already at or below the level and cutting is a no-op.
+lookupIteLevel :: Int -> [ChoicePoint] -> Maybe Int
+lookupIteLevel _ [] = Nothing
+lookupIteLevel reg (cp : rest) =
+  case IM.lookup reg (cpLevels cp) of
+    Just lv -> Just lv
+    Nothing -> lookupIteLevel reg rest
+
+-- | ST-mode twin of lookupIteLevel.
+lookupIteLevelST :: Int -> [MutableChoicePoint] -> Maybe Int
+lookupIteLevelST _ [] = Nothing
+lookupIteLevelST reg (mcp : rest) =
+  case IM.lookup reg (mcpLevels mcp) of
+    Just lv -> Just lv
+    Nothing -> lookupIteLevelST reg rest
 
 -- | Read a register value in ST mode. Y-registers (>= 200) come from env frame.
 {-# INLINE getRegST #-}
@@ -5801,6 +5909,22 @@ data ChoicePoint = ChoicePoint
   , cpCutBar   :: {-# UNPACK #-} !Int
   , cpAggFrame :: !(Maybe AggFrame)
   , cpBuiltin  :: !(Maybe BuiltinState)
+  -- | If-then-else barrier levels captured by `get_level Yn` on THIS choice
+  -- point: register id -> the CP-stack depth `cut Yn` must truncate back to.
+  --
+  -- The shared WAM compiler reserves a *permanent* (Y) register for an ITE
+  -- barrier AFTER deciding whether the clause needs an environment
+  -- (`compile_if_then_else/7` in `wam_target.pl`), so it emits `get_level Y1`
+  -- in clauses with NO `Allocate` too. Both interpreters route Y registers to
+  -- the TOPMOST env frame, which for such a clause is the CALLER''s -- the old
+  -- register write replaced the caller''s permanent variable Yn with a
+  -- choice-point depth. That is a silent wrong answer, not a crash: the
+  -- WAM_FLEET_GAPS A2 hazard in its frameless-Y-write form (see
+  -- WAM_HASKELL_STATUS.md).
+  --
+  -- Keeping the level on the ITE''s own choice point means it never touches a
+  -- register, is per-activation for free, and dies with the choice point.
+  , cpLevels   :: !(IM.IntMap Int)
   } deriving (Show)
 
 -- | Builtin state for choice points that need custom retry logic.
@@ -5964,6 +6088,10 @@ data WamState = WamState
   , wsBuilderStack :: ![Builder]    -- saved builders for nested get_structure
   , wsVarCounter   :: {-# UNPACK #-} !Int
   , wsAggAccum :: ![Value]
+  -- | An if-then-else barrier level taken by `get_level Yn` immediately BEFORE
+  -- the ITE''s `try_me_else`; consumed by that TryMeElse, which records it on
+  -- the guard choice point it pushes. See ChoicePoint.cpLevels.
+  , wsPendingLevel :: !(Maybe (Int, Int))
   } deriving (Show)
 
 -- | Maximum register ID. A1-A99=1-99, X1-X99=101-199, Y handled via stack.
@@ -5989,6 +6117,8 @@ data PureWamState = PureWamState
   , pwBuilderStack :: ![Builder]    -- saved builders for nested get_structure
   , pwVarCounter   :: {-# UNPACK #-} !Int
   , pwAggAccum     :: ![Value]
+  -- | ST-mode twin of wsPendingLevel. See ChoicePoint.cpLevels.
+  , pwPendingLevel :: !(Maybe (Int, Int))
   }
 
 -- | Choice point with frozen register snapshot (for ST-mode execution).
@@ -6003,6 +6133,8 @@ data MutableChoicePoint = MutableChoicePoint
   , mcpCutBar    :: {-# UNPACK #-} !Int
   , mcpAggFrame  :: !(Maybe AggFrame)
   , mcpBuiltin   :: !(Maybe BuiltinState)
+  -- | ST-mode twin of cpLevels. See ChoicePoint.
+  , mcpLevels    :: !(IM.IntMap Int)
   }
 
 -- | Instruction type for the WAM.
@@ -6120,6 +6252,7 @@ emptyState = WamState
   , wsBuilderStack = []
   , wsVarCounter = 0
   , wsAggAccum = []
+  , wsPendingLevel = Nothing
   }
 '.
 

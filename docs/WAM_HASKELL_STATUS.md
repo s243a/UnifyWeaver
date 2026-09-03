@@ -97,7 +97,9 @@ favourable in the mature band:
 | # | Deficiency | Status | Evidence / reason |
 |---|---|---|---|
 | A1 | `sub_string/5` builtin missing | **verified missing** | no `sub_string/5` (or `sub_atom/5`) in the step dispatch |
-| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **verified (structural)** | register encoding is `X→+100 / Y→+200` (`wam_haskell_target.pl:6806-6807`), and `getReg`/`putReg` treat **any id ≥ 200 as a Y register in the topmost env frame** (`:5395-5416`). A large ground fact's X100+ placeholders therefore write into the *caller's* frame — the exact `default_registry/1` clobber the JS runtime hit. Worse: with no frame on the stack, `updateTopEnv` **silently drops the write** (`:5413`), so the fact's own head match can misbehave |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` callee | **aliasing form: verified (structural), open. Frameless-Y form: verified broken by source + emitted bytecode → FIXED 2026-09 (GHC verification pending)** | see the two sub-rows below |
+| A2a | …*aliasing form* (a big ground fact's X100+ spilling into the Y range) | **verified (structural)**, unchanged | register encoding is `X→+100 / Y→+200` (`wam_haskell_target.pl:6806-6807`), and `getReg`/`putReg` treat **any id ≥ 200 as a Y register in the topmost env frame**. A large ground fact's X100+ placeholders therefore write into the *caller's* frame — the exact `default_registry/1` clobber the JS runtime hit. Worse: with no frame on the stack, `updateTopEnv` **silently drops the write**, so the fact's own head match can misbehave |
+| A2b | …*frameless-Y-write form* (a callee with no frame naming a Y) | **verified broken, fixed 2026-09** | the fleet audit called this shape unreachable because "the current fact compiler does not emit it". It does not — but `compile_if_then_else/7` does: the shared emitter reserves the ITE barrier Y **after** the has-environment decision, so `get_level Y1` … `cut Y1` land in `Allocate`-less clauses, and the Haskell target always compiles with `ite_use_y_level(true)` (`wam_haskell_target.pl:302,6274,6729`). Confirmed in the emitted bytecode: for `sat(V, gte(G)) :- \+ lt(V, G).` the generated `Predicates.hs` holds `GetLevel 201` / `Cut 201` in a clause with **no `Allocate`**, while its caller's clause holds `Allocate` + `GetVariable 201` (Y1). The **default** `runMutableRegs`/`stepST` path wrote that level through `putRegST`, whose Y branch is `updateTopEnvPure` = the topmost (i.e. **caller's**) frame. The pure `step` path escaped the clobber only by accident — it wrote the flat `wsRegs` map, which no Y access reads — but truncated a NEWEST-FIRST choice-point list with `take n`, keeping the n *youngest* CPs instead of the n oldest (right only when `n == 0`). Both fixed: barrier levels now live on the ITE's own choice point (`cpLevels` / `mcpLevels`, `lookupIteLevel` / `lookupIteLevelST`, `wsPendingLevel` / `pwPendingLevel`), never in a register, and the truncation is `drop (len - n)`. Probe: `tests/test_wam_haskell_frameless_ite_level.pl` — its emission and generated-source arms run everywhere; the execution arm needs GHC (**not available in the audit environment, so the fix is source-verified and codegen-verified but not yet run**) |
 | A3 | `Execute` of a builtin doesn't return to the continuation | **verified partial** | only `isIsoMetaBuiltin` (`catch/3`, `throw/1`) routes through `BuiltinCall` with the CP-return conversion (`:2231-2235`); any other unlabelled name → `Nothing` = silent goal failure (`:2238-2245`, ST path `:3497-3516`) |
 | A4 | String fidelity | **rung 0** | `data Value` has no string constructor (`:5721-5729`); D37's double-quoted literals intern as atoms |
 
@@ -129,4 +131,14 @@ kernel, or ISO milestone lands. 2026-09-01: added the whole-program
 (A2) deficiency audit — Y-aliasing into the caller's env frame, silent
 `Execute` failure, `sub_string/5`, and the pattern lane's
 execute-at-compile-time fact fallback, all verified by source reading;
-see [`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).
+see [`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md). 2026-09-03: the A2
+frameless-Y-write form (the if-then-else barrier) was verified reachable
+from the emitted bytecode and fixed runtime-side in **both** interpreters
+— barrier levels on the choice point, plus the `take`/`drop` truncation
+bug on the pure path. **GHC is absent from the audit environment**, so the
+change is source- and codegen-verified only: the execution arm of
+`tests/test_wam_haskell_frameless_ite_level.pl` must be run where GHC
+exists before the fix is called proven. Pre-existing suite state at that
+date: `test_wam_haskell_target.pl` has 5 failures (async/unsafe imports,
+4 F1 fact-classification tests) that reproduce identically on the
+untouched tree; all other Haskell WAM suites green.

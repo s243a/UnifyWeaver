@@ -122,7 +122,9 @@ classes that are fleet-wide suspects. F#'s audit:
 | # | Deficiency | Status | Evidence / reason |
 |---|---|---|---|
 | A1 | `sub_string/5` builtin missing | **verified missing** | not in the step dispatch |
-| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **suspected (strong)** | same design as the verified Haskell case: numeric `X→+100 / Y→+200` encoding (`wam_fsharp_target.pl:4190-4191`) plus per-frame `EfYRegs` (`:1136-1143`), which puts X101 ≡ Y1 into the *caller's* frame when the callee never allocates. The exact getReg/putReg Y-threshold was not directly confirmed, hence suspected rather than verified |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` callee | **aliasing form: VERIFIED (was "suspected"), open. Frameless-Y form: UNREACHABLE on this target's emitter path (2026-09)** | see the two sub-rows below |
+| A2a | …*aliasing form* (a big ground fact's X100+ spilling into the Y range) | **verified (was suspected)** | numeric `X→+100 / Y→+200` encoding (`wam_fsharp_target.pl:4190-4191`) plus per-frame `EfYRegs` (`:1136-1143`) puts X101 ≡ Y1 into the *caller's* frame when the callee never allocates. The Y threshold the earlier audit could not locate is in the **bindings** file, not the target: `getReg`/`putReg` in `src/unifyweaver/bindings/fsharp_wam_bindings.pl:546-592` branch on `n >= 201` and read/write `s.WsStack`'s head frame (`putReg` also mirrors into `WsRegs`). So this is now *verified*, not suspected |
+| A2b | …*frameless-Y-write form* (a callee with no frame naming a Y) | **unreachable on wam_fsharp's own emitter path (2026-09)** | the form that broke wam_rust (D50), wam_python and wam_haskell comes from `compile_if_then_else/7` reserving the barrier Y **after** the has-environment decision — but only under `ite_use_y_level(true)`. **wam_fsharp never enables it**: every WAM compile passes a literal `[]` (`wam_fsharp_target.pl:209-212`, `:4851-4853`), so no barrier Y is reserved and `->/2` compiles to the legacy `cut_ite`/`CutIte` (`\+` doesn't even reach that path — it takes the `((G,!,fail);true)` hard-cut rewrite). Corpus evidence: compiling all 79 predicates of `examples/pkg_resolver/resolver.pl` and all 43 of `examples/cli_args/cli_args.pl` with `[]` yields **zero** `allocate`-less clauses naming a Y register; the same scan with `ite_use_y_level(true)` flags `satisfies/2` — the clause wam_rust tripped on. Second line of defence: `wam_instr_to_fsharp/2` has no `get_level` clause, so the tokens hit the catch-all, which warns on stderr at codegen time and emits `(* UNKNOWN: get_level Y1 *) Proceed` — noisy, never a silent register write. **This is routing immunity, not structural immunity**: `putReg` really does send `n >= 201` into the topmost frame, so opting into `ite_use_y_level(true)` (e.g. to pick up the M17 soft cut's better nested-cut semantics) requires adopting the choice-point model first (`ChoicePoint::levels` in wam_rust, `cpLevels` in wam_haskell, `ChoicePoint.levels` in the Python runtime) — **and, per the standing lesson below, in the lowered emitter too**. Probe: `tests/test_wam_fsharp_frameless_ite_level.pl` (no dotnet needed) |
 | A3 | `Execute` of a builtin doesn't return to the continuation | **verified partial** | `isIsoMetaBuiltin` (catch/throw/succ) routes through `BuiltinCall` with the correct PC→CP conversion (`:1041-1070`) — the pattern the Rust arm mirrors — but any other unlabelled builtin falls through label lookup to `None` = silent goal failure (`:1072-1083`) |
 | A4 | String fidelity | **rung 0** | no string term tag; D37's double-quoted literals intern as atoms |
 
@@ -155,4 +157,13 @@ Status extract over `WAM_FSHARP_TARGET.md` +
 `WAM_FSHARP_PARITY_AUDIT.md`. Prefer updating those for API detail;
 update **this** file for milestone checkboxes and cross-target
 ranking. 2026-09-01: added the whole-program (A2) deficiency audit; see
-[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md). 2026-09-03: A2 split into its
+aliasing and frameless-Y forms after the wam_rust D50 finding. The
+aliasing form is now **verified** (the missing Y threshold lives in
+`bindings/fsharp_wam_bindings.pl`, not in the target); the frameless-Y
+form is **unreachable on wam_fsharp's own emitter path** (M17 barrier
+never enabled, emitter has no `get_level` clause) and is pinned by
+`tests/test_wam_fsharp_frameless_ite_level.pl`. No wam_fsharp source
+changed. Sampled F# suites (`test_wam_fsharp_target.pl`,
+`test_wam_fsharp_lowered_ite.pl`, `test_wam_fsharp_iso_unit.pl`) green at
+that date.

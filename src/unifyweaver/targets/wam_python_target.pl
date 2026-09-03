@@ -520,24 +520,27 @@ wam_instruction_branch('elif instr[0] == \"neck_cut\"', Body) :-
                         break
             return True'.
 
+% M17 soft cut. The barrier level is kept on the if-then-else''s own CHOICE
+% POINT (record_ite_level / lookup_ite_level in the runtime), never in the
+% register `yn`: `compile_if_then_else/7` reserves the barrier Y *after* the
+% has-environment decision, so `get_level Y1` also reaches clauses with no
+% `allocate`, where a Y write lands in the CALLER''s frame. See
+% `WamRuntime.ChoicePoint.levels` and docs/WAM_PYTHON_STATUS.md (gap A2).
 wam_instruction_branch('elif instr[0] == \"get_level\"', Body) :-
 	Body = '            yn = instr[1]
-            set_reg(self, yn, Int(self.b))
+            code = getattr(self, "_code", None)
+            nxt = None
+            if code is not None and 0 <= self._pc + 1 < len(code):
+                nxt = code[self._pc + 1][0]
+            record_ite_level(self, yn, nxt)
             return True'.
 
 wam_instruction_branch('elif instr[0] == \"cut\"', Body) :-
 	Body = '            yn = instr[1]
-            val = get_reg(self, yn)
-            if val is not None and isinstance(val, Int):
-                saved_b = val.n
-                while self.b > saved_b and self.b >= 0 and self.b < len(self.stack):
-                    cp = self.stack[self.b]
-                    if isinstance(cp, ChoicePoint):
-                        self.b = cp.saved_b
-                    else:
-                        break
-                return True
-            return False'.
+            level = lookup_ite_level(self, yn)
+            if level is not None:
+                _cut_to(self, level)
+            return True'.
 
 % --- Indexing Instructions ---
 
