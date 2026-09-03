@@ -696,9 +696,19 @@ wam_instruction_arm('Instruction::ReturnAdd1(out_reg, in_reg)', Body) :-
 
 wam_instruction_arm('Instruction::Allocate', Body) :-
     Body = '                use std::collections::HashMap;
-                self.cut_barrier = self.pending_cut_barrier
-                    .take()
-                    .unwrap_or(self.choice_points.len());
+                // The pending barrier belongs to the clause whose
+                // TryMeElse/RetryMeElse parked it, and reaches its Allocate on
+                // the VERY NEXT instruction. Without the pc check the value
+                // leaked: a fact predicate (try_me_else + head + proceed, no
+                // Allocate) left its barrier parked, and the next unrelated
+                // Allocate consumed it -- so a `!` in a single-clause callee
+                // cut back past a preceding fact predicate''s choice point
+                // (`findall(Y, (e(_), p28_h(Y)), L)` collected one solution
+                // instead of two).
+                self.cut_barrier = match self.pending_cut_barrier.take() {
+                    Some((barrier, at_pc)) if at_pc == self.pc => barrier,
+                    _ => self.choice_points.len(),
+                };
                 let saved_cp = self.cp;
                 self.smut().push(StackEntry::Env(saved_cp, HashMap::new()));
                 self.pc += 1; true'.
@@ -725,8 +735,6 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                 } else if p == "read_term/2" {
                     let options = self.get_reg_raw("A2");
                     self.execute_read_term_builtin(options.as_ref())
-                } else if p == "atomic/1" {
-                    self.execute_builtin(p, *_arity)
                 } else if self.foreign_predicates.contains(p) {
                     self.cp = self.pc + 1;
                     if self.execute_foreign_predicate(p, *_arity) {
@@ -740,13 +748,22 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                     __ftr
                 } else if self.dynamic_call(p, self.pc + 1) {
                     true
-                } else if Self::is_iso_meta_builtin(p) {
-                    // ISO meta-builtins (catch/3, throw/1, succ/2) are
-                    // emitted by the shared WAM compiler as Call rather
-                    // than BuiltinCall; route them through the builtin
-                    // dispatch (mirrors the F# isIsoMetaBuiltin arm).
-                    self.execute_builtin(p, *_arity)
-                } else { false }'.
+                } else if self.execute_builtin(p, *_arity) {
+                    // WAM_BACKEND_CONVENTIONS §7 (call half): a predicate the
+                    // shared compiler does not know as a builtin
+                    // (is_builtin_pred/2) but this runtime DOES implement
+                    // reaches us as `call <name>` with no label. Route the
+                    // whole class through builtin dispatch rather than naming
+                    // individual predicates -- the old arm listed only
+                    // atomic/1 plus the three is_iso_meta_builtin names, so
+                    // every other runtime builtin silently failed here.
+                    // execute_builtin advances pc itself, exactly as the
+                    // BuiltinCall arm relies on.
+                    true
+                } else {
+                    Self::warn_unresolved_goal("call", p);
+                    false
+                }'.
 
 wam_instruction_arm('Instruction::CallPc(target_pc, _arity)', Body) :-
     Body = '                self.cp = self.pc + 1;
@@ -786,6 +803,7 @@ wam_instruction_arm('Instruction::CallIndexedAtomFact2(pred)', Body) :-
                             data: vec![Value::Integer(1)],
                         }),
                         cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
                     });
                 }
                 if self.unify(&a2, &Value::Atom(values[0].clone())) {
@@ -813,11 +831,6 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
                         self.pc = self.cp;
                         true
                     } else { false }
-                } else if p == "atomic/1" {
-                    if self.execute_builtin(p, 1) {
-                        self.pc = self.cp;
-                        true
-                    } else { false }
                 } else if self.foreign_predicates.contains(p) {
                     self.execute_foreign_predicate(p, 0)
                 } else if let Some(__ftr) = crate::fact_table_call(self, p, self.cp) {
@@ -826,16 +839,34 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
                     __ftr
                 } else if self.dynamic_call(p, self.cp) {
                     true
-                } else if Self::is_iso_meta_builtin(p) {
-                    // Tail-position ISO meta-builtin: dispatch, then honor
-                    // return semantics by jumping to the continuation.
+                } else {
+                    // WAM_BACKEND_CONVENTIONS §7: the class fix, the Rust
+                    // analogue of Go''s BuiltinExecute instruction. A clause
+                    // whose LAST goal is a runtime-implemented builtin outside
+                    // is_builtin_pred/2 arrives here as `execute <name>` with
+                    // no label. Run the builtin, then take Proceed''s return
+                    // path (jump to CP; CP == 0 is the top-level sentinel and
+                    // halts run()).
+                    //
+                    // This used to be gated on is_iso_meta_builtin (catch/3,
+                    // throw/1, succ/2) plus a hand-listed atomic/1, so EVERY
+                    // other runtime builtin in tail position bound its outputs
+                    // and then reported FAILURE -- a silent wrong answer, not
+                    // a missing feature.
                     let arity: usize = p.rsplit(\'/\').next()
                         .and_then(|a| a.parse().ok()).unwrap_or(0);
+                    let __pc_before = self.pc;
                     if self.execute_builtin(p, arity) {
                         self.pc = self.cp;
                         true
-                    } else { false }
-                } else { false }'.
+                    } else {
+                        // Restore pc in case a partially-run builtin advanced
+                        // it before failing, then fail the goal.
+                        self.pc = __pc_before;
+                        Self::warn_unresolved_goal("execute", p);
+                        false
+                    }
+                }'.
 
 wam_instruction_arm('Instruction::ExecutePc(target_pc)', Body) :-
     Body = '                self.pc = *target_pc;
@@ -861,19 +892,60 @@ wam_instruction_arm('Instruction::NoOp', Body) :-
 % CutTo restores it at the commit point, removing the ITE guard CP plus
 % any CPs the condition pushed - regardless of how many that was.
 wam_instruction_arm('Instruction::GetLevel(yn)', Body) :-
-    Body = '                let depth = Value::Integer(self.choice_points.len() as i64);
-                self.trail_binding(yn);
-                self.put_reg(yn, depth);
+    Body = '                // The barrier level is stored on the ITE''s own CHOICE
+                // POINT, never in register `yn`.
+                //
+                // `wam_target.pl` reserves a permanent (Y) register for the
+                // barrier *after* deciding whether the clause needs an
+                // environment, so it happily emits `get_level Y1` in a clause
+                // with NO `Allocate` (e.g. satisfies/2''s `gte` clause). This
+                // runtime routes Y registers to the TOPMOST environment frame
+                // -- which, with no Allocate of our own, is the CALLER''s. The
+                // old register write therefore overwrote the caller''s
+                // permanent variable Y1 with a choice-point depth: a silent
+                // wrong answer (`pick/7` returned Ver = 2 instead of
+                // v(0,1,0)), not a crash. That is the §8 hazard in a shape the
+                // "string-named registers" defence does not cover.
+                //
+                // Two emission shapes (compile_if_then_else/7):
+                //   1. `get_level BarrierReg` immediately BEFORE the ITE
+                //      `try_me_else` -- park it as `pending_level` for that
+                //      TryMeElse to record on the guard CP it pushes.
+                //   2. `get_level CondBarrierReg` immediately AFTER the
+                //      try_me_else (only when the condition holds a top-level
+                //      `!`) -- attach it to the guard CP that already exists.
+                let depth = self.choice_points.len();
+                let next_is_try = matches!(self.code.get(self.pc),
+                    Some(Instruction::TryMeElse(_)) | Some(Instruction::TryMeElsePc(_)));
+                if next_is_try {
+                    self.pending_level = Some((yn.clone(), depth));
+                } else if let Some(cp) = self.choice_points.last_mut() {
+                    cp.levels.push((yn.clone(), depth));
+                }
                 self.pc += 1;
                 true'.
 
 wam_instruction_arm('Instruction::CutTo(yn)', Body) :-
-    Body = '                // get_reg (not get_reg_raw): Y registers live in the
-                // topmost env frame, where GetLevel stored the depth.
-                if let Some(v) = self.get_reg(yn) {
-                    if let Value::Integer(depth) = self.deref_var(&v) {
-                        self.choice_points.truncate(depth as usize);
+    Body = '                // Find the level `get_level yn` recorded, innermost
+                // first: the nearest choice point that carries this barrier
+                // name. Looking it up on the CP stack (rather than in a Y
+                // register) makes it per-activation for free -- two nested
+                // activations of the same predicate each hold their own
+                // barrier, and a callee can never clobber a caller''s.
+                //
+                // Nothing found means the guard was already cut away by an
+                // inner commit, in which case the stack is already at or below
+                // the level and truncating would be a no-op anyway.
+                let mut __target: Option<usize> = None;
+                for __cp in self.choice_points.iter().rev() {
+                    if let Some(&(_, __lvl)) =
+                        __cp.levels.iter().rev().find(|(__n, _)| __n == yn) {
+                        __target = Some(__lvl);
+                        break;
                     }
+                }
+                if let Some(__lvl) = __target {
+                    self.choice_points.truncate(__lvl);
                 }
                 self.pc += 1;
                 true'.
@@ -888,6 +960,28 @@ wam_instruction_arm('Instruction::BuiltinCall(op, arity)', Body) :-
 
 wam_instruction_arm('Instruction::BeginAggregate(agg_type, value_reg, result_reg)', Body) :-
     Body = '                self.aggregate_acc.clear();
+                // The continuation PC has to be known BEFORE the inner goal
+                // runs. It used to be recorded by EndAggregate -- but when the
+                // goal has ZERO solutions EndAggregate never executes, so the
+                // finalisation read a stale `aggregate_return_pc` (0 right
+                // after reset_query). pc = 0 means HALT, so
+                // `findall(X, fail, L)` reported SUCCESS and silently dropped
+                // every goal after it in the clause. Scan forward for the
+                // matching EndAggregate instead and carry its continuation in
+                // the aggregate frame. (self.pc is 1-based: code[pc-1] is the
+                // current instruction, so the scan starts at index self.pc.)
+                let mut __agg_depth = 0usize;
+                let mut __agg_ret_pc = 0usize;
+                for __i in self.pc..self.code.len() {
+                    match &self.code[__i] {
+                        Instruction::BeginAggregate(_, _, _) => { __agg_depth += 1; }
+                        Instruction::EndAggregate(_) => {
+                            if __agg_depth == 0 { __agg_ret_pc = __i + 2; break; }
+                            __agg_depth -= 1;
+                        }
+                        _ => {}
+                    }
+                }
                 self.choice_points.push(ChoicePoint {
                     next_pc: self.pc,
                     saved_args: self.save_regs(),
@@ -902,10 +996,22 @@ wam_instruction_arm('Instruction::BeginAggregate(agg_type, value_reg, result_reg
                             Value::Atom(value_reg.clone()),
                             Value::Atom(result_reg.clone()),
                         ],
-                        data: vec![],
+                        data: vec![Value::Integer(__agg_ret_pc as i64)],
                     }),
                     cut_barrier: self.cut_barrier,
+                    levels: Vec::new(),
                 });
+                // §9: "an inlined aggregate must raise the barrier above its
+                // own aggregate choice point so an inner `!` cannot strand the
+                // collection". findall/bagof/setof/aggregate_all inner goals
+                // are opaque cut scopes; without this, `findall(X, (d(X), !), L)`
+                // truncated the choice-point stack back to the enclosing
+                // clause''s barrier, DESTROYING the aggregate frame -- so
+                // EndAggregate''s backtrack never found it and the whole clause
+                // silently vanished. The pre-aggregate barrier is already
+                // stored on the frame above, and backtrack() restores it before
+                // the finalisation runs.
+                self.cut_barrier = self.choice_points.len();
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::EndAggregate(value_reg)', Body) :-
@@ -1012,11 +1118,15 @@ wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
                         heap_len: self.heap.len(),
                         builtin_state: None,
                         cut_barrier: self.cut_barrier,
+                        // Consume the level parked by an immediately preceding
+                        // GetLevel: this is the ITE guard choice point, so the
+                        // barrier belongs on it.
+                        levels: self.pending_level.take().into_iter().collect(),
                     });
                     if label.starts_with("L_ite_else_") {
                         self.pending_cut_barrier = None;
                     } else {
-                        self.pending_cut_barrier = Some(clause_barrier);
+                        self.pending_cut_barrier = Some((clause_barrier, self.pc + 1));
                     }
                     self.pc += 1; true
                 } else { false }'.
@@ -1032,8 +1142,9 @@ wam_instruction_arm('Instruction::TryMeElsePc(next_pc)', Body) :-
                     heap_len: self.heap.len(),
                     builtin_state: None,
                     cut_barrier: self.cut_barrier,
+                    levels: self.pending_level.take().into_iter().collect(),
                 });
-                self.pending_cut_barrier = Some(clause_barrier);
+                self.pending_cut_barrier = Some((clause_barrier, self.pc + 1));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::TrustMe', Body) :-
@@ -1045,7 +1156,7 @@ wam_instruction_arm('Instruction::RetryMeElse(label)', Body) :-
                     if let Some(cp) = self.choice_points.last_mut() {
                         cp.next_pc = next_pc;
                     }
-                    self.pending_cut_barrier = Some(self.choice_points.len().saturating_sub(1));
+                    self.pending_cut_barrier = Some((self.choice_points.len().saturating_sub(1), self.pc + 1));
                     self.pc += 1; true
                 } else { false }'.
 
@@ -1053,7 +1164,7 @@ wam_instruction_arm('Instruction::RetryMeElsePc(next_pc)', Body) :-
     Body = '                if let Some(cp) = self.choice_points.last_mut() {
                     cp.next_pc = *next_pc;
                 }
-                self.pending_cut_barrier = Some(self.choice_points.len().saturating_sub(1));
+                self.pending_cut_barrier = Some((self.choice_points.len().saturating_sub(1), self.pc + 1));
                 self.pc += 1; true'.
 
 % --- Indexing Instructions ---
@@ -1287,6 +1398,10 @@ compile_backtrack_to_rust(Code0) :-
             self.cp = cp.cp;
             self.cut_barrier = cp.cut_barrier;
             self.pending_cut_barrier = None;
+            // A GetLevel parked between the last CP and this failure never
+            // reached its TryMeElse; drop it rather than let the next
+            // choice point adopt a stale barrier.
+            self.pending_level = None;
 
             if let Some(state) = cp.builtin_state {
                 self.choice_points.pop();
@@ -1392,11 +1507,9 @@ compile_execute_arith_builtin_to_rust(Code) :-
                 } else { false }
             }
             "==/2" => {
-                let v1 = self.get_reg_raw("A1")
-                    .map(|v| self.deref_heap(&self.deref_var(&v)));
-                let v2 = self.get_reg_raw("A2")
-                    .map(|v| self.deref_heap(&self.deref_var(&v)));
-                if v1 == v2 { self.pc += 1; true } else { false }
+                let v1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let v2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.terms_identical(&v1, &v2) { self.pc += 1; true } else { false }
             }
             _ => false,
         }
@@ -2243,6 +2356,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                                     data: vec![Value::Integer(1)],
                                 }),
                                 cut_barrier: self.cut_barrier,
+                                levels: Vec::new(),
                             });
                         }
 
@@ -3161,6 +3275,25 @@ compile_execute_term_builtin_to_rust(Code) :-
         }
     }
 
+    /// Deref a builtin argument that is meant to be a LIST, normalising the
+    /// three spellings a list can arrive in (WAM_BACKEND_CONVENTIONS §1):
+    /// the native `Value::List`, the ATOM `"[]"` -- which is how
+    /// `put_constant []` delivers the empty list -- and a cons-functor chain
+    /// (`[|]/2` / `./2`).
+    ///
+    /// Builtins that matched only `Value::List` silently FAILED whenever the
+    /// argument was an empty list built by `put_constant`: `sort([], X)`,
+    /// `keysort([], X)`, `sum_list([], N)`, `include(G, [], X)` and every
+    /// other list builtin were unreachable in that (very common) case. A
+    /// non-list argument is returned deref-ed and unchanged, so callers keep
+    /// their existing "not a list" arms.
+    fn deref_list_arg(&self, value: &Value) -> Value {
+        match self.value_as_list(value) {
+            Some(items) => Value::List(items),
+            None => self.deref_heap(&self.deref_var(value)),
+        }
+    }
+
     fn pair_list_columns(
         &self,
         value: &Value,
@@ -4031,6 +4164,7 @@ compile_foreign_result_helpers_to_rust(Code) :-
                         data: results[idx + 1..].to_vec(),
                     }),
                     cut_barrier: saved_cut_barrier,
+                    levels: Vec::new(),
                 });
             }
             return true;
@@ -4778,6 +4912,7 @@ compile_fact_table_attempt_to_rust(Code) :-
                             data,
                         }),
                         cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
                     });
                 }
                 self.pc = cont_pc;
@@ -4792,6 +4927,7 @@ compile_fact_table_attempt_to_rust(Code) :-
 
 compile_resume_builtin_to_rust(Code) :-
     Code = '    fn resume_builtin(&mut self, state: BuiltinState) -> bool {
+        use std::cmp::Ordering;
         match state.name.as_str() {
             "fact_table" => {
                 // T9: resume a fact-table scan at the next candidate row. The
@@ -4835,6 +4971,26 @@ compile_resume_builtin_to_rust(Code) :-
                     }
                     "count" => Value::Integer(self.aggregate_acc.len() as i64),
                     "collect" => Value::List(self.aggregate_acc.clone()),
+                    // bagof/setof differ from findall in exactly two ways at
+                    // this (witness-free) level: they FAIL on an empty
+                    // solution set, and setof sorts + dedups. The 4-operand
+                    // begin_aggregate form that carries them used to fall
+                    // through to NoOp, so the aggregate frame was never pushed
+                    // and the whole clause failed.
+                    "bagof" | "bag" => {
+                        if self.aggregate_acc.is_empty() { return false; }
+                        Value::List(self.aggregate_acc.clone())
+                    }
+                    "setof" | "set" => {
+                        if self.aggregate_acc.is_empty() { return false; }
+                        let mut items: Vec<Value> = self.aggregate_acc.clone()
+                            .iter()
+                            .map(|v| self.deref_heap(&self.deref_var(v)))
+                            .collect();
+                        items.sort_by(|a, b| self.term_compare(a, b));
+                        items.dedup_by(|a, b| self.term_compare(a, b) == Ordering::Equal);
+                        Value::List(items)
+                    }
                     "max" => {
                         let mut best: Option<Value> = None;
                         for val in &self.aggregate_acc {
@@ -4896,7 +5052,13 @@ compile_resume_builtin_to_rust(Code) :-
                         self.put_reg(&result_reg, result);
                     }
                 }
-                self.pc = self.aggregate_return_pc;
+                // Prefer the continuation recorded by BeginAggregate (correct
+                // even when the inner goal had no solutions); fall back to the
+                // EndAggregate-recorded value for frames built elsewhere.
+                self.pc = match state.data.first() {
+                    Some(Value::Integer(n)) if *n > 0 => *n as usize,
+                    _ => self.aggregate_return_pc,
+                };
                 true
             }
             "member/2" => {
@@ -4925,6 +5087,7 @@ compile_resume_builtin_to_rust(Code) :-
                                 data: vec![Value::Integer((idx + 1) as i64)],
                             }),
                             cut_barrier: self.cut_barrier,
+                            levels: Vec::new(),
                         });
                     }
                     
@@ -5015,6 +5178,7 @@ compile_resume_builtin_to_rust(Code) :-
                             data: vec![Value::Integer((idx + 1) as i64)],
                         }),
                         cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
                     });
                 }
                 let a2 = match self.get_reg_raw("A2") {
@@ -5141,6 +5305,44 @@ compile_resume_builtin_to_rust(Code) :-
 compile_execute_ext_builtin_to_rust(Code) :-
     Code = '    /// Standard order class: Var < Number < Atom < Compound.
     /// Bool orders as its atom name; the empty list as the atom [].
+    /// Structural identity for `==/2` / `\\==/2`, with the same list aliasing
+    /// `unify` and `term_compare` already apply (WAM_BACKEND_CONVENTIONS §1):
+    /// the atom `[]` IS the empty list, a `[|]/2`/`./2` cons chain IS a native
+    /// list cell, and `Str("f/2", _)` IS `Str("f", _)`. Raw `Value: PartialEq`
+    /// made `L == []` FALSE whenever `L` came back from a builtin as the
+    /// native empty list -- e.g. after `findall(X, Goal, L)` with no solutions.
+    fn terms_identical(&self, a: &Value, b: &Value) -> bool {
+        let da = self.deref_heap(&self.deref_var(a));
+        let db = self.deref_heap(&self.deref_var(b));
+        self.identical_derefed(&da, &db)
+    }
+
+    fn identical_derefed(&self, da: &Value, db: &Value) -> bool {
+        match (da, db) {
+            (Value::List(l), Value::Atom(s)) | (Value::Atom(s), Value::List(l))
+                if l.is_empty() && s == "[]" => true,
+            (Value::List(l), Value::Str(f, args)) | (Value::Str(f, args), Value::List(l))
+                if self.is_cons_functor(f) && args.len() == 2 && !l.is_empty() => {
+                self.terms_identical(&l[0], &args[0])
+                    && self.terms_identical(&Value::List(l[1..].to_vec()), &args[1])
+            }
+            (Value::List(l1), Value::List(l2)) => {
+                l1.len() == l2.len()
+                    && l1.iter().zip(l2.iter()).all(|(x, y)| self.terms_identical(x, y))
+            }
+            (Value::Str(f1, a1), Value::Str(f2, a2)) => {
+                if a1.len() != a2.len() { return false; }
+                let same_functor = f1 == f2
+                    || (self.is_cons_functor(f1) && self.is_cons_functor(f2))
+                    || Self::display_functor_name(f1, a1.len())
+                        == Self::display_functor_name(f2, a2.len());
+                same_functor
+                    && a1.iter().zip(a2.iter()).all(|(x, y)| self.terms_identical(x, y))
+            }
+            _ => da == db,
+        }
+    }
+
     fn term_order_class(v: &Value) -> u8 {
         match v {
             Value::Unbound(_) | Value::Ref(_) | Value::Uninit => 0,
@@ -5324,6 +5526,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     data: vec![Value::Integer(n + 1), Value::Integer(high)],
                 }),
                 cut_barrier: self.cut_barrier,
+                levels: Vec::new(),
             });
         }
         if self.unify(x_raw, &Value::Integer(n)) { self.pc += 1; true } else { false }
@@ -5347,6 +5550,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     data: vec![Value::Integer((idx + 1) as i64)],
                 }),
                 cut_barrier: self.cut_barrier,
+                levels: Vec::new(),
             });
         }
         let mut rest: Vec<Value> = items.to_vec();
@@ -5374,6 +5578,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     data: vec![Value::Integer((idx + 1) as i64)],
                 }),
                 cut_barrier: self.cut_barrier,
+                levels: Vec::new(),
             });
         }
         if self.unify(n_raw, &Value::Integer(idx as i64 + base))
@@ -5401,6 +5606,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     data: vec![Value::Integer((split + 1) as i64)],
                 }),
                 cut_barrier: self.cut_barrier,
+                levels: Vec::new(),
             });
         }
         let prefix: String = chars[..split].iter().collect();
@@ -5428,9 +5634,9 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 if unified { false } else { self.pc += 1; true }
             }
             "\\\\==/2" => {
-                let v1 = self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v)));
-                let v2 = self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v)));
-                if v1 != v2 { self.pc += 1; true } else { false }
+                let v1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let v2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.terms_identical(&v1, &v2) { false } else { self.pc += 1; true }
             }
             "@</2" | "@=</2" | "@>/2" | "@>=/2" => {
                 let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
@@ -5457,7 +5663,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 if self.unify(&a1, &Value::Atom(sym.to_string())) { self.pc += 1; true } else { false }
             }
             "msort/2" | "sort/2" => {
-                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
@@ -5495,7 +5701,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     _ => return false,
                 };
                 let list = match self.get_reg_raw("A3")
-                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    .map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
@@ -5531,7 +5737,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 }
             }
             "keysort/2" => {
-                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
@@ -5612,7 +5818,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 // First element that unifies wins, deterministically;
                 // failed attempts are unwound, the winning binding kept.
                 let x = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-                let list = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
@@ -5624,7 +5830,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 false
             }
             "last/2" => {
-                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) if !items.is_empty() => items,
                     _ => return false,
                 };
@@ -5635,7 +5841,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
             "nth0/3" | "nth1/3" => {
                 let base: i64 = if op == "nth1/3" { 1 } else { 0 };
                 let n_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-                let list = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
@@ -5668,7 +5874,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
             "delete/3" => {
                 // Keep elements that do NOT unify with A2 (trial-unify,
                 // always unwound — matches the no-residual-bindings use).
-                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
@@ -5684,11 +5890,11 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 if self.unify(&a3, &Value::List(kept)) { self.pc += 1; true } else { false }
             }
             "subtract/3" => {
-                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
-                let excluded = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let excluded = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
@@ -5700,12 +5906,12 @@ compile_execute_ext_builtin_to_rust(Code) :-
             }
             "intersection/3" => {
                 let left = match self.get_reg_raw("A1")
-                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    .map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let right = match self.get_reg_raw("A2")
-                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    .map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
@@ -5726,12 +5932,12 @@ compile_execute_ext_builtin_to_rust(Code) :-
             }
             "union/3" => {
                 let left = match self.get_reg_raw("A1")
-                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    .map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let right = match self.get_reg_raw("A2")
-                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    .map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
@@ -5753,7 +5959,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
             }
             "list_to_set/2" => {
                 let items = match self.get_reg_raw("A1")
-                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    .map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
@@ -5774,7 +5980,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
             }
             "select/3" => {
                 let x_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-                let list = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) if !items.is_empty() => items,
                     _ => return false,
                 };
@@ -5843,7 +6049,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 }
             }
             "sum_list/2" | "sumlist/2" | "max_list/2" | "min_list/2" => {
-                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
@@ -6090,7 +6296,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                     return if self.unify(&a2, &Value::List(chars)) { self.pc += 1; true } else { false };
                 }
-                let list = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
@@ -6153,7 +6359,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 }
             }
             "atomic_list_concat/2" => {
-                let items = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let items = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
@@ -6377,6 +6583,38 @@ compile_execute_meta_builtin_to_rust(Code) :-
     Code = '    /// Execute meta-predicates that require goal evaluation.
     fn execute_meta_builtin(&mut self, op: &str, _arity: usize) -> bool {
         match op {
+            "call/1" | "call/2" | "call/3" | "call/4" | "call/5" | "call/6"
+            | "call/7" | "call/8" => {
+                // §9: the goal of call/1 is an OPAQUE cut scope -- a `!` inside
+                // may prune only the call''s own choice points. call_goal_once
+                // sets the barrier to the scope entry depth and drops anything
+                // the goal leaves behind (first-solution meta-call).
+                //
+                // Before this arm existed the runtime had NO call/N at all:
+                // `execute call/1` found no label and simply failed, so every
+                // clause ending in call/1 was dead.
+                let base = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                let extra: Vec<Value> = (2.._arity + 1)
+                    .map(|i| self.get_reg_raw(&format!("A{}", i))
+                        .map(|v| self.deref_var(&v))
+                        .unwrap_or(Value::Uninit))
+                    .collect();
+                let goal = if extra.is_empty() {
+                    base
+                } else {
+                    match self.extend_goal(&base, &extra) {
+                        Some(g) => g,
+                        None => return false,
+                    }
+                };
+                let saved_pc = self.pc;
+                if self.call_goal_once(&goal) {
+                    self.pc = saved_pc + 1;
+                    true
+                } else { false }
+            }
             "\\\\+/1" => {
                 // Negation-as-failure using WAM choice point mechanism.
                 // Push a choice point that will succeed if the goal fails.
@@ -6419,6 +6657,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                                 data: vec![],
                             }),
                             cut_barrier: self.cut_barrier,
+                            levels: Vec::new(),
                         });
 
                         let pred_key = format!("{}", functor);
@@ -6603,7 +6842,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 let goal = self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v)))
                     .unwrap_or(Value::Uninit);
-                let items = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let items = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
@@ -6627,7 +6866,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 let goal = self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v)))
                     .unwrap_or(Value::Uninit);
-                let items = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let items = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
@@ -6657,12 +6896,12 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 let goal = self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v)))
                     .unwrap_or(Value::Uninit);
-                let l1 = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let l1 = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let l2: Option<Vec<Value>> = if two_lists {
-                    match self.get_reg_raw("A3").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    match self.get_reg_raw("A3").map(|v| self.deref_list_arg(&v)) {
                         Some(Value::List(items)) if items.len() == l1.len() => Some(items),
                         _ => return false,
                     }
@@ -6720,7 +6959,13 @@ compile_execute_meta_builtin_to_rust(Code) :-
     /// commit per element).
     fn call_goal_once(&mut self, goal: &Value) -> bool {
         let cp_depth = self.choice_points.len();
+        // §9 barrier-raising context: a meta-called goal is an opaque cut
+        // scope, so `!` inside it prunes back to the scope entry and no
+        // further. Without this the cut escaped into the enclosing clause.
+        let saved_barrier = self.cut_barrier;
+        self.cut_barrier = cp_depth;
         let ok = self.call_goal_value(goal);
+        self.cut_barrier = saved_barrier;
         if self.choice_points.len() > cp_depth {
             self.choice_points.truncate(cp_depth);
         }
@@ -6730,8 +6975,25 @@ compile_execute_meta_builtin_to_rust(Code) :-
     /// Predicates the shared WAM compiler emits as Call/Execute (no
     /// is_builtin_pred entry) but that this runtime implements as
     /// builtins. Mirrors the F# isIsoMetaBuiltin routing.
+    ///
+    /// No longer a gate: Call/Execute now fall back to the whole builtin
+    /// table (WAM_BACKEND_CONVENTIONS §7). Kept as documentation of the
+    /// three names that used to be the ONLY ones routed.
+    #[allow(dead_code)]
     fn is_iso_meta_builtin(pred: &str) -> bool {
         matches!(pred, "catch/3" | "throw/1" | "succ/2")
+    }
+
+    /// §7: "a builtin the runtime genuinely does not implement should still
+    /// fail loudly enough to find". A `call`/`execute` of a name with no
+    /// label, no dynamic clauses, no foreign registration and no builtin is
+    /// an undefined predicate. It cannot be distinguished at runtime from a
+    /// builtin that merely FAILED, so the diagnostic is opt-in via
+    /// UW_WAM_WARN_UNKNOWN rather than printed on every ordinary failure.
+    fn warn_unresolved_goal(form: &str, pred: &str) {
+        if std::env::var_os("UW_WAM_WARN_UNKNOWN").is_some() {
+            eprintln!("[wam_rust] {} of unresolved goal {} failed", form, pred);
+        }
     }
 
     /// Meta-call a goal VALUE (catch/3 goal and recovery, callable
@@ -6744,6 +7006,69 @@ compile_execute_meta_builtin_to_rust(Code) :-
         match goal {
             Value::Atom(name) if name == "true" => true,
             Value::Atom(name) if name == "fail" || name == "false" => false,
+            Value::Atom(name) if name == "!" => {
+                // Cut inside a meta-call: local to the enclosing opaque scope,
+                // whose entry depth call_goal_once parked in cut_barrier.
+                self.choice_points.truncate(self.cut_barrier);
+                true
+            }
+            Value::Str(f, args) if args.len() == 2
+                && Self::display_functor_name(f, 2) == "," => {
+                let a = self.deref_heap(&self.deref_var(&args[0]));
+                let b = self.deref_heap(&self.deref_var(&args[1]));
+                let depth = self.choice_points.len();
+                if !self.call_goal_value(&a) { return false; }
+                if self.call_goal_value(&b) { return true; }
+                // The right conjunct failed. If the left one left choice
+                // points behind we would have to retry it -- which this
+                // structural meta-call cannot do (the alternatives live in the
+                // interpreter, not in this walk). Refuse loudly rather than
+                // report a first-solution answer as if it were the only one.
+                if self.choice_points.len() > depth {
+                    eprintln!("[wam_rust] call/1: cannot retry a nondeterministic \
+left conjunct; conjunction reported as failed (first-solution meta-call)");
+                }
+                false
+            }
+            Value::Str(f, args) if args.len() == 2
+                && Self::display_functor_name(f, 2) == ";" => {
+                let a = self.deref_heap(&self.deref_var(&args[0]));
+                // ( C -> T ; E ): the condition is its own opaque scope.
+                if let Value::Str(cf, cargs) = &a {
+                    if cargs.len() == 2 && Self::display_functor_name(cf, 2) == "->" {
+                        let cond = self.deref_heap(&self.deref_var(&cargs[0]));
+                        let then = self.deref_heap(&self.deref_var(&cargs[1]));
+                        let els = self.deref_heap(&self.deref_var(&args[1]));
+                        let mark = self.trail.len();
+                        if self.call_goal_once(&cond) {
+                            return self.call_goal_value(&then);
+                        }
+                        self.unwind_trail_to(mark);
+                        return self.call_goal_value(&els);
+                    }
+                }
+                let mark = self.trail.len();
+                if self.call_goal_value(&a) { return true; }
+                self.unwind_trail_to(mark);
+                let b = self.deref_heap(&self.deref_var(&args[1]));
+                self.call_goal_value(&b)
+            }
+            Value::Str(f, args) if args.len() == 2
+                && Self::display_functor_name(f, 2) == "->" => {
+                let cond = self.deref_heap(&self.deref_var(&args[0]));
+                let then = self.deref_heap(&self.deref_var(&args[1]));
+                if self.call_goal_once(&cond) {
+                    self.call_goal_value(&then)
+                } else { false }
+            }
+            Value::Str(f, args) if args.len() == 1
+                && Self::display_functor_name(f, 1) == "\\\\+" => {
+                let inner = self.deref_heap(&self.deref_var(&args[0]));
+                let mark = self.trail.len();
+                let ok = self.call_goal_once(&inner);
+                self.unwind_trail_to(mark);
+                !ok
+            }
             Value::Atom(name) => {
                 let key = format!("{}/0", name);
                 self.call_goal_key(&key, 0, &[])
@@ -7830,6 +8155,29 @@ wam_line_to_rust_instr(["begin_aggregate", Type, ValueReg, ResultReg], _, _, Rus
     format(string(Rust),
         'Instruction::BeginAggregate("~w".to_string(), "~w".to_string(), "~w".to_string())',
         [CType, CValueReg, CResultReg]).
+% bagof/setof carry a 4th operand: the ISO free-witness registers as
+% "'Y1;Y2'" (see aggregate_witness_clause/5 in wam_target.pl). An EMPTY
+% witness list means bagof/setof behave as collect-that-fails-when-empty
+% (setof additionally sorts), which the Rust aggregate frame implements.
+% A NON-empty witness list means ISO grouping — one solution per distinct
+% witness binding — which this runtime does not implement; refuse to
+% compile rather than emit a silently ungrouped answer.
+wam_line_to_rust_instr(["begin_aggregate", Type, ValueReg, ResultReg, Witness],
+                       PredIndicator, _, Rust) :-
+    clean_comma(Type, CType),
+    clean_comma(ValueReg, CValueReg),
+    clean_comma(ResultReg, CResultReg),
+    clean_comma(Witness, CWitness0),
+    rust_strip_witness_quotes(CWitness0, CWitness),
+    (   CWitness == ""
+    ->  format(string(Rust),
+            'Instruction::BeginAggregate("~w".to_string(), "~w".to_string(), "~w".to_string())',
+            [CType, CValueReg, CResultReg])
+    ;   throw(error(unsupported_wam_instruction(
+                        bagof_setof_witness_grouping(CType, CWitness)),
+                    context(wam_rust_target:wam_line_to_rust_instr/4,
+                            PredIndicator)))
+    ).
 wam_line_to_rust_instr(["end_aggregate", ValueReg], _, _, Rust) :-
     clean_comma(ValueReg, CValueReg),
     format(string(Rust),
@@ -7912,6 +8260,16 @@ wam_line_to_rust_instr(["switch_on_constant_a2"|Entries], _, _, Rust) :-
 wam_line_to_rust_instr(Parts, _, _, Rust) :-
     atomic_list_concat(Parts, ' ', Joined),
     format(string(Rust), 'Instruction::NoOp /* unknown: ~w */', [Joined]).
+
+%% rust_strip_witness_quotes(+Raw, -Inner)
+%  "'Y1;Y2'" -> "Y1;Y2"; "''" -> "".
+rust_strip_witness_quotes(Raw, Inner) :-
+    text_to_string(Raw, S0),
+    (   string_concat("'", Rest, S0),
+        string_concat(Mid, "'", Rest)
+    ->  Inner = Mid
+    ;   Inner = S0
+    ).
 
 %% rust_const_value(+Const, -RustValueExpr)
 %  Render a WAM constant token as the right Value variant. Numeric
@@ -8736,8 +9094,19 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         % LLVM target made in M17). The Rust runtime now implements
         % both instructions.
         ( memberchk(ite_use_y_level(_), Options)
-        -> WamOptions = Options
-        ;  WamOptions = [ite_use_y_level(true)|Options]
+        -> WamOptions0 = Options
+        ;  WamOptions0 = [ite_use_y_level(true)|Options]
+        ),
+        % Inline bagof/3 and setof/3 into begin_aggregate/end_aggregate the
+        % same way findall/3 already is (the JS target has always compiled
+        % with this on). Without it they reached the backend as
+        % `execute bagof/3` -- a name with no label and no runtime builtin,
+        % i.e. an unconditional failure. The aggregate frame implements the
+        % witness-free semantics (fail on empty; setof sorts and dedups);
+        % a non-empty ISO witness list refuses to compile, loudly.
+        ( memberchk(inline_bagof_setof(_), WamOptions0)
+        -> WamOptions = WamOptions0
+        ;  WamOptions = [inline_bagof_setof(true)|WamOptions0]
         ),
         wam_target:compile_predicate_to_wam(Module:Pred/Arity, WamOptions, WamCode),
         (   option(foreign_lowering(ForeignSpec), Options),

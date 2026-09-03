@@ -578,6 +578,7 @@
                             data: vec![Value::Integer((idx + 1) as i64), Value::Integer(cont_pc as i64)],
                         }),
                         cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
                     });
                 }
                 if self.dynamic_clause_has_body(&clause) {
@@ -594,6 +595,7 @@
                             data: vec![Value::Integer(1), Value::Integer(cont_pc as i64)],
                         }),
                         cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
                     });
                 }
                 self.pc = cont_pc;
@@ -705,6 +707,7 @@
                     data: vec![Value::Integer((solution_idx + 1) as i64), Value::Integer(cont_pc as i64)],
                 }),
                 cut_barrier: self.cut_barrier,
+                levels: Vec::new(),
             });
             self.pc = cont_pc;
             return true;
@@ -856,6 +859,7 @@
                             ],
                         }),
                         cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
                     });
                 }
                 self.pc = cont_pc;
@@ -946,6 +950,7 @@
                             ],
                         }),
                         cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
                     });
                 }
                 self.pc = cont_pc;
@@ -1016,6 +1021,7 @@
                             data: vec![Value::Integer(idx as i64), Value::Integer(cont_pc as i64)],
                         }),
                         cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
                     });
                 }
                 self.pc = cont_pc;

@@ -381,6 +381,20 @@ pub struct ChoicePoint {
     pub builtin_state: Option<BuiltinState>,
     /// Saved cut barrier for backtracking.
     pub cut_barrier: usize,
+    /// If-then-else barrier levels captured by `get_level Yn` (name -> the
+    /// choice-point depth at the moment the level was taken).
+    ///
+    /// The shared WAM compiler reserves a *permanent* (Y) register for an ITE
+    /// barrier even in clauses it compiles with NO `Allocate` (see
+    /// `compile_if_then_else/7` in `wam_target.pl`: the barrier Y is reserved
+    /// after the has-environment decision). Because this runtime routes Y
+    /// registers to the TOPMOST environment frame, such a `get_level Yn` used
+    /// to overwrite the CALLER's permanent variable Yn -- the §8 hazard, in a
+    /// form the "string-named registers" defence does not cover. Keeping the
+    /// level on the ITE's own choice point instead means it never touches a
+    /// register, is inherently per-activation, and is saved/restored by
+    /// backtracking for free.
+    pub levels: Vec<(String, usize)>,
 }
 
 /// State for non-deterministic builtins
@@ -596,7 +610,15 @@ pub struct WamState {
     /// Pending barrier captured before a predicate clause choice point was
     /// pushed. The following Allocate consumes it so neck cuts commit to the
     /// current clause instead of leaving the predicate alternative alive.
-    pub pending_cut_barrier: Option<usize>,
+    /// Paired with the PC of the instruction that must consume it (the
+    /// clause's Allocate, always the instruction right after the
+    /// TryMeElse/RetryMeElse that parked it). Without the PC the value leaked
+    /// out of Allocate-less clauses -- see the Allocate arm.
+    pub pending_cut_barrier: Option<(usize, usize)>,
+    /// If-then-else barrier level taken by `get_level Yn` immediately BEFORE
+    /// the ITE's `try_me_else`; consumed by that TryMeElse, which stores it on
+    /// the guard choice point it pushes. See `ChoicePoint::levels`.
+    pub pending_level: Option<(String, usize)>,
     /// Step counter for limiting exploration on dense cyclic graphs.
     pub step_count: u64,
     /// Maximum steps per query (0 = unlimited).
@@ -727,6 +749,7 @@ impl WamState {
             var_counter: 0,
             cut_barrier: 0,
             pending_cut_barrier: None,
+            pending_level: None,
             step_count: 0,
             step_limit: 0,
             backtrack_count: 0,
@@ -2368,6 +2391,7 @@ impl WamState {
         self.var_counter = 0;
         self.cut_barrier = 0;
         self.pending_cut_barrier = None;
+        self.pending_level = None;
         self.step_count = 0;
         self.backtrack_count = 0;
         self.aggregate_acc.clear();
