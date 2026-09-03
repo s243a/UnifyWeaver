@@ -98,6 +98,14 @@ type ChoicePoint struct {
 	BetweenCurrent   int64
 	BetweenHigh      int64
 	BetweenReg       int
+	YSaveLen         int
+	// PendingB0 / CutB0Stack / YSaves snapshot the call-frame regime
+	// (docs/WAM_BACKEND_CONVENTIONS.md §9). Restore on backtrack so a
+	// Proceed that already popped does not extra-pop on the retry, and
+	// so a neck-cut still sees the B0 that was live at this CP.
+	PendingB0    int
+	CutB0Stack   []int
+	YSaves       [][100]Value
 }
 
 type EnvFrame struct {
@@ -204,10 +212,15 @@ type WamState struct {
 	CP           int
 	// PendingB0: choicepoint-stack height captured by Call/Execute just
 	// before transferring to a user predicate (BEFORE its try_me_else
-	// pushes the clause-chain CP). Allocate copies it into EnvFrame.CutB0
-	// so a plain cut (!/0) truncates back to the callee's entry level --
-	// its own clause alternatives, not a caller's choicepoint.
+	// pushes the clause-chain CP). This is the WAM B0 / JS cut_barrier.
+	// Allocate copies it into EnvFrame.CutB0; !/0 truncates to
+	// PendingB0 (not the caller's env), so a no-Allocate neck-cut
+	// still leaves the caller's alternatives.
 	PendingB0    int
+	// CutB0Stack is the saved-B0 stack (JS cut_stack). Call pushes the
+	// caller's PendingB0; Proceed pops it. Execute rebases PendingB0
+	// WITHOUT pushing — LCO reuses the caller's slot.
+	CutB0Stack   []int
 	// Regs holds A/X/Y registers in a single flat array.
 	//   * A1..A8: indices 0..7 (argument registers)
 	//   * X-regs: 8..199  (clause-local temporaries)
@@ -234,6 +247,12 @@ type WamState struct {
 	Trail        []TrailEntry
 	TrailLen     int
 	ChoicePoints []ChoicePoint
+	// YSaves: caller Y-register snapshots pushed by Call (not Execute)
+	// and popped by Proceed. Y slots are global (Regs[200..299]), so a
+	// callee that writes Y without Allocate (GetLevel, GetVariable Y1)
+	// would otherwise clobber the caller's live Y. This is the
+	// Allocate-less half of A2; X101≡Y1 aliasing is unchanged.
+	YSaves       [][100]Value
 	Halted       bool
 	CurrentStruct *Structure
 	CurrentList   *List
@@ -597,7 +616,7 @@ func (vm *WamState) LoRestoreClause(snap ClauseSnapshot) {
 
 func (vm *WamState) pushChoicePoint(nextPC int, arity int) {
 	_ = arity
-	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+	cp := ChoicePoint{
 		NextPC:    nextPC,
 		CP:        vm.CP,
 		E:         vm.E,
@@ -605,12 +624,14 @@ func (vm *WamState) pushChoicePoint(nextPC int, arity int) {
 		SavedRegs: vm.snapshotAllRegs(),
 		HeapTop:   vm.HeapLen,
 		TrailMark: vm.TrailLen,
-	})
+	}
+	vm.fillBarrier(&cp)
+	vm.ChoicePoints = append(vm.ChoicePoints, cp)
 }
 
 func (vm *WamState) pushIndexedChoicePoint(pcs []int, arity int) {
 	_ = arity
-	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+	cp := ChoicePoint{
 		CP:        vm.CP,
 		E:         vm.E,
 		StackLen:  len(vm.Stack),
@@ -618,7 +639,92 @@ func (vm *WamState) pushIndexedChoicePoint(pcs []int, arity int) {
 		HeapTop:   vm.HeapLen,
 		TrailMark: vm.TrailLen,
 		IndexedClausePCs: append([]int(nil), pcs...),
-	})
+	}
+	vm.fillBarrier(&cp)
+	vm.ChoicePoints = append(vm.ChoicePoints, cp)
+}
+
+func (vm *WamState) copyCutB0Stack() []int {
+	if len(vm.CutB0Stack) == 0 {
+		return nil
+	}
+	out := make([]int, len(vm.CutB0Stack))
+	copy(out, vm.CutB0Stack)
+	return out
+}
+
+func (vm *WamState) copyYSaveStack() [][100]Value {
+	if len(vm.YSaves) == 0 {
+		return nil
+	}
+	out := make([][100]Value, len(vm.YSaves))
+	copy(out, vm.YSaves)
+	return out
+}
+
+func (vm *WamState) fillBarrier(cp *ChoicePoint) {
+	cp.PendingB0 = vm.PendingB0
+	cp.CutB0Stack = vm.copyCutB0Stack()
+	cp.YSaves = vm.copyYSaveStack()
+	cp.YSaveLen = len(vm.YSaves)
+}
+
+func (vm *WamState) restoreBarrier(cp *ChoicePoint) {
+	vm.PendingB0 = cp.PendingB0
+	if cp.CutB0Stack != nil {
+		vm.CutB0Stack = make([]int, len(cp.CutB0Stack))
+		copy(vm.CutB0Stack, cp.CutB0Stack)
+	} else {
+		vm.CutB0Stack = nil
+	}
+	if cp.YSaves != nil {
+		vm.YSaves = make([][100]Value, len(cp.YSaves))
+		copy(vm.YSaves, cp.YSaves)
+	} else {
+		vm.YSaves = nil
+	}
+}
+
+func (vm *WamState) pushYSave() {
+	var s [100]Value
+	copy(s[:], vm.Regs[200:300])
+	vm.YSaves = append(vm.YSaves, s)
+}
+
+func (vm *WamState) popYSave() {
+	n := len(vm.YSaves)
+	if n == 0 {
+		return
+	}
+	s := vm.YSaves[n-1]
+	vm.YSaves = vm.YSaves[:n-1]
+	copy(vm.Regs[200:300], s[:])
+}
+
+// pushCallFrame is WAM Call: snapshot caller Ys and B0, then B0 <- B.
+func (vm *WamState) pushCallFrame() {
+	vm.CutB0Stack = append(vm.CutB0Stack, vm.PendingB0)
+	vm.pushYSave()
+	vm.PendingB0 = len(vm.ChoicePoints)
+}
+
+// enterExecute is WAM Execute: B0 <- B without pushing. The callee
+// reuses the caller's cut_stack/Y-save slot (its Proceed pops the
+// Call that entered this activation) but gets its own barrier, so a
+// neck-cut cannot wipe the caller's clause alternatives.
+func (vm *WamState) enterExecute() {
+	vm.PendingB0 = len(vm.ChoicePoints)
+}
+
+func (vm *WamState) popCallFrame() {
+	vm.popYSave()
+	n := len(vm.CutB0Stack)
+	if n == 0 {
+		vm.PendingB0 = 0
+		return
+	}
+	vm.PendingB0 = vm.CutB0Stack[n-1]
+	vm.CutB0Stack = vm.CutB0Stack[:n-1]
 }
 
 func (vm *WamState) popEnvFrame() *EnvFrame {
@@ -710,6 +816,7 @@ func (vm *WamState) Clone() *WamState {
 		Input:        vm.Input,
 		NextStreamID: vm.NextStreamID,
 		PendingB0:    vm.PendingB0,
+		CutB0Stack:   vm.copyCutB0Stack(),
 		// Carry MaxYReg so the sub-VM's snapshotAllRegs sees the
 		// same Y-reg high-water mark as the parent (sub.Regs is a
 		// value-copy of parent.Regs and therefore *contains* those
@@ -726,6 +833,12 @@ func (vm *WamState) Clone() *WamState {
 	copy(newState.Stack, vm.Stack)
 	copy(newState.Trail, vm.Trail)
 	copy(newState.ChoicePoints, vm.ChoicePoints)
+	if len(vm.YSaves) > 0 {
+		newState.YSaves = append([][100]Value(nil), vm.YSaves...)
+	}
+	if len(vm.CutB0Stack) > 0 {
+		newState.CutB0Stack = append([]int(nil), vm.CutB0Stack...)
+	}
 	return newState
 }
 
@@ -2677,14 +2790,12 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "fail/0":
 		return false
 	case "!/0":
-		limit := 0
-		if env := vm.peekEnvFrame(); env != nil {
-			// CutB0 = call-time choicepoint height, so the cut removes this
-			// predicate's own clause alternatives but not a caller's CP.
-			// (B0 is allocate-time and one too high -- it would leave
-			// sibling clauses uncut, making the cut a no-op.)
-			limit = env.CutB0
-		}
+		// Cut is a barrier at PendingB0 (WAM B0), never a stack wipe.
+		// PendingB0 is set by Call AND Execute (docs/WAM_BACKEND_CONVENTIONS.md §9).
+		// A no-Allocate callee has no EnvFrame; using peekEnvFrame().CutB0
+		// would cut to the caller's Allocate-time height and steal its
+		// alternatives (cut-semantics p01).
+		limit := vm.PendingB0
 		if limit < 0 {
 			limit = 0
 		}
@@ -2772,7 +2883,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return false
 		}
 		if lo.Val < hi.Val {
-			vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+			cp := ChoicePoint{
 				ResumePC:       vm.PC + 1,
 				CP:             vm.CP,
 				E:              vm.E,
@@ -2784,7 +2895,9 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 				BetweenCurrent: lo.Val + 1,
 				BetweenHigh:    hi.Val,
 				BetweenReg:     2,
-			})
+			}
+			vm.fillBarrier(&cp)
+			vm.ChoicePoints = append(vm.ChoicePoints, cp)
 		}
 		return vm.Unify(arg3, &Integer{Val: lo.Val})
 	case "atom_number/2":
@@ -3143,7 +3256,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			if vm.Unify(arg1, head) {
 				tail = vm.deref(tail)
 				if !isEmptyListValue(tail) {
-					vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+					cp := ChoicePoint{
 						ResumePC: vm.PC + 1,
 						CP:       vm.CP,
 						E:        vm.E,
@@ -3152,7 +3265,9 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 						HeapTop:   vm.HeapLen,
 						TrailMark: mark,
 						MemberTail: tail,
-					})
+					}
+					vm.fillBarrier(&cp)
+					vm.ChoicePoints = append(vm.ChoicePoints, cp)
 				}
 				return true
 			}
@@ -3203,7 +3318,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 				continue
 			}
 			if idx+1 < len(solutions) {
-				vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+				cp := ChoicePoint{
 					ResumePC:      resumePC,
 					CP:            vm.CP,
 					E:             vm.E,
@@ -3212,7 +3327,9 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 					HeapTop:       heapTop,
 					TrailMark:     trailMark,
 					SelectResults: append([]SelectSolution(nil), solutions[idx+1:]...),
-				})
+				}
+				vm.fillBarrier(&cp)
+				vm.ChoicePoints = append(vm.ChoicePoints, cp)
 			}
 			return true
 		}
@@ -3791,11 +3908,22 @@ func (vm *WamState) invokeAtPC(pc int, args []Value, cutFloor int) bool {
 	for i, a := range args {
 		vm.putReg(i, a)
 	}
-	vm.PendingB0 = len(vm.ChoicePoints)
+	savedPending := vm.PendingB0
+	savedCutLen := len(vm.CutB0Stack)
+	yStart := len(vm.YSaves)
+	vm.pushCallFrame()
 	vm.CP = 0
 	vm.PC = pc
 	vm.Halted = false
 	ok := vm.runUntilHalt(cutFloor)
+	if len(vm.YSaves) > yStart {
+		copy(vm.Regs[200:300], vm.YSaves[yStart][:])
+		vm.YSaves = vm.YSaves[:yStart]
+	}
+	if len(vm.CutB0Stack) > savedCutLen {
+		vm.CutB0Stack = vm.CutB0Stack[:savedCutLen]
+	}
+	vm.PendingB0 = savedPending
 	vm.Halted = savedHalted
 	vm.PC = savedPC
 	vm.CP = savedCP
@@ -3969,6 +4097,7 @@ func (vm *WamState) backtrack() bool {
     // in-place, removing the explicit `vm.ChoicePoints[topIdx] = cp`
     // write-back the value-copy version needed.
     cp := &vm.ChoicePoints[topIdx]
+    vm.restoreBarrier(cp)
     if len(cp.IndexedClausePCs) > 0 {
         vm.unwindTrailTo(cp.TrailMark)
         vm.restoreSavedRegs(cp.SavedRegs)

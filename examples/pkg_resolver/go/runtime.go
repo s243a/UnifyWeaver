@@ -416,7 +416,7 @@ func (vm *WamState) Step(instr Instruction) bool {
     case *Call:
         vm.CP = vm.PC + 1
         if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
-            vm.PendingB0 = len(vm.ChoicePoints)
+            vm.pushCallFrame()
             vm.PC = pc
             return true
         }
@@ -471,12 +471,12 @@ func (vm *WamState) Step(instr Instruction) bool {
         return vm.executeIndexedAtomFact2(i.Pred)
     case *CallPc:
         vm.CP = vm.PC + 1
-        vm.PendingB0 = len(vm.ChoicePoints)
+        vm.pushCallFrame()
         vm.PC = i.TargetPC
         return true
     case *Execute:
         if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
-            vm.PendingB0 = len(vm.ChoicePoints)
+            vm.enterExecute()
             vm.PC = pc
             return true
         }
@@ -485,7 +485,7 @@ func (vm *WamState) Step(instr Instruction) bool {
         }
         return vm.executeIndexedAtomFact2(i.Pred)
     case *ExecutePc:
-        vm.PendingB0 = len(vm.ChoicePoints)
+        vm.enterExecute()
         vm.PC = i.TargetPC
         return true
     case *Jump:
@@ -522,6 +522,7 @@ func (vm *WamState) Step(instr Instruction) bool {
         vm.PC++
         return true
     case *Proceed:
+        vm.popCallFrame()
         if vm.CP > 0 {
             vm.PC = vm.CP
         } else {
@@ -539,6 +540,7 @@ func (vm *WamState) Step(instr Instruction) bool {
         if !result {
             return false
         }
+        vm.popCallFrame()
         if vm.CP > 0 {
             vm.PC = vm.CP
         } else {
@@ -1547,6 +1549,10 @@ func (vm *WamState) finishStreamResults(predKey string, resultRegs []int, result
                 ForeignPredKey: predKey,
                 ForeignResultRegs: append([]int(nil), resultRegs...),
                 ForeignResults: remaining,
+                PendingB0: vm.PendingB0,
+                CutB0Stack: vm.copyCutB0Stack(),
+                YSaves: vm.copyYSaveStack(),
+                YSaveLen: len(vm.YSaves),
             })
         }
         vm.PC = resumePC
