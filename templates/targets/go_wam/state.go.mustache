@@ -314,9 +314,19 @@ type WamState struct {
 // variable. The 1000 floor reserves the X-register-slot range below
 // (which earlier code used as Idx values) so existing snapshots /
 // trail entries that happened to pre-date this change can't collide.
+//
+// Drivers (the uw-resolve JSON shim, probe mains) mint output
+// Unbounds at Idx 10000+arity. A long query used to walk NextVarId
+// from 1000 through that window (~9000 PutVariable/SetVariable
+// cells) and alias Bindings[10002] with resolve_layered's Selection
+// — sort/2 then unified a 10-package Acc with [] and failed. Jump
+// over 10000..10999 so those driver-minted cells stay unique.
 func (vm *WamState) allocVarId() int {
 	if vm.NextVarId < 1000 {
 		vm.NextVarId = 1000
+	}
+	if vm.NextVarId >= 10000 && vm.NextVarId < 11000 {
+		vm.NextVarId = 11000
 	}
 	id := vm.NextVarId
 	vm.NextVarId++

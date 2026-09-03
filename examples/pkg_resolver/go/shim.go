@@ -181,7 +181,7 @@ func runPred(predArity string, argTerms []Value) (ok bool, vm *WamState, saved [
 		if i < len(argTerms) && argTerms[i] != nil {
 			t = argTerms[i]
 		} else {
-			t = &Unbound{Name: "Out", Idx: 10000 + i}
+			t = &Unbound{Name: "Out", Idx: vm.allocVarId()}
 		}
 		vm.Regs[i] = t
 		saved[i] = t
