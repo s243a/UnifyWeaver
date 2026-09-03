@@ -106,6 +106,26 @@ type ChoicePoint struct {
 	PendingB0    int
 	CutB0Stack   []int
 	YSaves       [][100]Value
+	// Levels: if-then-else barrier levels captured by `get_level Yn`,
+	// keyed by the Y-register index the shared emitter named. nil until
+	// a barrier is actually recorded (most choice points never carry one).
+	//
+	// `compile_if_then_else/7` in wam_target.pl reserves a *permanent* (Y)
+	// register for the ITE barrier AFTER it has decided whether the clause
+	// needs an environment, so under `ite_use_y_level(true)` — which every
+	// Go compile passes — it emits `get_level Y1` … `cut Y1` into clauses
+	// with NO `allocate`. `sat(V, gte(G)) :- \+ lt(V, G)` (the resolver's
+	// satisfies/2 shape) is exactly that clause. Y registers are global
+	// slots here (Regs[200..299]), so writing the level into Regs[200]
+	// scribbled on whatever Y1 the *caller* was holding — the
+	// WAM_FLEET_GAPS A2 hazard in its frameless-Y-write form.
+	//
+	// Keeping the level on the if-then-else's own choice point instead
+	// (the wam_rust `ChoicePoint::levels` / wam_python `ChoicePoint.levels`
+	// model) means it never touches a register at all: it is per-activation
+	// for free, and backtracking discards it with the choice point that
+	// owns it.
+	Levels map[int]int
 }
 
 type EnvFrame struct {
@@ -249,10 +269,27 @@ type WamState struct {
 	ChoicePoints []ChoicePoint
 	// YSaves: caller Y-register snapshots pushed by Call (not Execute)
 	// and popped by Proceed. Y slots are global (Regs[200..299]), so a
-	// callee that writes Y without Allocate (GetLevel, GetVariable Y1)
-	// would otherwise clobber the caller's live Y. This is the
-	// Allocate-less half of A2; X101≡Y1 aliasing is unchanged.
+	// callee that writes Y without Allocate (GetVariable Y1) would
+	// otherwise clobber the caller's live Y. This is the Allocate-less
+	// half of A2; X101≡Y1 aliasing is unchanged.
+	//
+	// It only protects entries made through the WAM `Call` instruction.
+	// A predicate entered any other way — a shim / lowered.go doing
+	// `vm.PC = labels["p/4"]; vm.Run()`, which pushes no Y save — is
+	// NOT covered, which is why the if-then-else barrier does not live
+	// in a register at all any more (see ChoicePoint.Levels).
 	YSaves       [][100]Value
+	// PendingLevel* park the barrier level captured by a `get_level Yn`
+	// that sits immediately before an if-then-else `try_me_else`, so the
+	// choice point that try_me_else is about to push can own it. The
+	// other emission shape (`get_level Yn` immediately AFTER the
+	// try_me_else, used when the condition holds a top-level `!`) needs
+	// no parking: its guard choice point already exists.
+	// The zero value means "nothing parked", so no constructor has to
+	// initialise these.
+	PendingLevelSet bool
+	PendingLevelReg int
+	PendingLevelVal int
 	Halted       bool
 	CurrentStruct *Structure
 	CurrentList   *List
@@ -677,10 +714,22 @@ func (vm *WamState) fillBarrier(cp *ChoicePoint) {
 	cp.CutB0Stack = vm.copyCutB0Stack()
 	cp.YSaves = vm.copyYSaveStack()
 	cp.YSaveLen = len(vm.YSaves)
+	// A `get_level Yn` sitting immediately before this try_me_else parked
+	// its barrier level; this is the guard choice point that owns it.
+	if vm.PendingLevelSet {
+		if cp.Levels == nil {
+			cp.Levels = make(map[int]int, 2)
+		}
+		cp.Levels[vm.PendingLevelReg] = vm.PendingLevelVal
+		vm.PendingLevelSet = false
+	}
 }
 
 func (vm *WamState) restoreBarrier(cp *ChoicePoint) {
 	vm.PendingB0 = cp.PendingB0
+	// A parked-but-unconsumed barrier level cannot outlive a backtrack:
+	// the try_me_else that was going to claim it never ran.
+	vm.PendingLevelSet = false
 	if cp.CutB0Stack != nil {
 		vm.CutB0Stack = make([]int, len(cp.CutB0Stack))
 		copy(vm.CutB0Stack, cp.CutB0Stack)
@@ -693,6 +742,64 @@ func (vm *WamState) restoreBarrier(cp *ChoicePoint) {
 	} else {
 		vm.YSaves = nil
 	}
+}
+
+// recordIteLevel implements `get_level Yn`: snapshot the cut level for an
+// if-then-else / negation barrier WITHOUT writing register Yn.
+//
+// The level itself is unchanged from the register-based version —
+// len(vm.ChoicePoints) at this instant — only where it is kept changes.
+// Two emission shapes come out of compile_if_then_else/7:
+//
+//  1. `get_level BarrierReg` immediately BEFORE the ITE `try_me_else`:
+//     park it, and let that try_me_else record it on the guard choice
+//     point it pushes (fillBarrier). The level equals the index the guard
+//     will occupy, so `cut BarrierReg` prunes the guard and everything the
+//     branch pushed above it.
+//  2. `get_level CondBarrierReg` immediately AFTER the try_me_else — only
+//     when the condition holds a top-level `!`. Its guard choice point
+//     already exists, so attach the level to it directly; the level then
+//     includes the guard, and a cut in the condition prunes only the
+//     condition's own choice points.
+//
+// Shape 1 must park rather than write the top choice point: the clause may
+// be entered with NO choice points at all (`sat/2` reached from a shim or
+// from lowered.go), and there would be nowhere to record.
+func (vm *WamState) recordIteLevel(reg int) {
+	level := len(vm.ChoicePoints)
+	if vm.PC+1 < len(vm.Ctx.Code) {
+		switch vm.Ctx.Code[vm.PC+1].(type) {
+		case *TryMeElse, *TryMeElsePc:
+			vm.PendingLevelSet = true
+			vm.PendingLevelReg = reg
+			vm.PendingLevelVal = level
+			return
+		}
+	}
+	if n := len(vm.ChoicePoints); n > 0 {
+		cp := &vm.ChoicePoints[n-1]
+		if cp.Levels == nil {
+			cp.Levels = make(map[int]int, 2)
+		}
+		cp.Levels[reg] = level
+	}
+}
+
+// lookupIteLevel implements the read half of `cut Yn`: find the level that
+// `get_level Yn` recorded, innermost choice point first. Searching the
+// choice-point stack rather than a register makes the barrier
+// per-activation for free — two live activations of the same clause each
+// carry their own — and a callee can never clobber a caller's.
+//
+// `false` means the guard was already cut away by an inner commit, in which
+// case the stack is at or below the level anyway and cutting is a no-op.
+func (vm *WamState) lookupIteLevel(reg int) (int, bool) {
+	for i := len(vm.ChoicePoints) - 1; i >= 0; i-- {
+		if lvl, ok := vm.ChoicePoints[i].Levels[reg]; ok {
+			return lvl, true
+		}
+	}
+	return 0, false
 }
 
 func (vm *WamState) pushYSave() {

@@ -504,12 +504,11 @@ func (vm *WamState) Step(instr Instruction) bool {
         vm.PC++
         return true
     case *GetLevel:
-        vm.putReg(i.Reg, &Integer{Val: int64(len(vm.ChoicePoints))})
+        vm.recordIteLevel(i.Reg)
         vm.PC++
         return true
     case *Cut:
-        if iv, ok := vm.deref(vm.getReg(i.Reg)).(*Integer); ok {
-            target := int(iv.Val)
+        if target, ok := vm.lookupIteLevel(i.Reg); ok {
             if target >= 0 && target < len(vm.ChoicePoints) {
                 vm.ChoicePoints = vm.ChoicePoints[:target]
             }

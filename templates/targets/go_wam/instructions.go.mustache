@@ -96,11 +96,18 @@ func (i *JumpPc) instrTag() {}
 type CutIte struct{}
 func (i *CutIte) instrTag() {}
 
-// M17 soft cut. GetLevel snapshots the choicepoint-stack height into a Y
-// register (before an if-then-else / negation try_me_else); Cut truncates
-// the choicepoint stack back to that snapshot at the commit site, removing
-// the ITE/negation choicepoint AND any CPs the condition pushed above it.
-// Replaces the legacy CutIte (which dropped only the single topmost CP).
+// M17 soft cut. GetLevel snapshots the choicepoint-stack height (before an
+// if-then-else / negation try_me_else); Cut truncates the choicepoint stack
+// back to that snapshot at the commit site, removing the ITE/negation
+// choicepoint AND any CPs the condition pushed above it. Replaces the legacy
+// CutIte (which dropped only the single topmost CP).
+//
+// Reg names the Y register the shared emitter reserved for the barrier, but
+// it is only a KEY: the level is kept on the if-then-else's own choice point
+// (ChoicePoint.Levels), never written into Regs[Reg]. The emitter plants
+// `get_level Yn` in clauses that get no `allocate`, and Y slots are global
+// here, so writing the register clobbered the caller's Y (WAM_FLEET_GAPS A2,
+// frameless-Y-write form). See recordIteLevel / lookupIteLevel in state.go.
 type GetLevel struct { Reg int }
 func (i *GetLevel) instrTag() {}
 

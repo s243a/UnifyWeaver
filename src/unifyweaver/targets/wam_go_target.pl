@@ -2725,16 +2725,24 @@ wam_go_case('CutIte', '        if len(vm.ChoicePoints) > 0 {
         return true').
 
 % M17 soft cut (enabled by ite_use_y_level). GetLevel snapshots the
-% current choicepoint-stack height into a Y register; Cut truncates the
-% stack back to that snapshot. Unlike CutIte (drop one CP), this removes
-% the if-then-else / negation choicepoint AND every CP the condition
-% pushed above it -- the cut a proper negation / soft-cut condition needs.
-wam_go_case('GetLevel', '        vm.putReg(i.Reg, &Integer{Val: int64(len(vm.ChoicePoints))})
+% current choicepoint-stack height; Cut truncates the stack back to that
+% snapshot. Unlike CutIte (drop one CP), this removes the if-then-else /
+% negation choicepoint AND every CP the condition pushed above it -- the
+% cut a proper negation / soft-cut condition needs.
+%
+% The level is NOT stored in register i.Reg. `compile_if_then_else/7`
+% reserves the barrier's Y register after it has decided whether the
+% clause needs an environment, so `get_level Y1` lands in clauses with no
+% `allocate` -- and Y registers are global slots (Regs[200..299]) here, so
+% the write scribbled on the CALLER's live Y1 (WAM_FLEET_GAPS A2, the
+% frameless-Y-write form; ledger D50/D52). The level lives on the
+% if-then-else's own choice point instead (ChoicePoint.Levels), the
+% wam_rust / wam_python model. See recordIteLevel / lookupIteLevel.
+wam_go_case('GetLevel', '        vm.recordIteLevel(i.Reg)
         vm.PC++
         return true').
 
-wam_go_case('Cut', '        if iv, ok := vm.deref(vm.getReg(i.Reg)).(*Integer); ok {
-            target := int(iv.Val)
+wam_go_case('Cut', '        if target, ok := vm.lookupIteLevel(i.Reg); ok {
             if target >= 0 && target < len(vm.ChoicePoints) {
                 vm.ChoicePoints = vm.ChoicePoints[:target]
             }

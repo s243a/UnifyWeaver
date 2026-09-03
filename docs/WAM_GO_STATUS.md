@@ -87,7 +87,7 @@ classes that are fleet-wide suspects. Go's audit:
 | # | Deficiency | Status | Evidence / reason |
 |---|---|---|---|
 | A1 | `sub_string/5` builtin missing | **verified missing** | Go has `sub_atom/5` (`state.go.mustache:2792`) but no `sub_string/5` |
-| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **verified (structural); Call Y-save is a partial mitigation; X101≡Y1 not hit by uw-resolve** | encoding `X_n→n+99 / Y_n→n+199`, so **X101 ≡ index 200 ≡ Y1**. Call snapshots Y 200..299 and Proceed restores; Execute does **not** push (LCO). Choice points snapshot the Y-save stack. The numeric alias is unchanged. |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **aliasing form: verified (structural), Call Y-save is a partial mitigation, X101≡Y1 not hit by uw-resolve. Frameless-Y form: REPRODUCED as a live wrong answer on the lowered lane → FIXED 2026-09** | encoding `X_n→n+99 / Y_n→n+199`, so **X101 ≡ index 200 ≡ Y1**. Call snapshots Y 200..299 and Proceed restores; Execute does **not** push (LCO). Choice points snapshot the Y-save stack. The numeric alias is unchanged. See the frameless-Y section below. |
 | A3 | `Execute` of a builtin doesn't return to the continuation | **handled for known builtins; `call/1` now classified** | `BuiltinExecute` takes Proceed's return path **including** `popCallFrame`. Residual: a missed classifier entry still silently fails. `call/1` is `wam_go_direct_builtin` → `BuiltinCall`. `member/2` in uw-resolve is `BuiltinCall`. |
 | A4 | String fidelity | **rung 0** | `value.go.mustache` has Integer/Float/Atom/Compound/Structure/List/Ref/Unbound — no string type; D37's double-quoted literals intern as atoms |
 
@@ -128,6 +128,110 @@ ITE condition / `\+` / `once` / `forall` remain the M17 soft-cut
 rewrite. Probe count and any refused-loudly shapes are reported by the
 suite (currently 35 compile).
 
+## A2 frameless-Y: the if-then-else barrier (2026-09-03)
+
+**Verdict: wam_go WAS exposed — reproduced as a live wrong answer on the
+lowered lane, and fixed.** Pinned by
+`tests/test_wam_go_frameless_ite_level.pl` (RED on the pristine tree with
+2 divergences, green after).
+
+The shape (ledger D50/D52). `compile_if_then_else/7` in `wam_target.pl`
+reserves the ITE barrier's permanent register *after* it has decided
+whether the clause needs an environment, so under `ite_use_y_level(true)`
+— which **every** wam_go compile passes (`classify_predicates/3`, all
+four `go_compile_predicate_to_wam` arms) — it plants `get_level Y1` …
+`cut Y1` into clauses with **no `allocate`**. The canonical instance is
+`sat(V, gte(G)) :- \+ lt(V, G)`, the resolver's `satisfies/2` shape.
+
+What we found, lane by lane:
+
+- **Interpreter lane: already safe, and here is why.** D51's §9 work
+  added `vm.YSaves` — `Call` (`pushCallFrame`) snapshots `Regs[200:300]`
+  and `Proceed` (`popCallFrame`) restores it, with every choice point
+  saving and restoring the whole `YSaves` stack. That is the
+  wam_javascript Call-snapshot model, and it repairs the caller's Y1
+  after the frameless callee scribbles on it. Verified causally, not by
+  inspection: with the `copy` in `popYSave` disabled, a 14-shape
+  differential against SWI went from 14/14 correct to
+  `pick_b(3,gte(1),tagX,Out) = 1` (a choice-point depth), `pick_a` failing
+  outright, and a `findall` returning `[2,1]` instead of `[2,3]`.
+  Restoring the copy made all 14 correct again.
+- **Lowered lane: BROKEN.** `wam_go_lowered_emitter.pl` emits `call p/N`
+  as raw label dispatch —
+  `func() bool { if pc, ok := vm.Ctx.Labels["p/N"]; ok { vm.PC = pc; return vm.Run() }; return false }()`
+  — with **no `pushCallFrame`**, so no Y save is pushed and nothing is
+  restored; its `allocate` likewise pushes a bare `&EnvFrame{CP:…, B0:…}`
+  with no `SavedYRegs` copy. A lowered method that parks a permanent in
+  `vm.Regs[200]` and then calls an interpreted frameless-ITE callee
+  therefore got its Y1 overwritten. On the pristine tree, against SWI's
+  `Out = tagX`:
+
+  ```
+  vm.PredPick_b4(3, gte(1), tagX, Out)  ->  ok=true,  Out = 0   (a CP depth)
+  vm.PredPick_a4(3, gte(1), tagX, Out)  ->  ok=false            (silent fail)
+  ```
+
+  while the same predicate entered at its interpreter label returned
+  `tagX` for both. This lane is how `examples/pkg_resolver/go/shim.go`'s
+  sibling embedders reach a predicate, so it is not hypothetical.
+
+**The fix** takes the barrier out of the register file entirely — the
+wam_rust `ChoicePoint::levels` / wam_python `ChoicePoint.levels` model:
+
+- `ChoicePoint.Levels map[int]int` (nil until used) keyed by the
+  Y-register index the emitter named.
+- `recordIteLevel/1` replaces the `putReg` in the `GetLevel` case. The
+  level is unchanged (`len(vm.ChoicePoints)` at that instant); only its
+  home changes. Both emission shapes are handled: `get_level` immediately
+  *before* the ITE `try_me_else` parks the level (`PendingLevel*` on the
+  VM) for `fillBarrier` to record on the guard choice point that
+  `try_me_else` pushes; `get_level` immediately *after* it (the shape used
+  when the condition holds a top-level `!`) attaches to the guard that
+  already exists. Parking is load-bearing: the clause can be entered with
+  zero choice points, so there is nowhere to record until the guard is
+  pushed.
+- `lookupIteLevel/1` replaces the `getReg` in the `Cut` case, walking the
+  choice-point stack innermost-first; "not found" means an inner commit
+  already cut the guard away and the truncation is a no-op.
+- `restoreBarrier` clears a parked-but-unconsumed level, so it cannot
+  outlive a backtrack.
+
+Because the level never touches `vm.Regs`, the fix is independent of how
+the predicate was entered — it closes the lowered lane as well as the
+interpreter lane, and it does not depend on `YSaves` (which stays, since
+it still covers `get_variable Yn` in Allocate-less clauses).
+
+Files: `templates/targets/go_wam/state.go.mustache` (`ChoicePoint.Levels`,
+`PendingLevel*`, `recordIteLevel`, `lookupIteLevel`, `fillBarrier`,
+`restoreBarrier`), `templates/targets/go_wam/instructions.go.mustache`
+(doc), `src/unifyweaver/targets/wam_go_target.pl`
+(`wam_go_case('GetLevel')`, `wam_go_case('Cut')`).
+
+Gates re-run after the fix: cut probes **35/35** (0 refused), the five
+D51 probe suites, the full 24-suite `tests/test_wam_go_*.pl` sweep,
+corpus **39/39**, differential **2400/0/0**. The corpus and differential
+are *not* evidence for this fix — `shim.go` enters every predicate by
+label, never through a lowered method, so the resolver never exercised
+the broken lane. They are evidence the fix is neutral (and it is:
+pristine differential 27.9 s, fixed 25.2–27.1 s on the same box).
+
+### Residual (separate defect, NOT this one)
+
+A lowered method whose clause body contains a `call` into the
+interpreter and then tail-`execute`s itself **loses the output binding**.
+`wpick(4, tagY, Out)` returns `ok=true` with `Out` still unbound from
+`vm.PredWpick3()`, while the interpreter lane returns `tagY`. This is not
+the ITE barrier: the control `wcall/3` — same recursive shape, a plain
+`call okp/1` in the body, no if-then-else or negation anywhere — fails
+identically, and both fail the same way before and after the barrier fix
+(a second control, `wplain/3`, with no `call` at all, is correct on both
+lanes at every depth). Suspected cause, not verified: the lowered emitter
+does not implement the §9 call-frame protocol at all — `emit_one(call)`
+omits `pushCallFrame` and `emit_one(allocate)` omits the `SavedYRegs`
+copy, so the interpreted callee's `Proceed`/`popCallFrame` pops a frame
+the lowered caller never pushed. `tests/test_wam_go_frameless_ite_level.pl`
+runs `wpick` on the interpreter lane only and says why.
+
 ## Whole-program exercise: uw-resolve (`examples/pkg_resolver/go/`)
 
 P0.5 resolver compiled through `wam_go` (`prefer_wam(true)`). JSON shim
@@ -165,3 +269,12 @@ A2 still structural (Call Y-save is a partial mitigation). A3 residual
 remains for unclassified builtins; `call/1` now classified. Cut suite
 is `prefer_wam(true)` only. B3 5k `resolve_layered` matches SWI after
 `allocVarId` skips Idx 10000–10999 (Go resolve 4.604s vs SWI 0.008s).
+2026-09-03 (later): **A2's frameless-Y form reproduced and fixed** —
+broken on the lowered lane (`vm.PredPick_b4` returned a choice-point
+depth), already safe on the interpreter lane thanks to D51's `YSaves`
+(proved causally by disabling `popYSave`'s restore). ITE barrier levels
+now live on `ChoicePoint.Levels`, never in `vm.Regs`. Probe
+`tests/test_wam_go_frameless_ite_level.pl`. A separate, pre-existing
+lowered-lane defect (a lowered method that `call`s the interpreter and
+then tail-recurses loses its output binding) is recorded as a residual
+above — it is not the barrier and is not fixed here.
