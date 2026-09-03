@@ -1938,6 +1938,13 @@ wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg], GoLit)
     go_reg_index(CResultReg, ResultRegIdx),
     format(atom(GoLit), '&BeginAggregate{AggType: "~w", ValueReg: ~w, ResultReg: ~w}',
         [CAggType, ValueRegIdx, ResultRegIdx]).
+% bagof/setof emit a 4th witness-register argument
+% (`begin_aggregate bagof, Y1, X2, ''`). Dropping it as `// TODO`
+% skipped the instruction, so EndAggregate was a no-op and L stayed
+% unbound (`__R200`). Witness grouping is not implemented; the 3-arg
+% runtime path is correct when the witness list is empty.
+wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg, _Witnesses], GoLit) :-
+    wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg], GoLit).
 wam_line_to_go_literal(["end_aggregate", ValueReg], GoLit) :-
     clean_comma(ValueReg, CValueReg),
     go_reg_index(CValueReg, ValueRegIdx),
@@ -2629,7 +2636,7 @@ wam_go_case('Deallocate', '        if vm.E >= 0 && vm.E < len(vm.Stack) {
 
 wam_go_case('Call', '        vm.CP = vm.PC + 1
         if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
-            vm.PendingB0 = len(vm.ChoicePoints)
+            vm.pushCallFrame()
             vm.PC = pc
             return true
         }
@@ -2684,12 +2691,12 @@ wam_go_case('CallForeign', '        return vm.executeForeignPredicate(i.Pred, i.
 wam_go_case('CallIndexedAtomFact2', '        return vm.executeIndexedAtomFact2(i.Pred)').
 
 wam_go_case('CallPc', '        vm.CP = vm.PC + 1
-        vm.PendingB0 = len(vm.ChoicePoints)
+        vm.pushCallFrame()
         vm.PC = i.TargetPC
         return true').
 
 wam_go_case('Execute', '        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
-            vm.PendingB0 = len(vm.ChoicePoints)
+            vm.enterExecute()
             vm.PC = pc
             return true
         }
@@ -2698,7 +2705,7 @@ wam_go_case('Execute', '        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
         }
         return vm.executeIndexedAtomFact2(i.Pred)').
 
-wam_go_case('ExecutePc', '        vm.PendingB0 = len(vm.ChoicePoints)
+wam_go_case('ExecutePc', '        vm.enterExecute()
         vm.PC = i.TargetPC
         return true').
 
@@ -2740,7 +2747,8 @@ wam_go_case('BeginAggregate', '        return vm.executeAggregate(i.AggType, i.V
 wam_go_case('EndAggregate', '        vm.PC++
         return true').
 
-wam_go_case('Proceed', '        if vm.CP > 0 {
+wam_go_case('Proceed', '        vm.popCallFrame()
+        if vm.CP > 0 {
             vm.PC = vm.CP
         } else {
             vm.Halted = true
@@ -2760,6 +2768,7 @@ wam_go_case('BuiltinExecute', '        result := vm.executeBuiltin(i.Op, i.Arity
         if !result {
             return false
         }
+        vm.popCallFrame()
         if vm.CP > 0 {
             vm.PC = vm.CP
         } else {
@@ -3775,6 +3784,10 @@ func (vm *WamState) finishStreamResults(predKey string, resultRegs []int, result
                 ForeignPredKey: predKey,
                 ForeignResultRegs: append([]int(nil), resultRegs...),
                 ForeignResults: remaining,
+                PendingB0: vm.PendingB0,
+                CutB0Stack: vm.copyCutB0Stack(),
+                YSaves: vm.copyYSaveStack(),
+                YSaveLen: len(vm.YSaves),
             })
         }
         vm.PC = resumePC

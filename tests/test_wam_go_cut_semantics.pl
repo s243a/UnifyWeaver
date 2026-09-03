@@ -324,6 +324,7 @@ compile_cut_probes(Dir, Bin) :-
                           module_name(cutsem),
                           package_name(wam)],
                          Dir),
+    !,
     directory_file_path(Dir, 'lib.go', LibPath),
     read_file_to_string(LibPath, Lib, []),
     (   sub_string(Lib, _, _, _, ': compilation failed')
@@ -370,6 +371,7 @@ test_wam_go_cut_semantics :-
 
 test(prefer_wam_matches_swi, [setup(install_cut_probes)]) :-
     compile_cut_probes(Dir, Bin),
+    !,
     findall(N, cut_probe(N, _), All),
     findall(N, cut_probe_refused(N, _), Refused),
     length(All, NAll),
