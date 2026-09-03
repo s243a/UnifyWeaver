@@ -709,6 +709,7 @@ func (vm *WamState) Clone() *WamState {
 		E:            vm.E,
 		Input:        vm.Input,
 		NextStreamID: vm.NextStreamID,
+		PendingB0:    vm.PendingB0,
 		// Carry MaxYReg so the sub-VM's snapshotAllRegs sees the
 		// same Y-reg high-water mark as the parent (sub.Regs is a
 		// value-copy of parent.Regs and therefore *contains* those
@@ -726,6 +727,40 @@ func (vm *WamState) Clone() *WamState {
 	copy(newState.Trail, vm.Trail)
 	copy(newState.ChoicePoints, vm.ChoicePoints)
 	return newState
+}
+
+// freezeTerm copies v with every Unbound/Ref chased through this VM's
+// Bindings and Heap. findall/bagof run in a Clone(); a shallow deref of
+// the template leaves nested Unbounds whose bindings live only on the
+// sub-VM. After the clone is discarded those slots read as unbound in
+// the parent (inst_walk's findall(D-DV, ...) yielded [null-v, null-v]).
+func (vm *WamState) freezeTerm(v Value) Value {
+	if v == nil {
+		return nil
+	}
+	v = vm.deref(v)
+	switch t := v.(type) {
+	case *Structure:
+		args := make([]Value, len(t.Args))
+		for i, a := range t.Args {
+			args[i] = vm.freezeTerm(a)
+		}
+		return &Structure{Functor: t.Functor, Arity: t.Arity, Args: args}
+	case *Compound:
+		args := make([]Value, len(t.Args))
+		for i, a := range t.Args {
+			args[i] = vm.freezeTerm(a)
+		}
+		return &Compound{Functor: t.Functor, Args: args}
+	case *List:
+		elems := make([]Value, len(t.Elements))
+		for i, a := range t.Elements {
+			elems[i] = vm.freezeTerm(a)
+		}
+		return listFromItems(elems)
+	default:
+		return v
+	}
 }
 
 func (vm *WamState) ForkAtChoicePoint() *WamState {
@@ -831,6 +866,86 @@ func compareValues(a, b Value) int {
 	return 0
 }
 
+// compareTerms is the order sort/2, msort/2, @</2 and compare/3 use.
+// compareValues only ranks atoms/numbers and treats every compound as
+// equal, so sort([a-1,b-1,c-1], L) uniquely collapsed to one pair —
+// uw-resolve's sort(Acc, Selection) kept only the last pick.
+func (vm *WamState) compareTerms(a, b Value) int {
+	a = vm.deref(a)
+	b = vm.deref(b)
+	if isEmptyListValue(a) || isEmptyListValue(b) {
+		if isEmptyListValue(a) && isEmptyListValue(b) {
+			return 0
+		}
+		if isEmptyListValue(a) {
+			return -1
+		}
+		return 1
+	}
+	ha, ta, oka := vm.valueListHeadTail(a)
+	hb, tb, okb := vm.valueListHeadTail(b)
+	if oka || okb {
+		if !oka {
+			return 1
+		}
+		if !okb {
+			return -1
+		}
+		if c := vm.compareTerms(ha, hb); c != 0 {
+			return c
+		}
+		return vm.compareTerms(ta, tb)
+	}
+	rank := func(v Value) int {
+		switch v.(type) {
+		case *Unbound:
+			return 0
+		case *Atom:
+			return 1
+		case *Integer:
+			return 2
+		case *Float:
+			return 3
+		default:
+			return 4
+		}
+	}
+	ra, rb := rank(a), rank(b)
+	if ra != rb {
+		return ra - rb
+	}
+	switch ta := a.(type) {
+	case *Unbound:
+		tb := b.(*Unbound)
+		if ta.Idx < tb.Idx {
+			return -1
+		}
+		if ta.Idx > tb.Idx {
+			return 1
+		}
+		return 0
+	case *Atom, *Integer, *Float:
+		return compareValues(a, b)
+	}
+	fa, argsa := decompose(a)
+	fb, argsb := decompose(b)
+	if len(argsa) != len(argsb) {
+		return len(argsa) - len(argsb)
+	}
+	if fa < fb {
+		return -1
+	}
+	if fa > fb {
+		return 1
+	}
+	for i := range argsa {
+		if c := vm.compareTerms(argsa[i], argsb[i]); c != 0 {
+			return c
+		}
+	}
+	return 0
+}
+
 func isEmptyListValue(v Value) bool {
 	if atom, ok := v.(*Atom); ok {
 		return atom.Name == "[]"
@@ -839,6 +954,18 @@ func isEmptyListValue(v Value) bool {
 		return len(list.Elements) == 0
 	}
 	return false
+}
+
+// listFromItems is the canonical Go→Prolog list constructor: empty
+// becomes the interned [] atom (so get_constant [] matches), non-empty
+// becomes a flat *List. Builtins that rebuild lists (append/sort/reverse)
+// must go through this rather than `&List{Elements: items}` with a
+// possibly-empty slice.
+func listFromItems(items []Value) Value {
+	if len(items) == 0 {
+		return emptyListAtom
+	}
+	return &List{Elements: items}
 }
 
 // emptyListAtom is a process-wide singleton for the `[]` terminator,
@@ -2367,6 +2494,8 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "write/1":
 		fmt.Print(vm.writeTermString(arg1))
 		return true
+	case "call/1":
+		return vm.executeCall1(vm.deref(arg1))
 	case "write_canonical/1":
 		fmt.Print(vm.canonicalTermString(arg1))
 		return true
@@ -2921,15 +3050,15 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "==/2": return vm.termIdentical(arg1, arg2)
 	case "\\==/2": return !vm.termIdentical(arg1, arg2)
 	case "@</2":
-		return compareValues(vm.deref(arg1), vm.deref(arg2)) < 0
+		return vm.compareTerms(arg1, arg2) < 0
 	case "@=</2":
-		return compareValues(vm.deref(arg1), vm.deref(arg2)) <= 0
+		return vm.compareTerms(arg1, arg2) <= 0
 	case "@>/2":
-		return compareValues(vm.deref(arg1), vm.deref(arg2)) > 0
+		return vm.compareTerms(arg1, arg2) > 0
 	case "@>=/2":
-		return compareValues(vm.deref(arg1), vm.deref(arg2)) >= 0
+		return vm.compareTerms(arg1, arg2) >= 0
 	case "compare/3":
-		cmp := compareValues(vm.deref(arg2), vm.deref(arg3))
+		cmp := vm.compareTerms(arg2, arg3)
 		switch {
 		case cmp < 0:
 			return vm.Unify(arg1, internAtom("<"))
@@ -3211,8 +3340,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		l1, ok1 := vm.listToSlice(arg1)
 		l2, ok2 := vm.listToSlice(arg2)
 		if !ok1 || !ok2 { return false }
-		combined := &List{Elements: append(append([]Value{}, l1...), l2...)}
-		return vm.Unify(arg3, combined)
+		return vm.Unify(arg3, listFromItems(append(append([]Value{}, l1...), l2...)))
 	case "reverse/2":
 		d1 := vm.deref(arg1)
 		d2 := vm.deref(arg2)
@@ -3225,7 +3353,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
 				reversed[i], reversed[j] = reversed[j], reversed[i]
 			}
-			return vm.Unify(arg2, &List{Elements: reversed})
+			return vm.Unify(arg2, listFromItems(reversed))
 		}
 		if !isUnbound(d2) {
 			items, ok := vm.listToSlice(d2)
@@ -3236,7 +3364,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
 				reversed[i], reversed[j] = reversed[j], reversed[i]
 			}
-			return vm.Unify(arg1, &List{Elements: reversed})
+			return vm.Unify(arg1, listFromItems(reversed))
 		}
 		return false
 	case "last/2":
@@ -3330,19 +3458,18 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		sorted := append([]Value(nil), items...)
 		sort.SliceStable(sorted, func(i, j int) bool {
-			return compareValues(vm.deref(sorted[i]), vm.deref(sorted[j])) < 0
+			return vm.compareTerms(sorted[i], sorted[j]) < 0
 		})
 		if op == "sort/2" {
 			deduped := make([]Value, 0, len(sorted))
 			for _, item := range sorted {
-				item = vm.deref(item)
-				if len(deduped) == 0 || compareValues(vm.deref(deduped[len(deduped)-1]), item) != 0 {
+				if len(deduped) == 0 || vm.compareTerms(deduped[len(deduped)-1], item) != 0 {
 					deduped = append(deduped, item)
 				}
 			}
 			sorted = deduped
 		}
-		return vm.Unify(arg2, &List{Elements: sorted})
+		return vm.Unify(arg2, listFromItems(sorted))
 	case "keysort/2":
 		items, ok := vm.listToSlice(arg1)
 		if !ok {
@@ -3437,7 +3564,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		for i, pair := range pairs {
 			sorted[i] = pair.pair
 		}
-		return vm.Unify(arg2, &List{Elements: sorted})
+		return vm.Unify(arg2, listFromItems(sorted))
 	case "functor/3":
 		t := vm.deref(arg1)
 		if isUnbound(t) {
@@ -3526,6 +3653,176 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		return vm.Unify(arg2, copy)
 	}
 	return false
+}
+
+// executeCall1 implements ISO call/1 as an opaque cut scope: a `!`
+// inside the metacall prunes only choice points created during the
+// call. Nested user goals run on this VM (bindings are shared) with
+// Proceed treated as a local halt so the outer BuiltinCall can
+// continue. Leftover CPs from a user goal inside call/1 are not
+// resumed as extra solutions of the metacall (first-solution nested
+// run); the cut-semantics probes that use call/1 (p09, p10) do not
+// require that extra-solution path.
+func (vm *WamState) executeCall1(goal Value) bool {
+	return vm.invokeGoal(goal, len(vm.ChoicePoints))
+}
+
+func goalNameArgs(v Value) (name string, args []Value, ok bool) {
+	if v == nil {
+		return "", nil, false
+	}
+	switch t := v.(type) {
+	case *Atom:
+		return t.Name, nil, true
+	case *Structure:
+		return parseFunctorName(t.Functor), t.Args, true
+	case *Compound:
+		return parseFunctorName(t.Functor), t.Args, true
+	default:
+		return "", nil, false
+	}
+}
+
+func (vm *WamState) invokeGoal(goal Value, cutFloor int) bool {
+	goal = vm.deref(goal)
+	name, args, ok := goalNameArgs(goal)
+	if !ok {
+		return false
+	}
+	if name == ":" && len(args) == 2 {
+		return vm.invokeGoal(args[1], cutFloor)
+	}
+	switch name {
+	case "true":
+		return true
+	case "fail", "false":
+		return false
+	case "!":
+		if cutFloor < 0 {
+			cutFloor = 0
+		}
+		if cutFloor < len(vm.ChoicePoints) {
+			vm.ChoicePoints = vm.ChoicePoints[:cutFloor]
+		}
+		return true
+	case ",":
+		if len(args) != 2 {
+			return false
+		}
+		if !vm.invokeGoal(args[0], cutFloor) {
+			return false
+		}
+		return vm.invokeGoal(args[1], cutFloor)
+	case ";":
+		if len(args) != 2 {
+			return false
+		}
+		left := vm.deref(args[0])
+		lname, largs, lok := goalNameArgs(left)
+		if lok && (lname == "->" || lname == "*->") && len(largs) == 2 {
+			if vm.invokeGoal(largs[0], cutFloor) {
+				return vm.invokeGoal(largs[1], cutFloor)
+			}
+			return vm.invokeGoal(args[1], cutFloor)
+		}
+		if vm.invokeGoal(args[0], cutFloor) {
+			return true
+		}
+		return vm.invokeGoal(args[1], cutFloor)
+	case "->", "*->":
+		if len(args) != 2 {
+			return false
+		}
+		if !vm.invokeGoal(args[0], cutFloor) {
+			return false
+		}
+		return vm.invokeGoal(args[1], cutFloor)
+	case "\\+", "not":
+		if len(args) != 1 {
+			return false
+		}
+		mark := len(vm.ChoicePoints)
+		ok := vm.invokeGoal(args[0], mark)
+		if mark < len(vm.ChoicePoints) {
+			vm.ChoicePoints = vm.ChoicePoints[:mark]
+		}
+		return !ok
+	case "once":
+		if len(args) != 1 {
+			return false
+		}
+		mark := len(vm.ChoicePoints)
+		ok := vm.invokeGoal(args[0], mark)
+		if mark < len(vm.ChoicePoints) {
+			vm.ChoicePoints = vm.ChoicePoints[:mark]
+		}
+		return ok
+	case "call":
+		if len(args) == 0 {
+			return false
+		}
+		return vm.invokeGoal(args[0], cutFloor)
+	default:
+		return vm.invokeCallable(name, args, cutFloor)
+	}
+}
+
+func (vm *WamState) invokeCallable(name string, args []Value, cutFloor int) bool {
+	key := fmt.Sprintf("%s/%d", name, len(args))
+	if pc, found := vm.Ctx.Labels[key]; found {
+		return vm.invokeAtPC(pc, args, cutFloor)
+	}
+	saved := vm.snapshotAllRegs()
+	for i, a := range args {
+		vm.putReg(i, a)
+	}
+	ok := vm.executeBuiltin(key, len(args))
+	if !ok {
+		vm.restoreSavedRegs(saved)
+	}
+	return ok
+}
+
+func (vm *WamState) invokeAtPC(pc int, args []Value, cutFloor int) bool {
+	savedPC := vm.PC
+	savedCP := vm.CP
+	savedHalted := vm.Halted
+	savedRegs := vm.snapshotAllRegs()
+	for i, a := range args {
+		vm.putReg(i, a)
+	}
+	vm.PendingB0 = len(vm.ChoicePoints)
+	vm.CP = 0
+	vm.PC = pc
+	vm.Halted = false
+	ok := vm.runUntilHalt(cutFloor)
+	vm.Halted = savedHalted
+	vm.PC = savedPC
+	vm.CP = savedCP
+	if !ok {
+		vm.restoreSavedRegs(savedRegs)
+	}
+	return ok
+}
+
+func (vm *WamState) runUntilHalt(baseChoicePoints int) bool {
+	for {
+		if vm.Halted {
+			return true
+		}
+		instr := vm.fetch()
+		if instr == nil {
+			if !vm.backtrackAbove(baseChoicePoints) {
+				return false
+			}
+			continue
+		}
+		if !vm.Step(instr) {
+			if !vm.backtrackAbove(baseChoicePoints) {
+				return false
+			}
+		}
+	}
 }
 
 func (vm *WamState) hasParallelNegationChoices(targetPC int) bool {
