@@ -218,6 +218,47 @@ env(CatId, Base, Installed, Requested, Layers, Excluded, Aliases)
 exposes the same 10 queries as `*_store` predicates. Lookups always bind
 `CatId|Name` (seek, not scan).
 
+### Backends: `indexed(Prefix)` vs `lmdb(Dir)`
+
+The wamjs store adapter is a **declaration-level** switch. Same
+predicates (`store_pkg/2`, `store_dep/2`, `store_conflict/2`,
+`store_revdep/2`), same 10 queries, same JSON shim. Only the
+`javascript_wam_fact_sources/1` entries change:
+
+```prolog
+% default (D48)
+source(store_pkg/2, indexed(Prefix))     % Prefix.data + Prefix.idx
+% opt-in (this round)
+source(store_pkg/2, lmdb(Dir))           % Dir = StoreDir/lmdb/pkg
+```
+
+Set `UW_STORE_BACKEND=indexed|lmdb` (or the 4th argv to `wamjs_store/build.pl`).
+Default is `indexed`. `lmdb` is opt-in: the `lmdb` npm package is installed
+under `/tmp/uw-lmdb-pkg` (D43 policy — **no repo `package.json` dependency**).
+If the package is missing, the error names `lmdb(...)` and says indexed is
+**not used as a fallback**. There is no silent backend swap.
+
+Builder: `store/rich_to_p2.mjs` then either `store/build_stores.sh`
+(`uw_fact_index.js`) or `store/build_lmdb_stores.sh` (`uw_fact_lmdb.js
+build-all`). Same P/2 JSONL; same key layout as the table above.
+
+### L1 read-through cache
+
+The JS fact-source layer memos **bound** (and unbound-scan) lookups for
+both backends. Default **OFF**.
+
+| knob | default | meaning |
+| --- | --- | --- |
+| `UW_FACT_CACHE` | off (`0`/`off`/`false`/`""`) | `1`/`on`/`true` enables L1 |
+| `UW_FACT_CACHE_CAP` | `4096` | max entries (LRU) |
+
+Keying: `pred + "\\0" + hex(encode_store_key(A1))`, or `pred + "\\0*"` for
+an unbound scan. Hits return the same row list (same order). Catalogs are
+**read-only**: the cache is never invalidated. A future write path **must**
+call `Runtime.fact_cache_reset()` after any store mutation. `store/test_cache_equiv.mjs`
+asserts cache on/off produce identical corpus results (indexed ungated;
+lmdb gated).
+
 ### JSONL dump schema
 
 One JSON object per fact (`kind` discriminates). `catalog` is the store
@@ -252,17 +293,16 @@ D43 stores are scalar P/2 (atom/int/float/string). Compounds are packed:
 
 Constraint packing: `any` · `eq:1.0.0` · `gte:1.0.0` · `lt:2.0.0` ·
 `range:1.0.0:2.0.0`. Builder: `store/rich_to_p2.mjs` then
-`store/build_stores.sh` (`scripts/js_wam/uw_fact_index.js`). `lmdb(Dir)`
-uses the same P/2 JSONL via `uw_fact_lmdb.js` (opt-in; no repo
-`package.json` dependency).
+`store/build_stores.sh` (`scripts/js_wam/uw_fact_index.js`) or
+`store/build_lmdb_stores.sh` (`uw_fact_lmdb.js build-all`). `lmdb(Dir)`
+uses the same P/2 JSONL (opt-in; no repo `package.json` dependency).
 
 ### SWI-side data
 
 SWI (the oracle) reads the **same P/2 JSONL files** the indexer consumes
 (`load_p2_jsonl/1`), not the binary `.data`/`.idx`. SWI has no UWFI
 reader; the JSONL is the canonical row encoding, so both engines see
-identical keys and packed cells. WAM seeks `indexed(Prefix)` built from
-those rows.
+identical keys and packed cells. WAM seeks `indexed(Prefix)` or `lmdb(Dir)` built from those rows.
 
 ## Files
 
@@ -275,8 +315,9 @@ those rows.
 | `dump_corpus.pl` | SWI → JSONL for the term-catalog wamjs runner |
 | `dump_store_data.pl` | rich JSONL + P/2 JSONL + store corpus cases |
 | `wamjs/` | term-catalog JS WAM build |
-| `wamjs_store/` | store-backed JS WAM build (D43 fact sources) |
-| `store/` | dump schema helpers, indexer wrapper, 5k generator |
+| `wamjs_store/` | store-backed JS WAM build (D43 fact sources; `UW_STORE_BACKEND`) |
+| `store/` | dump schema helpers, indexer + LMDB builder, 5k generator, cache equiv |
+| `store/run_measure_2x2.sh` | `{indexed,lmdb}×{cache off,on}` + 100× repeat |
 | `gen_catalogs.mjs` | mulberry32, 2400 term catalogs (seed `0xa5b6c7d8`) |
 | `run_differential.sh` | term-catalog SWI vs wamjs, 0-divergence gate |
 | `run_store_differential.sh` | store-backed 5k catalog, ≥500 cases, 0 divergences |
@@ -297,10 +338,18 @@ bash examples/pkg_resolver/run_differential.sh
 swipl -q -g test_resolver_store -t halt examples/pkg_resolver/test_resolver_store.pl
 bash examples/pkg_resolver/wamjs_store/build.sh
 bash examples/pkg_resolver/wamjs_store/run_corpus_wamjs.sh
+bash examples/pkg_resolver/store/run_cache_equiv.sh indexed
+bash examples/pkg_resolver/store/lmdb_smoke.sh   # missing-package ungated; lmdb arm gated
+
+# lmdb backend (gated: /tmp/uw-lmdb-pkg install, loud error if missing)
+UW_STORE_BACKEND=lmdb bash examples/pkg_resolver/wamjs_store/run_corpus_wamjs.sh
+UW_STORE_BACKEND=lmdb bash examples/pkg_resolver/run_store_differential.sh
+bash examples/pkg_resolver/store/run_cache_equiv.sh lmdb
 
 # 5k catalog: bytes-read + timings + ≥500-case store differential
-bash examples/pkg_resolver/run_scale_demo.sh
-bash examples/pkg_resolver/run_store_differential.sh
+bash examples/pkg_resolver/run_scale_demo.sh          # indexed, cache off
+bash examples/pkg_resolver/run_store_differential.sh  # indexed, cache off
+bash examples/pkg_resolver/store/run_measure_2x2.sh   # 2×2 + 100× repeat
 ```
 
 ## Deferred (not P2)
@@ -310,4 +359,6 @@ bash examples/pkg_resolver/run_store_differential.sh
 - ~~`pkg`-style CLI on top of `examples/cli_args`~~ — done, see [`cli/`](cli/)
 - write paths (install / remove / commit a layer)
 - per-file / per-SFS modeling inside a named layer
-- incremental store updates (rebuild the four indexes from a full dump)
+- incremental store updates (rebuild the four indexes from a full dump;
+  a write path must `Runtime.fact_cache_reset()`)
+- secondary indexes / CSR layouts beyond the four P/2 stores

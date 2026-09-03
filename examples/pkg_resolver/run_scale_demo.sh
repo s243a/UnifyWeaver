@@ -42,7 +42,7 @@ print(f"  total_store_bytes: {total}")
 open(os.path.join(d, "store_size.txt"), "w").write(str(total) + "\n")
 PY
 
-echo "== WAM bound resolve_layered (UW_FACT_IO_STATS) =="
+echo "== WAM bound resolve_layered (UW_FACT_IO_STATS, cache off) =="
 UW_FACT_IO_STATS=1 node "$HERE/store/run_probe.mjs" "$WAM" "$SCALE/probe.json" \
   2> "$SCALE/probe_wamjs.err" | tee "$SCALE/probe_wamjs.log"
 echo "--- fact_io stderr ---"

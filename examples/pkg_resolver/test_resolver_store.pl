@@ -101,3 +101,56 @@ test(store_env_split_ignores_big_lists) :-
     !.
 
 :- end_tests(pkg_resolver_store).
+
+% JS L1 cache + lmdb missing-package (append-only). Indexed cache
+% equivalence is ungated; the lmdb arm is gated like D43.
+:- use_module(library(process)).
+:- use_module(library(filesex)).
+
+pkg_resolver_dir(Dir) :-
+    source_file(test_resolver_store:test_resolver_store, File),
+    file_directory_name(File, Dir).
+
+run_pkg_bash(Rel, Args, Exit, Combined) :-
+    pkg_resolver_dir(Dir),
+    directory_file_path(Dir, Rel, Script),
+    append([Script], Args, Argv),
+    process_create(path(bash), Argv,
+        [stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
+    read_string(O, _, OS),
+    read_string(E, _, ES),
+    close(O), close(E),
+    process_wait(Pid, exit(Exit)),
+    atomic_list_concat([OS, ES], Combined).
+
+lmdb_js_available :-
+    pkg_resolver_dir(Dir),
+    directory_file_path(Dir, '../..', Root0),
+    absolute_file_name(Root0, Root),
+    process_create(path(bash),
+        ['-lc', 'source examples/pkg_resolver/store/ensure_lmdb.sh && uw_ensure_lmdb'],
+        [cwd(Root), stdout(null), stderr(null), process(Pid)]),
+    process_wait(Pid, exit(0)).
+
+:- begin_tests(pkg_resolver_store_js_cache).
+
+test(lmdb_missing_package_ungated) :-
+    run_pkg_bash('store/lmdb_smoke.sh', [], Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(sub_string(Out, _, _, _, "lmdb_missing_error_ok")),
+    !.
+
+test(js_fact_cache_equiv_indexed) :-
+    run_pkg_bash('store/run_cache_equiv.sh', [indexed], Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(sub_string(Out, _, _, _, "cache_equiv indexed ok")),
+    assertion(sub_string(Out, _, _, _, "cache_equiv ok")),
+    !.
+
+test(js_fact_cache_equiv_lmdb, [condition(lmdb_js_available)]) :-
+    run_pkg_bash('store/run_cache_equiv.sh', [lmdb], Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(sub_string(Out, _, _, _, "cache_equiv lmdb ok")),
+    !.
+
+:- end_tests(pkg_resolver_store_js_cache).
