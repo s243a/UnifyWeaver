@@ -7,7 +7,7 @@
 %   swipl -q -g dump_store_data -t halt examples/pkg_resolver/dump_store_data.pl -- DIR
 %
 % Writes DIR/pkg.jsonl DIR/dep.jsonl DIR/conflict.jsonl DIR/revdep.jsonl
-%        DIR/rich.jsonl DIR/cases.jsonl DIR/envs.jsonl
+%        DIR/provide.jsonl DIR/rich.jsonl DIR/cases.jsonl DIR/envs.jsonl
 
 :- module(dump_store_data, [dump_store_data/0]).
 
@@ -25,6 +25,7 @@ dump_store_data :-
     atom_concat(Dir, '/dep.jsonl', DepF),
     atom_concat(Dir, '/conflict.jsonl', ConfF),
     atom_concat(Dir, '/revdep.jsonl', RevF),
+    atom_concat(Dir, '/provide.jsonl', ProvF),
     atom_concat(Dir, '/rich.jsonl', RichF),
     atom_concat(Dir, '/cases.jsonl', CaseF),
     atom_concat(Dir, '/envs.jsonl', EnvF),
@@ -32,24 +33,30 @@ dump_store_data :-
     setup_call_cleanup(open(DepF, write, DS),
     setup_call_cleanup(open(ConfF, write, CS),
     setup_call_cleanup(open(RevF, write, RS),
+    setup_call_cleanup(open(ProvF, write, PrS),
     setup_call_cleanup(open(RichF, write, RichS),
-        dump_all_catalogs(PS, DS, CS, RS, RichS),
-    close(RichS)), close(RS)), close(CS)), close(DS)), close(PS)),
+        dump_all_catalogs(PS, DS, CS, RS, PrS, RichS),
+    close(RichS)), close(PrS)), close(RS)), close(CS)), close(DS)), close(PS)),
     setup_call_cleanup(open(EnvF, write, ES), dump_envs(ES), close(ES)),
     setup_call_cleanup(open(CaseF, write, KS), dump_cases(KS), close(KS)),
     format("dump_store_data: wrote P/2 + cases under ~w~n", [Dir]).
 
-dump_all_catalogs(PS, DS, CS, RS, RichS) :-
+dump_all_catalogs(PS, DS, CS, RS, PrS, RichS) :-
     findall(Name, scenario_catalog(Name, _), Names0),
     sort(Names0, Names),
     forall(member(Name, Names),
            (   scenario_catalog(Name, Cat),
-               dump_one_catalog(Name, Cat, PS, DS, CS, RS, RichS)
+               dump_one_catalog(Name, Cat, PS, DS, CS, RS, PrS, RichS)
            )).
 
-dump_one_catalog(Id, catalog(Ps, Ds, Cs, B, I, R), PS, DS, CS, RS, RichS) :-
-    dump_one_catalog(Id, catalog(Ps, Ds, Cs, B, I, R, [], [], []), PS, DS, CS, RS, RichS).
-dump_one_catalog(Id, catalog(Ps, Ds, Cs, B, I, R, Ls, Es, As), PS, DS, CS, RS, RichS) :-
+dump_one_catalog(Id, catalog(Ps, Ds, Cs, B, I, R), PS, DS, CS, RS, PrS, RichS) :-
+    dump_one_catalog(Id, catalog(Ps, Ds, Cs, B, I, R, [], [], [], []),
+                     PS, DS, CS, RS, PrS, RichS).
+dump_one_catalog(Id, catalog(Ps, Ds, Cs, B, I, R, Ls, Es, As), PS, DS, CS, RS, PrS, RichS) :-
+    dump_one_catalog(Id, catalog(Ps, Ds, Cs, B, I, R, Ls, Es, As, []),
+                     PS, DS, CS, RS, PrS, RichS).
+dump_one_catalog(Id, catalog(Ps, Ds, Cs, B, I, R, Ls, Es, As, Prs),
+                 PS, DS, CS, RS, PrS, RichS) :-
     atom_string(Id, IdS),
     forall(member(package(N, V), Ps),
            (   pack_key(Id, N, K), pack_ver(V, VA),
@@ -58,17 +65,7 @@ dump_one_catalog(Id, catalog(Ps, Ds, Cs, B, I, R, Ls, Es, As), PS, DS, CS, RS, R
                json_write_dict(RichS, _{kind: "package", catalog: IdS, name: NS, ver: VJ},
                                [width(0)]), nl(RichS)
            )),
-    forall(member(depends(N, V, D, C), Ds),
-           (   pack_key(Id, N, KN), pack_dep_local(V, D, C, DA),
-               write_pair(DS, KN, DA),
-               pack_key(Id, D, KD), pack_rev_local(N, V, C, RA),
-               write_pair(RS, KD, RA),
-               ver_json(V, VJ), atom_string(N, NS), atom_string(D, DepS),
-               constraint_json(C, CJ),
-               json_write_dict(RichS,
-                   _{kind: "depends", catalog: IdS, name: NS, ver: VJ, dep: DepS, constraint: CJ},
-                   [width(0)]), nl(RichS)
-           )),
+    forall(member(Dep, Ds), dump_dep_row(Id, IdS, Dep, DS, RS, RichS)),
     forall(member(conflicts(N, V, O), Cs),
            (   pack_key(Id, N, K), pack_conflict_local(V, O, CA),
                write_pair(CS, K, CA),
@@ -77,19 +74,59 @@ dump_one_catalog(Id, catalog(Ps, Ds, Cs, B, I, R, Ls, Es, As), PS, DS, CS, RS, R
                    _{kind: "conflicts", catalog: IdS, name: NS, ver: VJ, other: OS},
                    [width(0)]), nl(RichS)
            )),
+    forall(member(Prov, Prs), dump_provide_row(Id, IdS, Prov, PrS, RichS)),
     dump_env_rich(IdS, B, I, R, Ls, Es, As, RichS).
 
-pack_dep_local(V, D, C, DA) :-
-    resolver_store:pack_ver(V, VA),
-    resolver_store:pack_constraint(C, CA),
-    atom_concat(VA, '#', T1), atom_concat(T1, D, T2),
-    atom_concat(T2, '#', T3), atom_concat(T3, CA, DA).
+dump_dep_row(Id, IdS, depends(N, V, D, C), DS, RS, RichS) :-
+    pack_key(Id, N, KN),
+    resolver_store:pack_dep(V, D, C, DA),
+    write_pair(DS, KN, DA),
+    dump_rev_for_need(Id, N, V, D, C, RS),
+    ver_json(V, VJ), atom_string(N, NS), dep_json_local(D, DJ),
+    constraint_json(C, CJ),
+    json_write_dict(RichS,
+        _{kind: "depends", catalog: IdS, name: NS, ver: VJ, dep: DJ, constraint: CJ},
+        [width(0)]), nl(RichS).
 
-pack_rev_local(N, V, C, RA) :-
-    resolver_store:pack_ver(V, VA),
-    resolver_store:pack_constraint(C, CA),
-    atom_concat(N, '#', T1), atom_concat(T1, VA, T2),
-    atom_concat(T2, '#', T3), atom_concat(T3, CA, RA).
+dump_rev_for_need(Id, N, V, alternatives(Alts), C, RS) :-
+    !,
+    forall(member(dep(AN, AC), Alts),
+           (   pack_key(Id, AN, KD),
+               resolver_store:pack_rev(N, V, AC, RA),
+               write_pair(RS, KD, RA)
+           )),
+    (   C = any -> true
+    ;   true
+    ).
+dump_rev_for_need(Id, N, V, D, C, RS) :-
+    pack_key(Id, D, KD),
+    resolver_store:pack_rev(N, V, C, RA),
+    write_pair(RS, KD, RA).
+
+dump_provide_row(Id, IdS, provides(N, V, Virt), PrS, RichS) :-
+    pack_key(Id, Virt, K),
+    resolver_store:pack_provide(N, V, '-', PA),
+    write_pair(PrS, K, PA),
+    ver_json(V, VJ), atom_string(N, NS), atom_string(Virt, VS),
+    json_write_dict(RichS,
+        _{kind: "provides", catalog: IdS, name: NS, ver: VJ, virtual: VS},
+        [width(0)]), nl(RichS).
+dump_provide_row(Id, IdS, provides(N, V, Virt, VV), PrS, RichS) :-
+    pack_key(Id, Virt, K),
+    resolver_store:pack_provide(N, V, VV, PA),
+    write_pair(PrS, K, PA),
+    ver_json(V, VJ), ver_json(VV, VVJ),
+    atom_string(N, NS), atom_string(Virt, VS),
+    json_write_dict(RichS,
+        _{kind: "provides", catalog: IdS, name: NS, ver: VJ, virtual: VS, virtual_ver: VVJ},
+        [width(0)]), nl(RichS).
+
+dep_json_local(alternatives(Alts), _{alternatives: Js}) :-
+    !, maplist(alt_json_local, Alts, Js).
+dep_json_local(D, DS) :- atom_string(D, DS).
+
+alt_json_local(dep(N, C), _{dep: NS, constraint: CJ}) :-
+    atom_string(N, NS), constraint_json(C, CJ).
 
 pack_conflict_local(V, O, CA) :-
     resolver_store:pack_ver(V, VA),
@@ -225,7 +262,14 @@ run_term_local(dependents, Cat, Args, Exp) :-
 run_term_local(dependents_installed, Cat, Args, Exp) :-
     dependents_installed(Cat, Args, Deps), sel_json(Deps, Js), Exp = _{ok: Js}.
 
-ver_json(v(A, B, C), [A, B, C]).
+ver_json(v(A, B, C), [A, B, C]) :- !.
+ver_json(deb(E, Up, Rev), _{deb: [E, UJ, RJ]}) :-
+    maplist(seg_json, Up, UJ),
+    maplist(seg_json, Rev, RJ).
+
+seg_json(s(Codes, N), [S, N]) :-
+    string_codes(S, Codes).
+
 pair_json(N-V, [NS, VJ]) :- atom_string(N, NS), ver_json(V, VJ).
 hold_json(N-V, [NS, VJ]) :- atom_string(N, NS), ver_json(V, VJ).
 hold_json(base(N-V, R), [NS, VJ, RS]) :- atom_string(N, NS), ver_json(V, VJ), atom_string(R, RS).
@@ -236,6 +280,8 @@ alias_json(alias(A, C), [AS, CS]) :- atom_string(A, AS), atom_string(C, CS).
 constraint_json(any, any).
 constraint_json(eq(V), _{op: "eq", v: J}) :- ver_json(V, J).
 constraint_json(gte(V), _{op: "gte", v: J}) :- ver_json(V, J).
+constraint_json(lte(V), _{op: "lte", v: J}) :- ver_json(V, J).
+constraint_json(gt(V), _{op: "gt", v: J}) :- ver_json(V, J).
 constraint_json(lt(V), _{op: "lt", v: J}) :- ver_json(V, J).
 constraint_json(range(Lo, Hi), _{op: "range", lo: LJ, hi: HJ}) :-
     ver_json(Lo, LJ), ver_json(Hi, HJ).
@@ -247,8 +293,27 @@ sel_json([N-V|Rest], [[NS, VJ]|Js]) :-
 blocked_list_json([], []).
 blocked_list_json([blocked(N, needs(C), base_has(V))|Rest],
                   [_{name: NS, needs: CJ, base_has: VJ}|Js]) :-
+    atom(N),
+    !,
     atom_string(N, NS), constraint_json(C, CJ), ver_json(V, VJ),
     blocked_list_json(Rest, Js).
+blocked_list_json([blocked(N, needs(C), providers(Ps))|Rest],
+                  [_{name: NS, needs: CJ, providers: PJ}|Js]) :-
+    !,
+    atom_string(N, NS), constraint_json(C, CJ),
+    blocked_list_json(Ps, PJ),
+    blocked_list_json(Rest, Js).
+blocked_list_json([blocked(alternatives(Rs))|Rest],
+                  [_{alternatives: AJ}|Js]) :-
+    !,
+    maplist(alt_reason_json, Rs, AJ),
+    blocked_list_json(Rest, Js).
+
+alt_reason_json(alt(N, unsatisfiable), _{dep: NS, reason: "unsatisfiable"}) :-
+    atom_string(N, NS).
+alt_reason_json(alt(N, B), _{dep: NS, reason: BJ}) :-
+    atom_string(N, NS),
+    blocked_list_json([B], [BJ]).
 
 verdict_json(safe(cost(R)), _{cost: RS, verdict: "safe"}) :- atom_string(R, RS).
 verdict_json(coordinated(Set), _{set: SJ, verdict: "coordinated"}) :- sel_json(Set, SJ).

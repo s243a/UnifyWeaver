@@ -1,0 +1,7 @@
+Debian Packages slice for uw-resolve P3.
+Source: https://deb.debian.org/debian/dists/bookworm/main/binary-amd64/Packages.gz
+Snapshot Last-Modified: Sat, 11 Jul 2026 (deb.debian.org).
+Stanzas: 500
+Parser: examples/pkg_resolver/debian/parse_packages.mjs
+Notes: Pre-Depends treated as Depends; Breaks treated as Conflicts;
+       Essential:yes mapped to base-candidate (kind=essential / footprint holds).

@@ -23,6 +23,14 @@ v1(v(1, 0, 0)).
 v2(v(2, 0, 0)).
 v11(v(1, 1, 0)).
 
+% Pre-segmented deb/3 (P3). 126 = ~, 46 = '.'
+deb_10(deb(0, [s([], 1), s([46], 0)], [])).
+deb_10_1(deb(0, [s([], 1), s([46], 0)], [s([], 1)])).
+deb_rc1(deb(0, [s([], 1), s([46], 0), s([126, 114, 99], 1)], [])).
+deb_236(deb(0, [s([], 2), s([46], 36)], [s([], 9)])).
+deb_238(deb(0, [s([], 2), s([46], 38)], [s([], 1)])).
+deb_ep2(deb(2, [s([], 1), s([46], 0)], [])).
+
 empty_cat(catalog([], [], [], [], [], [])).
 
 % ---------------------------------------------------------------------------
@@ -273,6 +281,110 @@ scenario_catalog(alias_rxvt, Cat) :-
         [],
         [alias(urxvt, rxvt)]).
 
+% --- P3 catalogs (Debian versions / provides / alternatives) ---
+
+scenario_catalog(deb_tilde, Cat) :-
+    deb_10(V), deb_rc1(RC),
+    Cat = catalog(
+        [package(lib, V), package(lib, RC), package(app, V)],
+        [depends(app, V, lib, gte(V))],
+        [], [], [], []).
+
+scenario_catalog(deb_epoch_ceiling, Cat) :-
+    deb_10(V), deb_ep2(E2),
+    Cat = catalog(
+        [package(lib, V), package(lib, E2), package(app, V)],
+        [depends(app, V, lib, gte(E2))],
+        [],
+        [lib-V],
+        [], []).
+
+scenario_catalog(deb_tilde_ceiling, Cat) :-
+    deb_236(Old), deb_238(New),
+    Cat = catalog(
+        [package(libc6, Old), package(libc6, New), package(app, New)],
+        [depends(app, New, libc6, gte(New))],
+        [],
+        [libc6-Old],
+        [], []).
+
+scenario_catalog(provides_real_pref, Cat) :-
+    v1(V),
+    Cat = catalog(
+        [package(awk, V), package(mawk, V), package(app, V)],
+        [depends(app, V, awk, any)],
+        [], [], [], [], [], [], [],
+        [provides(mawk, V, awk)]).
+
+scenario_catalog(provides_only, Cat) :-
+    v1(V),
+    Cat = catalog(
+        [package(postfix, V), package(app, V)],
+        [depends(app, V, 'mail-transport-agent', any)],
+        [], [], [], [], [], [], [],
+        [provides(postfix, V, 'mail-transport-agent')]).
+
+scenario_catalog(provides_versioned, Cat) :-
+    v1(V1), v2(V2),
+    Cat = catalog(
+        [package(mawk, V2), package(app, V1)],
+        [depends(app, V1, awk, gte(V2))],
+        [], [], [], [], [], [], [],
+        [provides(mawk, V2, awk, V2)]).
+
+scenario_catalog(provides_multi, Cat) :-
+    v1(V),
+    Cat = catalog(
+        [package(exim4, V), package(postfix, V), package(app, V)],
+        [depends(app, V, 'mail-transport-agent', any)],
+        [], [], [], [], [], [], [],
+        [provides(exim4, V, 'mail-transport-agent'),
+         provides(postfix, V, 'mail-transport-agent')]).
+
+scenario_catalog(alts_first, Cat) :-
+    v1(V),
+    Cat = catalog(
+        [package(a, V), package(b, V), package(app, V)],
+        [depends(app, V, alternatives([dep(a, any), dep(b, any)]), any)],
+        [], [], [], []).
+
+scenario_catalog(alts_backtrack, Cat) :-
+    v1(V),
+    Cat = catalog(
+        [package(a, V), package(b, V), package(app, V), package(peer, V)],
+        [depends(app, V, alternatives([dep(a, any), dep(b, any)]), any)],
+        [conflicts(a, V, peer)],
+        [], [], []).
+
+scenario_catalog(layered_provides, Cat) :-
+    v1(V),
+    Cat = catalog(
+        [package(postfix, V), package(app, V)],
+        [depends(app, V, 'mail-transport-agent', any)],
+        [],
+        [postfix-V],
+        [], [], [], [], [],
+        [provides(postfix, V, 'mail-transport-agent')]).
+
+scenario_catalog(layered_alts, Cat) :-
+    v1(V),
+    Cat = catalog(
+        [package(a, V), package(b, V), package(app, V)],
+        [depends(app, V, alternatives([dep(a, any), dep(b, any)]), any)],
+        [],
+        [a-V],
+        [], []).
+
+scenario_catalog(provider_hold_audit, Cat) :-
+    v1(V),
+    Cat = catalog(
+        [package(postfix, V), package(app, V)],
+        [depends(app, V, 'mail-transport-agent', any)],
+        [],
+        [postfix-V, app-V],
+        [], [], [], [], [],
+        [provides(postfix, V, 'mail-transport-agent')]).
+
 % corpus_case(Id, CatalogName, Query, Args)
 % Query = resolve | resolve_layered | explain_blocked | layer_closure | removal_orphans
 % Args  = requests list, a single request, or a package name.
@@ -316,6 +428,19 @@ corpus_case(excluded_does_not_block_removal, excluded_removal, removal_orphans, 
 corpus_case(dependents_lib, what_needs, dependents, lib).
 corpus_case(dependents_installed_lib, what_needs, dependents_installed, lib).
 corpus_case(alias_request_edge, alias_rxvt, resolve, [urxvt]).
+% P3
+corpus_case(deb_tilde_picks_release, deb_tilde, resolve, [app]).
+corpus_case(deb_epoch_ceiling, deb_epoch_ceiling, explain_blocked, app).
+corpus_case(deb_tilde_ceiling, deb_tilde_ceiling, explain_blocked, app).
+corpus_case(provides_real_preferred, provides_real_pref, resolve, [app]).
+corpus_case(provides_virtual_only, provides_only, resolve, [app]).
+corpus_case(provides_versioned_ok, provides_versioned, resolve, [app]).
+corpus_case(provides_first_listed, provides_multi, resolve, [app]).
+corpus_case(alts_first_preference, alts_first, resolve, [app]).
+corpus_case(alts_backtrack_second, alts_backtrack, resolve, [app, peer]).
+corpus_case(layered_uses_provider, layered_provides, resolve_layered, [app]).
+corpus_case(layered_alt_from_base, layered_alts, resolve_layered, [app]).
+corpus_case(freeze_audit_through_provides, provider_hold_audit, freeze_audit, []).
 
 :- begin_tests(pkg_resolver).
 
@@ -560,5 +685,85 @@ test(alias_at_request_edge) :-
     resolve(Cat, [urxvt], Sel),
     assertion(Sel == [rxvt-V]),
     assertion(\+ member(urxvt-_, Sel)).
+
+% ---- P3 ------------------------------------------------------------------
+
+test(deb_tilde_picks_release) :-
+    scenario_catalog(deb_tilde, Cat),
+    deb_10(V),
+    resolve(Cat, [app], Sel),
+    assertion(member(lib-V, Sel)),
+    assertion(\+ (deb_rc1(RC), member(lib-RC, Sel))).
+
+test(deb_epoch_ceiling_explain) :-
+    scenario_catalog(deb_epoch_ceiling, Cat),
+    deb_10(V), deb_ep2(E2),
+    \+ resolve_layered(Cat, [app], _),
+    findall(B, explain_blocked(Cat, app, B), Bs0),
+    sort(Bs0, Bs),
+    assertion(Bs == [blocked(lib, needs(gte(E2)), base_has(V))]).
+
+test(deb_tilde_ceiling_explain) :-
+    scenario_catalog(deb_tilde_ceiling, Cat),
+    deb_236(Old), deb_238(New),
+    \+ resolve_layered(Cat, [app], _),
+    findall(B, explain_blocked(Cat, app, B), Bs0),
+    sort(Bs0, Bs),
+    assertion(Bs == [blocked(libc6, needs(gte(New)), base_has(Old))]).
+
+test(provides_real_preferred) :-
+    scenario_catalog(provides_real_pref, Cat), v1(V),
+    resolve(Cat, [app], Sel),
+    assertion(member(awk-V, Sel)),
+    assertion(\+ member(mawk-_, Sel)).
+
+test(provides_virtual_selects_provider) :-
+    scenario_catalog(provides_only, Cat), v1(V),
+    resolve(Cat, [app], Sel),
+    assertion(member(postfix-V, Sel)),
+    assertion(\+ member('mail-transport-agent'-_, Sel)).
+
+test(provides_versioned) :-
+    scenario_catalog(provides_versioned, Cat), v1(V1), v2(V2),
+    resolve(Cat, [app], Sel),
+    assertion(member(mawk-V2, Sel)),
+    assertion(member(app-V1, Sel)).
+
+test(provides_multi_catalog_order) :-
+    scenario_catalog(provides_multi, Cat), v1(V),
+    resolve(Cat, [app], Sel),
+    assertion(member(exim4-V, Sel)),
+    assertion(\+ member(postfix-_, Sel)).
+
+test(alts_first_preference) :-
+    scenario_catalog(alts_first, Cat), v1(V),
+    resolve(Cat, [app], Sel),
+    assertion(member(a-V, Sel)),
+    assertion(\+ member(b-_, Sel)).
+
+test(alts_backtrack_to_second) :-
+    scenario_catalog(alts_backtrack, Cat), v1(V),
+    resolve(Cat, [app, peer], Sel),
+    assertion(member(b-V, Sel)),
+    assertion(member(peer-V, Sel)),
+    assertion(\+ member(a-_, Sel)).
+
+test(layered_uses_provider_hold) :-
+    scenario_catalog(layered_provides, Cat), v1(V),
+    resolve_layered(Cat, [app], Sel),
+    assertion(Sel == [app-V]),
+    assertion(\+ member(postfix-_, Sel)).
+
+test(layered_alt_already_in_base) :-
+    scenario_catalog(layered_alts, Cat), v1(V),
+    resolve_layered(Cat, [app], Sel),
+    assertion(Sel == [app-V]),
+    assertion(\+ member(a-_, Sel)),
+    assertion(\+ member(b-_, Sel)).
+
+test(freeze_audit_through_provides) :-
+    scenario_catalog(provider_hold_audit, Cat),
+    freeze_audit(Cat, Audit),
+    assertion(member(audit(postfix, suggest(abi_anchor)), Audit)).
 
 :- end_tests(pkg_resolver).

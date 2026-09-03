@@ -8,10 +8,12 @@ resolution: packages / depends / conflicts / reverse-deps live in D43
 indexed fact stores; the machine-local environment stays a term. Bytes
 read on a bound query are proportional to the query, not the catalog.
 
-Debian epoch/tilde, `Provides:`/virtual packages, write paths, and
-incremental store updates remain deferred. The `pkg`-style CLI exists:
-see [`cli/`](cli/) — the command grammar is a `cli_args` registry term,
-parsed by the transpiled argparser and dispatched to the wamjs resolver.
+P3 adds Debian version semantics, `Provides:` / virtual packages, and
+alternatives, plus a real Debian Packages slice under [`debian/`](debian/).
+Write paths and incremental store updates remain deferred. The `pkg`-style
+CLI exists: see [`cli/`](cli/) — the command grammar is a `cli_args`
+registry term, parsed by the transpiled argparser and dispatched to the
+wamjs resolver.
 
 
 Layered / frugal distros (Puppy, Woof-CE) run an **immutable curated base**
@@ -22,29 +24,32 @@ is the oracle; the same spec is compiled through `wam_javascript`
 (`emit_mode(mixed)`) and gated by the contract corpus plus a seeded
 differential.
 
-Debian epoch/tilde version semantics, `Provides:`/virtual packages, write
-paths, and incremental store updates remain deferred.
-The GP-LMDB / D43 indexed catalog path is P2 (this document); the
-`pkg`-style CLI lives in [`cli/`](cli/).
+Debian epoch/tilde, `Provides:`, and alternatives are P3 (this document,
+[`debian/`](debian/)). Write paths and incremental store updates remain
+deferred. The GP-LMDB / D43 indexed catalog path is P2; the `pkg`-style
+CLI lives in [`cli/`](cli/).
 
 ## The model
 
 The catalog is **data**, not the Prolog database. Every query takes a
-`catalog/6` (P0) or `catalog/9` (P0.5 extras) term as its first argument.
-There is no `assert`/`retract`. Bare `catalog/6` is still accepted: missing
-layers / excluded / aliases are `[]`, and a bare `Name-Ver` hold is
-`blanket`. Every P0 scenario is unchanged.
+`catalog/6` (P0), `catalog/9` (P0.5 extras), or `catalog/10` (P3 Provides)
+term as its first argument. There is no `assert`/`retract`. Bare
+`catalog/6` is still accepted: missing layers / excluded / aliases /
+provides are `[]`, and a bare `Name-Ver` hold is `blanket`. Every P0
+scenario is unchanged (the v/3 world is byte-identical).
 
 ```
 catalog(Packages, Depends, Conflicts, Base, Installed, Requested)
 catalog(Packages, Depends, Conflicts, Base, Installed, Requested,
         Layers, Excluded, Aliases)
+catalog(Packages, Depends, Conflicts, Base, Installed, Requested,
+        Layers, Excluded, Aliases, Provides)
 ```
 
 | Field | Shape |
 | --- | --- |
-| `Packages` | `[package(Name, v(M,I,P)), …]` |
-| `Depends` | `[depends(Name, Ver, DepName, Constraint), …]` |
+| `Packages` | `[package(Name, Ver), …]` |
+| `Depends` | `[depends(Name, Ver, DepNeed, Constraint), …]` — `DepNeed` is a name or `alternatives([dep(N,C),…])` |
 | `Conflicts` | `[conflicts(Name, Ver, OtherName), …]` (checked in both directions) |
 | `Base` | `[Hold, …]` — see **Freeze reasons** |
 | `Installed` | `[Name-Ver, …]` |
@@ -52,11 +57,27 @@ catalog(Packages, Depends, Conflicts, Base, Installed, Requested,
 | `Layers` | `[layer(Name, [Hold, …]), …]` — named loaded layers (§2f, minimal) |
 | `Excluded` | `[Name, …]` — candidate-generation blacklist only |
 | `Aliases` | `[alias(Alias, Canonical), …]` — request edge only |
+| `Provides` | `[provides(Name, Ver, Virtual)` or `provides(Name, Ver, Virtual, VirtualVer), …]` |
 
-**Versions** are `v(Major, Minor, Patch)`, compared lexicographically.
+**Versions:** `v(Major, Minor, Patch)` (P0, unchanged) or
+`deb(Epoch, UpSegs, RevSegs)` (P3). A segment is
+`s(OrderCodes, DigitInt)` — pre-segmented at the ingestion/API edge so
+comparison is pure list walking (Policy §5.6.12). Epoch is numeric
+(default 0). Then upstream, then revision, each segment-wise: `~` sorts
+before everything including the empty string; letters before non-letters;
+digit runs compare numerically; a missing part compares as empty.
 
 **Constraints:** `any` · `eq(V)` · `gte(V)` · `lt(V)` · `range(Lo, Hi)`
-(Lo inclusive, Hi exclusive). No Debian epoch/tilde in P0.5.
+(Lo inclusive, Hi exclusive) plus `lte(V)` / `gt(V)` for Debian `<=` / `>>`.
+Debian relation map at the ingestion edge:
+
+| Debian | resolver |
+| --- | --- |
+| `>=` | `gte` |
+| `<=` | `lte` |
+| `>>` | `gt` (strict) |
+| `<<` | `lt` (strict) |
+| `=` | `eq` |
 
 **Requests** are an atom `Name` (constraint `any`) or `req(Name, Constraint)`.
 Alias rewriting happens here only; catalog names stay canonical.
@@ -89,7 +110,8 @@ satisfying version the query fails; `upgrade_set_result/4` binds the same
 layers are not freeze-audited):
 
 - non-blanket → `audit(Name, held(Reason))`
-- blanket + a tight (`\== any`) reverse-dep from another base package →
+- blanket + a tight (`\== any`) reverse-dep from another base package
+  (or a virtual that this hold **provides**) →
   `audit(Name, suggest(abi_anchor))`
 - blanket + no such reverse-dep → `audit(Name, over_frozen)` — the
   "TrixiePup freezes too much" diagnosis as a query
@@ -116,6 +138,57 @@ protect it from being orphaned. (Stock Pkg conflated the two.)
 (`resolve*`, `explain_blocked`, `layer_closure`, `removal_orphans`,
 `safe_upgrade`, `upgrade_set`, `dependents*`). Catalog package names stay
 canonical: requesting `urxvt` selects `rxvt`.
+
+## Provides / virtual packages (P3)
+
+Shipped both unversioned `provides(Name, Ver, Virtual)` and versioned
+`provides(Name, Ver, Virtual, VirtualVer)`. A dependency on X is satisfied
+by a real package X **or** by any selected package providing X.
+A virtual name with no real package is never itself selected — a provider
+is.
+
+**Determinism:** real package preferred over providers; providers are
+tried in **catalog-list order** (first listed wins; later providers are
+backtrack alternatives). Unversioned Provides satisfy `any` only (Debian
+Policy). Versioned Provides compare `VirtualVer` against the constraint.
+
+`explain_blocked` on a blocked virtual names the providers and their
+ceilings: `blocked(Virtual, needs(C), providers([blocked(P, needs(C), base_has(V)), …]))`.
+
+Layered: a provider already in a loaded layer satisfies the virtual
+without re-selection (`from_base`).
+
+## Alternatives (P3)
+
+`depends(Name, Ver, alternatives([dep(A,C), dep(B,C), …]), any)` is an
+ordered candidate group. The first satisfiable alternative under the
+current partial selection wins; later alternatives are tried when a
+choice dead-ends downstream (genuine new backtracking surface). An
+alternative already satisfied by Acc or a loaded layer wins without
+re-selection.
+
+`explain_blocked` reports `blocked(alternatives([alt(N, Reason), …]))`
+with a per-alternative reason (`blocked/3` or `unsatisfiable`).
+
+## Debian Packages ingestion (P3)
+
+Parser is **`.mjs`**: [`debian/parse_packages.mjs`](debian/parse_packages.mjs).
+Field coverage: Package, Version, Depends, Pre-Depends (as Depends,
+noted), Provides, Conflicts, Breaks (as Conflicts, noted), Essential
+(`kind: "essential"` / `marker: "base-candidate"` — candidates for a
+frozen-base hold, not auto-held). Unknown fields skipped loudly-once.
+
+Committed slice: [`debian/sample_packages`](debian/sample_packages)
+(see [`debian/PROVENANCE.txt`](debian/PROVENANCE.txt)). Demo:
+
+```bash
+swipl -q -g demo -t halt examples/pkg_resolver/debian/demo.pl
+swipl -q -g test_deb_version -t halt examples/pkg_resolver/debian/test_deb_version.pl
+```
+
+The curated version table is ungated plunit. The dpkg arm
+(`dpkg --compare-versions`, ≥2000 seeded pairs) is gated on availability
+like D43's lmdb arm.
 
 ## Queries
 
@@ -320,10 +393,20 @@ key prefix so many catalogs can share one index.
 {"kind":"requested","catalog":"removal_basic","name":"app"}
 {"kind":"excluded","catalog":"excluded_select","name":"bad"}
 {"kind":"alias","catalog":"alias_rxvt","alias":"urxvt","canonical":"rxvt"}
+{"kind":"package","catalog":"debian_slice","name":"libc6","ver":{"deb":[0,[["",2],[".",36]],[["-",9]]]}}
+{"kind":"depends","catalog":"alts_first","name":"app","ver":[1,0,0],"dep":{"alternatives":[{"dep":"a","constraint":"any"},{"dep":"b","constraint":"any"}]},"constraint":"any"}
+{"kind":"provides","catalog":"provides_only","name":"postfix","ver":[1,0,0],"virtual":"mail-transport-agent"}
+{"kind":"provides","catalog":"provides_versioned","name":"mawk","ver":[1,0,0],"virtual":"awk","virtual_ver":[1,0,0]}
+{"kind":"essential","catalog":"debian_slice","name":"libc6","ver":{"deb":[0,[["",2],[".",36]],[["-",9]]]},"marker":"base-candidate"}
 ```
 
-Only `package` / `depends` / `conflicts` are indexed. Env rows stay
-term-side. `depends` also emits a reverse-dep posting at build time.
+`package` / `depends` / `conflicts` / `provides` are indexed. Env rows stay
+term-side. `depends` also emits a reverse-dep posting at build time
+(one per alternative member). `deb` versions pack as
+`d:Epoch:order|num;…:order|num;…`. Alternative deps pack as
+`Ver#ALTS/name=cstr+name=cstr#Constraint`. Provides pack as
+`Pkg#Ver#-` (unversioned) or `Pkg#Ver#VirtualVer` keyed by
+`CatId|Virtual`.
 
 ### Store key layout (D43 P/2)
 
@@ -331,10 +414,11 @@ D43 stores are scalar P/2 (atom/int/float/string). Compounds are packed:
 
 | Store prefix | a1 (index key) | a2 (packed atom) |
 | --- | --- | --- |
-| `pkg` | `CatId\|Name` | `Major.Minor.Patch` |
-| `dep` | `CatId\|Name` | `Ver#Dep#Constraint` |
+| `pkg` | `CatId\|Name` | `Major.Minor.Patch` or `d:Epoch:Up:Rev` |
+| `dep` | `CatId\|Name` | `Ver#Dep#Constraint` or `Ver#ALTS/…#Constraint` |
 | `conflict` | `CatId\|Name` | `Ver#Other` |
 | `revdep` | `CatId\|DepName` | `Name#Ver#Constraint` |
+| `provide` | `CatId\|Virtual` | `Pkg#Ver#-` or `Pkg#Ver#VirtualVer` |
 
 Constraint packing: `any` · `eq:1.0.0` · `gte:1.0.0` · `lt:2.0.0` ·
 `range:1.0.0:2.0.0`. Builder: `store/rich_to_p2.mjs` then
@@ -363,7 +447,8 @@ identical keys and packed cells. WAM seeks `indexed(Prefix)` or `lmdb(Dir)` buil
 | `wamjs_store/` | store-backed JS WAM build (D43 fact sources; `UW_STORE_BACKEND`) |
 | `store/` | dump schema helpers, indexer + LMDB builder, 5k generator, cache equiv |
 | `store/run_measure_2x2.sh` | `{indexed,lmdb}×{lazy,cached}` (`UW_FACT_CACHE=0|1`) + 100× repeat |
-| `gen_catalogs.mjs` | mulberry32, 2400 term catalogs (seed `0xa5b6c7d8`) |
+| `gen_catalogs.mjs` | mulberry32, 2400 v/3 catalogs (seed `0xa5b6c7d8`) + 200 P3 (seed `0xdeb00001`) |
+| `debian/` | deb parser, dpkg oracle, Packages ingestion, committed slice |
 | `run_differential.sh` | term-catalog SWI vs wamjs, 0-divergence gate |
 | `run_store_differential.sh` | store-backed 5k catalog, ≥500 cases, 0 divergences |
 | `run_scale_demo.sh` | bytes-read proof + term-vs-store timings |
@@ -398,14 +483,19 @@ UW_FACT_CACHE=0 bash examples/pkg_resolver/run_store_differential.sh  # lazy
 bash examples/pkg_resolver/store/run_measure_2x2.sh   # 2×2 lazy/cached + 100× repeat
 ```
 
-## Deferred (not P2)
+## Deferred (not P3)
 
-- Debian epoch / tilde / letter version semantics
-- `Provides:` / virtual packages / alternatives
+- ~~Debian epoch / tilde / letter version semantics~~ — done (P3)
+- ~~`Provides:` / virtual packages / alternatives~~ — done (P3)
 - ~~`pkg`-style CLI on top of `examples/cli_args`~~ — done, see [`cli/`](cli/)
+- Breaks vs Conflicts fidelity (Breaks currently ingested as Conflicts)
+- Pre-Depends ordering (ingested as Depends)
+- Recommends / Suggests
+- multiarch (`:any`, arch qualifiers)
+- epoch display formatting (missing-digit reconstruction)
 - write paths (install / remove / commit a layer)
 - per-file / per-SFS modeling inside a named layer
-- incremental store updates (rebuild the four indexes from a full dump;
+- incremental store updates (rebuild the indexes from a full dump;
   a write path must `Runtime.fact_cache_reset()`)
 - JS L2 two-level cache (`lmdb_l2_capacity` as a real L2; Go L1 = L2/8)
 - `lmdb_materialisation(auto)` + `core/cost_model.pl` (JS currently warns
