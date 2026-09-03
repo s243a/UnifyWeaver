@@ -33,6 +33,7 @@ test(driver_idx_10002_survives_long_walk) :-
     ( exists_directory(Proj) -> delete_directory_and_contents(Proj) ; true ),
     write_wam_go_project([user:gwalk/1],
                          [module_name(varidcol), prefer_wam(true)], Proj),
+    !,
     directory_file_path(Proj, 'cmd', CmdDir),
     directory_file_path(CmdDir, 'run', RunDir),
     make_directory_path(RunDir),

@@ -25,7 +25,7 @@ WAM pipeline via `prefer_wam(true)`.
 |---|---:|
 | `src/unifyweaver/targets/wam_go_target.pl` | ~4.3k |
 | `src/unifyweaver/targets/wam_go_lowered_emitter.pl` | ~0.8k |
-| Dedicated tests | ~22 files |
+| Dedicated tests | ~23 files |
 
 ## What's shipped
 
@@ -135,9 +135,10 @@ is term↔JSON IO only. Corpus **39/39** vs SWI; seeded differential
 **2400/0**. Additional runtime bugs the program forced (not in the A2
 table): empty-list `GetConstant` vs `*List`; `sort/2` unique-collapsing
 compounds; `switch_on_structure` emission using `Val` instead of
-`Functor`; 4-arg `begin_aggregate`. **B3 residual:** `matching_deps/4`
-on a depends list longer than ~1463 leaves `Sel` unbound at `sort/2`
-(`fail` on the 5k catalog; SWI returns 10 packages). See
+`Functor`; 4-arg `begin_aggregate`; `allocVarId` aliasing driver Idx
+10000–10999 (B3 `sort/2` unifying Acc with `[]`). **B3** on the 5k
+catalog (`0xc0ffee01`): Go load **0.060s** / resolve **4.604s**, same
+10-package selection as SWI (load **0.428s** / resolve **0.008s**). See
 `examples/pkg_resolver/go/README.md`.
 
 ## Path forward
@@ -162,5 +163,5 @@ source reading; see [`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).
 2026-09-03: uw-resolve on Go + 35-probe cut audit (35/35, 0 refused).
 A2 still structural (Call Y-save is a partial mitigation). A3 residual
 remains for unclassified builtins; `call/1` now classified. Cut suite
-is `prefer_wam(true)` only. B3 5k `resolve_layered` still fails
-(`matching_deps/4` depth).
+is `prefer_wam(true)` only. B3 5k `resolve_layered` matches SWI after
+`allocVarId` skips Idx 10000–10999 (Go resolve 4.604s vs SWI 0.008s).

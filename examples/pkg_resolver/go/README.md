@@ -41,6 +41,7 @@ times `resolve_layered` on `DIR/rich.jsonl` + `DIR/probe.json`.
 | 6 | `bagof`/`setof` compiled to a missing `call bagof/3` | Go did not pass `inline_bagof_setof(true)` | Opt in at `go_compile_predicate_to_wam/3`; empty bagof/setof fail; setof sorts | cut-semantics p14/p15 |
 | 7 | bagof/setof probes left `L` as `__R200` | 4-arg `begin_aggregate bagof, Y, X, ''` was dropped as `// TODO`, so `EndAggregate` was a no-op | Accept the 4th witness-register argument (empty witness list uses the 3-arg runtime) | cut-semantics p14/p15 |
 | 8 | Cut suite lost extra solutions / p29 printed `1` not `ok` | Y slots are global; Proceed popped a Call Y-save that backtrack did not restore; `!/0` used the caller's `EnvFrame.CutB0` | Call pushes B0+Y; Execute rebases B0 only (LCO); Proceed pops; CPs snapshot/restore both stacks; `!/0` truncates to `PendingB0` | `tests/test_wam_go_cut_semantics.pl` (35/35) |
+| 9 | B3 `resolve_layered` unified Acc with `[]` | `allocVarId` started at 1000; shim minted output vars at `Idx: 10000+i`; after ~9000 cells, `NextVarId` aliased `Bindings[10002]` with `Selection` | skip 10000–10999 in `allocVarId`; shim uses `vm.allocVarId()` | `tests/test_wam_go_varid_collision.pl` |
 
 ## Cut / choice-point barriers
 
@@ -73,21 +74,15 @@ row is `alias_request_edge`).
 
 | Bench | What | Number |
 |-------|------|--------|
-| B1 | 39-scenario corpus, Go binary, one process (`run_corpus_go.sh`) | **0.027s wall, 39/39 vs SWI** |
-| B1 | `go build` of `uwresolve` (not in B1 wall) | **0.167s** |
-| B2 | Differential Go leg (`run_differential_go.sh`, seed `0xa5b6c7d8`) | **17.602s, 2400 cases, 0 divergences, 0 crashes** |
-| B2 | SWI oracle leg, same machine | **1.483s** |
-| B3 | 5k catalog `resolve_layered` (`run_scale_go.sh`, seed `0xc0ffee01`) | Go **load 0.082s / resolve 8.496s**, result `{"fail":true}` |
+| B1 | 39-scenario corpus, Go binary, one process (`run_corpus_go.sh`) | **0.024s wall, 39/39 vs SWI** |
+| B1 | `go build` of `uwresolve` (not in B1 wall; clean rebuild) | **0.168s** |
+| B2 | Differential Go leg (`run_differential_go.sh`, seed `0xa5b6c7d8`) | **8.869s, 2400 cases, 0 divergences, 0 crashes** |
+| B2 | SWI oracle leg, same machine | **1.331s** |
+| B3 | 5k catalog `resolve_layered` (`run_scale_go.sh`, seed `0xc0ffee01`) | Go **load 0.060s / resolve 4.604s**, 10-package selection `p1-v(1,0,0)`, `p10`, `p12`, `p2`, `p3`, `p30`, `p4`, `p5`, `p6`, `p7` |
 
 SWI term reference on the **same** `go/.scale_out` catalog + `p30` probe
 (not `run_scale_demo.sh`, which also builds the store path): **load
-0.430s / resolve 0.008s**, selection of 10 packages
-(`[p1-v(1,0,0), p10-v(0,0,0), …, p30-v(0,0,0)]`).
-
-B3 is a residual, not a comparable timing: Go fails when the depends
-list is longer than ~1463 edges (`matching_deps/4` recursion). A
-depends-free 7514-package catalog resolves `p1` correctly. The 2400-case
-differential never builds a catalog that large.
+0.428s / resolve 0.008s**, same 10 packages.
 
 ## Residuals
 
@@ -95,15 +90,17 @@ differential never builds a catalog that large.
   so X101 ≡ Y1): still structural. Call Y-save is a partial mitigation
   for Allocate-less Y clobber; the numeric alias is unchanged. The P0.5
   resolver did not hit a no-`Allocate` fact with >99 X placeholders.
-- **B3 / `matching_deps/4`:** `resolve_layered` on the 5k catalog
-  (15000 depends) returns `fail` with `Sel` still unbound at `sort/2`
-  once the depends list is longer than ~1463. SWI returns a 10-package
-  selection in 8ms. Not hit by corpus or the 2400-case differential.
 - **A3**: `BuiltinExecute` covers known builtins. A builtin missed by
   translation-time classification still fails silently. `call/1` is
   now classified. `member/2` is `BuiltinCall` here.
 - **call/1 extra solutions**: nested user goals are first-solution;
   opaque `!` is correct.
+- **bagof witness grouping** is not implemented (empty witness list is
+  OK for cut-semantics p14/p15).
+- **Var-id skip window** 10000–10999 is a shim-friendly hole, not a
+  general heap allocator. Programs that allocate >9000 unbound cells
+  still wrap past the window; the shim now uses `vm.allocVarId()` so
+  output vars never sit in that hole.
 - P0.5 resolver residuals (unchanged, frozen source): Provides/virtual,
   Debian epoch/tilde, write paths, incremental stores, pkg CLI
   (concurrent), per-file SFS layers.
