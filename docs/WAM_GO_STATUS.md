@@ -25,7 +25,7 @@ WAM pipeline via `prefer_wam(true)`.
 |---|---:|
 | `src/unifyweaver/targets/wam_go_target.pl` | ~4.3k |
 | `src/unifyweaver/targets/wam_go_lowered_emitter.pl` | ~0.8k |
-| Dedicated tests | ~17 files |
+| Dedicated tests | ~22 files |
 
 ## What's shipped
 
@@ -87,14 +87,47 @@ classes that are fleet-wide suspects. Go's audit:
 | # | Deficiency | Status | Evidence / reason |
 |---|---|---|---|
 | A1 | `sub_string/5` builtin missing | **verified missing** | Go has `sub_atom/5` (`state.go.mustache:2792`) but no `sub_string/5` |
-| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **verified (structural)** | encoding `X_n→n+99 / Y_n→n+199` (`wam_go_target.pl:2103-2105`), so **X101 ≡ index 200 ≡ Y1**; registers are one flat `vm.Regs` array, and the Y range 200..299 is saved/restored only across the *callee's own* `Allocate`/`Deallocate` (`:2558-2598`) — a no-`Allocate` fact with >99 X placeholders scribbles over the caller's live Y values with nothing to restore them |
-| A3 | `Execute` of a builtin doesn't return to the continuation | **handled for known builtins** | Go already solved the class with a dedicated `BuiltinExecute` instruction that runs the builtin then takes Proceed's return path (`instructions.go.mustache:130-143`, `wam_go_target.pl:2729-2738`) — the fleet's reference implementation. Residual: the builtin-vs-predicate decision is made at translation time (`:1000-1008,1907-1908`); a builtin the classifier misses falls into `Execute`'s label→foreign→indexed-fact chain and silently fails (`:2661-2669`) |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **verified (structural); not hit by uw-resolve** | encoding `X_n→n+99 / Y_n→n+199` (`wam_go_target.pl:2103-2105`), so **X101 ≡ index 200 ≡ Y1**; Y 200..299 is saved only across the *callee's own* `Allocate`/`Deallocate`. The P0.5 resolver did not exercise a no-`Allocate` fact with >99 X placeholders; the encoding is unchanged. |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **handled for known builtins; `call/1` now classified** | `BuiltinExecute` still takes Proceed's return path for classified builtins. Residual: a missed classifier entry still silently fails. `call/1` was that class (compiled as `call call/1`, no label) — now `wam_go_direct_builtin` → `BuiltinCall`. `member/2` in uw-resolve is `BuiltinCall`. |
 | A4 | String fidelity | **rung 0** | `value.go.mustache` has Integer/Float/Atom/Compound/Structure/List/Ref/Unbound — no string type; D37's double-quoted literals intern as atoms |
 
 Pattern lane: `go_target.pl` compiles facts from `clause(Head, true)`
 (`:6790-6798`) — the G-A3-8 execute-at-compile-time hazard is absent.
 The G-A3 machinery has no analogue; presume those gaps present until
 `examples/cli_args/` is attempted through the Go pattern lane.
+
+## Cut and choice-point barriers (2026-09)
+
+Pinned by `tests/test_wam_go_cut_semantics.pl` (35 probes, SWI oracle,
+`prefer_wam(true)` only — Go has no `emit_mode`). The JS audit found 12
+divergences of this class (`!` wiping ALL choice points); this backend
+already had M17 `GetLevel`/`Cut` and `PendingB0` rebased by both Call
+and Execute, with `EnvFrame.CutB0` consumed by `!/0`. uw-resolve plus
+the 35-probe corpus forced:
+
+- **`call/1` opaque scope.** Previously a missing label (silent fail).
+  Now a builtin whose `!` truncates only to the metacall entry height.
+  Residual: nested *user* goals inside `call/1` are first-solution
+  (leftover CPs are not resumed as extra metacall solutions). p09/p10
+  do not need that path.
+- **`inline_bagof_setof(true)`.** bagof/setof compile to
+  `BeginAggregate` instead of `call bagof/3`. Empty bagof/setof fail;
+  setof sorts.
+- Aggregates still run in `Clone()`; an inner `!` cannot destroy the
+  caller's CPs. `freezeTerm` copies collected templates out of the clone
+  (findall nested Unbounds).
+
+ITE condition / `\+` / `once` / `forall` remain the M17 soft-cut
+rewrite. Probe count and any refused-loudly shapes are reported by the
+suite (currently 35 compile).
+
+## Whole-program exercise: uw-resolve (`examples/pkg_resolver/go/`)
+
+P0.5 resolver compiled through `wam_go` (`prefer_wam(true)`). JSON shim
+is term↔JSON IO only. Additional runtime bugs the program forced (not
+in the A2 table): empty-list `GetConstant` vs `*List`; `sort/2`
+unique-collapsing compounds; `switch_on_structure` emission using
+`Val` instead of `Functor`. See `examples/pkg_resolver/go/README.md`.
 
 ## Path forward
 
@@ -115,3 +148,6 @@ gap cards (LMDB-GO, ISO-GO, BENCH-GO, PARSE-GO) landed. Update the parity audit 
 then refresh here. 2026-09-01: added the whole-program (A2) deficiency
 audit — X→Y aliasing and the `BuiltinExecute` mitigation verified by
 source reading; see [`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).
+2026-09-03: uw-resolve on Go + 35-probe cut audit. A2 still structural
+(not hit). A3 residual remains for unclassified builtins; `call/1` now
+classified. Cut suite is `prefer_wam(true)` only.
