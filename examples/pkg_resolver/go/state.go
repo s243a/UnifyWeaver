@@ -3994,6 +3994,7 @@ func (vm *WamState) builtinMaplist(nLists int) bool {
 	if bound == nil || nLists != 2 {
 		return false
 	}
+	outReg := vm.getReg(1 + unboundAt)
 	out := make([]Value, 0, len(bound))
 	for i := 0; i < len(bound); i++ {
 		y := &Unbound{Name: fmt.Sprintf("_ML%d", i), Idx: vm.allocVarId()}
@@ -4012,7 +4013,7 @@ func (vm *WamState) builtinMaplist(nLists int) bool {
 		}
 		out = append(out, y)
 	}
-	return vm.Unify(vm.getReg(1+unboundAt), listFromItems(out))
+	return vm.Unify(outReg, listFromItems(out))
 }
 
 // builtinPredsort implements predsort/3. Comparator is Pred(Order,X,Y)
@@ -4024,6 +4025,12 @@ func (vm *WamState) builtinPredsort() bool {
 	if !ok {
 		return false
 	}
+	// Capture A2 before the comparator meta-calls. invokeAtPC writes
+	// Order/X/Y into A0–A2 and on success does not restore them;
+	// Unify(getReg(2), Sorted) then compared a version term to a list
+	// and predsort failed whenever the less-func actually ran
+	// (single-element lists, and compare/3, never hit this).
+	out := vm.getReg(2)
 	predName := ""
 	if a, isAtom := pred.(*Atom); isAtom {
 		predName = parseFunctorName(a.Name)
@@ -4039,7 +4046,9 @@ func (vm *WamState) builtinPredsort() bool {
 		if goal == nil {
 			return false
 		}
+		saved := vm.snapshotAllRegs()
 		ok := vm.invokeGoalOnce(goal)
+		vm.restoreSavedRegs(saved)
 		if !ok {
 			return false
 		}
@@ -4048,7 +4057,7 @@ func (vm *WamState) builtinPredsort() bool {
 		}
 		return false
 	})
-	return vm.Unify(vm.getReg(2), listFromItems(sorted))
+	return vm.Unify(out, listFromItems(sorted))
 }
 
 // invokeGoalOnce meta-calls goal and then discards leftover choice

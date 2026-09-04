@@ -20,6 +20,8 @@
 :- dynamic user:gscodes/0.
 :- dynamic user:empty_codes/1.
 :- dynamic user:gpredsort/0.
+:- dynamic user:gpreduser/0.
+:- dynamic user:cmp_n/3.
 :- dynamic user:gunknown/0.
 
 user:is_v3(v(_, _, _)).
@@ -30,6 +32,11 @@ user:gmapinc :- maplist(inc1, [1, 2, 3], [2, 3, 4]).
 user:empty_codes([]).
 user:gscodes :- string_codes('', L), empty_codes(L).
 user:gpredsort :- predsort(compare, [v(2, 0, 0), v(1, 0, 0)], [v(1, 0, 0), v(2, 0, 0)]).
+% User comparator (resolver's cmp_ver/3 shape): must not smash A2.
+user:cmp_n(<, A, B) :- A < B, !.
+user:cmp_n(>, A, B) :- B < A, !.
+user:cmp_n(=, _, _).
+user:gpreduser :- predsort(cmp_n, [3, 1, 2], [1, 2, 3]).
 user:gunknown :- totally_missing_pred(x).
 
 go_available :-
@@ -62,6 +69,7 @@ func main() {
 	fmt.Printf("MAPINC=%v\\n", run(wam.GmapincCode, wam.GmapincLabels, wam.GmapincStartPC))
 	fmt.Printf("SCODES=%v\\n", run(wam.GscodesCode, wam.GscodesLabels, wam.GscodesStartPC))
 	fmt.Printf("PREDSORT=%v\\n", run(wam.GpredsortCode, wam.GpredsortLabels, wam.GpredsortStartPC))
+	fmt.Printf("PREDUSER=%v\\n", run(wam.GpreduserCode, wam.GpreduserLabels, wam.GpreduserStartPC))
 	fmt.Printf("UNKNOWN=%v\\n", run(wam.GunknownCode, wam.GunknownLabels, wam.GunknownStartPC))
 }
 '),
@@ -75,7 +83,7 @@ test(maplist_predsort_string_codes_warn) :-
     write_wam_go_project(
         [user:is_v3/1, user:inc1/2, user:gmapv3/0, user:gmapdeb/0,
          user:gmapinc/0, user:empty_codes/1, user:gscodes/0,
-         user:gpredsort/0, user:gunknown/0],
+         user:gpredsort/0, user:cmp_n/3, user:gpreduser/0, user:gunknown/0],
         [module_name(maplistprobe), prefer_wam(true)], Proj),
     directory_file_path(Proj, 'cmd', CmdDir),
     directory_file_path(CmdDir, 'run', RunDir),
@@ -107,6 +115,7 @@ test(maplist_predsort_string_codes_warn) :-
     assertion(sub_string(OutStr, _, _, _, "MAPINC=true")),
     assertion(sub_string(OutStr, _, _, _, "SCODES=true")),
     assertion(sub_string(OutStr, _, _, _, "PREDSORT=true")),
+    assertion(sub_string(OutStr, _, _, _, "PREDUSER=true")),
     assertion(sub_string(OutStr, _, _, _, "UNKNOWN=false")),
     directory_file_path(Proj, 'warn.err', WarnPath),
     read_file_to_string(WarnPath, WarnStr, []),
