@@ -119,12 +119,39 @@ catalog_json(catalog(Ps, Ds, Cs, Bs, Is, Rs, Ls, Es, As),
     maplist(layer_json, Ls, LJ),
     maplist(atom_string, Es, EJ),
     maplist(alias_json, As, AJ).
+catalog_json(catalog(Ps, Ds, Cs, Bs, Is, Rs, Ls, Es, As, Pr),
+             _{packages: PJ, depends: DJ, conflicts: CJ,
+               base: BJ, installed: IJ, requested: RJ,
+               layers: LJ, excluded: EJ, aliases: AJ, provides: PrJ}) :-
+    maplist(pkg_json, Ps, PJ),
+    maplist(dep_json, Ds, DJ),
+    maplist(conf_json, Cs, CJ),
+    maplist(hold_json, Bs, BJ),
+    maplist(pair_json, Is, IJ),
+    maplist(atom_string, Rs, RJ),
+    maplist(layer_json, Ls, LJ),
+    maplist(atom_string, Es, EJ),
+    maplist(alias_json, As, AJ),
+    maplist(provide_json, Pr, PrJ).
+
+provide_json(provides(N, V, Virt), [NS, VJ, VS]) :-
+    atom_string(N, NS), ver_json(V, VJ), atom_string(Virt, VS).
+provide_json(provides(N, V, Virt, VV), [NS, VJ, VS, VVJ]) :-
+    atom_string(N, NS), ver_json(V, VJ), atom_string(Virt, VS), ver_json(VV, VVJ).
 
 pkg_json(package(N, V), [NS, VJ]) :-
     atom_string(N, NS), ver_json(V, VJ).
+dep_json(depends(N, V, alternatives(Alts), C), [NS, VJ, _{alternatives: AJ}, CJ]) :-
+    !,
+    atom_string(N, NS), ver_json(V, VJ),
+    maplist(alt_json, Alts, AJ),
+    constraint_json(C, CJ).
 dep_json(depends(N, V, D, C), [NS, VJ, DS, CJ]) :-
     atom_string(N, NS), ver_json(V, VJ), atom_string(D, DS),
     constraint_json(C, CJ).
+
+alt_json(dep(D, C), _{constraint: CJ, dep: DS}) :-
+    atom_string(D, DS), constraint_json(C, CJ).
 conf_json(conflicts(N, V, O), [NS, VJ, OS]) :-
     atom_string(N, NS), ver_json(V, VJ), atom_string(O, OS).
 pair_json(N-V, [NS, VJ]) :-
@@ -139,11 +166,19 @@ layer_json(layer(N, Pkgs), _{name: NS, packages: PJ}) :-
 alias_json(alias(A, C), [AS, CS]) :-
     atom_string(A, AS), atom_string(C, CS).
 
-ver_json(v(A, B, C), [A, B, C]).
+ver_json(v(A, B, C), [A, B, C]) :- !.
+ver_json(deb(E, Up, Rev), _{deb: [E, UJ, RJ]}) :-
+    maplist(seg_json, Up, UJ),
+    maplist(seg_json, Rev, RJ).
+
+seg_json(s(Codes, N), [S, N]) :-
+    string_codes(S, Codes).
 
 constraint_json(any, any).
 constraint_json(eq(V), _{op: "eq", v: J}) :- ver_json(V, J).
 constraint_json(gte(V), _{op: "gte", v: J}) :- ver_json(V, J).
+constraint_json(lte(V), _{op: "lte", v: J}) :- ver_json(V, J).
+constraint_json(gt(V), _{op: "gt", v: J}) :- ver_json(V, J).
 constraint_json(lt(V), _{op: "lt", v: J}) :- ver_json(V, J).
 constraint_json(range(Lo, Hi), _{op: "range", lo: LJ, hi: HJ}) :-
     ver_json(Lo, LJ), ver_json(Hi, HJ).
@@ -156,10 +191,30 @@ sel_json([N-V|Rest], [[NS, VJ]|Js]) :-
 blocked_list_json([], []).
 blocked_list_json([blocked(N, needs(C), base_has(V))|Rest],
                   [_{name: NS, needs: CJ, base_has: VJ}|Js]) :-
+    atom(N),
+    !,
     atom_string(N, NS),
     constraint_json(C, CJ),
     ver_json(V, VJ),
     blocked_list_json(Rest, Js).
+blocked_list_json([blocked(N, needs(C), providers(Ps))|Rest],
+                  [_{name: NS, needs: CJ, providers: PJ}|Js]) :-
+    !,
+    atom_string(N, NS),
+    constraint_json(C, CJ),
+    blocked_list_json(Ps, PJ),
+    blocked_list_json(Rest, Js).
+blocked_list_json([blocked(alternatives(Rs))|Rest],
+                  [_{alternatives: AJ}|Js]) :-
+    !,
+    maplist(alt_reason_json, Rs, AJ),
+    blocked_list_json(Rest, Js).
+
+alt_reason_json(alt(N, unsatisfiable), _{dep: NS, reason: "unsatisfiable"}) :-
+    atom_string(N, NS).
+alt_reason_json(alt(N, B), _{dep: NS, reason: BJ}) :-
+    atom_string(N, NS),
+    blocked_list_json([B], [BJ]).
 
 verdict_json(safe(cost(R)), _{cost: RS, verdict: "safe"}) :-
     atom_string(R, RS).

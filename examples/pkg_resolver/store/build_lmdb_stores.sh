@@ -6,8 +6,8 @@
 #
 #   bash examples/pkg_resolver/store/build_lmdb_stores.sh DIR
 #
-# Expects DIR/{pkg,dep,conflict,revdep}.jsonl
-# Writes DIR/lmdb/{pkg,dep,conflict,revdep}/ (one LMDB env per store).
+# Expects DIR/{pkg,dep,conflict,revdep,provide}.jsonl
+# Writes DIR/lmdb/{pkg,dep,conflict,revdep,provide}/ (one LMDB env per store).
 # Loud error if the `lmdb` npm package is missing; never falls back
 # to indexed(...).
 
@@ -24,4 +24,4 @@ LMDB_JS="$ROOT/scripts/js_wam/uw_fact_lmdb.js"
 PARENT="$DIR/lmdb"
 mkdir -p "$PARENT"
 node "$LMDB_JS" build-all "$DIR" "$PARENT"
-echo "build_lmdb_stores.sh: wrote $PARENT/{pkg,dep,conflict,revdep}"
+echo "build_lmdb_stores.sh: wrote $PARENT/{pkg,dep,conflict,revdep,provide}"

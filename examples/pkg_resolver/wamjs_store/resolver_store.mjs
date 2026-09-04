@@ -49,21 +49,43 @@ function jsListToTerm(arr, mapItem) {
   return cur;
 }
 
-function vTerm(triple) {
+function vTerm(ver) {
+  return verTerm(ver);
+}
+
+function verTerm(ver) {
+  if (ver && typeof ver === "object" && !Array.isArray(ver) && ver.deb) {
+    const d = ver.deb;
+    return V.Struct(functorId("deb"), [
+      V.Int(d[0] | 0),
+      segsTerm(d[1] || []),
+      segsTerm(d[2] || [])
+    ]);
+  }
   return V.Struct(functorId("v"), [
-    V.Int(triple[0] | 0),
-    V.Int(triple[1] | 0),
-    V.Int(triple[2] | 0)
+    V.Int(ver[0] | 0),
+    V.Int(ver[1] | 0),
+    V.Int(ver[2] | 0)
   ]);
+}
+
+function segsTerm(segs) {
+  return jsListToTerm(segs, (seg) => {
+    const order = String(seg[0] || "");
+    const codes = [];
+    for (let i = 0; i < order.length; i++) codes.push(order.charCodeAt(i));
+    return V.Struct(functorId("s"), [jsListToTerm(codes, (c) => V.Int(c)), V.Int(seg[1] | 0)]);
+  });
 }
 
 function constraintTerm(c) {
   if (c === "any" || c == null) return internAtom("any");
-  if (typeof c === "object" && c.op === "eq") return V.Struct(functorId("eq"), [vTerm(c.v)]);
-  if (typeof c === "object" && c.op === "gte") return V.Struct(functorId("gte"), [vTerm(c.v)]);
-  if (typeof c === "object" && c.op === "lt") return V.Struct(functorId("lt"), [vTerm(c.v)]);
+  if (typeof c === "object" && (c.op === "eq" || c.op === "gte" || c.op === "lt" ||
+      c.op === "lte" || c.op === "gt")) {
+    return V.Struct(functorId(c.op), [verTerm(c.v)]);
+  }
   if (typeof c === "object" && c.op === "range") {
-    return V.Struct(functorId("range"), [vTerm(c.lo), vTerm(c.hi)]);
+    return V.Struct(functorId("range"), [verTerm(c.lo), verTerm(c.hi)]);
   }
   throw new Error("resolver shim: unknown constraint " + JSON.stringify(c));
 }
@@ -175,12 +197,27 @@ function termToJs(state, term0) {
     const n = functorName(term.fid).replace(/\/\d+$/, "");
     const args = (term.args || []).map((a) => termToJs(state, a));
     if (n === "v" && args.length === 3) return args;
+    if (n === "s" && args.length === 2) {
+      const order = Array.isArray(args[0])
+        ? String.fromCharCode.apply(null, args[0])
+        : "";
+      return [order, args[1]];
+    }
+    if (n === "deb" && args.length === 3) return { deb: args };
     if (n === "-" && args.length === 2) return [args[0], args[1]];
     if (n === "blocked" && args.length === 3) {
       const needs = args[1] && args[1][0] === "needs" ? args[1][1] : args[1];
-      const bh = args[2] && args[2][0] === "base_has" ? args[2][1] : args[2];
+      const third = args[2];
+      if (third && third[0] === "providers") {
+        return { name: args[0], needs: needs, providers: third[1] };
+      }
+      const bh = third && third[0] === "base_has" ? third[1] : third;
       return { name: args[0], needs: needs, base_has: bh };
     }
+    if (n === "blocked" && args.length === 1 && args[0] && args[0][0] === "alternatives") {
+      return { alternatives: args[0][1] };
+    }
+    if (n === "alt" && args.length === 2) return { dep: args[0], reason: args[1] };
     if (n === "safe" && args.length === 1) {
       const cost = Array.isArray(args[0]) && args[0][0] === "cost" ? args[0][1] : args[0];
       return { cost: cost, verdict: "safe" };
@@ -196,7 +233,9 @@ function termToJs(state, term0) {
     }
     if (n === "ok" && args.length === 1) return { __ok_set: args[0] };
     if (n === "needs" || n === "base_has" || n === "eq" || n === "gte" || n === "lt"
-        || n === "cost" || n === "held" || n === "suggest") {
+        || n === "lte" || n === "gt"
+        || n === "cost" || n === "held" || n === "suggest" || n === "providers"
+        || n === "alternatives") {
       return [n, args[0]];
     }
     if (n === "range") return { op: "range", lo: args[0], hi: args[1] };
@@ -207,7 +246,8 @@ function termToJs(state, term0) {
 
 function normalizeConstraint(c) {
   if (c === "any") return "any";
-  if (Array.isArray(c) && (c[0] === "gte" || c[0] === "eq" || c[0] === "lt")) {
+  if (Array.isArray(c) && (c[0] === "gte" || c[0] === "eq" || c[0] === "lt"
+      || c[0] === "lte" || c[0] === "gt")) {
     return { op: c[0], v: c[1] };
   }
   if (c && typeof c === "object" && c.op) return c;
@@ -244,6 +284,16 @@ function normalizeUpgrade(r) {
 }
 
 function normalizeBlocked(b) {
+  if (b && typeof b === "object" && b.alternatives) {
+    return { alternatives: b.alternatives };
+  }
+  if (b && typeof b === "object" && b.providers) {
+    return {
+      name: b.name,
+      needs: normalizeConstraint(b.needs),
+      providers: (b.providers || []).map(normalizeBlocked)
+    };
+  }
   if (b && typeof b === "object" && b.name) {
     // Key order matches SWI json_write_dict (alpha) so corpus stringify compares.
     return {

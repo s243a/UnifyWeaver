@@ -660,6 +660,37 @@ test(profile_lowered_call_counts, [setup(install_profile_preds)]) :-
     get_dict(lowered, Row, Lowered),
     assertion((Lowered == true ; Lowered == @(true))).
 
+% D57 probe: the runtime gained maplist/2,3,4 and string_codes/2 (with the
+% empty-string <-> [] edge) because the compiler emits BuiltinCall maplist/N
+% for the Debian store unpack; pin the builtins directly.
+:- dynamic user:probe_maplist_sc/0.
+:- dynamic user:inc1/2.
+
+install_maplist_probe :-
+    retractall(user:probe_maplist_sc),
+    retractall(user:inc1(_, _)),
+    assertz((user:inc1(X, Y) :- Y is X + 1)),
+    assertz((user:probe_maplist_sc :-
+        maplist(inc1, [1, 2, 3], L1),
+        L1 == [2, 3, 4],
+        string_codes(S, [104, 105]),
+        S == "hi",
+        string_codes(E, []),
+        E == "")).
+
+test(maplist_string_codes_runtime, [setup(install_maplist_probe)]) :-
+    % SWI oracle for the same shapes.
+    assertion((maplist(user:inc1, [1, 2, 3], L0), L0 == [2, 3, 4])),
+    assertion((string_codes(S0, []), S0 == "")),
+    Dir = 'output/js_wam_maplist_probe',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:inc1/2, user:probe_maplist_sc/0],
+        [emit_mode(interpreter)], Dir),
+    run_node(Dir, 'probe_maplist_sc/0', Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Out)).
+
 :- end_tests(js_wam_builtins).
 
 % ---------------------------------------------------------------------------

@@ -146,8 +146,53 @@ for (let i = 0; i < N_CASES; i++) {
     }
   });
 }
+// P3 overlay (does not consume the 500-case rng — original cases stay
+// byte-identical). Rebuilds the scale stores through deb / provides / alts.
+const deb10 = { deb: [0, [["", 1], [".", 0]], []] };
+const debRc = { deb: [0, [["", 1], [".", 0], ["~rc", 1]], []] };
+rich.push({ kind: "package", catalog: CAT, name: "p_deb", ver: deb10 });
+rich.push({ kind: "package", catalog: CAT, name: "p_deb", ver: debRc });
+rich.push({ kind: "package", catalog: CAT, name: "p_app", ver: [1, 0, 0] });
+rich.push({
+  kind: "depends", catalog: CAT, name: "p_app", ver: [1, 0, 0],
+  dep: "p_deb", constraint: { op: "gte", v: deb10 }
+});
+rich.push({ kind: "package", catalog: CAT, name: "p_mawk", ver: [1, 0, 0] });
+rich.push({
+  kind: "provides", catalog: CAT, name: "p_mawk", ver: [1, 0, 0], virtual: "awk"
+});
+rich.push({ kind: "package", catalog: CAT, name: "p_virtapp", ver: [1, 0, 0] });
+rich.push({
+  kind: "depends", catalog: CAT, name: "p_virtapp", ver: [1, 0, 0],
+  dep: "awk", constraint: "any"
+});
+rich.push({ kind: "package", catalog: CAT, name: "p_alta", ver: [1, 0, 0] });
+rich.push({ kind: "package", catalog: CAT, name: "p_altb", ver: [1, 0, 0] });
+rich.push({ kind: "package", catalog: CAT, name: "p_altapp", ver: [1, 0, 0] });
+rich.push({
+  kind: "depends", catalog: CAT, name: "p_altapp", ver: [1, 0, 0],
+  dep: {
+    alternatives: [
+      { dep: "p_alta", constraint: "any" },
+      { dep: "p_altb", constraint: "any" }
+    ]
+  },
+  constraint: "any"
+});
+
+function emptyEnv() {
+  return {
+    catalog_id: CAT, base: [], installed: [], requested: [],
+    layers: [], excluded: [], aliases: []
+  };
+}
+cases.push({ id: "s_p3_deb", catalog_id: CAT, query: "resolve", args: ["p_app"], env: emptyEnv() });
+cases.push({ id: "s_p3_virt", catalog_id: CAT, query: "resolve", args: ["p_virtapp"], env: emptyEnv() });
+cases.push({ id: "s_p3_alts", catalog_id: CAT, query: "resolve", args: ["p_altapp"], env: emptyEnv() });
+
+writeFileSync(outDir + "/rich.jsonl", rich.map((r) => JSON.stringify(r)).join("\n") + "\n");
 writeFileSync(outDir + "/cases.jsonl", cases.map((c) => JSON.stringify(c)).join("\n") + "\n");
 
 console.log("gen_scale_catalog: packages=" + N_PKGS + " dep_edges=" + nDeps +
-  " rich_rows=" + rich.length + " cases=" + N_CASES + " cat=" + CAT);
+  " rich_rows=" + rich.length + " cases=" + cases.length + " cat=" + CAT);
 console.log("  key example " + packKey(CAT, "p0"));
