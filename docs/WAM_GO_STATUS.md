@@ -25,7 +25,7 @@ WAM pipeline via `prefer_wam(true)`.
 |---|---:|
 | `src/unifyweaver/targets/wam_go_target.pl` | ~4.3k |
 | `src/unifyweaver/targets/wam_go_lowered_emitter.pl` | ~0.8k |
-| Dedicated tests | ~23 files |
+| Dedicated tests | ~26 files |
 
 ## What's shipped
 
@@ -88,7 +88,7 @@ classes that are fleet-wide suspects. Go's audit:
 |---|---|---|---|
 | A1 | `sub_string/5` builtin missing | **verified missing** | Go has `sub_atom/5` (`state.go.mustache:2792`) but no `sub_string/5` |
 | A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **aliasing form: verified (structural), Call Y-save is a partial mitigation, X101≡Y1 not hit by uw-resolve. Frameless-Y form: REPRODUCED as a live wrong answer on the lowered lane → FIXED 2026-09** | encoding `X_n→n+99 / Y_n→n+199`, so **X101 ≡ index 200 ≡ Y1**. Call snapshots Y 200..299 and Proceed restores; Execute does **not** push (LCO). Choice points snapshot the Y-save stack. The numeric alias is unchanged. See the frameless-Y section below. |
-| A3 | `Execute` of a builtin doesn't return to the continuation | **handled for known builtins; `call/1` now classified** | `BuiltinExecute` takes Proceed's return path **including** `popCallFrame`. Residual: a missed classifier entry still silently fails. `call/1` is `wam_go_direct_builtin` → `BuiltinCall`. `member/2` in uw-resolve is `BuiltinCall`. |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **handled for known builtins; P3 helpers classified; unknown-builtin warn knob landed** | `BuiltinExecute` takes Proceed's return path **including** `popCallFrame`. Residual: a missed classifier entry still fails the query; `UW_WAM_WARN_UNKNOWN=1` now prints `[wam_go] call|execute of unresolved goal NAME failed` (off by default). `call/1`, `maplist/2-4`, `predsort/3`, `functor/3`, `arg/3`, `=../2` are `wam_go_direct_builtin`. Lowered `pred_to_go_call` also falls back to `executeBuiltin` then warn. |
 | A4 | String fidelity | **rung 0** | `value.go.mustache` has Integer/Float/Atom/Compound/Structure/List/Ref/Unbound — no string type; D37's double-quoted literals intern as atoms |
 
 Pattern lane: `go_target.pl` compiles facts from `clause(Head, true)`
@@ -234,16 +234,51 @@ runs `wpick` on the interpreter lane only and says why.
 
 ## Whole-program exercise: uw-resolve (`examples/pkg_resolver/go/`)
 
-P0.5 resolver compiled through `wam_go` (`prefer_wam(true)`). JSON shim
-is term↔JSON IO only. Corpus **39/39** vs SWI; seeded differential
-**2400/0**. Additional runtime bugs the program forced (not in the A2
-table): empty-list `GetConstant` vs `*List`; `sort/2` unique-collapsing
-compounds; `switch_on_structure` emission using `Val` instead of
-`Functor`; 4-arg `begin_aggregate`; `allocVarId` aliasing driver Idx
-10000–10999 (B3 `sort/2` unifying Acc with `[]`). **B3** on the 5k
-catalog (`0xc0ffee01`): Go load **0.060s** / resolve **4.604s**, same
-10-package selection as SWI (load **0.428s** / resolve **0.008s**). See
-`examples/pkg_resolver/go/README.md`.
+P3 resolver compiled through `wam_go` (`prefer_wam(true)`). JSON shim
+is term↔JSON IO only (deb versions, Provides 3-/4-ary, alternatives
+groups, `catalog/6|9|10`, blocked `providers`/`alternatives` shapes).
+Corpus **51/51** vs SWI; seeded differential **2600/0** (2400 `g*` @
+`0xa5b6c7d8` + 200 `p3g*` @ `0xdeb00001`). D59 `index_threshold(64)`
+comes free with the current `resolver.pl`.
+
+P3 builtin inventory (generated WAM → runtime → `wam_go_direct_builtin`):
+
+| Name | Found | Implemented | Classified |
+|---|---|---|---|
+| `maplist/2,3,4` | missing; compiler emits `BuiltinCall`/`Call` | yes, meta-calls user preds via `invokeGoalOnce` | yes |
+| `predsort/3` | missing; resolver `cmp_ver/3` for `deb/3` | yes | yes |
+| `functor/3`, `arg/3`, `=../2` | implemented, unclassified (A3) | already in `executeBuiltin` | now classified |
+| `string_codes/2` | present; empty result was `*List{}` | empty goes through `listFromItems` | already classified |
+| `memberchk/2` | already OK | — | — |
+
+`UW_WAM_WARN_UNKNOWN=1` (off by default) prints
+`[wam_go] call|execute of unresolved goal NAME failed` after the
+label/foreign/fact miss — additive, mirrors Rust.
+
+Bugs this program forced beyond the P0.5 table:
+
+| Symptom | Cause | Fix | Probe |
+|---|---|---|---|
+| `provides_virtual_only` / first-listed / versioned-ok → `{fail:true}` | `pick_need` indexes on Mode; `classic` is switch `"default"` with two clauses; Pc rewrite jumped to `idx+1` then `indexedClauseBodyStart` skipped `TryMeElse` | label-form default falls through (`PC++`); Pc form keeps the jump when the target is a try/retry head | `tests/test_wam_go_switch_default_chain.pl` |
+| 40 `p3g*` differentials `{fail:true}` (corpus still 51/51) | `predsort` meta-called `cmp_ver`; `invokeAtPC` smashed A2; `Unify(getReg(2), Sorted)` compared a version to a list. Single-element lists and `compare/3` never ran the less-func — corpus P3 rows filtered to one candidate | capture A2 before the comparator; restore regs after each `invokeGoalOnce`; leftover CPs truncated | `tests/test_wam_go_maplist_predsort.pl` (`gpreduser`) |
+
+**B1–B3** (this Cloud Agent VM, SWI 9.0.4, Go 1.22.2, Node v22):
+
+| Bench | Number |
+|---|---|
+| B1 corpus wall | **0.053s, 51/51** |
+| B2 differential | **2600 cases, 0 divergences**; SWI **1.671s** / Go **17.179s** |
+| B3 5k `resolve_layered` (`0xc0ffee01`) | load **0.065s** / resolve **10.620s**, same 10-package selection as SWI / D51 |
+
+Index effect: the 5k catalog is far above `index_threshold(64)`, so
+`resolve_layered` wraps `icat/3` (cannot toggle the frozen fact from
+owned files). D51 pre-index Go B3 was **11.0s** linear scans; with-index
+Go is **10.62s** (~1.04×). wamjs saw **9.2×** on the same G1 trees —
+Go's interpreted index build (~45 WAM instructions/row × 5k) almost
+cancels the lookup win. Selection matches the historical SWI 10-package
+set, so the index is semantically active.
+
+See `examples/pkg_resolver/go/README.md`.
 
 ## Path forward
 
@@ -278,3 +313,9 @@ now live on `ChoicePoint.Levels`, never in `vm.Regs`. Probe
 lowered-lane defect (a lowered method that `call`s the interpreter and
 then tail-recurses loses its output binding) is recorded as a residual
 above — it is not the barrier and is not fixed here.
+2026-09-04: **uw-resolve P3 on Go.** maplist/predsort/functor classified;
+`UW_WAM_WARN_UNKNOWN`; shim speaks deb/provides/alternatives; switch
+default try/retry chain; predsort A2 smash. Corpus **51/51**,
+differential **2600/0**, cut **35/35**, full `test_wam_go_*.pl` sweep
+green, shared-lane JS/cli_args/wamjs intact. B3 with-index **10.62s**
+vs D51 pre-index **11.0s**.

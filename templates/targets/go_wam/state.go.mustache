@@ -3093,7 +3093,8 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		if atom, ok := atomVal.(*Atom); ok {
 			if _, unbound := listVal.(*Unbound); unbound {
-				return vm.Unify(arg2, listFromText(atom.Name))
+				lst := listFromText(atom.Name)
+				return vm.Unify(arg2, listFromItems(lst.Elements))
 			}
 			text, ok := textFromList(listVal)
 			return ok && atom.Name == text
@@ -3122,7 +3123,8 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 				return false
 			}
 			if _, unbound := listVal.(*Unbound); unbound {
-				return vm.Unify(arg2, listFromText(text))
+				lst := listFromText(text)
+				return vm.Unify(arg2, listFromItems(lst.Elements))
 			}
 			listText, ok := textFromList(listVal)
 			return ok && text == listText
@@ -3885,8 +3887,195 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "copy_term/2":
 		copy := vm.copyTermValue(arg1, make(map[int]*Unbound))
 		return vm.Unify(arg2, copy)
+	case "maplist/2":
+		return vm.builtinMaplist(1)
+	case "maplist/3":
+		return vm.builtinMaplist(2)
+	case "maplist/4":
+		return vm.builtinMaplist(3)
+	case "predsort/3":
+		return vm.builtinPredsort()
 	}
 	return false
+}
+
+// predArityFromName reads the trailing /N of a "name/N" key. Used by
+// Execute (the instruction has no Arity field) when falling back to
+// executeBuiltin.
+func predArityFromName(name string) int {
+	if slash := strings.LastIndex(name, "/"); slash >= 0 {
+		n, err := strconv.Atoi(name[slash+1:])
+		if err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+// warnUnresolved is the A3 loud-unknown-builtin knob. Off by default;
+// set UW_WAM_WARN_UNKNOWN=1 to print on Call/Execute of a goal that
+// missed Labels, Foreign, indexed facts, and the builtin table.
+func (vm *WamState) warnUnresolved(form, pred string) {
+	if os.Getenv("UW_WAM_WARN_UNKNOWN") != "" {
+		fmt.Fprintf(os.Stderr, "[wam_go] %s of unresolved goal %s failed\n", form, pred)
+	}
+}
+
+// predExtraGoal builds Goal+extra-args for maplist/predsort, matching
+// the JS runtime: an atom becomes name(Extra...), a structure appends.
+func (vm *WamState) predExtraGoal(pred Value, extra []Value) Value {
+	pred = vm.deref(pred)
+	switch t := pred.(type) {
+	case *Atom:
+		if len(extra) == 0 {
+			return t
+		}
+		return makeStructureValue(parseFunctorName(t.Name), extra)
+	case *Structure:
+		args := make([]Value, 0, len(t.Args)+len(extra))
+		args = append(args, t.Args...)
+		args = append(args, extra...)
+		return makeStructureValue(parseFunctorName(t.Functor), args)
+	case *Compound:
+		args := make([]Value, 0, len(t.Args)+len(extra))
+		args = append(args, t.Args...)
+		args = append(args, extra...)
+		return makeStructureValue(parseFunctorName(t.Functor), args)
+	default:
+		return nil
+	}
+}
+
+// builtinMaplist implements maplist/2,3,4. Meta-calls USER predicates
+// (resolver is_v3/1, store unpack helpers) via invokeGoal. nLists is
+// the number of list arguments (maplist/2 → 1).
+func (vm *WamState) builtinMaplist(nLists int) bool {
+	pred := vm.deref(vm.getReg(0))
+	lists := make([][]Value, nLists)
+	unboundAt := -1
+	for i := 0; i < nLists; i++ {
+		items, ok := vm.listToSlice(vm.getReg(1 + i))
+		if !ok {
+			if unboundAt >= 0 {
+				return false
+			}
+			unboundAt = i
+			continue
+		}
+		lists[i] = items
+	}
+	if unboundAt < 0 {
+		len0 := len(lists[0])
+		for i := 1; i < nLists; i++ {
+			if len(lists[i]) != len0 {
+				return false
+			}
+		}
+		for i := 0; i < len0; i++ {
+			extra := make([]Value, nLists)
+			for j := 0; j < nLists; j++ {
+				extra[j] = lists[j][i]
+			}
+			goal := vm.predExtraGoal(pred, extra)
+			if goal == nil {
+				return false
+			}
+			if !vm.invokeGoalOnce(goal) {
+				return false
+			}
+		}
+		return true
+	}
+	boundIdx := 0
+	if unboundAt == 0 {
+		boundIdx = 1
+	}
+	bound := lists[boundIdx]
+	if bound == nil || nLists != 2 {
+		return false
+	}
+	outReg := vm.getReg(1 + unboundAt)
+	out := make([]Value, 0, len(bound))
+	for i := 0; i < len(bound); i++ {
+		y := &Unbound{Name: fmt.Sprintf("_ML%d", i), Idx: vm.allocVarId()}
+		var extra []Value
+		if unboundAt == 0 {
+			extra = []Value{y, bound[i]}
+		} else {
+			extra = []Value{bound[i], y}
+		}
+		goal := vm.predExtraGoal(pred, extra)
+		if goal == nil {
+			return false
+		}
+		if !vm.invokeGoalOnce(goal) {
+			return false
+		}
+		out = append(out, y)
+	}
+	return vm.Unify(outReg, listFromItems(out))
+}
+
+// builtinPredsort implements predsort/3. Comparator is Pred(Order,X,Y)
+// binding Order to < / > / =; compare/3 short-circuits to term order
+// (resolver uses cmp_ver/3 for mixed v/3 + deb/3).
+func (vm *WamState) builtinPredsort() bool {
+	pred := vm.deref(vm.getReg(0))
+	items, ok := vm.listToSlice(vm.getReg(1))
+	if !ok {
+		return false
+	}
+	// Capture A2 before the comparator meta-calls. invokeAtPC writes
+	// Order/X/Y into A0–A2 and on success does not restore them;
+	// Unify(getReg(2), Sorted) then compared a version term to a list
+	// and predsort failed whenever the less-func actually ran
+	// (single-element lists, and compare/3, never hit this).
+	out := vm.getReg(2)
+	predName := ""
+	if a, isAtom := pred.(*Atom); isAtom {
+		predName = parseFunctorName(a.Name)
+	}
+	sorted := append([]Value(nil), items...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		x, y := sorted[i], sorted[j]
+		if predName == "compare" {
+			return vm.compareTerms(x, y) < 0
+		}
+		order := &Unbound{Name: "_Ord", Idx: vm.allocVarId()}
+		goal := vm.predExtraGoal(pred, []Value{order, x, y})
+		if goal == nil {
+			return false
+		}
+		saved := vm.snapshotAllRegs()
+		ok := vm.invokeGoalOnce(goal)
+		vm.restoreSavedRegs(saved)
+		if !ok {
+			return false
+		}
+		if a, ok := vm.deref(order).(*Atom); ok {
+			return a.Name == "<"
+		}
+		return false
+	})
+	return vm.Unify(out, listFromItems(sorted))
+}
+
+// invokeGoalOnce meta-calls goal and then discards leftover choice
+// points and trail cells it created. predsort's comparator
+// (cmp_ver/3 → version_lt/2) is an ITE-heavy test: without this
+// cleanup those CPs stay on the stack and a later resolve failure
+// backtracks into a stale comparator, aborting the query.
+func (vm *WamState) invokeGoalOnce(goal Value) bool {
+	cpMark := len(vm.ChoicePoints)
+	trailMark := vm.TrailLen
+	ok := vm.invokeGoal(goal, cpMark)
+	if cpMark < len(vm.ChoicePoints) {
+		vm.ChoicePoints = vm.ChoicePoints[:cpMark]
+	}
+	if !ok {
+		vm.unwindTrailTo(trailMark)
+	}
+	return ok
 }
 
 // executeCall1 implements ISO call/1 as an opaque cut scope: a `!`

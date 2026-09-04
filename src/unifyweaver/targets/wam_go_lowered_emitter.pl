@@ -803,17 +803,19 @@ go_val_literal(Str, GoVal) :-
 
 %% pred_to_go_call(+PredStr, -CallExpr)
 %  Convert "pred/arity" to a Go method call expression.
-%  Generates a call via label dispatch (vm interprets from code array).
+%  Label dispatch first; then executeBuiltin (WAM text still says
+%  `call predsort/3` even after wam_go_direct_builtin rewrites the
+%  interpreter lane to BuiltinCall). Unknown goals warn when
+%  UW_WAM_WARN_UNKNOWN is set — same A3 path as Call/Execute.
 pred_to_go_call(PredStr, CallExpr) :-
     atom_string(PA, PredStr),
     (   sub_atom(PA, B, 1, _, '/')
     ->  sub_atom(PA, 0, B, _, _Functor),
         B1 is B + 1,
         sub_atom(PA, B1, _, 0, AS),
-        atom_number(AS, _Arity)
-    ;   true
+        atom_number(AS, Arity)
+    ;   Arity = 0
     ),
-    % Use label dispatch: set PC to label, run
     format(atom(CallExpr),
-        'func() bool { if pc, ok := vm.Ctx.Labels["~w"]; ok { vm.PC = pc; return vm.Run() }; return false }()',
-        [PredStr]).
+        'func() bool { if pc, ok := vm.Ctx.Labels["~w"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("~w", ~w) { return true }; vm.warnUnresolved("call", "~w"); return false }()',
+        [PredStr, PredStr, Arity, PredStr]).

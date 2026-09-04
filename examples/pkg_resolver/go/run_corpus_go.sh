@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 John William Creighton (@s243a)
 #
-# run_corpus_go.sh -- drive the P0.5 contract corpus through the Go WAM
+# run_corpus_go.sh -- drive the P3 contract corpus through the Go WAM
 # build and compare every result to SWI (including blocked/3 terms).
 #
 #   bash examples/pkg_resolver/go/run_corpus_go.sh

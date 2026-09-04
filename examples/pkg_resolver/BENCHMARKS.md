@@ -67,9 +67,19 @@ build is pre-P3 (D57) and the index is quadratic on that runtime. The cause is
 isolated and recorded in [`docs/WAM_RUST_STATUS.md`](../../docs/WAM_RUST_STATUS.md);
 the short form is that `WamState::unify` deep-derefs both arguments before
 dispatch, so unifying an output variable against a suffix of a long list costs
-O(length), and doing that once per element is Θ(N²). Go and ClojureScript were
-not re-measured: neither lane is P3-ported (D57), so neither builds from the
-current `resolver.pl` at all.
+O(length), and doing that once per element is Θ(N²). ClojureScript is not
+re-measured (not P3-ported, D57).
+
+**Go, post-P3-port (D61), with the index active**: B1 corpus (51 rows)
+0.053 s; B2 differential (2,600 cases) 17.2 s vs SWI 1.7 s, 0 divergences;
+B3 5k `resolve_layered` load 0.065 s / resolve 10.62 s — **~1.04× vs the
+pre-index 11.0 s**, against wamjs's 9.2× on the same G1 trees. The
+difference is honest arithmetic: Go's baseline could already finish
+(linear scans), and building the index interpreted (~45 WAM
+instructions/row over 22.5k rows) nearly cancels the lookup savings.
+The index is semantically active (identical selection); on this runtime
+it is not a wall-time win. Contributor box; coordinator box reproduces
+the ratios (resolve 14.5 s).
 
 ## Readings
 
