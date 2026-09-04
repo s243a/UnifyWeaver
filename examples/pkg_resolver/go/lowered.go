@@ -102,6 +102,91 @@ func (vm *WamState) PredAlias_list2() bool {
         return true
     }() { return true }
     vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_structure catalog/10, A1
+        if !vm.Step(&GetStructure{Functor: "catalog/10", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // unify_variable X7
+        if !vm.Step(&UnifyVariable{Xn: 106}) {
+            return false
+        }
+        // unify_variable X8
+        if !vm.Step(&UnifyVariable{Xn: 107}) {
+            return false
+        }
+        // unify_variable X9
+        if !vm.Step(&UnifyVariable{Xn: 108}) {
+            return false
+        }
+        // unify_variable X10
+        if !vm.Step(&UnifyVariable{Xn: 109}) {
+            return false
+        }
+        // get_value X9, A2
+        if !vm.Unify(vm.Regs[1], vm.Regs[108]) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_structure icat/3, A1
+        if !vm.Step(&GetStructure{Functor: "icat/3", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // get_variable X4, A2
+        vm.Regs[103] = vm.Regs[1]
+        // put_value X1, A1
+        vm.Regs[0] = vm.getReg(100)
+        // put_value X4, A2
+        vm.Regs[1] = vm.getReg(103)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute alias_list/2 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["alias_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("alias_list/2", 2) { return true }; vm.warnUnresolved("call", "alias_list/2"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
     return false
 
 }
@@ -124,6 +209,162 @@ func (vm *WamState) PredAlias_lookup3() bool {
     // get_value X1, A3
     if !vm.Unify(vm.Regs[2], vm.Regs[100]) {
         return false
+    }
+    return true
+
+}
+
+// PredAlready_provided4 — lowered from already_provided/4
+func (vm *WamState) PredAlready_provided4() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_variable Y1, A1
+    vm.Regs[200] = vm.Regs[0]
+    // get_variable X6, A2
+    vm.Regs[105] = vm.Regs[1]
+    // get_variable Y4, A3
+    vm.Regs[203] = vm.Regs[2]
+    // get_variable Y5, A4
+    vm.Regs[204] = vm.Regs[3]
+    // put_structure -/2, A1
+    if !vm.Step(&PutStructure{Functor: "-/2", Ai: 0}) {
+        return false
+    }
+    // set_variable Y2
+    if !vm.Step(&SetVariable{Xn: 201}) {
+        return false
+    }
+    // set_variable Y3
+    if !vm.Step(&SetVariable{Xn: 202}) {
+        return false
+    }
+    // put_value X6, A2
+    vm.Regs[1] = vm.getReg(105)
+    // builtin_call member/2 2
+    if !vm.executeBuiltin("member/2", 2) {
+        return false
+    }
+    // put_value Y1, A1
+    vm.Regs[0] = vm.getReg(200)
+    // put_value Y2, A2
+    vm.Regs[1] = vm.getReg(201)
+    // put_value Y3, A3
+    vm.Regs[2] = vm.getReg(202)
+    // put_value Y4, A4
+    vm.Regs[3] = vm.getReg(203)
+    // put_value Y5, A5
+    vm.Regs[4] = vm.getReg(204)
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    // execute provides_sat/5 (tail call)
+    return func() bool { if pc, ok := vm.Ctx.Labels["provides_sat/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("provides_sat/5", 5) { return true }; vm.warnUnresolved("call", "provides_sat/5"); return false }()
+
+}
+
+// PredAlready_satisfied4 — lowered from already_satisfied/4 (T4 all-clauses inline)
+func (vm *WamState) PredAlready_satisfied4() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_variable X3, A1
+        vm.Regs[102] = vm.Regs[0]
+        // get_variable X4, A2
+        vm.Regs[103] = vm.Regs[1]
+        // get_variable X5, A3
+        vm.Regs[104] = vm.Regs[2]
+        // get_variable Y2, A4
+        vm.Regs[201] = vm.Regs[3]
+        // put_value X4, A1
+        vm.Regs[0] = vm.getReg(103)
+        // put_value X5, A2
+        vm.Regs[1] = vm.getReg(104)
+        // put_variable Y1, A3
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 200), Idx: 200}
+            vm.putReg(200, v)
+            vm.Regs[2] = v
+        }
+        // call selected_ver/3
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["selected_ver/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("selected_ver/3", 3) { return true }; vm.warnUnresolved("call", "selected_ver/3"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_value Y2, A2
+        vm.Regs[1] = vm.getReg(201)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute satisfies/2 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["satisfies/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("satisfies/2", 2) { return true }; vm.warnUnresolved("call", "satisfies/2"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_variable X1, A1
+        vm.Regs[100] = vm.Regs[0]
+        // get_variable X2, A2
+        vm.Regs[101] = vm.Regs[1]
+        // get_variable X3, A3
+        vm.Regs[102] = vm.Regs[2]
+        // get_variable X4, A4
+        vm.Regs[103] = vm.Regs[3]
+        // put_value X1, A1
+        vm.Regs[0] = vm.getReg(100)
+        // put_value X2, A2
+        vm.Regs[1] = vm.getReg(101)
+        // put_value X3, A3
+        vm.Regs[2] = vm.getReg(102)
+        // put_value X4, A4
+        vm.Regs[3] = vm.getReg(103)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute already_provided/4 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["already_provided/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("already_provided/4", 4) { return true }; vm.warnUnresolved("call", "already_provided/4"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
+
+}
+
+// PredAlt_reasons4 — lowered from alt_reasons/4
+func (vm *WamState) PredAlt_reasons4() bool {
+    // get_variable X1, A1
+    vm.Regs[100] = vm.Regs[0]
+    // get_constant [], A2
+    {
+        _a := vm.deref(vm.Regs[1])
+        if _, ok := _a.(*Unbound); ok {
+            u := _a.(*Unbound)
+            vm.trailBinding(u.Idx)
+            vm.Regs[u.Idx] = wamAtom____0
+        } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+            return false
+        }
+    }
+    // get_variable X2, A3
+    vm.Regs[101] = vm.Regs[2]
+    // get_constant [], A4
+    {
+        _a := vm.deref(vm.Regs[3])
+        if _, ok := _a.(*Unbound); ok {
+            u := _a.(*Unbound)
+            vm.trailBinding(u.Idx)
+            vm.Regs[u.Idx] = wamAtom____0
+        } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+            return false
+        }
     }
     return true
 
@@ -173,7 +414,7 @@ func (vm *WamState) PredBase_holds2() bool {
     // call base_list/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["base_list/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["base_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("base_list/2", 2) { return true }; vm.warnUnresolved("call", "base_list/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -191,7 +432,7 @@ func (vm *WamState) PredBase_holds2() bool {
     // call scan_base_holds/3
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["scan_base_holds/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["scan_base_holds/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("scan_base_holds/3", 3) { return true }; vm.warnUnresolved("call", "scan_base_holds/3"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -299,6 +540,91 @@ func (vm *WamState) PredBase_list2() bool {
         return true
     }() { return true }
     vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_structure catalog/10, A1
+        if !vm.Step(&GetStructure{Functor: "catalog/10", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // unify_variable X7
+        if !vm.Step(&UnifyVariable{Xn: 106}) {
+            return false
+        }
+        // unify_variable X8
+        if !vm.Step(&UnifyVariable{Xn: 107}) {
+            return false
+        }
+        // unify_variable X9
+        if !vm.Step(&UnifyVariable{Xn: 108}) {
+            return false
+        }
+        // unify_variable X10
+        if !vm.Step(&UnifyVariable{Xn: 109}) {
+            return false
+        }
+        // get_value X4, A2
+        if !vm.Unify(vm.Regs[1], vm.Regs[103]) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_structure icat/3, A1
+        if !vm.Step(&GetStructure{Functor: "icat/3", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // get_variable X4, A2
+        vm.Regs[103] = vm.Regs[1]
+        // put_value X1, A1
+        vm.Regs[0] = vm.getReg(100)
+        // put_value X4, A2
+        vm.Regs[1] = vm.getReg(103)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute base_list/2 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["base_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("base_list/2", 2) { return true }; vm.warnUnresolved("call", "base_list/2"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
     return false
 
 }
@@ -326,7 +652,7 @@ func (vm *WamState) PredBase_name2() bool {
         vm.CP = env.CP
     }
     // execute base_ver/3 (tail call)
-    return func() bool { if pc, ok := vm.Ctx.Labels["base_ver/3"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+    return func() bool { if pc, ok := vm.Ctx.Labels["base_ver/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("base_ver/3", 3) { return true }; vm.warnUnresolved("call", "base_ver/3"); return false }()
 
 }
 
@@ -351,7 +677,7 @@ func (vm *WamState) PredBase_reason3() bool {
     // call base_holds/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["base_holds/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["base_holds/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("base_holds/2", 2) { return true }; vm.warnUnresolved("call", "base_holds/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -367,7 +693,7 @@ func (vm *WamState) PredBase_reason3() bool {
         vm.CP = env.CP
     }
     // execute hold_reason/3 (tail call)
-    return func() bool { if pc, ok := vm.Ctx.Labels["hold_reason/3"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+    return func() bool { if pc, ok := vm.Ctx.Labels["hold_reason/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("hold_reason/3", 3) { return true }; vm.warnUnresolved("call", "hold_reason/3"); return false }()
 
 }
 
@@ -392,7 +718,7 @@ func (vm *WamState) PredBase_ver3() bool {
     // call base_list/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["base_list/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["base_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("base_list/2", 2) { return true }; vm.warnUnresolved("call", "base_list/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -408,7 +734,7 @@ func (vm *WamState) PredBase_ver3() bool {
     // call layers_list/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["layers_list/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["layers_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("layers_list/2", 2) { return true }; vm.warnUnresolved("call", "layers_list/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -438,7 +764,7 @@ func (vm *WamState) PredBase_ver3() bool {
         vm.CP = env.CP
     }
     // execute lookup_held/3 (tail call)
-    return func() bool { if pc, ok := vm.Ctx.Labels["lookup_held/3"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+    return func() bool { if pc, ok := vm.Ctx.Labels["lookup_held/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("lookup_held/3", 3) { return true }; vm.warnUnresolved("call", "lookup_held/3"); return false }()
 
 }
 
@@ -446,36 +772,42 @@ func (vm *WamState) PredBase_ver3() bool {
 func (vm *WamState) PredBlocked_acc5() bool {
     // allocate
     vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
-    // get_variable X1, A1
-    vm.Regs[100] = vm.Regs[0]
+    // get_variable X3, A1
+    vm.Regs[102] = vm.Regs[0]
     // get_structure req/2, A2
     if !vm.Step(&GetStructure{Functor: "req/2", Ai: 1}) {
         return false
     }
-    // unify_variable X2
-    if !vm.Step(&UnifyVariable{Xn: 101}) {
+    // unify_variable Y2
+    if !vm.Step(&UnifyVariable{Xn: 201}) {
         return false
     }
-    // unify_variable X3
-    if !vm.Step(&UnifyVariable{Xn: 102}) {
+    // unify_variable X4
+    if !vm.Step(&UnifyVariable{Xn: 103}) {
         return false
     }
-    // get_variable X4, A3
-    vm.Regs[103] = vm.Regs[2]
+    // get_variable Y1, A3
+    vm.Regs[200] = vm.Regs[2]
     // get_variable X5, A4
     vm.Regs[104] = vm.Regs[3]
     // get_value X5, A5
     if !vm.Unify(vm.Regs[4], vm.Regs[104]) {
         return false
     }
-    // put_value X4, A1
-    vm.Regs[0] = vm.getReg(103)
-    // put_value X2, A2
-    vm.Regs[1] = vm.getReg(101)
+    // put_value Y2, A1
+    vm.Regs[0] = vm.getReg(201)
+    // builtin_call atom/1 1
+    if !vm.executeBuiltin("atom/1", 1) {
+        return false
+    }
+    // put_value Y1, A1
+    vm.Regs[0] = vm.getReg(200)
+    // put_value Y2, A2
+    vm.Regs[1] = vm.getReg(201)
     // call seen_name/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["seen_name/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["seen_name/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("seen_name/2", 2) { return true }; vm.warnUnresolved("call", "seen_name/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -560,7 +892,7 @@ func (vm *WamState) PredBlocked_acc_list5() bool {
         // call blocked_acc/5
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["blocked_acc/5"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["blocked_acc/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("blocked_acc/5", 5) { return true }; vm.warnUnresolved("call", "blocked_acc/5"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -580,10 +912,307 @@ func (vm *WamState) PredBlocked_acc_list5() bool {
             vm.CP = env.CP
         }
         // execute blocked_acc_list/5 (tail call)
-        return func() bool { if pc, ok := vm.Ctx.Labels["blocked_acc_list/5"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+        return func() bool { if pc, ok := vm.Ctx.Labels["blocked_acc_list/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("blocked_acc_list/5", 5) { return true }; vm.warnUnresolved("call", "blocked_acc_list/5"); return false }()
     }() { return true }
     vm.LoRestoreClause(_t4)
     return false
+
+}
+
+// PredBlocked_from4 — lowered from blocked_from/4
+func (vm *WamState) PredBlocked_from4() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_variable Y1, A1
+    vm.Regs[200] = vm.Regs[0]
+    // get_structure req/2, A2
+    if !vm.Step(&GetStructure{Functor: "req/2", Ai: 1}) {
+        return false
+    }
+    // unify_variable X6
+    if !vm.Step(&UnifyVariable{Xn: 105}) {
+        return false
+    }
+    // get_structure alternatives/1, X6
+    if !vm.Step(&GetStructure{Functor: "alternatives/1", Ai: 105}) {
+        return false
+    }
+    // unify_variable Y2
+    if !vm.Step(&UnifyVariable{Xn: 201}) {
+        return false
+    }
+    // unify_variable X7
+    if !vm.Step(&UnifyVariable{Xn: 106}) {
+        return false
+    }
+    // get_variable Y3, A3
+    vm.Regs[202] = vm.Regs[2]
+    // get_variable Y4, A4
+    vm.Regs[203] = vm.Regs[3]
+    // builtin_call !/0 0
+    if !vm.executeBuiltin("!/0", 0) {
+        return false
+    }
+    // put_value Y1, A1
+    vm.Regs[0] = vm.getReg(200)
+    // put_value Y2, A2
+    vm.Regs[1] = vm.getReg(201)
+    // put_value Y3, A3
+    vm.Regs[2] = vm.getReg(202)
+    // put_variable Y5, A4
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 204), Idx: 204}
+        vm.putReg(204, v)
+        vm.Regs[3] = v
+    }
+    // call alt_reasons/4
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["alt_reasons/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("alt_reasons/4", 4) { return true }; vm.warnUnresolved("call", "alt_reasons/4"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // put_value Y4, A1
+    vm.Regs[0] = vm.getReg(203)
+    // put_structure blocked/1, A2
+    if !vm.Step(&PutStructure{Functor: "blocked/1", Ai: 1}) {
+        return false
+    }
+    // set_variable X9
+    if !vm.Step(&SetVariable{Xn: 108}) {
+        return false
+    }
+    // put_structure alternatives/1, X9
+    if !vm.Step(&PutStructure{Functor: "alternatives/1", Ai: 108}) {
+        return false
+    }
+    // set_value Y5
+    if !vm.Step(&SetValue{Xn: 204}) {
+        return false
+    }
+    // builtin_call =/2 2
+    if !vm.executeBuiltin("=/2", 2) {
+        return false
+    }
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    return true
+
+}
+
+// PredBuild_tree4 — lowered from build_tree/4
+func (vm *WamState) PredBuild_tree4() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_variable Y1, A1
+    vm.Regs[200] = vm.Regs[0]
+    // get_variable Y3, A2
+    vm.Regs[202] = vm.Regs[1]
+    // get_variable Y7, A3
+    vm.Regs[206] = vm.Regs[2]
+    // get_variable Y6, A4
+    vm.Regs[205] = vm.Regs[3]
+    // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+    {
+        _trailMark := vm.TrailLen
+        _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+        _condOk := func() bool {
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_constant 0, A2
+        vm.Regs[1] = &Integer{Val: 0}
+        // builtin_call =:=/2 2
+        if !vm.executeBuiltin("=:=/2", 2) {
+            return false
+        }
+            return true
+        }()
+        if _condOk {
+        // put_value Y7, A1
+        vm.Regs[0] = vm.getReg(206)
+        // put_constant t, A2
+        vm.Regs[1] = wamAtom_t_5
+        // builtin_call =/2 2
+        if !vm.executeBuiltin("=/2", 2) {
+            return false
+        }
+        // put_value Y6, A1
+        vm.Regs[0] = vm.getReg(205)
+        // put_value Y3, A2
+        vm.Regs[1] = vm.getReg(202)
+        // builtin_call =/2 2
+        if !vm.executeBuiltin("=/2", 2) {
+            return false
+        }
+        } else {
+            vm.Regs = _savedRegs
+            vm.unwindTrailTo(_trailMark)
+        // put_variable Y2, A1
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+            vm.putReg(201, v)
+            vm.Regs[0] = v
+        }
+        // put_structure ///2, A2
+        if !vm.Step(&PutStructure{Functor: "///2", Ai: 1}) {
+            return false
+        }
+        // set_variable X13
+        if !vm.Step(&SetVariable{Xn: 112}) {
+            return false
+        }
+        // set_constant 2
+        if !vm.Step(&SetConstant{C: &Integer{Val: 2}}) {
+            return false
+        }
+        // put_structure -/2, X13
+        if !vm.Step(&PutStructure{Functor: "-/2", Ai: 112}) {
+            return false
+        }
+        // set_value Y1
+        if !vm.Step(&SetValue{Xn: 200}) {
+            return false
+        }
+        // set_constant 1
+        if !vm.Step(&SetConstant{C: &Integer{Val: 1}}) {
+            return false
+        }
+        // builtin_call is/2 2
+        if !vm.executeBuiltin("is/2", 2) {
+            return false
+        }
+        // put_variable Y4, A1
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 203), Idx: 203}
+            vm.putReg(203, v)
+            vm.Regs[0] = v
+        }
+        // put_structure -/2, A2
+        if !vm.Step(&PutStructure{Functor: "-/2", Ai: 1}) {
+            return false
+        }
+        // set_variable X15
+        if !vm.Step(&SetVariable{Xn: 114}) {
+            return false
+        }
+        // set_value Y2
+        if !vm.Step(&SetValue{Xn: 201}) {
+            return false
+        }
+        // put_structure -/2, X15
+        if !vm.Step(&PutStructure{Functor: "-/2", Ai: 114}) {
+            return false
+        }
+        // set_value Y1
+        if !vm.Step(&SetValue{Xn: 200}) {
+            return false
+        }
+        // set_constant 1
+        if !vm.Step(&SetConstant{C: &Integer{Val: 1}}) {
+            return false
+        }
+        // builtin_call is/2 2
+        if !vm.executeBuiltin("is/2", 2) {
+            return false
+        }
+        // put_value Y2, A1
+        vm.Regs[0] = vm.getReg(201)
+        // put_value Y3, A2
+        vm.Regs[1] = vm.getReg(202)
+        // put_variable Y8, A3
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 207), Idx: 207}
+            vm.putReg(207, v)
+            vm.Regs[2] = v
+        }
+        // put_structure [|]/2, A4
+        if !vm.Step(&PutStructure{Functor: "[|]/2", Ai: 3}) {
+            return false
+        }
+        // set_variable X17
+        if !vm.Step(&SetVariable{Xn: 116}) {
+            return false
+        }
+        // set_variable Y5
+        if !vm.Step(&SetVariable{Xn: 204}) {
+            return false
+        }
+        // put_structure -/2, X17
+        if !vm.Step(&PutStructure{Functor: "-/2", Ai: 116}) {
+            return false
+        }
+        // set_variable Y9
+        if !vm.Step(&SetVariable{Xn: 208}) {
+            return false
+        }
+        // set_variable Y10
+        if !vm.Step(&SetVariable{Xn: 209}) {
+            return false
+        }
+        // call build_tree/4
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["build_tree/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("build_tree/4", 4) { return true }; vm.warnUnresolved("call", "build_tree/4"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_value Y4, A1
+        vm.Regs[0] = vm.getReg(203)
+        // put_value Y5, A2
+        vm.Regs[1] = vm.getReg(204)
+        // put_variable Y11, A3
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 210), Idx: 210}
+            vm.putReg(210, v)
+            vm.Regs[2] = v
+        }
+        // put_value Y6, A4
+        vm.Regs[3] = vm.getReg(205)
+        // call build_tree/4
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["build_tree/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("build_tree/4", 4) { return true }; vm.warnUnresolved("call", "build_tree/4"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_value Y7, A1
+        vm.Regs[0] = vm.getReg(206)
+        // put_structure t/4, A2
+        if !vm.Step(&PutStructure{Functor: "t/4", Ai: 1}) {
+            return false
+        }
+        // set_value Y8
+        if !vm.Step(&SetValue{Xn: 207}) {
+            return false
+        }
+        // set_value Y9
+        if !vm.Step(&SetValue{Xn: 208}) {
+            return false
+        }
+        // set_value Y10
+        if !vm.Step(&SetValue{Xn: 209}) {
+            return false
+        }
+        // set_value Y11
+        if !vm.Step(&SetValue{Xn: 210}) {
+            return false
+        }
+        // builtin_call =/2 2
+        if !vm.executeBuiltin("=/2", 2) {
+            return false
+        }
+        }
+    }
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    return true
 
 }
 
@@ -593,12 +1222,12 @@ func (vm *WamState) PredCandidates_high_first4() bool {
     vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
     // get_variable Y1, A1
     vm.Regs[200] = vm.Regs[0]
-    // get_variable Y3, A2
-    vm.Regs[202] = vm.Regs[1]
-    // get_variable Y4, A3
-    vm.Regs[203] = vm.Regs[2]
-    // get_variable Y7, A4
-    vm.Regs[206] = vm.Regs[3]
+    // get_variable Y2, A2
+    vm.Regs[201] = vm.Regs[1]
+    // get_variable Y3, A3
+    vm.Regs[202] = vm.Regs[2]
+    // get_variable Y5, A4
+    vm.Regs[204] = vm.Regs[3]
     // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
     {
         _trailMark := vm.TrailLen
@@ -606,12 +1235,12 @@ func (vm *WamState) PredCandidates_high_first4() bool {
         _condOk := func() bool {
         // put_value Y1, A1
         vm.Regs[0] = vm.getReg(200)
-        // put_value Y3, A2
-        vm.Regs[1] = vm.getReg(202)
+        // put_value Y2, A2
+        vm.Regs[1] = vm.getReg(201)
         // call excluded_name/2
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["excluded_name/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["excluded_name/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("excluded_name/2", 2) { return true }; vm.warnUnresolved("call", "excluded_name/2"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -634,68 +1263,44 @@ func (vm *WamState) PredCandidates_high_first4() bool {
     }
     // put_value Y1, A1
     vm.Regs[0] = vm.getReg(200)
-    // put_variable Y2, A2
+    // put_value Y2, A2
+    vm.Regs[1] = vm.getReg(201)
+    // put_value Y3, A3
+    vm.Regs[2] = vm.getReg(202)
+    // put_variable Y4, A4
     {
-        v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
-        vm.putReg(201, v)
-        vm.Regs[1] = v
-    }
-    // call packages/2
-    {
-        savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["packages/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
-            return false
-        }
-        vm.CP = savedCP
-    }
-    // put_value Y2, A1
-    vm.Regs[0] = vm.getReg(201)
-    // put_value Y3, A2
-    vm.Regs[1] = vm.getReg(202)
-    // put_value Y4, A3
-    vm.Regs[2] = vm.getReg(203)
-    // put_variable Y5, A4
-    {
-        v := &Unbound{Name: fmt.Sprintf("_R%d", 204), Idx: 204}
-        vm.putReg(204, v)
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 203), Idx: 203}
+        vm.putReg(203, v)
         vm.Regs[3] = v
     }
-    // call matching_versions/4
+    // call matching_versions_in/4
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["matching_versions/4"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["matching_versions_in/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("matching_versions_in/4", 4) { return true }; vm.warnUnresolved("call", "matching_versions_in/4"); return false }() {
             return false
         }
         vm.CP = savedCP
     }
-    // put_value Y5, A1
-    vm.Regs[0] = vm.getReg(204)
+    // put_value Y4, A1
+    vm.Regs[0] = vm.getReg(203)
     // put_variable Y6, A2
     {
         v := &Unbound{Name: fmt.Sprintf("_R%d", 205), Idx: 205}
         vm.putReg(205, v)
         vm.Regs[1] = v
     }
-    // builtin_call sort/2 2
-    if !vm.executeBuiltin("sort/2", 2) {
-        return false
-    }
-    // put_value Y6, A1
-    vm.Regs[0] = vm.getReg(205)
-    // put_variable Y8, A2
+    // call sort_versions_desc/2
     {
-        v := &Unbound{Name: fmt.Sprintf("_R%d", 207), Idx: 207}
-        vm.putReg(207, v)
-        vm.Regs[1] = v
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["sort_versions_desc/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("sort_versions_desc/2", 2) { return true }; vm.warnUnresolved("call", "sort_versions_desc/2"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
     }
-    // builtin_call reverse/2 2
-    if !vm.executeBuiltin("reverse/2", 2) {
-        return false
-    }
-    // put_value Y7, A1
-    vm.Regs[0] = vm.getReg(206)
-    // put_value Y8, A2
-    vm.Regs[1] = vm.getReg(207)
+    // put_value Y5, A1
+    vm.Regs[0] = vm.getReg(204)
+    // put_value Y6, A2
+    vm.Regs[1] = vm.getReg(205)
     // builtin_call member/2 2
     if !vm.executeBuiltin("member/2", 2) {
         return false
@@ -729,7 +1334,7 @@ func (vm *WamState) PredCanonicalize_name3() bool {
     // call alias_list/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["alias_list/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["alias_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("alias_list/2", 2) { return true }; vm.warnUnresolved("call", "alias_list/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -745,7 +1350,7 @@ func (vm *WamState) PredCanonicalize_name3() bool {
         vm.CP = env.CP
     }
     // execute alias_lookup/3 (tail call)
-    return func() bool { if pc, ok := vm.Ctx.Labels["alias_lookup/3"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+    return func() bool { if pc, ok := vm.Ctx.Labels["alias_lookup/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("alias_lookup/3", 3) { return true }; vm.warnUnresolved("call", "alias_lookup/3"); return false }()
 
 }
 
@@ -770,7 +1375,7 @@ func (vm *WamState) PredClose_moving3() bool {
     // call base_holds/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["base_holds/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["base_holds/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("base_holds/2", 2) { return true }; vm.warnUnresolved("call", "base_holds/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -790,7 +1395,7 @@ func (vm *WamState) PredClose_moving3() bool {
     // call first_broken/4
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["first_broken/4"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["first_broken/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("first_broken/4", 4) { return true }; vm.warnUnresolved("call", "first_broken/4"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -803,7 +1408,7 @@ func (vm *WamState) PredClose_moving3() bool {
         // put_value Y3, A1
         vm.Regs[0] = vm.getReg(202)
         // put_constant none, A2
-        vm.Regs[1] = wamAtom_none_4
+        vm.Regs[1] = wamAtom_none_6
         // builtin_call =/2 2
         if !vm.executeBuiltin("=/2", 2) {
             return false
@@ -882,7 +1487,7 @@ func (vm *WamState) PredClose_moving3() bool {
             // call pick_repair/4
             {
                 savedCP := vm.CP
-                if !func() bool { if pc, ok := vm.Ctx.Labels["pick_repair/4"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+                if !func() bool { if pc, ok := vm.Ctx.Labels["pick_repair/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("pick_repair/4", 4) { return true }; vm.warnUnresolved("call", "pick_repair/4"); return false }() {
                     return false
                 }
                 vm.CP = savedCP
@@ -921,7 +1526,7 @@ func (vm *WamState) PredClose_moving3() bool {
             // call close_moving/3
             {
                 savedCP := vm.CP
-                if !func() bool { if pc, ok := vm.Ctx.Labels["close_moving/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+                if !func() bool { if pc, ok := vm.Ctx.Labels["close_moving/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("close_moving/3", 3) { return true }; vm.warnUnresolved("call", "close_moving/3"); return false }() {
                     return false
                 }
                 vm.CP = savedCP
@@ -985,48 +1590,261 @@ func (vm *WamState) PredClose_moving3() bool {
 
 }
 
+// PredCmp_ver3 — lowered from cmp_ver/3 (T4 all-clauses inline)
+func (vm *WamState) PredCmp_ver3() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_constant <, A1
+        {
+            _a := vm.deref(vm.Regs[0])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom___7
+            } else if !valueEquals(vm.deref(_a), wamAtom___7) {
+                return false
+            }
+        }
+        // get_variable X1, A2
+        vm.Regs[100] = vm.Regs[1]
+        // get_variable X2, A3
+        vm.Regs[101] = vm.Regs[2]
+        // put_value X1, A1
+        vm.Regs[0] = vm.getReg(100)
+        // put_value X2, A2
+        vm.Regs[1] = vm.getReg(101)
+        // call version_lt/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["version_lt/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("version_lt/2", 2) { return true }; vm.warnUnresolved("call", "version_lt/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // builtin_call !/0 0
+        if !vm.executeBuiltin("!/0", 0) {
+            return false
+        }
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_constant >, A1
+        {
+            _a := vm.deref(vm.Regs[0])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom___8
+            } else if !valueEquals(vm.deref(_a), wamAtom___8) {
+                return false
+            }
+        }
+        // get_variable X1, A2
+        vm.Regs[100] = vm.Regs[1]
+        // get_variable X2, A3
+        vm.Regs[101] = vm.Regs[2]
+        // put_value X2, A1
+        vm.Regs[0] = vm.getReg(101)
+        // put_value X1, A2
+        vm.Regs[1] = vm.getReg(100)
+        // call version_lt/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["version_lt/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("version_lt/2", 2) { return true }; vm.warnUnresolved("call", "version_lt/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // builtin_call !/0 0
+        if !vm.executeBuiltin("!/0", 0) {
+            return false
+        }
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_constant =, A1
+        {
+            _a := vm.deref(vm.Regs[0])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom___9
+            } else if !valueEquals(vm.deref(_a), wamAtom___9) {
+                return false
+            }
+        }
+        // get_variable X1, A2
+        vm.Regs[100] = vm.Regs[1]
+        // get_variable X2, A3
+        vm.Regs[101] = vm.Regs[2]
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
+
+}
+
 // PredCollect_deps4 — lowered from collect_deps/4
 func (vm *WamState) PredCollect_deps4() bool {
     // allocate
     vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
-    // get_variable X5, A1
-    vm.Regs[104] = vm.Regs[0]
-    // get_variable Y2, A2
-    vm.Regs[201] = vm.Regs[1]
-    // get_variable Y3, A3
-    vm.Regs[202] = vm.Regs[2]
-    // get_variable Y4, A4
-    vm.Regs[203] = vm.Regs[3]
-    // put_value X5, A1
-    vm.Regs[0] = vm.getReg(104)
-    // put_variable Y1, A2
+    // get_variable Y3, A1
+    vm.Regs[202] = vm.Regs[0]
+    // get_variable Y5, A2
+    vm.Regs[204] = vm.Regs[1]
+    // get_variable Y6, A3
+    vm.Regs[205] = vm.Regs[2]
+    // get_variable Y7, A4
+    vm.Regs[206] = vm.Regs[3]
+    // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
     {
-        v := &Unbound{Name: fmt.Sprintf("_R%d", 200), Idx: 200}
-        vm.putReg(200, v)
-        vm.Regs[1] = v
-    }
-    // call depends_list/2
-    {
-        savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["depends_list/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
-            return false
+        _trailMark := vm.TrailLen
+        _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+        _condOk := func() bool {
+        // put_value Y3, A1
+        vm.Regs[0] = vm.getReg(202)
+        // put_variable Y1, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 200), Idx: 200}
+            vm.putReg(200, v)
+            vm.Regs[1] = v
         }
-        vm.CP = savedCP
+        // call dep_index/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["dep_index/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("dep_index/2", 2) { return true }; vm.warnUnresolved("call", "dep_index/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+            return true
+        }()
+        if _condOk {
+        // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+        {
+            _trailMark := vm.TrailLen
+            _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+            _condOk := func() bool {
+            // put_value Y1, A1
+            vm.Regs[0] = vm.getReg(200)
+            // put_structure -/2, A2
+            if !vm.Step(&PutStructure{Functor: "-/2", Ai: 1}) {
+                return false
+            }
+            // set_value Y5
+            if !vm.Step(&SetValue{Xn: 204}) {
+                return false
+            }
+            // set_value Y6
+            if !vm.Step(&SetValue{Xn: 205}) {
+                return false
+            }
+            // put_variable Y2, A3
+            {
+                v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+                vm.putReg(201, v)
+                vm.Regs[2] = v
+            }
+            // call tree_lookup/3
+            {
+                savedCP := vm.CP
+                if !func() bool { if pc, ok := vm.Ctx.Labels["tree_lookup/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("tree_lookup/3", 3) { return true }; vm.warnUnresolved("call", "tree_lookup/3"); return false }() {
+                    return false
+                }
+                vm.CP = savedCP
+            }
+                return true
+            }()
+            if _condOk {
+            // put_value Y7, A1
+            vm.Regs[0] = vm.getReg(206)
+            // put_value Y2, A2
+            vm.Regs[1] = vm.getReg(201)
+            // builtin_call =/2 2
+            if !vm.executeBuiltin("=/2", 2) {
+                return false
+            }
+            } else {
+                vm.Regs = _savedRegs
+                vm.unwindTrailTo(_trailMark)
+            // put_variable Y2, A3
+            {
+                v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+                vm.putReg(201, v)
+                vm.Regs[2] = v
+            }
+            // put_value Y7, A1
+            vm.Regs[0] = vm.getReg(206)
+            // put_constant [], A2
+            vm.Regs[1] = wamAtom____0
+            // builtin_call =/2 2
+            if !vm.executeBuiltin("=/2", 2) {
+                return false
+            }
+            }
+        }
+        } else {
+            vm.Regs = _savedRegs
+            vm.unwindTrailTo(_trailMark)
+        // put_variable Y1, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 200), Idx: 200}
+            vm.putReg(200, v)
+            vm.Regs[1] = v
+        }
+        // put_value Y3, A1
+        vm.Regs[0] = vm.getReg(202)
+        // put_variable Y4, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 203), Idx: 203}
+            vm.putReg(203, v)
+            vm.Regs[1] = v
+        }
+        // call depends_list/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["depends_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("depends_list/2", 2) { return true }; vm.warnUnresolved("call", "depends_list/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_value Y4, A1
+        vm.Regs[0] = vm.getReg(203)
+        // put_value Y5, A2
+        vm.Regs[1] = vm.getReg(204)
+        // put_value Y6, A3
+        vm.Regs[2] = vm.getReg(205)
+        // put_value Y7, A4
+        vm.Regs[3] = vm.getReg(206)
+        // call matching_deps/4
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["matching_deps/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("matching_deps/4", 4) { return true }; vm.warnUnresolved("call", "matching_deps/4"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        }
     }
-    // put_value Y1, A1
-    vm.Regs[0] = vm.getReg(200)
-    // put_value Y2, A2
-    vm.Regs[1] = vm.getReg(201)
-    // put_value Y3, A3
-    vm.Regs[2] = vm.getReg(202)
-    // put_value Y4, A4
-    vm.Regs[3] = vm.getReg(203)
     // deallocate
     if env := vm.popEnvFrame(); env != nil {
         vm.CP = env.CP
     }
-    // execute matching_deps/4 (tail call)
-    return func() bool { if pc, ok := vm.Ctx.Labels["matching_deps/4"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+    return true
 
 }
 
@@ -1053,7 +1871,7 @@ func (vm *WamState) PredConflicts_in4() bool {
     // call conflicts_list/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["conflicts_list/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["conflicts_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("conflicts_list/2", 2) { return true }; vm.warnUnresolved("call", "conflicts_list/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -1175,7 +1993,225 @@ func (vm *WamState) PredConflicts_list2() bool {
         return true
     }() { return true }
     vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_structure catalog/10, A1
+        if !vm.Step(&GetStructure{Functor: "catalog/10", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // unify_variable X7
+        if !vm.Step(&UnifyVariable{Xn: 106}) {
+            return false
+        }
+        // unify_variable X8
+        if !vm.Step(&UnifyVariable{Xn: 107}) {
+            return false
+        }
+        // unify_variable X9
+        if !vm.Step(&UnifyVariable{Xn: 108}) {
+            return false
+        }
+        // unify_variable X10
+        if !vm.Step(&UnifyVariable{Xn: 109}) {
+            return false
+        }
+        // get_value X3, A2
+        if !vm.Unify(vm.Regs[1], vm.Regs[102]) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_structure icat/3, A1
+        if !vm.Step(&GetStructure{Functor: "icat/3", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // get_variable X4, A2
+        vm.Regs[103] = vm.Regs[1]
+        // put_value X1, A1
+        vm.Regs[0] = vm.getReg(100)
+        // put_value X4, A2
+        vm.Regs[1] = vm.getReg(103)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute conflicts_list/2 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["conflicts_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("conflicts_list/2", 2) { return true }; vm.warnUnresolved("call", "conflicts_list/2"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
     return false
+
+}
+
+// PredDep_breaks5 — lowered from dep_breaks/5
+func (vm *WamState) PredDep_breaks5() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_list A1
+    if !vm.Step(&GetList{Ai: 0}) {
+        return false
+    }
+    // unify_variable X11
+    if !vm.Step(&UnifyVariable{Xn: 110}) {
+        return false
+    }
+    // get_structure depends/4, X11
+    if !vm.Step(&GetStructure{Functor: "depends/4", Ai: 110}) {
+        return false
+    }
+    // unify_variable Y1
+    if !vm.Step(&UnifyVariable{Xn: 200}) {
+        return false
+    }
+    // unify_variable Y2
+    if !vm.Step(&UnifyVariable{Xn: 201}) {
+        return false
+    }
+    // unify_variable Y3
+    if !vm.Step(&UnifyVariable{Xn: 202}) {
+        return false
+    }
+    // unify_variable Y4
+    if !vm.Step(&UnifyVariable{Xn: 203}) {
+        return false
+    }
+    // unify_variable Y6
+    if !vm.Step(&UnifyVariable{Xn: 205}) {
+        return false
+    }
+    // get_variable Y7, A2
+    vm.Regs[206] = vm.Regs[1]
+    // get_variable Y8, A3
+    vm.Regs[207] = vm.Regs[2]
+    // get_variable Y9, A4
+    vm.Regs[208] = vm.Regs[3]
+    // get_variable Y10, A5
+    vm.Regs[209] = vm.Regs[4]
+    // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+    {
+        _trailMark := vm.TrailLen
+        _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+        _condOk := func() bool {
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_value Y7, A2
+        vm.Regs[1] = vm.getReg(206)
+        // builtin_call ==/2 2
+        if !vm.executeBuiltin("==/2", 2) {
+            return false
+        }
+        // put_value Y2, A1
+        vm.Regs[0] = vm.getReg(201)
+        // put_value Y8, A2
+        vm.Regs[1] = vm.getReg(207)
+        // builtin_call ==/2 2
+        if !vm.executeBuiltin("==/2", 2) {
+            return false
+        }
+        // put_value Y9, A1
+        vm.Regs[0] = vm.getReg(208)
+        // put_value Y3, A2
+        vm.Regs[1] = vm.getReg(202)
+        // put_value Y4, A3
+        vm.Regs[2] = vm.getReg(203)
+        // put_variable Y5, A4
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 204), Idx: 204}
+            vm.putReg(204, v)
+            vm.Regs[3] = v
+        }
+        // call dep_breaks_need/4
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["dep_breaks_need/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("dep_breaks_need/4", 4) { return true }; vm.warnUnresolved("call", "dep_breaks_need/4"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+            return true
+        }()
+        if _condOk {
+        // put_value Y10, A1
+        vm.Regs[0] = vm.getReg(209)
+        // put_value Y5, A2
+        vm.Regs[1] = vm.getReg(204)
+        // builtin_call =/2 2
+        if !vm.executeBuiltin("=/2", 2) {
+            return false
+        }
+        } else {
+            vm.Regs = _savedRegs
+            vm.unwindTrailTo(_trailMark)
+        // put_variable Y5, A4
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 204), Idx: 204}
+            vm.putReg(204, v)
+            vm.Regs[3] = v
+        }
+        // put_value Y6, A1
+        vm.Regs[0] = vm.getReg(205)
+        // put_value Y7, A2
+        vm.Regs[1] = vm.getReg(206)
+        // put_value Y8, A3
+        vm.Regs[2] = vm.getReg(207)
+        // put_value Y9, A4
+        vm.Regs[3] = vm.getReg(208)
+        // put_value Y10, A5
+        vm.Regs[4] = vm.getReg(209)
+        // call dep_breaks/5
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["dep_breaks/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("dep_breaks/5", 5) { return true }; vm.warnUnresolved("call", "dep_breaks/5"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        }
+    }
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    return true
 
 }
 
@@ -1204,7 +2240,7 @@ func (vm *WamState) PredDep_breaks_moving5() bool {
     // call depends_list/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["depends_list/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["depends_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("depends_list/2", 2) { return true }; vm.warnUnresolved("call", "depends_list/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -1224,7 +2260,284 @@ func (vm *WamState) PredDep_breaks_moving5() bool {
         vm.CP = env.CP
     }
     // execute dep_breaks/5 (tail call)
-    return func() bool { if pc, ok := vm.Ctx.Labels["dep_breaks/5"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+    return func() bool { if pc, ok := vm.Ctx.Labels["dep_breaks/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("dep_breaks/5", 5) { return true }; vm.warnUnresolved("call", "dep_breaks/5"); return false }()
+
+}
+
+// PredDep_index2 — lowered from dep_index/2
+func (vm *WamState) PredDep_index2() bool {
+    // get_structure icat/3, A1
+    if !vm.Step(&GetStructure{Functor: "icat/3", Ai: 0}) {
+        return false
+    }
+    // unify_variable X1
+    if !vm.Step(&UnifyVariable{Xn: 100}) {
+        return false
+    }
+    // unify_variable X2
+    if !vm.Step(&UnifyVariable{Xn: 101}) {
+        return false
+    }
+    // unify_variable X3
+    if !vm.Step(&UnifyVariable{Xn: 102}) {
+        return false
+    }
+    // get_value X2, A2
+    if !vm.Unify(vm.Regs[1], vm.Regs[101]) {
+        return false
+    }
+    return true
+
+}
+
+// PredDep_mentions2 — lowered from dep_mentions/2 (T4 all-clauses inline)
+func (vm *WamState) PredDep_mentions2() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_structure alternatives/1, A1
+        if !vm.Step(&GetStructure{Functor: "alternatives/1", Ai: 0}) {
+            return false
+        }
+        // unify_variable Y3
+        if !vm.Step(&UnifyVariable{Xn: 202}) {
+            return false
+        }
+        // get_variable Y1, A2
+        vm.Regs[200] = vm.Regs[1]
+        // builtin_call !/0 0
+        if !vm.executeBuiltin("!/0", 0) {
+            return false
+        }
+        // put_structure dep/2, A1
+        if !vm.Step(&PutStructure{Functor: "dep/2", Ai: 0}) {
+            return false
+        }
+        // set_value Y1
+        if !vm.Step(&SetValue{Xn: 200}) {
+            return false
+        }
+        // set_variable Y2
+        if !vm.Step(&SetVariable{Xn: 201}) {
+            return false
+        }
+        // put_value Y3, A2
+        vm.Regs[1] = vm.getReg(202)
+        // builtin_call member/2 2
+        if !vm.executeBuiltin("member/2", 2) {
+            return false
+        }
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_variable X1, A1
+        vm.Regs[100] = vm.Regs[0]
+        // get_variable X2, A2
+        vm.Regs[101] = vm.Regs[1]
+        // put_value X1, A1
+        vm.Regs[0] = vm.getReg(100)
+        // put_value X2, A2
+        vm.Regs[1] = vm.getReg(101)
+        // builtin_call ==/2 2
+        if !vm.executeBuiltin("==/2", 2) {
+            return false
+        }
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
+
+}
+
+// PredDep_targets5 — lowered from dep_targets/5
+func (vm *WamState) PredDep_targets5() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_variable X6, A1
+    vm.Regs[105] = vm.Regs[0]
+    // get_variable X7, A2
+    vm.Regs[106] = vm.Regs[1]
+    // get_variable X8, A3
+    vm.Regs[107] = vm.Regs[2]
+    // get_variable Y2, A4
+    vm.Regs[201] = vm.Regs[3]
+    // get_variable Y4, A5
+    vm.Regs[203] = vm.Regs[4]
+    // put_value X6, A1
+    vm.Regs[0] = vm.getReg(105)
+    // put_value X7, A2
+    vm.Regs[1] = vm.getReg(106)
+    // put_value X8, A3
+    vm.Regs[2] = vm.getReg(107)
+    // put_variable Y3, A4
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 202), Idx: 202}
+        vm.putReg(202, v)
+        vm.Regs[3] = v
+    }
+    // put_variable Y5, A5
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 204), Idx: 204}
+        vm.putReg(204, v)
+        vm.Regs[4] = v
+    }
+    // call depends_in/5
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["depends_in/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("depends_in/5", 5) { return true }; vm.warnUnresolved("call", "depends_in/5"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+    {
+        _trailMark := vm.TrailLen
+        _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+        _condOk := func() bool {
+        // put_value Y3, A1
+        vm.Regs[0] = vm.getReg(202)
+        // put_structure alternatives/1, A2
+        if !vm.Step(&PutStructure{Functor: "alternatives/1", Ai: 1}) {
+            return false
+        }
+        // set_variable Y1
+        if !vm.Step(&SetVariable{Xn: 200}) {
+            return false
+        }
+        // builtin_call =/2 2
+        if !vm.executeBuiltin("=/2", 2) {
+            return false
+        }
+            return true
+        }()
+        if _condOk {
+        // put_structure dep/2, A1
+        if !vm.Step(&PutStructure{Functor: "dep/2", Ai: 0}) {
+            return false
+        }
+        // set_value Y2
+        if !vm.Step(&SetValue{Xn: 201}) {
+            return false
+        }
+        // set_value Y4
+        if !vm.Step(&SetValue{Xn: 203}) {
+            return false
+        }
+        // put_value Y1, A2
+        vm.Regs[1] = vm.getReg(200)
+        // builtin_call member/2 2
+        if !vm.executeBuiltin("member/2", 2) {
+            return false
+        }
+        } else {
+            vm.Regs = _savedRegs
+            vm.unwindTrailTo(_trailMark)
+        // put_value Y2, A1
+        vm.Regs[0] = vm.getReg(201)
+        // put_value Y3, A2
+        vm.Regs[1] = vm.getReg(202)
+        // builtin_call =/2 2
+        if !vm.executeBuiltin("=/2", 2) {
+            return false
+        }
+        // put_value Y4, A1
+        vm.Regs[0] = vm.getReg(203)
+        // put_value Y5, A2
+        vm.Regs[1] = vm.getReg(204)
+        // builtin_call =/2 2
+        if !vm.executeBuiltin("=/2", 2) {
+            return false
+        }
+        }
+    }
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    return true
+
+}
+
+// PredDep_to_req3 — lowered from dep_to_req/3 (T4 all-clauses inline)
+func (vm *WamState) PredDep_to_req3() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_structure alternatives/1, A1
+        if !vm.Step(&GetStructure{Functor: "alternatives/1", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // get_variable X2, A2
+        vm.Regs[101] = vm.Regs[1]
+        // get_structure req/2, A3
+        if !vm.Step(&GetStructure{Functor: "req/2", Ai: 2}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // get_structure alternatives/1, X3
+        if !vm.Step(&GetStructure{Functor: "alternatives/1", Ai: 102}) {
+            return false
+        }
+        // unify_value X1
+        if !vm.Step(&UnifyValue{Xn: 100}) {
+            return false
+        }
+        // unify_constant any
+        if !vm.Step(&UnifyConstant{C: wamAtom_any_10}) {
+            return false
+        }
+        // builtin_call !/0 0
+        if !vm.executeBuiltin("!/0", 0) {
+            return false
+        }
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_variable X1, A1
+        vm.Regs[100] = vm.Regs[0]
+        // get_variable X2, A2
+        vm.Regs[101] = vm.Regs[1]
+        // get_structure req/2, A3
+        if !vm.Step(&GetStructure{Functor: "req/2", Ai: 2}) {
+            return false
+        }
+        // unify_value X1
+        if !vm.Step(&UnifyValue{Xn: 100}) {
+            return false
+        }
+        // unify_value X2
+        if !vm.Step(&UnifyValue{Xn: 101}) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
 
 }
 
@@ -1251,7 +2564,7 @@ func (vm *WamState) PredDependents3() bool {
     // call canonicalize_name/3
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["canonicalize_name/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["canonicalize_name/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("canonicalize_name/3", 3) { return true }; vm.warnUnresolved("call", "canonicalize_name/3"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -1267,7 +2580,7 @@ func (vm *WamState) PredDependents3() bool {
     // call depends_list/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["depends_list/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["depends_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("depends_list/2", 2) { return true }; vm.warnUnresolved("call", "depends_list/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -1287,7 +2600,7 @@ func (vm *WamState) PredDependents3() bool {
     // call direct_on/4
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["direct_on/4"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["direct_on/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("direct_on/4", 4) { return true }; vm.warnUnresolved("call", "direct_on/4"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -1335,7 +2648,7 @@ func (vm *WamState) PredDependents_installed3() bool {
     // call dependents/3
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["dependents/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["dependents/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("dependents/3", 3) { return true }; vm.warnUnresolved("call", "dependents/3"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -1355,7 +2668,7 @@ func (vm *WamState) PredDependents_installed3() bool {
     // call keep_installed_or_base/4
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["keep_installed_or_base/4"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["keep_installed_or_base/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("keep_installed_or_base/4", 4) { return true }; vm.warnUnresolved("call", "keep_installed_or_base/4"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -1405,7 +2718,7 @@ func (vm *WamState) PredDepends_in5() bool {
     // call depends_list/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["depends_list/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["depends_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("depends_list/2", 2) { return true }; vm.warnUnresolved("call", "depends_list/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -1531,6 +2844,91 @@ func (vm *WamState) PredDepends_list2() bool {
         return true
     }() { return true }
     vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_structure catalog/10, A1
+        if !vm.Step(&GetStructure{Functor: "catalog/10", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // unify_variable X7
+        if !vm.Step(&UnifyVariable{Xn: 106}) {
+            return false
+        }
+        // unify_variable X8
+        if !vm.Step(&UnifyVariable{Xn: 107}) {
+            return false
+        }
+        // unify_variable X9
+        if !vm.Step(&UnifyVariable{Xn: 108}) {
+            return false
+        }
+        // unify_variable X10
+        if !vm.Step(&UnifyVariable{Xn: 109}) {
+            return false
+        }
+        // get_value X2, A2
+        if !vm.Unify(vm.Regs[1], vm.Regs[101]) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_structure icat/3, A1
+        if !vm.Step(&GetStructure{Functor: "icat/3", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // get_variable X4, A2
+        vm.Regs[103] = vm.Regs[1]
+        // put_value X1, A1
+        vm.Regs[0] = vm.getReg(100)
+        // put_value X4, A2
+        vm.Regs[1] = vm.getReg(103)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute depends_list/2 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["depends_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("depends_list/2", 2) { return true }; vm.warnUnresolved("call", "depends_list/2"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
     return false
 
 }
@@ -1625,7 +3023,7 @@ func (vm *WamState) PredExclude_name3() bool {
             vm.CP = env.CP
         }
         // execute exclude_name/3 (tail call)
-        return func() bool { if pc, ok := vm.Ctx.Labels["exclude_name/3"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+        return func() bool { if pc, ok := vm.Ctx.Labels["exclude_name/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("exclude_name/3", 3) { return true }; vm.warnUnresolved("call", "exclude_name/3"); return false }()
     }() { return true }
     vm.LoRestoreClause(_t4)
     if func() bool {
@@ -1668,7 +3066,7 @@ func (vm *WamState) PredExclude_name3() bool {
             vm.CP = env.CP
         }
         // execute exclude_name/3 (tail call)
-        return func() bool { if pc, ok := vm.Ctx.Labels["exclude_name/3"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+        return func() bool { if pc, ok := vm.Ctx.Labels["exclude_name/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("exclude_name/3", 3) { return true }; vm.warnUnresolved("call", "exclude_name/3"); return false }()
     }() { return true }
     vm.LoRestoreClause(_t4)
     return false
@@ -1769,6 +3167,91 @@ func (vm *WamState) PredExcluded_list2() bool {
         return true
     }() { return true }
     vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_structure catalog/10, A1
+        if !vm.Step(&GetStructure{Functor: "catalog/10", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // unify_variable X7
+        if !vm.Step(&UnifyVariable{Xn: 106}) {
+            return false
+        }
+        // unify_variable X8
+        if !vm.Step(&UnifyVariable{Xn: 107}) {
+            return false
+        }
+        // unify_variable X9
+        if !vm.Step(&UnifyVariable{Xn: 108}) {
+            return false
+        }
+        // unify_variable X10
+        if !vm.Step(&UnifyVariable{Xn: 109}) {
+            return false
+        }
+        // get_value X8, A2
+        if !vm.Unify(vm.Regs[1], vm.Regs[107]) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_structure icat/3, A1
+        if !vm.Step(&GetStructure{Functor: "icat/3", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // get_variable X4, A2
+        vm.Regs[103] = vm.Regs[1]
+        // put_value X1, A1
+        vm.Regs[0] = vm.getReg(100)
+        // put_value X4, A2
+        vm.Regs[1] = vm.getReg(103)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute excluded_list/2 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["excluded_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("excluded_list/2", 2) { return true }; vm.warnUnresolved("call", "excluded_list/2"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
     return false
 
 }
@@ -1792,7 +3275,7 @@ func (vm *WamState) PredExcluded_name2() bool {
     // call excluded_list/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["excluded_list/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["excluded_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("excluded_list/2", 2) { return true }; vm.warnUnresolved("call", "excluded_list/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -1836,7 +3319,7 @@ func (vm *WamState) PredExplain_blocked3() bool {
     // call request_to_req/3
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["request_to_req/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["request_to_req/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("request_to_req/3", 3) { return true }; vm.warnUnresolved("call", "request_to_req/3"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -1854,7 +3337,7 @@ func (vm *WamState) PredExplain_blocked3() bool {
         vm.CP = env.CP
     }
     // execute blocked_from/4 (tail call)
-    return func() bool { if pc, ok := vm.Ctx.Labels["blocked_from/4"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+    return func() bool { if pc, ok := vm.Ctx.Labels["blocked_from/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("blocked_from/4", 4) { return true }; vm.warnUnresolved("call", "blocked_from/4"); return false }()
 
 }
 
@@ -1881,7 +3364,7 @@ func (vm *WamState) PredExplain_blocked_list3() bool {
     // call request_to_req/3
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["request_to_req/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["request_to_req/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("request_to_req/3", 3) { return true }; vm.warnUnresolved("call", "request_to_req/3"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -1903,7 +3386,7 @@ func (vm *WamState) PredExplain_blocked_list3() bool {
     // call blocked_acc/5
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["blocked_acc/5"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["blocked_acc/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("blocked_acc/5", 5) { return true }; vm.warnUnresolved("call", "blocked_acc/5"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -1925,6 +3408,162 @@ func (vm *WamState) PredExplain_blocked_list3() bool {
         vm.CP = env.CP
     }
     return true
+
+}
+
+// PredFilter_satisfies3 — lowered from filter_satisfies/3
+func (vm *WamState) PredFilter_satisfies3() bool {
+    // get_constant [], A1
+    {
+        _a := vm.deref(vm.Regs[0])
+        if _, ok := _a.(*Unbound); ok {
+            u := _a.(*Unbound)
+            vm.trailBinding(u.Idx)
+            vm.Regs[u.Idx] = wamAtom____0
+        } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+            return false
+        }
+    }
+    // get_variable X1, A2
+    vm.Regs[100] = vm.Regs[1]
+    // get_constant [], A3
+    {
+        _a := vm.deref(vm.Regs[2])
+        if _, ok := _a.(*Unbound); ok {
+            u := _a.(*Unbound)
+            vm.trailBinding(u.Idx)
+            vm.Regs[u.Idx] = wamAtom____0
+        } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+            return false
+        }
+    }
+    return true
+
+}
+
+// PredFirst_alt_already4 — lowered from first_alt_already/4 (T4 all-clauses inline)
+func (vm *WamState) PredFirst_alt_already4() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_variable X5, A1
+        vm.Regs[104] = vm.Regs[0]
+        // get_variable Y1, A2
+        vm.Regs[200] = vm.Regs[1]
+        // get_variable Y2, A3
+        vm.Regs[201] = vm.Regs[2]
+        // get_variable X6, A4
+        vm.Regs[105] = vm.Regs[3]
+        // put_structure dep/2, A1
+        if !vm.Step(&PutStructure{Functor: "dep/2", Ai: 0}) {
+            return false
+        }
+        // set_variable Y3
+        if !vm.Step(&SetVariable{Xn: 202}) {
+            return false
+        }
+        // set_variable Y4
+        if !vm.Step(&SetVariable{Xn: 203}) {
+            return false
+        }
+        // put_value X6, A2
+        vm.Regs[1] = vm.getReg(105)
+        // builtin_call member/2 2
+        if !vm.executeBuiltin("member/2", 2) {
+            return false
+        }
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_value Y2, A2
+        vm.Regs[1] = vm.getReg(201)
+        // put_value Y3, A3
+        vm.Regs[2] = vm.getReg(202)
+        // put_value Y4, A4
+        vm.Regs[3] = vm.getReg(203)
+        // call already_satisfied/4
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["already_satisfied/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("already_satisfied/4", 4) { return true }; vm.warnUnresolved("call", "already_satisfied/4"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // builtin_call !/0 0
+        if !vm.executeBuiltin("!/0", 0) {
+            return false
+        }
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_constant layered, A1
+        {
+            _a := vm.deref(vm.Regs[0])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom_layered_11
+            } else if !valueEquals(vm.deref(_a), wamAtom_layered_11) {
+                return false
+            }
+        }
+        // get_variable Y1, A2
+        vm.Regs[200] = vm.Regs[1]
+        // get_variable X4, A3
+        vm.Regs[103] = vm.Regs[2]
+        // get_variable X5, A4
+        vm.Regs[104] = vm.Regs[3]
+        // put_structure dep/2, A1
+        if !vm.Step(&PutStructure{Functor: "dep/2", Ai: 0}) {
+            return false
+        }
+        // set_variable Y2
+        if !vm.Step(&SetVariable{Xn: 201}) {
+            return false
+        }
+        // set_variable Y3
+        if !vm.Step(&SetVariable{Xn: 202}) {
+            return false
+        }
+        // put_value X5, A2
+        vm.Regs[1] = vm.getReg(104)
+        // builtin_call member/2 2
+        if !vm.executeBuiltin("member/2", 2) {
+            return false
+        }
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_value Y2, A2
+        vm.Regs[1] = vm.getReg(201)
+        // put_value Y3, A3
+        vm.Regs[2] = vm.getReg(202)
+        // call layer_satisfies/3
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["layer_satisfies/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("layer_satisfies/3", 3) { return true }; vm.warnUnresolved("call", "layer_satisfies/3"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // builtin_call !/0 0
+        if !vm.executeBuiltin("!/0", 0) {
+            return false
+        }
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
 
 }
 
@@ -1951,12 +3590,192 @@ func (vm *WamState) PredFirst_broken4() bool {
         if _, ok := _a.(*Unbound); ok {
             u := _a.(*Unbound)
             vm.trailBinding(u.Idx)
-            vm.Regs[u.Idx] = wamAtom_none_4
-        } else if !valueEquals(vm.deref(_a), wamAtom_none_4) {
+            vm.Regs[u.Idx] = wamAtom_none_6
+        } else if !valueEquals(vm.deref(_a), wamAtom_none_6) {
             return false
         }
     }
     return true
+
+}
+
+// PredFollow_dep_name5 — lowered from follow_dep_name/5
+func (vm *WamState) PredFollow_dep_name5() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_variable X5, A1
+    vm.Regs[104] = vm.Regs[0]
+    // get_variable X6, A2
+    vm.Regs[105] = vm.Regs[1]
+    // get_variable X7, A3
+    vm.Regs[106] = vm.Regs[2]
+    // get_variable Y3, A4
+    vm.Regs[202] = vm.Regs[3]
+    // get_variable Y4, A5
+    vm.Regs[203] = vm.Regs[4]
+    // put_value X5, A1
+    vm.Regs[0] = vm.getReg(104)
+    // put_value X6, A2
+    vm.Regs[1] = vm.getReg(105)
+    // put_value X7, A3
+    vm.Regs[2] = vm.getReg(106)
+    // put_variable Y1, A4
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 200), Idx: 200}
+        vm.putReg(200, v)
+        vm.Regs[3] = v
+    }
+    // put_variable Y2, A5
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+        vm.putReg(201, v)
+        vm.Regs[4] = v
+    }
+    // call depends_in/5
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["depends_in/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("depends_in/5", 5) { return true }; vm.warnUnresolved("call", "depends_in/5"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // put_value Y1, A1
+    vm.Regs[0] = vm.getReg(200)
+    // put_value Y2, A2
+    vm.Regs[1] = vm.getReg(201)
+    // put_value Y3, A3
+    vm.Regs[2] = vm.getReg(202)
+    // put_value Y4, A4
+    vm.Regs[3] = vm.getReg(203)
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    // execute follow_raw_dep/4 (tail call)
+    return func() bool { if pc, ok := vm.Ctx.Labels["follow_raw_dep/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("follow_raw_dep/4", 4) { return true }; vm.warnUnresolved("call", "follow_raw_dep/4"); return false }()
+
+}
+
+// PredFollow_raw_dep4 — lowered from follow_raw_dep/4 (T4 all-clauses inline)
+func (vm *WamState) PredFollow_raw_dep4() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_structure alternatives/1, A1
+        if !vm.Step(&GetStructure{Functor: "alternatives/1", Ai: 0}) {
+            return false
+        }
+        // unify_variable Y2
+        if !vm.Step(&UnifyVariable{Xn: 201}) {
+            return false
+        }
+        // get_variable X7, A2
+        vm.Regs[106] = vm.Regs[1]
+        // get_variable Y4, A3
+        vm.Regs[203] = vm.Regs[2]
+        // get_variable Y5, A4
+        vm.Regs[204] = vm.Regs[3]
+        // builtin_call !/0 0
+        if !vm.executeBuiltin("!/0", 0) {
+            return false
+        }
+        // put_structure dep/2, A1
+        if !vm.Step(&PutStructure{Functor: "dep/2", Ai: 0}) {
+            return false
+        }
+        // set_variable Y6
+        if !vm.Step(&SetVariable{Xn: 205}) {
+            return false
+        }
+        // set_variable Y1
+        if !vm.Step(&SetVariable{Xn: 200}) {
+            return false
+        }
+        // put_value Y2, A2
+        vm.Regs[1] = vm.getReg(201)
+        // builtin_call member/2 2
+        if !vm.executeBuiltin("member/2", 2) {
+            return false
+        }
+        // put_structure -/2, A1
+        if !vm.Step(&PutStructure{Functor: "-/2", Ai: 0}) {
+            return false
+        }
+        // set_value Y6
+        if !vm.Step(&SetValue{Xn: 205}) {
+            return false
+        }
+        // set_variable Y3
+        if !vm.Step(&SetVariable{Xn: 202}) {
+            return false
+        }
+        // put_value Y4, A2
+        vm.Regs[1] = vm.getReg(203)
+        // builtin_call member/2 2
+        if !vm.executeBuiltin("member/2", 2) {
+            return false
+        }
+        // put_value Y5, A1
+        vm.Regs[0] = vm.getReg(204)
+        // put_value Y6, A2
+        vm.Regs[1] = vm.getReg(205)
+        // builtin_call =/2 2
+        if !vm.executeBuiltin("=/2", 2) {
+            return false
+        }
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_variable Y1, A1
+        vm.Regs[200] = vm.Regs[0]
+        // get_variable X4, A2
+        vm.Regs[103] = vm.Regs[1]
+        // get_variable Y3, A3
+        vm.Regs[202] = vm.Regs[2]
+        // get_value Y1, A4
+        if !vm.Unify(vm.Regs[3], vm.Regs[200]) {
+            return false
+        }
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // builtin_call atom/1 1
+        if !vm.executeBuiltin("atom/1", 1) {
+            return false
+        }
+        // put_structure -/2, A1
+        if !vm.Step(&PutStructure{Functor: "-/2", Ai: 0}) {
+            return false
+        }
+        // set_value Y1
+        if !vm.Step(&SetValue{Xn: 200}) {
+            return false
+        }
+        // set_variable Y2
+        if !vm.Step(&SetVariable{Xn: 201}) {
+            return false
+        }
+        // put_value Y3, A2
+        vm.Regs[1] = vm.getReg(202)
+        // builtin_call member/2 2
+        if !vm.executeBuiltin("member/2", 2) {
+            return false
+        }
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
 
 }
 
@@ -1979,7 +3798,7 @@ func (vm *WamState) PredFreeze_audit2() bool {
     // call base_holds/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["base_holds/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["base_holds/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("base_holds/2", 2) { return true }; vm.warnUnresolved("call", "base_holds/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -1999,7 +3818,7 @@ func (vm *WamState) PredFreeze_audit2() bool {
     // call audit_holds/4
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["audit_holds/4"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["audit_holds/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("audit_holds/4", 4) { return true }; vm.warnUnresolved("call", "audit_holds/4"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -2021,6 +3840,146 @@ func (vm *WamState) PredFreeze_audit2() bool {
         vm.CP = env.CP
     }
     return true
+
+}
+
+// PredGroup_keyed2 — lowered from group_keyed/2 (T4 all-clauses inline)
+func (vm *WamState) PredGroup_keyed2() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // get_constant [], A1
+        {
+            _a := vm.deref(vm.Regs[0])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom____0
+            } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+                return false
+            }
+        }
+        // get_constant [], A2
+        {
+            _a := vm.deref(vm.Regs[1])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom____0
+            } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+                return false
+            }
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_list A1
+        if !vm.Step(&GetList{Ai: 0}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // get_structure -/2, X3
+        if !vm.Step(&GetStructure{Functor: "-/2", Ai: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // get_structure -/2, X4
+        if !vm.Step(&GetStructure{Functor: "-/2", Ai: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // unify_variable X7
+        if !vm.Step(&UnifyVariable{Xn: 106}) {
+            return false
+        }
+        // unify_variable X8
+        if !vm.Step(&UnifyVariable{Xn: 107}) {
+            return false
+        }
+        // get_list A2
+        if !vm.Step(&GetList{Ai: 1}) {
+            return false
+        }
+        // unify_variable X9
+        if !vm.Step(&UnifyVariable{Xn: 108}) {
+            return false
+        }
+        // get_structure -/2, X9
+        if !vm.Step(&GetStructure{Functor: "-/2", Ai: 108}) {
+            return false
+        }
+        // unify_value X5
+        if !vm.Step(&UnifyValue{Xn: 104}) {
+            return false
+        }
+        // unify_variable X10
+        if !vm.Step(&UnifyVariable{Xn: 109}) {
+            return false
+        }
+        // get_structure [|]/2, X10
+        if !vm.Step(&GetStructure{Functor: "[|]/2", Ai: 109}) {
+            return false
+        }
+        // unify_value X7
+        if !vm.Step(&UnifyValue{Xn: 106}) {
+            return false
+        }
+        // unify_variable X11
+        if !vm.Step(&UnifyVariable{Xn: 110}) {
+            return false
+        }
+        // unify_variable Y2
+        if !vm.Step(&UnifyVariable{Xn: 201}) {
+            return false
+        }
+        // put_value X8, A1
+        vm.Regs[0] = vm.getReg(107)
+        // put_value X5, A2
+        vm.Regs[1] = vm.getReg(104)
+        // put_value X11, A3
+        vm.Regs[2] = vm.getReg(110)
+        // put_variable Y1, A4
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 200), Idx: 200}
+            vm.putReg(200, v)
+            vm.Regs[3] = v
+        }
+        // call same_key/4
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["same_key/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("same_key/4", 4) { return true }; vm.warnUnresolved("call", "same_key/4"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_value Y2, A2
+        vm.Regs[1] = vm.getReg(201)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute group_keyed/2 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["group_keyed/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("group_keyed/2", 2) { return true }; vm.warnUnresolved("call", "group_keyed/2"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
 
 }
 
@@ -2096,7 +4055,7 @@ func (vm *WamState) PredHold_reason3() bool {
         // call hold_reason/3
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["hold_reason/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["hold_reason/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("hold_reason/3", 3) { return true }; vm.warnUnresolved("call", "hold_reason/3"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -2106,6 +4065,260 @@ func (vm *WamState) PredHold_reason3() bool {
     // deallocate
     if env := vm.popEnvFrame(); env != nil {
         vm.CP = env.CP
+    }
+    return true
+
+}
+
+// PredIndex_catalog2 — lowered from index_catalog/2
+func (vm *WamState) PredIndex_catalog2() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_variable Y12, A1
+    vm.Regs[211] = vm.Regs[0]
+    // get_variable Y11, A2
+    vm.Regs[210] = vm.Regs[1]
+    // put_value Y12, A1
+    vm.Regs[0] = vm.getReg(211)
+    // call is_public_catalog/1
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["is_public_catalog/1"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("is_public_catalog/1", 1) { return true }; vm.warnUnresolved("call", "is_public_catalog/1"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // put_value Y12, A1
+    vm.Regs[0] = vm.getReg(211)
+    // put_variable Y1, A2
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 200), Idx: 200}
+        vm.putReg(200, v)
+        vm.Regs[1] = v
+    }
+    // call depends_list/2
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["depends_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("depends_list/2", 2) { return true }; vm.warnUnresolved("call", "depends_list/2"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // put_value Y12, A1
+    vm.Regs[0] = vm.getReg(211)
+    // put_variable Y5, A2
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 204), Idx: 204}
+        vm.putReg(204, v)
+        vm.Regs[1] = v
+    }
+    // call packages/2
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["packages/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("packages/2", 2) { return true }; vm.warnUnresolved("call", "packages/2"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+    {
+        _trailMark := vm.TrailLen
+        _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+        _condOk := func() bool {
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_value Y5, A2
+        vm.Regs[1] = vm.getReg(204)
+        // call worth_indexing/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["worth_indexing/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("worth_indexing/2", 2) { return true }; vm.warnUnresolved("call", "worth_indexing/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+            return true
+        }()
+        if _condOk {
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_constant 0, A2
+        vm.Regs[1] = &Integer{Val: 0}
+        // put_variable Y2, A3
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+            vm.putReg(201, v)
+            vm.Regs[2] = v
+        }
+        // call key_dep_rows/3
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["key_dep_rows/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("key_dep_rows/3", 3) { return true }; vm.warnUnresolved("call", "key_dep_rows/3"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_value Y2, A1
+        vm.Regs[0] = vm.getReg(201)
+        // put_variable Y3, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 202), Idx: 202}
+            vm.putReg(202, v)
+            vm.Regs[1] = v
+        }
+        // builtin_call sort/2 2
+        if !vm.executeBuiltin("sort/2", 2) {
+            return false
+        }
+        // put_value Y3, A1
+        vm.Regs[0] = vm.getReg(202)
+        // put_variable Y4, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 203), Idx: 203}
+            vm.putReg(203, v)
+            vm.Regs[1] = v
+        }
+        // call group_keyed/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["group_keyed/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("group_keyed/2", 2) { return true }; vm.warnUnresolved("call", "group_keyed/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_value Y4, A1
+        vm.Regs[0] = vm.getReg(203)
+        // put_variable Y9, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 208), Idx: 208}
+            vm.putReg(208, v)
+            vm.Regs[1] = v
+        }
+        // call list_to_tree/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["list_to_tree/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("list_to_tree/2", 2) { return true }; vm.warnUnresolved("call", "list_to_tree/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_value Y5, A1
+        vm.Regs[0] = vm.getReg(204)
+        // put_constant 0, A2
+        vm.Regs[1] = &Integer{Val: 0}
+        // put_variable Y6, A3
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 205), Idx: 205}
+            vm.putReg(205, v)
+            vm.Regs[2] = v
+        }
+        // call key_pkg_rows/3
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["key_pkg_rows/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("key_pkg_rows/3", 3) { return true }; vm.warnUnresolved("call", "key_pkg_rows/3"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_value Y6, A1
+        vm.Regs[0] = vm.getReg(205)
+        // put_variable Y7, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 206), Idx: 206}
+            vm.putReg(206, v)
+            vm.Regs[1] = v
+        }
+        // builtin_call sort/2 2
+        if !vm.executeBuiltin("sort/2", 2) {
+            return false
+        }
+        // put_value Y7, A1
+        vm.Regs[0] = vm.getReg(206)
+        // put_variable Y8, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 207), Idx: 207}
+            vm.putReg(207, v)
+            vm.Regs[1] = v
+        }
+        // call group_keyed/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["group_keyed/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("group_keyed/2", 2) { return true }; vm.warnUnresolved("call", "group_keyed/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_value Y8, A1
+        vm.Regs[0] = vm.getReg(207)
+        // put_variable Y10, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 209), Idx: 209}
+            vm.putReg(209, v)
+            vm.Regs[1] = v
+        }
+        // call list_to_tree/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["list_to_tree/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("list_to_tree/2", 2) { return true }; vm.warnUnresolved("call", "list_to_tree/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_value Y11, A1
+        vm.Regs[0] = vm.getReg(210)
+        // put_structure icat/3, A2
+        if !vm.Step(&PutStructure{Functor: "icat/3", Ai: 1}) {
+            return false
+        }
+        // set_value Y12
+        if !vm.Step(&SetValue{Xn: 211}) {
+            return false
+        }
+        // set_value Y9
+        if !vm.Step(&SetValue{Xn: 208}) {
+            return false
+        }
+        // set_value Y10
+        if !vm.Step(&SetValue{Xn: 209}) {
+            return false
+        }
+        // builtin_call =/2 2
+        if !vm.executeBuiltin("=/2", 2) {
+            return false
+        }
+        } else {
+            vm.Regs = _savedRegs
+            vm.unwindTrailTo(_trailMark)
+        // put_value Y11, A1
+        vm.Regs[0] = vm.getReg(210)
+        // put_value Y12, A2
+        vm.Regs[1] = vm.getReg(211)
+        // builtin_call =/2 2
+        if !vm.executeBuiltin("=/2", 2) {
+            return false
+        }
+        }
+    }
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    return true
+
+}
+
+// PredIndex_threshold1 — lowered from index_threshold/1
+func (vm *WamState) PredIndex_threshold1() bool {
+    // get_constant 64, A1
+    {
+        _a := vm.deref(vm.Regs[0])
+        if _, ok := _a.(*Unbound); ok {
+            u := _a.(*Unbound)
+            vm.trailBinding(u.Idx)
+            vm.Regs[u.Idx] = &Integer{Val: 64}
+        } else if !valueEquals(vm.deref(_a), &Integer{Val: 64}) {
+            return false
+        }
     }
     return true
 
@@ -2164,7 +4377,7 @@ func (vm *WamState) PredInst_closure_names5() bool {
         vm.CP = env.CP
     }
     // execute inst_walk/6 (tail call)
-    return func() bool { if pc, ok := vm.Ctx.Labels["inst_walk/6"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+    return func() bool { if pc, ok := vm.Ctx.Labels["inst_walk/6"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("inst_walk/6", 6) { return true }; vm.warnUnresolved("call", "inst_walk/6"); return false }()
 
 }
 
@@ -2284,6 +4497,91 @@ func (vm *WamState) PredInstalled_list2() bool {
         return true
     }() { return true }
     vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_structure catalog/10, A1
+        if !vm.Step(&GetStructure{Functor: "catalog/10", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // unify_variable X7
+        if !vm.Step(&UnifyVariable{Xn: 106}) {
+            return false
+        }
+        // unify_variable X8
+        if !vm.Step(&UnifyVariable{Xn: 107}) {
+            return false
+        }
+        // unify_variable X9
+        if !vm.Step(&UnifyVariable{Xn: 108}) {
+            return false
+        }
+        // unify_variable X10
+        if !vm.Step(&UnifyVariable{Xn: 109}) {
+            return false
+        }
+        // get_value X5, A2
+        if !vm.Unify(vm.Regs[1], vm.Regs[104]) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_structure icat/3, A1
+        if !vm.Step(&GetStructure{Functor: "icat/3", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // get_variable X4, A2
+        vm.Regs[103] = vm.Regs[1]
+        // put_value X1, A1
+        vm.Regs[0] = vm.getReg(100)
+        // put_value X4, A2
+        vm.Regs[1] = vm.getReg(103)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute installed_list/2 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["installed_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("installed_list/2", 2) { return true }; vm.warnUnresolved("call", "installed_list/2"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
     return false
 
 }
@@ -2311,7 +4609,7 @@ func (vm *WamState) PredInstalled_or_base3() bool {
             vm.CP = env.CP
         }
         // execute installed_ver/3 (tail call)
-        return func() bool { if pc, ok := vm.Ctx.Labels["installed_ver/3"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+        return func() bool { if pc, ok := vm.Ctx.Labels["installed_ver/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("installed_ver/3", 3) { return true }; vm.warnUnresolved("call", "installed_ver/3"); return false }()
     }() { return true }
     vm.LoRestoreClause(_t4)
     if func() bool {
@@ -2336,7 +4634,7 @@ func (vm *WamState) PredInstalled_or_base3() bool {
         // call base_ver/3
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["base_ver/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["base_ver/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("base_ver/3", 3) { return true }; vm.warnUnresolved("call", "base_ver/3"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -2381,7 +4679,7 @@ func (vm *WamState) PredInstalled_ver3() bool {
     // call installed_list/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["installed_list/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["installed_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("installed_list/2", 2) { return true }; vm.warnUnresolved("call", "installed_list/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -2407,6 +4705,159 @@ func (vm *WamState) PredInstalled_ver3() bool {
     // deallocate
     if env := vm.popEnvFrame(); env != nil {
         vm.CP = env.CP
+    }
+    return true
+
+}
+
+// PredIs_public_catalog1 — lowered from is_public_catalog/1 (T4 all-clauses inline)
+func (vm *WamState) PredIs_public_catalog1() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // get_structure catalog/6, A1
+        if !vm.Step(&GetStructure{Functor: "catalog/6", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_structure catalog/9, A1
+        if !vm.Step(&GetStructure{Functor: "catalog/9", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // unify_variable X7
+        if !vm.Step(&UnifyVariable{Xn: 106}) {
+            return false
+        }
+        // unify_variable X8
+        if !vm.Step(&UnifyVariable{Xn: 107}) {
+            return false
+        }
+        // unify_variable X9
+        if !vm.Step(&UnifyVariable{Xn: 108}) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_structure catalog/10, A1
+        if !vm.Step(&GetStructure{Functor: "catalog/10", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // unify_variable X7
+        if !vm.Step(&UnifyVariable{Xn: 106}) {
+            return false
+        }
+        // unify_variable X8
+        if !vm.Step(&UnifyVariable{Xn: 107}) {
+            return false
+        }
+        // unify_variable X9
+        if !vm.Step(&UnifyVariable{Xn: 108}) {
+            return false
+        }
+        // unify_variable X10
+        if !vm.Step(&UnifyVariable{Xn: 109}) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
+
+}
+
+// PredIs_v31 — lowered from is_v3/1
+func (vm *WamState) PredIs_v31() bool {
+    // get_structure v/3, A1
+    if !vm.Step(&GetStructure{Functor: "v/3", Ai: 0}) {
+        return false
+    }
+    // unify_variable X1
+    if !vm.Step(&UnifyVariable{Xn: 100}) {
+        return false
+    }
+    // unify_variable X2
+    if !vm.Step(&UnifyVariable{Xn: 101}) {
+        return false
+    }
+    // unify_variable X3
+    if !vm.Step(&UnifyVariable{Xn: 102}) {
+        return false
     }
     return true
 
@@ -2529,7 +4980,7 @@ func (vm *WamState) PredItem_ver3() bool {
             vm.CP = env.CP
         }
         // execute lookup_held/3 (tail call)
-        return func() bool { if pc, ok := vm.Ctx.Labels["lookup_held/3"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+        return func() bool { if pc, ok := vm.Ctx.Labels["lookup_held/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("lookup_held/3", 3) { return true }; vm.warnUnresolved("call", "lookup_held/3"); return false }()
     }() { return true }
     vm.LoRestoreClause(_t4)
     return false
@@ -2558,6 +5009,312 @@ func (vm *WamState) PredKeep_installed_or_base4() bool {
         return false
     }
     return true
+
+}
+
+// PredKey_dep_rows3 — lowered from key_dep_rows/3 (T4 all-clauses inline)
+func (vm *WamState) PredKey_dep_rows3() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // get_constant [], A1
+        {
+            _a := vm.deref(vm.Regs[0])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom____0
+            } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+                return false
+            }
+        }
+        // get_variable X1, A2
+        vm.Regs[100] = vm.Regs[1]
+        // get_constant [], A3
+        {
+            _a := vm.deref(vm.Regs[2])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom____0
+            } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+                return false
+            }
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_list A1
+        if !vm.Step(&GetList{Ai: 0}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // get_structure depends/4, X5
+        if !vm.Step(&GetStructure{Functor: "depends/4", Ai: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // unify_variable X7
+        if !vm.Step(&UnifyVariable{Xn: 106}) {
+            return false
+        }
+        // unify_variable X8
+        if !vm.Step(&UnifyVariable{Xn: 107}) {
+            return false
+        }
+        // unify_variable X9
+        if !vm.Step(&UnifyVariable{Xn: 108}) {
+            return false
+        }
+        // unify_variable Y2
+        if !vm.Step(&UnifyVariable{Xn: 201}) {
+            return false
+        }
+        // get_variable Y1, A2
+        vm.Regs[200] = vm.Regs[1]
+        // get_list A3
+        if !vm.Step(&GetList{Ai: 2}) {
+            return false
+        }
+        // unify_variable X10
+        if !vm.Step(&UnifyVariable{Xn: 109}) {
+            return false
+        }
+        // get_structure -/2, X10
+        if !vm.Step(&GetStructure{Functor: "-/2", Ai: 109}) {
+            return false
+        }
+        // unify_variable X11
+        if !vm.Step(&UnifyVariable{Xn: 110}) {
+            return false
+        }
+        // get_structure -/2, X11
+        if !vm.Step(&GetStructure{Functor: "-/2", Ai: 110}) {
+            return false
+        }
+        // unify_variable X12
+        if !vm.Step(&UnifyVariable{Xn: 111}) {
+            return false
+        }
+        // get_structure -/2, X12
+        if !vm.Step(&GetStructure{Functor: "-/2", Ai: 111}) {
+            return false
+        }
+        // unify_value X6
+        if !vm.Step(&UnifyValue{Xn: 105}) {
+            return false
+        }
+        // unify_value X7
+        if !vm.Step(&UnifyValue{Xn: 106}) {
+            return false
+        }
+        // unify_value Y1
+        if !vm.Step(&UnifyValue{Xn: 200}) {
+            return false
+        }
+        // unify_variable X13
+        if !vm.Step(&UnifyVariable{Xn: 112}) {
+            return false
+        }
+        // unify_variable Y4
+        if !vm.Step(&UnifyVariable{Xn: 203}) {
+            return false
+        }
+        // put_value X8, A1
+        vm.Regs[0] = vm.getReg(107)
+        // put_value X9, A2
+        vm.Regs[1] = vm.getReg(108)
+        // put_value X13, A3
+        vm.Regs[2] = vm.getReg(112)
+        // call dep_to_req/3
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["dep_to_req/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("dep_to_req/3", 3) { return true }; vm.warnUnresolved("call", "dep_to_req/3"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_variable Y3, A1
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 202), Idx: 202}
+            vm.putReg(202, v)
+            vm.Regs[0] = v
+        }
+        // put_structure +/2, A2
+        if !vm.Step(&PutStructure{Functor: "+/2", Ai: 1}) {
+            return false
+        }
+        // set_value Y1
+        if !vm.Step(&SetValue{Xn: 200}) {
+            return false
+        }
+        // set_constant 1
+        if !vm.Step(&SetConstant{C: &Integer{Val: 1}}) {
+            return false
+        }
+        // builtin_call is/2 2
+        if !vm.executeBuiltin("is/2", 2) {
+            return false
+        }
+        // put_value Y2, A1
+        vm.Regs[0] = vm.getReg(201)
+        // put_value Y3, A2
+        vm.Regs[1] = vm.getReg(202)
+        // put_value Y4, A3
+        vm.Regs[2] = vm.getReg(203)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute key_dep_rows/3 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["key_dep_rows/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("key_dep_rows/3", 3) { return true }; vm.warnUnresolved("call", "key_dep_rows/3"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
+
+}
+
+// PredKey_pkg_rows3 — lowered from key_pkg_rows/3 (T4 all-clauses inline)
+func (vm *WamState) PredKey_pkg_rows3() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // get_constant [], A1
+        {
+            _a := vm.deref(vm.Regs[0])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom____0
+            } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+                return false
+            }
+        }
+        // get_variable X1, A2
+        vm.Regs[100] = vm.Regs[1]
+        // get_constant [], A3
+        {
+            _a := vm.deref(vm.Regs[2])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom____0
+            } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+                return false
+            }
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_list A1
+        if !vm.Step(&GetList{Ai: 0}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // get_structure package/2, X4
+        if !vm.Step(&GetStructure{Functor: "package/2", Ai: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // unify_variable Y1
+        if !vm.Step(&UnifyVariable{Xn: 200}) {
+            return false
+        }
+        // get_variable X7, A2
+        vm.Regs[106] = vm.Regs[1]
+        // get_list A3
+        if !vm.Step(&GetList{Ai: 2}) {
+            return false
+        }
+        // unify_variable X8
+        if !vm.Step(&UnifyVariable{Xn: 107}) {
+            return false
+        }
+        // get_structure -/2, X8
+        if !vm.Step(&GetStructure{Functor: "-/2", Ai: 107}) {
+            return false
+        }
+        // unify_variable X9
+        if !vm.Step(&UnifyVariable{Xn: 108}) {
+            return false
+        }
+        // get_structure -/2, X9
+        if !vm.Step(&GetStructure{Functor: "-/2", Ai: 108}) {
+            return false
+        }
+        // unify_value X5
+        if !vm.Step(&UnifyValue{Xn: 104}) {
+            return false
+        }
+        // unify_value X7
+        if !vm.Step(&UnifyValue{Xn: 106}) {
+            return false
+        }
+        // unify_value X6
+        if !vm.Step(&UnifyValue{Xn: 105}) {
+            return false
+        }
+        // unify_variable Y3
+        if !vm.Step(&UnifyVariable{Xn: 202}) {
+            return false
+        }
+        // put_variable Y2, A1
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+            vm.putReg(201, v)
+            vm.Regs[0] = v
+        }
+        // put_structure +/2, A2
+        if !vm.Step(&PutStructure{Functor: "+/2", Ai: 1}) {
+            return false
+        }
+        // set_value X7
+        if !vm.Step(&SetValue{Xn: 106}) {
+            return false
+        }
+        // set_constant 1
+        if !vm.Step(&SetConstant{C: &Integer{Val: 1}}) {
+            return false
+        }
+        // builtin_call is/2 2
+        if !vm.executeBuiltin("is/2", 2) {
+            return false
+        }
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_value Y2, A2
+        vm.Regs[1] = vm.getReg(201)
+        // put_value Y3, A3
+        vm.Regs[2] = vm.getReg(202)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute key_pkg_rows/3 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["key_pkg_rows/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("key_pkg_rows/3", 3) { return true }; vm.warnUnresolved("call", "key_pkg_rows/3"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
 
 }
 
@@ -2594,7 +5351,7 @@ func (vm *WamState) PredLayer_closure3() bool {
     // call resolve_layered/3
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["resolve_layered/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["resolve_layered/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("resolve_layered/3", 3) { return true }; vm.warnUnresolved("call", "resolve_layered/3"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -2608,7 +5365,7 @@ func (vm *WamState) PredLayer_closure3() bool {
     // call topo_sort_sel/3
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["topo_sort_sel/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["topo_sort_sel/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("topo_sort_sel/3", 3) { return true }; vm.warnUnresolved("call", "topo_sort_sel/3"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -2622,6 +5379,161 @@ func (vm *WamState) PredLayer_closure3() bool {
         vm.CP = env.CP
     }
     return true
+
+}
+
+// PredLayer_provider5 — lowered from layer_provider/5 (T4 all-clauses inline)
+func (vm *WamState) PredLayer_provider5() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_variable Y3, A1
+        vm.Regs[202] = vm.Regs[0]
+        // get_variable Y6, A2
+        vm.Regs[205] = vm.Regs[1]
+        // get_variable Y7, A3
+        vm.Regs[206] = vm.Regs[2]
+        // get_variable Y4, A4
+        vm.Regs[203] = vm.Regs[3]
+        // get_variable Y5, A5
+        vm.Regs[204] = vm.Regs[4]
+        // put_value Y3, A1
+        vm.Regs[0] = vm.getReg(202)
+        // put_variable Y2, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+            vm.putReg(201, v)
+            vm.Regs[1] = v
+        }
+        // call base_holds/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["base_holds/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("base_holds/2", 2) { return true }; vm.warnUnresolved("call", "base_holds/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_structure hold/3, A1
+        if !vm.Step(&PutStructure{Functor: "hold/3", Ai: 0}) {
+            return false
+        }
+        // set_value Y4
+        if !vm.Step(&SetValue{Xn: 203}) {
+            return false
+        }
+        // set_value Y5
+        if !vm.Step(&SetValue{Xn: 204}) {
+            return false
+        }
+        // set_variable Y1
+        if !vm.Step(&SetVariable{Xn: 200}) {
+            return false
+        }
+        // put_value Y2, A2
+        vm.Regs[1] = vm.getReg(201)
+        // builtin_call member/2 2
+        if !vm.executeBuiltin("member/2", 2) {
+            return false
+        }
+        // put_value Y3, A1
+        vm.Regs[0] = vm.getReg(202)
+        // put_value Y4, A2
+        vm.Regs[1] = vm.getReg(203)
+        // put_value Y5, A3
+        vm.Regs[2] = vm.getReg(204)
+        // put_value Y6, A4
+        vm.Regs[3] = vm.getReg(205)
+        // put_value Y7, A5
+        vm.Regs[4] = vm.getReg(206)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute provides_sat/5 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["provides_sat/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("provides_sat/5", 5) { return true }; vm.warnUnresolved("call", "provides_sat/5"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_variable Y4, A1
+        vm.Regs[203] = vm.Regs[0]
+        // get_variable Y7, A2
+        vm.Regs[206] = vm.Regs[1]
+        // get_variable Y8, A3
+        vm.Regs[207] = vm.Regs[2]
+        // get_variable Y5, A4
+        vm.Regs[204] = vm.Regs[3]
+        // get_variable Y6, A5
+        vm.Regs[205] = vm.Regs[4]
+        // put_value Y4, A1
+        vm.Regs[0] = vm.getReg(203)
+        // put_variable Y2, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+            vm.putReg(201, v)
+            vm.Regs[1] = v
+        }
+        // call layers_list/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["layers_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("layers_list/2", 2) { return true }; vm.warnUnresolved("call", "layers_list/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_structure layer/2, A1
+        if !vm.Step(&PutStructure{Functor: "layer/2", Ai: 0}) {
+            return false
+        }
+        // set_variable Y1
+        if !vm.Step(&SetVariable{Xn: 200}) {
+            return false
+        }
+        // set_variable Y3
+        if !vm.Step(&SetVariable{Xn: 202}) {
+            return false
+        }
+        // put_value Y2, A2
+        vm.Regs[1] = vm.getReg(201)
+        // builtin_call member/2 2
+        if !vm.executeBuiltin("member/2", 2) {
+            return false
+        }
+        // put_value Y3, A1
+        vm.Regs[0] = vm.getReg(202)
+        // put_value Y5, A2
+        vm.Regs[1] = vm.getReg(204)
+        // put_value Y6, A3
+        vm.Regs[2] = vm.getReg(205)
+        // call lookup_held/3
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["lookup_held/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("lookup_held/3", 3) { return true }; vm.warnUnresolved("call", "lookup_held/3"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_value Y4, A1
+        vm.Regs[0] = vm.getReg(203)
+        // put_value Y5, A2
+        vm.Regs[1] = vm.getReg(204)
+        // put_value Y6, A3
+        vm.Regs[2] = vm.getReg(205)
+        // put_value Y7, A4
+        vm.Regs[3] = vm.getReg(206)
+        // put_value Y8, A5
+        vm.Regs[4] = vm.getReg(207)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute provides_sat/5 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["provides_sat/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("provides_sat/5", 5) { return true }; vm.warnUnresolved("call", "provides_sat/5"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
 
 }
 
@@ -2655,7 +5567,7 @@ func (vm *WamState) PredLayered_walk_ver4() bool {
         // call base_ver/3
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["base_ver/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["base_ver/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("base_ver/3", 3) { return true }; vm.warnUnresolved("call", "base_ver/3"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -2670,7 +5582,7 @@ func (vm *WamState) PredLayered_walk_ver4() bool {
         // call satisfies/2
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["satisfies/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["satisfies/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("satisfies/2", 2) { return true }; vm.warnUnresolved("call", "satisfies/2"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -2703,7 +5615,7 @@ func (vm *WamState) PredLayered_walk_ver4() bool {
         // call candidates_high_first/4
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["candidates_high_first/4"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["candidates_high_first/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("candidates_high_first/4", 4) { return true }; vm.warnUnresolved("call", "candidates_high_first/4"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -2816,7 +5728,214 @@ func (vm *WamState) PredLayers_list2() bool {
         return true
     }() { return true }
     vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_structure catalog/10, A1
+        if !vm.Step(&GetStructure{Functor: "catalog/10", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // unify_variable X7
+        if !vm.Step(&UnifyVariable{Xn: 106}) {
+            return false
+        }
+        // unify_variable X8
+        if !vm.Step(&UnifyVariable{Xn: 107}) {
+            return false
+        }
+        // unify_variable X9
+        if !vm.Step(&UnifyVariable{Xn: 108}) {
+            return false
+        }
+        // unify_variable X10
+        if !vm.Step(&UnifyVariable{Xn: 109}) {
+            return false
+        }
+        // get_value X7, A2
+        if !vm.Unify(vm.Regs[1], vm.Regs[106]) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_structure icat/3, A1
+        if !vm.Step(&GetStructure{Functor: "icat/3", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // get_variable X4, A2
+        vm.Regs[103] = vm.Regs[1]
+        // put_value X1, A1
+        vm.Regs[0] = vm.getReg(100)
+        // put_value X4, A2
+        vm.Regs[1] = vm.getReg(103)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute layers_list/2 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["layers_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("layers_list/2", 2) { return true }; vm.warnUnresolved("call", "layers_list/2"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
     return false
+
+}
+
+// PredList_to_tree2 — lowered from list_to_tree/2
+func (vm *WamState) PredList_to_tree2() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_variable Y2, A1
+    vm.Regs[201] = vm.Regs[0]
+    // get_variable Y3, A2
+    vm.Regs[202] = vm.Regs[1]
+    // put_value Y2, A1
+    vm.Regs[0] = vm.getReg(201)
+    // put_variable Y1, A2
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 200), Idx: 200}
+        vm.putReg(200, v)
+        vm.Regs[1] = v
+    }
+    // builtin_call length/2 2
+    if !vm.executeBuiltin("length/2", 2) {
+        return false
+    }
+    // put_value Y1, A1
+    vm.Regs[0] = vm.getReg(200)
+    // put_value Y2, A2
+    vm.Regs[1] = vm.getReg(201)
+    // put_value Y3, A3
+    vm.Regs[2] = vm.getReg(202)
+    // put_constant [], A4
+    vm.Regs[3] = wamAtom____0
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    // execute build_tree/4 (tail call)
+    return func() bool { if pc, ok := vm.Ctx.Labels["build_tree/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("build_tree/4", 4) { return true }; vm.warnUnresolved("call", "build_tree/4"); return false }()
+
+}
+
+// PredLong_enough2 — lowered from long_enough/2
+func (vm *WamState) PredLong_enough2() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_list A1
+    if !vm.Step(&GetList{Ai: 0}) {
+        return false
+    }
+    // unify_variable X4
+    if !vm.Step(&UnifyVariable{Xn: 103}) {
+        return false
+    }
+    // unify_variable Y2
+    if !vm.Step(&UnifyVariable{Xn: 201}) {
+        return false
+    }
+    // get_variable Y1, A2
+    vm.Regs[200] = vm.Regs[1]
+    // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+    {
+        _trailMark := vm.TrailLen
+        _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+        _condOk := func() bool {
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_constant 1, A2
+        vm.Regs[1] = &Integer{Val: 1}
+        // builtin_call =</2 2
+        if !vm.executeBuiltin("=</2", 2) {
+            return false
+        }
+            return true
+        }()
+        if _condOk {
+        // builtin_call true/0 0
+        if !vm.executeBuiltin("true/0", 0) {
+            return false
+        }
+        } else {
+            vm.Regs = _savedRegs
+            vm.unwindTrailTo(_trailMark)
+        // put_variable Y3, A1
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 202), Idx: 202}
+            vm.putReg(202, v)
+            vm.Regs[0] = v
+        }
+        // put_structure +/2, A2
+        if !vm.Step(&PutStructure{Functor: "+/2", Ai: 1}) {
+            return false
+        }
+        // set_value Y1
+        if !vm.Step(&SetValue{Xn: 200}) {
+            return false
+        }
+        // set_constant -1
+        if !vm.Step(&SetConstant{C: &Integer{Val: -1}}) {
+            return false
+        }
+        // builtin_call is/2 2
+        if !vm.executeBuiltin("is/2", 2) {
+            return false
+        }
+        // put_value Y2, A1
+        vm.Regs[0] = vm.getReg(201)
+        // put_value Y3, A2
+        vm.Regs[1] = vm.getReg(202)
+        // call long_enough/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["long_enough/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("long_enough/2", 2) { return true }; vm.warnUnresolved("call", "long_enough/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        }
+    }
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    return true
 
 }
 
@@ -2858,7 +5977,7 @@ func (vm *WamState) PredLookup_held3() bool {
         // call item_ver/3
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["item_ver/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["item_ver/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("item_ver/3", 3) { return true }; vm.warnUnresolved("call", "item_ver/3"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -2892,7 +6011,7 @@ func (vm *WamState) PredLookup_held3() bool {
         // call lookup_held/3
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["lookup_held/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["lookup_held/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("lookup_held/3", 3) { return true }; vm.warnUnresolved("call", "lookup_held/3"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -2976,7 +6095,7 @@ func (vm *WamState) PredMap_requests3() bool {
         // call request_to_req/3
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["request_to_req/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["request_to_req/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("request_to_req/3", 3) { return true }; vm.warnUnresolved("call", "request_to_req/3"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -2992,7 +6111,7 @@ func (vm *WamState) PredMap_requests3() bool {
             vm.CP = env.CP
         }
         // execute map_requests/3 (tail call)
-        return func() bool { if pc, ok := vm.Ctx.Labels["map_requests/3"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+        return func() bool { if pc, ok := vm.Ctx.Labels["map_requests/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("map_requests/3", 3) { return true }; vm.warnUnresolved("call", "map_requests/3"); return false }()
     }() { return true }
     vm.LoRestoreClause(_t4)
     return false
@@ -3058,6 +6177,152 @@ func (vm *WamState) PredMatching_versions4() bool {
         } else if !valueEquals(vm.deref(_a), wamAtom____0) {
             return false
         }
+    }
+    return true
+
+}
+
+// PredMatching_versions_in4 — lowered from matching_versions_in/4
+func (vm *WamState) PredMatching_versions_in4() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_variable Y3, A1
+    vm.Regs[202] = vm.Regs[0]
+    // get_variable Y5, A2
+    vm.Regs[204] = vm.Regs[1]
+    // get_variable Y6, A3
+    vm.Regs[205] = vm.Regs[2]
+    // get_variable Y7, A4
+    vm.Regs[206] = vm.Regs[3]
+    // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+    {
+        _trailMark := vm.TrailLen
+        _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+        _condOk := func() bool {
+        // put_value Y3, A1
+        vm.Regs[0] = vm.getReg(202)
+        // put_variable Y1, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 200), Idx: 200}
+            vm.putReg(200, v)
+            vm.Regs[1] = v
+        }
+        // call pkg_index/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["pkg_index/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("pkg_index/2", 2) { return true }; vm.warnUnresolved("call", "pkg_index/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+            return true
+        }()
+        if _condOk {
+        // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+        {
+            _trailMark := vm.TrailLen
+            _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+            _condOk := func() bool {
+            // put_value Y1, A1
+            vm.Regs[0] = vm.getReg(200)
+            // put_value Y5, A2
+            vm.Regs[1] = vm.getReg(204)
+            // put_variable Y2, A3
+            {
+                v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+                vm.putReg(201, v)
+                vm.Regs[2] = v
+            }
+            // call tree_lookup/3
+            {
+                savedCP := vm.CP
+                if !func() bool { if pc, ok := vm.Ctx.Labels["tree_lookup/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("tree_lookup/3", 3) { return true }; vm.warnUnresolved("call", "tree_lookup/3"); return false }() {
+                    return false
+                }
+                vm.CP = savedCP
+            }
+                return true
+            }()
+            if _condOk {
+            // put_value Y2, A1
+            vm.Regs[0] = vm.getReg(201)
+            // put_value Y6, A2
+            vm.Regs[1] = vm.getReg(205)
+            // put_value Y7, A3
+            vm.Regs[2] = vm.getReg(206)
+            // call filter_satisfies/3
+            {
+                savedCP := vm.CP
+                if !func() bool { if pc, ok := vm.Ctx.Labels["filter_satisfies/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("filter_satisfies/3", 3) { return true }; vm.warnUnresolved("call", "filter_satisfies/3"); return false }() {
+                    return false
+                }
+                vm.CP = savedCP
+            }
+            } else {
+                vm.Regs = _savedRegs
+                vm.unwindTrailTo(_trailMark)
+            // put_variable Y2, A3
+            {
+                v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+                vm.putReg(201, v)
+                vm.Regs[2] = v
+            }
+            // put_value Y7, A1
+            vm.Regs[0] = vm.getReg(206)
+            // put_constant [], A2
+            vm.Regs[1] = wamAtom____0
+            // builtin_call =/2 2
+            if !vm.executeBuiltin("=/2", 2) {
+                return false
+            }
+            }
+        }
+        } else {
+            vm.Regs = _savedRegs
+            vm.unwindTrailTo(_trailMark)
+        // put_variable Y1, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 200), Idx: 200}
+            vm.putReg(200, v)
+            vm.Regs[1] = v
+        }
+        // put_value Y3, A1
+        vm.Regs[0] = vm.getReg(202)
+        // put_variable Y4, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 203), Idx: 203}
+            vm.putReg(203, v)
+            vm.Regs[1] = v
+        }
+        // call packages/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["packages/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("packages/2", 2) { return true }; vm.warnUnresolved("call", "packages/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_value Y4, A1
+        vm.Regs[0] = vm.getReg(203)
+        // put_value Y5, A2
+        vm.Regs[1] = vm.getReg(204)
+        // put_value Y6, A3
+        vm.Regs[2] = vm.getReg(205)
+        // put_value Y7, A4
+        vm.Regs[3] = vm.getReg(206)
+        // call matching_versions/4
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["matching_versions/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("matching_versions/4", 4) { return true }; vm.warnUnresolved("call", "matching_versions/4"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        }
+    }
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
     }
     return true
 
@@ -3170,7 +6435,7 @@ func (vm *WamState) PredNames_of2() bool {
             vm.CP = env.CP
         }
         // execute names_of/2 (tail call)
-        return func() bool { if pc, ok := vm.Ctx.Labels["names_of/2"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+        return func() bool { if pc, ok := vm.Ctx.Labels["names_of/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("names_of/2", 2) { return true }; vm.warnUnresolved("call", "names_of/2"); return false }()
     }() { return true }
     vm.LoRestoreClause(_t4)
     return false
@@ -3234,7 +6499,7 @@ func (vm *WamState) PredNeeded_names4() bool {
         // call roots_to_pairs/3
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["roots_to_pairs/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["roots_to_pairs/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("roots_to_pairs/3", 3) { return true }; vm.warnUnresolved("call", "roots_to_pairs/3"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -3256,7 +6521,7 @@ func (vm *WamState) PredNeeded_names4() bool {
             vm.CP = env.CP
         }
         // execute inst_walk/6 (tail call)
-        return func() bool { if pc, ok := vm.Ctx.Labels["inst_walk/6"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+        return func() bool { if pc, ok := vm.Ctx.Labels["inst_walk/6"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("inst_walk/6", 6) { return true }; vm.warnUnresolved("call", "inst_walk/6"); return false }()
     }() { return true }
     vm.LoRestoreClause(_t4)
     return false
@@ -3286,6 +6551,189 @@ func (vm *WamState) PredNo_acc_conflicts4() bool {
 
 }
 
+// PredOrder_lt2 — lowered from order_lt/2
+func (vm *WamState) PredOrder_lt2() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_constant [], A1
+    {
+        _a := vm.deref(vm.Regs[0])
+        if _, ok := _a.(*Unbound); ok {
+            u := _a.(*Unbound)
+            vm.trailBinding(u.Idx)
+            vm.Regs[u.Idx] = wamAtom____0
+        } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+            return false
+        }
+    }
+    // get_constant [], A2
+    {
+        _a := vm.deref(vm.Regs[1])
+        if _, ok := _a.(*Unbound); ok {
+            u := _a.(*Unbound)
+            vm.trailBinding(u.Idx)
+            vm.Regs[u.Idx] = wamAtom____0
+        } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+            return false
+        }
+    }
+    // builtin_call !/0 0
+    if !vm.executeBuiltin("!/0", 0) {
+        return false
+    }
+    // builtin_call fail/0 0
+    if !vm.executeBuiltin("fail/0", 0) {
+        return false
+    }
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    return true
+
+}
+
+// PredOrder_val2 — lowered from order_val/2 (T4 all-clauses inline)
+func (vm *WamState) PredOrder_val2() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_constant 126, A1
+        {
+            _a := vm.deref(vm.Regs[0])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = &Integer{Val: 126}
+            } else if !valueEquals(vm.deref(_a), &Integer{Val: 126}) {
+                return false
+            }
+        }
+        // get_constant -1, A2
+        {
+            _a := vm.deref(vm.Regs[1])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = &Integer{Val: -1}
+            } else if !valueEquals(vm.deref(_a), &Integer{Val: -1}) {
+                return false
+            }
+        }
+        // builtin_call !/0 0
+        if !vm.executeBuiltin("!/0", 0) {
+            return false
+        }
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_variable Y1, A1
+        vm.Regs[200] = vm.Regs[0]
+        // get_value Y1, A2
+        if !vm.Unify(vm.Regs[1], vm.Regs[200]) {
+            return false
+        }
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_constant 65, A2
+        vm.Regs[1] = &Integer{Val: 65}
+        // builtin_call >=/2 2
+        if !vm.executeBuiltin(">=/2", 2) {
+            return false
+        }
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_constant 90, A2
+        vm.Regs[1] = &Integer{Val: 90}
+        // builtin_call =</2 2
+        if !vm.executeBuiltin("=</2", 2) {
+            return false
+        }
+        // builtin_call !/0 0
+        if !vm.executeBuiltin("!/0", 0) {
+            return false
+        }
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_variable Y1, A1
+        vm.Regs[200] = vm.Regs[0]
+        // get_value Y1, A2
+        if !vm.Unify(vm.Regs[1], vm.Regs[200]) {
+            return false
+        }
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_constant 97, A2
+        vm.Regs[1] = &Integer{Val: 97}
+        // builtin_call >=/2 2
+        if !vm.executeBuiltin(">=/2", 2) {
+            return false
+        }
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_constant 122, A2
+        vm.Regs[1] = &Integer{Val: 122}
+        // builtin_call =</2 2
+        if !vm.executeBuiltin("=</2", 2) {
+            return false
+        }
+        // builtin_call !/0 0
+        if !vm.executeBuiltin("!/0", 0) {
+            return false
+        }
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_variable X1, A1
+        vm.Regs[100] = vm.Regs[0]
+        // get_variable X2, A2
+        vm.Regs[101] = vm.Regs[1]
+        // put_value X2, A1
+        vm.Regs[0] = vm.getReg(101)
+        // put_structure +/2, A2
+        if !vm.Step(&PutStructure{Functor: "+/2", Ai: 1}) {
+            return false
+        }
+        // set_value X1
+        if !vm.Step(&SetValue{Xn: 100}) {
+            return false
+        }
+        // set_constant 256
+        if !vm.Step(&SetConstant{C: &Integer{Val: 256}}) {
+            return false
+        }
+        // builtin_call is/2 2
+        if !vm.executeBuiltin("is/2", 2) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
+
+}
+
 // PredPackage_in3 — lowered from package_in/3
 func (vm *WamState) PredPackage_in3() bool {
     // allocate
@@ -3307,7 +6755,7 @@ func (vm *WamState) PredPackage_in3() bool {
     // call packages/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["packages/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["packages/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("packages/2", 2) { return true }; vm.warnUnresolved("call", "packages/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -3322,6 +6770,56 @@ func (vm *WamState) PredPackage_in3() bool {
     }
     // set_value Y2
     if !vm.Step(&SetValue{Xn: 201}) {
+        return false
+    }
+    // put_value Y3, A2
+    vm.Regs[1] = vm.getReg(202)
+    // builtin_call member/2 2
+    if !vm.executeBuiltin("member/2", 2) {
+        return false
+    }
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    return true
+
+}
+
+// PredPackage_in_name2 — lowered from package_in_name/2
+func (vm *WamState) PredPackage_in_name2() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_variable X4, A1
+    vm.Regs[103] = vm.Regs[0]
+    // get_variable Y1, A2
+    vm.Regs[200] = vm.Regs[1]
+    // put_value X4, A1
+    vm.Regs[0] = vm.getReg(103)
+    // put_variable Y3, A2
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 202), Idx: 202}
+        vm.putReg(202, v)
+        vm.Regs[1] = v
+    }
+    // call packages/2
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["packages/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("packages/2", 2) { return true }; vm.warnUnresolved("call", "packages/2"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // put_structure package/2, A1
+    if !vm.Step(&PutStructure{Functor: "package/2", Ai: 0}) {
+        return false
+    }
+    // set_value Y1
+    if !vm.Step(&SetValue{Xn: 200}) {
+        return false
+    }
+    // set_variable Y2
+    if !vm.Step(&SetVariable{Xn: 201}) {
         return false
     }
     // put_value Y3, A2
@@ -3425,6 +6923,157 @@ func (vm *WamState) PredPackages2() bool {
         return true
     }() { return true }
     vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_structure catalog/10, A1
+        if !vm.Step(&GetStructure{Functor: "catalog/10", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // unify_variable X7
+        if !vm.Step(&UnifyVariable{Xn: 106}) {
+            return false
+        }
+        // unify_variable X8
+        if !vm.Step(&UnifyVariable{Xn: 107}) {
+            return false
+        }
+        // unify_variable X9
+        if !vm.Step(&UnifyVariable{Xn: 108}) {
+            return false
+        }
+        // unify_variable X10
+        if !vm.Step(&UnifyVariable{Xn: 109}) {
+            return false
+        }
+        // get_value X1, A2
+        if !vm.Unify(vm.Regs[1], vm.Regs[100]) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_structure icat/3, A1
+        if !vm.Step(&GetStructure{Functor: "icat/3", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // get_variable X4, A2
+        vm.Regs[103] = vm.Regs[1]
+        // put_value X1, A1
+        vm.Regs[0] = vm.getReg(100)
+        // put_value X4, A2
+        vm.Regs[1] = vm.getReg(103)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute packages/2 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["packages/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("packages/2", 2) { return true }; vm.warnUnresolved("call", "packages/2"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
+
+}
+
+// PredPad_head2 — lowered from pad_head/2 (T4 all-clauses inline)
+func (vm *WamState) PredPad_head2() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_constant [], A1
+        {
+            _a := vm.deref(vm.Regs[0])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom____0
+            } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+                return false
+            }
+        }
+        // get_list A2
+        if !vm.Step(&GetList{Ai: 1}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // get_structure s/2, X1
+        if !vm.Step(&GetStructure{Functor: "s/2", Ai: 100}) {
+            return false
+        }
+        // unify_constant []
+        if !vm.Step(&UnifyConstant{C: wamAtom____0}) {
+            return false
+        }
+        // unify_constant 0
+        if !vm.Step(&UnifyConstant{C: &Integer{Val: 0}}) {
+            return false
+        }
+        // unify_constant []
+        if !vm.Step(&UnifyConstant{C: wamAtom____0}) {
+            return false
+        }
+        // builtin_call !/0 0
+        if !vm.executeBuiltin("!/0", 0) {
+            return false
+        }
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_variable X1, A1
+        vm.Regs[100] = vm.Regs[0]
+        // get_value X1, A2
+        if !vm.Unify(vm.Regs[1], vm.Regs[100]) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
     return false
 
 }
@@ -3446,13 +7095,13 @@ func (vm *WamState) PredPick_repair4() bool {
     // put_value Y2, A2
     vm.Regs[1] = vm.getReg(201)
     // put_constant any, A3
-    vm.Regs[2] = wamAtom_any_9
+    vm.Regs[2] = wamAtom_any_10
     // put_value Y3, A4
     vm.Regs[3] = vm.getReg(202)
     // call candidates_high_first/4
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["candidates_high_first/4"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["candidates_high_first/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("candidates_high_first/4", 4) { return true }; vm.warnUnresolved("call", "candidates_high_first/4"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -3470,7 +7119,635 @@ func (vm *WamState) PredPick_repair4() bool {
         vm.CP = env.CP
     }
     // execute repairs_moving/4 (tail call)
-    return func() bool { if pc, ok := vm.Ctx.Labels["repairs_moving/4"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+    return func() bool { if pc, ok := vm.Ctx.Labels["repairs_moving/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("repairs_moving/4", 4) { return true }; vm.warnUnresolved("call", "repairs_moving/4"); return false }()
+
+}
+
+// PredPkg_index2 — lowered from pkg_index/2
+func (vm *WamState) PredPkg_index2() bool {
+    // get_structure icat/3, A1
+    if !vm.Step(&GetStructure{Functor: "icat/3", Ai: 0}) {
+        return false
+    }
+    // unify_variable X1
+    if !vm.Step(&UnifyVariable{Xn: 100}) {
+        return false
+    }
+    // unify_variable X2
+    if !vm.Step(&UnifyVariable{Xn: 101}) {
+        return false
+    }
+    // unify_variable X3
+    if !vm.Step(&UnifyVariable{Xn: 102}) {
+        return false
+    }
+    // get_value X3, A2
+    if !vm.Unify(vm.Regs[1], vm.Regs[102]) {
+        return false
+    }
+    return true
+
+}
+
+// PredProvide_row5 — lowered from provide_row/5 (T4 all-clauses inline)
+func (vm *WamState) PredProvide_row5() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // get_structure provides/3, A1
+        if !vm.Step(&GetStructure{Functor: "provides/3", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // get_value X1, A2
+        if !vm.Unify(vm.Regs[1], vm.Regs[100]) {
+            return false
+        }
+        // get_value X2, A3
+        if !vm.Unify(vm.Regs[2], vm.Regs[101]) {
+            return false
+        }
+        // get_value X3, A4
+        if !vm.Unify(vm.Regs[3], vm.Regs[102]) {
+            return false
+        }
+        // get_constant unversioned, A5
+        {
+            _a := vm.deref(vm.Regs[4])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom_unversioned_15
+            } else if !valueEquals(vm.deref(_a), wamAtom_unversioned_15) {
+                return false
+            }
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_structure provides/4, A1
+        if !vm.Step(&GetStructure{Functor: "provides/4", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // get_value X1, A2
+        if !vm.Unify(vm.Regs[1], vm.Regs[100]) {
+            return false
+        }
+        // get_value X2, A3
+        if !vm.Unify(vm.Regs[2], vm.Regs[101]) {
+            return false
+        }
+        // get_value X3, A4
+        if !vm.Unify(vm.Regs[3], vm.Regs[102]) {
+            return false
+        }
+        // get_value X4, A5
+        if !vm.Unify(vm.Regs[4], vm.Regs[103]) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
+
+}
+
+// PredProvide_satisfies2 — lowered from provide_satisfies/2 (T4 all-clauses inline)
+func (vm *WamState) PredProvide_satisfies2() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // get_constant unversioned, A1
+        {
+            _a := vm.deref(vm.Regs[0])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom_unversioned_15
+            } else if !valueEquals(vm.deref(_a), wamAtom_unversioned_15) {
+                return false
+            }
+        }
+        // get_constant any, A2
+        {
+            _a := vm.deref(vm.Regs[1])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom_any_10
+            } else if !valueEquals(vm.deref(_a), wamAtom_any_10) {
+                return false
+            }
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_variable Y1, A1
+        vm.Regs[200] = vm.Regs[0]
+        // get_variable Y2, A2
+        vm.Regs[201] = vm.Regs[1]
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_constant unversioned, A2
+        vm.Regs[1] = wamAtom_unversioned_15
+        // builtin_call \==/2 2
+        if !vm.executeBuiltin("\\==/2", 2) {
+            return false
+        }
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_value Y2, A2
+        vm.Regs[1] = vm.getReg(201)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute satisfies/2 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["satisfies/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("satisfies/2", 2) { return true }; vm.warnUnresolved("call", "satisfies/2"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
+
+}
+
+// PredProvider_candidate5 — lowered from provider_candidate/5
+func (vm *WamState) PredProvider_candidate5() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_variable Y6, A1
+    vm.Regs[205] = vm.Regs[0]
+    // get_variable Y3, A2
+    vm.Regs[202] = vm.Regs[1]
+    // get_variable Y5, A3
+    vm.Regs[204] = vm.Regs[2]
+    // get_variable Y7, A4
+    vm.Regs[206] = vm.Regs[3]
+    // get_variable Y8, A5
+    vm.Regs[207] = vm.Regs[4]
+    // put_value Y6, A1
+    vm.Regs[0] = vm.getReg(205)
+    // put_variable Y1, A2
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 200), Idx: 200}
+        vm.putReg(200, v)
+        vm.Regs[1] = v
+    }
+    // call provides_list/2
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["provides_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("provides_list/2", 2) { return true }; vm.warnUnresolved("call", "provides_list/2"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // put_variable Y2, A1
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+        vm.putReg(201, v)
+        vm.Regs[0] = v
+    }
+    // put_value Y1, A2
+    vm.Regs[1] = vm.getReg(200)
+    // builtin_call member/2 2
+    if !vm.executeBuiltin("member/2", 2) {
+        return false
+    }
+    // put_value Y2, A1
+    vm.Regs[0] = vm.getReg(201)
+    // put_value Y7, A2
+    vm.Regs[1] = vm.getReg(206)
+    // put_value Y8, A3
+    vm.Regs[2] = vm.getReg(207)
+    // put_value Y3, A4
+    vm.Regs[3] = vm.getReg(202)
+    // put_variable Y4, A5
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 203), Idx: 203}
+        vm.putReg(203, v)
+        vm.Regs[4] = v
+    }
+    // call provide_row/5
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["provide_row/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("provide_row/5", 5) { return true }; vm.warnUnresolved("call", "provide_row/5"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+    {
+        _trailMark := vm.TrailLen
+        _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+        _condOk := func() bool {
+        // put_value Y6, A1
+        vm.Regs[0] = vm.getReg(205)
+        // put_value Y7, A2
+        vm.Regs[1] = vm.getReg(206)
+        // call excluded_name/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["excluded_name/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("excluded_name/2", 2) { return true }; vm.warnUnresolved("call", "excluded_name/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+            return true
+        }()
+        if _condOk {
+        // builtin_call fail/0 0
+        if !vm.executeBuiltin("fail/0", 0) {
+            return false
+        }
+        } else {
+            vm.Regs = _savedRegs
+            vm.unwindTrailTo(_trailMark)
+        // builtin_call true/0 0
+        if !vm.executeBuiltin("true/0", 0) {
+            return false
+        }
+        }
+    }
+    // put_value Y4, A1
+    vm.Regs[0] = vm.getReg(203)
+    // put_value Y5, A2
+    vm.Regs[1] = vm.getReg(204)
+    // call provide_satisfies/2
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["provide_satisfies/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("provide_satisfies/2", 2) { return true }; vm.warnUnresolved("call", "provide_satisfies/2"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // put_value Y6, A1
+    vm.Regs[0] = vm.getReg(205)
+    // put_value Y7, A2
+    vm.Regs[1] = vm.getReg(206)
+    // put_value Y8, A3
+    vm.Regs[2] = vm.getReg(207)
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    // execute package_in/3 (tail call)
+    return func() bool { if pc, ok := vm.Ctx.Labels["package_in/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("package_in/3", 3) { return true }; vm.warnUnresolved("call", "package_in/3"); return false }()
+
+}
+
+// PredProvides_for5 — lowered from provides_for/5
+func (vm *WamState) PredProvides_for5() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_variable X7, A1
+    vm.Regs[106] = vm.Regs[0]
+    // get_variable Y5, A2
+    vm.Regs[204] = vm.Regs[1]
+    // get_variable Y3, A3
+    vm.Regs[202] = vm.Regs[2]
+    // get_variable Y4, A4
+    vm.Regs[203] = vm.Regs[3]
+    // get_variable Y6, A5
+    vm.Regs[205] = vm.Regs[4]
+    // put_value X7, A1
+    vm.Regs[0] = vm.getReg(106)
+    // put_variable Y1, A2
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 200), Idx: 200}
+        vm.putReg(200, v)
+        vm.Regs[1] = v
+    }
+    // call provides_list/2
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["provides_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("provides_list/2", 2) { return true }; vm.warnUnresolved("call", "provides_list/2"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // put_variable Y2, A1
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+        vm.putReg(201, v)
+        vm.Regs[0] = v
+    }
+    // put_value Y1, A2
+    vm.Regs[1] = vm.getReg(200)
+    // builtin_call member/2 2
+    if !vm.executeBuiltin("member/2", 2) {
+        return false
+    }
+    // put_value Y2, A1
+    vm.Regs[0] = vm.getReg(201)
+    // put_value Y3, A2
+    vm.Regs[1] = vm.getReg(202)
+    // put_value Y4, A3
+    vm.Regs[2] = vm.getReg(203)
+    // put_value Y5, A4
+    vm.Regs[3] = vm.getReg(204)
+    // put_value Y6, A5
+    vm.Regs[4] = vm.getReg(205)
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    // execute provide_row/5 (tail call)
+    return func() bool { if pc, ok := vm.Ctx.Labels["provide_row/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("provide_row/5", 5) { return true }; vm.warnUnresolved("call", "provide_row/5"); return false }()
+
+}
+
+// PredProvides_list2 — lowered from provides_list/2 (T4 all-clauses inline)
+func (vm *WamState) PredProvides_list2() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // get_structure catalog/6, A1
+        if !vm.Step(&GetStructure{Functor: "catalog/6", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // get_constant [], A2
+        {
+            _a := vm.deref(vm.Regs[1])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom____0
+            } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+                return false
+            }
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_structure catalog/9, A1
+        if !vm.Step(&GetStructure{Functor: "catalog/9", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // unify_variable X7
+        if !vm.Step(&UnifyVariable{Xn: 106}) {
+            return false
+        }
+        // unify_variable X8
+        if !vm.Step(&UnifyVariable{Xn: 107}) {
+            return false
+        }
+        // unify_variable X9
+        if !vm.Step(&UnifyVariable{Xn: 108}) {
+            return false
+        }
+        // get_constant [], A2
+        {
+            _a := vm.deref(vm.Regs[1])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom____0
+            } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+                return false
+            }
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_structure catalog/10, A1
+        if !vm.Step(&GetStructure{Functor: "catalog/10", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // unify_variable X7
+        if !vm.Step(&UnifyVariable{Xn: 106}) {
+            return false
+        }
+        // unify_variable X8
+        if !vm.Step(&UnifyVariable{Xn: 107}) {
+            return false
+        }
+        // unify_variable X9
+        if !vm.Step(&UnifyVariable{Xn: 108}) {
+            return false
+        }
+        // unify_variable X10
+        if !vm.Step(&UnifyVariable{Xn: 109}) {
+            return false
+        }
+        // get_value X10, A2
+        if !vm.Unify(vm.Regs[1], vm.Regs[109]) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_structure icat/3, A1
+        if !vm.Step(&GetStructure{Functor: "icat/3", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // get_variable X4, A2
+        vm.Regs[103] = vm.Regs[1]
+        // put_value X1, A1
+        vm.Regs[0] = vm.getReg(100)
+        // put_value X4, A2
+        vm.Regs[1] = vm.getReg(103)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute provides_list/2 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["provides_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("provides_list/2", 2) { return true }; vm.warnUnresolved("call", "provides_list/2"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
+
+}
+
+// PredProvides_sat5 — lowered from provides_sat/5
+func (vm *WamState) PredProvides_sat5() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_variable X8, A1
+    vm.Regs[107] = vm.Regs[0]
+    // get_variable Y3, A2
+    vm.Regs[202] = vm.Regs[1]
+    // get_variable Y4, A3
+    vm.Regs[203] = vm.Regs[2]
+    // get_variable Y5, A4
+    vm.Regs[204] = vm.Regs[3]
+    // get_variable Y7, A5
+    vm.Regs[206] = vm.Regs[4]
+    // put_value X8, A1
+    vm.Regs[0] = vm.getReg(107)
+    // put_variable Y1, A2
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 200), Idx: 200}
+        vm.putReg(200, v)
+        vm.Regs[1] = v
+    }
+    // call provides_list/2
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["provides_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("provides_list/2", 2) { return true }; vm.warnUnresolved("call", "provides_list/2"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // put_variable Y2, A1
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+        vm.putReg(201, v)
+        vm.Regs[0] = v
+    }
+    // put_value Y1, A2
+    vm.Regs[1] = vm.getReg(200)
+    // builtin_call member/2 2
+    if !vm.executeBuiltin("member/2", 2) {
+        return false
+    }
+    // put_value Y2, A1
+    vm.Regs[0] = vm.getReg(201)
+    // put_value Y3, A2
+    vm.Regs[1] = vm.getReg(202)
+    // put_value Y4, A3
+    vm.Regs[2] = vm.getReg(203)
+    // put_value Y5, A4
+    vm.Regs[3] = vm.getReg(204)
+    // put_variable Y6, A5
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 205), Idx: 205}
+        vm.putReg(205, v)
+        vm.Regs[4] = v
+    }
+    // call provide_row/5
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["provide_row/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("provide_row/5", 5) { return true }; vm.warnUnresolved("call", "provide_row/5"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // put_value Y6, A1
+    vm.Regs[0] = vm.getReg(205)
+    // put_value Y7, A2
+    vm.Regs[1] = vm.getReg(206)
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    // execute provide_satisfies/2 (tail call)
+    return func() bool { if pc, ok := vm.Ctx.Labels["provide_satisfies/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("provide_satisfies/2", 2) { return true }; vm.warnUnresolved("call", "provide_satisfies/2"); return false }()
 
 }
 
@@ -3497,7 +7774,7 @@ func (vm *WamState) PredRemoval_orphans3() bool {
     // call canonicalize_name/3
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["canonicalize_name/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["canonicalize_name/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("canonicalize_name/3", 3) { return true }; vm.warnUnresolved("call", "canonicalize_name/3"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -3513,7 +7790,7 @@ func (vm *WamState) PredRemoval_orphans3() bool {
     // call installed_list/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["installed_list/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["installed_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("installed_list/2", 2) { return true }; vm.warnUnresolved("call", "installed_list/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -3536,7 +7813,7 @@ func (vm *WamState) PredRemoval_orphans3() bool {
         // call installed_ver/3
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["installed_ver/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["installed_ver/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("installed_ver/3", 3) { return true }; vm.warnUnresolved("call", "installed_ver/3"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -3564,7 +7841,7 @@ func (vm *WamState) PredRemoval_orphans3() bool {
             vm.Regs[0] = v
         }
         // put_constant none, A2
-        vm.Regs[1] = wamAtom_none_4
+        vm.Regs[1] = wamAtom_none_6
         // builtin_call =/2 2
         if !vm.executeBuiltin("=/2", 2) {
             return false
@@ -3579,7 +7856,7 @@ func (vm *WamState) PredRemoval_orphans3() bool {
         // put_value Y1, A1
         vm.Regs[0] = vm.getReg(200)
         // put_constant none, A2
-        vm.Regs[1] = wamAtom_none_4
+        vm.Regs[1] = wamAtom_none_6
         // builtin_call ==/2 2
         if !vm.executeBuiltin("==/2", 2) {
             return false
@@ -3615,7 +7892,7 @@ func (vm *WamState) PredRemoval_orphans3() bool {
         // call inst_closure_names/5
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["inst_closure_names/5"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["inst_closure_names/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("inst_closure_names/5", 5) { return true }; vm.warnUnresolved("call", "inst_closure_names/5"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -3631,7 +7908,7 @@ func (vm *WamState) PredRemoval_orphans3() bool {
         // call requested_list/2
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["requested_list/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["requested_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("requested_list/2", 2) { return true }; vm.warnUnresolved("call", "requested_list/2"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -3649,7 +7926,7 @@ func (vm *WamState) PredRemoval_orphans3() bool {
         // call exclude_name/3
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["exclude_name/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["exclude_name/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("exclude_name/3", 3) { return true }; vm.warnUnresolved("call", "exclude_name/3"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -3669,7 +7946,7 @@ func (vm *WamState) PredRemoval_orphans3() bool {
         // call needed_names/4
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["needed_names/4"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["needed_names/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("needed_names/4", 4) { return true }; vm.warnUnresolved("call", "needed_names/4"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -3767,7 +8044,7 @@ func (vm *WamState) PredRemoval_orphans3() bool {
             // call base_name/2
             {
                 savedCP := vm.CP
-                if !func() bool { if pc, ok := vm.Ctx.Labels["base_name/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+                if !func() bool { if pc, ok := vm.Ctx.Labels["base_name/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("base_name/2", 2) { return true }; vm.warnUnresolved("call", "base_name/2"); return false }() {
                     return false
                 }
                 vm.CP = savedCP
@@ -3849,7 +8126,7 @@ func (vm *WamState) PredRepairs_moving4() bool {
     // call collect_deps/4
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["collect_deps/4"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["collect_deps/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("collect_deps/4", 4) { return true }; vm.warnUnresolved("call", "collect_deps/4"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -3863,7 +8140,7 @@ func (vm *WamState) PredRepairs_moving4() bool {
         vm.CP = env.CP
     }
     // execute reqs_ok_moving/2 (tail call)
-    return func() bool { if pc, ok := vm.Ctx.Labels["reqs_ok_moving/2"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+    return func() bool { if pc, ok := vm.Ctx.Labels["reqs_ok_moving/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("reqs_ok_moving/2", 2) { return true }; vm.warnUnresolved("call", "reqs_ok_moving/2"); return false }()
 
 }
 
@@ -3941,7 +8218,7 @@ func (vm *WamState) PredRequest_to_req3() bool {
         // call canonicalize_name/3
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["canonicalize_name/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["canonicalize_name/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("canonicalize_name/3", 3) { return true }; vm.warnUnresolved("call", "canonicalize_name/3"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -3958,7 +8235,7 @@ func (vm *WamState) PredRequest_to_req3() bool {
         // call canonicalize_name/3
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["canonicalize_name/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["canonicalize_name/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("canonicalize_name/3", 3) { return true }; vm.warnUnresolved("call", "canonicalize_name/3"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -3966,7 +8243,7 @@ func (vm *WamState) PredRequest_to_req3() bool {
         // put_value Y5, A1
         vm.Regs[0] = vm.getReg(204)
         // put_constant any, A2
-        vm.Regs[1] = wamAtom_any_9
+        vm.Regs[1] = wamAtom_any_10
         // builtin_call =/2 2
         if !vm.executeBuiltin("=/2", 2) {
             return false
@@ -4068,6 +8345,91 @@ func (vm *WamState) PredRequested_list2() bool {
         return true
     }() { return true }
     vm.LoRestoreClause(_t4)
+    if func() bool {
+        // get_structure catalog/10, A1
+        if !vm.Step(&GetStructure{Functor: "catalog/10", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // unify_variable X4
+        if !vm.Step(&UnifyVariable{Xn: 103}) {
+            return false
+        }
+        // unify_variable X5
+        if !vm.Step(&UnifyVariable{Xn: 104}) {
+            return false
+        }
+        // unify_variable X6
+        if !vm.Step(&UnifyVariable{Xn: 105}) {
+            return false
+        }
+        // unify_variable X7
+        if !vm.Step(&UnifyVariable{Xn: 106}) {
+            return false
+        }
+        // unify_variable X8
+        if !vm.Step(&UnifyVariable{Xn: 107}) {
+            return false
+        }
+        // unify_variable X9
+        if !vm.Step(&UnifyVariable{Xn: 108}) {
+            return false
+        }
+        // unify_variable X10
+        if !vm.Step(&UnifyVariable{Xn: 109}) {
+            return false
+        }
+        // get_value X6, A2
+        if !vm.Unify(vm.Regs[1], vm.Regs[105]) {
+            return false
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_structure icat/3, A1
+        if !vm.Step(&GetStructure{Functor: "icat/3", Ai: 0}) {
+            return false
+        }
+        // unify_variable X1
+        if !vm.Step(&UnifyVariable{Xn: 100}) {
+            return false
+        }
+        // unify_variable X2
+        if !vm.Step(&UnifyVariable{Xn: 101}) {
+            return false
+        }
+        // unify_variable X3
+        if !vm.Step(&UnifyVariable{Xn: 102}) {
+            return false
+        }
+        // get_variable X4, A2
+        vm.Regs[103] = vm.Regs[1]
+        // put_value X1, A1
+        vm.Regs[0] = vm.getReg(100)
+        // put_value X4, A2
+        vm.Regs[1] = vm.getReg(103)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute requested_list/2 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["requested_list/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("requested_list/2", 2) { return true }; vm.warnUnresolved("call", "requested_list/2"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
     return false
 
 }
@@ -4076,48 +8438,64 @@ func (vm *WamState) PredRequested_list2() bool {
 func (vm *WamState) PredResolve3() bool {
     // allocate
     vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
-    // get_variable Y1, A1
-    vm.Regs[200] = vm.Regs[0]
-    // get_variable X5, A2
-    vm.Regs[104] = vm.Regs[1]
-    // get_variable Y4, A3
-    vm.Regs[203] = vm.Regs[2]
-    // put_value Y1, A1
-    vm.Regs[0] = vm.getReg(200)
-    // put_value X5, A2
-    vm.Regs[1] = vm.getReg(104)
-    // put_variable Y2, A3
+    // get_variable X6, A1
+    vm.Regs[105] = vm.Regs[0]
+    // get_variable Y1, A2
+    vm.Regs[200] = vm.Regs[1]
+    // get_variable Y5, A3
+    vm.Regs[204] = vm.Regs[2]
+    // put_value X6, A1
+    vm.Regs[0] = vm.getReg(105)
+    // put_variable Y2, A2
     {
         v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
         vm.putReg(201, v)
+        vm.Regs[1] = v
+    }
+    // call index_catalog/2
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["index_catalog/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("index_catalog/2", 2) { return true }; vm.warnUnresolved("call", "index_catalog/2"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // put_value Y2, A1
+    vm.Regs[0] = vm.getReg(201)
+    // put_value Y1, A2
+    vm.Regs[1] = vm.getReg(200)
+    // put_variable Y3, A3
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 202), Idx: 202}
+        vm.putReg(202, v)
         vm.Regs[2] = v
     }
     // call map_requests/3
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["map_requests/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["map_requests/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("map_requests/3", 3) { return true }; vm.warnUnresolved("call", "map_requests/3"); return false }() {
             return false
         }
         vm.CP = savedCP
     }
     // put_constant classic, A1
-    vm.Regs[0] = wamAtom_classic_5
-    // put_value Y1, A2
-    vm.Regs[1] = vm.getReg(200)
-    // put_value Y2, A3
-    vm.Regs[2] = vm.getReg(201)
+    vm.Regs[0] = wamAtom_classic_12
+    // put_value Y2, A2
+    vm.Regs[1] = vm.getReg(201)
+    // put_value Y3, A3
+    vm.Regs[2] = vm.getReg(202)
     // put_constant [], A4
     vm.Regs[3] = wamAtom____0
-    // put_variable Y3, A5
+    // put_variable Y4, A5
     {
-        v := &Unbound{Name: fmt.Sprintf("_R%d", 202), Idx: 202}
-        vm.putReg(202, v)
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 203), Idx: 203}
+        vm.putReg(203, v)
         vm.Regs[4] = v
     }
     // call resolve_pending/5
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["resolve_pending/5"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["resolve_pending/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("resolve_pending/5", 5) { return true }; vm.warnUnresolved("call", "resolve_pending/5"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -4126,13 +8504,142 @@ func (vm *WamState) PredResolve3() bool {
     if !vm.executeBuiltin("!/0", 0) {
         return false
     }
-    // put_value Y3, A1
-    vm.Regs[0] = vm.getReg(202)
-    // put_value Y4, A2
-    vm.Regs[1] = vm.getReg(203)
+    // put_value Y4, A1
+    vm.Regs[0] = vm.getReg(203)
+    // put_value Y5, A2
+    vm.Regs[1] = vm.getReg(204)
     // builtin_call sort/2 2
     if !vm.executeBuiltin("sort/2", 2) {
         return false
+    }
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    return true
+
+}
+
+// PredResolve_alternatives6 — lowered from resolve_alternatives/6
+func (vm *WamState) PredResolve_alternatives6() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_variable Y2, A1
+    vm.Regs[201] = vm.Regs[0]
+    // get_variable Y3, A2
+    vm.Regs[202] = vm.Regs[1]
+    // get_variable Y1, A3
+    vm.Regs[200] = vm.Regs[2]
+    // get_variable Y6, A4
+    vm.Regs[205] = vm.Regs[3]
+    // get_variable Y7, A5
+    vm.Regs[206] = vm.Regs[4]
+    // get_variable Y8, A6
+    vm.Regs[207] = vm.Regs[5]
+    // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+    {
+        _trailMark := vm.TrailLen
+        _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+        _condOk := func() bool {
+        // put_value Y2, A1
+        vm.Regs[0] = vm.getReg(201)
+        // put_value Y3, A2
+        vm.Regs[1] = vm.getReg(202)
+        // put_value Y7, A3
+        vm.Regs[2] = vm.getReg(206)
+        // put_value Y1, A4
+        vm.Regs[3] = vm.getReg(200)
+        // call first_alt_already/4
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["first_alt_already/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("first_alt_already/4", 4) { return true }; vm.warnUnresolved("call", "first_alt_already/4"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+            return true
+        }()
+        if _condOk {
+        // put_value Y2, A1
+        vm.Regs[0] = vm.getReg(201)
+        // put_value Y3, A2
+        vm.Regs[1] = vm.getReg(202)
+        // put_value Y6, A3
+        vm.Regs[2] = vm.getReg(205)
+        // put_value Y7, A4
+        vm.Regs[3] = vm.getReg(206)
+        // put_value Y8, A5
+        vm.Regs[4] = vm.getReg(207)
+        // call resolve_pending/5
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["resolve_pending/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("resolve_pending/5", 5) { return true }; vm.warnUnresolved("call", "resolve_pending/5"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        } else {
+            vm.Regs = _savedRegs
+            vm.unwindTrailTo(_trailMark)
+        // put_structure dep/2, A1
+        if !vm.Step(&PutStructure{Functor: "dep/2", Ai: 0}) {
+            return false
+        }
+        // set_variable Y4
+        if !vm.Step(&SetVariable{Xn: 203}) {
+            return false
+        }
+        // set_variable Y5
+        if !vm.Step(&SetVariable{Xn: 204}) {
+            return false
+        }
+        // put_value Y1, A2
+        vm.Regs[1] = vm.getReg(200)
+        // builtin_call member/2 2
+        if !vm.executeBuiltin("member/2", 2) {
+            return false
+        }
+        // put_value Y2, A1
+        vm.Regs[0] = vm.getReg(201)
+        // put_value Y3, A2
+        vm.Regs[1] = vm.getReg(202)
+        // put_structure [|]/2, A3
+        if !vm.Step(&PutStructure{Functor: "[|]/2", Ai: 2}) {
+            return false
+        }
+        // set_variable X11
+        if !vm.Step(&SetVariable{Xn: 110}) {
+            return false
+        }
+        // set_value Y6
+        if !vm.Step(&SetValue{Xn: 205}) {
+            return false
+        }
+        // put_structure req/2, X11
+        if !vm.Step(&PutStructure{Functor: "req/2", Ai: 110}) {
+            return false
+        }
+        // set_value Y4
+        if !vm.Step(&SetValue{Xn: 203}) {
+            return false
+        }
+        // set_value Y5
+        if !vm.Step(&SetValue{Xn: 204}) {
+            return false
+        }
+        // put_value Y7, A4
+        vm.Regs[3] = vm.getReg(206)
+        // put_value Y8, A5
+        vm.Regs[4] = vm.getReg(207)
+        // call resolve_pending/5
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["resolve_pending/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("resolve_pending/5", 5) { return true }; vm.warnUnresolved("call", "resolve_pending/5"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        }
     }
     // deallocate
     if env := vm.popEnvFrame(); env != nil {
@@ -4146,48 +8653,64 @@ func (vm *WamState) PredResolve3() bool {
 func (vm *WamState) PredResolve_layered3() bool {
     // allocate
     vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
-    // get_variable Y1, A1
-    vm.Regs[200] = vm.Regs[0]
-    // get_variable X5, A2
-    vm.Regs[104] = vm.Regs[1]
-    // get_variable Y4, A3
-    vm.Regs[203] = vm.Regs[2]
-    // put_value Y1, A1
-    vm.Regs[0] = vm.getReg(200)
-    // put_value X5, A2
-    vm.Regs[1] = vm.getReg(104)
-    // put_variable Y2, A3
+    // get_variable X6, A1
+    vm.Regs[105] = vm.Regs[0]
+    // get_variable Y1, A2
+    vm.Regs[200] = vm.Regs[1]
+    // get_variable Y5, A3
+    vm.Regs[204] = vm.Regs[2]
+    // put_value X6, A1
+    vm.Regs[0] = vm.getReg(105)
+    // put_variable Y2, A2
     {
         v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
         vm.putReg(201, v)
+        vm.Regs[1] = v
+    }
+    // call index_catalog/2
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["index_catalog/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("index_catalog/2", 2) { return true }; vm.warnUnresolved("call", "index_catalog/2"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // put_value Y2, A1
+    vm.Regs[0] = vm.getReg(201)
+    // put_value Y1, A2
+    vm.Regs[1] = vm.getReg(200)
+    // put_variable Y3, A3
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 202), Idx: 202}
+        vm.putReg(202, v)
         vm.Regs[2] = v
     }
     // call map_requests/3
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["map_requests/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["map_requests/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("map_requests/3", 3) { return true }; vm.warnUnresolved("call", "map_requests/3"); return false }() {
             return false
         }
         vm.CP = savedCP
     }
     // put_constant layered, A1
-    vm.Regs[0] = wamAtom_layered_6
-    // put_value Y1, A2
-    vm.Regs[1] = vm.getReg(200)
-    // put_value Y2, A3
-    vm.Regs[2] = vm.getReg(201)
+    vm.Regs[0] = wamAtom_layered_11
+    // put_value Y2, A2
+    vm.Regs[1] = vm.getReg(201)
+    // put_value Y3, A3
+    vm.Regs[2] = vm.getReg(202)
     // put_constant [], A4
     vm.Regs[3] = wamAtom____0
-    // put_variable Y3, A5
+    // put_variable Y4, A5
     {
-        v := &Unbound{Name: fmt.Sprintf("_R%d", 202), Idx: 202}
-        vm.putReg(202, v)
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 203), Idx: 203}
+        vm.putReg(203, v)
         vm.Regs[4] = v
     }
     // call resolve_pending/5
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["resolve_pending/5"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["resolve_pending/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("resolve_pending/5", 5) { return true }; vm.warnUnresolved("call", "resolve_pending/5"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -4196,10 +8719,10 @@ func (vm *WamState) PredResolve_layered3() bool {
     if !vm.executeBuiltin("!/0", 0) {
         return false
     }
-    // put_value Y3, A1
-    vm.Regs[0] = vm.getReg(202)
-    // put_value Y4, A2
-    vm.Regs[1] = vm.getReg(203)
+    // put_value Y4, A1
+    vm.Regs[0] = vm.getReg(203)
+    // put_value Y5, A2
+    vm.Regs[1] = vm.getReg(204)
     // builtin_call sort/2 2
     if !vm.executeBuiltin("sort/2", 2) {
         return false
@@ -4344,7 +8867,7 @@ func (vm *WamState) PredRoots_to_pairs3() bool {
             vm.CP = env.CP
         }
         // execute roots_to_pairs/3 (tail call)
-        return func() bool { if pc, ok := vm.Ctx.Labels["roots_to_pairs/3"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+        return func() bool { if pc, ok := vm.Ctx.Labels["roots_to_pairs/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("roots_to_pairs/3", 3) { return true }; vm.warnUnresolved("call", "roots_to_pairs/3"); return false }()
     }() { return true }
     vm.LoRestoreClause(_t4)
     if func() bool {
@@ -4377,7 +8900,7 @@ func (vm *WamState) PredRoots_to_pairs3() bool {
             vm.CP = env.CP
         }
         // execute roots_to_pairs/3 (tail call)
-        return func() bool { if pc, ok := vm.Ctx.Labels["roots_to_pairs/3"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+        return func() bool { if pc, ok := vm.Ctx.Labels["roots_to_pairs/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("roots_to_pairs/3", 3) { return true }; vm.warnUnresolved("call", "roots_to_pairs/3"); return false }()
     }() { return true }
     vm.LoRestoreClause(_t4)
     return false
@@ -4400,8 +8923,8 @@ func (vm *WamState) PredSafe_upgrade_reason5() bool {
             if _, ok := _a.(*Unbound); ok {
                 u := _a.(*Unbound)
                 vm.trailBinding(u.Idx)
-                vm.Regs[u.Idx] = wamAtom_modified_11
-            } else if !valueEquals(vm.deref(_a), wamAtom_modified_11) {
+                vm.Regs[u.Idx] = wamAtom_modified_17
+            } else if !valueEquals(vm.deref(_a), wamAtom_modified_17) {
                 return false
             }
         }
@@ -4410,7 +8933,7 @@ func (vm *WamState) PredSafe_upgrade_reason5() bool {
             return false
         }
         // unify_constant modified
-        if !vm.Step(&UnifyConstant{C: wamAtom_modified_11}) {
+        if !vm.Step(&UnifyConstant{C: wamAtom_modified_17}) {
             return false
         }
         return true
@@ -4429,8 +8952,8 @@ func (vm *WamState) PredSafe_upgrade_reason5() bool {
             if _, ok := _a.(*Unbound); ok {
                 u := _a.(*Unbound)
                 vm.trailBinding(u.Idx)
-                vm.Regs[u.Idx] = wamAtom_footprint_12
-            } else if !valueEquals(vm.deref(_a), wamAtom_footprint_12) {
+                vm.Regs[u.Idx] = wamAtom_footprint_18
+            } else if !valueEquals(vm.deref(_a), wamAtom_footprint_18) {
                 return false
             }
         }
@@ -4447,7 +8970,7 @@ func (vm *WamState) PredSafe_upgrade_reason5() bool {
             return false
         }
         // unify_constant footprint
-        if !vm.Step(&UnifyConstant{C: wamAtom_footprint_12}) {
+        if !vm.Step(&UnifyConstant{C: wamAtom_footprint_18}) {
             return false
         }
         return true
@@ -4466,8 +8989,8 @@ func (vm *WamState) PredSafe_upgrade_reason5() bool {
             if _, ok := _a.(*Unbound); ok {
                 u := _a.(*Unbound)
                 vm.trailBinding(u.Idx)
-                vm.Regs[u.Idx] = wamAtom_blanket_1
-            } else if !valueEquals(vm.deref(_a), wamAtom_blanket_1) {
+                vm.Regs[u.Idx] = wamAtom_blanket_2
+            } else if !valueEquals(vm.deref(_a), wamAtom_blanket_2) {
                 return false
             }
         }
@@ -4484,7 +9007,7 @@ func (vm *WamState) PredSafe_upgrade_reason5() bool {
             return false
         }
         // unify_constant blanket
-        if !vm.Step(&UnifyConstant{C: wamAtom_blanket_1}) {
+        if !vm.Step(&UnifyConstant{C: wamAtom_blanket_2}) {
             return false
         }
         return true
@@ -4503,8 +9026,8 @@ func (vm *WamState) PredSafe_upgrade_reason5() bool {
             if _, ok := _a.(*Unbound); ok {
                 u := _a.(*Unbound)
                 vm.trailBinding(u.Idx)
-                vm.Regs[u.Idx] = wamAtom_layer_shadow_13
-            } else if !valueEquals(vm.deref(_a), wamAtom_layer_shadow_13) {
+                vm.Regs[u.Idx] = wamAtom_layer_shadow_19
+            } else if !valueEquals(vm.deref(_a), wamAtom_layer_shadow_19) {
                 return false
             }
         }
@@ -4521,7 +9044,7 @@ func (vm *WamState) PredSafe_upgrade_reason5() bool {
             return false
         }
         // unify_constant layer_shadow
-        if !vm.Step(&UnifyConstant{C: wamAtom_layer_shadow_13}) {
+        if !vm.Step(&UnifyConstant{C: wamAtom_layer_shadow_19}) {
             return false
         }
         return true
@@ -4542,8 +9065,8 @@ func (vm *WamState) PredSafe_upgrade_reason5() bool {
             if _, ok := _a.(*Unbound); ok {
                 u := _a.(*Unbound)
                 vm.trailBinding(u.Idx)
-                vm.Regs[u.Idx] = wamAtom_abi_anchor_2
-            } else if !valueEquals(vm.deref(_a), wamAtom_abi_anchor_2) {
+                vm.Regs[u.Idx] = wamAtom_abi_anchor_3
+            } else if !valueEquals(vm.deref(_a), wamAtom_abi_anchor_3) {
                 return false
             }
         }
@@ -4574,10 +9097,51 @@ func (vm *WamState) PredSafe_upgrade_reason5() bool {
             vm.CP = env.CP
         }
         // execute upgrade_set_result/4 (tail call)
-        return func() bool { if pc, ok := vm.Ctx.Labels["upgrade_set_result/4"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+        return func() bool { if pc, ok := vm.Ctx.Labels["upgrade_set_result/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("upgrade_set_result/4", 4) { return true }; vm.warnUnresolved("call", "upgrade_set_result/4"); return false }()
     }() { return true }
     vm.LoRestoreClause(_t4)
     return false
+
+}
+
+// PredSame_key4 — lowered from same_key/4
+func (vm *WamState) PredSame_key4() bool {
+    // get_constant [], A1
+    {
+        _a := vm.deref(vm.Regs[0])
+        if _, ok := _a.(*Unbound); ok {
+            u := _a.(*Unbound)
+            vm.trailBinding(u.Idx)
+            vm.Regs[u.Idx] = wamAtom____0
+        } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+            return false
+        }
+    }
+    // get_variable X1, A2
+    vm.Regs[100] = vm.Regs[1]
+    // get_constant [], A3
+    {
+        _a := vm.deref(vm.Regs[2])
+        if _, ok := _a.(*Unbound); ok {
+            u := _a.(*Unbound)
+            vm.trailBinding(u.Idx)
+            vm.Regs[u.Idx] = wamAtom____0
+        } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+            return false
+        }
+    }
+    // get_constant [], A4
+    {
+        _a := vm.deref(vm.Regs[3])
+        if _, ok := _a.(*Unbound); ok {
+            u := _a.(*Unbound)
+            vm.trailBinding(u.Idx)
+            vm.Regs[u.Idx] = wamAtom____0
+        } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+            return false
+        }
+    }
+    return true
 
 }
 
@@ -4591,8 +9155,8 @@ func (vm *WamState) PredSatisfies2() bool {
         if _, ok := _a.(*Unbound); ok {
             u := _a.(*Unbound)
             vm.trailBinding(u.Idx)
-            vm.Regs[u.Idx] = wamAtom_any_9
-        } else if !valueEquals(vm.deref(_a), wamAtom_any_9) {
+            vm.Regs[u.Idx] = wamAtom_any_10
+        } else if !valueEquals(vm.deref(_a), wamAtom_any_10) {
             return false
         }
     }
@@ -4671,10 +9235,258 @@ func (vm *WamState) PredSeen_name2() bool {
         // call seen_name/2
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["seen_name/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["seen_name/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("seen_name/2", 2) { return true }; vm.warnUnresolved("call", "seen_name/2"); return false }() {
                 return false
             }
             vm.CP = savedCP
+        }
+        }
+    }
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    return true
+
+}
+
+// PredSegs_lt2 — lowered from segs_lt/2 (T4 all-clauses inline)
+func (vm *WamState) PredSegs_lt2() bool {
+    _t4 := vm.LoClauseSnapshot()
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_constant [], A1
+        {
+            _a := vm.deref(vm.Regs[0])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom____0
+            } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+                return false
+            }
+        }
+        // get_constant [], A2
+        {
+            _a := vm.deref(vm.Regs[1])
+            if _, ok := _a.(*Unbound); ok {
+                u := _a.(*Unbound)
+                vm.trailBinding(u.Idx)
+                vm.Regs[u.Idx] = wamAtom____0
+            } else if !valueEquals(vm.deref(_a), wamAtom____0) {
+                return false
+            }
+        }
+        // builtin_call !/0 0
+        if !vm.executeBuiltin("!/0", 0) {
+            return false
+        }
+        // builtin_call fail/0 0
+        if !vm.executeBuiltin("fail/0", 0) {
+            return false
+        }
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        return true
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    if func() bool {
+        // allocate
+        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+        // get_variable X4, A1
+        vm.Regs[103] = vm.Regs[0]
+        // get_variable Y1, A2
+        vm.Regs[200] = vm.Regs[1]
+        // put_value X4, A1
+        vm.Regs[0] = vm.getReg(103)
+        // put_variable Y2, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+            vm.putReg(201, v)
+            vm.Regs[1] = v
+        }
+        // call pad_head/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["pad_head/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("pad_head/2", 2) { return true }; vm.warnUnresolved("call", "pad_head/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_variable Y3, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 202), Idx: 202}
+            vm.putReg(202, v)
+            vm.Regs[1] = v
+        }
+        // call pad_head/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["pad_head/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("pad_head/2", 2) { return true }; vm.warnUnresolved("call", "pad_head/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_value Y2, A1
+        vm.Regs[0] = vm.getReg(201)
+        // put_value Y3, A2
+        vm.Regs[1] = vm.getReg(202)
+        // deallocate
+        if env := vm.popEnvFrame(); env != nil {
+            vm.CP = env.CP
+        }
+        // execute segs_lt_1/2 (tail call)
+        return func() bool { if pc, ok := vm.Ctx.Labels["segs_lt_1/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("segs_lt_1/2", 2) { return true }; vm.warnUnresolved("call", "segs_lt_1/2"); return false }()
+    }() { return true }
+    vm.LoRestoreClause(_t4)
+    return false
+
+}
+
+// PredSegs_lt_12 — lowered from segs_lt_1/2
+func (vm *WamState) PredSegs_lt_12() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_list A1
+    if !vm.Step(&GetList{Ai: 0}) {
+        return false
+    }
+    // unify_variable X7
+    if !vm.Step(&UnifyVariable{Xn: 106}) {
+        return false
+    }
+    // get_structure s/2, X7
+    if !vm.Step(&GetStructure{Functor: "s/2", Ai: 106}) {
+        return false
+    }
+    // unify_variable Y1
+    if !vm.Step(&UnifyVariable{Xn: 200}) {
+        return false
+    }
+    // unify_variable Y3
+    if !vm.Step(&UnifyVariable{Xn: 202}) {
+        return false
+    }
+    // unify_variable Y5
+    if !vm.Step(&UnifyVariable{Xn: 204}) {
+        return false
+    }
+    // get_list A2
+    if !vm.Step(&GetList{Ai: 1}) {
+        return false
+    }
+    // unify_variable X8
+    if !vm.Step(&UnifyVariable{Xn: 107}) {
+        return false
+    }
+    // get_structure s/2, X8
+    if !vm.Step(&GetStructure{Functor: "s/2", Ai: 107}) {
+        return false
+    }
+    // unify_variable Y2
+    if !vm.Step(&UnifyVariable{Xn: 201}) {
+        return false
+    }
+    // unify_variable Y4
+    if !vm.Step(&UnifyVariable{Xn: 203}) {
+        return false
+    }
+    // unify_variable Y6
+    if !vm.Step(&UnifyVariable{Xn: 205}) {
+        return false
+    }
+    // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+    {
+        _trailMark := vm.TrailLen
+        _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+        _condOk := func() bool {
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_value Y2, A2
+        vm.Regs[1] = vm.getReg(201)
+        // call order_lt/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["order_lt/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("order_lt/2", 2) { return true }; vm.warnUnresolved("call", "order_lt/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+            return true
+        }()
+        if _condOk {
+        // builtin_call true/0 0
+        if !vm.executeBuiltin("true/0", 0) {
+            return false
+        }
+        } else {
+            vm.Regs = _savedRegs
+            vm.unwindTrailTo(_trailMark)
+        // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+        {
+            _trailMark := vm.TrailLen
+            _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+            _condOk := func() bool {
+            // put_value Y1, A1
+            vm.Regs[0] = vm.getReg(200)
+            // put_value Y2, A2
+            vm.Regs[1] = vm.getReg(201)
+            // builtin_call ==/2 2
+            if !vm.executeBuiltin("==/2", 2) {
+                return false
+            }
+            // put_value Y3, A1
+            vm.Regs[0] = vm.getReg(202)
+            // put_value Y4, A2
+            vm.Regs[1] = vm.getReg(203)
+            // builtin_call </2 2
+            if !vm.executeBuiltin("</2", 2) {
+                return false
+            }
+                return true
+            }()
+            if _condOk {
+            // builtin_call true/0 0
+            if !vm.executeBuiltin("true/0", 0) {
+                return false
+            }
+            } else {
+                vm.Regs = _savedRegs
+                vm.unwindTrailTo(_trailMark)
+            // put_value Y1, A1
+            vm.Regs[0] = vm.getReg(200)
+            // put_value Y2, A2
+            vm.Regs[1] = vm.getReg(201)
+            // builtin_call ==/2 2
+            if !vm.executeBuiltin("==/2", 2) {
+                return false
+            }
+            // put_value Y3, A1
+            vm.Regs[0] = vm.getReg(202)
+            // put_value Y4, A2
+            vm.Regs[1] = vm.getReg(203)
+            // builtin_call =:=/2 2
+            if !vm.executeBuiltin("=:=/2", 2) {
+                return false
+            }
+            // put_value Y5, A1
+            vm.Regs[0] = vm.getReg(204)
+            // put_value Y6, A2
+            vm.Regs[1] = vm.getReg(205)
+            // call segs_lt/2
+            {
+                savedCP := vm.CP
+                if !func() bool { if pc, ok := vm.Ctx.Labels["segs_lt/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("segs_lt/2", 2) { return true }; vm.warnUnresolved("call", "segs_lt/2"); return false }() {
+                    return false
+                }
+                vm.CP = savedCP
+            }
+            }
         }
         }
     }
@@ -4748,10 +9560,93 @@ func (vm *WamState) PredSelected_ver3() bool {
         // call selected_ver/3
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["selected_ver/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["selected_ver/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("selected_ver/3", 3) { return true }; vm.warnUnresolved("call", "selected_ver/3"); return false }() {
                 return false
             }
             vm.CP = savedCP
+        }
+        }
+    }
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    return true
+
+}
+
+// PredSort_versions_desc2 — lowered from sort_versions_desc/2
+func (vm *WamState) PredSort_versions_desc2() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_variable Y1, A1
+    vm.Regs[200] = vm.Regs[0]
+    // get_variable Y3, A2
+    vm.Regs[202] = vm.Regs[1]
+    // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+    {
+        _trailMark := vm.TrailLen
+        _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+        _condOk := func() bool {
+        // put_constant is_v3, A1
+        vm.Regs[0] = wamAtom_is_v3_21
+        // put_value Y1, A2
+        vm.Regs[1] = vm.getReg(200)
+        // builtin_call maplist/2 2
+        if !vm.executeBuiltin("maplist/2", 2) {
+            return false
+        }
+            return true
+        }()
+        if _condOk {
+        // put_value Y1, A1
+        vm.Regs[0] = vm.getReg(200)
+        // put_variable Y2, A2
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+            vm.putReg(201, v)
+            vm.Regs[1] = v
+        }
+        // builtin_call sort/2 2
+        if !vm.executeBuiltin("sort/2", 2) {
+            return false
+        }
+        // put_value Y2, A1
+        vm.Regs[0] = vm.getReg(201)
+        // put_value Y3, A2
+        vm.Regs[1] = vm.getReg(202)
+        // builtin_call reverse/2 2
+        if !vm.executeBuiltin("reverse/2", 2) {
+            return false
+        }
+        } else {
+            vm.Regs = _savedRegs
+            vm.unwindTrailTo(_trailMark)
+        // put_constant cmp_ver, A1
+        vm.Regs[0] = wamAtom_cmp_ver_22
+        // put_value Y1, A2
+        vm.Regs[1] = vm.getReg(200)
+        // put_variable Y2, A3
+        {
+            v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+            vm.putReg(201, v)
+            vm.Regs[2] = v
+        }
+        // call predsort/3
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["predsort/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("predsort/3", 3) { return true }; vm.warnUnresolved("call", "predsort/3"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+        // put_value Y2, A1
+        vm.Regs[0] = vm.getReg(201)
+        // put_value Y3, A2
+        vm.Regs[1] = vm.getReg(202)
+        // builtin_call reverse/2 2
+        if !vm.executeBuiltin("reverse/2", 2) {
+            return false
         }
         }
     }
@@ -4782,7 +9677,7 @@ func (vm *WamState) PredTight_base_revdep2() bool {
     // call base_holds/2
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["base_holds/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["base_holds/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("base_holds/2", 2) { return true }; vm.warnUnresolved("call", "base_holds/2"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -4798,7 +9693,7 @@ func (vm *WamState) PredTight_base_revdep2() bool {
         vm.CP = env.CP
     }
     // execute tight_rev_in/3 (tail call)
-    return func() bool { if pc, ok := vm.Ctx.Labels["tight_rev_in/3"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+    return func() bool { if pc, ok := vm.Ctx.Labels["tight_rev_in/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("tight_rev_in/3", 3) { return true }; vm.warnUnresolved("call", "tight_rev_in/3"); return false }()
 
 }
 
@@ -4807,131 +9702,10 @@ func (vm *WamState) PredTight_constraint1() bool {
     // allocate
     vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
     // put_constant any, A2
-    vm.Regs[1] = wamAtom_any_9
+    vm.Regs[1] = wamAtom_any_10
     // builtin_call \==/2 2
     if !vm.executeBuiltin("\\==/2", 2) {
         return false
-    }
-    // deallocate
-    if env := vm.popEnvFrame(); env != nil {
-        vm.CP = env.CP
-    }
-    return true
-
-}
-
-// PredTight_rev_in3 — lowered from tight_rev_in/3
-func (vm *WamState) PredTight_rev_in3() bool {
-    // allocate
-    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
-    // get_list A1
-    if !vm.Step(&GetList{Ai: 0}) {
-        return false
-    }
-    // unify_variable X7
-    if !vm.Step(&UnifyVariable{Xn: 106}) {
-        return false
-    }
-    // get_structure hold/3, X7
-    if !vm.Step(&GetStructure{Functor: "hold/3", Ai: 106}) {
-        return false
-    }
-    // unify_variable Y1
-    if !vm.Step(&UnifyVariable{Xn: 200}) {
-        return false
-    }
-    // unify_variable Y2
-    if !vm.Step(&UnifyVariable{Xn: 201}) {
-        return false
-    }
-    // unify_variable X8
-    if !vm.Step(&UnifyVariable{Xn: 107}) {
-        return false
-    }
-    // unify_variable Y4
-    if !vm.Step(&UnifyVariable{Xn: 203}) {
-        return false
-    }
-    // get_variable Y5, A2
-    vm.Regs[204] = vm.Regs[1]
-    // get_variable Y6, A3
-    vm.Regs[205] = vm.Regs[2]
-    // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
-    {
-        _trailMark := vm.TrailLen
-        _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
-        _condOk := func() bool {
-        // put_value Y1, A1
-        vm.Regs[0] = vm.getReg(200)
-        // put_value Y6, A2
-        vm.Regs[1] = vm.getReg(205)
-        // builtin_call \==/2 2
-        if !vm.executeBuiltin("\\==/2", 2) {
-            return false
-        }
-        // put_value Y5, A1
-        vm.Regs[0] = vm.getReg(204)
-        // put_value Y1, A2
-        vm.Regs[1] = vm.getReg(200)
-        // put_value Y2, A3
-        vm.Regs[2] = vm.getReg(201)
-        // put_value Y6, A4
-        vm.Regs[3] = vm.getReg(205)
-        // put_variable Y3, A5
-        {
-            v := &Unbound{Name: fmt.Sprintf("_R%d", 202), Idx: 202}
-            vm.putReg(202, v)
-            vm.Regs[4] = v
-        }
-        // call depends_in/5
-        {
-            savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["depends_in/5"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
-                return false
-            }
-            vm.CP = savedCP
-        }
-        // put_value Y3, A1
-        vm.Regs[0] = vm.getReg(202)
-        // call tight_constraint/1
-        {
-            savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["tight_constraint/1"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
-                return false
-            }
-            vm.CP = savedCP
-        }
-            return true
-        }()
-        if _condOk {
-        // builtin_call true/0 0
-        if !vm.executeBuiltin("true/0", 0) {
-            return false
-        }
-        } else {
-            vm.Regs = _savedRegs
-            vm.unwindTrailTo(_trailMark)
-        // put_variable Y3, A5
-        {
-            v := &Unbound{Name: fmt.Sprintf("_R%d", 202), Idx: 202}
-            vm.putReg(202, v)
-            vm.Regs[4] = v
-        }
-        // put_value Y4, A1
-        vm.Regs[0] = vm.getReg(203)
-        // put_value Y5, A2
-        vm.Regs[1] = vm.getReg(204)
-        // put_value Y6, A3
-        vm.Regs[2] = vm.getReg(205)
-        // call tight_rev_in/3
-        {
-            savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["tight_rev_in/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
-                return false
-            }
-            vm.CP = savedCP
-        }
-        }
     }
     // deallocate
     if env := vm.popEnvFrame(); env != nil {
@@ -5027,7 +9801,7 @@ func (vm *WamState) PredTopo_all7() bool {
         // call topo_one/7
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["topo_one/7"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["topo_one/7"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("topo_one/7", 7) { return true }; vm.warnUnresolved("call", "topo_one/7"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -5051,7 +9825,7 @@ func (vm *WamState) PredTopo_all7() bool {
             vm.CP = env.CP
         }
         // execute topo_all/7 (tail call)
-        return func() bool { if pc, ok := vm.Ctx.Labels["topo_all/7"]; ok { vm.PC = pc; return vm.Run() }; return false }()
+        return func() bool { if pc, ok := vm.Ctx.Labels["topo_all/7"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("topo_all/7", 7) { return true }; vm.warnUnresolved("call", "topo_all/7"); return false }()
     }() { return true }
     vm.LoRestoreClause(_t4)
     return false
@@ -5173,7 +9947,7 @@ func (vm *WamState) PredTopo_sort_sel3() bool {
         // call names_of/2
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["names_of/2"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["names_of/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("names_of/2", 2) { return true }; vm.warnUnresolved("call", "names_of/2"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -5203,7 +9977,7 @@ func (vm *WamState) PredTopo_sort_sel3() bool {
         // call topo_all/7
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["topo_all/7"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["topo_all/7"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("topo_all/7", 7) { return true }; vm.warnUnresolved("call", "topo_all/7"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -5224,6 +9998,134 @@ func (vm *WamState) PredTopo_sort_sel3() bool {
     }() { return true }
     vm.LoRestoreClause(_t4)
     return false
+
+}
+
+// PredTree_lookup3 — lowered from tree_lookup/3
+func (vm *WamState) PredTree_lookup3() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_structure t/4, A1
+    if !vm.Step(&GetStructure{Functor: "t/4", Ai: 0}) {
+        return false
+    }
+    // unify_variable Y3
+    if !vm.Step(&UnifyVariable{Xn: 202}) {
+        return false
+    }
+    // unify_variable X7
+    if !vm.Step(&UnifyVariable{Xn: 106}) {
+        return false
+    }
+    // unify_variable Y1
+    if !vm.Step(&UnifyVariable{Xn: 200}) {
+        return false
+    }
+    // unify_variable Y6
+    if !vm.Step(&UnifyVariable{Xn: 205}) {
+        return false
+    }
+    // get_variable Y4, A2
+    vm.Regs[203] = vm.Regs[1]
+    // get_variable Y5, A3
+    vm.Regs[204] = vm.Regs[2]
+    // put_variable Y2, A1
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 201), Idx: 201}
+        vm.putReg(201, v)
+        vm.Regs[0] = v
+    }
+    // put_value Y4, A2
+    vm.Regs[1] = vm.getReg(203)
+    // put_value X7, A3
+    vm.Regs[2] = vm.getReg(106)
+    // builtin_call compare/3 3
+    if !vm.executeBuiltin("compare/3", 3) {
+        return false
+    }
+    // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+    {
+        _trailMark := vm.TrailLen
+        _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+        _condOk := func() bool {
+        // put_value Y2, A1
+        vm.Regs[0] = vm.getReg(201)
+        // put_constant =, A2
+        vm.Regs[1] = wamAtom___9
+        // builtin_call =/2 2
+        if !vm.executeBuiltin("=/2", 2) {
+            return false
+        }
+            return true
+        }()
+        if _condOk {
+        // put_value Y5, A1
+        vm.Regs[0] = vm.getReg(204)
+        // put_value Y1, A2
+        vm.Regs[1] = vm.getReg(200)
+        // builtin_call =/2 2
+        if !vm.executeBuiltin("=/2", 2) {
+            return false
+        }
+        } else {
+            vm.Regs = _savedRegs
+            vm.unwindTrailTo(_trailMark)
+        // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+        {
+            _trailMark := vm.TrailLen
+            _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+            _condOk := func() bool {
+            // put_value Y2, A1
+            vm.Regs[0] = vm.getReg(201)
+            // put_constant <, A2
+            vm.Regs[1] = wamAtom___7
+            // builtin_call =/2 2
+            if !vm.executeBuiltin("=/2", 2) {
+                return false
+            }
+                return true
+            }()
+            if _condOk {
+            // put_value Y3, A1
+            vm.Regs[0] = vm.getReg(202)
+            // put_value Y4, A2
+            vm.Regs[1] = vm.getReg(203)
+            // put_value Y5, A3
+            vm.Regs[2] = vm.getReg(204)
+            // call tree_lookup/3
+            {
+                savedCP := vm.CP
+                if !func() bool { if pc, ok := vm.Ctx.Labels["tree_lookup/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("tree_lookup/3", 3) { return true }; vm.warnUnresolved("call", "tree_lookup/3"); return false }() {
+                    return false
+                }
+                vm.CP = savedCP
+            }
+            } else {
+                vm.Regs = _savedRegs
+                vm.unwindTrailTo(_trailMark)
+            // put_value Y6, A1
+            vm.Regs[0] = vm.getReg(205)
+            // put_value Y4, A2
+            vm.Regs[1] = vm.getReg(203)
+            // put_value Y5, A3
+            vm.Regs[2] = vm.getReg(204)
+            // call tree_lookup/3
+            {
+                savedCP := vm.CP
+                if !func() bool { if pc, ok := vm.Ctx.Labels["tree_lookup/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("tree_lookup/3", 3) { return true }; vm.warnUnresolved("call", "tree_lookup/3"); return false }() {
+                    return false
+                }
+                vm.CP = savedCP
+            }
+            }
+        }
+        }
+    }
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    return true
 
 }
 
@@ -5256,7 +10158,7 @@ func (vm *WamState) PredUpgrade_set4() bool {
     // call upgrade_set_result/4
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["upgrade_set_result/4"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["upgrade_set_result/4"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("upgrade_set_result/4", 4) { return true }; vm.warnUnresolved("call", "upgrade_set_result/4"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -5298,7 +10200,7 @@ func (vm *WamState) PredUpgrade_set_result4() bool {
     // call canonicalize_name/3
     {
         savedCP := vm.CP
-        if !func() bool { if pc, ok := vm.Ctx.Labels["canonicalize_name/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+        if !func() bool { if pc, ok := vm.Ctx.Labels["canonicalize_name/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("canonicalize_name/3", 3) { return true }; vm.warnUnresolved("call", "canonicalize_name/3"); return false }() {
             return false
         }
         vm.CP = savedCP
@@ -5317,7 +10219,7 @@ func (vm *WamState) PredUpgrade_set_result4() bool {
         // call package_in/3
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["package_in/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["package_in/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("package_in/3", 3) { return true }; vm.warnUnresolved("call", "package_in/3"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -5356,7 +10258,7 @@ func (vm *WamState) PredUpgrade_set_result4() bool {
         // call close_moving/3
         {
             savedCP := vm.CP
-            if !func() bool { if pc, ok := vm.Ctx.Labels["close_moving/3"]; ok { vm.PC = pc; return vm.Run() }; return false }() {
+            if !func() bool { if pc, ok := vm.Ctx.Labels["close_moving/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("close_moving/3", 3) { return true }; vm.warnUnresolved("call", "close_moving/3"); return false }() {
                 return false
             }
             vm.CP = savedCP
@@ -5367,7 +10269,7 @@ func (vm *WamState) PredUpgrade_set_result4() bool {
         // put_value Y4, A1
         vm.Regs[0] = vm.getReg(203)
         // put_constant no_candidate, A2
-        vm.Regs[1] = wamAtom_no_candidate_10
+        vm.Regs[1] = wamAtom_no_candidate_16
         // builtin_call =/2 2
         if !vm.executeBuiltin("=/2", 2) {
             return false
@@ -5386,41 +10288,199 @@ func (vm *WamState) PredUpgrade_set_result4() bool {
 
 }
 
-// PredVersion_lt2 — lowered from version_lt/2
-func (vm *WamState) PredVersion_lt2() bool {
+// PredVirtual_provider_ceilings4 — lowered from virtual_provider_ceilings/4
+func (vm *WamState) PredVirtual_provider_ceilings4() bool {
     // allocate
     vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
-    // get_structure v/3, A1
-    if !vm.Step(&GetStructure{Functor: "v/3", Ai: 0}) {
+    // get_variable Y3, A1
+    vm.Regs[202] = vm.Regs[0]
+    // get_variable Y2, A2
+    vm.Regs[201] = vm.Regs[1]
+    // get_variable Y7, A3
+    vm.Regs[206] = vm.Regs[2]
+    // get_variable Y1, A4
+    vm.Regs[200] = vm.Regs[3]
+    // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+    {
+        _trailMark := vm.TrailLen
+        _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+        _condOk := func() bool {
+        // put_value Y3, A1
+        vm.Regs[0] = vm.getReg(202)
+        // put_value Y2, A2
+        vm.Regs[1] = vm.getReg(201)
+        // call package_in_name/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["package_in_name/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("package_in_name/2", 2) { return true }; vm.warnUnresolved("call", "package_in_name/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+            return true
+        }()
+        if _condOk {
+        // builtin_call fail/0 0
+        if !vm.executeBuiltin("fail/0", 0) {
+            return false
+        }
+        } else {
+            vm.Regs = _savedRegs
+            vm.unwindTrailTo(_trailMark)
+        // builtin_call true/0 0
+        if !vm.executeBuiltin("true/0", 0) {
+            return false
+        }
+        }
+    }
+    // put_variable Y4, Y4
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 203), Idx: 203}
+        vm.putReg(203, v)
+        vm.Regs[203] = v
+    }
+    // put_variable Y7, Y7
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 206), Idx: 206}
+        vm.putReg(206, v)
+        vm.Regs[206] = v
+    }
+    // put_variable Y5, Y5
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 204), Idx: 204}
+        vm.putReg(204, v)
+        vm.Regs[204] = v
+    }
+    // put_value Y3, A1
+    vm.Regs[0] = vm.getReg(202)
+    // put_value Y2, A2
+    vm.Regs[1] = vm.getReg(201)
+    // put_value Y4, A3
+    vm.Regs[2] = vm.getReg(203)
+    // put_value Y5, A4
+    vm.Regs[3] = vm.getReg(204)
+    // put_variable Y6, A5
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 205), Idx: 205}
+        vm.putReg(205, v)
+        vm.Regs[4] = v
+    }
+    // call provides_for/5
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["provides_for/5"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("provides_for/5", 5) { return true }; vm.warnUnresolved("call", "provides_for/5"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // put_value Y3, A1
+    vm.Regs[0] = vm.getReg(202)
+    // put_value Y4, A2
+    vm.Regs[1] = vm.getReg(203)
+    // put_value Y5, A3
+    vm.Regs[2] = vm.getReg(204)
+    // call base_ver/3
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["base_ver/3"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("base_ver/3", 3) { return true }; vm.warnUnresolved("call", "base_ver/3"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
+    }
+    // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+    {
+        _trailMark := vm.TrailLen
+        _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+        _condOk := func() bool {
+        // put_value Y6, A1
+        vm.Regs[0] = vm.getReg(205)
+        // put_value Y7, A2
+        vm.Regs[1] = vm.getReg(206)
+        // call provide_satisfies/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["provide_satisfies/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("provide_satisfies/2", 2) { return true }; vm.warnUnresolved("call", "provide_satisfies/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
+        }
+            return true
+        }()
+        if _condOk {
+        // builtin_call fail/0 0
+        if !vm.executeBuiltin("fail/0", 0) {
+            return false
+        }
+        } else {
+            vm.Regs = _savedRegs
+            vm.unwindTrailTo(_trailMark)
+        // builtin_call true/0 0
+        if !vm.executeBuiltin("true/0", 0) {
+            return false
+        }
+        }
+    }
+    // put_structure blocked/3, A1
+    if !vm.Step(&PutStructure{Functor: "blocked/3", Ai: 0}) {
         return false
     }
-    // unify_variable Y1
-    if !vm.Step(&UnifyVariable{Xn: 200}) {
+    // set_value Y4
+    if !vm.Step(&SetValue{Xn: 203}) {
         return false
     }
-    // unify_variable Y3
-    if !vm.Step(&UnifyVariable{Xn: 202}) {
+    // set_variable _XT0
+    if !vm.Step(&SetVariable{Xn: 0}) {
         return false
     }
-    // unify_variable Y5
-    if !vm.Step(&UnifyVariable{Xn: 204}) {
+    // set_variable _XT1
+    if !vm.Step(&SetVariable{Xn: 0}) {
         return false
     }
-    // get_structure v/3, A2
-    if !vm.Step(&GetStructure{Functor: "v/3", Ai: 1}) {
+    // put_structure needs/1, _XT0
+    if !vm.Step(&PutStructure{Functor: "needs/1", Ai: 0}) {
         return false
     }
-    // unify_variable Y2
-    if !vm.Step(&UnifyVariable{Xn: 201}) {
+    // set_value Y7
+    if !vm.Step(&SetValue{Xn: 206}) {
         return false
     }
-    // unify_variable Y4
-    if !vm.Step(&UnifyVariable{Xn: 203}) {
+    // put_structure base_has/1, _XT1
+    if !vm.Step(&PutStructure{Functor: "base_has/1", Ai: 0}) {
         return false
     }
-    // unify_variable Y6
-    if !vm.Step(&UnifyVariable{Xn: 205}) {
+    // set_value Y5
+    if !vm.Step(&SetValue{Xn: 204}) {
         return false
+    }
+    // deallocate
+    if env := vm.popEnvFrame(); env != nil {
+        vm.CP = env.CP
+    }
+    return true
+
+}
+
+// PredWorth_indexing2 — lowered from worth_indexing/2
+func (vm *WamState) PredWorth_indexing2() bool {
+    // allocate
+    vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+    // get_variable Y1, A1
+    vm.Regs[200] = vm.Regs[0]
+    // get_variable Y2, A2
+    vm.Regs[201] = vm.Regs[1]
+    // put_variable Y3, A1
+    {
+        v := &Unbound{Name: fmt.Sprintf("_R%d", 202), Idx: 202}
+        vm.putReg(202, v)
+        vm.Regs[0] = v
+    }
+    // call index_threshold/1
+    {
+        savedCP := vm.CP
+        if !func() bool { if pc, ok := vm.Ctx.Labels["index_threshold/1"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("index_threshold/1", 1) { return true }; vm.warnUnresolved("call", "index_threshold/1"); return false }() {
+            return false
+        }
+        vm.CP = savedCP
     }
     // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
     {
@@ -5429,11 +10489,15 @@ func (vm *WamState) PredVersion_lt2() bool {
         _condOk := func() bool {
         // put_value Y1, A1
         vm.Regs[0] = vm.getReg(200)
-        // put_value Y2, A2
-        vm.Regs[1] = vm.getReg(201)
-        // builtin_call </2 2
-        if !vm.executeBuiltin("</2", 2) {
-            return false
+        // put_value Y3, A2
+        vm.Regs[1] = vm.getReg(202)
+        // call long_enough/2
+        {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["long_enough/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("long_enough/2", 2) { return true }; vm.warnUnresolved("call", "long_enough/2"); return false }() {
+                return false
+            }
+            vm.CP = savedCP
         }
             return true
         }()
@@ -5445,62 +10509,17 @@ func (vm *WamState) PredVersion_lt2() bool {
         } else {
             vm.Regs = _savedRegs
             vm.unwindTrailTo(_trailMark)
-        // if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+        // put_value Y2, A1
+        vm.Regs[0] = vm.getReg(201)
+        // put_value Y3, A2
+        vm.Regs[1] = vm.getReg(202)
+        // call long_enough/2
         {
-            _trailMark := vm.TrailLen
-            _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
-            _condOk := func() bool {
-            // put_value Y1, A1
-            vm.Regs[0] = vm.getReg(200)
-            // put_value Y2, A2
-            vm.Regs[1] = vm.getReg(201)
-            // builtin_call =:=/2 2
-            if !vm.executeBuiltin("=:=/2", 2) {
+            savedCP := vm.CP
+            if !func() bool { if pc, ok := vm.Ctx.Labels["long_enough/2"]; ok { vm.PC = pc; return vm.Run() }; if vm.executeBuiltin("long_enough/2", 2) { return true }; vm.warnUnresolved("call", "long_enough/2"); return false }() {
                 return false
             }
-            // put_value Y3, A1
-            vm.Regs[0] = vm.getReg(202)
-            // put_value Y4, A2
-            vm.Regs[1] = vm.getReg(203)
-            // builtin_call </2 2
-            if !vm.executeBuiltin("</2", 2) {
-                return false
-            }
-                return true
-            }()
-            if _condOk {
-            // builtin_call true/0 0
-            if !vm.executeBuiltin("true/0", 0) {
-                return false
-            }
-            } else {
-                vm.Regs = _savedRegs
-                vm.unwindTrailTo(_trailMark)
-            // put_value Y1, A1
-            vm.Regs[0] = vm.getReg(200)
-            // put_value Y2, A2
-            vm.Regs[1] = vm.getReg(201)
-            // builtin_call =:=/2 2
-            if !vm.executeBuiltin("=:=/2", 2) {
-                return false
-            }
-            // put_value Y3, A1
-            vm.Regs[0] = vm.getReg(202)
-            // put_value Y4, A2
-            vm.Regs[1] = vm.getReg(203)
-            // builtin_call =:=/2 2
-            if !vm.executeBuiltin("=:=/2", 2) {
-                return false
-            }
-            // put_value Y5, A1
-            vm.Regs[0] = vm.getReg(204)
-            // put_value Y6, A2
-            vm.Regs[1] = vm.getReg(205)
-            // builtin_call </2 2
-            if !vm.executeBuiltin("</2", 2) {
-                return false
-            }
-            }
+            vm.CP = savedCP
         }
         }
     }

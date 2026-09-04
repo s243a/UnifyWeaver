@@ -431,6 +431,11 @@ func (vm *WamState) Step(instr Instruction) bool {
             vm.PC = vm.CP
             return true
         }
+        if vm.executeBuiltin(i.Pred, i.Arity) {
+            vm.PC = vm.CP
+            return true
+        }
+        vm.warnUnresolved("call", i.Pred)
         return false
     case *GetArgInto:
         term := vm.deref(vm.getReg(i.Src))
@@ -483,7 +488,20 @@ func (vm *WamState) Step(instr Instruction) bool {
         if _, ok := vm.Ctx.ForeignNativeKinds[i.Pred]; ok {
             return vm.executeForeignPredicate(i.Pred, 0)
         }
-        return vm.executeIndexedAtomFact2(i.Pred)
+        if vm.executeIndexedAtomFact2(i.Pred) {
+            return true
+        }
+        if vm.executeBuiltin(i.Pred, predArityFromName(i.Pred)) {
+            vm.popCallFrame()
+            if vm.CP > 0 {
+                vm.PC = vm.CP
+            } else {
+                vm.Halted = true
+            }
+            return true
+        }
+        vm.warnUnresolved("execute", i.Pred)
+        return false
     case *ExecutePc:
         vm.enterExecute()
         vm.PC = i.TargetPC
