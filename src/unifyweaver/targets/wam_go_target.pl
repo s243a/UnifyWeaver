@@ -708,6 +708,32 @@ wam_go_direct_builtin(call, 1, 'call/1').
 wam_go_direct_builtin(call/1, 1, 'call/1').
 wam_go_direct_builtin('call/1', 1, 'call/1').
 wam_go_direct_builtin("call/1", 1, 'call/1').
+% P3 pkg_resolver: maplist/N meta-calls user preds (is_v3/1); predsort/3
+% drives cmp_ver/3 for deb/3 order. Without these, Call{"maplist/N"}
+% misses Labels and fails silently (A3). functor/3 is implemented in
+% executeBuiltin but was unclassified — D60's silent-fail class.
+wam_go_direct_builtin(maplist/2, 2, 'maplist/2').
+wam_go_direct_builtin('maplist/2', 2, 'maplist/2').
+wam_go_direct_builtin("maplist/2", 2, 'maplist/2').
+wam_go_direct_builtin(maplist/3, 3, 'maplist/3').
+wam_go_direct_builtin('maplist/3', 3, 'maplist/3').
+wam_go_direct_builtin("maplist/3", 3, 'maplist/3').
+wam_go_direct_builtin(maplist/4, 4, 'maplist/4').
+wam_go_direct_builtin('maplist/4', 4, 'maplist/4').
+wam_go_direct_builtin("maplist/4", 4, 'maplist/4').
+wam_go_direct_builtin(predsort/3, 3, 'predsort/3').
+wam_go_direct_builtin('predsort/3', 3, 'predsort/3').
+wam_go_direct_builtin("predsort/3", 3, 'predsort/3').
+wam_go_direct_builtin(functor/3, 3, 'functor/3').
+wam_go_direct_builtin('functor/3', 3, 'functor/3').
+wam_go_direct_builtin("functor/3", 3, 'functor/3').
+wam_go_direct_builtin(arg/3, 3, 'arg/3').
+wam_go_direct_builtin('arg/3', 3, 'arg/3').
+wam_go_direct_builtin("arg/3", 3, 'arg/3').
+wam_go_direct_builtin('=..', 2, '=../2').
+wam_go_direct_builtin('=..'/2, 2, '=../2').
+wam_go_direct_builtin('=../2', 2, '=../2').
+wam_go_direct_builtin("=../2", 2, '=../2').
 wam_go_direct_builtin(writeln/1, 1, 'writeln/1').
 wam_go_direct_builtin('writeln/1', 1, 'writeln/1').
 wam_go_direct_builtin("writeln/1", 1, 'writeln/1').
@@ -2651,6 +2677,11 @@ wam_go_case('Call', '        vm.CP = vm.PC + 1
             vm.PC = vm.CP
             return true
         }
+        if vm.executeBuiltin(i.Pred, i.Arity) {
+            vm.PC = vm.CP
+            return true
+        }
+        vm.warnUnresolved("call", i.Pred)
         return false').
 
 wam_go_case('GetArgInto', '        term := vm.deref(vm.getReg(i.Src))
@@ -2703,7 +2734,20 @@ wam_go_case('Execute', '        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
         if _, ok := vm.Ctx.ForeignNativeKinds[i.Pred]; ok {
             return vm.executeForeignPredicate(i.Pred, 0)
         }
-        return vm.executeIndexedAtomFact2(i.Pred)').
+        if vm.executeIndexedAtomFact2(i.Pred) {
+            return true
+        }
+        if vm.executeBuiltin(i.Pred, predArityFromName(i.Pred)) {
+            vm.popCallFrame()
+            if vm.CP > 0 {
+                vm.PC = vm.CP
+            } else {
+                vm.Halted = true
+            }
+            return true
+        }
+        vm.warnUnresolved("execute", i.Pred)
+        return false').
 
 wam_go_case('ExecutePc', '        vm.enterExecute()
         vm.PC = i.TargetPC

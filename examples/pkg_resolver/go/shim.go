@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 John William Creighton (@s243a)
 //
-// shim.go -- EDGE of the Go-WAM compiled uw-resolve P0.5.
+// shim.go -- EDGE of the Go-WAM compiled uw-resolve P3.
 //
 // WHAT IS IN HERE, exhaustively: conversion between JSON catalogs/requests
 // and WAM terms, plus driving NewWamState / Run. There is NO resolver
@@ -43,12 +43,57 @@ func listOf(items []Value) Value {
 	return &List{Elements: items}
 }
 
-func vTerm(triple []int64) *Structure {
-	return st("v", i64(triple[0]), i64(triple[1]), i64(triple[2]))
+func vTerm(ver interface{}) Value {
+	return verTerm(ver)
 }
 
-func pairTerm(name string, ver []int64) *Structure {
-	return st("-", atom(name), vTerm(ver))
+// verTerm accepts P0 v/3 triples [M,I,P] and P3
+// {"deb":[Epoch,[[order,num],…],[…]]}.
+func verTerm(ver interface{}) Value {
+	if m, ok := ver.(map[string]interface{}); ok {
+		if d, has := m["deb"]; has {
+			arr := asArray(d)
+			epoch := int64(0)
+			var up, rev interface{}
+			if len(arr) > 0 {
+				epoch = asInt(arr[0])
+			}
+			if len(arr) > 1 {
+				up = arr[1]
+			}
+			if len(arr) > 2 {
+				rev = arr[2]
+			}
+			return st("deb", i64(epoch), segsTerm(up), segsTerm(rev))
+		}
+	}
+	a := asArray(ver)
+	return st("v", i64(asInt(a[0])), i64(asInt(a[1])), i64(asInt(a[2])))
+}
+
+func segsTerm(v interface{}) Value {
+	var items []Value
+	for _, seg := range asArray(v) {
+		s := asArray(seg)
+		order := ""
+		num := int64(0)
+		if len(s) > 0 {
+			order = asString(s[0])
+		}
+		if len(s) > 1 {
+			num = asInt(s[1])
+		}
+		var codes []Value
+		for _, r := range order {
+			codes = append(codes, i64(int64(r)))
+		}
+		items = append(items, st("s", listOf(codes), i64(num)))
+	}
+	return listOf(items)
+}
+
+func pairTerm(name string, ver interface{}) *Structure {
+	return st("-", atom(name), verTerm(ver))
 }
 
 func constraintTerm(c interface{}) Value {
@@ -63,14 +108,10 @@ func constraintTerm(c interface{}) Value {
 	case map[string]interface{}:
 		op, _ := t["op"].(string)
 		switch op {
-		case "eq":
-			return st("eq", vTerm(asVer(t["v"])))
-		case "gte":
-			return st("gte", vTerm(asVer(t["v"])))
-		case "lt":
-			return st("lt", vTerm(asVer(t["v"])))
+		case "eq", "gte", "lt", "lte", "gt":
+			return st(op, verTerm(t["v"]))
 		case "range":
-			return st("range", vTerm(asVer(t["lo"])), vTerm(asVer(t["hi"])))
+			return st("range", verTerm(t["lo"]), verTerm(t["hi"]))
 		}
 	}
 	panic(fmt.Sprintf("shim: unknown constraint %v", c))
@@ -78,7 +119,7 @@ func constraintTerm(c interface{}) Value {
 
 func holdTerm(row []interface{}) Value {
 	name := asString(row[0])
-	ver := asVer(row[1])
+	ver := row[1]
 	if len(row) >= 3 {
 		return st("base", pairTerm(name, ver), atom(asString(row[2])))
 	}
@@ -99,18 +140,43 @@ func aliasTerm(row []interface{}) Value {
 }
 
 func pkgTerm(row []interface{}) Value {
-	return st("package", atom(asString(row[0])), vTerm(asVer(row[1])))
+	return st("package", atom(asString(row[0])), verTerm(row[1]))
 }
 
 func depTerm(row []interface{}) Value {
+	third := row[2]
+	var depArg Value
+	if m, ok := third.(map[string]interface{}); ok {
+		if alts, has := m["alternatives"]; has {
+			var altTerms []Value
+			for _, a := range asArray(alts) {
+				am := asMap(a)
+				altTerms = append(altTerms, st("dep", atom(asString(am["dep"])), constraintTerm(am["constraint"])))
+			}
+			depArg = st("alternatives", listOf(altTerms))
+		}
+	}
+	if depArg == nil {
+		depArg = atom(asString(third))
+	}
 	return st("depends",
-		atom(asString(row[0])), vTerm(asVer(row[1])),
-		atom(asString(row[2])), constraintTerm(row[3]))
+		atom(asString(row[0])), verTerm(row[1]),
+		depArg, constraintTerm(row[3]))
+}
+
+func provideTerm(row []interface{}) Value {
+	if len(row) >= 4 && row[3] != nil {
+		return st("provides",
+			atom(asString(row[0])), verTerm(row[1]),
+			atom(asString(row[2])), verTerm(row[3]))
+	}
+	return st("provides",
+		atom(asString(row[0])), verTerm(row[1]), atom(asString(row[2])))
 }
 
 func confTerm(row []interface{}) Value {
 	return st("conflicts",
-		atom(asString(row[0])), vTerm(asVer(row[1])), atom(asString(row[2])))
+		atom(asString(row[0])), verTerm(row[1]), atom(asString(row[2])))
 }
 
 func requestTerm(req interface{}) Value {
@@ -132,14 +198,15 @@ func catalogToTerm(cat map[string]interface{}) Value {
 	base := mapList(cat["base"], func(x interface{}) Value { return holdTerm(asArray(x)) })
 	inst := mapList(cat["installed"], func(x interface{}) Value {
 		a := asArray(x)
-		return pairTerm(asString(a[0]), asVer(a[1]))
+		return pairTerm(asString(a[0]), a[1])
 	})
 	req := mapList(cat["requested"], func(x interface{}) Value { return atom(asString(x)) })
 	core := []Value{listOf(pkgs), listOf(deps), listOf(confs), listOf(base), listOf(inst), listOf(req)}
 	layersIn := asArray(cat["layers"])
 	exclIn := asArray(cat["excluded"])
 	aliasIn := asArray(cat["aliases"])
-	if len(layersIn) == 0 && len(exclIn) == 0 && len(aliasIn) == 0 {
+	provIn := asArray(cat["provides"])
+	if len(layersIn) == 0 && len(exclIn) == 0 && len(aliasIn) == 0 && len(provIn) == 0 {
 		return st("catalog", core...)
 	}
 	var layers []Value
@@ -151,7 +218,12 @@ func catalogToTerm(cat map[string]interface{}) Value {
 	for _, a := range aliasIn {
 		aliases = append(aliases, aliasTerm(asArray(a)))
 	}
-	return st("catalog", append(core, listOf(layers), listOf(excl), listOf(aliases))...)
+	nine := append(core, listOf(layers), listOf(excl), listOf(aliases))
+	if len(provIn) == 0 {
+		return st("catalog", nine...)
+	}
+	provs := mapList(cat["provides"], func(x interface{}) Value { return provideTerm(asArray(x)) })
+	return st("catalog", append(nine, listOf(provs))...)
 }
 
 func mapList(v interface{}, f func(interface{}) Value) []Value {
@@ -254,20 +326,51 @@ func termToJS(vm *WamState, term0 Value) interface{} {
 		if len(jsArgs) == 3 {
 			return jsArgs
 		}
+	case "s":
+		if len(jsArgs) == 2 {
+			order := ""
+			if codes, ok := jsArgs[0].([]interface{}); ok {
+				rs := make([]rune, 0, len(codes))
+				for _, c := range codes {
+					rs = append(rs, rune(asInt(c)))
+				}
+				order = string(rs)
+			}
+			return []interface{}{order, jsArgs[1]}
+		}
+	case "deb":
+		if len(jsArgs) == 3 {
+			return map[string]interface{}{"deb": jsArgs}
+		}
 	case "-":
 		if len(jsArgs) == 2 {
 			return []interface{}{jsArgs[0], jsArgs[1]}
 		}
 	case "blocked":
-		needs := jsArgs[1]
-		if a, ok := needs.([]interface{}); ok && len(a) == 2 && a[0] == "needs" {
-			needs = a[1]
+		if len(jsArgs) == 1 {
+			if a, ok := jsArgs[0].([]interface{}); ok && len(a) == 2 && a[0] == "alternatives" {
+				return map[string]interface{}{"alternatives": a[1]}
+			}
 		}
-		bh := jsArgs[2]
-		if a, ok := bh.([]interface{}); ok && len(a) == 2 && a[0] == "base_has" {
-			bh = a[1]
+		if len(jsArgs) >= 3 {
+			needs := jsArgs[1]
+			if a, ok := needs.([]interface{}); ok && len(a) == 2 && a[0] == "needs" {
+				needs = a[1]
+			}
+			third := jsArgs[2]
+			if a, ok := third.([]interface{}); ok && len(a) == 2 && a[0] == "providers" {
+				return map[string]interface{}{"name": jsArgs[0], "needs": needs, "providers": a[1]}
+			}
+			bh := third
+			if a, ok := third.([]interface{}); ok && len(a) == 2 && a[0] == "base_has" {
+				bh = a[1]
+			}
+			return map[string]interface{}{"name": jsArgs[0], "needs": needs, "base_has": bh}
 		}
-		return map[string]interface{}{"name": jsArgs[0], "needs": needs, "base_has": bh}
+	case "alt":
+		if len(jsArgs) == 2 {
+			return map[string]interface{}{"dep": jsArgs[0], "reason": jsArgs[1]}
+		}
 	case "safe":
 		cost := jsArgs[0]
 		if a, ok := cost.([]interface{}); ok && len(a) == 2 && a[0] == "cost" {
@@ -282,7 +385,7 @@ func termToJS(vm *WamState, term0 Value) interface{} {
 		return normalizeAuditTerm(jsArgs[0], jsArgs[1])
 	case "ok":
 		return map[string]interface{}{"__ok_set": jsArgs[0]}
-	case "needs", "base_has", "eq", "gte", "lt", "cost", "held", "suggest":
+	case "needs", "base_has", "eq", "gte", "lt", "lte", "gt", "cost", "held", "suggest", "providers", "alternatives":
 		return []interface{}{name, jsArgs[0]}
 	case "range":
 		return map[string]interface{}{"op": "range", "lo": jsArgs[0], "hi": jsArgs[1]}
@@ -296,7 +399,7 @@ func normalizeConstraint(c interface{}) interface{} {
 		return "any"
 	}
 	if a, ok := c.([]interface{}); ok && len(a) == 2 {
-		if a[0] == "gte" || a[0] == "eq" || a[0] == "lt" {
+		if a[0] == "gte" || a[0] == "eq" || a[0] == "lt" || a[0] == "lte" || a[0] == "gt" {
 			return map[string]interface{}{"op": a[0], "v": a[1]}
 		}
 		if a[0] == "range" {
@@ -355,6 +458,9 @@ func normalizeUpgrade(r interface{}) map[string]interface{} {
 			if _, has2 := m["base_has"]; has2 {
 				return map[string]interface{}{"ok": map[string]interface{}{"blocked": normalizeBlocked(m)}}
 			}
+			if _, has2 := m["providers"]; has2 {
+				return map[string]interface{}{"ok": map[string]interface{}{"blocked": normalizeBlocked(m)}}
+			}
 		}
 	}
 	if _, ok := r.([]interface{}); ok {
@@ -367,6 +473,20 @@ func normalizeBlocked(b interface{}) interface{} {
 	m, ok := b.(map[string]interface{})
 	if !ok {
 		return b
+	}
+	if _, has := m["alternatives"]; has {
+		return map[string]interface{}{"alternatives": m["alternatives"]}
+	}
+	if _, has := m["providers"]; has {
+		var nested []interface{}
+		for _, p := range asArray(m["providers"]) {
+			nested = append(nested, normalizeBlocked(p))
+		}
+		return map[string]interface{}{
+			"name":      m["name"],
+			"needs":     normalizeConstraint(m["needs"]),
+			"providers": nested,
+		}
 	}
 	if _, has := m["name"]; has {
 		return map[string]interface{}{
@@ -395,10 +515,10 @@ func runCase(row map[string]interface{}) map[string]interface{} {
 		return removalOrphansQ(cat, asString(args))
 	case "safe_upgrade":
 		a := asArray(args)
-		return safeUpgradeQ(cat, asString(a[0]), asVer(a[1]))
+		return safeUpgradeQ(cat, asString(a[0]), a[1])
 	case "upgrade_set":
 		a := asArray(args)
-		return upgradeSetQ(cat, asString(a[0]), asVer(a[1]))
+		return upgradeSetQ(cat, asString(a[0]), a[1])
 	case "freeze_audit":
 		return freezeAuditQ(cat)
 	case "dependents":
@@ -455,16 +575,16 @@ func removalOrphansQ(cat map[string]interface{}, pkg string) map[string]interfac
 	return map[string]interface{}{"ok": readSaved(vm, saved, 3)}
 }
 
-func safeUpgradeQ(cat map[string]interface{}, pkg string, ver []int64) map[string]interface{} {
-	ok, vm, saved := runPred("safe_upgrade/4", []Value{catalogToTerm(cat), atom(pkg), vTerm(ver), nil})
+func safeUpgradeQ(cat map[string]interface{}, pkg string, ver interface{}) map[string]interface{} {
+	ok, vm, saved := runPred("safe_upgrade/4", []Value{catalogToTerm(cat), atom(pkg), verTerm(ver), nil})
 	if !ok {
 		return map[string]interface{}{"fail": true}
 	}
 	return map[string]interface{}{"ok": normalizeVerdict(readSaved(vm, saved, 4))}
 }
 
-func upgradeSetQ(cat map[string]interface{}, pkg string, ver []int64) map[string]interface{} {
-	ok, vm, saved := runPred("upgrade_set_result/4", []Value{catalogToTerm(cat), atom(pkg), vTerm(ver), nil})
+func upgradeSetQ(cat map[string]interface{}, pkg string, ver interface{}) map[string]interface{} {
+	ok, vm, saved := runPred("upgrade_set_result/4", []Value{catalogToTerm(cat), atom(pkg), verTerm(ver), nil})
 	if !ok {
 		return map[string]interface{}{"fail": true}
 	}
@@ -741,7 +861,7 @@ func loadRichJSONL(path string, probe map[string]interface{}) (map[string]interf
 		return nil, err
 	}
 	defer f.Close()
-	var pkgs, deps, confs []interface{}
+	var pkgs, deps, confs, provides []interface{}
 	sc := bufio.NewScanner(f)
 	buf := make([]byte, 0, 1024*1024)
 	sc.Buffer(buf, 32*1024*1024)
@@ -761,6 +881,12 @@ func loadRichJSONL(path string, probe map[string]interface{}) (map[string]interf
 			deps = append(deps, []interface{}{row["name"], row["ver"], row["dep"], row["constraint"]})
 		case "conflicts":
 			confs = append(confs, []interface{}{row["name"], row["ver"], row["other"]})
+		case "provides":
+			p := []interface{}{row["name"], row["ver"], row["virtual"]}
+			if vv := row["virtual_ver"]; vv != nil {
+				p = append(p, vv)
+			}
+			provides = append(provides, p)
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -775,5 +901,6 @@ func loadRichJSONL(path string, probe map[string]interface{}) (map[string]interf
 		"packages": pkgs, "depends": deps, "conflicts": confs,
 		"base": base, "installed": env["installed"], "requested": env["requested"],
 		"layers": env["layers"], "excluded": env["excluded"], "aliases": env["aliases"],
+		"provides": provides,
 	}, nil
 }
