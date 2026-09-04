@@ -90,7 +90,7 @@ test(maplist_predsort_string_codes_warn) :-
         write(GS, GoModNew),
         close(GS)),
     format(atom(RunCmd),
-           'cd ~w && UW_WAM_WARN_UNKNOWN=1 go run main.go 2>../warn.err',
+           'cd ~w && UW_WAM_WARN_UNKNOWN=1 go run main.go 2>../../warn.err',
            [RunDir]),
     process_create(path(sh), ['-c', RunCmd],
                    [stdout(pipe(Out)), process(Pid)]),
