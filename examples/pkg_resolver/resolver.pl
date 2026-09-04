@@ -350,6 +350,12 @@ no_acc_conflicts(Cat, Name, Ver, [Other-OtherVer|Rest]) :-
 % ---------------------------------------------------------------------------
 
 index_catalog(Cat, Out) :-
+    % Reject the internal wrapper as public input (invariant 7 of the
+    % design; review finding): a caller handing us an icat/3 term must
+    % see exactly what the pre-index resolver saw — failure, because no
+    % public accessor matched it. Only genuine catalog terms proceed.
+    % Structural check only: every WAM leg handles plain unification.
+    is_public_catalog(Cat),
     depends_list(Cat, Ds),
     packages(Cat, Ps),
     (   worth_indexing(Ds, Ps)
@@ -364,6 +370,10 @@ index_catalog(Cat, Out) :-
         Out = icat(Cat, DepT, PkgT)
     ;   Out = Cat
     ).
+
+is_public_catalog(catalog(_, _, _, _, _, _)).
+is_public_catalog(catalog(_, _, _, _, _, _, _, _, _)).
+is_public_catalog(catalog(_, _, _, _, _, _, _, _, _, _)).
 
 % Size threshold. Both branches are the same relation, so this is a cost
 % decision, not a semantic one: the index costs ~45 interpreted

@@ -1862,6 +1862,8 @@ const shared_instructions = [
   I.GetVariable(212, 1),
   I.GetVariable(211, 2),
   I.PutValue(212, 1),
+  I.Call("is_public_catalog", 1),
+  I.PutValue(212, 1),
   I.PutVariable(201, 2),
   I.Call("depends_list", 2),
   I.PutValue(212, 1),
@@ -2092,6 +2094,41 @@ const shared_instructions = [
   I.PutValue(203, 2),
   I.BuiltinCall("member/2", 2),
   I.Deallocate(),
+  I.Proceed(),
+  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_is_public_catalog_1_2_body"}, {fid: 6, arity: 10, label: "L_is_public_catalog_1_3_body"}]),
+  I.TryMeElse("L_is_public_catalog_1_2"),
+  I.GetStructure(6, 1, 6),
+  I.UnifyVariable(101),
+  I.UnifyVariable(102),
+  I.UnifyVariable(103),
+  I.UnifyVariable(104),
+  I.UnifyVariable(105),
+  I.UnifyVariable(106),
+  I.Proceed(),
+  I.RetryMeElse("L_is_public_catalog_1_3"),
+  I.GetStructure(6, 1, 9),
+  I.UnifyVariable(101),
+  I.UnifyVariable(102),
+  I.UnifyVariable(103),
+  I.UnifyVariable(104),
+  I.UnifyVariable(105),
+  I.UnifyVariable(106),
+  I.UnifyVariable(107),
+  I.UnifyVariable(108),
+  I.UnifyVariable(109),
+  I.Proceed(),
+  I.TrustMe(),
+  I.GetStructure(6, 1, 10),
+  I.UnifyVariable(101),
+  I.UnifyVariable(102),
+  I.UnifyVariable(103),
+  I.UnifyVariable(104),
+  I.UnifyVariable(105),
+  I.UnifyVariable(106),
+  I.UnifyVariable(107),
+  I.UnifyVariable(108),
+  I.UnifyVariable(109),
+  I.UnifyVariable(110),
   I.Proceed(),
   I.GetStructure(38, 1, 3),
   I.UnifyVariable(101),
@@ -4845,346 +4882,351 @@ const shared_instructions = [
 ];
 
 const shared_labels = {
-  "worth_indexing/2": 4738,
-  "L_ite_else_269": 4751,
-  "L_ite_cont_269": 4755,
-  "walk_pkg_for_blocked/5": 4697,
-  "L_walk_pkg_for_blocked_5_2": 4710,
-  "L_walk_pkg_for_blocked_5_2_body": 4711,
-  "L_walk_pkg_for_blocked_5_3": 4724,
-  "L_walk_pkg_for_blocked_5_3_body": 4725,
-  "virtual_provider_ceilings/4": 4647,
-  "L_ite_else_263": 4660,
-  "L_ite_cont_263": 4662,
-  "L_ite_else_264": 4684,
-  "L_ite_cont_264": 4686,
-  "version_lt/2": 4545,
-  "L_ite_else_245": 4564,
-  "L_ite_else_246": 4576,
-  "L_ite_cont_246": 4586,
-  "L_ite_cont_245": 4586,
-  "L_version_lt_2_2": 4588,
-  "L_version_lt_2_2_body": 4589,
-  "L_ite_else_247": 4606,
-  "L_ite_else_248": 4618,
-  "L_ite_else_249": 4630,
-  "L_ite_cont_249": 4632,
-  "L_ite_else_250": 4640,
-  "L_ite_cont_250": 4642,
-  "L_ite_cont_248": 4645,
-  "L_ite_cont_247": 4645,
-  "upgrade_set_result/4": 4512,
-  "L_ite_else_242": 4538,
-  "L_ite_cont_242": 4542,
-  "upgrade_set/4": 4498,
-  "tree_lookup/3": 4457,
-  "L_ite_else_238": 4479,
-  "L_ite_else_239": 4491,
-  "L_ite_cont_239": 4496,
-  "L_ite_cont_238": 4496,
-  "topo_sort_sel/3": 4424,
-  "L_topo_sort_sel_3_2": 4433,
-  "L_topo_sort_sel_3_2_body": 4434,
-  "topo_one/7": 4346,
-  "L_topo_one_7_2": 4361,
-  "L_topo_one_7_2_body": 4362,
-  "L_ite_else_235": 4413,
-  "L_ite_cont_235": 4422,
-  "topo_all/7": 4308,
-  "L_topo_all_7_2": 4318,
-  "L_topo_all_7_2_body": 4319,
-  "tight_rev_in/3": 4259,
-  "L_ite_else_230": 4287,
-  "L_ite_cont_230": 4298,
-  "L_ite_else_229": 4301,
-  "L_ite_cont_229": 4306,
-  "tight_constraint/1": 4254,
-  "tight_base_revdep/2": 4243,
-  "sort_versions_desc/2": 4217,
-  "L_ite_else_227": 4233,
-  "L_ite_cont_227": 4241,
-  "selected_ver/3": 4194,
-  "L_ite_else_225": 4210,
-  "L_ite_cont_225": 4215,
-  "segs_lt_1/2": 4149,
-  "L_ite_else_219": 4170,
-  "L_ite_else_220": 4182,
-  "L_ite_cont_220": 4192,
-  "L_ite_cont_219": 4192,
-  "segs_lt/2": 4126,
-  "L_segs_lt_2_2": 4135,
-  "L_segs_lt_2_2_body": 4136,
-  "seen_name/2": 4107,
-  "L_ite_else_217": 4120,
-  "L_ite_cont_217": 4124,
-  "scan_base_holds/3": 4018,
-  "L_scan_base_holds_3_2": 4024,
-  "L_scan_base_holds_3_2_body": 4025,
-  "L_ite_else_209": 4044,
-  "L_ite_else_210": 4057,
-  "L_ite_else_211": 4079,
-  "L_ite_else_212": 4098,
-  "L_ite_cont_212": 4102,
-  "L_ite_cont_211": 4102,
-  "L_ite_cont_210": 4102,
-  "L_ite_cont_209": 4102,
-  "satisfies/2": 3937,
-  "L_satisfies_2_2": 3942,
-  "L_satisfies_2_2_body": 3943,
-  "L_satisfies_2_3": 3950,
-  "L_satisfies_2_3_body": 3951,
-  "L_ite_else_200": 3962,
-  "L_ite_cont_200": 3964,
-  "L_satisfies_2_4": 3965,
-  "L_satisfies_2_4_body": 3966,
-  "L_ite_else_201": 3977,
-  "L_ite_cont_201": 3979,
-  "L_satisfies_2_5": 3980,
-  "L_satisfies_2_5_body": 3981,
-  "L_satisfies_2_6": 3989,
-  "L_satisfies_2_6_body": 3990,
-  "L_satisfies_2_7": 3998,
-  "L_satisfies_2_7_body": 3999,
-  "L_ite_else_202": 4012,
-  "L_ite_cont_202": 4014,
-  "same_key/4": 3882,
-  "L_same_key_4_2": 3889,
-  "L_same_key_4_2_body": 3890,
-  "L_ite_else_198": 3920,
-  "L_ite_cont_198": 3935,
-  "safe_upgrade_reason/5": 3829,
-  "L_safe_upgrade_reason_5_2": 3837,
-  "L_safe_upgrade_reason_5_2_body": 3838,
-  "L_safe_upgrade_reason_5_3": 3847,
-  "L_safe_upgrade_reason_5_3_body": 3848,
-  "L_safe_upgrade_reason_5_4": 3857,
-  "L_safe_upgrade_reason_5_4_body": 3858,
-  "L_safe_upgrade_reason_5_5": 3867,
-  "L_safe_upgrade_reason_5_5_body": 3868,
-  "safe_upgrade/4": 3769,
-  "L_ite_else_187": 3789,
-  "L_ite_cont_187": 3791,
-  "L_ite_else_186": 3796,
-  "L_ite_else_189": 3808,
-  "L_ite_cont_189": 3810,
-  "L_ite_else_188": 3815,
-  "L_ite_cont_188": 3826,
-  "L_ite_cont_186": 3826,
-  "roots_to_pairs/3": 3726,
-  "L_roots_to_pairs_3_2": 3732,
-  "L_roots_to_pairs_3_2_body": 3733,
-  "L_roots_to_pairs_3_3": 3755,
-  "L_roots_to_pairs_3_3_body": 3756,
-  "L_roots_to_pairs_3_list_dispatch": 3767,
-  "resolve_pending/5": 3598,
-  "L_resolve_pending_5_2": 3605,
-  "L_resolve_pending_5_2_body": 3606,
-  "L_ite_else_174": 3632,
-  "L_ite_else_175": 3650,
-  "L_ite_else_176": 3666,
-  "L_ite_else_177": 3698,
-  "L_ite_cont_177": 3724,
-  "L_ite_cont_176": 3724,
-  "L_ite_cont_175": 3724,
-  "L_ite_cont_174": 3724,
-  "resolve_layered/3": 3575,
-  "resolve_alternatives/6": 3534,
-  "L_ite_else_171": 3556,
-  "L_ite_cont_171": 3573,
-  "resolve/3": 3511,
-  "requested_list/2": 3462,
-  "L_requested_list_2_2": 3473,
-  "L_requested_list_2_2_body": 3474,
-  "L_requested_list_2_3": 3486,
-  "L_requested_list_2_3_body": 3487,
-  "L_requested_list_2_4": 3500,
-  "L_requested_list_2_4_body": 3501,
-  "request_to_req/3": 3433,
-  "L_ite_else_168": 3452,
-  "L_ite_cont_168": 3460,
-  "reqs_ok_moving/2": 3366,
-  "L_reqs_ok_moving_2_2": 3371,
-  "L_reqs_ok_moving_2_2_body": 3372,
-  "L_ite_else_162": 3399,
-  "L_ite_cont_162": 3401,
-  "L_reqs_ok_moving_2_3": 3405,
-  "L_reqs_ok_moving_2_3_body": 3406,
-  "L_ite_else_163": 3425,
-  "L_ite_cont_163": 3427,
-  "L_reqs_ok_moving_2_list_dispatch": 3431,
-  "repairs_moving/4": 3352,
-  "removal_orphans/3": 3254,
-  "L_ite_else_150": 3274,
-  "L_ite_cont_150": 3278,
-  "L_ite_else_151": 3288,
-  "L_ite_else_152": 3330,
-  "L_ite_cont_152": 3332,
-  "L_ite_else_153": 3340,
-  "L_ite_cont_153": 3342,
-  "L_ite_cont_151": 3349,
-  "provides_sat/5": 3232,
-  "provides_list/2": 3183,
-  "L_provides_list_2_2": 3194,
-  "L_provides_list_2_2_body": 3195,
-  "L_provides_list_2_3": 3207,
-  "L_provides_list_2_3_body": 3208,
-  "L_provides_list_2_4": 3221,
-  "L_provides_list_2_4_body": 3222,
-  "provides_for/5": 3164,
-  "provider_candidate/5": 3128,
-  "L_ite_else_147": 3154,
-  "L_ite_cont_147": 3156,
-  "provide_satisfies/2": 3112,
-  "L_provide_satisfies_2_2": 3117,
-  "L_provide_satisfies_2_2_body": 3118,
-  "provide_row/5": 3090,
-  "L_provide_row_5_2": 3101,
-  "L_provide_row_5_2_body": 3102,
-  "pkg_index/2": 3084,
-  "pick_repair/4": 3068,
-  "pick_need/8": 2962,
-  "L_pick_need_8_2": 2979,
-  "L_pick_need_8_2_body": 2980,
-  "L_pick_need_8_3": 2996,
-  "L_pick_need_8_3_body": 2997,
-  "L_ite_else_138": 3026,
-  "L_ite_else_139": 3040,
-  "L_ite_else_140": 3056,
-  "L_ite_cont_140": 3066,
-  "L_ite_cont_139": 3066,
-  "L_ite_cont_138": 3066,
-  "pick/7": 2909,
-  "L_pick_7_2": 2925,
-  "L_pick_7_2_body": 2926,
-  "L_ite_else_135": 2951,
-  "L_ite_cont_135": 2960,
-  "pad_head/2": 2892,
-  "L_pad_head_2_2": 2905,
-  "L_pad_head_2_2_body": 2906,
-  "packages/2": 2843,
-  "L_packages_2_2": 2854,
-  "L_packages_2_2_body": 2855,
-  "L_packages_2_3": 2867,
-  "L_packages_2_3_body": 2868,
-  "L_packages_2_4": 2881,
-  "L_packages_2_4_body": 2882,
-  "package_in_name/2": 2830,
-  "package_in/3": 2816,
-  "order_val/2": 2773,
-  "L_order_val_2_2": 2781,
-  "L_order_val_2_2_body": 2782,
-  "L_order_val_2_3": 2794,
-  "L_order_val_2_3_body": 2795,
-  "L_order_val_2_4": 2807,
-  "L_order_val_2_4_body": 2808,
-  "order_lt/2": 2703,
-  "L_order_lt_2_2": 2712,
-  "L_order_lt_2_2_body": 2713,
-  "L_order_lt_2_3": 2726,
-  "L_order_lt_2_3_body": 2727,
-  "L_order_lt_2_4": 2740,
-  "L_order_lt_2_4_body": 2741,
-  "L_ite_else_132": 2762,
-  "L_ite_cont_132": 2769,
-  "L_order_lt_2_list_dispatch": 2771,
-  "no_acc_conflicts/4": 2656,
-  "L_no_acc_conflicts_4_2": 2662,
-  "L_no_acc_conflicts_4_2_body": 2663,
-  "L_ite_else_126": 2683,
-  "L_ite_cont_126": 2685,
-  "L_ite_else_127": 2695,
-  "L_ite_cont_127": 2697,
-  "needed_names/4": 2632,
-  "L_needed_names_4_2": 2638,
-  "L_needed_names_4_2_body": 2639,
-  "names_of/2": 2612,
-  "L_names_of_2_2": 2617,
-  "L_names_of_2_2_body": 2618,
-  "member_selected/3": 2603,
-  "matching_versions_in/4": 2564,
-  "L_ite_else_121": 2587,
-  "L_ite_cont_121": 2591,
-  "L_ite_else_120": 2592,
-  "L_ite_cont_120": 2601,
-  "matching_versions/4": 2521,
-  "L_matching_versions_4_2": 2528,
-  "L_matching_versions_4_2_body": 2529,
-  "L_ite_else_117": 2554,
-  "L_ite_cont_117": 2558,
-  "matching_deps/4": 2472,
-  "L_matching_deps_4_2": 2479,
-  "L_matching_deps_4_2_body": 2480,
-  "L_ite_else_114": 2511,
-  "L_ite_cont_114": 2515,
-  "map_requests/3": 2448,
-  "L_map_requests_3_2": 2454,
-  "L_map_requests_3_2_body": 2455,
-  "lookup_held/3": 2424,
-  "L_ite_else_111": 2441,
-  "L_ite_cont_111": 2446,
-  "long_enough/2": 2400,
-  "L_ite_else_109": 2413,
-  "L_ite_cont_109": 2422,
-  "list_to_tree/2": 2388,
-  "layers_list/2": 2339,
-  "L_layers_list_2_2": 2350,
-  "L_layers_list_2_2_body": 2351,
-  "L_layers_list_2_3": 2363,
-  "L_layers_list_2_3_body": 2364,
-  "L_layers_list_2_4": 2377,
-  "L_layers_list_2_4_body": 2378,
-  "layered_walk_ver/4": 2311,
-  "L_ite_else_106": 2330,
-  "L_ite_cont_106": 2336,
-  "layer_satisfies/3": 2240,
-  "L_layer_satisfies_3_2": 2253,
-  "L_layer_satisfies_3_2_body": 2254,
-  "L_layer_satisfies_3_3": 2274,
-  "L_layer_satisfies_3_3_body": 2275,
-  "L_ite_else_103": 2302,
-  "L_ite_cont_103": 2309,
-  "layer_provider/5": 2191,
-  "L_layer_provider_5_2": 2214,
-  "L_layer_provider_5_2_body": 2215,
-  "layer_closure/3": 2174,
-  "key_pkg_rows/3": 2140,
-  "L_key_pkg_rows_3_2": 2146,
-  "L_key_pkg_rows_3_2_body": 2147,
-  "key_dep_rows/3": 2097,
-  "L_key_dep_rows_3_2": 2103,
-  "L_key_dep_rows_3_2_body": 2104,
-  "keep_installed_or_base/4": 2053,
-  "L_keep_installed_or_base_4_2": 2060,
-  "L_keep_installed_or_base_4_2_body": 2061,
-  "L_ite_else_100": 2087,
-  "L_ite_cont_100": 2091,
-  "item_ver/3": 2013,
-  "L_item_ver_3_2": 2026,
-  "L_item_ver_3_2_body": 2027,
-  "L_item_ver_3_3": 2041,
-  "L_item_ver_3_3_body": 2042,
-  "is_v3/1": 2008,
-  "installed_ver/3": 1994,
-  "installed_or_base/3": 1970,
-  "L_installed_or_base_3_2": 1980,
-  "L_installed_or_base_3_2_body": 1981,
-  "installed_list/2": 1921,
-  "L_installed_list_2_2": 1932,
-  "L_installed_list_2_2_body": 1933,
-  "L_installed_list_2_3": 1945,
-  "L_installed_list_2_3_body": 1946,
-  "L_installed_list_2_4": 1959,
-  "L_installed_list_2_4_body": 1960,
-  "inst_walk/6": 1848,
-  "L_inst_walk_6_2": 1857,
-  "L_inst_walk_6_2_body": 1858,
-  "L_ite_else_97": 1884,
-  "L_ite_cont_97": 1919,
-  "inst_closure_names/5": 1829,
-  "index_threshold/1": 1827,
+  "worth_indexing/2": 4775,
+  "L_ite_else_269": 4788,
+  "L_ite_cont_269": 4792,
+  "walk_pkg_for_blocked/5": 4734,
+  "L_walk_pkg_for_blocked_5_2": 4747,
+  "L_walk_pkg_for_blocked_5_2_body": 4748,
+  "L_walk_pkg_for_blocked_5_3": 4761,
+  "L_walk_pkg_for_blocked_5_3_body": 4762,
+  "virtual_provider_ceilings/4": 4684,
+  "L_ite_else_263": 4697,
+  "L_ite_cont_263": 4699,
+  "L_ite_else_264": 4721,
+  "L_ite_cont_264": 4723,
+  "version_lt/2": 4582,
+  "L_ite_else_245": 4601,
+  "L_ite_else_246": 4613,
+  "L_ite_cont_246": 4623,
+  "L_ite_cont_245": 4623,
+  "L_version_lt_2_2": 4625,
+  "L_version_lt_2_2_body": 4626,
+  "L_ite_else_247": 4643,
+  "L_ite_else_248": 4655,
+  "L_ite_else_249": 4667,
+  "L_ite_cont_249": 4669,
+  "L_ite_else_250": 4677,
+  "L_ite_cont_250": 4679,
+  "L_ite_cont_248": 4682,
+  "L_ite_cont_247": 4682,
+  "upgrade_set_result/4": 4549,
+  "L_ite_else_242": 4575,
+  "L_ite_cont_242": 4579,
+  "upgrade_set/4": 4535,
+  "tree_lookup/3": 4494,
+  "L_ite_else_238": 4516,
+  "L_ite_else_239": 4528,
+  "L_ite_cont_239": 4533,
+  "L_ite_cont_238": 4533,
+  "topo_sort_sel/3": 4461,
+  "L_topo_sort_sel_3_2": 4470,
+  "L_topo_sort_sel_3_2_body": 4471,
+  "topo_one/7": 4383,
+  "L_topo_one_7_2": 4398,
+  "L_topo_one_7_2_body": 4399,
+  "L_ite_else_235": 4450,
+  "L_ite_cont_235": 4459,
+  "topo_all/7": 4345,
+  "L_topo_all_7_2": 4355,
+  "L_topo_all_7_2_body": 4356,
+  "tight_rev_in/3": 4296,
+  "L_ite_else_230": 4324,
+  "L_ite_cont_230": 4335,
+  "L_ite_else_229": 4338,
+  "L_ite_cont_229": 4343,
+  "tight_constraint/1": 4291,
+  "tight_base_revdep/2": 4280,
+  "sort_versions_desc/2": 4254,
+  "L_ite_else_227": 4270,
+  "L_ite_cont_227": 4278,
+  "selected_ver/3": 4231,
+  "L_ite_else_225": 4247,
+  "L_ite_cont_225": 4252,
+  "segs_lt_1/2": 4186,
+  "L_ite_else_219": 4207,
+  "L_ite_else_220": 4219,
+  "L_ite_cont_220": 4229,
+  "L_ite_cont_219": 4229,
+  "segs_lt/2": 4163,
+  "L_segs_lt_2_2": 4172,
+  "L_segs_lt_2_2_body": 4173,
+  "seen_name/2": 4144,
+  "L_ite_else_217": 4157,
+  "L_ite_cont_217": 4161,
+  "scan_base_holds/3": 4055,
+  "L_scan_base_holds_3_2": 4061,
+  "L_scan_base_holds_3_2_body": 4062,
+  "L_ite_else_209": 4081,
+  "L_ite_else_210": 4094,
+  "L_ite_else_211": 4116,
+  "L_ite_else_212": 4135,
+  "L_ite_cont_212": 4139,
+  "L_ite_cont_211": 4139,
+  "L_ite_cont_210": 4139,
+  "L_ite_cont_209": 4139,
+  "satisfies/2": 3974,
+  "L_satisfies_2_2": 3979,
+  "L_satisfies_2_2_body": 3980,
+  "L_satisfies_2_3": 3987,
+  "L_satisfies_2_3_body": 3988,
+  "L_ite_else_200": 3999,
+  "L_ite_cont_200": 4001,
+  "L_satisfies_2_4": 4002,
+  "L_satisfies_2_4_body": 4003,
+  "L_ite_else_201": 4014,
+  "L_ite_cont_201": 4016,
+  "L_satisfies_2_5": 4017,
+  "L_satisfies_2_5_body": 4018,
+  "L_satisfies_2_6": 4026,
+  "L_satisfies_2_6_body": 4027,
+  "L_satisfies_2_7": 4035,
+  "L_satisfies_2_7_body": 4036,
+  "L_ite_else_202": 4049,
+  "L_ite_cont_202": 4051,
+  "same_key/4": 3919,
+  "L_same_key_4_2": 3926,
+  "L_same_key_4_2_body": 3927,
+  "L_ite_else_198": 3957,
+  "L_ite_cont_198": 3972,
+  "safe_upgrade_reason/5": 3866,
+  "L_safe_upgrade_reason_5_2": 3874,
+  "L_safe_upgrade_reason_5_2_body": 3875,
+  "L_safe_upgrade_reason_5_3": 3884,
+  "L_safe_upgrade_reason_5_3_body": 3885,
+  "L_safe_upgrade_reason_5_4": 3894,
+  "L_safe_upgrade_reason_5_4_body": 3895,
+  "L_safe_upgrade_reason_5_5": 3904,
+  "L_safe_upgrade_reason_5_5_body": 3905,
+  "safe_upgrade/4": 3806,
+  "L_ite_else_187": 3826,
+  "L_ite_cont_187": 3828,
+  "L_ite_else_186": 3833,
+  "L_ite_else_189": 3845,
+  "L_ite_cont_189": 3847,
+  "L_ite_else_188": 3852,
+  "L_ite_cont_188": 3863,
+  "L_ite_cont_186": 3863,
+  "roots_to_pairs/3": 3763,
+  "L_roots_to_pairs_3_2": 3769,
+  "L_roots_to_pairs_3_2_body": 3770,
+  "L_roots_to_pairs_3_3": 3792,
+  "L_roots_to_pairs_3_3_body": 3793,
+  "L_roots_to_pairs_3_list_dispatch": 3804,
+  "resolve_pending/5": 3635,
+  "L_resolve_pending_5_2": 3642,
+  "L_resolve_pending_5_2_body": 3643,
+  "L_ite_else_174": 3669,
+  "L_ite_else_175": 3687,
+  "L_ite_else_176": 3703,
+  "L_ite_else_177": 3735,
+  "L_ite_cont_177": 3761,
+  "L_ite_cont_176": 3761,
+  "L_ite_cont_175": 3761,
+  "L_ite_cont_174": 3761,
+  "resolve_layered/3": 3612,
+  "resolve_alternatives/6": 3571,
+  "L_ite_else_171": 3593,
+  "L_ite_cont_171": 3610,
+  "resolve/3": 3548,
+  "requested_list/2": 3499,
+  "L_requested_list_2_2": 3510,
+  "L_requested_list_2_2_body": 3511,
+  "L_requested_list_2_3": 3523,
+  "L_requested_list_2_3_body": 3524,
+  "L_requested_list_2_4": 3537,
+  "L_requested_list_2_4_body": 3538,
+  "request_to_req/3": 3470,
+  "L_ite_else_168": 3489,
+  "L_ite_cont_168": 3497,
+  "reqs_ok_moving/2": 3403,
+  "L_reqs_ok_moving_2_2": 3408,
+  "L_reqs_ok_moving_2_2_body": 3409,
+  "L_ite_else_162": 3436,
+  "L_ite_cont_162": 3438,
+  "L_reqs_ok_moving_2_3": 3442,
+  "L_reqs_ok_moving_2_3_body": 3443,
+  "L_ite_else_163": 3462,
+  "L_ite_cont_163": 3464,
+  "L_reqs_ok_moving_2_list_dispatch": 3468,
+  "repairs_moving/4": 3389,
+  "removal_orphans/3": 3291,
+  "L_ite_else_150": 3311,
+  "L_ite_cont_150": 3315,
+  "L_ite_else_151": 3325,
+  "L_ite_else_152": 3367,
+  "L_ite_cont_152": 3369,
+  "L_ite_else_153": 3377,
+  "L_ite_cont_153": 3379,
+  "L_ite_cont_151": 3386,
+  "provides_sat/5": 3269,
+  "provides_list/2": 3220,
+  "L_provides_list_2_2": 3231,
+  "L_provides_list_2_2_body": 3232,
+  "L_provides_list_2_3": 3244,
+  "L_provides_list_2_3_body": 3245,
+  "L_provides_list_2_4": 3258,
+  "L_provides_list_2_4_body": 3259,
+  "provides_for/5": 3201,
+  "provider_candidate/5": 3165,
+  "L_ite_else_147": 3191,
+  "L_ite_cont_147": 3193,
+  "provide_satisfies/2": 3149,
+  "L_provide_satisfies_2_2": 3154,
+  "L_provide_satisfies_2_2_body": 3155,
+  "provide_row/5": 3127,
+  "L_provide_row_5_2": 3138,
+  "L_provide_row_5_2_body": 3139,
+  "pkg_index/2": 3121,
+  "pick_repair/4": 3105,
+  "pick_need/8": 2999,
+  "L_pick_need_8_2": 3016,
+  "L_pick_need_8_2_body": 3017,
+  "L_pick_need_8_3": 3033,
+  "L_pick_need_8_3_body": 3034,
+  "L_ite_else_138": 3063,
+  "L_ite_else_139": 3077,
+  "L_ite_else_140": 3093,
+  "L_ite_cont_140": 3103,
+  "L_ite_cont_139": 3103,
+  "L_ite_cont_138": 3103,
+  "pick/7": 2946,
+  "L_pick_7_2": 2962,
+  "L_pick_7_2_body": 2963,
+  "L_ite_else_135": 2988,
+  "L_ite_cont_135": 2997,
+  "pad_head/2": 2929,
+  "L_pad_head_2_2": 2942,
+  "L_pad_head_2_2_body": 2943,
+  "packages/2": 2880,
+  "L_packages_2_2": 2891,
+  "L_packages_2_2_body": 2892,
+  "L_packages_2_3": 2904,
+  "L_packages_2_3_body": 2905,
+  "L_packages_2_4": 2918,
+  "L_packages_2_4_body": 2919,
+  "package_in_name/2": 2867,
+  "package_in/3": 2853,
+  "order_val/2": 2810,
+  "L_order_val_2_2": 2818,
+  "L_order_val_2_2_body": 2819,
+  "L_order_val_2_3": 2831,
+  "L_order_val_2_3_body": 2832,
+  "L_order_val_2_4": 2844,
+  "L_order_val_2_4_body": 2845,
+  "order_lt/2": 2740,
+  "L_order_lt_2_2": 2749,
+  "L_order_lt_2_2_body": 2750,
+  "L_order_lt_2_3": 2763,
+  "L_order_lt_2_3_body": 2764,
+  "L_order_lt_2_4": 2777,
+  "L_order_lt_2_4_body": 2778,
+  "L_ite_else_132": 2799,
+  "L_ite_cont_132": 2806,
+  "L_order_lt_2_list_dispatch": 2808,
+  "no_acc_conflicts/4": 2693,
+  "L_no_acc_conflicts_4_2": 2699,
+  "L_no_acc_conflicts_4_2_body": 2700,
+  "L_ite_else_126": 2720,
+  "L_ite_cont_126": 2722,
+  "L_ite_else_127": 2732,
+  "L_ite_cont_127": 2734,
+  "needed_names/4": 2669,
+  "L_needed_names_4_2": 2675,
+  "L_needed_names_4_2_body": 2676,
+  "names_of/2": 2649,
+  "L_names_of_2_2": 2654,
+  "L_names_of_2_2_body": 2655,
+  "member_selected/3": 2640,
+  "matching_versions_in/4": 2601,
+  "L_ite_else_121": 2624,
+  "L_ite_cont_121": 2628,
+  "L_ite_else_120": 2629,
+  "L_ite_cont_120": 2638,
+  "matching_versions/4": 2558,
+  "L_matching_versions_4_2": 2565,
+  "L_matching_versions_4_2_body": 2566,
+  "L_ite_else_117": 2591,
+  "L_ite_cont_117": 2595,
+  "matching_deps/4": 2509,
+  "L_matching_deps_4_2": 2516,
+  "L_matching_deps_4_2_body": 2517,
+  "L_ite_else_114": 2548,
+  "L_ite_cont_114": 2552,
+  "map_requests/3": 2485,
+  "L_map_requests_3_2": 2491,
+  "L_map_requests_3_2_body": 2492,
+  "lookup_held/3": 2461,
+  "L_ite_else_111": 2478,
+  "L_ite_cont_111": 2483,
+  "long_enough/2": 2437,
+  "L_ite_else_109": 2450,
+  "L_ite_cont_109": 2459,
+  "list_to_tree/2": 2425,
+  "layers_list/2": 2376,
+  "L_layers_list_2_2": 2387,
+  "L_layers_list_2_2_body": 2388,
+  "L_layers_list_2_3": 2400,
+  "L_layers_list_2_3_body": 2401,
+  "L_layers_list_2_4": 2414,
+  "L_layers_list_2_4_body": 2415,
+  "layered_walk_ver/4": 2348,
+  "L_ite_else_106": 2367,
+  "L_ite_cont_106": 2373,
+  "layer_satisfies/3": 2277,
+  "L_layer_satisfies_3_2": 2290,
+  "L_layer_satisfies_3_2_body": 2291,
+  "L_layer_satisfies_3_3": 2311,
+  "L_layer_satisfies_3_3_body": 2312,
+  "L_ite_else_103": 2339,
+  "L_ite_cont_103": 2346,
+  "layer_provider/5": 2228,
+  "L_layer_provider_5_2": 2251,
+  "L_layer_provider_5_2_body": 2252,
+  "layer_closure/3": 2211,
+  "key_pkg_rows/3": 2177,
+  "L_key_pkg_rows_3_2": 2183,
+  "L_key_pkg_rows_3_2_body": 2184,
+  "key_dep_rows/3": 2134,
+  "L_key_dep_rows_3_2": 2140,
+  "L_key_dep_rows_3_2_body": 2141,
+  "keep_installed_or_base/4": 2090,
+  "L_keep_installed_or_base_4_2": 2097,
+  "L_keep_installed_or_base_4_2_body": 2098,
+  "L_ite_else_100": 2124,
+  "L_ite_cont_100": 2128,
+  "item_ver/3": 2050,
+  "L_item_ver_3_2": 2063,
+  "L_item_ver_3_2_body": 2064,
+  "L_item_ver_3_3": 2078,
+  "L_item_ver_3_3_body": 2079,
+  "is_v3/1": 2045,
+  "is_public_catalog/1": 2010,
+  "L_is_public_catalog_1_2": 2020,
+  "L_is_public_catalog_1_2_body": 2021,
+  "L_is_public_catalog_1_3": 2032,
+  "L_is_public_catalog_1_3_body": 2033,
+  "installed_ver/3": 1996,
+  "installed_or_base/3": 1972,
+  "L_installed_or_base_3_2": 1982,
+  "L_installed_or_base_3_2_body": 1983,
+  "installed_list/2": 1923,
+  "L_installed_list_2_2": 1934,
+  "L_installed_list_2_2_body": 1935,
+  "L_installed_list_2_3": 1947,
+  "L_installed_list_2_3_body": 1948,
+  "L_installed_list_2_4": 1961,
+  "L_installed_list_2_4_body": 1962,
+  "inst_walk/6": 1850,
+  "L_inst_walk_6_2": 1859,
+  "L_inst_walk_6_2_body": 1860,
+  "L_ite_else_97": 1886,
+  "L_ite_cont_97": 1921,
+  "inst_closure_names/5": 1831,
+  "index_threshold/1": 1829,
   "index_catalog/2": 1773,
-  "L_ite_else_94": 1821,
-  "L_ite_cont_94": 1825,
+  "L_ite_else_94": 1823,
+  "L_ite_cont_94": 1827,
   "hold_reason/3": 1746,
   "L_ite_else_92": 1766,
   "L_ite_cont_92": 1771,
@@ -5377,82 +5419,83 @@ const shared_labels = {
 };
 
 const dispatch = {
-  "worth_indexing/2": 4738,
-  "walk_pkg_for_blocked/5": 4697,
-  "virtual_provider_ceilings/4": 4647,
-  "version_lt/2": 4545,
-  "upgrade_set_result/4": 4512,
-  "upgrade_set/4": 4498,
-  "tree_lookup/3": 4457,
-  "topo_sort_sel/3": 4424,
-  "topo_one/7": 4346,
-  "topo_all/7": 4308,
-  "tight_rev_in/3": 4259,
-  "tight_constraint/1": 4254,
-  "tight_base_revdep/2": 4243,
-  "sort_versions_desc/2": 4217,
-  "selected_ver/3": 4194,
-  "segs_lt_1/2": 4149,
-  "segs_lt/2": 4126,
-  "seen_name/2": 4107,
-  "scan_base_holds/3": 4018,
-  "satisfies/2": 3937,
-  "same_key/4": 3882,
-  "safe_upgrade_reason/5": 3829,
-  "safe_upgrade/4": 3769,
-  "roots_to_pairs/3": 3726,
-  "resolve_pending/5": 3598,
-  "resolve_layered/3": 3575,
-  "resolve_alternatives/6": 3534,
-  "resolve/3": 3511,
-  "requested_list/2": 3462,
-  "request_to_req/3": 3433,
-  "reqs_ok_moving/2": 3366,
-  "repairs_moving/4": 3352,
-  "removal_orphans/3": 3254,
-  "provides_sat/5": 3232,
-  "provides_list/2": 3183,
-  "provides_for/5": 3164,
-  "provider_candidate/5": 3128,
-  "provide_satisfies/2": 3112,
-  "provide_row/5": 3090,
-  "pkg_index/2": 3084,
-  "pick_repair/4": 3068,
-  "pick_need/8": 2962,
-  "pick/7": 2909,
-  "pad_head/2": 2892,
-  "packages/2": 2843,
-  "package_in_name/2": 2830,
-  "package_in/3": 2816,
-  "order_val/2": 2773,
-  "order_lt/2": 2703,
-  "no_acc_conflicts/4": 2656,
-  "needed_names/4": 2632,
-  "names_of/2": 2612,
-  "member_selected/3": 2603,
-  "matching_versions_in/4": 2564,
-  "matching_versions/4": 2521,
-  "matching_deps/4": 2472,
-  "map_requests/3": 2448,
-  "lookup_held/3": 2424,
-  "long_enough/2": 2400,
-  "list_to_tree/2": 2388,
-  "layers_list/2": 2339,
-  "layered_walk_ver/4": 2311,
-  "layer_satisfies/3": 2240,
-  "layer_provider/5": 2191,
-  "layer_closure/3": 2174,
-  "key_pkg_rows/3": 2140,
-  "key_dep_rows/3": 2097,
-  "keep_installed_or_base/4": 2053,
-  "item_ver/3": 2013,
-  "is_v3/1": 2008,
-  "installed_ver/3": 1994,
-  "installed_or_base/3": 1970,
-  "installed_list/2": 1921,
-  "inst_walk/6": 1848,
-  "inst_closure_names/5": 1829,
-  "index_threshold/1": 1827,
+  "worth_indexing/2": 4775,
+  "walk_pkg_for_blocked/5": 4734,
+  "virtual_provider_ceilings/4": 4684,
+  "version_lt/2": 4582,
+  "upgrade_set_result/4": 4549,
+  "upgrade_set/4": 4535,
+  "tree_lookup/3": 4494,
+  "topo_sort_sel/3": 4461,
+  "topo_one/7": 4383,
+  "topo_all/7": 4345,
+  "tight_rev_in/3": 4296,
+  "tight_constraint/1": 4291,
+  "tight_base_revdep/2": 4280,
+  "sort_versions_desc/2": 4254,
+  "selected_ver/3": 4231,
+  "segs_lt_1/2": 4186,
+  "segs_lt/2": 4163,
+  "seen_name/2": 4144,
+  "scan_base_holds/3": 4055,
+  "satisfies/2": 3974,
+  "same_key/4": 3919,
+  "safe_upgrade_reason/5": 3866,
+  "safe_upgrade/4": 3806,
+  "roots_to_pairs/3": 3763,
+  "resolve_pending/5": 3635,
+  "resolve_layered/3": 3612,
+  "resolve_alternatives/6": 3571,
+  "resolve/3": 3548,
+  "requested_list/2": 3499,
+  "request_to_req/3": 3470,
+  "reqs_ok_moving/2": 3403,
+  "repairs_moving/4": 3389,
+  "removal_orphans/3": 3291,
+  "provides_sat/5": 3269,
+  "provides_list/2": 3220,
+  "provides_for/5": 3201,
+  "provider_candidate/5": 3165,
+  "provide_satisfies/2": 3149,
+  "provide_row/5": 3127,
+  "pkg_index/2": 3121,
+  "pick_repair/4": 3105,
+  "pick_need/8": 2999,
+  "pick/7": 2946,
+  "pad_head/2": 2929,
+  "packages/2": 2880,
+  "package_in_name/2": 2867,
+  "package_in/3": 2853,
+  "order_val/2": 2810,
+  "order_lt/2": 2740,
+  "no_acc_conflicts/4": 2693,
+  "needed_names/4": 2669,
+  "names_of/2": 2649,
+  "member_selected/3": 2640,
+  "matching_versions_in/4": 2601,
+  "matching_versions/4": 2558,
+  "matching_deps/4": 2509,
+  "map_requests/3": 2485,
+  "lookup_held/3": 2461,
+  "long_enough/2": 2437,
+  "list_to_tree/2": 2425,
+  "layers_list/2": 2376,
+  "layered_walk_ver/4": 2348,
+  "layer_satisfies/3": 2277,
+  "layer_provider/5": 2228,
+  "layer_closure/3": 2211,
+  "key_pkg_rows/3": 2177,
+  "key_dep_rows/3": 2134,
+  "keep_installed_or_base/4": 2090,
+  "item_ver/3": 2050,
+  "is_v3/1": 2045,
+  "is_public_catalog/1": 2010,
+  "installed_ver/3": 1996,
+  "installed_or_base/3": 1972,
+  "installed_list/2": 1923,
+  "inst_walk/6": 1850,
+  "inst_closure_names/5": 1831,
+  "index_threshold/1": 1829,
   "index_catalog/2": 1773,
   "hold_reason/3": 1746,
   "group_keyed/2": 1712,
@@ -7701,6 +7744,83 @@ function lowered_is_v3_1(program, state) {
 }
 
 lowered_dispatch["is_v3/1"] = function (program, state) { return lowered_is_v3_1(program, state); };
+// Lowered: is_public_catalog/1 (T4 all-clauses inline)
+function lowered_is_public_catalog_1(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("is_public_catalog/1");
+  const _t4_trail = state.trail.length;
+  const _t4_regs = Runtime.copy_table(state.regs);
+  const _t4_vc = state.var_counter;
+  const _t4_stack = state.stack.slice();
+  const _t4_ysave = (state.y_save || []).slice();
+  const _t4_mode = state.mode;
+  const _t4_build = state.build_stack.slice();
+  const _t4_rstack = (state.read_stack || []).slice();
+  const _t4_rargs = state.read_args;
+  const _t4_rcur = state.read_cursor;
+  if ((function () {
+    if (Runtime.op_get_structure(program, state, 6, 1, 6) !== true) return false;
+    if (Runtime.op_unify_variable(state, 101) !== true) return false;
+    if (Runtime.op_unify_variable(state, 102) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    if (Runtime.op_unify_variable(state, 104) !== true) return false;
+    if (Runtime.op_unify_variable(state, 105) !== true) return false;
+    if (Runtime.op_unify_variable(state, 106) !== true) return false;
+    return true;
+    return false;
+  })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_get_structure(program, state, 6, 1, 9) !== true) return false;
+    if (Runtime.op_unify_variable(state, 101) !== true) return false;
+    if (Runtime.op_unify_variable(state, 102) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    if (Runtime.op_unify_variable(state, 104) !== true) return false;
+    if (Runtime.op_unify_variable(state, 105) !== true) return false;
+    if (Runtime.op_unify_variable(state, 106) !== true) return false;
+    if (Runtime.op_unify_variable(state, 107) !== true) return false;
+    if (Runtime.op_unify_variable(state, 108) !== true) return false;
+    if (Runtime.op_unify_variable(state, 109) !== true) return false;
+    return true;
+    return false;
+  })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_get_structure(program, state, 6, 1, 10) !== true) return false;
+    if (Runtime.op_unify_variable(state, 101) !== true) return false;
+    if (Runtime.op_unify_variable(state, 102) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    if (Runtime.op_unify_variable(state, 104) !== true) return false;
+    if (Runtime.op_unify_variable(state, 105) !== true) return false;
+    if (Runtime.op_unify_variable(state, 106) !== true) return false;
+    if (Runtime.op_unify_variable(state, 107) !== true) return false;
+    if (Runtime.op_unify_variable(state, 108) !== true) return false;
+    if (Runtime.op_unify_variable(state, 109) !== true) return false;
+    if (Runtime.op_unify_variable(state, 110) !== true) return false;
+    return true;
+    return false;
+  })()) return true;
+  return false;
+}
+
+lowered_dispatch["is_public_catalog/1"] = function (program, state) { return lowered_is_public_catalog_1(program, state); };
 // wamjs lower fallback: installed_ver/3  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: installed_or_base/3  fallback(naked member/2 (or callee) needs interpreter choice points)
 // Lowered: installed_list/2 (T4 all-clauses inline)
@@ -8918,27 +9038,27 @@ function worth_indexing(a1, a2) {
 M.worth_indexing = worth_indexing;
 
 function walk_pkg_for_blocked(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 4697, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 4734, [a1, a2, a3, a4, a5]);
 }
 M.walk_pkg_for_blocked = walk_pkg_for_blocked;
 
 function virtual_provider_ceilings(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 4647, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 4684, [a1, a2, a3, a4]);
 }
 M.virtual_provider_ceilings = virtual_provider_ceilings;
 
 function version_lt(a1, a2) {
-  return Runtime.run_predicate(shared_program, 4545, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 4582, [a1, a2]);
 }
 M.version_lt = version_lt;
 
 function upgrade_set_result(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 4512, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 4549, [a1, a2, a3, a4]);
 }
 M.upgrade_set_result = upgrade_set_result;
 
 function upgrade_set(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 4498, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 4535, [a1, a2, a3, a4]);
 }
 M.upgrade_set = upgrade_set;
 
@@ -8955,22 +9075,22 @@ function tree_lookup(a1, a2, a3) {
 M.tree_lookup = tree_lookup;
 
 function topo_sort_sel(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 4424, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 4461, [a1, a2, a3]);
 }
 M.topo_sort_sel = topo_sort_sel;
 
 function topo_one(a1, a2, a3, a4, a5, a6, a7) {
-  return Runtime.run_predicate(shared_program, 4346, [a1, a2, a3, a4, a5, a6, a7]);
+  return Runtime.run_predicate(shared_program, 4383, [a1, a2, a3, a4, a5, a6, a7]);
 }
 M.topo_one = topo_one;
 
 function topo_all(a1, a2, a3, a4, a5, a6, a7) {
-  return Runtime.run_predicate(shared_program, 4308, [a1, a2, a3, a4, a5, a6, a7]);
+  return Runtime.run_predicate(shared_program, 4345, [a1, a2, a3, a4, a5, a6, a7]);
 }
 M.topo_all = topo_all;
 
 function tight_rev_in(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 4259, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 4296, [a1, a2, a3]);
 }
 M.tight_rev_in = tight_rev_in;
 
@@ -8987,7 +9107,7 @@ function tight_constraint(a1) {
 M.tight_constraint = tight_constraint;
 
 function tight_base_revdep(a1, a2) {
-  return Runtime.run_predicate(shared_program, 4243, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 4280, [a1, a2]);
 }
 M.tight_base_revdep = tight_base_revdep;
 
@@ -9016,12 +9136,12 @@ function selected_ver(a1, a2, a3) {
 M.selected_ver = selected_ver;
 
 function segs_lt_1(a1, a2) {
-  return Runtime.run_predicate(shared_program, 4149, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 4186, [a1, a2]);
 }
 M.segs_lt_1 = segs_lt_1;
 
 function segs_lt(a1, a2) {
-  return Runtime.run_predicate(shared_program, 4126, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 4163, [a1, a2]);
 }
 M.segs_lt = segs_lt;
 
@@ -9050,7 +9170,7 @@ function scan_base_holds(a1, a2, a3) {
 M.scan_base_holds = scan_base_holds;
 
 function satisfies(a1, a2) {
-  return Runtime.run_predicate(shared_program, 3937, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 3974, [a1, a2]);
 }
 M.satisfies = satisfies;
 
@@ -9067,37 +9187,37 @@ function same_key(a1, a2, a3, a4) {
 M.same_key = same_key;
 
 function safe_upgrade_reason(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 3829, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 3866, [a1, a2, a3, a4, a5]);
 }
 M.safe_upgrade_reason = safe_upgrade_reason;
 
 function safe_upgrade(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 3769, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 3806, [a1, a2, a3, a4]);
 }
 M.safe_upgrade = safe_upgrade;
 
 function roots_to_pairs(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 3726, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 3763, [a1, a2, a3]);
 }
 M.roots_to_pairs = roots_to_pairs;
 
 function resolve_pending(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 3598, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 3635, [a1, a2, a3, a4, a5]);
 }
 M.resolve_pending = resolve_pending;
 
 function resolve_layered(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 3575, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 3612, [a1, a2, a3]);
 }
 M.resolve_layered = resolve_layered;
 
 function resolve_alternatives(a1, a2, a3, a4, a5, a6) {
-  return Runtime.run_predicate(shared_program, 3534, [a1, a2, a3, a4, a5, a6]);
+  return Runtime.run_predicate(shared_program, 3571, [a1, a2, a3, a4, a5, a6]);
 }
 M.resolve_alternatives = resolve_alternatives;
 
 function resolve(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 3511, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 3548, [a1, a2, a3]);
 }
 M.resolve = resolve;
 
@@ -9114,27 +9234,27 @@ function requested_list(a1, a2) {
 M.requested_list = requested_list;
 
 function request_to_req(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 3433, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 3470, [a1, a2, a3]);
 }
 M.request_to_req = request_to_req;
 
 function reqs_ok_moving(a1, a2) {
-  return Runtime.run_predicate(shared_program, 3366, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 3403, [a1, a2]);
 }
 M.reqs_ok_moving = reqs_ok_moving;
 
 function repairs_moving(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 3352, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 3389, [a1, a2, a3, a4]);
 }
 M.repairs_moving = repairs_moving;
 
 function removal_orphans(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 3254, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 3291, [a1, a2, a3]);
 }
 M.removal_orphans = removal_orphans;
 
 function provides_sat(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 3232, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 3269, [a1, a2, a3, a4, a5]);
 }
 M.provides_sat = provides_sat;
 
@@ -9151,17 +9271,17 @@ function provides_list(a1, a2) {
 M.provides_list = provides_list;
 
 function provides_for(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 3164, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 3201, [a1, a2, a3, a4, a5]);
 }
 M.provides_for = provides_for;
 
 function provider_candidate(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 3128, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 3165, [a1, a2, a3, a4, a5]);
 }
 M.provider_candidate = provider_candidate;
 
 function provide_satisfies(a1, a2) {
-  return Runtime.run_predicate(shared_program, 3112, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 3149, [a1, a2]);
 }
 M.provide_satisfies = provide_satisfies;
 
@@ -9190,17 +9310,17 @@ function pkg_index(a1, a2) {
 M.pkg_index = pkg_index;
 
 function pick_repair(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 3068, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 3105, [a1, a2, a3, a4]);
 }
 M.pick_repair = pick_repair;
 
 function pick_need(a1, a2, a3, a4, a5, a6, a7, a8) {
-  return Runtime.run_predicate(shared_program, 2962, [a1, a2, a3, a4, a5, a6, a7, a8]);
+  return Runtime.run_predicate(shared_program, 2999, [a1, a2, a3, a4, a5, a6, a7, a8]);
 }
 M.pick_need = pick_need;
 
 function pick(a1, a2, a3, a4, a5, a6, a7) {
-  return Runtime.run_predicate(shared_program, 2909, [a1, a2, a3, a4, a5, a6, a7]);
+  return Runtime.run_predicate(shared_program, 2946, [a1, a2, a3, a4, a5, a6, a7]);
 }
 M.pick = pick;
 
@@ -9229,12 +9349,12 @@ function packages(a1, a2) {
 M.packages = packages;
 
 function package_in_name(a1, a2) {
-  return Runtime.run_predicate(shared_program, 2830, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 2867, [a1, a2]);
 }
 M.package_in_name = package_in_name;
 
 function package_in(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 2816, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 2853, [a1, a2, a3]);
 }
 M.package_in = package_in;
 
@@ -9251,17 +9371,17 @@ function order_val(a1, a2) {
 M.order_val = order_val;
 
 function order_lt(a1, a2) {
-  return Runtime.run_predicate(shared_program, 2703, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 2740, [a1, a2]);
 }
 M.order_lt = order_lt;
 
 function no_acc_conflicts(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 2656, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 2693, [a1, a2, a3, a4]);
 }
 M.no_acc_conflicts = no_acc_conflicts;
 
 function needed_names(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 2632, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 2669, [a1, a2, a3, a4]);
 }
 M.needed_names = needed_names;
 
@@ -9278,32 +9398,32 @@ function names_of(a1, a2) {
 M.names_of = names_of;
 
 function member_selected(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 2603, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 2640, [a1, a2, a3]);
 }
 M.member_selected = member_selected;
 
 function matching_versions_in(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 2564, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 2601, [a1, a2, a3, a4]);
 }
 M.matching_versions_in = matching_versions_in;
 
 function matching_versions(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 2521, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 2558, [a1, a2, a3, a4]);
 }
 M.matching_versions = matching_versions;
 
 function matching_deps(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 2472, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 2509, [a1, a2, a3, a4]);
 }
 M.matching_deps = matching_deps;
 
 function map_requests(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 2448, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 2485, [a1, a2, a3]);
 }
 M.map_requests = map_requests;
 
 function lookup_held(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 2424, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 2461, [a1, a2, a3]);
 }
 M.lookup_held = lookup_held;
 
@@ -9344,22 +9464,22 @@ function layers_list(a1, a2) {
 M.layers_list = layers_list;
 
 function layered_walk_ver(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 2311, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 2348, [a1, a2, a3, a4]);
 }
 M.layered_walk_ver = layered_walk_ver;
 
 function layer_satisfies(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 2240, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 2277, [a1, a2, a3]);
 }
 M.layer_satisfies = layer_satisfies;
 
 function layer_provider(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 2191, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 2228, [a1, a2, a3, a4, a5]);
 }
 M.layer_provider = layer_provider;
 
 function layer_closure(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 2174, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 2211, [a1, a2, a3]);
 }
 M.layer_closure = layer_closure;
 
@@ -9376,12 +9496,12 @@ function key_pkg_rows(a1, a2, a3) {
 M.key_pkg_rows = key_pkg_rows;
 
 function key_dep_rows(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 2097, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 2134, [a1, a2, a3]);
 }
 M.key_dep_rows = key_dep_rows;
 
 function keep_installed_or_base(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 2053, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 2090, [a1, a2, a3, a4]);
 }
 M.keep_installed_or_base = keep_installed_or_base;
 
@@ -9409,13 +9529,25 @@ function is_v3(a1) {
 }
 M.is_v3 = is_v3;
 
+function is_public_catalog(a1) {
+  const state = Runtime.new_state();
+  const args = [a1];
+  for (let i = 0; i < 1; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_is_public_catalog_1(shared_program, state) === true;
+}
+M.is_public_catalog = is_public_catalog;
+
 function installed_ver(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 1994, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 1996, [a1, a2, a3]);
 }
 M.installed_ver = installed_ver;
 
 function installed_or_base(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 1970, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 1972, [a1, a2, a3]);
 }
 M.installed_or_base = installed_or_base;
 
@@ -9432,12 +9564,12 @@ function installed_list(a1, a2) {
 M.installed_list = installed_list;
 
 function inst_walk(a1, a2, a3, a4, a5, a6) {
-  return Runtime.run_predicate(shared_program, 1848, [a1, a2, a3, a4, a5, a6]);
+  return Runtime.run_predicate(shared_program, 1850, [a1, a2, a3, a4, a5, a6]);
 }
 M.inst_walk = inst_walk;
 
 function inst_closure_names(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 1829, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 1831, [a1, a2, a3, a4, a5]);
 }
 M.inst_closure_names = inst_closure_names;
 

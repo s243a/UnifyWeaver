@@ -921,3 +921,61 @@ P1–P3, which is the point: the guards preserve the hazards.
   examples/pkg_resolver/diff_runner.pl < cases.jsonl` for the baseline and
   for a copy of the runner whose `use_module` points at the prototype;
   `cmp` the two outputs.
+
+---
+
+## 7. Independent review findings (post-D59 addendum, coordinator-recorded)
+
+An adversarial external review (run against baseline `dadbed63` and head
+`0f93b222`) falsified two claims and could not falsify the rest. Recorded
+here so the doc stays honest; the fixes landed in D60.
+
+**7.1 G4's preservation proof is unsound when the doomed subtree
+diverges (FALSIFIED — G4 is unshipped; binding on any future G4 round).**
+The §2 G4 proof treats "has no solution" as "eventually fails and the
+enclosing enumeration resumes". On a catalog combining H4's held-package
+cycle with an alternatives group, the baseline DIVERGES (the cycle is
+inside the doomed alternative) while the guarded version fails that
+alternative immediately and RETURNS AN ANSWER through the next one.
+G4 therefore turns divergence into success — arguably an improvement,
+but a change in observable behavior that violates the H4-preservation
+invariant as stated. A future G4 round must either (a) first fix H4
+(cycle detection), re-baseline, and then land G4 under the new baseline,
+or (b) get explicit owner sign-off that divergence→success is an accepted
+semantic change, with the differential runner given a timeout notion so
+the change is visible rather than silent. The reviewer also ran 1,536
+finite comparisons over the §6 flag's hard cases (same atom as
+real/held/virtual, self-provision, aliases onto the held name,
+`VirtualVer` equal to the base version) and found NO successful branch
+incorrectly pruned — the finite-case soundness of `provides_mentions/2`
+held.
+
+**7.2 `icat/3` was accepted as public input (FALSIFIED — fixed in D60).**
+Invariant 7 said the wrapper is "never accepted as input", but
+`resolve(icat(...), ...)` succeeded through the delegating accessors
+where the pre-index resolver failed. Fixed: `index_catalog/2` now
+requires a genuine `catalog/6|9|10` functor, restoring the pre-index
+behavior (failure) on wrapper input; pinned by probe
+`a3b_icat_rejected_as_input`.
+
+**7.3 CE5 was too weak (fixed in D60).** The original probe also
+succeeded if resolution returned normally; the strict form succeeds only
+on the timeout, so it can distinguish H4's divergence from an answer.
+
+**7.4 Invariants §4 is missing, per the review:** (i) divergence vs
+finite failure as distinct observables (the differential runner has no
+timeout notion — a hang and an unsatisfiable request are currently
+indistinguishable on the SWI leg, and H6 makes them indistinguishable on
+the JS leg for the opposite reason); (ii) explicit ground/well-formed
+input preconditions for the groundness-based entailments (G2, G3);
+(iii) wrapper-input rejection as an executable check, not prose;
+(iv) resource-limit behavior (step caps, stack) as distinct from logical
+answers. H5 and H6 also need baseline probe coverage of their own (H5
+now has one; H6 cannot be probed from SWI).
+
+**Not falsified** (with the review's own sweep sizes): G1 rows/order on
+ground well-formed catalogs incl. comparator-equal-but-distinct `deb/3`
+keys staying separate (3,600 permutation/lookups); G2's groundness
+premise (30,720 picks, all ground); G3's truth table (64/64); accessor
+completeness and raw-query preservation (108 comparisons). CE1–CE6
+reproduce on both committed versions.

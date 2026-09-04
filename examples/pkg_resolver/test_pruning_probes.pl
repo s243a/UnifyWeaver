@@ -92,12 +92,17 @@ ce4_catalog(Cat) :-
                   [provides(bar,V1,foo,V2)]).
 
 % CE5 -- cyclic held deps do not terminate in layered mode (H4).
+% Strict form (review finding): the original probe also succeeded if the
+% query returned normally, so it could not distinguish nontermination
+% from an answer. This form succeeds ONLY on the timeout.
 ce5 :-
     v1(V1),
     Cat = catalog([package(a,V1), package(b,V1)],
                   [depends(a,V1,b,any), depends(b,V1,a,any)],
                   [], [a-V1, b-V1], [], []),
-    catch(call_with_time_limit(2, resolve_layered(Cat, [a], _)),
+    catch(( call_with_time_limit(2, resolve_layered(Cat, [a], _)),
+            fail                       % returned or failed in time: NOT H4
+          ),
           time_limit_exceeded, true).
 
 % CE6 -- layered commits to the highest candidate (H1).
@@ -210,6 +215,15 @@ test(a3_icat_never_escapes) :-
     forall(( member(G, [resolve(Cat,[a],X), resolve_layered(Cat,[a],X)]),
              catch(call(G), _, fail) ),
            assertion(\+ contains_icat(X))).
+
+% A3b (review finding): the index wrapper is REJECTED as public input.
+% Before the fix, resolve(icat(...), ...) succeeded through the
+% delegating accessors where the pre-index resolver failed; invariant 7
+% requires the pre-index behavior (failure) on such abuse.
+test(a3b_icat_rejected_as_input, [fail]) :-
+    v1(V1),
+    C = catalog([package(p, V1)], [], [], [], [], []),
+    resolve(icat(C, t, t(t, p, [V1], t)), [p], _).
 
 % A4: index_catalog/2 (when present) is det and leaves no choice point.
 test(a4_index_catalog_deterministic) :-
