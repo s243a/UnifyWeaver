@@ -603,9 +603,14 @@ func (vm *WamState) Step(instr Instruction) bool {
                 if !valueEquals(c.Val, val) {
                     continue
                 }
+                // "default" is the try/retry chain immediately after the
+                // switch. Several clauses can share that key (pick_need
+                // classic/1 and classic/2). Skipping TryMeElse via
+                // indexedClauseBodyStart kept only the first body, so the
+                // provider clause was never tried.
                 if c.Label == "default" {
-                    targets = append(targets, vm.indexedClauseBodyStart(vm.PC+1))
-                    continue
+                    vm.PC++
+                    return true
                 }
                 if pc, ok := vm.Ctx.Labels[c.Label]; ok {
                     targets = append(targets, vm.indexedClauseBodyStart(pc))
@@ -644,8 +649,8 @@ func (vm *WamState) Step(instr Instruction) bool {
                         continue
                     }
                     if c.Label == "default" {
-                        targets = append(targets, vm.indexedClauseBodyStart(vm.PC+1))
-                        continue
+                        vm.PC++
+                        return true
                     }
                     if pc, ok := vm.Ctx.Labels[c.Label]; ok {
                         targets = append(targets, vm.indexedClauseBodyStart(pc))
@@ -683,8 +688,8 @@ func (vm *WamState) Step(instr Instruction) bool {
                     continue
                 }
                 if c.Label == "default" {
-                    targets = append(targets, vm.indexedClauseBodyStart(vm.PC+1))
-                    continue
+                    vm.PC++
+                    return true
                 }
                 if pc, ok := vm.Ctx.Labels[c.Label]; ok {
                     targets = append(targets, vm.indexedClauseBodyStart(pc))
