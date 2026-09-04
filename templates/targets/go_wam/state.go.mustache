@@ -3980,7 +3980,7 @@ func (vm *WamState) builtinMaplist(nLists int) bool {
 			if goal == nil {
 				return false
 			}
-			if !vm.invokeGoal(goal, len(vm.ChoicePoints)) {
+			if !vm.invokeGoalOnce(goal) {
 				return false
 			}
 		}
@@ -4007,7 +4007,7 @@ func (vm *WamState) builtinMaplist(nLists int) bool {
 		if goal == nil {
 			return false
 		}
-		if !vm.invokeGoal(goal, len(vm.ChoicePoints)) {
+		if !vm.invokeGoalOnce(goal) {
 			return false
 		}
 		out = append(out, y)
@@ -4039,7 +4039,8 @@ func (vm *WamState) builtinPredsort() bool {
 		if goal == nil {
 			return false
 		}
-		if !vm.invokeGoal(goal, len(vm.ChoicePoints)) {
+		ok := vm.invokeGoalOnce(goal)
+		if !ok {
 			return false
 		}
 		if a, ok := vm.deref(order).(*Atom); ok {
@@ -4048,6 +4049,24 @@ func (vm *WamState) builtinPredsort() bool {
 		return false
 	})
 	return vm.Unify(vm.getReg(2), listFromItems(sorted))
+}
+
+// invokeGoalOnce meta-calls goal and then discards leftover choice
+// points and trail cells it created. predsort's comparator
+// (cmp_ver/3 → version_lt/2) is an ITE-heavy test: without this
+// cleanup those CPs stay on the stack and a later resolve failure
+// backtracks into a stale comparator, aborting the query.
+func (vm *WamState) invokeGoalOnce(goal Value) bool {
+	cpMark := len(vm.ChoicePoints)
+	trailMark := vm.TrailLen
+	ok := vm.invokeGoal(goal, cpMark)
+	if cpMark < len(vm.ChoicePoints) {
+		vm.ChoicePoints = vm.ChoicePoints[:cpMark]
+	}
+	if !ok {
+		vm.unwindTrailTo(trailMark)
+	}
+	return ok
 }
 
 // executeCall1 implements ISO call/1 as an opaque cut scope: a `!`
