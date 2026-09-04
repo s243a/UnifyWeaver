@@ -1,10 +1,13 @@
 # uw-resolve on Go (`wam_go`)
 
-Compile the frozen P0.5 package resolver (`../resolver.pl`) through
+Compile the frozen P3 package resolver (`../resolver.pl`) through
 the Go WAM backend and drive it with a JSON shim. The shim converts
-catalogs/requests/env **in** and selections/explanations **out**. It
-contains no resolver logic (no candidate order, no constraint
-arithmetic, no layer walk).
+catalogs/requests/env **in** and selections/explanations **out**,
+including `{"deb":[Epoch,[[order,num],…],[…]]}`,
+`{"alternatives":[…]}`, provides 3- and 4-ary rows, `catalog/10`,
+and `blocked(..., providers([...]))` /
+`blocked(alternatives([...]))`. It contains no resolver logic (no
+candidate order, no constraint arithmetic, no layer walk).
 
 ## Build / run
 
@@ -42,6 +45,8 @@ times `resolve_layered` on `DIR/rich.jsonl` + `DIR/probe.json`.
 | 7 | bagof/setof probes left `L` as `__R200` | 4-arg `begin_aggregate bagof, Y, X, ''` was dropped as `// TODO`, so `EndAggregate` was a no-op | Accept the 4th witness-register argument (empty witness list uses the 3-arg runtime) | cut-semantics p14/p15 |
 | 8 | Cut suite lost extra solutions / p29 printed `1` not `ok` | Y slots are global; Proceed popped a Call Y-save that backtrack did not restore; `!/0` used the caller's `EnvFrame.CutB0` | Call pushes B0+Y; Execute rebases B0 only (LCO); Proceed pops; CPs snapshot/restore both stacks; `!/0` truncates to `PendingB0` | `tests/test_wam_go_cut_semantics.pl` (35/35) |
 | 9 | B3 `resolve_layered` unified Acc with `[]` | `allocVarId` started at 1000; shim minted output vars at `Idx: 10000+i`; after ~9000 cells, `NextVarId` aliased `Bindings[10002]` with `Selection` | skip 10000–10999 in `allocVarId`; shim uses `vm.allocVarId()` | `tests/test_wam_go_varid_collision.pl` |
+| 10 | P3 `provides_*` corpus rows `{fail:true}` | `SwitchOnConstantPc` default resolved to the `TryMeElse` then skipped it, so only the first classic clause of `pick_need/8` ran | fall through label-form default; keep Pc jump when the target is a try/retry head | `tests/test_wam_go_switch_default_chain.pl` |
+| 11 | 40 generated `p3g*` cases `{fail:true}` | `predsort(cmp_ver)` smashed A2; Unify then compared a version to the sorted list. Corpus survived because those P3 rows had one matching version (less-func never ran) | capture A2; restore regs after each comparator; `invokeGoalOnce` drops leftover CPs | `tests/test_wam_go_maplist_predsort.pl` |
 
 ## Cut / choice-point barriers
 
@@ -68,21 +73,25 @@ that path.
 
 ## Benchmarks (B1–B3)
 
-Measured on this Cloud Agent VM (SWI 9.0.4, Go 1.22.2). Dump corpus
-has 39 cases (plunit `test_resolver.pl` is 38 tests; the extra dump
-row is `alias_request_edge`).
+Measured on this Cloud Agent VM (SWI 9.0.4, Go 1.22.2, Node v22). Dump
+corpus has **51** cases (40 pre-P3 + 11 P3). Differential is 2400 `g*`
+(seed `0xa5b6c7d8`) + 200 `p3g*` (seed `0xdeb00001`).
 
 | Bench | What | Number |
 |-------|------|--------|
-| B1 | 39-scenario corpus, Go binary, one process (`run_corpus_go.sh`) | **0.024s wall, 39/39 vs SWI** |
-| B1 | `go build` of `uwresolve` (not in B1 wall; clean rebuild) | **0.168s** |
-| B2 | Differential Go leg (`run_differential_go.sh`, seed `0xa5b6c7d8`) | **8.869s, 2400 cases, 0 divergences, 0 crashes** |
-| B2 | SWI oracle leg, same machine | **1.331s** |
-| B3 | 5k catalog `resolve_layered` (`run_scale_go.sh`, seed `0xc0ffee01`) | Go **load 0.060s / resolve 4.604s**, 10-package selection `p1-v(1,0,0)`, `p10`, `p12`, `p2`, `p3`, `p30`, `p4`, `p5`, `p6`, `p7` |
+| B1 | 51-scenario corpus, Go binary (`run_corpus_go.sh`) | **0.053s wall, 51/51 vs SWI** |
+| B2 | Differential Go leg (`run_differential_go.sh`) | **17.179s, 2600 cases, 0 divergences, 0 crashes** |
+| B2 | SWI oracle leg, same machine | **1.671s** |
+| B3 | 5k catalog `resolve_layered` (`run_scale_go.sh`, seed `0xc0ffee01`) | Go **load 0.065s / resolve 10.620s**, 10-package selection `p1-v(1,0,0)`, `p10`, `p12`, `p2`, `p3`, `p30`, `p4`, `p5`, `p6`, `p7` |
 
-SWI term reference on the **same** `go/.scale_out` catalog + `p30` probe
-(not `run_scale_demo.sh`, which also builds the store path): **load
-0.428s / resolve 0.008s**, same 10 packages.
+Index: `index_threshold(64)` is a frozen fact; the 5k catalog wraps
+`icat/3`. D51 pre-index Go B3 was **11.0s**; with-index is **10.62s**
+(~1.04×). wamjs saw 9.2× on the same trees — Go's interpreted index
+build cost nearly cancels the lookup win. Threshold itself cannot be
+toggled from this directory.
+
+`loadRichJSONL` keeps provides rows and alternatives `dep` objects (the
+P3 overlay the older scale path stripped).
 
 ## Residuals
 
@@ -91,8 +100,10 @@ SWI term reference on the **same** `go/.scale_out` catalog + `p30` probe
   for Allocate-less Y clobber; the numeric alias is unchanged. The P0.5
   resolver did not hit a no-`Allocate` fact with >99 X placeholders.
 - **A3**: `BuiltinExecute` covers known builtins. A builtin missed by
-  translation-time classification still fails silently. `call/1` is
-  now classified. `member/2` is `BuiltinCall` here.
+  translation-time classification still fails the query;
+  `UW_WAM_WARN_UNKNOWN=1` prints the miss (off by default). `call/1`,
+  `maplist/2-4`, `predsort/3`, `functor/3`, `arg/3`, `=../2` are
+  classified. `member/2` is `BuiltinCall` here.
 - **call/1 extra solutions**: nested user goals are first-solution;
   opaque `!` is correct.
 - **bagof witness grouping** is not implemented (empty witness list is
@@ -101,7 +112,7 @@ SWI term reference on the **same** `go/.scale_out` catalog + `p30` probe
   general heap allocator. Programs that allocate >9000 unbound cells
   still wrap past the window; the shim now uses `vm.allocVarId()` so
   output vars never sit in that hole.
-- P0.5 resolver residuals (unchanged, frozen source): Provides/virtual,
-  Debian epoch/tilde, write paths, incremental stores, pkg CLI
-  (concurrent), per-file SFS layers.
-- Do not create `cljs/` or `rust/` — concurrent rounds.
+- Frozen `resolver.pl` residuals: Breaks≡Conflicts, Pre-Depends
+  ordering, Recommends/Suggests, multiarch, epoch display `0`, write
+  paths, incremental stores, pkg CLI, per-file SFS layers.
+- Do not edit anything under `examples/pkg_resolver/` except `go/`.
