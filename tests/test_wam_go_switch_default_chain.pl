@@ -89,6 +89,7 @@ func main() {
     assertion(sub_string(OutStr, _, _, _, "REAL=true")),
     assertion(sub_string(OutStr, _, _, _, "VIRT=true")),
     assertion(sub_string(OutStr, _, _, _, "FAILREAL=false")),
-    ( exists_directory(Proj) -> delete_directory_and_contents(Proj) ; true ).
+    ( exists_directory(Proj) -> delete_directory_and_contents(Proj) ; true ),
+    !.
 
 :- end_tests(wam_go_switch_default_chain).

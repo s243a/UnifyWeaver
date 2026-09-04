@@ -2897,6 +2897,10 @@ wam_go_case('SwitchOnConstantPc', '        if val := vm.Regs[0]; val != nil && !
             })
             targets := make([]int, 0)
             for idx < n && valueEquals(i.Cases[idx].Val, val) {
+                if vm.isChoiceChainHead(i.Cases[idx].TargetPC) {
+                    vm.PC = i.Cases[idx].TargetPC
+                    return true
+                }
                 targets = append(targets, vm.indexedClauseBodyStart(i.Cases[idx].TargetPC))
                 idx++
             }
@@ -2937,6 +2941,10 @@ wam_go_case('SwitchOnStructurePc', '        if val := vm.Regs[0]; val != nil {
                 targets := make([]int, 0)
                 for _, c := range i.Cases {
                     if c.Functor == key {
+                        if vm.isChoiceChainHead(c.TargetPC) {
+                            vm.PC = c.TargetPC
+                            return true
+                        }
                         targets = append(targets, vm.indexedClauseBodyStart(c.TargetPC))
                     }
                 }
@@ -2976,6 +2984,10 @@ wam_go_case('SwitchOnConstantA2Pc', '        if val := vm.Regs[1]; val != nil &&
             })
             targets := make([]int, 0)
             for idx < n && valueEquals(i.Cases[idx].Val, val) {
+                if vm.isChoiceChainHead(i.Cases[idx].TargetPC) {
+                    vm.PC = i.Cases[idx].TargetPC
+                    return true
+                }
                 targets = append(targets, vm.indexedClauseBodyStart(i.Cases[idx].TargetPC))
                 idx++
             }
@@ -3033,6 +3045,22 @@ func (vm *WamState) indexedClauseBodyStart(targetPC int) int {
         return targetPC + 1
     default:
         return targetPC
+    }
+}
+
+// isChoiceChainHead is true when a switch default resolved to the
+// TryMeElse/RetryMeElse that heads a multi-clause group (pick_need
+// classic/1+classic/2). Jumping there — not past it — lets the chain
+// try every clause. Named clause bodies (L_*_body) are never heads.
+func (vm *WamState) isChoiceChainHead(targetPC int) bool {
+    if targetPC < 0 || targetPC >= len(vm.Ctx.Code) {
+        return false
+    }
+    switch vm.Ctx.Code[targetPC].(type) {
+    case *TryMeElse, *TryMeElsePc, *RetryMeElse, *RetryMeElsePc:
+        return true
+    default:
+        return false
     }
 }
 
