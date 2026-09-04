@@ -524,11 +524,18 @@ resolve_pending_store(Mode, Env, [req(Name, C)|Rest], Acc, Sel) :-
     ;   already_provided_store(Env, Acc, Name, C)
     ->  resolve_pending_store(Mode, Env, Rest, Acc, Sel)
     ;   pick_need_store(Mode, Env, Name, C, Pkg, Ver, Origin),
-        collect_deps_store(Env, Pkg, Ver, DepReqs),
-        append(DepReqs, Rest, More),
+        % G2 mirror of resolve_pending/5, kept textually parallel. Same
+        % entailment: collect_deps_store/4 is a findall/3 (det, always
+        % succeeds), append/3 with two bound arguments is det, and
+        % no_acc_conflicts_store/4 is a test on ground arguments
+        % (pick_need_store/7 binds Pkg and Ver on every arm).
         (   Origin = from_base
-        ->  resolve_pending_store(Mode, Env, More, Acc, Sel)
+        ->  collect_deps_store(Env, Pkg, Ver, DepReqs),
+            append(DepReqs, Rest, More),
+            resolve_pending_store(Mode, Env, More, Acc, Sel)
         ;   no_acc_conflicts_store(Env, Pkg, Ver, Acc),
+            collect_deps_store(Env, Pkg, Ver, DepReqs),
+            append(DepReqs, Rest, More),
             resolve_pending_store(Mode, Env, More, [Pkg-Ver|Acc], Sel)
         )
     ).

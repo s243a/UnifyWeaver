@@ -40,6 +40,37 @@ D43 indexed stores, 8,242 of 1,645,394 bytes touched (0.50%). The other legs
 load the full term catalog. All legs return the identical 10-package
 selection.
 
+## Post-pruning note (G1 catalog index + G2 conflict-first)
+
+`resolver.pl` now builds a per-call index over the catalog lists at the
+`resolve/3` / `resolve_layered/3` edge (guard G1 of
+[`docs/proposals/RESOLVER_PRUNING_DESIGN.md`](../../docs/proposals/RESOLVER_PRUNING_DESIGN.md)),
+gated behind a size threshold (`index_threshold/1`, 64 rows). The table above
+is unchanged — these are per-leg before/after figures for the legs that were
+re-measured in the implementing round, on **one contributor box (4-core)**,
+so they are comparable to each other but not to the table's mixed boxes.
+
+| leg / workload | before | after | note |
+| --- | ---: | ---: | --- |
+| SWI, 5k `resolve_layered(p30)`, 50 reps | 286,804 inf / 16.50 ms | 142,476 inf / 26.12 ms | −50 % inferences, **+58 % wall** — SWI's native scans beat building a tree |
+| wamjs, 250 pkgs (363 rows / 811 deps) | 421,879 instr | 54,394 instr | 7.8× |
+| wamjs, 500 pkgs (736 / 1,549) | 808,155 | 96,200 | 8.4× |
+| wamjs, 1,000 pkgs (1,503 / 3,036) | 1,590,479 | 180,219 | 8.8× |
+| wamjs, 2,000 pkgs (3,014 / 6,058) | **2,000,000-step cap → `fail`** | 350,033, correct | cap cleared |
+| wamjs, 5,000 pkgs (7,514 / 15,000) | cap → `fail` (7,843,227 uncapped) | **854,887, correct** | **9.2×**; needs `node --stack-size=200000` |
+| wamjs, B2 2,600 cases (threshold 64) | 11,903,199 instr / 22.1 s | 10,952,778 / 21.5 s | −8.0 % instr, −2.6 % wall |
+| wamjs, B2 2,600 cases (index forced on) | 11,903,199 / 22.1 s | 8,881,347 / 24.3 s | −25.4 % instr but **+9.9 % wall** — why the threshold exists |
+| Rust, 500 / 1,000 / 2,000 / 5,000 pkgs (resolve) | 639 / 1,296 / 2,608 / 6,427 ms | 1,850 / 6,557 / 26,668 ms / **4 GiB abort** | **regression — the Rust leg does not take the index**, see below |
+
+The Rust lane is **not** rebuilt against the indexed resolver: its committed
+build is pre-P3 (D57) and the index is quadratic on that runtime. The cause is
+isolated and recorded in [`docs/WAM_RUST_STATUS.md`](../../docs/WAM_RUST_STATUS.md);
+the short form is that `WamState::unify` deep-derefs both arguments before
+dispatch, so unifying an output variable against a suffix of a long list costs
+O(length), and doing that once per element is Θ(N²). Go and ClojureScript were
+not re-measured: neither lane is P3-ported (D57), so neither builds from the
+current `resolver.pl` at all.
+
 ## Readings
 
 - **SWI wins resolution outright** (first-argument indexing + decades of WAM

@@ -20,6 +20,7 @@ const intern_seed = [
   "",
   "[|]",
   "catalog",
+  "icat",
   "alias",
   "-",
   "dep",
@@ -38,6 +39,8 @@ const intern_seed = [
   "needs",
   "base_has",
   "providers",
+  "t",
+  "//",
   "none",
   "ok",
   "broken",
@@ -51,8 +54,8 @@ const intern_seed = [
   "v",
   "base",
   "layer",
-  "package",
   "+",
+  "package",
   "s",
   "classic",
   "from_catalog",
@@ -107,7 +110,7 @@ const shared_instructions = [
   I.Call("conflicts_in", 4),
   I.Deallocate(),
   I.Proceed(),
-  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_alias_list_2_2_body"}, {fid: 6, arity: 10, label: "L_alias_list_2_3_body"}]),
+  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_alias_list_2_2_body"}, {fid: 6, arity: 10, label: "L_alias_list_2_3_body"}, {fid: 7, arity: 3, label: "L_alias_list_2_4_body"}]),
   I.TryMeElse("L_alias_list_2_2"),
   I.GetStructure(6, 1, 6),
   I.UnifyVariable(101),
@@ -131,7 +134,7 @@ const shared_instructions = [
   I.UnifyVariable(109),
   I.GetValue(109, 2),
   I.Proceed(),
-  I.TrustMe(),
+  I.RetryMeElse("L_alias_list_2_4"),
   I.GetStructure(6, 1, 10),
   I.UnifyVariable(101),
   I.UnifyVariable(102),
@@ -145,6 +148,17 @@ const shared_instructions = [
   I.UnifyVariable(110),
   I.GetValue(109, 2),
   I.Proceed(),
+  I.TrustMe(),
+  I.Allocate(),
+  I.GetStructure(7, 1, 3),
+  I.UnifyVariable(101),
+  I.UnifyVariable(102),
+  I.UnifyVariable(103),
+  I.GetVariable(104, 2),
+  I.PutValue(101, 1),
+  I.PutValue(104, 2),
+  I.Deallocate(),
+  I.Execute("alias_list", 2),
   I.SwitchOnTerm([{value: V.Atom(2), label: "default"}], [], "L_alias_lookup_3_2_body", 1),
   I.TryMeElse("L_alias_lookup_3_2"),
   I.GetConstant(V.Atom(2), 1),
@@ -155,7 +169,7 @@ const shared_instructions = [
   I.Allocate(),
   I.GetList(1, 5),
   I.UnifyVariable(106),
-  I.GetStructure(7, 106, 2),
+  I.GetStructure(8, 106, 2),
   I.UnifyVariable(201),
   I.UnifyVariable(202),
   I.UnifyVariable(203),
@@ -183,7 +197,7 @@ const shared_instructions = [
   I.GetVariable(106, 2),
   I.GetVariable(204, 3),
   I.GetVariable(205, 4),
-  I.PutStructure(8, 1, 2),
+  I.PutStructure(9, 1, 2),
   I.SetVariable(202),
   I.SetVariable(203),
   I.PutValue(106, 2),
@@ -233,14 +247,14 @@ const shared_instructions = [
   I.GetVariable(204, 1),
   I.GetList(2, 5),
   I.UnifyVariable(108),
-  I.GetStructure(9, 108, 2),
+  I.GetStructure(10, 108, 2),
   I.UnifyVariable(201),
   I.UnifyVariable(202),
   I.UnifyVariable(205),
   I.GetVariable(206, 3),
   I.GetList(4, 5),
   I.UnifyVariable(109),
-  I.GetStructure(10, 109, 2),
+  I.GetStructure(11, 109, 2),
   I.UnifyValue(201),
   I.UnifyVariable(203),
   I.UnifyVariable(207),
@@ -257,7 +271,7 @@ const shared_instructions = [
   I.Jump("L_ite_cont_6"),
   I.TrustMe(),
   I.PutValue(203, 1),
-  I.PutConstant(V.Atom(11), 2),
+  I.PutConstant(V.Atom(12), 2),
   I.BuiltinCall("=/2", 2),
   I.PutValue(204, 1),
   I.PutValue(205, 2),
@@ -276,7 +290,7 @@ const shared_instructions = [
   I.Allocate(),
   I.GetList(1, 5),
   I.UnifyVariable(108),
-  I.GetStructure(12, 108, 3),
+  I.GetStructure(13, 108, 3),
   I.UnifyVariable(201),
   I.UnifyVariable(109),
   I.UnifyVariable(202),
@@ -287,7 +301,7 @@ const shared_instructions = [
   I.GetLevel(208),
   I.TryMeElse("L_ite_else_9"),
   I.PutValue(202, 1),
-  I.PutConstant(V.Atom(13), 2),
+  I.PutConstant(V.Atom(14), 2),
   I.BuiltinCall("==/2", 2),
   I.Cut(208),
   I.GetLevel(209),
@@ -297,26 +311,26 @@ const shared_instructions = [
   I.Call("tight_base_revdep", 2),
   I.Cut(209),
   I.PutVariable(205, 1),
-  I.PutStructure(14, 2, 2),
+  I.PutStructure(15, 2, 2),
   I.SetValue(201),
   I.SetVariable(111),
-  I.PutStructure(15, 111, 1),
-  I.SetConstant(V.Atom(16)),
+  I.PutStructure(16, 111, 1),
+  I.SetConstant(V.Atom(17)),
   I.BuiltinCall("=/2", 2),
   I.Jump("L_ite_cont_10"),
   I.TrustMe(),
   I.PutVariable(205, 1),
-  I.PutStructure(14, 2, 2),
+  I.PutStructure(15, 2, 2),
   I.SetValue(201),
-  I.SetConstant(V.Atom(17)),
+  I.SetConstant(V.Atom(18)),
   I.BuiltinCall("=/2", 2),
   I.Jump("L_ite_cont_9"),
   I.TrustMe(),
   I.PutVariable(205, 1),
-  I.PutStructure(14, 2, 2),
+  I.PutStructure(15, 2, 2),
   I.SetValue(201),
   I.SetVariable(111),
-  I.PutStructure(18, 111, 1),
+  I.PutStructure(19, 111, 1),
   I.SetValue(202),
   I.BuiltinCall("=/2", 2),
   I.PutValue(203, 1),
@@ -342,7 +356,7 @@ const shared_instructions = [
   I.BuiltinCall("sort/2", 2),
   I.Deallocate(),
   I.Proceed(),
-  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_base_list_2_2_body"}, {fid: 6, arity: 10, label: "L_base_list_2_3_body"}]),
+  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_base_list_2_2_body"}, {fid: 6, arity: 10, label: "L_base_list_2_3_body"}, {fid: 7, arity: 3, label: "L_base_list_2_4_body"}]),
   I.TryMeElse("L_base_list_2_2"),
   I.GetStructure(6, 1, 6),
   I.UnifyVariable(101),
@@ -366,7 +380,7 @@ const shared_instructions = [
   I.UnifyVariable(109),
   I.GetValue(104, 2),
   I.Proceed(),
-  I.TrustMe(),
+  I.RetryMeElse("L_base_list_2_4"),
   I.GetStructure(6, 1, 10),
   I.UnifyVariable(101),
   I.UnifyVariable(102),
@@ -380,6 +394,17 @@ const shared_instructions = [
   I.UnifyVariable(110),
   I.GetValue(104, 2),
   I.Proceed(),
+  I.TrustMe(),
+  I.Allocate(),
+  I.GetStructure(7, 1, 3),
+  I.UnifyVariable(101),
+  I.UnifyVariable(102),
+  I.UnifyVariable(103),
+  I.GetVariable(104, 2),
+  I.PutValue(101, 1),
+  I.PutValue(104, 2),
+  I.Deallocate(),
+  I.Execute("base_list", 2),
   I.Allocate(),
   I.GetVariable(101, 1),
   I.GetVariable(102, 2),
@@ -419,11 +444,11 @@ const shared_instructions = [
   I.PutValue(206, 3),
   I.Deallocate(),
   I.Execute("lookup_held", 3),
-  I.SwitchOnStructureA2([{fid: 19, arity: 2, label: "default"}, {fid: 19, arity: 2, label: "L_blocked_acc_5_2"}, {fid: 19, arity: 2, label: "L_blocked_acc_5_3"}]),
+  I.SwitchOnStructureA2([{fid: 20, arity: 2, label: "default"}, {fid: 20, arity: 2, label: "L_blocked_acc_5_2"}, {fid: 20, arity: 2, label: "L_blocked_acc_5_3"}]),
   I.TryMeElse("L_blocked_acc_5_2"),
   I.Allocate(),
   I.GetVariable(103, 1),
-  I.GetStructure(19, 2, 2),
+  I.GetStructure(20, 2, 2),
   I.UnifyVariable(202),
   I.UnifyVariable(104),
   I.GetVariable(201, 3),
@@ -440,9 +465,9 @@ const shared_instructions = [
   I.RetryMeElse("L_blocked_acc_5_3"),
   I.Allocate(),
   I.GetVariable(201, 1),
-  I.GetStructure(19, 2, 2),
+  I.GetStructure(20, 2, 2),
   I.UnifyVariable(107),
-  I.GetStructure(20, 107, 1),
+  I.GetStructure(21, 107, 1),
   I.UnifyVariable(202),
   I.UnifyVariable(108),
   I.GetVariable(203, 3),
@@ -458,9 +483,9 @@ const shared_instructions = [
   I.PutStructure(5, 2, 2),
   I.SetVariable(110),
   I.SetValue(206),
-  I.PutStructure(21, 110, 1),
+  I.PutStructure(22, 110, 1),
   I.SetVariable(111),
-  I.PutStructure(20, 111, 1),
+  I.PutStructure(21, 111, 1),
   I.SetValue(205),
   I.BuiltinCall("=/2", 2),
   I.Deallocate(),
@@ -468,7 +493,7 @@ const shared_instructions = [
   I.TrustMe(),
   I.Allocate(),
   I.GetVariable(207, 1),
-  I.GetStructure(19, 2, 2),
+  I.GetStructure(20, 2, 2),
   I.UnifyVariable(209),
   I.UnifyVariable(204),
   I.GetVariable(210, 3),
@@ -495,13 +520,13 @@ const shared_instructions = [
   I.PutStructure(5, 2, 2),
   I.SetVariable(114),
   I.SetValue(203),
-  I.PutStructure(21, 114, 3),
+  I.PutStructure(22, 114, 3),
   I.SetValue(209),
   I.SetVariable(115),
   I.SetVariable(116),
-  I.PutStructure(22, 115, 1),
+  I.PutStructure(23, 115, 1),
   I.SetValue(204),
-  I.PutStructure(23, 116, 1),
+  I.PutStructure(24, 116, 1),
   I.SetValue(201),
   I.BuiltinCall("=/2", 2),
   I.Jump("L_ite_cont_15"),
@@ -521,13 +546,13 @@ const shared_instructions = [
   I.PutStructure(5, 2, 2),
   I.SetVariable(114),
   I.SetValue(203),
-  I.PutStructure(21, 114, 3),
+  I.PutStructure(22, 114, 3),
   I.SetValue(209),
   I.SetVariable(115),
   I.SetVariable(116),
-  I.PutStructure(22, 115, 1),
+  I.PutStructure(23, 115, 1),
   I.SetValue(204),
-  I.PutStructure(24, 116, 1),
+  I.PutStructure(25, 116, 1),
   I.SetValue(202),
   I.BuiltinCall("=/2", 2),
   I.Jump("L_ite_cont_17"),
@@ -594,13 +619,13 @@ const shared_instructions = [
   I.PutValue(205, 5),
   I.Deallocate(),
   I.Execute("blocked_acc_list", 5),
-  I.SwitchOnStructureA2([{fid: 19, arity: 2, label: "default"}, {fid: 19, arity: 2, label: "L_blocked_from_4_2"}, {fid: 19, arity: 2, label: "L_blocked_from_4_3"}, {fid: 19, arity: 2, label: "L_blocked_from_4_4"}]),
+  I.SwitchOnStructureA2([{fid: 20, arity: 2, label: "default"}, {fid: 20, arity: 2, label: "L_blocked_from_4_2"}, {fid: 20, arity: 2, label: "L_blocked_from_4_3"}, {fid: 20, arity: 2, label: "L_blocked_from_4_4"}]),
   I.TryMeElse("L_blocked_from_4_2"),
   I.Allocate(),
   I.GetVariable(201, 1),
-  I.GetStructure(19, 2, 2),
+  I.GetStructure(20, 2, 2),
   I.UnifyVariable(106),
-  I.GetStructure(20, 106, 1),
+  I.GetStructure(21, 106, 1),
   I.UnifyVariable(202),
   I.UnifyVariable(107),
   I.GetVariable(203, 3),
@@ -612,9 +637,9 @@ const shared_instructions = [
   I.PutVariable(205, 4),
   I.Call("alt_reasons", 4),
   I.PutValue(204, 1),
-  I.PutStructure(21, 2, 1),
+  I.PutStructure(22, 2, 1),
   I.SetVariable(109),
-  I.PutStructure(20, 109, 1),
+  I.PutStructure(21, 109, 1),
   I.SetValue(205),
   I.BuiltinCall("=/2", 2),
   I.Deallocate(),
@@ -622,7 +647,7 @@ const shared_instructions = [
   I.RetryMeElse("L_blocked_from_4_3"),
   I.Allocate(),
   I.GetVariable(201, 1),
-  I.GetStructure(19, 2, 2),
+  I.GetStructure(20, 2, 2),
   I.UnifyVariable(203),
   I.UnifyVariable(204),
   I.GetVariable(106, 3),
@@ -652,13 +677,13 @@ const shared_instructions = [
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.PutValue(202, 1),
-  I.PutStructure(21, 2, 3),
+  I.PutStructure(22, 2, 3),
   I.SetValue(203),
   I.SetVariable(108),
   I.SetVariable(109),
-  I.PutStructure(22, 108, 1),
+  I.PutStructure(23, 108, 1),
   I.SetValue(204),
-  I.PutStructure(23, 109, 1),
+  I.PutStructure(24, 109, 1),
   I.SetValue(205),
   I.BuiltinCall("=/2", 2),
   I.Deallocate(),
@@ -666,7 +691,7 @@ const shared_instructions = [
   I.RetryMeElse("L_blocked_from_4_4"),
   I.Allocate(),
   I.GetVariable(201, 1),
-  I.GetStructure(19, 2, 2),
+  I.GetStructure(20, 2, 2),
   I.UnifyVariable(203),
   I.UnifyVariable(204),
   I.GetVariable(106, 3),
@@ -690,13 +715,13 @@ const shared_instructions = [
   I.PutConstant(V.Atom(2), 2),
   I.BuiltinCall("\\==/2", 2),
   I.PutValue(202, 1),
-  I.PutStructure(21, 2, 3),
+  I.PutStructure(22, 2, 3),
   I.SetValue(203),
   I.SetVariable(108),
   I.SetVariable(109),
-  I.PutStructure(22, 108, 1),
+  I.PutStructure(23, 108, 1),
   I.SetValue(204),
-  I.PutStructure(24, 109, 1),
+  I.PutStructure(25, 109, 1),
   I.SetValue(205),
   I.BuiltinCall("=/2", 2),
   I.Deallocate(),
@@ -704,7 +729,7 @@ const shared_instructions = [
   I.TrustMe(),
   I.Allocate(),
   I.GetVariable(205, 1),
-  I.GetStructure(19, 2, 2),
+  I.GetStructure(20, 2, 2),
   I.UnifyVariable(207),
   I.UnifyVariable(201),
   I.GetVariable(208, 3),
@@ -744,31 +769,87 @@ const shared_instructions = [
   I.Allocate(),
   I.GetVariable(201, 1),
   I.GetVariable(203, 2),
-  I.GetVariable(204, 3),
+  I.GetVariable(207, 3),
   I.GetVariable(206, 4),
-  I.GetLevel(208),
+  I.GetLevel(212),
   I.TryMeElse("L_ite_else_39"),
   I.PutValue(201, 1),
+  I.PutConstant(V.Int(0), 2),
+  I.BuiltinCall("=:=/2", 2),
+  I.Cut(212),
+  I.PutValue(207, 1),
+  I.PutConstant(V.Atom(26), 2),
+  I.BuiltinCall("=/2", 2),
+  I.PutValue(206, 1),
   I.PutValue(203, 2),
-  I.Call("excluded_name", 2),
-  I.Cut(208),
-  I.BuiltinCall("fail/0", 0),
+  I.BuiltinCall("=/2", 2),
   I.Jump("L_ite_cont_39"),
+  I.TrustMe(),
+  I.PutVariable(202, 1),
+  I.PutStructure(27, 2, 2),
+  I.SetVariable(113),
+  I.SetConstant(V.Int(2)),
+  I.PutStructure(9, 113, 2),
+  I.SetValue(201),
+  I.SetConstant(V.Int(1)),
+  I.BuiltinCall("is/2", 2),
+  I.PutVariable(204, 1),
+  I.PutStructure(9, 2, 2),
+  I.SetVariable(115),
+  I.SetValue(202),
+  I.PutStructure(9, 115, 2),
+  I.SetValue(201),
+  I.SetConstant(V.Int(1)),
+  I.BuiltinCall("is/2", 2),
+  I.PutValue(202, 1),
+  I.PutValue(203, 2),
+  I.PutVariable(208, 3),
+  I.PutStructure(5, 4, 2),
+  I.SetVariable(117),
+  I.SetVariable(205),
+  I.PutStructure(9, 117, 2),
+  I.SetVariable(209),
+  I.SetVariable(210),
+  I.Call("build_tree", 4),
+  I.PutValue(204, 1),
+  I.PutValue(205, 2),
+  I.PutVariable(211, 3),
+  I.PutValue(206, 4),
+  I.Call("build_tree", 4),
+  I.PutValue(207, 1),
+  I.PutStructure(26, 2, 4),
+  I.SetValue(208),
+  I.SetValue(209),
+  I.SetValue(210),
+  I.SetValue(211),
+  I.BuiltinCall("=/2", 2),
+  I.Deallocate(),
+  I.Proceed(),
+  I.Allocate(),
+  I.GetVariable(201, 1),
+  I.GetVariable(202, 2),
+  I.GetVariable(203, 3),
+  I.GetVariable(205, 4),
+  I.GetLevel(207),
+  I.TryMeElse("L_ite_else_41"),
+  I.PutValue(201, 1),
+  I.PutValue(202, 2),
+  I.Call("excluded_name", 2),
+  I.Cut(207),
+  I.BuiltinCall("fail/0", 0),
+  I.Jump("L_ite_cont_41"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.PutValue(201, 1),
-  I.PutVariable(202, 2),
-  I.Call("packages", 2),
-  I.PutValue(202, 1),
-  I.PutValue(203, 2),
-  I.PutValue(204, 3),
-  I.PutVariable(205, 4),
-  I.Call("matching_versions", 4),
-  I.PutValue(205, 1),
-  I.PutVariable(207, 2),
+  I.PutValue(202, 2),
+  I.PutValue(203, 3),
+  I.PutVariable(204, 4),
+  I.Call("matching_versions_in", 4),
+  I.PutValue(204, 1),
+  I.PutVariable(206, 2),
   I.Call("sort_versions_desc", 2),
-  I.PutValue(206, 1),
-  I.PutValue(207, 2),
+  I.PutValue(205, 1),
+  I.PutValue(206, 2),
   I.BuiltinCall("member/2", 2),
   I.Deallocate(),
   I.Proceed(),
@@ -797,28 +878,28 @@ const shared_instructions = [
   I.PutVariable(203, 4),
   I.Call("first_broken", 4),
   I.GetLevel(211),
-  I.TryMeElse("L_ite_else_42"),
+  I.TryMeElse("L_ite_else_44"),
   I.PutValue(203, 1),
-  I.PutConstant(V.Atom(25), 2),
+  I.PutConstant(V.Atom(28), 2),
   I.BuiltinCall("=/2", 2),
   I.Cut(211),
   I.PutValue(206, 1),
   I.PutVariable(202, 2),
   I.BuiltinCall("sort/2", 2),
   I.PutValue(208, 1),
-  I.PutStructure(26, 2, 1),
+  I.PutStructure(29, 2, 1),
   I.SetValue(202),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_42"),
+  I.Jump("L_ite_cont_44"),
   I.TrustMe(),
   I.PutValue(203, 1),
-  I.PutStructure(27, 2, 3),
+  I.PutStructure(30, 2, 3),
   I.SetVariable(205),
   I.SetVariable(210),
   I.SetVariable(209),
   I.BuiltinCall("=/2", 2),
   I.GetLevel(212),
-  I.TryMeElse("L_ite_else_43"),
+  I.TryMeElse("L_ite_else_45"),
   I.PutValue(204, 1),
   I.PutValue(205, 2),
   I.PutValue(206, 3),
@@ -829,29 +910,29 @@ const shared_instructions = [
   I.PutStructure(5, 2, 2),
   I.SetVariable(113),
   I.SetValue(206),
-  I.PutStructure(8, 113, 2),
+  I.PutStructure(9, 113, 2),
   I.SetValue(205),
   I.SetValue(207),
   I.PutValue(208, 3),
   I.Call("close_moving", 3),
-  I.Jump("L_ite_cont_43"),
+  I.Jump("L_ite_cont_45"),
   I.TrustMe(),
   I.PutValue(208, 1),
-  I.PutStructure(21, 2, 3),
+  I.PutStructure(22, 2, 3),
   I.SetValue(205),
   I.SetVariable(113),
   I.SetVariable(114),
-  I.PutStructure(22, 113, 1),
+  I.PutStructure(23, 113, 1),
   I.SetValue(209),
-  I.PutStructure(23, 114, 1),
+  I.PutStructure(24, 114, 1),
   I.SetValue(210),
   I.BuiltinCall("=/2", 2),
   I.Deallocate(),
   I.Proceed(),
-  I.SwitchOnConstant([{value: V.Atom(28), label: "default"}, {value: V.Atom(29), label: "L_cmp_ver_3_2_body"}, {value: V.Atom(30), label: "L_cmp_ver_3_3_body"}], false),
+  I.SwitchOnConstant([{value: V.Atom(31), label: "default"}, {value: V.Atom(32), label: "L_cmp_ver_3_2_body"}, {value: V.Atom(33), label: "L_cmp_ver_3_3_body"}], false),
   I.TryMeElse("L_cmp_ver_3_2"),
   I.Allocate(),
-  I.GetConstant(V.Atom(28), 1),
+  I.GetConstant(V.Atom(31), 1),
   I.GetVariable(101, 2),
   I.GetVariable(102, 3),
   I.PutValue(101, 1),
@@ -862,7 +943,7 @@ const shared_instructions = [
   I.Proceed(),
   I.RetryMeElse("L_cmp_ver_3_3"),
   I.Allocate(),
-  I.GetConstant(V.Atom(29), 1),
+  I.GetConstant(V.Atom(32), 1),
   I.GetVariable(101, 2),
   I.GetVariable(102, 3),
   I.PutValue(102, 1),
@@ -872,24 +953,50 @@ const shared_instructions = [
   I.Deallocate(),
   I.Proceed(),
   I.TrustMe(),
-  I.GetConstant(V.Atom(30), 1),
+  I.GetConstant(V.Atom(33), 1),
   I.GetVariable(101, 2),
   I.GetVariable(102, 3),
   I.Proceed(),
   I.Allocate(),
-  I.GetVariable(105, 1),
-  I.GetVariable(202, 2),
-  I.GetVariable(203, 3),
-  I.GetVariable(204, 4),
-  I.PutValue(105, 1),
+  I.GetVariable(203, 1),
+  I.GetVariable(205, 2),
+  I.GetVariable(206, 3),
+  I.GetVariable(207, 4),
+  I.GetLevel(208),
+  I.TryMeElse("L_ite_else_50"),
+  I.PutValue(203, 1),
   I.PutVariable(201, 2),
-  I.Call("depends_list", 2),
+  I.Call("dep_index", 2),
+  I.Cut(208),
+  I.GetLevel(209),
+  I.TryMeElse("L_ite_else_51"),
   I.PutValue(201, 1),
+  I.PutStructure(9, 2, 2),
+  I.SetValue(205),
+  I.SetValue(206),
+  I.PutVariable(202, 3),
+  I.Call("tree_lookup", 3),
+  I.Cut(209),
+  I.PutValue(207, 1),
   I.PutValue(202, 2),
-  I.PutValue(203, 3),
-  I.PutValue(204, 4),
+  I.BuiltinCall("=/2", 2),
+  I.Jump("L_ite_cont_51"),
+  I.TrustMe(),
+  I.PutValue(207, 1),
+  I.PutConstant(V.Atom(2), 2),
+  I.BuiltinCall("=/2", 2),
+  I.Jump("L_ite_cont_50"),
+  I.TrustMe(),
+  I.PutValue(203, 1),
+  I.PutVariable(204, 2),
+  I.Call("depends_list", 2),
+  I.PutValue(204, 1),
+  I.PutValue(205, 2),
+  I.PutValue(206, 3),
+  I.PutValue(207, 4),
+  I.Call("matching_deps", 4),
   I.Deallocate(),
-  I.Execute("matching_deps", 4),
+  I.Proceed(),
   I.Allocate(),
   I.GetVariable(105, 1),
   I.GetVariable(201, 2),
@@ -898,7 +1005,7 @@ const shared_instructions = [
   I.PutValue(105, 1),
   I.PutVariable(204, 2),
   I.Call("conflicts_list", 2),
-  I.PutStructure(31, 1, 3),
+  I.PutStructure(34, 1, 3),
   I.SetValue(201),
   I.SetValue(202),
   I.SetValue(203),
@@ -906,7 +1013,7 @@ const shared_instructions = [
   I.BuiltinCall("member/2", 2),
   I.Deallocate(),
   I.Proceed(),
-  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_conflicts_list_2_2_body"}, {fid: 6, arity: 10, label: "L_conflicts_list_2_3_body"}]),
+  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_conflicts_list_2_2_body"}, {fid: 6, arity: 10, label: "L_conflicts_list_2_3_body"}, {fid: 7, arity: 3, label: "L_conflicts_list_2_4_body"}]),
   I.TryMeElse("L_conflicts_list_2_2"),
   I.GetStructure(6, 1, 6),
   I.UnifyVariable(101),
@@ -930,7 +1037,7 @@ const shared_instructions = [
   I.UnifyVariable(109),
   I.GetValue(103, 2),
   I.Proceed(),
-  I.TrustMe(),
+  I.RetryMeElse("L_conflicts_list_2_4"),
   I.GetStructure(6, 1, 10),
   I.UnifyVariable(101),
   I.UnifyVariable(102),
@@ -944,10 +1051,21 @@ const shared_instructions = [
   I.UnifyVariable(110),
   I.GetValue(103, 2),
   I.Proceed(),
+  I.TrustMe(),
+  I.Allocate(),
+  I.GetStructure(7, 1, 3),
+  I.UnifyVariable(101),
+  I.UnifyVariable(102),
+  I.UnifyVariable(103),
+  I.GetVariable(104, 2),
+  I.PutValue(101, 1),
+  I.PutValue(104, 2),
+  I.Deallocate(),
+  I.Execute("conflicts_list", 2),
   I.Allocate(),
   I.GetList(1, 5),
   I.UnifyVariable(111),
-  I.GetStructure(32, 111, 4),
+  I.GetStructure(35, 111, 4),
   I.UnifyVariable(201),
   I.UnifyVariable(202),
   I.UnifyVariable(203),
@@ -958,7 +1076,7 @@ const shared_instructions = [
   I.GetVariable(209, 4),
   I.GetVariable(210, 5),
   I.GetLevel(211),
-  I.TryMeElse("L_ite_else_48"),
+  I.TryMeElse("L_ite_else_56"),
   I.PutValue(201, 1),
   I.PutValue(207, 2),
   I.BuiltinCall("==/2", 2),
@@ -974,7 +1092,7 @@ const shared_instructions = [
   I.PutValue(210, 1),
   I.PutValue(205, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_48"),
+  I.Jump("L_ite_cont_56"),
   I.TrustMe(),
   I.PutValue(206, 1),
   I.PutValue(207, 2),
@@ -1003,12 +1121,12 @@ const shared_instructions = [
   I.TryMeElse("L_dep_breaks_need_4_2"),
   I.Allocate(),
   I.GetVariable(207, 1),
-  I.GetStructure(20, 2, 1),
+  I.GetStructure(21, 2, 1),
   I.UnifyVariable(206),
   I.GetVariable(109, 3),
   I.GetVariable(203, 4),
   I.BuiltinCall("!/0", 0),
-  I.PutStructure(9, 1, 2),
+  I.PutStructure(10, 1, 2),
   I.SetVariable(201),
   I.SetValue(203),
   I.PutValue(206, 2),
@@ -1018,18 +1136,18 @@ const shared_instructions = [
   I.PutVariable(202, 3),
   I.Call("selected_ver", 3),
   I.GetLevel(209),
-  I.TryMeElse("L_ite_else_51"),
+  I.TryMeElse("L_ite_else_59"),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
   I.Call("satisfies", 2),
   I.Cut(209),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_51"),
+  I.Jump("L_ite_cont_59"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.GetLevel(210),
-  I.TryMeElse("L_ite_else_52"),
-  I.PutStructure(9, 1, 2),
+  I.TryMeElse("L_ite_else_60"),
+  I.PutStructure(10, 1, 2),
   I.SetVariable(204),
   I.SetVariable(205),
   I.PutValue(206, 2),
@@ -1043,7 +1161,7 @@ const shared_instructions = [
   I.Call("satisfies", 2),
   I.Cut(210),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_52"),
+  I.Jump("L_ite_cont_60"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.Deallocate(),
@@ -1059,24 +1177,30 @@ const shared_instructions = [
   I.PutVariable(201, 3),
   I.Call("selected_ver", 3),
   I.GetLevel(203),
-  I.TryMeElse("L_ite_else_53"),
+  I.TryMeElse("L_ite_else_61"),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
   I.Call("satisfies", 2),
   I.Cut(203),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_53"),
+  I.Jump("L_ite_cont_61"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.Deallocate(),
   I.Proceed(),
+  I.GetStructure(7, 1, 3),
+  I.UnifyVariable(101),
+  I.UnifyVariable(102),
+  I.UnifyVariable(103),
+  I.GetValue(102, 2),
+  I.Proceed(),
   I.TryMeElse("L_dep_mentions_2_2"),
   I.Allocate(),
-  I.GetStructure(20, 1, 1),
+  I.GetStructure(21, 1, 1),
   I.UnifyVariable(203),
   I.GetVariable(201, 2),
   I.BuiltinCall("!/0", 0),
-  I.PutStructure(9, 1, 2),
+  I.PutStructure(10, 1, 2),
   I.SetValue(201),
   I.SetVariable(202),
   I.PutValue(203, 2),
@@ -1105,18 +1229,18 @@ const shared_instructions = [
   I.PutVariable(205, 5),
   I.Call("depends_in", 5),
   I.GetLevel(206),
-  I.TryMeElse("L_ite_else_60"),
+  I.TryMeElse("L_ite_else_68"),
   I.PutValue(203, 1),
-  I.PutStructure(20, 2, 1),
+  I.PutStructure(21, 2, 1),
   I.SetVariable(201),
   I.BuiltinCall("=/2", 2),
   I.Cut(206),
-  I.PutStructure(9, 1, 2),
+  I.PutStructure(10, 1, 2),
   I.SetValue(202),
   I.SetValue(204),
   I.PutValue(201, 2),
   I.BuiltinCall("member/2", 2),
-  I.Jump("L_ite_cont_60"),
+  I.Jump("L_ite_cont_68"),
   I.TrustMe(),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
@@ -1128,21 +1252,21 @@ const shared_instructions = [
   I.Proceed(),
   I.TryMeElse("L_dep_to_req_3_2"),
   I.Allocate(),
-  I.GetStructure(20, 1, 1),
+  I.GetStructure(21, 1, 1),
   I.UnifyVariable(101),
   I.GetVariable(102, 2),
-  I.GetStructure(19, 3, 2),
+  I.GetStructure(20, 3, 2),
   I.UnifyVariable(103),
-  I.GetStructure(20, 103, 1),
+  I.GetStructure(21, 103, 1),
   I.UnifyValue(101),
-  I.UnifyConstant(V.Atom(33)),
+  I.UnifyConstant(V.Atom(36)),
   I.BuiltinCall("!/0", 0),
   I.Deallocate(),
   I.Proceed(),
   I.TrustMe(),
   I.GetVariable(101, 1),
   I.GetVariable(102, 2),
-  I.GetStructure(19, 3, 2),
+  I.GetStructure(20, 3, 2),
   I.UnifyValue(101),
   I.UnifyValue(102),
   I.Proceed(),
@@ -1196,7 +1320,7 @@ const shared_instructions = [
   I.PutValue(106, 1),
   I.PutVariable(205, 2),
   I.Call("depends_list", 2),
-  I.PutStructure(32, 1, 4),
+  I.PutStructure(35, 1, 4),
   I.SetValue(201),
   I.SetValue(202),
   I.SetValue(203),
@@ -1205,7 +1329,7 @@ const shared_instructions = [
   I.BuiltinCall("member/2", 2),
   I.Deallocate(),
   I.Proceed(),
-  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_depends_list_2_2_body"}, {fid: 6, arity: 10, label: "L_depends_list_2_3_body"}]),
+  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_depends_list_2_2_body"}, {fid: 6, arity: 10, label: "L_depends_list_2_3_body"}, {fid: 7, arity: 3, label: "L_depends_list_2_4_body"}]),
   I.TryMeElse("L_depends_list_2_2"),
   I.GetStructure(6, 1, 6),
   I.UnifyVariable(101),
@@ -1229,7 +1353,7 @@ const shared_instructions = [
   I.UnifyVariable(109),
   I.GetValue(102, 2),
   I.Proceed(),
-  I.TrustMe(),
+  I.RetryMeElse("L_depends_list_2_4"),
   I.GetStructure(6, 1, 10),
   I.UnifyVariable(101),
   I.UnifyVariable(102),
@@ -1243,6 +1367,17 @@ const shared_instructions = [
   I.UnifyVariable(110),
   I.GetValue(102, 2),
   I.Proceed(),
+  I.TrustMe(),
+  I.Allocate(),
+  I.GetStructure(7, 1, 3),
+  I.UnifyVariable(101),
+  I.UnifyVariable(102),
+  I.UnifyVariable(103),
+  I.GetVariable(104, 2),
+  I.PutValue(101, 1),
+  I.PutValue(104, 2),
+  I.Deallocate(),
+  I.Execute("depends_list", 2),
   I.SwitchOnTerm([{value: V.Atom(2), label: "default"}], [], "L_direct_on_4_2_body", 1),
   I.TryMeElse("L_direct_on_4_2"),
   I.GetConstant(V.Atom(2), 1),
@@ -1254,7 +1389,7 @@ const shared_instructions = [
   I.Allocate(),
   I.GetList(1, 5),
   I.UnifyVariable(109),
-  I.GetStructure(32, 109, 4),
+  I.GetStructure(35, 109, 4),
   I.UnifyVariable(202),
   I.UnifyVariable(203),
   I.UnifyVariable(201),
@@ -1264,7 +1399,7 @@ const shared_instructions = [
   I.GetVariable(204, 3),
   I.GetVariable(208, 4),
   I.GetLevel(209),
-  I.TryMeElse("L_ite_else_63"),
+  I.TryMeElse("L_ite_else_71"),
   I.PutValue(201, 1),
   I.PutValue(206, 2),
   I.Call("dep_mentions", 2),
@@ -1273,11 +1408,11 @@ const shared_instructions = [
   I.PutStructure(5, 2, 2),
   I.SetVariable(112),
   I.SetValue(204),
-  I.PutStructure(8, 112, 2),
+  I.PutStructure(9, 112, 2),
   I.SetValue(202),
   I.SetValue(203),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_63"),
+  I.Jump("L_ite_cont_71"),
   I.TrustMe(),
   I.PutVariable(207, 1),
   I.PutValue(204, 2),
@@ -1321,7 +1456,7 @@ const shared_instructions = [
   I.PutValue(104, 3),
   I.Deallocate(),
   I.Execute("exclude_name", 3),
-  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_excluded_list_2_2_body"}, {fid: 6, arity: 10, label: "L_excluded_list_2_3_body"}]),
+  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_excluded_list_2_2_body"}, {fid: 6, arity: 10, label: "L_excluded_list_2_3_body"}, {fid: 7, arity: 3, label: "L_excluded_list_2_4_body"}]),
   I.TryMeElse("L_excluded_list_2_2"),
   I.GetStructure(6, 1, 6),
   I.UnifyVariable(101),
@@ -1345,7 +1480,7 @@ const shared_instructions = [
   I.UnifyVariable(109),
   I.GetValue(108, 2),
   I.Proceed(),
-  I.TrustMe(),
+  I.RetryMeElse("L_excluded_list_2_4"),
   I.GetStructure(6, 1, 10),
   I.UnifyVariable(101),
   I.UnifyVariable(102),
@@ -1359,6 +1494,17 @@ const shared_instructions = [
   I.UnifyVariable(110),
   I.GetValue(108, 2),
   I.Proceed(),
+  I.TrustMe(),
+  I.Allocate(),
+  I.GetStructure(7, 1, 3),
+  I.UnifyVariable(101),
+  I.UnifyVariable(102),
+  I.UnifyVariable(103),
+  I.GetVariable(104, 2),
+  I.PutValue(101, 1),
+  I.PutValue(104, 2),
+  I.Deallocate(),
+  I.Execute("excluded_list", 2),
   I.Allocate(),
   I.GetVariable(103, 1),
   I.GetVariable(201, 2),
@@ -1377,9 +1523,9 @@ const shared_instructions = [
   I.GetVariable(201, 4),
   I.GetVariable(208, 5),
   I.GetLevel(209),
-  I.TryMeElse("L_ite_else_66"),
+  I.TryMeElse("L_ite_else_74"),
   I.PutValue(202, 1),
-  I.PutStructure(19, 2, 2),
+  I.PutStructure(20, 2, 2),
   I.SetValue(203),
   I.SetValue(204),
   I.PutValue(201, 3),
@@ -1387,13 +1533,13 @@ const shared_instructions = [
   I.Call("blocked_from", 4),
   I.Cut(209),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_66"),
+  I.Jump("L_ite_cont_74"),
   I.TrustMe(),
   I.GetLevel(210),
-  I.TryMeElse("L_ite_else_67"),
+  I.TryMeElse("L_ite_else_75"),
   I.GetLevel(211),
-  I.TryMeElse("L_ite_else_68"),
-  I.PutConstant(V.Atom(34), 1),
+  I.TryMeElse("L_ite_else_76"),
+  I.PutConstant(V.Atom(37), 1),
   I.PutValue(202, 2),
   I.PutValue(203, 3),
   I.PutValue(204, 4),
@@ -1404,14 +1550,14 @@ const shared_instructions = [
   I.Call("pick_need", 8),
   I.Cut(211),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_68"),
+  I.Jump("L_ite_cont_76"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.Cut(210),
   I.PutValue(208, 1),
-  I.PutConstant(V.Atom(11), 2),
+  I.PutConstant(V.Atom(12), 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_67"),
+  I.Jump("L_ite_cont_75"),
   I.TrustMe(),
   I.BuiltinCall("fail/0", 0),
   I.Deallocate(),
@@ -1450,13 +1596,47 @@ const shared_instructions = [
   I.BuiltinCall("!/0", 0),
   I.Deallocate(),
   I.Proceed(),
+  I.SwitchOnTerm([{value: V.Atom(2), label: "default"}], [], "L_filter_satisfies_3_2_body", 1),
+  I.TryMeElse("L_filter_satisfies_3_2"),
+  I.GetConstant(V.Atom(2), 1),
+  I.GetVariable(101, 2),
+  I.GetConstant(V.Atom(2), 3),
+  I.Proceed(),
+  I.TrustMe(),
+  I.Allocate(),
+  I.GetList(1, 5),
+  I.UnifyVariable(201),
+  I.UnifyVariable(203),
+  I.GetVariable(204, 2),
+  I.GetVariable(202, 3),
+  I.GetLevel(206),
+  I.TryMeElse("L_ite_else_83"),
+  I.PutValue(201, 1),
+  I.PutValue(204, 2),
+  I.Call("satisfies", 2),
+  I.Cut(206),
+  I.PutValue(202, 1),
+  I.PutStructure(5, 2, 2),
+  I.SetValue(201),
+  I.SetVariable(205),
+  I.BuiltinCall("=/2", 2),
+  I.Jump("L_ite_cont_83"),
+  I.TrustMe(),
+  I.PutValue(202, 1),
+  I.PutVariable(205, 2),
+  I.BuiltinCall("=/2", 2),
+  I.PutValue(203, 1),
+  I.PutValue(204, 2),
+  I.PutValue(205, 3),
+  I.Deallocate(),
+  I.Execute("filter_satisfies", 3),
   I.TryMeElse("L_first_alt_already_4_2"),
   I.Allocate(),
   I.GetVariable(105, 1),
   I.GetVariable(201, 2),
   I.GetVariable(202, 3),
   I.GetVariable(106, 4),
-  I.PutStructure(9, 1, 2),
+  I.PutStructure(10, 1, 2),
   I.SetVariable(203),
   I.SetVariable(204),
   I.PutValue(106, 2),
@@ -1471,11 +1651,11 @@ const shared_instructions = [
   I.Proceed(),
   I.TrustMe(),
   I.Allocate(),
-  I.GetConstant(V.Atom(34), 1),
+  I.GetConstant(V.Atom(37), 1),
   I.GetVariable(201, 2),
   I.GetVariable(104, 3),
   I.GetVariable(105, 4),
-  I.PutStructure(9, 1, 2),
+  I.PutStructure(10, 1, 2),
   I.SetVariable(202),
   I.SetVariable(203),
   I.PutValue(105, 2),
@@ -1492,13 +1672,13 @@ const shared_instructions = [
   I.GetConstant(V.Atom(2), 1),
   I.GetVariable(101, 2),
   I.GetVariable(102, 3),
-  I.GetConstant(V.Atom(25), 4),
+  I.GetConstant(V.Atom(28), 4),
   I.Proceed(),
   I.TrustMe(),
   I.Allocate(),
   I.GetList(1, 5),
   I.UnifyVariable(109),
-  I.GetStructure(12, 109, 3),
+  I.GetStructure(13, 109, 3),
   I.UnifyVariable(203),
   I.UnifyVariable(204),
   I.UnifyVariable(110),
@@ -1507,7 +1687,7 @@ const shared_instructions = [
   I.GetVariable(205, 3),
   I.GetVariable(207, 4),
   I.GetLevel(209),
-  I.TryMeElse("L_ite_else_75"),
+  I.TryMeElse("L_ite_else_86"),
   I.PutValue(205, 1),
   I.PutValue(203, 2),
   I.PutVariable(201, 3),
@@ -1518,10 +1698,10 @@ const shared_instructions = [
   I.PutValue(205, 3),
   I.PutValue(207, 4),
   I.Call("first_broken", 4),
-  I.Jump("L_ite_cont_75"),
+  I.Jump("L_ite_cont_86"),
   I.TrustMe(),
   I.GetLevel(210),
-  I.TryMeElse("L_ite_else_76"),
+  I.TryMeElse("L_ite_else_87"),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
   I.PutValue(204, 3),
@@ -1530,12 +1710,12 @@ const shared_instructions = [
   I.Call("dep_breaks_moving", 5),
   I.Cut(210),
   I.PutValue(207, 1),
-  I.PutStructure(27, 2, 3),
+  I.PutStructure(30, 2, 3),
   I.SetValue(203),
   I.SetValue(204),
   I.SetValue(206),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_76"),
+  I.Jump("L_ite_cont_87"),
   I.TrustMe(),
   I.PutValue(208, 1),
   I.PutValue(202, 2),
@@ -1564,18 +1744,18 @@ const shared_instructions = [
   I.Execute("follow_raw_dep", 4),
   I.TryMeElse("L_follow_raw_dep_4_2"),
   I.Allocate(),
-  I.GetStructure(20, 1, 1),
+  I.GetStructure(21, 1, 1),
   I.UnifyVariable(202),
   I.GetVariable(107, 2),
   I.GetVariable(204, 3),
   I.GetVariable(205, 4),
   I.BuiltinCall("!/0", 0),
-  I.PutStructure(9, 1, 2),
+  I.PutStructure(10, 1, 2),
   I.SetVariable(206),
   I.SetVariable(201),
   I.PutValue(202, 2),
   I.BuiltinCall("member/2", 2),
-  I.PutStructure(8, 1, 2),
+  I.PutStructure(9, 1, 2),
   I.SetValue(206),
   I.SetVariable(203),
   I.PutValue(204, 2),
@@ -1593,7 +1773,7 @@ const shared_instructions = [
   I.GetValue(201, 4),
   I.PutValue(201, 1),
   I.BuiltinCall("atom/1", 1),
-  I.PutStructure(8, 1, 2),
+  I.PutStructure(9, 1, 2),
   I.SetValue(201),
   I.SetVariable(202),
   I.PutValue(203, 2),
@@ -1617,10 +1797,44 @@ const shared_instructions = [
   I.BuiltinCall("!/0", 0),
   I.Deallocate(),
   I.Proceed(),
+  I.SwitchOnTerm([{value: V.Atom(2), label: "default"}], [], "L_group_keyed_2_2_body", 1),
+  I.TryMeElse("L_group_keyed_2_2"),
+  I.GetConstant(V.Atom(2), 1),
+  I.GetConstant(V.Atom(2), 2),
+  I.Proceed(),
+  I.TrustMe(),
+  I.Allocate(),
+  I.GetList(1, 5),
+  I.UnifyVariable(103),
+  I.GetStructure(9, 103, 2),
+  I.UnifyVariable(104),
+  I.GetStructure(9, 104, 2),
+  I.UnifyVariable(105),
+  I.UnifyVariable(106),
+  I.UnifyVariable(107),
+  I.UnifyVariable(108),
+  I.GetList(2, 5),
+  I.UnifyVariable(109),
+  I.GetStructure(9, 109, 2),
+  I.UnifyValue(105),
+  I.UnifyVariable(110),
+  I.GetStructure(5, 110, 2),
+  I.UnifyValue(107),
+  I.UnifyVariable(111),
+  I.UnifyVariable(202),
+  I.PutValue(108, 1),
+  I.PutValue(105, 2),
+  I.PutValue(111, 3),
+  I.PutVariable(201, 4),
+  I.Call("same_key", 4),
+  I.PutValue(201, 1),
+  I.PutValue(202, 2),
+  I.Deallocate(),
+  I.Execute("group_keyed", 2),
   I.Allocate(),
   I.GetList(1, 5),
   I.UnifyVariable(106),
-  I.GetStructure(12, 106, 3),
+  I.GetStructure(13, 106, 3),
   I.UnifyVariable(201),
   I.UnifyVariable(107),
   I.UnifyVariable(202),
@@ -1628,7 +1842,7 @@ const shared_instructions = [
   I.GetVariable(204, 2),
   I.GetVariable(205, 3),
   I.GetLevel(206),
-  I.TryMeElse("L_ite_else_81"),
+  I.TryMeElse("L_ite_else_92"),
   I.PutValue(201, 1),
   I.PutValue(204, 2),
   I.BuiltinCall("==/2", 2),
@@ -1636,13 +1850,69 @@ const shared_instructions = [
   I.PutValue(205, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_81"),
+  I.Jump("L_ite_cont_92"),
   I.TrustMe(),
   I.PutValue(203, 1),
   I.PutValue(204, 2),
   I.PutValue(205, 3),
   I.Call("hold_reason", 3),
   I.Deallocate(),
+  I.Proceed(),
+  I.Allocate(),
+  I.GetVariable(212, 1),
+  I.GetVariable(211, 2),
+  I.PutValue(212, 1),
+  I.PutVariable(201, 2),
+  I.Call("depends_list", 2),
+  I.PutValue(212, 1),
+  I.PutVariable(205, 2),
+  I.Call("packages", 2),
+  I.GetLevel(213),
+  I.TryMeElse("L_ite_else_94"),
+  I.PutValue(201, 1),
+  I.PutValue(205, 2),
+  I.Call("worth_indexing", 2),
+  I.Cut(213),
+  I.PutValue(201, 1),
+  I.PutConstant(V.Int(0), 2),
+  I.PutVariable(202, 3),
+  I.Call("key_dep_rows", 3),
+  I.PutValue(202, 1),
+  I.PutVariable(203, 2),
+  I.BuiltinCall("sort/2", 2),
+  I.PutValue(203, 1),
+  I.PutVariable(204, 2),
+  I.Call("group_keyed", 2),
+  I.PutValue(204, 1),
+  I.PutVariable(209, 2),
+  I.Call("list_to_tree", 2),
+  I.PutValue(205, 1),
+  I.PutConstant(V.Int(0), 2),
+  I.PutVariable(206, 3),
+  I.Call("key_pkg_rows", 3),
+  I.PutValue(206, 1),
+  I.PutVariable(207, 2),
+  I.BuiltinCall("sort/2", 2),
+  I.PutValue(207, 1),
+  I.PutVariable(208, 2),
+  I.Call("group_keyed", 2),
+  I.PutValue(208, 1),
+  I.PutVariable(210, 2),
+  I.Call("list_to_tree", 2),
+  I.PutValue(211, 1),
+  I.PutStructure(7, 2, 3),
+  I.SetValue(212),
+  I.SetValue(209),
+  I.SetValue(210),
+  I.BuiltinCall("=/2", 2),
+  I.Jump("L_ite_cont_94"),
+  I.TrustMe(),
+  I.PutValue(211, 1),
+  I.PutValue(212, 2),
+  I.BuiltinCall("=/2", 2),
+  I.Deallocate(),
+  I.Proceed(),
+  I.GetConstant(V.Int(64), 1),
   I.Proceed(),
   I.Allocate(),
   I.GetVariable(101, 1),
@@ -1653,7 +1923,7 @@ const shared_instructions = [
   I.PutList(1, 5),
   I.SetVariable(107),
   I.SetConstant(V.Atom(2)),
-  I.PutStructure(8, 107, 2),
+  I.PutStructure(9, 107, 2),
   I.SetValue(103),
   I.SetValue(104),
   I.PutValue(101, 2),
@@ -1676,7 +1946,7 @@ const shared_instructions = [
   I.Allocate(),
   I.GetList(1, 5),
   I.UnifyVariable(113),
-  I.GetStructure(8, 113, 2),
+  I.GetStructure(9, 113, 2),
   I.UnifyVariable(209),
   I.UnifyVariable(203),
   I.UnifyVariable(205),
@@ -1686,7 +1956,7 @@ const shared_instructions = [
   I.GetVariable(211, 5),
   I.GetVariable(212, 6),
   I.GetLevel(213),
-  I.TryMeElse("L_ite_else_83"),
+  I.TryMeElse("L_ite_else_97"),
   I.PutValue(209, 1),
   I.PutValue(210, 2),
   I.BuiltinCall("member/2", 2),
@@ -1698,7 +1968,7 @@ const shared_instructions = [
   I.PutValue(211, 5),
   I.PutValue(212, 6),
   I.Call("inst_walk", 6),
-  I.Jump("L_ite_cont_83"),
+  I.Jump("L_ite_cont_97"),
   I.TrustMe(),
   I.PutVariable(204, 204),
   I.PutVariable(201, 201),
@@ -1710,12 +1980,12 @@ const shared_instructions = [
   I.PutValue(208, 4),
   I.PutValue(201, 5),
   I.Call("follow_dep_name", 5),
-  I.PutStructure(8, 1, 2),
+  I.PutStructure(9, 1, 2),
   I.SetValue(201),
   I.SetValue(202),
   I.PutValue(208, 2),
   I.BuiltinCall("member/2", 2),
-  I.PutStructure(8, 1, 2),
+  I.PutStructure(9, 1, 2),
   I.SetValue(201),
   I.SetValue(202),
   I.EndAggregate(1),
@@ -1736,7 +2006,7 @@ const shared_instructions = [
   I.Call("inst_walk", 6),
   I.Deallocate(),
   I.Proceed(),
-  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_installed_list_2_2_body"}, {fid: 6, arity: 10, label: "L_installed_list_2_3_body"}]),
+  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_installed_list_2_2_body"}, {fid: 6, arity: 10, label: "L_installed_list_2_3_body"}, {fid: 7, arity: 3, label: "L_installed_list_2_4_body"}]),
   I.TryMeElse("L_installed_list_2_2"),
   I.GetStructure(6, 1, 6),
   I.UnifyVariable(101),
@@ -1760,7 +2030,7 @@ const shared_instructions = [
   I.UnifyVariable(109),
   I.GetValue(105, 2),
   I.Proceed(),
-  I.TrustMe(),
+  I.RetryMeElse("L_installed_list_2_4"),
   I.GetStructure(6, 1, 10),
   I.UnifyVariable(101),
   I.UnifyVariable(102),
@@ -1774,6 +2044,17 @@ const shared_instructions = [
   I.UnifyVariable(110),
   I.GetValue(105, 2),
   I.Proceed(),
+  I.TrustMe(),
+  I.Allocate(),
+  I.GetStructure(7, 1, 3),
+  I.UnifyVariable(101),
+  I.UnifyVariable(102),
+  I.UnifyVariable(103),
+  I.GetVariable(104, 2),
+  I.PutValue(101, 1),
+  I.PutValue(104, 2),
+  I.Deallocate(),
+  I.Execute("installed_list", 2),
   I.TryMeElse("L_installed_or_base_3_2"),
   I.Allocate(),
   I.GetVariable(101, 1),
@@ -1805,22 +2086,22 @@ const shared_instructions = [
   I.PutValue(104, 1),
   I.PutVariable(203, 2),
   I.Call("installed_list", 2),
-  I.PutStructure(8, 1, 2),
+  I.PutStructure(9, 1, 2),
   I.SetValue(201),
   I.SetValue(202),
   I.PutValue(203, 2),
   I.BuiltinCall("member/2", 2),
   I.Deallocate(),
   I.Proceed(),
-  I.GetStructure(35, 1, 3),
+  I.GetStructure(38, 1, 3),
   I.UnifyVariable(101),
   I.UnifyVariable(102),
   I.UnifyVariable(103),
   I.Proceed(),
-  I.SwitchOnStructure([{fid: 8, arity: 2, label: "default"}, {fid: 36, arity: 2, label: "L_item_ver_3_2_body"}, {fid: 37, arity: 2, label: "L_item_ver_3_3_body"}]),
+  I.SwitchOnStructure([{fid: 9, arity: 2, label: "default"}, {fid: 39, arity: 2, label: "L_item_ver_3_2_body"}, {fid: 40, arity: 2, label: "L_item_ver_3_3_body"}]),
   I.TryMeElse("L_item_ver_3_2"),
   I.Allocate(),
-  I.GetStructure(8, 1, 2),
+  I.GetStructure(9, 1, 2),
   I.UnifyVariable(101),
   I.UnifyVariable(102),
   I.GetVariable(103, 2),
@@ -1832,9 +2113,9 @@ const shared_instructions = [
   I.Proceed(),
   I.RetryMeElse("L_item_ver_3_3"),
   I.Allocate(),
-  I.GetStructure(36, 1, 2),
+  I.GetStructure(39, 1, 2),
   I.UnifyVariable(101),
-  I.GetStructure(8, 101, 2),
+  I.GetStructure(9, 101, 2),
   I.UnifyVariable(102),
   I.UnifyVariable(103),
   I.UnifyVariable(104),
@@ -1847,7 +2128,7 @@ const shared_instructions = [
   I.Proceed(),
   I.TrustMe(),
   I.Allocate(),
-  I.GetStructure(37, 1, 2),
+  I.GetStructure(40, 1, 2),
   I.UnifyVariable(101),
   I.UnifyVariable(102),
   I.GetVariable(103, 2),
@@ -1868,7 +2149,7 @@ const shared_instructions = [
   I.Allocate(),
   I.GetList(1, 5),
   I.UnifyVariable(108),
-  I.GetStructure(8, 108, 2),
+  I.GetStructure(9, 108, 2),
   I.UnifyVariable(201),
   I.UnifyVariable(202),
   I.UnifyVariable(204),
@@ -1876,7 +2157,7 @@ const shared_instructions = [
   I.GetVariable(203, 3),
   I.GetVariable(207, 4),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_86"),
+  I.TryMeElse("L_ite_else_100"),
   I.PutValue(205, 1),
   I.PutValue(201, 2),
   I.PutValue(202, 3),
@@ -1886,11 +2167,11 @@ const shared_instructions = [
   I.PutStructure(5, 2, 2),
   I.SetVariable(110),
   I.SetValue(203),
-  I.PutStructure(8, 110, 2),
+  I.PutStructure(9, 110, 2),
   I.SetValue(201),
   I.SetValue(202),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_86"),
+  I.Jump("L_ite_cont_100"),
   I.TrustMe(),
   I.PutVariable(206, 1),
   I.PutValue(203, 2),
@@ -1901,6 +2182,83 @@ const shared_instructions = [
   I.PutValue(207, 4),
   I.Deallocate(),
   I.Execute("keep_installed_or_base", 4),
+  I.SwitchOnTerm([{value: V.Atom(2), label: "default"}], [], "L_key_dep_rows_3_2_body", 1),
+  I.TryMeElse("L_key_dep_rows_3_2"),
+  I.GetConstant(V.Atom(2), 1),
+  I.GetVariable(101, 2),
+  I.GetConstant(V.Atom(2), 3),
+  I.Proceed(),
+  I.TrustMe(),
+  I.Allocate(),
+  I.GetList(1, 5),
+  I.UnifyVariable(105),
+  I.GetStructure(35, 105, 4),
+  I.UnifyVariable(106),
+  I.UnifyVariable(107),
+  I.UnifyVariable(108),
+  I.UnifyVariable(109),
+  I.UnifyVariable(202),
+  I.GetVariable(201, 2),
+  I.GetList(3, 5),
+  I.UnifyVariable(110),
+  I.GetStructure(9, 110, 2),
+  I.UnifyVariable(111),
+  I.GetStructure(9, 111, 2),
+  I.UnifyVariable(112),
+  I.GetStructure(9, 112, 2),
+  I.UnifyValue(106),
+  I.UnifyValue(107),
+  I.UnifyValue(201),
+  I.UnifyVariable(113),
+  I.UnifyVariable(204),
+  I.PutValue(108, 1),
+  I.PutValue(109, 2),
+  I.PutValue(113, 3),
+  I.Call("dep_to_req", 3),
+  I.PutVariable(203, 1),
+  I.PutStructure(41, 2, 2),
+  I.SetValue(201),
+  I.SetConstant(V.Int(1)),
+  I.BuiltinCall("is/2", 2),
+  I.PutValue(202, 1),
+  I.PutValue(203, 2),
+  I.PutValue(204, 3),
+  I.Deallocate(),
+  I.Execute("key_dep_rows", 3),
+  I.SwitchOnTerm([{value: V.Atom(2), label: "default"}], [], "L_key_pkg_rows_3_2_body", 1),
+  I.TryMeElse("L_key_pkg_rows_3_2"),
+  I.GetConstant(V.Atom(2), 1),
+  I.GetVariable(101, 2),
+  I.GetConstant(V.Atom(2), 3),
+  I.Proceed(),
+  I.TrustMe(),
+  I.Allocate(),
+  I.GetList(1, 5),
+  I.UnifyVariable(104),
+  I.GetStructure(42, 104, 2),
+  I.UnifyVariable(105),
+  I.UnifyVariable(106),
+  I.UnifyVariable(201),
+  I.GetVariable(107, 2),
+  I.GetList(3, 5),
+  I.UnifyVariable(108),
+  I.GetStructure(9, 108, 2),
+  I.UnifyVariable(109),
+  I.GetStructure(9, 109, 2),
+  I.UnifyValue(105),
+  I.UnifyValue(107),
+  I.UnifyValue(106),
+  I.UnifyVariable(203),
+  I.PutVariable(202, 1),
+  I.PutStructure(41, 2, 2),
+  I.SetValue(107),
+  I.SetConstant(V.Int(1)),
+  I.BuiltinCall("is/2", 2),
+  I.PutValue(201, 1),
+  I.PutValue(202, 2),
+  I.PutValue(203, 3),
+  I.Deallocate(),
+  I.Execute("key_pkg_rows", 3),
   I.Allocate(),
   I.GetVariable(201, 1),
   I.GetVariable(104, 2),
@@ -1928,7 +2286,7 @@ const shared_instructions = [
   I.PutValue(203, 1),
   I.PutVariable(202, 2),
   I.Call("base_holds", 2),
-  I.PutStructure(12, 1, 3),
+  I.PutStructure(13, 1, 3),
   I.SetValue(204),
   I.SetValue(205),
   I.SetVariable(201),
@@ -1951,7 +2309,7 @@ const shared_instructions = [
   I.PutValue(204, 1),
   I.PutVariable(202, 2),
   I.Call("layers_list", 2),
-  I.PutStructure(37, 1, 2),
+  I.PutStructure(40, 1, 2),
   I.SetVariable(201),
   I.SetVariable(203),
   I.PutValue(202, 2),
@@ -1988,7 +2346,7 @@ const shared_instructions = [
   I.PutValue(203, 1),
   I.PutVariable(202, 2),
   I.Call("base_holds", 2),
-  I.PutStructure(12, 1, 3),
+  I.PutStructure(13, 1, 3),
   I.SetVariable(204),
   I.SetVariable(205),
   I.SetVariable(201),
@@ -2009,7 +2367,7 @@ const shared_instructions = [
   I.PutValue(204, 1),
   I.PutVariable(202, 2),
   I.Call("layers_list", 2),
-  I.PutStructure(37, 1, 2),
+  I.PutStructure(40, 1, 2),
   I.SetVariable(201),
   I.SetVariable(203),
   I.PutValue(202, 2),
@@ -2019,7 +2377,7 @@ const shared_instructions = [
   I.PutVariable(206, 3),
   I.Call("lookup_held", 3),
   I.GetLevel(209),
-  I.TryMeElse("L_ite_else_89"),
+  I.TryMeElse("L_ite_else_103"),
   I.PutValue(205, 1),
   I.PutValue(207, 2),
   I.BuiltinCall("==/2", 2),
@@ -2028,7 +2386,7 @@ const shared_instructions = [
   I.Call("satisfies", 2),
   I.Cut(209),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_89"),
+  I.Jump("L_ite_cont_103"),
   I.TrustMe(),
   I.PutValue(204, 1),
   I.PutValue(205, 2),
@@ -2044,7 +2402,7 @@ const shared_instructions = [
   I.GetVariable(204, 3),
   I.GetVariable(205, 4),
   I.GetLevel(206),
-  I.TryMeElse("L_ite_else_92"),
+  I.TryMeElse("L_ite_else_106"),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
   I.PutVariable(201, 3),
@@ -2056,7 +2414,7 @@ const shared_instructions = [
   I.PutValue(205, 1),
   I.PutValue(201, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_92"),
+  I.Jump("L_ite_cont_106"),
   I.TrustMe(),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
@@ -2066,7 +2424,7 @@ const shared_instructions = [
   I.BuiltinCall("!/0", 0),
   I.Deallocate(),
   I.Proceed(),
-  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_layers_list_2_2_body"}, {fid: 6, arity: 10, label: "L_layers_list_2_3_body"}]),
+  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_layers_list_2_2_body"}, {fid: 6, arity: 10, label: "L_layers_list_2_3_body"}, {fid: 7, arity: 3, label: "L_layers_list_2_4_body"}]),
   I.TryMeElse("L_layers_list_2_2"),
   I.GetStructure(6, 1, 6),
   I.UnifyVariable(101),
@@ -2090,7 +2448,7 @@ const shared_instructions = [
   I.UnifyVariable(109),
   I.GetValue(107, 2),
   I.Proceed(),
-  I.TrustMe(),
+  I.RetryMeElse("L_layers_list_2_4"),
   I.GetStructure(6, 1, 10),
   I.UnifyVariable(101),
   I.UnifyVariable(102),
@@ -2104,6 +2462,53 @@ const shared_instructions = [
   I.UnifyVariable(110),
   I.GetValue(107, 2),
   I.Proceed(),
+  I.TrustMe(),
+  I.Allocate(),
+  I.GetStructure(7, 1, 3),
+  I.UnifyVariable(101),
+  I.UnifyVariable(102),
+  I.UnifyVariable(103),
+  I.GetVariable(104, 2),
+  I.PutValue(101, 1),
+  I.PutValue(104, 2),
+  I.Deallocate(),
+  I.Execute("layers_list", 2),
+  I.Allocate(),
+  I.GetVariable(202, 1),
+  I.GetVariable(203, 2),
+  I.PutValue(202, 1),
+  I.PutVariable(201, 2),
+  I.BuiltinCall("length/2", 2),
+  I.PutValue(201, 1),
+  I.PutValue(202, 2),
+  I.PutValue(203, 3),
+  I.PutConstant(V.Atom(2), 4),
+  I.Deallocate(),
+  I.Execute("build_tree", 4),
+  I.Allocate(),
+  I.GetList(1, 5),
+  I.UnifyVariable(104),
+  I.UnifyVariable(202),
+  I.GetVariable(201, 2),
+  I.GetLevel(204),
+  I.TryMeElse("L_ite_else_109"),
+  I.PutValue(201, 1),
+  I.PutConstant(V.Int(1), 2),
+  I.BuiltinCall("=</2", 2),
+  I.Cut(204),
+  I.BuiltinCall("true/0", 0),
+  I.Jump("L_ite_cont_109"),
+  I.TrustMe(),
+  I.PutVariable(203, 1),
+  I.PutStructure(41, 2, 2),
+  I.SetValue(201),
+  I.SetConstant(V.Int(-1)),
+  I.BuiltinCall("is/2", 2),
+  I.PutValue(202, 1),
+  I.PutValue(203, 2),
+  I.Call("long_enough", 2),
+  I.Deallocate(),
+  I.Proceed(),
   I.Allocate(),
   I.GetList(1, 5),
   I.UnifyVariable(201),
@@ -2111,7 +2516,7 @@ const shared_instructions = [
   I.GetVariable(204, 2),
   I.GetVariable(205, 3),
   I.GetLevel(206),
-  I.TryMeElse("L_ite_else_95"),
+  I.TryMeElse("L_ite_else_111"),
   I.PutValue(201, 1),
   I.PutValue(204, 2),
   I.PutVariable(202, 3),
@@ -2120,7 +2525,7 @@ const shared_instructions = [
   I.PutValue(205, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_95"),
+  I.Jump("L_ite_cont_111"),
   I.TrustMe(),
   I.PutValue(203, 1),
   I.PutValue(204, 2),
@@ -2163,7 +2568,7 @@ const shared_instructions = [
   I.Allocate(),
   I.GetList(1, 5),
   I.UnifyVariable(111),
-  I.GetStructure(32, 111, 4),
+  I.GetStructure(35, 111, 4),
   I.UnifyVariable(201),
   I.UnifyVariable(202),
   I.UnifyVariable(203),
@@ -2173,7 +2578,7 @@ const shared_instructions = [
   I.GetVariable(209, 3),
   I.GetVariable(206, 4),
   I.GetLevel(211),
-  I.TryMeElse("L_ite_else_98"),
+  I.TryMeElse("L_ite_else_114"),
   I.PutValue(201, 1),
   I.PutValue(208, 2),
   I.BuiltinCall("==/2", 2),
@@ -2190,7 +2595,7 @@ const shared_instructions = [
   I.SetValue(205),
   I.SetVariable(210),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_98"),
+  I.Jump("L_ite_cont_114"),
   I.TrustMe(),
   I.PutValue(206, 1),
   I.PutVariable(210, 2),
@@ -2212,7 +2617,7 @@ const shared_instructions = [
   I.Allocate(),
   I.GetList(1, 5),
   I.UnifyVariable(108),
-  I.GetStructure(38, 108, 2),
+  I.GetStructure(42, 108, 2),
   I.UnifyVariable(201),
   I.UnifyVariable(202),
   I.UnifyVariable(204),
@@ -2220,7 +2625,7 @@ const shared_instructions = [
   I.GetVariable(206, 3),
   I.GetVariable(203, 4),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_101"),
+  I.TryMeElse("L_ite_else_117"),
   I.PutValue(201, 1),
   I.PutValue(205, 2),
   I.BuiltinCall("==/2", 2),
@@ -2233,7 +2638,7 @@ const shared_instructions = [
   I.SetValue(202),
   I.SetVariable(207),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_101"),
+  I.Jump("L_ite_cont_117"),
   I.TrustMe(),
   I.PutValue(203, 1),
   I.PutVariable(207, 2),
@@ -2244,10 +2649,49 @@ const shared_instructions = [
   I.PutValue(207, 4),
   I.Deallocate(),
   I.Execute("matching_versions", 4),
+  I.Allocate(),
+  I.GetVariable(203, 1),
+  I.GetVariable(205, 2),
+  I.GetVariable(206, 3),
+  I.GetVariable(207, 4),
+  I.GetLevel(208),
+  I.TryMeElse("L_ite_else_120"),
+  I.PutValue(203, 1),
+  I.PutVariable(201, 2),
+  I.Call("pkg_index", 2),
+  I.Cut(208),
+  I.GetLevel(209),
+  I.TryMeElse("L_ite_else_121"),
+  I.PutValue(201, 1),
+  I.PutValue(205, 2),
+  I.PutVariable(202, 3),
+  I.Call("tree_lookup", 3),
+  I.Cut(209),
+  I.PutValue(202, 1),
+  I.PutValue(206, 2),
+  I.PutValue(207, 3),
+  I.Call("filter_satisfies", 3),
+  I.Jump("L_ite_cont_121"),
+  I.TrustMe(),
+  I.PutValue(207, 1),
+  I.PutConstant(V.Atom(2), 2),
+  I.BuiltinCall("=/2", 2),
+  I.Jump("L_ite_cont_120"),
+  I.TrustMe(),
+  I.PutValue(203, 1),
+  I.PutVariable(204, 2),
+  I.Call("packages", 2),
+  I.PutValue(204, 1),
+  I.PutValue(205, 2),
+  I.PutValue(206, 3),
+  I.PutValue(207, 4),
+  I.Call("matching_versions", 4),
+  I.Deallocate(),
+  I.Proceed(),
   I.GetVariable(101, 1),
   I.GetVariable(102, 2),
   I.GetVariable(103, 3),
-  I.PutStructure(8, 1, 2),
+  I.PutStructure(9, 1, 2),
   I.SetValue(102),
   I.SetValue(103),
   I.PutValue(101, 2),
@@ -2262,7 +2706,7 @@ const shared_instructions = [
   I.Allocate(),
   I.GetList(1, 5),
   I.UnifyVariable(101),
-  I.GetStructure(8, 101, 2),
+  I.GetStructure(9, 101, 2),
   I.UnifyVariable(102),
   I.UnifyVariable(103),
   I.UnifyVariable(104),
@@ -2310,12 +2754,12 @@ const shared_instructions = [
   I.GetVariable(205, 3),
   I.GetList(4, 5),
   I.UnifyVariable(107),
-  I.GetStructure(8, 107, 2),
+  I.GetStructure(9, 107, 2),
   I.UnifyVariable(201),
   I.UnifyVariable(202),
   I.UnifyVariable(206),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_104"),
+  I.TryMeElse("L_ite_else_126"),
   I.PutValue(203, 1),
   I.PutValue(204, 2),
   I.PutValue(205, 3),
@@ -2323,11 +2767,11 @@ const shared_instructions = [
   I.Call("conflicts_in", 4),
   I.Cut(207),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_104"),
+  I.Jump("L_ite_cont_126"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_105"),
+  I.TryMeElse("L_ite_else_127"),
   I.PutValue(203, 1),
   I.PutValue(201, 2),
   I.PutValue(202, 3),
@@ -2335,7 +2779,7 @@ const shared_instructions = [
   I.Call("conflicts_in", 4),
   I.Cut(208),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_105"),
+  I.Jump("L_ite_cont_127"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.PutValue(203, 1),
@@ -2396,13 +2840,13 @@ const shared_instructions = [
   I.PutVariable(203, 2),
   I.Call("order_val", 2),
   I.GetLevel(206),
-  I.TryMeElse("L_ite_else_110"),
+  I.TryMeElse("L_ite_else_132"),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
   I.BuiltinCall("</2", 2),
   I.Cut(206),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_110"),
+  I.Jump("L_ite_cont_132"),
   I.TrustMe(),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
@@ -2452,7 +2896,7 @@ const shared_instructions = [
   I.GetVariable(101, 1),
   I.GetVariable(102, 2),
   I.PutValue(102, 1),
-  I.PutStructure(39, 2, 2),
+  I.PutStructure(41, 2, 2),
   I.SetValue(101),
   I.SetConstant(V.Int(256)),
   I.BuiltinCall("is/2", 2),
@@ -2464,7 +2908,7 @@ const shared_instructions = [
   I.PutValue(104, 1),
   I.PutVariable(203, 2),
   I.Call("packages", 2),
-  I.PutStructure(38, 1, 2),
+  I.PutStructure(42, 1, 2),
   I.SetValue(201),
   I.SetValue(202),
   I.PutValue(203, 2),
@@ -2477,14 +2921,14 @@ const shared_instructions = [
   I.PutValue(104, 1),
   I.PutVariable(203, 2),
   I.Call("packages", 2),
-  I.PutStructure(38, 1, 2),
+  I.PutStructure(42, 1, 2),
   I.SetValue(201),
   I.SetVariable(202),
   I.PutValue(203, 2),
   I.BuiltinCall("member/2", 2),
   I.Deallocate(),
   I.Proceed(),
-  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_packages_2_2_body"}, {fid: 6, arity: 10, label: "L_packages_2_3_body"}]),
+  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_packages_2_2_body"}, {fid: 6, arity: 10, label: "L_packages_2_3_body"}, {fid: 7, arity: 3, label: "L_packages_2_4_body"}]),
   I.TryMeElse("L_packages_2_2"),
   I.GetStructure(6, 1, 6),
   I.UnifyVariable(101),
@@ -2508,7 +2952,7 @@ const shared_instructions = [
   I.UnifyVariable(109),
   I.GetValue(101, 2),
   I.Proceed(),
-  I.TrustMe(),
+  I.RetryMeElse("L_packages_2_4"),
   I.GetStructure(6, 1, 10),
   I.UnifyVariable(101),
   I.UnifyVariable(102),
@@ -2522,13 +2966,24 @@ const shared_instructions = [
   I.UnifyVariable(110),
   I.GetValue(101, 2),
   I.Proceed(),
+  I.TrustMe(),
+  I.Allocate(),
+  I.GetStructure(7, 1, 3),
+  I.UnifyVariable(101),
+  I.UnifyVariable(102),
+  I.UnifyVariable(103),
+  I.GetVariable(104, 2),
+  I.PutValue(101, 1),
+  I.PutValue(104, 2),
+  I.Deallocate(),
+  I.Execute("packages", 2),
   I.SwitchOnConstant([{value: V.Atom(2), label: "default"}], true),
   I.TryMeElse("L_pad_head_2_2"),
   I.Allocate(),
   I.GetConstant(V.Atom(2), 1),
   I.GetList(2, 5),
   I.UnifyVariable(101),
-  I.GetStructure(40, 101, 2),
+  I.GetStructure(43, 101, 2),
   I.UnifyConstant(V.Atom(2)),
   I.UnifyConstant(V.Int(0)),
   I.UnifyConstant(V.Atom(2)),
@@ -2539,16 +2994,16 @@ const shared_instructions = [
   I.GetVariable(101, 1),
   I.GetValue(101, 2),
   I.Proceed(),
-  I.SwitchOnConstant([{value: V.Atom(41), label: "default"}, {value: V.Atom(34), label: "L_pick_7_2_body"}], false),
+  I.SwitchOnConstant([{value: V.Atom(44), label: "default"}, {value: V.Atom(37), label: "L_pick_7_2_body"}], false),
   I.TryMeElse("L_pick_7_2"),
   I.Allocate(),
-  I.GetConstant(V.Atom(41), 1),
+  I.GetConstant(V.Atom(44), 1),
   I.GetVariable(101, 2),
   I.GetVariable(102, 3),
   I.GetVariable(103, 4),
   I.GetVariable(104, 5),
   I.GetVariable(105, 6),
-  I.GetConstant(V.Atom(42), 7),
+  I.GetConstant(V.Atom(45), 7),
   I.PutValue(101, 1),
   I.PutValue(102, 2),
   I.PutValue(103, 3),
@@ -2557,7 +3012,7 @@ const shared_instructions = [
   I.Execute("candidates_high_first", 4),
   I.TrustMe(),
   I.Allocate(),
-  I.GetConstant(V.Atom(34), 1),
+  I.GetConstant(V.Atom(37), 1),
   I.GetVariable(202, 2),
   I.GetVariable(203, 3),
   I.GetVariable(204, 4),
@@ -2565,7 +3020,7 @@ const shared_instructions = [
   I.GetVariable(205, 6),
   I.GetVariable(206, 7),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_113"),
+  I.TryMeElse("L_ite_else_135"),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
   I.PutVariable(201, 3),
@@ -2578,9 +3033,9 @@ const shared_instructions = [
   I.PutValue(201, 2),
   I.BuiltinCall("=/2", 2),
   I.PutValue(206, 1),
-  I.PutConstant(V.Atom(43), 2),
+  I.PutConstant(V.Atom(46), 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_113"),
+  I.Jump("L_ite_cont_135"),
   I.TrustMe(),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
@@ -2588,21 +3043,21 @@ const shared_instructions = [
   I.PutValue(205, 4),
   I.Call("candidates_high_first", 4),
   I.PutValue(206, 1),
-  I.PutConstant(V.Atom(42), 2),
+  I.PutConstant(V.Atom(45), 2),
   I.BuiltinCall("=/2", 2),
   I.Deallocate(),
   I.Proceed(),
-  I.SwitchOnConstant([{value: V.Atom(41), label: "default"}, {value: V.Atom(34), label: "L_pick_need_8_3_body"}], false),
+  I.SwitchOnConstant([{value: V.Atom(44), label: "default"}, {value: V.Atom(37), label: "L_pick_need_8_3_body"}], false),
   I.TryMeElse("L_pick_need_8_2"),
   I.Allocate(),
-  I.GetConstant(V.Atom(41), 1),
+  I.GetConstant(V.Atom(44), 1),
   I.GetVariable(101, 2),
   I.GetVariable(102, 3),
   I.GetVariable(103, 4),
   I.GetVariable(104, 5),
   I.GetValue(102, 6),
   I.GetVariable(105, 7),
-  I.GetConstant(V.Atom(42), 8),
+  I.GetConstant(V.Atom(45), 8),
   I.PutValue(101, 1),
   I.PutValue(102, 2),
   I.PutValue(103, 3),
@@ -2611,14 +3066,14 @@ const shared_instructions = [
   I.Execute("candidates_high_first", 4),
   I.RetryMeElse("L_pick_need_8_3"),
   I.Allocate(),
-  I.GetConstant(V.Atom(41), 1),
+  I.GetConstant(V.Atom(44), 1),
   I.GetVariable(101, 2),
   I.GetVariable(102, 3),
   I.GetVariable(103, 4),
   I.GetVariable(104, 5),
   I.GetVariable(105, 6),
   I.GetVariable(106, 7),
-  I.GetConstant(V.Atom(42), 8),
+  I.GetConstant(V.Atom(45), 8),
   I.PutValue(101, 1),
   I.PutValue(102, 2),
   I.PutValue(103, 3),
@@ -2628,7 +3083,7 @@ const shared_instructions = [
   I.Execute("provider_candidate", 5),
   I.TrustMe(),
   I.Allocate(),
-  I.GetConstant(V.Atom(34), 1),
+  I.GetConstant(V.Atom(37), 1),
   I.GetVariable(202, 2),
   I.GetVariable(203, 3),
   I.GetVariable(204, 4),
@@ -2637,7 +3092,7 @@ const shared_instructions = [
   I.GetVariable(206, 7),
   I.GetVariable(207, 8),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_116"),
+  I.TryMeElse("L_ite_else_138"),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
   I.PutVariable(201, 3),
@@ -2653,12 +3108,12 @@ const shared_instructions = [
   I.PutValue(201, 2),
   I.BuiltinCall("=/2", 2),
   I.PutValue(207, 1),
-  I.PutConstant(V.Atom(43), 2),
+  I.PutConstant(V.Atom(46), 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_116"),
+  I.Jump("L_ite_cont_138"),
   I.TrustMe(),
   I.GetLevel(209),
-  I.TryMeElse("L_ite_else_117"),
+  I.TryMeElse("L_ite_else_139"),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
   I.PutValue(204, 3),
@@ -2667,12 +3122,12 @@ const shared_instructions = [
   I.Call("layer_provider", 5),
   I.Cut(209),
   I.PutValue(207, 1),
-  I.PutConstant(V.Atom(43), 2),
+  I.PutConstant(V.Atom(46), 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_117"),
+  I.Jump("L_ite_cont_139"),
   I.TrustMe(),
   I.GetLevel(210),
-  I.TryMeElse("L_ite_else_118"),
+  I.TryMeElse("L_ite_else_140"),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
   I.PutValue(204, 3),
@@ -2683,9 +3138,9 @@ const shared_instructions = [
   I.PutValue(203, 2),
   I.BuiltinCall("=/2", 2),
   I.PutValue(207, 1),
-  I.PutConstant(V.Atom(42), 2),
+  I.PutConstant(V.Atom(45), 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_118"),
+  I.Jump("L_ite_cont_140"),
   I.TrustMe(),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
@@ -2694,7 +3149,7 @@ const shared_instructions = [
   I.PutValue(206, 5),
   I.Call("provider_candidate", 5),
   I.PutValue(207, 1),
-  I.PutConstant(V.Atom(42), 2),
+  I.PutConstant(V.Atom(45), 2),
   I.BuiltinCall("=/2", 2),
   I.Deallocate(),
   I.Proceed(),
@@ -2705,7 +3160,7 @@ const shared_instructions = [
   I.GetVariable(203, 4),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
-  I.PutConstant(V.Atom(33), 3),
+  I.PutConstant(V.Atom(36), 3),
   I.PutValue(203, 4),
   I.Call("candidates_high_first", 4),
   I.PutValue(201, 1),
@@ -2714,19 +3169,25 @@ const shared_instructions = [
   I.PutValue(204, 4),
   I.Deallocate(),
   I.Execute("repairs_moving", 4),
-  I.SwitchOnStructure([{fid: 44, arity: 3, label: "default"}, {fid: 44, arity: 4, label: "L_provide_row_5_2_body"}]),
+  I.GetStructure(7, 1, 3),
+  I.UnifyVariable(101),
+  I.UnifyVariable(102),
+  I.UnifyVariable(103),
+  I.GetValue(103, 2),
+  I.Proceed(),
+  I.SwitchOnStructure([{fid: 47, arity: 3, label: "default"}, {fid: 47, arity: 4, label: "L_provide_row_5_2_body"}]),
   I.TryMeElse("L_provide_row_5_2"),
-  I.GetStructure(44, 1, 3),
+  I.GetStructure(47, 1, 3),
   I.UnifyVariable(101),
   I.UnifyVariable(102),
   I.UnifyVariable(103),
   I.GetValue(101, 2),
   I.GetValue(102, 3),
   I.GetValue(103, 4),
-  I.GetConstant(V.Atom(45), 5),
+  I.GetConstant(V.Atom(48), 5),
   I.Proceed(),
   I.TrustMe(),
-  I.GetStructure(44, 1, 4),
+  I.GetStructure(47, 1, 4),
   I.UnifyVariable(101),
   I.UnifyVariable(102),
   I.UnifyVariable(103),
@@ -2736,17 +3197,17 @@ const shared_instructions = [
   I.GetValue(103, 4),
   I.GetValue(104, 5),
   I.Proceed(),
-  I.SwitchOnConstant([{value: V.Atom(45), label: "default"}], true),
+  I.SwitchOnConstant([{value: V.Atom(48), label: "default"}], true),
   I.TryMeElse("L_provide_satisfies_2_2"),
-  I.GetConstant(V.Atom(45), 1),
-  I.GetConstant(V.Atom(33), 2),
+  I.GetConstant(V.Atom(48), 1),
+  I.GetConstant(V.Atom(36), 2),
   I.Proceed(),
   I.TrustMe(),
   I.Allocate(),
   I.GetVariable(201, 1),
   I.GetVariable(202, 2),
   I.PutValue(201, 1),
-  I.PutConstant(V.Atom(45), 2),
+  I.PutConstant(V.Atom(48), 2),
   I.BuiltinCall("\\==/2", 2),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
@@ -2771,13 +3232,13 @@ const shared_instructions = [
   I.PutVariable(204, 5),
   I.Call("provide_row", 5),
   I.GetLevel(209),
-  I.TryMeElse("L_ite_else_125"),
+  I.TryMeElse("L_ite_else_147"),
   I.PutValue(206, 1),
   I.PutValue(207, 2),
   I.Call("excluded_name", 2),
   I.Cut(209),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_125"),
+  I.Jump("L_ite_cont_147"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.PutValue(204, 1),
@@ -2807,7 +3268,7 @@ const shared_instructions = [
   I.PutValue(206, 5),
   I.Deallocate(),
   I.Execute("provide_row", 5),
-  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_provides_list_2_2_body"}, {fid: 6, arity: 10, label: "L_provides_list_2_3_body"}]),
+  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_provides_list_2_2_body"}, {fid: 6, arity: 10, label: "L_provides_list_2_3_body"}, {fid: 7, arity: 3, label: "L_provides_list_2_4_body"}]),
   I.TryMeElse("L_provides_list_2_2"),
   I.GetStructure(6, 1, 6),
   I.UnifyVariable(101),
@@ -2831,7 +3292,7 @@ const shared_instructions = [
   I.UnifyVariable(109),
   I.GetConstant(V.Atom(2), 2),
   I.Proceed(),
-  I.TrustMe(),
+  I.RetryMeElse("L_provides_list_2_4"),
   I.GetStructure(6, 1, 10),
   I.UnifyVariable(101),
   I.UnifyVariable(102),
@@ -2845,6 +3306,17 @@ const shared_instructions = [
   I.UnifyVariable(110),
   I.GetValue(110, 2),
   I.Proceed(),
+  I.TrustMe(),
+  I.Allocate(),
+  I.GetStructure(7, 1, 3),
+  I.UnifyVariable(101),
+  I.UnifyVariable(102),
+  I.UnifyVariable(103),
+  I.GetVariable(104, 2),
+  I.PutValue(101, 1),
+  I.PutValue(104, 2),
+  I.Deallocate(),
+  I.Execute("provides_list", 2),
   I.Allocate(),
   I.GetVariable(108, 1),
   I.GetVariable(203, 2),
@@ -2879,28 +3351,28 @@ const shared_instructions = [
   I.PutVariable(206, 2),
   I.Call("installed_list", 2),
   I.GetLevel(213),
-  I.TryMeElse("L_ite_else_128"),
+  I.TryMeElse("L_ite_else_150"),
   I.PutValue(210, 1),
   I.PutValue(207, 2),
   I.PutVariable(201, 3),
   I.Call("installed_ver", 3),
   I.Cut(213),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_128"),
+  I.Jump("L_ite_cont_150"),
   I.TrustMe(),
   I.PutVariable(201, 1),
-  I.PutConstant(V.Atom(25), 2),
+  I.PutConstant(V.Atom(28), 2),
   I.BuiltinCall("=/2", 2),
   I.GetLevel(214),
-  I.TryMeElse("L_ite_else_129"),
+  I.TryMeElse("L_ite_else_151"),
   I.PutValue(201, 1),
-  I.PutConstant(V.Atom(25), 2),
+  I.PutConstant(V.Atom(28), 2),
   I.BuiltinCall("==/2", 2),
   I.Cut(214),
   I.PutValue(212, 1),
   I.PutConstant(V.Atom(2), 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_129"),
+  I.Jump("L_ite_cont_151"),
   I.TrustMe(),
   I.PutValue(210, 1),
   I.PutValue(206, 2),
@@ -2924,7 +3396,7 @@ const shared_instructions = [
   I.PutVariable(204, 204),
   I.PutVariable(205, 205),
   I.BeginAggregate("collect", 1, 211, []),
-  I.PutStructure(8, 1, 2),
+  I.PutStructure(9, 1, 2),
   I.SetValue(204),
   I.SetValue(205),
   I.PutValue(206, 2),
@@ -2936,26 +3408,26 @@ const shared_instructions = [
   I.PutValue(208, 2),
   I.BuiltinCall("member/2", 2),
   I.GetLevel(215),
-  I.TryMeElse("L_ite_else_130"),
+  I.TryMeElse("L_ite_else_152"),
   I.PutValue(204, 1),
   I.PutValue(209, 2),
   I.BuiltinCall("member/2", 2),
   I.Cut(215),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_130"),
+  I.Jump("L_ite_cont_152"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.GetLevel(216),
-  I.TryMeElse("L_ite_else_131"),
+  I.TryMeElse("L_ite_else_153"),
   I.PutValue(210, 1),
   I.PutValue(204, 2),
   I.Call("base_name", 2),
   I.Cut(216),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_131"),
+  I.Jump("L_ite_cont_153"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
-  I.PutStructure(8, 1, 2),
+  I.PutStructure(9, 1, 2),
   I.SetValue(204),
   I.SetValue(205),
   I.EndAggregate(1),
@@ -2988,17 +3460,17 @@ const shared_instructions = [
   I.Allocate(),
   I.GetList(1, 5),
   I.UnifyVariable(107),
-  I.GetStructure(19, 107, 2),
+  I.GetStructure(20, 107, 2),
   I.UnifyVariable(108),
-  I.GetStructure(20, 108, 1),
+  I.GetStructure(21, 108, 1),
   I.UnifyVariable(201),
   I.UnifyVariable(109),
   I.UnifyVariable(205),
   I.GetVariable(206, 2),
   I.BuiltinCall("!/0", 0),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_140"),
-  I.PutStructure(9, 1, 2),
+  I.TryMeElse("L_ite_else_162"),
+  I.PutStructure(10, 1, 2),
   I.SetVariable(202),
   I.SetVariable(204),
   I.PutValue(201, 2),
@@ -3011,7 +3483,7 @@ const shared_instructions = [
   I.PutValue(203, 1),
   I.PutValue(204, 2),
   I.Call("satisfies", 2),
-  I.Jump("L_ite_cont_140"),
+  I.Jump("L_ite_cont_162"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.PutValue(205, 1),
@@ -3022,13 +3494,13 @@ const shared_instructions = [
   I.Allocate(),
   I.GetList(1, 5),
   I.UnifyVariable(106),
-  I.GetStructure(19, 106, 2),
+  I.GetStructure(20, 106, 2),
   I.UnifyVariable(201),
   I.UnifyVariable(203),
   I.UnifyVariable(204),
   I.GetVariable(205, 2),
   I.GetLevel(206),
-  I.TryMeElse("L_ite_else_141"),
+  I.TryMeElse("L_ite_else_163"),
   I.PutValue(205, 1),
   I.PutValue(201, 2),
   I.PutVariable(202, 3),
@@ -3037,7 +3509,7 @@ const shared_instructions = [
   I.PutValue(202, 1),
   I.PutValue(203, 2),
   I.Call("satisfies", 2),
-  I.Jump("L_ite_cont_141"),
+  I.Jump("L_ite_cont_163"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.PutValue(204, 1),
@@ -3049,13 +3521,13 @@ const shared_instructions = [
   I.Allocate(),
   I.GetVariable(202, 1),
   I.GetVariable(203, 2),
-  I.GetStructure(19, 3, 2),
+  I.GetStructure(20, 3, 2),
   I.UnifyVariable(204),
   I.UnifyVariable(205),
   I.GetLevel(206),
-  I.TryMeElse("L_ite_else_146"),
+  I.TryMeElse("L_ite_else_168"),
   I.PutValue(203, 1),
-  I.PutStructure(19, 2, 2),
+  I.PutStructure(20, 2, 2),
   I.SetVariable(201),
   I.SetValue(205),
   I.BuiltinCall("=/2", 2),
@@ -3064,18 +3536,18 @@ const shared_instructions = [
   I.PutValue(201, 2),
   I.PutValue(204, 3),
   I.Call("canonicalize_name", 3),
-  I.Jump("L_ite_cont_146"),
+  I.Jump("L_ite_cont_168"),
   I.TrustMe(),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
   I.PutValue(204, 3),
   I.Call("canonicalize_name", 3),
   I.PutValue(205, 1),
-  I.PutConstant(V.Atom(33), 2),
+  I.PutConstant(V.Atom(36), 2),
   I.BuiltinCall("=/2", 2),
   I.Deallocate(),
   I.Proceed(),
-  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_requested_list_2_2_body"}, {fid: 6, arity: 10, label: "L_requested_list_2_3_body"}]),
+  I.SwitchOnStructure([{fid: 6, arity: 6, label: "default"}, {fid: 6, arity: 9, label: "L_requested_list_2_2_body"}, {fid: 6, arity: 10, label: "L_requested_list_2_3_body"}, {fid: 7, arity: 3, label: "L_requested_list_2_4_body"}]),
   I.TryMeElse("L_requested_list_2_2"),
   I.GetStructure(6, 1, 6),
   I.UnifyVariable(101),
@@ -3099,7 +3571,7 @@ const shared_instructions = [
   I.UnifyVariable(109),
   I.GetValue(106, 2),
   I.Proceed(),
-  I.TrustMe(),
+  I.RetryMeElse("L_requested_list_2_4"),
   I.GetStructure(6, 1, 10),
   I.UnifyVariable(101),
   I.UnifyVariable(102),
@@ -3113,23 +3585,37 @@ const shared_instructions = [
   I.UnifyVariable(110),
   I.GetValue(106, 2),
   I.Proceed(),
+  I.TrustMe(),
   I.Allocate(),
-  I.GetVariable(201, 1),
-  I.GetVariable(105, 2),
-  I.GetVariable(204, 3),
-  I.PutValue(201, 1),
-  I.PutValue(105, 2),
-  I.PutVariable(202, 3),
-  I.Call("map_requests", 3),
-  I.PutConstant(V.Atom(41), 1),
+  I.GetStructure(7, 1, 3),
+  I.UnifyVariable(101),
+  I.UnifyVariable(102),
+  I.UnifyVariable(103),
+  I.GetVariable(104, 2),
+  I.PutValue(101, 1),
+  I.PutValue(104, 2),
+  I.Deallocate(),
+  I.Execute("requested_list", 2),
+  I.Allocate(),
+  I.GetVariable(106, 1),
+  I.GetVariable(201, 2),
+  I.GetVariable(205, 3),
+  I.PutValue(106, 1),
+  I.PutVariable(202, 2),
+  I.Call("index_catalog", 2),
+  I.PutValue(202, 1),
   I.PutValue(201, 2),
-  I.PutValue(202, 3),
+  I.PutVariable(203, 3),
+  I.Call("map_requests", 3),
+  I.PutConstant(V.Atom(44), 1),
+  I.PutValue(202, 2),
+  I.PutValue(203, 3),
   I.PutConstant(V.Atom(2), 4),
-  I.PutVariable(203, 5),
+  I.PutVariable(204, 5),
   I.Call("resolve_pending", 5),
   I.BuiltinCall("!/0", 0),
-  I.PutValue(203, 1),
-  I.PutValue(204, 2),
+  I.PutValue(204, 1),
+  I.PutValue(205, 2),
   I.BuiltinCall("sort/2", 2),
   I.Deallocate(),
   I.Proceed(),
@@ -3141,7 +3627,7 @@ const shared_instructions = [
   I.GetVariable(207, 5),
   I.GetVariable(208, 6),
   I.GetLevel(209),
-  I.TryMeElse("L_ite_else_149"),
+  I.TryMeElse("L_ite_else_171"),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
   I.PutValue(207, 3),
@@ -3154,9 +3640,9 @@ const shared_instructions = [
   I.PutValue(207, 4),
   I.PutValue(208, 5),
   I.Call("resolve_pending", 5),
-  I.Jump("L_ite_cont_149"),
+  I.Jump("L_ite_cont_171"),
   I.TrustMe(),
-  I.PutStructure(9, 1, 2),
+  I.PutStructure(10, 1, 2),
   I.SetVariable(204),
   I.SetVariable(205),
   I.PutValue(201, 2),
@@ -3166,7 +3652,7 @@ const shared_instructions = [
   I.PutStructure(5, 3, 2),
   I.SetVariable(111),
   I.SetValue(206),
-  I.PutStructure(19, 111, 2),
+  I.PutStructure(20, 111, 2),
   I.SetValue(204),
   I.SetValue(205),
   I.PutValue(207, 4),
@@ -3175,22 +3661,25 @@ const shared_instructions = [
   I.Deallocate(),
   I.Proceed(),
   I.Allocate(),
-  I.GetVariable(201, 1),
-  I.GetVariable(105, 2),
-  I.GetVariable(204, 3),
-  I.PutValue(201, 1),
-  I.PutValue(105, 2),
-  I.PutVariable(202, 3),
-  I.Call("map_requests", 3),
-  I.PutConstant(V.Atom(34), 1),
+  I.GetVariable(106, 1),
+  I.GetVariable(201, 2),
+  I.GetVariable(205, 3),
+  I.PutValue(106, 1),
+  I.PutVariable(202, 2),
+  I.Call("index_catalog", 2),
+  I.PutValue(202, 1),
   I.PutValue(201, 2),
-  I.PutValue(202, 3),
+  I.PutVariable(203, 3),
+  I.Call("map_requests", 3),
+  I.PutConstant(V.Atom(37), 1),
+  I.PutValue(202, 2),
+  I.PutValue(203, 3),
   I.PutConstant(V.Atom(2), 4),
-  I.PutVariable(203, 5),
+  I.PutVariable(204, 5),
   I.Call("resolve_pending", 5),
   I.BuiltinCall("!/0", 0),
-  I.PutValue(203, 1),
-  I.PutValue(204, 2),
+  I.PutValue(204, 1),
+  I.PutValue(205, 2),
   I.BuiltinCall("sort/2", 2),
   I.Deallocate(),
   I.Proceed(),
@@ -3207,16 +3696,16 @@ const shared_instructions = [
   I.GetVariable(207, 2),
   I.GetList(3, 5),
   I.UnifyVariable(114),
-  I.GetStructure(19, 114, 2),
+  I.GetStructure(20, 114, 2),
   I.UnifyVariable(203),
   I.UnifyVariable(205),
   I.UnifyVariable(208),
   I.GetVariable(202, 4),
   I.GetVariable(209, 5),
   I.GetLevel(214),
-  I.TryMeElse("L_ite_else_152"),
+  I.TryMeElse("L_ite_else_174"),
   I.PutValue(203, 1),
-  I.PutStructure(20, 2, 1),
+  I.PutStructure(21, 2, 1),
   I.SetVariable(201),
   I.BuiltinCall("=/2", 2),
   I.Cut(214),
@@ -3227,10 +3716,10 @@ const shared_instructions = [
   I.PutValue(202, 5),
   I.PutValue(209, 6),
   I.Call("resolve_alternatives", 6),
-  I.Jump("L_ite_cont_152"),
+  I.Jump("L_ite_cont_174"),
   I.TrustMe(),
   I.GetLevel(215),
-  I.TryMeElse("L_ite_else_153"),
+  I.TryMeElse("L_ite_else_175"),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
   I.PutVariable(204, 3),
@@ -3245,10 +3734,10 @@ const shared_instructions = [
   I.PutValue(202, 4),
   I.PutValue(209, 5),
   I.Call("resolve_pending", 5),
-  I.Jump("L_ite_cont_153"),
+  I.Jump("L_ite_cont_175"),
   I.TrustMe(),
   I.GetLevel(216),
-  I.TryMeElse("L_ite_else_154"),
+  I.TryMeElse("L_ite_else_176"),
   I.PutValue(207, 1),
   I.PutValue(202, 2),
   I.PutValue(203, 3),
@@ -3261,7 +3750,7 @@ const shared_instructions = [
   I.PutValue(202, 4),
   I.PutValue(209, 5),
   I.Call("resolve_pending", 5),
-  I.Jump("L_ite_cont_154"),
+  I.Jump("L_ite_cont_176"),
   I.TrustMe(),
   I.PutValue(206, 1),
   I.PutValue(207, 2),
@@ -3272,6 +3761,12 @@ const shared_instructions = [
   I.PutVariable(204, 7),
   I.PutVariable(211, 8),
   I.Call("pick_need", 8),
+  I.GetLevel(217),
+  I.TryMeElse("L_ite_else_177"),
+  I.PutValue(211, 1),
+  I.PutConstant(V.Atom(46), 2),
+  I.BuiltinCall("=/2", 2),
+  I.Cut(217),
   I.PutValue(207, 1),
   I.PutValue(210, 2),
   I.PutValue(204, 3),
@@ -3281,32 +3776,35 @@ const shared_instructions = [
   I.PutValue(208, 2),
   I.PutVariable(213, 3),
   I.BuiltinCall("append/3", 3),
-  I.GetLevel(217),
-  I.TryMeElse("L_ite_else_155"),
-  I.PutValue(211, 1),
-  I.PutConstant(V.Atom(43), 2),
-  I.BuiltinCall("=/2", 2),
-  I.Cut(217),
   I.PutValue(206, 1),
   I.PutValue(207, 2),
   I.PutValue(213, 3),
   I.PutValue(202, 4),
   I.PutValue(209, 5),
   I.Call("resolve_pending", 5),
-  I.Jump("L_ite_cont_155"),
+  I.Jump("L_ite_cont_177"),
   I.TrustMe(),
   I.PutValue(207, 1),
   I.PutValue(210, 2),
   I.PutValue(204, 3),
   I.PutValue(202, 4),
   I.Call("no_acc_conflicts", 4),
+  I.PutValue(207, 1),
+  I.PutValue(210, 2),
+  I.PutValue(204, 3),
+  I.PutVariable(212, 4),
+  I.Call("collect_deps", 4),
+  I.PutValue(212, 1),
+  I.PutValue(208, 2),
+  I.PutVariable(213, 3),
+  I.BuiltinCall("append/3", 3),
   I.PutValue(206, 1),
   I.PutValue(207, 2),
   I.PutValue(213, 3),
   I.PutStructure(5, 4, 2),
   I.SetVariable(116),
   I.SetValue(202),
-  I.PutStructure(8, 116, 2),
+  I.PutStructure(9, 116, 2),
   I.SetValue(210),
   I.SetValue(204),
   I.PutValue(209, 5),
@@ -3327,11 +3825,11 @@ const shared_instructions = [
   I.GetVariable(202, 2),
   I.GetList(3, 5),
   I.UnifyVariable(105),
-  I.GetStructure(8, 105, 2),
+  I.GetStructure(9, 105, 2),
   I.UnifyValue(104),
   I.UnifyVariable(106),
   I.UnifyVariable(203),
-  I.PutStructure(8, 1, 2),
+  I.PutStructure(9, 1, 2),
   I.SetValue(104),
   I.SetValue(106),
   I.PutValue(202, 2),
@@ -3366,42 +3864,42 @@ const shared_instructions = [
   I.PutVariable(202, 3),
   I.Call("canonicalize_name", 3),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_164"),
+  I.TryMeElse("L_ite_else_186"),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_165"),
+  I.TryMeElse("L_ite_else_187"),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
   I.PutValue(206, 3),
   I.Call("package_in", 3),
   I.Cut(208),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_165"),
+  I.Jump("L_ite_cont_187"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.Cut(207),
   I.PutValue(204, 1),
-  I.PutConstant(V.Atom(46), 2),
+  I.PutConstant(V.Atom(49), 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_164"),
+  I.Jump("L_ite_cont_186"),
   I.TrustMe(),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_166"),
+  I.TryMeElse("L_ite_else_188"),
   I.GetLevel(209),
-  I.TryMeElse("L_ite_else_167"),
+  I.TryMeElse("L_ite_else_189"),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
   I.PutVariable(203, 3),
   I.Call("base_reason", 3),
   I.Cut(209),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_167"),
+  I.Jump("L_ite_cont_189"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.Cut(208),
   I.PutValue(204, 1),
-  I.PutConstant(V.Atom(46), 2),
+  I.PutConstant(V.Atom(49), 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_166"),
+  I.Jump("L_ite_cont_188"),
   I.TrustMe(),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
@@ -3420,63 +3918,118 @@ const shared_instructions = [
   I.GetVariable(101, 1),
   I.GetVariable(102, 2),
   I.GetVariable(103, 3),
-  I.GetConstant(V.Atom(47), 4),
-  I.GetStructure(48, 5, 1),
-  I.UnifyConstant(V.Atom(47)),
+  I.GetConstant(V.Atom(50), 4),
+  I.GetStructure(51, 5, 1),
+  I.UnifyConstant(V.Atom(50)),
   I.Proceed(),
   I.RetryMeElse("L_safe_upgrade_reason_5_3"),
   I.GetVariable(101, 1),
   I.GetVariable(102, 2),
   I.GetVariable(103, 3),
-  I.GetConstant(V.Atom(49), 4),
-  I.GetStructure(50, 5, 1),
+  I.GetConstant(V.Atom(52), 4),
+  I.GetStructure(53, 5, 1),
   I.UnifyVariable(104),
-  I.GetStructure(51, 104, 1),
-  I.UnifyConstant(V.Atom(49)),
+  I.GetStructure(54, 104, 1),
+  I.UnifyConstant(V.Atom(52)),
   I.Proceed(),
   I.RetryMeElse("L_safe_upgrade_reason_5_4"),
   I.GetVariable(101, 1),
   I.GetVariable(102, 2),
   I.GetVariable(103, 3),
-  I.GetConstant(V.Atom(13), 4),
-  I.GetStructure(50, 5, 1),
+  I.GetConstant(V.Atom(14), 4),
+  I.GetStructure(53, 5, 1),
   I.UnifyVariable(104),
-  I.GetStructure(51, 104, 1),
-  I.UnifyConstant(V.Atom(13)),
+  I.GetStructure(54, 104, 1),
+  I.UnifyConstant(V.Atom(14)),
   I.Proceed(),
   I.RetryMeElse("L_safe_upgrade_reason_5_5"),
   I.GetVariable(101, 1),
   I.GetVariable(102, 2),
   I.GetVariable(103, 3),
-  I.GetConstant(V.Atom(52), 4),
-  I.GetStructure(50, 5, 1),
+  I.GetConstant(V.Atom(55), 4),
+  I.GetStructure(53, 5, 1),
   I.UnifyVariable(104),
-  I.GetStructure(51, 104, 1),
-  I.UnifyConstant(V.Atom(52)),
+  I.GetStructure(54, 104, 1),
+  I.UnifyConstant(V.Atom(55)),
   I.Proceed(),
   I.TrustMe(),
   I.Allocate(),
   I.GetVariable(101, 1),
   I.GetVariable(102, 2),
   I.GetVariable(103, 3),
-  I.GetConstant(V.Atom(16), 4),
-  I.GetStructure(53, 5, 1),
+  I.GetConstant(V.Atom(17), 4),
+  I.GetStructure(56, 5, 1),
   I.UnifyVariable(104),
   I.PutValue(101, 1),
   I.PutValue(102, 2),
   I.PutValue(103, 3),
-  I.PutStructure(26, 4, 1),
+  I.PutStructure(29, 4, 1),
   I.SetValue(104),
   I.Deallocate(),
   I.Execute("upgrade_set_result", 4),
-  I.SwitchOnTerm([{value: V.Atom(33), label: "default"}], [{fid: 54, arity: 1, label: "L_satisfies_2_2"}, {fid: 55, arity: 1, label: "L_satisfies_2_3"}, {fid: 56, arity: 1, label: "L_satisfies_2_4"}, {fid: 57, arity: 1, label: "L_satisfies_2_5"}, {fid: 58, arity: 1, label: "L_satisfies_2_6"}, {fid: 59, arity: 2, label: "L_satisfies_2_7"}], "none", 2),
+  I.SwitchOnTerm([{value: V.Atom(2), label: "default"}], [], "L_same_key_4_2_body", 1),
+  I.TryMeElse("L_same_key_4_2"),
+  I.GetConstant(V.Atom(2), 1),
+  I.GetVariable(101, 2),
+  I.GetConstant(V.Atom(2), 3),
+  I.GetConstant(V.Atom(2), 4),
+  I.Proceed(),
+  I.TrustMe(),
+  I.Allocate(),
+  I.GetList(1, 5),
+  I.UnifyVariable(109),
+  I.GetStructure(9, 109, 2),
+  I.UnifyVariable(110),
+  I.GetStructure(9, 110, 2),
+  I.UnifyVariable(205),
+  I.UnifyVariable(206),
+  I.UnifyVariable(207),
+  I.UnifyVariable(208),
+  I.GetVariable(201, 2),
+  I.GetVariable(203, 3),
+  I.GetVariable(204, 4),
+  I.GetLevel(209),
+  I.TryMeElse("L_ite_else_198"),
+  I.PutValue(205, 1),
+  I.PutValue(201, 2),
+  I.BuiltinCall("==/2", 2),
+  I.Cut(209),
+  I.PutValue(203, 1),
+  I.PutStructure(5, 2, 2),
+  I.SetValue(207),
+  I.SetVariable(202),
+  I.BuiltinCall("=/2", 2),
+  I.PutValue(208, 1),
+  I.PutValue(201, 2),
+  I.PutValue(202, 3),
+  I.PutValue(204, 4),
+  I.Call("same_key", 4),
+  I.Jump("L_ite_cont_198"),
+  I.TrustMe(),
+  I.PutValue(203, 1),
+  I.PutConstant(V.Atom(2), 2),
+  I.BuiltinCall("=/2", 2),
+  I.PutValue(204, 1),
+  I.PutStructure(5, 2, 2),
+  I.SetVariable(112),
+  I.SetValue(208),
+  I.PutStructure(9, 112, 2),
+  I.SetVariable(113),
+  I.SetValue(207),
+  I.PutStructure(9, 113, 2),
+  I.SetValue(205),
+  I.SetValue(206),
+  I.BuiltinCall("=/2", 2),
+  I.Deallocate(),
+  I.Proceed(),
+  I.SwitchOnTerm([{value: V.Atom(36), label: "default"}], [{fid: 57, arity: 1, label: "L_satisfies_2_2"}, {fid: 58, arity: 1, label: "L_satisfies_2_3"}, {fid: 59, arity: 1, label: "L_satisfies_2_4"}, {fid: 60, arity: 1, label: "L_satisfies_2_5"}, {fid: 61, arity: 1, label: "L_satisfies_2_6"}, {fid: 62, arity: 2, label: "L_satisfies_2_7"}], "none", 2),
   I.TryMeElse("L_satisfies_2_2"),
   I.GetVariable(101, 1),
-  I.GetConstant(V.Atom(33), 2),
+  I.GetConstant(V.Atom(36), 2),
   I.Proceed(),
   I.RetryMeElse("L_satisfies_2_3"),
   I.GetVariable(101, 1),
-  I.GetStructure(54, 2, 1),
+  I.GetStructure(57, 2, 1),
   I.UnifyVariable(102),
   I.PutValue(101, 1),
   I.PutValue(102, 2),
@@ -3484,38 +4037,38 @@ const shared_instructions = [
   I.Proceed(),
   I.RetryMeElse("L_satisfies_2_4"),
   I.GetVariable(101, 1),
-  I.GetStructure(55, 2, 1),
+  I.GetStructure(58, 2, 1),
   I.UnifyVariable(102),
   I.GetLevel(201),
-  I.TryMeElse("L_ite_else_176"),
+  I.TryMeElse("L_ite_else_200"),
   I.PutValue(101, 1),
   I.PutValue(102, 2),
   I.Call("version_lt", 2),
   I.Cut(201),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_176"),
+  I.Jump("L_ite_cont_200"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.Proceed(),
   I.RetryMeElse("L_satisfies_2_5"),
   I.GetVariable(101, 1),
-  I.GetStructure(56, 2, 1),
+  I.GetStructure(59, 2, 1),
   I.UnifyVariable(102),
   I.GetLevel(201),
-  I.TryMeElse("L_ite_else_177"),
+  I.TryMeElse("L_ite_else_201"),
   I.PutValue(102, 1),
   I.PutValue(101, 2),
   I.Call("version_lt", 2),
   I.Cut(201),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_177"),
+  I.Jump("L_ite_cont_201"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.Proceed(),
   I.RetryMeElse("L_satisfies_2_6"),
   I.Allocate(),
   I.GetVariable(101, 1),
-  I.GetStructure(57, 2, 1),
+  I.GetStructure(60, 2, 1),
   I.UnifyVariable(102),
   I.PutValue(101, 1),
   I.PutValue(102, 2),
@@ -3524,7 +4077,7 @@ const shared_instructions = [
   I.RetryMeElse("L_satisfies_2_7"),
   I.Allocate(),
   I.GetVariable(101, 1),
-  I.GetStructure(58, 2, 1),
+  I.GetStructure(61, 2, 1),
   I.UnifyVariable(102),
   I.PutValue(102, 1),
   I.PutValue(101, 2),
@@ -3533,17 +4086,17 @@ const shared_instructions = [
   I.TrustMe(),
   I.Allocate(),
   I.GetVariable(201, 1),
-  I.GetStructure(59, 2, 2),
+  I.GetStructure(62, 2, 2),
   I.UnifyVariable(103),
   I.UnifyVariable(202),
   I.GetLevel(203),
-  I.TryMeElse("L_ite_else_178"),
+  I.TryMeElse("L_ite_else_202"),
   I.PutValue(201, 1),
   I.PutValue(103, 2),
   I.Call("version_lt", 2),
   I.Cut(203),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_178"),
+  I.Jump("L_ite_cont_202"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.PutValue(201, 1),
@@ -3564,10 +4117,10 @@ const shared_instructions = [
   I.GetVariable(205, 2),
   I.GetVariable(211, 3),
   I.GetLevel(212),
-  I.TryMeElse("L_ite_else_185"),
+  I.TryMeElse("L_ite_else_209"),
   I.PutValue(202, 1),
-  I.PutStructure(37, 2, 2),
-  I.SetConstant(V.Atom(36)),
+  I.PutStructure(40, 2, 2),
+  I.SetConstant(V.Atom(39)),
   I.SetVariable(201),
   I.BuiltinCall("=/2", 2),
   I.Cut(212),
@@ -3575,12 +4128,12 @@ const shared_instructions = [
   I.PutValue(205, 2),
   I.PutVariable(210, 3),
   I.Call("scan_base_holds", 3),
-  I.Jump("L_ite_cont_185"),
+  I.Jump("L_ite_cont_209"),
   I.TrustMe(),
   I.GetLevel(213),
-  I.TryMeElse("L_ite_else_186"),
+  I.TryMeElse("L_ite_else_210"),
   I.PutValue(202, 1),
-  I.PutStructure(37, 2, 2),
+  I.PutStructure(40, 2, 2),
   I.SetVariable(203),
   I.SetVariable(204),
   I.BuiltinCall("=/2", 2),
@@ -3588,15 +4141,15 @@ const shared_instructions = [
   I.PutVariable(210, 1),
   I.PutValue(205, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_186"),
+  I.Jump("L_ite_cont_210"),
   I.TrustMe(),
   I.GetLevel(214),
-  I.TryMeElse("L_ite_else_187"),
+  I.TryMeElse("L_ite_else_211"),
   I.PutValue(202, 1),
-  I.PutStructure(36, 2, 2),
+  I.PutStructure(39, 2, 2),
   I.SetVariable(113),
   I.SetVariable(208),
-  I.PutStructure(8, 113, 2),
+  I.PutStructure(9, 113, 2),
   I.SetVariable(206),
   I.SetVariable(207),
   I.BuiltinCall("=/2", 2),
@@ -3605,17 +4158,17 @@ const shared_instructions = [
   I.PutStructure(5, 2, 2),
   I.SetVariable(115),
   I.SetValue(205),
-  I.PutStructure(12, 115, 3),
+  I.PutStructure(13, 115, 3),
   I.SetValue(206),
   I.SetValue(207),
   I.SetValue(208),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_187"),
+  I.Jump("L_ite_cont_211"),
   I.TrustMe(),
   I.GetLevel(215),
-  I.TryMeElse("L_ite_else_188"),
+  I.TryMeElse("L_ite_else_212"),
   I.PutValue(202, 1),
-  I.PutStructure(8, 2, 2),
+  I.PutStructure(9, 2, 2),
   I.SetVariable(206),
   I.SetVariable(207),
   I.BuiltinCall("=/2", 2),
@@ -3624,12 +4177,12 @@ const shared_instructions = [
   I.PutStructure(5, 2, 2),
   I.SetVariable(114),
   I.SetValue(205),
-  I.PutStructure(12, 114, 3),
+  I.PutStructure(13, 114, 3),
   I.SetValue(206),
   I.SetValue(207),
-  I.SetConstant(V.Atom(13)),
+  I.SetConstant(V.Atom(14)),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_188"),
+  I.Jump("L_ite_cont_212"),
   I.TrustMe(),
   I.PutVariable(210, 1),
   I.PutValue(205, 2),
@@ -3645,13 +4198,13 @@ const shared_instructions = [
   I.UnifyVariable(202),
   I.GetVariable(203, 2),
   I.GetLevel(204),
-  I.TryMeElse("L_ite_else_193"),
+  I.TryMeElse("L_ite_else_217"),
   I.PutValue(201, 1),
   I.PutValue(203, 2),
   I.BuiltinCall("==/2", 2),
   I.Cut(204),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_193"),
+  I.Jump("L_ite_cont_217"),
   I.TrustMe(),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
@@ -3684,27 +4237,27 @@ const shared_instructions = [
   I.Allocate(),
   I.GetList(1, 5),
   I.UnifyVariable(107),
-  I.GetStructure(40, 107, 2),
+  I.GetStructure(43, 107, 2),
   I.UnifyVariable(201),
   I.UnifyVariable(203),
   I.UnifyVariable(205),
   I.GetList(2, 5),
   I.UnifyVariable(108),
-  I.GetStructure(40, 108, 2),
+  I.GetStructure(43, 108, 2),
   I.UnifyVariable(202),
   I.UnifyVariable(204),
   I.UnifyVariable(206),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_195"),
+  I.TryMeElse("L_ite_else_219"),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
   I.Call("order_lt", 2),
   I.Cut(207),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_195"),
+  I.Jump("L_ite_cont_219"),
   I.TrustMe(),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_196"),
+  I.TryMeElse("L_ite_else_220"),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("==/2", 2),
@@ -3713,7 +4266,7 @@ const shared_instructions = [
   I.BuiltinCall("</2", 2),
   I.Cut(208),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_196"),
+  I.Jump("L_ite_cont_220"),
   I.TrustMe(),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
@@ -3733,15 +4286,15 @@ const shared_instructions = [
   I.GetVariable(203, 2),
   I.GetVariable(204, 3),
   I.GetLevel(205),
-  I.TryMeElse("L_ite_else_201"),
+  I.TryMeElse("L_ite_else_225"),
   I.PutValue(201, 1),
-  I.PutStructure(8, 2, 2),
+  I.PutStructure(9, 2, 2),
   I.SetValue(203),
   I.SetValue(204),
   I.BuiltinCall("=/2", 2),
   I.Cut(205),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_201"),
+  I.Jump("L_ite_cont_225"),
   I.TrustMe(),
   I.PutValue(202, 1),
   I.PutValue(203, 2),
@@ -3753,8 +4306,8 @@ const shared_instructions = [
   I.GetVariable(201, 1),
   I.GetVariable(203, 2),
   I.GetLevel(204),
-  I.TryMeElse("L_ite_else_203"),
-  I.PutConstant(V.Atom(60), 1),
+  I.TryMeElse("L_ite_else_227"),
+  I.PutConstant(V.Atom(63), 1),
   I.PutValue(201, 2),
   I.BuiltinCall("maplist/2", 2),
   I.Cut(204),
@@ -3764,9 +4317,9 @@ const shared_instructions = [
   I.PutValue(202, 1),
   I.PutValue(203, 2),
   I.BuiltinCall("reverse/2", 2),
-  I.Jump("L_ite_cont_203"),
+  I.Jump("L_ite_cont_227"),
   I.TrustMe(),
-  I.PutConstant(V.Atom(61), 1),
+  I.PutConstant(V.Atom(64), 1),
   I.PutValue(201, 2),
   I.PutVariable(202, 3),
   I.Call("predsort", 3),
@@ -3787,14 +4340,14 @@ const shared_instructions = [
   I.Deallocate(),
   I.Execute("tight_rev_in", 3),
   I.Allocate(),
-  I.PutConstant(V.Atom(33), 2),
+  I.PutConstant(V.Atom(36), 2),
   I.BuiltinCall("\\==/2", 2),
   I.Deallocate(),
   I.Proceed(),
   I.Allocate(),
   I.GetList(1, 5),
   I.UnifyVariable(109),
-  I.GetStructure(12, 109, 3),
+  I.GetStructure(13, 109, 3),
   I.UnifyVariable(201),
   I.UnifyVariable(202),
   I.UnifyVariable(110),
@@ -3802,7 +4355,7 @@ const shared_instructions = [
   I.GetVariable(207, 2),
   I.GetVariable(208, 3),
   I.GetLevel(209),
-  I.TryMeElse("L_ite_else_205"),
+  I.TryMeElse("L_ite_else_229"),
   I.PutValue(201, 1),
   I.PutValue(208, 2),
   I.BuiltinCall("\\==/2", 2),
@@ -3812,13 +4365,13 @@ const shared_instructions = [
   I.PutVariable(203, 4),
   I.PutVariable(204, 5),
   I.Call("dep_targets", 5),
-  I.TryMeElse("L_ite_else_206"),
+  I.TryMeElse("L_ite_else_230"),
   I.PutValue(203, 1),
   I.PutValue(208, 2),
   I.BuiltinCall("==/2", 2),
   I.PutValue(204, 1),
   I.Call("tight_constraint", 1),
-  I.Jump("L_ite_cont_206"),
+  I.Jump("L_ite_cont_230"),
   I.TrustMe(),
   I.PutValue(207, 1),
   I.PutValue(208, 2),
@@ -3832,7 +4385,7 @@ const shared_instructions = [
   I.Call("provides_sat", 5),
   I.Cut(209),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_205"),
+  I.Jump("L_ite_cont_229"),
   I.TrustMe(),
   I.PutValue(206, 1),
   I.PutValue(207, 2),
@@ -3903,8 +4456,8 @@ const shared_instructions = [
   I.GetVariable(213, 6),
   I.GetVariable(212, 7),
   I.GetLevel(214),
-  I.TryMeElse("L_ite_else_211"),
-  I.PutStructure(8, 1, 2),
+  I.TryMeElse("L_ite_else_235"),
+  I.PutStructure(9, 1, 2),
   I.SetValue(210),
   I.SetVariable(206),
   I.PutValue(205, 2),
@@ -3937,14 +4490,14 @@ const shared_instructions = [
   I.PutStructure(5, 2, 2),
   I.SetVariable(117),
   I.SetValue(207),
-  I.PutStructure(8, 117, 2),
+  I.PutStructure(9, 117, 2),
   I.SetValue(210),
   I.SetValue(206),
   I.BuiltinCall("=/2", 2),
   I.PutValue(209, 1),
   I.PutValue(208, 2),
   I.BuiltinCall("=/2", 2),
-  I.Jump("L_ite_cont_211"),
+  I.Jump("L_ite_cont_235"),
   I.TrustMe(),
   I.PutValue(209, 1),
   I.PutStructure(5, 2, 2),
@@ -3990,6 +4543,47 @@ const shared_instructions = [
   I.Deallocate(),
   I.Proceed(),
   I.Allocate(),
+  I.GetStructure(26, 1, 4),
+  I.UnifyVariable(203),
+  I.UnifyVariable(107),
+  I.UnifyVariable(201),
+  I.UnifyVariable(206),
+  I.GetVariable(204, 2),
+  I.GetVariable(205, 3),
+  I.PutVariable(202, 1),
+  I.PutValue(204, 2),
+  I.PutValue(107, 3),
+  I.BuiltinCall("compare/3", 3),
+  I.GetLevel(207),
+  I.TryMeElse("L_ite_else_238"),
+  I.PutValue(202, 1),
+  I.PutConstant(V.Atom(33), 2),
+  I.BuiltinCall("=/2", 2),
+  I.Cut(207),
+  I.PutValue(205, 1),
+  I.PutValue(201, 2),
+  I.BuiltinCall("=/2", 2),
+  I.Jump("L_ite_cont_238"),
+  I.TrustMe(),
+  I.GetLevel(208),
+  I.TryMeElse("L_ite_else_239"),
+  I.PutValue(202, 1),
+  I.PutConstant(V.Atom(31), 2),
+  I.BuiltinCall("=/2", 2),
+  I.Cut(208),
+  I.PutValue(203, 1),
+  I.PutValue(204, 2),
+  I.PutValue(205, 3),
+  I.Call("tree_lookup", 3),
+  I.Jump("L_ite_cont_239"),
+  I.TrustMe(),
+  I.PutValue(206, 1),
+  I.PutValue(204, 2),
+  I.PutValue(205, 3),
+  I.Call("tree_lookup", 3),
+  I.Deallocate(),
+  I.Proceed(),
+  I.Allocate(),
   I.GetVariable(101, 1),
   I.GetVariable(102, 2),
   I.GetVariable(103, 3),
@@ -3997,7 +4591,7 @@ const shared_instructions = [
   I.PutValue(101, 1),
   I.PutValue(102, 2),
   I.PutValue(103, 3),
-  I.PutStructure(26, 4, 1),
+  I.PutStructure(29, 4, 1),
   I.SetValue(104),
   I.Call("upgrade_set_result", 4),
   I.BuiltinCall("!/0", 0),
@@ -4013,7 +4607,7 @@ const shared_instructions = [
   I.PutVariable(202, 3),
   I.Call("canonicalize_name", 3),
   I.GetLevel(205),
-  I.TryMeElse("L_ite_else_214"),
+  I.TryMeElse("L_ite_else_242"),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
   I.PutValue(203, 3),
@@ -4023,41 +4617,41 @@ const shared_instructions = [
   I.PutList(2, 5),
   I.SetVariable(107),
   I.SetConstant(V.Atom(2)),
-  I.PutStructure(8, 107, 2),
+  I.PutStructure(9, 107, 2),
   I.SetValue(202),
   I.SetValue(203),
   I.PutValue(204, 3),
   I.Call("close_moving", 3),
-  I.Jump("L_ite_cont_214"),
+  I.Jump("L_ite_cont_242"),
   I.TrustMe(),
   I.PutValue(204, 1),
-  I.PutConstant(V.Atom(46), 2),
+  I.PutConstant(V.Atom(49), 2),
   I.BuiltinCall("=/2", 2),
   I.BuiltinCall("!/0", 0),
   I.Deallocate(),
   I.Proceed(),
-  I.SwitchOnStructure([{fid: 35, arity: 3, label: "default"}, {fid: 62, arity: 3, label: "L_version_lt_2_2_body"}]),
+  I.SwitchOnStructure([{fid: 38, arity: 3, label: "default"}, {fid: 65, arity: 3, label: "L_version_lt_2_2_body"}]),
   I.TryMeElse("L_version_lt_2_2"),
   I.Allocate(),
-  I.GetStructure(35, 1, 3),
+  I.GetStructure(38, 1, 3),
   I.UnifyVariable(201),
   I.UnifyVariable(203),
   I.UnifyVariable(205),
-  I.GetStructure(35, 2, 3),
+  I.GetStructure(38, 2, 3),
   I.UnifyVariable(202),
   I.UnifyVariable(204),
   I.UnifyVariable(206),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_217"),
+  I.TryMeElse("L_ite_else_245"),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("</2", 2),
   I.Cut(207),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_217"),
+  I.Jump("L_ite_cont_245"),
   I.TrustMe(),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_218"),
+  I.TryMeElse("L_ite_else_246"),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("=:=/2", 2),
@@ -4066,7 +4660,7 @@ const shared_instructions = [
   I.BuiltinCall("</2", 2),
   I.Cut(208),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_218"),
+  I.Jump("L_ite_cont_246"),
   I.TrustMe(),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
@@ -4081,25 +4675,25 @@ const shared_instructions = [
   I.Proceed(),
   I.TrustMe(),
   I.Allocate(),
-  I.GetStructure(62, 1, 3),
+  I.GetStructure(65, 1, 3),
   I.UnifyVariable(201),
   I.UnifyVariable(203),
   I.UnifyVariable(205),
-  I.GetStructure(62, 2, 3),
+  I.GetStructure(65, 2, 3),
   I.UnifyVariable(202),
   I.UnifyVariable(204),
   I.UnifyVariable(206),
   I.GetLevel(207),
-  I.TryMeElse("L_ite_else_219"),
+  I.TryMeElse("L_ite_else_247"),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("</2", 2),
   I.Cut(207),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_219"),
+  I.Jump("L_ite_cont_247"),
   I.TrustMe(),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_220"),
+  I.TryMeElse("L_ite_else_248"),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("=:=/2", 2),
@@ -4108,29 +4702,29 @@ const shared_instructions = [
   I.Call("segs_lt", 2),
   I.Cut(208),
   I.BuiltinCall("true/0", 0),
-  I.Jump("L_ite_cont_220"),
+  I.Jump("L_ite_cont_248"),
   I.TrustMe(),
   I.PutValue(201, 1),
   I.PutValue(202, 2),
   I.BuiltinCall("=:=/2", 2),
   I.GetLevel(209),
-  I.TryMeElse("L_ite_else_221"),
+  I.TryMeElse("L_ite_else_249"),
   I.PutValue(203, 1),
   I.PutValue(204, 2),
   I.Call("segs_lt", 2),
   I.Cut(209),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_221"),
+  I.Jump("L_ite_cont_249"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.GetLevel(210),
-  I.TryMeElse("L_ite_else_222"),
+  I.TryMeElse("L_ite_else_250"),
   I.PutValue(204, 1),
   I.PutValue(203, 2),
   I.Call("segs_lt", 2),
   I.Cut(210),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_222"),
+  I.Jump("L_ite_cont_250"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.PutValue(205, 1),
@@ -4144,13 +4738,13 @@ const shared_instructions = [
   I.GetVariable(207, 3),
   I.GetVariable(201, 4),
   I.GetLevel(208),
-  I.TryMeElse("L_ite_else_235"),
+  I.TryMeElse("L_ite_else_263"),
   I.PutValue(203, 1),
   I.PutValue(202, 2),
   I.Call("package_in_name", 2),
   I.Cut(208),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_235"),
+  I.Jump("L_ite_cont_263"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
   I.PutVariable(204, 204),
@@ -4168,16 +4762,16 @@ const shared_instructions = [
   I.PutValue(205, 3),
   I.Call("base_ver", 3),
   I.GetLevel(209),
-  I.TryMeElse("L_ite_else_236"),
+  I.TryMeElse("L_ite_else_264"),
   I.PutValue(206, 1),
   I.PutValue(207, 2),
   I.Call("provide_satisfies", 2),
   I.Cut(209),
   I.BuiltinCall("fail/0", 0),
-  I.Jump("L_ite_cont_236"),
+  I.Jump("L_ite_cont_264"),
   I.TrustMe(),
   I.BuiltinCall("true/0", 0),
-  I.PutStructure(21, 1, 3),
+  I.PutStructure(22, 1, 3),
   I.SetValue(204),
   I.Raw("set_variable _XT0"),
   I.Raw("set_variable _XT1"),
@@ -4228,582 +4822,685 @@ const shared_instructions = [
   I.PutValue(104, 4),
   I.PutValue(105, 5),
   I.Deallocate(),
-  I.Execute("provider_candidate", 5)
+  I.Execute("provider_candidate", 5),
+  I.Allocate(),
+  I.GetVariable(201, 1),
+  I.GetVariable(202, 2),
+  I.PutVariable(203, 1),
+  I.Call("index_threshold", 1),
+  I.GetLevel(204),
+  I.TryMeElse("L_ite_else_269"),
+  I.PutValue(201, 1),
+  I.PutValue(203, 2),
+  I.Call("long_enough", 2),
+  I.Cut(204),
+  I.BuiltinCall("true/0", 0),
+  I.Jump("L_ite_cont_269"),
+  I.TrustMe(),
+  I.PutValue(202, 1),
+  I.PutValue(203, 2),
+  I.Call("long_enough", 2),
+  I.Deallocate(),
+  I.Proceed()
 ];
 
 const shared_labels = {
-  "walk_pkg_for_blocked/5": 4106,
-  "L_walk_pkg_for_blocked_5_2": 4119,
-  "L_walk_pkg_for_blocked_5_2_body": 4120,
-  "L_walk_pkg_for_blocked_5_3": 4133,
-  "L_walk_pkg_for_blocked_5_3_body": 4134,
-  "virtual_provider_ceilings/4": 4056,
-  "L_ite_else_235": 4069,
-  "L_ite_cont_235": 4071,
-  "L_ite_else_236": 4093,
-  "L_ite_cont_236": 4095,
-  "version_lt/2": 3954,
-  "L_ite_else_217": 3973,
-  "L_ite_else_218": 3985,
-  "L_ite_cont_218": 3995,
-  "L_ite_cont_217": 3995,
-  "L_version_lt_2_2": 3997,
-  "L_version_lt_2_2_body": 3998,
-  "L_ite_else_219": 4015,
-  "L_ite_else_220": 4027,
-  "L_ite_else_221": 4039,
-  "L_ite_cont_221": 4041,
-  "L_ite_else_222": 4049,
-  "L_ite_cont_222": 4051,
-  "L_ite_cont_220": 4054,
-  "L_ite_cont_219": 4054,
-  "upgrade_set_result/4": 3921,
-  "L_ite_else_214": 3947,
-  "L_ite_cont_214": 3951,
-  "upgrade_set/4": 3907,
-  "topo_sort_sel/3": 3874,
-  "L_topo_sort_sel_3_2": 3883,
-  "L_topo_sort_sel_3_2_body": 3884,
-  "topo_one/7": 3796,
-  "L_topo_one_7_2": 3811,
-  "L_topo_one_7_2_body": 3812,
-  "L_ite_else_211": 3863,
-  "L_ite_cont_211": 3872,
-  "topo_all/7": 3758,
-  "L_topo_all_7_2": 3768,
-  "L_topo_all_7_2_body": 3769,
-  "tight_rev_in/3": 3709,
-  "L_ite_else_206": 3737,
-  "L_ite_cont_206": 3748,
-  "L_ite_else_205": 3751,
-  "L_ite_cont_205": 3756,
-  "tight_constraint/1": 3704,
-  "tight_base_revdep/2": 3693,
-  "sort_versions_desc/2": 3667,
-  "L_ite_else_203": 3683,
-  "L_ite_cont_203": 3691,
-  "selected_ver/3": 3644,
-  "L_ite_else_201": 3660,
-  "L_ite_cont_201": 3665,
-  "segs_lt_1/2": 3599,
-  "L_ite_else_195": 3620,
-  "L_ite_else_196": 3632,
-  "L_ite_cont_196": 3642,
-  "L_ite_cont_195": 3642,
-  "segs_lt/2": 3576,
-  "L_segs_lt_2_2": 3585,
-  "L_segs_lt_2_2_body": 3586,
-  "seen_name/2": 3557,
-  "L_ite_else_193": 3570,
-  "L_ite_cont_193": 3574,
-  "scan_base_holds/3": 3468,
-  "L_scan_base_holds_3_2": 3474,
-  "L_scan_base_holds_3_2_body": 3475,
-  "L_ite_else_185": 3494,
-  "L_ite_else_186": 3507,
-  "L_ite_else_187": 3529,
-  "L_ite_else_188": 3548,
-  "L_ite_cont_188": 3552,
-  "L_ite_cont_187": 3552,
-  "L_ite_cont_186": 3552,
-  "L_ite_cont_185": 3552,
-  "satisfies/2": 3387,
-  "L_satisfies_2_2": 3392,
-  "L_satisfies_2_2_body": 3393,
-  "L_satisfies_2_3": 3400,
-  "L_satisfies_2_3_body": 3401,
-  "L_ite_else_176": 3412,
-  "L_ite_cont_176": 3414,
-  "L_satisfies_2_4": 3415,
-  "L_satisfies_2_4_body": 3416,
-  "L_ite_else_177": 3427,
-  "L_ite_cont_177": 3429,
-  "L_satisfies_2_5": 3430,
-  "L_satisfies_2_5_body": 3431,
-  "L_satisfies_2_6": 3439,
-  "L_satisfies_2_6_body": 3440,
-  "L_satisfies_2_7": 3448,
-  "L_satisfies_2_7_body": 3449,
-  "L_ite_else_178": 3462,
-  "L_ite_cont_178": 3464,
-  "safe_upgrade_reason/5": 3334,
-  "L_safe_upgrade_reason_5_2": 3342,
-  "L_safe_upgrade_reason_5_2_body": 3343,
-  "L_safe_upgrade_reason_5_3": 3352,
-  "L_safe_upgrade_reason_5_3_body": 3353,
-  "L_safe_upgrade_reason_5_4": 3362,
-  "L_safe_upgrade_reason_5_4_body": 3363,
-  "L_safe_upgrade_reason_5_5": 3372,
-  "L_safe_upgrade_reason_5_5_body": 3373,
-  "safe_upgrade/4": 3274,
-  "L_ite_else_165": 3294,
-  "L_ite_cont_165": 3296,
-  "L_ite_else_164": 3301,
-  "L_ite_else_167": 3313,
-  "L_ite_cont_167": 3315,
-  "L_ite_else_166": 3320,
-  "L_ite_cont_166": 3331,
-  "L_ite_cont_164": 3331,
-  "roots_to_pairs/3": 3231,
-  "L_roots_to_pairs_3_2": 3237,
-  "L_roots_to_pairs_3_2_body": 3238,
-  "L_roots_to_pairs_3_3": 3260,
-  "L_roots_to_pairs_3_3_body": 3261,
-  "L_roots_to_pairs_3_list_dispatch": 3272,
-  "resolve_pending/5": 3112,
-  "L_resolve_pending_5_2": 3119,
-  "L_resolve_pending_5_2_body": 3120,
-  "L_ite_else_152": 3146,
-  "L_ite_else_153": 3164,
-  "L_ite_else_154": 3180,
-  "L_ite_else_155": 3212,
-  "L_ite_cont_155": 3229,
-  "L_ite_cont_154": 3229,
-  "L_ite_cont_153": 3229,
-  "L_ite_cont_152": 3229,
-  "resolve_layered/3": 3092,
-  "resolve_alternatives/6": 3051,
-  "L_ite_else_149": 3073,
-  "L_ite_cont_149": 3090,
-  "resolve/3": 3031,
-  "requested_list/2": 2993,
-  "L_requested_list_2_2": 3004,
-  "L_requested_list_2_2_body": 3005,
-  "L_requested_list_2_3": 3017,
-  "L_requested_list_2_3_body": 3018,
-  "request_to_req/3": 2964,
-  "L_ite_else_146": 2983,
-  "L_ite_cont_146": 2991,
-  "reqs_ok_moving/2": 2897,
-  "L_reqs_ok_moving_2_2": 2902,
-  "L_reqs_ok_moving_2_2_body": 2903,
-  "L_ite_else_140": 2930,
-  "L_ite_cont_140": 2932,
-  "L_reqs_ok_moving_2_3": 2936,
-  "L_reqs_ok_moving_2_3_body": 2937,
-  "L_ite_else_141": 2956,
-  "L_ite_cont_141": 2958,
-  "L_reqs_ok_moving_2_list_dispatch": 2962,
-  "repairs_moving/4": 2883,
-  "removal_orphans/3": 2785,
-  "L_ite_else_128": 2805,
-  "L_ite_cont_128": 2809,
-  "L_ite_else_129": 2819,
-  "L_ite_else_130": 2861,
-  "L_ite_cont_130": 2863,
-  "L_ite_else_131": 2871,
-  "L_ite_cont_131": 2873,
-  "L_ite_cont_129": 2880,
-  "provides_sat/5": 2763,
-  "provides_list/2": 2725,
-  "L_provides_list_2_2": 2736,
-  "L_provides_list_2_2_body": 2737,
-  "L_provides_list_2_3": 2749,
-  "L_provides_list_2_3_body": 2750,
-  "provides_for/5": 2706,
-  "provider_candidate/5": 2670,
-  "L_ite_else_125": 2696,
-  "L_ite_cont_125": 2698,
-  "provide_satisfies/2": 2654,
-  "L_provide_satisfies_2_2": 2659,
-  "L_provide_satisfies_2_2_body": 2660,
-  "provide_row/5": 2632,
-  "L_provide_row_5_2": 2643,
-  "L_provide_row_5_2_body": 2644,
-  "pick_repair/4": 2616,
-  "pick_need/8": 2510,
-  "L_pick_need_8_2": 2527,
-  "L_pick_need_8_2_body": 2528,
-  "L_pick_need_8_3": 2544,
-  "L_pick_need_8_3_body": 2545,
-  "L_ite_else_116": 2574,
-  "L_ite_else_117": 2588,
-  "L_ite_else_118": 2604,
-  "L_ite_cont_118": 2614,
-  "L_ite_cont_117": 2614,
-  "L_ite_cont_116": 2614,
-  "pick/7": 2457,
-  "L_pick_7_2": 2473,
-  "L_pick_7_2_body": 2474,
-  "L_ite_else_113": 2499,
-  "L_ite_cont_113": 2508,
-  "pad_head/2": 2440,
-  "L_pad_head_2_2": 2453,
-  "L_pad_head_2_2_body": 2454,
-  "packages/2": 2402,
-  "L_packages_2_2": 2413,
-  "L_packages_2_2_body": 2414,
-  "L_packages_2_3": 2426,
-  "L_packages_2_3_body": 2427,
-  "package_in_name/2": 2389,
-  "package_in/3": 2375,
-  "order_val/2": 2332,
-  "L_order_val_2_2": 2340,
-  "L_order_val_2_2_body": 2341,
-  "L_order_val_2_3": 2353,
-  "L_order_val_2_3_body": 2354,
-  "L_order_val_2_4": 2366,
-  "L_order_val_2_4_body": 2367,
-  "order_lt/2": 2262,
-  "L_order_lt_2_2": 2271,
-  "L_order_lt_2_2_body": 2272,
-  "L_order_lt_2_3": 2285,
-  "L_order_lt_2_3_body": 2286,
-  "L_order_lt_2_4": 2299,
-  "L_order_lt_2_4_body": 2300,
-  "L_ite_else_110": 2321,
-  "L_ite_cont_110": 2328,
-  "L_order_lt_2_list_dispatch": 2330,
-  "no_acc_conflicts/4": 2215,
-  "L_no_acc_conflicts_4_2": 2221,
-  "L_no_acc_conflicts_4_2_body": 2222,
-  "L_ite_else_104": 2242,
-  "L_ite_cont_104": 2244,
-  "L_ite_else_105": 2254,
-  "L_ite_cont_105": 2256,
-  "needed_names/4": 2191,
-  "L_needed_names_4_2": 2197,
-  "L_needed_names_4_2_body": 2198,
-  "names_of/2": 2171,
-  "L_names_of_2_2": 2176,
-  "L_names_of_2_2_body": 2177,
-  "member_selected/3": 2162,
-  "matching_versions/4": 2119,
-  "L_matching_versions_4_2": 2126,
-  "L_matching_versions_4_2_body": 2127,
-  "L_ite_else_101": 2152,
-  "L_ite_cont_101": 2156,
-  "matching_deps/4": 2070,
-  "L_matching_deps_4_2": 2077,
-  "L_matching_deps_4_2_body": 2078,
-  "L_ite_else_98": 2109,
-  "L_ite_cont_98": 2113,
-  "map_requests/3": 2046,
-  "L_map_requests_3_2": 2052,
-  "L_map_requests_3_2_body": 2053,
-  "lookup_held/3": 2022,
-  "L_ite_else_95": 2039,
-  "L_ite_cont_95": 2044,
-  "layers_list/2": 1984,
-  "L_layers_list_2_2": 1995,
-  "L_layers_list_2_2_body": 1996,
-  "L_layers_list_2_3": 2008,
-  "L_layers_list_2_3_body": 2009,
-  "layered_walk_ver/4": 1956,
-  "L_ite_else_92": 1975,
-  "L_ite_cont_92": 1981,
-  "layer_satisfies/3": 1885,
-  "L_layer_satisfies_3_2": 1898,
-  "L_layer_satisfies_3_2_body": 1899,
-  "L_layer_satisfies_3_3": 1919,
-  "L_layer_satisfies_3_3_body": 1920,
-  "L_ite_else_89": 1947,
-  "L_ite_cont_89": 1954,
-  "layer_provider/5": 1836,
-  "L_layer_provider_5_2": 1859,
-  "L_layer_provider_5_2_body": 1860,
-  "layer_closure/3": 1819,
-  "keep_installed_or_base/4": 1775,
-  "L_keep_installed_or_base_4_2": 1782,
-  "L_keep_installed_or_base_4_2_body": 1783,
-  "L_ite_else_86": 1809,
-  "L_ite_cont_86": 1813,
-  "item_ver/3": 1735,
-  "L_item_ver_3_2": 1748,
-  "L_item_ver_3_2_body": 1749,
-  "L_item_ver_3_3": 1763,
-  "L_item_ver_3_3_body": 1764,
-  "is_v3/1": 1730,
-  "installed_ver/3": 1716,
-  "installed_or_base/3": 1692,
-  "L_installed_or_base_3_2": 1702,
-  "L_installed_or_base_3_2_body": 1703,
-  "installed_list/2": 1654,
-  "L_installed_list_2_2": 1665,
-  "L_installed_list_2_2_body": 1666,
-  "L_installed_list_2_3": 1678,
-  "L_installed_list_2_3_body": 1679,
-  "inst_walk/6": 1581,
-  "L_inst_walk_6_2": 1590,
-  "L_inst_walk_6_2_body": 1591,
-  "L_ite_else_83": 1617,
-  "L_ite_cont_83": 1652,
-  "inst_closure_names/5": 1562,
-  "hold_reason/3": 1535,
-  "L_ite_else_81": 1555,
-  "L_ite_cont_81": 1560,
-  "freeze_audit/2": 1518,
-  "follow_raw_dep/4": 1480,
-  "L_follow_raw_dep_4_2": 1503,
-  "L_follow_raw_dep_4_2_body": 1504,
-  "follow_dep_name/5": 1462,
-  "first_broken/4": 1405,
-  "L_first_broken_4_2": 1412,
-  "L_first_broken_4_2_body": 1413,
-  "L_ite_else_75": 1437,
-  "L_ite_else_76": 1454,
-  "L_ite_cont_76": 1460,
-  "L_ite_cont_75": 1460,
-  "first_alt_already/4": 1368,
-  "L_first_alt_already_4_2": 1387,
-  "L_first_alt_already_4_2_body": 1388,
-  "explain_blocked_list/3": 1348,
-  "explain_blocked/3": 1334,
-  "explain_alt/5": 1288,
-  "L_ite_else_66": 1306,
-  "L_ite_else_68": 1323,
-  "L_ite_cont_68": 1325,
-  "L_ite_else_67": 1330,
-  "L_ite_cont_67": 1332,
-  "L_ite_cont_66": 1332,
-  "excluded_name/2": 1277,
-  "excluded_list/2": 1239,
-  "L_excluded_list_2_2": 1250,
-  "L_excluded_list_2_2_body": 1251,
-  "L_excluded_list_2_3": 1263,
-  "L_excluded_list_2_3_body": 1264,
-  "exclude_name/3": 1206,
-  "L_exclude_name_3_2": 1212,
-  "L_exclude_name_3_2_body": 1213,
-  "L_exclude_name_3_3": 1225,
-  "L_exclude_name_3_3_body": 1226,
-  "direct_on/4": 1161,
-  "L_direct_on_4_2": 1168,
-  "L_direct_on_4_2_body": 1169,
-  "L_ite_else_63": 1196,
-  "L_ite_cont_63": 1200,
-  "depends_list/2": 1123,
-  "L_depends_list_2_2": 1134,
-  "L_depends_list_2_2_body": 1135,
-  "L_depends_list_2_3": 1147,
-  "L_depends_list_2_3_body": 1148,
-  "depends_in/5": 1105,
-  "dependents_installed/3": 1086,
-  "dependents/3": 1064,
-  "dep_to_req/3": 1044,
-  "L_dep_to_req_3_2": 1057,
-  "L_dep_to_req_3_2_body": 1058,
-  "dep_targets/5": 1010,
-  "L_ite_else_60": 1035,
-  "L_ite_cont_60": 1042,
-  "dep_mentions/2": 988,
-  "L_dep_mentions_2_2": 1001,
-  "L_dep_mentions_2_2_body": 1002,
-  "dep_breaks_need/4": 918,
-  "L_ite_else_51": 943,
-  "L_ite_cont_51": 945,
-  "L_ite_else_52": 962,
-  "L_ite_cont_52": 964,
-  "L_dep_breaks_need_4_2": 966,
-  "L_dep_breaks_need_4_2_body": 967,
-  "L_ite_else_53": 984,
-  "L_ite_cont_53": 986,
-  "dep_breaks_moving/5": 902,
-  "dep_breaks/5": 862,
-  "L_ite_else_48": 893,
-  "L_ite_cont_48": 900,
-  "conflicts_list/2": 824,
-  "L_conflicts_list_2_2": 835,
-  "L_conflicts_list_2_2_body": 836,
-  "L_conflicts_list_2_3": 848,
-  "L_conflicts_list_2_3_body": 849,
-  "conflicts_in/4": 808,
-  "collect_deps/4": 794,
-  "cmp_ver/3": 766,
-  "L_cmp_ver_3_2": 778,
-  "L_cmp_ver_3_2_body": 779,
-  "L_cmp_ver_3_3": 789,
-  "L_cmp_ver_3_3_body": 790,
-  "close_moving/3": 702,
-  "L_ite_else_42": 728,
-  "L_ite_else_43": 753,
-  "L_ite_cont_43": 764,
-  "L_ite_cont_42": 764,
-  "canonicalize_name/3": 690,
-  "candidates_high_first/4": 659,
-  "L_ite_else_39": 672,
-  "L_ite_cont_39": 674,
-  "blocked_from/4": 512,
-  "L_blocked_from_4_2": 537,
-  "L_blocked_from_4_2_body": 538,
-  "L_ite_else_27": 553,
-  "L_ite_cont_27": 555,
-  "L_ite_else_28": 567,
-  "L_ite_cont_28": 569,
-  "L_blocked_from_4_3": 581,
-  "L_blocked_from_4_3_body": 582,
-  "L_ite_else_29": 597,
-  "L_ite_cont_29": 599,
-  "L_blocked_from_4_4": 619,
-  "L_blocked_from_4_4_body": 620,
-  "L_ite_else_30": 635,
-  "L_ite_cont_30": 637,
-  "blocked_acc_list/5": 482,
-  "L_blocked_acc_list_5_2": 490,
-  "L_blocked_acc_list_5_2_body": 491,
-  "blocked_acc/5": 337,
-  "L_blocked_acc_5_2": 355,
-  "L_blocked_acc_5_2_body": 356,
-  "L_blocked_acc_5_3": 383,
-  "L_blocked_acc_5_3_body": 384,
-  "L_ite_else_16": 406,
-  "L_ite_cont_16": 408,
-  "L_ite_else_15": 423,
-  "L_ite_else_17": 449,
-  "L_ite_cont_17": 453,
-  "L_ite_cont_15": 453,
-  "L_ite_else_18": 476,
-  "L_ite_cont_18": 480,
-  "base_ver/3": 318,
-  "base_reason/3": 306,
-  "base_name/2": 298,
-  "base_list/2": 260,
-  "L_base_list_2_2": 271,
-  "L_base_list_2_2_body": 272,
-  "L_base_list_2_3": 284,
-  "L_base_list_2_3_body": 285,
-  "base_holds/2": 245,
-  "audit_holds/4": 183,
-  "L_audit_holds_4_2": 190,
-  "L_audit_holds_4_2_body": 191,
-  "L_ite_else_10": 222,
-  "L_ite_cont_10": 228,
-  "L_ite_else_9": 229,
-  "L_ite_cont_9": 237,
-  "alt_reasons/4": 139,
-  "L_alt_reasons_4_2": 146,
-  "L_alt_reasons_4_2_body": 147,
-  "L_ite_else_6": 173,
-  "L_ite_cont_6": 177,
-  "already_satisfied/4": 113,
-  "L_already_satisfied_4_2": 127,
-  "L_already_satisfied_4_2_body": 128,
-  "already_provided/4": 96,
-  "alias_lookup/3": 63,
-  "L_alias_lookup_3_2": 69,
-  "L_alias_lookup_3_2_body": 70,
-  "L_ite_else_4": 89,
-  "L_ite_cont_4": 94,
+  "worth_indexing/2": 4738,
+  "L_ite_else_269": 4751,
+  "L_ite_cont_269": 4755,
+  "walk_pkg_for_blocked/5": 4697,
+  "L_walk_pkg_for_blocked_5_2": 4710,
+  "L_walk_pkg_for_blocked_5_2_body": 4711,
+  "L_walk_pkg_for_blocked_5_3": 4724,
+  "L_walk_pkg_for_blocked_5_3_body": 4725,
+  "virtual_provider_ceilings/4": 4647,
+  "L_ite_else_263": 4660,
+  "L_ite_cont_263": 4662,
+  "L_ite_else_264": 4684,
+  "L_ite_cont_264": 4686,
+  "version_lt/2": 4545,
+  "L_ite_else_245": 4564,
+  "L_ite_else_246": 4576,
+  "L_ite_cont_246": 4586,
+  "L_ite_cont_245": 4586,
+  "L_version_lt_2_2": 4588,
+  "L_version_lt_2_2_body": 4589,
+  "L_ite_else_247": 4606,
+  "L_ite_else_248": 4618,
+  "L_ite_else_249": 4630,
+  "L_ite_cont_249": 4632,
+  "L_ite_else_250": 4640,
+  "L_ite_cont_250": 4642,
+  "L_ite_cont_248": 4645,
+  "L_ite_cont_247": 4645,
+  "upgrade_set_result/4": 4512,
+  "L_ite_else_242": 4538,
+  "L_ite_cont_242": 4542,
+  "upgrade_set/4": 4498,
+  "tree_lookup/3": 4457,
+  "L_ite_else_238": 4479,
+  "L_ite_else_239": 4491,
+  "L_ite_cont_239": 4496,
+  "L_ite_cont_238": 4496,
+  "topo_sort_sel/3": 4424,
+  "L_topo_sort_sel_3_2": 4433,
+  "L_topo_sort_sel_3_2_body": 4434,
+  "topo_one/7": 4346,
+  "L_topo_one_7_2": 4361,
+  "L_topo_one_7_2_body": 4362,
+  "L_ite_else_235": 4413,
+  "L_ite_cont_235": 4422,
+  "topo_all/7": 4308,
+  "L_topo_all_7_2": 4318,
+  "L_topo_all_7_2_body": 4319,
+  "tight_rev_in/3": 4259,
+  "L_ite_else_230": 4287,
+  "L_ite_cont_230": 4298,
+  "L_ite_else_229": 4301,
+  "L_ite_cont_229": 4306,
+  "tight_constraint/1": 4254,
+  "tight_base_revdep/2": 4243,
+  "sort_versions_desc/2": 4217,
+  "L_ite_else_227": 4233,
+  "L_ite_cont_227": 4241,
+  "selected_ver/3": 4194,
+  "L_ite_else_225": 4210,
+  "L_ite_cont_225": 4215,
+  "segs_lt_1/2": 4149,
+  "L_ite_else_219": 4170,
+  "L_ite_else_220": 4182,
+  "L_ite_cont_220": 4192,
+  "L_ite_cont_219": 4192,
+  "segs_lt/2": 4126,
+  "L_segs_lt_2_2": 4135,
+  "L_segs_lt_2_2_body": 4136,
+  "seen_name/2": 4107,
+  "L_ite_else_217": 4120,
+  "L_ite_cont_217": 4124,
+  "scan_base_holds/3": 4018,
+  "L_scan_base_holds_3_2": 4024,
+  "L_scan_base_holds_3_2_body": 4025,
+  "L_ite_else_209": 4044,
+  "L_ite_else_210": 4057,
+  "L_ite_else_211": 4079,
+  "L_ite_else_212": 4098,
+  "L_ite_cont_212": 4102,
+  "L_ite_cont_211": 4102,
+  "L_ite_cont_210": 4102,
+  "L_ite_cont_209": 4102,
+  "satisfies/2": 3937,
+  "L_satisfies_2_2": 3942,
+  "L_satisfies_2_2_body": 3943,
+  "L_satisfies_2_3": 3950,
+  "L_satisfies_2_3_body": 3951,
+  "L_ite_else_200": 3962,
+  "L_ite_cont_200": 3964,
+  "L_satisfies_2_4": 3965,
+  "L_satisfies_2_4_body": 3966,
+  "L_ite_else_201": 3977,
+  "L_ite_cont_201": 3979,
+  "L_satisfies_2_5": 3980,
+  "L_satisfies_2_5_body": 3981,
+  "L_satisfies_2_6": 3989,
+  "L_satisfies_2_6_body": 3990,
+  "L_satisfies_2_7": 3998,
+  "L_satisfies_2_7_body": 3999,
+  "L_ite_else_202": 4012,
+  "L_ite_cont_202": 4014,
+  "same_key/4": 3882,
+  "L_same_key_4_2": 3889,
+  "L_same_key_4_2_body": 3890,
+  "L_ite_else_198": 3920,
+  "L_ite_cont_198": 3935,
+  "safe_upgrade_reason/5": 3829,
+  "L_safe_upgrade_reason_5_2": 3837,
+  "L_safe_upgrade_reason_5_2_body": 3838,
+  "L_safe_upgrade_reason_5_3": 3847,
+  "L_safe_upgrade_reason_5_3_body": 3848,
+  "L_safe_upgrade_reason_5_4": 3857,
+  "L_safe_upgrade_reason_5_4_body": 3858,
+  "L_safe_upgrade_reason_5_5": 3867,
+  "L_safe_upgrade_reason_5_5_body": 3868,
+  "safe_upgrade/4": 3769,
+  "L_ite_else_187": 3789,
+  "L_ite_cont_187": 3791,
+  "L_ite_else_186": 3796,
+  "L_ite_else_189": 3808,
+  "L_ite_cont_189": 3810,
+  "L_ite_else_188": 3815,
+  "L_ite_cont_188": 3826,
+  "L_ite_cont_186": 3826,
+  "roots_to_pairs/3": 3726,
+  "L_roots_to_pairs_3_2": 3732,
+  "L_roots_to_pairs_3_2_body": 3733,
+  "L_roots_to_pairs_3_3": 3755,
+  "L_roots_to_pairs_3_3_body": 3756,
+  "L_roots_to_pairs_3_list_dispatch": 3767,
+  "resolve_pending/5": 3598,
+  "L_resolve_pending_5_2": 3605,
+  "L_resolve_pending_5_2_body": 3606,
+  "L_ite_else_174": 3632,
+  "L_ite_else_175": 3650,
+  "L_ite_else_176": 3666,
+  "L_ite_else_177": 3698,
+  "L_ite_cont_177": 3724,
+  "L_ite_cont_176": 3724,
+  "L_ite_cont_175": 3724,
+  "L_ite_cont_174": 3724,
+  "resolve_layered/3": 3575,
+  "resolve_alternatives/6": 3534,
+  "L_ite_else_171": 3556,
+  "L_ite_cont_171": 3573,
+  "resolve/3": 3511,
+  "requested_list/2": 3462,
+  "L_requested_list_2_2": 3473,
+  "L_requested_list_2_2_body": 3474,
+  "L_requested_list_2_3": 3486,
+  "L_requested_list_2_3_body": 3487,
+  "L_requested_list_2_4": 3500,
+  "L_requested_list_2_4_body": 3501,
+  "request_to_req/3": 3433,
+  "L_ite_else_168": 3452,
+  "L_ite_cont_168": 3460,
+  "reqs_ok_moving/2": 3366,
+  "L_reqs_ok_moving_2_2": 3371,
+  "L_reqs_ok_moving_2_2_body": 3372,
+  "L_ite_else_162": 3399,
+  "L_ite_cont_162": 3401,
+  "L_reqs_ok_moving_2_3": 3405,
+  "L_reqs_ok_moving_2_3_body": 3406,
+  "L_ite_else_163": 3425,
+  "L_ite_cont_163": 3427,
+  "L_reqs_ok_moving_2_list_dispatch": 3431,
+  "repairs_moving/4": 3352,
+  "removal_orphans/3": 3254,
+  "L_ite_else_150": 3274,
+  "L_ite_cont_150": 3278,
+  "L_ite_else_151": 3288,
+  "L_ite_else_152": 3330,
+  "L_ite_cont_152": 3332,
+  "L_ite_else_153": 3340,
+  "L_ite_cont_153": 3342,
+  "L_ite_cont_151": 3349,
+  "provides_sat/5": 3232,
+  "provides_list/2": 3183,
+  "L_provides_list_2_2": 3194,
+  "L_provides_list_2_2_body": 3195,
+  "L_provides_list_2_3": 3207,
+  "L_provides_list_2_3_body": 3208,
+  "L_provides_list_2_4": 3221,
+  "L_provides_list_2_4_body": 3222,
+  "provides_for/5": 3164,
+  "provider_candidate/5": 3128,
+  "L_ite_else_147": 3154,
+  "L_ite_cont_147": 3156,
+  "provide_satisfies/2": 3112,
+  "L_provide_satisfies_2_2": 3117,
+  "L_provide_satisfies_2_2_body": 3118,
+  "provide_row/5": 3090,
+  "L_provide_row_5_2": 3101,
+  "L_provide_row_5_2_body": 3102,
+  "pkg_index/2": 3084,
+  "pick_repair/4": 3068,
+  "pick_need/8": 2962,
+  "L_pick_need_8_2": 2979,
+  "L_pick_need_8_2_body": 2980,
+  "L_pick_need_8_3": 2996,
+  "L_pick_need_8_3_body": 2997,
+  "L_ite_else_138": 3026,
+  "L_ite_else_139": 3040,
+  "L_ite_else_140": 3056,
+  "L_ite_cont_140": 3066,
+  "L_ite_cont_139": 3066,
+  "L_ite_cont_138": 3066,
+  "pick/7": 2909,
+  "L_pick_7_2": 2925,
+  "L_pick_7_2_body": 2926,
+  "L_ite_else_135": 2951,
+  "L_ite_cont_135": 2960,
+  "pad_head/2": 2892,
+  "L_pad_head_2_2": 2905,
+  "L_pad_head_2_2_body": 2906,
+  "packages/2": 2843,
+  "L_packages_2_2": 2854,
+  "L_packages_2_2_body": 2855,
+  "L_packages_2_3": 2867,
+  "L_packages_2_3_body": 2868,
+  "L_packages_2_4": 2881,
+  "L_packages_2_4_body": 2882,
+  "package_in_name/2": 2830,
+  "package_in/3": 2816,
+  "order_val/2": 2773,
+  "L_order_val_2_2": 2781,
+  "L_order_val_2_2_body": 2782,
+  "L_order_val_2_3": 2794,
+  "L_order_val_2_3_body": 2795,
+  "L_order_val_2_4": 2807,
+  "L_order_val_2_4_body": 2808,
+  "order_lt/2": 2703,
+  "L_order_lt_2_2": 2712,
+  "L_order_lt_2_2_body": 2713,
+  "L_order_lt_2_3": 2726,
+  "L_order_lt_2_3_body": 2727,
+  "L_order_lt_2_4": 2740,
+  "L_order_lt_2_4_body": 2741,
+  "L_ite_else_132": 2762,
+  "L_ite_cont_132": 2769,
+  "L_order_lt_2_list_dispatch": 2771,
+  "no_acc_conflicts/4": 2656,
+  "L_no_acc_conflicts_4_2": 2662,
+  "L_no_acc_conflicts_4_2_body": 2663,
+  "L_ite_else_126": 2683,
+  "L_ite_cont_126": 2685,
+  "L_ite_else_127": 2695,
+  "L_ite_cont_127": 2697,
+  "needed_names/4": 2632,
+  "L_needed_names_4_2": 2638,
+  "L_needed_names_4_2_body": 2639,
+  "names_of/2": 2612,
+  "L_names_of_2_2": 2617,
+  "L_names_of_2_2_body": 2618,
+  "member_selected/3": 2603,
+  "matching_versions_in/4": 2564,
+  "L_ite_else_121": 2587,
+  "L_ite_cont_121": 2591,
+  "L_ite_else_120": 2592,
+  "L_ite_cont_120": 2601,
+  "matching_versions/4": 2521,
+  "L_matching_versions_4_2": 2528,
+  "L_matching_versions_4_2_body": 2529,
+  "L_ite_else_117": 2554,
+  "L_ite_cont_117": 2558,
+  "matching_deps/4": 2472,
+  "L_matching_deps_4_2": 2479,
+  "L_matching_deps_4_2_body": 2480,
+  "L_ite_else_114": 2511,
+  "L_ite_cont_114": 2515,
+  "map_requests/3": 2448,
+  "L_map_requests_3_2": 2454,
+  "L_map_requests_3_2_body": 2455,
+  "lookup_held/3": 2424,
+  "L_ite_else_111": 2441,
+  "L_ite_cont_111": 2446,
+  "long_enough/2": 2400,
+  "L_ite_else_109": 2413,
+  "L_ite_cont_109": 2422,
+  "list_to_tree/2": 2388,
+  "layers_list/2": 2339,
+  "L_layers_list_2_2": 2350,
+  "L_layers_list_2_2_body": 2351,
+  "L_layers_list_2_3": 2363,
+  "L_layers_list_2_3_body": 2364,
+  "L_layers_list_2_4": 2377,
+  "L_layers_list_2_4_body": 2378,
+  "layered_walk_ver/4": 2311,
+  "L_ite_else_106": 2330,
+  "L_ite_cont_106": 2336,
+  "layer_satisfies/3": 2240,
+  "L_layer_satisfies_3_2": 2253,
+  "L_layer_satisfies_3_2_body": 2254,
+  "L_layer_satisfies_3_3": 2274,
+  "L_layer_satisfies_3_3_body": 2275,
+  "L_ite_else_103": 2302,
+  "L_ite_cont_103": 2309,
+  "layer_provider/5": 2191,
+  "L_layer_provider_5_2": 2214,
+  "L_layer_provider_5_2_body": 2215,
+  "layer_closure/3": 2174,
+  "key_pkg_rows/3": 2140,
+  "L_key_pkg_rows_3_2": 2146,
+  "L_key_pkg_rows_3_2_body": 2147,
+  "key_dep_rows/3": 2097,
+  "L_key_dep_rows_3_2": 2103,
+  "L_key_dep_rows_3_2_body": 2104,
+  "keep_installed_or_base/4": 2053,
+  "L_keep_installed_or_base_4_2": 2060,
+  "L_keep_installed_or_base_4_2_body": 2061,
+  "L_ite_else_100": 2087,
+  "L_ite_cont_100": 2091,
+  "item_ver/3": 2013,
+  "L_item_ver_3_2": 2026,
+  "L_item_ver_3_2_body": 2027,
+  "L_item_ver_3_3": 2041,
+  "L_item_ver_3_3_body": 2042,
+  "is_v3/1": 2008,
+  "installed_ver/3": 1994,
+  "installed_or_base/3": 1970,
+  "L_installed_or_base_3_2": 1980,
+  "L_installed_or_base_3_2_body": 1981,
+  "installed_list/2": 1921,
+  "L_installed_list_2_2": 1932,
+  "L_installed_list_2_2_body": 1933,
+  "L_installed_list_2_3": 1945,
+  "L_installed_list_2_3_body": 1946,
+  "L_installed_list_2_4": 1959,
+  "L_installed_list_2_4_body": 1960,
+  "inst_walk/6": 1848,
+  "L_inst_walk_6_2": 1857,
+  "L_inst_walk_6_2_body": 1858,
+  "L_ite_else_97": 1884,
+  "L_ite_cont_97": 1919,
+  "inst_closure_names/5": 1829,
+  "index_threshold/1": 1827,
+  "index_catalog/2": 1773,
+  "L_ite_else_94": 1821,
+  "L_ite_cont_94": 1825,
+  "hold_reason/3": 1746,
+  "L_ite_else_92": 1766,
+  "L_ite_cont_92": 1771,
+  "group_keyed/2": 1712,
+  "L_group_keyed_2_2": 1717,
+  "L_group_keyed_2_2_body": 1718,
+  "freeze_audit/2": 1695,
+  "follow_raw_dep/4": 1657,
+  "L_follow_raw_dep_4_2": 1680,
+  "L_follow_raw_dep_4_2_body": 1681,
+  "follow_dep_name/5": 1639,
+  "first_broken/4": 1582,
+  "L_first_broken_4_2": 1589,
+  "L_first_broken_4_2_body": 1590,
+  "L_ite_else_86": 1614,
+  "L_ite_else_87": 1631,
+  "L_ite_cont_87": 1637,
+  "L_ite_cont_86": 1637,
+  "first_alt_already/4": 1545,
+  "L_first_alt_already_4_2": 1564,
+  "L_first_alt_already_4_2_body": 1565,
+  "filter_satisfies/3": 1511,
+  "L_filter_satisfies_3_2": 1517,
+  "L_filter_satisfies_3_2_body": 1518,
+  "L_ite_else_83": 1536,
+  "L_ite_cont_83": 1540,
+  "explain_blocked_list/3": 1491,
+  "explain_blocked/3": 1477,
+  "explain_alt/5": 1431,
+  "L_ite_else_74": 1449,
+  "L_ite_else_76": 1466,
+  "L_ite_cont_76": 1468,
+  "L_ite_else_75": 1473,
+  "L_ite_cont_75": 1475,
+  "L_ite_cont_74": 1475,
+  "excluded_name/2": 1420,
+  "excluded_list/2": 1371,
+  "L_excluded_list_2_2": 1382,
+  "L_excluded_list_2_2_body": 1383,
+  "L_excluded_list_2_3": 1395,
+  "L_excluded_list_2_3_body": 1396,
+  "L_excluded_list_2_4": 1409,
+  "L_excluded_list_2_4_body": 1410,
+  "exclude_name/3": 1338,
+  "L_exclude_name_3_2": 1344,
+  "L_exclude_name_3_2_body": 1345,
+  "L_exclude_name_3_3": 1357,
+  "L_exclude_name_3_3_body": 1358,
+  "direct_on/4": 1293,
+  "L_direct_on_4_2": 1300,
+  "L_direct_on_4_2_body": 1301,
+  "L_ite_else_71": 1328,
+  "L_ite_cont_71": 1332,
+  "depends_list/2": 1244,
+  "L_depends_list_2_2": 1255,
+  "L_depends_list_2_2_body": 1256,
+  "L_depends_list_2_3": 1268,
+  "L_depends_list_2_3_body": 1269,
+  "L_depends_list_2_4": 1282,
+  "L_depends_list_2_4_body": 1283,
+  "depends_in/5": 1226,
+  "dependents_installed/3": 1207,
+  "dependents/3": 1185,
+  "dep_to_req/3": 1165,
+  "L_dep_to_req_3_2": 1178,
+  "L_dep_to_req_3_2_body": 1179,
+  "dep_targets/5": 1131,
+  "L_ite_else_68": 1156,
+  "L_ite_cont_68": 1163,
+  "dep_mentions/2": 1109,
+  "L_dep_mentions_2_2": 1122,
+  "L_dep_mentions_2_2_body": 1123,
+  "dep_index/2": 1103,
+  "dep_breaks_need/4": 1033,
+  "L_ite_else_59": 1058,
+  "L_ite_cont_59": 1060,
+  "L_ite_else_60": 1077,
+  "L_ite_cont_60": 1079,
+  "L_dep_breaks_need_4_2": 1081,
+  "L_dep_breaks_need_4_2_body": 1082,
+  "L_ite_else_61": 1099,
+  "L_ite_cont_61": 1101,
+  "dep_breaks_moving/5": 1017,
+  "dep_breaks/5": 977,
+  "L_ite_else_56": 1008,
+  "L_ite_cont_56": 1015,
+  "conflicts_list/2": 928,
+  "L_conflicts_list_2_2": 939,
+  "L_conflicts_list_2_2_body": 940,
+  "L_conflicts_list_2_3": 952,
+  "L_conflicts_list_2_3_body": 953,
+  "L_conflicts_list_2_4": 966,
+  "L_conflicts_list_2_4_body": 967,
+  "conflicts_in/4": 912,
+  "collect_deps/4": 872,
+  "L_ite_else_51": 896,
+  "L_ite_cont_51": 900,
+  "L_ite_else_50": 901,
+  "L_ite_cont_50": 910,
+  "cmp_ver/3": 844,
+  "L_cmp_ver_3_2": 856,
+  "L_cmp_ver_3_2_body": 857,
+  "L_cmp_ver_3_3": 867,
+  "L_cmp_ver_3_3_body": 868,
+  "close_moving/3": 780,
+  "L_ite_else_44": 806,
+  "L_ite_else_45": 831,
+  "L_ite_cont_45": 842,
+  "L_ite_cont_44": 842,
+  "canonicalize_name/3": 768,
+  "candidates_high_first/4": 740,
+  "L_ite_else_41": 753,
+  "L_ite_cont_41": 755,
+  "build_tree/4": 681,
+  "L_ite_else_39": 699,
+  "L_ite_cont_39": 738,
+  "blocked_from/4": 534,
+  "L_blocked_from_4_2": 559,
+  "L_blocked_from_4_2_body": 560,
+  "L_ite_else_27": 575,
+  "L_ite_cont_27": 577,
+  "L_ite_else_28": 589,
+  "L_ite_cont_28": 591,
+  "L_blocked_from_4_3": 603,
+  "L_blocked_from_4_3_body": 604,
+  "L_ite_else_29": 619,
+  "L_ite_cont_29": 621,
+  "L_blocked_from_4_4": 641,
+  "L_blocked_from_4_4_body": 642,
+  "L_ite_else_30": 657,
+  "L_ite_cont_30": 659,
+  "blocked_acc_list/5": 504,
+  "L_blocked_acc_list_5_2": 512,
+  "L_blocked_acc_list_5_2_body": 513,
+  "blocked_acc/5": 359,
+  "L_blocked_acc_5_2": 377,
+  "L_blocked_acc_5_2_body": 378,
+  "L_blocked_acc_5_3": 405,
+  "L_blocked_acc_5_3_body": 406,
+  "L_ite_else_16": 428,
+  "L_ite_cont_16": 430,
+  "L_ite_else_15": 445,
+  "L_ite_else_17": 471,
+  "L_ite_cont_17": 475,
+  "L_ite_cont_15": 475,
+  "L_ite_else_18": 498,
+  "L_ite_cont_18": 502,
+  "base_ver/3": 340,
+  "base_reason/3": 328,
+  "base_name/2": 320,
+  "base_list/2": 271,
+  "L_base_list_2_2": 282,
+  "L_base_list_2_2_body": 283,
+  "L_base_list_2_3": 295,
+  "L_base_list_2_3_body": 296,
+  "L_base_list_2_4": 309,
+  "L_base_list_2_4_body": 310,
+  "base_holds/2": 256,
+  "audit_holds/4": 194,
+  "L_audit_holds_4_2": 201,
+  "L_audit_holds_4_2_body": 202,
+  "L_ite_else_10": 233,
+  "L_ite_cont_10": 239,
+  "L_ite_else_9": 240,
+  "L_ite_cont_9": 248,
+  "alt_reasons/4": 150,
+  "L_alt_reasons_4_2": 157,
+  "L_alt_reasons_4_2_body": 158,
+  "L_ite_else_6": 184,
+  "L_ite_cont_6": 188,
+  "already_satisfied/4": 124,
+  "L_already_satisfied_4_2": 138,
+  "L_already_satisfied_4_2_body": 139,
+  "already_provided/4": 107,
+  "alias_lookup/3": 74,
+  "L_alias_lookup_3_2": 80,
+  "L_alias_lookup_3_2_body": 81,
+  "L_ite_else_4": 100,
+  "L_ite_cont_4": 105,
   "alias_list/2": 25,
   "L_alias_list_2_2": 36,
   "L_alias_list_2_2_body": 37,
   "L_alias_list_2_3": 49,
   "L_alias_list_2_3_body": 50,
+  "L_alias_list_2_4": 63,
+  "L_alias_list_2_4_body": 64,
   "acc_conflicts/4": 1,
   "L_ite_else_1": 17,
   "L_ite_cont_1": 23
 };
 
 const dispatch = {
-  "walk_pkg_for_blocked/5": 4106,
-  "virtual_provider_ceilings/4": 4056,
-  "version_lt/2": 3954,
-  "upgrade_set_result/4": 3921,
-  "upgrade_set/4": 3907,
-  "topo_sort_sel/3": 3874,
-  "topo_one/7": 3796,
-  "topo_all/7": 3758,
-  "tight_rev_in/3": 3709,
-  "tight_constraint/1": 3704,
-  "tight_base_revdep/2": 3693,
-  "sort_versions_desc/2": 3667,
-  "selected_ver/3": 3644,
-  "segs_lt_1/2": 3599,
-  "segs_lt/2": 3576,
-  "seen_name/2": 3557,
-  "scan_base_holds/3": 3468,
-  "satisfies/2": 3387,
-  "safe_upgrade_reason/5": 3334,
-  "safe_upgrade/4": 3274,
-  "roots_to_pairs/3": 3231,
-  "resolve_pending/5": 3112,
-  "resolve_layered/3": 3092,
-  "resolve_alternatives/6": 3051,
-  "resolve/3": 3031,
-  "requested_list/2": 2993,
-  "request_to_req/3": 2964,
-  "reqs_ok_moving/2": 2897,
-  "repairs_moving/4": 2883,
-  "removal_orphans/3": 2785,
-  "provides_sat/5": 2763,
-  "provides_list/2": 2725,
-  "provides_for/5": 2706,
-  "provider_candidate/5": 2670,
-  "provide_satisfies/2": 2654,
-  "provide_row/5": 2632,
-  "pick_repair/4": 2616,
-  "pick_need/8": 2510,
-  "pick/7": 2457,
-  "pad_head/2": 2440,
-  "packages/2": 2402,
-  "package_in_name/2": 2389,
-  "package_in/3": 2375,
-  "order_val/2": 2332,
-  "order_lt/2": 2262,
-  "no_acc_conflicts/4": 2215,
-  "needed_names/4": 2191,
-  "names_of/2": 2171,
-  "member_selected/3": 2162,
-  "matching_versions/4": 2119,
-  "matching_deps/4": 2070,
-  "map_requests/3": 2046,
-  "lookup_held/3": 2022,
-  "layers_list/2": 1984,
-  "layered_walk_ver/4": 1956,
-  "layer_satisfies/3": 1885,
-  "layer_provider/5": 1836,
-  "layer_closure/3": 1819,
-  "keep_installed_or_base/4": 1775,
-  "item_ver/3": 1735,
-  "is_v3/1": 1730,
-  "installed_ver/3": 1716,
-  "installed_or_base/3": 1692,
-  "installed_list/2": 1654,
-  "inst_walk/6": 1581,
-  "inst_closure_names/5": 1562,
-  "hold_reason/3": 1535,
-  "freeze_audit/2": 1518,
-  "follow_raw_dep/4": 1480,
-  "follow_dep_name/5": 1462,
-  "first_broken/4": 1405,
-  "first_alt_already/4": 1368,
-  "explain_blocked_list/3": 1348,
-  "explain_blocked/3": 1334,
-  "explain_alt/5": 1288,
-  "excluded_name/2": 1277,
-  "excluded_list/2": 1239,
-  "exclude_name/3": 1206,
-  "direct_on/4": 1161,
-  "depends_list/2": 1123,
-  "depends_in/5": 1105,
-  "dependents_installed/3": 1086,
-  "dependents/3": 1064,
-  "dep_to_req/3": 1044,
-  "dep_targets/5": 1010,
-  "dep_mentions/2": 988,
-  "dep_breaks_need/4": 918,
-  "dep_breaks_moving/5": 902,
-  "dep_breaks/5": 862,
-  "conflicts_list/2": 824,
-  "conflicts_in/4": 808,
-  "collect_deps/4": 794,
-  "cmp_ver/3": 766,
-  "close_moving/3": 702,
-  "canonicalize_name/3": 690,
-  "candidates_high_first/4": 659,
-  "blocked_from/4": 512,
-  "blocked_acc_list/5": 482,
-  "blocked_acc/5": 337,
-  "base_ver/3": 318,
-  "base_reason/3": 306,
-  "base_name/2": 298,
-  "base_list/2": 260,
-  "base_holds/2": 245,
-  "audit_holds/4": 183,
-  "alt_reasons/4": 139,
-  "already_satisfied/4": 113,
-  "already_provided/4": 96,
-  "alias_lookup/3": 63,
+  "worth_indexing/2": 4738,
+  "walk_pkg_for_blocked/5": 4697,
+  "virtual_provider_ceilings/4": 4647,
+  "version_lt/2": 4545,
+  "upgrade_set_result/4": 4512,
+  "upgrade_set/4": 4498,
+  "tree_lookup/3": 4457,
+  "topo_sort_sel/3": 4424,
+  "topo_one/7": 4346,
+  "topo_all/7": 4308,
+  "tight_rev_in/3": 4259,
+  "tight_constraint/1": 4254,
+  "tight_base_revdep/2": 4243,
+  "sort_versions_desc/2": 4217,
+  "selected_ver/3": 4194,
+  "segs_lt_1/2": 4149,
+  "segs_lt/2": 4126,
+  "seen_name/2": 4107,
+  "scan_base_holds/3": 4018,
+  "satisfies/2": 3937,
+  "same_key/4": 3882,
+  "safe_upgrade_reason/5": 3829,
+  "safe_upgrade/4": 3769,
+  "roots_to_pairs/3": 3726,
+  "resolve_pending/5": 3598,
+  "resolve_layered/3": 3575,
+  "resolve_alternatives/6": 3534,
+  "resolve/3": 3511,
+  "requested_list/2": 3462,
+  "request_to_req/3": 3433,
+  "reqs_ok_moving/2": 3366,
+  "repairs_moving/4": 3352,
+  "removal_orphans/3": 3254,
+  "provides_sat/5": 3232,
+  "provides_list/2": 3183,
+  "provides_for/5": 3164,
+  "provider_candidate/5": 3128,
+  "provide_satisfies/2": 3112,
+  "provide_row/5": 3090,
+  "pkg_index/2": 3084,
+  "pick_repair/4": 3068,
+  "pick_need/8": 2962,
+  "pick/7": 2909,
+  "pad_head/2": 2892,
+  "packages/2": 2843,
+  "package_in_name/2": 2830,
+  "package_in/3": 2816,
+  "order_val/2": 2773,
+  "order_lt/2": 2703,
+  "no_acc_conflicts/4": 2656,
+  "needed_names/4": 2632,
+  "names_of/2": 2612,
+  "member_selected/3": 2603,
+  "matching_versions_in/4": 2564,
+  "matching_versions/4": 2521,
+  "matching_deps/4": 2472,
+  "map_requests/3": 2448,
+  "lookup_held/3": 2424,
+  "long_enough/2": 2400,
+  "list_to_tree/2": 2388,
+  "layers_list/2": 2339,
+  "layered_walk_ver/4": 2311,
+  "layer_satisfies/3": 2240,
+  "layer_provider/5": 2191,
+  "layer_closure/3": 2174,
+  "key_pkg_rows/3": 2140,
+  "key_dep_rows/3": 2097,
+  "keep_installed_or_base/4": 2053,
+  "item_ver/3": 2013,
+  "is_v3/1": 2008,
+  "installed_ver/3": 1994,
+  "installed_or_base/3": 1970,
+  "installed_list/2": 1921,
+  "inst_walk/6": 1848,
+  "inst_closure_names/5": 1829,
+  "index_threshold/1": 1827,
+  "index_catalog/2": 1773,
+  "hold_reason/3": 1746,
+  "group_keyed/2": 1712,
+  "freeze_audit/2": 1695,
+  "follow_raw_dep/4": 1657,
+  "follow_dep_name/5": 1639,
+  "first_broken/4": 1582,
+  "first_alt_already/4": 1545,
+  "filter_satisfies/3": 1511,
+  "explain_blocked_list/3": 1491,
+  "explain_blocked/3": 1477,
+  "explain_alt/5": 1431,
+  "excluded_name/2": 1420,
+  "excluded_list/2": 1371,
+  "exclude_name/3": 1338,
+  "direct_on/4": 1293,
+  "depends_list/2": 1244,
+  "depends_in/5": 1226,
+  "dependents_installed/3": 1207,
+  "dependents/3": 1185,
+  "dep_to_req/3": 1165,
+  "dep_targets/5": 1131,
+  "dep_mentions/2": 1109,
+  "dep_index/2": 1103,
+  "dep_breaks_need/4": 1033,
+  "dep_breaks_moving/5": 1017,
+  "dep_breaks/5": 977,
+  "conflicts_list/2": 928,
+  "conflicts_in/4": 912,
+  "collect_deps/4": 872,
+  "cmp_ver/3": 844,
+  "close_moving/3": 780,
+  "canonicalize_name/3": 768,
+  "candidates_high_first/4": 740,
+  "build_tree/4": 681,
+  "blocked_from/4": 534,
+  "blocked_acc_list/5": 504,
+  "blocked_acc/5": 359,
+  "base_ver/3": 340,
+  "base_reason/3": 328,
+  "base_name/2": 320,
+  "base_list/2": 271,
+  "base_holds/2": 256,
+  "audit_holds/4": 194,
+  "alt_reasons/4": 150,
+  "already_satisfied/4": 124,
+  "already_provided/4": 107,
+  "alias_lookup/3": 74,
   "alias_list/2": 25,
   "acc_conflicts/4": 1
 };
@@ -4831,11 +5528,261 @@ Runtime.resolve_program(shared_program);
 
 
 const lowered_dispatch = {};
+// Lowered: worth_indexing/2 (if-then-else / negation / once)
+function lowered_worth_indexing_2(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("worth_indexing/2");
+  if (Runtime.op_allocate(state) !== true) return false;
+  Runtime.put_reg(state, 201, Runtime.get_reg(state, 1));
+  Runtime.put_reg(state, 202, Runtime.get_reg(state, 2));
+  { const v = Runtime.new_var(state); Runtime.put_reg(state, 203, v); Runtime.put_reg(state, 1, v); }
+  if (typeof lowered_index_threshold_1 === "function") {
+    const _cpd = state.cps.length;
+    Runtime.push_cut_barrier(state);
+    if (lowered_index_threshold_1(program, state) !== true) {
+      Runtime.pop_cut_barrier(state);
+      while (state.cps.length > _cpd) state.cps.pop();
+      return false;
+    }
+    Runtime.pop_cut_barrier(state);
+    while (state.cps.length > _cpd) state.cps.pop();
+  } else {
+    const saved_cp = state.cp;
+    const saved_pc = state.pc;
+    const target = program.labels["index_threshold/1"];
+    let _ok = true;
+    if (target !== undefined && target !== null) {
+      const _fm = Runtime.call_frame_mark(state);
+      Runtime.push_call_frame(state);
+      state.cp = 0;
+      state.pc = target;
+      state.program = program;
+      _ok = Runtime.run_isolated(program, state) === true;
+      state.halt = false;
+      Runtime.call_frame_release(state, _fm);
+    } else if (Runtime.step(program, state, I.Call("index_threshold", 1)) !== true) {
+      _ok = false;
+    }
+    state.cp = saved_cp;
+    state.pc = saved_pc;
+    state.halt = false;
+    if (!_ok) return false;
+  }
+  if (Runtime.op_get_level(state, 204) !== true) return false;
+  {
+    const _ite_snap = Runtime.snapshot_machine(state);
+    const _ite_cps = state.cps.length;
+    const _ite_cond = (function () {
+      Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+      Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
+      if (typeof lowered_long_enough_2 === "function") {
+        const _cpd = state.cps.length;
+        Runtime.push_cut_barrier(state);
+        if (lowered_long_enough_2(program, state) !== true) {
+          Runtime.pop_cut_barrier(state);
+          while (state.cps.length > _cpd) state.cps.pop();
+          return false;
+        }
+        Runtime.pop_cut_barrier(state);
+        while (state.cps.length > _cpd) state.cps.pop();
+      } else {
+        const saved_cp = state.cp;
+        const saved_pc = state.pc;
+        const target = program.labels["long_enough/2"];
+        let _ok = true;
+        if (target !== undefined && target !== null) {
+          const _fm = Runtime.call_frame_mark(state);
+          Runtime.push_call_frame(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+          Runtime.call_frame_release(state, _fm);
+        } else if (Runtime.step(program, state, I.Call("long_enough", 2)) !== true) {
+          _ok = false;
+        }
+        state.cp = saved_cp;
+        state.pc = saved_pc;
+        state.halt = false;
+        if (!_ok) return false;
+      }
+      return true;
+    })();
+    if (_ite_cond) {
+      while (state.cps.length > _ite_cps) state.cps.pop();
+      if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
+    } else {
+      Runtime.restore_machine(state, _ite_snap);
+      while (state.cps.length > _ite_cps) state.cps.pop();
+      Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+      Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
+      if (typeof lowered_long_enough_2 === "function") {
+        const _cpd = state.cps.length;
+        Runtime.push_cut_barrier(state);
+        if (lowered_long_enough_2(program, state) !== true) {
+          Runtime.pop_cut_barrier(state);
+          while (state.cps.length > _cpd) state.cps.pop();
+          return false;
+        }
+        Runtime.pop_cut_barrier(state);
+        while (state.cps.length > _cpd) state.cps.pop();
+      } else {
+        const saved_cp = state.cp;
+        const saved_pc = state.pc;
+        const target = program.labels["long_enough/2"];
+        let _ok = true;
+        if (target !== undefined && target !== null) {
+          const _fm = Runtime.call_frame_mark(state);
+          Runtime.push_call_frame(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+          Runtime.call_frame_release(state, _fm);
+        } else if (Runtime.step(program, state, I.Call("long_enough", 2)) !== true) {
+          _ok = false;
+        }
+        state.cp = saved_cp;
+        state.pc = saved_pc;
+        state.halt = false;
+        if (!_ok) return false;
+      }
+    }
+  }
+  if (Runtime.op_deallocate(state) !== true) return false;
+  return true;
+  return true;
+}
+
+lowered_dispatch["worth_indexing/2"] = function (program, state) { return lowered_worth_indexing_2(program, state); };
 // wamjs lower fallback: walk_pkg_for_blocked/5  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: virtual_provider_ceilings/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: version_lt/2  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: upgrade_set_result/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: upgrade_set/4  fallback(naked member/2 (or callee) needs interpreter choice points)
+// Lowered: tree_lookup/3 (if-then-else / negation / once)
+function lowered_tree_lookup_3(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("tree_lookup/3");
+  if (Runtime.op_allocate(state) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 26, 1, 4) !== true) return false;
+  if (Runtime.op_unify_variable(state, 203) !== true) return false;
+  if (Runtime.op_unify_variable(state, 107) !== true) return false;
+  if (Runtime.op_unify_variable(state, 201) !== true) return false;
+  if (Runtime.op_unify_variable(state, 206) !== true) return false;
+  Runtime.put_reg(state, 204, Runtime.get_reg(state, 2));
+  Runtime.put_reg(state, 205, Runtime.get_reg(state, 3));
+  { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 1, v); }
+  Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
+  Runtime.put_reg(state, 3, Runtime.get_reg(state, 107));
+  if (Runtime.op_builtin(program, state, "compare/3", 3) !== true) return false;
+  if (Runtime.op_get_level(state, 207) !== true) return false;
+  {
+    const _ite_lite = Runtime.snapshot_lite(state);
+    const _ite_cond = (function () {
+      Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+      Runtime.put_reg(state, 2, V.Atom(33));
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      return true;
+    })();
+    if (_ite_cond) {
+      Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
+      Runtime.put_reg(state, 2, Runtime.get_reg(state, 201));
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+    } else {
+      Runtime.restore_lite(state, _ite_lite);
+      if (Runtime.op_get_level(state, 208) !== true) return false;
+      {
+        const _ite_lite = Runtime.snapshot_lite(state);
+        const _ite_cond = (function () {
+          Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+          Runtime.put_reg(state, 2, V.Atom(31));
+          if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+          return true;
+        })();
+        if (_ite_cond) {
+          Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
+          Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
+          Runtime.put_reg(state, 3, Runtime.get_reg(state, 205));
+          if (typeof lowered_tree_lookup_3 === "function") {
+            const _cpd = state.cps.length;
+            Runtime.push_cut_barrier(state);
+            if (lowered_tree_lookup_3(program, state) !== true) {
+              Runtime.pop_cut_barrier(state);
+              while (state.cps.length > _cpd) state.cps.pop();
+              return false;
+            }
+            Runtime.pop_cut_barrier(state);
+            while (state.cps.length > _cpd) state.cps.pop();
+          } else {
+            const saved_cp = state.cp;
+            const saved_pc = state.pc;
+            const target = program.labels["tree_lookup/3"];
+            let _ok = true;
+            if (target !== undefined && target !== null) {
+              const _fm = Runtime.call_frame_mark(state);
+              Runtime.push_call_frame(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+              Runtime.call_frame_release(state, _fm);
+            } else if (Runtime.step(program, state, I.Call("tree_lookup", 3)) !== true) {
+              _ok = false;
+            }
+            state.cp = saved_cp;
+            state.pc = saved_pc;
+            state.halt = false;
+            if (!_ok) return false;
+          }
+        } else {
+          Runtime.restore_lite(state, _ite_lite);
+          Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
+          Runtime.put_reg(state, 2, Runtime.get_reg(state, 204));
+          Runtime.put_reg(state, 3, Runtime.get_reg(state, 205));
+          if (typeof lowered_tree_lookup_3 === "function") {
+            const _cpd = state.cps.length;
+            Runtime.push_cut_barrier(state);
+            if (lowered_tree_lookup_3(program, state) !== true) {
+              Runtime.pop_cut_barrier(state);
+              while (state.cps.length > _cpd) state.cps.pop();
+              return false;
+            }
+            Runtime.pop_cut_barrier(state);
+            while (state.cps.length > _cpd) state.cps.pop();
+          } else {
+            const saved_cp = state.cp;
+            const saved_pc = state.pc;
+            const target = program.labels["tree_lookup/3"];
+            let _ok = true;
+            if (target !== undefined && target !== null) {
+              const _fm = Runtime.call_frame_mark(state);
+              Runtime.push_call_frame(state);
+              state.cp = 0;
+              state.pc = target;
+              state.program = program;
+              _ok = Runtime.run_isolated(program, state) === true;
+              state.halt = false;
+              Runtime.call_frame_release(state, _fm);
+            } else if (Runtime.step(program, state, I.Call("tree_lookup", 3)) !== true) {
+              _ok = false;
+            }
+            state.cp = saved_cp;
+            state.pc = saved_pc;
+            state.halt = false;
+            if (!_ok) return false;
+          }
+        }
+      }
+    }
+  }
+  if (Runtime.op_deallocate(state) !== true) return false;
+  return true;
+  return true;
+}
+
+lowered_dispatch["tree_lookup/3"] = function (program, state) { return lowered_tree_lookup_3(program, state); };
 // wamjs lower fallback: topo_sort_sel/3  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: topo_one/7  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: topo_all/7  fallback(naked member/2 (or callee) needs interpreter choice points)
@@ -4844,7 +5791,7 @@ const lowered_dispatch = {};
 function lowered_tight_constraint_1(program, state) {
   if (Runtime._prof) Runtime.prof_lowered_call("tight_constraint/1");
   if (Runtime.op_allocate(state) !== true) return false;
-  Runtime.put_reg(state, 2, V.Atom(33));
+  Runtime.put_reg(state, 2, V.Atom(36));
   if (Runtime.op_builtin(program, state, "\\==/2", 2) !== true) return false;
   if (Runtime.op_deallocate(state) !== true) return false;
   return true;
@@ -4863,7 +5810,7 @@ function lowered_sort_versions_desc_2(program, state) {
   {
     const _ite_lite = Runtime.snapshot_lite(state);
     const _ite_cond = (function () {
-      Runtime.put_reg(state, 1, V.Atom(60));
+      Runtime.put_reg(state, 1, V.Atom(63));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 201));
       if (Runtime.op_builtin(program, state, "maplist/2", 2) !== true) return false;
       return true;
@@ -4877,7 +5824,7 @@ function lowered_sort_versions_desc_2(program, state) {
       if (Runtime.op_builtin(program, state, "reverse/2", 2) !== true) return false;
     } else {
       Runtime.restore_lite(state, _ite_lite);
-      Runtime.put_reg(state, 1, V.Atom(61));
+      Runtime.put_reg(state, 1, V.Atom(64));
       Runtime.put_reg(state, 2, Runtime.get_reg(state, 201));
       { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 3, v); }
       if (typeof lowered_predsort_3 === "function") {
@@ -4937,7 +5884,7 @@ function lowered_selected_ver_3(program, state) {
     const _ite_lite = Runtime.snapshot_lite(state);
     const _ite_cond = (function () {
       Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
-      if (Runtime.op_put_structure(program, state, 8, 2, 2) !== true) return false;
+      if (Runtime.op_put_structure(program, state, 9, 2, 2) !== true) return false;
       if (Runtime.op_unify_value(program, state, 203) !== true) return false;
       if (Runtime.op_unify_value(program, state, 204) !== true) return false;
       if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
@@ -5079,8 +6026,8 @@ function lowered_scan_base_holds_3(program, state) {
       const _ite_lite = Runtime.snapshot_lite(state);
       const _ite_cond = (function () {
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
-        if (Runtime.op_put_structure(program, state, 37, 2, 2) !== true) return false;
-        if (Runtime.op_unify_constant(program, state, V.Atom(36)) !== true) return false;
+        if (Runtime.op_put_structure(program, state, 40, 2, 2) !== true) return false;
+        if (Runtime.op_unify_constant(program, state, V.Atom(39)) !== true) return false;
         if (Runtime.op_unify_variable(state, 201) !== true) return false;
         if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
         return true;
@@ -5128,7 +6075,7 @@ function lowered_scan_base_holds_3(program, state) {
           const _ite_lite = Runtime.snapshot_lite(state);
           const _ite_cond = (function () {
             Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
-            if (Runtime.op_put_structure(program, state, 37, 2, 2) !== true) return false;
+            if (Runtime.op_put_structure(program, state, 40, 2, 2) !== true) return false;
             if (Runtime.op_unify_variable(state, 203) !== true) return false;
             if (Runtime.op_unify_variable(state, 204) !== true) return false;
             if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
@@ -5145,10 +6092,10 @@ function lowered_scan_base_holds_3(program, state) {
               const _ite_lite = Runtime.snapshot_lite(state);
               const _ite_cond = (function () {
                 Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
-                if (Runtime.op_put_structure(program, state, 36, 2, 2) !== true) return false;
+                if (Runtime.op_put_structure(program, state, 39, 2, 2) !== true) return false;
                 if (Runtime.op_unify_variable(state, 113) !== true) return false;
                 if (Runtime.op_unify_variable(state, 208) !== true) return false;
-                if (Runtime.op_put_structure(program, state, 8, 113, 2) !== true) return false;
+                if (Runtime.op_put_structure(program, state, 9, 113, 2) !== true) return false;
                 if (Runtime.op_unify_variable(state, 206) !== true) return false;
                 if (Runtime.op_unify_variable(state, 207) !== true) return false;
                 if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
@@ -5159,7 +6106,7 @@ function lowered_scan_base_holds_3(program, state) {
                 if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
                 if (Runtime.op_unify_variable(state, 115) !== true) return false;
                 if (Runtime.op_unify_value(program, state, 205) !== true) return false;
-                if (Runtime.op_put_structure(program, state, 12, 115, 3) !== true) return false;
+                if (Runtime.op_put_structure(program, state, 13, 115, 3) !== true) return false;
                 if (Runtime.op_unify_value(program, state, 206) !== true) return false;
                 if (Runtime.op_unify_value(program, state, 207) !== true) return false;
                 if (Runtime.op_unify_value(program, state, 208) !== true) return false;
@@ -5171,7 +6118,7 @@ function lowered_scan_base_holds_3(program, state) {
                   const _ite_lite = Runtime.snapshot_lite(state);
                   const _ite_cond = (function () {
                     Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
-                    if (Runtime.op_put_structure(program, state, 8, 2, 2) !== true) return false;
+                    if (Runtime.op_put_structure(program, state, 9, 2, 2) !== true) return false;
                     if (Runtime.op_unify_variable(state, 206) !== true) return false;
                     if (Runtime.op_unify_variable(state, 207) !== true) return false;
                     if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
@@ -5182,10 +6129,10 @@ function lowered_scan_base_holds_3(program, state) {
                     if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
                     if (Runtime.op_unify_variable(state, 114) !== true) return false;
                     if (Runtime.op_unify_value(program, state, 205) !== true) return false;
-                    if (Runtime.op_put_structure(program, state, 12, 114, 3) !== true) return false;
+                    if (Runtime.op_put_structure(program, state, 13, 114, 3) !== true) return false;
                     if (Runtime.op_unify_value(program, state, 206) !== true) return false;
                     if (Runtime.op_unify_value(program, state, 207) !== true) return false;
-                    if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+                    if (Runtime.op_unify_constant(program, state, V.Atom(14)) !== true) return false;
                     if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
                   } else {
                     Runtime.restore_lite(state, _ite_lite);
@@ -5256,8 +6203,8 @@ function lowered_scan_base_holds_3(program, state) {
       const _ite_lite = Runtime.snapshot_lite(state);
       const _ite_cond = (function () {
         Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
-        if (Runtime.op_put_structure(program, state, 37, 2, 2) !== true) return false;
-        if (Runtime.op_unify_constant(program, state, V.Atom(36)) !== true) return false;
+        if (Runtime.op_put_structure(program, state, 40, 2, 2) !== true) return false;
+        if (Runtime.op_unify_constant(program, state, V.Atom(39)) !== true) return false;
         if (Runtime.op_unify_variable(state, 201) !== true) return false;
         if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
         return true;
@@ -5305,7 +6252,7 @@ function lowered_scan_base_holds_3(program, state) {
           const _ite_lite = Runtime.snapshot_lite(state);
           const _ite_cond = (function () {
             Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
-            if (Runtime.op_put_structure(program, state, 37, 2, 2) !== true) return false;
+            if (Runtime.op_put_structure(program, state, 40, 2, 2) !== true) return false;
             if (Runtime.op_unify_variable(state, 203) !== true) return false;
             if (Runtime.op_unify_variable(state, 204) !== true) return false;
             if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
@@ -5322,10 +6269,10 @@ function lowered_scan_base_holds_3(program, state) {
               const _ite_lite = Runtime.snapshot_lite(state);
               const _ite_cond = (function () {
                 Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
-                if (Runtime.op_put_structure(program, state, 36, 2, 2) !== true) return false;
+                if (Runtime.op_put_structure(program, state, 39, 2, 2) !== true) return false;
                 if (Runtime.op_unify_variable(state, 113) !== true) return false;
                 if (Runtime.op_unify_variable(state, 208) !== true) return false;
-                if (Runtime.op_put_structure(program, state, 8, 113, 2) !== true) return false;
+                if (Runtime.op_put_structure(program, state, 9, 113, 2) !== true) return false;
                 if (Runtime.op_unify_variable(state, 206) !== true) return false;
                 if (Runtime.op_unify_variable(state, 207) !== true) return false;
                 if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
@@ -5336,7 +6283,7 @@ function lowered_scan_base_holds_3(program, state) {
                 if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
                 if (Runtime.op_unify_variable(state, 115) !== true) return false;
                 if (Runtime.op_unify_value(program, state, 205) !== true) return false;
-                if (Runtime.op_put_structure(program, state, 12, 115, 3) !== true) return false;
+                if (Runtime.op_put_structure(program, state, 13, 115, 3) !== true) return false;
                 if (Runtime.op_unify_value(program, state, 206) !== true) return false;
                 if (Runtime.op_unify_value(program, state, 207) !== true) return false;
                 if (Runtime.op_unify_value(program, state, 208) !== true) return false;
@@ -5348,7 +6295,7 @@ function lowered_scan_base_holds_3(program, state) {
                   const _ite_lite = Runtime.snapshot_lite(state);
                   const _ite_cond = (function () {
                     Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
-                    if (Runtime.op_put_structure(program, state, 8, 2, 2) !== true) return false;
+                    if (Runtime.op_put_structure(program, state, 9, 2, 2) !== true) return false;
                     if (Runtime.op_unify_variable(state, 206) !== true) return false;
                     if (Runtime.op_unify_variable(state, 207) !== true) return false;
                     if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
@@ -5359,10 +6306,10 @@ function lowered_scan_base_holds_3(program, state) {
                     if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
                     if (Runtime.op_unify_variable(state, 114) !== true) return false;
                     if (Runtime.op_unify_value(program, state, 205) !== true) return false;
-                    if (Runtime.op_put_structure(program, state, 12, 114, 3) !== true) return false;
+                    if (Runtime.op_put_structure(program, state, 13, 114, 3) !== true) return false;
                     if (Runtime.op_unify_value(program, state, 206) !== true) return false;
                     if (Runtime.op_unify_value(program, state, 207) !== true) return false;
-                    if (Runtime.op_unify_constant(program, state, V.Atom(13)) !== true) return false;
+                    if (Runtime.op_unify_constant(program, state, V.Atom(14)) !== true) return false;
                     if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
                   } else {
                     Runtime.restore_lite(state, _ite_lite);
@@ -5399,6 +6346,227 @@ function lowered_scan_base_holds_3(program, state) {
 
 lowered_dispatch["scan_base_holds/3"] = function (program, state) { return lowered_scan_base_holds_3(program, state); };
 // wamjs lower fallback: satisfies/2  fallback(naked member/2 (or callee) needs interpreter choice points)
+// Lowered: same_key/4 (T4 nil/cons dispatch; no snapshot on bound A1)
+function lowered_same_key_4(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("same_key/4");
+  const _a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (Runtime.term_is_nil(program, _a1)) {
+    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
+    if (Runtime.op_get_constant(program, state, 3, V.Atom(2)) !== true) return false;
+    if (Runtime.op_get_constant(program, state, 4, V.Atom(2)) !== true) return false;
+    return true;
+    return true;
+  }
+  if (Runtime.term_is_cons(program, _a1)) {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 109) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 9, 109, 2) !== true) return false;
+    if (Runtime.op_unify_variable(state, 110) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 9, 110, 2) !== true) return false;
+    if (Runtime.op_unify_variable(state, 205) !== true) return false;
+    if (Runtime.op_unify_variable(state, 206) !== true) return false;
+    if (Runtime.op_unify_variable(state, 207) !== true) return false;
+    if (Runtime.op_unify_variable(state, 208) !== true) return false;
+    Runtime.put_reg(state, 201, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 203, Runtime.get_reg(state, 3));
+    Runtime.put_reg(state, 204, Runtime.get_reg(state, 4));
+    if (Runtime.op_get_level(state, 209) !== true) return false;
+    {
+      const _ite_trail = state.trail.length;
+      const _ite_args = Runtime.capture_a_regs(state, 8);
+      const _ite_cond = (function () {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
+        Runtime.put_reg(state, 2, Runtime.get_reg(state, 201));
+        if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
+        return true;
+      })();
+      if (_ite_cond) {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
+        if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 207) !== true) return false;
+        if (Runtime.op_unify_variable(state, 202) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
+        Runtime.put_reg(state, 2, Runtime.get_reg(state, 201));
+        Runtime.put_reg(state, 3, Runtime.get_reg(state, 202));
+        Runtime.put_reg(state, 4, Runtime.get_reg(state, 204));
+        if (typeof lowered_same_key_4 === "function") {
+          const _cpd = state.cps.length;
+          Runtime.push_cut_barrier(state);
+          if (lowered_same_key_4(program, state) !== true) {
+            Runtime.pop_cut_barrier(state);
+            while (state.cps.length > _cpd) state.cps.pop();
+            return false;
+          }
+          Runtime.pop_cut_barrier(state);
+          while (state.cps.length > _cpd) state.cps.pop();
+        } else {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const target = program.labels["same_key/4"];
+          let _ok = true;
+          if (target !== undefined && target !== null) {
+            const _fm = Runtime.call_frame_mark(state);
+            Runtime.push_call_frame(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+            Runtime.call_frame_release(state, _fm);
+          } else if (Runtime.step(program, state, I.Call("same_key", 4)) !== true) {
+            _ok = false;
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+      } else {
+        Runtime.undo_trail(state, _ite_trail);
+        Runtime.restore_a_regs(state, _ite_args);
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
+        Runtime.put_reg(state, 2, V.Atom(2));
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
+        if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+        if (Runtime.op_unify_variable(state, 112) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 208) !== true) return false;
+        if (Runtime.op_put_structure(program, state, 9, 112, 2) !== true) return false;
+        if (Runtime.op_unify_variable(state, 113) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 207) !== true) return false;
+        if (Runtime.op_put_structure(program, state, 9, 113, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 205) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 206) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      }
+    }
+    if (Runtime.op_deallocate(state) !== true) return false;
+    return true;
+    return true;
+  }
+  const _t4_trail = state.trail.length;
+  const _t4_regs = Runtime.copy_table(state.regs);
+  const _t4_vc = state.var_counter;
+  const _t4_stack = state.stack.slice();
+  const _t4_ysave = (state.y_save || []).slice();
+  const _t4_mode = state.mode;
+  const _t4_build = state.build_stack.slice();
+  const _t4_rstack = (state.read_stack || []).slice();
+  const _t4_rargs = state.read_args;
+  const _t4_rcur = state.read_cursor;
+  if ((function () {
+    if (Runtime.op_get_constant(program, state, 1, V.Atom(2)) !== true) return false;
+    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
+    if (Runtime.op_get_constant(program, state, 3, V.Atom(2)) !== true) return false;
+    if (Runtime.op_get_constant(program, state, 4, V.Atom(2)) !== true) return false;
+    return true;
+    return false;
+  })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 109) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 9, 109, 2) !== true) return false;
+    if (Runtime.op_unify_variable(state, 110) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 9, 110, 2) !== true) return false;
+    if (Runtime.op_unify_variable(state, 205) !== true) return false;
+    if (Runtime.op_unify_variable(state, 206) !== true) return false;
+    if (Runtime.op_unify_variable(state, 207) !== true) return false;
+    if (Runtime.op_unify_variable(state, 208) !== true) return false;
+    Runtime.put_reg(state, 201, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 203, Runtime.get_reg(state, 3));
+    Runtime.put_reg(state, 204, Runtime.get_reg(state, 4));
+    if (Runtime.op_get_level(state, 209) !== true) return false;
+    {
+      const _ite_trail = state.trail.length;
+      const _ite_args = Runtime.capture_a_regs(state, 8);
+      const _ite_cond = (function () {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 205));
+        Runtime.put_reg(state, 2, Runtime.get_reg(state, 201));
+        if (Runtime.op_builtin(program, state, "==/2", 2) !== true) return false;
+        return true;
+      })();
+      if (_ite_cond) {
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
+        if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 207) !== true) return false;
+        if (Runtime.op_unify_variable(state, 202) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 208));
+        Runtime.put_reg(state, 2, Runtime.get_reg(state, 201));
+        Runtime.put_reg(state, 3, Runtime.get_reg(state, 202));
+        Runtime.put_reg(state, 4, Runtime.get_reg(state, 204));
+        if (typeof lowered_same_key_4 === "function") {
+          const _cpd = state.cps.length;
+          Runtime.push_cut_barrier(state);
+          if (lowered_same_key_4(program, state) !== true) {
+            Runtime.pop_cut_barrier(state);
+            while (state.cps.length > _cpd) state.cps.pop();
+            return false;
+          }
+          Runtime.pop_cut_barrier(state);
+          while (state.cps.length > _cpd) state.cps.pop();
+        } else {
+          const saved_cp = state.cp;
+          const saved_pc = state.pc;
+          const target = program.labels["same_key/4"];
+          let _ok = true;
+          if (target !== undefined && target !== null) {
+            const _fm = Runtime.call_frame_mark(state);
+            Runtime.push_call_frame(state);
+            state.cp = 0;
+            state.pc = target;
+            state.program = program;
+            _ok = Runtime.run_isolated(program, state) === true;
+            state.halt = false;
+            Runtime.call_frame_release(state, _fm);
+          } else if (Runtime.step(program, state, I.Call("same_key", 4)) !== true) {
+            _ok = false;
+          }
+          state.cp = saved_cp;
+          state.pc = saved_pc;
+          state.halt = false;
+          if (!_ok) return false;
+        }
+      } else {
+        Runtime.undo_trail(state, _ite_trail);
+        Runtime.restore_a_regs(state, _ite_args);
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 203));
+        Runtime.put_reg(state, 2, V.Atom(2));
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+        Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
+        if (Runtime.op_put_structure(program, state, 5, 2, 2) !== true) return false;
+        if (Runtime.op_unify_variable(state, 112) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 208) !== true) return false;
+        if (Runtime.op_put_structure(program, state, 9, 112, 2) !== true) return false;
+        if (Runtime.op_unify_variable(state, 113) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 207) !== true) return false;
+        if (Runtime.op_put_structure(program, state, 9, 113, 2) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 205) !== true) return false;
+        if (Runtime.op_unify_value(program, state, 206) !== true) return false;
+        if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      }
+    }
+    if (Runtime.op_deallocate(state) !== true) return false;
+    return true;
+    return false;
+  })()) return true;
+  return false;
+}
+
+lowered_dispatch["same_key/4"] = function (program, state) { return lowered_same_key_4(program, state); };
 // wamjs lower fallback: safe_upgrade_reason/5  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: safe_upgrade/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: roots_to_pairs/3  fallback(naked member/2 (or callee) needs interpreter choice points)
@@ -5480,6 +6648,39 @@ function lowered_requested_list_2(program, state) {
     if (Runtime.op_unify_variable(state, 110) !== true) return false;
     if (Runtime.op_get_value(program, state, 106, 2) !== true) return false;
     return true;
+    return false;
+  })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 7, 1, 3) !== true) return false;
+    if (Runtime.op_unify_variable(state, 101) !== true) return false;
+    if (Runtime.op_unify_variable(state, 102) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    Runtime.put_reg(state, 104, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 101));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 104));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_requested_list_2 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_requested_list_2(program, state) === true;
+    }
+    {
+      const target = program.labels["requested_list/2"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "requested_list", 2) === true;
+    }
     return false;
   })()) return true;
   return false;
@@ -5567,6 +6768,39 @@ function lowered_provides_list_2(program, state) {
     return true;
     return false;
   })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 7, 1, 3) !== true) return false;
+    if (Runtime.op_unify_variable(state, 101) !== true) return false;
+    if (Runtime.op_unify_variable(state, 102) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    Runtime.put_reg(state, 104, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 101));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 104));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_provides_list_2 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_provides_list_2(program, state) === true;
+    }
+    {
+      const target = program.labels["provides_list/2"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "provides_list", 2) === true;
+    }
+    return false;
+  })()) return true;
   return false;
 }
 
@@ -5588,14 +6822,14 @@ function lowered_provide_row_5(program, state) {
   const _t4_rargs = state.read_args;
   const _t4_rcur = state.read_cursor;
   if ((function () {
-    if (Runtime.op_get_structure(program, state, 44, 1, 3) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 47, 1, 3) !== true) return false;
     if (Runtime.op_unify_variable(state, 101) !== true) return false;
     if (Runtime.op_unify_variable(state, 102) !== true) return false;
     if (Runtime.op_unify_variable(state, 103) !== true) return false;
     if (Runtime.op_get_value(program, state, 101, 2) !== true) return false;
     if (Runtime.op_get_value(program, state, 102, 3) !== true) return false;
     if (Runtime.op_get_value(program, state, 103, 4) !== true) return false;
-    if (Runtime.op_get_constant(program, state, 5, V.Atom(45)) !== true) return false;
+    if (Runtime.op_get_constant(program, state, 5, V.Atom(48)) !== true) return false;
     return true;
     return false;
   })()) return true;
@@ -5610,7 +6844,7 @@ function lowered_provide_row_5(program, state) {
   state.read_args = _t4_rargs;
   state.read_cursor = _t4_rcur;
   if ((function () {
-    if (Runtime.op_get_structure(program, state, 44, 1, 4) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 47, 1, 4) !== true) return false;
     if (Runtime.op_unify_variable(state, 101) !== true) return false;
     if (Runtime.op_unify_variable(state, 102) !== true) return false;
     if (Runtime.op_unify_variable(state, 103) !== true) return false;
@@ -5626,6 +6860,19 @@ function lowered_provide_row_5(program, state) {
 }
 
 lowered_dispatch["provide_row/5"] = function (program, state) { return lowered_provide_row_5(program, state); };
+// Lowered: pkg_index/2 (deterministic)
+function lowered_pkg_index_2(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("pkg_index/2");
+  if (Runtime.op_get_structure(program, state, 7, 1, 3) !== true) return false;
+  if (Runtime.op_unify_variable(state, 101) !== true) return false;
+  if (Runtime.op_unify_variable(state, 102) !== true) return false;
+  if (Runtime.op_unify_variable(state, 103) !== true) return false;
+  if (Runtime.op_get_value(program, state, 103, 2) !== true) return false;
+  return true;
+  return true;
+}
+
+lowered_dispatch["pkg_index/2"] = function (program, state) { return lowered_pkg_index_2(program, state); };
 // wamjs lower fallback: pick_repair/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: pick_need/8  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: pick/7  fallback(naked member/2 (or callee) needs interpreter choice points)
@@ -5647,7 +6894,7 @@ function lowered_pad_head_2(program, state) {
     if (Runtime.op_get_constant(program, state, 1, V.Atom(2)) !== true) return false;
     if (Runtime.op_get_list(program, state, 2, 5) !== true) return false;
     if (Runtime.op_unify_variable(state, 101) !== true) return false;
-    if (Runtime.op_get_structure(program, state, 40, 101, 2) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 43, 101, 2) !== true) return false;
     if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
     if (Runtime.op_unify_constant(program, state, V.Int(0)) !== true) return false;
     if (Runtime.op_unify_constant(program, state, V.Atom(2)) !== true) return false;
@@ -5752,6 +6999,39 @@ function lowered_packages_2(program, state) {
     return true;
     return false;
   })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 7, 1, 3) !== true) return false;
+    if (Runtime.op_unify_variable(state, 101) !== true) return false;
+    if (Runtime.op_unify_variable(state, 102) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    Runtime.put_reg(state, 104, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 101));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 104));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_packages_2 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_packages_2(program, state) === true;
+    }
+    {
+      const target = program.labels["packages/2"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "packages", 2) === true;
+    }
+    return false;
+  })()) return true;
   return false;
 }
 
@@ -5844,7 +7124,7 @@ function lowered_order_val_2(program, state) {
     Runtime.put_reg(state, 101, Runtime.get_reg(state, 1));
     Runtime.put_reg(state, 102, Runtime.get_reg(state, 2));
     Runtime.put_reg(state, 1, Runtime.get_reg(state, 102));
-    if (Runtime.op_put_structure(program, state, 39, 2, 2) !== true) return false;
+    if (Runtime.op_put_structure(program, state, 41, 2, 2) !== true) return false;
     if (Runtime.op_unify_value(program, state, 101) !== true) return false;
     if (Runtime.op_unify_constant(program, state, V.Int(256)) !== true) return false;
     if (Runtime.op_builtin(program, state, "is/2", 2) !== true) return false;
@@ -5871,7 +7151,7 @@ function lowered_names_of_2(program, state) {
     if (Runtime.op_allocate(state) !== true) return false;
     if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
     if (Runtime.op_unify_variable(state, 101) !== true) return false;
-    if (Runtime.op_get_structure(program, state, 8, 101, 2) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 9, 101, 2) !== true) return false;
     if (Runtime.op_unify_variable(state, 102) !== true) return false;
     if (Runtime.op_unify_variable(state, 103) !== true) return false;
     if (Runtime.op_unify_variable(state, 104) !== true) return false;
@@ -5924,7 +7204,7 @@ function lowered_names_of_2(program, state) {
     if (Runtime.op_allocate(state) !== true) return false;
     if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
     if (Runtime.op_unify_variable(state, 101) !== true) return false;
-    if (Runtime.op_get_structure(program, state, 8, 101, 2) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 9, 101, 2) !== true) return false;
     if (Runtime.op_unify_variable(state, 102) !== true) return false;
     if (Runtime.op_unify_variable(state, 103) !== true) return false;
     if (Runtime.op_unify_variable(state, 104) !== true) return false;
@@ -5952,10 +7232,110 @@ function lowered_names_of_2(program, state) {
 
 lowered_dispatch["names_of/2"] = function (program, state) { return lowered_names_of_2(program, state); };
 // wamjs lower fallback: member_selected/3  fallback(naked member/2 (or callee) needs interpreter choice points)
+// wamjs lower fallback: matching_versions_in/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: matching_versions/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: matching_deps/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: map_requests/3  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: lookup_held/3  fallback(naked member/2 (or callee) needs interpreter choice points)
+// Lowered: long_enough/2 (if-then-else / negation / once)
+function lowered_long_enough_2(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("long_enough/2");
+  if (Runtime.op_allocate(state) !== true) return false;
+  if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+  if (Runtime.op_unify_variable(state, 104) !== true) return false;
+  if (Runtime.op_unify_variable(state, 202) !== true) return false;
+  Runtime.put_reg(state, 201, Runtime.get_reg(state, 2));
+  if (Runtime.op_get_level(state, 204) !== true) return false;
+  {
+    const _ite_trail = state.trail.length;
+    const _ite_args = Runtime.capture_a_regs(state, 8);
+    const _ite_cond = (function () {
+      Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+      Runtime.put_reg(state, 2, V.Int(1));
+      if (Runtime.op_builtin(program, state, "=</2", 2) !== true) return false;
+      return true;
+    })();
+    if (_ite_cond) {
+      if (Runtime.op_builtin(program, state, "true/0", 0) !== true) return false;
+    } else {
+      Runtime.undo_trail(state, _ite_trail);
+      Runtime.restore_a_regs(state, _ite_args);
+      { const v = Runtime.new_var(state); Runtime.put_reg(state, 203, v); Runtime.put_reg(state, 1, v); }
+      if (Runtime.op_put_structure(program, state, 41, 2, 2) !== true) return false;
+      if (Runtime.op_unify_value(program, state, 201) !== true) return false;
+      if (Runtime.op_unify_constant(program, state, V.Int(-1)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "is/2", 2) !== true) return false;
+      Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+      Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
+      if (typeof lowered_long_enough_2 === "function") {
+        const _cpd = state.cps.length;
+        Runtime.push_cut_barrier(state);
+        if (lowered_long_enough_2(program, state) !== true) {
+          Runtime.pop_cut_barrier(state);
+          while (state.cps.length > _cpd) state.cps.pop();
+          return false;
+        }
+        Runtime.pop_cut_barrier(state);
+        while (state.cps.length > _cpd) state.cps.pop();
+      } else {
+        const saved_cp = state.cp;
+        const saved_pc = state.pc;
+        const target = program.labels["long_enough/2"];
+        let _ok = true;
+        if (target !== undefined && target !== null) {
+          const _fm = Runtime.call_frame_mark(state);
+          Runtime.push_call_frame(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+          Runtime.call_frame_release(state, _fm);
+        } else if (Runtime.step(program, state, I.Call("long_enough", 2)) !== true) {
+          _ok = false;
+        }
+        state.cp = saved_cp;
+        state.pc = saved_pc;
+        state.halt = false;
+        if (!_ok) return false;
+      }
+    }
+  }
+  if (Runtime.op_deallocate(state) !== true) return false;
+  return true;
+  return true;
+}
+
+lowered_dispatch["long_enough/2"] = function (program, state) { return lowered_long_enough_2(program, state); };
+// Lowered: list_to_tree/2 (deterministic)
+function lowered_list_to_tree_2(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("list_to_tree/2");
+  if (Runtime.op_allocate(state) !== true) return false;
+  Runtime.put_reg(state, 202, Runtime.get_reg(state, 1));
+  Runtime.put_reg(state, 203, Runtime.get_reg(state, 2));
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+  { const v = Runtime.new_var(state); Runtime.put_reg(state, 201, v); Runtime.put_reg(state, 2, v); }
+  if (Runtime.op_builtin(program, state, "length/2", 2) !== true) return false;
+  Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+  Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
+  Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
+  Runtime.put_reg(state, 4, V.Atom(2));
+  if (Runtime.op_deallocate(state) !== true) return false;
+  if (typeof lowered_build_tree_4 === "function") {
+    Runtime.enter_execute(state);
+    return lowered_build_tree_4(program, state) === true;
+  }
+  {
+    const target = program.labels["build_tree/4"];
+    if (target !== undefined && target !== null) {
+      return Runtime.execute_user_isolated(program, state, target) === true;
+    }
+    return Runtime.op_builtin(program, state, "build_tree", 4) === true;
+  }
+  return true;
+}
+
+lowered_dispatch["list_to_tree/2"] = function (program, state) { return lowered_list_to_tree_2(program, state); };
 // Lowered: layers_list/2 (T4 all-clauses inline)
 function lowered_layers_list_2(program, state) {
   if (Runtime._prof) Runtime.prof_lowered_call("layers_list/2");
@@ -6032,6 +7412,39 @@ function lowered_layers_list_2(program, state) {
     return true;
     return false;
   })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 7, 1, 3) !== true) return false;
+    if (Runtime.op_unify_variable(state, 101) !== true) return false;
+    if (Runtime.op_unify_variable(state, 102) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    Runtime.put_reg(state, 104, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 101));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 104));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_layers_list_2 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_layers_list_2(program, state) === true;
+    }
+    {
+      const target = program.labels["layers_list/2"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "layers_list", 2) === true;
+    }
+    return false;
+  })()) return true;
   return false;
 }
 
@@ -6040,6 +7453,128 @@ lowered_dispatch["layers_list/2"] = function (program, state) { return lowered_l
 // wamjs lower fallback: layer_satisfies/3  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: layer_provider/5  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: layer_closure/3  fallback(naked member/2 (or callee) needs interpreter choice points)
+// Lowered: key_pkg_rows/3 (T4 nil/cons dispatch; no snapshot on bound A1)
+function lowered_key_pkg_rows_3(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("key_pkg_rows/3");
+  const _a1 = Runtime.deref(state, Runtime.get_reg(state, 1));
+  if (Runtime.term_is_nil(program, _a1)) {
+    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
+    if (Runtime.op_get_constant(program, state, 3, V.Atom(2)) !== true) return false;
+    return true;
+    return true;
+  }
+  if (Runtime.term_is_cons(program, _a1)) {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 104) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 42, 104, 2) !== true) return false;
+    if (Runtime.op_unify_variable(state, 105) !== true) return false;
+    if (Runtime.op_unify_variable(state, 106) !== true) return false;
+    if (Runtime.op_unify_variable(state, 201) !== true) return false;
+    Runtime.put_reg(state, 107, Runtime.get_reg(state, 2));
+    if (Runtime.op_get_list(program, state, 3, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 108) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 9, 108, 2) !== true) return false;
+    if (Runtime.op_unify_variable(state, 109) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 9, 109, 2) !== true) return false;
+    if (Runtime.op_unify_value(program, state, 105) !== true) return false;
+    if (Runtime.op_unify_value(program, state, 107) !== true) return false;
+    if (Runtime.op_unify_value(program, state, 106) !== true) return false;
+    if (Runtime.op_unify_variable(state, 203) !== true) return false;
+    { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 1, v); }
+    if (Runtime.op_put_structure(program, state, 41, 2, 2) !== true) return false;
+    if (Runtime.op_unify_value(program, state, 107) !== true) return false;
+    if (Runtime.op_unify_constant(program, state, V.Int(1)) !== true) return false;
+    if (Runtime.op_builtin(program, state, "is/2", 2) !== true) return false;
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
+    Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_key_pkg_rows_3 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_key_pkg_rows_3(program, state) === true;
+    }
+    {
+      const target = program.labels["key_pkg_rows/3"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "key_pkg_rows", 3) === true;
+    }
+    return true;
+  }
+  const _t4_trail = state.trail.length;
+  const _t4_regs = Runtime.copy_table(state.regs);
+  const _t4_vc = state.var_counter;
+  const _t4_stack = state.stack.slice();
+  const _t4_ysave = (state.y_save || []).slice();
+  const _t4_mode = state.mode;
+  const _t4_build = state.build_stack.slice();
+  const _t4_rstack = (state.read_stack || []).slice();
+  const _t4_rargs = state.read_args;
+  const _t4_rcur = state.read_cursor;
+  if ((function () {
+    if (Runtime.op_get_constant(program, state, 1, V.Atom(2)) !== true) return false;
+    Runtime.put_reg(state, 101, Runtime.get_reg(state, 2));
+    if (Runtime.op_get_constant(program, state, 3, V.Atom(2)) !== true) return false;
+    return true;
+    return false;
+  })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 104) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 42, 104, 2) !== true) return false;
+    if (Runtime.op_unify_variable(state, 105) !== true) return false;
+    if (Runtime.op_unify_variable(state, 106) !== true) return false;
+    if (Runtime.op_unify_variable(state, 201) !== true) return false;
+    Runtime.put_reg(state, 107, Runtime.get_reg(state, 2));
+    if (Runtime.op_get_list(program, state, 3, 5) !== true) return false;
+    if (Runtime.op_unify_variable(state, 108) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 9, 108, 2) !== true) return false;
+    if (Runtime.op_unify_variable(state, 109) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 9, 109, 2) !== true) return false;
+    if (Runtime.op_unify_value(program, state, 105) !== true) return false;
+    if (Runtime.op_unify_value(program, state, 107) !== true) return false;
+    if (Runtime.op_unify_value(program, state, 106) !== true) return false;
+    if (Runtime.op_unify_variable(state, 203) !== true) return false;
+    { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 1, v); }
+    if (Runtime.op_put_structure(program, state, 41, 2, 2) !== true) return false;
+    if (Runtime.op_unify_value(program, state, 107) !== true) return false;
+    if (Runtime.op_unify_constant(program, state, V.Int(1)) !== true) return false;
+    if (Runtime.op_builtin(program, state, "is/2", 2) !== true) return false;
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 202));
+    Runtime.put_reg(state, 3, Runtime.get_reg(state, 203));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_key_pkg_rows_3 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_key_pkg_rows_3(program, state) === true;
+    }
+    {
+      const target = program.labels["key_pkg_rows/3"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "key_pkg_rows", 3) === true;
+    }
+    return false;
+  })()) return true;
+  return false;
+}
+
+lowered_dispatch["key_pkg_rows/3"] = function (program, state) { return lowered_key_pkg_rows_3(program, state); };
+// wamjs lower fallback: key_dep_rows/3  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: keep_installed_or_base/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 // Lowered: item_ver/3 (T4 all-clauses inline)
 function lowered_item_ver_3(program, state) {
@@ -6056,7 +7591,7 @@ function lowered_item_ver_3(program, state) {
   const _t4_rcur = state.read_cursor;
   if ((function () {
     if (Runtime.op_allocate(state) !== true) return false;
-    if (Runtime.op_get_structure(program, state, 8, 1, 2) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 9, 1, 2) !== true) return false;
     if (Runtime.op_unify_variable(state, 101) !== true) return false;
     if (Runtime.op_unify_variable(state, 102) !== true) return false;
     Runtime.put_reg(state, 103, Runtime.get_reg(state, 2));
@@ -6080,9 +7615,9 @@ function lowered_item_ver_3(program, state) {
   state.read_cursor = _t4_rcur;
   if ((function () {
     if (Runtime.op_allocate(state) !== true) return false;
-    if (Runtime.op_get_structure(program, state, 36, 1, 2) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 39, 1, 2) !== true) return false;
     if (Runtime.op_unify_variable(state, 101) !== true) return false;
-    if (Runtime.op_get_structure(program, state, 8, 101, 2) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 9, 101, 2) !== true) return false;
     if (Runtime.op_unify_variable(state, 102) !== true) return false;
     if (Runtime.op_unify_variable(state, 103) !== true) return false;
     if (Runtime.op_unify_variable(state, 104) !== true) return false;
@@ -6107,7 +7642,7 @@ function lowered_item_ver_3(program, state) {
   state.read_cursor = _t4_rcur;
   if ((function () {
     if (Runtime.op_allocate(state) !== true) return false;
-    if (Runtime.op_get_structure(program, state, 37, 1, 2) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 40, 1, 2) !== true) return false;
     if (Runtime.op_unify_variable(state, 101) !== true) return false;
     if (Runtime.op_unify_variable(state, 102) !== true) return false;
     Runtime.put_reg(state, 103, Runtime.get_reg(state, 2));
@@ -6151,7 +7686,7 @@ function lowered_is_v3_1(program, state) {
     }
     return true;
   }
-  if (Runtime.op_get_structure(program, state, 35, 1, 3) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 38, 1, 3) !== true) return false;
   if (Runtime.op_unify_variable(state, 101) !== true) return false;
   if (Runtime.op_unify_variable(state, 102) !== true) return false;
   if (Runtime.op_unify_variable(state, 103) !== true) return false;
@@ -6244,19 +7779,83 @@ function lowered_installed_list_2(program, state) {
     return true;
     return false;
   })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 7, 1, 3) !== true) return false;
+    if (Runtime.op_unify_variable(state, 101) !== true) return false;
+    if (Runtime.op_unify_variable(state, 102) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    Runtime.put_reg(state, 104, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 101));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 104));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_installed_list_2 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_installed_list_2(program, state) === true;
+    }
+    {
+      const target = program.labels["installed_list/2"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "installed_list", 2) === true;
+    }
+    return false;
+  })()) return true;
   return false;
 }
 
 lowered_dispatch["installed_list/2"] = function (program, state) { return lowered_installed_list_2(program, state); };
 // wamjs lower fallback: inst_walk/6  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: inst_closure_names/5  fallback(naked member/2 (or callee) needs interpreter choice points)
+// Lowered: index_threshold/1 (deterministic ground fact; interned after first success)
+function lowered_index_threshold_1(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("index_threshold/1");
+  const _gk = "index_threshold/1";
+  const _gm = program.ground_memo || (program.ground_memo = Object.create(null));
+  const _cached = _gm[_gk];
+  if (_cached !== undefined) {
+    // Trail-safety: _cached is a copy_term snapshot of a fully ground
+    // answer. It contains no unbound cells, so it is never trailed;
+    // unify only binds the caller's registers (or compares ground-to-ground).
+    // Sharing the interned object across calls is sound because get_structure
+    // / unify in read mode do not mutate args arrays, and a later trail undo
+    // only deletes caller bindings.
+    for (let _i = 0; _i < _cached.length; _i++) {
+      if (Runtime.unify(state, Runtime.get_reg(state, _i + 1), _cached[_i], program) !== true) return false;
+    }
+    return true;
+  }
+  if (Runtime.op_get_constant(program, state, 1, V.Int(64)) !== true) return false;
+  const _snap = [];
+  for (let _i = 0; _i < 1; _i++) {
+    const _ti = Runtime.deref(state, Runtime.get_reg(state, _i + 1));
+    if (!Runtime.term_is_ground(state, _ti)) return true;
+    _snap.push(Runtime.copy_term(state, _ti));
+  }
+  _gm[_gk] = _snap;
+  return true;
+}
+
+lowered_dispatch["index_threshold/1"] = function (program, state) { return lowered_index_threshold_1(program, state); };
+// wamjs lower fallback: index_catalog/2  fallback(naked member/2 (or callee) needs interpreter choice points)
 // Lowered: hold_reason/3 (if-then-else / negation / once)
 function lowered_hold_reason_3(program, state) {
   if (Runtime._prof) Runtime.prof_lowered_call("hold_reason/3");
   if (Runtime.op_allocate(state) !== true) return false;
   if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
   if (Runtime.op_unify_variable(state, 106) !== true) return false;
-  if (Runtime.op_get_structure(program, state, 12, 106, 3) !== true) return false;
+  if (Runtime.op_get_structure(program, state, 13, 106, 3) !== true) return false;
   if (Runtime.op_unify_variable(state, 201) !== true) return false;
   if (Runtime.op_unify_variable(state, 107) !== true) return false;
   if (Runtime.op_unify_variable(state, 202) !== true) return false;
@@ -6323,11 +7922,13 @@ function lowered_hold_reason_3(program, state) {
 }
 
 lowered_dispatch["hold_reason/3"] = function (program, state) { return lowered_hold_reason_3(program, state); };
+// wamjs lower fallback: group_keyed/2  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: freeze_audit/2  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: follow_raw_dep/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: follow_dep_name/5  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: first_broken/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: first_alt_already/4  fallback(naked member/2 (or callee) needs interpreter choice points)
+// wamjs lower fallback: filter_satisfies/3  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: explain_blocked_list/3  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: explain_blocked/3  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: explain_alt/5  fallback(naked member/2 (or callee) needs interpreter choice points)
@@ -6406,6 +8007,39 @@ function lowered_excluded_list_2(program, state) {
     if (Runtime.op_unify_variable(state, 110) !== true) return false;
     if (Runtime.op_get_value(program, state, 108, 2) !== true) return false;
     return true;
+    return false;
+  })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 7, 1, 3) !== true) return false;
+    if (Runtime.op_unify_variable(state, 101) !== true) return false;
+    if (Runtime.op_unify_variable(state, 102) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    Runtime.put_reg(state, 104, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 101));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 104));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_excluded_list_2 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_excluded_list_2(program, state) === true;
+    }
+    {
+      const target = program.labels["excluded_list/2"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "excluded_list", 2) === true;
+    }
     return false;
   })()) return true;
   return false;
@@ -6490,6 +8124,39 @@ function lowered_depends_list_2(program, state) {
     return true;
     return false;
   })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 7, 1, 3) !== true) return false;
+    if (Runtime.op_unify_variable(state, 101) !== true) return false;
+    if (Runtime.op_unify_variable(state, 102) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    Runtime.put_reg(state, 104, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 101));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 104));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_depends_list_2 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_depends_list_2(program, state) === true;
+    }
+    {
+      const target = program.labels["depends_list/2"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "depends_list", 2) === true;
+    }
+    return false;
+  })()) return true;
   return false;
 }
 
@@ -6512,14 +8179,14 @@ function lowered_dep_to_req_3(program, state) {
   const _t4_rcur = state.read_cursor;
   if ((function () {
     if (Runtime.op_allocate(state) !== true) return false;
-    if (Runtime.op_get_structure(program, state, 20, 1, 1) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 21, 1, 1) !== true) return false;
     if (Runtime.op_unify_variable(state, 101) !== true) return false;
     Runtime.put_reg(state, 102, Runtime.get_reg(state, 2));
-    if (Runtime.op_get_structure(program, state, 19, 3, 2) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 20, 3, 2) !== true) return false;
     if (Runtime.op_unify_variable(state, 103) !== true) return false;
-    if (Runtime.op_get_structure(program, state, 20, 103, 1) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 21, 103, 1) !== true) return false;
     if (Runtime.op_unify_value(program, state, 101) !== true) return false;
-    if (Runtime.op_unify_constant(program, state, V.Atom(33)) !== true) return false;
+    if (Runtime.op_unify_constant(program, state, V.Atom(36)) !== true) return false;
     if (Runtime.op_builtin(program, state, "!/0", 0) !== true) return false;
     if (Runtime.op_deallocate(state) !== true) return false;
     return true;
@@ -6538,7 +8205,7 @@ function lowered_dep_to_req_3(program, state) {
   if ((function () {
     Runtime.put_reg(state, 101, Runtime.get_reg(state, 1));
     Runtime.put_reg(state, 102, Runtime.get_reg(state, 2));
-    if (Runtime.op_get_structure(program, state, 19, 3, 2) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 20, 3, 2) !== true) return false;
     if (Runtime.op_unify_value(program, state, 101) !== true) return false;
     if (Runtime.op_unify_value(program, state, 102) !== true) return false;
     return true;
@@ -6550,6 +8217,19 @@ function lowered_dep_to_req_3(program, state) {
 lowered_dispatch["dep_to_req/3"] = function (program, state) { return lowered_dep_to_req_3(program, state); };
 // wamjs lower fallback: dep_targets/5  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: dep_mentions/2  fallback(naked member/2 (or callee) needs interpreter choice points)
+// Lowered: dep_index/2 (deterministic)
+function lowered_dep_index_2(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("dep_index/2");
+  if (Runtime.op_get_structure(program, state, 7, 1, 3) !== true) return false;
+  if (Runtime.op_unify_variable(state, 101) !== true) return false;
+  if (Runtime.op_unify_variable(state, 102) !== true) return false;
+  if (Runtime.op_unify_variable(state, 103) !== true) return false;
+  if (Runtime.op_get_value(program, state, 102, 2) !== true) return false;
+  return true;
+  return true;
+}
+
+lowered_dispatch["dep_index/2"] = function (program, state) { return lowered_dep_index_2(program, state); };
 // wamjs lower fallback: dep_breaks_need/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: dep_breaks_moving/5  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: dep_breaks/5  fallback(naked member/2 (or callee) needs interpreter choice points)
@@ -6629,6 +8309,39 @@ function lowered_conflicts_list_2(program, state) {
     return true;
     return false;
   })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 7, 1, 3) !== true) return false;
+    if (Runtime.op_unify_variable(state, 101) !== true) return false;
+    if (Runtime.op_unify_variable(state, 102) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    Runtime.put_reg(state, 104, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 101));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 104));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_conflicts_list_2 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_conflicts_list_2(program, state) === true;
+    }
+    {
+      const target = program.labels["conflicts_list/2"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "conflicts_list", 2) === true;
+    }
+    return false;
+  })()) return true;
   return false;
 }
 
@@ -6639,6 +8352,142 @@ lowered_dispatch["conflicts_list/2"] = function (program, state) { return lowere
 // wamjs lower fallback: close_moving/3  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: canonicalize_name/3  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: candidates_high_first/4  fallback(naked member/2 (or callee) needs interpreter choice points)
+// Lowered: build_tree/4 (if-then-else / negation / once)
+function lowered_build_tree_4(program, state) {
+  if (Runtime._prof) Runtime.prof_lowered_call("build_tree/4");
+  if (Runtime.op_allocate(state) !== true) return false;
+  Runtime.put_reg(state, 201, Runtime.get_reg(state, 1));
+  Runtime.put_reg(state, 203, Runtime.get_reg(state, 2));
+  Runtime.put_reg(state, 207, Runtime.get_reg(state, 3));
+  Runtime.put_reg(state, 206, Runtime.get_reg(state, 4));
+  if (Runtime.op_get_level(state, 212) !== true) return false;
+  {
+    const _ite_trail = state.trail.length;
+    const _ite_args = Runtime.capture_a_regs(state, 8);
+    const _ite_cond = (function () {
+      Runtime.put_reg(state, 1, Runtime.get_reg(state, 201));
+      Runtime.put_reg(state, 2, V.Int(0));
+      if (Runtime.op_builtin(program, state, "=:=/2", 2) !== true) return false;
+      return true;
+    })();
+    if (_ite_cond) {
+      Runtime.put_reg(state, 1, Runtime.get_reg(state, 207));
+      Runtime.put_reg(state, 2, V.Atom(26));
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+      Runtime.put_reg(state, 1, Runtime.get_reg(state, 206));
+      Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+    } else {
+      Runtime.undo_trail(state, _ite_trail);
+      Runtime.restore_a_regs(state, _ite_args);
+      { const v = Runtime.new_var(state); Runtime.put_reg(state, 202, v); Runtime.put_reg(state, 1, v); }
+      if (Runtime.op_put_structure(program, state, 27, 2, 2) !== true) return false;
+      if (Runtime.op_unify_variable(state, 113) !== true) return false;
+      if (Runtime.op_unify_constant(program, state, V.Int(2)) !== true) return false;
+      if (Runtime.op_put_structure(program, state, 9, 113, 2) !== true) return false;
+      if (Runtime.op_unify_value(program, state, 201) !== true) return false;
+      if (Runtime.op_unify_constant(program, state, V.Int(1)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "is/2", 2) !== true) return false;
+      { const v = Runtime.new_var(state); Runtime.put_reg(state, 204, v); Runtime.put_reg(state, 1, v); }
+      if (Runtime.op_put_structure(program, state, 9, 2, 2) !== true) return false;
+      if (Runtime.op_unify_variable(state, 115) !== true) return false;
+      if (Runtime.op_unify_value(program, state, 202) !== true) return false;
+      if (Runtime.op_put_structure(program, state, 9, 115, 2) !== true) return false;
+      if (Runtime.op_unify_value(program, state, 201) !== true) return false;
+      if (Runtime.op_unify_constant(program, state, V.Int(1)) !== true) return false;
+      if (Runtime.op_builtin(program, state, "is/2", 2) !== true) return false;
+      Runtime.put_reg(state, 1, Runtime.get_reg(state, 202));
+      Runtime.put_reg(state, 2, Runtime.get_reg(state, 203));
+      { const v = Runtime.new_var(state); Runtime.put_reg(state, 208, v); Runtime.put_reg(state, 3, v); }
+      if (Runtime.op_put_structure(program, state, 5, 4, 2) !== true) return false;
+      if (Runtime.op_unify_variable(state, 117) !== true) return false;
+      if (Runtime.op_unify_variable(state, 205) !== true) return false;
+      if (Runtime.op_put_structure(program, state, 9, 117, 2) !== true) return false;
+      if (Runtime.op_unify_variable(state, 209) !== true) return false;
+      if (Runtime.op_unify_variable(state, 210) !== true) return false;
+      if (typeof lowered_build_tree_4 === "function") {
+        const _cpd = state.cps.length;
+        Runtime.push_cut_barrier(state);
+        if (lowered_build_tree_4(program, state) !== true) {
+          Runtime.pop_cut_barrier(state);
+          while (state.cps.length > _cpd) state.cps.pop();
+          return false;
+        }
+        Runtime.pop_cut_barrier(state);
+        while (state.cps.length > _cpd) state.cps.pop();
+      } else {
+        const saved_cp = state.cp;
+        const saved_pc = state.pc;
+        const target = program.labels["build_tree/4"];
+        let _ok = true;
+        if (target !== undefined && target !== null) {
+          const _fm = Runtime.call_frame_mark(state);
+          Runtime.push_call_frame(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+          Runtime.call_frame_release(state, _fm);
+        } else if (Runtime.step(program, state, I.Call("build_tree", 4)) !== true) {
+          _ok = false;
+        }
+        state.cp = saved_cp;
+        state.pc = saved_pc;
+        state.halt = false;
+        if (!_ok) return false;
+      }
+      Runtime.put_reg(state, 1, Runtime.get_reg(state, 204));
+      Runtime.put_reg(state, 2, Runtime.get_reg(state, 205));
+      { const v = Runtime.new_var(state); Runtime.put_reg(state, 211, v); Runtime.put_reg(state, 3, v); }
+      Runtime.put_reg(state, 4, Runtime.get_reg(state, 206));
+      if (typeof lowered_build_tree_4 === "function") {
+        const _cpd = state.cps.length;
+        Runtime.push_cut_barrier(state);
+        if (lowered_build_tree_4(program, state) !== true) {
+          Runtime.pop_cut_barrier(state);
+          while (state.cps.length > _cpd) state.cps.pop();
+          return false;
+        }
+        Runtime.pop_cut_barrier(state);
+        while (state.cps.length > _cpd) state.cps.pop();
+      } else {
+        const saved_cp = state.cp;
+        const saved_pc = state.pc;
+        const target = program.labels["build_tree/4"];
+        let _ok = true;
+        if (target !== undefined && target !== null) {
+          const _fm = Runtime.call_frame_mark(state);
+          Runtime.push_call_frame(state);
+          state.cp = 0;
+          state.pc = target;
+          state.program = program;
+          _ok = Runtime.run_isolated(program, state) === true;
+          state.halt = false;
+          Runtime.call_frame_release(state, _fm);
+        } else if (Runtime.step(program, state, I.Call("build_tree", 4)) !== true) {
+          _ok = false;
+        }
+        state.cp = saved_cp;
+        state.pc = saved_pc;
+        state.halt = false;
+        if (!_ok) return false;
+      }
+      Runtime.put_reg(state, 1, Runtime.get_reg(state, 207));
+      if (Runtime.op_put_structure(program, state, 26, 2, 4) !== true) return false;
+      if (Runtime.op_unify_value(program, state, 208) !== true) return false;
+      if (Runtime.op_unify_value(program, state, 209) !== true) return false;
+      if (Runtime.op_unify_value(program, state, 210) !== true) return false;
+      if (Runtime.op_unify_value(program, state, 211) !== true) return false;
+      if (Runtime.op_builtin(program, state, "=/2", 2) !== true) return false;
+    }
+  }
+  if (Runtime.op_deallocate(state) !== true) return false;
+  return true;
+  return true;
+}
+
+lowered_dispatch["build_tree/4"] = function (program, state) { return lowered_build_tree_4(program, state); };
 // wamjs lower fallback: blocked_from/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: blocked_acc_list/5  fallback(naked member/2 (or callee) needs interpreter choice points)
 // wamjs lower fallback: blocked_acc/5  fallback(naked member/2 (or callee) needs interpreter choice points)
@@ -6721,6 +8570,39 @@ function lowered_base_list_2(program, state) {
     return true;
     return false;
   })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 7, 1, 3) !== true) return false;
+    if (Runtime.op_unify_variable(state, 101) !== true) return false;
+    if (Runtime.op_unify_variable(state, 102) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    Runtime.put_reg(state, 104, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 101));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 104));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_base_list_2 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_base_list_2(program, state) === true;
+    }
+    {
+      const target = program.labels["base_list/2"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "base_list", 2) === true;
+    }
+    return false;
+  })()) return true;
   return false;
 }
 
@@ -6744,7 +8626,7 @@ function lowered_alias_lookup_3(program, state) {
     if (Runtime.op_allocate(state) !== true) return false;
     if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
     if (Runtime.op_unify_variable(state, 106) !== true) return false;
-    if (Runtime.op_get_structure(program, state, 7, 106, 2) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 8, 106, 2) !== true) return false;
     if (Runtime.op_unify_variable(state, 201) !== true) return false;
     if (Runtime.op_unify_variable(state, 202) !== true) return false;
     if (Runtime.op_unify_variable(state, 203) !== true) return false;
@@ -6839,7 +8721,7 @@ function lowered_alias_lookup_3(program, state) {
     if (Runtime.op_allocate(state) !== true) return false;
     if (Runtime.op_get_list(program, state, 1, 5) !== true) return false;
     if (Runtime.op_unify_variable(state, 106) !== true) return false;
-    if (Runtime.op_get_structure(program, state, 7, 106, 2) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 8, 106, 2) !== true) return false;
     if (Runtime.op_unify_variable(state, 201) !== true) return false;
     if (Runtime.op_unify_variable(state, 202) !== true) return false;
     if (Runtime.op_unify_variable(state, 203) !== true) return false;
@@ -6983,6 +8865,39 @@ function lowered_alias_list_2(program, state) {
     return true;
     return false;
   })()) return true;
+  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }
+  state.regs = Runtime.copy_table(_t4_regs);
+  state.var_counter = _t4_vc;
+  state.stack = _t4_stack.slice();
+  state.y_save = _t4_ysave.slice();
+  state.mode = _t4_mode;
+  state.build_stack = _t4_build.slice();
+  state.read_stack = _t4_rstack.slice();
+  state.read_args = _t4_rargs;
+  state.read_cursor = _t4_rcur;
+  if ((function () {
+    if (Runtime.op_allocate(state) !== true) return false;
+    if (Runtime.op_get_structure(program, state, 7, 1, 3) !== true) return false;
+    if (Runtime.op_unify_variable(state, 101) !== true) return false;
+    if (Runtime.op_unify_variable(state, 102) !== true) return false;
+    if (Runtime.op_unify_variable(state, 103) !== true) return false;
+    Runtime.put_reg(state, 104, Runtime.get_reg(state, 2));
+    Runtime.put_reg(state, 1, Runtime.get_reg(state, 101));
+    Runtime.put_reg(state, 2, Runtime.get_reg(state, 104));
+    if (Runtime.op_deallocate(state) !== true) return false;
+    if (typeof lowered_alias_list_2 === "function") {
+      Runtime.enter_execute(state);
+      return lowered_alias_list_2(program, state) === true;
+    }
+    {
+      const target = program.labels["alias_list/2"];
+      if (target !== undefined && target !== null) {
+        return Runtime.execute_user_isolated(program, state, target) === true;
+      }
+      return Runtime.op_builtin(program, state, "alias_list", 2) === true;
+    }
+    return false;
+  })()) return true;
   return false;
 }
 
@@ -6990,48 +8905,72 @@ lowered_dispatch["alias_list/2"] = function (program, state) { return lowered_al
 // wamjs lower fallback: acc_conflicts/4  fallback(naked member/2 (or callee) needs interpreter choice points)
 shared_program.lowered_dispatch = lowered_dispatch;
 
+function worth_indexing(a1, a2) {
+  const state = Runtime.new_state();
+  const args = [a1, a2];
+  for (let i = 0; i < 2; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_worth_indexing_2(shared_program, state) === true;
+}
+M.worth_indexing = worth_indexing;
+
 function walk_pkg_for_blocked(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 4106, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 4697, [a1, a2, a3, a4, a5]);
 }
 M.walk_pkg_for_blocked = walk_pkg_for_blocked;
 
 function virtual_provider_ceilings(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 4056, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 4647, [a1, a2, a3, a4]);
 }
 M.virtual_provider_ceilings = virtual_provider_ceilings;
 
 function version_lt(a1, a2) {
-  return Runtime.run_predicate(shared_program, 3954, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 4545, [a1, a2]);
 }
 M.version_lt = version_lt;
 
 function upgrade_set_result(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 3921, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 4512, [a1, a2, a3, a4]);
 }
 M.upgrade_set_result = upgrade_set_result;
 
 function upgrade_set(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 3907, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 4498, [a1, a2, a3, a4]);
 }
 M.upgrade_set = upgrade_set;
 
+function tree_lookup(a1, a2, a3) {
+  const state = Runtime.new_state();
+  const args = [a1, a2, a3];
+  for (let i = 0; i < 3; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_tree_lookup_3(shared_program, state) === true;
+}
+M.tree_lookup = tree_lookup;
+
 function topo_sort_sel(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 3874, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 4424, [a1, a2, a3]);
 }
 M.topo_sort_sel = topo_sort_sel;
 
 function topo_one(a1, a2, a3, a4, a5, a6, a7) {
-  return Runtime.run_predicate(shared_program, 3796, [a1, a2, a3, a4, a5, a6, a7]);
+  return Runtime.run_predicate(shared_program, 4346, [a1, a2, a3, a4, a5, a6, a7]);
 }
 M.topo_one = topo_one;
 
 function topo_all(a1, a2, a3, a4, a5, a6, a7) {
-  return Runtime.run_predicate(shared_program, 3758, [a1, a2, a3, a4, a5, a6, a7]);
+  return Runtime.run_predicate(shared_program, 4308, [a1, a2, a3, a4, a5, a6, a7]);
 }
 M.topo_all = topo_all;
 
 function tight_rev_in(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 3709, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 4259, [a1, a2, a3]);
 }
 M.tight_rev_in = tight_rev_in;
 
@@ -7048,7 +8987,7 @@ function tight_constraint(a1) {
 M.tight_constraint = tight_constraint;
 
 function tight_base_revdep(a1, a2) {
-  return Runtime.run_predicate(shared_program, 3693, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 4243, [a1, a2]);
 }
 M.tight_base_revdep = tight_base_revdep;
 
@@ -7077,12 +9016,12 @@ function selected_ver(a1, a2, a3) {
 M.selected_ver = selected_ver;
 
 function segs_lt_1(a1, a2) {
-  return Runtime.run_predicate(shared_program, 3599, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 4149, [a1, a2]);
 }
 M.segs_lt_1 = segs_lt_1;
 
 function segs_lt(a1, a2) {
-  return Runtime.run_predicate(shared_program, 3576, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 4126, [a1, a2]);
 }
 M.segs_lt = segs_lt;
 
@@ -7111,42 +9050,54 @@ function scan_base_holds(a1, a2, a3) {
 M.scan_base_holds = scan_base_holds;
 
 function satisfies(a1, a2) {
-  return Runtime.run_predicate(shared_program, 3387, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 3937, [a1, a2]);
 }
 M.satisfies = satisfies;
 
+function same_key(a1, a2, a3, a4) {
+  const state = Runtime.new_state();
+  const args = [a1, a2, a3, a4];
+  for (let i = 0; i < 4; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_same_key_4(shared_program, state) === true;
+}
+M.same_key = same_key;
+
 function safe_upgrade_reason(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 3334, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 3829, [a1, a2, a3, a4, a5]);
 }
 M.safe_upgrade_reason = safe_upgrade_reason;
 
 function safe_upgrade(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 3274, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 3769, [a1, a2, a3, a4]);
 }
 M.safe_upgrade = safe_upgrade;
 
 function roots_to_pairs(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 3231, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 3726, [a1, a2, a3]);
 }
 M.roots_to_pairs = roots_to_pairs;
 
 function resolve_pending(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 3112, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 3598, [a1, a2, a3, a4, a5]);
 }
 M.resolve_pending = resolve_pending;
 
 function resolve_layered(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 3092, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 3575, [a1, a2, a3]);
 }
 M.resolve_layered = resolve_layered;
 
 function resolve_alternatives(a1, a2, a3, a4, a5, a6) {
-  return Runtime.run_predicate(shared_program, 3051, [a1, a2, a3, a4, a5, a6]);
+  return Runtime.run_predicate(shared_program, 3534, [a1, a2, a3, a4, a5, a6]);
 }
 M.resolve_alternatives = resolve_alternatives;
 
 function resolve(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 3031, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 3511, [a1, a2, a3]);
 }
 M.resolve = resolve;
 
@@ -7163,27 +9114,27 @@ function requested_list(a1, a2) {
 M.requested_list = requested_list;
 
 function request_to_req(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 2964, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 3433, [a1, a2, a3]);
 }
 M.request_to_req = request_to_req;
 
 function reqs_ok_moving(a1, a2) {
-  return Runtime.run_predicate(shared_program, 2897, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 3366, [a1, a2]);
 }
 M.reqs_ok_moving = reqs_ok_moving;
 
 function repairs_moving(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 2883, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 3352, [a1, a2, a3, a4]);
 }
 M.repairs_moving = repairs_moving;
 
 function removal_orphans(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 2785, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 3254, [a1, a2, a3]);
 }
 M.removal_orphans = removal_orphans;
 
 function provides_sat(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 2763, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 3232, [a1, a2, a3, a4, a5]);
 }
 M.provides_sat = provides_sat;
 
@@ -7200,17 +9151,17 @@ function provides_list(a1, a2) {
 M.provides_list = provides_list;
 
 function provides_for(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 2706, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 3164, [a1, a2, a3, a4, a5]);
 }
 M.provides_for = provides_for;
 
 function provider_candidate(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 2670, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 3128, [a1, a2, a3, a4, a5]);
 }
 M.provider_candidate = provider_candidate;
 
 function provide_satisfies(a1, a2) {
-  return Runtime.run_predicate(shared_program, 2654, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 3112, [a1, a2]);
 }
 M.provide_satisfies = provide_satisfies;
 
@@ -7226,18 +9177,30 @@ function provide_row(a1, a2, a3, a4, a5) {
 }
 M.provide_row = provide_row;
 
+function pkg_index(a1, a2) {
+  const state = Runtime.new_state();
+  const args = [a1, a2];
+  for (let i = 0; i < 2; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_pkg_index_2(shared_program, state) === true;
+}
+M.pkg_index = pkg_index;
+
 function pick_repair(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 2616, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 3068, [a1, a2, a3, a4]);
 }
 M.pick_repair = pick_repair;
 
 function pick_need(a1, a2, a3, a4, a5, a6, a7, a8) {
-  return Runtime.run_predicate(shared_program, 2510, [a1, a2, a3, a4, a5, a6, a7, a8]);
+  return Runtime.run_predicate(shared_program, 2962, [a1, a2, a3, a4, a5, a6, a7, a8]);
 }
 M.pick_need = pick_need;
 
 function pick(a1, a2, a3, a4, a5, a6, a7) {
-  return Runtime.run_predicate(shared_program, 2457, [a1, a2, a3, a4, a5, a6, a7]);
+  return Runtime.run_predicate(shared_program, 2909, [a1, a2, a3, a4, a5, a6, a7]);
 }
 M.pick = pick;
 
@@ -7266,12 +9229,12 @@ function packages(a1, a2) {
 M.packages = packages;
 
 function package_in_name(a1, a2) {
-  return Runtime.run_predicate(shared_program, 2389, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 2830, [a1, a2]);
 }
 M.package_in_name = package_in_name;
 
 function package_in(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 2375, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 2816, [a1, a2, a3]);
 }
 M.package_in = package_in;
 
@@ -7288,17 +9251,17 @@ function order_val(a1, a2) {
 M.order_val = order_val;
 
 function order_lt(a1, a2) {
-  return Runtime.run_predicate(shared_program, 2262, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 2703, [a1, a2]);
 }
 M.order_lt = order_lt;
 
 function no_acc_conflicts(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 2215, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 2656, [a1, a2, a3, a4]);
 }
 M.no_acc_conflicts = no_acc_conflicts;
 
 function needed_names(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 2191, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 2632, [a1, a2, a3, a4]);
 }
 M.needed_names = needed_names;
 
@@ -7315,29 +9278,58 @@ function names_of(a1, a2) {
 M.names_of = names_of;
 
 function member_selected(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 2162, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 2603, [a1, a2, a3]);
 }
 M.member_selected = member_selected;
 
+function matching_versions_in(a1, a2, a3, a4) {
+  return Runtime.run_predicate(shared_program, 2564, [a1, a2, a3, a4]);
+}
+M.matching_versions_in = matching_versions_in;
+
 function matching_versions(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 2119, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 2521, [a1, a2, a3, a4]);
 }
 M.matching_versions = matching_versions;
 
 function matching_deps(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 2070, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 2472, [a1, a2, a3, a4]);
 }
 M.matching_deps = matching_deps;
 
 function map_requests(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 2046, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 2448, [a1, a2, a3]);
 }
 M.map_requests = map_requests;
 
 function lookup_held(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 2022, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 2424, [a1, a2, a3]);
 }
 M.lookup_held = lookup_held;
+
+function long_enough(a1, a2) {
+  const state = Runtime.new_state();
+  const args = [a1, a2];
+  for (let i = 0; i < 2; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_long_enough_2(shared_program, state) === true;
+}
+M.long_enough = long_enough;
+
+function list_to_tree(a1, a2) {
+  const state = Runtime.new_state();
+  const args = [a1, a2];
+  for (let i = 0; i < 2; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_list_to_tree_2(shared_program, state) === true;
+}
+M.list_to_tree = list_to_tree;
 
 function layers_list(a1, a2) {
   const state = Runtime.new_state();
@@ -7352,27 +9344,44 @@ function layers_list(a1, a2) {
 M.layers_list = layers_list;
 
 function layered_walk_ver(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 1956, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 2311, [a1, a2, a3, a4]);
 }
 M.layered_walk_ver = layered_walk_ver;
 
 function layer_satisfies(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 1885, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 2240, [a1, a2, a3]);
 }
 M.layer_satisfies = layer_satisfies;
 
 function layer_provider(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 1836, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 2191, [a1, a2, a3, a4, a5]);
 }
 M.layer_provider = layer_provider;
 
 function layer_closure(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 1819, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 2174, [a1, a2, a3]);
 }
 M.layer_closure = layer_closure;
 
+function key_pkg_rows(a1, a2, a3) {
+  const state = Runtime.new_state();
+  const args = [a1, a2, a3];
+  for (let i = 0; i < 3; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_key_pkg_rows_3(shared_program, state) === true;
+}
+M.key_pkg_rows = key_pkg_rows;
+
+function key_dep_rows(a1, a2, a3) {
+  return Runtime.run_predicate(shared_program, 2097, [a1, a2, a3]);
+}
+M.key_dep_rows = key_dep_rows;
+
 function keep_installed_or_base(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 1775, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 2053, [a1, a2, a3, a4]);
 }
 M.keep_installed_or_base = keep_installed_or_base;
 
@@ -7401,12 +9410,12 @@ function is_v3(a1) {
 M.is_v3 = is_v3;
 
 function installed_ver(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 1716, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 1994, [a1, a2, a3]);
 }
 M.installed_ver = installed_ver;
 
 function installed_or_base(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 1692, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 1970, [a1, a2, a3]);
 }
 M.installed_or_base = installed_or_base;
 
@@ -7423,14 +9432,31 @@ function installed_list(a1, a2) {
 M.installed_list = installed_list;
 
 function inst_walk(a1, a2, a3, a4, a5, a6) {
-  return Runtime.run_predicate(shared_program, 1581, [a1, a2, a3, a4, a5, a6]);
+  return Runtime.run_predicate(shared_program, 1848, [a1, a2, a3, a4, a5, a6]);
 }
 M.inst_walk = inst_walk;
 
 function inst_closure_names(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 1562, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 1829, [a1, a2, a3, a4, a5]);
 }
 M.inst_closure_names = inst_closure_names;
+
+function index_threshold(a1) {
+  const state = Runtime.new_state();
+  const args = [a1];
+  for (let i = 0; i < 1; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_index_threshold_1(shared_program, state) === true;
+}
+M.index_threshold = index_threshold;
+
+function index_catalog(a1, a2) {
+  return Runtime.run_predicate(shared_program, 1773, [a1, a2]);
+}
+M.index_catalog = index_catalog;
 
 function hold_reason(a1, a2, a3) {
   const state = Runtime.new_state();
@@ -7444,48 +9470,58 @@ function hold_reason(a1, a2, a3) {
 }
 M.hold_reason = hold_reason;
 
+function group_keyed(a1, a2) {
+  return Runtime.run_predicate(shared_program, 1712, [a1, a2]);
+}
+M.group_keyed = group_keyed;
+
 function freeze_audit(a1, a2) {
-  return Runtime.run_predicate(shared_program, 1518, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 1695, [a1, a2]);
 }
 M.freeze_audit = freeze_audit;
 
 function follow_raw_dep(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 1480, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 1657, [a1, a2, a3, a4]);
 }
 M.follow_raw_dep = follow_raw_dep;
 
 function follow_dep_name(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 1462, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 1639, [a1, a2, a3, a4, a5]);
 }
 M.follow_dep_name = follow_dep_name;
 
 function first_broken(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 1405, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 1582, [a1, a2, a3, a4]);
 }
 M.first_broken = first_broken;
 
 function first_alt_already(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 1368, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 1545, [a1, a2, a3, a4]);
 }
 M.first_alt_already = first_alt_already;
 
+function filter_satisfies(a1, a2, a3) {
+  return Runtime.run_predicate(shared_program, 1511, [a1, a2, a3]);
+}
+M.filter_satisfies = filter_satisfies;
+
 function explain_blocked_list(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 1348, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 1491, [a1, a2, a3]);
 }
 M.explain_blocked_list = explain_blocked_list;
 
 function explain_blocked(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 1334, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 1477, [a1, a2, a3]);
 }
 M.explain_blocked = explain_blocked;
 
 function explain_alt(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 1288, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 1431, [a1, a2, a3, a4, a5]);
 }
 M.explain_alt = explain_alt;
 
 function excluded_name(a1, a2) {
-  return Runtime.run_predicate(shared_program, 1277, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 1420, [a1, a2]);
 }
 M.excluded_name = excluded_name;
 
@@ -7502,12 +9538,12 @@ function excluded_list(a1, a2) {
 M.excluded_list = excluded_list;
 
 function exclude_name(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 1206, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 1338, [a1, a2, a3]);
 }
 M.exclude_name = exclude_name;
 
 function direct_on(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 1161, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 1293, [a1, a2, a3, a4]);
 }
 M.direct_on = direct_on;
 
@@ -7524,17 +9560,17 @@ function depends_list(a1, a2) {
 M.depends_list = depends_list;
 
 function depends_in(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 1105, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 1226, [a1, a2, a3, a4, a5]);
 }
 M.depends_in = depends_in;
 
 function dependents_installed(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 1086, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 1207, [a1, a2, a3]);
 }
 M.dependents_installed = dependents_installed;
 
 function dependents(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 1064, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 1185, [a1, a2, a3]);
 }
 M.dependents = dependents;
 
@@ -7551,27 +9587,39 @@ function dep_to_req(a1, a2, a3) {
 M.dep_to_req = dep_to_req;
 
 function dep_targets(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 1010, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 1131, [a1, a2, a3, a4, a5]);
 }
 M.dep_targets = dep_targets;
 
 function dep_mentions(a1, a2) {
-  return Runtime.run_predicate(shared_program, 988, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 1109, [a1, a2]);
 }
 M.dep_mentions = dep_mentions;
 
+function dep_index(a1, a2) {
+  const state = Runtime.new_state();
+  const args = [a1, a2];
+  for (let i = 0; i < 2; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_dep_index_2(shared_program, state) === true;
+}
+M.dep_index = dep_index;
+
 function dep_breaks_need(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 918, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 1033, [a1, a2, a3, a4]);
 }
 M.dep_breaks_need = dep_breaks_need;
 
 function dep_breaks_moving(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 902, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 1017, [a1, a2, a3, a4, a5]);
 }
 M.dep_breaks_moving = dep_breaks_moving;
 
 function dep_breaks(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 862, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 977, [a1, a2, a3, a4, a5]);
 }
 M.dep_breaks = dep_breaks;
 
@@ -7588,62 +9636,74 @@ function conflicts_list(a1, a2) {
 M.conflicts_list = conflicts_list;
 
 function conflicts_in(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 808, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 912, [a1, a2, a3, a4]);
 }
 M.conflicts_in = conflicts_in;
 
 function collect_deps(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 794, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 872, [a1, a2, a3, a4]);
 }
 M.collect_deps = collect_deps;
 
 function cmp_ver(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 766, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 844, [a1, a2, a3]);
 }
 M.cmp_ver = cmp_ver;
 
 function close_moving(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 702, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 780, [a1, a2, a3]);
 }
 M.close_moving = close_moving;
 
 function canonicalize_name(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 690, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 768, [a1, a2, a3]);
 }
 M.canonicalize_name = canonicalize_name;
 
 function candidates_high_first(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 659, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 740, [a1, a2, a3, a4]);
 }
 M.candidates_high_first = candidates_high_first;
 
+function build_tree(a1, a2, a3, a4) {
+  const state = Runtime.new_state();
+  const args = [a1, a2, a3, a4];
+  for (let i = 0; i < 4; i++) {
+    Runtime.put_reg(state, i + 1, i < args.length && args[i] !== undefined ? args[i] : Runtime.new_var(state));
+  }
+  state.cp = 0;
+  state.program = shared_program;
+  return lowered_build_tree_4(shared_program, state) === true;
+}
+M.build_tree = build_tree;
+
 function blocked_from(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 512, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 534, [a1, a2, a3, a4]);
 }
 M.blocked_from = blocked_from;
 
 function blocked_acc_list(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 482, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 504, [a1, a2, a3, a4, a5]);
 }
 M.blocked_acc_list = blocked_acc_list;
 
 function blocked_acc(a1, a2, a3, a4, a5) {
-  return Runtime.run_predicate(shared_program, 337, [a1, a2, a3, a4, a5]);
+  return Runtime.run_predicate(shared_program, 359, [a1, a2, a3, a4, a5]);
 }
 M.blocked_acc = blocked_acc;
 
 function base_ver(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 318, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 340, [a1, a2, a3]);
 }
 M.base_ver = base_ver;
 
 function base_reason(a1, a2, a3) {
-  return Runtime.run_predicate(shared_program, 306, [a1, a2, a3]);
+  return Runtime.run_predicate(shared_program, 328, [a1, a2, a3]);
 }
 M.base_reason = base_reason;
 
 function base_name(a1, a2) {
-  return Runtime.run_predicate(shared_program, 298, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 320, [a1, a2]);
 }
 M.base_name = base_name;
 
@@ -7660,27 +9720,27 @@ function base_list(a1, a2) {
 M.base_list = base_list;
 
 function base_holds(a1, a2) {
-  return Runtime.run_predicate(shared_program, 245, [a1, a2]);
+  return Runtime.run_predicate(shared_program, 256, [a1, a2]);
 }
 M.base_holds = base_holds;
 
 function audit_holds(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 183, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 194, [a1, a2, a3, a4]);
 }
 M.audit_holds = audit_holds;
 
 function alt_reasons(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 139, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 150, [a1, a2, a3, a4]);
 }
 M.alt_reasons = alt_reasons;
 
 function already_satisfied(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 113, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 124, [a1, a2, a3, a4]);
 }
 M.already_satisfied = already_satisfied;
 
 function already_provided(a1, a2, a3, a4) {
-  return Runtime.run_predicate(shared_program, 96, [a1, a2, a3, a4]);
+  return Runtime.run_predicate(shared_program, 107, [a1, a2, a3, a4]);
 }
 M.already_provided = already_provided;
 

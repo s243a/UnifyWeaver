@@ -57,36 +57,52 @@
 % Catalog accessors — catalog/6 (P0) and catalog/9 (P0.5)
 % ---------------------------------------------------------------------------
 
+% Each accessor gains one delegating icat/3 clause (G1a). icat/3 is an
+% internal per-call wrapper built by index_catalog/2 at the API edge; it
+% never escapes resolver.pl and is never accepted as input.
 packages(catalog(Ps, _, _, _, _, _), Ps).
 packages(catalog(Ps, _, _, _, _, _, _, _, _), Ps).
 packages(catalog(Ps, _, _, _, _, _, _, _, _, _), Ps).
+packages(icat(Cat, _, _), Ps) :- packages(Cat, Ps).
 depends_list(catalog(_, Ds, _, _, _, _), Ds).
 depends_list(catalog(_, Ds, _, _, _, _, _, _, _), Ds).
 depends_list(catalog(_, Ds, _, _, _, _, _, _, _, _), Ds).
+depends_list(icat(Cat, _, _), Ds) :- depends_list(Cat, Ds).
 conflicts_list(catalog(_, _, Cs, _, _, _), Cs).
 conflicts_list(catalog(_, _, Cs, _, _, _, _, _, _), Cs).
 conflicts_list(catalog(_, _, Cs, _, _, _, _, _, _, _), Cs).
+conflicts_list(icat(Cat, _, _), Cs) :- conflicts_list(Cat, Cs).
 base_list(catalog(_, _, _, Bs, _, _), Bs).
 base_list(catalog(_, _, _, Bs, _, _, _, _, _), Bs).
 base_list(catalog(_, _, _, Bs, _, _, _, _, _, _), Bs).
+base_list(icat(Cat, _, _), Bs) :- base_list(Cat, Bs).
 installed_list(catalog(_, _, _, _, Is, _), Is).
 installed_list(catalog(_, _, _, _, Is, _, _, _, _), Is).
 installed_list(catalog(_, _, _, _, Is, _, _, _, _, _), Is).
+installed_list(icat(Cat, _, _), Is) :- installed_list(Cat, Is).
 requested_list(catalog(_, _, _, _, _, Rs), Rs).
 requested_list(catalog(_, _, _, _, _, Rs, _, _, _), Rs).
 requested_list(catalog(_, _, _, _, _, Rs, _, _, _, _), Rs).
+requested_list(icat(Cat, _, _), Rs) :- requested_list(Cat, Rs).
 layers_list(catalog(_, _, _, _, _, _), []).
 layers_list(catalog(_, _, _, _, _, _, Ls, _, _), Ls).
 layers_list(catalog(_, _, _, _, _, _, Ls, _, _, _), Ls).
+layers_list(icat(Cat, _, _), Ls) :- layers_list(Cat, Ls).
 excluded_list(catalog(_, _, _, _, _, _), []).
 excluded_list(catalog(_, _, _, _, _, _, _, Es, _), Es).
 excluded_list(catalog(_, _, _, _, _, _, _, Es, _, _), Es).
+excluded_list(icat(Cat, _, _), Es) :- excluded_list(Cat, Es).
 alias_list(catalog(_, _, _, _, _, _), []).
 alias_list(catalog(_, _, _, _, _, _, _, _, As), As).
 alias_list(catalog(_, _, _, _, _, _, _, _, As, _), As).
+alias_list(icat(Cat, _, _), As) :- alias_list(Cat, As).
 provides_list(catalog(_, _, _, _, _, _), []).
 provides_list(catalog(_, _, _, _, _, _, _, _, _), []).
 provides_list(catalog(_, _, _, _, _, _, _, _, _, Pr), Pr).
+provides_list(icat(Cat, _, _), Pr) :- provides_list(Cat, Pr).
+
+dep_index(icat(_, DepT, _), DepT).
+pkg_index(icat(_, _, PkgT), PkgT).
 
 package_in(Cat, Name, Ver) :-
     packages(Cat, Ps),
@@ -228,10 +244,30 @@ cmp_ver(=, _, _).
 % filters generation only — never removal).
 candidates_high_first(Cat, Name, C, Ver) :-
     \+ excluded_name(Cat, Name),
-    packages(Cat, Ps),
-    matching_versions(Ps, Name, C, Vs),
+    matching_versions_in(Cat, Name, C, Vs),
     sort_versions_desc(Vs, Desc),
     member(Ver, Desc).
+
+% Indexed when the catalog is wrapped (G1b), the historical full scan
+% otherwise. Both compute the same list: the catalog-order versions of
+% Name that satisfy C, duplicates included.
+matching_versions_in(Cat, Name, C, Vs) :-
+    (   pkg_index(Cat, T)
+    ->  (   tree_lookup(T, Name, All)
+        ->  filter_satisfies(All, C, Vs)
+        ;   Vs = []
+        )
+    ;   packages(Cat, Ps),
+        matching_versions(Ps, Name, C, Vs)
+    ).
+
+filter_satisfies([], _C, []).
+filter_satisfies([V|Vs], C, Out) :-
+    (   satisfies(V, C)
+    ->  Out = [V|Os]
+    ;   Out = Os
+    ),
+    filter_satisfies(Vs, C, Os).
 
 matching_versions([], _Name, _C, []).
 matching_versions([package(N, V)|Rest], Name, C, Out) :-
@@ -295,16 +331,126 @@ no_acc_conflicts(Cat, Name, Ver, [Other-OtherVer|Rest]) :-
     no_acc_conflicts(Cat, Name, Ver, Rest).
 
 % ---------------------------------------------------------------------------
+% Per-call catalog index (G1a + G1b)
+%
+% resolve/3 and resolve_layered/3 wrap the catalog in icat/3, which carries
+% two balanced lookup trees: depends rows grouped by Name-Ver, and package
+% versions grouped by Name. Every accessor has a delegating icat/3 clause,
+% so the rest of the file cannot tell the difference; collect_deps/4 and
+% matching_versions_in/4 take the tree when it is there and the historical
+% full scan when it is not.
+%
+% Answer-preserving because both forms compute the same list in the same
+% order: rows are tagged with their catalog position before sort/2, so no
+% two keys compare equal, nothing is dropped, and within one key the rows
+% stay in catalog order. See docs/proposals/RESOLVER_PRUNING_DESIGN.md §2.
+%
+% Pure: no assert/retract. The index is a term built per call and dropped
+% with it. icat/3 never escapes and is never accepted as input.
+% ---------------------------------------------------------------------------
+
+index_catalog(Cat, Out) :-
+    depends_list(Cat, Ds),
+    packages(Cat, Ps),
+    (   worth_indexing(Ds, Ps)
+    ->  key_dep_rows(Ds, 0, KDs),
+        sort(KDs, SDs),
+        group_keyed(SDs, GDs),
+        list_to_tree(GDs, DepT),
+        key_pkg_rows(Ps, 0, KPs),
+        sort(KPs, SPs),
+        group_keyed(SPs, GPs),
+        list_to_tree(GPs, PkgT),
+        Out = icat(Cat, DepT, PkgT)
+    ;   Out = Cat
+    ).
+
+% Size threshold. Both branches are the same relation, so this is a cost
+% decision, not a semantic one: the index costs ~45 interpreted
+% instructions per catalog row to build and pays for itself after about
+% two scans, so tiny catalogs are left on the historical scan path.
+index_threshold(64).
+
+worth_indexing(Ds, Ps) :-
+    index_threshold(N),
+    (   long_enough(Ds, N)
+    ->  true
+    ;   long_enough(Ps, N)
+    ).
+
+% length(L, Len), Len >= N without walking past N cells.
+long_enough([_|T], N) :-
+    (   N =< 1
+    ->  true
+    ;   N1 is N - 1,
+        long_enough(T, N1)
+    ).
+
+% (Name-Ver)-Pos-Req: Pos is unique, so sort/2 on this shape drops nothing
+% and orders equal keys by ascending Pos, i.e. catalog-list order.
+key_dep_rows([], _I, []).
+key_dep_rows([depends(N, V, D, C)|Rest], I, [(N-V)-I-Req|Ks]) :-
+    dep_to_req(D, C, Req),
+    I1 is I + 1,
+    key_dep_rows(Rest, I1, Ks).
+
+key_pkg_rows([], _I, []).
+key_pkg_rows([package(N, V)|Rest], I, [N-I-V|Ks]) :-
+    I1 is I + 1,
+    key_pkg_rows(Rest, I1, Ks).
+
+group_keyed([], []).
+group_keyed([K-_-X|Rest], [K-[X|Xs]|Gs]) :-
+    same_key(Rest, K, Xs, Rest1),
+    group_keyed(Rest1, Gs).
+
+same_key([], _K, [], []).
+same_key([K2-I-X|Rest], K, Xs, Rest1) :-
+    (   K2 == K
+    ->  Xs = [X|Xs1],
+        same_key(Rest, K, Xs1, Rest1)
+    ;   Xs = [],
+        Rest1 = [K2-I-X|Rest]
+    ).
+
+list_to_tree(Pairs, Tree) :-
+    length(Pairs, N),
+    build_tree(N, Pairs, Tree, []).
+
+build_tree(N, Pairs, Tree, Rest) :-
+    (   N =:= 0
+    ->  Tree = t,
+        Rest = Pairs
+    ;   NL is (N - 1) // 2,
+        NR is N - 1 - NL,
+        build_tree(NL, Pairs, L, [K-V|Mid]),
+        build_tree(NR, Mid, R, Rest),
+        Tree = t(L, K, V, R)
+    ).
+
+% Fails on the empty tree `t` and on a key that is not present.
+tree_lookup(t(L, K, V, R), Key, Val) :-
+    compare(Ord, Key, K),
+    (   Ord = (=)
+    ->  Val = V
+    ;   Ord = (<)
+    ->  tree_lookup(L, Key, Val)
+    ;   tree_lookup(R, Key, Val)
+    ).
+
+% ---------------------------------------------------------------------------
 % Classic / layered resolve
 % ---------------------------------------------------------------------------
 
-resolve(Cat, Requests, Selection) :-
+resolve(Cat0, Requests, Selection) :-
+    index_catalog(Cat0, Cat),
     map_requests(Cat, Requests, Pending),
     resolve_pending(classic, Cat, Pending, [], Acc),
     !,
     sort(Acc, Selection).
 
-resolve_layered(Cat, Requests, Selection) :-
+resolve_layered(Cat0, Requests, Selection) :-
+    index_catalog(Cat0, Cat),
     map_requests(Cat, Requests, Pending),
     resolve_pending(layered, Cat, Pending, [], Acc),
     !,
@@ -321,11 +467,19 @@ resolve_pending(Mode, Cat, [req(Name, C)|Rest], Acc, Sel) :-
     ;   already_provided(Cat, Acc, Name, C)
     ->  resolve_pending(Mode, Cat, Rest, Acc, Sel)
     ;   pick_need(Mode, Cat, Name, C, Acc, Pkg, Ver, Origin),
-        collect_deps(Cat, Pkg, Ver, DepReqs),
-        append(DepReqs, Rest, More),
+        % G2: the conflict test moved ahead of the expansion. It is a test
+        % on ground arguments (pick_need/8 binds Pkg and Ver on every arm;
+        % Acc is ground), and collect_deps/4 and append/3 are det and always
+        % succeed, so permuting it earlier changes neither the solutions nor
+        % their order nor the choice points -- it only skips the two goals
+        % on the failing path. See RESOLVER_PRUNING_DESIGN.md §2, G2.
         (   Origin = from_base
-        ->  resolve_pending(Mode, Cat, More, Acc, Sel)
+        ->  collect_deps(Cat, Pkg, Ver, DepReqs),
+            append(DepReqs, Rest, More),
+            resolve_pending(Mode, Cat, More, Acc, Sel)
         ;   no_acc_conflicts(Cat, Pkg, Ver, Acc),
+            collect_deps(Cat, Pkg, Ver, DepReqs),
+            append(DepReqs, Rest, More),
             resolve_pending(Mode, Cat, More, [Pkg-Ver|Acc], Sel)
         )
     ).
@@ -376,8 +530,14 @@ layer_satisfies(Cat, Name, C) :-
     ).
 
 collect_deps(Cat, Name, Ver, Reqs) :-
-    depends_list(Cat, Ds),
-    matching_deps(Ds, Name, Ver, Reqs).
+    (   dep_index(Cat, T)
+    ->  (   tree_lookup(T, Name-Ver, Reqs0)
+        ->  Reqs = Reqs0
+        ;   Reqs = []
+        )
+    ;   depends_list(Cat, Ds),
+        matching_deps(Ds, Name, Ver, Reqs)
+    ).
 
 matching_deps([], _Name, _Ver, []).
 matching_deps([depends(N, V, D, C)|Rest], Name, Ver, Out) :-

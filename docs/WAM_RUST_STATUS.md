@@ -85,6 +85,82 @@ default path in tests.
   no parallelism requirement
   ([`WAM_TARGET_ROADMAP.md`](WAM_TARGET_ROADMAP.md) paradigm table).
 
+## Quadratic list handling: `unify` deep-derefs before dispatch (2026-09-04)
+
+Found while implementing guard G1 of
+[`proposals/RESOLVER_PRUNING_DESIGN.md`](proposals/RESOLVER_PRUNING_DESIGN.md)
+(a per-call catalog index built in pure Prolog). The identical program is
+**linear** on SWI and on wamjs and **quadratic** here, so this is a runtime
+shape, not a spec property.
+
+**Symptom.** `examples/pkg_resolver` B3 ladder, resolve ms, same box:
+
+| packages | 500 | 1,000 | 2,000 | 5,000 |
+| --- | ---: | ---: | ---: | ---: |
+| baseline (no index) | 639 | 1,296 | 2,608 | 6,427 |
+| with the G1 index | 1,850 | 6,557 | 26,668 | **abort: 4 GiB exhausted** |
+
+Baseline doubles with size (linear); the indexed build goes ×3.5 then ×4.1
+per doubling (quadratic) and cannot finish 5k inside 4 GiB.
+
+**Isolation.** Six ten-line probes, each building an N-element list and then
+doing exactly one more thing to it (ms, release build):
+
+| probe | 1,000 | 2,000 | 4,000 | 8,000 | shape |
+| --- | ---: | ---: | ---: | ---: | --- |
+| list construction only | 26.5 | 51.7 | 126.7 | 224.9 | **linear** |
+| + `keysort/2` | 57.9 | 187.5 | 824.8 | 3,500.6 | **quadratic** (×4.2) |
+| + `sort/2` on tagged triples | 89.0 | 236.9 | 764.1 | 2,979.2 | **quadratic** (×3.3) |
+| suffix-through-output-arg only, no sorting | 123.4 | 429.5 | 1,755.2 | 7,092.5 | **quadratic** (×4.0) |
+| `sort/2` + `group_keyed/2` + `same_key/4` | 349.9 | 1,243.1 | 4,706.6 | — | quadratic |
+| the whole index build (adds `build_tree/4`) | 727.4 | 2,679.0 | 10,655.9 | — | quadratic |
+
+Constructing long lists is fine. **Two independent shapes are each
+quadratic on their own**: the sort builtins, and any predicate that hands a
+suffix of a long list back through an output argument (`Rest1 = [X|Rest]`).
+Above ~8,000 list cells every probe also aborts with a Rust stack overflow.
+
+**Cause.** callgrind on the suffix probe (1,853 M Ir): `_int_malloc` 14.3 %,
+`_int_free` 12.0 %, `WamState::deref_heap` (recursive) 11.3 %, `malloc`
+7.8 %, `free` 5.1 %, `malloc_consolidate` 4.7 %, `String::clone` 4.7 %,
+`drop_in_place<Value>` 4.3 % — about 60 % of the program is allocating and
+freeing copies of terms.
+
+`WamState::unify` (`templates/targets/rust_wam/state.rs.mustache`) opens with
+
+```rust
+let dv1 = self.deref_var(&self.deref_heap(v1));
+let dv2 = self.deref_var(&self.deref_heap(v2));
+match (&dv1, &dv2) { ... }
+```
+
+`deref_heap` walks the **entire** term recursively, allocating a fresh
+`Vec<Value>` per node and re-parsing `"functor/arity"` with `rfind('/')` at
+every node. It is called eagerly on both arguments *before* the match learns
+what they are — including on the very common `(Value::Unbound(n1), _)` arm,
+which then just does `bind_var(n1, dv2.clone())`. So unifying a fresh output
+variable against a suffix of a long list costs O(length of the suffix), and
+doing that once per element is Θ(N²). The `if !changed { return val.clone() }`
+short-circuit inside `deref_heap` avoids *rebuilding* the spine but has
+already *walked* it, so it does not bound the cost.
+
+**Consequence for the fleet.** The catalog index is gated behind
+`index_threshold/1` (64 rows) in `examples/pkg_resolver/resolver.pl`, but the
+Rust regression starts at 500 packages — far above any threshold that would
+still be worth having — so **the threshold does not rescue this lane**. The
+Rust lane is therefore left on the pre-P3 committed build and must not take
+the index until this is fixed. wamjs is unaffected (9.2× faster at 5k) and
+SWI is unaffected (it never sees the tree because it is faster without it,
+but it is correct either way).
+
+**Fix sketch (not attempted here — it is the hottest path in the runtime).**
+Dispatch on the *undereferenced* shapes first and deref only the argument the
+chosen arm actually needs; bind variables to the shallow value and let the
+existing lazy deref resolve it later. A cheaper first step is to stop
+re-parsing `functor/arity` per node (the callgrind profile shows 6.5 % in
+`memrchr`/`CharSearcher` alone). Pin any fix with the six probes above before
+and after.
+
 ## Known issues / gaps
 
 - **Head-unification fixes landed 2026-08-06** (CONF-FIX-RUST-NESTED,
@@ -391,7 +467,10 @@ deficiency audit; see [`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).
 2026-09-03: uw-resolve exercise — A3 closed with a class fix, A2 reopened
 and closed in its frameless-Y form, six further silent-defect classes
 fixed, §9 claimed with a 35-probe corpus, and the deep-copy `Value`
-performance blocker recorded. 2026-09-03 (D52): that blocker **closed** —
+performance blocker recorded. 2026-09-04: the uw-resolve pruning round
+isolated a **second** quadratic — `unify` deep-derefs both arguments before
+dispatch — with a six-probe ladder and a callgrind profile; see the section
+above. 2026-09-03 (D52): the earlier blocker **closed** —
 `Value` gained structural sharing, B2 fell 306.9 s → 16.5 s and B3 went from
 OOM-at-8.5 GB to 4.73 s / 680 MB peak RSS; a 9-probe sharing suite added; the
 lowered tier measured to be unreachable from the interpreter, and scoped.

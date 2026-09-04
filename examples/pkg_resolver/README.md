@@ -504,3 +504,35 @@ bash examples/pkg_resolver/store/run_measure_2x2.sh   # 2×2 lazy/cached + 100×
   `write_wam_javascript_project` (runtime env + optional
   `source.materialisation` until `wam_javascript_target.pl` can emit them)
 - secondary indexes / CSR layouts beyond the four P/2 stores
+
+### Known semantic hazards (H1–H6)
+
+Found while designing the branch-pruning guards and **preserved, not fixed**,
+by that work: the differential is SWI-oracled, so every leg reproduces them
+and a guard that changed any of them would be a regression. Each is pinned by
+a probe in [`test_pruning_probes.pl`](test_pruning_probes.pl) (CE1–CE6); the
+full write-ups, with the entailment arguments, are §3.2 of
+[`docs/proposals/RESOLVER_PRUNING_DESIGN.md`](../../docs/proposals/RESOLVER_PRUNING_DESIGN.md).
+Whether any is a bug is the owner's call — but if one is fixed, the pruning
+invariants (§4 of that document) must be re-baselined first.
+
+- **H1** — layered mode does not backtrack over candidate versions since P3;
+  `pick_need/8`'s if-then-else commits to the highest satisfying version, so
+  a downstream dead end never retries a lower one. P0.5 did retry. Probe CE6.
+- **H2** — one name can end up at two versions via the provider path: the
+  diamond rule is enforced on the *requested* name, not on the *selected*
+  provider. Probe CE3.
+- **H3** — `resolve_layered/3` and `explain_blocked_list/3` disagree when a
+  held name's ceiling is bypassed by a provider: the resolve succeeds while
+  the explanation still reports it blocked. Probe CE4.
+- **H4** — cyclic dependencies among held packages do not terminate in
+  layered mode (`from_base` picks never enter `Acc`, so nothing detects the
+  cycle). Classic mode is safe. Probe CE5.
+- **H5** — named-layer providers are unreachable: the second clause of
+  `layer_provider/5` and the third of `layer_satisfies/3` call
+  `lookup_held/3` with the package name unbound, and `item_ver/3` tests
+  `N == Name`, which never holds for a fresh variable. Dead code or a bug,
+  depending on intent.
+- **H6** — the wamjs term leg's 2,000,000-step cap (`wam_runtime.js`)
+  silently returns `fail` rather than an error, so a too-large catalog is
+  indistinguishable from an unsatisfiable request.
