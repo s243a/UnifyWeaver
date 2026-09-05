@@ -72,11 +72,11 @@ compiled and run under nbb).
   the switch prefix and tries clauses in order inline. The interpreted
   path (everything the resolver uses) now dispatches on the table.
 - **Interpretation cost, not indexing, is what bounds this lane at
-  scale.** With indexing in place, one `resolve_layered` on the 5k
-  catalog still executes 7.56 M WAM instructions at roughly 5 µs each
-  under nbb (SCI). Measured per-instruction costs and the remaining
-  levers (per-instruction closure compilation / basic-block fusion) are
-  recorded in `examples/pkg_resolver/cljs/README.md`.
+  scale.** P3 + G1 `index_threshold(64)`: one `resolve_layered` on the 5k
+  catalog is **17.6 s / 2.68 M instructions** (index build 2.65 M, query
+  27 k) at ~6.6 µs/instr under nbb. Pre-P3 was ~39–42 s / 7.56 M. The
+  index cuts the *search* ~276×; the build is interpreted too and is now
+  99% of the census. Details in `examples/pkg_resolver/cljs/README.md`.
 
 ## Whole-program exercise (A2, 2026-09): known / suspected deficiencies
 
@@ -88,7 +88,7 @@ classes that are fleet-wide suspects. Clojure's audit:
 |---|---|---|---|
 | A1 | `sub_string/5` builtin missing | **verified missing** | `sub_atom` appears in the builtin table but `sub_string/5` nowhere |
 | A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **suspected (low)** | registers are string-named and env frames are per-`Allocate` maps (`runtime.clj.mustache:2846-2855`), so the numeric X→Y aliasing form is absent; the frameless-Y-write form was not fully audited |
-| A3 | `Execute` of a builtin doesn't return to the continuation | **verified** | the `:execute` arm special-cases only `variant/2`; any other unresolved name → `backtrack` = silent goal failure (`runtime.clj.mustache:3275-3283`) |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **partially closed (P3)** | `:execute` now succeed-states after `variant/2`, `maplist/2-4`, and `predsort/3`. Other unresolved names still backtrack; `UW_WAM_WARN_UNKNOWN=1` prints `[wam_clojure] execute of unresolved goal NAME failed` (nbb sink: `js/console.error`) |
 | A4 | String fidelity | **rung 0** | no string term tag; D37's double-quoted literals intern as atoms |
 
 Compounding A3/B-H2: `wam_clojure` has **no conformance arm**
@@ -114,6 +114,17 @@ absent; the G-A3 machinery has no analogue there.
 4. Broaden foreign handlers toward the shared-7 kernel set if graph
    perf becomes a goal.
 
+## P3 port (2026-09)
+
+uw-resolve P3 on this lane (mirrors D61 Go): `maplist/2,3,4` + `predsort/3`
+meta-call user predicates with isolated env/unify/CP stacks (D61 hygiene
+on a persistent-map state); shim speaks `deb/3`, alternatives, provides
+3/4-ary, `catalog/10`, blocked `providers`/`alternatives`. Last-slash
+arity parse so `///2` is `put_structure`, not `:raw` — that was the 54
+G1-index divergences. Gates: corpus **51/51**, differential **2600/0**,
+D49+D54 probes green, CLI **142/153** vs frozen expected (live SWI and
+the JS CLI agree with cljs on the 11 `install-plan` misses).
+
 ## Document status
 
 Fleet-aligned snapshot; source-verified line counts (lowered > target),
@@ -121,4 +132,5 @@ the LMDB-JNI + cache-policy surface, the foreign category handlers, the
 `switch_on_constant` prefix-stripping T4 behavior, and the absence of
 conformance registration (2026-07-11). 2026-09-01: added the
 whole-program (A2) deficiency audit; see
-[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md). 2026-09-05: P3 port + G1
+`///2` parse; B3 census split recorded above.
