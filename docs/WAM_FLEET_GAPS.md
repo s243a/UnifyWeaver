@@ -218,7 +218,7 @@ source-confirmed) · **absent** (structurally immune; reason cited).
 | Target | A1 `sub_string/5` | A2 Y-clobber (no-`Allocate` fact) | A3 `Execute` of a builtin | A4 rung | B-H1 pattern fact fallback executes |
 |---|---|---|---|---|---|
 | **javascript** | fixed | fixed (Call snapshots Y, Proceed restores) | fixed (proceeds to CP) | **2** | n/a (TS family lane; G-A3-8 closed) |
-| **cpp** | **handled** — alias of `sub_atom/5` (`wam_cpp_target.pl:7935,7998`); results are atoms | absent — string-named regs, per-frame `y_regs` (`:3321-3336`) | **handled** — general builtin fallback then proceed-to-CP (`:8035-8040`) | 0 | absent — `clause(Head,true)` |
+| **cpp** | **handled** — alias of `sub_atom/5` (`wam_cpp_target.pl:7935,7998`); results are atoms | **aliasing form absent** — string-named regs, per-frame `y_regs` (`:3321-3336`); `"X101"` cannot collide with `"Y1"`. **Frameless-Y form: REPRODUCED as a live wrong answer → fixed 2026-09** — the flag is on (`wam_cpp_target.pl:439,1425,2641`), `get_level Y1` lands in an `Allocate`-less clause, and every Y access routes to `env_stack.back().y_regs` — the CALLER's frame for a frameless callee, so `GetLevel`'s old `bind_cell(get_cell("Y1"), …)` overwrote the caller's permanent with a CP depth: `pick_a(3,gte(1),tagX,Out)` FAILED and `pick_b(...)` gave `Out=0` where SWI gives `tagX`. Fix = the Rust/Python/Go CP-levels model: `ChoicePoint::levels` + `record_ite_level`/`lookup_ite_level`, with a `pending_level` park so a `get_level` emitted immediately before `try_me_else` lands on the guard CP; the level never touches a register. Both the interpreter lane and the lowered-caller lane (whose `call` dispatches the callee through the interpreter) are covered; the pure lowered-structural ITE already emitted `get_level`/`cut` as no-ops. Probe `tests/test_wam_cpp_frameless_ite_level.pl` (RED on pristine, 5 divergences across both lanes) | **handled** — general builtin fallback then proceed-to-CP (`:8035-8040`) | 0 | absent — `clause(Head,true)` |
 | **rust** | **verified missing** — no `sub_atom` either | absent (aliasing form) — string-named regs; Y in topmost env frame (`state.rs.mustache:2398-2406`) | **verified partial** — only `catch/3`,`throw/1`,`succ/2` route (`wam_rust_target.pl:795-838,6733-6735`); anything else silently fails | 0 | absent — `clause(Head,true)` |
 | **haskell** | verified missing | **verified (aliasing form, open)** — `+100/+200` encoding (`wam_haskell_target.pl:6806-6807`); `putReg` treats id ≥ 200 as Y in the *topmost env frame*, so a big fact's X100+ writes land in the caller's frame; with no frame the write is *silently dropped*. **Frameless-Y form: verified broken → fixed 2026-09** (ITE barrier levels moved onto the choice point in BOTH interpreters; GHC verification pending) | verified partial — ISO meta subset only (`:2231-2245,3497-3516`); else silent fail | 0 | **verified PRESENT** — `haskell_target.pl:104-114` falls back to `compile_facts_to_haskell`, which `call(Goal)`s the predicate (`:127-132`) |
 | **lua** | verified missing (no `sub_atom`; ~10-builtin dispatch) | **verified** — `+100/+200` (`wam_lua_target.pl:136-137`); flat `state.regs` (`runtime.lua.mustache:158-159`); `Allocate` frame stores only `cp` (`:1023`); no Y save on `Call` (`:1127-1133`). **Frameless-Y form: EXPOSED, UNFIXED 2026-09** — the flag is always on (`wam_lua_target.pl:541,543`), the emitter accepts the shape (`wam_parts_to_lua`, `:282-287` → `I.GetLevel(201)` in an `I.Allocate()`-less clause, the same slot the framed caller uses for its own first permanent), and `GetLevel` writes it into the flat table (`runtime.lua.mustache:1110-1113`). No Y save on any lane, so the caller's Y1 is never repaired — strictly worse than wam_go was, which at least had `YSaves` on its interpreter lane. No conformance arm (B-H2), so the probe is emission-level: `tests/test_wam_lua_frameless_ite_level.pl` | **verified** — `Execute`/`Call` have *no* builtin fallback: unresolved label = silent goal failure (`:1141-1148`) | 0 | absent — `clause(Head,true)` |
@@ -284,12 +284,15 @@ Notes on the matrix:
   clauses naming a Y register under `[]`, and exactly one under
   `ite_use_y_level(true)` — `satisfies/2`, the clause wam_rust tripped on.
 
-  Still to check for this form: of the flag-passing targets, **cpp** and
-  **javascript** remain un-re-audited against the ITE barrier
+  Still to check for this form: of the flag-passing targets, only
+  **javascript** remains un-re-audited against the ITE barrier
   specifically. (`wam_javascript` snapshots the Y range at `Call` and
   restores at `Proceed`, so the caller's frame is repaired on return even
-  if the callee scribbles on it; `wam_cpp` uses string-named per-frame
-  `y_regs`. Both are *reasons to expect immunity*, not audits.)
+  if the callee scribbles on it — a *reason to expect immunity*, not an
+  audit.) **cpp was audited 2026-09-05**: the per-frame `y_regs` was
+  immunity for the aliasing form only; the frameless-Y form REPRODUCED as
+  a live wrong answer and was fixed with the CP-levels model (see the cpp
+  A2 cell), probe `tests/test_wam_cpp_frameless_ite_level.pl`.
 
   **go, lua and llvm were audited 2026-09-03** and are no longer open
   questions:
@@ -367,8 +370,9 @@ Notes on the matrix:
    with no conformance arm to catch it — see B-H2) and `wam_llvm`
    (exposed on the bytecode lane).** Both verdicts are probe-pinned;
    `wam_go` was audited in the same round, found broken on its lowered
-   lane, and fixed. `wam_cpp` and `wam_javascript` remain the only
-   flag-passing targets not yet re-checked for this shape. Use the
+   lane, and fixed. `wam_cpp` was audited 2026-09-05, found broken on
+   both lanes, and fixed (CP-levels model). `wam_javascript` remains the
+   only flag-passing target not yet re-checked for this shape. Use the
    four-line reproduction under the matrix notes.
 3. **A3 elsewhere**: silent failure of last-goal builtins. Runtimes with
    partial routing (rust, haskell, fsharp, elixir) have the pattern to
