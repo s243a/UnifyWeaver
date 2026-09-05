@@ -1,7 +1,7 @@
 ;; SPDX-License-Identifier: MIT OR Apache-2.0
 ;; Copyright (c) 2026 John William Creighton (s243a)
 ;;
-;; resolver.cljs -- EDGE of the ClojureScript-WAM compiled uw-resolve P0.5.
+;; resolver.cljs -- EDGE of the ClojureScript-WAM compiled uw-resolve P3.
 ;;
 ;; The ClojureScript twin of ../wamjs/resolver.mjs, function for function.
 ;;
@@ -38,17 +38,31 @@
 (defn- list-term [items]
   (reduce (fn [tail item] (struct-term "[|]/2" [item tail])) "[]" (reverse items)))
 
+(defn- segs-term [segs]
+  (list-term
+    (map (fn [seg]
+           (let [order (str (or (nth seg 0) ""))
+                 num (or (nth seg 1) 0)
+                 codes (mapv #(.charCodeAt order %) (range (count order)))]
+             (struct-term "s/2" [(list-term codes) num])))
+         (or segs []))))
+
+;; P0 v/3 triples [M I P] and P3 {"deb":[Epoch,[[order,num],…],[…]]}.
 (defn- ver-term [v]
-  (struct-term "v/3" [(nth v 0) (nth v 1) (nth v 2)]))
+  (if (and (map? v) (contains? v "deb"))
+    (let [d (get v "deb")]
+      (struct-term "deb/3" [(or (nth d 0) 0)
+                            (segs-term (nth d 1 []))
+                            (segs-term (nth d 2 []))]))
+    (struct-term "v/3" [(nth v 0) (nth v 1) (nth v 2)])))
 
 (defn- constraint-term [c]
   (cond
     (or (nil? c) (= c "any")) "any"
     (map? c)
     (case (get c "op")
-      "eq"    (struct-term "eq/1" [(ver-term (get c "v"))])
-      "gte"   (struct-term "gte/1" [(ver-term (get c "v"))])
-      "lt"    (struct-term "lt/1" [(ver-term (get c "v"))])
+      ("eq" "gte" "lt" "lte" "gt")
+      (struct-term (str (get c "op") "/1") [(ver-term (get c "v"))])
       "range" (struct-term "range/2" [(ver-term (get c "lo")) (ver-term (get c "hi"))])
       (throw (ex-info (str "resolver shim: unknown constraint " (pr-str c)) {})))
     :else (throw (ex-info (str "resolver shim: unknown constraint " (pr-str c)) {}))))
@@ -67,8 +81,23 @@
 (defn- alias-term [row] (struct-term "alias/2" [(nth row 0) (nth row 1)]))
 (defn- pkg-term [row] (struct-term "package/2" [(nth row 0) (ver-term (nth row 1))]))
 (defn- dep-term [row]
-  (struct-term "depends/4" [(nth row 0) (ver-term (nth row 1)) (nth row 2)
-                            (constraint-term (nth row 3))]))
+  (let [third (nth row 2)
+        dep-arg (if (and (map? third) (contains? third "alternatives"))
+                  (struct-term "alternatives/1"
+                               [(list-term
+                                  (map (fn [a]
+                                         (struct-term "dep/2"
+                                                      [(get a "dep")
+                                                       (constraint-term (get a "constraint"))]))
+                                       (get third "alternatives" [])))])
+                  third)]
+    (struct-term "depends/4" [(nth row 0) (ver-term (nth row 1)) dep-arg
+                              (constraint-term (nth row 3))])))
+(defn- provide-term [row]
+  (if (and (>= (count row) 4) (some? (nth row 3)))
+    (struct-term "provides/4" [(nth row 0) (ver-term (nth row 1))
+                               (nth row 2) (ver-term (nth row 3))])
+    (struct-term "provides/3" [(nth row 0) (ver-term (nth row 1)) (nth row 2)])))
 (defn- conf-term [row]
   (struct-term "conflicts/3" [(nth row 0) (ver-term (nth row 1)) (nth row 2)]))
 
@@ -77,8 +106,8 @@
     (struct-term "req/2" [(get req "req") (constraint-term (get req "constraint"))])
     req))
 
-;; catalog/6 when there is nothing P0.5 to carry, catalog/9 otherwise -- the
-;; same rule diff_runner.pl applies on the SWI side.
+;; catalog/6 when there is nothing P0.5/P3 to carry, catalog/9 for
+;; layers/excluded/aliases, catalog/10 when provides are present.
 (defn catalog->term [cat]
   (let [c (or cat {})
         core-args [(list-term (map pkg-term (get c "packages" [])))
@@ -89,14 +118,17 @@
                    (list-term (get c "requested" []))]
         layers (get c "layers" [])
         excluded (get c "excluded" [])
-        aliases (get c "aliases" [])]
-    (if (and (empty? layers) (empty? excluded) (empty? aliases))
+        aliases (get c "aliases" [])
+        provides (get c "provides" [])]
+    (if (and (empty? layers) (empty? excluded) (empty? aliases) (empty? provides))
       (struct-term "catalog/6" core-args)
-      (struct-term "catalog/9"
-                   (conj (vec core-args)
-                         (list-term (map layer-term layers))
-                         (list-term excluded)
-                         (list-term (map alias-term aliases)))))))
+      (let [nine (conj (vec core-args)
+                       (list-term (map layer-term layers))
+                       (list-term excluded)
+                       (list-term (map alias-term aliases)))]
+        (if (empty? provides)
+          (struct-term "catalog/9" nine)
+          (struct-term "catalog/10" (conj nine (list-term (map provide-term provides)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; WAM terms -> JS values  (the mirror of resolver.mjs's termToJs)
@@ -151,11 +183,24 @@
           (let [args (mapv #(term->js state %) (:args t))]
             (cond
               (and (= n "v") (= 3 (count args))) args
+              (and (= n "s") (= 2 (count args)))
+              [(if (vector? (nth args 0))
+                 (apply str (map char (nth args 0)))
+                 "")
+               (nth args 1)]
+              (and (= n "deb") (= 3 (count args))) {"deb" args}
               (and (= n "-") (= 2 (count args))) args
               (and (= n "blocked") (= 3 (count args)))
-              (blocked->js (nth args 0)
-                           (let [x (nth args 1)] (if (and (vector? x) (= "needs" (first x))) (second x) x))
-                           (let [x (nth args 2)] (if (and (vector? x) (= "base_has" (first x))) (second x) x)))
+              (let [needs (let [x (nth args 1)] (if (and (vector? x) (= "needs" (first x))) (second x) x))
+                    third (nth args 2)]
+                (if (and (vector? third) (= "providers" (first third)))
+                  {"name" (nth args 0) "needs" needs "providers" (second third)}
+                  (blocked->js (nth args 0) needs
+                               (if (and (vector? third) (= "base_has" (first third))) (second third) third))))
+              (and (= n "blocked") (= 1 (count args))
+                   (vector? (first args)) (= "alternatives" (ffirst args)))
+              {"alternatives" (second (first args))}
+              (and (= n "alt") (= 2 (count args))) {"dep" (nth args 0) "reason" (nth args 1)}
               (and (= n "safe") (= 1 (count args)))
               {"verdict" "safe"
                "cost" (let [x (first args)] (if (and (vector? x) (= "cost" (first x))) (second x) x))}
@@ -163,7 +208,8 @@
               (and (= n "unsafe") (= 1 (count args))) {"verdict" "unsafe" "reason" (first args)}
               (and (= n "audit") (= 2 (count args))) (audit->js (nth args 0) (nth args 1))
               (and (= n "ok") (= 1 (count args))) {"__ok_set" (first args)}
-              (and (#{"needs" "base_has" "eq" "gte" "lt" "cost" "held" "suggest"} n)
+              (and (#{"needs" "base_has" "eq" "gte" "lt" "lte" "gt"
+                      "cost" "held" "suggest" "providers" "alternatives"} n)
                    (= 1 (count args)))
               [n (first args)]
               (= n "range") {"op" "range" "lo" (nth args 0) "hi" (nth args 1)}
@@ -175,16 +221,23 @@
 (defn- normalize-constraint [c]
   (cond
     (= c "any") "any"
-    (and (vector? c) (#{"gte" "eq" "lt"} (first c))) {"op" (first c) "v" (second c)}
+    (and (vector? c) (#{"gte" "eq" "lt" "lte" "gt"} (first c))) {"op" (first c) "v" (second c)}
     (and (map? c) (contains? c "op")) c
     (and (vector? c) (= "range" (first c))) {"op" "range" "lo" (nth c 1) "hi" (nth c 2)}
     :else c))
 
 (defn- normalize-blocked [b]
-  (if (and (map? b) (contains? b "name"))
+  (cond
+    (and (map? b) (contains? b "alternatives"))
+    {"alternatives" (get b "alternatives")}
+    (and (map? b) (contains? b "providers"))
+    {"name" (get b "name")
+     "needs" (normalize-constraint (get b "needs"))
+     "providers" (mapv normalize-blocked (or (get b "providers") []))}
+    (and (map? b) (contains? b "name"))
     {"base_has" (get b "base_has") "name" (get b "name")
      "needs" (normalize-constraint (get b "needs"))}
-    b))
+    :else b))
 
 (defn- normalize-verdict [v]
   (if (= v "no_candidate") {"verdict" "no_candidate"} v))
@@ -241,6 +294,22 @@
   (let [o (out-var)
         s (core/resolve-layered-state cat-term (list-term (map request-term requests)) o)]
     (if s {"ok" (answer s o)} {"fail" true})))
+
+;; B3 census: one resolve_layered (includes G1 index build) plus index_catalog/2
+;; alone so query ≈ resolve − build. Bindings do not escape the counted run.
+(defn resolve-layered-prepared-counted [cat-term requests]
+  (let [o (out-var)
+        s (binding [rt/*count-instrs* true]
+            (core/resolve-layered-state cat-term (list-term (map request-term requests)) o))]
+    {:result (if s {"ok" (answer s o)} {"fail" true})
+     :instrs (or (and s (:instr-count s)) 0)}))
+
+(defn index-catalog-counted [cat-term]
+  (let [o (out-var)
+        s (binding [rt/*count-instrs* true]
+            (core/index-catalog-state cat-term o))]
+    {:ok (some? s)
+     :instrs (or (and s (:instr-count s)) 0)}))
 
 (defn explain-blocked [catalog request]
   (let [o (out-var)
