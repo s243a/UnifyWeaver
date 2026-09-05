@@ -23,12 +23,18 @@ if (!dir) {
 
 const packages = [];
 const depends = [];
+const provides = [];
 
 for (const line of readFileSync(join(dir, "rich.jsonl"), "utf8").split("\n")) {
   if (line === "") continue;
   const r = JSON.parse(line);
   if (r.kind === "package") packages.push([r.name, r.ver]);
   else if (r.kind === "depends") depends.push([r.name, r.ver, r.dep, r.constraint]);
+  else if (r.kind === "provides") {
+    const row = [r.name, r.ver, r.virtual];
+    if (r.virtual_ver != null) row.push(r.virtual_ver);
+    provides.push(row);
+  }
 }
 
 const catalog = {
@@ -37,7 +43,8 @@ const catalog = {
   conflicts: [],
   base: [["p0", [0, 0, 0]]],
   installed: [],
-  requested: []
+  requested: [],
+  provides
 };
 
 const out = join(dir, "catalog.json");

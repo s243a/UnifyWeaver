@@ -5,11 +5,11 @@ Copyright (c) 2026 John William Creighton (s243a)
 
 # `resolver.pl` + the `pkg` CLI → ClojureScript
 
-**The whole of uw-resolve P0.5 and the whole of the `pkg` command line,
+**The whole of uw-resolve P3 and the whole of the `pkg` command line,
 transpiled from Prolog to ClojureScript and measured against the SWI-Prolog
 oracle and the JavaScript CLI they were written from.**
 
-`examples/pkg_resolver/resolver.pl` — all 79 predicates, every one of the ten
+`examples/pkg_resolver/resolver.pl` — 127 predicates, every one of the ten
 queries — compiles into a pair of ClojureScript namespaces that nbb loads
 clean. `pkg.cljs` drives it with the *same* `cli/generated/pkg_registry.json`
 through the *same* D40 ClojureScript argparser the `cli_args` lane ships, and
@@ -17,10 +17,10 @@ prints byte-for-byte what `cli/pkg.mjs` prints.
 
 | gate | result |
 | --- | --- |
-| nbb loads the generated namespaces (the `node --check` analogue) | **clean** — 2536 WAM instructions, 79 predicates |
-| the P0.5 contract corpus (`dump_corpus.pl`, SWI expected) | **39 / 39** matched SWI |
-| the `pkg` CLI contract corpus, CLJS CLI vs the JS lane's own expectations | **153 / 153** assertions (the JS suite's 86, plus 66 byte-for-byte cross-checks and the wrapper) |
-| differential vs SWI — the harness's own generator, same seed | **2400 cases, 0 divergences, 0 crashes**, all ten queries |
+| nbb loads the generated namespaces (the `node --check` analogue) | **clean** — 4700 WAM instructions, 127 predicates |
+| the P3 contract corpus (`dump_corpus.pl`, SWI expected) | **51 / 51** matched SWI |
+| the `pkg` CLI contract corpus | **142 / 153** vs frozen `cli/generated/expected.json`; **66 / 66** cljs==js; the 11 misses are `install-plan` cases where **live SWI also fails** (stale expected, `cli/` is frozen) |
+| differential vs SWI — gen_catalogs.mjs seeds `0xa5b6c7d8` + `0xdeb00001` | **2600 cases, 0 divergences, 0 crashes** |
 
 This is the **first backtracking program** the ClojureScript lane has carried.
 The D40 argparser is deterministic from end to end; pointing a program with real
@@ -35,9 +35,9 @@ is measured by B3.
 
 ```bash
 bash examples/pkg_resolver/cljs/build.sh            # compile + nbb load check
-bash examples/pkg_resolver/cljs/run_corpus_cljs.sh  # the 39-scenario gate vs SWI
+bash examples/pkg_resolver/cljs/run_corpus_cljs.sh  # the 51-scenario gate vs SWI
 node --test examples/pkg_resolver/cljs/test_pkg_cli_cljs.mjs   # the CLI gate
-bash examples/pkg_resolver/run_differential_cljs.sh # the 2400-case gate
+bash examples/pkg_resolver/run_differential_cljs.sh # the 2600-case gate
 bash examples/pkg_resolver/cljs/bench_scale.sh      # B3, the 5k-package catalog
 
 # the two runtime probe suites (compile a minimal program, run it under nbb)
@@ -55,12 +55,12 @@ Requires `swipl`, `node` and `nbb` on `PATH`.
 
 | file | what it is |
 | --- | --- |
-| `build.pl` / `build.sh` | ONE command: reads the FROZEN `../resolver.pl`, compiles all 79 predicates, and nbb-loads the result |
+| `build.pl` / `build.sh` | ONE command: reads the FROZEN `../resolver.pl`, compiles all 127 predicates, and nbb-loads the result |
 | `generated/resolver/core.cljs` | **compiler output** — the WAM instruction table, the intern tables, the lowered prefixes and the predicate wrappers |
 | `generated/resolver/runtime.cljs` | **compiler output** — the WAM runtime, rendered from `templates/targets/clojure_wam/runtime.clj.mustache` with the JVM→JS interop rewritten |
 | `resolver.cljs` | the EDGE: JSON ⇄ WAM terms, and driving the generated wrappers. No resolver logic |
 | `pkg.cljs` | the CLI. No parse logic, no resolve logic |
-| `run_corpus.cljs` / `run_corpus_cljs.sh` | the 39-scenario contract gate against SWI |
+| `run_corpus.cljs` / `run_corpus_cljs.sh` | the 51-scenario contract gate against SWI |
 | `test_pkg_cli_cljs.mjs` | `../cli/test_pkg_cli.mjs` with `runPkg` pointed at `pkg.cljs`, plus the byte-for-byte cross-check |
 | `diff_runner_cljs.cljs` | the harness's stdin/JSONL protocol, under nbb |
 | `../run_differential_cljs.sh` | `../run_differential.sh` with the CLJS leg swapped in (the original is untouched) |
@@ -306,6 +306,35 @@ B1 is unchanged because it is nbb's own start-up (~1.3 s of the 1.6 s); the
 B2 improves **1.3–1.4×** and B3 **1.47×**. Both answer exactly what they
 answered before — B2 is still 2400 cases / 0 divergences / 0 crashes, and B3
 still returns the same ten packages at the same ten versions as SWI.
+
+### P3 + G1 index (this round)
+
+P3 builtins (`maplist/2`, `predsort/3`) and the shim encodings (`deb/3`,
+alternatives, provides 3/4-ary, `catalog/10`) are in the runtime and edge.
+`UW_WAM_WARN_UNKNOWN=1` is loud on nbb via `js/console.error`. The G1
+`index_threshold(64)` path required a last-slash arity parse so
+`put_structure ///2` from `build_tree`'s `(N-1)//2` is a real instruction
+(a first-slash split emitted `:raw` and every catalog past the threshold
+failed `index_catalog` — 54 differential divergences, all G1-sized).
+
+Same box, `nbb v1.5.212` / Node 22 / SWI 9.0.4:
+
+| | P3 cljs | SWI (same catalog / probe `p30`) |
+| --- | ---: | ---: |
+| **B1** 51-case corpus wall | **2.078 s** | — |
+| **B2** 2600-case differential | **62.332 s** | **2.427 s** |
+| **B3** load / resolve / total | 0.291 s / **17.619 s** / 17.910 s | 0.437 s / **0.018 s** / 0.454 s |
+| B3 instruction census | resolve **2,676,284** = index build **2,648,879** + query **27,405** | — |
+
+B3 answers the same ten packages as SWI. vs D54's pre-P3 resolve (~38.6–42 s,
+7.56 M instructions) this is **~2.2× wall** and ~2.8× fewer instructions.
+The interesting reading is mechanical: **99% of the remaining instructions
+are index BUILD** (interpreted `sort/2` + `list_to_tree` on 7.5k packages /
+15k deps). Query itself is 27k steps (~0.18 s at 6.6 µs/instr) — a ~276×
+cut versus the old 7.56 M search. CLJS's slow baseline makes the G1 index a
+real wall win even though the build is interpreted; Go's 1.04× was the
+opposite (fast baseline, build-dominated). wamjs's 9.2× is the other pole
+(native-enough query, build cheap relative to the old search).
 
 ### Why indexing did not buy an order of magnitude — measured, not argued
 
