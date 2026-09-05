@@ -6,6 +6,28 @@
 
 (def well-known-intern-seeds ["true" "fail" "[]" "." "" "[|]" "[|]/2"])
 
+;; P3 helpers + the A3 class D60/D61 found unclassified. resolve-instruction
+;; rewrites unmatched call/execute of these to :builtin-call.
+(def clojure-wam-direct-builtins
+  #{"maplist/2" "maplist/3" "maplist/4" "predsort/3"
+    "functor/3" "arg/3" "=../2" "string_codes/2"})
+
+(defn clojure-wam-direct-builtin? [pred]
+  (contains? clojure-wam-direct-builtins pred))
+
+(defn uw-env-get [k]
+  (System/getenv k))
+
+(defn env-uw-warn-unknown? []
+  (try
+    (= "1" (uw-env-get "UW_WAM_WARN_UNKNOWN"))
+    (catch Exception _ false)))
+
+(defn warn-unresolved [kind pred]
+  (when (env-uw-warn-unknown?)
+    (binding [*out* *err*]
+      (println (str "[wam_clojure] " kind " of unresolved goal " pred " failed")))))
+
 (defn parse-functor-arity [functor]
   (let [slash (.lastIndexOf ^String functor "/")
         arity-str (when (pos? slash) (subs functor (inc slash)))]
@@ -132,12 +154,16 @@
     :call
     (if-let [pc (get labels (:pred instr))]
       (assoc instr :op :call-pc :target-pc pc)
-      instr)
+      (if (clojure-wam-direct-builtin? (:pred instr))
+        (assoc instr :op :builtin-call :pred (:pred instr))
+        instr))
 
     :execute
     (if-let [pc (get labels (:pred instr))]
       (assoc instr :op :execute-pc :target-pc pc)
-      instr)
+      (if (clojure-wam-direct-builtin? (:pred instr))
+        (assoc instr :op :builtin-call :pred (:pred instr))
+        instr))
 
     :jump
     (if-let [pc (get labels (:label instr))]
@@ -371,6 +397,7 @@
          list->term
          parse-number-text
          reg-get-raw
+         run-wam-state
          sorted-unique-terms
          term-compare)
 
@@ -1980,6 +2007,195 @@
 
       :else
       (backtrack state))))
+
+;; ---------------------------------------------------------------------------
+;; Meta-call (maplist / predsort). Persistent-map hygiene (D61 restated):
+;; the sub-run gets a FRESH :choice-points / :stack / :regs; on success we
+;; take only bindings/trail/heap/intern/next-var-id. Registers and leftover
+;; CPs never leak into the caller.
+;; ---------------------------------------------------------------------------
+
+(defn put-arg-regs [state args]
+  (loop [s state
+         i 1
+         remaining args]
+    (if (empty? remaining)
+      s
+      (recur (reg-set-raw s (str "A" i) (first remaining))
+             (inc i)
+             (rest remaining)))))
+
+(defn goal-name-args [state goal]
+  (let [g (deref-value (:bindings state) goal)]
+    (cond
+      (atom-term? g)
+      [(atom-text state g) []]
+
+      (structure-term? g)
+      (let [key (functor-key (:intern-context state) (:functor g))
+            name (functor-name-from-key key)]
+        (if (and (= name ":") (= 2 (count (:args g))))
+          (goal-name-args state (second (:args g)))
+          [name (vec (:args g))]))
+
+      :else nil)))
+
+(defn pred-extra-goal [state pred extra]
+  (let [p (deref-value (:bindings state) pred)]
+    (cond
+      (atom-term? p)
+      (let [name (atom-text state p)
+            n (count extra)
+            [ctx id] (intern-atom (:intern-context state) (str name "/" n))]
+        [(assoc state :intern-context ctx)
+         (structure-term (atom-term id) (vec extra))])
+
+      (structure-term? p)
+      (let [old (vec (:args p))
+            all (into old extra)
+            old-key (functor-key (:intern-context state) (:functor p))
+            old-name (functor-name-from-key old-key)
+            [ctx id] (intern-atom (:intern-context state) (str old-name "/" (count all)))]
+        [(assoc state :intern-context ctx)
+         (structure-term (atom-term id) all)])
+
+      :else nil)))
+
+(defn invoke-at-pc-isolated [state pc args]
+  (let [isolated (-> state
+                     (assoc :regs {}
+                            :pc pc
+                            :stack []
+                            :choice-points []
+                            :cut-bar 0
+                            :status :running)
+                     (put-arg-regs args))
+        result (run-wam-state isolated)]
+    (when result
+      (-> state
+          (assoc :bindings (:bindings result)
+                 :trail (:trail result)
+                 :heap (:heap result)
+                 :intern-context (:intern-context result)
+                 :next-var-id (:next-var-id result)
+                 :instr-count (:instr-count result))))))
+
+(defn invoke-callable-isolated [state name args]
+  (let [key (str name "/" (count args))]
+    (if-let [pc (get (:labels state) key)]
+      (invoke-at-pc-isolated state pc args)
+      nil)))
+
+(defn invoke-goal-once [state goal]
+  (when-let [[name args] (goal-name-args state goal)]
+    (case name
+      "true" state
+      ("fail" "false") nil
+      (invoke-callable-isolated state name args))))
+
+(defn maplist-collect-lists [state n-lists]
+  (loop [i 0
+         lists []
+         unbound-at -1]
+    (if (>= i n-lists)
+      [lists unbound-at]
+      (let [items (proper-list-items state (or (reg-get-raw state (str "A" (+ 2 i))) ::unbound))]
+        (if (nil? items)
+          (if (>= unbound-at 0)
+            nil
+            (recur (inc i) (conj lists nil) i))
+          (recur (inc i) (conj lists items) unbound-at))))))
+
+(defn maplist-call-row [state pred extras]
+  (let [built (pred-extra-goal state pred extras)]
+    (when built
+      (let [[s2 goal] built]
+        (invoke-goal-once s2 goal)))))
+
+(defn apply-maplist-solution [state n-lists]
+  (let [pred (deref-value (:bindings state)
+                          (or (reg-get-raw state "A1") ::unbound))
+        collected (maplist-collect-lists state n-lists)]
+    (if-not collected
+      (backtrack state)
+      (let [[lists unbound-at] collected]
+        (if (neg? unbound-at)
+          (let [len0 (count (nth lists 0))]
+            (if (some #(not= (count %) len0) lists)
+              (backtrack state)
+              (loop [s state k 0]
+                (if (>= k len0)
+                  (advance s)
+                  (if-let [s3 (maplist-call-row s pred (mapv #(nth % k) lists))]
+                    (recur s3 (inc k))
+                    (backtrack state))))))
+          (let [bound (nth lists (if (zero? unbound-at) 1 0) nil)]
+            (if (or (nil? bound) (not= n-lists 2))
+              (backtrack state)
+              (loop [s state k 0 out []]
+                (if (>= k (count bound))
+                  (let [out-term (list->term (:intern-context s) out)
+                        dest (or (reg-get-raw s (str "A" (+ 2 unbound-at))) ::unbound)
+                        [ok unified] (unify-values s dest out-term)]
+                    (if ok (advance unified) (backtrack state)))
+                  (let [[y s1] (fresh-var s)
+                        extra (if (zero? unbound-at) [y (nth bound k)] [(nth bound k) y])]
+                    (if-let [s3 (maplist-call-row s1 pred extra)]
+                      (recur s3 (inc k) (conj out y))
+                      (backtrack state))))))))))))
+
+(defn pred-name-text [state pred]
+  (let [p (deref-value (:bindings state) pred)]
+    (cond
+      (atom-term? p) (functor-name-from-key (or (atom-text state p) ""))
+      (string? p) (functor-name-from-key p)
+      :else nil)))
+
+(defn pred-less? [state pred-name x y]
+  (if (= pred-name "compare")
+    [state (neg? (term-compare state x y))]
+    (let [[order s1] (fresh-var state)
+          built (pred-extra-goal s1
+                                 (or (reg-get-raw state "A1") ::unbound)
+                                 [order x y])]
+      (if-not built
+        [state false]
+        (let [[s2 goal] built
+              s3 (invoke-goal-once s2 goal)]
+          (if-not s3
+            [state false]
+            (let [o (deref-value (:bindings s3) order)]
+              [s3 (= "<" (atom-text s3 o))])))))))
+
+(defn insert-sorted-pred [state pred-name acc x]
+  (loop [s state
+         before []
+         after acc]
+    (if (empty? after)
+      [s (conj before x)]
+      (let [y (first after)
+            [s2 less?] (pred-less? s pred-name x y)]
+        (if less?
+          [s2 (into (conj before x) after)]
+          (recur s2 (conj before y) (rest after)))))))
+
+(defn apply-predsort-solution [state]
+  (let [pred (deref-value (:bindings state)
+                          (or (reg-get-raw state "A1") ::unbound))
+        items (proper-list-items state (or (reg-get-raw state "A2") ::unbound))
+        out (or (reg-get-raw state "A3") ::unbound)]
+    (if-not items
+      (backtrack state)
+      (let [pred-name (pred-name-text state pred)]
+        (loop [s state
+               acc []
+               remaining items]
+          (if (empty? remaining)
+            (let [sorted-term (list->term (:intern-context s) acc)
+                  [ok unified] (unify-values s out sorted-term)]
+              (if ok (advance unified) (backtrack state)))
+            (let [[s2 inserted] (insert-sorted-pred s pred-name acc (first remaining))]
+              (recur s2 inserted (rest remaining)))))))))
 
 (defn unify-text-atom-value [state value text]
   (if (or (string? value) (symbol? value))
@@ -3601,19 +3817,45 @@
           "sub_atom/5"
           (apply-sub-atom-solution state (inc (:pc state)))
 
+          "maplist/2"
+          (apply-maplist-solution state 1)
+
+          "maplist/3"
+          (apply-maplist-solution state 2)
+
+          "maplist/4"
+          (apply-maplist-solution state 3)
+
+          "predsort/3"
+          (apply-predsort-solution state)
+
           "!/0"
           (-> state
               (update :choice-points #(vec (take (:cut-bar state) %)))
               advance)
 
-          (backtrack state))
+          (do (warn-unresolved "execute" (:pred instr))
+              (backtrack state)))
 
         :call
         (case (:pred instr)
           "variant/2"
           (apply-variant-solution state)
 
-          (backtrack state))
+          "maplist/2"
+          (apply-maplist-solution state 1)
+
+          "maplist/3"
+          (apply-maplist-solution state 2)
+
+          "maplist/4"
+          (apply-maplist-solution state 3)
+
+          "predsort/3"
+          (apply-predsort-solution state)
+
+          (do (warn-unresolved "call" (:pred instr))
+              (backtrack state)))
 
         :execute
         (case (:pred instr)
@@ -3623,7 +3865,20 @@
               (succeed-state next-state)
               next-state))
 
-          (backtrack state))
+          "maplist/2"
+          (apply-maplist-solution state 1)
+
+          "maplist/3"
+          (apply-maplist-solution state 2)
+
+          "maplist/4"
+          (apply-maplist-solution state 3)
+
+          "predsort/3"
+          (apply-predsort-solution state)
+
+          (do (warn-unresolved "execute" (:pred instr))
+              (backtrack state)))
 
         :call-foreign
         (execute-foreign state instr)
@@ -3655,12 +3910,17 @@
 ;; its shims deref the argument cell afterwards.) run-wam-state keeps the door
 ;; open: the SUCCEEDING state, or nil on failure. Bindings are read with
 ;; deref-value over (:bindings state).
+(def ^:dynamic *count-instrs* false)
+
 (defn run-wam-state [state]
   (loop [s state]
     (case (:status s)
       :succeeded s
       :failed nil
-      (recur (step s)))))
+      (let [s2 (step s)]
+        (recur (if *count-instrs*
+                 (assoc s2 :instr-count (inc (or (:instr-count s2) 0)))
+                 s2))))))
 
 (defn run-wam-predicate
   ([code labels start-pc regs]

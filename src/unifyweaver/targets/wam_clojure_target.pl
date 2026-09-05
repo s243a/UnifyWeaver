@@ -68,7 +68,13 @@ write_wam_clojurescript_files(Predicates, Options, OutDir) :-
     format(atom(CoreClj),    "~w/src/~w/core.clj",    [TmpDir, NsPath]),
     % runtime.cljs
     read_whole_file(RuntimeClj, RuntimeSrc),
-    clojurescript_interop_rewrite(RuntimeSrc, RuntimeCljs),
+    clojurescript_interop_rewrite(RuntimeSrc, RuntimeCljs0),
+    % nbb cannot resolve System/getenv; the template keeps it for the JVM
+    % project and we swap in process.env on the ClojureScript rewrite.
+    wamcljs_replace(RuntimeCljs0,
+                    '(System/getenv k)',
+                    '(aget (.-env js/process) k)',
+                    RuntimeCljs),
     format(atom(RuntimeOut), "~w/runtime.cljs", [OutDir]),
     write_text_file(RuntimeOut, RuntimeCljs),
     % core.cljs (drop CLI -main + its edn require — JVM/CLI only)
@@ -744,6 +750,31 @@ wam_args(ArgText, Args) :-
 normalize_space_string(In, Out) :-
     normalize_space(string(Out), In).
 
+% P3 uw-resolve helpers. Without this rewrite, `call maplist/N` /
+% `call predsort/3` stay as :call and the runtime's unmatched-call
+% arm silently backtracks (A3). functor/3, arg/3, =../2, string_codes/2
+% already emit as builtin_call.
+clojure_wam_direct_builtin("maplist/2").
+clojure_wam_direct_builtin("maplist/3").
+clojure_wam_direct_builtin("maplist/4").
+clojure_wam_direct_builtin('maplist/2').
+clojure_wam_direct_builtin('maplist/3').
+clojure_wam_direct_builtin('maplist/4').
+clojure_wam_direct_builtin("predsort/3").
+clojure_wam_direct_builtin('predsort/3').
+clojure_wam_direct_builtin("functor/3").
+clojure_wam_direct_builtin('functor/3').
+clojure_wam_direct_builtin("arg/3").
+clojure_wam_direct_builtin('arg/3').
+clojure_wam_direct_builtin("=../2").
+clojure_wam_direct_builtin('=../2').
+clojure_wam_direct_builtin("string_codes/2").
+clojure_wam_direct_builtin('string_codes/2').
+
+wam_op_to_clojure_literal("call", [Pred, ArityStr], _, Literal) :-
+    clojure_wam_direct_builtin(Pred),
+    !,
+    wam_op_to_clojure_literal("builtin_call", [Pred, ArityStr], _, Literal).
 wam_op_to_clojure_literal("call", [Pred, ArityStr], _, Literal) :-
     clj_string_literal(Pred, PredLit),
     number_string(Arity, ArityStr),
@@ -752,6 +783,15 @@ wam_op_to_clojure_literal("call_foreign", [Pred, ArityStr], _, Literal) :-
     clj_string_literal(Pred, PredLit),
     number_string(Arity, ArityStr),
     format(atom(Literal), '{:op :call-foreign :pred ~w :arity ~w}', [PredLit, Arity]).
+wam_op_to_clojure_literal("execute", [Pred], _, Literal) :-
+    clojure_wam_direct_builtin(Pred),
+    !,
+    (   functor_arity_string(Pred, Arity)
+    ->  true
+    ;   Arity = 0
+    ),
+    format(atom(ArityStr), '~w', [Arity]),
+    wam_op_to_clojure_literal("builtin_call", [Pred, ArityStr], _, Literal).
 wam_op_to_clojure_literal("execute", [Pred], _, Literal) :-
     clj_string_literal(Pred, PredLit),
     format(atom(Literal), '{:op :execute :pred ~w}', [PredLit]).
