@@ -85,7 +85,73 @@ default path in tests.
   no parallelism requirement
   ([`WAM_TARGET_ROADMAP.md`](WAM_TARGET_ROADMAP.md) paradigm table).
 
-## Quadratic list handling: `unify` deep-derefs before dispatch (2026-09-04)
+## Quadratic list handling: `unify` deep-derefs before dispatch — FIXED (2026-09-05)
+
+**Fixed 2026-09-05 by the shape-first `unify` restructure (D59 step 1c follow-up).**
+`WamState::unify` now dispatches on the raw cell shape, following only the
+variable-binding chain by reference (`deref_chain`, allocation-free), and
+materialises at most ONE level of a term per side (`deref_shallow`) before any
+element-wise work. Deep traversal happens only when both sides are genuinely
+compound, and the spine walk is a loop (O(1) Rust stack). The bind-unbound arm
+no longer pays a walk of the other side at all. `deref_heap` got two companion
+fixes: cons chains are now flattened ITERATIVELY (`deref_cons_chain`) instead of
+rebuilt one `Args::cons` at a time — that was a *second* Θ(N²), and the source
+of the "stack overflow above ~8,000 cells" — and its argument vector is now
+allocated lazily, only once a sub-term actually moves (the ~5% `deref_heap`
+follow-up the profile flagged).
+
+**Is it mechanical?** Mostly. The reorder itself is the mechanical part. The
+one borrow-checker constraint: phase 1 (the allocation-free arms) borrows
+`&self.bindings` through `deref_chain`, and an arm that must mutate — bind a
+variable, or recurse into `unify(&mut self, …)` — cannot hold that borrow. The
+structure that satisfies the checker is a two-phase body: a first `match` on the
+two borrowed raw cells that only *reads* (returns for the atomic/identical-var
+cases), then, once the borrows are dropped, phase 2 takes owned one-level values
+(`deref_shallow` returns `Value`, O(1) for compounds/lists because the spine is
+shared) and does the binding/recursion. That split is forced, not stylistic, but
+it is a local rewrite of one function plus three small helpers — no change to
+the `Value` representation, the trail, or any call site.
+
+**Result — the six D59 probes, pristine vs fixed** (release, this box; the
+suffix and build_tree probes are the ones the write-up isolated as quadratic):
+
+| probe (ms) | 1,000 | 2,000 | 4,000 | 8,000 | shape now |
+| --- | ---: | ---: | ---: | ---: | --- |
+| construction only (pristine) | 33.8 | 118.6 | 446.7 | 1,794 | was already ~linear-ish, now flat |
+| construction only (fixed) | 12.9 | 24.3 | 49.6 | 98.2 | **linear** (×2/doubling) |
+| suffix-through-output-arg (pristine) | 173.6 | 697.7 | 2,620 | 10,474 | quadratic (×4) |
+| suffix-through-output-arg (fixed) | 22.5 | 42.9 | 96.6 | 193.1 | **linear** (×2) |
+| build_tree/keysort/group (pristine `pd`) | 397.5 | 1,451 | 6,884 | 30,943 | quadratic (×4) |
+| build_tree/keysort/group (fixed `pd`) | 58.6 | 150.1 | 262.7 | 568.1 | **linear** (×2) |
+
+`keysort/2` and `sort/2` over tagged triples also go linear (they were quadratic
+only because they *walked* long lists through the same deref path). No probe
+aborts any more — 32,000-cell `pd` finishes in 4.1 s where 8,000 used to be the
+stack-overflow ceiling.
+
+**The G1 index on the Rust lane, unblocked.** The scale ladder (scratch crate,
+P3 rows stripped, `index_threshold(1)` to force the index on), resolve ms:
+
+| packages | 744 | 1,511 | 3,022 | 7,522 |
+| --- | ---: | ---: | ---: | ---: |
+| pristine + G1 index | 1,358 | 4,914 | 18,490 | **abort (4 GiB)** |
+| fixed + G1 index | 223 | 411 | 822 | 1,924 |
+| fixed, index off | 480 | 876 | 1,717 | 4,402 |
+| pristine, index off | 543 | 919 | 1,839 | 4,684 |
+
+The indexed build is now **linear** (×2 per doubling) and, with the quadratic
+gone, the index is a straight ~2.3× win at 5k rather than an OOM. The plain
+index-off ladder does **not** regress (fixed ≈ pristine, both linear). So the
+D59 index is sound on the Rust lane once the runtime is fixed — the committed
+example stays PRE-P3 (rebuilding it against the current resolver is a separate
+port round), but the blocker recorded below is cleared.
+
+Pinned by `tests/test_wam_rust_unify_shape.pl` (9 SWI-oracled behaviour probes:
+unbound-vs-suffix, var-var, nested compound-compound, cons/empty-list aliasing,
+N-cell element-wise, partial-list tail fill, wide compound, deep-leaf failure)
+and the re-run 9-probe sharing suite.
+
+<details><summary>Original finding (2026-09-04), kept for the record</summary>
 
 Found while implementing guard G1 of
 [`proposals/RESOLVER_PRUNING_DESIGN.md`](proposals/RESOLVER_PRUNING_DESIGN.md)
@@ -161,6 +227,8 @@ re-parsing `functor/arity` per node (the callgrind profile shows 6.5 % in
 `memrchr`/`CharSearcher` alone). Pin any fix with the six probes above before
 and after.
 
+</details>
+
 ## Known issues / gaps
 
 - **Head-unification fixes landed 2026-08-06** (CONF-FIX-RUST-NESTED,
@@ -190,11 +258,12 @@ and after.
   tail is the same allocation one element along. Choice-point creation costs
   O(live registers) instead of O(term size), and walking an N-element list is
   O(N) instead of N retained copies of the remainder. Numbers below.
-- **The lowered tier is not reachable from the interpreter.** Lowered
-  predicates keep their WAM label and no name-keyed call-site hook routes
-  `Execute`/`Call` to a lowered function, so a project built with
-  `emit_mode(functions)` runs entirely interpreted and the lowered functions
-  are dead code. Measured, and scoped, below.
+- ~~**The lowered tier is not reachable from the interpreter.**~~ **Partly
+  closed 2026-09-05.** A `lowered_call` hook now routes `Execute`/`Call` to a
+  lowered function for the dispatch-safe class (cp-clean fixpoint). Predicates
+  that call a multi-clause predicate, and the multi-clause predicates
+  themselves, are still interpreted pending the resumable protocol (item 2b).
+  See the lowered-tier section below.
 - **`arg/3` over a body-constructed compound returns the construction-time
   placeholder** instead of the argument: `T = k(5,2), arg(1,T,V)` leaves `V`
   unbound where SWI gives 5. Head unification of the same term
@@ -444,13 +513,123 @@ available today is to dispatch only predicates classified `deterministic` or
 a mixed tier with no semantic risk, measurable before the resumable protocol
 exists.
 
+### The sound intermediate landed (2026-09-05) — `lowered_call` hook
+
+Item 1 is now wired: a crate-level `lowered_call(vm, pred, cont_pc) -> Option<bool>`
+(shaped exactly like T9's `fact_table_call`) is consulted from both the `Call`
+and `Execute` arms *before* label lookup, and the emitter builds its match table
+at compile time from the predicates it classifies dispatch-safe. On by default
+under `emit_mode(functions)`; `lowered_dispatch(false)` turns it off.
+
+**What is dispatched — and why the class is narrower than "deterministic or
+clause_chain" first looks.** A lowered function reaches a user callee by running
+it *interpreted* (`emit_one(call)` sets `pc` and calls `run()`), NOT by calling
+the callee's own lowered function — so an interpreted MULTI-clause callee leaves
+a live choice point, and a later failure inside the same lowered function
+backtracks straight into it, escaping the function's scope. The runtime guard
+(`WamState::lowered_dispatch`: run with `cp=0` and the cut barrier at entry
+depth, then roll back and return `None` if the call left a choice point) catches
+a non-deterministic *result*, but cannot undo mid-run corruption. So eligibility
+is a greatest fixpoint: a predicate is dispatched only when every predicate it
+(transitively) calls is **cp-clean when interpreted** — single-clause
+(`deterministic` / `ite_lowered`, whose transient ITE choice point is cut before
+return). A LEAF `clause_chain` (a fact table like `kind/2`) has no user callees,
+so it stays dispatchable itself and an interpreted caller reaches its clean
+cascade through the hook; but a predicate that *calls* a multi-clause predicate
+is left interpreted. This is the same optimistic-then-swept whole-predicate
+classification mprolog uses (`proposals/MPROLOG_MINING_NOTES.md`, F2), and F3's
+"nondet-to-det crossing still pays dynamic dispatch" is exactly the boundary we
+declined to cross here.
+
+Two runtime correctness fixes fell out of wiring this, both latent before (the
+lowered tier was dead code, so never exercised as a subroutine):
+
+* **`get_constant`/`get_integer`/`get_nil` on an unbound argument register now
+  bind the underlying variable**, not just overwrite the register
+  (`WamState::head_constant`). Register-only was correct when a lowered function
+  was the top-level entry (the caller reads the register), but wrong as a
+  subroutine, where the caller passed its own variable expecting it bound — a
+  fact-shaped `clause_chain` returned its result into a register the caller
+  never read. This matches the interpreter's `GetConstant` exactly.
+
+**Measurement (2a).** A det-heavy synthetic (a list folded through a
+deterministic transform chain `step -> scale/bias/clampv`, driven by a
+multi-clause `runl`), 50,000 elements, best of 4, this box:
+
+| build | resolve ms |
+| --- | ---: |
+| interpreter (dispatch off) | ~1,010 |
+| dispatched, with the soundness snapshot guard | ~1,000 |
+| dispatched, guard removed (unsound, to price it) | ~965 |
+
+Dispatch itself buys ~4% (1,010 → 965), but the per-call rollback snapshot
+(`save_regs`, a clone of the live register file) costs ~3.5%, so the *sound*
+tier nets roughly neutral on this workload. The honest reading: on the sound
+intermediate, the hot code — the multi-clause recursion drivers — cannot be
+dispatched, so the win is bounded by how much of the work is in cp-clean
+leaves. The lever the profile actually points at (running the *nondeterministic*
+predicates as native code) still needs item 2. Probes:
+`tests/test_wam_rust_lowered_dispatch.pl` (dispatched answers == interpreted ==
+SWI on every probe, including a `member/2` enumerator that must keep all three
+solutions — proof the hook does not commit a nondet predicate).
+
+### Item 2b (resumable nondeterminism): not attempted this round — verdict
+
+Deferred deliberately, not started, given the round's budget and the priority
+order (item 1 unify was the load-bearing deliverable). The design is scoped and
+its precedent is solid (mprolog F3: a choice point is a saved resume label +
+frame slot, the second solution is a JUMP not a re-call; the portable analogue
+is a state-machine enum driven by a trampoline, resumed by restoring saved
+locals and matching to the right arm). Two obstructions are already visible from
+2a's work and should frame the 2b round:
+
+1. **The cross-call convention.** 2a's lowered functions call each other through
+   the *interpreter* (`run()`), which is what forced the cp-clean restriction. A
+   resumable tier must make lowered-to-lowered calls direct (a
+   `lowered_call`-style resume entry, not `run()`), or nondet callees will keep
+   leaking choice points into their callers. mprolog's own compiler is the
+   negative example here (F3: it goes zero-overhead nondet-to-nondet but pays
+   full dispatch nondet-to-det).
+2. **The snapshot cost.** 2a already shows the soundness snapshot (`save_regs`)
+   costs about what dispatch saves. A resumable protocol pushes a choice point
+   *per re-entry*; unless the saved-locals set is much smaller than the whole
+   register file, the per-solution cost will not beat the interpreter's own
+   choice-point machinery, which is already the thing being measured at 21%
+   backtrack + 12% restore_regs. 2b must measure per-solution cost against that
+   baseline before it lands, on the cut suite's sequence-oracle style (order +
+   multiplicity + cut interaction, §9).
+
+Recommendation: 2b is worth a dedicated round, but only with a cheaper
+saved-state representation than `save_regs` and a direct lowered-to-lowered
+resume path — otherwise it repeats 2a's neutral result at higher risk.
+
+### Q2 (Rust half): is self-tail-recursion compiled to a loop today?
+
+No — it is net-new. The emitter has no tail-recursion class. `wam_rust_lowerable`
+classifies a predicate as `deterministic`, `clause_chain`, `multi_clause_n`,
+`multi_clause_1`, or `ite_lowered`; none of these detects that a clause's last
+goal is a self-call and rewrites it into a loop. A self-recursive predicate like
+the resolver's list walkers lowers as `multi_clause_n` (each clause tried in
+order, the recursive clause emitting a real `execute`/`call` that re-enters
+through the interpreter or, post-2a, through a fresh function activation) — it
+does not become mprolog's `tail` class (assign args once, `loopN:` label,
+reassign registers, `goto loopN`, zero choice-point machinery, F11). Adding it
+would be a new front-end class (`independ_head`-style check that the head has no
+repeated argument variable, plus "single recursive clause, recursion in tail
+position") emitting a `loop { }` in the lowered function; it is independent of
+2b (a tail-recursive single-solution-path predicate has no choice point to
+resume, so it is safe under the *existing* first-solution tier) and is the
+lowest-risk next lowered-tier step.
+
 ## Path forward
 
-0. **Make the lowered tier reachable** — the three-step scoping above
-   (`lowered_call` call-site hook, a resumable multi-clause protocol, ITE
-   per clause + `(A ; B)`). This is now the largest single lever on symbolic
-   workloads; the sound intermediate (dispatch only `deterministic` /
-   `clause_chain` predicates) can land and be measured first.
+0. **Make the lowered tier reachable** — the three-step scoping above.
+   **Step 1 (the `lowered_call` call-site hook) and the sound intermediate
+   LANDED 2026-09-05** (measured ~neutral; see the lowered-tier section). What
+   remains: the resumable multi-clause protocol (item 2b — deferred with an
+   obstruction write-up, needs a cheaper saved-state rep + direct
+   lowered-to-lowered calls), a self-tail-recursion→loop class (Q2, net-new,
+   lowest-risk next step), and ITE per clause + `(A ; B)`.
 1. Simplewiki-scale bidirectional benchmark vs F#.
 2. Promote LMDB lazy/cached into default project options + FactSource
    generalisation.
@@ -474,3 +653,11 @@ above. 2026-09-03 (D52): the earlier blocker **closed** —
 `Value` gained structural sharing, B2 fell 306.9 s → 16.5 s and B3 went from
 OOM-at-8.5 GB to 4.73 s / 680 MB peak RSS; a 9-probe sharing suite added; the
 lowered tier measured to be unreachable from the interpreter, and scoped.
+2026-09-05: the D59 `unify` quadratic **fixed** with shape-first dispatch (three
+D59 probes go linear; the G1 index unblocked on the Rust lane, curve linear);
+the D55 sound-intermediate lowered-tier dispatch (`lowered_call` hook) **landed**
+and measured ~neutral, with a cp-clean eligibility fixpoint and a latent
+`head_constant` subroutine-binding fix; item 2b (resumable nondeterminism)
+deferred with an obstruction write-up; Q2 (self-tail-recursion loop) answered —
+net-new. New probes: `test_wam_rust_unify_shape.pl` (9),
+`test_wam_rust_lowered_dispatch.pl`.

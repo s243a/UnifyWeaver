@@ -2315,6 +2315,48 @@ impl WamState {
         }
     }
 
+    /// Head match of a constant against an argument register, with the SAME
+    /// semantics the interpreter's `GetConstant` uses — including binding the
+    /// underlying variable, not just overwriting the register.
+    ///
+    /// This is the head-unification primitive the lowered emitter's
+    /// `get_constant` / `get_integer` / `get_nil` sites call. When the register
+    /// derefs to an unbound variable they used to `put_reg` the constant into
+    /// the register alone: correct when the lowered function is the TOP-LEVEL
+    /// entry (the caller reads the register back), but wrong when the function
+    /// is reached as a subroutine — the caller passed its own variable in the
+    /// register and expects that variable bound, exactly as a real WAM call
+    /// would. Binding the variable as well as setting the register makes the
+    /// lowered tier correct in both positions (the register write is redundant
+    /// once the binding exists, but harmless and keeps the fast in-register
+    /// read hot). Returns `true` when matched or freshly bound, `false` on a
+    /// genuine clash (the caller fails the clause).
+    pub fn head_constant(&mut self, ai: &str, c: Value) -> bool {
+        let raw = match self.get_reg_raw(ai) {
+            Some(v) => v,
+            None => {
+                // Uninitialised register: treat as a fresh cell holding the
+                // constant (mirrors the interpreter's write-mode fallthrough).
+                self.put_reg(ai, c);
+                return true;
+            }
+        };
+        let val = self.deref_var(&raw);
+        match val {
+            Value::Unbound(ref var_name) => {
+                self.trail_binding(ai);
+                self.set_reg_str(ai, c.clone());
+                self.bind_var(var_name, c);
+                true
+            }
+            ref v if *v == c => true,
+            // Empty-list aliasing: the [] atom and an empty Value::List.
+            Value::List(ref items) if items.is_empty()
+                && matches!(&c, Value::Atom(s) if s == "[]") => true,
+            _ => false,
+        }
+    }
+
     /// Allocation-free first-argument indexing (T6) read: deref the register
     /// (by reference, following the binding chain) and, if it resolves to a
     /// bound atom, borrow its `&str`. Returns `None` for an unbound register or
@@ -2583,6 +2625,60 @@ impl WamState {
     }
 
 
+    /// D55 "sound intermediate": run a LOWERED predicate as a direct Rust
+    /// function from an interpreted `call`/`execute` site.
+    ///
+    /// The lowered tier is first-solution-only — a lowered function returns
+    /// `bool` and leaves no choice point a caller could retry — while the
+    /// interpreter backtracks, so dispatching one is sound only when its first
+    /// solution is its ONLY solution. The emitter decides that statically
+    /// (`deterministic` / atom-guarded `clause_chain`, closed over the call
+    /// graph); this method is the runtime half of the contract, and it CHECKS
+    /// the static claim rather than trusting it:
+    ///
+    ///  * the function runs with `cp = 0`, so a nested `run()` started by a
+    ///    lowered `call`/`execute` halts at the top-level sentinel instead of
+    ///    falling through into the caller's continuation, and with the cut
+    ///    barrier at the entry choice-point depth, so a `!` in the lowered
+    ///    body prunes exactly the alternatives the body itself created;
+    ///  * if the call leaves ANY choice point behind — the one observable sign
+    ///    that it was not deterministic after all — the machine is restored to
+    ///    its entry state and `None` is returned, and the caller runs the
+    ///    predicate interpreted instead. Rolling back is safe because the
+    ///    eligible class cannot do I/O or touch the database.
+    ///
+    /// `None` therefore means "the interpreter must handle this", never
+    /// "failed"; `Some(false)` is a genuine failure.
+    pub fn lowered_dispatch(
+        &mut self,
+        f: fn(&mut WamState) -> bool,
+        cont_pc: usize,
+    ) -> Option<bool> {
+        let cp_depth = self.choice_points.len();
+        let snap = self.lo_clause_snapshot();
+        let saved_cp = self.cp;
+        let saved_pc = self.pc;
+        let saved_barrier = self.cut_barrier;
+        let saved_pending = self.pending_cut_barrier.take();
+        self.cp = 0;
+        self.cut_barrier = cp_depth;
+        let ok = f(self);
+        let left_choice_points = self.choice_points.len() > cp_depth;
+        self.cp = saved_cp;
+        self.cut_barrier = saved_barrier;
+        self.pending_cut_barrier = saved_pending;
+        if left_choice_points {
+            self.choice_points.truncate(cp_depth);
+            self.lo_restore_clause(&snap);
+            self.pc = saved_pc;
+            return None;
+        }
+        if ok {
+            self.pc = cont_pc;
+        }
+        Some(ok)
+    }
+
     /// Record a binding on the trail for backtracking.
     pub fn trail_binding(&mut self, key: &str) {
         let old = self.get_reg(key);
@@ -2592,56 +2688,227 @@ impl WamState {
         });
     }
 
+    /// Follow the variable-binding chain BY REFERENCE: no allocation, and no
+    /// descent into sub-terms. Returns the first cell that is not a bound
+    /// variable — which may still be an unbound variable, a heap `Ref`, or a
+    /// compound whose functor key is still in `"f/N"` form.
+    ///
+    /// This is `deref_var` minus its clone, and it is what makes the
+    /// shape-first dispatch in `unify` free for the atomic cases.
+    #[inline]
+    pub fn deref_chain<'a>(&'a self, val: &'a Value) -> &'a Value {
+        let mut cur = val;
+        // A cyclic binding chain cannot be built by this runtime (unify never
+        // binds a variable to itself), but a bounded walk turns a corrupted
+        // state into a wrong answer rather than a hang.
+        let mut hops: u32 = 0;
+        while let Value::Unbound(name) = cur {
+            match self.bindings.get(name) {
+                Some(next) => {
+                    hops += 1;
+                    if hops > 1_000_000 { return cur; }
+                    cur = next;
+                }
+                None => break,
+            }
+        }
+        cur
+    }
+
+    /// Normalise a structure's functor key: strip the `"str(...)"` wrapper the
+    /// heap sometimes carries and the `"/N"` arity suffix when `N` matches the
+    /// actual argument count. Borrowed, so the common already-normalised case
+    /// costs nothing.
+    #[inline]
+    pub fn functor_of(full: &str, arity: usize) -> &str {
+        let inner = if full.starts_with("str(") && full.ends_with(')') {
+            &full[4..full.len() - 1]
+        } else {
+            full
+        };
+        match inner.rfind('/') {
+            Some(slash) => match inner[slash + 1..].parse::<usize>() {
+                Ok(a) if a == arity => &inner[..slash],
+                _ => inner,
+            },
+            None => inner,
+        }
+    }
+
+    /// Materialise the heap node whose header sits at `addr` — ONE level: the
+    /// argument cells are read straight out of `heap[addr+1..]` and are NOT
+    /// dereferenced. `None` when that slot does not hold a structure header.
+    fn heap_node_shallow(&self, addr: usize) -> Option<Value> {
+        let full = match self.heap.get(addr) {
+            Some(Value::Str(f, _)) => f.clone(),
+            _ => return None,
+        };
+        let inner = if full.starts_with("str(") && full.ends_with(')') {
+            &full[4..full.len() - 1]
+        } else {
+            full.as_str()
+        };
+        let slash = inner.rfind('/')?;
+        let arity: usize = inner[slash + 1..].parse().ok()?;
+        let functor = inner[..slash].to_string();
+        let args = self.heap_subargs(addr + 1, arity);
+        Some(Value::strv(functor, args))
+    }
+
+    /// Resolve a cell ONE level and hand it back owned: follow the
+    /// variable-binding chain, materialise a heap `Ref` into the node it
+    /// names, and normalise a `"f/N"` functor key — but never walk into
+    /// sub-terms.
+    ///
+    /// This is the shape-first dispatch idea: learn what a cell *is* before
+    /// paying for anything underneath it. It is what `unify` uses in place of
+    /// `deref_heap`, which walks (and used to rebuild) the whole term. Because
+    /// a compound's arguments and a list's elements are one shared `Args`
+    /// spine, the value returned here is O(1) to build for lists and
+    /// compounds — the deep structure is *shared*, not copied, and any part of
+    /// it that still needs resolving is resolved lazily, by the next reader.
+    pub fn deref_shallow(&self, val: &Value) -> Value {
+        let mut cur: Value = {
+            let c = self.deref_chain(val);
+            match c {
+                Value::Str(full, args) => {
+                    let f = Self::functor_of(full, args.len());
+                    if f.len() == full.len() {
+                        return c.clone();
+                    }
+                    return Value::Str(f.to_string(), args.clone());
+                }
+                Value::Ref(_) => c.clone(),
+                other => return other.clone(),
+            }
+        };
+        // Only a heap Ref can need another round (it may name a cell that is
+        // itself a variable or another Ref); bound to keep a corrupted heap
+        // from looping.
+        for _ in 0..64 {
+            let addr = match cur {
+                Value::Ref(a) => a,
+                _ => break,
+            };
+            match self.heap_node_shallow(addr) {
+                Some(node) => {
+                    cur = node;
+                    let c = self.deref_chain(&cur);
+                    if !matches!(c, Value::Ref(_)) {
+                        // Already a concrete node; `heap_node_shallow`
+                        // normalises the functor itself.
+                        return cur;
+                    }
+                    cur = c.clone();
+                }
+                None => break,
+            }
+        }
+        cur
+    }
+
     /// Unify two values, potentially trailing bindings.
+    ///
+    /// SHAPE-FIRST DISPATCH (see `docs/WAM_RUST_STATUS.md`). This used to open
+    /// with `deref_var(&deref_heap(v1))` on BOTH arguments, so every
+    /// unification paid a full recursive walk (and, before structural sharing,
+    /// a full rebuild) of both terms before the match had learned what they
+    /// were — including on the overwhelmingly common "bind a fresh output
+    /// variable" arm, which then only needed the other side's top cell. That
+    /// made unifying an output variable against the suffix of a long list
+    /// O(len), and doing it once per element Θ(N²).
+    ///
+    /// The order is now: dispatch on the raw cells (following only the
+    /// variable-binding chain, by reference, with no allocation at all); if an
+    /// arm needs a value, materialise exactly ONE level of it; and do
+    /// element-wise work only when both sides really are compound. The spine
+    /// of a list or compound is shared, never walked, unless the other side is
+    /// a compound that forces element-wise comparison.
+    ///
+    /// The spine walk is a loop rather than tail recursion, so unifying two
+    /// N-cell cons chains costs O(N) time and O(1) Rust stack.
     pub fn unify(&mut self, v1: &Value, v2: &Value) -> bool {
-        let dv1 = self.deref_var(&self.deref_heap(v1));
-        let dv2 = self.deref_var(&self.deref_heap(v2));
-        match (&dv1, &dv2) {
-            (Value::Unbound(n1), Value::Unbound(n2)) if n1 == n2 => true,
-            (Value::Unbound(n1), _) => {
-                self.bind_var(n1, dv2.clone());
-                true
+        // Phase 1 -- allocation-free arms on the raw cells. The borrows into
+        // `self.bindings` are confined to this block: an arm that has to
+        // mutate (bind a variable, or recurse) cannot hold them, which is the
+        // one structural constraint the borrow checker imposes here.
+        {
+            let s1 = self.deref_chain(v1);
+            let s2 = self.deref_chain(v2);
+            match (s1, s2) {
+                (Value::Atom(a1), Value::Atom(a2)) => return a1 == a2,
+                (Value::Integer(i1), Value::Integer(i2)) => return i1 == i2,
+                (Value::Float(f1), Value::Float(f2)) => return (f1 - f2).abs() < f64::EPSILON,
+                (Value::Bool(b1), Value::Bool(b2)) => return b1 == b2,
+                (Value::Unbound(n1), Value::Unbound(n2)) if n1 == n2 => return true,
+                _ => {}
             }
-            (_, Value::Unbound(n2)) => {
-                self.bind_var(n2, dv1.clone());
-                true
-            }
-            (Value::Atom(a1), Value::Atom(a2)) => a1 == a2,
-            (Value::Integer(i1), Value::Integer(i2)) => i1 == i2,
-            (Value::Float(f1), Value::Float(f2)) => (f1 - f2).abs() < f64::EPSILON,
-            (Value::Bool(b1), Value::Bool(b2)) => b1 == b2,
-            // Empty-list aliasing: the [] atom and the empty Value::List.
-            (Value::List(l), Value::Atom(s)) | (Value::Atom(s), Value::List(l))
-                if l.is_empty() && s == "[]" => true,
-            // Cons-cell aliasing: one logical list is built from both put_list
-            // (Value::List) and put_structure "[|]/2" (Value::Str) cells, so a
-            // List and a cons-functor Str of arity 2 are the same cell.
-            (Value::List(l), Value::Str(f, a)) | (Value::Str(f, a), Value::List(l))
-                if self.is_cons_functor(f) && a.len() == 2 && !l.is_empty() => {
-                let h = l[0].clone();
-                let t = Value::list(l[1..].to_vec());
-                let (a0, a1v) = (a[0].clone(), a[1].clone());
-                self.unify(&h, &a0) && self.unify(&t, &a1v)
-            }
-            (Value::Str(f1, a1), Value::Str(f2, a2)) => {
-                // Alias cons spellings ("[|]/2" vs "./2") against each other.
-                let same = f1 == f2 || (self.is_cons_functor(f1) && self.is_cons_functor(f2));
-                if !same || a1.len() != a2.len() { return false; }
-                let pairs: Vec<(Value, Value)> = a1.iter().cloned().zip(a2.iter().cloned()).collect();
-                for (arg1, arg2) in pairs {
-                    if !self.unify(&arg1, &arg2) { return false; }
+        }
+        // Phase 2 -- one level materialised per side, then a spine loop.
+        let mut d1 = self.deref_shallow(v1);
+        let mut d2 = self.deref_shallow(v2);
+        loop {
+            match (d1, d2) {
+                (Value::Unbound(n1), Value::Unbound(n2)) if n1 == n2 => return true,
+                (Value::Unbound(n1), other) => {
+                    self.bind_var(&n1, other);
+                    return true;
                 }
-                true
-            }
-            (Value::List(l1), Value::List(l2)) => {
-                if l1.len() != l2.len() { return false; }
-                let pairs: Vec<(Value, Value)> = l1.iter().cloned().zip(l2.iter().cloned()).collect();
-                for (i1, i2) in pairs {
-                    if !self.unify(&i1, &i2) { return false; }
+                (other, Value::Unbound(n2)) => {
+                    self.bind_var(&n2, other);
+                    return true;
                 }
-                true
+                (Value::Atom(a1), Value::Atom(a2)) => return a1 == a2,
+                (Value::Integer(i1), Value::Integer(i2)) => return i1 == i2,
+                (Value::Float(f1), Value::Float(f2)) => return (f1 - f2).abs() < f64::EPSILON,
+                (Value::Bool(b1), Value::Bool(b2)) => return b1 == b2,
+                // Empty-list aliasing: the [] atom and the empty Value::List.
+                (Value::List(l), Value::Atom(s)) | (Value::Atom(s), Value::List(l))
+                    if l.is_empty() && s == "[]" => return true,
+                // Cons-cell aliasing: one logical list is built from both
+                // put_list (Value::List) and put_structure "[|]/2"
+                // (Value::Str) cells, so a List and a cons-functor Str of
+                // arity 2 are the same cell. The tail is the SAME spine one
+                // element along (O(1)), never a copy of the remainder.
+                (Value::List(l), Value::Str(f, a)) | (Value::Str(f, a), Value::List(l))
+                    if self.is_cons_functor(&f) && a.len() == 2 && !l.is_empty() => {
+                    let h = l[0].clone();
+                    let a0 = a[0].clone();
+                    if !self.unify(&h, &a0) { return false; }
+                    let t = Value::List(l.tail());
+                    let a1v = a[1].clone();
+                    d1 = self.deref_shallow(&t);
+                    d2 = self.deref_shallow(&a1v);
+                    continue;
+                }
+                (Value::Str(f1, a1), Value::Str(f2, a2)) => {
+                    // Alias cons spellings ("[|]/2" vs "./2") against each other.
+                    let same = f1 == f2
+                        || (self.is_cons_functor(&f1) && self.is_cons_functor(&f2));
+                    if !same || a1.len() != a2.len() { return false; }
+                    if a1.is_empty() { return true; }
+                    let last = a1.len() - 1;
+                    for i in 0..last {
+                        let (x, y) = (a1[i].clone(), a2[i].clone());
+                        if !self.unify(&x, &y) { return false; }
+                    }
+                    // Continue on the LAST argument in this loop: for a cons
+                    // cell that is the tail, so a long chain costs no stack.
+                    let (x, y) = (a1[last].clone(), a2[last].clone());
+                    d1 = self.deref_shallow(&x);
+                    d2 = self.deref_shallow(&y);
+                    continue;
+                }
+                (Value::List(l1), Value::List(l2)) => {
+                    if l1.len() != l2.len() { return false; }
+                    for i in 0..l1.len() {
+                        let (x, y) = (l1[i].clone(), l2[i].clone());
+                        if !self.unify(&x, &y) { return false; }
+                    }
+                    return true;
+                }
+                (x, y) => return x == y,
             }
-            _ => dv1 == dv2,
         }
     }
 
@@ -2676,6 +2943,69 @@ impl WamState {
         }
     }
 
+    /// Fully dereference a CONS CHAIN — `[H|T]` where `T` is itself another
+    /// cons cell — into one `Value::List` (or, when the chain ends in
+    /// something other than `[]`/a list, into a partial list), walking the
+    /// spine ITERATIVELY.
+    ///
+    /// The recursive form this replaces rebuilt the chain from the inside out
+    /// with `Args::cons`, which copies the visible window: prepending one
+    /// element at a time to a list that is already k long is O(k), so an
+    /// N-cell chain cost Θ(N²) — a second quadratic on top of the one in
+    /// `unify`, and N frames of Rust stack (the recorded "stack overflow above
+    /// ~8,000 list cells"). Collecting the heads in one pass and building the
+    /// spine once is O(N) time and O(1) stack.
+    fn deref_cons_chain(&self, head0: &Value, tail0: &Value) -> Value {
+        let mut heads: Vec<Value> = Vec::new();
+        heads.push(self.deref_heap(&self.deref_var(head0)));
+        let mut tail: Value = tail0.clone();
+        loop {
+            let node = self.deref_shallow(&tail);
+            match node {
+                Value::Str(ref f, ref a)
+                    if a.len() == 2 && self.is_cons_functor(f) => {
+                    heads.push(self.deref_heap(&self.deref_var(&a[0])));
+                    tail = a[1].clone();
+                }
+                Value::Atom(ref s) if s == "[]" => {
+                    return Value::list(heads);
+                }
+                Value::List(_) => {
+                    // The rest is already a materialised list: deref its
+                    // elements (cheap when nothing under them moved) and
+                    // append once.
+                    let rest = self.deref_heap(&node);
+                    match rest {
+                        Value::List(items) => {
+                            heads.reserve(items.len());
+                            heads.extend(items.iter().cloned());
+                            return Value::list(heads);
+                        }
+                        other => return Self::rebuild_partial(heads, other),
+                    }
+                }
+                other => {
+                    // Partial list: the tail is still an unbound variable (or
+                    // some other cell a later put_structure will fill). Keep
+                    // it as a cons cell so the tail variable still derefs to
+                    // the rest of the list.
+                    let end = self.deref_heap(&other);
+                    return Self::rebuild_partial(heads, end);
+                }
+            }
+        }
+    }
+
+    /// Rebuild `heads ++ end` as nested `[|]/2` cons cells (used when a chain
+    /// does not end in `[]` or a list). O(N), no window copying.
+    fn rebuild_partial(heads: Vec<Value>, end: Value) -> Value {
+        let mut acc = end;
+        for h in heads.into_iter().rev() {
+            acc = Value::strv("[|]/2".to_string(), vec![h, acc]);
+        }
+        acc
+    }
+
     /// Dereference a heap reference or unbound variable back to its concrete value.
     ///
     /// STRUCTURAL SHARING: this walks the whole term, so it used to REBUILD it
@@ -2693,66 +3023,69 @@ impl WamState {
                 val.clone()
             }
             Value::Str(full_str, args) => {
-                let mut changed = false;
-                let mut derefed: Vec<Value> = Vec::with_capacity(args.len());
-                for a in args.iter() {
+                let functor = Self::functor_of(full_str, args.len());
+                // A cons cell is walked ITERATIVELY (see deref_cons_chain):
+                // rebuilding it recursively used to prepend one element at a
+                // time onto the tail already built, and `Args::cons` copies
+                // the visible window — so an N-cell chain cost Θ(N²) time and
+                // N frames of Rust stack.
+                if args.len() == 2 && self.is_cons_functor(functor) {
+                    return self.deref_cons_chain(&args[0], &args[1]);
+                }
+                // Deferred allocation: the `derefed` vector is only built once
+                // a sub-term actually dereferences to a different cell, so an
+                // already-resolved N-argument term costs a walk and nothing
+                // else.
+                let mut derefed: Option<Vec<Value>> = None;
+                for (idx, a) in args.iter().enumerate() {
                     let d = self.deref_heap(&self.deref_var(a));
-                    if !changed && !Self::same_cell(&d, a) {
-                        changed = true;
-                    }
-                    derefed.push(d);
-                }
-                let inner = if full_str.starts_with("str(") && full_str.ends_with(')') {
-                    &full_str[4..full_str.len() - 1]
-                } else {
-                    full_str
-                };
-                let functor = if let Some(slash) = inner.rfind('/') {
-                    match inner[slash + 1..].parse::<usize>() {
-                        Ok(arity) if arity == derefed.len() => &inner[..slash],
-                        _ => inner,
-                    }
-                } else {
-                    inner
-                };
-                if self.is_cons_functor(functor) && derefed.len() == 2 {
-                    let head = derefed[0].clone();
-                    let tail = derefed[1].clone();
-                    match tail {
-                        Value::List(items) => {
-                            return Value::List(items.cons(head));
+                    match derefed {
+                        Some(ref mut acc) => acc.push(d),
+                        None => {
+                            if !Self::same_cell(&d, a) {
+                                let mut acc: Vec<Value> = Vec::with_capacity(args.len());
+                                acc.extend(args[..idx].iter().cloned());
+                                acc.push(d);
+                                derefed = Some(acc);
+                            }
                         }
-                        Value::Atom(ref s) if s == "[]" => {
-                            return Value::list(vec![head]);
+                    }
+                }
+                match derefed {
+                    None => {
+                        // Nothing under this node moved: keep the existing
+                        // spine. (The functor may still be normalised from
+                        // "f/N" to "f", which costs one small string, never
+                        // the arguments.)
+                        if functor == full_str.as_str() {
+                            val.clone()
+                        } else {
+                            Value::Str(functor.to_string(), args.clone())
                         }
-                        _ => return Value::strv("[|]/2".to_string(), vec![head, tail]),
                     }
+                    Some(acc) => Value::strv(functor.to_string(), acc),
                 }
-                if !changed {
-                    // Nothing under this node moved: keep the existing spine.
-                    // (The functor may still be normalised from "f/N" to "f",
-                    // which costs one small string, never the arguments.)
-                    if functor == full_str.as_str() {
-                        return val.clone();
-                    }
-                    return Value::Str(functor.to_string(), args.clone());
-                }
-                Value::strv(functor.to_string(), derefed)
             }
             Value::List(items) => {
-                let mut changed = false;
-                let mut derefed: Vec<Value> = Vec::with_capacity(items.len());
-                for i in items.iter() {
+                let mut derefed: Option<Vec<Value>> = None;
+                for (idx, i) in items.iter().enumerate() {
                     let d = self.deref_heap(&self.deref_var(i));
-                    if !changed && !Self::same_cell(&d, i) {
-                        changed = true;
+                    match derefed {
+                        Some(ref mut acc) => acc.push(d),
+                        None => {
+                            if !Self::same_cell(&d, i) {
+                                let mut acc: Vec<Value> = Vec::with_capacity(items.len());
+                                acc.extend(items[..idx].iter().cloned());
+                                acc.push(d);
+                                derefed = Some(acc);
+                            }
+                        }
                     }
-                    derefed.push(d);
                 }
-                if !changed {
-                    return val.clone();
+                match derefed {
+                    None => val.clone(),
+                    Some(acc) => Value::list(acc),
                 }
-                Value::list(derefed)
             }
             Value::Ref(addr) => {
                 if let Some(Value::Str(full_str, _)) = self.heap.get(*addr) {
@@ -2766,25 +3099,13 @@ impl WamState {
                         let functor = &inner[..slash];
                         if let Ok(arity) = inner[slash + 1..].parse::<usize>() {
                             let args = self.heap_subargs(addr + 1, arity);
+                            if (functor == "." || functor == "[|]") && args.len() == 2 {
+                                // Reconstruct as a list, iteratively.
+                                return self.deref_cons_chain(&args[0], &args[1]);
+                            }
                             let derefed: Vec<Value> = args.iter()
                                 .map(|a| self.deref_heap(a))
                                 .collect();
-                            if functor == "." || functor == "[|]" {
-                                // Reconstruct as list
-                                if derefed.len() == 2 {
-                                    let head = derefed[0].clone();
-                                    let tail = derefed[1].clone();
-                                    match tail {
-                                        Value::List(items) => {
-                                            return Value::List(items.cons(head));
-                                        }
-                                        Value::Atom(ref s) if s == "[]" => {
-                                            return Value::list(vec![head]);
-                                        }
-                                        _ => return Value::strv("[|]/2".to_string(), vec![head, tail]),
-                                    }
-                                }
-                            }
                             return Value::strv(functor.to_string(), derefed);
                         }
                     }

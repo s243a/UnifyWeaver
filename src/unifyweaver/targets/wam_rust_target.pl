@@ -43,7 +43,8 @@
 :- use_module('../targets/wam_rust_lowered_emitter', [
     wam_rust_lowerable/3,
     lower_predicate_to_rust/4,
-    rust_lowered_func_name/2
+    rust_lowered_func_name/2,
+    rust_lowered_dispatch_profile/4
 ]).
 :- use_module('../targets/wam_runtime_parser_capability', [
     parser_dependent_body_goal/2,
@@ -721,7 +722,16 @@ wam_instruction_arm('Instruction::Deallocate', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
-    Body = '                if let Some(&target_pc) = self.labels.get(p) {
+    Body = '                if let Some(__lo) = crate::lowered_call(self, p, self.pc + 1) {
+                    // D55 sound intermediate: this name is a LOWERED predicate
+                    // whose first solution is its only solution, so it runs as
+                    // a direct Rust function instead of being interpreted.
+                    // `None` (fall through) means "not eligible, or declined
+                    // at runtime" -- lowered_call has already rolled the
+                    // machine back in that case, so the interpreter path below
+                    // sees exactly the state it would have seen.
+                    __lo
+                } else if let Some(&target_pc) = self.labels.get(p) {
                     self.cp = self.pc + 1;
                     self.pc = target_pc;
                     true
@@ -812,7 +822,11 @@ wam_instruction_arm('Instruction::CallIndexedAtomFact2(pred)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::Execute(p)', Body) :-
-    Body = '                if let Some(&target_pc) = self.labels.get(p) {
+    Body = '                if let Some(__lo) = crate::lowered_call(self, p, self.cp) {
+                    // D55 sound intermediate, tail-call half: the continuation
+                    // is the saved cp, i.e. Proceed''s return path.
+                    __lo
+                } else if let Some(&target_pc) = self.labels.get(p) {
                     self.pc = target_pc;
                     true
                 } else if p == "retract/1" {
@@ -8959,7 +8973,10 @@ pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
     % T9 call-site dispatch: a crate-level fact_table_call referenced by the
     % Call/Execute handlers (always emitted; empty match when no fact tables).
     rust_fact_table_dispatch_fn(Classified, DispatchCode),
-    format(string(Code), "~w\n\n~w", [Body1, DispatchCode]).
+    % D55 sound intermediate: a crate-level lowered_call referenced by the same
+    % two handlers (always emitted; empty match when nothing is eligible).
+    rust_lowered_dispatch_fn(Classified, Options, LoweredDispatchCode),
+    format(string(Code), "~w\n\n~w\n\n~w", [Body1, DispatchCode, LoweredDispatchCode]).
 
 %% rust_fact_table_dispatch_fn(+Classified, -Code)
 %  Emit `fact_table_call(vm, pred, cont_pc) -> Option<bool>`: a match over the
@@ -8980,6 +8997,220 @@ pub fn fact_table_call(vm: &mut WamState, pred: &str, cont_pc: usize) -> Option<
 ~w        _ => None,
     }
 }', [ArmsStr]).
+
+% =====================================================================
+% D55 sound intermediate: reaching the LOWERED tier from the interpreter
+% =====================================================================
+%
+% `emit_mode(functions)` lowers most predicates to direct Rust functions, but
+% until now nothing routed an interpreted `call`/`execute` to one: the lowered
+% functions kept their WAM label and were dead code. The hook below is shaped
+% exactly like T9's `fact_table_call/3` — a crate-level name-keyed match
+% consulted by both the Call and Execute arms BEFORE label lookup.
+%
+% Dispatching every lowered predicate would be UNSOUND: the lowered tier is
+% first-solution-only (a lowered function returns `bool` and leaves no choice
+% point for the caller to retry), while the interpreter backtracks. So only the
+% classes whose first solution is their ONLY solution are offered, and even
+% those are checked at runtime (see `WamState::lowered_dispatch`, which rolls
+% the machine back and declines when the call leaves a choice point behind).
+%
+% Eligibility is a greatest fixpoint over the call graph — start with every
+% `deterministic` / `clause_chain` predicate and drop any whose body reaches
+% something not itself eligible, until nothing more drops. Self- and mutual
+% recursion therefore stay eligible, which is the same optimistic-then-swept
+% shape mprolog's whole-predicate classifier uses for the identical problem
+% (`docs/proposals/MPROLOG_MINING_NOTES.md`, finding F2).
+%
+% Disable with `lowered_dispatch(false)`; it is otherwise on whenever
+% `emit_mode(functions)` is.
+
+%% rust_lowered_dispatch_fn(+Classified, +Options, -Code)
+rust_lowered_dispatch_fn(Classified, Options, Code) :-
+    (   \+ option(emit_mode(functions), Options)
+    ->  Eligible = []
+    ;   option(lowered_dispatch(false), Options)
+    ->  Eligible = []
+    ;   rust_lowered_dispatch_candidates(Classified, Cands),
+        rust_lowered_dispatch_fixpoint(Cands, Eligible)
+    ),
+    maplist(rust_lowered_dispatch_arm, Eligible, Arms),
+    atomic_list_concat(Arms, '\n', ArmsStr),
+    length(Eligible, NEligible),
+    format(string(Code),
+'/// D55 call-site dispatch for the LOWERED tier: route a WAM call/execute of a
+/// lowered predicate to its generated Rust function. `Some(ok)` when the
+/// predicate ran as a function, `None` when the interpreter must handle it
+/// (not eligible, first argument outside the dispatch guard, or the call
+/// turned out not to be deterministic and was rolled back).
+///
+/// ~w predicate(s) offered here. Only classes whose first solution is their
+/// only solution are, and `WamState::lowered_dispatch` verifies that claim at
+/// runtime rather than trusting it.
+#[allow(unused_variables)]
+pub fn lowered_call(vm: &mut WamState, pred: &str, cont_pc: usize) -> Option<bool> {
+    match pred {
+~w
+        _ => None,
+    }
+}', [NEligible, ArmsStr]).
+
+%% rust_lowered_dispatch_candidates(+Classified, -Cands)
+%  Every lowered predicate whose class carries a dispatch profile, paired with
+%  it. `lo_cand(Key, FuncName, Reason, Guards, Profile)`.
+rust_lowered_dispatch_candidates(Classified, Cands) :-
+    findall(lo_cand(Key, FName, Reason, Guards, Profile),
+            ( member(classified(_, P, A, lowered, lowered_code(_, WamCode, Reason)),
+                     Classified),
+              rust_lowered_dispatch_profile(P/A, WamCode, Reason, Profile),
+              Profile = dispatch_profile(_, _, _, Guards),
+              format(atom(Key), '~w/~w', [P, A]),
+              rust_lowered_func_name(P/A, FName) ),
+            Cands).
+
+%% rust_lowered_dispatch_fixpoint(+Cands, -Eligible)
+%
+%  A LOWERED function reaches a user callee by running it INTERPRETED
+%  (`emit_one(call)` sets `pc` and calls `run()`), NOT by calling the callee's
+%  own lowered function. That matters for soundness: an interpreted MULTI-clause
+%  callee leaves a live choice point behind, and a later failure inside the
+%  same lowered function backtracks straight into it — escaping the function's
+%  own scope. `lowered_dispatch`'s after-the-fact "did it leave a choice point"
+%  guard cannot undo damage that already happened mid-run.
+%
+%  So a predicate may be dispatched only when every user predicate it calls is
+%  CP-CLEAN when interpreted: single-clause (a `deterministic` or `ite_lowered`
+%  class — an `ite` prunes its transient choice point with a cut before
+%  returning), transitively. `clause_chain` / `multi_clause_n` are multi-clause
+%  and are NOT cp-clean, so nothing that calls one is dispatched — but a LEAF
+%  `clause_chain` (a fact table like `kind/2`) has no user callees and stays
+%  dispatchable itself; an interpreted caller then reaches it through
+%  `lowered_call`, which routes to its clean cascade.
+%
+%  Both properties are greatest fixpoints over the candidate call graph
+%  (start optimistic, drop what fails, repeat) — the same shape mprolog's
+%  whole-predicate determinism classifier uses (`MPROLOG_MINING_NOTES.md`, F2).
+rust_lowered_dispatch_fixpoint(Cands, Eligible) :-
+    rust_cp_clean_fixpoint(Cands, CleanKeys),
+    include(rust_lowered_dispatch_ok(CleanKeys), Cands, Eligible).
+
+%% rust_cp_clean_fixpoint(+Cands, -CleanKeys)
+%  The keys of candidates that are single-clause (deterministic/ite_lowered)
+%  AND transitively call only cp-clean predicates with pure builtins and no
+%  foreign calls.
+rust_cp_clean_fixpoint(Cands, CleanKeys) :-
+    include(rust_cp_clean_shaped, Cands, Clean0),
+    rust_cp_clean_iterate(Clean0, Cands, Clean),
+    findall(K, member(lo_cand(K, _, _, _, _), Clean), CleanKeys).
+
+rust_cp_clean_shaped(lo_cand(_, _, Reason, _, _)) :-
+    memberchk(Reason, [deterministic, ite_lowered]).
+
+rust_cp_clean_iterate(Clean, AllCands, Result) :-
+    findall(K, member(lo_cand(K, _, _, _, _), Clean), Keys),
+    include(rust_lowered_dispatch_ok(Keys), Clean, Kept),
+    (   Kept == Clean
+    ->  Result = Clean
+    ;   rust_cp_clean_iterate(Kept, AllCands, Result)
+    ).
+
+rust_lowered_dispatch_ok(CleanKeys,
+        lo_cand(_, _, _, _, dispatch_profile(Calls, Builtins, Foreigns, _))) :-
+    Foreigns == [],
+    forall(member(C, Calls), rust_lowered_dispatch_key_member(C, CleanKeys)),
+    forall(member(B, Builtins), rust_lowered_dispatch_pure_builtin(B)).
+
+rust_lowered_dispatch_key_member(C, Keys) :-
+    ( atom(C) -> K = C ; atom_string(K, C) ),
+    memberchk(K, Keys).
+
+%% rust_lowered_dispatch_pure_builtin(+Op)
+%  The builtins a dispatched predicate may use. `builtin_call` runs through
+%  `execute_builtin` in the lowered function EXACTLY as it does in the
+%  interpreter, so a builtin can never make the two paths disagree by itself.
+%  The list is still a whitelist rather than a blacklist for one reason: when
+%  `lowered_dispatch` declines and rolls back, anything the attempt already did
+%  to the outside world would happen twice. Everything here is side-effect
+%  free, so a rolled-back attempt is invisible.
+rust_lowered_dispatch_pure_builtin(Op0) :-
+    ( atom(Op0) -> Op = Op0 ; atom_string(Op, Op0) ),
+    rust_dispatch_pure_builtin(Op).
+
+rust_dispatch_pure_builtin('!/0').
+rust_dispatch_pure_builtin('is/2').
+rust_dispatch_pure_builtin('=/2').
+rust_dispatch_pure_builtin('\\=/2').
+rust_dispatch_pure_builtin('=:=/2').
+rust_dispatch_pure_builtin('=\\=/2').
+rust_dispatch_pure_builtin('</2').
+rust_dispatch_pure_builtin('>/2').
+rust_dispatch_pure_builtin('=</2').
+rust_dispatch_pure_builtin('>=/2').
+rust_dispatch_pure_builtin('==/2').
+rust_dispatch_pure_builtin('\\==/2').
+rust_dispatch_pure_builtin('@</2').
+rust_dispatch_pure_builtin('@>/2').
+rust_dispatch_pure_builtin('@=</2').
+rust_dispatch_pure_builtin('@>=/2').
+rust_dispatch_pure_builtin('compare/3').
+rust_dispatch_pure_builtin('var/1').
+rust_dispatch_pure_builtin('nonvar/1').
+rust_dispatch_pure_builtin('atom/1').
+rust_dispatch_pure_builtin('atomic/1').
+rust_dispatch_pure_builtin('number/1').
+rust_dispatch_pure_builtin('integer/1').
+rust_dispatch_pure_builtin('float/1').
+rust_dispatch_pure_builtin('compound/1').
+rust_dispatch_pure_builtin('callable/1').
+rust_dispatch_pure_builtin('is_list/1').
+rust_dispatch_pure_builtin('ground/1').
+rust_dispatch_pure_builtin('functor/3').
+rust_dispatch_pure_builtin('arg/3').
+rust_dispatch_pure_builtin('=../2').
+rust_dispatch_pure_builtin('copy_term/2').
+rust_dispatch_pure_builtin('succ/2').
+rust_dispatch_pure_builtin('plus/3').
+rust_dispatch_pure_builtin('atom_length/2').
+rust_dispatch_pure_builtin('atom_codes/2').
+rust_dispatch_pure_builtin('atom_chars/2').
+rust_dispatch_pure_builtin('atom_number/2').
+rust_dispatch_pure_builtin('char_code/2').
+rust_dispatch_pure_builtin('number_codes/2').
+rust_dispatch_pure_builtin('number_chars/2').
+rust_dispatch_pure_builtin('upcase_atom/2').
+rust_dispatch_pure_builtin('downcase_atom/2').
+rust_dispatch_pure_builtin('length/2').
+rust_dispatch_pure_builtin('msort/2').
+rust_dispatch_pure_builtin('sort/2').
+rust_dispatch_pure_builtin('keysort/2').
+rust_dispatch_pure_builtin('reverse/2').
+rust_dispatch_pure_builtin('sum_list/2').
+rust_dispatch_pure_builtin('sumlist/2').
+rust_dispatch_pure_builtin('max_list/2').
+rust_dispatch_pure_builtin('min_list/2').
+rust_dispatch_pure_builtin('list_to_set/2').
+rust_dispatch_pure_builtin('numlist/3').
+
+%% rust_lowered_dispatch_arm(+Cand, -Arm)
+%  `deterministic` dispatches unconditionally; `clause_chain` only when the
+%  first argument is bound to one of the cascade's own discriminators — with
+%  anything else the cascade returns `false` meaning "declined", which an
+%  interpreted caller must never read as "failed".
+rust_lowered_dispatch_arm(lo_cand(Key, FName, _, [], _), Arm) :- !,
+    format(string(Arm),
+'        "~w" => vm.lowered_dispatch(~w, cont_pc),', [Key, FName]).
+rust_lowered_dispatch_arm(lo_cand(Key, FName, _, Guards, _), Arm) :-
+    maplist(rust_lowered_guard_literal, Guards, Lits),
+    atomic_list_concat(Lits, ' | ', LitStr),
+    format(string(Arm),
+'        "~w" => {
+            let __hit = matches!(vm.match_reg_atom_str("A1"), ~w);
+            if __hit { vm.lowered_dispatch(~w, cont_pc) } else { None }
+        }', [Key, LitStr, FName]).
+
+rust_lowered_guard_literal(Atom, Lit) :-
+    escape_rust_string(Atom, Esc),
+    format(atom(Lit), 'Some("~w")', [Esc]).
 
 rust_fact_dispatch_arm(Pred/Arity, Arm) :-
     rust_safe_function_name(Pred/Arity, FName),
@@ -9131,7 +9362,7 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         ->  lower_predicate_to_rust(Pred/Arity, WamCode, Options, RustLines),
             atomic_list_concat(RustLines, '\n', PredCode),
             format(user_error, '  ~w/~w: lowered (~w)~n', [Pred, Arity, Reason]),
-            Entry = classified(Module, Pred, Arity, lowered, lowered_code(PredCode, WamCode))
+            Entry = classified(Module, Pred, Arity, lowered, lowered_code(PredCode, WamCode, Reason))
         ;   % Standard WAM fallback: will use shared table
             format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
             Entry = classified(Module, Pred, Arity, wam, WamCode)
@@ -9160,7 +9391,7 @@ collect_wam_entries([classified(_, Pred, Arity, wam, WamCode)|Rest], PC, Rewrite
     collect_wam_entries(Rest, NextPC, Rewrites, RestEntries, RestInstrs, RestLabels),
     append(InstrParts, RestInstrs, AllInstrs),
     append(LabelParts, RestLabels, AllLabels).
-collect_wam_entries([classified(_, Pred, Arity, lowered, lowered_code(_, WamCode))|Rest], PC, Rewrites,
+collect_wam_entries([classified(_, Pred, Arity, lowered, lowered_code(_, WamCode, _))|Rest], PC, Rewrites,
                     [wam_entry(Pred, Arity, PC)|RestEntries],
                     AllInstrs, AllLabels) :-
     atom_string(WamCode, WamStr),
@@ -9209,7 +9440,7 @@ generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Re
                          WamEntries, Options, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: wam\n~w", [PredCode]),
     generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
-generate_predicate_codes([classified(_, _Pred, _Arity, lowered, lowered_code(PredCode, _))|Rest],
+generate_predicate_codes([classified(_, _Pred, _Arity, lowered, lowered_code(PredCode, _, _))|Rest],
                          WamEntries, Options, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: lowered\n~w", [PredCode]),
     generate_predicate_codes(Rest, WamEntries, Options, RestCodes).

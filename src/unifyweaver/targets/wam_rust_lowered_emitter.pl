@@ -18,7 +18,8 @@
     wam_rust_lowerable/3,
     lower_predicate_to_rust/4,
     is_deterministic_pred_rust/1,
-    rust_lowered_func_name/2
+    rust_lowered_func_name/2,
+    rust_lowered_dispatch_profile/4
 ]).
 
 :- use_module(library(lists)).
@@ -195,6 +196,74 @@ clause1_instrs([], []).
 clause1_instrs([try_me_else(_)|Rest], C1) :- !,
     take_to_proceed(Rest, C1).
 clause1_instrs(Instrs, Instrs).
+
+%% rust_lowered_dispatch_profile(+PI, +WamCode, +Reason, -Profile) is semidet.
+%
+%  What a caller needs in order to decide whether a LOWERED predicate may be
+%  reached from an interpreted `call`/`execute` (D55's "sound intermediate";
+%  the whole-predicate determinism-class idea is credited in
+%  `docs/proposals/MPROLOG_MINING_NOTES.md`, finding F2).
+%
+%  Only the two classes whose first solution is their only solution are
+%  profiled:
+%
+%    * `deterministic` — a single clause with no choice-point instruction at
+%      all;
+%    * `ite_lowered` — a single clause whose only inner choice point is a
+%      committed `(C -> T ; E)` / `\+` / `once` block, which the structurer has
+%      already folded away;
+%    * `clause_chain` — a first-argument constant cascade in which every
+%      discriminator is a distinct ATOM and every clause remainder is itself
+%      choice-point free. Guards are returned so the call site can check that
+%      the first argument really is one of them before dispatching: with an
+%      unbound or non-matching first argument the cascade returns `false`
+%      meaning "declined", which an interpreted caller must not read as
+%      "failed".
+%
+%  Profile = `dispatch_profile(Calls, Builtins, Foreigns, Guards)`, where
+%  Calls are the `call/2`/`execute/1` targets ("name/arity" strings), Builtins
+%  the `builtin_call/2` operators, Foreigns the `call_foreign/2` targets, and
+%  Guards the atom discriminators (`[]` for `deterministic`). Fails for any
+%  other class.
+rust_lowered_dispatch_profile(_PI, WamCode, Reason,
+                              dispatch_profile(Calls, Builtins, Foreigns, Guards)) :-
+    rust_base_instrs(WamCode, Instrs),
+    (   Reason == deterministic
+    ->  Guards = [],
+        clause1_instrs(Instrs, Body0),
+        rust_flatten_structured(Body0, Body)
+    ;   Reason == ite_lowered
+    ->  Guards = [],
+        rust_structured_clause1(WamCode, Structured),
+        rust_flatten_structured(Structured, Body)
+    ;   Reason == clause_chain
+    ->  rust_clause_chain_lowerable(Instrs, G0),
+        findall(A,
+                ( member(guard(V, _), G0),
+                  wam_classify_constant_token(V, atom(A)) ),
+                Guards),
+        length(G0, NG),
+        length(Guards, NG),          % every discriminator must be an atom
+        findall(Rem, member(guard(_, Rem), G0), Rems),
+        append(Rems, Body1),
+        rust_flatten_structured(Body1, Body)
+    ),
+    findall(P, ( member(I, Body), ( I = call(P, _) ; I = execute(P) ) ), Calls),
+    findall(Op, ( member(I, Body), I = builtin_call(Op, _) ), Builtins),
+    findall(F, ( member(I, Body), I = call_foreign(F, _) ), Foreigns).
+
+%% rust_flatten_structured(+Instrs, -Flat)
+%  Flatten `ite(Cond, Then, Else)` blocks so the profile above sees every goal
+%  the lowered function can actually run, not just the top level.
+rust_flatten_structured([], []).
+rust_flatten_structured([ite(C, T, E)|Rest], Flat) :- !,
+    rust_flatten_structured(C, FC),
+    rust_flatten_structured(T, FT),
+    rust_flatten_structured(E, FE),
+    rust_flatten_structured(Rest, FR),
+    append([FC, FT, FE, FR], Flat).
+rust_flatten_structured([I|Rest], [I|Flat]) :-
+    rust_flatten_structured(Rest, Flat).
 
 take_to_proceed([], []).
 take_to_proceed([proceed|_], [proceed]) :- !.
@@ -553,6 +622,14 @@ emit_one(fail, I) :-
 % allocations the old `get_reg() != Value::Atom("...".to_string())` form paid
 % per comparison. Integer/other constants keep the (allocation-free, Copy)
 % Value comparison.
+% get_constant — the hot head-match. `head_constant` matches the constant
+% against the register and, when the register is an unbound variable, BINDS
+% that variable (not just the register). Binding the variable is what makes a
+% lowered function correct when it is reached as a subroutine (D55 dispatch),
+% where the caller passed its own variable in the argument register; it is
+% harmless — the register is still set — when the function is the top-level
+% entry. It keeps the two allocation-free comparison arms for the common
+% already-bound case (an atom compared in place; a Copy literal compared).
 emit_one(get_constant(CStr, AiStr), I) :-
     rust_reg_name(AiStr, Ai),
     wam_classify_constant_token(CStr, Class),
@@ -564,8 +641,7 @@ emit_one(get_constant(CStr, AiStr), I) :-
         format("~w        Some(true) => {}~n", [I]),
         format("~w        Some(false) => return false,~n", [I]),
         format("~w        None => {~n", [I]),
-        format("~w            vm.trail_binding(\"~w\");~n", [I, Ai]),
-        format("~w            vm.put_reg(\"~w\", Value::Atom(\"~w\".to_string()));~n", [I, Ai, Esc]),
+        format("~w            if !vm.head_constant(\"~w\", Value::Atom(\"~w\".to_string())) { return false; }~n", [I, Ai, Esc]),
         format("~w        }~n", [I]),
         format("~w    }~n", [I]),
         format("~w}~n", [I])
@@ -573,9 +649,8 @@ emit_one(get_constant(CStr, AiStr), I) :-
         format("~w// get_constant ~w, ~w~n", [I, CStr, AiStr]),
         format("~w{~n", [I]),
         format("~w    let _a = vm.get_reg(\"~w\").unwrap_or(Value::Uninit);~n", [I, Ai]),
-        format("~w    if _a.is_unbound() {~n", [I]),
-        format("~w        vm.trail_binding(\"~w\");~n", [I, Ai]),
-        format("~w        vm.put_reg(\"~w\", ~w);~n", [I, Ai, RustVal]),
+        format("~w    if _a.is_unbound() || _a == Value::Uninit {~n", [I]),
+        format("~w        if !vm.head_constant(\"~w\", ~w) { return false; }~n", [I, Ai, RustVal]),
         format("~w    } else if _a != ~w {~n", [I, RustVal]),
         format("~w        return false;~n", [I]),
         format("~w    }~n", [I]),
@@ -587,9 +662,8 @@ emit_one(get_integer(NStr, AiStr), I) :-
     format("~w// get_integer ~w, ~w~n", [I, NStr, AiStr]),
     format("~w{~n", [I]),
     format("~w    let _a = vm.get_reg(\"~w\").unwrap_or(Value::Uninit);~n", [I, Ai]),
-    format("~w    if _a.is_unbound() {~n", [I]),
-    format("~w        vm.trail_binding(\"~w\");~n", [I, Ai]),
-    format("~w        vm.put_reg(\"~w\", Value::Integer(~w));~n", [I, Ai, NStr]),
+    format("~w    if _a.is_unbound() || _a == Value::Uninit {~n", [I]),
+    format("~w        if !vm.head_constant(\"~w\", Value::Integer(~w)) { return false; }~n", [I, Ai, NStr]),
     format("~w    } else if _a != Value::Integer(~w) {~n", [I, NStr]),
     format("~w        return false;~n", [I]),
     format("~w    }~n", [I]),
@@ -603,8 +677,7 @@ emit_one(get_nil(AiStr), I) :-
     format("~w        Some(true) => {}~n", [I]),
     format("~w        Some(false) => return false,~n", [I]),
     format("~w        None => {~n", [I]),
-    format("~w            vm.trail_binding(\"~w\");~n", [I, Ai]),
-    format("~w            vm.put_reg(\"~w\", Value::Atom(\"[]\".to_string()));~n", [I, Ai]),
+    format("~w            if !vm.head_constant(\"~w\", Value::Atom(\"[]\".to_string())) { return false; }~n", [I, Ai]),
     format("~w        }~n", [I]),
     format("~w    }~n", [I]),
     format("~w}~n", [I]).
