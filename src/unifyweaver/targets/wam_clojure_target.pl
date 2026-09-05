@@ -68,7 +68,19 @@ write_wam_clojurescript_files(Predicates, Options, OutDir) :-
     format(atom(CoreClj),    "~w/src/~w/core.clj",    [TmpDir, NsPath]),
     % runtime.cljs
     read_whole_file(RuntimeClj, RuntimeSrc),
-    clojurescript_interop_rewrite(RuntimeSrc, RuntimeCljs),
+    clojurescript_interop_rewrite(RuntimeSrc, RuntimeCljs0),
+    % nbb cannot resolve System/getenv; the template keeps it for the JVM
+    % project and we swap in process.env on the ClojureScript rewrite.
+    wamcljs_replace(RuntimeCljs0,
+                    '(System/getenv k)',
+                    '(aget (.-env js/process) k)',
+                    RuntimeCljs1),
+    % nbb's *err* is clojure.core/*err* (unbound). JVM keeps *err*;
+    % ClojureScript writes the warn to process.stderr via console.error.
+    wamcljs_replace(RuntimeCljs1,
+                    '(binding [*out* *err*]\n      (println (str "[wam_clojure] " kind " of unresolved goal " pred " failed")))',
+                    '(js/console.error (str "[wam_clojure] " kind " of unresolved goal " pred " failed"))',
+                    RuntimeCljs),
     format(atom(RuntimeOut), "~w/runtime.cljs", [OutDir]),
     write_text_file(RuntimeOut, RuntimeCljs),
     % core.cljs (drop CLI -main + its edn require — JVM/CLI only)
@@ -744,13 +756,38 @@ wam_args(ArgText, Args) :-
 normalize_space_string(In, Out) :-
     normalize_space(string(Out), In).
 
+% P3 uw-resolve helpers. Without this rewrite, `call maplist/N` /
+% `call predsort/3` stay as :call and the runtime's unmatched-call
+% arm silently backtracks (A3). functor/3, arg/3, =../2, string_codes/2
+% already emit as builtin_call.
+clojure_wam_direct_builtin("maplist/2").
+clojure_wam_direct_builtin("maplist/3").
+clojure_wam_direct_builtin("maplist/4").
+clojure_wam_direct_builtin('maplist/2').
+clojure_wam_direct_builtin('maplist/3').
+clojure_wam_direct_builtin('maplist/4').
+clojure_wam_direct_builtin("predsort/3").
+clojure_wam_direct_builtin('predsort/3').
+clojure_wam_direct_builtin("functor/3").
+clojure_wam_direct_builtin('functor/3').
+clojure_wam_direct_builtin("arg/3").
+clojure_wam_direct_builtin('arg/3').
+clojure_wam_direct_builtin("=../2").
+clojure_wam_direct_builtin('=../2').
+clojure_wam_direct_builtin("string_codes/2").
+clojure_wam_direct_builtin('string_codes/2').
+
+wam_op_to_clojure_literal("call", [Pred, ArityStr], _, Literal) :-
+    clojure_wam_direct_builtin(Pred),
+    !,
+    wam_op_to_clojure_literal("builtin_call", [Pred, ArityStr], _, Literal).
 wam_op_to_clojure_literal("call", [Pred, ArityStr], _, Literal) :-
     clj_string_literal(Pred, PredLit),
-    number_string(Arity, ArityStr),
+    wam_int_token(ArityStr, Arity),
     format(atom(Literal), '{:op :call :pred ~w :arity ~w}', [PredLit, Arity]).
 wam_op_to_clojure_literal("call_foreign", [Pred, ArityStr], _, Literal) :-
     clj_string_literal(Pred, PredLit),
-    number_string(Arity, ArityStr),
+    wam_int_token(ArityStr, Arity),
     format(atom(Literal), '{:op :call-foreign :pred ~w :arity ~w}', [PredLit, Arity]).
 wam_op_to_clojure_literal("execute", [Pred], _, Literal) :-
     clj_string_literal(Pred, PredLit),
@@ -869,7 +906,7 @@ wam_op_to_clojure_literal("trust", [Label], _, Literal) :-
     format(atom(Literal), '{:op :trust :label ~w}', [LabelLit]).
 wam_op_to_clojure_literal("builtin_call", [Pred, ArityStr], _, Literal) :-
     clj_string_literal(Pred, PredLit),
-    number_string(Arity, ArityStr),
+    wam_int_token(ArityStr, Arity),
     format(atom(Literal), '{:op :builtin-call :pred ~w :arity ~w}', [PredLit, Arity]).
 wam_op_to_clojure_literal("begin_aggregate", [Kind, TemplateReg, BagReg], _, Literal) :-
     clj_string_literal(Kind, KindLit),
@@ -925,9 +962,38 @@ aggregate_witness_vector_literal(WitnessText, WitnessLit) :-
     ),
     emit_clojure_string_vector(Witnesses, WitnessLit).
 
+%% wam_int_token(+Text, -N)
+%  WAM arity/count tokens arrive as strings (`split_string`), atoms
+%  (`format(atom, ...)`), or integers. `number_string/2` rejects atoms
+%  on SWI 9 (`type_error(list, '3')`); last-goal `execute predsort/3`
+%  hits that path.
+wam_int_token(Text, N) :-
+    number(Text),
+    !,
+    N = Text.
+wam_int_token(Text, N) :-
+    (   string(Text)
+    ->  S = Text
+    ;   atom(Text)
+    ->  atom_string(Text, S)
+    ),
+    number_string(N, S).
+
+%% functor_arity_string(+Functor, -Arity)
+%  Arity is the trailing /<digits> segment so names that contain `/`
+%  (`///2`, `//2`, `=../2`) parse. A first-slash split turns `///2`
+%  into four empty tokens and put_structure falls through to :raw,
+%  which backtracks — that is what made index_catalog (build_tree's
+%  `NL is (N-1)//2`) fail on every catalog past index_threshold.
 functor_arity_string(Functor, Arity) :-
-    split_string(Functor, "/", "", [_Name, ArityStr]),
-    number_string(Arity, ArityStr).
+    (   string(Functor)
+    ->  S = Functor
+    ;   atom_string(Functor, S)
+    ),
+    split_string(S, "/", "", Parts),
+    Parts = [_,_|_],
+    last(Parts, ArityStr),
+    wam_int_token(ArityStr, Arity).
 
 predicate_indicator_parts(Module:Pred/Arity, Module, Pred, Arity) :- !.
 predicate_indicator_parts(Pred/Arity, user, Pred, Arity).

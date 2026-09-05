@@ -5,8 +5,8 @@
   (:require 
             [generated.resolver.runtime :as runtime]))
 
-(def compile-time-atom-seeds ["-/2" "[]" "[|]/2" "abi_anchor" "alias/2" "any" "audit/2" "base" "base/2" "base_has/1" "blanket" "blocked/3" "broken/3" "catalog/6" "catalog/9" "classic" "conflicts/3" "coordinated/1" "cost/1" "depends/4" "eq/1" "footprint" "from_base" "from_catalog" "gte/1" "held/1" "hold/3" "layer/2" "layer_shadow" "layered" "lt/1" "modified" "needs/1" "no_candidate" "none" "ok/1" "over_frozen" "package/2" "range/2" "req/2" "safe/1" "suggest/1" "unsafe/1" "v/3" "acc_conflicts/4" "alias_list/2" "alias_lookup/3" "audit_holds/4" "base_holds/2" "base_list/2" "base_name/2" "base_reason/3" "base_ver/3" "blocked_acc/5" "blocked_acc_list/5" "blocked_from/4" "candidates_high_first/4" "canonicalize_name/3" "close_moving/3" "collect_deps/4" "conflicts_in/4" "conflicts_list/2" "dep_breaks/5" "dep_breaks_moving/5" "dependents/3" "dependents_installed/3" "depends_in/5" "depends_list/2" "direct_on/4" "exclude_name/3" "excluded_list/2" "excluded_name/2" "explain_blocked/3" "explain_blocked_list/3" "first_broken/4" "freeze_audit/2" "hold_reason/3" "inst_closure_names/5" "inst_walk/6" "installed_list/2" "installed_or_base/3" "installed_ver/3" "item_ver/3" "keep_installed_or_base/4" "layer_closure/3" "layered_walk_ver/4" "layers_list/2" "lookup_held/3" "map_requests/3" "matching_deps/4" "matching_versions/4" "member_selected/3" "names_of/2" "needed_names/4" "no_acc_conflicts/4" "package_in/3" "packages/2" "pick/7" "pick_repair/4" "removal_orphans/3" "repairs_moving/4" "reqs_ok_moving/2" "request_to_req/3" "requested_list/2" "resolve/3" "resolve_layered/3" "resolve_pending/5" "roots_to_pairs/3" "safe_upgrade/4" "safe_upgrade_reason/5" "satisfies/2" "scan_base_holds/3" "seen_name/2" "selected_ver/3" "tight_base_revdep/2" "tight_constraint/1" "tight_rev_in/3" "topo_all/7" "topo_one/7" "topo_sort_sel/3" "upgrade_set/4" "upgrade_set_result/4" "version_lt/2"])
-(def compile-time-functor-seeds ["-/2" "[|]/2" "alias/2" "audit/2" "base/2" "base_has/1" "blocked/3" "broken/3" "catalog/6" "catalog/9" "conflicts/3" "coordinated/1" "cost/1" "depends/4" "eq/1" "gte/1" "held/1" "hold/3" "layer/2" "lt/1" "needs/1" "ok/1" "package/2" "range/2" "req/2" "safe/1" "suggest/1" "unsafe/1" "v/3"])
+(def compile-time-atom-seeds ["+/2" "-/2" "-1" "///2" "0" "1" "122" "126" "2" "256" "64" "65" "90" "97" "<" "=" ">" "[]" "[|]/2" "abi_anchor" "alias/2" "alt/2" "alternatives/1" "any" "audit/2" "base" "base/2" "base_has/1" "blanket" "blocked/1" "blocked/3" "broken/3" "catalog/10" "catalog/6" "catalog/9" "classic" "cmp_ver" "conflicts/3" "coordinated/1" "cost/1" "deb/3" "dep/2" "depends/4" "eq/1" "footprint" "from_base" "from_catalog" "gt/1" "gte/1" "held/1" "hold/3" "icat/3" "is_v3" "layer/2" "layer_shadow" "layered" "lt/1" "lte/1" "modified" "needs/1" "no_candidate" "none" "ok/1" "over_frozen" "package/2" "providers/1" "provides/3" "provides/4" "range/2" "req/2" "s/2" "safe/1" "suggest/1" "t" "t/4" "unsafe/1" "unsatisfiable" "unversioned" "v/3" "acc_conflicts/4" "alias_list/2" "alias_lookup/3" "already_provided/4" "already_satisfied/4" "alt_reasons/4" "audit_holds/4" "base_holds/2" "base_list/2" "base_name/2" "base_reason/3" "base_ver/3" "blocked_acc/5" "blocked_acc_list/5" "blocked_from/4" "build_tree/4" "candidates_high_first/4" "canonicalize_name/3" "close_moving/3" "cmp_ver/3" "collect_deps/4" "conflicts_in/4" "conflicts_list/2" "dep_breaks/5" "dep_breaks_moving/5" "dep_breaks_need/4" "dep_index/2" "dep_mentions/2" "dep_targets/5" "dep_to_req/3" "dependents/3" "dependents_installed/3" "depends_in/5" "depends_list/2" "direct_on/4" "exclude_name/3" "excluded_list/2" "excluded_name/2" "explain_alt/5" "explain_blocked/3" "explain_blocked_list/3" "filter_satisfies/3" "first_alt_already/4" "first_broken/4" "follow_dep_name/5" "follow_raw_dep/4" "freeze_audit/2" "group_keyed/2" "hold_reason/3" "index_catalog/2" "index_threshold/1" "inst_closure_names/5" "inst_walk/6" "installed_list/2" "installed_or_base/3" "installed_ver/3" "is_public_catalog/1" "is_v3/1" "item_ver/3" "keep_installed_or_base/4" "key_dep_rows/3" "key_pkg_rows/3" "layer_closure/3" "layer_provider/5" "layer_satisfies/3" "layered_walk_ver/4" "layers_list/2" "list_to_tree/2" "long_enough/2" "lookup_held/3" "map_requests/3" "matching_deps/4" "matching_versions/4" "matching_versions_in/4" "member_selected/3" "names_of/2" "needed_names/4" "no_acc_conflicts/4" "order_lt/2" "order_val/2" "package_in/3" "package_in_name/2" "packages/2" "pad_head/2" "pick/7" "pick_need/8" "pick_repair/4" "pkg_index/2" "provide_row/5" "provide_satisfies/2" "provider_candidate/5" "provides_for/5" "provides_list/2" "provides_sat/5" "removal_orphans/3" "repairs_moving/4" "reqs_ok_moving/2" "request_to_req/3" "requested_list/2" "resolve/3" "resolve_alternatives/6" "resolve_layered/3" "resolve_pending/5" "roots_to_pairs/3" "safe_upgrade/4" "safe_upgrade_reason/5" "same_key/4" "satisfies/2" "scan_base_holds/3" "seen_name/2" "segs_lt/2" "segs_lt_1/2" "selected_ver/3" "sort_versions_desc/2" "tight_base_revdep/2" "tight_constraint/1" "tight_rev_in/3" "topo_all/7" "topo_one/7" "topo_sort_sel/3" "tree_lookup/3" "upgrade_set/4" "upgrade_set_result/4" "version_lt/2" "virtual_provider_ceilings/4" "walk_pkg_for_blocked/5" "worth_indexing/2"])
+(def compile-time-functor-seeds ["+/2" "-/2" "///2" "[|]/2" "alias/2" "alt/2" "alternatives/1" "audit/2" "base/2" "base_has/1" "blocked/1" "blocked/3" "broken/3" "catalog/10" "catalog/6" "catalog/9" "conflicts/3" "coordinated/1" "cost/1" "deb/3" "dep/2" "depends/4" "eq/1" "gt/1" "gte/1" "held/1" "hold/3" "icat/3" "layer/2" "lt/1" "lte/1" "needs/1" "ok/1" "package/2" "providers/1" "provides/3" "provides/4" "range/2" "req/2" "s/2" "safe/1" "suggest/1" "t/4" "unsafe/1" "v/3"])
 (def atom-intern-context
   (runtime/build-intern-context compile-time-atom-seeds compile-time-functor-seeds))
 (def atom-intern-table (:atom-intern atom-intern-context))
@@ -38,7 +38,7 @@
   {:op :call :pred "conflicts_in/4" :arity 4}
   {:op :deallocate}
   {:op :proceed}
-  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_alias_list_2_2_body"}] :reg "A1"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_alias_list_2_2_body"} {:functor "catalog/10" :label "L_alias_list_2_3_body"} {:functor "icat/3" :label "L_alias_list_2_4_body"}] :reg "A1"}
   {:op :try-me-else :label "L_alias_list_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -49,7 +49,7 @@
   {:op :unify-variable :var "X6"}
   {:op :get-constant :constant "[]" :reg "A2"}
   {:op :proceed}
-  {:op :trust-me}
+  {:op :retry-me-else :label "L_alias_list_2_3"}
   {:op :get-structure :functor "catalog/9" :reg "A1"}
   {:op :unify-variable :var "X1"}
   {:op :unify-variable :var "X2"}
@@ -62,6 +62,31 @@
   {:op :unify-variable :var "X9"}
   {:op :get-value :var "X9" :reg "A2"}
   {:op :proceed}
+  {:op :retry-me-else :label "L_alias_list_2_4"}
+  {:op :get-structure :functor "catalog/10" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "X7"}
+  {:op :unify-variable :var "X8"}
+  {:op :unify-variable :var "X9"}
+  {:op :unify-variable :var "X10"}
+  {:op :get-value :var "X9" :reg "A2"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-structure :functor "icat/3" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :get-variable :var "X4" :reg "A2"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X4" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "alias_list/2"}
   {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_alias_lookup_3_2_body" :reg "A1"}
   {:op :try-me-else :label "L_alias_lookup_3_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
@@ -94,6 +119,92 @@
   {:op :call :pred "alias_lookup/3" :arity 3}
   {:op :deallocate}
   {:op :proceed}
+  {:op :allocate}
+  {:op :get-variable :var "Y1" :reg "A1"}
+  {:op :get-variable :var "X6" :reg "A2"}
+  {:op :get-variable :var "Y4" :reg "A3"}
+  {:op :get-variable :var "Y5" :reg "A4"}
+  {:op :put-structure :functor "-/2" :reg "A1" :arity 2}
+  {:op :set-variable :var "Y2"}
+  {:op :set-variable :var "Y3"}
+  {:op :put-value :var "X6" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :put-value :var "Y3" :reg "A3"}
+  {:op :put-value :var "Y4" :reg "A4"}
+  {:op :put-value :var "Y5" :reg "A5"}
+  {:op :deallocate}
+  {:op :execute :pred "provides_sat/5"}
+  {:op :try-me-else :label "L_already_satisfied_4_2"}
+  {:op :allocate}
+  {:op :get-variable :var "X3" :reg "A1"}
+  {:op :get-variable :var "X4" :reg "A2"}
+  {:op :get-variable :var "X5" :reg "A3"}
+  {:op :get-variable :var "Y2" :reg "A4"}
+  {:op :put-value :var "X4" :reg "A1"}
+  {:op :put-value :var "X5" :reg "A2"}
+  {:op :put-variable :var "Y1" :reg "A3"}
+  {:op :call :pred "selected_ver/3" :arity 3}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "satisfies/2"}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-variable :var "X1" :reg "A1"}
+  {:op :get-variable :var "X2" :reg "A2"}
+  {:op :get-variable :var "X3" :reg "A3"}
+  {:op :get-variable :var "X4" :reg "A4"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X2" :reg "A2"}
+  {:op :put-value :var "X3" :reg "A3"}
+  {:op :put-value :var "X4" :reg "A4"}
+  {:op :deallocate}
+  {:op :execute :pred "already_provided/4"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_alt_reasons_4_2" :reg "A2"}
+  {:op :try-me-else :label "L_alt_reasons_4_2"}
+  {:op :get-variable :var "X1" :reg "A1"}
+  {:op :get-constant :constant "[]" :reg "A2"}
+  {:op :get-variable :var "X2" :reg "A3"}
+  {:op :get-constant :constant "[]" :reg "A4"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-variable :var "Y4" :reg "A1"}
+  {:op :get-list :reg "A2"}
+  {:op :unify-variable :var "X8"}
+  {:op :get-structure :functor "dep/2" :reg "X8"}
+  {:op :unify-variable :var "Y1"}
+  {:op :unify-variable :var "Y2"}
+  {:op :unify-variable :var "Y5"}
+  {:op :get-variable :var "Y6" :reg "A3"}
+  {:op :get-list :reg "A4"}
+  {:op :unify-variable :var "X9"}
+  {:op :get-structure :functor "alt/2" :reg "X9"}
+  {:op :unify-value :var "Y1"}
+  {:op :unify-variable :var "Y3"}
+  {:op :unify-variable :var "Y7"}
+  {:op :try-me-else :label "L_ite_else_3"}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :put-value :var "Y2" :reg "A3"}
+  {:op :put-value :var "Y6" :reg "A4"}
+  {:op :put-value :var "Y3" :reg "A5"}
+  {:op :call :pred "explain_alt/5" :arity 5}
+  {:op :cut-ite}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :jump :label "L_ite_cont_3"}
+  {:op :trust-me}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-constant :constant "unsatisfiable" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :put-value :var "Y6" :reg "A3"}
+  {:op :put-value :var "Y7" :reg "A4"}
+  {:op :deallocate}
+  {:op :execute :pred "alt_reasons/4"}
   {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_audit_holds_4_2_body" :reg "A1"}
   {:op :try-me-else :label "L_audit_holds_4_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
@@ -113,12 +224,12 @@
   {:op :get-variable :var "Y4" :reg "A2"}
   {:op :get-variable :var "Y6" :reg "A3"}
   {:op :get-variable :var "Y7" :reg "A4"}
-  {:op :try-me-else :label "L_ite_else_3"}
+  {:op :try-me-else :label "L_ite_else_4"}
   {:op :put-value :var "Y2" :reg "A1"}
   {:op :put-constant :constant "blanket" :reg "A2"}
   {:op :builtin-call :pred "==/2" :arity 2}
   {:op :cut-ite}
-  {:op :try-me-else :label "L_ite_else_4"}
+  {:op :try-me-else :label "L_ite_else_5"}
   {:op :put-value :var "Y4" :reg "A1"}
   {:op :put-value :var "Y1" :reg "A2"}
   {:op :call :pred "tight_base_revdep/2" :arity 2}
@@ -130,14 +241,14 @@
   {:op :put-structure :functor "suggest/1" :reg "X11" :arity 1}
   {:op :set-constant :constant "abi_anchor"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_4"}
+  {:op :jump :label "L_ite_cont_5"}
   {:op :trust-me}
   {:op :put-variable :var "Y5" :reg "A1"}
   {:op :put-structure :functor "audit/2" :reg "A2" :arity 2}
   {:op :set-value :var "Y1"}
   {:op :set-constant :constant "over_frozen"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_3"}
+  {:op :jump :label "L_ite_cont_4"}
   {:op :trust-me}
   {:op :put-variable :var "Y5" :reg "A1"}
   {:op :put-structure :functor "audit/2" :reg "A2" :arity 2}
@@ -169,7 +280,7 @@
   {:op :builtin-call :pred "sort/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
-  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_base_list_2_2_body"}] :reg "A1"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_base_list_2_2_body"} {:functor "catalog/10" :label "L_base_list_2_3_body"} {:functor "icat/3" :label "L_base_list_2_4_body"}] :reg "A1"}
   {:op :try-me-else :label "L_base_list_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -180,7 +291,7 @@
   {:op :unify-variable :var "X6"}
   {:op :get-value :var "X4" :reg "A2"}
   {:op :proceed}
-  {:op :trust-me}
+  {:op :retry-me-else :label "L_base_list_2_3"}
   {:op :get-structure :functor "catalog/9" :reg "A1"}
   {:op :unify-variable :var "X1"}
   {:op :unify-variable :var "X2"}
@@ -193,6 +304,31 @@
   {:op :unify-variable :var "X9"}
   {:op :get-value :var "X4" :reg "A2"}
   {:op :proceed}
+  {:op :retry-me-else :label "L_base_list_2_4"}
+  {:op :get-structure :functor "catalog/10" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "X7"}
+  {:op :unify-variable :var "X8"}
+  {:op :unify-variable :var "X9"}
+  {:op :unify-variable :var "X10"}
+  {:op :get-value :var "X4" :reg "A2"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-structure :functor "icat/3" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :get-variable :var "X4" :reg "A2"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X4" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "base_list/2"}
   {:op :allocate}
   {:op :get-variable :var "X1" :reg "A1"}
   {:op :get-variable :var "X2" :reg "A2"}
@@ -232,88 +368,144 @@
   {:op :put-value :var "Y6" :reg "A3"}
   {:op :deallocate}
   {:op :execute :pred "lookup_held/3"}
-  {:op :switch-on-structure :cases [{:functor "req/2" :label "default"} {:functor "req/2" :label "L_blocked_acc_5_2"}] :reg "A2"}
+  {:op :switch-on-structure :cases [{:functor "req/2" :label "default"} {:functor "req/2" :label "L_blocked_acc_5_2"} {:functor "req/2" :label "L_blocked_acc_5_3"}] :reg "A2"}
   {:op :try-me-else :label "L_blocked_acc_5_2"}
   {:op :allocate}
-  {:op :get-variable :var "X1" :reg "A1"}
+  {:op :get-variable :var "X3" :reg "A1"}
   {:op :get-structure :functor "req/2" :reg "A2"}
-  {:op :unify-variable :var "X2"}
-  {:op :unify-variable :var "X3"}
-  {:op :get-variable :var "X4" :reg "A3"}
+  {:op :unify-variable :var "Y2"}
+  {:op :unify-variable :var "X4"}
+  {:op :get-variable :var "Y1" :reg "A3"}
   {:op :get-variable :var "X5" :reg "A4"}
   {:op :get-value :var "X5" :reg "A5"}
-  {:op :put-value :var "X4" :reg "A1"}
-  {:op :put-value :var "X2" :reg "A2"}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :builtin-call :pred "atom/1" :arity 1}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
   {:op :call :pred "seen_name/2" :arity 2}
   {:op :builtin-call :pred "!/0" :arity 0}
   {:op :deallocate}
   {:op :proceed}
+  {:op :retry-me-else :label "L_blocked_acc_5_3"}
+  {:op :allocate}
+  {:op :get-variable :var "Y1" :reg "A1"}
+  {:op :get-structure :functor "req/2" :reg "A2"}
+  {:op :unify-variable :var "X7"}
+  {:op :get-structure :functor "alternatives/1" :reg "X7"}
+  {:op :unify-variable :var "Y2"}
+  {:op :unify-variable :var "X8"}
+  {:op :get-variable :var "Y3" :reg "A3"}
+  {:op :get-variable :var "Y6" :reg "A4"}
+  {:op :get-variable :var "Y4" :reg "A5"}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :put-value :var "Y3" :reg "A3"}
+  {:op :put-variable :var "Y5" :reg "A4"}
+  {:op :call :pred "alt_reasons/4" :arity 4}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-structure :functor "[|]/2" :reg "A2" :arity 2}
+  {:op :set-variable :var "X10"}
+  {:op :set-value :var "Y6"}
+  {:op :put-structure :functor "blocked/1" :reg "X10" :arity 1}
+  {:op :set-variable :var "X11"}
+  {:op :put-structure :functor "alternatives/1" :reg "X11" :arity 1}
+  {:op :set-value :var "Y5"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
   {:op :trust-me}
   {:op :allocate}
-  {:op :get-variable :var "Y5" :reg "A1"}
+  {:op :get-variable :var "Y7" :reg "A1"}
   {:op :get-structure :functor "req/2" :reg "A2"}
-  {:op :unify-variable :var "Y7"}
-  {:op :unify-variable :var "Y3"}
-  {:op :get-variable :var "Y8" :reg "A3"}
-  {:op :get-variable :var "Y2" :reg "A4"}
-  {:op :get-variable :var "Y9" :reg "A5"}
-  {:op :try-me-else :label "L_ite_else_5"}
-  {:op :put-value :var "Y5" :reg "A1"}
-  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :unify-variable :var "Y9"}
+  {:op :unify-variable :var "Y4"}
+  {:op :get-variable :var "Y10" :reg "A3"}
+  {:op :get-variable :var "Y3" :reg "A4"}
+  {:op :get-variable :var "Y11" :reg "A5"}
+  {:op :try-me-else :label "L_ite_else_6"}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-value :var "Y9" :reg "A2"}
   {:op :put-variable :var "Y1" :reg "A3"}
   {:op :call :pred "base_ver/3" :arity 3}
-  {:op :try-me-else :label "L_ite_else_6"}
+  {:op :try-me-else :label "L_ite_else_7"}
   {:op :put-value :var "Y1" :reg "A1"}
-  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :put-value :var "Y4" :reg "A2"}
   {:op :call :pred "satisfies/2" :arity 2}
   {:op :cut-ite}
   {:op :builtin-call :pred "fail/0" :arity 0}
-  {:op :jump :label "L_ite_cont_6"}
+  {:op :jump :label "L_ite_cont_7"}
   {:op :trust-me}
   {:op :builtin-call :pred "true/0" :arity 0}
   {:op :cut-ite}
-  {:op :put-variable :var "Y10" :reg "A1"}
+  {:op :put-variable :var "Y12" :reg "A1"}
   {:op :put-structure :functor "[|]/2" :reg "A2" :arity 2}
-  {:op :set-variable :var "X12"}
-  {:op :set-value :var "Y2"}
-  {:op :put-structure :functor "blocked/3" :reg "X12" :arity 3}
-  {:op :set-value :var "Y7"}
-  {:op :set-variable :var "X13"}
   {:op :set-variable :var "X14"}
-  {:op :put-structure :functor "needs/1" :reg "X13" :arity 1}
   {:op :set-value :var "Y3"}
-  {:op :put-structure :functor "base_has/1" :reg "X14" :arity 1}
+  {:op :put-structure :functor "blocked/3" :reg "X14" :arity 3}
+  {:op :set-value :var "Y9"}
+  {:op :set-variable :var "X15"}
+  {:op :set-variable :var "X16"}
+  {:op :put-structure :functor "needs/1" :reg "X15" :arity 1}
+  {:op :set-value :var "Y4"}
+  {:op :put-structure :functor "base_has/1" :reg "X16" :arity 1}
   {:op :set-value :var "Y1"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_5"}
+  {:op :jump :label "L_ite_cont_6"}
   {:op :trust-me}
-  {:op :put-variable :var "Y10" :reg "A1"}
-  {:op :put-value :var "Y2" :reg "A2"}
-  {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :try-me-else :label "L_ite_else_7"}
-  {:op :put-value :var "Y5" :reg "A1"}
-  {:op :put-value :var "Y7" :reg "A2"}
-  {:op :put-value :var "Y3" :reg "A3"}
-  {:op :put-variable :var "Y4" :reg "A4"}
-  {:op :call :pred "layered_walk_ver/4" :arity 4}
-  {:op :cut-ite}
-  {:op :put-value :var "Y5" :reg "A1"}
-  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :try-me-else :label "L_ite_else_8"}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-value :var "Y9" :reg "A2"}
   {:op :put-value :var "Y4" :reg "A3"}
-  {:op :put-variable :var "Y6" :reg "A4"}
-  {:op :call :pred "collect_deps/4" :arity 4}
-  {:op :put-value :var "Y5" :reg "A1"}
-  {:op :put-value :var "Y6" :reg "A2"}
-  {:op :put-structure :functor "[|]/2" :reg "A3" :arity 2}
-  {:op :set-value :var "Y7"}
-  {:op :set-value :var "Y8"}
-  {:op :put-value :var "Y10" :reg "A4"}
-  {:op :put-value :var "Y9" :reg "A5"}
-  {:op :call :pred "blocked_acc_list/5" :arity 5}
-  {:op :jump :label "L_ite_cont_7"}
+  {:op :put-variable :var "Y2" :reg "A4"}
+  {:op :call :pred "virtual_provider_ceilings/4" :arity 4}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-constant :constant "[]" :reg "A2"}
+  {:op :builtin-call :pred "\\==/2" :arity 2}
+  {:op :cut-ite}
+  {:op :put-variable :var "Y12" :reg "A1"}
+  {:op :put-structure :functor "[|]/2" :reg "A2" :arity 2}
+  {:op :set-variable :var "X14"}
+  {:op :set-value :var "Y3"}
+  {:op :put-structure :functor "blocked/3" :reg "X14" :arity 3}
+  {:op :set-value :var "Y9"}
+  {:op :set-variable :var "X15"}
+  {:op :set-variable :var "X16"}
+  {:op :put-structure :functor "needs/1" :reg "X15" :arity 1}
+  {:op :set-value :var "Y4"}
+  {:op :put-structure :functor "providers/1" :reg "X16" :arity 1}
+  {:op :set-value :var "Y2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :jump :label "L_ite_cont_8"}
   {:op :trust-me}
-  {:op :put-value :var "Y9" :reg "A1"}
-  {:op :put-value :var "Y10" :reg "A2"}
+  {:op :put-variable :var "Y12" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :try-me-else :label "L_ite_else_9"}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-value :var "Y9" :reg "A2"}
+  {:op :put-value :var "Y4" :reg "A3"}
+  {:op :put-variable :var "Y5" :reg "A4"}
+  {:op :put-variable :var "Y6" :reg "A5"}
+  {:op :call :pred "walk_pkg_for_blocked/5" :arity 5}
+  {:op :cut-ite}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :put-value :var "Y6" :reg "A3"}
+  {:op :put-variable :var "Y8" :reg "A4"}
+  {:op :call :pred "collect_deps/4" :arity 4}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-value :var "Y8" :reg "A2"}
+  {:op :put-structure :functor "[|]/2" :reg "A3" :arity 2}
+  {:op :set-value :var "Y9"}
+  {:op :set-value :var "Y10"}
+  {:op :put-value :var "Y12" :reg "A4"}
+  {:op :put-value :var "Y11" :reg "A5"}
+  {:op :call :pred "blocked_acc_list/5" :arity 5}
+  {:op :jump :label "L_ite_cont_9"}
+  {:op :trust-me}
+  {:op :put-value :var "Y11" :reg "A1"}
+  {:op :put-value :var "Y12" :reg "A2"}
   {:op :builtin-call :pred "=/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
@@ -347,8 +539,32 @@
   {:op :put-value :var "Y5" :reg "A5"}
   {:op :deallocate}
   {:op :execute :pred "blocked_acc_list/5"}
-  {:op :switch-on-structure :cases [{:functor "req/2" :label "default"} {:functor "req/2" :label "L_blocked_from_4_2"}] :reg "A2"}
+  {:op :switch-on-structure :cases [{:functor "req/2" :label "default"} {:functor "req/2" :label "L_blocked_from_4_2"} {:functor "req/2" :label "L_blocked_from_4_3"} {:functor "req/2" :label "L_blocked_from_4_4"}] :reg "A2"}
   {:op :try-me-else :label "L_blocked_from_4_2"}
+  {:op :allocate}
+  {:op :get-variable :var "Y1" :reg "A1"}
+  {:op :get-structure :functor "req/2" :reg "A2"}
+  {:op :unify-variable :var "X6"}
+  {:op :get-structure :functor "alternatives/1" :reg "X6"}
+  {:op :unify-variable :var "Y2"}
+  {:op :unify-variable :var "X7"}
+  {:op :get-variable :var "Y3" :reg "A3"}
+  {:op :get-variable :var "Y4" :reg "A4"}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :put-value :var "Y3" :reg "A3"}
+  {:op :put-variable :var "Y5" :reg "A4"}
+  {:op :call :pred "alt_reasons/4" :arity 4}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-structure :functor "blocked/1" :reg "A2" :arity 1}
+  {:op :set-variable :var "X9"}
+  {:op :put-structure :functor "alternatives/1" :reg "X9" :arity 1}
+  {:op :set-value :var "Y5"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :retry-me-else :label "L_blocked_from_4_3"}
   {:op :allocate}
   {:op :get-variable :var "Y1" :reg "A1"}
   {:op :get-structure :functor "req/2" :reg "A2"}
@@ -356,26 +572,26 @@
   {:op :unify-variable :var "Y4"}
   {:op :get-variable :var "X6" :reg "A3"}
   {:op :get-variable :var "Y2" :reg "A4"}
-  {:op :try-me-else :label "L_ite_else_8"}
+  {:op :try-me-else :label "L_ite_else_10"}
   {:op :put-value :var "X6" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
   {:op :call :pred "seen_name/2" :arity 2}
   {:op :builtin-call :pred "!/0" :arity 0}
   {:op :builtin-call :pred "fail/0" :arity 0}
-  {:op :jump :label "L_ite_cont_8"}
+  {:op :jump :label "L_ite_cont_10"}
   {:op :trust-me}
   {:op :builtin-call :pred "true/0" :arity 0}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
   {:op :put-variable :var "Y5" :reg "A3"}
   {:op :call :pred "base_ver/3" :arity 3}
-  {:op :try-me-else :label "L_ite_else_9"}
+  {:op :try-me-else :label "L_ite_else_11"}
   {:op :put-value :var "Y5" :reg "A1"}
   {:op :put-value :var "Y4" :reg "A2"}
   {:op :call :pred "satisfies/2" :arity 2}
   {:op :builtin-call :pred "!/0" :arity 0}
   {:op :builtin-call :pred "fail/0" :arity 0}
-  {:op :jump :label "L_ite_cont_9"}
+  {:op :jump :label "L_ite_cont_11"}
   {:op :trust-me}
   {:op :builtin-call :pred "true/0" :arity 0}
   {:op :put-value :var "Y2" :reg "A1"}
@@ -390,74 +606,164 @@
   {:op :builtin-call :pred "=/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
-  {:op :trust-me}
+  {:op :retry-me-else :label "L_blocked_from_4_4"}
   {:op :allocate}
-  {:op :get-variable :var "Y4" :reg "A1"}
+  {:op :get-variable :var "Y1" :reg "A1"}
   {:op :get-structure :functor "req/2" :reg "A2"}
-  {:op :unify-variable :var "Y6"}
-  {:op :unify-variable :var "Y1"}
-  {:op :get-variable :var "Y7" :reg "A3"}
-  {:op :get-variable :var "Y8" :reg "A4"}
-  {:op :try-me-else :label "L_ite_else_10"}
-  {:op :put-value :var "Y7" :reg "A1"}
-  {:op :put-value :var "Y6" :reg "A2"}
+  {:op :unify-variable :var "Y3"}
+  {:op :unify-variable :var "Y4"}
+  {:op :get-variable :var "X6" :reg "A3"}
+  {:op :get-variable :var "Y2" :reg "A4"}
+  {:op :try-me-else :label "L_ite_else_12"}
+  {:op :put-value :var "X6" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
   {:op :call :pred "seen_name/2" :arity 2}
   {:op :builtin-call :pred "!/0" :arity 0}
   {:op :builtin-call :pred "fail/0" :arity 0}
-  {:op :jump :label "L_ite_cont_10"}
+  {:op :jump :label "L_ite_cont_12"}
   {:op :trust-me}
   {:op :builtin-call :pred "true/0" :arity 0}
-  {:op :put-value :var "Y4" :reg "A1"}
-  {:op :put-value :var "Y6" :reg "A2"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :put-value :var "Y4" :reg "A3"}
+  {:op :put-variable :var "Y5" :reg "A4"}
+  {:op :call :pred "virtual_provider_ceilings/4" :arity 4}
+  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-constant :constant "[]" :reg "A2"}
+  {:op :builtin-call :pred "\\==/2" :arity 2}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-structure :functor "blocked/3" :reg "A2" :arity 3}
+  {:op :set-value :var "Y3"}
+  {:op :set-variable :var "X8"}
+  {:op :set-variable :var "X9"}
+  {:op :put-structure :functor "needs/1" :reg "X8" :arity 1}
+  {:op :set-value :var "Y4"}
+  {:op :put-structure :functor "providers/1" :reg "X9" :arity 1}
+  {:op :set-value :var "Y5"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-variable :var "Y5" :reg "A1"}
+  {:op :get-structure :functor "req/2" :reg "A2"}
+  {:op :unify-variable :var "Y7"}
+  {:op :unify-variable :var "Y1"}
+  {:op :get-variable :var "Y8" :reg "A3"}
+  {:op :get-variable :var "Y9" :reg "A4"}
+  {:op :try-me-else :label "L_ite_else_13"}
+  {:op :put-value :var "Y8" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :call :pred "seen_name/2" :arity 2}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :builtin-call :pred "fail/0" :arity 0}
+  {:op :jump :label "L_ite_cont_13"}
+  {:op :trust-me}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A2"}
   {:op :put-value :var "Y1" :reg "A3"}
   {:op :put-variable :var "Y2" :reg "A4"}
-  {:op :call :pred "layered_walk_ver/4" :arity 4}
-  {:op :put-value :var "Y4" :reg "A1"}
-  {:op :put-value :var "Y6" :reg "A2"}
-  {:op :put-value :var "Y2" :reg "A3"}
-  {:op :put-variable :var "Y3" :reg "A4"}
+  {:op :put-variable :var "Y3" :reg "A5"}
+  {:op :call :pred "walk_pkg_for_blocked/5" :arity 5}
+  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :put-value :var "Y3" :reg "A3"}
+  {:op :put-variable :var "Y4" :reg "A4"}
   {:op :call :pred "collect_deps/4" :arity 4}
-  {:op :put-variable :var "Y5" :reg "A1"}
-  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :put-variable :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
   {:op :builtin-call :pred "member/2" :arity 2}
-  {:op :put-value :var "Y4" :reg "A1"}
-  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-value :var "Y6" :reg "A2"}
   {:op :put-structure :functor "[|]/2" :reg "A3" :arity 2}
-  {:op :set-value :var "Y6"}
   {:op :set-value :var "Y7"}
-  {:op :put-value :var "Y8" :reg "A4"}
+  {:op :set-value :var "Y8"}
+  {:op :put-value :var "Y9" :reg "A4"}
   {:op :deallocate}
   {:op :execute :pred "blocked_from/4"}
   {:op :allocate}
   {:op :get-variable :var "Y1" :reg "A1"}
   {:op :get-variable :var "Y3" :reg "A2"}
-  {:op :get-variable :var "Y4" :reg "A3"}
-  {:op :get-variable :var "Y7" :reg "A4"}
-  {:op :try-me-else :label "L_ite_else_11"}
+  {:op :get-variable :var "Y7" :reg "A3"}
+  {:op :get-variable :var "Y6" :reg "A4"}
+  {:op :try-me-else :label "L_ite_else_14"}
   {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-constant :constant 0 :reg "A2"}
+  {:op :builtin-call :pred "=:=/2" :arity 2}
+  {:op :cut-ite}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-constant :constant "t" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :put-value :var "Y6" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :jump :label "L_ite_cont_14"}
+  {:op :trust-me}
+  {:op :put-variable :var "Y2" :reg "A1"}
+  {:op :put-structure :functor "///2" :reg "A2" :arity 2}
+  {:op :set-variable :var "X13"}
+  {:op :set-constant :constant 2}
+  {:op :put-structure :functor "-/2" :reg "X13" :arity 2}
+  {:op :set-value :var "Y1"}
+  {:op :set-constant :constant 1}
+  {:op :builtin-call :pred "is/2" :arity 2}
+  {:op :put-variable :var "Y4" :reg "A1"}
+  {:op :put-structure :functor "-/2" :reg "A2" :arity 2}
+  {:op :set-variable :var "X15"}
+  {:op :set-value :var "Y2"}
+  {:op :put-structure :functor "-/2" :reg "X15" :arity 2}
+  {:op :set-value :var "Y1"}
+  {:op :set-constant :constant 1}
+  {:op :builtin-call :pred "is/2" :arity 2}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :put-variable :var "Y8" :reg "A3"}
+  {:op :put-structure :functor "[|]/2" :reg "A4" :arity 2}
+  {:op :set-variable :var "X17"}
+  {:op :set-variable :var "Y5"}
+  {:op :put-structure :functor "-/2" :reg "X17" :arity 2}
+  {:op :set-variable :var "Y9"}
+  {:op :set-variable :var "Y10"}
+  {:op :call :pred "build_tree/4" :arity 4}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :put-variable :var "Y11" :reg "A3"}
+  {:op :put-value :var "Y6" :reg "A4"}
+  {:op :call :pred "build_tree/4" :arity 4}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-structure :functor "t/4" :reg "A2" :arity 4}
+  {:op :set-value :var "Y8"}
+  {:op :set-value :var "Y9"}
+  {:op :set-value :var "Y10"}
+  {:op :set-value :var "Y11"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :allocate}
+  {:op :get-variable :var "Y1" :reg "A1"}
+  {:op :get-variable :var "Y2" :reg "A2"}
+  {:op :get-variable :var "Y3" :reg "A3"}
+  {:op :get-variable :var "Y5" :reg "A4"}
+  {:op :try-me-else :label "L_ite_else_15"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
   {:op :call :pred "excluded_name/2" :arity 2}
   {:op :builtin-call :pred "!/0" :arity 0}
   {:op :builtin-call :pred "fail/0" :arity 0}
-  {:op :jump :label "L_ite_cont_11"}
+  {:op :jump :label "L_ite_cont_15"}
   {:op :trust-me}
   {:op :builtin-call :pred "true/0" :arity 0}
   {:op :put-value :var "Y1" :reg "A1"}
-  {:op :put-variable :var "Y2" :reg "A2"}
-  {:op :call :pred "packages/2" :arity 2}
-  {:op :put-value :var "Y2" :reg "A1"}
-  {:op :put-value :var "Y3" :reg "A2"}
-  {:op :put-value :var "Y4" :reg "A3"}
-  {:op :put-variable :var "Y5" :reg "A4"}
-  {:op :call :pred "matching_versions/4" :arity 4}
-  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :put-value :var "Y3" :reg "A3"}
+  {:op :put-variable :var "Y4" :reg "A4"}
+  {:op :call :pred "matching_versions_in/4" :arity 4}
+  {:op :put-value :var "Y4" :reg "A1"}
   {:op :put-variable :var "Y6" :reg "A2"}
-  {:op :builtin-call :pred "sort/2" :arity 2}
-  {:op :put-value :var "Y6" :reg "A1"}
-  {:op :put-variable :var "Y8" :reg "A2"}
-  {:op :builtin-call :pred "reverse/2" :arity 2}
-  {:op :put-value :var "Y7" :reg "A1"}
-  {:op :put-value :var "Y8" :reg "A2"}
+  {:op :call :pred "sort_versions_desc/2" :arity 2}
+  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-value :var "Y6" :reg "A2"}
   {:op :builtin-call :pred "member/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
@@ -485,7 +791,7 @@
   {:op :put-value :var "Y6" :reg "A3"}
   {:op :put-variable :var "Y3" :reg "A4"}
   {:op :call :pred "first_broken/4" :arity 4}
-  {:op :try-me-else :label "L_ite_else_12"}
+  {:op :try-me-else :label "L_ite_else_16"}
   {:op :put-value :var "Y3" :reg "A1"}
   {:op :put-constant :constant "none" :reg "A2"}
   {:op :builtin-call :pred "=/2" :arity 2}
@@ -497,7 +803,7 @@
   {:op :put-structure :functor "ok/1" :reg "A2" :arity 1}
   {:op :set-value :var "Y2"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_12"}
+  {:op :jump :label "L_ite_cont_16"}
   {:op :trust-me}
   {:op :put-value :var "Y3" :reg "A1"}
   {:op :put-structure :functor "broken/3" :reg "A2" :arity 3}
@@ -505,7 +811,7 @@
   {:op :set-variable :var "Y10"}
   {:op :set-variable :var "Y9"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :try-me-else :label "L_ite_else_13"}
+  {:op :try-me-else :label "L_ite_else_17"}
   {:op :put-value :var "Y4" :reg "A1"}
   {:op :put-value :var "Y5" :reg "A2"}
   {:op :put-value :var "Y6" :reg "A3"}
@@ -521,7 +827,7 @@
   {:op :set-value :var "Y7"}
   {:op :put-value :var "Y8" :reg "A3"}
   {:op :call :pred "close_moving/3" :arity 3}
-  {:op :jump :label "L_ite_cont_13"}
+  {:op :jump :label "L_ite_cont_17"}
   {:op :trust-me}
   {:op :put-value :var "Y8" :reg "A1"}
   {:op :put-structure :functor "blocked/3" :reg "A2" :arity 3}
@@ -535,20 +841,72 @@
   {:op :builtin-call :pred "=/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
+  {:op :switch-on-constant :cases [{:value "<" :label "default"} {:value ">" :label "L_cmp_ver_3_2_body"} {:value "=" :label "L_cmp_ver_3_3_body"}] :reg "A1" :fallthrough? false}
+  {:op :try-me-else :label "L_cmp_ver_3_2"}
   {:op :allocate}
-  {:op :get-variable :var "X5" :reg "A1"}
-  {:op :get-variable :var "Y2" :reg "A2"}
-  {:op :get-variable :var "Y3" :reg "A3"}
-  {:op :get-variable :var "Y4" :reg "A4"}
-  {:op :put-value :var "X5" :reg "A1"}
-  {:op :put-variable :var "Y1" :reg "A2"}
-  {:op :call :pred "depends_list/2" :arity 2}
-  {:op :put-value :var "Y1" :reg "A1"}
-  {:op :put-value :var "Y2" :reg "A2"}
-  {:op :put-value :var "Y3" :reg "A3"}
-  {:op :put-value :var "Y4" :reg "A4"}
+  {:op :get-constant :constant "<" :reg "A1"}
+  {:op :get-variable :var "X1" :reg "A2"}
+  {:op :get-variable :var "X2" :reg "A3"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X2" :reg "A2"}
+  {:op :call :pred "version_lt/2" :arity 2}
+  {:op :builtin-call :pred "!/0" :arity 0}
   {:op :deallocate}
-  {:op :execute :pred "matching_deps/4"}
+  {:op :proceed}
+  {:op :retry-me-else :label "L_cmp_ver_3_3"}
+  {:op :allocate}
+  {:op :get-constant :constant ">" :reg "A1"}
+  {:op :get-variable :var "X1" :reg "A2"}
+  {:op :get-variable :var "X2" :reg "A3"}
+  {:op :put-value :var "X2" :reg "A1"}
+  {:op :put-value :var "X1" :reg "A2"}
+  {:op :call :pred "version_lt/2" :arity 2}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :get-constant :constant "=" :reg "A1"}
+  {:op :get-variable :var "X1" :reg "A2"}
+  {:op :get-variable :var "X2" :reg "A3"}
+  {:op :proceed}
+  {:op :allocate}
+  {:op :get-variable :var "Y3" :reg "A1"}
+  {:op :get-variable :var "Y5" :reg "A2"}
+  {:op :get-variable :var "Y6" :reg "A3"}
+  {:op :get-variable :var "Y7" :reg "A4"}
+  {:op :try-me-else :label "L_ite_else_18"}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-variable :var "Y1" :reg "A2"}
+  {:op :call :pred "dep_index/2" :arity 2}
+  {:op :cut-ite}
+  {:op :try-me-else :label "L_ite_else_19"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-structure :functor "-/2" :reg "A2" :arity 2}
+  {:op :set-value :var "Y5"}
+  {:op :set-value :var "Y6"}
+  {:op :put-variable :var "Y2" :reg "A3"}
+  {:op :call :pred "tree_lookup/3" :arity 3}
+  {:op :cut-ite}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :jump :label "L_ite_cont_19"}
+  {:op :trust-me}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-constant :constant "[]" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :jump :label "L_ite_cont_18"}
+  {:op :trust-me}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-variable :var "Y4" :reg "A2"}
+  {:op :call :pred "depends_list/2" :arity 2}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :put-value :var "Y6" :reg "A3"}
+  {:op :put-value :var "Y7" :reg "A4"}
+  {:op :call :pred "matching_deps/4" :arity 4}
+  {:op :deallocate}
+  {:op :proceed}
   {:op :allocate}
   {:op :get-variable :var "X5" :reg "A1"}
   {:op :get-variable :var "Y1" :reg "A2"}
@@ -565,7 +923,7 @@
   {:op :builtin-call :pred "member/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
-  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_conflicts_list_2_2_body"}] :reg "A1"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_conflicts_list_2_2_body"} {:functor "catalog/10" :label "L_conflicts_list_2_3_body"} {:functor "icat/3" :label "L_conflicts_list_2_4_body"}] :reg "A1"}
   {:op :try-me-else :label "L_conflicts_list_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -576,7 +934,7 @@
   {:op :unify-variable :var "X6"}
   {:op :get-value :var "X3" :reg "A2"}
   {:op :proceed}
-  {:op :trust-me}
+  {:op :retry-me-else :label "L_conflicts_list_2_3"}
   {:op :get-structure :functor "catalog/9" :reg "A1"}
   {:op :unify-variable :var "X1"}
   {:op :unify-variable :var "X2"}
@@ -589,6 +947,31 @@
   {:op :unify-variable :var "X9"}
   {:op :get-value :var "X3" :reg "A2"}
   {:op :proceed}
+  {:op :retry-me-else :label "L_conflicts_list_2_4"}
+  {:op :get-structure :functor "catalog/10" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "X7"}
+  {:op :unify-variable :var "X8"}
+  {:op :unify-variable :var "X9"}
+  {:op :unify-variable :var "X10"}
+  {:op :get-value :var "X3" :reg "A2"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-structure :functor "icat/3" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :get-variable :var "X4" :reg "A2"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X4" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "conflicts_list/2"}
   {:op :allocate}
   {:op :get-list :reg "A1"}
   {:op :unify-variable :var "X11"}
@@ -596,13 +979,13 @@
   {:op :unify-variable :var "Y1"}
   {:op :unify-variable :var "Y2"}
   {:op :unify-variable :var "Y3"}
-  {:op :unify-variable :var "Y5"}
+  {:op :unify-variable :var "Y4"}
   {:op :unify-variable :var "Y6"}
   {:op :get-variable :var "Y7" :reg "A2"}
   {:op :get-variable :var "Y8" :reg "A3"}
   {:op :get-variable :var "Y9" :reg "A4"}
   {:op :get-variable :var "Y10" :reg "A5"}
-  {:op :try-me-else :label "L_ite_else_14"}
+  {:op :try-me-else :label "L_ite_else_20"}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-value :var "Y7" :reg "A2"}
   {:op :builtin-call :pred "==/2" :arity 2}
@@ -611,22 +994,14 @@
   {:op :builtin-call :pred "==/2" :arity 2}
   {:op :put-value :var "Y9" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
-  {:op :put-variable :var "Y4" :reg "A3"}
-  {:op :call :pred "selected_ver/3" :arity 3}
-  {:op :try-me-else :label "L_ite_else_15"}
-  {:op :put-value :var "Y4" :reg "A1"}
-  {:op :put-value :var "Y5" :reg "A2"}
-  {:op :call :pred "satisfies/2" :arity 2}
-  {:op :cut-ite}
-  {:op :builtin-call :pred "fail/0" :arity 0}
-  {:op :jump :label "L_ite_cont_15"}
-  {:op :trust-me}
-  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :put-value :var "Y4" :reg "A3"}
+  {:op :put-variable :var "Y5" :reg "A4"}
+  {:op :call :pred "dep_breaks_need/4" :arity 4}
   {:op :cut-ite}
   {:op :put-value :var "Y10" :reg "A1"}
   {:op :put-value :var "Y5" :reg "A2"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_14"}
+  {:op :jump :label "L_ite_cont_20"}
   {:op :trust-me}
   {:op :put-value :var "Y6" :reg "A1"}
   {:op :put-value :var "Y7" :reg "A2"}
@@ -652,6 +1027,154 @@
   {:op :put-value :var "Y5" :reg "A5"}
   {:op :deallocate}
   {:op :execute :pred "dep_breaks/5"}
+  {:op :try-me-else :label "L_dep_breaks_need_4_2"}
+  {:op :allocate}
+  {:op :get-variable :var "Y7" :reg "A1"}
+  {:op :get-structure :functor "alternatives/1" :reg "A2"}
+  {:op :unify-variable :var "Y6"}
+  {:op :get-variable :var "X9" :reg "A3"}
+  {:op :get-variable :var "Y3" :reg "A4"}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :put-structure :functor "dep/2" :reg "A1" :arity 2}
+  {:op :set-variable :var "Y1"}
+  {:op :set-value :var "Y3"}
+  {:op :put-value :var "Y6" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :put-variable :var "Y2" :reg "A3"}
+  {:op :call :pred "selected_ver/3" :arity 3}
+  {:op :try-me-else :label "L_ite_else_21"}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :call :pred "satisfies/2" :arity 2}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :builtin-call :pred "fail/0" :arity 0}
+  {:op :jump :label "L_ite_cont_21"}
+  {:op :trust-me}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :try-me-else :label "L_ite_else_22"}
+  {:op :put-structure :functor "dep/2" :reg "A1" :arity 2}
+  {:op :set-variable :var "Y4"}
+  {:op :set-variable :var "Y5"}
+  {:op :put-value :var "Y6" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :put-variable :var "Y8" :reg "A3"}
+  {:op :call :pred "selected_ver/3" :arity 3}
+  {:op :put-value :var "Y8" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :call :pred "satisfies/2" :arity 2}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :builtin-call :pred "fail/0" :arity 0}
+  {:op :jump :label "L_ite_cont_22"}
+  {:op :trust-me}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-variable :var "X3" :reg "A1"}
+  {:op :get-variable :var "X4" :reg "A2"}
+  {:op :get-variable :var "Y2" :reg "A3"}
+  {:op :get-value :var "Y2" :reg "A4"}
+  {:op :put-value :var "X3" :reg "A1"}
+  {:op :put-value :var "X4" :reg "A2"}
+  {:op :put-variable :var "Y1" :reg "A3"}
+  {:op :call :pred "selected_ver/3" :arity 3}
+  {:op :try-me-else :label "L_ite_else_23"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :call :pred "satisfies/2" :arity 2}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :builtin-call :pred "fail/0" :arity 0}
+  {:op :jump :label "L_ite_cont_23"}
+  {:op :trust-me}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :get-structure :functor "icat/3" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :get-value :var "X2" :reg "A2"}
+  {:op :proceed}
+  {:op :try-me-else :label "L_dep_mentions_2_2"}
+  {:op :allocate}
+  {:op :get-structure :functor "alternatives/1" :reg "A1"}
+  {:op :unify-variable :var "Y3"}
+  {:op :get-variable :var "Y1" :reg "A2"}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :put-structure :functor "dep/2" :reg "A1" :arity 2}
+  {:op :set-value :var "Y1"}
+  {:op :set-variable :var "Y2"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-variable :var "X1" :reg "A1"}
+  {:op :get-variable :var "X2" :reg "A2"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X2" :reg "A2"}
+  {:op :builtin-call :pred "==/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :allocate}
+  {:op :get-variable :var "X6" :reg "A1"}
+  {:op :get-variable :var "X7" :reg "A2"}
+  {:op :get-variable :var "X8" :reg "A3"}
+  {:op :get-variable :var "Y2" :reg "A4"}
+  {:op :get-variable :var "Y4" :reg "A5"}
+  {:op :put-value :var "X6" :reg "A1"}
+  {:op :put-value :var "X7" :reg "A2"}
+  {:op :put-value :var "X8" :reg "A3"}
+  {:op :put-variable :var "Y3" :reg "A4"}
+  {:op :put-variable :var "Y5" :reg "A5"}
+  {:op :call :pred "depends_in/5" :arity 5}
+  {:op :try-me-else :label "L_ite_else_24"}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-structure :functor "alternatives/1" :reg "A2" :arity 1}
+  {:op :set-variable :var "Y1"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :cut-ite}
+  {:op :put-structure :functor "dep/2" :reg "A1" :arity 2}
+  {:op :set-value :var "Y2"}
+  {:op :set-value :var "Y4"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :jump :label "L_ite_cont_24"}
+  {:op :trust-me}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :try-me-else :label "L_dep_to_req_3_2"}
+  {:op :allocate}
+  {:op :get-structure :functor "alternatives/1" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :get-variable :var "X2" :reg "A2"}
+  {:op :get-structure :functor "req/2" :reg "A3"}
+  {:op :unify-variable :var "X3"}
+  {:op :get-structure :functor "alternatives/1" :reg "X3"}
+  {:op :unify-value :var "X1"}
+  {:op :unify-constant :constant "any"}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :get-variable :var "X1" :reg "A1"}
+  {:op :get-variable :var "X2" :reg "A2"}
+  {:op :get-structure :functor "req/2" :reg "A3"}
+  {:op :unify-value :var "X1"}
+  {:op :unify-value :var "X2"}
+  {:op :proceed}
   {:op :allocate}
   {:op :get-variable :var "Y1" :reg "A1"}
   {:op :get-variable :var "X6" :reg "A2"}
@@ -711,7 +1234,7 @@
   {:op :builtin-call :pred "member/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
-  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_depends_list_2_2_body"}] :reg "A1"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_depends_list_2_2_body"} {:functor "catalog/10" :label "L_depends_list_2_3_body"} {:functor "icat/3" :label "L_depends_list_2_4_body"}] :reg "A1"}
   {:op :try-me-else :label "L_depends_list_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -722,7 +1245,7 @@
   {:op :unify-variable :var "X6"}
   {:op :get-value :var "X2" :reg "A2"}
   {:op :proceed}
-  {:op :trust-me}
+  {:op :retry-me-else :label "L_depends_list_2_3"}
   {:op :get-structure :functor "catalog/9" :reg "A1"}
   {:op :unify-variable :var "X1"}
   {:op :unify-variable :var "X2"}
@@ -735,6 +1258,31 @@
   {:op :unify-variable :var "X9"}
   {:op :get-value :var "X2" :reg "A2"}
   {:op :proceed}
+  {:op :retry-me-else :label "L_depends_list_2_4"}
+  {:op :get-structure :functor "catalog/10" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "X7"}
+  {:op :unify-variable :var "X8"}
+  {:op :unify-variable :var "X9"}
+  {:op :unify-variable :var "X10"}
+  {:op :get-value :var "X2" :reg "A2"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-structure :functor "icat/3" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :get-variable :var "X4" :reg "A2"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X4" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "depends_list/2"}
   {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_direct_on_4_2_body" :reg "A1"}
   {:op :try-me-else :label "L_direct_on_4_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
@@ -755,10 +1303,10 @@
   {:op :get-variable :var "Y6" :reg "A2"}
   {:op :get-variable :var "Y4" :reg "A3"}
   {:op :get-variable :var "Y8" :reg "A4"}
-  {:op :try-me-else :label "L_ite_else_16"}
+  {:op :try-me-else :label "L_ite_else_25"}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-value :var "Y6" :reg "A2"}
-  {:op :builtin-call :pred "==/2" :arity 2}
+  {:op :call :pred "dep_mentions/2" :arity 2}
   {:op :cut-ite}
   {:op :put-variable :var "Y7" :reg "A1"}
   {:op :put-structure :functor "[|]/2" :reg "A2" :arity 2}
@@ -768,7 +1316,7 @@
   {:op :set-value :var "Y2"}
   {:op :set-value :var "Y3"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_16"}
+  {:op :jump :label "L_ite_cont_25"}
   {:op :trust-me}
   {:op :put-variable :var "Y7" :reg "A1"}
   {:op :put-value :var "Y4" :reg "A2"}
@@ -812,7 +1360,7 @@
   {:op :put-value :var "X4" :reg "A3"}
   {:op :deallocate}
   {:op :execute :pred "exclude_name/3"}
-  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_excluded_list_2_2_body"}] :reg "A1"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_excluded_list_2_2_body"} {:functor "catalog/10" :label "L_excluded_list_2_3_body"} {:functor "icat/3" :label "L_excluded_list_2_4_body"}] :reg "A1"}
   {:op :try-me-else :label "L_excluded_list_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -823,7 +1371,7 @@
   {:op :unify-variable :var "X6"}
   {:op :get-constant :constant "[]" :reg "A2"}
   {:op :proceed}
-  {:op :trust-me}
+  {:op :retry-me-else :label "L_excluded_list_2_3"}
   {:op :get-structure :functor "catalog/9" :reg "A1"}
   {:op :unify-variable :var "X1"}
   {:op :unify-variable :var "X2"}
@@ -836,6 +1384,31 @@
   {:op :unify-variable :var "X9"}
   {:op :get-value :var "X8" :reg "A2"}
   {:op :proceed}
+  {:op :retry-me-else :label "L_excluded_list_2_4"}
+  {:op :get-structure :functor "catalog/10" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "X7"}
+  {:op :unify-variable :var "X8"}
+  {:op :unify-variable :var "X9"}
+  {:op :unify-variable :var "X10"}
+  {:op :get-value :var "X8" :reg "A2"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-structure :functor "icat/3" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :get-variable :var "X4" :reg "A2"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X4" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "excluded_list/2"}
   {:op :allocate}
   {:op :get-variable :var "X3" :reg "A1"}
   {:op :get-variable :var "Y1" :reg "A2"}
@@ -845,6 +1418,49 @@
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-value :var "Y2" :reg "A2"}
   {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :allocate}
+  {:op :get-variable :var "Y2" :reg "A1"}
+  {:op :get-variable :var "Y3" :reg "A2"}
+  {:op :get-variable :var "Y4" :reg "A3"}
+  {:op :get-variable :var "Y1" :reg "A4"}
+  {:op :get-variable :var "Y8" :reg "A5"}
+  {:op :try-me-else :label "L_ite_else_26"}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-structure :functor "req/2" :reg "A2" :arity 2}
+  {:op :set-value :var "Y3"}
+  {:op :set-value :var "Y4"}
+  {:op :put-value :var "Y1" :reg "A3"}
+  {:op :put-value :var "Y8" :reg "A4"}
+  {:op :call :pred "blocked_from/4" :arity 4}
+  {:op :cut-ite}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :jump :label "L_ite_cont_26"}
+  {:op :trust-me}
+  {:op :try-me-else :label "L_ite_else_27"}
+  {:op :try-me-else :label "L_ite_else_28"}
+  {:op :put-constant :constant "layered" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :put-value :var "Y3" :reg "A3"}
+  {:op :put-value :var "Y4" :reg "A4"}
+  {:op :put-constant :constant "[]" :reg "A5"}
+  {:op :put-variable :var "Y5" :reg "A6"}
+  {:op :put-variable :var "Y6" :reg "A7"}
+  {:op :put-variable :var "Y7" :reg "A8"}
+  {:op :call :pred "pick_need/8" :arity 8}
+  {:op :cut-ite}
+  {:op :builtin-call :pred "fail/0" :arity 0}
+  {:op :jump :label "L_ite_cont_28"}
+  {:op :trust-me}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :cut-ite}
+  {:op :put-value :var "Y8" :reg "A1"}
+  {:op :put-constant :constant "unsatisfiable" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :jump :label "L_ite_cont_27"}
+  {:op :trust-me}
+  {:op :builtin-call :pred "fail/0" :arity 0}
   {:op :deallocate}
   {:op :proceed}
   {:op :allocate}
@@ -881,6 +1497,76 @@
   {:op :builtin-call :pred "!/0" :arity 0}
   {:op :deallocate}
   {:op :proceed}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_filter_satisfies_3_2_body" :reg "A1"}
+  {:op :try-me-else :label "L_filter_satisfies_3_2"}
+  {:op :get-constant :constant "[]" :reg "A1"}
+  {:op :get-variable :var "X1" :reg "A2"}
+  {:op :get-constant :constant "[]" :reg "A3"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-list :reg "A1"}
+  {:op :unify-variable :var "Y1"}
+  {:op :unify-variable :var "Y3"}
+  {:op :get-variable :var "Y4" :reg "A2"}
+  {:op :get-variable :var "Y2" :reg "A3"}
+  {:op :try-me-else :label "L_ite_else_29"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :call :pred "satisfies/2" :arity 2}
+  {:op :cut-ite}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-structure :functor "[|]/2" :reg "A2" :arity 2}
+  {:op :set-value :var "Y1"}
+  {:op :set-variable :var "Y5"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :jump :label "L_ite_cont_29"}
+  {:op :trust-me}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-variable :var "Y5" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :put-value :var "Y5" :reg "A3"}
+  {:op :deallocate}
+  {:op :execute :pred "filter_satisfies/3"}
+  {:op :try-me-else :label "L_first_alt_already_4_2"}
+  {:op :allocate}
+  {:op :get-variable :var "X5" :reg "A1"}
+  {:op :get-variable :var "Y1" :reg "A2"}
+  {:op :get-variable :var "Y2" :reg "A3"}
+  {:op :get-variable :var "X6" :reg "A4"}
+  {:op :put-structure :functor "dep/2" :reg "A1" :arity 2}
+  {:op :set-variable :var "Y3"}
+  {:op :set-variable :var "Y4"}
+  {:op :put-value :var "X6" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :put-value :var "Y3" :reg "A3"}
+  {:op :put-value :var "Y4" :reg "A4"}
+  {:op :call :pred "already_satisfied/4" :arity 4}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-constant :constant "layered" :reg "A1"}
+  {:op :get-variable :var "Y1" :reg "A2"}
+  {:op :get-variable :var "X4" :reg "A3"}
+  {:op :get-variable :var "X5" :reg "A4"}
+  {:op :put-structure :functor "dep/2" :reg "A1" :arity 2}
+  {:op :set-variable :var "Y2"}
+  {:op :set-variable :var "Y3"}
+  {:op :put-value :var "X5" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :put-value :var "Y3" :reg "A3"}
+  {:op :call :pred "layer_satisfies/3" :arity 3}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :deallocate}
+  {:op :proceed}
   {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_first_broken_4_2_body" :reg "A1"}
   {:op :try-me-else :label "L_first_broken_4_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
@@ -900,7 +1586,7 @@
   {:op :get-variable :var "Y2" :reg "A2"}
   {:op :get-variable :var "Y5" :reg "A3"}
   {:op :get-variable :var "Y7" :reg "A4"}
-  {:op :try-me-else :label "L_ite_else_17"}
+  {:op :try-me-else :label "L_ite_else_30"}
   {:op :put-value :var "Y5" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
   {:op :put-variable :var "Y1" :reg "A3"}
@@ -911,9 +1597,9 @@
   {:op :put-value :var "Y5" :reg "A3"}
   {:op :put-value :var "Y7" :reg "A4"}
   {:op :call :pred "first_broken/4" :arity 4}
-  {:op :jump :label "L_ite_cont_17"}
+  {:op :jump :label "L_ite_cont_30"}
   {:op :trust-me}
-  {:op :try-me-else :label "L_ite_else_18"}
+  {:op :try-me-else :label "L_ite_else_31"}
   {:op :put-value :var "Y2" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
   {:op :put-value :var "Y4" :reg "A3"}
@@ -927,13 +1613,69 @@
   {:op :set-value :var "Y4"}
   {:op :set-value :var "Y6"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_18"}
+  {:op :jump :label "L_ite_cont_31"}
   {:op :trust-me}
   {:op :put-value :var "Y8" :reg "A1"}
   {:op :put-value :var "Y2" :reg "A2"}
   {:op :put-value :var "Y5" :reg "A3"}
   {:op :put-value :var "Y7" :reg "A4"}
   {:op :call :pred "first_broken/4" :arity 4}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :allocate}
+  {:op :get-variable :var "X5" :reg "A1"}
+  {:op :get-variable :var "X6" :reg "A2"}
+  {:op :get-variable :var "X7" :reg "A3"}
+  {:op :get-variable :var "Y3" :reg "A4"}
+  {:op :get-variable :var "Y4" :reg "A5"}
+  {:op :put-value :var "X5" :reg "A1"}
+  {:op :put-value :var "X6" :reg "A2"}
+  {:op :put-value :var "X7" :reg "A3"}
+  {:op :put-variable :var "Y1" :reg "A4"}
+  {:op :put-variable :var "Y2" :reg "A5"}
+  {:op :call :pred "depends_in/5" :arity 5}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :put-value :var "Y3" :reg "A3"}
+  {:op :put-value :var "Y4" :reg "A4"}
+  {:op :deallocate}
+  {:op :execute :pred "follow_raw_dep/4"}
+  {:op :try-me-else :label "L_follow_raw_dep_4_2"}
+  {:op :allocate}
+  {:op :get-structure :functor "alternatives/1" :reg "A1"}
+  {:op :unify-variable :var "Y2"}
+  {:op :get-variable :var "X7" :reg "A2"}
+  {:op :get-variable :var "Y4" :reg "A3"}
+  {:op :get-variable :var "Y5" :reg "A4"}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :put-structure :functor "dep/2" :reg "A1" :arity 2}
+  {:op :set-variable :var "Y6"}
+  {:op :set-variable :var "Y1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :put-structure :functor "-/2" :reg "A1" :arity 2}
+  {:op :set-value :var "Y6"}
+  {:op :set-variable :var "Y3"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-value :var "Y6" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-variable :var "Y1" :reg "A1"}
+  {:op :get-variable :var "X4" :reg "A2"}
+  {:op :get-variable :var "Y3" :reg "A3"}
+  {:op :get-value :var "Y1" :reg "A4"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :builtin-call :pred "atom/1" :arity 1}
+  {:op :put-structure :functor "-/2" :reg "A1" :arity 2}
+  {:op :set-value :var "Y1"}
+  {:op :set-variable :var "Y2"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
   {:op :allocate}
@@ -953,6 +1695,40 @@
   {:op :builtin-call :pred "!/0" :arity 0}
   {:op :deallocate}
   {:op :proceed}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_group_keyed_2_2_body" :reg "A1"}
+  {:op :try-me-else :label "L_group_keyed_2_2"}
+  {:op :get-constant :constant "[]" :reg "A1"}
+  {:op :get-constant :constant "[]" :reg "A2"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-list :reg "A1"}
+  {:op :unify-variable :var "X3"}
+  {:op :get-structure :functor "-/2" :reg "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :get-structure :functor "-/2" :reg "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "X7"}
+  {:op :unify-variable :var "X8"}
+  {:op :get-list :reg "A2"}
+  {:op :unify-variable :var "X9"}
+  {:op :get-structure :functor "-/2" :reg "X9"}
+  {:op :unify-value :var "X5"}
+  {:op :unify-variable :var "X10"}
+  {:op :get-structure :functor "[|]/2" :reg "X10"}
+  {:op :unify-value :var "X7"}
+  {:op :unify-variable :var "X11"}
+  {:op :unify-variable :var "Y2"}
+  {:op :put-value :var "X8" :reg "A1"}
+  {:op :put-value :var "X5" :reg "A2"}
+  {:op :put-value :var "X11" :reg "A3"}
+  {:op :put-variable :var "Y1" :reg "A4"}
+  {:op :call :pred "same_key/4" :arity 4}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "group_keyed/2"}
   {:op :allocate}
   {:op :get-list :reg "A1"}
   {:op :unify-variable :var "X6"}
@@ -963,7 +1739,7 @@
   {:op :unify-variable :var "Y3"}
   {:op :get-variable :var "Y4" :reg "A2"}
   {:op :get-variable :var "Y5" :reg "A3"}
-  {:op :try-me-else :label "L_ite_else_19"}
+  {:op :try-me-else :label "L_ite_else_32"}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-value :var "Y4" :reg "A2"}
   {:op :builtin-call :pred "==/2" :arity 2}
@@ -971,13 +1747,70 @@
   {:op :put-value :var "Y5" :reg "A1"}
   {:op :put-value :var "Y2" :reg "A2"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_19"}
+  {:op :jump :label "L_ite_cont_32"}
   {:op :trust-me}
   {:op :put-value :var "Y3" :reg "A1"}
   {:op :put-value :var "Y4" :reg "A2"}
   {:op :put-value :var "Y5" :reg "A3"}
   {:op :call :pred "hold_reason/3" :arity 3}
   {:op :deallocate}
+  {:op :proceed}
+  {:op :allocate}
+  {:op :get-variable :var "Y12" :reg "A1"}
+  {:op :get-variable :var "Y11" :reg "A2"}
+  {:op :put-value :var "Y12" :reg "A1"}
+  {:op :call :pred "is_public_catalog/1" :arity 1}
+  {:op :put-value :var "Y12" :reg "A1"}
+  {:op :put-variable :var "Y1" :reg "A2"}
+  {:op :call :pred "depends_list/2" :arity 2}
+  {:op :put-value :var "Y12" :reg "A1"}
+  {:op :put-variable :var "Y5" :reg "A2"}
+  {:op :call :pred "packages/2" :arity 2}
+  {:op :try-me-else :label "L_ite_else_33"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :call :pred "worth_indexing/2" :arity 2}
+  {:op :cut-ite}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-constant :constant 0 :reg "A2"}
+  {:op :put-variable :var "Y2" :reg "A3"}
+  {:op :call :pred "key_dep_rows/3" :arity 3}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-variable :var "Y3" :reg "A2"}
+  {:op :builtin-call :pred "sort/2" :arity 2}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-variable :var "Y4" :reg "A2"}
+  {:op :call :pred "group_keyed/2" :arity 2}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-variable :var "Y9" :reg "A2"}
+  {:op :call :pred "list_to_tree/2" :arity 2}
+  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-constant :constant 0 :reg "A2"}
+  {:op :put-variable :var "Y6" :reg "A3"}
+  {:op :call :pred "key_pkg_rows/3" :arity 3}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-variable :var "Y7" :reg "A2"}
+  {:op :builtin-call :pred "sort/2" :arity 2}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-variable :var "Y8" :reg "A2"}
+  {:op :call :pred "group_keyed/2" :arity 2}
+  {:op :put-value :var "Y8" :reg "A1"}
+  {:op :put-variable :var "Y10" :reg "A2"}
+  {:op :call :pred "list_to_tree/2" :arity 2}
+  {:op :put-value :var "Y11" :reg "A1"}
+  {:op :put-structure :functor "icat/3" :reg "A2" :arity 3}
+  {:op :set-value :var "Y12"}
+  {:op :set-value :var "Y9"}
+  {:op :set-value :var "Y10"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :jump :label "L_ite_cont_33"}
+  {:op :trust-me}
+  {:op :put-value :var "Y11" :reg "A1"}
+  {:op :put-value :var "Y12" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :get-constant :constant 64 :reg "A1"}
   {:op :proceed}
   {:op :allocate}
   {:op :get-variable :var "X1" :reg "A1"}
@@ -1010,67 +1843,67 @@
   {:op :trust-me}
   {:op :allocate}
   {:op :get-list :reg "A1"}
-  {:op :unify-variable :var "X14"}
-  {:op :get-structure :functor "-/2" :reg "X14"}
-  {:op :unify-variable :var "Y10"}
+  {:op :unify-variable :var "X13"}
+  {:op :get-structure :functor "-/2" :reg "X13"}
+  {:op :unify-variable :var "Y9"}
   {:op :unify-variable :var "Y3"}
-  {:op :unify-variable :var "Y6"}
-  {:op :get-variable :var "Y8" :reg "A2"}
-  {:op :get-variable :var "Y9" :reg "A3"}
-  {:op :get-variable :var "Y11" :reg "A4"}
-  {:op :get-variable :var "Y12" :reg "A5"}
-  {:op :get-variable :var "Y13" :reg "A6"}
-  {:op :try-me-else :label "L_ite_else_20"}
-  {:op :put-value :var "Y10" :reg "A1"}
-  {:op :put-value :var "Y11" :reg "A2"}
+  {:op :unify-variable :var "Y5"}
+  {:op :get-variable :var "Y7" :reg "A2"}
+  {:op :get-variable :var "Y8" :reg "A3"}
+  {:op :get-variable :var "Y10" :reg "A4"}
+  {:op :get-variable :var "Y11" :reg "A5"}
+  {:op :get-variable :var "Y12" :reg "A6"}
+  {:op :try-me-else :label "L_ite_else_34"}
+  {:op :put-value :var "Y9" :reg "A1"}
+  {:op :put-value :var "Y10" :reg "A2"}
   {:op :builtin-call :pred "member/2" :arity 2}
   {:op :cut-ite}
-  {:op :put-value :var "Y6" :reg "A1"}
-  {:op :put-value :var "Y8" :reg "A2"}
-  {:op :put-value :var "Y9" :reg "A3"}
-  {:op :put-value :var "Y11" :reg "A4"}
-  {:op :put-value :var "Y12" :reg "A5"}
-  {:op :put-value :var "Y13" :reg "A6"}
+  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :put-value :var "Y8" :reg "A3"}
+  {:op :put-value :var "Y10" :reg "A4"}
+  {:op :put-value :var "Y11" :reg "A5"}
+  {:op :put-value :var "Y12" :reg "A6"}
   {:op :call :pred "inst_walk/6" :arity 6}
-  {:op :jump :label "L_ite_cont_20"}
+  {:op :jump :label "L_ite_cont_34"}
   {:op :trust-me}
-  {:op :put-variable :var "Y5" :reg "Y5"}
+  {:op :put-variable :var "Y4" :reg "Y4"}
   {:op :put-variable :var "Y1" :reg "Y1"}
   {:op :put-variable :var "Y2" :reg "Y2"}
-  {:op :begin-aggregate :kind "collect" :template "A1" :bag "Y5" :witnesses []}
-  {:op :put-value :var "Y8" :reg "A1"}
-  {:op :put-value :var "Y10" :reg "A2"}
+  {:op :begin-aggregate :kind "collect" :template "A1" :bag "Y4" :witnesses []}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-value :var "Y9" :reg "A2"}
   {:op :put-value :var "Y3" :reg "A3"}
-  {:op :put-value :var "Y1" :reg "A4"}
-  {:op :put-variable :var "Y4" :reg "A5"}
-  {:op :call :pred "depends_in/5" :arity 5}
+  {:op :put-value :var "Y8" :reg "A4"}
+  {:op :put-value :var "Y1" :reg "A5"}
+  {:op :call :pred "follow_dep_name/5" :arity 5}
   {:op :put-structure :functor "-/2" :reg "A1" :arity 2}
   {:op :set-value :var "Y1"}
   {:op :set-value :var "Y2"}
-  {:op :put-value :var "Y9" :reg "A2"}
+  {:op :put-value :var "Y8" :reg "A2"}
   {:op :builtin-call :pred "member/2" :arity 2}
   {:op :put-structure :functor "-/2" :reg "A1" :arity 2}
   {:op :set-value :var "Y1"}
   {:op :set-value :var "Y2"}
   {:op :end-aggregate :template "A1"}
-  {:op :put-value :var "Y5" :reg "A1"}
-  {:op :put-value :var "Y6" :reg "A2"}
-  {:op :put-variable :var "Y7" :reg "A3"}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :put-variable :var "Y6" :reg "A3"}
   {:op :builtin-call :pred "append/3" :arity 3}
-  {:op :put-value :var "Y7" :reg "A1"}
-  {:op :put-value :var "Y8" :reg "A2"}
-  {:op :put-value :var "Y9" :reg "A3"}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :put-value :var "Y8" :reg "A3"}
   {:op :put-structure :functor "[|]/2" :reg "A4" :arity 2}
+  {:op :set-value :var "Y9"}
   {:op :set-value :var "Y10"}
-  {:op :set-value :var "Y11"}
   {:op :put-structure :functor "[|]/2" :reg "A5" :arity 2}
-  {:op :set-value :var "Y10"}
-  {:op :set-value :var "Y12"}
-  {:op :put-value :var "Y13" :reg "A6"}
+  {:op :set-value :var "Y9"}
+  {:op :set-value :var "Y11"}
+  {:op :put-value :var "Y12" :reg "A6"}
   {:op :call :pred "inst_walk/6" :arity 6}
   {:op :deallocate}
   {:op :proceed}
-  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_installed_list_2_2_body"}] :reg "A1"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_installed_list_2_2_body"} {:functor "catalog/10" :label "L_installed_list_2_3_body"} {:functor "icat/3" :label "L_installed_list_2_4_body"}] :reg "A1"}
   {:op :try-me-else :label "L_installed_list_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -1081,7 +1914,7 @@
   {:op :unify-variable :var "X6"}
   {:op :get-value :var "X5" :reg "A2"}
   {:op :proceed}
-  {:op :trust-me}
+  {:op :retry-me-else :label "L_installed_list_2_3"}
   {:op :get-structure :functor "catalog/9" :reg "A1"}
   {:op :unify-variable :var "X1"}
   {:op :unify-variable :var "X2"}
@@ -1094,6 +1927,31 @@
   {:op :unify-variable :var "X9"}
   {:op :get-value :var "X5" :reg "A2"}
   {:op :proceed}
+  {:op :retry-me-else :label "L_installed_list_2_4"}
+  {:op :get-structure :functor "catalog/10" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "X7"}
+  {:op :unify-variable :var "X8"}
+  {:op :unify-variable :var "X9"}
+  {:op :unify-variable :var "X10"}
+  {:op :get-value :var "X5" :reg "A2"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-structure :functor "icat/3" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :get-variable :var "X4" :reg "A2"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X4" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "installed_list/2"}
   {:op :try-me-else :label "L_installed_or_base_3_2"}
   {:op :allocate}
   {:op :get-variable :var "X1" :reg "A1"}
@@ -1131,6 +1989,46 @@
   {:op :put-value :var "Y3" :reg "A2"}
   {:op :builtin-call :pred "member/2" :arity 2}
   {:op :deallocate}
+  {:op :proceed}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_is_public_catalog_1_2_body"} {:functor "catalog/10" :label "L_is_public_catalog_1_3_body"}] :reg "A1"}
+  {:op :try-me-else :label "L_is_public_catalog_1_2"}
+  {:op :get-structure :functor "catalog/6" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :proceed}
+  {:op :retry-me-else :label "L_is_public_catalog_1_3"}
+  {:op :get-structure :functor "catalog/9" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "X7"}
+  {:op :unify-variable :var "X8"}
+  {:op :unify-variable :var "X9"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :get-structure :functor "catalog/10" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "X7"}
+  {:op :unify-variable :var "X8"}
+  {:op :unify-variable :var "X9"}
+  {:op :unify-variable :var "X10"}
+  {:op :proceed}
+  {:op :get-structure :functor "v/3" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
   {:op :proceed}
   {:op :switch-on-structure :cases [{:functor "-/2" :label "default"} {:functor "base/2" :label "L_item_ver_3_2_body"} {:functor "layer/2" :label "L_item_ver_3_3_body"}] :reg "A1"}
   {:op :try-me-else :label "L_item_ver_3_2"}
@@ -1190,7 +2088,7 @@
   {:op :get-variable :var "Y5" :reg "A2"}
   {:op :get-variable :var "Y3" :reg "A3"}
   {:op :get-variable :var "Y7" :reg "A4"}
-  {:op :try-me-else :label "L_ite_else_21"}
+  {:op :try-me-else :label "L_ite_else_35"}
   {:op :put-value :var "Y5" :reg "A1"}
   {:op :put-value :var "Y1" :reg "A2"}
   {:op :put-value :var "Y2" :reg "A3"}
@@ -1204,7 +2102,7 @@
   {:op :set-value :var "Y1"}
   {:op :set-value :var "Y2"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_21"}
+  {:op :jump :label "L_ite_cont_35"}
   {:op :trust-me}
   {:op :put-variable :var "Y6" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
@@ -1215,6 +2113,83 @@
   {:op :put-value :var "Y7" :reg "A4"}
   {:op :deallocate}
   {:op :execute :pred "keep_installed_or_base/4"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_key_dep_rows_3_2_body" :reg "A1"}
+  {:op :try-me-else :label "L_key_dep_rows_3_2"}
+  {:op :get-constant :constant "[]" :reg "A1"}
+  {:op :get-variable :var "X1" :reg "A2"}
+  {:op :get-constant :constant "[]" :reg "A3"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-list :reg "A1"}
+  {:op :unify-variable :var "X5"}
+  {:op :get-structure :functor "depends/4" :reg "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "X7"}
+  {:op :unify-variable :var "X8"}
+  {:op :unify-variable :var "X9"}
+  {:op :unify-variable :var "Y2"}
+  {:op :get-variable :var "Y1" :reg "A2"}
+  {:op :get-list :reg "A3"}
+  {:op :unify-variable :var "X10"}
+  {:op :get-structure :functor "-/2" :reg "X10"}
+  {:op :unify-variable :var "X11"}
+  {:op :get-structure :functor "-/2" :reg "X11"}
+  {:op :unify-variable :var "X12"}
+  {:op :get-structure :functor "-/2" :reg "X12"}
+  {:op :unify-value :var "X6"}
+  {:op :unify-value :var "X7"}
+  {:op :unify-value :var "Y1"}
+  {:op :unify-variable :var "X13"}
+  {:op :unify-variable :var "Y4"}
+  {:op :put-value :var "X8" :reg "A1"}
+  {:op :put-value :var "X9" :reg "A2"}
+  {:op :put-value :var "X13" :reg "A3"}
+  {:op :call :pred "dep_to_req/3" :arity 3}
+  {:op :put-variable :var "Y3" :reg "A1"}
+  {:op :put-structure :functor "+/2" :reg "A2" :arity 2}
+  {:op :set-value :var "Y1"}
+  {:op :set-constant :constant 1}
+  {:op :builtin-call :pred "is/2" :arity 2}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :put-value :var "Y4" :reg "A3"}
+  {:op :deallocate}
+  {:op :execute :pred "key_dep_rows/3"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_key_pkg_rows_3_2_body" :reg "A1"}
+  {:op :try-me-else :label "L_key_pkg_rows_3_2"}
+  {:op :get-constant :constant "[]" :reg "A1"}
+  {:op :get-variable :var "X1" :reg "A2"}
+  {:op :get-constant :constant "[]" :reg "A3"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-list :reg "A1"}
+  {:op :unify-variable :var "X4"}
+  {:op :get-structure :functor "package/2" :reg "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "Y1"}
+  {:op :get-variable :var "X7" :reg "A2"}
+  {:op :get-list :reg "A3"}
+  {:op :unify-variable :var "X8"}
+  {:op :get-structure :functor "-/2" :reg "X8"}
+  {:op :unify-variable :var "X9"}
+  {:op :get-structure :functor "-/2" :reg "X9"}
+  {:op :unify-value :var "X5"}
+  {:op :unify-value :var "X7"}
+  {:op :unify-value :var "X6"}
+  {:op :unify-variable :var "Y3"}
+  {:op :put-variable :var "Y2" :reg "A1"}
+  {:op :put-structure :functor "+/2" :reg "A2" :arity 2}
+  {:op :set-value :var "X7"}
+  {:op :set-constant :constant 1}
+  {:op :builtin-call :pred "is/2" :arity 2}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :put-value :var "Y3" :reg "A3"}
+  {:op :deallocate}
+  {:op :execute :pred "key_pkg_rows/3"}
   {:op :allocate}
   {:op :get-variable :var "Y1" :reg "A1"}
   {:op :get-variable :var "X4" :reg "A2"}
@@ -1232,12 +2207,131 @@
   {:op :builtin-call :pred "!/0" :arity 0}
   {:op :deallocate}
   {:op :proceed}
+  {:op :try-me-else :label "L_layer_provider_5_2"}
+  {:op :allocate}
+  {:op :get-variable :var "Y3" :reg "A1"}
+  {:op :get-variable :var "Y6" :reg "A2"}
+  {:op :get-variable :var "Y7" :reg "A3"}
+  {:op :get-variable :var "Y4" :reg "A4"}
+  {:op :get-variable :var "Y5" :reg "A5"}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-variable :var "Y2" :reg "A2"}
+  {:op :call :pred "base_holds/2" :arity 2}
+  {:op :put-structure :functor "hold/3" :reg "A1" :arity 3}
+  {:op :set-value :var "Y4"}
+  {:op :set-value :var "Y5"}
+  {:op :set-variable :var "Y1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :put-value :var "Y5" :reg "A3"}
+  {:op :put-value :var "Y6" :reg "A4"}
+  {:op :put-value :var "Y7" :reg "A5"}
+  {:op :deallocate}
+  {:op :execute :pred "provides_sat/5"}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-variable :var "Y4" :reg "A1"}
+  {:op :get-variable :var "Y7" :reg "A2"}
+  {:op :get-variable :var "Y8" :reg "A3"}
+  {:op :get-variable :var "Y5" :reg "A4"}
+  {:op :get-variable :var "Y6" :reg "A5"}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-variable :var "Y2" :reg "A2"}
+  {:op :call :pred "layers_list/2" :arity 2}
+  {:op :put-structure :functor "layer/2" :reg "A1" :arity 2}
+  {:op :set-variable :var "Y1"}
+  {:op :set-variable :var "Y3"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :put-value :var "Y6" :reg "A3"}
+  {:op :call :pred "lookup_held/3" :arity 3}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :put-value :var "Y6" :reg "A3"}
+  {:op :put-value :var "Y7" :reg "A4"}
+  {:op :put-value :var "Y8" :reg "A5"}
+  {:op :deallocate}
+  {:op :execute :pred "provides_sat/5"}
+  {:op :try-me-else :label "L_layer_satisfies_3_2"}
+  {:op :allocate}
+  {:op :get-variable :var "X3" :reg "A1"}
+  {:op :get-variable :var "X4" :reg "A2"}
+  {:op :get-variable :var "Y2" :reg "A3"}
+  {:op :put-value :var "X3" :reg "A1"}
+  {:op :put-value :var "X4" :reg "A2"}
+  {:op :put-variable :var "Y1" :reg "A3"}
+  {:op :call :pred "base_ver/3" :arity 3}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "satisfies/2"}
+  {:op :retry-me-else :label "L_layer_satisfies_3_3"}
+  {:op :allocate}
+  {:op :get-variable :var "Y3" :reg "A1"}
+  {:op :get-variable :var "Y6" :reg "A2"}
+  {:op :get-variable :var "Y7" :reg "A3"}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-variable :var "Y2" :reg "A2"}
+  {:op :call :pred "base_holds/2" :arity 2}
+  {:op :put-structure :functor "hold/3" :reg "A1" :arity 3}
+  {:op :set-variable :var "Y4"}
+  {:op :set-variable :var "Y5"}
+  {:op :set-variable :var "Y1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :put-value :var "Y5" :reg "A3"}
+  {:op :put-value :var "Y6" :reg "A4"}
+  {:op :put-value :var "Y7" :reg "A5"}
+  {:op :deallocate}
+  {:op :execute :pred "provides_sat/5"}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-variable :var "Y4" :reg "A1"}
+  {:op :get-variable :var "Y7" :reg "A2"}
+  {:op :get-variable :var "Y8" :reg "A3"}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-variable :var "Y2" :reg "A2"}
+  {:op :call :pred "layers_list/2" :arity 2}
+  {:op :put-structure :functor "layer/2" :reg "A1" :arity 2}
+  {:op :set-variable :var "Y1"}
+  {:op :set-variable :var "Y3"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-variable :var "Y5" :reg "A2"}
+  {:op :put-variable :var "Y6" :reg "A3"}
+  {:op :call :pred "lookup_held/3" :arity 3}
+  {:op :try-me-else :label "L_ite_else_36"}
+  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :builtin-call :pred "==/2" :arity 2}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y8" :reg "A2"}
+  {:op :call :pred "satisfies/2" :arity 2}
+  {:op :cut-ite}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :jump :label "L_ite_cont_36"}
+  {:op :trust-me}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :put-value :var "Y6" :reg "A3"}
+  {:op :put-value :var "Y7" :reg "A4"}
+  {:op :put-value :var "Y8" :reg "A5"}
+  {:op :call :pred "provides_sat/5" :arity 5}
+  {:op :deallocate}
+  {:op :proceed}
   {:op :allocate}
   {:op :get-variable :var "Y2" :reg "A1"}
   {:op :get-variable :var "Y3" :reg "A2"}
   {:op :get-variable :var "Y4" :reg "A3"}
   {:op :get-variable :var "Y5" :reg "A4"}
-  {:op :try-me-else :label "L_ite_else_22"}
+  {:op :try-me-else :label "L_ite_else_37"}
   {:op :put-value :var "Y2" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
   {:op :put-variable :var "Y1" :reg "A3"}
@@ -1249,7 +2343,7 @@
   {:op :put-value :var "Y5" :reg "A1"}
   {:op :put-value :var "Y1" :reg "A2"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_22"}
+  {:op :jump :label "L_ite_cont_37"}
   {:op :trust-me}
   {:op :put-value :var "Y2" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
@@ -1259,7 +2353,7 @@
   {:op :builtin-call :pred "!/0" :arity 0}
   {:op :deallocate}
   {:op :proceed}
-  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_layers_list_2_2_body"}] :reg "A1"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_layers_list_2_2_body"} {:functor "catalog/10" :label "L_layers_list_2_3_body"} {:functor "icat/3" :label "L_layers_list_2_4_body"}] :reg "A1"}
   {:op :try-me-else :label "L_layers_list_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -1270,7 +2364,7 @@
   {:op :unify-variable :var "X6"}
   {:op :get-constant :constant "[]" :reg "A2"}
   {:op :proceed}
-  {:op :trust-me}
+  {:op :retry-me-else :label "L_layers_list_2_3"}
   {:op :get-structure :functor "catalog/9" :reg "A1"}
   {:op :unify-variable :var "X1"}
   {:op :unify-variable :var "X2"}
@@ -1283,13 +2377,73 @@
   {:op :unify-variable :var "X9"}
   {:op :get-value :var "X7" :reg "A2"}
   {:op :proceed}
+  {:op :retry-me-else :label "L_layers_list_2_4"}
+  {:op :get-structure :functor "catalog/10" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "X7"}
+  {:op :unify-variable :var "X8"}
+  {:op :unify-variable :var "X9"}
+  {:op :unify-variable :var "X10"}
+  {:op :get-value :var "X7" :reg "A2"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-structure :functor "icat/3" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :get-variable :var "X4" :reg "A2"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X4" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "layers_list/2"}
+  {:op :allocate}
+  {:op :get-variable :var "Y2" :reg "A1"}
+  {:op :get-variable :var "Y3" :reg "A2"}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-variable :var "Y1" :reg "A2"}
+  {:op :builtin-call :pred "length/2" :arity 2}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :put-value :var "Y3" :reg "A3"}
+  {:op :put-constant :constant "[]" :reg "A4"}
+  {:op :deallocate}
+  {:op :execute :pred "build_tree/4"}
+  {:op :allocate}
+  {:op :get-list :reg "A1"}
+  {:op :unify-variable :var "X4"}
+  {:op :unify-variable :var "Y2"}
+  {:op :get-variable :var "Y1" :reg "A2"}
+  {:op :try-me-else :label "L_ite_else_38"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-constant :constant 1 :reg "A2"}
+  {:op :builtin-call :pred "=</2" :arity 2}
+  {:op :cut-ite}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :jump :label "L_ite_cont_38"}
+  {:op :trust-me}
+  {:op :put-variable :var "Y3" :reg "A1"}
+  {:op :put-structure :functor "+/2" :reg "A2" :arity 2}
+  {:op :set-value :var "Y1"}
+  {:op :set-constant :constant -1}
+  {:op :builtin-call :pred "is/2" :arity 2}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :call :pred "long_enough/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
   {:op :allocate}
   {:op :get-list :reg "A1"}
   {:op :unify-variable :var "Y1"}
   {:op :unify-variable :var "Y3"}
   {:op :get-variable :var "Y4" :reg "A2"}
   {:op :get-variable :var "Y5" :reg "A3"}
-  {:op :try-me-else :label "L_ite_else_23"}
+  {:op :try-me-else :label "L_ite_else_39"}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-value :var "Y4" :reg "A2"}
   {:op :put-variable :var "Y2" :reg "A3"}
@@ -1298,7 +2452,7 @@
   {:op :put-value :var "Y5" :reg "A1"}
   {:op :put-value :var "Y2" :reg "A2"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_23"}
+  {:op :jump :label "L_ite_cont_39"}
   {:op :trust-me}
   {:op :put-value :var "Y3" :reg "A1"}
   {:op :put-value :var "Y4" :reg "A2"}
@@ -1340,41 +2494,42 @@
   {:op :trust-me}
   {:op :allocate}
   {:op :get-list :reg "A1"}
-  {:op :unify-variable :var "X10"}
-  {:op :get-structure :functor "depends/4" :reg "X10"}
+  {:op :unify-variable :var "X11"}
+  {:op :get-structure :functor "depends/4" :reg "X11"}
   {:op :unify-variable :var "Y1"}
   {:op :unify-variable :var "Y2"}
   {:op :unify-variable :var "Y3"}
   {:op :unify-variable :var "Y4"}
-  {:op :unify-variable :var "Y6"}
-  {:op :get-variable :var "Y7" :reg "A2"}
-  {:op :get-variable :var "Y8" :reg "A3"}
-  {:op :get-variable :var "Y5" :reg "A4"}
-  {:op :try-me-else :label "L_ite_else_24"}
+  {:op :unify-variable :var "Y7"}
+  {:op :get-variable :var "Y8" :reg "A2"}
+  {:op :get-variable :var "Y9" :reg "A3"}
+  {:op :get-variable :var "Y6" :reg "A4"}
+  {:op :try-me-else :label "L_ite_else_40"}
   {:op :put-value :var "Y1" :reg "A1"}
-  {:op :put-value :var "Y7" :reg "A2"}
-  {:op :builtin-call :pred "==/2" :arity 2}
-  {:op :put-value :var "Y2" :reg "A1"}
   {:op :put-value :var "Y8" :reg "A2"}
   {:op :builtin-call :pred "==/2" :arity 2}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y9" :reg "A2"}
+  {:op :builtin-call :pred "==/2" :arity 2}
   {:op :cut-ite}
-  {:op :put-value :var "Y5" :reg "A1"}
-  {:op :put-structure :functor "[|]/2" :reg "A2" :arity 2}
-  {:op :set-variable :var "X12"}
-  {:op :set-variable :var "Y9"}
-  {:op :put-structure :functor "req/2" :reg "X12" :arity 2}
-  {:op :set-value :var "Y3"}
-  {:op :set-value :var "Y4"}
-  {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_24"}
-  {:op :trust-me}
-  {:op :put-value :var "Y5" :reg "A1"}
-  {:op :put-variable :var "Y9" :reg "A2"}
-  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :put-variable :var "Y5" :reg "A3"}
+  {:op :call :pred "dep_to_req/3" :arity 3}
   {:op :put-value :var "Y6" :reg "A1"}
-  {:op :put-value :var "Y7" :reg "A2"}
-  {:op :put-value :var "Y8" :reg "A3"}
-  {:op :put-value :var "Y9" :reg "A4"}
+  {:op :put-structure :functor "[|]/2" :reg "A2" :arity 2}
+  {:op :set-value :var "Y5"}
+  {:op :set-variable :var "Y10"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :jump :label "L_ite_cont_40"}
+  {:op :trust-me}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-variable :var "Y10" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-value :var "Y8" :reg "A2"}
+  {:op :put-value :var "Y9" :reg "A3"}
+  {:op :put-value :var "Y10" :reg "A4"}
   {:op :deallocate}
   {:op :execute :pred "matching_deps/4"}
   {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_matching_versions_4_2_body" :reg "A1"}
@@ -1395,7 +2550,7 @@
   {:op :get-variable :var "Y5" :reg "A2"}
   {:op :get-variable :var "Y6" :reg "A3"}
   {:op :get-variable :var "Y3" :reg "A4"}
-  {:op :try-me-else :label "L_ite_else_25"}
+  {:op :try-me-else :label "L_ite_else_41"}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-value :var "Y5" :reg "A2"}
   {:op :builtin-call :pred "==/2" :arity 2}
@@ -1408,7 +2563,7 @@
   {:op :set-value :var "Y2"}
   {:op :set-variable :var "Y7"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_25"}
+  {:op :jump :label "L_ite_cont_41"}
   {:op :trust-me}
   {:op :put-value :var "Y3" :reg "A1"}
   {:op :put-variable :var "Y7" :reg "A2"}
@@ -1419,6 +2574,43 @@
   {:op :put-value :var "Y7" :reg "A4"}
   {:op :deallocate}
   {:op :execute :pred "matching_versions/4"}
+  {:op :allocate}
+  {:op :get-variable :var "Y3" :reg "A1"}
+  {:op :get-variable :var "Y5" :reg "A2"}
+  {:op :get-variable :var "Y6" :reg "A3"}
+  {:op :get-variable :var "Y7" :reg "A4"}
+  {:op :try-me-else :label "L_ite_else_42"}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-variable :var "Y1" :reg "A2"}
+  {:op :call :pred "pkg_index/2" :arity 2}
+  {:op :cut-ite}
+  {:op :try-me-else :label "L_ite_else_43"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :put-variable :var "Y2" :reg "A3"}
+  {:op :call :pred "tree_lookup/3" :arity 3}
+  {:op :cut-ite}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y6" :reg "A2"}
+  {:op :put-value :var "Y7" :reg "A3"}
+  {:op :call :pred "filter_satisfies/3" :arity 3}
+  {:op :jump :label "L_ite_cont_43"}
+  {:op :trust-me}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-constant :constant "[]" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :jump :label "L_ite_cont_42"}
+  {:op :trust-me}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-variable :var "Y4" :reg "A2"}
+  {:op :call :pred "packages/2" :arity 2}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :put-value :var "Y6" :reg "A3"}
+  {:op :put-value :var "Y7" :reg "A4"}
+  {:op :call :pred "matching_versions/4" :arity 4}
+  {:op :deallocate}
+  {:op :proceed}
   {:op :get-variable :var "X1" :reg "A1"}
   {:op :get-variable :var "X2" :reg "A2"}
   {:op :get-variable :var "X3" :reg "A3"}
@@ -1489,7 +2681,7 @@
   {:op :unify-variable :var "Y1"}
   {:op :unify-variable :var "Y2"}
   {:op :unify-variable :var "Y6"}
-  {:op :try-me-else :label "L_ite_else_26"}
+  {:op :try-me-else :label "L_ite_else_44"}
   {:op :put-value :var "Y3" :reg "A1"}
   {:op :put-value :var "Y4" :reg "A2"}
   {:op :put-value :var "Y5" :reg "A3"}
@@ -1497,10 +2689,10 @@
   {:op :call :pred "conflicts_in/4" :arity 4}
   {:op :builtin-call :pred "!/0" :arity 0}
   {:op :builtin-call :pred "fail/0" :arity 0}
-  {:op :jump :label "L_ite_cont_26"}
+  {:op :jump :label "L_ite_cont_44"}
   {:op :trust-me}
   {:op :builtin-call :pred "true/0" :arity 0}
-  {:op :try-me-else :label "L_ite_else_27"}
+  {:op :try-me-else :label "L_ite_else_45"}
   {:op :put-value :var "Y3" :reg "A1"}
   {:op :put-value :var "Y1" :reg "A2"}
   {:op :put-value :var "Y2" :reg "A3"}
@@ -1508,7 +2700,7 @@
   {:op :call :pred "conflicts_in/4" :arity 4}
   {:op :builtin-call :pred "!/0" :arity 0}
   {:op :builtin-call :pred "fail/0" :arity 0}
-  {:op :jump :label "L_ite_cont_27"}
+  {:op :jump :label "L_ite_cont_45"}
   {:op :trust-me}
   {:op :builtin-call :pred "true/0" :arity 0}
   {:op :put-value :var "Y3" :reg "A1"}
@@ -1517,6 +2709,118 @@
   {:op :put-value :var "Y6" :reg "A4"}
   {:op :deallocate}
   {:op :execute :pred "no_acc_conflicts/4"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_order_lt_2_list_dispatch" :reg "A1"}
+  {:op :try-me-else :label "L_order_lt_2_2"}
+  {:op :allocate}
+  {:op :get-constant :constant "[]" :reg "A1"}
+  {:op :get-constant :constant "[]" :reg "A2"}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :builtin-call :pred "fail/0" :arity 0}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :retry-me-else :label "L_order_lt_2_3"}
+  {:op :allocate}
+  {:op :get-constant :constant "[]" :reg "A1"}
+  {:op :get-list :reg "A2"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :put-value :var "X2" :reg "A1"}
+  {:op :put-variable :var "Y1" :reg "A2"}
+  {:op :call :pred "order_val/2" :arity 2}
+  {:op :put-constant :constant 0 :reg "A1"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :builtin-call :pred "</2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :retry-me-else :label "L_order_lt_2_4"}
+  {:op :allocate}
+  {:op :get-list :reg "A1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :get-constant :constant "[]" :reg "A2"}
+  {:op :put-value :var "X2" :reg "A1"}
+  {:op :put-variable :var "Y1" :reg "A2"}
+  {:op :call :pred "order_val/2" :arity 2}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-constant :constant 0 :reg "A2"}
+  {:op :builtin-call :pred "</2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-list :reg "A1"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "Y4"}
+  {:op :get-list :reg "A2"}
+  {:op :unify-variable :var "Y1"}
+  {:op :unify-variable :var "Y5"}
+  {:op :put-value :var "X6" :reg "A1"}
+  {:op :put-variable :var "Y2" :reg "A2"}
+  {:op :call :pred "order_val/2" :arity 2}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-variable :var "Y3" :reg "A2"}
+  {:op :call :pred "order_val/2" :arity 2}
+  {:op :try-me-else :label "L_ite_else_46"}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :builtin-call :pred "</2" :arity 2}
+  {:op :cut-ite}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :jump :label "L_ite_cont_46"}
+  {:op :trust-me}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :builtin-call :pred "=:=/2" :arity 2}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :call :pred "order_lt/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :try :label "L_order_lt_2_3_body"}
+  {:op :trust :label "L_order_lt_2_4_body"}
+  {:op :switch-on-constant :cases [{:value 126 :label "default"}] :reg "A1" :fallthrough? true}
+  {:op :try-me-else :label "L_order_val_2_2"}
+  {:op :allocate}
+  {:op :get-constant :constant 126 :reg "A1"}
+  {:op :get-constant :constant -1 :reg "A2"}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :retry-me-else :label "L_order_val_2_3"}
+  {:op :allocate}
+  {:op :get-variable :var "Y1" :reg "A1"}
+  {:op :get-value :var "Y1" :reg "A2"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-constant :constant 65 :reg "A2"}
+  {:op :builtin-call :pred ">=/2" :arity 2}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-constant :constant 90 :reg "A2"}
+  {:op :builtin-call :pred "=</2" :arity 2}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :retry-me-else :label "L_order_val_2_4"}
+  {:op :allocate}
+  {:op :get-variable :var "Y1" :reg "A1"}
+  {:op :get-value :var "Y1" :reg "A2"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-constant :constant 97 :reg "A2"}
+  {:op :builtin-call :pred ">=/2" :arity 2}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-constant :constant 122 :reg "A2"}
+  {:op :builtin-call :pred "=</2" :arity 2}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :get-variable :var "X1" :reg "A1"}
+  {:op :get-variable :var "X2" :reg "A2"}
+  {:op :put-value :var "X2" :reg "A1"}
+  {:op :put-structure :functor "+/2" :reg "A2" :arity 2}
+  {:op :set-value :var "X1"}
+  {:op :set-constant :constant 256}
+  {:op :builtin-call :pred "is/2" :arity 2}
+  {:op :proceed}
   {:op :allocate}
   {:op :get-variable :var "X4" :reg "A1"}
   {:op :get-variable :var "Y1" :reg "A2"}
@@ -1531,7 +2835,20 @@
   {:op :builtin-call :pred "member/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
-  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_packages_2_2_body"}] :reg "A1"}
+  {:op :allocate}
+  {:op :get-variable :var "X4" :reg "A1"}
+  {:op :get-variable :var "Y1" :reg "A2"}
+  {:op :put-value :var "X4" :reg "A1"}
+  {:op :put-variable :var "Y3" :reg "A2"}
+  {:op :call :pred "packages/2" :arity 2}
+  {:op :put-structure :functor "package/2" :reg "A1" :arity 2}
+  {:op :set-value :var "Y1"}
+  {:op :set-variable :var "Y2"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_packages_2_2_body"} {:functor "catalog/10" :label "L_packages_2_3_body"} {:functor "icat/3" :label "L_packages_2_4_body"}] :reg "A1"}
   {:op :try-me-else :label "L_packages_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -1542,7 +2859,7 @@
   {:op :unify-variable :var "X6"}
   {:op :get-value :var "X1" :reg "A2"}
   {:op :proceed}
-  {:op :trust-me}
+  {:op :retry-me-else :label "L_packages_2_3"}
   {:op :get-structure :functor "catalog/9" :reg "A1"}
   {:op :unify-variable :var "X1"}
   {:op :unify-variable :var "X2"}
@@ -1553,6 +2870,48 @@
   {:op :unify-variable :var "X7"}
   {:op :unify-variable :var "X8"}
   {:op :unify-variable :var "X9"}
+  {:op :get-value :var "X1" :reg "A2"}
+  {:op :proceed}
+  {:op :retry-me-else :label "L_packages_2_4"}
+  {:op :get-structure :functor "catalog/10" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "X7"}
+  {:op :unify-variable :var "X8"}
+  {:op :unify-variable :var "X9"}
+  {:op :unify-variable :var "X10"}
+  {:op :get-value :var "X1" :reg "A2"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-structure :functor "icat/3" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :get-variable :var "X4" :reg "A2"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X4" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "packages/2"}
+  {:op :switch-on-constant :cases [{:value "[]" :label "default"}] :reg "A1" :fallthrough? true}
+  {:op :try-me-else :label "L_pad_head_2_2"}
+  {:op :allocate}
+  {:op :get-constant :constant "[]" :reg "A1"}
+  {:op :get-list :reg "A2"}
+  {:op :unify-variable :var "X1"}
+  {:op :get-structure :functor "s/2" :reg "X1"}
+  {:op :unify-constant :constant "[]"}
+  {:op :unify-constant :constant 0}
+  {:op :unify-constant :constant "[]"}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :get-variable :var "X1" :reg "A1"}
   {:op :get-value :var "X1" :reg "A2"}
   {:op :proceed}
   {:op :switch-on-constant :cases [{:value "classic" :label "default"} {:value "layered" :label "L_pick_7_2_body"}] :reg "A1" :fallthrough? false}
@@ -1580,7 +2939,7 @@
   {:op :get-variable :var "X7" :reg "A5"}
   {:op :get-variable :var "Y5" :reg "A6"}
   {:op :get-variable :var "Y6" :reg "A7"}
-  {:op :try-me-else :label "L_ite_else_28"}
+  {:op :try-me-else :label "L_ite_else_47"}
   {:op :put-value :var "Y2" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
   {:op :put-variable :var "Y1" :reg "A3"}
@@ -1595,7 +2954,7 @@
   {:op :put-value :var "Y6" :reg "A1"}
   {:op :put-constant :constant "from_base" :reg "A2"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_28"}
+  {:op :jump :label "L_ite_cont_47"}
   {:op :trust-me}
   {:op :put-value :var "Y2" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
@@ -1603,6 +2962,109 @@
   {:op :put-value :var "Y5" :reg "A4"}
   {:op :call :pred "candidates_high_first/4" :arity 4}
   {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-constant :constant "from_catalog" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :switch-on-constant :cases [{:value "classic" :label "default"} {:value "layered" :label "L_pick_need_8_3_body"}] :reg "A1" :fallthrough? false}
+  {:op :try-me-else :label "L_pick_need_8_2"}
+  {:op :allocate}
+  {:op :get-constant :constant "classic" :reg "A1"}
+  {:op :get-variable :var "X1" :reg "A2"}
+  {:op :get-variable :var "X2" :reg "A3"}
+  {:op :get-variable :var "X3" :reg "A4"}
+  {:op :get-variable :var "X4" :reg "A5"}
+  {:op :get-value :var "X2" :reg "A6"}
+  {:op :get-variable :var "X5" :reg "A7"}
+  {:op :get-constant :constant "from_catalog" :reg "A8"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X2" :reg "A2"}
+  {:op :put-value :var "X3" :reg "A3"}
+  {:op :put-value :var "X5" :reg "A4"}
+  {:op :deallocate}
+  {:op :execute :pred "candidates_high_first/4"}
+  {:op :retry-me-else :label "L_pick_need_8_3"}
+  {:op :allocate}
+  {:op :get-constant :constant "classic" :reg "A1"}
+  {:op :get-variable :var "X1" :reg "A2"}
+  {:op :get-variable :var "X2" :reg "A3"}
+  {:op :get-variable :var "X3" :reg "A4"}
+  {:op :get-variable :var "X4" :reg "A5"}
+  {:op :get-variable :var "X5" :reg "A6"}
+  {:op :get-variable :var "X6" :reg "A7"}
+  {:op :get-constant :constant "from_catalog" :reg "A8"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X2" :reg "A2"}
+  {:op :put-value :var "X3" :reg "A3"}
+  {:op :put-value :var "X5" :reg "A4"}
+  {:op :put-value :var "X6" :reg "A5"}
+  {:op :deallocate}
+  {:op :execute :pred "provider_candidate/5"}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-constant :constant "layered" :reg "A1"}
+  {:op :get-variable :var "Y2" :reg "A2"}
+  {:op :get-variable :var "Y3" :reg "A3"}
+  {:op :get-variable :var "Y4" :reg "A4"}
+  {:op :get-variable :var "X8" :reg "A5"}
+  {:op :get-variable :var "Y5" :reg "A6"}
+  {:op :get-variable :var "Y6" :reg "A7"}
+  {:op :get-variable :var "Y7" :reg "A8"}
+  {:op :try-me-else :label "L_ite_else_48"}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :put-variable :var "Y1" :reg "A3"}
+  {:op :call :pred "base_ver/3" :arity 3}
+  {:op :cut-ite}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :call :pred "satisfies/2" :arity 2}
+  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-constant :constant "from_base" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :jump :label "L_ite_cont_48"}
+  {:op :trust-me}
+  {:op :try-me-else :label "L_ite_else_49"}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :put-value :var "Y4" :reg "A3"}
+  {:op :put-value :var "Y5" :reg "A4"}
+  {:op :put-value :var "Y6" :reg "A5"}
+  {:op :call :pred "layer_provider/5" :arity 5}
+  {:op :cut-ite}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-constant :constant "from_base" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :jump :label "L_ite_cont_49"}
+  {:op :trust-me}
+  {:op :try-me-else :label "L_ite_else_50"}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :put-value :var "Y4" :reg "A3"}
+  {:op :put-value :var "Y6" :reg "A4"}
+  {:op :call :pred "candidates_high_first/4" :arity 4}
+  {:op :cut-ite}
+  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-constant :constant "from_catalog" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :jump :label "L_ite_cont_50"}
+  {:op :trust-me}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :put-value :var "Y4" :reg "A3"}
+  {:op :put-value :var "Y5" :reg "A4"}
+  {:op :put-value :var "Y6" :reg "A5"}
+  {:op :call :pred "provider_candidate/5" :arity 5}
+  {:op :put-value :var "Y7" :reg "A1"}
   {:op :put-constant :constant "from_catalog" :reg "A2"}
   {:op :builtin-call :pred "=/2" :arity 2}
   {:op :deallocate}
@@ -1623,6 +3085,175 @@
   {:op :put-value :var "Y4" :reg "A4"}
   {:op :deallocate}
   {:op :execute :pred "repairs_moving/4"}
+  {:op :get-structure :functor "icat/3" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :get-value :var "X3" :reg "A2"}
+  {:op :proceed}
+  {:op :switch-on-structure :cases [{:functor "provides/3" :label "default"} {:functor "provides/4" :label "L_provide_row_5_2_body"}] :reg "A1"}
+  {:op :try-me-else :label "L_provide_row_5_2"}
+  {:op :get-structure :functor "provides/3" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :get-value :var "X1" :reg "A2"}
+  {:op :get-value :var "X2" :reg "A3"}
+  {:op :get-value :var "X3" :reg "A4"}
+  {:op :get-constant :constant "unversioned" :reg "A5"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :get-structure :functor "provides/4" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :get-value :var "X1" :reg "A2"}
+  {:op :get-value :var "X2" :reg "A3"}
+  {:op :get-value :var "X3" :reg "A4"}
+  {:op :get-value :var "X4" :reg "A5"}
+  {:op :proceed}
+  {:op :switch-on-constant :cases [{:value "unversioned" :label "default"}] :reg "A1" :fallthrough? true}
+  {:op :try-me-else :label "L_provide_satisfies_2_2"}
+  {:op :get-constant :constant "unversioned" :reg "A1"}
+  {:op :get-constant :constant "any" :reg "A2"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-variable :var "Y1" :reg "A1"}
+  {:op :get-variable :var "Y2" :reg "A2"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-constant :constant "unversioned" :reg "A2"}
+  {:op :builtin-call :pred "\\==/2" :arity 2}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "satisfies/2"}
+  {:op :allocate}
+  {:op :get-variable :var "Y6" :reg "A1"}
+  {:op :get-variable :var "Y3" :reg "A2"}
+  {:op :get-variable :var "Y5" :reg "A3"}
+  {:op :get-variable :var "Y7" :reg "A4"}
+  {:op :get-variable :var "Y8" :reg "A5"}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-variable :var "Y1" :reg "A2"}
+  {:op :call :pred "provides_list/2" :arity 2}
+  {:op :put-variable :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :put-value :var "Y8" :reg "A3"}
+  {:op :put-value :var "Y3" :reg "A4"}
+  {:op :put-variable :var "Y4" :reg "A5"}
+  {:op :call :pred "provide_row/5" :arity 5}
+  {:op :try-me-else :label "L_ite_else_51"}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :call :pred "excluded_name/2" :arity 2}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :builtin-call :pred "fail/0" :arity 0}
+  {:op :jump :label "L_ite_cont_51"}
+  {:op :trust-me}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :call :pred "provide_satisfies/2" :arity 2}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :put-value :var "Y8" :reg "A3"}
+  {:op :deallocate}
+  {:op :execute :pred "package_in/3"}
+  {:op :allocate}
+  {:op :get-variable :var "X7" :reg "A1"}
+  {:op :get-variable :var "Y5" :reg "A2"}
+  {:op :get-variable :var "Y3" :reg "A3"}
+  {:op :get-variable :var "Y4" :reg "A4"}
+  {:op :get-variable :var "Y6" :reg "A5"}
+  {:op :put-value :var "X7" :reg "A1"}
+  {:op :put-variable :var "Y1" :reg "A2"}
+  {:op :call :pred "provides_list/2" :arity 2}
+  {:op :put-variable :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :put-value :var "Y4" :reg "A3"}
+  {:op :put-value :var "Y5" :reg "A4"}
+  {:op :put-value :var "Y6" :reg "A5"}
+  {:op :deallocate}
+  {:op :execute :pred "provide_row/5"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_provides_list_2_2_body"} {:functor "catalog/10" :label "L_provides_list_2_3_body"} {:functor "icat/3" :label "L_provides_list_2_4_body"}] :reg "A1"}
+  {:op :try-me-else :label "L_provides_list_2_2"}
+  {:op :get-structure :functor "catalog/6" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :get-constant :constant "[]" :reg "A2"}
+  {:op :proceed}
+  {:op :retry-me-else :label "L_provides_list_2_3"}
+  {:op :get-structure :functor "catalog/9" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "X7"}
+  {:op :unify-variable :var "X8"}
+  {:op :unify-variable :var "X9"}
+  {:op :get-constant :constant "[]" :reg "A2"}
+  {:op :proceed}
+  {:op :retry-me-else :label "L_provides_list_2_4"}
+  {:op :get-structure :functor "catalog/10" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "X7"}
+  {:op :unify-variable :var "X8"}
+  {:op :unify-variable :var "X9"}
+  {:op :unify-variable :var "X10"}
+  {:op :get-value :var "X10" :reg "A2"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-structure :functor "icat/3" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :get-variable :var "X4" :reg "A2"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X4" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "provides_list/2"}
+  {:op :allocate}
+  {:op :get-variable :var "X8" :reg "A1"}
+  {:op :get-variable :var "Y3" :reg "A2"}
+  {:op :get-variable :var "Y4" :reg "A3"}
+  {:op :get-variable :var "Y5" :reg "A4"}
+  {:op :get-variable :var "Y7" :reg "A5"}
+  {:op :put-value :var "X8" :reg "A1"}
+  {:op :put-variable :var "Y1" :reg "A2"}
+  {:op :call :pred "provides_list/2" :arity 2}
+  {:op :put-variable :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :put-value :var "Y4" :reg "A3"}
+  {:op :put-value :var "Y5" :reg "A4"}
+  {:op :put-variable :var "Y6" :reg "A5"}
+  {:op :call :pred "provide_row/5" :arity 5}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "provide_satisfies/2"}
   {:op :allocate}
   {:op :get-variable :var "Y10" :reg "A1"}
   {:op :get-variable :var "X13" :reg "A2"}
@@ -1634,19 +3265,19 @@
   {:op :put-value :var "Y10" :reg "A1"}
   {:op :put-variable :var "Y6" :reg "A2"}
   {:op :call :pred "installed_list/2" :arity 2}
-  {:op :try-me-else :label "L_ite_else_29"}
+  {:op :try-me-else :label "L_ite_else_52"}
   {:op :put-value :var "Y10" :reg "A1"}
   {:op :put-value :var "Y7" :reg "A2"}
   {:op :put-variable :var "Y1" :reg "A3"}
   {:op :call :pred "installed_ver/3" :arity 3}
   {:op :cut-ite}
   {:op :builtin-call :pred "true/0" :arity 0}
-  {:op :jump :label "L_ite_cont_29"}
+  {:op :jump :label "L_ite_cont_52"}
   {:op :trust-me}
   {:op :put-variable :var "Y1" :reg "A1"}
   {:op :put-constant :constant "none" :reg "A2"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :try-me-else :label "L_ite_else_30"}
+  {:op :try-me-else :label "L_ite_else_53"}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-constant :constant "none" :reg "A2"}
   {:op :builtin-call :pred "==/2" :arity 2}
@@ -1654,7 +3285,7 @@
   {:op :put-value :var "Y12" :reg "A1"}
   {:op :put-constant :constant "[]" :reg "A2"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_30"}
+  {:op :jump :label "L_ite_cont_53"}
   {:op :trust-me}
   {:op :put-value :var "Y10" :reg "A1"}
   {:op :put-value :var "Y6" :reg "A2"}
@@ -1689,22 +3320,22 @@
   {:op :put-value :var "Y4" :reg "A1"}
   {:op :put-value :var "Y8" :reg "A2"}
   {:op :builtin-call :pred "member/2" :arity 2}
-  {:op :try-me-else :label "L_ite_else_31"}
+  {:op :try-me-else :label "L_ite_else_54"}
   {:op :put-value :var "Y4" :reg "A1"}
   {:op :put-value :var "Y9" :reg "A2"}
   {:op :builtin-call :pred "member/2" :arity 2}
   {:op :cut-ite}
   {:op :builtin-call :pred "fail/0" :arity 0}
-  {:op :jump :label "L_ite_cont_31"}
+  {:op :jump :label "L_ite_cont_54"}
   {:op :trust-me}
   {:op :builtin-call :pred "true/0" :arity 0}
-  {:op :try-me-else :label "L_ite_else_32"}
+  {:op :try-me-else :label "L_ite_else_55"}
   {:op :put-value :var "Y10" :reg "A1"}
   {:op :put-value :var "Y4" :reg "A2"}
   {:op :call :pred "base_name/2" :arity 2}
   {:op :cut-ite}
   {:op :builtin-call :pred "fail/0" :arity 0}
-  {:op :jump :label "L_ite_cont_32"}
+  {:op :jump :label "L_ite_cont_55"}
   {:op :trust-me}
   {:op :builtin-call :pred "true/0" :arity 0}
   {:op :put-structure :functor "-/2" :reg "A1" :arity 2}
@@ -1731,11 +3362,44 @@
   {:op :put-value :var "Y2" :reg "A2"}
   {:op :deallocate}
   {:op :execute :pred "reqs_ok_moving/2"}
-  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_reqs_ok_moving_2_2_body" :reg "A1"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_reqs_ok_moving_2_list_dispatch" :reg "A1"}
   {:op :try-me-else :label "L_reqs_ok_moving_2_2"}
   {:op :get-constant :constant "[]" :reg "A1"}
   {:op :get-variable :var "X1" :reg "A2"}
   {:op :proceed}
+  {:op :retry-me-else :label "L_reqs_ok_moving_2_3"}
+  {:op :allocate}
+  {:op :get-list :reg "A1"}
+  {:op :unify-variable :var "X7"}
+  {:op :get-structure :functor "req/2" :reg "X7"}
+  {:op :unify-variable :var "X8"}
+  {:op :get-structure :functor "alternatives/1" :reg "X8"}
+  {:op :unify-variable :var "Y1"}
+  {:op :unify-variable :var "X9"}
+  {:op :unify-variable :var "Y5"}
+  {:op :get-variable :var "Y6" :reg "A2"}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :try-me-else :label "L_ite_else_56"}
+  {:op :put-structure :functor "dep/2" :reg "A1" :arity 2}
+  {:op :set-variable :var "Y2"}
+  {:op :set-variable :var "Y4"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :put-variable :var "Y3" :reg "A3"}
+  {:op :call :pred "selected_ver/3" :arity 3}
+  {:op :cut-ite}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :call :pred "satisfies/2" :arity 2}
+  {:op :jump :label "L_ite_cont_56"}
+  {:op :trust-me}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-value :var "Y6" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "reqs_ok_moving/2"}
   {:op :trust-me}
   {:op :allocate}
   {:op :get-list :reg "A1"}
@@ -1745,7 +3409,7 @@
   {:op :unify-variable :var "Y3"}
   {:op :unify-variable :var "Y4"}
   {:op :get-variable :var "Y5" :reg "A2"}
-  {:op :try-me-else :label "L_ite_else_33"}
+  {:op :try-me-else :label "L_ite_else_57"}
   {:op :put-value :var "Y5" :reg "A1"}
   {:op :put-value :var "Y1" :reg "A2"}
   {:op :put-variable :var "Y2" :reg "A3"}
@@ -1754,20 +3418,22 @@
   {:op :put-value :var "Y2" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
   {:op :call :pred "satisfies/2" :arity 2}
-  {:op :jump :label "L_ite_cont_33"}
+  {:op :jump :label "L_ite_cont_57"}
   {:op :trust-me}
   {:op :builtin-call :pred "true/0" :arity 0}
   {:op :put-value :var "Y4" :reg "A1"}
   {:op :put-value :var "Y5" :reg "A2"}
   {:op :deallocate}
   {:op :execute :pred "reqs_ok_moving/2"}
+  {:op :try :label "L_reqs_ok_moving_2_2_body"}
+  {:op :trust :label "L_reqs_ok_moving_2_3_body"}
   {:op :allocate}
   {:op :get-variable :var "Y2" :reg "A1"}
   {:op :get-variable :var "Y3" :reg "A2"}
   {:op :get-structure :functor "req/2" :reg "A3"}
   {:op :unify-variable :var "Y4"}
   {:op :unify-variable :var "Y5"}
-  {:op :try-me-else :label "L_ite_else_34"}
+  {:op :try-me-else :label "L_ite_else_58"}
   {:op :put-value :var "Y3" :reg "A1"}
   {:op :put-structure :functor "req/2" :reg "A2" :arity 2}
   {:op :set-variable :var "Y1"}
@@ -1778,7 +3444,7 @@
   {:op :put-value :var "Y1" :reg "A2"}
   {:op :put-value :var "Y4" :reg "A3"}
   {:op :call :pred "canonicalize_name/3" :arity 3}
-  {:op :jump :label "L_ite_cont_34"}
+  {:op :jump :label "L_ite_cont_58"}
   {:op :trust-me}
   {:op :put-value :var "Y2" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
@@ -1789,7 +3455,7 @@
   {:op :builtin-call :pred "=/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
-  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_requested_list_2_2_body"}] :reg "A1"}
+  {:op :switch-on-structure :cases [{:functor "catalog/6" :label "default"} {:functor "catalog/9" :label "L_requested_list_2_2_body"} {:functor "catalog/10" :label "L_requested_list_2_3_body"} {:functor "icat/3" :label "L_requested_list_2_4_body"}] :reg "A1"}
   {:op :try-me-else :label "L_requested_list_2_2"}
   {:op :get-structure :functor "catalog/6" :reg "A1"}
   {:op :unify-variable :var "X1"}
@@ -1800,7 +3466,7 @@
   {:op :unify-variable :var "X6"}
   {:op :get-value :var "X6" :reg "A2"}
   {:op :proceed}
-  {:op :trust-me}
+  {:op :retry-me-else :label "L_requested_list_2_3"}
   {:op :get-structure :functor "catalog/9" :reg "A1"}
   {:op :unify-variable :var "X1"}
   {:op :unify-variable :var "X2"}
@@ -1813,43 +3479,114 @@
   {:op :unify-variable :var "X9"}
   {:op :get-value :var "X6" :reg "A2"}
   {:op :proceed}
+  {:op :retry-me-else :label "L_requested_list_2_4"}
+  {:op :get-structure :functor "catalog/10" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :unify-variable :var "X4"}
+  {:op :unify-variable :var "X5"}
+  {:op :unify-variable :var "X6"}
+  {:op :unify-variable :var "X7"}
+  {:op :unify-variable :var "X8"}
+  {:op :unify-variable :var "X9"}
+  {:op :unify-variable :var "X10"}
+  {:op :get-value :var "X6" :reg "A2"}
+  {:op :proceed}
+  {:op :trust-me}
   {:op :allocate}
-  {:op :get-variable :var "Y1" :reg "A1"}
-  {:op :get-variable :var "X5" :reg "A2"}
-  {:op :get-variable :var "Y4" :reg "A3"}
-  {:op :put-value :var "Y1" :reg "A1"}
-  {:op :put-value :var "X5" :reg "A2"}
-  {:op :put-variable :var "Y2" :reg "A3"}
+  {:op :get-structure :functor "icat/3" :reg "A1"}
+  {:op :unify-variable :var "X1"}
+  {:op :unify-variable :var "X2"}
+  {:op :unify-variable :var "X3"}
+  {:op :get-variable :var "X4" :reg "A2"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X4" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "requested_list/2"}
+  {:op :allocate}
+  {:op :get-variable :var "X6" :reg "A1"}
+  {:op :get-variable :var "Y1" :reg "A2"}
+  {:op :get-variable :var "Y5" :reg "A3"}
+  {:op :put-value :var "X6" :reg "A1"}
+  {:op :put-variable :var "Y2" :reg "A2"}
+  {:op :call :pred "index_catalog/2" :arity 2}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :put-variable :var "Y3" :reg "A3"}
   {:op :call :pred "map_requests/3" :arity 3}
   {:op :put-constant :constant "classic" :reg "A1"}
-  {:op :put-value :var "Y1" :reg "A2"}
-  {:op :put-value :var "Y2" :reg "A3"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :put-value :var "Y3" :reg "A3"}
   {:op :put-constant :constant "[]" :reg "A4"}
-  {:op :put-variable :var "Y3" :reg "A5"}
+  {:op :put-variable :var "Y4" :reg "A5"}
   {:op :call :pred "resolve_pending/5" :arity 5}
   {:op :builtin-call :pred "!/0" :arity 0}
-  {:op :put-value :var "Y3" :reg "A1"}
-  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
   {:op :builtin-call :pred "sort/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
   {:op :allocate}
-  {:op :get-variable :var "Y1" :reg "A1"}
-  {:op :get-variable :var "X5" :reg "A2"}
-  {:op :get-variable :var "Y4" :reg "A3"}
-  {:op :put-value :var "Y1" :reg "A1"}
-  {:op :put-value :var "X5" :reg "A2"}
-  {:op :put-variable :var "Y2" :reg "A3"}
+  {:op :get-variable :var "Y2" :reg "A1"}
+  {:op :get-variable :var "Y3" :reg "A2"}
+  {:op :get-variable :var "Y1" :reg "A3"}
+  {:op :get-variable :var "Y6" :reg "A4"}
+  {:op :get-variable :var "Y7" :reg "A5"}
+  {:op :get-variable :var "Y8" :reg "A6"}
+  {:op :try-me-else :label "L_ite_else_59"}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :put-value :var "Y7" :reg "A3"}
+  {:op :put-value :var "Y1" :reg "A4"}
+  {:op :call :pred "first_alt_already/4" :arity 4}
+  {:op :cut-ite}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :put-value :var "Y6" :reg "A3"}
+  {:op :put-value :var "Y7" :reg "A4"}
+  {:op :put-value :var "Y8" :reg "A5"}
+  {:op :call :pred "resolve_pending/5" :arity 5}
+  {:op :jump :label "L_ite_cont_59"}
+  {:op :trust-me}
+  {:op :put-structure :functor "dep/2" :reg "A1" :arity 2}
+  {:op :set-variable :var "Y4"}
+  {:op :set-variable :var "Y5"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :builtin-call :pred "member/2" :arity 2}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :put-structure :functor "[|]/2" :reg "A3" :arity 2}
+  {:op :set-variable :var "X11"}
+  {:op :set-value :var "Y6"}
+  {:op :put-structure :functor "req/2" :reg "X11" :arity 2}
+  {:op :set-value :var "Y4"}
+  {:op :set-value :var "Y5"}
+  {:op :put-value :var "Y7" :reg "A4"}
+  {:op :put-value :var "Y8" :reg "A5"}
+  {:op :call :pred "resolve_pending/5" :arity 5}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :allocate}
+  {:op :get-variable :var "X6" :reg "A1"}
+  {:op :get-variable :var "Y1" :reg "A2"}
+  {:op :get-variable :var "Y5" :reg "A3"}
+  {:op :put-value :var "X6" :reg "A1"}
+  {:op :put-variable :var "Y2" :reg "A2"}
+  {:op :call :pred "index_catalog/2" :arity 2}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :put-variable :var "Y3" :reg "A3"}
   {:op :call :pred "map_requests/3" :arity 3}
   {:op :put-constant :constant "layered" :reg "A1"}
-  {:op :put-value :var "Y1" :reg "A2"}
-  {:op :put-value :var "Y2" :reg "A3"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :put-value :var "Y3" :reg "A3"}
   {:op :put-constant :constant "[]" :reg "A4"}
-  {:op :put-variable :var "Y3" :reg "A5"}
+  {:op :put-variable :var "Y4" :reg "A5"}
   {:op :call :pred "resolve_pending/5" :arity 5}
   {:op :builtin-call :pred "!/0" :arity 0}
-  {:op :put-value :var "Y3" :reg "A1"}
-  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
   {:op :builtin-call :pred "sort/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
@@ -1862,77 +3599,117 @@
   {:op :proceed}
   {:op :trust-me}
   {:op :allocate}
-  {:op :get-variable :var "Y5" :reg "A1"}
-  {:op :get-variable :var "Y6" :reg "A2"}
+  {:op :get-variable :var "Y6" :reg "A1"}
+  {:op :get-variable :var "Y7" :reg "A2"}
   {:op :get-list :reg "A3"}
-  {:op :unify-variable :var "X12"}
-  {:op :get-structure :functor "req/2" :reg "X12"}
-  {:op :unify-variable :var "Y10"}
-  {:op :unify-variable :var "Y1"}
+  {:op :unify-variable :var "X14"}
+  {:op :get-structure :functor "req/2" :reg "X14"}
   {:op :unify-variable :var "Y3"}
-  {:op :get-variable :var "Y8" :reg "A4"}
+  {:op :unify-variable :var "Y5"}
+  {:op :unify-variable :var "Y8"}
+  {:op :get-variable :var "Y2" :reg "A4"}
   {:op :get-variable :var "Y9" :reg "A5"}
-  {:op :try-me-else :label "L_ite_else_35"}
-  {:op :put-value :var "Y8" :reg "A1"}
-  {:op :put-value :var "Y10" :reg "A2"}
-  {:op :put-variable :var "Y11" :reg "A3"}
-  {:op :call :pred "selected_ver/3" :arity 3}
+  {:op :try-me-else :label "L_ite_else_60"}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-structure :functor "alternatives/1" :reg "A2" :arity 1}
+  {:op :set-variable :var "Y1"}
+  {:op :builtin-call :pred "=/2" :arity 2}
   {:op :cut-ite}
-  {:op :put-value :var "Y11" :reg "A1"}
-  {:op :put-value :var "Y1" :reg "A2"}
-  {:op :call :pred "satisfies/2" :arity 2}
-  {:op :put-value :var "Y5" :reg "A1"}
-  {:op :put-value :var "Y6" :reg "A2"}
-  {:op :put-value :var "Y3" :reg "A3"}
-  {:op :put-value :var "Y8" :reg "A4"}
-  {:op :put-value :var "Y9" :reg "A5"}
-  {:op :call :pred "resolve_pending/5" :arity 5}
-  {:op :jump :label "L_ite_cont_35"}
-  {:op :trust-me}
-  {:op :put-value :var "Y5" :reg "A1"}
-  {:op :put-value :var "Y6" :reg "A2"}
-  {:op :put-value :var "Y10" :reg "A3"}
-  {:op :put-value :var "Y1" :reg "A4"}
-  {:op :put-value :var "Y8" :reg "A5"}
-  {:op :put-variable :var "Y11" :reg "A6"}
-  {:op :put-variable :var "Y4" :reg "A7"}
-  {:op :call :pred "pick/7" :arity 7}
   {:op :put-value :var "Y6" :reg "A1"}
-  {:op :put-value :var "Y10" :reg "A2"}
-  {:op :put-value :var "Y11" :reg "A3"}
-  {:op :put-variable :var "Y2" :reg "A4"}
-  {:op :call :pred "collect_deps/4" :arity 4}
+  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :put-value :var "Y1" :reg "A3"}
+  {:op :put-value :var "Y8" :reg "A4"}
+  {:op :put-value :var "Y2" :reg "A5"}
+  {:op :put-value :var "Y9" :reg "A6"}
+  {:op :call :pred "resolve_alternatives/6" :arity 6}
+  {:op :jump :label "L_ite_cont_60"}
+  {:op :trust-me}
+  {:op :try-me-else :label "L_ite_else_61"}
   {:op :put-value :var "Y2" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
-  {:op :put-variable :var "Y7" :reg "A3"}
-  {:op :builtin-call :pred "append/3" :arity 3}
-  {:op :try-me-else :label "L_ite_else_36"}
+  {:op :put-variable :var "Y4" :reg "A3"}
+  {:op :call :pred "selected_ver/3" :arity 3}
+  {:op :cut-ite}
   {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :call :pred "satisfies/2" :arity 2}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :put-value :var "Y8" :reg "A3"}
+  {:op :put-value :var "Y2" :reg "A4"}
+  {:op :put-value :var "Y9" :reg "A5"}
+  {:op :call :pred "resolve_pending/5" :arity 5}
+  {:op :jump :label "L_ite_cont_61"}
+  {:op :trust-me}
+  {:op :try-me-else :label "L_ite_else_62"}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :put-value :var "Y3" :reg "A3"}
+  {:op :put-value :var "Y5" :reg "A4"}
+  {:op :call :pred "already_provided/4" :arity 4}
+  {:op :cut-ite}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :put-value :var "Y8" :reg "A3"}
+  {:op :put-value :var "Y2" :reg "A4"}
+  {:op :put-value :var "Y9" :reg "A5"}
+  {:op :call :pred "resolve_pending/5" :arity 5}
+  {:op :jump :label "L_ite_cont_62"}
+  {:op :trust-me}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :put-value :var "Y3" :reg "A3"}
+  {:op :put-value :var "Y5" :reg "A4"}
+  {:op :put-value :var "Y2" :reg "A5"}
+  {:op :put-variable :var "Y10" :reg "A6"}
+  {:op :put-variable :var "Y4" :reg "A7"}
+  {:op :put-variable :var "Y11" :reg "A8"}
+  {:op :call :pred "pick_need/8" :arity 8}
+  {:op :try-me-else :label "L_ite_else_63"}
+  {:op :put-value :var "Y11" :reg "A1"}
   {:op :put-constant :constant "from_base" :reg "A2"}
   {:op :builtin-call :pred "=/2" :arity 2}
   {:op :cut-ite}
-  {:op :put-value :var "Y5" :reg "A1"}
-  {:op :put-value :var "Y6" :reg "A2"}
-  {:op :put-value :var "Y7" :reg "A3"}
-  {:op :put-value :var "Y8" :reg "A4"}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-value :var "Y10" :reg "A2"}
+  {:op :put-value :var "Y4" :reg "A3"}
+  {:op :put-variable :var "Y12" :reg "A4"}
+  {:op :call :pred "collect_deps/4" :arity 4}
+  {:op :put-value :var "Y12" :reg "A1"}
+  {:op :put-value :var "Y8" :reg "A2"}
+  {:op :put-variable :var "Y13" :reg "A3"}
+  {:op :builtin-call :pred "append/3" :arity 3}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :put-value :var "Y13" :reg "A3"}
+  {:op :put-value :var "Y2" :reg "A4"}
   {:op :put-value :var "Y9" :reg "A5"}
   {:op :call :pred "resolve_pending/5" :arity 5}
-  {:op :jump :label "L_ite_cont_36"}
+  {:op :jump :label "L_ite_cont_63"}
   {:op :trust-me}
-  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A1"}
   {:op :put-value :var "Y10" :reg "A2"}
-  {:op :put-value :var "Y11" :reg "A3"}
-  {:op :put-value :var "Y8" :reg "A4"}
+  {:op :put-value :var "Y4" :reg "A3"}
+  {:op :put-value :var "Y2" :reg "A4"}
   {:op :call :pred "no_acc_conflicts/4" :arity 4}
-  {:op :put-value :var "Y5" :reg "A1"}
-  {:op :put-value :var "Y6" :reg "A2"}
-  {:op :put-value :var "Y7" :reg "A3"}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-value :var "Y10" :reg "A2"}
+  {:op :put-value :var "Y4" :reg "A3"}
+  {:op :put-variable :var "Y12" :reg "A4"}
+  {:op :call :pred "collect_deps/4" :arity 4}
+  {:op :put-value :var "Y12" :reg "A1"}
+  {:op :put-value :var "Y8" :reg "A2"}
+  {:op :put-variable :var "Y13" :reg "A3"}
+  {:op :builtin-call :pred "append/3" :arity 3}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :put-value :var "Y13" :reg "A3"}
   {:op :put-structure :functor "[|]/2" :reg "A4" :arity 2}
-  {:op :set-variable :var "X14"}
-  {:op :set-value :var "Y8"}
-  {:op :put-structure :functor "-/2" :reg "X14" :arity 2}
+  {:op :set-variable :var "X16"}
+  {:op :set-value :var "Y2"}
+  {:op :put-structure :functor "-/2" :reg "X16" :arity 2}
   {:op :set-value :var "Y10"}
-  {:op :set-value :var "Y11"}
+  {:op :set-value :var "Y4"}
   {:op :put-value :var "Y9" :reg "A5"}
   {:op :call :pred "resolve_pending/5" :arity 5}
   {:op :deallocate}
@@ -1989,39 +3766,39 @@
   {:op :put-value :var "X7" :reg "A2"}
   {:op :put-variable :var "Y2" :reg "A3"}
   {:op :call :pred "canonicalize_name/3" :arity 3}
-  {:op :try-me-else :label "L_ite_else_37"}
-  {:op :try-me-else :label "L_ite_else_38"}
+  {:op :try-me-else :label "L_ite_else_64"}
+  {:op :try-me-else :label "L_ite_else_65"}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-value :var "Y2" :reg "A2"}
   {:op :put-value :var "Y6" :reg "A3"}
   {:op :call :pred "package_in/3" :arity 3}
   {:op :cut-ite}
   {:op :builtin-call :pred "fail/0" :arity 0}
-  {:op :jump :label "L_ite_cont_38"}
+  {:op :jump :label "L_ite_cont_65"}
   {:op :trust-me}
   {:op :builtin-call :pred "true/0" :arity 0}
   {:op :cut-ite}
   {:op :put-value :var "Y4" :reg "A1"}
   {:op :put-constant :constant "no_candidate" :reg "A2"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_37"}
+  {:op :jump :label "L_ite_cont_64"}
   {:op :trust-me}
-  {:op :try-me-else :label "L_ite_else_39"}
-  {:op :try-me-else :label "L_ite_else_40"}
+  {:op :try-me-else :label "L_ite_else_66"}
+  {:op :try-me-else :label "L_ite_else_67"}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-value :var "Y2" :reg "A2"}
   {:op :put-variable :var "Y3" :reg "A3"}
   {:op :call :pred "base_reason/3" :arity 3}
   {:op :cut-ite}
   {:op :builtin-call :pred "fail/0" :arity 0}
-  {:op :jump :label "L_ite_cont_40"}
+  {:op :jump :label "L_ite_cont_67"}
   {:op :trust-me}
   {:op :builtin-call :pred "true/0" :arity 0}
   {:op :cut-ite}
   {:op :put-value :var "Y4" :reg "A1"}
   {:op :put-constant :constant "no_candidate" :reg "A2"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_39"}
+  {:op :jump :label "L_ite_cont_66"}
   {:op :trust-me}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-value :var "Y2" :reg "A2"}
@@ -2089,7 +3866,61 @@
   {:op :set-value :var "X4"}
   {:op :deallocate}
   {:op :execute :pred "upgrade_set_result/4"}
-  {:op :switch-on-term :consts [{:value "any" :label "default"}] :structs [{:functor "eq/1" :label "L_satisfies_2_2"} {:functor "gte/1" :label "L_satisfies_2_3"} {:functor "lt/1" :label "L_satisfies_2_4"} {:functor "range/2" :label "L_satisfies_2_5"}] :list-label "none" :reg "A2"}
+  {:op :switch-on-term :consts [{:value "[]" :label "default"}] :structs [] :list-label "L_same_key_4_2_body" :reg "A1"}
+  {:op :try-me-else :label "L_same_key_4_2"}
+  {:op :get-constant :constant "[]" :reg "A1"}
+  {:op :get-variable :var "X1" :reg "A2"}
+  {:op :get-constant :constant "[]" :reg "A3"}
+  {:op :get-constant :constant "[]" :reg "A4"}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-list :reg "A1"}
+  {:op :unify-variable :var "X9"}
+  {:op :get-structure :functor "-/2" :reg "X9"}
+  {:op :unify-variable :var "X10"}
+  {:op :get-structure :functor "-/2" :reg "X10"}
+  {:op :unify-variable :var "Y5"}
+  {:op :unify-variable :var "Y6"}
+  {:op :unify-variable :var "Y7"}
+  {:op :unify-variable :var "Y8"}
+  {:op :get-variable :var "Y1" :reg "A2"}
+  {:op :get-variable :var "Y3" :reg "A3"}
+  {:op :get-variable :var "Y4" :reg "A4"}
+  {:op :try-me-else :label "L_ite_else_68"}
+  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :builtin-call :pred "==/2" :arity 2}
+  {:op :cut-ite}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-structure :functor "[|]/2" :reg "A2" :arity 2}
+  {:op :set-value :var "Y7"}
+  {:op :set-variable :var "Y2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :put-value :var "Y8" :reg "A1"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :put-value :var "Y2" :reg "A3"}
+  {:op :put-value :var "Y4" :reg "A4"}
+  {:op :call :pred "same_key/4" :arity 4}
+  {:op :jump :label "L_ite_cont_68"}
+  {:op :trust-me}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-constant :constant "[]" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-structure :functor "[|]/2" :reg "A2" :arity 2}
+  {:op :set-variable :var "X12"}
+  {:op :set-value :var "Y8"}
+  {:op :put-structure :functor "-/2" :reg "X12" :arity 2}
+  {:op :set-variable :var "X13"}
+  {:op :set-value :var "Y7"}
+  {:op :put-structure :functor "-/2" :reg "X13" :arity 2}
+  {:op :set-value :var "Y5"}
+  {:op :set-value :var "Y6"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :switch-on-term :consts [{:value "any" :label "default"}] :structs [{:functor "eq/1" :label "L_satisfies_2_2"} {:functor "gte/1" :label "L_satisfies_2_3"} {:functor "lte/1" :label "L_satisfies_2_4"} {:functor "lt/1" :label "L_satisfies_2_5"} {:functor "gt/1" :label "L_satisfies_2_6"} {:functor "range/2" :label "L_satisfies_2_7"}] :list-label "none" :reg "A2"}
   {:op :try-me-else :label "L_satisfies_2_2"}
   {:op :get-variable :var "X1" :reg "A1"}
   {:op :get-constant :constant "any" :reg "A2"}
@@ -2106,17 +3937,31 @@
   {:op :get-variable :var "X1" :reg "A1"}
   {:op :get-structure :functor "gte/1" :reg "A2"}
   {:op :unify-variable :var "X2"}
-  {:op :try-me-else :label "L_ite_else_41"}
+  {:op :try-me-else :label "L_ite_else_69"}
   {:op :put-value :var "X1" :reg "A1"}
   {:op :put-value :var "X2" :reg "A2"}
   {:op :call :pred "version_lt/2" :arity 2}
   {:op :builtin-call :pred "!/0" :arity 0}
   {:op :builtin-call :pred "fail/0" :arity 0}
-  {:op :jump :label "L_ite_cont_41"}
+  {:op :jump :label "L_ite_cont_69"}
   {:op :trust-me}
   {:op :builtin-call :pred "true/0" :arity 0}
   {:op :proceed}
   {:op :retry-me-else :label "L_satisfies_2_5"}
+  {:op :get-variable :var "X1" :reg "A1"}
+  {:op :get-structure :functor "lte/1" :reg "A2"}
+  {:op :unify-variable :var "X2"}
+  {:op :try-me-else :label "L_ite_else_70"}
+  {:op :put-value :var "X2" :reg "A1"}
+  {:op :put-value :var "X1" :reg "A2"}
+  {:op :call :pred "version_lt/2" :arity 2}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :builtin-call :pred "fail/0" :arity 0}
+  {:op :jump :label "L_ite_cont_70"}
+  {:op :trust-me}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :proceed}
+  {:op :retry-me-else :label "L_satisfies_2_6"}
   {:op :allocate}
   {:op :get-variable :var "X1" :reg "A1"}
   {:op :get-structure :functor "lt/1" :reg "A2"}
@@ -2125,19 +3970,28 @@
   {:op :put-value :var "X2" :reg "A2"}
   {:op :deallocate}
   {:op :execute :pred "version_lt/2"}
+  {:op :retry-me-else :label "L_satisfies_2_7"}
+  {:op :allocate}
+  {:op :get-variable :var "X1" :reg "A1"}
+  {:op :get-structure :functor "gt/1" :reg "A2"}
+  {:op :unify-variable :var "X2"}
+  {:op :put-value :var "X2" :reg "A1"}
+  {:op :put-value :var "X1" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "version_lt/2"}
   {:op :trust-me}
   {:op :allocate}
   {:op :get-variable :var "Y1" :reg "A1"}
   {:op :get-structure :functor "range/2" :reg "A2"}
   {:op :unify-variable :var "X3"}
   {:op :unify-variable :var "Y2"}
-  {:op :try-me-else :label "L_ite_else_42"}
+  {:op :try-me-else :label "L_ite_else_71"}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-value :var "X3" :reg "A2"}
   {:op :call :pred "version_lt/2" :arity 2}
   {:op :builtin-call :pred "!/0" :arity 0}
   {:op :builtin-call :pred "fail/0" :arity 0}
-  {:op :jump :label "L_ite_cont_42"}
+  {:op :jump :label "L_ite_cont_71"}
   {:op :trust-me}
   {:op :builtin-call :pred "true/0" :arity 0}
   {:op :put-value :var "Y1" :reg "A1"}
@@ -2157,7 +4011,7 @@
   {:op :unify-variable :var "Y9"}
   {:op :get-variable :var "Y5" :reg "A2"}
   {:op :get-variable :var "Y11" :reg "A3"}
-  {:op :try-me-else :label "L_ite_else_43"}
+  {:op :try-me-else :label "L_ite_else_72"}
   {:op :put-value :var "Y2" :reg "A1"}
   {:op :put-structure :functor "layer/2" :reg "A2" :arity 2}
   {:op :set-constant :constant "base"}
@@ -2168,9 +4022,9 @@
   {:op :put-value :var "Y5" :reg "A2"}
   {:op :put-variable :var "Y10" :reg "A3"}
   {:op :call :pred "scan_base_holds/3" :arity 3}
-  {:op :jump :label "L_ite_cont_43"}
+  {:op :jump :label "L_ite_cont_72"}
   {:op :trust-me}
-  {:op :try-me-else :label "L_ite_else_44"}
+  {:op :try-me-else :label "L_ite_else_73"}
   {:op :put-value :var "Y2" :reg "A1"}
   {:op :put-structure :functor "layer/2" :reg "A2" :arity 2}
   {:op :set-variable :var "Y3"}
@@ -2180,9 +4034,9 @@
   {:op :put-variable :var "Y10" :reg "A1"}
   {:op :put-value :var "Y5" :reg "A2"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_44"}
+  {:op :jump :label "L_ite_cont_73"}
   {:op :trust-me}
-  {:op :try-me-else :label "L_ite_else_45"}
+  {:op :try-me-else :label "L_ite_else_74"}
   {:op :put-value :var "Y2" :reg "A1"}
   {:op :put-structure :functor "base/2" :reg "A2" :arity 2}
   {:op :set-variable :var "X13"}
@@ -2201,9 +4055,9 @@
   {:op :set-value :var "Y7"}
   {:op :set-value :var "Y8"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_45"}
+  {:op :jump :label "L_ite_cont_74"}
   {:op :trust-me}
-  {:op :try-me-else :label "L_ite_else_46"}
+  {:op :try-me-else :label "L_ite_else_75"}
   {:op :put-value :var "Y2" :reg "A1"}
   {:op :put-structure :functor "-/2" :reg "A2" :arity 2}
   {:op :set-variable :var "Y6"}
@@ -2219,7 +4073,7 @@
   {:op :set-value :var "Y7"}
   {:op :set-constant :constant "blanket"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_46"}
+  {:op :jump :label "L_ite_cont_75"}
   {:op :trust-me}
   {:op :put-variable :var "Y10" :reg "A1"}
   {:op :put-value :var "Y5" :reg "A2"}
@@ -2234,17 +4088,83 @@
   {:op :unify-variable :var "Y1"}
   {:op :unify-variable :var "Y2"}
   {:op :get-variable :var "Y3" :reg "A2"}
-  {:op :try-me-else :label "L_ite_else_47"}
+  {:op :try-me-else :label "L_ite_else_76"}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
   {:op :builtin-call :pred "==/2" :arity 2}
   {:op :cut-ite}
   {:op :builtin-call :pred "true/0" :arity 0}
-  {:op :jump :label "L_ite_cont_47"}
+  {:op :jump :label "L_ite_cont_76"}
   {:op :trust-me}
   {:op :put-value :var "Y2" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
   {:op :call :pred "seen_name/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :switch-on-constant :cases [{:value "[]" :label "default"}] :reg "A1" :fallthrough? true}
+  {:op :try-me-else :label "L_segs_lt_2_2"}
+  {:op :allocate}
+  {:op :get-constant :constant "[]" :reg "A1"}
+  {:op :get-constant :constant "[]" :reg "A2"}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :builtin-call :pred "fail/0" :arity 0}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-variable :var "X4" :reg "A1"}
+  {:op :get-variable :var "Y1" :reg "A2"}
+  {:op :put-value :var "X4" :reg "A1"}
+  {:op :put-variable :var "Y2" :reg "A2"}
+  {:op :call :pred "pad_head/2" :arity 2}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-variable :var "Y3" :reg "A2"}
+  {:op :call :pred "pad_head/2" :arity 2}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :deallocate}
+  {:op :execute :pred "segs_lt_1/2"}
+  {:op :allocate}
+  {:op :get-list :reg "A1"}
+  {:op :unify-variable :var "X7"}
+  {:op :get-structure :functor "s/2" :reg "X7"}
+  {:op :unify-variable :var "Y1"}
+  {:op :unify-variable :var "Y3"}
+  {:op :unify-variable :var "Y5"}
+  {:op :get-list :reg "A2"}
+  {:op :unify-variable :var "X8"}
+  {:op :get-structure :functor "s/2" :reg "X8"}
+  {:op :unify-variable :var "Y2"}
+  {:op :unify-variable :var "Y4"}
+  {:op :unify-variable :var "Y6"}
+  {:op :try-me-else :label "L_ite_else_77"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :call :pred "order_lt/2" :arity 2}
+  {:op :cut-ite}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :jump :label "L_ite_cont_77"}
+  {:op :trust-me}
+  {:op :try-me-else :label "L_ite_else_78"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :builtin-call :pred "==/2" :arity 2}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :builtin-call :pred "</2" :arity 2}
+  {:op :cut-ite}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :jump :label "L_ite_cont_78"}
+  {:op :trust-me}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :builtin-call :pred "==/2" :arity 2}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :builtin-call :pred "=:=/2" :arity 2}
+  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-value :var "Y6" :reg "A2"}
+  {:op :call :pred "segs_lt/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
   {:op :allocate}
@@ -2253,7 +4173,7 @@
   {:op :unify-variable :var "Y2"}
   {:op :get-variable :var "Y3" :reg "A2"}
   {:op :get-variable :var "Y4" :reg "A3"}
-  {:op :try-me-else :label "L_ite_else_48"}
+  {:op :try-me-else :label "L_ite_else_79"}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-structure :functor "-/2" :reg "A2" :arity 2}
   {:op :set-value :var "Y3"}
@@ -2261,12 +4181,37 @@
   {:op :builtin-call :pred "=/2" :arity 2}
   {:op :cut-ite}
   {:op :builtin-call :pred "true/0" :arity 0}
-  {:op :jump :label "L_ite_cont_48"}
+  {:op :jump :label "L_ite_cont_79"}
   {:op :trust-me}
   {:op :put-value :var "Y2" :reg "A1"}
   {:op :put-value :var "Y3" :reg "A2"}
   {:op :put-value :var "Y4" :reg "A3"}
   {:op :call :pred "selected_ver/3" :arity 3}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :allocate}
+  {:op :get-variable :var "Y1" :reg "A1"}
+  {:op :get-variable :var "Y3" :reg "A2"}
+  {:op :try-me-else :label "L_ite_else_80"}
+  {:op :put-constant :constant "is_v3" :reg "A1"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :builtin-call :pred "maplist/2" :arity 2}
+  {:op :cut-ite}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-variable :var "Y2" :reg "A2"}
+  {:op :builtin-call :pred "sort/2" :arity 2}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :builtin-call :pred "reverse/2" :arity 2}
+  {:op :jump :label "L_ite_cont_80"}
+  {:op :trust-me}
+  {:op :put-constant :constant "cmp_ver" :reg "A1"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :put-variable :var "Y2" :reg "A3"}
+  {:op :builtin-call :pred "predsort/3" :arity 3}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :builtin-call :pred "reverse/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
   {:op :allocate}
@@ -2287,33 +4232,49 @@
   {:op :proceed}
   {:op :allocate}
   {:op :get-list :reg "A1"}
-  {:op :unify-variable :var "X7"}
-  {:op :get-structure :functor "hold/3" :reg "X7"}
+  {:op :unify-variable :var "X9"}
+  {:op :get-structure :functor "hold/3" :reg "X9"}
   {:op :unify-variable :var "Y1"}
   {:op :unify-variable :var "Y2"}
-  {:op :unify-variable :var "X8"}
-  {:op :unify-variable :var "Y4"}
-  {:op :get-variable :var "Y5" :reg "A2"}
-  {:op :get-variable :var "Y6" :reg "A3"}
-  {:op :try-me-else :label "L_ite_else_49"}
+  {:op :unify-variable :var "X10"}
+  {:op :unify-variable :var "Y6"}
+  {:op :get-variable :var "Y7" :reg "A2"}
+  {:op :get-variable :var "Y8" :reg "A3"}
+  {:op :try-me-else :label "L_ite_else_81"}
   {:op :put-value :var "Y1" :reg "A1"}
-  {:op :put-value :var "Y6" :reg "A2"}
+  {:op :put-value :var "Y8" :reg "A2"}
   {:op :builtin-call :pred "\\==/2" :arity 2}
-  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A1"}
   {:op :put-value :var "Y1" :reg "A2"}
   {:op :put-value :var "Y2" :reg "A3"}
-  {:op :put-value :var "Y6" :reg "A4"}
-  {:op :put-variable :var "Y3" :reg "A5"}
-  {:op :call :pred "depends_in/5" :arity 5}
+  {:op :put-variable :var "Y3" :reg "A4"}
+  {:op :put-variable :var "Y4" :reg "A5"}
+  {:op :call :pred "dep_targets/5" :arity 5}
+  {:op :try-me-else :label "L_ite_else_82"}
   {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-value :var "Y8" :reg "A2"}
+  {:op :builtin-call :pred "==/2" :arity 2}
+  {:op :put-value :var "Y4" :reg "A1"}
   {:op :call :pred "tight_constraint/1" :arity 1}
+  {:op :jump :label "L_ite_cont_82"}
+  {:op :trust-me}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-value :var "Y8" :reg "A2"}
+  {:op :put-variable :var "Y5" :reg "A3"}
+  {:op :call :pred "base_ver/3" :arity 3}
+  {:op :put-value :var "Y7" :reg "A1"}
+  {:op :put-value :var "Y8" :reg "A2"}
+  {:op :put-value :var "Y5" :reg "A3"}
+  {:op :put-value :var "Y3" :reg "A4"}
+  {:op :put-value :var "Y4" :reg "A5"}
+  {:op :call :pred "provides_sat/5" :arity 5}
   {:op :cut-ite}
   {:op :builtin-call :pred "true/0" :arity 0}
-  {:op :jump :label "L_ite_cont_49"}
+  {:op :jump :label "L_ite_cont_81"}
   {:op :trust-me}
-  {:op :put-value :var "Y4" :reg "A1"}
-  {:op :put-value :var "Y5" :reg "A2"}
-  {:op :put-value :var "Y6" :reg "A3"}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :put-value :var "Y8" :reg "A3"}
   {:op :call :pred "tight_rev_in/3" :arity 3}
   {:op :deallocate}
   {:op :proceed}
@@ -2372,63 +4333,63 @@
   {:op :proceed}
   {:op :trust-me}
   {:op :allocate}
-  {:op :get-variable :var "Y4" :reg "A1"}
-  {:op :get-variable :var "Y11" :reg "A2"}
-  {:op :get-variable :var "Y6" :reg "A3"}
-  {:op :get-variable :var "Y12" :reg "A4"}
-  {:op :get-variable :var "Y10" :reg "A5"}
-  {:op :get-variable :var "Y14" :reg "A6"}
-  {:op :get-variable :var "Y13" :reg "A7"}
-  {:op :try-me-else :label "L_ite_else_50"}
+  {:op :get-variable :var "Y3" :reg "A1"}
+  {:op :get-variable :var "Y10" :reg "A2"}
+  {:op :get-variable :var "Y5" :reg "A3"}
+  {:op :get-variable :var "Y11" :reg "A4"}
+  {:op :get-variable :var "Y9" :reg "A5"}
+  {:op :get-variable :var "Y13" :reg "A6"}
+  {:op :get-variable :var "Y12" :reg "A7"}
+  {:op :try-me-else :label "L_ite_else_83"}
   {:op :put-structure :functor "-/2" :reg "A1" :arity 2}
-  {:op :set-value :var "Y11"}
-  {:op :set-variable :var "Y7"}
-  {:op :put-value :var "Y6" :reg "A2"}
+  {:op :set-value :var "Y10"}
+  {:op :set-variable :var "Y6"}
+  {:op :put-value :var "Y5" :reg "A2"}
   {:op :builtin-call :pred "member/2" :arity 2}
   {:op :cut-ite}
-  {:op :put-variable :var "Y3" :reg "Y3"}
+  {:op :put-variable :var "Y2" :reg "Y2"}
   {:op :put-variable :var "Y1" :reg "Y1"}
-  {:op :begin-aggregate :kind "collect" :template "Y1" :bag "Y3" :witnesses []}
-  {:op :put-value :var "Y4" :reg "A1"}
-  {:op :put-value :var "Y11" :reg "A2"}
-  {:op :put-value :var "Y7" :reg "A3"}
-  {:op :put-value :var "Y1" :reg "A4"}
-  {:op :put-variable :var "Y2" :reg "A5"}
-  {:op :call :pred "depends_in/5" :arity 5}
-  {:op :end-aggregate :template "Y1"}
+  {:op :begin-aggregate :kind "collect" :template "Y1" :bag "Y2" :witnesses []}
   {:op :put-value :var "Y3" :reg "A1"}
-  {:op :put-variable :var "Y5" :reg "A2"}
-  {:op :builtin-call :pred "sort/2" :arity 2}
-  {:op :put-value :var "Y4" :reg "A1"}
-  {:op :put-value :var "Y5" :reg "A2"}
+  {:op :put-value :var "Y10" :reg "A2"}
   {:op :put-value :var "Y6" :reg "A3"}
+  {:op :put-value :var "Y5" :reg "A4"}
+  {:op :put-value :var "Y1" :reg "A5"}
+  {:op :call :pred "follow_dep_name/5" :arity 5}
+  {:op :end-aggregate :template "Y1"}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-variable :var "Y4" :reg "A2"}
+  {:op :builtin-call :pred "sort/2" :arity 2}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :put-value :var "Y5" :reg "A3"}
   {:op :put-structure :functor "[|]/2" :reg "A4" :arity 2}
+  {:op :set-value :var "Y10"}
   {:op :set-value :var "Y11"}
-  {:op :set-value :var "Y12"}
-  {:op :put-variable :var "Y9" :reg "A5"}
-  {:op :put-value :var "Y14" :reg "A6"}
-  {:op :put-variable :var "Y8" :reg "A7"}
+  {:op :put-variable :var "Y8" :reg "A5"}
+  {:op :put-value :var "Y13" :reg "A6"}
+  {:op :put-variable :var "Y7" :reg "A7"}
   {:op :call :pred "topo_all/7" :arity 7}
-  {:op :put-value :var "Y13" :reg "A1"}
+  {:op :put-value :var "Y12" :reg "A1"}
   {:op :put-structure :functor "[|]/2" :reg "A2" :arity 2}
-  {:op :set-variable :var "X18"}
-  {:op :set-value :var "Y8"}
-  {:op :put-structure :functor "-/2" :reg "X18" :arity 2}
-  {:op :set-value :var "Y11"}
+  {:op :set-variable :var "X17"}
   {:op :set-value :var "Y7"}
+  {:op :put-structure :functor "-/2" :reg "X17" :arity 2}
+  {:op :set-value :var "Y10"}
+  {:op :set-value :var "Y6"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :put-value :var "Y10" :reg "A1"}
-  {:op :put-value :var "Y9" :reg "A2"}
+  {:op :put-value :var "Y9" :reg "A1"}
+  {:op :put-value :var "Y8" :reg "A2"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :jump :label "L_ite_cont_50"}
+  {:op :jump :label "L_ite_cont_83"}
   {:op :trust-me}
-  {:op :put-value :var "Y10" :reg "A1"}
+  {:op :put-value :var "Y9" :reg "A1"}
   {:op :put-structure :functor "[|]/2" :reg "A2" :arity 2}
+  {:op :set-value :var "Y10"}
   {:op :set-value :var "Y11"}
-  {:op :set-value :var "Y12"}
   {:op :builtin-call :pred "=/2" :arity 2}
-  {:op :put-value :var "Y13" :reg "A1"}
-  {:op :put-value :var "Y14" :reg "A2"}
+  {:op :put-value :var "Y12" :reg "A1"}
+  {:op :put-value :var "Y13" :reg "A2"}
   {:op :builtin-call :pred "=/2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
@@ -2466,6 +4427,45 @@
   {:op :deallocate}
   {:op :proceed}
   {:op :allocate}
+  {:op :get-structure :functor "t/4" :reg "A1"}
+  {:op :unify-variable :var "Y3"}
+  {:op :unify-variable :var "X7"}
+  {:op :unify-variable :var "Y1"}
+  {:op :unify-variable :var "Y6"}
+  {:op :get-variable :var "Y4" :reg "A2"}
+  {:op :get-variable :var "Y5" :reg "A3"}
+  {:op :put-variable :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :put-value :var "X7" :reg "A3"}
+  {:op :builtin-call :pred "compare/3" :arity 3}
+  {:op :try-me-else :label "L_ite_else_84"}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-constant :constant "=" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :cut-ite}
+  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-value :var "Y1" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :jump :label "L_ite_cont_84"}
+  {:op :trust-me}
+  {:op :try-me-else :label "L_ite_else_85"}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-constant :constant "<" :reg "A2"}
+  {:op :builtin-call :pred "=/2" :arity 2}
+  {:op :cut-ite}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :put-value :var "Y5" :reg "A3"}
+  {:op :call :pred "tree_lookup/3" :arity 3}
+  {:op :jump :label "L_ite_cont_85"}
+  {:op :trust-me}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :put-value :var "Y5" :reg "A3"}
+  {:op :call :pred "tree_lookup/3" :arity 3}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :allocate}
   {:op :get-variable :var "X1" :reg "A1"}
   {:op :get-variable :var "X2" :reg "A2"}
   {:op :get-variable :var "X3" :reg "A3"}
@@ -2488,7 +4488,7 @@
   {:op :put-value :var "X5" :reg "A2"}
   {:op :put-variable :var "Y2" :reg "A3"}
   {:op :call :pred "canonicalize_name/3" :arity 3}
-  {:op :try-me-else :label "L_ite_else_51"}
+  {:op :try-me-else :label "L_ite_else_86"}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-value :var "Y2" :reg "A2"}
   {:op :put-value :var "Y3" :reg "A3"}
@@ -2503,7 +4503,7 @@
   {:op :set-value :var "Y3"}
   {:op :put-value :var "Y4" :reg "A3"}
   {:op :call :pred "close_moving/3" :arity 3}
-  {:op :jump :label "L_ite_cont_51"}
+  {:op :jump :label "L_ite_cont_86"}
   {:op :trust-me}
   {:op :put-value :var "Y4" :reg "A1"}
   {:op :put-constant :constant "no_candidate" :reg "A2"}
@@ -2511,6 +4511,8 @@
   {:op :builtin-call :pred "!/0" :arity 0}
   {:op :deallocate}
   {:op :proceed}
+  {:op :switch-on-structure :cases [{:functor "v/3" :label "default"} {:functor "deb/3" :label "L_version_lt_2_2_body"}] :reg "A1"}
+  {:op :try-me-else :label "L_version_lt_2_2"}
   {:op :allocate}
   {:op :get-structure :functor "v/3" :reg "A1"}
   {:op :unify-variable :var "Y1"}
@@ -2520,15 +4522,15 @@
   {:op :unify-variable :var "Y2"}
   {:op :unify-variable :var "Y4"}
   {:op :unify-variable :var "Y6"}
-  {:op :try-me-else :label "L_ite_else_52"}
+  {:op :try-me-else :label "L_ite_else_87"}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-value :var "Y2" :reg "A2"}
   {:op :builtin-call :pred "</2" :arity 2}
   {:op :cut-ite}
   {:op :builtin-call :pred "true/0" :arity 0}
-  {:op :jump :label "L_ite_cont_52"}
+  {:op :jump :label "L_ite_cont_87"}
   {:op :trust-me}
-  {:op :try-me-else :label "L_ite_else_53"}
+  {:op :try-me-else :label "L_ite_else_88"}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-value :var "Y2" :reg "A2"}
   {:op :builtin-call :pred "=:=/2" :arity 2}
@@ -2537,7 +4539,7 @@
   {:op :builtin-call :pred "</2" :arity 2}
   {:op :cut-ite}
   {:op :builtin-call :pred "true/0" :arity 0}
-  {:op :jump :label "L_ite_cont_53"}
+  {:op :jump :label "L_ite_cont_88"}
   {:op :trust-me}
   {:op :put-value :var "Y1" :reg "A1"}
   {:op :put-value :var "Y2" :reg "A2"}
@@ -2550,6 +4552,168 @@
   {:op :builtin-call :pred "</2" :arity 2}
   {:op :deallocate}
   {:op :proceed}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-structure :functor "deb/3" :reg "A1"}
+  {:op :unify-variable :var "Y1"}
+  {:op :unify-variable :var "Y3"}
+  {:op :unify-variable :var "Y5"}
+  {:op :get-structure :functor "deb/3" :reg "A2"}
+  {:op :unify-variable :var "Y2"}
+  {:op :unify-variable :var "Y4"}
+  {:op :unify-variable :var "Y6"}
+  {:op :try-me-else :label "L_ite_else_89"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :builtin-call :pred "</2" :arity 2}
+  {:op :cut-ite}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :jump :label "L_ite_cont_89"}
+  {:op :trust-me}
+  {:op :try-me-else :label "L_ite_else_90"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :builtin-call :pred "=:=/2" :arity 2}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :call :pred "segs_lt/2" :arity 2}
+  {:op :cut-ite}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :jump :label "L_ite_cont_90"}
+  {:op :trust-me}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :builtin-call :pred "=:=/2" :arity 2}
+  {:op :try-me-else :label "L_ite_else_91"}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :call :pred "segs_lt/2" :arity 2}
+  {:op :cut-ite}
+  {:op :builtin-call :pred "fail/0" :arity 0}
+  {:op :jump :label "L_ite_cont_91"}
+  {:op :trust-me}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :try-me-else :label "L_ite_else_92"}
+  {:op :put-value :var "Y4" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :call :pred "segs_lt/2" :arity 2}
+  {:op :cut-ite}
+  {:op :builtin-call :pred "fail/0" :arity 0}
+  {:op :jump :label "L_ite_cont_92"}
+  {:op :trust-me}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :put-value :var "Y5" :reg "A1"}
+  {:op :put-value :var "Y6" :reg "A2"}
+  {:op :call :pred "segs_lt/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :allocate}
+  {:op :get-variable :var "Y3" :reg "A1"}
+  {:op :get-variable :var "Y2" :reg "A2"}
+  {:op :get-variable :var "Y7" :reg "A3"}
+  {:op :get-variable :var "Y1" :reg "A4"}
+  {:op :try-me-else :label "L_ite_else_93"}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :call :pred "package_in_name/2" :arity 2}
+  {:op :builtin-call :pred "!/0" :arity 0}
+  {:op :builtin-call :pred "fail/0" :arity 0}
+  {:op :jump :label "L_ite_cont_93"}
+  {:op :trust-me}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :put-variable :var "Y4" :reg "Y4"}
+  {:op :put-variable :var "Y7" :reg "Y7"}
+  {:op :put-variable :var "Y5" :reg "Y5"}
+  {:op :begin-aggregate :kind "collect" :template "A1" :bag "Y1" :witnesses []}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-value :var "Y2" :reg "A2"}
+  {:op :put-value :var "Y4" :reg "A3"}
+  {:op :put-value :var "Y5" :reg "A4"}
+  {:op :put-variable :var "Y6" :reg "A5"}
+  {:op :call :pred "provides_for/5" :arity 5}
+  {:op :put-value :var "Y3" :reg "A1"}
+  {:op :put-value :var "Y4" :reg "A2"}
+  {:op :put-value :var "Y5" :reg "A3"}
+  {:op :call :pred "base_ver/3" :arity 3}
+  {:op :try-me-else :label "L_ite_else_94"}
+  {:op :put-value :var "Y6" :reg "A1"}
+  {:op :put-value :var "Y7" :reg "A2"}
+  {:op :call :pred "provide_satisfies/2" :arity 2}
+  {:op :cut-ite}
+  {:op :builtin-call :pred "fail/0" :arity 0}
+  {:op :jump :label "L_ite_cont_94"}
+  {:op :trust-me}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :put-structure :functor "blocked/3" :reg "A1" :arity 3}
+  {:op :set-value :var "Y4"}
+  {:op :set-variable :var "_XT0"}
+  {:op :set-variable :var "_XT1"}
+  {:op :put-structure :functor "needs/1" :reg "_XT0" :arity 1}
+  {:op :set-value :var "Y7"}
+  {:op :put-structure :functor "base_has/1" :reg "_XT1" :arity 1}
+  {:op :set-value :var "Y5"}
+  {:op :end-aggregate :template "A1"}
+  {:op :deallocate}
+  {:op :proceed}
+  {:op :try-me-else :label "L_walk_pkg_for_blocked_5_2"}
+  {:op :allocate}
+  {:op :get-variable :var "X1" :reg "A1"}
+  {:op :get-variable :var "X2" :reg "A2"}
+  {:op :get-variable :var "X3" :reg "A3"}
+  {:op :get-value :var "X2" :reg "A4"}
+  {:op :get-variable :var "X4" :reg "A5"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X2" :reg "A2"}
+  {:op :put-value :var "X3" :reg "A3"}
+  {:op :put-value :var "X4" :reg "A4"}
+  {:op :deallocate}
+  {:op :execute :pred "layered_walk_ver/4"}
+  {:op :retry-me-else :label "L_walk_pkg_for_blocked_5_3"}
+  {:op :allocate}
+  {:op :get-variable :var "X1" :reg "A1"}
+  {:op :get-variable :var "X2" :reg "A2"}
+  {:op :get-variable :var "X3" :reg "A3"}
+  {:op :get-variable :var "X4" :reg "A4"}
+  {:op :get-variable :var "X5" :reg "A5"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X2" :reg "A2"}
+  {:op :put-value :var "X3" :reg "A3"}
+  {:op :put-value :var "X4" :reg "A4"}
+  {:op :put-value :var "X5" :reg "A5"}
+  {:op :deallocate}
+  {:op :execute :pred "layer_provider/5"}
+  {:op :trust-me}
+  {:op :allocate}
+  {:op :get-variable :var "X1" :reg "A1"}
+  {:op :get-variable :var "X2" :reg "A2"}
+  {:op :get-variable :var "X3" :reg "A3"}
+  {:op :get-variable :var "X4" :reg "A4"}
+  {:op :get-variable :var "X5" :reg "A5"}
+  {:op :put-value :var "X1" :reg "A1"}
+  {:op :put-value :var "X2" :reg "A2"}
+  {:op :put-value :var "X3" :reg "A3"}
+  {:op :put-value :var "X4" :reg "A4"}
+  {:op :put-value :var "X5" :reg "A5"}
+  {:op :deallocate}
+  {:op :execute :pred "provider_candidate/5"}
+  {:op :allocate}
+  {:op :get-variable :var "Y1" :reg "A1"}
+  {:op :get-variable :var "Y2" :reg "A2"}
+  {:op :put-variable :var "Y3" :reg "A1"}
+  {:op :call :pred "index_threshold/1" :arity 1}
+  {:op :try-me-else :label "L_ite_else_95"}
+  {:op :put-value :var "Y1" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :call :pred "long_enough/2" :arity 2}
+  {:op :cut-ite}
+  {:op :builtin-call :pred "true/0" :arity 0}
+  {:op :jump :label "L_ite_cont_95"}
+  {:op :trust-me}
+  {:op :put-value :var "Y2" :reg "A1"}
+  {:op :put-value :var "Y3" :reg "A2"}
+  {:op :call :pred "long_enough/2" :arity 2}
+  {:op :deallocate}
+  {:op :proceed}
 ])
 
 (def shared-wam-labels {
@@ -2559,278 +4723,534 @@
   "alias_list/2" 24
   "L_alias_list_2_2" 35
   "L_alias_list_2_2_body" 36
-  "alias_lookup/3" 48
-  "L_alias_lookup_3_2" 54
-  "L_alias_lookup_3_2_body" 55
-  "L_ite_else_2" 73
-  "L_ite_cont_2" 78
-  "audit_holds/4" 80
-  "L_audit_holds_4_2" 87
-  "L_audit_holds_4_2_body" 88
-  "L_ite_else_4" 117
-  "L_ite_cont_4" 123
-  "L_ite_else_3" 124
-  "L_ite_cont_3" 132
-  "base_holds/2" 140
-  "base_list/2" 155
-  "L_base_list_2_2" 166
-  "L_base_list_2_2_body" 167
-  "base_name/2" 179
-  "base_reason/3" 187
-  "base_ver/3" 199
-  "blocked_acc/5" 218
-  "L_blocked_acc_5_2" 234
-  "L_blocked_acc_5_2_body" 235
-  "L_ite_else_6" 255
-  "L_ite_cont_6" 257
-  "L_ite_else_5" 272
-  "L_ite_cont_5" 276
-  "L_ite_else_7" 297
-  "L_ite_cont_7" 301
-  "blocked_acc_list/5" 303
-  "L_blocked_acc_list_5_2" 311
-  "L_blocked_acc_list_5_2_body" 312
-  "blocked_from/4" 333
-  "L_ite_else_8" 349
-  "L_ite_cont_8" 351
-  "L_ite_else_9" 362
-  "L_ite_cont_9" 364
-  "L_blocked_from_4_2" 376
-  "L_blocked_from_4_2_body" 377
-  "L_ite_else_10" 391
-  "L_ite_cont_10" 393
-  "candidates_high_first/4" 414
-  "L_ite_else_11" 426
-  "L_ite_cont_11" 428
-  "canonicalize_name/3" 447
-  "close_moving/3" 459
-  "L_ite_else_12" 484
-  "L_ite_else_13" 508
-  "L_ite_cont_13" 519
-  "L_ite_cont_12" 519
-  "collect_deps/4" 521
-  "conflicts_in/4" 535
-  "conflicts_list/2" 551
-  "L_conflicts_list_2_2" 562
-  "L_conflicts_list_2_2_body" 563
-  "dep_breaks/5" 575
-  "L_ite_else_15" 606
-  "L_ite_cont_15" 608
-  "L_ite_else_14" 613
-  "L_ite_cont_14" 620
-  "dep_breaks_moving/5" 622
-  "dependents/3" 638
-  "dependents_installed/3" 660
-  "depends_in/5" 679
-  "depends_list/2" 697
-  "L_depends_list_2_2" 708
-  "L_depends_list_2_2_body" 709
-  "direct_on/4" 721
-  "L_direct_on_4_2" 728
-  "L_direct_on_4_2_body" 729
-  "L_ite_else_16" 755
-  "L_ite_cont_16" 759
-  "exclude_name/3" 765
-  "L_exclude_name_3_2" 771
-  "L_exclude_name_3_2_body" 772
-  "L_exclude_name_3_3" 784
-  "L_exclude_name_3_3_body" 785
-  "excluded_list/2" 798
-  "L_excluded_list_2_2" 809
-  "L_excluded_list_2_2_body" 810
-  "excluded_name/2" 822
-  "explain_blocked/3" 833
-  "explain_blocked_list/3" 847
-  "first_broken/4" 867
-  "L_first_broken_4_2" 874
-  "L_first_broken_4_2_body" 875
-  "L_ite_else_17" 898
-  "L_ite_else_18" 914
-  "L_ite_cont_18" 920
-  "L_ite_cont_17" 920
-  "freeze_audit/2" 922
-  "hold_reason/3" 939
-  "L_ite_else_19" 958
-  "L_ite_cont_19" 963
-  "inst_closure_names/5" 965
-  "inst_walk/6" 984
-  "L_inst_walk_6_2" 993
-  "L_inst_walk_6_2_body" 994
-  "L_ite_else_20" 1019
-  "L_ite_cont_20" 1054
-  "installed_list/2" 1056
-  "L_installed_list_2_2" 1067
-  "L_installed_list_2_2_body" 1068
-  "installed_or_base/3" 1080
-  "L_installed_or_base_3_2" 1090
-  "L_installed_or_base_3_2_body" 1091
-  "installed_ver/3" 1104
-  "item_ver/3" 1118
-  "L_item_ver_3_2" 1131
-  "L_item_ver_3_2_body" 1132
-  "L_item_ver_3_3" 1146
-  "L_item_ver_3_3_body" 1147
-  "keep_installed_or_base/4" 1158
-  "L_keep_installed_or_base_4_2" 1165
-  "L_keep_installed_or_base_4_2_body" 1166
-  "L_ite_else_21" 1191
-  "L_ite_cont_21" 1195
-  "layer_closure/3" 1201
-  "layered_walk_ver/4" 1218
-  "L_ite_else_22" 1236
-  "L_ite_cont_22" 1242
-  "layers_list/2" 1245
-  "L_layers_list_2_2" 1256
-  "L_layers_list_2_2_body" 1257
-  "lookup_held/3" 1269
-  "L_ite_else_23" 1285
-  "L_ite_cont_23" 1290
-  "map_requests/3" 1292
-  "L_map_requests_3_2" 1298
-  "L_map_requests_3_2_body" 1299
-  "matching_deps/4" 1316
-  "L_matching_deps_4_2" 1323
-  "L_matching_deps_4_2_body" 1324
-  "L_ite_else_24" 1353
-  "L_ite_cont_24" 1357
-  "matching_versions/4" 1363
-  "L_matching_versions_4_2" 1370
-  "L_matching_versions_4_2_body" 1371
-  "L_ite_else_25" 1395
-  "L_ite_cont_25" 1399
-  "member_selected/3" 1405
-  "names_of/2" 1414
-  "L_names_of_2_2" 1419
-  "L_names_of_2_2_body" 1420
-  "needed_names/4" 1434
-  "L_needed_names_4_2" 1440
-  "L_needed_names_4_2_body" 1441
-  "no_acc_conflicts/4" 1458
-  "L_no_acc_conflicts_4_2" 1464
-  "L_no_acc_conflicts_4_2_body" 1465
-  "L_ite_else_26" 1484
-  "L_ite_cont_26" 1486
-  "L_ite_else_27" 1495
-  "L_ite_cont_27" 1497
-  "package_in/3" 1503
-  "packages/2" 1517
-  "L_packages_2_2" 1528
-  "L_packages_2_2_body" 1529
-  "pick/7" 1541
-  "L_pick_7_2" 1557
-  "L_pick_7_2_body" 1558
-  "L_ite_else_28" 1582
-  "L_ite_cont_28" 1591
-  "pick_repair/4" 1593
-  "removal_orphans/3" 1609
-  "L_ite_else_29" 1628
-  "L_ite_cont_29" 1632
-  "L_ite_else_30" 1641
-  "L_ite_else_31" 1682
-  "L_ite_cont_31" 1684
-  "L_ite_else_32" 1691
-  "L_ite_cont_32" 1693
-  "L_ite_cont_30" 1700
-  "repairs_moving/4" 1703
-  "reqs_ok_moving/2" 1717
-  "L_reqs_ok_moving_2_2" 1722
-  "L_reqs_ok_moving_2_2_body" 1723
-  "L_ite_else_33" 1741
-  "L_ite_cont_33" 1743
-  "request_to_req/3" 1747
-  "L_ite_else_34" 1765
-  "L_ite_cont_34" 1773
-  "requested_list/2" 1775
-  "L_requested_list_2_2" 1786
-  "L_requested_list_2_2_body" 1787
-  "resolve/3" 1799
-  "resolve_layered/3" 1819
-  "resolve_pending/5" 1839
-  "L_resolve_pending_5_2" 1846
-  "L_resolve_pending_5_2_body" 1847
-  "L_ite_else_35" 1874
-  "L_ite_else_36" 1904
-  "L_ite_cont_36" 1921
-  "L_ite_cont_35" 1921
-  "roots_to_pairs/3" 1923
-  "L_roots_to_pairs_3_2" 1929
-  "L_roots_to_pairs_3_2_body" 1930
-  "L_roots_to_pairs_3_3" 1952
-  "L_roots_to_pairs_3_3_body" 1953
-  "L_roots_to_pairs_3_list_dispatch" 1964
-  "safe_upgrade/4" 1966
-  "L_ite_else_38" 1984
-  "L_ite_cont_38" 1986
-  "L_ite_else_37" 1991
-  "L_ite_else_40" 2001
-  "L_ite_cont_40" 2003
-  "L_ite_else_39" 2008
-  "L_ite_cont_39" 2019
-  "L_ite_cont_37" 2019
-  "safe_upgrade_reason/5" 2022
-  "L_safe_upgrade_reason_5_2" 2030
-  "L_safe_upgrade_reason_5_2_body" 2031
-  "L_safe_upgrade_reason_5_3" 2040
-  "L_safe_upgrade_reason_5_3_body" 2041
-  "L_safe_upgrade_reason_5_4" 2050
-  "L_safe_upgrade_reason_5_4_body" 2051
-  "L_safe_upgrade_reason_5_5" 2060
-  "L_safe_upgrade_reason_5_5_body" 2061
-  "satisfies/2" 2075
-  "L_satisfies_2_2" 2080
-  "L_satisfies_2_2_body" 2081
-  "L_satisfies_2_3" 2088
-  "L_satisfies_2_3_body" 2089
-  "L_ite_else_41" 2099
-  "L_ite_cont_41" 2101
-  "L_satisfies_2_4" 2102
-  "L_satisfies_2_4_body" 2103
-  "L_satisfies_2_5" 2111
-  "L_satisfies_2_5_body" 2112
-  "L_ite_else_42" 2124
-  "L_ite_cont_42" 2126
-  "scan_base_holds/3" 2130
-  "L_scan_base_holds_3_2" 2136
-  "L_scan_base_holds_3_2_body" 2137
-  "L_ite_else_43" 2155
-  "L_ite_else_44" 2167
-  "L_ite_else_45" 2188
-  "L_ite_else_46" 2206
-  "L_ite_cont_46" 2210
-  "L_ite_cont_45" 2210
-  "L_ite_cont_44" 2210
-  "L_ite_cont_43" 2210
-  "seen_name/2" 2215
-  "L_ite_else_47" 2227
-  "L_ite_cont_47" 2231
-  "selected_ver/3" 2233
-  "L_ite_else_48" 2248
-  "L_ite_cont_48" 2253
-  "tight_base_revdep/2" 2255
-  "tight_constraint/1" 2266
-  "tight_rev_in/3" 2271
-  "L_ite_else_49" 2296
-  "L_ite_cont_49" 2301
-  "topo_all/7" 2303
-  "L_topo_all_7_2" 2313
-  "L_topo_all_7_2_body" 2314
-  "topo_one/7" 2341
-  "L_topo_one_7_2" 2356
-  "L_topo_one_7_2_body" 2357
-  "L_ite_else_50" 2407
-  "L_ite_cont_50" 2416
-  "topo_sort_sel/3" 2418
-  "L_topo_sort_sel_3_2" 2427
-  "L_topo_sort_sel_3_2_body" 2428
-  "upgrade_set/4" 2451
-  "upgrade_set_result/4" 2465
-  "L_ite_else_51" 2490
-  "L_ite_cont_51" 2494
-  "version_lt/2" 2497
-  "L_ite_else_52" 2513
-  "L_ite_else_53" 2524
-  "L_ite_cont_53" 2534
-  "L_ite_cont_52" 2534
+  "L_alias_list_2_3" 48
+  "L_alias_list_2_3_body" 49
+  "L_alias_list_2_4" 62
+  "L_alias_list_2_4_body" 63
+  "alias_lookup/3" 73
+  "L_alias_lookup_3_2" 79
+  "L_alias_lookup_3_2_body" 80
+  "L_ite_else_2" 98
+  "L_ite_cont_2" 103
+  "already_provided/4" 105
+  "already_satisfied/4" 122
+  "L_already_satisfied_4_2" 136
+  "L_already_satisfied_4_2_body" 137
+  "alt_reasons/4" 148
+  "L_alt_reasons_4_2" 155
+  "L_alt_reasons_4_2_body" 156
+  "L_ite_else_3" 181
+  "L_ite_cont_3" 185
+  "audit_holds/4" 191
+  "L_audit_holds_4_2" 198
+  "L_audit_holds_4_2_body" 199
+  "L_ite_else_5" 228
+  "L_ite_cont_5" 234
+  "L_ite_else_4" 235
+  "L_ite_cont_4" 243
+  "base_holds/2" 251
+  "base_list/2" 266
+  "L_base_list_2_2" 277
+  "L_base_list_2_2_body" 278
+  "L_base_list_2_3" 290
+  "L_base_list_2_3_body" 291
+  "L_base_list_2_4" 304
+  "L_base_list_2_4_body" 305
+  "base_name/2" 315
+  "base_reason/3" 323
+  "base_ver/3" 335
+  "blocked_acc/5" 354
+  "L_blocked_acc_5_2" 372
+  "L_blocked_acc_5_2_body" 373
+  "L_blocked_acc_5_3" 400
+  "L_blocked_acc_5_3_body" 401
+  "L_ite_else_7" 421
+  "L_ite_cont_7" 423
+  "L_ite_else_6" 438
+  "L_ite_else_8" 463
+  "L_ite_cont_8" 467
+  "L_ite_cont_6" 467
+  "L_ite_else_9" 489
+  "L_ite_cont_9" 493
+  "blocked_acc_list/5" 495
+  "L_blocked_acc_list_5_2" 503
+  "L_blocked_acc_list_5_2_body" 504
+  "blocked_from/4" 525
+  "L_blocked_from_4_2" 550
+  "L_blocked_from_4_2_body" 551
+  "L_ite_else_10" 565
+  "L_ite_cont_10" 567
+  "L_ite_else_11" 578
+  "L_ite_cont_11" 580
+  "L_blocked_from_4_3" 592
+  "L_blocked_from_4_3_body" 593
+  "L_ite_else_12" 607
+  "L_ite_cont_12" 609
+  "L_blocked_from_4_4" 629
+  "L_blocked_from_4_4_body" 630
+  "L_ite_else_13" 644
+  "L_ite_cont_13" 646
+  "build_tree/4" 668
+  "L_ite_else_14" 685
+  "L_ite_cont_14" 724
+  "candidates_high_first/4" 726
+  "L_ite_else_15" 738
+  "L_ite_cont_15" 740
+  "canonicalize_name/3" 753
+  "close_moving/3" 765
+  "L_ite_else_16" 790
+  "L_ite_else_17" 814
+  "L_ite_cont_17" 825
+  "L_ite_cont_16" 825
+  "cmp_ver/3" 827
+  "L_cmp_ver_3_2" 839
+  "L_cmp_ver_3_2_body" 840
+  "L_cmp_ver_3_3" 850
+  "L_cmp_ver_3_3_body" 851
+  "collect_deps/4" 855
+  "L_ite_else_19" 877
+  "L_ite_cont_19" 881
+  "L_ite_else_18" 882
+  "L_ite_cont_18" 891
+  "conflicts_in/4" 893
+  "conflicts_list/2" 909
+  "L_conflicts_list_2_2" 920
+  "L_conflicts_list_2_2_body" 921
+  "L_conflicts_list_2_3" 933
+  "L_conflicts_list_2_3_body" 934
+  "L_conflicts_list_2_4" 947
+  "L_conflicts_list_2_4_body" 948
+  "dep_breaks/5" 958
+  "L_ite_else_20" 988
+  "L_ite_cont_20" 995
+  "dep_breaks_moving/5" 997
+  "dep_breaks_need/4" 1013
+  "L_ite_else_21" 1037
+  "L_ite_cont_21" 1039
+  "L_ite_else_22" 1055
+  "L_ite_cont_22" 1057
+  "L_dep_breaks_need_4_2" 1059
+  "L_dep_breaks_need_4_2_body" 1060
+  "L_ite_else_23" 1076
+  "L_ite_cont_23" 1078
+  "dep_index/2" 1080
+  "dep_mentions/2" 1086
+  "L_dep_mentions_2_2" 1099
+  "L_dep_mentions_2_2_body" 1100
+  "dep_targets/5" 1108
+  "L_ite_else_24" 1132
+  "L_ite_cont_24" 1139
+  "dep_to_req/3" 1141
+  "L_dep_to_req_3_2" 1154
+  "L_dep_to_req_3_2_body" 1155
+  "dependents/3" 1161
+  "dependents_installed/3" 1183
+  "depends_in/5" 1202
+  "depends_list/2" 1220
+  "L_depends_list_2_2" 1231
+  "L_depends_list_2_2_body" 1232
+  "L_depends_list_2_3" 1244
+  "L_depends_list_2_3_body" 1245
+  "L_depends_list_2_4" 1258
+  "L_depends_list_2_4_body" 1259
+  "direct_on/4" 1269
+  "L_direct_on_4_2" 1276
+  "L_direct_on_4_2_body" 1277
+  "L_ite_else_25" 1303
+  "L_ite_cont_25" 1307
+  "exclude_name/3" 1313
+  "L_exclude_name_3_2" 1319
+  "L_exclude_name_3_2_body" 1320
+  "L_exclude_name_3_3" 1332
+  "L_exclude_name_3_3_body" 1333
+  "excluded_list/2" 1346
+  "L_excluded_list_2_2" 1357
+  "L_excluded_list_2_2_body" 1358
+  "L_excluded_list_2_3" 1370
+  "L_excluded_list_2_3_body" 1371
+  "L_excluded_list_2_4" 1384
+  "L_excluded_list_2_4_body" 1385
+  "excluded_name/2" 1395
+  "explain_alt/5" 1406
+  "L_ite_else_26" 1423
+  "L_ite_else_28" 1438
+  "L_ite_cont_28" 1440
+  "L_ite_else_27" 1445
+  "L_ite_cont_27" 1447
+  "L_ite_cont_26" 1447
+  "explain_blocked/3" 1449
+  "explain_blocked_list/3" 1463
+  "filter_satisfies/3" 1483
+  "L_filter_satisfies_3_2" 1489
+  "L_filter_satisfies_3_2_body" 1490
+  "L_ite_else_29" 1507
+  "L_ite_cont_29" 1511
+  "first_alt_already/4" 1516
+  "L_first_alt_already_4_2" 1535
+  "L_first_alt_already_4_2_body" 1536
+  "first_broken/4" 1553
+  "L_first_broken_4_2" 1560
+  "L_first_broken_4_2_body" 1561
+  "L_ite_else_30" 1584
+  "L_ite_else_31" 1600
+  "L_ite_cont_31" 1606
+  "L_ite_cont_30" 1606
+  "follow_dep_name/5" 1608
+  "follow_raw_dep/4" 1626
+  "L_follow_raw_dep_4_2" 1649
+  "L_follow_raw_dep_4_2_body" 1650
+  "freeze_audit/2" 1664
+  "group_keyed/2" 1681
+  "L_group_keyed_2_2" 1686
+  "L_group_keyed_2_2_body" 1687
+  "hold_reason/3" 1715
+  "L_ite_else_32" 1734
+  "L_ite_cont_32" 1739
+  "index_catalog/2" 1741
+  "L_ite_else_33" 1790
+  "L_ite_cont_33" 1794
+  "index_threshold/1" 1796
+  "inst_closure_names/5" 1798
+  "inst_walk/6" 1817
+  "L_inst_walk_6_2" 1826
+  "L_inst_walk_6_2_body" 1827
+  "L_ite_else_34" 1852
+  "L_ite_cont_34" 1887
+  "installed_list/2" 1889
+  "L_installed_list_2_2" 1900
+  "L_installed_list_2_2_body" 1901
+  "L_installed_list_2_3" 1913
+  "L_installed_list_2_3_body" 1914
+  "L_installed_list_2_4" 1927
+  "L_installed_list_2_4_body" 1928
+  "installed_or_base/3" 1938
+  "L_installed_or_base_3_2" 1948
+  "L_installed_or_base_3_2_body" 1949
+  "installed_ver/3" 1962
+  "is_public_catalog/1" 1976
+  "L_is_public_catalog_1_2" 1986
+  "L_is_public_catalog_1_2_body" 1987
+  "L_is_public_catalog_1_3" 1998
+  "L_is_public_catalog_1_3_body" 1999
+  "is_v3/1" 2011
+  "item_ver/3" 2016
+  "L_item_ver_3_2" 2029
+  "L_item_ver_3_2_body" 2030
+  "L_item_ver_3_3" 2044
+  "L_item_ver_3_3_body" 2045
+  "keep_installed_or_base/4" 2056
+  "L_keep_installed_or_base_4_2" 2063
+  "L_keep_installed_or_base_4_2_body" 2064
+  "L_ite_else_35" 2089
+  "L_ite_cont_35" 2093
+  "key_dep_rows/3" 2099
+  "L_key_dep_rows_3_2" 2105
+  "L_key_dep_rows_3_2_body" 2106
+  "key_pkg_rows/3" 2142
+  "L_key_pkg_rows_3_2" 2148
+  "L_key_pkg_rows_3_2_body" 2149
+  "layer_closure/3" 2176
+  "layer_provider/5" 2193
+  "L_layer_provider_5_2" 2216
+  "L_layer_provider_5_2_body" 2217
+  "layer_satisfies/3" 2242
+  "L_layer_satisfies_3_2" 2255
+  "L_layer_satisfies_3_2_body" 2256
+  "L_layer_satisfies_3_3" 2276
+  "L_layer_satisfies_3_3_body" 2277
+  "L_ite_else_36" 2303
+  "L_ite_cont_36" 2310
+  "layered_walk_ver/4" 2312
+  "L_ite_else_37" 2330
+  "L_ite_cont_37" 2336
+  "layers_list/2" 2339
+  "L_layers_list_2_2" 2350
+  "L_layers_list_2_2_body" 2351
+  "L_layers_list_2_3" 2363
+  "L_layers_list_2_3_body" 2364
+  "L_layers_list_2_4" 2377
+  "L_layers_list_2_4_body" 2378
+  "list_to_tree/2" 2388
+  "long_enough/2" 2400
+  "L_ite_else_38" 2412
+  "L_ite_cont_38" 2421
+  "lookup_held/3" 2423
+  "L_ite_else_39" 2439
+  "L_ite_cont_39" 2444
+  "map_requests/3" 2446
+  "L_map_requests_3_2" 2452
+  "L_map_requests_3_2_body" 2453
+  "matching_deps/4" 2470
+  "L_matching_deps_4_2" 2477
+  "L_matching_deps_4_2_body" 2478
+  "L_ite_else_40" 2508
+  "L_ite_cont_40" 2512
+  "matching_versions/4" 2518
+  "L_matching_versions_4_2" 2525
+  "L_matching_versions_4_2_body" 2526
+  "L_ite_else_41" 2550
+  "L_ite_cont_41" 2554
+  "matching_versions_in/4" 2560
+  "L_ite_else_43" 2581
+  "L_ite_cont_43" 2585
+  "L_ite_else_42" 2586
+  "L_ite_cont_42" 2595
+  "member_selected/3" 2597
+  "names_of/2" 2606
+  "L_names_of_2_2" 2611
+  "L_names_of_2_2_body" 2612
+  "needed_names/4" 2626
+  "L_needed_names_4_2" 2632
+  "L_needed_names_4_2_body" 2633
+  "no_acc_conflicts/4" 2650
+  "L_no_acc_conflicts_4_2" 2656
+  "L_no_acc_conflicts_4_2_body" 2657
+  "L_ite_else_44" 2676
+  "L_ite_cont_44" 2678
+  "L_ite_else_45" 2687
+  "L_ite_cont_45" 2689
+  "order_lt/2" 2695
+  "L_order_lt_2_2" 2704
+  "L_order_lt_2_2_body" 2705
+  "L_order_lt_2_3" 2718
+  "L_order_lt_2_3_body" 2719
+  "L_order_lt_2_4" 2732
+  "L_order_lt_2_4_body" 2733
+  "L_ite_else_46" 2753
+  "L_ite_cont_46" 2760
+  "L_order_lt_2_list_dispatch" 2762
+  "order_val/2" 2764
+  "L_order_val_2_2" 2772
+  "L_order_val_2_2_body" 2773
+  "L_order_val_2_3" 2785
+  "L_order_val_2_3_body" 2786
+  "L_order_val_2_4" 2798
+  "L_order_val_2_4_body" 2799
+  "package_in/3" 2807
+  "package_in_name/2" 2821
+  "packages/2" 2834
+  "L_packages_2_2" 2845
+  "L_packages_2_2_body" 2846
+  "L_packages_2_3" 2858
+  "L_packages_2_3_body" 2859
+  "L_packages_2_4" 2872
+  "L_packages_2_4_body" 2873
+  "pad_head/2" 2883
+  "L_pad_head_2_2" 2896
+  "L_pad_head_2_2_body" 2897
+  "pick/7" 2900
+  "L_pick_7_2" 2916
+  "L_pick_7_2_body" 2917
+  "L_ite_else_47" 2941
+  "L_ite_cont_47" 2950
+  "pick_need/8" 2952
+  "L_pick_need_8_2" 2969
+  "L_pick_need_8_2_body" 2970
+  "L_pick_need_8_3" 2986
+  "L_pick_need_8_3_body" 2987
+  "L_ite_else_48" 3015
+  "L_ite_else_49" 3028
+  "L_ite_else_50" 3043
+  "L_ite_cont_50" 3053
+  "L_ite_cont_49" 3053
+  "L_ite_cont_48" 3053
+  "pick_repair/4" 3055
+  "pkg_index/2" 3071
+  "provide_row/5" 3077
+  "L_provide_row_5_2" 3088
+  "L_provide_row_5_2_body" 3089
+  "provide_satisfies/2" 3099
+  "L_provide_satisfies_2_2" 3104
+  "L_provide_satisfies_2_2_body" 3105
+  "provider_candidate/5" 3115
+  "L_ite_else_51" 3140
+  "L_ite_cont_51" 3142
+  "provides_for/5" 3150
+  "provides_list/2" 3169
+  "L_provides_list_2_2" 3180
+  "L_provides_list_2_2_body" 3181
+  "L_provides_list_2_3" 3193
+  "L_provides_list_2_3_body" 3194
+  "L_provides_list_2_4" 3207
+  "L_provides_list_2_4_body" 3208
+  "provides_sat/5" 3218
+  "removal_orphans/3" 3240
+  "L_ite_else_52" 3259
+  "L_ite_cont_52" 3263
+  "L_ite_else_53" 3272
+  "L_ite_else_54" 3313
+  "L_ite_cont_54" 3315
+  "L_ite_else_55" 3322
+  "L_ite_cont_55" 3324
+  "L_ite_cont_53" 3331
+  "repairs_moving/4" 3334
+  "reqs_ok_moving/2" 3348
+  "L_reqs_ok_moving_2_2" 3353
+  "L_reqs_ok_moving_2_2_body" 3354
+  "L_ite_else_56" 3380
+  "L_ite_cont_56" 3382
+  "L_reqs_ok_moving_2_3" 3386
+  "L_reqs_ok_moving_2_3_body" 3387
+  "L_ite_else_57" 3405
+  "L_ite_cont_57" 3407
+  "L_reqs_ok_moving_2_list_dispatch" 3411
+  "request_to_req/3" 3413
+  "L_ite_else_58" 3431
+  "L_ite_cont_58" 3439
+  "requested_list/2" 3441
+  "L_requested_list_2_2" 3452
+  "L_requested_list_2_2_body" 3453
+  "L_requested_list_2_3" 3465
+  "L_requested_list_2_3_body" 3466
+  "L_requested_list_2_4" 3479
+  "L_requested_list_2_4_body" 3480
+  "resolve/3" 3490
+  "resolve_alternatives/6" 3513
+  "L_ite_else_59" 3534
+  "L_ite_cont_59" 3551
+  "resolve_layered/3" 3553
+  "resolve_pending/5" 3576
+  "L_resolve_pending_5_2" 3583
+  "L_resolve_pending_5_2_body" 3584
+  "L_ite_else_60" 3609
+  "L_ite_else_61" 3626
+  "L_ite_else_62" 3641
+  "L_ite_else_63" 3672
+  "L_ite_cont_63" 3698
+  "L_ite_cont_62" 3698
+  "L_ite_cont_61" 3698
+  "L_ite_cont_60" 3698
+  "roots_to_pairs/3" 3700
+  "L_roots_to_pairs_3_2" 3706
+  "L_roots_to_pairs_3_2_body" 3707
+  "L_roots_to_pairs_3_3" 3729
+  "L_roots_to_pairs_3_3_body" 3730
+  "L_roots_to_pairs_3_list_dispatch" 3741
+  "safe_upgrade/4" 3743
+  "L_ite_else_65" 3761
+  "L_ite_cont_65" 3763
+  "L_ite_else_64" 3768
+  "L_ite_else_67" 3778
+  "L_ite_cont_67" 3780
+  "L_ite_else_66" 3785
+  "L_ite_cont_66" 3796
+  "L_ite_cont_64" 3796
+  "safe_upgrade_reason/5" 3799
+  "L_safe_upgrade_reason_5_2" 3807
+  "L_safe_upgrade_reason_5_2_body" 3808
+  "L_safe_upgrade_reason_5_3" 3817
+  "L_safe_upgrade_reason_5_3_body" 3818
+  "L_safe_upgrade_reason_5_4" 3827
+  "L_safe_upgrade_reason_5_4_body" 3828
+  "L_safe_upgrade_reason_5_5" 3837
+  "L_safe_upgrade_reason_5_5_body" 3838
+  "same_key/4" 3852
+  "L_same_key_4_2" 3859
+  "L_same_key_4_2_body" 3860
+  "L_ite_else_68" 3889
+  "L_ite_cont_68" 3904
+  "satisfies/2" 3906
+  "L_satisfies_2_2" 3911
+  "L_satisfies_2_2_body" 3912
+  "L_satisfies_2_3" 3919
+  "L_satisfies_2_3_body" 3920
+  "L_ite_else_69" 3930
+  "L_ite_cont_69" 3932
+  "L_satisfies_2_4" 3933
+  "L_satisfies_2_4_body" 3934
+  "L_ite_else_70" 3944
+  "L_ite_cont_70" 3946
+  "L_satisfies_2_5" 3947
+  "L_satisfies_2_5_body" 3948
+  "L_satisfies_2_6" 3956
+  "L_satisfies_2_6_body" 3957
+  "L_satisfies_2_7" 3965
+  "L_satisfies_2_7_body" 3966
+  "L_ite_else_71" 3978
+  "L_ite_cont_71" 3980
+  "scan_base_holds/3" 3984
+  "L_scan_base_holds_3_2" 3990
+  "L_scan_base_holds_3_2_body" 3991
+  "L_ite_else_72" 4009
+  "L_ite_else_73" 4021
+  "L_ite_else_74" 4042
+  "L_ite_else_75" 4060
+  "L_ite_cont_75" 4064
+  "L_ite_cont_74" 4064
+  "L_ite_cont_73" 4064
+  "L_ite_cont_72" 4064
+  "seen_name/2" 4069
+  "L_ite_else_76" 4081
+  "L_ite_cont_76" 4085
+  "segs_lt/2" 4087
+  "L_segs_lt_2_2" 4096
+  "L_segs_lt_2_2_body" 4097
+  "segs_lt_1/2" 4110
+  "L_ite_else_77" 4130
+  "L_ite_else_78" 4141
+  "L_ite_cont_78" 4151
+  "L_ite_cont_77" 4151
+  "selected_ver/3" 4153
+  "L_ite_else_79" 4168
+  "L_ite_cont_79" 4173
+  "sort_versions_desc/2" 4175
+  "L_ite_else_80" 4190
+  "L_ite_cont_80" 4198
+  "tight_base_revdep/2" 4200
+  "tight_constraint/1" 4211
+  "tight_rev_in/3" 4216
+  "L_ite_else_82" 4243
+  "L_ite_cont_82" 4254
+  "L_ite_else_81" 4257
+  "L_ite_cont_81" 4262
+  "topo_all/7" 4264
+  "L_topo_all_7_2" 4274
+  "L_topo_all_7_2_body" 4275
+  "topo_one/7" 4302
+  "L_topo_one_7_2" 4317
+  "L_topo_one_7_2_body" 4318
+  "L_ite_else_83" 4368
+  "L_ite_cont_83" 4377
+  "topo_sort_sel/3" 4379
+  "L_topo_sort_sel_3_2" 4388
+  "L_topo_sort_sel_3_2_body" 4389
+  "tree_lookup/3" 4412
+  "L_ite_else_84" 4433
+  "L_ite_else_85" 4444
+  "L_ite_cont_85" 4449
+  "L_ite_cont_84" 4449
+  "upgrade_set/4" 4451
+  "upgrade_set_result/4" 4465
+  "L_ite_else_86" 4490
+  "L_ite_cont_86" 4494
+  "version_lt/2" 4497
+  "L_ite_else_87" 4515
+  "L_ite_else_88" 4526
+  "L_ite_cont_88" 4536
+  "L_ite_cont_87" 4536
+  "L_version_lt_2_2" 4538
+  "L_version_lt_2_2_body" 4539
+  "L_ite_else_89" 4555
+  "L_ite_else_90" 4566
+  "L_ite_else_91" 4577
+  "L_ite_cont_91" 4579
+  "L_ite_else_92" 4586
+  "L_ite_cont_92" 4588
+  "L_ite_cont_90" 4591
+  "L_ite_cont_89" 4591
+  "virtual_provider_ceilings/4" 4593
+  "L_ite_else_93" 4605
+  "L_ite_cont_93" 4607
+  "L_ite_else_94" 4628
+  "L_ite_cont_94" 4630
+  "walk_pkg_for_blocked/5" 4641
+  "L_walk_pkg_for_blocked_5_2" 4654
+  "L_walk_pkg_for_blocked_5_2_body" 4655
+  "L_walk_pkg_for_blocked_5_3" 4668
+  "L_walk_pkg_for_blocked_5_3_body" 4669
+  "worth_indexing/2" 4682
+  "L_ite_else_95" 4694
+  "L_ite_cont_95" 4698
 })
 
 (def shared-wam-code
@@ -2861,84 +5281,7 @@
 
 ;; lowered-alias-list-2 — lowered from alias_list/2
 (defn lowered-alias-list-2 [state]
-  ;; T4 all-clauses inline (generated): try each clause on the same input
-  ;; state; first :succeeded wins (immutable state = free per-clause restore).
-  (let [c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/6, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/6") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; get-constant [], A2
-              s8 (if c7 (let [constant (runtime/normalize-literal-term (:intern-context s7) "[]") current (or (runtime/reg-get-raw s7 "A2") ::lowered-unbound) current* (if (= current ::lowered-unbound) current (runtime/deref-value (:bindings s7) current))] (cond (= current* ::lowered-unbound) (-> s7 (runtime/reg-set-raw "A2" constant) runtime/advance) (runtime/logic-var? current*) (-> (runtime/bind-var s7 current* constant) runtime/advance) (runtime/interned-equal? current* constant) (runtime/advance s7) :else (runtime/backtrack s7))) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; proceed
-              s9 (if c8 (runtime/succeed-state s8) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ]
-          s9)
-       ]
-    (if (= :succeeded (:status c1))
-      c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/9, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/9") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; unify-variable X7
-              s8 (if c7 (let [[item next-state] (runtime/pop-unify-item s7)] (-> next-state (runtime/reg-set-raw "X7" item) runtime/advance)) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; unify-variable X8
-              s9 (if c8 (let [[item next-state] (runtime/pop-unify-item s8)] (-> next-state (runtime/reg-set-raw "X8" item) runtime/advance)) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ;; unify-variable X9
-              s10 (if c9 (let [[item next-state] (runtime/pop-unify-item s9)] (-> next-state (runtime/reg-set-raw "X9" item) runtime/advance)) s9)
-              c10 (runtime/lowered-step-advanced? c9 s9 s10)
-              ;; get-value X9, A2
-              s11 (if c10 (let [left (or (runtime/reg-get-raw s10 "X9") ::lowered-unbound) right (or (runtime/reg-get-raw s10 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s10 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s10))) s10)
-              c11 (runtime/lowered-step-advanced? c10 s10 s11)
-              ;; proceed
-              s12 (if c11 (runtime/succeed-state s11) s11)
-              c12 (runtime/lowered-step-advanced? c11 s11 s12)
-              ]
-          s12)
-  ))
+  state
 )
 
 (def alias-list-start-pc 24)
@@ -2960,7 +5303,7 @@
   state
 )
 
-(def alias-lookup-start-pc 48)
+(def alias-lookup-start-pc 73)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -2974,12 +5317,123 @@
   (some? (alias-lookup-state a1 a2 a3)))
 
 
+;; lowered-already-provided-4 — lowered from already_provided/4
+(defn lowered-already-provided-4 [state]
+  (let [s0 state
+        c0 true
+        ;; allocate
+        s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
+        c1 (runtime/lowered-step-advanced? c0 s0 s1)
+        ;; get-variable Y1, A1
+        s2 (if c1 (-> s1 (runtime/reg-set-raw "Y1" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
+        c2 (runtime/lowered-step-advanced? c1 s1 s2)
+        ;; get-variable X6, A2
+        s3 (if c2 (-> s2 (runtime/reg-set-raw "X6" (runtime/reg-get-raw s2 "A2")) runtime/advance) s2)
+        c3 (runtime/lowered-step-advanced? c2 s2 s3)
+        ;; get-variable Y4, A3
+        s4 (if c3 (-> s3 (runtime/reg-set-raw "Y4" (runtime/reg-get-raw s3 "A3")) runtime/advance) s3)
+        c4 (runtime/lowered-step-advanced? c3 s3 s4)
+        ;; get-variable Y5, A4
+        s5 (if c4 (-> s4 (runtime/reg-set-raw "Y5" (runtime/reg-get-raw s4 "A4")) runtime/advance) s4)
+        c5 (runtime/lowered-step-advanced? c4 s4 s5)
+        ;; put-structure -/2, A1
+        s6 (if c5 (let [functor (runtime/normalize-literal-term (:intern-context s5) "-/2") arity (runtime/functor-arity (:intern-context s5) functor)] (-> s5 (runtime/push-build-frame "A1" functor arity) runtime/advance)) s5)
+        c6 (runtime/lowered-step-advanced? c5 s5 s6)
+        ;; set-variable Y2
+        s7 (if c6 (let [[fresh next-state] (runtime/fresh-var s6)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/append-build-arg fresh) runtime/finalize-complete-builds runtime/advance)) s6)
+        c7 (runtime/lowered-step-advanced? c6 s6 s7)
+        ;; set-variable Y3
+        s8 (if c7 (let [[fresh next-state] (runtime/fresh-var s7)] (-> next-state (runtime/reg-set-raw "Y3" fresh) (runtime/append-build-arg fresh) runtime/finalize-complete-builds runtime/advance)) s7)
+        c8 (runtime/lowered-step-advanced? c7 s7 s8)
+        ;; put-value X6, A2
+        s9 (if c8 (let [val (runtime/deref-value (:bindings s8) (runtime/reg-get-raw s8 "X6"))] (-> s8 (runtime/reg-set-raw "A2" val) runtime/advance)) s8)
+        c9 (runtime/lowered-step-advanced? c8 s8 s9)
+        ;; builtin-call member/2/2
+        s10 (if c9 (let [elem (runtime/deref-value (:bindings s9) (or (runtime/reg-get-raw s9 "A1") ::lowered-unbound)) list-value (runtime/deref-value (:bindings s9) (or (runtime/reg-get-raw s9 "A2") ::lowered-unbound))] (runtime/apply-member-solution s9 (inc (:pc s9)) elem list-value)) s9)
+        c10 (runtime/lowered-step-advanced? c9 s9 s10)
+        ;; put-value Y1, A1
+        s11 (if c10 (let [val (runtime/deref-value (:bindings s10) (runtime/reg-get-raw s10 "Y1"))] (-> s10 (runtime/reg-set-raw "A1" val) runtime/advance)) s10)
+        c11 (runtime/lowered-step-advanced? c10 s10 s11)
+        ;; put-value Y2, A2
+        s12 (if c11 (let [val (runtime/deref-value (:bindings s11) (runtime/reg-get-raw s11 "Y2"))] (-> s11 (runtime/reg-set-raw "A2" val) runtime/advance)) s11)
+        c12 (runtime/lowered-step-advanced? c11 s11 s12)
+        ;; put-value Y3, A3
+        s13 (if c12 (let [val (runtime/deref-value (:bindings s12) (runtime/reg-get-raw s12 "Y3"))] (-> s12 (runtime/reg-set-raw "A3" val) runtime/advance)) s12)
+        c13 (runtime/lowered-step-advanced? c12 s12 s13)
+        ;; put-value Y4, A4
+        s14 (if c13 (let [val (runtime/deref-value (:bindings s13) (runtime/reg-get-raw s13 "Y4"))] (-> s13 (runtime/reg-set-raw "A4" val) runtime/advance)) s13)
+        c14 (runtime/lowered-step-advanced? c13 s13 s14)
+        ;; put-value Y5, A5
+        s15 (if c14 (let [val (runtime/deref-value (:bindings s14) (runtime/reg-get-raw s14 "Y5"))] (-> s14 (runtime/reg-set-raw "A5" val) runtime/advance)) s14)
+        c15 (runtime/lowered-step-advanced? c14 s14 s15)
+        ;; deallocate
+        s16 (if c15 (-> s15 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s15)
+        c16 (runtime/lowered-step-advanced? c15 s15 s16)
+        ;; execute provides_sat/5
+        s17 (if c16 (if-let [target-pc (get (:labels s16) "provides_sat/5")] (-> s16 (runtime/enter-execute-barrier) (assoc :pc target-pc)) (do (runtime/warn-unresolved "execute" "provides_sat/5") (runtime/backtrack s16))) s16)
+        c17 (runtime/lowered-step-advanced? c16 s16 s17)
+        ]
+    s17)
+)
+
+(def already-provided-start-pc 105)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn already-provided-state [a1 a2 a3 a4]
+  (runtime/run-wam-state
+    (lowered-already-provided-4
+      (runtime/new-state shared-wam-code shared-wam-labels already-provided-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4} foreign-handlers atom-intern-context))))
+
+(defn already-provided [a1 a2 a3 a4]
+  (some? (already-provided-state a1 a2 a3 a4)))
+
+
+;; lowered-already-satisfied-4 — lowered from already_satisfied/4
+(defn lowered-already-satisfied-4 [state]
+  state
+)
+
+(def already-satisfied-start-pc 122)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn already-satisfied-state [a1 a2 a3 a4]
+  (runtime/run-wam-state
+    (lowered-already-satisfied-4
+      (runtime/new-state shared-wam-code shared-wam-labels already-satisfied-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4} foreign-handlers atom-intern-context))))
+
+(defn already-satisfied [a1 a2 a3 a4]
+  (some? (already-satisfied-state a1 a2 a3 a4)))
+
+
+;; lowered-alt-reasons-4 — lowered from alt_reasons/4
+(defn lowered-alt-reasons-4 [state]
+  state
+)
+
+(def alt-reasons-start-pc 148)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn alt-reasons-state [a1 a2 a3 a4]
+  (runtime/run-wam-state
+    (lowered-alt-reasons-4
+      (runtime/new-state shared-wam-code shared-wam-labels alt-reasons-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4} foreign-handlers atom-intern-context))))
+
+(defn alt-reasons [a1 a2 a3 a4]
+  (some? (alt-reasons-state a1 a2 a3 a4)))
+
+
 ;; lowered-audit-holds-4 — lowered from audit_holds/4
 (defn lowered-audit-holds-4 [state]
   state
 )
 
-(def audit-holds-start-pc 80)
+(def audit-holds-start-pc 191)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3013,13 +5467,13 @@
         s5 (if c4 (let [[fresh next-state] (runtime/fresh-var s4)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s4)
         c5 (runtime/lowered-step-advanced? c4 s4 s5)
         ;; call base_list/2/2
-        s6 (if c5 (if-let [target-pc (get (:labels s5) "base_list/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (runtime/backtrack s5)) s5)
+        s6 (if c5 (if-let [target-pc (get (:labels s5) "base_list/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "base_list/2") (runtime/backtrack s5))) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ]
     s6)
 )
 
-(def base-holds-start-pc 140)
+(def base-holds-start-pc 251)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3035,87 +5489,10 @@
 
 ;; lowered-base-list-2 — lowered from base_list/2
 (defn lowered-base-list-2 [state]
-  ;; T4 all-clauses inline (generated): try each clause on the same input
-  ;; state; first :succeeded wins (immutable state = free per-clause restore).
-  (let [c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/6, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/6") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; get-value X4, A2
-              s8 (if c7 (let [left (or (runtime/reg-get-raw s7 "X4") ::lowered-unbound) right (or (runtime/reg-get-raw s7 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s7 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s7))) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; proceed
-              s9 (if c8 (runtime/succeed-state s8) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ]
-          s9)
-       ]
-    (if (= :succeeded (:status c1))
-      c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/9, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/9") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; unify-variable X7
-              s8 (if c7 (let [[item next-state] (runtime/pop-unify-item s7)] (-> next-state (runtime/reg-set-raw "X7" item) runtime/advance)) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; unify-variable X8
-              s9 (if c8 (let [[item next-state] (runtime/pop-unify-item s8)] (-> next-state (runtime/reg-set-raw "X8" item) runtime/advance)) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ;; unify-variable X9
-              s10 (if c9 (let [[item next-state] (runtime/pop-unify-item s9)] (-> next-state (runtime/reg-set-raw "X9" item) runtime/advance)) s9)
-              c10 (runtime/lowered-step-advanced? c9 s9 s10)
-              ;; get-value X4, A2
-              s11 (if c10 (let [left (or (runtime/reg-get-raw s10 "X4") ::lowered-unbound) right (or (runtime/reg-get-raw s10 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s10 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s10))) s10)
-              c11 (runtime/lowered-step-advanced? c10 s10 s11)
-              ;; proceed
-              s12 (if c11 (runtime/succeed-state s11) s11)
-              c12 (runtime/lowered-step-advanced? c11 s11 s12)
-              ]
-          s12)
-  ))
+  state
 )
 
-(def base-list-start-pc 155)
+(def base-list-start-pc 266)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3155,13 +5532,13 @@
         s7 (if c6 (-> s6 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ;; execute base_ver/3
-        s8 (if c7 (if-let [target-pc (get (:labels s7) "base_ver/3")] (-> s7 (runtime/enter-execute-barrier) (assoc :pc target-pc)) (runtime/backtrack s7)) s7)
+        s8 (if c7 (if-let [target-pc (get (:labels s7) "base_ver/3")] (-> s7 (runtime/enter-execute-barrier) (assoc :pc target-pc)) (do (runtime/warn-unresolved "execute" "base_ver/3") (runtime/backtrack s7))) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ]
     s8)
 )
 
-(def base-name-start-pc 179)
+(def base-name-start-pc 315)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3198,13 +5575,13 @@
         s6 (if c5 (let [[fresh next-state] (runtime/fresh-var s5)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ;; call base_holds/2/2
-        s7 (if c6 (if-let [target-pc (get (:labels s6) "base_holds/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (runtime/backtrack s6)) s6)
+        s7 (if c6 (if-let [target-pc (get (:labels s6) "base_holds/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "base_holds/2") (runtime/backtrack s6))) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ]
     s7)
 )
 
-(def base-reason-start-pc 187)
+(def base-reason-start-pc 323)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3241,13 +5618,13 @@
         s6 (if c5 (let [[fresh next-state] (runtime/fresh-var s5)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ;; call base_list/2/2
-        s7 (if c6 (if-let [target-pc (get (:labels s6) "base_list/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (runtime/backtrack s6)) s6)
+        s7 (if c6 (if-let [target-pc (get (:labels s6) "base_list/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "base_list/2") (runtime/backtrack s6))) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ]
     s7)
 )
 
-(def base-ver-start-pc 199)
+(def base-ver-start-pc 335)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3266,7 +5643,7 @@
   state
 )
 
-(def blocked-acc-start-pc 218)
+(def blocked-acc-start-pc 354)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3285,7 +5662,7 @@
   state
 )
 
-(def blocked-acc-list-start-pc 303)
+(def blocked-acc-list-start-pc 495)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3304,7 +5681,7 @@
   state
 )
 
-(def blocked-from-start-pc 333)
+(def blocked-from-start-pc 525)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3318,12 +5695,31 @@
   (some? (blocked-from-state a1 a2 a3 a4)))
 
 
+;; lowered-build-tree-4 — lowered from build_tree/4
+(defn lowered-build-tree-4 [state]
+  state
+)
+
+(def build-tree-start-pc 668)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn build-tree-state [a1 a2 a3 a4]
+  (runtime/run-wam-state
+    (lowered-build-tree-4
+      (runtime/new-state shared-wam-code shared-wam-labels build-tree-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4} foreign-handlers atom-intern-context))))
+
+(defn build-tree [a1 a2 a3 a4]
+  (some? (build-tree-state a1 a2 a3 a4)))
+
+
 ;; lowered-candidates-high-first-4 — lowered from candidates_high_first/4
 (defn lowered-candidates-high-first-4 [state]
   state
 )
 
-(def candidates-high-first-start-pc 414)
+(def candidates-high-first-start-pc 726)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3360,13 +5756,13 @@
         s6 (if c5 (let [[fresh next-state] (runtime/fresh-var s5)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ;; call alias_list/2/2
-        s7 (if c6 (if-let [target-pc (get (:labels s6) "alias_list/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (runtime/backtrack s6)) s6)
+        s7 (if c6 (if-let [target-pc (get (:labels s6) "alias_list/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "alias_list/2") (runtime/backtrack s6))) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ]
     s7)
 )
 
-(def canonicalize-name-start-pc 447)
+(def canonicalize-name-start-pc 753)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3385,7 +5781,7 @@
   state
 )
 
-(def close-moving-start-pc 459)
+(def close-moving-start-pc 765)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3399,39 +5795,31 @@
   (some? (close-moving-state a1 a2 a3)))
 
 
-;; lowered-collect-deps-4 — lowered from collect_deps/4
-(defn lowered-collect-deps-4 [state]
-  (let [s0 state
-        c0 true
-        ;; allocate
-        s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
-        c1 (runtime/lowered-step-advanced? c0 s0 s1)
-        ;; get-variable X5, A1
-        s2 (if c1 (-> s1 (runtime/reg-set-raw "X5" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
-        c2 (runtime/lowered-step-advanced? c1 s1 s2)
-        ;; get-variable Y2, A2
-        s3 (if c2 (-> s2 (runtime/reg-set-raw "Y2" (runtime/reg-get-raw s2 "A2")) runtime/advance) s2)
-        c3 (runtime/lowered-step-advanced? c2 s2 s3)
-        ;; get-variable Y3, A3
-        s4 (if c3 (-> s3 (runtime/reg-set-raw "Y3" (runtime/reg-get-raw s3 "A3")) runtime/advance) s3)
-        c4 (runtime/lowered-step-advanced? c3 s3 s4)
-        ;; get-variable Y4, A4
-        s5 (if c4 (-> s4 (runtime/reg-set-raw "Y4" (runtime/reg-get-raw s4 "A4")) runtime/advance) s4)
-        c5 (runtime/lowered-step-advanced? c4 s4 s5)
-        ;; put-value X5, A1
-        s6 (if c5 (let [val (runtime/deref-value (:bindings s5) (runtime/reg-get-raw s5 "X5"))] (-> s5 (runtime/reg-set-raw "A1" val) runtime/advance)) s5)
-        c6 (runtime/lowered-step-advanced? c5 s5 s6)
-        ;; put-variable Y1, A2
-        s7 (if c6 (let [[fresh next-state] (runtime/fresh-var s6)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s6)
-        c7 (runtime/lowered-step-advanced? c6 s6 s7)
-        ;; call depends_list/2/2
-        s8 (if c7 (if-let [target-pc (get (:labels s7) "depends_list/2")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (runtime/backtrack s7)) s7)
-        c8 (runtime/lowered-step-advanced? c7 s7 s8)
-        ]
-    s8)
+;; lowered-cmp-ver-3 — lowered from cmp_ver/3
+(defn lowered-cmp-ver-3 [state]
+  state
 )
 
-(def collect-deps-start-pc 521)
+(def cmp-ver-start-pc 827)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn cmp-ver-state [a1 a2 a3]
+  (runtime/run-wam-state
+    (lowered-cmp-ver-3
+      (runtime/new-state shared-wam-code shared-wam-labels cmp-ver-start-pc {"A1" a1, "A2" a2, "A3" a3} foreign-handlers atom-intern-context))))
+
+(defn cmp-ver [a1 a2 a3]
+  (some? (cmp-ver-state a1 a2 a3)))
+
+
+;; lowered-collect-deps-4 — lowered from collect_deps/4
+(defn lowered-collect-deps-4 [state]
+  state
+)
+
+(def collect-deps-start-pc 855)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3471,13 +5859,13 @@
         s7 (if c6 (let [[fresh next-state] (runtime/fresh-var s6)] (-> next-state (runtime/reg-set-raw "Y4" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ;; call conflicts_list/2/2
-        s8 (if c7 (if-let [target-pc (get (:labels s7) "conflicts_list/2")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (runtime/backtrack s7)) s7)
+        s8 (if c7 (if-let [target-pc (get (:labels s7) "conflicts_list/2")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "conflicts_list/2") (runtime/backtrack s7))) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ]
     s8)
 )
 
-(def conflicts-in-start-pc 535)
+(def conflicts-in-start-pc 893)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3493,87 +5881,10 @@
 
 ;; lowered-conflicts-list-2 — lowered from conflicts_list/2
 (defn lowered-conflicts-list-2 [state]
-  ;; T4 all-clauses inline (generated): try each clause on the same input
-  ;; state; first :succeeded wins (immutable state = free per-clause restore).
-  (let [c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/6, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/6") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; get-value X3, A2
-              s8 (if c7 (let [left (or (runtime/reg-get-raw s7 "X3") ::lowered-unbound) right (or (runtime/reg-get-raw s7 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s7 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s7))) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; proceed
-              s9 (if c8 (runtime/succeed-state s8) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ]
-          s9)
-       ]
-    (if (= :succeeded (:status c1))
-      c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/9, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/9") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; unify-variable X7
-              s8 (if c7 (let [[item next-state] (runtime/pop-unify-item s7)] (-> next-state (runtime/reg-set-raw "X7" item) runtime/advance)) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; unify-variable X8
-              s9 (if c8 (let [[item next-state] (runtime/pop-unify-item s8)] (-> next-state (runtime/reg-set-raw "X8" item) runtime/advance)) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ;; unify-variable X9
-              s10 (if c9 (let [[item next-state] (runtime/pop-unify-item s9)] (-> next-state (runtime/reg-set-raw "X9" item) runtime/advance)) s9)
-              c10 (runtime/lowered-step-advanced? c9 s9 s10)
-              ;; get-value X3, A2
-              s11 (if c10 (let [left (or (runtime/reg-get-raw s10 "X3") ::lowered-unbound) right (or (runtime/reg-get-raw s10 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s10 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s10))) s10)
-              c11 (runtime/lowered-step-advanced? c10 s10 s11)
-              ;; proceed
-              s12 (if c11 (runtime/succeed-state s11) s11)
-              c12 (runtime/lowered-step-advanced? c11 s11 s12)
-              ]
-          s12)
-  ))
+  state
 )
 
-(def conflicts-list-start-pc 551)
+(def conflicts-list-start-pc 909)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3592,7 +5903,7 @@
   state
 )
 
-(def dep-breaks-start-pc 575)
+(def dep-breaks-start-pc 958)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3635,13 +5946,13 @@
         s8 (if c7 (let [[fresh next-state] (runtime/fresh-var s7)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ;; call depends_list/2/2
-        s9 (if c8 (if-let [target-pc (get (:labels s8) "depends_list/2")] (-> s8 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s8))) (assoc :pc target-pc)) (runtime/backtrack s8)) s8)
+        s9 (if c8 (if-let [target-pc (get (:labels s8) "depends_list/2")] (-> s8 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s8))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "depends_list/2") (runtime/backtrack s8))) s8)
         c9 (runtime/lowered-step-advanced? c8 s8 s9)
         ]
     s9)
 )
 
-(def dep-breaks-moving-start-pc 622)
+(def dep-breaks-moving-start-pc 997)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3653,6 +5964,264 @@
 
 (defn dep-breaks-moving [a1 a2 a3 a4 a5]
   (some? (dep-breaks-moving-state a1 a2 a3 a4 a5)))
+
+
+;; lowered-dep-breaks-need-4 — lowered from dep_breaks_need/4
+(defn lowered-dep-breaks-need-4 [state]
+  state
+)
+
+(def dep-breaks-need-start-pc 1013)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn dep-breaks-need-state [a1 a2 a3 a4]
+  (runtime/run-wam-state
+    (lowered-dep-breaks-need-4
+      (runtime/new-state shared-wam-code shared-wam-labels dep-breaks-need-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4} foreign-handlers atom-intern-context))))
+
+(defn dep-breaks-need [a1 a2 a3 a4]
+  (some? (dep-breaks-need-state a1 a2 a3 a4)))
+
+
+;; lowered-dep-index-2 — lowered from dep_index/2
+(defn lowered-dep-index-2 [state]
+  (let [s0 state
+        c0 true
+        ;; get-structure icat/3, A1
+        s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "icat/3") "A1") s0)
+        c1 (runtime/lowered-step-advanced? c0 s0 s1)
+        ;; unify-variable X1
+        s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
+        c2 (runtime/lowered-step-advanced? c1 s1 s2)
+        ;; unify-variable X2
+        s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
+        c3 (runtime/lowered-step-advanced? c2 s2 s3)
+        ;; unify-variable X3
+        s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
+        c4 (runtime/lowered-step-advanced? c3 s3 s4)
+        ;; get-value X2, A2
+        s5 (if c4 (let [left (or (runtime/reg-get-raw s4 "X2") ::lowered-unbound) right (or (runtime/reg-get-raw s4 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s4 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s4))) s4)
+        c5 (runtime/lowered-step-advanced? c4 s4 s5)
+        ;; proceed
+        s6 (if c5 (runtime/succeed-state s5) s5)
+        c6 (runtime/lowered-step-advanced? c5 s5 s6)
+        ]
+    s6)
+)
+
+(def dep-index-start-pc 1080)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn dep-index-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-dep-index-2
+      (runtime/new-state shared-wam-code shared-wam-labels dep-index-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn dep-index [a1 a2]
+  (some? (dep-index-state a1 a2)))
+
+
+;; lowered-dep-mentions-2 — lowered from dep_mentions/2
+(defn lowered-dep-mentions-2 [state]
+  ;; T4 all-clauses inline (generated): try each clause on the same input
+  ;; state; first :succeeded wins (immutable state = free per-clause restore).
+  (let [c1
+        (let [s0 state
+              c0 true
+              ;; allocate
+              s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
+              c1 (runtime/lowered-step-advanced? c0 s0 s1)
+              ;; get-structure alternatives/1, A1
+              s2 (if c1 (runtime/op-get-structure s1 (runtime/normalize-literal-term (:intern-context s1) "alternatives/1") "A1") s1)
+              c2 (runtime/lowered-step-advanced? c1 s1 s2)
+              ;; unify-variable Y3
+              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "Y3" item) runtime/advance)) s2)
+              c3 (runtime/lowered-step-advanced? c2 s2 s3)
+              ;; get-variable Y1, A2
+              s4 (if c3 (-> s3 (runtime/reg-set-raw "Y1" (runtime/reg-get-raw s3 "A2")) runtime/advance) s3)
+              c4 (runtime/lowered-step-advanced? c3 s3 s4)
+              ;; builtin-call !/0/0
+              s5 (if c4 (-> s4 (update :choice-points #(vec (take (:cut-bar s4) %))) runtime/advance) s4)
+              c5 (runtime/lowered-step-advanced? c4 s4 s5)
+              ;; put-structure dep/2, A1
+              s6 (if c5 (let [functor (runtime/normalize-literal-term (:intern-context s5) "dep/2") arity (runtime/functor-arity (:intern-context s5) functor)] (-> s5 (runtime/push-build-frame "A1" functor arity) runtime/advance)) s5)
+              c6 (runtime/lowered-step-advanced? c5 s5 s6)
+              ;; set-value Y1
+              s7 (if c6 (let [val (runtime/deref-value (:bindings s6) (runtime/reg-get-raw s6 "Y1"))] (-> s6 (runtime/append-build-arg val) runtime/finalize-complete-builds runtime/advance)) s6)
+              c7 (runtime/lowered-step-advanced? c6 s6 s7)
+              ;; set-variable Y2
+              s8 (if c7 (let [[fresh next-state] (runtime/fresh-var s7)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/append-build-arg fresh) runtime/finalize-complete-builds runtime/advance)) s7)
+              c8 (runtime/lowered-step-advanced? c7 s7 s8)
+              ;; put-value Y3, A2
+              s9 (if c8 (let [val (runtime/deref-value (:bindings s8) (runtime/reg-get-raw s8 "Y3"))] (-> s8 (runtime/reg-set-raw "A2" val) runtime/advance)) s8)
+              c9 (runtime/lowered-step-advanced? c8 s8 s9)
+              ;; builtin-call member/2/2
+              s10 (if c9 (let [elem (runtime/deref-value (:bindings s9) (or (runtime/reg-get-raw s9 "A1") ::lowered-unbound)) list-value (runtime/deref-value (:bindings s9) (or (runtime/reg-get-raw s9 "A2") ::lowered-unbound))] (runtime/apply-member-solution s9 (inc (:pc s9)) elem list-value)) s9)
+              c10 (runtime/lowered-step-advanced? c9 s9 s10)
+              ;; deallocate
+              s11 (if c10 (-> s10 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s10)
+              c11 (runtime/lowered-step-advanced? c10 s10 s11)
+              ;; proceed
+              s12 (if c11 (runtime/succeed-state s11) s11)
+              c12 (runtime/lowered-step-advanced? c11 s11 s12)
+              ]
+          s12)
+       ]
+    (if (= :succeeded (:status c1))
+      c1
+        (let [s0 state
+              c0 true
+              ;; allocate
+              s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
+              c1 (runtime/lowered-step-advanced? c0 s0 s1)
+              ;; get-variable X1, A1
+              s2 (if c1 (-> s1 (runtime/reg-set-raw "X1" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
+              c2 (runtime/lowered-step-advanced? c1 s1 s2)
+              ;; get-variable X2, A2
+              s3 (if c2 (-> s2 (runtime/reg-set-raw "X2" (runtime/reg-get-raw s2 "A2")) runtime/advance) s2)
+              c3 (runtime/lowered-step-advanced? c2 s2 s3)
+              ;; put-value X1, A1
+              s4 (if c3 (let [val (runtime/deref-value (:bindings s3) (runtime/reg-get-raw s3 "X1"))] (-> s3 (runtime/reg-set-raw "A1" val) runtime/advance)) s3)
+              c4 (runtime/lowered-step-advanced? c3 s3 s4)
+              ;; put-value X2, A2
+              s5 (if c4 (let [val (runtime/deref-value (:bindings s4) (runtime/reg-get-raw s4 "X2"))] (-> s4 (runtime/reg-set-raw "A2" val) runtime/advance)) s4)
+              c5 (runtime/lowered-step-advanced? c4 s4 s5)
+              ;; builtin-call ==/2/2
+              s6 (if c5 (let [left (or (runtime/reg-get-raw s5 "A1") ::lowered-unbound) right (or (runtime/reg-get-raw s5 "A2") ::lowered-unbound)] (if (runtime/term-identical? s5 left right) (runtime/advance s5) (runtime/backtrack s5))) s5)
+              c6 (runtime/lowered-step-advanced? c5 s5 s6)
+              ;; deallocate
+              s7 (if c6 (-> s6 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s6)
+              c7 (runtime/lowered-step-advanced? c6 s6 s7)
+              ;; proceed
+              s8 (if c7 (runtime/succeed-state s7) s7)
+              c8 (runtime/lowered-step-advanced? c7 s7 s8)
+              ]
+          s8)
+  ))
+)
+
+(def dep-mentions-start-pc 1086)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn dep-mentions-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-dep-mentions-2
+      (runtime/new-state shared-wam-code shared-wam-labels dep-mentions-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn dep-mentions [a1 a2]
+  (some? (dep-mentions-state a1 a2)))
+
+
+;; lowered-dep-targets-5 — lowered from dep_targets/5
+(defn lowered-dep-targets-5 [state]
+  state
+)
+
+(def dep-targets-start-pc 1108)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn dep-targets-state [a1 a2 a3 a4 a5]
+  (runtime/run-wam-state
+    (lowered-dep-targets-5
+      (runtime/new-state shared-wam-code shared-wam-labels dep-targets-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4, "A5" a5} foreign-handlers atom-intern-context))))
+
+(defn dep-targets [a1 a2 a3 a4 a5]
+  (some? (dep-targets-state a1 a2 a3 a4 a5)))
+
+
+;; lowered-dep-to-req-3 — lowered from dep_to_req/3
+(defn lowered-dep-to-req-3 [state]
+  ;; T4 all-clauses inline (generated): try each clause on the same input
+  ;; state; first :succeeded wins (immutable state = free per-clause restore).
+  (let [c1
+        (let [s0 state
+              c0 true
+              ;; allocate
+              s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
+              c1 (runtime/lowered-step-advanced? c0 s0 s1)
+              ;; get-structure alternatives/1, A1
+              s2 (if c1 (runtime/op-get-structure s1 (runtime/normalize-literal-term (:intern-context s1) "alternatives/1") "A1") s1)
+              c2 (runtime/lowered-step-advanced? c1 s1 s2)
+              ;; unify-variable X1
+              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s2)
+              c3 (runtime/lowered-step-advanced? c2 s2 s3)
+              ;; get-variable X2, A2
+              s4 (if c3 (-> s3 (runtime/reg-set-raw "X2" (runtime/reg-get-raw s3 "A2")) runtime/advance) s3)
+              c4 (runtime/lowered-step-advanced? c3 s3 s4)
+              ;; get-structure req/2, A3
+              s5 (if c4 (runtime/op-get-structure s4 (runtime/normalize-literal-term (:intern-context s4) "req/2") "A3") s4)
+              c5 (runtime/lowered-step-advanced? c4 s4 s5)
+              ;; unify-variable X3
+              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s5)
+              c6 (runtime/lowered-step-advanced? c5 s5 s6)
+              ;; get-structure alternatives/1, X3
+              s7 (if c6 (runtime/op-get-structure s6 (runtime/normalize-literal-term (:intern-context s6) "alternatives/1") "X3") s6)
+              c7 (runtime/lowered-step-advanced? c6 s6 s7)
+              ;; unify-value X1
+              s8 (if c7 (let [[item next-state] (runtime/pop-unify-item s7) reg-val (or (runtime/reg-get-raw next-state "X1") ::lowered-unbound) [ok bound-state] (runtime/unify-values next-state reg-val item)] (if ok (runtime/advance bound-state) (runtime/backtrack s7))) s7)
+              c8 (runtime/lowered-step-advanced? c7 s7 s8)
+              ;; unify-constant any
+              s9 (if c8 (let [constant (runtime/normalize-literal-term (:intern-context s8) "any") [item next-state] (runtime/pop-unify-item s8) [ok bound-state] (runtime/unify-values next-state item constant)] (if ok (runtime/advance bound-state) (runtime/backtrack s8))) s8)
+              c9 (runtime/lowered-step-advanced? c8 s8 s9)
+              ;; builtin-call !/0/0
+              s10 (if c9 (-> s9 (update :choice-points #(vec (take (:cut-bar s9) %))) runtime/advance) s9)
+              c10 (runtime/lowered-step-advanced? c9 s9 s10)
+              ;; deallocate
+              s11 (if c10 (-> s10 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s10)
+              c11 (runtime/lowered-step-advanced? c10 s10 s11)
+              ;; proceed
+              s12 (if c11 (runtime/succeed-state s11) s11)
+              c12 (runtime/lowered-step-advanced? c11 s11 s12)
+              ]
+          s12)
+       ]
+    (if (= :succeeded (:status c1))
+      c1
+        (let [s0 state
+              c0 true
+              ;; get-variable X1, A1
+              s1 (if c0 (-> s0 (runtime/reg-set-raw "X1" (runtime/reg-get-raw s0 "A1")) runtime/advance) s0)
+              c1 (runtime/lowered-step-advanced? c0 s0 s1)
+              ;; get-variable X2, A2
+              s2 (if c1 (-> s1 (runtime/reg-set-raw "X2" (runtime/reg-get-raw s1 "A2")) runtime/advance) s1)
+              c2 (runtime/lowered-step-advanced? c1 s1 s2)
+              ;; get-structure req/2, A3
+              s3 (if c2 (runtime/op-get-structure s2 (runtime/normalize-literal-term (:intern-context s2) "req/2") "A3") s2)
+              c3 (runtime/lowered-step-advanced? c2 s2 s3)
+              ;; unify-value X1
+              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3) reg-val (or (runtime/reg-get-raw next-state "X1") ::lowered-unbound) [ok bound-state] (runtime/unify-values next-state reg-val item)] (if ok (runtime/advance bound-state) (runtime/backtrack s3))) s3)
+              c4 (runtime/lowered-step-advanced? c3 s3 s4)
+              ;; unify-value X2
+              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4) reg-val (or (runtime/reg-get-raw next-state "X2") ::lowered-unbound) [ok bound-state] (runtime/unify-values next-state reg-val item)] (if ok (runtime/advance bound-state) (runtime/backtrack s4))) s4)
+              c5 (runtime/lowered-step-advanced? c4 s4 s5)
+              ;; proceed
+              s6 (if c5 (runtime/succeed-state s5) s5)
+              c6 (runtime/lowered-step-advanced? c5 s5 s6)
+              ]
+          s6)
+  ))
+)
+
+(def dep-to-req-start-pc 1141)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn dep-to-req-state [a1 a2 a3]
+  (runtime/run-wam-state
+    (lowered-dep-to-req-3
+      (runtime/new-state shared-wam-code shared-wam-labels dep-to-req-start-pc {"A1" a1, "A2" a2, "A3" a3} foreign-handlers atom-intern-context))))
+
+(defn dep-to-req [a1 a2 a3]
+  (some? (dep-to-req-state a1 a2 a3)))
 
 
 ;; lowered-dependents-3 — lowered from dependents/3
@@ -3681,13 +6250,13 @@
         s7 (if c6 (let [[fresh next-state] (runtime/fresh-var s6)] (-> next-state (runtime/reg-set-raw "Y3" fresh) (runtime/reg-set-raw "A3" fresh) runtime/advance)) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ;; call canonicalize_name/3/3
-        s8 (if c7 (if-let [target-pc (get (:labels s7) "canonicalize_name/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (runtime/backtrack s7)) s7)
+        s8 (if c7 (if-let [target-pc (get (:labels s7) "canonicalize_name/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "canonicalize_name/3") (runtime/backtrack s7))) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ]
     s8)
 )
 
-(def dependents-start-pc 638)
+(def dependents-start-pc 1161)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3727,13 +6296,13 @@
         s7 (if c6 (let [[fresh next-state] (runtime/fresh-var s6)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A3" fresh) runtime/advance)) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ;; call dependents/3/3
-        s8 (if c7 (if-let [target-pc (get (:labels s7) "dependents/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (runtime/backtrack s7)) s7)
+        s8 (if c7 (if-let [target-pc (get (:labels s7) "dependents/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "dependents/3") (runtime/backtrack s7))) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ]
     s8)
 )
 
-(def dependents-installed-start-pc 660)
+(def dependents-installed-start-pc 1183)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3776,13 +6345,13 @@
         s8 (if c7 (let [[fresh next-state] (runtime/fresh-var s7)] (-> next-state (runtime/reg-set-raw "Y5" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ;; call depends_list/2/2
-        s9 (if c8 (if-let [target-pc (get (:labels s8) "depends_list/2")] (-> s8 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s8))) (assoc :pc target-pc)) (runtime/backtrack s8)) s8)
+        s9 (if c8 (if-let [target-pc (get (:labels s8) "depends_list/2")] (-> s8 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s8))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "depends_list/2") (runtime/backtrack s8))) s8)
         c9 (runtime/lowered-step-advanced? c8 s8 s9)
         ]
     s9)
 )
 
-(def depends-in-start-pc 679)
+(def depends-in-start-pc 1202)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3798,87 +6367,10 @@
 
 ;; lowered-depends-list-2 — lowered from depends_list/2
 (defn lowered-depends-list-2 [state]
-  ;; T4 all-clauses inline (generated): try each clause on the same input
-  ;; state; first :succeeded wins (immutable state = free per-clause restore).
-  (let [c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/6, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/6") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; get-value X2, A2
-              s8 (if c7 (let [left (or (runtime/reg-get-raw s7 "X2") ::lowered-unbound) right (or (runtime/reg-get-raw s7 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s7 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s7))) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; proceed
-              s9 (if c8 (runtime/succeed-state s8) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ]
-          s9)
-       ]
-    (if (= :succeeded (:status c1))
-      c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/9, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/9") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; unify-variable X7
-              s8 (if c7 (let [[item next-state] (runtime/pop-unify-item s7)] (-> next-state (runtime/reg-set-raw "X7" item) runtime/advance)) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; unify-variable X8
-              s9 (if c8 (let [[item next-state] (runtime/pop-unify-item s8)] (-> next-state (runtime/reg-set-raw "X8" item) runtime/advance)) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ;; unify-variable X9
-              s10 (if c9 (let [[item next-state] (runtime/pop-unify-item s9)] (-> next-state (runtime/reg-set-raw "X9" item) runtime/advance)) s9)
-              c10 (runtime/lowered-step-advanced? c9 s9 s10)
-              ;; get-value X2, A2
-              s11 (if c10 (let [left (or (runtime/reg-get-raw s10 "X2") ::lowered-unbound) right (or (runtime/reg-get-raw s10 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s10 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s10))) s10)
-              c11 (runtime/lowered-step-advanced? c10 s10 s11)
-              ;; proceed
-              s12 (if c11 (runtime/succeed-state s11) s11)
-              c12 (runtime/lowered-step-advanced? c11 s11 s12)
-              ]
-          s12)
-  ))
+  state
 )
 
-(def depends-list-start-pc 697)
+(def depends-list-start-pc 1220)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3897,7 +6389,7 @@
   state
 )
 
-(def direct-on-start-pc 721)
+(def direct-on-start-pc 1269)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3916,7 +6408,7 @@
   state
 )
 
-(def exclude-name-start-pc 765)
+(def exclude-name-start-pc 1313)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -3932,87 +6424,10 @@
 
 ;; lowered-excluded-list-2 — lowered from excluded_list/2
 (defn lowered-excluded-list-2 [state]
-  ;; T4 all-clauses inline (generated): try each clause on the same input
-  ;; state; first :succeeded wins (immutable state = free per-clause restore).
-  (let [c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/6, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/6") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; get-constant [], A2
-              s8 (if c7 (let [constant (runtime/normalize-literal-term (:intern-context s7) "[]") current (or (runtime/reg-get-raw s7 "A2") ::lowered-unbound) current* (if (= current ::lowered-unbound) current (runtime/deref-value (:bindings s7) current))] (cond (= current* ::lowered-unbound) (-> s7 (runtime/reg-set-raw "A2" constant) runtime/advance) (runtime/logic-var? current*) (-> (runtime/bind-var s7 current* constant) runtime/advance) (runtime/interned-equal? current* constant) (runtime/advance s7) :else (runtime/backtrack s7))) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; proceed
-              s9 (if c8 (runtime/succeed-state s8) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ]
-          s9)
-       ]
-    (if (= :succeeded (:status c1))
-      c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/9, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/9") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; unify-variable X7
-              s8 (if c7 (let [[item next-state] (runtime/pop-unify-item s7)] (-> next-state (runtime/reg-set-raw "X7" item) runtime/advance)) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; unify-variable X8
-              s9 (if c8 (let [[item next-state] (runtime/pop-unify-item s8)] (-> next-state (runtime/reg-set-raw "X8" item) runtime/advance)) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ;; unify-variable X9
-              s10 (if c9 (let [[item next-state] (runtime/pop-unify-item s9)] (-> next-state (runtime/reg-set-raw "X9" item) runtime/advance)) s9)
-              c10 (runtime/lowered-step-advanced? c9 s9 s10)
-              ;; get-value X8, A2
-              s11 (if c10 (let [left (or (runtime/reg-get-raw s10 "X8") ::lowered-unbound) right (or (runtime/reg-get-raw s10 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s10 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s10))) s10)
-              c11 (runtime/lowered-step-advanced? c10 s10 s11)
-              ;; proceed
-              s12 (if c11 (runtime/succeed-state s11) s11)
-              c12 (runtime/lowered-step-advanced? c11 s11 s12)
-              ]
-          s12)
-  ))
+  state
 )
 
-(def excluded-list-start-pc 798)
+(def excluded-list-start-pc 1346)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4046,13 +6461,13 @@
         s5 (if c4 (let [[fresh next-state] (runtime/fresh-var s4)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s4)
         c5 (runtime/lowered-step-advanced? c4 s4 s5)
         ;; call excluded_list/2/2
-        s6 (if c5 (if-let [target-pc (get (:labels s5) "excluded_list/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (runtime/backtrack s5)) s5)
+        s6 (if c5 (if-let [target-pc (get (:labels s5) "excluded_list/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "excluded_list/2") (runtime/backtrack s5))) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ]
     s6)
 )
 
-(def excluded-name-start-pc 822)
+(def excluded-name-start-pc 1395)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4064,6 +6479,25 @@
 
 (defn excluded-name [a1 a2]
   (some? (excluded-name-state a1 a2)))
+
+
+;; lowered-explain-alt-5 — lowered from explain_alt/5
+(defn lowered-explain-alt-5 [state]
+  state
+)
+
+(def explain-alt-start-pc 1406)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn explain-alt-state [a1 a2 a3 a4 a5]
+  (runtime/run-wam-state
+    (lowered-explain-alt-5
+      (runtime/new-state shared-wam-code shared-wam-labels explain-alt-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4, "A5" a5} foreign-handlers atom-intern-context))))
+
+(defn explain-alt [a1 a2 a3 a4 a5]
+  (some? (explain-alt-state a1 a2 a3 a4 a5)))
 
 
 ;; lowered-explain-blocked-3 — lowered from explain_blocked/3
@@ -4092,13 +6526,13 @@
         s7 (if c6 (let [[fresh next-state] (runtime/fresh-var s6)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A3" fresh) runtime/advance)) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ;; call request_to_req/3/3
-        s8 (if c7 (if-let [target-pc (get (:labels s7) "request_to_req/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (runtime/backtrack s7)) s7)
+        s8 (if c7 (if-let [target-pc (get (:labels s7) "request_to_req/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "request_to_req/3") (runtime/backtrack s7))) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ]
     s8)
 )
 
-(def explain-blocked-start-pc 833)
+(def explain-blocked-start-pc 1449)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4138,13 +6572,13 @@
         s7 (if c6 (let [[fresh next-state] (runtime/fresh-var s6)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A3" fresh) runtime/advance)) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ;; call request_to_req/3/3
-        s8 (if c7 (if-let [target-pc (get (:labels s7) "request_to_req/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (runtime/backtrack s7)) s7)
+        s8 (if c7 (if-let [target-pc (get (:labels s7) "request_to_req/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "request_to_req/3") (runtime/backtrack s7))) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ]
     s8)
 )
 
-(def explain-blocked-list-start-pc 847)
+(def explain-blocked-list-start-pc 1463)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4158,12 +6592,50 @@
   (some? (explain-blocked-list-state a1 a2 a3)))
 
 
+;; lowered-filter-satisfies-3 — lowered from filter_satisfies/3
+(defn lowered-filter-satisfies-3 [state]
+  state
+)
+
+(def filter-satisfies-start-pc 1483)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn filter-satisfies-state [a1 a2 a3]
+  (runtime/run-wam-state
+    (lowered-filter-satisfies-3
+      (runtime/new-state shared-wam-code shared-wam-labels filter-satisfies-start-pc {"A1" a1, "A2" a2, "A3" a3} foreign-handlers atom-intern-context))))
+
+(defn filter-satisfies [a1 a2 a3]
+  (some? (filter-satisfies-state a1 a2 a3)))
+
+
+;; lowered-first-alt-already-4 — lowered from first_alt_already/4
+(defn lowered-first-alt-already-4 [state]
+  state
+)
+
+(def first-alt-already-start-pc 1516)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn first-alt-already-state [a1 a2 a3 a4]
+  (runtime/run-wam-state
+    (lowered-first-alt-already-4
+      (runtime/new-state shared-wam-code shared-wam-labels first-alt-already-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4} foreign-handlers atom-intern-context))))
+
+(defn first-alt-already [a1 a2 a3 a4]
+  (some? (first-alt-already-state a1 a2 a3 a4)))
+
+
 ;; lowered-first-broken-4 — lowered from first_broken/4
 (defn lowered-first-broken-4 [state]
   state
 )
 
-(def first-broken-start-pc 867)
+(def first-broken-start-pc 1553)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4175,6 +6647,205 @@
 
 (defn first-broken [a1 a2 a3 a4]
   (some? (first-broken-state a1 a2 a3 a4)))
+
+
+;; lowered-follow-dep-name-5 — lowered from follow_dep_name/5
+(defn lowered-follow-dep-name-5 [state]
+  (let [s0 state
+        c0 true
+        ;; allocate
+        s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
+        c1 (runtime/lowered-step-advanced? c0 s0 s1)
+        ;; get-variable X5, A1
+        s2 (if c1 (-> s1 (runtime/reg-set-raw "X5" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
+        c2 (runtime/lowered-step-advanced? c1 s1 s2)
+        ;; get-variable X6, A2
+        s3 (if c2 (-> s2 (runtime/reg-set-raw "X6" (runtime/reg-get-raw s2 "A2")) runtime/advance) s2)
+        c3 (runtime/lowered-step-advanced? c2 s2 s3)
+        ;; get-variable X7, A3
+        s4 (if c3 (-> s3 (runtime/reg-set-raw "X7" (runtime/reg-get-raw s3 "A3")) runtime/advance) s3)
+        c4 (runtime/lowered-step-advanced? c3 s3 s4)
+        ;; get-variable Y3, A4
+        s5 (if c4 (-> s4 (runtime/reg-set-raw "Y3" (runtime/reg-get-raw s4 "A4")) runtime/advance) s4)
+        c5 (runtime/lowered-step-advanced? c4 s4 s5)
+        ;; get-variable Y4, A5
+        s6 (if c5 (-> s5 (runtime/reg-set-raw "Y4" (runtime/reg-get-raw s5 "A5")) runtime/advance) s5)
+        c6 (runtime/lowered-step-advanced? c5 s5 s6)
+        ;; put-value X5, A1
+        s7 (if c6 (let [val (runtime/deref-value (:bindings s6) (runtime/reg-get-raw s6 "X5"))] (-> s6 (runtime/reg-set-raw "A1" val) runtime/advance)) s6)
+        c7 (runtime/lowered-step-advanced? c6 s6 s7)
+        ;; put-value X6, A2
+        s8 (if c7 (let [val (runtime/deref-value (:bindings s7) (runtime/reg-get-raw s7 "X6"))] (-> s7 (runtime/reg-set-raw "A2" val) runtime/advance)) s7)
+        c8 (runtime/lowered-step-advanced? c7 s7 s8)
+        ;; put-value X7, A3
+        s9 (if c8 (let [val (runtime/deref-value (:bindings s8) (runtime/reg-get-raw s8 "X7"))] (-> s8 (runtime/reg-set-raw "A3" val) runtime/advance)) s8)
+        c9 (runtime/lowered-step-advanced? c8 s8 s9)
+        ;; put-variable Y1, A4
+        s10 (if c9 (let [[fresh next-state] (runtime/fresh-var s9)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A4" fresh) runtime/advance)) s9)
+        c10 (runtime/lowered-step-advanced? c9 s9 s10)
+        ;; put-variable Y2, A5
+        s11 (if c10 (let [[fresh next-state] (runtime/fresh-var s10)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A5" fresh) runtime/advance)) s10)
+        c11 (runtime/lowered-step-advanced? c10 s10 s11)
+        ;; call depends_in/5/5
+        s12 (if c11 (if-let [target-pc (get (:labels s11) "depends_in/5")] (-> s11 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s11))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "depends_in/5") (runtime/backtrack s11))) s11)
+        c12 (runtime/lowered-step-advanced? c11 s11 s12)
+        ]
+    s12)
+)
+
+(def follow-dep-name-start-pc 1608)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn follow-dep-name-state [a1 a2 a3 a4 a5]
+  (runtime/run-wam-state
+    (lowered-follow-dep-name-5
+      (runtime/new-state shared-wam-code shared-wam-labels follow-dep-name-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4, "A5" a5} foreign-handlers atom-intern-context))))
+
+(defn follow-dep-name [a1 a2 a3 a4 a5]
+  (some? (follow-dep-name-state a1 a2 a3 a4 a5)))
+
+
+;; lowered-follow-raw-dep-4 — lowered from follow_raw_dep/4
+(defn lowered-follow-raw-dep-4 [state]
+  ;; T4 all-clauses inline (generated): try each clause on the same input
+  ;; state; first :succeeded wins (immutable state = free per-clause restore).
+  (let [c1
+        (let [s0 state
+              c0 true
+              ;; allocate
+              s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
+              c1 (runtime/lowered-step-advanced? c0 s0 s1)
+              ;; get-structure alternatives/1, A1
+              s2 (if c1 (runtime/op-get-structure s1 (runtime/normalize-literal-term (:intern-context s1) "alternatives/1") "A1") s1)
+              c2 (runtime/lowered-step-advanced? c1 s1 s2)
+              ;; unify-variable Y2
+              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "Y2" item) runtime/advance)) s2)
+              c3 (runtime/lowered-step-advanced? c2 s2 s3)
+              ;; get-variable X7, A2
+              s4 (if c3 (-> s3 (runtime/reg-set-raw "X7" (runtime/reg-get-raw s3 "A2")) runtime/advance) s3)
+              c4 (runtime/lowered-step-advanced? c3 s3 s4)
+              ;; get-variable Y4, A3
+              s5 (if c4 (-> s4 (runtime/reg-set-raw "Y4" (runtime/reg-get-raw s4 "A3")) runtime/advance) s4)
+              c5 (runtime/lowered-step-advanced? c4 s4 s5)
+              ;; get-variable Y5, A4
+              s6 (if c5 (-> s5 (runtime/reg-set-raw "Y5" (runtime/reg-get-raw s5 "A4")) runtime/advance) s5)
+              c6 (runtime/lowered-step-advanced? c5 s5 s6)
+              ;; builtin-call !/0/0
+              s7 (if c6 (-> s6 (update :choice-points #(vec (take (:cut-bar s6) %))) runtime/advance) s6)
+              c7 (runtime/lowered-step-advanced? c6 s6 s7)
+              ;; put-structure dep/2, A1
+              s8 (if c7 (let [functor (runtime/normalize-literal-term (:intern-context s7) "dep/2") arity (runtime/functor-arity (:intern-context s7) functor)] (-> s7 (runtime/push-build-frame "A1" functor arity) runtime/advance)) s7)
+              c8 (runtime/lowered-step-advanced? c7 s7 s8)
+              ;; set-variable Y6
+              s9 (if c8 (let [[fresh next-state] (runtime/fresh-var s8)] (-> next-state (runtime/reg-set-raw "Y6" fresh) (runtime/append-build-arg fresh) runtime/finalize-complete-builds runtime/advance)) s8)
+              c9 (runtime/lowered-step-advanced? c8 s8 s9)
+              ;; set-variable Y1
+              s10 (if c9 (let [[fresh next-state] (runtime/fresh-var s9)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/append-build-arg fresh) runtime/finalize-complete-builds runtime/advance)) s9)
+              c10 (runtime/lowered-step-advanced? c9 s9 s10)
+              ;; put-value Y2, A2
+              s11 (if c10 (let [val (runtime/deref-value (:bindings s10) (runtime/reg-get-raw s10 "Y2"))] (-> s10 (runtime/reg-set-raw "A2" val) runtime/advance)) s10)
+              c11 (runtime/lowered-step-advanced? c10 s10 s11)
+              ;; builtin-call member/2/2
+              s12 (if c11 (let [elem (runtime/deref-value (:bindings s11) (or (runtime/reg-get-raw s11 "A1") ::lowered-unbound)) list-value (runtime/deref-value (:bindings s11) (or (runtime/reg-get-raw s11 "A2") ::lowered-unbound))] (runtime/apply-member-solution s11 (inc (:pc s11)) elem list-value)) s11)
+              c12 (runtime/lowered-step-advanced? c11 s11 s12)
+              ;; put-structure -/2, A1
+              s13 (if c12 (let [functor (runtime/normalize-literal-term (:intern-context s12) "-/2") arity (runtime/functor-arity (:intern-context s12) functor)] (-> s12 (runtime/push-build-frame "A1" functor arity) runtime/advance)) s12)
+              c13 (runtime/lowered-step-advanced? c12 s12 s13)
+              ;; set-value Y6
+              s14 (if c13 (let [val (runtime/deref-value (:bindings s13) (runtime/reg-get-raw s13 "Y6"))] (-> s13 (runtime/append-build-arg val) runtime/finalize-complete-builds runtime/advance)) s13)
+              c14 (runtime/lowered-step-advanced? c13 s13 s14)
+              ;; set-variable Y3
+              s15 (if c14 (let [[fresh next-state] (runtime/fresh-var s14)] (-> next-state (runtime/reg-set-raw "Y3" fresh) (runtime/append-build-arg fresh) runtime/finalize-complete-builds runtime/advance)) s14)
+              c15 (runtime/lowered-step-advanced? c14 s14 s15)
+              ;; put-value Y4, A2
+              s16 (if c15 (let [val (runtime/deref-value (:bindings s15) (runtime/reg-get-raw s15 "Y4"))] (-> s15 (runtime/reg-set-raw "A2" val) runtime/advance)) s15)
+              c16 (runtime/lowered-step-advanced? c15 s15 s16)
+              ;; builtin-call member/2/2
+              s17 (if c16 (let [elem (runtime/deref-value (:bindings s16) (or (runtime/reg-get-raw s16 "A1") ::lowered-unbound)) list-value (runtime/deref-value (:bindings s16) (or (runtime/reg-get-raw s16 "A2") ::lowered-unbound))] (runtime/apply-member-solution s16 (inc (:pc s16)) elem list-value)) s16)
+              c17 (runtime/lowered-step-advanced? c16 s16 s17)
+              ;; put-value Y5, A1
+              s18 (if c17 (let [val (runtime/deref-value (:bindings s17) (runtime/reg-get-raw s17 "Y5"))] (-> s17 (runtime/reg-set-raw "A1" val) runtime/advance)) s17)
+              c18 (runtime/lowered-step-advanced? c17 s17 s18)
+              ;; put-value Y6, A2
+              s19 (if c18 (let [val (runtime/deref-value (:bindings s18) (runtime/reg-get-raw s18 "Y6"))] (-> s18 (runtime/reg-set-raw "A2" val) runtime/advance)) s18)
+              c19 (runtime/lowered-step-advanced? c18 s18 s19)
+              ;; builtin-call =/2/2
+              s20 (if c19 (let [left (or (runtime/reg-get-raw s19 "A1") ::lowered-unbound) right (or (runtime/reg-get-raw s19 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s19 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s19))) s19)
+              c20 (runtime/lowered-step-advanced? c19 s19 s20)
+              ;; deallocate
+              s21 (if c20 (-> s20 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s20)
+              c21 (runtime/lowered-step-advanced? c20 s20 s21)
+              ;; proceed
+              s22 (if c21 (runtime/succeed-state s21) s21)
+              c22 (runtime/lowered-step-advanced? c21 s21 s22)
+              ]
+          s22)
+       ]
+    (if (= :succeeded (:status c1))
+      c1
+        (let [s0 state
+              c0 true
+              ;; allocate
+              s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
+              c1 (runtime/lowered-step-advanced? c0 s0 s1)
+              ;; get-variable Y1, A1
+              s2 (if c1 (-> s1 (runtime/reg-set-raw "Y1" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
+              c2 (runtime/lowered-step-advanced? c1 s1 s2)
+              ;; get-variable X4, A2
+              s3 (if c2 (-> s2 (runtime/reg-set-raw "X4" (runtime/reg-get-raw s2 "A2")) runtime/advance) s2)
+              c3 (runtime/lowered-step-advanced? c2 s2 s3)
+              ;; get-variable Y3, A3
+              s4 (if c3 (-> s3 (runtime/reg-set-raw "Y3" (runtime/reg-get-raw s3 "A3")) runtime/advance) s3)
+              c4 (runtime/lowered-step-advanced? c3 s3 s4)
+              ;; get-value Y1, A4
+              s5 (if c4 (let [left (or (runtime/reg-get-raw s4 "Y1") ::lowered-unbound) right (or (runtime/reg-get-raw s4 "A4") ::lowered-unbound) [ok next-state] (runtime/unify-values s4 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s4))) s4)
+              c5 (runtime/lowered-step-advanced? c4 s4 s5)
+              ;; put-value Y1, A1
+              s6 (if c5 (let [val (runtime/deref-value (:bindings s5) (runtime/reg-get-raw s5 "Y1"))] (-> s5 (runtime/reg-set-raw "A1" val) runtime/advance)) s5)
+              c6 (runtime/lowered-step-advanced? c5 s5 s6)
+              ;; builtin-call atom/1/1
+              s7 (if c6 (let [value (runtime/deref-value (:bindings s6) (or (runtime/reg-get-raw s6 "A1") ::lowered-unbound))] (if (runtime/atom-term? value) (runtime/advance s6) (runtime/backtrack s6))) s6)
+              c7 (runtime/lowered-step-advanced? c6 s6 s7)
+              ;; put-structure -/2, A1
+              s8 (if c7 (let [functor (runtime/normalize-literal-term (:intern-context s7) "-/2") arity (runtime/functor-arity (:intern-context s7) functor)] (-> s7 (runtime/push-build-frame "A1" functor arity) runtime/advance)) s7)
+              c8 (runtime/lowered-step-advanced? c7 s7 s8)
+              ;; set-value Y1
+              s9 (if c8 (let [val (runtime/deref-value (:bindings s8) (runtime/reg-get-raw s8 "Y1"))] (-> s8 (runtime/append-build-arg val) runtime/finalize-complete-builds runtime/advance)) s8)
+              c9 (runtime/lowered-step-advanced? c8 s8 s9)
+              ;; set-variable Y2
+              s10 (if c9 (let [[fresh next-state] (runtime/fresh-var s9)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/append-build-arg fresh) runtime/finalize-complete-builds runtime/advance)) s9)
+              c10 (runtime/lowered-step-advanced? c9 s9 s10)
+              ;; put-value Y3, A2
+              s11 (if c10 (let [val (runtime/deref-value (:bindings s10) (runtime/reg-get-raw s10 "Y3"))] (-> s10 (runtime/reg-set-raw "A2" val) runtime/advance)) s10)
+              c11 (runtime/lowered-step-advanced? c10 s10 s11)
+              ;; builtin-call member/2/2
+              s12 (if c11 (let [elem (runtime/deref-value (:bindings s11) (or (runtime/reg-get-raw s11 "A1") ::lowered-unbound)) list-value (runtime/deref-value (:bindings s11) (or (runtime/reg-get-raw s11 "A2") ::lowered-unbound))] (runtime/apply-member-solution s11 (inc (:pc s11)) elem list-value)) s11)
+              c12 (runtime/lowered-step-advanced? c11 s11 s12)
+              ;; deallocate
+              s13 (if c12 (-> s12 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s12)
+              c13 (runtime/lowered-step-advanced? c12 s12 s13)
+              ;; proceed
+              s14 (if c13 (runtime/succeed-state s13) s13)
+              c14 (runtime/lowered-step-advanced? c13 s13 s14)
+              ]
+          s14)
+  ))
+)
+
+(def follow-raw-dep-start-pc 1626)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn follow-raw-dep-state [a1 a2 a3 a4]
+  (runtime/run-wam-state
+    (lowered-follow-raw-dep-4
+      (runtime/new-state shared-wam-code shared-wam-labels follow-raw-dep-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4} foreign-handlers atom-intern-context))))
+
+(defn follow-raw-dep [a1 a2 a3 a4]
+  (some? (follow-raw-dep-state a1 a2 a3 a4)))
 
 
 ;; lowered-freeze-audit-2 — lowered from freeze_audit/2
@@ -4197,13 +6868,13 @@
         s5 (if c4 (let [[fresh next-state] (runtime/fresh-var s4)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s4)
         c5 (runtime/lowered-step-advanced? c4 s4 s5)
         ;; call base_holds/2/2
-        s6 (if c5 (if-let [target-pc (get (:labels s5) "base_holds/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (runtime/backtrack s5)) s5)
+        s6 (if c5 (if-let [target-pc (get (:labels s5) "base_holds/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "base_holds/2") (runtime/backtrack s5))) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ]
     s6)
 )
 
-(def freeze-audit-start-pc 922)
+(def freeze-audit-start-pc 1664)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4217,12 +6888,31 @@
   (some? (freeze-audit-state a1 a2)))
 
 
+;; lowered-group-keyed-2 — lowered from group_keyed/2
+(defn lowered-group-keyed-2 [state]
+  state
+)
+
+(def group-keyed-start-pc 1681)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn group-keyed-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-group-keyed-2
+      (runtime/new-state shared-wam-code shared-wam-labels group-keyed-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn group-keyed [a1 a2]
+  (some? (group-keyed-state a1 a2)))
+
+
 ;; lowered-hold-reason-3 — lowered from hold_reason/3
 (defn lowered-hold-reason-3 [state]
   state
 )
 
-(def hold-reason-start-pc 939)
+(def hold-reason-start-pc 1715)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4234,6 +6924,53 @@
 
 (defn hold-reason [a1 a2 a3]
   (some? (hold-reason-state a1 a2 a3)))
+
+
+;; lowered-index-catalog-2 — lowered from index_catalog/2
+(defn lowered-index-catalog-2 [state]
+  state
+)
+
+(def index-catalog-start-pc 1741)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn index-catalog-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-index-catalog-2
+      (runtime/new-state shared-wam-code shared-wam-labels index-catalog-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn index-catalog [a1 a2]
+  (some? (index-catalog-state a1 a2)))
+
+
+;; lowered-index-threshold-1 — lowered from index_threshold/1
+(defn lowered-index-threshold-1 [state]
+  (let [s0 state
+        c0 true
+        ;; get-constant 64, A1
+        s1 (if c0 (let [constant (runtime/normalize-literal-term (:intern-context s0) 64) current (or (runtime/reg-get-raw s0 "A1") ::lowered-unbound) current* (if (= current ::lowered-unbound) current (runtime/deref-value (:bindings s0) current))] (cond (= current* ::lowered-unbound) (-> s0 (runtime/reg-set-raw "A1" constant) runtime/advance) (runtime/logic-var? current*) (-> (runtime/bind-var s0 current* constant) runtime/advance) (runtime/interned-equal? current* constant) (runtime/advance s0) :else (runtime/backtrack s0))) s0)
+        c1 (runtime/lowered-step-advanced? c0 s0 s1)
+        ;; proceed
+        s2 (if c1 (runtime/succeed-state s1) s1)
+        c2 (runtime/lowered-step-advanced? c1 s1 s2)
+        ]
+    s2)
+)
+
+(def index-threshold-start-pc 1796)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn index-threshold-state [a1]
+  (runtime/run-wam-state
+    (lowered-index-threshold-1
+      (runtime/new-state shared-wam-code shared-wam-labels index-threshold-start-pc {"A1" a1} foreign-handlers atom-intern-context))))
+
+(defn index-threshold [a1]
+  (some? (index-threshold-state a1)))
 
 
 ;; lowered-inst-closure-names-5 — lowered from inst_closure_names/5
@@ -4295,13 +7032,13 @@
         s18 (if c17 (-> s17 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s17)
         c18 (runtime/lowered-step-advanced? c17 s17 s18)
         ;; execute inst_walk/6
-        s19 (if c18 (if-let [target-pc (get (:labels s18) "inst_walk/6")] (-> s18 (runtime/enter-execute-barrier) (assoc :pc target-pc)) (runtime/backtrack s18)) s18)
+        s19 (if c18 (if-let [target-pc (get (:labels s18) "inst_walk/6")] (-> s18 (runtime/enter-execute-barrier) (assoc :pc target-pc)) (do (runtime/warn-unresolved "execute" "inst_walk/6") (runtime/backtrack s18))) s18)
         c19 (runtime/lowered-step-advanced? c18 s18 s19)
         ]
     s19)
 )
 
-(def inst-closure-names-start-pc 965)
+(def inst-closure-names-start-pc 1798)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4320,7 +7057,7 @@
   state
 )
 
-(def inst-walk-start-pc 984)
+(def inst-walk-start-pc 1817)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4336,87 +7073,10 @@
 
 ;; lowered-installed-list-2 — lowered from installed_list/2
 (defn lowered-installed-list-2 [state]
-  ;; T4 all-clauses inline (generated): try each clause on the same input
-  ;; state; first :succeeded wins (immutable state = free per-clause restore).
-  (let [c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/6, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/6") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; get-value X5, A2
-              s8 (if c7 (let [left (or (runtime/reg-get-raw s7 "X5") ::lowered-unbound) right (or (runtime/reg-get-raw s7 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s7 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s7))) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; proceed
-              s9 (if c8 (runtime/succeed-state s8) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ]
-          s9)
-       ]
-    (if (= :succeeded (:status c1))
-      c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/9, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/9") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; unify-variable X7
-              s8 (if c7 (let [[item next-state] (runtime/pop-unify-item s7)] (-> next-state (runtime/reg-set-raw "X7" item) runtime/advance)) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; unify-variable X8
-              s9 (if c8 (let [[item next-state] (runtime/pop-unify-item s8)] (-> next-state (runtime/reg-set-raw "X8" item) runtime/advance)) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ;; unify-variable X9
-              s10 (if c9 (let [[item next-state] (runtime/pop-unify-item s9)] (-> next-state (runtime/reg-set-raw "X9" item) runtime/advance)) s9)
-              c10 (runtime/lowered-step-advanced? c9 s9 s10)
-              ;; get-value X5, A2
-              s11 (if c10 (let [left (or (runtime/reg-get-raw s10 "X5") ::lowered-unbound) right (or (runtime/reg-get-raw s10 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s10 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s10))) s10)
-              c11 (runtime/lowered-step-advanced? c10 s10 s11)
-              ;; proceed
-              s12 (if c11 (runtime/succeed-state s11) s11)
-              c12 (runtime/lowered-step-advanced? c11 s11 s12)
-              ]
-          s12)
-  ))
+  state
 )
 
-(def installed-list-start-pc 1056)
+(def installed-list-start-pc 1889)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4435,7 +7095,7 @@
   state
 )
 
-(def installed-or-base-start-pc 1080)
+(def installed-or-base-start-pc 1938)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4472,13 +7132,13 @@
         s6 (if c5 (let [[fresh next-state] (runtime/fresh-var s5)] (-> next-state (runtime/reg-set-raw "Y3" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ;; call installed_list/2/2
-        s7 (if c6 (if-let [target-pc (get (:labels s6) "installed_list/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (runtime/backtrack s6)) s6)
+        s7 (if c6 (if-let [target-pc (get (:labels s6) "installed_list/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "installed_list/2") (runtime/backtrack s6))) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ]
     s7)
 )
 
-(def installed-ver-start-pc 1104)
+(def installed-ver-start-pc 1962)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4492,12 +7152,184 @@
   (some? (installed-ver-state a1 a2 a3)))
 
 
+;; lowered-is-public-catalog-1 — lowered from is_public_catalog/1
+(defn lowered-is-public-catalog-1 [state]
+  ;; T4 all-clauses inline (generated): try each clause on the same input
+  ;; state; first :succeeded wins (immutable state = free per-clause restore).
+  (let [c1
+        (let [s0 state
+              c0 true
+              ;; get-structure catalog/6, A1
+              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/6") "A1") s0)
+              c1 (runtime/lowered-step-advanced? c0 s0 s1)
+              ;; unify-variable X1
+              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
+              c2 (runtime/lowered-step-advanced? c1 s1 s2)
+              ;; unify-variable X2
+              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
+              c3 (runtime/lowered-step-advanced? c2 s2 s3)
+              ;; unify-variable X3
+              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
+              c4 (runtime/lowered-step-advanced? c3 s3 s4)
+              ;; unify-variable X4
+              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
+              c5 (runtime/lowered-step-advanced? c4 s4 s5)
+              ;; unify-variable X5
+              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
+              c6 (runtime/lowered-step-advanced? c5 s5 s6)
+              ;; unify-variable X6
+              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
+              c7 (runtime/lowered-step-advanced? c6 s6 s7)
+              ;; proceed
+              s8 (if c7 (runtime/succeed-state s7) s7)
+              c8 (runtime/lowered-step-advanced? c7 s7 s8)
+              ]
+          s8)
+       ]
+    (if (= :succeeded (:status c1))
+      c1
+        (let [c2
+              (let [s0 state
+                    c0 true
+                    ;; get-structure catalog/9, A1
+                    s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/9") "A1") s0)
+                    c1 (runtime/lowered-step-advanced? c0 s0 s1)
+                    ;; unify-variable X1
+                    s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
+                    c2 (runtime/lowered-step-advanced? c1 s1 s2)
+                    ;; unify-variable X2
+                    s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
+                    c3 (runtime/lowered-step-advanced? c2 s2 s3)
+                    ;; unify-variable X3
+                    s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
+                    c4 (runtime/lowered-step-advanced? c3 s3 s4)
+                    ;; unify-variable X4
+                    s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
+                    c5 (runtime/lowered-step-advanced? c4 s4 s5)
+                    ;; unify-variable X5
+                    s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
+                    c6 (runtime/lowered-step-advanced? c5 s5 s6)
+                    ;; unify-variable X6
+                    s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
+                    c7 (runtime/lowered-step-advanced? c6 s6 s7)
+                    ;; unify-variable X7
+                    s8 (if c7 (let [[item next-state] (runtime/pop-unify-item s7)] (-> next-state (runtime/reg-set-raw "X7" item) runtime/advance)) s7)
+                    c8 (runtime/lowered-step-advanced? c7 s7 s8)
+                    ;; unify-variable X8
+                    s9 (if c8 (let [[item next-state] (runtime/pop-unify-item s8)] (-> next-state (runtime/reg-set-raw "X8" item) runtime/advance)) s8)
+                    c9 (runtime/lowered-step-advanced? c8 s8 s9)
+                    ;; unify-variable X9
+                    s10 (if c9 (let [[item next-state] (runtime/pop-unify-item s9)] (-> next-state (runtime/reg-set-raw "X9" item) runtime/advance)) s9)
+                    c10 (runtime/lowered-step-advanced? c9 s9 s10)
+                    ;; proceed
+                    s11 (if c10 (runtime/succeed-state s10) s10)
+                    c11 (runtime/lowered-step-advanced? c10 s10 s11)
+                    ]
+                s11)
+             ]
+          (if (= :succeeded (:status c2))
+            c2
+              (let [s0 state
+                    c0 true
+                    ;; get-structure catalog/10, A1
+                    s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/10") "A1") s0)
+                    c1 (runtime/lowered-step-advanced? c0 s0 s1)
+                    ;; unify-variable X1
+                    s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
+                    c2 (runtime/lowered-step-advanced? c1 s1 s2)
+                    ;; unify-variable X2
+                    s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
+                    c3 (runtime/lowered-step-advanced? c2 s2 s3)
+                    ;; unify-variable X3
+                    s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
+                    c4 (runtime/lowered-step-advanced? c3 s3 s4)
+                    ;; unify-variable X4
+                    s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
+                    c5 (runtime/lowered-step-advanced? c4 s4 s5)
+                    ;; unify-variable X5
+                    s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
+                    c6 (runtime/lowered-step-advanced? c5 s5 s6)
+                    ;; unify-variable X6
+                    s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
+                    c7 (runtime/lowered-step-advanced? c6 s6 s7)
+                    ;; unify-variable X7
+                    s8 (if c7 (let [[item next-state] (runtime/pop-unify-item s7)] (-> next-state (runtime/reg-set-raw "X7" item) runtime/advance)) s7)
+                    c8 (runtime/lowered-step-advanced? c7 s7 s8)
+                    ;; unify-variable X8
+                    s9 (if c8 (let [[item next-state] (runtime/pop-unify-item s8)] (-> next-state (runtime/reg-set-raw "X8" item) runtime/advance)) s8)
+                    c9 (runtime/lowered-step-advanced? c8 s8 s9)
+                    ;; unify-variable X9
+                    s10 (if c9 (let [[item next-state] (runtime/pop-unify-item s9)] (-> next-state (runtime/reg-set-raw "X9" item) runtime/advance)) s9)
+                    c10 (runtime/lowered-step-advanced? c9 s9 s10)
+                    ;; unify-variable X10
+                    s11 (if c10 (let [[item next-state] (runtime/pop-unify-item s10)] (-> next-state (runtime/reg-set-raw "X10" item) runtime/advance)) s10)
+                    c11 (runtime/lowered-step-advanced? c10 s10 s11)
+                    ;; proceed
+                    s12 (if c11 (runtime/succeed-state s11) s11)
+                    c12 (runtime/lowered-step-advanced? c11 s11 s12)
+                    ]
+                s12)
+        ))
+  ))
+)
+
+(def is-public-catalog-start-pc 1976)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn is-public-catalog-state [a1]
+  (runtime/run-wam-state
+    (lowered-is-public-catalog-1
+      (runtime/new-state shared-wam-code shared-wam-labels is-public-catalog-start-pc {"A1" a1} foreign-handlers atom-intern-context))))
+
+(defn is-public-catalog [a1]
+  (some? (is-public-catalog-state a1)))
+
+
+;; lowered-is-v3-1 — lowered from is_v3/1
+(defn lowered-is-v3-1 [state]
+  (let [s0 state
+        c0 true
+        ;; get-structure v/3, A1
+        s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "v/3") "A1") s0)
+        c1 (runtime/lowered-step-advanced? c0 s0 s1)
+        ;; unify-variable X1
+        s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
+        c2 (runtime/lowered-step-advanced? c1 s1 s2)
+        ;; unify-variable X2
+        s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
+        c3 (runtime/lowered-step-advanced? c2 s2 s3)
+        ;; unify-variable X3
+        s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
+        c4 (runtime/lowered-step-advanced? c3 s3 s4)
+        ;; proceed
+        s5 (if c4 (runtime/succeed-state s4) s4)
+        c5 (runtime/lowered-step-advanced? c4 s4 s5)
+        ]
+    s5)
+)
+
+(def is-v3-start-pc 2011)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn is-v3-state [a1]
+  (runtime/run-wam-state
+    (lowered-is-v3-1
+      (runtime/new-state shared-wam-code shared-wam-labels is-v3-start-pc {"A1" a1} foreign-handlers atom-intern-context))))
+
+(defn is-v3 [a1]
+  (some? (is-v3-state a1)))
+
+
 ;; lowered-item-ver-3 — lowered from item_ver/3
 (defn lowered-item-ver-3 [state]
   state
 )
 
-(def item-ver-start-pc 1118)
+(def item-ver-start-pc 2016)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4516,7 +7348,7 @@
   state
 )
 
-(def keep-installed-or-base-start-pc 1158)
+(def keep-installed-or-base-start-pc 2056)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4528,6 +7360,44 @@
 
 (defn keep-installed-or-base [a1 a2 a3 a4]
   (some? (keep-installed-or-base-state a1 a2 a3 a4)))
+
+
+;; lowered-key-dep-rows-3 — lowered from key_dep_rows/3
+(defn lowered-key-dep-rows-3 [state]
+  state
+)
+
+(def key-dep-rows-start-pc 2099)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn key-dep-rows-state [a1 a2 a3]
+  (runtime/run-wam-state
+    (lowered-key-dep-rows-3
+      (runtime/new-state shared-wam-code shared-wam-labels key-dep-rows-start-pc {"A1" a1, "A2" a2, "A3" a3} foreign-handlers atom-intern-context))))
+
+(defn key-dep-rows [a1 a2 a3]
+  (some? (key-dep-rows-state a1 a2 a3)))
+
+
+;; lowered-key-pkg-rows-3 — lowered from key_pkg_rows/3
+(defn lowered-key-pkg-rows-3 [state]
+  state
+)
+
+(def key-pkg-rows-start-pc 2142)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn key-pkg-rows-state [a1 a2 a3]
+  (runtime/run-wam-state
+    (lowered-key-pkg-rows-3
+      (runtime/new-state shared-wam-code shared-wam-labels key-pkg-rows-start-pc {"A1" a1, "A2" a2, "A3" a3} foreign-handlers atom-intern-context))))
+
+(defn key-pkg-rows [a1 a2 a3]
+  (some? (key-pkg-rows-state a1 a2 a3)))
 
 
 ;; lowered-layer-closure-3 — lowered from layer_closure/3
@@ -4562,13 +7432,13 @@
         s9 (if c8 (let [[fresh next-state] (runtime/fresh-var s8)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A3" fresh) runtime/advance)) s8)
         c9 (runtime/lowered-step-advanced? c8 s8 s9)
         ;; call resolve_layered/3/3
-        s10 (if c9 (if-let [target-pc (get (:labels s9) "resolve_layered/3")] (-> s9 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s9))) (assoc :pc target-pc)) (runtime/backtrack s9)) s9)
+        s10 (if c9 (if-let [target-pc (get (:labels s9) "resolve_layered/3")] (-> s9 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s9))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "resolve_layered/3") (runtime/backtrack s9))) s9)
         c10 (runtime/lowered-step-advanced? c9 s9 s10)
         ]
     s10)
 )
 
-(def layer-closure-start-pc 1201)
+(def layer-closure-start-pc 2176)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4582,12 +7452,42 @@
   (some? (layer-closure-state a1 a2 a3)))
 
 
+;; lowered-layer-provider-5 — lowered from layer_provider/5
+(defn lowered-layer-provider-5 [state]
+  state
+)
+
+(def layer-provider-start-pc 2193)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn layer-provider-state [a1 a2 a3 a4 a5]
+  (runtime/run-wam-state
+    (lowered-layer-provider-5
+      (runtime/new-state shared-wam-code shared-wam-labels layer-provider-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4, "A5" a5} foreign-handlers atom-intern-context))))
+
+(defn layer-provider [a1 a2 a3 a4 a5]
+  (some? (layer-provider-state a1 a2 a3 a4 a5)))
+
+
+(def layer-satisfies-start-pc 2242)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+(defn layer-satisfies-state [a1 a2 a3]
+  (runtime/run-wam-state
+    (runtime/new-state shared-wam-code shared-wam-labels layer-satisfies-start-pc {"A1" a1, "A2" a2, "A3" a3} foreign-handlers atom-intern-context)))
+
+(defn layer-satisfies [a1 a2 a3]
+  (some? (layer-satisfies-state a1 a2 a3)))
+
+
 ;; lowered-layered-walk-ver-4 — lowered from layered_walk_ver/4
 (defn lowered-layered-walk-ver-4 [state]
   state
 )
 
-(def layered-walk-ver-start-pc 1218)
+(def layered-walk-ver-start-pc 2312)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4603,87 +7503,10 @@
 
 ;; lowered-layers-list-2 — lowered from layers_list/2
 (defn lowered-layers-list-2 [state]
-  ;; T4 all-clauses inline (generated): try each clause on the same input
-  ;; state; first :succeeded wins (immutable state = free per-clause restore).
-  (let [c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/6, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/6") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; get-constant [], A2
-              s8 (if c7 (let [constant (runtime/normalize-literal-term (:intern-context s7) "[]") current (or (runtime/reg-get-raw s7 "A2") ::lowered-unbound) current* (if (= current ::lowered-unbound) current (runtime/deref-value (:bindings s7) current))] (cond (= current* ::lowered-unbound) (-> s7 (runtime/reg-set-raw "A2" constant) runtime/advance) (runtime/logic-var? current*) (-> (runtime/bind-var s7 current* constant) runtime/advance) (runtime/interned-equal? current* constant) (runtime/advance s7) :else (runtime/backtrack s7))) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; proceed
-              s9 (if c8 (runtime/succeed-state s8) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ]
-          s9)
-       ]
-    (if (= :succeeded (:status c1))
-      c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/9, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/9") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; unify-variable X7
-              s8 (if c7 (let [[item next-state] (runtime/pop-unify-item s7)] (-> next-state (runtime/reg-set-raw "X7" item) runtime/advance)) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; unify-variable X8
-              s9 (if c8 (let [[item next-state] (runtime/pop-unify-item s8)] (-> next-state (runtime/reg-set-raw "X8" item) runtime/advance)) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ;; unify-variable X9
-              s10 (if c9 (let [[item next-state] (runtime/pop-unify-item s9)] (-> next-state (runtime/reg-set-raw "X9" item) runtime/advance)) s9)
-              c10 (runtime/lowered-step-advanced? c9 s9 s10)
-              ;; get-value X7, A2
-              s11 (if c10 (let [left (or (runtime/reg-get-raw s10 "X7") ::lowered-unbound) right (or (runtime/reg-get-raw s10 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s10 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s10))) s10)
-              c11 (runtime/lowered-step-advanced? c10 s10 s11)
-              ;; proceed
-              s12 (if c11 (runtime/succeed-state s11) s11)
-              c12 (runtime/lowered-step-advanced? c11 s11 s12)
-              ]
-          s12)
-  ))
+  state
 )
 
-(def layers-list-start-pc 1245)
+(def layers-list-start-pc 2339)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4697,12 +7520,89 @@
   (some? (layers-list-state a1 a2)))
 
 
+;; lowered-list-to-tree-2 — lowered from list_to_tree/2
+(defn lowered-list-to-tree-2 [state]
+  (let [s0 state
+        c0 true
+        ;; allocate
+        s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
+        c1 (runtime/lowered-step-advanced? c0 s0 s1)
+        ;; get-variable Y2, A1
+        s2 (if c1 (-> s1 (runtime/reg-set-raw "Y2" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
+        c2 (runtime/lowered-step-advanced? c1 s1 s2)
+        ;; get-variable Y3, A2
+        s3 (if c2 (-> s2 (runtime/reg-set-raw "Y3" (runtime/reg-get-raw s2 "A2")) runtime/advance) s2)
+        c3 (runtime/lowered-step-advanced? c2 s2 s3)
+        ;; put-value Y2, A1
+        s4 (if c3 (let [val (runtime/deref-value (:bindings s3) (runtime/reg-get-raw s3 "Y2"))] (-> s3 (runtime/reg-set-raw "A1" val) runtime/advance)) s3)
+        c4 (runtime/lowered-step-advanced? c3 s3 s4)
+        ;; put-variable Y1, A2
+        s5 (if c4 (let [[fresh next-state] (runtime/fresh-var s4)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s4)
+        c5 (runtime/lowered-step-advanced? c4 s4 s5)
+        ;; builtin-call length/2/2
+        s6 (if c5 (runtime/apply-length-solution s5) s5)
+        c6 (runtime/lowered-step-advanced? c5 s5 s6)
+        ;; put-value Y1, A1
+        s7 (if c6 (let [val (runtime/deref-value (:bindings s6) (runtime/reg-get-raw s6 "Y1"))] (-> s6 (runtime/reg-set-raw "A1" val) runtime/advance)) s6)
+        c7 (runtime/lowered-step-advanced? c6 s6 s7)
+        ;; put-value Y2, A2
+        s8 (if c7 (let [val (runtime/deref-value (:bindings s7) (runtime/reg-get-raw s7 "Y2"))] (-> s7 (runtime/reg-set-raw "A2" val) runtime/advance)) s7)
+        c8 (runtime/lowered-step-advanced? c7 s7 s8)
+        ;; put-value Y3, A3
+        s9 (if c8 (let [val (runtime/deref-value (:bindings s8) (runtime/reg-get-raw s8 "Y3"))] (-> s8 (runtime/reg-set-raw "A3" val) runtime/advance)) s8)
+        c9 (runtime/lowered-step-advanced? c8 s8 s9)
+        ;; put-constant [], A4
+        s10 (if c9 (let [constant (runtime/normalize-literal-term (:intern-context s9) "[]")] (-> s9 (runtime/reg-set-raw "A4" constant) runtime/advance)) s9)
+        c10 (runtime/lowered-step-advanced? c9 s9 s10)
+        ;; deallocate
+        s11 (if c10 (-> s10 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s10)
+        c11 (runtime/lowered-step-advanced? c10 s10 s11)
+        ;; execute build_tree/4
+        s12 (if c11 (if-let [target-pc (get (:labels s11) "build_tree/4")] (-> s11 (runtime/enter-execute-barrier) (assoc :pc target-pc)) (do (runtime/warn-unresolved "execute" "build_tree/4") (runtime/backtrack s11))) s11)
+        c12 (runtime/lowered-step-advanced? c11 s11 s12)
+        ]
+    s12)
+)
+
+(def list-to-tree-start-pc 2388)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn list-to-tree-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-list-to-tree-2
+      (runtime/new-state shared-wam-code shared-wam-labels list-to-tree-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn list-to-tree [a1 a2]
+  (some? (list-to-tree-state a1 a2)))
+
+
+;; lowered-long-enough-2 — lowered from long_enough/2
+(defn lowered-long-enough-2 [state]
+  state
+)
+
+(def long-enough-start-pc 2400)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn long-enough-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-long-enough-2
+      (runtime/new-state shared-wam-code shared-wam-labels long-enough-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn long-enough [a1 a2]
+  (some? (long-enough-state a1 a2)))
+
+
 ;; lowered-lookup-held-3 — lowered from lookup_held/3
 (defn lowered-lookup-held-3 [state]
   state
 )
 
-(def lookup-held-start-pc 1269)
+(def lookup-held-start-pc 2423)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4721,7 +7621,7 @@
   state
 )
 
-(def map-requests-start-pc 1292)
+(def map-requests-start-pc 2446)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4740,7 +7640,7 @@
   state
 )
 
-(def matching-deps-start-pc 1316)
+(def matching-deps-start-pc 2470)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4759,7 +7659,7 @@
   state
 )
 
-(def matching-versions-start-pc 1363)
+(def matching-versions-start-pc 2518)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4771,6 +7671,25 @@
 
 (defn matching-versions [a1 a2 a3 a4]
   (some? (matching-versions-state a1 a2 a3 a4)))
+
+
+;; lowered-matching-versions-in-4 — lowered from matching_versions_in/4
+(defn lowered-matching-versions-in-4 [state]
+  state
+)
+
+(def matching-versions-in-start-pc 2560)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn matching-versions-in-state [a1 a2 a3 a4]
+  (runtime/run-wam-state
+    (lowered-matching-versions-in-4
+      (runtime/new-state shared-wam-code shared-wam-labels matching-versions-in-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4} foreign-handlers atom-intern-context))))
+
+(defn matching-versions-in [a1 a2 a3 a4]
+  (some? (matching-versions-in-state a1 a2 a3 a4)))
 
 
 ;; lowered-member-selected-3 — lowered from member_selected/3
@@ -4808,7 +7727,7 @@
     s9)
 )
 
-(def member-selected-start-pc 1405)
+(def member-selected-start-pc 2597)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4827,7 +7746,7 @@
   state
 )
 
-(def names-of-start-pc 1414)
+(def names-of-start-pc 2606)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4846,7 +7765,7 @@
   state
 )
 
-(def needed-names-start-pc 1434)
+(def needed-names-start-pc 2626)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4865,7 +7784,7 @@
   state
 )
 
-(def no-acc-conflicts-start-pc 1458)
+(def no-acc-conflicts-start-pc 2650)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4877,6 +7796,190 @@
 
 (defn no-acc-conflicts [a1 a2 a3 a4]
   (some? (no-acc-conflicts-state a1 a2 a3 a4)))
+
+
+;; lowered-order-lt-2 — lowered from order_lt/2
+(defn lowered-order-lt-2 [state]
+  state
+)
+
+(def order-lt-start-pc 2695)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn order-lt-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-order-lt-2
+      (runtime/new-state shared-wam-code shared-wam-labels order-lt-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn order-lt [a1 a2]
+  (some? (order-lt-state a1 a2)))
+
+
+;; lowered-order-val-2 — lowered from order_val/2
+(defn lowered-order-val-2 [state]
+  ;; T4 all-clauses inline (generated): try each clause on the same input
+  ;; state; first :succeeded wins (immutable state = free per-clause restore).
+  (let [c1
+        (let [s0 state
+              c0 true
+              ;; allocate
+              s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
+              c1 (runtime/lowered-step-advanced? c0 s0 s1)
+              ;; get-constant 126, A1
+              s2 (if c1 (let [constant (runtime/normalize-literal-term (:intern-context s1) 126) current (or (runtime/reg-get-raw s1 "A1") ::lowered-unbound) current* (if (= current ::lowered-unbound) current (runtime/deref-value (:bindings s1) current))] (cond (= current* ::lowered-unbound) (-> s1 (runtime/reg-set-raw "A1" constant) runtime/advance) (runtime/logic-var? current*) (-> (runtime/bind-var s1 current* constant) runtime/advance) (runtime/interned-equal? current* constant) (runtime/advance s1) :else (runtime/backtrack s1))) s1)
+              c2 (runtime/lowered-step-advanced? c1 s1 s2)
+              ;; get-constant -1, A2
+              s3 (if c2 (let [constant (runtime/normalize-literal-term (:intern-context s2) -1) current (or (runtime/reg-get-raw s2 "A2") ::lowered-unbound) current* (if (= current ::lowered-unbound) current (runtime/deref-value (:bindings s2) current))] (cond (= current* ::lowered-unbound) (-> s2 (runtime/reg-set-raw "A2" constant) runtime/advance) (runtime/logic-var? current*) (-> (runtime/bind-var s2 current* constant) runtime/advance) (runtime/interned-equal? current* constant) (runtime/advance s2) :else (runtime/backtrack s2))) s2)
+              c3 (runtime/lowered-step-advanced? c2 s2 s3)
+              ;; builtin-call !/0/0
+              s4 (if c3 (-> s3 (update :choice-points #(vec (take (:cut-bar s3) %))) runtime/advance) s3)
+              c4 (runtime/lowered-step-advanced? c3 s3 s4)
+              ;; deallocate
+              s5 (if c4 (-> s4 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s4)
+              c5 (runtime/lowered-step-advanced? c4 s4 s5)
+              ;; proceed
+              s6 (if c5 (runtime/succeed-state s5) s5)
+              c6 (runtime/lowered-step-advanced? c5 s5 s6)
+              ]
+          s6)
+       ]
+    (if (= :succeeded (:status c1))
+      c1
+        (let [c2
+              (let [s0 state
+                    c0 true
+                    ;; allocate
+                    s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
+                    c1 (runtime/lowered-step-advanced? c0 s0 s1)
+                    ;; get-variable Y1, A1
+                    s2 (if c1 (-> s1 (runtime/reg-set-raw "Y1" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
+                    c2 (runtime/lowered-step-advanced? c1 s1 s2)
+                    ;; get-value Y1, A2
+                    s3 (if c2 (let [left (or (runtime/reg-get-raw s2 "Y1") ::lowered-unbound) right (or (runtime/reg-get-raw s2 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s2 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s2))) s2)
+                    c3 (runtime/lowered-step-advanced? c2 s2 s3)
+                    ;; put-value Y1, A1
+                    s4 (if c3 (let [val (runtime/deref-value (:bindings s3) (runtime/reg-get-raw s3 "Y1"))] (-> s3 (runtime/reg-set-raw "A1" val) runtime/advance)) s3)
+                    c4 (runtime/lowered-step-advanced? c3 s3 s4)
+                    ;; put-constant 65, A2
+                    s5 (if c4 (let [constant (runtime/normalize-literal-term (:intern-context s4) 65)] (-> s4 (runtime/reg-set-raw "A2" constant) runtime/advance)) s4)
+                    c5 (runtime/lowered-step-advanced? c4 s4 s5)
+                    ;; builtin-call >=/2/2
+                    s6 (if c5 (let [left (runtime/deref-value (:bindings s5) (or (runtime/reg-get-raw s5 "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings s5) (or (runtime/reg-get-raw s5 "A2") ::lowered-unbound))] (if (runtime/arithmetic-greater-or-equal? s5 left right) (runtime/advance s5) (runtime/backtrack s5))) s5)
+                    c6 (runtime/lowered-step-advanced? c5 s5 s6)
+                    ;; put-value Y1, A1
+                    s7 (if c6 (let [val (runtime/deref-value (:bindings s6) (runtime/reg-get-raw s6 "Y1"))] (-> s6 (runtime/reg-set-raw "A1" val) runtime/advance)) s6)
+                    c7 (runtime/lowered-step-advanced? c6 s6 s7)
+                    ;; put-constant 90, A2
+                    s8 (if c7 (let [constant (runtime/normalize-literal-term (:intern-context s7) 90)] (-> s7 (runtime/reg-set-raw "A2" constant) runtime/advance)) s7)
+                    c8 (runtime/lowered-step-advanced? c7 s7 s8)
+                    ;; builtin-call =</2/2
+                    s9 (if c8 (let [left (runtime/deref-value (:bindings s8) (or (runtime/reg-get-raw s8 "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings s8) (or (runtime/reg-get-raw s8 "A2") ::lowered-unbound))] (if (runtime/arithmetic-less-or-equal? s8 left right) (runtime/advance s8) (runtime/backtrack s8))) s8)
+                    c9 (runtime/lowered-step-advanced? c8 s8 s9)
+                    ;; builtin-call !/0/0
+                    s10 (if c9 (-> s9 (update :choice-points #(vec (take (:cut-bar s9) %))) runtime/advance) s9)
+                    c10 (runtime/lowered-step-advanced? c9 s9 s10)
+                    ;; deallocate
+                    s11 (if c10 (-> s10 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s10)
+                    c11 (runtime/lowered-step-advanced? c10 s10 s11)
+                    ;; proceed
+                    s12 (if c11 (runtime/succeed-state s11) s11)
+                    c12 (runtime/lowered-step-advanced? c11 s11 s12)
+                    ]
+                s12)
+             ]
+          (if (= :succeeded (:status c2))
+            c2
+              (let [c3
+                    (let [s0 state
+                          c0 true
+                          ;; allocate
+                          s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
+                          c1 (runtime/lowered-step-advanced? c0 s0 s1)
+                          ;; get-variable Y1, A1
+                          s2 (if c1 (-> s1 (runtime/reg-set-raw "Y1" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
+                          c2 (runtime/lowered-step-advanced? c1 s1 s2)
+                          ;; get-value Y1, A2
+                          s3 (if c2 (let [left (or (runtime/reg-get-raw s2 "Y1") ::lowered-unbound) right (or (runtime/reg-get-raw s2 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s2 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s2))) s2)
+                          c3 (runtime/lowered-step-advanced? c2 s2 s3)
+                          ;; put-value Y1, A1
+                          s4 (if c3 (let [val (runtime/deref-value (:bindings s3) (runtime/reg-get-raw s3 "Y1"))] (-> s3 (runtime/reg-set-raw "A1" val) runtime/advance)) s3)
+                          c4 (runtime/lowered-step-advanced? c3 s3 s4)
+                          ;; put-constant 97, A2
+                          s5 (if c4 (let [constant (runtime/normalize-literal-term (:intern-context s4) 97)] (-> s4 (runtime/reg-set-raw "A2" constant) runtime/advance)) s4)
+                          c5 (runtime/lowered-step-advanced? c4 s4 s5)
+                          ;; builtin-call >=/2/2
+                          s6 (if c5 (let [left (runtime/deref-value (:bindings s5) (or (runtime/reg-get-raw s5 "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings s5) (or (runtime/reg-get-raw s5 "A2") ::lowered-unbound))] (if (runtime/arithmetic-greater-or-equal? s5 left right) (runtime/advance s5) (runtime/backtrack s5))) s5)
+                          c6 (runtime/lowered-step-advanced? c5 s5 s6)
+                          ;; put-value Y1, A1
+                          s7 (if c6 (let [val (runtime/deref-value (:bindings s6) (runtime/reg-get-raw s6 "Y1"))] (-> s6 (runtime/reg-set-raw "A1" val) runtime/advance)) s6)
+                          c7 (runtime/lowered-step-advanced? c6 s6 s7)
+                          ;; put-constant 122, A2
+                          s8 (if c7 (let [constant (runtime/normalize-literal-term (:intern-context s7) 122)] (-> s7 (runtime/reg-set-raw "A2" constant) runtime/advance)) s7)
+                          c8 (runtime/lowered-step-advanced? c7 s7 s8)
+                          ;; builtin-call =</2/2
+                          s9 (if c8 (let [left (runtime/deref-value (:bindings s8) (or (runtime/reg-get-raw s8 "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings s8) (or (runtime/reg-get-raw s8 "A2") ::lowered-unbound))] (if (runtime/arithmetic-less-or-equal? s8 left right) (runtime/advance s8) (runtime/backtrack s8))) s8)
+                          c9 (runtime/lowered-step-advanced? c8 s8 s9)
+                          ;; builtin-call !/0/0
+                          s10 (if c9 (-> s9 (update :choice-points #(vec (take (:cut-bar s9) %))) runtime/advance) s9)
+                          c10 (runtime/lowered-step-advanced? c9 s9 s10)
+                          ;; deallocate
+                          s11 (if c10 (-> s10 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s10)
+                          c11 (runtime/lowered-step-advanced? c10 s10 s11)
+                          ;; proceed
+                          s12 (if c11 (runtime/succeed-state s11) s11)
+                          c12 (runtime/lowered-step-advanced? c11 s11 s12)
+                          ]
+                      s12)
+                   ]
+                (if (= :succeeded (:status c3))
+                  c3
+                    (let [s0 state
+                          c0 true
+                          ;; get-variable X1, A1
+                          s1 (if c0 (-> s0 (runtime/reg-set-raw "X1" (runtime/reg-get-raw s0 "A1")) runtime/advance) s0)
+                          c1 (runtime/lowered-step-advanced? c0 s0 s1)
+                          ;; get-variable X2, A2
+                          s2 (if c1 (-> s1 (runtime/reg-set-raw "X2" (runtime/reg-get-raw s1 "A2")) runtime/advance) s1)
+                          c2 (runtime/lowered-step-advanced? c1 s1 s2)
+                          ;; put-value X2, A1
+                          s3 (if c2 (let [val (runtime/deref-value (:bindings s2) (runtime/reg-get-raw s2 "X2"))] (-> s2 (runtime/reg-set-raw "A1" val) runtime/advance)) s2)
+                          c3 (runtime/lowered-step-advanced? c2 s2 s3)
+                          ;; put-structure +/2, A2
+                          s4 (if c3 (let [functor (runtime/normalize-literal-term (:intern-context s3) "+/2") arity (runtime/functor-arity (:intern-context s3) functor)] (-> s3 (runtime/push-build-frame "A2" functor arity) runtime/advance)) s3)
+                          c4 (runtime/lowered-step-advanced? c3 s3 s4)
+                          ;; set-value X1
+                          s5 (if c4 (let [val (runtime/deref-value (:bindings s4) (runtime/reg-get-raw s4 "X1"))] (-> s4 (runtime/append-build-arg val) runtime/finalize-complete-builds runtime/advance)) s4)
+                          c5 (runtime/lowered-step-advanced? c4 s4 s5)
+                          ;; set-constant 256
+                          s6 (if c5 (let [constant (runtime/normalize-literal-term (:intern-context s5) 256)] (-> s5 (runtime/append-build-arg constant) runtime/finalize-complete-builds runtime/advance)) s5)
+                          c6 (runtime/lowered-step-advanced? c5 s5 s6)
+                          ;; builtin-call is/2/2
+                          s7 (if c6 (let [left (runtime/deref-value (:bindings s6) (or (runtime/reg-get-raw s6 "A1") ::lowered-unbound)) expr (runtime/deref-value (:bindings s6) (or (runtime/reg-get-raw s6 "A2") ::lowered-unbound)) result (runtime/eval-arithmetic-term s6 expr)] (if (some? result) (let [[ok next-state] (runtime/unify-values s6 left result)] (if ok (runtime/advance next-state) (runtime/backtrack s6))) (runtime/backtrack s6))) s6)
+                          c7 (runtime/lowered-step-advanced? c6 s6 s7)
+                          ;; proceed
+                          s8 (if c7 (runtime/succeed-state s7) s7)
+                          c8 (runtime/lowered-step-advanced? c7 s7 s8)
+                          ]
+                      s8)
+              ))
+        ))
+  ))
+)
+
+(def order-val-start-pc 2764)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn order-val-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-order-val-2
+      (runtime/new-state shared-wam-code shared-wam-labels order-val-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn order-val [a1 a2]
+  (some? (order-val-state a1 a2)))
 
 
 ;; lowered-package-in-3 — lowered from package_in/3
@@ -4902,13 +8005,13 @@
         s6 (if c5 (let [[fresh next-state] (runtime/fresh-var s5)] (-> next-state (runtime/reg-set-raw "Y3" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ;; call packages/2/2
-        s7 (if c6 (if-let [target-pc (get (:labels s6) "packages/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (runtime/backtrack s6)) s6)
+        s7 (if c6 (if-let [target-pc (get (:labels s6) "packages/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "packages/2") (runtime/backtrack s6))) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ]
     s7)
 )
 
-(def package-in-start-pc 1503)
+(def package-in-start-pc 2807)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -4922,89 +8025,52 @@
   (some? (package-in-state a1 a2 a3)))
 
 
-;; lowered-packages-2 — lowered from packages/2
-(defn lowered-packages-2 [state]
-  ;; T4 all-clauses inline (generated): try each clause on the same input
-  ;; state; first :succeeded wins (immutable state = free per-clause restore).
-  (let [c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/6, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/6") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; get-value X1, A2
-              s8 (if c7 (let [left (or (runtime/reg-get-raw s7 "X1") ::lowered-unbound) right (or (runtime/reg-get-raw s7 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s7 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s7))) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; proceed
-              s9 (if c8 (runtime/succeed-state s8) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ]
-          s9)
-       ]
-    (if (= :succeeded (:status c1))
-      c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/9, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/9") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; unify-variable X7
-              s8 (if c7 (let [[item next-state] (runtime/pop-unify-item s7)] (-> next-state (runtime/reg-set-raw "X7" item) runtime/advance)) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; unify-variable X8
-              s9 (if c8 (let [[item next-state] (runtime/pop-unify-item s8)] (-> next-state (runtime/reg-set-raw "X8" item) runtime/advance)) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ;; unify-variable X9
-              s10 (if c9 (let [[item next-state] (runtime/pop-unify-item s9)] (-> next-state (runtime/reg-set-raw "X9" item) runtime/advance)) s9)
-              c10 (runtime/lowered-step-advanced? c9 s9 s10)
-              ;; get-value X1, A2
-              s11 (if c10 (let [left (or (runtime/reg-get-raw s10 "X1") ::lowered-unbound) right (or (runtime/reg-get-raw s10 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s10 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s10))) s10)
-              c11 (runtime/lowered-step-advanced? c10 s10 s11)
-              ;; proceed
-              s12 (if c11 (runtime/succeed-state s11) s11)
-              c12 (runtime/lowered-step-advanced? c11 s11 s12)
-              ]
-          s12)
-  ))
+;; lowered-package-in-name-2 — lowered from package_in_name/2
+(defn lowered-package-in-name-2 [state]
+  (let [s0 state
+        c0 true
+        ;; allocate
+        s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
+        c1 (runtime/lowered-step-advanced? c0 s0 s1)
+        ;; get-variable X4, A1
+        s2 (if c1 (-> s1 (runtime/reg-set-raw "X4" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
+        c2 (runtime/lowered-step-advanced? c1 s1 s2)
+        ;; get-variable Y1, A2
+        s3 (if c2 (-> s2 (runtime/reg-set-raw "Y1" (runtime/reg-get-raw s2 "A2")) runtime/advance) s2)
+        c3 (runtime/lowered-step-advanced? c2 s2 s3)
+        ;; put-value X4, A1
+        s4 (if c3 (let [val (runtime/deref-value (:bindings s3) (runtime/reg-get-raw s3 "X4"))] (-> s3 (runtime/reg-set-raw "A1" val) runtime/advance)) s3)
+        c4 (runtime/lowered-step-advanced? c3 s3 s4)
+        ;; put-variable Y3, A2
+        s5 (if c4 (let [[fresh next-state] (runtime/fresh-var s4)] (-> next-state (runtime/reg-set-raw "Y3" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s4)
+        c5 (runtime/lowered-step-advanced? c4 s4 s5)
+        ;; call packages/2/2
+        s6 (if c5 (if-let [target-pc (get (:labels s5) "packages/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "packages/2") (runtime/backtrack s5))) s5)
+        c6 (runtime/lowered-step-advanced? c5 s5 s6)
+        ]
+    s6)
 )
 
-(def packages-start-pc 1517)
+(def package-in-name-start-pc 2821)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn package-in-name-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-package-in-name-2
+      (runtime/new-state shared-wam-code shared-wam-labels package-in-name-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn package-in-name [a1 a2]
+  (some? (package-in-name-state a1 a2)))
+
+
+;; lowered-packages-2 — lowered from packages/2
+(defn lowered-packages-2 [state]
+  state
+)
+
+(def packages-start-pc 2834)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5018,12 +8084,87 @@
   (some? (packages-state a1 a2)))
 
 
+;; lowered-pad-head-2 — lowered from pad_head/2
+(defn lowered-pad-head-2 [state]
+  ;; T4 all-clauses inline (generated): try each clause on the same input
+  ;; state; first :succeeded wins (immutable state = free per-clause restore).
+  (let [c1
+        (let [s0 state
+              c0 true
+              ;; allocate
+              s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
+              c1 (runtime/lowered-step-advanced? c0 s0 s1)
+              ;; get-constant [], A1
+              s2 (if c1 (let [constant (runtime/normalize-literal-term (:intern-context s1) "[]") current (or (runtime/reg-get-raw s1 "A1") ::lowered-unbound) current* (if (= current ::lowered-unbound) current (runtime/deref-value (:bindings s1) current))] (cond (= current* ::lowered-unbound) (-> s1 (runtime/reg-set-raw "A1" constant) runtime/advance) (runtime/logic-var? current*) (-> (runtime/bind-var s1 current* constant) runtime/advance) (runtime/interned-equal? current* constant) (runtime/advance s1) :else (runtime/backtrack s1))) s1)
+              c2 (runtime/lowered-step-advanced? c1 s1 s2)
+              ;; get-list A2
+              s3 (if c2 (runtime/op-get-list s2 "A2") s2)
+              c3 (runtime/lowered-step-advanced? c2 s2 s3)
+              ;; unify-variable X1
+              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s3)
+              c4 (runtime/lowered-step-advanced? c3 s3 s4)
+              ;; get-structure s/2, X1
+              s5 (if c4 (runtime/op-get-structure s4 (runtime/normalize-literal-term (:intern-context s4) "s/2") "X1") s4)
+              c5 (runtime/lowered-step-advanced? c4 s4 s5)
+              ;; unify-constant []
+              s6 (if c5 (let [constant (runtime/normalize-literal-term (:intern-context s5) "[]") [item next-state] (runtime/pop-unify-item s5) [ok bound-state] (runtime/unify-values next-state item constant)] (if ok (runtime/advance bound-state) (runtime/backtrack s5))) s5)
+              c6 (runtime/lowered-step-advanced? c5 s5 s6)
+              ;; unify-constant 0
+              s7 (if c6 (let [constant (runtime/normalize-literal-term (:intern-context s6) 0) [item next-state] (runtime/pop-unify-item s6) [ok bound-state] (runtime/unify-values next-state item constant)] (if ok (runtime/advance bound-state) (runtime/backtrack s6))) s6)
+              c7 (runtime/lowered-step-advanced? c6 s6 s7)
+              ;; unify-constant []
+              s8 (if c7 (let [constant (runtime/normalize-literal-term (:intern-context s7) "[]") [item next-state] (runtime/pop-unify-item s7) [ok bound-state] (runtime/unify-values next-state item constant)] (if ok (runtime/advance bound-state) (runtime/backtrack s7))) s7)
+              c8 (runtime/lowered-step-advanced? c7 s7 s8)
+              ;; builtin-call !/0/0
+              s9 (if c8 (-> s8 (update :choice-points #(vec (take (:cut-bar s8) %))) runtime/advance) s8)
+              c9 (runtime/lowered-step-advanced? c8 s8 s9)
+              ;; deallocate
+              s10 (if c9 (-> s9 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s9)
+              c10 (runtime/lowered-step-advanced? c9 s9 s10)
+              ;; proceed
+              s11 (if c10 (runtime/succeed-state s10) s10)
+              c11 (runtime/lowered-step-advanced? c10 s10 s11)
+              ]
+          s11)
+       ]
+    (if (= :succeeded (:status c1))
+      c1
+        (let [s0 state
+              c0 true
+              ;; get-variable X1, A1
+              s1 (if c0 (-> s0 (runtime/reg-set-raw "X1" (runtime/reg-get-raw s0 "A1")) runtime/advance) s0)
+              c1 (runtime/lowered-step-advanced? c0 s0 s1)
+              ;; get-value X1, A2
+              s2 (if c1 (let [left (or (runtime/reg-get-raw s1 "X1") ::lowered-unbound) right (or (runtime/reg-get-raw s1 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s1 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s1))) s1)
+              c2 (runtime/lowered-step-advanced? c1 s1 s2)
+              ;; proceed
+              s3 (if c2 (runtime/succeed-state s2) s2)
+              c3 (runtime/lowered-step-advanced? c2 s2 s3)
+              ]
+          s3)
+  ))
+)
+
+(def pad-head-start-pc 2883)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn pad-head-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-pad-head-2
+      (runtime/new-state shared-wam-code shared-wam-labels pad-head-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn pad-head [a1 a2]
+  (some? (pad-head-state a1 a2)))
+
+
 ;; lowered-pick-7 — lowered from pick/7
 (defn lowered-pick-7 [state]
   state
 )
 
-(def pick-start-pc 1541)
+(def pick-start-pc 2900)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5035,6 +8176,17 @@
 
 (defn pick [a1 a2 a3 a4 a5 a6 a7]
   (some? (pick-state a1 a2 a3 a4 a5 a6 a7)))
+
+
+(def pick-need-start-pc 2952)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+(defn pick-need-state [a1 a2 a3 a4 a5 a6 a7 a8]
+  (runtime/run-wam-state
+    (runtime/new-state shared-wam-code shared-wam-labels pick-need-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4, "A5" a5, "A6" a6, "A7" a7, "A8" a8} foreign-handlers atom-intern-context)))
+
+(defn pick-need [a1 a2 a3 a4 a5 a6 a7 a8]
+  (some? (pick-need-state a1 a2 a3 a4 a5 a6 a7 a8)))
 
 
 ;; lowered-pick-repair-4 — lowered from pick_repair/4
@@ -5069,13 +8221,13 @@
         s9 (if c8 (let [val (runtime/deref-value (:bindings s8) (runtime/reg-get-raw s8 "Y3"))] (-> s8 (runtime/reg-set-raw "A4" val) runtime/advance)) s8)
         c9 (runtime/lowered-step-advanced? c8 s8 s9)
         ;; call candidates_high_first/4/4
-        s10 (if c9 (if-let [target-pc (get (:labels s9) "candidates_high_first/4")] (-> s9 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s9))) (assoc :pc target-pc)) (runtime/backtrack s9)) s9)
+        s10 (if c9 (if-let [target-pc (get (:labels s9) "candidates_high_first/4")] (-> s9 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s9))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "candidates_high_first/4") (runtime/backtrack s9))) s9)
         c10 (runtime/lowered-step-advanced? c9 s9 s10)
         ]
     s10)
 )
 
-(def pick-repair-start-pc 1593)
+(def pick-repair-start-pc 3055)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5089,7 +8241,292 @@
   (some? (pick-repair-state a1 a2 a3 a4)))
 
 
-(def removal-orphans-start-pc 1609)
+;; lowered-pkg-index-2 — lowered from pkg_index/2
+(defn lowered-pkg-index-2 [state]
+  (let [s0 state
+        c0 true
+        ;; get-structure icat/3, A1
+        s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "icat/3") "A1") s0)
+        c1 (runtime/lowered-step-advanced? c0 s0 s1)
+        ;; unify-variable X1
+        s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
+        c2 (runtime/lowered-step-advanced? c1 s1 s2)
+        ;; unify-variable X2
+        s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
+        c3 (runtime/lowered-step-advanced? c2 s2 s3)
+        ;; unify-variable X3
+        s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
+        c4 (runtime/lowered-step-advanced? c3 s3 s4)
+        ;; get-value X3, A2
+        s5 (if c4 (let [left (or (runtime/reg-get-raw s4 "X3") ::lowered-unbound) right (or (runtime/reg-get-raw s4 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s4 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s4))) s4)
+        c5 (runtime/lowered-step-advanced? c4 s4 s5)
+        ;; proceed
+        s6 (if c5 (runtime/succeed-state s5) s5)
+        c6 (runtime/lowered-step-advanced? c5 s5 s6)
+        ]
+    s6)
+)
+
+(def pkg-index-start-pc 3071)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn pkg-index-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-pkg-index-2
+      (runtime/new-state shared-wam-code shared-wam-labels pkg-index-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn pkg-index [a1 a2]
+  (some? (pkg-index-state a1 a2)))
+
+
+;; lowered-provide-row-5 — lowered from provide_row/5
+(defn lowered-provide-row-5 [state]
+  ;; T4 all-clauses inline (generated): try each clause on the same input
+  ;; state; first :succeeded wins (immutable state = free per-clause restore).
+  (let [c1
+        (let [s0 state
+              c0 true
+              ;; get-structure provides/3, A1
+              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "provides/3") "A1") s0)
+              c1 (runtime/lowered-step-advanced? c0 s0 s1)
+              ;; unify-variable X1
+              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
+              c2 (runtime/lowered-step-advanced? c1 s1 s2)
+              ;; unify-variable X2
+              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
+              c3 (runtime/lowered-step-advanced? c2 s2 s3)
+              ;; unify-variable X3
+              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
+              c4 (runtime/lowered-step-advanced? c3 s3 s4)
+              ;; get-value X1, A2
+              s5 (if c4 (let [left (or (runtime/reg-get-raw s4 "X1") ::lowered-unbound) right (or (runtime/reg-get-raw s4 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s4 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s4))) s4)
+              c5 (runtime/lowered-step-advanced? c4 s4 s5)
+              ;; get-value X2, A3
+              s6 (if c5 (let [left (or (runtime/reg-get-raw s5 "X2") ::lowered-unbound) right (or (runtime/reg-get-raw s5 "A3") ::lowered-unbound) [ok next-state] (runtime/unify-values s5 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s5))) s5)
+              c6 (runtime/lowered-step-advanced? c5 s5 s6)
+              ;; get-value X3, A4
+              s7 (if c6 (let [left (or (runtime/reg-get-raw s6 "X3") ::lowered-unbound) right (or (runtime/reg-get-raw s6 "A4") ::lowered-unbound) [ok next-state] (runtime/unify-values s6 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s6))) s6)
+              c7 (runtime/lowered-step-advanced? c6 s6 s7)
+              ;; get-constant unversioned, A5
+              s8 (if c7 (let [constant (runtime/normalize-literal-term (:intern-context s7) "unversioned") current (or (runtime/reg-get-raw s7 "A5") ::lowered-unbound) current* (if (= current ::lowered-unbound) current (runtime/deref-value (:bindings s7) current))] (cond (= current* ::lowered-unbound) (-> s7 (runtime/reg-set-raw "A5" constant) runtime/advance) (runtime/logic-var? current*) (-> (runtime/bind-var s7 current* constant) runtime/advance) (runtime/interned-equal? current* constant) (runtime/advance s7) :else (runtime/backtrack s7))) s7)
+              c8 (runtime/lowered-step-advanced? c7 s7 s8)
+              ;; proceed
+              s9 (if c8 (runtime/succeed-state s8) s8)
+              c9 (runtime/lowered-step-advanced? c8 s8 s9)
+              ]
+          s9)
+       ]
+    (if (= :succeeded (:status c1))
+      c1
+        (let [s0 state
+              c0 true
+              ;; get-structure provides/4, A1
+              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "provides/4") "A1") s0)
+              c1 (runtime/lowered-step-advanced? c0 s0 s1)
+              ;; unify-variable X1
+              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
+              c2 (runtime/lowered-step-advanced? c1 s1 s2)
+              ;; unify-variable X2
+              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
+              c3 (runtime/lowered-step-advanced? c2 s2 s3)
+              ;; unify-variable X3
+              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
+              c4 (runtime/lowered-step-advanced? c3 s3 s4)
+              ;; unify-variable X4
+              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
+              c5 (runtime/lowered-step-advanced? c4 s4 s5)
+              ;; get-value X1, A2
+              s6 (if c5 (let [left (or (runtime/reg-get-raw s5 "X1") ::lowered-unbound) right (or (runtime/reg-get-raw s5 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s5 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s5))) s5)
+              c6 (runtime/lowered-step-advanced? c5 s5 s6)
+              ;; get-value X2, A3
+              s7 (if c6 (let [left (or (runtime/reg-get-raw s6 "X2") ::lowered-unbound) right (or (runtime/reg-get-raw s6 "A3") ::lowered-unbound) [ok next-state] (runtime/unify-values s6 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s6))) s6)
+              c7 (runtime/lowered-step-advanced? c6 s6 s7)
+              ;; get-value X3, A4
+              s8 (if c7 (let [left (or (runtime/reg-get-raw s7 "X3") ::lowered-unbound) right (or (runtime/reg-get-raw s7 "A4") ::lowered-unbound) [ok next-state] (runtime/unify-values s7 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s7))) s7)
+              c8 (runtime/lowered-step-advanced? c7 s7 s8)
+              ;; get-value X4, A5
+              s9 (if c8 (let [left (or (runtime/reg-get-raw s8 "X4") ::lowered-unbound) right (or (runtime/reg-get-raw s8 "A5") ::lowered-unbound) [ok next-state] (runtime/unify-values s8 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s8))) s8)
+              c9 (runtime/lowered-step-advanced? c8 s8 s9)
+              ;; proceed
+              s10 (if c9 (runtime/succeed-state s9) s9)
+              c10 (runtime/lowered-step-advanced? c9 s9 s10)
+              ]
+          s10)
+  ))
+)
+
+(def provide-row-start-pc 3077)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn provide-row-state [a1 a2 a3 a4 a5]
+  (runtime/run-wam-state
+    (lowered-provide-row-5
+      (runtime/new-state shared-wam-code shared-wam-labels provide-row-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4, "A5" a5} foreign-handlers atom-intern-context))))
+
+(defn provide-row [a1 a2 a3 a4 a5]
+  (some? (provide-row-state a1 a2 a3 a4 a5)))
+
+
+;; lowered-provide-satisfies-2 — lowered from provide_satisfies/2
+(defn lowered-provide-satisfies-2 [state]
+  state
+)
+
+(def provide-satisfies-start-pc 3099)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn provide-satisfies-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-provide-satisfies-2
+      (runtime/new-state shared-wam-code shared-wam-labels provide-satisfies-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn provide-satisfies [a1 a2]
+  (some? (provide-satisfies-state a1 a2)))
+
+
+;; lowered-provider-candidate-5 — lowered from provider_candidate/5
+(defn lowered-provider-candidate-5 [state]
+  state
+)
+
+(def provider-candidate-start-pc 3115)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn provider-candidate-state [a1 a2 a3 a4 a5]
+  (runtime/run-wam-state
+    (lowered-provider-candidate-5
+      (runtime/new-state shared-wam-code shared-wam-labels provider-candidate-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4, "A5" a5} foreign-handlers atom-intern-context))))
+
+(defn provider-candidate [a1 a2 a3 a4 a5]
+  (some? (provider-candidate-state a1 a2 a3 a4 a5)))
+
+
+;; lowered-provides-for-5 — lowered from provides_for/5
+(defn lowered-provides-for-5 [state]
+  (let [s0 state
+        c0 true
+        ;; allocate
+        s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
+        c1 (runtime/lowered-step-advanced? c0 s0 s1)
+        ;; get-variable X7, A1
+        s2 (if c1 (-> s1 (runtime/reg-set-raw "X7" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
+        c2 (runtime/lowered-step-advanced? c1 s1 s2)
+        ;; get-variable Y5, A2
+        s3 (if c2 (-> s2 (runtime/reg-set-raw "Y5" (runtime/reg-get-raw s2 "A2")) runtime/advance) s2)
+        c3 (runtime/lowered-step-advanced? c2 s2 s3)
+        ;; get-variable Y3, A3
+        s4 (if c3 (-> s3 (runtime/reg-set-raw "Y3" (runtime/reg-get-raw s3 "A3")) runtime/advance) s3)
+        c4 (runtime/lowered-step-advanced? c3 s3 s4)
+        ;; get-variable Y4, A4
+        s5 (if c4 (-> s4 (runtime/reg-set-raw "Y4" (runtime/reg-get-raw s4 "A4")) runtime/advance) s4)
+        c5 (runtime/lowered-step-advanced? c4 s4 s5)
+        ;; get-variable Y6, A5
+        s6 (if c5 (-> s5 (runtime/reg-set-raw "Y6" (runtime/reg-get-raw s5 "A5")) runtime/advance) s5)
+        c6 (runtime/lowered-step-advanced? c5 s5 s6)
+        ;; put-value X7, A1
+        s7 (if c6 (let [val (runtime/deref-value (:bindings s6) (runtime/reg-get-raw s6 "X7"))] (-> s6 (runtime/reg-set-raw "A1" val) runtime/advance)) s6)
+        c7 (runtime/lowered-step-advanced? c6 s6 s7)
+        ;; put-variable Y1, A2
+        s8 (if c7 (let [[fresh next-state] (runtime/fresh-var s7)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s7)
+        c8 (runtime/lowered-step-advanced? c7 s7 s8)
+        ;; call provides_list/2/2
+        s9 (if c8 (if-let [target-pc (get (:labels s8) "provides_list/2")] (-> s8 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s8))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "provides_list/2") (runtime/backtrack s8))) s8)
+        c9 (runtime/lowered-step-advanced? c8 s8 s9)
+        ]
+    s9)
+)
+
+(def provides-for-start-pc 3150)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn provides-for-state [a1 a2 a3 a4 a5]
+  (runtime/run-wam-state
+    (lowered-provides-for-5
+      (runtime/new-state shared-wam-code shared-wam-labels provides-for-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4, "A5" a5} foreign-handlers atom-intern-context))))
+
+(defn provides-for [a1 a2 a3 a4 a5]
+  (some? (provides-for-state a1 a2 a3 a4 a5)))
+
+
+;; lowered-provides-list-2 — lowered from provides_list/2
+(defn lowered-provides-list-2 [state]
+  state
+)
+
+(def provides-list-start-pc 3169)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn provides-list-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-provides-list-2
+      (runtime/new-state shared-wam-code shared-wam-labels provides-list-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn provides-list [a1 a2]
+  (some? (provides-list-state a1 a2)))
+
+
+;; lowered-provides-sat-5 — lowered from provides_sat/5
+(defn lowered-provides-sat-5 [state]
+  (let [s0 state
+        c0 true
+        ;; allocate
+        s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
+        c1 (runtime/lowered-step-advanced? c0 s0 s1)
+        ;; get-variable X8, A1
+        s2 (if c1 (-> s1 (runtime/reg-set-raw "X8" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
+        c2 (runtime/lowered-step-advanced? c1 s1 s2)
+        ;; get-variable Y3, A2
+        s3 (if c2 (-> s2 (runtime/reg-set-raw "Y3" (runtime/reg-get-raw s2 "A2")) runtime/advance) s2)
+        c3 (runtime/lowered-step-advanced? c2 s2 s3)
+        ;; get-variable Y4, A3
+        s4 (if c3 (-> s3 (runtime/reg-set-raw "Y4" (runtime/reg-get-raw s3 "A3")) runtime/advance) s3)
+        c4 (runtime/lowered-step-advanced? c3 s3 s4)
+        ;; get-variable Y5, A4
+        s5 (if c4 (-> s4 (runtime/reg-set-raw "Y5" (runtime/reg-get-raw s4 "A4")) runtime/advance) s4)
+        c5 (runtime/lowered-step-advanced? c4 s4 s5)
+        ;; get-variable Y7, A5
+        s6 (if c5 (-> s5 (runtime/reg-set-raw "Y7" (runtime/reg-get-raw s5 "A5")) runtime/advance) s5)
+        c6 (runtime/lowered-step-advanced? c5 s5 s6)
+        ;; put-value X8, A1
+        s7 (if c6 (let [val (runtime/deref-value (:bindings s6) (runtime/reg-get-raw s6 "X8"))] (-> s6 (runtime/reg-set-raw "A1" val) runtime/advance)) s6)
+        c7 (runtime/lowered-step-advanced? c6 s6 s7)
+        ;; put-variable Y1, A2
+        s8 (if c7 (let [[fresh next-state] (runtime/fresh-var s7)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s7)
+        c8 (runtime/lowered-step-advanced? c7 s7 s8)
+        ;; call provides_list/2/2
+        s9 (if c8 (if-let [target-pc (get (:labels s8) "provides_list/2")] (-> s8 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s8))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "provides_list/2") (runtime/backtrack s8))) s8)
+        c9 (runtime/lowered-step-advanced? c8 s8 s9)
+        ]
+    s9)
+)
+
+(def provides-sat-start-pc 3218)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn provides-sat-state [a1 a2 a3 a4 a5]
+  (runtime/run-wam-state
+    (lowered-provides-sat-5
+      (runtime/new-state shared-wam-code shared-wam-labels provides-sat-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4, "A5" a5} foreign-handlers atom-intern-context))))
+
+(defn provides-sat [a1 a2 a3 a4 a5]
+  (some? (provides-sat-state a1 a2 a3 a4 a5)))
+
+
+(def removal-orphans-start-pc 3240)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 (defn removal-orphans-state [a1 a2 a3]
@@ -5132,13 +8569,13 @@
         s9 (if c8 (let [[fresh next-state] (runtime/fresh-var s8)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A4" fresh) runtime/advance)) s8)
         c9 (runtime/lowered-step-advanced? c8 s8 s9)
         ;; call collect_deps/4/4
-        s10 (if c9 (if-let [target-pc (get (:labels s9) "collect_deps/4")] (-> s9 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s9))) (assoc :pc target-pc)) (runtime/backtrack s9)) s9)
+        s10 (if c9 (if-let [target-pc (get (:labels s9) "collect_deps/4")] (-> s9 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s9))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "collect_deps/4") (runtime/backtrack s9))) s9)
         c10 (runtime/lowered-step-advanced? c9 s9 s10)
         ]
     s10)
 )
 
-(def repairs-moving-start-pc 1703)
+(def repairs-moving-start-pc 3334)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5157,7 +8594,7 @@
   state
 )
 
-(def reqs-ok-moving-start-pc 1717)
+(def reqs-ok-moving-start-pc 3348)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5176,7 +8613,7 @@
   state
 )
 
-(def request-to-req-start-pc 1747)
+(def request-to-req-start-pc 3413)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5192,87 +8629,10 @@
 
 ;; lowered-requested-list-2 — lowered from requested_list/2
 (defn lowered-requested-list-2 [state]
-  ;; T4 all-clauses inline (generated): try each clause on the same input
-  ;; state; first :succeeded wins (immutable state = free per-clause restore).
-  (let [c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/6, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/6") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; get-value X6, A2
-              s8 (if c7 (let [left (or (runtime/reg-get-raw s7 "X6") ::lowered-unbound) right (or (runtime/reg-get-raw s7 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s7 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s7))) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; proceed
-              s9 (if c8 (runtime/succeed-state s8) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ]
-          s9)
-       ]
-    (if (= :succeeded (:status c1))
-      c1
-        (let [s0 state
-              c0 true
-              ;; get-structure catalog/9, A1
-              s1 (if c0 (runtime/op-get-structure s0 (runtime/normalize-literal-term (:intern-context s0) "catalog/9") "A1") s0)
-              c1 (runtime/lowered-step-advanced? c0 s0 s1)
-              ;; unify-variable X1
-              s2 (if c1 (let [[item next-state] (runtime/pop-unify-item s1)] (-> next-state (runtime/reg-set-raw "X1" item) runtime/advance)) s1)
-              c2 (runtime/lowered-step-advanced? c1 s1 s2)
-              ;; unify-variable X2
-              s3 (if c2 (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "X2" item) runtime/advance)) s2)
-              c3 (runtime/lowered-step-advanced? c2 s2 s3)
-              ;; unify-variable X3
-              s4 (if c3 (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "X3" item) runtime/advance)) s3)
-              c4 (runtime/lowered-step-advanced? c3 s3 s4)
-              ;; unify-variable X4
-              s5 (if c4 (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "X4" item) runtime/advance)) s4)
-              c5 (runtime/lowered-step-advanced? c4 s4 s5)
-              ;; unify-variable X5
-              s6 (if c5 (let [[item next-state] (runtime/pop-unify-item s5)] (-> next-state (runtime/reg-set-raw "X5" item) runtime/advance)) s5)
-              c6 (runtime/lowered-step-advanced? c5 s5 s6)
-              ;; unify-variable X6
-              s7 (if c6 (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "X6" item) runtime/advance)) s6)
-              c7 (runtime/lowered-step-advanced? c6 s6 s7)
-              ;; unify-variable X7
-              s8 (if c7 (let [[item next-state] (runtime/pop-unify-item s7)] (-> next-state (runtime/reg-set-raw "X7" item) runtime/advance)) s7)
-              c8 (runtime/lowered-step-advanced? c7 s7 s8)
-              ;; unify-variable X8
-              s9 (if c8 (let [[item next-state] (runtime/pop-unify-item s8)] (-> next-state (runtime/reg-set-raw "X8" item) runtime/advance)) s8)
-              c9 (runtime/lowered-step-advanced? c8 s8 s9)
-              ;; unify-variable X9
-              s10 (if c9 (let [[item next-state] (runtime/pop-unify-item s9)] (-> next-state (runtime/reg-set-raw "X9" item) runtime/advance)) s9)
-              c10 (runtime/lowered-step-advanced? c9 s9 s10)
-              ;; get-value X6, A2
-              s11 (if c10 (let [left (or (runtime/reg-get-raw s10 "X6") ::lowered-unbound) right (or (runtime/reg-get-raw s10 "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values s10 left right)] (if ok (runtime/advance next-state) (runtime/backtrack s10))) s10)
-              c11 (runtime/lowered-step-advanced? c10 s10 s11)
-              ;; proceed
-              s12 (if c11 (runtime/succeed-state s11) s11)
-              c12 (runtime/lowered-step-advanced? c11 s11 s12)
-              ]
-          s12)
-  ))
+  state
 )
 
-(def requested-list-start-pc 1775)
+(def requested-list-start-pc 3441)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5293,32 +8653,29 @@
         ;; allocate
         s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
         c1 (runtime/lowered-step-advanced? c0 s0 s1)
-        ;; get-variable Y1, A1
-        s2 (if c1 (-> s1 (runtime/reg-set-raw "Y1" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
+        ;; get-variable X6, A1
+        s2 (if c1 (-> s1 (runtime/reg-set-raw "X6" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
         c2 (runtime/lowered-step-advanced? c1 s1 s2)
-        ;; get-variable X5, A2
-        s3 (if c2 (-> s2 (runtime/reg-set-raw "X5" (runtime/reg-get-raw s2 "A2")) runtime/advance) s2)
+        ;; get-variable Y1, A2
+        s3 (if c2 (-> s2 (runtime/reg-set-raw "Y1" (runtime/reg-get-raw s2 "A2")) runtime/advance) s2)
         c3 (runtime/lowered-step-advanced? c2 s2 s3)
-        ;; get-variable Y4, A3
-        s4 (if c3 (-> s3 (runtime/reg-set-raw "Y4" (runtime/reg-get-raw s3 "A3")) runtime/advance) s3)
+        ;; get-variable Y5, A3
+        s4 (if c3 (-> s3 (runtime/reg-set-raw "Y5" (runtime/reg-get-raw s3 "A3")) runtime/advance) s3)
         c4 (runtime/lowered-step-advanced? c3 s3 s4)
-        ;; put-value Y1, A1
-        s5 (if c4 (let [val (runtime/deref-value (:bindings s4) (runtime/reg-get-raw s4 "Y1"))] (-> s4 (runtime/reg-set-raw "A1" val) runtime/advance)) s4)
+        ;; put-value X6, A1
+        s5 (if c4 (let [val (runtime/deref-value (:bindings s4) (runtime/reg-get-raw s4 "X6"))] (-> s4 (runtime/reg-set-raw "A1" val) runtime/advance)) s4)
         c5 (runtime/lowered-step-advanced? c4 s4 s5)
-        ;; put-value X5, A2
-        s6 (if c5 (let [val (runtime/deref-value (:bindings s5) (runtime/reg-get-raw s5 "X5"))] (-> s5 (runtime/reg-set-raw "A2" val) runtime/advance)) s5)
+        ;; put-variable Y2, A2
+        s6 (if c5 (let [[fresh next-state] (runtime/fresh-var s5)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
-        ;; put-variable Y2, A3
-        s7 (if c6 (let [[fresh next-state] (runtime/fresh-var s6)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A3" fresh) runtime/advance)) s6)
+        ;; call index_catalog/2/2
+        s7 (if c6 (if-let [target-pc (get (:labels s6) "index_catalog/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "index_catalog/2") (runtime/backtrack s6))) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
-        ;; call map_requests/3/3
-        s8 (if c7 (if-let [target-pc (get (:labels s7) "map_requests/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (runtime/backtrack s7)) s7)
-        c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ]
-    s8)
+    s7)
 )
 
-(def resolve-start-pc 1799)
+(def resolve-start-pc 3490)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5332,6 +8689,25 @@
   (some? (resolve-state a1 a2 a3)))
 
 
+;; lowered-resolve-alternatives-6 — lowered from resolve_alternatives/6
+(defn lowered-resolve-alternatives-6 [state]
+  state
+)
+
+(def resolve-alternatives-start-pc 3513)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn resolve-alternatives-state [a1 a2 a3 a4 a5 a6]
+  (runtime/run-wam-state
+    (lowered-resolve-alternatives-6
+      (runtime/new-state shared-wam-code shared-wam-labels resolve-alternatives-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4, "A5" a5, "A6" a6} foreign-handlers atom-intern-context))))
+
+(defn resolve-alternatives [a1 a2 a3 a4 a5 a6]
+  (some? (resolve-alternatives-state a1 a2 a3 a4 a5 a6)))
+
+
 ;; lowered-resolve-layered-3 — lowered from resolve_layered/3
 (defn lowered-resolve-layered-3 [state]
   (let [s0 state
@@ -5339,32 +8715,29 @@
         ;; allocate
         s1 (if c0 (-> s0 (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points s0))) runtime/advance) s0)
         c1 (runtime/lowered-step-advanced? c0 s0 s1)
-        ;; get-variable Y1, A1
-        s2 (if c1 (-> s1 (runtime/reg-set-raw "Y1" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
+        ;; get-variable X6, A1
+        s2 (if c1 (-> s1 (runtime/reg-set-raw "X6" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
         c2 (runtime/lowered-step-advanced? c1 s1 s2)
-        ;; get-variable X5, A2
-        s3 (if c2 (-> s2 (runtime/reg-set-raw "X5" (runtime/reg-get-raw s2 "A2")) runtime/advance) s2)
+        ;; get-variable Y1, A2
+        s3 (if c2 (-> s2 (runtime/reg-set-raw "Y1" (runtime/reg-get-raw s2 "A2")) runtime/advance) s2)
         c3 (runtime/lowered-step-advanced? c2 s2 s3)
-        ;; get-variable Y4, A3
-        s4 (if c3 (-> s3 (runtime/reg-set-raw "Y4" (runtime/reg-get-raw s3 "A3")) runtime/advance) s3)
+        ;; get-variable Y5, A3
+        s4 (if c3 (-> s3 (runtime/reg-set-raw "Y5" (runtime/reg-get-raw s3 "A3")) runtime/advance) s3)
         c4 (runtime/lowered-step-advanced? c3 s3 s4)
-        ;; put-value Y1, A1
-        s5 (if c4 (let [val (runtime/deref-value (:bindings s4) (runtime/reg-get-raw s4 "Y1"))] (-> s4 (runtime/reg-set-raw "A1" val) runtime/advance)) s4)
+        ;; put-value X6, A1
+        s5 (if c4 (let [val (runtime/deref-value (:bindings s4) (runtime/reg-get-raw s4 "X6"))] (-> s4 (runtime/reg-set-raw "A1" val) runtime/advance)) s4)
         c5 (runtime/lowered-step-advanced? c4 s4 s5)
-        ;; put-value X5, A2
-        s6 (if c5 (let [val (runtime/deref-value (:bindings s5) (runtime/reg-get-raw s5 "X5"))] (-> s5 (runtime/reg-set-raw "A2" val) runtime/advance)) s5)
+        ;; put-variable Y2, A2
+        s6 (if c5 (let [[fresh next-state] (runtime/fresh-var s5)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
-        ;; put-variable Y2, A3
-        s7 (if c6 (let [[fresh next-state] (runtime/fresh-var s6)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A3" fresh) runtime/advance)) s6)
+        ;; call index_catalog/2/2
+        s7 (if c6 (if-let [target-pc (get (:labels s6) "index_catalog/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "index_catalog/2") (runtime/backtrack s6))) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
-        ;; call map_requests/3/3
-        s8 (if c7 (if-let [target-pc (get (:labels s7) "map_requests/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (runtime/backtrack s7)) s7)
-        c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ]
-    s8)
+    s7)
 )
 
-(def resolve-layered-start-pc 1819)
+(def resolve-layered-start-pc 3553)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5383,7 +8756,7 @@
   state
 )
 
-(def resolve-pending-start-pc 1839)
+(def resolve-pending-start-pc 3576)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5402,7 +8775,7 @@
   state
 )
 
-(def roots-to-pairs-start-pc 1923)
+(def roots-to-pairs-start-pc 3700)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5421,7 +8794,7 @@
   state
 )
 
-(def safe-upgrade-start-pc 1966)
+(def safe-upgrade-start-pc 3743)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5440,7 +8813,7 @@
   state
 )
 
-(def safe-upgrade-reason-start-pc 2022)
+(def safe-upgrade-reason-start-pc 3799)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5454,12 +8827,31 @@
   (some? (safe-upgrade-reason-state a1 a2 a3 a4 a5)))
 
 
+;; lowered-same-key-4 — lowered from same_key/4
+(defn lowered-same-key-4 [state]
+  state
+)
+
+(def same-key-start-pc 3852)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn same-key-state [a1 a2 a3 a4]
+  (runtime/run-wam-state
+    (lowered-same-key-4
+      (runtime/new-state shared-wam-code shared-wam-labels same-key-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4} foreign-handlers atom-intern-context))))
+
+(defn same-key [a1 a2 a3 a4]
+  (some? (same-key-state a1 a2 a3 a4)))
+
+
 ;; lowered-satisfies-2 — lowered from satisfies/2
 (defn lowered-satisfies-2 [state]
   state
 )
 
-(def satisfies-start-pc 2075)
+(def satisfies-start-pc 3906)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5478,7 +8870,7 @@
   state
 )
 
-(def scan-base-holds-start-pc 2130)
+(def scan-base-holds-start-pc 3984)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5497,7 +8889,7 @@
   state
 )
 
-(def seen-name-start-pc 2215)
+(def seen-name-start-pc 4069)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5511,12 +8903,50 @@
   (some? (seen-name-state a1 a2)))
 
 
+;; lowered-segs-lt-2 — lowered from segs_lt/2
+(defn lowered-segs-lt-2 [state]
+  state
+)
+
+(def segs-lt-start-pc 4087)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn segs-lt-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-segs-lt-2
+      (runtime/new-state shared-wam-code shared-wam-labels segs-lt-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn segs-lt [a1 a2]
+  (some? (segs-lt-state a1 a2)))
+
+
+;; lowered-segs-lt-1-2 — lowered from segs_lt_1/2
+(defn lowered-segs-lt-1-2 [state]
+  state
+)
+
+(def segs-lt-1-start-pc 4110)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn segs-lt-1-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-segs-lt-1-2
+      (runtime/new-state shared-wam-code shared-wam-labels segs-lt-1-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn segs-lt-1 [a1 a2]
+  (some? (segs-lt-1-state a1 a2)))
+
+
 ;; lowered-selected-ver-3 — lowered from selected_ver/3
 (defn lowered-selected-ver-3 [state]
   state
 )
 
-(def selected-ver-start-pc 2233)
+(def selected-ver-start-pc 4153)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5528,6 +8958,75 @@
 
 (defn selected-ver [a1 a2 a3]
   (some? (selected-ver-state a1 a2 a3)))
+
+
+;; lowered-sort-versions-desc-2 — lowered from sort_versions_desc/2
+(defn lowered-sort-versions-desc-2 [state]
+  (let [
+        ;; allocate
+        s1 (if (= :running (:status state)) (-> state (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points state))) runtime/advance) state)
+        ;; get-variable Y1, A1
+        s2 (if (= :running (:status s1)) (-> s1 (runtime/reg-set-raw "Y1" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
+        ;; get-variable Y3, A2
+        s3 (if (= :running (:status s2)) (-> s2 (runtime/reg-set-raw "Y3" (runtime/reg-get-raw s2 "A2")) runtime/advance) s2)
+        ;; put-constant is_v3, A1
+        s4 (if (= :running (:status s3)) (let [constant (runtime/normalize-literal-term (:intern-context s3) "is_v3")] (-> s3 (runtime/reg-set-raw "A1" constant) runtime/advance)) s3)
+        ;; put-value Y1, A2
+        s5 (if (= :running (:status s4)) (let [val (runtime/deref-value (:bindings s4) (runtime/reg-get-raw s4 "Y1"))] (-> s4 (runtime/reg-set-raw "A2" val) runtime/advance)) s4)
+        ;; builtin-call maplist/2/2
+        s6 (if (= :running (:status s5)) (runtime/apply-maplist-solution s5 1) s5)
+        ;; if-then-else
+        s7 (if (= :running (:status s6))
+              (let [
+        ;; put-value Y1, A1
+        s8 (if (= :running (:status s6)) (let [val (runtime/deref-value (:bindings s6) (runtime/reg-get-raw s6 "Y1"))] (-> s6 (runtime/reg-set-raw "A1" val) runtime/advance)) s6)
+        ;; put-variable Y2, A2
+        s9 (if (= :running (:status s8)) (let [[fresh next-state] (runtime/fresh-var s8)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s8)
+        ;; builtin-call sort/2/2
+        s10 (if (= :running (:status s9)) (runtime/apply-sort-solution s9) s9)
+        ;; put-value Y2, A1
+        s11 (if (= :running (:status s10)) (let [val (runtime/deref-value (:bindings s10) (runtime/reg-get-raw s10 "Y2"))] (-> s10 (runtime/reg-set-raw "A1" val) runtime/advance)) s10)
+        ;; put-value Y3, A2
+        s12 (if (= :running (:status s11)) (let [val (runtime/deref-value (:bindings s11) (runtime/reg-get-raw s11 "Y3"))] (-> s11 (runtime/reg-set-raw "A2" val) runtime/advance)) s11)
+        ;; builtin-call reverse/2/2
+        s13 (if (= :running (:status s12)) (runtime/apply-reverse-solution s12) s12)
+              ] s13)
+              (let [
+        ;; put-constant cmp_ver, A1
+        s14 (if (= :running (:status s3)) (let [constant (runtime/normalize-literal-term (:intern-context s3) "cmp_ver")] (-> s3 (runtime/reg-set-raw "A1" constant) runtime/advance)) s3)
+        ;; put-value Y1, A2
+        s15 (if (= :running (:status s14)) (let [val (runtime/deref-value (:bindings s14) (runtime/reg-get-raw s14 "Y1"))] (-> s14 (runtime/reg-set-raw "A2" val) runtime/advance)) s14)
+        ;; put-variable Y2, A3
+        s16 (if (= :running (:status s15)) (let [[fresh next-state] (runtime/fresh-var s15)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A3" fresh) runtime/advance)) s15)
+        ;; call predsort/3/3
+        s17 (if (= :running (:status s16)) (runtime/apply-predsort-solution s16) s16)
+        ;; put-value Y2, A1
+        s18 (if (= :running (:status s17)) (let [val (runtime/deref-value (:bindings s17) (runtime/reg-get-raw s17 "Y2"))] (-> s17 (runtime/reg-set-raw "A1" val) runtime/advance)) s17)
+        ;; put-value Y3, A2
+        s19 (if (= :running (:status s18)) (let [val (runtime/deref-value (:bindings s18) (runtime/reg-get-raw s18 "Y3"))] (-> s18 (runtime/reg-set-raw "A2" val) runtime/advance)) s18)
+        ;; builtin-call reverse/2/2
+        s20 (if (= :running (:status s19)) (runtime/apply-reverse-solution s19) s19)
+              ] s20))
+        ;; deallocate
+        s21 (if (= :running (:status s7)) (-> s7 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s7)
+        ;; proceed
+        s22 (if (= :running (:status s21)) (runtime/succeed-state s21) s21)
+        ]
+    s22)
+)
+
+(def sort-versions-desc-start-pc 4175)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn sort-versions-desc-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-sort-versions-desc-2
+      (runtime/new-state shared-wam-code shared-wam-labels sort-versions-desc-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn sort-versions-desc [a1 a2]
+  (some? (sort-versions-desc-state a1 a2)))
 
 
 ;; lowered-tight-base-revdep-2 — lowered from tight_base_revdep/2
@@ -5550,13 +9049,13 @@
         s5 (if c4 (let [[fresh next-state] (runtime/fresh-var s4)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s4)
         c5 (runtime/lowered-step-advanced? c4 s4 s5)
         ;; call base_holds/2/2
-        s6 (if c5 (if-let [target-pc (get (:labels s5) "base_holds/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (runtime/backtrack s5)) s5)
+        s6 (if c5 (if-let [target-pc (get (:labels s5) "base_holds/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "base_holds/2") (runtime/backtrack s5))) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ]
     s6)
 )
 
-(def tight-base-revdep-start-pc 2255)
+(def tight-base-revdep-start-pc 4200)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5593,7 +9092,7 @@
     s5)
 )
 
-(def tight-constraint-start-pc 2266)
+(def tight-constraint-start-pc 4211)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5612,7 +9111,7 @@
   state
 )
 
-(def tight-rev-in-start-pc 2271)
+(def tight-rev-in-start-pc 4216)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5631,7 +9130,7 @@
   state
 )
 
-(def topo-all-start-pc 2303)
+(def topo-all-start-pc 4264)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5650,7 +9149,7 @@
   state
 )
 
-(def topo-one-start-pc 2341)
+(def topo-one-start-pc 4302)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5669,7 +9168,7 @@
   state
 )
 
-(def topo-sort-sel-start-pc 2418)
+(def topo-sort-sel-start-pc 4379)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5681,6 +9180,25 @@
 
 (defn topo-sort-sel [a1 a2 a3]
   (some? (topo-sort-sel-state a1 a2 a3)))
+
+
+;; lowered-tree-lookup-3 — lowered from tree_lookup/3
+(defn lowered-tree-lookup-3 [state]
+  state
+)
+
+(def tree-lookup-start-pc 4412)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn tree-lookup-state [a1 a2 a3]
+  (runtime/run-wam-state
+    (lowered-tree-lookup-3
+      (runtime/new-state shared-wam-code shared-wam-labels tree-lookup-start-pc {"A1" a1, "A2" a2, "A3" a3} foreign-handlers atom-intern-context))))
+
+(defn tree-lookup [a1 a2 a3]
+  (some? (tree-lookup-state a1 a2 a3)))
 
 
 ;; lowered-upgrade-set-4 — lowered from upgrade_set/4
@@ -5718,13 +9236,13 @@
         s10 (if c9 (let [val (runtime/deref-value (:bindings s9) (runtime/reg-get-raw s9 "X4"))] (-> s9 (runtime/append-build-arg val) runtime/finalize-complete-builds runtime/advance)) s9)
         c10 (runtime/lowered-step-advanced? c9 s9 s10)
         ;; call upgrade_set_result/4/4
-        s11 (if c10 (if-let [target-pc (get (:labels s10) "upgrade_set_result/4")] (-> s10 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s10))) (assoc :pc target-pc)) (runtime/backtrack s10)) s10)
+        s11 (if c10 (if-let [target-pc (get (:labels s10) "upgrade_set_result/4")] (-> s10 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s10))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "upgrade_set_result/4") (runtime/backtrack s10))) s10)
         c11 (runtime/lowered-step-advanced? c10 s10 s11)
         ]
     s11)
 )
 
-(def upgrade-set-start-pc 2451)
+(def upgrade-set-start-pc 4451)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5743,7 +9261,7 @@
   state
 )
 
-(def upgrade-set-result-start-pc 2465)
+(def upgrade-set-result-start-pc 4465)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5759,86 +9277,10 @@
 
 ;; lowered-version-lt-2 — lowered from version_lt/2
 (defn lowered-version-lt-2 [state]
-  (let [
-        ;; allocate
-        s1 (if (= :running (:status state)) (-> state (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points state))) runtime/advance) state)
-        ;; get-structure v/3, A1
-        s2 (if (= :running (:status s1)) (runtime/op-get-structure s1 (runtime/normalize-literal-term (:intern-context s1) "v/3") "A1") s1)
-        ;; unify-variable Y1
-        s3 (if (= :running (:status s2)) (let [[item next-state] (runtime/pop-unify-item s2)] (-> next-state (runtime/reg-set-raw "Y1" item) runtime/advance)) s2)
-        ;; unify-variable Y3
-        s4 (if (= :running (:status s3)) (let [[item next-state] (runtime/pop-unify-item s3)] (-> next-state (runtime/reg-set-raw "Y3" item) runtime/advance)) s3)
-        ;; unify-variable Y5
-        s5 (if (= :running (:status s4)) (let [[item next-state] (runtime/pop-unify-item s4)] (-> next-state (runtime/reg-set-raw "Y5" item) runtime/advance)) s4)
-        ;; get-structure v/3, A2
-        s6 (if (= :running (:status s5)) (runtime/op-get-structure s5 (runtime/normalize-literal-term (:intern-context s5) "v/3") "A2") s5)
-        ;; unify-variable Y2
-        s7 (if (= :running (:status s6)) (let [[item next-state] (runtime/pop-unify-item s6)] (-> next-state (runtime/reg-set-raw "Y2" item) runtime/advance)) s6)
-        ;; unify-variable Y4
-        s8 (if (= :running (:status s7)) (let [[item next-state] (runtime/pop-unify-item s7)] (-> next-state (runtime/reg-set-raw "Y4" item) runtime/advance)) s7)
-        ;; unify-variable Y6
-        s9 (if (= :running (:status s8)) (let [[item next-state] (runtime/pop-unify-item s8)] (-> next-state (runtime/reg-set-raw "Y6" item) runtime/advance)) s8)
-        ;; put-value Y1, A1
-        s10 (if (= :running (:status s9)) (let [val (runtime/deref-value (:bindings s9) (runtime/reg-get-raw s9 "Y1"))] (-> s9 (runtime/reg-set-raw "A1" val) runtime/advance)) s9)
-        ;; put-value Y2, A2
-        s11 (if (= :running (:status s10)) (let [val (runtime/deref-value (:bindings s10) (runtime/reg-get-raw s10 "Y2"))] (-> s10 (runtime/reg-set-raw "A2" val) runtime/advance)) s10)
-        ;; builtin-call </2/2
-        s12 (if (= :running (:status s11)) (let [left (runtime/deref-value (:bindings s11) (or (runtime/reg-get-raw s11 "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings s11) (or (runtime/reg-get-raw s11 "A2") ::lowered-unbound))] (if (runtime/arithmetic-less? s11 left right) (runtime/advance s11) (runtime/backtrack s11))) s11)
-        ;; if-then-else
-        s13 (if (= :running (:status s12))
-              (let [
-        ;; builtin-call true/0/0
-        s14 (if (= :running (:status s12)) (runtime/advance s12) s12)
-              ] s14)
-              (let [
-        ;; put-value Y1, A1
-        s15 (if (= :running (:status s9)) (let [val (runtime/deref-value (:bindings s9) (runtime/reg-get-raw s9 "Y1"))] (-> s9 (runtime/reg-set-raw "A1" val) runtime/advance)) s9)
-        ;; put-value Y2, A2
-        s16 (if (= :running (:status s15)) (let [val (runtime/deref-value (:bindings s15) (runtime/reg-get-raw s15 "Y2"))] (-> s15 (runtime/reg-set-raw "A2" val) runtime/advance)) s15)
-        ;; builtin-call =:=/2/2
-        s17 (if (= :running (:status s16)) (let [left (runtime/deref-value (:bindings s16) (or (runtime/reg-get-raw s16 "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings s16) (or (runtime/reg-get-raw s16 "A2") ::lowered-unbound))] (if (runtime/arithmetic-equal? s16 left right) (runtime/advance s16) (runtime/backtrack s16))) s16)
-        ;; put-value Y3, A1
-        s18 (if (= :running (:status s17)) (let [val (runtime/deref-value (:bindings s17) (runtime/reg-get-raw s17 "Y3"))] (-> s17 (runtime/reg-set-raw "A1" val) runtime/advance)) s17)
-        ;; put-value Y4, A2
-        s19 (if (= :running (:status s18)) (let [val (runtime/deref-value (:bindings s18) (runtime/reg-get-raw s18 "Y4"))] (-> s18 (runtime/reg-set-raw "A2" val) runtime/advance)) s18)
-        ;; builtin-call </2/2
-        s20 (if (= :running (:status s19)) (let [left (runtime/deref-value (:bindings s19) (or (runtime/reg-get-raw s19 "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings s19) (or (runtime/reg-get-raw s19 "A2") ::lowered-unbound))] (if (runtime/arithmetic-less? s19 left right) (runtime/advance s19) (runtime/backtrack s19))) s19)
-        ;; if-then-else
-        s21 (if (= :running (:status s20))
-              (let [
-        ;; builtin-call true/0/0
-        s22 (if (= :running (:status s20)) (runtime/advance s20) s20)
-              ] s22)
-              (let [
-        ;; put-value Y1, A1
-        s23 (if (= :running (:status s9)) (let [val (runtime/deref-value (:bindings s9) (runtime/reg-get-raw s9 "Y1"))] (-> s9 (runtime/reg-set-raw "A1" val) runtime/advance)) s9)
-        ;; put-value Y2, A2
-        s24 (if (= :running (:status s23)) (let [val (runtime/deref-value (:bindings s23) (runtime/reg-get-raw s23 "Y2"))] (-> s23 (runtime/reg-set-raw "A2" val) runtime/advance)) s23)
-        ;; builtin-call =:=/2/2
-        s25 (if (= :running (:status s24)) (let [left (runtime/deref-value (:bindings s24) (or (runtime/reg-get-raw s24 "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings s24) (or (runtime/reg-get-raw s24 "A2") ::lowered-unbound))] (if (runtime/arithmetic-equal? s24 left right) (runtime/advance s24) (runtime/backtrack s24))) s24)
-        ;; put-value Y3, A1
-        s26 (if (= :running (:status s25)) (let [val (runtime/deref-value (:bindings s25) (runtime/reg-get-raw s25 "Y3"))] (-> s25 (runtime/reg-set-raw "A1" val) runtime/advance)) s25)
-        ;; put-value Y4, A2
-        s27 (if (= :running (:status s26)) (let [val (runtime/deref-value (:bindings s26) (runtime/reg-get-raw s26 "Y4"))] (-> s26 (runtime/reg-set-raw "A2" val) runtime/advance)) s26)
-        ;; builtin-call =:=/2/2
-        s28 (if (= :running (:status s27)) (let [left (runtime/deref-value (:bindings s27) (or (runtime/reg-get-raw s27 "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings s27) (or (runtime/reg-get-raw s27 "A2") ::lowered-unbound))] (if (runtime/arithmetic-equal? s27 left right) (runtime/advance s27) (runtime/backtrack s27))) s27)
-        ;; put-value Y5, A1
-        s29 (if (= :running (:status s28)) (let [val (runtime/deref-value (:bindings s28) (runtime/reg-get-raw s28 "Y5"))] (-> s28 (runtime/reg-set-raw "A1" val) runtime/advance)) s28)
-        ;; put-value Y6, A2
-        s30 (if (= :running (:status s29)) (let [val (runtime/deref-value (:bindings s29) (runtime/reg-get-raw s29 "Y6"))] (-> s29 (runtime/reg-set-raw "A2" val) runtime/advance)) s29)
-        ;; builtin-call </2/2
-        s31 (if (= :running (:status s30)) (let [left (runtime/deref-value (:bindings s30) (or (runtime/reg-get-raw s30 "A1") ::lowered-unbound)) right (runtime/deref-value (:bindings s30) (or (runtime/reg-get-raw s30 "A2") ::lowered-unbound))] (if (runtime/arithmetic-less? s30 left right) (runtime/advance s30) (runtime/backtrack s30))) s30)
-              ] s31))
-              ] s21))
-        ;; deallocate
-        s32 (if (= :running (:status s13)) (-> s13 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s13)
-        ;; proceed
-        s33 (if (= :running (:status s32)) (runtime/succeed-state s32) s32)
-        ]
-    s33)
+  state
 )
 
-(def version-lt-start-pc 2497)
+(def version-lt-start-pc 4497)
 
 ;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
 ;; The lowered prefix runs first; run-wam-state interprets from wherever it
@@ -5852,10 +9294,54 @@
   (some? (version-lt-state a1 a2)))
 
 
+(def virtual-provider-ceilings-start-pc 4593)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+(defn virtual-provider-ceilings-state [a1 a2 a3 a4]
+  (runtime/run-wam-state
+    (runtime/new-state shared-wam-code shared-wam-labels virtual-provider-ceilings-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4} foreign-handlers atom-intern-context)))
+
+(defn virtual-provider-ceilings [a1 a2 a3 a4]
+  (some? (virtual-provider-ceilings-state a1 a2 a3 a4)))
+
+
+(def walk-pkg-for-blocked-start-pc 4641)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+(defn walk-pkg-for-blocked-state [a1 a2 a3 a4 a5]
+  (runtime/run-wam-state
+    (runtime/new-state shared-wam-code shared-wam-labels walk-pkg-for-blocked-start-pc {"A1" a1, "A2" a2, "A3" a3, "A4" a4, "A5" a5} foreign-handlers atom-intern-context)))
+
+(defn walk-pkg-for-blocked [a1 a2 a3 a4 a5]
+  (some? (walk-pkg-for-blocked-state a1 a2 a3 a4 a5)))
+
+
+;; lowered-worth-indexing-2 — lowered from worth_indexing/2
+(defn lowered-worth-indexing-2 [state]
+  state
+)
+
+(def worth-indexing-start-pc 4682)
+
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn worth-indexing-state [a1 a2]
+  (runtime/run-wam-state
+    (lowered-worth-indexing-2
+      (runtime/new-state shared-wam-code shared-wam-labels worth-indexing-start-pc {"A1" a1, "A2" a2} foreign-handlers atom-intern-context))))
+
+(defn worth-indexing [a1 a2]
+  (some? (worth-indexing-state a1 a2)))
+
+
 (def predicate-dispatch {
   "acc_conflicts/4" acc-conflicts
   "alias_list/2" alias-list
   "alias_lookup/3" alias-lookup
+  "already_provided/4" already-provided
+  "already_satisfied/4" already-satisfied
+  "alt_reasons/4" alt-reasons
   "audit_holds/4" audit-holds
   "base_holds/2" base-holds
   "base_list/2" base-list
@@ -5865,14 +9351,21 @@
   "blocked_acc/5" blocked-acc
   "blocked_acc_list/5" blocked-acc-list
   "blocked_from/4" blocked-from
+  "build_tree/4" build-tree
   "candidates_high_first/4" candidates-high-first
   "canonicalize_name/3" canonicalize-name
   "close_moving/3" close-moving
+  "cmp_ver/3" cmp-ver
   "collect_deps/4" collect-deps
   "conflicts_in/4" conflicts-in
   "conflicts_list/2" conflicts-list
   "dep_breaks/5" dep-breaks
   "dep_breaks_moving/5" dep-breaks-moving
+  "dep_breaks_need/4" dep-breaks-need
+  "dep_index/2" dep-index
+  "dep_mentions/2" dep-mentions
+  "dep_targets/5" dep-targets
+  "dep_to_req/3" dep-to-req
   "dependents/3" dependents
   "dependents_installed/3" dependents-installed
   "depends_in/5" depends-in
@@ -5881,57 +9374,95 @@
   "exclude_name/3" exclude-name
   "excluded_list/2" excluded-list
   "excluded_name/2" excluded-name
+  "explain_alt/5" explain-alt
   "explain_blocked/3" explain-blocked
   "explain_blocked_list/3" explain-blocked-list
+  "filter_satisfies/3" filter-satisfies
+  "first_alt_already/4" first-alt-already
   "first_broken/4" first-broken
+  "follow_dep_name/5" follow-dep-name
+  "follow_raw_dep/4" follow-raw-dep
   "freeze_audit/2" freeze-audit
+  "group_keyed/2" group-keyed
   "hold_reason/3" hold-reason
+  "index_catalog/2" index-catalog
+  "index_threshold/1" index-threshold
   "inst_closure_names/5" inst-closure-names
   "inst_walk/6" inst-walk
   "installed_list/2" installed-list
   "installed_or_base/3" installed-or-base
   "installed_ver/3" installed-ver
+  "is_public_catalog/1" is-public-catalog
+  "is_v3/1" is-v3
   "item_ver/3" item-ver
   "keep_installed_or_base/4" keep-installed-or-base
+  "key_dep_rows/3" key-dep-rows
+  "key_pkg_rows/3" key-pkg-rows
   "layer_closure/3" layer-closure
+  "layer_provider/5" layer-provider
+  "layer_satisfies/3" layer-satisfies
   "layered_walk_ver/4" layered-walk-ver
   "layers_list/2" layers-list
+  "list_to_tree/2" list-to-tree
+  "long_enough/2" long-enough
   "lookup_held/3" lookup-held
   "map_requests/3" map-requests
   "matching_deps/4" matching-deps
   "matching_versions/4" matching-versions
+  "matching_versions_in/4" matching-versions-in
   "member_selected/3" member-selected
   "names_of/2" names-of
   "needed_names/4" needed-names
   "no_acc_conflicts/4" no-acc-conflicts
+  "order_lt/2" order-lt
+  "order_val/2" order-val
   "package_in/3" package-in
+  "package_in_name/2" package-in-name
   "packages/2" packages
+  "pad_head/2" pad-head
   "pick/7" pick
+  "pick_need/8" pick-need
   "pick_repair/4" pick-repair
+  "pkg_index/2" pkg-index
+  "provide_row/5" provide-row
+  "provide_satisfies/2" provide-satisfies
+  "provider_candidate/5" provider-candidate
+  "provides_for/5" provides-for
+  "provides_list/2" provides-list
+  "provides_sat/5" provides-sat
   "removal_orphans/3" removal-orphans
   "repairs_moving/4" repairs-moving
   "reqs_ok_moving/2" reqs-ok-moving
   "request_to_req/3" request-to-req
   "requested_list/2" requested-list
   "resolve/3" resolve
+  "resolve_alternatives/6" resolve-alternatives
   "resolve_layered/3" resolve-layered
   "resolve_pending/5" resolve-pending
   "roots_to_pairs/3" roots-to-pairs
   "safe_upgrade/4" safe-upgrade
   "safe_upgrade_reason/5" safe-upgrade-reason
+  "same_key/4" same-key
   "satisfies/2" satisfies
   "scan_base_holds/3" scan-base-holds
   "seen_name/2" seen-name
+  "segs_lt/2" segs-lt
+  "segs_lt_1/2" segs-lt-1
   "selected_ver/3" selected-ver
+  "sort_versions_desc/2" sort-versions-desc
   "tight_base_revdep/2" tight-base-revdep
   "tight_constraint/1" tight-constraint
   "tight_rev_in/3" tight-rev-in
   "topo_all/7" topo-all
   "topo_one/7" topo-one
   "topo_sort_sel/3" topo-sort-sel
+  "tree_lookup/3" tree-lookup
   "upgrade_set/4" upgrade-set
   "upgrade_set_result/4" upgrade-set-result
   "version_lt/2" version-lt
+  "virtual_provider_ceilings/4" virtual-provider-ceilings
+  "walk_pkg_for_blocked/5" walk-pkg-for-blocked
+  "worth_indexing/2" worth-indexing
 })
 
 (defn invoke-predicate [pred-key args]

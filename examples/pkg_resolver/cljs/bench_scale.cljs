@@ -33,12 +33,19 @@
           term (R/catalog->term cat)
           t1 (js/Date.now)
 
-          r (R/resolve-layered-prepared term [req])
-          t2 (js/Date.now)]
+          counted (R/resolve-layered-prepared-counted term [req])
+          t2 (js/Date.now)
+          r (:result counted)
+          resolve-instrs (:instrs counted)
+          idx (R/index-catalog-counted term)
+          idx-instrs (:instrs idx)]
       (println (str "cljs_term_load_s " (.toFixed (/ (- t1 t0) 1000) 3)))
       (println (str "cljs_term_resolve_s " (.toFixed (/ (- t2 t1) 1000) 3)))
       (println (str "cljs_term_total_s " (.toFixed (/ (- t2 t0) 1000) 3)))
       (println (str "cljs_term_request " req))
-      (println (str "cljs_term_result " (js/JSON.stringify (clj->js r)))))))
+      (println (str "cljs_term_result " (js/JSON.stringify (clj->js r))))
+      (println (str "cljs_instr_resolve " resolve-instrs))
+      (println (str "cljs_instr_index_build " idx-instrs))
+      (println (str "cljs_instr_query " (max 0 (- resolve-instrs idx-instrs)))))))
 
 (-main (vec *command-line-args*))

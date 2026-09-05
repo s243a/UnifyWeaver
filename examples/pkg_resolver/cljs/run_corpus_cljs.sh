@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 John William Creighton (s243a)
 #
-# run_corpus_cljs.sh -- drive the P0.5 contract corpus through the
+# run_corpus_cljs.sh -- drive the P3 contract corpus through the
 # ClojureScript-WAM build and compare every result to SWI (blocked/3, audit/2
 # and the upgrade verdicts included).
 #
