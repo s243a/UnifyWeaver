@@ -85,7 +85,12 @@
 ;; 1. conversion
 ;; ---------------------------------------------------------------------------
 
-(defn- ver-str [v] (str (nth v 0) "." (nth v 1) "." (nth v 2)))
+(defn- ver-str [v]
+  (cond
+    (and (map? v) (get v "deb"))
+    (let [d (get v "deb")]
+      (str (nth d 0) ":" (pr-str (nth d 1 [])) "-" (pr-str (nth d 2 []))))
+    :else (str (nth v 0) "." (nth v 1) "." (nth v 2))))
 
 (defn- parse-ver [s]
   (let [m (re-matches #"(\d+)\.(\d+)\.(\d+)" (str s))]
@@ -101,7 +106,7 @@
     (or (nil? c) (= c "any")) (jso "op" "any")
     (= (get c "op") "range")
     (jso "op" "range" "lo" (ver-str (get c "lo")) "hi" (ver-str (get c "hi")))
-    (#{"eq" "gte" "lt"} (get c "op"))
+    (#{"eq" "gte" "lt" "lte" "gt"} (get c "op"))
     (jso "op" (get c "op") "version" (ver-str (get c "v")))
     :else (throw (ex-info (str "pkg: unhandled constraint " (pr-str c)) {}))))
 

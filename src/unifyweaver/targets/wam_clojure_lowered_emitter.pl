@@ -710,6 +710,22 @@ clojure_direct_builtin("sort/2", "2").
 clojure_direct_builtin("sort/2", 2).
 clojure_direct_builtin('sort/2', "2").
 clojure_direct_builtin('sort/2', 2).
+clojure_direct_builtin("maplist/2", "2").
+clojure_direct_builtin("maplist/2", 2).
+clojure_direct_builtin('maplist/2', "2").
+clojure_direct_builtin('maplist/2', 2).
+clojure_direct_builtin("maplist/3", "3").
+clojure_direct_builtin("maplist/3", 3).
+clojure_direct_builtin('maplist/3', "3").
+clojure_direct_builtin('maplist/3', 3).
+clojure_direct_builtin("maplist/4", "4").
+clojure_direct_builtin("maplist/4", 4).
+clojure_direct_builtin('maplist/4', "4").
+clojure_direct_builtin('maplist/4', 4).
+clojure_direct_builtin("predsort/3", "3").
+clojure_direct_builtin("predsort/3", 3).
+clojure_direct_builtin('predsort/3', "3").
+clojure_direct_builtin('predsort/3', 3).
 clojure_direct_builtin("msort/2", "2").
 clojure_direct_builtin("msort/2", 2).
 clojure_direct_builtin('msort/2', "2").
@@ -856,12 +872,18 @@ clojure_pred_key_direct_builtin(Pred, Op, Arity) :-
     (   string(Pred) -> PredString = Pred
     ;   atom(Pred) -> atom_string(Pred, PredString)
     ),
-    (   split_string(PredString, "/", "", [Name, ArityString])
-    ->  (   var(Arity) -> number_string(Arity, ArityString)
+    split_string(PredString, "/", "", Parts),
+    (   Parts = [_,_|_],
+        last(Parts, ArityString),
+        append(NameParts, [_], Parts),
+        atomic_list_concat(NameParts, '/', Name0),
+        atom_string(Name0, Name),
+        (   var(Arity) -> number_string(Arity, ArityString)
         ;   integer(Arity) -> number_string(Arity, ArityString)
         ;   string(Arity) -> Arity = ArityString
         ;   atom(Arity) -> atom_string(Arity, ArityString)
         )
+    ->  true
     ;   integer(Arity),
         Name = PredString
     ),
@@ -924,8 +946,8 @@ emit_lowered_expr(call(Pred, CallArity), S, Expr) :-
 emit_lowered_expr(call(Pred, _Arity), S, Expr) :-
     clj_lowered_string_literal(Pred, PredLit),
     format(atom(Expr),
-           '(if-let [target-pc (get (:labels ~w) ~w)] (-> ~w (runtime/enter-call-barrier) (update :stack conj (inc (:pc ~w))) (assoc :pc target-pc)) (runtime/backtrack ~w))',
-           [S, PredLit, S, S, S]).
+           '(if-let [target-pc (get (:labels ~w) ~w)] (-> ~w (runtime/enter-call-barrier) (update :stack conj (inc (:pc ~w))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" ~w) (runtime/backtrack ~w)))',
+           [S, PredLit, S, S, PredLit, S]).
 emit_lowered_expr(execute(Pred), S, Expr) :-
     clojure_pred_key_direct_builtin(Pred, Op, Arity),
     !,
@@ -936,8 +958,8 @@ emit_lowered_expr(execute(Pred), S, Expr) :-
 emit_lowered_expr(execute(Pred), S, Expr) :-
     clj_lowered_string_literal(Pred, PredLit),
     format(atom(Expr),
-           '(if-let [target-pc (get (:labels ~w) ~w)] (-> ~w (runtime/enter-execute-barrier) (assoc :pc target-pc)) (runtime/backtrack ~w))',
-           [S, PredLit, S, S]).
+           '(if-let [target-pc (get (:labels ~w) ~w)] (-> ~w (runtime/enter-execute-barrier) (assoc :pc target-pc)) (do (runtime/warn-unresolved "execute" ~w) (runtime/backtrack ~w)))',
+           [S, PredLit, S, PredLit, S]).
 emit_lowered_expr(jump(Label), S, Expr) :-
     clj_lowered_string_literal(Label, LabelLit),
     format(atom(Expr),
@@ -1181,6 +1203,26 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "sort/2" ; Op == 'sort/2'),
     !,
     format(atom(Expr), '(runtime/apply-sort-solution ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "maplist/2" ; Op == 'maplist/2'),
+    !,
+    format(atom(Expr), '(runtime/apply-maplist-solution ~w 1)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "maplist/3" ; Op == 'maplist/3'),
+    !,
+    format(atom(Expr), '(runtime/apply-maplist-solution ~w 2)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "maplist/4" ; Op == 'maplist/4'),
+    !,
+    format(atom(Expr), '(runtime/apply-maplist-solution ~w 3)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "predsort/3" ; Op == 'predsort/3'),
+    !,
+    format(atom(Expr), '(runtime/apply-predsort-solution ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "msort/2" ; Op == 'msort/2'),
