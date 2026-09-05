@@ -41,6 +41,7 @@ nbb_available :- catch(nbb_path(_), _, fail).
 :- dynamic user:gpredsort/0.
 :- dynamic user:gpreduser/0.
 :- dynamic user:gunknown/0.
+:- dynamic user:gdiv/0.
 
 setup_probe_program :-
     retractall(user:is_v3(_)),
@@ -54,6 +55,7 @@ setup_probe_program :-
     retractall(user:gpredsort),
     retractall(user:gpreduser),
     retractall(user:gunknown),
+    retractall(user:gdiv),
     assertz(user:(is_v3(v(_, _, _)))),
     assertz(user:(inc1(X, Y) :- Y is X + 1)),
     assertz(user:(cmp_n(<, A, B) :- A < B, !)),
@@ -67,11 +69,14 @@ setup_probe_program :-
     assertz(user:(gpredsort :- predsort(compare, [v(2, 0, 0), v(1, 0, 0)],
                                        [v(1, 0, 0), v(2, 0, 0)]))),
     assertz(user:(gpreduser :- predsort(cmp_n, [3, 1, 2], [1, 2, 3]))),
-    assertz(user:(gunknown :- totally_missing_pred(x))).
+    assertz(user:(gunknown :- totally_missing_pred(x))),
+    % D61/P3 index_catalog: `NL is (N-1)//2` emits put_structure ///2.
+    % A first-slash arity split drops that instruction to :raw (backtrack).
+    assertz(user:(gdiv :- N is (3-1)//2, N =:= 1)).
 
 probe_predicates([is_v3/1, inc1/2, cmp_n/3, empty_codes/1,
                   gmapv3/0, gmapdeb/0, gmapinc/0, gscodes/0,
-                  gpredsort/0, gpreduser/0, gunknown/0]).
+                  gpredsort/0, gpreduser/0, gunknown/0, gdiv/0]).
 
 probe_driver_source(
 "(ns driver
@@ -86,6 +91,7 @@ probe_driver_source(
 (line \"PREDSORT\" (c/gpredsort-state))
 (line \"PREDUSER\" (c/gpreduser-state))
 (line \"UNKNOWN\" (c/gunknown-state))
+(line \"DIV\" (c/gdiv-state))
 ").
 
 run_nbb(Classpath, Driver, Output, ErrStr) :-
@@ -137,6 +143,7 @@ test(maplist_predsort_string_codes_warn, [condition(nbb_available)]) :-
     probe_line(Lines, 'PREDSORT', true),
     probe_line(Lines, 'PREDUSER', true),
     probe_line(Lines, 'UNKNOWN', false),
+    probe_line(Lines, 'DIV', true),
     assertion(sub_string(Err, _, _, _, "[wam_clojure]")),
     assertion(sub_string(Err, _, _, _, "unresolved goal")).
 

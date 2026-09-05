@@ -701,7 +701,7 @@
   {:op :jump :label "L_ite_cont_14"}
   {:op :trust-me}
   {:op :put-variable :var "Y2" :reg "A1"}
-  {:op :raw :text "put_structure ///2, A2"}
+  {:op :put-structure :functor "///2" :reg "A2" :arity 2}
   {:op :set-variable :var "X13"}
   {:op :set-constant :constant 2}
   {:op :put-structure :functor "-/2" :reg "X13" :arity 2}
@@ -5370,7 +5370,7 @@
         s16 (if c15 (-> s15 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s15)
         c16 (runtime/lowered-step-advanced? c15 s15 s16)
         ;; execute provides_sat/5
-        s17 (if c16 (if-let [target-pc (get (:labels s16) "provides_sat/5")] (-> s16 (runtime/enter-execute-barrier) (assoc :pc target-pc)) (runtime/backtrack s16)) s16)
+        s17 (if c16 (if-let [target-pc (get (:labels s16) "provides_sat/5")] (-> s16 (runtime/enter-execute-barrier) (assoc :pc target-pc)) (do (runtime/warn-unresolved "execute" "provides_sat/5") (runtime/backtrack s16))) s16)
         c17 (runtime/lowered-step-advanced? c16 s16 s17)
         ]
     s17)
@@ -5467,7 +5467,7 @@
         s5 (if c4 (let [[fresh next-state] (runtime/fresh-var s4)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s4)
         c5 (runtime/lowered-step-advanced? c4 s4 s5)
         ;; call base_list/2/2
-        s6 (if c5 (if-let [target-pc (get (:labels s5) "base_list/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (runtime/backtrack s5)) s5)
+        s6 (if c5 (if-let [target-pc (get (:labels s5) "base_list/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "base_list/2") (runtime/backtrack s5))) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ]
     s6)
@@ -5532,7 +5532,7 @@
         s7 (if c6 (-> s6 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ;; execute base_ver/3
-        s8 (if c7 (if-let [target-pc (get (:labels s7) "base_ver/3")] (-> s7 (runtime/enter-execute-barrier) (assoc :pc target-pc)) (runtime/backtrack s7)) s7)
+        s8 (if c7 (if-let [target-pc (get (:labels s7) "base_ver/3")] (-> s7 (runtime/enter-execute-barrier) (assoc :pc target-pc)) (do (runtime/warn-unresolved "execute" "base_ver/3") (runtime/backtrack s7))) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ]
     s8)
@@ -5575,7 +5575,7 @@
         s6 (if c5 (let [[fresh next-state] (runtime/fresh-var s5)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ;; call base_holds/2/2
-        s7 (if c6 (if-let [target-pc (get (:labels s6) "base_holds/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (runtime/backtrack s6)) s6)
+        s7 (if c6 (if-let [target-pc (get (:labels s6) "base_holds/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "base_holds/2") (runtime/backtrack s6))) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ]
     s7)
@@ -5618,7 +5618,7 @@
         s6 (if c5 (let [[fresh next-state] (runtime/fresh-var s5)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ;; call base_list/2/2
-        s7 (if c6 (if-let [target-pc (get (:labels s6) "base_list/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (runtime/backtrack s6)) s6)
+        s7 (if c6 (if-let [target-pc (get (:labels s6) "base_list/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "base_list/2") (runtime/backtrack s6))) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ]
     s7)
@@ -5756,7 +5756,7 @@
         s6 (if c5 (let [[fresh next-state] (runtime/fresh-var s5)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ;; call alias_list/2/2
-        s7 (if c6 (if-let [target-pc (get (:labels s6) "alias_list/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (runtime/backtrack s6)) s6)
+        s7 (if c6 (if-let [target-pc (get (:labels s6) "alias_list/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "alias_list/2") (runtime/backtrack s6))) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ]
     s7)
@@ -5859,7 +5859,7 @@
         s7 (if c6 (let [[fresh next-state] (runtime/fresh-var s6)] (-> next-state (runtime/reg-set-raw "Y4" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ;; call conflicts_list/2/2
-        s8 (if c7 (if-let [target-pc (get (:labels s7) "conflicts_list/2")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (runtime/backtrack s7)) s7)
+        s8 (if c7 (if-let [target-pc (get (:labels s7) "conflicts_list/2")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "conflicts_list/2") (runtime/backtrack s7))) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ]
     s8)
@@ -5946,7 +5946,7 @@
         s8 (if c7 (let [[fresh next-state] (runtime/fresh-var s7)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ;; call depends_list/2/2
-        s9 (if c8 (if-let [target-pc (get (:labels s8) "depends_list/2")] (-> s8 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s8))) (assoc :pc target-pc)) (runtime/backtrack s8)) s8)
+        s9 (if c8 (if-let [target-pc (get (:labels s8) "depends_list/2")] (-> s8 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s8))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "depends_list/2") (runtime/backtrack s8))) s8)
         c9 (runtime/lowered-step-advanced? c8 s8 s9)
         ]
     s9)
@@ -6250,7 +6250,7 @@
         s7 (if c6 (let [[fresh next-state] (runtime/fresh-var s6)] (-> next-state (runtime/reg-set-raw "Y3" fresh) (runtime/reg-set-raw "A3" fresh) runtime/advance)) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ;; call canonicalize_name/3/3
-        s8 (if c7 (if-let [target-pc (get (:labels s7) "canonicalize_name/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (runtime/backtrack s7)) s7)
+        s8 (if c7 (if-let [target-pc (get (:labels s7) "canonicalize_name/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "canonicalize_name/3") (runtime/backtrack s7))) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ]
     s8)
@@ -6296,7 +6296,7 @@
         s7 (if c6 (let [[fresh next-state] (runtime/fresh-var s6)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A3" fresh) runtime/advance)) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ;; call dependents/3/3
-        s8 (if c7 (if-let [target-pc (get (:labels s7) "dependents/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (runtime/backtrack s7)) s7)
+        s8 (if c7 (if-let [target-pc (get (:labels s7) "dependents/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "dependents/3") (runtime/backtrack s7))) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ]
     s8)
@@ -6345,7 +6345,7 @@
         s8 (if c7 (let [[fresh next-state] (runtime/fresh-var s7)] (-> next-state (runtime/reg-set-raw "Y5" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ;; call depends_list/2/2
-        s9 (if c8 (if-let [target-pc (get (:labels s8) "depends_list/2")] (-> s8 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s8))) (assoc :pc target-pc)) (runtime/backtrack s8)) s8)
+        s9 (if c8 (if-let [target-pc (get (:labels s8) "depends_list/2")] (-> s8 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s8))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "depends_list/2") (runtime/backtrack s8))) s8)
         c9 (runtime/lowered-step-advanced? c8 s8 s9)
         ]
     s9)
@@ -6461,7 +6461,7 @@
         s5 (if c4 (let [[fresh next-state] (runtime/fresh-var s4)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s4)
         c5 (runtime/lowered-step-advanced? c4 s4 s5)
         ;; call excluded_list/2/2
-        s6 (if c5 (if-let [target-pc (get (:labels s5) "excluded_list/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (runtime/backtrack s5)) s5)
+        s6 (if c5 (if-let [target-pc (get (:labels s5) "excluded_list/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "excluded_list/2") (runtime/backtrack s5))) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ]
     s6)
@@ -6526,7 +6526,7 @@
         s7 (if c6 (let [[fresh next-state] (runtime/fresh-var s6)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A3" fresh) runtime/advance)) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ;; call request_to_req/3/3
-        s8 (if c7 (if-let [target-pc (get (:labels s7) "request_to_req/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (runtime/backtrack s7)) s7)
+        s8 (if c7 (if-let [target-pc (get (:labels s7) "request_to_req/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "request_to_req/3") (runtime/backtrack s7))) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ]
     s8)
@@ -6572,7 +6572,7 @@
         s7 (if c6 (let [[fresh next-state] (runtime/fresh-var s6)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A3" fresh) runtime/advance)) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ;; call request_to_req/3/3
-        s8 (if c7 (if-let [target-pc (get (:labels s7) "request_to_req/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (runtime/backtrack s7)) s7)
+        s8 (if c7 (if-let [target-pc (get (:labels s7) "request_to_req/3")] (-> s7 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s7))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "request_to_req/3") (runtime/backtrack s7))) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ]
     s8)
@@ -6687,7 +6687,7 @@
         s11 (if c10 (let [[fresh next-state] (runtime/fresh-var s10)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A5" fresh) runtime/advance)) s10)
         c11 (runtime/lowered-step-advanced? c10 s10 s11)
         ;; call depends_in/5/5
-        s12 (if c11 (if-let [target-pc (get (:labels s11) "depends_in/5")] (-> s11 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s11))) (assoc :pc target-pc)) (runtime/backtrack s11)) s11)
+        s12 (if c11 (if-let [target-pc (get (:labels s11) "depends_in/5")] (-> s11 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s11))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "depends_in/5") (runtime/backtrack s11))) s11)
         c12 (runtime/lowered-step-advanced? c11 s11 s12)
         ]
     s12)
@@ -6868,7 +6868,7 @@
         s5 (if c4 (let [[fresh next-state] (runtime/fresh-var s4)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s4)
         c5 (runtime/lowered-step-advanced? c4 s4 s5)
         ;; call base_holds/2/2
-        s6 (if c5 (if-let [target-pc (get (:labels s5) "base_holds/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (runtime/backtrack s5)) s5)
+        s6 (if c5 (if-let [target-pc (get (:labels s5) "base_holds/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "base_holds/2") (runtime/backtrack s5))) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ]
     s6)
@@ -7032,7 +7032,7 @@
         s18 (if c17 (-> s17 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s17)
         c18 (runtime/lowered-step-advanced? c17 s17 s18)
         ;; execute inst_walk/6
-        s19 (if c18 (if-let [target-pc (get (:labels s18) "inst_walk/6")] (-> s18 (runtime/enter-execute-barrier) (assoc :pc target-pc)) (runtime/backtrack s18)) s18)
+        s19 (if c18 (if-let [target-pc (get (:labels s18) "inst_walk/6")] (-> s18 (runtime/enter-execute-barrier) (assoc :pc target-pc)) (do (runtime/warn-unresolved "execute" "inst_walk/6") (runtime/backtrack s18))) s18)
         c19 (runtime/lowered-step-advanced? c18 s18 s19)
         ]
     s19)
@@ -7132,7 +7132,7 @@
         s6 (if c5 (let [[fresh next-state] (runtime/fresh-var s5)] (-> next-state (runtime/reg-set-raw "Y3" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ;; call installed_list/2/2
-        s7 (if c6 (if-let [target-pc (get (:labels s6) "installed_list/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (runtime/backtrack s6)) s6)
+        s7 (if c6 (if-let [target-pc (get (:labels s6) "installed_list/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "installed_list/2") (runtime/backtrack s6))) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ]
     s7)
@@ -7432,7 +7432,7 @@
         s9 (if c8 (let [[fresh next-state] (runtime/fresh-var s8)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A3" fresh) runtime/advance)) s8)
         c9 (runtime/lowered-step-advanced? c8 s8 s9)
         ;; call resolve_layered/3/3
-        s10 (if c9 (if-let [target-pc (get (:labels s9) "resolve_layered/3")] (-> s9 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s9))) (assoc :pc target-pc)) (runtime/backtrack s9)) s9)
+        s10 (if c9 (if-let [target-pc (get (:labels s9) "resolve_layered/3")] (-> s9 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s9))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "resolve_layered/3") (runtime/backtrack s9))) s9)
         c10 (runtime/lowered-step-advanced? c9 s9 s10)
         ]
     s10)
@@ -7558,7 +7558,7 @@
         s11 (if c10 (-> s10 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s10)
         c11 (runtime/lowered-step-advanced? c10 s10 s11)
         ;; execute build_tree/4
-        s12 (if c11 (if-let [target-pc (get (:labels s11) "build_tree/4")] (-> s11 (runtime/enter-execute-barrier) (assoc :pc target-pc)) (runtime/backtrack s11)) s11)
+        s12 (if c11 (if-let [target-pc (get (:labels s11) "build_tree/4")] (-> s11 (runtime/enter-execute-barrier) (assoc :pc target-pc)) (do (runtime/warn-unresolved "execute" "build_tree/4") (runtime/backtrack s11))) s11)
         c12 (runtime/lowered-step-advanced? c11 s11 s12)
         ]
     s12)
@@ -8005,7 +8005,7 @@
         s6 (if c5 (let [[fresh next-state] (runtime/fresh-var s5)] (-> next-state (runtime/reg-set-raw "Y3" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ;; call packages/2/2
-        s7 (if c6 (if-let [target-pc (get (:labels s6) "packages/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (runtime/backtrack s6)) s6)
+        s7 (if c6 (if-let [target-pc (get (:labels s6) "packages/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "packages/2") (runtime/backtrack s6))) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ]
     s7)
@@ -8045,7 +8045,7 @@
         s5 (if c4 (let [[fresh next-state] (runtime/fresh-var s4)] (-> next-state (runtime/reg-set-raw "Y3" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s4)
         c5 (runtime/lowered-step-advanced? c4 s4 s5)
         ;; call packages/2/2
-        s6 (if c5 (if-let [target-pc (get (:labels s5) "packages/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (runtime/backtrack s5)) s5)
+        s6 (if c5 (if-let [target-pc (get (:labels s5) "packages/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "packages/2") (runtime/backtrack s5))) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ]
     s6)
@@ -8221,7 +8221,7 @@
         s9 (if c8 (let [val (runtime/deref-value (:bindings s8) (runtime/reg-get-raw s8 "Y3"))] (-> s8 (runtime/reg-set-raw "A4" val) runtime/advance)) s8)
         c9 (runtime/lowered-step-advanced? c8 s8 s9)
         ;; call candidates_high_first/4/4
-        s10 (if c9 (if-let [target-pc (get (:labels s9) "candidates_high_first/4")] (-> s9 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s9))) (assoc :pc target-pc)) (runtime/backtrack s9)) s9)
+        s10 (if c9 (if-let [target-pc (get (:labels s9) "candidates_high_first/4")] (-> s9 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s9))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "candidates_high_first/4") (runtime/backtrack s9))) s9)
         c10 (runtime/lowered-step-advanced? c9 s9 s10)
         ]
     s10)
@@ -8438,7 +8438,7 @@
         s8 (if c7 (let [[fresh next-state] (runtime/fresh-var s7)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ;; call provides_list/2/2
-        s9 (if c8 (if-let [target-pc (get (:labels s8) "provides_list/2")] (-> s8 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s8))) (assoc :pc target-pc)) (runtime/backtrack s8)) s8)
+        s9 (if c8 (if-let [target-pc (get (:labels s8) "provides_list/2")] (-> s8 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s8))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "provides_list/2") (runtime/backtrack s8))) s8)
         c9 (runtime/lowered-step-advanced? c8 s8 s9)
         ]
     s9)
@@ -8506,7 +8506,7 @@
         s8 (if c7 (let [[fresh next-state] (runtime/fresh-var s7)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s7)
         c8 (runtime/lowered-step-advanced? c7 s7 s8)
         ;; call provides_list/2/2
-        s9 (if c8 (if-let [target-pc (get (:labels s8) "provides_list/2")] (-> s8 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s8))) (assoc :pc target-pc)) (runtime/backtrack s8)) s8)
+        s9 (if c8 (if-let [target-pc (get (:labels s8) "provides_list/2")] (-> s8 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s8))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "provides_list/2") (runtime/backtrack s8))) s8)
         c9 (runtime/lowered-step-advanced? c8 s8 s9)
         ]
     s9)
@@ -8569,7 +8569,7 @@
         s9 (if c8 (let [[fresh next-state] (runtime/fresh-var s8)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A4" fresh) runtime/advance)) s8)
         c9 (runtime/lowered-step-advanced? c8 s8 s9)
         ;; call collect_deps/4/4
-        s10 (if c9 (if-let [target-pc (get (:labels s9) "collect_deps/4")] (-> s9 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s9))) (assoc :pc target-pc)) (runtime/backtrack s9)) s9)
+        s10 (if c9 (if-let [target-pc (get (:labels s9) "collect_deps/4")] (-> s9 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s9))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "collect_deps/4") (runtime/backtrack s9))) s9)
         c10 (runtime/lowered-step-advanced? c9 s9 s10)
         ]
     s10)
@@ -8669,7 +8669,7 @@
         s6 (if c5 (let [[fresh next-state] (runtime/fresh-var s5)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ;; call index_catalog/2/2
-        s7 (if c6 (if-let [target-pc (get (:labels s6) "index_catalog/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (runtime/backtrack s6)) s6)
+        s7 (if c6 (if-let [target-pc (get (:labels s6) "index_catalog/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "index_catalog/2") (runtime/backtrack s6))) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ]
     s7)
@@ -8731,7 +8731,7 @@
         s6 (if c5 (let [[fresh next-state] (runtime/fresh-var s5)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ;; call index_catalog/2/2
-        s7 (if c6 (if-let [target-pc (get (:labels s6) "index_catalog/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (runtime/backtrack s6)) s6)
+        s7 (if c6 (if-let [target-pc (get (:labels s6) "index_catalog/2")] (-> s6 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s6))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "index_catalog/2") (runtime/backtrack s6))) s6)
         c7 (runtime/lowered-step-advanced? c6 s6 s7)
         ]
     s7)
@@ -8962,7 +8962,57 @@
 
 ;; lowered-sort-versions-desc-2 — lowered from sort_versions_desc/2
 (defn lowered-sort-versions-desc-2 [state]
-  state
+  (let [
+        ;; allocate
+        s1 (if (= :running (:status state)) (-> state (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points state))) runtime/advance) state)
+        ;; get-variable Y1, A1
+        s2 (if (= :running (:status s1)) (-> s1 (runtime/reg-set-raw "Y1" (runtime/reg-get-raw s1 "A1")) runtime/advance) s1)
+        ;; get-variable Y3, A2
+        s3 (if (= :running (:status s2)) (-> s2 (runtime/reg-set-raw "Y3" (runtime/reg-get-raw s2 "A2")) runtime/advance) s2)
+        ;; put-constant is_v3, A1
+        s4 (if (= :running (:status s3)) (let [constant (runtime/normalize-literal-term (:intern-context s3) "is_v3")] (-> s3 (runtime/reg-set-raw "A1" constant) runtime/advance)) s3)
+        ;; put-value Y1, A2
+        s5 (if (= :running (:status s4)) (let [val (runtime/deref-value (:bindings s4) (runtime/reg-get-raw s4 "Y1"))] (-> s4 (runtime/reg-set-raw "A2" val) runtime/advance)) s4)
+        ;; builtin-call maplist/2/2
+        s6 (if (= :running (:status s5)) (runtime/apply-maplist-solution s5 1) s5)
+        ;; if-then-else
+        s7 (if (= :running (:status s6))
+              (let [
+        ;; put-value Y1, A1
+        s8 (if (= :running (:status s6)) (let [val (runtime/deref-value (:bindings s6) (runtime/reg-get-raw s6 "Y1"))] (-> s6 (runtime/reg-set-raw "A1" val) runtime/advance)) s6)
+        ;; put-variable Y2, A2
+        s9 (if (= :running (:status s8)) (let [[fresh next-state] (runtime/fresh-var s8)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s8)
+        ;; builtin-call sort/2/2
+        s10 (if (= :running (:status s9)) (runtime/apply-sort-solution s9) s9)
+        ;; put-value Y2, A1
+        s11 (if (= :running (:status s10)) (let [val (runtime/deref-value (:bindings s10) (runtime/reg-get-raw s10 "Y2"))] (-> s10 (runtime/reg-set-raw "A1" val) runtime/advance)) s10)
+        ;; put-value Y3, A2
+        s12 (if (= :running (:status s11)) (let [val (runtime/deref-value (:bindings s11) (runtime/reg-get-raw s11 "Y3"))] (-> s11 (runtime/reg-set-raw "A2" val) runtime/advance)) s11)
+        ;; builtin-call reverse/2/2
+        s13 (if (= :running (:status s12)) (runtime/apply-reverse-solution s12) s12)
+              ] s13)
+              (let [
+        ;; put-constant cmp_ver, A1
+        s14 (if (= :running (:status s3)) (let [constant (runtime/normalize-literal-term (:intern-context s3) "cmp_ver")] (-> s3 (runtime/reg-set-raw "A1" constant) runtime/advance)) s3)
+        ;; put-value Y1, A2
+        s15 (if (= :running (:status s14)) (let [val (runtime/deref-value (:bindings s14) (runtime/reg-get-raw s14 "Y1"))] (-> s14 (runtime/reg-set-raw "A2" val) runtime/advance)) s14)
+        ;; put-variable Y2, A3
+        s16 (if (= :running (:status s15)) (let [[fresh next-state] (runtime/fresh-var s15)] (-> next-state (runtime/reg-set-raw "Y2" fresh) (runtime/reg-set-raw "A3" fresh) runtime/advance)) s15)
+        ;; call predsort/3/3
+        s17 (if (= :running (:status s16)) (runtime/apply-predsort-solution s16) s16)
+        ;; put-value Y2, A1
+        s18 (if (= :running (:status s17)) (let [val (runtime/deref-value (:bindings s17) (runtime/reg-get-raw s17 "Y2"))] (-> s17 (runtime/reg-set-raw "A1" val) runtime/advance)) s17)
+        ;; put-value Y3, A2
+        s19 (if (= :running (:status s18)) (let [val (runtime/deref-value (:bindings s18) (runtime/reg-get-raw s18 "Y3"))] (-> s18 (runtime/reg-set-raw "A2" val) runtime/advance)) s18)
+        ;; builtin-call reverse/2/2
+        s20 (if (= :running (:status s19)) (runtime/apply-reverse-solution s19) s19)
+              ] s20))
+        ;; deallocate
+        s21 (if (= :running (:status s7)) (-> s7 (update :env-stack #(if (seq %) (pop %) %)) runtime/advance) s7)
+        ;; proceed
+        s22 (if (= :running (:status s21)) (runtime/succeed-state s21) s21)
+        ]
+    s22)
 )
 
 (def sort-versions-desc-start-pc 4175)
@@ -8999,7 +9049,7 @@
         s5 (if c4 (let [[fresh next-state] (runtime/fresh-var s4)] (-> next-state (runtime/reg-set-raw "Y1" fresh) (runtime/reg-set-raw "A2" fresh) runtime/advance)) s4)
         c5 (runtime/lowered-step-advanced? c4 s4 s5)
         ;; call base_holds/2/2
-        s6 (if c5 (if-let [target-pc (get (:labels s5) "base_holds/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (runtime/backtrack s5)) s5)
+        s6 (if c5 (if-let [target-pc (get (:labels s5) "base_holds/2")] (-> s5 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s5))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "base_holds/2") (runtime/backtrack s5))) s5)
         c6 (runtime/lowered-step-advanced? c5 s5 s6)
         ]
     s6)
@@ -9186,7 +9236,7 @@
         s10 (if c9 (let [val (runtime/deref-value (:bindings s9) (runtime/reg-get-raw s9 "X4"))] (-> s9 (runtime/append-build-arg val) runtime/finalize-complete-builds runtime/advance)) s9)
         c10 (runtime/lowered-step-advanced? c9 s9 s10)
         ;; call upgrade_set_result/4/4
-        s11 (if c10 (if-let [target-pc (get (:labels s10) "upgrade_set_result/4")] (-> s10 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s10))) (assoc :pc target-pc)) (runtime/backtrack s10)) s10)
+        s11 (if c10 (if-let [target-pc (get (:labels s10) "upgrade_set_result/4")] (-> s10 (runtime/enter-call-barrier) (update :stack conj (inc (:pc s10))) (assoc :pc target-pc)) (do (runtime/warn-unresolved "call" "upgrade_set_result/4") (runtime/backtrack s10))) s10)
         c11 (runtime/lowered-step-advanced? c10 s10 s11)
         ]
     s11)
