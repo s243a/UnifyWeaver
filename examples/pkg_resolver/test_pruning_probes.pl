@@ -4,12 +4,16 @@
 %
 % test_pruning_probes.pl -- hazard + guard probes for RESOLVER_PRUNING_DESIGN.
 %
-% CE1-CE6 pin the six pre-existing semantic hazards (H1-H6) recorded in
-% docs/proposals/RESOLVER_PRUNING_DESIGN.md §3.2. They are *preservation*
-% probes: they succeed on the pre-pruning resolver and must still succeed
-% after the guards land. A red bar here means a guard changed answers.
+% CE1-CE6 pin the semantic hazards (H1-H6) recorded in
+% docs/proposals/RESOLVER_PRUNING_DESIGN.md §3.2. CE1, CE3, CE4 remain
+% preservation probes (succeed on the pre-pruning resolver and still).
+% CE2, CE5, CE6 are now *pins of the new semantics* after the H4+H1 round
+% (RESOLVER_H4_H1_DESIGN.md §5.4): the D59 wording is kept as history in
+% each probe. A red bar on CE1/CE3/CE4 means a guard changed answers.
 %
 % A1-A11 are the §6 review assertions for the guards that were implemented.
+% The H4 (active same-state cycle closure) and H1 (version-only
+% backtracking) scenarios of RESOLVER_H4_H1_DESIGN.md §6.1 follow the CEs.
 %
 %   swipl -q -g test_pruning_probes -t halt \
 %       examples/pkg_resolver/test_pruning_probes.pl
@@ -50,6 +54,9 @@ ce1 :-
     S2 == [app-V1, b-V1, c-V2, d-V2].
 
 % CE2 -- skipping a from_base re-expansion changes the answer (R2).
+% Split after H1 (§5.4): S1 (the cyclic-held catalog Ds1) is unchanged; the
+% modified catalog Ds2 used to FAIL but now ANSWERS under version-only
+% backtracking (a lower x rescues d-2). Both are pins of the new semantics.
 ce2 :-
     v1(V1), v2(V2),
     Ps = [package(base0,V1), package(a,V1), package(b,V2), package(b,V1),
@@ -60,8 +67,9 @@ ce2 :-
     Ds2 = [depends(base0,V1,a,any), depends(base0,V1,b,any),
            depends(a,V1,x,any)|Dd],
     resolve_layered(catalog(Ps, Ds1, [], [base0-V1], [], []), [base0], S1),
-    \+ resolve_layered(catalog(Ps, Ds2, [], [base0-V1], [], []), [base0], _),
-    S1 == [a-V1, b-V2, d-V1, x-V2].
+    S1 == [a-V1, b-V2, d-V1, x-V2],
+    resolve_layered(catalog(Ps, Ds2, [], [base0-V1], [], []), [base0], S2),
+    S2 == [a-V1, b-V1, d-V2, x-V2].
 
 % CE3 -- two versions of one name via the provider path (H2).
 ce3 :-
@@ -91,21 +99,20 @@ ce4_catalog(Cat) :-
     Cat = catalog(Ps, Ds, [], [foo-V1], [], [], [], [], [],
                   [provides(bar,V1,foo,V2)]).
 
-% CE5 -- cyclic held deps do not terminate in layered mode (H4).
-% Strict form (review finding): the original probe also succeeded if the
-% query returned normally, so it could not distinguish nontermination
-% from an answer. This form succeeds ONLY on the timeout.
+% CE5 -- cyclic held deps now TERMINATE in layered mode (H4 fixed, this
+% round). Pin of the new semantics (was: succeeds only on timeout). The
+% satisfied cycle a <-> b, both held `any`, resolves to [] within the limit.
 ce5 :-
     v1(V1),
     Cat = catalog([package(a,V1), package(b,V1)],
                   [depends(a,V1,b,any), depends(b,V1,a,any)],
                   [], [a-V1, b-V1], [], []),
-    catch(( call_with_time_limit(2, resolve_layered(Cat, [a], _)),
-            fail                       % returned or failed in time: NOT H4
-          ),
-          time_limit_exceeded, true).
+    call_with_time_limit(2, resolve_layered(Cat, [a], S)),
+    S == [].
 
-% CE6 -- layered commits to the highest candidate (H1).
+% CE6 -- layered now backtracks over candidate versions (H1 fixed, this
+% round). Pin of the new semantics: layered achieves classic parity
+% [b-2, d-1, x-1] (was: layered failed because it committed to x-2).
 ce6 :-
     v1(V1), v2(V2),
     Ps = [package(b,V2), package(b,V1), package(x,V2), package(x,V1),
@@ -113,7 +120,335 @@ ce6 :-
     Ds = [depends(b,V2,d,eq(V1)), depends(x,V2,d,eq(V2))],
     Cat = catalog(Ps, Ds, [], [zz-V1], [], []),
     resolve(Cat, [b,x], S1), S1 == [b-V2, d-V1, x-V1],
-    \+ resolve_layered(Cat, [b,x], _).
+    resolve_layered(Cat, [b,x], S2), S2 == [b-V2, d-V1, x-V1].
+
+% ---------------------------------------------------------------------------
+% H4 scenarios (RESOLVER_H4_H1_DESIGN.md §6.1) -- active same-state cycle
+% closure. All green with H4 alone (matrix §6.2 "H4" column).
+% ---------------------------------------------------------------------------
+
+% A satisfied held cycle terminates and selects nothing new.
+h4_cycle_closing_edge_fails :-
+    v1(V1), v2(V2),
+    Cat = catalog([package(a,V1),package(b,V1),package(a,V2)],
+                  [depends(a,V1,b,any), depends(b,V1,a,eq(V2))],
+                  [], [a-V1,b-V1], [], []),
+    \+ resolve_layered(Cat, [a], _).
+
+% held a -> [b, x], b -> [a, y]; y-2 -> d = 1, x-2 -> d any.
+% y is expanded before x; d-1 chosen by y, x accepts it.
+h4_cycle_order_y_before_x :-
+    v1(V1), v2(V2),
+    Cat = catalog([package(d,V1),package(d,V2),package(x,V2),package(y,V2)],
+                  [depends(a,V1,b,any),depends(a,V1,x,any),
+                   depends(b,V1,a,any),depends(b,V1,y,any),
+                   depends(y,V2,d,eq(V1)),depends(x,V2,d,any)],
+                  [], [a-V1,b-V1], [], []),
+    resolve_layered(Cat, [a], S),
+    S == [d-V1, x-V2, y-V2].
+
+% app -> alt(p, z); p -> a; held a -> b -> a = 2 (closing edge fails).
+% The first alternative dead-ends (finitely, via H4), the second is taken.
+h4_cycle_in_alt_rescued :-
+    v1(V1), v2(V2),
+    Cat = catalog([package(app,V1),package(p,V1),package(z,V1),
+                   package(a,V1),package(b,V1),package(a,V2)],
+                  [depends(app,V1,alternatives([dep(p,any),dep(z,any)]),any),
+                   depends(p,V1,a,any),depends(a,V1,b,any),
+                   depends(b,V1,a,eq(V2))],
+                  [], [a-V1,b-V1], [], []),
+    resolve_layered(Cat, [app], S),
+    S == [app-V1, z-V1].
+
+% Same shape, closing edge `any`: the first alternative is satisfiable.
+h4_cycle_in_alt_satisfiable :-
+    v1(V1),
+    Cat = catalog([package(app,V1),package(p,V1),package(z,V1),
+                   package(a,V1),package(b,V1)],
+                  [depends(app,V1,alternatives([dep(p,any),dep(z,any)]),any),
+                   depends(p,V1,a,any),depends(a,V1,b,any),
+                   depends(b,V1,a,any)],
+                  [], [a-V1,b-V1], [], []),
+    resolve_layered(Cat, [app], S),
+    S == [app-V1, p-V1].
+
+% app -> alt(p, z); p -> [a, h >= 2]; held a <-> b (cycle), h held 1.
+% The p branch closes the a<->b cycle then dead-ends on h; z is taken.
+h4_cycle_then_doomed_alt :-
+    v1(V1), v2(V2),
+    Cat = catalog([package(app,V1),package(p,V1),package(z,V1),
+                   package(a,V1),package(b,V1),package(h,V1)],
+                  [depends(app,V1,alternatives([dep(p,any),dep(z,any)]),any),
+                   depends(p,V1,a,any),depends(p,V1,h,gte(V2)),
+                   depends(a,V1,b,any),depends(b,V1,a,any)],
+                  [], [a-V1,b-V1,h-V1], [], []),
+    resolve_layered(Cat, [app], S),
+    S == [app-V1, z-V1].
+
+% Held mawk-1, h; h -> awk; mawk-2 provides awk, mawk-2 -> h. Inserting the
+% second version advances Gen; the re-expansion of h is NOT closed.
+h4_h2_second_version_progress :-
+    v1(V1), v2(V2),
+    Cat = catalog([package(app,V1),package(mawk,V2),package(mawk,V1),
+                   package(h,V1)],
+                  [depends(app,V1,mawk,any),depends(app,V1,awk,any),
+                   depends(h,V1,awk,any),depends(mawk,V2,h,any)],
+                  [], [mawk-V1,h-V1], [], [], [], [], [],
+                  [provides(mawk,V2,awk)]),
+    resolve_layered(Cat, [app], S),
+    S == [app-V1, mawk-V2].
+
+% postfix provides mta; postfix -> app2; app2 -> mta; both held. The mark is
+% keyed on the held *provider* pair, so the cycle closes.
+h4_held_provider_cycle :-
+    v1(V1),
+    Cat = catalog([package(postfix,V1),package(app2,V1),package(app,V1)],
+                  [depends(app,V1,'mta',any),depends(postfix,V1,app2,any),
+                   depends(app2,V1,'mta',any)],
+                  [], [postfix-V1,app2-V1], [], [], [], [], [],
+                  [provides(postfix,V1,'mta')]),
+    resolve_layered(Cat, [app], S),
+    S == [app-V1].
+
+% base holds a-1 and a-2; a-2 provides v, a-2 -> a. Two marks, two keys.
+h4_distinct_held_versions :-
+    v1(V1), v2(V2),
+    Cat = catalog([package(a,V1),package(a,V2),package(app,V1)],
+                  [depends(app,V1,a,any),depends(a,V2,a,any)],
+                  [], [a-V1,a-V2], [], [], [], [], [],
+                  [provides(a,V2,vv)]),
+    resolve_layered(Cat, [app], S),
+    S == [app-V1].
+
+% a <-> b held in layer(base, ...): base_ver sees named layers.
+h4_named_layer_cycle :-
+    v1(V1),
+    Cat = catalog([package(a,V1),package(b,V1)],
+                  [depends(a,V1,b,any),depends(b,V1,a,any)],
+                  [], [], [], [], [layer(base,[a-V1,b-V1])], [], []),
+    resolve_layered(Cat, [a], S),
+    S == [].
+
+% b -> x; x-2 -> h; held h <-> k. The highest x version is satisfiable.
+h4_satisfiable_cyclic_highest :-
+    v1(V1), v2(V2),
+    Cat = catalog([package(b,V1),package(x,V2),package(x,V1),
+                   package(h,V1),package(k,V1)],
+                  [depends(b,V1,x,any),depends(x,V2,h,any),
+                   depends(h,V1,k,any),depends(k,V1,h,any)],
+                  [], [h-V1,k-V1], [], []),
+    resolve_layered(Cat, [b], S),
+    S == [b-V1, x-V2].
+
+% Restoration under backtracking: held a -> x; x-2 -> [b, q] (q missing);
+% x-1 -> b; held b -> z = 2, z held 1. A stale `b` mark from the failed x-2
+% branch would hide z's ceiling in the x-1 branch and succeed unsoundly. The
+% correct implementation FAILS. (H1 is needed to reach the x-1 branch, so
+% this is a both-fixes probe; see the H1 section.)
+
+% Sibling scope (REFINEMENT 1): held a -> [b, c]; b -> x; c -> x; x -> y.
+% x is re-expanded under c because its entry-time mark was popped when b's
+% subtree completed. Approach 4 would skip the second expansion. BOTH return
+% [y] -- the scope distinction is answer-invisible, so this probe asserts an
+% instruction-count (model-trace) observable: the two-parent catalog costs
+% strictly more inferences than a one-parent control, because x is expanded
+% twice. An approach-4 / completion-cache implementation would collapse them.
+h4_sibling_scope :-
+    v1(V1),
+    Two = catalog([package(y,V1)],
+                  [depends(a,V1,b,any),depends(a,V1,c,any),
+                   depends(b,V1,x,any),depends(c,V1,x,any),
+                   depends(x,V1,y,any)],
+                  [], [a-V1,b-V1,c-V1,x-V1], [], []),
+    One = catalog([package(y,V1)],
+                  [depends(a,V1,b,any),depends(a,V1,c,any),
+                   depends(b,V1,x,any),depends(x,V1,y,any)],
+                  [], [a-V1,b-V1,c-V1,x-V1], [], []),
+    resolve_layered(Two, [a], STwo), STwo == [y-V1],
+    resolve_layered(One, [a], SOne), SOne == [y-V1],
+    infer_cost(resolve_layered(Two, [a], _), DTwo),
+    infer_cost(resolve_layered(One, [a], _), DOne),
+    % x expanded twice vs once: a clear margin (measured ~65 inferences).
+    DTwo > DOne + 20.
+
+infer_cost(Goal, D) :-
+    statistics(inferences, I0),
+    ( call(Goal) -> true ; true ),
+    statistics(inferences, I1),
+    D is I1 - I0.
+
+% Classic mode is structurally unchanged: a real (non-held) cycle enumerates
+% both packages, exactly as before H4.
+h4_classic_cycle_unchanged :-
+    v1(V1),
+    Cat = catalog([package(a,V1),package(b,V1)],
+                  [depends(a,V1,b,any),depends(b,V1,a,any)],
+                  [], [], [], []),
+    resolve(Cat, [a], S),
+    S == [a-V1, b-V1].
+
+% layer_closure through a held cycle terminates.
+h4_cyc_layer_closure :-
+    v1(V1),
+    Cat = catalog([package(app,V1),package(a,V1),package(b,V1)],
+                  [depends(app,V1,a,any),depends(a,V1,b,any),
+                   depends(b,V1,a,any)],
+                  [], [a-V1,b-V1], [], []),
+    layer_closure(Cat, app, L),
+    L == [app-V1].
+
+% ---------------------------------------------------------------------------
+% H1 / both-fixes scenarios (§6.1) -- version-only backtracking, requiring
+% BOTH H4 and H1 (the H4 closure makes the lower-version branch finite; the
+% H1 rewrite reaches it). Green only after this commit.
+% ---------------------------------------------------------------------------
+
+% b -> x; x-2 -> [h, k = 2]; held h <-> k, k held 1; x-1 bare. The highest x
+% dead-ends on k=2 inside the cycle; x-1 rescues.
+h1_needs_lower_retry_cyclic :-
+    v1(V1), v2(V2),
+    Cat = catalog([package(b,V1),package(x,V2),package(x,V1),
+                   package(h,V1),package(k,V1)],
+                  [depends(b,V1,x,any),depends(x,V2,h,any),
+                   depends(x,V2,k,eq(V2)),depends(h,V1,k,any),
+                   depends(k,V1,h,any)],
+                  [], [h-V1,k-V1], [], []),
+    resolve_layered(Cat, [b], S),
+    S == [b-V1, x-V1].
+
+% x-2 -> k = 2 (fails), x-1 -> h, held h <-> k. The lower version enters the
+% cycle that the highest did not. Diverges under H1-only; finite under both.
+h1_lower_version_enters_cycle :-
+    v1(V1), v2(V2),
+    Cat = catalog([package(b,V1),package(x,V2),package(x,V1),
+                   package(h,V1),package(k,V1)],
+                  [depends(b,V1,x,any),depends(x,V2,k,eq(V2)),
+                   depends(x,V1,h,any),depends(h,V1,k,any),
+                   depends(k,V1,h,any)],
+                  [], [h-V1,k-V1], [], []),
+    resolve_layered(Cat, [b], S),
+    S == [b-V1, x-V1].
+
+% held a -> [x, b, d = 1]; x-2 -> [b, d = 2]; x-1 -> b; held b -> a. Marks
+% and generation are restored together after x-2 fails d's ceiling.
+h1_rollback_marks_with_generation :-
+    v1(V1), v2(V2),
+    Cat = catalog([package(x,V2),package(x,V1),package(d,V2),package(d,V1)],
+                  [depends(a,V1,x,any),depends(a,V1,b,any),
+                   depends(a,V1,d,eq(V1)),depends(x,V2,b,any),
+                   depends(x,V2,d,eq(V2)),depends(x,V1,b,any),
+                   depends(b,V1,a,any)],
+                  [], [a-V1,b-V1], [], []),
+    resolve_layered(Cat, [a], S),
+    S == [d-V1, x-V1].
+
+% held a -> x; x-2 -> [b, q] (q missing); x-1 -> b; held b -> z = 2, z held 1.
+% A stale `b` mark from the failed x-2 branch would hide z's ceiling in the
+% x-1 branch and succeed unsoundly (R6). The correct implementation FAILS.
+h1_stale_mark_would_be_unsound :-
+    v1(V1), v2(V2),
+    Cat = catalog([package(x,V2),package(x,V1),package(b,V1),package(z,V1)],
+                  [depends(a,V1,x,any),depends(x,V2,b,any),
+                   depends(x,V2,q,any),depends(x,V1,b,any),
+                   depends(b,V1,z,eq(V2))],
+                  [], [a-V1,b-V1,z-V1], [], []),
+    \+ resolve_layered(Cat, [a], _).
+
+% Same shape with z = 1: the control succeeds. An asserted-mark
+% implementation passes this and (wrongly) succeeds the unsound case above.
+h1_stale_mark_control_succeeds :-
+    v1(V1),
+    Cat = catalog([package(x,V2),package(x,V1),package(b,V1),package(z,V1)],
+                  [depends(a,V1,x,any),depends(x,V2,b,any),
+                   depends(x,V2,q,any),depends(x,V1,b,any),
+                   depends(b,V1,z,eq(V1))],
+                  [], [a-V1,b-V1,z-V1], [], []),
+    resolve_layered(Cat, [a], S),
+    S == [x-V1].
+
+% app -> [alt(p, q), y]; p -> x; x-2 -> d = 2; y -> d = 1. A lower x rescues
+% the EARLIER alternative (p) rather than falling through to q.
+h1_alt_rescued_by_lower :-
+    v1(V1), v2(V2),
+    Cat = catalog([package(app,V1),package(p,V1),package(q,V1),package(y,V1),
+                   package(x,V2),package(x,V1),package(d,V2),package(d,V1)],
+                  [depends(app,V1,alternatives([dep(p,any),dep(q,any)]),any),
+                   depends(app,V1,y,any),depends(p,V1,x,any),
+                   depends(x,V2,d,eq(V2)),depends(y,V1,d,eq(V1))],
+                  [], [], [], []),
+    resolve_layered(Cat, [app], S),
+    S == [app-V1, d-V1, p-V1, x-V1, y-V1].
+
+% x-1 -> missing, p provides x (R8). Version-only: no provider fallback once
+% a real candidate existed. Layered fails; classic still succeeds via the
+% clause-2 fallback (documented divergence).
+h1_version_only_no_provider_fallback :-
+    v1(V1),
+    Cat = catalog([package(app,V1),package(x,V1),package(p,V1)],
+                  [depends(app,V1,x,any),depends(x,V1,missing,any)],
+                  [], [], [], [], [], [], [], [provides(p,V1,x)]),
+    \+ resolve_layered(Cat, [app], _),
+    resolve(Cat, [app], SC),
+    SC == [app-V1, p-V1].
+
+% Held commitment witness (I4 / R9): held foo-1, request foo >= 2, foo-2 and
+% a provider both in the catalog. The base_ver arm commits; the query FAILS.
+h1_held_ceiling_committed :-
+    v1(V1), v2(V2),
+    Cat = catalog([package(app,V1),package(foo,V1),package(foo,V2),
+                   package(bar,V1)],
+                  [depends(app,V1,foo,gte(V2))],
+                  [], [foo-V1], [], [], [], [], [],
+                  [provides(bar,V1,foo,V2)]),
+    \+ resolve_layered(Cat, [app], _).
+
+% ---------------------------------------------------------------------------
+% Explain probes E1-E4 (§4) -- report the preferred candidate's blockage;
+% success and explanation are separate observables.
+% ---------------------------------------------------------------------------
+
+% E1: closing edge fails; explain reports the repeated name's ceiling.
+e1_explain_closing_edge :-
+    v1(V1), v2(V2),
+    Cat = catalog([package(a,V1),package(b,V1),package(a,V2)],
+                  [depends(a,V1,b,any),depends(b,V1,a,eq(V2))],
+                  [], [a-V1,b-V1], [], []),
+    explain_blocked_list(Cat, a, L),
+    L == [blocked(a, needs(eq(V2)), base_has(V1))],
+    findall(B, explain_blocked(Cat, a, B), Bs),
+    Bs == [blocked(a, needs(eq(V2)), base_has(V1))],
+    \+ resolve_layered(Cat, [a], _).
+
+% E2: a satisfied cycle is never "blocked".
+e2_explain_satisfied_cycle :-
+    v1(V1),
+    Cat = catalog([package(a,V1),package(b,V1)],
+                  [depends(a,V1,b,any),depends(b,V1,a,any)],
+                  [], [a-V1,b-V1], [], []),
+    \+ explain_blocked(Cat, a, _),
+    explain_blocked_list(Cat, a, L), L == [],
+    resolve_layered(Cat, [a], S), S == [].
+
+% E3: resolve succeeds via x-1 while explain reports x-2's (preferred) ceiling.
+e3_explain_preferred_candidate :-
+    v1(V1), v2(V2),
+    Cat = catalog([package(app,V1),package(x,V2),package(x,V1),package(h,V1)],
+                  [depends(app,V1,x,any),depends(x,V2,h,gte(V2))],
+                  [], [h-V1], [], []),
+    resolve_layered(Cat, [app], S), S == [app-V1, x-V1],
+    explain_blocked_list(Cat, x, L),
+    L == [blocked(h, needs(gte(V2)), base_has(V1))].
+
+% E4: two paths to the same held ceiling yield the reason exactly twice.
+e4_explain_two_paths_multiplicity :-
+    v1(V1), v2(V2),
+    Cat = catalog([package(app,V1),package(c,V1),package(b,V1),package(h,V1)],
+                  [depends(app,V1,c,any),depends(app,V1,b,any),
+                   depends(c,V1,h,gte(V2)),depends(b,V1,h,gte(V2))],
+                  [], [h-V1], [], []),
+    findall(B, explain_blocked(Cat, app, B), Bs),
+    Bs == [blocked(h, needs(gte(V2)), base_has(V1)),
+           blocked(h, needs(gte(V2)), base_has(V1))].
 
 % ---------------------------------------------------------------------------
 % H5 -- named-layer providers are unreachable (dead clause). Preserved.
@@ -165,12 +500,43 @@ a1_catalog(Cat) :-
 :- begin_tests(pruning_probes).
 
 test(ce1_pending_order_decides_first_solution) :- ce1.
-test(ce2_from_base_reexpansion_is_load_bearing) :- ce2.
+test(ce2_from_base_reexpansion_and_version_backtrack) :- ce2.
 test(ce3_two_versions_one_name_via_provider) :- ce3.
 test(ce4_held_ceiling_bypassed_by_provider) :- ce4.
-test(ce5_cyclic_held_deps_do_not_terminate) :- ce5.
-test(ce6_layered_commits_to_highest_candidate) :- ce6.
+test(ce5_cyclic_held_deps_terminate) :- ce5.
+test(ce6_layered_backtracks_over_versions) :- ce6.
 test(ce_h5_named_layer_providers_unreachable) :- ce_h5.
+
+% H4 scenarios (§6.1) -- green with H4 alone.
+test(h4_cycle_closing_edge_fails) :- h4_cycle_closing_edge_fails.
+test(h4_cycle_order_y_before_x) :- h4_cycle_order_y_before_x.
+test(h4_cycle_in_alt_rescued) :- h4_cycle_in_alt_rescued.
+test(h4_cycle_in_alt_satisfiable) :- h4_cycle_in_alt_satisfiable.
+test(h4_cycle_then_doomed_alt) :- h4_cycle_then_doomed_alt.
+test(h4_h2_second_version_progress) :- h4_h2_second_version_progress.
+test(h4_held_provider_cycle) :- h4_held_provider_cycle.
+test(h4_distinct_held_versions) :- h4_distinct_held_versions.
+test(h4_named_layer_cycle) :- h4_named_layer_cycle.
+test(h4_satisfiable_cyclic_highest) :- h4_satisfiable_cyclic_highest.
+test(h4_sibling_scope_trace) :- h4_sibling_scope.
+test(h4_classic_cycle_unchanged) :- h4_classic_cycle_unchanged.
+test(h4_cyc_layer_closure) :- h4_cyc_layer_closure.
+
+% H1 / both-fixes scenarios (§6.1).
+test(h1_needs_lower_retry_cyclic) :- h1_needs_lower_retry_cyclic.
+test(h1_lower_version_enters_cycle) :- h1_lower_version_enters_cycle.
+test(h1_rollback_marks_with_generation) :- h1_rollback_marks_with_generation.
+test(h1_stale_mark_would_be_unsound) :- h1_stale_mark_would_be_unsound.
+test(h1_stale_mark_control_succeeds) :- h1_stale_mark_control_succeeds.
+test(h1_alt_rescued_by_lower) :- h1_alt_rescued_by_lower.
+test(h1_version_only_no_provider_fallback) :- h1_version_only_no_provider_fallback.
+test(h1_held_ceiling_committed) :- h1_held_ceiling_committed.
+
+% Explain probes E1-E4 (§4).
+test(e1_explain_closing_edge) :- e1_explain_closing_edge.
+test(e2_explain_satisfied_cycle) :- e2_explain_satisfied_cycle.
+test(e3_explain_preferred_candidate) :- e3_explain_preferred_candidate.
+test(e4_explain_two_paths_multiplicity) :- e4_explain_two_paths_multiplicity.
 
 % A1: deps by (Name,Ver) come back in list order with multiplicity.
 test(a1_collect_deps_order_and_multiplicity) :-

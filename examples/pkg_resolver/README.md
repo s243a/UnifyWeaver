@@ -507,27 +507,38 @@ bash examples/pkg_resolver/store/run_measure_2x2.sh   # 2×2 lazy/cached + 100×
 
 ### Known semantic hazards (H1–H6)
 
-Found while designing the branch-pruning guards and **preserved, not fixed**,
-by that work: the differential is SWI-oracled, so every leg reproduces them
-and a guard that changed any of them would be a regression. Each is pinned by
-a probe in [`test_pruning_probes.pl`](test_pruning_probes.pl) (CE1–CE6); the
-full write-ups, with the entailment arguments, are §3.2 of
+Found while designing the branch-pruning guards. **H4 and H1 are now
+fixed** (`docs/proposals/RESOLVER_H4_H1_DESIGN.md`, the H4-then-H1 round);
+H2, H3, H5, H6 are **preserved, not fixed**. The differential is
+SWI-oracled, so every leg reproduces the preserved ones and a guard that
+changed any of them would be a regression. Each is pinned by a probe in
+[`test_pruning_probes.pl`](test_pruning_probes.pl) (CE1–CE6, plus the H4/H1
+scenarios and explain probes); the full write-ups, with the entailment
+arguments, are §3.2 of
 [`docs/proposals/RESOLVER_PRUNING_DESIGN.md`](../../docs/proposals/RESOLVER_PRUNING_DESIGN.md).
-Whether any is a bug is the owner's call — but if one is fixed, the pruning
-invariants (§4 of that document) must be re-baselined first.
+CE2/CE5/CE6 now pin the *new* (fixed) semantics.
 
-- **H1** — layered mode does not backtrack over candidate versions since P3;
-  `pick_need/8`'s if-then-else commits to the highest satisfying version, so
-  a downstream dead end never retries a lower one. P0.5 did retry. Probe CE6.
+- **H1** — *fixed.* Layered mode again backtracks over candidate versions:
+  `pick_need/8`'s real-candidate arm enumerates the descending version list
+  with `member/2` (version-only restoration; held-name and held-provider
+  arms stay committed), so a downstream dead end retries a lower version, as
+  P0.5 did. Probe CE6 (restored classic parity), plus the H1/both scenarios.
 - **H2** — one name can end up at two versions via the provider path: the
   diamond rule is enforced on the *requested* name, not on the *selected*
   provider. Probe CE3.
 - **H3** — `resolve_layered/3` and `explain_blocked_list/3` disagree when a
   held name's ceiling is bypassed by a provider: the resolve succeeds while
-  the explanation still reports it blocked. Probe CE4.
-- **H4** — cyclic dependencies among held packages do not terminate in
-  layered mode (`from_base` picks never enter `Acc`, so nothing detects the
-  cycle). Classic mode is safe. Probe CE5.
+  the explanation still reports it blocked. This is the **intended reading**
+  of `explain_blocked` — it reports the *preferred* candidate's blockage,
+  not the absence of a solution (`RESOLVER_H4_H1_DESIGN.md` §4). After H1,
+  `resolve_layered` may succeed via a lower version while the explanation
+  reports the highest version's ceiling (probes E1–E4). Probe CE4.
+- **H4** — *fixed.* Cyclic dependencies among held packages now terminate in
+  layered mode via active same-state cycle closure: the search threads a
+  generation-stamped stack of open held expansions and closes a re-request
+  of a still-open `Pkg-Ver` at the same generation (after validating it).
+  Classic mode is structurally unchanged. Probe CE5 (now terminates), plus
+  the H4 cycle scenarios.
 - **H5** — named-layer providers are unreachable: the second clause of
   `layer_provider/5` and the third of `layer_satisfies/3` call
   `lookup_held/3` with the package name unbound, and `item_ver/3` tests

@@ -369,15 +369,21 @@ package_in_store(Env, Name, Ver) :-
     unpack_ver(Packed, Ver).
 
 candidates_high_first_store(Env, Name, C, Ver) :-
-    \+ excluded_name_env(Env, Name),
-    store_key(Env, Name, Key),
-    findall(V, (
-        store_pkg(Key, Packed),
-        unpack_ver(Packed, V),
-        satisfies(V, C)
-    ), Vs),
-    sort_versions_desc_store(Vs, Desc),
+    candidate_versions_store(Env, Name, C, Desc),
     member(Ver, Desc).
+
+% H1 mirror: the descending candidate list (det; [] when excluded or none).
+candidate_versions_store(Env, Name, C, Desc) :-
+    (   excluded_name_env(Env, Name)
+    ->  Desc = []
+    ;   store_key(Env, Name, Key),
+        findall(V, (
+            store_pkg(Key, Packed),
+            unpack_ver(Packed, V),
+            satisfies(V, C)
+        ), Vs),
+        sort_versions_desc_store(Vs, Desc)
+    ).
 
 sort_versions_desc_store(Vs, Desc) :-
     (   maplist(is_v3_store, Vs)
@@ -514,37 +520,66 @@ resolve_layered_store(Env, Requests, Selection) :-
     !,
     sort(Acc, Selection).
 
-resolve_pending_store(_Mode, _Env, [], Acc, Acc).
-resolve_pending_store(Mode, Env, [req(Name, C)|Rest], Acc, Sel) :-
-    (   Name = alternatives(Alts)
-    ->  resolve_alternatives_store(Mode, Env, Alts, Rest, Acc, Sel)
-    ;   selected_ver(Acc, Name, Ver)
-    ->  satisfies(Ver, C),
-        resolve_pending_store(Mode, Env, Rest, Acc, Sel)
-    ;   already_provided_store(Env, Acc, Name, C)
-    ->  resolve_pending_store(Mode, Env, Rest, Acc, Sel)
-    ;   pick_need_store(Mode, Env, Name, C, Pkg, Ver, Origin),
-        % G2 mirror of resolve_pending/5, kept textually parallel. Same
-        % entailment: collect_deps_store/4 is a findall/3 (det, always
-        % succeeds), append/3 with two bound arguments is det, and
-        % no_acc_conflicts_store/4 is a test on ground arguments
-        % (pick_need_store/7 binds Pkg and Ver on every arm).
-        (   Origin = from_base
-        ->  collect_deps_store(Env, Pkg, Ver, DepReqs),
-            append(DepReqs, Rest, More),
-            resolve_pending_store(Mode, Env, More, Acc, Sel)
-        ;   no_acc_conflicts_store(Env, Pkg, Ver, Acc),
-            collect_deps_store(Env, Pkg, Ver, DepReqs),
-            append(DepReqs, Rest, More),
-            resolve_pending_store(Mode, Env, More, [Pkg-Ver|Acc], Sel)
+% H4 (approach 3) -- textual mirror of resolver.pl's threaded st(Gen, Active)
+% loop (RESOLVER_H4_H1_DESIGN.md §1.8). The done(Pkg, Ver, Gen) sentinel POPS
+% the entry-time a/3 mark; it never caches a completed expansion.
+resolve_pending_store(Mode, Env, Pending, Acc, Sel) :-
+    resolve_pending_store(Mode, Env, Pending, Acc, st(0, []), Sel).
+
+resolve_pending_store(_Mode, _Env, [], Acc, _St, Acc).
+resolve_pending_store(Mode, Env, [Item|Rest], Acc, St, Sel) :-
+    (   Item = done(Pkg, Ver, Gen)
+    ->  St = st(GenNow, [a(Pkg, Ver, Gen)|Active1]),
+        resolve_pending_store(Mode, Env, Rest, Acc, st(GenNow, Active1), Sel)
+    ;   Item = req(Name, C),
+        (   Name = alternatives(Alts)
+        ->  resolve_alternatives_store(Mode, Env, Alts, Rest, Acc, St, Sel)
+        ;   selected_ver(Acc, Name, Ver)
+        ->  satisfies(Ver, C),
+            resolve_pending_store(Mode, Env, Rest, Acc, St, Sel)
+        ;   already_provided_store(Env, Acc, Name, C)
+        ->  resolve_pending_store(Mode, Env, Rest, Acc, St, Sel)
+        ;   pick_need_store(Mode, Env, Name, C, Pkg, Ver, Origin),
+            % G2 mirror of resolve_pending/6, kept textually parallel. Same
+            % entailment: collect_deps_store/4 is a findall/3 (det, always
+            % succeeds), append/3 with two bound arguments is det, and
+            % no_acc_conflicts_store/4 is a test on ground arguments
+            % (pick_need_store/7 binds Pkg and Ver on every arm).
+            (   Origin = from_base
+            ->  St = st(Gen, Active),
+                (   active_member(Active, Pkg, Ver, Gen)
+                ->  resolve_pending_store(Mode, Env, Rest, Acc, St, Sel)
+                ;   collect_deps_store(Env, Pkg, Ver, DepReqs),
+                    append(DepReqs, [done(Pkg, Ver, Gen)|Rest], More),
+                    resolve_pending_store(Mode, Env, More, Acc,
+                                          st(Gen, [a(Pkg, Ver, Gen)|Active]), Sel)
+                )
+            ;   no_acc_conflicts_store(Env, Pkg, Ver, Acc),
+                collect_deps_store(Env, Pkg, Ver, DepReqs),
+                append(DepReqs, Rest, More),
+                St = st(Gen, Active),
+                Gen1 is Gen + 1,          % the ONLY site that advances Gen
+                resolve_pending_store(Mode, Env, More, [Pkg-Ver|Acc],
+                                      st(Gen1, Active), Sel)
+            )
         )
     ).
 
-resolve_alternatives_store(Mode, Env, Alts, Rest, Acc, Sel) :-
+% Same-generation marks are a prefix of the stack; the scan stops at the
+% first older mark.
+active_member([a(P, V, G)|Rest], Pkg, Ver, Gen) :-
+    (   G < Gen
+    ->  fail
+    ;   P == Pkg, V == Ver
+    ->  true
+    ;   active_member(Rest, Pkg, Ver, Gen)
+    ).
+
+resolve_alternatives_store(Mode, Env, Alts, Rest, Acc, St, Sel) :-
     (   first_alt_already_store(Mode, Env, Acc, Alts)
-    ->  resolve_pending_store(Mode, Env, Rest, Acc, Sel)
+    ->  resolve_pending_store(Mode, Env, Rest, Acc, St, Sel)
     ;   member(dep(N, C), Alts),
-        resolve_pending_store(Mode, Env, [req(N, C)|Rest], Acc, Sel)
+        resolve_pending_store(Mode, Env, [req(N, C)|Rest], Acc, St, Sel)
     ).
 
 first_alt_already_store(_Mode, Env, Acc, Alts) :-
@@ -620,8 +655,10 @@ pick_need_store(layered, Env, Name, C, Pkg, Ver, Origin) :-
         Origin = from_base
     ;   layer_provider_store(Env, Name, C, Pkg, Ver)
     ->  Origin = from_base
-    ;   candidates_high_first_store(Env, Name, C, Ver)
-    ->  Pkg = Name,
+    ;   candidate_versions_store(Env, Name, C, Desc),
+        Desc = [_|_]
+    ->  member(Ver, Desc),          % H1: descending versions on backtracking
+        Pkg = Name,
         Origin = from_catalog
     ;   provider_candidate_store(Env, Name, C, Pkg, Ver),
         Origin = from_catalog
@@ -653,26 +690,23 @@ blocked_from_store(Env, req(alternatives(Alts), _), Seen, Blocked) :-
     !,
     alt_reasons_store(Env, Alts, Seen, Rs),
     Blocked = blocked(alternatives(Rs)).
-blocked_from_store(Env, req(Name, C), Seen, Blocked) :-
-    \+ seen_name(Seen, Name),
+% §4 mirror: report the preferred candidate's blockage; Seen bounds only
+% the walk, not the ceiling reports.
+blocked_from_store(Env, req(Name, C), _Seen, Blocked) :-
     base_ver_env(Env, Name, BV),
     \+ satisfies(BV, C),
     Blocked = blocked(Name, needs(C), base_has(BV)).
-blocked_from_store(Env, req(Name, C), Seen, Blocked) :-
-    \+ seen_name(Seen, Name),
+blocked_from_store(Env, req(Name, C), _Seen, Blocked) :-
     virtual_provider_ceilings_store(Env, Name, C, Reasons),
     Reasons \== [],
     Blocked = blocked(Name, needs(C), providers(Reasons)).
 blocked_from_store(Env, req(Name, C), Seen, Blocked) :-
-    \+ seen_name(Seen, Name),
+    \+ seen_name(Seen, Name),               % the walk is what Seen bounds
     walk_pkg_for_blocked_store(Env, Name, C, Pkg, Ver),
     collect_deps_store(Env, Pkg, Ver, DepReqs),
     member(Dep, DepReqs),
     blocked_from_store(Env, Dep, [Name|Seen], Blocked).
 
-blocked_acc_store(_Env, req(Name, _C), Seen, Acc, Acc) :-
-    atom(Name),
-    seen_name(Seen, Name), !.
 blocked_acc_store(Env, req(alternatives(Alts), _), Seen, Acc0, Acc) :-
     !,
     alt_reasons_store(Env, Alts, Seen, Rs),
@@ -686,7 +720,9 @@ blocked_acc_store(Env, req(Name, C), Seen, Acc0, Acc) :-
     ->  Acc1 = [blocked(Name, needs(C), providers(Reasons))|Acc0]
     ;   Acc1 = Acc0
     ),
-    (   walk_pkg_for_blocked_store(Env, Name, C, Pkg, Ver)
+    (   seen_name(Seen, Name)
+    ->  Acc = Acc1                          % repeated name: no second walk
+    ;   walk_pkg_for_blocked_store(Env, Name, C, Pkg, Ver)
     ->  collect_deps_store(Env, Pkg, Ver, DepReqs),
         blocked_acc_list_store(Env, DepReqs, [Name|Seen], Acc1, Acc)
     ;   Acc = Acc1

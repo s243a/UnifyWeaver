@@ -29,6 +29,45 @@ var sharedWamCodeRaw = []Instruction{
         &Call{Pred: "conflicts_in/4", Arity: 4},
         &Deallocate{},
         &Proceed{},
+        &Allocate{},
+        &GetList{Ai: 0},
+        &UnifyVariable{Xn: 107},
+        &GetStructure{Functor: "a/3", Ai: 107},
+        &UnifyVariable{Xn: 201},
+        &UnifyVariable{Xn: 203},
+        &UnifyVariable{Xn: 200},
+        &UnifyVariable{Xn: 205},
+        &GetVariable{Xn: 202, Ai: 1},
+        &GetVariable{Xn: 204, Ai: 2},
+        &GetVariable{Xn: 206, Ai: 3},
+        &GetLevel{Reg: 207},
+        &TryMeElse{Label: "L_ite_else_2", Arity: 4},
+        &PutValue{Xn: 200, Ai: 0},
+        &PutValue{Xn: 206, Ai: 1},
+        &BuiltinCall{Op: "</2", Arity: 2},
+        &Cut{Reg: 207},
+        &BuiltinCall{Op: "fail/0", Arity: 0},
+        &Jump{Label: "L_ite_cont_2"},
+        &TrustMe{},
+        &GetLevel{Reg: 208},
+        &TryMeElse{Label: "L_ite_else_3", Arity: 4},
+        &PutValue{Xn: 201, Ai: 0},
+        &PutValue{Xn: 202, Ai: 1},
+        &BuiltinCall{Op: "==/2", Arity: 2},
+        &PutValue{Xn: 203, Ai: 0},
+        &PutValue{Xn: 204, Ai: 1},
+        &BuiltinCall{Op: "==/2", Arity: 2},
+        &Cut{Reg: 208},
+        &BuiltinCall{Op: "true/0", Arity: 0},
+        &Jump{Label: "L_ite_cont_3"},
+        &TrustMe{},
+        &PutValue{Xn: 205, Ai: 0},
+        &PutValue{Xn: 202, Ai: 1},
+        &PutValue{Xn: 204, Ai: 2},
+        &PutValue{Xn: 206, Ai: 3},
+        &Call{Pred: "active_member/4", Arity: 4},
+        &Deallocate{},
+        &Proceed{},
         &SwitchOnStructure{Cases: []StructCase{{Functor: "catalog/6", Label: "default"}, {Functor: "catalog/9", Label: "L_alias_list_2_2_body"}, {Functor: "catalog/10", Label: "L_alias_list_2_3_body"}, {Functor: "icat/3", Label: "L_alias_list_2_4_body"}}},
         &TryMeElse{Label: "L_alias_list_2_2", Arity: 2},
         &GetStructure{Functor: "catalog/6", Ai: 0},
@@ -94,7 +133,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 203, Ai: 1},
         &GetVariable{Xn: 204, Ai: 2},
         &GetLevel{Reg: 205},
-        &TryMeElse{Label: "L_ite_else_2", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_4", Arity: 3},
         &PutValue{Xn: 203, Ai: 0},
         &PutValue{Xn: 200, Ai: 1},
         &BuiltinCall{Op: "==/2", Arity: 2},
@@ -102,7 +141,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 204, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_2"},
+        &Jump{Label: "L_ite_cont_4"},
         &TrustMe{},
         &PutValue{Xn: 202, Ai: 0},
         &PutValue{Xn: 203, Ai: 1},
@@ -176,7 +215,7 @@ var sharedWamCodeRaw = []Instruction{
         &UnifyVariable{Xn: 202},
         &UnifyVariable{Xn: 206},
         &GetLevel{Reg: 207},
-        &TryMeElse{Label: "L_ite_else_3", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_5", Arity: 4},
         &PutValue{Xn: 203, Ai: 0},
         &PutValue{Xn: 200, Ai: 1},
         &PutValue{Xn: 201, Ai: 2},
@@ -185,7 +224,7 @@ var sharedWamCodeRaw = []Instruction{
         &Call{Pred: "explain_alt/5", Arity: 5},
         &Cut{Reg: 207},
         &BuiltinCall{Op: "true/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_3"},
+        &Jump{Label: "L_ite_cont_5"},
         &TrustMe{},
         &PutValue{Xn: 202, Ai: 0},
         &PutConstant{C: wamAtom_unsatisfiable_1, Ai: 1},
@@ -215,13 +254,13 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 205, Ai: 2},
         &GetVariable{Xn: 206, Ai: 3},
         &GetLevel{Reg: 207},
-        &TryMeElse{Label: "L_ite_else_4", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_6", Arity: 4},
         &PutValue{Xn: 201, Ai: 0},
         &PutConstant{C: wamAtom_blanket_2, Ai: 1},
         &BuiltinCall{Op: "==/2", Arity: 2},
         &Cut{Reg: 207},
         &GetLevel{Reg: 208},
-        &TryMeElse{Label: "L_ite_else_5", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_7", Arity: 4},
         &PutValue{Xn: 203, Ai: 0},
         &PutValue{Xn: 200, Ai: 1},
         &Call{Pred: "tight_base_revdep/2", Arity: 2},
@@ -233,14 +272,14 @@ var sharedWamCodeRaw = []Instruction{
         &PutStructure{Functor: "suggest/1", Ai: 110},
         &SetConstant{C: wamAtom_abi_anchor_3},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_5"},
+        &Jump{Label: "L_ite_cont_7"},
         &TrustMe{},
         &PutVariable{Xn: 204, Ai: 0},
         &PutStructure{Functor: "audit/2", Ai: 1},
         &SetValue{Xn: 200},
         &SetConstant{C: wamAtom_over_frozen_4},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_4"},
+        &Jump{Label: "L_ite_cont_6"},
         &TrustMe{},
         &PutVariable{Xn: 204, Ai: 0},
         &PutStructure{Functor: "audit/2", Ai: 1},
@@ -362,23 +401,6 @@ var sharedWamCodeRaw = []Instruction{
         &Execute{Pred: "lookup_held/3"},
         &TryMeElse{Label: "L_blocked_acc_5_2", Arity: 5},
         &Allocate{},
-        &GetVariable{Xn: 102, Ai: 0},
-        &GetStructure{Functor: "req/2", Ai: 1},
-        &UnifyVariable{Xn: 201},
-        &UnifyVariable{Xn: 103},
-        &GetVariable{Xn: 200, Ai: 2},
-        &GetVariable{Xn: 104, Ai: 3},
-        &GetValue{Xn: 104, Ai: 4},
-        &PutValue{Xn: 201, Ai: 0},
-        &BuiltinCall{Op: "atom/1", Arity: 1},
-        &PutValue{Xn: 200, Ai: 0},
-        &PutValue{Xn: 201, Ai: 1},
-        &Call{Pred: "seen_name/2", Arity: 2},
-        &BuiltinCall{Op: "!/0", Arity: 0},
-        &Deallocate{},
-        &Proceed{},
-        &RetryMeElse{Label: "L_blocked_acc_5_3", Arity: 5},
-        &Allocate{},
         &GetVariable{Xn: 200, Ai: 0},
         &GetStructure{Functor: "req/2", Ai: 1},
         &UnifyVariable{Xn: 106},
@@ -407,100 +429,111 @@ var sharedWamCodeRaw = []Instruction{
         &Proceed{},
         &TrustMe{},
         &Allocate{},
-        &GetVariable{Xn: 206, Ai: 0},
+        &GetVariable{Xn: 203, Ai: 0},
         &GetStructure{Functor: "req/2", Ai: 1},
-        &UnifyVariable{Xn: 208},
-        &UnifyVariable{Xn: 203},
+        &UnifyVariable{Xn: 204},
+        &UnifyVariable{Xn: 205},
         &GetVariable{Xn: 209, Ai: 2},
         &GetVariable{Xn: 202, Ai: 3},
-        &GetVariable{Xn: 210, Ai: 4},
+        &GetVariable{Xn: 211, Ai: 4},
         &GetLevel{Reg: 212},
-        &TryMeElse{Label: "L_ite_else_6", Arity: 5},
-        &PutValue{Xn: 206, Ai: 0},
-        &PutValue{Xn: 208, Ai: 1},
+        &TryMeElse{Label: "L_ite_else_8", Arity: 5},
+        &PutValue{Xn: 203, Ai: 0},
+        &PutValue{Xn: 204, Ai: 1},
         &PutVariable{Xn: 200, Ai: 2},
         &Call{Pred: "base_ver/3", Arity: 3},
         &GetLevel{Reg: 213},
-        &TryMeElse{Label: "L_ite_else_7", Arity: 5},
+        &TryMeElse{Label: "L_ite_else_9", Arity: 5},
         &PutValue{Xn: 200, Ai: 0},
-        &PutValue{Xn: 203, Ai: 1},
+        &PutValue{Xn: 205, Ai: 1},
         &Call{Pred: "satisfies/2", Arity: 2},
         &Cut{Reg: 213},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_7"},
+        &Jump{Label: "L_ite_cont_9"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &Cut{Reg: 212},
-        &PutVariable{Xn: 211, Ai: 0},
+        &PutVariable{Xn: 210, Ai: 0},
         &PutStructure{Functor: "[|]/2", Ai: 1},
         &SetVariable{Xn: 113},
         &SetValue{Xn: 202},
         &PutStructure{Functor: "blocked/3", Ai: 113},
-        &SetValue{Xn: 208},
+        &SetValue{Xn: 204},
         &SetVariable{Xn: 114},
         &SetVariable{Xn: 115},
         &PutStructure{Functor: "needs/1", Ai: 114},
-        &SetValue{Xn: 203},
+        &SetValue{Xn: 205},
         &PutStructure{Functor: "base_has/1", Ai: 115},
         &SetValue{Xn: 200},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_6"},
+        &Jump{Label: "L_ite_cont_8"},
         &TrustMe{},
         &GetLevel{Reg: 213},
-        &TryMeElse{Label: "L_ite_else_8", Arity: 5},
-        &PutValue{Xn: 206, Ai: 0},
-        &PutValue{Xn: 208, Ai: 1},
-        &PutValue{Xn: 203, Ai: 2},
+        &TryMeElse{Label: "L_ite_else_10", Arity: 5},
+        &PutValue{Xn: 203, Ai: 0},
+        &PutValue{Xn: 204, Ai: 1},
+        &PutValue{Xn: 205, Ai: 2},
         &PutVariable{Xn: 201, Ai: 3},
         &Call{Pred: "virtual_provider_ceilings/4", Arity: 4},
         &PutValue{Xn: 201, Ai: 0},
         &PutConstant{C: wamAtom____0, Ai: 1},
         &BuiltinCall{Op: "\\==/2", Arity: 2},
         &Cut{Reg: 213},
-        &PutVariable{Xn: 211, Ai: 0},
+        &PutVariable{Xn: 210, Ai: 0},
         &PutStructure{Functor: "[|]/2", Ai: 1},
         &SetVariable{Xn: 113},
         &SetValue{Xn: 202},
         &PutStructure{Functor: "blocked/3", Ai: 113},
-        &SetValue{Xn: 208},
+        &SetValue{Xn: 204},
         &SetVariable{Xn: 114},
         &SetVariable{Xn: 115},
         &PutStructure{Functor: "needs/1", Ai: 114},
-        &SetValue{Xn: 203},
+        &SetValue{Xn: 205},
         &PutStructure{Functor: "providers/1", Ai: 115},
         &SetValue{Xn: 201},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_8"},
+        &Jump{Label: "L_ite_cont_10"},
         &TrustMe{},
-        &PutVariable{Xn: 211, Ai: 0},
+        &PutVariable{Xn: 210, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
         &GetLevel{Reg: 214},
-        &TryMeElse{Label: "L_ite_else_9", Arity: 5},
-        &PutValue{Xn: 206, Ai: 0},
-        &PutValue{Xn: 208, Ai: 1},
-        &PutValue{Xn: 203, Ai: 2},
-        &PutVariable{Xn: 204, Ai: 3},
-        &PutVariable{Xn: 205, Ai: 4},
-        &Call{Pred: "walk_pkg_for_blocked/5", Arity: 5},
+        &TryMeElse{Label: "L_ite_else_11", Arity: 5},
+        &PutValue{Xn: 209, Ai: 0},
+        &PutValue{Xn: 204, Ai: 1},
+        &Call{Pred: "seen_name/2", Arity: 2},
         &Cut{Reg: 214},
-        &PutValue{Xn: 206, Ai: 0},
+        &PutValue{Xn: 211, Ai: 0},
+        &PutValue{Xn: 210, Ai: 1},
+        &BuiltinCall{Op: "=/2", Arity: 2},
+        &Jump{Label: "L_ite_cont_11"},
+        &TrustMe{},
+        &GetLevel{Reg: 215},
+        &TryMeElse{Label: "L_ite_else_12", Arity: 5},
+        &PutValue{Xn: 203, Ai: 0},
         &PutValue{Xn: 204, Ai: 1},
         &PutValue{Xn: 205, Ai: 2},
-        &PutVariable{Xn: 207, Ai: 3},
+        &PutVariable{Xn: 206, Ai: 3},
+        &PutVariable{Xn: 207, Ai: 4},
+        &Call{Pred: "walk_pkg_for_blocked/5", Arity: 5},
+        &Cut{Reg: 215},
+        &PutValue{Xn: 203, Ai: 0},
+        &PutValue{Xn: 206, Ai: 1},
+        &PutValue{Xn: 207, Ai: 2},
+        &PutVariable{Xn: 208, Ai: 3},
         &Call{Pred: "collect_deps/4", Arity: 4},
-        &PutValue{Xn: 206, Ai: 0},
-        &PutValue{Xn: 207, Ai: 1},
+        &PutValue{Xn: 203, Ai: 0},
+        &PutValue{Xn: 208, Ai: 1},
         &PutStructure{Functor: "[|]/2", Ai: 2},
-        &SetValue{Xn: 208},
+        &SetValue{Xn: 204},
         &SetValue{Xn: 209},
-        &PutValue{Xn: 211, Ai: 3},
-        &PutValue{Xn: 210, Ai: 4},
+        &PutValue{Xn: 210, Ai: 3},
+        &PutValue{Xn: 211, Ai: 4},
         &Call{Pred: "blocked_acc_list/5", Arity: 5},
-        &Jump{Label: "L_ite_cont_9"},
+        &Jump{Label: "L_ite_cont_12"},
         &TrustMe{},
-        &PutValue{Xn: 210, Ai: 0},
-        &PutValue{Xn: 211, Ai: 1},
+        &PutValue{Xn: 211, Ai: 0},
+        &PutValue{Xn: 210, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
         &Deallocate{},
         &Proceed{},
@@ -559,83 +592,63 @@ var sharedWamCodeRaw = []Instruction{
         &Proceed{},
         &RetryMeElse{Label: "L_blocked_from_4_3", Arity: 4},
         &Allocate{},
-        &GetVariable{Xn: 200, Ai: 0},
+        &GetVariable{Xn: 104, Ai: 0},
         &GetStructure{Functor: "req/2", Ai: 1},
+        &UnifyVariable{Xn: 201},
         &UnifyVariable{Xn: 202},
-        &UnifyVariable{Xn: 203},
         &GetVariable{Xn: 105, Ai: 2},
-        &GetVariable{Xn: 201, Ai: 3},
-        &GetLevel{Reg: 205},
-        &TryMeElse{Label: "L_ite_else_10", Arity: 4},
-        &PutValue{Xn: 105, Ai: 0},
+        &GetVariable{Xn: 200, Ai: 3},
+        &PutValue{Xn: 104, Ai: 0},
+        &PutValue{Xn: 201, Ai: 1},
+        &PutVariable{Xn: 203, Ai: 2},
+        &Call{Pred: "base_ver/3", Arity: 3},
+        &GetLevel{Reg: 204},
+        &TryMeElse{Label: "L_ite_else_13", Arity: 4},
+        &PutValue{Xn: 203, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
-        &Call{Pred: "seen_name/2", Arity: 2},
-        &Cut{Reg: 205},
+        &Call{Pred: "satisfies/2", Arity: 2},
+        &Cut{Reg: 204},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_10"},
+        &Jump{Label: "L_ite_cont_13"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &PutValue{Xn: 200, Ai: 0},
-        &PutValue{Xn: 202, Ai: 1},
-        &PutVariable{Xn: 204, Ai: 2},
-        &Call{Pred: "base_ver/3", Arity: 3},
-        &GetLevel{Reg: 206},
-        &TryMeElse{Label: "L_ite_else_11", Arity: 4},
-        &PutValue{Xn: 204, Ai: 0},
-        &PutValue{Xn: 203, Ai: 1},
-        &Call{Pred: "satisfies/2", Arity: 2},
-        &Cut{Reg: 206},
-        &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_11"},
-        &TrustMe{},
-        &BuiltinCall{Op: "true/0", Arity: 0},
-        &PutValue{Xn: 201, Ai: 0},
         &PutStructure{Functor: "blocked/3", Ai: 1},
-        &SetValue{Xn: 202},
+        &SetValue{Xn: 201},
         &SetVariable{Xn: 107},
         &SetVariable{Xn: 108},
         &PutStructure{Functor: "needs/1", Ai: 107},
-        &SetValue{Xn: 203},
+        &SetValue{Xn: 202},
         &PutStructure{Functor: "base_has/1", Ai: 108},
-        &SetValue{Xn: 204},
+        &SetValue{Xn: 203},
         &BuiltinCall{Op: "=/2", Arity: 2},
         &Deallocate{},
         &Proceed{},
         &RetryMeElse{Label: "L_blocked_from_4_4", Arity: 4},
         &Allocate{},
-        &GetVariable{Xn: 200, Ai: 0},
+        &GetVariable{Xn: 104, Ai: 0},
         &GetStructure{Functor: "req/2", Ai: 1},
+        &UnifyVariable{Xn: 201},
         &UnifyVariable{Xn: 202},
-        &UnifyVariable{Xn: 203},
         &GetVariable{Xn: 105, Ai: 2},
-        &GetVariable{Xn: 201, Ai: 3},
-        &GetLevel{Reg: 205},
-        &TryMeElse{Label: "L_ite_else_12", Arity: 4},
-        &PutValue{Xn: 105, Ai: 0},
-        &PutValue{Xn: 202, Ai: 1},
-        &Call{Pred: "seen_name/2", Arity: 2},
-        &Cut{Reg: 205},
-        &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_12"},
-        &TrustMe{},
-        &BuiltinCall{Op: "true/0", Arity: 0},
-        &PutValue{Xn: 200, Ai: 0},
-        &PutValue{Xn: 202, Ai: 1},
-        &PutValue{Xn: 203, Ai: 2},
-        &PutVariable{Xn: 204, Ai: 3},
+        &GetVariable{Xn: 200, Ai: 3},
+        &PutValue{Xn: 104, Ai: 0},
+        &PutValue{Xn: 201, Ai: 1},
+        &PutValue{Xn: 202, Ai: 2},
+        &PutVariable{Xn: 203, Ai: 3},
         &Call{Pred: "virtual_provider_ceilings/4", Arity: 4},
-        &PutValue{Xn: 204, Ai: 0},
+        &PutValue{Xn: 203, Ai: 0},
         &PutConstant{C: wamAtom____0, Ai: 1},
         &BuiltinCall{Op: "\\==/2", Arity: 2},
-        &PutValue{Xn: 201, Ai: 0},
+        &PutValue{Xn: 200, Ai: 0},
         &PutStructure{Functor: "blocked/3", Ai: 1},
-        &SetValue{Xn: 202},
+        &SetValue{Xn: 201},
         &SetVariable{Xn: 107},
         &SetVariable{Xn: 108},
         &PutStructure{Functor: "needs/1", Ai: 107},
-        &SetValue{Xn: 203},
+        &SetValue{Xn: 202},
         &PutStructure{Functor: "providers/1", Ai: 108},
-        &SetValue{Xn: 204},
+        &SetValue{Xn: 203},
         &BuiltinCall{Op: "=/2", Arity: 2},
         &Deallocate{},
         &Proceed{},
@@ -648,13 +661,13 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 207, Ai: 2},
         &GetVariable{Xn: 208, Ai: 3},
         &GetLevel{Reg: 209},
-        &TryMeElse{Label: "L_ite_else_13", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_14", Arity: 4},
         &PutValue{Xn: 207, Ai: 0},
         &PutValue{Xn: 206, Ai: 1},
         &Call{Pred: "seen_name/2", Arity: 2},
         &Cut{Reg: 209},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_13"},
+        &Jump{Label: "L_ite_cont_14"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &PutValue{Xn: 204, Ai: 0},
@@ -685,7 +698,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 206, Ai: 2},
         &GetVariable{Xn: 205, Ai: 3},
         &GetLevel{Reg: 211},
-        &TryMeElse{Label: "L_ite_else_14", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_15", Arity: 4},
         &PutValue{Xn: 200, Ai: 0},
         &PutConstant{C: &Integer{Val: 0}, Ai: 1},
         &BuiltinCall{Op: "=:=/2", Arity: 2},
@@ -696,7 +709,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 205, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_14"},
+        &Jump{Label: "L_ite_cont_15"},
         &TrustMe{},
         &PutVariable{Xn: 201, Ai: 0},
         &PutStructure{Functor: "///2", Ai: 1},
@@ -743,26 +756,39 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 201, Ai: 1},
         &GetVariable{Xn: 202, Ai: 2},
         &GetVariable{Xn: 204, Ai: 3},
-        &GetLevel{Reg: 206},
-        &TryMeElse{Label: "L_ite_else_15", Arity: 4},
+        &GetLevel{Reg: 205},
+        &TryMeElse{Label: "L_ite_else_16", Arity: 4},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &Call{Pred: "excluded_name/2", Arity: 2},
-        &Cut{Reg: 206},
-        &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_15"},
+        &Cut{Reg: 205},
+        &PutValue{Xn: 204, Ai: 0},
+        &PutConstant{C: wamAtom____0, Ai: 1},
+        &BuiltinCall{Op: "=/2", Arity: 2},
+        &Jump{Label: "L_ite_cont_16"},
         &TrustMe{},
-        &BuiltinCall{Op: "true/0", Arity: 0},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &PutValue{Xn: 202, Ai: 2},
         &PutVariable{Xn: 203, Ai: 3},
         &Call{Pred: "matching_versions_in/4", Arity: 4},
         &PutValue{Xn: 203, Ai: 0},
-        &PutVariable{Xn: 205, Ai: 1},
+        &PutValue{Xn: 204, Ai: 1},
         &Call{Pred: "sort_versions_desc/2", Arity: 2},
-        &PutValue{Xn: 204, Ai: 0},
-        &PutValue{Xn: 205, Ai: 1},
+        &Deallocate{},
+        &Proceed{},
+        &Allocate{},
+        &GetVariable{Xn: 102, Ai: 0},
+        &GetVariable{Xn: 103, Ai: 1},
+        &GetVariable{Xn: 104, Ai: 2},
+        &GetVariable{Xn: 200, Ai: 3},
+        &PutValue{Xn: 102, Ai: 0},
+        &PutValue{Xn: 103, Ai: 1},
+        &PutValue{Xn: 104, Ai: 2},
+        &PutVariable{Xn: 201, Ai: 3},
+        &Call{Pred: "candidate_versions/4", Arity: 4},
+        &PutValue{Xn: 200, Ai: 0},
+        &PutValue{Xn: 201, Ai: 1},
         &BuiltinCall{Op: "member/2", Arity: 2},
         &Deallocate{},
         &Proceed{},
@@ -791,7 +817,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutVariable{Xn: 202, Ai: 3},
         &Call{Pred: "first_broken/4", Arity: 4},
         &GetLevel{Reg: 210},
-        &TryMeElse{Label: "L_ite_else_16", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_17", Arity: 3},
         &PutValue{Xn: 202, Ai: 0},
         &PutConstant{C: wamAtom_none_6, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
@@ -803,7 +829,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutStructure{Functor: "ok/1", Ai: 1},
         &SetValue{Xn: 201},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_16"},
+        &Jump{Label: "L_ite_cont_17"},
         &TrustMe{},
         &PutValue{Xn: 202, Ai: 0},
         &PutStructure{Functor: "broken/3", Ai: 1},
@@ -812,7 +838,7 @@ var sharedWamCodeRaw = []Instruction{
         &SetVariable{Xn: 208},
         &BuiltinCall{Op: "=/2", Arity: 2},
         &GetLevel{Reg: 211},
-        &TryMeElse{Label: "L_ite_else_17", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_18", Arity: 3},
         &PutValue{Xn: 203, Ai: 0},
         &PutValue{Xn: 204, Ai: 1},
         &PutValue{Xn: 205, Ai: 2},
@@ -828,7 +854,7 @@ var sharedWamCodeRaw = []Instruction{
         &SetValue{Xn: 206},
         &PutValue{Xn: 207, Ai: 2},
         &Call{Pred: "close_moving/3", Arity: 3},
-        &Jump{Label: "L_ite_cont_17"},
+        &Jump{Label: "L_ite_cont_18"},
         &TrustMe{},
         &PutValue{Xn: 207, Ai: 0},
         &PutStructure{Functor: "blocked/3", Ai: 1},
@@ -876,13 +902,13 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 205, Ai: 2},
         &GetVariable{Xn: 206, Ai: 3},
         &GetLevel{Reg: 207},
-        &TryMeElse{Label: "L_ite_else_18", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_19", Arity: 4},
         &PutValue{Xn: 202, Ai: 0},
         &PutVariable{Xn: 200, Ai: 1},
         &Call{Pred: "dep_index/2", Arity: 2},
         &Cut{Reg: 207},
         &GetLevel{Reg: 208},
-        &TryMeElse{Label: "L_ite_else_19", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_20", Arity: 4},
         &PutValue{Xn: 200, Ai: 0},
         &PutStructure{Functor: "-/2", Ai: 1},
         &SetValue{Xn: 204},
@@ -893,12 +919,12 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 206, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_19"},
+        &Jump{Label: "L_ite_cont_20"},
         &TrustMe{},
         &PutValue{Xn: 206, Ai: 0},
         &PutConstant{C: wamAtom____0, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_18"},
+        &Jump{Label: "L_ite_cont_19"},
         &TrustMe{},
         &PutValue{Xn: 202, Ai: 0},
         &PutVariable{Xn: 203, Ai: 1},
@@ -989,7 +1015,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 208, Ai: 3},
         &GetVariable{Xn: 209, Ai: 4},
         &GetLevel{Reg: 210},
-        &TryMeElse{Label: "L_ite_else_20", Arity: 5},
+        &TryMeElse{Label: "L_ite_else_21", Arity: 5},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 206, Ai: 1},
         &BuiltinCall{Op: "==/2", Arity: 2},
@@ -1005,7 +1031,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 209, Ai: 0},
         &PutValue{Xn: 204, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_20"},
+        &Jump{Label: "L_ite_cont_21"},
         &TrustMe{},
         &PutValue{Xn: 205, Ai: 0},
         &PutValue{Xn: 206, Ai: 1},
@@ -1049,17 +1075,17 @@ var sharedWamCodeRaw = []Instruction{
         &PutVariable{Xn: 201, Ai: 2},
         &Call{Pred: "selected_ver/3", Arity: 3},
         &GetLevel{Reg: 208},
-        &TryMeElse{Label: "L_ite_else_21", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_22", Arity: 4},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &Call{Pred: "satisfies/2", Arity: 2},
         &Cut{Reg: 208},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_21"},
+        &Jump{Label: "L_ite_cont_22"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &GetLevel{Reg: 209},
-        &TryMeElse{Label: "L_ite_else_22", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_23", Arity: 4},
         &PutStructure{Functor: "dep/2", Ai: 0},
         &SetVariable{Xn: 203},
         &SetVariable{Xn: 204},
@@ -1074,7 +1100,7 @@ var sharedWamCodeRaw = []Instruction{
         &Call{Pred: "satisfies/2", Arity: 2},
         &Cut{Reg: 209},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_22"},
+        &Jump{Label: "L_ite_cont_23"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &Deallocate{},
@@ -1090,13 +1116,13 @@ var sharedWamCodeRaw = []Instruction{
         &PutVariable{Xn: 200, Ai: 2},
         &Call{Pred: "selected_ver/3", Arity: 3},
         &GetLevel{Reg: 202},
-        &TryMeElse{Label: "L_ite_else_23", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_24", Arity: 4},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &Call{Pred: "satisfies/2", Arity: 2},
         &Cut{Reg: 202},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_23"},
+        &Jump{Label: "L_ite_cont_24"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &Deallocate{},
@@ -1142,7 +1168,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutVariable{Xn: 204, Ai: 4},
         &Call{Pred: "depends_in/5", Arity: 5},
         &GetLevel{Reg: 205},
-        &TryMeElse{Label: "L_ite_else_24", Arity: 5},
+        &TryMeElse{Label: "L_ite_else_25", Arity: 5},
         &PutValue{Xn: 202, Ai: 0},
         &PutStructure{Functor: "alternatives/1", Ai: 1},
         &SetVariable{Xn: 200},
@@ -1153,7 +1179,7 @@ var sharedWamCodeRaw = []Instruction{
         &SetValue{Xn: 203},
         &PutValue{Xn: 200, Ai: 1},
         &BuiltinCall{Op: "member/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_24"},
+        &Jump{Label: "L_ite_cont_25"},
         &TrustMe{},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
@@ -1311,7 +1337,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 203, Ai: 2},
         &GetVariable{Xn: 207, Ai: 3},
         &GetLevel{Reg: 208},
-        &TryMeElse{Label: "L_ite_else_25", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_26", Arity: 4},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 205, Ai: 1},
         &Call{Pred: "dep_mentions/2", Arity: 2},
@@ -1324,7 +1350,7 @@ var sharedWamCodeRaw = []Instruction{
         &SetValue{Xn: 201},
         &SetValue{Xn: 202},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_25"},
+        &Jump{Label: "L_ite_cont_26"},
         &TrustMe{},
         &PutVariable{Xn: 206, Ai: 0},
         &PutValue{Xn: 203, Ai: 1},
@@ -1434,7 +1460,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 200, Ai: 3},
         &GetVariable{Xn: 207, Ai: 4},
         &GetLevel{Reg: 208},
-        &TryMeElse{Label: "L_ite_else_26", Arity: 5},
+        &TryMeElse{Label: "L_ite_else_27", Arity: 5},
         &PutValue{Xn: 201, Ai: 0},
         &PutStructure{Functor: "req/2", Ai: 1},
         &SetValue{Xn: 202},
@@ -1444,12 +1470,12 @@ var sharedWamCodeRaw = []Instruction{
         &Call{Pred: "blocked_from/4", Arity: 4},
         &Cut{Reg: 208},
         &BuiltinCall{Op: "true/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_26"},
+        &Jump{Label: "L_ite_cont_27"},
         &TrustMe{},
         &GetLevel{Reg: 209},
-        &TryMeElse{Label: "L_ite_else_27", Arity: 5},
-        &GetLevel{Reg: 210},
         &TryMeElse{Label: "L_ite_else_28", Arity: 5},
+        &GetLevel{Reg: 210},
+        &TryMeElse{Label: "L_ite_else_29", Arity: 5},
         &PutConstant{C: wamAtom_layered_11, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &PutValue{Xn: 202, Ai: 2},
@@ -1461,14 +1487,14 @@ var sharedWamCodeRaw = []Instruction{
         &Call{Pred: "pick_need/8", Arity: 8},
         &Cut{Reg: 210},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_28"},
+        &Jump{Label: "L_ite_cont_29"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &Cut{Reg: 209},
         &PutValue{Xn: 207, Ai: 0},
         &PutConstant{C: wamAtom_unsatisfiable_1, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_27"},
+        &Jump{Label: "L_ite_cont_28"},
         &TrustMe{},
         &BuiltinCall{Op: "fail/0", Arity: 0},
         &Deallocate{},
@@ -1520,7 +1546,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 203, Ai: 1},
         &GetVariable{Xn: 201, Ai: 2},
         &GetLevel{Reg: 205},
-        &TryMeElse{Label: "L_ite_else_29", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_30", Arity: 3},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 203, Ai: 1},
         &Call{Pred: "satisfies/2", Arity: 2},
@@ -1530,7 +1556,7 @@ var sharedWamCodeRaw = []Instruction{
         &SetValue{Xn: 200},
         &SetVariable{Xn: 204},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_29"},
+        &Jump{Label: "L_ite_cont_30"},
         &TrustMe{},
         &PutValue{Xn: 201, Ai: 0},
         &PutVariable{Xn: 204, Ai: 1},
@@ -1596,7 +1622,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 204, Ai: 2},
         &GetVariable{Xn: 206, Ai: 3},
         &GetLevel{Reg: 208},
-        &TryMeElse{Label: "L_ite_else_30", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_31", Arity: 4},
         &PutValue{Xn: 204, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &PutVariable{Xn: 200, Ai: 2},
@@ -1607,10 +1633,10 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 204, Ai: 2},
         &PutValue{Xn: 206, Ai: 3},
         &Call{Pred: "first_broken/4", Arity: 4},
-        &Jump{Label: "L_ite_cont_30"},
+        &Jump{Label: "L_ite_cont_31"},
         &TrustMe{},
         &GetLevel{Reg: 209},
-        &TryMeElse{Label: "L_ite_else_31", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_32", Arity: 4},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &PutValue{Xn: 203, Ai: 2},
@@ -1624,7 +1650,7 @@ var sharedWamCodeRaw = []Instruction{
         &SetValue{Xn: 203},
         &SetValue{Xn: 205},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_31"},
+        &Jump{Label: "L_ite_cont_32"},
         &TrustMe{},
         &PutValue{Xn: 207, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
@@ -1750,7 +1776,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 203, Ai: 1},
         &GetVariable{Xn: 204, Ai: 2},
         &GetLevel{Reg: 205},
-        &TryMeElse{Label: "L_ite_else_32", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_33", Arity: 3},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 203, Ai: 1},
         &BuiltinCall{Op: "==/2", Arity: 2},
@@ -1758,7 +1784,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 204, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_32"},
+        &Jump{Label: "L_ite_cont_33"},
         &TrustMe{},
         &PutValue{Xn: 202, Ai: 0},
         &PutValue{Xn: 203, Ai: 1},
@@ -1778,7 +1804,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutVariable{Xn: 204, Ai: 1},
         &Call{Pred: "packages/2", Arity: 2},
         &GetLevel{Reg: 212},
-        &TryMeElse{Label: "L_ite_else_33", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_34", Arity: 2},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 204, Ai: 1},
         &Call{Pred: "worth_indexing/2", Arity: 2},
@@ -1815,7 +1841,7 @@ var sharedWamCodeRaw = []Instruction{
         &SetValue{Xn: 208},
         &SetValue{Xn: 209},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_33"},
+        &Jump{Label: "L_ite_cont_34"},
         &TrustMe{},
         &PutValue{Xn: 210, Ai: 0},
         &PutValue{Xn: 211, Ai: 1},
@@ -1865,7 +1891,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 210, Ai: 4},
         &GetVariable{Xn: 211, Ai: 5},
         &GetLevel{Reg: 212},
-        &TryMeElse{Label: "L_ite_else_34", Arity: 6},
+        &TryMeElse{Label: "L_ite_else_35", Arity: 6},
         &PutValue{Xn: 208, Ai: 0},
         &PutValue{Xn: 209, Ai: 1},
         &BuiltinCall{Op: "member/2", Arity: 2},
@@ -1877,7 +1903,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 210, Ai: 4},
         &PutValue{Xn: 211, Ai: 5},
         &Call{Pred: "inst_walk/6", Arity: 6},
-        &Jump{Label: "L_ite_cont_34"},
+        &Jump{Label: "L_ite_cont_35"},
         &TrustMe{},
         &PutVariable{Xn: 203, Ai: 203},
         &PutVariable{Xn: 200, Ai: 200},
@@ -2100,7 +2126,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 202, Ai: 2},
         &GetVariable{Xn: 206, Ai: 3},
         &GetLevel{Reg: 207},
-        &TryMeElse{Label: "L_ite_else_35", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_36", Arity: 4},
         &PutValue{Xn: 204, Ai: 0},
         &PutValue{Xn: 200, Ai: 1},
         &PutValue{Xn: 201, Ai: 2},
@@ -2114,7 +2140,7 @@ var sharedWamCodeRaw = []Instruction{
         &SetValue{Xn: 200},
         &SetValue{Xn: 201},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_35"},
+        &Jump{Label: "L_ite_cont_36"},
         &TrustMe{},
         &PutVariable{Xn: 205, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
@@ -2318,7 +2344,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutVariable{Xn: 205, Ai: 2},
         &Call{Pred: "lookup_held/3", Arity: 3},
         &GetLevel{Reg: 208},
-        &TryMeElse{Label: "L_ite_else_36", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_37", Arity: 3},
         &PutValue{Xn: 204, Ai: 0},
         &PutValue{Xn: 206, Ai: 1},
         &BuiltinCall{Op: "==/2", Arity: 2},
@@ -2327,7 +2353,7 @@ var sharedWamCodeRaw = []Instruction{
         &Call{Pred: "satisfies/2", Arity: 2},
         &Cut{Reg: 208},
         &BuiltinCall{Op: "true/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_36"},
+        &Jump{Label: "L_ite_cont_37"},
         &TrustMe{},
         &PutValue{Xn: 203, Ai: 0},
         &PutValue{Xn: 204, Ai: 1},
@@ -2343,7 +2369,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 203, Ai: 2},
         &GetVariable{Xn: 204, Ai: 3},
         &GetLevel{Reg: 205},
-        &TryMeElse{Label: "L_ite_else_37", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_38", Arity: 4},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &PutVariable{Xn: 200, Ai: 2},
@@ -2355,7 +2381,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 204, Ai: 0},
         &PutValue{Xn: 200, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_37"},
+        &Jump{Label: "L_ite_cont_38"},
         &TrustMe{},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
@@ -2432,13 +2458,13 @@ var sharedWamCodeRaw = []Instruction{
         &UnifyVariable{Xn: 201},
         &GetVariable{Xn: 200, Ai: 1},
         &GetLevel{Reg: 203},
-        &TryMeElse{Label: "L_ite_else_38", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_39", Arity: 2},
         &PutValue{Xn: 200, Ai: 0},
         &PutConstant{C: &Integer{Val: 1}, Ai: 1},
         &BuiltinCall{Op: "=</2", Arity: 2},
         &Cut{Reg: 203},
         &BuiltinCall{Op: "true/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_38"},
+        &Jump{Label: "L_ite_cont_39"},
         &TrustMe{},
         &PutVariable{Xn: 202, Ai: 0},
         &PutStructure{Functor: "+/2", Ai: 1},
@@ -2457,7 +2483,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 203, Ai: 1},
         &GetVariable{Xn: 204, Ai: 2},
         &GetLevel{Reg: 205},
-        &TryMeElse{Label: "L_ite_else_39", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_40", Arity: 3},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 203, Ai: 1},
         &PutVariable{Xn: 201, Ai: 2},
@@ -2466,7 +2492,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 204, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_39"},
+        &Jump{Label: "L_ite_cont_40"},
         &TrustMe{},
         &PutValue{Xn: 202, Ai: 0},
         &PutValue{Xn: 203, Ai: 1},
@@ -2517,7 +2543,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 208, Ai: 2},
         &GetVariable{Xn: 205, Ai: 3},
         &GetLevel{Reg: 210},
-        &TryMeElse{Label: "L_ite_else_40", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_41", Arity: 4},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 207, Ai: 1},
         &BuiltinCall{Op: "==/2", Arity: 2},
@@ -2534,7 +2560,7 @@ var sharedWamCodeRaw = []Instruction{
         &SetValue{Xn: 204},
         &SetVariable{Xn: 209},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_40"},
+        &Jump{Label: "L_ite_cont_41"},
         &TrustMe{},
         &PutValue{Xn: 205, Ai: 0},
         &PutVariable{Xn: 209, Ai: 1},
@@ -2563,7 +2589,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 205, Ai: 2},
         &GetVariable{Xn: 202, Ai: 3},
         &GetLevel{Reg: 207},
-        &TryMeElse{Label: "L_ite_else_41", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_42", Arity: 4},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 204, Ai: 1},
         &BuiltinCall{Op: "==/2", Arity: 2},
@@ -2576,7 +2602,7 @@ var sharedWamCodeRaw = []Instruction{
         &SetValue{Xn: 201},
         &SetVariable{Xn: 206},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_41"},
+        &Jump{Label: "L_ite_cont_42"},
         &TrustMe{},
         &PutValue{Xn: 202, Ai: 0},
         &PutVariable{Xn: 206, Ai: 1},
@@ -2593,13 +2619,13 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 205, Ai: 2},
         &GetVariable{Xn: 206, Ai: 3},
         &GetLevel{Reg: 207},
-        &TryMeElse{Label: "L_ite_else_42", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_43", Arity: 4},
         &PutValue{Xn: 202, Ai: 0},
         &PutVariable{Xn: 200, Ai: 1},
         &Call{Pred: "pkg_index/2", Arity: 2},
         &Cut{Reg: 207},
         &GetLevel{Reg: 208},
-        &TryMeElse{Label: "L_ite_else_43", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_44", Arity: 4},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 204, Ai: 1},
         &PutVariable{Xn: 201, Ai: 2},
@@ -2609,12 +2635,12 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 205, Ai: 1},
         &PutValue{Xn: 206, Ai: 2},
         &Call{Pred: "filter_satisfies/3", Arity: 3},
-        &Jump{Label: "L_ite_cont_43"},
+        &Jump{Label: "L_ite_cont_44"},
         &TrustMe{},
         &PutValue{Xn: 206, Ai: 0},
         &PutConstant{C: wamAtom____0, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_42"},
+        &Jump{Label: "L_ite_cont_43"},
         &TrustMe{},
         &PutValue{Xn: 202, Ai: 0},
         &PutVariable{Xn: 203, Ai: 1},
@@ -2696,7 +2722,7 @@ var sharedWamCodeRaw = []Instruction{
         &UnifyVariable{Xn: 201},
         &UnifyVariable{Xn: 205},
         &GetLevel{Reg: 206},
-        &TryMeElse{Label: "L_ite_else_44", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_45", Arity: 4},
         &PutValue{Xn: 202, Ai: 0},
         &PutValue{Xn: 203, Ai: 1},
         &PutValue{Xn: 204, Ai: 2},
@@ -2704,11 +2730,11 @@ var sharedWamCodeRaw = []Instruction{
         &Call{Pred: "conflicts_in/4", Arity: 4},
         &Cut{Reg: 206},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_44"},
+        &Jump{Label: "L_ite_cont_45"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &GetLevel{Reg: 207},
-        &TryMeElse{Label: "L_ite_else_45", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_46", Arity: 4},
         &PutValue{Xn: 202, Ai: 0},
         &PutValue{Xn: 200, Ai: 1},
         &PutValue{Xn: 201, Ai: 2},
@@ -2716,7 +2742,7 @@ var sharedWamCodeRaw = []Instruction{
         &Call{Pred: "conflicts_in/4", Arity: 4},
         &Cut{Reg: 207},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_45"},
+        &Jump{Label: "L_ite_cont_46"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &PutValue{Xn: 202, Ai: 0},
@@ -2776,13 +2802,13 @@ var sharedWamCodeRaw = []Instruction{
         &PutVariable{Xn: 202, Ai: 1},
         &Call{Pred: "order_val/2", Arity: 2},
         &GetLevel{Reg: 205},
-        &TryMeElse{Label: "L_ite_else_46", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_47", Arity: 2},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &BuiltinCall{Op: "</2", Arity: 2},
         &Cut{Reg: 205},
         &BuiltinCall{Op: "true/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_46"},
+        &Jump{Label: "L_ite_cont_47"},
         &TrustMe{},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
@@ -2952,7 +2978,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 204, Ai: 5},
         &GetVariable{Xn: 205, Ai: 6},
         &GetLevel{Reg: 206},
-        &TryMeElse{Label: "L_ite_else_47", Arity: 7},
+        &TryMeElse{Label: "L_ite_else_48", Arity: 7},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &PutVariable{Xn: 200, Ai: 2},
@@ -2967,7 +2993,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 205, Ai: 0},
         &PutConstant{C: wamAtom_from_base_14, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_47"},
+        &Jump{Label: "L_ite_cont_48"},
         &TrustMe{},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
@@ -3019,17 +3045,17 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 201, Ai: 1},
         &GetVariable{Xn: 202, Ai: 2},
         &GetVariable{Xn: 203, Ai: 3},
-        &GetVariable{Xn: 107, Ai: 4},
+        &GetVariable{Xn: 110, Ai: 4},
         &GetVariable{Xn: 204, Ai: 5},
         &GetVariable{Xn: 205, Ai: 6},
         &GetVariable{Xn: 206, Ai: 7},
-        &GetLevel{Reg: 207},
-        &TryMeElse{Label: "L_ite_else_48", Arity: 8},
+        &GetLevel{Reg: 210},
+        &TryMeElse{Label: "L_ite_else_49", Arity: 8},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &PutVariable{Xn: 200, Ai: 2},
         &Call{Pred: "base_ver/3", Arity: 3},
-        &Cut{Reg: 207},
+        &Cut{Reg: 210},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 203, Ai: 1},
         &Call{Pred: "satisfies/2", Arity: 2},
@@ -3042,37 +3068,45 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 206, Ai: 0},
         &PutConstant{C: wamAtom_from_base_14, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_48"},
+        &Jump{Label: "L_ite_cont_49"},
         &TrustMe{},
-        &GetLevel{Reg: 208},
-        &TryMeElse{Label: "L_ite_else_49", Arity: 8},
+        &GetLevel{Reg: 211},
+        &TryMeElse{Label: "L_ite_else_50", Arity: 8},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &PutValue{Xn: 203, Ai: 2},
         &PutValue{Xn: 204, Ai: 3},
         &PutValue{Xn: 205, Ai: 4},
         &Call{Pred: "layer_provider/5", Arity: 5},
-        &Cut{Reg: 208},
+        &Cut{Reg: 211},
         &PutValue{Xn: 206, Ai: 0},
         &PutConstant{C: wamAtom_from_base_14, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_49"},
+        &Jump{Label: "L_ite_cont_50"},
         &TrustMe{},
-        &GetLevel{Reg: 209},
-        &TryMeElse{Label: "L_ite_else_50", Arity: 8},
+        &GetLevel{Reg: 212},
+        &TryMeElse{Label: "L_ite_else_51", Arity: 8},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &PutValue{Xn: 203, Ai: 2},
-        &PutValue{Xn: 205, Ai: 3},
-        &Call{Pred: "candidates_high_first/4", Arity: 4},
-        &Cut{Reg: 209},
+        &PutVariable{Xn: 207, Ai: 3},
+        &Call{Pred: "candidate_versions/4", Arity: 4},
+        &PutValue{Xn: 207, Ai: 0},
+        &PutStructure{Functor: "[|]/2", Ai: 1},
+        &SetVariable{Xn: 208},
+        &SetVariable{Xn: 209},
+        &BuiltinCall{Op: "=/2", Arity: 2},
+        &Cut{Reg: 212},
+        &PutValue{Xn: 205, Ai: 0},
+        &PutValue{Xn: 207, Ai: 1},
+        &BuiltinCall{Op: "member/2", Arity: 2},
         &PutValue{Xn: 204, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
         &PutValue{Xn: 206, Ai: 0},
         &PutConstant{C: wamAtom_from_catalog_13, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_50"},
+        &Jump{Label: "L_ite_cont_51"},
         &TrustMe{},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
@@ -3163,13 +3197,13 @@ var sharedWamCodeRaw = []Instruction{
         &PutVariable{Xn: 203, Ai: 4},
         &Call{Pred: "provide_row/5", Arity: 5},
         &GetLevel{Reg: 208},
-        &TryMeElse{Label: "L_ite_else_51", Arity: 5},
+        &TryMeElse{Label: "L_ite_else_52", Arity: 5},
         &PutValue{Xn: 205, Ai: 0},
         &PutValue{Xn: 206, Ai: 1},
         &Call{Pred: "excluded_name/2", Arity: 2},
         &Cut{Reg: 208},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_51"},
+        &Jump{Label: "L_ite_cont_52"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &PutValue{Xn: 203, Ai: 0},
@@ -3282,20 +3316,20 @@ var sharedWamCodeRaw = []Instruction{
         &PutVariable{Xn: 205, Ai: 1},
         &Call{Pred: "installed_list/2", Arity: 2},
         &GetLevel{Reg: 212},
-        &TryMeElse{Label: "L_ite_else_52", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_53", Arity: 3},
         &PutValue{Xn: 209, Ai: 0},
         &PutValue{Xn: 206, Ai: 1},
         &PutVariable{Xn: 200, Ai: 2},
         &Call{Pred: "installed_ver/3", Arity: 3},
         &Cut{Reg: 212},
         &BuiltinCall{Op: "true/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_52"},
+        &Jump{Label: "L_ite_cont_53"},
         &TrustMe{},
         &PutVariable{Xn: 200, Ai: 0},
         &PutConstant{C: wamAtom_none_6, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
         &GetLevel{Reg: 213},
-        &TryMeElse{Label: "L_ite_else_53", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_54", Arity: 3},
         &PutValue{Xn: 200, Ai: 0},
         &PutConstant{C: wamAtom_none_6, Ai: 1},
         &BuiltinCall{Op: "==/2", Arity: 2},
@@ -3303,7 +3337,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 211, Ai: 0},
         &PutConstant{C: wamAtom____0, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_53"},
+        &Jump{Label: "L_ite_cont_54"},
         &TrustMe{},
         &PutValue{Xn: 209, Ai: 0},
         &PutValue{Xn: 205, Ai: 1},
@@ -3339,23 +3373,23 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 207, Ai: 1},
         &BuiltinCall{Op: "member/2", Arity: 2},
         &GetLevel{Reg: 214},
-        &TryMeElse{Label: "L_ite_else_54", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_55", Arity: 3},
         &PutValue{Xn: 203, Ai: 0},
         &PutValue{Xn: 208, Ai: 1},
         &BuiltinCall{Op: "member/2", Arity: 2},
         &Cut{Reg: 214},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_54"},
+        &Jump{Label: "L_ite_cont_55"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &GetLevel{Reg: 215},
-        &TryMeElse{Label: "L_ite_else_55", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_56", Arity: 3},
         &PutValue{Xn: 209, Ai: 0},
         &PutValue{Xn: 203, Ai: 1},
         &Call{Pred: "base_name/2", Arity: 2},
         &Cut{Reg: 215},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_55"},
+        &Jump{Label: "L_ite_cont_56"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &PutStructure{Functor: "-/2", Ai: 0},
@@ -3399,7 +3433,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 205, Ai: 1},
         &BuiltinCall{Op: "!/0", Arity: 0},
         &GetLevel{Reg: 206},
-        &TryMeElse{Label: "L_ite_else_56", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_57", Arity: 2},
         &PutStructure{Functor: "dep/2", Ai: 0},
         &SetVariable{Xn: 201},
         &SetVariable{Xn: 203},
@@ -3413,7 +3447,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 202, Ai: 0},
         &PutValue{Xn: 203, Ai: 1},
         &Call{Pred: "satisfies/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_56"},
+        &Jump{Label: "L_ite_cont_57"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &PutValue{Xn: 204, Ai: 0},
@@ -3430,7 +3464,7 @@ var sharedWamCodeRaw = []Instruction{
         &UnifyVariable{Xn: 203},
         &GetVariable{Xn: 204, Ai: 1},
         &GetLevel{Reg: 205},
-        &TryMeElse{Label: "L_ite_else_57", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_58", Arity: 2},
         &PutValue{Xn: 204, Ai: 0},
         &PutValue{Xn: 200, Ai: 1},
         &PutVariable{Xn: 201, Ai: 2},
@@ -3439,7 +3473,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &Call{Pred: "satisfies/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_57"},
+        &Jump{Label: "L_ite_cont_58"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &PutValue{Xn: 203, Ai: 0},
@@ -3453,7 +3487,7 @@ var sharedWamCodeRaw = []Instruction{
         &UnifyVariable{Xn: 203},
         &UnifyVariable{Xn: 204},
         &GetLevel{Reg: 205},
-        &TryMeElse{Label: "L_ite_else_58", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_59", Arity: 3},
         &PutValue{Xn: 202, Ai: 0},
         &PutStructure{Functor: "req/2", Ai: 1},
         &SetVariable{Xn: 200},
@@ -3464,7 +3498,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 200, Ai: 1},
         &PutValue{Xn: 203, Ai: 2},
         &Call{Pred: "canonicalize_name/3", Arity: 3},
-        &Jump{Label: "L_ite_cont_58"},
+        &Jump{Label: "L_ite_cont_59"},
         &TrustMe{},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
@@ -3554,21 +3588,23 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 205, Ai: 3},
         &GetVariable{Xn: 206, Ai: 4},
         &GetVariable{Xn: 207, Ai: 5},
-        &GetLevel{Reg: 208},
-        &TryMeElse{Label: "L_ite_else_59", Arity: 6},
+        &GetVariable{Xn: 208, Ai: 6},
+        &GetLevel{Reg: 209},
+        &TryMeElse{Label: "L_ite_else_60", Arity: 7},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &PutValue{Xn: 206, Ai: 2},
         &PutValue{Xn: 200, Ai: 3},
         &Call{Pred: "first_alt_already/4", Arity: 4},
-        &Cut{Reg: 208},
+        &Cut{Reg: 209},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &PutValue{Xn: 205, Ai: 2},
         &PutValue{Xn: 206, Ai: 3},
         &PutValue{Xn: 207, Ai: 4},
-        &Call{Pred: "resolve_pending/5", Arity: 5},
-        &Jump{Label: "L_ite_cont_59"},
+        &PutValue{Xn: 208, Ai: 5},
+        &Call{Pred: "resolve_pending/6", Arity: 6},
+        &Jump{Label: "L_ite_cont_60"},
         &TrustMe{},
         &PutStructure{Functor: "dep/2", Ai: 0},
         &SetVariable{Xn: 203},
@@ -3578,14 +3614,15 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &PutStructure{Functor: "[|]/2", Ai: 2},
-        &SetVariable{Xn: 110},
+        &SetVariable{Xn: 111},
         &SetValue{Xn: 205},
-        &PutStructure{Functor: "req/2", Ai: 110},
+        &PutStructure{Functor: "req/2", Ai: 111},
         &SetValue{Xn: 203},
         &SetValue{Xn: 204},
         &PutValue{Xn: 206, Ai: 3},
         &PutValue{Xn: 207, Ai: 4},
-        &Call{Pred: "resolve_pending/5", Arity: 5},
+        &PutValue{Xn: 208, Ai: 5},
+        &Call{Pred: "resolve_pending/6", Arity: 6},
         &Deallocate{},
         &Proceed{},
         &Allocate{},
@@ -3611,132 +3648,238 @@ var sharedWamCodeRaw = []Instruction{
         &BuiltinCall{Op: "sort/2", Arity: 2},
         &Deallocate{},
         &Proceed{},
-        &TryMeElse{Label: "L_resolve_pending_5_2", Arity: 5},
+        &Allocate{},
+        &GetVariable{Xn: 100, Ai: 0},
+        &GetVariable{Xn: 101, Ai: 1},
+        &GetVariable{Xn: 102, Ai: 2},
+        &GetVariable{Xn: 103, Ai: 3},
+        &GetVariable{Xn: 104, Ai: 4},
+        &PutValue{Xn: 100, Ai: 0},
+        &PutValue{Xn: 101, Ai: 1},
+        &PutValue{Xn: 102, Ai: 2},
+        &PutValue{Xn: 103, Ai: 3},
+        &PutStructure{Functor: "st/2", Ai: 4},
+        &SetConstant{C: &Integer{Val: 0}},
+        &SetConstant{C: wamAtom____0},
+        &PutValue{Xn: 104, Ai: 5},
+        &Deallocate{},
+        &Execute{Pred: "resolve_pending/6"},
+        &TryMeElse{Label: "L_resolve_pending_6_2", Arity: 6},
         &GetVariable{Xn: 100, Ai: 0},
         &GetVariable{Xn: 101, Ai: 1},
         &GetConstant{C: wamAtom____0, Ai: 2},
         &GetVariable{Xn: 102, Ai: 3},
-        &GetValue{Xn: 102, Ai: 4},
+        &GetVariable{Xn: 103, Ai: 4},
+        &GetValue{Xn: 102, Ai: 5},
         &Proceed{},
         &TrustMe{},
         &Allocate{},
         &GetVariable{Xn: 205, Ai: 0},
         &GetVariable{Xn: 206, Ai: 1},
         &GetList{Ai: 2},
-        &UnifyVariable{Xn: 113},
-        &GetStructure{Functor: "req/2", Ai: 113},
         &UnifyVariable{Xn: 202},
-        &UnifyVariable{Xn: 204},
         &UnifyVariable{Xn: 207},
-        &GetVariable{Xn: 201, Ai: 3},
-        &GetVariable{Xn: 208, Ai: 4},
-        &GetLevel{Reg: 213},
-        &TryMeElse{Label: "L_ite_else_60", Arity: 5},
+        &GetVariable{Xn: 208, Ai: 3},
+        &GetVariable{Xn: 209, Ai: 4},
+        &GetVariable{Xn: 210, Ai: 5},
+        &GetLevel{Reg: 220},
+        &TryMeElse{Label: "L_ite_else_61", Arity: 6},
         &PutValue{Xn: 202, Ai: 0},
-        &PutStructure{Functor: "alternatives/1", Ai: 1},
-        &SetVariable{Xn: 200},
+        &PutStructure{Functor: "done/3", Ai: 1},
+        &SetVariable{Xn: 213},
+        &SetVariable{Xn: 211},
+        &SetVariable{Xn: 215},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Cut{Reg: 213},
+        &Cut{Reg: 220},
+        &PutValue{Xn: 209, Ai: 0},
+        &PutStructure{Functor: "st/2", Ai: 1},
+        &SetVariable{Xn: 200},
+        &SetVariable{Xn: 122},
+        &PutStructure{Functor: "[|]/2", Ai: 122},
+        &SetVariable{Xn: 123},
+        &SetVariable{Xn: 201},
+        &PutStructure{Functor: "a/3", Ai: 123},
+        &SetValue{Xn: 213},
+        &SetValue{Xn: 211},
+        &SetValue{Xn: 215},
+        &BuiltinCall{Op: "=/2", Arity: 2},
         &PutValue{Xn: 205, Ai: 0},
         &PutValue{Xn: 206, Ai: 1},
-        &PutValue{Xn: 200, Ai: 2},
-        &PutValue{Xn: 207, Ai: 3},
-        &PutValue{Xn: 201, Ai: 4},
-        &PutValue{Xn: 208, Ai: 5},
-        &Call{Pred: "resolve_alternatives/6", Arity: 6},
-        &Jump{Label: "L_ite_cont_60"},
+        &PutValue{Xn: 207, Ai: 2},
+        &PutValue{Xn: 208, Ai: 3},
+        &PutStructure{Functor: "st/2", Ai: 4},
+        &SetValue{Xn: 200},
+        &SetValue{Xn: 201},
+        &PutValue{Xn: 210, Ai: 5},
+        &Call{Pred: "resolve_pending/6", Arity: 6},
+        &Jump{Label: "L_ite_cont_61"},
         &TrustMe{},
-        &GetLevel{Reg: 214},
-        &TryMeElse{Label: "L_ite_else_61", Arity: 5},
-        &PutValue{Xn: 201, Ai: 0},
-        &PutValue{Xn: 202, Ai: 1},
-        &PutVariable{Xn: 203, Ai: 2},
-        &Call{Pred: "selected_ver/3", Arity: 3},
-        &Cut{Reg: 214},
+        &PutValue{Xn: 202, Ai: 0},
+        &PutStructure{Functor: "req/2", Ai: 1},
+        &SetVariable{Xn: 203},
+        &SetVariable{Xn: 212},
+        &BuiltinCall{Op: "=/2", Arity: 2},
+        &GetLevel{Reg: 221},
+        &TryMeElse{Label: "L_ite_else_62", Arity: 6},
         &PutValue{Xn: 203, Ai: 0},
-        &PutValue{Xn: 204, Ai: 1},
+        &PutStructure{Functor: "alternatives/1", Ai: 1},
+        &SetVariable{Xn: 204},
+        &BuiltinCall{Op: "=/2", Arity: 2},
+        &Cut{Reg: 221},
+        &PutValue{Xn: 205, Ai: 0},
+        &PutValue{Xn: 206, Ai: 1},
+        &PutValue{Xn: 204, Ai: 2},
+        &PutValue{Xn: 207, Ai: 3},
+        &PutValue{Xn: 208, Ai: 4},
+        &PutValue{Xn: 209, Ai: 5},
+        &PutValue{Xn: 210, Ai: 6},
+        &Call{Pred: "resolve_alternatives/7", Arity: 7},
+        &Jump{Label: "L_ite_cont_62"},
+        &TrustMe{},
+        &GetLevel{Reg: 222},
+        &TryMeElse{Label: "L_ite_else_63", Arity: 6},
+        &PutValue{Xn: 208, Ai: 0},
+        &PutValue{Xn: 203, Ai: 1},
+        &PutVariable{Xn: 211, Ai: 2},
+        &Call{Pred: "selected_ver/3", Arity: 3},
+        &Cut{Reg: 222},
+        &PutValue{Xn: 211, Ai: 0},
+        &PutValue{Xn: 212, Ai: 1},
         &Call{Pred: "satisfies/2", Arity: 2},
         &PutValue{Xn: 205, Ai: 0},
         &PutValue{Xn: 206, Ai: 1},
         &PutValue{Xn: 207, Ai: 2},
-        &PutValue{Xn: 201, Ai: 3},
-        &PutValue{Xn: 208, Ai: 4},
-        &Call{Pred: "resolve_pending/5", Arity: 5},
-        &Jump{Label: "L_ite_cont_61"},
+        &PutValue{Xn: 208, Ai: 3},
+        &PutValue{Xn: 209, Ai: 4},
+        &PutValue{Xn: 210, Ai: 5},
+        &Call{Pred: "resolve_pending/6", Arity: 6},
+        &Jump{Label: "L_ite_cont_63"},
         &TrustMe{},
-        &GetLevel{Reg: 215},
-        &TryMeElse{Label: "L_ite_else_62", Arity: 5},
+        &GetLevel{Reg: 223},
+        &TryMeElse{Label: "L_ite_else_64", Arity: 6},
         &PutValue{Xn: 206, Ai: 0},
-        &PutValue{Xn: 201, Ai: 1},
-        &PutValue{Xn: 202, Ai: 2},
-        &PutValue{Xn: 204, Ai: 3},
+        &PutValue{Xn: 208, Ai: 1},
+        &PutValue{Xn: 203, Ai: 2},
+        &PutValue{Xn: 212, Ai: 3},
         &Call{Pred: "already_provided/4", Arity: 4},
-        &Cut{Reg: 215},
+        &Cut{Reg: 223},
         &PutValue{Xn: 205, Ai: 0},
         &PutValue{Xn: 206, Ai: 1},
         &PutValue{Xn: 207, Ai: 2},
-        &PutValue{Xn: 201, Ai: 3},
-        &PutValue{Xn: 208, Ai: 4},
-        &Call{Pred: "resolve_pending/5", Arity: 5},
-        &Jump{Label: "L_ite_cont_62"},
+        &PutValue{Xn: 208, Ai: 3},
+        &PutValue{Xn: 209, Ai: 4},
+        &PutValue{Xn: 210, Ai: 5},
+        &Call{Pred: "resolve_pending/6", Arity: 6},
+        &Jump{Label: "L_ite_cont_64"},
         &TrustMe{},
         &PutValue{Xn: 205, Ai: 0},
         &PutValue{Xn: 206, Ai: 1},
-        &PutValue{Xn: 202, Ai: 2},
-        &PutValue{Xn: 204, Ai: 3},
-        &PutValue{Xn: 201, Ai: 4},
-        &PutVariable{Xn: 209, Ai: 5},
-        &PutVariable{Xn: 203, Ai: 6},
-        &PutVariable{Xn: 210, Ai: 7},
+        &PutValue{Xn: 203, Ai: 2},
+        &PutValue{Xn: 212, Ai: 3},
+        &PutValue{Xn: 208, Ai: 4},
+        &PutVariable{Xn: 213, Ai: 5},
+        &PutVariable{Xn: 211, Ai: 6},
+        &PutVariable{Xn: 214, Ai: 7},
         &Call{Pred: "pick_need/8", Arity: 8},
-        &GetLevel{Reg: 216},
-        &TryMeElse{Label: "L_ite_else_63", Arity: 5},
-        &PutValue{Xn: 210, Ai: 0},
+        &GetLevel{Reg: 224},
+        &TryMeElse{Label: "L_ite_else_65", Arity: 6},
+        &PutValue{Xn: 214, Ai: 0},
         &PutConstant{C: wamAtom_from_base_14, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Cut{Reg: 216},
-        &PutValue{Xn: 206, Ai: 0},
-        &PutValue{Xn: 209, Ai: 1},
-        &PutValue{Xn: 203, Ai: 2},
-        &PutVariable{Xn: 211, Ai: 3},
-        &Call{Pred: "collect_deps/4", Arity: 4},
-        &PutValue{Xn: 211, Ai: 0},
-        &PutValue{Xn: 207, Ai: 1},
-        &PutVariable{Xn: 212, Ai: 2},
-        &BuiltinCall{Op: "append/3", Arity: 3},
+        &Cut{Reg: 224},
+        &PutValue{Xn: 209, Ai: 0},
+        &PutStructure{Functor: "st/2", Ai: 1},
+        &SetVariable{Xn: 215},
+        &SetVariable{Xn: 216},
+        &BuiltinCall{Op: "=/2", Arity: 2},
+        &GetLevel{Reg: 225},
+        &TryMeElse{Label: "L_ite_else_66", Arity: 6},
+        &PutValue{Xn: 216, Ai: 0},
+        &PutValue{Xn: 213, Ai: 1},
+        &PutValue{Xn: 211, Ai: 2},
+        &PutValue{Xn: 215, Ai: 3},
+        &Call{Pred: "active_member/4", Arity: 4},
+        &Cut{Reg: 225},
         &PutValue{Xn: 205, Ai: 0},
         &PutValue{Xn: 206, Ai: 1},
-        &PutValue{Xn: 212, Ai: 2},
-        &PutValue{Xn: 201, Ai: 3},
-        &PutValue{Xn: 208, Ai: 4},
-        &Call{Pred: "resolve_pending/5", Arity: 5},
-        &Jump{Label: "L_ite_cont_63"},
+        &PutValue{Xn: 207, Ai: 2},
+        &PutValue{Xn: 208, Ai: 3},
+        &PutValue{Xn: 209, Ai: 4},
+        &PutValue{Xn: 210, Ai: 5},
+        &Call{Pred: "resolve_pending/6", Arity: 6},
+        &Jump{Label: "L_ite_cont_66"},
         &TrustMe{},
         &PutValue{Xn: 206, Ai: 0},
-        &PutValue{Xn: 209, Ai: 1},
-        &PutValue{Xn: 203, Ai: 2},
-        &PutValue{Xn: 201, Ai: 3},
-        &Call{Pred: "no_acc_conflicts/4", Arity: 4},
-        &PutValue{Xn: 206, Ai: 0},
-        &PutValue{Xn: 209, Ai: 1},
-        &PutValue{Xn: 203, Ai: 2},
-        &PutVariable{Xn: 211, Ai: 3},
+        &PutValue{Xn: 213, Ai: 1},
+        &PutValue{Xn: 211, Ai: 2},
+        &PutVariable{Xn: 217, Ai: 3},
         &Call{Pred: "collect_deps/4", Arity: 4},
-        &PutValue{Xn: 211, Ai: 0},
-        &PutValue{Xn: 207, Ai: 1},
-        &PutVariable{Xn: 212, Ai: 2},
+        &PutValue{Xn: 217, Ai: 0},
+        &PutStructure{Functor: "[|]/2", Ai: 1},
+        &SetVariable{Xn: 123},
+        &SetValue{Xn: 207},
+        &PutStructure{Functor: "done/3", Ai: 123},
+        &SetValue{Xn: 213},
+        &SetValue{Xn: 211},
+        &SetValue{Xn: 215},
+        &PutVariable{Xn: 218, Ai: 2},
         &BuiltinCall{Op: "append/3", Arity: 3},
         &PutValue{Xn: 205, Ai: 0},
         &PutValue{Xn: 206, Ai: 1},
-        &PutValue{Xn: 212, Ai: 2},
+        &PutValue{Xn: 218, Ai: 2},
+        &PutValue{Xn: 208, Ai: 3},
+        &PutStructure{Functor: "st/2", Ai: 4},
+        &SetValue{Xn: 215},
+        &SetVariable{Xn: 125},
+        &PutStructure{Functor: "[|]/2", Ai: 125},
+        &SetVariable{Xn: 126},
+        &SetValue{Xn: 216},
+        &PutStructure{Functor: "a/3", Ai: 126},
+        &SetValue{Xn: 213},
+        &SetValue{Xn: 211},
+        &SetValue{Xn: 215},
+        &PutValue{Xn: 210, Ai: 5},
+        &Call{Pred: "resolve_pending/6", Arity: 6},
+        &Jump{Label: "L_ite_cont_65"},
+        &TrustMe{},
+        &PutValue{Xn: 206, Ai: 0},
+        &PutValue{Xn: 213, Ai: 1},
+        &PutValue{Xn: 211, Ai: 2},
+        &PutValue{Xn: 208, Ai: 3},
+        &Call{Pred: "no_acc_conflicts/4", Arity: 4},
+        &PutValue{Xn: 206, Ai: 0},
+        &PutValue{Xn: 213, Ai: 1},
+        &PutValue{Xn: 211, Ai: 2},
+        &PutVariable{Xn: 217, Ai: 3},
+        &Call{Pred: "collect_deps/4", Arity: 4},
+        &PutValue{Xn: 217, Ai: 0},
+        &PutValue{Xn: 207, Ai: 1},
+        &PutVariable{Xn: 218, Ai: 2},
+        &BuiltinCall{Op: "append/3", Arity: 3},
+        &PutValue{Xn: 209, Ai: 0},
+        &PutStructure{Functor: "st/2", Ai: 1},
+        &SetVariable{Xn: 215},
+        &SetVariable{Xn: 216},
+        &BuiltinCall{Op: "=/2", Arity: 2},
+        &PutVariable{Xn: 219, Ai: 0},
+        &PutStructure{Functor: "+/2", Ai: 1},
+        &SetValue{Xn: 215},
+        &SetConstant{C: &Integer{Val: 1}},
+        &BuiltinCall{Op: "is/2", Arity: 2},
+        &PutValue{Xn: 205, Ai: 0},
+        &PutValue{Xn: 206, Ai: 1},
+        &PutValue{Xn: 218, Ai: 2},
         &PutStructure{Functor: "[|]/2", Ai: 3},
-        &SetVariable{Xn: 115},
-        &SetValue{Xn: 201},
-        &PutStructure{Functor: "-/2", Ai: 115},
-        &SetValue{Xn: 209},
-        &SetValue{Xn: 203},
-        &PutValue{Xn: 208, Ai: 4},
-        &Call{Pred: "resolve_pending/5", Arity: 5},
+        &SetVariable{Xn: 124},
+        &SetValue{Xn: 208},
+        &PutStructure{Functor: "-/2", Ai: 124},
+        &SetValue{Xn: 213},
+        &SetValue{Xn: 211},
+        &PutStructure{Functor: "st/2", Ai: 4},
+        &SetValue{Xn: 219},
+        &SetValue{Xn: 216},
+        &PutValue{Xn: 210, Ai: 5},
+        &Call{Pred: "resolve_pending/6", Arity: 6},
         &Deallocate{},
         &Proceed{},
         &TryMeElse{Label: "L_roots_to_pairs_3_2", Arity: 3},
@@ -3789,42 +3932,42 @@ var sharedWamCodeRaw = []Instruction{
         &PutVariable{Xn: 201, Ai: 2},
         &Call{Pred: "canonicalize_name/3", Arity: 3},
         &GetLevel{Reg: 206},
-        &TryMeElse{Label: "L_ite_else_64", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_67", Arity: 4},
         &GetLevel{Reg: 207},
-        &TryMeElse{Label: "L_ite_else_65", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_68", Arity: 4},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &PutValue{Xn: 205, Ai: 2},
         &Call{Pred: "package_in/3", Arity: 3},
         &Cut{Reg: 207},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_65"},
+        &Jump{Label: "L_ite_cont_68"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &Cut{Reg: 206},
         &PutValue{Xn: 203, Ai: 0},
         &PutConstant{C: wamAtom_no_candidate_16, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_64"},
+        &Jump{Label: "L_ite_cont_67"},
         &TrustMe{},
         &GetLevel{Reg: 207},
-        &TryMeElse{Label: "L_ite_else_66", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_69", Arity: 4},
         &GetLevel{Reg: 208},
-        &TryMeElse{Label: "L_ite_else_67", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_70", Arity: 4},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &PutVariable{Xn: 202, Ai: 2},
         &Call{Pred: "base_reason/3", Arity: 3},
         &Cut{Reg: 208},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_67"},
+        &Jump{Label: "L_ite_cont_70"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &Cut{Reg: 207},
         &PutValue{Xn: 203, Ai: 0},
         &PutConstant{C: wamAtom_no_candidate_16, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_66"},
+        &Jump{Label: "L_ite_cont_69"},
         &TrustMe{},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
@@ -3913,7 +4056,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 202, Ai: 2},
         &GetVariable{Xn: 203, Ai: 3},
         &GetLevel{Reg: 208},
-        &TryMeElse{Label: "L_ite_else_68", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_71", Arity: 4},
         &PutValue{Xn: 204, Ai: 0},
         &PutValue{Xn: 200, Ai: 1},
         &BuiltinCall{Op: "==/2", Arity: 2},
@@ -3928,7 +4071,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 201, Ai: 2},
         &PutValue{Xn: 203, Ai: 3},
         &Call{Pred: "same_key/4", Arity: 4},
-        &Jump{Label: "L_ite_cont_68"},
+        &Jump{Label: "L_ite_cont_71"},
         &TrustMe{},
         &PutValue{Xn: 202, Ai: 0},
         &PutConstant{C: wamAtom____0, Ai: 1},
@@ -3963,13 +4106,13 @@ var sharedWamCodeRaw = []Instruction{
         &GetStructure{Functor: "gte/1", Ai: 1},
         &UnifyVariable{Xn: 101},
         &GetLevel{Reg: 200},
-        &TryMeElse{Label: "L_ite_else_69", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_72", Arity: 2},
         &PutValue{Xn: 100, Ai: 0},
         &PutValue{Xn: 101, Ai: 1},
         &Call{Pred: "version_lt/2", Arity: 2},
         &Cut{Reg: 200},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_69"},
+        &Jump{Label: "L_ite_cont_72"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &Proceed{},
@@ -3978,13 +4121,13 @@ var sharedWamCodeRaw = []Instruction{
         &GetStructure{Functor: "lte/1", Ai: 1},
         &UnifyVariable{Xn: 101},
         &GetLevel{Reg: 200},
-        &TryMeElse{Label: "L_ite_else_70", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_73", Arity: 2},
         &PutValue{Xn: 101, Ai: 0},
         &PutValue{Xn: 100, Ai: 1},
         &Call{Pred: "version_lt/2", Arity: 2},
         &Cut{Reg: 200},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_70"},
+        &Jump{Label: "L_ite_cont_73"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &Proceed{},
@@ -4013,13 +4156,13 @@ var sharedWamCodeRaw = []Instruction{
         &UnifyVariable{Xn: 102},
         &UnifyVariable{Xn: 201},
         &GetLevel{Reg: 202},
-        &TryMeElse{Label: "L_ite_else_71", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_74", Arity: 2},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 102, Ai: 1},
         &Call{Pred: "version_lt/2", Arity: 2},
         &Cut{Reg: 202},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_71"},
+        &Jump{Label: "L_ite_cont_74"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &PutValue{Xn: 200, Ai: 0},
@@ -4039,7 +4182,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 204, Ai: 1},
         &GetVariable{Xn: 210, Ai: 2},
         &GetLevel{Reg: 211},
-        &TryMeElse{Label: "L_ite_else_72", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_75", Arity: 3},
         &PutValue{Xn: 201, Ai: 0},
         &PutStructure{Functor: "layer/2", Ai: 1},
         &SetConstant{C: wamAtom_base_20},
@@ -4050,10 +4193,10 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 204, Ai: 1},
         &PutVariable{Xn: 209, Ai: 2},
         &Call{Pred: "scan_base_holds/3", Arity: 3},
-        &Jump{Label: "L_ite_cont_72"},
+        &Jump{Label: "L_ite_cont_75"},
         &TrustMe{},
         &GetLevel{Reg: 212},
-        &TryMeElse{Label: "L_ite_else_73", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_76", Arity: 3},
         &PutValue{Xn: 201, Ai: 0},
         &PutStructure{Functor: "layer/2", Ai: 1},
         &SetVariable{Xn: 202},
@@ -4063,10 +4206,10 @@ var sharedWamCodeRaw = []Instruction{
         &PutVariable{Xn: 209, Ai: 0},
         &PutValue{Xn: 204, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_73"},
+        &Jump{Label: "L_ite_cont_76"},
         &TrustMe{},
         &GetLevel{Reg: 213},
-        &TryMeElse{Label: "L_ite_else_74", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_77", Arity: 3},
         &PutValue{Xn: 201, Ai: 0},
         &PutStructure{Functor: "base/2", Ai: 1},
         &SetVariable{Xn: 112},
@@ -4085,10 +4228,10 @@ var sharedWamCodeRaw = []Instruction{
         &SetValue{Xn: 206},
         &SetValue{Xn: 207},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_74"},
+        &Jump{Label: "L_ite_cont_77"},
         &TrustMe{},
         &GetLevel{Reg: 214},
-        &TryMeElse{Label: "L_ite_else_75", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_78", Arity: 3},
         &PutValue{Xn: 201, Ai: 0},
         &PutStructure{Functor: "-/2", Ai: 1},
         &SetVariable{Xn: 205},
@@ -4104,7 +4247,7 @@ var sharedWamCodeRaw = []Instruction{
         &SetValue{Xn: 206},
         &SetConstant{C: wamAtom_blanket_2},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_75"},
+        &Jump{Label: "L_ite_cont_78"},
         &TrustMe{},
         &PutVariable{Xn: 209, Ai: 0},
         &PutValue{Xn: 204, Ai: 1},
@@ -4120,13 +4263,13 @@ var sharedWamCodeRaw = []Instruction{
         &UnifyVariable{Xn: 201},
         &GetVariable{Xn: 202, Ai: 1},
         &GetLevel{Reg: 203},
-        &TryMeElse{Label: "L_ite_else_76", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_79", Arity: 2},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &BuiltinCall{Op: "==/2", Arity: 2},
         &Cut{Reg: 203},
         &BuiltinCall{Op: "true/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_76"},
+        &Jump{Label: "L_ite_cont_79"},
         &TrustMe{},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
@@ -4169,16 +4312,16 @@ var sharedWamCodeRaw = []Instruction{
         &UnifyVariable{Xn: 203},
         &UnifyVariable{Xn: 205},
         &GetLevel{Reg: 206},
-        &TryMeElse{Label: "L_ite_else_77", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_80", Arity: 2},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &Call{Pred: "order_lt/2", Arity: 2},
         &Cut{Reg: 206},
         &BuiltinCall{Op: "true/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_77"},
+        &Jump{Label: "L_ite_cont_80"},
         &TrustMe{},
         &GetLevel{Reg: 207},
-        &TryMeElse{Label: "L_ite_else_78", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_81", Arity: 2},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &BuiltinCall{Op: "==/2", Arity: 2},
@@ -4187,7 +4330,7 @@ var sharedWamCodeRaw = []Instruction{
         &BuiltinCall{Op: "</2", Arity: 2},
         &Cut{Reg: 207},
         &BuiltinCall{Op: "true/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_78"},
+        &Jump{Label: "L_ite_cont_81"},
         &TrustMe{},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
@@ -4207,7 +4350,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 202, Ai: 1},
         &GetVariable{Xn: 203, Ai: 2},
         &GetLevel{Reg: 204},
-        &TryMeElse{Label: "L_ite_else_79", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_82", Arity: 3},
         &PutValue{Xn: 200, Ai: 0},
         &PutStructure{Functor: "-/2", Ai: 1},
         &SetValue{Xn: 202},
@@ -4215,7 +4358,7 @@ var sharedWamCodeRaw = []Instruction{
         &BuiltinCall{Op: "=/2", Arity: 2},
         &Cut{Reg: 204},
         &BuiltinCall{Op: "true/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_79"},
+        &Jump{Label: "L_ite_cont_82"},
         &TrustMe{},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
@@ -4227,7 +4370,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 200, Ai: 0},
         &GetVariable{Xn: 202, Ai: 1},
         &GetLevel{Reg: 203},
-        &TryMeElse{Label: "L_ite_else_80", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_83", Arity: 2},
         &PutConstant{C: wamAtom_is_v3_21, Ai: 0},
         &PutValue{Xn: 200, Ai: 1},
         &BuiltinCall{Op: "maplist/2", Arity: 2},
@@ -4238,7 +4381,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &BuiltinCall{Op: "reverse/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_80"},
+        &Jump{Label: "L_ite_cont_83"},
         &TrustMe{},
         &PutConstant{C: wamAtom_cmp_ver_22, Ai: 0},
         &PutValue{Xn: 200, Ai: 1},
@@ -4276,7 +4419,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 206, Ai: 1},
         &GetVariable{Xn: 207, Ai: 2},
         &GetLevel{Reg: 208},
-        &TryMeElse{Label: "L_ite_else_81", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_84", Arity: 3},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 207, Ai: 1},
         &BuiltinCall{Op: "\\==/2", Arity: 2},
@@ -4286,13 +4429,13 @@ var sharedWamCodeRaw = []Instruction{
         &PutVariable{Xn: 202, Ai: 3},
         &PutVariable{Xn: 203, Ai: 4},
         &Call{Pred: "dep_targets/5", Arity: 5},
-        &TryMeElse{Label: "L_ite_else_82", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_85", Arity: 3},
         &PutValue{Xn: 202, Ai: 0},
         &PutValue{Xn: 207, Ai: 1},
         &BuiltinCall{Op: "==/2", Arity: 2},
         &PutValue{Xn: 203, Ai: 0},
         &Call{Pred: "tight_constraint/1", Arity: 1},
-        &Jump{Label: "L_ite_cont_82"},
+        &Jump{Label: "L_ite_cont_85"},
         &TrustMe{},
         &PutValue{Xn: 206, Ai: 0},
         &PutValue{Xn: 207, Ai: 1},
@@ -4306,7 +4449,7 @@ var sharedWamCodeRaw = []Instruction{
         &Call{Pred: "provides_sat/5", Arity: 5},
         &Cut{Reg: 208},
         &BuiltinCall{Op: "true/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_81"},
+        &Jump{Label: "L_ite_cont_84"},
         &TrustMe{},
         &PutValue{Xn: 205, Ai: 0},
         &PutValue{Xn: 206, Ai: 1},
@@ -4376,7 +4519,7 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 212, Ai: 5},
         &GetVariable{Xn: 211, Ai: 6},
         &GetLevel{Reg: 213},
-        &TryMeElse{Label: "L_ite_else_83", Arity: 7},
+        &TryMeElse{Label: "L_ite_else_86", Arity: 7},
         &PutStructure{Functor: "-/2", Ai: 0},
         &SetValue{Xn: 209},
         &SetVariable{Xn: 205},
@@ -4417,7 +4560,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 208, Ai: 0},
         &PutValue{Xn: 207, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_83"},
+        &Jump{Label: "L_ite_cont_86"},
         &TrustMe{},
         &PutValue{Xn: 208, Ai: 0},
         &PutStructure{Functor: "[|]/2", Ai: 1},
@@ -4474,7 +4617,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 106, Ai: 2},
         &BuiltinCall{Op: "compare/3", Arity: 3},
         &GetLevel{Reg: 206},
-        &TryMeElse{Label: "L_ite_else_84", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_87", Arity: 3},
         &PutValue{Xn: 201, Ai: 0},
         &PutConstant{C: wamAtom___9, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
@@ -4482,10 +4625,10 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 204, Ai: 0},
         &PutValue{Xn: 200, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
-        &Jump{Label: "L_ite_cont_84"},
+        &Jump{Label: "L_ite_cont_87"},
         &TrustMe{},
         &GetLevel{Reg: 207},
-        &TryMeElse{Label: "L_ite_else_85", Arity: 3},
+        &TryMeElse{Label: "L_ite_else_88", Arity: 3},
         &PutValue{Xn: 201, Ai: 0},
         &PutConstant{C: wamAtom___7, Ai: 1},
         &BuiltinCall{Op: "=/2", Arity: 2},
@@ -4494,7 +4637,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 203, Ai: 1},
         &PutValue{Xn: 204, Ai: 2},
         &Call{Pred: "tree_lookup/3", Arity: 3},
-        &Jump{Label: "L_ite_cont_85"},
+        &Jump{Label: "L_ite_cont_88"},
         &TrustMe{},
         &PutValue{Xn: 205, Ai: 0},
         &PutValue{Xn: 203, Ai: 1},
@@ -4526,7 +4669,7 @@ var sharedWamCodeRaw = []Instruction{
         &PutVariable{Xn: 201, Ai: 2},
         &Call{Pred: "canonicalize_name/3", Arity: 3},
         &GetLevel{Reg: 204},
-        &TryMeElse{Label: "L_ite_else_86", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_89", Arity: 4},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &PutValue{Xn: 202, Ai: 2},
@@ -4541,7 +4684,7 @@ var sharedWamCodeRaw = []Instruction{
         &SetValue{Xn: 202},
         &PutValue{Xn: 203, Ai: 2},
         &Call{Pred: "close_moving/3", Arity: 3},
-        &Jump{Label: "L_ite_cont_86"},
+        &Jump{Label: "L_ite_cont_89"},
         &TrustMe{},
         &PutValue{Xn: 203, Ai: 0},
         &PutConstant{C: wamAtom_no_candidate_16, Ai: 1},
@@ -4561,16 +4704,16 @@ var sharedWamCodeRaw = []Instruction{
         &UnifyVariable{Xn: 203},
         &UnifyVariable{Xn: 205},
         &GetLevel{Reg: 206},
-        &TryMeElse{Label: "L_ite_else_87", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_90", Arity: 2},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &BuiltinCall{Op: "</2", Arity: 2},
         &Cut{Reg: 206},
         &BuiltinCall{Op: "true/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_87"},
+        &Jump{Label: "L_ite_cont_90"},
         &TrustMe{},
         &GetLevel{Reg: 207},
-        &TryMeElse{Label: "L_ite_else_88", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_91", Arity: 2},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &BuiltinCall{Op: "=:=/2", Arity: 2},
@@ -4579,7 +4722,7 @@ var sharedWamCodeRaw = []Instruction{
         &BuiltinCall{Op: "</2", Arity: 2},
         &Cut{Reg: 207},
         &BuiltinCall{Op: "true/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_88"},
+        &Jump{Label: "L_ite_cont_91"},
         &TrustMe{},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
@@ -4603,16 +4746,16 @@ var sharedWamCodeRaw = []Instruction{
         &UnifyVariable{Xn: 203},
         &UnifyVariable{Xn: 205},
         &GetLevel{Reg: 206},
-        &TryMeElse{Label: "L_ite_else_89", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_92", Arity: 2},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &BuiltinCall{Op: "</2", Arity: 2},
         &Cut{Reg: 206},
         &BuiltinCall{Op: "true/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_89"},
+        &Jump{Label: "L_ite_cont_92"},
         &TrustMe{},
         &GetLevel{Reg: 207},
-        &TryMeElse{Label: "L_ite_else_90", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_93", Arity: 2},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &BuiltinCall{Op: "=:=/2", Arity: 2},
@@ -4621,29 +4764,29 @@ var sharedWamCodeRaw = []Instruction{
         &Call{Pred: "segs_lt/2", Arity: 2},
         &Cut{Reg: 207},
         &BuiltinCall{Op: "true/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_90"},
+        &Jump{Label: "L_ite_cont_93"},
         &TrustMe{},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &BuiltinCall{Op: "=:=/2", Arity: 2},
         &GetLevel{Reg: 208},
-        &TryMeElse{Label: "L_ite_else_91", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_94", Arity: 2},
         &PutValue{Xn: 202, Ai: 0},
         &PutValue{Xn: 203, Ai: 1},
         &Call{Pred: "segs_lt/2", Arity: 2},
         &Cut{Reg: 208},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_91"},
+        &Jump{Label: "L_ite_cont_94"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &GetLevel{Reg: 209},
-        &TryMeElse{Label: "L_ite_else_92", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_95", Arity: 2},
         &PutValue{Xn: 203, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &Call{Pred: "segs_lt/2", Arity: 2},
         &Cut{Reg: 209},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_92"},
+        &Jump{Label: "L_ite_cont_95"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &PutValue{Xn: 204, Ai: 0},
@@ -4657,13 +4800,13 @@ var sharedWamCodeRaw = []Instruction{
         &GetVariable{Xn: 206, Ai: 2},
         &GetVariable{Xn: 200, Ai: 3},
         &GetLevel{Reg: 207},
-        &TryMeElse{Label: "L_ite_else_93", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_96", Arity: 4},
         &PutValue{Xn: 202, Ai: 0},
         &PutValue{Xn: 201, Ai: 1},
         &Call{Pred: "package_in_name/2", Arity: 2},
         &Cut{Reg: 207},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_93"},
+        &Jump{Label: "L_ite_cont_96"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &PutVariable{Xn: 203, Ai: 203},
@@ -4681,13 +4824,13 @@ var sharedWamCodeRaw = []Instruction{
         &PutValue{Xn: 204, Ai: 2},
         &Call{Pred: "base_ver/3", Arity: 3},
         &GetLevel{Reg: 208},
-        &TryMeElse{Label: "L_ite_else_94", Arity: 4},
+        &TryMeElse{Label: "L_ite_else_97", Arity: 4},
         &PutValue{Xn: 205, Ai: 0},
         &PutValue{Xn: 206, Ai: 1},
         &Call{Pred: "provide_satisfies/2", Arity: 2},
         &Cut{Reg: 208},
         &BuiltinCall{Op: "fail/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_94"},
+        &Jump{Label: "L_ite_cont_97"},
         &TrustMe{},
         &BuiltinCall{Op: "true/0", Arity: 0},
         &PutStructure{Functor: "blocked/3", Ai: 0},
@@ -4748,13 +4891,13 @@ var sharedWamCodeRaw = []Instruction{
         &PutVariable{Xn: 202, Ai: 0},
         &Call{Pred: "index_threshold/1", Arity: 1},
         &GetLevel{Reg: 203},
-        &TryMeElse{Label: "L_ite_else_95", Arity: 2},
+        &TryMeElse{Label: "L_ite_else_98", Arity: 2},
         &PutValue{Xn: 200, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
         &Call{Pred: "long_enough/2", Arity: 2},
         &Cut{Reg: 203},
         &BuiltinCall{Op: "true/0", Arity: 0},
-        &Jump{Label: "L_ite_cont_95"},
+        &Jump{Label: "L_ite_cont_98"},
         &TrustMe{},
         &PutValue{Xn: 201, Ai: 0},
         &PutValue{Xn: 202, Ai: 1},
@@ -4767,537 +4910,544 @@ var sharedWamLabels = map[string]int{
         "acc_conflicts/4": 0,
         "L_ite_else_1": 16,
         "L_ite_cont_1": 22,
-        "alias_list/2": 24,
-        "L_alias_list_2_2": 35,
-        "L_alias_list_2_2_body": 36,
-        "L_alias_list_2_3": 48,
-        "L_alias_list_2_3_body": 49,
-        "L_alias_list_2_4": 62,
-        "L_alias_list_2_4_body": 63,
-        "alias_lookup/3": 73,
-        "L_alias_lookup_3_2": 78,
-        "L_alias_lookup_3_2_body": 79,
-        "L_ite_else_2": 98,
-        "L_ite_cont_2": 103,
-        "already_provided/4": 105,
-        "already_satisfied/4": 122,
-        "L_already_satisfied_4_2": 136,
-        "L_already_satisfied_4_2_body": 137,
-        "alt_reasons/4": 148,
-        "L_alt_reasons_4_2": 154,
-        "L_alt_reasons_4_2_body": 155,
-        "L_ite_else_3": 181,
-        "L_ite_cont_3": 185,
-        "audit_holds/4": 191,
-        "L_audit_holds_4_2": 197,
-        "L_audit_holds_4_2_body": 198,
-        "L_ite_else_5": 229,
-        "L_ite_cont_5": 235,
-        "L_ite_else_4": 236,
-        "L_ite_cont_4": 244,
-        "base_holds/2": 252,
-        "base_list/2": 267,
-        "L_base_list_2_2": 278,
-        "L_base_list_2_2_body": 279,
-        "L_base_list_2_3": 291,
-        "L_base_list_2_3_body": 292,
-        "L_base_list_2_4": 305,
-        "L_base_list_2_4_body": 306,
-        "base_name/2": 316,
-        "base_reason/3": 324,
-        "base_ver/3": 336,
-        "blocked_acc/5": 355,
-        "L_blocked_acc_5_2": 372,
-        "L_blocked_acc_5_2_body": 373,
-        "L_blocked_acc_5_3": 400,
-        "L_blocked_acc_5_3_body": 401,
-        "L_ite_else_7": 423,
-        "L_ite_cont_7": 425,
-        "L_ite_else_6": 440,
-        "L_ite_else_8": 466,
-        "L_ite_cont_8": 470,
-        "L_ite_cont_6": 470,
-        "L_ite_else_9": 493,
-        "L_ite_cont_9": 497,
-        "blocked_acc_list/5": 499,
-        "L_blocked_acc_list_5_2": 506,
-        "L_blocked_acc_list_5_2_body": 507,
-        "blocked_from/4": 528,
-        "L_blocked_from_4_2": 552,
-        "L_blocked_from_4_2_body": 553,
-        "L_ite_else_10": 568,
-        "L_ite_cont_10": 570,
-        "L_ite_else_11": 582,
-        "L_ite_cont_11": 584,
-        "L_blocked_from_4_3": 596,
-        "L_blocked_from_4_3_body": 597,
-        "L_ite_else_12": 612,
-        "L_ite_cont_12": 614,
-        "L_blocked_from_4_4": 634,
-        "L_blocked_from_4_4_body": 635,
-        "L_ite_else_13": 650,
-        "L_ite_cont_13": 652,
-        "build_tree/4": 674,
-        "L_ite_else_14": 692,
-        "L_ite_cont_14": 731,
-        "candidates_high_first/4": 733,
-        "L_ite_else_15": 746,
-        "L_ite_cont_15": 748,
-        "canonicalize_name/3": 761,
-        "close_moving/3": 773,
-        "L_ite_else_16": 799,
-        "L_ite_else_17": 824,
-        "L_ite_cont_17": 835,
-        "L_ite_cont_16": 835,
-        "cmp_ver/3": 837,
-        "L_cmp_ver_3_2": 849,
-        "L_cmp_ver_3_2_body": 850,
-        "L_cmp_ver_3_3": 860,
-        "L_cmp_ver_3_3_body": 861,
-        "collect_deps/4": 865,
-        "L_ite_else_19": 889,
-        "L_ite_cont_19": 893,
-        "L_ite_else_18": 894,
-        "L_ite_cont_18": 903,
-        "conflicts_in/4": 905,
-        "conflicts_list/2": 921,
-        "L_conflicts_list_2_2": 932,
-        "L_conflicts_list_2_2_body": 933,
-        "L_conflicts_list_2_3": 945,
-        "L_conflicts_list_2_3_body": 946,
-        "L_conflicts_list_2_4": 959,
-        "L_conflicts_list_2_4_body": 960,
-        "dep_breaks/5": 970,
-        "L_ite_else_20": 1001,
-        "L_ite_cont_20": 1008,
-        "dep_breaks_moving/5": 1010,
-        "dep_breaks_need/4": 1026,
-        "L_ite_else_21": 1051,
-        "L_ite_cont_21": 1053,
-        "L_ite_else_22": 1070,
-        "L_ite_cont_22": 1072,
-        "L_dep_breaks_need_4_2": 1074,
-        "L_dep_breaks_need_4_2_body": 1075,
-        "L_ite_else_23": 1092,
-        "L_ite_cont_23": 1094,
-        "dep_index/2": 1096,
-        "dep_mentions/2": 1102,
-        "L_dep_mentions_2_2": 1115,
-        "L_dep_mentions_2_2_body": 1116,
-        "dep_targets/5": 1124,
-        "L_ite_else_24": 1149,
-        "L_ite_cont_24": 1156,
-        "dep_to_req/3": 1158,
-        "L_dep_to_req_3_2": 1171,
-        "L_dep_to_req_3_2_body": 1172,
-        "dependents/3": 1178,
-        "dependents_installed/3": 1200,
-        "depends_in/5": 1219,
-        "depends_list/2": 1237,
-        "L_depends_list_2_2": 1248,
-        "L_depends_list_2_2_body": 1249,
-        "L_depends_list_2_3": 1261,
-        "L_depends_list_2_3_body": 1262,
-        "L_depends_list_2_4": 1275,
-        "L_depends_list_2_4_body": 1276,
-        "direct_on/4": 1286,
-        "L_direct_on_4_2": 1292,
-        "L_direct_on_4_2_body": 1293,
-        "L_ite_else_25": 1320,
-        "L_ite_cont_25": 1324,
-        "exclude_name/3": 1330,
-        "L_exclude_name_3_2": 1335,
-        "L_exclude_name_3_2_body": 1336,
-        "L_exclude_name_3_3": 1348,
-        "L_exclude_name_3_3_body": 1349,
-        "excluded_list/2": 1362,
-        "L_excluded_list_2_2": 1373,
-        "L_excluded_list_2_2_body": 1374,
-        "L_excluded_list_2_3": 1386,
-        "L_excluded_list_2_3_body": 1387,
-        "L_excluded_list_2_4": 1400,
-        "L_excluded_list_2_4_body": 1401,
-        "excluded_name/2": 1411,
-        "explain_alt/5": 1422,
-        "L_ite_else_26": 1440,
-        "L_ite_else_28": 1457,
-        "L_ite_cont_28": 1459,
-        "L_ite_else_27": 1464,
-        "L_ite_cont_27": 1466,
-        "L_ite_cont_26": 1466,
-        "explain_blocked/3": 1468,
-        "explain_blocked_list/3": 1482,
-        "filter_satisfies/3": 1502,
-        "L_filter_satisfies_3_2": 1507,
-        "L_filter_satisfies_3_2_body": 1508,
-        "L_ite_else_29": 1526,
-        "L_ite_cont_29": 1530,
-        "first_alt_already/4": 1535,
-        "L_first_alt_already_4_2": 1554,
-        "L_first_alt_already_4_2_body": 1555,
-        "first_broken/4": 1572,
-        "L_first_broken_4_2": 1578,
-        "L_first_broken_4_2_body": 1579,
-        "L_ite_else_30": 1603,
-        "L_ite_else_31": 1620,
-        "L_ite_cont_31": 1626,
-        "L_ite_cont_30": 1626,
-        "follow_dep_name/5": 1628,
-        "follow_raw_dep/4": 1646,
-        "L_follow_raw_dep_4_2": 1669,
-        "L_follow_raw_dep_4_2_body": 1670,
-        "freeze_audit/2": 1684,
-        "group_keyed/2": 1701,
-        "L_group_keyed_2_2": 1705,
-        "L_group_keyed_2_2_body": 1706,
-        "hold_reason/3": 1734,
-        "L_ite_else_32": 1754,
-        "L_ite_cont_32": 1759,
-        "index_catalog/2": 1761,
-        "L_ite_else_33": 1811,
-        "L_ite_cont_33": 1815,
-        "index_threshold/1": 1817,
-        "inst_closure_names/5": 1819,
-        "inst_walk/6": 1838,
-        "L_inst_walk_6_2": 1846,
-        "L_inst_walk_6_2_body": 1847,
-        "L_ite_else_34": 1873,
-        "L_ite_cont_34": 1908,
-        "installed_list/2": 1910,
-        "L_installed_list_2_2": 1921,
-        "L_installed_list_2_2_body": 1922,
-        "L_installed_list_2_3": 1934,
-        "L_installed_list_2_3_body": 1935,
-        "L_installed_list_2_4": 1948,
-        "L_installed_list_2_4_body": 1949,
-        "installed_or_base/3": 1959,
-        "L_installed_or_base_3_2": 1969,
-        "L_installed_or_base_3_2_body": 1970,
-        "installed_ver/3": 1983,
-        "is_public_catalog/1": 1997,
-        "L_is_public_catalog_1_2": 2007,
-        "L_is_public_catalog_1_2_body": 2008,
-        "L_is_public_catalog_1_3": 2019,
-        "L_is_public_catalog_1_3_body": 2020,
-        "is_v3/1": 2032,
-        "item_ver/3": 2037,
-        "L_item_ver_3_2": 2050,
-        "L_item_ver_3_2_body": 2051,
-        "L_item_ver_3_3": 2065,
-        "L_item_ver_3_3_body": 2066,
-        "keep_installed_or_base/4": 2077,
-        "L_keep_installed_or_base_4_2": 2083,
-        "L_keep_installed_or_base_4_2_body": 2084,
-        "L_ite_else_35": 2110,
-        "L_ite_cont_35": 2114,
-        "key_dep_rows/3": 2120,
-        "L_key_dep_rows_3_2": 2125,
-        "L_key_dep_rows_3_2_body": 2126,
-        "key_pkg_rows/3": 2162,
-        "L_key_pkg_rows_3_2": 2167,
-        "L_key_pkg_rows_3_2_body": 2168,
-        "layer_closure/3": 2195,
-        "layer_provider/5": 2212,
-        "L_layer_provider_5_2": 2235,
-        "L_layer_provider_5_2_body": 2236,
-        "layer_satisfies/3": 2261,
-        "L_layer_satisfies_3_2": 2274,
-        "L_layer_satisfies_3_2_body": 2275,
-        "L_layer_satisfies_3_3": 2295,
-        "L_layer_satisfies_3_3_body": 2296,
-        "L_ite_else_36": 2323,
-        "L_ite_cont_36": 2330,
-        "layered_walk_ver/4": 2332,
-        "L_ite_else_37": 2351,
-        "L_ite_cont_37": 2357,
-        "layers_list/2": 2360,
-        "L_layers_list_2_2": 2371,
-        "L_layers_list_2_2_body": 2372,
-        "L_layers_list_2_3": 2384,
-        "L_layers_list_2_3_body": 2385,
-        "L_layers_list_2_4": 2398,
-        "L_layers_list_2_4_body": 2399,
-        "list_to_tree/2": 2409,
-        "long_enough/2": 2421,
-        "L_ite_else_38": 2434,
-        "L_ite_cont_38": 2443,
-        "lookup_held/3": 2445,
-        "L_ite_else_39": 2462,
-        "L_ite_cont_39": 2467,
-        "map_requests/3": 2469,
-        "L_map_requests_3_2": 2474,
-        "L_map_requests_3_2_body": 2475,
-        "matching_deps/4": 2492,
-        "L_matching_deps_4_2": 2498,
-        "L_matching_deps_4_2_body": 2499,
-        "L_ite_else_40": 2530,
-        "L_ite_cont_40": 2534,
-        "matching_versions/4": 2540,
-        "L_matching_versions_4_2": 2546,
-        "L_matching_versions_4_2_body": 2547,
-        "L_ite_else_41": 2572,
-        "L_ite_cont_41": 2576,
-        "matching_versions_in/4": 2582,
-        "L_ite_else_43": 2605,
-        "L_ite_cont_43": 2609,
-        "L_ite_else_42": 2610,
-        "L_ite_cont_42": 2619,
-        "member_selected/3": 2621,
-        "names_of/2": 2630,
-        "L_names_of_2_2": 2634,
-        "L_names_of_2_2_body": 2635,
-        "needed_names/4": 2649,
-        "L_needed_names_4_2": 2655,
-        "L_needed_names_4_2_body": 2656,
-        "no_acc_conflicts/4": 2673,
-        "L_no_acc_conflicts_4_2": 2679,
-        "L_no_acc_conflicts_4_2_body": 2680,
-        "L_ite_else_44": 2700,
-        "L_ite_cont_44": 2702,
-        "L_ite_else_45": 2712,
-        "L_ite_cont_45": 2714,
-        "order_lt/2": 2720,
-        "L_order_lt_2_2": 2728,
-        "L_order_lt_2_2_body": 2729,
-        "L_order_lt_2_3": 2742,
-        "L_order_lt_2_3_body": 2743,
-        "L_order_lt_2_4": 2756,
-        "L_order_lt_2_4_body": 2757,
-        "L_ite_else_46": 2778,
-        "L_ite_cont_46": 2785,
-        "L_order_lt_2_list_dispatch": 2787,
-        "order_val/2": 2787,
-        "L_order_val_2_2": 2794,
-        "L_order_val_2_2_body": 2795,
-        "L_order_val_2_3": 2807,
-        "L_order_val_2_3_body": 2808,
-        "L_order_val_2_4": 2820,
-        "L_order_val_2_4_body": 2821,
-        "package_in/3": 2829,
-        "package_in_name/2": 2843,
-        "packages/2": 2856,
-        "L_packages_2_2": 2867,
-        "L_packages_2_2_body": 2868,
-        "L_packages_2_3": 2880,
-        "L_packages_2_3_body": 2881,
-        "L_packages_2_4": 2894,
-        "L_packages_2_4_body": 2895,
-        "pad_head/2": 2905,
-        "L_pad_head_2_2": 2917,
-        "L_pad_head_2_2_body": 2918,
-        "pick/7": 2921,
-        "L_pick_7_2": 2937,
-        "L_pick_7_2_body": 2938,
-        "L_ite_else_47": 2963,
-        "L_ite_cont_47": 2972,
-        "pick_need/8": 2974,
-        "L_pick_need_8_2": 2991,
-        "L_pick_need_8_2_body": 2992,
-        "L_pick_need_8_3": 3008,
-        "L_pick_need_8_3_body": 3009,
-        "L_ite_else_48": 3038,
-        "L_ite_else_49": 3052,
-        "L_ite_else_50": 3068,
-        "L_ite_cont_50": 3078,
-        "L_ite_cont_49": 3078,
-        "L_ite_cont_48": 3078,
-        "pick_repair/4": 3080,
-        "pkg_index/2": 3096,
-        "provide_row/5": 3102,
-        "L_provide_row_5_2": 3113,
-        "L_provide_row_5_2_body": 3114,
-        "provide_satisfies/2": 3124,
-        "L_provide_satisfies_2_2": 3128,
-        "L_provide_satisfies_2_2_body": 3129,
-        "provider_candidate/5": 3139,
-        "L_ite_else_51": 3165,
-        "L_ite_cont_51": 3167,
-        "provides_for/5": 3175,
-        "provides_list/2": 3194,
-        "L_provides_list_2_2": 3205,
-        "L_provides_list_2_2_body": 3206,
-        "L_provides_list_2_3": 3218,
-        "L_provides_list_2_3_body": 3219,
-        "L_provides_list_2_4": 3232,
-        "L_provides_list_2_4_body": 3233,
-        "provides_sat/5": 3243,
-        "removal_orphans/3": 3265,
-        "L_ite_else_52": 3285,
-        "L_ite_cont_52": 3289,
-        "L_ite_else_53": 3299,
-        "L_ite_else_54": 3341,
-        "L_ite_cont_54": 3343,
-        "L_ite_else_55": 3351,
-        "L_ite_cont_55": 3353,
-        "L_ite_cont_53": 3360,
-        "repairs_moving/4": 3363,
-        "reqs_ok_moving/2": 3377,
-        "L_reqs_ok_moving_2_2": 3381,
-        "L_reqs_ok_moving_2_2_body": 3382,
-        "L_ite_else_56": 3409,
-        "L_ite_cont_56": 3411,
-        "L_reqs_ok_moving_2_3": 3415,
-        "L_reqs_ok_moving_2_3_body": 3416,
-        "L_ite_else_57": 3435,
-        "L_ite_cont_57": 3437,
-        "L_reqs_ok_moving_2_list_dispatch": 3441,
-        "request_to_req/3": 3441,
-        "L_ite_else_58": 3460,
-        "L_ite_cont_58": 3468,
-        "requested_list/2": 3470,
-        "L_requested_list_2_2": 3481,
-        "L_requested_list_2_2_body": 3482,
-        "L_requested_list_2_3": 3494,
-        "L_requested_list_2_3_body": 3495,
-        "L_requested_list_2_4": 3508,
-        "L_requested_list_2_4_body": 3509,
-        "resolve/3": 3519,
-        "resolve_alternatives/6": 3542,
-        "L_ite_else_59": 3564,
-        "L_ite_cont_59": 3581,
-        "resolve_layered/3": 3583,
-        "resolve_pending/5": 3606,
-        "L_resolve_pending_5_2": 3613,
-        "L_resolve_pending_5_2_body": 3614,
-        "L_ite_else_60": 3640,
-        "L_ite_else_61": 3658,
-        "L_ite_else_62": 3674,
-        "L_ite_else_63": 3706,
-        "L_ite_cont_63": 3732,
-        "L_ite_cont_62": 3732,
-        "L_ite_cont_61": 3732,
-        "L_ite_cont_60": 3732,
-        "roots_to_pairs/3": 3734,
-        "L_roots_to_pairs_3_2": 3739,
-        "L_roots_to_pairs_3_2_body": 3740,
-        "L_roots_to_pairs_3_3": 3762,
-        "L_roots_to_pairs_3_3_body": 3763,
-        "L_roots_to_pairs_3_list_dispatch": 3774,
-        "safe_upgrade/4": 3774,
-        "L_ite_else_65": 3794,
-        "L_ite_cont_65": 3796,
-        "L_ite_else_64": 3801,
-        "L_ite_else_67": 3813,
-        "L_ite_cont_67": 3815,
-        "L_ite_else_66": 3820,
-        "L_ite_cont_66": 3831,
-        "L_ite_cont_64": 3831,
-        "safe_upgrade_reason/5": 3834,
-        "L_safe_upgrade_reason_5_2": 3842,
-        "L_safe_upgrade_reason_5_2_body": 3843,
-        "L_safe_upgrade_reason_5_3": 3852,
-        "L_safe_upgrade_reason_5_3_body": 3853,
-        "L_safe_upgrade_reason_5_4": 3862,
-        "L_safe_upgrade_reason_5_4_body": 3863,
-        "L_safe_upgrade_reason_5_5": 3872,
-        "L_safe_upgrade_reason_5_5_body": 3873,
-        "same_key/4": 3887,
-        "L_same_key_4_2": 3893,
-        "L_same_key_4_2_body": 3894,
-        "L_ite_else_68": 3924,
+        "active_member/4": 24,
+        "L_ite_else_2": 43,
+        "L_ite_else_3": 55,
+        "L_ite_cont_3": 61,
+        "L_ite_cont_2": 61,
+        "alias_list/2": 63,
+        "L_alias_list_2_2": 74,
+        "L_alias_list_2_2_body": 75,
+        "L_alias_list_2_3": 87,
+        "L_alias_list_2_3_body": 88,
+        "L_alias_list_2_4": 101,
+        "L_alias_list_2_4_body": 102,
+        "alias_lookup/3": 112,
+        "L_alias_lookup_3_2": 117,
+        "L_alias_lookup_3_2_body": 118,
+        "L_ite_else_4": 137,
+        "L_ite_cont_4": 142,
+        "already_provided/4": 144,
+        "already_satisfied/4": 161,
+        "L_already_satisfied_4_2": 175,
+        "L_already_satisfied_4_2_body": 176,
+        "alt_reasons/4": 187,
+        "L_alt_reasons_4_2": 193,
+        "L_alt_reasons_4_2_body": 194,
+        "L_ite_else_5": 220,
+        "L_ite_cont_5": 224,
+        "audit_holds/4": 230,
+        "L_audit_holds_4_2": 236,
+        "L_audit_holds_4_2_body": 237,
+        "L_ite_else_7": 268,
+        "L_ite_cont_7": 274,
+        "L_ite_else_6": 275,
+        "L_ite_cont_6": 283,
+        "base_holds/2": 291,
+        "base_list/2": 306,
+        "L_base_list_2_2": 317,
+        "L_base_list_2_2_body": 318,
+        "L_base_list_2_3": 330,
+        "L_base_list_2_3_body": 331,
+        "L_base_list_2_4": 344,
+        "L_base_list_2_4_body": 345,
+        "base_name/2": 355,
+        "base_reason/3": 363,
+        "base_ver/3": 375,
+        "blocked_acc/5": 394,
+        "L_blocked_acc_5_2": 422,
+        "L_blocked_acc_5_2_body": 423,
+        "L_ite_else_9": 445,
+        "L_ite_cont_9": 447,
+        "L_ite_else_8": 462,
+        "L_ite_else_10": 488,
+        "L_ite_cont_10": 492,
+        "L_ite_cont_8": 492,
+        "L_ite_else_11": 502,
+        "L_ite_else_12": 526,
+        "L_ite_cont_12": 530,
+        "L_ite_cont_11": 530,
+        "blocked_acc_list/5": 532,
+        "L_blocked_acc_list_5_2": 539,
+        "L_blocked_acc_list_5_2_body": 540,
+        "blocked_from/4": 561,
+        "L_blocked_from_4_2": 585,
+        "L_blocked_from_4_2_body": 586,
+        "L_ite_else_13": 605,
+        "L_ite_cont_13": 607,
+        "L_blocked_from_4_3": 619,
+        "L_blocked_from_4_3_body": 620,
+        "L_blocked_from_4_4": 647,
+        "L_blocked_from_4_4_body": 648,
+        "L_ite_else_14": 663,
+        "L_ite_cont_14": 665,
+        "build_tree/4": 687,
+        "L_ite_else_15": 705,
+        "L_ite_cont_15": 744,
+        "candidate_versions/4": 746,
+        "L_ite_else_16": 761,
+        "L_ite_cont_16": 770,
+        "candidates_high_first/4": 772,
+        "canonicalize_name/3": 787,
+        "close_moving/3": 799,
+        "L_ite_else_17": 825,
+        "L_ite_else_18": 850,
+        "L_ite_cont_18": 861,
+        "L_ite_cont_17": 861,
+        "cmp_ver/3": 863,
+        "L_cmp_ver_3_2": 875,
+        "L_cmp_ver_3_2_body": 876,
+        "L_cmp_ver_3_3": 886,
+        "L_cmp_ver_3_3_body": 887,
+        "collect_deps/4": 891,
+        "L_ite_else_20": 915,
+        "L_ite_cont_20": 919,
+        "L_ite_else_19": 920,
+        "L_ite_cont_19": 929,
+        "conflicts_in/4": 931,
+        "conflicts_list/2": 947,
+        "L_conflicts_list_2_2": 958,
+        "L_conflicts_list_2_2_body": 959,
+        "L_conflicts_list_2_3": 971,
+        "L_conflicts_list_2_3_body": 972,
+        "L_conflicts_list_2_4": 985,
+        "L_conflicts_list_2_4_body": 986,
+        "dep_breaks/5": 996,
+        "L_ite_else_21": 1027,
+        "L_ite_cont_21": 1034,
+        "dep_breaks_moving/5": 1036,
+        "dep_breaks_need/4": 1052,
+        "L_ite_else_22": 1077,
+        "L_ite_cont_22": 1079,
+        "L_ite_else_23": 1096,
+        "L_ite_cont_23": 1098,
+        "L_dep_breaks_need_4_2": 1100,
+        "L_dep_breaks_need_4_2_body": 1101,
+        "L_ite_else_24": 1118,
+        "L_ite_cont_24": 1120,
+        "dep_index/2": 1122,
+        "dep_mentions/2": 1128,
+        "L_dep_mentions_2_2": 1141,
+        "L_dep_mentions_2_2_body": 1142,
+        "dep_targets/5": 1150,
+        "L_ite_else_25": 1175,
+        "L_ite_cont_25": 1182,
+        "dep_to_req/3": 1184,
+        "L_dep_to_req_3_2": 1197,
+        "L_dep_to_req_3_2_body": 1198,
+        "dependents/3": 1204,
+        "dependents_installed/3": 1226,
+        "depends_in/5": 1245,
+        "depends_list/2": 1263,
+        "L_depends_list_2_2": 1274,
+        "L_depends_list_2_2_body": 1275,
+        "L_depends_list_2_3": 1287,
+        "L_depends_list_2_3_body": 1288,
+        "L_depends_list_2_4": 1301,
+        "L_depends_list_2_4_body": 1302,
+        "direct_on/4": 1312,
+        "L_direct_on_4_2": 1318,
+        "L_direct_on_4_2_body": 1319,
+        "L_ite_else_26": 1346,
+        "L_ite_cont_26": 1350,
+        "exclude_name/3": 1356,
+        "L_exclude_name_3_2": 1361,
+        "L_exclude_name_3_2_body": 1362,
+        "L_exclude_name_3_3": 1374,
+        "L_exclude_name_3_3_body": 1375,
+        "excluded_list/2": 1388,
+        "L_excluded_list_2_2": 1399,
+        "L_excluded_list_2_2_body": 1400,
+        "L_excluded_list_2_3": 1412,
+        "L_excluded_list_2_3_body": 1413,
+        "L_excluded_list_2_4": 1426,
+        "L_excluded_list_2_4_body": 1427,
+        "excluded_name/2": 1437,
+        "explain_alt/5": 1448,
+        "L_ite_else_27": 1466,
+        "L_ite_else_29": 1483,
+        "L_ite_cont_29": 1485,
+        "L_ite_else_28": 1490,
+        "L_ite_cont_28": 1492,
+        "L_ite_cont_27": 1492,
+        "explain_blocked/3": 1494,
+        "explain_blocked_list/3": 1508,
+        "filter_satisfies/3": 1528,
+        "L_filter_satisfies_3_2": 1533,
+        "L_filter_satisfies_3_2_body": 1534,
+        "L_ite_else_30": 1552,
+        "L_ite_cont_30": 1556,
+        "first_alt_already/4": 1561,
+        "L_first_alt_already_4_2": 1580,
+        "L_first_alt_already_4_2_body": 1581,
+        "first_broken/4": 1598,
+        "L_first_broken_4_2": 1604,
+        "L_first_broken_4_2_body": 1605,
+        "L_ite_else_31": 1629,
+        "L_ite_else_32": 1646,
+        "L_ite_cont_32": 1652,
+        "L_ite_cont_31": 1652,
+        "follow_dep_name/5": 1654,
+        "follow_raw_dep/4": 1672,
+        "L_follow_raw_dep_4_2": 1695,
+        "L_follow_raw_dep_4_2_body": 1696,
+        "freeze_audit/2": 1710,
+        "group_keyed/2": 1727,
+        "L_group_keyed_2_2": 1731,
+        "L_group_keyed_2_2_body": 1732,
+        "hold_reason/3": 1760,
+        "L_ite_else_33": 1780,
+        "L_ite_cont_33": 1785,
+        "index_catalog/2": 1787,
+        "L_ite_else_34": 1837,
+        "L_ite_cont_34": 1841,
+        "index_threshold/1": 1843,
+        "inst_closure_names/5": 1845,
+        "inst_walk/6": 1864,
+        "L_inst_walk_6_2": 1872,
+        "L_inst_walk_6_2_body": 1873,
+        "L_ite_else_35": 1899,
+        "L_ite_cont_35": 1934,
+        "installed_list/2": 1936,
+        "L_installed_list_2_2": 1947,
+        "L_installed_list_2_2_body": 1948,
+        "L_installed_list_2_3": 1960,
+        "L_installed_list_2_3_body": 1961,
+        "L_installed_list_2_4": 1974,
+        "L_installed_list_2_4_body": 1975,
+        "installed_or_base/3": 1985,
+        "L_installed_or_base_3_2": 1995,
+        "L_installed_or_base_3_2_body": 1996,
+        "installed_ver/3": 2009,
+        "is_public_catalog/1": 2023,
+        "L_is_public_catalog_1_2": 2033,
+        "L_is_public_catalog_1_2_body": 2034,
+        "L_is_public_catalog_1_3": 2045,
+        "L_is_public_catalog_1_3_body": 2046,
+        "is_v3/1": 2058,
+        "item_ver/3": 2063,
+        "L_item_ver_3_2": 2076,
+        "L_item_ver_3_2_body": 2077,
+        "L_item_ver_3_3": 2091,
+        "L_item_ver_3_3_body": 2092,
+        "keep_installed_or_base/4": 2103,
+        "L_keep_installed_or_base_4_2": 2109,
+        "L_keep_installed_or_base_4_2_body": 2110,
+        "L_ite_else_36": 2136,
+        "L_ite_cont_36": 2140,
+        "key_dep_rows/3": 2146,
+        "L_key_dep_rows_3_2": 2151,
+        "L_key_dep_rows_3_2_body": 2152,
+        "key_pkg_rows/3": 2188,
+        "L_key_pkg_rows_3_2": 2193,
+        "L_key_pkg_rows_3_2_body": 2194,
+        "layer_closure/3": 2221,
+        "layer_provider/5": 2238,
+        "L_layer_provider_5_2": 2261,
+        "L_layer_provider_5_2_body": 2262,
+        "layer_satisfies/3": 2287,
+        "L_layer_satisfies_3_2": 2300,
+        "L_layer_satisfies_3_2_body": 2301,
+        "L_layer_satisfies_3_3": 2321,
+        "L_layer_satisfies_3_3_body": 2322,
+        "L_ite_else_37": 2349,
+        "L_ite_cont_37": 2356,
+        "layered_walk_ver/4": 2358,
+        "L_ite_else_38": 2377,
+        "L_ite_cont_38": 2383,
+        "layers_list/2": 2386,
+        "L_layers_list_2_2": 2397,
+        "L_layers_list_2_2_body": 2398,
+        "L_layers_list_2_3": 2410,
+        "L_layers_list_2_3_body": 2411,
+        "L_layers_list_2_4": 2424,
+        "L_layers_list_2_4_body": 2425,
+        "list_to_tree/2": 2435,
+        "long_enough/2": 2447,
+        "L_ite_else_39": 2460,
+        "L_ite_cont_39": 2469,
+        "lookup_held/3": 2471,
+        "L_ite_else_40": 2488,
+        "L_ite_cont_40": 2493,
+        "map_requests/3": 2495,
+        "L_map_requests_3_2": 2500,
+        "L_map_requests_3_2_body": 2501,
+        "matching_deps/4": 2518,
+        "L_matching_deps_4_2": 2524,
+        "L_matching_deps_4_2_body": 2525,
+        "L_ite_else_41": 2556,
+        "L_ite_cont_41": 2560,
+        "matching_versions/4": 2566,
+        "L_matching_versions_4_2": 2572,
+        "L_matching_versions_4_2_body": 2573,
+        "L_ite_else_42": 2598,
+        "L_ite_cont_42": 2602,
+        "matching_versions_in/4": 2608,
+        "L_ite_else_44": 2631,
+        "L_ite_cont_44": 2635,
+        "L_ite_else_43": 2636,
+        "L_ite_cont_43": 2645,
+        "member_selected/3": 2647,
+        "names_of/2": 2656,
+        "L_names_of_2_2": 2660,
+        "L_names_of_2_2_body": 2661,
+        "needed_names/4": 2675,
+        "L_needed_names_4_2": 2681,
+        "L_needed_names_4_2_body": 2682,
+        "no_acc_conflicts/4": 2699,
+        "L_no_acc_conflicts_4_2": 2705,
+        "L_no_acc_conflicts_4_2_body": 2706,
+        "L_ite_else_45": 2726,
+        "L_ite_cont_45": 2728,
+        "L_ite_else_46": 2738,
+        "L_ite_cont_46": 2740,
+        "order_lt/2": 2746,
+        "L_order_lt_2_2": 2754,
+        "L_order_lt_2_2_body": 2755,
+        "L_order_lt_2_3": 2768,
+        "L_order_lt_2_3_body": 2769,
+        "L_order_lt_2_4": 2782,
+        "L_order_lt_2_4_body": 2783,
+        "L_ite_else_47": 2804,
+        "L_ite_cont_47": 2811,
+        "L_order_lt_2_list_dispatch": 2813,
+        "order_val/2": 2813,
+        "L_order_val_2_2": 2820,
+        "L_order_val_2_2_body": 2821,
+        "L_order_val_2_3": 2833,
+        "L_order_val_2_3_body": 2834,
+        "L_order_val_2_4": 2846,
+        "L_order_val_2_4_body": 2847,
+        "package_in/3": 2855,
+        "package_in_name/2": 2869,
+        "packages/2": 2882,
+        "L_packages_2_2": 2893,
+        "L_packages_2_2_body": 2894,
+        "L_packages_2_3": 2906,
+        "L_packages_2_3_body": 2907,
+        "L_packages_2_4": 2920,
+        "L_packages_2_4_body": 2921,
+        "pad_head/2": 2931,
+        "L_pad_head_2_2": 2943,
+        "L_pad_head_2_2_body": 2944,
+        "pick/7": 2947,
+        "L_pick_7_2": 2963,
+        "L_pick_7_2_body": 2964,
+        "L_ite_else_48": 2989,
+        "L_ite_cont_48": 2998,
+        "pick_need/8": 3000,
+        "L_pick_need_8_2": 3017,
+        "L_pick_need_8_2_body": 3018,
+        "L_pick_need_8_3": 3034,
+        "L_pick_need_8_3_body": 3035,
+        "L_ite_else_49": 3064,
+        "L_ite_else_50": 3078,
+        "L_ite_else_51": 3102,
+        "L_ite_cont_51": 3112,
+        "L_ite_cont_50": 3112,
+        "L_ite_cont_49": 3112,
+        "pick_repair/4": 3114,
+        "pkg_index/2": 3130,
+        "provide_row/5": 3136,
+        "L_provide_row_5_2": 3147,
+        "L_provide_row_5_2_body": 3148,
+        "provide_satisfies/2": 3158,
+        "L_provide_satisfies_2_2": 3162,
+        "L_provide_satisfies_2_2_body": 3163,
+        "provider_candidate/5": 3173,
+        "L_ite_else_52": 3199,
+        "L_ite_cont_52": 3201,
+        "provides_for/5": 3209,
+        "provides_list/2": 3228,
+        "L_provides_list_2_2": 3239,
+        "L_provides_list_2_2_body": 3240,
+        "L_provides_list_2_3": 3252,
+        "L_provides_list_2_3_body": 3253,
+        "L_provides_list_2_4": 3266,
+        "L_provides_list_2_4_body": 3267,
+        "provides_sat/5": 3277,
+        "removal_orphans/3": 3299,
+        "L_ite_else_53": 3319,
+        "L_ite_cont_53": 3323,
+        "L_ite_else_54": 3333,
+        "L_ite_else_55": 3375,
+        "L_ite_cont_55": 3377,
+        "L_ite_else_56": 3385,
+        "L_ite_cont_56": 3387,
+        "L_ite_cont_54": 3394,
+        "repairs_moving/4": 3397,
+        "reqs_ok_moving/2": 3411,
+        "L_reqs_ok_moving_2_2": 3415,
+        "L_reqs_ok_moving_2_2_body": 3416,
+        "L_ite_else_57": 3443,
+        "L_ite_cont_57": 3445,
+        "L_reqs_ok_moving_2_3": 3449,
+        "L_reqs_ok_moving_2_3_body": 3450,
+        "L_ite_else_58": 3469,
+        "L_ite_cont_58": 3471,
+        "L_reqs_ok_moving_2_list_dispatch": 3475,
+        "request_to_req/3": 3475,
+        "L_ite_else_59": 3494,
+        "L_ite_cont_59": 3502,
+        "requested_list/2": 3504,
+        "L_requested_list_2_2": 3515,
+        "L_requested_list_2_2_body": 3516,
+        "L_requested_list_2_3": 3528,
+        "L_requested_list_2_3_body": 3529,
+        "L_requested_list_2_4": 3542,
+        "L_requested_list_2_4_body": 3543,
+        "resolve/3": 3553,
+        "resolve_alternatives/7": 3576,
+        "L_ite_else_60": 3600,
+        "L_ite_cont_60": 3618,
+        "resolve_layered/3": 3620,
+        "resolve_pending/5": 3643,
+        "resolve_pending/6": 3659,
+        "L_resolve_pending_6_2": 3667,
+        "L_resolve_pending_6_2_body": 3668,
+        "L_ite_else_61": 3708,
+        "L_ite_else_62": 3730,
+        "L_ite_else_63": 3749,
+        "L_ite_else_64": 3766,
+        "L_ite_else_66": 3803,
+        "L_ite_cont_66": 3835,
+        "L_ite_else_65": 3836,
+        "L_ite_cont_65": 3875,
+        "L_ite_cont_64": 3875,
+        "L_ite_cont_63": 3875,
+        "L_ite_cont_62": 3875,
+        "L_ite_cont_61": 3875,
+        "roots_to_pairs/3": 3877,
+        "L_roots_to_pairs_3_2": 3882,
+        "L_roots_to_pairs_3_2_body": 3883,
+        "L_roots_to_pairs_3_3": 3905,
+        "L_roots_to_pairs_3_3_body": 3906,
+        "L_roots_to_pairs_3_list_dispatch": 3917,
+        "safe_upgrade/4": 3917,
+        "L_ite_else_68": 3937,
         "L_ite_cont_68": 3939,
-        "satisfies/2": 3941,
-        "L_satisfies_2_2": 3945,
-        "L_satisfies_2_2_body": 3946,
-        "L_satisfies_2_3": 3953,
-        "L_satisfies_2_3_body": 3954,
-        "L_ite_else_69": 3965,
-        "L_ite_cont_69": 3967,
-        "L_satisfies_2_4": 3968,
-        "L_satisfies_2_4_body": 3969,
-        "L_ite_else_70": 3980,
-        "L_ite_cont_70": 3982,
-        "L_satisfies_2_5": 3983,
-        "L_satisfies_2_5_body": 3984,
-        "L_satisfies_2_6": 3992,
-        "L_satisfies_2_6_body": 3993,
-        "L_satisfies_2_7": 4001,
-        "L_satisfies_2_7_body": 4002,
-        "L_ite_else_71": 4015,
-        "L_ite_cont_71": 4017,
-        "scan_base_holds/3": 4021,
-        "L_scan_base_holds_3_2": 4026,
-        "L_scan_base_holds_3_2_body": 4027,
-        "L_ite_else_72": 4046,
-        "L_ite_else_73": 4059,
-        "L_ite_else_74": 4081,
-        "L_ite_else_75": 4100,
-        "L_ite_cont_75": 4104,
-        "L_ite_cont_74": 4104,
-        "L_ite_cont_73": 4104,
-        "L_ite_cont_72": 4104,
-        "seen_name/2": 4109,
-        "L_ite_else_76": 4122,
-        "L_ite_cont_76": 4126,
-        "segs_lt/2": 4128,
-        "L_segs_lt_2_2": 4136,
-        "L_segs_lt_2_2_body": 4137,
-        "segs_lt_1/2": 4150,
-        "L_ite_else_77": 4171,
-        "L_ite_else_78": 4183,
-        "L_ite_cont_78": 4193,
-        "L_ite_cont_77": 4193,
-        "selected_ver/3": 4195,
-        "L_ite_else_79": 4211,
-        "L_ite_cont_79": 4216,
-        "sort_versions_desc/2": 4218,
-        "L_ite_else_80": 4234,
-        "L_ite_cont_80": 4242,
-        "tight_base_revdep/2": 4244,
-        "tight_constraint/1": 4255,
-        "tight_rev_in/3": 4260,
-        "L_ite_else_82": 4288,
-        "L_ite_cont_82": 4299,
-        "L_ite_else_81": 4302,
-        "L_ite_cont_81": 4307,
-        "topo_all/7": 4309,
-        "L_topo_all_7_2": 4318,
-        "L_topo_all_7_2_body": 4319,
-        "topo_one/7": 4346,
-        "L_topo_one_7_2": 4361,
-        "L_topo_one_7_2_body": 4362,
-        "L_ite_else_83": 4413,
-        "L_ite_cont_83": 4422,
-        "topo_sort_sel/3": 4424,
-        "L_topo_sort_sel_3_2": 4432,
-        "L_topo_sort_sel_3_2_body": 4433,
-        "tree_lookup/3": 4456,
-        "L_ite_else_84": 4478,
-        "L_ite_else_85": 4490,
-        "L_ite_cont_85": 4495,
-        "L_ite_cont_84": 4495,
-        "upgrade_set/4": 4497,
-        "upgrade_set_result/4": 4511,
-        "L_ite_else_86": 4537,
-        "L_ite_cont_86": 4541,
-        "version_lt/2": 4544,
-        "L_ite_else_87": 4563,
-        "L_ite_else_88": 4575,
-        "L_ite_cont_88": 4585,
-        "L_ite_cont_87": 4585,
-        "L_version_lt_2_2": 4587,
-        "L_version_lt_2_2_body": 4588,
-        "L_ite_else_89": 4605,
-        "L_ite_else_90": 4617,
-        "L_ite_else_91": 4629,
-        "L_ite_cont_91": 4631,
-        "L_ite_else_92": 4639,
-        "L_ite_cont_92": 4641,
-        "L_ite_cont_90": 4644,
-        "L_ite_cont_89": 4644,
-        "virtual_provider_ceilings/4": 4646,
-        "L_ite_else_93": 4659,
-        "L_ite_cont_93": 4661,
-        "L_ite_else_94": 4683,
-        "L_ite_cont_94": 4685,
-        "walk_pkg_for_blocked/5": 4696,
-        "L_walk_pkg_for_blocked_5_2": 4709,
-        "L_walk_pkg_for_blocked_5_2_body": 4710,
-        "L_walk_pkg_for_blocked_5_3": 4723,
-        "L_walk_pkg_for_blocked_5_3_body": 4724,
-        "worth_indexing/2": 4737,
-        "L_ite_else_95": 4750,
-        "L_ite_cont_95": 4754,
+        "L_ite_else_67": 3944,
+        "L_ite_else_70": 3956,
+        "L_ite_cont_70": 3958,
+        "L_ite_else_69": 3963,
+        "L_ite_cont_69": 3974,
+        "L_ite_cont_67": 3974,
+        "safe_upgrade_reason/5": 3977,
+        "L_safe_upgrade_reason_5_2": 3985,
+        "L_safe_upgrade_reason_5_2_body": 3986,
+        "L_safe_upgrade_reason_5_3": 3995,
+        "L_safe_upgrade_reason_5_3_body": 3996,
+        "L_safe_upgrade_reason_5_4": 4005,
+        "L_safe_upgrade_reason_5_4_body": 4006,
+        "L_safe_upgrade_reason_5_5": 4015,
+        "L_safe_upgrade_reason_5_5_body": 4016,
+        "same_key/4": 4030,
+        "L_same_key_4_2": 4036,
+        "L_same_key_4_2_body": 4037,
+        "L_ite_else_71": 4067,
+        "L_ite_cont_71": 4082,
+        "satisfies/2": 4084,
+        "L_satisfies_2_2": 4088,
+        "L_satisfies_2_2_body": 4089,
+        "L_satisfies_2_3": 4096,
+        "L_satisfies_2_3_body": 4097,
+        "L_ite_else_72": 4108,
+        "L_ite_cont_72": 4110,
+        "L_satisfies_2_4": 4111,
+        "L_satisfies_2_4_body": 4112,
+        "L_ite_else_73": 4123,
+        "L_ite_cont_73": 4125,
+        "L_satisfies_2_5": 4126,
+        "L_satisfies_2_5_body": 4127,
+        "L_satisfies_2_6": 4135,
+        "L_satisfies_2_6_body": 4136,
+        "L_satisfies_2_7": 4144,
+        "L_satisfies_2_7_body": 4145,
+        "L_ite_else_74": 4158,
+        "L_ite_cont_74": 4160,
+        "scan_base_holds/3": 4164,
+        "L_scan_base_holds_3_2": 4169,
+        "L_scan_base_holds_3_2_body": 4170,
+        "L_ite_else_75": 4189,
+        "L_ite_else_76": 4202,
+        "L_ite_else_77": 4224,
+        "L_ite_else_78": 4243,
+        "L_ite_cont_78": 4247,
+        "L_ite_cont_77": 4247,
+        "L_ite_cont_76": 4247,
+        "L_ite_cont_75": 4247,
+        "seen_name/2": 4252,
+        "L_ite_else_79": 4265,
+        "L_ite_cont_79": 4269,
+        "segs_lt/2": 4271,
+        "L_segs_lt_2_2": 4279,
+        "L_segs_lt_2_2_body": 4280,
+        "segs_lt_1/2": 4293,
+        "L_ite_else_80": 4314,
+        "L_ite_else_81": 4326,
+        "L_ite_cont_81": 4336,
+        "L_ite_cont_80": 4336,
+        "selected_ver/3": 4338,
+        "L_ite_else_82": 4354,
+        "L_ite_cont_82": 4359,
+        "sort_versions_desc/2": 4361,
+        "L_ite_else_83": 4377,
+        "L_ite_cont_83": 4385,
+        "tight_base_revdep/2": 4387,
+        "tight_constraint/1": 4398,
+        "tight_rev_in/3": 4403,
+        "L_ite_else_85": 4431,
+        "L_ite_cont_85": 4442,
+        "L_ite_else_84": 4445,
+        "L_ite_cont_84": 4450,
+        "topo_all/7": 4452,
+        "L_topo_all_7_2": 4461,
+        "L_topo_all_7_2_body": 4462,
+        "topo_one/7": 4489,
+        "L_topo_one_7_2": 4504,
+        "L_topo_one_7_2_body": 4505,
+        "L_ite_else_86": 4556,
+        "L_ite_cont_86": 4565,
+        "topo_sort_sel/3": 4567,
+        "L_topo_sort_sel_3_2": 4575,
+        "L_topo_sort_sel_3_2_body": 4576,
+        "tree_lookup/3": 4599,
+        "L_ite_else_87": 4621,
+        "L_ite_else_88": 4633,
+        "L_ite_cont_88": 4638,
+        "L_ite_cont_87": 4638,
+        "upgrade_set/4": 4640,
+        "upgrade_set_result/4": 4654,
+        "L_ite_else_89": 4680,
+        "L_ite_cont_89": 4684,
+        "version_lt/2": 4687,
+        "L_ite_else_90": 4706,
+        "L_ite_else_91": 4718,
+        "L_ite_cont_91": 4728,
+        "L_ite_cont_90": 4728,
+        "L_version_lt_2_2": 4730,
+        "L_version_lt_2_2_body": 4731,
+        "L_ite_else_92": 4748,
+        "L_ite_else_93": 4760,
+        "L_ite_else_94": 4772,
+        "L_ite_cont_94": 4774,
+        "L_ite_else_95": 4782,
+        "L_ite_cont_95": 4784,
+        "L_ite_cont_93": 4787,
+        "L_ite_cont_92": 4787,
+        "virtual_provider_ceilings/4": 4789,
+        "L_ite_else_96": 4802,
+        "L_ite_cont_96": 4804,
+        "L_ite_else_97": 4826,
+        "L_ite_cont_97": 4828,
+        "walk_pkg_for_blocked/5": 4839,
+        "L_walk_pkg_for_blocked_5_2": 4852,
+        "L_walk_pkg_for_blocked_5_2_body": 4853,
+        "L_walk_pkg_for_blocked_5_3": 4866,
+        "L_walk_pkg_for_blocked_5_3_body": 4867,
+        "worth_indexing/2": 4880,
+        "L_ite_else_98": 4893,
+        "L_ite_cont_98": 4897,
 }
 
 var sharedWamCode = resolveInstructions(sharedWamCodeRaw, sharedWamLabels)
@@ -5325,31 +5475,49 @@ func Acc_conflicts(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: alias_list/2 (shared table, pc=24)
-var Alias_listCode = sharedWamCode
-var Alias_listLabels = sharedWamLabels
-const Alias_listStartPC = 24
+// WAM-compiled predicate: active_member/4 (shared table, pc=24)
+var Active_memberCode = sharedWamCode
+var Active_memberLabels = sharedWamLabels
+const Active_memberStartPC = 24
 
-func Alias_list(a1 Value, a2 Value) bool {
+func Active_member(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
     vm.PC = 24
     vm.Regs[0] = a1
     vm.Regs[1] = a2
+    vm.Regs[2] = a3
+    vm.Regs[3] = a4
     return vm.Run()
 }
 
 
 // Strategy: wam
-// WAM-compiled predicate: alias_lookup/3 (shared table, pc=73)
+// WAM-compiled predicate: alias_list/2 (shared table, pc=63)
+var Alias_listCode = sharedWamCode
+var Alias_listLabels = sharedWamLabels
+const Alias_listStartPC = 63
+
+func Alias_list(a1 Value, a2 Value) bool {
+    vm := NewWamState(sharedWamCode, sharedWamLabels)
+    setupSharedForeignPredicates(vm)
+    vm.PC = 63
+    vm.Regs[0] = a1
+    vm.Regs[1] = a2
+    return vm.Run()
+}
+
+
+// Strategy: wam
+// WAM-compiled predicate: alias_lookup/3 (shared table, pc=112)
 var Alias_lookupCode = sharedWamCode
 var Alias_lookupLabels = sharedWamLabels
-const Alias_lookupStartPC = 73
+const Alias_lookupStartPC = 112
 
 func Alias_lookup(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 73
+    vm.PC = 112
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5358,15 +5526,15 @@ func Alias_lookup(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: already_provided/4 (shared table, pc=105)
+// WAM-compiled predicate: already_provided/4 (shared table, pc=144)
 var Already_providedCode = sharedWamCode
 var Already_providedLabels = sharedWamLabels
-const Already_providedStartPC = 105
+const Already_providedStartPC = 144
 
 func Already_provided(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 105
+    vm.PC = 144
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5376,15 +5544,15 @@ func Already_provided(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: already_satisfied/4 (shared table, pc=122)
+// WAM-compiled predicate: already_satisfied/4 (shared table, pc=161)
 var Already_satisfiedCode = sharedWamCode
 var Already_satisfiedLabels = sharedWamLabels
-const Already_satisfiedStartPC = 122
+const Already_satisfiedStartPC = 161
 
 func Already_satisfied(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 122
+    vm.PC = 161
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5394,15 +5562,15 @@ func Already_satisfied(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: alt_reasons/4 (shared table, pc=148)
+// WAM-compiled predicate: alt_reasons/4 (shared table, pc=187)
 var Alt_reasonsCode = sharedWamCode
 var Alt_reasonsLabels = sharedWamLabels
-const Alt_reasonsStartPC = 148
+const Alt_reasonsStartPC = 187
 
 func Alt_reasons(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 148
+    vm.PC = 187
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5412,15 +5580,15 @@ func Alt_reasons(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: audit_holds/4 (shared table, pc=191)
+// WAM-compiled predicate: audit_holds/4 (shared table, pc=230)
 var Audit_holdsCode = sharedWamCode
 var Audit_holdsLabels = sharedWamLabels
-const Audit_holdsStartPC = 191
+const Audit_holdsStartPC = 230
 
 func Audit_holds(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 191
+    vm.PC = 230
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5430,15 +5598,15 @@ func Audit_holds(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: base_holds/2 (shared table, pc=252)
+// WAM-compiled predicate: base_holds/2 (shared table, pc=291)
 var Base_holdsCode = sharedWamCode
 var Base_holdsLabels = sharedWamLabels
-const Base_holdsStartPC = 252
+const Base_holdsStartPC = 291
 
 func Base_holds(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 252
+    vm.PC = 291
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -5446,15 +5614,15 @@ func Base_holds(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: base_list/2 (shared table, pc=267)
+// WAM-compiled predicate: base_list/2 (shared table, pc=306)
 var Base_listCode = sharedWamCode
 var Base_listLabels = sharedWamLabels
-const Base_listStartPC = 267
+const Base_listStartPC = 306
 
 func Base_list(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 267
+    vm.PC = 306
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -5462,67 +5630,67 @@ func Base_list(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: base_name/2 (shared table, pc=316)
+// WAM-compiled predicate: base_name/2 (shared table, pc=355)
 var Base_nameCode = sharedWamCode
 var Base_nameLabels = sharedWamLabels
-const Base_nameStartPC = 316
+const Base_nameStartPC = 355
 
 func Base_name(a1 Value, a2 Value) bool {
-    vm := NewWamState(sharedWamCode, sharedWamLabels)
-    setupSharedForeignPredicates(vm)
-    vm.PC = 316
-    vm.Regs[0] = a1
-    vm.Regs[1] = a2
-    return vm.Run()
-}
-
-
-// Strategy: wam
-// WAM-compiled predicate: base_reason/3 (shared table, pc=324)
-var Base_reasonCode = sharedWamCode
-var Base_reasonLabels = sharedWamLabels
-const Base_reasonStartPC = 324
-
-func Base_reason(a1 Value, a2 Value, a3 Value) bool {
-    vm := NewWamState(sharedWamCode, sharedWamLabels)
-    setupSharedForeignPredicates(vm)
-    vm.PC = 324
-    vm.Regs[0] = a1
-    vm.Regs[1] = a2
-    vm.Regs[2] = a3
-    return vm.Run()
-}
-
-
-// Strategy: wam
-// WAM-compiled predicate: base_ver/3 (shared table, pc=336)
-var Base_verCode = sharedWamCode
-var Base_verLabels = sharedWamLabels
-const Base_verStartPC = 336
-
-func Base_ver(a1 Value, a2 Value, a3 Value) bool {
-    vm := NewWamState(sharedWamCode, sharedWamLabels)
-    setupSharedForeignPredicates(vm)
-    vm.PC = 336
-    vm.Regs[0] = a1
-    vm.Regs[1] = a2
-    vm.Regs[2] = a3
-    return vm.Run()
-}
-
-
-// Strategy: wam
-// WAM-compiled predicate: blocked_acc/5 (shared table, pc=355)
-var Blocked_accCode = sharedWamCode
-var Blocked_accLabels = sharedWamLabels
-const Blocked_accStartPC = 355
-
-func Blocked_acc(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
     vm.PC = 355
     vm.Regs[0] = a1
     vm.Regs[1] = a2
+    return vm.Run()
+}
+
+
+// Strategy: wam
+// WAM-compiled predicate: base_reason/3 (shared table, pc=363)
+var Base_reasonCode = sharedWamCode
+var Base_reasonLabels = sharedWamLabels
+const Base_reasonStartPC = 363
+
+func Base_reason(a1 Value, a2 Value, a3 Value) bool {
+    vm := NewWamState(sharedWamCode, sharedWamLabels)
+    setupSharedForeignPredicates(vm)
+    vm.PC = 363
+    vm.Regs[0] = a1
+    vm.Regs[1] = a2
+    vm.Regs[2] = a3
+    return vm.Run()
+}
+
+
+// Strategy: wam
+// WAM-compiled predicate: base_ver/3 (shared table, pc=375)
+var Base_verCode = sharedWamCode
+var Base_verLabels = sharedWamLabels
+const Base_verStartPC = 375
+
+func Base_ver(a1 Value, a2 Value, a3 Value) bool {
+    vm := NewWamState(sharedWamCode, sharedWamLabels)
+    setupSharedForeignPredicates(vm)
+    vm.PC = 375
+    vm.Regs[0] = a1
+    vm.Regs[1] = a2
+    vm.Regs[2] = a3
+    return vm.Run()
+}
+
+
+// Strategy: wam
+// WAM-compiled predicate: blocked_acc/5 (shared table, pc=394)
+var Blocked_accCode = sharedWamCode
+var Blocked_accLabels = sharedWamLabels
+const Blocked_accStartPC = 394
+
+func Blocked_acc(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
+    vm := NewWamState(sharedWamCode, sharedWamLabels)
+    setupSharedForeignPredicates(vm)
+    vm.PC = 394
+    vm.Regs[0] = a1
+    vm.Regs[1] = a2
     vm.Regs[2] = a3
     vm.Regs[3] = a4
     vm.Regs[4] = a5
@@ -5531,15 +5699,15 @@ func Blocked_acc(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: blocked_acc_list/5 (shared table, pc=499)
+// WAM-compiled predicate: blocked_acc_list/5 (shared table, pc=532)
 var Blocked_acc_listCode = sharedWamCode
 var Blocked_acc_listLabels = sharedWamLabels
-const Blocked_acc_listStartPC = 499
+const Blocked_acc_listStartPC = 532
 
 func Blocked_acc_list(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 499
+    vm.PC = 532
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5550,15 +5718,15 @@ func Blocked_acc_list(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: blocked_from/4 (shared table, pc=528)
+// WAM-compiled predicate: blocked_from/4 (shared table, pc=561)
 var Blocked_fromCode = sharedWamCode
 var Blocked_fromLabels = sharedWamLabels
-const Blocked_fromStartPC = 528
+const Blocked_fromStartPC = 561
 
 func Blocked_from(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 528
+    vm.PC = 561
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5568,15 +5736,15 @@ func Blocked_from(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: build_tree/4 (shared table, pc=674)
+// WAM-compiled predicate: build_tree/4 (shared table, pc=687)
 var Build_treeCode = sharedWamCode
 var Build_treeLabels = sharedWamLabels
-const Build_treeStartPC = 674
+const Build_treeStartPC = 687
 
 func Build_tree(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 674
+    vm.PC = 687
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5586,15 +5754,33 @@ func Build_tree(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: candidates_high_first/4 (shared table, pc=733)
+// WAM-compiled predicate: candidate_versions/4 (shared table, pc=746)
+var Candidate_versionsCode = sharedWamCode
+var Candidate_versionsLabels = sharedWamLabels
+const Candidate_versionsStartPC = 746
+
+func Candidate_versions(a1 Value, a2 Value, a3 Value, a4 Value) bool {
+    vm := NewWamState(sharedWamCode, sharedWamLabels)
+    setupSharedForeignPredicates(vm)
+    vm.PC = 746
+    vm.Regs[0] = a1
+    vm.Regs[1] = a2
+    vm.Regs[2] = a3
+    vm.Regs[3] = a4
+    return vm.Run()
+}
+
+
+// Strategy: wam
+// WAM-compiled predicate: candidates_high_first/4 (shared table, pc=772)
 var Candidates_high_firstCode = sharedWamCode
 var Candidates_high_firstLabels = sharedWamLabels
-const Candidates_high_firstStartPC = 733
+const Candidates_high_firstStartPC = 772
 
 func Candidates_high_first(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 733
+    vm.PC = 772
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5604,15 +5790,15 @@ func Candidates_high_first(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: canonicalize_name/3 (shared table, pc=761)
+// WAM-compiled predicate: canonicalize_name/3 (shared table, pc=787)
 var Canonicalize_nameCode = sharedWamCode
 var Canonicalize_nameLabels = sharedWamLabels
-const Canonicalize_nameStartPC = 761
+const Canonicalize_nameStartPC = 787
 
 func Canonicalize_name(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 761
+    vm.PC = 787
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5621,15 +5807,15 @@ func Canonicalize_name(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: close_moving/3 (shared table, pc=773)
+// WAM-compiled predicate: close_moving/3 (shared table, pc=799)
 var Close_movingCode = sharedWamCode
 var Close_movingLabels = sharedWamLabels
-const Close_movingStartPC = 773
+const Close_movingStartPC = 799
 
 func Close_moving(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 773
+    vm.PC = 799
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5638,15 +5824,15 @@ func Close_moving(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: cmp_ver/3 (shared table, pc=837)
+// WAM-compiled predicate: cmp_ver/3 (shared table, pc=863)
 var Cmp_verCode = sharedWamCode
 var Cmp_verLabels = sharedWamLabels
-const Cmp_verStartPC = 837
+const Cmp_verStartPC = 863
 
 func Cmp_ver(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 837
+    vm.PC = 863
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5655,15 +5841,15 @@ func Cmp_ver(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: collect_deps/4 (shared table, pc=865)
+// WAM-compiled predicate: collect_deps/4 (shared table, pc=891)
 var Collect_depsCode = sharedWamCode
 var Collect_depsLabels = sharedWamLabels
-const Collect_depsStartPC = 865
+const Collect_depsStartPC = 891
 
 func Collect_deps(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 865
+    vm.PC = 891
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5673,15 +5859,15 @@ func Collect_deps(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: conflicts_in/4 (shared table, pc=905)
+// WAM-compiled predicate: conflicts_in/4 (shared table, pc=931)
 var Conflicts_inCode = sharedWamCode
 var Conflicts_inLabels = sharedWamLabels
-const Conflicts_inStartPC = 905
+const Conflicts_inStartPC = 931
 
 func Conflicts_in(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 905
+    vm.PC = 931
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5691,15 +5877,15 @@ func Conflicts_in(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: conflicts_list/2 (shared table, pc=921)
+// WAM-compiled predicate: conflicts_list/2 (shared table, pc=947)
 var Conflicts_listCode = sharedWamCode
 var Conflicts_listLabels = sharedWamLabels
-const Conflicts_listStartPC = 921
+const Conflicts_listStartPC = 947
 
 func Conflicts_list(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 921
+    vm.PC = 947
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -5707,15 +5893,15 @@ func Conflicts_list(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: dep_breaks/5 (shared table, pc=970)
+// WAM-compiled predicate: dep_breaks/5 (shared table, pc=996)
 var Dep_breaksCode = sharedWamCode
 var Dep_breaksLabels = sharedWamLabels
-const Dep_breaksStartPC = 970
+const Dep_breaksStartPC = 996
 
 func Dep_breaks(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 970
+    vm.PC = 996
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5726,15 +5912,15 @@ func Dep_breaks(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: dep_breaks_moving/5 (shared table, pc=1010)
+// WAM-compiled predicate: dep_breaks_moving/5 (shared table, pc=1036)
 var Dep_breaks_movingCode = sharedWamCode
 var Dep_breaks_movingLabels = sharedWamLabels
-const Dep_breaks_movingStartPC = 1010
+const Dep_breaks_movingStartPC = 1036
 
 func Dep_breaks_moving(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1010
+    vm.PC = 1036
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5745,15 +5931,15 @@ func Dep_breaks_moving(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: dep_breaks_need/4 (shared table, pc=1026)
+// WAM-compiled predicate: dep_breaks_need/4 (shared table, pc=1052)
 var Dep_breaks_needCode = sharedWamCode
 var Dep_breaks_needLabels = sharedWamLabels
-const Dep_breaks_needStartPC = 1026
+const Dep_breaks_needStartPC = 1052
 
 func Dep_breaks_need(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1026
+    vm.PC = 1052
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5763,15 +5949,15 @@ func Dep_breaks_need(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: dep_index/2 (shared table, pc=1096)
+// WAM-compiled predicate: dep_index/2 (shared table, pc=1122)
 var Dep_indexCode = sharedWamCode
 var Dep_indexLabels = sharedWamLabels
-const Dep_indexStartPC = 1096
+const Dep_indexStartPC = 1122
 
 func Dep_index(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1096
+    vm.PC = 1122
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -5779,15 +5965,15 @@ func Dep_index(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: dep_mentions/2 (shared table, pc=1102)
+// WAM-compiled predicate: dep_mentions/2 (shared table, pc=1128)
 var Dep_mentionsCode = sharedWamCode
 var Dep_mentionsLabels = sharedWamLabels
-const Dep_mentionsStartPC = 1102
+const Dep_mentionsStartPC = 1128
 
 func Dep_mentions(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1102
+    vm.PC = 1128
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -5795,15 +5981,15 @@ func Dep_mentions(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: dep_targets/5 (shared table, pc=1124)
+// WAM-compiled predicate: dep_targets/5 (shared table, pc=1150)
 var Dep_targetsCode = sharedWamCode
 var Dep_targetsLabels = sharedWamLabels
-const Dep_targetsStartPC = 1124
+const Dep_targetsStartPC = 1150
 
 func Dep_targets(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1124
+    vm.PC = 1150
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5814,15 +6000,15 @@ func Dep_targets(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: dep_to_req/3 (shared table, pc=1158)
+// WAM-compiled predicate: dep_to_req/3 (shared table, pc=1184)
 var Dep_to_reqCode = sharedWamCode
 var Dep_to_reqLabels = sharedWamLabels
-const Dep_to_reqStartPC = 1158
+const Dep_to_reqStartPC = 1184
 
 func Dep_to_req(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1158
+    vm.PC = 1184
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5831,15 +6017,15 @@ func Dep_to_req(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: dependents/3 (shared table, pc=1178)
+// WAM-compiled predicate: dependents/3 (shared table, pc=1204)
 var DependentsCode = sharedWamCode
 var DependentsLabels = sharedWamLabels
-const DependentsStartPC = 1178
+const DependentsStartPC = 1204
 
 func Dependents(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1178
+    vm.PC = 1204
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5848,15 +6034,15 @@ func Dependents(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: dependents_installed/3 (shared table, pc=1200)
+// WAM-compiled predicate: dependents_installed/3 (shared table, pc=1226)
 var Dependents_installedCode = sharedWamCode
 var Dependents_installedLabels = sharedWamLabels
-const Dependents_installedStartPC = 1200
+const Dependents_installedStartPC = 1226
 
 func Dependents_installed(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1200
+    vm.PC = 1226
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5865,15 +6051,15 @@ func Dependents_installed(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: depends_in/5 (shared table, pc=1219)
+// WAM-compiled predicate: depends_in/5 (shared table, pc=1245)
 var Depends_inCode = sharedWamCode
 var Depends_inLabels = sharedWamLabels
-const Depends_inStartPC = 1219
+const Depends_inStartPC = 1245
 
 func Depends_in(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1219
+    vm.PC = 1245
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5884,15 +6070,15 @@ func Depends_in(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: depends_list/2 (shared table, pc=1237)
+// WAM-compiled predicate: depends_list/2 (shared table, pc=1263)
 var Depends_listCode = sharedWamCode
 var Depends_listLabels = sharedWamLabels
-const Depends_listStartPC = 1237
+const Depends_listStartPC = 1263
 
 func Depends_list(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1237
+    vm.PC = 1263
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -5900,15 +6086,15 @@ func Depends_list(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: direct_on/4 (shared table, pc=1286)
+// WAM-compiled predicate: direct_on/4 (shared table, pc=1312)
 var Direct_onCode = sharedWamCode
 var Direct_onLabels = sharedWamLabels
-const Direct_onStartPC = 1286
+const Direct_onStartPC = 1312
 
 func Direct_on(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1286
+    vm.PC = 1312
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5918,15 +6104,15 @@ func Direct_on(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: exclude_name/3 (shared table, pc=1330)
+// WAM-compiled predicate: exclude_name/3 (shared table, pc=1356)
 var Exclude_nameCode = sharedWamCode
 var Exclude_nameLabels = sharedWamLabels
-const Exclude_nameStartPC = 1330
+const Exclude_nameStartPC = 1356
 
 func Exclude_name(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1330
+    vm.PC = 1356
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5935,15 +6121,15 @@ func Exclude_name(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: excluded_list/2 (shared table, pc=1362)
+// WAM-compiled predicate: excluded_list/2 (shared table, pc=1388)
 var Excluded_listCode = sharedWamCode
 var Excluded_listLabels = sharedWamLabels
-const Excluded_listStartPC = 1362
+const Excluded_listStartPC = 1388
 
 func Excluded_list(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1362
+    vm.PC = 1388
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -5951,15 +6137,15 @@ func Excluded_list(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: excluded_name/2 (shared table, pc=1411)
+// WAM-compiled predicate: excluded_name/2 (shared table, pc=1437)
 var Excluded_nameCode = sharedWamCode
 var Excluded_nameLabels = sharedWamLabels
-const Excluded_nameStartPC = 1411
+const Excluded_nameStartPC = 1437
 
 func Excluded_name(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1411
+    vm.PC = 1437
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -5967,15 +6153,15 @@ func Excluded_name(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: explain_alt/5 (shared table, pc=1422)
+// WAM-compiled predicate: explain_alt/5 (shared table, pc=1448)
 var Explain_altCode = sharedWamCode
 var Explain_altLabels = sharedWamLabels
-const Explain_altStartPC = 1422
+const Explain_altStartPC = 1448
 
 func Explain_alt(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1422
+    vm.PC = 1448
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -5986,15 +6172,15 @@ func Explain_alt(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: explain_blocked/3 (shared table, pc=1468)
+// WAM-compiled predicate: explain_blocked/3 (shared table, pc=1494)
 var Explain_blockedCode = sharedWamCode
 var Explain_blockedLabels = sharedWamLabels
-const Explain_blockedStartPC = 1468
+const Explain_blockedStartPC = 1494
 
 func Explain_blocked(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1468
+    vm.PC = 1494
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6003,15 +6189,15 @@ func Explain_blocked(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: explain_blocked_list/3 (shared table, pc=1482)
+// WAM-compiled predicate: explain_blocked_list/3 (shared table, pc=1508)
 var Explain_blocked_listCode = sharedWamCode
 var Explain_blocked_listLabels = sharedWamLabels
-const Explain_blocked_listStartPC = 1482
+const Explain_blocked_listStartPC = 1508
 
 func Explain_blocked_list(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1482
+    vm.PC = 1508
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6020,15 +6206,15 @@ func Explain_blocked_list(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: filter_satisfies/3 (shared table, pc=1502)
+// WAM-compiled predicate: filter_satisfies/3 (shared table, pc=1528)
 var Filter_satisfiesCode = sharedWamCode
 var Filter_satisfiesLabels = sharedWamLabels
-const Filter_satisfiesStartPC = 1502
+const Filter_satisfiesStartPC = 1528
 
 func Filter_satisfies(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1502
+    vm.PC = 1528
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6037,15 +6223,15 @@ func Filter_satisfies(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: first_alt_already/4 (shared table, pc=1535)
+// WAM-compiled predicate: first_alt_already/4 (shared table, pc=1561)
 var First_alt_alreadyCode = sharedWamCode
 var First_alt_alreadyLabels = sharedWamLabels
-const First_alt_alreadyStartPC = 1535
+const First_alt_alreadyStartPC = 1561
 
 func First_alt_already(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1535
+    vm.PC = 1561
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6055,15 +6241,15 @@ func First_alt_already(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: first_broken/4 (shared table, pc=1572)
+// WAM-compiled predicate: first_broken/4 (shared table, pc=1598)
 var First_brokenCode = sharedWamCode
 var First_brokenLabels = sharedWamLabels
-const First_brokenStartPC = 1572
+const First_brokenStartPC = 1598
 
 func First_broken(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1572
+    vm.PC = 1598
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6073,15 +6259,15 @@ func First_broken(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: follow_dep_name/5 (shared table, pc=1628)
+// WAM-compiled predicate: follow_dep_name/5 (shared table, pc=1654)
 var Follow_dep_nameCode = sharedWamCode
 var Follow_dep_nameLabels = sharedWamLabels
-const Follow_dep_nameStartPC = 1628
+const Follow_dep_nameStartPC = 1654
 
 func Follow_dep_name(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1628
+    vm.PC = 1654
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6092,15 +6278,15 @@ func Follow_dep_name(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: follow_raw_dep/4 (shared table, pc=1646)
+// WAM-compiled predicate: follow_raw_dep/4 (shared table, pc=1672)
 var Follow_raw_depCode = sharedWamCode
 var Follow_raw_depLabels = sharedWamLabels
-const Follow_raw_depStartPC = 1646
+const Follow_raw_depStartPC = 1672
 
 func Follow_raw_dep(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1646
+    vm.PC = 1672
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6110,15 +6296,15 @@ func Follow_raw_dep(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: freeze_audit/2 (shared table, pc=1684)
+// WAM-compiled predicate: freeze_audit/2 (shared table, pc=1710)
 var Freeze_auditCode = sharedWamCode
 var Freeze_auditLabels = sharedWamLabels
-const Freeze_auditStartPC = 1684
+const Freeze_auditStartPC = 1710
 
 func Freeze_audit(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1684
+    vm.PC = 1710
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6126,15 +6312,15 @@ func Freeze_audit(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: group_keyed/2 (shared table, pc=1701)
+// WAM-compiled predicate: group_keyed/2 (shared table, pc=1727)
 var Group_keyedCode = sharedWamCode
 var Group_keyedLabels = sharedWamLabels
-const Group_keyedStartPC = 1701
+const Group_keyedStartPC = 1727
 
 func Group_keyed(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1701
+    vm.PC = 1727
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6142,15 +6328,15 @@ func Group_keyed(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: hold_reason/3 (shared table, pc=1734)
+// WAM-compiled predicate: hold_reason/3 (shared table, pc=1760)
 var Hold_reasonCode = sharedWamCode
 var Hold_reasonLabels = sharedWamLabels
-const Hold_reasonStartPC = 1734
+const Hold_reasonStartPC = 1760
 
 func Hold_reason(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1734
+    vm.PC = 1760
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6159,15 +6345,15 @@ func Hold_reason(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: index_catalog/2 (shared table, pc=1761)
+// WAM-compiled predicate: index_catalog/2 (shared table, pc=1787)
 var Index_catalogCode = sharedWamCode
 var Index_catalogLabels = sharedWamLabels
-const Index_catalogStartPC = 1761
+const Index_catalogStartPC = 1787
 
 func Index_catalog(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1761
+    vm.PC = 1787
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6175,30 +6361,30 @@ func Index_catalog(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: index_threshold/1 (shared table, pc=1817)
+// WAM-compiled predicate: index_threshold/1 (shared table, pc=1843)
 var Index_thresholdCode = sharedWamCode
 var Index_thresholdLabels = sharedWamLabels
-const Index_thresholdStartPC = 1817
+const Index_thresholdStartPC = 1843
 
 func Index_threshold(a1 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1817
+    vm.PC = 1843
     vm.Regs[0] = a1
     return vm.Run()
 }
 
 
 // Strategy: wam
-// WAM-compiled predicate: inst_closure_names/5 (shared table, pc=1819)
+// WAM-compiled predicate: inst_closure_names/5 (shared table, pc=1845)
 var Inst_closure_namesCode = sharedWamCode
 var Inst_closure_namesLabels = sharedWamLabels
-const Inst_closure_namesStartPC = 1819
+const Inst_closure_namesStartPC = 1845
 
 func Inst_closure_names(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1819
+    vm.PC = 1845
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6209,15 +6395,15 @@ func Inst_closure_names(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: inst_walk/6 (shared table, pc=1838)
+// WAM-compiled predicate: inst_walk/6 (shared table, pc=1864)
 var Inst_walkCode = sharedWamCode
 var Inst_walkLabels = sharedWamLabels
-const Inst_walkStartPC = 1838
+const Inst_walkStartPC = 1864
 
 func Inst_walk(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value, a6 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1838
+    vm.PC = 1864
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6229,15 +6415,15 @@ func Inst_walk(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value, a6 Value) bool 
 
 
 // Strategy: wam
-// WAM-compiled predicate: installed_list/2 (shared table, pc=1910)
+// WAM-compiled predicate: installed_list/2 (shared table, pc=1936)
 var Installed_listCode = sharedWamCode
 var Installed_listLabels = sharedWamLabels
-const Installed_listStartPC = 1910
+const Installed_listStartPC = 1936
 
 func Installed_list(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1910
+    vm.PC = 1936
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6245,15 +6431,15 @@ func Installed_list(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: installed_or_base/3 (shared table, pc=1959)
+// WAM-compiled predicate: installed_or_base/3 (shared table, pc=1985)
 var Installed_or_baseCode = sharedWamCode
 var Installed_or_baseLabels = sharedWamLabels
-const Installed_or_baseStartPC = 1959
+const Installed_or_baseStartPC = 1985
 
 func Installed_or_base(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1959
+    vm.PC = 1985
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6262,15 +6448,15 @@ func Installed_or_base(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: installed_ver/3 (shared table, pc=1983)
+// WAM-compiled predicate: installed_ver/3 (shared table, pc=2009)
 var Installed_verCode = sharedWamCode
 var Installed_verLabels = sharedWamLabels
-const Installed_verStartPC = 1983
+const Installed_verStartPC = 2009
 
 func Installed_ver(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1983
+    vm.PC = 2009
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6279,45 +6465,45 @@ func Installed_ver(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: is_public_catalog/1 (shared table, pc=1997)
+// WAM-compiled predicate: is_public_catalog/1 (shared table, pc=2023)
 var Is_public_catalogCode = sharedWamCode
 var Is_public_catalogLabels = sharedWamLabels
-const Is_public_catalogStartPC = 1997
+const Is_public_catalogStartPC = 2023
 
 func Is_public_catalog(a1 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 1997
+    vm.PC = 2023
     vm.Regs[0] = a1
     return vm.Run()
 }
 
 
 // Strategy: wam
-// WAM-compiled predicate: is_v3/1 (shared table, pc=2032)
+// WAM-compiled predicate: is_v3/1 (shared table, pc=2058)
 var Is_v3Code = sharedWamCode
 var Is_v3Labels = sharedWamLabels
-const Is_v3StartPC = 2032
+const Is_v3StartPC = 2058
 
 func Is_v3(a1 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2032
+    vm.PC = 2058
     vm.Regs[0] = a1
     return vm.Run()
 }
 
 
 // Strategy: wam
-// WAM-compiled predicate: item_ver/3 (shared table, pc=2037)
+// WAM-compiled predicate: item_ver/3 (shared table, pc=2063)
 var Item_verCode = sharedWamCode
 var Item_verLabels = sharedWamLabels
-const Item_verStartPC = 2037
+const Item_verStartPC = 2063
 
 func Item_ver(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2037
+    vm.PC = 2063
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6326,15 +6512,15 @@ func Item_ver(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: keep_installed_or_base/4 (shared table, pc=2077)
+// WAM-compiled predicate: keep_installed_or_base/4 (shared table, pc=2103)
 var Keep_installed_or_baseCode = sharedWamCode
 var Keep_installed_or_baseLabels = sharedWamLabels
-const Keep_installed_or_baseStartPC = 2077
+const Keep_installed_or_baseStartPC = 2103
 
 func Keep_installed_or_base(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2077
+    vm.PC = 2103
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6344,15 +6530,15 @@ func Keep_installed_or_base(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: key_dep_rows/3 (shared table, pc=2120)
+// WAM-compiled predicate: key_dep_rows/3 (shared table, pc=2146)
 var Key_dep_rowsCode = sharedWamCode
 var Key_dep_rowsLabels = sharedWamLabels
-const Key_dep_rowsStartPC = 2120
+const Key_dep_rowsStartPC = 2146
 
 func Key_dep_rows(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2120
+    vm.PC = 2146
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6361,15 +6547,15 @@ func Key_dep_rows(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: key_pkg_rows/3 (shared table, pc=2162)
+// WAM-compiled predicate: key_pkg_rows/3 (shared table, pc=2188)
 var Key_pkg_rowsCode = sharedWamCode
 var Key_pkg_rowsLabels = sharedWamLabels
-const Key_pkg_rowsStartPC = 2162
+const Key_pkg_rowsStartPC = 2188
 
 func Key_pkg_rows(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2162
+    vm.PC = 2188
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6378,15 +6564,15 @@ func Key_pkg_rows(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: layer_closure/3 (shared table, pc=2195)
+// WAM-compiled predicate: layer_closure/3 (shared table, pc=2221)
 var Layer_closureCode = sharedWamCode
 var Layer_closureLabels = sharedWamLabels
-const Layer_closureStartPC = 2195
+const Layer_closureStartPC = 2221
 
 func Layer_closure(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2195
+    vm.PC = 2221
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6395,15 +6581,15 @@ func Layer_closure(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: layer_provider/5 (shared table, pc=2212)
+// WAM-compiled predicate: layer_provider/5 (shared table, pc=2238)
 var Layer_providerCode = sharedWamCode
 var Layer_providerLabels = sharedWamLabels
-const Layer_providerStartPC = 2212
+const Layer_providerStartPC = 2238
 
 func Layer_provider(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2212
+    vm.PC = 2238
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6414,15 +6600,15 @@ func Layer_provider(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: layer_satisfies/3 (shared table, pc=2261)
+// WAM-compiled predicate: layer_satisfies/3 (shared table, pc=2287)
 var Layer_satisfiesCode = sharedWamCode
 var Layer_satisfiesLabels = sharedWamLabels
-const Layer_satisfiesStartPC = 2261
+const Layer_satisfiesStartPC = 2287
 
 func Layer_satisfies(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2261
+    vm.PC = 2287
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6431,15 +6617,15 @@ func Layer_satisfies(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: layered_walk_ver/4 (shared table, pc=2332)
+// WAM-compiled predicate: layered_walk_ver/4 (shared table, pc=2358)
 var Layered_walk_verCode = sharedWamCode
 var Layered_walk_verLabels = sharedWamLabels
-const Layered_walk_verStartPC = 2332
+const Layered_walk_verStartPC = 2358
 
 func Layered_walk_ver(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2332
+    vm.PC = 2358
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6449,15 +6635,15 @@ func Layered_walk_ver(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: layers_list/2 (shared table, pc=2360)
+// WAM-compiled predicate: layers_list/2 (shared table, pc=2386)
 var Layers_listCode = sharedWamCode
 var Layers_listLabels = sharedWamLabels
-const Layers_listStartPC = 2360
+const Layers_listStartPC = 2386
 
 func Layers_list(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2360
+    vm.PC = 2386
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6465,15 +6651,15 @@ func Layers_list(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: list_to_tree/2 (shared table, pc=2409)
+// WAM-compiled predicate: list_to_tree/2 (shared table, pc=2435)
 var List_to_treeCode = sharedWamCode
 var List_to_treeLabels = sharedWamLabels
-const List_to_treeStartPC = 2409
+const List_to_treeStartPC = 2435
 
 func List_to_tree(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2409
+    vm.PC = 2435
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6481,15 +6667,15 @@ func List_to_tree(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: long_enough/2 (shared table, pc=2421)
+// WAM-compiled predicate: long_enough/2 (shared table, pc=2447)
 var Long_enoughCode = sharedWamCode
 var Long_enoughLabels = sharedWamLabels
-const Long_enoughStartPC = 2421
+const Long_enoughStartPC = 2447
 
 func Long_enough(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2421
+    vm.PC = 2447
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6497,15 +6683,15 @@ func Long_enough(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: lookup_held/3 (shared table, pc=2445)
+// WAM-compiled predicate: lookup_held/3 (shared table, pc=2471)
 var Lookup_heldCode = sharedWamCode
 var Lookup_heldLabels = sharedWamLabels
-const Lookup_heldStartPC = 2445
+const Lookup_heldStartPC = 2471
 
 func Lookup_held(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2445
+    vm.PC = 2471
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6514,15 +6700,15 @@ func Lookup_held(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: map_requests/3 (shared table, pc=2469)
+// WAM-compiled predicate: map_requests/3 (shared table, pc=2495)
 var Map_requestsCode = sharedWamCode
 var Map_requestsLabels = sharedWamLabels
-const Map_requestsStartPC = 2469
+const Map_requestsStartPC = 2495
 
 func Map_requests(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2469
+    vm.PC = 2495
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6531,15 +6717,15 @@ func Map_requests(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: matching_deps/4 (shared table, pc=2492)
+// WAM-compiled predicate: matching_deps/4 (shared table, pc=2518)
 var Matching_depsCode = sharedWamCode
 var Matching_depsLabels = sharedWamLabels
-const Matching_depsStartPC = 2492
+const Matching_depsStartPC = 2518
 
 func Matching_deps(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2492
+    vm.PC = 2518
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6549,15 +6735,15 @@ func Matching_deps(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: matching_versions/4 (shared table, pc=2540)
+// WAM-compiled predicate: matching_versions/4 (shared table, pc=2566)
 var Matching_versionsCode = sharedWamCode
 var Matching_versionsLabels = sharedWamLabels
-const Matching_versionsStartPC = 2540
+const Matching_versionsStartPC = 2566
 
 func Matching_versions(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2540
+    vm.PC = 2566
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6567,15 +6753,15 @@ func Matching_versions(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: matching_versions_in/4 (shared table, pc=2582)
+// WAM-compiled predicate: matching_versions_in/4 (shared table, pc=2608)
 var Matching_versions_inCode = sharedWamCode
 var Matching_versions_inLabels = sharedWamLabels
-const Matching_versions_inStartPC = 2582
+const Matching_versions_inStartPC = 2608
 
 func Matching_versions_in(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2582
+    vm.PC = 2608
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6585,15 +6771,15 @@ func Matching_versions_in(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: member_selected/3 (shared table, pc=2621)
+// WAM-compiled predicate: member_selected/3 (shared table, pc=2647)
 var Member_selectedCode = sharedWamCode
 var Member_selectedLabels = sharedWamLabels
-const Member_selectedStartPC = 2621
+const Member_selectedStartPC = 2647
 
 func Member_selected(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2621
+    vm.PC = 2647
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6602,15 +6788,15 @@ func Member_selected(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: names_of/2 (shared table, pc=2630)
+// WAM-compiled predicate: names_of/2 (shared table, pc=2656)
 var Names_ofCode = sharedWamCode
 var Names_ofLabels = sharedWamLabels
-const Names_ofStartPC = 2630
+const Names_ofStartPC = 2656
 
 func Names_of(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2630
+    vm.PC = 2656
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6618,15 +6804,15 @@ func Names_of(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: needed_names/4 (shared table, pc=2649)
+// WAM-compiled predicate: needed_names/4 (shared table, pc=2675)
 var Needed_namesCode = sharedWamCode
 var Needed_namesLabels = sharedWamLabels
-const Needed_namesStartPC = 2649
+const Needed_namesStartPC = 2675
 
 func Needed_names(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2649
+    vm.PC = 2675
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6636,15 +6822,15 @@ func Needed_names(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: no_acc_conflicts/4 (shared table, pc=2673)
+// WAM-compiled predicate: no_acc_conflicts/4 (shared table, pc=2699)
 var No_acc_conflictsCode = sharedWamCode
 var No_acc_conflictsLabels = sharedWamLabels
-const No_acc_conflictsStartPC = 2673
+const No_acc_conflictsStartPC = 2699
 
 func No_acc_conflicts(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2673
+    vm.PC = 2699
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6654,15 +6840,15 @@ func No_acc_conflicts(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: order_lt/2 (shared table, pc=2720)
+// WAM-compiled predicate: order_lt/2 (shared table, pc=2746)
 var Order_ltCode = sharedWamCode
 var Order_ltLabels = sharedWamLabels
-const Order_ltStartPC = 2720
+const Order_ltStartPC = 2746
 
 func Order_lt(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2720
+    vm.PC = 2746
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6670,15 +6856,15 @@ func Order_lt(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: order_val/2 (shared table, pc=2787)
+// WAM-compiled predicate: order_val/2 (shared table, pc=2813)
 var Order_valCode = sharedWamCode
 var Order_valLabels = sharedWamLabels
-const Order_valStartPC = 2787
+const Order_valStartPC = 2813
 
 func Order_val(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2787
+    vm.PC = 2813
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6686,15 +6872,15 @@ func Order_val(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: package_in/3 (shared table, pc=2829)
+// WAM-compiled predicate: package_in/3 (shared table, pc=2855)
 var Package_inCode = sharedWamCode
 var Package_inLabels = sharedWamLabels
-const Package_inStartPC = 2829
+const Package_inStartPC = 2855
 
 func Package_in(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2829
+    vm.PC = 2855
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6703,15 +6889,15 @@ func Package_in(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: package_in_name/2 (shared table, pc=2843)
+// WAM-compiled predicate: package_in_name/2 (shared table, pc=2869)
 var Package_in_nameCode = sharedWamCode
 var Package_in_nameLabels = sharedWamLabels
-const Package_in_nameStartPC = 2843
+const Package_in_nameStartPC = 2869
 
 func Package_in_name(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2843
+    vm.PC = 2869
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6719,15 +6905,15 @@ func Package_in_name(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: packages/2 (shared table, pc=2856)
+// WAM-compiled predicate: packages/2 (shared table, pc=2882)
 var PackagesCode = sharedWamCode
 var PackagesLabels = sharedWamLabels
-const PackagesStartPC = 2856
+const PackagesStartPC = 2882
 
 func Packages(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2856
+    vm.PC = 2882
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6735,15 +6921,15 @@ func Packages(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: pad_head/2 (shared table, pc=2905)
+// WAM-compiled predicate: pad_head/2 (shared table, pc=2931)
 var Pad_headCode = sharedWamCode
 var Pad_headLabels = sharedWamLabels
-const Pad_headStartPC = 2905
+const Pad_headStartPC = 2931
 
 func Pad_head(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2905
+    vm.PC = 2931
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6751,15 +6937,15 @@ func Pad_head(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: pick/7 (shared table, pc=2921)
+// WAM-compiled predicate: pick/7 (shared table, pc=2947)
 var PickCode = sharedWamCode
 var PickLabels = sharedWamLabels
-const PickStartPC = 2921
+const PickStartPC = 2947
 
 func Pick(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value, a6 Value, a7 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2921
+    vm.PC = 2947
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6772,15 +6958,15 @@ func Pick(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value, a6 Value, a7 Value) 
 
 
 // Strategy: wam
-// WAM-compiled predicate: pick_need/8 (shared table, pc=2974)
+// WAM-compiled predicate: pick_need/8 (shared table, pc=3000)
 var Pick_needCode = sharedWamCode
 var Pick_needLabels = sharedWamLabels
-const Pick_needStartPC = 2974
+const Pick_needStartPC = 3000
 
 func Pick_need(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value, a6 Value, a7 Value, a8 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 2974
+    vm.PC = 3000
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6794,15 +6980,15 @@ func Pick_need(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value, a6 Value, a7 Va
 
 
 // Strategy: wam
-// WAM-compiled predicate: pick_repair/4 (shared table, pc=3080)
+// WAM-compiled predicate: pick_repair/4 (shared table, pc=3114)
 var Pick_repairCode = sharedWamCode
 var Pick_repairLabels = sharedWamLabels
-const Pick_repairStartPC = 3080
+const Pick_repairStartPC = 3114
 
 func Pick_repair(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3080
+    vm.PC = 3114
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6812,15 +6998,15 @@ func Pick_repair(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: pkg_index/2 (shared table, pc=3096)
+// WAM-compiled predicate: pkg_index/2 (shared table, pc=3130)
 var Pkg_indexCode = sharedWamCode
 var Pkg_indexLabels = sharedWamLabels
-const Pkg_indexStartPC = 3096
+const Pkg_indexStartPC = 3130
 
 func Pkg_index(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3096
+    vm.PC = 3130
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6828,15 +7014,15 @@ func Pkg_index(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: provide_row/5 (shared table, pc=3102)
+// WAM-compiled predicate: provide_row/5 (shared table, pc=3136)
 var Provide_rowCode = sharedWamCode
 var Provide_rowLabels = sharedWamLabels
-const Provide_rowStartPC = 3102
+const Provide_rowStartPC = 3136
 
 func Provide_row(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3102
+    vm.PC = 3136
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6847,15 +7033,15 @@ func Provide_row(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: provide_satisfies/2 (shared table, pc=3124)
+// WAM-compiled predicate: provide_satisfies/2 (shared table, pc=3158)
 var Provide_satisfiesCode = sharedWamCode
 var Provide_satisfiesLabels = sharedWamLabels
-const Provide_satisfiesStartPC = 3124
+const Provide_satisfiesStartPC = 3158
 
 func Provide_satisfies(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3124
+    vm.PC = 3158
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6863,15 +7049,15 @@ func Provide_satisfies(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: provider_candidate/5 (shared table, pc=3139)
+// WAM-compiled predicate: provider_candidate/5 (shared table, pc=3173)
 var Provider_candidateCode = sharedWamCode
 var Provider_candidateLabels = sharedWamLabels
-const Provider_candidateStartPC = 3139
+const Provider_candidateStartPC = 3173
 
 func Provider_candidate(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3139
+    vm.PC = 3173
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6882,15 +7068,15 @@ func Provider_candidate(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: provides_for/5 (shared table, pc=3175)
+// WAM-compiled predicate: provides_for/5 (shared table, pc=3209)
 var Provides_forCode = sharedWamCode
 var Provides_forLabels = sharedWamLabels
-const Provides_forStartPC = 3175
+const Provides_forStartPC = 3209
 
 func Provides_for(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3175
+    vm.PC = 3209
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6901,15 +7087,15 @@ func Provides_for(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: provides_list/2 (shared table, pc=3194)
+// WAM-compiled predicate: provides_list/2 (shared table, pc=3228)
 var Provides_listCode = sharedWamCode
 var Provides_listLabels = sharedWamLabels
-const Provides_listStartPC = 3194
+const Provides_listStartPC = 3228
 
 func Provides_list(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3194
+    vm.PC = 3228
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6917,15 +7103,15 @@ func Provides_list(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: provides_sat/5 (shared table, pc=3243)
+// WAM-compiled predicate: provides_sat/5 (shared table, pc=3277)
 var Provides_satCode = sharedWamCode
 var Provides_satLabels = sharedWamLabels
-const Provides_satStartPC = 3243
+const Provides_satStartPC = 3277
 
 func Provides_sat(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3243
+    vm.PC = 3277
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6936,15 +7122,15 @@ func Provides_sat(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: removal_orphans/3 (shared table, pc=3265)
+// WAM-compiled predicate: removal_orphans/3 (shared table, pc=3299)
 var Removal_orphansCode = sharedWamCode
 var Removal_orphansLabels = sharedWamLabels
-const Removal_orphansStartPC = 3265
+const Removal_orphansStartPC = 3299
 
 func Removal_orphans(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3265
+    vm.PC = 3299
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6953,15 +7139,15 @@ func Removal_orphans(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: repairs_moving/4 (shared table, pc=3363)
+// WAM-compiled predicate: repairs_moving/4 (shared table, pc=3397)
 var Repairs_movingCode = sharedWamCode
 var Repairs_movingLabels = sharedWamLabels
-const Repairs_movingStartPC = 3363
+const Repairs_movingStartPC = 3397
 
 func Repairs_moving(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3363
+    vm.PC = 3397
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -6971,15 +7157,15 @@ func Repairs_moving(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: reqs_ok_moving/2 (shared table, pc=3377)
+// WAM-compiled predicate: reqs_ok_moving/2 (shared table, pc=3411)
 var Reqs_ok_movingCode = sharedWamCode
 var Reqs_ok_movingLabels = sharedWamLabels
-const Reqs_ok_movingStartPC = 3377
+const Reqs_ok_movingStartPC = 3411
 
 func Reqs_ok_moving(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3377
+    vm.PC = 3411
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -6987,15 +7173,15 @@ func Reqs_ok_moving(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: request_to_req/3 (shared table, pc=3441)
+// WAM-compiled predicate: request_to_req/3 (shared table, pc=3475)
 var Request_to_reqCode = sharedWamCode
 var Request_to_reqLabels = sharedWamLabels
-const Request_to_reqStartPC = 3441
+const Request_to_reqStartPC = 3475
 
 func Request_to_req(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3441
+    vm.PC = 3475
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7004,15 +7190,15 @@ func Request_to_req(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: requested_list/2 (shared table, pc=3470)
+// WAM-compiled predicate: requested_list/2 (shared table, pc=3504)
 var Requested_listCode = sharedWamCode
 var Requested_listLabels = sharedWamLabels
-const Requested_listStartPC = 3470
+const Requested_listStartPC = 3504
 
 func Requested_list(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3470
+    vm.PC = 3504
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -7020,15 +7206,15 @@ func Requested_list(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: resolve/3 (shared table, pc=3519)
+// WAM-compiled predicate: resolve/3 (shared table, pc=3553)
 var ResolveCode = sharedWamCode
 var ResolveLabels = sharedWamLabels
-const ResolveStartPC = 3519
+const ResolveStartPC = 3553
 
 func Resolve(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3519
+    vm.PC = 3553
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7037,35 +7223,36 @@ func Resolve(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: resolve_alternatives/6 (shared table, pc=3542)
+// WAM-compiled predicate: resolve_alternatives/7 (shared table, pc=3576)
 var Resolve_alternativesCode = sharedWamCode
 var Resolve_alternativesLabels = sharedWamLabels
-const Resolve_alternativesStartPC = 3542
+const Resolve_alternativesStartPC = 3576
 
-func Resolve_alternatives(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value, a6 Value) bool {
+func Resolve_alternatives(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value, a6 Value, a7 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3542
+    vm.PC = 3576
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
     vm.Regs[3] = a4
     vm.Regs[4] = a5
     vm.Regs[5] = a6
+    vm.Regs[6] = a7
     return vm.Run()
 }
 
 
 // Strategy: wam
-// WAM-compiled predicate: resolve_layered/3 (shared table, pc=3583)
+// WAM-compiled predicate: resolve_layered/3 (shared table, pc=3620)
 var Resolve_layeredCode = sharedWamCode
 var Resolve_layeredLabels = sharedWamLabels
-const Resolve_layeredStartPC = 3583
+const Resolve_layeredStartPC = 3620
 
 func Resolve_layered(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3583
+    vm.PC = 3620
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7074,15 +7261,15 @@ func Resolve_layered(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: resolve_pending/5 (shared table, pc=3606)
-var Resolve_pendingCode = sharedWamCode
-var Resolve_pendingLabels = sharedWamLabels
-const Resolve_pendingStartPC = 3606
+// WAM-compiled predicate: resolve_pending/5 (shared table, pc=3643)
+var Resolve_pending5Code = sharedWamCode
+var Resolve_pending5Labels = sharedWamLabels
+const Resolve_pending5StartPC = 3643
 
-func Resolve_pending(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
+func Resolve_pending5(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3606
+    vm.PC = 3643
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7093,15 +7280,35 @@ func Resolve_pending(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: roots_to_pairs/3 (shared table, pc=3734)
+// WAM-compiled predicate: resolve_pending/6 (shared table, pc=3659)
+var Resolve_pending6Code = sharedWamCode
+var Resolve_pending6Labels = sharedWamLabels
+const Resolve_pending6StartPC = 3659
+
+func Resolve_pending6(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value, a6 Value) bool {
+    vm := NewWamState(sharedWamCode, sharedWamLabels)
+    setupSharedForeignPredicates(vm)
+    vm.PC = 3659
+    vm.Regs[0] = a1
+    vm.Regs[1] = a2
+    vm.Regs[2] = a3
+    vm.Regs[3] = a4
+    vm.Regs[4] = a5
+    vm.Regs[5] = a6
+    return vm.Run()
+}
+
+
+// Strategy: wam
+// WAM-compiled predicate: roots_to_pairs/3 (shared table, pc=3877)
 var Roots_to_pairsCode = sharedWamCode
 var Roots_to_pairsLabels = sharedWamLabels
-const Roots_to_pairsStartPC = 3734
+const Roots_to_pairsStartPC = 3877
 
 func Roots_to_pairs(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3734
+    vm.PC = 3877
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7110,15 +7317,15 @@ func Roots_to_pairs(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: safe_upgrade/4 (shared table, pc=3774)
+// WAM-compiled predicate: safe_upgrade/4 (shared table, pc=3917)
 var Safe_upgradeCode = sharedWamCode
 var Safe_upgradeLabels = sharedWamLabels
-const Safe_upgradeStartPC = 3774
+const Safe_upgradeStartPC = 3917
 
 func Safe_upgrade(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3774
+    vm.PC = 3917
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7128,15 +7335,15 @@ func Safe_upgrade(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: safe_upgrade_reason/5 (shared table, pc=3834)
+// WAM-compiled predicate: safe_upgrade_reason/5 (shared table, pc=3977)
 var Safe_upgrade_reasonCode = sharedWamCode
 var Safe_upgrade_reasonLabels = sharedWamLabels
-const Safe_upgrade_reasonStartPC = 3834
+const Safe_upgrade_reasonStartPC = 3977
 
 func Safe_upgrade_reason(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3834
+    vm.PC = 3977
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7147,15 +7354,15 @@ func Safe_upgrade_reason(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool 
 
 
 // Strategy: wam
-// WAM-compiled predicate: same_key/4 (shared table, pc=3887)
+// WAM-compiled predicate: same_key/4 (shared table, pc=4030)
 var Same_keyCode = sharedWamCode
 var Same_keyLabels = sharedWamLabels
-const Same_keyStartPC = 3887
+const Same_keyStartPC = 4030
 
 func Same_key(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3887
+    vm.PC = 4030
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7165,15 +7372,15 @@ func Same_key(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: satisfies/2 (shared table, pc=3941)
+// WAM-compiled predicate: satisfies/2 (shared table, pc=4084)
 var SatisfiesCode = sharedWamCode
 var SatisfiesLabels = sharedWamLabels
-const SatisfiesStartPC = 3941
+const SatisfiesStartPC = 4084
 
 func Satisfies(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 3941
+    vm.PC = 4084
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -7181,15 +7388,15 @@ func Satisfies(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: scan_base_holds/3 (shared table, pc=4021)
+// WAM-compiled predicate: scan_base_holds/3 (shared table, pc=4164)
 var Scan_base_holdsCode = sharedWamCode
 var Scan_base_holdsLabels = sharedWamLabels
-const Scan_base_holdsStartPC = 4021
+const Scan_base_holdsStartPC = 4164
 
 func Scan_base_holds(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4021
+    vm.PC = 4164
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7198,15 +7405,15 @@ func Scan_base_holds(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: seen_name/2 (shared table, pc=4109)
+// WAM-compiled predicate: seen_name/2 (shared table, pc=4252)
 var Seen_nameCode = sharedWamCode
 var Seen_nameLabels = sharedWamLabels
-const Seen_nameStartPC = 4109
+const Seen_nameStartPC = 4252
 
 func Seen_name(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4109
+    vm.PC = 4252
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -7214,15 +7421,15 @@ func Seen_name(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: segs_lt/2 (shared table, pc=4128)
+// WAM-compiled predicate: segs_lt/2 (shared table, pc=4271)
 var Segs_ltCode = sharedWamCode
 var Segs_ltLabels = sharedWamLabels
-const Segs_ltStartPC = 4128
+const Segs_ltStartPC = 4271
 
 func Segs_lt(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4128
+    vm.PC = 4271
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -7230,15 +7437,15 @@ func Segs_lt(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: segs_lt_1/2 (shared table, pc=4150)
+// WAM-compiled predicate: segs_lt_1/2 (shared table, pc=4293)
 var Segs_lt_1Code = sharedWamCode
 var Segs_lt_1Labels = sharedWamLabels
-const Segs_lt_1StartPC = 4150
+const Segs_lt_1StartPC = 4293
 
 func Segs_lt_1(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4150
+    vm.PC = 4293
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -7246,15 +7453,15 @@ func Segs_lt_1(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: selected_ver/3 (shared table, pc=4195)
+// WAM-compiled predicate: selected_ver/3 (shared table, pc=4338)
 var Selected_verCode = sharedWamCode
 var Selected_verLabels = sharedWamLabels
-const Selected_verStartPC = 4195
+const Selected_verStartPC = 4338
 
 func Selected_ver(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4195
+    vm.PC = 4338
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7263,15 +7470,15 @@ func Selected_ver(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: sort_versions_desc/2 (shared table, pc=4218)
+// WAM-compiled predicate: sort_versions_desc/2 (shared table, pc=4361)
 var Sort_versions_descCode = sharedWamCode
 var Sort_versions_descLabels = sharedWamLabels
-const Sort_versions_descStartPC = 4218
+const Sort_versions_descStartPC = 4361
 
 func Sort_versions_desc(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4218
+    vm.PC = 4361
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -7279,15 +7486,15 @@ func Sort_versions_desc(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: tight_base_revdep/2 (shared table, pc=4244)
+// WAM-compiled predicate: tight_base_revdep/2 (shared table, pc=4387)
 var Tight_base_revdepCode = sharedWamCode
 var Tight_base_revdepLabels = sharedWamLabels
-const Tight_base_revdepStartPC = 4244
+const Tight_base_revdepStartPC = 4387
 
 func Tight_base_revdep(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4244
+    vm.PC = 4387
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -7295,30 +7502,30 @@ func Tight_base_revdep(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: tight_constraint/1 (shared table, pc=4255)
+// WAM-compiled predicate: tight_constraint/1 (shared table, pc=4398)
 var Tight_constraintCode = sharedWamCode
 var Tight_constraintLabels = sharedWamLabels
-const Tight_constraintStartPC = 4255
+const Tight_constraintStartPC = 4398
 
 func Tight_constraint(a1 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4255
+    vm.PC = 4398
     vm.Regs[0] = a1
     return vm.Run()
 }
 
 
 // Strategy: wam
-// WAM-compiled predicate: tight_rev_in/3 (shared table, pc=4260)
+// WAM-compiled predicate: tight_rev_in/3 (shared table, pc=4403)
 var Tight_rev_inCode = sharedWamCode
 var Tight_rev_inLabels = sharedWamLabels
-const Tight_rev_inStartPC = 4260
+const Tight_rev_inStartPC = 4403
 
 func Tight_rev_in(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4260
+    vm.PC = 4403
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7327,15 +7534,15 @@ func Tight_rev_in(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: topo_all/7 (shared table, pc=4309)
+// WAM-compiled predicate: topo_all/7 (shared table, pc=4452)
 var Topo_allCode = sharedWamCode
 var Topo_allLabels = sharedWamLabels
-const Topo_allStartPC = 4309
+const Topo_allStartPC = 4452
 
 func Topo_all(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value, a6 Value, a7 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4309
+    vm.PC = 4452
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7348,15 +7555,15 @@ func Topo_all(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value, a6 Value, a7 Val
 
 
 // Strategy: wam
-// WAM-compiled predicate: topo_one/7 (shared table, pc=4346)
+// WAM-compiled predicate: topo_one/7 (shared table, pc=4489)
 var Topo_oneCode = sharedWamCode
 var Topo_oneLabels = sharedWamLabels
-const Topo_oneStartPC = 4346
+const Topo_oneStartPC = 4489
 
 func Topo_one(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value, a6 Value, a7 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4346
+    vm.PC = 4489
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7369,15 +7576,15 @@ func Topo_one(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value, a6 Value, a7 Val
 
 
 // Strategy: wam
-// WAM-compiled predicate: topo_sort_sel/3 (shared table, pc=4424)
+// WAM-compiled predicate: topo_sort_sel/3 (shared table, pc=4567)
 var Topo_sort_selCode = sharedWamCode
 var Topo_sort_selLabels = sharedWamLabels
-const Topo_sort_selStartPC = 4424
+const Topo_sort_selStartPC = 4567
 
 func Topo_sort_sel(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4424
+    vm.PC = 4567
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7386,15 +7593,15 @@ func Topo_sort_sel(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: tree_lookup/3 (shared table, pc=4456)
+// WAM-compiled predicate: tree_lookup/3 (shared table, pc=4599)
 var Tree_lookupCode = sharedWamCode
 var Tree_lookupLabels = sharedWamLabels
-const Tree_lookupStartPC = 4456
+const Tree_lookupStartPC = 4599
 
 func Tree_lookup(a1 Value, a2 Value, a3 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4456
+    vm.PC = 4599
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7403,15 +7610,15 @@ func Tree_lookup(a1 Value, a2 Value, a3 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: upgrade_set/4 (shared table, pc=4497)
+// WAM-compiled predicate: upgrade_set/4 (shared table, pc=4640)
 var Upgrade_setCode = sharedWamCode
 var Upgrade_setLabels = sharedWamLabels
-const Upgrade_setStartPC = 4497
+const Upgrade_setStartPC = 4640
 
 func Upgrade_set(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4497
+    vm.PC = 4640
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7421,15 +7628,15 @@ func Upgrade_set(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: upgrade_set_result/4 (shared table, pc=4511)
+// WAM-compiled predicate: upgrade_set_result/4 (shared table, pc=4654)
 var Upgrade_set_resultCode = sharedWamCode
 var Upgrade_set_resultLabels = sharedWamLabels
-const Upgrade_set_resultStartPC = 4511
+const Upgrade_set_resultStartPC = 4654
 
 func Upgrade_set_result(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4511
+    vm.PC = 4654
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7439,15 +7646,15 @@ func Upgrade_set_result(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: version_lt/2 (shared table, pc=4544)
+// WAM-compiled predicate: version_lt/2 (shared table, pc=4687)
 var Version_ltCode = sharedWamCode
 var Version_ltLabels = sharedWamLabels
-const Version_ltStartPC = 4544
+const Version_ltStartPC = 4687
 
 func Version_lt(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4544
+    vm.PC = 4687
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()
@@ -7455,15 +7662,15 @@ func Version_lt(a1 Value, a2 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: virtual_provider_ceilings/4 (shared table, pc=4646)
+// WAM-compiled predicate: virtual_provider_ceilings/4 (shared table, pc=4789)
 var Virtual_provider_ceilingsCode = sharedWamCode
 var Virtual_provider_ceilingsLabels = sharedWamLabels
-const Virtual_provider_ceilingsStartPC = 4646
+const Virtual_provider_ceilingsStartPC = 4789
 
 func Virtual_provider_ceilings(a1 Value, a2 Value, a3 Value, a4 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4646
+    vm.PC = 4789
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7473,15 +7680,15 @@ func Virtual_provider_ceilings(a1 Value, a2 Value, a3 Value, a4 Value) bool {
 
 
 // Strategy: wam
-// WAM-compiled predicate: walk_pkg_for_blocked/5 (shared table, pc=4696)
+// WAM-compiled predicate: walk_pkg_for_blocked/5 (shared table, pc=4839)
 var Walk_pkg_for_blockedCode = sharedWamCode
 var Walk_pkg_for_blockedLabels = sharedWamLabels
-const Walk_pkg_for_blockedStartPC = 4696
+const Walk_pkg_for_blockedStartPC = 4839
 
 func Walk_pkg_for_blocked(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4696
+    vm.PC = 4839
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     vm.Regs[2] = a3
@@ -7492,15 +7699,15 @@ func Walk_pkg_for_blocked(a1 Value, a2 Value, a3 Value, a4 Value, a5 Value) bool
 
 
 // Strategy: wam
-// WAM-compiled predicate: worth_indexing/2 (shared table, pc=4737)
+// WAM-compiled predicate: worth_indexing/2 (shared table, pc=4880)
 var Worth_indexingCode = sharedWamCode
 var Worth_indexingLabels = sharedWamLabels
-const Worth_indexingStartPC = 4737
+const Worth_indexingStartPC = 4880
 
 func Worth_indexing(a1 Value, a2 Value) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
-    vm.PC = 4737
+    vm.PC = 4880
     vm.Regs[0] = a1
     vm.Regs[1] = a2
     return vm.Run()

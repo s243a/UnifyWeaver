@@ -241,12 +241,21 @@ cmp_ver(>, A, B) :- version_lt(B, A), !.
 cmp_ver(=, _, _).
 
 % Highest version first. Excluded names produce no candidates (blacklist
-% filters generation only — never removal).
+% filters generation only — never removal). Factored through
+% candidate_versions/4 (H1) so there is one definition of the order; the
+% solution sequence is unchanged (excluded now fails through member(_, [])
+% rather than through \+).
 candidates_high_first(Cat, Name, C, Ver) :-
-    \+ excluded_name(Cat, Name),
-    matching_versions_in(Cat, Name, C, Vs),
-    sort_versions_desc(Vs, Desc),
+    candidate_versions(Cat, Name, C, Desc),
     member(Ver, Desc).
+
+% The descending candidate list itself (det; [] when excluded or none).
+candidate_versions(Cat, Name, C, Desc) :-
+    (   excluded_name(Cat, Name)
+    ->  Desc = []
+    ;   matching_versions_in(Cat, Name, C, Vs),
+        sort_versions_desc(Vs, Desc)
+    ).
 
 % Indexed when the catalog is wrapped (G1b), the historical full scan
 % otherwise. Both compute the same list: the catalog-order versions of
@@ -466,42 +475,89 @@ resolve_layered(Cat0, Requests, Selection) :-
     !,
     sort(Acc, Selection).
 
-resolve_pending(_Mode, _Cat, [], Acc, Acc).
-resolve_pending(Mode, Cat, [req(Name, C)|Rest], Acc, Sel) :-
-    (   Name = alternatives(Alts)
-    ->  resolve_alternatives(Mode, Cat, Alts, Rest, Acc, Sel)
-    ;   selected_ver(Acc, Name, Ver)
-    ->  % commit: a second version of the same name is never added (diamond)
-        satisfies(Ver, C),
-        resolve_pending(Mode, Cat, Rest, Acc, Sel)
-    ;   already_provided(Cat, Acc, Name, C)
-    ->  resolve_pending(Mode, Cat, Rest, Acc, Sel)
-    ;   pick_need(Mode, Cat, Name, C, Acc, Pkg, Ver, Origin),
-        % G2: the conflict test moved ahead of the expansion. It is a test
-        % on ground arguments (pick_need/8 binds Pkg and Ver on every arm;
-        % Acc is ground), and collect_deps/4 and append/3 are det and always
-        % succeed, so permuting it earlier changes neither the solutions nor
-        % their order nor the choice points -- it only skips the two goals
-        % on the failing path. See RESOLVER_PRUNING_DESIGN.md §2, G2.
-        (   Origin = from_base
-        ->  collect_deps(Cat, Pkg, Ver, DepReqs),
-            append(DepReqs, Rest, More),
-            resolve_pending(Mode, Cat, More, Acc, Sel)
-        ;   no_acc_conflicts(Cat, Pkg, Ver, Acc),
-            collect_deps(Cat, Pkg, Ver, DepReqs),
-            append(DepReqs, Rest, More),
-            resolve_pending(Mode, Cat, More, [Pkg-Ver|Acc], Sel)
+% Public-internal wrapper (H4): the search loop threads a state term
+% St = st(Gen, Active) as a sixth argument (RESOLVER_H4_H1_DESIGN.md §1).
+% Existing callers (resolve/3, resolve_layered/3, and the probe file's
+% resolver:resolve_pending/5) reach the loop through this wrapper unchanged.
+resolve_pending(Mode, Cat, Pending, Acc, Sel) :-
+    resolve_pending(Mode, Cat, Pending, Acc, st(0, []), Sel).
+
+% H4 (approach 3, active same-state cycle closure). St = st(Gen, Active):
+%   Gen    -- branch-local selection generation, incremented on every
+%             catalog insertion (the single site below).
+%   Active -- LIFO stack of open held expansions, each a(Pkg, Ver, Gen)
+%             recording the generation at which the expansion was opened.
+% Backtracking restores marks and generation together because St is an
+% ordinary term binding, never asserted (§1.5). A completed held expansion
+% POPS its entry-time mark via a done(Pkg, Ver, Gen) sentinel -- the mark is
+% never repurposed as a completion cache (§7 refinement 2).
+resolve_pending(_Mode, _Cat, [], Acc, _St, Acc).
+resolve_pending(Mode, Cat, [Item|Rest], Acc, St, Sel) :-
+    (   Item = done(Pkg, Ver, Gen)
+    ->  % a held expansion completed: pop its entry-time mark. Strict LIFO
+        % (§1.4), so the mark is the head; this unification is an internal
+        % assertion that cannot fail on a correct implementation.
+        St = st(GenNow, [a(Pkg, Ver, Gen)|Active1]),
+        resolve_pending(Mode, Cat, Rest, Acc, st(GenNow, Active1), Sel)
+    ;   Item = req(Name, C),
+        (   Name = alternatives(Alts)
+        ->  resolve_alternatives(Mode, Cat, Alts, Rest, Acc, St, Sel)
+        ;   selected_ver(Acc, Name, Ver)
+        ->  % commit: a second version of the same name is never added (diamond)
+            satisfies(Ver, C),
+            resolve_pending(Mode, Cat, Rest, Acc, St, Sel)
+        ;   already_provided(Cat, Acc, Name, C)
+        ->  resolve_pending(Mode, Cat, Rest, Acc, St, Sel)
+        ;   pick_need(Mode, Cat, Name, C, Acc, Pkg, Ver, Origin),
+            % G2: the conflict test moved ahead of the expansion. It is a test
+            % on ground arguments (pick_need/8 binds Pkg and Ver on every arm;
+            % Acc is ground), and collect_deps/4 and append/3 are det and always
+            % succeed, so permuting it earlier changes neither the solutions nor
+            % their order nor the choice points -- it only skips the two goals
+            % on the failing path. See RESOLVER_PRUNING_DESIGN.md §2, G2.
+            (   Origin = from_base
+            ->  St = st(Gen, Active),
+                (   active_member(Active, Pkg, Ver, Gen)
+                ->  % H4: same-state cycle closure. The incoming request was
+                    % already validated by pick_need/8 (held version satisfies
+                    % C, or the held provider provides Name at C). Omit only
+                    % the repeated expansion; every remaining obligation in
+                    % Rest is kept (validate-then-suppress, §1.6).
+                    resolve_pending(Mode, Cat, Rest, Acc, St, Sel)
+                ;   collect_deps(Cat, Pkg, Ver, DepReqs),
+                    append(DepReqs, [done(Pkg, Ver, Gen)|Rest], More),
+                    resolve_pending(Mode, Cat, More, Acc,
+                                    st(Gen, [a(Pkg, Ver, Gen)|Active]), Sel)
+                )
+            ;   no_acc_conflicts(Cat, Pkg, Ver, Acc),
+                collect_deps(Cat, Pkg, Ver, DepReqs),
+                append(DepReqs, Rest, More),
+                St = st(Gen, Active),
+                Gen1 is Gen + 1,          % the ONLY site that advances Gen
+                resolve_pending(Mode, Cat, More, [Pkg-Ver|Acc],
+                                st(Gen1, Active), Sel)
+            )
         )
+    ).
+
+% Same-generation marks are a prefix of the stack (§1.4), so the scan stops
+% at the first older mark.
+active_member([a(P, V, G)|Rest], Pkg, Ver, Gen) :-
+    (   G < Gen
+    ->  fail
+    ;   P == Pkg, V == Ver
+    ->  true
+    ;   active_member(Rest, Pkg, Ver, Gen)
     ).
 
 % Alternatives: first already-satisfied (Acc or, in layered mode, a loaded
 % layer) wins without re-selection. Otherwise try each dep/2 in listed
 % order, backtracking into later alternatives when a choice dead-ends.
-resolve_alternatives(Mode, Cat, Alts, Rest, Acc, Sel) :-
+resolve_alternatives(Mode, Cat, Alts, Rest, Acc, St, Sel) :-
     (   first_alt_already(Mode, Cat, Acc, Alts)
-    ->  resolve_pending(Mode, Cat, Rest, Acc, Sel)
+    ->  resolve_pending(Mode, Cat, Rest, Acc, St, Sel)
     ;   member(dep(N, C), Alts),
-        resolve_pending(Mode, Cat, [req(N, C)|Rest], Acc, Sel)
+        resolve_pending(Mode, Cat, [req(N, C)|Rest], Acc, St, Sel)
     ).
 
 first_alt_already(_Mode, Cat, Acc, Alts) :-
@@ -592,8 +648,10 @@ pick_need(layered, Cat, Name, C, _Acc, Pkg, Ver, Origin) :-
         Origin = from_base
     ;   layer_provider(Cat, Name, C, Pkg, Ver)
     ->  Origin = from_base
-    ;   candidates_high_first(Cat, Name, C, Ver)
-    ->  Pkg = Name,
+    ;   candidate_versions(Cat, Name, C, Desc),
+        Desc = [_|_]
+    ->  member(Ver, Desc),          % H1: descending versions on backtracking
+        Pkg = Name,
         Origin = from_catalog
     ;   provider_candidate(Cat, Name, C, Pkg, Ver),
         Origin = from_catalog
@@ -656,26 +714,24 @@ blocked_from(Cat, req(alternatives(Alts), _), Seen, Blocked) :-
     !,
     alt_reasons(Cat, Alts, Seen, Rs),
     Blocked = blocked(alternatives(Rs)).
-blocked_from(Cat, req(Name, C), Seen, Blocked) :-
-    \+ seen_name(Seen, Name),
+% H1/explain (§4): report the PREFERRED candidate's blockage. A repeated
+% name's failing ceiling is still reported; Seen bounds only the *walk*, not
+% the ceiling reports, so held a-1 -> b-1 -> a=2 explains a's ceiling.
+blocked_from(Cat, req(Name, C), _Seen, Blocked) :-
     base_ver(Cat, Name, BV),
     \+ satisfies(BV, C),
     Blocked = blocked(Name, needs(C), base_has(BV)).
-blocked_from(Cat, req(Name, C), Seen, Blocked) :-
-    \+ seen_name(Seen, Name),
+blocked_from(Cat, req(Name, C), _Seen, Blocked) :-
     virtual_provider_ceilings(Cat, Name, C, Reasons),
     Reasons \== [],
     Blocked = blocked(Name, needs(C), providers(Reasons)).
 blocked_from(Cat, req(Name, C), Seen, Blocked) :-
-    \+ seen_name(Seen, Name),
+    \+ seen_name(Seen, Name),               % the walk is what Seen bounds
     walk_pkg_for_blocked(Cat, Name, C, Pkg, Ver),
     collect_deps(Cat, Pkg, Ver, DepReqs),
     member(Dep, DepReqs),
     blocked_from(Cat, Dep, [Name|Seen], Blocked).
 
-blocked_acc(_Cat, req(Name, _C), Seen, Acc, Acc) :-
-    atom(Name),
-    seen_name(Seen, Name), !.
 blocked_acc(Cat, req(alternatives(Alts), _), Seen, Acc0, Acc) :-
     !,
     alt_reasons(Cat, Alts, Seen, Rs),
@@ -689,7 +745,11 @@ blocked_acc(Cat, req(Name, C), Seen, Acc0, Acc) :-
     ->  Acc1 = [blocked(Name, needs(C), providers(Reasons))|Acc0]
     ;   Acc1 = Acc0
     ),
-    (   walk_pkg_for_blocked(Cat, Name, C, Pkg, Ver)
+    % Seen bounds only the second walk; the ceiling above is reported even
+    % for a repeated name (§4).
+    (   seen_name(Seen, Name)
+    ->  Acc = Acc1                          % repeated name: no second walk
+    ;   walk_pkg_for_blocked(Cat, Name, C, Pkg, Ver)
     ->  collect_deps(Cat, Pkg, Ver, DepReqs),
         blocked_acc_list(Cat, DepReqs, [Name|Seen], Acc1, Acc)
     ;   Acc = Acc1
