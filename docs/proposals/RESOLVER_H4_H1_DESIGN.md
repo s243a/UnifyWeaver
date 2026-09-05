@@ -938,3 +938,41 @@ prototype source, `emit_mode(mixed)`), `run_corpus.mjs` and
 cyclic/H1 cases in the differential JSON schema through both. All
 numbers quoted as **[measured]** come from those runs on the same box on
 the same day; nothing in the repository was modified other than this file.
+
+---
+
+## 7. Hardening verdict (coordinator, post-D67)
+
+An independent adversarial hardening pass on the CHOSEN APPROACH (approach 3),
+run against branch head with the current resolver, returned CLEAN — the
+design proceeds to implementation unchanged. Results:
+
+- **Approach 3 confirmed.** All five targeted verification cases (scope
+  exit/rollback, virtual providers on the closing edge, distinct held
+  versions under one name, closing-edge constraints, sibling scope) pass.
+  A 30,000-case seeded search found ZERO answer differences among
+  generation-keyed approach 3, accumulator-snapshot approach 3, and
+  approach 4, across all three H1 policies (current commitment, restored
+  real-version backtracking, real-then-provider fallback); no model
+  exhausted budget; all 28,381 in-budget baseline cases preserved their
+  result under H4 alone. Independent confirmation of §0's measured result.
+- **The corpus pins have teeth.** Three faulty-bookkeeping mutants were
+  caught: a leaked mark drops a required package after rollback; a
+  name-only key skips another held version's dependencies; caching an
+  expansion at completion accepts a branch that should fail if that
+  expansion changed `Acc`.
+- **REFINEMENT 1 (corpus) — sibling scope needs a TRACE assertion.**
+  Approach 3 expands a completed-then-re-requested sibling twice; approach
+  4 skips the second; BOTH return the same selection. The scope
+  distinction is answer-invisible, so the sibling-scope corpus case MUST
+  assert a model trace / instruction-count observable, not just the
+  answer. The implementation's probe for this case is trace-level.
+- **REFINEMENT 2 (guardrail) — never mark at completion.** Approach 4's
+  soundness holds only if a reusable mark survives from expansion ENTRY
+  with no intervening selection; a mark ADDED AT COMPLETION is falsified
+  by the mutant above. For approach 3 as designed this means the `done`
+  sentinel must POP the entry-time `a(Pkg,Ver,Gen)` mark — it must never be
+  repurposed to CACHE a completed expansion. The implementer must not turn
+  `done` into a completion cache.
+
+Design cleared for the coordinated H4-then-H1 implementation round.
