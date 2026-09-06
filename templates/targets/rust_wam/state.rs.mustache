@@ -504,6 +504,11 @@ pub struct WamState {
     pub foreign_result_layouts: HashMap<String, String>,
     /// Foreign predicate result-delivery modes keyed by "name/arity".
     pub foreign_result_modes: HashMap<String, String>,
+    /// Store-backed P/2 fact sources (D43 indexed seek / lmdb gate) keyed by
+    /// "name/arity". Populated by register_indexed_seek_fact2 /
+    /// register_lmdb_seek_fact2; consumed by the "seek_fact" foreign-native-kind
+    /// handler (execute_seek_fact_source).
+    pub seek_fact_sources: HashMap<String, Arc<crate::seek_fact_source::SeekFactSource>>,
     /// Lazy edge-lookup backends keyed by "name/arity".
     /// Populated by `register_lazy_lookup` when `lmdb_materialisation(lazy)`
     /// is set; consumed by the `lazy_lmdb_lookup` foreign-native-kind handler.
@@ -737,6 +742,7 @@ impl WamState {
             foreign_f64_configs: HashMap::new(),
             foreign_result_layouts: HashMap::new(),
             foreign_result_modes: HashMap::new(),
+            seek_fact_sources: HashMap::new(),
             lazy_lookups: HashMap::new(),
             wam_to_lmdb: FxMap::default(),
             lmdb_to_wam: FxMap::default(),
@@ -821,6 +827,59 @@ impl WamState {
         if idx < self.regs.len() {
             self.regs[idx] = val;
         }
+    }
+
+    /// Register a store-backed P/2 fact source over a D43 indexed(Prefix) seek
+    /// store (Prefix.data + Prefix.idx). Reached by the "seek_fact" foreign
+    /// native kind.
+    pub fn register_indexed_seek_fact2(&mut self, pred: &str, prefix: &str) {
+        self.seek_fact_sources.insert(
+            pred.to_string(),
+            Arc::new(crate::seek_fact_source::SeekFactSource::new_indexed(prefix)),
+        );
+    }
+
+    /// Register a store-backed P/2 fact source over an lmdb(Dir) store. Opt-in;
+    /// this source fails loudly at query time (no compatible reader built in).
+    pub fn register_lmdb_seek_fact2(&mut self, pred: &str, dir: &str) {
+        self.seek_fact_sources.insert(
+            pred.to_string(),
+            Arc::new(crate::seek_fact_source::SeekFactSource::new_lmdb(dir)),
+        );
+    }
+
+    /// Serve one call to a store-backed P/2 fact source (the "seek_fact"
+    /// foreign native kind). A bound atomic A1 does a keyed seek (only the
+    /// records that key touches are read off disk); an unbound A1 does a full
+    /// scan (the provides walk). Every matching row becomes a __tuple__/2 that
+    /// finish_foreign_results unifies against A1/A2 through the stream
+    /// choice-point machinery, so both bound-A2 filtering and multi-row
+    /// backtracking work exactly as they do for a term-catalog fact predicate.
+    pub fn execute_seek_fact_source(&mut self, pred_key: &str) -> bool {
+        let a1_reg = match self.get_reg_raw("A1") {
+            Some(v) => v,
+            None => return false,
+        };
+        let a2_reg = match self.get_reg_raw("A2") {
+            Some(v) => v,
+            None => return false,
+        };
+        let a1d = self.deref_var(&a1_reg);
+        let key = match &a1d {
+            Value::Atom(_) | Value::Integer(_) | Value::Float(_) => {
+                Some(crate::seek_fact_source::encode_store_key(&a1d))
+            }
+            _ => None,
+        };
+        let rows = match self.seek_fact_sources.get(pred_key) {
+            Some(src) => src.rows(key),
+            None => return false,
+        };
+        let results: Vec<Value> = rows
+            .into_iter()
+            .map(|(v0, v1)| Value::strv("__tuple__".to_string(), vec![v0, v1]))
+            .collect();
+        self.finish_foreign_results(pred_key, vec![a1_reg, a2_reg], results)
     }
 
     /// Register an indexed atom/atom fact table for benchmark fast paths.

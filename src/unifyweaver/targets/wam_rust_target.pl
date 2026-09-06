@@ -4118,6 +4118,12 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![member_reg], results)
             }
+            "seek_fact" => {
+                // D43 store-backed P/2 fact source (indexed seek / lmdb gate).
+                // A1/A2 are read, a bound key seeks, and matching rows stream
+                // through the choice-point machinery. See execute_seek_fact_source.
+                self.execute_seek_fact_source(&pred_key)
+            }
             _ => false,
         }
     }'.
@@ -6389,6 +6395,33 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     }
                 }
             }
+            "number_string/2" => {
+                // number_string(?Number, ?String): the string arg is A2 (the
+                // reverse of atom_number/2). The store adapter parses version /
+                // constraint cells this way (split_string then number_string on
+                // each field). Atoms double as strings in this runtime.
+                let v2 = self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))).unwrap_or(Value::Uninit);
+                if let Some(t) = Self::value_atomic_text(&v2) {
+                    let trimmed = t.trim();
+                    let num = if let Ok(n) = trimmed.parse::<i64>() {
+                        Value::Integer(n)
+                    } else if let Ok(f) = trimmed.parse::<f64>() {
+                        Value::Float(f)
+                    } else {
+                        return false;
+                    };
+                    let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                    return if self.unify(&a1, &num) { self.pc += 1; true } else { false };
+                }
+                // Number -> String direction.
+                let text = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
+                    Some(Value::Integer(n)) => n.to_string(),
+                    Some(Value::Float(f)) => format!("{}", f),
+                    _ => return false,
+                };
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.unify(&a2, &Value::Atom(text)) { self.pc += 1; true } else { false }
+            }
             "atomic_list_concat/2" => {
                 let items = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
@@ -8282,6 +8315,18 @@ wam_line_to_rust_instr(["execute", P], Pred/Arity, Options, Rust) :-
     ;   format(string(Rust),
             'Instruction::Execute("~w".to_string())', [EP])
     ).
+% D43 store-backed fact source body: `call_foreign store_pkg/2 2` dispatches
+% straight to execute_foreign_predicate (the "seek_fact" native kind), then the
+% predicate's `proceed` returns to the caller. Emitted by classify_predicates
+% for each rust_wam_fact_sources declaration; the caller reaches the store
+% predicate by label exactly like any other predicate, so no call-site rewrite
+% is needed (mirrors the Go lane's call_fact_stream + proceed body).
+wam_line_to_rust_instr(["call_foreign", P, N], _, _, Rust) :-
+    clean_comma(P, CP), clean_comma(N, CN),
+    escape_rust_string(CP, ECP),
+    (   number_string(Num, CN) -> true ; Num = 0 ),
+    format(string(Rust),
+        'Instruction::CallForeign("~w".to_string(), ~w)', [ECP, Num]).
 wam_line_to_rust_instr(["proceed"], _, _, "Instruction::Proceed").
 wam_line_to_rust_instr(["builtin_call", Op, N], _, _, Rust) :-
     clean_comma(Op, COp), clean_comma(N, CN),
@@ -8718,6 +8763,31 @@ generate_setup_foreign_predicates_rust(DetectedKernels, Code) :-
     )),
     Code = Body.
 
+%% rust_generate_setup_foreign(+DetectedKernels, +StoreLines, +StoreKeys, -Code)
+%  setup_foreign_predicates() + foreign_pred_keys() combining detected FFI
+%  kernels and D43 store-backed seek sources. Delegates to the kernel-only
+%  generator when nothing at all is registered (keeps the `_vm` no-arg form).
+rust_generate_setup_foreign(Kernels, StoreLines, StoreKeys, Code) :-
+    (   Kernels == [], StoreLines == []
+    ->  generate_setup_foreign_predicates_rust([], Code)
+    ;   pairs_keys(Kernels, KKeys),
+        with_output_to(string(Body), (
+            format('pub fn setup_foreign_predicates(vm: &mut WamState) {~n'),
+            forall(member(KV, Kernels), emit_kernel_registration(KV)),
+            forall(member(Line, StoreLines), format('~w~n', [Line])),
+            format('}~n~n'),
+            format('pub fn foreign_pred_keys() -> HashSet<String> {~n'),
+            format('    let mut s = HashSet::new();~n'),
+            forall(member(K, KKeys),
+                   format('    s.insert("~w".to_string());~n', [K])),
+            forall(member(K, StoreKeys),
+                   format('    s.insert("~w".to_string());~n', [K])),
+            format('    s~n'),
+            format('}~n')
+        )),
+        Code = Body
+    ).
+
 %% emit_kernel_registration(+Key-Kernel)
 %  Emit Rust registration statements for a single detected kernel.
 emit_kernel_registration(Key-Kernel) :-
@@ -8925,13 +8995,28 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     directory_file_path(SrcDir, 'boundary_cache.rs', BoundaryPath),
     write_file(BoundaryPath, BoundaryCode),
 
-    % Generate setup_foreign_predicates function for detected kernels
-    generate_setup_foreign_predicates_rust(DetectedKernels, SetupForeignCode),
+    % Always emit src/seek_fact_source.rs (D43 store-backed P/2 seek reader).
+    % It has no external deps beyond std + crate::value, so it compiles into
+    % every crate; store-less builds simply never register a source.
+    read_template_file('templates/targets/rust_wam/seek_fact_source.rs.mustache', SeekTemplate),
+    render_template(SeekTemplate, [date=Date], SeekCode),
+    directory_file_path(SrcDir, 'seek_fact_source.rs', SeekPath),
+    write_file(SeekPath, SeekCode),
+
+    % Generate setup_foreign_predicates: detected kernels + any store-backed
+    % seek sources declared via rust_wam_fact_sources.
+    rust_store_fact_setup_lines(Options, StoreSetupLines, StoreSetupKeys),
+    rust_generate_setup_foreign(DetectedKernels, StoreSetupLines, StoreSetupKeys, SetupForeignCode),
 
     % Compile predicates and generate lib.rs
     pairs_keys(DetectedKernels, DetectedKeys),
     compile_predicates_for_project(ProjectPredicates, [foreign_pred_keys(DetectedKeys)|Options], PredicatesCode),
-    format(string(FullPredicatesCode), "~w\n\n~w", [SetupForeignCode, PredicatesCode]),
+    % Declare the seek module at crate root (mod decls may follow the `use`s the
+    % lib template emits). state.rs references crate::seek_fact_source, so the
+    % declaration must be present in every crate.
+    format(string(FullPredicatesCode),
+        "pub mod seek_fact_source;\n\n~w\n\n~w",
+        [SetupForeignCode, PredicatesCode]),
     render_named_template(rust_wam_lib,
         [module_name=ModuleName, date=Date, predicates_code=FullPredicatesCode,
          use_lmdb_zero=UseLmdbZero,
@@ -9041,9 +9126,20 @@ compile_predicates_for_project(Predicates0, Options, Code) :-
     collect_wam_entries(Classified, 1, EmbeddedRewrites, WamEntries, AllInstrParts, AllLabelParts),
     % Generate shared WAM table if any WAM predicates exist
     (   WamEntries \== []
-    ->  atomic_list_concat(AllInstrParts, '\n', AllInstrs),
-        atomic_list_concat(AllLabelParts, '\n', AllLabels),
-        format(string(SharedCode),
+    ->  atomic_list_concat(AllLabelParts, '\n', AllLabels),
+        length(AllInstrParts, NInstrParts),
+        % A single vec![...] of the whole program in one function makes rustc's
+        % optimizer memory blow up super-linearly with function size; past a few
+        % thousand instructions an opt-level>=2 build is OOM-killed. Split large
+        % programs into per-chunk builder functions the optimizer handles
+        % cheaply. The threshold (6000) sits above every crate that compiled as
+        % one vec before this change, so their generated output is byte-identical
+        % and only genuinely large programs (e.g. the store-backed resolver at
+        % ~9.9k instructions) take the chunked path.
+        (   NInstrParts > 6000
+        ->  rust_shared_wam_chunked(AllInstrParts, AllLabels, SharedCode)
+        ;   atomic_list_concat(AllInstrParts, '\n', AllInstrs),
+            format(string(SharedCode),
 'use std::sync::OnceLock;
 
 static SHARED_WAM: OnceLock<(Vec<Instruction>, HashMap<String, usize>)> = OnceLock::new();
@@ -9063,6 +9159,7 @@ pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
     let (code, labels) = get_shared_wam();
     (code.clone(), labels.clone())
 }', [AllLabels, AllInstrs])
+        )
     ;   % No shared-WAM predicates in this project. Still emit
         % shared_wam_program/0: templates/targets/rust_wam/main.rs.mustache
         % (and materialisation_setup.rs.mustache) import and call it
@@ -9372,6 +9469,142 @@ rust_body_has_control(!) :- !.
 rust_body_has_control((A , B)) :- !, ( rust_body_has_control(A) -> true ; rust_body_has_control(B) ).
 rust_body_has_control(_) :- fail.
 
+%% rust_wam_fact_source_spec(+P, +Arity, +Options, -Spec)
+%  True when Options declare a store-backed source for P/Arity. Only P/2 is
+%  served (mirrors the Go go_wam_fact_source_spec / wamjs contract).
+%    Spec = indexed(Prefix)   % D43 UWFI/UWIX seek store: Prefix.data + .idx
+%         | lmdb(Dir)         % opt-in; loud error if no reader is built in
+rust_wam_fact_source_spec(P, Arity, Options, Spec) :-
+    Arity =:= 2,
+    (   option(rust_wam_fact_sources(Sources), Options)
+    ->  true
+    ;   Sources = []
+    ),
+    member(source(PI, Spec), Sources),
+    rust_wam_fact_source_pi_match(PI, P, Arity).
+
+rust_wam_fact_source_pi_match(_:Name/Ar, P, Arity) :- !,
+    Name == P, Ar =:= Arity.
+rust_wam_fact_source_pi_match(Name/Ar, P, Arity) :-
+    Name == P, Ar =:= Arity.
+
+%% rust_fact_stream_wam_text(+P, +Arity, -WamText)
+%  The two-instruction predicate body served for a store fact source: dispatch
+%  to execute_foreign_predicate (native kind "seek_fact") then proceed. The
+%  caller reaches this by label like any other predicate.
+rust_fact_stream_wam_text(P, Arity, WamText) :-
+    format(atom(WamText),
+        '~w/~w:\n    call_foreign ~w/~w ~w\n    proceed\n',
+        [P, Arity, P, Arity, Arity]).
+
+%% rust_store_fact_setup_lines(+Options, -Lines, -Keys)
+%  One block of registration statements per store-backed source and the set of
+%  "name/arity" keys registered, for splicing into setup_foreign_predicates /
+%  foreign_pred_keys. indexed(Prefix) registers a seek source; lmdb(Dir)
+%  registers the loud-error tier.
+rust_store_fact_setup_lines(Options, Lines, Keys) :-
+    (   option(rust_wam_fact_sources(Sources), Options)
+    ->  true
+    ;   Sources = []
+    ),
+    findall(Block-Key,
+        ( member(source(PI, Spec), Sources),
+          rust_store_fact_source_pred(PI, Pred, Arity),
+          format(atom(Key), '~w/~w', [Pred, Arity]),
+          rust_store_fact_register_block(Key, Spec, Block)
+        ),
+        Pairs0),
+    sort(Pairs0, Pairs),
+    findall(B, member(B-_, Pairs), Lines),
+    findall(K, member(_-K, Pairs), Keys).
+
+rust_store_fact_source_pred(_:Name/Ar, Name, Ar) :- !.
+rust_store_fact_source_pred(Name/Ar, Name, Ar).
+
+rust_store_fact_register_block(Key, indexed(Prefix), Block) :-
+    rust_store_abs_path(Prefix, AbsPrefix),
+    escape_rust_string(AbsPrefix, EscPrefix),
+    format(atom(Block),
+'    vm.register_foreign_predicate("~w");
+    vm.register_foreign_native_kind("~w", "seek_fact");
+    vm.register_foreign_result_layout("~w", "tuple(2)");
+    vm.register_foreign_result_mode("~w", "stream");
+    vm.register_indexed_seek_fact2("~w", "~w");',
+        [Key, Key, Key, Key, Key, EscPrefix]).
+rust_store_fact_register_block(Key, lmdb(Dir), Block) :-
+    rust_store_abs_path(Dir, AbsDir),
+    escape_rust_string(AbsDir, EscDir),
+    format(atom(Block),
+'    vm.register_foreign_predicate("~w");
+    vm.register_foreign_native_kind("~w", "seek_fact");
+    vm.register_foreign_result_layout("~w", "tuple(2)");
+    vm.register_foreign_result_mode("~w", "stream");
+    vm.register_lmdb_seek_fact2("~w", "~w");',
+        [Key, Key, Key, Key, Key, EscDir]).
+
+rust_store_abs_path(Path, Abs) :-
+    atom_string(Path, PathStr),
+    working_directory(Cwd, Cwd),
+    (   catch(absolute_file_name(PathStr, Abs0, [relative_to(Cwd)]), _, fail),
+        Abs0 \== []
+    ->  Abs = Abs0
+    ;   Abs = PathStr
+    ).
+
+%% rust_shared_wam_chunked(+AllInstrParts, +AllLabels, -SharedCode)
+%  The chunked form of the shared WAM table: each ~800-instruction slice becomes
+%  a small wam_chunk_N() -> Vec<Instruction> builder the optimizer handles
+%  cheaply, and get_shared_wam concatenates them. Byte-for-byte equivalent to
+%  the single-vec form (same instruction order, same absolute PCs, so the
+%  label table is unchanged) but does not OOM rustc on large programs.
+rust_shared_wam_chunked(AllInstrParts, AllLabels, SharedCode) :-
+    rust_chunk_list(AllInstrParts, 800, Chunks),
+    findall(FnText-ExtLine,
+        ( nth0(I, Chunks, Chunk),
+          atomic_list_concat(Chunk, '\n', ChunkBody),
+          format(atom(FnText),
+'fn wam_chunk_~w() -> Vec<Instruction> {\n    vec![\n~w\n    ]\n}',
+                 [I, ChunkBody]),
+          format(atom(ExtLine), '        code.extend(wam_chunk_~w());', [I])
+        ),
+        Pairs),
+    findall(F, member(F-_, Pairs), FnTexts),
+    findall(E, member(_-E, Pairs), ExtLines),
+    atomic_list_concat(FnTexts, '\n\n', FnsBlock),
+    atomic_list_concat(ExtLines, '\n', ExtBlock),
+    format(string(SharedCode),
+'use std::sync::OnceLock;
+
+~w
+
+static SHARED_WAM: OnceLock<(Vec<Instruction>, HashMap<String, usize>)> = OnceLock::new();
+
+fn get_shared_wam() -> &\'static (Vec<Instruction>, HashMap<String, usize>) {
+    SHARED_WAM.get_or_init(|| {
+        let mut labels: HashMap<String, usize> = HashMap::new();
+~w
+        let mut code: Vec<Instruction> = Vec::new();
+~w
+        (code, labels)
+    })
+}
+
+pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
+    let (code, labels) = get_shared_wam();
+    (code.clone(), labels.clone())
+}', [FnsBlock, AllLabels, ExtBlock]).
+
+%% rust_chunk_list(+List, +Size, -Chunks)
+%  Split List into consecutive sublists of at most Size elements (order kept).
+rust_chunk_list([], _, []) :- !.
+rust_chunk_list(List, Size, [Chunk|Rest]) :-
+    length(Prefix, Size),
+    append(Prefix, Suffix, List),
+    !,
+    Chunk = Prefix,
+    rust_chunk_list(Suffix, Size, Rest).
+rust_chunk_list(List, _, [List]).
+
 %% classify_predicates(+Predicates, +Options, -Classified)
 %  Returns list of classify(Module, Pred, Arity, Strategy, ExtraData) terms.
 classify_predicates([], _, []).
@@ -9383,7 +9616,17 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     % inline because it exceeds the cap — it falls through to T4 below, but the
     % right fix is an external fact source.
     rust_maybe_warn_oversized_facts(Module:Pred/Arity, Options),
-    (   % T9 fact-table inline: an all-ground-facts predicate whose row count is
+    (   % D43 store-backed P/2 fact source: declared via rust_wam_fact_sources.
+        % Compile to a two-instruction body [call_foreign, proceed] (like the
+        % Go lane's call_fact_stream) so callers reach it by label exactly like
+        % any other predicate. The seek source itself is registered in
+        % setup_foreign_predicates. Checked first so a `:- dynamic` store
+        % predicate never falls through to the fact-table / dynamic paths.
+        rust_wam_fact_source_spec(Pred, Arity, Options, _Spec)
+    ->  rust_fact_stream_wam_text(Pred, Arity, WamText),
+        format(user_error, '  ~w/~w: store-backed fact source (seek)~n', [Pred, Arity]),
+        Entry = classified(Module, Pred, Arity, wam, WamText)
+    ;   % T9 fact-table inline: an all-ground-facts predicate whose row count is
         % in the inline window [t9_min_rows, t9_max_rows] compiles to a static
         % row table + first-arg hash index + choice-point enumeration, instead of
         % T4 instruction sequences. Default in-range (faster compile + correct vs

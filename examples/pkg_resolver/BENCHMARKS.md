@@ -32,7 +32,7 @@ sequentially on an otherwise-idle box; every leg returns the identical
 | ClojureScript (nbb) | 1.93 s | 110.6 s (2600 term) | 0.275 s / 28.98 s |
 | **wamjs store** (D48) | 0.238 s¹ | 9.69 s (503 store)² | store-seek / **0.186 s**³ |
 | **Go store** (D70) | corpus 51/51¹ | 28.9 s (503 store)² | store-seek / **0.593 s**⁵ |
-| Rust store | — | — | **pending** (Rust store lane not built yet)⁶ |
+| **Rust store** (D73) | corpus 51/51¹ | 3.93 s (503 store)² | store-seek / **0.038 s**⁶ |
 
 All gates passed on this box for every measured leg (corpus 51/51; term
 differential 2,600 cases / 0 divergences; store differential 503 cases /
@@ -58,8 +58,13 @@ was always the store run).
 vs the Go *term* leg's 15.28 s that scans the full catalog. That is **~26×
 faster than Go term** while touching under 1% of the store, with the identical
 10-package selection.
-⁶ The Rust store-backed lane does not exist yet (it is the next task); this
-row is reserved so its absence is visible. Rust's B3 above is the term leg.
+⁶ **Rust store B3** (`run_scale_rust_store.sh`, D73, indexed backend) is the
+fastest store leg: resolve **0.038 s** reading **10,305 of 1,142,225 store
+bytes (0.90%)**, 820 reads — vs the Rust *term* leg's 1.93 s that scans the
+full catalog, so **~51× faster than Rust term** while touching under 1% of
+the store, identical 10-package selection. The store legs do not run the
+2,600-case term differential; the 3.93 s figure is the 503-case store
+differential vs the SWI store adapter (SWI 0.72 s), 0 divergences.
 
 ## Ratios vs SWI (the legible story)
 
@@ -82,6 +87,7 @@ resolve = 0.0197 s):**
 
 | leg | resolve | ratio vs SWI | note |
 |---|---:|---:|---|
+| **Rust store** | 0.038 s | **1.9×** | reads 0.90% of the store |
 | **wamjs store** | 0.186 s | **9.4×** | reads 0.63% of the store |
 | **Go store** | 0.593 s | **30×** | reads 0.97% of the store |
 | Rust (term) | 1.93 s | **98×** | full term catalog |
@@ -92,8 +98,11 @@ The one-line reading: **SWI wins the raw resolve on the full term catalog**
 (first-argument indexing plus decades of WAM engineering); among the
 transpiled legs **Rust is fastest on the term catalog** (startup, B2, and B3
 resolve). The store-backed legs are where the gap closes — by reading an
-indexed seek store instead of the whole catalog, **Go store lands within 30×
-of SWI touching under 1% of the store**, the standout of this round.
+indexed seek store instead of the whole catalog. With the D73 Rust store lane,
+the standout is now **Rust store: 0.038 s, within ~1.9× of SWI's native
+resolve while touching under 1% of the store** — a transpiled target landing
+in SWI's league on the 5k catalog. Go store (30×) and wamjs store (9.4×)
+close the same gap on their runtimes.
 
 ## Post-pruning note (G1 catalog index + G2 conflict-first)
 
