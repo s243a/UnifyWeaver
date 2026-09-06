@@ -1,4 +1,4 @@
-// boundary_cache.rs — generated 2026-09-06 21:53:41
+// boundary_cache.rs — generated 2026-09-06 23:32:10
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
 // Boundary distribution cache — P1 core: the exact path-length-histogram splice.
