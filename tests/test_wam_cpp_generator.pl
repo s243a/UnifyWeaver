@@ -10666,6 +10666,10 @@ test(compile_error_default_is_warn) :-
     \+ wam_cpp_target:handle_compile_error(unknown_policy, foo/1,
                                           error(test_marker, _)).
 
+test(lowered_unsupported_instruction_fails_loudly,
+     [throws(error(wam_cpp_lowered_emitter_error(unsupported_instruction(bogus_lowered_op(a1))), _))]) :-
+    wam_cpp_lowered_emitter:emit_one(bogus_lowered_op(a1), "").
+
 :- end_tests(wam_cpp_generator).
 
 % --------------------------------------------------------------------
