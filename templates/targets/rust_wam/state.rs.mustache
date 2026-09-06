@@ -2381,6 +2381,13 @@ impl WamState {
                 None => None,
             },
             Value::Atom(s) => Some(s == atom),
+            // Empty-list aliasing (CONVENTIONS §1): the empty list is delivered
+            // as the atom `[]` OR as an empty `Value::List`, and the two are the
+            // same term (the interpreter's GetConstant / `unify` alias them). A
+            // head `get_constant []` / `get_nil` reaching this fast path must
+            // treat an empty Value::List as matching `[]`, else a lowered clause
+            // that discriminates [] vs [_|_] rejects a genuinely-empty list.
+            Value::List(l) if atom == "[]" => Some(l.is_empty()),
             _ => Some(false),
         }
     }

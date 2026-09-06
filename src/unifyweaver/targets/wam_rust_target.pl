@@ -44,7 +44,8 @@
     wam_rust_lowerable/3,
     lower_predicate_to_rust/4,
     rust_lowered_func_name/2,
-    rust_lowered_dispatch_profile/4
+    rust_lowered_dispatch_profile/4,
+    rust_heads_mutually_exclusive/1
 ]).
 :- use_module('../targets/wam_runtime_parser_capability', [
     parser_dependent_body_goal/2,
@@ -9120,7 +9121,11 @@ compile_predicates_for_project(Predicates0, Options, Code) :-
     % synthesise their enum/body helpers (added to the compile set) and record a
     % rewrite to splice a par_aggregate instruction over the begin/end block.
     rust_inject_embedded_par_aggregates(Predicates1, Options, Predicates, EmbeddedRewrites),
-    % Pass 1: classify each predicate as native, wam, or failed
+    % Pass 1: classify each predicate as native, wam, or failed.
+    % F11 self-tail-recursion lowering is default-OFF (measured net-negative on
+    % B2 — see docs/reports/wam_rust_f11_census_and_stage1.md); publish the gate
+    % as a module flag the emitter honors uniformly across emit modes.
+    ( rust_f11_enabled(Options) -> nb_setval(rust_f11_flag, true) ; nb_setval(rust_f11_flag, false) ),
     classify_predicates(Predicates, Options, Classified),
     % Pass 2: collect WAM entries with cumulative PCs, build shared table
     collect_wam_entries(Classified, 1, EmbeddedRewrites, WamEntries, AllInstrParts, AllLabelParts),
@@ -9240,13 +9245,30 @@ pub fn fact_table_call(vm: &mut WamState, pred: &str, cont_pc: usize) -> Option<
 % `emit_mode(functions)` is.
 
 %% rust_lowered_dispatch_fn(+Classified, +Options, -Code)
+%
+%  Two banks are offered through `lowered_call`:
+%   * The D55 sound-intermediate bank (emit_mode(functions) only): the cp-clean
+%     greatest-fixpoint over deterministic / clause_chain candidates.
+%   * The F11 tail-loop bank (EVERY emit mode): tail_loop candidates whose body
+%     is rollback-safe (only pure builtins, no foreign calls). Their user body
+%     calls run floor-protected and the runtime lowered_dispatch guard declines
+%     any call that turns out non-deterministic, so the conservative cp-clean
+%     fixpoint is not needed here — see the F11 header in
+%     wam_rust_lowered_emitter.pl.
 rust_lowered_dispatch_fn(Classified, Options, Code) :-
-    (   \+ option(emit_mode(functions), Options)
-    ->  Eligible = []
-    ;   option(lowered_dispatch(false), Options)
+    (   option(lowered_dispatch(false), Options)
     ->  Eligible = []
     ;   rust_lowered_dispatch_candidates(Classified, Cands),
-        rust_lowered_dispatch_fixpoint(Cands, Eligible)
+        partition(rust_cand_tail_loop, Cands, TailCands, OtherCands),
+        include(rust_f11_dispatch_ok, TailCands, F11Eligible),
+        (   option(emit_mode(functions), Options)
+        ->  % A dispatched F11 predicate leaves no choice point (guard-enforced),
+            % so it is cp-clean to its callers: seed the fixpoint with its keys.
+            findall(K, member(lo_cand(K, _, _, _, _), F11Eligible), F11Keys),
+            rust_lowered_dispatch_fixpoint(OtherCands, F11Keys, OtherEligible)
+        ;   OtherEligible = []
+        ),
+        append(F11Eligible, OtherEligible, Eligible)
     ),
     maplist(rust_lowered_dispatch_arm, Eligible, Arms),
     atomic_list_concat(Arms, '\n', ArmsStr),
@@ -9305,33 +9327,55 @@ rust_lowered_dispatch_candidates(Classified, Cands) :-
 %  (start optimistic, drop what fails, repeat) — the same shape mprolog's
 %  whole-predicate determinism classifier uses (`MPROLOG_MINING_NOTES.md`, F2).
 rust_lowered_dispatch_fixpoint(Cands, Eligible) :-
-    rust_cp_clean_fixpoint(Cands, CleanKeys),
+    rust_lowered_dispatch_fixpoint(Cands, [], Eligible).
+
+%% rust_lowered_dispatch_fixpoint(+Cands, +ExtraCleanKeys, -Eligible)
+%  ExtraCleanKeys are predicates already known cp-clean to callers (e.g. the
+%  dispatched F11 tail-loop bank, which leaves no choice point).
+rust_lowered_dispatch_fixpoint(Cands, ExtraCleanKeys, Eligible) :-
+    rust_cp_clean_fixpoint(Cands, ExtraCleanKeys, CleanKeys0),
+    append(ExtraCleanKeys, CleanKeys0, CleanKeys),
     include(rust_lowered_dispatch_ok(CleanKeys), Cands, Eligible).
 
-%% rust_cp_clean_fixpoint(+Cands, -CleanKeys)
+%% rust_cp_clean_fixpoint(+Cands, +ExtraCleanKeys, -CleanKeys)
 %  The keys of candidates that are single-clause (deterministic/ite_lowered)
 %  AND transitively call only cp-clean predicates with pure builtins and no
-%  foreign calls.
-rust_cp_clean_fixpoint(Cands, CleanKeys) :-
+%  foreign calls. ExtraCleanKeys are treated as cp-clean throughout.
+rust_cp_clean_fixpoint(Cands, ExtraCleanKeys, CleanKeys) :-
     include(rust_cp_clean_shaped, Cands, Clean0),
-    rust_cp_clean_iterate(Clean0, Cands, Clean),
+    rust_cp_clean_iterate(Clean0, ExtraCleanKeys, Cands, Clean),
     findall(K, member(lo_cand(K, _, _, _, _), Clean), CleanKeys).
 
 rust_cp_clean_shaped(lo_cand(_, _, Reason, _, _)) :-
     memberchk(Reason, [deterministic, ite_lowered]).
 
-rust_cp_clean_iterate(Clean, AllCands, Result) :-
-    findall(K, member(lo_cand(K, _, _, _, _), Clean), Keys),
+rust_cp_clean_iterate(Clean, ExtraCleanKeys, AllCands, Result) :-
+    findall(K, member(lo_cand(K, _, _, _, _), Clean), Keys0),
+    append(ExtraCleanKeys, Keys0, Keys),
     include(rust_lowered_dispatch_ok(Keys), Clean, Kept),
     (   Kept == Clean
     ->  Result = Clean
-    ;   rust_cp_clean_iterate(Kept, AllCands, Result)
+    ;   rust_cp_clean_iterate(Kept, ExtraCleanKeys, AllCands, Result)
     ).
 
 rust_lowered_dispatch_ok(CleanKeys,
         lo_cand(_, _, _, _, dispatch_profile(Calls, Builtins, Foreigns, _))) :-
     Foreigns == [],
     forall(member(C, Calls), rust_lowered_dispatch_key_member(C, CleanKeys)),
+    forall(member(B, Builtins), rust_lowered_dispatch_pure_builtin(B)).
+
+%% rust_cand_tail_loop(+Cand) — the candidate is an F11 tail-loop predicate.
+rust_cand_tail_loop(lo_cand(_, _, tail_loop, _, _)).
+
+%% rust_f11_dispatch_ok(+Cand) is semidet.
+%  An F11 tail-loop candidate is offered when its body is rollback-safe: no
+%  foreign calls and only side-effect-free builtins (so a declined attempt the
+%  guard rolls back is invisible). User body CALLS are permitted — they run
+%  floor-protected and the runtime guard declines any that leave a choice point,
+%  so they cannot corrupt the caller or drop solutions.
+rust_f11_dispatch_ok(lo_cand(_, _, tail_loop, _,
+        dispatch_profile(_Calls, Builtins, Foreigns, _))) :-
+    Foreigns == [],
     forall(member(B, Builtins), rust_lowered_dispatch_pure_builtin(B)).
 
 rust_lowered_dispatch_key_member(C, Keys) :-
@@ -9457,6 +9501,34 @@ rust_pred_has_control_constructs(Module:Pred/Arity) :-
     clause(Module:Head, Body),
     rust_body_has_control(Body),
     !.
+
+%% rust_f11_enabled(+Options) is semidet.
+%  F11 self-tail-recursion lowering is a landed-but-DEFAULT-OFF bank. Stage 0's
+%  census found 46% of the B2 differential's call/execute dispatches land in
+%  F11-shaped predicates, but the subset that is SAFE to dispatch as a
+%  first-solution native loop (mutually-exclusive clauses, pure body — see
+%  wam_rust_f11_lowerable) is dominated by SHALLOW catalog accessors, and for
+%  those the two per-call register-file snapshots the sound-dispatch guard and
+%  the loop take (the O2 cost in WAM_RUST_LOWERED_TIER_THROUGHPUT_PLAN.md §2)
+%  cost about what the removed interpreter dispatch saves. Measured
+%  neutral-to-slightly-negative on B2/B3, so it does not get banked ON by
+%  default ("bank it if it helps"). It is fully implemented, gated, and both
+%  lanes stay green WITH it on (term 2600/0/0, store 503/0). Enable with the
+%  `f11_tail_loop(true)` option or `UW_F11_ON=1`.
+rust_f11_enabled(Options) :-
+    ( option(f11_tail_loop(V), Options), V == true -> true
+    ; getenv('UW_F11_ON', '1')
+    ).
+
+%% rust_pred_heads_exclusive(+Module, +Pred, +Arity) is semidet.
+%  True when the predicate's clause heads are pairwise non-unifiable — the
+%  determinism carrier the F11 tail-loop lowering requires (see
+%  rust_heads_mutually_exclusive/1 in wam_rust_lowered_emitter). Fresh copies
+%  are gathered so the live database heads are never bound.
+rust_pred_heads_exclusive(Module, Pred, Arity) :-
+    functor(Proto, Pred, Arity),
+    findall(H, ( clause(Module:Proto, _), copy_term(Proto, H) ), Heads),
+    rust_heads_mutually_exclusive(Heads).
 
 rust_body_has_control(G) :- var(G), !, fail.
 rust_body_has_control((_ -> _)) :- !.
@@ -9716,6 +9788,20 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
             compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, PredCode),
             format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
             Entry = classified(Module, Pred, Arity, wam_foreign, PredCode)
+        ;   % F11 self-tail-recursion -> native loop. Reachable in EVERY emit
+            % mode (a small, safe, first-solution bank), gated by
+            % f11_tail_loop (default on). Two gates beyond the WAM shape check:
+            % the clause heads must be mutually exclusive (determinism carrier,
+            % so committing to the loop's first solution drops no answer), and
+            % the usual decline-if-unsure fallback applies. See Stage 1 of
+            % docs/proposals/WAM_RUST_LOWERED_TIER_THROUGHPUT_PLAN.md.
+            rust_f11_enabled(Options),
+            wam_rust_lowerable(Pred/Arity, WamCode, tail_loop),
+            rust_pred_heads_exclusive(Module, Pred, Arity)
+        ->  lower_predicate_to_rust(Pred/Arity, WamCode, Options, RustLines),
+            atomic_list_concat(RustLines, '\n', PredCode),
+            format(user_error, '  ~w/~w: lowered (tail_loop F11)~n', [Pred, Arity]),
+            Entry = classified(Module, Pred, Arity, lowered, lowered_code(PredCode, WamCode, tail_loop))
         ;   % Try lowered emitter when emit_mode(functions)
             option(emit_mode(functions), Options),
             wam_rust_lowerable(Pred/Arity, WamCode, Reason)
