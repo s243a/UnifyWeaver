@@ -153,6 +153,50 @@ From the runtime integration surface. Any lowered body must preserve, exactly as
   style); only side-effect-free builtins are safe on any path that can roll
   back (`rust_dispatch_pure_builtin` whitelist).
 
+## 6a. Soundness gates from external review (Kimi K2, 2026-09-06)
+
+An adversarial design review (`docs/reports/wam_rust_stage2_kimi_soundness_review.md`)
+found five load-bearing gaps, each with a concrete wrong-answer scenario. These
+are **hard gates** for the Stage 2 build, not advisories; the scenarios are
+regression targets. Several map onto machinery the runtime already has (the
+`lowered_dispatch` post-call CP-depth check, the Arc-cloned `stack` on
+`ChoicePoint`, the §9 cut-barrier and §8 ITE-levels models) — the review's job is
+to make these provably sufficient for the nondet case and to add the two new
+obligations (G-1, G-4/G-5).
+
+- **G-1 — resume state is more than the tuple.** `minimal_saved_locals` must be
+  computed by **backward** liveness from *every* `resume_arm`, and must **force
+  all argument registers live** at every internal choice point (they are live for
+  the *resumed* clause even if dead on the fall-through path). Plus frame pinning
+  (G-5) and `trail_len`/`heap_len`.
+- **G-2 — P1 needs a replacement guard.** Removing the interpreter round-trip
+  removes the choice-point-leak detector. Replace with (a) a whole-program `det`
+  lattice (poison on any non-`det` callee) and (b) a runtime post-call
+  choice-point-depth guard at every lowered→interpreted/unknown boundary
+  (commit only in a first-solution context, else deoptimize). The current
+  `lowered_dispatch` guard is the first-solution form of (b) to generalize.
+- **G-3 — cut across tiers.** One linear CP stack with uniform depth addressing;
+  the cut barrier **passed caller→callee as an explicit value** (frameless
+  lowered code has no frame slot to hold it); the barrier **saved in the CP at
+  original-call time and restored on resumption, never recomputed** from the
+  stack top.
+- **G-4 — determinism ≠ non-unifiable heads.** Pairwise non-unifiable heads
+  prove deterministic clause *selection*, not a single *solution* (a matched
+  body can still be nondet, e.g. `member/3`). Dropping the CP requires a
+  transitive whole-predicate **at-most-one-solution** proof; otherwise leave a
+  resume-state CP unless the call site is explicitly first-solution. (Stage 1's
+  F11 gate — non-unifiable heads + *pure body* — is a conservative special case;
+  the general mechanism needs the full lattice.)
+- **G-5 — activation identity + cut-invalidation.** Each resume-state CP carries
+  a validated **activation handle** (frame pointer + generation) so nested
+  self-calls do not confuse activations; and `cut` must **invalidate the
+  predicate's own resume-state CP** at the barrier level, not only prune CPs
+  above it.
+
+The build proceeds only against the review's full soundness checklist, with the
+seven concrete failure scenarios as explicit stress tests alongside the 2600/503
+differential at 0 divergences.
+
 ## 7. Attribution
 
 The loop shape (F11) and the resumable-choice-point shape (F3) are **ideas**
