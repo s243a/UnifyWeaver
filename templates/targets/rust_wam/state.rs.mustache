@@ -607,6 +607,16 @@ pub struct WamState {
     /// Cut barrier: choice point stack depth at the most recent neck/Allocate.
     /// !/0 truncates choice_points to this depth instead of clearing all.
     pub cut_barrier: usize,
+    /// Backtracking floor: `backtrack()` never pops a choice point at or below
+    /// this depth. A first-solution meta-call (`call_goal_once`) raises it to
+    /// the choice-point depth at entry so that when the meta-goal FAILS,
+    /// backtracking stops at the meta-call boundary and reports failure —
+    /// instead of escaping into the CALLER's choice points and resuming the
+    /// enclosing computation inside the nested `run()`. Without it a
+    /// `maplist(is_v3, Debs)` whose `is_v3(deb(...))` element test fails let the
+    /// nested run backtrack into the outer resolver search (P3 deb path; the
+    /// v/3 path never triggered it because `is_v3` always succeeds there).
+    pub backtrack_floor: usize,
     /// Pending barrier captured before a predicate clause choice point was
     /// pushed. The following Allocate consumes it so neck cuts commit to the
     /// current clause instead of leaving the predicate alternative alive.
@@ -748,6 +758,7 @@ impl WamState {
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
+            backtrack_floor: 0,
             pending_cut_barrier: None,
             pending_level: None,
             step_count: 0,
@@ -2432,6 +2443,7 @@ impl WamState {
         self.cp = 0;
         self.var_counter = 0;
         self.cut_barrier = 0;
+        self.backtrack_floor = 0;
         self.pending_cut_barrier = None;
         self.pending_level = None;
         self.step_count = 0;
