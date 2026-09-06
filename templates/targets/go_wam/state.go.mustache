@@ -213,6 +213,11 @@ type WamContext struct {
 	AtomFact2Sources          map[string]AtomFact2Source
 	IndexedAtomFactPairs      map[string][]AtomPair
 	IndexedWeightedEdgeTriples map[string][]WeightedEdgeTriple
+	// FactStreamSources holds store-backed P/2 fact sources (D43 UWFI/UWIX
+	// seek reader + the opt-in lmdb gate). Distinct from the in-memory
+	// AtomFact2Sources graph-kernel path: these read only the records a
+	// bound key touches, straight off disk.
+	FactStreamSources         map[string]*seekFactSource
 	AtomIntern                map[string]int
 	InternedFacts             map[string][][]int
 	InternedWeightedFacts     map[string][]InternedWeightedEdge
@@ -382,6 +387,7 @@ func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
 		AtomFact2Sources:     make(map[string]AtomFact2Source),
 		IndexedAtomFactPairs: make(map[string][]AtomPair),
 		IndexedWeightedEdgeTriples: make(map[string][]WeightedEdgeTriple),
+		FactStreamSources:    make(map[string]*seekFactSource),
 		AtomIntern:           make(map[string]int),
 		InternedFacts:        make(map[string][][]int),
 		InternedWeightedFacts: make(map[string][]InternedWeightedEdge),
@@ -3035,6 +3041,26 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return vm.Unify(arg1, internAtom(text))
 		}
 		return false
+	case "number_string/2":
+		// number_string(?Number, ?String): atom_number/2 with the argument
+		// roles swapped. Go has no string type, so the text side is an atom.
+		numVal := vm.deref(arg1)
+		strVal := vm.deref(arg2)
+		if parsed, ok := atomNumberValue(numVal); ok {
+			text, ok := atomNumberText(parsed)
+			if !ok {
+				return false
+			}
+			return vm.Unify(arg2, internAtom(text))
+		}
+		if text, ok := atomNumberText(strVal); ok {
+			parsed, ok := parseAtomNumberText(strings.TrimSpace(text))
+			if !ok {
+				return false
+			}
+			return vm.Unify(arg1, parsed)
+		}
+		return false
 	case "upcase_atom/2":
 		atom, ok := vm.deref(arg1).(*Atom)
 		if !ok {
@@ -3048,12 +3074,32 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		return vm.Unify(arg2, internAtom(strings.ToLower(atom.Name)))
 	case "atom_concat/3":
-		left, okLeft := vm.deref(arg1).(*Atom)
-		right, okRight := vm.deref(arg2).(*Atom)
-		if !okLeft || !okRight {
+		leftVal := vm.deref(arg1)
+		rightVal := vm.deref(arg2)
+		wholeText, okWhole := atomNumberText(vm.deref(arg3))
+		leftText, okLeft := atomNumberText(leftVal)
+		rightText, okRight := atomNumberText(rightVal)
+		// (+,+,-): forward concatenation.
+		if okLeft && okRight {
+			return vm.Unify(arg3, internAtom(leftText+rightText))
+		}
+		// (+,-,+): prefix strip. Bind arg2 to the suffix after arg1 in arg3.
+		// Used by resolver_store.pl's unpack_ver / unpack_constraint /
+		// unpack_dep ("d:", "gte:", "ALTS/", …) and the provides scan.
+		if okLeft && okWhole {
+			if strings.HasPrefix(wholeText, leftText) {
+				return vm.Unify(arg2, internAtom(wholeText[len(leftText):]))
+			}
 			return false
 		}
-		return vm.Unify(arg3, internAtom(left.Name+right.Name))
+		// (-,+,+): suffix strip. Bind arg1 to the prefix before arg2 in arg3.
+		if okRight && okWhole {
+			if strings.HasSuffix(wholeText, rightText) {
+				return vm.Unify(arg1, internAtom(wholeText[:len(wholeText)-len(rightText)]))
+			}
+			return false
+		}
+		return false
 	case "atom_length/2", "string_length/2":
 		atom, ok := vm.deref(arg1).(*Atom)
 		if !ok {

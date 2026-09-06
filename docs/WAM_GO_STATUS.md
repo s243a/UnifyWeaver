@@ -280,6 +280,75 @@ set, so the index is semantically active.
 
 See `examples/pkg_resolver/go/README.md`.
 
+## Whole-program exercise: uw-resolve STORE-backed (`examples/pkg_resolver/go_store/`)
+
+The D43/D48 store path (already shipped on wamjs) brought to Go: the
+shared adapter `resolver_store.pl` compiled through `wam_go`
+(`prefer_wam(true)`) with the five store predicates
+(`store_pkg`/`store_dep`/`store_conflict`/`store_revdep`/`store_provides`,
+all P/2) served from the language-agnostic **indexed seek stores**
+(`pkg.data`/`pkg.idx`, …) that `examples/pkg_resolver/store/` writes.
+A bound-key lookup reads only the records that key touches instead of
+loading the whole catalog term.
+
+**Fact-source inventory (have vs needed).** Before this round the Go WAM
+had TSV + LMDB *in-memory* atom-fact sources (`registerTsvAtomFact2` /
+`registerLmdbAtomFact2` / `registerIndexedAtomFact2Pairs`) for the
+graph kernels — all `string`-keyed `AtomPair`, materialised eagerly via
+`Scan()`, arg1-bound-only, output-arg2-only. None of that serves
+`source(P/2, indexed(Prefix))`: it needs a true UWFI/UWIX seek reader
+(no eager Scan), typed keys (atom/string/int/float tags), both args as
+in/out, and an unbound-arg1 full scan (the `tight_base_revdep` provides
+walk). So the reader was **new**, not a reuse of the graph path.
+
+**Reader built.** `indexed(Prefix)` — a dependency-free seek reader
+(`seekFactSource`) mirroring the wamjs `runtime.js` reader byte for byte:
+binary-search the sorted `.idx` key table via `ReadAt`, read only the
+matching `.data` records, and count bytes for the D43 proof
+(`factIOBytes`/`FactIOBytes()`). Typed key tags (atom `0x41` / string
+`0x53` / int `0x49` / float `0x46`) match the codec. A P/2 store
+predicate compiles to a two-instruction body `[CallFactStream, Proceed]`
+so callers reach it by label like any predicate; `executeCallFactStream`
+seeks (or full-scans when arg1 is unbound), filters bound args, and
+streams solutions through the existing `finishStreamResults` choice-point
+machinery. `lmdb(Dir)` was **gated, not wired**: Go has no repo
+dependency and cannot read the npm-`lmdb` store format, so the arm emits
+`registerLmdbSeekFact2` and fails LOUDLY on first lookup (never a silent
+swap to indexed) — the D43/D56 missing-package contract, ungated.
+
+**Bugs this program forced (symptom → cause → fix → probe):**
+
+| Symptom | Cause | Fix | Probe |
+|---|---|---|---|
+| every resolve `{fail:true}` | `number_string/2` unimplemented (the store packs versions with it; the term path never needed it) | added `number_string/2` builtin (atom_number/2 with roles swapped) + direct-builtin classification | store corpus |
+| non-`any` constraints / provides dropped mid-stream | `atom_concat/3` only did forward `(+,+,-)`; `unpack_ver`/`unpack_constraint`/`unpack_dep` decompose `(+,-,+)` | extended `atom_concat/3` to prefix/suffix strip modes | store corpus (dependents/blocked) |
+| `"-"` provides-cell mis-compared | a double-quoted string constant interned as an atom *including its quotes* (`"-"` vs `-`) | `parse_string_to_go_val` now strips a round-tripped string to its content atom (D37) | store corpus (provides) |
+| `base(N-V,R)` / `layer(N,Pkgs)` env holds not found; multi-clause-per-functor solutions collapsed | the first-arg indexed-dispatch forms `try`/`retry`/`trust L` were unrecognised → emitted as comments → dispatch labels collapsed to one PC | implemented `Try`/`Retry`/`Trust` instructions + line handlers | store corpus (named_layer, freeze_audit) |
+| atoms.go `internAtom("""")` syntax error | `escape_go_string` escaped `\` only, not `"` | escape backslash-then-quote (+ nl/tab/cr) | build |
+
+These are all in owned files (`wam_go_target.pl`,
+`templates/targets/go_wam/*`). `resolver_store.pl` was **not** modified.
+
+**B3 payoff (this VM, Go 1.24, SWI 9.0.4) — the headline:**
+
+| Bench | Term catalog (`../go`) | Store seek (`../go_store`) |
+|---|---|---|
+| load | ~0.10s (whole 1.14 MB catalog) | none (seek on demand) |
+| resolve `resolve_layered` (`0xc0ffee01`) | **~14.6s** | **~0.77s** |
+| bytes read | ~1.14 MB (all) | **~11 KB / 1.14 MB (0.97%)** |
+| selection | 10 pkgs | identical 10 pkgs |
+
+The store leg resolves ~19× faster while reading under 1% of the store —
+Go's native speed plus read-only-what-you-need, the fleet's fastest leg
+at scale. (D43's bytes-read proof, now on Go: 880 reads, 11,025 bytes.)
+
+Gates: store corpus **51/51** byte-identical to the term corpus; 5k store
+differential **503/0** vs the SWI store oracle (`store_diff_runner.pl`,
+same JSONL); term corpus **51/51** + differential **2600/0** unchanged;
+full `tests/test_wam_go_*.pl` sweep **26/26**; wamjs + wamjs_store corpus
+**51/51** each; `CONFORMANCE_TARGETS=javascript` + cli_args untouched.
+See `examples/pkg_resolver/go_store/README.md`.
+
 ## Path forward
 
 1. Decide whether the WAM route should become a first-class Go product

@@ -78,6 +78,12 @@ func (i *CallForeign) instrTag() {}
 type CallIndexedAtomFact2 struct { Pred string }
 func (i *CallIndexedAtomFact2) instrTag() {}
 
+// CallFactStream streams a store-backed P/2 fact source (D43 seek reader).
+// The predicate body is just [CallFactStream, Proceed]; the source itself
+// is registered by setupSharedForeignPredicates.
+type CallFactStream struct { Pred string }
+func (i *CallFactStream) instrTag() {}
+
 type CallPc struct { TargetPC int; Arity int }
 func (i *CallPc) instrTag() {}
 
@@ -163,6 +169,19 @@ func (i *RetryMeElsePc) instrTag() {}
 
 type TrustMe struct{}
 func (i *TrustMe) instrTag() {}
+
+// Try / Retry / Trust are the first-arg indexed-dispatch forms (a switch
+// case with more than one clause of the same functor jumps to a chain of
+// these). Unlike the _me_else forms, the alternative is the NEXT instruction
+// and the label is the clause body to enter now.
+type Try struct { Label string }
+func (i *Try) instrTag() {}
+
+type Retry struct { Label string }
+func (i *Retry) instrTag() {}
+
+type Trust struct { Label string }
+func (i *Trust) instrTag() {}
 
 type SwitchOnConstant struct { Cases []ConstCase }
 func (i *SwitchOnConstant) instrTag() {}

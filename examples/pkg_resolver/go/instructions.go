@@ -78,6 +78,12 @@ func (i *CallForeign) instrTag() {}
 type CallIndexedAtomFact2 struct { Pred string }
 func (i *CallIndexedAtomFact2) instrTag() {}
 
+// CallFactStream streams a store-backed P/2 fact source (D43 seek reader).
+// The predicate body is just [CallFactStream, Proceed]; the source itself
+// is registered by setupSharedForeignPredicates.
+type CallFactStream struct { Pred string }
+func (i *CallFactStream) instrTag() {}
+
 type CallPc struct { TargetPC int; Arity int }
 func (i *CallPc) instrTag() {}
 
