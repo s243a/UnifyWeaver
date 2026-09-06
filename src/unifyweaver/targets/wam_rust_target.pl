@@ -6822,7 +6822,10 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 let mut elems: Vec<Option<Vec<Value>>> = Vec::with_capacity(nlists);
                 let mut n: Option<usize> = None;
                 for raw in &raw_lists {
-                    match self.deref_heap(&self.deref_var(raw)) {
+                    // deref_list_arg aliases the atom [] (put_constant) with
+                    // Value::List -- matching only List used to reject empty
+                    // maplist/2 over [] (CONVENTIONS §1, defect 1).
+                    match self.deref_list_arg(raw) {
                         Value::List(items) => {
                             match n {
                                 Some(len) if len != items.len() => return false,
@@ -6858,6 +6861,42 @@ compile_execute_meta_builtin_to_rust(Code) :-
                     if !self.call_goal_once(&g) { return false; }
                 }
                 self.pc += 1; true
+            }
+            "predsort/3" => {
+                // predsort(Pred, List, Sorted). Pred(Order, X, Y) binds
+                // Order to < / > / =. Capture A3 BEFORE the comparator
+                // meta-calls: call_goal_key writes Order/X/Y into A1-A3
+                // and a leftover binding would make Unify compare a
+                // version term to the sorted list (D61 Go bug 2).
+                use std::cmp::Ordering;
+                let pred = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                let items = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
+                    Some(Value::List(items)) => items.to_vec(),
+                    _ => return false,
+                };
+                let out = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                let pred_is_compare = matches!(&pred, Value::Atom(n) if n == "compare");
+                let mut idxs: Vec<usize> = (0..items.len()).collect();
+                let mut cmp_failed = false;
+                idxs.sort_by(|&i, &j| {
+                    if cmp_failed { return i.cmp(&j); }
+                    let x = items[i].clone();
+                    let y = items[j].clone();
+                    let ord = if pred_is_compare {
+                        self.term_compare(&x, &y)
+                    } else {
+                        match self.predsort_order(&pred, &x, &y) {
+                            Some(o) => o,
+                            None => { cmp_failed = true; Ordering::Equal }
+                        }
+                    };
+                    ord.then(i.cmp(&j))
+                });
+                if cmp_failed { return false; }
+                let sorted: Vec<Value> = idxs.iter().map(|&k| items[k].clone()).collect();
+                if self.unify(&out, &Value::list(sorted)) { self.pc += 1; true } else { false }
             }
             "include/3" | "exclude/3" => {
                 // Filter: keep elements for which the test call succeeds
@@ -6980,20 +7019,59 @@ compile_execute_meta_builtin_to_rust(Code) :-
 
     /// First-solution meta-call used by the maplist family: any choice
     /// points the sub-call leaves behind are discarded (deterministic
-    /// commit per element).
+    /// commit per element). The environment stack is snapshotted and
+    /// restored so a nested `run()` (user comparator, is_v3/1, …) cannot
+    /// Deallocate the caller''s Env frame — that is what made
+    /// `sort_versions_desc` fail after a successful predsort/3: reverse/2
+    /// then ran, but the clause Deallocate found no Env (P3 deb path;
+    /// v/3 uses sort/2 and never nested-ran).
     fn call_goal_once(&mut self, goal: &Value) -> bool {
         let cp_depth = self.choice_points.len();
         // §9 barrier-raising context: a meta-called goal is an opaque cut
         // scope, so `!` inside it prunes back to the scope entry and no
         // further. Without this the cut escaped into the enclosing clause.
         let saved_barrier = self.cut_barrier;
+        let stack_snapshot = self.stack.clone();
         self.cut_barrier = cp_depth;
         let ok = self.call_goal_value(goal);
         self.cut_barrier = saved_barrier;
         if self.choice_points.len() > cp_depth {
             self.choice_points.truncate(cp_depth);
         }
+        self.stack = stack_snapshot;
         ok
+    }
+
+    /// Comparator for predsort/3: Pred(Order, X, Y). Saves and restores
+    /// A-registers around the meta-call (the comparator writes A1-A3)
+    /// and truncates leftover CPs via call_goal_once so a later resolve
+    /// failure cannot backtrack into a stale version_lt ITE.
+    fn predsort_order(&mut self, pred: &Value, x: &Value, y: &Value) -> Option<std::cmp::Ordering> {
+        use std::cmp::Ordering;
+        let order = self.fresh_meta_var();
+        let g = self.extend_goal(pred, &[order.clone(), x.clone(), y.clone()])?;
+        let trail_mark = self.trail.len();
+        let saved = self.save_regs();
+        let ok = self.call_goal_once(&g);
+        self.restore_regs(&saved);
+        if !ok {
+            self.unwind_trail_to(trail_mark);
+            return None;
+        }
+        let atom = match self.deref_heap(&self.deref_var(&order)) {
+            Value::Atom(s) => s,
+            _ => {
+                self.unwind_trail_to(trail_mark);
+                return None;
+            }
+        };
+        let o = match atom.as_str() {
+            "<" => Ordering::Less,
+            ">" => Ordering::Greater,
+            _ => Ordering::Equal,
+        };
+        self.unwind_trail_to(trail_mark);
+        Some(o)
     }
 
     /// Predicates the shared WAM compiler emits as Call/Execute (no
