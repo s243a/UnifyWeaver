@@ -171,3 +171,38 @@ async/await / Scheme-to-C CPS transform and is not mprolog-specific.
    only with P1+P2 designed and the per-solution cost proven against baseline.
 
 Ledger each landed stage in `JS_TARGETS_PARITY_PUNCHLIST.md`.
+
+## 9. Generalization directive (2026-09-06)
+
+Steering decision: **generalize as much as possible — do not special-case one
+family, and do not cap the ambition at deterministic code.** The end goal is a
+single *general* lowered execution model, not a bag of per-pattern hacks.
+
+- **General deterministic class.** The project has many deterministic recursion
+  patterns already identified — tail-recursive accessors (Stage 1's set),
+  non-tail recursive walkers (`lookup_held`, `long_enough`, `scan_base_holds`),
+  deterministic-in-practice bodies reached via `run()` (`matching_deps`,
+  `matching_versions`, `direct_on`, `no_acc_conflicts`), and index builders
+  (`same_key`, `build_tree`). The region-fusion mechanism (P1 direct calls + P2
+  minimal snapshot) should be built to cover this general class, characterized
+  against the census + the T1–T11 taxonomy, so the win reaches the whole
+  deterministic dispatch share, not the ~26% of one family.
+
+- **Nondeterministic code too (via F3).** mprolog's compiler handles nondet code
+  (F3: a choice point is a saved resume label, a second solution is a *jump*,
+  not a re-call). The census shows the true hot path is largely nondet (2b), so
+  a deterministic-only tier leaves most of the lever on the table. The target is
+  **one mechanism** whose choice point can carry a nondet resume state
+  (resume-arm + minimal saved locals + clause index) — the same minimal-snapshot
+  representation P2 requires, extended from "restore-and-fail" to
+  "restore-and-resume-at-arm." Whether one mechanism cleanly covers both is a
+  measured question, not an assumption.
+
+- **Two cruxes, measured before the general build.** (1) The *deterministic*
+  crux — does minimal-snapshot + direct-call beat the interpreter on a fused
+  region? (spike 1, in flight). (2) The *nondet* crux — does a resume-state
+  choice point beat the interpreter's own choice-point machinery per solution,
+  against the 21 % backtrack + 12 % restore_regs baseline? (spike 2). The
+  general build proceeds only when both cruxes read GO; a NO-GO on the nondet
+  crux narrows the general build to the deterministic class rather than
+  abandoning it.
