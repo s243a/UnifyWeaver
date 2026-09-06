@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 John William Creighton (s243a)
 //
-// main.rs -- EDGE of the Rust-WAM compiled uw-resolve P0.5.
+// main.rs -- EDGE of the Rust-WAM compiled uw-resolve P3.
 //
 // WHAT IS IN HERE, exhaustively: conversion between JSON catalogs/requests
 // and WAM `Value` terms, plus driving WamState::run for one entry predicate
 // per query. There is NO resolver logic -- no candidate order, no constraint
 // arithmetic, no layer walk, no topological sort. Those live in the generated
 // crate (compiler output from examples/pkg_resolver/resolver.pl).
+//
+// P3 encodings (both directions), matching dump_corpus.pl / the Go shim:
+//   {"deb":[Epoch,[[order,num],...],[...]]} <-> deb(Epoch, [s(Codes,N)|...], ...)
+//   depends third arg {"alternatives":[{dep,constraint},...]} <-> alternatives([dep/2|_])
+//   provides 3-ary / 4-ary; catalog/10 when provides are present
+//   blocked providers([...]) / alternatives([alt(N,Reason)|...])
 //
 // Usage:
 //   uw_resolve            < cases.jsonl > results.jsonl
@@ -35,7 +41,30 @@ fn s(functor: &str, args: Vec<Value>) -> Value {
     Value::strv(format!("{}/{}", functor, arity), args)
 }
 
+fn j_text(v: &J) -> String {
+    match v {
+        J::Str(s) => s.clone(),
+        J::Int(n) => n.to_string(),
+        J::Float(f) => format!("{}", *f as i64),
+        _ => String::new(),
+    }
+}
+
+/// P0 v/3 triples `[M,I,P]` and P3 `{"deb":[Epoch,[[order,num],…],[…]]}`.
 fn ver_term(v: &J) -> Value {
+    if let Some(d) = v.get("deb") {
+        let a = d.as_arr();
+        let epoch = a.first().map(|x| x.as_i64()).unwrap_or(0);
+        let empty = J::Arr(vec![]);
+        return s(
+            "deb",
+            vec![
+                Value::Integer(epoch),
+                segs_term(a.get(1).unwrap_or(&empty)),
+                segs_term(a.get(2).unwrap_or(&empty)),
+            ],
+        );
+    }
     let a = v.as_arr();
     let get = |i: usize| a.get(i).map(|x| x.as_i64()).unwrap_or(0);
     s(
@@ -48,6 +77,22 @@ fn ver_term(v: &J) -> Value {
     )
 }
 
+fn segs_term(v: &J) -> Value {
+    let items: Vec<Value> = v
+        .as_arr()
+        .iter()
+        .map(|seg| {
+            let pair = seg.as_arr();
+            let empty = J::s("");
+            let order = j_text(pair.first().unwrap_or(&empty));
+            let num = pair.get(1).map(|x| x.as_i64()).unwrap_or(0);
+            let codes: Vec<Value> = order.chars().map(|c| Value::Integer(c as i64)).collect();
+            s("s", vec![Value::list(codes), Value::Integer(num)])
+        })
+        .collect();
+    Value::list(items)
+}
+
 fn constraint_term(c: &J) -> Value {
     match c {
         J::Str(text) if text == "any" => atom("any"),
@@ -55,7 +100,9 @@ fn constraint_term(c: &J) -> Value {
         J::Obj(_) => {
             let op = c.get("op").map(|o| o.as_str().to_string()).unwrap_or_default();
             match op.as_str() {
-                "eq" | "gte" | "lt" => s(&op, vec![ver_term(c.get("v").unwrap_or(&J::Null))]),
+                "eq" | "gte" | "lt" | "lte" | "gt" => {
+                    s(&op, vec![ver_term(c.get("v").unwrap_or(&J::Null))])
+                }
                 "range" => s(
                     "range",
                     vec![
@@ -125,6 +172,26 @@ fn pkg_term(row: &J) -> Value {
     )
 }
 
+fn dep_need_term(third: &J) -> Value {
+    if let Some(alts) = third.get("alternatives") {
+        let terms: Vec<Value> = alts
+            .as_arr()
+            .iter()
+            .map(|a| {
+                s(
+                    "dep",
+                    vec![
+                        atom(a.get("dep").map(|x| x.as_str()).unwrap_or("")),
+                        constraint_term(a.get("constraint").unwrap_or(&J::Null)),
+                    ],
+                )
+            })
+            .collect();
+        return s("alternatives", vec![Value::list(terms)]);
+    }
+    atom(third.as_str())
+}
+
 fn dep_term(row: &J) -> Value {
     let a = row.as_arr();
     let nil = J::Null;
@@ -133,10 +200,22 @@ fn dep_term(row: &J) -> Value {
         vec![
             atom(a.first().map(|x| x.as_str()).unwrap_or("")),
             ver_term(a.get(1).unwrap_or(&nil)),
-            atom(a.get(2).map(|x| x.as_str()).unwrap_or("")),
+            dep_need_term(a.get(2).unwrap_or(&nil)),
             constraint_term(a.get(3).unwrap_or(&nil)),
         ],
     )
+}
+
+fn provide_term(row: &J) -> Value {
+    let a = row.as_arr();
+    let nil = J::Null;
+    let name = atom(a.first().map(|x| x.as_str()).unwrap_or(""));
+    let ver = ver_term(a.get(1).unwrap_or(&nil));
+    let virt = atom(a.get(2).map(|x| x.as_str()).unwrap_or(""));
+    match a.get(3) {
+        Some(v) if !matches!(v, J::Null) => s("provides", vec![name, ver, virt, ver_term(v)]),
+        _ => s("provides", vec![name, ver, virt]),
+    }
 }
 
 fn conf_term(row: &J) -> Value {
@@ -174,8 +253,8 @@ fn request_term(req: &J) -> Value {
     }
 }
 
-/// catalog/6 when the P0.5 extras are absent or all empty (exactly the rule the
-/// JS shim uses, so the two builds hand the compiled program the same term).
+/// catalog/6 when P0.5/P3 extras are absent, catalog/9 for
+/// layers/excluded/aliases, catalog/10 when provides are present.
 fn catalog_term(cat: &J) -> Value {
     let empty = J::Arr(vec![]);
     let list = |key: &str| cat.get(key).unwrap_or(&empty).as_arr().to_vec();
@@ -195,7 +274,8 @@ fn catalog_term(cat: &J) -> Value {
     let layers = list("layers");
     let excluded = list("excluded");
     let aliases = list("aliases");
-    if layers.is_empty() && excluded.is_empty() && aliases.is_empty() {
+    let provides = list("provides");
+    if layers.is_empty() && excluded.is_empty() && aliases.is_empty() && provides.is_empty() {
         return Value::strv("catalog/6".to_string(), core);
     }
     let mut args = core;
@@ -204,7 +284,11 @@ fn catalog_term(cat: &J) -> Value {
         excluded.iter().map(|e| atom(e.as_str())).collect(),
     ));
     args.push(Value::list(aliases.iter().map(alias_term).collect()));
-    Value::strv("catalog/9".to_string(), args)
+    if provides.is_empty() {
+        return Value::strv("catalog/9".to_string(), args);
+    }
+    args.push(Value::list(provides.iter().map(provide_term).collect()));
+    Value::strv("catalog/10".to_string(), args)
 }
 
 // ---------------------------------------------------------------------------
@@ -229,17 +313,40 @@ fn functor_of(v: &Value) -> Option<(String, &[Value])> {
     }
 }
 
+fn int_json(v: &Value) -> J {
+    match v {
+        Value::Integer(n) => J::Int(*n),
+        Value::Float(f) => J::Int(*f as i64),
+        other => J::Str(format!("{}", other)),
+    }
+}
+
+fn codes_to_string(v: &Value) -> String {
+    list_items(v)
+        .iter()
+        .filter_map(|c| match c {
+            Value::Integer(n) => char::from_u32(*n as u32),
+            _ => None,
+        })
+        .collect()
+}
+
 fn ver_json(v: &Value) -> J {
     match functor_of(v) {
-        Some((name, args)) if name == "v" && args.len() == 3 => J::Arr(
-            args.iter()
-                .map(|a| match a {
-                    Value::Integer(n) => J::Int(*n),
-                    Value::Float(f) => J::Int(*f as i64),
-                    other => J::Str(format!("{}", other)),
-                })
-                .collect(),
-        ),
+        Some((name, args)) if name == "v" && args.len() == 3 => {
+            J::Arr(args.iter().map(int_json).collect())
+        }
+        Some((name, args)) if name == "s" && args.len() == 2 => {
+            J::Arr(vec![J::s(&codes_to_string(&args[0])), int_json(&args[1])])
+        }
+        Some((name, args)) if name == "deb" && args.len() == 3 => J::obj(vec![(
+            "deb",
+            J::Arr(vec![
+                int_json(&args[0]),
+                J::Arr(list_items(&args[1]).iter().map(ver_json).collect()),
+                J::Arr(list_items(&args[2]).iter().map(ver_json).collect()),
+            ]),
+        )]),
         _ => J::Str(format!("{}", v)),
     }
 }
@@ -248,7 +355,14 @@ fn constraint_json(v: &Value) -> J {
     match v {
         Value::Atom(a) if a == "any" => J::s("any"),
         _ => match functor_of(v) {
-            Some((name, args)) if (name == "eq" || name == "gte" || name == "lt") && args.len() == 1 => {
+            Some((name, args))
+                if (name == "eq"
+                    || name == "gte"
+                    || name == "lt"
+                    || name == "lte"
+                    || name == "gt")
+                    && args.len() == 1 =>
+            {
                 J::obj(vec![("op", J::Str(name)), ("v", ver_json(&args[0]))])
             }
             Some((name, args)) if name == "range" && args.len() == 2 => J::obj(vec![
@@ -291,23 +405,71 @@ fn sel_json(v: &Value) -> J {
     J::Arr(list_items(v).iter().map(pair_json).collect())
 }
 
+fn atom_json(v: &Value) -> J {
+    match v {
+        Value::Atom(a) => J::Str(a.clone()),
+        other => J::Str(format!("{}", other)),
+    }
+}
+
+fn unwrap_functor<'a>(v: &'a Value, name: &str) -> &'a Value {
+    match functor_of(v) {
+        Some((n, args)) if n == name && args.len() == 1 => &args[0],
+        _ => v,
+    }
+}
+
+fn alt_reason_json(v: &Value) -> J {
+    match functor_of(v) {
+        Some((name, args)) if name == "alt" && args.len() == 2 => {
+            let reason = match &args[1] {
+                Value::Atom(a) if a == "unsatisfiable" => J::s("unsatisfiable"),
+                other => match functor_of(other) {
+                    Some((n, _)) if n == "blocked" => blocked_json(other),
+                    _ => atom_json(other),
+                },
+            };
+            J::obj(vec![("dep", atom_json(&args[0])), ("reason", reason)])
+        }
+        _ => J::Str(format!("{}", v)),
+    }
+}
+
 fn blocked_json(v: &Value) -> J {
     match functor_of(v) {
-        Some((name, args)) if name == "blocked" && args.len() == 3 => {
-            let needs = match functor_of(&args[1]) {
-                Some((n, a)) if n == "needs" && a.len() == 1 => constraint_json(&a[0]),
-                _ => constraint_json(&args[1]),
-            };
-            let base_has = match functor_of(&args[2]) {
-                Some((n, a)) if n == "base_has" && a.len() == 1 => ver_json(&a[0]),
-                _ => ver_json(&args[2]),
-            };
-            J::obj(vec![
-                ("base_has", base_has),
-                ("name", J::Str(format!("{}", args[0]))),
-                ("needs", needs),
-            ])
+        Some((name, args)) if name == "blocked" && args.len() == 1 => {
+            match functor_of(&args[0]) {
+                Some((n, a)) if n == "alternatives" && a.len() == 1 => J::obj(vec![(
+                    "alternatives",
+                    J::Arr(list_items(&a[0]).iter().map(alt_reason_json).collect()),
+                )]),
+                _ => J::Str(format!("{}", v)),
+            }
         }
+        Some((name, args)) if name == "blocked" && args.len() == 3 => {
+            let needs = constraint_json(unwrap_functor(&args[1], "needs"));
+            match functor_of(&args[2]) {
+                Some((n, a)) if n == "providers" && a.len() == 1 => J::obj(vec![
+                    ("name", atom_json(&args[0])),
+                    ("needs", needs),
+                    (
+                        "providers",
+                        J::Arr(list_items(&a[0]).iter().map(blocked_json).collect()),
+                    ),
+                ]),
+                Some((n, a)) if n == "base_has" && a.len() == 1 => J::obj(vec![
+                    ("base_has", ver_json(&a[0])),
+                    ("name", atom_json(&args[0])),
+                    ("needs", needs),
+                ]),
+                _ => J::obj(vec![
+                    ("base_has", ver_json(&args[2])),
+                    ("name", atom_json(&args[0])),
+                    ("needs", needs),
+                ]),
+            }
+        }
+        Some((name, args)) if name == "alt" && args.len() == 2 => alt_reason_json(v),
         _ => J::Str(format!("{}", v)),
     }
 }
