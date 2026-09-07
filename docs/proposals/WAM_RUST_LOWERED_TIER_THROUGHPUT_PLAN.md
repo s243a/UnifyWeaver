@@ -227,6 +227,27 @@ eligibility test mirrors PLAWK's: "the per-iteration nondet call is committed
 (once/cut/->) before the tail recursion, so backtracking cannot cross the
 iteration boundary."
 
+A **second** deterministic pattern PLAWK uses (project owner, 2026-09-07):
+**turn the nondeterministic part into an aggregation and iterate over that.**
+An aggregation (`findall`/`bagof`/`setof`/`aggregate_all`) is itself
+deterministic — it fully explores the nondet goal and returns exactly one list —
+so `findall(X, NondetGoal, Xs)` followed by a deterministic iteration over `Xs`
+is fully deterministic: the backtracking is contained at the aggregate boundary
+and the hot outer structure is a deterministic fold with **no resume-state
+choice point** (again lowering the cheap way; G-4/G-5 vacuous). The aggregate
+call itself stays an interpreted builtin (or is lowered separately later); what
+lowers deterministically is the iteration over its result. PLAWK's native
+codegen is full of this shape — `findall(X, member(X, L), Xs)` and
+`findall(..., ( member(N, Arities), ... ), ...)` in
+`examples/plawk/codegen/plawk_native_codegen.pl` — aggregate the candidates,
+then iterate the list.
+
+So per-driver classification is **three-way**: (a) committed-per-iteration
+recursion, (b) aggregate-then-iterate, (c) genuinely exposes alternatives to its
+caller. (a) and (b) take the cheap deterministic path (preferred); only (c) needs
+the resume-state trampoline. (b) applies only where a predicate ALREADY has the
+aggregate-then-iterate shape — never by editing the frozen spec.
+
 ## 7. Attribution
 
 The loop shape (F11) and the resumable-choice-point shape (F3) are **ideas**
