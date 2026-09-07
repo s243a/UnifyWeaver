@@ -9319,13 +9319,26 @@ rust_lowered_dispatch_fn(Classified, Options, Code) :-
     % matches.
     (   \+ option(lowered_dispatch(false), Options),
         rust_region3b_applicable(Options)
-    ->  exclude(rust_region3b_is_group_keyed, Eligible3a, Eligible),
+    ->  exclude(rust_region3b_is_group_keyed, Eligible3a, Eligible3b),
         RegionArm3b = '        "group_keyed/2" => vm.region_group_keyed_dispatch(cont_pc),',
         RegionArms3b = [RegionArm3b]
-    ;   Eligible = Eligible3a,
+    ;   Eligible3b = Eligible3a,
         RegionArms3b = []
     ),
-    append([RegionArms1, RegionArms2, RegionArms3a, RegionArms3b], RegionArms),
+    % Stage 2 region 4 (B3 index builder): wire the fused build_tree/4 (balanced
+    % BST builder over a difference list) when the flag is on and the frozen shape
+    % is present. It is deterministic (single clause, hard `->` commit, no CP), so
+    % it stays in the deterministic tier. The store lane never calls build_tree on
+    % its resolve path.
+    (   \+ option(lowered_dispatch(false), Options),
+        rust_region4_applicable(Options)
+    ->  exclude(rust_region4_is_build_tree, Eligible3b, Eligible),
+        RegionArm4 = '        "build_tree/4" => vm.region_build_tree_dispatch(cont_pc),',
+        RegionArms4 = [RegionArm4]
+    ;   Eligible = Eligible3b,
+        RegionArms4 = []
+    ),
+    append([RegionArms1, RegionArms2, RegionArms3a, RegionArms3b, RegionArms4], RegionArms),
     maplist(rust_lowered_dispatch_arm, Eligible, Arms0),
     append(RegionArms, Arms0, Arms),
     atomic_list_concat(Arms, '\n', ArmsStr),
@@ -9997,6 +10010,78 @@ rust_region3b_sk_rec(Clause) :-
                  -> Xs = [X|Xs1], same_key(Rest, K, Xs1, Rest1)
                  ;  Xs = [], Rest1 = [K2-I-X|Rest]
                  ) ).
+
+% =====================================================================
+% Stage 2 region 4 — fused native region: build_tree/4 (balanced BST builder)
+% =====================================================================
+%
+% The remaining B3 index builder (~21.9% of B3 `resolve_layered` dispatches, per
+% the census). `list_to_tree/2` measures the grouped-row list length and hands it
+% to `build_tree/4`, which builds a balanced binary search tree by
+% divide-and-conquer, threading the leftover suffix out through a difference-list
+% `Rest`:
+%
+%   build_tree(N, Pairs, Tree, Rest) :-
+%       ( N =:= 0
+%       -> Tree = t, Rest = Pairs
+%       ;  NL is (N - 1) // 2, NR is N - 1 - NL,
+%          build_tree(NL, Pairs, L, [K-V|Mid]),
+%          build_tree(NR, Mid,   R, Rest),
+%          Tree = t(L, K, V, R) ).
+%
+% It is a SINGLE clause whose body is a hard `->` commit on `N =:= 0` (an
+% arithmetic test leaving no choice point), so it is deterministic — at most one
+% solution — with NO backtracking and NO resume-state choice point. The recursion
+% is non-tail (two self-calls then the node is built) but balanced (NL, NR differ
+% by at most one), so its depth is O(log N); the RUNTIME half (state.rs.mustache
+% `WamState::region_build_tree_dispatch`, carrying the full G-1..G-5 argument)
+% realises it as a bounded native recursion over the materialised input (an
+% explicit stack of depth O(log N)) — no interpreter recursion, no frame, no CP.
+% This half decides, at codegen time, whether to WIRE it into `lowered_call`.
+%
+% Wired only when BOTH hold: the region-4 flag is on (default ON; disable with
+% `region4(false)` or `UW_REGION4_OFF=1`) AND the project contains `build_tree/4`
+% with the EXACT frozen resolver shape (verified with `=@=`). The store lane does
+% not call build_tree on its resolve path, so the region is inert there.
+
+%% rust_region4_is_build_tree(+Cand) is semidet.
+rust_region4_is_build_tree(lo_cand(K, _, _, _, _)) :- K == 'build_tree/4'.
+
+%% rust_region4_enabled(+Options) is semidet.
+%  Default per the real B3 A/B recorded in docs/reports/wam_rust_stage2_region4.md.
+rust_region4_enabled(Options) :-
+    (   option(region4(V), Options)
+    ->  V == true
+    ;   getenv('UW_REGION4_OFF', '1')
+    ->  fail
+    ;   true
+    ).
+
+%% rust_region4_applicable(+Options) is semidet.
+rust_region4_applicable(Options) :-
+    rust_region4_enabled(Options),
+    rust_region4_build_tree_ok.
+
+%% rust_region4_build_tree_ok is semidet.
+%    build_tree(N, Pairs, Tree, Rest) :-
+%        ( N =:= 0
+%        -> Tree = t, Rest = Pairs
+%        ;  NL is (N - 1) // 2, NR is N - 1 - NL,
+%           build_tree(NL, Pairs, L, [K-V|Mid]),
+%           build_tree(NR, Mid,   R, Rest),
+%           Tree = t(L, K, V, R) ).
+rust_region4_build_tree_ok :-
+    findall(H-B, ( H = build_tree(_,_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1],
+    C1 =@= ( build_tree(N, Pairs, Tree, Rest) -
+             ( N =:= 0
+             -> Tree = t, Rest = Pairs
+             ;  NL is (N - 1) // 2,
+                NR is N - 1 - NL,
+                build_tree(NL, Pairs, L, [K-V|Mid]),
+                build_tree(NR, Mid, R, Rest),
+                Tree = t(L, K, V, R)
+             ) ).
 
 %% rust_pred_heads_exclusive(+Module, +Pred, +Arity) is semidet.
 %  True when the predicate's clause heads are pairwise non-unifiable — the
