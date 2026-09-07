@@ -57,6 +57,12 @@ main :-
     write_wam_cpp_project(Preds,
         [emit_mode(interpreter),
          emit_main(true),
+         % sort_versions_desc/2 sorts non-v(_,_,_) (deb) versions via
+         % predsort(cmp_ver, ...); predsort's stdlib helpers are asserted
+         % into the compiling session, not textual clauses, so they must be
+         % explicitly pulled into the compiled predicate set or the deb
+         % scenarios hit an undefined predsort/3 Call and fail silently.
+         include_stdlib([predsort]),
          module_name('uw-pkg-resolver')],
         OutDir),
     format("build.pl: wrote C++ WAM project under ~w/cpp/~n", [OutDir]).
