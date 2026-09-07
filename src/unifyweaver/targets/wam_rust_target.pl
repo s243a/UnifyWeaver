@@ -9292,13 +9292,40 @@ rust_lowered_dispatch_fn(Classified, Options, Code) :-
     % arm routes to the native region, so no other call site changes behaviour.
     (   \+ option(lowered_dispatch(false), Options),
         rust_region2_applicable(Options)
-    ->  exclude(rust_region2_is_matching_versions, Eligible1, Eligible),
+    ->  exclude(rust_region2_is_matching_versions, Eligible1, Eligible2),
         RegionArm2 = '        "matching_versions/4" => vm.region_matching_versions_dispatch(cont_pc),',
         RegionArms2 = [RegionArm2]
-    ;   Eligible = Eligible1,
+    ;   Eligible2 = Eligible1,
         RegionArms2 = []
     ),
-    append(RegionArms1, RegionArms2, RegionArms),
+    % Stage 2 region 3a (B3 index builder): wire the fused key_dep_rows/3 ⊕
+    % dep_to_req/3 region when the flag is on and the frozen shape is present.
+    % dep_to_req is region 1's already-validated native, reused here; only the
+    % key_dep_rows/3 dispatch arm routes to the region. The store lane's
+    % key_dep_rows_store never matches.
+    (   \+ option(lowered_dispatch(false), Options),
+        rust_region3a_applicable(Options)
+    ->  exclude(rust_region3a_is_key_dep_rows, Eligible2, Eligible3a),
+        RegionArm3a = '        "key_dep_rows/3" => vm.region_key_dep_rows_dispatch(cont_pc),',
+        RegionArms3a = [RegionArm3a]
+    ;   Eligible3a = Eligible2,
+        RegionArms3a = []
+    ),
+    % Stage 2 region 3b (B3 index builder): wire the fused group_keyed/2 ⊕
+    % same_key/4 region when the flag is on and the frozen shape is present.
+    % same_key is called only from group_keyed and is inlined natively (nested
+    % loop with an explicit accumulator, no resume-state CP). One region serves
+    % both group_keyed call sites (dep rows and pkg rows). The store lane never
+    % matches.
+    (   \+ option(lowered_dispatch(false), Options),
+        rust_region3b_applicable(Options)
+    ->  exclude(rust_region3b_is_group_keyed, Eligible3a, Eligible),
+        RegionArm3b = '        "group_keyed/2" => vm.region_group_keyed_dispatch(cont_pc),',
+        RegionArms3b = [RegionArm3b]
+    ;   Eligible = Eligible3a,
+        RegionArms3b = []
+    ),
+    append([RegionArms1, RegionArms2, RegionArms3a, RegionArms3b], RegionArms),
     maplist(rust_lowered_dispatch_arm, Eligible, Arms0),
     append(RegionArms, Arms0, Arms),
     atomic_list_concat(Arms, '\n', ArmsStr),
@@ -9833,6 +9860,143 @@ rust_region2_order_val_ok :-
     C2 =@= ( order_val(Ca, Ca) - ( Ca >= 65, Ca =< 90, ! ) ),
     C3 =@= ( order_val(Cb, Cb) - ( Cb >= 97, Cb =< 122, ! ) ),
     C4 =@= ( order_val(Cc, Vc) - ( Vc is Cc + 256 ) ).
+
+% =====================================================================
+% Stage 2 region 3a — fused native region: key_dep_rows/3 ⊕ dep_to_req/3
+% =====================================================================
+%
+% The B3 index builder. `key_dep_rows/3` walks a dependency list building a
+% keyed row (N-V)-I-Req per element (with a monotone position counter I) and
+% calls `dep_to_req/3` per element. This is region 1's `matching_deps/4` shape
+% minus the N==Name/V==Ver filter plus the counter, so it is compiled to a
+% native loop with the identical P1 (direct native dep_to_req) + P2 (minimal
+% snapshot) recipe. The RUNTIME half lives in state.rs.mustache
+% (`WamState::region_key_dep_rows_dispatch`, which carries the full G-1..G-5
+% argument); this half decides, at codegen time, whether to WIRE it into
+% `lowered_call`. `dep_to_req/3` is region 1's already-validated native, reused.
+%
+% Wired only when BOTH hold: the region-3a flag is on (default ON; disable with
+% `region3a(false)` or `UW_REGION3A_OFF=1`) AND the project contains
+% `key_dep_rows/3` and `dep_to_req/3` with the EXACT frozen resolver shape
+% (verified with `=@=`, variant: structure + variable sharing, names irrelevant).
+% The store lane uses `key_dep_rows_store`/`dep_to_req_store` and never matches.
+
+%% rust_region3a_is_key_dep_rows(+Cand) is semidet.
+rust_region3a_is_key_dep_rows(lo_cand(K, _, _, _, _)) :- K == 'key_dep_rows/3'.
+
+%% rust_region3a_enabled(+Options) is semidet.
+%  Default per the real B3 A/B recorded in docs/reports/wam_rust_stage2_region3.md.
+rust_region3a_enabled(Options) :-
+    (   option(region3a(V), Options)
+    ->  V == true
+    ;   getenv('UW_REGION3A_OFF', '1')
+    ->  fail
+    ;   true
+    ).
+
+%% rust_region3a_applicable(+Options) is semidet.
+rust_region3a_applicable(Options) :-
+    rust_region3a_enabled(Options),
+    rust_region3a_key_dep_rows_ok,
+    rust_region1_dep_to_req_ok.   % same dep_to_req/3, reuse region 1's check
+
+%% rust_region3a_key_dep_rows_ok is semidet.
+%    key_dep_rows([], _I, []).
+%    key_dep_rows([depends(N, V, D, C)|Rest], I, [(N-V)-I-Req|Ks]) :-
+%        dep_to_req(D, C, Req),
+%        I1 is I + 1,
+%        key_dep_rows(Rest, I1, Ks).
+rust_region3a_key_dep_rows_ok :-
+    findall(H-B, ( H = key_dep_rows(_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [_, _],
+    once(( member(CB, Clauses), rust_region3a_kdr_base(CB) )),
+    once(( member(CR, Clauses), rust_region3a_kdr_rec(CR) )).
+
+rust_region3a_kdr_base(Clause) :-
+    Clause =@= ( key_dep_rows([], _, []) - true ).
+
+rust_region3a_kdr_rec(Clause) :-
+    Clause =@= ( key_dep_rows([depends(N,V,D,C)|Rest], I, [(N-V)-I-Req|Ks]) -
+                 ( dep_to_req(D, C, Req),
+                   I1 is I + 1,
+                   key_dep_rows(Rest, I1, Ks) ) ).
+
+% =====================================================================
+% Stage 2 region 3b — fused native region: group_keyed/2 ⊕ same_key/4
+% =====================================================================
+%
+% The other B3 index builder. `group_keyed/2` walks a SORTED keyed-row list and
+% groups consecutive rows sharing a key, using `same_key/4` (called only from
+% here) to consume each run. Both recursions are last-call and both output lists
+% are built top-down, so the fusion is a pair of nested native loops with an
+% explicit accumulator (no resume-state choice point — this stays deterministic;
+% the nondet round is not entered). The row shape `K-_-X` matches BOTH call
+% sites (dep rows `(N-V)-I-Req` and pkg rows `N-I-V`), so one region serves both.
+% The RUNTIME half lives in state.rs.mustache
+% (`WamState::region_group_keyed_dispatch` + `region_key_val`, carrying G-1..G-5).
+%
+% Wired only when BOTH hold: the region-3b flag is on (default ON; disable with
+% `region3b(false)` or `UW_REGION3B_OFF=1`) AND the project contains
+% `group_keyed/2` and `same_key/4` with the EXACT frozen resolver shape. The
+% store lane's renamed copies never match.
+
+%% rust_region3b_is_group_keyed(+Cand) is semidet.
+rust_region3b_is_group_keyed(lo_cand(K, _, _, _, _)) :- K == 'group_keyed/2'.
+
+%% rust_region3b_enabled(+Options) is semidet.
+rust_region3b_enabled(Options) :-
+    (   option(region3b(V), Options)
+    ->  V == true
+    ;   getenv('UW_REGION3B_OFF', '1')
+    ->  fail
+    ;   true
+    ).
+
+%% rust_region3b_applicable(+Options) is semidet.
+rust_region3b_applicable(Options) :-
+    rust_region3b_enabled(Options),
+    rust_region3b_group_keyed_ok,
+    rust_region3b_same_key_ok.
+
+%% rust_region3b_group_keyed_ok is semidet.
+%    group_keyed([], []).
+%    group_keyed([K-_-X|Rest], [K-[X|Xs]|Gs]) :-
+%        same_key(Rest, K, Xs, Rest1),
+%        group_keyed(Rest1, Gs).
+rust_region3b_group_keyed_ok :-
+    findall(H-B, ( H = group_keyed(_,_), clause(user:H, B) ), Clauses),
+    Clauses = [_, _],
+    once(( member(CB, Clauses), rust_region3b_gk_base(CB) )),
+    once(( member(CR, Clauses), rust_region3b_gk_rec(CR) )).
+
+rust_region3b_gk_base(Clause) :-
+    Clause =@= ( group_keyed([], []) - true ).
+
+rust_region3b_gk_rec(Clause) :-
+    Clause =@= ( group_keyed([K-_-X|Rest], [K-[X|Xs]|Gs]) -
+                 ( same_key(Rest, K, Xs, Rest1),
+                   group_keyed(Rest1, Gs) ) ).
+
+%% rust_region3b_same_key_ok is semidet.
+%    same_key([], _K, [], []).
+%    same_key([K2-I-X|Rest], K, Xs, Rest1) :-
+%        ( K2 == K -> Xs = [X|Xs1], same_key(Rest, K, Xs1, Rest1)
+%        ;           Xs = [], Rest1 = [K2-I-X|Rest] ).
+rust_region3b_same_key_ok :-
+    findall(H-B, ( H = same_key(_,_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [_, _],
+    once(( member(CB, Clauses), rust_region3b_sk_base(CB) )),
+    once(( member(CR, Clauses), rust_region3b_sk_rec(CR) )).
+
+rust_region3b_sk_base(Clause) :-
+    Clause =@= ( same_key([], _, [], []) - true ).
+
+rust_region3b_sk_rec(Clause) :-
+    Clause =@= ( same_key([K2-I-X|Rest], K, Xs, Rest1) -
+                 ( K2 == K
+                 -> Xs = [X|Xs1], same_key(Rest, K, Xs1, Rest1)
+                 ;  Xs = [], Rest1 = [K2-I-X|Rest]
+                 ) ).
 
 %% rust_pred_heads_exclusive(+Module, +Pred, +Arity) is semidet.
 %  True when the predicate's clause heads are pairwise non-unifiable — the
