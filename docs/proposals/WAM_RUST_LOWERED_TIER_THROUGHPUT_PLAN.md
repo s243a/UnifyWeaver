@@ -333,3 +333,42 @@ single *general* lowered execution model, not a bag of per-pattern hacks.
   general build proceeds only when both cruxes read GO; a NO-GO on the nondet
   crux narrows the general build to the deterministic class rather than
   abandoning it.
+
+## 10. Deferred / backlog (consolidated 2026-09-07)
+
+Single view of what's left, so it isn't scattered across ledger rows. Ordered
+roughly by the profile's expected payoff (D91), not by when it was raised.
+
+1. **Runtime term-representation levers (D91 — the actual next-biggest for B2/B3,
+   now that dispatch is gone).** (a) **Intern functors** — replace the `"f/N"`
+   functor strings with u32 ids in the `Value`/term representation (~11% B2,
+   ~20% B3, cross-cutting; other targets can mirror it). (b) **Cut Value-alloc
+   churn** — `deref_heap` memoization (both workloads), B2 backtrack saved-state,
+   B3 `msort` decorate-sort key-caching (hits the 46%/63% sort). These help every
+   predicate, lowered or interpreted.
+2. **Genuine LMDB catalog tier on Rust (user-requested, 2026-09-07).** The
+   `lmdb(Dir)` resolver-catalog tier fails loud on native Rust today (no
+   npm-lmdb reader). Wire a real Rust LMDB reader (e.g. `heed`/`lmdb-rkv`) as a
+   functional tier, then **measure whether it beats the working D43 indexed seek
+   store at large scale before committing** — the indexed store already touches
+   <1% of the catalog, so LMDB's B-tree/caching win is unproven. Measure-first,
+   data-driven.
+3. **blocked_from/4 aggregate-then-iterate resolver round (D85).** High-risk:
+   must reproduce the exact generator DFS order/multiplicity the tests observe,
+   before/after verified, all targets re-gated. Only genuinely-nondet driver
+   left after pick/7 (dead).
+4. **Mutual-recursion emission (D89).** Detection is done; stack-safe cyclic
+   lowering of non-tail SCCs (lookup_held/item_ver, topo_all/topo_one) is the
+   deferred deeper-look item.
+5. **Remaining genrec emitters (D89):** close_moving committed emitter; the
+   meta-call/`process_all/4` 3-precondition layer; the aggregate-then-iterate
+   emitter. Ceiling on more lowering is ≤3% B2 / ~0% B3 (D91) — low priority vs §10.1.
+6. **Subsume regions 1–5 into the general recognizer (D89)** once it grows the
+   committed + list_map_index emitters — a cleanup, not a perf win.
+7. **Cross-target reuse.** The general `deterministic_recursion_class` classifier
+   is in shared core (`src/unifyweaver/core/deterministic_recursion.pl`) —
+   target-agnostic. Port its emission + the store-as-default policy to C++/Go/wamjs.
+8. **The resumable trampoline (2b).** Still shelved; the classification (D85)
+   showed the deterministic patterns cover the drivers that were worth it, so the
+   trampoline is reserved for a driver that genuinely must expose alternatives
+   upward — none identified as worth it yet.
