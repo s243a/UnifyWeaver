@@ -348,11 +348,31 @@ roughly by the profile's expected payoff (D91), not by when it was raised.
    predicate, lowered or interpreted.
 2. **Genuine LMDB catalog tier on Rust (user-requested, 2026-09-07).** The
    `lmdb(Dir)` resolver-catalog tier fails loud on native Rust today (no
-   npm-lmdb reader). Wire a real Rust LMDB reader (e.g. `heed`/`lmdb-rkv`) as a
-   functional tier, then **measure whether it beats the working D43 indexed seek
-   store at large scale before committing** — the indexed store already touches
-   <1% of the catalog, so LMDB's B-tree/caching win is unproven. Measure-first,
-   data-driven.
+   npm-lmdb reader). Wire a real Rust LMDB reader as a functional tier, then
+   **measure whether it beats the working D43 indexed seek store at large scale
+   before committing.** Measure-first, data-driven.
+   - **Why it should win at scale (the hypothesis, project owner):** LMDB is
+     **memory-mapped** — the OS page cache keeps hot pages resident with no
+     syscall-per-read, and the working set can exceed RAM (paged on demand). The
+     D43 indexed store uses explicit positioned `ReadAt` reads, which don't
+     benefit from the OS page cache across repeated queries. On a large catalog
+     queried many times (the package-manager model), LMDB's mmap + page cache
+     should pull ahead of per-query explicit reads. This predicts a **second
+     scale crossover**: term → indexed store at one size, indexed store → LMDB at
+     a larger one — so the store-as-default switch is designed as an extensible
+     size→backend ladder (a third rung), and the LMDB investigation must find the
+     **indexed-store→LMDB crossover** specifically, not just term→LMDB.
+   - **Reference — the graph-algorithm cache models (already in-repo):** reuse
+     the existing LMDB/cache work rather than starting fresh:
+     `docs/design/WAM_RUST_LMDB_CRATE_DECISION.md` (the Rust LMDB crate choice —
+     likely already settled), `docs/design/WAM_LMDB_RESIDENT_INTERNING_IMPLEMENTATION_PLAN.md`,
+     `docs/proposals/WAM_HASKELL_LMDB_CACHE_TIERS.md`, the boundary-cache
+     benchmark (`scripts/lmdb_parent_boundary_cache_benchmark.py`), and the Rust
+     store crate's existing LMDB scaffolding (`boundary_cache.rs`, the
+     `lazy_lmdb_lookup` native-kind + `wam_to_lmdb`/`lmdb_to_wam` maps mirroring
+     Haskell's `lmdbCachedEdgeLookup`). The graph-kernel edge-lookup path already
+     uses memory-mapped LMDB with a cache tier; the catalog tier would adapt the
+     same model to the resolver's P/2 store queries.
 3. **blocked_from/4 aggregate-then-iterate resolver round (D85).** High-risk:
    must reproduce the exact generator DFS order/multiplicity the tests observe,
    before/after verified, all targets re-gated. Only genuinely-nondet driver
