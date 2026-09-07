@@ -4203,6 +4203,130 @@ impl WamState {
         Some(ok)
     }
 
+    /// tail_loop / bst_descent — `tree_lookup/3`:
+    ///   tree_lookup(t(L,K,V,R), Key, Val) :-
+    ///       compare(Ord, Key, K),
+    ///       ( Ord = (=) -> Val = V
+    ///       ; Ord = (<) -> tree_lookup(L, Key, Val)
+    ///       ;             tree_lookup(R, Key, Val) ).
+    /// A1 = tree, A2 = Key (search key), A3 = Val. Semidet: the empty tree `t`
+    /// (atom) has no clause, so a miss returns `Some(false)` (interpreter
+    /// failure) — a caller's `tree_lookup(...) -> ... ; ...` then takes the else.
+    /// compare/3 is standard order of terms; `region_std_order` reproduces it for
+    /// the key types the resolver's trees use (atoms = pkg-tree keys, `-(N,V)`
+    /// compounds over atoms/integers = dep-tree keys) and DECLINES any other
+    /// (e.g. deb-version list args) — declining is always sound. The descent only
+    /// reads/derefs, mutating no state, so any decline restores cleanly.
+    #[allow(dead_code)]
+    pub fn region_tree_lookup_dispatch(&mut self, cont_pc: usize) -> Option<bool> {
+        let cp_depth = self.choice_points.len();
+        // P2 minimal snapshot: three scalars, no save_regs.
+        let snap_trail = self.trail.len();
+        let snap_heap = self.heap.len();
+        let snap_vc = self.var_counter;
+
+        // A3 = Val must be unbound (the resolver's usage); declining is sound.
+        let val_reg = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+        if !matches!(self.deref_shallow(&val_reg), Value::Unbound(_)) {
+            return None;
+        }
+        // A ground search key is required to reproduce compare/3 deterministically.
+        let key = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        if !self.region_is_ground(&key) {
+            return None;
+        }
+
+        let mut cursor = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        loop {
+            let node = self.deref_shallow(&cursor);
+            match node {
+                // Node t(L, K, V, R): compare(Ord, Key, K), pick one tail branch.
+                Value::Str(ref f, ref a) if a.len() == 4 && Self::functor_of(f, 4) == "t" => {
+                    match self.region_std_order(&key, &a[1]) {
+                        Some(std::cmp::Ordering::Equal) => {
+                            // Ord = (=) -> Val = V
+                            if self.choice_points.len() != cp_depth {
+                                return self.region_decline(snap_trail, snap_heap, snap_vc);
+                            }
+                            let v = a[2].clone();
+                            let ok = self.unify(&val_reg, &v);
+                            if ok { self.pc = cont_pc; }
+                            return Some(ok);
+                        }
+                        Some(std::cmp::Ordering::Less) => { cursor = a[0].clone(); }   // L
+                        Some(std::cmp::Ordering::Greater) => { cursor = a[3].clone(); } // R
+                        None => return self.region_decline(snap_trail, snap_heap, snap_vc),
+                    }
+                }
+                // Empty tree `t` -> no matching clause -> interpreter fails.
+                Value::Atom(ref s) if s == "t" => {
+                    if self.choice_points.len() != cp_depth {
+                        return self.region_decline(snap_trail, snap_heap, snap_vc);
+                    }
+                    return Some(false);
+                }
+                // Unbound / unexpected shape -> defer to the interpreter.
+                _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
+            }
+        }
+    }
+
+    /// compare/3 standard order of terms, for the ground key types the resolver's
+    /// index trees use. Ranks: Number < Atom < Compound (SWI's order minus Var
+    /// and String, which this never sees in a key). Compounds order by arity,
+    /// then functor name, then args left-to-right. Returns `None` for any type it
+    /// does not reproduce exactly (unbound, float, string, list, ...) so the
+    /// caller DECLINES to the interpreter rather than risk a mis-ordering. Atoms
+    /// compare by UTF-8 bytes, which equals code-point order for well-formed
+    /// UTF-8 — matching SWI's atom collation.
+    #[allow(dead_code)]
+    fn region_std_order(&self, a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+        use std::cmp::Ordering::Equal;
+        let da = self.deref_shallow(a);
+        let db = self.deref_shallow(b);
+        let ra = Self::region_order_rank(&da)?;
+        let rb = Self::region_order_rank(&db)?;
+        if ra != rb {
+            return Some(ra.cmp(&rb));
+        }
+        match (&da, &db) {
+            (Value::Integer(x), Value::Integer(y)) => Some(x.cmp(y)),
+            (Value::Atom(x), Value::Atom(y)) => Some(x.cmp(y)),
+            (Value::Str(fa, aa), Value::Str(fb, ab)) => {
+                match aa.len().cmp(&ab.len()) {
+                    Equal => {}
+                    o => return Some(o),
+                }
+                let na = Self::functor_of(fa, aa.len());
+                let nb = Self::functor_of(fb, ab.len());
+                match na.cmp(nb) {
+                    Equal => {}
+                    o => return Some(o),
+                }
+                for (x, y) in aa.iter().zip(ab.iter()) {
+                    match self.region_std_order(x, y)? {
+                        Equal => continue,
+                        o => return Some(o),
+                    }
+                }
+                Some(Equal)
+            }
+            _ => None,
+        }
+    }
+
+    /// Standard-order rank for the term types region_std_order reproduces.
+    /// `None` = a type it declines on.
+    #[allow(dead_code)]
+    fn region_order_rank(v: &Value) -> Option<u8> {
+        match v {
+            Value::Integer(_) => Some(1), // Number
+            Value::Atom(_) => Some(2),    // Atom
+            Value::Str(_, _) => Some(3),  // Compound
+            _ => None,                     // Unbound/Ref/Float/String/List -> decline
+        }
+    }
+
     /// Record a binding on the trail for backtracking.
     pub fn trail_binding(&mut self, key: &str) {
         let old = self.get_reg(key);
@@ -6352,6 +6476,96 @@ mod genrec_sibling_gap_tests {
         assert_eq!(m.get_reg_raw("X1"), Some(atom("caller_sentinel")), "X1 preserved");
         assert_eq!(m.choice_points.len(), cp_before, "no choice point left");
         assert!(m.trail.len() > trail_before, "output binding trailed for backtrack");
+    }
+
+    // ---- tree_lookup/3: A1 = tree, A2 = Key, A3 = Val (unbound). ----
+    fn tnode(l: Value, k: Value, v: Value, r: Value) -> Value {
+        Value::strv("t".to_string(), vec![l, k, v, r])
+    }
+    fn tempty() -> Value { atom("t") }
+    fn setup_tree(tree: Value, key: Value) -> WamState {
+        let mut m = vm();
+        m.set_reg_str("A1", tree);
+        m.set_reg_str("A2", key);
+        m.set_reg_str("A3", Value::new_unbound("Val"));
+        m
+    }
+    fn val_of(m: &WamState) -> Value { m.deref_heap(&Value::new_unbound("Val")) }
+
+    // Balanced BST over atom keys a<b<c, values 1,2,3.
+    fn atom_tree() -> Value {
+        tnode(tnode(tempty(), atom("a"), int(1), tempty()),
+              atom("b"), int(2),
+              tnode(tempty(), atom("c"), int(3), tempty()))
+    }
+
+    #[test]
+    fn tree_lookup_hit_atom_keys() {
+        for (k, want) in [("a", 1), ("b", 2), ("c", 3)] {
+            let mut m = setup_tree(atom_tree(), atom(k));
+            assert_eq!(m.region_tree_lookup_dispatch(42), Some(true), "hit {}", k);
+            assert_eq!(m.pc, 42);
+            assert!(m.terms_identical(&val_of(&m), &int(want)), "value for {}", k);
+        }
+    }
+
+    #[test]
+    fn tree_lookup_miss_is_some_false() {
+        // Key not present -> descends to empty tree -> interpreter would fail.
+        let mut m = setup_tree(atom_tree(), atom("z"));
+        assert_eq!(m.region_tree_lookup_dispatch(1), Some(false), "miss fails");
+        assert!(matches!(val_of(&m), Value::Unbound(_)), "Val unbound on miss");
+    }
+
+    #[test]
+    fn tree_lookup_empty_tree_fails() {
+        let mut m = setup_tree(tempty(), atom("a"));
+        assert_eq!(m.region_tree_lookup_dispatch(1), Some(false));
+    }
+
+    #[test]
+    fn tree_lookup_compound_keys_name_version() {
+        // dep-tree style keys: -(Name, v(a,b,c)), ordered by std order of terms.
+        let k = |n: &str, a: i64, b: i64, c: i64| m2(atom(n), v3(a, b, c));
+        let tree = tnode(
+            tnode(tempty(), k("app", 1, 0, 0), int(10), tempty()),
+            k("lib", 2, 0, 0), int(20),
+            tnode(tempty(), k("zzz", 0, 1, 0), int(30), tempty()));
+        let mut m = setup_tree(tree.clone(), k("lib", 2, 0, 0));
+        assert_eq!(m.region_tree_lookup_dispatch(1), Some(true));
+        assert!(m.terms_identical(&val_of(&m), &int(20)));
+        // a compound key that sits left of the root
+        let mut m2v = setup_tree(tree, k("app", 1, 0, 0));
+        assert_eq!(m2v.region_tree_lookup_dispatch(1), Some(true));
+        assert!(m2v.terms_identical(&val_of(&m2v), &int(10)));
+    }
+
+    #[test]
+    fn tree_lookup_declines_bound_output() {
+        let mut m = vm();
+        m.set_reg_str("A1", atom_tree());
+        m.set_reg_str("A2", atom("a"));
+        m.set_reg_str("A3", int(999)); // already bound
+        assert_eq!(m.region_tree_lookup_dispatch(1), None);
+    }
+
+    #[test]
+    fn tree_lookup_declines_unground_key() {
+        let mut m = setup_tree(atom_tree(), Value::new_unbound("K"));
+        assert_eq!(m.region_tree_lookup_dispatch(1), None);
+    }
+
+    #[test]
+    fn tree_lookup_no_choice_point_and_registers_preserved() {
+        let tree = atom_tree();
+        let a1 = tree.clone();
+        let mut m = setup_tree(tree, atom("b"));
+        m.set_reg_str("X1", atom("caller_sentinel"));
+        let cp_before = m.choice_points.len();
+        assert_eq!(m.region_tree_lookup_dispatch(3), Some(true));
+        assert!(m.terms_identical(&m.get_reg_raw("A1").unwrap(), &a1), "A1 preserved");
+        assert_eq!(m.get_reg_raw("X1"), Some(atom("caller_sentinel")), "X1 preserved");
+        assert_eq!(m.choice_points.len(), cp_before, "no choice point left");
     }
 }
 

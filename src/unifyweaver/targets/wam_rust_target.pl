@@ -9467,6 +9467,8 @@ rust_genrec_shape_method(tail_loop(_:_, list_filter(satisfies/2, 1, 2, 3)),
                          region_filter_satisfies_dispatch).
 rust_genrec_shape_method(tail_loop(_:_, list_map_index(package/2, pkg_row, 1, 2, 3)),
                          region_key_pkg_rows_dispatch).
+rust_genrec_shape_method(tail_loop(_:_, bst_descent('t'/4, 2, 3, 1, 2, 3)),
+                         region_tree_lookup_dispatch).
 
 %% rust_genrec_claims(+Keys, +Cand) is semidet.
 %  True when the F11/D55 candidate's key is one genrec already emitted (so it
