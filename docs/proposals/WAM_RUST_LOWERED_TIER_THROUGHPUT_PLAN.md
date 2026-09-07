@@ -248,6 +248,38 @@ caller. (a) and (b) take the cheap deterministic path (preferred); only (c) need
 the resume-state trampoline. (b) applies only where a predicate ALREADY has the
 aggregate-then-iterate shape — never by editing the frozen spec.
 
+## 6c. The deterministic-recursion family is broader than tail recursion
+
+Guidance (project owner, 2026-09-07): this project has **more deterministic
+recursion patterns than tail recursion**, and the lowering recognizer must
+target the whole family, not assume a tail-recursive loop. Patterns already
+lowered here prove the point, and PLAWK carries more:
+
+- **Tail recursion → native loop** (F11; the region 1/2/3a walks).
+- **Non-tail recursion via explicit accumulator / stack** — region 3b
+  (`group_keyed`, nested loops over a materialised run) and region 4
+  (`build_tree`, bounded native recursion, balanced O(log N) depth). NOT loops.
+- **Committed-choice recursion** — the per-step nondet call is committed
+  (once/cut/->) before the tail (§6b; `dep_breaks/5`, region 5).
+- **Aggregate-then-iterate** — the nondeterminism is bounded in
+  findall/bagof/setof and the outer structure is a deterministic fold (§6b).
+- **…and more the project actually uses** (project owner): **linear recursion**
+  (one recursive call per clause, not necessarily in tail position),
+  **transitive closures** (reachability/ancestor-style closure over a relation —
+  deterministic when computed as a set / via aggregation or memoised to
+  terminate), **tree recursion** (multiple recursive calls per clause — region 4
+  `build_tree` is one), and **mutual recursion** (predicates that call each other
+  recursively). These are to be enumerated precisely from PLAWK
+  (`examples/plawk/`) and the resolver so the recognizer generalises to the
+  family rather than special-casing each shape.
+
+Design consequence: the eligibility recognizer is a **classifier over a family
+of deterministic recursion shapes** (each with its native emission — loop,
+explicit stack, committed-`->`, fold), with interpreter-decline for anything
+outside it. A survey of the project's deterministic recursion patterns should
+drive a general recognizer, target-agnostic so every backend's transpiler
+applies it.
+
 ## 7. Attribution
 
 The loop shape (F11) and the resumable-choice-point shape (F3) are **ideas**
