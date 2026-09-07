@@ -215,11 +215,67 @@ verified with `=@=`), so non-resolver projects are unaffected.
   regenerated via `build.sh` (default ON, all five region arms).
 - `docs/reports/wam_rust_stage2_region4.md` — this report.
 
+## Task B — F11 accessor bank under P2 (bounded attempt) — verdict: OFF
+
+The deterministic-cleanup round also carried a **bounded, time-boxed** re-check of
+the F11 self-tail-recursion accessor bank (the lowest-value item). The
+handed-forward finding was that re-enabling F11 under a P2-style minimal snapshot
+got it from ≈−7% to ≈−3% (still net-negative), with two identified remaining
+costs: (i) F11 emission re-dispatches through `vm.step(&Instruction::...)` with a
+per-instruction `String` allocation (NOT truly native like regions 1–4); (ii)
+`restore_regs` clears all 200 registers per failed clause attempt.
+
+**Structural reason F11 is different from the regions.** The regions win because
+they read their arguments into Rust locals and mutate **no** register, so a
+three-scalar (`trail`/`heap`/`var_counter`) minimal snapshot is sufficient and
+there is no register-file cost at all. F11 clauses, by contrast, **rebind the
+argument registers** (the recursive clause's `put_*` before the stripped tail
+call), so the loop genuinely needs a per-iteration register snapshot
+(`lo_clause_snapshot` → `save_regs`) — the "P2 minimal snapshot" cannot apply to
+F11 the way it does to the regions. That per-iteration register clone, plus the
+per-instruction `vm.step` `String`-allocating dispatch, is the irreducible F11
+overhead, and shallow accessors do not have enough work to amortize it.
+
+**Bounded fix attempted:** (ii) — a light F11 restore that drops the 200-register
+clear (sound because F11 clauses are compiled WAM whose temporaries are written
+before read, and the argument registers are restored from the snapshot). Verified
+correct: the full term differential stayed **2600/0/0** with F11 ON + the light
+restore. Fix (i) (removing the per-instruction `String` dispatch) is a codegen
+rewrite of the F11 body emitter — explicitly **out of this bounded scope** and,
+per the amortization theory, not worth it for shallow accessors.
+
+**Real B2 A/B** (2600-case term corpus, interleaved, distinct-sha binaries;
+F11-OFF = region 4 ON / F11 OFF, F11-ON = region 4 ON / F11 ON + light restore):
+
+```
+OFF sha256 fae79a29ea11835c6b97ab883cb14f196685744a6c3ed8a3fb6112337036ce42
+ON  sha256 498aba5cf93f7ff7f7e7fdc8864267e5f717a8679977b0d0be84c4e188b90648
+```
+
+| round | F11-OFF (ms) | F11-ON (ms) | delta (ms) | delta (%) |
+|---:|---:|---:|---:|---:|
+| 1 | 21,062 | 21,489 | +427 | +2.0 |
+| 2 | 20,197 | 21,054 | +857 | +4.2 |
+| 3 | 20,342 | 21,267 | +925 | +4.5 |
+| 4 | 19,697 | 21,197 | +1,500 | +7.6 |
+| 5 | 20,721 | 21,252 | +531 | +2.6 |
+
+**F11-ON is consistently SLOWER** (median ≈+4.2%), output byte-identical across
+the whole 2600-case corpus. The cheap restore fix did **not** flip it — it removed
+one cost, but the per-iteration register snapshot and per-instruction `String`
+dispatch remain and dominate for shallow accessors.
+
+**Decision: leave `rust_f11_enabled` OFF** (unchanged; the light-restore
+experiment was reverted so the committed surface is region 4 only). The
+amortization theory holds: shallow accessors don't pay, and F11's non-native
+emission would need a rewrite that is not worth it for accessors. This confirms
+the handed-forward finding on a faster (region-1/2/3/4-ON) baseline.
+
 ## Recommendation on what remains
 
-- **F11 accessor bank re-enable under P2** — measured in this same round (see the
-  F11 section of the deterministic-cleanup verdict). Bounded attempt, honest
-  verdict recorded there.
+- **F11 accessor bank** — verdict above: **OFF**. Only a full native rewrite of
+  the F11 body emitter (removing the per-instruction `vm.step` `String` dispatch)
+  could plausibly change this, and it is not worth it for shallow accessors.
 - **The nondet resume round (§7)** — still a separate later round. With
   `build_tree/4` now lowered deterministically, the remaining B3 targets are the
   genuine backtracking drivers `pick/7`, `blocked_from/4`, `dep_breaks/5`.
