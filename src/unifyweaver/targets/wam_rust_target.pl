@@ -60,6 +60,9 @@
     kernel_register_layout/2,
     kernel_native_call/2
 ]).
+:- use_module('../core/deterministic_recursion', [
+    deterministic_recursion_class/3
+]).
 
 rust_safe_function_name(Pred/Arity, FuncName) :-
     !,
@@ -9355,8 +9358,24 @@ rust_lowered_dispatch_fn(Classified, Options, Code) :-
         RegionArms5 = []
     ),
     append([RegionArms1, RegionArms2, RegionArms3a, RegionArms3b, RegionArms4, RegionArms5], RegionArms),
-    maplist(rust_lowered_dispatch_arm, Eligible, Arms0),
-    append(RegionArms, Arms0, Arms),
+    % Genrec: the GENERAL deterministic-recursion recognizer
+    % (src/unifyweaver/core/deterministic_recursion.pl, taxonomy §11). Where the
+    % regions above are per-predicate =@=-frozen shape checks, genrec classifies
+    % every candidate predicate with the compositional pipeline and emits arms
+    % for the sibling-gap tail_loop family (filter_satisfies, key_pkg_rows) that
+    % no region covers. Regions WIN on overlap: genrec never emits a key a region
+    % claims, and its emittable shapes (list_filter over satisfies/2, pkg-row
+    % list_map_index) do not overlap any region shape. Genrec keys are dropped
+    % from Eligible so no F11/D55 bank arm duplicates them.
+    (   \+ option(lowered_dispatch(false), Options),
+        rust_genrec_enabled(Options)
+    ->  rust_genrec_arms(Classified, GenrecArms, GenrecKeys)
+    ;   GenrecArms = [], GenrecKeys = []
+    ),
+    exclude(rust_genrec_claims(GenrecKeys), Eligible, EligibleFinal),
+    append([RegionArms, GenrecArms], AllPreArms),
+    maplist(rust_lowered_dispatch_arm, EligibleFinal, Arms0),
+    append(AllPreArms, Arms0, Arms),
     atomic_list_concat(Arms, '\n', ArmsStr),
     length(Arms, NEligible),
     format(string(Code),
@@ -9376,6 +9395,83 @@ pub fn lowered_call(vm: &mut WamState, pred: &str, cont_pc: usize) -> Option<boo
         _ => None,
     }
 }', [NEligible, ArmsStr]).
+
+% =====================================================================
+% Genrec — general deterministic-recursion recognizer wiring (step 7)
+% =====================================================================
+%
+% The Rust back-end (step 7) of the target-agnostic classifier in
+% src/unifyweaver/core/deterministic_recursion.pl. It runs
+% deterministic_recursion_class/3 over every candidate predicate and, for those
+% assigned a tail_loop shape it has a proven byte-identical native method for,
+% emits a `lowered_call` dispatch arm. This REPLACES per-predicate hand-written
+% =@= region recognizers with one general classifier — the sibling-gap family
+% (filter_satisfies, key_pkg_rows) is covered here with no region of its own.
+%
+% Default ON. Disable with the `genrec(false)` option or `UW_GENREC_OFF=1`.
+% Additionally shape-gated: a project without a matching tail_loop predicate is
+% unaffected either way (no arm emitted). The native methods
+% (WamState::region_filter_satisfies_dispatch / region_key_pkg_rows_dispatch)
+% carry the G-1..G-5 argument and the runtime decline guard.
+
+%% rust_genrec_enabled(+Options) is semidet.
+rust_genrec_enabled(Options) :-
+    (   option(genrec(V), Options)
+    ->  V == true
+    ;   getenv('UW_GENREC_OFF', '1')
+    ->  fail
+    ;   true
+    ).
+
+%% rust_genrec_arms(+Classified, -Arms, -Keys) is det.
+%  Classify every candidate predicate; for each whose class maps to an
+%  emittable native method (and whose key no region already claims), emit the
+%  dispatch arm. Keys are returned so they can be dropped from the F11/D55 bank.
+rust_genrec_arms(Classified, Arms, Keys) :-
+    findall(P/A, member(classified(_, P, A, _, _), Classified), PIs0),
+    sort(PIs0, PIs),
+    rust_region_claimed_keys(Claimed),
+    findall(Key-Arm,
+            ( member(P/A, PIs),
+              format(atom(Key), '~w/~w', [P, A]),
+              \+ memberchk(Key, Claimed),
+              catch(deterministic_recursion_class(user, P/A, Class), _, fail),
+              rust_genrec_shape_method(Class, Method),
+              format(atom(Arm),
+                     '        "~w" => vm.~w(cont_pc),', [Key, Method]) ),
+            Pairs0),
+    % de-dup on key (a predicate is classified once, but guard against repeats)
+    rust_genrec_dedup(Pairs0, Pairs),
+    pairs_keys_values(Pairs, Keys, Arms).
+
+rust_genrec_dedup([], []).
+rust_genrec_dedup([K-V|T], [K-V|R]) :-
+    exclude([K2-_]>>(K2==K), T, T1),
+    rust_genrec_dedup(T1, R).
+
+%% rust_region_claimed_keys(-Keys) is det.
+%  The fixed set of predicate keys the hand-built regions 1-5 own; genrec never
+%  emits an arm for any of them (regions win on overlap). None of these are in
+%  genrec's emittable shape set anyway — this is belt-and-suspenders.
+rust_region_claimed_keys([
+    'matching_deps/4', 'matching_versions/4', 'key_dep_rows/3',
+    'group_keyed/2', 'build_tree/4', 'dep_breaks/5'
+]).
+
+%% rust_genrec_shape_method(+Class, -Method) is semidet.
+%  Map a classifier CLASS to the WamState native dispatch method that lowers it
+%  byte-identically. Only the shapes with a proven native method are listed;
+%  every other class (committed, mutual, bst_descent, dep-row map, decline, ...)
+%  simply has no clause here, so genrec declines it to the interpreter.
+rust_genrec_shape_method(tail_loop(_:_, list_filter(satisfies/2, 1, 2, 3)),
+                         region_filter_satisfies_dispatch).
+rust_genrec_shape_method(tail_loop(_:_, list_map_index(package/2, pkg_row, 1, 2, 3)),
+                         region_key_pkg_rows_dispatch).
+
+%% rust_genrec_claims(+Keys, +Cand) is semidet.
+%  True when the F11/D55 candidate's key is one genrec already emitted (so it
+%  must be dropped from the bank to avoid a duplicate match arm).
+rust_genrec_claims(Keys, lo_cand(K, _, _, _, _)) :- memberchk(K, Keys).
 
 %% rust_lowered_dispatch_candidates(+Classified, -Cands)
 %  Every lowered predicate whose class carries a dispatch profile, paired with
