@@ -19,7 +19,7 @@ C++, plus a corpus runner that diffs every answer against SWI.
 | --- | --- |
 | resolver.pl compiles through wam_cpp end-to-end | **yes** (interpreter mode) |
 | C++ WAM binary runs the corpus | **yes** |
-| Milestone 1 — corpus vs SWI | **46 / 51 match** |
+| Milestone 1 — corpus vs SWI | **51 / 51 match** |
 | Milestone 2 — differential 2600/0 | not started |
 | Milestone 3 — store backend | not started |
 
@@ -64,60 +64,32 @@ not parse). Instead the corpus data lives **inside** the compiled binary:
 The generated main shim (`emit_main(true)`) runs `argv[1]` as a predicate key;
 `./cpp/uwresolve 'emit_all/0'` is the whole corpus.
 
-## The one blocker to 51/51
+## Milestone 1 resolution
 
-All 5 non-matching scenarios trace to a **single C++ WAM permanent-variable
-(Y-register) codegen bug** in interpreter emit mode, triggered by a `\+`
-(negation) inside a clause that carries several permanent variables:
+The five original mismatches had two independent causes:
 
-- 4 cases are `explain_blocked` (`layered_blocked_explanation`,
-  `two_blocked_ceilings`, `deb_epoch_ceiling`, `deb_tilde_ceiling`): they all
-  route through `resolver.pl`'s `blocked_acc/5`, whose first if-then-else is
-  `( base_ver(Cat,Name,BV), \+ satisfies(BV,C) -> [blocked(...)|Acc0] ; Acc0 )`.
-  On C++ that condition is taken to the ELSE branch, so the `blocked(...)` fact
-  is dropped and the query returns `ok([])`.
-- 1 case is `deb_tilde_picks_release` (`resolve` over deb versions): `resolve`
-  fails on C++ where SWI succeeds — same class of bug on `resolve`'s deep
-  recursion (its version guards also use `\+`).
+- A sole `\+` clause compiled with the Y-level soft-cut form could emit
+  `get_level YN` without first allocating its own environment. The barrier then
+  aliased a caller Y-register. The shared WAM compiler now allocates a frame for
+  exactly that inline-negation shape, while legacy and runtime-builtin negation
+  modes retain their previous allocation behaviour.
+- The deb-version cases call `predsort/3` through `sort_versions_desc/2`, but the
+  example build did not include the C++ WAM predsort helpers. The build now uses
+  `include_stdlib([predsort])`, which pulls in `predsort/3` and its registered
+  transitive helpers without changing the frozen resolver.
 
-It is NOT a resolver.pl issue, a deb-version-comparison issue, or a driver
-issue — each primitive works in isolation on the C++ WAM:
-
-- `satisfies/2`, `\+ satisfies/2`, `base_ver/3`, `walk_pkg_for_blocked/5`,
-  `collect_deps/4`, and the deb `version_lt/2` (tilde ordering) all return the
-  correct result standalone;
-- the same first if-then-else, reproduced with fewer permanent variables,
-  returns the correct non-empty accumulator (`bug_repro_ok/0`);
-- adding the surrounding permanent variables of the real clause flips it to
-  the empty branch (`bug_repro_bug/0`).
-
-Minimal reproducer, both shipped in `driver.pl`:
-
-```bash
-./cpp/uwresolve 'bug_repro_ok/0'    # then=v(1,0,0)   (condition succeeds)
-./cpp/uwresolve 'bug_repro_bug/0'   # after_ite1=[]    (same condition, ELSE)
-```
-
-SWI runs both identically (non-empty). Fixing it means the C++ WAM target's
-Y-register allocation / negation lowering (`wam_cpp_target.pl` +
-`\+`/`NegationReturn` handling in the emitted `wam_runtime.cpp`), cross-checked
-against the existing `cpp_e2e_yreg_isolation` / `cpp_e2e_not_*` suite. That is
-a codegen fix outside this lane; it is deliberately left for a focused C++ WAM
-change rather than patched around here (the resolver is frozen).
+After both corrections, the generated C++ executable matches the SWI oracle on
+all 51 corpus scenarios. The focused Y-register/negation tests and the complete
+C++ WAM e2e suite are the regression gates for the shared compiler behaviour.
 
 ## Next steps
 
-1. **Milestone 1 → 51/51:** fix the Y-register/negation codegen bug above, or
-   (to unblock sooner and localise risk) try `emit_mode(mixed([blocked_acc/5,
-   resolve/3, resolve_pending/... ]))` so only the affected predicates are
-   lowered to direct C++ — smaller than a full `functions` build, but confirm
-   RAM headroom before running it.
-2. **Milestone 2 (differential 2600/0):** the seeded differential feeds
+1. **Milestone 2 (differential 2600/0):** the seeded differential feeds
    generated catalogs as JSON; because the C++ parser can't take catalog text,
    this lane needs either (a) a C++ JSON→WAM-term shim like `../go/shim.go`, or
    (b) the generator emitting Prolog catalog *facts* compiled into a per-run
-   binary. Blocked behind milestone 1 anyway.
-3. **Milestone 3 (store backend):** mirror `../go` D43 indexed store; the C++
+   binary.
+2. **Milestone 3 (store backend):** mirror `../go` D43 indexed store; the C++
    runtime already has an LMDB `FactSource` (`WAM_CPP_ENABLE_LMDB`), so the
    indexed/lmdb split has a starting point.
 
