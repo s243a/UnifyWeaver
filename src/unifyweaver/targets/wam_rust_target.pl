@@ -9277,12 +9277,28 @@ rust_lowered_dispatch_fn(Classified, Options, Code) :-
     % matching_deps/4 arm is dropped so the region arm is the single match arm.
     (   \+ option(lowered_dispatch(false), Options),
         rust_region1_applicable(Options)
-    ->  exclude(rust_region1_is_matching_deps, Eligible0, Eligible),
-        RegionArm = '        "matching_deps/4" => vm.region_matching_deps_dispatch(cont_pc),',
-        RegionArms = [RegionArm]
-    ;   Eligible = Eligible0,
-        RegionArms = []
+    ->  exclude(rust_region1_is_matching_deps, Eligible0, Eligible1),
+        RegionArm1 = '        "matching_deps/4" => vm.region_matching_deps_dispatch(cont_pc),',
+        RegionArms1 = [RegionArm1]
+    ;   Eligible1 = Eligible0,
+        RegionArms1 = []
     ),
+    % Stage 2 region 2: wire the fused matching_versions/4 ⊕ satisfies/2 ⊕
+    % version_lt/2 region (its whole segs_lt/order_lt/order_val transitive chain
+    % is inlined natively) in front of the banks when the flag is on and the
+    % frozen shape is present. `satisfies`/`version_lt` are SHARED with other
+    % callers, so the region inlines a PRIVATE native copy of each and leaves the
+    % interpreted predicates fully intact — only the matching_versions/4 dispatch
+    % arm routes to the native region, so no other call site changes behaviour.
+    (   \+ option(lowered_dispatch(false), Options),
+        rust_region2_applicable(Options)
+    ->  exclude(rust_region2_is_matching_versions, Eligible1, Eligible),
+        RegionArm2 = '        "matching_versions/4" => vm.region_matching_versions_dispatch(cont_pc),',
+        RegionArms2 = [RegionArm2]
+    ;   Eligible = Eligible1,
+        RegionArms2 = []
+    ),
+    append(RegionArms1, RegionArms2, RegionArms),
     maplist(rust_lowered_dispatch_arm, Eligible, Arms0),
     append(RegionArms, Arms0, Arms),
     atomic_list_concat(Arms, '\n', ArmsStr),
@@ -9623,6 +9639,200 @@ rust_region1_dtr_c1(Clause) :-
 
 rust_region1_dtr_c2(Clause) :-
     Clause =@= ( dep_to_req(D, C, req(D, C)) - true ).
+
+% =====================================================================
+% Stage 2 region 2 — fused native region:
+%   matching_versions/4 ⊕ satisfies/2 ⊕ version_lt/2
+% =====================================================================
+%
+% `matching_versions/4` walks a package list and per element runs the
+% `N==Name, satisfies(V,C)` guard; `satisfies/2` in turn calls `version_lt/2`,
+% whose deb/3 path pulls in the whole Debian §5.6.12 segment walk
+% (`segs_lt`/`pad_head`/`segs_lt_1`/`order_lt`/`order_val`). This region fuses
+% that entire 3-deep chain into ONE native function entered once
+% (`WamState::region_matching_versions_dispatch`, which carries the G-1..G-5
+% argument in state.rs.mustache).
+%
+% SHARED-CALLEE handling: `satisfies/2` (and `version_lt/2`) are called from many
+% other predicates (filter_satisfies, layer_satisfies, provide_satisfies, cmp_ver,
+% ...). The region does NOT lower the shared predicate globally; it inlines a
+% PRIVATE native copy for the fused region only and leaves the interpreted
+% `satisfies`/`version_lt` untouched, so every other call site is byte-identical
+% to the region-off build BY CONSTRUCTION. Only the `matching_versions/4` dispatch
+% arm routes to the region.
+%
+% Wired only when BOTH the region flag is on AND the project contains the EXACT
+% frozen shape of ALL of matching_versions/satisfies/version_lt AND the whole
+% version_lt transitive chain (each verified below with `=@=`, variant: structure
+% and variable *sharing* matched, names irrelevant). The store lane's
+% matching_versions_store never matches, so it is untouched.
+
+%% rust_region2_is_matching_versions(+Cand) is semidet.
+rust_region2_is_matching_versions(lo_cand(K, _, _, _, _)) :- K == 'matching_versions/4'.
+
+%% rust_region2_enabled(+Options) is semidet.
+%  Default decision recorded in docs/reports/wam_rust_stage2_region2.md after the
+%  real interleaved A/B. Disable with the `region2(false)` option or
+%  `UW_REGION2_OFF=1`; force on with `region2(true)`.
+rust_region2_enabled(Options) :-
+    (   option(region2(V), Options)
+    ->  V == true
+    ;   getenv('UW_REGION2_OFF', '1')
+    ->  fail
+    ;   true
+    ).
+
+%% rust_region2_applicable(+Options) is semidet.
+%  Region-2 flag on AND every predicate in the fused chain matches its frozen
+%  shape. Any mismatch leaves the region inert (dead code) and the predicates
+%  run interpreted.
+rust_region2_applicable(Options) :-
+    rust_region2_enabled(Options),
+    rust_region2_matching_versions_ok,
+    rust_region2_satisfies_ok,
+    rust_region2_version_lt_ok,
+    rust_region2_segs_lt_ok,
+    rust_region2_pad_head_ok,
+    rust_region2_segs_lt_1_ok,
+    rust_region2_order_lt_ok,
+    rust_region2_order_val_ok.
+
+%% rust_region2_matching_versions_ok is semidet.
+%    matching_versions([], _Name, _C, []).
+%    matching_versions([package(N, V)|Rest], Name, C, Out) :-
+%        ( N == Name, satisfies(V, C) -> Out = [V|Vs] ; Out = Vs ),
+%        matching_versions(Rest, Name, C, Vs).
+rust_region2_matching_versions_ok :-
+    findall(H-B, ( H = matching_versions(_,_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [_, _],
+    once(( member(CB, Clauses), rust_region2_mv_base(CB) )),
+    once(( member(CR, Clauses), rust_region2_mv_rec(CR) )).
+
+rust_region2_mv_base(Clause) :-
+    Clause =@= ( matching_versions([], _, _, []) - true ).
+
+rust_region2_mv_rec(Clause) :-
+    Clause =@= ( matching_versions([package(N, V)|Rest], Name, C, Out) -
+                 ( ( N == Name, satisfies(V, C)
+                   -> Out = [V|Vs]
+                   ;  Out = Vs
+                   ),
+                   matching_versions(Rest, Name, C, Vs) ) ).
+
+%% rust_region2_satisfies_ok is semidet.
+%    satisfies(_Ver, any).
+%    satisfies(Ver, eq(E))    :- Ver = E.
+%    satisfies(Ver, gte(G))   :- \+ version_lt(Ver, G).
+%    satisfies(Ver, lte(G))   :- \+ version_lt(G, Ver).
+%    satisfies(Ver, lt(H))    :- version_lt(Ver, H).
+%    satisfies(Ver, gt(H))    :- version_lt(H, Ver).
+%    satisfies(Ver, range(Lo, Hi)) :- \+ version_lt(Ver, Lo), version_lt(Ver, Hi).
+rust_region2_satisfies_ok :-
+    findall(H-B, ( H = satisfies(_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1, C2, C3, C4, C5, C6, C7],
+    C1 =@= ( satisfies(_Ver, any) - true ),
+    C2 =@= ( satisfies(Ver2, eq(E)) - (Ver2 = E) ),
+    C3 =@= ( satisfies(Ver3, gte(G3)) - ( \+ version_lt(Ver3, G3) ) ),
+    C4 =@= ( satisfies(Ver4, lte(G4)) - ( \+ version_lt(G4, Ver4) ) ),
+    C5 =@= ( satisfies(Ver5, lt(H5)) - version_lt(Ver5, H5) ),
+    C6 =@= ( satisfies(Ver6, gt(H6)) - version_lt(H6, Ver6) ),
+    C7 =@= ( satisfies(Ver7, range(Lo, Hi)) -
+             ( \+ version_lt(Ver7, Lo), version_lt(Ver7, Hi) ) ).
+
+%% rust_region2_version_lt_ok is semidet.
+%    version_lt(v(A,B,C), v(D,E,F)) :-
+%        ( A < D -> true ; A =:= D, B < E -> true ; A =:= D, B =:= E, C < F ).
+%    version_lt(deb(E1,U1,R1), deb(E2,U2,R2)) :-
+%        ( E1 < E2 -> true
+%        ; E1 =:= E2, segs_lt(U1,U2) -> true
+%        ; E1 =:= E2, \+ segs_lt(U1,U2), \+ segs_lt(U2,U1), segs_lt(R1,R2) ).
+rust_region2_version_lt_ok :-
+    findall(H-B, ( H = version_lt(_,_), clause(user:H, B) ), Clauses),
+    Clauses = [_, _],
+    once(( member(CV, Clauses), rust_region2_vlt_v3(CV) )),
+    once(( member(CD, Clauses), rust_region2_vlt_deb(CD) )).
+
+rust_region2_vlt_v3(Clause) :-
+    Clause =@= ( version_lt(v(A, B, C), v(D, E, F)) -
+                 ( A < D
+                 -> true
+                 ;  A =:= D, B < E
+                 -> true
+                 ;  A =:= D, B =:= E, C < F
+                 ) ).
+
+rust_region2_vlt_deb(Clause) :-
+    Clause =@= ( version_lt(deb(E1, U1, R1), deb(E2, U2, R2)) -
+                 ( E1 < E2
+                 -> true
+                 ;  E1 =:= E2, segs_lt(U1, U2)
+                 -> true
+                 ;  E1 =:= E2, \+ segs_lt(U1, U2), \+ segs_lt(U2, U1), segs_lt(R1, R2)
+                 ) ).
+
+%% rust_region2_segs_lt_ok is semidet.
+%    segs_lt([], []) :- !, fail.
+%    segs_lt(A, B) :- pad_head(A, A1), pad_head(B, B1), segs_lt_1(A1, B1).
+rust_region2_segs_lt_ok :-
+    findall(H-B, ( H = segs_lt(_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1, C2],
+    C1 =@= ( segs_lt([], []) - ( !, fail ) ),
+    C2 =@= ( segs_lt(A, B) - ( pad_head(A, A1), pad_head(B, B1), segs_lt_1(A1, B1) ) ).
+
+%% rust_region2_pad_head_ok is semidet.
+%    pad_head([], [s([], 0)]) :- !.
+%    pad_head(Segs, Segs).
+rust_region2_pad_head_ok :-
+    findall(H-B, ( H = pad_head(_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1, C2],
+    C1 =@= ( pad_head([], [s([], 0)]) - ! ),
+    C2 =@= ( pad_head(Segs, Segs) - true ).
+
+%% rust_region2_segs_lt_1_ok is semidet.
+%    segs_lt_1([s(O1,N1)|T1], [s(O2,N2)|T2]) :-
+%        ( order_lt(O1,O2) -> true
+%        ; O1 == O2, N1 < N2 -> true
+%        ; O1 == O2, N1 =:= N2, segs_lt(T1,T2) ).
+rust_region2_segs_lt_1_ok :-
+    findall(H-B, ( H = segs_lt_1(_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1],
+    C1 =@= ( segs_lt_1([s(O1, N1)|T1], [s(O2, N2)|T2]) -
+             ( order_lt(O1, O2)
+             -> true
+             ;  O1 == O2, N1 < N2
+             -> true
+             ;  O1 == O2, N1 =:= N2, segs_lt(T1, T2)
+             ) ).
+
+%% rust_region2_order_lt_ok is semidet.
+%    order_lt([], []) :- !, fail.
+%    order_lt([], [C|_]) :- order_val(C, V), 0 < V.
+%    order_lt([C|_], []) :- order_val(C, V), V < 0.
+%    order_lt([A|As], [B|Bs]) :-
+%        order_val(A, VA), order_val(B, VB),
+%        ( VA < VB -> true ; VA =:= VB, order_lt(As, Bs) ).
+rust_region2_order_lt_ok :-
+    findall(H-B, ( H = order_lt(_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1, C2, C3, C4],
+    C1 =@= ( order_lt([], []) - ( !, fail ) ),
+    C2 =@= ( order_lt([], [C2c|_]) - ( order_val(C2c, V2), 0 < V2 ) ),
+    C3 =@= ( order_lt([C3c|_], []) - ( order_val(C3c, V3), V3 < 0 ) ),
+    C4 =@= ( order_lt([A4|As4], [B4|Bs4]) -
+             ( order_val(A4, VA), order_val(B4, VB),
+               ( VA < VB -> true ; VA =:= VB, order_lt(As4, Bs4) ) ) ).
+
+%% rust_region2_order_val_ok is semidet.
+%    order_val(126, -1) :- !.
+%    order_val(C, C) :- C >= 65, C =< 90, !.
+%    order_val(C, C) :- C >= 97, C =< 122, !.
+%    order_val(C, V) :- V is C + 256.
+rust_region2_order_val_ok :-
+    findall(H-B, ( H = order_val(_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1, C2, C3, C4],
+    C1 =@= ( order_val(126, -1) - ! ),
+    C2 =@= ( order_val(Ca, Ca) - ( Ca >= 65, Ca =< 90, ! ) ),
+    C3 =@= ( order_val(Cb, Cb) - ( Cb >= 97, Cb =< 122, ! ) ),
+    C4 =@= ( order_val(Cc, Vc) - ( Vc is Cc + 256 ) ).
 
 %% rust_pred_heads_exclusive(+Module, +Pred, +Arity) is semidet.
 %  True when the predicate's clause heads are pairwise non-unifiable — the
