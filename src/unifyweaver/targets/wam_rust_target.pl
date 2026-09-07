@@ -9268,11 +9268,25 @@ rust_lowered_dispatch_fn(Classified, Options, Code) :-
             rust_lowered_dispatch_fixpoint(OtherCands, F11Keys, OtherEligible)
         ;   OtherEligible = []
         ),
-        append(F11Eligible, OtherEligible, Eligible)
+        append(F11Eligible, OtherEligible, Eligible0)
     ),
-    maplist(rust_lowered_dispatch_arm, Eligible, Arms),
+    % Stage 2 region 1: wire the fused matching_deps/4 ⊕ dep_to_req/3 region in
+    % front of the D55/F11 banks when the flag is on and the frozen shape is
+    % present. Its runtime half (WamState::region_matching_deps_dispatch) carries
+    % the G-1..G-5 argument; here we only route the call to it. Any other bank's
+    % matching_deps/4 arm is dropped so the region arm is the single match arm.
+    (   \+ option(lowered_dispatch(false), Options),
+        rust_region1_applicable(Options)
+    ->  exclude(rust_region1_is_matching_deps, Eligible0, Eligible),
+        RegionArm = '        "matching_deps/4" => vm.region_matching_deps_dispatch(cont_pc),',
+        RegionArms = [RegionArm]
+    ;   Eligible = Eligible0,
+        RegionArms = []
+    ),
+    maplist(rust_lowered_dispatch_arm, Eligible, Arms0),
+    append(RegionArms, Arms0, Arms),
     atomic_list_concat(Arms, '\n', ArmsStr),
-    length(Eligible, NEligible),
+    length(Arms, NEligible),
     format(string(Code),
 '/// D55 call-site dispatch for the LOWERED tier: route a WAM call/execute of a
 /// lowered predicate to its generated Rust function. `Some(ok)` when the
@@ -9519,6 +9533,96 @@ rust_f11_enabled(Options) :-
     ( option(f11_tail_loop(V), Options), V == true -> true
     ; getenv('UW_F11_ON', '1')
     ).
+
+% =====================================================================
+% Stage 2 region 1 — fused native region: matching_deps/4 ⊕ dep_to_req/3
+% =====================================================================
+%
+% The lowered-tier throughput plan §5 (P1 direct native calls + P2 minimal
+% snapshot) and the measurement spike (docs/reports/wam_rust_stage2_spike.md)
+% target this one deterministic region. The RUNTIME half lives in
+% state.rs.mustache (`WamState::region_matching_deps_dispatch`, which carries
+% the full G-1..G-5 soundness argument); this half decides, at codegen time,
+% whether to WIRE that region into `lowered_call` for the project being built.
+%
+% It is wired only when BOTH hold:
+%   1. the region flag is on (default ON; disable with `region1(false)` or
+%      `UW_REGION1_OFF=1`), and
+%   2. the project actually contains `matching_deps/4` and `dep_to_req/3` with
+%      the EXACT frozen resolver shape (rust_region1_*_ok/0 below). The check is
+%      structural (variable *sharing* is verified, names are not), so it fires
+%      for resolver.pl and never for a different program — the store lane uses
+%      `matching_deps_store`/`dep_to_req_store` and so never matches.
+% When either fails the region method is inert dead code and the predicate runs
+% interpreted, byte-identical to the region-off build.
+
+%% rust_region1_is_matching_deps(+Cand) is semidet.
+rust_region1_is_matching_deps(lo_cand(K, _, _, _, _)) :- K == 'matching_deps/4'.
+
+%% rust_region1_enabled(+Options) is semidet.
+%  Default ON. The real interleaved drift-cancelling A/B on this box
+%  (docs/reports/wam_rust_stage2_region1.md) measured a clear, consistent
+%  ~7% B2 win (median ~1.6 s of ~23.3 s) with every gate green in both
+%  configs, CONFIRMING the spike's ~6% machinery-floor projection — so per the
+%  plan's "bank it if it helps" the region is banked ON. It stays gated:
+%  disable with the `region1(false)` option or `UW_REGION1_OFF=1`. The region
+%  is additionally shape-gated (rust_region1_applicable/1), so a project
+%  without the frozen matching_deps/dep_to_req shape is unaffected either way.
+rust_region1_enabled(Options) :-
+    (   option(region1(V), Options)
+    ->  V == true
+    ;   getenv('UW_REGION1_OFF', '1')
+    ->  fail
+    ;   true
+    ).
+
+%% rust_region1_applicable(+Options) is semidet.
+rust_region1_applicable(Options) :-
+    rust_region1_enabled(Options),
+    rust_region1_matching_deps_ok,
+    rust_region1_dep_to_req_ok.
+
+%% rust_region1_matching_deps_ok is semidet.
+%  matching_deps/4 is EXACTLY the frozen two clauses:
+%    matching_deps([], _, _, []).
+%    matching_deps([depends(N,V,D,C)|Rest], Name, Ver, Out) :-
+%        ( N==Name, V==Ver -> dep_to_req(D,C,Req), Out=[Req|Rs] ; Out=Rs ),
+%        matching_deps(Rest, Name, Ver, Rs).
+%  The whole head-body clause is compared with `=@=` (variant): structure is
+%  matched exactly and variable *sharing* is verified, while variable *names*
+%  are irrelevant.
+rust_region1_matching_deps_ok :-
+    findall(H-B, ( H = matching_deps(_,_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [_, _],
+    once(( member(CB, Clauses), rust_region1_md_base(CB) )),
+    once(( member(CR, Clauses), rust_region1_md_rec(CR) )).
+
+rust_region1_md_base(Clause) :-
+    Clause =@= ( matching_deps([], _, _, []) - true ).
+
+rust_region1_md_rec(Clause) :-
+    Clause =@= ( matching_deps([depends(N,V,D,C)|Rest], Name, Ver, Out) -
+                 ( ( N==Name, V==Ver
+                   -> dep_to_req(D,C,Req), Out=[Req|Rs]
+                   ;  Out=Rs
+                   ),
+                   matching_deps(Rest, Name, Ver, Rs) ) ).
+
+%% rust_region1_dep_to_req_ok is semidet.
+%  dep_to_req/3 is EXACTLY the frozen committed rewrite:
+%    dep_to_req(alternatives(Alts), _C, req(alternatives(Alts), any)) :- !.
+%    dep_to_req(D, C, req(D, C)).
+rust_region1_dep_to_req_ok :-
+    findall(H-B, ( H = dep_to_req(_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [_, _],
+    once(( member(C1, Clauses), rust_region1_dtr_c1(C1) )),
+    once(( member(C2, Clauses), rust_region1_dtr_c2(C2) )).
+
+rust_region1_dtr_c1(Clause) :-
+    Clause =@= ( dep_to_req(alternatives(Alts), _C, req(alternatives(Alts), any)) - ! ).
+
+rust_region1_dtr_c2(Clause) :-
+    Clause =@= ( dep_to_req(D, C, req(D, C)) - true ).
 
 %% rust_pred_heads_exclusive(+Module, +Pred, +Arity) is semidet.
 %  True when the predicate's clause heads are pairwise non-unifiable — the
