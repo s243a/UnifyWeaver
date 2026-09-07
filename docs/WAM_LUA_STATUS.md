@@ -30,7 +30,13 @@ in Lua hosts.
 the parity audit.
 
 **Lowered T4–T6.** Dual WAM-instr + lowered emitter covering T4–T6
-shapes.
+shapes. Lowered calls use a sound first-solution / deterministic-prefix
+contract: an interpreted callee cannot consume a choicepoint created by an
+earlier lowered goal. Consequently, predicates that require revisiting a
+nondeterministic prefix after a later goal fails may be incomplete in
+`emit_mode(functions)` or `emit_mode(mixed(...))`; use the default interpreter
+mode for full backtracking semantics until eligibility gains determinism-aware
+gating or continuations.
 
 **Narrow IO surface.**
 

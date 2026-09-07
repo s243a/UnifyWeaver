@@ -341,16 +341,14 @@ lower_predicate_to_javascript(PI, WamCode, Options, lowered(PredName, FuncName, 
     ).
 
 emit_multi_clause_n_function(PredName, FuncName, Clauses, Code) :-
+    with_output_to(string(Snapshot), emit_failure_snapshot_js("_t4", "  ")),
     with_output_to(string(ClausesBody), emit_js_t4_clauses(Clauses)),
     format(string(Code),
 '// Lowered: ~w (T4 all-clauses inline)
 function ~w(program, state) {
-  const _t4_trail = state.trail.length;
-  const _t4_regs = Runtime.copy_table(state.regs);
-  const _t4_vc = state.var_counter;
-~w  return false;
+~w~w  return false;
 }
-', [PredName, FuncName, ClausesBody]).
+', [PredName, FuncName, Snapshot, ClausesBody]).
 
 emit_js_t4_clauses([]).
 emit_js_t4_clauses([Clause|Rest]) :-
@@ -358,9 +356,7 @@ emit_js_t4_clauses([Clause|Rest]) :-
     emit_lines(Clause, "    "),
     format("    return false;~n"),
     format("  })()) return true;~n"),
-    format("  while (state.trail.length > _t4_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }~n"),
-    format("  state.regs = Runtime.copy_table(_t4_regs);~n"),
-    format("  state.var_counter = _t4_vc;~n"),
+    format("  _t4_restore();~n"),
     emit_js_t4_clauses(Rest).
 
 emit_ite_function(PredName, FuncName, Structured, Code) :-
@@ -380,15 +376,17 @@ emit_struct_js([Item|Rest], Ind) :-
 emit_struct_item_js(ite(Cond, Then, Else), Ind) :- !,
     string_concat(Ind, "    ", Ind4),
     format("~w{~n", [Ind]),
-    format("~w  const _ite_mark = state.trail.length;~n", [Ind]),
+    string_concat(Ind, "  ", Ind2),
+    emit_failure_snapshot_js("_ite", Ind2),
     format("~w  const _ite_cond = (function () {~n", [Ind]),
     emit_struct_js(Cond, Ind4),
     format("~w    return true;~n", [Ind]),
     format("~w  })();~n", [Ind]),
     format("~w  if (_ite_cond) {~n", [Ind]),
+    format("~w    state.cps = _ite_cps.slice();~n", [Ind]),
     emit_struct_js(Then, Ind4),
     format("~w  } else {~n", [Ind]),
-    format("~w    while (state.trail.length > _ite_mark) { const _n = state.trail.pop(); delete state.bindings[_n]; }~n", [Ind]),
+    format("~w    _ite_restore();~n", [Ind]),
     emit_struct_js(Else, Ind4),
     format("~w  }~n", [Ind]),
     format("~w}~n", [Ind]).
@@ -414,6 +412,7 @@ emit_multi_clause_function(PredName, FuncName, AltLabel, Lines, Code) :-
 function ~w(program, state) {
   const alt_pc = program.labels[~w];
   if (alt_pc === undefined || alt_pc === null) return false;
+  const _cp_floor = state.cps.length;
   const _cp = {
     next_pc: alt_pc,
     regs: Runtime.copy_table(state.regs),
@@ -432,11 +431,11 @@ function ~w(program, state) {
 ~w    return false;
   })();
   if (ok === true) return true;
-  if (Runtime.backtrack(state) !== true) return false;
+  if (Runtime.backtrack(state, _cp_floor) !== true) return false;
   state.pc = state.pc + 1;
   state.halt = false;
   state.program = program;
-  return Runtime.run(program, state) === true;
+  return Runtime.run(program, state, _cp_floor) === true;
 }
 ', [PredName, FuncName, AltQ, Body]).
 
@@ -460,6 +459,7 @@ const ~w = (function () {
     if (t5a1 && typeof t5a1 === "object" && t5a1.tag !== "unbound") return false;
     const alt_pc = program.labels[~w];
     if (alt_pc === undefined || alt_pc === null) return false;
+    const _cp_floor = state.cps.length;
     const _cp = {
       next_pc: alt_pc,
       regs: Runtime.copy_table(state.regs),
@@ -478,11 +478,11 @@ const ~w = (function () {
 ~w      return false;
     })();
     if (ok === true) return true;
-    if (Runtime.backtrack(state) !== true) return false;
+    if (Runtime.backtrack(state, _cp_floor) !== true) return false;
     state.pc = state.pc + 1;
     state.halt = false;
     state.program = program;
-    return Runtime.run(program, state) === true;
+    return Runtime.run(program, state, _cp_floor) === true;
   };
 })();
 ', [PredName, FuncName, Table, AltQ, Clause1Body]).
@@ -499,6 +499,7 @@ function ~w(program, state) {
   }
   const alt_pc = program.labels[~w];
   if (alt_pc === undefined || alt_pc === null) return false;
+  const _cp_floor = state.cps.length;
   const _cp = {
     next_pc: alt_pc,
     regs: Runtime.copy_table(state.regs),
@@ -517,11 +518,11 @@ function ~w(program, state) {
 ~w    return false;
   })();
   if (ok === true) return true;
-  if (Runtime.backtrack(state) !== true) return false;
+  if (Runtime.backtrack(state, _cp_floor) !== true) return false;
   state.pc = state.pc + 1;
   state.halt = false;
   state.program = program;
-  return Runtime.run(program, state) === true;
+  return Runtime.run(program, state, _cp_floor) === true;
 }
 ', [PredName, FuncName, Dispatch, AltQ, Clause1Body]).
 
@@ -621,28 +622,68 @@ emit_line_parts(Parts, I) :-
     wam_javascript_target:wam_parts_to_js(Parts, [], Lit),
     format("~wif (Runtime.step(program, state, ~w) !== true) return false;~n", [I, Lit]).
 
+% A lowered function executes against its caller's state.  A failed call can
+% return before the callee's Deallocate instruction, so failure boundaries
+% must restore the complete caller-visible machine state.  In particular,
+% restoring only the trail leaves a stale environment frame and the callee's
+% Y registers in place.  Keep successful bindings/state intact; this closure
+% is invoked only on failure (or on the failed arm of a structured ITE).
+emit_failure_snapshot_js(Tag, I) :-
+    format("~wconst ~w_trail = state.trail.length;~n", [I, Tag]),
+    format("~wconst ~w_regs = Runtime.copy_table(state.regs);~n", [I, Tag]),
+    format("~wconst ~w_cp = state.cp;~n", [I, Tag]),
+    format("~wconst ~w_pc = state.pc;~n", [I, Tag]),
+    format("~wconst ~w_halt = state.halt;~n", [I, Tag]),
+    format("~wconst ~w_indexed_entry = state.indexed_entry;~n", [I, Tag]),
+    format("~wconst ~w_var_counter = state.var_counter;~n", [I, Tag]),
+    format("~wconst ~w_mode = state.mode;~n", [I, Tag]),
+    format("~wconst ~w_build_stack = state.build_stack.slice();~n", [I, Tag]),
+    format("~wconst ~w_stack = state.stack.slice();~n", [I, Tag]),
+    format("~wconst ~w_cps = state.cps.slice();~n", [I, Tag]),
+    format("~wconst ~w_read_stack = (state.read_stack || []).slice();~n", [I, Tag]),
+    format("~wconst ~w_read_args = state.read_args;~n", [I, Tag]),
+    format("~wconst ~w_read_cursor = state.read_cursor;~n", [I, Tag]),
+    format("~wconst ~w_restore = function () {~n", [I, Tag]),
+    format("~w  while (state.trail.length > ~w_trail) { const _n = state.trail.pop(); delete state.bindings[_n]; }~n", [I, Tag]),
+    format("~w  state.regs = Runtime.copy_table(~w_regs);~n", [I, Tag]),
+    format("~w  state.cp = ~w_cp;~n", [I, Tag]),
+    format("~w  state.pc = ~w_pc;~n", [I, Tag]),
+    format("~w  state.halt = ~w_halt;~n", [I, Tag]),
+    format("~w  state.indexed_entry = ~w_indexed_entry;~n", [I, Tag]),
+    format("~w  state.var_counter = ~w_var_counter;~n", [I, Tag]),
+    format("~w  state.mode = ~w_mode;~n", [I, Tag]),
+    format("~w  state.build_stack = ~w_build_stack.slice();~n", [I, Tag]),
+    format("~w  state.stack = ~w_stack.slice();~n", [I, Tag]),
+    format("~w  state.cps = ~w_cps.slice();~n", [I, Tag]),
+    format("~w  state.read_stack = ~w_read_stack.slice();~n", [I, Tag]),
+    format("~w  state.read_args = ~w_read_args;~n", [I, Tag]),
+    format("~w  state.read_cursor = ~w_read_cursor;~n", [I, Tag]),
+    format("~w};~n", [I]).
+
 emit_call(PredArity, I) :-
     wam_javascript_target:js_string_literal(PredArity, Q),
     parse_call_pred_arity(PredArity, PredName, Arity),
     wam_javascript_target:js_string_literal(PredName, PQ),
     format("~w{~n", [I]),
-    format("~w  const saved_cp = state.cp;~n", [I]),
+    string_concat(I, "  ", I2),
+    emit_failure_snapshot_js("_call", I2),
+    format("~w  const _call_floor = state.cps.length;~n", [I]),
     format("~w  const _lf = (typeof lowered_dispatch !== \"undefined\") ? lowered_dispatch[~w] : undefined;~n", [I, Q]),
     format("~w  if (typeof _lf === \"function\") {~n", [I]),
-    format("~w    if (_lf(program, state) !== true) return false;~n", [I]),
+    format("~w    if (_lf(program, state, _call_floor) !== true) { _call_restore(); return false; }~n", [I]),
     format("~w  } else {~n", [I]),
     format("~w    const target = program.labels[~w];~n", [I, Q]),
     format("~w    if (target !== undefined && target !== null) {~n", [I]),
     format("~w      state.cp = 0;~n", [I]),
     format("~w      state.pc = target;~n", [I]),
     format("~w      state.program = program;~n", [I]),
-    format("~w      if (Runtime.run(program, state) !== true) return false;~n", [I]),
+    format("~w      if (Runtime.run(program, state, _call_floor) !== true) { _call_restore(); return false; }~n", [I]),
     format("~w      state.halt = false;~n", [I]),
     format("~w    } else if (Runtime.step(program, state, I.Call(~w, ~w)) !== true) {~n", [I, PQ, Arity]),
-    format("~w      return false;~n", [I]),
+    format("~w      _call_restore(); return false;~n", [I]),
     format("~w    }~n", [I]),
     format("~w  }~n", [I]),
-    format("~w  state.cp = saved_cp;~n", [I]),
+    format("~w  state.cp = _call_cp;~n", [I]),
     format("~w}~n", [I]).
 
 emit_execute(PredArity, I) :-
@@ -650,18 +691,19 @@ emit_execute(PredArity, I) :-
     parse_call_pred_arity(PredArity, PredName, Arity),
     wam_javascript_target:js_string_literal(PredName, PQ),
     format("~w{~n", [I]),
+    format("~w  const _execute_floor = state.cps.length;~n", [I]),
     format("~w  const _lf = (typeof lowered_dispatch !== \"undefined\") ? lowered_dispatch[~w] : undefined;~n", [I, Q]),
     format("~w  if (typeof _lf === \"function\") return _lf(program, state) === true;~n", [I]),
     format("~w  const target = program.labels[~w];~n", [I, Q]),
     format("~w  if (target !== undefined && target !== null) {~n", [I]),
     format("~w    state.pc = target;~n", [I]),
     format("~w    state.program = program;~n", [I]),
-    format("~w    return Runtime.run(program, state) === true;~n", [I]),
+    format("~w    return Runtime.run(program, state, _execute_floor) === true;~n", [I]),
     format("~w  }~n", [I]),
     format("~w  if (Runtime.step(program, state, I.Execute(~w, ~w)) !== true) return false;~n", [I, PQ, Arity]),
     format("~w  if (state.halt) return true;~n", [I]),
     format("~w  state.program = program;~n", [I]),
-    format("~w  return Runtime.run(program, state) === true;~n", [I]),
+    format("~w  return Runtime.run(program, state, _execute_floor) === true;~n", [I]),
     format("~w}~n", [I]).
 
 parse_call_pred_arity(PredArity, PredName, Arity) :-

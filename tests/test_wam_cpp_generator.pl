@@ -1349,6 +1349,9 @@ user:wam_cpp_test_lax_float_div_zero_nan :-
 :- dynamic user:wam_cpp_test_not_alias_succeeds/0.
 :- dynamic user:wam_cpp_test_not_alias_fails/0.
 :- dynamic user:wam_cpp_test_not_nan_check/0.
+:- dynamic user:wam_cpp_test_not_frame_fact/1.
+:- dynamic user:wam_cpp_test_not_frame_callee/1.
+:- dynamic user:wam_cpp_test_not_frame_caller/0.
 
 user:wam_cpp_test_not_fail        :- \+ fail.
 user:wam_cpp_test_not_true        :- \+ true.
@@ -1361,6 +1364,18 @@ user:wam_cpp_test_not_alias_fails    :- not(true).
 % The original gap that motivated this PR — NaN self-check needs \+/1
 % because NaN =:= NaN is false but \=== NaN at the structural level.
 user:wam_cpp_test_not_nan_check   :- R is 0.0 / 0.0, \+ (R =:= R).
+
+% A sole-negation callee still needs its own environment: its soft-cut
+% barrier uses Y1, while the caller keeps a live value in its own Y1 across
+% the call. Without the callee's allocate/deallocate pair, get_level aliases
+% and corrupts the caller cell.
+user:wam_cpp_test_not_frame_fact(a).
+user:wam_cpp_test_not_frame_callee(X) :-
+    \+ wam_cpp_test_not_frame_fact(X).
+user:wam_cpp_test_not_frame_caller :-
+    X = sentinel,
+    wam_cpp_test_not_frame_callee(z),
+    X == sentinel.
 
 % Cut INSIDE a negated conjunction. \+ G desugars to (G -> fail ; true),
 % so the cut becomes a cut in the if-then-else CONDITION, which is opaque
@@ -6532,6 +6547,22 @@ test(cpp_e2e_not_alias, [condition(cpp_compiler_available)]) :-
                     'wam_cpp_test_not_alias_succeeds/0', [], true),
           run_query(BinPath,
                     'wam_cpp_test_not_alias_fails/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_not_callee_frame_isolation,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_not_frame', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_not_frame_fact/1,
+             user:wam_cpp_test_not_frame_callee/1,
+             user:wam_cpp_test_not_frame_caller/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_not_frame_caller/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).

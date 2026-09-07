@@ -29,6 +29,25 @@
 :- dynamic user:probe_color_det/0.
 :- dynamic user:age/2.
 :- dynamic user:pick/2.
+:- dynamic user:js_lowered_negfail/0.
+:- dynamic user:js_lowered_middle/0.
+:- dynamic user:js_lowered_top/1.
+:- dynamic user:js_lowered_fact/1.
+:- dynamic user:js_lowered_neg/1.
+:- dynamic user:js_lowered_caller/0.
+:- dynamic user:js_t4_helper/0.
+:- dynamic user:js_t4_bad/0.
+:- dynamic user:js_t4_middle/0.
+:- dynamic user:js_t4_top/0.
+:- dynamic user:js_floor_choice/1.
+:- dynamic user:js_floor_failer/0.
+:- dynamic user:js_floor_probe/0.
+:- dynamic user:js_floor_tail_bad/0.
+:- dynamic user:js_floor_tail_probe/0.
+:- dynamic user:js_floor_direct_tail_probe/0.
+:- dynamic user:js_ite_choice/1.
+:- dynamic user:js_ite_commit/0.
+:- dynamic user:js_ite_det_probe/0.
 
 install_lowered_preds :-
     retractall(user:hello/1),
@@ -49,6 +68,99 @@ install_lowered_preds :-
     assertz(user:age(bob, 25)),
     assertz((user:pick(a, X) :- X = apple)),
     assertz((user:pick(b, X) :- X = banana)).
+
+install_lowered_frame_preds :-
+    retractall(user:js_lowered_negfail),
+    retractall(user:js_lowered_middle),
+    retractall(user:js_lowered_top(_)),
+    retractall(user:js_lowered_fact(_)),
+    retractall(user:js_lowered_neg(_)),
+    retractall(user:js_lowered_caller),
+    retractall(user:js_t4_helper),
+    retractall(user:js_t4_bad),
+    retractall(user:js_t4_middle),
+    retractall(user:js_t4_top),
+    retractall(user:js_floor_choice(_)),
+    retractall(user:js_floor_failer),
+    retractall(user:js_floor_probe),
+    retractall(user:js_floor_tail_bad),
+    retractall(user:js_floor_tail_probe),
+    retractall(user:js_floor_direct_tail_probe),
+    retractall(user:js_ite_choice(_)),
+    retractall(user:js_ite_commit),
+    retractall(user:js_ite_det_probe),
+    % Three layers are required to expose a failed framed callee leaving its
+    % environment on the caller's stack: negfail fails before deallocate,
+    % middle catches that failure in an ITE, and top then reads its saved Y1.
+    assertz((user:js_lowered_negfail :- \+ true)),
+    assertz((user:js_lowered_middle :-
+        (js_lowered_negfail -> fail ; true))),
+    assertz((user:js_lowered_top(X) :-
+        js_lowered_middle, X = a)),
+    % Direct caller-Y alias probe for the shared sole-negation allocation fix.
+    assertz(user:js_lowered_fact(a)),
+    assertz((user:js_lowered_neg(X) :- \+ js_lowered_fact(X))),
+    assertz((user:js_lowered_caller :-
+        X = sentinel, js_lowered_neg(z), X == sentinel)),
+    % T4 retries must undo an allocated first clause before trying the next.
+    assertz(user:js_t4_helper),
+    assertz((user:js_t4_bad :- js_t4_helper, fail)),
+    assertz(user:js_t4_bad),
+    assertz((user:js_t4_middle :-
+        X = middle, js_t4_bad, X == middle)),
+    assertz((user:js_t4_top :-
+        X = top, js_t4_middle, X == top)),
+    % A nested interpreter run must not consume a caller-owned alternative,
+    % including when the interpreter is reached through a lowered tail call.
+    assertz(user:js_floor_choice(a)),
+    assertz(user:js_floor_choice(b)),
+    assertz((user:js_floor_failer :- fail)),
+    assertz((user:js_floor_probe :-
+        js_floor_choice(X), js_floor_failer, X = b)),
+    assertz((user:js_floor_tail_bad :- js_floor_failer)),
+    assertz((user:js_floor_tail_probe :-
+        js_floor_choice(X), js_floor_tail_bad, X = b)),
+    assertz((user:js_floor_direct_tail_probe :-
+        js_floor_choice(_), js_floor_failer)),
+    % Structured ITE lowering elides get_level/cut, so success must explicitly
+    % discard alternatives created by its condition.
+    assertz(user:js_ite_choice(a)),
+    assertz(user:js_ite_choice(b)),
+    assertz((user:js_ite_commit :-
+        (js_ite_choice(_) -> true ; fail))),
+    assertz((user:js_ite_det_probe :-
+        js_ite_commit, deterministic)).
+
+lowered_frame_predicates([
+    user:js_lowered_negfail/0,
+    user:js_lowered_middle/0,
+    user:js_lowered_top/1,
+    user:js_lowered_fact/1,
+    user:js_lowered_neg/1,
+    user:js_lowered_caller/0,
+    user:js_t4_helper/0,
+    user:js_t4_bad/0,
+    user:js_t4_middle/0,
+    user:js_t4_top/0,
+    user:js_floor_choice/1,
+    user:js_floor_failer/0,
+    user:js_floor_probe/0,
+    user:js_floor_tail_bad/0,
+    user:js_floor_tail_probe/0,
+    user:js_floor_direct_tail_probe/0,
+    user:js_ite_choice/1,
+    user:js_ite_commit/0,
+    user:js_ite_det_probe/0
+]).
+
+assert_lowered_frame_queries(Dir) :-
+    run_node_args(Dir, ['js_lowered_top/1'], TopExit, TopOut),
+    assertion(TopExit =:= 0),
+    assertion(node_succeeded(TopOut)),
+    assertion(sub_string(TopOut, _, _, _, "A1 = a")),
+    run_node_args(Dir, ['js_lowered_caller/0'], CallerExit, CallerOut),
+    assertion(CallerExit =:= 0),
+    assertion(node_succeeded(CallerOut)).
 
 read_generated_js(Dir, Text) :-
     directory_file_path(Dir, 'js', JsDir),
@@ -154,5 +266,67 @@ test(interpreter_unchanged, [setup(install_lowered_preds)]) :-
     run_node_args(Dir, ['hello/1', 'world'], Exit, Out),
     assertion(Exit =:= 0),
     assertion(node_succeeded(Out)).
+
+test(functions_restore_failed_callee_frame,
+     [setup(install_lowered_frame_preds)]) :-
+    Dir = 'output/js_wam_lowered_frame_functions',
+    make_directory_path(Dir),
+    lowered_frame_predicates(Predicates),
+    write_wam_javascript_project(Predicates, [emit_mode(functions)], Dir),
+    read_generated_js(Dir, Code),
+    assertion(sub_string(Code, _, _, _, "function lowered_js_lowered_negfail_0")),
+    assertion(sub_string(Code, _, _, _, "const _call_restore = function")),
+    assertion(sub_string(Code, _, _, _, "const _ite_restore = function")),
+    assertion(sub_string(Code, _, _, _, "const _call_floor = state.cps.length")),
+    assertion(sub_string(Code, _, _, _, "state.cps = _ite_cps.slice()")),
+    assertion(sub_string(Code, _, _, _, "_t4_restore()")),
+    assert_lowered_frame_queries(Dir),
+    run_node_args(Dir, ['js_t4_top/0'], T4Exit, T4Out),
+    assertion(T4Exit =:= 0),
+    assertion(node_succeeded(T4Out)),
+    run_node_args(Dir, ['js_ite_det_probe/0'], IteExit, IteOut),
+    assertion(IteExit =:= 0),
+    assertion(node_succeeded(IteOut)).
+
+test(mixed_restore_failed_interpreter_callee_frame,
+     [setup(install_lowered_frame_preds)]) :-
+    Dir = 'output/js_wam_lowered_frame_mixed',
+    make_directory_path(Dir),
+    lowered_frame_predicates(Predicates),
+    % Keep the failing negation predicates in the interpreter.  This covers a
+    % lowered caller crossing into an interpreted framed callee as mixed mode
+    % does in real projects.
+    Mixed = [js_lowered_middle/0, js_lowered_top/1,
+             js_lowered_caller/0],
+    write_wam_javascript_project(Predicates, [emit_mode(mixed(Mixed))], Dir),
+    read_generated_js(Dir, Code),
+    assertion(sub_string(Code, _, _, _, "function lowered_js_lowered_middle_0")),
+    assertion(\+ sub_string(Code, _, _, _, "function lowered_js_lowered_negfail_0")),
+    assertion(\+ sub_string(Code, _, _, _, "function lowered_js_lowered_neg_1")),
+    assert_lowered_frame_queries(Dir).
+
+test(mixed_nested_runs_respect_caller_choicepoint_floor,
+     [setup(install_lowered_frame_preds)]) :-
+    Dir = 'output/js_wam_lowered_choicepoint_floor',
+    make_directory_path(Dir),
+    lowered_frame_predicates(Predicates),
+    Mixed = [js_floor_probe/0, js_floor_tail_bad/0,
+             js_floor_tail_probe/0, js_floor_direct_tail_probe/0],
+    write_wam_javascript_project(Predicates, [emit_mode(mixed(Mixed))], Dir),
+    read_generated_js(Dir, Code),
+    assertion(sub_string(Code, _, _, _,
+        "Runtime.run(program, state, _call_floor)")),
+    assertion(sub_string(Code, _, _, _,
+        "Runtime.run(program, state, _execute_floor)")),
+    run_node_args(Dir, ['js_floor_probe/0'], DirectExit, DirectOut),
+    assertion(DirectExit =:= 1),
+    assertion(\+ node_succeeded(DirectOut)),
+    run_node_args(Dir, ['js_floor_tail_probe/0'], TailExit, TailOut),
+    assertion(TailExit =:= 1),
+    assertion(\+ node_succeeded(TailOut)),
+    run_node_args(Dir, ['js_floor_direct_tail_probe/0'], DirectTailExit,
+                  DirectTailOut),
+    assertion(DirectTailExit =:= 1),
+    assertion(\+ node_succeeded(DirectTailOut)).
 
 :- end_tests(js_wam_lowered_standalone).

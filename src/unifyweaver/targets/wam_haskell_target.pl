@@ -2392,10 +2392,10 @@ step !ctx s CutIte =
 -- the CP stack back to that depth at the commit site, removing the
 -- ITE/negation CP AND any CPs the condition pushed above it.
 step !ctx s (GetLevel reg) =
-  Just (s { wsPC = wsPC s + 1, wsRegs = IM.insert reg (Integer (wsCPsLen s)) (wsRegs s) })
+  Just ((putReg reg (Integer (wsCPsLen s)) s) { wsPC = wsPC s + 1 })
 
 step !ctx s (Cut reg) =
-  case IM.lookup reg (wsRegs s) of
+  case getReg reg s of
     Just (Integer n) -> Just (s { wsPC = wsPC s + 1, wsCPs = take n (wsCPs s), wsCPsLen = n })
     _ -> Just (s { wsPC = wsPC s + 1 })
 

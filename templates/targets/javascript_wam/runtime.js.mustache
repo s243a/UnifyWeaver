@@ -413,8 +413,9 @@ function restore_cp_frame(state, cp) {
 
 let aggregate_result;
 
-Runtime.backtrack = function (state) {
-  if (state.cps.length === 0) return false;
+Runtime.backtrack = function (state, choicepointFloor) {
+  choicepointFloor = choicepointFloor === undefined ? 0 : choicepointFloor;
+  if (state.cps.length <= choicepointFloor) return false;
   const cp = state.cps[state.cps.length - 1];
   if (!cp) return false;
   if (cp.kind === "indexed_atom_fact2") {
@@ -423,7 +424,7 @@ Runtime.backtrack = function (state) {
     if (cp.values.length === 0) state.cps.pop();
     const atom = V.Atom(Runtime.intern(cp.table, value));
     if (Runtime.unify(state, Runtime.get_reg(state, 2), atom) !== true) {
-      return Runtime.backtrack(state);
+      return Runtime.backtrack(state, choicepointFloor);
     }
     state.pc = cp.next_pc;
     state.halt = false;
@@ -434,10 +435,10 @@ Runtime.backtrack = function (state) {
     const row = cp.rows.shift();
     if (cp.rows.length === 0) state.cps.pop();
     if (Runtime.unify(state, Runtime.get_reg(state, 1), row[0]) !== true) {
-      return Runtime.backtrack(state);
+      return Runtime.backtrack(state, choicepointFloor);
     }
     if (Runtime.unify(state, Runtime.get_reg(state, 2), row[1]) !== true) {
-      return Runtime.backtrack(state);
+      return Runtime.backtrack(state, choicepointFloor);
     }
     state.pc = cp.next_pc;
     state.halt = false;
@@ -448,7 +449,7 @@ Runtime.backtrack = function (state) {
     const value = cp.values.shift();
     if (cp.values.length === 0) state.cps.pop();
     if (Runtime.unify(state, Runtime.get_reg(state, 1), value) !== true) {
-      return Runtime.backtrack(state);
+      return Runtime.backtrack(state, choicepointFloor);
     }
     state.pc = cp.next_pc;
     state.halt = false;
@@ -459,7 +460,7 @@ Runtime.backtrack = function (state) {
     const sol = cp.sols.shift();
     if (cp.sols.length === 0) state.cps.pop();
     if (apply_enum_sol(state.program, state, sol) !== true) {
-      return Runtime.backtrack(state);
+      return Runtime.backtrack(state, choicepointFloor);
     }
     state.pc = cp.next_pc;
     state.halt = false;
@@ -470,12 +471,12 @@ Runtime.backtrack = function (state) {
     const n = cp.next;
     if (n > cp.high) {
       state.cps.pop();
-      return Runtime.backtrack(state);
+      return Runtime.backtrack(state, choicepointFloor);
     }
     cp.next = n + 1;
     if (cp.next > cp.high) state.cps.pop();
     if (Runtime.unify(state, Runtime.get_reg(state, 3), V.Int(n)) !== true) {
-      return Runtime.backtrack(state);
+      return Runtime.backtrack(state, choicepointFloor);
     }
     state.pc = cp.next_pc;
     state.halt = false;
@@ -484,14 +485,14 @@ Runtime.backtrack = function (state) {
   if (cp.kind === "aggregate") {
     state.cps.pop();
     restore_cp_frame(state, cp);
-    return finalize_aggregate(state.program, state, cp);
+    return finalize_aggregate(state.program, state, cp, choicepointFloor);
   }
   if (cp.kind === "agg_next_group") {
     restore_cp_frame(state, cp);
     const group = cp.groups.shift();
     if (cp.groups.length === 0) state.cps.pop();
     if (apply_witness_group(state.program, state, cp, group) !== true) {
-      return Runtime.backtrack(state);
+      return Runtime.backtrack(state, choicepointFloor);
     }
     state.pc = cp.next_pc;
     state.halt = false;
@@ -1071,7 +1072,7 @@ function push_remaining_groups(state, cp, rest, intern) {
   state.cps.push(next);
 }
 
-function finalize_aggregate(program, state, cp) {
+function finalize_aggregate(program, state, cp, choicepointFloor) {
   const kind = cp.agg_kind || "collect";
   const intern = (program && program.intern_table) || cp.table;
   const cmpState = empty_cmp_state();
@@ -1081,15 +1082,15 @@ function finalize_aggregate(program, state, cp) {
   const hasWitnesses = grouped && witnessRegs.length > 0 && entries.length > 0
     && entries.some(function (e) { return e.witnesses && e.witnesses.length > 0; });
 
-  if (grouped && entries.length === 0) return Runtime.backtrack(state);
+  if (grouped && entries.length === 0) return Runtime.backtrack(state, choicepointFloor);
 
   if (hasWitnesses) {
     const groups = group_by_witness(intern, cmpState, entries, kind);
-    if (groups.length === 0) return Runtime.backtrack(state);
+    if (groups.length === 0) return Runtime.backtrack(state, choicepointFloor);
     const first = groups[0];
     push_remaining_groups(state, cp, groups.slice(1), intern);
     if (apply_witness_group(program, state, cp, first) !== true) {
-      return Runtime.backtrack(state);
+      return Runtime.backtrack(state, choicepointFloor);
     }
     state.pc = cp.next_pc;
     state.halt = false;
@@ -1098,10 +1099,10 @@ function finalize_aggregate(program, state, cp) {
 
   const templates = [];
   for (let i = 0; i < entries.length; i++) templates.push(entries[i].template);
-  if (grouped && templates.length === 0) return Runtime.backtrack(state);
+  if (grouped && templates.length === 0) return Runtime.backtrack(state, choicepointFloor);
   const bag = aggregate_result(kind, templates, intern);
   if (bind_or_compare(state, cp.bag_reg, bag, program) !== true) {
-    return Runtime.backtrack(state);
+    return Runtime.backtrack(state, choicepointFloor);
   }
   state.pc = cp.next_pc;
   state.halt = false;
@@ -3170,7 +3171,8 @@ Runtime.step = function (program, state, inst) {
   return true;
 };
 
-Runtime.run = function (program, state) {
+Runtime.run = function (program, state, choicepointFloor) {
+  choicepointFloor = choicepointFloor === undefined ? 0 : choicepointFloor;
   state.program = program;
   state.halt = false;
   let steps = 0;
@@ -3181,7 +3183,7 @@ Runtime.run = function (program, state) {
     if (inst === undefined || inst === null) return false;
     const pcBefore = state.pc;
     if (Runtime.step(program, state, inst) !== true) {
-      if (Runtime.backtrack(state) !== true) return false;
+      if (Runtime.backtrack(state, choicepointFloor) !== true) return false;
     } else if (state.pc === pcBefore && !state.halt) {
       state.pc += 1;
     }

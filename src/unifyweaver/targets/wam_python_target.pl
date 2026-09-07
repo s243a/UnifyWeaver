@@ -13,10 +13,10 @@
 %   2. Lowered/function mode: each predicate as a Python function with
 %      explicit continuation passing (model on Rust target)
 %
-% Register encoding (same as all other WAM targets):
+% Python runtime register encoding:
 %   A1 → 1, A2 → 2, ..., AN → N
-%   X1 → 101, X2 → 102, ..., XN → 100+N
-%   Y1 → 201, Y2 → 202, ..., YN → 200+N
+%   X1 → 129, X2 → 130, ..., XN → 128+N
+%   Y1 → 301, Y2 → 302, ..., YN → 300+N
 %
 % See: docs/design/WAM_RUST_TRANSPILATION_IMPLEMENTATION_PLAN.md
 
