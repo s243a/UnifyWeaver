@@ -98,6 +98,34 @@ type ChoicePoint struct {
 	BetweenCurrent   int64
 	BetweenHigh      int64
 	BetweenReg       int
+	YSaveLen         int
+	// PendingB0 / CutB0Stack / YSaves snapshot the call-frame regime
+	// (docs/WAM_BACKEND_CONVENTIONS.md §9). Restore on backtrack so a
+	// Proceed that already popped does not extra-pop on the retry, and
+	// so a neck-cut still sees the B0 that was live at this CP.
+	PendingB0    int
+	CutB0Stack   []int
+	YSaves       [][100]Value
+	// Levels: if-then-else barrier levels captured by `get_level Yn`,
+	// keyed by the Y-register index the shared emitter named. nil until
+	// a barrier is actually recorded (most choice points never carry one).
+	//
+	// `compile_if_then_else/7` in wam_target.pl reserves a *permanent* (Y)
+	// register for the ITE barrier AFTER it has decided whether the clause
+	// needs an environment, so under `ite_use_y_level(true)` — which every
+	// Go compile passes — it emits `get_level Y1` … `cut Y1` into clauses
+	// with NO `allocate`. `sat(V, gte(G)) :- \+ lt(V, G)` (the resolver's
+	// satisfies/2 shape) is exactly that clause. Y registers are global
+	// slots here (Regs[200..299]), so writing the level into Regs[200]
+	// scribbled on whatever Y1 the *caller* was holding — the
+	// WAM_FLEET_GAPS A2 hazard in its frameless-Y-write form.
+	//
+	// Keeping the level on the if-then-else's own choice point instead
+	// (the wam_rust `ChoicePoint::levels` / wam_python `ChoicePoint.levels`
+	// model) means it never touches a register at all: it is per-activation
+	// for free, and backtracking discards it with the choice point that
+	// owns it.
+	Levels map[int]int
 }
 
 type EnvFrame struct {
@@ -185,6 +213,11 @@ type WamContext struct {
 	AtomFact2Sources          map[string]AtomFact2Source
 	IndexedAtomFactPairs      map[string][]AtomPair
 	IndexedWeightedEdgeTriples map[string][]WeightedEdgeTriple
+	// FactStreamSources holds store-backed P/2 fact sources (D43 UWFI/UWIX
+	// seek reader + the opt-in lmdb gate). Distinct from the in-memory
+	// AtomFact2Sources graph-kernel path: these read only the records a
+	// bound key touches, straight off disk.
+	FactStreamSources         map[string]*seekFactSource
 	AtomIntern                map[string]int
 	InternedFacts             map[string][][]int
 	InternedWeightedFacts     map[string][]InternedWeightedEdge
@@ -204,10 +237,15 @@ type WamState struct {
 	CP           int
 	// PendingB0: choicepoint-stack height captured by Call/Execute just
 	// before transferring to a user predicate (BEFORE its try_me_else
-	// pushes the clause-chain CP). Allocate copies it into EnvFrame.CutB0
-	// so a plain cut (!/0) truncates back to the callee's entry level --
-	// its own clause alternatives, not a caller's choicepoint.
+	// pushes the clause-chain CP). This is the WAM B0 / JS cut_barrier.
+	// Allocate copies it into EnvFrame.CutB0; !/0 truncates to
+	// PendingB0 (not the caller's env), so a no-Allocate neck-cut
+	// still leaves the caller's alternatives.
 	PendingB0    int
+	// CutB0Stack is the saved-B0 stack (JS cut_stack). Call pushes the
+	// caller's PendingB0; Proceed pops it. Execute rebases PendingB0
+	// WITHOUT pushing — LCO reuses the caller's slot.
+	CutB0Stack   []int
 	// Regs holds A/X/Y registers in a single flat array.
 	//   * A1..A8: indices 0..7 (argument registers)
 	//   * X-regs: 8..199  (clause-local temporaries)
@@ -234,6 +272,29 @@ type WamState struct {
 	Trail        []TrailEntry
 	TrailLen     int
 	ChoicePoints []ChoicePoint
+	// YSaves: caller Y-register snapshots pushed by Call (not Execute)
+	// and popped by Proceed. Y slots are global (Regs[200..299]), so a
+	// callee that writes Y without Allocate (GetVariable Y1) would
+	// otherwise clobber the caller's live Y. This is the Allocate-less
+	// half of A2; X101≡Y1 aliasing is unchanged.
+	//
+	// It only protects entries made through the WAM `Call` instruction.
+	// A predicate entered any other way — a shim / lowered.go doing
+	// `vm.PC = labels["p/4"]; vm.Run()`, which pushes no Y save — is
+	// NOT covered, which is why the if-then-else barrier does not live
+	// in a register at all any more (see ChoicePoint.Levels).
+	YSaves       [][100]Value
+	// PendingLevel* park the barrier level captured by a `get_level Yn`
+	// that sits immediately before an if-then-else `try_me_else`, so the
+	// choice point that try_me_else is about to push can own it. The
+	// other emission shape (`get_level Yn` immediately AFTER the
+	// try_me_else, used when the condition holds a top-level `!`) needs
+	// no parking: its guard choice point already exists.
+	// The zero value means "nothing parked", so no constructor has to
+	// initialise these.
+	PendingLevelSet bool
+	PendingLevelReg int
+	PendingLevelVal int
 	Halted       bool
 	CurrentStruct *Structure
 	CurrentList   *List
@@ -295,9 +356,19 @@ type WamState struct {
 // variable. The 1000 floor reserves the X-register-slot range below
 // (which earlier code used as Idx values) so existing snapshots /
 // trail entries that happened to pre-date this change can't collide.
+//
+// Drivers (the uw-resolve JSON shim, probe mains) mint output
+// Unbounds at Idx 10000+arity. A long query used to walk NextVarId
+// from 1000 through that window (~9000 PutVariable/SetVariable
+// cells) and alias Bindings[10002] with resolve_layered's Selection
+// — sort/2 then unified a 10-package Acc with [] and failed. Jump
+// over 10000..10999 so those driver-minted cells stay unique.
 func (vm *WamState) allocVarId() int {
 	if vm.NextVarId < 1000 {
 		vm.NextVarId = 1000
+	}
+	if vm.NextVarId >= 10000 && vm.NextVarId < 11000 {
+		vm.NextVarId = 11000
 	}
 	id := vm.NextVarId
 	vm.NextVarId++
@@ -316,6 +387,7 @@ func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
 		AtomFact2Sources:     make(map[string]AtomFact2Source),
 		IndexedAtomFactPairs: make(map[string][]AtomPair),
 		IndexedWeightedEdgeTriples: make(map[string][]WeightedEdgeTriple),
+		FactStreamSources:    make(map[string]*seekFactSource),
 		AtomIntern:           make(map[string]int),
 		InternedFacts:        make(map[string][][]int),
 		InternedWeightedFacts: make(map[string][]InternedWeightedEdge),
@@ -597,7 +669,7 @@ func (vm *WamState) LoRestoreClause(snap ClauseSnapshot) {
 
 func (vm *WamState) pushChoicePoint(nextPC int, arity int) {
 	_ = arity
-	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+	cp := ChoicePoint{
 		NextPC:    nextPC,
 		CP:        vm.CP,
 		E:         vm.E,
@@ -605,12 +677,14 @@ func (vm *WamState) pushChoicePoint(nextPC int, arity int) {
 		SavedRegs: vm.snapshotAllRegs(),
 		HeapTop:   vm.HeapLen,
 		TrailMark: vm.TrailLen,
-	})
+	}
+	vm.fillBarrier(&cp)
+	vm.ChoicePoints = append(vm.ChoicePoints, cp)
 }
 
 func (vm *WamState) pushIndexedChoicePoint(pcs []int, arity int) {
 	_ = arity
-	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+	cp := ChoicePoint{
 		CP:        vm.CP,
 		E:         vm.E,
 		StackLen:  len(vm.Stack),
@@ -618,7 +692,162 @@ func (vm *WamState) pushIndexedChoicePoint(pcs []int, arity int) {
 		HeapTop:   vm.HeapLen,
 		TrailMark: vm.TrailLen,
 		IndexedClausePCs: append([]int(nil), pcs...),
-	})
+	}
+	vm.fillBarrier(&cp)
+	vm.ChoicePoints = append(vm.ChoicePoints, cp)
+}
+
+func (vm *WamState) copyCutB0Stack() []int {
+	if len(vm.CutB0Stack) == 0 {
+		return nil
+	}
+	out := make([]int, len(vm.CutB0Stack))
+	copy(out, vm.CutB0Stack)
+	return out
+}
+
+func (vm *WamState) copyYSaveStack() [][100]Value {
+	if len(vm.YSaves) == 0 {
+		return nil
+	}
+	out := make([][100]Value, len(vm.YSaves))
+	copy(out, vm.YSaves)
+	return out
+}
+
+func (vm *WamState) fillBarrier(cp *ChoicePoint) {
+	cp.PendingB0 = vm.PendingB0
+	cp.CutB0Stack = vm.copyCutB0Stack()
+	cp.YSaves = vm.copyYSaveStack()
+	cp.YSaveLen = len(vm.YSaves)
+	// A `get_level Yn` sitting immediately before this try_me_else parked
+	// its barrier level; this is the guard choice point that owns it.
+	if vm.PendingLevelSet {
+		if cp.Levels == nil {
+			cp.Levels = make(map[int]int, 2)
+		}
+		cp.Levels[vm.PendingLevelReg] = vm.PendingLevelVal
+		vm.PendingLevelSet = false
+	}
+}
+
+func (vm *WamState) restoreBarrier(cp *ChoicePoint) {
+	vm.PendingB0 = cp.PendingB0
+	// A parked-but-unconsumed barrier level cannot outlive a backtrack:
+	// the try_me_else that was going to claim it never ran.
+	vm.PendingLevelSet = false
+	if cp.CutB0Stack != nil {
+		vm.CutB0Stack = make([]int, len(cp.CutB0Stack))
+		copy(vm.CutB0Stack, cp.CutB0Stack)
+	} else {
+		vm.CutB0Stack = nil
+	}
+	if cp.YSaves != nil {
+		vm.YSaves = make([][100]Value, len(cp.YSaves))
+		copy(vm.YSaves, cp.YSaves)
+	} else {
+		vm.YSaves = nil
+	}
+}
+
+// recordIteLevel implements `get_level Yn`: snapshot the cut level for an
+// if-then-else / negation barrier WITHOUT writing register Yn.
+//
+// The level itself is unchanged from the register-based version —
+// len(vm.ChoicePoints) at this instant — only where it is kept changes.
+// Two emission shapes come out of compile_if_then_else/7:
+//
+//  1. `get_level BarrierReg` immediately BEFORE the ITE `try_me_else`:
+//     park it, and let that try_me_else record it on the guard choice
+//     point it pushes (fillBarrier). The level equals the index the guard
+//     will occupy, so `cut BarrierReg` prunes the guard and everything the
+//     branch pushed above it.
+//  2. `get_level CondBarrierReg` immediately AFTER the try_me_else — only
+//     when the condition holds a top-level `!`. Its guard choice point
+//     already exists, so attach the level to it directly; the level then
+//     includes the guard, and a cut in the condition prunes only the
+//     condition's own choice points.
+//
+// Shape 1 must park rather than write the top choice point: the clause may
+// be entered with NO choice points at all (`sat/2` reached from a shim or
+// from lowered.go), and there would be nowhere to record.
+func (vm *WamState) recordIteLevel(reg int) {
+	level := len(vm.ChoicePoints)
+	if vm.PC+1 < len(vm.Ctx.Code) {
+		switch vm.Ctx.Code[vm.PC+1].(type) {
+		case *TryMeElse, *TryMeElsePc:
+			vm.PendingLevelSet = true
+			vm.PendingLevelReg = reg
+			vm.PendingLevelVal = level
+			return
+		}
+	}
+	if n := len(vm.ChoicePoints); n > 0 {
+		cp := &vm.ChoicePoints[n-1]
+		if cp.Levels == nil {
+			cp.Levels = make(map[int]int, 2)
+		}
+		cp.Levels[reg] = level
+	}
+}
+
+// lookupIteLevel implements the read half of `cut Yn`: find the level that
+// `get_level Yn` recorded, innermost choice point first. Searching the
+// choice-point stack rather than a register makes the barrier
+// per-activation for free — two live activations of the same clause each
+// carry their own — and a callee can never clobber a caller's.
+//
+// `false` means the guard was already cut away by an inner commit, in which
+// case the stack is at or below the level anyway and cutting is a no-op.
+func (vm *WamState) lookupIteLevel(reg int) (int, bool) {
+	for i := len(vm.ChoicePoints) - 1; i >= 0; i-- {
+		if lvl, ok := vm.ChoicePoints[i].Levels[reg]; ok {
+			return lvl, true
+		}
+	}
+	return 0, false
+}
+
+func (vm *WamState) pushYSave() {
+	var s [100]Value
+	copy(s[:], vm.Regs[200:300])
+	vm.YSaves = append(vm.YSaves, s)
+}
+
+func (vm *WamState) popYSave() {
+	n := len(vm.YSaves)
+	if n == 0 {
+		return
+	}
+	s := vm.YSaves[n-1]
+	vm.YSaves = vm.YSaves[:n-1]
+	copy(vm.Regs[200:300], s[:])
+}
+
+// pushCallFrame is WAM Call: snapshot caller Ys and B0, then B0 <- B.
+func (vm *WamState) pushCallFrame() {
+	vm.CutB0Stack = append(vm.CutB0Stack, vm.PendingB0)
+	vm.pushYSave()
+	vm.PendingB0 = len(vm.ChoicePoints)
+}
+
+// enterExecute is WAM Execute: B0 <- B without pushing. The callee
+// reuses the caller's cut_stack/Y-save slot (its Proceed pops the
+// Call that entered this activation) but gets its own barrier, so a
+// neck-cut cannot wipe the caller's clause alternatives.
+func (vm *WamState) enterExecute() {
+	vm.PendingB0 = len(vm.ChoicePoints)
+}
+
+func (vm *WamState) popCallFrame() {
+	vm.popYSave()
+	n := len(vm.CutB0Stack)
+	if n == 0 {
+		vm.PendingB0 = 0
+		return
+	}
+	vm.PendingB0 = vm.CutB0Stack[n-1]
+	vm.CutB0Stack = vm.CutB0Stack[:n-1]
 }
 
 func (vm *WamState) popEnvFrame() *EnvFrame {
@@ -709,6 +938,8 @@ func (vm *WamState) Clone() *WamState {
 		E:            vm.E,
 		Input:        vm.Input,
 		NextStreamID: vm.NextStreamID,
+		PendingB0:    vm.PendingB0,
+		CutB0Stack:   vm.copyCutB0Stack(),
 		// Carry MaxYReg so the sub-VM's snapshotAllRegs sees the
 		// same Y-reg high-water mark as the parent (sub.Regs is a
 		// value-copy of parent.Regs and therefore *contains* those
@@ -725,7 +956,47 @@ func (vm *WamState) Clone() *WamState {
 	copy(newState.Stack, vm.Stack)
 	copy(newState.Trail, vm.Trail)
 	copy(newState.ChoicePoints, vm.ChoicePoints)
+	if len(vm.YSaves) > 0 {
+		newState.YSaves = append([][100]Value(nil), vm.YSaves...)
+	}
+	if len(vm.CutB0Stack) > 0 {
+		newState.CutB0Stack = append([]int(nil), vm.CutB0Stack...)
+	}
 	return newState
+}
+
+// freezeTerm copies v with every Unbound/Ref chased through this VM's
+// Bindings and Heap. findall/bagof run in a Clone(); a shallow deref of
+// the template leaves nested Unbounds whose bindings live only on the
+// sub-VM. After the clone is discarded those slots read as unbound in
+// the parent (inst_walk's findall(D-DV, ...) yielded [null-v, null-v]).
+func (vm *WamState) freezeTerm(v Value) Value {
+	if v == nil {
+		return nil
+	}
+	v = vm.deref(v)
+	switch t := v.(type) {
+	case *Structure:
+		args := make([]Value, len(t.Args))
+		for i, a := range t.Args {
+			args[i] = vm.freezeTerm(a)
+		}
+		return &Structure{Functor: t.Functor, Arity: t.Arity, Args: args}
+	case *Compound:
+		args := make([]Value, len(t.Args))
+		for i, a := range t.Args {
+			args[i] = vm.freezeTerm(a)
+		}
+		return &Compound{Functor: t.Functor, Args: args}
+	case *List:
+		elems := make([]Value, len(t.Elements))
+		for i, a := range t.Elements {
+			elems[i] = vm.freezeTerm(a)
+		}
+		return listFromItems(elems)
+	default:
+		return v
+	}
 }
 
 func (vm *WamState) ForkAtChoicePoint() *WamState {
@@ -831,6 +1102,86 @@ func compareValues(a, b Value) int {
 	return 0
 }
 
+// compareTerms is the order sort/2, msort/2, @</2 and compare/3 use.
+// compareValues only ranks atoms/numbers and treats every compound as
+// equal, so sort([a-1,b-1,c-1], L) uniquely collapsed to one pair —
+// uw-resolve's sort(Acc, Selection) kept only the last pick.
+func (vm *WamState) compareTerms(a, b Value) int {
+	a = vm.deref(a)
+	b = vm.deref(b)
+	if isEmptyListValue(a) || isEmptyListValue(b) {
+		if isEmptyListValue(a) && isEmptyListValue(b) {
+			return 0
+		}
+		if isEmptyListValue(a) {
+			return -1
+		}
+		return 1
+	}
+	ha, ta, oka := vm.valueListHeadTail(a)
+	hb, tb, okb := vm.valueListHeadTail(b)
+	if oka || okb {
+		if !oka {
+			return 1
+		}
+		if !okb {
+			return -1
+		}
+		if c := vm.compareTerms(ha, hb); c != 0 {
+			return c
+		}
+		return vm.compareTerms(ta, tb)
+	}
+	rank := func(v Value) int {
+		switch v.(type) {
+		case *Unbound:
+			return 0
+		case *Atom:
+			return 1
+		case *Integer:
+			return 2
+		case *Float:
+			return 3
+		default:
+			return 4
+		}
+	}
+	ra, rb := rank(a), rank(b)
+	if ra != rb {
+		return ra - rb
+	}
+	switch ta := a.(type) {
+	case *Unbound:
+		tb := b.(*Unbound)
+		if ta.Idx < tb.Idx {
+			return -1
+		}
+		if ta.Idx > tb.Idx {
+			return 1
+		}
+		return 0
+	case *Atom, *Integer, *Float:
+		return compareValues(a, b)
+	}
+	fa, argsa := decompose(a)
+	fb, argsb := decompose(b)
+	if len(argsa) != len(argsb) {
+		return len(argsa) - len(argsb)
+	}
+	if fa < fb {
+		return -1
+	}
+	if fa > fb {
+		return 1
+	}
+	for i := range argsa {
+		if c := vm.compareTerms(argsa[i], argsb[i]); c != 0 {
+			return c
+		}
+	}
+	return 0
+}
+
 func isEmptyListValue(v Value) bool {
 	if atom, ok := v.(*Atom); ok {
 		return atom.Name == "[]"
@@ -839,6 +1190,18 @@ func isEmptyListValue(v Value) bool {
 		return len(list.Elements) == 0
 	}
 	return false
+}
+
+// listFromItems is the canonical Go→Prolog list constructor: empty
+// becomes the interned [] atom (so get_constant [] matches), non-empty
+// becomes a flat *List. Builtins that rebuild lists (append/sort/reverse)
+// must go through this rather than `&List{Elements: items}` with a
+// possibly-empty slice.
+func listFromItems(items []Value) Value {
+	if len(items) == 0 {
+		return emptyListAtom
+	}
+	return &List{Elements: items}
 }
 
 // emptyListAtom is a process-wide singleton for the `[]` terminator,
@@ -2367,6 +2730,8 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "write/1":
 		fmt.Print(vm.writeTermString(arg1))
 		return true
+	case "call/1":
+		return vm.executeCall1(vm.deref(arg1))
 	case "write_canonical/1":
 		fmt.Print(vm.canonicalTermString(arg1))
 		return true
@@ -2548,14 +2913,12 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "fail/0":
 		return false
 	case "!/0":
-		limit := 0
-		if env := vm.peekEnvFrame(); env != nil {
-			// CutB0 = call-time choicepoint height, so the cut removes this
-			// predicate's own clause alternatives but not a caller's CP.
-			// (B0 is allocate-time and one too high -- it would leave
-			// sibling clauses uncut, making the cut a no-op.)
-			limit = env.CutB0
-		}
+		// Cut is a barrier at PendingB0 (WAM B0), never a stack wipe.
+		// PendingB0 is set by Call AND Execute (docs/WAM_BACKEND_CONVENTIONS.md §9).
+		// A no-Allocate callee has no EnvFrame; using peekEnvFrame().CutB0
+		// would cut to the caller's Allocate-time height and steal its
+		// alternatives (cut-semantics p01).
+		limit := vm.PendingB0
 		if limit < 0 {
 			limit = 0
 		}
@@ -2643,7 +3006,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return false
 		}
 		if lo.Val < hi.Val {
-			vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+			cp := ChoicePoint{
 				ResumePC:       vm.PC + 1,
 				CP:             vm.CP,
 				E:              vm.E,
@@ -2655,7 +3018,9 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 				BetweenCurrent: lo.Val + 1,
 				BetweenHigh:    hi.Val,
 				BetweenReg:     2,
-			})
+			}
+			vm.fillBarrier(&cp)
+			vm.ChoicePoints = append(vm.ChoicePoints, cp)
 		}
 		return vm.Unify(arg3, &Integer{Val: lo.Val})
 	case "atom_number/2":
@@ -2676,6 +3041,26 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return vm.Unify(arg1, internAtom(text))
 		}
 		return false
+	case "number_string/2":
+		// number_string(?Number, ?String): atom_number/2 with the argument
+		// roles swapped. Go has no string type, so the text side is an atom.
+		numVal := vm.deref(arg1)
+		strVal := vm.deref(arg2)
+		if parsed, ok := atomNumberValue(numVal); ok {
+			text, ok := atomNumberText(parsed)
+			if !ok {
+				return false
+			}
+			return vm.Unify(arg2, internAtom(text))
+		}
+		if text, ok := atomNumberText(strVal); ok {
+			parsed, ok := parseAtomNumberText(strings.TrimSpace(text))
+			if !ok {
+				return false
+			}
+			return vm.Unify(arg1, parsed)
+		}
+		return false
 	case "upcase_atom/2":
 		atom, ok := vm.deref(arg1).(*Atom)
 		if !ok {
@@ -2689,12 +3074,32 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		return vm.Unify(arg2, internAtom(strings.ToLower(atom.Name)))
 	case "atom_concat/3":
-		left, okLeft := vm.deref(arg1).(*Atom)
-		right, okRight := vm.deref(arg2).(*Atom)
-		if !okLeft || !okRight {
+		leftVal := vm.deref(arg1)
+		rightVal := vm.deref(arg2)
+		wholeText, okWhole := atomNumberText(vm.deref(arg3))
+		leftText, okLeft := atomNumberText(leftVal)
+		rightText, okRight := atomNumberText(rightVal)
+		// (+,+,-): forward concatenation.
+		if okLeft && okRight {
+			return vm.Unify(arg3, internAtom(leftText+rightText))
+		}
+		// (+,-,+): prefix strip. Bind arg2 to the suffix after arg1 in arg3.
+		// Used by resolver_store.pl's unpack_ver / unpack_constraint /
+		// unpack_dep ("d:", "gte:", "ALTS/", …) and the provides scan.
+		if okLeft && okWhole {
+			if strings.HasPrefix(wholeText, leftText) {
+				return vm.Unify(arg2, internAtom(wholeText[len(leftText):]))
+			}
 			return false
 		}
-		return vm.Unify(arg3, internAtom(left.Name+right.Name))
+		// (-,+,+): suffix strip. Bind arg1 to the prefix before arg2 in arg3.
+		if okRight && okWhole {
+			if strings.HasSuffix(wholeText, rightText) {
+				return vm.Unify(arg1, internAtom(wholeText[:len(wholeText)-len(rightText)]))
+			}
+			return false
+		}
+		return false
 	case "atom_length/2", "string_length/2":
 		atom, ok := vm.deref(arg1).(*Atom)
 		if !ok {
@@ -2734,7 +3139,8 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		if atom, ok := atomVal.(*Atom); ok {
 			if _, unbound := listVal.(*Unbound); unbound {
-				return vm.Unify(arg2, listFromText(atom.Name))
+				lst := listFromText(atom.Name)
+				return vm.Unify(arg2, listFromItems(lst.Elements))
 			}
 			text, ok := textFromList(listVal)
 			return ok && atom.Name == text
@@ -2763,7 +3169,8 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 				return false
 			}
 			if _, unbound := listVal.(*Unbound); unbound {
-				return vm.Unify(arg2, listFromText(text))
+				lst := listFromText(text)
+				return vm.Unify(arg2, listFromItems(lst.Elements))
 			}
 			listText, ok := textFromList(listVal)
 			return ok && text == listText
@@ -2921,15 +3328,15 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "==/2": return vm.termIdentical(arg1, arg2)
 	case "\\==/2": return !vm.termIdentical(arg1, arg2)
 	case "@</2":
-		return compareValues(vm.deref(arg1), vm.deref(arg2)) < 0
+		return vm.compareTerms(arg1, arg2) < 0
 	case "@=</2":
-		return compareValues(vm.deref(arg1), vm.deref(arg2)) <= 0
+		return vm.compareTerms(arg1, arg2) <= 0
 	case "@>/2":
-		return compareValues(vm.deref(arg1), vm.deref(arg2)) > 0
+		return vm.compareTerms(arg1, arg2) > 0
 	case "@>=/2":
-		return compareValues(vm.deref(arg1), vm.deref(arg2)) >= 0
+		return vm.compareTerms(arg1, arg2) >= 0
 	case "compare/3":
-		cmp := compareValues(vm.deref(arg2), vm.deref(arg3))
+		cmp := vm.compareTerms(arg2, arg3)
 		switch {
 		case cmp < 0:
 			return vm.Unify(arg1, internAtom("<"))
@@ -3014,7 +3421,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			if vm.Unify(arg1, head) {
 				tail = vm.deref(tail)
 				if !isEmptyListValue(tail) {
-					vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+					cp := ChoicePoint{
 						ResumePC: vm.PC + 1,
 						CP:       vm.CP,
 						E:        vm.E,
@@ -3023,7 +3430,9 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 						HeapTop:   vm.HeapLen,
 						TrailMark: mark,
 						MemberTail: tail,
-					})
+					}
+					vm.fillBarrier(&cp)
+					vm.ChoicePoints = append(vm.ChoicePoints, cp)
 				}
 				return true
 			}
@@ -3074,7 +3483,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 				continue
 			}
 			if idx+1 < len(solutions) {
-				vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+				cp := ChoicePoint{
 					ResumePC:      resumePC,
 					CP:            vm.CP,
 					E:             vm.E,
@@ -3083,7 +3492,9 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 					HeapTop:       heapTop,
 					TrailMark:     trailMark,
 					SelectResults: append([]SelectSolution(nil), solutions[idx+1:]...),
-				})
+				}
+				vm.fillBarrier(&cp)
+				vm.ChoicePoints = append(vm.ChoicePoints, cp)
 			}
 			return true
 		}
@@ -3211,8 +3622,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		l1, ok1 := vm.listToSlice(arg1)
 		l2, ok2 := vm.listToSlice(arg2)
 		if !ok1 || !ok2 { return false }
-		combined := &List{Elements: append(append([]Value{}, l1...), l2...)}
-		return vm.Unify(arg3, combined)
+		return vm.Unify(arg3, listFromItems(append(append([]Value{}, l1...), l2...)))
 	case "reverse/2":
 		d1 := vm.deref(arg1)
 		d2 := vm.deref(arg2)
@@ -3225,7 +3635,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
 				reversed[i], reversed[j] = reversed[j], reversed[i]
 			}
-			return vm.Unify(arg2, &List{Elements: reversed})
+			return vm.Unify(arg2, listFromItems(reversed))
 		}
 		if !isUnbound(d2) {
 			items, ok := vm.listToSlice(d2)
@@ -3236,7 +3646,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
 				reversed[i], reversed[j] = reversed[j], reversed[i]
 			}
-			return vm.Unify(arg1, &List{Elements: reversed})
+			return vm.Unify(arg1, listFromItems(reversed))
 		}
 		return false
 	case "last/2":
@@ -3330,19 +3740,18 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		sorted := append([]Value(nil), items...)
 		sort.SliceStable(sorted, func(i, j int) bool {
-			return compareValues(vm.deref(sorted[i]), vm.deref(sorted[j])) < 0
+			return vm.compareTerms(sorted[i], sorted[j]) < 0
 		})
 		if op == "sort/2" {
 			deduped := make([]Value, 0, len(sorted))
 			for _, item := range sorted {
-				item = vm.deref(item)
-				if len(deduped) == 0 || compareValues(vm.deref(deduped[len(deduped)-1]), item) != 0 {
+				if len(deduped) == 0 || vm.compareTerms(deduped[len(deduped)-1], item) != 0 {
 					deduped = append(deduped, item)
 				}
 			}
 			sorted = deduped
 		}
-		return vm.Unify(arg2, &List{Elements: sorted})
+		return vm.Unify(arg2, listFromItems(sorted))
 	case "keysort/2":
 		items, ok := vm.listToSlice(arg1)
 		if !ok {
@@ -3437,7 +3846,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		for i, pair := range pairs {
 			sorted[i] = pair.pair
 		}
-		return vm.Unify(arg2, &List{Elements: sorted})
+		return vm.Unify(arg2, listFromItems(sorted))
 	case "functor/3":
 		t := vm.deref(arg1)
 		if isUnbound(t) {
@@ -3524,8 +3933,376 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "copy_term/2":
 		copy := vm.copyTermValue(arg1, make(map[int]*Unbound))
 		return vm.Unify(arg2, copy)
+	case "maplist/2":
+		return vm.builtinMaplist(1)
+	case "maplist/3":
+		return vm.builtinMaplist(2)
+	case "maplist/4":
+		return vm.builtinMaplist(3)
+	case "predsort/3":
+		return vm.builtinPredsort()
 	}
 	return false
+}
+
+// predArityFromName reads the trailing /N of a "name/N" key. Used by
+// Execute (the instruction has no Arity field) when falling back to
+// executeBuiltin.
+func predArityFromName(name string) int {
+	if slash := strings.LastIndex(name, "/"); slash >= 0 {
+		n, err := strconv.Atoi(name[slash+1:])
+		if err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+// warnUnresolved is the A3 loud-unknown-builtin knob. Off by default;
+// set UW_WAM_WARN_UNKNOWN=1 to print on Call/Execute of a goal that
+// missed Labels, Foreign, indexed facts, and the builtin table.
+func (vm *WamState) warnUnresolved(form, pred string) {
+	if os.Getenv("UW_WAM_WARN_UNKNOWN") != "" {
+		fmt.Fprintf(os.Stderr, "[wam_go] %s of unresolved goal %s failed\n", form, pred)
+	}
+}
+
+// predExtraGoal builds Goal+extra-args for maplist/predsort, matching
+// the JS runtime: an atom becomes name(Extra...), a structure appends.
+func (vm *WamState) predExtraGoal(pred Value, extra []Value) Value {
+	pred = vm.deref(pred)
+	switch t := pred.(type) {
+	case *Atom:
+		if len(extra) == 0 {
+			return t
+		}
+		return makeStructureValue(parseFunctorName(t.Name), extra)
+	case *Structure:
+		args := make([]Value, 0, len(t.Args)+len(extra))
+		args = append(args, t.Args...)
+		args = append(args, extra...)
+		return makeStructureValue(parseFunctorName(t.Functor), args)
+	case *Compound:
+		args := make([]Value, 0, len(t.Args)+len(extra))
+		args = append(args, t.Args...)
+		args = append(args, extra...)
+		return makeStructureValue(parseFunctorName(t.Functor), args)
+	default:
+		return nil
+	}
+}
+
+// builtinMaplist implements maplist/2,3,4. Meta-calls USER predicates
+// (resolver is_v3/1, store unpack helpers) via invokeGoal. nLists is
+// the number of list arguments (maplist/2 → 1).
+func (vm *WamState) builtinMaplist(nLists int) bool {
+	pred := vm.deref(vm.getReg(0))
+	lists := make([][]Value, nLists)
+	unboundAt := -1
+	for i := 0; i < nLists; i++ {
+		items, ok := vm.listToSlice(vm.getReg(1 + i))
+		if !ok {
+			if unboundAt >= 0 {
+				return false
+			}
+			unboundAt = i
+			continue
+		}
+		lists[i] = items
+	}
+	if unboundAt < 0 {
+		len0 := len(lists[0])
+		for i := 1; i < nLists; i++ {
+			if len(lists[i]) != len0 {
+				return false
+			}
+		}
+		for i := 0; i < len0; i++ {
+			extra := make([]Value, nLists)
+			for j := 0; j < nLists; j++ {
+				extra[j] = lists[j][i]
+			}
+			goal := vm.predExtraGoal(pred, extra)
+			if goal == nil {
+				return false
+			}
+			if !vm.invokeGoalOnce(goal) {
+				return false
+			}
+		}
+		return true
+	}
+	boundIdx := 0
+	if unboundAt == 0 {
+		boundIdx = 1
+	}
+	bound := lists[boundIdx]
+	if bound == nil || nLists != 2 {
+		return false
+	}
+	outReg := vm.getReg(1 + unboundAt)
+	out := make([]Value, 0, len(bound))
+	for i := 0; i < len(bound); i++ {
+		y := &Unbound{Name: fmt.Sprintf("_ML%d", i), Idx: vm.allocVarId()}
+		var extra []Value
+		if unboundAt == 0 {
+			extra = []Value{y, bound[i]}
+		} else {
+			extra = []Value{bound[i], y}
+		}
+		goal := vm.predExtraGoal(pred, extra)
+		if goal == nil {
+			return false
+		}
+		if !vm.invokeGoalOnce(goal) {
+			return false
+		}
+		out = append(out, y)
+	}
+	return vm.Unify(outReg, listFromItems(out))
+}
+
+// builtinPredsort implements predsort/3. Comparator is Pred(Order,X,Y)
+// binding Order to < / > / =; compare/3 short-circuits to term order
+// (resolver uses cmp_ver/3 for mixed v/3 + deb/3).
+func (vm *WamState) builtinPredsort() bool {
+	pred := vm.deref(vm.getReg(0))
+	items, ok := vm.listToSlice(vm.getReg(1))
+	if !ok {
+		return false
+	}
+	// Capture A2 before the comparator meta-calls. invokeAtPC writes
+	// Order/X/Y into A0–A2 and on success does not restore them;
+	// Unify(getReg(2), Sorted) then compared a version term to a list
+	// and predsort failed whenever the less-func actually ran
+	// (single-element lists, and compare/3, never hit this).
+	out := vm.getReg(2)
+	predName := ""
+	if a, isAtom := pred.(*Atom); isAtom {
+		predName = parseFunctorName(a.Name)
+	}
+	sorted := append([]Value(nil), items...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		x, y := sorted[i], sorted[j]
+		if predName == "compare" {
+			return vm.compareTerms(x, y) < 0
+		}
+		order := &Unbound{Name: "_Ord", Idx: vm.allocVarId()}
+		goal := vm.predExtraGoal(pred, []Value{order, x, y})
+		if goal == nil {
+			return false
+		}
+		saved := vm.snapshotAllRegs()
+		ok := vm.invokeGoalOnce(goal)
+		vm.restoreSavedRegs(saved)
+		if !ok {
+			return false
+		}
+		if a, ok := vm.deref(order).(*Atom); ok {
+			return a.Name == "<"
+		}
+		return false
+	})
+	return vm.Unify(out, listFromItems(sorted))
+}
+
+// invokeGoalOnce meta-calls goal and then discards leftover choice
+// points and trail cells it created. predsort's comparator
+// (cmp_ver/3 → version_lt/2) is an ITE-heavy test: without this
+// cleanup those CPs stay on the stack and a later resolve failure
+// backtracks into a stale comparator, aborting the query.
+func (vm *WamState) invokeGoalOnce(goal Value) bool {
+	cpMark := len(vm.ChoicePoints)
+	trailMark := vm.TrailLen
+	ok := vm.invokeGoal(goal, cpMark)
+	if cpMark < len(vm.ChoicePoints) {
+		vm.ChoicePoints = vm.ChoicePoints[:cpMark]
+	}
+	if !ok {
+		vm.unwindTrailTo(trailMark)
+	}
+	return ok
+}
+
+// executeCall1 implements ISO call/1 as an opaque cut scope: a `!`
+// inside the metacall prunes only choice points created during the
+// call. Nested user goals run on this VM (bindings are shared) with
+// Proceed treated as a local halt so the outer BuiltinCall can
+// continue. Leftover CPs from a user goal inside call/1 are not
+// resumed as extra solutions of the metacall (first-solution nested
+// run); the cut-semantics probes that use call/1 (p09, p10) do not
+// require that extra-solution path.
+func (vm *WamState) executeCall1(goal Value) bool {
+	return vm.invokeGoal(goal, len(vm.ChoicePoints))
+}
+
+func goalNameArgs(v Value) (name string, args []Value, ok bool) {
+	if v == nil {
+		return "", nil, false
+	}
+	switch t := v.(type) {
+	case *Atom:
+		return t.Name, nil, true
+	case *Structure:
+		return parseFunctorName(t.Functor), t.Args, true
+	case *Compound:
+		return parseFunctorName(t.Functor), t.Args, true
+	default:
+		return "", nil, false
+	}
+}
+
+func (vm *WamState) invokeGoal(goal Value, cutFloor int) bool {
+	goal = vm.deref(goal)
+	name, args, ok := goalNameArgs(goal)
+	if !ok {
+		return false
+	}
+	if name == ":" && len(args) == 2 {
+		return vm.invokeGoal(args[1], cutFloor)
+	}
+	switch name {
+	case "true":
+		return true
+	case "fail", "false":
+		return false
+	case "!":
+		if cutFloor < 0 {
+			cutFloor = 0
+		}
+		if cutFloor < len(vm.ChoicePoints) {
+			vm.ChoicePoints = vm.ChoicePoints[:cutFloor]
+		}
+		return true
+	case ",":
+		if len(args) != 2 {
+			return false
+		}
+		if !vm.invokeGoal(args[0], cutFloor) {
+			return false
+		}
+		return vm.invokeGoal(args[1], cutFloor)
+	case ";":
+		if len(args) != 2 {
+			return false
+		}
+		left := vm.deref(args[0])
+		lname, largs, lok := goalNameArgs(left)
+		if lok && (lname == "->" || lname == "*->") && len(largs) == 2 {
+			if vm.invokeGoal(largs[0], cutFloor) {
+				return vm.invokeGoal(largs[1], cutFloor)
+			}
+			return vm.invokeGoal(args[1], cutFloor)
+		}
+		if vm.invokeGoal(args[0], cutFloor) {
+			return true
+		}
+		return vm.invokeGoal(args[1], cutFloor)
+	case "->", "*->":
+		if len(args) != 2 {
+			return false
+		}
+		if !vm.invokeGoal(args[0], cutFloor) {
+			return false
+		}
+		return vm.invokeGoal(args[1], cutFloor)
+	case "\\+", "not":
+		if len(args) != 1 {
+			return false
+		}
+		mark := len(vm.ChoicePoints)
+		ok := vm.invokeGoal(args[0], mark)
+		if mark < len(vm.ChoicePoints) {
+			vm.ChoicePoints = vm.ChoicePoints[:mark]
+		}
+		return !ok
+	case "once":
+		if len(args) != 1 {
+			return false
+		}
+		mark := len(vm.ChoicePoints)
+		ok := vm.invokeGoal(args[0], mark)
+		if mark < len(vm.ChoicePoints) {
+			vm.ChoicePoints = vm.ChoicePoints[:mark]
+		}
+		return ok
+	case "call":
+		if len(args) == 0 {
+			return false
+		}
+		return vm.invokeGoal(args[0], cutFloor)
+	default:
+		return vm.invokeCallable(name, args, cutFloor)
+	}
+}
+
+func (vm *WamState) invokeCallable(name string, args []Value, cutFloor int) bool {
+	key := fmt.Sprintf("%s/%d", name, len(args))
+	if pc, found := vm.Ctx.Labels[key]; found {
+		return vm.invokeAtPC(pc, args, cutFloor)
+	}
+	saved := vm.snapshotAllRegs()
+	for i, a := range args {
+		vm.putReg(i, a)
+	}
+	ok := vm.executeBuiltin(key, len(args))
+	if !ok {
+		vm.restoreSavedRegs(saved)
+	}
+	return ok
+}
+
+func (vm *WamState) invokeAtPC(pc int, args []Value, cutFloor int) bool {
+	savedPC := vm.PC
+	savedCP := vm.CP
+	savedHalted := vm.Halted
+	savedRegs := vm.snapshotAllRegs()
+	for i, a := range args {
+		vm.putReg(i, a)
+	}
+	savedPending := vm.PendingB0
+	savedCutLen := len(vm.CutB0Stack)
+	yStart := len(vm.YSaves)
+	vm.pushCallFrame()
+	vm.CP = 0
+	vm.PC = pc
+	vm.Halted = false
+	ok := vm.runUntilHalt(cutFloor)
+	if len(vm.YSaves) > yStart {
+		copy(vm.Regs[200:300], vm.YSaves[yStart][:])
+		vm.YSaves = vm.YSaves[:yStart]
+	}
+	if len(vm.CutB0Stack) > savedCutLen {
+		vm.CutB0Stack = vm.CutB0Stack[:savedCutLen]
+	}
+	vm.PendingB0 = savedPending
+	vm.Halted = savedHalted
+	vm.PC = savedPC
+	vm.CP = savedCP
+	if !ok {
+		vm.restoreSavedRegs(savedRegs)
+	}
+	return ok
+}
+
+func (vm *WamState) runUntilHalt(baseChoicePoints int) bool {
+	for {
+		if vm.Halted {
+			return true
+		}
+		instr := vm.fetch()
+		if instr == nil {
+			if !vm.backtrackAbove(baseChoicePoints) {
+				return false
+			}
+			continue
+		}
+		if !vm.Step(instr) {
+			if !vm.backtrackAbove(baseChoicePoints) {
+				return false
+			}
+		}
+	}
 }
 
 func (vm *WamState) hasParallelNegationChoices(targetPC int) bool {
@@ -3672,6 +4449,7 @@ func (vm *WamState) backtrack() bool {
     // in-place, removing the explicit `vm.ChoicePoints[topIdx] = cp`
     // write-back the value-copy version needed.
     cp := &vm.ChoicePoints[topIdx]
+    vm.restoreBarrier(cp)
     if len(cp.IndexedClausePCs) > 0 {
         vm.unwindTrailTo(cp.TrailMark)
         vm.restoreSavedRegs(cp.SavedRegs)

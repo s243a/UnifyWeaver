@@ -3370,6 +3370,22 @@ struct ChoicePoint {
     std::vector<ModeFrame> saved_mode_stack;
     std::vector<EnvFrame> saved_env_stack;
     std::vector<BodyFrame> saved_body_frames;
+    // If-then-else barrier levels captured by `get_level Yn` — Y-reg name ->
+    // the choicepoint count (`choice_points.size()`) `cut Yn` truncates back
+    // to. The shared WAM compiler (`compile_if_then_else/7` in wam_target.pl)
+    // reserves a *permanent* (Y) register for an ITE barrier AFTER it has
+    // decided whether the clause needs an environment, so under
+    // ite_use_y_level(true) it emits `get_level Y1` in a clause with NO
+    // `allocate` — e.g. the negation/if-then-else clause of a multi-clause
+    // predicate holding no other permanent. This runtime routes every Y
+    // access to env_stack.back().y_regs, which for such a frameless callee is
+    // the CALLER''s frame: a Y write there overwrote the caller''s permanent
+    // with a choicepoint depth — a silent wrong answer, the WAM_FLEET_GAPS
+    // A2 hazard in its frameless-Y-write form. Keeping the level on the ITE''s
+    // own choice point instead means it never touches a register, is
+    // per-activation for free (nested activations each carry their own
+    // barrier), and is discarded by backtracking with the CP that owns it.
+    std::unordered_map<std::string, std::size_t> levels;
 };
 
 // Aggregate scope opened by BeginAggregate. Backtrack() finalises the
@@ -3732,6 +3748,22 @@ struct WamState {
     std::size_t cut_barrier = 0;
     std::uint64_t var_counter = 0;
     bool halt = false;
+    // ITE barrier level parked by a `get_level Yn` sitting immediately
+    // BEFORE its try_me_else. The clause may be entered with no choice point
+    // at all, so there is nowhere to record yet; the next try_me_else claims
+    // this park and records it on the guard choice point it pushes. See
+    // ChoicePoint::levels and record_ite_level/lookup_ite_level.
+    bool        pending_level_set = false;
+    std::string pending_level_reg;
+    std::size_t pending_level_val = 0;
+    // Cut barrier for a `!` reached as a meta-called goal-term (call/N).
+    // call/1 is a cut barrier: `!` inside `call((G, !))` / `call(!)` prunes
+    // only the choice points created since the call began, never the
+    // caller''s clause alternatives. dispatch_call_meta records the
+    // choicepoint height at entry here; invoke_goal_as_call''s `!` case cuts
+    // back to it. (A `!` compiled into a clause body uses EnvFrame::b0 via
+    // the !/0 builtin instead — this is only the meta-call path.)
+    std::size_t meta_call_barrier = 0;
     // True iff SwitchOnTerm just jumped directly into the middle/end
     // of a clause chain, bypassing the chain''s entry TryMeElse. The
     // subsequent RetryMeElse / TrustMe consults this flag to decide
@@ -3803,6 +3835,13 @@ struct WamState {
     // Convenience for the lowered emitter (no real binding — equality
     // / unbound-as-success check only).
     bool    unify(const Value& a, const Value& b);
+
+    // ITE soft-cut barrier (M17). record_ite_level implements `get_level Yn`
+    // WITHOUT writing register Yn (that write lands in the caller''s frame for
+    // a frameless callee — the A2 hazard); lookup_ite_level implements the
+    // read half of `cut Yn`, searching the choicepoint stack innermost-first.
+    void        record_ite_level(const std::string& reg);
+    bool        lookup_ite_level(const std::string& reg, std::size_t& out) const;
 
     bool    step(const Instruction& instr);
     bool    run();
@@ -4276,6 +4315,53 @@ void WamState::put_reg(const std::string& name, Value v) {
     else          *regs[i] = std::move(v);
 }
 
+// `get_level Yn` — snapshot the cut level for an if-then-else / negation
+// barrier WITHOUT writing register Yn. The level itself is unchanged from the
+// register-based version (choice_points.size() at this instant); only where it
+// is kept changes. Two emission shapes come out of compile_if_then_else/7:
+//
+//   1. `get_level BarrierReg` immediately BEFORE the ITE try_me_else — park
+//      it, and let that try_me_else record it on the guard choice point it
+//      pushes (see the TryMeElse handler). The level equals the count the
+//      guard will occupy, so `cut BarrierReg` prunes the guard and everything
+//      the committed branch pushed above it. Parking is required because the
+//      clause may be entered with NO choice point at all (a frameless callee
+//      reached from a shim / lowered caller), so there is nowhere to record.
+//   2. `get_level CondBarrierReg` immediately AFTER the try_me_else (only when
+//      the condition holds a top-level `!`) — its guard choice point already
+//      exists, so attach the level to the top CP directly.
+void WamState::record_ite_level(const std::string& reg) {
+    std::size_t level = choice_points.size();
+    if (pc + 1 < instrs.size()
+        && instrs[pc + 1].op == Instruction::Op::TryMeElse) {
+        pending_level_set = true;
+        pending_level_reg = reg;
+        pending_level_val = level;
+        return;
+    }
+    if (!choice_points.empty()) {
+        choice_points.back().levels[reg] = level;
+    }
+}
+
+// `cut Yn` read half — find the level `get_level Yn` recorded, searching the
+// choicepoint stack innermost-first. Returns false when the guard was already
+// cut away by an inner commit, in which case the stack is at or below the
+// level anyway and cutting would be a no-op. Searching the CP stack rather
+// than a register makes the barrier per-activation for free, and a callee can
+// never clobber a caller''s.
+bool WamState::lookup_ite_level(const std::string& reg,
+                                std::size_t& out) const {
+    for (std::size_t k = choice_points.size(); k-- > 0; ) {
+        auto it = choice_points[k].levels.find(reg);
+        if (it != choice_points[k].levels.end()) {
+            out = it->second;
+            return true;
+        }
+    }
+    return false;
+}
+
 void WamState::trail_binding(const std::string& name) {
     int i = reg_index(name);
     if (i < 0 || (std::size_t)i >= regs.size() || !regs[i]) return;
@@ -4746,6 +4832,18 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         // correct fallback.
         std::size_t level = env_stack.empty() ? cut_barrier
                                               : env_stack.back().b0;
+        // A `!` inside a findall/bagof/setof goal is local to that goal
+        // (ISO: the goal is opaque to cut). When the aggregate''s generator
+        // was opened by the SAME clause that carries the cut, this clause''s
+        // b0 sits BELOW the aggregate''s generator base -- cutting to b0
+        // would prune the aggregate''s own backtracking CP and any choice
+        // point a goal before the aggregate left live (e.g.
+        // `e(Y), findall(X, (d(X), !), L)`), collapsing the whole solve.
+        // Never prune below the innermost open aggregate''s base.
+        if (!aggregate_frames.empty()) {
+            std::size_t agg_base = aggregate_frames.back().base_cp_count;
+            if (agg_base > level) level = agg_base;
+        }
         if (choice_points.size() > level) choice_points.resize(level);
         pc += 1; return true;
     }
@@ -8298,6 +8396,13 @@ bool WamState::step(const Instruction& instr) {
             cp_.saved_mode_stack = mode_stack;
             cp_.saved_env_stack = env_stack;
             cp_.saved_body_frames = body_frames;
+            // A `get_level Yn` sitting immediately before this try_me_else
+            // parked its barrier level; this is the guard choice point that
+            // owns it. See record_ite_level / ChoicePoint::levels.
+            if (pending_level_set) {
+                cp_.levels[pending_level_reg] = pending_level_val;
+                pending_level_set = false;
+            }
             choice_points.push_back(std::move(cp_));
             pc += 1; return true;
         }
@@ -8436,21 +8541,21 @@ bool WamState::step(const Instruction& instr) {
         // not cut a negation over a generator (e.g. the forall negative
         // case left the generators CP alive).
         case Instruction::Op::GetLevel: {
-            CellPtr c = get_cell(instr.a);
-            bind_cell(c, Value::Integer(
-                static_cast<std::int64_t>(choice_points.size())));
+            // Level snapshot lives on the ITE''s own choice point, never in
+            // register instr.a — a Y write here would land in the CALLER''s
+            // env frame for a frameless callee (WAM_FLEET_GAPS A2 hazard).
+            record_ite_level(instr.a);
             pc += 1; return true;
         }
         case Instruction::Op::Cut: {
-            CellPtr c = get_cell(instr.a);
-            Value v = deref(*c);
-            if (v.tag == Value::Tag::Integer) {
-                std::size_t target = static_cast<std::size_t>(v.i);
+            std::size_t target;
+            if (lookup_ite_level(instr.a, target)) {
                 if (choice_points.size() > target) {
                     choice_points.resize(target);
                 }
                 if (cut_barrier > target) cut_barrier = target;
             }
+            // No recorded level = the guard was already cut away; no-op.
             pc += 1; return true;
         }
 
@@ -9725,6 +9830,19 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
         if (g.s == "fail" || g.s == "false") {
             return false;
         }
+        // `!` reached as a meta-called goal-term (call/1, call((G,!))): cut
+        // to the call-scope barrier dispatch_call_meta recorded, then
+        // succeed. call/N is a cut barrier, so this prunes choice points
+        // created inside the call but never the caller''s alternatives. A
+        // clause-body `!` never comes through here — it is the !/0 builtin.
+        if (g.s == "!") {
+            if (choice_points.size() > meta_call_barrier)
+                choice_points.resize(meta_call_barrier);
+            cp = after_pc;
+            if (cp == 0) { halt = true; return true; }
+            pc = cp; cp = 0;
+            return true;
+        }
         std::string key = g.s + "/0";
         auto it = labels.find(key);
         if (it != labels.end()) {
@@ -9967,6 +10085,10 @@ bool WamState::dispatch_call_meta(const std::string& op,
         }
     }
     if (total_arity < 1) return false;
+    // call/N is a cut barrier: a `!` inside the meta-called goal prunes only
+    // the choice points created since the call began. Record that height so
+    // invoke_goal_as_call''s `!` case can cut back to it.
+    meta_call_barrier = choice_points.size();
     CellPtr goal_cell = get_cell("A1");
     if (total_arity == 1) {
         // No extras — dispatch A1 as-is.
@@ -10399,6 +10521,9 @@ Value WamState::arith_culprit(const Value& v) const {
 }
 
 bool WamState::backtrack() {
+    // A parked-but-unconsumed ITE barrier level cannot outlive a backtrack:
+    // the try_me_else that was going to claim it never ran.
+    pending_level_set = false;
     // Pop normal choice points until we either find one to retry or run
     // into an open aggregate frame''s base — at which point the frame is
     // finalised and execution continues past its EndAggregate.
@@ -10652,6 +10777,7 @@ bool WamState::query(const std::string& pred_key, const std::vector<Value>& args
     cp = 0;
     cut_barrier = 0;
     indexed_entry = false;
+    pending_level_set = false;
     halt = false;
     return run();
 }

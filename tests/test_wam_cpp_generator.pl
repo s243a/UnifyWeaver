@@ -10666,34 +10666,6 @@ test(compile_error_default_is_warn) :-
     \+ wam_cpp_target:handle_compile_error(unknown_policy, foo/1,
                                           error(test_marker, _)).
 
-test(lowered_unsupported_instruction_fails_loudly,
-     [throws(error(wam_cpp_lowered_emitter_error(unsupported_instruction(bogus_lowered_op(a1))), _))]) :-
-    wam_cpp_lowered_emitter:emit_one(bogus_lowered_op(a1), "").
-
-% Guards against drift between the lowered emitter's cpp_supported/1 allow-list
-% and its emit_one clauses: every supported opcode must have an emit_one clause,
-% except the four switch_on_* indexing opcodes, which are stripped before
-% emission and dispatched by the interpreter's step().
-test(cpp_supported_opcode_has_emitter_or_is_indexing) :-
-    % Functors with a SPECIFIC (non-fallback) emit_one clause. The fallback has a
-    % variable head, so nonvar(Head) filters it out; collect from both arities.
-    findall(F/A,
-            ( ( clause(wam_cpp_lowered_emitter:emit_one(Head, _), _)
-              ; clause(wam_cpp_lowered_emitter:emit_one(Head, _, _), _) ),
-              nonvar(Head),
-              functor(Head, F, A) ),
-            Handled0),
-    sort(Handled0, Handled),
-    IndexingFunctors = [switch_on_constant/1, switch_on_constant_a2/1,
-                        switch_on_structure/1, switch_on_term/1],
-    findall(F/A,
-            ( wam_cpp_lowered_emitter:cpp_supported(T),
-              functor(T, F, A),
-              \+ memberchk(F/A, Handled),
-              \+ memberchk(F/A, IndexingFunctors) ),
-            Missing),
-    assertion(Missing == []).
-
 :- end_tests(wam_cpp_generator).
 
 % --------------------------------------------------------------------

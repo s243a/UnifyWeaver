@@ -18,7 +18,9 @@
     wam_rust_lowerable/3,
     lower_predicate_to_rust/4,
     is_deterministic_pred_rust/1,
-    rust_lowered_func_name/2
+    rust_lowered_func_name/2,
+    rust_lowered_dispatch_profile/4,
+    rust_heads_mutually_exclusive/1
 ]).
 
 :- use_module(library(lists)).
@@ -161,6 +163,28 @@ rust_supported_structured(I) :- rust_supported(I).
 %% wam_rust_lowerable(+Pred/Arity, +WamCode, -Reason)
 %  True if the predicate can be lowered to a direct Rust function.
 wam_rust_lowerable(PI, WamCode, Reason) :-
+    ( PI = _M0:P0/A0 -> true ; PI = P0/A0 ),
+    (   % F11 (self-tail-recursion -> native loop) takes precedence over every
+        % other class: a predicate that IS a single-recursive-clause tail loop
+        % compiles to a `loop { }` instead of a per-recursion re-dispatch. Idea
+        % adapted from mprolog's tail_recursive/independ_head (see the F11
+        % header block below). Gated behind the module flag `rust_f11_flag`
+        % (default off — the tier measured net-negative on B2, so it is banked
+        % OFF; enable via the f11_tail_loop(true) option or UW_F11_ON=1).
+        % Declines for anything that does not fit the shape, so the checks below
+        % still run.
+        rust_f11_flag_on,
+        wam_rust_f11_lowerable(P0/A0, WamCode, _F11Clauses, _RecIdx)
+    ->  Reason = tail_loop
+    ;   wam_rust_lowerable_nonf11(WamCode, Reason)
+    ).
+
+%% rust_f11_flag_on is semidet — true when F11 lowering is enabled for this run.
+rust_f11_flag_on :- catch(nb_getval(rust_f11_flag, true), _, fail).
+
+%% wam_rust_lowerable_nonf11(+WamCode, -Reason)
+%  The pre-F11 classifier (unchanged) for every non-tail-loop shape.
+wam_rust_lowerable_nonf11(WamCode, Reason) :-
     rust_base_instrs(WamCode, Instrs),
     clause1_instrs(Instrs, C1),
     (   % T5: multi-clause predicate discriminating on a distinct
@@ -188,13 +212,94 @@ wam_rust_lowerable(PI, WamCode, Reason) :-
         rust_structured_clause1(WamCode, Structured),
         forall(member(I, Structured), rust_supported_structured(I)),
         Reason = ite_lowered
-    ),
-    ( PI = _M:_P/_A -> true ; PI = _/_A2 -> true ; true ).
+    ).
 
 clause1_instrs([], []).
 clause1_instrs([try_me_else(_)|Rest], C1) :- !,
     take_to_proceed(Rest, C1).
 clause1_instrs(Instrs, Instrs).
+
+%% rust_lowered_dispatch_profile(+PI, +WamCode, +Reason, -Profile) is semidet.
+%
+%  What a caller needs in order to decide whether a LOWERED predicate may be
+%  reached from an interpreted `call`/`execute` (D55's "sound intermediate";
+%  the whole-predicate determinism-class idea is credited in
+%  `docs/proposals/MPROLOG_MINING_NOTES.md`, finding F2).
+%
+%  Only the two classes whose first solution is their only solution are
+%  profiled:
+%
+%    * `deterministic` — a single clause with no choice-point instruction at
+%      all;
+%    * `ite_lowered` — a single clause whose only inner choice point is a
+%      committed `(C -> T ; E)` / `\+` / `once` block, which the structurer has
+%      already folded away;
+%    * `clause_chain` — a first-argument constant cascade in which every
+%      discriminator is a distinct ATOM and every clause remainder is itself
+%      choice-point free. Guards are returned so the call site can check that
+%      the first argument really is one of them before dispatching: with an
+%      unbound or non-matching first argument the cascade returns `false`
+%      meaning "declined", which an interpreted caller must not read as
+%      "failed".
+%
+%  Profile = `dispatch_profile(Calls, Builtins, Foreigns, Guards)`, where
+%  Calls are the `call/2`/`execute/1` targets ("name/arity" strings), Builtins
+%  the `builtin_call/2` operators, Foreigns the `call_foreign/2` targets, and
+%  Guards the atom discriminators (`[]` for `deterministic`). Fails for any
+%  other class.
+rust_lowered_dispatch_profile(PI, WamCode, Reason,
+                              dispatch_profile(Calls, Builtins, Foreigns, Guards)) :-
+    rust_base_instrs(WamCode, Instrs),
+    (   Reason == tail_loop
+    ->  Guards = [],
+        ( PI = _M:P0/A0 -> true ; PI = P0/A0 ),
+        wam_rust_f11_lowerable(P0/A0, WamCode, F11Clauses, RecIdx),
+        format(string(SelfKey0), '~w/~w', [P0, A0]),
+        % Body = every clause's goals, flattened, with the ONE tail self-call
+        % (the loop back-edge) removed — it is not a runtime callee.
+        nth0(RecIdx, F11Clauses, RecCl0),
+        rust_f11_recursive_body(RecCl0, RecBody0),
+        findall(Other, ( nth0(J, F11Clauses, ClJ), J =\= RecIdx, Other = ClJ ), OtherCls),
+        append([RecBody0|OtherCls], AllStruct),
+        rust_flatten_structured(AllStruct, Body),
+        SelfKey = SelfKey0
+    ;   Reason == deterministic
+    ->  Guards = [], SelfKey = '',
+        clause1_instrs(Instrs, Body0),
+        rust_flatten_structured(Body0, Body)
+    ;   Reason == ite_lowered
+    ->  Guards = [], SelfKey = '',
+        rust_structured_clause1(WamCode, Structured),
+        rust_flatten_structured(Structured, Body)
+    ;   Reason == clause_chain, SelfKey = ''
+    ->  rust_clause_chain_lowerable(Instrs, G0),
+        findall(A,
+                ( member(guard(V, _), G0),
+                  wam_classify_constant_token(V, atom(A)) ),
+                Guards),
+        length(G0, NG),
+        length(Guards, NG),          % every discriminator must be an atom
+        findall(Rem, member(guard(_, Rem), G0), Rems),
+        append(Rems, Body1),
+        rust_flatten_structured(Body1, Body)
+    ),
+    findall(P, ( member(I, Body), ( I = call(P, _) ; I = execute(P) ),
+                 \+ rust_key_match(P, SelfKey) ), Calls),
+    findall(Op, ( member(I, Body), I = builtin_call(Op, _) ), Builtins),
+    findall(F, ( member(I, Body), I = call_foreign(F, _) ), Foreigns).
+
+%% rust_flatten_structured(+Instrs, -Flat)
+%  Flatten `ite(Cond, Then, Else)` blocks so the profile above sees every goal
+%  the lowered function can actually run, not just the top level.
+rust_flatten_structured([], []).
+rust_flatten_structured([ite(C, T, E)|Rest], Flat) :- !,
+    rust_flatten_structured(C, FC),
+    rust_flatten_structured(T, FT),
+    rust_flatten_structured(E, FE),
+    rust_flatten_structured(Rest, FR),
+    append([FC, FT, FE, FR], Flat).
+rust_flatten_structured([I|Rest], [I|Flat]) :-
+    rust_flatten_structured(Rest, Flat).
 
 take_to_proceed([], []).
 take_to_proceed([proceed|_], [proceed]) :- !.
@@ -287,6 +392,222 @@ rust_supported(get_level(_)). % M144: cut-level capture (no-op when lowered)
 rust_supported(jump(_)).
 
 % =====================================================================
+% F11 — self-tail-recursion -> native loop (Stage 1 of the lowered-tier
+% throughput plan, docs/proposals/WAM_RUST_LOWERED_TIER_THROUGHPUT_PLAN.md)
+% =====================================================================
+%
+% ATTRIBUTION. The recognition test below (a single genuinely-tail-recursive
+% clause plus mutually-exclusive base clauses, compiled to one flat loop with
+% no per-recursion choice point or environment re-dispatch) is an idea adapted
+% from Kenichi Sasagawa's M-Prolog / N-Prolog `tail_recursive/6` +
+% `independ_head/1` (`jump.pl:2210-2270`), finding F11 in
+% docs/proposals/MPROLOG_MINING_NOTES.md. Idea only — no mprolog code was
+% copied. mprolog is distributed under the Modified BSD licence; per its terms
+% this adapted logic carries the notice below.
+%
+%   Modified BSD notice (for the mprolog-derived F11 recognition idea):
+%   Copyright (c) Kenichi Sasagawa. M-Prolog / N-Prolog, Modified BSD licence
+%   (https://github.com/sasagawa888/mprolog). Redistribution and use in source
+%   and binary forms, with or without modification, are permitted provided that
+%   the copyright notice and this notice are retained. This UnifyWeaver code is
+%   an independent reimplementation of the *idea*, not a copy of mprolog source.
+%
+% SOUNDNESS. F11 is a first-solution native tier, dispatched from an interpreted
+% call/execute through the same `lowered_call` -> `lowered_dispatch` guard as the
+% D55 sound intermediate. Two properties keep it sound:
+%   1. Clause selection is deterministic. The base clause(s) and the single
+%      recursive clause are mutually exclusive (the WAM compiler proved it by
+%      emitting switch_on_term / switch_on_structure first-argument indexing, or
+%      the heads differ structurally, e.g. [] vs [_|_]). At most one clause's
+%      head matches a given goal, so the loop's first solution is the predicate's
+%      only solution. If more than one clause could match, F11 declines.
+%   2. Body cross-calls cannot corrupt the caller. Each user call/execute in a
+%      lowered body runs the interpreter (`vm.run()`) inside a raised
+%      `backtrack_floor` (D71) that confines its backtracking to choice points it
+%      itself created; a callee that fails returns cleanly rather than resuming a
+%      caller's alternative (mprolog F3's negative example: the nondet->det
+%      crossing). Should a call nonetheless leave a live choice point, the
+%      runtime `lowered_dispatch` guard rolls the whole call back and defers to
+%      the interpreter (decline-if-unsure). So a non-deterministic body execution
+%      is never committed; only genuinely deterministic runs take the fast path.
+%
+% Note we do NOT require independ_head for correctness the way mprolog does: our
+% emission runs the real head-unification instructions (get_value handles a
+% repeated head variable), so a repeated head variable is safe. Determinism is
+% carried instead by the mutual-exclusivity check above.
+
+%% rust_heads_mutually_exclusive(+Heads) is semidet.
+%  True when the clause heads are pairwise non-unifiable, i.e. at most one clause
+%  can match any goal. This is the determinism carrier for F11: it makes the
+%  loop's first solution the predicate's ONLY solution, so committing to it and
+%  never leaving a choice point cannot drop an answer an interpreted caller would
+%  have found by backtracking into another clause. Checked on FRESH copies so the
+%  test never binds the real heads.
+rust_heads_mutually_exclusive(Heads) :-
+    \+ ( append(_, [H1|Rest], Heads),
+         member(H2, Rest),
+         \+ \+ ( copy_term(H1, H1c), copy_term(H2, H2c), H1c = H2c ) ).
+
+%% wam_rust_f11_lowerable(+Pred/Arity, +WamCode, -Clauses, -RecIdx) is semidet.
+%  True when the predicate is a single-recursive-clause tail loop. Clauses is
+%  the per-clause structured instruction list (inner ITE folded), RecIdx the
+%  0-based index of the one recursive (tail self-call) clause.
+wam_rust_f11_lowerable(Pred/Arity, WamCode, Clauses, RecIdx) :-
+    ( is_list(WamCode) -> LInstrs = WamCode ; parse_wam_text_labeled(WamCode, LInstrs) ),
+    format(string(SelfKey), '~w/~w', [Pred, Arity]),
+    rust_f11_split_clauses(LInstrs, RawClauses),
+    RawClauses = [_|_],
+    maplist(rust_f11_structure_clause, RawClauses, Clauses),
+    % Exactly one clause is recursive: its terminal is `execute SelfKey`.
+    findall(I, ( nth0(I, Clauses, Cl), rust_clause_tail_is(Cl, SelfKey) ), RecIdxs),
+    RecIdxs = [RecIdx],
+    % Every clause is fully structurable/supported with no residual predicate
+    % choice point (all ITE folded) — a malformed split fails here, so we then
+    % decline rather than emit wrong code.
+    forall(member(Cl2, Clauses),
+           ( forall(member(SI, Cl2), rust_supported_structured(SI)),
+             \+ member(try_me_else(_), Cl2),
+             \+ member(retry_me_else(_), Cl2),
+             \+ member(trust_me, Cl2) )),
+    % Single recursive clause: no OTHER clause calls or executes self, and the
+    % recursive clause's only self reference is the tail call.
+    forall(( nth0(J, Clauses, ClJ), J =\= RecIdx ),
+           \+ rust_struct_refs_pred(ClJ, SelfKey)),
+    nth0(RecIdx, Clauses, RecCl),
+    rust_f11_recursive_body(RecCl, _Body0),          % strips exactly one tail exec
+    \+ rust_struct_refs_pred_nontail(RecCl, SelfKey),
+    % PURE-BODY restriction (Stage 1 shipped bank): no clause makes ANY user
+    % call/execute other than the single recursive tail self-call. A body that
+    % re-enters the interpreter (`vm.run()`) can reach a NON-deterministic
+    % callee (e.g. a store-backed seek that enumerates rows); confining that
+    % soundly across both lanes needs the Stage 2 direct lowered->lowered
+    % deterministic-call convention (O1). Until then F11 lowers only predicates
+    % whose iteration is self-contained (head match + pure builtins + the loop),
+    % which is safe on the term AND store lanes. See the throughput plan §5.
+    rust_f11_body_pure(Clauses, SelfKey).
+
+%% rust_f11_body_pure(+Clauses, +SelfKey) is semidet.
+%  True when no clause contains a user call/execute except the one tail self
+%  reference. Pure builtins (builtin_call) and structural ops are allowed.
+rust_f11_body_pure(Clauses, SelfKey) :-
+    forall(member(Cl, Clauses),
+           ( rust_struct_flat(Cl, Flat),
+             forall(member(I, Flat),
+                    ( I = call(_, _) -> fail
+                    ; I = execute(P) -> rust_key_match(P, SelfKey)
+                    ; true )) )).
+
+%% rust_f11_split_clauses(+LabeledInstrs, -Clauses)
+%  Split a labelled instruction stream into per-clause instruction lists. A
+%  clause runs up to and including its first terminal (proceed/fail/execute);
+%  predicate-level choice-point separators (try_me_else/retry_me_else/trust_me)
+%  and clause labels are skipped between clauses. Inner-ITE separators sit
+%  BEFORE the terminal and stay inside the clause for the structurer to fold.
+rust_f11_split_clauses([], []) :- !.
+rust_f11_split_clauses(Instrs, [Clause|More]) :-
+    rust_f11_skip_seps(Instrs, Instrs1),
+    Instrs1 = [_|_],
+    rust_f11_collect_clause(Instrs1, Clause, Rest),
+    rust_f11_split_clauses(Rest, More).
+
+rust_f11_skip_seps([try_me_else(_)|R], R2) :- !, rust_f11_skip_seps(R, R2).
+rust_f11_skip_seps([retry_me_else(_)|R], R2) :- !, rust_f11_skip_seps(R, R2).
+rust_f11_skip_seps([trust_me|R], R2) :- !, rust_f11_skip_seps(R, R2).
+rust_f11_skip_seps([label(_)|R], R2) :- !, rust_f11_skip_seps(R, R2).
+rust_f11_skip_seps(R, R).
+
+rust_f11_collect_clause([I|R], [I], R) :- rust_f11_terminal(I), !.
+rust_f11_collect_clause([I|R], [I|More], Rest) :- rust_f11_collect_clause(R, More, Rest).
+
+rust_f11_terminal(proceed).
+rust_f11_terminal(fail).
+rust_f11_terminal(execute(_)).
+
+%% rust_f11_structure_clause(+RawClause, -StructuredClause) is semidet.
+rust_f11_structure_clause(Raw, Struct) :- structure_ite(Raw, Struct).
+
+%% rust_clause_tail_is(+StructuredClause, +SelfKey) — last goal is execute SelfKey.
+rust_clause_tail_is(Cl, SelfKey) :-
+    last(Cl, execute(P)),
+    rust_key_match(P, SelfKey).
+
+rust_key_match(P, SelfKey) :- ( P == SelfKey -> true ; atom_string(P, S), S == SelfKey ).
+
+%% rust_f11_recursive_body(+RecClause, -BodyWithoutTail) — strip the one tail exec.
+rust_f11_recursive_body(Cl, Body) :- append(Body, [execute(_)], Cl).
+
+%% rust_struct_refs_pred(+StructuredInstrs, +SelfKey) — any call/execute to self.
+rust_struct_refs_pred(Instrs, SelfKey) :-
+    rust_struct_flat(Instrs, Flat),
+    member(I, Flat),
+    ( I = call(P, _) ; I = execute(P) ),
+    rust_key_match(P, SelfKey), !.
+
+%% rust_struct_refs_pred_nontail — a self reference that is NOT the final tail exec.
+rust_struct_refs_pred_nontail(Cl, SelfKey) :-
+    rust_f11_recursive_body(Cl, Body),
+    rust_struct_refs_pred(Body, SelfKey).
+
+%% rust_struct_flat(+StructuredInstrs, -Flat) — flatten ite(C,T,E) blocks.
+rust_struct_flat([], []).
+rust_struct_flat([ite(C,T,E)|Rest], Flat) :- !,
+    rust_struct_flat(C, FC), rust_struct_flat(T, FT), rust_struct_flat(E, FE),
+    rust_struct_flat(Rest, FR), append([FC,FT,FE,FR], Flat).
+rust_struct_flat([I|Rest], [I|Flat]) :- rust_struct_flat(Rest, Flat).
+
+%% emit_f11_tail_loop(+FuncName, +Pred, +Arity, +Clauses, +RecIdx, +FK, -RustLines)
+%  Emit the tail-loop function: try each clause in source order inside a
+%  `loop { }`; the base clauses return on their terminal, the one recursive
+%  clause rebinds the argument registers (its body's put_* before the stripped
+%  tail call already do so) and `continue`s the loop instead of re-dispatching.
+%  F11 bodies are pure (rust_f11_body_pure): head match + pure builtins + the
+%  loop, with no user call/execute except the tail self-call, so the same body
+%  emission as the proven ite_lowered tier is reused verbatim.
+emit_f11_tail_loop(FuncName, Pred, Arity, Clauses, RecIdx, ForeignPreds, RustLines) :-
+    format(string(Header),
+'// ~w — lowered from ~w/~w (F11 self-tail-recursion -> native loop)
+pub fn ~w(vm: &mut WamState) -> bool {', [FuncName, Pred, Arity, FuncName]),
+    % The clauses are mutually exclusive (rust_pred_heads_exclusive), so clause
+    % ORDER does not change which one matches. Emit the RECURSIVE clause FIRST:
+    % during the recursion it is the one that matches every iteration but the
+    % last, so trying it first skips a failed base-clause head-match plus its
+    % `restore_regs` (which clears the whole register file) on every iteration —
+    % that per-iteration restore was the O2 snapshot cost the plan warned of.
+    nth0(RecIdx, Clauses, RecCl),
+    findall(BCl, ( nth0(J, Clauses, BCl), J =\= RecIdx ), BaseCls),
+    with_output_to(string(Body),
+        ( format("    loop {~n"),
+          format("        let _f11 = vm.lo_clause_snapshot();~n"),
+          rust_f11_emit_recursive(RecCl, ForeignPreds),
+          rust_f11_emit_bases(BaseCls, ForeignPreds),
+          format("        return false;~n"),
+          format("    }~n") )),
+    format(string(Footer), '}', []),
+    RustLines = [Header, Body, Footer].
+
+%% rust_f11_emit_recursive(+RecClause, +FK) — the one tail-recursive clause.
+%  Runs head+body up to the (stripped) tail call, then `continue`s the loop
+%  with the argument registers rebound by the body's put_* instructions.
+rust_f11_emit_recursive(Cl, ForeignPreds) :-
+    rust_f11_recursive_body(Cl, Body),
+    format("        // recursive clause -> loop~n"),
+    format("        if (|vm: &mut WamState| -> bool {~n"),
+    emit_instrs(Body, "            ", ForeignPreds),
+    format("            true~n"),
+    format("        })(vm) { continue; }~n"),
+    format("        vm.lo_restore_clause(&_f11);~n").
+
+%% rust_f11_emit_bases(+BaseClauses, +FK) — the non-recursive clauses in order.
+rust_f11_emit_bases([], _).
+rust_f11_emit_bases([Cl|Rest], ForeignPreds) :-
+    format("        if (|vm: &mut WamState| -> bool {~n"),
+    emit_instrs(Cl, "            ", ForeignPreds),
+    format("            false~n"),
+    format("        })(vm) { return true; }~n"),
+    format("        vm.lo_restore_clause(&_f11);~n"),
+    rust_f11_emit_bases(Rest, ForeignPreds).
+
+% =====================================================================
 % Function name generation
 % =====================================================================
 
@@ -329,7 +650,12 @@ lower_predicate_to_rust(PI, WamCode, Options, RustLines) :-
     ;   ForeignPreds = []
     ),
     nb_setval(rust_ite_ctr, 0),
-    (   % T5/T6 first-argument-constant dispatch takes precedence.
+    (   % F11 self-tail-recursion -> native loop takes precedence over every
+        % other lowering (see the F11 section above), gated by rust_f11_flag.
+        rust_f11_flag_on,
+        wam_rust_f11_lowerable(Pred/Arity, WamCode, F11Clauses, RecIdx)
+    ->  emit_f11_tail_loop(FuncName, Pred, Arity, F11Clauses, RecIdx, ForeignPreds, RustLines)
+    ;   % T5/T6 first-argument-constant dispatch takes precedence.
         rust_clause_chain_lowerable(Instrs, Guards)
     ->  emit_clause_chain_rust(FuncName, Pred, Arity, Guards, ForeignPreds, Options, RustLines)
     ;   % T4: a multi-clause predicate whose clauses are all supported
@@ -553,6 +879,14 @@ emit_one(fail, I) :-
 % allocations the old `get_reg() != Value::Atom("...".to_string())` form paid
 % per comparison. Integer/other constants keep the (allocation-free, Copy)
 % Value comparison.
+% get_constant — the hot head-match. `head_constant` matches the constant
+% against the register and, when the register is an unbound variable, BINDS
+% that variable (not just the register). Binding the variable is what makes a
+% lowered function correct when it is reached as a subroutine (D55 dispatch),
+% where the caller passed its own variable in the argument register; it is
+% harmless — the register is still set — when the function is the top-level
+% entry. It keeps the two allocation-free comparison arms for the common
+% already-bound case (an atom compared in place; a Copy literal compared).
 emit_one(get_constant(CStr, AiStr), I) :-
     rust_reg_name(AiStr, Ai),
     wam_classify_constant_token(CStr, Class),
@@ -564,8 +898,7 @@ emit_one(get_constant(CStr, AiStr), I) :-
         format("~w        Some(true) => {}~n", [I]),
         format("~w        Some(false) => return false,~n", [I]),
         format("~w        None => {~n", [I]),
-        format("~w            vm.trail_binding(\"~w\");~n", [I, Ai]),
-        format("~w            vm.put_reg(\"~w\", Value::Atom(\"~w\".to_string()));~n", [I, Ai, Esc]),
+        format("~w            if !vm.head_constant(\"~w\", Value::Atom(\"~w\".to_string())) { return false; }~n", [I, Ai, Esc]),
         format("~w        }~n", [I]),
         format("~w    }~n", [I]),
         format("~w}~n", [I])
@@ -573,9 +906,8 @@ emit_one(get_constant(CStr, AiStr), I) :-
         format("~w// get_constant ~w, ~w~n", [I, CStr, AiStr]),
         format("~w{~n", [I]),
         format("~w    let _a = vm.get_reg(\"~w\").unwrap_or(Value::Uninit);~n", [I, Ai]),
-        format("~w    if _a.is_unbound() {~n", [I]),
-        format("~w        vm.trail_binding(\"~w\");~n", [I, Ai]),
-        format("~w        vm.put_reg(\"~w\", ~w);~n", [I, Ai, RustVal]),
+        format("~w    if _a.is_unbound() || _a == Value::Uninit {~n", [I]),
+        format("~w        if !vm.head_constant(\"~w\", ~w) { return false; }~n", [I, Ai, RustVal]),
         format("~w    } else if _a != ~w {~n", [I, RustVal]),
         format("~w        return false;~n", [I]),
         format("~w    }~n", [I]),
@@ -587,9 +919,8 @@ emit_one(get_integer(NStr, AiStr), I) :-
     format("~w// get_integer ~w, ~w~n", [I, NStr, AiStr]),
     format("~w{~n", [I]),
     format("~w    let _a = vm.get_reg(\"~w\").unwrap_or(Value::Uninit);~n", [I, Ai]),
-    format("~w    if _a.is_unbound() {~n", [I]),
-    format("~w        vm.trail_binding(\"~w\");~n", [I, Ai]),
-    format("~w        vm.put_reg(\"~w\", Value::Integer(~w));~n", [I, Ai, NStr]),
+    format("~w    if _a.is_unbound() || _a == Value::Uninit {~n", [I]),
+    format("~w        if !vm.head_constant(\"~w\", Value::Integer(~w)) { return false; }~n", [I, Ai, NStr]),
     format("~w    } else if _a != Value::Integer(~w) {~n", [I, NStr]),
     format("~w        return false;~n", [I]),
     format("~w    }~n", [I]),
@@ -603,8 +934,7 @@ emit_one(get_nil(AiStr), I) :-
     format("~w        Some(true) => {}~n", [I]),
     format("~w        Some(false) => return false,~n", [I]),
     format("~w        None => {~n", [I]),
-    format("~w            vm.trail_binding(\"~w\");~n", [I, Ai]),
-    format("~w            vm.put_reg(\"~w\", Value::Atom(\"[]\".to_string()));~n", [I, Ai]),
+    format("~w            if !vm.head_constant(\"~w\", Value::Atom(\"[]\".to_string())) { return false; }~n", [I, Ai]),
     format("~w        }~n", [I]),
     format("~w    }~n", [I]),
     format("~w}~n", [I]).
