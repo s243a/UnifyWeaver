@@ -35,7 +35,8 @@
     wam_recognise_label/2,         % +Tokens, -LabelName
     wam_recognise_instruction/2,   % +Tokens, -Item
     wam_text_to_items/2,           % +WamText, -Items
-    wam_classify_constant_token/2  % +Token, -Class
+    wam_classify_constant_token/2, % +Token, -Class
+    wam_constant_token_is_string/1 % +Token
 ]).
 
 :- use_module(library(lists)).
@@ -82,13 +83,13 @@ parse_lines([Line|Rest], Items) :-
 %  quotes, backslash escapes the following character, matching
 %  wam_target:quote_wam_constant/2.
 %
-%  Quoted regions preserve their surrounding single quotes attached
-%  to the token: ''foo bar'' produces the token "''foo bar''" (with
-%  the outer apostrophes), not "foo bar". The quotes are the
-%  atom-vs-number discriminator — a bare token `5` is the integer 5,
-%  a quoted token ''5'' is the atom ''5''. Use
-%  wam_classify_constant_token/2 to consume the discriminator
-%  uniformly. Keywords like `get_constant` and register names are
+%  Quoted regions preserve their surrounding quotes attached to the
+%  token: ''foo bar'' produces "''foo bar''"; `"hello world"` produces
+%  the token `"hello world"` (outer double quotes kept). Single quotes
+%  are the atom-vs-number discriminator; double quotes mark a Prolog
+%  string spelling. Use wam_classify_constant_token/2 (still returns
+%  atom(Name) for both) and wam_constant_token_is_string/1 for the
+%  string signal. Keywords like `get_constant` and register names are
 %  never quoted in WAM TEXT, so the instruction recognisers (which
 %  pattern-match on bare strings) are unaffected.
 wam_tokenize_line(Line, Tokens) :-
@@ -104,6 +105,11 @@ tokenize_chars([C|Cs], Tokens) :-
         % Preserve the outer quotes attached to the token so
         % atom-vs-number is recoverable downstream.
         string_chars(Tok, ['\''|QChars]),
+        Tokens = [Tok|More],
+        tokenize_chars(Rest, More)
+    ;   C == '"'
+    ->  read_dquoted(Cs, QChars, Rest),
+        string_chars(Tok, ['"'|QChars]),
         Tokens = [Tok|More],
         tokenize_chars(Rest, More)
     ;   C == ',' , \+ ( Cs = ['/'|_] )
@@ -129,6 +135,14 @@ read_quoted(['\\', C|Cs], [C|More], Rest) :- !,
 read_quoted([C|Cs], [C|More], Rest) :-
     read_quoted(Cs, More, Rest).
 
+% Double-quoted region: same escape rules, delimiter is `"`.
+read_dquoted([], [], []).
+read_dquoted(['"'|Rest], ['"'], Rest) :- !.
+read_dquoted(['\\', C|Cs], [C|More], Rest) :- !,
+    read_dquoted(Cs, More, Rest).
+read_dquoted([C|Cs], [C|More], Rest) :-
+    read_dquoted(Cs, More, Rest).
+
 %% wam_classify_constant_token(+Token, -Class) is det.
 %
 %  Classify a WAM TEXT constant token (as produced by
@@ -136,14 +150,18 @@ read_quoted([C|Cs], [C|More], Rest) :-
 %  quote-preserving convention) into one of:
 %
 %    atom(NameStr)      - Token came from a quoted region (outer ''
-%                         present), OR is bare-but-non-numeric.
-%                         NameStr is the atom name with the outer
-%                         quotes stripped.
+%                         or outer `"..."` present), OR is
+%                         bare-but-non-numeric. NameStr is the atom
+%                         name with the outer quotes stripped.
+%                         Double-quoted tokens STILL classify as
+%                         atom(Name) — no `string(_)` Class — so
+%                         existing consumers are unchanged.
 %    integer(N)         - Bare token that parses as an integer.
 %    float(F)           - Bare token that parses as a float.
 %
 %  The atom-vs-number discriminator is the presence of outer quotes:
-%  bare `5` is the integer; quoted ''5'' is the atom. This matches
+%  bare `5` is the integer; quoted ''5'' is the atom. Double-quoted
+%  `"hi"` is atom(hi) plus wam_constant_token_is_string/1. This matches
 %  the format produced by wam_target:quote_wam_constant/2.
 wam_classify_constant_token(Token, Class) :-
     (   string(Token) -> Str = Token
@@ -155,12 +173,28 @@ wam_classify_constant_token(Token, Class) :-
     (   Chars = ['\''|Rest], append(Inner, ['\''], Rest)
     ->  string_chars(Name, Inner),
         Class = atom(Name)
+    ;   Chars = ['"'|Rest], append(Inner, ['"'], Rest)
+    ->  string_chars(Name, Inner),
+        Class = atom(Name)
     ;   catch(number_string(N, Str), _, fail), integer(N)
     ->  Class = integer(N)
     ;   catch(number_string(F, Str), _, fail), float(F)
     ->  Class = float(F)
     ;   Class = atom(Str)
     ).
+
+%% wam_constant_token_is_string(+Token) is semidet.
+%  True iff Token has outer double quotes (Prolog string spelling
+%  from quote_wam_constant/2). The classifier still returns atom(_)
+%  for those tokens; only string-aware emitters (JS) read this.
+wam_constant_token_is_string(Token) :-
+    (   string(Token) -> Str = Token
+    ;   atom(Token)   -> atom_string(Token, Str)
+    ;   fail
+    ),
+    string_chars(Str, Chars),
+    Chars = ['"'|Rest],
+    append(_, ['"'], Rest).
 
 read_unquoted([], [], []).
 read_unquoted([C|Cs], [], [C|Cs]) :- ws(C), !.

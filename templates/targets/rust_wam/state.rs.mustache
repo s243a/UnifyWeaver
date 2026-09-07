@@ -41,7 +41,7 @@ pub type FxSet<K> = std::collections::HashSet<K, FxBuildHasher>;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-use crate::value::Value;
+use crate::value::{Args, Value};
 use crate::instructions::Instruction;
 
 /// Lazy edge-lookup interface used by the `lazy_lmdb_lookup` foreign
@@ -381,6 +381,20 @@ pub struct ChoicePoint {
     pub builtin_state: Option<BuiltinState>,
     /// Saved cut barrier for backtracking.
     pub cut_barrier: usize,
+    /// If-then-else barrier levels captured by `get_level Yn` (name -> the
+    /// choice-point depth at the moment the level was taken).
+    ///
+    /// The shared WAM compiler reserves a *permanent* (Y) register for an ITE
+    /// barrier even in clauses it compiles with NO `Allocate` (see
+    /// `compile_if_then_else/7` in `wam_target.pl`: the barrier Y is reserved
+    /// after the has-environment decision). Because this runtime routes Y
+    /// registers to the TOPMOST environment frame, such a `get_level Yn` used
+    /// to overwrite the CALLER's permanent variable Yn -- the §8 hazard, in a
+    /// form the "string-named registers" defence does not cover. Keeping the
+    /// level on the ITE's own choice point instead means it never touches a
+    /// register, is inherently per-activation, and is saved/restored by
+    /// backtracking for free.
+    pub levels: Vec<(String, usize)>,
 }
 
 /// State for non-deterministic builtins
@@ -490,6 +504,11 @@ pub struct WamState {
     pub foreign_result_layouts: HashMap<String, String>,
     /// Foreign predicate result-delivery modes keyed by "name/arity".
     pub foreign_result_modes: HashMap<String, String>,
+    /// Store-backed P/2 fact sources (D43 indexed seek / lmdb gate) keyed by
+    /// "name/arity". Populated by register_indexed_seek_fact2 /
+    /// register_lmdb_seek_fact2; consumed by the "seek_fact" foreign-native-kind
+    /// handler (execute_seek_fact_source).
+    pub seek_fact_sources: HashMap<String, Arc<crate::seek_fact_source::SeekFactSource>>,
     /// Lazy edge-lookup backends keyed by "name/arity".
     /// Populated by `register_lazy_lookup` when `lmdb_materialisation(lazy)`
     /// is set; consumed by the `lazy_lmdb_lookup` foreign-native-kind handler.
@@ -593,10 +612,28 @@ pub struct WamState {
     /// Cut barrier: choice point stack depth at the most recent neck/Allocate.
     /// !/0 truncates choice_points to this depth instead of clearing all.
     pub cut_barrier: usize,
+    /// Backtracking floor: `backtrack()` never pops a choice point at or below
+    /// this depth. A first-solution meta-call (`call_goal_once`) raises it to
+    /// the choice-point depth at entry so that when the meta-goal FAILS,
+    /// backtracking stops at the meta-call boundary and reports failure —
+    /// instead of escaping into the CALLER's choice points and resuming the
+    /// enclosing computation inside the nested `run()`. Without it a
+    /// `maplist(is_v3, Debs)` whose `is_v3(deb(...))` element test fails let the
+    /// nested run backtrack into the outer resolver search (P3 deb path; the
+    /// v/3 path never triggered it because `is_v3` always succeeds there).
+    pub backtrack_floor: usize,
     /// Pending barrier captured before a predicate clause choice point was
     /// pushed. The following Allocate consumes it so neck cuts commit to the
     /// current clause instead of leaving the predicate alternative alive.
-    pub pending_cut_barrier: Option<usize>,
+    /// Paired with the PC of the instruction that must consume it (the
+    /// clause's Allocate, always the instruction right after the
+    /// TryMeElse/RetryMeElse that parked it). Without the PC the value leaked
+    /// out of Allocate-less clauses -- see the Allocate arm.
+    pub pending_cut_barrier: Option<(usize, usize)>,
+    /// If-then-else barrier level taken by `get_level Yn` immediately BEFORE
+    /// the ITE's `try_me_else`; consumed by that TryMeElse, which stores it on
+    /// the guard choice point it pushes. See `ChoicePoint::levels`.
+    pub pending_level: Option<(String, usize)>,
     /// Step counter for limiting exploration on dense cyclic graphs.
     pub step_count: u64,
     /// Maximum steps per query (0 = unlimited).
@@ -705,6 +742,7 @@ impl WamState {
             foreign_f64_configs: HashMap::new(),
             foreign_result_layouts: HashMap::new(),
             foreign_result_modes: HashMap::new(),
+            seek_fact_sources: HashMap::new(),
             lazy_lookups: HashMap::new(),
             wam_to_lmdb: FxMap::default(),
             lmdb_to_wam: FxMap::default(),
@@ -726,7 +764,9 @@ impl WamState {
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
+            backtrack_floor: 0,
             pending_cut_barrier: None,
+            pending_level: None,
             step_count: 0,
             step_limit: 0,
             backtrack_count: 0,
@@ -787,6 +827,59 @@ impl WamState {
         if idx < self.regs.len() {
             self.regs[idx] = val;
         }
+    }
+
+    /// Register a store-backed P/2 fact source over a D43 indexed(Prefix) seek
+    /// store (Prefix.data + Prefix.idx). Reached by the "seek_fact" foreign
+    /// native kind.
+    pub fn register_indexed_seek_fact2(&mut self, pred: &str, prefix: &str) {
+        self.seek_fact_sources.insert(
+            pred.to_string(),
+            Arc::new(crate::seek_fact_source::SeekFactSource::new_indexed(prefix)),
+        );
+    }
+
+    /// Register a store-backed P/2 fact source over an lmdb(Dir) store. Opt-in;
+    /// this source fails loudly at query time (no compatible reader built in).
+    pub fn register_lmdb_seek_fact2(&mut self, pred: &str, dir: &str) {
+        self.seek_fact_sources.insert(
+            pred.to_string(),
+            Arc::new(crate::seek_fact_source::SeekFactSource::new_lmdb(dir)),
+        );
+    }
+
+    /// Serve one call to a store-backed P/2 fact source (the "seek_fact"
+    /// foreign native kind). A bound atomic A1 does a keyed seek (only the
+    /// records that key touches are read off disk); an unbound A1 does a full
+    /// scan (the provides walk). Every matching row becomes a __tuple__/2 that
+    /// finish_foreign_results unifies against A1/A2 through the stream
+    /// choice-point machinery, so both bound-A2 filtering and multi-row
+    /// backtracking work exactly as they do for a term-catalog fact predicate.
+    pub fn execute_seek_fact_source(&mut self, pred_key: &str) -> bool {
+        let a1_reg = match self.get_reg_raw("A1") {
+            Some(v) => v,
+            None => return false,
+        };
+        let a2_reg = match self.get_reg_raw("A2") {
+            Some(v) => v,
+            None => return false,
+        };
+        let a1d = self.deref_var(&a1_reg);
+        let key = match &a1d {
+            Value::Atom(_) | Value::Integer(_) | Value::Float(_) => {
+                Some(crate::seek_fact_source::encode_store_key(&a1d))
+            }
+            _ => None,
+        };
+        let rows = match self.seek_fact_sources.get(pred_key) {
+            Some(src) => src.rows(key),
+            None => return false,
+        };
+        let results: Vec<Value> = rows
+            .into_iter()
+            .map(|(v0, v1)| Value::strv("__tuple__".to_string(), vec![v0, v1]))
+            .collect();
+        self.finish_foreign_results(pred_key, vec![a1_reg, a2_reg], results)
     }
 
     /// Register an indexed atom/atom fact table for benchmark fast paths.
@@ -2288,7 +2381,56 @@ impl WamState {
                 None => None,
             },
             Value::Atom(s) => Some(s == atom),
+            // Empty-list aliasing (CONVENTIONS §1): the empty list is delivered
+            // as the atom `[]` OR as an empty `Value::List`, and the two are the
+            // same term (the interpreter's GetConstant / `unify` alias them). A
+            // head `get_constant []` / `get_nil` reaching this fast path must
+            // treat an empty Value::List as matching `[]`, else a lowered clause
+            // that discriminates [] vs [_|_] rejects a genuinely-empty list.
+            Value::List(l) if atom == "[]" => Some(l.is_empty()),
             _ => Some(false),
+        }
+    }
+
+    /// Head match of a constant against an argument register, with the SAME
+    /// semantics the interpreter's `GetConstant` uses — including binding the
+    /// underlying variable, not just overwriting the register.
+    ///
+    /// This is the head-unification primitive the lowered emitter's
+    /// `get_constant` / `get_integer` / `get_nil` sites call. When the register
+    /// derefs to an unbound variable they used to `put_reg` the constant into
+    /// the register alone: correct when the lowered function is the TOP-LEVEL
+    /// entry (the caller reads the register back), but wrong when the function
+    /// is reached as a subroutine — the caller passed its own variable in the
+    /// register and expects that variable bound, exactly as a real WAM call
+    /// would. Binding the variable as well as setting the register makes the
+    /// lowered tier correct in both positions (the register write is redundant
+    /// once the binding exists, but harmless and keeps the fast in-register
+    /// read hot). Returns `true` when matched or freshly bound, `false` on a
+    /// genuine clash (the caller fails the clause).
+    pub fn head_constant(&mut self, ai: &str, c: Value) -> bool {
+        let raw = match self.get_reg_raw(ai) {
+            Some(v) => v,
+            None => {
+                // Uninitialised register: treat as a fresh cell holding the
+                // constant (mirrors the interpreter's write-mode fallthrough).
+                self.put_reg(ai, c);
+                return true;
+            }
+        };
+        let val = self.deref_var(&raw);
+        match val {
+            Value::Unbound(ref var_name) => {
+                self.trail_binding(ai);
+                self.set_reg_str(ai, c.clone());
+                self.bind_var(var_name, c);
+                true
+            }
+            ref v if *v == c => true,
+            // Empty-list aliasing: the [] atom and an empty Value::List.
+            Value::List(ref items) if items.is_empty()
+                && matches!(&c, Value::Atom(s) if s == "[]") => true,
+            _ => false,
         }
     }
 
@@ -2367,7 +2509,9 @@ impl WamState {
         self.cp = 0;
         self.var_counter = 0;
         self.cut_barrier = 0;
+        self.backtrack_floor = 0;
         self.pending_cut_barrier = None;
+        self.pending_level = None;
         self.step_count = 0;
         self.backtrack_count = 0;
         self.aggregate_acc.clear();
@@ -2437,8 +2581,8 @@ impl WamState {
                 let head = self.heap[marker].clone();
                 let tail = self.heap[marker + 1].clone();
                 let list = match tail {
-                    Value::List(mut items) => { items.insert(0, head); Value::List(items) }
-                    Value::Atom(ref s) if s == "[]" => Value::List(vec![head]),
+                    Value::List(items) => Value::List(items.cons(head)),
+                    Value::Atom(ref s) if s == "[]" => Value::list(vec![head]),
                     // Partial list: the tail is still an unbound
                     // variable (or a ref/cons) that a later
                     // put_structure will fill — e.g. building
@@ -2450,7 +2594,7 @@ impl WamState {
                     // and wrongly succeeded. Keep it as a cons cell
                     // so the tail var derefs to the rest of the
                     // list. get_list/unify already alias [|]/2.
-                    _ => Value::Str("[|]/2".to_string(), vec![head, tail]),
+                    _ => Value::strv("[|]/2".to_string(), vec![head, tail]),
                 };
                 // Update the register holding Ref(marker) or Integer(marker)
                 let ref_val = Value::Ref(marker);
@@ -2482,11 +2626,11 @@ impl WamState {
                                     let args: Vec<Value> = (1..=arity)
                                         .map(|j| self.heap[marker + j].clone())
                                         .collect();
-                                    self.heap[marker] = Value::Str(functor.clone(), args.clone());
+                                    self.heap[marker] = Value::strv(functor.clone(), args.clone());
                                     // Update register holding Ref(marker)
                                     let ref_val = Value::Ref(marker);
                                     if let Some(idx) = self.regs.iter().position(|v| *v == ref_val) {
-                                        self.regs[idx] = Value::Str(functor.clone(), args);
+                                        self.regs[idx] = Value::strv(functor.clone(), args);
                                     }
                                     self.smut().pop();
                                 }
@@ -2559,6 +2703,1363 @@ impl WamState {
     }
 
 
+    /// D55 "sound intermediate": run a LOWERED predicate as a direct Rust
+    /// function from an interpreted `call`/`execute` site.
+    ///
+    /// The lowered tier is first-solution-only — a lowered function returns
+    /// `bool` and leaves no choice point a caller could retry — while the
+    /// interpreter backtracks, so dispatching one is sound only when its first
+    /// solution is its ONLY solution. The emitter decides that statically
+    /// (`deterministic` / atom-guarded `clause_chain`, closed over the call
+    /// graph); this method is the runtime half of the contract, and it CHECKS
+    /// the static claim rather than trusting it:
+    ///
+    ///  * the function runs with `cp = 0`, so a nested `run()` started by a
+    ///    lowered `call`/`execute` halts at the top-level sentinel instead of
+    ///    falling through into the caller's continuation, and with the cut
+    ///    barrier at the entry choice-point depth, so a `!` in the lowered
+    ///    body prunes exactly the alternatives the body itself created;
+    ///  * if the call leaves ANY choice point behind — the one observable sign
+    ///    that it was not deterministic after all — the machine is restored to
+    ///    its entry state and `None` is returned, and the caller runs the
+    ///    predicate interpreted instead. Rolling back is safe because the
+    ///    eligible class cannot do I/O or touch the database.
+    ///
+    /// `None` therefore means "the interpreter must handle this", never
+    /// "failed"; `Some(false)` is a genuine failure.
+    pub fn lowered_dispatch(
+        &mut self,
+        f: fn(&mut WamState) -> bool,
+        cont_pc: usize,
+    ) -> Option<bool> {
+        let cp_depth = self.choice_points.len();
+        let snap = self.lo_clause_snapshot();
+        let saved_cp = self.cp;
+        let saved_pc = self.pc;
+        let saved_barrier = self.cut_barrier;
+        let saved_pending = self.pending_cut_barrier.take();
+        self.cp = 0;
+        self.cut_barrier = cp_depth;
+        let ok = f(self);
+        let left_choice_points = self.choice_points.len() > cp_depth;
+        self.cp = saved_cp;
+        self.cut_barrier = saved_barrier;
+        self.pending_cut_barrier = saved_pending;
+        if left_choice_points {
+            self.choice_points.truncate(cp_depth);
+            self.lo_restore_clause(&snap);
+            self.pc = saved_pc;
+            return None;
+        }
+        if ok {
+            self.pc = cont_pc;
+        }
+        Some(ok)
+    }
+
+    // =================================================================
+    // Stage 2 region 1 — fused native region: matching_deps/4 ⊕ dep_to_req/3
+    // =================================================================
+    //
+    // The lowered-tier throughput plan §5 (P1 direct native calls, P2 minimal
+    // snapshot) and the measurement spike (docs/reports/wam_rust_stage2_spike.md)
+    // target this exact region: `matching_deps/4` walks a dependency list and
+    // calls `dep_to_req/3` (a pure 2-clause committed rewrite, called only from
+    // `matching_deps`) per element. This method fuses the two into ONE native
+    // region entered once:
+    //
+    //   * P1 (direct native call): `dep_to_req` is inlined here as
+    //     `region_dep_to_req` — a plain Rust call, never `vm.run()`.
+    //   * P2 (minimal-locals snapshot): rollback saves only three scalars
+    //     (`trail_len`, `heap_len`, `var_counter`) — NOT a full `save_regs`
+    //     register-file clone. The four argument registers are forced live for
+    //     the region's single rollback point (G-1) by never being clobbered
+    //     (the walk reads them into Rust locals and mutates no register), so
+    //     backward liveness from the one resume point reduces to "A1..A4 at
+    //     entry", which is preserved.
+    //   * fusion: the `matching_deps` recursion is compiled into a native
+    //     `loop`; the self-call never happens at runtime, so no resume-state
+    //     choice point is ever created (G-5 is vacuous — there is no activation
+    //     to confuse), and no `Allocate`/`Deallocate`/re-dispatch per element.
+    //
+    // Soundness against the Kimi K2 gates (docs/reports/wam_rust_stage2_kimi_soundness_review.md):
+    //   * G-2 (determinism guard): the region pushes NO choice point and calls
+    //     NO interpreted code, so the choice-point-depth is unchanged by
+    //     construction; it is asserted after the walk (the generalised form of
+    //     `lowered_dispatch`'s post-call guard). Any element outside the
+    //     recognised shape makes the region DECLINE (`None`) and the
+    //     interpreter runs the predicate — never a wrong commit.
+    //   * G-3 (cut across tiers): `matching_deps` has no cut; `dep_to_req`'s
+    //     first-clause cut is realised as a Rust `if/else` in
+    //     `region_dep_to_req` (there is no choice point for it to prune), and
+    //     no interpreted callee runs, so no cut barrier crosses a tier
+    //     boundary. Nothing to pass or restore.
+    //   * G-4 (at-most-one-solution, not just non-unifiable heads):
+    //     `matching_deps` selects on []/[_|_] (mutually exclusive) with a
+    //     deterministic (committed `->`) body; `dep_to_req` is single-solution
+    //     because its clause-1 cut commits and clause-2 is the catch-all — so
+    //     the fused region has at most one solution and committing drops no
+    //     answer. Proven transitively before any commit; NOT relying on head
+    //     non-unifiability (dep_to_req's heads are NOT non-unifiable).
+    //   * G-5 (activation identity / cut-invalidation): no resume-state CP is
+    //     created, so there is no activation handle to validate and no own-CP
+    //     to invalidate on cut. Vacuous for this deterministic region.
+    //
+    // Gated at the call site: `lowered_call` emits the `matching_deps/4` arm
+    // only when the region flag is on AND the frozen resolver shape is present
+    // (see `rust_region1_applicable/1`). When off, this method is dead code.
+    //
+    // Returns Some(true)/Some(false) when the region handled the call (`pc` set
+    // to `cont_pc` on success, mirroring `lowered_dispatch`), `None` to decline
+    // (machine restored to entry, interpreter takes over).
+    #[allow(dead_code)]
+    pub fn region_matching_deps_dispatch(&mut self, cont_pc: usize) -> Option<bool> {
+        let cp_depth = self.choice_points.len();
+        // P2 minimal snapshot: three scalars, no save_regs.
+        let snap_trail = self.trail.len();
+        let snap_heap = self.heap.len();
+        let snap_vc = self.var_counter;
+
+        // Inputs: A1 = dependency list, A2 = Name, A3 = Ver, A4 = Out.
+        let name = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let ver  = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+        let out_reg = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
+        // Only the resolver's actual usage (a fully unbound output) is taken
+        // natively; a bound output would need the interpreter's failure-path
+        // trail discipline, and declining is always sound.
+        if !matches!(self.deref_shallow(&out_reg), Value::Unbound(_)) {
+            return None;
+        }
+
+        let mut cursor = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let mut out: Vec<Value> = Vec::new();
+        loop {
+            let node = self.deref_shallow(&cursor);
+            let (head, tail) = match node {
+                // End of a proper list: the [] atom or the empty native list.
+                Value::Atom(ref s) if s == "[]" => break,
+                Value::List(ref l) if l.is_empty() => break,
+                // A cons cell as a native list, or as a "[|]/2" / "./2" Str.
+                Value::List(ref l) => (l[0].clone(), Value::List(l.tail())),
+                Value::Str(ref f, ref a) if a.len() == 2 && self.is_cons_functor(f) =>
+                    (a[0].clone(), a[1].clone()),
+                // Unbound tail / unexpected shape -> defer to the interpreter.
+                _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
+            };
+            // Each element must be depends(N, V, D, C).
+            let elem = self.deref_shallow(&head);
+            let (n, v, d, c) = match elem {
+                Value::Str(ref f, ref a)
+                    if a.len() == 4 && Self::functor_of(f, 4) == "depends" =>
+                    (a[0].clone(), a[1].clone(), a[2].clone(), a[3].clone()),
+                _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
+            };
+            // ( N == Name, V == Ver -> dep_to_req(D,C,Req), Out=[Req|Rs] ; Out=Rs )
+            // `terms_identical` is exactly the `==/2` builtin's comparison.
+            if self.terms_identical(&n, &name) && self.terms_identical(&v, &ver) {
+                match self.region_dep_to_req(&d, &c) {
+                    Some(req) => out.push(req),
+                    None => return self.region_decline(snap_trail, snap_heap, snap_vc),
+                }
+            }
+            cursor = tail;
+        }
+        // G-2 runtime guard (generalises lowered_dispatch's post-call check):
+        // the region must leave the choice-point stack exactly as it found it.
+        if self.choice_points.len() != cp_depth {
+            return self.region_decline(snap_trail, snap_heap, snap_vc);
+        }
+        // The output list, built in walk order (matches the interpreter's
+        // top-down cons). Unify it with the (unbound) output register.
+        let result = Value::list(out);
+        let ok = self.unify(&out_reg, &result);
+        if ok {
+            self.pc = cont_pc;
+        }
+        Some(ok)
+    }
+
+    /// Restore the P2 minimal snapshot and decline to the interpreter.
+    #[allow(dead_code)]
+    fn region_decline(&mut self, snap_trail: usize, snap_heap: usize, snap_vc: usize)
+        -> Option<bool>
+    {
+        self.unwind_trail_to(snap_trail);
+        self.heap.truncate(snap_heap);
+        self.var_counter = snap_vc;
+        None
+    }
+
+    /// `dep_to_req/3` as a direct native call (P1): the pure 2-clause committed
+    /// rewrite, inlined.
+    ///
+    ///   dep_to_req(alternatives(Alts), _C, req(alternatives(Alts), any)) :- !.
+    ///   dep_to_req(D, C, req(D, C)).
+    ///
+    /// `Some(req)` is the single solution. `None` declines when the dep is an
+    /// unbound variable — the interpreter's clause-1 head would then *bind* it
+    /// to `alternatives(_)`, which is outside the recognised deterministic
+    /// shape.
+    #[allow(dead_code)]
+    fn region_dep_to_req(&self, d: &Value, c: &Value) -> Option<Value> {
+        let dd = self.deref_shallow(d);
+        match dd {
+            Value::Unbound(_) | Value::Ref(_) => None,
+            Value::Str(ref f, ref a)
+                if a.len() == 1 && Self::functor_of(f, 1) == "alternatives" =>
+                // req(alternatives(Alts), any) — reuse the alternatives term.
+                Some(Value::strv("req".to_string(),
+                                 vec![dd.clone(), Value::Atom("any".to_string())])),
+            _ =>
+                // req(D, C) — the original element args as-is.
+                Some(Value::strv("req".to_string(), vec![d.clone(), c.clone()])),
+        }
+    }
+
+    // =================================================================
+    // Stage 2 region 2 — fused native region:
+    //   matching_versions/4 ⊕ satisfies/2 ⊕ version_lt/2
+    // =================================================================
+    //
+    // `matching_versions/4` walks a package list and per element runs the
+    // `N==Name, satisfies(V,C)` guard; `satisfies/2` calls `version_lt/2`, whose
+    // deb/3 path pulls in the whole Debian Policy §5.6.12 segment walk
+    // (`segs_lt`/`pad_head`/`segs_lt_1`/`order_lt`/`order_val`). This method
+    // fuses that entire 3-deep chain into ONE native region entered once.
+    //
+    //   * P1 (direct native call): `satisfies`, `version_lt` and their whole
+    //     transitive chain are inlined below (`region_satisfies`,
+    //     `region_version_lt`, `region_segs_lt`, `region_order_lt`,
+    //     `region_order_val`) — plain Rust calls, never `vm.run()`.
+    //   * P2 (minimal-locals snapshot): rollback saves only three scalars
+    //     (`trail_len`, `heap_len`, `var_counter`) via `region_decline` — the
+    //     same minimal snapshot region 1 uses, NOT a full `save_regs`.
+    //   * fusion: the `matching_versions` recursion is compiled into a native
+    //     `loop`; the self-call never happens, so no resume-state choice point is
+    //     ever created (G-5 vacuous) and no per-element Allocate/re-dispatch.
+    //
+    // SHARED-CALLEE handling (the region-1 recipe did NOT have this): `satisfies`
+    // and `version_lt` are called from many other predicates. The region does NOT
+    // change the shared predicate — it inlines a PRIVATE native copy here and the
+    // interpreted `satisfies`/`version_lt` stay fully intact, so every other call
+    // site is byte-identical to the region-off build BY CONSTRUCTION. Only the
+    // `matching_versions/4` dispatch arm routes here.
+    //
+    // Soundness against the Kimi K2 gates:
+    //   * G-1: the region has a single rollback point (entry); A1..A4 are forced
+    //     live (read into Rust locals, no register clobbered), so backward
+    //     liveness reduces to "A1..A4 at entry". The minimal snapshot records
+    //     trail/heap/var_counter. No frame is dropped (none allocated, no CP).
+    //   * G-2 (determinism guard): the region pushes NO choice point and calls NO
+    //     interpreted code, so CP-depth is unchanged by construction; it is
+    //     asserted after the walk. Any off-shape input (open list tail, non
+    //     package/2 element, unbound version/constraint, a version_lt shape with
+    //     an unbound or mixed operand) DECLINES (`None`) and the interpreter runs
+    //     the predicate — never a wrong commit.
+    //   * G-3 (cut across tiers): `matching_versions` and `satisfies` have no cut;
+    //     the cuts in `version_lt`'s chain (`segs_lt`/`pad_head`/`order_lt`/
+    //     `order_val`) are realised as Rust `if/else`/`match` (no choice point to
+    //     prune), and no interpreted callee runs — so no cut barrier crosses a
+    //     tier boundary. Nothing to pass or restore.
+    //   * G-4 (at-most-one-solution, NOT just non-unifiable heads):
+    //     `matching_versions` selects on []/[_|_] (mutually exclusive) with a
+    //     committed (`->`) body. `satisfies` is single-solution: its 7 clauses
+    //     are mutually exclusive on the (ground) constraint functor
+    //     (any/eq/gte/lte/lt/gt/range), and each body is semidet — `Ver=E` on
+    //     ground terms (0/1 sol), `\+ version_lt(...)` (negation is semidet), or a
+    //     conjunction of semidet goals. `version_lt` is single-solution: its two
+    //     heads are non-unifiable (v/3 vs deb/3) AND each body is an if-then-else
+    //     chain (committed); `segs_lt`/`order_lt` likewise commit via `->`/cuts
+    //     and mutually-exclusive list-shape heads. So the fused region has at most
+    //     one solution and committing drops no answer. This rests on the cuts +
+    //     committed bodies, not on head non-unifiability alone (satisfies' heads
+    //     share the first arg and are NOT non-unifiable).
+    //   * G-5 (activation identity / cut-invalidation): the recursion is a loop,
+    //     so no resume-state CP is created — no activation to confuse, no own-CP
+    //     to invalidate on cut. Vacuous for this deterministic region.
+    //
+    // Gated at the call site: `lowered_call` emits the `matching_versions/4` arm
+    // only when the region flag is on AND the frozen resolver shape of ALL of
+    // matching_versions/satisfies/version_lt and the whole version_lt chain is
+    // present (see `rust_region2_applicable/1`). When off, these methods are dead
+    // code.
+    //
+    // Returns Some(true)/Some(false) when the region handled the call (`pc` set to
+    // `cont_pc` on success), `None` to decline (machine restored to entry).
+    #[allow(dead_code)]
+    pub fn region_matching_versions_dispatch(&mut self, cont_pc: usize) -> Option<bool> {
+        let cp_depth = self.choice_points.len();
+        // P2 minimal snapshot: three scalars, no save_regs.
+        let snap_trail = self.trail.len();
+        let snap_heap = self.heap.len();
+        let snap_vc = self.var_counter;
+
+        // Inputs: A1 = package list, A2 = Name, A3 = C (constraint), A4 = Out.
+        let name = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let constraint = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+        let out_reg = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
+        // Only the resolver's actual usage (a fully unbound output) is taken
+        // natively; a bound output would need the interpreter's failure-path
+        // trail discipline, and declining is always sound.
+        if !matches!(self.deref_shallow(&out_reg), Value::Unbound(_)) {
+            return None;
+        }
+
+        let mut cursor = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let mut out: Vec<Value> = Vec::new();
+        loop {
+            let node = self.deref_shallow(&cursor);
+            let (head, tail) = match node {
+                // End of a proper list: the [] atom or the empty native list.
+                Value::Atom(ref s) if s == "[]" => break,
+                Value::List(ref l) if l.is_empty() => break,
+                // A cons cell as a native list, or as a "[|]/2" / "./2" Str.
+                Value::List(ref l) => (l[0].clone(), Value::List(l.tail())),
+                Value::Str(ref f, ref a) if a.len() == 2 && self.is_cons_functor(f) =>
+                    (a[0].clone(), a[1].clone()),
+                // Unbound tail / unexpected shape -> defer to the interpreter.
+                _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
+            };
+            // Each element must be package(N, V).
+            let elem = self.deref_shallow(&head);
+            let (n, v) = match elem {
+                Value::Str(ref f, ref a)
+                    if a.len() == 2 && Self::functor_of(f, 2) == "package" =>
+                    (a[0].clone(), a[1].clone()),
+                _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
+            };
+            // ( N == Name, satisfies(V, C) -> Out=[V|Vs] ; Out=Vs )
+            // Short-circuit: satisfies is only consulted when N == Name, exactly
+            // like the interpreter's conjunction. `terms_identical` is `==/2`.
+            if self.terms_identical(&n, &name) {
+                match self.region_satisfies(&v, &constraint) {
+                    Some(true) => out.push(v),
+                    Some(false) => {} // element skipped (Out = Vs)
+                    None => return self.region_decline(snap_trail, snap_heap, snap_vc),
+                }
+            }
+            cursor = tail;
+        }
+        // G-2 runtime guard: the region must leave the CP stack as it found it.
+        if self.choice_points.len() != cp_depth {
+            return self.region_decline(snap_trail, snap_heap, snap_vc);
+        }
+        // The output list, built in walk order (matches the interpreter's
+        // top-down cons). Unify with the (unbound) output register.
+        let result = Value::list(out);
+        let ok = self.unify(&out_reg, &result);
+        if ok {
+            self.pc = cont_pc;
+        }
+        Some(ok)
+    }
+
+    /// `satisfies/2` as a direct native call (P1), a PRIVATE copy for the fused
+    /// region — the interpreted `satisfies` is untouched for its other callers.
+    ///
+    ///   satisfies(_Ver, any).
+    ///   satisfies(Ver, eq(E))        :- Ver = E.
+    ///   satisfies(Ver, gte(G))       :- \+ version_lt(Ver, G).
+    ///   satisfies(Ver, lte(G))       :- \+ version_lt(G, Ver).
+    ///   satisfies(Ver, lt(H))        :- version_lt(Ver, H).
+    ///   satisfies(Ver, gt(H))        :- version_lt(H, Ver).
+    ///   satisfies(Ver, range(Lo,Hi)) :- \+ version_lt(Ver, Lo), version_lt(Ver, Hi).
+    ///
+    /// `Some(true)`/`Some(false)` is the single solution / failure; `None`
+    /// declines (unbound/off-shape constraint, or a version_lt operand the
+    /// interpreter would treat differently).
+    #[allow(dead_code)]
+    fn region_satisfies(&self, ver: &Value, c: &Value) -> Option<bool> {
+        let cc = self.deref_shallow(c);
+        match cc {
+            Value::Atom(ref s) if s == "any" => Some(true),
+            Value::Str(ref f, ref a) if a.len() == 1 && Self::functor_of(f, 1) == "eq" => {
+                // Ver = E : ground unification is structural identity. Decline if
+                // either side is non-ground (the interpreter's `=` could bind).
+                if self.region_is_ground(ver) && self.region_is_ground(&a[0]) {
+                    Some(self.terms_identical(ver, &a[0]))
+                } else {
+                    None
+                }
+            }
+            Value::Str(ref f, ref a) if a.len() == 1 && Self::functor_of(f, 1) == "gte" =>
+                // \+ version_lt(Ver, G)
+                self.region_version_lt(ver, &a[0]).map(|lt| !lt),
+            Value::Str(ref f, ref a) if a.len() == 1 && Self::functor_of(f, 1) == "lte" =>
+                // \+ version_lt(G, Ver)
+                self.region_version_lt(&a[0], ver).map(|lt| !lt),
+            Value::Str(ref f, ref a) if a.len() == 1 && Self::functor_of(f, 1) == "lt" =>
+                // version_lt(Ver, H)
+                self.region_version_lt(ver, &a[0]),
+            Value::Str(ref f, ref a) if a.len() == 1 && Self::functor_of(f, 1) == "gt" =>
+                // version_lt(H, Ver)
+                self.region_version_lt(&a[0], ver),
+            Value::Str(ref f, ref a) if a.len() == 2 && Self::functor_of(f, 2) == "range" => {
+                // \+ version_lt(Ver, Lo), version_lt(Ver, Hi)
+                match self.region_version_lt(ver, &a[0])? {
+                    true => Some(false), // version_lt(Ver,Lo) => \+ fails => whole fails
+                    false => self.region_version_lt(ver, &a[1]),
+                }
+            }
+            // Unbound constraint or unknown functor -> decline.
+            _ => None,
+        }
+    }
+
+    /// `version_lt/2` as a direct native call (P1), a PRIVATE copy for the region.
+    ///
+    ///   version_lt(v(A,B,C), v(D,E,F)) :-
+    ///       ( A < D -> true ; A =:= D, B < E -> true ; A =:= D, B =:= E, C < F ).
+    ///   version_lt(deb(E1,U1,R1), deb(E2,U2,R2)) :-
+    ///       ( E1 < E2 -> true
+    ///       ; E1 =:= E2, segs_lt(U1,U2) -> true
+    ///       ; E1 =:= E2, \+ segs_lt(U1,U2), \+ segs_lt(U2,U1), segs_lt(R1,R2) ).
+    ///
+    /// `Some(true)` = version_lt succeeds, `Some(false)` = it fails (both operands
+    /// well-formed and comparable), `None` = decline (unbound / mixed / off-shape
+    /// operand — the interpreter decides).
+    #[allow(dead_code)]
+    fn region_version_lt(&self, a: &Value, b: &Value) -> Option<bool> {
+        let da = self.deref_shallow(a);
+        let db = self.deref_shallow(b);
+        match (&da, &db) {
+            (Value::Str(fa, aa), Value::Str(fb, ab))
+                if aa.len() == 3 && ab.len() == 3
+                    && Self::functor_of(fa, 3) == "v" && Self::functor_of(fb, 3) == "v" =>
+            {
+                let a1 = self.region_int(&aa[0])?;
+                let b1 = self.region_int(&aa[1])?;
+                let c1 = self.region_int(&aa[2])?;
+                let d1 = self.region_int(&ab[0])?;
+                let e1 = self.region_int(&ab[1])?;
+                let f1 = self.region_int(&ab[2])?;
+                Some(
+                    if a1 < d1 {
+                        true
+                    } else if a1 == d1 && b1 < e1 {
+                        true
+                    } else {
+                        a1 == d1 && b1 == e1 && c1 < f1
+                    },
+                )
+            }
+            (Value::Str(fa, aa), Value::Str(fb, ab))
+                if aa.len() == 3 && ab.len() == 3
+                    && Self::functor_of(fa, 3) == "deb" && Self::functor_of(fb, 3) == "deb" =>
+            {
+                let e1 = self.region_int(&aa[0])?;
+                let e2 = self.region_int(&ab[0])?;
+                if e1 < e2 {
+                    return Some(true);
+                }
+                if e1 != e2 {
+                    // e1 > e2: no branch's `E1 =:= E2` condition holds -> fail.
+                    return Some(false);
+                }
+                // e1 == e2
+                let u1 = self.region_proper_list(&aa[1])?;
+                let u2 = self.region_proper_list(&ab[1])?;
+                match self.region_segs_lt(&u1, &u2)? {
+                    true => Some(true),
+                    false => {
+                        // \+ segs_lt(U1,U2), \+ segs_lt(U2,U1), segs_lt(R1,R2)
+                        match self.region_segs_lt(&u2, &u1)? {
+                            true => Some(false), // segs_lt(U2,U1) => \+ fails => whole fails
+                            false => {
+                                let r1 = self.region_proper_list(&aa[2])?;
+                                let r2 = self.region_proper_list(&ab[2])?;
+                                self.region_segs_lt(&r1, &r2)
+                            }
+                        }
+                    }
+                }
+            }
+            // Unbound, mixed v/deb, or any other shape: decline (the interpreter's
+            // version_lt has no matching clause OR could bind an unbound operand).
+            _ => None,
+        }
+    }
+
+    /// Debian §5.6.12 segment-list comparison (`segs_lt/2`), inlined.
+    ///
+    ///   segs_lt([], []) :- !, fail.
+    ///   segs_lt(A, B) :- pad_head(A, A1), pad_head(B, B1), segs_lt_1(A1, B1).
+    ///   pad_head([], [s([], 0)]) :- !.   pad_head(Segs, Segs).
+    ///
+    /// A missing part (empty list) pads to a single `s([], 0)` segment.
+    #[allow(dead_code)]
+    fn region_segs_lt(&self, a: &[Value], b: &[Value]) -> Option<bool> {
+        if a.is_empty() && b.is_empty() {
+            return Some(false); // clause 1: !, fail
+        }
+        // pad_head: [] -> [s([], 0)] ; otherwise unchanged.
+        let pad = Value::strv("s".to_string(), vec![Value::list(vec![]), Value::Integer(0)]);
+        let a1: &[Value] = if a.is_empty() { std::slice::from_ref(&pad) } else { a };
+        let b1: &[Value] = if b.is_empty() { std::slice::from_ref(&pad) } else { b };
+        self.region_segs_lt_1(a1, b1)
+    }
+
+    /// `segs_lt_1/2` — both slices are guaranteed non-empty by `region_segs_lt`.
+    ///
+    ///   segs_lt_1([s(O1,N1)|T1], [s(O2,N2)|T2]) :-
+    ///       ( order_lt(O1,O2) -> true
+    ///       ; O1 == O2, N1 < N2 -> true
+    ///       ; O1 == O2, N1 =:= N2, segs_lt(T1,T2) ).
+    #[allow(dead_code)]
+    fn region_segs_lt_1(&self, a: &[Value], b: &[Value]) -> Option<bool> {
+        let (o1, n1) = self.region_seg_parts(&a[0])?;
+        let (o2, n2) = self.region_seg_parts(&b[0])?;
+        if self.region_order_lt(&o1, &o2)? {
+            return Some(true);
+        }
+        let o_eq = self.region_codes_identical(&o1, &o2); // O1 == O2 (structural)
+        if o_eq && n1 < n2 {
+            return Some(true);
+        }
+        if o_eq && n1 == n2 {
+            return self.region_segs_lt(&a[1..], &b[1..]);
+        }
+        Some(false)
+    }
+
+    /// Decompose a `s(OrderCodes, DigitInt)` segment. `None` if off-shape.
+    #[allow(dead_code)]
+    fn region_seg_parts(&self, seg: &Value) -> Option<(Vec<Value>, i64)> {
+        match self.deref_shallow(seg) {
+            Value::Str(ref f, ref a) if a.len() == 2 && Self::functor_of(f, 2) == "s" => {
+                let codes = self.region_proper_list(&a[0])?;
+                let num = self.region_int(&a[1])?;
+                Some((codes, num))
+            }
+            _ => None,
+        }
+    }
+
+    /// `order_lt/2` — lexicographic order-code comparison with the Debian
+    /// end-of-string rule.
+    ///
+    ///   order_lt([], []) :- !, fail.
+    ///   order_lt([], [C|_]) :- order_val(C, V), 0 < V.
+    ///   order_lt([C|_], []) :- order_val(C, V), V < 0.
+    ///   order_lt([A|As], [B|Bs]) :- order_val(A,VA), order_val(B,VB),
+    ///       ( VA < VB -> true ; VA =:= VB, order_lt(As, Bs) ).
+    #[allow(dead_code)]
+    fn region_order_lt(&self, o1: &[Value], o2: &[Value]) -> Option<bool> {
+        match (o1.is_empty(), o2.is_empty()) {
+            (true, true) => Some(false), // clause 1: !, fail
+            (true, false) => {
+                let v = self.region_order_val(&o2[0])?;
+                Some(0 < v)
+            }
+            (false, true) => {
+                let v = self.region_order_val(&o1[0])?;
+                Some(v < 0)
+            }
+            (false, false) => {
+                let va = self.region_order_val(&o1[0])?;
+                let vb = self.region_order_val(&o2[0])?;
+                if va < vb {
+                    Some(true)
+                } else if va == vb {
+                    self.region_order_lt(&o1[1..], &o2[1..])
+                } else {
+                    Some(false)
+                }
+            }
+        }
+    }
+
+    /// `order_val/2` — a single order-code's sort rank.
+    ///
+    ///   order_val(126, -1) :- !.                     % ~ sorts before everything
+    ///   order_val(C, C) :- C >= 65, C =< 90, !.      % A-Z
+    ///   order_val(C, C) :- C >= 97, C =< 122, !.     % a-z
+    ///   order_val(C, V) :- V is C + 256.             % everything else after letters
+    ///
+    /// `None` if the code is not an integer (off-shape -> decline).
+    #[allow(dead_code)]
+    fn region_order_val(&self, code: &Value) -> Option<i64> {
+        let c = self.region_int(code)?;
+        Some(if c == 126 {
+            -1
+        } else if (65..=90).contains(&c) {
+            c
+        } else if (97..=122).contains(&c) {
+            c
+        } else {
+            c + 256
+        })
+    }
+
+    /// One-level integer extraction; `None` if not an integer.
+    #[allow(dead_code)]
+    fn region_int(&self, v: &Value) -> Option<i64> {
+        match self.deref_shallow(v) {
+            Value::Integer(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// Structural `==/2` over two order-code lists (lists of integers).
+    #[allow(dead_code)]
+    fn region_codes_identical(&self, o1: &[Value], o2: &[Value]) -> bool {
+        o1.len() == o2.len()
+            && o1.iter().zip(o2.iter()).all(|(x, y)| self.terms_identical(x, y))
+    }
+
+    /// True iff `v` is fully ground (no unbound variable / dangling ref anywhere).
+    #[allow(dead_code)]
+    fn region_is_ground(&self, v: &Value) -> bool {
+        match self.deref_shallow(v) {
+            Value::Unbound(_) | Value::Ref(_) | Value::Uninit => false,
+            Value::Str(_, ref a) => a.iter().all(|x| self.region_is_ground(x)),
+            Value::List(ref l) => l.iter().all(|x| self.region_is_ground(x)),
+            _ => true,
+        }
+    }
+
+    /// Collect a proper Prolog list into an owned `Vec`, derefing one level per
+    /// spine step. `None` for an improper list or an unbound tail (decline).
+    #[allow(dead_code)]
+    fn region_proper_list(&self, v: &Value) -> Option<Vec<Value>> {
+        let mut out: Vec<Value> = Vec::new();
+        let mut cur = self.deref_shallow(v);
+        loop {
+            match cur {
+                Value::Atom(ref s) if s == "[]" => return Some(out),
+                Value::List(ref l) => {
+                    // A native list cell is the whole (proper) list.
+                    for it in l.iter() {
+                        out.push(it.clone());
+                    }
+                    return Some(out);
+                }
+                Value::Str(ref f, ref a) if a.len() == 2 && self.is_cons_functor(f) => {
+                    out.push(a[0].clone());
+                    cur = self.deref_shallow(&a[1]);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    // =================================================================
+    // Stage 2 region 3a — fused native region: key_dep_rows/3 ⊕ dep_to_req/3
+    // =================================================================
+    //
+    // The B3 index builder. `key_dep_rows/3` walks a dependency list building a
+    // keyed row per element and calls `dep_to_req/3` (region 1's already-validated
+    // native, reused here) per element:
+    //
+    //   key_dep_rows([], _I, []).
+    //   key_dep_rows([depends(N, V, D, C)|Rest], I, [(N-V)-I-Req|Ks]) :-
+    //       dep_to_req(D, C, Req),
+    //       I1 is I + 1,
+    //       key_dep_rows(Rest, I1, Ks).
+    //
+    // This is the SAME shape as region 1's `matching_deps/4` (a list walk whose
+    // recursion is the last goal and whose output list is built top-down in the
+    // clause head), minus the `N==Name, V==Ver` filter (EVERY element yields a
+    // row) and plus a monotone integer position counter `I` (I1 is I+1). It is
+    // therefore compiled to a native `loop` with the identical P1 (direct native
+    // `dep_to_req`) + P2 (three-scalar minimal snapshot) recipe.
+    //
+    // Non-tail handling: the recursion IS last-call with the output cons cell
+    // built in the head (fresh `Ks` filled by the recursion), so the "native
+    // loop building the output vector top-down" transformation is exact — no
+    // explicit stack and no resume-state choice point are needed.
+    //
+    // Soundness against the Kimi K2 gates:
+    //   * G-1: single rollback point (entry); A1/A2/A3 forced live by never being
+    //     clobbered (read into Rust locals, no register mutated); minimal snapshot
+    //     of trail/heap/var_counter; no frame allocated, no CP created.
+    //   * G-2: pushes NO choice point and calls NO interpreted code, so CP-depth
+    //     is unchanged by construction and asserted after the walk. Any off-shape
+    //     input DECLINES (`None`) to the interpreter — never a wrong commit.
+    //   * G-3: `key_dep_rows` has no cut; `dep_to_req`'s clause-1 cut is realised
+    //     as a Rust `if/else` in `region_dep_to_req`, and no interpreted callee
+    //     runs, so no cut barrier crosses a tier boundary.
+    //   * G-4 (at-most-one-solution, NOT head non-unifiability alone):
+    //     `key_dep_rows` selects on []/[_|_] (exclusive) with a committed body
+    //     (`dep_to_req` det, `is/2` functional, then the tail recursion);
+    //     `dep_to_req` is single-solution via its clause-1 cut + clause-2 catch-all
+    //     (its heads are NOT non-unifiable — the proof rests on the cut). So the
+    //     fused region has at most one solution and committing drops no answer.
+    //   * G-5: the recursion is a loop, so no resume-state CP exists — vacuous.
+    //
+    // Gated at the call site: `lowered_call` emits the `key_dep_rows/3` arm only
+    // when the region-3a flag is on AND the frozen resolver shape is present
+    // (see `rust_region3a_applicable/1`). When off, this method is dead code.
+    #[allow(dead_code)]
+    pub fn region_key_dep_rows_dispatch(&mut self, cont_pc: usize) -> Option<bool> {
+        let cp_depth = self.choice_points.len();
+        // P2 minimal snapshot: three scalars, no save_regs.
+        let snap_trail = self.trail.len();
+        let snap_heap = self.heap.len();
+        let snap_vc = self.var_counter;
+
+        // Inputs: A1 = dependency list, A2 = index (integer), A3 = Out.
+        let out_reg = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+        // Only the resolver's actual usage (a fully unbound output) is taken
+        // natively; declining is always sound. No state mutated yet.
+        if !matches!(self.deref_shallow(&out_reg), Value::Unbound(_)) {
+            return None;
+        }
+        // A2 must be a bound integer: the interpreter's `I1 is I+1` demands it.
+        let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let mut idx = match self.region_int(&a2) {
+            Some(n) => n,
+            None => return None,
+        };
+
+        let mut cursor = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let mut out: Vec<Value> = Vec::new();
+        loop {
+            let node = self.deref_shallow(&cursor);
+            let (head, tail) = match node {
+                Value::Atom(ref s) if s == "[]" => break,
+                Value::List(ref l) if l.is_empty() => break,
+                Value::List(ref l) => (l[0].clone(), Value::List(l.tail())),
+                Value::Str(ref f, ref a) if a.len() == 2 && self.is_cons_functor(f) =>
+                    (a[0].clone(), a[1].clone()),
+                // Unbound tail / unexpected shape -> defer to the interpreter.
+                _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
+            };
+            // Each element must be depends(N, V, D, C).
+            let elem = self.deref_shallow(&head);
+            let (n, v, d, c) = match elem {
+                Value::Str(ref f, ref a)
+                    if a.len() == 4 && Self::functor_of(f, 4) == "depends" =>
+                    (a[0].clone(), a[1].clone(), a[2].clone(), a[3].clone()),
+                _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
+            };
+            // dep_to_req(D, C, Req) — region 1's native (P1), reused verbatim.
+            let req = match self.region_dep_to_req(&d, &c) {
+                Some(r) => r,
+                None => return self.region_decline(snap_trail, snap_heap, snap_vc),
+            };
+            // Output row (N-V)-I-Req = -(-(-(N,V),I),Req). Bare-functor form, the
+            // same convention region 1's `req(...)` uses (functor_of normalises it
+            // everywhere the interpreter's "-/2" is compared/serialised).
+            let nv = Value::strv("-".to_string(), vec![n, v]);
+            let nvi = Value::strv("-".to_string(), vec![nv, Value::Integer(idx)]);
+            let row = Value::strv("-".to_string(), vec![nvi, req]);
+            out.push(row);
+            idx += 1;
+            cursor = tail;
+        }
+        // G-2 runtime guard: the region left the choice-point stack unchanged.
+        if self.choice_points.len() != cp_depth {
+            return self.region_decline(snap_trail, snap_heap, snap_vc);
+        }
+        // The keyed-row list in walk order (matches the interpreter's top-down
+        // cons). Unify with the (unbound) output register.
+        let result = Value::list(out);
+        let ok = self.unify(&out_reg, &result);
+        if ok {
+            self.pc = cont_pc;
+        }
+        Some(ok)
+    }
+
+    // =================================================================
+    // Stage 2 region 3b — fused native region: group_keyed/2 ⊕ same_key/4
+    // =================================================================
+    //
+    // The other B3 index builder. `group_keyed/2` walks a SORTED keyed-row list
+    // and groups consecutive rows that share a key, using `same_key/4` (called
+    // only from here) to consume each run:
+    //
+    //   group_keyed([], []).
+    //   group_keyed([K-_-X|Rest], [K-[X|Xs]|Gs]) :-
+    //       same_key(Rest, K, Xs, Rest1),
+    //       group_keyed(Rest1, Gs).
+    //
+    //   same_key([], _K, [], []).
+    //   same_key([K2-I-X|Rest], K, Xs, Rest1) :-
+    //       ( K2 == K -> Xs = [X|Xs1], same_key(Rest, K, Xs1, Rest1)
+    //       ;           Xs = [], Rest1 = [K2-I-X|Rest] ).
+    //
+    // Non-tail handling: `group_keyed`'s own recursion is last-call, but each
+    // iteration must first consume a variable-length run via `same_key` and
+    // resume at the leftover `Rest1`. Rather than a resume-state choice point
+    // (which would cross into the nondet round), this is realised as an EXPLICIT
+    // NATIVE ACCUMULATOR over the materialised input: an outer index `i` marks
+    // the start of each group and an inner index `j` scans the same-key run;
+    // the outer loop resumes at `i = j` (exactly same_key's `Rest1`). Solution
+    // order is preserved (groups in first-seen key order, each group's values in
+    // list order) and the P2 minimal-snapshot rollback still bounds the commit.
+    // No resume-state CP is created, so this stays a deterministic region.
+    //
+    // Genericity: the row shape is `K-_-X` = `-(-(K,_),X)`, which matches BOTH
+    // `group_keyed`'s call sites — the dep rows `(N-V)-I-Req` (K = N-V) and the
+    // pkg rows `N-I-V` (K = N) — so one region serves both.
+    //
+    // Soundness against the Kimi K2 gates:
+    //   * G-1: single rollback point (entry); A1/A2 forced live (read into locals,
+    //     no register mutated); minimal snapshot; no frame, no CP.
+    //   * G-2: pushes NO choice point and calls NO interpreted code; CP-depth is
+    //     unchanged by construction and asserted; any off-shape row DECLINES.
+    //   * G-3: `group_keyed` has no cut; `same_key`'s `K2==K ->` is realised as a
+    //     Rust `if/else` (no choice point to prune); no interpreted callee runs,
+    //     so no cut barrier crosses a boundary.
+    //   * G-4 (at-most-one-solution, NOT head non-unifiability alone): both
+    //     predicates select on []/[_|_] (exclusive) with committed bodies;
+    //     `same_key`'s `K2==K` is `==/2` (structural, never binds), so its
+    //     if-then-else is genuinely semidet. Grouping is a deterministic function
+    //     of the (already ground, sorted) input, so the region has one solution
+    //     and committing drops no answer.
+    //   * G-5: both recursions are loops, so no resume-state CP exists — vacuous.
+    //
+    // Gated at the call site: `lowered_call` emits the `group_keyed/2` arm only
+    // when the region-3b flag is on AND the frozen resolver shape is present
+    // (see `rust_region3b_applicable/1`). When off, this method is dead code.
+    #[allow(dead_code)]
+    pub fn region_group_keyed_dispatch(&mut self, cont_pc: usize) -> Option<bool> {
+        let cp_depth = self.choice_points.len();
+        // P2 minimal snapshot: three scalars, no save_regs.
+        let snap_trail = self.trail.len();
+        let snap_heap = self.heap.len();
+        let snap_vc = self.var_counter;
+
+        // Inputs: A1 = sorted keyed rows, A2 = Out.
+        let out_reg = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        if !matches!(self.deref_shallow(&out_reg), Value::Unbound(_)) {
+            return None;
+        }
+        let in_reg = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        // Materialise the (proper) input list; decline on an improper/open tail.
+        let elems = match self.region_proper_list(&in_reg) {
+            Some(v) => v,
+            None => return self.region_decline(snap_trail, snap_heap, snap_vc),
+        };
+
+        let mut groups: Vec<Value> = Vec::new();
+        let mut i = 0usize;
+        while i < elems.len() {
+            // First row of the run: K-_-X.
+            let (k, x) = match self.region_key_val(&elems[i]) {
+                Some(kv) => kv,
+                None => return self.region_decline(snap_trail, snap_heap, snap_vc),
+            };
+            // same_key: collect the values of the run sharing key K.
+            let mut values: Vec<Value> = vec![x];
+            let mut j = i + 1;
+            while j < elems.len() {
+                let (k2, x2) = match self.region_key_val(&elems[j]) {
+                    Some(kv) => kv,
+                    None => return self.region_decline(snap_trail, snap_heap, snap_vc),
+                };
+                // `K2 == K` — `terms_identical` is exactly the ==/2 comparison.
+                if self.terms_identical(&k2, &k) {
+                    values.push(x2);
+                    j += 1;
+                } else {
+                    break; // key changed -> same_key's Rest1 = [this|rest]
+                }
+            }
+            // Emit K-[X|Xs].
+            groups.push(Value::strv("-".to_string(),
+                                    vec![k, Value::list(values)]));
+            i = j;
+        }
+        // G-2 runtime guard: choice-point stack left unchanged.
+        if self.choice_points.len() != cp_depth {
+            return self.region_decline(snap_trail, snap_heap, snap_vc);
+        }
+        let result = Value::list(groups);
+        let ok = self.unify(&out_reg, &result);
+        if ok {
+            self.pc = cont_pc;
+        }
+        Some(ok)
+    }
+
+    /// Destructure a keyed row `K-_-X` = `-(-(K,_),X)` into `(K, X)`, derefing
+    /// the spine one level at each `-/2`. `None` (decline) when it is not that
+    /// shape. Serves both `group_keyed` call sites: the dep-row `(N-V)-I-Req`
+    /// (K = N-V) and the pkg-row `N-I-V` (K = N).
+    #[allow(dead_code)]
+    fn region_key_val(&self, elem: &Value) -> Option<(Value, Value)> {
+        let e = self.deref_shallow(elem);
+        let (inner, x) = match e {
+            Value::Str(ref f, ref a)
+                if a.len() == 2 && Self::functor_of(f, 2) == "-" =>
+                (a[0].clone(), a[1].clone()),
+            _ => return None,
+        };
+        let inner = self.deref_shallow(&inner);
+        let k = match inner {
+            Value::Str(ref f, ref a)
+                if a.len() == 2 && Self::functor_of(f, 2) == "-" =>
+                a[0].clone(),
+            _ => return None,
+        };
+        Some((k, x))
+    }
+
+    // =================================================================
+    // Stage 2 region 4 — fused native region: build_tree/4 (balanced BST
+    // builder over a difference list)
+    // =================================================================
+    //
+    // The remaining B3 index builder (the census puts it at ~21.9% of B3
+    // `resolve_layered` dispatches). `list_to_tree/2` measures the length of the
+    // grouped-row list and hands it to `build_tree/4`, which builds a balanced
+    // binary search tree by divide-and-conquer, threading the leftover suffix out
+    // through a difference-list `Rest`:
+    //
+    //   list_to_tree(Pairs, Tree) :- length(Pairs, N), build_tree(N, Pairs, Tree, []).
+    //
+    //   build_tree(N, Pairs, Tree, Rest) :-
+    //       ( N =:= 0
+    //       -> Tree = t, Rest = Pairs
+    //       ;  NL is (N - 1) // 2,
+    //          NR is N - 1 - NL,
+    //          build_tree(NL, Pairs, L, [K-V|Mid]),
+    //          build_tree(NR, Mid,   R, Rest),
+    //          Tree = t(L, K, V, R) ).
+    //
+    // It consumes the first N elements of `Pairs` in list order — each one a
+    // `K-V` pair that becomes exactly one tree node — and unifies `Rest` with the
+    // list suffix after those N elements (the difference-list tail). The two call
+    // sites feed it the grouped rows `K-[X|Xs]` = `-(K, Group)` (region 3b's
+    // output), so every consumed element is a `-/2` pair.
+    //
+    // Determinism / non-tail handling: `build_tree/4` is a SINGLE clause whose
+    // body is a hard `->` commit on `N =:= 0` (an arithmetic test that leaves no
+    // choice point), with functional `is/2` arithmetic and two self-calls. It is
+    // deterministic — at most one solution — with NO backtracking and NO
+    // resume-state choice point, so it belongs to the deterministic tier, not the
+    // nondet round. The recursion is genuinely non-tail (two self-calls, then the
+    // node is built), but because the split is balanced (NL and NR differ by at
+    // most one) its depth is O(log N); it is realised here as a bounded native
+    // recursion over the materialised input (equivalently an explicit stack of
+    // depth O(log N)), so no interpreter recursion, no per-call frame, and no CP
+    // are created. The difference-list `Rest` is resolved by capturing the raw
+    // list tail at position N during the input walk.
+    //
+    // Soundness against the Kimi K2 gates:
+    //   * G-1: single rollback point (entry). A1 (N), A2 (Pairs), A4 (Rest) are
+    //     forced live by never being clobbered (read into Rust locals, no register
+    //     mutated before the final unifies); minimal P2 snapshot of
+    //     trail/heap/var_counter; no frame allocated, no CP created.
+    //   * G-2: pushes NO choice point and calls NO interpreted code, so CP-depth
+    //     is unchanged by construction and asserted after the build. Any off-shape
+    //     input DECLINES (`None`) to the interpreter: non-integer / negative N,
+    //     bound Tree output, open/improper tail, a consumed element that is not a
+    //     `-/2` pair, or a list shorter than N (which the interpreter would fail on
+    //     — declining lets it produce that failure). Never a wrong commit.
+    //   * G-3: `build_tree/4` has no cut, and no interpreted callee runs, so no cut
+    //     barrier crosses a tier boundary. (The `->` is realised as a Rust `if`.)
+    //   * G-4 (at-most-one-solution, NOT head non-unifiability alone): one clause,
+    //     so clause selection is trivially deterministic; the body's `N =:= 0 ->`
+    //     is `=:=/2` (arithmetic, never binds, semidet), the `is/2` goals are
+    //     functional, and both self-calls are at-most-one by induction on N (the
+    //     head-unification `[K-V|Mid]` can only fail, never branch). So the region
+    //     has at most one solution and committing drops no answer.
+    //   * G-5: the recursion is a native (bounded, log-depth) recursion with no
+    //     resume-state CP, so there is no activation to confuse and no own-CP to
+    //     invalidate on cut — vacuous.
+    //
+    // Gated at the call site: `lowered_call` emits the `build_tree/4` arm only when
+    // the region-4 flag is on AND the frozen resolver shape is present (see
+    // `rust_region4_applicable/1`). When off, this method is dead code. The store
+    // lane never calls `build_tree` on its resolve path, so the region is inert
+    // there (as regions 3a/3b are).
+    #[allow(dead_code)]
+    pub fn region_build_tree_dispatch(&mut self, cont_pc: usize) -> Option<bool> {
+        let cp_depth = self.choice_points.len();
+        // P2 minimal snapshot: three scalars, no save_regs.
+        let snap_trail = self.trail.len();
+        let snap_heap = self.heap.len();
+        let snap_vc = self.var_counter;
+
+        // Inputs: A1 = N, A2 = Pairs, A3 = Tree (out), A4 = Rest (out).
+        let tree_reg = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+        // Only the resolver's actual usage (a fully unbound Tree output) is taken
+        // natively; declining is always sound. No state mutated yet.
+        if !matches!(self.deref_shallow(&tree_reg), Value::Unbound(_)) {
+            return None;
+        }
+        // A1 must be a bound, non-negative integer (the count of nodes to build).
+        let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let n = match self.region_int(&a1) {
+            Some(v) if v >= 0 => v,
+            _ => return None,
+        };
+
+        // Walk `Pairs`, collecting the first N elements (each must be a `-/2`
+        // pair) and capturing the raw list tail at position N as the difference-
+        // list `Rest`. No heap is allocated here (the tree is built in-memory and
+        // unified once), so declining mid-walk needs only the scalar rollback.
+        let mut elems: Vec<Value> = Vec::with_capacity(n as usize);
+        let mut cursor = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let mut consumed: i64 = 0;
+        let rest_tail: Value = loop {
+            if consumed == n {
+                break cursor; // suffix after N elements = build_tree's Rest
+            }
+            let node = self.deref_shallow(&cursor);
+            let (head, tail) = match node {
+                // List shorter than N: build_tree's `[K-V|Mid]` head-unification
+                // would fail. Decline so the interpreter yields that failure.
+                Value::Atom(ref s) if s == "[]" =>
+                    return self.region_decline(snap_trail, snap_heap, snap_vc),
+                Value::List(ref l) if l.is_empty() =>
+                    return self.region_decline(snap_trail, snap_heap, snap_vc),
+                Value::List(ref l) => (l[0].clone(), Value::List(l.tail())),
+                Value::Str(ref f, ref a) if a.len() == 2 && self.is_cons_functor(f) =>
+                    (a[0].clone(), a[1].clone()),
+                // Unbound tail / unexpected shape -> defer to the interpreter.
+                _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
+            };
+            // Each consumed element becomes one node, so it must be a `-/2` pair.
+            let elem = self.deref_shallow(&head);
+            match elem {
+                Value::Str(ref f, ref a)
+                    if a.len() == 2 && Self::functor_of(f, 2) == "-" =>
+                    elems.push(elem.clone()),
+                _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
+            }
+            consumed += 1;
+            cursor = tail;
+        };
+
+        // Build the balanced tree from the N materialised elements. Depth is
+        // O(log N) (balanced split), so the native recursion cannot overflow.
+        let tree = Self::region_build_tree_rec(&elems, 0, n).0;
+
+        // G-2 runtime guard: the region left the choice-point stack unchanged.
+        if self.choice_points.len() != cp_depth {
+            return self.region_decline(snap_trail, snap_heap, snap_vc);
+        }
+        // Unify Tree (fresh, so this always succeeds) then Rest with the captured
+        // suffix. A failed Rest unify is a genuine failure (Some(false)); the
+        // caller's backtracking unwinds the trail bindings, exactly as it would
+        // for the interpreted clause.
+        let rest_reg = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
+        let ok = self.unify(&tree_reg, &tree) && self.unify(&rest_reg, &rest_tail);
+        if ok {
+            self.pc = cont_pc;
+        }
+        Some(ok)
+    }
+
+    /// Build a balanced BST node from `elems[start..]`, consuming `n` elements in
+    /// list order, and return `(Tree, next_index)`. `Tree` is the atom `t` when
+    /// `n == 0`, else `t(L, K, V, R)` where `K-V` is the element at the median
+    /// position — exactly `build_tree/4`'s divide-and-conquer. Each consumed
+    /// element was validated as a `-/2` pair during the input walk.
+    #[allow(dead_code)]
+    fn region_build_tree_rec(elems: &[Value], start: usize, n: i64) -> (Value, usize) {
+        if n == 0 {
+            return (Value::Atom("t".to_string()), start);
+        }
+        let nl = (n - 1) / 2;   // (N-1)//2; N-1 >= 0 so // == / here
+        let nr = n - 1 - nl;
+        let (l, mid) = Self::region_build_tree_rec(elems, start, nl);
+        // Node element `K-V` at the median index.
+        let (k, v) = match &elems[mid] {
+            Value::Str(_f, a) if a.len() == 2 => (a[0].clone(), a[1].clone()),
+            // The walk guarantees a `-/2` pair here; be total regardless.
+            other => (other.clone(), Value::Atom("[]".to_string())),
+        };
+        let (r, next) = Self::region_build_tree_rec(elems, mid + 1, nr);
+        (Value::strv("t".to_string(), vec![l, k, v, r]), next)
+    }
+
+    /// Stage 2 region 5 — committed-choice recursion `dep_breaks/5`, native.
+    ///
+    ///   dep_breaks([depends(HN, HV, D, C)|Rest], N, V, Acc, COut) :-
+    ///       (   HN == N, HV == V, dep_breaks_need(Acc, D, C, CBroken)
+    ///       ->  COut = CBroken
+    ///       ;   dep_breaks(Rest, N, V, Acc, COut) ).
+    ///
+    /// Class (a) per the D85 classification: the `->` commits `dep_breaks_need`'s
+    /// first solution (its `member/2` nondeterminism) BEFORE the else-branch tail
+    /// self-call, so the whole predicate has AT MOST ONE solution and leaves NO
+    /// choice point — deterministic tier, exactly like regions 1-4, with G-4/G-5
+    /// vacuous. It is additionally consumed first-solution (dep_breaks_moving/5
+    /// under first_broken/4's `-> Broken=...`), doubly confirming the commit.
+    ///
+    /// This is the recognizer WIDENING of the region-4 committing-`->` family:
+    /// where build_tree/4 special-cases an arithmetic committing test (`N =:= 0`,
+    /// semidet, never binds), region 5 accepts a committing condition whose
+    /// per-iteration goal CONTAINS a nondet sub-goal (`dep_breaks_need`), because
+    /// the `->` makes it single-solution.
+    ///
+    /// P1 direct native: the depends list is walked in Rust and the committing
+    /// condition is evaluated per element with `region_dep_breaks_need` (which
+    /// inlines the frozen dep_breaks_need/4 and selected_ver/3, reusing region 2's
+    /// `region_satisfies`/`region_version_lt`). No `vm.run()`, no interpreted call
+    /// on the hot path. P2 minimal snapshot: three scalars via `region_decline`.
+    ///
+    /// G-1: A2..A5 read into Rust locals; no register clobbered before the sole
+    /// COut unify. G-2: no CP pushed, no interpreted code; CP-depth asserted
+    /// after the walk, off-shape declines. G-3: no cut crosses a tier boundary
+    /// (the `->`/cut are Rust `if`s; no interpreted callee runs). G-4: single
+    /// clause + committed `->` = at most one solution (proven from the commit,
+    /// NOT head-exclusivity). G-5: vacuous (no resume-state CP).
+    ///
+    /// Returns `Some(true)` on the committing element (COut unified, pc=cont_pc);
+    /// `Some(false)` when the list is exhausted with no commit (dep_breaks/5 has
+    /// no clause for [] -> the interpreter's genuine failure); `None` to decline
+    /// any off-shape input to the interpreter (never a wrong commit).
+    #[allow(dead_code)]
+    pub fn region_dep_breaks_dispatch(&mut self, cont_pc: usize) -> Option<bool> {
+        let cp_depth = self.choice_points.len();
+        // P2 minimal snapshot: three scalars, no save_regs.
+        let snap_trail = self.trail.len();
+        let snap_heap = self.heap.len();
+        let snap_vc = self.var_counter;
+
+        // Inputs: A1 = depends list, A2 = N, A3 = V, A4 = Acc, A5 = COut (out).
+        let out_reg = self.get_reg_raw("A5").unwrap_or(Value::Uninit);
+        // Only the resolver's actual usage (a fully unbound COut) is taken
+        // natively; a bound output would need the interpreter's unify/trail
+        // discipline against CBroken. Declining is always sound. No state
+        // mutated yet.
+        if !matches!(self.deref_shallow(&out_reg), Value::Unbound(_)) {
+            return None;
+        }
+        let name = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let ver  = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+        let acc  = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
+
+        let mut cursor = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let committed: Option<Value> = loop {
+            let node = self.deref_shallow(&cursor);
+            let (head, tail) = match node {
+                // End of a proper list: dep_breaks/5 has no clause for [] -> it
+                // FAILS. Signalled by `break None` (a genuine failure below).
+                Value::Atom(ref s) if s == "[]" => break None,
+                Value::List(ref l) if l.is_empty() => break None,
+                Value::List(ref l) => (l[0].clone(), Value::List(l.tail())),
+                Value::Str(ref f, ref a) if a.len() == 2 && self.is_cons_functor(f) =>
+                    (a[0].clone(), a[1].clone()),
+                // Unbound tail / unexpected shape -> defer to the interpreter.
+                _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
+            };
+            // Each element must be depends(HN, HV, D, C).
+            let elem = self.deref_shallow(&head);
+            let (hn, hv, d, c) = match elem {
+                Value::Str(ref f, ref a)
+                    if a.len() == 4 && Self::functor_of(f, 4) == "depends" =>
+                    (a[0].clone(), a[1].clone(), a[2].clone(), a[3].clone()),
+                _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
+            };
+            // Condition: HN == N, HV == V, dep_breaks_need(Acc, D, C, CBroken).
+            // `terms_identical` is exactly the `==/2` builtin (false, never a
+            // bind, on any mismatch or unbound operand — matching `==`).
+            if self.terms_identical(&hn, &name) && self.terms_identical(&hv, &ver) {
+                match self.region_dep_breaks_need(&acc, &d, &c) {
+                    // An off-shape sub-goal the interpreter must run: decline.
+                    None => return self.region_decline(snap_trail, snap_heap, snap_vc),
+                    // Condition TRUE -> commit COut = CBroken, stop the walk.
+                    Some(Some(cbroken)) => break Some(cbroken),
+                    // Condition FALSE -> else branch = tail self-call, continue.
+                    Some(None) => {}
+                }
+            }
+            cursor = tail;
+        };
+
+        // G-2 runtime guard: the region left the choice-point stack unchanged.
+        if self.choice_points.len() != cp_depth {
+            return self.region_decline(snap_trail, snap_heap, snap_vc);
+        }
+        match committed {
+            Some(cbroken) => {
+                // COut is unbound (checked above); unifying binds it (trailed so
+                // the caller's backtracking unwinds it exactly as the clause did).
+                let ok = self.unify(&out_reg, &cbroken);
+                if ok {
+                    self.pc = cont_pc;
+                }
+                Some(ok)
+            }
+            // Exhausted the list with no commit: dep_breaks/5 has no clause for
+            // []. A genuine deterministic FAILURE, not a decline — the read-only
+            // walk made no bindings, so there is nothing to unwind.
+            None => Some(false),
+        }
+    }
+
+    /// `dep_breaks_need/4` as a direct native call (P1): the frozen 2-clause
+    /// committed predicate, inlined. READ-ONLY (no bindings, no heap).
+    ///
+    ///   dep_breaks_need(Acc, alternatives(Alts), _C, COut) :- !,
+    ///       member(dep(D0, COut), Alts), selected_ver(Acc, D0, MV),
+    ///       \+ satisfies(MV, COut),
+    ///       \+ (member(dep(D2, C2), Alts), selected_ver(Acc, D2, MV2),
+    ///           satisfies(MV2, C2)).
+    ///   dep_breaks_need(Acc, D, C, C) :-
+    ///       selected_ver(Acc, D, MV), \+ satisfies(MV, C).
+    ///
+    /// Because the outer `->` commits the FIRST solution, this returns exactly
+    /// that: `Some(Some(cbroken))` on success (COut = cbroken), `Some(None)` on a
+    /// deterministic failure (the `->` condition is false -> the else tail
+    /// self-call runs), `None` to decline (an operand the interpreter must
+    /// handle: unbound dep, improper Alts, or a satisfies/selected_ver that
+    /// itself declines).
+    ///
+    /// The clause-1 negation guard `\+ (member(dep(D2,C2),Alts), ...)` is
+    /// invariant across the outer `member(D0)`, so it decides clause 1 wholesale:
+    /// if ANY alternative's selected version satisfies its constraint, `\+ (...)`
+    /// fails for every D0 and clause 1 fails; otherwise the first D0 (list order)
+    /// whose selected version does NOT satisfy its constraint is the committed
+    /// answer. This is the exact left-to-right first-solution the interpreter
+    /// computes.
+    #[allow(dead_code)]
+    fn region_dep_breaks_need(&self, acc: &Value, d: &Value, c: &Value)
+        -> Option<Option<Value>>
+    {
+        let dd = self.deref_shallow(d);
+        match dd {
+            // An UNBOUND dep would let the interpreter's clause-1 head bind it to
+            // `alternatives(_)`: outside the deterministic shape -> decline.
+            Value::Unbound(_) | Value::Ref(_) => None,
+            // clause 1: D = alternatives(Alts). The cut excludes clause 2.
+            Value::Str(ref f, ref a)
+                if a.len() == 1 && Self::functor_of(f, 1) == "alternatives" =>
+            {
+                // Alts must be a proper list of dep(Name, Constraint) pairs.
+                let alts = self.region_proper_list(&a[0])?;
+                // Negation guard first (invariant across the outer member(D0)):
+                //   any_satisfying == exists dep(D2,C2) in Alts whose selected
+                //   version satisfies C2. Then `\+ (...)` holds iff NOT that.
+                let mut any_satisfying = false;
+                for elem in &alts {
+                    // member(dep(D2,C2), Alts): a non-dep/2 element cannot unify,
+                    // so member skips it; an unbound element would be bound ->
+                    // decline (region_dep_pair returns None then).
+                    let pair = self.region_dep_pair(elem)?;
+                    let (d2, c2) = match pair {
+                        None => continue,
+                        Some(p) => p,
+                    };
+                    if let Some(mv2) = self.region_selected_ver(acc, &d2)? {
+                        if self.region_satisfies(&mv2, &c2)? {
+                            any_satisfying = true;
+                            break;
+                        }
+                    }
+                }
+                if any_satisfying {
+                    // `\+ (...)` fails for every D0 -> clause 1 fails entirely.
+                    return Some(None);
+                }
+                // Guard holds: find the FIRST dep(D0, COut) in list order whose
+                // selected version does NOT satisfy COut. That COut commits.
+                for elem in &alts {
+                    let pair = self.region_dep_pair(elem)?;
+                    let (d0, cout) = match pair {
+                        None => continue,
+                        Some(p) => p,
+                    };
+                    if let Some(mv) = self.region_selected_ver(acc, &d0)? {
+                        // \+ satisfies(MV, COut): commit when it does NOT satisfy.
+                        if !self.region_satisfies(&mv, &cout)? {
+                            return Some(Some(cout));
+                        }
+                    }
+                }
+                // No alternative produced a broken selection -> clause 1 fails.
+                Some(None)
+            }
+            // clause 2: dep_breaks_need(Acc, D, C, C). COut unifies with C.
+            _ => match self.region_selected_ver(acc, d)? {
+                // selected_ver fails -> clause 2 fails.
+                None => Some(None),
+                // \+ satisfies(MV, C): succeed (COut = C) when it does NOT hold.
+                Some(mv) => {
+                    if self.region_satisfies(&mv, c)? {
+                        Some(None)
+                    } else {
+                        Some(Some(c.clone()))
+                    }
+                }
+            },
+        }
+    }
+
+    /// `selected_ver/3` as a direct native call (P1): the frozen single clause,
+    /// inlined. READ-ONLY.
+    ///
+    ///   selected_ver([H|Rest], Name, Ver) :-
+    ///       ( H = Name-Ver -> true ; selected_ver(Rest, Name, Ver) ).
+    ///
+    /// `H = Name-Ver` unifies a ground `Acc` pair `K-V` against `Name-Ver`: with
+    /// `Name` ground and `Ver` fresh, the `->` commits the first pair whose key
+    /// is structurally `Name`, binding `Ver = V`. There is no base clause, so an
+    /// empty (or exhausted) list FAILS.
+    ///
+    /// Returns `Some(Some(ver))` for the first matching pair's version;
+    /// `Some(None)` when no pair matches (selected_ver fails); `None` to decline
+    /// (improper Acc list, an unbound element/key, or a non-ground `Name` — cases
+    /// where the interpreter's `=` could bind, outside the recognised shape).
+    #[allow(dead_code)]
+    fn region_selected_ver(&self, acc: &Value, name: &Value) -> Option<Option<Value>> {
+        // A non-ground Name would let `K-V = Name-Ver` bind Name to K -> decline.
+        if !self.region_is_ground(name) {
+            return None;
+        }
+        let mut cursor = acc.clone();
+        loop {
+            let node = self.deref_shallow(&cursor);
+            let (head, tail) = match node {
+                Value::Atom(ref s) if s == "[]" => return Some(None),
+                Value::List(ref l) if l.is_empty() => return Some(None),
+                Value::List(ref l) => (l[0].clone(), Value::List(l.tail())),
+                Value::Str(ref f, ref a) if a.len() == 2 && self.is_cons_functor(f) =>
+                    (a[0].clone(), a[1].clone()),
+                // Unbound tail / off-shape list -> decline.
+                _ => return None,
+            };
+            let elem = self.deref_shallow(&head);
+            match elem {
+                Value::Str(ref f, ref a)
+                    if a.len() == 2 && Self::functor_of(f, 2) == "-" =>
+                {
+                    // The key must be ground to compare structurally (the
+                    // interpreter unifies; a ground key => structural ==).
+                    let key = self.deref_shallow(&a[0]);
+                    if !self.region_is_ground(&key) {
+                        return None;
+                    }
+                    if self.terms_identical(&key, name) {
+                        // First match commits the `->`; Ver = the pair's value.
+                        return Some(Some(a[1].clone()));
+                    }
+                    // No match -> the `->` condition failed -> recurse on Rest.
+                }
+                // An unbound element: `H = Name-Ver` would bind it -> decline.
+                Value::Unbound(_) | Value::Ref(_) => return None,
+                // A bound non-pair term cannot unify with `Name-Ver`; the `->`
+                // condition fails deterministically -> recurse on Rest (skip).
+                _ => {}
+            }
+            cursor = tail;
+        }
+    }
+
+    /// Extract `(Name, Constraint)` from a `dep(Name, Constraint)` element (the
+    /// shape `member(dep(_, _), Alts)` enumerates). `Some(Some(pair))` on a
+    /// `dep/2`; `Some(None)` on a bound non-`dep/2` element (member's unification
+    /// fails -> skip it); `None` on an unbound element (member would bind it ->
+    /// decline). READ-ONLY.
+    #[allow(dead_code)]
+    fn region_dep_pair(&self, elem: &Value) -> Option<Option<(Value, Value)>> {
+        match self.deref_shallow(elem) {
+            Value::Str(ref f, ref a)
+                if a.len() == 2 && Self::functor_of(f, 2) == "dep" =>
+                Some(Some((a[0].clone(), a[1].clone()))),
+            Value::Unbound(_) | Value::Ref(_) => None,
+            _ => Some(None),
+        }
+    }
+
     /// Record a binding on the trail for backtracking.
     pub fn trail_binding(&mut self, key: &str) {
         let old = self.get_reg(key);
@@ -2568,56 +4069,227 @@ impl WamState {
         });
     }
 
+    /// Follow the variable-binding chain BY REFERENCE: no allocation, and no
+    /// descent into sub-terms. Returns the first cell that is not a bound
+    /// variable — which may still be an unbound variable, a heap `Ref`, or a
+    /// compound whose functor key is still in `"f/N"` form.
+    ///
+    /// This is `deref_var` minus its clone, and it is what makes the
+    /// shape-first dispatch in `unify` free for the atomic cases.
+    #[inline]
+    pub fn deref_chain<'a>(&'a self, val: &'a Value) -> &'a Value {
+        let mut cur = val;
+        // A cyclic binding chain cannot be built by this runtime (unify never
+        // binds a variable to itself), but a bounded walk turns a corrupted
+        // state into a wrong answer rather than a hang.
+        let mut hops: u32 = 0;
+        while let Value::Unbound(name) = cur {
+            match self.bindings.get(name) {
+                Some(next) => {
+                    hops += 1;
+                    if hops > 1_000_000 { return cur; }
+                    cur = next;
+                }
+                None => break,
+            }
+        }
+        cur
+    }
+
+    /// Normalise a structure's functor key: strip the `"str(...)"` wrapper the
+    /// heap sometimes carries and the `"/N"` arity suffix when `N` matches the
+    /// actual argument count. Borrowed, so the common already-normalised case
+    /// costs nothing.
+    #[inline]
+    pub fn functor_of(full: &str, arity: usize) -> &str {
+        let inner = if full.starts_with("str(") && full.ends_with(')') {
+            &full[4..full.len() - 1]
+        } else {
+            full
+        };
+        match inner.rfind('/') {
+            Some(slash) => match inner[slash + 1..].parse::<usize>() {
+                Ok(a) if a == arity => &inner[..slash],
+                _ => inner,
+            },
+            None => inner,
+        }
+    }
+
+    /// Materialise the heap node whose header sits at `addr` — ONE level: the
+    /// argument cells are read straight out of `heap[addr+1..]` and are NOT
+    /// dereferenced. `None` when that slot does not hold a structure header.
+    fn heap_node_shallow(&self, addr: usize) -> Option<Value> {
+        let full = match self.heap.get(addr) {
+            Some(Value::Str(f, _)) => f.clone(),
+            _ => return None,
+        };
+        let inner = if full.starts_with("str(") && full.ends_with(')') {
+            &full[4..full.len() - 1]
+        } else {
+            full.as_str()
+        };
+        let slash = inner.rfind('/')?;
+        let arity: usize = inner[slash + 1..].parse().ok()?;
+        let functor = inner[..slash].to_string();
+        let args = self.heap_subargs(addr + 1, arity);
+        Some(Value::strv(functor, args))
+    }
+
+    /// Resolve a cell ONE level and hand it back owned: follow the
+    /// variable-binding chain, materialise a heap `Ref` into the node it
+    /// names, and normalise a `"f/N"` functor key — but never walk into
+    /// sub-terms.
+    ///
+    /// This is the shape-first dispatch idea: learn what a cell *is* before
+    /// paying for anything underneath it. It is what `unify` uses in place of
+    /// `deref_heap`, which walks (and used to rebuild) the whole term. Because
+    /// a compound's arguments and a list's elements are one shared `Args`
+    /// spine, the value returned here is O(1) to build for lists and
+    /// compounds — the deep structure is *shared*, not copied, and any part of
+    /// it that still needs resolving is resolved lazily, by the next reader.
+    pub fn deref_shallow(&self, val: &Value) -> Value {
+        let mut cur: Value = {
+            let c = self.deref_chain(val);
+            match c {
+                Value::Str(full, args) => {
+                    let f = Self::functor_of(full, args.len());
+                    if f.len() == full.len() {
+                        return c.clone();
+                    }
+                    return Value::Str(f.to_string(), args.clone());
+                }
+                Value::Ref(_) => c.clone(),
+                other => return other.clone(),
+            }
+        };
+        // Only a heap Ref can need another round (it may name a cell that is
+        // itself a variable or another Ref); bound to keep a corrupted heap
+        // from looping.
+        for _ in 0..64 {
+            let addr = match cur {
+                Value::Ref(a) => a,
+                _ => break,
+            };
+            match self.heap_node_shallow(addr) {
+                Some(node) => {
+                    cur = node;
+                    let c = self.deref_chain(&cur);
+                    if !matches!(c, Value::Ref(_)) {
+                        // Already a concrete node; `heap_node_shallow`
+                        // normalises the functor itself.
+                        return cur;
+                    }
+                    cur = c.clone();
+                }
+                None => break,
+            }
+        }
+        cur
+    }
+
     /// Unify two values, potentially trailing bindings.
+    ///
+    /// SHAPE-FIRST DISPATCH (see `docs/WAM_RUST_STATUS.md`). This used to open
+    /// with `deref_var(&deref_heap(v1))` on BOTH arguments, so every
+    /// unification paid a full recursive walk (and, before structural sharing,
+    /// a full rebuild) of both terms before the match had learned what they
+    /// were — including on the overwhelmingly common "bind a fresh output
+    /// variable" arm, which then only needed the other side's top cell. That
+    /// made unifying an output variable against the suffix of a long list
+    /// O(len), and doing it once per element Θ(N²).
+    ///
+    /// The order is now: dispatch on the raw cells (following only the
+    /// variable-binding chain, by reference, with no allocation at all); if an
+    /// arm needs a value, materialise exactly ONE level of it; and do
+    /// element-wise work only when both sides really are compound. The spine
+    /// of a list or compound is shared, never walked, unless the other side is
+    /// a compound that forces element-wise comparison.
+    ///
+    /// The spine walk is a loop rather than tail recursion, so unifying two
+    /// N-cell cons chains costs O(N) time and O(1) Rust stack.
     pub fn unify(&mut self, v1: &Value, v2: &Value) -> bool {
-        let dv1 = self.deref_var(&self.deref_heap(v1));
-        let dv2 = self.deref_var(&self.deref_heap(v2));
-        match (&dv1, &dv2) {
-            (Value::Unbound(n1), Value::Unbound(n2)) if n1 == n2 => true,
-            (Value::Unbound(n1), _) => {
-                self.bind_var(n1, dv2.clone());
-                true
+        // Phase 1 -- allocation-free arms on the raw cells. The borrows into
+        // `self.bindings` are confined to this block: an arm that has to
+        // mutate (bind a variable, or recurse) cannot hold them, which is the
+        // one structural constraint the borrow checker imposes here.
+        {
+            let s1 = self.deref_chain(v1);
+            let s2 = self.deref_chain(v2);
+            match (s1, s2) {
+                (Value::Atom(a1), Value::Atom(a2)) => return a1 == a2,
+                (Value::Integer(i1), Value::Integer(i2)) => return i1 == i2,
+                (Value::Float(f1), Value::Float(f2)) => return (f1 - f2).abs() < f64::EPSILON,
+                (Value::Bool(b1), Value::Bool(b2)) => return b1 == b2,
+                (Value::Unbound(n1), Value::Unbound(n2)) if n1 == n2 => return true,
+                _ => {}
             }
-            (_, Value::Unbound(n2)) => {
-                self.bind_var(n2, dv1.clone());
-                true
-            }
-            (Value::Atom(a1), Value::Atom(a2)) => a1 == a2,
-            (Value::Integer(i1), Value::Integer(i2)) => i1 == i2,
-            (Value::Float(f1), Value::Float(f2)) => (f1 - f2).abs() < f64::EPSILON,
-            (Value::Bool(b1), Value::Bool(b2)) => b1 == b2,
-            // Empty-list aliasing: the [] atom and the empty Value::List.
-            (Value::List(l), Value::Atom(s)) | (Value::Atom(s), Value::List(l))
-                if l.is_empty() && s == "[]" => true,
-            // Cons-cell aliasing: one logical list is built from both put_list
-            // (Value::List) and put_structure "[|]/2" (Value::Str) cells, so a
-            // List and a cons-functor Str of arity 2 are the same cell.
-            (Value::List(l), Value::Str(f, a)) | (Value::Str(f, a), Value::List(l))
-                if self.is_cons_functor(f) && a.len() == 2 && !l.is_empty() => {
-                let h = l[0].clone();
-                let t = Value::List(l[1..].to_vec());
-                let (a0, a1v) = (a[0].clone(), a[1].clone());
-                self.unify(&h, &a0) && self.unify(&t, &a1v)
-            }
-            (Value::Str(f1, a1), Value::Str(f2, a2)) => {
-                // Alias cons spellings ("[|]/2" vs "./2") against each other.
-                let same = f1 == f2 || (self.is_cons_functor(f1) && self.is_cons_functor(f2));
-                if !same || a1.len() != a2.len() { return false; }
-                let pairs: Vec<(Value, Value)> = a1.iter().cloned().zip(a2.iter().cloned()).collect();
-                for (arg1, arg2) in pairs {
-                    if !self.unify(&arg1, &arg2) { return false; }
+        }
+        // Phase 2 -- one level materialised per side, then a spine loop.
+        let mut d1 = self.deref_shallow(v1);
+        let mut d2 = self.deref_shallow(v2);
+        loop {
+            match (d1, d2) {
+                (Value::Unbound(n1), Value::Unbound(n2)) if n1 == n2 => return true,
+                (Value::Unbound(n1), other) => {
+                    self.bind_var(&n1, other);
+                    return true;
                 }
-                true
-            }
-            (Value::List(l1), Value::List(l2)) => {
-                if l1.len() != l2.len() { return false; }
-                let pairs: Vec<(Value, Value)> = l1.iter().cloned().zip(l2.iter().cloned()).collect();
-                for (i1, i2) in pairs {
-                    if !self.unify(&i1, &i2) { return false; }
+                (other, Value::Unbound(n2)) => {
+                    self.bind_var(&n2, other);
+                    return true;
                 }
-                true
+                (Value::Atom(a1), Value::Atom(a2)) => return a1 == a2,
+                (Value::Integer(i1), Value::Integer(i2)) => return i1 == i2,
+                (Value::Float(f1), Value::Float(f2)) => return (f1 - f2).abs() < f64::EPSILON,
+                (Value::Bool(b1), Value::Bool(b2)) => return b1 == b2,
+                // Empty-list aliasing: the [] atom and the empty Value::List.
+                (Value::List(l), Value::Atom(s)) | (Value::Atom(s), Value::List(l))
+                    if l.is_empty() && s == "[]" => return true,
+                // Cons-cell aliasing: one logical list is built from both
+                // put_list (Value::List) and put_structure "[|]/2"
+                // (Value::Str) cells, so a List and a cons-functor Str of
+                // arity 2 are the same cell. The tail is the SAME spine one
+                // element along (O(1)), never a copy of the remainder.
+                (Value::List(l), Value::Str(f, a)) | (Value::Str(f, a), Value::List(l))
+                    if self.is_cons_functor(&f) && a.len() == 2 && !l.is_empty() => {
+                    let h = l[0].clone();
+                    let a0 = a[0].clone();
+                    if !self.unify(&h, &a0) { return false; }
+                    let t = Value::List(l.tail());
+                    let a1v = a[1].clone();
+                    d1 = self.deref_shallow(&t);
+                    d2 = self.deref_shallow(&a1v);
+                    continue;
+                }
+                (Value::Str(f1, a1), Value::Str(f2, a2)) => {
+                    // Alias cons spellings ("[|]/2" vs "./2") against each other.
+                    let same = f1 == f2
+                        || (self.is_cons_functor(&f1) && self.is_cons_functor(&f2));
+                    if !same || a1.len() != a2.len() { return false; }
+                    if a1.is_empty() { return true; }
+                    let last = a1.len() - 1;
+                    for i in 0..last {
+                        let (x, y) = (a1[i].clone(), a2[i].clone());
+                        if !self.unify(&x, &y) { return false; }
+                    }
+                    // Continue on the LAST argument in this loop: for a cons
+                    // cell that is the tail, so a long chain costs no stack.
+                    let (x, y) = (a1[last].clone(), a2[last].clone());
+                    d1 = self.deref_shallow(&x);
+                    d2 = self.deref_shallow(&y);
+                    continue;
+                }
+                (Value::List(l1), Value::List(l2)) => {
+                    if l1.len() != l2.len() { return false; }
+                    for i in 0..l1.len() {
+                        let (x, y) = (l1[i].clone(), l2[i].clone());
+                        if !self.unify(&x, &y) { return false; }
+                    }
+                    return true;
+                }
+                (x, y) => return x == y,
             }
-            _ => dv1 == dv2,
         }
     }
 
@@ -2628,7 +4300,101 @@ impl WamState {
             .collect()
     }
 
+    /// Cell-level identity: are these two values the SAME term cell, so that a
+    /// caller holding `a` may keep it instead of storing `b`?
+    ///
+    /// Used by `deref_heap` to decide whether a sub-term actually changed. A
+    /// compound or list is "the same cell" only when its shared spine is the
+    /// same allocation and window (`Args::same_ref`) — exactly the condition
+    /// under which reusing that spine is free. Answering `false` is always
+    /// safe (it only costs a rebuild), so the test stays cheap and
+    /// conservative.
+    fn same_cell(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Atom(x), Value::Atom(y)) => x == y,
+            (Value::Integer(x), Value::Integer(y)) => x == y,
+            (Value::Float(x), Value::Float(y)) => x == y,
+            (Value::Bool(x), Value::Bool(y)) => x == y,
+            (Value::Ref(x), Value::Ref(y)) => x == y,
+            (Value::Unbound(x), Value::Unbound(y)) => x == y,
+            (Value::Uninit, Value::Uninit) => true,
+            (Value::Str(f1, a1), Value::Str(f2, a2)) => f1 == f2 && Args::same_ref(a1, a2),
+            (Value::List(l1), Value::List(l2)) => Args::same_ref(l1, l2),
+            _ => false,
+        }
+    }
+
+    /// Fully dereference a CONS CHAIN — `[H|T]` where `T` is itself another
+    /// cons cell — into one `Value::List` (or, when the chain ends in
+    /// something other than `[]`/a list, into a partial list), walking the
+    /// spine ITERATIVELY.
+    ///
+    /// The recursive form this replaces rebuilt the chain from the inside out
+    /// with `Args::cons`, which copies the visible window: prepending one
+    /// element at a time to a list that is already k long is O(k), so an
+    /// N-cell chain cost Θ(N²) — a second quadratic on top of the one in
+    /// `unify`, and N frames of Rust stack (the recorded "stack overflow above
+    /// ~8,000 list cells"). Collecting the heads in one pass and building the
+    /// spine once is O(N) time and O(1) stack.
+    fn deref_cons_chain(&self, head0: &Value, tail0: &Value) -> Value {
+        let mut heads: Vec<Value> = Vec::new();
+        heads.push(self.deref_heap(&self.deref_var(head0)));
+        let mut tail: Value = tail0.clone();
+        loop {
+            let node = self.deref_shallow(&tail);
+            match node {
+                Value::Str(ref f, ref a)
+                    if a.len() == 2 && self.is_cons_functor(f) => {
+                    heads.push(self.deref_heap(&self.deref_var(&a[0])));
+                    tail = a[1].clone();
+                }
+                Value::Atom(ref s) if s == "[]" => {
+                    return Value::list(heads);
+                }
+                Value::List(_) => {
+                    // The rest is already a materialised list: deref its
+                    // elements (cheap when nothing under them moved) and
+                    // append once.
+                    let rest = self.deref_heap(&node);
+                    match rest {
+                        Value::List(items) => {
+                            heads.reserve(items.len());
+                            heads.extend(items.iter().cloned());
+                            return Value::list(heads);
+                        }
+                        other => return Self::rebuild_partial(heads, other),
+                    }
+                }
+                other => {
+                    // Partial list: the tail is still an unbound variable (or
+                    // some other cell a later put_structure will fill). Keep
+                    // it as a cons cell so the tail variable still derefs to
+                    // the rest of the list.
+                    let end = self.deref_heap(&other);
+                    return Self::rebuild_partial(heads, end);
+                }
+            }
+        }
+    }
+
+    /// Rebuild `heads ++ end` as nested `[|]/2` cons cells (used when a chain
+    /// does not end in `[]` or a list). O(N), no window copying.
+    fn rebuild_partial(heads: Vec<Value>, end: Value) -> Value {
+        let mut acc = end;
+        for h in heads.into_iter().rev() {
+            acc = Value::strv("[|]/2".to_string(), vec![h, acc]);
+        }
+        acc
+    }
+
     /// Dereference a heap reference or unbound variable back to its concrete value.
+    ///
+    /// STRUCTURAL SHARING: this walks the whole term, so it used to REBUILD it
+    /// — a fresh spine at every level on every call, even when no sub-term had
+    /// changed. Since `unify` derefs both of its arguments, a register holding
+    /// the catalog was deep-copied on essentially every unification. The
+    /// argument spine is now reused whenever every sub-term dereferenced to the
+    /// same cell, so an already-resolved term costs a walk and no allocation.
     pub fn deref_heap(&self, val: &Value) -> Value {
         match val {
             Value::Unbound(name) => {
@@ -2638,42 +4404,69 @@ impl WamState {
                 val.clone()
             }
             Value::Str(full_str, args) => {
-                let derefed: Vec<Value> = args.iter()
-                    .map(|a| self.deref_heap(&self.deref_var(a)))
-                    .collect();
-                let inner = if full_str.starts_with("str(") && full_str.ends_with(')') {
-                    &full_str[4..full_str.len() - 1]
-                } else {
-                    full_str
-                };
-                let functor = if let Some(slash) = inner.rfind('/') {
-                    match inner[slash + 1..].parse::<usize>() {
-                        Ok(arity) if arity == derefed.len() => &inner[..slash],
-                        _ => inner,
-                    }
-                } else {
-                    inner
-                };
-                if self.is_cons_functor(functor) && derefed.len() == 2 {
-                    let head = derefed[0].clone();
-                    let tail = derefed[1].clone();
-                    match tail {
-                        Value::List(mut items) => {
-                            items.insert(0, head);
-                            return Value::List(items);
+                let functor = Self::functor_of(full_str, args.len());
+                // A cons cell is walked ITERATIVELY (see deref_cons_chain):
+                // rebuilding it recursively used to prepend one element at a
+                // time onto the tail already built, and `Args::cons` copies
+                // the visible window — so an N-cell chain cost Θ(N²) time and
+                // N frames of Rust stack.
+                if args.len() == 2 && self.is_cons_functor(functor) {
+                    return self.deref_cons_chain(&args[0], &args[1]);
+                }
+                // Deferred allocation: the `derefed` vector is only built once
+                // a sub-term actually dereferences to a different cell, so an
+                // already-resolved N-argument term costs a walk and nothing
+                // else.
+                let mut derefed: Option<Vec<Value>> = None;
+                for (idx, a) in args.iter().enumerate() {
+                    let d = self.deref_heap(&self.deref_var(a));
+                    match derefed {
+                        Some(ref mut acc) => acc.push(d),
+                        None => {
+                            if !Self::same_cell(&d, a) {
+                                let mut acc: Vec<Value> = Vec::with_capacity(args.len());
+                                acc.extend(args[..idx].iter().cloned());
+                                acc.push(d);
+                                derefed = Some(acc);
+                            }
                         }
-                        Value::Atom(ref s) if s == "[]" => {
-                            return Value::List(vec![head]);
-                        }
-                        _ => return Value::Str("[|]/2".to_string(), vec![head, tail]),
                     }
                 }
-                Value::Str(functor.to_string(), derefed)
+                match derefed {
+                    None => {
+                        // Nothing under this node moved: keep the existing
+                        // spine. (The functor may still be normalised from
+                        // "f/N" to "f", which costs one small string, never
+                        // the arguments.)
+                        if functor == full_str.as_str() {
+                            val.clone()
+                        } else {
+                            Value::Str(functor.to_string(), args.clone())
+                        }
+                    }
+                    Some(acc) => Value::strv(functor.to_string(), acc),
+                }
             }
             Value::List(items) => {
-                Value::List(items.iter()
-                    .map(|i| self.deref_heap(&self.deref_var(i)))
-                    .collect())
+                let mut derefed: Option<Vec<Value>> = None;
+                for (idx, i) in items.iter().enumerate() {
+                    let d = self.deref_heap(&self.deref_var(i));
+                    match derefed {
+                        Some(ref mut acc) => acc.push(d),
+                        None => {
+                            if !Self::same_cell(&d, i) {
+                                let mut acc: Vec<Value> = Vec::with_capacity(items.len());
+                                acc.extend(items[..idx].iter().cloned());
+                                acc.push(d);
+                                derefed = Some(acc);
+                            }
+                        }
+                    }
+                }
+                match derefed {
+                    None => val.clone(),
+                    Some(acc) => Value::list(acc),
+                }
             }
             Value::Ref(addr) => {
                 if let Some(Value::Str(full_str, _)) = self.heap.get(*addr) {
@@ -2687,27 +4480,14 @@ impl WamState {
                         let functor = &inner[..slash];
                         if let Ok(arity) = inner[slash + 1..].parse::<usize>() {
                             let args = self.heap_subargs(addr + 1, arity);
+                            if (functor == "." || functor == "[|]") && args.len() == 2 {
+                                // Reconstruct as a list, iteratively.
+                                return self.deref_cons_chain(&args[0], &args[1]);
+                            }
                             let derefed: Vec<Value> = args.iter()
                                 .map(|a| self.deref_heap(a))
                                 .collect();
-                            if functor == "." || functor == "[|]" {
-                                // Reconstruct as list
-                                if derefed.len() == 2 {
-                                    let head = derefed[0].clone();
-                                    let tail = derefed[1].clone();
-                                    match tail {
-                                        Value::List(mut items) => {
-                                            items.insert(0, head);
-                                            return Value::List(items);
-                                        }
-                                        Value::Atom(ref s) if s == "[]" => {
-                                            return Value::List(vec![head]);
-                                        }
-                                        _ => return Value::Str("[|]/2".to_string(), vec![head, tail]),
-                                    }
-                                }
-                            }
-                            return Value::Str(functor.to_string(), derefed);
+                            return Value::strv(functor.to_string(), derefed);
                         }
                     }
                 }
@@ -3029,6 +4809,1215 @@ pub fn run_parallel(seeds: Vec<WamState>) -> Vec<Option<bool>> {
                 Some(result)
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod region1_matching_deps_tests {
+    // Stage 2 region 1 stress tests: the fused native region
+    // matching_deps/4 ⊕ dep_to_req/3 (WAM_RUST_LOWERED_TIER_THROUGHPUT_PLAN §5),
+    // exercising the Kimi K2 soundness scenarios
+    // (docs/reports/wam_rust_stage2_kimi_soundness_review.md):
+    //   * the determinism decision (G-4/G-2): dep_to_req's committed cut
+    //     (alternatives(_) -> req(_,any)) vs the catch-all clause;
+    //   * frame pinning / argument-register liveness (G-1): a successful region
+    //     leaves the caller's argument and temporary registers untouched;
+    //   * recursive-lowered-backtrack safety (G-2/G-5): the region leaves NO
+    //     choice point and trails the output binding so a caller backtrack
+    //     undoes it; anything off-shape DECLINES with the P2 minimal snapshot
+    //     rolled back (no partial mutation escapes).
+    use super::*;
+    use std::collections::HashMap;
+
+    fn vm() -> WamState { WamState::new(vec![], HashMap::new()) }
+
+    fn depends(n: Value, v: Value, d: Value, c: Value) -> Value {
+        Value::strv("depends".to_string(), vec![n, v, d, c])
+    }
+    fn req(a: Value, b: Value) -> Value {
+        Value::strv("req".to_string(), vec![a, b])
+    }
+    fn atom(s: &str) -> Value { Value::Atom(s.to_string()) }
+
+    // Read what the (unbound) output register was bound to.
+    fn out_of(m: &WamState) -> Value {
+        m.deref_heap(&Value::new_unbound("Out"))
+    }
+
+    // Set A1..A4 for a matching_deps(list, Name, Ver, Out) call with an unbound
+    // output. Returns the machine ready to dispatch.
+    fn setup(list: Value, name: Value, ver: Value) -> WamState {
+        let mut m = vm();
+        m.set_reg_str("A1", list);
+        m.set_reg_str("A2", name);
+        m.set_reg_str("A3", ver);
+        m.set_reg_str("A4", Value::new_unbound("Out"));
+        m
+    }
+
+    #[test]
+    fn fusion_walk_and_dep_to_req_cut_decision() {
+        // Name=foo, Ver=1. Match foo/1 elements; dep_to_req commits on
+        // alternatives(_) to req(_,any) (its cut), else req(D,C).
+        let list = Value::list(vec![
+            depends(atom("foo"), Value::Integer(1), Value::strv("pkg".into(), vec![atom("bar")]), atom("gt")),
+            depends(atom("baz"), Value::Integer(2), atom("whatever"), atom("c")), // Name mismatch -> skip
+            depends(atom("foo"), Value::Integer(9), atom("x"), atom("c")),        // Ver mismatch -> skip
+            depends(atom("foo"), Value::Integer(1), Value::strv("alternatives".into(), vec![Value::list(vec![atom("a"), atom("b")])]), atom("cc")),
+        ]);
+        let mut m = setup(list, atom("foo"), Value::Integer(1));
+        let r = m.region_matching_deps_dispatch(42);
+        assert_eq!(r, Some(true), "region handled the deterministic call");
+        assert_eq!(m.pc, 42, "pc advanced to cont_pc on success");
+        let expected = Value::list(vec![
+            req(Value::strv("pkg".into(), vec![atom("bar")]), atom("gt")),
+            req(Value::strv("alternatives".into(), vec![Value::list(vec![atom("a"), atom("b")])]), atom("any")),
+        ]);
+        assert!(m.terms_identical(&out_of(&m), &expected),
+            "fused output matches interpreter semantics incl. the alternatives->any cut; got {}", out_of(&m));
+    }
+
+    #[test]
+    fn compound_version_structural_equality() {
+        // == is structural: a compound version v(1,2,3) must match by structure.
+        let ver = Value::strv("v".into(), vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)]);
+        let list = Value::list(vec![
+            depends(atom("foo"), ver.clone(), atom("dep1"), atom("c1")),
+            depends(atom("foo"), Value::strv("v".into(), vec![Value::Integer(1), Value::Integer(2), Value::Integer(4)]), atom("dep2"), atom("c2")), // differs -> skip
+        ]);
+        let mut m = setup(list, atom("foo"), ver);
+        assert_eq!(m.region_matching_deps_dispatch(1), Some(true));
+        let expected = Value::list(vec![req(atom("dep1"), atom("c1"))]);
+        assert!(m.terms_identical(&out_of(&m), &expected), "got {}", out_of(&m));
+    }
+
+    #[test]
+    fn empty_list_yields_empty_output() {
+        let mut m = setup(Value::list(vec![]), atom("foo"), Value::Integer(1));
+        assert_eq!(m.region_matching_deps_dispatch(7), Some(true));
+        // [] atom and empty native list are aliased.
+        assert!(m.terms_identical(&out_of(&m), &atom("[]")));
+        assert!(m.terms_identical(&out_of(&m), &Value::list(vec![])));
+    }
+
+    #[test]
+    fn frame_pinning_argument_and_temporary_registers_preserved() {
+        // G-1: a successful region must not clobber the caller's registers —
+        // the four argument registers stay live and any temporary (X) register
+        // the caller left is untouched.
+        let list = Value::list(vec![
+            depends(atom("foo"), Value::Integer(1), atom("d"), atom("c")),
+        ]);
+        let a1 = list.clone();
+        let mut m = setup(list, atom("foo"), Value::Integer(1));
+        m.set_reg_str("X1", atom("caller_sentinel"));
+        let cp_before = m.choice_points.len();
+        let trail_before = m.trail.len();
+        assert_eq!(m.region_matching_deps_dispatch(3), Some(true));
+        // Argument registers unchanged (forced live).
+        assert!(m.terms_identical(&m.get_reg_raw("A1").unwrap(), &a1), "A1 preserved");
+        assert!(m.terms_identical(&m.get_reg_raw("A2").unwrap(), &atom("foo")), "A2 preserved");
+        assert!(m.terms_identical(&m.get_reg_raw("A3").unwrap(), &Value::Integer(1)), "A3 preserved");
+        // Caller temporary untouched.
+        assert_eq!(m.get_reg_raw("X1"), Some(atom("caller_sentinel")), "X1 preserved");
+        // G-2: no choice point left behind; the output binding IS trailed so a
+        // caller backtrack can undo it (recursive-lowered-backtrack safety).
+        assert_eq!(m.choice_points.len(), cp_before, "region leaves no choice point");
+        assert!(m.trail.len() > trail_before, "output binding is trailed for backtrack");
+    }
+
+    #[test]
+    fn decline_open_tail_restores_minimal_snapshot() {
+        // An unbound list tail is outside the recognised shape: the region must
+        // DECLINE (None) with the P2 minimal snapshot rolled back — no binding,
+        // no trail growth, no choice point, output still unbound.
+        let open = Value::strv("[|]/2".into(), vec![
+            depends(atom("foo"), Value::Integer(1), atom("d"), atom("c")),
+            Value::new_unbound("Tail"),
+        ]);
+        let mut m = setup(open, atom("foo"), Value::Integer(1));
+        let trail_before = m.trail.len();
+        let cp_before = m.choice_points.len();
+        assert_eq!(m.region_matching_deps_dispatch(5), None, "declines to interpreter on open tail");
+        assert_eq!(m.trail.len(), trail_before, "trail restored (minimal snapshot)");
+        assert_eq!(m.choice_points.len(), cp_before, "no choice point left");
+        assert!(matches!(out_of(&m), Value::Unbound(_)), "output still unbound after decline");
+    }
+
+    #[test]
+    fn decline_bound_output() {
+        // A bound output is out of the recognised (unbound-output) shape.
+        let list = Value::list(vec![
+            depends(atom("foo"), Value::Integer(1), atom("d"), atom("c")),
+        ]);
+        let mut m = vm();
+        m.set_reg_str("A1", list);
+        m.set_reg_str("A2", atom("foo"));
+        m.set_reg_str("A3", Value::Integer(1));
+        m.set_reg_str("A4", Value::list(vec![])); // already bound
+        assert_eq!(m.region_matching_deps_dispatch(1), None, "declines when output already bound");
+    }
+
+    #[test]
+    fn decline_non_depends_element() {
+        // An element that is not depends/4 is off-shape -> decline.
+        let list = Value::list(vec![atom("not_a_depends")]);
+        let mut m = setup(list, atom("foo"), Value::Integer(1));
+        assert_eq!(m.region_matching_deps_dispatch(1), None);
+        assert!(matches!(out_of(&m), Value::Unbound(_)));
+    }
+
+    #[test]
+    fn decline_unbound_dep_in_matching_element() {
+        // A matching element whose dep (arg 3) is unbound: the interpreter's
+        // dep_to_req clause-1 head would BIND it to alternatives(_); the region
+        // must not guess -> decline.
+        let list = Value::list(vec![
+            depends(atom("foo"), Value::Integer(1), Value::new_unbound("D"), atom("c")),
+        ]);
+        let mut m = setup(list, atom("foo"), Value::Integer(1));
+        assert_eq!(m.region_matching_deps_dispatch(1), None);
+    }
+}
+
+#[cfg(test)]
+mod region2_matching_versions_tests {
+    // Stage 2 region 2 stress tests: the fused native region
+    // matching_versions/4 ⊕ satisfies/2 ⊕ version_lt/2
+    // (WAM_RUST_LOWERED_TIER_THROUGHPUT_PLAN §5). Exercises:
+    //   * the Debian §5.6.12 version-comparison edges (epoch, ~pre-release,
+    //     +dfsg, numeric-vs-alpha runs) against the SWI ground-truth truth
+    //     table — the region's highest correctness risk;
+    //   * satisfies' 7-clause determinism decision (any/eq/gte/lte/lt/gt/range);
+    //   * the G-4 determinism / G-2 no-CP guarantee;
+    //   * the decline paths (open tail, non-package element, bound output,
+    //     unbound version/constraint, mixed v/deb operand);
+    //   * the SHARED-callee invariance: region_satisfies / region_version_lt are
+    //     pure (no state mutation), so the interpreted satisfies/version_lt used
+    //     by every OTHER call site are untouched.
+    use super::*;
+    use std::collections::HashMap;
+
+    fn vm() -> WamState { WamState::new(vec![], HashMap::new()) }
+    fn atom(s: &str) -> Value { Value::Atom(s.to_string()) }
+    fn int(n: i64) -> Value { Value::Integer(n) }
+    fn package(n: Value, v: Value) -> Value {
+        Value::strv("package".to_string(), vec![n, v])
+    }
+    fn v3(a: i64, b: i64, c: i64) -> Value {
+        Value::strv("v".to_string(), vec![int(a), int(b), int(c)])
+    }
+    // s(OrderCodes, DigitInt) — codes given as a &[i64].
+    fn seg(codes: &[i64], num: i64) -> Value {
+        Value::strv("s".to_string(),
+            vec![Value::list(codes.iter().map(|&c| int(c)).collect()), int(num)])
+    }
+    fn deb(epoch: i64, up: Vec<Value>, rev: Vec<Value>) -> Value {
+        Value::strv("deb".to_string(),
+            vec![int(epoch), Value::list(up), Value::list(rev)])
+    }
+    fn out_of(m: &WamState) -> Value { m.deref_heap(&Value::new_unbound("Out")) }
+
+    // Set A1..A4 for matching_versions(list, Name, C, Out) with unbound output.
+    fn setup(list: Value, name: Value, c: Value) -> WamState {
+        let mut m = vm();
+        m.set_reg_str("A1", list);
+        m.set_reg_str("A2", name);
+        m.set_reg_str("A3", c);
+        m.set_reg_str("A4", Value::new_unbound("Out"));
+        m
+    }
+
+    // The DEB_POOL terms exactly as gen_catalogs / the shim build them
+    // (verified against SWI's own parse). Order matters: it is the row/col
+    // order of the truth matrix below.
+    fn deb_pool() -> Vec<(&'static str, Value)> {
+        vec![
+            ("1.0~rc1",   deb(0, vec![seg(&[],1), seg(&[46],0), seg(&[126,114,99],1)], vec![])),
+            ("1.0",       deb(0, vec![seg(&[],1), seg(&[46],0)], vec![])),
+            ("1.0-1",     deb(0, vec![seg(&[],1), seg(&[46],0)], vec![seg(&[],1)])),
+            ("1.0-2",     deb(0, vec![seg(&[],1), seg(&[46],0)], vec![seg(&[],2)])),
+            ("1.0+dfsg1", deb(0, vec![seg(&[],1), seg(&[46],0), seg(&[43,100,102,115,103],1)], vec![])),
+            ("2.36-9",    deb(0, vec![seg(&[],2), seg(&[46],36)], vec![seg(&[],9)])),
+            ("2.38-1",    deb(0, vec![seg(&[],2), seg(&[46],38)], vec![seg(&[],1)])),
+            ("1:1.0",     deb(1, vec![seg(&[],1), seg(&[46],0)], vec![])),
+            ("2:0.1",     deb(2, vec![seg(&[],0), seg(&[46],1)], vec![])),
+            ("0.1",       deb(0, vec![seg(&[],0), seg(&[46],1)], vec![])),
+        ]
+    }
+
+    #[test]
+    fn debian_version_lt_truth_table_matches_swi() {
+        // SWI ground truth (row < col), generated from resolver.pl's own
+        // version_lt over the DEB_POOL. 1 = version_lt succeeds, 0 = fails.
+        let truth: [[u8; 10]; 10] = [
+            [0,1,1,1,1,1,1,1,1,0], // 1.0~rc1
+            [0,0,1,1,1,1,1,1,1,0], // 1.0
+            [0,0,0,1,1,1,1,1,1,0], // 1.0-1
+            [0,0,0,0,1,1,1,1,1,0], // 1.0-2
+            [0,0,0,0,0,1,1,1,1,0], // 1.0+dfsg1
+            [0,0,0,0,0,0,1,1,1,0], // 2.36-9
+            [0,0,0,0,0,0,0,1,1,0], // 2.38-1
+            [0,0,0,0,0,0,0,0,1,0], // 1:1.0
+            [0,0,0,0,0,0,0,0,0,0], // 2:0.1
+            [1,1,1,1,1,1,1,1,1,0], // 0.1
+        ];
+        let m = vm();
+        let pool = deb_pool();
+        for (i, (la, ta)) in pool.iter().enumerate() {
+            for (j, (lb, tb)) in pool.iter().enumerate() {
+                let got = m.region_version_lt(ta, tb);
+                assert_eq!(got, Some(truth[i][j] == 1),
+                    "version_lt({} , {}) native={:?} expected {}", la, lb, got, truth[i][j]);
+            }
+        }
+    }
+
+    #[test]
+    fn version_lt_specific_debian_edges() {
+        let m = vm();
+        // ~ pre-release sorts BEFORE the release.
+        let rc = deb(0, vec![seg(&[],1), seg(&[46],0), seg(&[126,114,99],1)], vec![]);
+        let rel = deb(0, vec![seg(&[],1), seg(&[46],0)], vec![]);
+        assert_eq!(m.region_version_lt(&rc, &rel), Some(true), "~rc1 < release");
+        assert_eq!(m.region_version_lt(&rel, &rc), Some(false), "release !< ~rc1");
+        // +dfsg sorts AFTER the plain release.
+        let dfsg = deb(0, vec![seg(&[],1), seg(&[46],0), seg(&[43,100,102,115,103],1)], vec![]);
+        assert_eq!(m.region_version_lt(&rel, &dfsg), Some(true), "1.0 < 1.0+dfsg1");
+        // Epoch dominates upstream: 1:1.0 < 2:0.1 though 0.1 < 1.0 upstream.
+        let e1 = deb(1, vec![seg(&[],1), seg(&[46],0)], vec![]);
+        let e2 = deb(2, vec![seg(&[],0), seg(&[46],1)], vec![]);
+        assert_eq!(m.region_version_lt(&e1, &e2), Some(true), "epoch 1 < epoch 2");
+        // Revision comparison decides when upstream is equal.
+        let r1 = deb(0, vec![seg(&[],1), seg(&[46],0)], vec![seg(&[],1)]);
+        let r2 = deb(0, vec![seg(&[],1), seg(&[46],0)], vec![seg(&[],2)]);
+        assert_eq!(m.region_version_lt(&r1, &r2), Some(true), "-1 < -2 revision");
+        // Numeric run compares as numbers, not lexically (36 < 38, and 2 < 10).
+        let n36 = deb(0, vec![seg(&[],2), seg(&[46],36)], vec![seg(&[],9)]);
+        let n38 = deb(0, vec![seg(&[],2), seg(&[46],38)], vec![seg(&[],1)]);
+        assert_eq!(m.region_version_lt(&n36, &n38), Some(true), "36 < 38 numeric");
+        let two = deb(0, vec![seg(&[],2)], vec![]);
+        let ten = deb(0, vec![seg(&[],10)], vec![]);
+        assert_eq!(m.region_version_lt(&two, &ten), Some(true), "2 < 10 numeric not lexical");
+    }
+
+    #[test]
+    fn version_lt_v3_triples() {
+        let m = vm();
+        assert_eq!(m.region_version_lt(&v3(1,2,3), &v3(1,2,4)), Some(true));
+        assert_eq!(m.region_version_lt(&v3(1,2,3), &v3(1,2,3)), Some(false)); // equal
+        assert_eq!(m.region_version_lt(&v3(1,3,0), &v3(1,2,9)), Some(false)); // B: 3 !< 2
+        assert_eq!(m.region_version_lt(&v3(2,0,0), &v3(1,9,9)), Some(false)); // A dominates
+        assert_eq!(m.region_version_lt(&v3(1,0,0), &v3(2,0,0)), Some(true));
+    }
+
+    #[test]
+    fn satisfies_all_seven_clauses() {
+        let m = vm();
+        let ver = v3(1,2,3);
+        // any
+        assert_eq!(m.region_satisfies(&ver, &atom("any")), Some(true));
+        // eq — structural identity on ground terms
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("eq".into(), vec![v3(1,2,3)])), Some(true));
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("eq".into(), vec![v3(1,2,4)])), Some(false));
+        // gte : \+ version_lt(Ver, G)
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("gte".into(), vec![v3(1,2,3)])), Some(true));  // equal -> !false
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("gte".into(), vec![v3(1,2,4)])), Some(false)); // ver<g -> !true
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("gte".into(), vec![v3(1,2,2)])), Some(true));
+        // lte : \+ version_lt(G, Ver)
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("lte".into(), vec![v3(1,2,3)])), Some(true));
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("lte".into(), vec![v3(1,2,2)])), Some(false));
+        // lt : version_lt(Ver, H)
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("lt".into(), vec![v3(1,2,4)])), Some(true));
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("lt".into(), vec![v3(1,2,3)])), Some(false));
+        // gt : version_lt(H, Ver)
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("gt".into(), vec![v3(1,2,2)])), Some(true));
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("gt".into(), vec![v3(1,2,3)])), Some(false));
+        // range(Lo,Hi) : \+ version_lt(Ver,Lo), version_lt(Ver,Hi)
+        let range = |lo: Value, hi: Value| Value::strv("range".into(), vec![lo, hi]);
+        assert_eq!(m.region_satisfies(&ver, &range(v3(1,0,0), v3(2,0,0))), Some(true));
+        assert_eq!(m.region_satisfies(&ver, &range(v3(1,2,4), v3(2,0,0))), Some(false)); // below Lo
+        assert_eq!(m.region_satisfies(&ver, &range(v3(1,0,0), v3(1,2,3))), Some(false)); // not < Hi
+    }
+
+    #[test]
+    fn fused_walk_keeps_only_matching_and_satisfying() {
+        // Name=foo, C=gte(v(1,0,0)). Keep foo packages whose version >= 1.0.0.
+        let list = Value::list(vec![
+            package(atom("foo"), v3(0,9,0)),  // foo but 0.9.0 < 1.0.0 -> skip
+            package(atom("bar"), v3(2,0,0)),  // name mismatch -> skip
+            package(atom("foo"), v3(1,0,0)),  // keep
+            package(atom("foo"), v3(1,5,0)),  // keep
+        ]);
+        let c = Value::strv("gte".into(), vec![v3(1,0,0)]);
+        let mut m = setup(list, atom("foo"), c);
+        let r = m.region_matching_versions_dispatch(42);
+        assert_eq!(r, Some(true), "region handled the deterministic call");
+        assert_eq!(m.pc, 42, "pc advanced to cont_pc");
+        let expected = Value::list(vec![v3(1,0,0), v3(1,5,0)]);
+        assert!(m.terms_identical(&out_of(&m), &expected),
+            "kept versions in walk order; got {}", out_of(&m));
+    }
+
+    #[test]
+    fn fused_walk_with_debian_versions_and_any() {
+        // C=any keeps every matching-name package regardless of version.
+        let list = Value::list(vec![
+            package(atom("d0"), deb(0, vec![seg(&[],1), seg(&[46],0)], vec![])),
+            package(atom("d0"), deb(0, vec![seg(&[],1), seg(&[46],0), seg(&[126,114,99],1)], vec![])),
+        ]);
+        let mut m = setup(list, atom("d0"), atom("any"));
+        assert_eq!(m.region_matching_versions_dispatch(1), Some(true));
+        let expected = Value::list(vec![
+            deb(0, vec![seg(&[],1), seg(&[46],0)], vec![]),
+            deb(0, vec![seg(&[],1), seg(&[46],0), seg(&[126,114,99],1)], vec![]),
+        ]);
+        assert!(m.terms_identical(&out_of(&m), &expected), "got {}", out_of(&m));
+    }
+
+    #[test]
+    fn empty_list_yields_empty_output() {
+        let mut m = setup(Value::list(vec![]), atom("foo"), atom("any"));
+        assert_eq!(m.region_matching_versions_dispatch(7), Some(true));
+        assert!(m.terms_identical(&out_of(&m), &atom("[]")));
+        assert!(m.terms_identical(&out_of(&m), &Value::list(vec![])));
+    }
+
+    #[test]
+    fn determinism_no_choice_point_and_registers_preserved() {
+        // G-2/G-4: a successful region leaves NO choice point; G-1: argument
+        // registers stay live; the output binding is trailed for a caller
+        // backtrack.
+        let list = Value::list(vec![package(atom("foo"), v3(1,0,0))]);
+        let a1 = list.clone();
+        let mut m = setup(list, atom("foo"), atom("any"));
+        m.set_reg_str("X1", atom("caller_sentinel"));
+        let cp_before = m.choice_points.len();
+        let trail_before = m.trail.len();
+        assert_eq!(m.region_matching_versions_dispatch(3), Some(true));
+        assert!(m.terms_identical(&m.get_reg_raw("A1").unwrap(), &a1), "A1 preserved");
+        assert!(m.terms_identical(&m.get_reg_raw("A2").unwrap(), &atom("foo")), "A2 preserved");
+        assert_eq!(m.get_reg_raw("X1"), Some(atom("caller_sentinel")), "X1 preserved");
+        assert_eq!(m.choice_points.len(), cp_before, "region leaves no choice point");
+        assert!(m.trail.len() > trail_before, "output binding trailed for backtrack");
+    }
+
+    #[test]
+    fn shared_satisfies_callee_is_pure_no_state_mutation() {
+        // SHARED-callee invariance: the region's private satisfies/version_lt
+        // must not mutate machine state (trail / choice points / heap / var
+        // counter), so the interpreted satisfies used by every OTHER call site
+        // is unaffected. Exercise every satisfies clause and check nothing moved.
+        let mut m = vm();
+        m.set_reg_str("Z", atom("z"));
+        let trail0 = m.trail.len();
+        let cp0 = m.choice_points.len();
+        let heap0 = m.heap.len();
+        let vc0 = m.var_counter;
+        let ver = v3(1,2,3);
+        let probes = vec![
+            atom("any"),
+            Value::strv("eq".into(), vec![v3(1,2,3)]),
+            Value::strv("gte".into(), vec![v3(1,0,0)]),
+            Value::strv("lte".into(), vec![v3(2,0,0)]),
+            Value::strv("lt".into(), vec![v3(2,0,0)]),
+            Value::strv("gt".into(), vec![v3(1,0,0)]),
+            Value::strv("range".into(), vec![v3(1,0,0), v3(2,0,0)]),
+        ];
+        for c in &probes { let _ = m.region_satisfies(&ver, c); }
+        // deb path too
+        let _ = m.region_version_lt(
+            &deb(0, vec![seg(&[],1)], vec![]),
+            &deb(0, vec![seg(&[],2)], vec![]));
+        assert_eq!(m.trail.len(), trail0, "trail unchanged (pure callee)");
+        assert_eq!(m.choice_points.len(), cp0, "no choice point pushed");
+        assert_eq!(m.heap.len(), heap0, "heap unchanged");
+        assert_eq!(m.var_counter, vc0, "var_counter unchanged");
+    }
+
+    #[test]
+    fn decline_open_tail_restores_minimal_snapshot() {
+        let open = Value::strv("[|]/2".into(), vec![
+            package(atom("foo"), v3(1,0,0)),
+            Value::new_unbound("Tail"),
+        ]);
+        let mut m = setup(open, atom("foo"), atom("any"));
+        let trail_before = m.trail.len();
+        let cp_before = m.choice_points.len();
+        assert_eq!(m.region_matching_versions_dispatch(5), None, "declines on open tail");
+        assert_eq!(m.trail.len(), trail_before, "trail restored (minimal snapshot)");
+        assert_eq!(m.choice_points.len(), cp_before, "no choice point left");
+        assert!(matches!(out_of(&m), Value::Unbound(_)), "output still unbound after decline");
+    }
+
+    #[test]
+    fn decline_non_package_element() {
+        let list = Value::list(vec![atom("not_a_package")]);
+        let mut m = setup(list, atom("foo"), atom("any"));
+        assert_eq!(m.region_matching_versions_dispatch(1), None);
+        assert!(matches!(out_of(&m), Value::Unbound(_)));
+    }
+
+    #[test]
+    fn decline_bound_output() {
+        let list = Value::list(vec![package(atom("foo"), v3(1,0,0))]);
+        let mut m = vm();
+        m.set_reg_str("A1", list);
+        m.set_reg_str("A2", atom("foo"));
+        m.set_reg_str("A3", atom("any"));
+        m.set_reg_str("A4", Value::list(vec![])); // already bound
+        assert_eq!(m.region_matching_versions_dispatch(1), None, "declines when output bound");
+    }
+
+    #[test]
+    fn decline_unbound_version_in_matching_element() {
+        // Matching name but the version is unbound: satisfies with a non-`any`
+        // constraint needs a ground version; the region must not guess -> decline.
+        let list = Value::list(vec![
+            package(atom("foo"), Value::new_unbound("V")),
+        ]);
+        let c = Value::strv("gte".into(), vec![v3(1,0,0)]);
+        let mut m = setup(list, atom("foo"), c);
+        assert_eq!(m.region_matching_versions_dispatch(1), None);
+    }
+
+    #[test]
+    fn decline_unbound_constraint() {
+        let list = Value::list(vec![package(atom("foo"), v3(1,0,0))]);
+        let mut m = setup(list, atom("foo"), Value::new_unbound("C"));
+        assert_eq!(m.region_matching_versions_dispatch(1), None);
+    }
+
+    #[test]
+    fn decline_mixed_v_deb_operand() {
+        // version_lt(v(..), deb(..)) has no matching interpreter clause; the
+        // region declines rather than guessing a cross-shape comparison.
+        let m = vm();
+        assert_eq!(
+            m.region_version_lt(&v3(1,0,0), &deb(0, vec![seg(&[],1)], vec![])),
+            None, "mixed v/deb declines");
+    }
+}
+
+#[cfg(test)]
+mod region3a_key_dep_rows_tests {
+    // Stage 2 region 3a stress tests: the fused native region
+    // key_dep_rows/3 ⊕ dep_to_req/3 (WAM_RUST_LOWERED_TIER_THROUGHPUT_PLAN §5),
+    // the B3 index builder. Exercises:
+    //   * the fused walk building keyed rows (N-V)-I-Req with a MONOTONE index I
+    //     and dep_to_req's committed cut (alternatives(_) -> req(_,any));
+    //   * a non-zero start index threads correctly;
+    //   * G-1 frame pinning / register liveness and G-2 no-CP (output trailed);
+    //   * the decline paths (open tail, bound output, non-depends element,
+    //     unbound dep that dep_to_req would bind, non-integer index).
+    use super::*;
+    use std::collections::HashMap;
+
+    fn vm() -> WamState { WamState::new(vec![], HashMap::new()) }
+    fn atom(s: &str) -> Value { Value::Atom(s.to_string()) }
+    fn int(n: i64) -> Value { Value::Integer(n) }
+    fn depends(n: Value, v: Value, d: Value, c: Value) -> Value {
+        Value::strv("depends".to_string(), vec![n, v, d, c])
+    }
+    fn req(a: Value, b: Value) -> Value {
+        Value::strv("req".to_string(), vec![a, b])
+    }
+    // `-`/2 pair term.
+    fn m2(a: Value, b: Value) -> Value {
+        Value::strv("-".to_string(), vec![a, b])
+    }
+    // A keyed dep row (N-V)-I-Req.
+    fn row(n: Value, v: Value, i: i64, r: Value) -> Value {
+        m2(m2(m2(n, v), int(i)), r)
+    }
+    fn out_of(m: &WamState) -> Value { m.deref_heap(&Value::new_unbound("Out")) }
+
+    // Set A1..A3 for key_dep_rows(list, I, Out) with unbound output.
+    fn setup(list: Value, i: i64) -> WamState {
+        let mut m = vm();
+        m.set_reg_str("A1", list);
+        m.set_reg_str("A2", int(i));
+        m.set_reg_str("A3", Value::new_unbound("Out"));
+        m
+    }
+
+    #[test]
+    fn fusion_walk_index_and_dep_to_req_cut() {
+        // Every element yields a row; I increments; dep_to_req commits on
+        // alternatives(_) to req(_,any) (its cut), else req(D,C).
+        let alts = Value::strv("alternatives".into(), vec![Value::list(vec![atom("a"), atom("b")])]);
+        let list = Value::list(vec![
+            depends(atom("foo"), int(1), Value::strv("pkg".into(), vec![atom("bar")]), atom("gt")),
+            depends(atom("baz"), int(2), alts.clone(), atom("cc")),
+        ]);
+        let mut m = setup(list, 0);
+        let r = m.region_key_dep_rows_dispatch(42);
+        assert_eq!(r, Some(true), "region handled the deterministic call");
+        assert_eq!(m.pc, 42, "pc advanced to cont_pc");
+        let expected = Value::list(vec![
+            row(atom("foo"), int(1), 0, req(Value::strv("pkg".into(), vec![atom("bar")]), atom("gt"))),
+            row(atom("baz"), int(2), 1, req(alts, atom("any"))),
+        ]);
+        assert!(m.terms_identical(&out_of(&m), &expected),
+            "fused rows match interpreter semantics incl. index + alternatives->any cut; got {}", out_of(&m));
+    }
+
+    #[test]
+    fn nonzero_start_index() {
+        let list = Value::list(vec![
+            depends(atom("p"), int(1), atom("d0"), atom("c0")),
+            depends(atom("q"), int(2), atom("d1"), atom("c1")),
+        ]);
+        let mut m = setup(list, 5);
+        assert_eq!(m.region_key_dep_rows_dispatch(1), Some(true));
+        let expected = Value::list(vec![
+            row(atom("p"), int(1), 5, req(atom("d0"), atom("c0"))),
+            row(atom("q"), int(2), 6, req(atom("d1"), atom("c1"))),
+        ]);
+        assert!(m.terms_identical(&out_of(&m), &expected), "got {}", out_of(&m));
+    }
+
+    #[test]
+    fn empty_list_yields_empty_output() {
+        let mut m = setup(Value::list(vec![]), 0);
+        assert_eq!(m.region_key_dep_rows_dispatch(7), Some(true));
+        assert!(m.terms_identical(&out_of(&m), &atom("[]")));
+    }
+
+    #[test]
+    fn frame_pinning_registers_preserved() {
+        // G-1: argument registers stay live; caller temporary untouched.
+        // G-2: no choice point; output binding trailed for a caller backtrack.
+        let list = Value::list(vec![depends(atom("foo"), int(1), atom("d"), atom("c"))]);
+        let a1 = list.clone();
+        let mut m = setup(list, 3);
+        m.set_reg_str("X1", atom("caller_sentinel"));
+        let cp_before = m.choice_points.len();
+        let trail_before = m.trail.len();
+        assert_eq!(m.region_key_dep_rows_dispatch(3), Some(true));
+        assert!(m.terms_identical(&m.get_reg_raw("A1").unwrap(), &a1), "A1 preserved");
+        assert!(m.terms_identical(&m.get_reg_raw("A2").unwrap(), &int(3)), "A2 preserved");
+        assert_eq!(m.get_reg_raw("X1"), Some(atom("caller_sentinel")), "X1 preserved");
+        assert_eq!(m.choice_points.len(), cp_before, "region leaves no choice point");
+        assert!(m.trail.len() > trail_before, "output binding trailed for backtrack");
+    }
+
+    #[test]
+    fn decline_open_tail_restores_minimal_snapshot() {
+        let open = Value::strv("[|]/2".into(), vec![
+            depends(atom("foo"), int(1), atom("d"), atom("c")),
+            Value::new_unbound("Tail"),
+        ]);
+        let mut m = setup(open, 0);
+        let trail_before = m.trail.len();
+        let cp_before = m.choice_points.len();
+        assert_eq!(m.region_key_dep_rows_dispatch(5), None, "declines on open tail");
+        assert_eq!(m.trail.len(), trail_before, "trail restored (minimal snapshot)");
+        assert_eq!(m.choice_points.len(), cp_before, "no choice point left");
+        assert!(matches!(out_of(&m), Value::Unbound(_)), "output still unbound after decline");
+    }
+
+    #[test]
+    fn decline_bound_output() {
+        let mut m = vm();
+        m.set_reg_str("A1", Value::list(vec![depends(atom("foo"), int(1), atom("d"), atom("c"))]));
+        m.set_reg_str("A2", int(0));
+        m.set_reg_str("A3", Value::list(vec![])); // already bound
+        assert_eq!(m.region_key_dep_rows_dispatch(1), None, "declines when output bound");
+    }
+
+    #[test]
+    fn decline_non_depends_element() {
+        let mut m = setup(Value::list(vec![atom("not_a_depends")]), 0);
+        assert_eq!(m.region_key_dep_rows_dispatch(1), None);
+        assert!(matches!(out_of(&m), Value::Unbound(_)));
+    }
+
+    #[test]
+    fn decline_unbound_dep() {
+        // dep arg unbound: interpreter's dep_to_req clause-1 head would BIND it
+        // to alternatives(_); the region must not guess -> decline.
+        let list = Value::list(vec![depends(atom("foo"), int(1), Value::new_unbound("D"), atom("c"))]);
+        let mut m = setup(list, 0);
+        assert_eq!(m.region_key_dep_rows_dispatch(1), None);
+    }
+
+    #[test]
+    fn decline_non_integer_index() {
+        // I not a bound integer: the interpreter's `I1 is I+1` demands it.
+        let list = Value::list(vec![depends(atom("foo"), int(1), atom("d"), atom("c"))]);
+        let mut m = vm();
+        m.set_reg_str("A1", list);
+        m.set_reg_str("A2", atom("not_an_int"));
+        m.set_reg_str("A3", Value::new_unbound("Out"));
+        assert_eq!(m.region_key_dep_rows_dispatch(1), None);
+    }
+}
+
+#[cfg(test)]
+mod region3b_group_keyed_tests {
+    // Stage 2 region 3b stress tests: the fused native region
+    // group_keyed/2 ⊕ same_key/4 (WAM_RUST_LOWERED_TIER_THROUGHPUT_PLAN §5),
+    // the other B3 index builder. Exercises:
+    //   * grouping consecutive same-key runs (same_key), for BOTH the dep-row
+    //     shape (N-V)-I-Req (compound key N-V) and the pkg-row shape N-I-V;
+    //   * singleton groups (every key distinct) and a trailing run;
+    //   * structural key equality (== over compound keys);
+    //   * G-1 frame pinning / register liveness and G-2 no-CP;
+    //   * the decline paths (open tail, bound output, non-pair element).
+    use super::*;
+    use std::collections::HashMap;
+
+    fn vm() -> WamState { WamState::new(vec![], HashMap::new()) }
+    fn atom(s: &str) -> Value { Value::Atom(s.to_string()) }
+    fn int(n: i64) -> Value { Value::Integer(n) }
+    fn m2(a: Value, b: Value) -> Value { Value::strv("-".to_string(), vec![a, b]) }
+    // A keyed row K-I-X.
+    fn row(k: Value, i: i64, x: Value) -> Value { m2(m2(k, int(i)), x) }
+    // A group K-[Xs].
+    fn group(k: Value, xs: Vec<Value>) -> Value { m2(k, Value::list(xs)) }
+    fn out_of(m: &WamState) -> Value { m.deref_heap(&Value::new_unbound("Out")) }
+
+    // Set A1..A2 for group_keyed(list, Out) with unbound output.
+    fn setup(list: Value) -> WamState {
+        let mut m = vm();
+        m.set_reg_str("A1", list);
+        m.set_reg_str("A2", Value::new_unbound("Out"));
+        m
+    }
+
+    #[test]
+    fn groups_dep_row_shape_with_compound_keys() {
+        // Dep rows (N-V)-I-Req: key = N-V (compound). Sorted input with two
+        // runs then a singleton.
+        let ka = m2(atom("a"), int(1));
+        let kb = m2(atom("b"), int(2));
+        let list = Value::list(vec![
+            row(ka.clone(), 0, atom("r0")),
+            row(ka.clone(), 1, atom("r1")),
+            row(kb.clone(), 2, atom("r2")),
+        ]);
+        let mut m = setup(list);
+        let r = m.region_group_keyed_dispatch(42);
+        assert_eq!(r, Some(true), "region handled the deterministic call");
+        assert_eq!(m.pc, 42, "pc advanced to cont_pc");
+        let expected = Value::list(vec![
+            group(ka, vec![atom("r0"), atom("r1")]),
+            group(kb, vec![atom("r2")]),
+        ]);
+        assert!(m.terms_identical(&out_of(&m), &expected),
+            "grouped runs (compound keys) match interpreter; got {}", out_of(&m));
+    }
+
+    #[test]
+    fn groups_pkg_row_shape_with_atom_keys() {
+        // Pkg rows N-I-V: key = N (atom). One run of 3, then a singleton.
+        let list = Value::list(vec![
+            row(atom("p"), 0, atom("v0")),
+            row(atom("p"), 1, atom("v1")),
+            row(atom("p"), 2, atom("v2")),
+            row(atom("q"), 3, atom("v3")),
+        ]);
+        let mut m = setup(list);
+        assert_eq!(m.region_group_keyed_dispatch(1), Some(true));
+        let expected = Value::list(vec![
+            group(atom("p"), vec![atom("v0"), atom("v1"), atom("v2")]),
+            group(atom("q"), vec![atom("v3")]),
+        ]);
+        assert!(m.terms_identical(&out_of(&m), &expected), "got {}", out_of(&m));
+    }
+
+    #[test]
+    fn all_distinct_keys_are_singleton_groups() {
+        let list = Value::list(vec![
+            row(atom("a"), 0, atom("x")),
+            row(atom("b"), 1, atom("y")),
+            row(atom("c"), 2, atom("z")),
+        ]);
+        let mut m = setup(list);
+        assert_eq!(m.region_group_keyed_dispatch(1), Some(true));
+        let expected = Value::list(vec![
+            group(atom("a"), vec![atom("x")]),
+            group(atom("b"), vec![atom("y")]),
+            group(atom("c"), vec![atom("z")]),
+        ]);
+        assert!(m.terms_identical(&out_of(&m), &expected), "got {}", out_of(&m));
+    }
+
+    #[test]
+    fn key_equality_is_structural() {
+        // Two rows whose compound keys are structurally equal but built as
+        // separate terms must group together (== is structural).
+        let list = Value::list(vec![
+            row(m2(atom("a"), int(1)), 0, atom("x")),
+            row(m2(atom("a"), int(1)), 1, atom("y")),
+        ]);
+        let mut m = setup(list);
+        assert_eq!(m.region_group_keyed_dispatch(1), Some(true));
+        let expected = Value::list(vec![
+            group(m2(atom("a"), int(1)), vec![atom("x"), atom("y")]),
+        ]);
+        assert!(m.terms_identical(&out_of(&m), &expected), "got {}", out_of(&m));
+    }
+
+    #[test]
+    fn empty_list_yields_empty_output() {
+        let mut m = setup(Value::list(vec![]));
+        assert_eq!(m.region_group_keyed_dispatch(7), Some(true));
+        assert!(m.terms_identical(&out_of(&m), &atom("[]")));
+    }
+
+    #[test]
+    fn frame_pinning_registers_preserved() {
+        // G-1/G-2: A1 stays live, caller temporary untouched, no CP, output trailed.
+        let list = Value::list(vec![row(atom("p"), 0, atom("v0"))]);
+        let a1 = list.clone();
+        let mut m = setup(list);
+        m.set_reg_str("X1", atom("caller_sentinel"));
+        let cp_before = m.choice_points.len();
+        let trail_before = m.trail.len();
+        assert_eq!(m.region_group_keyed_dispatch(3), Some(true));
+        assert!(m.terms_identical(&m.get_reg_raw("A1").unwrap(), &a1), "A1 preserved");
+        assert_eq!(m.get_reg_raw("X1"), Some(atom("caller_sentinel")), "X1 preserved");
+        assert_eq!(m.choice_points.len(), cp_before, "region leaves no choice point");
+        assert!(m.trail.len() > trail_before, "output binding trailed for backtrack");
+    }
+
+    #[test]
+    fn decline_open_tail_restores_minimal_snapshot() {
+        let open = Value::strv("[|]/2".into(), vec![
+            row(atom("p"), 0, atom("v0")),
+            Value::new_unbound("Tail"),
+        ]);
+        let mut m = setup(open);
+        let trail_before = m.trail.len();
+        let cp_before = m.choice_points.len();
+        assert_eq!(m.region_group_keyed_dispatch(5), None, "declines on open tail");
+        assert_eq!(m.trail.len(), trail_before, "trail restored");
+        assert_eq!(m.choice_points.len(), cp_before, "no choice point left");
+        assert!(matches!(out_of(&m), Value::Unbound(_)), "output still unbound after decline");
+    }
+
+    #[test]
+    fn decline_bound_output() {
+        let mut m = vm();
+        m.set_reg_str("A1", Value::list(vec![row(atom("p"), 0, atom("v0"))]));
+        m.set_reg_str("A2", Value::list(vec![])); // already bound
+        assert_eq!(m.region_group_keyed_dispatch(1), None, "declines when output bound");
+    }
+
+    #[test]
+    fn decline_non_pair_element() {
+        // An element that is not K-_-X = -(-(_,_),_) is off-shape -> decline.
+        let mut m = setup(Value::list(vec![atom("not_a_row")]));
+        assert_eq!(m.region_group_keyed_dispatch(1), None);
+        assert!(matches!(out_of(&m), Value::Unbound(_)));
+        // A pair that is only one level deep (K-X, not K-_-X) also declines.
+        let mut m2v = setup(Value::list(vec![m2(atom("k"), atom("x"))]));
+        assert_eq!(m2v.region_group_keyed_dispatch(1), None);
+    }
+}
+
+// Stage 2 region 4 — build_tree/4 (balanced BST builder over a difference list).
+#[cfg(test)]
+mod region4_build_tree_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn vm() -> WamState { WamState::new(vec![], HashMap::new()) }
+    fn atom(s: &str) -> Value { Value::Atom(s.to_string()) }
+    fn int(n: i64) -> Value { Value::Integer(n) }
+    // A K-V pair (the shape `build_tree` consumes, one per node).
+    fn pair(k: Value, v: Value) -> Value { Value::strv("-".to_string(), vec![k, v]) }
+    fn tree_of(m: &WamState) -> Value { m.deref_heap(&Value::new_unbound("Tree")) }
+    fn rest_of(m: &WamState) -> Value { m.deref_heap(&Value::new_unbound("Rest")) }
+
+    // Set A1=N, A2=Pairs, A3=Tree(unbound), A4=Rest.
+    fn setup(n: i64, pairs: Value, rest: Value) -> WamState {
+        let mut m = vm();
+        m.set_reg_str("A1", int(n));
+        m.set_reg_str("A2", pairs);
+        m.set_reg_str("A3", Value::new_unbound("Tree"));
+        m.set_reg_str("A4", rest);
+        m
+    }
+
+    // Reference divide-and-conquer, mirroring the Prolog build_tree exactly, so
+    // the tests assert against an independent oracle rather than the region.
+    fn oracle(elems: &[Value], start: usize, n: i64) -> (Value, usize) {
+        if n == 0 { return (atom("t"), start); }
+        let nl = (n - 1) / 2;
+        let nr = n - 1 - nl;
+        let (l, mid) = oracle(elems, start, nl);
+        let (k, v) = match &elems[mid] {
+            Value::Str(_f, a) if a.len() == 2 => (a[0].clone(), a[1].clone()),
+            other => (other.clone(), atom("[]")),
+        };
+        let (r, next) = oracle(elems, mid + 1, nr);
+        (Value::strv("t".to_string(), vec![l, k, v, r]), next)
+    }
+
+    fn pairs_vec(count: i64) -> Vec<Value> {
+        (0..count).map(|i| pair(atom(&format!("k{}", i)), int(i))).collect()
+    }
+
+    // The core fusion: for N = length(list) and Rest = [], the built tree matches
+    // the divide-and-conquer oracle and Rest unifies with [].
+    #[test]
+    fn builds_balanced_tree_matching_oracle() {
+        for count in [1i64, 2, 3, 4, 5, 7, 8, 15, 16, 31, 64, 100] {
+            let elems = pairs_vec(count);
+            let list = Value::list(elems.clone());
+            // Rest as an unbound var so we can observe it binding to [] (the whole
+            // list is consumed when N = length).
+            let mut m = setup(count, list, Value::new_unbound("Rest"));
+            let r = m.region_build_tree_dispatch(42);
+            assert_eq!(r, Some(true), "N={} handled natively", count);
+            assert_eq!(m.pc, 42, "pc advanced to cont_pc");
+            let expected = oracle(&elems, 0, count).0;
+            assert!(m.terms_identical(&tree_of(&m), &expected),
+                "N={} tree matches oracle; got {}", count, tree_of(&m));
+            assert!(m.terms_identical(&rest_of(&m), &atom("[]")),
+                "N={} Rest = [] (whole list consumed); got {}", count, rest_of(&m));
+        }
+    }
+
+    #[test]
+    fn zero_nodes_yields_atom_t_and_rest_is_whole_list() {
+        // N =:= 0 -> Tree = t, Rest = Pairs (the entire input, unconsumed).
+        let elems = pairs_vec(3);
+        let list = Value::list(elems.clone());
+        let mut m = setup(0, list.clone(), Value::new_unbound("Rest"));
+        assert_eq!(m.region_build_tree_dispatch(1), Some(true));
+        assert!(m.terms_identical(&tree_of(&m), &atom("t")), "empty tree is atom t");
+        assert!(m.terms_identical(&rest_of(&m), &list),
+            "Rest = the whole (unconsumed) list; got {}", rest_of(&m));
+    }
+
+    #[test]
+    fn partial_consume_leaves_correct_difference_list_tail() {
+        // N < length: consume the first N, Rest = the suffix (difference list).
+        // This is the internal recursive-call shape build_tree threads.
+        let elems = pairs_vec(5);
+        let list = Value::list(elems.clone());
+        let mut m = setup(3, list, Value::new_unbound("Rest"));
+        assert_eq!(m.region_build_tree_dispatch(1), Some(true));
+        let expected_tree = oracle(&elems, 0, 3).0;
+        assert!(m.terms_identical(&tree_of(&m), &expected_tree), "first 3 built");
+        // Suffix after 3 elements: [k3-3, k4-4].
+        let expected_rest = Value::list(vec![elems[3].clone(), elems[4].clone()]);
+        assert!(m.terms_identical(&rest_of(&m), &expected_rest),
+            "Rest = suffix after N; got {}", rest_of(&m));
+    }
+
+    #[test]
+    fn single_node_tree() {
+        let elems = vec![pair(atom("only"), int(7))];
+        let list = Value::list(elems.clone());
+        let mut m = setup(1, list, atom("[]"));
+        assert_eq!(m.region_build_tree_dispatch(1), Some(true));
+        // t(t, only, 7, t).
+        let expected = Value::strv("t".to_string(),
+            vec![atom("t"), atom("only"), int(7), atom("t")]);
+        assert!(m.terms_identical(&tree_of(&m), &expected), "got {}", tree_of(&m));
+    }
+
+    #[test]
+    fn frame_pinning_registers_preserved() {
+        // G-1/G-2: A1/A2 stay live, caller temporary untouched, no CP, output trailed.
+        let elems = pairs_vec(4);
+        let list = Value::list(elems);
+        let a1 = int(4);
+        let a2 = list.clone();
+        let mut m = setup(4, list, atom("[]"));
+        m.set_reg_str("X1", atom("caller_sentinel"));
+        let cp_before = m.choice_points.len();
+        let trail_before = m.trail.len();
+        assert_eq!(m.region_build_tree_dispatch(9), Some(true));
+        assert!(m.terms_identical(&m.get_reg_raw("A1").unwrap(), &a1), "A1 preserved");
+        assert!(m.terms_identical(&m.get_reg_raw("A2").unwrap(), &a2), "A2 preserved");
+        assert_eq!(m.get_reg_raw("X1"), Some(atom("caller_sentinel")), "X1 preserved");
+        assert_eq!(m.choice_points.len(), cp_before, "region leaves no choice point");
+        assert!(m.trail.len() > trail_before, "output bindings trailed for backtrack");
+    }
+
+    #[test]
+    fn decline_bound_tree_output() {
+        let elems = pairs_vec(2);
+        let mut m = setup(2, Value::list(elems), atom("[]"));
+        m.set_reg_str("A3", atom("already_bound")); // Tree not unbound
+        assert_eq!(m.region_build_tree_dispatch(1), None, "declines when Tree bound");
+    }
+
+    #[test]
+    fn decline_non_integer_count() {
+        let elems = pairs_vec(2);
+        let mut m = setup(0, Value::list(elems), atom("[]"));
+        m.set_reg_str("A1", atom("not_an_int"));
+        assert_eq!(m.region_build_tree_dispatch(1), None, "declines on non-integer N");
+    }
+
+    #[test]
+    fn decline_negative_count() {
+        let elems = pairs_vec(2);
+        let mut m = setup(-1, Value::list(elems), atom("[]"));
+        assert_eq!(m.region_build_tree_dispatch(1), None, "declines on negative N");
+    }
+
+    #[test]
+    fn decline_list_shorter_than_count_restores_snapshot() {
+        // N greater than available elements: build_tree would fail; decline so the
+        // interpreter yields that failure. Snapshot restored, output untouched.
+        let elems = pairs_vec(2);
+        let list = Value::list(elems);
+        let mut m = setup(5, list, atom("[]"));
+        let trail_before = m.trail.len();
+        let cp_before = m.choice_points.len();
+        assert_eq!(m.region_build_tree_dispatch(1), None, "declines when list too short");
+        assert_eq!(m.trail.len(), trail_before, "trail restored");
+        assert_eq!(m.choice_points.len(), cp_before, "no choice point left");
+        assert!(matches!(tree_of(&m), Value::Unbound(_)), "Tree still unbound after decline");
+    }
+
+    #[test]
+    fn decline_open_tail_restores_snapshot() {
+        // An open (unbound) tail within the first N cells -> defer to interpreter.
+        let open = Value::strv("[|]/2".into(), vec![
+            pair(atom("k0"), int(0)),
+            Value::new_unbound("Tail"),
+        ]);
+        let mut m = setup(2, open, atom("[]"));
+        let trail_before = m.trail.len();
+        assert_eq!(m.region_build_tree_dispatch(1), None, "declines on open tail");
+        assert_eq!(m.trail.len(), trail_before, "trail restored");
+        assert!(matches!(tree_of(&m), Value::Unbound(_)), "Tree still unbound after decline");
+    }
+
+    #[test]
+    fn decline_non_pair_element() {
+        // A consumed element that is not a -/2 pair is off-shape -> decline.
+        let list = Value::list(vec![atom("not_a_pair"), pair(atom("k"), int(1))]);
+        let mut m = setup(2, list, atom("[]"));
+        assert_eq!(m.region_build_tree_dispatch(1), None, "declines on non-pair element");
+        assert!(matches!(tree_of(&m), Value::Unbound(_)));
+    }
+}
+
+#[cfg(test)]
+mod region5_dep_breaks_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn vm() -> WamState { WamState::new(vec![], HashMap::new()) }
+    fn atom(s: &str) -> Value { Value::Atom(s.to_string()) }
+    fn ver(a: i64, b: i64, c: i64) -> Value {
+        Value::strv("v".into(), vec![Value::Integer(a), Value::Integer(b), Value::Integer(c)])
+    }
+    // Acc entry: Name-Ver.
+    fn pair(name: &str, v: Value) -> Value {
+        Value::strv("-".into(), vec![atom(name), v])
+    }
+    fn depends(n: &str, v: Value, d: Value, c: Value) -> Value {
+        Value::strv("depends".into(), vec![atom(n), v, d, c])
+    }
+    fn dep(name: &str, c: Value) -> Value {
+        Value::strv("dep".into(), vec![atom(name), c])
+    }
+    fn alternatives(alts: Vec<Value>) -> Value {
+        Value::strv("alternatives".into(), vec![Value::list(alts)])
+    }
+    fn eqc(v: Value) -> Value { Value::strv("eq".into(), vec![v]) }
+    fn gtec(v: Value) -> Value { Value::strv("gte".into(), vec![v]) }
+    fn cout_of(m: &WamState) -> Value { m.deref_heap(&Value::new_unbound("COut")) }
+
+    // A1=depends list, A2=N, A3=V, A4=Acc, A5=COut(unbound).
+    fn setup(ds: Vec<Value>, n: &str, v: Value, acc: Vec<Value>) -> WamState {
+        let mut m = vm();
+        m.set_reg_str("A1", Value::list(ds));
+        m.set_reg_str("A2", atom(n));
+        m.set_reg_str("A3", v);
+        m.set_reg_str("A4", Value::list(acc));
+        m.set_reg_str("A5", Value::new_unbound("COut"));
+        m
+    }
+
+    #[test]
+    fn commits_on_matching_broken_plain_dep() {
+        // depends(app, v1.0.0, foo, gte(v2.0.0)); Acc has foo at v1.0.0, which
+        // does NOT satisfy gte(v2.0.0) -> dep_breaks_need clause 2 succeeds,
+        // COut = gte(v2.0.0), the `->` commits.
+        let c = gtec(ver(2, 0, 0));
+        let ds = vec![depends("app", ver(1, 0, 0), atom("foo"), c.clone())];
+        let acc = vec![pair("foo", ver(1, 0, 0))];
+        let mut m = setup(ds, "app", ver(1, 0, 0), acc);
+        assert_eq!(m.region_dep_breaks_dispatch(42), Some(true));
+        assert_eq!(m.pc, 42, "pc advanced to cont_pc on commit");
+        assert!(m.terms_identical(&cout_of(&m), &c), "COut = the broken constraint; got {}", cout_of(&m));
+    }
+
+    #[test]
+    fn walks_past_non_matching_then_commits() {
+        // First element name mismatches (HN != N) -> condition false, tail
+        // self-call; second element matches and is broken -> commit.
+        let broken = gtec(ver(9, 0, 0));
+        let ds = vec![
+            depends("other", ver(1, 0, 0), atom("foo"), gtec(ver(1, 0, 0))),
+            depends("app",   ver(1, 0, 0), atom("bar"), broken.clone()),
+        ];
+        let acc = vec![pair("foo", ver(5, 0, 0)), pair("bar", ver(1, 0, 0))];
+        let mut m = setup(ds, "app", ver(1, 0, 0), acc);
+        assert_eq!(m.region_dep_breaks_dispatch(7), Some(true));
+        assert!(m.terms_identical(&cout_of(&m), &broken), "commits on 2nd elem; got {}", cout_of(&m));
+    }
+
+    #[test]
+    fn fails_when_selected_version_satisfies() {
+        // Matching element, but the selected version DOES satisfy the constraint
+        // -> \+ satisfies fails -> dep_breaks_need fails -> else tail -> list
+        // exhausted -> dep_breaks/5 has no clause for [] -> Some(false).
+        let ds = vec![depends("app", ver(1, 0, 0), atom("foo"), gtec(ver(1, 0, 0)))];
+        let acc = vec![pair("foo", ver(1, 0, 0))]; // v1.0.0 satisfies gte(v1.0.0)
+        let mut m = setup(ds, "app", ver(1, 0, 0), acc);
+        assert_eq!(m.region_dep_breaks_dispatch(1), Some(false), "no commit -> genuine failure");
+        assert!(matches!(cout_of(&m), Value::Unbound(_)), "COut never bound on failure");
+    }
+
+    #[test]
+    fn empty_depends_list_fails() {
+        // No clause for [] -> deterministic failure, no decline, no binding.
+        let mut m = setup(vec![], "app", ver(1, 0, 0), vec![pair("foo", ver(1, 0, 0))]);
+        assert_eq!(m.region_dep_breaks_dispatch(1), Some(false));
+    }
+
+    #[test]
+    fn alternatives_all_broken_commits_first() {
+        // D = alternatives([dep(foo,eq(v2)), dep(bar,eq(v3))]); Acc selects foo@v1
+        // and bar@v1, neither satisfies its eq -> guard \+(...) holds -> the first
+        // broken alt (foo) commits with COut = its constraint eq(v2.0.0).
+        let alts = alternatives(vec![
+            dep("foo", eqc(ver(2, 0, 0))),
+            dep("bar", eqc(ver(3, 0, 0))),
+        ]);
+        let ds = vec![depends("app", ver(1, 0, 0), alts, atom("any"))];
+        let acc = vec![pair("foo", ver(1, 0, 0)), pair("bar", ver(1, 0, 0))];
+        let mut m = setup(ds, "app", ver(1, 0, 0), acc);
+        assert_eq!(m.region_dep_breaks_dispatch(3), Some(true));
+        assert!(m.terms_identical(&cout_of(&m), &eqc(ver(2, 0, 0))),
+            "COut = first broken alt's constraint; got {}", cout_of(&m));
+    }
+
+    #[test]
+    fn alternatives_one_satisfies_guard_fails() {
+        // foo@v2 satisfies eq(v2) -> the negation guard's inner goal succeeds ->
+        // \+(...) fails for every member -> clause 1 fails -> Some(false).
+        let alts = alternatives(vec![
+            dep("foo", eqc(ver(2, 0, 0))),
+            dep("bar", eqc(ver(3, 0, 0))),
+        ]);
+        let ds = vec![depends("app", ver(1, 0, 0), alts, atom("any"))];
+        let acc = vec![pair("foo", ver(2, 0, 0)), pair("bar", ver(1, 0, 0))];
+        let mut m = setup(ds, "app", ver(1, 0, 0), acc);
+        assert_eq!(m.region_dep_breaks_dispatch(1), Some(false), "guard fails -> no commit");
+        assert!(matches!(cout_of(&m), Value::Unbound(_)));
+    }
+
+    #[test]
+    fn alternatives_missing_selection_is_skipped() {
+        // foo is not in Acc -> selected_ver(Acc,foo) fails -> member(foo) yields
+        // no solution (skipped) in both guard and main scans; bar@v1 does not
+        // satisfy eq(v3) -> bar is the first broken alt -> COut = eq(v3.0.0).
+        let alts = alternatives(vec![
+            dep("foo", eqc(ver(2, 0, 0))),
+            dep("bar", eqc(ver(3, 0, 0))),
+        ]);
+        let ds = vec![depends("app", ver(1, 0, 0), alts, atom("any"))];
+        let acc = vec![pair("bar", ver(1, 0, 0))]; // foo absent
+        let mut m = setup(ds, "app", ver(1, 0, 0), acc);
+        assert_eq!(m.region_dep_breaks_dispatch(1), Some(true));
+        assert!(m.terms_identical(&cout_of(&m), &eqc(ver(3, 0, 0))),
+            "first resolvable broken alt is bar; got {}", cout_of(&m));
+    }
+
+    #[test]
+    fn frame_pinning_registers_preserved_and_no_cp() {
+        // G-1/G-2: A1..A4 stay live, caller temporary untouched, no CP, output trailed.
+        let c = gtec(ver(2, 0, 0));
+        let a1 = Value::list(vec![depends("app", ver(1, 0, 0), atom("foo"), c.clone())]);
+        let a4 = Value::list(vec![pair("foo", ver(1, 0, 0))]);
+        let mut m = vm();
+        m.set_reg_str("A1", a1.clone());
+        m.set_reg_str("A2", atom("app"));
+        m.set_reg_str("A3", ver(1, 0, 0));
+        m.set_reg_str("A4", a4.clone());
+        m.set_reg_str("A5", Value::new_unbound("COut"));
+        m.set_reg_str("X1", atom("caller_sentinel"));
+        let cp_before = m.choice_points.len();
+        let trail_before = m.trail.len();
+        assert_eq!(m.region_dep_breaks_dispatch(9), Some(true));
+        assert!(m.terms_identical(&m.get_reg_raw("A1").unwrap(), &a1), "A1 preserved");
+        assert!(m.terms_identical(&m.get_reg_raw("A4").unwrap(), &a4), "A4 preserved");
+        assert_eq!(m.get_reg_raw("X1"), Some(atom("caller_sentinel")), "X1 preserved");
+        assert_eq!(m.choice_points.len(), cp_before, "region leaves no choice point");
+        assert!(m.trail.len() > trail_before, "output binding trailed for backtrack");
+    }
+
+    #[test]
+    fn decline_bound_output() {
+        let c = gtec(ver(2, 0, 0));
+        let ds = vec![depends("app", ver(1, 0, 0), atom("foo"), c)];
+        let acc = vec![pair("foo", ver(1, 0, 0))];
+        let mut m = setup(ds, "app", ver(1, 0, 0), acc);
+        m.set_reg_str("A5", atom("already_bound"));
+        assert_eq!(m.region_dep_breaks_dispatch(1), None, "declines when COut bound");
+    }
+
+    #[test]
+    fn decline_open_tail_restores_snapshot() {
+        // An open (unbound) list tail -> defer to interpreter, snapshot restored.
+        let open = Value::strv("[|]/2".into(), vec![
+            depends("other", ver(1, 0, 0), atom("foo"), gtec(ver(1, 0, 0))),
+            Value::new_unbound("Tail"),
+        ]);
+        let mut m = vm();
+        m.set_reg_str("A1", open);
+        m.set_reg_str("A2", atom("app"));
+        m.set_reg_str("A3", ver(1, 0, 0));
+        m.set_reg_str("A4", Value::list(vec![pair("foo", ver(1, 0, 0))]));
+        m.set_reg_str("A5", Value::new_unbound("COut"));
+        let trail_before = m.trail.len();
+        assert_eq!(m.region_dep_breaks_dispatch(1), None, "declines on open tail");
+        assert_eq!(m.trail.len(), trail_before, "trail restored");
+        assert!(matches!(cout_of(&m), Value::Unbound(_)), "COut still unbound after decline");
+    }
+
+    #[test]
+    fn decline_unbound_dep_in_condition() {
+        // A depends element whose D is unbound and HN==N,HV==V: the interpreter's
+        // clause-1 head of dep_breaks_need would bind it to alternatives(_) ->
+        // outside the deterministic shape -> decline.
+        let ds = vec![depends("app", ver(1, 0, 0), Value::new_unbound("D"), atom("any"))];
+        let acc = vec![pair("foo", ver(1, 0, 0))];
+        let mut m = setup(ds, "app", ver(1, 0, 0), acc);
+        assert_eq!(m.region_dep_breaks_dispatch(1), None, "declines on unbound dep");
+    }
+
+    #[test]
+    fn decline_non_depends_element() {
+        // A list element that is not depends/4 -> off-shape -> decline.
+        let ds = vec![atom("not_a_depends")];
+        let acc = vec![pair("foo", ver(1, 0, 0))];
+        let mut m = setup(ds, "app", ver(1, 0, 0), acc);
+        assert_eq!(m.region_dep_breaks_dispatch(1), None, "declines on non-depends element");
+    }
+
+    #[test]
+    fn non_matching_head_never_evaluates_condition() {
+        // HN==N but HV != V: the `->` condition is false without running
+        // dep_breaks_need at all; single element -> exhausted -> Some(false).
+        let ds = vec![depends("app", ver(2, 0, 0), atom("foo"), gtec(ver(9, 0, 0)))];
+        let acc = vec![pair("foo", ver(1, 0, 0))];
+        let mut m = setup(ds, "app", ver(1, 0, 0), acc); // A3 = v1.0.0 != elem's v2.0.0
+        assert_eq!(m.region_dep_breaks_dispatch(1), Some(false));
     }
 }
 

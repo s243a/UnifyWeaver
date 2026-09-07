@@ -46,6 +46,23 @@ opt-in (needs `wat2wasm` + `node` per program), not default CI.
 - **No runtime-parser capability entry.**
 - Interpreter-bound dispatch is the standing perf ceiling.
 
+## Whole-program exercise (A2, 2026-09): known / suspected deficiencies
+
+The peerhailer CLI-parser exercise (see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md)) found three JS-WAM runtime bug
+classes that are fleet-wide suspects. WAT's audit contains the fleet's
+single most dangerous cell:
+
+| # | Deficiency | Status | Evidence / reason |
+|---|---|---|---|
+| A1 | `sub_string/5` builtin missing | **verified missing** | not in the `builtin_id` table |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **suspected** | the memory-banked register layout was not audited for X→Y aliasing or window overflow |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **verified (worst form)** | `execute(P)` resolves its label at **encode time**, and `resolve_label` falls back to **PC = 0** for any unknown name (`wam_wat_target.pl:1204-1209`, used at `:348-351`). A last-goal builtin outside `is_builtin_pred/2` therefore encodes as a silent jump to instruction 0 — control-flow corruption, not even a clean failure. The fused `builtin_proceed` / `deallocate_builtin_proceed` shapes (`:760-817`) correctly cover *recognized* last-goal builtins only |
+| A4 | String fidelity | **rung 0** | no string term tag; D37's double-quoted literals intern as atoms |
+
+Cheapest first fix: make `resolve_label` refuse loudly (or emit a fail
+op) instead of encoding PC 0.
+
 ## Path forward
 
 1. Explore foreign/host-imported graph kernels via WASM imports if
@@ -60,4 +77,6 @@ opt-in (needs `wat2wasm` + `node` per program), not default CI.
 Fleet-aligned snapshot; source-verified line counts, the T4–T6 +
 `$run_loop` hybrid path, absence of kernels/LMDB, and opt-in
 conformance registration against `wam_wat_target.pl` and the
-conformance harness (2026-07-11).
+conformance harness (2026-07-11). 2026-09-01: added the whole-program
+(A2) deficiency audit — the `resolve_label` PC-0 fallback verified by
+source reading; see [`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).

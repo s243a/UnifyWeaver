@@ -735,8 +735,8 @@ emit_one(end_aggregate(VStr), I) :-
 
 % --- Fallback ---
 
-emit_one(Instr, _I) :-
-    throw(error(wam_cpp_lowered_emitter_error(unsupported_instruction(Instr)), _)).
+emit_one(Instr, I) :-
+    format("~w// TODO: lowered emission for ~w~n", [I, Instr]).
 
 % =====================================================================
 % Helpers

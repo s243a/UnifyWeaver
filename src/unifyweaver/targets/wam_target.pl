@@ -1212,9 +1212,19 @@ format_index_entries(Entries, Str) :-
 %  the textual form. See
 %  wam_text_parser:wam_classify_constant_token/2 for the shared
 %  classification helper.
+%
+%  Prolog *strings* (SWI `string/1`, not atoms) are spelled with
+%  outer double quotes (`"hi"`), escaping `\\` and `"`. The shared
+%  classifier still returns `atom(Name)` for those tokens so every
+%  existing consumer stays byte-for-byte the same; string-aware
+%  runtimes (JS) consult
+%  wam_text_parser:wam_constant_token_is_string/1.
 quote_wam_constant(Value, Quoted) :-
     (   number(Value)
     ->  format(string(Quoted), "~w", [Value])
+    ;   string(Value)
+    ->  escape_for_wam_dquoting(Value, Escaped),
+        format(string(Quoted), '"~w"', [Escaped])
     ;   ( atom(Value) -> atom_string(Value, Str) ; Str = Value ),
         (   ( atom_looks_like_number(Str)
             ; constant_needs_quoting(Str)
@@ -1254,6 +1264,16 @@ escape_for_wam_quoting(Str, Escaped) :-
 escape_wam_char('\\', ['\\', '\\']).
 escape_wam_char('\'', ['\\', '\'']).
 escape_wam_char(C, [C]).
+
+escape_for_wam_dquoting(Str, Escaped) :-
+    string_chars(Str, Chars),
+    maplist(escape_wam_dquote_char, Chars, NestedChars),
+    append(NestedChars, EscChars),
+    string_chars(Escaped, EscChars).
+
+escape_wam_dquote_char('\\', ['\\', '\\']).
+escape_wam_dquote_char('"', ['\\', '"']).
+escape_wam_dquote_char(C, [C]).
 
 %% compile_single_clause_wam(+Clause, +Options, -Code)
 compile_single_clause_wam(Head-Body, Options, Code) :-

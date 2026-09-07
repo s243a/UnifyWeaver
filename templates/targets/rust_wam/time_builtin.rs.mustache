@@ -59,7 +59,7 @@
 
     fn stamp_date_time_value(stamp: i64) -> Option<Value> {
         let tm = Self::local_tm(stamp)?;
-        Some(Value::Str("date".to_string(), vec![
+        Some(Value::strv("date".to_string(), vec![
             Value::Integer(Self::tm_read_i32(&tm, 20) + 1900),
             Value::Integer(Self::tm_read_i32(&tm, 16) + 1),
             Value::Integer(Self::tm_read_i32(&tm, 12)),
