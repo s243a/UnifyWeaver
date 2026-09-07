@@ -1,4 +1,4 @@
-// par_aggregate.rs — generated 2026-09-06 23:49:22
+// par_aggregate.rs — generated 2026-09-07 02:01:04
 //
 // T7 parallel-aggregate runtime (route 1). The compile-time transform
 // (parallel_gate.parallel_aggregate_transform) rewrites a parallel-eligible
