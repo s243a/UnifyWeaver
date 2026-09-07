@@ -9332,13 +9332,29 @@ rust_lowered_dispatch_fn(Classified, Options, Code) :-
     % its resolve path.
     (   \+ option(lowered_dispatch(false), Options),
         rust_region4_applicable(Options)
-    ->  exclude(rust_region4_is_build_tree, Eligible3b, Eligible),
+    ->  exclude(rust_region4_is_build_tree, Eligible3b, Eligible4),
         RegionArm4 = '        "build_tree/4" => vm.region_build_tree_dispatch(cont_pc),',
         RegionArms4 = [RegionArm4]
-    ;   Eligible = Eligible3b,
+    ;   Eligible4 = Eligible3b,
         RegionArms4 = []
     ),
-    append([RegionArms1, RegionArms2, RegionArms3a, RegionArms3b, RegionArms4], RegionArms),
+    % Stage 2 region 5 (committed-choice recursion): wire dep_breaks/5 — a
+    % committing `->` whose CONDITION contains a nondet sub-goal
+    % (dep_breaks_need, member/2 inside), committed before the sole tail
+    % self-call in the else-branch. Class (a) per the D85 classification: the
+    % commit makes it single-solution, so it lowers deterministically exactly
+    % like regions 1-4 (native loop, P2 minimal snapshot, NO resume-state CP).
+    % dep_breaks_need/selected_ver are inlined natively; satisfies/version_lt
+    % reuse region 2's private native copies. The store lane never matches.
+    (   \+ option(lowered_dispatch(false), Options),
+        rust_region5_applicable(Options)
+    ->  exclude(rust_region5_is_dep_breaks, Eligible4, Eligible),
+        RegionArm5 = '        "dep_breaks/5" => vm.region_dep_breaks_dispatch(cont_pc),',
+        RegionArms5 = [RegionArm5]
+    ;   Eligible = Eligible4,
+        RegionArms5 = []
+    ),
+    append([RegionArms1, RegionArms2, RegionArms3a, RegionArms3b, RegionArms4, RegionArms5], RegionArms),
     maplist(rust_lowered_dispatch_arm, Eligible, Arms0),
     append(RegionArms, Arms0, Arms),
     atomic_list_concat(Arms, '\n', ArmsStr),
@@ -10081,6 +10097,136 @@ rust_region4_build_tree_ok :-
                 build_tree(NL, Pairs, L, [K-V|Mid]),
                 build_tree(NR, Mid, R, Rest),
                 Tree = t(L, K, V, R)
+             ) ).
+
+% =====================================================================
+% Stage 2 region 5 — committed-choice recursion: dep_breaks/5
+% =====================================================================
+%
+% The last of the three "nondet drivers" the D85 classification
+% (docs/reports/wam_rust_nondet_driver_classification.md) examined. Unlike the
+% other two (pick/7 is dead code; blocked_from/4 genuinely exposes alternatives),
+% dep_breaks/5 is class (a) — committed-per-iteration recursion — and is
+% therefore ALREADY deterministic. It needs NO resolver rewrite; only a
+% recognizer widening of the region-4 committing-`->` family.
+%
+%   dep_breaks([depends(HN, HV, D, C)|Rest], N, V, Acc, COut) :-
+%       (   HN == N,
+%           HV == V,
+%           dep_breaks_need(Acc, D, C, CBroken)   % NONDET (member/2 inside) but
+%       ->  COut = CBroken                         % COMMITTED by the `->` before
+%       ;   dep_breaks(Rest, N, V, Acc, COut)      % the sole tail self-call (else)
+%       ).
+%
+% Where region 4's build_tree/4 special-cases an ARITHMETIC committing test
+% (`N =:= 0`, which is semidet and never binds), region 5 widens the family to a
+% committing condition whose per-iteration goal CONTAINS a nondeterministic
+% sub-goal (`dep_breaks_need`, which enumerates alternatives via member/2). The
+% `->` commits that sub-goal's first solution BEFORE the else-branch tail
+% self-call, so backtracking can never re-enter it: the whole predicate has
+% AT MOST ONE solution and leaves NO choice point — exactly the deterministic
+% tier (regions 1–4), G-4/G-5 vacuous. It is additionally consumed
+% first-solution (`dep_breaks_moving/5` under first_broken/4's `-> Broken=...`),
+% so the commit is doubly confirmed.
+%
+% The single clause has no base case: on an empty depends list there is no
+% matching clause, so dep_breaks/5 FAILS (which the runtime realises as
+% Some(false), the interpreter's genuine failure — NOT a decline).
+%
+% The runtime half (state.rs.mustache `WamState::region_dep_breaks_dispatch`,
+% carrying the full G-1..G-5 argument) walks the depends list natively, evaluates
+% the committing condition per element with P1 direct native calls
+% (`region_dep_breaks_need`/`region_selected_ver` inlining the frozen
+% dep_breaks_need/selected_ver, reusing region 2's already-validated
+% `region_satisfies`/`region_version_lt`), and on the first committing element
+% unifies COut and returns — a plain native loop, P2 3-scalar minimal snapshot,
+% NO resume-state choice point.
+%
+% Wired only when BOTH hold: the region-5 flag is on (default ON; disable with
+% `region5(false)` or `UW_REGION5_OFF=1`) AND the project contains dep_breaks/5,
+% dep_breaks_need/4 and selected_ver/3 with the EXACT frozen resolver shapes
+% (verified with `=@=`), plus satisfies/2 + version_lt/2 (the region 2 chain the
+% native condition reuses). The store lane's `_store`-renamed copies never match.
+
+%% rust_region5_is_dep_breaks(+Cand) is semidet.
+rust_region5_is_dep_breaks(lo_cand(K, _, _, _, _)) :- K == 'dep_breaks/5'.
+
+%% rust_region5_enabled(+Options) is semidet.
+%  Default per the real B2 A/B recorded in docs/reports/wam_rust_stage2_region5.md.
+rust_region5_enabled(Options) :-
+    (   option(region5(V), Options)
+    ->  V == true
+    ;   getenv('UW_REGION5_OFF', '1')
+    ->  fail
+    ;   true
+    ).
+
+%% rust_region5_applicable(+Options) is semidet.
+%  The committing-condition body AND the two committed sub-predicates it inlines
+%  natively AND the satisfies/version_lt chain region 2 already validates. If any
+%  shape is off, the region is not wired and the interpreter runs dep_breaks/5.
+rust_region5_applicable(Options) :-
+    rust_region5_enabled(Options),
+    rust_region5_dep_breaks_ok,
+    rust_region5_dep_breaks_need_ok,
+    rust_region5_selected_ver_ok,
+    % The condition's satisfies/version_lt sub-goals reuse region 2's native
+    % copies, so the same frozen shapes must be present.
+    rust_region2_satisfies_ok,
+    rust_region2_version_lt_ok,
+    rust_region2_segs_lt_ok,
+    rust_region2_pad_head_ok,
+    rust_region2_segs_lt_1_ok.
+
+%% rust_region5_dep_breaks_ok is semidet.
+%    dep_breaks([depends(HN, HV, D, C)|Rest], N, V, Acc, COut) :-
+%        (   HN == N, HV == V, dep_breaks_need(Acc, D, C, CBroken)
+%        ->  COut = CBroken
+%        ;   dep_breaks(Rest, N, V, Acc, COut)
+%        ).
+rust_region5_dep_breaks_ok :-
+    findall(H-B, ( H = dep_breaks(_,_,_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1],
+    C1 =@= ( dep_breaks([depends(HN, HV, D, C)|Rest], N, V, Acc, COut) -
+             ( ( HN == N,
+                 HV == V,
+                 dep_breaks_need(Acc, D, C, CBroken)
+               ->  COut = CBroken
+               ;   dep_breaks(Rest, N, V, Acc, COut)
+               ) ) ).
+
+%% rust_region5_dep_breaks_need_ok is semidet.
+%    dep_breaks_need(Acc, alternatives(Alts), _C, COut) :- !,
+%        member(dep(D, COut), Alts), selected_ver(Acc, D, MV),
+%        \+ satisfies(MV, COut),
+%        \+ (member(dep(D2, C2), Alts), selected_ver(Acc, D2, MV2), satisfies(MV2, C2)).
+%    dep_breaks_need(Acc, D, C, C) :- selected_ver(Acc, D, MV), \+ satisfies(MV, C).
+rust_region5_dep_breaks_need_ok :-
+    findall(H-B, ( H = dep_breaks_need(_,_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [CAlt, CPlain],
+    CAlt =@= ( dep_breaks_need(Acc, alternatives(Alts), _C, COut) -
+               ( !,
+                 member(dep(D, COut), Alts),
+                 selected_ver(Acc, D, MV),
+                 \+ satisfies(MV, COut),
+                 \+ ( member(dep(D2, C2), Alts),
+                      selected_ver(Acc, D2, MV2),
+                      satisfies(MV2, C2) )
+               ) ),
+    CPlain =@= ( dep_breaks_need(Acc2, D3, C3, C3) -
+                 ( selected_ver(Acc2, D3, MV3),
+                   \+ satisfies(MV3, C3) ) ).
+
+%% rust_region5_selected_ver_ok is semidet.
+%    selected_ver([H|Rest], Name, Ver) :-
+%        ( H = Name-Ver -> true ; selected_ver(Rest, Name, Ver) ).
+rust_region5_selected_ver_ok :-
+    findall(H-B, ( H = selected_ver(_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1],
+    C1 =@= ( selected_ver([HH|Rest], Name, Ver) -
+             ( HH = Name-Ver
+             -> true
+             ;  selected_ver(Rest, Name, Ver)
              ) ).
 
 %% rust_pred_heads_exclusive(+Module, +Pred, +Arity) is semidet.
