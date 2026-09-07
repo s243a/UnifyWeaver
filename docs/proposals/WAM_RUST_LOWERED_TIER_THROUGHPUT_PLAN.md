@@ -197,6 +197,36 @@ The build proceeds only against the review's full soundness checklist, with the
 seven concrete failure scenarios as explicit stress tests alongside the 2600/503
 differential at 0 divergences.
 
+## 6b. Committed-choice recursion is deterministic (classify before building 2b)
+
+Refinement (project owner, 2026-09-07), applied to Stage 0 classification and to
+every driver before it is treated as a 2b case: **a recursion whose body makes a
+nondeterministic call is still deterministic overall if backtracking is
+forbidden from re-entering that call past the iteration boundary** — i.e. the
+per-step nondet call is *committed* before the recursive step (a `once/1`, a cut
+that commits the choice ahead of the tail call, or an `->`/if-then-else that
+discards alternatives before recursing). Such a recursion yields exactly one
+solution and never re-enters an earlier iteration's nondet call on backtracking.
+
+Consequence: it lowers with the **cheap deterministic mechanism** (native loop /
+explicit-stack + P2 minimal snapshot, **no resume-state choice point**) — exactly
+like regions 1–4 — and the hard gates are vacuous for it (G-5 activation identity
+and G-4 multiplicity/order do not arise when no CP is left). So the classifier
+must, for each apparent backtracking driver (`pick/7`, `blocked_from/4`,
+`dep_breaks/5`), first decide: **(a)** committed-per-iteration → deterministic
+path (preferred: safer and faster), or **(b)** genuinely exposes alternatives to
+its caller → the resume-state trampoline. Prefer (a) wherever the commit/cut sits
+before the recursive call.
+
+**In-project reference:** PLAWK uses exactly this principle — a committed-choice
+recursion compiled to a deterministic native loop despite containing a
+nondet/meta call. See `examples/plawk/core/plawk_core.pl`,
+`examples/plawk/codegen/plawk_native_codegen.pl`, the loop/meta-call probes under
+`examples/plawk/probes/`, and `examples/plawk/TUTORIAL.md`. The deterministic-path
+eligibility test mirrors PLAWK's: "the per-iteration nondet call is committed
+(once/cut/->) before the tail recursion, so backtracking cannot cross the
+iteration boundary."
+
 ## 7. Attribution
 
 The loop shape (F11) and the resumable-choice-point shape (F3) are **ideas**
