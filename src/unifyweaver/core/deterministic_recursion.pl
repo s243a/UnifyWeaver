@@ -132,7 +132,7 @@ dr_is_metacall(G) :- functor(G, call, N), N >= 1.
 %% dr_reaches(+Module, +From, +To) is semidet.
 %  From can reach To in the module-local call graph (one or more hops).
 dr_reaches(M, From, To) :-
-    dr_reaches_(M, [From], [], To).
+    once(dr_reaches_(M, [From], [], To)).
 
 dr_reaches_(M, [P|_], _, To) :-
     dr_callees(M, P, Cs),
@@ -153,7 +153,8 @@ dr_self_recursive(M, PI) :- dr_reaches(M, PI, PI).
 dr_scc(M, PI, SCC) :-
     dr_module_pis(M, PI, All),
     include(dr_mutual(M, PI), All, Others),
-    sort([PI|Others], SCC).
+    sort([PI|Others], SCC),
+    !.
 
 dr_mutual(M, PI, Q) :-
     PI \== Q,
@@ -440,13 +441,18 @@ dr_scc_member_shape(M, Mi, SCC, Shape) :-
     ;  Shape = nontail
     ).
 
-% Every SCC-member call in the body is the syntactically last goal of its
-% conjunction chain (a conservative tail test).
+% A clause is tail w.r.t. the SCC iff every SCC-member call it makes is in tail
+% position — i.e. there is at most ONE SCC call in the body and, when present,
+% it is the syntactically last goal. A second SCC call (like topo_one's inner
+% walk before its post-order prepend, or a helper SCC-call before the tail
+% self-call) makes the clause non-tail.
 dr_scc_calls_tail(B, SCC) :-
-    dr_conj_last(B, Last),
-    ( dr_goal_calls_scc(Last, SCC)
+    findall(G, ( dr_body_goal(B, G), nonvar(G), dr_goal_in_scc(G, SCC) ), SccCalls),
+    ( SccCalls == []
     -> true
-    ;  \+ ( dr_body_goal(B, G), nonvar(G), dr_goal_in_scc(G, SCC) )
+    ;  SccCalls = [_],                     % exactly one SCC call in the body
+       dr_conj_last(B, Last),
+       dr_goal_in_scc(Last, SCC)           % and it is the tail goal
     ).
 
 dr_conj_last((_, B), Last) :- !, dr_conj_last(B, Last).
@@ -454,8 +460,6 @@ dr_conj_last((_ -> T ; E), Last) :- !, ( dr_conj_last(T, Last) ; dr_conj_last(E,
 dr_conj_last((_ -> T), Last) :- !, dr_conj_last(T, Last).
 dr_conj_last((_ ; E), Last) :- !, dr_conj_last(E, Last).
 dr_conj_last(G, G).
-
-dr_goal_calls_scc(G, SCC) :- dr_goal_in_scc(G, SCC).
 
 dr_goal_in_scc(G, SCC) :-
     nonvar(G), functor(G, N, A), memberchk(N/A, SCC).
