@@ -1,0 +1,4 @@
+# Regenerated harness artifacts (all seeded / reproducible).
+.corpus_out/
+.diff_out/
+.scale/

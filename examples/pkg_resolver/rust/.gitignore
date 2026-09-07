@@ -1,0 +1,11 @@
+# Regenerated harness artifacts.
+.diff_out/
+.corpus_out/
+.scale/
+
+# Cargo build products of the committed generated crate.
+uw_resolve_wam/target/
+uw_resolve_wam/Cargo.lock
+
+# The shim is copied in by build.sh; the copies are not the source of truth.
+uw_resolve_wam/src/bin/
