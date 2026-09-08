@@ -90,6 +90,22 @@ re-unifies, so only an identity comparison exposes it.
   unrelated to the unification fixes (re-confirmed against a stashed
   baseline); not yet triaged.
 
+## Whole-program exercise (A2, 2026-09): known / suspected deficiencies
+
+The peerhailer CLI-parser exercise (see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md)) found three JS-WAM runtime bug
+classes that are fleet-wide suspects. C's audit:
+
+| # | Deficiency | Status | Evidence / reason |
+|---|---|---|---|
+| A1 | `sub_string/5` builtin missing | **verified missing** | not in `wam_execute_builtin` or the `Execute` special cases (the C++ sibling has the alias; C does not) |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **absent (aliasing form) / suspected (overflow form)** | C segregates A/X/Y into distinct banks with an `is_y` flag per operand (`wam_c_target.pl:1684-1710`), so X registers cannot alias Y. But the banks are fixed 256-slot arrays (`wam_runtime.h.mustache:11,81-82`) and `_XT` temps map to `128 + N` inside the X bank (`:1705-1708`); a ground fact needing more X registers than the bank holds would index **out of bounds** — no bounds check was found. Suspected memory-corruption hazard on very large facts |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **verified** | `INSTR_EXECUTE` special-cases only findall/bagof/setof, then label lookup, then `return false` (`wam_c_target.pl:2257-2270`) — a last-goal builtin outside `is_builtin_pred/2` silently fails |
+| A4 | String fidelity | **rung 0** | no string term tag; D37's double-quoted literals intern as atoms |
+
+Pattern lane: `c_target.pl` compiles facts from `clause(Head, true)` —
+the G-A3-8 execute-at-compile-time hazard is absent.
+
 ## Path forward
 
 1. Adopt the ISO three-form error contract (C++ is the reference).
@@ -107,3 +123,5 @@ facts against `wam_c_target.pl`, the conformance harness, and the
 parser-capability module (2026-07-11). Refreshed 2026-08-09 after
 CONF-FIX-C-EQ-DEREF; the C arm now carries no `ct_xfail` at all. Update
 the living checklist first when milestones land, then refresh here.
+2026-09-01: added the whole-program (A2) deficiency audit; see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).

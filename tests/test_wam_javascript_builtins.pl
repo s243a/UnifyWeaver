@@ -15,6 +15,7 @@
 :- use_module(library(plunit)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module(library(process)).
+:- use_module(library(http/json)).
 :- use_module('../src/unifyweaver/targets/wam_javascript_target',
               [write_wam_javascript_project/3,
                javascript_wam_resolve_emit_mode/2]).
@@ -61,6 +62,18 @@
 :- dynamic user:probe_term_meta/0.
 :- dynamic user:probe_op3/0.
 :- dynamic user:probe_parse_likes/0.
+:- dynamic user:probe_string_tag/0.
+:- dynamic user:probe_string_polish/0.
+:- dynamic user:probe_string_literal/0.
+:- dynamic user:probe_sub_string/0.
+:- dynamic user:probe_tail_builtin/0.
+:- dynamic user:probe_y_preserve/0.
+:- dynamic user:tail_sub/2.
+:- dynamic user:wide_list/1.
+:- dynamic user:lit_hi/1.
+:- dynamic user:eq_str/1.
+:- dynamic user:fib/2.
+:- dynamic user:hello/1.
 
 install_probes :-
     retractall(user:probe_findall),
@@ -103,6 +116,16 @@ install_probes :-
     retractall(user:probe_term_meta),
     retractall(user:probe_op3),
     retractall(user:probe_parse_likes),
+    retractall(user:probe_string_tag),
+    retractall(user:probe_string_polish),
+    retractall(user:probe_string_literal),
+    retractall(user:probe_sub_string),
+    retractall(user:probe_tail_builtin),
+    retractall(user:probe_y_preserve),
+    retractall(user:tail_sub/2),
+    retractall(user:wide_list/1),
+    retractall(user:lit_hi/1),
+    retractall(user:eq_str/1),
     assertz((user:probe_findall :-
         findall(X, member(X, [1,2,3]), L), write(L), nl, L == [1,2,3])),
     assertz((user:probe_functor :-
@@ -269,6 +292,63 @@ install_probes :-
     assertz((user:probe_parse_likes :-
         read_term_from_atom('alice likes bob', T),
         T == likes(alice, bob),
+        write(ok), nl)),
+    assertz((user:probe_string_tag :-
+        atom_string(a, S), string(S), \+ atom(S),
+        string_to_atom(S, A0), A0 == a,
+        split_string('a,b,c', ',', '', Parts),
+        Parts = [P1, P2, P3],
+        string(P1), string(P2), string(P3),
+        atom_string(a, EA), atom_string(b, EB), atom_string(c, EC),
+        P1 == EA, P2 == EB, P3 == EC,
+        string_concat(x, y, Z), string(Z),
+        atom_string(xy, EZ), Z == EZ,
+        atom_string(foo, SFoo),
+        sort([foo, SFoo, 1, bar], Ord),
+        Ord == [1, SFoo, bar, foo],
+        write(ok), nl)),
+    assertz((user:probe_string_polish :-
+        atom_string(abc, Sabc), string_length(Sabc, N), N == 3,
+        string_length(abc, N2), N2 == 3,
+        string_length(123, N3), N3 == 3,
+        atom_string(ab, SAB),
+        writeq([SAB, foo]), nl,
+        writeq('hello world'), nl,
+        writeq(foo), nl,
+        writeq([]), nl,
+        atom_string(ab, S2), write(S2), nl,
+        atom_string(x, SX),
+        format('~q', [SX]), nl,
+        format('~q', [[SX, y]]), nl,
+        write(ok), nl)),
+    assertz(user:lit_hi("hi")),
+    assertz((user:eq_str(X) :- X = "hi")),
+    assertz((user:probe_string_literal :-
+        lit_hi(X), string(X), \+ atom(X),
+        atom_string(hi, Expected), X == Expected,
+        eq_str(Y), string(Y), Y == Expected,
+        writeq(X), nl)),
+    assertz((user:probe_sub_string :-
+        sub_string("hello", 0, 2, After, Sub),
+        string(Sub), Sub == "he", After == 3,
+        sub_string("--flag", 0, 2, _, Pref), Pref == "--",
+        \+ sub_string("ab", 0, 3, _, _),
+        write(ok), nl)),
+    % Tail-call a builtin (compiler emits Deallocate+Execute sub_string/5).
+    % Execute-to-builtin must Proceed to CP, not halt the machine.
+    assertz((user:tail_sub(In, Out) :-
+        sub_string(In, 0, 2, _, Out))),
+    assertz((user:probe_tail_builtin :-
+        tail_sub("hello", S),
+        string(S), S == "he",
+        write(ok), nl)),
+    % A long ground list fact compiles as GetList/Unify* with no Allocate,
+    % so it would clobber the caller's Y. Call must save/restore Y.
+    assertz(user:wide_list([0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79])),
+    assertz((user:probe_y_preserve :-
+        Marker = kept,
+        wide_list(_),
+        Marker == kept,
         write(ok), nl)).
 
 probe_preds([
@@ -306,7 +386,17 @@ probe_preds([
     user:probe_assoc/0,
     user:probe_parse_atom/0,
     user:probe_term_meta/0,
-    user:probe_op3/0
+    user:probe_op3/0,
+    user:probe_string_tag/0,
+    user:probe_string_polish/0,
+    user:lit_hi/1,
+    user:eq_str/1,
+    user:probe_string_literal/0,
+    user:probe_sub_string/0,
+    user:tail_sub/2,
+    user:probe_tail_builtin/0,
+    user:wide_list/1,
+    user:probe_y_preserve/0
 ]).
 
 :- dynamic user:ctw_js/0.
@@ -333,14 +423,57 @@ run_node(Dir, Key, Exit, Out) :-
     run_node_args(Dir, [Key], Exit, Out).
 
 run_node_args(Dir, Args, Exit, Out) :-
-    directory_file_path(Dir, 'js', JsDir),
-    process_create(path(node), ['generated_program.js'|Args],
-        [cwd(JsDir), stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
-    read_string(O, _, OS),
-    read_string(E, _, ES),
-    close(O), close(E),
-    process_wait(Pid, exit(Exit)),
+    run_node_split(Dir, [], Args, Exit, OS, ES),
     atomic_list_concat([OS, ES], Out).
+
+% Split stdout/stderr. EnvPairs are NAME=VALUE atoms prepended to `env`.
+run_node_split(Dir, EnvPairs, Args, Exit, Stdout, Stderr) :-
+    directory_file_path(Dir, 'js', JsDir),
+    append(EnvPairs, [node, 'generated_program.js'|Args], EnvArgs),
+    process_create(path(env), EnvArgs,
+        [cwd(JsDir), stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
+    read_string(O, _, Stdout),
+    read_string(E, _, Stderr),
+    close(O), close(E),
+    process_wait(Pid, exit(Exit)).
+
+profile_table_calls(Stderr, Pred, Calls) :-
+    split_string(Stderr, "\n", "", Lines),
+    once((
+        member(Line, Lines),
+        split_string(Line, " \t", " \t", Toks),
+        Toks = [Pred, CallsStr|_],
+        number_string(Calls, CallsStr)
+    )).
+
+profile_json_pred(Dict, Pred, Row) :-
+    get_dict(predicates, Dict, Preds),
+    once((
+        member(Row0, Preds),
+        get_dict(pred, Row0, Name),
+        format(string(S), '~w', [Name]),
+        S == Pred,
+        Row = Row0
+    )).
+
+install_profile_preds :-
+    retractall(user:fib/2),
+    retractall(user:hello/1),
+    assertz(user:fib(0, 0)),
+    assertz(user:fib(1, 1)),
+    assertz((user:fib(N, F) :-
+        N > 1,
+        N1 is N - 1,
+        N2 is N - 2,
+        fib(N1, F1),
+        fib(N2, F2),
+        F is F1 + F2)),
+    assertz(user:hello(world)).
+
+compile_profile_fib(Dir) :-
+    Dir = 'output/js_wam_profile_probes',
+    make_directory_path(Dir),
+    write_wam_javascript_project([user:fib/2], [emit_mode(interpreter)], Dir).
 
 node_succeeded(Out) :-
     split_string(Out, "\n", " \t\r", Lines0),
@@ -430,6 +563,131 @@ test(emitted_op_decls, [setup(install_probes)]) :-
     assertion(sub_string(Code, _, _, _, "install_declared_ops")),
     assertion(sub_string(Code, _, _, _, "likes")),
     run_node(Dir, 'probe_parse_likes/0', Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Out)).
+
+test(string_polish_output, [setup(install_probes)]) :-
+    Dir = 'output/js_wam_string_polish',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:probe_string_polish/0],
+        [emit_mode(interpreter)], Dir),
+    run_node(Dir, 'probe_string_polish/0', Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Out)),
+    assertion(sub_string(Out, _, _, _, '["ab",foo]')),
+    assertion(sub_string(Out, _, _, _, "'hello world'")),
+    assertion(sub_string(Out, _, _, _, "foo")),
+    assertion(sub_string(Out, _, _, _, '["x",y]')),
+    split_string(Out, "\n", "", Lines),
+    assertion(member("ab", Lines)),
+    assertion(member("\"x\"", Lines)).
+
+test(string_literal_output, [setup(install_probes)]) :-
+    Dir = 'output/js_wam_string_literal',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:lit_hi/1, user:eq_str/1, user:probe_string_literal/0],
+        [emit_mode(interpreter)], Dir),
+    read_generated_js(Dir, Code),
+    assertion(sub_string(Code, _, _, _, 'V.String("hi")')),
+    run_node(Dir, 'probe_string_literal/0', Exit, Out),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Out)),
+    split_string(Out, "\n", "", Lines),
+    assertion(member("\"hi\"", Lines)).
+
+test(profile_default_silent, [setup(install_profile_preds)]) :-
+    compile_profile_fib(Dir),
+    run_node_split(Dir, ['UW_PROFILE='], ['fib/2', '8'], Exit, Stdout, Stderr),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Stdout)),
+    assertion(Stderr == ""),
+    assertion(\+ sub_string(Stdout, _, _, _, "UW profile")).
+
+test(profile_table_stdout_identical, [setup(install_profile_preds)]) :-
+    compile_profile_fib(Dir),
+    run_node_split(Dir, ['UW_PROFILE='], ['fib/2', '8'], OffExit, OffOut, OffErr),
+    run_node_split(Dir, ['UW_PROFILE=1'], ['fib/2', '8'], OnExit, OnOut, OnErr),
+    assertion(OffExit =:= 0),
+    assertion(OnExit =:= 0),
+    assertion(OffOut == OnOut),
+    assertion(node_succeeded(OnOut)),
+    assertion(OffErr == ""),
+    assertion(sub_string(OnErr, _, _, _, "UW profile")),
+    profile_table_calls(OnErr, "fib/2", Calls),
+    assertion(Calls >= 20).
+
+test(profile_json_schema, [setup(install_profile_preds)]) :-
+    compile_profile_fib(Dir),
+    run_node_split(Dir, ['UW_PROFILE='], ['fib/2', '8'], OffExit, OffOut, OffErr),
+    run_node_split(Dir, ['UW_PROFILE=json'], ['fib/2', '8'], OnExit, OnOut, OnErr),
+    assertion(OffExit =:= 0),
+    assertion(OnExit =:= 0),
+    assertion(OffOut == OnOut),
+    assertion(OffErr == ""),
+    atom_string(ErrAtom, OnErr),
+    atom_json_dict(ErrAtom, Dict, []),
+    profile_json_pred(Dict, "fib/2", Row),
+    get_dict(calls, Row, Calls),
+    assertion(Calls >= 1),
+    get_dict(global, Dict, G),
+    get_dict(instructions, G, Instr),
+    assertion(Instr >= 1),
+    get_dict(unify_calls, G, _),
+    get_dict(trail_pushes, G, _),
+    get_dict(heap_cells, G, _),
+    get_dict(backtracks, G, _),
+    get_dict(trail_undos, G, _),
+    get_dict(wall_ns, G, Wall),
+    assertion(Wall >= 0),
+    get_dict(tier_note, Dict, _).
+
+test(profile_lowered_call_counts, [setup(install_profile_preds)]) :-
+    Dir = 'output/js_wam_profile_lowered',
+    make_directory_path(Dir),
+    write_wam_javascript_project([user:hello/1], [emit_mode(functions)], Dir),
+    read_generated_js(Dir, Code),
+    assertion(sub_string(Code, _, _, _, "Runtime.prof_lowered_call")),
+    run_node_split(Dir, ['UW_PROFILE=json'], ['hello/1', 'world'], Exit, Stdout, Stderr),
+    assertion(Exit =:= 0),
+    assertion(node_succeeded(Stdout)),
+    atom_string(ErrAtom, Stderr),
+    atom_json_dict(ErrAtom, Dict, []),
+    profile_json_pred(Dict, "hello/1", Row),
+    get_dict(calls, Row, Calls),
+    assertion(Calls >= 1),
+    get_dict(lowered, Row, Lowered),
+    assertion((Lowered == true ; Lowered == @(true))).
+
+% D57 probe: the runtime gained maplist/2,3,4 and string_codes/2 (with the
+% empty-string <-> [] edge) because the compiler emits BuiltinCall maplist/N
+% for the Debian store unpack; pin the builtins directly.
+:- dynamic user:probe_maplist_sc/0.
+:- dynamic user:inc1/2.
+
+install_maplist_probe :-
+    retractall(user:probe_maplist_sc),
+    retractall(user:inc1(_, _)),
+    assertz((user:inc1(X, Y) :- Y is X + 1)),
+    assertz((user:probe_maplist_sc :-
+        maplist(inc1, [1, 2, 3], L1),
+        L1 == [2, 3, 4],
+        string_codes(S, [104, 105]),
+        S == "hi",
+        string_codes(E, []),
+        E == "")).
+
+test(maplist_string_codes_runtime, [setup(install_maplist_probe)]) :-
+    % SWI oracle for the same shapes.
+    assertion((maplist(user:inc1, [1, 2, 3], L0), L0 == [2, 3, 4])),
+    assertion((string_codes(S0, []), S0 == "")),
+    Dir = 'output/js_wam_maplist_probe',
+    make_directory_path(Dir),
+    write_wam_javascript_project(
+        [user:inc1/2, user:probe_maplist_sc/0],
+        [emit_mode(interpreter)], Dir),
+    run_node(Dir, 'probe_maplist_sc/0', Exit, Out),
     assertion(Exit =:= 0),
     assertion(node_succeeded(Out)).
 

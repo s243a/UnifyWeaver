@@ -88,6 +88,25 @@ class ChoicePoint:
     trail_top: int         # trail mark for undo
     heap_top: int          # heap mark for trimming
     saved_b: int           # parent choice point index
+    # If-then-else barrier levels captured by `get_level Yn` — register id ->
+    # the choice-point index (`state.b`) to cut back to.
+    #
+    # The shared WAM compiler reserves a *permanent* (Y) register for an ITE
+    # barrier AFTER it has decided whether the clause needs an environment
+    # (`compile_if_then_else/7` in `wam_target.pl`), so it happily emits
+    # `get_level Y1` in a clause with NO `allocate` — e.g. the `\+`/if-then-else
+    # clause of a multi-clause predicate whose body holds no other permanent.
+    # This runtime routes Y registers (>= _Y_BASE) to the CURRENT environment
+    # frame, which for such a clause is the CALLER's frame: the write landed on
+    # the caller's permanent variable Yn and replaced it with a choice-point
+    # depth. That is a silent wrong answer, not a crash — the WAM_FLEET_GAPS
+    # A2 hazard in the frameless-Y-write form (see WAM_PYTHON_STATUS.md).
+    #
+    # Keeping the level on the ITE's own choice point instead means it never
+    # touches a register, is per-activation for free (two nested activations of
+    # the same predicate each carry their own barrier), and is discarded by
+    # backtracking along with the choice point that owns it.
+    levels: Dict[int, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -137,6 +156,10 @@ class WamState:
         # Side stack for Prolog catch/3 frames. Python exceptions provide the
         # unwind mechanism; these frames carry WAM-level state snapshots.
         self.catcher_frames: List[CatcherFrame] = []
+        # If-then-else barrier level taken by `get_level Yn` immediately BEFORE
+        # the ITE's `try_me_else`; consumed by the next push_choice_point, which
+        # records it on the guard choice point it creates. See ChoicePoint.levels.
+        self.pending_level: Optional[Tuple[int, int]] = None
         self.temp_y_regs: Optional[List] = None
         self.input_pushback: List[str] = []
         self.stream_pushback: Dict[int, List[str]] = {}
@@ -469,8 +492,61 @@ def push_choice_point(state: WamState, n_args: int, next_clause: Any) -> None:
         heap_top=state.heap_len,
         saved_b=state.b,
     )
+    # An ITE `get_level Yn` emitted immediately before this try_me_else parked
+    # its barrier level; this is the guard choice point that owns it.
+    if state.pending_level is not None:
+        _lvl_reg, _lvl_val = state.pending_level
+        cp.levels[_lvl_reg] = _lvl_val
+        state.pending_level = None
     state.stack.append(cp)
     state.b = len(state.stack) - 1
+
+
+def record_ite_level(state: WamState, reg: int, next_op: Optional[str]) -> None:
+    """`get_level Yn` — snapshot the cut level for an if-then-else barrier.
+
+    Never writes register `reg`: see ChoicePoint.levels for why a Y write here
+    lands in the CALLER's environment frame. Two emission shapes come out of
+    `compile_if_then_else/7`:
+
+      1. `get_level BarrierReg` immediately BEFORE the ITE `try_me_else` — park
+         it for that try_me_else to record on the guard choice point it pushes.
+      2. `get_level CondBarrierReg` immediately AFTER the try_me_else (only when
+         the condition holds a top-level `!`) — attach it to the guard choice
+         point that already exists, so a cut in the condition prunes only the
+         condition's own choice points.
+
+    In both shapes the recorded level is simply `state.b` at this instant.
+    """
+    if next_op in ('try_me_else', 'try_me_else_pc'):
+        state.pending_level = (reg, state.b)
+        return
+    b = state.b
+    if 0 <= b < len(state.stack):
+        frame = state.stack[b]
+        if isinstance(frame, ChoicePoint):
+            frame.levels[reg] = b
+
+
+def lookup_ite_level(state: WamState, reg: int) -> Optional[int]:
+    """`cut Yn` — find the level `get_level Yn` recorded, innermost first.
+
+    Looking the barrier up on the choice-point chain (rather than in a Y
+    register) makes it per-activation for free, and a callee can never clobber
+    a caller's. `None` means the guard was already cut away by an inner commit,
+    in which case the stack is at or below the level anyway and cutting would
+    be a no-op.
+    """
+    b = state.b
+    while 0 <= b < len(state.stack):
+        frame = state.stack[b]
+        if not isinstance(frame, ChoicePoint):
+            break
+        if reg in frame.levels:
+            return frame.levels[reg]
+        b = frame.saved_b
+    return None
+
 
 def restore_choice_point(state: WamState, next_clause: Any = None) -> None:
     """Backtrack: restore state from current choice point (retry_me_else)."""
@@ -2598,6 +2674,10 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
         # already shrunk state.b to the next fallback CP; loop and retry
         # so we don't drop those by returning False outright.
         nonlocal ip
+        # A `get_level` parked between the last choice point and this failure
+        # never reached its try_me_else; it must not attach to an unrelated
+        # choice point pushed later.
+        state.pending_level = None
         while True:
             if state.b < 0:
                 return False
@@ -3073,12 +3153,14 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
 
         elif op == 'get_level':
             _, reg = instr
-            set_reg(state, reg, state.b)
+            record_ite_level(state, reg,
+                             code[ip][0] if ip < code_len else None)
 
         elif op == 'cut':
             _, reg = instr
-            level = get_reg(state, reg)
-            _cut_to(state, level)
+            level = lookup_ite_level(state, reg)
+            if level is not None:
+                _cut_to(state, level)
 
         elif op == 'allocate':
             n_perm = instr[1] if len(instr) > 1 else 16  # default perm vars
@@ -3504,6 +3586,9 @@ def _run_aggregate_body(code: list, labels: dict, body_start: int, end_pc: int,
 
     def sub_fail():
         nonlocal sub_ip
+        # See the main loop's fail(): drop a get_level that never reached its
+        # try_me_else.
+        sub.pending_level = None
         if sub.b < 0 or sub.b <= base_b:
             return False
         cp = sub.stack[sub.b]
@@ -3861,10 +3946,13 @@ def _run_aggregate_body(code: list, labels: dict, body_start: int, end_pc: int,
             _cut_to(sub, target_b)
         elif op == 'get_level':
             _, reg = instr
-            set_reg(sub, reg, sub.b)
+            record_ite_level(sub, reg,
+                             code[sub_ip][0] if sub_ip < code_len else None)
         elif op == 'cut':
             _, reg = instr
-            _cut_to(sub, get_reg(sub, reg))
+            _sub_level = lookup_ite_level(sub, reg)
+            if _sub_level is not None:
+                _cut_to(sub, _sub_level)
         elif op == 'allocate':
             n_perm = instr[1] if len(instr) > 1 else 16
             push_environment(sub, n_perm)

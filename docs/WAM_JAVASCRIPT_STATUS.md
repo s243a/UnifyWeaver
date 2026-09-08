@@ -61,12 +61,17 @@ Key, `@<`/`@>`/`<`/`>`), **`predsort/3`** (`compare/3` and 3-arg callables),
 **`compare/3`**.
 
 Atom/string: **`atom_concat/3`**, **`string_concat/3`**, **`atom_length/2`**,
-**`atom_chars/2`**, **`string_chars/2`**, **`atom_codes/2`**, **`char_code/2`**,
+**`string_length/2`**, **`atom_chars/2`**, **`string_chars/2`**, **`atom_codes/2`**, **`char_code/2`**,
 **`sub_atom/5`** (ground-Atom; enumerates unbound Before/Length/After),
-**`atom_string/2`**, **`number_codes/2`**, **`number_string/2`**,
-**`split_string/4`**, **`upcase_atom/2`**, **`downcase_atom/2`**.
+**`sub_string/5`** (same walk; Sub is a `V.String`),
+**`atom_string/2`**, **`string_to_atom/2`**, **`string/1`**,
+**`number_codes/2`**, **`number_string/2`**, **`split_string/4`**,
+**`upcase_atom/2`**, **`downcase_atom/2`**. Distinct **`string` tag**
+(`V.String`): string-producing builtins yield strings; `atom/1` is
+false for them. `write/1` prints the text; `writeq/1` and `format` `~q`
+quote strings with `"` and quote atoms only when needed.
 
-I/O: `write/1`, `nl/0`, `writeln/1`, **`format/2`**, **`format/3`**
+I/O: `write/1`, **`writeq/1`**, `nl/0`, `writeln/1`, **`format/2`**, **`format/3`**
 (`~w ~a ~d ~p ~q ~n ~s ~t ~~`; `atom(A)` / `string(S)` sinks), **`tab/1`**.
 
 Assoc (`library(assoc)` shape, list-of-pairs not AVL): **`empty_assoc/1`**,
@@ -86,8 +91,8 @@ builtin metacall), **`bagof/3`** / **`setof/3`** (ISO free-var grouping,
 `^/2` existential quantification, empty-goal failure), **`aggregate_all/3`**
 for `count` / `sum(X)` / `bag(X)` / `set(X)`.
 
-Types: `atom/1`, `integer/1`, `float/1`, `number/1`, `compound/1`, `var/1`,
-`nonvar/1`, `is_list/1`, `ground/1`.
+Types: `atom/1`, `integer/1`, `float/1`, `number/1`, `string/1`, `compound/1`,
+`var/1`, `nonvar/1`, `is_list/1`, `ground/1`.
 
 ## Runtime term parser (G-W2)
 
@@ -97,7 +102,8 @@ goes through `parse_cli_atom_or_int`, which now calls the same reader
 (unreadable text still interned as an atom).
 
 **Full:** integers (including a leading `-` after start/`(`/`[`/`,`/`|`),
-floats (`3.14`, `-1.5`, `1.0e2`), bare atoms, quoted atoms (`'hi there'`
+floats (`3.14`, `-1.5`, `1.0e2`), bare atoms, quoted atoms (`'hi there'`),
+double-quoted strings (`"hi"` → string tag),
 with `\'` / `\\` escapes), variables (`X`, `_`, shared names), `[]`,
 proper lists `[a,b,c]`, partial lists `[H|T]`, compounds
 `foo(a, bar(b), 3)`, and parentheses. Cons intern as `[|]/2` + the `[]`
@@ -128,25 +134,326 @@ target_runtime_parser_mode_(wam_javascript, native(parse_term)).
 This matches C++/R (`native(parse_term)`): an in-runtime host-language
 parser, not the bundled portable `compiled(prolog_term_parser)`.
 
-## Remaining / partial
+## Profiling (GP-PROF)
+
+Opt-in interpreter instrumentation. **Off by default:** `Runtime._prof` is
+`null` and every hook is a single falsy check (no allocation). When off,
+`Runtime.run` / `collect_run` take the same instruction loop as before this
+change; stdout and stderr are byte-identical to an uninstrumented run.
+
+### Activation
+
+| Mechanism | Effect |
+|---|---|
+| env `UW_PROFILE=1` (also `true` / `yes`) | Table report on stderr at process exit |
+| env `UW_PROFILE=json` | One JSON object on stderr at process exit |
+| `Runtime.profile(true)` | Same as `UW_PROFILE=1` |
+| `Runtime.profile("json")` | Same as `UW_PROFILE=json` |
+| `Runtime.profile(false)` | Disable |
+| `Runtime.profileReport()` | Write the report now (also hooked on `process.exit`) |
+
+Reports go to **stderr only**. Stdout stays program output (the conformance
+harness reads it).
+
+### Per-predicate metrics
+
+Exclusive while the predicate is on top of the profiler stack:
+
+| Field | Meaning |
+|---|---|
+| `calls` | Enter count (`Call` / `Execute` / CLI / lowered dispatch) |
+| `instr` | Instructions executed (interpreter tier only) |
+| `ns` | Exclusive wall time via `process.hrtime.bigint()` |
+| `cps` | Choice points created while on top |
+| `max_cp_depth` | Max `state.cps.length` seen while on top |
+| `lowered` | `true` if the row came from a lowered-function call |
+
+Predicates are sorted by `ns` descending, then `calls` descending. Lowered
+names get a trailing `*` in the table. Instruction / CP / exclusive-time
+detail is **interpreter-tier only**; lowered functions increment `calls`
+(and set `lowered`) through the `lowered_dispatch` wrapper.
+
+### Global metrics
+
+`instructions`, `unify_calls`, `trail_pushes`, `heap_cells`, `backtracks`,
+`trail_undos` (each `undo_trail` that actually popped), `wall_ns` (process
+span from `Runtime.profile()`).
+
+### `UW_PROFILE=json` schema
+
+One object, one line (plus newline). Stable keys:
+
+```json
+{
+  "tier_note": "Lowered predicates: call counts only; instruction/CP/time detail is interpreter-tier.",
+  "predicates": [
+    {
+      "pred": "fib/2",
+      "calls": 67,
+      "instr": 1234,
+      "ns": 89012,
+      "cps": 3,
+      "max_cp_depth": 2,
+      "lowered": false
+    }
+  ],
+  "global": {
+    "instructions": 1234,
+    "unify_calls": 56,
+    "trail_pushes": 40,
+    "heap_cells": 30,
+    "backtracks": 12,
+    "trail_undos": 8,
+    "wall_ns": 100000
+  }
+}
+```
+
+Table shape (stderr):
+
+```
+UW profile  (interpreter instr/CP/time; lowered = calls only)
+pred                          calls       instr       CPs   maxCP            ns
+fib/2                            67        1234         3       2         89012
+--
+instr=1234 unify=56 trail=40 heap=30 backtracks=12 undos=8 wall_ns=100000
+```
+
+## Peerhailer argparser (A2)
+
+**Runs the peerhailer argparser (A2).** `examples/cli_args/cli_args.pl` (module
+`cli_args`, `parse_args/2,3`) compiles through `wam_javascript`
+(`emit_mode(mixed)`) into `examples/cli_args/wamjs/js/`. Eligible helpers
+lower to direct JS functions; the rest stay on the interpreter. A thin ESM
+shim (`cliArgs.mjs`) converts JS `argv` ↔ WAM terms and maps `ok/2` /
+`error/1`; it implements no parse rule.
+
+| Check | Result |
+|---|---|
+| Contract corpus (`cliArgs.wamjs.test.mjs`, oracle tests, import swapped) | **17 / 17** |
+| Differential vs JS oracle (`run_differential_wamjs.sh`, same seed) | **5067 lines, 0 divergences, 0 message mismatches** |
+
+A2 interpreter baseline (parent `grok/wamjs-cli-args`, this machine): oracle
+**0.048s**, wamjs **4.639s**. GP-PERF round 1 mixed (`grok/wamjs-perf`):
+**3.144s** (**1.48×** vs 4.639s). GP-PERF-2 (`grok/wamjs-perf2`, this
+machine): oracle **0.056s**, wamjs **2.187s** (**2.12×** vs 4.639s,
+**1.50×** vs this-VM round-1 3.271s). Stretch ≥4.5× vs A2 / ≥3× vs round 1
+was not met; see [GP-PERF](#gp-perf-mixed-mode-and-ground-intern).
+
+Runtime gaps this program forced: `sub_string/5`; Y-register save/restore
+across `Call` of a non-`Allocate` fact; `Execute` of a builtin `Proceed`s to
+CP instead of halting. Probes: `probe_sub_string/0`, `probe_y_preserve/0`,
+`probe_tail_builtin/0` in `tests/test_wam_javascript_builtins.pl`.
+
+## GP-PERF mixed mode and ground intern
+
+Loud fallback (stdout + `// wamjs lower fallback:` comments) lists every
+predicate that stays interpreted and why. Wrong-but-fast is refused: a
+shape that cannot match interpreter semantics keeps falling back.
+
+### Memoization rule
+
+If every clause of a predicate is a **ground fact**, the lowered function
+builds the answer once, `copy_term`s it into `program.ground_memo[P/N]`,
+and later calls unify against that snapshot. Indexed `switch_on_*` copies
+of the same fact are collapsed onto this path.
+
+Trail-safety: the interned value contains **no unbound cells**, so it is
+never trailed. Unify only binds the caller's registers (or compares
+ground-to-ground). Read-mode `get_structure` / unify do not mutate `args`
+arrays. A later trail undo only deletes caller bindings. Sharing the live
+constructed term (no `copy_term`) is unsound: a later write-mode `GetList`
+can alias into the interned object and build cyclic lists.
+
+### Continuation integrity (Execute-of-user)
+
+WAM Execute does not modify CP. A lowered frame's Proceed is JS
+`return true`, so the callee must not resume at the query CP.
+
+- **Lowered callee:** `return lowered_P_N(program, state) === true`.
+  JS return *is* Proceed; `state.cp` is untouched.
+- **Interpreted user callee:** `Runtime.execute_user_isolated` saves CP,
+  sets `cp=0` so the isolated interpreter's Proceed **halts** instead of
+  jumping the query continuation, then restores CP. The lowered wrapper's
+  `return` is the real Proceed (so `invoke_lowered_execute` can
+  `proceed_to_cp`). Round 1's `cp=0` without restore stole corpus test 1.
+- **Call with live Y after the Call** (the other half of corpus test 1):
+  `parse_args/2` Calls `default_registry/1` then reads Y1–Y3. Ground-intern
+  first construction can clobber caller Y; emit `push_y_save` /
+  `run_lowered_body` / `pop_y_save` only when a Y register is live across
+  the Call. Interpreter `invoke_lowered_call` always Y-saves.
+
+Probes: `execute_user_continuation_integrity` (nested Execute +
+Call-then-continue) and `execute_user_interpreted_callee` in
+`tests/test_wam_javascript_lowered.pl`.
+
+### Argparser: lower vs interpret
+
+**Lowered (all 43 compiled preds, including the round-1 leftovers):**
+`parse_args/2`, `parse_args/3`, `looks_like_legacy_flag/1`,
+`lenient_result/2`, `merge_flags/3`, `is_long_flag/1`,
+`first_equals_index/2`, `js_object_prototype_key/1`,
+`drop_brackets/2` (T4 nil/cons), `substring_from/3`, `substring_range/4`
+(Execute of `sub_string/5` → `Runtime.op_builtin`), plus the round-1 hot
+path (`first_char_index/4`, `string_member/2`, `pair_lookup/3`,
+`starts_with/2`, `lenient_loop/5`, `strict_loop/8`, `default_registry/1`
+ground memo, …).
+
+**Still interpret (argparser build):** none. `build.sh` emits no
+`wamjs lower fallback` comments. Call of a JS WAM builtin is
+`op_builtin` (same first-solution semantics as interpreter
+`try_builtin_fallback`). Unbound-A1 T4 still has a snapshot fallback
+inside the lowered function; that is not interpreter fallback.
+
+### 200-line `UW_PROFILE=1` (same cases)
+
+A2 interpreter (parent JS): `first_char_index/4` 3910 calls / 3910 CPs /
+96k instr; `default_registry/1` 200 calls / 96k instr / 0 CPs;
+`string_member/2` 1804 calls / 1821 CPs.
+
+Round 1: interpreter instr **20,667** (almost only `drop_brackets/2`).
+Lowered call counts: `first_char_index/4*` 3910, `string_member/2*` 1804.
+
+Round 2 after L1b (wrappers lower, `drop_brackets/2` still interpreted):
+instr **8,985**. After L2+L3 (nil/cons + lite ITE + builtin Execute +
+`drop_brackets/2` fold) and L4 (direct JS Call): instr **0**,
+`drop_brackets/2*` 10, `parse_args/2*` 200. Call counts still match A2
+(`string_member/2*` 1804 — cheap-ITE-for-`=/2` runaway would explode this).
+
+### Per-lever wall time (5067-line differential, this VM)
+
+| Stage | Wall | vs R1 3.271s | vs A2 4.639s | 200-line instr |
+|---|---|---|---|---|
+| A2 interpreter | 4.639s | — | 1.00× | (interpreter) |
+| Round 1 (`grok/wamjs-perf`) | 3.271s (docs 3.144s) | 1.00× | 1.42× | 20,667 |
+| L1 Y-save on every Call | 4.978s | 0.66× (regression) | — | — |
+| L1b Y-save iff Y live after Call | 3.014s | 1.09× | 1.54× | 8,985 |
+| L2+L3 nil/cons + lite ITE + builtin Execute | 2.211s | 1.48× | 2.10× | 0 |
+| L4 direct JS Call/Execute + Call-of-builtin | **2.187s** | **1.50×** | **2.12×** | 0 |
+
+Official `run_differential_wamjs.sh`: oracle **0.056s**, wamjs **2.187s**,
+**0 divergences, 0 message mismatches**, corpus **17/17**. Target was ≥3×
+vs round 1 (≤1.05s) / ≥4.5× vs A2; L1b paid the wrapper lowering, L2
+paid the snapshot cut, L4 was essentially flat.
+
+### Residual
+
+The lowered tier still dominates. Unbound-A1 T4 copies the register file;
+unifying ITE still `snapshot_lite`s A1–A16 + X101–X160 (Call/Allocate in
+the condition still `snapshot_machine`). Recursive Call is a direct JS
+call but still `allocate`/`deallocate`s Y frames (convention: Y-snapshot
+≥201, not Lua locals). `default_registry/1` ground-intern `copy_term`s a
+large term on first construction. Next lever: skip `snapshot_lite` when
+the ITE condition is read-only, and/or intern `default_registry/1` at
+emit time so the first `parse_args/2` is not a full construction.
+
+## Cut and choice-point barriers
+
+This section is normative for the JS WAM backend. It is pinned down by
+`tests/test_wam_javascript_cut_semantics.pl` (35 probes, each run against
+SWI-Prolog as the oracle in four emit modes).
+
+### What a barrier is
+
+`state.cps` is one flat array of choice points, shared by the
+interpreter, the lowered JS functions and every nested run. A **barrier**
+is an index into that array below which a given operation may not
+truncate. Two barriers exist and they mean different things:
+
+| field | meaning | set by | consumed by |
+|---|---|---|---|
+| `state.cut_barrier` | the WAM **B0** of the *current predicate activation*: `cps.length` recorded when this predicate was entered. `!` prunes back to it. | `push_cut_barrier` (Call), `enter_execute` (Execute) | `neck_cut` |
+| `state.cp_barrier` | a **hard isolation floor**: a nested `Runtime.run` driven from a lowered frame may neither backtrack below it nor cut below it. | `Runtime.run_isolated` | `Runtime.backtrack`, `neck_cut`, `Cut Yn` |
+
+`state.cut_stack` is the saved-B0 stack: Call pushes the caller's
+`cut_barrier`, Proceed pops it. `snapshot_machine` captures **both**
+`cut_barrier` and `cut_stack`, and `restore_machine` restores them, so
+backtracking into any choice point restores the barrier regime that was
+live when the choice point was created. **Any hand-rolled choice-point
+object must therefore be built by `Runtime.snapshot_machine`** — a
+literal that omits those two fields makes `restore_machine` delete the
+barrier and empty the stack.
+
+The effective floor for a cut is
+
+```js
+cut_floor(state) = max(state.cut_barrier ?? 0, state.cp_barrier ?? 0)
+```
+
+The `max` matters: an isolated sub-run inherits a *lower* `cut_barrier`
+from an outer frame, and without the clamp a `!` inside it would destroy
+choice points its caller still owns.
+
+### Barrier discipline per context
+
+| context | barrier |
+|---|---|
+| Query top level | No frame is pushed; `cut_barrier` is undefined, so `cut_floor` is 0. A top-level `!` prunes everything, which is correct — nothing outside the query owns a choice point. |
+| Interpreted `Call` | `push_call_frame` = Y-save + `push_cut_barrier`. `cut_barrier := cps.length` **before** the callee's `try_me_else`, so `!` leaves the caller's alternatives and cuts the callee's own clause choice point. `state.cp` is set to the return address first. |
+| Interpreted `Execute` (LCO) | `enter_execute`: `cut_barrier := cps.length` **without** pushing. WAM does `B0 <- B` on `execute` as well as on `call`; the callee reuses the caller's `cut_stack` slot (its Proceed pops the entry the caller's Call pushed) but still gets its own B0. |
+| Lowered `Call` (JS return = Proceed) | `Runtime.push_cut_barrier` / `pop_cut_barrier` around the direct JS call (`push_call_frame` / `pop_call_frame` when the caller's Y is live across it). Choice points the callee leaves above the entry mark are dropped — see *first-solution contract* below. |
+| Lowered `Execute` | `Runtime.enter_execute` before the tail call, then `return`. |
+| `Runtime.execute_user_isolated` | `cp := 0` so the interpreted callee's Proceed halts the isolated run rather than jumping the lowered caller's continuation. It pushes a call frame (so the callee's `pop_call_frame` is balanced) and repairs with `call_frame_mark` / `call_frame_release` on the failure path. |
+| `Runtime.run_isolated` / `cp_barrier` | Raises the hard floor to `cps.length`, runs, then **drops every choice point left above the floor**. Those choice points are not resumable — their snapshot carries `cp = 0` and a pc inside the callee — so keeping them produced incoherent resumes. Dropping them makes an isolated call honestly first-solution. |
+| `\+ G` | Compiled (`inline_not_as_failure`, default) to the soft-cut form `(G -> fail ; true)` with `get_level`/`cut Yn`, so it is an opaque barrier scoped to the negation alone. Metacalled `\+ /1` runs `G` in a **fresh sub-state** with its own empty `cps`, which is opaque by construction. |
+| `findall` / `bagof` / `setof` / `aggregate_all` inner goal | `BeginAggregate` pushes the aggregate choice point and then `push_cut_barrier`, so `cut_barrier` sits **above** the aggregate CP. A `!` in the inner goal prunes only the inner goal's own alternatives and can never destroy the aggregate CP (which would strand `EndAggregate`). The barrier and `cut_stack` are restored by `restore_cp_frame` when `backtrack` reaches the aggregate — its snapshot was taken before the push. This is the ISO "inner goal is call/1-like" rule. |
+| `once/1` | Compiled to `(G -> true ; fail)`. Entering the then-branch commits: the condition's choice points are cut. `once` therefore does **not** cut the enclosing predicate's clause alternatives. |
+| `( C -> T ; E )` | `get_level Yn` before `try_me_else`, `cut Yn` at the commit. Entering the then-branch cuts **C's** choice points only; T's and E's belong to the enclosing clause and are **not** cut. A `!` written *in* C is opaque to the clause — the compiler retargets it to a second Y holding the condition's own entry level. A `!` in T or E cuts the **enclosing clause** (ISO). |
+| `call/1` | ISO: a cut inside `call/1` is **local**. The metacall builds a fresh sub-state whose `cps` is empty, so `!` there cannot reach the caller. Control constructs (`,`, `;`, `->`, `\+`, `!`, `once`, `ignore`, `call/N`, `^`) are interpreted structurally inside the metacall. |
+| `-> ` inside `\+` | Two nested opaque scopes; each gets its own Y level. Verified by probe P23. |
+| `catch/3` | **Not implemented** in this backend (no `catch`/`throw`), so it has no barrier. Listed here so the omission is explicit rather than assumed. |
+| `Cut Yn` (Y-level soft cut) | Truncates to the level `get_level` recorded, clamped at `cp_barrier`. |
+
+### The first-solution contract (and what the emitter refuses)
+
+A lowered JS function yields **at most one solution**: its body is
+straight-line, so when a goal fails there is no machinery to retry an
+earlier goal, and any choice point a callee leaves is not resumable from
+a lowered frame. The emitter enforces the contract by *declining to
+lower* rather than by emitting first-solution code where more is needed:
+
+- a predicate whose body reaches a **CP-creating builtin** outside a
+  commit wrapper (`member/2`, `between/3` — exactly the builtins that
+  push onto `state.cps`; every other library predicate in this runtime is
+  semi-deterministic and cannot leak one);
+- a predicate whose body **calls a user predicate with more than one
+  distinct clause** (counted up to variant equality) outside a commit
+  wrapper — the caller could never reach that callee's second solution;
+- a predicate that can itself **yield more than one solution**: more than
+  one distinct clause, heads not first-argument mutually exclusive, and
+  not every clause but the last committed by a top-level `!`. T5/T6
+  (`clause_chain`) are exempt — their unbound-A1 path pushes a real
+  interpreter choice point and hands the alternatives back;
+- a **plain disjunction** `( A ; B )`. It compiles to a commit-less
+  `try_me_else` block; folding that into `ite(A, [], B)` silently deletes
+  B as a retry alternative and makes A first-solution.
+
+Commit wrappers that *do not* taint the caller: `findall`, `bagof`,
+`setof`, `aggregate_all`, `once`, `forall`, `\+`, and the **condition**
+of an if-then-else.
+
+
 
 | Builtin | Status |
 |---|---|
 | `bagof/3` | **Implemented.** ISO witness grouping (one bag per distinct free-var binding, SWI encounter order), `Var^Goal` / nested `V1^V2^Goal` stripped from the witness set, fails when Goal has no solutions. |
-| `setof/3` | **Implemented.** `bagof` then per-group standard-order sort + dedup. Order: Var < Number < Atom < String < Compound; compounds by arity, functor **name**, then args L-to-R (matches SWI mixed-type lists). |
+| `setof/3` | **Implemented.** `bagof` then per-group standard-order sort + dedup. Order: Var < Number < **String** < Atom < Compound (SWI 9.0.4); compounds by arity, functor **name**, then args L-to-R (matches SWI mixed-type lists). |
 | `term_variables/2` | **Implemented.** Distinct unbound vars, first-occurrence L-to-R depth-first. Cyclic compounds are visited once (same `seen` walk as `copy_term`). |
 | `numbervars/3` | **Implemented.** Binds+trails each distinct unbound var to `'$VAR'(N)` from Start; End is Start+count. `write/1` prints `'$VAR'(N)` literally — it does **not** letter-style SWI rendering (`A`, `B`, …). |
 | `=@=/2` / `\=@=/2` | **Implemented.** Variant equality: ground as `==`; vars match via a consistent bijection. Cyclic struct pairs are treated as already-equal once seen. |
 | `format/2` `/3` | **Implemented** for `~w ~a ~d ~p ~q ~n ~s ~t ~~`. Not ported: `~f`, `~r`, `~D`, positioning (`~N|`, `~+`, `t~`), aliases, and stream sinks other than stdout / `atom(A)` / `string(S)`. |
 | `sub_atom/5` | **Implemented** when Atom is ground; enumerates unbound Before/Length/After (and filters a ground SubAtom). |
-| `atom_string/2` / `split_string/4` | **Implemented** but the runtime has no distinct string tag — results intern as atoms (write/== match SWI for the probe suite). |
+| `sub_string/5` | **Implemented.** Same enumeration as `sub_atom/5`; Sub is a `V.String`. |
+| Peerhailer argparser (A2) | **Implemented.** `examples/cli_args/wamjs/` compiles `cli_args.pl` through `wam_javascript` (`emit_mode(mixed)`) and matches the JS oracle: **17/17** corpus, **5067-line** differential with **0 divergences, 0 message mismatches**. A2 interpreter baseline 4.639s → round-1 mixed 3.144s (**1.48×**) → GP-PERF-2 **2.187s** (**2.12×** vs A2). |
+| String term tag | **Implemented.** `V.String` is a distinct tag. Unify/`==` require equal strings (not atoms). Standard order / `compare/3` / `sort` matches SWI 9.0.4: Var < Number < **String** < Atom < Compound (`"foo" @< foo`). `atom_string/2`, `string_concat/3`, `string_chars/2` (construct), `string_to_atom/2`, `number_string/2`, `split_string/4` produce strings. `string/1` is true only for the tag. `string_length/2` accepts a string, atom, or number (code-point length). `write/1` prints text unquoted; `writeq/1` and `format` `~q` recurse through lists/compounds, double-quote strings, and quote atoms only when needed (see quoting subset below). **Compiled `"foo"` literals** are spelled with outer double quotes in WAM text (`quote_wam_constant/2`); the shared classifier still returns `atom(foo)` (no `string(_)` Class). JS consults `wam_constant_token_is_string/1` and builds `V.String`. Other runtimes intern the atom as before. Fact-source JSON/TSV values still intern as atoms. |
 | `library(assoc)` | **Implemented** as a Prolog `assoc/1` list of Key-Value pairs (not SWI's AVL tree). get/put/list/keys match SWI for unique-key maps. |
 | First-arg indexing | **Implemented.** `switch_on_constant` / `_fallthrough` / `_a2`, `switch_on_structure` / `_a2`, and `switch_on_term` / `_a2` jump to the matching clause group. Ground first-arg with a unique clause leaves no choice point (`deterministic/0`). Unbound first arg falls through to the try/retry/trust chain (no lost solutions). Exclusive miss fails; fallthrough variants keep the chain for variable-headed clauses. Dedicated `try`/`retry`/`trust` dispatch chains are emitted for multi-clause groups. |
 | Second-arg / deep indexing | A2 switches are implemented; deep (argument >2) indexing is not. |
-| Lowered / functions emit mode | **Implemented.** `javascript_wam_resolve_emit_mode/2` accepts `interpreter` (default), `functions` (lower every eligible predicate), and `mixed([P/A, ...])` (lower only the named ones). Eligible shapes: single-clause deterministic bodies; T4 all-clauses-inline; T5 first-arg constant dispatch; T6 hash dispatch (≥8 atom keys); structured ITE / negation / once. Unsupported ops (`begin_aggregate`, bagof/setof, cuts/jumps the planner rejects) fall back to the interpreter rather than emitting wrong code. Interpreter-mode bytecode and wrappers are unchanged. |
+| Lowered / functions emit mode | **Implemented.** `javascript_wam_resolve_emit_mode/2` accepts `interpreter` (default), `functions` (lower every eligible predicate), `mixed` (lower every eligible predicate, interpret the rest), and `mixed([P/A, ...])` (lower only the named ones). Eligible shapes: single-clause deterministic bodies; T4 all-clauses-inline (including nested `\+` via a depth-aware ITE fold, and nil/cons list recursion without a bound-A1 snapshot); T5 first-arg constant dispatch; T6 hash dispatch (≥8 atom keys); structured ITE / negation / once. Ground facts intern via `copy_term` into `program.ground_memo`. Execute of a user predicate preserves CP (`execute_user_isolated` or JS `return`). Execute/Call of a JS WAM builtin is `op_builtin`. Unsupported ops fall back to the interpreter rather than emitting wrong code. Interpreter-mode bytecode and wrappers are unchanged. Shapes that would need a resumable choice point are **refused** (CP-creating builtin, multi-clause user callee, self can-yield-many, plain disjunction) — see [Cut and choice-point barriers](#cut-and-choice-point-barriers). |
 | CLI / runtime term parser | **Implemented.** Pratt reader: int/float/atom (incl. quoted)/var/list/`[H\|T]`/compound. CLI argv + `read_term_from_atom` / `atom_to_term` / `term_to_atom`. **`op/3`** updates the live infix/prefix/postfix tables (defaults cloned from ISO). Compile-time ops via `javascript_wam_ops/1`. Capability `native(parse_term)` via `INTEGRATION_PATCH.md` §7. |
+| Interpreter profiling | **Implemented.** Off by default (`Runtime._prof === null`). `UW_PROFILE=1` / `json` or `Runtime.profile(...)` writes a per-predicate table or JSON to **stderr**. Lowered tier: call counts only. See [Profiling (GP-PROF)](#profiling-gp-prof). |
 | `op/3` | **Implemented.** Infix `xfx`/`xfy`/`yfx`, prefix `fx`/`fy`, postfix `xf`/`yf`. Priority 0 removes. Name = atom or list of atoms. `current_op/3` is not implemented; ops are process-global. |
-| External fact sources | **Implemented.** `javascript_wam_fact_sources([source(P/2, file(Path))])` (alias `js_fact_sources/1`) emits `CallFactStream` and a Node `fs` reader for TSV/CSV and JSONL. First-arg index when A1 is bound. Same lightweight file-backed model as Lua. **LMDB / CSR are out of scope.** Inline facts (no option) are unchanged. |
+| External fact sources | **Implemented.** One `CallFactStream` path, three source forms (P/2 only). `file(Path)` is D27 and is **byte-for-byte unchanged**: whole-file TSV/CSV/JSONL into memory, first-arg index after parse. `indexed(Prefix)` is backend B (dependency-free on-disk index; see [Persistent indexed stores](#persistent-indexed-stores-gp-lmdb)). `lmdb(Dir)` is backend A (opt-in npm `lmdb`; see same section). Inline facts (no option) are unchanged. CSR remains out of scope. `docs/WAM_FLEET_GAPS.md` still lists LMDB as Lua-matching out-of-scope; **this target** now has it. |
 | Conformance harness adapter | See `INTEGRATION_PATCH.md` (coordinator applies `conformance_target(javascript)`). |
 
 ## How to run
@@ -156,35 +463,224 @@ mkdir -p output/advanced
 # Dedicated probe + local 48-query suite (does not edit the shared harness):
 swipl -q -g run_tests -t halt tests/test_wam_javascript_builtins.pl
 
-# File-backed P/2 fact sources (CSV/TSV/JSONL):
+# Cut / choice-point barrier conformance: 35 probes x 4 emit modes,
+# every probe's stdout compared byte-for-byte with SWI-Prolog.
+swipl -q -g run_tests -t halt tests/test_wam_javascript_cut_semantics.pl
+
+# File-backed P/2 fact sources (CSV/TSV/JSONL) + indexed/lmdb stores:
 swipl -q -g run_tests -t halt tests/test_wam_javascript_fact_sources.pl
+# Backend B builder (zero deps):  node scripts/js_wam/uw_fact_index.js build edges.tsv store_prefix
+# Backend A loader (needs `npm install lmdb`): node scripts/js_wam/uw_fact_lmdb.js build edges.tsv lmdb_dir
+# Bound-lookup I/O proof (stderr): UW_FACT_IO_STATS=1 node js/generated_program.js js_idx_probe_bound/0
 
 # Tier-2 lowered / mixed emit-mode suite:
 swipl -q -g run_tests -t halt tests/test_wam_javascript_lowered.pl
 
+# Opt-in profiler (stderr only; stdout unchanged). 1 = table, json = JSON:
+# UW_PROFILE=1 node output/js_wam_profile_probes/js/generated_program.js fib/2 20
+
 # After INTEGRATION_PATCH.md is applied:
 CONFORMANCE_TARGETS=javascript swipl -q -g run_tests -t halt \
   tests/test_wam_cross_target_conformance.pl
+
+# Peerhailer CLI parser (A2) — compile, 17-test corpus, differential vs oracle:
+bash examples/cli_args/wamjs/build.sh
+node --test examples/cli_args/wamjs/cliArgs.wamjs.test.mjs
+bash examples/cli_args/wamjs/run_differential_wamjs.sh
 ```
 
 Residual ISO corners not covered: bagof/setof of *unbound* free vars (two
 solutions that leave the same witness unbound) is grouped by copied
-variable name rather than `@=`; the runtime has no distinct string tag,
-so String vs Atom order is unused and `atom_string`/`split_string`
-intern results as atoms; `^/2` as a standalone metacall just
+variable name rather than `@=`; `^/2` as a standalone metacall just
 runs the RHS; `format` does not implement `~f` / `~r` / column
 positioning; assoc is a list-of-pairs, not SWI's AVL tree;
 `numbervars` does not letter-render `'$VAR'(N)` on `write/1`;
 `op/3` is process-global (no module-local ops) and `current_op/3` is
-not implemented.
+not implemented. `writeq` atom quoting is a pragmatic SWI
+subset: unquoted for `[]`, `!`, `;`, `{}`, `^[a-z][A-Za-z0-9_]*$`, and
+ISO graphic atoms (`#$&*+-./:<=>?@^~\`) except the lone atom `.`;
+quoted otherwise, escaping `\\` and `\'` only (no `\n`/`\t` escapes).
+Brace terms `{a}` are written as `'{}'(a)` / `{}(a)`, not SWI `{a}`.
+`write/1` list spacing is unchanged (`", "`). Fact-source cells stay
+atoms even when the host file looks like a quoted string, except a TSV/CSV
+field wrapped in `"..."` (or a JSON string that `parse_term` reads as a
+string) which follows the D34 string tag through `parse_term`.
+
+## Persistent indexed stores (GP-LMDB)
+
+D27 `file(Path)` still loads and parses the **whole** file at first use.
+That is the right default for small fixtures and is **unchanged**. GP-LMDB
+adds stores that answer a **bound first argument** by seeking, without
+scanning the data file.
+
+### Option syntax
+
+```prolog
+javascript_wam_fact_sources([
+  source(edge/2, file('edges.tsv')),          % D27: in-memory
+  source(edge/2, indexed('stores/edges')),    % B: stores/edges.data + stores/edges.idx
+  source(edge/2, lmdb('stores/edges.lmdb'))   % A: LMDB environment directory
+]).
+```
+
+Alias `js_fact_sources/1` is unchanged. Emitted JS:
+
+- `file`: `{ path: "..." }` — **no** `kind` field (D27 byte-for-byte).
+- `indexed`: `{ kind: "indexed", path: "..." }` (`path` is the file prefix).
+- `lmdb`: `{ kind: "lmdb", path: "..." }` (`path` is the env directory).
+
+Identical `CallFactStream` semantics for every form:
+
+- Unbound A1 → enumerate **all** facts in **source-file order**.
+- Bound A1 → only matching facts (B: binary search of the key table; A: LMDB range get).
+- Other-args bound → filter the streamed candidates (same as D27).
+- Cells go through `parse_fact_source_value` → `parse_term` (D34 string tag, D37 literals).
+
+### Backend B — `indexed(Prefix)` (default capability, zero deps)
+
+This is **LMDB-style** (persistent + indexed + seek-based). It is **not**
+LMDB. The format is our own, read-oriented, **single-writer at build time**.
+There is no write path and no multi-arg secondary index (both out of scope).
+
+Builder:
+
+```bash
+node scripts/js_wam/uw_fact_index.js build <tsv|csv|jsonl> <store-prefix>
+```
+
+Writes `<store-prefix>.data` and `<store-prefix>.idx`. Input parsing matches
+D27 (tab vs comma; JSONL array / `{args}` / `{a1,a2}`; `#` and blank lines
+skipped). Reproducible from the same flat files `file(Path)` reads.
+
+**Why a sorted key table + binary search** (not a hash bucket table):
+O(log n) `fs.readSync` seeks with a fully specified total order
+(`Buffer.compare` on the encoded key). No hash function, no collision
+buckets, and the bytes-read proof is a handful of 16-byte entry reads plus
+the matching records. Hash buckets would need a documented hash and a
+worst-case scan of a bucket; they are not worth it for a read-only
+build-time index.
+
+#### `Prefix.data` (little-endian)
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 4 | magic `UWFI` |
+| 4 | 1 | version `1` |
+| 5 | 3 | pad |
+| 8 | 4 | `n_records` (u32le) |
+| 12 | 4 | reserved |
+| 16 | … | records |
+
+Each record: `u32le payload_len`, then payload `u16le a1_len`, `u16le a2_len`,
+A1 UTF-8, A2 UTF-8. Payloads are the **original cell text** (TSV field /
+JSON-serialized number or string) so the runtime `parse_term` round-trip
+matches D27. Enumeration is a sequential scan from offset 16.
+
+The runtime must **not** `readFileSync` the data file. Bound lookup reads
+only the matching records (plus index probes). `UW_FACT_IO_STATS=1` prints
+`fact_io bytes_read=N data_size=M` on stderr at process exit.
+
+#### `Prefix.idx` (little-endian)
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 4 | magic `UWIX` |
+| 4 | 1 | version `1` |
+| 5 | 3 | pad |
+| 8 | 4 | `n_keys` (u32le) |
+| 12 | 4 | `keyblob_off` (u32le) |
+| 16 | 4 | `hits_off` (u32le) |
+| 20 | 4 | `n_records` (u32le) |
+| 24 | `n_keys × 16` | `KeyEnt` table |
+| `keyblob_off` | … | concatenated keys, sorted by `Buffer.compare` |
+| `hits_off` | … | per key: `n_hits × u32le` data-file offsets, encounter order |
+
+`KeyEnt` (16 bytes): `u32le key_rel`, `u16le key_len`, `u16le n_hits`,
+`u32le hits_rel`, 4 bytes pad.
+
+Bound lookup: binary-search the table (read 16-byte `KeyEnt` + key bytes
+per probe), then read only those data-file records.
+
+#### Index key encoding (intern-id independent; preserves D34)
+
+Shared by B and A (`scripts/js_wam/uw_fact_codec.js` / runtime
+`encode_store_key`):
+
+| Tag byte | Payload | Term |
+|---|---|---|
+| `0x49` (`I`) | int64 big-endian | integer |
+| `0x46` (`F`) | float64 big-endian | float |
+| `0x53` (`S`) | UTF-8 | string (`V.String`) |
+| `0x41` (`A`) | UTF-8 atom name | atom |
+| `0x3F` | (none) | anything else (no index hit) |
+
+Quoted TSV `"strkey"` is a string; bare `strkey` is an atom. JSON numbers
+are ints/floats; JSON strings go through the same cell classifier as TSV
+so `"a"` in JSON (unquoted Prolog atom text) is still atom `a`.
+
+### Backend A — `lmdb(Dir)` (opt-in, real LMDB)
+
+Loader:
+
+```bash
+npm install lmdb          # user action; not a repo package.json dependency
+node scripts/js_wam/uw_fact_lmdb.js build <tsv|csv|jsonl> <lmdb-dir>
+```
+
+The runtime loads the package **lazily** (`createRequire(__filename)("lmdb")`)
+only when a `lmdb(...)` source is actually used. `encoding: "binary"` and
+`keyEncoding: "binary"`. `noSubdir: false` is set explicitly: lmdb-js
+otherwise treats a path with an extension (e.g. `edges.lmdb`) as the
+data *file* and throws `EISDIR` if that path is a directory.
+
+**LMDB key encoding** (same cell payload as B):
+
+| Kind | Key | Value |
+|---|---|---|
+| seq (unbound enum) | `0x00` \|\| uint64be(seq) | payload (u16le a1_len, u16le a2_len, bytes) |
+| A1 (bound lookup) | `0x01` \|\| uint16be(key_len) \|\| `encodeIndexKey(A1)` \|\| uint64be(seq) | same payload |
+
+Range get for a bound A1 uses start seq=0 and end seq=`0xff…ff` (end is
+exclusive in `lmdb-js` `getRange`; keys may contain `0x00`, so a
+length-prefix sits in front of the encoded A1 rather than a NUL delimiter).
+Unbound enumeration is `getRange({start: [0x00], end: [0x01]})` over seq
+keys, which is source-file order.
+
+Missing package: **one** error naming the store, the missing package, and
+`npm install lmdb`. It states that `indexed(...)` is a different format
+and is **not** used as a fallback. Test seam: `UW_LMDB_FORCE_MISSING=1`.
+
+### Optional-dependency policy
+
+`lmdb` is opt-in **per source declaration**. Absence is a loud error at
+the moment that source is used. Default builds, `file(...)`, and
+`indexed(...)` do not require any npm package and must not grow a repo
+`package.json` dependency. Different store formats are never silently
+swapped.
+
+### Out of scope this round
+
+Multi-arg secondary indexes, write paths / live updates, and CSR. Backend
+B has no writer after `uw_fact_index build`. Backend A is loaded
+read-only at runtime.
 
 ## Document status
 
 Initial JS WAM bring-up + builtin port from Lua, ISO bagof/3 and setof/3,
 first-argument indexing, the Tier-2 lowered emitter, ISO/library builtin
 breadth (sort, lists, atom/string, format, assoc), the G-W2 runtime term
-parser, G-W4 file-backed fact sources (TSV/CSV/JSONL; LMDB/CSR out of
-scope), the G-W3 term-meta family (`term_variables/2`,
+parser, G-W4 file-backed fact sources (TSV/CSV/JSONL), GP-LMDB persistent
+indexed stores on **this** target (`indexed/1` zero-dep + opt-in `lmdb/1`;
+fleet-gaps still lists LMDB as Lua-matching out-of-scope), the G-W3
+term-meta family (`term_variables/2`,
 `numbervars/3`, `=@=/2`, `\=@=/2`), then G-W2 `op/3` (dynamic Pratt
-table: infix + prefix + postfix). Source-verified against SWI-Prolog
-as the oracle (2026-08-30).
+table: infix + prefix + postfix), then a distinct string term tag
+(`V.String`; string-producing builtins + standard order), then
+`string_length/2` and `writeq/1` / recursive `~q` quoting, then
+compiled `"foo"` literals as `V.String` (double-quoted WAM spelling;
+classifier still returns `atom(_)`), then opt-in interpreter profiling
+(`UW_PROFILE=1` / `json`, stderr-only table or JSON; lowered = call counts),
+then the peerhailer CLI argparser through mixed emit (A2 + GP-PERF:
+`examples/cli_args/wamjs/`, 17/17 corpus + 5067-line differential vs the
+JS oracle, 0 divergences; A2 4.639s → round-1 3.144s → GP-PERF-2 2.187s).
+Source-verified against SWI-Prolog as the oracle (2026-09-01).

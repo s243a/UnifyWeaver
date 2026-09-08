@@ -104,6 +104,28 @@ program.
 - ~~`test(nqueens)` does not terminate~~ — **fixed 2026-08-10**, see
   below. The whole classic-programs suite now runs to completion.
 
+## Whole-program exercise (A2, 2026-09): known / suspected deficiencies
+
+The peerhailer CLI-parser exercise (see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md)) found three JS-WAM runtime bug
+classes that are fleet-wide suspects. Scala's audit:
+
+| # | Deficiency | Status | Evidence / reason |
+|---|---|---|---|
+| A1 | `sub_string/5` builtin missing | **verified missing** | `sub_atom/5` is in the intercept table (`runtime.scala.mustache:1868`); `sub_string/5` is not |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **verified (structural)** | encoding `X→+100 / Y→+200` (`wam_scala_target.pl:106-107`), so X101 ≡ Y1; registers are one flat `s.regs` array. `Allocate` *copies* the current Y range 201..299 into the new frame (`runtime.scala.mustache:1185-1192`) but `Deallocate` drops the frame **without restoring** (`:1194-1196`) and `Call` takes no snapshot — a no-`Allocate` fact with >99 X placeholders overwrites the caller's live Y values |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **handled for its intercept set** | `interceptedExecuteBuiltin` (14 builtins incl. `call/N`, `sub_atom/5`, `between/3`, sort/bag/set, `format/2`) is routed from *both* the `Call` and `Execute` arms with `withReturn` plumbing (`:1158-1175`, `:1846-1870`); a builtin outside the set with no label → silent `backtrack` |
+| A4 | String fidelity | **rung 0** | no string term type in `WamTerm`; D37's double-quoted literals intern as atoms |
+
+Note for the "default conformance backend" role: being green on the
+classic programs did not protect the JS runtime from any of these three
+classes — they only fire on shapes (huge ground facts, last-goal string
+builtins) the classic suite never emits. See Class C in the fleet doc.
+
+Pattern lane: `scala_target.pl` compiles facts from
+`clause(Head, true)` — the G-A3-8 execute-at-compile-time hazard is
+absent; the G-A3 machinery has no analogue there.
+
 ## Path forward
 
 1. ISO three-form adoption.
@@ -120,3 +142,5 @@ figures cited from the mode bench, not re-run. Refreshed 2026-08-09
 after CONF-FIX-SCALA-NESTED / CONF-FIX-SCALA-EQ; note that the emitted
 runtime needs **Scala 2.13+** (it uses `String.toIntOption`), so a 2.11
 toolchain fails to compile the project rather than diverging.
+2026-09-01: added the whole-program (A2) deficiency audit; see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).

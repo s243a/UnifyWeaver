@@ -558,7 +558,7 @@ fn test_generated_predicates() {
     assert!(!ok12, "tri_sum(4, 11) should fail");
 
     // Test tail_suffix/2 foreign lowering end-to-end
-    let list_abc = Value::List(vec![
+    let list_abc = Value::list(vec![
         Value::Atom("a".to_string()),
         Value::Atom("b".to_string()),
         Value::Atom("c".to_string()),
@@ -594,7 +594,7 @@ fn test_generated_predicates() {
     let mut vm_suffix_check = WamState::new(vec![], std::collections::HashMap::new());
     let ok14 = tail_suffix(&mut vm_suffix_check,
         list_abc.clone(),
-        Value::List(vec![
+        Value::list(vec![
             Value::Atom("b".to_string()),
             Value::Atom("c".to_string()),
         ]));
@@ -603,13 +603,13 @@ fn test_generated_predicates() {
     let mut vm_suffix_fail = WamState::new(vec![], std::collections::HashMap::new());
     let ok15 = tail_suffix(&mut vm_suffix_fail,
         list_abc,
-        Value::List(vec![Value::Atom("d".to_string())]));
+        Value::list(vec![Value::Atom("d".to_string())]));
     assert!(!ok15, "tail_suffix([a,b,c], [d]) should fail");
 
     // Test tail_suffixes/2 deterministic collection foreign lowering end-to-end
     let mut vm_suffixes = WamState::new(vec![], std::collections::HashMap::new());
     let ok16 = tail_suffixes(&mut vm_suffixes,
-        Value::List(vec![
+        Value::list(vec![
             Value::Atom("a".to_string()),
             Value::Atom("b".to_string()),
             Value::Atom("c".to_string()),
@@ -617,18 +617,18 @@ fn test_generated_predicates() {
         Value::Unbound("Suffixes".to_string()));
     assert!(ok16, "tail_suffixes([a,b,c], Suffixes) should succeed");
     match vm_suffixes.bindings.get("Suffixes").cloned() {
-        Some(Value::List(items)) => assert_eq!(items, vec![
-            Value::List(vec![
+        Some(Value::List(items)) => assert_eq!(items.to_vec(), vec![
+            Value::list(vec![
                 Value::Atom("a".to_string()),
                 Value::Atom("b".to_string()),
                 Value::Atom("c".to_string()),
             ]),
-            Value::List(vec![
+            Value::list(vec![
                 Value::Atom("b".to_string()),
                 Value::Atom("c".to_string()),
             ]),
-            Value::List(vec![Value::Atom("c".to_string())]),
-            Value::List(vec![]),
+            Value::list(vec![Value::Atom("c".to_string())]),
+            Value::list(vec![]),
         ]),
         other => panic!("expected deterministic suffix collection in Suffixes, got {:?}", other),
     }

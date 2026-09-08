@@ -8,11 +8,14 @@
 % with an instruction-array WAM interpreter plus an optional Tier-2
 % lowered-function path. Architecture mirrors wam_lua_target.pl
 % (closest dynamically typed model). emit_mode is interpreter | functions
-% | mixed(List); default remains interpreter.
+% | mixed (every eligible predicate) | mixed(List); default remains interpreter.
 % javascript_wam_fact_sources([source(P/2, file(Path))]) streams binary
-% facts from a TSV/CSV or JSONL file (Lua-style; no LMDB/CSR).
+% facts from a TSV/CSV or JSONL file (Lua-style). Persistent indexed
+% stores: source(P/2, indexed(Prefix)) (dependency-free seek index) and
+% source(P/2, lmdb(Dir)) (opt-in npm `lmdb`; loud error if missing).
 % javascript_wam_ops([op(Prec, Type, Name), ...]) (alias js_op_decls/1)
 % seeds the runtime Pratt op table at program startup (R's r_op_decls/1).
+% Lowered dispatch wraps each function with a UW_PROFILE call counter.
 
 :- module(wam_javascript_target, [
     write_wam_javascript_project/3,
@@ -38,10 +41,12 @@
     wam_tokenize_line/2,
     wam_recognise_label/2,
     wam_recognise_instruction/2,
-    wam_classify_constant_token/2
+    wam_classify_constant_token/2,
+    wam_constant_token_is_string/1
 ]).
 :- use_module(wam_javascript_lowered_emitter, [
     wam_javascript_lowerable/3,
+    wam_javascript_explain_lower/3,
     lower_predicate_to_javascript/4
 ]).
 
@@ -63,12 +68,14 @@ wam_javascript_resolve_emit_mode(Options, Mode) :-
 
 validate_emit_mode(interpreter, interpreter) :- !.
 validate_emit_mode(functions, functions) :- !.
+validate_emit_mode(mixed, mixed) :- !.
 validate_emit_mode(mixed(L), mixed(L)) :- is_list(L), !.
 validate_emit_mode(Other, _) :-
     throw(error(domain_error(wam_javascript_emit_mode, Other),
                 wam_javascript_resolve_emit_mode/2)).
 
 should_try_lower(functions, _, _) :- !.
+should_try_lower(mixed, _, _) :- !.
 should_try_lower(mixed(HotPreds), P, A) :-
     member(P/A, HotPreds), !.
 should_try_lower(_, _, _) :- fail.
@@ -362,14 +369,19 @@ normalize_switch_case_tokens([Token|Rest], [Token|More]) :-
     normalize_switch_case_tokens(Rest, More).
 
 constant_to_js_term(C, Lit) :-
-    wam_classify_constant_token(C, Class),
-    (   Class = integer(N)
-    ->  format(string(Lit), 'V.Int(~w)', [N])
-    ;   Class = float(F)
-    ->  format(string(Lit), 'V.Float(~w)', [F])
-    ;   Class = atom(Name),
-        intern_js_atom(Name, Id),
-        format(string(Lit), 'V.Atom(~w)', [Id])
+    (   wam_constant_token_is_string(C)
+    ->  wam_classify_constant_token(C, atom(Name)),
+        js_string_literal(Name, SLit),
+        format(string(Lit), 'V.String(~w)', [SLit])
+    ;   wam_classify_constant_token(C, Class),
+        (   Class = integer(N)
+        ->  format(string(Lit), 'V.Int(~w)', [N])
+        ;   Class = float(F)
+        ->  format(string(Lit), 'V.Float(~w)', [F])
+        ;   Class = atom(Name),
+            intern_js_atom(Name, Id),
+            format(string(Lit), 'V.Atom(~w)', [Id])
+        )
     ).
 
 % Convention 2: arity is the trailing /<digits> segment so names that
@@ -551,10 +563,20 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, BasePC,
         catch(wam_javascript_lowerable(Pred, WamText, _), _, fail),
         catch(lower_predicate_to_javascript(Pred, WamText, [],
                                            lowered(_, FuncName, LoweredJs)), _, fail)
-    ->  format(string(DispatchLine), 'lowered_dispatch[~w] = ~w;', [KeyQ, FuncName]),
+    ->          format(string(DispatchLine),
+               'lowered_dispatch[~w] = function (program, state) { return ~w(program, state); };',
+               [KeyQ, FuncName]),
         NewLoweredAcc = [LoweredJs, DispatchLine|LoweredAcc],
         emit_js_lowered_wrapper(P, Arity, FuncName, Wrapper)
-    ;   NewLoweredAcc = LoweredAcc,
+    ;   (   SkipLower \== true,
+            should_try_lower(EmitMode, P, Arity)
+        ->  compile_js_predicate_wam_text(P/Arity, WamText0),
+            wam_javascript_explain_lower(Pred, WamText0, Decision),
+            format("wamjs lower fallback: ~w  ~w~n", [MainKey, Decision]),
+            format(string(FbLine), '// wamjs lower fallback: ~w  ~w', [MainKey, Decision]),
+            NewLoweredAcc = [FbLine|LoweredAcc]
+        ;   NewLoweredAcc = LoweredAcc
+        ),
         emit_js_wrapper(P, Arity, BasePC, Wrapper)
     ),
     (FactSourceEntry == none -> NewFactSourceAcc = FactSourceAcc ; NewFactSourceAcc = [FactSourceEntry|FactSourceAcc]),
@@ -562,8 +584,10 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, BasePC,
         NewInstrs, NewTopLabels, NewAllLabels, [Wrapper|WrapperAcc], NewLoweredAcc, NewFactSourceAcc,
         AllInstrs, TopLabels, AllLabels, Wrappers, Lowered, FactSources).
 
-%% javascript_wam_fact_sources([source(P/A, file(Path)), ...])
-%  Lightweight file-backed binary facts (Lua's lua_fact_sources/1).
+%% javascript_wam_fact_sources([source(P/A, Spec), ...])
+%  Spec = file(Path)           % D27: load whole TSV/CSV/JSONL into memory
+%       | indexed(Prefix)      % GP-LMDB B: Prefix.data + Prefix.idx, seek lookup
+%       | lmdb(Dir)            % GP-LMDB A: opt-in LMDB env; never silent-fallback
 %  Only P/2 is streamed; other arities keep compiled inline WAM.
 javascript_wam_fact_source_spec(P, Arity, Options, Spec) :-
     Arity =:= 2,
@@ -590,6 +614,25 @@ javascript_wam_fact_source_entry(Key, file(Path), Entry) :-
     js_string_literal(Key, KeyQ),
     js_string_literal(SourcePath, PathQ),
     format(string(Entry), '  ~w: { path: ~w }', [KeyQ, PathQ]).
+javascript_wam_fact_source_entry(Key, indexed(Path), Entry) :-
+    javascript_wam_store_path(Path, SourcePath),
+    js_string_literal(Key, KeyQ),
+    js_string_literal(SourcePath, PathQ),
+    format(string(Entry), '  ~w: { kind: "indexed", path: ~w }', [KeyQ, PathQ]).
+javascript_wam_fact_source_entry(Key, lmdb(Path), Entry) :-
+    javascript_wam_store_path(Path, SourcePath),
+    js_string_literal(Key, KeyQ),
+    js_string_literal(SourcePath, PathQ),
+    format(string(Entry), '  ~w: { kind: "lmdb", path: ~w }', [KeyQ, PathQ]).
+
+javascript_wam_store_path(Path, SourcePath) :-
+    atom_string(Path, PathStr),
+    working_directory(Cwd, Cwd),
+    (   catch(absolute_file_name(PathStr, AbsPath, [relative_to(Cwd)]), _, fail),
+        AbsPath \== []
+    ->  SourcePath = AbsPath
+    ;   SourcePath = PathStr
+    ).
 
 compile_js_predicate_wam(PredIndicator, WamCode) :-
     CompileOpts = [ite_use_y_level(true), inline_bagof_setof(true)],

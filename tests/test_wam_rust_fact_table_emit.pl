@@ -36,7 +36,7 @@ test(value_literals) :-
 % nested terms / lists / floats lower correctly.
 test(value_literals_compound) :-
     emit_fact_table_rust(q/1, fact_info(1, [[f(a, [1, 2])], [3.5]]), [], Code),
-    assertion(sub_string(Code, _, _, _, "Value::Str(\"f\".to_string(), vec![Value::Atom(\"a\".to_string()), Value::List(vec![Value::Integer(1), Value::Integer(2)])])")),
+    assertion(sub_string(Code, _, _, _, "Value::strv(\"f\".to_string(), vec![Value::Atom(\"a\".to_string()), Value::list(vec![Value::Integer(1), Value::Integer(2)])])")),
     assertion(sub_string(Code, _, _, _, "Value::Float(3.5)")).
 
 % default in-range (no inline option): an all-ground-facts predicate whose row
