@@ -5027,8 +5027,8 @@ compile_resume_builtin_to_rust(Code) :-
                             .iter()
                             .map(|v| self.deref_heap(&self.deref_var(v)))
                             .collect();
-                        items.sort_by(|a, b| self.term_compare(a, b));
-                        items.dedup_by(|a, b| self.term_compare(a, b) == Ordering::Equal);
+                        items.sort_by(|a, b| self.sort_cmp(a, b));
+                        items.dedup_by(|a, b| self.sort_cmp(a, b) == Ordering::Equal);
                         Value::list(items)
                     }
                     "max" => {
@@ -5499,6 +5499,126 @@ compile_execute_ext_builtin_to_rust(Code) :-
         }
     }
 
+    /// Borrowing (allocation-free) form of `value_atom_name`, used by the
+    /// decorate-sort comparator so an atom-class compare never clones the
+    /// atom name. Returns the SAME bytes `value_atom_name` would return.
+    fn value_atom_name_ref(v: &Value) -> Option<&str> {
+        match v {
+            Value::Atom(s) => Some(s.as_str()),
+            Value::Bool(true) => Some("true"),
+            Value::Bool(false) => Some("false"),
+            Value::List(items) if items.is_empty() => Some("[]"),
+            _ => None,
+        }
+    }
+
+    /// Decorate-sort comparator. Produces the SAME standard-order-of-terms
+    /// ordering as `term_compare`, but TRUSTS that both operands are already
+    /// fully dereferenced -- the invariant the sort/msort/keysort/setof
+    /// builtins establish by pre-dereffing each element once (O(n)) before
+    /// sorting. It therefore performs NO `deref_heap`/`deref_var` at any level
+    /// (the whole re-deref that made `term_compare` O(n log n) inside the
+    /// comparator), and compares compound functor names through the borrowing
+    /// `functor_of` -- which applies byte-identical normalisation to
+    /// `display_functor_name` but returns a `&str`, so no functor String is
+    /// allocated per comparison. `deref_heap` has already normalised every
+    /// compound functor to its bare form, so `functor_of` here is idempotent.
+    pub fn term_compare_derefed(&self, a: &Value, b: &Value) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        let ca = Self::term_order_class(a);
+        let cb = Self::term_order_class(b);
+        if ca != cb {
+            return ca.cmp(&cb);
+        }
+        match ca {
+            0 => {
+                let na = match a { Value::Unbound(n) => n.as_str(), _ => "" };
+                let nb = match b { Value::Unbound(n) => n.as_str(), _ => "" };
+                na.cmp(nb)
+            }
+            1 => {
+                let fa = match a { Value::Integer(n) => *n as f64, Value::Float(f) => *f, _ => 0.0 };
+                let fb = match b { Value::Integer(n) => *n as f64, Value::Float(f) => *f, _ => 0.0 };
+                match fa.partial_cmp(&fb).unwrap_or(Ordering::Equal) {
+                    Ordering::Equal => {
+                        let ka = matches!(a, Value::Integer(_)) as u8;
+                        let kb = matches!(b, Value::Integer(_)) as u8;
+                        ka.cmp(&kb)
+                    }
+                    o => o,
+                }
+            }
+            2 => {
+                let na = Self::value_atom_name_ref(a).unwrap_or("");
+                let nb = Self::value_atom_name_ref(b).unwrap_or("");
+                na.cmp(nb)
+            }
+            _ => match (a, b) {
+                (Value::List(l1), Value::List(l2)) => {
+                    let n = l1.len().min(l2.len());
+                    for i in 0..n {
+                        let o = self.term_compare_derefed(&l1[i], &l2[i]);
+                        if o != Ordering::Equal { return o; }
+                    }
+                    l1.len().cmp(&l2.len())
+                }
+                (Value::List(l), Value::Str(f, args))
+                    if self.is_cons_functor(f) && args.len() == 2 && !l.is_empty() => {
+                    let o = self.term_compare_derefed(&l[0], &args[0]);
+                    if o != Ordering::Equal { return o; }
+                    self.term_compare_derefed(&Value::list(l[1..].to_vec()), &args[1])
+                }
+                (Value::Str(f, args), Value::List(l))
+                    if self.is_cons_functor(f) && args.len() == 2 && !l.is_empty() => {
+                    let o = self.term_compare_derefed(&args[0], &l[0]);
+                    if o != Ordering::Equal { return o; }
+                    self.term_compare_derefed(&args[1], &Value::list(l[1..].to_vec()))
+                }
+                (Value::Str(f1, a1), Value::Str(f2, a2)) => {
+                    match a1.len().cmp(&a2.len()) {
+                        Ordering::Equal => {
+                            let n1 = Self::functor_of(f1, a1.len());
+                            let n2 = Self::functor_of(f2, a2.len());
+                            match n1.cmp(n2) {
+                                Ordering::Equal => {
+                                    for i in 0..a1.len() {
+                                        let o = self.term_compare_derefed(&a1[i], &a2[i]);
+                                        if o != Ordering::Equal { return o; }
+                                    }
+                                    Ordering::Equal
+                                }
+                                o => o,
+                            }
+                        }
+                        o => o,
+                    }
+                }
+                // List vs Str non-cons compound: lists are ./2, lowest arity 2
+                (Value::List(_), Value::Str(_, args)) => 2usize.cmp(&args.len()),
+                (Value::Str(_, args), Value::List(_)) => args.len().cmp(&2usize),
+                _ => Ordering::Equal,
+            },
+        }
+    }
+
+    /// Sort comparator dispatch used by the pre-dereffing sort builtins
+    /// (sort/2, msort/2, sort/4, keysort/2, setof). With the `decorate_sort`
+    /// feature (default ON) it uses `term_compare_derefed`, trusting the
+    /// pre-deref and skipping the per-comparison re-deref/alloc. With the
+    /// feature OFF it falls back to `term_compare` (which re-derefs both
+    /// operands) so the two builds can be A/B compared. Output is
+    /// byte-identical either way -- this is a behaviour-preserving refactor.
+    #[cfg(feature = "decorate_sort")]
+    #[inline]
+    pub fn sort_cmp(&self, a: &Value, b: &Value) -> std::cmp::Ordering {
+        self.term_compare_derefed(a, b)
+    }
+    #[cfg(not(feature = "decorate_sort"))]
+    #[inline]
+    pub fn sort_cmp(&self, a: &Value, b: &Value) -> std::cmp::Ordering {
+        self.term_compare(a, b)
+    }
+
     fn value_is_ground(&self, v: &Value) -> bool {
         match self.deref_heap(&self.deref_var(v)) {
             Value::Unbound(_) => false,
@@ -5710,9 +5830,9 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let mut sorted: Vec<Value> = list.iter()
                     .map(|v| self.deref_heap(&self.deref_var(v)))
                     .collect();
-                sorted.sort_by(|a, b| self.term_compare(a, b));
+                sorted.sort_by(|a, b| self.sort_cmp(a, b));
                 if op == "sort/2" {
-                    sorted.dedup_by(|a, b| self.term_compare(a, b) == Ordering::Equal);
+                    sorted.dedup_by(|a, b| self.sort_cmp(a, b) == Ordering::Equal);
                 }
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 if self.unify(&a2, &Value::list(sorted)) { self.pc += 1; true } else { false }
@@ -5754,14 +5874,14 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 keyed.sort_by(|a, b| {
                     let a_key = a.1.as_ref().unwrap_or(&a.0);
                     let b_key = b.1.as_ref().unwrap_or(&b.0);
-                    let ordering = self.term_compare(a_key, b_key);
+                    let ordering = self.sort_cmp(a_key, b_key);
                     if descending { ordering.reverse() } else { ordering }
                 });
                 if deduplicate {
                     keyed.dedup_by(|a, b| {
                         let a_key = a.1.as_ref().unwrap_or(&a.0);
                         let b_key = b.1.as_ref().unwrap_or(&b.0);
-                        self.term_compare(a_key, b_key) == Ordering::Equal
+                        self.sort_cmp(a_key, b_key) == Ordering::Equal
                     });
                 }
                 let sorted = keyed.into_iter()
@@ -5790,7 +5910,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                         _ => return false,
                     }
                 }
-                keyed.sort_by(|a, b| self.term_compare(&a.0, &b.0));
+                keyed.sort_by(|a, b| self.sort_cmp(&a.0, &b.0));
                 let sorted: Vec<Value> = keyed.into_iter().map(|kv| kv.1).collect();
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 if self.unify(&a2, &Value::list(sorted)) { self.pc += 1; true } else { false }
@@ -8924,6 +9044,14 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
          use_lmdb_zero=UseLmdbZero,
          use_heed=UseHeed,
          use_rayon=UseRayon],
+        CargoContent0),
+    % Decorate-sort (round #1 hot-path opt): expose the sort-comparator path as
+    % a Cargo feature (default ON) so an ON build and an OFF build are
+    % sha-distinct binaries for a clean A/B, while output stays byte-identical.
+    % Appended here rather than in the shared cargo template so the wiring stays
+    % inside the wam_rust target (the shared template also feeds other lanes).
+    atom_concat(CargoContent0,
+        '\n[features]\ndefault = ["decorate_sort"]\n# When off, the sort/msort/keysort/setof builtins fall back to the original\n# `term_compare` (re-deref) path; output is byte-identical to the on build.\ndecorate_sort = []\n',
         CargoContent),
     directory_file_path(ProjectDir, 'Cargo.toml', CargoPath),
     write_file(CargoPath, CargoContent),
