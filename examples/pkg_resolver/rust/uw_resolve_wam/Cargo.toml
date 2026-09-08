@@ -15,3 +15,8 @@ default = ["decorate_sort"]
 # When off, the sort/msort/keysort/setof builtins fall back to the original
 # `term_compare` (re-deref) path; output is byte-identical to the on build.
 decorate_sort = []
+# Hot-path opt #2 (D96): intern functor/atom/var names to u32 ids so term
+# construction, `deref_var` and the `"f/N"` functor parse stop allocating tiny
+# name Strings. Off = the pre-intern String path. Output is byte-identical to
+# the on build; the two are sha-distinct binaries for a clean A/B.
+intern = []

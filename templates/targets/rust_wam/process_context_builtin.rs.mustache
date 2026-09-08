@@ -25,7 +25,7 @@
 {{case arms}}
             "working_directory/2" => {
                 let directory = match Self::current_working_directory() {
-                    Some(directory) => Value::Atom(directory),
+                    Some(directory) => Value::Atom(directory.into()),
                     None => return false,
                 };
                 let old = self.get_reg_raw("A1").unwrap_or(Value::Uninit);

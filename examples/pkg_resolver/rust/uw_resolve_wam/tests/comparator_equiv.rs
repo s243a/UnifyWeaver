@@ -31,10 +31,10 @@ fn state() -> WamState {
 }
 
 fn atom(s: &str) -> Value {
-    Value::Atom(s.to_string())
+    Value::Atom(s.to_string().into())
 }
 fn var(s: &str) -> Value {
-    Value::Unbound(s.to_string())
+    Value::Unbound(s.to_string().into())
 }
 fn cmpd(f: &str, args: Vec<Value>) -> Value {
     // Bare functor name, as `deref_heap` normalises it via `functor_of`.
