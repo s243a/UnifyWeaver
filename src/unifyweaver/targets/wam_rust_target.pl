@@ -9057,7 +9057,7 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     % Appended here rather than in the shared cargo template so the wiring stays
     % inside the wam_rust target (the shared template also feeds other lanes).
     atom_concat(CargoContent0,
-        '\n[features]\ndefault = ["decorate_sort"]\n# When off, the sort/msort/keysort/setof builtins fall back to the original\n# `term_compare` (re-deref) path; output is byte-identical to the on build.\ndecorate_sort = []\n# Hot-path opt #2 (D96): intern functor/atom/var names to u32 ids so term\n# construction, `deref_var` and the `"f/N"` functor parse stop allocating tiny\n# name Strings. Off = the pre-intern String path. Output is byte-identical to\n# the on build; the two are sha-distinct binaries for a clean A/B.\nintern = []\n',
+        '\n[features]\ndefault = ["decorate_sort", "intern"]\n# When off, the sort/msort/keysort/setof builtins fall back to the original\n# `term_compare` (re-deref) path; output is byte-identical to the on build.\ndecorate_sort = []\n# Hot-path opt #2 (D96): intern functor/atom/var names to u32 ids so term\n# construction, `deref_var` and the `"f/N"` functor parse stop allocating tiny\n# name Strings. Default ON (A/B: B3 -29% Ir/-29% wall, B2 -41% Ir/-32% wall,\n# byte-identical). Off = the pre-intern String path, kept for A/B via\n# `--no-default-features --features decorate_sort`; the two are sha-distinct.\nintern = []\n',
         CargoContent),
     directory_file_path(ProjectDir, 'Cargo.toml', CargoPath),
     write_file(CargoPath, CargoContent),

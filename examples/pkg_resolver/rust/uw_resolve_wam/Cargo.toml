@@ -11,12 +11,13 @@ path = "src/main.rs"
 [dependencies]
 
 [features]
-default = ["decorate_sort"]
+default = ["decorate_sort", "intern"]
 # When off, the sort/msort/keysort/setof builtins fall back to the original
 # `term_compare` (re-deref) path; output is byte-identical to the on build.
 decorate_sort = []
 # Hot-path opt #2 (D96): intern functor/atom/var names to u32 ids so term
 # construction, `deref_var` and the `"f/N"` functor parse stop allocating tiny
-# name Strings. Off = the pre-intern String path. Output is byte-identical to
-# the on build; the two are sha-distinct binaries for a clean A/B.
+# name Strings. Default ON (A/B: B3 -29% Ir/-29% wall, B2 -41% Ir/-32% wall,
+# byte-identical). Off = the pre-intern String path, kept for A/B via
+# `--no-default-features --features decorate_sort`; the two are sha-distinct.
 intern = []
