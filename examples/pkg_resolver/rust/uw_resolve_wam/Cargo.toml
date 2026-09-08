@@ -9,3 +9,9 @@ name = "bench"
 path = "src/main.rs"
 
 [dependencies]
+
+[features]
+default = ["decorate_sort"]
+# When off, the sort/msort/keysort/setof builtins fall back to the original
+# `term_compare` (re-deref) path; output is byte-identical to the on build.
+decorate_sort = []
