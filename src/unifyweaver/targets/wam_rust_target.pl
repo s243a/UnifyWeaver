@@ -183,7 +183,7 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                             .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
                         self.heap.push(Value::strv(fn_str.clone(), vec![]));
                         for _ in 0..arity {
-                            self.heap.push(Value::Atom("__struct_arg__".to_string()));
+                            self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
                         }
                         self.trail_binding(ai);
                         if let Value::Unbound(ref name) = val {
@@ -234,8 +234,8 @@ wam_instruction_arm('Instruction::GetList(ai)', Body) :-
                     if val.is_unbound() {
                         let addr = self.heap.len();
                         self.heap.push(Value::strv("./2".to_string(), vec![]));
-                        self.heap.push(Value::Atom("__struct_arg__".to_string()));
-                        self.heap.push(Value::Atom("__struct_arg__".to_string()));
+                        self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
+                        self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
                         self.trail_binding(ai);
                         if let Value::Unbound(ref name) = val {
                             self.bind_var(name, Value::Ref(addr));
@@ -283,7 +283,7 @@ wam_instruction_arm('Instruction::UnifyVariable(xn)', Body) :-
                         self.pc += 1; true
                     } else { false }
                 } else if let Some(StackEntry::WriteCtx(_marker)) = self.stack.last().cloned() {
-                    let var = Value::Unbound(format!("_H{}", self.var_counter));
+                    let var = Value::Unbound(format!("_H{}", self.var_counter).into());
                     self.var_counter += 1;
                     self.set_heap_or_list(var.clone());
                     self.put_reg(xn, var);
@@ -362,7 +362,7 @@ wam_instruction_arm('Instruction::PutConstant(c, ai)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutVariable(xn, ai)', Body) :-
-    Body = '                let var = Value::Unbound(format!("_V{}", self.var_counter));
+    Body = '                let var = Value::Unbound(format!("_V{}", self.var_counter).into());
                 self.var_counter += 1;
                 self.trail_binding(xn);
                 self.trail_binding(ai);
@@ -385,7 +385,7 @@ wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
                 let addr = self.heap.len();
                 self.heap.push(Value::strv(fn_str.clone(), vec![])); // placeholder
                 for _ in 0..arity {
-                    self.heap.push(Value::Atom("__struct_arg__".to_string()));
+                    self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
                 }
                 // Enter structure-write mode: next N SetValue/SetConstant calls fill args
                 self.smut().push(StackEntry::WriteCtx(addr));
@@ -421,14 +421,14 @@ wam_instruction_arm('Instruction::PutList(ai)', Body) :-
                 // use the heap as a scratch area: push a sentinel, then
                 // collect two values; after the second, build the list.
                 let marker = self.heap.len();
-                self.heap.push(Value::Atom("__list_head__".to_string()));
-                self.heap.push(Value::Atom("__list_tail__".to_string()));
+                self.heap.push(Value::Atom("__list_head__".to_string().into()));
+                self.heap.push(Value::Atom("__list_tail__".to_string().into()));
                 self.set_reg_str(ai, Value::Integer(marker as i64));
                 self.smut().push(StackEntry::WriteCtx(marker));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
-    Body = '                let var = Value::Unbound(format!("_H{}", self.var_counter));
+    Body = '                let var = Value::Unbound(format!("_H{}", self.var_counter).into());
                 self.var_counter += 1;
                 self.put_reg(xn, var.clone());
                 // Write the fresh variable into the current structure/list arg
@@ -528,8 +528,8 @@ wam_instruction_arm('Instruction::BaseCategoryAncestor(cat_reg, target_reg, visi
                 }
                 let parent_matches = self.indexed_atom_fact2
                     .get("category_parent/2")
-                    .and_then(|table| table.get(&cat))
-                    .map(|values| values.iter().any(|parent| parent == &target_atom))
+                    .and_then(|table| table.get(cat.as_str()))
+                    .map(|values| values.iter().any(|parent| parent.as_str() == target_atom.as_str()))
                     .unwrap_or(false);
                 if !parent_matches {
                     return false;
@@ -574,8 +574,8 @@ wam_instruction_arm('Instruction::BaseCategoryAncestorBind(cat_reg, target_reg, 
                 }
                 let parent_matches = self.indexed_atom_fact2
                     .get("category_parent/2")
-                    .and_then(|table| table.get(&cat))
-                    .map(|values| values.iter().any(|parent| parent == &target_atom))
+                    .and_then(|table| table.get(cat.as_str()))
+                    .map(|values| values.iter().any(|parent| parent.as_str() == target_atom.as_str()))
                     .unwrap_or(false);
                 if !parent_matches {
                     return false;
@@ -625,7 +625,7 @@ wam_instruction_arm('Instruction::RecurseCategoryAncestorPc(mid_reg, root_reg, c
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
-                let child_hops = Value::Unbound(format!("_V{}", self.var_counter));
+                let child_hops = Value::Unbound(format!("_V{}", self.var_counter).into());
                 self.var_counter += 1;
                 let next_visited = match visited {
                     Value::List(items) => Value::List(items.cons(mid.clone())),
@@ -681,7 +681,7 @@ wam_instruction_arm('Instruction::ReturnAdd1(out_reg, in_reg)', Body) :-
                     Value::Unbound(var_name) => self.bind_var(&var_name, result),
                     Value::Integer(n) if result == Value::Integer(n) => {},
                     Value::Float(f) if result == Value::Float(f) => {},
-                    Value::Atom(ref raw) if result == Value::Atom(raw.clone()) => {},
+                    Value::Atom(ref raw) if result == Value::Atom(raw.clone().into()) => {},
                     other => {
                         if !self.unify(&other, &result) {
                             return false;
@@ -800,7 +800,7 @@ wam_instruction_arm('Instruction::CallIndexedAtomFact2(pred)', Body) :-
                     Some(val) => val,
                     None => return false,
                 };
-                let values = match self.indexed_atom_fact2.get(pred).and_then(|table| table.get(&key)) {
+                let values = match self.indexed_atom_fact2.get(pred.as_str()).and_then(|table| table.get(key.as_str())) {
                     Some(values) if !values.is_empty() => values.clone(),
                     _ => return false,
                 };
@@ -814,14 +814,14 @@ wam_instruction_arm('Instruction::CallIndexedAtomFact2(pred)', Body) :-
                         heap_len: self.heap.len(),
                         builtin_state: Some(BuiltinState {
                             name: "indexed_atom_fact2".to_string(),
-                            args: vec![Value::Atom(pred.clone()), Value::Atom(key.clone())],
+                            args: vec![Value::Atom(pred.clone().into()), Value::Atom(key.clone().into())],
                             data: vec![Value::Integer(1)],
                         }),
                         cut_barrier: self.cut_barrier,
                         levels: Vec::new(),
                     });
                 }
-                if self.unify(&a2, &Value::Atom(values[0].clone())) {
+                if self.unify(&a2, &Value::Atom(values[0].clone().into())) {
                     self.pc += 1; true
                 } else { false }'.
 
@@ -1011,9 +1011,9 @@ wam_instruction_arm('Instruction::BeginAggregate(agg_type, value_reg, result_reg
                     builtin_state: Some(BuiltinState {
                         name: "aggregate_frame".to_string(),
                         args: vec![
-                            Value::Atom(agg_type.clone()),
-                            Value::Atom(value_reg.clone()),
-                            Value::Atom(result_reg.clone()),
+                            Value::Atom(agg_type.clone().into()),
+                            Value::Atom(value_reg.clone().into()),
+                            Value::Atom(result_reg.clone().into()),
                         ],
                         data: vec![Value::Integer(__agg_ret_pc as i64)],
                     }),
@@ -1050,7 +1050,7 @@ wam_instruction_arm('Instruction::ParAggregate(agg_type, enum_label, body_label,
                 // Capture the external-input values from the container''s registers
                 // (Y-aware, fully dereferenced) so the helpers run with them bound.
                 let __ivals: Vec<Value> = input_regs.iter().map(|__r| {
-                    let __raw = self.get_reg(__r).unwrap_or(Value::Unbound(__r.clone()));
+                    let __raw = self.get_reg(__r).unwrap_or(Value::Unbound(__r.clone().into()));
                     self.deref_var(&self.deref_heap(&__raw))
                 }).collect();
                 let __vals = crate::par_aggregate::par_collect_labels(&__base, enum_label, body_label, &__ivals);
@@ -1585,7 +1585,7 @@ compile_execute_io_builtin_to_rust(Code) :-
     Prefix = '    fn builtin_path_arg(&self, reg: &str) -> Option<String> {
         match self.get_reg_raw(reg)
             .map(|v| self.deref_heap(&self.deref_var(&v))) {
-            Some(Value::Atom(path)) => Some(path),
+            Some(Value::Atom(path)) => Some(path.as_str().to_string()),
             _ => None,
         }
     }
@@ -1593,12 +1593,12 @@ compile_execute_io_builtin_to_rust(Code) :-
     fn format_term_text(&self, value: &Value) -> String {
         let derefed = self.deref_heap(&self.deref_var(value));
         match derefed {
-            Value::Atom(text) => text,
+            Value::Atom(text) => text.as_str().to_string(),
             Value::Integer(number) => number.to_string(),
             Value::Float(number) => number.to_string(),
             Value::Bool(boolean) => boolean.to_string(),
             Value::Unbound(name) => {
-                if name.is_empty() { "_".to_string() } else { name }
+                if name.is_empty() { "_".to_string() } else { name.as_str().to_string() }
             }
             Value::List(items) => {
                 let rendered: Vec<String> = items.iter()
@@ -1621,7 +1621,7 @@ compile_execute_io_builtin_to_rust(Code) :-
     fn render_format(&self, format_raw: &Value, args_raw: Option<&Value>) -> Option<String> {
         let format_value = self.deref_heap(&self.deref_var(format_raw));
         let format_text = match format_value {
-            Value::Atom(text) => text,
+            Value::Atom(text) => text.as_str().to_string(),
             Value::Integer(number) => number.to_string(),
             Value::Bool(boolean) => boolean.to_string(),
             Value::List(items) if items.is_empty() => "[]".to_string(),
@@ -1743,7 +1743,7 @@ compile_execute_io_builtin_to_rust(Code) :-
                     Value::Str(functor, args) if args.len() == 1 => {
                         let name = Self::display_functor_name(&functor, 1);
                         let output = match name.as_str() {
-                            "atom" | "string" => Value::Atom(rendered),
+                            "atom" | "string" => Value::Atom(rendered.into()),
                             "codes" => Self::string_to_codes_value(&rendered),
                             _ => return false,
                         };
@@ -1861,7 +1861,7 @@ compile_execute_io_builtin_to_rust(Code) :-
                 };
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::Atom(component)) {
+                if self.unify(&output, &Value::Atom(component.into())) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -1885,16 +1885,16 @@ compile_execute_io_builtin_to_rust(Code) :-
                             file[..index].to_string(),
                             file[index + 1..].to_string(),
                         ),
-                        None => (file, String::new()),
+                        None => (file.as_str().to_string(), String::new()),
                     };
                     let base_output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
                     let extension_output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                     let mark = self.trail.len();
-                    if !self.unify(&base_output, &Value::Atom(base)) {
+                    if !self.unify(&base_output, &Value::Atom(base.into())) {
                         self.unwind_trail_to(mark);
                         return false;
                     }
-                    if self.unify(&extension_output, &Value::Atom(extension)) {
+                    if self.unify(&extension_output, &Value::Atom(extension.into())) {
                         self.pc += 1; true
                     } else {
                         self.unwind_trail_to(mark);
@@ -1916,7 +1916,7 @@ compile_execute_io_builtin_to_rust(Code) :-
                     };
                     let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                     let mark = self.trail.len();
-                    if self.unify(&output, &Value::Atom(file)) {
+                    if self.unify(&output, &Value::Atom(file.into())) {
                         self.pc += 1; true
                     } else {
                         self.unwind_trail_to(mark);
@@ -1951,7 +1951,7 @@ compile_execute_io_builtin_to_rust(Code) :-
                 };
                 let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::Atom(full)) {
+                if self.unify(&output, &Value::Atom(full.into())) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -1976,7 +1976,7 @@ compile_execute_io_builtin_to_rust(Code) :-
                 };
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::Atom(resolved)) {
+                if self.unify(&output, &Value::Atom(resolved.into())) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -2050,7 +2050,7 @@ compile_execute_io_builtin_to_rust(Code) :-
                 };
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::Atom(content)) {
+                if self.unify(&output, &Value::Atom(content.into())) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -2176,9 +2176,9 @@ compile_execute_io_builtin_to_rust(Code) :-
                 }
                 names.sort_unstable();
                 let mut files = Vec::with_capacity(names.len() + 2);
-                files.push(Value::Atom(".".to_string()));
-                files.push(Value::Atom("..".to_string()));
-                files.extend(names.into_iter().map(Value::Atom));
+                files.push(Value::Atom(".".to_string().into()));
+                files.push(Value::Atom("..".to_string().into()));
+                files.extend(names.into_iter().map(Value::atom));
 
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
@@ -2253,13 +2253,13 @@ compile_execute_io_builtin_to_rust(Code) :-
                     Some(Value::Atom(name)) => name,
                     _ => return false,
                 };
-                let value = match std::env::var(name) {
+                let value = match std::env::var(name.as_str()) {
                     Ok(value) => value,
                     Err(_) => return false,
                 };
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::Atom(value)) {
+                if self.unify(&output, &Value::Atom(value.into())) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -2283,7 +2283,7 @@ compile_execute_io_builtin_to_rust(Code) :-
                     || value.as_bytes().contains(&0) {
                     return false;
                 }
-                std::env::set_var(name, value);
+                std::env::set_var(name.as_str(), value.as_str());
                 self.pc += 1; true
             }
             "unsetenv/1" => {
@@ -2297,7 +2297,7 @@ compile_execute_io_builtin_to_rust(Code) :-
                     || name.as_bytes().contains(&0) {
                     return false;
                 }
-                std::env::remove_var(name);
+                std::env::remove_var(name.as_str());
                 self.pc += 1; true
             }
             "getpid/1" => {
@@ -2431,7 +2431,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                     if items.try_reserve_exact(count).is_err() { return false; }
                     for _ in 0..count {
                         self.var_counter += 1;
-                        items.push(Value::Unbound(format!("_L{}", self.var_counter)));
+                        items.push(Value::Unbound(format!("_L{}", self.var_counter).into()));
                     }
                     let mark = self.trail.len();
                     if self.unify(&list_raw, &Value::list(items)) {
@@ -2545,7 +2545,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                             if args.try_reserve_exact(arity).is_err() { return false; }
                             for _ in 0..arity {
                                 self.var_counter += 1;
-                                args.push(Value::Unbound(format!("_F{}", self.var_counter)));
+                                args.push(Value::Unbound(format!("_F{}", self.var_counter).into()));
                             }
                             Value::strv(functor, args)
                         } else {
@@ -2561,11 +2561,11 @@ compile_execute_term_builtin_to_rust(Code) :-
                     }
                     term => {
                         let (name, arity): (Value, i64) = match &term {
-                            Value::Str(functor, args) => (Value::Atom(functor.clone()), args.len() as i64),
+                            Value::Str(functor, args) => (Value::Atom(functor.clone().into()), args.len() as i64),
                             Value::List(items) if items.is_empty() =>
-                                (Value::Atom("[]".to_string()), 0),
-                            Value::List(_) => (Value::Atom(".".to_string()), 2),
-                            Value::Atom(name) => (Value::Atom(name.clone()), 0),
+                                (Value::Atom("[]".to_string().into()), 0),
+                            Value::List(_) => (Value::Atom(".".to_string().into()), 2),
+                            Value::Atom(name) => (Value::Atom(name.clone().into()), 0),
                             Value::Integer(_) | Value::Float(_) | Value::Bool(_) =>
                                 (term.clone(), 0),
                             _ => return false,
@@ -2668,7 +2668,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                         // Decompose mode: build list from T.
                         let list = match &t {
                             Value::Str(f, args) => {
-                                let mut items = vec![Value::Atom(f.clone())];
+                                let mut items = vec![Value::Atom(f.clone().into())];
                                 items.extend(args.iter().cloned());
                                 Value::list(items)
                             }
@@ -2677,10 +2677,10 @@ compile_execute_term_builtin_to_rust(Code) :-
                                 Value::list(vec![t.clone()])
                             }
                             Value::List(items) if items.is_empty() => {
-                                Value::list(vec![Value::Atom("[]".to_string())])
+                                Value::list(vec![Value::Atom("[]".to_string().into())])
                             }
                             Value::List(items) => Value::list(vec![
-                                Value::Atom(".".to_string()),
+                                Value::Atom(".".to_string().into()),
                                 items[0].clone(),
                                 Value::list(items[1..].to_vec()),
                             ]),
@@ -2850,7 +2850,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                         let bound = self.bindings.get(name)?.clone();
                         Some(Value::strv(
                             "=/2".to_string(),
-                            vec![Value::Unbound(name.to_string()), bound],
+                            vec![Value::Unbound(name.to_string().into()), bound],
                         ))
                 })
                     .collect();
@@ -2877,13 +2877,13 @@ compile_execute_term_builtin_to_rust(Code) :-
     ) -> Value {
         match v {
             Value::Unbound(name) => {
-                if let Some(new_name) = var_map.get(name) {
-                    Value::Unbound(new_name.clone())
+                if let Some(new_name) = var_map.get(name.as_str()) {
+                    Value::Unbound(new_name.clone().into())
                 } else {
                     *counter += 1;
                     let new_name = format!("_C{}", counter);
-                    var_map.insert(name.clone(), new_name.clone());
-                    Value::Unbound(new_name)
+                    var_map.insert(name.as_str().to_string(), new_name.clone());
+                    Value::Unbound(new_name.into())
                 }
             }
             Value::Str(f, args) => {
@@ -2910,12 +2910,13 @@ compile_execute_term_builtin_to_rust(Code) :-
     ) -> bool {
         match (left, right) {
             (Value::Unbound(a), Value::Unbound(b)) => {
-                if let Some(mapped) = left_vars.get(a) {
-                    return mapped == b && right_vars.get(b) == Some(a);
+                if let Some(mapped) = left_vars.get(a.as_str()) {
+                    return mapped.as_str() == b.as_str()
+                        && right_vars.get(b.as_str()).map(|s| s.as_str()) == Some(a.as_str());
                 }
-                if right_vars.contains_key(b) { return false; }
-                left_vars.insert(a.clone(), b.clone());
-                right_vars.insert(b.clone(), a.clone());
+                if right_vars.contains_key(b.as_str()) { return false; }
+                left_vars.insert(a.as_str().to_string(), b.as_str().to_string());
+                right_vars.insert(b.as_str().to_string(), a.as_str().to_string());
                 true
             }
             (Value::Atom(a), Value::Atom(b)) => a == b,
@@ -2985,7 +2986,7 @@ compile_execute_term_builtin_to_rust(Code) :-
             (Value::Unbound(_), Value::List(items)) => {
                 match self.code_list_to_string(&items) {
                     Some(text) => {
-                        if self.unify(&atom_raw, &Value::Atom(text)) { self.pc += 1; true }
+                        if self.unify(&atom_raw, &Value::Atom(text.into())) { self.pc += 1; true }
                         else { false }
                     }
                     None => false,
@@ -3046,7 +3047,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                 let list = Value::list(
                     n.to_string()
                         .chars()
-                        .map(|ch| Value::Atom(ch.to_string()))
+                        .map(|ch| Value::Atom(ch.to_string().into()))
                         .collect(),
                 );
                 if self.unify(&chars_raw, &list) { self.pc += 1; true }
@@ -3056,7 +3057,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                 let list = Value::list(
                     f.to_string()
                         .chars()
-                        .map(|ch| Value::Atom(ch.to_string()))
+                        .map(|ch| Value::Atom(ch.to_string().into()))
                         .collect(),
                 );
                 if self.unify(&chars_raw, &list) { self.pc += 1; true }
@@ -3127,7 +3128,7 @@ compile_execute_term_builtin_to_rust(Code) :-
             }
         } else {
             let rendered = self.term_to_atom_text(&term);
-            if self.unify(&atom_raw, &Value::Atom(rendered)) { self.pc += 1; true }
+            if self.unify(&atom_raw, &Value::Atom(rendered.into())) { self.pc += 1; true }
             else { false }
         }
     }
@@ -3182,7 +3183,7 @@ compile_execute_term_builtin_to_rust(Code) :-
         }
         let mut parser = WamState::new(self.code.clone(), self.labels.clone());
 
-        let ops_var = Value::Unbound("_RP_ops".to_string());
+        let ops_var = Value::Unbound("_RP_ops".to_string().into());
         parser.set_reg_str("A1", ops_var.clone());
         if !parser.run_named_label("canonical_op_table/1") {
             if syntax_errors_error {
@@ -3193,11 +3194,11 @@ compile_execute_term_builtin_to_rust(Code) :-
         let ops = parser.deref_heap(&parser.deref_var(&ops_var));
 
         parser.reset_query();
-        let parsed_var = Value::Unbound("_RP_term".to_string());
-        parser.set_reg_str("A1", Value::Atom(atom_text));
+        let parsed_var = Value::Unbound("_RP_term".to_string().into());
+        parser.set_reg_str("A1", Value::Atom(atom_text.into()));
         parser.set_reg_str("A2", ops);
         parser.set_reg_str("A3", parsed_var.clone());
-        let var_env = Value::Unbound("_RP_env".to_string());
+        let var_env = Value::Unbound("_RP_env".to_string().into());
         if wants_env {
             parser.set_reg_str("A4", var_env.clone());
         }
@@ -3262,13 +3263,13 @@ compile_execute_term_builtin_to_rust(Code) :-
         let derefed = source.deref_heap(&derefed_var);
         match derefed {
             Value::Unbound(name) => {
-                if let Some(new_name) = var_map.get(&name) {
-                    Value::Unbound(new_name.clone())
+                if let Some(new_name) = var_map.get(name.as_str()) {
+                    Value::Unbound(new_name.clone().into())
                 } else {
                     self.var_counter += 1;
                     let new_name = format!("_RP{}", self.var_counter);
-                    var_map.insert(name, new_name.clone());
-                    Value::Unbound(new_name)
+                    var_map.insert(name.as_str().to_string(), new_name.clone());
+                    Value::Unbound(new_name.into())
                 }
             }
             Value::Str(f, args) => {
@@ -3378,7 +3379,7 @@ compile_execute_term_builtin_to_rust(Code) :-
             Value::Integer(n) => n.to_string(),
             Value::Float(f) => f.to_string(),
             Value::Bool(b) => b.to_string(),
-            Value::Unbound(name) => name,
+            Value::Unbound(name) => name.as_str().to_string(),
             Value::List(items) => {
                 let rendered: Vec<String> = items.iter()
                     .map(|i| self.term_to_atom_text(i))
@@ -3619,13 +3620,13 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 let mut nodes: Vec<String> = Vec::new();
                 self.collect_native_transitive_closure_nodes(&start, &edge_pred, &mut nodes);
                 if let Some(target) = target_filter {
-                    nodes.retain(|node| *node == target);
+                    nodes.retain(|node| *node == target.as_str());
                 }
                 if nodes.is_empty() {
                     return false;
                 }
                 let results: Vec<Value> = nodes.into_iter().map(|node| {
-                    Value::strv("__tuple__".to_string(), vec![Value::Atom(node)])
+                    Value::strv("__tuple__".to_string(), vec![Value::Atom(node.into())])
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![target_reg], results)
             }
@@ -3659,7 +3660,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 let mut results: Vec<(String, i64)> = Vec::new();
                 self.collect_native_transitive_distance_results(&start, &edge_pred, &mut results);
                 if let Some(target) = target_filter {
-                    results.retain(|(node, _)| *node == target);
+                    results.retain(|(node, _)| *node == target.as_str());
                 }
                 if let Some(want_d) = distance_filter {
                     results.retain(|(_, d)| *d == want_d);
@@ -3669,7 +3670,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }
                 let packed_results: Vec<Value> = results.into_iter().map(|(node, dist)| {
                     Value::strv("__tuple__".to_string(), vec![
-                        Value::Atom(node),
+                        Value::Atom(node.into()),
                         Value::Integer(dist),
                     ])
                 }).collect();
@@ -3714,10 +3715,10 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 let mut results: Vec<(String, String, i64)> = Vec::new();
                 self.collect_native_transitive_parent_distance_results(&start, &edge_pred, &mut results);
                 if let Some(target) = target_filter {
-                    results.retain(|(node, _, _)| *node == target);
+                    results.retain(|(node, _, _)| *node == target.as_str());
                 }
                 if let Some(parent) = parent_filter {
-                    results.retain(|(_, p, _)| *p == parent);
+                    results.retain(|(_, p, _)| *p == parent.as_str());
                 }
                 if let Some(want_d) = distance_filter {
                     results.retain(|(_, _, d)| *d == want_d);
@@ -3727,8 +3728,8 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }
                 let packed_results: Vec<Value> = results.into_iter().map(|(node, parent, dist)| {
                     Value::strv("__tuple__".to_string(), vec![
-                        Value::Atom(node),
-                        Value::Atom(parent),
+                        Value::Atom(node.into()),
+                        Value::Atom(parent.into()),
                         Value::Integer(dist),
                     ])
                 }).collect();
@@ -3767,16 +3768,16 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 let mut results: Vec<(String, String, String, i64)> = Vec::new();
                 self.collect_native_transitive_step_parent_distance_results(&start, &edge_pred, &mut results);
                 if let Some(target) = target_filter {
-                    results.retain(|(node, _, _, _)| *node == target);
+                    results.retain(|(node, _, _, _)| *node == target.as_str());
                 }
                 if results.is_empty() {
                     return false;
                 }
                 let packed_results: Vec<Value> = results.into_iter().map(|(node, step, parent, dist)| {
                     Value::strv("__tuple__".to_string(), vec![
-                        Value::Atom(node),
-                        Value::Atom(step),
-                        Value::Atom(parent),
+                        Value::Atom(node.into()),
+                        Value::Atom(step.into()),
+                        Value::Atom(parent.into()),
                         Value::Integer(dist),
                     ])
                 }).collect();
@@ -3807,14 +3808,14 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 let mut results: Vec<(String, f64)> = Vec::new();
                 self.collect_native_weighted_shortest_path_results(&start, &weight_pred, &mut results);
                 if let Some(target) = target_filter {
-                    results.retain(|(node, _)| *node == target);
+                    results.retain(|(node, _)| *node == target.as_str());
                 }
                 if results.is_empty() {
                     return false;
                 }
                 let packed_results: Vec<Value> = results.into_iter().map(|(node, dist)| {
                     Value::strv("__tuple__".to_string(), vec![
-                        Value::Atom(node),
+                        Value::Atom(node.into()),
                         Value::Float(dist),
                     ])
                 }).collect();
@@ -3887,7 +3888,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }
                 let results: Vec<Value> = value_ints.iter().filter_map(|vid| {
                     source.atom_for_key(*vid).map(|s| {
-                        Value::strv("__tuple__".to_string(), vec![Value::Atom(s)])
+                        Value::strv("__tuple__".to_string(), vec![Value::Atom(s.into())])
                     })
                 }).collect();
                 if results.is_empty() {
@@ -3997,7 +3998,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     None => return false,
                 };
                 self.finish_foreign_results(&pred_key, vec![class_reg], vec![
-                    Value::strv("__tuple__".to_string(), vec![Value::Atom(class.to_string())])
+                    Value::strv("__tuple__".to_string(), vec![Value::Atom(class.to_string().into())])
                 ])
             }
             "bridge" => {
@@ -4035,8 +4036,8 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 let results: Vec<Value> = candidates.into_iter().map(|(id, class, neff)| {
                     let name = self.atom_name(id).unwrap_or("").to_string();
                     Value::strv("__tuple__".to_string(), vec![
-                        Value::Atom(name),
-                        Value::Atom(class.to_string()),
+                        Value::Atom(name.into()),
+                        Value::Atom(class.to_string().into()),
                         Value::Float(neff),
                     ])
                 }).collect();
@@ -4118,7 +4119,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }
                 let results: Vec<Value> = members.into_iter().map(|id| {
                     let name = self.atom_name(id).unwrap_or("").to_string();
-                    Value::strv("__tuple__".to_string(), vec![Value::Atom(name)])
+                    Value::strv("__tuple__".to_string(), vec![Value::Atom(name.into())])
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![member_reg], results)
             }
@@ -4197,7 +4198,7 @@ compile_foreign_result_helpers_to_rust(Code) :-
                         name: "foreign_results".to_string(),
                         args: {
                             let mut args = Vec::with_capacity(result_regs.len() + 1);
-                            args.push(Value::Atom(pred_key.to_string()));
+                            args.push(Value::Atom(pred_key.to_string().into()));
                             args.extend(result_regs.iter().cloned());
                             args
                         },
@@ -5192,14 +5193,14 @@ compile_resume_builtin_to_rust(Code) :-
                     _ => return false,
                 };
                 let key = match state.args.get(1) {
-                    Some(Value::Atom(key)) => key.clone(),
+                    Some(Value::Atom(key)) => key.as_str().to_string(),
                     _ => return false,
                 };
                 let idx = match state.data.get(0) {
                     Some(Value::Integer(n)) => *n as usize,
                     _ => return false,
                 };
-                let values = match self.indexed_atom_fact2.get(&pred).and_then(|table| table.get(&key)) {
+                let values = match self.indexed_atom_fact2.get(pred.as_str()).and_then(|table| table.get(key.as_str())) {
                     Some(values) => values,
                     None => return false,
                 };
@@ -5225,13 +5226,13 @@ compile_resume_builtin_to_rust(Code) :-
                     Some(val) => val,
                     None => return false,
                 };
-                if self.unify(&a2, &Value::Atom(values[idx].clone())) {
+                if self.unify(&a2, &Value::Atom(values[idx].clone().into())) {
                     self.pc += 1; true
                 } else { false }
             }
             "dynamic_call" => {
                 let key = match state.args.get(0) {
-                    Some(Value::Atom(key)) => key.clone(),
+                    Some(Value::Atom(key)) => key.as_str().to_string(),
                     _ => return false,
                 };
                 let start_idx = match state.data.get(0) {
@@ -5246,7 +5247,7 @@ compile_resume_builtin_to_rust(Code) :-
             }
             "dynamic_retract" => {
                 let key = match state.args.get(0) {
-                    Some(Value::Atom(key)) => key.clone(),
+                    Some(Value::Atom(key)) => key.as_str().to_string(),
                     _ => return false,
                 };
                 let pattern = match state.args.get(1) {
@@ -5265,7 +5266,7 @@ compile_resume_builtin_to_rust(Code) :-
             }
             "dynamic_clause" => {
                 let key = match state.args.get(0) {
-                    Some(Value::Atom(key)) => key.clone(),
+                    Some(Value::Atom(key)) => key.as_str().to_string(),
                     _ => return false,
                 };
                 let head = match state.args.get(1) {
@@ -5395,7 +5396,10 @@ compile_execute_ext_builtin_to_rust(Code) :-
 
     fn value_atom_name(v: &Value) -> Option<String> {
         match v {
-            Value::Atom(s) => Some(s.clone()),
+            // De-intern to the NAME (sort-order trap, approach a): ordering must
+            // compare atom names, never interned ids. Byte-identical to the
+            // pre-intern `s.clone()`.
+            Value::Atom(s) => Some(s.as_str().to_string()),
             Value::Bool(true) => Some("true".to_string()),
             Value::Bool(false) => Some("false".to_string()),
             Value::List(items) if items.is_empty() => Some("[]".to_string()),
@@ -5430,8 +5434,10 @@ compile_execute_ext_builtin_to_rust(Code) :-
         }
         match ca {
             0 => {
-                let na = match &da { Value::Unbound(n) => n.clone(), _ => String::new() };
-                let nb = match &db { Value::Unbound(n) => n.clone(), _ => String::new() };
+                // De-intern to the NAME (sort-order trap): variable order is by
+                // internal name, never by interned id.
+                let na = match &da { Value::Unbound(n) => n.as_str().to_string(), _ => String::new() };
+                let nb = match &db { Value::Unbound(n) => n.as_str().to_string(), _ => String::new() };
                 na.cmp(&nb)
             }
             1 => {
@@ -5630,7 +5636,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
 
     fn raise_builtin_error(&mut self, formal: Value) -> bool {
         self.var_counter += 1;
-        let context = Value::Unbound(format!("_MB{}", self.var_counter));
+        let context = Value::Unbound(format!("_MB{}", self.var_counter).into());
         self.thrown_ball = Some(Value::strv(
             "error".to_string(), vec![formal, context]));
         false
@@ -5762,7 +5768,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 heap_len: self.heap.len(),
                 builtin_state: Some(BuiltinState {
                     name: "atom_concat/3".to_string(),
-                    args: vec![a1_raw.clone(), a2_raw.clone(), Value::Atom(whole)],
+                    args: vec![a1_raw.clone(), a2_raw.clone(), Value::Atom(whole.into())],
                     data: vec![Value::Integer((split + 1) as i64)],
                 }),
                 cut_barrier: self.cut_barrier,
@@ -5771,7 +5777,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
         }
         let prefix: String = chars[..split].iter().collect();
         let suffix: String = chars[split..].iter().collect();
-        if self.unify(a1_raw, &Value::Atom(prefix)) && self.unify(a2_raw, &Value::Atom(suffix)) {
+        if self.unify(a1_raw, &Value::Atom(prefix.into())) && self.unify(a2_raw, &Value::Atom(suffix.into())) {
             self.pc += 1; true
         } else { false }
     }
@@ -5820,7 +5826,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     Ordering::Greater => ">",
                 };
                 let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-                if self.unify(&a1, &Value::Atom(sym.to_string())) { self.pc += 1; true } else { false }
+                if self.unify(&a1, &Value::Atom(sym.to_string().into())) { self.pc += 1; true } else { false }
             }
             "msort/2" | "sort/2" => {
                 let list = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
@@ -6275,7 +6281,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let parts = text
                     .split(|ch| separators.contains(&ch))
                     .map(|part| {
-                        Value::Atom(part.trim_matches(|ch| pads.contains(&ch)).to_string())
+                        Value::Atom(part.trim_matches(|ch| pads.contains(&ch)).to_string().into())
                     })
                     .collect::<Vec<_>>();
                 let output = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
@@ -6306,7 +6312,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 };
                 let parts = text
                     .split(separator_char)
-                    .map(|part| Value::Atom(part.to_string()))
+                    .map(|part| Value::Atom(part.to_string().into()))
                     .collect::<Vec<_>>();
                 let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
@@ -6330,9 +6336,9 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     _ => return false,
                 };
                 let matched = match op {
-                    "atom_starts_with/2" => text.starts_with(&fragment),
-                    "atom_ends_with/2" => text.ends_with(&fragment),
-                    "atom_contains/2" => text.contains(&fragment),
+                    "atom_starts_with/2" => text.starts_with(fragment.as_str()),
+                    "atom_ends_with/2" => text.ends_with(fragment.as_str()),
+                    "atom_contains/2" => text.contains(fragment.as_str()),
                     _ => false,
                 };
                 if matched { self.pc += 1; true } else { false }
@@ -6344,7 +6350,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let t2 = Self::value_atomic_text(&v2);
                 if let (Some(t1), Some(t2)) = (&t1, &t2) {
                     let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                    let whole = Value::Atom(format!("{}{}", t1, t2));
+                    let whole = Value::Atom(format!("{}{}", t1, t2).into());
                     return if self.unify(&a3, &whole) { self.pc += 1; true } else { false };
                 }
                 // Split mode: enumerate prefix/suffix pairs of a bound A3.
@@ -6399,7 +6405,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     self.unwind_trail_to(mark);
                     return false;
                 }
-                if self.unify(&a5, &Value::Atom(sub)) {
+                if self.unify(&a5, &Value::Atom(sub.into())) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -6444,7 +6450,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                             Some(c) => c,
                             None => return false,
                         };
-                        if self.unify(&v1, &Value::Atom(ch.to_string())) { self.pc += 1; true } else { false }
+                        if self.unify(&v1, &Value::Atom(ch.to_string().into())) { self.pc += 1; true } else { false }
                     }
                 }
             }
@@ -6452,7 +6458,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
                 if let Some(text) = Self::value_atomic_text(&v1) {
                     let chars: Vec<Value> = text.chars()
-                        .map(|c| Value::Atom(c.to_string()))
+                        .map(|c| Value::Atom(c.to_string().into()))
                         .collect();
                     let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                     return if self.unify(&a2, &Value::list(chars)) { self.pc += 1; true } else { false };
@@ -6468,7 +6474,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                         _ => return false,
                     }
                 }
-                if self.unify(&v1, &Value::Atom(text)) { self.pc += 1; true } else { false }
+                if self.unify(&v1, &Value::Atom(text.into())) { self.pc += 1; true } else { false }
             }
             "atom_string/2" | "string_to_atom/2" => {
                 // Atoms double as strings in this runtime; both are
@@ -6477,11 +6483,11 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let v2 = self.get_reg_raw("A2").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
                 if let Some(t) = Self::value_atomic_text(&v1) {
                     let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                    return if self.unify(&a2, &Value::Atom(t)) { self.pc += 1; true } else { false };
+                    return if self.unify(&a2, &Value::Atom(t.into())) { self.pc += 1; true } else { false };
                 }
                 if let Some(t) = Self::value_atomic_text(&v2) {
                     let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-                    return if self.unify(&a1, &Value::Atom(t)) { self.pc += 1; true } else { false };
+                    return if self.unify(&a1, &Value::Atom(t.into())) { self.pc += 1; true } else { false };
                 }
                 false
             }
@@ -6493,7 +6499,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 };
                 let cased = if op == "upcase_atom/2" { text.to_uppercase() } else { text.to_lowercase() };
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                if self.unify(&a2, &Value::Atom(cased)) { self.pc += 1; true } else { false }
+                if self.unify(&a2, &Value::Atom(cased.into())) { self.pc += 1; true } else { false }
             }
             "atom_number/2" => {
                 let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
@@ -6515,7 +6521,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                             Some(Value::Float(f)) => format!("{}", f),
                             _ => return false,
                         };
-                        if self.unify(&v1, &Value::Atom(text)) { self.pc += 1; true } else { false }
+                        if self.unify(&v1, &Value::Atom(text.into())) { self.pc += 1; true } else { false }
                     }
                 }
             }
@@ -6544,7 +6550,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     _ => return false,
                 };
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                if self.unify(&a2, &Value::Atom(text)) { self.pc += 1; true } else { false }
+                if self.unify(&a2, &Value::Atom(text.into())) { self.pc += 1; true } else { false }
             }
             "atomic_list_concat/2" => {
                 let items = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
@@ -6559,7 +6565,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     }
                 }
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                if self.unify(&a2, &Value::Atom(text)) { self.pc += 1; true } else { false }
+                if self.unify(&a2, &Value::Atom(text.into())) { self.pc += 1; true } else { false }
             }
             "atomic_list_concat/3" => {
                 // Join mode (+List, +Sep, ?Atom) or split mode
@@ -6579,7 +6585,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                                 None => return false,
                             }
                         }
-                        let joined = Value::Atom(parts.join(&sep));
+                        let joined = Value::Atom(parts.join(&sep).into());
                         let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                         if self.unify(&a3, &joined) { self.pc += 1; true } else { false }
                     }
@@ -6591,7 +6597,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                             None => return false,
                         };
                         let parts: Vec<Value> = whole.split(&sep as &str)
-                            .map(|p| Value::Atom(p.to_string()))
+                            .map(|p| Value::Atom(p.to_string().into()))
                             .collect();
                         let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
                         if self.unify(&a1, &Value::list(parts)) { self.pc += 1; true } else { false }
@@ -6674,21 +6680,21 @@ compile_execute_ext_builtin_to_rust(Code) :-
                             }
                             "to_lower" => {
                                 let lo = ch.to_lowercase().next().unwrap_or(ch);
-                                if self.unify(&arg, &Value::Atom(lo.to_string())) { self.pc += 1; true } else { false }
+                                if self.unify(&arg, &Value::Atom(lo.to_string().into())) { self.pc += 1; true } else { false }
                             }
                             "to_upper" => {
                                 let up = ch.to_uppercase().next().unwrap_or(ch);
-                                if self.unify(&arg, &Value::Atom(up.to_string())) { self.pc += 1; true } else { false }
+                                if self.unify(&arg, &Value::Atom(up.to_string().into())) { self.pc += 1; true } else { false }
                             }
                             "upper" => {
                                 if !ch.is_uppercase() { return false; }
                                 let lo = ch.to_lowercase().next().unwrap_or(ch);
-                                if self.unify(&arg, &Value::Atom(lo.to_string())) { self.pc += 1; true } else { false }
+                                if self.unify(&arg, &Value::Atom(lo.to_string().into())) { self.pc += 1; true } else { false }
                             }
                             "lower" => {
                                 if !ch.is_lowercase() { return false; }
                                 let up = ch.to_uppercase().next().unwrap_or(ch);
-                                if self.unify(&arg, &Value::Atom(up.to_string())) { self.pc += 1; true } else { false }
+                                if self.unify(&arg, &Value::Atom(up.to_string().into())) { self.pc += 1; true } else { false }
                             }
                             _ => false,
                         }
@@ -6706,13 +6712,13 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     .unwrap_or(Value::Uninit);
                 if matches!(&type_value, Value::Unbound(_)) {
                     return self.raise_builtin_error(
-                        Value::Atom("instantiation_error".to_string()));
+                        Value::Atom("instantiation_error".to_string().into()));
                 }
                 let type_name = match Self::value_atom_name(&type_value) {
                     Some(name) => name,
                     None => return self.raise_builtin_error(Value::strv(
                         "type_error".to_string(),
-                        vec![Value::Atom("atom".to_string()), type_value],
+                        vec![Value::Atom("atom".to_string().into()), type_value],
                     )),
                 };
                 let value = self.get_reg_raw("A2")
@@ -6721,7 +6727,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 if matches!(&value, Value::Unbound(_))
                     && type_name != "var" && type_name != "nonvar" {
                     return self.raise_builtin_error(
-                        Value::Atom("instantiation_error".to_string()));
+                        Value::Atom("instantiation_error".to_string().into()));
                 }
 
                 let is_atom = Self::value_atom_name(&value).is_some();
@@ -6745,13 +6751,13 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     "ground" => {
                         if !self.value_is_ground(&value) {
                             return self.raise_builtin_error(
-                                Value::Atom("instantiation_error".to_string()));
+                                Value::Atom("instantiation_error".to_string().into()));
                         }
                         true
                     }
                     _ => return self.raise_builtin_error(Value::strv(
                         "domain_error".to_string(),
-                        vec![Value::Atom("type".to_string()), type_value],
+                        vec![Value::Atom("type".to_string().into()), type_value],
                     )),
                 };
                 if ok {
@@ -6759,7 +6765,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 } else {
                     self.raise_builtin_error(Value::strv(
                         "type_error".to_string(),
-                        vec![Value::Atom(type_name), value],
+                        vec![Value::Atom(type_name.into()), value],
                     ))
                 }
             }
@@ -6895,7 +6901,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 // whose catcher unifies consumes it.
                 let ball = self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v)))
-                    .unwrap_or(Value::Atom("instantiation_error".to_string()));
+                    .unwrap_or(Value::Atom("instantiation_error".to_string().into()));
                 self.thrown_ball = Some(ball);
                 false
             }
@@ -7178,7 +7184,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
 
     fn fresh_meta_var(&mut self) -> Value {
         self.var_counter += 1;
-        Value::Unbound(format!("_M{}", self.var_counter))
+        Value::Unbound(format!("_M{}", self.var_counter).into())
     }
 
     /// First-solution meta-call used by the maplist family: any choice
@@ -8071,10 +8077,10 @@ rust_term_to_value_literal(T, Lit) :- is_list(T), !,
     format(string(Lit), 'Value::list(vec![~w])', [Inner]).
 rust_term_to_value_literal(T, Lit) :- atom(T), !,
     escape_rust_string(T, E),
-    format(string(Lit), 'Value::Atom("~w".to_string())', [E]).
+    format(string(Lit), 'Value::Atom("~w".to_string().into())', [E]).
 rust_term_to_value_literal(T, Lit) :- string(T), !,
     escape_rust_string(T, E),
-    format(string(Lit), 'Value::Atom("~w".to_string())', [E]).
+    format(string(Lit), 'Value::Atom("~w".to_string().into())', [E]).
 rust_term_to_value_literal(T, Lit) :- compound(T), !,
     T =.. [F|Args],
     escape_rust_string(F, EF),
@@ -8599,7 +8605,7 @@ rust_const_value(C, Expr) :-
     ->  format(string(Expr), 'Value::Float(~w)', [N])
     ;   Class = atom(A)
     ->  escape_rust_string(A, Escaped),
-        format(string(Expr), 'Value::Atom("~w".to_string())', [Escaped])
+        format(string(Expr), 'Value::Atom("~w".to_string().into())', [Escaped])
     ).
 
 rust_foreign_rewrite_call(Options, CurrentPred, TargetPredArity, Num, ForeignPred, ForeignArity) :-
@@ -8638,9 +8644,9 @@ parse_index_entry_constant(Entry, Rust) :-
         ->  format(string(Rust), '(Value::Integer(~w), "~w".to_string())', [N, Label])
         ;   ValStr = "true" -> format(string(Rust), '(Value::Bool(true), "~w".to_string())', [Label])
         ;   ValStr = "false" -> format(string(Rust), '(Value::Bool(false), "~w".to_string())', [Label])
-        ;   format(string(Rust), '(Value::Atom("~w".to_string()), "~w".to_string())', [ValStr, Label])
+        ;   format(string(Rust), '(Value::Atom("~w".to_string().into()), "~w".to_string())', [ValStr, Label])
         )
-    ;   format(string(Rust), '(Value::Atom("~w".to_string()), "unknown".to_string())', [Entry])
+    ;   format(string(Rust), '(Value::Atom("~w".to_string().into()), "unknown".to_string())', [Entry])
     ).
 
 parse_index_entry_structure(Entry, Rust) :-
@@ -9051,7 +9057,7 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     % Appended here rather than in the shared cargo template so the wiring stays
     % inside the wam_rust target (the shared template also feeds other lanes).
     atom_concat(CargoContent0,
-        '\n[features]\ndefault = ["decorate_sort"]\n# When off, the sort/msort/keysort/setof builtins fall back to the original\n# `term_compare` (re-deref) path; output is byte-identical to the on build.\ndecorate_sort = []\n',
+        '\n[features]\ndefault = ["decorate_sort", "intern"]\n# When off, the sort/msort/keysort/setof builtins fall back to the original\n# `term_compare` (re-deref) path; output is byte-identical to the on build.\ndecorate_sort = []\n# Hot-path opt #2 (D96): intern functor/atom/var names to u32 ids so term\n# construction, `deref_var` and the `"f/N"` functor parse stop allocating tiny\n# name Strings. Default ON (A/B: B3 -29% Ir/-29% wall, B2 -41% Ir/-32% wall,\n# byte-identical). Off = the pre-intern String path, kept for A/B via\n# `--no-default-features --features decorate_sort`; the two are sha-distinct.\nintern = []\n',
         CargoContent),
     directory_file_path(ProjectDir, 'Cargo.toml', CargoPath),
     write_file(CargoPath, CargoContent),
@@ -9788,7 +9794,7 @@ rust_fact_dispatch_arm(Pred/Arity, Arm) :-
     findall(Read,
             ( member(I, Idxs),
               format(atom(Read),
-                '            let a~w = vm.get_reg_raw("A~w").unwrap_or(Value::Unbound("_A~w".to_string()));',
+                '            let a~w = vm.get_reg_raw("A~w").unwrap_or(Value::Unbound("_A~w".to_string().into()));',
                 [I, I, I]) ),
             Reads),
     atomic_list_concat(Reads, '\n', ReadsStr),

@@ -225,7 +225,7 @@ pub fn parse_fact_source_value(text: &str) -> Value {
             return Value::Float(f);
         }
     }
-    Value::Atom(t.to_string())
+    Value::Atom(t.to_string().into())
 }
 
 /// Encode a dereferenced bound key cell into the tagged byte key the .idx

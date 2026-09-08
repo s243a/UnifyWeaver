@@ -86,8 +86,8 @@
                     _ => return false,
                 };
                 let line = match Self::read_line_reader(handle) {
-                    Some(Some(line)) => Value::Atom(line),
-                    Some(None) => Value::Atom("end_of_file".to_string()),
+                    Some(Some(line)) => Value::Atom(line.into()),
+                    Some(None) => Value::Atom("end_of_file".to_string().into()),
                     None => return false,
                 };
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);

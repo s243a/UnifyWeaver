@@ -199,7 +199,7 @@
             }
             "getlogin/1" => {
                 let name = match Self::login_name() {
-                    Some(name) => Value::Atom(name),
+                    Some(name) => Value::Atom(name.into()),
                     None => return false,
                 };
                 let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
