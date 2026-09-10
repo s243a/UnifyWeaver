@@ -3090,10 +3090,22 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
 
         elif op == 'call_lowered':
             _, fn, _arity = instr
+            # A lowered predicate is a real WAM call boundary.  In
+            # particular, a failing predicate may have allocated an
+            # environment before taking a negation/ITE failure path.
+            # Restore the caller's logical environment even on failure;
+            # frames stay in the stack just as they do after deallocate.
+            saved_cp = state.cp
+            saved_e = state.e
+            saved_temp_y_regs = state.temp_y_regs
+            state.temp_y_regs = None
             try:
                 ok = fn(state)
             except WAMError:
                 ok = False
+            state.cp = saved_cp
+            state.e = saved_e
+            state.temp_y_regs = saved_temp_y_regs
             if not ok:
                 if not fail(): return False
                 continue
@@ -3894,10 +3906,21 @@ def _run_aggregate_body(code: list, labels: dict, body_start: int, end_pc: int,
                 break
         elif op == 'call_lowered':
             _, fn, _arity = instr
+            # Match the main run_wam call boundary.  Aggregate enumeration
+            # executes against a cloned WAM state, but a lowered callee can
+            # still fail before deallocate and leave that clone pointing at
+            # the callee's frame unless the caller context is restored here.
+            saved_cp = sub.cp
+            saved_e = sub.e
+            saved_temp_y_regs = sub.temp_y_regs
+            sub.temp_y_regs = None
             try:
                 ok = fn(sub)
             except WAMError:
                 ok = False
+            sub.cp = saved_cp
+            sub.e = saved_e
+            sub.temp_y_regs = saved_temp_y_regs
             if not ok:
                 if not sub_fail(): break
                 sub_arg_snap = list(sub.regs)

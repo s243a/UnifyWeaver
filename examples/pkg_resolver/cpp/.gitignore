@@ -1,0 +1,3 @@
+# Generated C++ WAM project (regenerate with build.sh) and build artefacts.
+cpp/
+.corpus_out/

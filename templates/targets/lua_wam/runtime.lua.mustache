@@ -102,6 +102,43 @@ function Runtime.copy_table(t)
   return out
 end
 
+function Runtime.copy_array(t)
+  local out = {}
+  for i, v in ipairs(t or {}) do out[i] = v end
+  return out
+end
+
+-- Environment frames own their Y registers. Choicepoints must clone the
+-- frames rather than retain live tables: code executed after a choicepoint
+-- may overwrite a Y slot before backtracking restores it.
+function Runtime.copy_stack(stack)
+  local out = {}
+  for i, frame in ipairs(stack or {}) do
+    local copy = {}
+    for k, v in pairs(frame) do
+      if k == "yregs" or k == "locals" then
+        copy[k] = Runtime.copy_table(v)
+      else
+        copy[k] = v
+      end
+    end
+    copy.yregs = copy.yregs or {}
+    copy.locals = copy.locals or {}
+    out[i] = copy
+  end
+  return out
+end
+
+local function copy_build_stack(stack)
+  local out = {}
+  for i, entry in ipairs(stack or {}) do
+    local copy = Runtime.copy_table(entry)
+    copy.args = Runtime.copy_array(entry.args)
+    out[i] = copy
+  end
+  return out
+end
+
 function Runtime.copy_term(state, v, seen)
   v = Runtime.deref(state, v)
   if type(v) ~= "table" then return v end
@@ -155,8 +192,91 @@ function Runtime.new_state()
   }
 end
 
-function Runtime.get_reg(state, idx) return state.regs[idx] end
-function Runtime.put_reg(state, idx, val) state.regs[idx] = val end
+local function current_yregs(state)
+  if type(state.stack) ~= "table" or #state.stack == 0 then return nil end
+  local frame = state.stack[#state.stack]
+  frame.yregs = frame.yregs or {}
+  return frame.yregs
+end
+
+function Runtime.get_reg(state, idx)
+  if type(idx) == "number" and idx >= 201 then
+    local yregs = current_yregs(state)
+    if yregs ~= nil then return yregs[idx] end
+  end
+  return state.regs[idx]
+end
+
+function Runtime.put_reg(state, idx, val)
+  if type(idx) == "number" and idx >= 201 then
+    local yregs = current_yregs(state)
+    if yregs ~= nil then yregs[idx] = val; return end
+  end
+  state.regs[idx] = val
+end
+
+function Runtime.push_frame(state)
+  table.insert(state.stack, { cp = state.cp, locals = {}, yregs = {} })
+end
+
+function Runtime.pop_frame(state)
+  local frame = table.remove(state.stack)
+  if frame then state.cp = frame.cp end
+  return frame
+end
+
+function Runtime.snapshot_machine(state)
+  return {
+    regs = Runtime.copy_table(state.regs),
+    cp = state.cp,
+    trail_len = #state.trail,
+    var_counter = state.var_counter,
+    mode = state.mode,
+    build_stack = copy_build_stack(state.build_stack),
+    stack = Runtime.copy_stack(state.stack),
+    read_args = Runtime.copy_array(state.read_args),
+    read_cursor = state.read_cursor,
+    halt = state.halt
+  }
+end
+
+function Runtime.restore_machine(state, snapshot)
+  while #state.trail > snapshot.trail_len do
+    local name = table.remove(state.trail)
+    state.bindings[name] = nil
+  end
+  state.regs = Runtime.copy_table(snapshot.regs)
+  state.cp = snapshot.cp
+  state.var_counter = snapshot.var_counter
+  state.mode = snapshot.mode
+  state.build_stack = copy_build_stack(snapshot.build_stack)
+  state.stack = Runtime.copy_stack(snapshot.stack)
+  state.read_args = Runtime.copy_array(snapshot.read_args)
+  state.read_cursor = snapshot.read_cursor or 1
+  state.halt = snapshot.halt or false
+end
+
+function Runtime.new_choicepoint(state, fields)
+  local cp = Runtime.snapshot_machine(state)
+  for k, v in pairs(fields or {}) do cp[k] = v end
+  return cp
+end
+
+-- Lowered code executes nested bytecode against the same state object.  Keep
+-- an explicit execution snapshot so a failed nested call can restore outer
+-- choicepoints as well as registers, frames, and bindings.
+function Runtime.snapshot_execution(state)
+  local snapshot = Runtime.snapshot_machine(state)
+  snapshot.pc_before = state.pc
+  snapshot.cps = Runtime.copy_array(state.cps)
+  return snapshot
+end
+
+function Runtime.restore_execution(state, snapshot)
+  Runtime.restore_machine(state, snapshot)
+  state.pc = snapshot.pc_before
+  state.cps = Runtime.copy_array(snapshot.cps)
+end
 
 function Runtime.new_var(state)
   local v = V.Unbound("V" .. tostring(state.var_counter))
@@ -264,67 +384,44 @@ end
 
 local aggregate_result
 
-function Runtime.backtrack(state)
+function Runtime.backtrack(state, choicepoint_floor)
+  choicepoint_floor = choicepoint_floor or 0
   local n = #state.cps
-  if n == 0 then return false end
+  if n <= choicepoint_floor then return false end
   local cp = state.cps[n]
   if cp == nil then return false end
   if cp.kind == "indexed_atom_fact2" then
-    while #state.trail > cp.trail_len do
-      local name = table.remove(state.trail)
-      state.bindings[name] = nil
-    end
-    state.regs = Runtime.copy_table(cp.regs)
-    state.cp = cp.cp
-    state.var_counter = cp.var_counter
-    state.mode = cp.mode
-    state.build_stack = cp.build_stack or {}
+    Runtime.restore_machine(state, cp)
     local value = table.remove(cp.values, 1)
     if #cp.values == 0 then table.remove(state.cps) end
     local atom = V.Atom(Runtime.intern(cp.table, value))
     if Runtime.unify(state, Runtime.get_reg(state, 2), atom) ~= true then
-      return Runtime.backtrack(state)
+      return Runtime.backtrack(state, choicepoint_floor)
     end
     state.pc = cp.next_pc
     state.halt = false
     return true
   end
   if cp.kind == "fact_stream" then
-    while #state.trail > cp.trail_len do
-      local name = table.remove(state.trail)
-      state.bindings[name] = nil
-    end
-    state.regs = Runtime.copy_table(cp.regs)
-    state.cp = cp.cp
-    state.var_counter = cp.var_counter
-    state.mode = cp.mode
-    state.build_stack = cp.build_stack or {}
+    Runtime.restore_machine(state, cp)
     local row = table.remove(cp.rows, 1)
     if #cp.rows == 0 then table.remove(state.cps) end
     if Runtime.unify(state, Runtime.get_reg(state, 1), row[1]) ~= true then
-      return Runtime.backtrack(state)
+      return Runtime.backtrack(state, choicepoint_floor)
     end
     if Runtime.unify(state, Runtime.get_reg(state, 2), row[2]) ~= true then
-      return Runtime.backtrack(state)
+      return Runtime.backtrack(state, choicepoint_floor)
     end
     state.pc = cp.next_pc
     state.halt = false
     return true
   end
   if cp.kind == "member" then
-    while #state.trail > cp.trail_len do
-      local name = table.remove(state.trail)
-      state.bindings[name] = nil
-    end
-    state.regs = Runtime.copy_table(cp.regs)
-    state.cp = cp.cp
-    state.var_counter = cp.var_counter
-    state.mode = cp.mode
-    state.build_stack = cp.build_stack or {}
+    Runtime.restore_machine(state, cp)
     local value = table.remove(cp.values, 1)
     if #cp.values == 0 then table.remove(state.cps) end
     if Runtime.unify(state, Runtime.get_reg(state, 1), value) ~= true then
-      return Runtime.backtrack(state)
+      return Runtime.backtrack(state, choicepoint_floor)
     end
     state.pc = cp.next_pc
     state.halt = false
@@ -332,33 +429,19 @@ function Runtime.backtrack(state)
   end
   if cp.kind == "aggregate" then
     table.remove(state.cps)
-    while #state.trail > cp.trail_len do
-      local name = table.remove(state.trail)
-      state.bindings[name] = nil
-    end
-    state.regs = Runtime.copy_table(cp.regs)
-    state.cp = cp.cp
-    state.var_counter = cp.var_counter
-    state.mode = cp.mode
-    state.build_stack = cp.build_stack or {}
+    Runtime.restore_machine(state, cp)
     local bag = aggregate_result(cp.agg_kind, cp.collected or {}, cp.table)
     local cur = Runtime.get_reg(state, cp.bag_reg)
     if cur == nil then
       Runtime.put_reg(state, cp.bag_reg, bag)
     elseif Runtime.unify(state, cur, bag) ~= true then
-      return Runtime.backtrack(state)
+      return Runtime.backtrack(state, choicepoint_floor)
     end
     state.pc = cp.next_pc
     state.halt = false
     return true
   end
-  while #state.trail > cp.trail_len do
-    local name = table.remove(state.trail)
-    state.bindings[name] = nil
-  end
-  state.regs = Runtime.copy_table(cp.regs)
-  state.cp = cp.cp
-  state.var_counter = cp.var_counter
+  Runtime.restore_machine(state, cp)
   state.pc = cp.next_pc
   state.halt = false
   return true
@@ -396,17 +479,11 @@ local function builtin_member(program, state)
   if #items > 1 then
     local rest = {}
     for i = 2, #items do rest[#rest + 1] = items[i] end
-    table.insert(state.cps, {
+    table.insert(state.cps, Runtime.new_choicepoint(state, {
       kind = "member",
       next_pc = state.pc + 1,
-      regs = Runtime.copy_table(state.regs),
-      cp = state.cp,
-      trail_len = #state.trail,
-      var_counter = state.var_counter,
-      mode = state.mode,
-      build_stack = state.build_stack,
       values = rest
-    })
+    }))
   end
   return Runtime.unify(state, Runtime.get_reg(state, 1), items[1])
 end
@@ -727,18 +804,12 @@ local function call_indexed_atom_fact2(program, state, instr)
   if #values > 1 then
     local rest = {}
     for i = 2, #values do rest[#rest + 1] = values[i] end
-    table.insert(state.cps, {
+    table.insert(state.cps, Runtime.new_choicepoint(state, {
       kind = "indexed_atom_fact2",
       next_pc = state.pc + 1,
-      regs = Runtime.copy_table(state.regs),
-      cp = state.cp,
-      trail_len = #state.trail,
-      var_counter = state.var_counter,
-      mode = state.mode,
-      build_stack = state.build_stack,
       table = program.intern_table,
       values = rest
-    })
+    }))
   end
   local atom = V.Atom(Runtime.intern(program.intern_table, values[1]))
   if Runtime.unify(state, Runtime.get_reg(state, 2), atom) ~= true then return false end
@@ -824,17 +895,11 @@ local function call_fact_stream(program, state, instr)
   if #rows > 1 then
     local rest = {}
     for i = 2, #rows do rest[#rest + 1] = rows[i] end
-    table.insert(state.cps, {
+    table.insert(state.cps, Runtime.new_choicepoint(state, {
       kind = "fact_stream",
       next_pc = state.pc + 1,
-      regs = Runtime.copy_table(state.regs),
-      cp = state.cp,
-      trail_len = #state.trail,
-      var_counter = state.var_counter,
-      mode = state.mode,
-      build_stack = state.build_stack,
       rows = rest
-    })
+    }))
   end
   if Runtime.unify(state, Runtime.get_reg(state, 1), rows[1][1]) ~= true then return false end
   if Runtime.unify(state, Runtime.get_reg(state, 2), rows[1][2]) ~= true then return false end
@@ -1020,8 +1085,8 @@ function Runtime.step(program, state, instr)
     return true
   end
   if op == "Fail" then return false end
-  if op == "Allocate" then table.insert(state.stack, { cp = state.cp, locals = {} }); state.pc = state.pc + 1; return true end
-  if op == "Deallocate" then local f = table.remove(state.stack); if f then state.cp = f.cp end; state.pc = state.pc + 1; return true end
+  if op == "Allocate" then Runtime.push_frame(state); state.pc = state.pc + 1; return true end
+  if op == "Deallocate" then Runtime.pop_frame(state); state.pc = state.pc + 1; return true end
   if op == "PutConstant" then Runtime.put_reg(state, instr.ai, instr.c); state.pc = state.pc + 1; return true end
   if op == "PutVariable" then local v = Runtime.new_var(state); Runtime.put_reg(state, instr.xn, v); Runtime.put_reg(state, instr.ai, v); state.pc = state.pc + 1; return true end
   if op == "PutValue" then Runtime.put_reg(state, instr.ai, Runtime.get_reg(state, instr.xn)); state.pc = state.pc + 1; return true end
@@ -1085,14 +1150,15 @@ function Runtime.step(program, state, instr)
     return false
   end
   if op == "TryMeElse" or op == "TryMeElsePc" then
-    table.insert(state.cps, { next_pc = instr.pc or program.labels[instr.label], regs = Runtime.copy_table(state.regs), cp = state.cp, trail_len = #state.trail, var_counter = state.var_counter })
+    table.insert(state.cps, Runtime.new_choicepoint(state, {
+      next_pc = instr.pc or program.labels[instr.label]
+    }))
     state.pc = state.pc + 1; return true
   end
   if op == "RetryMeElse" or op == "RetryMeElsePc" then
     local cp = state.cps[#state.cps]
     if cp == nil or cp.kind == "aggregate" then state.pc = state.pc + 1; return true end
-    while #state.trail > cp.trail_len do state.bindings[table.remove(state.trail)] = nil end
-    state.regs = Runtime.copy_table(cp.regs)
+    Runtime.restore_machine(state, cp)
     cp.next_pc = instr.pc or program.labels[instr.label]
     state.pc = state.pc + 1; return true
   end
@@ -1163,21 +1229,15 @@ function Runtime.step(program, state, instr)
   if op == "BeginAggregate" then
     local end_pc = find_matching_end_aggregate(program, state.pc)
     if end_pc == nil then return false end
-    table.insert(state.cps, {
+    table.insert(state.cps, Runtime.new_choicepoint(state, {
       kind = "aggregate",
       agg_kind = instr.kind,
       template_reg = instr.template,
       bag_reg = instr.bag,
       next_pc = end_pc + 1,
-      regs = Runtime.copy_table(state.regs),
-      cp = state.cp,
-      trail_len = #state.trail,
-      var_counter = state.var_counter,
-      mode = state.mode,
-      build_stack = state.build_stack,
       table = program.intern_table,
       collected = {}
-    })
+    }))
     state.pc = state.pc + 1
     return true
   end
@@ -1196,14 +1256,15 @@ function Runtime.step(program, state, instr)
   return false
 end
 
-function Runtime.run(program, state)
+function Runtime.run(program, state, choicepoint_floor)
+  choicepoint_floor = choicepoint_floor or 0
   state.halt = false
   while not state.halt do
     local instr = program.instructions[state.pc]
     if instr == nil then return false end
     local pc_before = state.pc
     if Runtime.step(program, state, instr) ~= true then
-      if Runtime.backtrack(state) ~= true then return false end
+      if Runtime.backtrack(state, choicepoint_floor) ~= true then return false end
     elseif state.pc == pc_before and not state.halt then
       state.pc = state.pc + 1
     end

@@ -1322,6 +1322,15 @@ goals_contain_call_or_aggregate(Goals) :-
     ; G = findall(_, _, _)
     ; wam_inline_bagof_setof_enabled, G = bagof(_, _, _)
     ; wam_inline_bagof_setof_enabled, G = setof(_, _, _)
+    % Under ite_use_y_level(true), an inlined `\+ G` compiles to the
+    % soft-cut form `(G -> fail ; true)`, whose get_level/cut barrier needs
+    % a permanent Y-register. A clause whose ONLY body goal is such a
+    % negation would otherwise skip allocation (length(Goals) == 1 and `\+`
+    % is treated as a builtin below), so its barrier Y-register aliases the
+    % CALLER's frame and corrupts a shared register cell. Force a frame only
+    % when that inline rewrite is enabled; the runtime-builtin opt-out emits
+    % no Y-level barrier. (`not/1` already reaches the callable arm below.)
+    ; wam_ite_use_y_level_enabled, wam_inline_not_enabled, G = \+(_)
     ; callable(G), functor(G, F, _), \+ is_builtin_goal(F)
     ),
     !.
