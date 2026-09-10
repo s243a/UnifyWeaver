@@ -207,7 +207,10 @@ test_choice_point_instructions :-
     (   implemented_wam_c_cases(Cases),
         member(try_me_else, Cases),
         member(retry_me_else, Cases),
-        member(trust_me, Cases)
+        member(trust_me, Cases),
+        member(try, Cases),
+        member(retry, Cases),
+        member(trust, Cases)
     ->  pass(Test)
     ;   fail_test(Test, 'missing choice point instruction arms')
     ).
@@ -218,9 +221,26 @@ test_choice_point_content :-
         atom_string(Code, S),
         sub_string(S, _, _, _, 'push_choice_point(state'),
         sub_string(S, _, _, _, 'cp->next_pc = target'),
-        sub_string(S, _, _, _, 'pop_choice_point(state)')
+        sub_string(S, _, _, _, 'pop_choice_point(state)'),
+        sub_string(S, _, _, _, 'push_choice_point(state, state->P + 1'),
+        sub_string(S, _, _, _, 'cp->next_pc = next_chain')
     ->  pass(Test)
     ;   fail_test(Test, 'choice point bytecode missing expected functions')
+    ).
+
+test_indexed_dispatch_instruction_parsing :-
+    Test = 'WAM-C: indexed try/retry/trust parse to distinct tags',
+    WamCode = 'wam_c_idx_parse/1:\n    try L_b1\n    retry L_b2\n    trust L_b3\nL_b1:\n    proceed\nL_b2:\n    proceed\nL_b3:\n    proceed',
+    (   compile_wam_predicate_to_c(user:wam_c_idx_parse/1, WamCode, [], CCode),
+        atom_string(CCode, S),
+        sub_string(S, _, _, _, 'INSTR_TRY,'),
+        sub_string(S, _, _, _, 'INSTR_RETRY,'),
+        sub_string(S, _, _, _, 'INSTR_TRUST,'),
+        \+ sub_string(S, _, _, _, 'INSTR_TRY_ME_ELSE'),
+        \+ sub_string(S, _, _, _, 'INSTR_RETRY_ME_ELSE'),
+        \+ sub_string(S, _, _, _, 'INSTR_TRUST_ME')
+    ->  pass(Test)
+    ;   fail_test(Test, 'indexed try/retry/trust were aliased to try_me_else/retry_me_else/trust_me')
     ).
 
 test_switch_on_term_list_dispatch :-
@@ -307,6 +327,33 @@ test_builtin_call_generation :-
         sub_string(HelpersS, _, _, _, 'bool wam_execute_builtin')
     ->  pass(Test)
     ;   fail_test(Test, 'builtin_call parser/runtime delegation missing')
+    ).
+
+test_builtin_unsupported_diagnostics_generation :-
+    Test = 'WAM-C: unsupported builtin is a distinct runtime error',
+    (   compile_step_wam_to_c([], StepCode),
+        atom_string(StepCode, StepS),
+        compile_wam_helpers_to_c([], HelpersCode),
+        atom_string(HelpersCode, HelpersS),
+        sub_string(StepS, _, _, _, 'if (state->error != 0)'),
+        sub_string(HelpersS, _, _, _, 'wam_clear_error(state)'),
+        sub_string(HelpersS, _, _, _, 'wam_set_unsupported_builtin(state, op, arity)'),
+        sub_string(HelpersS, _, _, _, 'Classify arithmetic comparisons by operator first')
+    ->  pass(Test)
+    ;   fail_test(Test, 'unsupported-builtin error path missing from generated runtime')
+    ).
+
+test_sort_builtin_generation :-
+    Test = 'WAM-C: sort/2 standard-order unique sort is generated',
+    (   compile_wam_helpers_to_c([], HelpersCode),
+        atom_string(HelpersCode, HelpersS),
+        sub_string(HelpersS, _, _, _, 'strcmp(op, "sort/2")'),
+        sub_string(HelpersS, _, _, _, 'wam_execute_sort'),
+        sub_string(HelpersS, _, _, _, 'sort/2: standard-order unique sort'),
+        sub_string(HelpersS, _, _, _, 'wam_sort_identity_value'),
+        sub_string(HelpersS, _, _, _, 'Does not reuse the aggregate stored-term comparator')
+    ->  pass(Test)
+    ;   fail_test(Test, 'sort/2 builtin missing from generated runtime')
     ).
 
 test_call_foreign_generation :-
@@ -7356,6 +7403,9 @@ implemented_case(end_aggregate, 'case INSTR_END_AGGREGATE').
 implemented_case(try_me_else, 'case INSTR_TRY_ME_ELSE').
 implemented_case(retry_me_else, 'case INSTR_RETRY_ME_ELSE').
 implemented_case(trust_me, 'case INSTR_TRUST_ME').
+implemented_case(try, 'case INSTR_TRY:').
+implemented_case(retry, 'case INSTR_RETRY:').
+implemented_case(trust, 'case INSTR_TRUST:').
 implemented_case(get_level, 'case INSTR_GET_LEVEL').
 implemented_case(cut, 'case INSTR_CUT').
 implemented_case(cut_ite, 'case INSTR_CUT_ITE').
@@ -7400,6 +7450,7 @@ run_tests_once :-
     test_precise_ite_y_level_generation,
     test_choice_point_instructions,
     test_choice_point_content,
+    test_indexed_dispatch_instruction_parsing,
     test_switch_on_term_list_dispatch,
     test_c_pointer_access,
     test_c_return_pattern,
@@ -7407,6 +7458,8 @@ run_tests_once :-
     test_c_while_loop,
     test_predicate_hash_registration,
     test_builtin_call_generation,
+    test_builtin_unsupported_diagnostics_generation,
+    test_sort_builtin_generation,
     test_call_foreign_generation,
     test_category_ancestor_kernel_generation,
     test_bidirectional_ancestor_kernel_generation,
