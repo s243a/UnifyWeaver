@@ -43,7 +43,9 @@
 :- use_module('../targets/wam_rust_lowered_emitter', [
     wam_rust_lowerable/3,
     lower_predicate_to_rust/4,
-    rust_lowered_func_name/2
+    rust_lowered_func_name/2,
+    rust_lowered_dispatch_profile/4,
+    rust_heads_mutually_exclusive/1
 ]).
 :- use_module('../targets/wam_runtime_parser_capability', [
     parser_dependent_body_goal/2,
@@ -57,6 +59,9 @@
     kernel_config/2,
     kernel_register_layout/2,
     kernel_native_call/2
+]).
+:- use_module('../core/deterministic_recursion', [
+    deterministic_recursion_class/3
 ]).
 
 rust_safe_function_name(Pred/Arity, FuncName) :-
@@ -176,9 +181,9 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                         let addr = self.heap.len();
                         let arity = fn_str.split(\'/\').nth(1)
                             .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
-                        self.heap.push(Value::Str(fn_str.clone(), vec![]));
+                        self.heap.push(Value::strv(fn_str.clone(), vec![]));
                         for _ in 0..arity {
-                            self.heap.push(Value::Atom("__struct_arg__".to_string()));
+                            self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
                         }
                         self.trail_binding(ai);
                         if let Value::Unbound(ref name) = val {
@@ -228,9 +233,9 @@ wam_instruction_arm('Instruction::GetList(ai)', Body) :-
                     let val = self.deref_var(&raw);
                     if val.is_unbound() {
                         let addr = self.heap.len();
-                        self.heap.push(Value::Str("./2".to_string(), vec![]));
-                        self.heap.push(Value::Atom("__struct_arg__".to_string()));
-                        self.heap.push(Value::Atom("__struct_arg__".to_string()));
+                        self.heap.push(Value::strv("./2".to_string(), vec![]));
+                        self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
+                        self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
                         self.trail_binding(ai);
                         if let Value::Unbound(ref name) = val {
                             self.bind_var(name, Value::Ref(addr));
@@ -239,15 +244,19 @@ wam_instruction_arm('Instruction::GetList(ai)', Body) :-
                         self.smut().push(StackEntry::WriteCtx(addr));
                         self.pc += 1; true
                     } else if let Value::List(items) = &val {
-                        if let Some((head, tail)) = items.split_first() {
+                        if let Some(head) = items.first() {
+                            // STRUCTURAL SHARING: the tail is the SAME spine
+                            // one element along, so peeling an N-element list
+                            // costs O(N) rather than N copies of the remaining
+                            // list that every choice point then retains.
                             self.smut().push(StackEntry::UnifyCtx(
-                                vec![head.clone(), Value::List(tail.to_vec())]));
+                                vec![head.clone(), Value::List(items.tail())]));
                             self.pc += 1; true
                         } else { false }
                     } else if let Value::Str(s, args) = &val {
                         // Materialised cons cell, e.g. "[|]/2"/"./2".
                         if self.is_cons_functor(s) && args.len() == 2 {
-                            self.smut().push(StackEntry::UnifyCtx(args.clone()));
+                            self.smut().push(StackEntry::UnifyCtx(args.to_vec()));
                             self.pc += 1; true
                         } else { false }
                     } else if let Value::Ref(addr) = &val {
@@ -274,7 +283,7 @@ wam_instruction_arm('Instruction::UnifyVariable(xn)', Body) :-
                         self.pc += 1; true
                     } else { false }
                 } else if let Some(StackEntry::WriteCtx(_marker)) = self.stack.last().cloned() {
-                    let var = Value::Unbound(format!("_H{}", self.var_counter));
+                    let var = Value::Unbound(format!("_H{}", self.var_counter).into());
                     self.var_counter += 1;
                     self.set_heap_or_list(var.clone());
                     self.put_reg(xn, var);
@@ -353,7 +362,7 @@ wam_instruction_arm('Instruction::PutConstant(c, ai)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutVariable(xn, ai)', Body) :-
-    Body = '                let var = Value::Unbound(format!("_V{}", self.var_counter));
+    Body = '                let var = Value::Unbound(format!("_V{}", self.var_counter).into());
                 self.var_counter += 1;
                 self.trail_binding(xn);
                 self.trail_binding(ai);
@@ -374,9 +383,9 @@ wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
                     .and_then(|s| s.parse().ok()).unwrap_or(0);
                 // Reserve heap slots for the structure header + args
                 let addr = self.heap.len();
-                self.heap.push(Value::Str(fn_str.clone(), vec![])); // placeholder
+                self.heap.push(Value::strv(fn_str.clone(), vec![])); // placeholder
                 for _ in 0..arity {
-                    self.heap.push(Value::Atom("__struct_arg__".to_string()));
+                    self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
                 }
                 // Enter structure-write mode: next N SetValue/SetConstant calls fill args
                 self.smut().push(StackEntry::WriteCtx(addr));
@@ -412,14 +421,14 @@ wam_instruction_arm('Instruction::PutList(ai)', Body) :-
                 // use the heap as a scratch area: push a sentinel, then
                 // collect two values; after the second, build the list.
                 let marker = self.heap.len();
-                self.heap.push(Value::Atom("__list_head__".to_string()));
-                self.heap.push(Value::Atom("__list_tail__".to_string()));
+                self.heap.push(Value::Atom("__list_head__".to_string().into()));
+                self.heap.push(Value::Atom("__list_tail__".to_string().into()));
                 self.set_reg_str(ai, Value::Integer(marker as i64));
                 self.smut().push(StackEntry::WriteCtx(marker));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
-    Body = '                let var = Value::Unbound(format!("_H{}", self.var_counter));
+    Body = '                let var = Value::Unbound(format!("_H{}", self.var_counter).into());
                 self.var_counter += 1;
                 self.put_reg(xn, var.clone());
                 // Write the fresh variable into the current structure/list arg
@@ -450,8 +459,8 @@ wam_instruction_arm('Instruction::Cons(head_reg, tail_reg, out_reg, skip)', Body
                     self.heap.push(head.clone());
                     self.heap.push(tail.clone());
                     let list = match tail {
-                        Value::List(mut items) => { items.insert(0, head); Value::List(items) }
-                        tail_val => Value::List(vec![head, tail_val]),
+                        Value::List(items) => Value::List(items.cons(head)),
+                        tail_val => Value::list(vec![head, tail_val]),
                     };
                     self.set_reg_str(&out_reg, list);
                     self.pc += *skip; true
@@ -519,8 +528,8 @@ wam_instruction_arm('Instruction::BaseCategoryAncestor(cat_reg, target_reg, visi
                 }
                 let parent_matches = self.indexed_atom_fact2
                     .get("category_parent/2")
-                    .and_then(|table| table.get(&cat))
-                    .map(|values| values.iter().any(|parent| parent == &target_atom))
+                    .and_then(|table| table.get(cat.as_str()))
+                    .map(|values| values.iter().any(|parent| parent.as_str() == target_atom.as_str()))
                     .unwrap_or(false);
                 if !parent_matches {
                     return false;
@@ -565,8 +574,8 @@ wam_instruction_arm('Instruction::BaseCategoryAncestorBind(cat_reg, target_reg, 
                 }
                 let parent_matches = self.indexed_atom_fact2
                     .get("category_parent/2")
-                    .and_then(|table| table.get(&cat))
-                    .map(|values| values.iter().any(|parent| parent == &target_atom))
+                    .and_then(|table| table.get(cat.as_str()))
+                    .map(|values| values.iter().any(|parent| parent.as_str() == target_atom.as_str()))
                     .unwrap_or(false);
                 if !parent_matches {
                     return false;
@@ -616,14 +625,11 @@ wam_instruction_arm('Instruction::RecurseCategoryAncestorPc(mid_reg, root_reg, c
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
-                let child_hops = Value::Unbound(format!("_V{}", self.var_counter));
+                let child_hops = Value::Unbound(format!("_V{}", self.var_counter).into());
                 self.var_counter += 1;
                 let next_visited = match visited {
-                    Value::List(mut items) => {
-                        items.insert(0, mid.clone());
-                        Value::List(items)
-                    }
-                    tail => Value::List(vec![mid.clone(), tail]),
+                    Value::List(items) => Value::List(items.cons(mid.clone())),
+                    tail => Value::list(vec![mid.clone(), tail]),
                 };
                 self.trail_binding(child_hops_reg);
                 self.trail_binding("A1");
@@ -675,7 +681,7 @@ wam_instruction_arm('Instruction::ReturnAdd1(out_reg, in_reg)', Body) :-
                     Value::Unbound(var_name) => self.bind_var(&var_name, result),
                     Value::Integer(n) if result == Value::Integer(n) => {},
                     Value::Float(f) if result == Value::Float(f) => {},
-                    Value::Atom(ref raw) if result == Value::Atom(raw.clone()) => {},
+                    Value::Atom(ref raw) if result == Value::Atom(raw.clone().into()) => {},
                     other => {
                         if !self.unify(&other, &result) {
                             return false;
@@ -696,9 +702,19 @@ wam_instruction_arm('Instruction::ReturnAdd1(out_reg, in_reg)', Body) :-
 
 wam_instruction_arm('Instruction::Allocate', Body) :-
     Body = '                use std::collections::HashMap;
-                self.cut_barrier = self.pending_cut_barrier
-                    .take()
-                    .unwrap_or(self.choice_points.len());
+                // The pending barrier belongs to the clause whose
+                // TryMeElse/RetryMeElse parked it, and reaches its Allocate on
+                // the VERY NEXT instruction. Without the pc check the value
+                // leaked: a fact predicate (try_me_else + head + proceed, no
+                // Allocate) left its barrier parked, and the next unrelated
+                // Allocate consumed it -- so a `!` in a single-clause callee
+                // cut back past a preceding fact predicate''s choice point
+                // (`findall(Y, (e(_), p28_h(Y)), L)` collected one solution
+                // instead of two).
+                self.cut_barrier = match self.pending_cut_barrier.take() {
+                    Some((barrier, at_pc)) if at_pc == self.pc => barrier,
+                    _ => self.choice_points.len(),
+                };
                 let saved_cp = self.cp;
                 self.smut().push(StackEntry::Env(saved_cp, HashMap::new()));
                 self.pc += 1; true'.
@@ -710,7 +726,16 @@ wam_instruction_arm('Instruction::Deallocate', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
-    Body = '                if let Some(&target_pc) = self.labels.get(p) {
+    Body = '                if let Some(__lo) = crate::lowered_call(self, p, self.pc + 1) {
+                    // D55 sound intermediate: this name is a LOWERED predicate
+                    // whose first solution is its only solution, so it runs as
+                    // a direct Rust function instead of being interpreted.
+                    // `None` (fall through) means "not eligible, or declined
+                    // at runtime" -- lowered_call has already rolled the
+                    // machine back in that case, so the interpreter path below
+                    // sees exactly the state it would have seen.
+                    __lo
+                } else if let Some(&target_pc) = self.labels.get(p) {
                     self.cp = self.pc + 1;
                     self.pc = target_pc;
                     true
@@ -725,8 +750,6 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                 } else if p == "read_term/2" {
                     let options = self.get_reg_raw("A2");
                     self.execute_read_term_builtin(options.as_ref())
-                } else if p == "atomic/1" {
-                    self.execute_builtin(p, *_arity)
                 } else if self.foreign_predicates.contains(p) {
                     self.cp = self.pc + 1;
                     if self.execute_foreign_predicate(p, *_arity) {
@@ -740,13 +763,22 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                     __ftr
                 } else if self.dynamic_call(p, self.pc + 1) {
                     true
-                } else if Self::is_iso_meta_builtin(p) {
-                    // ISO meta-builtins (catch/3, throw/1, succ/2) are
-                    // emitted by the shared WAM compiler as Call rather
-                    // than BuiltinCall; route them through the builtin
-                    // dispatch (mirrors the F# isIsoMetaBuiltin arm).
-                    self.execute_builtin(p, *_arity)
-                } else { false }'.
+                } else if self.execute_builtin(p, *_arity) {
+                    // WAM_BACKEND_CONVENTIONS §7 (call half): a predicate the
+                    // shared compiler does not know as a builtin
+                    // (is_builtin_pred/2) but this runtime DOES implement
+                    // reaches us as `call <name>` with no label. Route the
+                    // whole class through builtin dispatch rather than naming
+                    // individual predicates -- the old arm listed only
+                    // atomic/1 plus the three is_iso_meta_builtin names, so
+                    // every other runtime builtin silently failed here.
+                    // execute_builtin advances pc itself, exactly as the
+                    // BuiltinCall arm relies on.
+                    true
+                } else {
+                    Self::warn_unresolved_goal("call", p);
+                    false
+                }'.
 
 wam_instruction_arm('Instruction::CallPc(target_pc, _arity)', Body) :-
     Body = '                self.cp = self.pc + 1;
@@ -768,7 +800,7 @@ wam_instruction_arm('Instruction::CallIndexedAtomFact2(pred)', Body) :-
                     Some(val) => val,
                     None => return false,
                 };
-                let values = match self.indexed_atom_fact2.get(pred).and_then(|table| table.get(&key)) {
+                let values = match self.indexed_atom_fact2.get(pred.as_str()).and_then(|table| table.get(key.as_str())) {
                     Some(values) if !values.is_empty() => values.clone(),
                     _ => return false,
                 };
@@ -782,18 +814,23 @@ wam_instruction_arm('Instruction::CallIndexedAtomFact2(pred)', Body) :-
                         heap_len: self.heap.len(),
                         builtin_state: Some(BuiltinState {
                             name: "indexed_atom_fact2".to_string(),
-                            args: vec![Value::Atom(pred.clone()), Value::Atom(key.clone())],
+                            args: vec![Value::Atom(pred.clone().into()), Value::Atom(key.clone().into())],
                             data: vec![Value::Integer(1)],
                         }),
                         cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
                     });
                 }
-                if self.unify(&a2, &Value::Atom(values[0].clone())) {
+                if self.unify(&a2, &Value::Atom(values[0].clone().into())) {
                     self.pc += 1; true
                 } else { false }'.
 
 wam_instruction_arm('Instruction::Execute(p)', Body) :-
-    Body = '                if let Some(&target_pc) = self.labels.get(p) {
+    Body = '                if let Some(__lo) = crate::lowered_call(self, p, self.cp) {
+                    // D55 sound intermediate, tail-call half: the continuation
+                    // is the saved cp, i.e. Proceed''s return path.
+                    __lo
+                } else if let Some(&target_pc) = self.labels.get(p) {
                     self.pc = target_pc;
                     true
                 } else if p == "retract/1" {
@@ -813,11 +850,6 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
                         self.pc = self.cp;
                         true
                     } else { false }
-                } else if p == "atomic/1" {
-                    if self.execute_builtin(p, 1) {
-                        self.pc = self.cp;
-                        true
-                    } else { false }
                 } else if self.foreign_predicates.contains(p) {
                     self.execute_foreign_predicate(p, 0)
                 } else if let Some(__ftr) = crate::fact_table_call(self, p, self.cp) {
@@ -826,16 +858,34 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
                     __ftr
                 } else if self.dynamic_call(p, self.cp) {
                     true
-                } else if Self::is_iso_meta_builtin(p) {
-                    // Tail-position ISO meta-builtin: dispatch, then honor
-                    // return semantics by jumping to the continuation.
+                } else {
+                    // WAM_BACKEND_CONVENTIONS §7: the class fix, the Rust
+                    // analogue of Go''s BuiltinExecute instruction. A clause
+                    // whose LAST goal is a runtime-implemented builtin outside
+                    // is_builtin_pred/2 arrives here as `execute <name>` with
+                    // no label. Run the builtin, then take Proceed''s return
+                    // path (jump to CP; CP == 0 is the top-level sentinel and
+                    // halts run()).
+                    //
+                    // This used to be gated on is_iso_meta_builtin (catch/3,
+                    // throw/1, succ/2) plus a hand-listed atomic/1, so EVERY
+                    // other runtime builtin in tail position bound its outputs
+                    // and then reported FAILURE -- a silent wrong answer, not
+                    // a missing feature.
                     let arity: usize = p.rsplit(\'/\').next()
                         .and_then(|a| a.parse().ok()).unwrap_or(0);
+                    let __pc_before = self.pc;
                     if self.execute_builtin(p, arity) {
                         self.pc = self.cp;
                         true
-                    } else { false }
-                } else { false }'.
+                    } else {
+                        // Restore pc in case a partially-run builtin advanced
+                        // it before failing, then fail the goal.
+                        self.pc = __pc_before;
+                        Self::warn_unresolved_goal("execute", p);
+                        false
+                    }
+                }'.
 
 wam_instruction_arm('Instruction::ExecutePc(target_pc)', Body) :-
     Body = '                self.pc = *target_pc;
@@ -861,19 +911,60 @@ wam_instruction_arm('Instruction::NoOp', Body) :-
 % CutTo restores it at the commit point, removing the ITE guard CP plus
 % any CPs the condition pushed - regardless of how many that was.
 wam_instruction_arm('Instruction::GetLevel(yn)', Body) :-
-    Body = '                let depth = Value::Integer(self.choice_points.len() as i64);
-                self.trail_binding(yn);
-                self.put_reg(yn, depth);
+    Body = '                // The barrier level is stored on the ITE''s own CHOICE
+                // POINT, never in register `yn`.
+                //
+                // `wam_target.pl` reserves a permanent (Y) register for the
+                // barrier *after* deciding whether the clause needs an
+                // environment, so it happily emits `get_level Y1` in a clause
+                // with NO `Allocate` (e.g. satisfies/2''s `gte` clause). This
+                // runtime routes Y registers to the TOPMOST environment frame
+                // -- which, with no Allocate of our own, is the CALLER''s. The
+                // old register write therefore overwrote the caller''s
+                // permanent variable Y1 with a choice-point depth: a silent
+                // wrong answer (`pick/7` returned Ver = 2 instead of
+                // v(0,1,0)), not a crash. That is the §8 hazard in a shape the
+                // "string-named registers" defence does not cover.
+                //
+                // Two emission shapes (compile_if_then_else/7):
+                //   1. `get_level BarrierReg` immediately BEFORE the ITE
+                //      `try_me_else` -- park it as `pending_level` for that
+                //      TryMeElse to record on the guard CP it pushes.
+                //   2. `get_level CondBarrierReg` immediately AFTER the
+                //      try_me_else (only when the condition holds a top-level
+                //      `!`) -- attach it to the guard CP that already exists.
+                let depth = self.choice_points.len();
+                let next_is_try = matches!(self.code.get(self.pc),
+                    Some(Instruction::TryMeElse(_)) | Some(Instruction::TryMeElsePc(_)));
+                if next_is_try {
+                    self.pending_level = Some((yn.clone(), depth));
+                } else if let Some(cp) = self.choice_points.last_mut() {
+                    cp.levels.push((yn.clone(), depth));
+                }
                 self.pc += 1;
                 true'.
 
 wam_instruction_arm('Instruction::CutTo(yn)', Body) :-
-    Body = '                // get_reg (not get_reg_raw): Y registers live in the
-                // topmost env frame, where GetLevel stored the depth.
-                if let Some(v) = self.get_reg(yn) {
-                    if let Value::Integer(depth) = self.deref_var(&v) {
-                        self.choice_points.truncate(depth as usize);
+    Body = '                // Find the level `get_level yn` recorded, innermost
+                // first: the nearest choice point that carries this barrier
+                // name. Looking it up on the CP stack (rather than in a Y
+                // register) makes it per-activation for free -- two nested
+                // activations of the same predicate each hold their own
+                // barrier, and a callee can never clobber a caller''s.
+                //
+                // Nothing found means the guard was already cut away by an
+                // inner commit, in which case the stack is already at or below
+                // the level and truncating would be a no-op anyway.
+                let mut __target: Option<usize> = None;
+                for __cp in self.choice_points.iter().rev() {
+                    if let Some(&(_, __lvl)) =
+                        __cp.levels.iter().rev().find(|(__n, _)| __n == yn) {
+                        __target = Some(__lvl);
+                        break;
                     }
+                }
+                if let Some(__lvl) = __target {
+                    self.choice_points.truncate(__lvl);
                 }
                 self.pc += 1;
                 true'.
@@ -888,6 +979,28 @@ wam_instruction_arm('Instruction::BuiltinCall(op, arity)', Body) :-
 
 wam_instruction_arm('Instruction::BeginAggregate(agg_type, value_reg, result_reg)', Body) :-
     Body = '                self.aggregate_acc.clear();
+                // The continuation PC has to be known BEFORE the inner goal
+                // runs. It used to be recorded by EndAggregate -- but when the
+                // goal has ZERO solutions EndAggregate never executes, so the
+                // finalisation read a stale `aggregate_return_pc` (0 right
+                // after reset_query). pc = 0 means HALT, so
+                // `findall(X, fail, L)` reported SUCCESS and silently dropped
+                // every goal after it in the clause. Scan forward for the
+                // matching EndAggregate instead and carry its continuation in
+                // the aggregate frame. (self.pc is 1-based: code[pc-1] is the
+                // current instruction, so the scan starts at index self.pc.)
+                let mut __agg_depth = 0usize;
+                let mut __agg_ret_pc = 0usize;
+                for __i in self.pc..self.code.len() {
+                    match &self.code[__i] {
+                        Instruction::BeginAggregate(_, _, _) => { __agg_depth += 1; }
+                        Instruction::EndAggregate(_) => {
+                            if __agg_depth == 0 { __agg_ret_pc = __i + 2; break; }
+                            __agg_depth -= 1;
+                        }
+                        _ => {}
+                    }
+                }
                 self.choice_points.push(ChoicePoint {
                     next_pc: self.pc,
                     saved_args: self.save_regs(),
@@ -898,14 +1011,26 @@ wam_instruction_arm('Instruction::BeginAggregate(agg_type, value_reg, result_reg
                     builtin_state: Some(BuiltinState {
                         name: "aggregate_frame".to_string(),
                         args: vec![
-                            Value::Atom(agg_type.clone()),
-                            Value::Atom(value_reg.clone()),
-                            Value::Atom(result_reg.clone()),
+                            Value::Atom(agg_type.clone().into()),
+                            Value::Atom(value_reg.clone().into()),
+                            Value::Atom(result_reg.clone().into()),
                         ],
-                        data: vec![],
+                        data: vec![Value::Integer(__agg_ret_pc as i64)],
                     }),
                     cut_barrier: self.cut_barrier,
+                    levels: Vec::new(),
                 });
+                // §9: "an inlined aggregate must raise the barrier above its
+                // own aggregate choice point so an inner `!` cannot strand the
+                // collection". findall/bagof/setof/aggregate_all inner goals
+                // are opaque cut scopes; without this, `findall(X, (d(X), !), L)`
+                // truncated the choice-point stack back to the enclosing
+                // clause''s barrier, DESTROYING the aggregate frame -- so
+                // EndAggregate''s backtrack never found it and the whole clause
+                // silently vanished. The pre-aggregate barrier is already
+                // stored on the frame above, and backtrack() restores it before
+                // the finalisation runs.
+                self.cut_barrier = self.choice_points.len();
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::EndAggregate(value_reg)', Body) :-
@@ -925,7 +1050,7 @@ wam_instruction_arm('Instruction::ParAggregate(agg_type, enum_label, body_label,
                 // Capture the external-input values from the container''s registers
                 // (Y-aware, fully dereferenced) so the helpers run with them bound.
                 let __ivals: Vec<Value> = input_regs.iter().map(|__r| {
-                    let __raw = self.get_reg(__r).unwrap_or(Value::Unbound(__r.clone()));
+                    let __raw = self.get_reg(__r).unwrap_or(Value::Unbound(__r.clone().into()));
                     self.deref_var(&self.deref_heap(&__raw))
                 }).collect();
                 let __vals = crate::par_aggregate::par_collect_labels(&__base, enum_label, body_label, &__ivals);
@@ -959,7 +1084,7 @@ wam_instruction_arm('Instruction::ParAggregate(agg_type, enum_label, body_label,
                                 },
                             };
                         }
-                        best.unwrap_or(Value::List(vec![]))
+                        best.unwrap_or(Value::list(vec![]))
                     }
                     "min" => {
                         let mut best: Option<Value> = None;
@@ -976,9 +1101,9 @@ wam_instruction_arm('Instruction::ParAggregate(agg_type, enum_label, body_label,
                                 },
                             };
                         }
-                        best.unwrap_or(Value::List(vec![]))
+                        best.unwrap_or(Value::list(vec![]))
                     }
-                    _ => Value::List(__vals),
+                    _ => Value::list(__vals),
                 };
                 // Bind through the Y-aware accessors (get_reg/put_reg): an
                 // embedded aggregate''s result register is a permanent (Y)
@@ -1012,11 +1137,15 @@ wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
                         heap_len: self.heap.len(),
                         builtin_state: None,
                         cut_barrier: self.cut_barrier,
+                        // Consume the level parked by an immediately preceding
+                        // GetLevel: this is the ITE guard choice point, so the
+                        // barrier belongs on it.
+                        levels: self.pending_level.take().into_iter().collect(),
                     });
                     if label.starts_with("L_ite_else_") {
                         self.pending_cut_barrier = None;
                     } else {
-                        self.pending_cut_barrier = Some(clause_barrier);
+                        self.pending_cut_barrier = Some((clause_barrier, self.pc + 1));
                     }
                     self.pc += 1; true
                 } else { false }'.
@@ -1032,8 +1161,9 @@ wam_instruction_arm('Instruction::TryMeElsePc(next_pc)', Body) :-
                     heap_len: self.heap.len(),
                     builtin_state: None,
                     cut_barrier: self.cut_barrier,
+                    levels: self.pending_level.take().into_iter().collect(),
                 });
-                self.pending_cut_barrier = Some(clause_barrier);
+                self.pending_cut_barrier = Some((clause_barrier, self.pc + 1));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::TrustMe', Body) :-
@@ -1045,7 +1175,7 @@ wam_instruction_arm('Instruction::RetryMeElse(label)', Body) :-
                     if let Some(cp) = self.choice_points.last_mut() {
                         cp.next_pc = next_pc;
                     }
-                    self.pending_cut_barrier = Some(self.choice_points.len().saturating_sub(1));
+                    self.pending_cut_barrier = Some((self.choice_points.len().saturating_sub(1), self.pc + 1));
                     self.pc += 1; true
                 } else { false }'.
 
@@ -1053,7 +1183,7 @@ wam_instruction_arm('Instruction::RetryMeElsePc(next_pc)', Body) :-
     Body = '                if let Some(cp) = self.choice_points.last_mut() {
                     cp.next_pc = *next_pc;
                 }
-                self.pending_cut_barrier = Some(self.choice_points.len().saturating_sub(1));
+                self.pending_cut_barrier = Some((self.choice_points.len().saturating_sub(1), self.pc + 1));
                 self.pc += 1; true'.
 
 % --- Indexing Instructions ---
@@ -1270,7 +1400,14 @@ compile_backtrack_to_rust(Code0) :-
     Code0 = '    /// Restore state from the top choice point without popping it.
     pub fn backtrack(&mut self) -> bool {
         self.backtrack_count += 1;
-        while let Some(cp) = self.choice_points.last().cloned() {
+        // Never pop a choice point at or below the current backtracking floor:
+        // those belong to a caller of a first-solution meta-call and must not
+        // be resumed inside the nested run (see `backtrack_floor`).
+        while self.choice_points.len() > self.backtrack_floor {
+            let cp = match self.choice_points.last().cloned() {
+                Some(cp) => cp,
+                None => break,
+            };
             self.pc = cp.next_pc;
 
             // 1. Unwind bindings from trail entries added since the CP.
@@ -1287,6 +1424,10 @@ compile_backtrack_to_rust(Code0) :-
             self.cp = cp.cp;
             self.cut_barrier = cp.cut_barrier;
             self.pending_cut_barrier = None;
+            // A GetLevel parked between the last CP and this failure never
+            // reached its TryMeElse; drop it rather than let the next
+            // choice point adopt a stale barrier.
+            self.pending_level = None;
 
             if let Some(state) = cp.builtin_state {
                 self.choice_points.pop();
@@ -1392,11 +1533,9 @@ compile_execute_arith_builtin_to_rust(Code) :-
                 } else { false }
             }
             "==/2" => {
-                let v1 = self.get_reg_raw("A1")
-                    .map(|v| self.deref_heap(&self.deref_var(&v)));
-                let v2 = self.get_reg_raw("A2")
-                    .map(|v| self.deref_heap(&self.deref_var(&v)));
-                if v1 == v2 { self.pc += 1; true } else { false }
+                let v1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let v2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.terms_identical(&v1, &v2) { self.pc += 1; true } else { false }
             }
             _ => false,
         }
@@ -1446,7 +1585,7 @@ compile_execute_io_builtin_to_rust(Code) :-
     Prefix = '    fn builtin_path_arg(&self, reg: &str) -> Option<String> {
         match self.get_reg_raw(reg)
             .map(|v| self.deref_heap(&self.deref_var(&v))) {
-            Some(Value::Atom(path)) => Some(path),
+            Some(Value::Atom(path)) => Some(path.as_str().to_string()),
             _ => None,
         }
     }
@@ -1454,12 +1593,12 @@ compile_execute_io_builtin_to_rust(Code) :-
     fn format_term_text(&self, value: &Value) -> String {
         let derefed = self.deref_heap(&self.deref_var(value));
         match derefed {
-            Value::Atom(text) => text,
+            Value::Atom(text) => text.as_str().to_string(),
             Value::Integer(number) => number.to_string(),
             Value::Float(number) => number.to_string(),
             Value::Bool(boolean) => boolean.to_string(),
             Value::Unbound(name) => {
-                if name.is_empty() { "_".to_string() } else { name }
+                if name.is_empty() { "_".to_string() } else { name.as_str().to_string() }
             }
             Value::List(items) => {
                 let rendered: Vec<String> = items.iter()
@@ -1482,7 +1621,7 @@ compile_execute_io_builtin_to_rust(Code) :-
     fn render_format(&self, format_raw: &Value, args_raw: Option<&Value>) -> Option<String> {
         let format_value = self.deref_heap(&self.deref_var(format_raw));
         let format_text = match format_value {
-            Value::Atom(text) => text,
+            Value::Atom(text) => text.as_str().to_string(),
             Value::Integer(number) => number.to_string(),
             Value::Bool(boolean) => boolean.to_string(),
             Value::List(items) if items.is_empty() => "[]".to_string(),
@@ -1491,7 +1630,7 @@ compile_execute_io_builtin_to_rust(Code) :-
         let args = match args_raw {
             None => Vec::new(),
             Some(raw) => match self.deref_heap(&self.deref_var(raw)) {
-                Value::List(items) => items,
+                Value::List(items) => items.to_vec(),
                 Value::Atom(name) if name == "[]" => Vec::new(),
                 _ => return None,
             },
@@ -1604,7 +1743,7 @@ compile_execute_io_builtin_to_rust(Code) :-
                     Value::Str(functor, args) if args.len() == 1 => {
                         let name = Self::display_functor_name(&functor, 1);
                         let output = match name.as_str() {
-                            "atom" | "string" => Value::Atom(rendered),
+                            "atom" | "string" => Value::Atom(rendered.into()),
                             "codes" => Self::string_to_codes_value(&rendered),
                             _ => return false,
                         };
@@ -1722,7 +1861,7 @@ compile_execute_io_builtin_to_rust(Code) :-
                 };
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::Atom(component)) {
+                if self.unify(&output, &Value::Atom(component.into())) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -1746,16 +1885,16 @@ compile_execute_io_builtin_to_rust(Code) :-
                             file[..index].to_string(),
                             file[index + 1..].to_string(),
                         ),
-                        None => (file, String::new()),
+                        None => (file.as_str().to_string(), String::new()),
                     };
                     let base_output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
                     let extension_output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                     let mark = self.trail.len();
-                    if !self.unify(&base_output, &Value::Atom(base)) {
+                    if !self.unify(&base_output, &Value::Atom(base.into())) {
                         self.unwind_trail_to(mark);
                         return false;
                     }
-                    if self.unify(&extension_output, &Value::Atom(extension)) {
+                    if self.unify(&extension_output, &Value::Atom(extension.into())) {
                         self.pc += 1; true
                     } else {
                         self.unwind_trail_to(mark);
@@ -1777,7 +1916,7 @@ compile_execute_io_builtin_to_rust(Code) :-
                     };
                     let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                     let mark = self.trail.len();
-                    if self.unify(&output, &Value::Atom(file)) {
+                    if self.unify(&output, &Value::Atom(file.into())) {
                         self.pc += 1; true
                     } else {
                         self.unwind_trail_to(mark);
@@ -1812,7 +1951,7 @@ compile_execute_io_builtin_to_rust(Code) :-
                 };
                 let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::Atom(full)) {
+                if self.unify(&output, &Value::Atom(full.into())) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -1837,7 +1976,7 @@ compile_execute_io_builtin_to_rust(Code) :-
                 };
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::Atom(resolved)) {
+                if self.unify(&output, &Value::Atom(resolved.into())) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -1911,7 +2050,7 @@ compile_execute_io_builtin_to_rust(Code) :-
                 };
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::Atom(content)) {
+                if self.unify(&output, &Value::Atom(content.into())) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -2037,13 +2176,13 @@ compile_execute_io_builtin_to_rust(Code) :-
                 }
                 names.sort_unstable();
                 let mut files = Vec::with_capacity(names.len() + 2);
-                files.push(Value::Atom(".".to_string()));
-                files.push(Value::Atom("..".to_string()));
-                files.extend(names.into_iter().map(Value::Atom));
+                files.push(Value::Atom(".".to_string().into()));
+                files.push(Value::Atom("..".to_string().into()));
+                files.extend(names.into_iter().map(Value::atom));
 
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::List(files)) {
+                if self.unify(&output, &Value::list(files)) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -2114,13 +2253,13 @@ compile_execute_io_builtin_to_rust(Code) :-
                     Some(Value::Atom(name)) => name,
                     _ => return false,
                 };
-                let value = match std::env::var(name) {
+                let value = match std::env::var(name.as_str()) {
                     Ok(value) => value,
                     Err(_) => return false,
                 };
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::Atom(value)) {
+                if self.unify(&output, &Value::Atom(value.into())) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -2144,7 +2283,7 @@ compile_execute_io_builtin_to_rust(Code) :-
                     || value.as_bytes().contains(&0) {
                     return false;
                 }
-                std::env::set_var(name, value);
+                std::env::set_var(name.as_str(), value.as_str());
                 self.pc += 1; true
             }
             "unsetenv/1" => {
@@ -2158,7 +2297,7 @@ compile_execute_io_builtin_to_rust(Code) :-
                     || name.as_bytes().contains(&0) {
                     return false;
                 }
-                std::env::remove_var(name);
+                std::env::remove_var(name.as_str());
                 self.pc += 1; true
             }
             "getpid/1" => {
@@ -2243,6 +2382,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                                     data: vec![Value::Integer(1)],
                                 }),
                                 cut_barrier: self.cut_barrier,
+                                levels: Vec::new(),
                             });
                         }
 
@@ -2291,10 +2431,10 @@ compile_execute_term_builtin_to_rust(Code) :-
                     if items.try_reserve_exact(count).is_err() { return false; }
                     for _ in 0..count {
                         self.var_counter += 1;
-                        items.push(Value::Unbound(format!("_L{}", self.var_counter)));
+                        items.push(Value::Unbound(format!("_L{}", self.var_counter).into()));
                     }
                     let mark = self.trail.len();
-                    if self.unify(&list_raw, &Value::List(items)) {
+                    if self.unify(&list_raw, &Value::list(items)) {
                         self.pc += 1; true
                     } else {
                         self.unwind_trail_to(mark);
@@ -2323,7 +2463,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                     let mut appended = left.clone();
                     appended.extend(right.iter().cloned());
                     let mark = self.trail.len();
-                    if self.unify(&a3, &Value::List(appended)) {
+                    if self.unify(&a3, &Value::list(appended)) {
                         self.pc += 1; true
                     } else {
                         self.unwind_trail_to(mark);
@@ -2336,7 +2476,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                     };
                     if let Some(left) = left {
                         if whole.starts_with(&left) {
-                            let suffix = Value::List(whole[left.len()..].to_vec());
+                            let suffix = Value::list(whole[left.len()..].to_vec());
                             let mark = self.trail.len();
                             if self.unify(&a2, &suffix) {
                                 self.pc += 1; true
@@ -2349,7 +2489,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                         }
                     } else if let Some(right) = right {
                         if whole.ends_with(&right) {
-                            let prefix = Value::List(whole[..whole.len() - right.len()].to_vec());
+                            let prefix = Value::list(whole[..whole.len() - right.len()].to_vec());
                             let mark = self.trail.len();
                             if self.unify(&a1, &prefix) {
                                 self.pc += 1; true
@@ -2405,9 +2545,9 @@ compile_execute_term_builtin_to_rust(Code) :-
                             if args.try_reserve_exact(arity).is_err() { return false; }
                             for _ in 0..arity {
                                 self.var_counter += 1;
-                                args.push(Value::Unbound(format!("_F{}", self.var_counter)));
+                                args.push(Value::Unbound(format!("_F{}", self.var_counter).into()));
                             }
-                            Value::Str(functor, args)
+                            Value::strv(functor, args)
                         } else {
                             return false;
                         };
@@ -2421,11 +2561,11 @@ compile_execute_term_builtin_to_rust(Code) :-
                     }
                     term => {
                         let (name, arity): (Value, i64) = match &term {
-                            Value::Str(functor, args) => (Value::Atom(functor.clone()), args.len() as i64),
+                            Value::Str(functor, args) => (Value::Atom(functor.clone().into()), args.len() as i64),
                             Value::List(items) if items.is_empty() =>
-                                (Value::Atom("[]".to_string()), 0),
-                            Value::List(_) => (Value::Atom(".".to_string()), 2),
-                            Value::Atom(name) => (Value::Atom(name.clone()), 0),
+                                (Value::Atom("[]".to_string().into()), 0),
+                            Value::List(_) => (Value::Atom(".".to_string().into()), 2),
+                            Value::Atom(name) => (Value::Atom(name.clone().into()), 0),
                             Value::Integer(_) | Value::Float(_) | Value::Bool(_) =>
                                 (term.clone(), 0),
                             _ => return false,
@@ -2468,7 +2608,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                             Value::List(items) if n == 1 && !items.is_empty() =>
                                 Some(items[0].clone()),
                             Value::List(items) if n == 2 && !items.is_empty() =>
-                                Some(Value::List(items[1..].to_vec())),
+                                Some(Value::list(items[1..].to_vec())),
                             _ => None,
                         };
                         match arg {
@@ -2512,7 +2652,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                                 _ => return false,
                             }
                         } else if let Value::Atom(fname) = head {
-                            Value::Str(fname, items[1..].to_vec())
+                            Value::strv(fname, items[1..].to_vec())
                         } else {
                             return false;
                         };
@@ -2528,21 +2668,21 @@ compile_execute_term_builtin_to_rust(Code) :-
                         // Decompose mode: build list from T.
                         let list = match &t {
                             Value::Str(f, args) => {
-                                let mut items = vec![Value::Atom(f.clone())];
+                                let mut items = vec![Value::Atom(f.clone().into())];
                                 items.extend(args.iter().cloned());
-                                Value::List(items)
+                                Value::list(items)
                             }
                             Value::Atom(_) | Value::Integer(_)
                             | Value::Float(_) | Value::Bool(_) => {
-                                Value::List(vec![t.clone()])
+                                Value::list(vec![t.clone()])
                             }
                             Value::List(items) if items.is_empty() => {
-                                Value::List(vec![Value::Atom("[]".to_string())])
+                                Value::list(vec![Value::Atom("[]".to_string().into())])
                             }
-                            Value::List(items) => Value::List(vec![
-                                Value::Atom(".".to_string()),
+                            Value::List(items) => Value::list(vec![
+                                Value::Atom(".".to_string().into()),
                                 items[0].clone(),
-                                Value::List(items[1..].to_vec()),
+                                Value::list(items[1..].to_vec()),
                             ]),
                             _ => return false,
                         };
@@ -2640,16 +2780,16 @@ compile_execute_term_builtin_to_rust(Code) :-
                 };
                 let mark = self.trail.len();
                 let mut next_number = start;
-                for variable in variables {
+                for variable in variables.iter() {
                     let following = match next_number.checked_add(1) {
                         Some(n) => n,
                         None => { self.unwind_trail_to(mark); return false; }
                     };
-                    let numbered = Value::Str(
+                    let numbered = Value::strv(
                         "$VAR/1".to_string(),
                         vec![Value::Integer(next_number)],
                     );
-                    if !self.unify(&variable, &numbered) {
+                    if !self.unify(variable, &numbered) {
                         self.unwind_trail_to(mark);
                         return false;
                     }
@@ -2708,14 +2848,14 @@ compile_execute_term_builtin_to_rust(Code) :-
                     .filter_map(|entry| {
                         let name = entry.key.strip_prefix("__binding__")?;
                         let bound = self.bindings.get(name)?.clone();
-                        Some(Value::Str(
+                        Some(Value::strv(
                             "=/2".to_string(),
-                            vec![Value::Unbound(name.to_string()), bound],
+                            vec![Value::Unbound(name.to_string().into()), bound],
                         ))
                 })
                     .collect();
                 self.unwind_trail_to(mark);
-                if self.unify(&output, &Value::List(pairs)) {
+                if self.unify(&output, &Value::list(pairs)) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -2737,26 +2877,26 @@ compile_execute_term_builtin_to_rust(Code) :-
     ) -> Value {
         match v {
             Value::Unbound(name) => {
-                if let Some(new_name) = var_map.get(name) {
-                    Value::Unbound(new_name.clone())
+                if let Some(new_name) = var_map.get(name.as_str()) {
+                    Value::Unbound(new_name.clone().into())
                 } else {
                     *counter += 1;
                     let new_name = format!("_C{}", counter);
-                    var_map.insert(name.clone(), new_name.clone());
-                    Value::Unbound(new_name)
+                    var_map.insert(name.as_str().to_string(), new_name.clone());
+                    Value::Unbound(new_name.into())
                 }
             }
             Value::Str(f, args) => {
                 let new_args: Vec<Value> = args.iter()
                     .map(|a| Self::copy_term_walk(counter, var_map, a))
                     .collect();
-                Value::Str(f.clone(), new_args)
+                Value::strv(f.clone(), new_args)
             }
             Value::List(items) => {
                 let new_items: Vec<Value> = items.iter()
                     .map(|i| Self::copy_term_walk(counter, var_map, i))
                     .collect();
-                Value::List(new_items)
+                Value::list(new_items)
             }
             _ => v.clone(),
         }
@@ -2770,12 +2910,13 @@ compile_execute_term_builtin_to_rust(Code) :-
     ) -> bool {
         match (left, right) {
             (Value::Unbound(a), Value::Unbound(b)) => {
-                if let Some(mapped) = left_vars.get(a) {
-                    return mapped == b && right_vars.get(b) == Some(a);
+                if let Some(mapped) = left_vars.get(a.as_str()) {
+                    return mapped.as_str() == b.as_str()
+                        && right_vars.get(b.as_str()).map(|s| s.as_str()) == Some(a.as_str());
                 }
-                if right_vars.contains_key(b) { return false; }
-                left_vars.insert(a.clone(), b.clone());
-                right_vars.insert(b.clone(), a.clone());
+                if right_vars.contains_key(b.as_str()) { return false; }
+                left_vars.insert(a.as_str().to_string(), b.as_str().to_string());
+                right_vars.insert(b.as_str().to_string(), a.as_str().to_string());
                 true
             }
             (Value::Atom(a), Value::Atom(b)) => a == b,
@@ -2820,7 +2961,7 @@ compile_execute_term_builtin_to_rust(Code) :-
             Some(mut items) => {
                 items.reverse();
                 let mark = self.trail.len();
-                if self.unify(&dst, &Value::List(items)) {
+                if self.unify(&dst, &Value::list(items)) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -2845,7 +2986,7 @@ compile_execute_term_builtin_to_rust(Code) :-
             (Value::Unbound(_), Value::List(items)) => {
                 match self.code_list_to_string(&items) {
                     Some(text) => {
-                        if self.unify(&atom_raw, &Value::Atom(text)) { self.pc += 1; true }
+                        if self.unify(&atom_raw, &Value::Atom(text.into())) { self.pc += 1; true }
                         else { false }
                     }
                     None => false,
@@ -2903,20 +3044,20 @@ compile_execute_term_builtin_to_rust(Code) :-
         let chars = self.deref_heap(&self.deref_var(&chars_raw));
         match (num, chars) {
             (Value::Integer(n), _) => {
-                let list = Value::List(
+                let list = Value::list(
                     n.to_string()
                         .chars()
-                        .map(|ch| Value::Atom(ch.to_string()))
+                        .map(|ch| Value::Atom(ch.to_string().into()))
                         .collect(),
                 );
                 if self.unify(&chars_raw, &list) { self.pc += 1; true }
                 else { false }
             }
             (Value::Float(f), _) => {
-                let list = Value::List(
+                let list = Value::list(
                     f.to_string()
                         .chars()
-                        .map(|ch| Value::Atom(ch.to_string()))
+                        .map(|ch| Value::Atom(ch.to_string().into()))
                         .collect(),
                 );
                 if self.unify(&chars_raw, &list) { self.pc += 1; true }
@@ -2924,7 +3065,7 @@ compile_execute_term_builtin_to_rust(Code) :-
             }
             (Value::Unbound(_), Value::List(items)) => {
                 let mut text = String::new();
-                for item in &items {
+                for item in items.iter() {
                     match self.deref_heap(&self.deref_var(item)) {
                         Value::Atom(atom) if atom.chars().count() == 1 => {
                             text.push(atom.chars().next().unwrap());
@@ -2955,7 +3096,7 @@ compile_execute_term_builtin_to_rust(Code) :-
         let atom = self.get_reg_raw("A1")
             .map(|value| self.deref_heap(&self.deref_var(&value)));
         let bindings = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-        let options = Value::List(vec![Value::Str(
+        let options = Value::list(vec![Value::strv(
             "variable_names".to_string(),
             vec![bindings],
         )]);
@@ -2987,7 +3128,7 @@ compile_execute_term_builtin_to_rust(Code) :-
             }
         } else {
             let rendered = self.term_to_atom_text(&term);
-            if self.unify(&atom_raw, &Value::Atom(rendered)) { self.pc += 1; true }
+            if self.unify(&atom_raw, &Value::Atom(rendered.into())) { self.pc += 1; true }
             else { false }
         }
     }
@@ -3042,7 +3183,7 @@ compile_execute_term_builtin_to_rust(Code) :-
         }
         let mut parser = WamState::new(self.code.clone(), self.labels.clone());
 
-        let ops_var = Value::Unbound("_RP_ops".to_string());
+        let ops_var = Value::Unbound("_RP_ops".to_string().into());
         parser.set_reg_str("A1", ops_var.clone());
         if !parser.run_named_label("canonical_op_table/1") {
             if syntax_errors_error {
@@ -3053,11 +3194,11 @@ compile_execute_term_builtin_to_rust(Code) :-
         let ops = parser.deref_heap(&parser.deref_var(&ops_var));
 
         parser.reset_query();
-        let parsed_var = Value::Unbound("_RP_term".to_string());
-        parser.set_reg_str("A1", Value::Atom(atom_text));
+        let parsed_var = Value::Unbound("_RP_term".to_string().into());
+        parser.set_reg_str("A1", Value::Atom(atom_text.into()));
         parser.set_reg_str("A2", ops);
         parser.set_reg_str("A3", parsed_var.clone());
-        let var_env = Value::Unbound("_RP_env".to_string());
+        let var_env = Value::Unbound("_RP_env".to_string().into());
         if wants_env {
             parser.set_reg_str("A4", var_env.clone());
         }
@@ -3122,26 +3263,26 @@ compile_execute_term_builtin_to_rust(Code) :-
         let derefed = source.deref_heap(&derefed_var);
         match derefed {
             Value::Unbound(name) => {
-                if let Some(new_name) = var_map.get(&name) {
-                    Value::Unbound(new_name.clone())
+                if let Some(new_name) = var_map.get(name.as_str()) {
+                    Value::Unbound(new_name.clone().into())
                 } else {
                     self.var_counter += 1;
                     let new_name = format!("_RP{}", self.var_counter);
-                    var_map.insert(name, new_name.clone());
-                    Value::Unbound(new_name)
+                    var_map.insert(name.as_str().to_string(), new_name.clone());
+                    Value::Unbound(new_name.into())
                 }
             }
             Value::Str(f, args) => {
                 let copied_args: Vec<Value> = args.iter()
                     .map(|a| self.copy_external_term_from(source, a, var_map))
                     .collect();
-                Value::Str(Self::display_functor_name(&f, copied_args.len()), copied_args)
+                Value::strv(Self::display_functor_name(&f, copied_args.len()), copied_args)
             }
             Value::List(items) => {
                 let copied_items: Vec<Value> = items.iter()
                     .map(|i| self.copy_external_term_from(source, i, var_map))
                     .collect();
-                Value::List(copied_items)
+                Value::list(copied_items)
             }
             other => other,
         }
@@ -3150,7 +3291,7 @@ compile_execute_term_builtin_to_rust(Code) :-
     fn value_as_list(&self, value: &Value) -> Option<Vec<Value>> {
         let derefed = self.deref_heap(&self.deref_var(value));
         match derefed {
-            Value::List(items) => Some(items),
+            Value::List(items) => Some(items.to_vec()),
             Value::Atom(s) if s == "[]" => Some(Vec::new()),
             Value::Str(f, args) if self.is_cons_functor(&f) && args.len() == 2 => {
                 let mut tail = self.value_as_list(&args[1])?;
@@ -3158,6 +3299,33 @@ compile_execute_term_builtin_to_rust(Code) :-
                 Some(tail)
             }
             _ => None,
+        }
+    }
+
+    /// Deref a builtin argument that is meant to be a LIST, normalising the
+    /// three spellings a list can arrive in (WAM_BACKEND_CONVENTIONS §1):
+    /// the native `Value::List`, the ATOM `"[]"` -- which is how
+    /// `put_constant []` delivers the empty list -- and a cons-functor chain
+    /// (`[|]/2` / `./2`).
+    ///
+    /// Builtins that matched only `Value::List` silently FAILED whenever the
+    /// argument was an empty list built by `put_constant`: `sort([], X)`,
+    /// `keysort([], X)`, `sum_list([], N)`, `include(G, [], X)` and every
+    /// other list builtin were unreachable in that (very common) case. A
+    /// non-list argument is returned deref-ed and unchanged, so callers keep
+    /// their existing "not a list" arms.
+    fn deref_list_arg(&self, value: &Value) -> Value {
+        // STRUCTURAL SHARING: when the argument ALREADY derefs to a native
+        // Value::List, hand back that very list -- going through
+        // value_as_list would copy the whole spine (and a builtin argument
+        // is routinely the entire catalog).
+        let derefed = self.deref_heap(&self.deref_var(value));
+        if let Value::List(_) = derefed {
+            return derefed;
+        }
+        match self.value_as_list(&derefed) {
+            Some(items) => Value::list(items),
+            None => derefed,
         }
     }
 
@@ -3170,7 +3338,7 @@ compile_execute_term_builtin_to_rust(Code) :-
         let items = self.value_as_list(value)?;
         let mut keys = if take_keys { Vec::with_capacity(items.len()) } else { Vec::new() };
         let mut values = if take_values { Vec::with_capacity(items.len()) } else { Vec::new() };
-        for item in &items {
+        for item in items.iter() {
             match self.deref_heap(&self.deref_var(item)) {
                 Value::Str(functor, args)
                     if args.len() == 2
@@ -3185,7 +3353,7 @@ compile_execute_term_builtin_to_rust(Code) :-
     }
 
     fn string_to_codes_value(text: &str) -> Value {
-        Value::List(text.chars()
+        Value::list(text.chars()
             .map(|c| Value::Integer(c as i64))
             .collect())
     }
@@ -3211,7 +3379,7 @@ compile_execute_term_builtin_to_rust(Code) :-
             Value::Integer(n) => n.to_string(),
             Value::Float(f) => f.to_string(),
             Value::Bool(b) => b.to_string(),
-            Value::Unbound(name) => name,
+            Value::Unbound(name) => name.as_str().to_string(),
             Value::List(items) => {
                 let rendered: Vec<String> = items.iter()
                     .map(|i| self.term_to_atom_text(i))
@@ -3307,7 +3475,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     return false;
                 }
                 let results: Vec<Value> = hops.into_iter().map(|hop| {
-                    Value::Str("__tuple__".to_string(), vec![Value::Integer(hop)])
+                    Value::strv("__tuple__".to_string(), vec![Value::Integer(hop)])
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![hops_reg], results)
             }
@@ -3365,7 +3533,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     return false;
                 }
                 let results: Vec<Value> = hops.into_iter().map(|(t, p, c)| {
-                    Value::Str("__tuple__".to_string(), vec![
+                    Value::strv("__tuple__".to_string(), vec![
                         Value::Integer(t),
                         Value::Integer(p),
                         Value::Integer(c),
@@ -3387,7 +3555,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     None => return false,
                 };
                 self.finish_foreign_results(&pred_key, vec![sum_reg], vec![
-                    Value::Str("__tuple__".to_string(), vec![Value::Integer(sum)])
+                    Value::strv("__tuple__".to_string(), vec![Value::Integer(sum)])
                 ])
             }
             "list_suffix2" => {
@@ -3413,7 +3581,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     return false;
                 }
                 let results: Vec<Value> = suffixes.into_iter().map(|suffix| {
-                    Value::Str("__tuple__".to_string(), vec![suffix])
+                    Value::strv("__tuple__".to_string(), vec![suffix])
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![suffix_reg], results)
             }
@@ -3428,7 +3596,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 };
                 let mut suffixes: Vec<Value> = Vec::new();
                 self.collect_native_list_suffixes(&items, &mut suffixes);
-                let result = Value::Str("__tuple__".to_string(), vec![Value::List(suffixes)]);
+                let result = Value::strv("__tuple__".to_string(), vec![Value::list(suffixes)]);
                 self.finish_foreign_results(&pred_key, vec![suffixes_reg], vec![result])
             }
             "transitive_closure2" => {
@@ -3452,13 +3620,13 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 let mut nodes: Vec<String> = Vec::new();
                 self.collect_native_transitive_closure_nodes(&start, &edge_pred, &mut nodes);
                 if let Some(target) = target_filter {
-                    nodes.retain(|node| *node == target);
+                    nodes.retain(|node| *node == target.as_str());
                 }
                 if nodes.is_empty() {
                     return false;
                 }
                 let results: Vec<Value> = nodes.into_iter().map(|node| {
-                    Value::Str("__tuple__".to_string(), vec![Value::Atom(node)])
+                    Value::strv("__tuple__".to_string(), vec![Value::Atom(node.into())])
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![target_reg], results)
             }
@@ -3492,7 +3660,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 let mut results: Vec<(String, i64)> = Vec::new();
                 self.collect_native_transitive_distance_results(&start, &edge_pred, &mut results);
                 if let Some(target) = target_filter {
-                    results.retain(|(node, _)| *node == target);
+                    results.retain(|(node, _)| *node == target.as_str());
                 }
                 if let Some(want_d) = distance_filter {
                     results.retain(|(_, d)| *d == want_d);
@@ -3501,8 +3669,8 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     return false;
                 }
                 let packed_results: Vec<Value> = results.into_iter().map(|(node, dist)| {
-                    Value::Str("__tuple__".to_string(), vec![
-                        Value::Atom(node),
+                    Value::strv("__tuple__".to_string(), vec![
+                        Value::Atom(node.into()),
                         Value::Integer(dist),
                     ])
                 }).collect();
@@ -3547,10 +3715,10 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 let mut results: Vec<(String, String, i64)> = Vec::new();
                 self.collect_native_transitive_parent_distance_results(&start, &edge_pred, &mut results);
                 if let Some(target) = target_filter {
-                    results.retain(|(node, _, _)| *node == target);
+                    results.retain(|(node, _, _)| *node == target.as_str());
                 }
                 if let Some(parent) = parent_filter {
-                    results.retain(|(_, p, _)| *p == parent);
+                    results.retain(|(_, p, _)| *p == parent.as_str());
                 }
                 if let Some(want_d) = distance_filter {
                     results.retain(|(_, _, d)| *d == want_d);
@@ -3559,9 +3727,9 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     return false;
                 }
                 let packed_results: Vec<Value> = results.into_iter().map(|(node, parent, dist)| {
-                    Value::Str("__tuple__".to_string(), vec![
-                        Value::Atom(node),
-                        Value::Atom(parent),
+                    Value::strv("__tuple__".to_string(), vec![
+                        Value::Atom(node.into()),
+                        Value::Atom(parent.into()),
                         Value::Integer(dist),
                     ])
                 }).collect();
@@ -3600,16 +3768,16 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 let mut results: Vec<(String, String, String, i64)> = Vec::new();
                 self.collect_native_transitive_step_parent_distance_results(&start, &edge_pred, &mut results);
                 if let Some(target) = target_filter {
-                    results.retain(|(node, _, _, _)| *node == target);
+                    results.retain(|(node, _, _, _)| *node == target.as_str());
                 }
                 if results.is_empty() {
                     return false;
                 }
                 let packed_results: Vec<Value> = results.into_iter().map(|(node, step, parent, dist)| {
-                    Value::Str("__tuple__".to_string(), vec![
-                        Value::Atom(node),
-                        Value::Atom(step),
-                        Value::Atom(parent),
+                    Value::strv("__tuple__".to_string(), vec![
+                        Value::Atom(node.into()),
+                        Value::Atom(step.into()),
+                        Value::Atom(parent.into()),
                         Value::Integer(dist),
                     ])
                 }).collect();
@@ -3640,14 +3808,14 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 let mut results: Vec<(String, f64)> = Vec::new();
                 self.collect_native_weighted_shortest_path_results(&start, &weight_pred, &mut results);
                 if let Some(target) = target_filter {
-                    results.retain(|(node, _)| *node == target);
+                    results.retain(|(node, _)| *node == target.as_str());
                 }
                 if results.is_empty() {
                     return false;
                 }
                 let packed_results: Vec<Value> = results.into_iter().map(|(node, dist)| {
-                    Value::Str("__tuple__".to_string(), vec![
-                        Value::Atom(node),
+                    Value::strv("__tuple__".to_string(), vec![
+                        Value::Atom(node.into()),
                         Value::Float(dist),
                     ])
                 }).collect();
@@ -3720,7 +3888,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }
                 let results: Vec<Value> = value_ints.iter().filter_map(|vid| {
                     source.atom_for_key(*vid).map(|s| {
-                        Value::Str("__tuple__".to_string(), vec![Value::Atom(s)])
+                        Value::strv("__tuple__".to_string(), vec![Value::Atom(s.into())])
                     })
                 }).collect();
                 if results.is_empty() {
@@ -3784,7 +3952,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                             .map(|(l, &c)| c as f64 * (l as f64).powf(-n)).sum()
                     };
                     match extractor.as_str() {
-                        "distribution" => Value::List(
+                        "distribution" => Value::list(
                             hist.iter().map(|&c| Value::Integer(c as i64)).collect()),
                         "effective_distance" => {
                             let ws = weight_sum();
@@ -3796,7 +3964,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 };
                 self.finish_foreign_results(
                     &pred_key, vec![out_reg],
-                    vec![Value::Str("__tuple__".to_string(), vec![result])])
+                    vec![Value::strv("__tuple__".to_string(), vec![result])])
             }
             "category_bridge_score" => {
                 // category_bridge_score(Node, Class): Node atom in (A1), Class atom out (A2). Builds
@@ -3830,7 +3998,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     None => return false,
                 };
                 self.finish_foreign_results(&pred_key, vec![class_reg], vec![
-                    Value::Str("__tuple__".to_string(), vec![Value::Atom(class.to_string())])
+                    Value::strv("__tuple__".to_string(), vec![Value::Atom(class.to_string().into())])
                 ])
             }
             "bridge" => {
@@ -3867,9 +4035,9 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }
                 let results: Vec<Value> = candidates.into_iter().map(|(id, class, neff)| {
                     let name = self.atom_name(id).unwrap_or("").to_string();
-                    Value::Str("__tuple__".to_string(), vec![
-                        Value::Atom(name),
-                        Value::Atom(class.to_string()),
+                    Value::strv("__tuple__".to_string(), vec![
+                        Value::Atom(name.into()),
+                        Value::Atom(class.to_string().into()),
                         Value::Float(neff),
                     ])
                 }).collect();
@@ -3911,7 +4079,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     None => return false,
                 };
                 self.finish_foreign_results(&pred_key, vec![id_reg], vec![
-                    Value::Str("__tuple__".to_string(), vec![Value::Integer(cluster as i64)])
+                    Value::strv("__tuple__".to_string(), vec![Value::Integer(cluster as i64)])
                 ])
             }
             "cluster_members" => {
@@ -3951,9 +4119,15 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }
                 let results: Vec<Value> = members.into_iter().map(|id| {
                     let name = self.atom_name(id).unwrap_or("").to_string();
-                    Value::Str("__tuple__".to_string(), vec![Value::Atom(name)])
+                    Value::strv("__tuple__".to_string(), vec![Value::Atom(name.into())])
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![member_reg], results)
+            }
+            "seek_fact" => {
+                // D43 store-backed P/2 fact source (indexed seek / lmdb gate).
+                // A1/A2 are read, a bound key seeks, and matching rows stream
+                // through the choice-point machinery. See execute_seek_fact_source.
+                self.execute_seek_fact_source(&pred_key)
             }
             _ => false,
         }
@@ -4024,13 +4198,14 @@ compile_foreign_result_helpers_to_rust(Code) :-
                         name: "foreign_results".to_string(),
                         args: {
                             let mut args = Vec::with_capacity(result_regs.len() + 1);
-                            args.push(Value::Atom(pred_key.to_string()));
+                            args.push(Value::Atom(pred_key.to_string().into()));
                             args.extend(result_regs.iter().cloned());
                             args
                         },
                         data: results[idx + 1..].to_vec(),
                     }),
                     cut_barrier: saved_cut_barrier,
+                    levels: Vec::new(),
                 });
             }
             return true;
@@ -4393,7 +4568,7 @@ compile_collect_native_list_suffixes_to_rust(Code) :-
         out: &mut Vec<Value>,
     ) {
         for idx in 0..=items.len() {
-            out.push(Value::List(items[idx..].to_vec()));
+            out.push(Value::list(items[idx..].to_vec()));
         }
     }'.
 
@@ -4778,6 +4953,7 @@ compile_fact_table_attempt_to_rust(Code) :-
                             data,
                         }),
                         cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
                     });
                 }
                 self.pc = cont_pc;
@@ -4792,6 +4968,7 @@ compile_fact_table_attempt_to_rust(Code) :-
 
 compile_resume_builtin_to_rust(Code) :-
     Code = '    fn resume_builtin(&mut self, state: BuiltinState) -> bool {
+        use std::cmp::Ordering;
         match state.name.as_str() {
             "fact_table" => {
                 // T9: resume a fact-table scan at the next candidate row. The
@@ -4834,7 +5011,27 @@ compile_resume_builtin_to_rust(Code) :-
                         if saw_float { Value::Float(sum_f) } else { Value::Integer(sum_i) }
                     }
                     "count" => Value::Integer(self.aggregate_acc.len() as i64),
-                    "collect" => Value::List(self.aggregate_acc.clone()),
+                    "collect" => Value::list(self.aggregate_acc.clone()),
+                    // bagof/setof differ from findall in exactly two ways at
+                    // this (witness-free) level: they FAIL on an empty
+                    // solution set, and setof sorts + dedups. The 4-operand
+                    // begin_aggregate form that carries them used to fall
+                    // through to NoOp, so the aggregate frame was never pushed
+                    // and the whole clause failed.
+                    "bagof" | "bag" => {
+                        if self.aggregate_acc.is_empty() { return false; }
+                        Value::list(self.aggregate_acc.clone())
+                    }
+                    "setof" | "set" => {
+                        if self.aggregate_acc.is_empty() { return false; }
+                        let mut items: Vec<Value> = self.aggregate_acc.clone()
+                            .iter()
+                            .map(|v| self.deref_heap(&self.deref_var(v)))
+                            .collect();
+                        items.sort_by(|a, b| self.sort_cmp(a, b));
+                        items.dedup_by(|a, b| self.sort_cmp(a, b) == Ordering::Equal);
+                        Value::list(items)
+                    }
                     "max" => {
                         let mut best: Option<Value> = None;
                         for val in &self.aggregate_acc {
@@ -4852,7 +5049,7 @@ compile_resume_builtin_to_rust(Code) :-
                                 }
                             };
                         }
-                        best.unwrap_or(Value::List(vec![]))
+                        best.unwrap_or(Value::list(vec![]))
                     }
                     "min" => {
                         let mut best: Option<Value> = None;
@@ -4871,7 +5068,7 @@ compile_resume_builtin_to_rust(Code) :-
                                 }
                             };
                         }
-                        best.unwrap_or(Value::List(vec![]))
+                        best.unwrap_or(Value::list(vec![]))
                     }
                     _ => return false,
                 };
@@ -4896,7 +5093,13 @@ compile_resume_builtin_to_rust(Code) :-
                         self.put_reg(&result_reg, result);
                     }
                 }
-                self.pc = self.aggregate_return_pc;
+                // Prefer the continuation recorded by BeginAggregate (correct
+                // even when the inner goal had no solutions); fall back to the
+                // EndAggregate-recorded value for frames built elsewhere.
+                self.pc = match state.data.first() {
+                    Some(Value::Integer(n)) if *n > 0 => *n as usize,
+                    _ => self.aggregate_return_pc,
+                };
                 true
             }
             "member/2" => {
@@ -4925,6 +5128,7 @@ compile_resume_builtin_to_rust(Code) :-
                                 data: vec![Value::Integer((idx + 1) as i64)],
                             }),
                             cut_barrier: self.cut_barrier,
+                            levels: Vec::new(),
                         });
                     }
                     
@@ -4989,14 +5193,14 @@ compile_resume_builtin_to_rust(Code) :-
                     _ => return false,
                 };
                 let key = match state.args.get(1) {
-                    Some(Value::Atom(key)) => key.clone(),
+                    Some(Value::Atom(key)) => key.as_str().to_string(),
                     _ => return false,
                 };
                 let idx = match state.data.get(0) {
                     Some(Value::Integer(n)) => *n as usize,
                     _ => return false,
                 };
-                let values = match self.indexed_atom_fact2.get(&pred).and_then(|table| table.get(&key)) {
+                let values = match self.indexed_atom_fact2.get(pred.as_str()).and_then(|table| table.get(key.as_str())) {
                     Some(values) => values,
                     None => return false,
                 };
@@ -5015,19 +5219,20 @@ compile_resume_builtin_to_rust(Code) :-
                             data: vec![Value::Integer((idx + 1) as i64)],
                         }),
                         cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
                     });
                 }
                 let a2 = match self.get_reg_raw("A2") {
                     Some(val) => val,
                     None => return false,
                 };
-                if self.unify(&a2, &Value::Atom(values[idx].clone())) {
+                if self.unify(&a2, &Value::Atom(values[idx].clone().into())) {
                     self.pc += 1; true
                 } else { false }
             }
             "dynamic_call" => {
                 let key = match state.args.get(0) {
-                    Some(Value::Atom(key)) => key.clone(),
+                    Some(Value::Atom(key)) => key.as_str().to_string(),
                     _ => return false,
                 };
                 let start_idx = match state.data.get(0) {
@@ -5042,7 +5247,7 @@ compile_resume_builtin_to_rust(Code) :-
             }
             "dynamic_retract" => {
                 let key = match state.args.get(0) {
-                    Some(Value::Atom(key)) => key.clone(),
+                    Some(Value::Atom(key)) => key.as_str().to_string(),
                     _ => return false,
                 };
                 let pattern = match state.args.get(1) {
@@ -5061,7 +5266,7 @@ compile_resume_builtin_to_rust(Code) :-
             }
             "dynamic_clause" => {
                 let key = match state.args.get(0) {
-                    Some(Value::Atom(key)) => key.clone(),
+                    Some(Value::Atom(key)) => key.as_str().to_string(),
                     _ => return false,
                 };
                 let head = match state.args.get(1) {
@@ -5084,7 +5289,7 @@ compile_resume_builtin_to_rust(Code) :-
             }
             "current_predicate" => {
                 let keys = match state.args.get(0) {
-                    Some(Value::List(keys)) => keys.clone(),
+                    Some(Value::List(keys)) => keys.to_vec(),
                     _ => return false,
                 };
                 let name = match state.args.get(1) {
@@ -5141,6 +5346,44 @@ compile_resume_builtin_to_rust(Code) :-
 compile_execute_ext_builtin_to_rust(Code) :-
     Code = '    /// Standard order class: Var < Number < Atom < Compound.
     /// Bool orders as its atom name; the empty list as the atom [].
+    /// Structural identity for `==/2` / `\\==/2`, with the same list aliasing
+    /// `unify` and `term_compare` already apply (WAM_BACKEND_CONVENTIONS §1):
+    /// the atom `[]` IS the empty list, a `[|]/2`/`./2` cons chain IS a native
+    /// list cell, and `Str("f/2", _)` IS `Str("f", _)`. Raw `Value: PartialEq`
+    /// made `L == []` FALSE whenever `L` came back from a builtin as the
+    /// native empty list -- e.g. after `findall(X, Goal, L)` with no solutions.
+    fn terms_identical(&self, a: &Value, b: &Value) -> bool {
+        let da = self.deref_heap(&self.deref_var(a));
+        let db = self.deref_heap(&self.deref_var(b));
+        self.identical_derefed(&da, &db)
+    }
+
+    fn identical_derefed(&self, da: &Value, db: &Value) -> bool {
+        match (da, db) {
+            (Value::List(l), Value::Atom(s)) | (Value::Atom(s), Value::List(l))
+                if l.is_empty() && s == "[]" => true,
+            (Value::List(l), Value::Str(f, args)) | (Value::Str(f, args), Value::List(l))
+                if self.is_cons_functor(f) && args.len() == 2 && !l.is_empty() => {
+                self.terms_identical(&l[0], &args[0])
+                    && self.terms_identical(&Value::list(l[1..].to_vec()), &args[1])
+            }
+            (Value::List(l1), Value::List(l2)) => {
+                l1.len() == l2.len()
+                    && l1.iter().zip(l2.iter()).all(|(x, y)| self.terms_identical(x, y))
+            }
+            (Value::Str(f1, a1), Value::Str(f2, a2)) => {
+                if a1.len() != a2.len() { return false; }
+                let same_functor = f1 == f2
+                    || (self.is_cons_functor(f1) && self.is_cons_functor(f2))
+                    || Self::display_functor_name(f1, a1.len())
+                        == Self::display_functor_name(f2, a2.len());
+                same_functor
+                    && a1.iter().zip(a2.iter()).all(|(x, y)| self.terms_identical(x, y))
+            }
+            _ => da == db,
+        }
+    }
+
     fn term_order_class(v: &Value) -> u8 {
         match v {
             Value::Unbound(_) | Value::Ref(_) | Value::Uninit => 0,
@@ -5153,7 +5396,10 @@ compile_execute_ext_builtin_to_rust(Code) :-
 
     fn value_atom_name(v: &Value) -> Option<String> {
         match v {
-            Value::Atom(s) => Some(s.clone()),
+            // De-intern to the NAME (sort-order trap, approach a): ordering must
+            // compare atom names, never interned ids. Byte-identical to the
+            // pre-intern `s.clone()`.
+            Value::Atom(s) => Some(s.as_str().to_string()),
             Value::Bool(true) => Some("true".to_string()),
             Value::Bool(false) => Some("false".to_string()),
             Value::List(items) if items.is_empty() => Some("[]".to_string()),
@@ -5188,8 +5434,10 @@ compile_execute_ext_builtin_to_rust(Code) :-
         }
         match ca {
             0 => {
-                let na = match &da { Value::Unbound(n) => n.clone(), _ => String::new() };
-                let nb = match &db { Value::Unbound(n) => n.clone(), _ => String::new() };
+                // De-intern to the NAME (sort-order trap): variable order is by
+                // internal name, never by interned id.
+                let na = match &da { Value::Unbound(n) => n.as_str().to_string(), _ => String::new() };
+                let nb = match &db { Value::Unbound(n) => n.as_str().to_string(), _ => String::new() };
                 na.cmp(&nb)
             }
             1 => {
@@ -5222,13 +5470,13 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     if self.is_cons_functor(f) && args.len() == 2 && !l.is_empty() => {
                     let o = self.term_compare(&l[0], &args[0]);
                     if o != Ordering::Equal { return o; }
-                    self.term_compare(&Value::List(l[1..].to_vec()), &args[1])
+                    self.term_compare(&Value::list(l[1..].to_vec()), &args[1])
                 }
                 (Value::Str(f, args), Value::List(l))
                     if self.is_cons_functor(f) && args.len() == 2 && !l.is_empty() => {
                     let o = self.term_compare(&args[0], &l[0]);
                     if o != Ordering::Equal { return o; }
-                    self.term_compare(&args[1], &Value::List(l[1..].to_vec()))
+                    self.term_compare(&args[1], &Value::list(l[1..].to_vec()))
                 }
                 (Value::Str(f1, a1), Value::Str(f2, a2)) => {
                     match a1.len().cmp(&a2.len()) {
@@ -5257,6 +5505,126 @@ compile_execute_ext_builtin_to_rust(Code) :-
         }
     }
 
+    /// Borrowing (allocation-free) form of `value_atom_name`, used by the
+    /// decorate-sort comparator so an atom-class compare never clones the
+    /// atom name. Returns the SAME bytes `value_atom_name` would return.
+    fn value_atom_name_ref(v: &Value) -> Option<&str> {
+        match v {
+            Value::Atom(s) => Some(s.as_str()),
+            Value::Bool(true) => Some("true"),
+            Value::Bool(false) => Some("false"),
+            Value::List(items) if items.is_empty() => Some("[]"),
+            _ => None,
+        }
+    }
+
+    /// Decorate-sort comparator. Produces the SAME standard-order-of-terms
+    /// ordering as `term_compare`, but TRUSTS that both operands are already
+    /// fully dereferenced -- the invariant the sort/msort/keysort/setof
+    /// builtins establish by pre-dereffing each element once (O(n)) before
+    /// sorting. It therefore performs NO `deref_heap`/`deref_var` at any level
+    /// (the whole re-deref that made `term_compare` O(n log n) inside the
+    /// comparator), and compares compound functor names through the borrowing
+    /// `functor_of` -- which applies byte-identical normalisation to
+    /// `display_functor_name` but returns a `&str`, so no functor String is
+    /// allocated per comparison. `deref_heap` has already normalised every
+    /// compound functor to its bare form, so `functor_of` here is idempotent.
+    pub fn term_compare_derefed(&self, a: &Value, b: &Value) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        let ca = Self::term_order_class(a);
+        let cb = Self::term_order_class(b);
+        if ca != cb {
+            return ca.cmp(&cb);
+        }
+        match ca {
+            0 => {
+                let na = match a { Value::Unbound(n) => n.as_str(), _ => "" };
+                let nb = match b { Value::Unbound(n) => n.as_str(), _ => "" };
+                na.cmp(nb)
+            }
+            1 => {
+                let fa = match a { Value::Integer(n) => *n as f64, Value::Float(f) => *f, _ => 0.0 };
+                let fb = match b { Value::Integer(n) => *n as f64, Value::Float(f) => *f, _ => 0.0 };
+                match fa.partial_cmp(&fb).unwrap_or(Ordering::Equal) {
+                    Ordering::Equal => {
+                        let ka = matches!(a, Value::Integer(_)) as u8;
+                        let kb = matches!(b, Value::Integer(_)) as u8;
+                        ka.cmp(&kb)
+                    }
+                    o => o,
+                }
+            }
+            2 => {
+                let na = Self::value_atom_name_ref(a).unwrap_or("");
+                let nb = Self::value_atom_name_ref(b).unwrap_or("");
+                na.cmp(nb)
+            }
+            _ => match (a, b) {
+                (Value::List(l1), Value::List(l2)) => {
+                    let n = l1.len().min(l2.len());
+                    for i in 0..n {
+                        let o = self.term_compare_derefed(&l1[i], &l2[i]);
+                        if o != Ordering::Equal { return o; }
+                    }
+                    l1.len().cmp(&l2.len())
+                }
+                (Value::List(l), Value::Str(f, args))
+                    if self.is_cons_functor(f) && args.len() == 2 && !l.is_empty() => {
+                    let o = self.term_compare_derefed(&l[0], &args[0]);
+                    if o != Ordering::Equal { return o; }
+                    self.term_compare_derefed(&Value::list(l[1..].to_vec()), &args[1])
+                }
+                (Value::Str(f, args), Value::List(l))
+                    if self.is_cons_functor(f) && args.len() == 2 && !l.is_empty() => {
+                    let o = self.term_compare_derefed(&args[0], &l[0]);
+                    if o != Ordering::Equal { return o; }
+                    self.term_compare_derefed(&args[1], &Value::list(l[1..].to_vec()))
+                }
+                (Value::Str(f1, a1), Value::Str(f2, a2)) => {
+                    match a1.len().cmp(&a2.len()) {
+                        Ordering::Equal => {
+                            let n1 = Self::functor_of(f1, a1.len());
+                            let n2 = Self::functor_of(f2, a2.len());
+                            match n1.cmp(n2) {
+                                Ordering::Equal => {
+                                    for i in 0..a1.len() {
+                                        let o = self.term_compare_derefed(&a1[i], &a2[i]);
+                                        if o != Ordering::Equal { return o; }
+                                    }
+                                    Ordering::Equal
+                                }
+                                o => o,
+                            }
+                        }
+                        o => o,
+                    }
+                }
+                // List vs Str non-cons compound: lists are ./2, lowest arity 2
+                (Value::List(_), Value::Str(_, args)) => 2usize.cmp(&args.len()),
+                (Value::Str(_, args), Value::List(_)) => args.len().cmp(&2usize),
+                _ => Ordering::Equal,
+            },
+        }
+    }
+
+    /// Sort comparator dispatch used by the pre-dereffing sort builtins
+    /// (sort/2, msort/2, sort/4, keysort/2, setof). With the `decorate_sort`
+    /// feature (default ON) it uses `term_compare_derefed`, trusting the
+    /// pre-deref and skipping the per-comparison re-deref/alloc. With the
+    /// feature OFF it falls back to `term_compare` (which re-derefs both
+    /// operands) so the two builds can be A/B compared. Output is
+    /// byte-identical either way -- this is a behaviour-preserving refactor.
+    #[cfg(feature = "decorate_sort")]
+    #[inline]
+    pub fn sort_cmp(&self, a: &Value, b: &Value) -> std::cmp::Ordering {
+        self.term_compare_derefed(a, b)
+    }
+    #[cfg(not(feature = "decorate_sort"))]
+    #[inline]
+    pub fn sort_cmp(&self, a: &Value, b: &Value) -> std::cmp::Ordering {
+        self.term_compare(a, b)
+    }
+
     fn value_is_ground(&self, v: &Value) -> bool {
         match self.deref_heap(&self.deref_var(v)) {
             Value::Unbound(_) => false,
@@ -5268,8 +5636,8 @@ compile_execute_ext_builtin_to_rust(Code) :-
 
     fn raise_builtin_error(&mut self, formal: Value) -> bool {
         self.var_counter += 1;
-        let context = Value::Unbound(format!("_MB{}", self.var_counter));
-        self.thrown_ball = Some(Value::Str(
+        let context = Value::Unbound(format!("_MB{}", self.var_counter).into());
+        self.thrown_ball = Some(Value::strv(
             "error".to_string(), vec![formal, context]));
         false
     }
@@ -5288,7 +5656,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 Some(self.deref_heap(&self.deref_var(&items[0])))
             }
             Value::List(items) if !items.is_empty() && position == 2 => {
-                Some(Value::List(items[1..].to_vec()))
+                Some(Value::list(items[1..].to_vec()))
             }
             _ => None,
         }
@@ -5324,6 +5692,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     data: vec![Value::Integer(n + 1), Value::Integer(high)],
                 }),
                 cut_barrier: self.cut_barrier,
+                levels: Vec::new(),
             });
         }
         if self.unify(x_raw, &Value::Integer(n)) { self.pc += 1; true } else { false }
@@ -5343,15 +5712,16 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 heap_len: self.heap.len(),
                 builtin_state: Some(BuiltinState {
                     name: "select/3".to_string(),
-                    args: vec![x_raw.clone(), Value::List(items.to_vec()), rest_raw.clone()],
+                    args: vec![x_raw.clone(), Value::list(items.to_vec()), rest_raw.clone()],
                     data: vec![Value::Integer((idx + 1) as i64)],
                 }),
                 cut_barrier: self.cut_barrier,
+                levels: Vec::new(),
             });
         }
         let mut rest: Vec<Value> = items.to_vec();
         rest.remove(idx);
-        if self.unify(x_raw, &items[idx]) && self.unify(rest_raw, &Value::List(rest)) {
+        if self.unify(x_raw, &items[idx]) && self.unify(rest_raw, &Value::list(rest)) {
             self.pc += 1; true
         } else { false }
     }
@@ -5370,10 +5740,11 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 heap_len: self.heap.len(),
                 builtin_state: Some(BuiltinState {
                     name: name.to_string(),
-                    args: vec![n_raw.clone(), Value::List(items.to_vec()), elem_raw.clone()],
+                    args: vec![n_raw.clone(), Value::list(items.to_vec()), elem_raw.clone()],
                     data: vec![Value::Integer((idx + 1) as i64)],
                 }),
                 cut_barrier: self.cut_barrier,
+                levels: Vec::new(),
             });
         }
         if self.unify(n_raw, &Value::Integer(idx as i64 + base))
@@ -5397,15 +5768,16 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 heap_len: self.heap.len(),
                 builtin_state: Some(BuiltinState {
                     name: "atom_concat/3".to_string(),
-                    args: vec![a1_raw.clone(), a2_raw.clone(), Value::Atom(whole)],
+                    args: vec![a1_raw.clone(), a2_raw.clone(), Value::Atom(whole.into())],
                     data: vec![Value::Integer((split + 1) as i64)],
                 }),
                 cut_barrier: self.cut_barrier,
+                levels: Vec::new(),
             });
         }
         let prefix: String = chars[..split].iter().collect();
         let suffix: String = chars[split..].iter().collect();
-        if self.unify(a1_raw, &Value::Atom(prefix)) && self.unify(a2_raw, &Value::Atom(suffix)) {
+        if self.unify(a1_raw, &Value::Atom(prefix.into())) && self.unify(a2_raw, &Value::Atom(suffix.into())) {
             self.pc += 1; true
         } else { false }
     }
@@ -5428,9 +5800,9 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 if unified { false } else { self.pc += 1; true }
             }
             "\\\\==/2" => {
-                let v1 = self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v)));
-                let v2 = self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v)));
-                if v1 != v2 { self.pc += 1; true } else { false }
+                let v1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let v2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.terms_identical(&v1, &v2) { false } else { self.pc += 1; true }
             }
             "@</2" | "@=</2" | "@>/2" | "@>=/2" => {
                 let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
@@ -5454,22 +5826,22 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     Ordering::Greater => ">",
                 };
                 let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-                if self.unify(&a1, &Value::Atom(sym.to_string())) { self.pc += 1; true } else { false }
+                if self.unify(&a1, &Value::Atom(sym.to_string().into())) { self.pc += 1; true } else { false }
             }
             "msort/2" | "sort/2" => {
-                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let mut sorted: Vec<Value> = list.iter()
                     .map(|v| self.deref_heap(&self.deref_var(v)))
                     .collect();
-                sorted.sort_by(|a, b| self.term_compare(a, b));
+                sorted.sort_by(|a, b| self.sort_cmp(a, b));
                 if op == "sort/2" {
-                    sorted.dedup_by(|a, b| self.term_compare(a, b) == Ordering::Equal);
+                    sorted.dedup_by(|a, b| self.sort_cmp(a, b) == Ordering::Equal);
                 }
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                if self.unify(&a2, &Value::List(sorted)) { self.pc += 1; true } else { false }
+                if self.unify(&a2, &Value::list(sorted)) { self.pc += 1; true } else { false }
             }
             "sort/4" => {
                 let key_position = match self.get_reg_raw("A1")
@@ -5495,12 +5867,12 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     _ => return false,
                 };
                 let list = match self.get_reg_raw("A3")
-                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    .map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let mut keyed = Vec::with_capacity(list.len());
-                for item in &list {
+                for item in list.iter() {
                     let value = self.deref_heap(&self.deref_var(item));
                     let key = self.builtin_sort_key(&value, key_position);
                     keyed.push((value, key));
@@ -5508,14 +5880,14 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 keyed.sort_by(|a, b| {
                     let a_key = a.1.as_ref().unwrap_or(&a.0);
                     let b_key = b.1.as_ref().unwrap_or(&b.0);
-                    let ordering = self.term_compare(a_key, b_key);
+                    let ordering = self.sort_cmp(a_key, b_key);
                     if descending { ordering.reverse() } else { ordering }
                 });
                 if deduplicate {
                     keyed.dedup_by(|a, b| {
                         let a_key = a.1.as_ref().unwrap_or(&a.0);
                         let b_key = b.1.as_ref().unwrap_or(&b.0);
-                        self.term_compare(a_key, b_key) == Ordering::Equal
+                        self.sort_cmp(a_key, b_key) == Ordering::Equal
                     });
                 }
                 let sorted = keyed.into_iter()
@@ -5523,7 +5895,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     .collect::<Vec<_>>();
                 let output = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::List(sorted)) {
+                if self.unify(&output, &Value::list(sorted)) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -5531,12 +5903,12 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 }
             }
             "keysort/2" => {
-                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let mut keyed: Vec<(Value, Value)> = Vec::with_capacity(list.len());
-                for item in &list {
+                for item in list.iter() {
                     match self.deref_heap(&self.deref_var(item)) {
                         Value::Str(f, args)
                             if args.len() == 2 && Self::display_functor_name(&f, 2) == "-" =>
@@ -5544,10 +5916,10 @@ compile_execute_ext_builtin_to_rust(Code) :-
                         _ => return false,
                     }
                 }
-                keyed.sort_by(|a, b| self.term_compare(&a.0, &b.0));
+                keyed.sort_by(|a, b| self.sort_cmp(&a.0, &b.0));
                 let sorted: Vec<Value> = keyed.into_iter().map(|kv| kv.1).collect();
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                if self.unify(&a2, &Value::List(sorted)) { self.pc += 1; true } else { false }
+                if self.unify(&a2, &Value::list(sorted)) { self.pc += 1; true } else { false }
             }
             "pairs_keys/2" | "pairs_values/2" => {
                 let pairs = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
@@ -5559,7 +5931,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let projected = if op == "pairs_keys/2" { keys } else { values };
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::List(projected)) {
+                if self.unify(&output, &Value::list(projected)) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -5581,10 +5953,10 @@ compile_execute_ext_builtin_to_rust(Code) :-
                         _ => return false,
                     };
                     let zipped: Vec<Value> = keys.into_iter().zip(values)
-                        .map(|(key, value)| Value::Str("-".to_string(), vec![key, value]))
+                        .map(|(key, value)| Value::strv("-".to_string(), vec![key, value]))
                         .collect();
                     let mark = self.trail.len();
-                    if self.unify(&pairs_raw, &Value::List(zipped)) {
+                    if self.unify(&pairs_raw, &Value::list(zipped)) {
                         self.pc += 1; true
                     } else {
                         self.unwind_trail_to(mark);
@@ -5596,11 +5968,11 @@ compile_execute_ext_builtin_to_rust(Code) :-
                         None => return false,
                     };
                     let mark = self.trail.len();
-                    if !self.unify(&keys_raw, &Value::List(keys)) {
+                    if !self.unify(&keys_raw, &Value::list(keys)) {
                         self.unwind_trail_to(mark);
                         return false;
                     }
-                    if self.unify(&values_raw, &Value::List(values)) {
+                    if self.unify(&values_raw, &Value::list(values)) {
                         self.pc += 1; true
                     } else {
                         self.unwind_trail_to(mark);
@@ -5612,11 +5984,11 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 // First element that unifies wins, deterministically;
                 // failed attempts are unwound, the winning binding kept.
                 let x = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-                let list = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
-                for item in &list {
+                for item in list.iter() {
                     let mark = self.trail.len();
                     if self.unify(&x, item) { self.pc += 1; return true; }
                     self.unwind_trail_to(mark);
@@ -5624,7 +5996,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 false
             }
             "last/2" => {
-                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) if !items.is_empty() => items,
                     _ => return false,
                 };
@@ -5635,7 +6007,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
             "nth0/3" | "nth1/3" => {
                 let base: i64 = if op == "nth1/3" { 1 } else { 0 };
                 let n_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-                let list = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
@@ -5663,61 +6035,62 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 if low > high { return false; }
                 let items: Vec<Value> = (low..=high).map(Value::Integer).collect();
                 let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                if self.unify(&a3, &Value::List(items)) { self.pc += 1; true } else { false }
+                if self.unify(&a3, &Value::list(items)) { self.pc += 1; true } else { false }
             }
             "delete/3" => {
                 // Keep elements that do NOT unify with A2 (trial-unify,
                 // always unwound — matches the no-residual-bindings use).
-                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let pat = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 let mut kept: Vec<Value> = Vec::new();
-                for item in &list {
+                for item in list.iter() {
                     let mark = self.trail.len();
                     let matched = self.unify(&pat, item);
                     self.unwind_trail_to(mark);
                     if !matched { kept.push(item.clone()); }
                 }
                 let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                if self.unify(&a3, &Value::List(kept)) { self.pc += 1; true } else { false }
+                if self.unify(&a3, &Value::list(kept)) { self.pc += 1; true } else { false }
             }
             "subtract/3" => {
-                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
-                let excluded = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let excluded = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
-                let kept: Vec<Value> = list.into_iter()
+                let kept: Vec<Value> = list.iter()
                     .filter(|item| !excluded.contains(item))
+                    .cloned()
                     .collect();
                 let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                if self.unify(&a3, &Value::List(kept)) { self.pc += 1; true } else { false }
+                if self.unify(&a3, &Value::list(kept)) { self.pc += 1; true } else { false }
             }
             "intersection/3" => {
                 let left = match self.get_reg_raw("A1")
-                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    .map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let right = match self.get_reg_raw("A2")
-                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    .map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let mark = self.trail.len();
                 let mut common = Vec::with_capacity(left.len());
-                for item in &left {
+                for item in left.iter() {
                     if self.builtin_unify_member(item, &right) {
                         common.push(item.clone());
                     }
                 }
                 let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                if self.unify(&output, &Value::List(common)) {
+                if self.unify(&output, &Value::list(common)) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -5726,25 +6099,25 @@ compile_execute_ext_builtin_to_rust(Code) :-
             }
             "union/3" => {
                 let left = match self.get_reg_raw("A1")
-                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    .map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let right = match self.get_reg_raw("A2")
-                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    .map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let mark = self.trail.len();
                 let mut union = Vec::with_capacity(left.len() + right.len());
                 union.extend(left.iter().cloned());
-                for item in &right {
+                for item in right.iter() {
                     if !self.builtin_unify_member(item, &left) {
                         union.push(item.clone());
                     }
                 }
                 let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                if self.unify(&output, &Value::List(union)) {
+                if self.unify(&output, &Value::list(union)) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -5753,19 +6126,19 @@ compile_execute_ext_builtin_to_rust(Code) :-
             }
             "list_to_set/2" => {
                 let items = match self.get_reg_raw("A1")
-                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    .map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let mark = self.trail.len();
                 let mut unique = Vec::with_capacity(items.len());
-                for item in &items {
+                for item in items.iter() {
                     if !self.builtin_unify_member(item, &unique) {
                         unique.push(item.clone());
                     }
                 }
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                if self.unify(&output, &Value::List(unique)) {
+                if self.unify(&output, &Value::list(unique)) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -5774,7 +6147,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
             }
             "select/3" => {
                 let x_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-                let list = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) if !items.is_empty() => items,
                     _ => return false,
                 };
@@ -5843,14 +6216,14 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 }
             }
             "sum_list/2" | "sumlist/2" | "max_list/2" | "min_list/2" => {
-                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let mut nums: Vec<f64> = Vec::with_capacity(list.len());
                 let mut all_int = true;
                 let mut ints: Vec<i64> = Vec::with_capacity(list.len());
-                for item in &list {
+                for item in list.iter() {
                     match self.deref_var(item) {
                         Value::Integer(n) => { nums.push(n as f64); ints.push(n); }
                         Value::Float(f) => { nums.push(f); all_int = false; }
@@ -5908,12 +6281,12 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let parts = text
                     .split(|ch| separators.contains(&ch))
                     .map(|part| {
-                        Value::Atom(part.trim_matches(|ch| pads.contains(&ch)).to_string())
+                        Value::Atom(part.trim_matches(|ch| pads.contains(&ch)).to_string().into())
                     })
                     .collect::<Vec<_>>();
                 let output = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::List(parts)) {
+                if self.unify(&output, &Value::list(parts)) {
                     self.pc += 1;
                     true
                 } else {
@@ -5939,11 +6312,11 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 };
                 let parts = text
                     .split(separator_char)
-                    .map(|part| Value::Atom(part.to_string()))
+                    .map(|part| Value::Atom(part.to_string().into()))
                     .collect::<Vec<_>>();
                 let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::List(parts)) {
+                if self.unify(&output, &Value::list(parts)) {
                     self.pc += 1;
                     true
                 } else {
@@ -5963,9 +6336,9 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     _ => return false,
                 };
                 let matched = match op {
-                    "atom_starts_with/2" => text.starts_with(&fragment),
-                    "atom_ends_with/2" => text.ends_with(&fragment),
-                    "atom_contains/2" => text.contains(&fragment),
+                    "atom_starts_with/2" => text.starts_with(fragment.as_str()),
+                    "atom_ends_with/2" => text.ends_with(fragment.as_str()),
+                    "atom_contains/2" => text.contains(fragment.as_str()),
                     _ => false,
                 };
                 if matched { self.pc += 1; true } else { false }
@@ -5977,7 +6350,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let t2 = Self::value_atomic_text(&v2);
                 if let (Some(t1), Some(t2)) = (&t1, &t2) {
                     let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                    let whole = Value::Atom(format!("{}{}", t1, t2));
+                    let whole = Value::Atom(format!("{}{}", t1, t2).into());
                     return if self.unify(&a3, &whole) { self.pc += 1; true } else { false };
                 }
                 // Split mode: enumerate prefix/suffix pairs of a bound A3.
@@ -6032,7 +6405,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     self.unwind_trail_to(mark);
                     return false;
                 }
-                if self.unify(&a5, &Value::Atom(sub)) {
+                if self.unify(&a5, &Value::Atom(sub.into())) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
@@ -6077,7 +6450,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                             Some(c) => c,
                             None => return false,
                         };
-                        if self.unify(&v1, &Value::Atom(ch.to_string())) { self.pc += 1; true } else { false }
+                        if self.unify(&v1, &Value::Atom(ch.to_string().into())) { self.pc += 1; true } else { false }
                     }
                 }
             }
@@ -6085,23 +6458,23 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
                 if let Some(text) = Self::value_atomic_text(&v1) {
                     let chars: Vec<Value> = text.chars()
-                        .map(|c| Value::Atom(c.to_string()))
+                        .map(|c| Value::Atom(c.to_string().into()))
                         .collect();
                     let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                    return if self.unify(&a2, &Value::List(chars)) { self.pc += 1; true } else { false };
+                    return if self.unify(&a2, &Value::list(chars)) { self.pc += 1; true } else { false };
                 }
-                let list = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let list = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let mut text = String::new();
-                for item in &list {
+                for item in list.iter() {
                     match self.deref_var(item) {
                         Value::Atom(s) => text.push_str(&s),
                         _ => return false,
                     }
                 }
-                if self.unify(&v1, &Value::Atom(text)) { self.pc += 1; true } else { false }
+                if self.unify(&v1, &Value::Atom(text.into())) { self.pc += 1; true } else { false }
             }
             "atom_string/2" | "string_to_atom/2" => {
                 // Atoms double as strings in this runtime; both are
@@ -6110,11 +6483,11 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let v2 = self.get_reg_raw("A2").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
                 if let Some(t) = Self::value_atomic_text(&v1) {
                     let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                    return if self.unify(&a2, &Value::Atom(t)) { self.pc += 1; true } else { false };
+                    return if self.unify(&a2, &Value::Atom(t.into())) { self.pc += 1; true } else { false };
                 }
                 if let Some(t) = Self::value_atomic_text(&v2) {
                     let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-                    return if self.unify(&a1, &Value::Atom(t)) { self.pc += 1; true } else { false };
+                    return if self.unify(&a1, &Value::Atom(t.into())) { self.pc += 1; true } else { false };
                 }
                 false
             }
@@ -6126,7 +6499,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 };
                 let cased = if op == "upcase_atom/2" { text.to_uppercase() } else { text.to_lowercase() };
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                if self.unify(&a2, &Value::Atom(cased)) { self.pc += 1; true } else { false }
+                if self.unify(&a2, &Value::Atom(cased.into())) { self.pc += 1; true } else { false }
             }
             "atom_number/2" => {
                 let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
@@ -6148,24 +6521,51 @@ compile_execute_ext_builtin_to_rust(Code) :-
                             Some(Value::Float(f)) => format!("{}", f),
                             _ => return false,
                         };
-                        if self.unify(&v1, &Value::Atom(text)) { self.pc += 1; true } else { false }
+                        if self.unify(&v1, &Value::Atom(text.into())) { self.pc += 1; true } else { false }
                     }
                 }
             }
+            "number_string/2" => {
+                // number_string(?Number, ?String): the string arg is A2 (the
+                // reverse of atom_number/2). The store adapter parses version /
+                // constraint cells this way (split_string then number_string on
+                // each field). Atoms double as strings in this runtime.
+                let v2 = self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))).unwrap_or(Value::Uninit);
+                if let Some(t) = Self::value_atomic_text(&v2) {
+                    let trimmed = t.trim();
+                    let num = if let Ok(n) = trimmed.parse::<i64>() {
+                        Value::Integer(n)
+                    } else if let Ok(f) = trimmed.parse::<f64>() {
+                        Value::Float(f)
+                    } else {
+                        return false;
+                    };
+                    let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                    return if self.unify(&a1, &num) { self.pc += 1; true } else { false };
+                }
+                // Number -> String direction.
+                let text = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
+                    Some(Value::Integer(n)) => n.to_string(),
+                    Some(Value::Float(f)) => format!("{}", f),
+                    _ => return false,
+                };
+                let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.unify(&a2, &Value::Atom(text.into())) { self.pc += 1; true } else { false }
+            }
             "atomic_list_concat/2" => {
-                let items = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let items = match self.get_reg_raw("A1").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let mut text = String::new();
-                for item in &items {
+                for item in items.iter() {
                     match Self::value_atomic_text(&self.deref_var(item)) {
                         Some(t) => text.push_str(&t),
                         None => return false,
                     }
                 }
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
-                if self.unify(&a2, &Value::Atom(text)) { self.pc += 1; true } else { false }
+                if self.unify(&a2, &Value::Atom(text.into())) { self.pc += 1; true } else { false }
             }
             "atomic_list_concat/3" => {
                 // Join mode (+List, +Sep, ?Atom) or split mode
@@ -6179,13 +6579,13 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 match v1 {
                     Value::List(items) => {
                         let mut parts: Vec<String> = Vec::with_capacity(items.len());
-                        for item in &items {
+                        for item in items.iter() {
                             match Self::value_atomic_text(&self.deref_var(item)) {
                                 Some(t) => parts.push(t),
                                 None => return false,
                             }
                         }
-                        let joined = Value::Atom(parts.join(&sep));
+                        let joined = Value::Atom(parts.join(&sep).into());
                         let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                         if self.unify(&a3, &joined) { self.pc += 1; true } else { false }
                     }
@@ -6197,10 +6597,10 @@ compile_execute_ext_builtin_to_rust(Code) :-
                             None => return false,
                         };
                         let parts: Vec<Value> = whole.split(&sep as &str)
-                            .map(|p| Value::Atom(p.to_string()))
+                            .map(|p| Value::Atom(p.to_string().into()))
                             .collect();
                         let a1 = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-                        if self.unify(&a1, &Value::List(parts)) { self.pc += 1; true } else { false }
+                        if self.unify(&a1, &Value::list(parts)) { self.pc += 1; true } else { false }
                     }
                     _ => false,
                 }
@@ -6280,21 +6680,21 @@ compile_execute_ext_builtin_to_rust(Code) :-
                             }
                             "to_lower" => {
                                 let lo = ch.to_lowercase().next().unwrap_or(ch);
-                                if self.unify(&arg, &Value::Atom(lo.to_string())) { self.pc += 1; true } else { false }
+                                if self.unify(&arg, &Value::Atom(lo.to_string().into())) { self.pc += 1; true } else { false }
                             }
                             "to_upper" => {
                                 let up = ch.to_uppercase().next().unwrap_or(ch);
-                                if self.unify(&arg, &Value::Atom(up.to_string())) { self.pc += 1; true } else { false }
+                                if self.unify(&arg, &Value::Atom(up.to_string().into())) { self.pc += 1; true } else { false }
                             }
                             "upper" => {
                                 if !ch.is_uppercase() { return false; }
                                 let lo = ch.to_lowercase().next().unwrap_or(ch);
-                                if self.unify(&arg, &Value::Atom(lo.to_string())) { self.pc += 1; true } else { false }
+                                if self.unify(&arg, &Value::Atom(lo.to_string().into())) { self.pc += 1; true } else { false }
                             }
                             "lower" => {
                                 if !ch.is_lowercase() { return false; }
                                 let up = ch.to_uppercase().next().unwrap_or(ch);
-                                if self.unify(&arg, &Value::Atom(up.to_string())) { self.pc += 1; true } else { false }
+                                if self.unify(&arg, &Value::Atom(up.to_string().into())) { self.pc += 1; true } else { false }
                             }
                             _ => false,
                         }
@@ -6312,13 +6712,13 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     .unwrap_or(Value::Uninit);
                 if matches!(&type_value, Value::Unbound(_)) {
                     return self.raise_builtin_error(
-                        Value::Atom("instantiation_error".to_string()));
+                        Value::Atom("instantiation_error".to_string().into()));
                 }
                 let type_name = match Self::value_atom_name(&type_value) {
                     Some(name) => name,
-                    None => return self.raise_builtin_error(Value::Str(
+                    None => return self.raise_builtin_error(Value::strv(
                         "type_error".to_string(),
-                        vec![Value::Atom("atom".to_string()), type_value],
+                        vec![Value::Atom("atom".to_string().into()), type_value],
                     )),
                 };
                 let value = self.get_reg_raw("A2")
@@ -6327,7 +6727,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 if matches!(&value, Value::Unbound(_))
                     && type_name != "var" && type_name != "nonvar" {
                     return self.raise_builtin_error(
-                        Value::Atom("instantiation_error".to_string()));
+                        Value::Atom("instantiation_error".to_string().into()));
                 }
 
                 let is_atom = Self::value_atom_name(&value).is_some();
@@ -6351,21 +6751,21 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     "ground" => {
                         if !self.value_is_ground(&value) {
                             return self.raise_builtin_error(
-                                Value::Atom("instantiation_error".to_string()));
+                                Value::Atom("instantiation_error".to_string().into()));
                         }
                         true
                     }
-                    _ => return self.raise_builtin_error(Value::Str(
+                    _ => return self.raise_builtin_error(Value::strv(
                         "domain_error".to_string(),
-                        vec![Value::Atom("type".to_string()), type_value],
+                        vec![Value::Atom("type".to_string().into()), type_value],
                     )),
                 };
                 if ok {
                     self.pc += 1; true
                 } else {
-                    self.raise_builtin_error(Value::Str(
+                    self.raise_builtin_error(Value::strv(
                         "type_error".to_string(),
-                        vec![Value::Atom(type_name), value],
+                        vec![Value::Atom(type_name.into()), value],
                     ))
                 }
             }
@@ -6377,6 +6777,38 @@ compile_execute_meta_builtin_to_rust(Code) :-
     Code = '    /// Execute meta-predicates that require goal evaluation.
     fn execute_meta_builtin(&mut self, op: &str, _arity: usize) -> bool {
         match op {
+            "call/1" | "call/2" | "call/3" | "call/4" | "call/5" | "call/6"
+            | "call/7" | "call/8" => {
+                // §9: the goal of call/1 is an OPAQUE cut scope -- a `!` inside
+                // may prune only the call''s own choice points. call_goal_once
+                // sets the barrier to the scope entry depth and drops anything
+                // the goal leaves behind (first-solution meta-call).
+                //
+                // Before this arm existed the runtime had NO call/N at all:
+                // `execute call/1` found no label and simply failed, so every
+                // clause ending in call/1 was dead.
+                let base = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                let extra: Vec<Value> = (2.._arity + 1)
+                    .map(|i| self.get_reg_raw(&format!("A{}", i))
+                        .map(|v| self.deref_var(&v))
+                        .unwrap_or(Value::Uninit))
+                    .collect();
+                let goal = if extra.is_empty() {
+                    base
+                } else {
+                    match self.extend_goal(&base, &extra) {
+                        Some(g) => g,
+                        None => return false,
+                    }
+                };
+                let saved_pc = self.pc;
+                if self.call_goal_once(&goal) {
+                    self.pc = saved_pc + 1;
+                    true
+                } else { false }
+            }
             "\\\\+/1" => {
                 // Negation-as-failure using WAM choice point mechanism.
                 // Push a choice point that will succeed if the goal fails.
@@ -6419,6 +6851,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                                 data: vec![],
                             }),
                             cut_barrier: self.cut_barrier,
+                            levels: Vec::new(),
                         });
 
                         let pred_key = format!("{}", functor);
@@ -6468,7 +6901,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 // whose catcher unifies consumes it.
                 let ball = self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v)))
-                    .unwrap_or(Value::Atom("instantiation_error".to_string()));
+                    .unwrap_or(Value::Atom("instantiation_error".to_string().into()));
                 self.thrown_ball = Some(ball);
                 false
             }
@@ -6559,13 +6992,16 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 let mut elems: Vec<Option<Vec<Value>>> = Vec::with_capacity(nlists);
                 let mut n: Option<usize> = None;
                 for raw in &raw_lists {
-                    match self.deref_heap(&self.deref_var(raw)) {
+                    // deref_list_arg aliases the atom [] (put_constant) with
+                    // Value::List -- matching only List used to reject empty
+                    // maplist/2 over [] (CONVENTIONS §1, defect 1).
+                    match self.deref_list_arg(raw) {
                         Value::List(items) => {
                             match n {
                                 Some(len) if len != items.len() => return false,
                                 _ => n = Some(items.len()),
                             }
-                            elems.push(Some(items));
+                            elems.push(Some(items.to_vec()));
                         }
                         Value::Unbound(_) => elems.push(None),
                         _ => return false,
@@ -6578,7 +7014,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 for j in 0..nlists {
                     if elems[j].is_none() {
                         let fresh: Vec<Value> = (0..n).map(|_| self.fresh_meta_var()).collect();
-                        if !self.unify(&raw_lists[j], &Value::List(fresh.clone())) {
+                        if !self.unify(&raw_lists[j], &Value::list(fresh.clone())) {
                             return false;
                         }
                         elems[j] = Some(fresh);
@@ -6596,6 +7032,42 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 }
                 self.pc += 1; true
             }
+            "predsort/3" => {
+                // predsort(Pred, List, Sorted). Pred(Order, X, Y) binds
+                // Order to < / > / =. Capture A3 BEFORE the comparator
+                // meta-calls: call_goal_key writes Order/X/Y into A1-A3
+                // and a leftover binding would make Unify compare a
+                // version term to the sorted list (D61 Go bug 2).
+                use std::cmp::Ordering;
+                let pred = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                let items = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
+                    Some(Value::List(items)) => items.to_vec(),
+                    _ => return false,
+                };
+                let out = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                let pred_is_compare = matches!(&pred, Value::Atom(n) if n == "compare");
+                let mut idxs: Vec<usize> = (0..items.len()).collect();
+                let mut cmp_failed = false;
+                idxs.sort_by(|&i, &j| {
+                    if cmp_failed { return i.cmp(&j); }
+                    let x = items[i].clone();
+                    let y = items[j].clone();
+                    let ord = if pred_is_compare {
+                        self.term_compare(&x, &y)
+                    } else {
+                        match self.predsort_order(&pred, &x, &y) {
+                            Some(o) => o,
+                            None => { cmp_failed = true; Ordering::Equal }
+                        }
+                    };
+                    ord.then(i.cmp(&j))
+                });
+                if cmp_failed { return false; }
+                let sorted: Vec<Value> = idxs.iter().map(|&k| items[k].clone()).collect();
+                if self.unify(&out, &Value::list(sorted)) { self.pc += 1; true } else { false }
+            }
             "include/3" | "exclude/3" => {
                 // Filter: keep elements for which the test call succeeds
                 // (include) or fails (exclude). Test-call bindings are
@@ -6603,13 +7075,13 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 let goal = self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v)))
                     .unwrap_or(Value::Uninit);
-                let items = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let items = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let keep_on = op == "include/3";
                 let mut kept: Vec<Value> = Vec::new();
-                for item in &items {
+                for item in items.iter() {
                     let g = match self.extend_goal(&goal, &[self.deref_var(item)]) {
                         Some(g) => g,
                         None => return false,
@@ -6621,19 +7093,19 @@ compile_execute_meta_builtin_to_rust(Code) :-
                     if ok == keep_on { kept.push(item.clone()); }
                 }
                 let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                if self.unify(&a3, &Value::List(kept)) { self.pc += 1; true } else { false }
+                if self.unify(&a3, &Value::list(kept)) { self.pc += 1; true } else { false }
             }
             "partition/4" => {
                 let goal = self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v)))
                     .unwrap_or(Value::Uninit);
-                let items = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let items = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let mut incl: Vec<Value> = Vec::new();
                 let mut excl: Vec<Value> = Vec::new();
-                for item in &items {
+                for item in items.iter() {
                     let g = match self.extend_goal(&goal, &[self.deref_var(item)]) {
                         Some(g) => g,
                         None => return false,
@@ -6646,7 +7118,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 }
                 let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                 let a4 = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
-                if self.unify(&a3, &Value::List(incl)) && self.unify(&a4, &Value::List(excl)) {
+                if self.unify(&a3, &Value::list(incl)) && self.unify(&a4, &Value::list(excl)) {
                     self.pc += 1; true
                 } else { false }
             }
@@ -6657,13 +7129,13 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 let goal = self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v)))
                     .unwrap_or(Value::Uninit);
-                let l1 = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                let l1 = match self.get_reg_raw("A2").map(|v| self.deref_list_arg(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
                 let l2: Option<Vec<Value>> = if two_lists {
-                    match self.get_reg_raw("A3").map(|v| self.deref_heap(&self.deref_var(&v))) {
-                        Some(Value::List(items)) if items.len() == l1.len() => Some(items),
+                    match self.get_reg_raw("A3").map(|v| self.deref_list_arg(&v)) {
+                        Some(Value::List(items)) if items.len() == l1.len() => Some(items.to_vec()),
                         _ => return false,
                     }
                 } else { None };
@@ -6699,12 +7171,12 @@ compile_execute_meta_builtin_to_rust(Code) :-
     /// goals get the extra arguments appended after their own.
     fn extend_goal(&self, base: &Value, extra: &[Value]) -> Option<Value> {
         match base {
-            Value::Atom(name) => Some(Value::Str(name.clone(), extra.to_vec())),
+            Value::Atom(name) => Some(Value::strv(name.clone(), extra.to_vec())),
             Value::Str(f, args) => {
                 let name = Self::display_functor_name(f, args.len());
-                let mut all = args.clone();
+                let mut all = args.to_vec();
                 all.extend_from_slice(extra);
-                Some(Value::Str(name, all))
+                Some(Value::strv(name, all))
             }
             _ => None,
         }
@@ -6712,26 +7184,120 @@ compile_execute_meta_builtin_to_rust(Code) :-
 
     fn fresh_meta_var(&mut self) -> Value {
         self.var_counter += 1;
-        Value::Unbound(format!("_M{}", self.var_counter))
+        Value::Unbound(format!("_M{}", self.var_counter).into())
     }
 
     /// First-solution meta-call used by the maplist family: any choice
     /// points the sub-call leaves behind are discarded (deterministic
-    /// commit per element).
+    /// commit per element). The environment stack is snapshotted and
+    /// restored so a nested `run()` (user comparator, is_v3/1, …) cannot
+    /// Deallocate the caller''s Env frame — that is what made
+    /// `sort_versions_desc` fail after a successful predsort/3: reverse/2
+    /// then ran, but the clause Deallocate found no Env (P3 deb path;
+    /// v/3 uses sort/2 and never nested-ran).
     fn call_goal_once(&mut self, goal: &Value) -> bool {
         let cp_depth = self.choice_points.len();
+        // §9 barrier-raising context: a meta-called goal is an opaque cut
+        // scope, so `!` inside it prunes back to the scope entry and no
+        // further. Without this the cut escaped into the enclosing clause.
+        let saved_barrier = self.cut_barrier;
+        let saved_floor = self.backtrack_floor;
+        let stack_snapshot = self.stack.clone();
+        let trail_mark = self.trail.len();
+        self.cut_barrier = cp_depth;
+        // Bound failure-backtracking to this meta-call: if the goal fails, the
+        // nested run stops at cp_depth and reports failure rather than
+        // consuming the caller''s choice points.
+        self.backtrack_floor = cp_depth;
         let ok = self.call_goal_value(goal);
+        self.backtrack_floor = saved_floor;
+        self.cut_barrier = saved_barrier;
         if self.choice_points.len() > cp_depth {
             self.choice_points.truncate(cp_depth);
         }
+        // The nested run allocated its own Env frames and (via
+        // PutVariable/GetVariable) pushed Yi-register trail entries that record
+        // the OLD value of a Yi in one of THOSE frames. Restoring the stack
+        // snapshot below discards those frames and returns every outer Yi to
+        // its pre-call value, so those trail entries are redundant. Worse, they
+        // are harmful: unwind_trail_to applies a register entry with put_reg,
+        // which targets the CURRENT topmost Env frame -- after the restore that
+        // is the CALLER''s frame, not the nested one -- so the caller''s own
+        // unwind_trail_to (predsort_order, negation, include, forall) would
+        // overwrite the caller''s live Yi (e.g. the predsort output variable)
+        // with the nested frame''s stale value, and reverse/2 then saw an
+        // unbound list and failed. Drop the nested run''s Yi-register trail
+        // entries here, keeping binding entries (so predsort_order can still
+        // read the comparator''s Order result) and Ai/Xi entries (restored
+        // explicitly by the caller''s save/restore).
+        if self.trail.len() > trail_mark {
+            let tail = self.trail.split_off(trail_mark);
+            for e in tail {
+                let is_frame_local_reg = !e.key.starts_with("__binding__")
+                    && e.key.as_bytes().first() == Some(&b''Y'');
+                if !is_frame_local_reg {
+                    self.trail.push(e);
+                }
+            }
+        }
+        self.stack = stack_snapshot;
         ok
+    }
+
+    /// Comparator for predsort/3: Pred(Order, X, Y). Saves and restores
+    /// A-registers around the meta-call (the comparator writes A1-A3)
+    /// and truncates leftover CPs via call_goal_once so a later resolve
+    /// failure cannot backtrack into a stale version_lt ITE.
+    fn predsort_order(&mut self, pred: &Value, x: &Value, y: &Value) -> Option<std::cmp::Ordering> {
+        use std::cmp::Ordering;
+        let order = self.fresh_meta_var();
+        let g = self.extend_goal(pred, &[order.clone(), x.clone(), y.clone()])?;
+        let trail_mark = self.trail.len();
+        let saved = self.save_regs();
+        let ok = self.call_goal_once(&g);
+        self.restore_regs(&saved);
+        if !ok {
+            self.unwind_trail_to(trail_mark);
+            return None;
+        }
+        let atom = match self.deref_heap(&self.deref_var(&order)) {
+            Value::Atom(s) => s,
+            _ => {
+                self.unwind_trail_to(trail_mark);
+                return None;
+            }
+        };
+        let o = match atom.as_str() {
+            "<" => Ordering::Less,
+            ">" => Ordering::Greater,
+            _ => Ordering::Equal,
+        };
+        self.unwind_trail_to(trail_mark);
+        Some(o)
     }
 
     /// Predicates the shared WAM compiler emits as Call/Execute (no
     /// is_builtin_pred entry) but that this runtime implements as
     /// builtins. Mirrors the F# isIsoMetaBuiltin routing.
+    ///
+    /// No longer a gate: Call/Execute now fall back to the whole builtin
+    /// table (WAM_BACKEND_CONVENTIONS §7). Kept as documentation of the
+    /// three names that used to be the ONLY ones routed.
+    #[allow(dead_code)]
     fn is_iso_meta_builtin(pred: &str) -> bool {
         matches!(pred, "catch/3" | "throw/1" | "succ/2")
+    }
+
+    /// §7: "a builtin the runtime genuinely does not implement should still
+    /// fail loudly enough to find". A `call`/`execute` of a name with no
+    /// label, no dynamic clauses, no foreign registration and no builtin is
+    /// an undefined predicate. It cannot be distinguished at runtime from a
+    /// builtin that merely FAILED, so the diagnostic is opt-in via
+    /// UW_WAM_WARN_UNKNOWN rather than printed on every ordinary failure.
+    fn warn_unresolved_goal(form: &str, pred: &str) {
+        if std::env::var_os("UW_WAM_WARN_UNKNOWN").is_some() {
+            eprintln!("[wam_rust] {} of unresolved goal {} failed", form, pred);
+        }
     }
 
     /// Meta-call a goal VALUE (catch/3 goal and recovery, callable
@@ -6744,6 +7310,69 @@ compile_execute_meta_builtin_to_rust(Code) :-
         match goal {
             Value::Atom(name) if name == "true" => true,
             Value::Atom(name) if name == "fail" || name == "false" => false,
+            Value::Atom(name) if name == "!" => {
+                // Cut inside a meta-call: local to the enclosing opaque scope,
+                // whose entry depth call_goal_once parked in cut_barrier.
+                self.choice_points.truncate(self.cut_barrier);
+                true
+            }
+            Value::Str(f, args) if args.len() == 2
+                && Self::display_functor_name(f, 2) == "," => {
+                let a = self.deref_heap(&self.deref_var(&args[0]));
+                let b = self.deref_heap(&self.deref_var(&args[1]));
+                let depth = self.choice_points.len();
+                if !self.call_goal_value(&a) { return false; }
+                if self.call_goal_value(&b) { return true; }
+                // The right conjunct failed. If the left one left choice
+                // points behind we would have to retry it -- which this
+                // structural meta-call cannot do (the alternatives live in the
+                // interpreter, not in this walk). Refuse loudly rather than
+                // report a first-solution answer as if it were the only one.
+                if self.choice_points.len() > depth {
+                    eprintln!("[wam_rust] call/1: cannot retry a nondeterministic \
+left conjunct; conjunction reported as failed (first-solution meta-call)");
+                }
+                false
+            }
+            Value::Str(f, args) if args.len() == 2
+                && Self::display_functor_name(f, 2) == ";" => {
+                let a = self.deref_heap(&self.deref_var(&args[0]));
+                // ( C -> T ; E ): the condition is its own opaque scope.
+                if let Value::Str(cf, cargs) = &a {
+                    if cargs.len() == 2 && Self::display_functor_name(cf, 2) == "->" {
+                        let cond = self.deref_heap(&self.deref_var(&cargs[0]));
+                        let then = self.deref_heap(&self.deref_var(&cargs[1]));
+                        let els = self.deref_heap(&self.deref_var(&args[1]));
+                        let mark = self.trail.len();
+                        if self.call_goal_once(&cond) {
+                            return self.call_goal_value(&then);
+                        }
+                        self.unwind_trail_to(mark);
+                        return self.call_goal_value(&els);
+                    }
+                }
+                let mark = self.trail.len();
+                if self.call_goal_value(&a) { return true; }
+                self.unwind_trail_to(mark);
+                let b = self.deref_heap(&self.deref_var(&args[1]));
+                self.call_goal_value(&b)
+            }
+            Value::Str(f, args) if args.len() == 2
+                && Self::display_functor_name(f, 2) == "->" => {
+                let cond = self.deref_heap(&self.deref_var(&args[0]));
+                let then = self.deref_heap(&self.deref_var(&args[1]));
+                if self.call_goal_once(&cond) {
+                    self.call_goal_value(&then)
+                } else { false }
+            }
+            Value::Str(f, args) if args.len() == 1
+                && Self::display_functor_name(f, 1) == "\\\\+" => {
+                let inner = self.deref_heap(&self.deref_var(&args[0]));
+                let mark = self.trail.len();
+                let ok = self.call_goal_once(&inner);
+                self.unwind_trail_to(mark);
+                !ok
+            }
             Value::Atom(name) => {
                 let key = format!("{}/0", name);
                 self.call_goal_key(&key, 0, &[])
@@ -7062,7 +7691,7 @@ rust_ext_clone_args([V|Vs], Args, [Clone|Rest]) :-
 
 % Reduce the collected per-branch values by aggregate type (mirrors the
 % aggregate_frame finalisation in the interpreter).
-rust_agg_reduce(collect, "Value::List(__vals)") :- !.
+rust_agg_reduce(collect, "Value::list(__vals)") :- !.
 rust_agg_reduce(count, "Value::Integer(__vals.len() as i64)") :- !.
 rust_agg_reduce(sum, Expr) :- !,
     Expr = "{ let mut si: i64 = 0; let mut sf: f64 = 0.0; let mut isf = false; for v in &__vals { match v { Value::Integer(n) => { si += *n; sf += *n as f64; }, Value::Float(f) => { isf = true; sf += *f; }, _ => {} } } if isf { Value::Float(sf) } else { Value::Integer(si) } }".
@@ -7071,13 +7700,13 @@ rust_agg_reduce(min, Expr) :- !, rust_agg_minmax_reduce("<", Expr).
 % set: sorted, duplicate-free (standard order of terms via the runtime's
 % term_compare; dedup adjacent equals after sort).
 rust_agg_reduce(set, Expr) :- !,
-    Expr = "{ let mut __s = __vals; __s.sort_by(|a, b| vm.term_compare(a, b)); __s.dedup_by(|a, b| vm.term_compare(a, b) == std::cmp::Ordering::Equal); Value::List(__s) }".
+    Expr = "{ let mut __s = __vals; __s.sort_by(|a, b| vm.term_compare(a, b)); __s.dedup_by(|a, b| vm.term_compare(a, b) == std::cmp::Ordering::Equal); Value::list(__s) }".
 
 % max/min share a fold; Cmp is the Rust comparison operator (">" or "<").
 % Mirrors the interpreter's aggregate_frame max/min (Integer/Float mixed).
 rust_agg_minmax_reduce(Cmp, Expr) :-
     format(string(Expr),
-"{ let mut __best: Option<Value> = None; for v in &__vals { let __take = match &__best { None => true, Some(p) => match (v, p) { (Value::Integer(a), Value::Integer(b)) => a ~w b, (Value::Float(a), Value::Float(b)) => a ~w b, (Value::Integer(a), Value::Float(b)) => (*a as f64) ~w *b, (Value::Float(a), Value::Integer(b)) => *a ~w (*b as f64), _ => false } }; if __take { __best = Some(v.clone()); } } __best.unwrap_or(Value::List(vec![])) }",
+"{ let mut __best: Option<Value> = None; for v in &__vals { let __take = match &__best { None => true, Some(p) => match (v, p) { (Value::Integer(a), Value::Integer(b)) => a ~w b, (Value::Float(a), Value::Float(b)) => a ~w b, (Value::Integer(a), Value::Float(b)) => (*a as f64) ~w *b, (Value::Float(a), Value::Integer(b)) => *a ~w (*b as f64), _ => false } }; if __take { __best = Some(v.clone()); } } __best.unwrap_or(Value::list(vec![])) }",
            [Cmp, Cmp, Cmp, Cmp]).
 
 % Partition the project predicate list: predicates whose body is a
@@ -7416,8 +8045,8 @@ fn ~w_run(vm: &mut WamState, args: Vec<Value>, cont_pc: usize) -> bool {
     let (__rows, __idx) = ~w_table();
     // Bound atomic first arg -> that index bucket; otherwise full scan.
     let __cands: Vec<Value> = match __args[0].fact_index_key() {
-        Some(k) => __idx.get(&k).map(|is| is.iter().map(|&i| Value::List(__rows[i].clone())).collect()).unwrap_or_default(),
-        None => __rows.iter().map(|r| Value::List(r.clone())).collect(),
+        Some(k) => __idx.get(&k).map(|is| is.iter().map(|&i| Value::list(__rows[i].clone())).collect()).unwrap_or_default(),
+        None => __rows.iter().map(|r| Value::list(r.clone())).collect(),
     };
     vm.fact_table_attempt(__args, __cands, cont_pc)
 }
@@ -7445,19 +8074,19 @@ rust_term_to_value_literal(T, Lit) :- float(T), !,
 rust_term_to_value_literal(T, Lit) :- is_list(T), !,
     maplist(rust_term_to_value_literal, T, Es),
     atomic_list_concat(Es, ', ', Inner),
-    format(string(Lit), 'Value::List(vec![~w])', [Inner]).
+    format(string(Lit), 'Value::list(vec![~w])', [Inner]).
 rust_term_to_value_literal(T, Lit) :- atom(T), !,
     escape_rust_string(T, E),
-    format(string(Lit), 'Value::Atom("~w".to_string())', [E]).
+    format(string(Lit), 'Value::Atom("~w".to_string().into())', [E]).
 rust_term_to_value_literal(T, Lit) :- string(T), !,
     escape_rust_string(T, E),
-    format(string(Lit), 'Value::Atom("~w".to_string())', [E]).
+    format(string(Lit), 'Value::Atom("~w".to_string().into())', [E]).
 rust_term_to_value_literal(T, Lit) :- compound(T), !,
     T =.. [F|Args],
     escape_rust_string(F, EF),
     maplist(rust_term_to_value_literal, Args, Es),
     atomic_list_concat(Es, ', ', Inner),
-    format(string(Lit), 'Value::Str("~w".to_string(), vec![~w])', [EF, Inner]).
+    format(string(Lit), 'Value::strv("~w".to_string(), vec![~w])', [EF, Inner]).
 
 % --- T7 embedded-aggregate wiring, step 1: pure clause-lifting pass ----------
 %
@@ -7816,6 +8445,18 @@ wam_line_to_rust_instr(["execute", P], Pred/Arity, Options, Rust) :-
     ;   format(string(Rust),
             'Instruction::Execute("~w".to_string())', [EP])
     ).
+% D43 store-backed fact source body: `call_foreign store_pkg/2 2` dispatches
+% straight to execute_foreign_predicate (the "seek_fact" native kind), then the
+% predicate's `proceed` returns to the caller. Emitted by classify_predicates
+% for each rust_wam_fact_sources declaration; the caller reaches the store
+% predicate by label exactly like any other predicate, so no call-site rewrite
+% is needed (mirrors the Go lane's call_fact_stream + proceed body).
+wam_line_to_rust_instr(["call_foreign", P, N], _, _, Rust) :-
+    clean_comma(P, CP), clean_comma(N, CN),
+    escape_rust_string(CP, ECP),
+    (   number_string(Num, CN) -> true ; Num = 0 ),
+    format(string(Rust),
+        'Instruction::CallForeign("~w".to_string(), ~w)', [ECP, Num]).
 wam_line_to_rust_instr(["proceed"], _, _, "Instruction::Proceed").
 wam_line_to_rust_instr(["builtin_call", Op, N], _, _, Rust) :-
     clean_comma(Op, COp), clean_comma(N, CN),
@@ -7830,6 +8471,29 @@ wam_line_to_rust_instr(["begin_aggregate", Type, ValueReg, ResultReg], _, _, Rus
     format(string(Rust),
         'Instruction::BeginAggregate("~w".to_string(), "~w".to_string(), "~w".to_string())',
         [CType, CValueReg, CResultReg]).
+% bagof/setof carry a 4th operand: the ISO free-witness registers as
+% "'Y1;Y2'" (see aggregate_witness_clause/5 in wam_target.pl). An EMPTY
+% witness list means bagof/setof behave as collect-that-fails-when-empty
+% (setof additionally sorts), which the Rust aggregate frame implements.
+% A NON-empty witness list means ISO grouping — one solution per distinct
+% witness binding — which this runtime does not implement; refuse to
+% compile rather than emit a silently ungrouped answer.
+wam_line_to_rust_instr(["begin_aggregate", Type, ValueReg, ResultReg, Witness],
+                       PredIndicator, _, Rust) :-
+    clean_comma(Type, CType),
+    clean_comma(ValueReg, CValueReg),
+    clean_comma(ResultReg, CResultReg),
+    clean_comma(Witness, CWitness0),
+    rust_strip_witness_quotes(CWitness0, CWitness),
+    (   CWitness == ""
+    ->  format(string(Rust),
+            'Instruction::BeginAggregate("~w".to_string(), "~w".to_string(), "~w".to_string())',
+            [CType, CValueReg, CResultReg])
+    ;   throw(error(unsupported_wam_instruction(
+                        bagof_setof_witness_grouping(CType, CWitness)),
+                    context(wam_rust_target:wam_line_to_rust_instr/4,
+                            PredIndicator)))
+    ).
 wam_line_to_rust_instr(["end_aggregate", ValueReg], _, _, Rust) :-
     clean_comma(ValueReg, CValueReg),
     format(string(Rust),
@@ -7913,6 +8577,16 @@ wam_line_to_rust_instr(Parts, _, _, Rust) :-
     atomic_list_concat(Parts, ' ', Joined),
     format(string(Rust), 'Instruction::NoOp /* unknown: ~w */', [Joined]).
 
+%% rust_strip_witness_quotes(+Raw, -Inner)
+%  "'Y1;Y2'" -> "Y1;Y2"; "''" -> "".
+rust_strip_witness_quotes(Raw, Inner) :-
+    text_to_string(Raw, S0),
+    (   string_concat("'", Rest, S0),
+        string_concat(Mid, "'", Rest)
+    ->  Inner = Mid
+    ;   Inner = S0
+    ).
+
 %% rust_const_value(+Const, -RustValueExpr)
 %  Render a WAM constant token as the right Value variant. Numeric
 %  constants MUST become Value::Integer/Value::Float, not Value::Atom:
@@ -7931,7 +8605,7 @@ rust_const_value(C, Expr) :-
     ->  format(string(Expr), 'Value::Float(~w)', [N])
     ;   Class = atom(A)
     ->  escape_rust_string(A, Escaped),
-        format(string(Expr), 'Value::Atom("~w".to_string())', [Escaped])
+        format(string(Expr), 'Value::Atom("~w".to_string().into())', [Escaped])
     ).
 
 rust_foreign_rewrite_call(Options, CurrentPred, TargetPredArity, Num, ForeignPred, ForeignArity) :-
@@ -7970,9 +8644,9 @@ parse_index_entry_constant(Entry, Rust) :-
         ->  format(string(Rust), '(Value::Integer(~w), "~w".to_string())', [N, Label])
         ;   ValStr = "true" -> format(string(Rust), '(Value::Bool(true), "~w".to_string())', [Label])
         ;   ValStr = "false" -> format(string(Rust), '(Value::Bool(false), "~w".to_string())', [Label])
-        ;   format(string(Rust), '(Value::Atom("~w".to_string()), "~w".to_string())', [ValStr, Label])
+        ;   format(string(Rust), '(Value::Atom("~w".to_string().into()), "~w".to_string())', [ValStr, Label])
         )
-    ;   format(string(Rust), '(Value::Atom("~w".to_string()), "unknown".to_string())', [Entry])
+    ;   format(string(Rust), '(Value::Atom("~w".to_string().into()), "unknown".to_string())', [Entry])
     ).
 
 parse_index_entry_structure(Entry, Rust) :-
@@ -8219,6 +8893,31 @@ generate_setup_foreign_predicates_rust(DetectedKernels, Code) :-
     )),
     Code = Body.
 
+%% rust_generate_setup_foreign(+DetectedKernels, +StoreLines, +StoreKeys, -Code)
+%  setup_foreign_predicates() + foreign_pred_keys() combining detected FFI
+%  kernels and D43 store-backed seek sources. Delegates to the kernel-only
+%  generator when nothing at all is registered (keeps the `_vm` no-arg form).
+rust_generate_setup_foreign(Kernels, StoreLines, StoreKeys, Code) :-
+    (   Kernels == [], StoreLines == []
+    ->  generate_setup_foreign_predicates_rust([], Code)
+    ;   pairs_keys(Kernels, KKeys),
+        with_output_to(string(Body), (
+            format('pub fn setup_foreign_predicates(vm: &mut WamState) {~n'),
+            forall(member(KV, Kernels), emit_kernel_registration(KV)),
+            forall(member(Line, StoreLines), format('~w~n', [Line])),
+            format('}~n~n'),
+            format('pub fn foreign_pred_keys() -> HashSet<String> {~n'),
+            format('    let mut s = HashSet::new();~n'),
+            forall(member(K, KKeys),
+                   format('    s.insert("~w".to_string());~n', [K])),
+            forall(member(K, StoreKeys),
+                   format('    s.insert("~w".to_string());~n', [K])),
+            format('    s~n'),
+            format('}~n')
+        )),
+        Code = Body
+    ).
+
 %% emit_kernel_registration(+Key-Kernel)
 %  Emit Rust registration statements for a single detected kernel.
 emit_kernel_registration(Key-Kernel) :-
@@ -8351,6 +9050,14 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
          use_lmdb_zero=UseLmdbZero,
          use_heed=UseHeed,
          use_rayon=UseRayon],
+        CargoContent0),
+    % Decorate-sort (round #1 hot-path opt): expose the sort-comparator path as
+    % a Cargo feature (default ON) so an ON build and an OFF build are
+    % sha-distinct binaries for a clean A/B, while output stays byte-identical.
+    % Appended here rather than in the shared cargo template so the wiring stays
+    % inside the wam_rust target (the shared template also feeds other lanes).
+    atom_concat(CargoContent0,
+        '\n[features]\ndefault = ["decorate_sort", "intern"]\n# When off, the sort/msort/keysort/setof builtins fall back to the original\n# `term_compare` (re-deref) path; output is byte-identical to the on build.\ndecorate_sort = []\n# Hot-path opt #2 (D96): intern functor/atom/var names to u32 ids so term\n# construction, `deref_var` and the `"f/N"` functor parse stop allocating tiny\n# name Strings. Default ON (A/B: B3 -29% Ir/-29% wall, B2 -41% Ir/-32% wall,\n# byte-identical). Off = the pre-intern String path, kept for A/B via\n# `--no-default-features --features decorate_sort`; the two are sha-distinct.\nintern = []\n# T7 parallel-aggregate path (state.rs `#[cfg(feature="parallel")]`). Declared\n# so Cargo\'s unexpected-cfgs lint knows the name (adding [features] above turns\n# that lint on). Off by default and empty: enabling it needs rayon, which is a\n# hard dep only under the generator\'s parallel(true) option.\nparallel = []\n',
         CargoContent),
     directory_file_path(ProjectDir, 'Cargo.toml', CargoPath),
     write_file(CargoPath, CargoContent),
@@ -8426,13 +9133,28 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     directory_file_path(SrcDir, 'boundary_cache.rs', BoundaryPath),
     write_file(BoundaryPath, BoundaryCode),
 
-    % Generate setup_foreign_predicates function for detected kernels
-    generate_setup_foreign_predicates_rust(DetectedKernels, SetupForeignCode),
+    % Always emit src/seek_fact_source.rs (D43 store-backed P/2 seek reader).
+    % It has no external deps beyond std + crate::value, so it compiles into
+    % every crate; store-less builds simply never register a source.
+    read_template_file('templates/targets/rust_wam/seek_fact_source.rs.mustache', SeekTemplate),
+    render_template(SeekTemplate, [date=Date], SeekCode),
+    directory_file_path(SrcDir, 'seek_fact_source.rs', SeekPath),
+    write_file(SeekPath, SeekCode),
+
+    % Generate setup_foreign_predicates: detected kernels + any store-backed
+    % seek sources declared via rust_wam_fact_sources.
+    rust_store_fact_setup_lines(Options, StoreSetupLines, StoreSetupKeys),
+    rust_generate_setup_foreign(DetectedKernels, StoreSetupLines, StoreSetupKeys, SetupForeignCode),
 
     % Compile predicates and generate lib.rs
     pairs_keys(DetectedKernels, DetectedKeys),
     compile_predicates_for_project(ProjectPredicates, [foreign_pred_keys(DetectedKeys)|Options], PredicatesCode),
-    format(string(FullPredicatesCode), "~w\n\n~w", [SetupForeignCode, PredicatesCode]),
+    % Declare the seek module at crate root (mod decls may follow the `use`s the
+    % lib template emits). state.rs references crate::seek_fact_source, so the
+    % declaration must be present in every crate.
+    format(string(FullPredicatesCode),
+        "pub mod seek_fact_source;\n\n~w\n\n~w",
+        [SetupForeignCode, PredicatesCode]),
     render_named_template(rust_wam_lib,
         [module_name=ModuleName, date=Date, predicates_code=FullPredicatesCode,
          use_lmdb_zero=UseLmdbZero,
@@ -8536,15 +9258,30 @@ compile_predicates_for_project(Predicates0, Options, Code) :-
     % synthesise their enum/body helpers (added to the compile set) and record a
     % rewrite to splice a par_aggregate instruction over the begin/end block.
     rust_inject_embedded_par_aggregates(Predicates1, Options, Predicates, EmbeddedRewrites),
-    % Pass 1: classify each predicate as native, wam, or failed
+    % Pass 1: classify each predicate as native, wam, or failed.
+    % F11 self-tail-recursion lowering is default-OFF (measured net-negative on
+    % B2 — see docs/reports/wam_rust_f11_census_and_stage1.md); publish the gate
+    % as a module flag the emitter honors uniformly across emit modes.
+    ( rust_f11_enabled(Options) -> nb_setval(rust_f11_flag, true) ; nb_setval(rust_f11_flag, false) ),
     classify_predicates(Predicates, Options, Classified),
     % Pass 2: collect WAM entries with cumulative PCs, build shared table
     collect_wam_entries(Classified, 1, EmbeddedRewrites, WamEntries, AllInstrParts, AllLabelParts),
     % Generate shared WAM table if any WAM predicates exist
     (   WamEntries \== []
-    ->  atomic_list_concat(AllInstrParts, '\n', AllInstrs),
-        atomic_list_concat(AllLabelParts, '\n', AllLabels),
-        format(string(SharedCode),
+    ->  atomic_list_concat(AllLabelParts, '\n', AllLabels),
+        length(AllInstrParts, NInstrParts),
+        % A single vec![...] of the whole program in one function makes rustc's
+        % optimizer memory blow up super-linearly with function size; past a few
+        % thousand instructions an opt-level>=2 build is OOM-killed. Split large
+        % programs into per-chunk builder functions the optimizer handles
+        % cheaply. The threshold (6000) sits above every crate that compiled as
+        % one vec before this change, so their generated output is byte-identical
+        % and only genuinely large programs (e.g. the store-backed resolver at
+        % ~9.9k instructions) take the chunked path.
+        (   NInstrParts > 6000
+        ->  rust_shared_wam_chunked(AllInstrParts, AllLabels, SharedCode)
+        ;   atomic_list_concat(AllInstrParts, '\n', AllInstrs),
+            format(string(SharedCode),
 'use std::sync::OnceLock;
 
 static SHARED_WAM: OnceLock<(Vec<Instruction>, HashMap<String, usize>)> = OnceLock::new();
@@ -8564,6 +9301,7 @@ pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
     let (code, labels) = get_shared_wam();
     (code.clone(), labels.clone())
 }', [AllLabels, AllInstrs])
+        )
     ;   % No shared-WAM predicates in this project. Still emit
         % shared_wam_program/0: templates/targets/rust_wam/main.rs.mustache
         % (and materialisation_setup.rs.mustache) import and call it
@@ -8591,7 +9329,10 @@ pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
     % T9 call-site dispatch: a crate-level fact_table_call referenced by the
     % Call/Execute handlers (always emitted; empty match when no fact tables).
     rust_fact_table_dispatch_fn(Classified, DispatchCode),
-    format(string(Code), "~w\n\n~w", [Body1, DispatchCode]).
+    % D55 sound intermediate: a crate-level lowered_call referenced by the same
+    % two handlers (always emitted; empty match when nothing is eligible).
+    rust_lowered_dispatch_fn(Classified, Options, LoweredDispatchCode),
+    format(string(Code), "~w\n\n~w\n\n~w", [Body1, DispatchCode, LoweredDispatchCode]).
 
 %% rust_fact_table_dispatch_fn(+Classified, -Code)
 %  Emit `fact_table_call(vm, pred, cont_pc) -> Option<bool>`: a match over the
@@ -8613,13 +9354,447 @@ pub fn fact_table_call(vm: &mut WamState, pred: &str, cont_pc: usize) -> Option<
     }
 }', [ArmsStr]).
 
+% =====================================================================
+% D55 sound intermediate: reaching the LOWERED tier from the interpreter
+% =====================================================================
+%
+% `emit_mode(functions)` lowers most predicates to direct Rust functions, but
+% until now nothing routed an interpreted `call`/`execute` to one: the lowered
+% functions kept their WAM label and were dead code. The hook below is shaped
+% exactly like T9's `fact_table_call/3` — a crate-level name-keyed match
+% consulted by both the Call and Execute arms BEFORE label lookup.
+%
+% Dispatching every lowered predicate would be UNSOUND: the lowered tier is
+% first-solution-only (a lowered function returns `bool` and leaves no choice
+% point for the caller to retry), while the interpreter backtracks. So only the
+% classes whose first solution is their ONLY solution are offered, and even
+% those are checked at runtime (see `WamState::lowered_dispatch`, which rolls
+% the machine back and declines when the call leaves a choice point behind).
+%
+% Eligibility is a greatest fixpoint over the call graph — start with every
+% `deterministic` / `clause_chain` predicate and drop any whose body reaches
+% something not itself eligible, until nothing more drops. Self- and mutual
+% recursion therefore stay eligible, which is the same optimistic-then-swept
+% shape mprolog's whole-predicate classifier uses for the identical problem
+% (`docs/proposals/MPROLOG_MINING_NOTES.md`, finding F2).
+%
+% Disable with `lowered_dispatch(false)`; it is otherwise on whenever
+% `emit_mode(functions)` is.
+
+%% rust_lowered_dispatch_fn(+Classified, +Options, -Code)
+%
+%  Two banks are offered through `lowered_call`:
+%   * The D55 sound-intermediate bank (emit_mode(functions) only): the cp-clean
+%     greatest-fixpoint over deterministic / clause_chain candidates.
+%   * The F11 tail-loop bank (EVERY emit mode): tail_loop candidates whose body
+%     is rollback-safe (only pure builtins, no foreign calls). Their user body
+%     calls run floor-protected and the runtime lowered_dispatch guard declines
+%     any call that turns out non-deterministic, so the conservative cp-clean
+%     fixpoint is not needed here — see the F11 header in
+%     wam_rust_lowered_emitter.pl.
+rust_lowered_dispatch_fn(Classified, Options, Code) :-
+    (   option(lowered_dispatch(false), Options)
+    ->  Eligible = []
+    ;   rust_lowered_dispatch_candidates(Classified, Cands),
+        partition(rust_cand_tail_loop, Cands, TailCands, OtherCands),
+        include(rust_f11_dispatch_ok, TailCands, F11Eligible),
+        (   option(emit_mode(functions), Options)
+        ->  % A dispatched F11 predicate leaves no choice point (guard-enforced),
+            % so it is cp-clean to its callers: seed the fixpoint with its keys.
+            findall(K, member(lo_cand(K, _, _, _, _), F11Eligible), F11Keys),
+            rust_lowered_dispatch_fixpoint(OtherCands, F11Keys, OtherEligible)
+        ;   OtherEligible = []
+        ),
+        append(F11Eligible, OtherEligible, Eligible0)
+    ),
+    % Stage 2 region 1: wire the fused matching_deps/4 ⊕ dep_to_req/3 region in
+    % front of the D55/F11 banks when the flag is on and the frozen shape is
+    % present. Its runtime half (WamState::region_matching_deps_dispatch) carries
+    % the G-1..G-5 argument; here we only route the call to it. Any other bank's
+    % matching_deps/4 arm is dropped so the region arm is the single match arm.
+    (   \+ option(lowered_dispatch(false), Options),
+        rust_region1_applicable(Options)
+    ->  exclude(rust_region1_is_matching_deps, Eligible0, Eligible1),
+        RegionArm1 = '        "matching_deps/4" => vm.region_matching_deps_dispatch(cont_pc),',
+        RegionArms1 = [RegionArm1]
+    ;   Eligible1 = Eligible0,
+        RegionArms1 = []
+    ),
+    % Stage 2 region 2: wire the fused matching_versions/4 ⊕ satisfies/2 ⊕
+    % version_lt/2 region (its whole segs_lt/order_lt/order_val transitive chain
+    % is inlined natively) in front of the banks when the flag is on and the
+    % frozen shape is present. `satisfies`/`version_lt` are SHARED with other
+    % callers, so the region inlines a PRIVATE native copy of each and leaves the
+    % interpreted predicates fully intact — only the matching_versions/4 dispatch
+    % arm routes to the native region, so no other call site changes behaviour.
+    (   \+ option(lowered_dispatch(false), Options),
+        rust_region2_applicable(Options)
+    ->  exclude(rust_region2_is_matching_versions, Eligible1, Eligible2),
+        RegionArm2 = '        "matching_versions/4" => vm.region_matching_versions_dispatch(cont_pc),',
+        RegionArms2 = [RegionArm2]
+    ;   Eligible2 = Eligible1,
+        RegionArms2 = []
+    ),
+    % Stage 2 region 3a (B3 index builder): wire the fused key_dep_rows/3 ⊕
+    % dep_to_req/3 region when the flag is on and the frozen shape is present.
+    % dep_to_req is region 1's already-validated native, reused here; only the
+    % key_dep_rows/3 dispatch arm routes to the region. The store lane's
+    % key_dep_rows_store never matches.
+    (   \+ option(lowered_dispatch(false), Options),
+        rust_region3a_applicable(Options)
+    ->  exclude(rust_region3a_is_key_dep_rows, Eligible2, Eligible3a),
+        RegionArm3a = '        "key_dep_rows/3" => vm.region_key_dep_rows_dispatch(cont_pc),',
+        RegionArms3a = [RegionArm3a]
+    ;   Eligible3a = Eligible2,
+        RegionArms3a = []
+    ),
+    % Stage 2 region 3b (B3 index builder): wire the fused group_keyed/2 ⊕
+    % same_key/4 region when the flag is on and the frozen shape is present.
+    % same_key is called only from group_keyed and is inlined natively (nested
+    % loop with an explicit accumulator, no resume-state CP). One region serves
+    % both group_keyed call sites (dep rows and pkg rows). The store lane never
+    % matches.
+    (   \+ option(lowered_dispatch(false), Options),
+        rust_region3b_applicable(Options)
+    ->  exclude(rust_region3b_is_group_keyed, Eligible3a, Eligible3b),
+        RegionArm3b = '        "group_keyed/2" => vm.region_group_keyed_dispatch(cont_pc),',
+        RegionArms3b = [RegionArm3b]
+    ;   Eligible3b = Eligible3a,
+        RegionArms3b = []
+    ),
+    % Stage 2 region 4 (B3 index builder): wire the fused build_tree/4 (balanced
+    % BST builder over a difference list) when the flag is on and the frozen shape
+    % is present. It is deterministic (single clause, hard `->` commit, no CP), so
+    % it stays in the deterministic tier. The store lane never calls build_tree on
+    % its resolve path.
+    (   \+ option(lowered_dispatch(false), Options),
+        rust_region4_applicable(Options)
+    ->  exclude(rust_region4_is_build_tree, Eligible3b, Eligible4),
+        RegionArm4 = '        "build_tree/4" => vm.region_build_tree_dispatch(cont_pc),',
+        RegionArms4 = [RegionArm4]
+    ;   Eligible4 = Eligible3b,
+        RegionArms4 = []
+    ),
+    % Stage 2 region 5 (committed-choice recursion): wire dep_breaks/5 — a
+    % committing `->` whose CONDITION contains a nondet sub-goal
+    % (dep_breaks_need, member/2 inside), committed before the sole tail
+    % self-call in the else-branch. Class (a) per the D85 classification: the
+    % commit makes it single-solution, so it lowers deterministically exactly
+    % like regions 1-4 (native loop, P2 minimal snapshot, NO resume-state CP).
+    % dep_breaks_need/selected_ver are inlined natively; satisfies/version_lt
+    % reuse region 2's private native copies. The store lane never matches.
+    (   \+ option(lowered_dispatch(false), Options),
+        rust_region5_applicable(Options)
+    ->  exclude(rust_region5_is_dep_breaks, Eligible4, Eligible),
+        RegionArm5 = '        "dep_breaks/5" => vm.region_dep_breaks_dispatch(cont_pc),',
+        RegionArms5 = [RegionArm5]
+    ;   Eligible = Eligible4,
+        RegionArms5 = []
+    ),
+    append([RegionArms1, RegionArms2, RegionArms3a, RegionArms3b, RegionArms4, RegionArms5], RegionArms),
+    % Genrec: the GENERAL deterministic-recursion recognizer
+    % (src/unifyweaver/core/deterministic_recursion.pl, taxonomy §11). Where the
+    % regions above are per-predicate =@=-frozen shape checks, genrec classifies
+    % every candidate predicate with the compositional pipeline and emits arms
+    % for the sibling-gap tail_loop family (filter_satisfies, key_pkg_rows) that
+    % no region covers. Regions WIN on overlap: genrec never emits a key a region
+    % claims, and its emittable shapes (list_filter over satisfies/2, pkg-row
+    % list_map_index) do not overlap any region shape. Genrec keys are dropped
+    % from Eligible so no F11/D55 bank arm duplicates them.
+    (   \+ option(lowered_dispatch(false), Options),
+        rust_genrec_enabled(Options)
+    ->  rust_genrec_arms(Classified, GenrecArms, GenrecKeys)
+    ;   GenrecArms = [], GenrecKeys = []
+    ),
+    exclude(rust_genrec_claims(GenrecKeys), Eligible, EligibleFinal),
+    append([RegionArms, GenrecArms], AllPreArms),
+    maplist(rust_lowered_dispatch_arm, EligibleFinal, Arms0),
+    append(AllPreArms, Arms0, Arms),
+    atomic_list_concat(Arms, '\n', ArmsStr),
+    length(Arms, NEligible),
+    format(string(Code),
+'/// D55 call-site dispatch for the LOWERED tier: route a WAM call/execute of a
+/// lowered predicate to its generated Rust function. `Some(ok)` when the
+/// predicate ran as a function, `None` when the interpreter must handle it
+/// (not eligible, first argument outside the dispatch guard, or the call
+/// turned out not to be deterministic and was rolled back).
+///
+/// ~w predicate(s) offered here. Only classes whose first solution is their
+/// only solution are, and `WamState::lowered_dispatch` verifies that claim at
+/// runtime rather than trusting it.
+#[allow(unused_variables)]
+pub fn lowered_call(vm: &mut WamState, pred: &str, cont_pc: usize) -> Option<bool> {
+    match pred {
+~w
+        _ => None,
+    }
+}', [NEligible, ArmsStr]).
+
+% =====================================================================
+% Genrec — general deterministic-recursion recognizer wiring (step 7)
+% =====================================================================
+%
+% The Rust back-end (step 7) of the target-agnostic classifier in
+% src/unifyweaver/core/deterministic_recursion.pl. It runs
+% deterministic_recursion_class/3 over every candidate predicate and, for those
+% assigned a tail_loop shape it has a proven byte-identical native method for,
+% emits a `lowered_call` dispatch arm. This REPLACES per-predicate hand-written
+% =@= region recognizers with one general classifier — the sibling-gap family
+% (filter_satisfies, key_pkg_rows) is covered here with no region of its own.
+%
+% Default ON. Disable with the `genrec(false)` option or `UW_GENREC_OFF=1`.
+% Additionally shape-gated: a project without a matching tail_loop predicate is
+% unaffected either way (no arm emitted). The native methods
+% (WamState::region_filter_satisfies_dispatch / region_key_pkg_rows_dispatch)
+% carry the G-1..G-5 argument and the runtime decline guard.
+
+%% rust_genrec_enabled(+Options) is semidet.
+rust_genrec_enabled(Options) :-
+    (   option(genrec(V), Options)
+    ->  V == true
+    ;   getenv('UW_GENREC_OFF', '1')
+    ->  fail
+    ;   true
+    ).
+
+%% rust_genrec_arms(+Classified, -Arms, -Keys) is det.
+%  Classify every candidate predicate; for each whose class maps to an
+%  emittable native method (and whose key no region already claims), emit the
+%  dispatch arm. Keys are returned so they can be dropped from the F11/D55 bank.
+rust_genrec_arms(Classified, Arms, Keys) :-
+    findall(P/A, member(classified(_, P, A, _, _), Classified), PIs0),
+    sort(PIs0, PIs),
+    rust_region_claimed_keys(Claimed),
+    findall(Key-Arm,
+            ( member(P/A, PIs),
+              format(atom(Key), '~w/~w', [P, A]),
+              \+ memberchk(Key, Claimed),
+              catch(deterministic_recursion_class(user, P/A, Class), _, fail),
+              rust_genrec_shape_method(Class, Method),
+              format(atom(Arm),
+                     '        "~w" => vm.~w(cont_pc),', [Key, Method]) ),
+            Pairs0),
+    % de-dup on key (a predicate is classified once, but guard against repeats)
+    rust_genrec_dedup(Pairs0, Pairs),
+    pairs_keys_values(Pairs, Keys, Arms).
+
+rust_genrec_dedup([], []).
+rust_genrec_dedup([K-V|T], [K-V|R]) :-
+    exclude([K2-_]>>(K2==K), T, T1),
+    rust_genrec_dedup(T1, R).
+
+%% rust_region_claimed_keys(-Keys) is det.
+%  The fixed set of predicate keys the hand-built regions 1-5 own; genrec never
+%  emits an arm for any of them (regions win on overlap). None of these are in
+%  genrec's emittable shape set anyway — this is belt-and-suspenders.
+rust_region_claimed_keys([
+    'matching_deps/4', 'matching_versions/4', 'key_dep_rows/3',
+    'group_keyed/2', 'build_tree/4', 'dep_breaks/5'
+]).
+
+%% rust_genrec_shape_method(+Class, -Method) is semidet.
+%  Map a classifier CLASS to the WamState native dispatch method that lowers it
+%  byte-identically. Only the shapes with a proven native method are listed;
+%  every other class (committed, mutual, bst_descent, dep-row map, decline, ...)
+%  simply has no clause here, so genrec declines it to the interpreter.
+rust_genrec_shape_method(tail_loop(_:_, list_filter(satisfies/2, 1, 2, 3)),
+                         region_filter_satisfies_dispatch).
+rust_genrec_shape_method(tail_loop(_:_, list_map_index(package/2, pkg_row, 1, 2, 3)),
+                         region_key_pkg_rows_dispatch).
+rust_genrec_shape_method(tail_loop(_:_, bst_descent('t'/4, 2, 3, 1, 2, 3)),
+                         region_tree_lookup_dispatch).
+
+%% rust_genrec_claims(+Keys, +Cand) is semidet.
+%  True when the F11/D55 candidate's key is one genrec already emitted (so it
+%  must be dropped from the bank to avoid a duplicate match arm).
+rust_genrec_claims(Keys, lo_cand(K, _, _, _, _)) :- memberchk(K, Keys).
+
+%% rust_lowered_dispatch_candidates(+Classified, -Cands)
+%  Every lowered predicate whose class carries a dispatch profile, paired with
+%  it. `lo_cand(Key, FuncName, Reason, Guards, Profile)`.
+rust_lowered_dispatch_candidates(Classified, Cands) :-
+    findall(lo_cand(Key, FName, Reason, Guards, Profile),
+            ( member(classified(_, P, A, lowered, lowered_code(_, WamCode, Reason)),
+                     Classified),
+              rust_lowered_dispatch_profile(P/A, WamCode, Reason, Profile),
+              Profile = dispatch_profile(_, _, _, Guards),
+              format(atom(Key), '~w/~w', [P, A]),
+              rust_lowered_func_name(P/A, FName) ),
+            Cands).
+
+%% rust_lowered_dispatch_fixpoint(+Cands, -Eligible)
+%
+%  A LOWERED function reaches a user callee by running it INTERPRETED
+%  (`emit_one(call)` sets `pc` and calls `run()`), NOT by calling the callee's
+%  own lowered function. That matters for soundness: an interpreted MULTI-clause
+%  callee leaves a live choice point behind, and a later failure inside the
+%  same lowered function backtracks straight into it — escaping the function's
+%  own scope. `lowered_dispatch`'s after-the-fact "did it leave a choice point"
+%  guard cannot undo damage that already happened mid-run.
+%
+%  So a predicate may be dispatched only when every user predicate it calls is
+%  CP-CLEAN when interpreted: single-clause (a `deterministic` or `ite_lowered`
+%  class — an `ite` prunes its transient choice point with a cut before
+%  returning), transitively. `clause_chain` / `multi_clause_n` are multi-clause
+%  and are NOT cp-clean, so nothing that calls one is dispatched — but a LEAF
+%  `clause_chain` (a fact table like `kind/2`) has no user callees and stays
+%  dispatchable itself; an interpreted caller then reaches it through
+%  `lowered_call`, which routes to its clean cascade.
+%
+%  Both properties are greatest fixpoints over the candidate call graph
+%  (start optimistic, drop what fails, repeat) — the same shape mprolog's
+%  whole-predicate determinism classifier uses (`MPROLOG_MINING_NOTES.md`, F2).
+rust_lowered_dispatch_fixpoint(Cands, Eligible) :-
+    rust_lowered_dispatch_fixpoint(Cands, [], Eligible).
+
+%% rust_lowered_dispatch_fixpoint(+Cands, +ExtraCleanKeys, -Eligible)
+%  ExtraCleanKeys are predicates already known cp-clean to callers (e.g. the
+%  dispatched F11 tail-loop bank, which leaves no choice point).
+rust_lowered_dispatch_fixpoint(Cands, ExtraCleanKeys, Eligible) :-
+    rust_cp_clean_fixpoint(Cands, ExtraCleanKeys, CleanKeys0),
+    append(ExtraCleanKeys, CleanKeys0, CleanKeys),
+    include(rust_lowered_dispatch_ok(CleanKeys), Cands, Eligible).
+
+%% rust_cp_clean_fixpoint(+Cands, +ExtraCleanKeys, -CleanKeys)
+%  The keys of candidates that are single-clause (deterministic/ite_lowered)
+%  AND transitively call only cp-clean predicates with pure builtins and no
+%  foreign calls. ExtraCleanKeys are treated as cp-clean throughout.
+rust_cp_clean_fixpoint(Cands, ExtraCleanKeys, CleanKeys) :-
+    include(rust_cp_clean_shaped, Cands, Clean0),
+    rust_cp_clean_iterate(Clean0, ExtraCleanKeys, Cands, Clean),
+    findall(K, member(lo_cand(K, _, _, _, _), Clean), CleanKeys).
+
+rust_cp_clean_shaped(lo_cand(_, _, Reason, _, _)) :-
+    memberchk(Reason, [deterministic, ite_lowered]).
+
+rust_cp_clean_iterate(Clean, ExtraCleanKeys, AllCands, Result) :-
+    findall(K, member(lo_cand(K, _, _, _, _), Clean), Keys0),
+    append(ExtraCleanKeys, Keys0, Keys),
+    include(rust_lowered_dispatch_ok(Keys), Clean, Kept),
+    (   Kept == Clean
+    ->  Result = Clean
+    ;   rust_cp_clean_iterate(Kept, ExtraCleanKeys, AllCands, Result)
+    ).
+
+rust_lowered_dispatch_ok(CleanKeys,
+        lo_cand(_, _, _, _, dispatch_profile(Calls, Builtins, Foreigns, _))) :-
+    Foreigns == [],
+    forall(member(C, Calls), rust_lowered_dispatch_key_member(C, CleanKeys)),
+    forall(member(B, Builtins), rust_lowered_dispatch_pure_builtin(B)).
+
+%% rust_cand_tail_loop(+Cand) — the candidate is an F11 tail-loop predicate.
+rust_cand_tail_loop(lo_cand(_, _, tail_loop, _, _)).
+
+%% rust_f11_dispatch_ok(+Cand) is semidet.
+%  An F11 tail-loop candidate is offered when its body is rollback-safe: no
+%  foreign calls and only side-effect-free builtins (so a declined attempt the
+%  guard rolls back is invisible). User body CALLS are permitted — they run
+%  floor-protected and the runtime guard declines any that leave a choice point,
+%  so they cannot corrupt the caller or drop solutions.
+rust_f11_dispatch_ok(lo_cand(_, _, tail_loop, _,
+        dispatch_profile(_Calls, Builtins, Foreigns, _))) :-
+    Foreigns == [],
+    forall(member(B, Builtins), rust_lowered_dispatch_pure_builtin(B)).
+
+rust_lowered_dispatch_key_member(C, Keys) :-
+    ( atom(C) -> K = C ; atom_string(K, C) ),
+    memberchk(K, Keys).
+
+%% rust_lowered_dispatch_pure_builtin(+Op)
+%  The builtins a dispatched predicate may use. `builtin_call` runs through
+%  `execute_builtin` in the lowered function EXACTLY as it does in the
+%  interpreter, so a builtin can never make the two paths disagree by itself.
+%  The list is still a whitelist rather than a blacklist for one reason: when
+%  `lowered_dispatch` declines and rolls back, anything the attempt already did
+%  to the outside world would happen twice. Everything here is side-effect
+%  free, so a rolled-back attempt is invisible.
+rust_lowered_dispatch_pure_builtin(Op0) :-
+    ( atom(Op0) -> Op = Op0 ; atom_string(Op, Op0) ),
+    rust_dispatch_pure_builtin(Op).
+
+rust_dispatch_pure_builtin('!/0').
+rust_dispatch_pure_builtin('is/2').
+rust_dispatch_pure_builtin('=/2').
+rust_dispatch_pure_builtin('\\=/2').
+rust_dispatch_pure_builtin('=:=/2').
+rust_dispatch_pure_builtin('=\\=/2').
+rust_dispatch_pure_builtin('</2').
+rust_dispatch_pure_builtin('>/2').
+rust_dispatch_pure_builtin('=</2').
+rust_dispatch_pure_builtin('>=/2').
+rust_dispatch_pure_builtin('==/2').
+rust_dispatch_pure_builtin('\\==/2').
+rust_dispatch_pure_builtin('@</2').
+rust_dispatch_pure_builtin('@>/2').
+rust_dispatch_pure_builtin('@=</2').
+rust_dispatch_pure_builtin('@>=/2').
+rust_dispatch_pure_builtin('compare/3').
+rust_dispatch_pure_builtin('var/1').
+rust_dispatch_pure_builtin('nonvar/1').
+rust_dispatch_pure_builtin('atom/1').
+rust_dispatch_pure_builtin('atomic/1').
+rust_dispatch_pure_builtin('number/1').
+rust_dispatch_pure_builtin('integer/1').
+rust_dispatch_pure_builtin('float/1').
+rust_dispatch_pure_builtin('compound/1').
+rust_dispatch_pure_builtin('callable/1').
+rust_dispatch_pure_builtin('is_list/1').
+rust_dispatch_pure_builtin('ground/1').
+rust_dispatch_pure_builtin('functor/3').
+rust_dispatch_pure_builtin('arg/3').
+rust_dispatch_pure_builtin('=../2').
+rust_dispatch_pure_builtin('copy_term/2').
+rust_dispatch_pure_builtin('succ/2').
+rust_dispatch_pure_builtin('plus/3').
+rust_dispatch_pure_builtin('atom_length/2').
+rust_dispatch_pure_builtin('atom_codes/2').
+rust_dispatch_pure_builtin('atom_chars/2').
+rust_dispatch_pure_builtin('atom_number/2').
+rust_dispatch_pure_builtin('char_code/2').
+rust_dispatch_pure_builtin('number_codes/2').
+rust_dispatch_pure_builtin('number_chars/2').
+rust_dispatch_pure_builtin('upcase_atom/2').
+rust_dispatch_pure_builtin('downcase_atom/2').
+rust_dispatch_pure_builtin('length/2').
+rust_dispatch_pure_builtin('msort/2').
+rust_dispatch_pure_builtin('sort/2').
+rust_dispatch_pure_builtin('keysort/2').
+rust_dispatch_pure_builtin('reverse/2').
+rust_dispatch_pure_builtin('sum_list/2').
+rust_dispatch_pure_builtin('sumlist/2').
+rust_dispatch_pure_builtin('max_list/2').
+rust_dispatch_pure_builtin('min_list/2').
+rust_dispatch_pure_builtin('list_to_set/2').
+rust_dispatch_pure_builtin('numlist/3').
+
+%% rust_lowered_dispatch_arm(+Cand, -Arm)
+%  `deterministic` dispatches unconditionally; `clause_chain` only when the
+%  first argument is bound to one of the cascade's own discriminators — with
+%  anything else the cascade returns `false` meaning "declined", which an
+%  interpreted caller must never read as "failed".
+rust_lowered_dispatch_arm(lo_cand(Key, FName, _, [], _), Arm) :- !,
+    format(string(Arm),
+'        "~w" => vm.lowered_dispatch(~w, cont_pc),', [Key, FName]).
+rust_lowered_dispatch_arm(lo_cand(Key, FName, _, Guards, _), Arm) :-
+    maplist(rust_lowered_guard_literal, Guards, Lits),
+    atomic_list_concat(Lits, ' | ', LitStr),
+    format(string(Arm),
+'        "~w" => {
+            let __hit = matches!(vm.match_reg_atom_str("A1"), ~w);
+            if __hit { vm.lowered_dispatch(~w, cont_pc) } else { None }
+        }', [Key, LitStr, FName]).
+
+rust_lowered_guard_literal(Atom, Lit) :-
+    escape_rust_string(Atom, Esc),
+    format(atom(Lit), 'Some("~w")', [Esc]).
+
 rust_fact_dispatch_arm(Pred/Arity, Arm) :-
     rust_safe_function_name(Pred/Arity, FName),
     numlist(1, Arity, Idxs),
     findall(Read,
             ( member(I, Idxs),
               format(atom(Read),
-                '            let a~w = vm.get_reg_raw("A~w").unwrap_or(Value::Unbound("_A~w".to_string()));',
+                '            let a~w = vm.get_reg_raw("A~w").unwrap_or(Value::Unbound("_A~w".to_string().into()));',
                 [I, I, I]) ),
             Reads),
     atomic_list_concat(Reads, '\n', ReadsStr),
@@ -8645,6 +9820,657 @@ rust_pred_has_control_constructs(Module:Pred/Arity) :-
     rust_body_has_control(Body),
     !.
 
+%% rust_f11_enabled(+Options) is semidet.
+%  F11 self-tail-recursion lowering is a landed-but-DEFAULT-OFF bank. Stage 0's
+%  census found 46% of the B2 differential's call/execute dispatches land in
+%  F11-shaped predicates, but the subset that is SAFE to dispatch as a
+%  first-solution native loop (mutually-exclusive clauses, pure body — see
+%  wam_rust_f11_lowerable) is dominated by SHALLOW catalog accessors, and for
+%  those the two per-call register-file snapshots the sound-dispatch guard and
+%  the loop take (the O2 cost in WAM_RUST_LOWERED_TIER_THROUGHPUT_PLAN.md §2)
+%  cost about what the removed interpreter dispatch saves. Measured
+%  neutral-to-slightly-negative on B2/B3, so it does not get banked ON by
+%  default ("bank it if it helps"). It is fully implemented, gated, and both
+%  lanes stay green WITH it on (term 2600/0/0, store 503/0). Enable with the
+%  `f11_tail_loop(true)` option or `UW_F11_ON=1`.
+rust_f11_enabled(Options) :-
+    ( option(f11_tail_loop(V), Options), V == true -> true
+    ; getenv('UW_F11_ON', '1')
+    ).
+
+% =====================================================================
+% Stage 2 region 1 — fused native region: matching_deps/4 ⊕ dep_to_req/3
+% =====================================================================
+%
+% The lowered-tier throughput plan §5 (P1 direct native calls + P2 minimal
+% snapshot) and the measurement spike (docs/reports/wam_rust_stage2_spike.md)
+% target this one deterministic region. The RUNTIME half lives in
+% state.rs.mustache (`WamState::region_matching_deps_dispatch`, which carries
+% the full G-1..G-5 soundness argument); this half decides, at codegen time,
+% whether to WIRE that region into `lowered_call` for the project being built.
+%
+% It is wired only when BOTH hold:
+%   1. the region flag is on (default ON; disable with `region1(false)` or
+%      `UW_REGION1_OFF=1`), and
+%   2. the project actually contains `matching_deps/4` and `dep_to_req/3` with
+%      the EXACT frozen resolver shape (rust_region1_*_ok/0 below). The check is
+%      structural (variable *sharing* is verified, names are not), so it fires
+%      for resolver.pl and never for a different program — the store lane uses
+%      `matching_deps_store`/`dep_to_req_store` and so never matches.
+% When either fails the region method is inert dead code and the predicate runs
+% interpreted, byte-identical to the region-off build.
+
+%% rust_region1_is_matching_deps(+Cand) is semidet.
+rust_region1_is_matching_deps(lo_cand(K, _, _, _, _)) :- K == 'matching_deps/4'.
+
+%% rust_region1_enabled(+Options) is semidet.
+%  Default ON. The real interleaved drift-cancelling A/B on this box
+%  (docs/reports/wam_rust_stage2_region1.md) measured a clear, consistent
+%  ~7% B2 win (median ~1.6 s of ~23.3 s) with every gate green in both
+%  configs, CONFIRMING the spike's ~6% machinery-floor projection — so per the
+%  plan's "bank it if it helps" the region is banked ON. It stays gated:
+%  disable with the `region1(false)` option or `UW_REGION1_OFF=1`. The region
+%  is additionally shape-gated (rust_region1_applicable/1), so a project
+%  without the frozen matching_deps/dep_to_req shape is unaffected either way.
+rust_region1_enabled(Options) :-
+    (   option(region1(V), Options)
+    ->  V == true
+    ;   getenv('UW_REGION1_OFF', '1')
+    ->  fail
+    ;   true
+    ).
+
+%% rust_region1_applicable(+Options) is semidet.
+rust_region1_applicable(Options) :-
+    rust_region1_enabled(Options),
+    rust_region1_matching_deps_ok,
+    rust_region1_dep_to_req_ok.
+
+%% rust_region1_matching_deps_ok is semidet.
+%  matching_deps/4 is EXACTLY the frozen two clauses:
+%    matching_deps([], _, _, []).
+%    matching_deps([depends(N,V,D,C)|Rest], Name, Ver, Out) :-
+%        ( N==Name, V==Ver -> dep_to_req(D,C,Req), Out=[Req|Rs] ; Out=Rs ),
+%        matching_deps(Rest, Name, Ver, Rs).
+%  The whole head-body clause is compared with `=@=` (variant): structure is
+%  matched exactly and variable *sharing* is verified, while variable *names*
+%  are irrelevant.
+rust_region1_matching_deps_ok :-
+    findall(H-B, ( H = matching_deps(_,_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [_, _],
+    once(( member(CB, Clauses), rust_region1_md_base(CB) )),
+    once(( member(CR, Clauses), rust_region1_md_rec(CR) )).
+
+rust_region1_md_base(Clause) :-
+    Clause =@= ( matching_deps([], _, _, []) - true ).
+
+rust_region1_md_rec(Clause) :-
+    Clause =@= ( matching_deps([depends(N,V,D,C)|Rest], Name, Ver, Out) -
+                 ( ( N==Name, V==Ver
+                   -> dep_to_req(D,C,Req), Out=[Req|Rs]
+                   ;  Out=Rs
+                   ),
+                   matching_deps(Rest, Name, Ver, Rs) ) ).
+
+%% rust_region1_dep_to_req_ok is semidet.
+%  dep_to_req/3 is EXACTLY the frozen committed rewrite:
+%    dep_to_req(alternatives(Alts), _C, req(alternatives(Alts), any)) :- !.
+%    dep_to_req(D, C, req(D, C)).
+rust_region1_dep_to_req_ok :-
+    findall(H-B, ( H = dep_to_req(_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [_, _],
+    once(( member(C1, Clauses), rust_region1_dtr_c1(C1) )),
+    once(( member(C2, Clauses), rust_region1_dtr_c2(C2) )).
+
+rust_region1_dtr_c1(Clause) :-
+    Clause =@= ( dep_to_req(alternatives(Alts), _C, req(alternatives(Alts), any)) - ! ).
+
+rust_region1_dtr_c2(Clause) :-
+    Clause =@= ( dep_to_req(D, C, req(D, C)) - true ).
+
+% =====================================================================
+% Stage 2 region 2 — fused native region:
+%   matching_versions/4 ⊕ satisfies/2 ⊕ version_lt/2
+% =====================================================================
+%
+% `matching_versions/4` walks a package list and per element runs the
+% `N==Name, satisfies(V,C)` guard; `satisfies/2` in turn calls `version_lt/2`,
+% whose deb/3 path pulls in the whole Debian §5.6.12 segment walk
+% (`segs_lt`/`pad_head`/`segs_lt_1`/`order_lt`/`order_val`). This region fuses
+% that entire 3-deep chain into ONE native function entered once
+% (`WamState::region_matching_versions_dispatch`, which carries the G-1..G-5
+% argument in state.rs.mustache).
+%
+% SHARED-CALLEE handling: `satisfies/2` (and `version_lt/2`) are called from many
+% other predicates (filter_satisfies, layer_satisfies, provide_satisfies, cmp_ver,
+% ...). The region does NOT lower the shared predicate globally; it inlines a
+% PRIVATE native copy for the fused region only and leaves the interpreted
+% `satisfies`/`version_lt` untouched, so every other call site is byte-identical
+% to the region-off build BY CONSTRUCTION. Only the `matching_versions/4` dispatch
+% arm routes to the region.
+%
+% Wired only when BOTH the region flag is on AND the project contains the EXACT
+% frozen shape of ALL of matching_versions/satisfies/version_lt AND the whole
+% version_lt transitive chain (each verified below with `=@=`, variant: structure
+% and variable *sharing* matched, names irrelevant). The store lane's
+% matching_versions_store never matches, so it is untouched.
+
+%% rust_region2_is_matching_versions(+Cand) is semidet.
+rust_region2_is_matching_versions(lo_cand(K, _, _, _, _)) :- K == 'matching_versions/4'.
+
+%% rust_region2_enabled(+Options) is semidet.
+%  Default decision recorded in docs/reports/wam_rust_stage2_region2.md after the
+%  real interleaved A/B. Disable with the `region2(false)` option or
+%  `UW_REGION2_OFF=1`; force on with `region2(true)`.
+rust_region2_enabled(Options) :-
+    (   option(region2(V), Options)
+    ->  V == true
+    ;   getenv('UW_REGION2_OFF', '1')
+    ->  fail
+    ;   true
+    ).
+
+%% rust_region2_applicable(+Options) is semidet.
+%  Region-2 flag on AND every predicate in the fused chain matches its frozen
+%  shape. Any mismatch leaves the region inert (dead code) and the predicates
+%  run interpreted.
+rust_region2_applicable(Options) :-
+    rust_region2_enabled(Options),
+    rust_region2_matching_versions_ok,
+    rust_region2_satisfies_ok,
+    rust_region2_version_lt_ok,
+    rust_region2_segs_lt_ok,
+    rust_region2_pad_head_ok,
+    rust_region2_segs_lt_1_ok,
+    rust_region2_order_lt_ok,
+    rust_region2_order_val_ok.
+
+%% rust_region2_matching_versions_ok is semidet.
+%    matching_versions([], _Name, _C, []).
+%    matching_versions([package(N, V)|Rest], Name, C, Out) :-
+%        ( N == Name, satisfies(V, C) -> Out = [V|Vs] ; Out = Vs ),
+%        matching_versions(Rest, Name, C, Vs).
+rust_region2_matching_versions_ok :-
+    findall(H-B, ( H = matching_versions(_,_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [_, _],
+    once(( member(CB, Clauses), rust_region2_mv_base(CB) )),
+    once(( member(CR, Clauses), rust_region2_mv_rec(CR) )).
+
+rust_region2_mv_base(Clause) :-
+    Clause =@= ( matching_versions([], _, _, []) - true ).
+
+rust_region2_mv_rec(Clause) :-
+    Clause =@= ( matching_versions([package(N, V)|Rest], Name, C, Out) -
+                 ( ( N == Name, satisfies(V, C)
+                   -> Out = [V|Vs]
+                   ;  Out = Vs
+                   ),
+                   matching_versions(Rest, Name, C, Vs) ) ).
+
+%% rust_region2_satisfies_ok is semidet.
+%    satisfies(_Ver, any).
+%    satisfies(Ver, eq(E))    :- Ver = E.
+%    satisfies(Ver, gte(G))   :- \+ version_lt(Ver, G).
+%    satisfies(Ver, lte(G))   :- \+ version_lt(G, Ver).
+%    satisfies(Ver, lt(H))    :- version_lt(Ver, H).
+%    satisfies(Ver, gt(H))    :- version_lt(H, Ver).
+%    satisfies(Ver, range(Lo, Hi)) :- \+ version_lt(Ver, Lo), version_lt(Ver, Hi).
+rust_region2_satisfies_ok :-
+    findall(H-B, ( H = satisfies(_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1, C2, C3, C4, C5, C6, C7],
+    C1 =@= ( satisfies(_Ver, any) - true ),
+    C2 =@= ( satisfies(Ver2, eq(E)) - (Ver2 = E) ),
+    C3 =@= ( satisfies(Ver3, gte(G3)) - ( \+ version_lt(Ver3, G3) ) ),
+    C4 =@= ( satisfies(Ver4, lte(G4)) - ( \+ version_lt(G4, Ver4) ) ),
+    C5 =@= ( satisfies(Ver5, lt(H5)) - version_lt(Ver5, H5) ),
+    C6 =@= ( satisfies(Ver6, gt(H6)) - version_lt(H6, Ver6) ),
+    C7 =@= ( satisfies(Ver7, range(Lo, Hi)) -
+             ( \+ version_lt(Ver7, Lo), version_lt(Ver7, Hi) ) ).
+
+%% rust_region2_version_lt_ok is semidet.
+%    version_lt(v(A,B,C), v(D,E,F)) :-
+%        ( A < D -> true ; A =:= D, B < E -> true ; A =:= D, B =:= E, C < F ).
+%    version_lt(deb(E1,U1,R1), deb(E2,U2,R2)) :-
+%        ( E1 < E2 -> true
+%        ; E1 =:= E2, segs_lt(U1,U2) -> true
+%        ; E1 =:= E2, \+ segs_lt(U1,U2), \+ segs_lt(U2,U1), segs_lt(R1,R2) ).
+rust_region2_version_lt_ok :-
+    findall(H-B, ( H = version_lt(_,_), clause(user:H, B) ), Clauses),
+    Clauses = [_, _],
+    once(( member(CV, Clauses), rust_region2_vlt_v3(CV) )),
+    once(( member(CD, Clauses), rust_region2_vlt_deb(CD) )).
+
+rust_region2_vlt_v3(Clause) :-
+    Clause =@= ( version_lt(v(A, B, C), v(D, E, F)) -
+                 ( A < D
+                 -> true
+                 ;  A =:= D, B < E
+                 -> true
+                 ;  A =:= D, B =:= E, C < F
+                 ) ).
+
+rust_region2_vlt_deb(Clause) :-
+    Clause =@= ( version_lt(deb(E1, U1, R1), deb(E2, U2, R2)) -
+                 ( E1 < E2
+                 -> true
+                 ;  E1 =:= E2, segs_lt(U1, U2)
+                 -> true
+                 ;  E1 =:= E2, \+ segs_lt(U1, U2), \+ segs_lt(U2, U1), segs_lt(R1, R2)
+                 ) ).
+
+%% rust_region2_segs_lt_ok is semidet.
+%    segs_lt([], []) :- !, fail.
+%    segs_lt(A, B) :- pad_head(A, A1), pad_head(B, B1), segs_lt_1(A1, B1).
+rust_region2_segs_lt_ok :-
+    findall(H-B, ( H = segs_lt(_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1, C2],
+    C1 =@= ( segs_lt([], []) - ( !, fail ) ),
+    C2 =@= ( segs_lt(A, B) - ( pad_head(A, A1), pad_head(B, B1), segs_lt_1(A1, B1) ) ).
+
+%% rust_region2_pad_head_ok is semidet.
+%    pad_head([], [s([], 0)]) :- !.
+%    pad_head(Segs, Segs).
+rust_region2_pad_head_ok :-
+    findall(H-B, ( H = pad_head(_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1, C2],
+    C1 =@= ( pad_head([], [s([], 0)]) - ! ),
+    C2 =@= ( pad_head(Segs, Segs) - true ).
+
+%% rust_region2_segs_lt_1_ok is semidet.
+%    segs_lt_1([s(O1,N1)|T1], [s(O2,N2)|T2]) :-
+%        ( order_lt(O1,O2) -> true
+%        ; O1 == O2, N1 < N2 -> true
+%        ; O1 == O2, N1 =:= N2, segs_lt(T1,T2) ).
+rust_region2_segs_lt_1_ok :-
+    findall(H-B, ( H = segs_lt_1(_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1],
+    C1 =@= ( segs_lt_1([s(O1, N1)|T1], [s(O2, N2)|T2]) -
+             ( order_lt(O1, O2)
+             -> true
+             ;  O1 == O2, N1 < N2
+             -> true
+             ;  O1 == O2, N1 =:= N2, segs_lt(T1, T2)
+             ) ).
+
+%% rust_region2_order_lt_ok is semidet.
+%    order_lt([], []) :- !, fail.
+%    order_lt([], [C|_]) :- order_val(C, V), 0 < V.
+%    order_lt([C|_], []) :- order_val(C, V), V < 0.
+%    order_lt([A|As], [B|Bs]) :-
+%        order_val(A, VA), order_val(B, VB),
+%        ( VA < VB -> true ; VA =:= VB, order_lt(As, Bs) ).
+rust_region2_order_lt_ok :-
+    findall(H-B, ( H = order_lt(_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1, C2, C3, C4],
+    C1 =@= ( order_lt([], []) - ( !, fail ) ),
+    C2 =@= ( order_lt([], [C2c|_]) - ( order_val(C2c, V2), 0 < V2 ) ),
+    C3 =@= ( order_lt([C3c|_], []) - ( order_val(C3c, V3), V3 < 0 ) ),
+    C4 =@= ( order_lt([A4|As4], [B4|Bs4]) -
+             ( order_val(A4, VA), order_val(B4, VB),
+               ( VA < VB -> true ; VA =:= VB, order_lt(As4, Bs4) ) ) ).
+
+%% rust_region2_order_val_ok is semidet.
+%    order_val(126, -1) :- !.
+%    order_val(C, C) :- C >= 65, C =< 90, !.
+%    order_val(C, C) :- C >= 97, C =< 122, !.
+%    order_val(C, V) :- V is C + 256.
+rust_region2_order_val_ok :-
+    findall(H-B, ( H = order_val(_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1, C2, C3, C4],
+    C1 =@= ( order_val(126, -1) - ! ),
+    C2 =@= ( order_val(Ca, Ca) - ( Ca >= 65, Ca =< 90, ! ) ),
+    C3 =@= ( order_val(Cb, Cb) - ( Cb >= 97, Cb =< 122, ! ) ),
+    C4 =@= ( order_val(Cc, Vc) - ( Vc is Cc + 256 ) ).
+
+% =====================================================================
+% Stage 2 region 3a — fused native region: key_dep_rows/3 ⊕ dep_to_req/3
+% =====================================================================
+%
+% The B3 index builder. `key_dep_rows/3` walks a dependency list building a
+% keyed row (N-V)-I-Req per element (with a monotone position counter I) and
+% calls `dep_to_req/3` per element. This is region 1's `matching_deps/4` shape
+% minus the N==Name/V==Ver filter plus the counter, so it is compiled to a
+% native loop with the identical P1 (direct native dep_to_req) + P2 (minimal
+% snapshot) recipe. The RUNTIME half lives in state.rs.mustache
+% (`WamState::region_key_dep_rows_dispatch`, which carries the full G-1..G-5
+% argument); this half decides, at codegen time, whether to WIRE it into
+% `lowered_call`. `dep_to_req/3` is region 1's already-validated native, reused.
+%
+% Wired only when BOTH hold: the region-3a flag is on (default ON; disable with
+% `region3a(false)` or `UW_REGION3A_OFF=1`) AND the project contains
+% `key_dep_rows/3` and `dep_to_req/3` with the EXACT frozen resolver shape
+% (verified with `=@=`, variant: structure + variable sharing, names irrelevant).
+% The store lane uses `key_dep_rows_store`/`dep_to_req_store` and never matches.
+
+%% rust_region3a_is_key_dep_rows(+Cand) is semidet.
+rust_region3a_is_key_dep_rows(lo_cand(K, _, _, _, _)) :- K == 'key_dep_rows/3'.
+
+%% rust_region3a_enabled(+Options) is semidet.
+%  Default per the real B3 A/B recorded in docs/reports/wam_rust_stage2_region3.md.
+rust_region3a_enabled(Options) :-
+    (   option(region3a(V), Options)
+    ->  V == true
+    ;   getenv('UW_REGION3A_OFF', '1')
+    ->  fail
+    ;   true
+    ).
+
+%% rust_region3a_applicable(+Options) is semidet.
+rust_region3a_applicable(Options) :-
+    rust_region3a_enabled(Options),
+    rust_region3a_key_dep_rows_ok,
+    rust_region1_dep_to_req_ok.   % same dep_to_req/3, reuse region 1's check
+
+%% rust_region3a_key_dep_rows_ok is semidet.
+%    key_dep_rows([], _I, []).
+%    key_dep_rows([depends(N, V, D, C)|Rest], I, [(N-V)-I-Req|Ks]) :-
+%        dep_to_req(D, C, Req),
+%        I1 is I + 1,
+%        key_dep_rows(Rest, I1, Ks).
+rust_region3a_key_dep_rows_ok :-
+    findall(H-B, ( H = key_dep_rows(_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [_, _],
+    once(( member(CB, Clauses), rust_region3a_kdr_base(CB) )),
+    once(( member(CR, Clauses), rust_region3a_kdr_rec(CR) )).
+
+rust_region3a_kdr_base(Clause) :-
+    Clause =@= ( key_dep_rows([], _, []) - true ).
+
+rust_region3a_kdr_rec(Clause) :-
+    Clause =@= ( key_dep_rows([depends(N,V,D,C)|Rest], I, [(N-V)-I-Req|Ks]) -
+                 ( dep_to_req(D, C, Req),
+                   I1 is I + 1,
+                   key_dep_rows(Rest, I1, Ks) ) ).
+
+% =====================================================================
+% Stage 2 region 3b — fused native region: group_keyed/2 ⊕ same_key/4
+% =====================================================================
+%
+% The other B3 index builder. `group_keyed/2` walks a SORTED keyed-row list and
+% groups consecutive rows sharing a key, using `same_key/4` (called only from
+% here) to consume each run. Both recursions are last-call and both output lists
+% are built top-down, so the fusion is a pair of nested native loops with an
+% explicit accumulator (no resume-state choice point — this stays deterministic;
+% the nondet round is not entered). The row shape `K-_-X` matches BOTH call
+% sites (dep rows `(N-V)-I-Req` and pkg rows `N-I-V`), so one region serves both.
+% The RUNTIME half lives in state.rs.mustache
+% (`WamState::region_group_keyed_dispatch` + `region_key_val`, carrying G-1..G-5).
+%
+% Wired only when BOTH hold: the region-3b flag is on (default ON; disable with
+% `region3b(false)` or `UW_REGION3B_OFF=1`) AND the project contains
+% `group_keyed/2` and `same_key/4` with the EXACT frozen resolver shape. The
+% store lane's renamed copies never match.
+
+%% rust_region3b_is_group_keyed(+Cand) is semidet.
+rust_region3b_is_group_keyed(lo_cand(K, _, _, _, _)) :- K == 'group_keyed/2'.
+
+%% rust_region3b_enabled(+Options) is semidet.
+rust_region3b_enabled(Options) :-
+    (   option(region3b(V), Options)
+    ->  V == true
+    ;   getenv('UW_REGION3B_OFF', '1')
+    ->  fail
+    ;   true
+    ).
+
+%% rust_region3b_applicable(+Options) is semidet.
+rust_region3b_applicable(Options) :-
+    rust_region3b_enabled(Options),
+    rust_region3b_group_keyed_ok,
+    rust_region3b_same_key_ok.
+
+%% rust_region3b_group_keyed_ok is semidet.
+%    group_keyed([], []).
+%    group_keyed([K-_-X|Rest], [K-[X|Xs]|Gs]) :-
+%        same_key(Rest, K, Xs, Rest1),
+%        group_keyed(Rest1, Gs).
+rust_region3b_group_keyed_ok :-
+    findall(H-B, ( H = group_keyed(_,_), clause(user:H, B) ), Clauses),
+    Clauses = [_, _],
+    once(( member(CB, Clauses), rust_region3b_gk_base(CB) )),
+    once(( member(CR, Clauses), rust_region3b_gk_rec(CR) )).
+
+rust_region3b_gk_base(Clause) :-
+    Clause =@= ( group_keyed([], []) - true ).
+
+rust_region3b_gk_rec(Clause) :-
+    Clause =@= ( group_keyed([K-_-X|Rest], [K-[X|Xs]|Gs]) -
+                 ( same_key(Rest, K, Xs, Rest1),
+                   group_keyed(Rest1, Gs) ) ).
+
+%% rust_region3b_same_key_ok is semidet.
+%    same_key([], _K, [], []).
+%    same_key([K2-I-X|Rest], K, Xs, Rest1) :-
+%        ( K2 == K -> Xs = [X|Xs1], same_key(Rest, K, Xs1, Rest1)
+%        ;           Xs = [], Rest1 = [K2-I-X|Rest] ).
+rust_region3b_same_key_ok :-
+    findall(H-B, ( H = same_key(_,_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [_, _],
+    once(( member(CB, Clauses), rust_region3b_sk_base(CB) )),
+    once(( member(CR, Clauses), rust_region3b_sk_rec(CR) )).
+
+rust_region3b_sk_base(Clause) :-
+    Clause =@= ( same_key([], _, [], []) - true ).
+
+rust_region3b_sk_rec(Clause) :-
+    Clause =@= ( same_key([K2-I-X|Rest], K, Xs, Rest1) -
+                 ( K2 == K
+                 -> Xs = [X|Xs1], same_key(Rest, K, Xs1, Rest1)
+                 ;  Xs = [], Rest1 = [K2-I-X|Rest]
+                 ) ).
+
+% =====================================================================
+% Stage 2 region 4 — fused native region: build_tree/4 (balanced BST builder)
+% =====================================================================
+%
+% The remaining B3 index builder (~21.9% of B3 `resolve_layered` dispatches, per
+% the census). `list_to_tree/2` measures the grouped-row list length and hands it
+% to `build_tree/4`, which builds a balanced binary search tree by
+% divide-and-conquer, threading the leftover suffix out through a difference-list
+% `Rest`:
+%
+%   build_tree(N, Pairs, Tree, Rest) :-
+%       ( N =:= 0
+%       -> Tree = t, Rest = Pairs
+%       ;  NL is (N - 1) // 2, NR is N - 1 - NL,
+%          build_tree(NL, Pairs, L, [K-V|Mid]),
+%          build_tree(NR, Mid,   R, Rest),
+%          Tree = t(L, K, V, R) ).
+%
+% It is a SINGLE clause whose body is a hard `->` commit on `N =:= 0` (an
+% arithmetic test leaving no choice point), so it is deterministic — at most one
+% solution — with NO backtracking and NO resume-state choice point. The recursion
+% is non-tail (two self-calls then the node is built) but balanced (NL, NR differ
+% by at most one), so its depth is O(log N); the RUNTIME half (state.rs.mustache
+% `WamState::region_build_tree_dispatch`, carrying the full G-1..G-5 argument)
+% realises it as a bounded native recursion over the materialised input (an
+% explicit stack of depth O(log N)) — no interpreter recursion, no frame, no CP.
+% This half decides, at codegen time, whether to WIRE it into `lowered_call`.
+%
+% Wired only when BOTH hold: the region-4 flag is on (default ON; disable with
+% `region4(false)` or `UW_REGION4_OFF=1`) AND the project contains `build_tree/4`
+% with the EXACT frozen resolver shape (verified with `=@=`). The store lane does
+% not call build_tree on its resolve path, so the region is inert there.
+
+%% rust_region4_is_build_tree(+Cand) is semidet.
+rust_region4_is_build_tree(lo_cand(K, _, _, _, _)) :- K == 'build_tree/4'.
+
+%% rust_region4_enabled(+Options) is semidet.
+%  Default per the real B3 A/B recorded in docs/reports/wam_rust_stage2_region4.md.
+rust_region4_enabled(Options) :-
+    (   option(region4(V), Options)
+    ->  V == true
+    ;   getenv('UW_REGION4_OFF', '1')
+    ->  fail
+    ;   true
+    ).
+
+%% rust_region4_applicable(+Options) is semidet.
+rust_region4_applicable(Options) :-
+    rust_region4_enabled(Options),
+    rust_region4_build_tree_ok.
+
+%% rust_region4_build_tree_ok is semidet.
+%    build_tree(N, Pairs, Tree, Rest) :-
+%        ( N =:= 0
+%        -> Tree = t, Rest = Pairs
+%        ;  NL is (N - 1) // 2, NR is N - 1 - NL,
+%           build_tree(NL, Pairs, L, [K-V|Mid]),
+%           build_tree(NR, Mid,   R, Rest),
+%           Tree = t(L, K, V, R) ).
+rust_region4_build_tree_ok :-
+    findall(H-B, ( H = build_tree(_,_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1],
+    C1 =@= ( build_tree(N, Pairs, Tree, Rest) -
+             ( N =:= 0
+             -> Tree = t, Rest = Pairs
+             ;  NL is (N - 1) // 2,
+                NR is N - 1 - NL,
+                build_tree(NL, Pairs, L, [K-V|Mid]),
+                build_tree(NR, Mid, R, Rest),
+                Tree = t(L, K, V, R)
+             ) ).
+
+% =====================================================================
+% Stage 2 region 5 — committed-choice recursion: dep_breaks/5
+% =====================================================================
+%
+% The last of the three "nondet drivers" the D85 classification
+% (docs/reports/wam_rust_nondet_driver_classification.md) examined. Unlike the
+% other two (pick/7 is dead code; blocked_from/4 genuinely exposes alternatives),
+% dep_breaks/5 is class (a) — committed-per-iteration recursion — and is
+% therefore ALREADY deterministic. It needs NO resolver rewrite; only a
+% recognizer widening of the region-4 committing-`->` family.
+%
+%   dep_breaks([depends(HN, HV, D, C)|Rest], N, V, Acc, COut) :-
+%       (   HN == N,
+%           HV == V,
+%           dep_breaks_need(Acc, D, C, CBroken)   % NONDET (member/2 inside) but
+%       ->  COut = CBroken                         % COMMITTED by the `->` before
+%       ;   dep_breaks(Rest, N, V, Acc, COut)      % the sole tail self-call (else)
+%       ).
+%
+% Where region 4's build_tree/4 special-cases an ARITHMETIC committing test
+% (`N =:= 0`, which is semidet and never binds), region 5 widens the family to a
+% committing condition whose per-iteration goal CONTAINS a nondeterministic
+% sub-goal (`dep_breaks_need`, which enumerates alternatives via member/2). The
+% `->` commits that sub-goal's first solution BEFORE the else-branch tail
+% self-call, so backtracking can never re-enter it: the whole predicate has
+% AT MOST ONE solution and leaves NO choice point — exactly the deterministic
+% tier (regions 1–4), G-4/G-5 vacuous. It is additionally consumed
+% first-solution (`dep_breaks_moving/5` under first_broken/4's `-> Broken=...`),
+% so the commit is doubly confirmed.
+%
+% The single clause has no base case: on an empty depends list there is no
+% matching clause, so dep_breaks/5 FAILS (which the runtime realises as
+% Some(false), the interpreter's genuine failure — NOT a decline).
+%
+% The runtime half (state.rs.mustache `WamState::region_dep_breaks_dispatch`,
+% carrying the full G-1..G-5 argument) walks the depends list natively, evaluates
+% the committing condition per element with P1 direct native calls
+% (`region_dep_breaks_need`/`region_selected_ver` inlining the frozen
+% dep_breaks_need/selected_ver, reusing region 2's already-validated
+% `region_satisfies`/`region_version_lt`), and on the first committing element
+% unifies COut and returns — a plain native loop, P2 3-scalar minimal snapshot,
+% NO resume-state choice point.
+%
+% Wired only when BOTH hold: the region-5 flag is on (default ON; disable with
+% `region5(false)` or `UW_REGION5_OFF=1`) AND the project contains dep_breaks/5,
+% dep_breaks_need/4 and selected_ver/3 with the EXACT frozen resolver shapes
+% (verified with `=@=`), plus satisfies/2 + version_lt/2 (the region 2 chain the
+% native condition reuses). The store lane's `_store`-renamed copies never match.
+
+%% rust_region5_is_dep_breaks(+Cand) is semidet.
+rust_region5_is_dep_breaks(lo_cand(K, _, _, _, _)) :- K == 'dep_breaks/5'.
+
+%% rust_region5_enabled(+Options) is semidet.
+%  Default per the real B2 A/B recorded in docs/reports/wam_rust_stage2_region5.md.
+rust_region5_enabled(Options) :-
+    (   option(region5(V), Options)
+    ->  V == true
+    ;   getenv('UW_REGION5_OFF', '1')
+    ->  fail
+    ;   true
+    ).
+
+%% rust_region5_applicable(+Options) is semidet.
+%  The committing-condition body AND the two committed sub-predicates it inlines
+%  natively AND the satisfies/version_lt chain region 2 already validates. If any
+%  shape is off, the region is not wired and the interpreter runs dep_breaks/5.
+rust_region5_applicable(Options) :-
+    rust_region5_enabled(Options),
+    rust_region5_dep_breaks_ok,
+    rust_region5_dep_breaks_need_ok,
+    rust_region5_selected_ver_ok,
+    % The condition's satisfies/version_lt sub-goals reuse region 2's native
+    % copies, so the same frozen shapes must be present.
+    rust_region2_satisfies_ok,
+    rust_region2_version_lt_ok,
+    rust_region2_segs_lt_ok,
+    rust_region2_pad_head_ok,
+    rust_region2_segs_lt_1_ok.
+
+%% rust_region5_dep_breaks_ok is semidet.
+%    dep_breaks([depends(HN, HV, D, C)|Rest], N, V, Acc, COut) :-
+%        (   HN == N, HV == V, dep_breaks_need(Acc, D, C, CBroken)
+%        ->  COut = CBroken
+%        ;   dep_breaks(Rest, N, V, Acc, COut)
+%        ).
+rust_region5_dep_breaks_ok :-
+    findall(H-B, ( H = dep_breaks(_,_,_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1],
+    C1 =@= ( dep_breaks([depends(HN, HV, D, C)|Rest], N, V, Acc, COut) -
+             ( ( HN == N,
+                 HV == V,
+                 dep_breaks_need(Acc, D, C, CBroken)
+               ->  COut = CBroken
+               ;   dep_breaks(Rest, N, V, Acc, COut)
+               ) ) ).
+
+%% rust_region5_dep_breaks_need_ok is semidet.
+%    dep_breaks_need(Acc, alternatives(Alts), _C, COut) :- !,
+%        member(dep(D, COut), Alts), selected_ver(Acc, D, MV),
+%        \+ satisfies(MV, COut),
+%        \+ (member(dep(D2, C2), Alts), selected_ver(Acc, D2, MV2), satisfies(MV2, C2)).
+%    dep_breaks_need(Acc, D, C, C) :- selected_ver(Acc, D, MV), \+ satisfies(MV, C).
+rust_region5_dep_breaks_need_ok :-
+    findall(H-B, ( H = dep_breaks_need(_,_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [CAlt, CPlain],
+    CAlt =@= ( dep_breaks_need(Acc, alternatives(Alts), _C, COut) -
+               ( !,
+                 member(dep(D, COut), Alts),
+                 selected_ver(Acc, D, MV),
+                 \+ satisfies(MV, COut),
+                 \+ ( member(dep(D2, C2), Alts),
+                      selected_ver(Acc, D2, MV2),
+                      satisfies(MV2, C2) )
+               ) ),
+    CPlain =@= ( dep_breaks_need(Acc2, D3, C3, C3) -
+                 ( selected_ver(Acc2, D3, MV3),
+                   \+ satisfies(MV3, C3) ) ).
+
+%% rust_region5_selected_ver_ok is semidet.
+%    selected_ver([H|Rest], Name, Ver) :-
+%        ( H = Name-Ver -> true ; selected_ver(Rest, Name, Ver) ).
+rust_region5_selected_ver_ok :-
+    findall(H-B, ( H = selected_ver(_,_,_), clause(user:H, B) ), Clauses),
+    Clauses = [C1],
+    C1 =@= ( selected_ver([HH|Rest], Name, Ver) -
+             ( HH = Name-Ver
+             -> true
+             ;  selected_ver(Rest, Name, Ver)
+             ) ).
+
+%% rust_pred_heads_exclusive(+Module, +Pred, +Arity) is semidet.
+%  True when the predicate's clause heads are pairwise non-unifiable — the
+%  determinism carrier the F11 tail-loop lowering requires (see
+%  rust_heads_mutually_exclusive/1 in wam_rust_lowered_emitter). Fresh copies
+%  are gathered so the live database heads are never bound.
+rust_pred_heads_exclusive(Module, Pred, Arity) :-
+    functor(Proto, Pred, Arity),
+    findall(H, ( clause(Module:Proto, _), copy_term(Proto, H) ), Heads),
+    rust_heads_mutually_exclusive(Heads).
+
 rust_body_has_control(G) :- var(G), !, fail.
 rust_body_has_control((_ -> _)) :- !.
 rust_body_has_control((_ ; _)) :- !.
@@ -8655,6 +10481,142 @@ rust_body_has_control(forall(_, _)) :- !.
 rust_body_has_control(!) :- !.
 rust_body_has_control((A , B)) :- !, ( rust_body_has_control(A) -> true ; rust_body_has_control(B) ).
 rust_body_has_control(_) :- fail.
+
+%% rust_wam_fact_source_spec(+P, +Arity, +Options, -Spec)
+%  True when Options declare a store-backed source for P/Arity. Only P/2 is
+%  served (mirrors the Go go_wam_fact_source_spec / wamjs contract).
+%    Spec = indexed(Prefix)   % D43 UWFI/UWIX seek store: Prefix.data + .idx
+%         | lmdb(Dir)         % opt-in; loud error if no reader is built in
+rust_wam_fact_source_spec(P, Arity, Options, Spec) :-
+    Arity =:= 2,
+    (   option(rust_wam_fact_sources(Sources), Options)
+    ->  true
+    ;   Sources = []
+    ),
+    member(source(PI, Spec), Sources),
+    rust_wam_fact_source_pi_match(PI, P, Arity).
+
+rust_wam_fact_source_pi_match(_:Name/Ar, P, Arity) :- !,
+    Name == P, Ar =:= Arity.
+rust_wam_fact_source_pi_match(Name/Ar, P, Arity) :-
+    Name == P, Ar =:= Arity.
+
+%% rust_fact_stream_wam_text(+P, +Arity, -WamText)
+%  The two-instruction predicate body served for a store fact source: dispatch
+%  to execute_foreign_predicate (native kind "seek_fact") then proceed. The
+%  caller reaches this by label like any other predicate.
+rust_fact_stream_wam_text(P, Arity, WamText) :-
+    format(atom(WamText),
+        '~w/~w:\n    call_foreign ~w/~w ~w\n    proceed\n',
+        [P, Arity, P, Arity, Arity]).
+
+%% rust_store_fact_setup_lines(+Options, -Lines, -Keys)
+%  One block of registration statements per store-backed source and the set of
+%  "name/arity" keys registered, for splicing into setup_foreign_predicates /
+%  foreign_pred_keys. indexed(Prefix) registers a seek source; lmdb(Dir)
+%  registers the loud-error tier.
+rust_store_fact_setup_lines(Options, Lines, Keys) :-
+    (   option(rust_wam_fact_sources(Sources), Options)
+    ->  true
+    ;   Sources = []
+    ),
+    findall(Block-Key,
+        ( member(source(PI, Spec), Sources),
+          rust_store_fact_source_pred(PI, Pred, Arity),
+          format(atom(Key), '~w/~w', [Pred, Arity]),
+          rust_store_fact_register_block(Key, Spec, Block)
+        ),
+        Pairs0),
+    sort(Pairs0, Pairs),
+    findall(B, member(B-_, Pairs), Lines),
+    findall(K, member(_-K, Pairs), Keys).
+
+rust_store_fact_source_pred(_:Name/Ar, Name, Ar) :- !.
+rust_store_fact_source_pred(Name/Ar, Name, Ar).
+
+rust_store_fact_register_block(Key, indexed(Prefix), Block) :-
+    rust_store_abs_path(Prefix, AbsPrefix),
+    escape_rust_string(AbsPrefix, EscPrefix),
+    format(atom(Block),
+'    vm.register_foreign_predicate("~w");
+    vm.register_foreign_native_kind("~w", "seek_fact");
+    vm.register_foreign_result_layout("~w", "tuple(2)");
+    vm.register_foreign_result_mode("~w", "stream");
+    vm.register_indexed_seek_fact2("~w", "~w");',
+        [Key, Key, Key, Key, Key, EscPrefix]).
+rust_store_fact_register_block(Key, lmdb(Dir), Block) :-
+    rust_store_abs_path(Dir, AbsDir),
+    escape_rust_string(AbsDir, EscDir),
+    format(atom(Block),
+'    vm.register_foreign_predicate("~w");
+    vm.register_foreign_native_kind("~w", "seek_fact");
+    vm.register_foreign_result_layout("~w", "tuple(2)");
+    vm.register_foreign_result_mode("~w", "stream");
+    vm.register_lmdb_seek_fact2("~w", "~w");',
+        [Key, Key, Key, Key, Key, EscDir]).
+
+rust_store_abs_path(Path, Abs) :-
+    atom_string(Path, PathStr),
+    working_directory(Cwd, Cwd),
+    (   catch(absolute_file_name(PathStr, Abs0, [relative_to(Cwd)]), _, fail),
+        Abs0 \== []
+    ->  Abs = Abs0
+    ;   Abs = PathStr
+    ).
+
+%% rust_shared_wam_chunked(+AllInstrParts, +AllLabels, -SharedCode)
+%  The chunked form of the shared WAM table: each ~800-instruction slice becomes
+%  a small wam_chunk_N() -> Vec<Instruction> builder the optimizer handles
+%  cheaply, and get_shared_wam concatenates them. Byte-for-byte equivalent to
+%  the single-vec form (same instruction order, same absolute PCs, so the
+%  label table is unchanged) but does not OOM rustc on large programs.
+rust_shared_wam_chunked(AllInstrParts, AllLabels, SharedCode) :-
+    rust_chunk_list(AllInstrParts, 800, Chunks),
+    findall(FnText-ExtLine,
+        ( nth0(I, Chunks, Chunk),
+          atomic_list_concat(Chunk, '\n', ChunkBody),
+          format(atom(FnText),
+'fn wam_chunk_~w() -> Vec<Instruction> {\n    vec![\n~w\n    ]\n}',
+                 [I, ChunkBody]),
+          format(atom(ExtLine), '        code.extend(wam_chunk_~w());', [I])
+        ),
+        Pairs),
+    findall(F, member(F-_, Pairs), FnTexts),
+    findall(E, member(_-E, Pairs), ExtLines),
+    atomic_list_concat(FnTexts, '\n\n', FnsBlock),
+    atomic_list_concat(ExtLines, '\n', ExtBlock),
+    format(string(SharedCode),
+'use std::sync::OnceLock;
+
+~w
+
+static SHARED_WAM: OnceLock<(Vec<Instruction>, HashMap<String, usize>)> = OnceLock::new();
+
+fn get_shared_wam() -> &\'static (Vec<Instruction>, HashMap<String, usize>) {
+    SHARED_WAM.get_or_init(|| {
+        let mut labels: HashMap<String, usize> = HashMap::new();
+~w
+        let mut code: Vec<Instruction> = Vec::new();
+~w
+        (code, labels)
+    })
+}
+
+pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
+    let (code, labels) = get_shared_wam();
+    (code.clone(), labels.clone())
+}', [FnsBlock, AllLabels, ExtBlock]).
+
+%% rust_chunk_list(+List, +Size, -Chunks)
+%  Split List into consecutive sublists of at most Size elements (order kept).
+rust_chunk_list([], _, []) :- !.
+rust_chunk_list(List, Size, [Chunk|Rest]) :-
+    length(Prefix, Size),
+    append(Prefix, Suffix, List),
+    !,
+    Chunk = Prefix,
+    rust_chunk_list(Suffix, Size, Rest).
+rust_chunk_list(List, _, [List]).
 
 %% classify_predicates(+Predicates, +Options, -Classified)
 %  Returns list of classify(Module, Pred, Arity, Strategy, ExtraData) terms.
@@ -8667,7 +10629,17 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     % inline because it exceeds the cap — it falls through to T4 below, but the
     % right fix is an external fact source.
     rust_maybe_warn_oversized_facts(Module:Pred/Arity, Options),
-    (   % T9 fact-table inline: an all-ground-facts predicate whose row count is
+    (   % D43 store-backed P/2 fact source: declared via rust_wam_fact_sources.
+        % Compile to a two-instruction body [call_foreign, proceed] (like the
+        % Go lane's call_fact_stream) so callers reach it by label exactly like
+        % any other predicate. The seek source itself is registered in
+        % setup_foreign_predicates. Checked first so a `:- dynamic` store
+        % predicate never falls through to the fact-table / dynamic paths.
+        rust_wam_fact_source_spec(Pred, Arity, Options, _Spec)
+    ->  rust_fact_stream_wam_text(Pred, Arity, WamText),
+        format(user_error, '  ~w/~w: store-backed fact source (seek)~n', [Pred, Arity]),
+        Entry = classified(Module, Pred, Arity, wam, WamText)
+    ;   % T9 fact-table inline: an all-ground-facts predicate whose row count is
         % in the inline window [t9_min_rows, t9_max_rows] compiles to a static
         % row table + first-arg hash index + choice-point enumeration, instead of
         % T4 instruction sequences. Default in-range (faster compile + correct vs
@@ -8736,8 +10708,19 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         % LLVM target made in M17). The Rust runtime now implements
         % both instructions.
         ( memberchk(ite_use_y_level(_), Options)
-        -> WamOptions = Options
-        ;  WamOptions = [ite_use_y_level(true)|Options]
+        -> WamOptions0 = Options
+        ;  WamOptions0 = [ite_use_y_level(true)|Options]
+        ),
+        % Inline bagof/3 and setof/3 into begin_aggregate/end_aggregate the
+        % same way findall/3 already is (the JS target has always compiled
+        % with this on). Without it they reached the backend as
+        % `execute bagof/3` -- a name with no label and no runtime builtin,
+        % i.e. an unconditional failure. The aggregate frame implements the
+        % witness-free semantics (fail on empty; setof sorts and dedups);
+        % a non-empty ISO witness list refuses to compile, loudly.
+        ( memberchk(inline_bagof_setof(_), WamOptions0)
+        -> WamOptions = WamOptions0
+        ;  WamOptions = [inline_bagof_setof(true)|WamOptions0]
         ),
         wam_target:compile_predicate_to_wam(Module:Pred/Arity, WamOptions, WamCode),
         (   option(foreign_lowering(ForeignSpec), Options),
@@ -8746,13 +10729,27 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
             compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, PredCode),
             format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
             Entry = classified(Module, Pred, Arity, wam_foreign, PredCode)
+        ;   % F11 self-tail-recursion -> native loop. Reachable in EVERY emit
+            % mode (a small, safe, first-solution bank), gated by
+            % f11_tail_loop (default on). Two gates beyond the WAM shape check:
+            % the clause heads must be mutually exclusive (determinism carrier,
+            % so committing to the loop's first solution drops no answer), and
+            % the usual decline-if-unsure fallback applies. See Stage 1 of
+            % docs/proposals/WAM_RUST_LOWERED_TIER_THROUGHPUT_PLAN.md.
+            rust_f11_enabled(Options),
+            wam_rust_lowerable(Pred/Arity, WamCode, tail_loop),
+            rust_pred_heads_exclusive(Module, Pred, Arity)
+        ->  lower_predicate_to_rust(Pred/Arity, WamCode, Options, RustLines),
+            atomic_list_concat(RustLines, '\n', PredCode),
+            format(user_error, '  ~w/~w: lowered (tail_loop F11)~n', [Pred, Arity]),
+            Entry = classified(Module, Pred, Arity, lowered, lowered_code(PredCode, WamCode, tail_loop))
         ;   % Try lowered emitter when emit_mode(functions)
             option(emit_mode(functions), Options),
             wam_rust_lowerable(Pred/Arity, WamCode, Reason)
         ->  lower_predicate_to_rust(Pred/Arity, WamCode, Options, RustLines),
             atomic_list_concat(RustLines, '\n', PredCode),
             format(user_error, '  ~w/~w: lowered (~w)~n', [Pred, Arity, Reason]),
-            Entry = classified(Module, Pred, Arity, lowered, lowered_code(PredCode, WamCode))
+            Entry = classified(Module, Pred, Arity, lowered, lowered_code(PredCode, WamCode, Reason))
         ;   % Standard WAM fallback: will use shared table
             format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
             Entry = classified(Module, Pred, Arity, wam, WamCode)
@@ -8781,7 +10778,7 @@ collect_wam_entries([classified(_, Pred, Arity, wam, WamCode)|Rest], PC, Rewrite
     collect_wam_entries(Rest, NextPC, Rewrites, RestEntries, RestInstrs, RestLabels),
     append(InstrParts, RestInstrs, AllInstrs),
     append(LabelParts, RestLabels, AllLabels).
-collect_wam_entries([classified(_, Pred, Arity, lowered, lowered_code(_, WamCode))|Rest], PC, Rewrites,
+collect_wam_entries([classified(_, Pred, Arity, lowered, lowered_code(_, WamCode, _))|Rest], PC, Rewrites,
                     [wam_entry(Pred, Arity, PC)|RestEntries],
                     AllInstrs, AllLabels) :-
     atom_string(WamCode, WamStr),
@@ -8830,7 +10827,7 @@ generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Re
                          WamEntries, Options, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: wam\n~w", [PredCode]),
     generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
-generate_predicate_codes([classified(_, _Pred, _Arity, lowered, lowered_code(PredCode, _))|Rest],
+generate_predicate_codes([classified(_, _Pred, _Arity, lowered, lowered_code(PredCode, _, _))|Rest],
                          WamEntries, Options, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: lowered\n~w", [PredCode]),
     generate_predicate_codes(Rest, WamEntries, Options, RestCodes).

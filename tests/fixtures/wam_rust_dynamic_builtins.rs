@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 fn at(s: &str) -> Value { Value::Atom(s.to_string()) }
 fn ub(s: &str) -> Value { Value::Unbound(s.to_string()) }
-fn fact(name: &str, args: Vec<Value>) -> Value { Value::Str(name.to_string(), args) }
+fn fact(name: &str, args: Vec<Value>) -> Value { Value::strv(name.to_string(), args) }
 fn rule(head: Value, body: Value) -> Value { fact(":-", vec![head, body]) }
 fn conj(left: Value, right: Value) -> Value { fact(",", vec![left, right]) }
 
@@ -572,7 +572,7 @@ fn generated_read_term_two_applies_variable_names() {
     let names = vm.deref_heap(&vm.deref_var(&names_raw));
     assert_eq!(
         names,
-        Value::List(vec![
+        Value::list(vec![
             fact("=", vec![at("A"), args[0].clone()]),
             fact("=", vec![at("B"), args[2].clone()]),
         ]),
@@ -592,7 +592,7 @@ fn asserted_rule_body_can_call_read_term_two() {
                 "read_term",
                 vec![
                     ub("T"),
-                    Value::List(vec![fact("variable_names", vec![ub("Names")])]),
+                    Value::list(vec![fact("variable_names", vec![ub("Names")])]),
                 ],
             ),
         ),
@@ -623,7 +623,7 @@ fn asserted_rule_body_can_call_read_term_two() {
     let names = vm.deref_heap(&vm.deref_var(&names_raw));
     assert_eq!(
         names,
-        Value::List(vec![
+        Value::list(vec![
             fact("=", vec![at("A"), args[0].clone()]),
             fact("=", vec![at("B"), args[2].clone()]),
         ]),
@@ -654,7 +654,7 @@ fn generated_atom_to_term_preserves_variables_and_bindings() {
     let bindings = vm.deref_heap(&vm.deref_var(&bindings_raw));
     assert_eq!(
         bindings,
-        Value::List(vec![
+        Value::list(vec![
             fact("=", vec![at("A"), args[0].clone()]),
             fact("=", vec![at("B"), args[2].clone()]),
         ]),
@@ -749,7 +749,7 @@ fn read_term_from_atom_returns_variable_metadata_with_shared_variables() {
     vm.set_reg_str("A2", ub("Term"));
     vm.set_reg_str(
         "A3",
-        Value::List(vec![
+        Value::list(vec![
             fact("variables", vec![ub("Variables")]),
             fact("variable_names", vec![ub("Names")]),
             fact("singletons", vec![ub("Singletons")]),
@@ -771,7 +771,7 @@ fn read_term_from_atom_returns_variable_metadata_with_shared_variables() {
     let variables = vm.deref_heap(&vm.deref_var(&variables_raw));
     assert_eq!(
         variables,
-        Value::List(vec![
+        Value::list(vec![
             args[0].clone(),
             args[1].clone(),
             args[3].clone(),
@@ -784,7 +784,7 @@ fn read_term_from_atom_returns_variable_metadata_with_shared_variables() {
     let names = vm.deref_heap(&vm.deref_var(&names_raw));
     assert_eq!(
         names,
-        Value::List(vec![
+        Value::list(vec![
             fact("=", vec![at("A"), args[0].clone()]),
             fact("=", vec![at("B"), args[1].clone()]),
             fact("=", vec![at("_C"), args[4].clone()]),
@@ -796,7 +796,7 @@ fn read_term_from_atom_returns_variable_metadata_with_shared_variables() {
     let singletons = vm.deref_heap(&vm.deref_var(&singletons_raw));
     assert_eq!(
         singletons,
-        Value::List(vec![
+        Value::list(vec![
             fact("=", vec![at("B"), args[1].clone()]),
             fact("=", vec![at("_"), args[3].clone()]),
             fact("=", vec![at("D"), args[6].clone()]),
@@ -822,7 +822,7 @@ fn read_term_syntax_errors_error_throws_and_quiet_fails() {
     quiet.set_reg_str("A2", ub("Term"));
     quiet.set_reg_str(
         "A3",
-        Value::List(vec![fact("syntax_errors", vec![at("quiet")])]),
+        Value::list(vec![fact("syntax_errors", vec![at("quiet")])]),
     );
     assert!(!quiet.execute_builtin("read_term_from_atom/3", 3));
     assert!(quiet.thrown_ball.is_none());

@@ -2,25 +2,351 @@
 // Date: {{date}}
 
 use std::fmt;
+use std::ops::Deref;
+use std::sync::Arc;
+
+// ===========================================================================
+// Symbol interning (hot-path optimization #2 — D94/D96).
+//
+// Functor / atom / unbound-variable NAMES are the tiny-`String` bucket the deep
+// profile (D94) blamed for 63% of B2 and 76% of B3 allocation blocks. `Sym` is
+// the name representation carried by `Value::Atom`, `Value::Str` and
+// `Value::Unbound`; it is chosen at compile time by the `intern` Cargo feature
+// so the ON build and the OFF build are sha-distinct binaries producing
+// byte-identical output (a clean A/B).
+//
+//   * feature OFF  ->  `type Sym = String`. This is the pre-intern path,
+//                      unchanged: every name is an owned `String` exactly as
+//                      before. All of `String`'s inherent methods and trait
+//                      impls (Deref<str>, Display, PartialEq<&str>, Ord, …)
+//                      serve directly, so the rest of the runtime compiles
+//                      against `Sym` with no cfg noise.
+//
+//   * feature ON   ->  `Sym(u32)`, a Copy index into a global, append-only,
+//                      canonical interner. `Value::clone` of an Atom/Unbound/Str
+//                      name becomes a `u32` copy (no malloc), `deref_var`
+//                      becomes allocation-free, and the `"f/N"` functor parse in
+//                      `deref_heap` no longer clones a String. De-interning
+//                      (`Sym::as_str`, `Display`) returns a `&'static str` from
+//                      the interner — used only for OUTPUT and for the sort
+//                      comparator's NAME-order compares.
+//
+// THE SORT-ORDER TRAP (D94/D95). SWI standard order compares atoms/functors by
+// NAME. Interned ids are assigned in first-seen order, NOT name order, so an
+// integer-id compare would order by id and silently corrupt every sort. The
+// comparators therefore de-intern to `&str` (via `as_str`/`functor_of`) for the
+// LESS/GREATER decision — approach (a) — keeping ordering name-correct and
+// byte-identical. To make that guarantee load-bearing rather than a convention,
+// the ON `Sym` deliberately does NOT implement `Ord`/`PartialOrd`: any code that
+// tries to order symbols by id is a COMPILE error, not a wrong answer. `Sym`'s
+// `PartialEq` (id compare) is still sound because interning is canonical — the
+// same name always maps to the same id — so id-equality iff name-equality.
+// ===========================================================================
+
+/// Name representation — see the module comment above. OFF path: a plain owned
+/// `String`, so the pre-intern behaviour is preserved verbatim.
+#[cfg(not(feature = "intern"))]
+pub type Sym = String;
+
+#[cfg(feature = "intern")]
+pub use self::interner::{intern, Sym};
+
+#[cfg(feature = "intern")]
+mod interner {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+    use std::sync::{OnceLock, RwLock};
+
+    // Chunked, never-moving id -> name storage so `resolve` is lock-free and
+    // wait-free: a chunk, once published, is never reallocated or freed, and the
+    // leaked `&'static str` inside it never moves.
+    const CHUNK_BITS: u32 = 12;
+    const CHUNK_SIZE: usize = 1 << CHUNK_BITS; // 4096 names per chunk
+    const CHUNK_MASK: u32 = (CHUNK_SIZE as u32) - 1;
+    const NUM_CHUNKS: usize = 1 << 18; // up to ~1.07B symbols
+
+    type Chunk = [&'static str; CHUNK_SIZE];
+
+    struct Table {
+        // One atomic pointer per chunk; null until that chunk is first needed.
+        chunks: Box<[AtomicPtr<Chunk>]>,
+        // Number of ids assigned so far (only mutated under `map`'s write lock).
+        len: AtomicU32,
+        // name -> id, read-mostly. Read lock is the construction fast path;
+        // write lock is taken only when a brand-new name is first interned.
+        map: RwLock<HashMap<&'static str, u32>>,
+    }
+
+    fn table() -> &'static Table {
+        static T: OnceLock<Table> = OnceLock::new();
+        T.get_or_init(|| {
+            let mut v: Vec<AtomicPtr<Chunk>> = Vec::with_capacity(NUM_CHUNKS);
+            for _ in 0..NUM_CHUNKS {
+                v.push(AtomicPtr::new(std::ptr::null_mut()));
+            }
+            Table {
+                chunks: v.into_boxed_slice(),
+                len: AtomicU32::new(0),
+                map: RwLock::new(HashMap::new()),
+            }
+        })
+    }
+
+    #[inline]
+    fn chunk_ptr(t: &'static Table, c: usize) -> *mut Chunk {
+        // Load, and if absent allocate-and-publish (CAS) exactly one chunk.
+        let existing = t.chunks[c].load(Ordering::Acquire);
+        if !existing.is_null() {
+            return existing;
+        }
+        let boxed: Box<Chunk> = Box::new([""; CHUNK_SIZE]);
+        let raw = Box::into_raw(boxed);
+        match t.chunks[c].compare_exchange(
+            std::ptr::null_mut(),
+            raw,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => raw,
+            Err(won) => {
+                // Someone else allocated it first; drop ours and use theirs.
+                drop(unsafe { Box::from_raw(raw) });
+                won
+            }
+        }
+    }
+
+    /// Intern a name, returning its canonical id. Idempotent.
+    pub fn intern(s: &str) -> u32 {
+        let t = table();
+        // Fast path: already interned (read lock, no allocation, no mutation).
+        if let Some(&id) = t.map.read().unwrap().get(s) {
+            return id;
+        }
+        // Slow path: first sight of this name.
+        let mut w = t.map.write().unwrap();
+        if let Some(&id) = w.get(s) {
+            return id; // raced in between the read unlock and the write lock
+        }
+        let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
+        let id = t.len.load(Ordering::Relaxed);
+        let c = (id >> CHUNK_BITS) as usize;
+        let slot = (id & CHUNK_MASK) as usize;
+        let ptr = chunk_ptr(t, c);
+        // Publish the name BEFORE the id becomes reachable via the map.
+        unsafe {
+            (*ptr)[slot] = leaked;
+        }
+        t.len.store(id + 1, Ordering::Release);
+        w.insert(leaked, id);
+        id
+    }
+
+    /// De-intern: id -> the canonical `&'static str`. Lock-free / wait-free.
+    #[inline]
+    pub fn resolve(id: u32) -> &'static str {
+        let t = table();
+        let c = (id >> CHUNK_BITS) as usize;
+        let slot = (id & CHUNK_MASK) as usize;
+        let ptr = t.chunks[c].load(Ordering::Acquire);
+        debug_assert!(!ptr.is_null(), "resolve of unpublished sym id {}", id);
+        unsafe { (*ptr)[slot] }
+    }
+
+    /// Interned symbol id. `Copy` — cloning a name is now a `u32` copy, not a
+    /// heap allocation. See the module comment for the sort-order-trap rationale
+    /// (no `Ord`: ordering must go through `as_str`, never the id).
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Sym(pub u32);
+
+    impl Sym {
+        /// The canonical name for this symbol (borrowed from the interner).
+        #[inline]
+        pub fn as_str(&self) -> &'static str {
+            resolve(self.0)
+        }
+    }
+
+    impl std::ops::Deref for Sym {
+        type Target = str;
+        #[inline]
+        fn deref(&self) -> &str {
+            resolve(self.0)
+        }
+    }
+
+    impl From<&str> for Sym {
+        #[inline]
+        fn from(s: &str) -> Sym {
+            Sym(intern(s))
+        }
+    }
+    impl From<String> for Sym {
+        #[inline]
+        fn from(s: String) -> Sym {
+            Sym(intern(&s))
+        }
+    }
+    impl From<&String> for Sym {
+        #[inline]
+        fn from(s: &String) -> Sym {
+            Sym(intern(s))
+        }
+    }
+
+    impl PartialEq<str> for Sym {
+        #[inline]
+        fn eq(&self, other: &str) -> bool {
+            self.as_str() == other
+        }
+    }
+    impl PartialEq<&str> for Sym {
+        #[inline]
+        fn eq(&self, other: &&str) -> bool {
+            self.as_str() == *other
+        }
+    }
+    impl PartialEq<String> for Sym {
+        #[inline]
+        fn eq(&self, other: &String) -> bool {
+            self.as_str() == other.as_str()
+        }
+    }
+    impl PartialEq<Sym> for &str {
+        #[inline]
+        fn eq(&self, other: &Sym) -> bool {
+            *self == other.as_str()
+        }
+    }
+
+    impl std::fmt::Display for Sym {
+        #[inline]
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.as_str())
+        }
+    }
+    impl std::fmt::Debug for Sym {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            std::fmt::Debug::fmt(self.as_str(), f)
+        }
+    }
+}
+
+/// Shared argument spine: the sub-arguments of a compound term, or the
+/// elements of a list — plus an offset, so that the TAIL of a list is the same
+/// allocation viewed one element further along.
+///
+/// STRUCTURAL SHARING (see docs/WAM_RUST_STATUS.md). Terms in this runtime are
+/// immutable — a variable binding lives in `WamState::bindings` keyed by the
+/// variable's name, never inside the term cell — so two terms may share one
+/// spine with no aliasing hazard: nothing can mutate a spine another snapshot
+/// observes, and the trail restores bindings, not cells. Sharing therefore
+/// needs no trail cooperation at all.
+///
+/// Two costs collapse because of it:
+///
+///  * `Value::clone` is O(1) for lists and compounds instead of a deep copy,
+///    so a choice point costs O(live registers), not O(term size) — a register
+///    holding the whole catalog is no longer copied per choice point.
+///  * `tail()` is O(1), so walking an N-element list is O(N) instead of
+///    allocating (and retaining) an N-element copy per step. That second one
+///    is what the resolver's `[H|T]` recursion over the catalog does at every
+///    level.
+///
+/// `Arc` rather than `Rc` because `WamState` must stay `Send`: the T7
+/// parallel-aggregate substrate forks a machine per Rayon worker and the
+/// static assertion in state.rs pins `Send` (an `Rc` inside `Value` would put
+/// non-`Send` data in `regs`/`heap`/`trail`/`bindings` and break it).
+///
+/// `Deref<Target = [Value]>` means every read (`len`, `iter`, indexing,
+/// slicing, `split_first`, `to_vec`) works on the visible window as if it were
+/// a plain slice; only construction and cons go through the methods below.
+#[derive(Clone, Debug)]
+pub struct Args {
+    spine: Arc<Vec<Value>>,
+    off: usize,
+}
+
+impl Args {
+    /// Take ownership of a freshly built vector as a new spine.
+    #[inline]
+    pub fn from_vec(items: Vec<Value>) -> Args {
+        Args { spine: Arc::new(items), off: 0 }
+    }
+
+    /// The empty spine.
+    #[inline]
+    pub fn empty() -> Args {
+        Args::from_vec(Vec::new())
+    }
+
+    /// This spine minus its first element — O(1), sharing the allocation.
+    /// Panics-free: an empty spine yields an empty spine.
+    #[inline]
+    pub fn tail(&self) -> Args {
+        let off = if self.off < self.spine.len() { self.off + 1 } else { self.off };
+        Args { spine: Arc::clone(&self.spine), off }
+    }
+
+    /// This spine with `head` prepended. The visible window starts at `off`, so
+    /// a slot before it may belong to another view of the same allocation and
+    /// can never be written; prepending therefore copies.
+    #[inline]
+    pub fn cons(&self, head: Value) -> Args {
+        let mut items = Vec::with_capacity(self.len() + 1);
+        items.push(head);
+        items.extend_from_slice(self);
+        Args::from_vec(items)
+    }
+
+    /// Are these the SAME view of the same allocation? Used to detect "nothing
+    /// changed" without comparing contents; `false` is always safe.
+    #[inline]
+    pub fn same_ref(a: &Args, b: &Args) -> bool {
+        a.off == b.off && Arc::ptr_eq(&a.spine, &b.spine)
+    }
+}
+
+impl Deref for Args {
+    type Target = [Value];
+    #[inline]
+    fn deref(&self) -> &[Value] {
+        &self.spine[self.off..]
+    }
+}
+
+impl From<Vec<Value>> for Args {
+    #[inline]
+    fn from(items: Vec<Value>) -> Args {
+        Args::from_vec(items)
+    }
+}
+
+impl PartialEq for Args {
+    #[inline]
+    fn eq(&self, other: &Args) -> bool {
+        Self::same_ref(self, other) || **self == **other
+    }
+}
 
 /// Universal value type for the WAM runtime.
 /// Mirrors the Prolog term universe used by wam_runtime.pl.
 #[derive(Clone, Debug)]
 pub enum Value {
-    /// Atomic symbol (Prolog atom)
-    Atom(String),
+    /// Atomic symbol (Prolog atom) — name interned (see `Sym`).
+    Atom(Sym),
     /// Integer value
     Integer(i64),
     /// Floating point value
     Float(f64),
-    /// Compound term: functor name + sub-arguments
-    Str(String, Vec<Value>),
-    /// List value (Prolog list)
-    List(Vec<Value>),
+    /// Compound term: functor name (interned) + shared sub-argument spine
+    Str(Sym, Args),
+    /// List value (Prolog list), shared spine
+    List(Args),
     /// Heap reference (from put_structure/put_list)
     Ref(usize),
-    /// Unbound variable (e.g., _V5, _H3)
-    Unbound(String),
+    /// Unbound variable (e.g., _V5, _H3) — name interned (see `Sym`).
+    Unbound(Sym),
     /// Boolean value
     Bool(bool),
     /// Uninitialized register slot -- zero-cost sentinel for the register file.
@@ -84,7 +410,7 @@ impl Value {
     /// Extract atom string, panicking if not an atom.
     pub fn as_atom(&self) -> &str {
         match self {
-            Value::Atom(s) => s,
+            Value::Atom(s) => s.as_str(),
             _ => panic!("Expected atom, got {:?}", self),
         }
     }
@@ -93,19 +419,56 @@ impl Value {
     /// Returns (functor, args) or None for non-compound values.
     pub fn univ(&self) -> Option<(&str, &[Value])> {
         match self {
-            Value::Str(f, args) => Some((f, args)),
+            Value::Str(f, args) => Some((f.as_str(), args)),
             _ => None,
         }
     }
 
     /// Construct a compound term from functor and args.
     pub fn make_str(functor: &str, args: Vec<Value>) -> Value {
-        Value::Str(functor.to_string(), args)
+        Value::Str(functor.into(), Args::from_vec(args))
     }
+
+    /// Construct an atom from anything nameable (interns the name under the
+    /// `intern` feature; an owned `String` on the pre-intern path). This is the
+    /// construction helper the generator/runtime route atom construction
+    /// through so the name representation is single-sourced.
+    #[inline]
+    pub fn atom(name: impl Into<Sym>) -> Value {
+        Value::Atom(name.into())
+    }
+
+    /// Construct an unbound variable from anything nameable.
+    #[inline]
+    pub fn unbound(name: impl Into<Sym>) -> Value {
+        Value::Unbound(name.into())
+    }
+
+    /// Construct a compound term from a nameable functor and a shared spine.
+    #[inline]
+    pub fn str_sym(functor: impl Into<Sym>, args: Args) -> Value {
+        Value::Str(functor.into(), args)
+    }
+
+    /// Construct a list from an owned `Vec` (structural-sharing constructor).
+    /// `Value::List` itself takes the shared `Args` spine; this is the
+    /// convenience form for the many sites that build a fresh vector.
+    #[inline]
+    pub fn list(items: Vec<Value>) -> Value {
+        Value::List(Args::from_vec(items))
+    }
+
+    /// Construct a compound term from an owned functor `String` and an owned
+    /// `Vec` of arguments (structural-sharing constructor).
+    #[inline]
+    pub fn strv(functor: impl Into<Sym>, args: Vec<Value>) -> Value {
+        Value::Str(functor.into(), Args::from_vec(args))
+    }
+
 
     /// Create a new unbound variable with the given name.
     pub fn new_unbound(name: &str) -> Value {
-        Value::Unbound(name.to_string())
+        Value::Unbound(name.into())
     }
 }
 

@@ -500,7 +500,11 @@ is_ffi_owned_fact(Module, Pred, Arity, Options) :-
 %  keys in every existing Go project for no gain, so Go opts in
 %  instead.)
 go_compile_predicate_to_wam(PI, Options, WamCode) :-
-    wam_target:compile_predicate_to_wam(PI, Options, WamCode0),
+    % inline_bagof_setof: bagof/setof otherwise emit `call bagof/3`
+    % (not a Go builtin) and fail silently. Required for the cut-
+    % semantics probes (p14/p15) and any program that uses bagof/setof.
+    wam_target:compile_predicate_to_wam(PI,
+        [inline_bagof_setof(true)|Options], WamCode0),
     (   go_iso_configured(Options)
     ->  iso_errors_resolve_options(Options, Config),
         iso_errors_audit_normalise_pi(PI, NormPI),
@@ -518,10 +522,79 @@ go_iso_configured(Options) :-
     ;   member(iso_errors_config(_), Options)
     ).
 
+%% go_wam_fact_source_spec(+P, +Arity, +Options, -Spec)
+%  True when Options declare a store-backed source for P/Arity. Only P/2
+%  is streamed (mirrors the wamjs javascript_wam_fact_sources contract).
+%    Spec = indexed(Prefix)   % D43 UWFI/UWIX seek store: Prefix.data + .idx
+%         | lmdb(Dir)         % opt-in; loud error if no reader is built in
+go_wam_fact_source_spec(P, Arity, Options, Spec) :-
+    Arity =:= 2,
+    (   option(go_wam_fact_sources(Sources), Options)
+    ->  true
+    ;   option(js_fact_sources(Sources), Options)
+    ->  true
+    ;   Sources = []
+    ),
+    member(source(PI, Spec), Sources),
+    go_wam_fact_source_pi_match(PI, P, Arity).
+
+go_wam_fact_source_pi_match(_:Name/Ar, P, Arity) :- !,
+    Name == P, Ar =:= Arity.
+go_wam_fact_source_pi_match(Name/Ar, P, Arity) :-
+    Name == P, Ar =:= Arity.
+
+%% go_fact_stream_wam_text(+P, +Arity, -WamText)
+%  The two-instruction predicate body streamed for a fact source.
+go_fact_stream_wam_text(P, Arity, WamText) :-
+    format(atom(WamText),
+        '~w/~w:\n    call_fact_stream ~w/~w\n    proceed\n',
+        [P, Arity, P, Arity]).
+
+%% go_wam_fact_source_setup_lines(+Classified, +Options, -Lines)
+%  One registration call per store-backed source (indexed seek or lmdb gate).
+go_wam_fact_source_setup_lines(Classified, Options, Lines) :-
+    findall(Line,
+        ( member(classified(_M, Pred, Arity, _Kind, _), Classified),
+          go_wam_fact_source_spec(Pred, Arity, Options, Spec),
+          go_wam_fact_source_register_line(Pred/Arity, Spec, Line)
+        ),
+        Lines0),
+    sort(Lines0, Lines).
+
+go_wam_fact_source_register_line(Pred/Arity, indexed(Prefix), Line) :-
+    go_store_abs_path(Prefix, AbsPrefix),
+    escape_go_string(AbsPrefix, EscPrefix),
+    format(atom(Line),
+        '    vm.registerIndexedSeekFact2("~w/~w", "~w")',
+        [Pred, Arity, EscPrefix]).
+go_wam_fact_source_register_line(Pred/Arity, lmdb(Dir), Line) :-
+    go_store_abs_path(Dir, AbsDir),
+    escape_go_string(AbsDir, EscDir),
+    format(atom(Line),
+        '    vm.registerLmdbSeekFact2("~w/~w", "~w")',
+        [Pred, Arity, EscDir]).
+
+go_store_abs_path(Path, Abs) :-
+    atom_string(Path, PathStr),
+    working_directory(Cwd, Cwd),
+    (   catch(absolute_file_name(PathStr, Abs0, [relative_to(Cwd)]), _, fail),
+        Abs0 \== []
+    ->  Abs = Abs0
+    ;   Abs = PathStr
+    ).
+
 classify_predicates([], _, []).
 classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
-    (   is_ffi_owned_fact(Module, Pred, Arity, Options)
+    (   go_wam_fact_source_spec(Pred, Arity, Options, _Spec)
+        % Store-backed P/2 fact source (D43 indexed seek / lmdb gate).
+        % Compile to a two-instruction body [call_fact_stream, proceed] so
+        % callers reach it by label exactly like any other predicate. The
+        % source itself is registered in setupSharedForeignPredicates.
+    ->  go_fact_stream_wam_text(Pred, Arity, WamText),
+        format(user_error, '  ~w/~w: store-backed fact source~n', [Pred, Arity]),
+        Entry = classified(Module, Pred, Arity, wam, WamText)
+    ;   is_ffi_owned_fact(Module, Pred, Arity, Options)
     ->  format(user_error, '  ~w/~w: FFI-owned fact (skipping WAM compilation)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, ffi_fact, '')
     ;   option(prefer_wam(true), Options),
@@ -620,10 +693,12 @@ compile_shared_foreign_setup(Classified, Options, Code) :-
           member(Line, SetupLines)
         ),
         RawLines),
-    sort(RawLines, Lines),
-    (   Lines == []
+    sort(RawLines, ForeignLines),
+    go_wam_fact_source_setup_lines(Classified, Options, FactLines),
+    append(ForeignLines, FactLines, AllLines),
+    (   AllLines == []
     ->  Body = ""
-    ;   atomic_list_concat(Lines, '\n', Body)
+    ;   atomic_list_concat(AllLines, '\n', Body)
     ),
     format(atom(Code),
 'func setupSharedForeignPredicates(vm *WamState) {
@@ -697,6 +772,39 @@ wam_go_direct_builtin("numlist/3", 3, 'numlist/3').
 wam_go_direct_builtin(between/3, 3, 'between/3').
 wam_go_direct_builtin('between/3', 3, 'between/3').
 wam_go_direct_builtin("between/3", 3, 'between/3').
+% call/1 is compiled as `call call/1` (not is_builtin_pred), so without
+% this rewrite the Go Call misses the label and fails. Opaque: a cut
+% inside the metacall prunes only choice points created during it.
+wam_go_direct_builtin(call, 1, 'call/1').
+wam_go_direct_builtin(call/1, 1, 'call/1').
+wam_go_direct_builtin('call/1', 1, 'call/1').
+wam_go_direct_builtin("call/1", 1, 'call/1').
+% P3 pkg_resolver: maplist/N meta-calls user preds (is_v3/1); predsort/3
+% drives cmp_ver/3 for deb/3 order. Without these, Call{"maplist/N"}
+% misses Labels and fails silently (A3). functor/3 is implemented in
+% executeBuiltin but was unclassified — D60's silent-fail class.
+wam_go_direct_builtin(maplist/2, 2, 'maplist/2').
+wam_go_direct_builtin('maplist/2', 2, 'maplist/2').
+wam_go_direct_builtin("maplist/2", 2, 'maplist/2').
+wam_go_direct_builtin(maplist/3, 3, 'maplist/3').
+wam_go_direct_builtin('maplist/3', 3, 'maplist/3').
+wam_go_direct_builtin("maplist/3", 3, 'maplist/3').
+wam_go_direct_builtin(maplist/4, 4, 'maplist/4').
+wam_go_direct_builtin('maplist/4', 4, 'maplist/4').
+wam_go_direct_builtin("maplist/4", 4, 'maplist/4').
+wam_go_direct_builtin(predsort/3, 3, 'predsort/3').
+wam_go_direct_builtin('predsort/3', 3, 'predsort/3').
+wam_go_direct_builtin("predsort/3", 3, 'predsort/3').
+wam_go_direct_builtin(functor/3, 3, 'functor/3').
+wam_go_direct_builtin('functor/3', 3, 'functor/3').
+wam_go_direct_builtin("functor/3", 3, 'functor/3').
+wam_go_direct_builtin(arg/3, 3, 'arg/3').
+wam_go_direct_builtin('arg/3', 3, 'arg/3').
+wam_go_direct_builtin("arg/3", 3, 'arg/3').
+wam_go_direct_builtin('=..', 2, '=../2').
+wam_go_direct_builtin('=..'/2, 2, '=../2').
+wam_go_direct_builtin('=../2', 2, '=../2').
+wam_go_direct_builtin("=../2", 2, '=../2').
 wam_go_direct_builtin(writeln/1, 1, 'writeln/1').
 wam_go_direct_builtin('writeln/1', 1, 'writeln/1').
 wam_go_direct_builtin("writeln/1", 1, 'writeln/1').
@@ -861,6 +969,9 @@ wam_go_direct_builtin("number_codes/2", 2, 'number_codes/2').
 wam_go_direct_builtin(number_chars/2, 2, 'number_chars/2').
 wam_go_direct_builtin('number_chars/2', 2, 'number_chars/2').
 wam_go_direct_builtin("number_chars/2", 2, 'number_chars/2').
+wam_go_direct_builtin(number_string/2, 2, 'number_string/2').
+wam_go_direct_builtin('number_string/2', 2, 'number_string/2').
+wam_go_direct_builtin("number_string/2", 2, 'number_string/2').
 wam_go_direct_builtin(atom_string/2, 2, 'atom_string/2').
 wam_go_direct_builtin('atom_string/2', 2, 'atom_string/2').
 wam_go_direct_builtin("atom_string/2", 2, 'atom_string/2').
@@ -1882,6 +1993,17 @@ parse_string_to_go_val(Str, GoVal) :-
         catch(term_to_atom(ParsedTerm, QuotedTok), _, fail),
         atom(ParsedTerm)
     ->  go_value_literal(ParsedTerm, GoVal)
+    ;   % A double-quoted string constant round-trips to a Prolog string.
+        % Go has no string type (D37: double-quoted literals intern as
+        % atoms), so emit the CONTENT as an atom rather than a token that
+        % keeps its surrounding quotes. Without this, resolver_store.pl's
+        % `VVS == "-"` compiled to an atom named `"-"` (quotes included),
+        % never matching the atom `-` that split_string/4 yields.
+        atom_string(QuotedTok, Str),
+        catch(term_to_atom(ParsedTerm, QuotedTok), _, fail),
+        string(ParsedTerm)
+    ->  atom_string(ContentAtom, ParsedTerm),
+        go_value_literal(ContentAtom, GoVal)
     ;   go_value_literal(Str, GoVal)
     ).
 
@@ -1898,6 +2020,10 @@ wam_line_to_go_literal(["call", P, N], PredIndicator, Options, GoLit) :-
 wam_line_to_go_literal(["call_indexed_atom_fact2", Pred], _PredIndicator, _Options, GoLit) :-
     clean_comma(Pred, CPred),
     wam_instruction_to_go_literal(call_indexed_atom_fact2(CPred), GoLit).
+wam_line_to_go_literal(["call_fact_stream", Pred], _PredIndicator, _Options, GoLit) :-
+    clean_comma(Pred, CPred),
+    escape_go_string(CPred, EscPred),
+    format(atom(GoLit), '&CallFactStream{Pred: "~w"}', [EscPred]).
 wam_line_to_go_literal(["execute", P], PredIndicator, Options, GoLit) :-
     clean_comma(P, CP),
     (   go_foreign_rewrite_execute(Options, PredIndicator, CP, ForeignPred, ForeignArity)
@@ -1927,6 +2053,13 @@ wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg], GoLit)
     go_reg_index(CResultReg, ResultRegIdx),
     format(atom(GoLit), '&BeginAggregate{AggType: "~w", ValueReg: ~w, ResultReg: ~w}',
         [CAggType, ValueRegIdx, ResultRegIdx]).
+% bagof/setof emit a 4th witness-register argument
+% (`begin_aggregate bagof, Y1, X2, ''`). Dropping it as `// TODO`
+% skipped the instruction, so EndAggregate was a no-op and L stayed
+% unbound (`__R200`). Witness grouping is not implemented; the 3-arg
+% runtime path is correct when the witness list is empty.
+wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg, _Witnesses], GoLit) :-
+    wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg], GoLit).
 wam_line_to_go_literal(["end_aggregate", ValueReg], GoLit) :-
     clean_comma(ValueReg, CValueReg),
     go_reg_index(CValueReg, ValueRegIdx),
@@ -2026,12 +2159,21 @@ wam_line_to_go_literal(["retry_me_else", L], GoLit) :-
     clean_comma(L, CL),
     format(atom(GoLit), '&RetryMeElse{Label: "~w", Arity: 100}', [CL]).
 wam_line_to_go_literal(["trust_me"], '&TrustMe{}').
+wam_line_to_go_literal(["try", L], GoLit) :-
+    clean_comma(L, CL),
+    format(atom(GoLit), '&Try{Label: "~w"}', [CL]).
+wam_line_to_go_literal(["retry", L], GoLit) :-
+    clean_comma(L, CL),
+    format(atom(GoLit), '&Retry{Label: "~w"}', [CL]).
+wam_line_to_go_literal(["trust", L], GoLit) :-
+    clean_comma(L, CL),
+    format(atom(GoLit), '&Trust{Label: "~w"}', [CL]).
 
 wam_line_to_go_literal(["switch_on_constant" | Table], GoLit) :-
     format_switch_table(Table, CaseStr),
     format(atom(GoLit), '&SwitchOnConstant{Cases: []ConstCase{~w}}', [CaseStr]).
 wam_line_to_go_literal(["switch_on_structure" | Table], GoLit) :-
-    format_switch_table(Table, CaseStr),
+    format_struct_switch_table(Table, CaseStr),
     format(atom(GoLit), '&SwitchOnStructure{Cases: []StructCase{~w}}', [CaseStr]).
 
 wam_line_to_go_literal(Parts, GoLit) :-
@@ -2096,6 +2238,25 @@ format_switch_case(Entry, Case) :-
         format(atom(Case), '{Val: ~w, Label: "~w"}', [GoVal, Label])
     ;   % Robustness fallback for malformed entries
         format(atom(Case), '{Val: internAtom("malformed"), Label: "~w"}', [Entry])
+    ).
+
+% switch_on_structure table entries are Functor/Arity:Label. StructCase
+% carries a functor STRING (the runtime compares fmt.Sprintf("%s/%d",
+% f, len(args))), not a Value. Reusing format_switch_case interned the
+% functor as an atom and emitted `{Val: wamAtom_...}`, which does not
+% compile (StructCase has Functor, not Val). Forced by catalog/6 vs
+% catalog/9 first-arg indexing in uw-resolve.
+format_struct_switch_table(Table, CaseStr) :-
+    maplist(format_struct_switch_case, Table, Cases),
+    atomic_list_concat(Cases, ", ", CaseStr).
+
+format_struct_switch_case(Entry, Case) :-
+    (   split_string(Entry, ":", " ", [FunStr, LabelStr])
+    ->  clean_comma(LabelStr, Label),
+        clean_comma(FunStr, Fun),
+        escape_go_string(Fun, EscFun),
+        format(atom(Case), '{Functor: "~w", Label: "~w"}', [EscFun, Label])
+    ;   format(atom(Case), '{Functor: "malformed", Label: "~w"}', [Entry])
     ).
 
 % --- Register index encoding ---
@@ -2599,7 +2760,7 @@ wam_go_case('Deallocate', '        if vm.E >= 0 && vm.E < len(vm.Stack) {
 
 wam_go_case('Call', '        vm.CP = vm.PC + 1
         if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
-            vm.PendingB0 = len(vm.ChoicePoints)
+            vm.pushCallFrame()
             vm.PC = pc
             return true
         }
@@ -2614,6 +2775,11 @@ wam_go_case('Call', '        vm.CP = vm.PC + 1
             vm.PC = vm.CP
             return true
         }
+        if vm.executeBuiltin(i.Pred, i.Arity) {
+            vm.PC = vm.CP
+            return true
+        }
+        vm.warnUnresolved("call", i.Pred)
         return false').
 
 wam_go_case('GetArgInto', '        term := vm.deref(vm.getReg(i.Src))
@@ -2653,22 +2819,37 @@ wam_go_case('CallForeign', '        return vm.executeForeignPredicate(i.Pred, i.
 
 wam_go_case('CallIndexedAtomFact2', '        return vm.executeIndexedAtomFact2(i.Pred)').
 
+wam_go_case('CallFactStream', '        return vm.executeCallFactStream(i.Pred)').
+
 wam_go_case('CallPc', '        vm.CP = vm.PC + 1
-        vm.PendingB0 = len(vm.ChoicePoints)
+        vm.pushCallFrame()
         vm.PC = i.TargetPC
         return true').
 
 wam_go_case('Execute', '        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
-            vm.PendingB0 = len(vm.ChoicePoints)
+            vm.enterExecute()
             vm.PC = pc
             return true
         }
         if _, ok := vm.Ctx.ForeignNativeKinds[i.Pred]; ok {
             return vm.executeForeignPredicate(i.Pred, 0)
         }
-        return vm.executeIndexedAtomFact2(i.Pred)').
+        if vm.executeIndexedAtomFact2(i.Pred) {
+            return true
+        }
+        if vm.executeBuiltin(i.Pred, predArityFromName(i.Pred)) {
+            vm.popCallFrame()
+            if vm.CP > 0 {
+                vm.PC = vm.CP
+            } else {
+                vm.Halted = true
+            }
+            return true
+        }
+        vm.warnUnresolved("execute", i.Pred)
+        return false').
 
-wam_go_case('ExecutePc', '        vm.PendingB0 = len(vm.ChoicePoints)
+wam_go_case('ExecutePc', '        vm.enterExecute()
         vm.PC = i.TargetPC
         return true').
 
@@ -2688,16 +2869,24 @@ wam_go_case('CutIte', '        if len(vm.ChoicePoints) > 0 {
         return true').
 
 % M17 soft cut (enabled by ite_use_y_level). GetLevel snapshots the
-% current choicepoint-stack height into a Y register; Cut truncates the
-% stack back to that snapshot. Unlike CutIte (drop one CP), this removes
-% the if-then-else / negation choicepoint AND every CP the condition
-% pushed above it -- the cut a proper negation / soft-cut condition needs.
-wam_go_case('GetLevel', '        vm.putReg(i.Reg, &Integer{Val: int64(len(vm.ChoicePoints))})
+% current choicepoint-stack height; Cut truncates the stack back to that
+% snapshot. Unlike CutIte (drop one CP), this removes the if-then-else /
+% negation choicepoint AND every CP the condition pushed above it -- the
+% cut a proper negation / soft-cut condition needs.
+%
+% The level is NOT stored in register i.Reg. `compile_if_then_else/7`
+% reserves the barrier's Y register after it has decided whether the
+% clause needs an environment, so `get_level Y1` lands in clauses with no
+% `allocate` -- and Y registers are global slots (Regs[200..299]) here, so
+% the write scribbled on the CALLER's live Y1 (WAM_FLEET_GAPS A2, the
+% frameless-Y-write form; ledger D50/D52). The level lives on the
+% if-then-else's own choice point instead (ChoicePoint.Levels), the
+% wam_rust / wam_python model. See recordIteLevel / lookupIteLevel.
+wam_go_case('GetLevel', '        vm.recordIteLevel(i.Reg)
         vm.PC++
         return true').
 
-wam_go_case('Cut', '        if iv, ok := vm.deref(vm.getReg(i.Reg)).(*Integer); ok {
-            target := int(iv.Val)
+wam_go_case('Cut', '        if target, ok := vm.lookupIteLevel(i.Reg); ok {
             if target >= 0 && target < len(vm.ChoicePoints) {
                 vm.ChoicePoints = vm.ChoicePoints[:target]
             }
@@ -2710,7 +2899,8 @@ wam_go_case('BeginAggregate', '        return vm.executeAggregate(i.AggType, i.V
 wam_go_case('EndAggregate', '        vm.PC++
         return true').
 
-wam_go_case('Proceed', '        if vm.CP > 0 {
+wam_go_case('Proceed', '        vm.popCallFrame()
+        if vm.CP > 0 {
             vm.PC = vm.CP
         } else {
             vm.Halted = true
@@ -2730,6 +2920,7 @@ wam_go_case('BuiltinExecute', '        result := vm.executeBuiltin(i.Op, i.Arity
         if !result {
             return false
         }
+        vm.popCallFrame()
         if vm.CP > 0 {
             vm.PC = vm.CP
         } else {
@@ -2771,6 +2962,31 @@ wam_go_case('TrustMe', '        if len(vm.ChoicePoints) > 0 {
         vm.PC++
         return true').
 
+% Indexed-dispatch try/retry/trust: alternative is the NEXT instruction,
+% label is the clause body to enter now. Emitted when a switch case covers
+% more than one clause of the same first-arg functor.
+wam_go_case('Try', '        target, ok := vm.Ctx.Labels[i.Label]
+        if !ok { return false }
+        vm.pushChoicePoint(vm.PC+1, 0)
+        vm.PC = target
+        return true').
+
+wam_go_case('Retry', '        target, ok := vm.Ctx.Labels[i.Label]
+        if !ok { return false }
+        if len(vm.ChoicePoints) > 0 {
+            vm.ChoicePoints[len(vm.ChoicePoints)-1].NextPC = vm.PC + 1
+        }
+        vm.PC = target
+        return true').
+
+wam_go_case('Trust', '        target, ok := vm.Ctx.Labels[i.Label]
+        if !ok { return false }
+        if len(vm.ChoicePoints) > 0 {
+            vm.ChoicePoints = vm.ChoicePoints[:len(vm.ChoicePoints)-1]
+        }
+        vm.PC = target
+        return true').
+
 % --- Indexing Instructions ---
 
 wam_go_case('SwitchOnConstant', '        if val := vm.Regs[0]; val != nil && !isUnbound(val) {
@@ -2779,9 +2995,14 @@ wam_go_case('SwitchOnConstant', '        if val := vm.Regs[0]; val != nil && !is
                 if !valueEquals(c.Val, val) {
                     continue
                 }
+                // "default" is the try/retry chain immediately after the
+                // switch. Several clauses can share that key (pick_need
+                // classic/1 and classic/2). Skipping TryMeElse via
+                // indexedClauseBodyStart kept only the first body, so the
+                // provider clause was never tried.
                 if c.Label == "default" {
-                    targets = append(targets, vm.indexedClauseBodyStart(vm.PC+1))
-                    continue
+                    vm.PC++
+                    return true
                 }
                 if pc, ok := vm.Ctx.Labels[c.Label]; ok {
                     targets = append(targets, vm.indexedClauseBodyStart(pc))
@@ -2801,6 +3022,10 @@ wam_go_case('SwitchOnConstantPc', '        if val := vm.Regs[0]; val != nil && !
             })
             targets := make([]int, 0)
             for idx < n && valueEquals(i.Cases[idx].Val, val) {
+                if vm.isChoiceChainHead(i.Cases[idx].TargetPC) {
+                    vm.PC = i.Cases[idx].TargetPC
+                    return true
+                }
                 targets = append(targets, vm.indexedClauseBodyStart(i.Cases[idx].TargetPC))
                 idx++
             }
@@ -2820,8 +3045,8 @@ wam_go_case('SwitchOnStructure', '        if val := vm.Regs[0]; val != nil {
                         continue
                     }
                     if c.Label == "default" {
-                        targets = append(targets, vm.indexedClauseBodyStart(vm.PC+1))
-                        continue
+                        vm.PC++
+                        return true
                     }
                     if pc, ok := vm.Ctx.Labels[c.Label]; ok {
                         targets = append(targets, vm.indexedClauseBodyStart(pc))
@@ -2841,6 +3066,10 @@ wam_go_case('SwitchOnStructurePc', '        if val := vm.Regs[0]; val != nil {
                 targets := make([]int, 0)
                 for _, c := range i.Cases {
                     if c.Functor == key {
+                        if vm.isChoiceChainHead(c.TargetPC) {
+                            vm.PC = c.TargetPC
+                            return true
+                        }
                         targets = append(targets, vm.indexedClauseBodyStart(c.TargetPC))
                     }
                 }
@@ -2859,8 +3088,8 @@ wam_go_case('SwitchOnConstantA2', '        if val := vm.Regs[1]; val != nil && !
                     continue
                 }
                 if c.Label == "default" {
-                    targets = append(targets, vm.indexedClauseBodyStart(vm.PC+1))
-                    continue
+                    vm.PC++
+                    return true
                 }
                 if pc, ok := vm.Ctx.Labels[c.Label]; ok {
                     targets = append(targets, vm.indexedClauseBodyStart(pc))
@@ -2880,6 +3109,10 @@ wam_go_case('SwitchOnConstantA2Pc', '        if val := vm.Regs[1]; val != nil &&
             })
             targets := make([]int, 0)
             for idx < n && valueEquals(i.Cases[idx].Val, val) {
+                if vm.isChoiceChainHead(i.Cases[idx].TargetPC) {
+                    vm.PC = i.Cases[idx].TargetPC
+                    return true
+                }
                 targets = append(targets, vm.indexedClauseBodyStart(i.Cases[idx].TargetPC))
                 idx++
             }
@@ -2937,6 +3170,22 @@ func (vm *WamState) indexedClauseBodyStart(targetPC int) int {
         return targetPC + 1
     default:
         return targetPC
+    }
+}
+
+// isChoiceChainHead is true when a switch default resolved to the
+// TryMeElse/RetryMeElse that heads a multi-clause group (pick_need
+// classic/1+classic/2). Jumping there — not past it — lets the chain
+// try every clause. Named clause bodies (L_*_body) are never heads.
+func (vm *WamState) isChoiceChainHead(targetPC int) bool {
+    if targetPC < 0 || targetPC >= len(vm.Ctx.Code) {
+        return false
+    }
+    switch vm.Ctx.Code[targetPC].(type) {
+    case *TryMeElse, *TryMeElsePc, *RetryMeElse, *RetryMeElsePc:
+        return true
+    default:
+        return false
     }
 }
 
@@ -3145,11 +3394,17 @@ func (vm *WamState) executeAggregate(aggType string, valueReg int, resultReg int
             if val == nil {
                 return false
             }
-            values = append(values, sub.deref(val))
+            values = append(values, sub.freezeTerm(val))
         }
         if !sub.backtrackAbove(baseChoicePoints) {
             break
         }
+    }
+
+    if aggType == "set" || aggType == "setof" {
+        sort.SliceStable(values, func(i, j int) bool {
+            return sub.compareTerms(values[i], values[j]) < 0
+        })
     }
 
     result, ok := aggregateResultValue(aggType, values, count)
@@ -3221,10 +3476,20 @@ func aggregateResultValue(aggType string, values []Value, count int) (Value, boo
     case "count":
         return &Integer{Val: int64(count)}, true
     case "collect":
-        return &List{Elements: append([]Value(nil), values...)}, true
-    case "bag", "bagof":
-        return &List{Elements: append([]Value(nil), values...)}, true
-    case "set", "setof":
+        return listFromItems(append([]Value(nil), values...)), true
+    case "bag":
+        return listFromItems(append([]Value(nil), values...)), true
+    case "bagof":
+        if len(values) == 0 {
+            return nil, false
+        }
+        return listFromItems(append([]Value(nil), values...)), true
+    case "set":
+        return &List{Elements: uniqueAggregateValues(values)}, true
+    case "setof":
+        if len(values) == 0 {
+            return nil, false
+        }
         return &List{Elements: uniqueAggregateValues(values)}, true
     case "sum":
         total := 0.0
@@ -3729,6 +3994,10 @@ func (vm *WamState) finishStreamResults(predKey string, resultRegs []int, result
                 ForeignPredKey: predKey,
                 ForeignResultRegs: append([]int(nil), resultRegs...),
                 ForeignResults: remaining,
+                PendingB0: vm.PendingB0,
+                CutB0Stack: vm.copyCutB0Stack(),
+                YSaves: vm.copyYSaveStack(),
+                YSaveLen: len(vm.YSaves),
             })
         }
         vm.PC = resumePC
@@ -4372,14 +4641,443 @@ func (vm *WamState) executeForeignPredicate(pred string, arity int) bool {
         return false
     }
 }
+
+// ---------------------------------------------------------------------------
+// Store-backed P/2 fact sources (D43). indexed(Prefix) is a dependency-free
+// seek reader over the UWFI/UWIX files the shared uw_fact_index.js builder
+// writes: a length-prefixed .data blob and a sorted-key .idx that is binary
+// searched, so a bound-key lookup reads only the records that key touches.
+// This mirrors templates/targets/javascript_wam/runtime.js.mustache
+// (open_indexed_store / indexed_lookup_offsets / indexed_read_record) byte for
+// byte, including the bytes-read counter for the D43 proof. lmdb(Dir) is the
+// opt-in tier and fails loudly here: the Go lane has no repo dependency and
+// does not read the npm-lmdb store format (never a silent swap to indexed).
+// Typed key tags (atom 0x41 / string 0x53 / int 0x49 / float 0x46) match the
+// codec so lookups find the right key regardless of the cell type.
+// ---------------------------------------------------------------------------
+
+var factIOBytes int64
+var factIOReads int64
+var factIODataSize int64
+
+// FactIOBytes / FactIOReads / FactIODataSize expose the D43 bytes-read proof
+// to embedders (the go_store scale probe). ResetFactIO zeroes them between runs.
+func FactIOBytes() int64    { return factIOBytes }
+func FactIOReads() int64    { return factIOReads }
+func FactIODataSize() int64 { return factIODataSize }
+func ResetFactIO()          { factIOBytes = 0; factIOReads = 0; factIODataSize = 0 }
+
+type seekFactSource struct {
+    predKey    string
+    kind       string
+    path       string
+    dataFile   *os.File
+    idxFile    *os.File
+    dataSize   int64
+    nKeys      uint32
+    keyblobOff uint32
+    hitsOff    uint32
+    nRecords   uint32
+    opened     bool
+}
+
+func leU16(b []byte, o int) int {
+    if o+2 > len(b) {
+        return 0
+    }
+    return int(b[o]) | int(b[o+1])<<8
+}
+
+func leU32(b []byte, o int) uint32 {
+    if o+4 > len(b) {
+        return 0
+    }
+    return uint32(b[o]) | uint32(b[o+1])<<8 | uint32(b[o+2])<<16 | uint32(b[o+3])<<24
+}
+
+func bytesCompareGo(a []byte, b []byte) int {
+    n := len(a)
+    if len(b) < n {
+        n = len(b)
+    }
+    for i := 0; i < n; i++ {
+        if a[i] != b[i] {
+            if a[i] < b[i] {
+                return -1
+            }
+            return 1
+        }
+    }
+    if len(a) < len(b) {
+        return -1
+    }
+    if len(a) > len(b) {
+        return 1
+    }
+    return 0
+}
+
+func factIORead(f *os.File, length int, position int64) []byte {
+    if length <= 0 {
+        return nil
+    }
+    buf := make([]byte, length)
+    n, _ := f.ReadAt(buf, position)
+    factIOBytes += int64(n)
+    factIOReads++
+    if n == length {
+        return buf
+    }
+    return buf[:n]
+}
+
+// ASCII byte constants (no Go char literals: they would close the Prolog
+// single-quoted atom this whole runtime string lives in).
+func isAsciiDigit(c byte) bool { return c >= 48 && c <= 57 }
+
+func isIntText(t string) bool {
+    if t == "" {
+        return false
+    }
+    i := 0
+    if t[0] == 45 {
+        if len(t) == 1 {
+            return false
+        }
+        i = 1
+    }
+    for ; i < len(t); i++ {
+        if !isAsciiDigit(t[i]) {
+            return false
+        }
+    }
+    return true
+}
+
+func isFloatText(t string) bool {
+    // ^-?(?:\\d+\\.\\d*|\\d*\\.\\d+)(?:[eE][+-]?\\d+)?$  OR  ^-?\\d+[eE][+-]?\\d+$
+    s := t
+    if s == "" {
+        return false
+    }
+    if s[0] == 45 {
+        s = s[1:]
+    }
+    if s == "" {
+        return false
+    }
+    mant := s
+    exp := ""
+    for k := 0; k < len(s); k++ {
+        if s[k] == 101 || s[k] == 69 {
+            mant = s[:k]
+            exp = s[k+1:]
+            break
+        }
+    }
+    hasExp := len(mant) != len(s)
+    dot := -1
+    for k := 0; k < len(mant); k++ {
+        c := mant[k]
+        if c == 46 {
+            if dot >= 0 {
+                return false
+            }
+            dot = k
+        } else if !isAsciiDigit(c) {
+            return false
+        }
+    }
+    if hasExp {
+        // integer mantissa allowed only with an exponent
+        if dot < 0 {
+            if mant == "" {
+                return false
+            }
+        } else {
+            left := mant[:dot]
+            right := mant[dot+1:]
+            if left == "" && right == "" {
+                return false
+            }
+        }
+        e := exp
+        if e == "" {
+            return false
+        }
+        if e[0] == 43 || e[0] == 45 {
+            e = e[1:]
+        }
+        if e == "" {
+            return false
+        }
+        for k := 0; k < len(e); k++ {
+            if !isAsciiDigit(e[k]) {
+                return false
+            }
+        }
+        return true
+    }
+    if dot < 0 {
+        return false
+    }
+    left := mant[:dot]
+    right := mant[dot+1:]
+    if left == "" && right == "" {
+        return false
+    }
+    return true
+}
+
+// parseFactSourceValue turns a stored cell text into a typed WAM value,
+// matching the codec classification (int / float / atom). The resolver store
+// packs everything as atoms; the numeric arms keep the D34 distinctions for
+// any store that carries bare numbers.
+func parseFactSourceValue(text string) Value {
+    t := strings.TrimSpace(text)
+    if isIntText(t) {
+        if n, err := strconv.ParseInt(t, 10, 64); err == nil {
+            return &Integer{Val: n}
+        }
+    }
+    if isFloatText(t) {
+        if f, err := strconv.ParseFloat(t, 64); err == nil {
+            return &Float{Val: f}
+        }
+    }
+    return internAtom(t)
+}
+
+func factIsBoundAtomic(v Value) bool {
+    switch v.(type) {
+    case *Atom, *Integer, *Float:
+        return true
+    }
+    return false
+}
+
+func factSameAtomic(a Value, b Value) bool {
+    switch av := a.(type) {
+    case *Atom:
+        bv, ok := b.(*Atom)
+        return ok && av.Name == bv.Name
+    case *Integer:
+        bv, ok := b.(*Integer)
+        return ok && av.Val == bv.Val
+    case *Float:
+        bv, ok := b.(*Float)
+        return ok && av.Val == bv.Val
+    }
+    return false
+}
+
+func encodeStoreKey(vm *WamState, v Value) []byte {
+    d := vm.deref(v)
+    switch t := d.(type) {
+    case *Integer:
+        b := make([]byte, 9)
+        b[0] = 0x49
+        u := uint64(t.Val)
+        for i := 0; i < 8; i++ {
+            b[8-i] = byte(u >> (uint(i) * 8))
+        }
+        return b
+    case *Float:
+        b := make([]byte, 9)
+        b[0] = 0x46
+        u := math.Float64bits(t.Val)
+        for i := 0; i < 8; i++ {
+            b[8-i] = byte(u >> (uint(i) * 8))
+        }
+        return b
+    case *Atom:
+        return append([]byte{0x41}, []byte(t.Name)...)
+    }
+    return []byte{0x3f}
+}
+
+func (s *seekFactSource) open() error {
+    if s.opened {
+        return nil
+    }
+    df, err := os.Open(s.path + ".data")
+    if err != nil {
+        return err
+    }
+    xf, err := os.Open(s.path + ".idx")
+    if err != nil {
+        df.Close()
+        return err
+    }
+    s.dataFile = df
+    s.idxFile = xf
+    if fi, ferr := df.Stat(); ferr == nil {
+        s.dataSize = fi.Size()
+    }
+    factIODataSize = s.dataSize
+    ih := factIORead(xf, 24, 0)
+    if len(ih) < 24 || string(ih[0:4]) != "UWIX" {
+        return fmt.Errorf("go_store: bad index magic at %s.idx", s.path)
+    }
+    s.nKeys = leU32(ih, 8)
+    s.keyblobOff = leU32(ih, 12)
+    s.hitsOff = leU32(ih, 16)
+    s.nRecords = leU32(ih, 20)
+    dh := factIORead(df, 16, 0)
+    if len(dh) < 16 || string(dh[0:4]) != "UWFI" {
+        return fmt.Errorf("go_store: bad data magic at %s.data", s.path)
+    }
+    s.opened = true
+    return nil
+}
+
+func (s *seekFactSource) lookupOffsets(target []byte) []uint32 {
+    lo := int64(0)
+    hi := int64(s.nKeys) - 1
+    for lo <= hi {
+        mid := (lo + hi) >> 1
+        pos := int64(24) + mid*16
+        e := factIORead(s.idxFile, 16, pos)
+        keyRel := leU32(e, 0)
+        keyLen := leU16(e, 4)
+        nHits := leU16(e, 6)
+        hitsRel := leU32(e, 8)
+        k := factIORead(s.idxFile, keyLen, int64(s.keyblobOff+keyRel))
+        c := bytesCompareGo(k, target)
+        if c == 0 {
+            hits := factIORead(s.idxFile, nHits*4, int64(s.hitsOff+hitsRel))
+            offs := make([]uint32, nHits)
+            for i := 0; i < nHits; i++ {
+                offs[i] = leU32(hits, i*4)
+            }
+            return offs
+        }
+        if c < 0 {
+            lo = mid + 1
+        } else {
+            hi = mid - 1
+        }
+    }
+    return nil
+}
+
+func (s *seekFactSource) readRecord(dataOff int64) ([2]Value, bool) {
+    var out [2]Value
+    lenBuf := factIORead(s.dataFile, 4, dataOff)
+    if len(lenBuf) < 4 {
+        return out, false
+    }
+    payloadLen := int(leU32(lenBuf, 0))
+    payload := factIORead(s.dataFile, payloadLen, dataOff+4)
+    if len(payload) < 4 {
+        return out, false
+    }
+    a1Len := leU16(payload, 0)
+    a2Len := leU16(payload, 2)
+    if len(payload) < 4+a1Len+a2Len {
+        return out, false
+    }
+    a1 := string(payload[4 : 4+a1Len])
+    a2 := string(payload[4+a1Len : 4+a1Len+a2Len])
+    out[0] = parseFactSourceValue(a1)
+    out[1] = parseFactSourceValue(a2)
+    return out, true
+}
+
+func (s *seekFactSource) scanAll() [][2]Value {
+    rows := make([][2]Value, 0, s.nRecords)
+    pos := int64(16)
+    for i := uint32(0); i < s.nRecords; i++ {
+        row, ok := s.readRecord(pos)
+        if ok {
+            rows = append(rows, row)
+        }
+        lenBuf := factIORead(s.dataFile, 4, pos)
+        pos += 4 + int64(leU32(lenBuf, 0))
+    }
+    return rows
+}
+
+func (s *seekFactSource) rows(vm *WamState) [][2]Value {
+    if s.kind == "lmdb" {
+        panic(lmdbSeekMissingError(s.predKey, s.path))
+    }
+    if err := s.open(); err != nil {
+        panic(err)
+    }
+    factIODataSize = s.dataSize
+    a1 := vm.deref(vm.getReg(0))
+    if factIsBoundAtomic(a1) {
+        offs := s.lookupOffsets(encodeStoreKey(vm, a1))
+        rows := make([][2]Value, 0, len(offs))
+        for _, off := range offs {
+            if row, ok := s.readRecord(int64(off)); ok {
+                rows = append(rows, row)
+            }
+        }
+        return rows
+    }
+    return s.scanAll()
+}
+
+func (vm *WamState) registerIndexedSeekFact2(predKey string, prefix string) {
+    vm.Ctx.FactStreamSources[predKey] = &seekFactSource{predKey: predKey, kind: "indexed", path: prefix}
+    vm.registerForeignResultLayout(predKey, "tuple:2")
+    vm.registerForeignResultMode(predKey, "stream")
+}
+
+func (vm *WamState) registerLmdbSeekFact2(predKey string, dir string) {
+    vm.Ctx.FactStreamSources[predKey] = &seekFactSource{predKey: predKey, kind: "lmdb", path: dir}
+    vm.registerForeignResultLayout(predKey, "tuple:2")
+    vm.registerForeignResultMode(predKey, "stream")
+}
+
+func lmdbSeekMissingError(predKey string, storePath string) string {
+    return "Go WAM fact source " + predKey + " is declared as lmdb(" + storePath +
+        ") but no compatible LMDB reader is built into this Go binary. This backend is opt-in and carries no repo dependency; the Go lane does not read the npm-lmdb (uw_fact_lmdb) store format. Use UW_STORE_BACKEND=indexed (the default), which reads the dependency-free UWFI/UWIX seek store. The indexed(...) store is a different format and is not used as a fallback."
+}
+
+func (vm *WamState) executeCallFactStream(predKey string) bool {
+    src, ok := vm.Ctx.FactStreamSources[predKey]
+    if !ok {
+        return false
+    }
+    rows := src.rows(vm)
+    a1 := vm.deref(vm.getReg(0))
+    a2 := vm.deref(vm.getReg(1))
+    a1Bound := factIsBoundAtomic(a1)
+    a2Bound := factIsBoundAtomic(a2)
+    results := make([]Value, 0, len(rows))
+    for _, row := range rows {
+        if a1Bound && !factSameAtomic(a1, row[0]) {
+            continue
+        }
+        if a2Bound && !factSameAtomic(a2, row[1]) {
+            continue
+        }
+        results = append(results, tupleValue(row[0], row[1]))
+    }
+    return vm.finishStreamResults(predKey, []int{0, 1}, results)
+}
 ', []).
 
 %% escape_go_string(+Atom, -Escaped)
-%  Escapes backslashes for Go string literals.
+%  Escapes an atom/string for a Go double-quoted string literal. Backslash
+%  MUST be escaped first (so the backslashes added for the later cases are
+%  not doubled). Double-quote handling is required now that resolver_store.pl
+%  interns a `"`-bearing atom; newline/tab/CR are covered defensively since a
+%  Go string literal cannot carry a raw control character.
 escape_go_string(Atom, Escaped) :-
-    atom_string(Atom, Str),
-    split_string(Str, "\\", "", Parts),
-    atomic_list_concat(Parts, "\\\\", Escaped).
+    atom_string(Atom, Str0),
+    go_str_replace(Str0, "\\", "\\\\", S1),
+    go_str_replace(S1, "\"", "\\\"", S2),
+    go_str_replace(S2, "\n", "\\n", S3),
+    go_str_replace(S3, "\t", "\\t", S4),
+    go_str_replace(S4, "\r", "\\r", Escaped).
+
+go_str_replace(In, From, To, Out) :-
+    split_string(In, From, "", Parts),
+    atomic_list_concat(Parts, To, Out).
 
 % ============================================================================
 % Atom Interning (for lowered Go emission)

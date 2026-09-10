@@ -213,6 +213,11 @@ type WamContext struct {
 	AtomFact2Sources          map[string]AtomFact2Source
 	IndexedAtomFactPairs      map[string][]AtomPair
 	IndexedWeightedEdgeTriples map[string][]WeightedEdgeTriple
+	// FactStreamSources holds store-backed P/2 fact sources (D43 UWFI/UWIX
+	// seek reader + the opt-in lmdb gate). Distinct from the in-memory
+	// AtomFact2Sources graph-kernel path: these read only the records a
+	// bound key touches, straight off disk.
+	FactStreamSources         map[string]*seekFactSource
 	AtomIntern                map[string]int
 	InternedFacts             map[string][][]int
 	InternedWeightedFacts     map[string][]InternedWeightedEdge
@@ -382,6 +387,7 @@ func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
 		AtomFact2Sources:     make(map[string]AtomFact2Source),
 		IndexedAtomFactPairs: make(map[string][]AtomPair),
 		IndexedWeightedEdgeTriples: make(map[string][]WeightedEdgeTriple),
+		FactStreamSources:    make(map[string]*seekFactSource),
 		AtomIntern:           make(map[string]int),
 		InternedFacts:        make(map[string][][]int),
 		InternedWeightedFacts: make(map[string][]InternedWeightedEdge),

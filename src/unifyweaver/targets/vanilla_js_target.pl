@@ -168,8 +168,19 @@ js_strip_rules([
     % 4. Remove arrow-function generic type-parameter lists: `= <T, R>(` -> `= (`.
     re("=\\s*<[^<>]*>\\s*\\("/g, "= ("),
 
-    % 5. Remove tuple / array-literal type annotations, e.g. `: [string, string][]`.
-    re(":\\s*\\[[^\\]]*\\](?:\\[\\])?(?=\\s*(?:=>|[,);{=]))"/g, ""),
+    % 5. Remove tuple / array-literal type annotations, e.g. `: [string, string][]`
+    %    and G-A3-9's `: [any, any]`.
+    %
+    %    The bracket contents are matched as a TYPE LIST, not as "anything up to
+    %    the first `]`". The looser form ate the `args: [` of an object literal:
+    %    G-A3-12's compound representation is `{$: "schema", args: [[], []]}`, in
+    %    which `: [[]` is followed by `,` and satisfied the old lookahead exactly,
+    %    so `{$: "-", args, ["name"]]}` reached node -- a syntax error inside an
+    %    otherwise-correct module. No tuple annotation this target emits contains
+    %    anything but type names.
+    re(":\\s*\\[\\s*(?:any|number|string|boolean|unknown|void|null|undefined)\
+(?:\\s*,\\s*(?:any|number|string|boolean|unknown|void|null|undefined))*\
+\\s*\\](?:\\[\\])?(?=\\s*(?:=>|[,);{=]))"/g, ""),
 
     % 6. Remove keyword / named type annotations, e.g. `: number`, `: string[]`,
     %    `: Set<string>`, `: Partial<FooFact>`, `: Promise<...>`, return types,

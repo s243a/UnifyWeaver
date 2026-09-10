@@ -120,10 +120,13 @@ test(structure_read_entry_is_direct_lowered_in_prefix) :-
         WamCode = "test_read_struct/1:\nget_structure f/2, A1\nunify_constant a\nunify_variable X1\nproceed\n",
         wam_clojure_lowerable(test_read_struct/1, WamCode, deterministic),
         lower_predicate_to_clojure(test_read_struct/1, WamCode, [], Code),
-        has(Code, "runtime/enter-unify-mode"),
+        % get_structure delegates to the runtime helper the interpreter's own
+        % step/1 uses, rather than inlining a second copy of the read/write
+        % mode logic here (which is how the missing WRITE mode survived on the
+        % lowered path alone). The unify-* entries stay inlined.
+        has(Code, "runtime/op-get-structure"),
+        has(Code, "runtime/normalize-literal-term"),
         has(Code, "runtime/pop-unify-item"),
-        has(Code, "runtime/structure-term?"),
-        has(Code, "runtime/interned-equal?"),
         has(Code, "runtime/unify-values")
     )).
 
@@ -132,9 +135,9 @@ test(list_read_entry_is_direct_lowered_in_prefix) :-
         WamCode = "test_read_list/1:\nget_list A1\nunify_constant head\nunify_constant []\nproceed\n",
         wam_clojure_lowerable(test_read_list/1, WamCode, deterministic),
         lower_predicate_to_clojure(test_read_list/1, WamCode, [], Code),
-        has(Code, "runtime/enter-unify-mode"),
-        has(Code, "runtime/list-functor-term"),
-        has(Code, "runtime/structure-term?"),
+        % get_list likewise delegates: op-get-list is op-get-structure with the
+        % list functor, so the two paths cannot drift apart again.
+        has(Code, "runtime/op-get-list"),
         has(Code, "runtime/pop-unify-item"),
         has(Code, "runtime/unify-values")
     )).

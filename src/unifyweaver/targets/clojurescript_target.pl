@@ -254,7 +254,20 @@ cljs_interop_rules([
     % --- host IO / json libraries are JVM-only; map to JS analogues ---
     '[clojure.data.json :as json]'-'[clojure.string :as cljs-str]',
     '(json/write-str '-'(cljs-json-write-str ',
-    '(json/read-str '-'(cljs-json-read-str '
+    '(json/read-str '-'(cljs-json-read-str ',
+    % --- A3 whole-program runtime (clojure_target's clj_runtime_helper/2) ---
+    % Three host-specific lines, and only three: the failure sentinel's fresh
+    % object, and the two character primitives. Each From is the ENTIRE emitted
+    % body of one helper, so the rule is exact and cannot match anything else --
+    % the same discipline the Integer/parseInt and Math/abs rules follow.
+    % A Prolog char is a ONE-CHARACTER STRING in this target on both hosts, so
+    % only the code<->char conversion differs, not the representation.
+    '(def ^:private uw-fail (Object.))'-'(def ^:private uw-fail (js/Object.))',
+    '(defn ^:private uw-char-code [c] (int (.charAt (str c) 0)))'-'(defn ^:private uw-char-code [c] (.charCodeAt (str c) 0))',
+    '(defn ^:private uw-code-char [x] (str (char x)))'-'(defn ^:private uw-code-char [x] (js/String.fromCharCode x))'
+    % uw-parse-num needs no rule of its own: its body is
+    % `(Double/parseDouble (str s))`, and the Double/parseDouble rule above
+    % already rewrites it to `(js/parseFloat (str s))`, which is the JS host form.
 ]).
 
 %% cljs_replace_all(+In, +From, +To, -Out)

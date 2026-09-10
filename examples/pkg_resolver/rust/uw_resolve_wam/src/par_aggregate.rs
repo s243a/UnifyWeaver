@@ -1,4 +1,4 @@
-// par_aggregate.rs — generated 2026-09-06 05:58:06
+// par_aggregate.rs — generated 2026-09-08 03:48:55
 //
 // T7 parallel-aggregate runtime (route 1). The compile-time transform
 // (parallel_gate.parallel_aggregate_transform) rewrites a parallel-eligible
@@ -28,7 +28,7 @@ fn collect_inputs<E>(base: &WamState, enum_c: &E) -> Vec<Value>
 where E: Fn(&mut WamState, Value) -> bool {
     let mut vm = base.clone();
     let mut out = Vec::new();
-    if enum_c(&mut vm, Value::Unbound(IN_VAR.to_string())) {
+    if enum_c(&mut vm, Value::Unbound(IN_VAR.to_string().into())) {
         loop {
             if let Some(raw) = vm.bindings.get(IN_VAR).cloned() {
                 // resolve heap refs / nested terms, as EndAggregate does
@@ -51,7 +51,7 @@ fn run_body<B>(base: &WamState, m: &mut WamState, body_c: &B, input: Value) -> V
 where B: Fn(&mut WamState, Value, Value) -> bool {
     *m = base.clone(); // each branch starts from a clean machine
     let mut vals = Vec::new();
-    if body_c(m, input, Value::Unbound(VAL_VAR.to_string())) {
+    if body_c(m, input, Value::Unbound(VAL_VAR.to_string().into())) {
         loop {
             if let Some(raw) = m.bindings.get(VAL_VAR).cloned() {
                 vals.push(m.deref_var(&m.deref_heap(&raw)));
@@ -161,7 +161,7 @@ fn collect_inputs_labeled(base: &WamState, enum_pc: usize, input_vals: &[Value])
     for (i, v) in input_vals.iter().enumerate() {
         vm.set_reg(&format!("A{}", i + 1), v.clone());
     }
-    vm.set_reg(&format!("A{}", k + 1), Value::Unbound(IN_VAR.to_string()));
+    vm.set_reg(&format!("A{}", k + 1), Value::Unbound(IN_VAR.to_string().into()));
     let mut out = Vec::new();
     if vm.run() {
         loop {
@@ -186,7 +186,7 @@ fn run_body_labeled(base: &WamState, m: &mut WamState, body_pc: usize, input_val
         m.set_reg(&format!("A{}", i + 1), v.clone());
     }
     m.set_reg(&format!("A{}", k + 1), input);
-    m.set_reg(&format!("A{}", k + 2), Value::Unbound(VAL_VAR.to_string()));
+    m.set_reg(&format!("A{}", k + 2), Value::Unbound(VAL_VAR.to_string().into()));
     let mut vals = Vec::new();
     if m.run() {
         loop {
