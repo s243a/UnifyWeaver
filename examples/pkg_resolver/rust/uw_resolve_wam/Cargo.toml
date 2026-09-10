@@ -21,3 +21,8 @@ decorate_sort = []
 # byte-identical). Off = the pre-intern String path, kept for A/B via
 # `--no-default-features --features decorate_sort`; the two are sha-distinct.
 intern = []
+# T7 parallel-aggregate path (state.rs `#[cfg(feature="parallel")]`). Declared
+# so Cargo's unexpected-cfgs lint knows the name (adding [features] above turns
+# that lint on). Off by default and empty: enabling it needs rayon, which is a
+# hard dep only under the generator's parallel(true) option.
+parallel = []

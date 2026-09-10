@@ -70,7 +70,7 @@ use alias_runtime::state::WamState;
 use alias_runtime::value::Value;
 
 fn atom(name: &str) -> Value {
-    Value::Atom(name.to_string())
+    Value::Atom(name.to_string().into())
 }
 
 fn tuple(left: &str, right: &str, distance: i64) -> Value {
@@ -86,8 +86,8 @@ fn machine() -> (WamState, Value, Value) {
     vm.register_foreign_result_mode(\"alias/3\", \"stream\");
     (
         vm,
-        Value::Unbound(\"Shared\".to_string()),
-        Value::Unbound(\"Distance\".to_string()),
+        Value::Unbound(\"Shared\".to_string().into()),
+        Value::Unbound(\"Distance\".to_string().into()),
     )
 }
 
