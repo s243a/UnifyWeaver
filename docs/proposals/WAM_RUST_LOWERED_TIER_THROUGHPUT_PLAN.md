@@ -392,3 +392,4 @@ roughly by the profile's expected payoff (D91), not by when it was raised.
    showed the deterministic patterns cover the drivers that were worth it, so the
    trampoline is reserved for a driver that genuinely must expose alternatives
    upward — none identified as worth it yet.
+9. **Tidy the agent relay-prompt docs (deferred, user-requested 2026-09-08).** The ~26 `docs/proposals/GROK_*_PROMPT.md` + `LOCAL_GEMINI_SUPERVISOR_PROMPT.md` relay prompts are process ephemera mixed into `docs/proposals/`. Keep for now (useful context), but eventually archive into a subfolder (e.g. `docs/proposals/agent-prompts/`) — not urgent.

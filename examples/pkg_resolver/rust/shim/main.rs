@@ -33,7 +33,7 @@ use uw_resolve_wam::{setup_foreign_predicates, shared_wam_program};
 // ---------------------------------------------------------------------------
 
 fn atom(name: &str) -> Value {
-    Value::Atom(name.to_string())
+    Value::Atom(name.to_string().into())
 }
 
 fn s(functor: &str, args: Vec<Value>) -> Value {
@@ -407,7 +407,7 @@ fn sel_json(v: &Value) -> J {
 
 fn atom_json(v: &Value) -> J {
     match v {
-        Value::Atom(a) => J::Str(a.clone()),
+        Value::Atom(a) => J::Str(a.as_str().to_string()),
         other => J::Str(format!("{}", other)),
     }
 }
@@ -560,12 +560,12 @@ fn call_pred(vm: &mut WamState, pred: &str, args: Vec<Value>) -> Option<Value> {
     }
     vm.set_reg(
         &format!("A{}", args.len() + 1),
-        Value::Unbound(OUT_VAR.to_string()),
+        Value::Unbound(OUT_VAR.to_string().into()),
     );
     vm.cp = 0;
     vm.pc = target;
     if vm.run() {
-        let out = vm.deref_heap(&Value::Unbound(OUT_VAR.to_string()));
+        let out = vm.deref_heap(&Value::Unbound(OUT_VAR.to_string().into()));
         // A "success" that left the output variable unbound means the machine
         // returned without ever running the goal that binds it (e.g. a
         // premature jump to PC 0). Reporting that as an empty selection would

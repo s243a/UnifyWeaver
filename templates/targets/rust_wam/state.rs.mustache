@@ -2322,7 +2322,7 @@ impl WamState {
     pub fn deref_var(&self, val: &Value) -> Value {
         match val {
             Value::Unbound(name) => {
-                if let Some(bound) = self.bindings.get(name) {
+                if let Some(bound) = self.bindings.get(name.as_str()) {
                     self.deref_var(bound)
                 } else {
                     val.clone()
@@ -2364,7 +2364,7 @@ impl WamState {
     /// atom against `atom` without building a `Value::Atom(String)` on either
     /// side. Returns `Some(true)` (bound & equal), `Some(false)` (bound but not
     /// an equal atom — the caller fails the clause), or `None` (unbound — the
-    /// caller binds). Mirrors the old `get_reg() != Value::Atom("...")` path,
+    /// caller binds). Mirrors the old `get_reg() != Value::Atom("...".into())` path,
     /// minus its two per-comparison heap allocations.
     #[inline]
     pub fn match_reg_atom(&self, name: &str, atom: &str) -> Option<bool> {
@@ -2376,7 +2376,7 @@ impl WamState {
 
     fn deref_match_atom(&self, val: &Value, atom: &str) -> Option<bool> {
         match val {
-            Value::Unbound(name) => match self.bindings.get(name) {
+            Value::Unbound(name) => match self.bindings.get(name.as_str()) {
                 Some(bound) => self.deref_match_atom(bound, atom),
                 None => None,
             },
@@ -2451,7 +2451,7 @@ impl WamState {
 
     fn deref_atom_str<'a>(&'a self, val: &'a Value) -> Option<&'a str> {
         match val {
-            Value::Unbound(name) => match self.bindings.get(name) {
+            Value::Unbound(name) => match self.bindings.get(name.as_str()) {
                 Some(bound) => self.deref_atom_str(bound),
                 None => None,
             },
@@ -2909,7 +2909,7 @@ impl WamState {
                 if a.len() == 1 && Self::functor_of(f, 1) == "alternatives" =>
                 // req(alternatives(Alts), any) — reuse the alternatives term.
                 Some(Value::strv("req".to_string(),
-                                 vec![dd.clone(), Value::Atom("any".to_string())])),
+                                 vec![dd.clone(), Value::Atom("any".to_string().into())])),
             _ =>
                 // req(D, C) — the original element args as-is.
                 Some(Value::strv("req".to_string(), vec![d.clone(), c.clone()])),
@@ -3754,7 +3754,7 @@ impl WamState {
     #[allow(dead_code)]
     fn region_build_tree_rec(elems: &[Value], start: usize, n: i64) -> (Value, usize) {
         if n == 0 {
-            return (Value::Atom("t".to_string()), start);
+            return (Value::Atom("t".to_string().into()), start);
         }
         let nl = (n - 1) / 2;   // (N-1)//2; N-1 >= 0 so // == / here
         let nr = n - 1 - nl;
@@ -3763,7 +3763,7 @@ impl WamState {
         let (k, v) = match &elems[mid] {
             Value::Str(_f, a) if a.len() == 2 => (a[0].clone(), a[1].clone()),
             // The walk guarantees a `-/2` pair here; be total regardless.
-            other => (other.clone(), Value::Atom("[]".to_string())),
+            other => (other.clone(), Value::Atom("[]".to_string().into())),
         };
         let (r, next) = Self::region_build_tree_rec(elems, mid + 1, nr);
         (Value::strv("t".to_string(), vec![l, k, v, r]), next)
@@ -4351,7 +4351,7 @@ impl WamState {
         // state into a wrong answer rather than a hang.
         let mut hops: u32 = 0;
         while let Value::Unbound(name) = cur {
-            match self.bindings.get(name) {
+            match self.bindings.get(name.as_str()) {
                 Some(next) => {
                     hops += 1;
                     if hops > 1_000_000 { return cur; }
@@ -4424,7 +4424,7 @@ impl WamState {
                     if f.len() == full.len() {
                         return c.clone();
                     }
-                    return Value::Str(f.to_string(), args.clone());
+                    return Value::Str(f.to_string().into(), args.clone());
                 }
                 Value::Ref(_) => c.clone(),
                 other => return other.clone(),
@@ -4665,7 +4665,7 @@ impl WamState {
     pub fn deref_heap(&self, val: &Value) -> Value {
         match val {
             Value::Unbound(name) => {
-                if let Some(v) = self.bindings.get(name) {
+                if let Some(v) = self.bindings.get(name.as_str()) {
                     return self.deref_heap(v);
                 }
                 val.clone()
@@ -4708,10 +4708,14 @@ impl WamState {
                         if functor == full_str.as_str() {
                             val.clone()
                         } else {
-                            Value::Str(functor.to_string(), args.clone())
+                            // Intern the normalised functor directly from the
+                            // &str -- no intermediate String allocation (this is
+                            // the deref_heap functor-String site D94 flagged as
+                            // 93% of B3 deref_heap allocations).
+                            Value::Str(functor.into(), args.clone())
                         }
                     }
-                    Some(acc) => Value::strv(functor.to_string(), acc),
+                    Some(acc) => Value::strv(functor, acc),
                 }
             }
             Value::List(items) => {
@@ -4754,7 +4758,7 @@ impl WamState {
                             let derefed: Vec<Value> = args.iter()
                                 .map(|a| self.deref_heap(a))
                                 .collect();
-                            return Value::strv(functor.to_string(), derefed);
+                            return Value::strv(functor, derefed);
                         }
                     }
                 }
@@ -4988,7 +4992,7 @@ impl WamState {
                             let label = &entry[colon_idx + 1..];
                             (Self::parse_value(val_str), label.to_string())
                         } else {
-                            (Value::Atom(entry.to_string()), "unknown".to_string())
+                            (Value::Atom(entry.to_string().into()), "unknown".to_string())
                         }
                     })
                     .collect();
@@ -5016,7 +5020,7 @@ impl WamState {
                             let label = &entry[colon_idx + 1..];
                             (Self::parse_value(val_str), label.to_string())
                         } else {
-                            (Value::Atom(entry.to_string()), "unknown".to_string())
+                            (Value::Atom(entry.to_string().into()), "unknown".to_string())
                         }
                     })
                     .collect();
@@ -5040,7 +5044,7 @@ impl WamState {
                 } else if let Ok(f) = s.parse::<f64>() {
                     Value::Float(f)
                 } else {
-                    Value::Atom(s.to_string())
+                    Value::Atom(s.to_string().into())
                 }
             }
         }
@@ -5104,7 +5108,7 @@ mod region1_matching_deps_tests {
     fn req(a: Value, b: Value) -> Value {
         Value::strv("req".to_string(), vec![a, b])
     }
-    fn atom(s: &str) -> Value { Value::Atom(s.to_string()) }
+    fn atom(s: &str) -> Value { Value::Atom(s.to_string().into()) }
 
     // Read what the (unbound) output register was bound to.
     fn out_of(m: &WamState) -> Value {
@@ -5127,18 +5131,18 @@ mod region1_matching_deps_tests {
         // Name=foo, Ver=1. Match foo/1 elements; dep_to_req commits on
         // alternatives(_) to req(_,any) (its cut), else req(D,C).
         let list = Value::list(vec![
-            depends(atom("foo"), Value::Integer(1), Value::strv("pkg".into(), vec![atom("bar")]), atom("gt")),
+            depends(atom("foo"), Value::Integer(1), Value::strv("pkg", vec![atom("bar")]), atom("gt")),
             depends(atom("baz"), Value::Integer(2), atom("whatever"), atom("c")), // Name mismatch -> skip
             depends(atom("foo"), Value::Integer(9), atom("x"), atom("c")),        // Ver mismatch -> skip
-            depends(atom("foo"), Value::Integer(1), Value::strv("alternatives".into(), vec![Value::list(vec![atom("a"), atom("b")])]), atom("cc")),
+            depends(atom("foo"), Value::Integer(1), Value::strv("alternatives", vec![Value::list(vec![atom("a"), atom("b")])]), atom("cc")),
         ]);
         let mut m = setup(list, atom("foo"), Value::Integer(1));
         let r = m.region_matching_deps_dispatch(42);
         assert_eq!(r, Some(true), "region handled the deterministic call");
         assert_eq!(m.pc, 42, "pc advanced to cont_pc on success");
         let expected = Value::list(vec![
-            req(Value::strv("pkg".into(), vec![atom("bar")]), atom("gt")),
-            req(Value::strv("alternatives".into(), vec![Value::list(vec![atom("a"), atom("b")])]), atom("any")),
+            req(Value::strv("pkg", vec![atom("bar")]), atom("gt")),
+            req(Value::strv("alternatives", vec![Value::list(vec![atom("a"), atom("b")])]), atom("any")),
         ]);
         assert!(m.terms_identical(&out_of(&m), &expected),
             "fused output matches interpreter semantics incl. the alternatives->any cut; got {}", out_of(&m));
@@ -5147,10 +5151,10 @@ mod region1_matching_deps_tests {
     #[test]
     fn compound_version_structural_equality() {
         // == is structural: a compound version v(1,2,3) must match by structure.
-        let ver = Value::strv("v".into(), vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)]);
+        let ver = Value::strv("v", vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)]);
         let list = Value::list(vec![
             depends(atom("foo"), ver.clone(), atom("dep1"), atom("c1")),
-            depends(atom("foo"), Value::strv("v".into(), vec![Value::Integer(1), Value::Integer(2), Value::Integer(4)]), atom("dep2"), atom("c2")), // differs -> skip
+            depends(atom("foo"), Value::strv("v", vec![Value::Integer(1), Value::Integer(2), Value::Integer(4)]), atom("dep2"), atom("c2")), // differs -> skip
         ]);
         let mut m = setup(list, atom("foo"), ver);
         assert_eq!(m.region_matching_deps_dispatch(1), Some(true));
@@ -5198,7 +5202,7 @@ mod region1_matching_deps_tests {
         // An unbound list tail is outside the recognised shape: the region must
         // DECLINE (None) with the P2 minimal snapshot rolled back — no binding,
         // no trail growth, no choice point, output still unbound.
-        let open = Value::strv("[|]/2".into(), vec![
+        let open = Value::strv("[|]/2", vec![
             depends(atom("foo"), Value::Integer(1), atom("d"), atom("c")),
             Value::new_unbound("Tail"),
         ]);
@@ -5266,7 +5270,7 @@ mod region2_matching_versions_tests {
     use std::collections::HashMap;
 
     fn vm() -> WamState { WamState::new(vec![], HashMap::new()) }
-    fn atom(s: &str) -> Value { Value::Atom(s.to_string()) }
+    fn atom(s: &str) -> Value { Value::Atom(s.to_string().into()) }
     fn int(n: i64) -> Value { Value::Integer(n) }
     fn package(n: Value, v: Value) -> Value {
         Value::strv("package".to_string(), vec![n, v])
@@ -5385,23 +5389,23 @@ mod region2_matching_versions_tests {
         // any
         assert_eq!(m.region_satisfies(&ver, &atom("any")), Some(true));
         // eq — structural identity on ground terms
-        assert_eq!(m.region_satisfies(&ver, &Value::strv("eq".into(), vec![v3(1,2,3)])), Some(true));
-        assert_eq!(m.region_satisfies(&ver, &Value::strv("eq".into(), vec![v3(1,2,4)])), Some(false));
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("eq", vec![v3(1,2,3)])), Some(true));
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("eq", vec![v3(1,2,4)])), Some(false));
         // gte : \+ version_lt(Ver, G)
-        assert_eq!(m.region_satisfies(&ver, &Value::strv("gte".into(), vec![v3(1,2,3)])), Some(true));  // equal -> !false
-        assert_eq!(m.region_satisfies(&ver, &Value::strv("gte".into(), vec![v3(1,2,4)])), Some(false)); // ver<g -> !true
-        assert_eq!(m.region_satisfies(&ver, &Value::strv("gte".into(), vec![v3(1,2,2)])), Some(true));
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("gte", vec![v3(1,2,3)])), Some(true));  // equal -> !false
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("gte", vec![v3(1,2,4)])), Some(false)); // ver<g -> !true
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("gte", vec![v3(1,2,2)])), Some(true));
         // lte : \+ version_lt(G, Ver)
-        assert_eq!(m.region_satisfies(&ver, &Value::strv("lte".into(), vec![v3(1,2,3)])), Some(true));
-        assert_eq!(m.region_satisfies(&ver, &Value::strv("lte".into(), vec![v3(1,2,2)])), Some(false));
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("lte", vec![v3(1,2,3)])), Some(true));
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("lte", vec![v3(1,2,2)])), Some(false));
         // lt : version_lt(Ver, H)
-        assert_eq!(m.region_satisfies(&ver, &Value::strv("lt".into(), vec![v3(1,2,4)])), Some(true));
-        assert_eq!(m.region_satisfies(&ver, &Value::strv("lt".into(), vec![v3(1,2,3)])), Some(false));
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("lt", vec![v3(1,2,4)])), Some(true));
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("lt", vec![v3(1,2,3)])), Some(false));
         // gt : version_lt(H, Ver)
-        assert_eq!(m.region_satisfies(&ver, &Value::strv("gt".into(), vec![v3(1,2,2)])), Some(true));
-        assert_eq!(m.region_satisfies(&ver, &Value::strv("gt".into(), vec![v3(1,2,3)])), Some(false));
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("gt", vec![v3(1,2,2)])), Some(true));
+        assert_eq!(m.region_satisfies(&ver, &Value::strv("gt", vec![v3(1,2,3)])), Some(false));
         // range(Lo,Hi) : \+ version_lt(Ver,Lo), version_lt(Ver,Hi)
-        let range = |lo: Value, hi: Value| Value::strv("range".into(), vec![lo, hi]);
+        let range = |lo: Value, hi: Value| Value::strv("range", vec![lo, hi]);
         assert_eq!(m.region_satisfies(&ver, &range(v3(1,0,0), v3(2,0,0))), Some(true));
         assert_eq!(m.region_satisfies(&ver, &range(v3(1,2,4), v3(2,0,0))), Some(false)); // below Lo
         assert_eq!(m.region_satisfies(&ver, &range(v3(1,0,0), v3(1,2,3))), Some(false)); // not < Hi
@@ -5416,7 +5420,7 @@ mod region2_matching_versions_tests {
             package(atom("foo"), v3(1,0,0)),  // keep
             package(atom("foo"), v3(1,5,0)),  // keep
         ]);
-        let c = Value::strv("gte".into(), vec![v3(1,0,0)]);
+        let c = Value::strv("gte", vec![v3(1,0,0)]);
         let mut m = setup(list, atom("foo"), c);
         let r = m.region_matching_versions_dispatch(42);
         assert_eq!(r, Some(true), "region handled the deterministic call");
@@ -5484,12 +5488,12 @@ mod region2_matching_versions_tests {
         let ver = v3(1,2,3);
         let probes = vec![
             atom("any"),
-            Value::strv("eq".into(), vec![v3(1,2,3)]),
-            Value::strv("gte".into(), vec![v3(1,0,0)]),
-            Value::strv("lte".into(), vec![v3(2,0,0)]),
-            Value::strv("lt".into(), vec![v3(2,0,0)]),
-            Value::strv("gt".into(), vec![v3(1,0,0)]),
-            Value::strv("range".into(), vec![v3(1,0,0), v3(2,0,0)]),
+            Value::strv("eq", vec![v3(1,2,3)]),
+            Value::strv("gte", vec![v3(1,0,0)]),
+            Value::strv("lte", vec![v3(2,0,0)]),
+            Value::strv("lt", vec![v3(2,0,0)]),
+            Value::strv("gt", vec![v3(1,0,0)]),
+            Value::strv("range", vec![v3(1,0,0), v3(2,0,0)]),
         ];
         for c in &probes { let _ = m.region_satisfies(&ver, c); }
         // deb path too
@@ -5504,7 +5508,7 @@ mod region2_matching_versions_tests {
 
     #[test]
     fn decline_open_tail_restores_minimal_snapshot() {
-        let open = Value::strv("[|]/2".into(), vec![
+        let open = Value::strv("[|]/2", vec![
             package(atom("foo"), v3(1,0,0)),
             Value::new_unbound("Tail"),
         ]);
@@ -5543,7 +5547,7 @@ mod region2_matching_versions_tests {
         let list = Value::list(vec![
             package(atom("foo"), Value::new_unbound("V")),
         ]);
-        let c = Value::strv("gte".into(), vec![v3(1,0,0)]);
+        let c = Value::strv("gte", vec![v3(1,0,0)]);
         let mut m = setup(list, atom("foo"), c);
         assert_eq!(m.region_matching_versions_dispatch(1), None);
     }
@@ -5581,7 +5585,7 @@ mod region3a_key_dep_rows_tests {
     use std::collections::HashMap;
 
     fn vm() -> WamState { WamState::new(vec![], HashMap::new()) }
-    fn atom(s: &str) -> Value { Value::Atom(s.to_string()) }
+    fn atom(s: &str) -> Value { Value::Atom(s.to_string().into()) }
     fn int(n: i64) -> Value { Value::Integer(n) }
     fn depends(n: Value, v: Value, d: Value, c: Value) -> Value {
         Value::strv("depends".to_string(), vec![n, v, d, c])
@@ -5612,9 +5616,9 @@ mod region3a_key_dep_rows_tests {
     fn fusion_walk_index_and_dep_to_req_cut() {
         // Every element yields a row; I increments; dep_to_req commits on
         // alternatives(_) to req(_,any) (its cut), else req(D,C).
-        let alts = Value::strv("alternatives".into(), vec![Value::list(vec![atom("a"), atom("b")])]);
+        let alts = Value::strv("alternatives", vec![Value::list(vec![atom("a"), atom("b")])]);
         let list = Value::list(vec![
-            depends(atom("foo"), int(1), Value::strv("pkg".into(), vec![atom("bar")]), atom("gt")),
+            depends(atom("foo"), int(1), Value::strv("pkg", vec![atom("bar")]), atom("gt")),
             depends(atom("baz"), int(2), alts.clone(), atom("cc")),
         ]);
         let mut m = setup(list, 0);
@@ -5622,7 +5626,7 @@ mod region3a_key_dep_rows_tests {
         assert_eq!(r, Some(true), "region handled the deterministic call");
         assert_eq!(m.pc, 42, "pc advanced to cont_pc");
         let expected = Value::list(vec![
-            row(atom("foo"), int(1), 0, req(Value::strv("pkg".into(), vec![atom("bar")]), atom("gt"))),
+            row(atom("foo"), int(1), 0, req(Value::strv("pkg", vec![atom("bar")]), atom("gt"))),
             row(atom("baz"), int(2), 1, req(alts, atom("any"))),
         ]);
         assert!(m.terms_identical(&out_of(&m), &expected),
@@ -5671,7 +5675,7 @@ mod region3a_key_dep_rows_tests {
 
     #[test]
     fn decline_open_tail_restores_minimal_snapshot() {
-        let open = Value::strv("[|]/2".into(), vec![
+        let open = Value::strv("[|]/2", vec![
             depends(atom("foo"), int(1), atom("d"), atom("c")),
             Value::new_unbound("Tail"),
         ]);
@@ -5736,7 +5740,7 @@ mod region3b_group_keyed_tests {
     use std::collections::HashMap;
 
     fn vm() -> WamState { WamState::new(vec![], HashMap::new()) }
-    fn atom(s: &str) -> Value { Value::Atom(s.to_string()) }
+    fn atom(s: &str) -> Value { Value::Atom(s.to_string().into()) }
     fn int(n: i64) -> Value { Value::Integer(n) }
     fn m2(a: Value, b: Value) -> Value { Value::strv("-".to_string(), vec![a, b]) }
     // A keyed row K-I-X.
@@ -5852,7 +5856,7 @@ mod region3b_group_keyed_tests {
 
     #[test]
     fn decline_open_tail_restores_minimal_snapshot() {
-        let open = Value::strv("[|]/2".into(), vec![
+        let open = Value::strv("[|]/2", vec![
             row(atom("p"), 0, atom("v0")),
             Value::new_unbound("Tail"),
         ]);
@@ -5892,7 +5896,7 @@ mod region4_build_tree_tests {
     use std::collections::HashMap;
 
     fn vm() -> WamState { WamState::new(vec![], HashMap::new()) }
-    fn atom(s: &str) -> Value { Value::Atom(s.to_string()) }
+    fn atom(s: &str) -> Value { Value::Atom(s.to_string().into()) }
     fn int(n: i64) -> Value { Value::Integer(n) }
     // A K-V pair (the shape `build_tree` consumes, one per node).
     fn pair(k: Value, v: Value) -> Value { Value::strv("-".to_string(), vec![k, v]) }
@@ -6049,7 +6053,7 @@ mod region4_build_tree_tests {
     #[test]
     fn decline_open_tail_restores_snapshot() {
         // An open (unbound) tail within the first N cells -> defer to interpreter.
-        let open = Value::strv("[|]/2".into(), vec![
+        let open = Value::strv("[|]/2", vec![
             pair(atom("k0"), int(0)),
             Value::new_unbound("Tail"),
         ]);
@@ -6076,25 +6080,25 @@ mod region5_dep_breaks_tests {
     use std::collections::HashMap;
 
     fn vm() -> WamState { WamState::new(vec![], HashMap::new()) }
-    fn atom(s: &str) -> Value { Value::Atom(s.to_string()) }
+    fn atom(s: &str) -> Value { Value::Atom(s.to_string().into()) }
     fn ver(a: i64, b: i64, c: i64) -> Value {
-        Value::strv("v".into(), vec![Value::Integer(a), Value::Integer(b), Value::Integer(c)])
+        Value::strv("v", vec![Value::Integer(a), Value::Integer(b), Value::Integer(c)])
     }
     // Acc entry: Name-Ver.
     fn pair(name: &str, v: Value) -> Value {
-        Value::strv("-".into(), vec![atom(name), v])
+        Value::strv("-", vec![atom(name), v])
     }
     fn depends(n: &str, v: Value, d: Value, c: Value) -> Value {
-        Value::strv("depends".into(), vec![atom(n), v, d, c])
+        Value::strv("depends", vec![atom(n), v, d, c])
     }
     fn dep(name: &str, c: Value) -> Value {
-        Value::strv("dep".into(), vec![atom(name), c])
+        Value::strv("dep", vec![atom(name), c])
     }
     fn alternatives(alts: Vec<Value>) -> Value {
-        Value::strv("alternatives".into(), vec![Value::list(alts)])
+        Value::strv("alternatives", vec![Value::list(alts)])
     }
-    fn eqc(v: Value) -> Value { Value::strv("eq".into(), vec![v]) }
-    fn gtec(v: Value) -> Value { Value::strv("gte".into(), vec![v]) }
+    fn eqc(v: Value) -> Value { Value::strv("eq", vec![v]) }
+    fn gtec(v: Value) -> Value { Value::strv("gte", vec![v]) }
     fn cout_of(m: &WamState) -> Value { m.deref_heap(&Value::new_unbound("COut")) }
 
     // A1=depends list, A2=N, A3=V, A4=Acc, A5=COut(unbound).
@@ -6241,7 +6245,7 @@ mod region5_dep_breaks_tests {
     #[test]
     fn decline_open_tail_restores_snapshot() {
         // An open (unbound) list tail -> defer to interpreter, snapshot restored.
-        let open = Value::strv("[|]/2".into(), vec![
+        let open = Value::strv("[|]/2", vec![
             depends("other", ver(1, 0, 0), atom("foo"), gtec(ver(1, 0, 0))),
             Value::new_unbound("Tail"),
         ]);
@@ -6299,7 +6303,7 @@ mod genrec_sibling_gap_tests {
     use std::collections::HashMap;
 
     fn vm() -> WamState { WamState::new(vec![], HashMap::new()) }
-    fn atom(s: &str) -> Value { Value::Atom(s.to_string()) }
+    fn atom(s: &str) -> Value { Value::Atom(s.to_string().into()) }
     fn int(n: i64) -> Value { Value::Integer(n) }
     fn package(n: Value, v: Value) -> Value {
         Value::strv("package".to_string(), vec![n, v])
@@ -6325,7 +6329,7 @@ mod genrec_sibling_gap_tests {
     fn filter_keeps_only_satisfying_versions_in_walk_order() {
         // C = gte(v(1,0,0)); keep versions >= 1.0.0, in list order.
         let list = Value::list(vec![v3(0,9,0), v3(1,0,0), v3(0,5,0), v3(1,5,0)]);
-        let c = Value::strv("gte".into(), vec![v3(1,0,0)]);
+        let c = Value::strv("gte", vec![v3(1,0,0)]);
         let mut m = setup_filter(list, c);
         let r = m.region_filter_satisfies_dispatch(42);
         assert_eq!(r, Some(true), "genrec handled the deterministic call");
@@ -6352,7 +6356,7 @@ mod genrec_sibling_gap_tests {
 
     #[test]
     fn filter_declines_open_tail() {
-        let open = Value::strv("[|]/2".into(), vec![v3(1,0,0), Value::new_unbound("Tail")]);
+        let open = Value::strv("[|]/2", vec![v3(1,0,0), Value::new_unbound("Tail")]);
         let mut m = setup_filter(open, atom("any"));
         let trail_before = m.trail.len();
         let cp_before = m.choice_points.len();
@@ -6437,7 +6441,7 @@ mod genrec_sibling_gap_tests {
 
     #[test]
     fn keypkg_declines_non_package_element() {
-        let list = Value::list(vec![Value::strv("depends".into(),
+        let list = Value::list(vec![Value::strv("depends",
             vec![atom("x"), int(1), atom("d"), atom("c")])]);
         let mut m = setup_keypkg(list, 0);
         assert_eq!(m.region_key_pkg_rows_dispatch(1), None, "declines on non-package element");

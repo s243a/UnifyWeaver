@@ -121,7 +121,7 @@
             }
             "gethostname/1" | "uname_sysname/1" | "uname_machine/1" => {
                 let name = match Self::system_name(op) {
-                    Some(name) => Value::Atom(name),
+                    Some(name) => Value::Atom(name.into()),
                     None => return false,
                 };
                 let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
@@ -183,7 +183,7 @@
                 };
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 let mark = self.trail.len();
-                if self.unify(&output, &Value::Atom(text)) {
+                if self.unify(&output, &Value::Atom(text.into())) {
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);

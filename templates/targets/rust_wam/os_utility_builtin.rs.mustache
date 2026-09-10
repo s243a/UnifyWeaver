@@ -79,7 +79,7 @@
                     _ => return false,
                 };
                 let path = match Self::create_temporary_file(&base) {
-                    Some(path) => Value::Atom(path),
+                    Some(path) => Value::Atom(path.into()),
                     None => return false,
                 };
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);

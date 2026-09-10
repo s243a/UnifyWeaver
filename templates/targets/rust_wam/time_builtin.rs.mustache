@@ -67,7 +67,7 @@
             Value::Integer(Self::tm_read_i32(&tm, 4)),
             Value::Integer(Self::tm_read_i32(&tm, 0)),
             Value::Integer(Self::tm_read_i64(&tm, 40)),
-            Value::Atom("local".to_string()),
+            Value::Atom("local".to_string().into()),
             Value::Integer(Self::tm_read_i32(&tm, 32)),
         ]))
     }
@@ -204,7 +204,7 @@
                     None => return false,
                 };
                 let formatted = match Self::format_local_time(&format, stamp) {
-                    Some(formatted) => Value::Atom(formatted),
+                    Some(formatted) => Value::Atom(formatted.into()),
                     None => return false,
                 };
                 let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
