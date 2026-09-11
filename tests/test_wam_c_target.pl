@@ -369,6 +369,23 @@ test_length_builtin_generation :-
     ;   fail_test(Test, 'length/2 builtin missing from generated runtime')
     ).
 
+test_atomic_builtin_generation :-
+    Test = 'WAM-C: atomic/1 type dispatch is generated',
+    WamCode = 'wam_c_builtin_atomic/1:\n    builtin_call atomic/1, 1\n    proceed',
+    (   compile_wam_helpers_to_c([], HelpersCode),
+        atom_string(HelpersCode, HelpersS),
+        sub_string(HelpersS, _, _, _, 'strcmp(op, "atomic/1")'),
+        sub_string(HelpersS, _, _, _, 'VAL_ATOM'),
+        sub_string(HelpersS, _, _, _, 'VAL_INT'),
+        sub_string(HelpersS, _, _, _, 'VAL_FLOAT'),
+        compile_wam_predicate_to_c(user:wam_c_builtin_atomic/1, WamCode, [], PredCode),
+        atom_string(PredCode, PredS),
+        sub_string(PredS, _, _, _, 'INSTR_BUILTIN_CALL'),
+        sub_string(PredS, _, _, _, '.pred = "atomic/1"')
+    ->  pass(Test)
+    ;   fail_test(Test, 'atomic/1 type dispatch missing from generated code')
+    ).
+
 test_call_foreign_generation :-
     Test = 'WAM-C: call_foreign parses and dispatches registered handlers',
     WamCode = 'foo/1:\n    call_foreign foo/1, 1\n    proceed',
@@ -1471,6 +1488,16 @@ test_builtin_call_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_atomic_builtin_executable_smoke :-
+    Test = 'WAM-C: atomic/1 executable smoke',
+    (   gcc_available
+    ->  (   run_atomic_builtin_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'atomic/1 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_call_foreign_executable_smoke :-
     Test = 'WAM-C: call_foreign executable smoke',
     (   gcc_available
@@ -2020,6 +2047,25 @@ run_multi_predicate_setup_executable_smoke :-
     format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w~n~n~w', [FirstPredCode, SecondPredCode]),
     write_text_file(PredPath, PredTranslationUnit),
     wam_c_multi_setup_smoke_main(MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_atomic_builtin_executable_smoke :-
+    WamCode = 'wam_c_builtin_atomic/1:\n    builtin_call atomic/1, 1\n    proceed',
+    compile_wam_predicate_to_c(user:wam_c_builtin_atomic/1, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_atomic_smoke', Stamp, TmpBase),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    wam_c_atomic_smoke_main(MainCode),
     write_text_file(MainPath, MainCode),
     compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
@@ -4063,6 +4109,93 @@ int main(void) {
     if (first_fail_rc != WAM_HALT) {
         wam_free_state(&state);
         return 30;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_atomic_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_builtin_atomic_1(WamState* state);
+
+static WamValue make_atomic_smoke_struct(WamState *state, const char *functor,
+                                         WamValue left, WamValue right) {
+    WamValue term;
+    term.tag = VAL_STR;
+    term.data.ref_addr = state->H;
+    state->H_array[state->H++] = val_atom(functor);
+    state->H_array[state->H++] = left;
+    state->H_array[state->H++] = right;
+    return term;
+}
+
+static WamValue make_atomic_smoke_list(WamState *state, WamValue head, WamValue tail) {
+    WamValue list;
+    list.tag = VAL_LIST;
+    list.data.ref_addr = state->H;
+    state->H_array[state->H++] = head;
+    state->H_array[state->H++] = tail;
+    return list;
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_builtin_atomic_1(&state);
+
+    WamValue atom_args[1] = { val_atom("a") };
+    int atom_rc = wam_run_predicate(&state, "wam_c_builtin_atomic/1", atom_args, 1);
+    if (atom_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue int_args[1] = { val_int(42) };
+    int int_rc = wam_run_predicate(&state, "wam_c_builtin_atomic/1", int_args, 1);
+    if (int_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue float_args[1] = { val_float(1.5) };
+    int float_rc = wam_run_predicate(&state, "wam_c_builtin_atomic/1", float_args, 1);
+    if (float_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue var_args[1] = { val_unbound("X") };
+    int var_rc = wam_run_predicate(&state, "wam_c_builtin_atomic/1", var_args, 1);
+    if (var_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    WamValue struct_term = make_atomic_smoke_struct(&state, "f/2",
+                                                    val_atom("x"), val_atom("y"));
+    WamValue struct_args[1] = { struct_term };
+    int struct_rc = wam_run_predicate(&state, "wam_c_builtin_atomic/1", struct_args, 1);
+    if (struct_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 50;
+    }
+
+    WamValue list_term = make_atomic_smoke_list(&state, val_atom("h"), val_atom("[]"));
+    WamValue list_args[1] = { list_term };
+    int list_rc = wam_run_predicate(&state, "wam_c_builtin_atomic/1", list_args, 1);
+    if (list_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 60;
+    }
+
+    WamValue nil_args[1] = { val_atom("[]") };
+    int nil_rc = wam_run_predicate(&state, "wam_c_builtin_atomic/1", nil_args, 1);
+    if (nil_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 70;
     }
 
     wam_free_state(&state);
@@ -7535,6 +7668,7 @@ run_tests_once :-
     test_builtin_unsupported_diagnostics_generation,
     test_sort_builtin_generation,
     test_length_builtin_generation,
+    test_atomic_builtin_generation,
     test_call_foreign_generation,
     test_category_ancestor_kernel_generation,
     test_bidirectional_ancestor_kernel_generation,
@@ -7586,6 +7720,7 @@ run_tests_once :-
     test_cross_predicate_executable_smoke,
     test_multi_predicate_setup_executable_smoke,
     test_builtin_call_executable_smoke,
+    test_atomic_builtin_executable_smoke,
     test_call_foreign_executable_smoke,
     test_category_ancestor_kernel_executable_smoke,
     test_bidirectional_ancestor_kernel_executable_smoke,
