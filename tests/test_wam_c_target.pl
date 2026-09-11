@@ -356,6 +356,19 @@ test_sort_builtin_generation :-
     ;   fail_test(Test, 'sort/2 builtin missing from generated runtime')
     ).
 
+test_length_builtin_generation :-
+    Test = 'WAM-C: length/2 measure and construct modes are generated',
+    (   compile_wam_helpers_to_c([], HelpersCode),
+        atom_string(HelpersCode, HelpersS),
+        sub_string(HelpersS, _, _, _, 'strcmp(op, "length/2")'),
+        sub_string(HelpersS, _, _, _, 'wam_execute_length'),
+        sub_string(HelpersS, _, _, _, 'wam_measure_length_list'),
+        sub_string(HelpersS, _, _, _, 'wam_build_fresh_var_list'),
+        sub_string(HelpersS, _, _, _, 'length/2: two supported modes')
+    ->  pass(Test)
+    ;   fail_test(Test, 'length/2 builtin missing from generated runtime')
+    ).
+
 test_call_foreign_generation :-
     Test = 'WAM-C: call_foreign parses and dispatches registered handlers',
     WamCode = 'foo/1:\n    call_foreign foo/1, 1\n    proceed',
@@ -7521,6 +7534,7 @@ run_tests_once :-
     test_builtin_call_generation,
     test_builtin_unsupported_diagnostics_generation,
     test_sort_builtin_generation,
+    test_length_builtin_generation,
     test_call_foreign_generation,
     test_category_ancestor_kernel_generation,
     test_bidirectional_ancestor_kernel_generation,
