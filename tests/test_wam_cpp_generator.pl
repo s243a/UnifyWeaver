@@ -1377,6 +1377,37 @@ user:wam_cpp_test_not_frame_caller :-
     wam_cpp_test_not_frame_callee(z),
     X == sentinel.
 
+% Sole-`\+` callee invoked from inside a negated-ITE CONDITION of a
+% multi-permanent-variable caller. This is the pkg_resolver blocked_acc/5
+% shape: `(base_ver(Cat,Name,BV), \+ satisfies(BV,C) -> ... ; ...)`, where
+% satisfies/2 is itself a sole-`\+` clause and the caller keeps Name/C/BV/Acc
+% live across it. Under ite_use_y_level the callee's `\+` compiles to a
+% soft-cut (G->fail;true) whose get_level/cut barrier needs a Y slot; if the
+% callee has no frame the barrier aliases the CALLER's frame and corrupts a
+% live cell (BV), so the wrong branch is taken and BV comes back mangled.
+% This is the manifestation behind the resolve_layered/explain_blocked
+% catalog/9 divergence; complements cpp_e2e_not_callee_frame_isolation
+% (which drives the sole-`\+` callee in isolation) by pinning the enclosing
+% multi-perm-var + negated-ITE-condition caller.
+:- dynamic user:wam_cpp_test_nsn_fact/1.
+user:wam_cpp_test_nsn_fact(a).
+user:wam_cpp_test_nsn_neg(X) :- \+ wam_cpp_test_nsn_fact(X).
+% base_ver-like: binds a payload into a caller permanent var.
+user:wam_cpp_test_nsn_id(_, N, payload(N)).
+% The blocked_acc/5 shape: a many-permanent-var clause whose if-then-else
+% CONDITION runs a sole-`\+` callee, with Name/C/BV/Acc0 all live across it
+% and consumed in the THEN arm. If the callee's barrier corrupts a caller
+% cell (the pre-fix bug), BV/Name come back wrong and the assertion fails.
+user:wam_cpp_test_not_blockedacc_shape :-
+    Cat = cat, Name = lib, C = gte, Acc0 = [],
+    (   wam_cpp_test_nsn_id(Cat, Name, BV),
+        wam_cpp_test_nsn_neg(BV)
+    ->  Acc1 = [blocked(Name, C, BV)|Acc0]
+    ;   Acc1 = Acc0
+    ),
+    Acc1 == [blocked(lib, gte, payload(lib))],
+    Name == lib, Cat == cat, C == gte.
+
 % Cut INSIDE a negated conjunction. \+ G desugars to (G -> fail ; true),
 % so the cut becomes a cut in the if-then-else CONDITION, which is opaque
 % (local to the condition, like call/1): it must commit gen''s first
@@ -6563,6 +6594,32 @@ test(cpp_e2e_not_callee_frame_isolation,
         ( build_e2e_binary(TmpDir, BinPath),
           run_query(BinPath,
                     'wam_cpp_test_not_frame_caller/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_not_blockedacc_shape,
+     [condition(cpp_compiler_available)]) :-
+    % The blocked_acc/5 manifestation: a many-permanent-var clause whose
+    % if-then-else CONDITION calls a sole-`\+` callee, with the caller's
+    % Name/C/BV live across the negation and consumed in the THEN arm.
+    % This is the shape behind the pkg_resolver resolve_layered/explain
+    % _blocked divergence on a catalog/9. Verified to FAIL on the pre-fix
+    % compiler (unframed sole-`\+` callee corrupts the caller's BV cell)
+    % and PASS post-fix. Complements cpp_e2e_not_callee_frame_isolation,
+    % which exercises the callee in isolation; this pins the enclosing
+    % multi-perm-var + negated-ITE-condition caller.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_not_blockedacc', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_nsn_fact/1,
+             user:wam_cpp_test_nsn_neg/1,
+             user:wam_cpp_test_nsn_id/3,
+             user:wam_cpp_test_not_blockedacc_shape/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_not_blockedacc_shape/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
