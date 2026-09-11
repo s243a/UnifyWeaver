@@ -3,6 +3,25 @@
 
 # uw-resolve: constraint insertion and branch trimming in `resolver.pl`
 
+> **Status update (2026-09-11, coordinator).** This document was written as
+> design-only at `dadbed63`. Parts have since **shipped and the baseline it
+> describes has moved**, so read it against the two updates below before wiring
+> any gate to it:
+> - **G1 (the per-call index) is implemented** (`icat/3`, `index_catalog/2`,
+>   `is_public_catalog/1`, the delegating accessors, the size threshold) — the
+>   "design, not code" preamble is historical.
+> - **H1 and H4 are FIXED** in a later "H4+H1 round" (see
+>   `RESOLVER_H4_H1_DESIGN.md`; `resolve_pending/5` now carries an `st(...)`
+>   state term with `done/…` sentinels and does version-only backtracking).
+>   Consequently the §3.2 "hazards preserved" framing and the §6.1 probes
+>   **CE2, CE5, CE6 no longer describe the committed semantics** — they are
+>   re-pinned to the *new* semantics in `test_pruning_probes.pl`. CE1/CE3/CE4
+>   still reproduce (H2/H3/H5 remain).
+> - A second adversarial review (Kimi K3, 2026-09-11) is recorded in **§7.5**;
+>   its verified findings adjust **invariant 7** (§4) and set hard preconditions
+>   for any future **G4** round. Invariants 1–3's byte-identity baseline must be
+>   regenerated from the post-H4+H1 file before a merge gate is wired here.
+
 **Status:** design, not code. The only repository change in this round is this
 document. Every number below was measured in a scratch copy of
 `examples/pkg_resolver/resolver.pl` (commit `dadbed63`, P3); the scratch
@@ -646,6 +665,14 @@ None of these is changed by G1–G4. H1 and H4 in particular are things a
 future "fix" would change answers on; if the owner fixes them, the
 invariants in §4 must be re-baselined first.
 
+> **Update:** the owner **did** fix H1 and H4 (the H4+H1 round,
+> `RESOLVER_H4_H1_DESIGN.md`). H1's version backtracking and H4's active
+> same-state cycle closure both changed layered answers, so this hazard list
+> (and the CE2/CE5/CE6 probes in §6.1) is **stale** — they are re-pinned to
+> the new semantics in `test_pruning_probes.pl`. H2, H3, H5, H6 remain
+> (CE3/CE4 still reproduce). See §7.5.3. Re-baseline invariants 1–3 from the
+> post-fix file before wiring any pruning gate here.
+
 ---
 
 ## 4. Invariants (every implementation must preserve)
@@ -669,8 +696,30 @@ invariants in §4 must be re-baselined first.
    per call and dropped with it.
 6. **No new cuts** outside the API edges; if-then-else only, as the file
    already does.
-7. **No catalog-shape change**: `icat/3` (or whatever the wrapper is
-   named) never escapes `resolver.pl` and is never accepted as input.
+7. **No catalog-shape change** (restated — the original "never escapes and is
+   never accepted as input" over-claimed; Kimi K3 + Fable 5.1, §7.5.1):
+   - `icat/3` is constructed **only** by `index_catalog/2` and is never
+     returned to callers (never escapes) — verified.
+   - The **resolve edge** (`resolve/3`, `resolve_layered/3`, `layer_closure/3`)
+     **actively rejects** an `icat/3` handed in as input, via
+     `index_catalog/2`'s `is_public_catalog/1` gate — verified.
+   - The nine read-only query exports (`explain_blocked/3`,
+     `explain_blocked_list/3`, `dependents/3`, `dependents_installed/3`,
+     `freeze_audit/2`, `removal_orphans/3`, `safe_upgrade/4`, `upgrade_set/4`,
+     `upgrade_set_result/4`) do **not** guard against it: a fabricated `icat/3`
+     passed to them is **unsupported input that happens to yield the wrapped
+     catalog's answer** (the delegating accessors are faithful). This is
+     **not a promised behavior** — no target is committed to preserving it,
+     and it must not be relied on.
+
+   The recommended resolution is this restatement (doc-only; the two verified
+   claims stand, the third is labelled unsupported). Making the original
+   invariant literally true — adding the `is_public_catalog/1` guard to the
+   nine exports — is a `resolver.pl` change that triggers the full-fleet
+   differential re-verification (and would itself need reject-branch
+   differential coverage on those nine), so it is **deferred to ride along on
+   the next `resolver.pl` change that already pays for that re-verification**,
+   where the guard is trivially correct and effectively free.
 8. **Solution multiplicity** for enumerating predicates (`explain_blocked/3`,
    internal `provider_candidate/5`) unchanged, duplicates included.
 9. **Leg parity**: each leg that is built from `resolver.pl` re-runs its
@@ -897,6 +946,14 @@ All six succeed on `dadbed63` (`swipl -q -g "ce1,ce2,ce3,ce4,ce5,ce6"
 -t halt probes.pl`). CE1, CE2, CE3, CE4 and CE6 also succeed on prototypes
 P1–P3, which is the point: the guards preserve the hazards.
 
+> **Stale on the current head (post H4+H1 round; verified 2026-09-11, §7.5.3):**
+> CE2 and CE6 **no longer reproduce** and CE5 is **fixed** (its catalog now
+> terminates with `S = []`; the weak form above still succeeds either way, so
+> use the strict `\+ time_limit_exceeded → fail` form of §7.3). CE1, CE3, CE4
+> still reproduce. The committed `test_pruning_probes.pl` carries the re-pinned
+> forms (post-H4+H1 semantics, `RESOLVER_H4_H1_DESIGN.md`); the shapes above are
+> kept as the `dadbed63` history.
+
 ### 6.2 Reproducing the measurements
 
 - 5k catalog: `node examples/pkg_resolver/store/gen_scale_catalog.mjs DIR`;
@@ -979,3 +1036,78 @@ keys staying separate (3,600 permutation/lookups); G2's groundness
 premise (30,720 picks, all ground); G3's truth table (64/64); accessor
 completeness and raw-query preservation (108 comparisons). CE1–CE6
 reproduce on both committed versions.
+
+## 7.5 Second independent review findings (Kimi K3, 2026-09-11, coordinator-recorded + verified)
+
+A second adversarial review ran against the **current branch head** (post
+D97), i.e. after the H4+H1 round — a different world than §7's baseline. It
+could not falsify G1, G2, G3, or the ground-case G4 enumeration (3,000-case
+G4 differential with 407 guard-firing catalogs, 2,000-case G2 groundness
+sweep, G3 truth table, targeted key-equality attacks). It produced three
+findings; I re-ran the two that are runnable against the committed file and
+**both reproduce**.
+
+**7.5.1 Invariant 7's §7.2 fix is incomplete — 9 of 12 catalog-taking
+exports accept `icat/3` (VERIFIED here).** §7.2's D60 fix hardened only the
+resolve edge (`resolve/3`, `resolve_layered/3`, and `layer_closure/3`
+transitively), because those route through `index_catalog/2`'s
+`is_public_catalog/1` gate. The delegating accessors make `icat/3` a working
+input everywhere else. Verified on the committed file with a forced index
+(catalog padded past `index_threshold(64)`, then `index_catalog/2` → a real
+`icat/3`): `resolve_layered(ICat, …)` **fails** (gate works), but
+`explain_blocked(ICat, app, B)` → `blocked(lib, needs(gte(v(2,0,0))),
+base_has(v(1,0,0)))`, `dependents(ICat, lib, D)` → `[app-v(1,0,0)]`, and
+`freeze_audit(ICat, A)` → `[audit(lib, over_frozen)]` all **succeed**. The
+answers are correct for the wrapped catalog (accessors delegate faithfully),
+so severity is low, but invariant 7 as written is false. Fix recorded in §4
+(restate the invariant, or add the guard to the other nine — the latter is a
+`resolver.pl` edit needing full-fleet re-verification).
+
+**7.5.2 G4 is actively unsound on non-ground `provides/…` rows (design-level;
+G4 unshipped).** Sharper than §7.4(ii). The guard's hypothesis test
+`provides_mentions/2` uses `==` (`Virt == D`), but the search's rescue path
+(`already_provided/4` → `provides_sat/…`) uses full **unification**. A
+provides row with a *variable* virtual defeats the guard yet satisfies the
+search: on `provides(bar, V1, _AnyVirt, V2)` the guard fails (`_AnyVirt == d`
+is false on a var) and prunes, while the unguarded search unifies
+`_AnyVirt = d` and answers `[app-v(1,0,0), bar-v(1,0,0)]` — G4 turns a
+solution into a failure (run the guarded call first, or build the catalog
+fresh per call, so the search does not bind the shared variable and mask it).
+This is not merely "unproven off well-formed input" (§7.4(ii)); it is a
+**wrong-answer** on non-ground input, and nothing in `index_catalog/2` or the
+API edge validates provides rows. **Binding on any future G4 round:** either
+adopt an explicit **ground/well-formed-catalog precondition enforced as an
+executable check** (not prose) at the API edge, or make `provides_mentions/2`
+use the same unification semantics as the rescue path. The finite ground-case
+enumeration still held (0 incorrectly-pruned branches over 3,000 catalogs).
+
+**7.5.3 The §6.1 / §3.2 baseline is stale after the H4+H1 round (VERIFIED
+here).** CE2 and CE6 **no longer reproduce** and CE5 is **fixed**, confirmed
+by re-running the §6.1 probes verbatim on the committed file: CE2's second
+clause fails (H1's version backtracking lets `b-1.0` rescue the branch the
+probe expects to fail); CE6's `\+ resolve_layered([b,x], _)` fails (layered
+now succeeds with classic parity); CE5's cyclic-held catalog **terminates**
+with `S = []` (H4 fixed) rather than diverging, and the §6.1 *weak* CE5 form
+succeeds either way. CE1/CE3/CE4 still reproduce (H2/H3/H5 remain). The
+committed `test_pruning_probes.pl` already re-pins CE2/CE5/CE6 to the new
+semantics (citing `RESOLVER_H4_H1_DESIGN.md`); this document's §3.2 hazard
+list and §6.1 expected outcomes are the stale copy. Consequence for a merge
+gate: **invariants 1–3's byte-identity baseline must be regenerated from the
+post-H4+H1 file**, and any G-guard gated against the §6.1 outcomes would see
+CE2/CE6 red for reasons unrelated to pruning and CE5 green whether or not H4
+regresses.
+
+**Also flagged (minor):** (a) §7.1's recorded G4-divergence falsification is
+now moot on this head — with H4 fixed, its counterexample (T6 shape)
+terminates identically with and without the guard; the divergence→success
+hole was a property of the pre-H4 baseline. (b) G4 as sketched fires only at
+*expansion*, so an initially-requested doomed package (a `req(D, …)` at the
+request edge with held `D`) is never pruned — not unsound, but §2(d)'s "fails
+at the first expansion" should not be read as covering the request edge.
+(c) §6.1 still prints the weak CE5 form; §7.3 records the strict fix but the
+inline probe was not updated.
+
+**Not falsified** (K3 sweep sizes): G1 (ground rows/order, incl.
+non-ground-key caveat), G2 (groundness), G3 (truth table), and the
+**ground-case** G4 enumeration (3,000-case differential, guard exercised on
+407 catalogs, 0 mismatches).
