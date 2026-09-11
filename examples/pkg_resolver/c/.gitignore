@@ -1,0 +1,10 @@
+# Generated C WAM products and local smoke artifacts.
+generated/
+.smoke_out/
+/smoke_runner
+/lib.c
+/wam_runtime.c
+/wam_runtime.h
+/setup_all.inc
+*.o
+*.exe

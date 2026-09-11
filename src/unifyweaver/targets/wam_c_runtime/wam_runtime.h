@@ -16,6 +16,8 @@
 
 #define WAM_HALT -1
 #define WAM_ERR_OOB -2
+#define WAM_ERR_UNSUPPORTED -11
+#define WAM_ERR_NOMEM -12
 #define WAM_MAX_REGS 256
 #define WAM_INITIAL_CAP 64
 #define WAM_PRED_HASH_SIZE 256
@@ -34,6 +36,7 @@
 #define WAM_META_ITE_THEN -8
 #define WAM_META_ITE_ELSE -9
 #define WAM_FOREIGN_STREAM_NEXT -10
+#define WAM_MEMBER_NEXT -12
 
 typedef struct WamState WamState;
 typedef bool (*WamForeignHandler)(WamState *state, const char *pred, int arity);
@@ -55,20 +58,35 @@ typedef struct {
     } data;
 } WamValue;
 
-/* Trail entry */
+/* Trail entry. Heap cells are stored by index so realloc of H_array
+   cannot dangle. Non-heap cells (A/X/Y registers) keep a raw pointer. */
 typedef struct {
-    WamValue *cell;
+    WamValue *cell;  /* non-heap location; NULL when heap_addr >= 0 */
+    int heap_addr;   /* heap index, or -1 if cell is not in H_array */
     WamValue old_val;
 } TrailEntry;
+
+/* Environment Frame */
+typedef struct {
+    int cp;
+    int saved_e;
+    WamValue y_regs[32];
+} EnvFrame;
 
 /* Choice point */
 typedef struct {
     int next_pc;
+    bool is_ite;
     int cp;
     int heap_size;
     int trail_size;
     int stack_size;
     int call_base_top;
+    /* Active call barriers are mutable stack slots. A caller CALL may reuse
+       and overwrite a slot after this alternative returns, so restoring only
+       call_base_top is insufficient for retrying a cut-bearing callee. */
+    int call_bases[WAM_CALL_STACK_SIZE];
+    bool call_base_preserve_choice[WAM_CALL_STACK_SIZE];
     int aggregate_group_top;
     int conj_top;
     int disj_top;
@@ -76,12 +94,19 @@ typedef struct {
     int arg_ctx_top;   /* read-mode arg-context depth at push time */
     int arity;
     WamValue a_regs[32]; // Reduced from MAX_REGS to save memory (typical max arity)
+    /* Environment slots are reused after deallocate. Snapshot every live
+       frame so a later backtrack restores the Y-register values as well as E. */
+    EnvFrame *env_frames;
+    int env_count;
     /* Owned only when next_pc == WAM_FOREIGN_STREAM_NEXT. */
     WamValue *foreign_results;
     int foreign_result_count;
     int foreign_result_index;
     int foreign_result_reg;
     int foreign_resume_pc;
+    /* Live remaining tail when next_pc == WAM_MEMBER_NEXT. Heap-shared:
+       tag+ref_addr into cells older than this CP heap_size. */
+    WamValue member_rest;
 } ChoicePoint;
 
 typedef struct {
@@ -152,13 +177,6 @@ typedef struct {
     int base_b;
 } WamIteFrame;
 
-/* Environment Frame */
-typedef struct {
-    int cp;
-    int saved_e;
-    WamValue y_regs[32];
-} EnvFrame;
-
 /* Wam Mode */
 typedef enum {
     MODE_READ = 0,
@@ -176,6 +194,11 @@ typedef enum {
     INSTR_CALL, INSTR_EXECUTE, INSTR_PROCEED,
     INSTR_ALLOCATE, INSTR_DEALLOCATE,
     INSTR_TRY_ME_ELSE, INSTR_RETRY_ME_ELSE, INSTR_TRUST_ME,
+    /* Indexed-dispatch chain ops (wam_target format_dispatch_chain).
+     * Distinct from TRY_ME_ELSE / RETRY_ME_ELSE / TRUST_ME: the
+     * instruction target is the clause body, and the choice-point
+     * next_pc is the next chain instruction (P+1). */
+    INSTR_TRY, INSTR_RETRY, INSTR_TRUST,
     INSTR_GET_LEVEL, INSTR_CUT, INSTR_CUT_ITE, INSTR_JUMP,
     INSTR_SWITCH_ON_CONSTANT, INSTR_SWITCH_ON_STRUCTURE, INSTR_SWITCH_ON_TERM,
     INSTR_BUILTIN_CALL, INSTR_CALL_FOREIGN,
@@ -189,9 +212,13 @@ typedef struct {
     int target_pc;
 } HashEntry;
 
+/* Predicate registry flags */
+#define WAM_PRED_FACT_ELIGIBLE (1U << 0)
+
 typedef struct {
     const char *name;
     int pc;
+    unsigned int flags;
 } PredEntry;
 
 typedef struct AtomEntry {
@@ -339,6 +366,7 @@ typedef struct {
 typedef struct {
     int target_pc;
     int arity;
+    int is_ite;
 } WamChoiceInstr;
 
 typedef struct {
@@ -534,6 +562,12 @@ struct WamState {
     KernelEdgeBinding *kernel_edge_bindings;
     int kernel_edge_binding_count;
     int kernel_edge_binding_cap;
+
+    /* Query-local runtime error. 0 = none. Distinct from WAM_HALT
+     * (logical failure). First error is kept until the next query. */
+    int error;
+    const char *error_op;
+    int error_arity;
 };
 
 bool step_wam(WamState* state, Instruction* instr);
@@ -673,6 +707,22 @@ static inline WamValue val_unbound(const char *name) {
     WamValue v; v.tag = VAL_UNBOUND; v.data.unbound_name = name; return v;
 }
 
+static inline void wam_clear_error(WamState *state) {
+    state->error = 0;
+    state->error_op = NULL;
+    state->error_arity = 0;
+}
+
+static inline void wam_set_unsupported_builtin(WamState *state,
+                                               const char *op,
+                                               int arity) {
+    if (state->error != 0)
+        return;
+    state->error = WAM_ERR_UNSUPPORTED;
+    state->error_op = op;
+    state->error_arity = arity;
+}
+
 static inline unsigned int wam_hash_string(const char *name) {
     unsigned int h = 5381;
     while (*name) h = ((h << 5) + h) ^ (unsigned char)*name++;
@@ -684,7 +734,8 @@ static inline unsigned int wam_pred_hash(const char *name) {
 }
 
 static inline void wam_register_predicate_hash(WamState *state,
-                                                const char *name, int pc) {
+                                               const char *name, int pc) {
+    if (!state || !name) return;
     unsigned int idx = wam_pred_hash(name);
     unsigned int probes = 0;
     while (state->pred_hash[idx].name != NULL &&
@@ -696,18 +747,59 @@ static inline void wam_register_predicate_hash(WamState *state,
     if (probes == WAM_PRED_HASH_SIZE) return;
     state->pred_hash[idx].name = name;
     state->pred_hash[idx].pc = pc;
+    /* Re-registering an ordinary/ineligible predicate clears previous eligibility flags */
+    state->pred_hash[idx].flags = 0;
 }
 
-static inline int resolve_predicate_hash(WamState *state, const char *name) {
+static inline void wam_set_predicate_fact_eligible(WamState *state,
+                                                   const char *name,
+                                                   bool eligible) {
+    if (!state || !name) return;
+    unsigned int idx = wam_pred_hash(name);
+    unsigned int probes = 0;
+    while (state->pred_hash[idx].name != NULL && probes < WAM_PRED_HASH_SIZE) {
+        if (strcmp(state->pred_hash[idx].name, name) == 0) {
+            if (eligible) {
+                state->pred_hash[idx].flags |= WAM_PRED_FACT_ELIGIBLE;
+            } else {
+                state->pred_hash[idx].flags &= ~WAM_PRED_FACT_ELIGIBLE;
+            }
+            return;
+        }
+        idx = (idx + 1) & (WAM_PRED_HASH_SIZE - 1);
+        probes++;
+    }
+}
+
+static inline const PredEntry *resolve_predicate_entry(WamState *state, const char *name) {
     unsigned int idx = wam_pred_hash(name);
     unsigned int probes = 0;
     while (state->pred_hash[idx].name != NULL && probes < WAM_PRED_HASH_SIZE) {
         if (strcmp(state->pred_hash[idx].name, name) == 0)
-            return state->pred_hash[idx].pc;
+            return &state->pred_hash[idx];
         idx = (idx + 1) & (WAM_PRED_HASH_SIZE - 1);
         probes++;
     }
-    return -1;
+    return NULL;
+}
+
+static inline int resolve_predicate_hash(WamState *state, const char *name) {
+    const PredEntry *entry = resolve_predicate_entry(state, name);
+    return entry ? entry->pc : -1;
+}
+
+static inline const PredEntry *wam_lookup_fact_eligible_entry(WamState *state,
+                                                              const char *goal_atom) {
+    if (!state || !goal_atom) return NULL;
+    if (strchr(goal_atom, '/') != NULL) return NULL;
+    char buf[256];
+    int n = snprintf(buf, sizeof(buf), "%s/1", goal_atom);
+    if (n <= 0 || (size_t)n >= sizeof(buf)) return NULL;
+    const PredEntry *entry = resolve_predicate_entry(state, buf);
+    if (entry && (entry->flags & WAM_PRED_FACT_ELIGIBLE)) {
+        return entry;
+    }
+    return NULL;
 }
 
 static inline void wam_register_predicate(WamState *state, const char *pred, int pc) {
@@ -859,7 +951,20 @@ static inline void trail_binding(WamState *state, WamValue *cell) {
         state->TR_cap = state->TR_cap ? state->TR_cap * 2 : WAM_INITIAL_CAP;
         state->TR_array = realloc(state->TR_array, sizeof(TrailEntry) * state->TR_cap);
     }
-    state->TR_array[state->TR].cell = cell;
+    /* Registers are separate allocations: pointer subtraction from the heap
+       would be undefined. Classify aligned addresses before deriving an index. */
+    uintptr_t addr = (uintptr_t)(void *)cell;
+    uintptr_t base = (uintptr_t)(void *)state->H_array;
+    uintptr_t offset = addr - base;
+    if (state->H_array && cell && addr >= base && state->H > 0 &&
+        offset % sizeof(WamValue) == 0 &&
+        offset / sizeof(WamValue) < (uintptr_t)state->H) {
+        state->TR_array[state->TR].cell = NULL;
+        state->TR_array[state->TR].heap_addr = (int)(offset / sizeof(WamValue));
+    } else {
+        state->TR_array[state->TR].cell = cell;
+        state->TR_array[state->TR].heap_addr = -1;
+    }
     state->TR_array[state->TR].old_val = *cell;
     state->TR++;
 }
@@ -1106,10 +1211,17 @@ static inline void wam_trim_ite_frames(WamState *state, int target_top) {
     state->ite_top = target_top;
 }
 
-static inline void push_choice_point(WamState *state, int next_pc, int arity) {
+static inline bool push_choice_point(WamState *state, int next_pc, int arity) {
     if (state->B >= state->B_cap) {
-        state->B_cap = state->B_cap ? state->B_cap * 2 : WAM_INITIAL_CAP;
-        state->B_array = realloc(state->B_array, sizeof(ChoicePoint) * state->B_cap);
+        int new_cap = state->B_cap ? state->B_cap * 2 : WAM_INITIAL_CAP;
+        ChoicePoint *grown = realloc(state->B_array,
+                                     sizeof(ChoicePoint) * (size_t)new_cap);
+        if (!grown) {
+            state->error = WAM_ERR_NOMEM;
+            return false;
+        }
+        state->B_array = grown;
+        state->B_cap = new_cap;
     }
     ChoicePoint *cp = &state->B_array[state->B];
     memset(cp, 0, sizeof(ChoicePoint));
@@ -1119,6 +1231,12 @@ static inline void push_choice_point(WamState *state, int next_pc, int arity) {
     cp->trail_size = state->TR;
     cp->stack_size = state->E;
     cp->call_base_top = state->call_base_top;
+    if (cp->call_base_top > 0) {
+        memcpy(cp->call_bases, state->call_bases,
+               sizeof(int) * (size_t)cp->call_base_top);
+        memcpy(cp->call_base_preserve_choice, state->call_base_preserve_choice,
+               sizeof(bool) * (size_t)cp->call_base_top);
+    }
     cp->aggregate_group_top = state->aggregate_group_top;
     cp->conj_top = state->conj_top;
     cp->disj_top = state->disj_top;
@@ -1128,25 +1246,55 @@ static inline void push_choice_point(WamState *state, int next_pc, int arity) {
        the next clause's get_* would push on top of them. Restoring the
        depth on backtracking keeps each clause's head starting clean. */
     cp->arg_ctx_top = state->arg_ctx_top;
+
+    cp->env_count = state->E + 1;
+    if (cp->env_count > 0) {
+        cp->env_frames = malloc(sizeof(EnvFrame) * (size_t)cp->env_count);
+        if (cp->env_frames) {
+            memcpy(cp->env_frames, state->E_array,
+                   sizeof(EnvFrame) * (size_t)cp->env_count);
+        } else {
+            cp->env_count = 0;
+            state->error = WAM_ERR_NOMEM;
+            return false;
+        }
+    }
     
     int save_arity = arity < 32 ? arity : 32;
     cp->arity = save_arity;
     memcpy(cp->a_regs, state->A, sizeof(WamValue) * save_arity);
     state->B++;
     state->HB = state->H;
+    return true;
 }
 static inline void unwind_trail(WamState *state, int target_tr) {
     while (state->TR > target_tr) {
         state->TR--;
         TrailEntry *te = &state->TR_array[state->TR];
-        *te->cell = te->old_val;
+        if (te->heap_addr >= 0) {
+            if (state->H_array && te->heap_addr < state->H_cap) {
+                state->H_array[te->heap_addr] = te->old_val;
+            }
+        } else if (te->cell) {
+            *te->cell = te->old_val;
+        }
     }
 }
 static inline void restore_choice_point(WamState *state, ChoicePoint *cp) {
     state->H = cp->heap_size;
     state->E = cp->stack_size;
+    if (cp->env_count > 0 && cp->env_frames) {
+        memcpy(state->E_array, cp->env_frames,
+               sizeof(EnvFrame) * (size_t)cp->env_count);
+    }
     state->CP = cp->cp;
     state->call_base_top = cp->call_base_top;
+    if (cp->call_base_top > 0) {
+        memcpy(state->call_bases, cp->call_bases,
+               sizeof(int) * (size_t)cp->call_base_top);
+        memcpy(state->call_base_preserve_choice, cp->call_base_preserve_choice,
+               sizeof(bool) * (size_t)cp->call_base_top);
+    }
     wam_trim_aggregate_group_iters(state, cp->aggregate_group_top);
     wam_trim_conj_frames(state, cp->conj_top);
     wam_trim_disj_frames(state, cp->disj_top);
@@ -1162,6 +1310,9 @@ static inline void pop_choice_point(WamState *state) {
         ChoicePoint *cp = &state->B_array[state->B - 1];
         free(cp->foreign_results);
         cp->foreign_results = NULL;
+        free(cp->env_frames);
+        cp->env_frames = NULL;
+        cp->env_count = 0;
         state->B--;
         if (state->B > 0) {
             state->HB = state->B_array[state->B - 1].heap_size;

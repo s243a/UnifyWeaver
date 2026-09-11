@@ -24,6 +24,8 @@
     generate_setup_reverse_index_c/2, % +Options, -CCode
     resolve_wam_c_reverse_index_plan/2, % +Options, -Plan
     plan_wam_c_lowered_helpers/4,     % +Predicates, +Options, +DetectedKeys, -Plans
+    wam_c_fact_eligible/3,            % +PredIndicator, +WamLines, +Arity
+    wam_c_fact_eligible/4,            % +PredIndicator, +WamLines, +Arity, +Options
     write_wam_c_project/3             % +Predicates, +Options, +ProjectDir
 ]).
 
@@ -1649,6 +1651,12 @@ wam_instruction_to_c_literal(try_me_else(_Label), _) :-
     throw(error(context_error(missing_label_map, "try_me_else/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
 wam_instruction_to_c_literal(retry_me_else(_Label), _) :-
     throw(error(context_error(missing_label_map, "retry_me_else/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
+wam_instruction_to_c_literal(try(_Label), _) :-
+    throw(error(context_error(missing_label_map, "try/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
+wam_instruction_to_c_literal(retry(_Label), _) :-
+    throw(error(context_error(missing_label_map, "retry/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
+wam_instruction_to_c_literal(trust(_Label), _) :-
+    throw(error(context_error(missing_label_map, "trust/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
 
 
 wam_instruction_to_c_literal(trust_me, '{ .tag = INSTR_TRUST_ME }').
@@ -1660,13 +1668,23 @@ wam_instruction_to_c_literal(Instr, _) :-
 
 wam_instruction_to_c_literal(try_me_else(Label), LabelMap, Code) :-
     ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
-    format(atom(Code), '{ .tag = INSTR_TRY_ME_ELSE, .as.choice = { .target_pc = ~w } }', [TargetPC]).
+    ( sub_atom(Label, 0, _, _, 'L_ite_else_') -> IsIte = 1 ; IsIte = 0 ),
+    format(atom(Code), '{ .tag = INSTR_TRY_ME_ELSE, .as.choice = { .target_pc = ~w, .is_ite = ~w } }', [TargetPC, IsIte]).
 wam_instruction_to_c_literal(retry_me_else(Label), LabelMap, Code) :-
     ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
     format(atom(Code), '{ .tag = INSTR_RETRY_ME_ELSE, .as.choice = { .target_pc = ~w } }', [TargetPC]).
 wam_instruction_to_c_literal(jump(Label), LabelMap, Code) :-
     ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
     format(atom(Code), '{ .tag = INSTR_JUMP, .as.jump = { .target_pc = ~w } }', [TargetPC]).
+wam_instruction_to_c_literal(try(Label), LabelMap, Code) :-
+    ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
+    format(atom(Code), '{ .tag = INSTR_TRY, .as.choice = { .target_pc = ~w } }', [TargetPC]).
+wam_instruction_to_c_literal(retry(Label), LabelMap, Code) :-
+    ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
+    format(atom(Code), '{ .tag = INSTR_RETRY, .as.choice = { .target_pc = ~w } }', [TargetPC]).
+wam_instruction_to_c_literal(trust(Label), LabelMap, Code) :-
+    ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
+    format(atom(Code), '{ .tag = INSTR_TRUST, .as.choice = { .target_pc = ~w } }', [TargetPC]).
 wam_instruction_to_c_literal(Instr, _, Code) :- wam_instruction_to_c_literal(Instr, Code).
 
 
@@ -1830,11 +1848,24 @@ wam_line_to_c_instr(["jump", L], LabelMap, _Arity, OffsetVar, Instr) :-
 wam_line_to_c_instr(["try_me_else", L], LabelMap, Arity, OffsetVar, Instr) :-
     clean_comma(L, CL),
     ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
-    format(atom(Instr), '{ .tag = INSTR_TRY_ME_ELSE, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
+    ( sub_string(CL, 0, _, _, "L_ite_else_") -> IsIte = 1 ; IsIte = 0 ),
+    format(atom(Instr), '{ .tag = INSTR_TRY_ME_ELSE, .as.choice = { .target_pc = ~w, .arity = ~w, .is_ite = ~w } }', [TargetPC, Arity, IsIte]).
 wam_line_to_c_instr(["retry_me_else", L], LabelMap, Arity, OffsetVar, Instr) :-
     clean_comma(L, CL),
     ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
     format(atom(Instr), '{ .tag = INSTR_RETRY_ME_ELSE, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
+wam_line_to_c_instr(["try", L], LabelMap, Arity, OffsetVar, Instr) :-
+    clean_comma(L, CL),
+    ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
+    format(atom(Instr), '{ .tag = INSTR_TRY, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
+wam_line_to_c_instr(["retry", L], LabelMap, Arity, OffsetVar, Instr) :-
+    clean_comma(L, CL),
+    ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
+    format(atom(Instr), '{ .tag = INSTR_RETRY, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
+wam_line_to_c_instr(["trust", L], LabelMap, Arity, OffsetVar, Instr) :-
+    clean_comma(L, CL),
+    ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
+    format(atom(Instr), '{ .tag = INSTR_TRUST, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
 wam_line_to_c_instr(["trust_me"], _, '{ .tag = INSTR_TRUST_ME }').
 wam_line_to_c_instr(["cut_ite"], _, '{ .tag = INSTR_CUT_ITE }').
 wam_line_to_c_instr(["proceed"], _, '{ .tag = INSTR_PROCEED }').
@@ -1909,25 +1940,38 @@ wam_lines_to_c_pass1([Line|Rest], PC, LabelMap) :-
         )
     ).
 
-wam_lines_to_c_pass2([], PC, _, _, _, PC, []).
-wam_lines_to_c_pass2([Line|Rest], PC, LabelMap, Arity, OffsetVar, CodeSize, Instrs) :-
+wam_lines_to_c_pass2(Lines, PC, LabelMap, Arity, OffsetVar, CodeSize, Instrs) :-
+    wam_lines_to_c_pass2(Lines, PC, LabelMap, Arity, OffsetVar, '', false, CodeSize, Instrs).
+
+wam_lines_to_c_pass2(Lines, PC, LabelMap, Arity, OffsetVar, IsEligible, CodeSize, Instrs) :-
+    wam_lines_to_c_pass2(Lines, PC, LabelMap, Arity, OffsetVar, '', IsEligible, CodeSize, Instrs).
+
+wam_lines_to_c_pass2([], PC, _, _, _, _, _, PC, []).
+wam_lines_to_c_pass2([Line|Rest], PC, LabelMap, Arity, OffsetVar, ExpectedLabel, IsEligible, CodeSize, Instrs) :-
     split_string(Line, " \t", " \t", Parts),
     delete(Parts, "", CleanParts),
-    (   CleanParts == [] -> wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, CodeSize, Instrs)
+    (   CleanParts == [] -> wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, ExpectedLabel, IsEligible, CodeSize, Instrs)
     ;   CleanParts = [First|_],
         (   sub_string(First, _, 1, 0, ":")
         ->  sub_string(First, 0, _, 1, LabelName),
             (   sub_string(LabelName, 0, 2, _, "L_")
-            ->  wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, CodeSize, Instrs)
+            ->  wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, ExpectedLabel, IsEligible, CodeSize, Instrs)
             ;   c_pc_expr(OffsetVar, PC, PCExpr),
                 format(atom(PredReg), '    wam_register_predicate_hash(state, "~w", ~w);', [LabelName, PCExpr]),
-                Instrs = [PredReg|RestInstrs],
-                wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, CodeSize, RestInstrs)
+                (   IsEligible == true,
+                    ExpectedLabel \== '',
+                    atom_string(ExpectedLabel, LabelName)
+                ->  format(atom(EligibleReg), '    wam_set_predicate_fact_eligible(state, "~w", true);', [LabelName]),
+                    RegInstrs = [PredReg, EligibleReg]
+                ;   RegInstrs = [PredReg]
+                ),
+                append(RegInstrs, RestInstrs, Instrs),
+                wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, ExpectedLabel, IsEligible, CodeSize, RestInstrs)
             )
         ;   wam_generate_c_instruction(PC, CleanParts, LabelMap, Arity, OffsetVar, CodeLines),
             NPC is PC + 1,
             append(CodeLines, RestInstrs, Instrs),
-            wam_lines_to_c_pass2(Rest, NPC, LabelMap, Arity, OffsetVar, CodeSize, RestInstrs)
+            wam_lines_to_c_pass2(Rest, NPC, LabelMap, Arity, OffsetVar, ExpectedLabel, IsEligible, CodeSize, RestInstrs)
         )
     ).
 
@@ -2027,16 +2071,237 @@ c_pc_expr(OffsetVar, PC, Expr) :-
     ;   format(atom(Expr), '~w + ~w', [OffsetVar, PC])
     ).
 
-compile_wam_predicate_to_c(PredIndicator, WamCode, _Options, CCode) :-
+%% wam_c_fact_eligible(+PredIndicator, +WamLines, +Arity)
+wam_c_fact_eligible(PredIndicator, WamLines, Arity) :-
+    wam_c_fact_eligible(PredIndicator, WamLines, Arity, []).
+
+%% wam_c_fact_eligible(+PredIndicator, +WamLines, +Arity, +Options)
+%  Conservative proof that PredIndicator is one bodyless unary fact.
+%  Enforces:
+%  1. Source-level proof: arity 1, defined, non-foreign, non-builtin, non-kernel,
+%     not a lowered wrapper, exactly one clause, and clause body is 'true'.
+%  2. Canonical WAM proof: supplied WAM token stream matches exactly the canonical
+%     shared-compiler WAM for this proven source fact.
+%  3. Stream validation: entry label matches <Pred>/1, exactly one proceed at end,
+%     valid register ranges (1 <= Xn < 256, A1 only, no Y registers), register
+%     initialization tracked before get_value/unify_value access, and strict
+%     unification-context validity (get_* only at top level, unify_* only inside terms).
+wam_c_fact_eligible(PredIndicator, WamInput, Arity, Options) :-
+    Arity =:= 1,
+    predicate_indicator_parts(PredIndicator, Module, Pred, 1),
+    format(atom(ExpectedLabel), '~w/1', [Pred]),
+    (   is_list(WamInput)
+    ->  WamLines = WamInput
+    ;   atom_string(WamInput, WamStr),
+        split_string(WamStr, "\n", "", WamLines)
+    ),
+    wam_c_fact_source_proven(PredIndicator),
+    wam_c_fact_canonical_proven(Module:Pred/1, Options, WamLines),
+    wam_c_fact_stream_proven(WamLines, ExpectedLabel).
+
+%% wam_c_fact_source_proven(+PredIndicator)
+%  Verified at the Prolog source level: arity 1, defined, non-foreign,
+%  non-builtin, non-kernel, non-wrapper, exactly one clause, and body is 'true'.
+wam_c_fact_source_proven(PredIndicator) :-
+    predicate_indicator_parts(PredIndicator, Module, Pred, 1),
+    wam_c_current_predicate_in_module(Module, Pred, 1),
+    \+ wam_c_fact_source_is_kernel(Pred, 1),
+    \+ wam_c_fact_source_is_wrapper(PredIndicator),
+    functor(Head, Pred, 1),
+    catch(findall(Body, wam_c_clause_in_module(Module, Head, Body), Bodies), _, fail),
+    Bodies = [true].
+
+wam_c_current_predicate_in_module(Module, Pred, Arity) :-
+    functor(Head, Pred, Arity),
+    (   Module == user
+    ->  current_predicate(user:Pred/Arity),
+        \+ predicate_property(user:Head, foreign),
+        \+ predicate_property(user:Head, built_in)
+    ;   current_predicate(Module:Pred/Arity),
+        \+ predicate_property(Module:Head, foreign),
+        \+ predicate_property(Module:Head, built_in)
+    ).
+
+wam_c_clause_in_module(Module, Head, Body) :-
+    (   Module == user
+    ->  user:clause(Head, Body)
+    ;   clause(Module:Head, Body)
+    ).
+
+wam_c_fact_source_is_kernel(Pred, Arity) :-
+    functor(Head, Pred, Arity),
+    catch(findall(Head-Body, user:clause(Head, Body), Clauses), _, fail),
+    Clauses \= [],
+    detect_recursive_kernel(Pred, Arity, Clauses, Kernel),
+    wam_c_supported_kernel(Kernel).
+
+wam_c_fact_source_is_wrapper(PredIndicator) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    functor(Head, Pred, Arity),
+    (   predicate_property(Head, foreign)
+    ;   predicate_property(Head, built_in)
+    ;   plan_wam_c_lowered_helper([], [], PredIndicator, Plan),
+        Plan = wam_c_lowered_helper_plan(_, _, lowered, Detail),
+        Detail \= fact_only(_)
+    ).
+
+%% wam_c_fact_canonical_proven(+PI, +Options, +WamLines)
+%  Supplied WAM must match the canonical shared-compiler output token-for-token.
+wam_c_fact_canonical_proven(PI, Options, WamLines) :-
+    catch(wam_target:compile_predicate_to_wam(PI, Options, CanonicalWam), _, fail),
+    atom_string(CanonicalWam, CanonicalWamStr),
+    split_string(CanonicalWamStr, "\n", "", CanonicalLines),
+    wam_c_filter_lines(CanonicalLines, CanonicalTokens),
+    wam_c_filter_lines(WamLines, SuppliedTokens),
+    CanonicalTokens == SuppliedTokens.
+
+%% wam_c_fact_stream_proven(+WamLines, +ExpectedLabel)
+%  Verified at the emitted instruction stream level:
+%  - First non-empty line must be ExpectedLabel:
+%  - No other label anywhere in the stream
+%  - Valid register ranges, initialization, and unification contexts
+wam_c_fact_stream_proven(WamLines, ExpectedLabel) :-
+    wam_c_filter_lines(WamLines, Filtered),
+    Filtered \= [],
+    Filtered = [[FirstTok | _] | InstrLines],
+    sub_string(FirstTok, _, 1, 0, ":"),
+    sub_string(FirstTok, 0, _, 1, LabelName),
+    atom_string(ExpectedLabel, LabelName),
+    \+ ( member(Line, InstrLines), member(Tok, Line), sub_string(Tok, _, 1, 0, ":") ),
+    wam_c_validate_fact_stream(InstrLines, top, [], top, _FinalInitVars).
+
+wam_c_filter_lines([], []).
+wam_c_filter_lines([Line|Rest], Filtered) :-
+    split_string(Line, " \t", " \t", Parts),
+    delete(Parts, "", CleanParts),
+    (   CleanParts == []
+    ->  wam_c_filter_lines(Rest, Filtered)
+    ;   Filtered = [CleanParts|RestFiltered],
+        wam_c_filter_lines(Rest, RestFiltered)
+    ).
+
+%% wam_c_validate_fact_stream(+InstrLines, +Context, +InitVars, -FinalContext, -FinalInitVars)
+wam_c_validate_fact_stream([["proceed"]], top, InitVars, top, InitVars).
+wam_c_validate_fact_stream([Instr | Rest], Ctx0, InitVars0, CtxF, InitVarsF) :-
+    Instr \= ["proceed"],
+    wam_c_fact_step_valid(Instr, Ctx0, InitVars0, Ctx1, InitVars1),
+    wam_c_validate_fact_stream(Rest, Ctx1, InitVars1, CtxF, InitVarsF).
+
+%% wam_c_fact_step_valid(+Instr, +CtxIn, +InitVarsIn, -CtxOut, -InitVarsOut)
+% Top-level head unification
+wam_c_fact_step_valid(["get_constant", _C, RegRaw], top, InitVars, top, InitVars) :-
+    wam_c_clean_arg(RegRaw, "A1").
+wam_c_fact_step_valid(["get_variable", XRegRaw, RegRaw], top, InitVars, top, [N | InitVars]) :-
+    wam_c_clean_arg(RegRaw, "A1"),
+    wam_c_clean_arg(XRegRaw, XReg),
+    wam_c_valid_x_reg(XReg, N).
+wam_c_fact_step_valid(["get_value", XRegRaw, RegRaw], top, InitVars, top, InitVars) :-
+    wam_c_clean_arg(RegRaw, "A1"),
+    wam_c_clean_arg(XRegRaw, XReg),
+    wam_c_valid_x_reg(XReg, N),
+    member(N, InitVars).
+wam_c_fact_step_valid(["get_structure", FunctorRaw, RegRaw], top, InitVars, in_term(Arity, []), InitVars) :-
+    wam_c_clean_arg(RegRaw, "A1"),
+    wam_c_clean_arg(FunctorRaw, Functor),
+    wam_c_parse_functor_arity(Functor, Arity),
+    Arity > 0.
+wam_c_fact_step_valid(["get_list", RegRaw], top, InitVars, in_term(2, []), InitVars) :-
+    wam_c_clean_arg(RegRaw, "A1").
+
+% Nested term entry inside existing term context
+wam_c_fact_step_valid(["get_structure", FunctorRaw, RegRaw], in_term(Remaining, Stack), InitVars, in_term(Arity, [Remaining | Stack]), InitVars) :-
+    wam_c_clean_arg(RegRaw, XReg),
+    wam_c_valid_x_reg(XReg, N),
+    member(N, InitVars),
+    wam_c_clean_arg(FunctorRaw, Functor),
+    wam_c_parse_functor_arity(Functor, Arity),
+    Arity > 0.
+wam_c_fact_step_valid(["get_list", RegRaw], in_term(Remaining, Stack), InitVars, in_term(2, [Remaining | Stack]), InitVars) :-
+    wam_c_clean_arg(RegRaw, XReg),
+    wam_c_valid_x_reg(XReg, N),
+    member(N, InitVars).
+
+% Subterm argument unifications (only inside in_term context)
+wam_c_fact_step_valid(["unify_variable", XRegRaw], in_term(Rem, Stack), InitVars, NextCtx, [N | InitVars]) :-
+    wam_c_clean_arg(XRegRaw, XReg),
+    wam_c_valid_x_reg(XReg, N),
+    wam_c_term_consume_arg(Rem, Stack, NextCtx).
+wam_c_fact_step_valid(["unify_value", XRegRaw], in_term(Rem, Stack), InitVars, NextCtx, InitVars) :-
+    wam_c_clean_arg(XRegRaw, XReg),
+    wam_c_valid_x_reg(XReg, N),
+    member(N, InitVars),
+    wam_c_term_consume_arg(Rem, Stack, NextCtx).
+wam_c_fact_step_valid(["unify_constant", _C], in_term(Rem, Stack), InitVars, NextCtx, InitVars) :-
+    wam_c_term_consume_arg(Rem, Stack, NextCtx).
+wam_c_fact_step_valid(["unify_nil"], in_term(Rem, Stack), InitVars, NextCtx, InitVars) :-
+    wam_c_term_consume_arg(Rem, Stack, NextCtx).
+wam_c_fact_step_valid(["unify_void"], in_term(Rem, Stack), InitVars, NextCtx, InitVars) :-
+    wam_c_term_consume_arg(Rem, Stack, NextCtx).
+wam_c_fact_step_valid(["unify_void", NumStr], in_term(Rem, Stack), InitVars, NextCtx, InitVars) :-
+    catch(number_string(Count, NumStr), _, fail),
+    integer(Count),
+    Count > 0,
+    Count =< Rem,
+    NextRem is Rem - Count,
+    (   NextRem =:= 0
+    ->  (   Stack == []
+        ->  NextCtx = top
+        ;   Stack = [ParentRem | RestStack],
+            NextCtx = in_term(ParentRem, RestStack)
+        )
+    ;   NextCtx = in_term(NextRem, Stack)
+    ).
+wam_c_fact_step_valid(["noop"], Ctx, InitVars, Ctx, InitVars).
+
+wam_c_term_consume_arg(Rem, Stack, NextCtx) :-
+    Rem > 0,
+    NextRem is Rem - 1,
+    (   NextRem =:= 0
+    ->  (   Stack == []
+        ->  NextCtx = top
+        ;   Stack = [ParentRem | RestStack],
+            NextCtx = in_term(ParentRem, RestStack)
+        )
+    ;   NextCtx = in_term(NextRem, Stack)
+    ).
+
+wam_c_valid_x_reg(Tok, Num) :-
+    sub_string(Tok, 0, 1, _, Prefix),
+    (Prefix == "x" ; Prefix == "X"),
+    sub_string(Tok, 1, _, 0, NumStr),
+    catch(number_string(Num, NumStr), _, fail),
+    integer(Num),
+    Num > 0,
+    Num < 256.
+
+wam_c_parse_functor_arity(FunctorStr, Arity) :-
+    sub_string(FunctorStr, SlashIdx, 1, AfterSlash, "/"),
+    SlashIdx > 0,
+    AfterSlash > 0,
+    sub_string(FunctorStr, _, AfterSlash, 0, ArityStr),
+    \+ sub_string(ArityStr, _, _, _, "/"),
+    catch(number_string(Arity, ArityStr), _, fail),
+    integer(Arity),
+    Arity > 0.
+
+wam_c_clean_arg(ArgWithComma, CleanArg) :-
+    (   sub_string(ArgWithComma, _, 1, 0, ",")
+    ->  sub_string(ArgWithComma, 0, _, 1, CleanArg)
+    ;   CleanArg = ArgWithComma
+    ).
+
+compile_wam_predicate_to_c(PredIndicator, WamCode, Options, CCode) :-
+    predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
     atom_string(Pred, PredStr),
     atom_string(WamCode, WamStr),
-    % Note: WamCode is a string generated by wam_target:compile_predicate_to_wam/3
-    % (e.g. "get_constant a, A1\ncall foo/2, 2\n"), NOT a list of terms.
-    % We parse it line-by-line into structural C literals.
+    format(atom(ExpectedLabel), '~w/~w', [Pred, Arity]),
     split_string(WamStr, "\n", "", Lines),
+    (   wam_c_fact_eligible(Module:Pred/Arity, Lines, Arity, Options)
+    ->  IsEligible = true
+    ;   IsEligible = false
+    ),
     wam_lines_to_c_pass1(Lines, 0, LabelMap),
-    wam_lines_to_c_pass2(Lines, 0, LabelMap, Arity, base_pc, CodeSize, InstrParts),
+    wam_lines_to_c_pass2(Lines, 0, LabelMap, Arity, base_pc, ExpectedLabel, IsEligible, CodeSize, InstrParts),
     atomic_list_concat(InstrParts, '\n', InstrLiterals),
     
     format(atom(CCode), 
@@ -2145,11 +2410,20 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return false;
             }
             case INSTR_GET_VARIABLE: {
-                // Per WAM spec: copy A[Ai] to X[Xn] without trailing.
-                // Trailing is only for mutations of already-bound cells.
                 WamValue *cell_xn = resolve_reg(state, instr->as.reg_pair.reg_xn, instr->as.reg_pair.is_y_xn);
                 WamValue *cell_ai = resolve_reg(state, instr->as.reg_pair.reg_ai, instr->as.reg_pair.is_y_ai);
-                *cell_xn = *cell_ai;
+                /* A raw UNBOUND register has no shareable identity when copied
+                   by value. Materialize one heap reference and install it in
+                   both locations so a callee''s later output binding reaches
+                   the caller. Existing REF and bound values already carry
+                   identity/value and remain a plain WAM copy. */
+                if (val_is_unbound(*cell_ai)) {
+                    WamValue ref = wam_make_ref(state);
+                    *cell_ai = ref;
+                    *cell_xn = ref;
+                } else {
+                    *cell_xn = *cell_ai;
+                }
                 state->P++;
                 return true;
             }
@@ -2224,11 +2498,11 @@ compile_step_wam_to_c(_Options, CCode) :-
                     return wam_continue_if_then_else(state);
                 }
                 if (continuation != WAM_HALT && state->call_base_top > 0) {
-                    int barrier_index = --state->call_base_top;
-                    int target_b = state->call_bases[barrier_index];
-                    if (!state->call_base_preserve_choice[barrier_index]) {
-                        wam_prune_choice_points(state, target_b);
-                    }
+                    /* Returning removes the active cut barrier, but the
+                       callee''s choicepoints remain valid alternatives for a
+                       later failure in the caller. Each choicepoint snapshots
+                       call_base_top, so retry restores the callee barrier. */
+                    state->call_base_top--;
                 }
                 state->P = continuation;
                 return true;
@@ -2264,6 +2538,17 @@ compile_step_wam_to_c(_Options, CCode) :-
                         strcmp(instr->as.pred.pred, "bagof/3") == 0 ? "bagof" : "setof";
                     return wam_dispatch_aggregate_meta(state, kind, state->CP);
                 }
+                /* A tail call replaces the current predicate while retaining
+                   its continuation. Its cut barrier is nevertheless the
+                   choicepoint depth at entry to the callee, just as for CALL;
+                   reusing the caller''s older B0 lets a cut in the callee prune
+                   alternatives belonging to the caller. */
+                if (state->call_base_top > 0) {
+                    int frame = state->call_base_top - 1;
+                    state->call_bases[frame] = state->B;
+                    state->call_base_preserve_choice[frame] =
+                        state->aggregate_top > 0;
+                }
                 int target = resolve_predicate_hash(state, instr->as.pred.pred);
                 if (target >= 0) { state->P = target; return true; }
                 return false;
@@ -2291,7 +2576,8 @@ compile_step_wam_to_c(_Options, CCode) :-
             case INSTR_TRY_ME_ELSE: {
                 int target = instr->as.choice.target_pc;
                 int arity = instr->as.choice.arity ? instr->as.choice.arity : 32;
-                push_choice_point(state, target, arity);
+                if (!push_choice_point(state, target, arity)) return false;
+                state->B_array[state->B - 1].is_ite = instr->as.choice.is_ite != 0;
                 state->P++;
                 return true;
             }
@@ -2307,6 +2593,43 @@ compile_step_wam_to_c(_Options, CCode) :-
             case INSTR_TRUST_ME: {
                 pop_choice_point(state);
                 state->P++;
+                return true;
+            }
+            case INSTR_TRY: {
+                /* Indexed-dispatch try (format_dispatch_chain): push a CP
+                   whose next_pc is P+1 (the next chain instruction), then
+                   JUMP to the body. TRY_ME_ELSE instead stores the alt
+                   label in the CP and falls through. */
+                int target = instr->as.choice.target_pc;
+                if (target < 0) return false;
+                int arity = instr->as.choice.arity ? instr->as.choice.arity : 32;
+                if (!push_choice_point(state, state->P + 1, arity)) return false;
+                state->P = target;
+                return true;
+            }
+            case INSTR_RETRY: {
+                /* Update the chain CP so backtrack resumes at P+1, then
+                   jump to this alternative body. */
+                int target = instr->as.choice.target_pc;
+                if (target < 0) return false;
+                int next_chain = state->P + 1;
+                if (state->B > 0) {
+                    ChoicePoint *cp = &state->B_array[state->B - 1];
+                    cp->next_pc = next_chain;
+                } else {
+                    int arity = instr->as.choice.arity ? instr->as.choice.arity : 32;
+                    if (!push_choice_point(state, next_chain, arity)) return false;
+                }
+                state->P = target;
+                return true;
+            }
+            case INSTR_TRUST: {
+                /* Last chain entry: pop the chain CP and jump to the body.
+                   TRUST_ME pops and falls through. */
+                int target = instr->as.choice.target_pc;
+                if (target < 0) return false;
+                pop_choice_point(state);
+                state->P = target;
                 return true;
             }
             case INSTR_GET_LEVEL: {
@@ -2325,8 +2648,12 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return true;
             }
             case INSTR_CUT_ITE: {
-                if (state->B <= 0) return false;
-                pop_choice_point(state);
+                int ite_b = state->B - 1;
+                while (ite_b >= 0 && !state->B_array[ite_b].is_ite) ite_b--;
+                if (ite_b < 0) return false;
+                /* Commit the condition: discard its marked else choicepoint
+                   and every alternative created while evaluating it. */
+                wam_prune_choice_points(state, ite_b);
                 state->P++;
                 return true;
             }
@@ -2717,6 +3044,9 @@ compile_step_wam_to_c(_Options, CCode) :-
         while (state->P >= 0 && state->P < state->code_size) {
             Instruction* instr = &state->code[state->P];
             if (!step_wam(state, instr)) {
+                if (state->error != 0) {
+                    return state->error;
+                }
                 bool recovered = false;
                 while (state->B > 0 && !recovered) {
                     ChoicePoint* cp = &state->B_array[state->B - 1];
@@ -2733,15 +3063,25 @@ compile_step_wam_to_c(_Options, CCode) :-
                         recovered = wam_resume_if_then_else(state);
                     } else if (next_pc == WAM_FOREIGN_STREAM_NEXT) {
                         recovered = wam_resume_foreign_stream(state);
+                    } else if (next_pc == WAM_MEMBER_NEXT) {
+                        recovered = wam_resume_member(state);
                     } else {
                         state->P = next_pc; // Explicitly jump to alternative
                         recovered = true;
+                    }
+                    if (state->error != 0) {
+                        return state->error;
                     }
                 }
                 if (!recovered) {
                     return WAM_HALT; // Failure, no choice points left
                 }
+            } else if (state->error != 0) {
+                return state->error;
             }
+        }
+        if (state->error != 0) {
+            return state->error;
         }
         return (state->P == WAM_HALT) ? 0 : WAM_ERR_OOB; // 0 on success (HALT), else OOB error
     }'.
@@ -2768,6 +3108,12 @@ static bool wam_continue_conjunction(WamState *state);
 static bool wam_resume_disjunction(WamState *state);
 static bool wam_continue_if_then_else(WamState *state);
 static bool wam_resume_if_then_else(WamState *state);
+static bool wam_execute_member(WamState *state, int resume_pc);
+static bool wam_resume_member(WamState *state);
+static bool wam_maplist_is_proper_list(WamState *state, WamValue list);
+static bool wam_execute_maplist(WamState *state);
+static bool wam_execute_reverse(WamState *state);
+static bool wam_execute_append(WamState *state);
 
 static bool wam_ensure_heap_slots(WamState *state, int additional) {
     if (additional <= 0) return true;
@@ -3032,7 +3378,7 @@ static bool wam_dispatch_if_then_else(WamState *state,
     frame->else_goal = else_goal;
     frame->return_pc = return_pc;
     frame->base_b = base_b;
-    push_choice_point(state, WAM_META_ITE_ELSE, 32);
+    if (!push_choice_point(state, WAM_META_ITE_ELSE, 32)) return false;
     return wam_invoke_goal_as_call(state, if_goal, WAM_META_ITE_THEN);
 }
 
@@ -3163,7 +3509,7 @@ static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
         WamDisjFrame *frame = &state->disj_frames[state->disj_top++];
         frame->right_goal = state->H_array[base + 2];
         frame->return_pc = return_pc;
-        push_choice_point(state, WAM_META_DISJ_RIGHT, 32);
+        if (!push_choice_point(state, WAM_META_DISJ_RIGHT, 32)) return false;
         return wam_invoke_goal_as_call(state, state->H_array[base + 1],
                                        return_pc);
     }
@@ -3195,6 +3541,12 @@ static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
         state->CP = return_pc;
         state->P = target;
         return true;
+    }
+    if (strcmp(functor, "member/2") == 0 && arity == 2) {
+        if (wam_execute_member(state, return_pc)) {
+            return wam_complete_goal_success(state, return_pc);
+        }
+        return false;
     }
     if (wam_execute_builtin(state, functor, arity)) {
         return wam_complete_goal_success(state, return_pc);
@@ -3757,7 +4109,7 @@ static bool wam_bind_next_aggregate_group(WamState *state) {
     bool has_more = iter->next_group < iter->group_count;
     int return_pc = iter->return_pc;
     if (has_more) {
-        push_choice_point(state, WAM_AGGREGATE_NEXT_GROUP, 32);
+        if (!push_choice_point(state, WAM_AGGREGATE_NEXT_GROUP, 32)) return false;
     }
 
     bool ok = wam_bind_aggregate_group(state, iter, group_index);
@@ -4045,7 +4397,7 @@ static bool wam_dispatch_aggregate_meta(WamState *state, const char *kind,
         }
     }
 
-    push_choice_point(state, WAM_AGGREGATE_META_DONE, 32);
+    if (!push_choice_point(state, WAM_AGGREGATE_META_DONE, 32)) return false;
     return wam_invoke_goal_as_call(state, state->A[1],
                                    WAM_AGGREGATE_META_COLLECT);
 }
@@ -4082,7 +4434,7 @@ static bool wam_begin_aggregate(WamState *state, Instruction *instr) {
         frame->witness_regs[i] = instr->as.aggregate.witness_regs[i];
         frame->witness_is_y[i] = instr->as.aggregate.witness_is_y[i];
     }
-    push_choice_point(state, state->P, 32);
+    if (!push_choice_point(state, state->P, 32)) return false;
     state->P++;
     return true;
 }
@@ -4121,6 +4473,8 @@ void wam_free_state(WamState *state) {
     for (int i = 0; i < state->B; i++) {
         free(state->B_array[i].foreign_results);
         state->B_array[i].foreign_results = NULL;
+        free(state->B_array[i].env_frames);
+        state->B_array[i].env_frames = NULL;
     }
     for (int i = 0; i < state->atom_table_size; i++) {
         AtomEntry *e = state->atom_table[i];
@@ -4161,23 +4515,48 @@ void wam_free_state(WamState *state) {
 
 int wam_run_predicate(WamState *state, const char *pred,
                       WamValue *args, int arity) {
+    wam_clear_error(state);
     int entry = resolve_predicate_hash(state, pred);
     if (entry < 0) return WAM_ERR_OOB;
     int base_b = state->B;
     int base_call_base_top = state->call_base_top;
+    int base_aggregate_top = state->aggregate_top;
+    int base_e = state->E;
+    int base_h = state->H;
+    int base_tr = state->TR;
+    int base_arg_ctx_top = state->arg_ctx_top;
     if (state->call_base_top >= WAM_CALL_STACK_SIZE) return WAM_ERR_OOB;
     state->call_bases[state->call_base_top] = base_b;
     state->call_base_preserve_choice[state->call_base_top] = false;
     state->call_base_top++;
+    WamValue query_args[WAM_MAX_REGS];
     for (int i = 0; i < arity; i++) {
         state->A[i] = val_is_unbound(args[i]) ? wam_make_ref(state) : args[i];
+        query_args[i] = state->A[i];
     }
     state->CP = WAM_HALT;
     state->P = entry;
     int rc = wam_run(state);
     wam_prune_choice_points(state, base_b);
+    if (state->error != 0) {
+        /* Errors skip normal aggregate completion and deallocation. Roll back
+           only this query while retaining the first diagnostic for its caller. */
+        while (state->aggregate_top > base_aggregate_top) {
+            state->aggregate_top--;
+            wam_aggregate_frame_free(&state->aggregate_frames[state->aggregate_top]);
+        }
+        unwind_trail(state, base_tr);
+        state->H = base_h;
+        state->E = base_e;
+        state->arg_ctx_top = base_arg_ctx_top;
+        state->call_base_top = base_call_base_top;
+        return rc;
+    }
     for (int i = 0; i < arity; i++) {
-        WamValue *cell = wam_deref_ptr(state, &state->A[i]);
+        /* Calls freely reuse A registers. Recover results through the stable
+           entry argument roots instead of whichever values the last callee
+           left in A. Heap references remain valid across heap reallocations. */
+        WamValue *cell = wam_deref_ptr(state, &query_args[i]);
         state->A[i] = *cell;
     }
     state->call_base_top = base_call_base_top;
@@ -4378,12 +4757,904 @@ static bool wam_execute_atom_concat(WamState *state) {
     return false;
 }
 
+/* sort/2: standard-order unique sort on finite proper lists.
+   Does not reuse the aggregate stored-term comparator: that ranks
+   ints before floats, names before arity, lists apart from compounds,
+   and collapses distinct variables. Invalid, open, or cyclic lists
+   set WAM_ERR_UNSUPPORTED; this runtime has no Prolog exceptions.
+   Input cons cells are not rewritten; output cells share the original
+   element values, including variable identity. */
+#define WAM_SORT_MAX_ITEMS 262144
+#define WAM_SORT_COMPARE_MAX_DEPTH 256
+
+typedef struct {
+    WamValue value;
+} WamSortItem;
+
+static _Thread_local WamState *wam_sort_qsort_state = NULL;
+static _Thread_local int wam_sort_compare_truncated = 0;
+
+static bool wam_sort_is_nil(const WamValue *cell) {
+    return cell->tag == VAL_ATOM && cell->data.atom != NULL &&
+           strcmp(cell->data.atom, "[]") == 0;
+}
+
+static bool wam_sort_cons_head(WamState *state, WamValue *cell, int *head_addr) {
+    int addr = wam_cons_head_addr(state, cell);
+    if (addr < 0 || addr + 1 >= state->H) return false;
+    *head_addr = addr;
+    return true;
+}
+
+static WamValue wam_sort_identity_value(WamState *state, WamValue *source) {
+    int addr = -1;
+    if (wam_ref_addr(state, *source, &addr)) {
+        WamValue ref;
+        ref.tag = VAL_REF;
+        ref.data.ref_addr = addr;
+        return ref;
+    }
+    /* Keep the original heap cell: a by-value UNBOUND copy has no identity. */
+    WamValue *cell = wam_deref_ptr(state, source);
+    if (val_is_unbound(*cell)) {
+        long idx = cell - state->H_array;
+        if (idx >= 0 && idx < (long)state->H) {
+            WamValue ref;
+            ref.tag = VAL_REF;
+            ref.data.ref_addr = (int)idx;
+            return ref;
+        }
+        return *source;
+    }
+    return *cell;
+}
+
+static int wam_sort_term_class(WamValue *cell) {
+    if (val_is_unbound(*cell) || cell->tag == VAL_REF) return 0;
+    if (cell->tag == VAL_INT || cell->tag == VAL_FLOAT) return 1;
+    if (cell->tag == VAL_ATOM) return 2;
+    if (cell->tag == VAL_LIST || cell->tag == VAL_STR) return 3;
+    return 4;
+}
+
+static int wam_sort_compare_names(const char *left, size_t left_len,
+                                  const char *right, size_t right_len) {
+    size_t n = left_len < right_len ? left_len : right_len;
+    int cmp = strncmp(left, right, n);
+    if (cmp != 0) return cmp;
+    return (left_len > right_len) - (left_len < right_len);
+}
+
+static bool wam_sort_compound_info(WamState *state, WamValue *cell,
+                                   const char **name, size_t *name_len,
+                                   int *arity, int *arg0) {
+    int cons = -1;
+    if (wam_sort_cons_head(state, cell, &cons)) {
+        *name = ".";
+        *name_len = 1;
+        *arity = 2;
+        *arg0 = cons;
+        return true;
+    }
+    if (cell->tag != VAL_STR) return false;
+    int base = cell->data.ref_addr;
+    if (base < 0 || base >= state->H) return false;
+    WamValue *functor = &state->H_array[base];
+    if (functor->tag != VAL_ATOM || functor->data.atom == NULL) return false;
+    int parsed_arity = 0;
+    if (!wam_parse_functor_arity(functor->data.atom, &parsed_arity)) return false;
+    if (base + parsed_arity >= state->H) return false;
+    const char *slash = strrchr(functor->data.atom, 47);
+    *name = functor->data.atom;
+    *name_len = slash ? (size_t)(slash - functor->data.atom)
+                      : strlen(functor->data.atom);
+    *arity = parsed_arity;
+    *arg0 = base + 1;
+    return true;
+}
+
+static int wam_compare_live_terms(WamState *state, WamValue left, WamValue right,
+                                  int depth) {
+    if (depth > WAM_SORT_COMPARE_MAX_DEPTH) {
+        wam_sort_compare_truncated = 1;
+        return 0;
+    }
+    WamValue *d1 = wam_deref_ptr(state, &left);
+    WamValue *d2 = wam_deref_ptr(state, &right);
+    if (d1 == d2) return 0;
+
+    int class1 = wam_sort_term_class(d1);
+    int class2 = wam_sort_term_class(d2);
+    if (class1 != class2) return wam_compare_ints(class1, class2);
+
+    if (class1 == 0) {
+        return (d1 > d2) - (d1 < d2);
+    }
+    if (class1 == 1) {
+        double left_n = (d1->tag == VAL_FLOAT) ? d1->data.floating
+                                               : (double)d1->data.integer;
+        double right_n = (d2->tag == VAL_FLOAT) ? d2->data.floating
+                                                : (double)d2->data.integer;
+        if (left_n < right_n) return -1;
+        if (left_n > right_n) return 1;
+        int left_int = (d1->tag == VAL_INT);
+        int right_int = (d2->tag == VAL_INT);
+        return wam_compare_ints(left_int, right_int);
+    }
+    if (class1 == 2) {
+        const char *left_atom = d1->data.atom ? d1->data.atom : "";
+        const char *right_atom = d2->data.atom ? d2->data.atom : "";
+        return strcmp(left_atom, right_atom);
+    }
+    if (class1 == 3) {
+        const char *left_name = "";
+        const char *right_name = "";
+        size_t left_len = 0;
+        size_t right_len = 0;
+        int left_arity = 0;
+        int right_arity = 0;
+        int left_arg0 = 0;
+        int right_arg0 = 0;
+        if (!wam_sort_compound_info(state, d1, &left_name, &left_len,
+                                    &left_arity, &left_arg0) ||
+            !wam_sort_compound_info(state, d2, &right_name, &right_len,
+                                    &right_arity, &right_arg0)) {
+            return wam_compare_ints((int)d1->tag, (int)d2->tag);
+        }
+        int arity_cmp = wam_compare_ints(left_arity, right_arity);
+        if (arity_cmp != 0) return arity_cmp;
+        int name_cmp = wam_sort_compare_names(left_name, left_len,
+                                              right_name, right_len);
+        if (name_cmp != 0) return name_cmp;
+        for (int i = 0; i < left_arity; i++) {
+            int arg_cmp = wam_compare_live_terms(state,
+                                                 state->H_array[left_arg0 + i],
+                                                 state->H_array[right_arg0 + i],
+                                                 depth + 1);
+            if (arg_cmp != 0) return arg_cmp;
+        }
+        return 0;
+    }
+    return wam_compare_ints((int)d1->tag, (int)d2->tag);
+}
+
+static int wam_sort_qsort_cmp(const void *left, const void *right) {
+    const WamSortItem *left_item = (const WamSortItem *)left;
+    const WamSortItem *right_item = (const WamSortItem *)right;
+    return wam_compare_live_terms(wam_sort_qsort_state,
+                                  left_item->value, right_item->value, 0);
+}
+
+static bool wam_collect_sort_list(WamState *state, WamValue list,
+                                  WamSortItem **items_out, int *count_out) {
+    WamValue *cell = wam_deref_ptr(state, &list);
+    if (wam_sort_is_nil(cell)) {
+        *items_out = NULL;
+        *count_out = 0;
+        return true;
+    }
+    if (val_is_unbound(*cell) || wam_cons_head_addr(state, cell) < 0) {
+        wam_set_unsupported_builtin(state, "sort/2", 2);
+        return false;
+    }
+
+    int cap = 16;
+    WamSortItem *items = malloc(sizeof(WamSortItem) * (size_t)cap);
+    if (!items) return false;
+    int count = 0;
+    WamValue *slow = cell;
+    WamValue *fast = cell;
+
+    for (;;) {
+        int head_addr = -1;
+        if (!wam_sort_cons_head(state, cell, &head_addr)) {
+            if (wam_sort_is_nil(cell)) break;
+            free(items);
+            wam_set_unsupported_builtin(state, "sort/2", 2);
+            return false;
+        }
+        if (count >= WAM_SORT_MAX_ITEMS) {
+            free(items);
+            wam_set_unsupported_builtin(state, "sort/2", 2);
+            return false;
+        }
+        if (count >= cap) {
+            if (cap > WAM_SORT_MAX_ITEMS / 2) {
+                free(items);
+                wam_set_unsupported_builtin(state, "sort/2", 2);
+                return false;
+            }
+            int new_cap = cap * 2;
+            WamSortItem *grown = realloc(items, sizeof(WamSortItem) * (size_t)new_cap);
+            if (!grown) {
+                free(items);
+                return false;
+            }
+            items = grown;
+            cap = new_cap;
+        }
+        items[count++].value =
+            wam_sort_identity_value(state, &state->H_array[head_addr]);
+        cell = wam_deref_ptr(state, &state->H_array[head_addr + 1]);
+
+        for (int step = 0; step < 2; step++) {
+            int fast_head = -1;
+            if (!fast || !wam_sort_cons_head(state, fast, &fast_head)) {
+                fast = NULL;
+                break;
+            }
+            fast = wam_deref_ptr(state, &state->H_array[fast_head + 1]);
+        }
+        if (fast) {
+            int slow_head = -1;
+            if (wam_sort_cons_head(state, slow, &slow_head)) {
+                slow = wam_deref_ptr(state, &state->H_array[slow_head + 1]);
+            }
+            if (slow == fast) {
+                free(items);
+                wam_set_unsupported_builtin(state, "sort/2", 2);
+                return false;
+            }
+        }
+    }
+
+    *items_out = items;
+    *count_out = count;
+    return true;
+}
+
+static bool wam_build_list_from_sort_items(WamState *state,
+                                           WamSortItem *items,
+                                           int count,
+                                           WamValue *out) {
+    WamValue tail = val_atom("[]");
+    for (int i = count - 1; i >= 0; i--) {
+        if (!wam_ensure_heap_slots(state, 2)) return false;
+        int base = state->H;
+        state->H_array[state->H++] = items[i].value;
+        state->H_array[state->H++] = tail;
+        tail.tag = VAL_LIST;
+        tail.data.ref_addr = base;
+    }
+    *out = tail;
+    return true;
+}
+
+static bool wam_execute_sort(WamState *state) {
+    int initial_h = state->H;
+    int initial_tr = state->TR;
+    WamSortItem *items = NULL;
+    int count = 0;
+    if (!wam_collect_sort_list(state, state->A[0], &items, &count)) {
+        return false;
+    }
+    if (count >= 2) {
+        wam_sort_compare_truncated = 0;
+        wam_sort_qsort_state = state;
+        qsort(items, (size_t)count, sizeof(WamSortItem), wam_sort_qsort_cmp);
+        wam_sort_qsort_state = NULL;
+        if (wam_sort_compare_truncated) {
+            free(items);
+            wam_set_unsupported_builtin(state, "sort/2", 2);
+            return false;
+        }
+        int unique = 0;
+        for (int i = 0; i < count; i++) {
+            if (unique > 0 &&
+                wam_term_strict_equal(state, &items[unique - 1].value,
+                                      &items[i].value)) {
+                continue;
+            }
+            items[unique++] = items[i];
+        }
+        count = unique;
+    }
+    WamValue result;
+    if (!wam_build_list_from_sort_items(state, items, count, &result)) {
+        free(items);
+        state->H = initial_h;
+        return false;
+    }
+    free(items);
+    if (!wam_unify(state, &state->A[1], &result)) {
+        unwind_trail(state, initial_tr);
+        state->H = initial_h;
+        return false;
+    }
+    return true;
+}
+
+/* member/2: finite proper lists only. Open, cyclic, improper, non-list,
+   and unbound tails are WAM_ERR_UNSUPPORTED (bounded; no infinite
+   generation). Solutions are ordered and duplicate-preserving. Heads
+   stay heap-shared via wam_sort_identity_value. */
+static bool wam_member_is_proper_list(WamState *state, WamValue list) {
+    WamValue *cell = wam_deref_ptr(state, &list);
+    if (wam_sort_is_nil(cell)) return true;
+    if (val_is_unbound(*cell) || wam_cons_head_addr(state, cell) < 0) {
+        wam_set_unsupported_builtin(state, "member/2", 2);
+        return false;
+    }
+    WamValue *slow = cell;
+    WamValue *fast = cell;
+    int count = 0;
+    for (;;) {
+        int head_addr = -1;
+        if (!wam_sort_cons_head(state, cell, &head_addr)) {
+            if (wam_sort_is_nil(cell)) return true;
+            wam_set_unsupported_builtin(state, "member/2", 2);
+            return false;
+        }
+        if (count >= WAM_SORT_MAX_ITEMS) {
+            wam_set_unsupported_builtin(state, "member/2", 2);
+            return false;
+        }
+        count++;
+        cell = wam_deref_ptr(state, &state->H_array[head_addr + 1]);
+        for (int step = 0; step < 2; step++) {
+            int fast_head = -1;
+            if (!fast || !wam_sort_cons_head(state, fast, &fast_head)) {
+                fast = NULL;
+                break;
+            }
+            fast = wam_deref_ptr(state, &state->H_array[fast_head + 1]);
+        }
+        if (fast) {
+            int slow_head = -1;
+            if (wam_sort_cons_head(state, slow, &slow_head)) {
+                slow = wam_deref_ptr(state, &state->H_array[slow_head + 1]);
+            }
+            if (slow == fast) {
+                wam_set_unsupported_builtin(state, "member/2", 2);
+                return false;
+            }
+        }
+    }
+}
+
+static bool wam_member_finish_success(WamState *state, int resume_pc) {
+    if (resume_pc == WAM_AGGREGATE_META_COLLECT) {
+        return wam_collect_meta_aggregate_success(state);
+    }
+    if (resume_pc == WAM_META_CONJ_RETURN) {
+        return wam_continue_conjunction(state);
+    }
+    if (resume_pc == WAM_META_ITE_THEN) {
+        return wam_continue_if_then_else(state);
+    }
+    state->P = resume_pc;
+    return true;
+}
+
+static bool wam_member_bind_from(WamState *state, WamValue list, int resume_pc,
+                                 bool have_cp) {
+    for (;;) {
+        WamValue *cell = wam_deref_ptr(state, &list);
+        if (wam_sort_is_nil(cell)) {
+            if (have_cp) pop_choice_point(state);
+            return false;
+        }
+        int head_addr = -1;
+        if (!wam_sort_cons_head(state, cell, &head_addr)) {
+            wam_set_unsupported_builtin(state, "member/2", 2);
+            if (have_cp) pop_choice_point(state);
+            return false;
+        }
+        WamValue ident = wam_sort_identity_value(state, &state->H_array[head_addr]);
+        WamValue rest = state->H_array[head_addr + 1];
+        int trail_mark = state->TR;
+        if (wam_unify(state, &state->A[0], &ident)) {
+            WamValue *rest_d = wam_deref_ptr(state, &rest);
+            if (wam_sort_is_nil(rest_d)) {
+                if (have_cp) pop_choice_point(state);
+                return true;
+            }
+            if (wam_cons_head_addr(state, rest_d) < 0) {
+                unwind_trail(state, trail_mark);
+                wam_set_unsupported_builtin(state, "member/2", 2);
+                if (have_cp) pop_choice_point(state);
+                return false;
+            }
+            unwind_trail(state, trail_mark);
+            if (have_cp) {
+                ChoicePoint *cp = &state->B_array[state->B - 1];
+                cp->member_rest = rest;
+                cp->foreign_resume_pc = resume_pc;
+            } else {
+                /* Save the full A window, not member/2''s arity. Caller
+                   A2+ and later put_value from Y survive a downstream
+                   builtin that overwrites A0/A1 (sort/2, =/2). */
+                if (!push_choice_point(state, WAM_MEMBER_NEXT, 32)) return false;
+                ChoicePoint *cp = &state->B_array[state->B - 1];
+                cp->member_rest = rest;
+                cp->foreign_resume_pc = resume_pc;
+            }
+            if (!wam_unify(state, &state->A[0], &ident)) {
+                pop_choice_point(state);
+                return false;
+            }
+            return true;
+        }
+        unwind_trail(state, trail_mark);
+        list = rest;
+    }
+}
+
+static bool wam_execute_member(WamState *state, int resume_pc) {
+    if (!wam_member_is_proper_list(state, state->A[1])) return false;
+    return wam_member_bind_from(state, state->A[1], resume_pc, false);
+}
+
+static bool wam_resume_member(WamState *state) {
+    if (state->B <= 0) return false;
+    ChoicePoint *cp = &state->B_array[state->B - 1];
+    if (cp->next_pc != WAM_MEMBER_NEXT) return false;
+    int resume_pc = cp->foreign_resume_pc;
+    WamValue rest = cp->member_rest;
+    if (!wam_member_bind_from(state, rest, resume_pc, true)) return false;
+    return wam_member_finish_success(state, resume_pc);
+}
+
+static bool wam_maplist_is_proper_list(WamState *state, WamValue list) {
+    if (!wam_member_is_proper_list(state, list)) {
+        if (state->error == WAM_ERR_UNSUPPORTED && state->error_op &&
+            strcmp(state->error_op, "member/2") == 0 && state->error_arity == 2) {
+            state->error_op = "maplist/2";
+            state->error_arity = 2;
+        }
+        return false;
+    }
+    return true;
+}
+
+static inline bool wam_is_fact_opcode(WamInstrTag tag) {
+    switch (tag) {
+        case INSTR_GET_CONSTANT:
+        case INSTR_GET_VARIABLE:
+        case INSTR_GET_VALUE:
+        case INSTR_GET_STRUCTURE:
+        case INSTR_GET_LIST:
+        case INSTR_UNIFY_VARIABLE:
+        case INSTR_UNIFY_VALUE:
+        case INSTR_UNIFY_CONSTANT:
+        case INSTR_NOOP:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool wam_execute_maplist(WamState *state) {
+    if (!wam_maplist_is_proper_list(state, state->A[1])) {
+        return false;
+    }
+
+    WamValue *list_cell = wam_deref_ptr(state, &state->A[1]);
+    if (wam_sort_is_nil(list_cell)) {
+        return true;
+    }
+
+    WamValue *goal_cell = wam_deref_ptr(state, &state->A[0]);
+    if (goal_cell->tag != VAL_ATOM || !goal_cell->data.atom) {
+        wam_set_unsupported_builtin(state, "maplist/2", 2);
+        return false;
+    }
+    const PredEntry *fact_entry = wam_lookup_fact_eligible_entry(state, goal_cell->data.atom);
+    if (!fact_entry) {
+        wam_set_unsupported_builtin(state, "maplist/2", 2);
+        return false;
+    }
+    int fact_pc = fact_entry->pc;
+    if (fact_pc < 0 || fact_pc >= state->code_size) {
+        wam_set_unsupported_builtin(state, "maplist/2", 2);
+        return false;
+    }
+
+    WamValue saved_A[WAM_MAX_REGS];
+    WamValue saved_X[WAM_MAX_REGS];
+    memcpy(saved_A, state->A, sizeof(state->A));
+    memcpy(saved_X, state->X, sizeof(state->X));
+    int saved_P = state->P;
+    int saved_CP = state->CP;
+    int saved_S = state->S;
+    WamMode saved_mode = state->mode;
+    int saved_arg_ctx_top = state->arg_ctx_top;
+    WamArgCtx saved_arg_ctx[WAM_ARG_CTX_MAX];
+    memcpy(saved_arg_ctx, state->arg_ctx, sizeof(state->arg_ctx));
+    int saved_call_base_top = state->call_base_top;
+    int initial_tr = state->TR;
+    bool success = false;
+
+    WamValue curr = state->A[1];
+    while (true) {
+        WamValue *cell = wam_deref_ptr(state, &curr);
+        if (wam_sort_is_nil(cell)) {
+            break;
+        }
+        int head_addr = -1;
+        if (!wam_sort_cons_head(state, cell, &head_addr)) {
+            wam_set_unsupported_builtin(state, "maplist/2", 2);
+            success = false;
+            goto cleanup;
+        }
+
+        int tail_addr = head_addr + 1;
+
+        WamValue elem_ref;
+        elem_ref.tag = VAL_REF;
+        elem_ref.data.ref_addr = head_addr;
+        state->A[0] = elem_ref;
+
+        memcpy(state->X, saved_X, sizeof(state->X));
+        state->P = fact_pc;
+        state->S = 0;
+        state->mode = MODE_READ;
+        state->arg_ctx_top = 0;
+
+        bool saw_proceed = false;
+        while (state->P >= 0 && state->P < state->code_size) {
+            Instruction *instr = &state->code[state->P];
+            if (instr->tag == INSTR_PROCEED) {
+                saw_proceed = true;
+                break;
+            }
+            if (!wam_is_fact_opcode(instr->tag)) {
+                wam_set_unsupported_builtin(state, "maplist/2", 2);
+                success = false;
+                goto cleanup;
+            }
+            if (!step_wam(state, instr) || state->error != 0) {
+                success = false;
+                goto cleanup;
+            }
+        }
+
+        if (!saw_proceed) {
+            if (state->error == 0) {
+                wam_set_unsupported_builtin(state, "maplist/2", 2);
+            }
+            success = false;
+            goto cleanup;
+        }
+
+        curr = state->H_array[tail_addr];
+    }
+
+    success = true;
+
+cleanup:
+    if (!success) {
+        unwind_trail(state, initial_tr);
+    }
+    memcpy(state->A, saved_A, sizeof(state->A));
+    memcpy(state->X, saved_X, sizeof(state->X));
+    state->P = saved_P;
+    state->CP = saved_CP;
+    state->S = saved_S;
+    state->mode = saved_mode;
+    memcpy(state->arg_ctx, saved_arg_ctx, sizeof(state->arg_ctx));
+    state->arg_ctx_top = saved_arg_ctx_top;
+    state->call_base_top = saved_call_base_top;
+    return success;
+}
+
+/* reverse/2: finite proper first-argument lists only. Open, cyclic,
+   improper, non-list, and unbound terms are WAM_ERR_UNSUPPORTED.
+   A new list spine is allocated while retaining original element
+   identities and heap references via wam_sort_identity_value (no deep copy). */
+typedef struct {
+    WamValue value;
+} WamReverseItem;
+
+static bool wam_collect_reverse_list(WamState *state, WamValue list,
+                                     WamReverseItem **items_out, int *count_out) {
+    WamValue *cell = wam_deref_ptr(state, &list);
+    if (wam_sort_is_nil(cell)) {
+        *items_out = NULL;
+        *count_out = 0;
+        return true;
+    }
+    if (val_is_unbound(*cell) || wam_cons_head_addr(state, cell) < 0) {
+        wam_set_unsupported_builtin(state, "reverse/2", 2);
+        return false;
+    }
+
+    int cap = 16;
+    WamReverseItem *items = malloc(sizeof(WamReverseItem) * (size_t)cap);
+    if (!items) return false;
+    int count = 0;
+    WamValue *slow = cell;
+    WamValue *fast = cell;
+
+    for (;;) {
+        int head_addr = -1;
+        if (!wam_sort_cons_head(state, cell, &head_addr)) {
+            if (wam_sort_is_nil(cell)) break;
+            free(items);
+            wam_set_unsupported_builtin(state, "reverse/2", 2);
+            return false;
+        }
+        if (count >= WAM_SORT_MAX_ITEMS) {
+            free(items);
+            wam_set_unsupported_builtin(state, "reverse/2", 2);
+            return false;
+        }
+        if (count >= cap) {
+            if (cap > WAM_SORT_MAX_ITEMS / 2) {
+                free(items);
+                wam_set_unsupported_builtin(state, "reverse/2", 2);
+                return false;
+            }
+            int new_cap = cap * 2;
+            WamReverseItem *grown = realloc(items, sizeof(WamReverseItem) * (size_t)new_cap);
+            if (!grown) {
+                free(items);
+                return false;
+            }
+            items = grown;
+            cap = new_cap;
+        }
+        items[count++].value =
+            wam_sort_identity_value(state, &state->H_array[head_addr]);
+        cell = wam_deref_ptr(state, &state->H_array[head_addr + 1]);
+
+        for (int step = 0; step < 2; step++) {
+            int fast_head = -1;
+            if (!fast || !wam_sort_cons_head(state, fast, &fast_head)) {
+                fast = NULL;
+                break;
+            }
+            fast = wam_deref_ptr(state, &state->H_array[fast_head + 1]);
+        }
+        if (fast) {
+            int slow_head = -1;
+            if (wam_sort_cons_head(state, slow, &slow_head)) {
+                slow = wam_deref_ptr(state, &state->H_array[slow_head + 1]);
+            }
+            if (slow == fast) {
+                free(items);
+                wam_set_unsupported_builtin(state, "reverse/2", 2);
+                return false;
+            }
+        }
+    }
+
+    *items_out = items;
+    *count_out = count;
+    return true;
+}
+
+static bool wam_build_list_from_reverse_items(WamState *state,
+                                              WamReverseItem *items,
+                                              int count,
+                                              WamValue *out) {
+    if (count == 0) {
+        *out = val_atom("[]");
+        return true;
+    }
+    if (!wam_ensure_heap_slots(state, 2 * count)) return false;
+    WamValue tail = val_atom("[]");
+    for (int i = 0; i < count; i++) {
+        int base = state->H;
+        state->H_array[state->H++] = items[i].value;
+        state->H_array[state->H++] = tail;
+        tail.tag = VAL_LIST;
+        tail.data.ref_addr = base;
+    }
+    *out = tail;
+    return true;
+}
+
+static bool wam_execute_reverse(WamState *state) {
+    WamReverseItem *items = NULL;
+    int count = 0;
+    if (!wam_collect_reverse_list(state, state->A[0], &items, &count)) {
+        return false;
+    }
+    int heap_mark = state->H;
+    WamValue result;
+    if (!wam_build_list_from_reverse_items(state, items, count, &result)) {
+        free(items);
+        state->H = heap_mark;
+        return false;
+    }
+    free(items);
+    int trail_mark = state->TR;
+    if (!wam_unify(state, &state->A[1], &result)) {
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+    return true;
+}
+
+/* append/3: finite proper first-argument lists only. Open, cyclic,
+   improper, non-list, and unbound terms are WAM_ERR_UNSUPPORTED.
+   Copies only the list spine of the first argument while sharing
+   its element terms and variable identities; the second argument is
+   used as the final tail without copying. If output unification fails,
+   trail bindings and temporary heap allocations are rolled back. */
+typedef struct {
+    WamValue value;
+} WamAppendItem;
+
+static bool wam_collect_append_list(WamState *state, WamValue list,
+                                     WamAppendItem **items_out, int *count_out) {
+    WamValue *cell = wam_deref_ptr(state, &list);
+    if (wam_sort_is_nil(cell)) {
+        *items_out = NULL;
+        *count_out = 0;
+        return true;
+    }
+    if (val_is_unbound(*cell) || wam_cons_head_addr(state, cell) < 0) {
+        wam_set_unsupported_builtin(state, "append/3", 3);
+        return false;
+    }
+
+    int cap = 16;
+    WamAppendItem *items = malloc(sizeof(WamAppendItem) * (size_t)cap);
+    if (!items) return false;
+    int count = 0;
+    WamValue *slow = cell;
+    WamValue *fast = cell;
+
+    for (;;) {
+        int head_addr = -1;
+        if (!wam_sort_cons_head(state, cell, &head_addr)) {
+            if (wam_sort_is_nil(cell)) break;
+            free(items);
+            wam_set_unsupported_builtin(state, "append/3", 3);
+            return false;
+        }
+        if (count >= WAM_SORT_MAX_ITEMS) {
+            free(items);
+            wam_set_unsupported_builtin(state, "append/3", 3);
+            return false;
+        }
+        if (count >= cap) {
+            if (cap > WAM_SORT_MAX_ITEMS / 2) {
+                free(items);
+                wam_set_unsupported_builtin(state, "append/3", 3);
+                return false;
+            }
+            int new_cap = cap * 2;
+            WamAppendItem *grown = realloc(items, sizeof(WamAppendItem) * (size_t)new_cap);
+            if (!grown) {
+                free(items);
+                return false;
+            }
+            items = grown;
+            cap = new_cap;
+        }
+        items[count++].value =
+            wam_sort_identity_value(state, &state->H_array[head_addr]);
+        cell = wam_deref_ptr(state, &state->H_array[head_addr + 1]);
+
+        for (int step = 0; step < 2; step++) {
+            int fast_head = -1;
+            if (!fast || !wam_sort_cons_head(state, fast, &fast_head)) {
+                fast = NULL;
+                break;
+            }
+            fast = wam_deref_ptr(state, &state->H_array[fast_head + 1]);
+        }
+        if (fast) {
+            int slow_head = -1;
+            if (wam_sort_cons_head(state, slow, &slow_head)) {
+                slow = wam_deref_ptr(state, &state->H_array[slow_head + 1]);
+            }
+            if (slow == fast) {
+                free(items);
+                wam_set_unsupported_builtin(state, "append/3", 3);
+                return false;
+            }
+        }
+    }
+
+    *items_out = items;
+    *count_out = count;
+    return true;
+}
+
+static WamValue wam_append_identity_tail(WamState *state, WamValue *source) {
+    int addr = -1;
+    if (wam_ref_addr(state, *source, &addr)) {
+        WamValue ref;
+        ref.tag = VAL_REF;
+        ref.data.ref_addr = addr;
+        return ref;
+    }
+    WamValue *cell = wam_deref_ptr(state, source);
+    if (val_is_unbound(*cell)) {
+        if (!wam_ensure_heap_slots(state, 1)) return *source;
+        int v_addr = state->H++;
+        state->H_array[v_addr] = val_unbound("tail_var");
+        WamValue ref;
+        ref.tag = VAL_REF;
+        ref.data.ref_addr = v_addr;
+        trail_binding(state, cell);
+        *cell = ref;
+        return ref;
+    }
+    return wam_sort_identity_value(state, source);
+}
+
+static bool wam_build_list_from_append_items(WamState *state,
+                                             WamAppendItem *items,
+                                             int count,
+                                             WamValue tail_val,
+                                             WamValue *out) {
+    if (count == 0) {
+        *out = tail_val;
+        return true;
+    }
+    if (!wam_ensure_heap_slots(state, 2 * count)) return false;
+    WamValue tail = tail_val;
+    for (int i = count - 1; i >= 0; i--) {
+        int base = state->H;
+        state->H_array[state->H++] = items[i].value;
+        state->H_array[state->H++] = tail;
+        tail.tag = VAL_LIST;
+        tail.data.ref_addr = base;
+    }
+    *out = tail;
+    return true;
+}
+
+static bool wam_execute_append(WamState *state) {
+    WamAppendItem *items = NULL;
+    int count = 0;
+    if (!wam_collect_append_list(state, state->A[0], &items, &count)) {
+        return false;
+    }
+
+    int trail_mark = state->TR;
+    int heap_mark = state->H;
+
+    if (count == 0) {
+        if (!wam_unify(state, &state->A[2], &state->A[1])) {
+            unwind_trail(state, trail_mark);
+            state->H = heap_mark;
+            return false;
+        }
+        return true;
+    }
+
+    WamValue tail_val = wam_append_identity_tail(state, &state->A[1]);
+    WamValue result;
+    if (!wam_build_list_from_append_items(state, items, count, tail_val, &result)) {
+        free(items);
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+    free(items);
+
+    if (!wam_unify(state, &state->A[2], &result)) {
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+    return true;
+}
+
 bool wam_execute_builtin(WamState *state, const char *op, int arity) {
     if (strcmp(op, "true/0") == 0 && arity == 0) return true;
     if ((strcmp(op, "fail/0") == 0 || strcmp(op, "false/0") == 0) && arity == 0) return false;
     if (strcmp(op, "!/0") == 0 && arity == 0) {
         if (state->call_base_top <= 0) return false;
         int target_b = state->call_bases[state->call_base_top - 1];
+        /* ISO: findall/bagof/setof Goal is opaque to cut. Inlined
+           begin_aggregate pushes a sentinel CP above the clause B0;
+           cutting to B0 would drop that sentinel so end_aggregate
+           cannot restore caller A/Y from it (findall(X,(member(X,L),!),Xs)
+           then leaves A1 as the input list). Never prune below the
+           innermost open aggregate''s sentinel. */
+        if (state->aggregate_top > 0) {
+            int agg_keep =
+                state->aggregate_frames[state->aggregate_top - 1].sentinel_b;
+            if (agg_keep > target_b) target_b = agg_keep;
+        }
         if (target_b < 0 || target_b > state->B) return false;
         wam_prune_choice_points(state, target_b);
         return true;
@@ -4457,7 +5728,24 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
         return wam_execute_atom_concat(state);
     }
 
-    if (arity == 2) {
+    if (strcmp(op, "sort/2") == 0 && arity == 2) {
+        return wam_execute_sort(state);
+    }
+
+    if (strcmp(op, "member/2") == 0 && arity == 2) {
+        return wam_execute_member(state, state->P + 1);
+    }
+
+    /* Classify arithmetic comparisons by operator first. Unknown arity-2
+       ops must not enter evaluation: numeric arguments used to make
+       member/2 look like a false comparison. */
+    if (arity == 2 &&
+        (strcmp(op, ">/2") == 0 ||
+         strcmp(op, "</2") == 0 ||
+         strcmp(op, ">=/2") == 0 ||
+         strcmp(op, "=</2") == 0 ||
+         strcmp(op, "=:=/2") == 0 ||
+         strcmp(op, "=\\\\=/2") == 0)) {
         int lhs = 0;
         int rhs = 0;
         if (!wam_eval_arith(state, state->A[0], &lhs)) return false;
@@ -4471,6 +5759,19 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
         if (strcmp(op, "=\\\\=/2") == 0) return lhs != rhs;
     }
 
+    if (strcmp(op, "maplist/2") == 0 && arity == 2) {
+        return wam_execute_maplist(state);
+    }
+
+    if (strcmp(op, "reverse/2") == 0 && arity == 2) {
+        return wam_execute_reverse(state);
+    }
+
+    if (strcmp(op, "append/3") == 0 && arity == 3) {
+        return wam_execute_append(state);
+    }
+
+    wam_set_unsupported_builtin(state, op, arity);
     return false;
 }
 
@@ -6444,7 +7745,10 @@ static bool wam_bind_foreign_atom_stream(WamState *state,
                                          int resume_pc) {
     WamValue first = results[0];
     if (result_count > 1) {
-        push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, result_reg + 1);
+        if (!push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, result_reg + 1)) {
+            free(results);
+            return false;
+        }
         ChoicePoint *cp = &state->B_array[state->B - 1];
         cp->foreign_results = results;
         cp->foreign_result_count = result_count;
@@ -6599,7 +7903,10 @@ static bool wam_bind_foreign_pair_stream(WamState *state,
     WamValue first_atom = results[0];
     WamValue first_dist = results[1];
     if (value_count > 2) {
-        push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 255);
+        if (!push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 255)) {
+            free(results);
+            return false;
+        }
         ChoicePoint *cp = &state->B_array[state->B - 1];
         cp->foreign_results = results;
         cp->foreign_result_count = value_count;
@@ -6641,9 +7948,12 @@ static bool wam_bind_foreign_triple_stream(WamState *state,
         if (index + 3 < value_count) {
             /* The choice-point snapshot must describe the state before this
              * first successful tuple.  Rewind the trial bind, take the
-             * ordinary foreign-stream snapshot, then commit the same tuple. */
+            * ordinary foreign-stream snapshot, then commit the same tuple. */
             unwind_trail(state, trail_mark);
-            push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 4);
+            if (!push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 4)) {
+                free(results);
+                return false;
+            }
             ChoicePoint *cp = &state->B_array[state->B - 1];
             cp->foreign_results = results;
             cp->foreign_result_count = value_count;
@@ -6688,7 +7998,10 @@ static bool wam_bind_foreign_quad_stream(WamState *state,
 
         if (index + 4 < value_count) {
             unwind_trail(state, trail_mark);
-            push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 5);
+            if (!push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 5)) {
+                free(results);
+                return false;
+            }
             ChoicePoint *cp = &state->B_array[state->B - 1];
             cp->foreign_results = results;
             cp->foreign_result_count = value_count;
