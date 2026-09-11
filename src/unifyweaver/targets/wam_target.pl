@@ -2680,6 +2680,7 @@ is_builtin_pred(reverse, 2).  % list reverse -- F#, Python, R, Clojure, Go,
                               % finding a labeled clause may need a
                               % builtin_call handler.
 is_builtin_pred(length, 2).
+is_builtin_pred(atomic, 1).  % ISO type test dispatched directly by supporting runtimes
 is_builtin_pred(functor, 3). % term inspection: name/arity read or construct
 is_builtin_pred(arg, 3).     % term inspection: Nth argument access
 is_builtin_pred((=..), 2).   % term inspection: univ (decompose/compose)

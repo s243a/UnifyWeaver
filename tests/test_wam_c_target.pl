@@ -2052,7 +2052,15 @@ run_multi_predicate_setup_executable_smoke :-
     run_c_smoke_plain(ExePath).
 
 run_atomic_builtin_executable_smoke :-
-    WamCode = 'wam_c_builtin_atomic/1:\n    builtin_call atomic/1, 1\n    proceed',
+    assertz((user:wam_c_builtin_atomic(X) :- atomic(X))),
+    setup_call_cleanup(
+        true,
+        run_atomic_builtin_executable_smoke_compiled,
+        retractall(user:wam_c_builtin_atomic(_))).
+
+run_atomic_builtin_executable_smoke_compiled :-
+    compile_predicate_to_wam(user:wam_c_builtin_atomic/1, [], WamCode),
+    sub_string(WamCode, _, _, _, 'builtin_call atomic/1, 1'),
     compile_wam_predicate_to_c(user:wam_c_builtin_atomic/1, WamCode, [], PredCode),
     compile_wam_runtime_to_c([], RuntimeCode),
     get_time(Now),
