@@ -12,7 +12,7 @@ across the three capability axes UnifyWeaver targets carry: **recursion patterns
 This document is the delegation spec: it records current state, the per-target
 checklist, the model assignments (Grok vs. Opus subagents), the collision-avoidance
 strategy, and the acceptance bars. The companion file
-`GROK_ANNOTATED_JS_TARGET_PROMPT.md` is the self-contained prompt for the Grok slice.
+`archive/agent-prompts/GROK_ANNOTATED_JS_TARGET_PROMPT.md` is the self-contained prompt for the Grok slice.
 
 ---
 
@@ -128,7 +128,7 @@ worktrees conflict-free on the hot shared files.
   (contract + JSDoc emission already present in `typescript_runtime/custom_typescript.pl`).
 - **Integration patch (hand to INT-0):** `register_target(annotated_js, javascript, [jsdoc, tsc_checked, modules, async])` + `target_module(annotated_js, annotated_js_target)`; `BINDING_MATRIX.md` row.
 - **Acceptance:** `swipl -q -g test_annotated_js_target -t halt tests/core/test_annotated_js_target.pl` green; a sample predicate's output passes `npx tsc --checkJs --noEmit --allowJs` clean.
-- **Full brief:** `GROK_ANNOTATED_JS_TARGET_PROMPT.md`.
+- **Full brief:** `archive/agent-prompts/GROK_ANNOTATED_JS_TARGET_PROMPT.md`.
 
 ### JS-2 — Vanilla JS pattern target  ·  Owner: **Opus subagent**  ·  depends on JS-1
 - **Goal:** new pattern target = annotated-JS minus the JSDoc/type comments (or a
