@@ -49,7 +49,7 @@ use std::sync::Arc;
 pub type Sym = String;
 
 #[cfg(feature = "intern")]
-pub use self::interner::{intern, Sym};
+pub use self::interner::{decomp, intern, Decomp, Sym};
 
 #[cfg(feature = "intern")]
 mod interner {
@@ -67,9 +67,72 @@ mod interner {
 
     type Chunk = [&'static str; CHUNK_SIZE];
 
+    // ---- Functor-decomposition cache (D101) ------------------------------
+    //
+    // `functor_of` / `heap_node_shallow` recover a functor's NAME and trailing
+    // ARITY from its `"name/arity"` text on every call, via `inner.rfind('/')`
+    // + `parse::<usize>()`. The D100 re-profile blamed that reverse-parse for
+    // ~11.9% of B3 (memrchr + next_match_back) plus the re-intern of the
+    // extracted name substring. Because the interner is append-only and
+    // CANONICAL (a given id's text never changes), each functor's decomposition
+    // is a pure, immutable function of its id — so it is computed ONCE, when the
+    // name is first interned, and stored id-keyed alongside the name. `functor_of`
+    // then becomes an O(1) slot read, byte-identical to the parse (it returns
+    // slices of the SAME canonical `&'static str` the parse would have sliced).
+    //
+    // Storage mirrors the name chunks exactly: chunked, never-moving, published
+    // under the same single-writer `map` write lock and read lock-free via an
+    // acquire-load of the chunk pointer. `Decomp` is `Copy`, so a chunk is a
+    // plain `[Decomp; CHUNK_SIZE]` filled in place — no per-slot atomics, no
+    // hot-path `Mutex`, same concurrency discipline as `resolve`.
+
+    /// The precomputed decomposition of a functor `Sym`, keyed by its id.
+    /// `name`/`inner` are slices of the interner's canonical `&'static str`.
+    #[derive(Clone, Copy)]
+    pub struct Decomp {
+        /// `inner[..slash]` — the functor name (== `inner` when there is no `/`;
+        /// only read when `arity.is_some()`, i.e. a `/` was present).
+        pub name: &'static str,
+        /// The parsed trailing arity: `Some(a)` iff a `/` is present AND the
+        /// suffix parses as `usize`; `None` otherwise (no `/`, or unparsable).
+        pub arity: Option<usize>,
+        /// The `str(...)`-stripped canonical text — the fallback return of
+        /// `functor_of` (arity mismatch / no `/` / unparsable suffix).
+        pub inner: &'static str,
+    }
+
+    impl Decomp {
+        const EMPTY: Decomp = Decomp { name: "", arity: None, inner: "" };
+    }
+
+    type DChunk = [Decomp; CHUNK_SIZE];
+
+    /// Compute a functor's decomposition from its canonical text — reproduces
+    /// `functor_of`'s `str(...)`-strip + `rfind('/')` + `parse` EXACTLY, once.
+    #[inline]
+    fn compute_decomp(full: &'static str) -> Decomp {
+        let inner: &'static str = if full.starts_with("str(") && full.ends_with(')') {
+            &full[4..full.len() - 1]
+        } else {
+            full
+        };
+        match inner.rfind('/') {
+            Some(slash) => Decomp {
+                name: &inner[..slash],
+                arity: inner[slash + 1..].parse::<usize>().ok(),
+                inner,
+            },
+            None => Decomp { name: inner, arity: None, inner },
+        }
+    }
+
     struct Table {
         // One atomic pointer per chunk; null until that chunk is first needed.
         chunks: Box<[AtomicPtr<Chunk>]>,
+        // Parallel decomposition chunks (D101): dchunks[c] holds the `Decomp`
+        // for every id in chunk `c`. Filled in lockstep with `chunks` under the
+        // `map` write lock; read lock-free like `chunks`.
+        dchunks: Box<[AtomicPtr<DChunk>]>,
         // Number of ids assigned so far (only mutated under `map`'s write lock).
         len: AtomicU32,
         // name -> id, read-mostly. Read lock is the construction fast path;
@@ -84,8 +147,13 @@ mod interner {
             for _ in 0..NUM_CHUNKS {
                 v.push(AtomicPtr::new(std::ptr::null_mut()));
             }
+            let mut dv: Vec<AtomicPtr<DChunk>> = Vec::with_capacity(NUM_CHUNKS);
+            for _ in 0..NUM_CHUNKS {
+                dv.push(AtomicPtr::new(std::ptr::null_mut()));
+            }
             Table {
                 chunks: v.into_boxed_slice(),
+                dchunks: dv.into_boxed_slice(),
                 len: AtomicU32::new(0),
                 map: RwLock::new(HashMap::new()),
             }
@@ -116,6 +184,29 @@ mod interner {
         }
     }
 
+    #[inline]
+    fn dchunk_ptr(t: &'static Table, c: usize) -> *mut DChunk {
+        // Same allocate-and-publish (CAS) discipline as `chunk_ptr`.
+        let existing = t.dchunks[c].load(Ordering::Acquire);
+        if !existing.is_null() {
+            return existing;
+        }
+        let boxed: Box<DChunk> = Box::new([Decomp::EMPTY; CHUNK_SIZE]);
+        let raw = Box::into_raw(boxed);
+        match t.dchunks[c].compare_exchange(
+            std::ptr::null_mut(),
+            raw,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => raw,
+            Err(won) => {
+                drop(unsafe { Box::from_raw(raw) });
+                won
+            }
+        }
+    }
+
     /// Intern a name, returning its canonical id. Idempotent.
     pub fn intern(s: &str) -> u32 {
         let t = table();
@@ -133,9 +224,16 @@ mod interner {
         let c = (id >> CHUNK_BITS) as usize;
         let slot = (id & CHUNK_MASK) as usize;
         let ptr = chunk_ptr(t, c);
-        // Publish the name BEFORE the id becomes reachable via the map.
+        // Precompute this id's functor decomposition (D101) once, from the
+        // canonical leaked text, and publish it into the parallel dchunk. The
+        // decomposition slices `leaked`, so it stays valid for the leak's life.
+        let dptr = dchunk_ptr(t, c);
+        // Publish the name AND its decomposition BEFORE the id becomes reachable
+        // via the map (the `w.insert` release edge below is the happens-before
+        // for every reader that gets this id through `map`).
         unsafe {
             (*ptr)[slot] = leaked;
+            (*dptr)[slot] = compute_decomp(leaked);
         }
         t.len.store(id + 1, Ordering::Release);
         w.insert(leaked, id);
@@ -150,6 +248,19 @@ mod interner {
         let slot = (id & CHUNK_MASK) as usize;
         let ptr = t.chunks[c].load(Ordering::Acquire);
         debug_assert!(!ptr.is_null(), "resolve of unpublished sym id {}", id);
+        unsafe { (*ptr)[slot] }
+    }
+
+    /// Functor decomposition for `id` (D101). O(1), lock-free / wait-free — the
+    /// same access shape as `resolve`. Precomputed at intern time, so this never
+    /// re-parses. `Copy`, so callers get an owned `Decomp` of `&'static str`s.
+    #[inline]
+    pub fn decomp(id: u32) -> Decomp {
+        let t = table();
+        let c = (id >> CHUNK_BITS) as usize;
+        let slot = (id & CHUNK_MASK) as usize;
+        let ptr = t.dchunks[c].load(Ordering::Acquire);
+        debug_assert!(!ptr.is_null(), "decomp of unpublished sym id {}", id);
         unsafe { (*ptr)[slot] }
     }
 

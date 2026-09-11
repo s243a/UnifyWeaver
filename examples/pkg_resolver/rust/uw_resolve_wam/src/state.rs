@@ -2850,7 +2850,7 @@ impl WamState {
             let elem = self.deref_shallow(&head);
             let (n, v, d, c) = match elem {
                 Value::Str(ref f, ref a)
-                    if a.len() == 4 && Self::functor_of(f, 4) == "depends" =>
+                    if a.len() == 4 && Self::functor_of_sym(f, 4) == "depends" =>
                     (a[0].clone(), a[1].clone(), a[2].clone(), a[3].clone()),
                 _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
             };
@@ -2906,7 +2906,7 @@ impl WamState {
         match dd {
             Value::Unbound(_) | Value::Ref(_) => None,
             Value::Str(ref f, ref a)
-                if a.len() == 1 && Self::functor_of(f, 1) == "alternatives" =>
+                if a.len() == 1 && Self::functor_of_sym(f, 1) == "alternatives" =>
                 // req(alternatives(Alts), any) — reuse the alternatives term.
                 Some(Value::strv("req".to_string(),
                                  vec![dd.clone(), Value::Atom("any".to_string().into())])),
@@ -3024,7 +3024,7 @@ impl WamState {
             let elem = self.deref_shallow(&head);
             let (n, v) = match elem {
                 Value::Str(ref f, ref a)
-                    if a.len() == 2 && Self::functor_of(f, 2) == "package" =>
+                    if a.len() == 2 && Self::functor_of_sym(f, 2) == "package" =>
                     (a[0].clone(), a[1].clone()),
                 _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
             };
@@ -3073,7 +3073,7 @@ impl WamState {
         let cc = self.deref_shallow(c);
         match cc {
             Value::Atom(ref s) if s == "any" => Some(true),
-            Value::Str(ref f, ref a) if a.len() == 1 && Self::functor_of(f, 1) == "eq" => {
+            Value::Str(ref f, ref a) if a.len() == 1 && Self::functor_of_sym(f, 1) == "eq" => {
                 // Ver = E : ground unification is structural identity. Decline if
                 // either side is non-ground (the interpreter's `=` could bind).
                 if self.region_is_ground(ver) && self.region_is_ground(&a[0]) {
@@ -3082,19 +3082,19 @@ impl WamState {
                     None
                 }
             }
-            Value::Str(ref f, ref a) if a.len() == 1 && Self::functor_of(f, 1) == "gte" =>
+            Value::Str(ref f, ref a) if a.len() == 1 && Self::functor_of_sym(f, 1) == "gte" =>
                 // \+ version_lt(Ver, G)
                 self.region_version_lt(ver, &a[0]).map(|lt| !lt),
-            Value::Str(ref f, ref a) if a.len() == 1 && Self::functor_of(f, 1) == "lte" =>
+            Value::Str(ref f, ref a) if a.len() == 1 && Self::functor_of_sym(f, 1) == "lte" =>
                 // \+ version_lt(G, Ver)
                 self.region_version_lt(&a[0], ver).map(|lt| !lt),
-            Value::Str(ref f, ref a) if a.len() == 1 && Self::functor_of(f, 1) == "lt" =>
+            Value::Str(ref f, ref a) if a.len() == 1 && Self::functor_of_sym(f, 1) == "lt" =>
                 // version_lt(Ver, H)
                 self.region_version_lt(ver, &a[0]),
-            Value::Str(ref f, ref a) if a.len() == 1 && Self::functor_of(f, 1) == "gt" =>
+            Value::Str(ref f, ref a) if a.len() == 1 && Self::functor_of_sym(f, 1) == "gt" =>
                 // version_lt(H, Ver)
                 self.region_version_lt(&a[0], ver),
-            Value::Str(ref f, ref a) if a.len() == 2 && Self::functor_of(f, 2) == "range" => {
+            Value::Str(ref f, ref a) if a.len() == 2 && Self::functor_of_sym(f, 2) == "range" => {
                 // \+ version_lt(Ver, Lo), version_lt(Ver, Hi)
                 match self.region_version_lt(ver, &a[0])? {
                     true => Some(false), // version_lt(Ver,Lo) => \+ fails => whole fails
@@ -3125,7 +3125,7 @@ impl WamState {
         match (&da, &db) {
             (Value::Str(fa, aa), Value::Str(fb, ab))
                 if aa.len() == 3 && ab.len() == 3
-                    && Self::functor_of(fa, 3) == "v" && Self::functor_of(fb, 3) == "v" =>
+                    && Self::functor_of_sym(fa, 3) == "v" && Self::functor_of_sym(fb, 3) == "v" =>
             {
                 let a1 = self.region_int(&aa[0])?;
                 let b1 = self.region_int(&aa[1])?;
@@ -3145,7 +3145,7 @@ impl WamState {
             }
             (Value::Str(fa, aa), Value::Str(fb, ab))
                 if aa.len() == 3 && ab.len() == 3
-                    && Self::functor_of(fa, 3) == "deb" && Self::functor_of(fb, 3) == "deb" =>
+                    && Self::functor_of_sym(fa, 3) == "deb" && Self::functor_of_sym(fb, 3) == "deb" =>
             {
                 let e1 = self.region_int(&aa[0])?;
                 let e2 = self.region_int(&ab[0])?;
@@ -3226,7 +3226,7 @@ impl WamState {
     #[allow(dead_code)]
     fn region_seg_parts(&self, seg: &Value) -> Option<(Vec<Value>, i64)> {
         match self.deref_shallow(seg) {
-            Value::Str(ref f, ref a) if a.len() == 2 && Self::functor_of(f, 2) == "s" => {
+            Value::Str(ref f, ref a) if a.len() == 2 && Self::functor_of_sym(f, 2) == "s" => {
                 let codes = self.region_proper_list(&a[0])?;
                 let num = self.region_int(&a[1])?;
                 Some((codes, num))
@@ -3429,7 +3429,7 @@ impl WamState {
             let elem = self.deref_shallow(&head);
             let (n, v, d, c) = match elem {
                 Value::Str(ref f, ref a)
-                    if a.len() == 4 && Self::functor_of(f, 4) == "depends" =>
+                    if a.len() == 4 && Self::functor_of_sym(f, 4) == "depends" =>
                     (a[0].clone(), a[1].clone(), a[2].clone(), a[3].clone()),
                 _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
             };
@@ -3584,14 +3584,14 @@ impl WamState {
         let e = self.deref_shallow(elem);
         let (inner, x) = match e {
             Value::Str(ref f, ref a)
-                if a.len() == 2 && Self::functor_of(f, 2) == "-" =>
+                if a.len() == 2 && Self::functor_of_sym(f, 2) == "-" =>
                 (a[0].clone(), a[1].clone()),
             _ => return None,
         };
         let inner = self.deref_shallow(&inner);
         let k = match inner {
             Value::Str(ref f, ref a)
-                if a.len() == 2 && Self::functor_of(f, 2) == "-" =>
+                if a.len() == 2 && Self::functor_of_sym(f, 2) == "-" =>
                 a[0].clone(),
             _ => return None,
         };
@@ -3718,7 +3718,7 @@ impl WamState {
             let elem = self.deref_shallow(&head);
             match elem {
                 Value::Str(ref f, ref a)
-                    if a.len() == 2 && Self::functor_of(f, 2) == "-" =>
+                    if a.len() == 2 && Self::functor_of_sym(f, 2) == "-" =>
                     elems.push(elem.clone()),
                 _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
             }
@@ -3845,7 +3845,7 @@ impl WamState {
             let elem = self.deref_shallow(&head);
             let (hn, hv, d, c) = match elem {
                 Value::Str(ref f, ref a)
-                    if a.len() == 4 && Self::functor_of(f, 4) == "depends" =>
+                    if a.len() == 4 && Self::functor_of_sym(f, 4) == "depends" =>
                     (a[0].clone(), a[1].clone(), a[2].clone(), a[3].clone()),
                 _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
             };
@@ -3922,7 +3922,7 @@ impl WamState {
             Value::Unbound(_) | Value::Ref(_) => None,
             // clause 1: D = alternatives(Alts). The cut excludes clause 2.
             Value::Str(ref f, ref a)
-                if a.len() == 1 && Self::functor_of(f, 1) == "alternatives" =>
+                if a.len() == 1 && Self::functor_of_sym(f, 1) == "alternatives" =>
             {
                 // Alts must be a proper list of dep(Name, Constraint) pairs.
                 let alts = self.region_proper_list(&a[0])?;
@@ -4020,7 +4020,7 @@ impl WamState {
             let elem = self.deref_shallow(&head);
             match elem {
                 Value::Str(ref f, ref a)
-                    if a.len() == 2 && Self::functor_of(f, 2) == "-" =>
+                    if a.len() == 2 && Self::functor_of_sym(f, 2) == "-" =>
                 {
                     // The key must be ground to compare structurally (the
                     // interpreter unifies; a ground key => structural ==).
@@ -4053,7 +4053,7 @@ impl WamState {
     fn region_dep_pair(&self, elem: &Value) -> Option<Option<(Value, Value)>> {
         match self.deref_shallow(elem) {
             Value::Str(ref f, ref a)
-                if a.len() == 2 && Self::functor_of(f, 2) == "dep" =>
+                if a.len() == 2 && Self::functor_of_sym(f, 2) == "dep" =>
                 Some(Some((a[0].clone(), a[1].clone()))),
             Value::Unbound(_) | Value::Ref(_) => None,
             _ => Some(None),
@@ -4179,7 +4179,7 @@ impl WamState {
             let elem = self.deref_shallow(&head);
             let (n, v) = match elem {
                 Value::Str(ref f, ref a)
-                    if a.len() == 2 && Self::functor_of(f, 2) == "package" =>
+                    if a.len() == 2 && Self::functor_of_sym(f, 2) == "package" =>
                     (a[0].clone(), a[1].clone()),
                 _ => return self.region_decline(snap_trail, snap_heap, snap_vc),
             };
@@ -4241,7 +4241,7 @@ impl WamState {
             let node = self.deref_shallow(&cursor);
             match node {
                 // Node t(L, K, V, R): compare(Ord, Key, K), pick one tail branch.
-                Value::Str(ref f, ref a) if a.len() == 4 && Self::functor_of(f, 4) == "t" => {
+                Value::Str(ref f, ref a) if a.len() == 4 && Self::functor_of_sym(f, 4) == "t" => {
                     match self.region_std_order(&key, &a[1]) {
                         Some(std::cmp::Ordering::Equal) => {
                             // Ord = (=) -> Val = V
@@ -4297,8 +4297,8 @@ impl WamState {
                     Equal => {}
                     o => return Some(o),
                 }
-                let na = Self::functor_of(fa, aa.len());
-                let nb = Self::functor_of(fb, ab.len());
+                let na = Self::functor_of_sym(fa, aa.len());
+                let nb = Self::functor_of_sym(fb, ab.len());
                 match na.cmp(nb) {
                     Equal => {}
                     o => return Some(o),
@@ -4383,9 +4383,41 @@ impl WamState {
         }
     }
 
+    /// Functor-normalise by interned `Sym` (D101). BYTE-IDENTICAL to
+    /// `functor_of(f.as_str(), arity)` in every case, but O(1): the
+    /// decomposition (`str(...)`-strip + `rfind('/')` + `parse`) was precomputed
+    /// once at intern time and is now a slot read, so the hot `memrchr` /
+    /// `next_match_back` reverse-parse and the re-intern of the extracted name
+    /// disappear from the dispatch sites and from `heap_node_shallow`.
+    ///
+    /// Threaded the `&Sym` through from callers (they hold `ref f: &Sym`) rather
+    /// than de-interning to `&str` first, so no work is done before the lookup.
+    #[cfg(feature = "intern")]
+    #[inline]
+    pub fn functor_of_sym(f: &crate::value::Sym, arity: usize) -> &'static str {
+        let d = crate::value::decomp(f.0);
+        // Mirrors `functor_of`: name when the parsed arity matches, else the
+        // `str(...)`-stripped inner (covers arity mismatch, no `/`, unparsable).
+        if d.arity == Some(arity) {
+            d.name
+        } else {
+            d.inner
+        }
+    }
+
+    /// OFF path (`type Sym = String`, no ids): the EXACT pre-change `rfind`/`parse`
+    /// via `functor_of`, so the OFF build stays a perfect pre-D101 baseline. The
+    /// cache is ON-only.
+    #[cfg(not(feature = "intern"))]
+    #[inline]
+    pub fn functor_of_sym<'a>(f: &'a crate::value::Sym, arity: usize) -> &'a str {
+        Self::functor_of(f, arity)
+    }
+
     /// Materialise the heap node whose header sits at `addr` — ONE level: the
     /// argument cells are read straight out of `heap[addr+1..]` and are NOT
     /// dereferenced. `None` when that slot does not hold a structure header.
+    #[cfg(not(feature = "intern"))]
     fn heap_node_shallow(&self, addr: usize) -> Option<Value> {
         let full = match self.heap.get(addr) {
             Some(Value::Str(f, _)) => f.clone(),
@@ -4401,6 +4433,22 @@ impl WamState {
         let functor = inner[..slash].to_string();
         let args = self.heap_subargs(addr + 1, arity);
         Some(Value::strv(functor, args))
+    }
+
+    /// Cached (D101) — byte-identical to the OFF path above: `None` on no `/` or
+    /// an unparsable suffix (`d.arity` is `None` in both cases, exactly as the
+    /// `?`s on `rfind`/`parse` returned `None`); otherwise the precomputed name
+    /// + parsed arity, so no reverse-parse runs here.
+    #[cfg(feature = "intern")]
+    fn heap_node_shallow(&self, addr: usize) -> Option<Value> {
+        let sym = match self.heap.get(addr) {
+            Some(Value::Str(f, _)) => *f, // Sym is Copy under `intern`
+            _ => return None,
+        };
+        let d = crate::value::decomp(sym.0);
+        let arity = d.arity?;
+        let args = self.heap_subargs(addr + 1, arity);
+        Some(Value::strv(d.name, args))
     }
 
     /// Resolve a cell ONE level and hand it back owned: follow the
@@ -4420,7 +4468,7 @@ impl WamState {
             let c = self.deref_chain(val);
             match c {
                 Value::Str(full, args) => {
-                    let f = Self::functor_of(full, args.len());
+                    let f = Self::functor_of_sym(full, args.len());
                     if f.len() == full.len() {
                         return c.clone();
                     }
@@ -4671,7 +4719,7 @@ impl WamState {
                 val.clone()
             }
             Value::Str(full_str, args) => {
-                let functor = Self::functor_of(full_str, args.len());
+                let functor = Self::functor_of_sym(full_str, args.len());
                 // A cons cell is walked ITERATIVELY (see deref_cons_chain):
                 // rebuilding it recursively used to prepend one element at a
                 // time onto the tail already built, and `Args::cons` copies
@@ -8437,6 +8485,86 @@ mod boundary_kernel_tests {
         let members = vm.cluster_members(cd1.unwrap());
         assert!(members.contains(&d1) && members.contains(&x1),
             "cluster_members lists the domain members");
+    }
+}
+
+// ===========================================================================
+// D101 — functor-decomposition cache equivalence.
+//
+// `functor_of_sym` (the cached fast path, ON) MUST return a byte-identical
+// `&str` to `functor_of` (the reference `rfind`/`parse`) for EVERY functor
+// string and EVERY queried arity — matching arity, non-matching arity, no
+// slash, `str(...)` wrapper, an unparsable/absent numeric suffix, and a name
+// that itself contains a `/`. On the OFF build `functor_of_sym` delegates to
+// `functor_of`, so this suite also proves the delegate is wired correctly.
+// ===========================================================================
+#[cfg(test)]
+mod functor_cache_tests {
+    use super::*;
+
+    // A spread that exercises every branch of `functor_of`.
+    const CASES: &[&str] = &[
+        "a/1",          // simple name + arity
+        "foo/2",        // simple name + arity
+        "str(bar/3)",   // str(...) wrapper stripped, then bar/3
+        "[|]/2",        // list-cons functor
+        "-/2",          // operator-looking name
+        "atom_no_slash",// no '/', returns inner for every arity
+        "x/2",          // will also be queried with the WRONG arity
+        "a/b/2",        // name CONTAINS a slash: rfind takes the LAST '/'
+        "foo/bar",      // '/' present but suffix is not a number -> None
+        "wrap/0",       // zero arity
+        "str(depends/4)", // wrapper + a real dispatch functor
+        "",             // empty
+        "/2",           // empty name before the slash
+        "q/12",         // multi-digit arity
+    ];
+
+    #[test]
+    fn functor_of_sym_equals_functor_of() {
+        for &s in CASES {
+            let sym: crate::value::Sym = s.into();
+            // Query a range of arities so both the matching and the
+            // non-matching arms are hit for every string.
+            for arity in 0usize..=13 {
+                let cached = WamState::functor_of_sym(&sym, arity);
+                let reference = WamState::functor_of(s, arity);
+                assert_eq!(
+                    cached, reference,
+                    "functor_of_sym(\"{}\", {}) = {:?} but functor_of = {:?}",
+                    s, arity, cached, reference
+                );
+            }
+        }
+    }
+
+    // Spot-check the exact expected normalisation, independent of the reference,
+    // so a bug that happens to match a broken `functor_of` still fails here.
+    #[test]
+    fn functor_of_sym_exact_values() {
+        let checks: &[(&str, usize, &str)] = &[
+            ("a/1", 1, "a"),               // matching arity -> name
+            ("foo/2", 2, "foo"),           // matching arity -> name
+            ("str(bar/3)", 3, "bar"),      // wrapper stripped, matching -> name
+            ("[|]/2", 2, "[|]"),           // cons functor name
+            ("-/2", 2, "-"),               // operator name
+            ("atom_no_slash", 0, "atom_no_slash"), // no slash -> inner
+            ("atom_no_slash", 1, "atom_no_slash"),
+            ("x/2", 3, "x/2"),             // WRONG arity -> inner
+            ("a/b/2", 2, "a/b"),           // last '/' splits; name keeps a slash
+            ("a/b/2", 1, "a/b/2"),         // wrong arity -> inner (keeps both)
+            ("foo/bar", 2, "foo/bar"),     // unparsable suffix -> inner
+            ("wrap/0", 0, "wrap"),         // zero arity matches
+            ("q/12", 12, "q"),             // multi-digit arity
+            ("/2", 2, ""),                 // empty name before slash
+        ];
+        for &(s, arity, want) in checks {
+            let sym: crate::value::Sym = s.into();
+            assert_eq!(
+                WamState::functor_of_sym(&sym, arity), want,
+                "functor_of_sym(\"{}\", {})", s, arity
+            );
+        }
     }
 }
 
