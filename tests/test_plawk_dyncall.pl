@@ -12,7 +12,7 @@
 :- use_module(library(process)).
 :- use_module(library(filesex), [make_directory_path/1]).
 :- use_module('../examples/plawk/parser/plawk_parser').
-:- use_module('../examples/plawk/codegen/plawk_native_codegen').
+:- use_module('../examples/plawk/codegen/llvm/plawk_native_codegen').
 :- use_module('../src/unifyweaver/targets/wam_llvm_target').
 
 % grammar predicates compiled into .wamo objects (arity = inputs + 1 out)

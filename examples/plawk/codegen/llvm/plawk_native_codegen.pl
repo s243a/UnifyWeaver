@@ -96,7 +96,7 @@ plawk_dedupe_keep_order([PI | Rest0], [PI | Deduped]) :-
     exclude(==(PI), Rest0, Rest),
     plawk_dedupe_keep_order(Rest, Deduped).
 
-:- use_module('../../../src/unifyweaver/targets/wam_llvm_target',
+:- use_module('../../../../src/unifyweaver/targets/wam_llvm_target',
     [llvm_emit_atom_prefix_guard/5,
      llvm_emit_atom_field_eq_guard/7,
      % Field-vs-string-literal comparison (the `$N OP "str"` guards and the

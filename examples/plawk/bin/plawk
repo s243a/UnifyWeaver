@@ -23,7 +23,7 @@
 :- initialization(main, main).
 
 :- use_module('../parser/plawk_parser').
-:- use_module('../codegen/plawk_native_codegen').
+:- use_module('../codegen/llvm/plawk_native_codegen').
 :- use_module('../../../src/unifyweaver/targets/wam_llvm_target').
 :- use_module('../../../src/unifyweaver/targets/wam_bootstrap_compiler').
 

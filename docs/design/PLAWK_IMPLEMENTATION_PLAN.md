@@ -253,7 +253,7 @@ surface forms, `/^PREFIX/ { print $0 }` and
 `$N == "VALUE" { count++ } END { print count }`, to explicit pattern/action
 ASTs. Rule bodies now carry semicolon-separated action lists, and scalar
 variables lower through indexed native slots.
-`examples/plawk/codegen/plawk_native_codegen.pl` lowers that AST to a native
+`examples/plawk/codegen/llvm/plawk_native_codegen.pl` lowers that AST to a native
 streaming WAM/LLVM driver using `llvm_emit_atom_prefix_guard/5` or
 `llvm_emit_atom_field_eq_guard/7`, and
 `tests/test_plawk_surface_prefix_print.pl` proves that the generated binary
