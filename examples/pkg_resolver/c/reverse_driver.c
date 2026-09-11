@@ -371,12 +371,22 @@ int main(void) {
         WamValue want = cons(&state, val_int(3),
                         cons(&state, val_int(1),
                         cons(&state, val_int(2), nil)));
-        int rc = run_reverse(&state,
-                             cons(&state, val_int(3),
-                             cons(&state, val_int(1),
-                             cons(&state, val_int(2), nil))),
-                             want);
-        if (rc == WAM_HALT && state.error == 0)
+        WamValue input = cons(&state, val_int(3),
+                         cons(&state, val_int(1),
+                         cons(&state, val_int(2), nil)));
+        int base_h = state.H;
+        int base_tr = state.TR;
+        int rc = WAM_HALT;
+        bool stable = true;
+        for (int i = 0; i < 100; i++) {
+            rc = run_reverse(&state, input, want);
+            if (rc != WAM_HALT || state.error != 0 ||
+                state.H != base_h || state.TR != base_tr) {
+                stable = false;
+                break;
+            }
+        }
+        if (stable)
             emit_token("prebound_mismatch", "fail", "prebound_mismatch_ok");
         else
             emit_token("prebound_mismatch", rc == 0 ? "ok" : "runtime_error",

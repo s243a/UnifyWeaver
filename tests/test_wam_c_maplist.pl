@@ -1251,8 +1251,11 @@ int main(void) {
         WamValue args[2] = { in_val, out_ref };
         int rc = wam_run_predicate(&s, "wam_control_overwrite_a0/2", args, 2);
         WamValue a0_deref = *wam_deref_ptr(&s, &s.A[0]);
-        bool a0_was_overwritten = !val_equal(a0_deref, in_val);
-        if (rc == 0 && s.error == 0 && a0_was_overwritten) {
+        WamValue out_deref = *wam_deref_ptr(&s, &out_ref);
+        bool root_args_restored = val_equal(a0_deref, in_val);
+        bool output_retained = out_deref.tag == VAL_ATOM &&
+                               strcmp(out_deref.data.atom, "retained_ok") == 0;
+        if (rc == 0 && s.error == 0 && root_args_restored && output_retained) {
             emit_case("control_builtin_overwrite", "ok", &s, &out_ref);
         } else if (rc == WAM_HALT && s.error == 0) {
             emit_case("control_builtin_overwrite", "fail", &s, NULL);

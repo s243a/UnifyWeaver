@@ -748,7 +748,7 @@ static int install_retry_program(WamState *state) {
     /* Every requested retry first runs a guaranteed failing instruction.
      * wam_run then restores the native stream CP and resumes it normally. */
     state->code[fail_pc].tag = INSTR_BUILTIN_CALL;
-    state->code[fail_pc].as.pred.pred = "__tpd4_retry_fail/0";
+    state->code[fail_pc].as.pred.pred = "fail/0";
     state->code[fail_pc].as.pred.arity = 0;
     state->code[fail_pc + 1].tag = INSTR_PROCEED;
 

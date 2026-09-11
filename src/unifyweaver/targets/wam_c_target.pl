@@ -2538,6 +2538,17 @@ compile_step_wam_to_c(_Options, CCode) :-
                         strcmp(instr->as.pred.pred, "bagof/3") == 0 ? "bagof" : "setof";
                     return wam_dispatch_aggregate_meta(state, kind, state->CP);
                 }
+                /* A tail call replaces the current predicate while retaining
+                   its continuation. Its cut barrier is nevertheless the
+                   choicepoint depth at entry to the callee, just as for CALL;
+                   reusing the caller''s older B0 lets a cut in the callee prune
+                   alternatives belonging to the caller. */
+                if (state->call_base_top > 0) {
+                    int frame = state->call_base_top - 1;
+                    state->call_bases[frame] = state->B;
+                    state->call_base_preserve_choice[frame] =
+                        state->aggregate_top > 0;
+                }
                 int target = resolve_predicate_hash(state, instr->as.pred.pred);
                 if (target >= 0) { state->P = target; return true; }
                 return false;
@@ -2565,7 +2576,7 @@ compile_step_wam_to_c(_Options, CCode) :-
             case INSTR_TRY_ME_ELSE: {
                 int target = instr->as.choice.target_pc;
                 int arity = instr->as.choice.arity ? instr->as.choice.arity : 32;
-                push_choice_point(state, target, arity);
+                if (!push_choice_point(state, target, arity)) return false;
                 state->B_array[state->B - 1].is_ite = instr->as.choice.is_ite != 0;
                 state->P++;
                 return true;
@@ -2592,7 +2603,7 @@ compile_step_wam_to_c(_Options, CCode) :-
                 int target = instr->as.choice.target_pc;
                 if (target < 0) return false;
                 int arity = instr->as.choice.arity ? instr->as.choice.arity : 32;
-                push_choice_point(state, state->P + 1, arity);
+                if (!push_choice_point(state, state->P + 1, arity)) return false;
                 state->P = target;
                 return true;
             }
@@ -2607,7 +2618,7 @@ compile_step_wam_to_c(_Options, CCode) :-
                     cp->next_pc = next_chain;
                 } else {
                     int arity = instr->as.choice.arity ? instr->as.choice.arity : 32;
-                    push_choice_point(state, next_chain, arity);
+                    if (!push_choice_point(state, next_chain, arity)) return false;
                 }
                 state->P = target;
                 return true;
@@ -3367,7 +3378,7 @@ static bool wam_dispatch_if_then_else(WamState *state,
     frame->else_goal = else_goal;
     frame->return_pc = return_pc;
     frame->base_b = base_b;
-    push_choice_point(state, WAM_META_ITE_ELSE, 32);
+    if (!push_choice_point(state, WAM_META_ITE_ELSE, 32)) return false;
     return wam_invoke_goal_as_call(state, if_goal, WAM_META_ITE_THEN);
 }
 
@@ -3498,7 +3509,7 @@ static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
         WamDisjFrame *frame = &state->disj_frames[state->disj_top++];
         frame->right_goal = state->H_array[base + 2];
         frame->return_pc = return_pc;
-        push_choice_point(state, WAM_META_DISJ_RIGHT, 32);
+        if (!push_choice_point(state, WAM_META_DISJ_RIGHT, 32)) return false;
         return wam_invoke_goal_as_call(state, state->H_array[base + 1],
                                        return_pc);
     }
@@ -4098,7 +4109,7 @@ static bool wam_bind_next_aggregate_group(WamState *state) {
     bool has_more = iter->next_group < iter->group_count;
     int return_pc = iter->return_pc;
     if (has_more) {
-        push_choice_point(state, WAM_AGGREGATE_NEXT_GROUP, 32);
+        if (!push_choice_point(state, WAM_AGGREGATE_NEXT_GROUP, 32)) return false;
     }
 
     bool ok = wam_bind_aggregate_group(state, iter, group_index);
@@ -4386,7 +4397,7 @@ static bool wam_dispatch_aggregate_meta(WamState *state, const char *kind,
         }
     }
 
-    push_choice_point(state, WAM_AGGREGATE_META_DONE, 32);
+    if (!push_choice_point(state, WAM_AGGREGATE_META_DONE, 32)) return false;
     return wam_invoke_goal_as_call(state, state->A[1],
                                    WAM_AGGREGATE_META_COLLECT);
 }
@@ -4423,7 +4434,7 @@ static bool wam_begin_aggregate(WamState *state, Instruction *instr) {
         frame->witness_regs[i] = instr->as.aggregate.witness_regs[i];
         frame->witness_is_y[i] = instr->as.aggregate.witness_is_y[i];
     }
-    push_choice_point(state, state->P, 32);
+    if (!push_choice_point(state, state->P, 32)) return false;
     state->P++;
     return true;
 }
@@ -5153,7 +5164,7 @@ static bool wam_member_bind_from(WamState *state, WamValue list, int resume_pc,
                 /* Save the full A window, not member/2''s arity. Caller
                    A2+ and later put_value from Y survive a downstream
                    builtin that overwrites A0/A1 (sort/2, =/2). */
-                push_choice_point(state, WAM_MEMBER_NEXT, 32);
+                if (!push_choice_point(state, WAM_MEMBER_NEXT, 32)) return false;
                 ChoicePoint *cp = &state->B_array[state->B - 1];
                 cp->member_rest = rest;
                 cp->foreign_resume_pc = resume_pc;
@@ -5440,15 +5451,18 @@ static bool wam_execute_reverse(WamState *state) {
     if (!wam_collect_reverse_list(state, state->A[0], &items, &count)) {
         return false;
     }
+    int heap_mark = state->H;
     WamValue result;
     if (!wam_build_list_from_reverse_items(state, items, count, &result)) {
         free(items);
+        state->H = heap_mark;
         return false;
     }
     free(items);
     int trail_mark = state->TR;
     if (!wam_unify(state, &state->A[1], &result)) {
         unwind_trail(state, trail_mark);
+        state->H = heap_mark;
         return false;
     }
     return true;
@@ -7731,7 +7745,10 @@ static bool wam_bind_foreign_atom_stream(WamState *state,
                                          int resume_pc) {
     WamValue first = results[0];
     if (result_count > 1) {
-        push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, result_reg + 1);
+        if (!push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, result_reg + 1)) {
+            free(results);
+            return false;
+        }
         ChoicePoint *cp = &state->B_array[state->B - 1];
         cp->foreign_results = results;
         cp->foreign_result_count = result_count;
@@ -7886,7 +7903,10 @@ static bool wam_bind_foreign_pair_stream(WamState *state,
     WamValue first_atom = results[0];
     WamValue first_dist = results[1];
     if (value_count > 2) {
-        push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 255);
+        if (!push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 255)) {
+            free(results);
+            return false;
+        }
         ChoicePoint *cp = &state->B_array[state->B - 1];
         cp->foreign_results = results;
         cp->foreign_result_count = value_count;
@@ -7928,9 +7948,12 @@ static bool wam_bind_foreign_triple_stream(WamState *state,
         if (index + 3 < value_count) {
             /* The choice-point snapshot must describe the state before this
              * first successful tuple.  Rewind the trial bind, take the
-             * ordinary foreign-stream snapshot, then commit the same tuple. */
+            * ordinary foreign-stream snapshot, then commit the same tuple. */
             unwind_trail(state, trail_mark);
-            push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 4);
+            if (!push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 4)) {
+                free(results);
+                return false;
+            }
             ChoicePoint *cp = &state->B_array[state->B - 1];
             cp->foreign_results = results;
             cp->foreign_result_count = value_count;
@@ -7975,7 +7998,10 @@ static bool wam_bind_foreign_quad_stream(WamState *state,
 
         if (index + 4 < value_count) {
             unwind_trail(state, trail_mark);
-            push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 5);
+            if (!push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 5)) {
+                free(results);
+                return false;
+            }
             ChoicePoint *cp = &state->B_array[state->B - 1];
             cp->foreign_results = results;
             cp->foreign_result_count = value_count;

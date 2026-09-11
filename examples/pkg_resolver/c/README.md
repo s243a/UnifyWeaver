@@ -12,22 +12,28 @@ The C runtime header is copied from
 suppressed (`no_kernels(true)`). Lowered helpers stay off
 (`lowered_helpers(false)`).
 
-## Reverse Implementation Checkpoint (2026-09-09)
+## Current checkpoint (2026-09-11)
 
-**WIP, not merge-ready.** The initial reverse suite completed successfully, but
-the latest strengthened revision is not independently verified. Its last gated
-execution failed and the following retry reached the repeated-command escalation
-threshold. The worker's final success claim is not sufficient evidence to override
-those events. Do not treat the current 31-case suite as a confirmed pass.
+The C lane now implements the conservative resolver subsets for `member/2`,
+`sort/2`, `maplist/2`, `reverse/2`, and `append/3`. The resolver smoke cases
+progress through these builtins. The current branch also fixes nested cut and
+choicepoint restoration across ordinary and tail calls. Merge readiness is
+determined by the current compiled test gates and PR review, rather than the
+historical work-in-progress notes retained below.
 
-Independent source review also identified pending corrections: `sort/2` must
+## Reverse implementation history (2026-09-09)
+
+This section records the earlier reverse implementation checkpoint. Its stale
+verification state and then-current blocker do not describe the current branch.
+
+At that time, independent source review identified corrections: `sort/2` had to
 unwind partial output bindings on failed unification; transient failed-query heap
 growth needs regression coverage; and the resolver smoke driver must retain the
 output heap handle instead of reading a potentially overwritten argument register.
 Generation must also fail on SWI load errors without accepting stale generated
 files, and the smoke wrong-answer control must use a successful case rather than
-an already-blocked case. These are pending review findings, not completed fixes.
-Re-run fresh compiled tests through the confined gate after these corrections.
+an already-blocked case. Those corrections were subsequently implemented and
+covered by fresh compiled tests.
 
 The conservative forward `reverse/2` subset has a behavioral test suite
 in `tests/test_wam_c_reverse.pl` (12 ground comparisons against SWI, 19 token/property
@@ -58,8 +64,8 @@ cyclic, open, improper, or non-lists report `WAM_ERR_UNSUPPORTED` with diagnosti
 
 The worker's earlier smoke report records 134 generated predicates and GCC success. It reports
 `empty_requests` (`ok []`). The three nonempty smoke cases (`single_package`,
-`backtrack_conflict_deeper`, `unsatisfiable_missing`) all progress past `reverse/2` and
-reach the next unsupported builtin: `append/3` (driver exit 4).
+`backtrack_conflict_deeper`, `unsatisfiable_missing`) all progressed past `reverse/2`
+and historically stopped at the then-unsupported `append/3` (driver exit 4).
 
 Execution command:
 ```bash
@@ -75,14 +81,13 @@ bash examples/pkg_resolver/c/build_and_smoke.sh
 | Case | Earlier Worker-Reported Result (not fresh independent verification) |
 | --- | --- |
 | `empty_requests` | MATCH `ok []` (driver 0) |
-| `single_package` | unsupported `append/3` (driver 4) |
-| `backtrack_conflict_deeper` | unsupported `append/3` (driver 4) |
-| `unsatisfiable_missing` | unsupported `append/3` (driver 4) |
+| `single_package` | historically unsupported `append/3` (driver 4) |
+| `backtrack_conflict_deeper` | historically unsupported `append/3` (driver 4) |
+| `unsatisfiable_missing` | historically unsupported `append/3` (driver 4) |
 
 Combined verification script `examples/pkg_resolver/c/verify_reverse.sh` runs `tests/test_wam_c_reverse.pl`
 then `examples/pkg_resolver/c/verify_maplist.sh`, preserving failure from either.
-The next reached unsupported builtin is `append/3`, replacing `reverse/2` as the smoke blocker.
-Scope was stopped at `append/3` per instructions. No general parity or merge-ready claims.
+At that historical checkpoint, `append/3` was the next unsupported builtin.
 
 ## Maplist Implementation Checkpoint (2026-09-09)
 
@@ -210,7 +215,7 @@ lists member/sort as missing):
 | `unsatisfiable_missing` | unsupported `maplist/2` (driver 4) |
 
 Wrong-answer control still rejects `[-(bar,v(9,9,9))]`. Next scoped
-resolver builtin is `maplist/2`; not implemented here. No full corpus,
+resolver builtin was `maplist/2`; it was not implemented at that checkpoint. No full corpus,
 performance, memory-safety, or merge-readiness claim.
 
 ### Prior member checkpoint (same day, before this follow-up)

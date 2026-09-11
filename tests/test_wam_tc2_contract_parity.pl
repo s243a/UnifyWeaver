@@ -631,7 +631,7 @@ int main(void) {
         if (!state.code) return 20;
         memset(&state.code[fail_pc], 0, sizeof(Instruction) * 2u);
         state.code[fail_pc].tag = INSTR_BUILTIN_CALL;
-        state.code[fail_pc].as.pred.pred = "__tc2_retry_fail/0";
+        state.code[fail_pc].as.pred.pred = "fail/0";
         state.code[fail_pc].as.pred.arity = 0;
         state.code[fail_pc + 1].tag = INSTR_PROCEED;
 

@@ -2789,15 +2789,42 @@ run_real_prolog_explicit_cut_executable_smoke :-
     assertz((user:wam_c_cut_choice(b) :- true)),
     assertz((user:wam_c_inner_cut :- wam_c_cut_choice(_), !)),
     assertz((user:wam_c_outer_cut(ok) :- (wam_c_inner_cut, fail ; true))),
+    assertz((user:wam_c_cut_retry_p(X) :-
+        wam_c_cut_retry_q(X), wam_c_cut_retry_r(X), X == c)),
+    assertz((user:wam_c_cut_retry_q(a) :- true)),
+    assertz((user:wam_c_cut_retry_q(b) :- !, fail)),
+    assertz((user:wam_c_cut_retry_q(c) :- true)),
+    assertz((user:wam_c_cut_retry_r(c) :- true)),
+    assertz((user:wam_c_tail_choice(a) :- true)),
+    assertz((user:wam_c_tail_choice(b) :- true)),
+    assertz((user:wam_c_tail_cut_target(a) :- !, fail)),
+    assertz((user:wam_c_tail_cut_target(b) :- true)),
+    assertz((user:wam_c_tail_cut(X) :-
+        wam_c_tail_choice(X), wam_c_tail_cut_target(X))),
     (   compile_predicate_to_wam(user:wam_c_cut_choice/1, [], WamChoice),
         compile_predicate_to_wam(user:wam_c_inner_cut/0, [], WamInner),
         compile_predicate_to_wam(user:wam_c_outer_cut/1, [], WamOuter),
+        compile_predicate_to_wam(user:wam_c_cut_retry_p/1, [], WamRetryP),
+        compile_predicate_to_wam(user:wam_c_cut_retry_q/1, [], WamRetryQ),
+        compile_predicate_to_wam(user:wam_c_cut_retry_r/1, [], WamRetryR),
+        compile_predicate_to_wam(user:wam_c_tail_choice/1, [], WamTailChoice),
+        compile_predicate_to_wam(user:wam_c_tail_cut_target/1, [], WamTailTarget),
+        compile_predicate_to_wam(user:wam_c_tail_cut/1, [], WamTailCut),
         sub_string(WamInner, _, _, _, 'builtin_call !/0, 0'),
         sub_string(WamOuter, _, _, _, 'try_me_else'),
         compile_wam_predicate_to_c(user:wam_c_cut_choice/1, WamChoice, [], ChoiceCode),
         compile_wam_predicate_to_c(user:wam_c_inner_cut/0, WamInner, [], InnerCode),
         compile_wam_predicate_to_c(user:wam_c_outer_cut/1, WamOuter, [], OuterCode),
-        atomic_list_concat([ChoiceCode, InnerCode, OuterCode], '\n\n', PredCode),
+        compile_wam_predicate_to_c(user:wam_c_cut_retry_p/1, WamRetryP, [], RetryPCode),
+        compile_wam_predicate_to_c(user:wam_c_cut_retry_q/1, WamRetryQ, [], RetryQCode),
+        compile_wam_predicate_to_c(user:wam_c_cut_retry_r/1, WamRetryR, [], RetryRCode),
+        compile_wam_predicate_to_c(user:wam_c_tail_choice/1, WamTailChoice, [], TailChoiceCode),
+        compile_wam_predicate_to_c(user:wam_c_tail_cut_target/1, WamTailTarget, [], TailTargetCode),
+        compile_wam_predicate_to_c(user:wam_c_tail_cut/1, WamTailCut, [], TailCutCode),
+        atomic_list_concat([ChoiceCode, InnerCode, OuterCode,
+                            RetryPCode, RetryQCode, RetryRCode,
+                            TailChoiceCode, TailTargetCode, TailCutCode],
+                           '\n\n', PredCode),
         compile_wam_runtime_to_c([], RuntimeCode),
         get_time(Now),
         Stamp is round(Now * 1000000),
@@ -2821,7 +2848,13 @@ run_real_prolog_explicit_cut_executable_smoke :-
 cleanup_wam_c_explicit_cut_smoke :-
     retractall(user:wam_c_cut_choice(_)),
     retractall(user:wam_c_inner_cut),
-    retractall(user:wam_c_outer_cut(_)).
+    retractall(user:wam_c_outer_cut(_)),
+    retractall(user:wam_c_cut_retry_p(_)),
+    retractall(user:wam_c_cut_retry_q(_)),
+    retractall(user:wam_c_cut_retry_r(_)),
+    retractall(user:wam_c_tail_choice(_)),
+    retractall(user:wam_c_tail_cut_target(_)),
+    retractall(user:wam_c_tail_cut(_)).
 
 run_real_prolog_forall_executable_smoke :-
     assertz((user:wam_c_forall_num(1) :- true)),
@@ -6401,6 +6434,12 @@ wam_c_explicit_cut_smoke_main(
 void setup_wam_c_cut_choice_1(WamState* state);
 void setup_wam_c_inner_cut_0(WamState* state);
 void setup_wam_c_outer_cut_1(WamState* state);
+void setup_wam_c_cut_retry_p_1(WamState* state);
+void setup_wam_c_cut_retry_q_1(WamState* state);
+void setup_wam_c_cut_retry_r_1(WamState* state);
+void setup_wam_c_tail_choice_1(WamState* state);
+void setup_wam_c_tail_cut_target_1(WamState* state);
+void setup_wam_c_tail_cut_1(WamState* state);
 
 int main(void) {
     WamState state;
@@ -6408,6 +6447,12 @@ int main(void) {
     setup_wam_c_cut_choice_1(&state);
     setup_wam_c_inner_cut_0(&state);
     setup_wam_c_outer_cut_1(&state);
+    setup_wam_c_cut_retry_p_1(&state);
+    setup_wam_c_cut_retry_q_1(&state);
+    setup_wam_c_cut_retry_r_1(&state);
+    setup_wam_c_tail_choice_1(&state);
+    setup_wam_c_tail_cut_target_1(&state);
+    setup_wam_c_tail_cut_1(&state);
 
     int inner_rc = wam_run_predicate(&state, "wam_c_inner_cut/0", NULL, 0);
     if (inner_rc != 0 || state.P != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
@@ -6427,6 +6472,22 @@ int main(void) {
     if (outer_fail_rc != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
         wam_free_state(&state);
         return 30;
+    }
+
+    WamValue retry_args[1] = { val_unbound("X") };
+    int retry_rc = wam_run_predicate(&state, "wam_c_cut_retry_p/1", retry_args, 1);
+    if (retry_rc != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    WamValue tail_args[1] = { val_unbound("X") };
+    int tail_rc = wam_run_predicate(&state, "wam_c_tail_cut/1", tail_args, 1);
+    if (tail_rc != 0 || state.P != WAM_HALT || state.B != 0 ||
+        state.call_base_top != 0 || state.A[0].tag != VAL_ATOM ||
+        strcmp(state.A[0].data.atom, "b") != 0) {
+        wam_free_state(&state);
+        return 50;
     }
 
     wam_free_state(&state);
