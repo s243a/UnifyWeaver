@@ -75,6 +75,7 @@ typedef struct {
 /* Choice point */
 typedef struct {
     int next_pc;
+    bool is_ite;
     int cp;
     int heap_size;
     int trail_size;
@@ -359,6 +360,7 @@ typedef struct {
 typedef struct {
     int target_pc;
     int arity;
+    int is_ite;
 } WamChoiceInstr;
 
 typedef struct {

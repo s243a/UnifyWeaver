@@ -22,6 +22,11 @@
 :- dynamic user:wam_member_nested/1.
 :- dynamic user:wam_member_cut_all/2.
 :- dynamic user:wam_member_grow/4.
+:- dynamic user:wam_member_callee/1.
+:- dynamic user:wam_member_caller/1.
+:- dynamic user:wam_bind_output/1.
+:- dynamic user:wam_bind_output_caller/1.
+:- dynamic user:wam_top_output/1.
 
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
@@ -56,7 +61,12 @@ cleanup_member_preds :-
     retractall(user:wam_member_cut_then(_, _, _)),
     retractall(user:wam_member_nested(_)),
     retractall(user:wam_member_cut_all(_, _)),
-    retractall(user:wam_member_grow(_, _, _, _)).
+    retractall(user:wam_member_grow(_, _, _, _)),
+    retractall(user:wam_member_callee(_)),
+    retractall(user:wam_member_caller(_)),
+    retractall(user:wam_bind_output(_)),
+    retractall(user:wam_bind_output_caller(_)),
+    retractall(user:wam_top_output(_)).
 
 setup_member_preds :-
     cleanup_member_preds,
@@ -69,7 +79,15 @@ setup_member_preds :-
     assertz((user:wam_member_cut_all(L, Xs) :-
                  findall(X, (member(X, L), !), Xs))),
     assertz((user:wam_member_grow(E, L, C, Pad) :-
-                 member(E, L), sort(Pad, _), E = C)).
+                 member(E, L), sort(Pad, _), E = C)),
+    assertz((user:wam_member_callee(E) :- member(E, [a, b, c]))),
+    assertz((user:wam_member_caller(E) :-
+                 user:wam_member_callee(E), E = c)),
+    assertz((user:wam_bind_output(X) :- X = bound)),
+    assertz((user:wam_bind_output_caller(X) :-
+                 user:wam_bind_output(X), true)),
+    assertz((user:wam_top_output(X) :-
+                 X = bound, sort([b, a], _))).
 
 ground_all_input(empty, []).
 ground_all_input(singleton, [a]).
@@ -108,6 +126,12 @@ token_swi(cut_all, ok, cut_all_ok) :-
 token_swi(trail_no_growth, ok, trail_nogrow_ok) :-
     member(E, [a, b, c]), sort([1, 2, 3], _), E = c.
 token_swi(choicepoint_env_restore, ok, choicepoint_env_restore_ok).
+token_swi(callee_choicepoint_survives_return, ok, callee_choicepoint_ok) :-
+    user:wam_member_caller(c).
+token_swi(callee_output_reaches_caller, ok, callee_output_ok) :-
+    user:wam_bind_output_caller(bound).
+token_swi(top_level_output_survives_a_clobber, ok, top_output_ok) :-
+    user:wam_top_output(bound).
 token_swi(distinct_vars, ok, distinct_ok).
 token_swi(cell_vars, ok, cell_vars_ok).
 token_swi(heap_growth, ok, heap_growth_ok) :-
@@ -309,6 +333,11 @@ run_compiled_c_member :-
     compile_one(user:wam_member_nested/1, NestedCode),
     compile_one(user:wam_member_cut_all/2, CutAllCode),
     compile_one(user:wam_member_grow/4, GrowCode),
+    compile_one(user:wam_member_callee/1, CalleeCode),
+    compile_one(user:wam_member_caller/1, CallerCode),
+    compile_one(user:wam_bind_output/1, BindOutputCode),
+    compile_one(user:wam_bind_output_caller/1, BindCallerCode),
+    compile_one(user:wam_top_output/1, TopOutputCode),
     compile_wam_runtime_to_c([], RuntimeCode),
     get_time(Now),
     Stamp is round(Now * 1000000),
@@ -318,7 +347,8 @@ run_compiled_c_member :-
     format(atom(ExePath), '~w_bin', [TmpBase]),
     write_text_file(RuntimePath, RuntimeCode),
     atomic_list_concat([QCode, AllCode, ThenCode, CutThenCode, NestedCode,
-                        GrowCode, CutAllCode],
+                        GrowCode, CutAllCode, CalleeCode, CallerCode,
+                        BindOutputCode, BindCallerCode, TopOutputCode],
                        '\n\n', PredCode),
     format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
     write_text_file(PredPath, PredTranslationUnit),
@@ -350,7 +380,9 @@ run_compiled_c_member :-
     Tokens = [prebound_match, prebound_mismatch, preserve_input, downstream,
               cut_commit, cut_all, partial, nested, shared_var, distinct_vars,
               cell_vars, heap_growth, cyclic, open_list, non_list, improper,
-              unbound_list, repeated, choicepoint_env_restore],
+              unbound_list, repeated, choicepoint_env_restore,
+              callee_choicepoint_survives_return, callee_output_reaches_caller,
+              top_level_output_survives_a_clobber],
     findall(Id, (member(Id, GroundAll), \+ compare_ground_all(Id, CCases)), AllBads),
     findall(Id, (member(Id, GroundQ), \+ compare_ground_q(Id, CCases)), QBads),
     findall(Id, (member(Id, Tokens), \+ compare_token(Id, CCases)), TokenBads),

@@ -19,6 +19,11 @@ void setup_wam_member_cut_then_3(WamState *state);
 void setup_wam_member_nested_1(WamState *state);
 void setup_wam_member_cut_all_2(WamState *state);
 void setup_wam_member_grow_4(WamState *state);
+void setup_wam_member_callee_1(WamState *state);
+void setup_wam_member_caller_1(WamState *state);
+void setup_wam_bind_output_1(WamState *state);
+void setup_wam_bind_output_caller_1(WamState *state);
+void setup_wam_top_output_1(WamState *state);
 
 static int g_fail = 0;
 
@@ -270,6 +275,11 @@ static void setup_all(WamState *s) {
     setup_wam_member_nested_1(s);
     setup_wam_member_cut_all_2(s);
     setup_wam_member_grow_4(s);
+    setup_wam_member_callee_1(s);
+    setup_wam_member_caller_1(s);
+    setup_wam_bind_output_1(s);
+    setup_wam_bind_output_caller_1(s);
+    setup_wam_top_output_1(s);
 }
 
 static int run_all(WamState *s, WamValue in) {
@@ -780,6 +790,51 @@ int main(void) {
                       : "choicepoint_env_restore_bad");
         pop_choice_point(&env_restore);
         wam_free_state(&env_restore);
+    }
+
+    {
+        WamState callee_retry;
+        wam_state_init(&callee_retry);
+        setup_all(&callee_retry);
+        WamValue args[1] = { val_unbound("E") };
+        int rc = wam_run_predicate(&callee_retry, "wam_member_caller/1",
+                                   args, 1);
+        int ok = rc == 0 && callee_retry.error == 0 &&
+                 same_atom(wam_deref_ptr(&callee_retry,
+                                         &callee_retry.A[0]), "c");
+        emit_token("callee_choicepoint_survives_return", ok ? "ok" : "fail",
+                   ok ? "callee_choicepoint_ok" : "callee_choicepoint_bad");
+        wam_free_state(&callee_retry);
+    }
+
+    {
+        WamState output_identity;
+        wam_state_init(&output_identity);
+        setup_all(&output_identity);
+        WamValue args[1] = { val_unbound("Out") };
+        int rc = wam_run_predicate(&output_identity,
+                                   "wam_bind_output_caller/1", args, 1);
+        int ok = rc == 0 && output_identity.error == 0 &&
+                 same_atom(wam_deref_ptr(&output_identity,
+                                         &output_identity.A[0]), "bound");
+        emit_token("callee_output_reaches_caller", ok ? "ok" : "fail",
+                   ok ? "callee_output_ok" : "callee_output_bad");
+        wam_free_state(&output_identity);
+    }
+
+    {
+        WamState top_output;
+        wam_state_init(&top_output);
+        setup_all(&top_output);
+        WamValue args[1] = { val_unbound("Out") };
+        int rc = wam_run_predicate(&top_output, "wam_top_output/1", args, 1);
+        int ok = rc == 0 && top_output.error == 0 &&
+                 same_atom(wam_deref_ptr(&top_output, &top_output.A[0]),
+                           "bound");
+        emit_token("top_level_output_survives_a_clobber",
+                   ok ? "ok" : "fail",
+                   ok ? "top_output_ok" : "top_output_bad");
+        wam_free_state(&top_output);
     }
 
     wam_free_state(&state);

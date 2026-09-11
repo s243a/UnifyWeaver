@@ -1668,7 +1668,8 @@ wam_instruction_to_c_literal(Instr, _) :-
 
 wam_instruction_to_c_literal(try_me_else(Label), LabelMap, Code) :-
     ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
-    format(atom(Code), '{ .tag = INSTR_TRY_ME_ELSE, .as.choice = { .target_pc = ~w } }', [TargetPC]).
+    ( sub_atom(Label, 0, _, _, 'L_ite_else_') -> IsIte = 1 ; IsIte = 0 ),
+    format(atom(Code), '{ .tag = INSTR_TRY_ME_ELSE, .as.choice = { .target_pc = ~w, .is_ite = ~w } }', [TargetPC, IsIte]).
 wam_instruction_to_c_literal(retry_me_else(Label), LabelMap, Code) :-
     ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
     format(atom(Code), '{ .tag = INSTR_RETRY_ME_ELSE, .as.choice = { .target_pc = ~w } }', [TargetPC]).
@@ -1847,7 +1848,8 @@ wam_line_to_c_instr(["jump", L], LabelMap, _Arity, OffsetVar, Instr) :-
 wam_line_to_c_instr(["try_me_else", L], LabelMap, Arity, OffsetVar, Instr) :-
     clean_comma(L, CL),
     ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
-    format(atom(Instr), '{ .tag = INSTR_TRY_ME_ELSE, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
+    ( sub_string(CL, 0, _, _, "L_ite_else_") -> IsIte = 1 ; IsIte = 0 ),
+    format(atom(Instr), '{ .tag = INSTR_TRY_ME_ELSE, .as.choice = { .target_pc = ~w, .arity = ~w, .is_ite = ~w } }', [TargetPC, Arity, IsIte]).
 wam_line_to_c_instr(["retry_me_else", L], LabelMap, Arity, OffsetVar, Instr) :-
     clean_comma(L, CL),
     ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
@@ -2408,11 +2410,20 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return false;
             }
             case INSTR_GET_VARIABLE: {
-                // Per WAM spec: copy A[Ai] to X[Xn] without trailing.
-                // Trailing is only for mutations of already-bound cells.
                 WamValue *cell_xn = resolve_reg(state, instr->as.reg_pair.reg_xn, instr->as.reg_pair.is_y_xn);
                 WamValue *cell_ai = resolve_reg(state, instr->as.reg_pair.reg_ai, instr->as.reg_pair.is_y_ai);
-                *cell_xn = *cell_ai;
+                /* A raw UNBOUND register has no shareable identity when copied
+                   by value. Materialize one heap reference and install it in
+                   both locations so a callee''s later output binding reaches
+                   the caller. Existing REF and bound values already carry
+                   identity/value and remain a plain WAM copy. */
+                if (val_is_unbound(*cell_ai)) {
+                    WamValue ref = wam_make_ref(state);
+                    *cell_ai = ref;
+                    *cell_xn = ref;
+                } else {
+                    *cell_xn = *cell_ai;
+                }
                 state->P++;
                 return true;
             }
@@ -2487,11 +2498,11 @@ compile_step_wam_to_c(_Options, CCode) :-
                     return wam_continue_if_then_else(state);
                 }
                 if (continuation != WAM_HALT && state->call_base_top > 0) {
-                    int barrier_index = --state->call_base_top;
-                    int target_b = state->call_bases[barrier_index];
-                    if (!state->call_base_preserve_choice[barrier_index]) {
-                        wam_prune_choice_points(state, target_b);
-                    }
+                    /* Returning removes the active cut barrier, but the
+                       callee''s choicepoints remain valid alternatives for a
+                       later failure in the caller. Each choicepoint snapshots
+                       call_base_top, so retry restores the callee barrier. */
+                    state->call_base_top--;
                 }
                 state->P = continuation;
                 return true;
@@ -2555,6 +2566,7 @@ compile_step_wam_to_c(_Options, CCode) :-
                 int target = instr->as.choice.target_pc;
                 int arity = instr->as.choice.arity ? instr->as.choice.arity : 32;
                 push_choice_point(state, target, arity);
+                state->B_array[state->B - 1].is_ite = instr->as.choice.is_ite != 0;
                 state->P++;
                 return true;
             }
@@ -2625,8 +2637,12 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return true;
             }
             case INSTR_CUT_ITE: {
-                if (state->B <= 0) return false;
-                pop_choice_point(state);
+                int ite_b = state->B - 1;
+                while (ite_b >= 0 && !state->B_array[ite_b].is_ite) ite_b--;
+                if (ite_b < 0) return false;
+                /* Commit the condition: discard its marked else choicepoint
+                   and every alternative created while evaluating it. */
+                wam_prune_choice_points(state, ite_b);
                 state->P++;
                 return true;
             }
@@ -4502,8 +4518,10 @@ int wam_run_predicate(WamState *state, const char *pred,
     state->call_bases[state->call_base_top] = base_b;
     state->call_base_preserve_choice[state->call_base_top] = false;
     state->call_base_top++;
+    WamValue query_args[WAM_MAX_REGS];
     for (int i = 0; i < arity; i++) {
         state->A[i] = val_is_unbound(args[i]) ? wam_make_ref(state) : args[i];
+        query_args[i] = state->A[i];
     }
     state->CP = WAM_HALT;
     state->P = entry;
@@ -4524,7 +4542,10 @@ int wam_run_predicate(WamState *state, const char *pred,
         return rc;
     }
     for (int i = 0; i < arity; i++) {
-        WamValue *cell = wam_deref_ptr(state, &state->A[i]);
+        /* Calls freely reuse A registers. Recover results through the stable
+           entry argument roots instead of whichever values the last callee
+           left in A. Heap references remain valid across heap reallocations. */
+        WamValue *cell = wam_deref_ptr(state, &query_args[i]);
         state->A[i] = *cell;
     }
     state->call_base_top = base_call_base_top;

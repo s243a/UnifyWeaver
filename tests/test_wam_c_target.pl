@@ -6034,7 +6034,7 @@ int main(void) {
     WamValue ok_args[2] = { val_atom("a"), val_unbound("Y") };
     int ok_rc = wam_run_predicate(&state, "wam_c_real_builtin/2", ok_args, 2);
     if (ok_rc != 0 || state.P != WAM_HALT ||
-        state.A[0].tag != VAL_INT || state.A[0].data.integer != 7) {
+        state.A[1].tag != VAL_INT || state.A[1].data.integer != 7) {
         wam_free_state(&state);
         return 10;
     }
@@ -7337,7 +7337,7 @@ static int expect_fib(WamState *state, int n, int expected) {
     setup_wam_c_classic_fib_2(&local);
     WamValue args[2] = { val_int(n), val_unbound("F") };
     int rc = wam_run_predicate(&local, "wam_c_classic_fib/2", args, 2);
-    WamValue *result = wam_deref_ptr(&local, &local.A[0]);
+    WamValue *result = wam_deref_ptr(&local, &local.A[1]);
     int ok = rc == 0 &&
              local.P == WAM_HALT &&
              result->tag == VAL_INT &&

@@ -45,6 +45,16 @@ static int is_plain_atom(const char *s) {
     return 1;
 }
 
+static int is_graphic_atom(const char *s) {
+    if (s == NULL || s[0] == '\0')
+        return 0;
+    for (const char *p = s; *p; p++) {
+        if (strchr("#$&*+-./:<=>?@^~\\\\", *p) == NULL)
+            return 0;
+    }
+    return 1;
+}
+
 static void print_atom(const char *s) {
     if (s == NULL) {
         fputs("''", stdout);
@@ -54,7 +64,7 @@ static void print_atom(const char *s) {
         fputs("[]", stdout);
         return;
     }
-    if (is_plain_atom(s)) {
+    if (is_plain_atom(s) || is_graphic_atom(s)) {
         fputs(s, stdout);
         return;
     }
