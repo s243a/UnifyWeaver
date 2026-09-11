@@ -511,6 +511,56 @@ int main(void) {
     }
 
     {
+        /* Behavioral regression for sort([2,1],[X,3]): logical failure,
+         * X restored to unbound, temporary heap reclaimed. Repeated failure
+         * on the SAME state and subsequent successful compatible query. */
+        WamValue x = wam_make_ref(&state);
+        WamValue in = cons(&state, val_int(2), cons(&state, val_int(1), nil));
+        WamValue mismatch_out = cons(&state, x, cons(&state, val_int(3), nil));
+        int h_baseline = state.H;
+        int tr_baseline = state.TR;
+
+        /* First attempt: sort([2, 1], [X, 3]) fails */
+        int rc1 = run_sort(&state, in, mismatch_out);
+        int fail1_ok = (rc1 == WAM_HALT) && (state.error == 0) &&
+                       val_is_unbound(*wam_deref_ptr(&state, &x)) &&
+                       (state.H == h_baseline) &&
+                       (state.TR == tr_baseline);
+
+        /* Repeated failure on the SAME state: sort([2, 1], [X, 3]) fails again */
+        int rc2 = run_sort(&state, in, mismatch_out);
+        int fail2_ok = (rc2 == WAM_HALT) && (state.error == 0) &&
+                       val_is_unbound(*wam_deref_ptr(&state, &x)) &&
+                       (state.H == h_baseline) &&
+                       (state.TR == tr_baseline);
+
+        /* Subsequent successful compatible query on the SAME state:
+         * sort([2, 1], [X, 2]) succeeds and binds X = 1. */
+        WamValue compat_out = cons(&state, x, cons(&state, val_int(2), nil));
+        int h_before_compat = state.H;
+        int rc_compat = run_sort(&state, in, compat_out);
+        WamValue *heads[2];
+        int n = 0;
+        int list_ok = list_heads(&state, state.A[1], heads, 2, &n) && (n == 2) &&
+                      same_int(wam_deref_ptr(&state, heads[0]), 1) &&
+                      same_int(wam_deref_ptr(&state, heads[1]), 2);
+        int compat_ok = (rc_compat == 0) && (state.error == 0) &&
+                        same_int(wam_deref_ptr(&state, &x), 1) &&
+                        (state.H >= h_before_compat + 4) &&
+                        list_ok;
+
+        int ok = fail1_ok && fail2_ok && compat_ok;
+        if (!ok) {
+            fail_check("mismatch_rollback",
+                       !fail1_ok ? "first failure did not restore unbound X or reclaim heap" :
+                       !fail2_ok ? "repeated failure on same state corrupted state" :
+                       "subsequent compatible query failed or did not bind X");
+        }
+        emit_token("mismatch_rollback", ok ? "ok" : "fail",
+                   ok ? "mismatch_rollback_ok" : "mismatch_rollback_bad");
+    }
+
+    {
         ensure_h(&state, 2);
         int base = state.H;
         state.H_array[state.H++] = val_int(1);

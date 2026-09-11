@@ -4986,6 +4986,8 @@ static bool wam_build_list_from_sort_items(WamState *state,
 }
 
 static bool wam_execute_sort(WamState *state) {
+    int initial_h = state->H;
+    int initial_tr = state->TR;
     WamSortItem *items = NULL;
     int count = 0;
     if (!wam_collect_sort_list(state, state->A[0], &items, &count)) {
@@ -5015,10 +5017,16 @@ static bool wam_execute_sort(WamState *state) {
     WamValue result;
     if (!wam_build_list_from_sort_items(state, items, count, &result)) {
         free(items);
+        state->H = initial_h;
         return false;
     }
     free(items);
-    return wam_unify(state, &state->A[1], &result);
+    if (!wam_unify(state, &state->A[1], &result)) {
+        unwind_trail(state, initial_tr);
+        state->H = initial_h;
+        return false;
+    }
+    return true;
 }
 
 /* member/2: finite proper lists only. Open, cyclic, improper, non-list,

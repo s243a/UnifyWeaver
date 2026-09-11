@@ -91,6 +91,14 @@ token_swi(cyclic, runtime_error, cyclic_ok).
 token_swi(open_list, runtime_error, open_ok).
 token_swi(non_list, runtime_error, non_list_ok).
 token_swi(improper, runtime_error, improper_ok).
+token_swi(mismatch_rollback, ok, mismatch_rollback_ok) :-
+    X = _,
+    (   sort([2, 1], [X, 3])
+    ->  fail
+    ;   var(X),
+        sort([2, 1], [X, 2]),
+        X == 1
+    ).
 
 parse_c_cases([], []).
 parse_c_cases([Line|Rest], Cases) :-
@@ -181,7 +189,8 @@ test_generation_sort_builtin :-
         sub_string(HelpersS, _, _, _, 'strcmp(op, "sort/2")'),
         sub_string(HelpersS, _, _, _, 'wam_execute_sort'),
         sub_string(HelpersS, _, _, _, 'wam_sort_identity_value'),
-        sub_string(HelpersS, _, _, _, 'Does not reuse the aggregate stored-term comparator')
+        sub_string(HelpersS, _, _, _, 'Does not reuse the aggregate stored-term comparator'),
+        sub_string(HelpersS, _, _, _, 'unwind_trail(state, initial_tr)')
     ->  pass(Test)
     ;   fail_test(Test, 'sort/2 handler missing from generated runtime')
     ).
@@ -204,6 +213,13 @@ test_wrong_answer_rejected :-
         \+ same_success(SWI, _)
     ->  pass(Test)
     ;   fail_test(Test, 'actual comparator failed positive or negative controls')
+    ).
+
+test_sort_rollback_oracle :-
+    Test = 'sort/2: partial mismatch [X, 3] on [2, 1] fails and restores X in SWI',
+    (   token_swi(mismatch_rollback, ok, mismatch_rollback_ok)
+    ->  pass(Test)
+    ;   fail_test(Test, 'SWI sort/2 rollback oracle failed')
     ).
 
 test_compiled_c_sort_matches_swi :-
@@ -259,7 +275,8 @@ run_compiled_c_sort :-
               negatives, ints_and_atoms, pairs, compounds, lists_and_compounds,
               nested_lists, list_binary_order],
     Tokens = [prebound_match, prebound_mismatch, preserve_input, heap_growth, mixed_numeric,
-              shared_var, cell_vars, distinct_vars, cyclic, open_list, non_list, improper],
+              shared_var, cell_vars, distinct_vars, cyclic, open_list, non_list, improper,
+              mismatch_rollback],
     findall(Id, (member(Id, Ground), \+ compare_ground(Id, CCases)), GroundBads),
     findall(Id, (member(Id, Tokens), \+ compare_token(Id, CCases)), TokenBads),
     (   member(c_case(unordered_atoms, ok, Atoms), CCases)
@@ -282,6 +299,7 @@ run_tests_once :-
     test_generation_sort_builtin,
     test_wam_emits_sort_builtin,
     test_wrong_answer_rejected,
+    test_sort_rollback_oracle,
     test_compiled_c_sort_matches_swi,
     cleanup_sort_pred,
     format('~n=== WAM-C sort/2 Tests Complete ===~n'),
