@@ -696,21 +696,30 @@ invariants in §4 must be re-baselined first.
    per call and dropped with it.
 6. **No new cuts** outside the API edges; if-then-else only, as the file
    already does.
-7. **No catalog-shape change**: `icat/3` (or whatever the wrapper is
-   named) never escapes `resolver.pl`. **Rejection-as-input is only
-   guaranteed at the resolve edge** (`resolve/3`, `resolve_layered/3`,
-   `layer_closure/3`), which route through `index_catalog/2`'s
-   `is_public_catalog/1` gate. The other nine catalog-taking exports
-   (`explain_blocked/3`, `explain_blocked_list/3`, `dependents/3`,
-   `dependents_installed/3`, `freeze_audit/2`, `removal_orphans/3`,
-   `safe_upgrade/4`, `upgrade_set/4`, `upgrade_set_result/4`) reach the
-   delegating accessors directly and **currently accept an `icat/3`
-   wrapper**, returning the correct answer for the wrapped catalog (Kimi K3,
-   verified — §7.5). "Never accepted as input" is therefore false as stated;
-   restate it as "rejected at the resolve edge", or add the executable
-   `is_public_catalog/1` guard to the other nine entry points (owner's
-   call — the latter is a `resolver.pl` change requiring the full-fleet
-   differential re-verification).
+7. **No catalog-shape change** (restated — the original "never escapes and is
+   never accepted as input" over-claimed; Kimi K3 + Fable 5.1, §7.5.1):
+   - `icat/3` is constructed **only** by `index_catalog/2` and is never
+     returned to callers (never escapes) — verified.
+   - The **resolve edge** (`resolve/3`, `resolve_layered/3`, `layer_closure/3`)
+     **actively rejects** an `icat/3` handed in as input, via
+     `index_catalog/2`'s `is_public_catalog/1` gate — verified.
+   - The nine read-only query exports (`explain_blocked/3`,
+     `explain_blocked_list/3`, `dependents/3`, `dependents_installed/3`,
+     `freeze_audit/2`, `removal_orphans/3`, `safe_upgrade/4`, `upgrade_set/4`,
+     `upgrade_set_result/4`) do **not** guard against it: a fabricated `icat/3`
+     passed to them is **unsupported input that happens to yield the wrapped
+     catalog's answer** (the delegating accessors are faithful). This is
+     **not a promised behavior** — no target is committed to preserving it,
+     and it must not be relied on.
+
+   The recommended resolution is this restatement (doc-only; the two verified
+   claims stand, the third is labelled unsupported). Making the original
+   invariant literally true — adding the `is_public_catalog/1` guard to the
+   nine exports — is a `resolver.pl` change that triggers the full-fleet
+   differential re-verification (and would itself need reject-branch
+   differential coverage on those nine), so it is **deferred to ride along on
+   the next `resolver.pl` change that already pays for that re-verification**,
+   where the guard is trivially correct and effectively free.
 8. **Solution multiplicity** for enumerating predicates (`explain_blocked/3`,
    internal `provider_candidate/5`) unchanged, duplicates included.
 9. **Leg parity**: each leg that is built from `resolver.pl` re-runs its
