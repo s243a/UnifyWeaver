@@ -11,7 +11,7 @@ path = "src/main.rs"
 [dependencies]
 
 [features]
-default = ["decorate_sort", "intern"]
+default = ["decorate_sort", "intern", "deref_memo"]
 # When off, the sort/msort/keysort/setof builtins fall back to the original
 # `term_compare` (re-deref) path; output is byte-identical to the on build.
 decorate_sort = []
@@ -21,6 +21,14 @@ decorate_sort = []
 # byte-identical). Off = the pre-intern String path, kept for A/B via
 # `--no-default-features --features decorate_sort`; the two are sha-distinct.
 intern = []
+# Hot-path opt #5 (D103): cache deref-stability on the Arc-shared Args spine so
+# `deref_heap` skips re-walking + rebuilding already-canonical (ground, no
+# "f/N" functor, no cons-Str) terms. The flag is set ONLY from deref_heap's
+# own verified verbatim-identity path, so an ON short-circuit is byte-identical
+# to the OFF full walk. Default ON. Off = the exact pre-D103 deref_heap (no
+# cache field consulted), a perfect A/B baseline, via
+# `--no-default-features --features "decorate_sort intern"`.
+deref_memo = []
 # T7 parallel-aggregate path (state.rs `#[cfg(feature="parallel")]`). Declared
 # so Cargo's unexpected-cfgs lint knows the name (adding [features] above turns
 # that lint on). Off by default and empty: enabling it needs rayon, which is a
