@@ -3095,6 +3095,8 @@ compile_wam_helpers_to_c(_Options, CCode) :-
 #include <fcntl.h>
 #include <limits.h>
 #include <math.h>
+#include <fenv.h>
+#include <locale.h>
 #include <unistd.h>
 
 static void wam_bidirectional_distance_cache_clear(WamState *state);
@@ -3115,6 +3117,7 @@ static bool wam_execute_maplist(WamState *state);
 static bool wam_execute_reverse(WamState *state);
 static bool wam_execute_append(WamState *state);
 static bool wam_execute_length(WamState *state);
+static bool wam_execute_atom_length(WamState *state);
 
 static bool wam_ensure_heap_slots(WamState *state, int additional) {
     if (additional <= 0) return true;
@@ -4712,6 +4715,307 @@ static bool wam_unify_atom_from_cstr(WamState *state, WamValue *target, const ch
     return wam_unify(state, target, &atom);
 }
 
+/* atom_length/2: count Unicode code points in the atomic text of A1,
+   matching WAM-Rust value_atomic_text (atoms, numbers, booleans, []).
+   Compounds, non-empty lists, and unbound A1 fail closed. A2 may be
+   unbound (bind length) or prebound (must match). Unify failure rolls
+   back trail/heap bindings made by this builtin. */
+static int wam_f64_bits_equal(double a, double b) {
+    uint64_t ua, ub;
+    memcpy(&ua, &a, sizeof ua);
+    memcpy(&ub, &b, sizeof ub);
+    return ua == ub;
+}
+
+static int wam_parse_printf_decimal(const char *s, int *neg,
+                                   char *digits, int *nd, int *sci_exp) {
+    int int_digits = 0;
+    int lead = 0;
+    int exp_adj = 0;
+    *neg = 0;
+    *nd = 0;
+    if (*s == ''-'') { *neg = 1; s++; }
+    else if (*s == ''+'') s++;
+    while (*s >= ''0'' && *s <= ''9'') {
+        if (*nd < 24) digits[(*nd)++] = *s;
+        int_digits++;
+        s++;
+    }
+    if (*s == ''.'' || *s == '','') {
+        s++;
+        while (*s >= ''0'' && *s <= ''9'') {
+            if (*nd < 24) digits[(*nd)++] = *s;
+            s++;
+        }
+    }
+    if (*s == ''e'' || *s == ''E'') {
+        int esign = 1;
+        int ev = 0;
+        s++;
+        if (*s == ''-'') { esign = -1; s++; }
+        else if (*s == ''+'') s++;
+        if (*s < ''0'' || *s > ''9'') return 0;
+        while (*s >= ''0'' && *s <= ''9'') {
+            ev = ev * 10 + (*s - ''0'');
+            s++;
+        }
+        exp_adj = esign * ev;
+    }
+    if (*s != 0 || *nd <= 0 || int_digits <= 0)
+        return 0;
+    while (lead < *nd - 1 && digits[lead] == ''0'')
+        lead++;
+    if (lead) {
+        memmove(digits, digits + lead, (size_t)(*nd - lead));
+        *nd -= lead;
+    }
+    while (*nd > 1 && digits[*nd - 1] == ''0'')
+        (*nd)--;
+    *sci_exp = int_digits - 1 - lead + exp_adj;
+    return 1;
+}
+
+static int wam_rust_display_fixed_len(int neg, int nd, int sci_exp) {
+    int n = neg ? 1 : 0;
+    int first = sci_exp;
+    int last = sci_exp - nd + 1;
+    if (nd <= 0)
+        return -1;
+    if (last >= 0)
+        return n + nd + last;
+    if (first < 0)
+        return n + 2 + (-first - 1) + nd;
+    return n + nd + 1;
+}
+
+static int wam_digits_add(char *d, int *nd, int *sci_exp, int delta) {
+    int i;
+    if (delta == 0 || *nd <= 0)
+        return 1;
+    if (delta > 0) {
+        int carry = delta;
+        for (i = *nd - 1; i >= 0 && carry; i--) {
+            int v = (d[i] - 48) + carry;
+            d[i] = (char)(48 + (v % 10));
+            carry = v / 10;
+        }
+        if (carry) {
+            if (*nd + 1 >= 24)
+                return 0;
+            memmove(d + 1, d, (size_t)*nd);
+            d[0] = (char)(48 + carry);
+            (*nd)++;
+            (*sci_exp)++;
+        }
+        return 1;
+    }
+    {
+        int sub = -delta;
+        for (i = *nd - 1; i >= 0 && sub; i--) {
+            int v = (d[i] - 48) - sub;
+            if (v >= 0) {
+                d[i] = (char)(48 + v);
+                sub = 0;
+            } else {
+                d[i] = (char)(48 + v + 10);
+                sub = 1;
+            }
+        }
+        if (sub)
+            return 0;
+        {
+            int lead = 0;
+            while (lead < *nd - 1 && d[lead] == 48)
+                lead++;
+            if (lead) {
+                memmove(d, d + lead, (size_t)(*nd - lead));
+                *nd -= lead;
+                *sci_exp -= lead;
+            }
+        }
+        return 1;
+    }
+}
+
+static int wam_sci_cstr_roundtrip(int neg, const char *digits, int nd,
+                                 int sci_exp, double orig) {
+    char buf[64];
+    char *end = NULL;
+    double parsed;
+    int n = 0;
+    if (nd <= 0 || nd > 20)
+        return 0;
+    if (neg)
+        buf[n++] = 45;
+    buf[n++] = digits[0];
+    if (nd > 1) {
+        buf[n++] = 46;
+        memcpy(buf + n, digits + 1, (size_t)(nd - 1));
+        n += nd - 1;
+    }
+    if (snprintf(buf + n, sizeof(buf) - (size_t)n, "e%+d", sci_exp) < 0)
+        return 0;
+    errno = 0;
+    parsed = strtod(buf, &end);
+    if (end == buf || (end && *end != 0))
+        return 0;
+    return wam_f64_bits_equal(parsed, orig);
+}
+
+static int wam_consider_float_len(int neg, const char *digits, int nd,
+                                 int sci_exp, double orig,
+                                 int *best_digits, int *best_len) {
+    char d[24];
+    int n = nd;
+    int len;
+    if (nd <= 0 || nd > 23)
+        return 0;
+    memcpy(d, digits, (size_t)nd);
+    while (n > 1 && d[n - 1] == 48)
+        n--;
+    if (!wam_sci_cstr_roundtrip(neg, d, n, sci_exp, orig))
+        return 0;
+    len = wam_rust_display_fixed_len(neg, n, sci_exp);
+    if (len > 0 && n < *best_digits) {
+        *best_digits = n;
+        *best_len = len;
+    }
+    return 1;
+}
+
+static void wam_consider_prefixes(int neg, const char *digits, int nd,
+                                 int sci_exp, double orig,
+                                 int *best_digits, int *best_len) {
+    int L;
+    for (L = 1; L <= nd; L++) {
+        char p[24];
+        int pn = L;
+        int pe = sci_exp;
+        memcpy(p, digits, (size_t)L);
+        wam_consider_float_len(neg, p, pn, pe, orig, best_digits, best_len);
+        if (wam_digits_add(p, &pn, &pe, 1))
+            wam_consider_float_len(neg, p, pn, pe, orig, best_digits, best_len);
+    }
+}
+
+static int wam_rust_display_float_len_c(double f) {
+    char buf[64];
+    char digits[24];
+    int prec, i, neg, nd, sci_exp, di;
+    int best_digits = 10000;
+    int best_len = -1;
+    static const int deltas[] = {0, -1, 1, -2, 2};
+    if (isnan(f))
+        return 3;
+    if (isinf(f))
+        return signbit(f) ? 4 : 3;
+    if (f == 0.0)
+        return signbit(f) ? 2 : 1;
+    for (prec = 1; prec <= 17; prec++) {
+        if (snprintf(buf, sizeof(buf), "%.*g", prec, f) < 0)
+            return -1;
+        for (i = 0; buf[i]; i++) {
+            if (buf[i] == 44)
+                buf[i] = 46;
+        }
+        if (!wam_parse_printf_decimal(buf, &neg, digits, &nd, &sci_exp))
+            continue;
+        for (di = 0; di < 5; di++) {
+            char d[24];
+            int n = nd;
+            int e = sci_exp;
+            memcpy(d, digits, (size_t)nd);
+            if (!wam_digits_add(d, &n, &e, deltas[di]))
+                continue;
+            wam_consider_prefixes(neg, d, n, e, f, &best_digits, &best_len);
+        }
+    }
+    return best_len;
+}
+
+static int wam_rust_display_float_len(double f) {
+    locale_t c_locale = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
+    locale_t prior_locale;
+    fenv_t prior_env;
+    int result;
+    if (!c_locale)
+        return -1;
+    prior_locale = uselocale(c_locale);
+    if (!prior_locale) {
+        freelocale(c_locale);
+        return -1;
+    }
+    if (feholdexcept(&prior_env) != 0) {
+        uselocale(prior_locale);
+        freelocale(c_locale);
+        return -1;
+    }
+    if (fesetround(FE_TONEAREST) != 0) {
+        fesetenv(&prior_env);
+        uselocale(prior_locale);
+        freelocale(c_locale);
+        return -1;
+    }
+    result = wam_rust_display_float_len_c(f);
+    fesetenv(&prior_env);
+    uselocale(prior_locale);
+    freelocale(c_locale);
+    return result;
+}
+
+static size_t wam_utf8_codepoint_count(const char *text) {
+    size_t count = 0;
+    if (!text) return 0;
+    for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
+        if ((*p & 0xC0) != 0x80)
+            count++;
+    }
+    return count;
+}
+
+static bool wam_value_atomic_length(WamValue *cell, size_t *length) {
+    if (cell->tag == VAL_ATOM && cell->data.atom) {
+        *length = wam_utf8_codepoint_count(cell->data.atom);
+        return true;
+    }
+    if (cell->tag == VAL_INT) {
+        char buf[32];
+        int n = snprintf(buf, sizeof(buf), "%d", cell->data.integer);
+        if (n < 0) return false;
+        *length = (size_t)n;
+        return true;
+    }
+    if (cell->tag == VAL_FLOAT) {
+        int n = wam_rust_display_float_len(cell->data.floating);
+        if (n < 0) return false;
+        *length = (size_t)n;
+        return true;
+    }
+    return false;
+}
+
+static bool wam_execute_atom_length(WamState *state) {
+    WamValue *a1 = wam_deref_ptr(state, &state->A[0]);
+    if (val_is_unbound(*a1))
+        return false;
+
+    size_t char_count;
+    if (!wam_value_atomic_length(a1, &char_count))
+        return false;
+    if (char_count > (size_t)INT_MAX)
+        return false;
+
+    WamValue len_val = val_int((int)char_count);
+    int trail_mark = state->TR;
+    int heap_mark = state->H;
+    if (!wam_unify(state, &state->A[1], &len_val)) {
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+    return true;
+}
+
 static bool wam_execute_atom_concat(WamState *state) {
     WamValue *left = wam_deref_ptr(state, &state->A[0]);
     WamValue *right = wam_deref_ptr(state, &state->A[1]);
@@ -5873,6 +6177,10 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
 
     if (strcmp(op, "atom_concat/3") == 0 && arity == 3) {
         return wam_execute_atom_concat(state);
+    }
+
+    if (strcmp(op, "atom_length/2") == 0 && arity == 2) {
+        return wam_execute_atom_length(state);
     }
 
     if (strcmp(op, "sort/2") == 0 && arity == 2) {
