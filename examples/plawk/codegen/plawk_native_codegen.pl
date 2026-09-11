@@ -5960,11 +5960,25 @@ plawk_guard_leaf_ir(guard(ColIndex, Op, Value), FieldSep, _Index, N,
     integer(Value),
     !,
     plawk_icmp_pred(Op, Pred),
+    % The parse returns %WamI64Parse = { i64 value, i1 ok } and MUST be called at
+    % that type. This site (and its twin in plawk_assoc_scalar_src_lines/5) used to
+    % call it as `call i64 ...` -- a call-site/definition type mismatch that clang 18's
+    % opaque-pointer semantics silently tolerated and clang 14's typed pointers reject
+    % ("defined with type '%WamI64Parse (...)*' but expected 'i64 (...)*'"). Under
+    % clang 18 it WORKED by ABI accident: the struct's i64 value field rides in the
+    % return register, and the runtime's fail path returns {0, false}, so the untyped
+    % read yielded value-or-0. The select below reproduces that shipped behaviour
+    % exactly (non-numeric field -> 0, awk semantics) in well-typed IR. Found the day
+    % the suites first ran under clang 14; 13 suites failed on this one signature.
     format(atom(IR),
-'  %rec_gv_~w = call i64 @wam_atom_field_i64_value(%Value %rec_row_v, i64 ~w, i8 ~w)
+'  %rec_gvp_~w = call %WamI64Parse @wam_atom_field_i64_value(%Value %rec_row_v, i64 ~w, i8 ~w)
+  %rec_gvv_~w = extractvalue %WamI64Parse %rec_gvp_~w, 0
+  %rec_gvo_~w = extractvalue %WamI64Parse %rec_gvp_~w, 1
+  %rec_gv_~w = select i1 %rec_gvo_~w, i64 %rec_gvv_~w, i64 0
   %rec_gcmp_~w = icmp ~w i64 %rec_gv_~w, ~w
   br i1 %rec_gcmp_~w, label %~w, label %~w',
-        [N, ColIndex, FieldSep, N, Pred, N, Value, N, TrueLbl, FalseLbl]).
+        [N, ColIndex, FieldSep, N, N, N, N, N, N, N, N, Pred, N, Value,
+         N, TrueLbl, FalseLbl]).
 plawk_guard_leaf_ir(guard(ColIndex, Op, float_const(M, D)), FieldSep, _Index, N,
         TrueLbl, FalseLbl, IR, '') :-
     !,
@@ -9525,9 +9539,13 @@ plawk_assoc_arith_operand_plan(_Tables, aint(V), aint(V)).
 % field N converted to i64.
 plawk_assoc_scalar_src_lines(int(V), _Base, _FieldSep, V, []).
 plawk_assoc_scalar_src_lines(field(K), Base, FieldSep, SrcVar, [Line]) :-
+    % Called at the definition's own type -- see the comment at the record-view
+    % guard emitter (plawk_guard_leaf_ir//?, the other site of the same mismatch)
+    % for the clang-14/18 story. select(ok, value, 0) preserves the shipped
+    % non-numeric-field -> 0 behaviour bit-for-bit.
     format(atom(Line),
-        '  %~w_fv = call i64 @wam_atom_field_i64_value(%Value %line, i64 ~w, i8 ~w)',
-        [Base, K, FieldSep]),
+        '  %~w_fvp = call %WamI64Parse @wam_atom_field_i64_value(%Value %line, i64 ~w, i8 ~w)~n  %~w_fvv = extractvalue %WamI64Parse %~w_fvp, 0~n  %~w_fvo = extractvalue %WamI64Parse %~w_fvp, 1~n  %~w_fv = select i1 %~w_fvo, i64 %~w_fvv, i64 0',
+        [Base, K, FieldSep, Base, Base, Base, Base, Base, Base, Base]),
     format(atom(SrcVar), '%~w_fv', [Base]).
 
 %% plawk_assoc_print_field_lines(+PlannedFields, +Base, +FieldSep, +Index, -Lines)
