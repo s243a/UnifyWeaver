@@ -436,7 +436,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     findall(Items, (
         member(PI, Predicates),
         catch(
-            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true), ite_use_y_level(true)], WamText),
+            ( cpp_predicate_wam_text(PI, Options, WamText),
               parse_pred_blocks(WamText, Items0),
               iso_errors_rewrite(IsoConfig, PI, Items0, Items)
             ),
@@ -456,7 +456,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
             conj_return, disj_alt, if_then_commit, if_then_else,
             aggregate_next_group, dynamic_next_clause, sub_atom_next,
             body_next, retract_next, output_capture_return,
-            current_pred_next],
+            current_pred_next, foreign_next_clause],
            FlatInstrs),
     length(FlatInstrs0, CatchReturnPC),
     NegationReturnPC is CatchReturnPC + 1,
@@ -472,6 +472,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     RetractNextPC is CatchReturnPC + 11,
     OutputCaptureReturnPC is CatchReturnPC + 12,
     CurrentPredNextPC is CatchReturnPC + 13,
+    ForeignNextClausePC is CatchReturnPC + 14,
     findall(LabelLine, (
         member(NameStr-PC, Labels),
         format(atom(LabelLine),
@@ -495,6 +496,15 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
                             Order, LoadLine)
     ), LoadLines),
     atomic_list_concat(LoadLines, '\n', LmdbLoadBody),
+    % D43 store-backed seek fact sources (cpp_wam_fact_sources option).
+    % One register_seek_fact_source(...) call per source, appended to
+    % wam_cpp_setup so the sources are live before any query runs.
+    seek_sources_from_options(Options, SeekSources),
+    findall(SeekLine, (
+        member(seek_source(SKey, SKind, SPath), SeekSources),
+        emit_seek_register_call(SKey, SKind, SPath, SeekLine)
+    ), SeekLines),
+    atomic_list_concat(SeekLines, '\n', SeekRegBody),
     length(FlatInstrs, Reserve),
     format(string(SetupCpp),
 'void wam_cpp_setup(WamState& vm) {
@@ -515,6 +525,8 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     vm.retract_next_pc = ~w;
     vm.output_capture_return_pc = ~w;
     vm.current_pred_next_pc = ~w;
+    vm.foreign_next_clause_pc = ~w;
+~w
 ~w
 ~w
 ~w
@@ -527,8 +539,8 @@ static const int _wam_cpp_setup_register = []() {
     ConjReturnPC, DisjAltPC, IfThenCommitPC, IfThenElsePC,
     AggregateNextGroupPC, DynamicNextClausePC, SubAtomNextPC,
     BodyNextPC, RetractNextPC, OutputCaptureReturnPC,
-    CurrentPredNextPC,
-    LabelBody, InstrBody, LmdbLoadBody]).
+    CurrentPredNextPC, ForeignNextClausePC,
+    LabelBody, InstrBody, LmdbLoadBody, SeekRegBody]).
 
 % Render one cpp_load_lmdb_fact_source call. DbName is either an
 % atom (named sub-DB) or [] (default unnamed DB -> nullptr).
@@ -555,6 +567,98 @@ db_name_arg(DbName, Arg) :-
 
 cpp_bool(true, 'true') :- !.
 cpp_bool(false, 'false').
+
+% ---------------------------------------------------------------------------
+% D43 store-backed seek fact sources (cpp_wam_fact_sources codegen option).
+%
+% Analogous to rust_wam_fact_sources / go_wam_fact_sources: a store-backed P/2
+% predicate is compiled to a two-instruction body [call_foreign, proceed] so
+% callers reach it by label exactly like any other predicate; the seek source
+% itself is registered in wam_cpp_setup and dispatched at runtime via
+% CallForeign → dispatch_foreign_call (keyed lazy seek). Distinct from the
+% eager, whole-DB cpp_fact_sources (LMDB) option, which stays as-is.
+%
+%   cpp_wam_fact_sources([ source(P/2, indexed(Prefix)) | source(P/2, lmdb(Dir)) ])
+% ---------------------------------------------------------------------------
+
+%% seek_sources_from_options(+Options, -Sources)
+%  Resolve the cpp_wam_fact_sources option into seek_source(Key, Kind, Path)
+%  terms. Key is "Name/Arity"; Kind is "indexed" | "lmdb"; Path is the absolute
+%  store prefix (indexed) or dir (lmdb), baked in at build time so the binary
+%  needs no runtime store argument (mirrors the Go/Rust lanes).
+seek_sources_from_options(Options, Sources) :-
+    (   member(cpp_wam_fact_sources(Specs), Options)
+    ->  findall(seek_source(Key, Kind, AbsPath), (
+            member(source(PI, Spec), Specs),
+            cpp_seek_source_pred(PI, Pred, Arity),
+            validate_seek_v1_arity(Pred, Arity),
+            format(atom(Key), '~w/~w', [Pred, Arity]),
+            cpp_seek_source_spec(Spec, Kind, Path0),
+            cpp_store_abs_path(Path0, AbsPath)
+        ), Sources)
+    ;   Sources = []
+    ).
+
+cpp_seek_source_pred(_:Name/Ar, Name, Ar) :- !.
+cpp_seek_source_pred(Name/Ar, Name, Ar).
+
+% v1 serves arity 2 only (mirrors the Rust/Go contract); reject anything else
+% loudly so a mis-declared source is a codegen-time error, not a silent skip.
+validate_seek_v1_arity(_, 2) :- !.
+validate_seek_v1_arity(Name, Arity) :-
+    throw(error(domain_error(cpp_wam_fact_source_arity_2, Name/Arity), _)).
+
+cpp_seek_source_spec(indexed(Prefix), indexed, Prefix).
+cpp_seek_source_spec(lmdb(Dir), lmdb, Dir).
+
+% Resolve a store path/prefix to an absolute path relative to the cwd so the
+% baked-in store location survives a different run directory.
+cpp_store_abs_path(Path, Abs) :-
+    atom_string(Path, PathStr),
+    working_directory(Cwd, Cwd),
+    (   catch(absolute_file_name(PathStr, Abs0, [relative_to(Cwd)]), _, fail),
+        Abs0 \== []
+    ->  Abs = Abs0
+    ;   Abs = PathStr
+    ).
+
+%% cpp_wam_fact_source_spec(+P, +Arity, +Options, -Spec)
+%  True when Options declare a store-backed source for P/Arity (arity 2).
+cpp_wam_fact_source_spec(P, Arity, Options, Spec) :-
+    Arity =:= 2,
+    member(cpp_wam_fact_sources(Sources), Options),
+    member(source(PI, Spec), Sources),
+    cpp_seek_source_pred(PI, Name, Ar),
+    Name == P, Ar =:= Arity.
+
+%% cpp_fact_stream_wam_text(+P, +Arity, -WamText)
+%  The two-instruction predicate body served for a store fact source: dispatch
+%  to CallForeign (which routes to the seek source) then proceed.
+cpp_fact_stream_wam_text(P, Arity, WamText) :-
+    format(atom(WamText),
+        '~w/~w:\n    call_foreign ~w/~w ~w\n    proceed\n',
+        [P, Arity, P, Arity, Arity]).
+
+%% cpp_predicate_wam_text(+PI, +Options, -WamText)
+%  WAM text for one predicate: the fact-stream body when PI is a declared
+%  cpp_wam_fact_sources source, else the shared compiler''s output.
+cpp_predicate_wam_text(PI, Options, WamText) :-
+    ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
+    (   cpp_wam_fact_source_spec(Pred, Arity, Options, _Spec)
+    ->  cpp_fact_stream_wam_text(Pred, Arity, WamText)
+    ;   compile_predicate_to_wam(PI,
+            [inline_bagof_setof(true), ite_use_y_level(true)], WamText)
+    ).
+
+%% emit_seek_register_call(+Key, +Kind, +Path, -Line)
+%  Render one register_seek_fact_source(...) call for wam_cpp_setup.
+emit_seek_register_call(Key, Kind, Path, Line) :-
+    escape_cpp_string(Key, EKey),
+    escape_cpp_string(Kind, EKind),
+    escape_cpp_string(Path, EPath),
+    format(atom(Line),
+        '    vm.register_seek_fact_source("~w", "~w", "~w");',
+        [EKey, EKind, EPath]).
 
 % Map the Prolog on_duplicate policy atom to the C++ enum tag.
 % fallback(Policy) collapses to the inner policy for v1 (Phase 2
@@ -2343,6 +2447,8 @@ instr_to_setup_line(output_capture_return, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::OutputCaptureReturn());'.
 instr_to_setup_line(current_pred_next, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::CurrentPredNext());'.
+instr_to_setup_line(foreign_next_clause, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::ForeignNextClause());'.
 instr_to_setup_line(Instr, _Labels, Line) :-
     wam_instruction_to_cpp_literal(Instr, Lit),
     format(atom(Line), '    vm.instrs.push_back(~w);', [Lit]).
@@ -2638,7 +2744,7 @@ compile_predicates_for_project(Predicates, Options, PredicatesCode) :-
     findall(Code, (
         member(PI, Predicates),
         catch(
-            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true), ite_use_y_level(true)], WamCode),
+            ( cpp_predicate_wam_text(PI, Options1, WamCode),
               compile_wam_predicate_to_cpp(PI, WamCode, Options1, Code)
             ),
             Err,
@@ -3017,12 +3123,19 @@ compile_wam_runtime_header_body_to_cpp(_Options,
 #ifndef UNIFYWEAVER_WAM_CPP_RUNTIME_H
 #define UNIFYWEAVER_WAM_CPP_RUNTIME_H
 
+#include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -3121,7 +3234,7 @@ struct Instruction {
         CatchReturn, NegationReturn, FindallCollect, ConjReturn, DisjAlt,
         IfThenCommit, IfThenElse, AggregateNextGroup, DynamicNextClause,
         SubAtomNext, BodyNext, RetractNext, OutputCaptureReturn,
-        CurrentPredNext,
+        CurrentPredNext, ForeignNextClause,
         Nop
     };
     // Sentinel pc values for switch-table entries that should not jump.
@@ -3305,6 +3418,8 @@ public:
         { Instruction i; i.op = Op::OutputCaptureReturn; return i; }
     static Instruction CurrentPredNext()
         { Instruction i; i.op = Op::CurrentPredNext; return i; }
+    static Instruction ForeignNextClause()
+        { Instruction i; i.op = Op::ForeignNextClause; return i; }
     static Instruction Nop()
         { Instruction i; i.op = Op::Nop; return i; }
 };
@@ -3546,6 +3661,324 @@ struct ClauseSnapshot {
     std::size_t cp_count = 0;
 };
 
+// ============================================================================
+// D43 store-backed P/2 fact source (seek reader). C++ port of
+// examples/pkg_resolver/rust/uw_resolve_wam/src/seek_fact_source.rs (and the Go
+// seekFactSource): keyed binary-search seeks over the dependency-free UWFI/UWIX
+// .data/.idx store that the shared scripts/js_wam/uw_fact_index.js builder
+// writes. A bound-key lookup reads only the records that key touches (a lazy
+// seek), never the whole catalog; an unbound key does a full scan. Byte-for-byte
+// on-disk-compatible with the Go/Rust lanes (same open / lookup_offsets /
+// read_record / scan_all), including the D43 bytes-read counters.
+//
+// Typed key tags (atom 0x41 / string 0x53 / int 0x49 / float 0x46) match the
+// codec (uw_fact_codec.js encodeIndexKey) so a lookup finds the right key
+// regardless of the bound cell''s type.
+//
+// The lmdb(Dir) kind is the opt-in comparison tier. The eager whole-DB
+// LmdbFactSource further down is Stage-2 territory; the seek reader''s lmdb kind
+// carries no built-in reader and fails loudly, exactly like the Rust lane -- it
+// never silently falls back to the indexed format.
+// ============================================================================
+
+// D43 bytes-read proof counters. Global (not per-source) so a scale probe can
+// total the bytes read across all five stores in one query, mirroring the Go
+// lane''s package-level factIOBytes / factIOReads / factIODataSize.
+inline std::atomic<std::uint64_t> g_fact_io_bytes{0};
+inline std::atomic<std::uint64_t> g_fact_io_reads{0};
+inline std::atomic<std::uint64_t> g_fact_io_data_size{0};
+
+inline std::uint64_t fact_io_bytes()     { return g_fact_io_bytes.load(std::memory_order_relaxed); }
+inline std::uint64_t fact_io_reads()     { return g_fact_io_reads.load(std::memory_order_relaxed); }
+inline std::uint64_t fact_io_data_size() { return g_fact_io_data_size.load(std::memory_order_relaxed); }
+inline void reset_fact_io() {
+    g_fact_io_bytes.store(0, std::memory_order_relaxed);
+    g_fact_io_reads.store(0, std::memory_order_relaxed);
+    g_fact_io_data_size.store(0, std::memory_order_relaxed);
+}
+
+inline std::size_t seek_le_u16(const std::string& b, std::size_t o) {
+    if (o + 2 > b.size()) return 0;
+    return (static_cast<unsigned char>(b[o]))
+         | (static_cast<std::size_t>(static_cast<unsigned char>(b[o + 1])) << 8);
+}
+inline std::uint32_t seek_le_u32(const std::string& b, std::size_t o) {
+    if (o + 4 > b.size()) return 0;
+    return (static_cast<std::uint32_t>(static_cast<unsigned char>(b[o])))
+         | (static_cast<std::uint32_t>(static_cast<unsigned char>(b[o + 1])) << 8)
+         | (static_cast<std::uint32_t>(static_cast<unsigned char>(b[o + 2])) << 16)
+         | (static_cast<std::uint32_t>(static_cast<unsigned char>(b[o + 3])) << 24);
+}
+inline int seek_bytes_compare(const std::string& a, const std::string& b) {
+    std::size_t n = std::min(a.size(), b.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        unsigned char ca = static_cast<unsigned char>(a[i]);
+        unsigned char cb = static_cast<unsigned char>(b[i]);
+        if (ca != cb) return ca < cb ? -1 : 1;
+    }
+    if (a.size() < b.size()) return -1;
+    if (a.size() > b.size()) return 1;
+    return 0;
+}
+
+// Character-code helpers (numeric codes, not char literals, so this text
+// survives verbatim through the Prolog-atom emission): 45 = "-", 43 = "+",
+// 46 = ".", 48..57 = digits, 69 = "E", 101 = "e".
+inline bool seek_is_digit(unsigned char c) { return c >= 48 && c <= 57; }
+inline bool seek_is_int_text(const std::string& t) {
+    if (t.empty()) return false;
+    std::size_t i = 0;
+    if (static_cast<unsigned char>(t[0]) == 45) { if (t.size() == 1) return false; i = 1; }
+    for (; i < t.size(); ++i) if (!seek_is_digit(static_cast<unsigned char>(t[i]))) return false;
+    return true;
+}
+inline bool seek_is_float_text(const std::string& t0) {
+    std::string s = t0;
+    if (s.empty()) return false;
+    if (static_cast<unsigned char>(s[0]) == 45) s = s.substr(1);
+    if (s.empty()) return false;
+    std::size_t split = s.size();
+    for (std::size_t k = 0; k < s.size(); ++k) {
+        unsigned char c = static_cast<unsigned char>(s[k]);
+        if (c == 101 || c == 69) { split = k; break; }
+    }
+    bool has_exp = split != s.size();
+    std::string mant = s.substr(0, split);
+    std::string exp  = has_exp ? s.substr(split + 1) : std::string();
+    int dot = -1;
+    for (std::size_t j = 0; j < mant.size(); ++j) {
+        unsigned char c = static_cast<unsigned char>(mant[j]);
+        if (c == 46) { if (dot >= 0) return false; dot = static_cast<int>(j); }
+        else if (!seek_is_digit(c)) return false;
+    }
+    if (has_exp) {
+        if (dot < 0) { if (mant.empty()) return false; }
+        else {
+            std::string left = mant.substr(0, dot);
+            std::string right = mant.substr(dot + 1);
+            if (left.empty() && right.empty()) return false;
+        }
+        std::string e = exp;
+        if (e.empty()) return false;
+        unsigned char e0 = static_cast<unsigned char>(e[0]);
+        if (e0 == 43 || e0 == 45) e = e.substr(1);
+        if (e.empty()) return false;
+        for (char cc : e) if (!seek_is_digit(static_cast<unsigned char>(cc))) return false;
+        return true;
+    }
+    if (dot < 0) return false;
+    std::string left = mant.substr(0, dot);
+    std::string right = mant.substr(dot + 1);
+    if (left.empty() && right.empty()) return false;
+    return true;
+}
+
+// Turn a stored cell text into a typed WAM value, matching the codec
+// classification (int / float / atom). The resolver store packs everything as
+// atoms; the numeric arms keep the distinctions for any store carrying bare
+// numbers. Mirrors the Rust/Go parse_fact_source_value.
+inline Value parse_fact_source_value(const std::string& text) {
+    // trim
+    std::size_t b = 0, e = text.size();
+    while (b < e && std::isspace(static_cast<unsigned char>(text[b]))) ++b;
+    while (e > b && std::isspace(static_cast<unsigned char>(text[e - 1]))) --e;
+    std::string t = text.substr(b, e - b);
+    if (seek_is_int_text(t)) {
+        try { return Value::Integer(static_cast<std::int64_t>(std::stoll(t))); }
+        catch (...) {}
+    }
+    if (seek_is_float_text(t)) {
+        try { return Value::Float(std::stod(t)); }
+        catch (...) {}
+    }
+    return Value::Atom(t);
+}
+
+// Encode a dereferenced bound key cell into the tagged byte key the .idx stores
+// (codec encodeIndexKey): atom 0x41 + utf8, string 0x53 + utf8, int 0x49 +
+// big-endian i64, float 0x46 + big-endian f64 bits. Mirrors the Rust/Go
+// encode_store_key. Returned as a std::string of raw bytes.
+inline std::string encode_store_key(const Value& v) {
+    std::string out;
+    if (v.tag == Value::Tag::Integer) {
+        out.resize(9);
+        out[0] = static_cast<char>(0x49);
+        std::uint64_t u = static_cast<std::uint64_t>(v.i);
+        for (int i = 0; i < 8; ++i) out[8 - i] = static_cast<char>((u >> (i * 8)) & 0xff);
+        return out;
+    }
+    if (v.tag == Value::Tag::Float) {
+        out.resize(9);
+        out[0] = static_cast<char>(0x46);
+        std::uint64_t u; std::memcpy(&u, &v.f, sizeof(u));
+        for (int i = 0; i < 8; ++i) out[8 - i] = static_cast<char>((u >> (i * 8)) & 0xff);
+        return out;
+    }
+    // Atom (and any string-tagged cell would take 0x53, but this runtime has no
+    // distinct string tag; the resolver store keys are all atoms).
+    out.push_back(static_cast<char>(0x41));
+    out.append(v.s);
+    return out;
+}
+
+class SeekFactSource {
+public:
+    SeekFactSource(std::string kind, std::string path)
+        : kind_(std::move(kind)), path_(std::move(path)) {}
+
+    const std::string& kind() const { return kind_; }
+    const std::string& path() const { return path_; }
+
+    // All matching rows for the query: a bound-key seek when `key` is set (only
+    // the records that key touches are read), else a full scan (the unbound-arg1
+    // provides walk). lmdb sources fail loudly (no reader built in).
+    std::vector<std::pair<Value, Value>> rows(const std::optional<std::string>& key) {
+        if (kind_ == "lmdb") {
+            throw std::runtime_error(lmdb_seek_missing_error());
+        }
+        ensure_open();
+        std::lock_guard<std::mutex> guard(mu_);
+        g_fact_io_data_size.store(data_size_, std::memory_order_relaxed);
+        std::vector<std::pair<Value, Value>> result;
+        if (key.has_value()) {
+            std::vector<std::uint32_t> offs = lookup_offsets(*key);
+            result.reserve(offs.size());
+            for (std::uint32_t off : offs) {
+                Value a1, a2;
+                if (read_record(static_cast<std::uint64_t>(off), a1, a2))
+                    result.emplace_back(std::move(a1), std::move(a2));
+            }
+        } else {
+            scan_all(result);
+        }
+        return result;
+    }
+
+    std::string lmdb_seek_missing_error() const {
+        return "C++ WAM fact source is declared as lmdb(" + path_ +
+            ") but no compatible lazy LMDB reader is built into this seek "
+            "backend. This tier is opt-in and carries no repo dependency; the "
+            "seek reader does not read the npm-lmdb store format. Use "
+            "UW_STORE_BACKEND=indexed (the default), which reads the "
+            "dependency-free UWFI/UWIX seek store. The indexed(...) store is a "
+            "different format and is not used as a fallback.";
+    }
+
+private:
+    std::string kind_;
+    std::string path_;
+    std::mutex  mu_;
+    bool        opened_ = false;
+    std::ifstream data_;
+    std::ifstream idx_;
+    std::uint64_t data_size_ = 0;
+    std::uint32_t n_keys_ = 0;
+    std::uint32_t keyblob_off_ = 0;
+    std::uint32_t hits_off_ = 0;
+    std::uint32_t n_records_ = 0;
+
+    // One positioned read that feeds the D43 counters. On a short read it
+    // returns only the bytes actually read (mirrors Go''s factIORead).
+    std::string fact_io_read(std::ifstream& f, std::size_t length, std::uint64_t position) {
+        if (length == 0) return std::string();
+        std::string buf;
+        buf.resize(length);
+        f.clear();
+        f.seekg(static_cast<std::streamoff>(position), std::ios::beg);
+        f.read(&buf[0], static_cast<std::streamsize>(length));
+        std::streamsize n = f.gcount();
+        if (n < 0) n = 0;
+        g_fact_io_bytes.fetch_add(static_cast<std::uint64_t>(n), std::memory_order_relaxed);
+        g_fact_io_reads.fetch_add(1, std::memory_order_relaxed);
+        buf.resize(static_cast<std::size_t>(n));
+        return buf;
+    }
+
+    void ensure_open() {
+        std::lock_guard<std::mutex> guard(mu_);
+        if (opened_) return;
+        data_.open(path_ + ".data", std::ios::binary);
+        if (!data_.is_open())
+            throw std::runtime_error("seek store open failed (" + path_ + ".data)");
+        idx_.open(path_ + ".idx", std::ios::binary);
+        if (!idx_.is_open())
+            throw std::runtime_error("seek store open failed (" + path_ + ".idx)");
+        // data size
+        data_.seekg(0, std::ios::end);
+        data_size_ = static_cast<std::uint64_t>(data_.tellg());
+        data_.seekg(0, std::ios::beg);
+        g_fact_io_data_size.store(data_size_, std::memory_order_relaxed);
+        std::string ih = fact_io_read(idx_, 24, 0);
+        if (ih.size() < 24 || ih.compare(0, 4, "UWIX") != 0)
+            throw std::runtime_error("seek store: bad index magic at " + path_ + ".idx");
+        n_keys_      = seek_le_u32(ih, 8);
+        keyblob_off_ = seek_le_u32(ih, 12);
+        hits_off_    = seek_le_u32(ih, 16);
+        n_records_   = seek_le_u32(ih, 20);
+        std::string dh = fact_io_read(data_, 16, 0);
+        if (dh.size() < 16 || dh.compare(0, 4, "UWFI") != 0)
+            throw std::runtime_error("seek store: bad data magic at " + path_ + ".data");
+        opened_ = true;
+    }
+
+    // Binary search the sorted key table for `target`; return the .data offsets
+    // that key hits (empty if absent). Every probe is a positioned read, so the
+    // D43 counters see exactly the bytes a keyed seek touches.
+    std::vector<std::uint32_t> lookup_offsets(const std::string& target) {
+        std::vector<std::uint32_t> offs;
+        std::int64_t lo = 0;
+        std::int64_t hi = static_cast<std::int64_t>(n_keys_) - 1;
+        while (lo <= hi) {
+            std::int64_t mid = (lo + hi) >> 1;
+            std::uint64_t pos = 24 + static_cast<std::uint64_t>(mid) * 16;
+            std::string e = fact_io_read(idx_, 16, pos);
+            std::uint32_t key_rel = seek_le_u32(e, 0);
+            std::size_t   key_len = seek_le_u16(e, 4);
+            std::size_t   n_hits  = seek_le_u16(e, 6);
+            std::uint32_t hits_rel = seek_le_u32(e, 8);
+            std::string k = fact_io_read(idx_, key_len,
+                                         static_cast<std::uint64_t>(keyblob_off_) + key_rel);
+            int c = seek_bytes_compare(k, target);
+            if (c == 0) {
+                std::string hits = fact_io_read(idx_, n_hits * 4,
+                    static_cast<std::uint64_t>(hits_off_) + hits_rel);
+                offs.reserve(n_hits);
+                for (std::size_t i = 0; i < n_hits; ++i) offs.push_back(seek_le_u32(hits, i * 4));
+                return offs;
+            }
+            if (c < 0) lo = mid + 1; else hi = mid - 1;
+        }
+        return offs;
+    }
+
+    bool read_record(std::uint64_t data_off, Value& a1_out, Value& a2_out) {
+        std::string len_buf = fact_io_read(data_, 4, data_off);
+        if (len_buf.size() < 4) return false;
+        std::size_t payload_len = seek_le_u32(len_buf, 0);
+        std::string payload = fact_io_read(data_, payload_len, data_off + 4);
+        if (payload.size() < 4) return false;
+        std::size_t a1_len = seek_le_u16(payload, 0);
+        std::size_t a2_len = seek_le_u16(payload, 2);
+        if (payload.size() < 4 + a1_len + a2_len) return false;
+        std::string a1 = payload.substr(4, a1_len);
+        std::string a2 = payload.substr(4 + a1_len, a2_len);
+        a1_out = parse_fact_source_value(a1);
+        a2_out = parse_fact_source_value(a2);
+        return true;
+    }
+
+    void scan_all(std::vector<std::pair<Value, Value>>& out) {
+        out.reserve(n_records_);
+        std::uint64_t pos = 16;
+        for (std::uint32_t i = 0; i < n_records_; ++i) {
+            Value a1, a2;
+            if (read_record(pos, a1, a2)) out.emplace_back(std::move(a1), std::move(a2));
+            std::string len_buf = fact_io_read(data_, 4, pos);
+            pos += 4 + static_cast<std::uint64_t>(seek_le_u32(len_buf, 0));
+        }
+    }
+};
+
 struct WamState {
     // A/X register file as a flat array indexed by reg_index() (A1..A100 ->
     // 0..99, X1..X220 -> 100..319). Y registers live in env_stack frames. This
@@ -3642,6 +4075,23 @@ struct WamState {
     };
     std::vector<DynamicIterator> dynamic_iters;
     std::size_t dynamic_next_clause_pc = 0;
+    // D43 store-backed P/2 fact sources, keyed by "name/arity". Registered at
+    // setup by register_seek_fact_source (from the cpp_wam_fact_sources codegen
+    // option). CallForeign dispatches store predicates here for keyed lazy
+    // seeks instead of loading the whole catalog into dynamic_db.
+    std::unordered_map<std::string, std::shared_ptr<SeekFactSource>> seek_fact_sources;
+    // Iteration state for dispatch_foreign_call. Mirrors DynamicIterator, but
+    // the clause list is materialised per-call from a seek/scan (already the
+    // rows the bound key touches), so it is owned by the iterator rather than
+    // read from dynamic_db. Each clause is a ground store_pred(A1,A2) compound.
+    struct ForeignIterator {
+        std::vector<CellPtr> clauses;
+        std::size_t next_idx = 0;
+        std::vector<CellPtr> call_args;
+        std::size_t after_pc = 0;
+    };
+    std::vector<ForeignIterator> foreign_iters;
+    std::size_t foreign_next_clause_pc = 0;
     // Mutable globals — nb_setval/2, nb_getval/2, b_setval/2, b_getval/2.
     // Each key maps to a CellPtr holding the current value. nb_setval
     // replaces the pointer (non-backtrackable: prior bindings to the
@@ -3906,6 +4356,25 @@ struct WamState {
     // after_pc; on no-match, undo trail and recurse (CP-style).
     // On exhausted iterator, pop and return false.
     bool    dynamic_try_next();
+    // Register a D43 store-backed P/2 seek fact source. Kind is "indexed"
+    // (UWFI/UWIX .data/.idx seek store at Path prefix) or "lmdb" (opt-in
+    // comparison tier; loud error at query time — no reader built into the seek
+    // backend).
+    void    register_seek_fact_source(const std::string& key,
+                                      const std::string& kind,
+                                      const std::string& path);
+    // Dispatch a CallForeign to a store-backed P/2 fact source: read A1, do a
+    // keyed seek when it is bound atomic (else a full scan), materialise the
+    // matching rows as ground clause cells, push a ForeignIterator, then
+    // delegate to foreign_try_next (which unifies the first row and pushes a CP
+    // for the rest if any). Returns false (→ backtrack) when no rows match.
+    bool    dispatch_foreign_call(const std::string& key,
+                                  std::int64_t arity,
+                                  std::size_t after_pc);
+    // Try the next row in the top ForeignIterator. Mirrors dynamic_try_next:
+    // unify call_args with the ground row, push a CP (alt_pc =
+    // foreign_next_clause_pc) if more rows remain, and proceed to after_pc.
+    bool    foreign_try_next();
     // Nondet retract/1 — finds the next clause in dynamic_db[key]
     // (from iter.next_idx onward) that unifies with iter.pattern,
     // removes it, leaves the unification bindings in place, pushes
@@ -8604,7 +9073,23 @@ bool WamState::step(const Instruction& instr) {
             return builtin(instr.a, instr.n);
         }
         case Instruction::Op::CallForeign:
+            // D43 store-backed P/2 fact source dispatch. instr.a is the
+            // "name/arity" key, instr.n the arity. When the predicate is a
+            // registered seek source, do the keyed lazy seek and stream the
+            // matching rows through the choice-point machinery; the continuation
+            // is the next instruction (the Proceed the fact-stream body emits).
+            // A predicate with no registered source keeps the historical no-op
+            // (advance past it) so a stray CallForeign never wedges the loop.
+            if (seek_fact_sources.find(instr.a) != seek_fact_sources.end())
+                return dispatch_foreign_call(instr.a, instr.n, pc + 1);
             pc += 1; return true;
+        case Instruction::Op::ForeignNextClause: {
+            // Reached when a store-backed fact-source call backtracks into its
+            // remaining rows. Pop the CP and delegate to foreign_try_next, which
+            // unifies the next row and pushes another CP if more remain.
+            if (!choice_points.empty()) choice_points.pop_back();
+            return foreign_try_next();
+        }
 
         // ---- Aggregate / findall driver ----------------------------
         case Instruction::Op::BeginAggregate: {
@@ -9181,6 +9666,119 @@ bool WamState::dynamic_try_next() {
     bf.base_cp_count = choice_points.size();
     body_frames.push_back(std::move(bf));
     return body_next();
+}
+
+// ----------------------------------------------------------------------
+// D43 store-backed P/2 seek fact source dispatch
+// ----------------------------------------------------------------------
+
+// Register a seek source under "name/arity". kind is "indexed" (UWFI/UWIX
+// .data/.idx seek store at `path` prefix) or "lmdb" (opt-in comparison tier).
+void WamState::register_seek_fact_source(const std::string& key,
+                                         const std::string& kind,
+                                         const std::string& path) {
+    seek_fact_sources[key] = std::make_shared<SeekFactSource>(kind, path);
+}
+
+// CallForeign entry for a store-backed P/2 fact source. A bound atomic A1
+// becomes a keyed seek (only the records that key touches are read off disk);
+// an unbound A1 becomes a full scan (the unbound-arg1 provides walk). Every
+// matching row is materialised as a ground store_pred(A1,A2) clause and
+// streamed through the choice-point machinery so both bound-A2 filtering and
+// multi-row backtracking behave exactly like a term-catalog fact predicate.
+bool WamState::dispatch_foreign_call(const std::string& key,
+                                     std::int64_t arity,
+                                     std::size_t after_pc) {
+    auto src_it = seek_fact_sources.find(key);
+    if (src_it == seek_fact_sources.end()) return false;
+    if (arity != 2) return false;  // v1 serves P/2 only
+    CellPtr a1 = get_cell("A1");
+    CellPtr a2 = get_cell("A2");
+    Value a1d = deref(*a1);
+    std::optional<std::string> seek_key;
+    if (a1d.tag == Value::Tag::Atom
+        || a1d.tag == Value::Tag::Integer
+        || a1d.tag == Value::Tag::Float) {
+        seek_key = encode_store_key(a1d);
+    }
+    std::vector<std::pair<Value, Value>> rows;
+    try {
+        rows = src_it->second->rows(seek_key);
+    } catch (const std::exception& e) {
+        // Loud, non-fatal: surface the message (missing store, or the opt-in
+        // lmdb tier with no reader) and fail the goal rather than std::terminate
+        // out of the interpreter loop.
+        std::fprintf(stderr, "[wam-cpp] fact source %s: %s\\n", key.c_str(), e.what());
+        return false;
+    }
+    if (rows.empty()) return false;
+    ForeignIterator it;
+    it.next_idx = 0;
+    it.after_pc = after_pc;
+    it.call_args.reserve(2);
+    it.call_args.push_back(a1);
+    it.call_args.push_back(a2);
+    it.clauses.reserve(rows.size());
+    for (auto& r : rows) {
+        std::vector<CellPtr> cargs;
+        cargs.reserve(2);
+        cargs.push_back(make_cell(r.first));
+        cargs.push_back(make_cell(r.second));
+        it.clauses.push_back(make_cell(Value::Compound(key, std::move(cargs))));
+    }
+    foreign_iters.push_back(std::move(it));
+    return foreign_try_next();
+}
+
+// Try the next row in the top ForeignIterator. Mirrors dynamic_try_next: push a
+// CP (alt_pc = foreign_next_clause_pc) when rows remain, unify the ground row
+// against the call args, and proceed to after_pc. Rows are ground store facts,
+// so a plain unify_cells suffices (no unbound-unbound rename seeding needed).
+bool WamState::foreign_try_next() {
+    if (foreign_iters.empty()) return false;
+    ForeignIterator& it = foreign_iters.back();
+    if (it.next_idx >= it.clauses.size()) {
+        foreign_iters.pop_back();
+        return false;
+    }
+    std::size_t idx = it.next_idx;
+    bool has_more = (idx + 1 < it.clauses.size());
+    std::vector<CellPtr> call_args = it.call_args;
+    std::size_t saved_after_pc = it.after_pc;
+    CellPtr clause = it.clauses[idx];
+    // Advance BEFORE pushing the CP — the CP snapshots foreign_iters state, so
+    // the captured next_idx must already point at the SUBSEQUENT row.
+    it.next_idx = idx + 1;
+    if (has_more) {
+        ChoicePoint cp_;
+        cp_.alt_pc            = foreign_next_clause_pc;
+        cp_.saved_cp          = cp;
+        cp_.trail_mark        = trail.size();
+        cp_.cut_barrier       = cut_barrier;
+        cp_.saved_regs        = regs;
+        cp_.saved_mode_stack  = mode_stack;
+        cp_.saved_env_stack   = env_stack;
+        cp_.saved_body_frames = body_frames;
+        choice_points.push_back(std::move(cp_));
+    } else {
+        // Last row — drop the iterator; exhaustion falls through to the outer
+        // backtrack scope.
+        foreign_iters.pop_back();
+    }
+    Value cv = deref(*clause);
+    if (cv.tag != Value::Tag::Compound || cv.args.size() != call_args.size())
+        return false;
+    for (std::size_t i = 0; i < call_args.size(); ++i) {
+        if (!unify_cells(call_args[i], cv.args[i])) return false;
+    }
+    // Fact match completes; advance to the continuation (the Proceed the
+    // fact-stream body emits after the call_foreign). Unlike dynamic_try_next
+    // (whose caller dispatches WITHOUT a label + return address), the store
+    // fact-source body IS reached by a normal Call that already set cp to the
+    // caller''s return address, so we must NOT clobber cp -- the following
+    // Proceed returns through it.
+    pc = saved_after_pc;
+    return true;
 }
 
 // retract/1 dispatcher. Reads A1 (the pattern), derives the
