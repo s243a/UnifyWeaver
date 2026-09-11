@@ -5,7 +5,7 @@
 
 Bounded recon task referenced from `PACKAGE_MANAGER_LOGIC_PROPOSAL.md` §2d/§2e.
 Goal: read Pkg's actual bash and map every real mechanism it encodes onto the
-`uw-resolve` P0 predicate set defined in `GROK_PKG_RESOLVER_PROMPT.md`:
+`uw-resolve` P0 predicate set defined in `archive/agent-prompts/GROK_PKG_RESOLVER_PROMPT.md`:
 `package/2`, `depends/4`, `conflicts/3`, `base/1`, `installed/1`,
 `requested/1`, and the four queries `resolve/2`, `resolve_layered/2`,
 `layer_closure/2`, `removal_orphans/2` (plus `explain_blocked/2`). No code was
@@ -140,7 +140,7 @@ declarative closure removes:
 `is_blacklisted_pkg()` (`usr/sbin/pkg:919-930`) and the exclusion applied
 inside every closure step (`grep -vE "'$PKG_BLACKLIST_REGEX'"`,
 `usr/sbin/pkg:6253,6277,6342`) implement a **third category** the current
-`GROK_PKG_RESOLVER_PROMPT.md` fact set doesn't name: packages the user (or
+`archive/agent-prompts/GROK_PKG_RESOLVER_PROMPT.md` fact set doesn't name: packages the user (or
 the distro, via `PKG_NAME_IGNORE` sourced from Woof-CE's own
 `/root/.packages/PKGS_MANAGEMENT`, per `CHANGELOG:90`) has declared "never
 auto-pull as a dependency," independent of whether it's base or installed.
@@ -192,7 +192,7 @@ removals but never proactively offers orphan cleanup after a `remove`.
 
 This is the single clearest point where **uw-resolve's design is already
 ahead of Pkg**, not behind it: `requested/1` vs. `installed/1` as separate
-facts (per `GROK_PKG_RESOLVER_PROMPT.md`) is precisely the distinction Pkg's
+facts (per `archive/agent-prompts/GROK_PKG_RESOLVER_PROMPT.md`) is precisely the distinction Pkg's
 data model lacks, and `removal_orphans/2` computing "no request and no
 surviving reverse-dep needs it" over that distinction is a real improvement,
 not a re-derivation of something Pkg already had. **Adopt:** keep
@@ -217,7 +217,7 @@ See §5 for the SFS-specific packaging requirements this implies.
 `list_dependents()` (`usr/sbin/pkg:6796-6852`, exposed as `wn`) answers
 "what installed packages need X" as a standalone, user-facing query — not
 just an internal removal-safety check. `resolve_layered`/`removal_orphans`
-compute reverse-deps internally but `GROK_PKG_RESOLVER_PROMPT.md` names no
+compute reverse-deps internally but `archive/agent-prompts/GROK_PKG_RESOLVER_PROMPT.md` names no
 predicate for exposing it directly. **Adopt:** add `dependents(Pkg,
 Dependents)` (or similar) to the P0 predicate set — cheap (it's a subset of
 what `removal_orphans` already computes) and it's explicitly one of the
@@ -246,7 +246,7 @@ whether to search only the current repo or federate across all repos when
 resolving names/deps, and whether to prefer the newest version from *any*
 repo vs. staying within one repo's version line. These map onto candidate
 generation order in `resolve`/`resolve_layered` (§3 of
-`GROK_PKG_RESOLVER_PROMPT.md` already specifies "prefer base-satisfied, then
+`archive/agent-prompts/GROK_PKG_RESOLVER_PROMPT.md` already specifies "prefer base-satisfied, then
 highest version" as the determinism policy) — **adapt:** the policy needs a
 knob for "highest version within the current/preferred repo" vs. "highest
 version across all federated repos," because Puppy users apparently wanted
@@ -347,7 +347,7 @@ site (`usr/sbin/pkg:7109`, `mksquashfs "$SFS_DIR" "$SFS_NAME" -noappend`):
    files into a merged tree, then squash once," order doesn't matter for
    *this* consumer. **This does not confirm or refute** whether
    `layer_closure`'s "dependencies before dependents" ordering requirement
-   (`GROK_PKG_RESOLVER_PROMPT.md` line ~42) matters for some *other* SFS
+   (`archive/agent-prompts/GROK_PKG_RESOLVER_PROMPT.md` line ~42) matters for some *other* SFS
    consumer (e.g. sequential `pkg_install` calls, where a package's
    post-install script might expect a dependency already present) —
    `pkg_install()` itself is called once per package with no
