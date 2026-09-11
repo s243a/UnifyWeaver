@@ -4639,6 +4639,35 @@ impl WamState {
         }
     }
 
+    /// Deref-memo (D103): is this value guaranteed to `deref_heap` back to
+    /// ITSELF (verbatim, `same_cell`) — i.e. is it a legitimate element of a
+    /// deref-stable parent spine?
+    ///
+    /// Called ONLY from `deref_heap`'s nothing-moved (None) branch, where the
+    /// recursion has already `deref_heap`'d every element and none moved — so a
+    /// `Str` child there already has a verbatim functor (a normalising functor
+    /// would have MOVED it into the Some branch) and its spine flag, if it is a
+    /// stable subtree, has just been set by that recursion. The classification
+    /// therefore depends only on IMMUTABLE structure and the (permanent) child
+    /// spine flags, never on bindings:
+    ///   * atomic leaves (Atom/Integer/Float/Bool) — always deref back to
+    ///     themselves;
+    ///   * `Str`/`List` — iff their FULL spine is proven stable (state 1);
+    ///   * `Unbound`/`Ref`/`Uninit` — NEVER (an `Unbound` can become bound and
+    ///     move; a `Ref` materialises; `Uninit` never appears in a term). These
+    ///     disqualify the parent, exactly as the design requires (a stable node
+    ///     contains no `Unbound`, no `Ref`).
+    #[cfg(feature = "deref_memo")]
+    #[inline]
+    fn child_is_deref_stable(v: &Value) -> bool {
+        match v {
+            Value::Atom(_) | Value::Integer(_) | Value::Float(_) | Value::Bool(_) => true,
+            Value::Str(_, args) => args.is_full_stable(),
+            Value::List(items) => items.is_full_stable(),
+            _ => false,
+        }
+    }
+
     /// Fully dereference a CONS CHAIN — `[H|T]` where `T` is itself another
     /// cons cell — into one `Value::List` (or, when the chain ends in
     /// something other than `[]`/a list, into a partial list), walking the
@@ -4720,12 +4749,32 @@ impl WamState {
             }
             Value::Str(full_str, args) => {
                 let functor = Self::functor_of_sym(full_str, args.len());
+                let is_cons = args.len() == 2 && self.is_cons_functor(functor);
+                // Deref-memo short-circuit (D103). A spine proven deref-stable
+                // (state 1) needs no re-walk: `deref_heap` would rebuild
+                // nothing, so the result is either `val.clone()` (verbatim
+                // functor) or the pure functor-normalisation `Str(functor,
+                // args.clone())` — both byte-identical to the walked paths
+                // below. Guarded by `!is_cons` because a cons `Str` on a
+                // (pathologically shared) stable spine must still take the
+                // cons-rebuild path, and the flag is only ever SET on non-cons
+                // verbatim nodes so this is defensive.
+                #[cfg(feature = "deref_memo")]
+                {
+                    if !is_cons && args.is_full_stable() {
+                        return if functor == full_str.as_str() {
+                            val.clone()
+                        } else {
+                            Value::Str(functor.into(), args.clone())
+                        };
+                    }
+                }
                 // A cons cell is walked ITERATIVELY (see deref_cons_chain):
                 // rebuilding it recursively used to prepend one element at a
                 // time onto the tail already built, and `Args::cons` copies
                 // the visible window — so an N-cell chain cost Θ(N²) time and
                 // N frames of Rust stack.
-                if args.len() == 2 && self.is_cons_functor(functor) {
+                if is_cons {
                     return self.deref_cons_chain(&args[0], &args[1]);
                 }
                 // Deferred allocation: the `derefed` vector is only built once
@@ -4749,10 +4798,30 @@ impl WamState {
                 }
                 match derefed {
                     None => {
-                        // Nothing under this node moved: keep the existing
-                        // spine. (The functor may still be normalised from
-                        // "f/N" to "f", which costs one small string, never
-                        // the arguments.)
+                        // Nothing under this node moved. Record the spine's
+                        // deref-stability (D103) for the next reader: this walk
+                        // just proved no element moves; if every element is
+                        // itself deref-stable (a permanent, immutable-structure
+                        // property, checked bottom-up — the recursion above has
+                        // already marked each stable child's spine) the full
+                        // spine is deref-stable forever. Only mark on a full
+                        // view (`off == 0`); a suffix cannot vouch for the
+                        // prefix. The child-stability re-check reads flags the
+                        // recursion set, so it holds whether or not the functor
+                        // normalises (both take this None branch).
+                        #[cfg(feature = "deref_memo")]
+                        {
+                            if args.stability() == 0 && args.is_full_view() {
+                                if args.iter().all(|a| Self::child_is_deref_stable(a)) {
+                                    args.mark_stable();
+                                } else {
+                                    args.mark_not_stable();
+                                }
+                            }
+                        }
+                        // Keep the existing spine. (The functor may still be
+                        // normalised from "f/N" to "f", which costs one small
+                        // string, never the arguments.)
                         if functor == full_str.as_str() {
                             val.clone()
                         } else {
@@ -4763,10 +4832,32 @@ impl WamState {
                             Value::Str(functor.into(), args.clone())
                         }
                     }
-                    Some(acc) => Value::strv(functor, acc),
+                    Some(acc) => {
+                        // A child moved ⟹ this spine is not deref-stable, and
+                        // that is permanent (a moved element is a bound var,
+                        // a Ref, or a non-stable sub-spine — none of which the
+                        // immutable spine can ever shed). Record it so later
+                        // derefs skip the stability re-check.
+                        #[cfg(feature = "deref_memo")]
+                        {
+                            if args.stability() == 0 && args.is_full_view() {
+                                args.mark_not_stable();
+                            }
+                        }
+                        Value::strv(functor, acc)
+                    }
                 }
             }
             Value::List(items) => {
+                // Deref-memo short-circuit (D103): a deref-stable list spine
+                // rebuilds to itself; `val.clone()` is byte-identical to the
+                // walked None branch below.
+                #[cfg(feature = "deref_memo")]
+                {
+                    if items.is_full_stable() {
+                        return val.clone();
+                    }
+                }
                 let mut derefed: Option<Vec<Value>> = None;
                 for (idx, i) in items.iter().enumerate() {
                     let d = self.deref_heap(&self.deref_var(i));
@@ -4783,8 +4874,28 @@ impl WamState {
                     }
                 }
                 match derefed {
-                    None => val.clone(),
-                    Some(acc) => Value::list(acc),
+                    None => {
+                        #[cfg(feature = "deref_memo")]
+                        {
+                            if items.stability() == 0 && items.is_full_view() {
+                                if items.iter().all(|i| Self::child_is_deref_stable(i)) {
+                                    items.mark_stable();
+                                } else {
+                                    items.mark_not_stable();
+                                }
+                            }
+                        }
+                        val.clone()
+                    }
+                    Some(acc) => {
+                        #[cfg(feature = "deref_memo")]
+                        {
+                            if items.stability() == 0 && items.is_full_view() {
+                                items.mark_not_stable();
+                            }
+                        }
+                        Value::list(acc)
+                    }
                 }
             }
             Value::Ref(addr) => {
@@ -8565,6 +8676,237 @@ mod functor_cache_tests {
                 "functor_of_sym(\"{}\", {})", s, arity
             );
         }
+    }
+}
+
+// ===========================================================================
+// Deref-memoization (D103) — the `deref_memo` deref-stability cache.
+//
+// These prove the two properties the short-circuit relies on: (1) `deref_heap`
+// is IDEMPOTENT across the transform hazards (a `"f/N"` functor that
+// normalises, a cons `Str` rebuilt into a list, nested compounds, an unbound
+// var, a bound var, a heap `Ref`), before AND after the memo can fire; and
+// (2) once `deref_heap` marks a spine stable, re-derefing that spine returns a
+// value equal to the first result (the short-circuit is byte-identical to the
+// walk). The suite runs on BOTH the ON and OFF builds; the flag-observing
+// assertions are `deref_memo`-gated.
+// ===========================================================================
+#[cfg(test)]
+mod deref_memo_tests {
+    use super::*;
+
+    fn vm() -> WamState { WamState::new(vec![], HashMap::new()) }
+
+    // A spread of terms covering every deref_heap transform branch.
+    fn spread(vm: &mut WamState) -> Vec<Value> {
+        // A heap Ref: heap[0] = str(foo/2), heap[1..3] = args.
+        vm.heap = vec![
+            Value::strv("foo/2", vec![]),
+            Value::atom("ha"),
+            Value::atom("hb"),
+        ];
+        // A bound variable: _B -> atom(bound_ok).
+        vm.bind_var("_B", Value::atom("bound_ok"));
+        vec![
+            // atomic leaves
+            Value::atom("a"),
+            Value::Integer(42),
+            Value::Float(3.5),
+            Value::Bool(true),
+            // ground compound whose functor NORMALISES "depends/4" -> "depends"
+            Value::strv("depends/4", vec![
+                Value::atom("p0"), Value::Integer(1), Value::atom("p1"), Value::Integer(2),
+            ]),
+            // ground compound with an already-verbatim functor
+            Value::strv("pair", vec![Value::atom("x"), Value::atom("y")]),
+            // nested compound: a list inside a compound inside a list
+            Value::list(vec![
+                Value::strv("node/1", vec![
+                    Value::list(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)]),
+                ]),
+                Value::atom("tail_marker"),
+            ]),
+            // a plain ground list
+            Value::list(vec![Value::atom("l1"), Value::atom("l2"), Value::atom("l3")]),
+            // a cons-Str chain "[|]/2" that deref_heap rebuilds into a list
+            Value::strv("[|]/2", vec![
+                Value::atom("c1"),
+                Value::strv("[|]/2", vec![Value::atom("c2"), Value::atom("[]")]),
+            ]),
+            // an unbound variable (stays unbound -> never markable stable)
+            Value::unbound("_U"),
+            // a bound variable (derefs to its binding)
+            Value::unbound("_B"),
+            // a compound containing an unbound var (never markable stable)
+            Value::strv("holds/1", vec![Value::unbound("_U2")]),
+            // a heap Ref
+            Value::Ref(0),
+        ]
+    }
+
+    // deref_heap(deref_heap(v)) == deref_heap(v) for every term in the spread,
+    // both on the first (cold, memo not yet set) and second (warm) deref.
+    #[test]
+    fn deref_heap_is_idempotent() {
+        let mut m = vm();
+        let terms = spread(&mut m);
+        for (i, t) in terms.iter().enumerate() {
+            let once = m.deref_heap(t);
+            let twice = m.deref_heap(&once);
+            assert_eq!(once, twice, "idempotence[{}] first round: {}", i, once);
+            // Run again so the warm (possibly memoised) path is also idempotent.
+            let once2 = m.deref_heap(t);
+            let twice2 = m.deref_heap(&once2);
+            assert_eq!(once, once2, "deref stable across calls[{}]: {} vs {}", i, once, once2);
+            assert_eq!(once2, twice2, "idempotence[{}] warm round: {}", i, once2);
+        }
+    }
+
+    // The specific transform-hazard outputs are correct (independent of the
+    // reference), and identical cold vs warm — so a memo that fired did not
+    // change the answer.
+    #[test]
+    fn transform_hazards_are_correct_cold_and_warm() {
+        let mut m = vm();
+        // "f/N" functor normalisation: depends/4 -> depends(...)
+        let fn_term = Value::strv("depends/4", vec![
+            Value::atom("p0"), Value::Integer(1), Value::atom("p1"), Value::Integer(2),
+        ]);
+        let want_fn = Value::strv("depends", vec![
+            Value::atom("p0"), Value::Integer(1), Value::atom("p1"), Value::Integer(2),
+        ]);
+        assert_eq!(m.deref_heap(&fn_term), want_fn, "f/N normalisation (cold)");
+        assert_eq!(m.deref_heap(&fn_term), want_fn, "f/N normalisation (warm)");
+
+        // cons-Str "[|]/2" chain -> a Value::List.
+        let cons = Value::strv("[|]/2", vec![
+            Value::atom("c1"),
+            Value::strv("[|]/2", vec![Value::atom("c2"), Value::atom("[]")]),
+        ]);
+        let want_cons = Value::list(vec![Value::atom("c1"), Value::atom("c2")]);
+        assert_eq!(m.deref_heap(&cons), want_cons, "cons-Str rebuild (cold)");
+        assert_eq!(m.deref_heap(&cons), want_cons, "cons-Str rebuild (warm)");
+
+        // A ground list is returned unchanged, structurally equal.
+        let list = Value::list(vec![Value::atom("l1"), Value::atom("l2")]);
+        assert_eq!(m.deref_heap(&list), list, "ground list (cold)");
+        assert_eq!(m.deref_heap(&list), list, "ground list (warm)");
+    }
+
+    // A stable spine, once marked, makes deref_heap return `val.clone()`
+    // (byte-identical) via the short-circuit; and terms with unbound vars /
+    // functor normalisation / cons cells are NOT marked stable.
+    #[cfg(feature = "deref_memo")]
+    #[test]
+    fn stable_flag_semantics() {
+        let mut m = vm();
+
+        // A ground compound with a verbatim functor: its spine becomes stable
+        // after one deref, and the second deref short-circuits to a clone.
+        let ground = Value::strv("pair", vec![Value::atom("x"), Value::atom("y")]);
+        if let Value::Str(_, ref args) = ground {
+            assert_eq!(args.stability(), 0, "cold spine is unknown");
+        }
+        let d1 = m.deref_heap(&ground);
+        if let Value::Str(_, ref args) = ground {
+            assert_eq!(args.stability(), 1, "ground spine marked stable after deref");
+            assert!(args.is_full_stable());
+        }
+        let d2 = m.deref_heap(&ground);
+        assert_eq!(d1, d2, "stable short-circuit equals the walked result");
+
+        // A ground list: spine marked stable, child_is_deref_stable holds.
+        let list = Value::list(vec![Value::atom("l1"), Value::atom("l2")]);
+        let _ = m.deref_heap(&list);
+        if let Value::List(ref items) = list {
+            assert!(items.is_full_stable(), "ground list spine marked stable");
+        }
+
+        // A compound with an unbound var is NEVER marked stable (state 2).
+        let with_var = Value::strv("holds/1", vec![Value::unbound("_free")]);
+        let _ = m.deref_heap(&with_var);
+        if let Value::Str(_, ref args) = with_var {
+            assert_eq!(args.stability(), 2, "unbound-var spine marked not-stable");
+            assert!(!args.is_full_stable());
+        }
+
+        // A cons-Str spine is never marked stable (it takes the rebuild path).
+        let cons = Value::strv("[|]/2", vec![Value::atom("c1"), Value::atom("[]")]);
+        let _ = m.deref_heap(&cons);
+        if let Value::Str(_, ref args) = cons {
+            assert_ne!(args.stability(), 1, "cons-Str spine never marked stable");
+        }
+
+        // child_is_deref_stable classification.
+        assert!(WamState::child_is_deref_stable(&Value::atom("a")));
+        assert!(WamState::child_is_deref_stable(&Value::Integer(1)));
+        assert!(!WamState::child_is_deref_stable(&Value::unbound("_z")));
+        assert!(!WamState::child_is_deref_stable(&Value::Ref(0)));
+    }
+
+    // A nested ground term with VERBATIM functors: stability propagates all the
+    // way to the root (bottom-up), and re-deref is byte-identical.
+    #[cfg(feature = "deref_memo")]
+    #[test]
+    fn nested_ground_marks_bottom_up() {
+        let mut m = vm();
+        let nested = Value::strv("outer", vec![
+            Value::list(vec![
+                Value::strv("inner", vec![Value::atom("a"), Value::Integer(7)]),
+                Value::atom("b"),
+            ]),
+        ]);
+        let d1 = m.deref_heap(&nested);
+        // With no "/N" functor to normalise, nothing moves and the root spine
+        // is marked stable (its child list + the inner compound are too).
+        if let Value::Str(_, ref args) = nested {
+            assert!(args.is_full_stable(), "outer verbatim-functor ground spine stable");
+        }
+        let d2 = m.deref_heap(&nested);
+        assert_eq!(d1, d2, "nested ground re-deref byte-identical");
+        let d3 = m.deref_heap(&d1);
+        assert_eq!(d1, d3, "deref of deref result is identical");
+    }
+
+    // TRANSFORM HAZARD, made explicit: a functor that NORMALISES ("f/N") is a
+    // MOVE, so such a node is never itself deref-stable AND it disqualifies its
+    // ancestors — but its own ARGUMENT spine is still marked stable, so the win
+    // (skipping the arg re-walk) applies to the resolver's ground "depends/4"
+    // catalog rows even though the top node re-normalises the functor each time.
+    #[cfg(feature = "deref_memo")]
+    #[test]
+    fn normalising_functor_marks_arg_spine_but_not_ancestors() {
+        let mut m = vm();
+        let row = Value::strv("depends/4", vec![
+            Value::atom("p0"), Value::Integer(1), Value::atom("p1"), Value::Integer(2),
+        ]);
+        let want = Value::strv("depends", vec![
+            Value::atom("p0"), Value::Integer(1), Value::atom("p1"), Value::Integer(2),
+        ]);
+        let d1 = m.deref_heap(&row);
+        assert_eq!(d1, want, "depends/4 normalises to depends(...) (cold)");
+        // The ARG spine of the "depends/4" node is marked stable...
+        if let Value::Str(_, ref args) = row {
+            assert!(args.is_full_stable(), "arg spine of a normalising node IS stable");
+        }
+        // ...so the second deref short-circuits (skips the 4-arg walk) and is
+        // byte-identical.
+        let d2 = m.deref_heap(&row);
+        assert_eq!(d1, d2, "normalising-node re-deref byte-identical (warm short-circuit)");
+
+        // A parent holding this normalising row does NOT become stable, because
+        // the row moves (functor changes) on deref.
+        let parent = Value::strv("wrap", vec![
+            Value::strv("depends/4", vec![
+                Value::atom("p0"), Value::Integer(1), Value::atom("p1"), Value::Integer(2),
+            ]),
+        ]);
+        let p1 = m.deref_heap(&parent);
+        if let Value::Str(_, ref args) = parent {
+            assert_eq!(args.stability(), 2, "parent of a normalising child is not stable");
+        }
+        let p2 = m.deref_heap(&parent);
+        assert_eq!(p1, p2, "parent re-deref still byte-identical");
     }
 }
 

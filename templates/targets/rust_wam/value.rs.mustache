@@ -4,6 +4,8 @@
 use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
+#[cfg(feature = "deref_memo")]
+use std::sync::atomic::{AtomicU8, Ordering};
 
 // ===========================================================================
 // Symbol interning (hot-path optimization #2 — D94/D96).
@@ -396,9 +398,35 @@ mod interner {
 /// `Deref<Target = [Value]>` means every read (`len`, `iter`, indexing,
 /// slicing, `split_first`, `to_vec`) works on the visible window as if it were
 /// a plain slice; only construction and cons go through the methods below.
+///
+/// DEREF-STABILITY MEMO (D103, `deref_memo` feature). `Spine` carries a
+/// lock-free tristate `stable` flag caching the predicate "`deref_heap`
+/// returns a node built on THIS (full) spine structurally unchanged" — i.e.
+/// every element is deref-stable and nothing under it moves. It is set ONLY
+/// from `deref_heap`'s own verified identity path (never a separate groundness
+/// walk), so short-circuiting a stable spine to `val.clone()` is byte-identical
+/// by construction. Because `Value`s are immutable (a deref rebuilds; a binding
+/// lives in `WamState::bindings`, a spine is never mutated in place) and a
+/// deref-stable spine contains no `Unbound`, no `Ref`, no `"f/N"` functor and
+/// no cons-`Str`, the flag — once `1` (stable) or `2` (not) — is a permanent
+/// property of the immutable spine, safe across bindings, the trail and
+/// backtracking. The flag describes the FULL spine (`items[0..]`); a window
+/// `[off..]` of a fully-stable spine is itself all-stable (a suffix of an
+/// all-stable list is all-stable), so the short-circuit is sound at any `off`,
+/// but the flag is only ever SET from a full-spine (`off == 0`) walk.
+#[derive(Debug)]
+struct Spine {
+    items: Vec<Value>,
+    /// Deref-stability tristate: 0 = unknown, 1 = stable, 2 = not stable.
+    /// Relaxed atomics — a race recomputes the same deterministic value, so a
+    /// benign double-write is harmless and no lock is needed.
+    #[cfg(feature = "deref_memo")]
+    stable: AtomicU8,
+}
+
 #[derive(Clone, Debug)]
 pub struct Args {
-    spine: Arc<Vec<Value>>,
+    spine: Arc<Spine>,
     off: usize,
 }
 
@@ -406,7 +434,14 @@ impl Args {
     /// Take ownership of a freshly built vector as a new spine.
     #[inline]
     pub fn from_vec(items: Vec<Value>) -> Args {
-        Args { spine: Arc::new(items), off: 0 }
+        Args {
+            spine: Arc::new(Spine {
+                items,
+                #[cfg(feature = "deref_memo")]
+                stable: AtomicU8::new(0),
+            }),
+            off: 0,
+        }
     }
 
     /// The empty spine.
@@ -419,7 +454,7 @@ impl Args {
     /// Panics-free: an empty spine yields an empty spine.
     #[inline]
     pub fn tail(&self) -> Args {
-        let off = if self.off < self.spine.len() { self.off + 1 } else { self.off };
+        let off = if self.off < self.spine.items.len() { self.off + 1 } else { self.off };
         Args { spine: Arc::clone(&self.spine), off }
     }
 
@@ -440,13 +475,54 @@ impl Args {
     pub fn same_ref(a: &Args, b: &Args) -> bool {
         a.off == b.off && Arc::ptr_eq(&a.spine, &b.spine)
     }
+
+    /// True iff this window is the FULL spine (`off == 0`). The stability flag
+    /// is only ever SET from a full-spine walk (see the type comment).
+    #[cfg(feature = "deref_memo")]
+    #[inline]
+    pub fn is_full_view(&self) -> bool {
+        self.off == 0
+    }
+
+    /// The deref-stability tristate of the full spine (0/1/2). `deref_heap`
+    /// short-circuits on `1` and skips re-checking on `2`.
+    #[cfg(feature = "deref_memo")]
+    #[inline]
+    pub fn stability(&self) -> u8 {
+        self.spine.stable.load(Ordering::Relaxed)
+    }
+
+    /// True iff the full spine is proven deref-stable (state `1`).
+    #[cfg(feature = "deref_memo")]
+    #[inline]
+    pub fn is_full_stable(&self) -> bool {
+        self.stability() == 1
+    }
+
+    /// Record that the full spine is deref-stable. Only call from
+    /// `deref_heap`'s verified identity path on a full view (`off == 0`) whose
+    /// every element is deref-stable.
+    #[cfg(feature = "deref_memo")]
+    #[inline]
+    pub fn mark_stable(&self) {
+        self.spine.stable.store(1, Ordering::Relaxed);
+    }
+
+    /// Record that the full spine is NOT deref-stable (a permanent property of
+    /// the immutable spine — an element moved, or an element is never
+    /// deref-stable). Skips the stability re-check on later derefs.
+    #[cfg(feature = "deref_memo")]
+    #[inline]
+    pub fn mark_not_stable(&self) {
+        self.spine.stable.store(2, Ordering::Relaxed);
+    }
 }
 
 impl Deref for Args {
     type Target = [Value];
     #[inline]
     fn deref(&self) -> &[Value] {
-        &self.spine[self.off..]
+        &self.spine.items[self.off..]
     }
 }
 
