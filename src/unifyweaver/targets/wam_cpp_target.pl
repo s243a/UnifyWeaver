@@ -7788,6 +7788,26 @@ static void begin_write(WamState& vm, const std::string& reg_name,
 // Step
 // ----------------------------------------------------------------------
 
+// An indexed switch (switch_on_term / _constant / _structure) that jumps
+// directly to the selected clause bypasses the entry try_me_else of the
+// clause chain. Only a retry_me_else / trust_me sitting AT that target reads
+// indexed_entry -- to synthesize a fresh CP (retry) or to skip a spurious pop
+// (trust). When first-arg indexing selects a UNIQUE clause, the jump lands on
+// the clause body itself (e.g. an allocate), which has no such consumer: that
+// clause then succeeds and proceeds, leaving indexed_entry set as a stale
+// global latch. A LATER, unrelated trust_me -- notably the else-guard
+// trust_me of an if-then-else ( Cond -> Then ; Else ) -- would then read the
+// latch and skip popping its own choice point, so the guard CP is never
+// consumed and execution loops forever (non-termination). Set the flag only
+// when a consumer actually awaits it at the jump target.
+static inline bool switch_target_consumes_indexed(
+        const std::vector<Instruction>& instrs, std::size_t tgt) {
+    if (tgt >= instrs.size()) return false;
+    Instruction::Op op = instrs[tgt].op;
+    return op == Instruction::Op::RetryMeElse
+        || op == Instruction::Op::TrustMe;
+}
+
 bool WamState::step(const Instruction& instr) {
     switch (instr.op) {
         // ---- Head unification --------------------------------------
@@ -8679,7 +8699,7 @@ bool WamState::step(const Instruction& instr) {
             if (it != instr.const_map.end()) {
                 if (it->second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
                 if (it->second == Instruction::SWITCH_NONE)    return false;
-                indexed_entry = true;
+                indexed_entry = switch_target_consumes_indexed(instrs, it->second);
                 pc = it->second; return true;
             }
             // Bound constant with no matching indexed clause. If the
@@ -8705,7 +8725,7 @@ bool WamState::step(const Instruction& instr) {
             if (it != instr.const_map.end()) {
                 if (it->second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
                 if (it->second == Instruction::SWITCH_NONE)    return false;
-                indexed_entry = true;
+                indexed_entry = switch_target_consumes_indexed(instrs, it->second);
                 pc = it->second; return true;
             }
             // See SwitchOnConstant: bound A2 with no entry in the
@@ -8723,7 +8743,7 @@ bool WamState::step(const Instruction& instr) {
                 if (kv.first == a.s) {
                     if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
                     if (kv.second == Instruction::SWITCH_NONE)    return false;
-                    indexed_entry = true;
+                    indexed_entry = switch_target_consumes_indexed(instrs, kv.second);
                     pc = kv.second; return true;
                 }
             }
@@ -8739,7 +8759,7 @@ bool WamState::step(const Instruction& instr) {
                 if (kv.first == a.s) {
                     if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
                     if (kv.second == Instruction::SWITCH_NONE)    return false;
-                    indexed_entry = true;
+                    indexed_entry = switch_target_consumes_indexed(instrs, kv.second);
                     pc = kv.second; return true;
                 }
             }
@@ -8761,7 +8781,7 @@ bool WamState::step(const Instruction& instr) {
                     if (kv.first == a) {
                         if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
                         if (kv.second == Instruction::SWITCH_NONE)    return false;
-                        indexed_entry = true;
+                        indexed_entry = switch_target_consumes_indexed(instrs, kv.second);
                         pc = kv.second; return true;
                     }
                 }
@@ -8771,14 +8791,14 @@ bool WamState::step(const Instruction& instr) {
                 if (a.s == "[|]/2") {
                     if (instr.target == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
                     if (instr.target == Instruction::SWITCH_NONE)    return false;
-                    indexed_entry = true;
+                    indexed_entry = switch_target_consumes_indexed(instrs, instr.target);
                     pc = instr.target; return true;
                 }
                 for (auto& kv : instr.struct_table) {
                     if (kv.first == a.s) {
                         if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
                         if (kv.second == Instruction::SWITCH_NONE)    return false;
-                        indexed_entry = true;
+                        indexed_entry = switch_target_consumes_indexed(instrs, kv.second);
                         pc = kv.second; return true;
                     }
                 }
@@ -8797,7 +8817,7 @@ bool WamState::step(const Instruction& instr) {
                     if (kv.first == a) {
                         if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
                         if (kv.second == Instruction::SWITCH_NONE)    return false;
-                        indexed_entry = true;
+                        indexed_entry = switch_target_consumes_indexed(instrs, kv.second);
                         pc = kv.second; return true;
                     }
                 }
@@ -8807,14 +8827,14 @@ bool WamState::step(const Instruction& instr) {
                 if (a.s == "[|]/2") {
                     if (instr.target == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
                     if (instr.target == Instruction::SWITCH_NONE)    return false;
-                    indexed_entry = true;
+                    indexed_entry = switch_target_consumes_indexed(instrs, instr.target);
                     pc = instr.target; return true;
                 }
                 for (auto& kv : instr.struct_table) {
                     if (kv.first == a.s) {
                         if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
                         if (kv.second == Instruction::SWITCH_NONE)    return false;
-                        indexed_entry = true;
+                        indexed_entry = switch_target_consumes_indexed(instrs, kv.second);
                         pc = kv.second; return true;
                     }
                 }

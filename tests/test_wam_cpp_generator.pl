@@ -13,6 +13,7 @@
 :- use_module(library(filesex)).
 :- use_module(library(process)).
 :- use_module(library(readutil)).
+:- use_module(library(time)).
 :- use_module('../src/unifyweaver/targets/wam_cpp_target').
 :- use_module('../src/unifyweaver/core/relation_policy', []).
 :- use_module('../src/unifyweaver/targets/wam_cpp_lowered_emitter').
@@ -3648,6 +3649,31 @@ user:wam_cpp_has_rect          :- user:wam_cpp_rect(box(1, 2)).
 user:wam_cpp_has_rect_wrong    :- user:wam_cpp_rect(box(1, 3)).
 user:wam_cpp_first(box(X, _), X).
 user:wam_cpp_lst([a, b, c]).
+% Non-termination regression (wam_cpp_target switch_target_consumes_indexed).
+% Mirrors the pkg_resolver item_ver/lookup_held/installed_or_base shape that
+% hung the C++ WAM (differential case g459) while SWI returned instantly.
+% wam_cpp_nt_iv/3 is first-arg STRUCTURE-indexed over three distinct functors
+% (-/2, base/2, layer/2), so a base(...) element is dispatched by a direct
+% switch_on_structure jump straight to that clause body -- with no
+% retry_me_else/trust_me at the target to consume the `indexed_entry` latch.
+% The leading base(a-1,r) element sets that latch and then FAILS the name
+% match; the ensuing backtrack lands on the if-then-else else-guard's
+% trust_me, which (pre-fix) read the stale latch and skipped popping its own
+% choice point -- so lookup was retried forever (flat memory, ~100% CPU).
+% wam_cpp_nt_iob/2 forces that backtrack by demanding version 99 while b
+% resolves to 2. Post-fix this terminates and fails cleanly.
+user:wam_cpp_nt_iv(N-V, Name, V)             :- N == Name.
+user:wam_cpp_nt_iv(base(N-V, _R), Name, V)   :- N == Name.
+user:wam_cpp_nt_iv(layer(_L, Pkgs), Name, V) :- user:wam_cpp_nt_lookup(Pkgs, Name, V).
+user:wam_cpp_nt_lookup([H|T], Name, Ver) :-
+    (   user:wam_cpp_nt_iv(H, Name, V0)
+    ->  Ver = V0
+    ;   user:wam_cpp_nt_lookup(T, Name, Ver)
+    ).
+user:wam_cpp_nt_iob(Name, V) :-
+    user:wam_cpp_nt_lookup([base(a-1, r), base(b-2, r), c-3], Name, BV),
+    V == BV.
+user:wam_cpp_nt_guard :- user:wam_cpp_nt_iob(b, 99).
 % Arithmetic & comparison
 user:wam_cpp_add1(X, Y)        :- Y is X + 1.
 user:wam_cpp_gt(X, Y)          :- X > Y.
@@ -4009,6 +4035,27 @@ test(cpp_e2e_caller, [condition(cpp_compiler_available)]) :-
           % through the labels table.
           run_query(BinPath, 'wam_cpp_caller/1', [a], true),
           run_query(BinPath, 'wam_cpp_caller/1', [b], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+% Regression guard for the switch_target_consumes_indexed non-termination
+% fix. wam_cpp_nt_guard/0 backtracks into an if-then-else else-guard after a
+% first-arg structure-indexed clause dispatch. Before the fix the compiled
+% interpreter looped forever here; the call_with_time_limit turns any such
+% regression into a fast, loud failure instead of a hung test run.
+test(cpp_e2e_indexed_soft_cut_no_hang, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_nthang', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_nt_guard/0,
+                               user:wam_cpp_nt_iob/2,
+                               user:wam_cpp_nt_lookup/3,
+                               user:wam_cpp_nt_iv/3],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          % Must TERMINATE (guarded) and fail: b resolves to 2, never 99.
+          call_with_time_limit(60,
+              run_query(BinPath, 'wam_cpp_nt_guard/0', [], false))
         ),
         delete_directory_and_contents(TmpDir)
     ).
