@@ -3114,6 +3114,7 @@ static bool wam_maplist_is_proper_list(WamState *state, WamValue list);
 static bool wam_execute_maplist(WamState *state);
 static bool wam_execute_reverse(WamState *state);
 static bool wam_execute_append(WamState *state);
+static bool wam_execute_length(WamState *state);
 
 static bool wam_ensure_heap_slots(WamState *state, int additional) {
     if (additional <= 0) return true;
@@ -5638,6 +5639,150 @@ static bool wam_execute_append(WamState *state) {
     return true;
 }
 
+/* length/2: two supported modes.
+   Measure: A1 is a finite proper list (including []), unify A2 with
+   the element count. Heads may be variables or compounds; input
+   cons cells are not rewritten.
+   Construct: A1 is unbound and A2 is a nonnegative integer; build a
+   proper list of that many fresh variables (including zero -> []).
+   Mismatched bound lengths fail and roll back trail plus transient
+   heap growth. Negative or non-integer N, improper/open/cyclic/
+   non-list input, and both arguments unbound are WAM_ERR_UNSUPPORTED. */
+enum {
+    WAM_LENGTH_PROPER = 0,
+    WAM_LENGTH_UNBOUND = 1,
+    WAM_LENGTH_INVALID = 2
+};
+
+static int wam_measure_length_list(WamState *state, WamValue list, int *count_out) {
+    WamValue *cell = wam_deref_ptr(state, &list);
+    if (wam_sort_is_nil(cell)) {
+        *count_out = 0;
+        return WAM_LENGTH_PROPER;
+    }
+    if (val_is_unbound(*cell)) return WAM_LENGTH_UNBOUND;
+    if (wam_cons_head_addr(state, cell) < 0) {
+        wam_set_unsupported_builtin(state, "length/2", 2);
+        return WAM_LENGTH_INVALID;
+    }
+
+    int count = 0;
+    WamValue *slow = cell;
+    WamValue *fast = cell;
+
+    for (;;) {
+        int head_addr = -1;
+        if (!wam_sort_cons_head(state, cell, &head_addr)) {
+            if (wam_sort_is_nil(cell)) break;
+            wam_set_unsupported_builtin(state, "length/2", 2);
+            return WAM_LENGTH_INVALID;
+        }
+        if (count >= WAM_SORT_MAX_ITEMS) {
+            wam_set_unsupported_builtin(state, "length/2", 2);
+            return WAM_LENGTH_INVALID;
+        }
+        count++;
+        cell = wam_deref_ptr(state, &state->H_array[head_addr + 1]);
+
+        for (int step = 0; step < 2; step++) {
+            int fast_head = -1;
+            if (!fast || !wam_sort_cons_head(state, fast, &fast_head)) {
+                fast = NULL;
+                break;
+            }
+            fast = wam_deref_ptr(state, &state->H_array[fast_head + 1]);
+        }
+        if (fast) {
+            int slow_head = -1;
+            if (wam_sort_cons_head(state, slow, &slow_head)) {
+                slow = wam_deref_ptr(state, &state->H_array[slow_head + 1]);
+            }
+            if (slow == fast) {
+                wam_set_unsupported_builtin(state, "length/2", 2);
+                return WAM_LENGTH_INVALID;
+            }
+        }
+    }
+
+    *count_out = count;
+    return WAM_LENGTH_PROPER;
+}
+
+static bool wam_build_fresh_var_list(WamState *state, int count, WamValue *out) {
+    if (count == 0) {
+        *out = val_atom("[]");
+        return true;
+    }
+    if (count < 0 || count > WAM_SORT_MAX_ITEMS) {
+        wam_set_unsupported_builtin(state, "length/2", 2);
+        return false;
+    }
+    if (count > INT_MAX / 3) return false;
+    if (!wam_ensure_heap_slots(state, 3 * count)) return false;
+    WamValue tail = val_atom("[]");
+    for (int i = 0; i < count; i++) {
+        int var_addr = state->H++;
+        state->H_array[var_addr] = val_unbound("len_var");
+        WamValue head;
+        head.tag = VAL_REF;
+        head.data.ref_addr = var_addr;
+        int base = state->H;
+        state->H_array[state->H++] = head;
+        state->H_array[state->H++] = tail;
+        tail.tag = VAL_LIST;
+        tail.data.ref_addr = base;
+    }
+    *out = tail;
+    return true;
+}
+
+static bool wam_execute_length(WamState *state) {
+    WamValue *n_cell = wam_deref_ptr(state, &state->A[1]);
+    int n_unbound = val_is_unbound(*n_cell);
+    int n_nonneg = (!n_unbound && n_cell->tag == VAL_INT &&
+                    n_cell->data.integer >= 0);
+    if (!n_unbound && !n_nonneg) {
+        wam_set_unsupported_builtin(state, "length/2", 2);
+        return false;
+    }
+
+    int count = 0;
+    int shape = wam_measure_length_list(state, state->A[0], &count);
+    if (shape == WAM_LENGTH_INVALID) return false;
+
+    if (shape == WAM_LENGTH_PROPER) {
+        WamValue measured = val_int(count);
+        int trail_mark = state->TR;
+        int heap_mark = state->H;
+        if (!wam_unify(state, &state->A[1], &measured)) {
+            unwind_trail(state, trail_mark);
+            state->H = heap_mark;
+            return false;
+        }
+        return true;
+    }
+
+    if (n_unbound) {
+        wam_set_unsupported_builtin(state, "length/2", 2);
+        return false;
+    }
+
+    int trail_mark = state->TR;
+    int heap_mark = state->H;
+    WamValue built;
+    if (!wam_build_fresh_var_list(state, n_cell->data.integer, &built)) {
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+    if (!wam_unify(state, &state->A[0], &built)) {
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+    return true;
+}
+
 bool wam_execute_builtin(WamState *state, const char *op, int arity) {
     if (strcmp(op, "true/0") == 0 && arity == 0) return true;
     if ((strcmp(op, "fail/0") == 0 || strcmp(op, "false/0") == 0) && arity == 0) return false;
@@ -5769,6 +5914,10 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
 
     if (strcmp(op, "append/3") == 0 && arity == 3) {
         return wam_execute_append(state);
+    }
+
+    if (strcmp(op, "length/2") == 0 && arity == 2) {
+        return wam_execute_length(state);
     }
 
     wam_set_unsupported_builtin(state, op, arity);
