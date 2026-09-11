@@ -5824,6 +5824,8 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
         if (strcmp(op, "integer/1") == 0) return a1->tag == VAL_INT;
         if (strcmp(op, "number/1") == 0) return a1->tag == VAL_INT || a1->tag == VAL_FLOAT;
         if (strcmp(op, "float/1") == 0) return a1->tag == VAL_FLOAT;
+        if (strcmp(op, "atomic/1") == 0)
+            return a1->tag == VAL_ATOM || a1->tag == VAL_INT || a1->tag == VAL_FLOAT;
         if (strcmp(op, "var/1") == 0) return val_is_unbound(*a1);
         if (strcmp(op, "nonvar/1") == 0) return !val_is_unbound(*a1);
         if (strcmp(op, "compound/1") == 0) return a1->tag == VAL_STR || a1->tag == VAL_LIST;
