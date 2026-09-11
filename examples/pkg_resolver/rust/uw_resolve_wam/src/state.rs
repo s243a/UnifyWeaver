@@ -13297,11 +13297,14 @@ impl WamState {
     /// builtins establish by pre-dereffing each element once (O(n)) before
     /// sorting. It therefore performs NO `deref_heap`/`deref_var` at any level
     /// (the whole re-deref that made `term_compare` O(n log n) inside the
-    /// comparator), and compares compound functor names through the borrowing
-    /// `functor_of` -- which applies byte-identical normalisation to
-    /// `display_functor_name` but returns a `&str`, so no functor String is
-    /// allocated per comparison. `deref_heap` has already normalised every
-    /// compound functor to its bare form, so `functor_of` here is idempotent.
+    /// comparator), and compares compound functor names through the id-keyed
+    /// `functor_of_sym` (D101/D102) -- byte-identical to `functor_of` but O(1):
+    /// the `str(...)`-strip + slash-`rfind` + arity-`parse` reverse-scan was
+    /// precomputed once at intern time, so no per-comparison `memrchr` /
+    /// `next_match_back` and no functor String allocation occur. `deref_heap`
+    /// has already normalised every compound functor to its bare form, so this
+    /// is idempotent. Under the `intern` OFF build `functor_of_sym` delegates to
+    /// the borrowing `functor_of`.
     pub fn term_compare_derefed(&self, a: &Value, b: &Value) -> std::cmp::Ordering {
         use std::cmp::Ordering;
         let ca = Self::term_order_class(a);
@@ -13356,8 +13359,8 @@ impl WamState {
                 (Value::Str(f1, a1), Value::Str(f2, a2)) => {
                     match a1.len().cmp(&a2.len()) {
                         Ordering::Equal => {
-                            let n1 = Self::functor_of(f1, a1.len());
-                            let n2 = Self::functor_of(f2, a2.len());
+                            let n1 = Self::functor_of_sym(f1, a1.len());
+                            let n2 = Self::functor_of_sym(f2, a2.len());
                             match n1.cmp(n2) {
                                 Ordering::Equal => {
                                     for i in 0..a1.len() {
