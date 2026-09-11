@@ -369,6 +369,17 @@ test_length_builtin_generation :-
     ;   fail_test(Test, 'length/2 builtin missing from generated runtime')
     ).
 
+test_atom_length_builtin_generation :-
+    Test = 'WAM-C: atom_length/2 Unicode code-point handler is generated',
+    (   compile_wam_helpers_to_c([], HelpersCode),
+        atom_string(HelpersCode, HelpersS),
+        sub_string(HelpersS, _, _, _, 'strcmp(op, "atom_length/2")'),
+        sub_string(HelpersS, _, _, _, 'wam_execute_atom_length'),
+        sub_string(HelpersS, _, _, _, 'wam_utf8_codepoint_count')
+    ->  pass(Test)
+    ;   fail_test(Test, 'atom_length/2 builtin missing from generated runtime')
+    ).
+
 test_atomic_builtin_generation :-
     Test = 'WAM-C: atomic/1 type dispatch is generated',
     WamCode = 'wam_c_builtin_atomic/1:\n    builtin_call atomic/1, 1\n    proceed',
@@ -7676,6 +7687,7 @@ run_tests_once :-
     test_builtin_unsupported_diagnostics_generation,
     test_sort_builtin_generation,
     test_length_builtin_generation,
+    test_atom_length_builtin_generation,
     test_atomic_builtin_generation,
     test_call_foreign_generation,
     test_category_ancestor_kernel_generation,
