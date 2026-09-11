@@ -1061,6 +1061,15 @@ plawk_program_native_driver_ir(
     DriverIR
 ) :-
     plawk_end_actions_have_loop(EndActions),
+    % A loop in the END block is only supported alongside a main rule. END-only
+    % support (an empty scalar state plan, added for `END { print ... }`) makes
+    % plawk_scalar_state_plan/3 succeed for Rules0 = [], which would otherwise let
+    % this clause commit past its cut and emit a malformed loop driver -- exit 4,
+    % a miscompile -- for `END { while (...) ... }`. Require a main rule so that
+    % END-loop-with-no-rule declines cleanly (exit 3) as the follow-on it is,
+    % rather than compiling to invalid LLVM. END-only print / if is unaffected
+    % (those clauses are 788 / 851 / 920 / 980).
+    Rules0 \== [],
     !,
     plawk_end_loop_print_fields(EndActions, PrintFields),
     plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules1, WritebinPlan),
@@ -8090,6 +8099,12 @@ plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots, Tracked)) :-
     ; BodyPrintFields \== []
     ; plawk_rules_have_record_getline(Rules)
     ; plawk_rules_have_main_getline(Rules)
+    % A rule-less program (END-only, or the empty program) has an empty scalar
+    % state plan and must still reach the driver: with no rules, none of the
+    % disjuncts above can fire, so without this the guard rejects exactly the
+    % programs whose slots legitimately come only from the END print fields (or
+    % from nothing at all). state_plan([], []) is the correct plan here.
+    ; Rules == []
     ),
     findall(Name,
         ( member(Field, PrintFields),
@@ -14898,6 +14913,17 @@ plawk_scalar_print_expr(Expr, Name) :-
     plawk_end_scalar_expr(Expr),
     plawk_expr_scalar_read_name(Expr, Name).
 
+% END-only / rule-less program: the record loop still runs (an END block reads all
+% input to fix NR / NF / $0), but there is no per-record rule chain. The general
+% clause below cannot serve this: with zero rules it emits an EMPTY `lowered_match:`
+% block, and the entry branch into the chain (`br label %rule_0_match`) that would
+% normally terminate that block is part of the chain IR, so an empty chain leaves
+% `lowered_match:` with no terminator -- invalid LLVM (clang: expected instruction
+% opcode). Emit the loop-continue branch instead: with nothing to match, the match
+% block jumps straight to `continue_loop`. RuleCount 0, no globals, no branch exits.
+plawk_scalar_rule_chain_ir([], _StatePlan, _FieldSeparator, _OutputSeparator,
+        '', '  br label %continue_loop', 0, []) :-
+    !.
 plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator,
         GlobalIR, ChainIR, RuleCount, BranchNextExits) :-
     plawk_scalar_planned_rules(Rules, PlannedRules, Controls),

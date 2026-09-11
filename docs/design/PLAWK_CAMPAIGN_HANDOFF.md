@@ -367,6 +367,21 @@ parse, not the gate you expected to fire.
 
 ## Verification practices (do not skip)
 
+- **Relaxing a shared gate can turn a clean decline into a MISCOMPILE in a
+  neighbouring driver that relied on that gate failing.** END-only support needed
+  `plawk_scalar_state_plan/3` to admit an empty plan (`; Rules == []`). That made
+  `END { print ... }` compile — but the END-LOOP driver clause (`END { while ... }`)
+  cuts as soon as it sees a loop, then had been relying on `state_plan` *failing* for
+  a rule-less program to decline after the cut. With the guard relaxed, state_plan
+  succeeded, the clause committed past its cut, and it emitted a malformed loop
+  driver: exit 4, a miscompile, on a program that used to decline cleanly at exit 3.
+  The fix was a targeted `Rules0 \== []` guard on that clause so END-loop-with-no-rule
+  keeps declining. **When you relax a gate, enumerate every clause that used that
+  gate's failure as its own decline mechanism** — a cut-then-rely-on-a-later-goal-
+  failing clause is silently converted from "declines" to "commits and may miscompile".
+  A broad exit-4 sweep of the whole surface the relaxation touches is mandatory, not
+  optional: here it found exactly one such site, and the campaign's worst outcome
+  (invalid LLVM on a supported-looking program) was one un-run probe away.
 - **gawk 5.2 is the oracle.** Compare output *and* exit status. Probe harness
   pattern: write the program, `rm -f` the binary first (a declining build must not
   run a stale one), build, run, diff against `gawk`.
@@ -690,8 +705,12 @@ condition emitter has a clause for `end_lastrec_field(_)` / `end_lastrec_nf`) ·
   at parse time (#4169). The two share a spelling and nothing else: one needs the
   retained record, the other needs no runtime at all. · **builtins over the
 record** in END (`substr($0, …)`, `toupper($1)` — the gate retains for them, the
-emitters have no clause; the *literal* forms of all five are done) · **END-only**
-programs (a driver with no retain) ·
+emitters have no clause; the *literal* forms of all five are done) · ~~**END-only**
+programs~~ **DONE** (see below; `END { print ... }`, printf, END-`if`, and the empty
+program now compile — remaining END-only follow-ons are an END-only **loop**
+(`END { while ... }`, pinned as a clean exit-3 decline, NOT a miscompile), an
+END-only scalar **assignment** (`END { x = 5; print x }`), and for-in / getline in
+END-only) ·
 `printf` field args in the **assoc / mixed END chain** (a different driver, passes
 `no_end_record`) · the **associative** END-`if` branch (refused by
 `plawk_assoc_end_if_branch_prints_ok/2`, which allows only string literals there —
