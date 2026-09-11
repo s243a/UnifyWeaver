@@ -3086,6 +3086,7 @@ static bool wam_resume_member(WamState *state);
 static bool wam_maplist_is_proper_list(WamState *state, WamValue list);
 static bool wam_execute_maplist(WamState *state);
 static bool wam_execute_reverse(WamState *state);
+static bool wam_execute_append(WamState *state);
 
 static bool wam_ensure_heap_slots(WamState *state, int additional) {
     if (additional <= 0) return true;
@@ -4445,6 +4446,8 @@ void wam_free_state(WamState *state) {
     for (int i = 0; i < state->B; i++) {
         free(state->B_array[i].foreign_results);
         state->B_array[i].foreign_results = NULL;
+        free(state->B_array[i].env_frames);
+        state->B_array[i].env_frames = NULL;
     }
     for (int i = 0; i < state->atom_table_size; i++) {
         AtomEntry *e = state->atom_table[i];
@@ -5430,6 +5433,176 @@ static bool wam_execute_reverse(WamState *state) {
     return true;
 }
 
+/* append/3: finite proper first-argument lists only. Open, cyclic,
+   improper, non-list, and unbound terms are WAM_ERR_UNSUPPORTED.
+   Copies only the list spine of the first argument while sharing
+   its element terms and variable identities; the second argument is
+   used as the final tail without copying. If output unification fails,
+   trail bindings and temporary heap allocations are rolled back. */
+typedef struct {
+    WamValue value;
+} WamAppendItem;
+
+static bool wam_collect_append_list(WamState *state, WamValue list,
+                                     WamAppendItem **items_out, int *count_out) {
+    WamValue *cell = wam_deref_ptr(state, &list);
+    if (wam_sort_is_nil(cell)) {
+        *items_out = NULL;
+        *count_out = 0;
+        return true;
+    }
+    if (val_is_unbound(*cell) || wam_cons_head_addr(state, cell) < 0) {
+        wam_set_unsupported_builtin(state, "append/3", 3);
+        return false;
+    }
+
+    int cap = 16;
+    WamAppendItem *items = malloc(sizeof(WamAppendItem) * (size_t)cap);
+    if (!items) return false;
+    int count = 0;
+    WamValue *slow = cell;
+    WamValue *fast = cell;
+
+    for (;;) {
+        int head_addr = -1;
+        if (!wam_sort_cons_head(state, cell, &head_addr)) {
+            if (wam_sort_is_nil(cell)) break;
+            free(items);
+            wam_set_unsupported_builtin(state, "append/3", 3);
+            return false;
+        }
+        if (count >= WAM_SORT_MAX_ITEMS) {
+            free(items);
+            wam_set_unsupported_builtin(state, "append/3", 3);
+            return false;
+        }
+        if (count >= cap) {
+            if (cap > WAM_SORT_MAX_ITEMS / 2) {
+                free(items);
+                wam_set_unsupported_builtin(state, "append/3", 3);
+                return false;
+            }
+            int new_cap = cap * 2;
+            WamAppendItem *grown = realloc(items, sizeof(WamAppendItem) * (size_t)new_cap);
+            if (!grown) {
+                free(items);
+                return false;
+            }
+            items = grown;
+            cap = new_cap;
+        }
+        items[count++].value =
+            wam_sort_identity_value(state, &state->H_array[head_addr]);
+        cell = wam_deref_ptr(state, &state->H_array[head_addr + 1]);
+
+        for (int step = 0; step < 2; step++) {
+            int fast_head = -1;
+            if (!fast || !wam_sort_cons_head(state, fast, &fast_head)) {
+                fast = NULL;
+                break;
+            }
+            fast = wam_deref_ptr(state, &state->H_array[fast_head + 1]);
+        }
+        if (fast) {
+            int slow_head = -1;
+            if (wam_sort_cons_head(state, slow, &slow_head)) {
+                slow = wam_deref_ptr(state, &state->H_array[slow_head + 1]);
+            }
+            if (slow == fast) {
+                free(items);
+                wam_set_unsupported_builtin(state, "append/3", 3);
+                return false;
+            }
+        }
+    }
+
+    *items_out = items;
+    *count_out = count;
+    return true;
+}
+
+static WamValue wam_append_identity_tail(WamState *state, WamValue *source) {
+    int addr = -1;
+    if (wam_ref_addr(state, *source, &addr)) {
+        WamValue ref;
+        ref.tag = VAL_REF;
+        ref.data.ref_addr = addr;
+        return ref;
+    }
+    WamValue *cell = wam_deref_ptr(state, source);
+    if (val_is_unbound(*cell)) {
+        if (!wam_ensure_heap_slots(state, 1)) return *source;
+        int v_addr = state->H++;
+        state->H_array[v_addr] = val_unbound("tail_var");
+        WamValue ref;
+        ref.tag = VAL_REF;
+        ref.data.ref_addr = v_addr;
+        trail_binding(state, cell);
+        *cell = ref;
+        return ref;
+    }
+    return wam_sort_identity_value(state, source);
+}
+
+static bool wam_build_list_from_append_items(WamState *state,
+                                             WamAppendItem *items,
+                                             int count,
+                                             WamValue tail_val,
+                                             WamValue *out) {
+    if (count == 0) {
+        *out = tail_val;
+        return true;
+    }
+    if (!wam_ensure_heap_slots(state, 2 * count)) return false;
+    WamValue tail = tail_val;
+    for (int i = count - 1; i >= 0; i--) {
+        int base = state->H;
+        state->H_array[state->H++] = items[i].value;
+        state->H_array[state->H++] = tail;
+        tail.tag = VAL_LIST;
+        tail.data.ref_addr = base;
+    }
+    *out = tail;
+    return true;
+}
+
+static bool wam_execute_append(WamState *state) {
+    WamAppendItem *items = NULL;
+    int count = 0;
+    if (!wam_collect_append_list(state, state->A[0], &items, &count)) {
+        return false;
+    }
+
+    int trail_mark = state->TR;
+    int heap_mark = state->H;
+
+    if (count == 0) {
+        if (!wam_unify(state, &state->A[2], &state->A[1])) {
+            unwind_trail(state, trail_mark);
+            state->H = heap_mark;
+            return false;
+        }
+        return true;
+    }
+
+    WamValue tail_val = wam_append_identity_tail(state, &state->A[1]);
+    WamValue result;
+    if (!wam_build_list_from_append_items(state, items, count, tail_val, &result)) {
+        free(items);
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+    free(items);
+
+    if (!wam_unify(state, &state->A[2], &result)) {
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+    return true;
+}
+
 bool wam_execute_builtin(WamState *state, const char *op, int arity) {
     if (strcmp(op, "true/0") == 0 && arity == 0) return true;
     if ((strcmp(op, "fail/0") == 0 || strcmp(op, "false/0") == 0) && arity == 0) return false;
@@ -5557,6 +5730,10 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
 
     if (strcmp(op, "reverse/2") == 0 && arity == 2) {
         return wam_execute_reverse(state);
+    }
+
+    if (strcmp(op, "append/3") == 0 && arity == 3) {
+        return wam_execute_append(state);
     }
 
     wam_set_unsupported_builtin(state, op, arity);

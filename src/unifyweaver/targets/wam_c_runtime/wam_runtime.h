@@ -65,6 +65,13 @@ typedef struct {
     WamValue old_val;
 } TrailEntry;
 
+/* Environment Frame */
+typedef struct {
+    int cp;
+    int saved_e;
+    WamValue y_regs[32];
+} EnvFrame;
+
 /* Choice point */
 typedef struct {
     int next_pc;
@@ -80,6 +87,10 @@ typedef struct {
     int arg_ctx_top;   /* read-mode arg-context depth at push time */
     int arity;
     WamValue a_regs[32]; // Reduced from MAX_REGS to save memory (typical max arity)
+    /* Environment slots are reused after deallocate. Snapshot every live
+       frame so a later backtrack restores the Y-register values as well as E. */
+    EnvFrame *env_frames;
+    int env_count;
     /* Owned only when next_pc == WAM_FOREIGN_STREAM_NEXT. */
     WamValue *foreign_results;
     int foreign_result_count;
@@ -158,13 +169,6 @@ typedef struct {
     int return_pc;
     int base_b;
 } WamIteFrame;
-
-/* Environment Frame */
-typedef struct {
-    int cp;
-    int saved_e;
-    WamValue y_regs[32];
-} EnvFrame;
 
 /* Wam Mode */
 typedef enum {
@@ -1221,6 +1225,17 @@ static inline void push_choice_point(WamState *state, int next_pc, int arity) {
        the next clause's get_* would push on top of them. Restoring the
        depth on backtracking keeps each clause's head starting clean. */
     cp->arg_ctx_top = state->arg_ctx_top;
+
+    cp->env_count = state->E + 1;
+    if (cp->env_count > 0) {
+        cp->env_frames = malloc(sizeof(EnvFrame) * (size_t)cp->env_count);
+        if (cp->env_frames) {
+            memcpy(cp->env_frames, state->E_array,
+                   sizeof(EnvFrame) * (size_t)cp->env_count);
+        } else {
+            cp->env_count = 0;
+        }
+    }
     
     int save_arity = arity < 32 ? arity : 32;
     cp->arity = save_arity;
@@ -1244,6 +1259,10 @@ static inline void unwind_trail(WamState *state, int target_tr) {
 static inline void restore_choice_point(WamState *state, ChoicePoint *cp) {
     state->H = cp->heap_size;
     state->E = cp->stack_size;
+    if (cp->env_count > 0 && cp->env_frames) {
+        memcpy(state->E_array, cp->env_frames,
+               sizeof(EnvFrame) * (size_t)cp->env_count);
+    }
     state->CP = cp->cp;
     state->call_base_top = cp->call_base_top;
     wam_trim_aggregate_group_iters(state, cp->aggregate_group_top);
@@ -1261,6 +1280,9 @@ static inline void pop_choice_point(WamState *state) {
         ChoicePoint *cp = &state->B_array[state->B - 1];
         free(cp->foreign_results);
         cp->foreign_results = NULL;
+        free(cp->env_frames);
+        cp->env_frames = NULL;
+        cp->env_count = 0;
         state->B--;
         if (state->B > 0) {
             state->HB = state->B_array[state->B - 1].heap_size;

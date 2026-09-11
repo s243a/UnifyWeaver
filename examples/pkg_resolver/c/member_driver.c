@@ -759,6 +759,29 @@ int main(void) {
         wam_free_state(&grow);
     }
 
+    /* A choicepoint retains live Y registers even if younger calls deallocate
+       and reuse the same EnvFrame slots before backtracking. */
+    {
+        WamState env_restore;
+        wam_state_init(&env_restore);
+        env_restore.E = 1;
+        env_restore.E_array[0].y_regs[0] = val_atom("outer");
+        env_restore.E_array[1].y_regs[0] = val_atom("saved");
+        push_choice_point(&env_restore, 17, 0);
+        env_restore.E_array[0].y_regs[0] = val_atom("overwritten_outer");
+        env_restore.E_array[1].y_regs[0] = val_atom("overwritten_saved");
+        restore_choice_point(&env_restore,
+                             &env_restore.B_array[env_restore.B - 1]);
+        int ok = env_restore.E == 1 &&
+                 same_atom(&env_restore.E_array[0].y_regs[0], "outer") &&
+                 same_atom(&env_restore.E_array[1].y_regs[0], "saved");
+        emit_token("choicepoint_env_restore", ok ? "ok" : "fail",
+                   ok ? "choicepoint_env_restore_ok"
+                      : "choicepoint_env_restore_bad");
+        pop_choice_point(&env_restore);
+        wam_free_state(&env_restore);
+    }
+
     wam_free_state(&state);
     return g_fail ? 20 : 0;
 }

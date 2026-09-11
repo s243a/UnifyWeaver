@@ -107,6 +107,7 @@ token_swi(cut_all, ok, cut_all_ok) :-
     findall(X, (member(X, [a, b, c]), !), [a]).
 token_swi(trail_no_growth, ok, trail_nogrow_ok) :-
     member(E, [a, b, c]), sort([1, 2, 3], _), E = c.
+token_swi(choicepoint_env_restore, ok, choicepoint_env_restore_ok).
 token_swi(distinct_vars, ok, distinct_ok).
 token_swi(cell_vars, ok, cell_vars_ok).
 token_swi(heap_growth, ok, heap_growth_ok) :-
@@ -349,7 +350,7 @@ run_compiled_c_member :-
     Tokens = [prebound_match, prebound_mismatch, preserve_input, downstream,
               cut_commit, cut_all, partial, nested, shared_var, distinct_vars,
               cell_vars, heap_growth, cyclic, open_list, non_list, improper,
-              unbound_list, repeated],
+              unbound_list, repeated, choicepoint_env_restore],
     findall(Id, (member(Id, GroundAll), \+ compare_ground_all(Id, CCases)), AllBads),
     findall(Id, (member(Id, GroundQ), \+ compare_ground_q(Id, CCases)), QBads),
     findall(Id, (member(Id, Tokens), \+ compare_token(Id, CCases)), TokenBads),
