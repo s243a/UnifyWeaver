@@ -176,6 +176,7 @@ silent: the warning names both cases.
 | `missing_dialect_header(Path)` | `.stache` file whose first non-empty line is not the pragma |
 | `unsupported_dialect_version(Path, V)` | header version ≠ 1 |
 | `bad_case_pattern(Text, syntax_error(W))` | case value does not read as a term |
+| `malformed_structure(Reason)` | a structural tag is malformed, misplaced, unterminated, or a match block is unclosed |
 | `nonlinear_pattern(Text)` | a variable occurs twice in one pattern |
 | `unreachable_case(...)` | an earlier case subsumes a later one |
 | `nonground_dispatch(Key, Value)` | dict value for a match key is nonground |
