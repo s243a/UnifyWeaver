@@ -261,6 +261,14 @@ jobs:
         run: |
           swipl -q -f init.pl -s tests/test_wam_cross_target_conformance.pl -g "seed_sampler,run_tests" -t halt
 
+      - name: Run C++ WAM template contracts
+        if: matrix.target == 'cpp'
+        run: |
+          output="$(swipl -q -s tests/test_wam_cpp_templates.pl -g 'run_tests(wam_cpp_templates)' -t halt 2>&1)" || { printf '%s\n' "$output"; exit 1; }
+          printf '%s\n' "$output"
+          if grep -Eq '^ERROR:' <<< "$output"; then exit 1; fi
+          if ! grep -q '\[6/6\].*passed' <<< "$output"; then exit 1; fi
+
       - name: Run WAM-C text builtin regressions
         if: matrix.target == 'c'
         run: |
