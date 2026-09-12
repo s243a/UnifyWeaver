@@ -3088,7 +3088,14 @@ write_text_file(Path, Content) :-
 
 compile_wam_runtime_header_to_cpp(Options, Code) :-
     compile_wam_runtime_header_body_to_cpp(Options, Body),
-    lmdb_sources_from_options(Options, LmdbSources),
+    lmdb_sources_from_options(Options, LmdbSources0),
+    % Also enable the LMDB gate when a D43 seek fact source selects the lmdb
+    % backend (Stage-2 lazy+cached reader), not only the eager cpp_fact_sources.
+    seek_sources_from_options(Options, SeekSources),
+    (   member(seek_source(_, lmdb, _), SeekSources)
+    ->  LmdbSources = [seek_lmdb|LmdbSources0]
+    ;   LmdbSources = LmdbSources0
+    ),
     (   LmdbSources == []
     ->  Code = Body
     ;   % Auto-enable LMDB when the codegen has fact sources. The
@@ -3128,7 +3135,9 @@ compile_wam_runtime_header_body_to_cpp(_Options,
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <functional>
 #include <memory>
@@ -3141,6 +3150,14 @@ compile_wam_runtime_header_body_to_cpp(_Options,
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+// Lazy+cached LMDB seek backend (Stage 2). Compiled only when the codegen
+// declares an lmdb(Dir) store fact source (WAM_CPP_ENABLE_LMDB, auto-set in the
+// generated header). Link with -llmdb. The indexed(Prefix) seek backend stays
+// dependency-free -- lmdb.h is not pulled in unless the flag is set.
+#ifdef WAM_CPP_ENABLE_LMDB
+#include <lmdb.h>
+#endif
 
 namespace wam_cpp {
 
@@ -3821,6 +3838,40 @@ inline std::string encode_store_key(const Value& v) {
     return out;
 }
 
+// LMDB key layout (uw_fact_codec.js a1RangeKey / seqKey): the JS builder stores
+// each record twice -- under seqKey(i) = 0x00 + u64BE(i) and under
+// a1RangeKey(keyBytes,i) = 0x01 + u16BE(keylen) + keyBytes + u64BE(i), where
+// keyBytes = encodeIndexKey(a1) (== encode_store_key here). A keyed read
+// range-scans the a1Range band for one key (only the records that key touches);
+// a full scan walks the seq band once.
+inline std::string lmdb_a1_prefix(const std::string& enc_key) {
+    std::string p;
+    p.push_back(static_cast<char>(0x01));
+    std::size_t n = enc_key.size();
+    p.push_back(static_cast<char>((n >> 8) & 0xff));
+    p.push_back(static_cast<char>(n & 0xff));
+    p.append(enc_key);
+    return p;
+}
+inline std::string lmdb_a1_start(const std::string& enc_key) {
+    std::string s = lmdb_a1_prefix(enc_key);
+    s.append(8, static_cast<char>(0x00));  // seq = 0 -> band start
+    return s;
+}
+// Decode an LMDB value (== uw_fact_codec recordPayload: u16LE a1len, u16LE
+// a2len, a1, a2) into a typed (a1, a2) pair.
+inline bool decode_record_payload(const char* p, std::size_t len,
+                                  Value& a1_out, Value& a2_out) {
+    if (len < 4) return false;
+    std::string payload(p, len);
+    std::size_t a1_len = seek_le_u16(payload, 0);
+    std::size_t a2_len = seek_le_u16(payload, 2);
+    if (payload.size() < 4 + a1_len + a2_len) return false;
+    a1_out = parse_fact_source_value(payload.substr(4, a1_len));
+    a2_out = parse_fact_source_value(payload.substr(4 + a1_len, a2_len));
+    return true;
+}
+
 class SeekFactSource {
 public:
     SeekFactSource(std::string kind, std::string path)
@@ -3834,7 +3885,11 @@ public:
     // provides walk). lmdb sources fail loudly (no reader built in).
     std::vector<std::pair<Value, Value>> rows(const std::optional<std::string>& key) {
         if (kind_ == "lmdb") {
+#ifdef WAM_CPP_ENABLE_LMDB
+            return rows_lmdb(key);
+#else
             throw std::runtime_error(lmdb_seek_missing_error());
+#endif
         }
         ensure_open();
         std::lock_guard<std::mutex> guard(mu_);
@@ -3853,6 +3908,11 @@ public:
         }
         return result;
     }
+
+    // Cache-attribution counters (D43 scale proof + the two-cache benchmark).
+    std::uint64_t l1_hits() const { return l1_hits_; }
+    std::uint64_t l2_hits() const { return l2_hits_; }
+    std::uint64_t cache_misses() const { return misses_; }
 
     std::string lmdb_seek_missing_error() const {
         return "C++ WAM fact source is declared as lmdb(" + path_ +
@@ -3977,6 +4037,219 @@ private:
             pos += 4 + static_cast<std::uint64_t>(seek_le_u32(len_buf, 0));
         }
     }
+
+    // Two-cache attribution (present in both build modes so the public accessors
+    // link regardless of the LMDB gate).
+    std::uint64_t l1_hits_ = 0;
+    std::uint64_t l2_hits_ = 0;
+    std::uint64_t misses_ = 0;
+
+#ifdef WAM_CPP_ENABLE_LMDB
+    // ------------------------------------------------------------------
+    // Stage 2: lazy + two-level-cached LMDB backend.
+    //
+    // Mirrors the RUST edge-cache variant specifically -- FIFO L2, not
+    // Haskell''s LRU (both are documented per-target choices; this lane picks
+    // Rust''s). The two cache TYPES the WAM_RUST cache design identifies:
+    //   * L1 -- a fixed-size, direct-mapped, collision-overwrite table
+    //     (Rust''s per-HEC L1_CACHE: one slot per key hash, no eviction
+    //     bookkeeping; the intra-query locality tier). Rust uses 1<<16 slots per
+    //     thread; the C++ WAM is single-threaded so one modest table suffices
+    //     (env override UW_WAM_LMDB_L1_SLOTS).
+    //   * L2 -- a shared, FIFO-bounded map (Rust''s CacheShard: a memory-budget
+    //     cap with FIFO eviction -- push_back on fill, pop_front to evict, NOT
+    //     LRU; the cross-query reuse tier). Default cap auto-sizes from live
+    //     /proc/meminfo (mirrors Rust resolve_runtime_cache_capacity / R8b); env
+    //     override UW_WAM_LMDB_L2_CAP lets a benchmark shrink it to model memory
+    //     pressure -- the memory x scale crossover the owner wants.
+    // Compose as two_level: L1 hit skips L2; L2 hit promotes to L1; an LMDB miss
+    // (a real keyed range-scan off disk) fills both. Each cached entry is the
+    // full row list for one bound key (key -> vector<(a1,a2)>), so a repeat
+    // lookup of a hot key pays zero LMDB reads.
+    // ------------------------------------------------------------------
+    using RowVec = std::vector<std::pair<Value, Value>>;
+    using RowVecPtr = std::shared_ptr<RowVec>;
+
+    std::vector<std::pair<Value, Value>> rows_lmdb(const std::optional<std::string>& key) {
+        ensure_open_lmdb();
+        std::lock_guard<std::mutex> guard(mu_);
+        if (!key.has_value()) {
+            // Unbound arg1: full seq-band scan (the provides walk). Not cached.
+            RowVec out;
+            lmdb_scan_all(out);
+            return out;
+        }
+        const std::string& enc = *key;
+        // L1 probe (direct-mapped).
+        std::size_t slot = std::hash<std::string>()(enc) & l1_mask_;
+        if (l1_[slot].valid && l1_[slot].key == enc) {
+            ++l1_hits_;
+            return *l1_[slot].rows;
+        }
+        // L2 probe (shared FIFO map); on hit, promote into L1.
+        auto it = l2_.find(enc);
+        if (it != l2_.end()) {
+            ++l2_hits_;
+            l1_[slot].valid = true;
+            l1_[slot].key = enc;
+            l1_[slot].rows = it->second;
+            return *it->second;
+        }
+        // Miss: real keyed range-scan off disk, then fill BOTH tiers.
+        ++misses_;
+        RowVecPtr rows = std::make_shared<RowVec>();
+        lmdb_range_scan(enc, *rows);
+        l1_[slot].valid = true;
+        l1_[slot].key = enc;
+        l1_[slot].rows = rows;
+        if (l2_cap_ > 0) {
+            l2_[enc] = rows;
+            l2_order_.push_back(enc);
+            while (l2_.size() > l2_cap_) {
+                const std::string& victim = l2_order_.front();
+                if (victim != enc) l2_.erase(victim);
+                l2_order_.pop_front();
+            }
+        }
+        return *rows;
+    }
+
+    // Default L2 cap: size from live /proc/meminfo (mirrors Rust R8b
+    // resolve_runtime_cache_capacity) so the shipped default adapts to the host
+    // instead of a bare constant. Rough per-entry cost estimate -- groundwork
+    // precision per CACHE_COST_MODEL_PHILOSOPHY.md, not second-decimal accuracy.
+    static std::size_t lmdb_default_l2_cap() {
+        std::size_t mem_avail_kb = 0;
+        std::ifstream mi("/proc/meminfo");
+        std::string tok;
+        while (mi >> tok) {
+            if (tok == "MemAvailable:") { mi >> mem_avail_kb; break; }
+        }
+        if (mem_avail_kb == 0) return 4096;  // fallback if /proc unavailable
+        const std::size_t budget = (static_cast<std::size_t>(mem_avail_kb) * 1024u) / 20u; // ~5%
+        const std::size_t edge_bytes = 256;  // key string + shared RowVec est.
+        std::size_t cap = budget / edge_bytes;
+        if (cap < 1024) cap = 1024;              // floor, as Rust floors at 1024
+        if (cap > (1u << 20)) cap = (1u << 20);  // sane ceiling
+        return cap;
+    }
+    static std::size_t env_size(const char* name, std::size_t fallback) {
+        if (const char* e = std::getenv(name)) {
+            char* end = nullptr;
+            unsigned long v = std::strtoul(e, &end, 10);
+            if (end && *end == 0 && v > 0) return static_cast<std::size_t>(v);
+        }
+        return fallback;
+    }
+    static std::size_t round_up_pow2(std::size_t n) {
+        std::size_t p = 1;
+        while (p < n) p <<= 1;
+        return p;
+    }
+
+    void ensure_open_lmdb() {
+        std::lock_guard<std::mutex> guard(mu_);
+        if (lmdb_open_) return;
+        // Configure caches on first open (env overrides in the UW_WAM_* runtime
+        // namespace; L2 default auto-sizes from available memory).
+        std::size_t l1_size = round_up_pow2(env_size("UW_WAM_LMDB_L1_SLOTS", 1u << 14));
+        l1_.assign(l1_size, L1Slot{});
+        l1_mask_ = l1_size - 1;
+        l2_cap_ = env_size("UW_WAM_LMDB_L2_CAP", lmdb_default_l2_cap());
+        int rc = mdb_env_create(&lmdb_env_);
+        if (rc != MDB_SUCCESS)
+            throw std::runtime_error("lmdb env_create failed for " + path_);
+        // The JS builder writes a directory env (data.mdb + lock.mdb). Probe for
+        // a single-file (NOSUBDIR) layout only when path_ has an extension.
+        unsigned int flags = MDB_RDONLY | MDB_NOTLS;
+        std::size_t dot = path_.rfind(static_cast<char>(46));  // 46 = "."
+        if (dot != std::string::npos && path_.substr(dot) == ".mdb")
+            flags |= MDB_NOSUBDIR;
+        rc = mdb_env_open(lmdb_env_, path_.c_str(), flags, 0664);
+        if (rc != MDB_SUCCESS) {
+            mdb_env_close(lmdb_env_);
+            lmdb_env_ = nullptr;
+            throw std::runtime_error("lmdb env_open failed for " + path_
+                + ": " + std::string(mdb_strerror(rc)));
+        }
+        MDB_txn* txn = nullptr;
+        rc = mdb_txn_begin(lmdb_env_, nullptr, MDB_RDONLY, &txn);
+        if (rc != MDB_SUCCESS)
+            throw std::runtime_error("lmdb txn_begin failed for " + path_);
+        rc = mdb_dbi_open(txn, nullptr, 0, &lmdb_dbi_);
+        if (rc != MDB_SUCCESS) {
+            mdb_txn_abort(txn);
+            throw std::runtime_error("lmdb dbi_open failed for " + path_);
+        }
+        mdb_txn_commit(txn);
+        lmdb_open_ = true;
+    }
+
+    // Keyed range scan over the a1Range band for one encoded key. Reads ONLY the
+    // records that key touches (the lazy keyed read).
+    void lmdb_range_scan(const std::string& enc_key, RowVec& out) {
+        std::string prefix = lmdb_a1_prefix(enc_key);
+        std::string start = lmdb_a1_start(enc_key);
+        MDB_txn* txn = nullptr;
+        if (mdb_txn_begin(lmdb_env_, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS) return;
+        MDB_cursor* cur = nullptr;
+        if (mdb_cursor_open(txn, lmdb_dbi_, &cur) != MDB_SUCCESS) { mdb_txn_abort(txn); return; }
+        MDB_val k, v;
+        k.mv_size = start.size();
+        k.mv_data = const_cast<char*>(start.data());
+        int rc = mdb_cursor_get(cur, &k, &v, MDB_SET_RANGE);
+        while (rc == MDB_SUCCESS) {
+            if (k.mv_size < prefix.size()
+                || std::memcmp(k.mv_data, prefix.data(), prefix.size()) != 0)
+                break;  // left the key''s band
+            g_fact_io_bytes.fetch_add(k.mv_size + v.mv_size, std::memory_order_relaxed);
+            g_fact_io_reads.fetch_add(1, std::memory_order_relaxed);
+            Value a1, a2;
+            if (decode_record_payload(static_cast<const char*>(v.mv_data), v.mv_size, a1, a2))
+                out.emplace_back(std::move(a1), std::move(a2));
+            rc = mdb_cursor_get(cur, &k, &v, MDB_NEXT);
+        }
+        mdb_cursor_close(cur);
+        mdb_txn_abort(txn);
+    }
+
+    // Full scan over the seq band (0x00 prefix); each record is stored once
+    // there (and once in the a1Range band), so this walks every row exactly once.
+    void lmdb_scan_all(RowVec& out) {
+        std::string prefix(1, static_cast<char>(0x00));
+        MDB_txn* txn = nullptr;
+        if (mdb_txn_begin(lmdb_env_, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS) return;
+        MDB_cursor* cur = nullptr;
+        if (mdb_cursor_open(txn, lmdb_dbi_, &cur) != MDB_SUCCESS) { mdb_txn_abort(txn); return; }
+        MDB_val k, v;
+        k.mv_size = prefix.size();
+        k.mv_data = const_cast<char*>(prefix.data());
+        int rc = mdb_cursor_get(cur, &k, &v, MDB_SET_RANGE);
+        while (rc == MDB_SUCCESS) {
+            if (k.mv_size < 1 || static_cast<unsigned char>(
+                    static_cast<const char*>(k.mv_data)[0]) != 0x00)
+                break;  // left the seq band
+            g_fact_io_bytes.fetch_add(k.mv_size + v.mv_size, std::memory_order_relaxed);
+            g_fact_io_reads.fetch_add(1, std::memory_order_relaxed);
+            Value a1, a2;
+            if (decode_record_payload(static_cast<const char*>(v.mv_data), v.mv_size, a1, a2))
+                out.emplace_back(std::move(a1), std::move(a2));
+            rc = mdb_cursor_get(cur, &k, &v, MDB_NEXT);
+        }
+        mdb_cursor_close(cur);
+        mdb_txn_abort(txn);
+    }
+
+    struct L1Slot { bool valid = false; std::string key; RowVecPtr rows; };
+    MDB_env* lmdb_env_ = nullptr;
+    MDB_dbi  lmdb_dbi_ = 0;
+    bool     lmdb_open_ = false;
+    std::vector<L1Slot> l1_;
+    std::size_t l1_mask_ = 0;
+    std::unordered_map<std::string, RowVecPtr> l2_;
+    std::deque<std::string> l2_order_;
+    std::size_t l2_cap_ = 0;
+#endif // WAM_CPP_ENABLE_LMDB
 };
 
 struct WamState {
