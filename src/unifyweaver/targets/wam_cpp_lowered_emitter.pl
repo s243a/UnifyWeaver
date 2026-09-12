@@ -29,6 +29,7 @@
 :- use_module(wam_ite_structurer, [structure_ite/2, split_commit/3, is_commit/1]).
 :- use_module(wam_text_parser, [wam_text_to_items/2, wam_classify_constant_token/2]).
 :- use_module(wam_clause_chain, [clause_chain/2]).
+:- use_module(wam_cpp_templates, [cpp_render_stache/3]).
 % Inlined escape helper to avoid a circular import with wam_cpp_target.
 % Keeps this module standalone-loadable.
 
@@ -521,28 +522,14 @@ emit_one(get_constant(CStr, AiStr), I) :-
     wam_classify_constant_token(CStr, Class),
     ( Class = atom(Name)
     ->  local_escape_cpp_string(Name, Esc),
-        format("~w// get_constant ~w, ~w~n", [I, CStr, AiStr]),
-        format("~w{~n", [I]),
-        format("~w    int _m = vm->match_reg_atom(\"~w\", \"~w\");~n", [I, Ai, Esc]),
-        format("~w    if (_m < 0) {~n", [I]),
-        format("~w        vm->trail_binding(\"~w\");~n", [I, Ai]),
-        format("~w        vm->put_reg(\"~w\", Value::Atom(\"~w\"));~n", [I, Ai, Esc]),
-        format("~w    } else if (_m == 0) {~n", [I]),
-        format("~w        return false;~n", [I]),
-        format("~w    }~n", [I]),
-        format("~w}~n", [I])
+        Vars = [op=head_constant(atom(Esc)), 'I'=I, 'CStr'=CStr,
+                'AiStr'=AiStr, 'Ai'=Ai]
     ;   cpp_val_literal(CStr, CppVal),
-        format("~w// get_constant ~w, ~w~n", [I, CStr, AiStr]),
-        format("~w{~n", [I]),
-        format("~w    Value _a = vm->get_reg(\"~w\");~n", [I, Ai]),
-        format("~w    if (_a.is_unbound()) {~n", [I]),
-        format("~w        vm->trail_binding(\"~w\");~n", [I, Ai]),
-        format("~w        vm->put_reg(\"~w\", ~w);~n", [I, Ai, CppVal]),
-        format("~w    } else if (!(_a == ~w)) {~n", [I, CppVal]),
-        format("~w        return false;~n", [I]),
-        format("~w    }~n", [I]),
-        format("~w}~n", [I])
-    ).
+        Vars = [op=head_constant(value(CppVal)), 'I'=I, 'CStr'=CStr,
+                'AiStr'=AiStr, 'Ai'=Ai]
+    ),
+    cpp_render_stache(head_constant, Vars, Text),
+    format('~s', [Text]).
 
 emit_one(get_integer(NStr, AiStr), I) :-
     cpp_reg_name(AiStr, Ai),

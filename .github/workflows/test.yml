@@ -267,7 +267,7 @@ jobs:
           output="$(swipl -q -s tests/test_wam_cpp_templates.pl -g 'run_tests(wam_cpp_templates)' -t halt 2>&1)" || { printf '%s\n' "$output"; exit 1; }
           printf '%s\n' "$output"
           if grep -Eq '^ERROR:' <<< "$output"; then exit 1; fi
-          if ! grep -q '\[6/6\].*passed' <<< "$output"; then exit 1; fi
+          if ! grep -Eq '^% \[([0-9]+)/\1\].*passed' <<< "$output"; then exit 1; fi
 
       - name: Run WAM-C text builtin regressions
         if: matrix.target == 'c'

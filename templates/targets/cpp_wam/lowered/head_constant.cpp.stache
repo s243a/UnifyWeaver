@@ -1,0 +1,22 @@
+{{! dialect(pattern_stache, 1) }}
+{{match op}}{{case head_constant(atom(Esc))}}{{I}}// get_constant {{CStr}}, {{AiStr}}
+{{I}}{
+{{I}}    int _m = vm->match_reg_atom("{{Ai}}", "{{Esc}}");
+{{I}}    if (_m < 0) {
+{{I}}        vm->trail_binding("{{Ai}}");
+{{I}}        vm->put_reg("{{Ai}}", Value::Atom("{{Esc}}"));
+{{I}}    } else if (_m == 0) {
+{{I}}        return false;
+{{I}}    }
+{{I}}}
+{{case head_constant(value(CppVal))}}{{I}}// get_constant {{CStr}}, {{AiStr}}
+{{I}}{
+{{I}}    Value _a = vm->get_reg("{{Ai}}");
+{{I}}    if (_a.is_unbound()) {
+{{I}}        vm->trail_binding("{{Ai}}");
+{{I}}        vm->put_reg("{{Ai}}", {{CppVal}});
+{{I}}    } else if (!(_a == {{CppVal}})) {
+{{I}}        return false;
+{{I}}    }
+{{I}}}
+{{/match}}
