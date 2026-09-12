@@ -6,7 +6,8 @@
 :- use_module('../src/unifyweaver/targets/wam_cpp_target',
               [compile_wam_runtime_header_to_cpp/2]).
 :- use_module('../src/unifyweaver/targets/wam_cpp_templates',
-              [cpp_render_template_at_root/4, cpp_render_stache_at_root/4]).
+              [cpp_render_template_at_root/4, cpp_render_stache_at_root/4,
+               cpp_with_template_root_for_test/2]).
 :- use_module('../src/unifyweaver/targets/wam_cpp_lowered_emitter', []).
 
 % SHA-256 covers UTF-8 bytes; lengths below count Prolog characters.
@@ -45,6 +46,71 @@ test(repeated_render) :-
     compile_wam_runtime_header_to_cpp([], First),
     compile_wam_runtime_header_to_cpp([], Second),
     assertion(First == Second).
+
+test(main_shim_exact_bytes) :-
+    wam_cpp_target:emit_main_shim(Main),
+    string_length(Main, 3252),
+    crypto_data_hash(Main, Digest, [algorithm(sha256), encoding(utf8)]),
+    assertion(Digest == '0c0f30bcf02ebd2adf39e546e02cbdf53970bcd07eb0fd35d7f778be2f95c327').
+
+test(project_preflight_missing_stache_no_files) :-
+    with_project_template_fixture(missing_stache, check_project_preflight_failure).
+
+test(project_preflight_malformed_stache_no_files) :-
+    with_project_template_fixture(malformed_stache, check_project_preflight_failure).
+
+test(project_preflight_malformed_main_no_files) :-
+    with_project_template_fixture(malformed_main, check_project_preflight_failure).
+
+test(project_preflight_missing_main_no_files) :-
+    with_project_template_fixture(missing_main, check_project_preflight_failure).
+
+test(project_preflight_malformed_header_no_files) :-
+    with_project_template_fixture(malformed_header, check_project_preflight_failure).
+
+with_project_template_fixture(Fault, Goal) :-
+    tmp_file(cpp_wam_preflight, Root),
+    setup_call_cleanup(
+        (make_directory(Root),
+         directory_file_path(Root, templates, Templates),
+         make_directory(Templates),
+         directory_file_path(Templates, lowered, Lowered),
+         make_directory(Lowered),
+         source_file(wam_cpp_target:write_wam_cpp_project(_, _, _), Source),
+         file_directory_name(Source, ModuleDir),
+         directory_file_path(ModuleDir, '../../../templates/targets/cpp_wam', RealRoot),
+         directory_file_path(RealRoot, 'runtime.h.mustache', Header),
+         directory_file_path(Templates, 'runtime.h.mustache', HeaderCopy),
+         copy_file(Header, HeaderCopy),
+         (Fault == malformed_header -> write_fixture(HeaderCopy, "{{bad") ; true),
+         directory_file_path(RealRoot, 'main.cpp.mustache', Main),
+         directory_file_path(Templates, 'main.cpp.mustache', MainCopy),
+         (Fault == missing_main -> true ; copy_file(Main, MainCopy)),
+         directory_file_path(RealRoot, 'lowered/head_constant.cpp.stache', Stache),
+         directory_file_path(Lowered, 'head_constant.cpp.stache', StacheCopy),
+         (Fault == missing_stache -> true ; copy_file(Stache, StacheCopy)),
+         (Fault == malformed_stache -> write_fixture(StacheCopy, "{{bad") ; true),
+         (Fault == malformed_main -> write_fixture(MainCopy, "{{bad") ; true)),
+        call(Goal, Fault, Root, Templates),
+        delete_directory_and_contents(Root)).
+
+write_fixture(Path, Text) :-
+    setup_call_cleanup(open(Path, write, Out), write(Out, Text), close(Out)).
+
+check_project_preflight_failure(Fault, Root, Templates) :-
+    directory_file_path(Root, project, Project),
+    catch(cpp_with_template_root_for_test(Templates,
+          wam_cpp_target:write_wam_cpp_project([], [emit_main(true)], Project)),
+          Error, true),
+    (   Fault == malformed_main
+    ->  assertion(Error = error(cpp_wam_template_tags(main_shim, _), _))
+    ;   Fault == missing_main
+    ->  assertion(Error = error(cpp_wam_template_load(main_shim, _, _), _))
+    ;   Fault == malformed_header
+    ->  assertion(Error = error(cpp_wam_template_tags(runtime_header, _), _))
+    ;   assertion(Error = error(cpp_wam_stache_failure(head_constant, _, _), _))
+    ),
+    assertion(\+ exists_directory(Project)).
 
 test(missing_file, [throws(error(cpp_wam_template_load(runtime_header, _, _), _))]) :-
     cpp_render_template_at_root('/tmp/absent_wam_cpp_template_fixture',

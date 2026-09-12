@@ -2,7 +2,9 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 
 :- module(wam_cpp_templates, [cpp_render_template/3, cpp_render_template_at_root/4,
-                             cpp_render_stache/3, cpp_render_stache_at_root/4]).
+                             cpp_render_stache/3, cpp_render_stache_at_root/4,
+                             cpp_preflight_stache/0,
+                             cpp_with_template_root_for_test/2]).
 
 :- use_module(library(readutil), [read_file_to_string/3]).
 :- use_module(library(crypto), [crypto_file_hash/3]).
@@ -10,14 +12,36 @@
 :- use_module('../core/pattern_stache', [load_stache_file/2, render_stache/3]).
 
 :- dynamic cached_head_constant_stache/3.
+:- thread_local test_cpp_template_root/1.
 
 cpp_template_path(runtime_header, 'runtime.h.mustache').
+cpp_template_path(main_shim, 'main.cpp.mustache').
 cpp_stache_path(head_constant, 'lowered/head_constant.cpp.stache').
 
-cpp_render_stache(Id, Vars, Text) :-
-    source_file(cpp_render_stache(_, _, _), Source),
+% Scoped fixture root for generator tests. Production callers resolve assets
+% from this module; no project option can redirect template loading.
+cpp_with_template_root_for_test(Root, Goal) :-
+    setup_call_cleanup(
+        asserta(test_cpp_template_root(Root), Ref),
+        call(Goal),
+        erase(Ref)).
+
+cpp_template_root(Root) :-
+    test_cpp_template_root(Root),
+    !.
+cpp_template_root(Root) :-
+    source_file(cpp_render_template(_, _, _), Source),
     file_directory_name(Source, ModuleDir),
-    directory_file_path(ModuleDir, '../../../templates/targets/cpp_wam', Root),
+    directory_file_path(ModuleDir, '../../../templates/targets/cpp_wam', Root).
+
+% Both case bodies are required even when a particular project only uses one.
+cpp_preflight_stache :-
+    Vars0 = ['I'="", 'CStr'="x", 'AiStr'="A1", 'Ai'="A1"],
+    cpp_render_stache(head_constant, [op=head_constant(atom("x"))|Vars0], _),
+    cpp_render_stache(head_constant, [op=head_constant(value("1"))|Vars0], _).
+
+cpp_render_stache(Id, Vars, Text) :-
+    cpp_template_root(Root),
     cpp_render_stache_at_root(Root, Id, Vars, Text).
 
 cpp_render_stache_at_root(Root, Id, Vars, Text) :-
@@ -119,9 +143,7 @@ head_constant_tag(atom, "Esc").
 head_constant_tag(value, "CppVal").
 
 cpp_render_template(Id, Vars, Text) :-
-    source_file(cpp_render_template(_, _, _), Source),
-    file_directory_name(Source, ModuleDir),
-    directory_file_path(ModuleDir, '../../../templates/targets/cpp_wam', Root),
+    cpp_template_root(Root),
     cpp_render_template_at_root(Root, Id, Vars, Text).
 
 % Explicit root is for isolated template fixtures; emitters use the module root.
@@ -140,12 +162,18 @@ cpp_render_template_at_root(Root, Id, Vars, Text) :-
     catch(read_file_to_string(Path, Template, [encoding(utf8)]),
           Error,
           throw(error(cpp_wam_template_load(Id, Path, Error),
-                      context(cpp_render_template/3, runtime_header)))),
+                      context(cpp_render_template/3, Id)))),
     (   Template == ""
     ->  throw(error(cpp_wam_template_empty(Id, Path),
-                    context(cpp_render_template/3, runtime_header)))
+                    context(cpp_render_template/3, Id)))
     ;   true
     ),
-    % The header has no substitution keys. Render through the existing engine,
-    % while keeping literal C++ braces and source text untouched.
+    % These whole-file assets have no substitutions. Reject template syntax
+    % here instead of silently leaving a malformed or unknown tag in C++.
+    (   (sub_string(Template, _, _, _, "{{") ;
+         sub_string(Template, _, _, _, "}}"))
+    ->  throw(error(cpp_wam_template_tags(Id, Path),
+                    context(cpp_render_template/3, Id)))
+    ;   true
+    ),
     render_template(Template, [], Text).
