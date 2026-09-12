@@ -8,3 +8,4 @@ generated/
 /setup_all.inc
 *.o
 *.exe
+diff/
