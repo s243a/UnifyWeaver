@@ -610,9 +610,13 @@ test(end_toupper_of_a_field_declines) :-
     build_status("{ n++ } END { print toupper($1) }\n", 3),
     !.
 
-% An END-only program (no rules) uses a different driver, which does not retain.
-test(end_only_program_field_read_declines) :-
-    build_status("END { print $1 }\n", 3),
+% An END-only program (no rules) now COMPILES and retains the last record -- the
+% END-only driver landed. `END { print $1 }` builds and prints the last record's $1.
+% Pinned as a decline while END-only was a gap; re-attributed, not deleted. Output
+% parity is in tests/test_plawk_end_only.pl (field_and_nf_of_last_record); here we
+% pin the status flip in the suite that first pinned this shape.
+test(end_only_program_field_read_now_compiles) :-
+    build_status("END { print $1 }\n", 0),
     !.
 
 % --- regressions: END without fields is unchanged ------------------------
