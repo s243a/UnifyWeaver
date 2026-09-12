@@ -6087,6 +6087,21 @@ static bool wam_execute_length(WamState *state) {
     return true;
 }
 
+/* compare/3: ISO standard-order comparison. Order unifies with <, =, or >.
+   Reuses the live-term comparator already used by sort/2 so indexed
+   tree_lookup/3 (compare(Ord, Key, NodeKey)) and predsort comparators
+   see the same order. */
+static bool wam_execute_compare(WamState *state) {
+    wam_sort_compare_truncated = 0;
+    int c = wam_compare_live_terms(state, state->A[1], state->A[2], 0);
+    if (wam_sort_compare_truncated) {
+        wam_set_unsupported_builtin(state, "compare/3", 3);
+        return false;
+    }
+    WamValue order = val_atom(c < 0 ? "<" : (c > 0 ? ">" : "="));
+    return wam_unify(state, &state->A[0], &order);
+}
+
 bool wam_execute_builtin(WamState *state, const char *op, int arity) {
     if (strcmp(op, "true/0") == 0 && arity == 0) return true;
     if ((strcmp(op, "fail/0") == 0 || strcmp(op, "false/0") == 0) && arity == 0) return false;
@@ -6228,6 +6243,10 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
 
     if (strcmp(op, "length/2") == 0 && arity == 2) {
         return wam_execute_length(state);
+    }
+
+    if (strcmp(op, "compare/3") == 0 && arity == 3) {
+        return wam_execute_compare(state);
     }
 
     wam_set_unsupported_builtin(state, op, arity);
