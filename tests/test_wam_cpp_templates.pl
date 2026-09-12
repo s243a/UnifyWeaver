@@ -53,6 +53,13 @@ test(main_shim_exact_bytes) :-
     crypto_data_hash(Main, Digest, [algorithm(sha256), encoding(utf8)]),
     assertion(Digest == '0c0f30bcf02ebd2adf39e546e02cbdf53970bcd07eb0fd35d7f778be2f95c327').
 
+test(runtime_source_exact_bytes, [forall(member(Options,
+     [[], [cpp_fact_sources([source(edge/2, lmdb('/tmp/phase3b_lmdb'))])]]))]) :-
+    wam_cpp_target:compile_wam_runtime_to_cpp(Options, Runtime),
+    string_length(Runtime, 310726),
+    crypto_data_hash(Runtime, Digest, [algorithm(sha256), encoding(utf8)]),
+    assertion(Digest == 'fa0317a11da5069d0fa18a36bc1937419bcf187e7f6ec4c5d278fd0270cfd300').
+
 test(program_shell_does_not_rescan_fragments) :-
     cpp_render_template_at_root('templates/targets/cpp_wam', generated_program,
         [predicates_code="P {{setup_code}}", setup_code="S {{predicates_code}}"],
@@ -106,6 +113,12 @@ test(project_preflight_missing_program_no_files) :-
 test(project_preflight_malformed_program_no_files) :-
     with_project_template_fixture(malformed_program, check_project_preflight_failure).
 
+test(project_preflight_missing_runtime_no_files) :-
+    with_project_template_fixture(missing_runtime, check_project_preflight_failure).
+
+test(project_preflight_malformed_runtime_no_files) :-
+    with_project_template_fixture(malformed_runtime, check_project_preflight_failure).
+
 with_project_template_fixture(Fault, Goal) :-
     tmp_file(cpp_wam_preflight, Root),
     setup_call_cleanup(
@@ -121,6 +134,10 @@ with_project_template_fixture(Fault, Goal) :-
          directory_file_path(Templates, 'runtime.h.mustache', HeaderCopy),
          copy_file(Header, HeaderCopy),
          (Fault == malformed_header -> write_fixture(HeaderCopy, "{{bad") ; true),
+         directory_file_path(RealRoot, 'runtime.cpp.mustache', Runtime),
+         directory_file_path(Templates, 'runtime.cpp.mustache', RuntimeCopy),
+         (Fault == missing_runtime -> true ; copy_file(Runtime, RuntimeCopy)),
+         (Fault == malformed_runtime -> write_fixture(RuntimeCopy, "{{bad") ; true),
          directory_file_path(RealRoot, 'main.cpp.mustache', Main),
          directory_file_path(Templates, 'main.cpp.mustache', MainCopy),
          (Fault == missing_main -> true ; copy_file(Main, MainCopy)),
@@ -150,6 +167,10 @@ check_project_preflight_failure(Fault, Root, Templates) :-
     ->  assertion(Error = error(cpp_wam_template_load(main_shim, _, _), _))
     ;   Fault == malformed_header
     ->  assertion(Error = error(cpp_wam_template_tags(runtime_header, _), _))
+    ;   Fault == missing_runtime
+    ->  assertion(Error = error(cpp_wam_template_load(runtime_source, _, _), _))
+    ;   Fault == malformed_runtime
+    ->  assertion(Error = error(cpp_wam_template_tags(runtime_source, _), _))
     ;   Fault == missing_program
     ->  assertion(Error = error(cpp_wam_template_load(generated_program, _, _), _))
     ;   Fault == malformed_program

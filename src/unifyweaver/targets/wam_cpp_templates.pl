@@ -8,13 +8,13 @@
 
 :- use_module(library(readutil), [read_file_to_string/3]).
 :- use_module(library(crypto), [crypto_file_hash/3]).
-:- use_module('../core/template_system', [render_template/3]).
 :- use_module('../core/pattern_stache', [load_stache_file/2, render_stache/3]).
 
 :- dynamic cached_head_constant_stache/3.
 :- thread_local test_cpp_template_root/1.
 
 cpp_template_path(runtime_header, 'runtime.h.mustache').
+cpp_template_path(runtime_source, 'runtime.cpp.mustache').
 cpp_template_path(main_shim, 'main.cpp.mustache').
 cpp_template_path(generated_program, 'generated_program.cpp.mustache').
 cpp_stache_path(head_constant, 'lowered/head_constant.cpp.stache').
@@ -193,11 +193,13 @@ render_cpp_template(generated_program, Path, Template,
     ;   throw(error(cpp_wam_template_tags(generated_program, Path),
                     context(cpp_render_template/3, generated_program)))
     ).
+% Whole-file assets without variables are literal source after tag lint.
+% Avoid scanning the large runtime through the generic renderer at each build.
 render_cpp_template(Id, Path, Template, [], Text) :-
     (   template_has_tags(Template)
     ->  throw(error(cpp_wam_template_tags(Id, Path),
                     context(cpp_render_template/3, Id)))
-    ;   render_template(Template, [], Text)
+    ;   Text = Template
     ).
 
 % Splice only source-template spans. Sequential Mustache replacement would
