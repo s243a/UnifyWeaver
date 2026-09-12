@@ -261,6 +261,12 @@ jobs:
         run: |
           swipl -q -f init.pl -s tests/test_wam_cross_target_conformance.pl -g "seed_sampler,run_tests" -t halt
 
+      - name: Run WAM-C text builtin regressions
+        if: matrix.target == 'c'
+        run: |
+          swipl -q -g run_tests -t halt tests/test_wam_c_atom_codes.pl
+          swipl -q -g run_tests -t halt tests/test_wam_c_atom_chars.pl
+
   wam_r_conformance:
     name: WAM R Conformance (interpreter + functions)
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
