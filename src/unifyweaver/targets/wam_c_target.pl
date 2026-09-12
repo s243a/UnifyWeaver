@@ -5380,6 +5380,13 @@ static bool wam_execute_char_code(WamState *state) {
         return false;
     }
 
+    if (!a2_unbound && (a2->tag != VAL_INT || a2->data.integer < 0 ||
+                        a2->data.integer > 0x10FFFF ||
+                        (a2->data.integer >= 0xD800 && a2->data.integer <= 0xDFFF))) {
+        wam_set_unsupported_builtin(state, "char_code/2", 2);
+        return false;
+    }
+
     if (!a1_unbound) {
         if (a1->tag != VAL_ATOM || !a1->data.atom) {
             wam_set_unsupported_builtin(state, "char_code/2", 2);

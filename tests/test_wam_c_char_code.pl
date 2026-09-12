@@ -102,8 +102,10 @@ token_swi(prebound_mismatch_code, fail, mismatch_code_ok) :-
     \+ char_code(a, 98).
 token_swi(prebound_mismatch_char, fail, mismatch_char_ok) :-
     \+ char_code(b, 97).
-token_swi(prebound_mismatch_nonint, fail, mismatch_nonint_ok) :-
-    \+ catch(char_code(a, foo), _, fail).
+token_swi(prebound_mismatch_nonint, ok, mismatch_nonint_ok) :-
+    catch((char_code(a, foo), Outcome = unexpected),
+          error(type_error(integer, _), _), Outcome = threw),
+    Outcome == threw.
 token_swi(aliased_var_mismatch, fail, aliased_mismatch_ok) :-
     X = b, \+ char_code(X, 97).
 token_swi(preserve_input, ok, preserve_ok).
@@ -655,9 +657,12 @@ int main(void) {
         int h_before = state.H;
         int tr_before = state.TR;
         int rc = run_char_code(&state, val_atom("a"), val_atom("foo"));
-        int rolled = (state.H == h_before && state.TR == tr_before && state.error == 0);
-        emit_token("prebound_mismatch_nonint", (rc == WAM_HALT && rolled) ? "fail" : "ok",
-                   (rc == WAM_HALT && rolled) ? "mismatch_nonint_ok" : "mismatch_nonint_bad");
+        int diagnostic = (rc == WAM_ERR_UNSUPPORTED &&
+                          state.error == WAM_ERR_UNSUPPORTED &&
+                          state.H == h_before && state.TR == tr_before);
+        emit_token("prebound_mismatch_nonint", diagnostic ? "ok" : "fail",
+                   diagnostic ? "mismatch_nonint_ok" : "mismatch_nonint_bad");
+        wam_clear_error(&state);
     }
 
     /* 8. Incompatible prebound with bound variable conflict */
@@ -944,7 +949,7 @@ int main(void) {
         wam_clear_error(&state);
     }
 
-    /* U+0000 cannot be represented by the runtime's NUL-terminated atoms. */
+    /* U+0000 cannot be represented by NUL-terminated runtime atoms. */
     {
         WamValue a_ref = make_out_ref(&state, "A");
         int rc = run_char_code(&state, a_ref, val_int(0));
