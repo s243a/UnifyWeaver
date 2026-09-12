@@ -74,17 +74,41 @@ called, exposing two mode gaps (each fixed with the store adapter as witness):
 
 ## Backends
 
-Default `UW_STORE_BACKEND=indexed` reads the dependency-free UWFI/UWIX seek
-store. `UW_STORE_BACKEND=lmdb` is opt-in and **fails loudly** on the C++ lane:
-the lazy+cached LMDB reader is not built yet (planned as the M3 Stage-2
-comparison tier, where the memory×scale crossover is measured) — it never
-silently falls back to indexed.
+- **`UW_STORE_BACKEND=indexed`** (default) reads the dependency-free UWFI/UWIX
+  seek store with positioned `ifstream` reads and NO application cache — it leans
+  entirely on the OS page cache.
+- **`UW_STORE_BACKEND=lmdb`** (Stage 2) is the lazy + two-level-cached LMDB
+  reader (compiled under `WAM_CPP_ENABLE_LMDB`, auto-#defined when an `lmdb(Dir)`
+  seek source is declared; links system `liblmdb`). Each bound-key lookup is a
+  keyed range-scan over the a1Range band; results are cached in an **L1**
+  direct-mapped slot table (mirrors Rust's `L1_CACHE`) and an **L2** FIFO map
+  (mirrors Rust's `CacheShard`; NOT Haskell's LRU). L2's default cap auto-sizes
+  from live `/proc/meminfo`; env overrides `UW_WAM_LMDB_L2_CAP` /
+  `UW_WAM_LMDB_L1_SLOTS` tune it (used by the benchmark sweep). It **fails
+  loudly**, never silently falling back to indexed.
+
+  **liblmdb format note:** the default `lmdb` npm prebuilt is a Symas fork whose
+  page format vanilla system `liblmdb` rejects (`MDB_INVALID`). Set
+  `UW_LMDB_DATA_V1=1` (wired into this lane's `build.sh`/run scripts) so
+  `ensure_lmdb.sh` builds the OpenLDAP-0.9.29-lineage module from source, which
+  vanilla `liblmdb` reads. See `ensure_lmdb.sh`.
 
 ## Numbers (this VM)
 
-- Corpus **51/51**, 0 divergences vs the SWI store oracle.
-- 5k store differential (`0xc0ffee01`): **503 cases, 0 divergences** vs SWI, on
-  both `-O0` and `-O2` builds.
-- The B3 bytes-read / wall-time payoff demo (a `--scale-probe` driver mode +
-  `run_scale_cpp_store.sh`, as in `../rust_store`) lands with the Stage-2 LMDB
-  comparison, where seek-vs-LMDB is measured against available memory.
+- Corpus **51/51** and the 5k store differential (`0xc0ffee01`) **503/503**, 0
+  divergences vs the SWI store oracle, on **both** the `indexed` and `lmdb`
+  backends (indexed on `-O0`+`-O2`).
+- I/O attribution over the 503 cases (`UW_WAM_CACHE_ATTRIBUTION=1`): `indexed`
+  reads **~2.46 MB in ~196k reads** (no cache); `lmdb` reads **~56 KB in ~1.25k
+  reads** — the L1 cache absorbs ~16.3k repeat lookups (308 disk misses). This is
+  an **I/O-volume** win, not by itself a wall-time win: with ample memory
+  `indexed`'s reads are cheap page-cache hits, so the I/O gap only converts to a
+  wall-time advantage under memory pressure (see below).
+- `run_scale_cpp_store.sh` is the **memory×scale crossover** harness: it runs the
+  workload through both backends under a `systemd-run` `MemoryMax` sweep and an
+  in-process `UW_WAM_LMDB_L2_CAP` sweep, reporting wall-time + the D43 byte
+  counters + cache hit/miss. The 5k store (~1 MB) fits in cache under any cap so
+  the crossover is muted at this scale; a dramatic crossover needs a much larger
+  catalog — the natural fit is loading real repo snapshots with structural
+  sharing of unchanged packages (a large, realistic store that is also the
+  multi-snapshot substrate).
