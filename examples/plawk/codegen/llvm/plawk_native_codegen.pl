@@ -14921,8 +14921,19 @@ plawk_scalar_print_expr(Expr, Name) :-
 % `lowered_match:` with no terminator -- invalid LLVM (clang: expected instruction
 % opcode). Emit the loop-continue branch instead: with nothing to match, the match
 % block jumps straight to `continue_loop`. RuleCount 0, no globals, no branch exits.
-plawk_scalar_rule_chain_ir([], _StatePlan, _FieldSeparator, _OutputSeparator,
+plawk_scalar_rule_chain_ir([], StatePlan, _FieldSeparator, _OutputSeparator,
         '', '  br label %continue_loop', 0, []) :-
+    % Zero rules is supported only when the END touches no SCALAR variable -- i.e. the
+    % state plan has no slots. A rule-less program whose END reads/writes a scalar
+    % (`END { print x }`) gives the plan a slot, and the loop's next-slot phi would
+    % reference %rule_-1_* (LastRuleIndex = RuleCount-1 = -1) -- undefined SSA, an
+    % exit-4 miscompile. AND an unset scalar's value in END is context-dependent
+    % (empty in string context, 0 in numeric) -- the uninitialised-scalar
+    % representation problem -- so even a correct pass-through phi would need that
+    % settled first. Until then, decline cleanly (this clause fails, the general
+    % `RuleCount > 0` clause fails, the driver declines at exit 3) rather than
+    % miscompile or print a context-wrong value. Scalar-var END-only is a follow-on.
+    plawk_state_plan_slots(StatePlan, []),
     !.
 plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator,
         GlobalIR, ChainIR, RuleCount, BranchNextExits) :-

@@ -211,6 +211,24 @@ test(end_only_getline_declines) :-
     build_status("END { getline x; print x }\n", 3),
     !.
 
+% A scalar VARIABLE read/write in an END-only program declines cleanly (exit 3), NOT
+% exit 4. This is the case an ultra review caught that the first cut missed: admitting
+% an empty rule chain let the state plan collect the scalar as a slot, and the loop's
+% next-slot phi then referenced %rule_-1_* (LastRuleIndex = RuleCount-1 = -1) --
+% undefined SSA, a clang miscompile. The dedicated empty rule-chain clause is now
+% guarded to fire only when the state plan has NO slots, so a scalar-var END-only
+% program declines. It is a genuine follow-on: an unset scalar's value in END is
+% context-dependent (empty in string context, 0 in numeric -- the uninitialised-scalar
+% representation problem), so even a correct pass-through phi needs that settled first.
+% Pinned so the miscompile cannot silently return and the follow-on stays visible.
+test(end_only_scalar_var_read_declines_not_miscompiles) :-
+    build_status("END { print x }\n", 3),
+    build_status("END { print x; print \"done\" }\n", 3),
+    build_status("END { printf \"%d\\n\", x }\n", 3),
+    build_status("END { if (x == 0) print \"zero\" }\n", 3),
+    build_status("END { if (NR > 0) print x }\n", 3),
+    !.
+
 % --- clang never rejects a supported END-only program -------------------
 %
 % Belt-and-braces over the whole supported surface: build each and require a
@@ -252,7 +270,14 @@ test(no_rule_less_shape_miscompiles) :-
         "BEGIN { FS=\":\" } END { print NR }\n",
         "BEGIN { print \"start\" } END { print NR }\n",
         "END { getline x }\n",
-        "END { x = 5 }\n"
+        "END { x = 5 }\n",
+        "END { print x }\n",
+        "END { print x; print \"done\" }\n",
+        "END { printf \"%d\\n\", x }\n",
+        "END { if (x == 0) print \"zero\" }\n",
+        "END { if (NR > 0) print x }\n",
+        "BEGIN { FS=\":\" } END { print x }\n",
+        "BEGIN { BINFMT = \"i64\" } END { print x }\n"
     ]), build_status_not_4(Src)),
     !.
 
