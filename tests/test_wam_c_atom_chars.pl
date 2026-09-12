@@ -98,6 +98,10 @@ token_swi(prebound_mismatch_content, fail, mismatch_content_ok) :-
     \+ atom_chars(hello, [h, e, l, l, c]).
 token_swi(prebound_mismatch_length, fail, mismatch_length_ok) :-
     \+ atom_chars(hello, [h, e, l, l]).
+% C currently reports a logical mismatch for a non-list output; SWI raises a
+% type error, so this token checks the documented C behavior separately.
+token_swi(prebound_mismatch_nonlist, fail, mismatch_nonlist_ok) :-
+    catch(atom_chars(hello, 42), error(type_error(list, _), _), true).
 token_swi(prebound_empty_mismatch, fail, empty_mismatch_ok) :-
     \+ atom_chars('', [a]).
 token_swi(aliased_var_mismatch, fail, aliased_mismatch_ok) :-
@@ -309,6 +313,7 @@ run_compiled_c_atom_chars :-
     Ground = [ascii, empty, multibyte_cafe, multibyte_greek, multibyte_cjk, multibyte_emoji],
     Tokens = [prebound_match, prebound_empty_match, aliased_var_match,
               prebound_mismatch_content, prebound_mismatch_length,
+              prebound_mismatch_nonlist,
               prebound_empty_mismatch,
               aliased_var_mismatch, preserve_input, reference_chain,
               repeated_calls, bind_control, backtrack_rollback,
@@ -399,6 +404,22 @@ static WamValue build_char_list(WamState *s, const char * const *items, int n) {
         cur = cons(s, val_atom(items[i]), cur);
     }
     return cur;
+}
+
+static int matches_char_list(WamState *s, WamValue *value,
+                             const char * const *expected, int count) {
+    WamValue *cell = wam_deref_ptr(s, value);
+    for (int i = 0; i < count; i++) {
+        if (cell->tag != VAL_LIST) return 0;
+        int base = cell->data.ref_addr;
+        if (base < 0 || base >= s->H - 1) return 0;
+        WamValue *head = wam_deref_ptr(s, &s->H_array[base]);
+        if (head->tag != VAL_ATOM || !head->data.atom ||
+            strcmp(head->data.atom, expected[i]) != 0) return 0;
+        cell = wam_deref_ptr(s, &s->H_array[base + 1]);
+    }
+    return cell->tag == VAL_ATOM && cell->data.atom &&
+           strcmp(cell->data.atom, "[]") == 0;
 }
 
 static int is_plain_atom(const char *str) {
@@ -697,10 +718,12 @@ int main(void) {
 
     /* 13. Bind control via compiled predicate */
     {
+        const char *expected[] = { "f", "o", "o" };
         WamValue out_ref = make_out_ref(&state, "Out");
         WamValue args[1] = { out_ref };
         int rc = wam_run_predicate(&state, "wam_atom_chars_bind_control/1", args, 1);
-        int ok = rc == 0 && state.error == 0;
+        int ok = rc == 0 && state.error == 0 &&
+                 matches_char_list(&state, &out_ref, expected, 3);
         emit_token("bind_control", ok ? "ok" : "fail",
                    ok ? "bind_control_ok" : "bind_control_bad");
     }
@@ -718,10 +741,12 @@ int main(void) {
 
     /* 15. Mismatch positive control via compiled predicate */
     {
+        const char *expected[] = { "h", "e", "l", "l", "o" };
         WamValue out_ref = make_out_ref(&state, "Out");
         WamValue args[1] = { out_ref };
         int rc = wam_run_predicate(&state, "wam_atom_chars_mismatch_positive/1", args, 1);
-        int ok = rc == 0 && state.error == 0;
+        int ok = rc == 0 && state.error == 0 &&
+                 matches_char_list(&state, &out_ref, expected, 5);
         emit_token("mismatch_positive", ok ? "ok" : "fail",
                    ok ? "mismatch_positive_ok" : "mismatch_positive_bad");
     }
