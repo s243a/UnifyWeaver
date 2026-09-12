@@ -1,7 +1,36 @@
 # C++ WAM template refactor plan
 
-Status: proposed; documentation only. Baseline: upstream `main` commit
-`55796489a9750388f4fcf3cac602e4d525b14c28` (2026-09-11).
+Status: in progress. Phase 1 (runtime header) and Phase 2 (lowered
+`get_constant`) landed in #4252 and #4253. This follow-up starts from
+`53d0bd4`, including the Pattern Stache literal-substitution fix in #4254.
+The original planning baseline was `55796489a9750388f4fcf3cac602e4d525b14c28`
+(2026-09-11).
+
+## Phase 3 progress (2026-09-12)
+
+The optional `main.cpp` is now a whole-file asset. Its old emitted UTF-8 bytes
+are pinned by SHA-256 `0c0f30bcf02ebd2adf39e546e02cbdf53970bcd07f778be2f95c327`
+(3,252 bytes, 111 lines). The template has no placeholders; adapter validation
+rejects template tags in this asset and in the runtime header. Runtime and
+generated-program extraction remain open.
+
+Project generation now validates the required Pattern Stache cases and renders
+all requested artifacts before creating the output directory. A failure in a
+required asset or in template-backed predicate rendering leaves a new project
+directory absent.
+This does not make filesystem writes transactional if a later write itself fails.
+Isolated fixture tests cover missing and malformed `.stache` and `.mustache`
+files, plus the frozen main bytes. Native fact, choice, caller, and T6 parity
+queries pass with the extracted main.
+
+The existing adapter caches the loaded Stache body by full path and SHA-256,
+while checking the file on every render so same-size and same-time edits cannot
+reuse stale content. A 10-fact `bench_pair/2` project in functions mode emitted
+10 `get_constant` fragments; 20 generations averaged 18.9 ms per project on the
+local host. A separate 10,000-render synthetic loop took 4.38 s (0.438 ms per
+render). The realistic project invokes this fragment roughly 12 times including
+the two preflight case renders, so another parsed-case cache is deferred until
+larger real projects show material generation time in this path.
 
 ## Outcome and scope
 
