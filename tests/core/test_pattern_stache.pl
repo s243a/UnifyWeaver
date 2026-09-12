@@ -378,6 +378,14 @@ test(outer_segments_render_once_around_case) :-
                   [g=f('{{K}}'), 'K'=outer], R),
     R == "outer/{{K}}/outer".
 
+test(open_brace_adjacent_to_placeholder) :-
+    render_stache("{{{K}}}", ['K'=ok], R),
+    R == "{ok}".
+
+test(unfinished_marker_before_placeholder) :-
+    render_stache("{{ unfinished {{K}}", ['K'=ok], R),
+    R == "{{ unfinished ok".
+
 :- end_tests(q6_dict_contract).
 
 %% ============================================

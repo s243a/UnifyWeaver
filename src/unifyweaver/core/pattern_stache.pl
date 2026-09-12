@@ -353,7 +353,20 @@ substitute_placeholders(Text, Dict, Result) :-
         TagStart is Open + 2,
         sub_string(Text, Close, 2, _, "}}"),
         Close >= TagStart
-    ->  TagLen is Close - TagStart,
+    ->  (   sub_string(Text, InnerOpen, 2, _, "{{"),
+            InnerOpen > Open,
+            InnerOpen < Close
+        ->  sub_string(Text, 0, InnerOpen, _, Prefix),
+            sub_string(Text, InnerOpen, _, 0, Remainder),
+            substitute_placeholders(Remainder, Dict, Tail),
+            string_concat(Prefix, Tail, Result)
+        ;   substitute_one_placeholder(Text, Dict, Open, TagStart, Close, Result)
+        )
+    ;   Result = Text
+    ).
+
+substitute_one_placeholder(Text, Dict, Open, TagStart, Close, Result) :-
+        TagLen is Close - TagStart,
         sub_string(Text, 0, Open, _, Before),
         sub_string(Text, TagStart, TagLen, _, Tag),
         SuffixStart is Close + 2,
@@ -365,9 +378,7 @@ substitute_placeholders(Text, Dict, Result) :-
         ),
         substitute_placeholders(Suffix, Dict, SuffixDone),
         string_concat(Before, Replacement, PrefixDone),
-        string_concat(PrefixDone, SuffixDone, Result)
-    ;   Result = Text
-    ).
+        string_concat(PrefixDone, SuffixDone, Result).
 
 placeholder_value(Tag, Dict, Replacement) :-
     (   sub_string(Tag, 0, 2, _, "q:")
