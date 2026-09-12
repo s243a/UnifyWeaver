@@ -94,6 +94,9 @@ plus two interpolation forms usable anywhere placeholders are substituted:
 
 A placeholder whose key is not in scope is left **verbatim** in the output (both forms) — the
 same behaviour as `template_system.pl`, kept deliberately (see exclusions).
+Interpolation scans source template text once. A rendered value containing `{{Key}}`
+remains literal; it is never scanned as another placeholder. Each selected case body
+uses its own bindings, and text outside that case uses the enclosing bindings.
 
 ## Case patterns
 

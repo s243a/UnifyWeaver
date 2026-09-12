@@ -368,6 +368,16 @@ test(unknown_placeholder_left_verbatim) :-
     render_stache("a {{missing}} b", [], R),
     R == "a {{missing}} b".
 
+test(case_binding_that_looks_like_outer_key_is_literal) :-
+    render_stache("{{match g}}{{case f(X)}}{{X}}{{/match}}",
+                  [g=f('{{K}}'), 'K'=replaced], R),
+    R == "{{K}}".
+
+test(outer_segments_render_once_around_case) :-
+    render_stache("{{K}}/{{match g}}{{case f(X)}}{{X}}{{/match}}/{{K}}",
+                  [g=f('{{K}}'), 'K'=outer], R),
+    R == "outer/{{K}}/outer".
+
 :- end_tests(q6_dict_contract).
 
 %% ============================================

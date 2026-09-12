@@ -68,6 +68,8 @@ old_head_constant_digest("'a\\\\b'", "A1", 255,
     'f34ee254e9903c8c04f693e9d803359052a2f7b84c5a13d79f75f8474357fa06').
 old_head_constant_digest("'{{name}}'", "A1", 263,
     '4c9757bd40782eb98ba2bead2f60d54ada9aaa3b583efe7e189fe47aaf36b916').
+old_head_constant_digest("'{{Ai}}'", "A1", 257,
+    '9c9e8d89c15580f873544aa6a249c6b1c0ec45fd5eb5506899a43137c97c9024').
 
 test(head_constant_old_bytes, [forall(old_head_constant_digest(C, Reg, Length, Digest))]) :-
     with_output_to(string(Text),
