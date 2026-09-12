@@ -72,10 +72,34 @@ testing against the frozen lane.
 `DedupRatio(pool) = N / (1 + c·N) → 1/c` (N snapshots, churn rate `c`). Measured
 at `N=50, base=2000, 2% churn`: unique versions **4,450 vs naive 107,387 (24×)**;
 bulk pooled tables **~1.2 MB vs ~30 MB (24×)**; whole store **7.3 MB vs 37.6 MB
-(5.1×)**. The per-snapshot `store_pkg` membership table is not deduped by this
-design and becomes the size driver at large N — a **delta-chain membership
-encoding** (store only each snapshot's change vs the previous) is the natural
-next step and would push the overall ratio toward the 24× bulk ratio.
+(5.1×)**. The per-snapshot `store_pkg` membership table is the remaining size
+driver at large N.
+
+## Git-tree membership (the compact canonical form)
+
+The membership table is stored as a **git-like change log** — the source of
+truth — from which the per-snapshot `store_pkg` (or the `(Name,Ver,from,to)`
+validity-interval table) is *derived*:
+
+- `gen_snapshots.mjs` emits `membership-git/delta-<t>.jsonl`: snapshot 0 is a
+  full `op:"set"` commit; each later snapshot records only `set` (a name's new
+  or bumped current version) / `del` (a dropped name) vs the previous.
+- `materialize_membership.mjs --snapshot=t` replays deltas `0..t` into one
+  snapshot's `store_pkg`; `--intervals` folds all deltas into one
+  `(Name,Ver,from,to)` row per version tenure (snapshot becomes a query
+  parameter, not a stored-per-row column — a single seek+filter, no replay).
+
+The git tree is canonical and compact; the materialized table is a rebuildable
+query index (log-is-truth / index-is-derived). Ingesting a new snapshot appends
+one delta and updates only the affected intervals — no full rebuild.
+
+Measured at `N=200, base=5000, 2% churn`: membership **31,639 delta rows vs
+1,298,652 full (41×)**; on disk **1.62 MB git-tree vs 86.2 MB full (53×)**.
+Materializing one snapshot (replay `0..150`) = **30 ms**, byte-identical to the
+full membership; the intervals fold (all 200 snapshots) = **59 ms**. This
+collapses the membership size driver, taking the *whole* store from ~93 MB
+(pool + full membership) to ~9 MB (pool 7.5 MB + git-tree 1.6 MB) — overall
+dedup now approaches the ~44× bulk ratio.
 
 ## Scope
 

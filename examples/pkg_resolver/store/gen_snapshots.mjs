@@ -175,6 +175,33 @@ for (let t = 0; t < N; t++) {
   writeFileSync(OUT + "/membership/snap-" + t + ".jsonl", rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
 }
 
+// --- git-tree membership: base commit + per-snapshot deltas -------------------
+// The COMPACT canonical form (the "git tree"): snapshot 0 is a full `set`
+// commit; each later snapshot records only what CHANGED vs the previous --
+// op:"set" (a name's new-or-bumped current version) or op:"del" (a dropped
+// name). Materialize snapshot t's membership by folding deltas 0..t
+// (materialize_membership.mjs). Because most packages don't change between
+// snapshots, this is a small fraction of the full per-snapshot lists above.
+mkdirSync(OUT + "/membership-git", { recursive: true });
+const vk = (v) => JSON.stringify(v);
+let deltaRows = 0;
+for (let t = 0; t < N; t++) {
+  const rows = [];
+  if (t === 0) {
+    for (const [name, ver] of membership[0]) rows.push({ snap: 0, op: "set", name, ver });
+  } else {
+    const prev = membership[t - 1], cur = membership[t];
+    for (const [name, ver] of cur) {
+      const pv = prev.get(name);
+      if (!pv || vk(pv) !== vk(ver)) rows.push({ snap: t, op: "set", name, ver });
+    }
+    for (const [name] of prev) if (!cur.has(name)) rows.push({ snap: t, op: "del", name });
+  }
+  deltaRows += rows.length;
+  writeFileSync(OUT + "/membership-git/delta-" + t + ".jsonl",
+    rows.map((r) => JSON.stringify(r)).join("\n") + (rows.length ? "\n" : ""));
+}
+
 const uniqueVersions = poolPkg.length;
 const naiveVersions = memberRows; // = sum of members over snapshots = naive (Name,Ver) rows
 console.log("gen_snapshots: pool_id=" + POOL_ID + " base=" + BASE + " N=" + N +
@@ -182,4 +209,7 @@ console.log("gen_snapshots: pool_id=" + POOL_ID + " base=" + BASE + " N=" + N +
 console.log("  pool: unique_versions=" + uniqueVersions + " dep_rows=" + poolDep.length);
 console.log("  membership rows (naive versions) =" + naiveVersions +
   "  dedup ratio (versions) = " + (naiveVersions / uniqueVersions).toFixed(2) + "x");
+console.log("  git-tree membership rows (deltas) =" + deltaRows +
+  "  vs full per-snapshot =" + memberRows +
+  "  membership compression = " + (memberRows / Math.max(1, deltaRows)).toFixed(2) + "x");
 console.log("  churn totals: bump=" + bumpTotal + " add=" + addTotal + " remove=" + removeTotal);
