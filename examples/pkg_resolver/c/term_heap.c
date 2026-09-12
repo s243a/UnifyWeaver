@@ -2,52 +2,106 @@
 #include "term_heap.h"
 
 #include <stdio.h>
+#include <limits.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 void term_heap_init(TermHeap *th, WamState *state) {
     th->state = state;
+    th->error = NULL;
 }
 
-void term_heap_ensure(TermHeap *th, int cells) {
+static void term_heap_fail(TermHeap *th, const char *message) {
+    if (!th->error) th->error = message;
+}
+
+bool term_heap_ensure(TermHeap *th, int cells) {
     WamState *s = th->state;
-    if (s->H + cells < s->H_cap)
-        return;
-    int cap = s->H_cap ? s->H_cap : 64;
-    while (s->H + cells >= cap) {
-        if (cap > (1 << 28))
-            return;
+    if (th->error) return false;
+    if (cells < 0 || s->H < 0 || cells > INT_MAX - s->H) {
+        term_heap_fail(th, "WAM term heap capacity exceeded");
+        return false;
+    }
+    int required = s->H + cells;
+    if (required <= s->H_cap && s->H_array) return true;
+    int cap = s->H_cap > 0 ? s->H_cap : 64;
+    while (required > cap) {
+        if (cap > INT_MAX / 2) { cap = required; break; }
         cap *= 2;
     }
+    if ((size_t)cap > SIZE_MAX / sizeof(WamValue)) {
+        term_heap_fail(th, "WAM term heap capacity exceeded");
+        return false;
+    }
     WamValue *heap = realloc(s->H_array, sizeof(WamValue) * (size_t)cap);
-    if (!heap)
-        return;
+    if (!heap) {
+        term_heap_fail(th, "WAM term heap allocation failed");
+        return false;
+    }
     s->H_array = heap;
     s->H_cap = cap;
+    return true;
+}
+
+void *term_heap_calloc(TermHeap *th, size_t count, size_t size) {
+    if (th->error) return NULL;
+    if (size && count > SIZE_MAX / size) {
+        term_heap_fail(th, "WAM term allocation size exceeded");
+        return NULL;
+    }
+    void *p = calloc(count ? count : 1, size);
+    if (!p) term_heap_fail(th, "WAM term allocation failed");
+    return p;
 }
 
 const char *term_heap_intern(TermHeap *th, const char *s) {
-    return wam_intern_atom(th->state, s);
+    if (th->error) return "";
+    const char *result = wam_intern_atom(th->state, s);
+    /* The runtime returns the borrowed input on allocation failure. Only
+       accept that pointer if it is already owned by the atom table. */
+    if (result == s) {
+        WamState *state = th->state;
+        if (state->atom_table) {
+            unsigned h = wam_hash_string(s) & (unsigned)(state->atom_table_size - 1);
+            for (AtomEntry *e = state->atom_table[h]; e; e = e->next)
+                if (e->str == s) return result;
+        }
+        term_heap_fail(th, "WAM atom allocation failed");
+        return "";
+    }
+    return result;
 }
 
 WamValue term_heap_atom(TermHeap *th, const char *s) {
-    return val_atom(term_heap_intern(th, s));
+    const char *atom = term_heap_intern(th, s);
+    return th->error ? val_unbound("term_error") : val_atom(atom);
 }
 
-WamValue term_heap_int(TermHeap *th, int n) {
-    (void)th;
-    return val_int(n);
+WamValue term_heap_int(TermHeap *th, int64_t n) {
+    if (n < INT_MIN || n > INT_MAX)
+        term_heap_fail(th, "Integer outside WAM C int range");
+    return th->error ? val_unbound("term_error") : val_int((int)n);
 }
 
 WamValue term_heap_compound(TermHeap *th, const char *name, int arity, const WamValue *args) {
     char functor[128];
-    snprintf(functor, sizeof functor, "%s/%d", name, arity);
-    term_heap_ensure(th, 1 + arity);
+    if (arity < 0 || arity == INT_MAX || (arity && !args)) {
+        term_heap_fail(th, "Invalid WAM compound arguments");
+        return val_unbound("term_error");
+    }
+    int len = snprintf(functor, sizeof functor, "%s/%d", name, arity);
+    if (len < 0 || (size_t)len >= sizeof functor) {
+        term_heap_fail(th, "WAM functor name too long");
+        return val_unbound("term_error");
+    }
+    const char *interned = term_heap_intern(th, functor);
+    if (!term_heap_ensure(th, 1 + arity)) return val_unbound("term_error");
     WamState *s = th->state;
     WamValue term;
     term.tag = VAL_STR;
     term.data.ref_addr = s->H;
-    s->H_array[s->H++] = val_atom(term_heap_intern(th, functor));
+    s->H_array[s->H++] = val_atom(interned);
     for (int i = 0; i < arity; i++)
         s->H_array[s->H++] = args[i];
     return term;
@@ -58,10 +112,15 @@ WamValue term_heap_nil(TermHeap *th) {
 }
 
 WamValue term_heap_list(TermHeap *th, const WamValue *items, size_t count) {
+    if (th->error || (count && !items)) {
+        term_heap_fail(th, "Invalid WAM list arguments");
+        return val_unbound("term_error");
+    }
     WamValue acc = term_heap_nil(th);
     for (size_t i = count; i > 0; i--) {
         WamValue pair_args[2] = { items[i - 1], acc };
         acc = term_heap_compound(th, "[|]", 2, pair_args);
+        if (th->error) break;
     }
     return acc;
 }

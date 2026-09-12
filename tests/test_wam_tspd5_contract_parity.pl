@@ -372,7 +372,7 @@ test(c_two_pred_isolation_and_diamond, [condition(gcc_available)]) :-
         close(Out)),
     IncludeDir = 'src/unifyweaver/targets/wam_c_runtime',
     format(atom(Cmd),
-        'gcc -O0 -std=c11 -I~w ~w ~w ~w -o ~w 2>~w/gcc.err',
+        'gcc -O0 -std=c11 -I~w ~w ~w ~w -lm -o ~w 2>~w/gcc.err',
         [IncludeDir, RuntimePath, LibPath, MainPath, ExePath, Dir]),
     shell(Cmd, GccExit),
     ( GccExit =:= 0 -> true

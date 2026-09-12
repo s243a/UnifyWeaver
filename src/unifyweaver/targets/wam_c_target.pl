@@ -5180,8 +5180,14 @@ static int wam_compare_live_terms(WamState *state, WamValue left, WamValue right
                                                : (double)d1->data.integer;
         double right_n = (d2->tag == VAL_FLOAT) ? d2->data.floating
                                                 : (double)d2->data.integer;
+        /* Match standard term order, including SWI floating extensions:
+           NaN precedes all other numbers; -0.0 precedes +0.0. */
+        if (isnan(left_n) || isnan(right_n))
+            return wam_compare_ints(!isnan(left_n), !isnan(right_n));
         if (left_n < right_n) return -1;
         if (left_n > right_n) return 1;
+        if (d1->tag == VAL_FLOAT && d2->tag == VAL_FLOAT && left_n == 0.0)
+            return wam_compare_ints(!!signbit(right_n), !!signbit(left_n));
         int left_int = (d1->tag == VAL_INT);
         int right_int = (d2->tag == VAL_INT);
         return wam_compare_ints(left_int, right_int);

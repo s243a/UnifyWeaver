@@ -5,14 +5,16 @@
 
 typedef struct TermHeap {
     WamState *state;
+    const char *error;
 } TermHeap;
 
 void term_heap_init(TermHeap *th, WamState *state);
-void term_heap_ensure(TermHeap *th, int cells);
+bool term_heap_ensure(TermHeap *th, int cells);
+void *term_heap_calloc(TermHeap *th, size_t count, size_t size);
 
 const char *term_heap_intern(TermHeap *th, const char *s);
 WamValue term_heap_atom(TermHeap *th, const char *s);
-WamValue term_heap_int(TermHeap *th, int n);
+WamValue term_heap_int(TermHeap *th, int64_t n);
 WamValue term_heap_compound(TermHeap *th, const char *name, int arity, const WamValue *args);
 WamValue term_heap_list(TermHeap *th, const WamValue *items, size_t count);
 WamValue term_heap_nil(TermHeap *th);

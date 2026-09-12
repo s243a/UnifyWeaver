@@ -10,8 +10,8 @@ static WamValue tb_segs_term(TermHeap *th, const Json *segs) {
         return term_heap_nil(th);
     size_t n = 0;
     const Json *items = json_array_items(segs, &n);
-    WamValue *buf = calloc(n > 0 ? n : 1, sizeof(WamValue));
-    if (!buf) return term_heap_nil(th);
+    WamValue *buf = term_heap_calloc(th, n > 0 ? n : 1, sizeof(WamValue));
+    if (!buf) return val_unbound("term_error");
     for (size_t i = 0; i < n; i++) {
         const Json *seg = &items[i];
         const char *order = "";
@@ -25,12 +25,13 @@ static WamValue tb_segs_term(TermHeap *th, const Json *segs) {
                 num = json_as_int(&sarr[1]);
         }
         size_t olen = strlen(order);
-        WamValue *codes = calloc(olen > 0 ? olen : 1, sizeof(WamValue));
+        WamValue *codes = term_heap_calloc(th, olen > 0 ? olen : 1, sizeof(WamValue));
+        if (!codes) { free(buf); return val_unbound("term_error"); }
         for (size_t j = 0; j < olen; j++)
             codes[j] = term_heap_int(th, (int)(unsigned char)order[j]);
         WamValue code_list = term_heap_list(th, codes, olen);
         free(codes);
-        WamValue s_args[2] = { code_list, term_heap_int(th, (int)num) };
+        WamValue s_args[2] = { code_list, term_heap_int(th, num) };
         buf[i] = term_heap_compound(th, "s", 2, s_args);
     }
     WamValue out = term_heap_list(th, buf, n);
@@ -48,7 +49,7 @@ WamValue tb_ver_term(TermHeap *th, const Json *ver) {
             const Json *up = (n > 1) ? &arr[1] : NULL;
             const Json *rev = (n > 2) ? &arr[2] : NULL;
             WamValue args[3] = {
-                term_heap_int(th, (int)epoch),
+                term_heap_int(th, epoch),
                 tb_segs_term(th, up),
                 tb_segs_term(th, rev)
             };
@@ -58,9 +59,9 @@ WamValue tb_ver_term(TermHeap *th, const Json *ver) {
     if (json_is_array(ver)) {
         size_t n = 0;
         const Json *arr = json_array_items(ver, &n);
-        int m = (n > 0 && json_is_int(&arr[0])) ? (int)json_as_int(&arr[0]) : 0;
-        int i = (n > 1 && json_is_int(&arr[1])) ? (int)json_as_int(&arr[1]) : 0;
-        int p = (n > 2 && json_is_int(&arr[2])) ? (int)json_as_int(&arr[2]) : 0;
+        int64_t m = (n > 0 && json_is_int(&arr[0])) ? json_as_int(&arr[0]) : 0;
+        int64_t i = (n > 1 && json_is_int(&arr[1])) ? json_as_int(&arr[1]) : 0;
+        int64_t p = (n > 2 && json_is_int(&arr[2])) ? json_as_int(&arr[2]) : 0;
         WamValue args[3] = { term_heap_int(th, m), term_heap_int(th, i), term_heap_int(th, p) };
         return term_heap_compound(th, "v", 3, args);
     }
@@ -122,7 +123,8 @@ WamValue tb_layer_term(TermHeap *th, const Json *row) {
     size_t pn = 0;
     const Json *pkgs_json = json_find(row, "packages");
     const Json *pkgs = pkgs_json ? json_array_items(pkgs_json, &pn) : NULL;
-    WamValue *items = calloc(pn > 0 ? pn : 1, sizeof(WamValue));
+    WamValue *items = term_heap_calloc(th, pn > 0 ? pn : 1, sizeof(WamValue));
+    if (!items) return val_unbound("term_error");
     for (size_t i = 0; i < pn; i++)
         items[i] = tb_hold_term(th, &pkgs[i]);
     WamValue pkg_list = term_heap_list(th, items, pn);
@@ -160,7 +162,8 @@ WamValue tb_dep_term(TermHeap *th, const Json *row) {
         const Json *alts_json = json_find(&arr[2], "alternatives");
         size_t an = 0;
         const Json *alts = alts_json ? json_array_items(alts_json, &an) : NULL;
-        WamValue *alt_terms = calloc(an > 0 ? an : 1, sizeof(WamValue));
+        WamValue *alt_terms = term_heap_calloc(th, an > 0 ? an : 1, sizeof(WamValue));
+        if (!alt_terms) return val_unbound("term_error");
         for (size_t i = 0; i < an; i++) {
             const char *dep_name = "";
             const Json *d = json_find(&alts[i], "dep");
@@ -243,7 +246,8 @@ static WamValue tb_json_array_to_list(TermHeap *th, const Json *arr_json,
                                       WamValue (*map_fn)(TermHeap *, const Json *)) {
     size_t n = 0;
     const Json *items = json_array_items(arr_json, &n);
-    WamValue *buf = calloc(n > 0 ? n : 1, sizeof(WamValue));
+    WamValue *buf = term_heap_calloc(th, n > 0 ? n : 1, sizeof(WamValue));
+    if (!buf) return val_unbound("term_error");
     for (size_t i = 0; i < n; i++)
         buf[i] = map_fn(th, &items[i]);
     WamValue out = term_heap_list(th, buf, n);
@@ -268,7 +272,8 @@ WamValue tb_catalog_to_term(TermHeap *th, const Json *catalog) {
     if (in && json_is_array(in)) {
         size_t n = 0;
         const Json *items = json_array_items(in, &n);
-        WamValue *buf = calloc(n > 0 ? n : 1, sizeof(WamValue));
+        WamValue *buf = term_heap_calloc(th, n > 0 ? n : 1, sizeof(WamValue));
+        if (!buf) return val_unbound("term_error");
         for (size_t i = 0; i < n; i++) {
             size_t rn = 0;
             const Json *row = json_array_items(&items[i], &rn);
@@ -285,7 +290,8 @@ WamValue tb_catalog_to_term(TermHeap *th, const Json *catalog) {
     if (r && json_is_array(r)) {
         size_t n = 0;
         const Json *items = json_array_items(r, &n);
-        WamValue *buf = calloc(n > 0 ? n : 1, sizeof(WamValue));
+        WamValue *buf = term_heap_calloc(th, n > 0 ? n : 1, sizeof(WamValue));
+        if (!buf) return val_unbound("term_error");
         for (size_t i = 0; i < n; i++)
             buf[i] = term_heap_atom(th, json_as_string(&items[i]));
         req = term_heap_list(th, buf, n);
@@ -312,7 +318,8 @@ WamValue tb_catalog_to_term(TermHeap *th, const Json *catalog) {
     if (excl_json && json_is_array(excl_json)) {
         size_t n = 0;
         const Json *items = json_array_items(excl_json, &n);
-        WamValue *buf = calloc(n > 0 ? n : 1, sizeof(WamValue));
+        WamValue *buf = term_heap_calloc(th, n > 0 ? n : 1, sizeof(WamValue));
+        if (!buf) return val_unbound("term_error");
         for (size_t i = 0; i < n; i++)
             buf[i] = term_heap_atom(th, json_as_string(&items[i]));
         excl = term_heap_list(th, buf, n);

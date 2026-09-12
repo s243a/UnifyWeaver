@@ -281,7 +281,13 @@ static Json parse_number(Parser *p) {
         }
     } else {
         while (isdigit((unsigned char)p->text[p->pos])) {
-            val = val * 10 + (uint64_t)(p->text[p->pos] - '0');
+            uint64_t digit = (uint64_t)(p->text[p->pos] - '0');
+            uint64_t limit = (uint64_t)INT64_MAX + (neg ? 1u : 0u);
+            if (val > (limit - digit) / 10) {
+                parse_fail(p, "Integer outside JSON int64 range");
+                return json_null();
+            }
+            val = val * 10 + digit;
             p->pos++;
         }
     }
@@ -289,8 +295,25 @@ static Json parse_number(Parser *p) {
         parse_fail(p, "Floating-point numbers not supported");
         return json_null();
     }
-    int64_t result = neg ? -(int64_t)val : (int64_t)val;
+    int64_t result = neg
+        ? (val == (uint64_t)INT64_MAX + 1u ? INT64_MIN : -(int64_t)val)
+        : (int64_t)val;
     return json_int(result);
+}
+
+static bool parse_hex4(Parser *p, uint32_t *cp) {
+    *cp = 0;
+    for (int i = 0; i < 4; i++) {
+        unsigned char h = (unsigned char)p->text[p->pos];
+        if (!h) { parse_fail(p, "Incomplete Unicode escape"); return false; }
+        p->pos++;
+        *cp <<= 4;
+        if (h >= '0' && h <= '9') *cp |= (uint32_t)(h - '0');
+        else if (h >= 'a' && h <= 'f') *cp |= (uint32_t)(h - 'a' + 10);
+        else if (h >= 'A' && h <= 'F') *cp |= (uint32_t)(h - 'A' + 10);
+        else { parse_fail(p, "Invalid Unicode hex digit"); return false; }
+    }
+    return true;
 }
 
 static char *parse_raw_string(Parser *p) {
@@ -314,7 +337,7 @@ static char *parse_raw_string(Parser *p) {
                 free(s);
                 return NULL;
             }
-            if (len + 4 > cap) {
+            if (len + 5 > cap) {
                 cap *= 2;
                 char *n = realloc(s, cap);
                 if (!n) { free(s); parse_fail(p, "Out of memory"); return NULL; }
@@ -330,28 +353,36 @@ static char *parse_raw_string(Parser *p) {
             case 'r': s[len++] = '\r'; break;
             case 't': s[len++] = '\t'; break;
             case 'u': {
-                if (strlen(p->text + p->pos) < 4) {
-                    parse_fail(p, "Incomplete \\u hex escape in string");
-                    free(s);
-                    return NULL;
+                uint32_t cp;
+                if (!parse_hex4(p, &cp)) { free(s); return NULL; }
+                if (cp >= 0xD800 && cp <= 0xDBFF) {
+                    if (p->text[p->pos] != '\\' || p->text[p->pos + 1] != 'u') {
+                        parse_fail(p, "Missing low Unicode surrogate"); free(s); return NULL;
+                    }
+                    p->pos += 2;
+                    uint32_t low;
+                    if (!parse_hex4(p, &low)) { free(s); return NULL; }
+                    if (low < 0xDC00 || low > 0xDFFF) {
+                        parse_fail(p, "Invalid low Unicode surrogate"); free(s); return NULL;
+                    }
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+                    parse_fail(p, "Unpaired low Unicode surrogate"); free(s); return NULL;
                 }
-                uint32_t cp = 0;
-                for (int i = 0; i < 4; i++) {
-                    char h = p->text[p->pos++];
-                    cp <<= 4;
-                    if (h >= '0' && h <= '9') cp |= (uint32_t)(h - '0');
-                    else if (h >= 'a' && h <= 'f') cp |= (uint32_t)(h - 'a' + 10);
-                    else if (h >= 'A' && h <= 'F') cp |= (uint32_t)(h - 'A' + 10);
-                    else { parse_fail(p, "Invalid hex digit in \\u escape"); free(s); return NULL; }
+                if (cp == 0) {
+                    parse_fail(p, "NUL is unsupported in WAM C strings"); free(s); return NULL;
                 }
                 if (cp <= 0x7F) s[len++] = (char)cp;
                 else if (cp <= 0x7FF) {
-                    if (len + 2 > cap) { cap *= 2; char *n = realloc(s, cap); if (!n) { free(s); return NULL; } s = n; }
-                    s[len++] = (char)(0xC0 | ((cp >> 6) & 0x1F));
+                    s[len++] = (char)(0xC0 | (cp >> 6));
+                    s[len++] = (char)(0x80 | (cp & 0x3F));
+                } else if (cp <= 0xFFFF) {
+                    s[len++] = (char)(0xE0 | (cp >> 12));
+                    s[len++] = (char)(0x80 | ((cp >> 6) & 0x3F));
                     s[len++] = (char)(0x80 | (cp & 0x3F));
                 } else {
-                    if (len + 3 > cap) { cap *= 2; char *n = realloc(s, cap); if (!n) { free(s); return NULL; } s = n; }
-                    s[len++] = (char)(0xE0 | ((cp >> 12) & 0x0F));
+                    s[len++] = (char)(0xF0 | (cp >> 18));
+                    s[len++] = (char)(0x80 | ((cp >> 12) & 0x3F));
                     s[len++] = (char)(0x80 | ((cp >> 6) & 0x3F));
                     s[len++] = (char)(0x80 | (cp & 0x3F));
                 }
@@ -389,7 +420,7 @@ static Json parse_array(Parser *p) {
     if (p->text[p->pos] == ']') { p->pos++; return arr; }
     for (;;) {
         Json elem = parse_value(p);
-        if (p->err && p->err->message) { json_free(&arr); return json_null(); }
+        if (p->err && p->err->message) { json_free(&elem); json_free(&arr); return json_null(); }
         json_array_push(&arr, elem);
         skip_ws(p);
         if (!p->text[p->pos]) { parse_fail(p, "Unterminated array"); json_free(&arr); return json_null(); }
@@ -429,7 +460,7 @@ static Json parse_object(Parser *p) {
         }
         p->pos++;
         Json val = parse_value(p);
-        if (p->err && p->err->message) { free(key); json_free(&obj); return json_null(); }
+        if (p->err && p->err->message) { json_free(&val); free(key); json_free(&obj); return json_null(); }
         json_object_set(&obj, key, val);
         free(key);
         skip_ws(p);
@@ -465,6 +496,7 @@ static Json parse_value(Parser *p) {
 Json json_parse(const char *text, JsonParseError *err) {
     JsonParseError local = {0};
     if (!err) err = &local;
+    err->message = NULL;
     Parser p = { text ? text : "", 0, err };
     skip_ws(&p);
     if (!p.text[p.pos]) { err->message = "Empty input"; return json_null(); }

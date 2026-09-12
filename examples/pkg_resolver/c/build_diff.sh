@@ -14,7 +14,8 @@ echo "== swipl build_diff.pl =="
 swipl -q -g main -t halt "$HERE/build_diff.pl" -- "$HERE/../resolver.pl" "$GEN"
 
 echo "== gcc diff_uwresolve =="
-gcc -std=c11 -Wall -Wextra -O0 \
+read -r -a EXTRA_CFLAGS <<< "${CFLAGS:-}"
+gcc -std=c11 -Wall -Wextra -O0 "${EXTRA_CFLAGS[@]}" \
   -I"$GEN" -I"$HERE" \
   -o "$BIN" \
   "$HERE/diff_main.c" \

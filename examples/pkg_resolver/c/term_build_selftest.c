@@ -25,7 +25,9 @@ int main(void) {
     wam_state_init(&g_state);
     term_heap_init(&g_th, &g_state);
 
-    check_str(term_render(&g_state, tb_ver_term(&g_th, &((Json){0}))), "?", "ver_term invalid");
+    char *invalid = term_render(&g_state, tb_ver_term(&g_th, &((Json){0})));
+    check_str(invalid, "?", "ver_term invalid");
+    free(invalid);
 
     {
         Json v = parse_ok("[0,2,0]");
@@ -88,5 +90,6 @@ int main(void) {
         json_free(&cat);
     }
 
+    wam_free_state(&g_state);
     return finish_tests();
 }

@@ -23,9 +23,12 @@ static WamValue list_of_values(WamValue *items, size_t count) {
 /* wam_run_predicate converts VAL_UNBOUND args to heap refs, then writes
  * dereferenced results back into state->A[i]. Read those after success. */
 static int query_capture(const char *pred_key, WamValue *args, int arity, WamValue *out_cells) {
+    if (g_th.error) return WAM_ERR_UNSUPPORTED;
     if (arity < 0 || arity > WAM_MAX_REGS)
         return -1;
     int rc = wam_run_predicate(&g_vm, pred_key, args, arity);
+    /* WAM_HALT is logical failure; all other nonzero codes are errors. */
+    if (rc != 0 && rc != WAM_HALT) g_vm.error = rc;
     if (rc != 0)
         return rc;
     for (int i = 0; i < arity; i++)
@@ -61,12 +64,13 @@ static void run_case(const Json *row, Json *out) {
         WamValue *req_vals = NULL;
         if (args_ptr && json_is_array(args_ptr)) {
             const Json *items = json_array_items(args_ptr, &rn);
-            req_vals = calloc(rn > 0 ? rn : 1, sizeof(WamValue));
+            req_vals = term_heap_calloc(&g_th, rn > 0 ? rn : 1, sizeof(WamValue));
+            if (!req_vals) return;
             for (size_t i = 0; i < rn; i++)
                 req_vals[i] = tb_request_term(&g_th, &items[i]);
         } else {
             rn = 0;
-            req_vals = calloc(1, sizeof(WamValue));
+            req_vals = term_heap_calloc(&g_th, 1, sizeof(WamValue));
         }
         WamValue reqs_list = list_of_values(req_vals, rn);
         free(req_vals);
@@ -190,10 +194,6 @@ static void run_case(const Json *row, Json *out) {
 }
 
 int main(void) {
-    wam_state_init(&g_vm);
-    term_heap_init(&g_th, &g_vm);
-    setup_all_predicates(&g_vm);
-
     char *line;
     while ((line = cstr_read_line(stdin)) != NULL) {
         if (line[0] == '\0') {
@@ -207,16 +207,32 @@ int main(void) {
         if (err.message) {
             json_object_set(&out, "crash", json_string(err.message));
         } else {
+            /* Each JSONL row owns its entire VM. Tear down choicepoints,
+               trail, heap, interned atoms and program tables together, so
+               failed or successful queries cannot retain prior row roots. */
+            wam_state_init(&g_vm);
+            term_heap_init(&g_th, &g_vm);
+            if (!g_vm.H_array || !g_vm.TR_array || !g_vm.B_array || !g_vm.E_array)
+                g_th.error = "WAM state allocation failed";
+            else {
+                setup_all_predicates(&g_vm);
+                run_case(&row, &out);
+            }
+            if (g_th.error || g_vm.error) {
+                json_free(&out);
+                out = json_object();
+                json_object_set(&out, "crash", json_string(g_th.error ? g_th.error : "WAM runtime error"));
+            }
             json_set_id(&out, &row);
-            run_case(&row, &out);
+            wam_free_state(&g_vm);
             json_free(&row);
         }
         char *dumped = json_dump(&out);
         puts(dumped);
+        fflush(stdout);
         free(dumped);
         json_free(&out);
         free(line);
     }
-    wam_free_state(&g_vm);
     return 0;
 }

@@ -60,3 +60,5 @@ echo "== focused regressions: $(wc -l < "$OUT/cases.jsonl") cases =="
 swipl -q -g main -t halt "$HERE/../diff_runner.pl" < "$OUT/cases.jsonl" > "$OUT/swi.jsonl"
 "$DIFF_BIN" < "$OUT/cases.jsonl" > "$OUT/c.jsonl"
 node "$HERE/../compare_jsonl.mjs" "$OUT/cases.jsonl" "$OUT/swi.jsonl" "$OUT/c.jsonl"
+
+python3 "$HERE/driver_selftest.py"
