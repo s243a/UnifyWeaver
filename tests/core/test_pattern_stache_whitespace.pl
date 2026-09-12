@@ -215,22 +215,19 @@ test(q_form_is_also_left_verbatim_when_unbound) :-
 :- end_tests(unbound_is_silent).
 
 %% ============================================
-%% HAZARD: substitution is a sequential global replace
+%% Substitution scans only source markers
 %% ============================================
 %
-% substitute_placeholders/3 walks the dict in order, replacing every
-% occurrence of each key's marker in the whole text.  A value that
-% itself contains a later key's marker is therefore rescanned; the
-% result depends on dict order.  Not a defect of v1 — a property a
-% consumer that interpolates untrusted text has to know.
+% Values containing marker-shaped text remain literal. Dict order does not
+% cause inserted values to be interpreted as template source.
 
 :- begin_tests(substitution_order).
 
-test(value_containing_a_later_keys_marker_is_rescanned) :-
+test(value_containing_a_later_keys_marker_is_literal) :-
     render_stache(stache(1, "A={{a}} B={{b}}"), [a='{{b}}', b=zzz], R),
-    R == "A=zzz B=zzz".
+    R == "A={{b}} B=zzz".
 
-test(the_same_dict_in_the_other_order_does_not_rescan) :-
+test(the_same_dict_in_the_other_order_is_identical) :-
     render_stache(stache(1, "A={{a}} B={{b}}"), [b=zzz, a='{{b}}'], R),
     R == "A={{b}} B=zzz".
 
