@@ -5756,14 +5756,49 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
     if (op == "atom_concat/3") {
         Value a1 = deref(*get_cell("A1"));
         Value a2 = deref(*get_cell("A2"));
-        if (a1.is_unbound() || a2.is_unbound()) return false;
-        std::string s1 = (a1.tag == Value::Tag::Atom) ? a1.s : render(a1);
-        std::string s2 = (a2.tag == Value::Tag::Atom) ? a2.s : render(a2);
-        Value result = Value::Atom(s1 + s2);
-        CellPtr tgt = get_cell("A3");
-        if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
-        if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
-        pc += 1; return true;
+        Value a3 = deref(*get_cell("A3"));
+        auto as_text = [&](const Value& v) {
+            return (v.tag == Value::Tag::Atom) ? v.s : render(v);
+        };
+        bool u1 = a1.is_unbound(), u2 = a2.is_unbound(), u3 = a3.is_unbound();
+        // (+,+,?) concatenate A1++A2 and unify with A3.
+        if (!u1 && !u2) {
+            Value result = Value::Atom(as_text(a1) + as_text(a2));
+            CellPtr tgt = get_cell("A3");
+            if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
+            if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
+            pc += 1; return true;
+        }
+        // Decomposition modes require A3 bound (SWI atom_concat/3 is
+        // bidirectional; unpack_constraint/unpack_dep rely on the (+,-,+)
+        // prefix-strip mode -- bound prefix gte: over bound whole gte:1.0.0
+        // must bind the middle arg to 1.0.0).
+        if (u3) return false;
+        std::string whole = as_text(a3);
+        // (+,-,+) A1 is a prefix of A3 -> A2 = the trailing suffix, else fail.
+        if (!u1 && u2) {
+            std::string p = as_text(a1);
+            if (whole.size() < p.size() || whole.compare(0, p.size(), p) != 0)
+                return false;
+            Value suf = Value::Atom(whole.substr(p.size()));
+            if (!unify_cells(get_cell("A2"), std::make_shared<Cell>(suf)))
+                return false;
+            pc += 1; return true;
+        }
+        // (-,+,+) A2 is a suffix of A3 -> A1 = the leading prefix, else fail.
+        if (u1 && !u2) {
+            std::string s = as_text(a2);
+            if (whole.size() < s.size()
+                || whole.compare(whole.size() - s.size(), s.size(), s) != 0)
+                return false;
+            Value pre = Value::Atom(whole.substr(0, whole.size() - s.size()));
+            if (!unify_cells(get_cell("A1"), std::make_shared<Cell>(pre)))
+                return false;
+            pc += 1; return true;
+        }
+        // (-,-,+) nondeterministic split enumeration is not needed by any
+        // pkg_resolver call; fail loudly-quiet rather than mis-answer.
+        return false;
     }
 
     // ---- atom_length/2 ----------------------------------------------
