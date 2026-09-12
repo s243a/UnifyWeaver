@@ -124,6 +124,9 @@ token_swi(compound_input, ok, compound_ok).
 token_swi(nonempty_list, ok, nonempty_list_ok).
 token_swi(integer_input, ok, integer_ok).
 token_swi(distinguish_mismatch_vs_unsupported, ok, distinguish_ok).
+token_swi(prebound_heap_stable, ok, heap_stable_ok).
+token_swi(malformed_utf8, ok, malformed_ok).
+token_swi(heap_alloc_failure, ok, alloc_failure_ok).
 
 parse_c_cases([], []).
 parse_c_cases([Line|Rest], Cases) :-
@@ -293,7 +296,7 @@ run_compiled_c_atom_codes :-
     IncludeDir = 'src/unifyweaver/targets/wam_c_runtime',
     process_create(path(gcc),
                    ['-std=c11', '-Wall', '-Wextra', '-I', IncludeDir,
-                    RuntimePath, PredPath, DriverPath, '-lm', '-o', ExePath],
+                    RuntimePath, PredPath, DriverPath, '-Wl,--wrap=realloc', '-lm', '-o', ExePath],
                    [process(Pid)]),
     process_wait(Pid, GccStatus),
     format('gcc orig_exit=~w~n', [GccStatus]),
@@ -312,7 +315,8 @@ run_compiled_c_atom_codes :-
               mismatch_positive, mismatch_rollback, c_unifier_rollback,
               caller_continuation, repeated_mismatch_rollback,
               unbound_atom, reverse_mode, compound_input, nonempty_list,
-              integer_input, distinguish_mismatch_vs_unsupported],
+              integer_input, distinguish_mismatch_vs_unsupported,
+              prebound_heap_stable, malformed_utf8, heap_alloc_failure],
     findall(Id, (member(Id, Ground), \+ compare_ground(Id, CCases)), GroundBads),
     findall(Id, (member(Id, Tokens), \+ compare_token(Id, CCases)), TokenBads),
     GroundBads == [],
@@ -332,6 +336,16 @@ void setup_wam_atom_codes_bind_control_1(WamState *state);
 void setup_wam_atom_codes_backtrack_1(WamState *state);
 void setup_wam_atom_codes_mismatch_positive_1(WamState *state);
 void setup_wam_atom_codes_mismatch_rollback_1(WamState *state);
+
+static int fail_next_realloc;
+void *__real_realloc(void *ptr, size_t size);
+void *__wrap_realloc(void *ptr, size_t size) {
+    if (fail_next_realloc) {
+        fail_next_realloc = 0;
+        return NULL;
+    }
+    return __real_realloc(ptr, size);
+}
 
 static void ensure_h(WamState *s, int n) {
     if (s->H + n < s->H_cap)
@@ -845,6 +859,61 @@ int main(void) {
         int ok = mis_ok && uns_ok;
         emit_token("distinguish_mismatch_vs_unsupported", ok ? "ok" : "fail",
                    ok ? "distinguish_ok" : "distinguish_bad");
+    }
+
+    /* 26. Matching a fully bound list must not retain temporary heap cells. */
+    {
+        WamState st;
+        wam_state_init(&st);
+        int item = 97;
+        WamValue list = build_int_list(&st, &item, 1);
+        int before = st.H;
+        int ok = 1;
+        for (int i = 0; i < 1000; i++) {
+            st.A[0] = val_atom("a");
+            st.A[1] = list;
+            if (!wam_execute_builtin(&st, "atom_codes/2", 2) || st.error != 0) {
+                ok = 0;
+                break;
+            }
+        }
+        ok = ok && st.H == before;
+        emit_token("prebound_heap_stable", ok ? "ok" : "fail",
+                   ok ? "heap_stable_ok" : "heap_stable_bad");
+        wam_free_state(&st);
+    }
+
+    /* 27. Invalid C-provided bytes cannot be mistaken for the empty atom. */
+    {
+        char invalid[2] = { (char)0x80, 0 };
+        state.A[0] = val_atom(invalid);
+        state.A[1] = val_atom("[]");
+        int ok = !wam_execute_builtin(&state, "atom_codes/2", 2) &&
+                 state.error == WAM_ERR_UNSUPPORTED;
+        emit_token("malformed_utf8", ok ? "ok" : "fail",
+                   ok ? "malformed_ok" : "malformed_bad");
+        wam_clear_error(&state);
+    }
+
+    /* 28. Failed growth must not advertise capacity the heap never acquired. */
+    {
+        WamState st;
+        wam_state_init(&st);
+        int cap = st.H_cap;
+        st.H = cap - 1;
+        st.A[0] = val_atom("ab");
+        st.A[1] = val_unbound("C");
+        fail_next_realloc = 1;
+        int failed = !wam_execute_builtin(&st, "atom_codes/2", 2);
+        int stable = st.H_cap == cap && st.H == cap - 1;
+        st.H = 0;
+        st.A[0] = val_atom("ab");
+        st.A[1] = val_unbound("C");
+        int retry = wam_execute_builtin(&st, "atom_codes/2", 2);
+        int ok = failed && stable && retry && st.error == 0;
+        emit_token("heap_alloc_failure", ok ? "ok" : "fail",
+                   ok ? "alloc_failure_ok" : "alloc_failure_bad");
+        wam_free_state(&st);
     }
 
     wam_free_state(&state);

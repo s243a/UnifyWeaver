@@ -3125,17 +3125,18 @@ static bool wam_ensure_heap_slots(WamState *state, int additional) {
     if (state->H > INT_MAX - additional) return false;
     int required = state->H + additional;
     if (required <= state->H_cap) return true;
-    if (state->H_cap == 0) state->H_cap = WAM_INITIAL_CAP;
-    while (required > state->H_cap) {
-        if (state->H_cap > INT_MAX / 2) {
-            state->H_cap = required;
+    int new_cap = state->H_cap ? state->H_cap : WAM_INITIAL_CAP;
+    while (required > new_cap) {
+        if (new_cap > INT_MAX / 2) {
+            new_cap = required;
             break;
         }
-        state->H_cap *= 2;
+        new_cap *= 2;
     }
-    WamValue *heap = realloc(state->H_array, sizeof(WamValue) * (size_t)state->H_cap);
+    WamValue *heap = realloc(state->H_array, sizeof(WamValue) * (size_t)new_cap);
     if (!heap) return false;
     state->H_array = heap;
+    state->H_cap = new_cap;
     return true;
 }
 
@@ -5026,6 +5027,7 @@ static bool wam_decode_utf8_codes(const char *text, int **codes_out, int *count_
     size_t count = wam_utf8_codepoint_count(text);
     if (count > (size_t)INT_MAX / 2) return false;
     if (count == 0) {
+        if (*text != 0) return false;
         *codes_out = NULL;
         *count_out = 0;
         return true;
@@ -5093,6 +5095,22 @@ static bool wam_build_code_list(WamState *state, const int *codes, int count, Wa
     return true;
 }
 
+/* A fully bound matching output needs no temporary heap list. Leave lists with
+   variables or unusual representations to wam_unify so bindings stay identical. */
+static bool wam_ground_code_list_matches(WamState *state, WamValue *output,
+                                         const int *codes, int count) {
+    WamValue *cell = wam_deref_ptr(state, output);
+    for (int i = 0; i < count; i++) {
+        if (cell->tag != VAL_LIST) return false;
+        int base = cell->data.ref_addr;
+        if (base < 0 || base >= state->H - 1) return false;
+        WamValue *head = wam_deref_ptr(state, &state->H_array[base]);
+        if (head->tag != VAL_INT || head->data.integer != codes[i]) return false;
+        cell = wam_deref_ptr(state, &state->H_array[base + 1]);
+    }
+    return cell->tag == VAL_ATOM && cell->data.atom && strcmp(cell->data.atom, "[]") == 0;
+}
+
 /* atom_codes/2: forward atom-to-codes mode only.
    Decompose atom text into a list of Unicode code point integers.
    Unbound atom or non-atom inputs are diagnosed as WAM_ERR_UNSUPPORTED.
@@ -5113,6 +5131,11 @@ static bool wam_execute_atom_codes(WamState *state) {
     if (!wam_decode_utf8_codes(a1->data.atom, &codes, &count)) {
         wam_set_unsupported_builtin(state, "atom_codes/2", 2);
         return false;
+    }
+
+    if (wam_ground_code_list_matches(state, &state->A[1], codes, count)) {
+        free(codes);
+        return true;
     }
 
     int trail_mark = state->TR;
