@@ -97,11 +97,10 @@ Never route `.mustache` through this engine or modify shared engine semantics.
 
 At the pinned baseline, no other module under `src/` imports or calls Pattern
 Stache; its current consumers are prototypes/tests, so C++ would be its first
-production target caller. A stronger load-structure validator is pending in
-PR #4250 (parent-task review status, not part of this baseline). Do not assume
-its checks exist here. Before Phase 2, land and verify that validator or provide
-equivalent bounded adapter validation and negative tests for malformed block
-structure. Keep that engine-hardening dependency separate from C++ extraction.
+production target caller. The stronger load-structure validator landed in
+PR #4250 after the pinned baseline. Before Phase 2, verify its malformed-block
+checks in the branch used for implementation. Keep that engine-hardening change
+separate from C++ extraction.
 
 An illustrative structural fragment (not a complete migration) is:
 
