@@ -264,8 +264,12 @@ jobs:
       - name: Run WAM-C text builtin regressions
         if: matrix.target == 'c'
         run: |
-          swipl -q -g run_tests -t halt tests/test_wam_c_atom_codes.pl
-          swipl -q -g run_tests -t halt tests/test_wam_c_atom_chars.pl
+          for suite in tests/test_wam_c_atom_codes.pl tests/test_wam_c_atom_chars.pl tests/test_wam_c_char_code.pl; do
+            output="$(swipl -q -g run_tests -t halt "$suite" 2>&1)" || { printf '%s\n' "$output"; exit 1; }
+            printf '%s\n' "$output"
+            if grep -Eq '(^ERROR:|\[FAIL\])' <<< "$output"; then exit 1; fi
+            if ! grep -q 'Tests Complete' <<< "$output"; then exit 1; fi
+          done
 
   wam_r_conformance:
     name: WAM R Conformance (interpreter + functions)
