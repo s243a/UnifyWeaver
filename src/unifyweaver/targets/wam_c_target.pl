@@ -3118,6 +3118,7 @@ static bool wam_execute_reverse(WamState *state);
 static bool wam_execute_append(WamState *state);
 static bool wam_execute_length(WamState *state);
 static bool wam_execute_atom_length(WamState *state);
+static bool wam_execute_atom_codes(WamState *state);
 
 static bool wam_ensure_heap_slots(WamState *state, int additional) {
     if (additional <= 0) return true;
@@ -5016,6 +5017,124 @@ static bool wam_execute_atom_length(WamState *state) {
     return true;
 }
 
+static bool wam_decode_utf8_codes(const char *text, int **codes_out, int *count_out) {
+    if (!text) {
+        *codes_out = NULL;
+        *count_out = 0;
+        return true;
+    }
+    size_t count = wam_utf8_codepoint_count(text);
+    if (count > (size_t)INT_MAX / 2) return false;
+    if (count == 0) {
+        *codes_out = NULL;
+        *count_out = 0;
+        return true;
+    }
+    int *codes = (int *)malloc(sizeof(int) * count);
+    if (!codes) return false;
+
+    const unsigned char *p = (const unsigned char *)text;
+    size_t idx = 0;
+    while (*p) {
+        unsigned char c0 = *p++;
+        int cp;
+        if (c0 < 0x80) {
+            cp = c0;
+        } else if (c0 >= 0xC2 && (c0 & 0xE0) == 0xC0) {
+            if ((*p & 0xC0) != 0x80) { free(codes); return false; }
+            cp = ((c0 & 0x1F) << 6) | (*p++ & 0x3F);
+        } else if ((c0 & 0xF0) == 0xE0) {
+            if ((*p & 0xC0) != 0x80) { free(codes); return false; }
+            unsigned char c1 = *p++;
+            if ((*p & 0xC0) != 0x80) { free(codes); return false; }
+            unsigned char c2 = *p++;
+            cp = ((c0 & 0x0F) << 12) | ((c1 & 0x3F) << 6) | (c2 & 0x3F);
+            if (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF)) { free(codes); return false; }
+        } else if ((c0 & 0xF8) == 0xF0) {
+            if ((*p & 0xC0) != 0x80) { free(codes); return false; }
+            unsigned char c1 = *p++;
+            if ((*p & 0xC0) != 0x80) { free(codes); return false; }
+            unsigned char c2 = *p++;
+            if ((*p & 0xC0) != 0x80) { free(codes); return false; }
+            unsigned char c3 = *p++;
+            cp = ((c0 & 0x07) << 18) | ((c1 & 0x3F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F);
+            if (cp < 0x10000 || cp > 0x10FFFF) { free(codes); return false; }
+        } else {
+            free(codes);
+            return false;
+        }
+        if (idx >= count) {
+            free(codes);
+            return false;
+        }
+        codes[idx++] = cp;
+    }
+    *codes_out = codes;
+    *count_out = (int)idx;
+    return true;
+}
+
+static bool wam_build_code_list(WamState *state, const int *codes, int count, WamValue *out) {
+    if (count == 0) {
+        *out = val_atom("[]");
+        return true;
+    }
+    if (!wam_ensure_heap_slots(state, 2 * count))
+        return false;
+    WamValue tail = val_atom("[]");
+    for (int i = count - 1; i >= 0; i--) {
+        int base = state->H;
+        state->H_array[state->H++] = val_int(codes[i]);
+        state->H_array[state->H++] = tail;
+        tail.tag = VAL_LIST;
+        tail.data.ref_addr = base;
+    }
+    *out = tail;
+    return true;
+}
+
+/* atom_codes/2: forward atom-to-codes mode only.
+   Decompose atom text into a list of Unicode code point integers.
+   Unbound atom or non-atom inputs are diagnosed as WAM_ERR_UNSUPPORTED.
+   Unification failure rolls back trail and heap bindings made by this builtin. */
+static bool wam_execute_atom_codes(WamState *state) {
+    WamValue *a1 = wam_deref_ptr(state, &state->A[0]);
+    if (val_is_unbound(*a1)) {
+        wam_set_unsupported_builtin(state, "atom_codes/2", 2);
+        return false;
+    }
+    if (a1->tag != VAL_ATOM || !a1->data.atom) {
+        wam_set_unsupported_builtin(state, "atom_codes/2", 2);
+        return false;
+    }
+
+    int *codes = NULL;
+    int count = 0;
+    if (!wam_decode_utf8_codes(a1->data.atom, &codes, &count)) {
+        wam_set_unsupported_builtin(state, "atom_codes/2", 2);
+        return false;
+    }
+
+    int trail_mark = state->TR;
+    int heap_mark = state->H;
+
+    WamValue codes_list;
+    if (!wam_build_code_list(state, codes, count, &codes_list)) {
+        free(codes);
+        state->H = heap_mark;
+        return false;
+    }
+    free(codes);
+
+    if (!wam_unify(state, &state->A[1], &codes_list)) {
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+
+    return true;
+}
+
 static bool wam_execute_atom_concat(WamState *state) {
     WamValue *left = wam_deref_ptr(state, &state->A[0]);
     WamValue *right = wam_deref_ptr(state, &state->A[1]);
@@ -6202,6 +6321,10 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
 
     if (strcmp(op, "atom_length/2") == 0 && arity == 2) {
         return wam_execute_atom_length(state);
+    }
+
+    if (strcmp(op, "atom_codes/2") == 0 && arity == 2) {
+        return wam_execute_atom_codes(state);
     }
 
     if (strcmp(op, "sort/2") == 0 && arity == 2) {
