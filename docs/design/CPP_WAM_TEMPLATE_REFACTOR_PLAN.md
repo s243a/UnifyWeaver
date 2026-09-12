@@ -247,6 +247,13 @@ adapter changes and call-site changes together.
 | Native integration | `tests/core/test_cpp_native_lowering.pl`; compile and run generated C++17 projects in interpreter, functions and representative mixed modes, including failure/retry and parser/foreign call paths affected by later extraction. |
 | Options | No-main/with-main, LMDB header text plus linked LMDB execution where available, runtime parser modes, foreign predicate registration, lowered clause strategies. Preserve existing option acceptance/rejection. |
 
+The existing `tests/test_template_match_case.pl` is not a green baseline at this
+commit: 29 of 31 checks pass. Its eager-LMDB assertions still expect
+`DictLookupSource` and `loadDupsortRelationDict`, while the current F# template
+uses a demand-pruned dictionary path. Reconcile those two assertions with the
+intended F# behavior in a separate change before using this suite as a migration
+gate; do not count its current failures as evidence of C++ template drift.
+
 Follow root `AGENTS.md` and `docs/TESTING.md` for setup before executing tests:
 SWI-Prolog 9.x, `scripts/setup_local.sh`, and `mkdir -p output/advanced`.
 For a focused existing plunit run from the repository root:
