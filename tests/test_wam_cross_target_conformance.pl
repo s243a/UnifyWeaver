@@ -1133,7 +1133,7 @@ ct_build(c, Preds, Queries, c_ctx(Dir, Map)) :-
     c_runner_driver(AllPreds, DriverSrc),
     directory_file_path(Dir, 'driver.c', DriverPath),
     setup_call_cleanup(open(DriverPath, write, S), write(S, DriverSrc), close(S)),
-    run_proc(gcc, ['-O1', '-o', 'runner', 'driver.c', 'lib.c', 'wam_runtime.c'],
+    run_proc(gcc, ['-O1', '-o', 'runner', 'driver.c', 'lib.c', 'wam_runtime.c', '-lm'],
              Dir, BExit, BErr),
     ( BExit =:= 0 -> true ; throw(c_build_failed(BExit, BErr)) ).
 

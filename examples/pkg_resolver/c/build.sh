@@ -37,7 +37,7 @@ fi
 echo "== gcc smoke_runner =="
 set +e
 gcc -O0 -std=c11 -I"$GEN" -o "$GEN/smoke_runner" \
-  "$HERE/driver.c" "$GEN/lib.c" "$GEN/wam_runtime.c" \
+  "$HERE/driver.c" "$GEN/lib.c" "$GEN/wam_runtime.c" -lm \
   >"$GEN/gcc.log" 2>&1
 GCC_RC=$?
 set -e

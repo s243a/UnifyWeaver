@@ -409,3 +409,38 @@ initial test shapes failed and are not both represented in that passing set:
 These exclusions do not establish that the observed failures are unrelated to
 the patch. They remain unresolved until independently reproduced and classified;
 do not count the passing focused suite as coverage of either original shape.
+
+
+## Term differential lane
+
+`build_diff.sh` compiles the resolver once into `diff/diff_uwresolve`; the driver
+accepts one catalog/query JSON object per input line. Each row owns a fresh VM,
+including its heap, trail, and interned atoms. Output is flushed after each row,
+so callers can retain the process and send subsequent rows interactively.
+
+```bash
+bash examples/pkg_resolver/c/build_diff.sh
+bash examples/pkg_resolver/c/build_selftests.sh
+bash examples/pkg_resolver/c/run_regression_c.sh
+bash examples/pkg_resolver/c/run_differential_c.sh
+```
+
+The focused regression command also checks Unicode identities, error recovery,
+and (on Linux) bounded resident memory over 1000 repeated indexed catalogs.
+The executable runtime safety selftest checks allocation failure, integer bounds,
+and `compare/3` ordering, including NaN, signed zero, variables, and depth limits.
+
+JSON integers must fit signed 64-bit storage; integers converted into WAM terms
+must additionally fit the runtime's C `int`. Overflow is reported as a `crash`
+record rather than silently changing a version. Unicode surrogate pairs decode
+to UTF-8; unpaired surrogates and escaped NUL are rejected (WAM atoms use
+NUL-terminated strings). Term allocation failures and runtime errors also produce
+`crash` records; ordinary Prolog failure produces `fail: true`.
+
+Both build scripts accept additional compiler/linker flags via `CFLAGS`, e.g.
+`CFLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer -g'` for sanitizer
+verification. The safety selftest uses GNU-compatible linker allocation wrappers.
+
+When linking a generated WAM C runtime manually, include `-lm` after the C
+sources or objects. Float formatting uses the floating-point environment API
+to preserve the caller's rounding mode and exception state.

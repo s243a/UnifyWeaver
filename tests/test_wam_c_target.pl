@@ -356,6 +356,18 @@ test_sort_builtin_generation :-
     ;   fail_test(Test, 'sort/2 builtin missing from generated runtime')
     ).
 
+test_compare_builtin_generation :-
+    Test = 'WAM-C: compare/3 standard-order relation is generated',
+    (   compile_wam_helpers_to_c([], HelpersCode),
+        atom_string(HelpersCode, HelpersS),
+        sub_string(HelpersS, _, _, _, 'strcmp(op, "compare/3")'),
+        sub_string(HelpersS, _, _, _, 'wam_execute_compare'),
+        sub_string(HelpersS, _, _, _, 'wam_compare_live_terms'),
+        sub_string(HelpersS, _, _, _, 'c < 0 ? "<" : (c > 0 ? ">" : "=")')
+    ->  pass(Test)
+    ;   fail_test(Test, 'compare/3 builtin missing from generated runtime')
+    ).
+
 test_length_builtin_generation :-
     Test = 'WAM-C: length/2 measure and construct modes are generated',
     (   compile_wam_helpers_to_c([], HelpersCode),
@@ -7686,6 +7698,7 @@ run_tests_once :-
     test_builtin_call_generation,
     test_builtin_unsupported_diagnostics_generation,
     test_sort_builtin_generation,
+    test_compare_builtin_generation,
     test_length_builtin_generation,
     test_atom_length_builtin_generation,
     test_atomic_builtin_generation,
