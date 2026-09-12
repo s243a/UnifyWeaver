@@ -53,6 +53,38 @@ test(main_shim_exact_bytes) :-
     crypto_data_hash(Main, Digest, [algorithm(sha256), encoding(utf8)]),
     assertion(Digest == '0c0f30bcf02ebd2adf39e546e02cbdf53970bcd07eb0fd35d7f778be2f95c327').
 
+test(program_shell_does_not_rescan_fragments) :-
+    cpp_render_template_at_root('templates/targets/cpp_wam', generated_program,
+        [predicates_code="P {{setup_code}}", setup_code="S {{predicates_code}}"],
+        Text),
+    assertion(sub_string(Text, _, _, _, "P {{setup_code}}")),
+    assertion(sub_string(Text, _, _, _, "S {{predicates_code}}")),
+    assertion(\+ sub_string(Text, _, _, _, "P S {{predicates_code}}")),
+    assertion(\+ sub_string(Text, _, _, _, "S P {{setup_code}}")).
+
+project_variant(functions, [emit_mode(functions), emit_main(true)],
+    'fadbf0020e10e86fbf206a5f1f6b0b912891676c8dc13a3168a34cece76aafa7').
+project_variant(interpreter, [emit_mode(interpreter)],
+    '172c9e2924ade91fc01513916c2bab0dd96cdf700be0d95df5c9f939ec143ba3').
+project_variant(lmdb,
+    [emit_mode(functions), emit_main(true),
+     cpp_fact_sources([source(phase3_pair/2, lmdb('/tmp/phase3b_lmdb'))])],
+    'a9bf8ebfdf493820f05a9323ffc86c365b12844d83a91de927ae8b045edb0e3c').
+
+test(generated_program_old_bytes,
+     [forall(project_variant(_, Options, Expected))]) :-
+    tmp_file(cpp_wam_program_bytes, Project),
+    setup_call_cleanup(
+        (assertz(user:phase3_pair(a, '{{setup_code}}'), Ref1),
+         assertz(user:phase3_pair(b, '{{predicates_code}}'), Ref2)),
+        (wam_cpp_target:write_wam_cpp_project([user:phase3_pair/2], Options, Project),
+         directory_file_path(Project, 'cpp/generated_program.cpp', Program),
+         read_file_to_string(Program, Text, []),
+         crypto_data_hash(Text, Actual, [algorithm(sha256), encoding(utf8)]),
+         assertion(Actual == Expected)),
+        (erase(Ref1), erase(Ref2),
+         (exists_directory(Project) -> delete_directory_and_contents(Project) ; true))).
+
 test(project_preflight_missing_stache_no_files) :-
     with_project_template_fixture(missing_stache, check_project_preflight_failure).
 
@@ -67,6 +99,12 @@ test(project_preflight_missing_main_no_files) :-
 
 test(project_preflight_malformed_header_no_files) :-
     with_project_template_fixture(malformed_header, check_project_preflight_failure).
+
+test(project_preflight_missing_program_no_files) :-
+    with_project_template_fixture(missing_program, check_project_preflight_failure).
+
+test(project_preflight_malformed_program_no_files) :-
+    with_project_template_fixture(malformed_program, check_project_preflight_failure).
 
 with_project_template_fixture(Fault, Goal) :-
     tmp_file(cpp_wam_preflight, Root),
@@ -86,6 +124,10 @@ with_project_template_fixture(Fault, Goal) :-
          directory_file_path(RealRoot, 'main.cpp.mustache', Main),
          directory_file_path(Templates, 'main.cpp.mustache', MainCopy),
          (Fault == missing_main -> true ; copy_file(Main, MainCopy)),
+         directory_file_path(RealRoot, 'generated_program.cpp.mustache', ProgramShell),
+         directory_file_path(Templates, 'generated_program.cpp.mustache', ProgramCopy),
+         (Fault == missing_program -> true ; copy_file(ProgramShell, ProgramCopy)),
+         (Fault == malformed_program -> write_fixture(ProgramCopy, "{{setup_code}}") ; true),
          directory_file_path(RealRoot, 'lowered/head_constant.cpp.stache', Stache),
          directory_file_path(Lowered, 'head_constant.cpp.stache', StacheCopy),
          (Fault == missing_stache -> true ; copy_file(Stache, StacheCopy)),
@@ -108,6 +150,10 @@ check_project_preflight_failure(Fault, Root, Templates) :-
     ->  assertion(Error = error(cpp_wam_template_load(main_shim, _, _), _))
     ;   Fault == malformed_header
     ->  assertion(Error = error(cpp_wam_template_tags(runtime_header, _), _))
+    ;   Fault == missing_program
+    ->  assertion(Error = error(cpp_wam_template_load(generated_program, _, _), _))
+    ;   Fault == malformed_program
+    ->  assertion(Error = error(cpp_wam_template_tags(generated_program, _), _))
     ;   assertion(Error = error(cpp_wam_stache_failure(head_constant, _, _), _))
     ),
     assertion(\+ exists_directory(Project)).

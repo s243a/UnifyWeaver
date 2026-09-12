@@ -16,6 +16,7 @@
 
 cpp_template_path(runtime_header, 'runtime.h.mustache').
 cpp_template_path(main_shim, 'main.cpp.mustache').
+cpp_template_path(generated_program, 'generated_program.cpp.mustache').
 cpp_stache_path(head_constant, 'lowered/head_constant.cpp.stache').
 
 % Scoped fixture root for generator tests. Production callers resolve assets
@@ -154,7 +155,7 @@ cpp_render_template_at_root(Root, Id, Vars, Text) :-
                     context(cpp_render_template/3, 'unknown C++ WAM template')))
     ),
     directory_file_path(Root, Name, Path),
-    (   Vars == []
+    (   valid_cpp_template_vars(Id, Vars)
     ->  true
     ;   throw(error(domain_error(cpp_wam_template_variables, Vars),
                     context(cpp_render_template/3, Id)))
@@ -168,12 +169,56 @@ cpp_render_template_at_root(Root, Id, Vars, Text) :-
                     context(cpp_render_template/3, Id)))
     ;   true
     ),
-    % These whole-file assets have no substitutions. Reject template syntax
-    % here instead of silently leaving a malformed or unknown tag in C++.
-    (   (sub_string(Template, _, _, _, "{{") ;
-         sub_string(Template, _, _, _, "}}"))
+    render_cpp_template(Id, Path, Template, Vars, Text).
+
+valid_cpp_template_vars(generated_program,
+                        [predicates_code=Predicates, setup_code=Setup]) :-
+    !,
+    text_value(Predicates),
+    text_value(Setup).
+valid_cpp_template_vars(Id, Vars) :-
+    Id \== generated_program,
+    Vars == [].
+
+render_cpp_template(generated_program, Path, Template,
+                    [predicates_code=Predicates, setup_code=Setup], Text) :-
+    !,
+    (   program_shell_parts(Template, Prefix, Middle, Suffix)
+    ->  atom_string(Predicates, PredicatesText),
+        atom_string(Setup, SetupText),
+        string_concat(Prefix, PredicatesText, P1),
+        string_concat(P1, Middle, P2),
+        string_concat(P2, SetupText, P3),
+        string_concat(P3, Suffix, Text)
+    ;   throw(error(cpp_wam_template_tags(generated_program, Path),
+                    context(cpp_render_template/3, generated_program)))
+    ).
+render_cpp_template(Id, Path, Template, [], Text) :-
+    (   template_has_tags(Template)
     ->  throw(error(cpp_wam_template_tags(Id, Path),
                     context(cpp_render_template/3, Id)))
-    ;   true
-    ),
-    render_template(Template, [], Text).
+    ;   render_template(Template, [], Text)
+    ).
+
+% Splice only source-template spans. Sequential Mustache replacement would
+% reinterpret {{setup_code}} inside an already-inserted predicate fragment.
+program_shell_parts(Template, Prefix, Middle, Suffix) :-
+    PredMarker = "{{predicates_code}}",
+    SetupMarker = "{{setup_code}}",
+    findall(At, sub_string(Template, At, _, _, PredMarker), [PredAt]),
+    findall(At, sub_string(Template, At, _, _, SetupMarker), [SetupAt]),
+    string_length(PredMarker, PredLen),
+    string_length(SetupMarker, SetupLen),
+    PredEnd is PredAt + PredLen,
+    SetupEnd is SetupAt + SetupLen,
+    PredEnd =< SetupAt,
+    MidLen is SetupAt - PredEnd,
+    sub_string(Template, 0, PredAt, _, Prefix),
+    sub_string(Template, PredEnd, MidLen, _, Middle),
+    sub_string(Template, SetupEnd, _, 0, Suffix),
+    \+ template_has_tags(Prefix),
+    \+ template_has_tags(Middle),
+    \+ template_has_tags(Suffix).
+
+template_has_tags(Text) :- sub_string(Text, _, _, _, "{{"), !.
+template_has_tags(Text) :- sub_string(Text, _, _, _, "}}").
