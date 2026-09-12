@@ -229,6 +229,33 @@ test(no_supported_end_only_form_miscompiles, [condition(clang_available)]) :-
     ]), build_status(Src, 0)),
     !.
 
+% --- clause enumeration: NO rule-less shape miscompiles (exit 4) ---------
+%
+% The sharpest risk in this change: relaxing the shared state-plan guard could let a
+% rule-less program COMMIT past a cut in some driver clause other than the ones tested
+% above and emit invalid LLVM. This pins the enumeration -- one rule-less program routed
+% at each END-driver clause type (scalar print/list/if, loop, MIXED and ASSOC ends whose
+% RuleCount>0 gates were deliberately NOT relaxed, BEGIN+end, binfmt, getline/redirect/
+% assignment). Every one must build to a real exit code (0 compile / 2 parse / 3 decline)
+% and NEVER 4. The mixed/assoc cases are the load-bearing ones: they confirm the two
+% unrelaxed gates keep those clauses declining instead of committing on empty rules.
+test(no_rule_less_shape_miscompiles) :-
+    forall(member(Src, [
+        "END { print \"x\" }\n",
+        "END { print \"a\"; print \"b\" }\n",
+        "END { if (NR == 3) print \"x\" }\n",
+        "END { while (i < 3) { print i; i++ } }\n",
+        "END { print c[\"x\"] }\n",
+        "END { print c[\"x\"], NR }\n",
+        "END { for (k in c) print k }\n",
+        "END { c[\"x\"]++; print c[\"x\"] }\n",
+        "BEGIN { FS=\":\" } END { print NR }\n",
+        "BEGIN { print \"start\" } END { print NR }\n",
+        "END { getline x }\n",
+        "END { x = 5 }\n"
+    ]), build_status_not_4(Src)),
+    !.
+
 % --- the empty rule chain lowers to a single loop-continue branch -------
 %
 % The IR property that keeps the fix additive: with no rules, the record loop's
@@ -285,6 +312,26 @@ build_status(Src, ExpectedStatus) :-
     atom_concat(Prog0, '_bin', Bin),
     ( exists_file(Bin) -> delete_file(Bin) ; true ),
     cli([build, Prog, '-o', Bin], ExpectedStatus).
+
+% Build and assert the exit code is anything but 4 (a clang miscompile). Used by the
+% clause-enumeration test: a rule-less shape may compile, parse-fail, or decline, but
+% must never produce invalid LLVM.
+build_status_not_4(Src) :-
+    odir(Dir),
+    directory_file_path(Dir, 'eo_no4', Prog0),
+    atom_concat(Prog0, '.plawk', Prog),
+    setup_call_cleanup(open(Prog, write, S, [encoding(utf8)]),
+        write(S, Src), close(S)),
+    atom_concat(Prog0, '_bin', Bin),
+    ( exists_file(Bin) -> delete_file(Bin) ; true ),
+    process_create(path(swipl), ['examples/plawk/bin/plawk', build, Prog, '-o', Bin],
+        [stdout(pipe(Out)), stderr(std), process(Pid)]),
+    read_string(Out, _, _), close(Out),
+    process_wait(Pid, exit(Status)),
+    ( Status =\= 4
+    -> true
+    ;  format(user_error, "~nMISCOMPILE (exit 4): ~w~n", [Src]), fail
+    ).
 
 build_ll(Src, LL) :-
     plawk_parse_string(Src, Program),
