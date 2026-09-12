@@ -266,6 +266,7 @@ jobs:
         run: |
           swipl -q -g run_tests -t halt tests/test_wam_c_atom_codes.pl
           swipl -q -g run_tests -t halt tests/test_wam_c_atom_chars.pl
+          swipl -q -g run_tests -t halt tests/test_wam_c_char_code.pl
 
   wam_r_conformance:
     name: WAM R Conformance (interpreter + functions)

@@ -3120,6 +3120,7 @@ static bool wam_execute_length(WamState *state);
 static bool wam_execute_atom_length(WamState *state);
 static bool wam_execute_atom_codes(WamState *state);
 static bool wam_execute_atom_chars(WamState *state);
+static bool wam_execute_char_code(WamState *state);
 
 static bool wam_ensure_heap_slots(WamState *state, int additional) {
     if (additional <= 0) return true;
@@ -5300,6 +5301,136 @@ static bool wam_execute_atom_chars(WamState *state) {
     return true;
 }
 
+static bool wam_decode_single_utf8_char(const char *text, int *cp_out) {
+    if (!text || *text == 0) return false;
+    const unsigned char *p = (const unsigned char *)text;
+    unsigned char c0 = *p++;
+    int cp;
+    if (c0 < 0x80) {
+        cp = c0;
+    } else if (c0 >= 0xC2 && (c0 & 0xE0) == 0xC0) {
+        if ((*p & 0xC0) != 0x80) return false;
+        cp = ((c0 & 0x1F) << 6) | (*p++ & 0x3F);
+    } else if ((c0 & 0xF0) == 0xE0) {
+        if ((*p & 0xC0) != 0x80) return false;
+        unsigned char c1 = *p++;
+        if ((*p & 0xC0) != 0x80) return false;
+        unsigned char c2 = *p++;
+        cp = ((c0 & 0x0F) << 12) | ((c1 & 0x3F) << 6) | (c2 & 0x3F);
+        if (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF)) return false;
+    } else if ((c0 & 0xF8) == 0xF0) {
+        if ((*p & 0xC0) != 0x80) return false;
+        unsigned char c1 = *p++;
+        if ((*p & 0xC0) != 0x80) return false;
+        unsigned char c2 = *p++;
+        if ((*p & 0xC0) != 0x80) return false;
+        unsigned char c3 = *p++;
+        cp = ((c0 & 0x07) << 18) | ((c1 & 0x3F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F);
+        if (cp < 0x10000 || cp > 0x10FFFF) return false;
+    } else {
+        return false;
+    }
+    if (*p != 0) return false;
+    *cp_out = cp;
+    return true;
+}
+
+static bool wam_encode_single_utf8_char(int cp, char buf[5]) {
+    /* Atoms use NUL-terminated C strings, so U+0000 is not representable. */
+    if (cp <= 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+        return false;
+    if (cp < 0x80) {
+        buf[0] = (char)cp;
+        buf[1] = 0;
+    } else if (cp < 0x800) {
+        buf[0] = (char)(0xC0 | (cp >> 6));
+        buf[1] = (char)(0x80 | (cp & 0x3F));
+        buf[2] = 0;
+    } else if (cp < 0x10000) {
+        buf[0] = (char)(0xE0 | (cp >> 12));
+        buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[2] = (char)(0x80 | (cp & 0x3F));
+        buf[3] = 0;
+    } else {
+        buf[0] = (char)(0xF0 | (cp >> 18));
+        buf[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        buf[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[3] = (char)(0x80 | (cp & 0x3F));
+        buf[4] = 0;
+    }
+    return true;
+}
+
+/* char_code/2: char-atom <-> integer Unicode code point.
+   Supports both useful modes:
+   - A bound atom containing exactly one Unicode scalar to its integer code.
+   - An unbound first argument with a valid bound integer code to an interned one-character atom.
+   Both-bound compatible values succeed and mismatches fail without retained bindings.
+   Invalid UTF-8, empty/multi-character atoms, negative/surrogate/out-of-range codes,
+   non-integer code input, and both-variables mode are rejected explicitly with WAM_ERR_UNSUPPORTED.
+   Preserves trail and heap state on mismatch and caller continuation. */
+static bool wam_execute_char_code(WamState *state) {
+    WamValue *a1 = wam_deref_ptr(state, &state->A[0]);
+    WamValue *a2 = wam_deref_ptr(state, &state->A[1]);
+    bool a1_unbound = val_is_unbound(*a1);
+    bool a2_unbound = val_is_unbound(*a2);
+
+    if (a1_unbound && a2_unbound) {
+        wam_set_unsupported_builtin(state, "char_code/2", 2);
+        return false;
+    }
+
+    if (!a1_unbound) {
+        if (a1->tag != VAL_ATOM || !a1->data.atom) {
+            wam_set_unsupported_builtin(state, "char_code/2", 2);
+            return false;
+        }
+        int cp = 0;
+        if (!wam_decode_single_utf8_char(a1->data.atom, &cp)) {
+            wam_set_unsupported_builtin(state, "char_code/2", 2);
+            return false;
+        }
+
+        int trail_mark = state->TR;
+        int heap_mark = state->H;
+        WamValue code_val = val_int(cp);
+        if (!wam_unify(state, &state->A[1], &code_val)) {
+            unwind_trail(state, trail_mark);
+            state->H = heap_mark;
+            return false;
+        }
+        return true;
+    }
+
+    /* Reverse mode: a1 is unbound, a2 must be a valid integer code */
+    if (a2->tag != VAL_INT) {
+        wam_set_unsupported_builtin(state, "char_code/2", 2);
+        return false;
+    }
+
+    int cp = a2->data.integer;
+    char buf[5];
+    if (!wam_encode_single_utf8_char(cp, buf)) {
+        wam_set_unsupported_builtin(state, "char_code/2", 2);
+        return false;
+    }
+
+    const char *interned = wam_intern_atom(state, buf);
+    if (interned == buf) {
+        return false;
+    }
+
+    int trail_mark = state->TR;
+    int heap_mark = state->H;
+    WamValue atom_val = val_atom(interned);
+    if (!wam_unify(state, &state->A[0], &atom_val)) {
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+    return true;
+}
+
 static bool wam_execute_atom_concat(WamState *state) {
     WamValue *left = wam_deref_ptr(state, &state->A[0]);
     WamValue *right = wam_deref_ptr(state, &state->A[1]);
@@ -6494,6 +6625,10 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
 
     if (strcmp(op, "atom_chars/2") == 0 && arity == 2) {
         return wam_execute_atom_chars(state);
+    }
+
+    if (strcmp(op, "char_code/2") == 0 && arity == 2) {
+        return wam_execute_char_code(state);
     }
 
     if (strcmp(op, "sort/2") == 0 && arity == 2) {
