@@ -287,6 +287,57 @@ test(load_and_render_roundtrip) :-
     load_stache_file(Path, Template),
     Template = stache(1, _).
 
+test(unclosed_match_rejected_at_load,
+     error(pattern_stache(malformed_structure(unclosed_match)))) :-
+    header(H),
+    string_concat(H, "{{match g}}{{case a}}body", Text),
+    make_stache_file(Text, Path),
+    load_stache_file(Path, _).
+
+test(malformed_match_key_rejected_at_load,
+     error(pattern_stache(malformed_structure(malformed_tag(_))))) :-
+    header(H),
+    string_concat(H, "{{match}}{{case a}}body{{/match}}", Text),
+    make_stache_file(Text, Path),
+    load_stache_file(Path, _).
+
+test(case_outside_match_rejected_at_load,
+     error(pattern_stache(malformed_structure(misplaced_case(_))))) :-
+    header(H),
+    string_concat(H, "{{case a}}body", Text),
+    make_stache_file(Text, Path),
+    load_stache_file(Path, _).
+
+test(case_after_default_rejected_at_load,
+     error(pattern_stache(malformed_structure(misplaced_case(_))))) :-
+    header(H),
+    string_concat(H, "{{match g}}{{default}}x{{case a}}a{{/match}}", Text),
+    make_stache_file(Text, Path),
+    load_stache_file(Path, _).
+
+test(unterminated_case_rejected_at_load,
+     error(pattern_stache(malformed_structure(unterminated_tag(_))))) :-
+    header(H),
+    string_concat(H, "{{match g}}{{case a", Text),
+    make_stache_file(Text, Path),
+    load_stache_file(Path, _).
+
+test(unclosed_nested_match_rejected_at_load,
+     error(pattern_stache(malformed_structure(unclosed_match)))) :-
+    header(H),
+    string_concat(H,
+        "{{match outer}}{{case a}}{{match inner}}{{case x}}X{{/match}}",
+        Text),
+    make_stache_file(Text, Path),
+    load_stache_file(Path, _).
+
+test(extra_match_close_rejected_at_load,
+     error(pattern_stache(malformed_structure(unexpected_match_close)))) :-
+    header(H),
+    string_concat(H, "{{match g}}{{case a}}A{{/match}}{{/match}}", Text),
+    make_stache_file(Text, Path),
+    load_stache_file(Path, _).
+
 :- end_tests(q5_loader).
 
 %% ============================================

@@ -119,7 +119,66 @@ parse_dialect_header(Line, Version) :-
 %  template fails when it is loaded, not when the offending case is
 %  first needed.
 check_stache_template(stache(_, Body)) :-
+    check_stache_structure(Body),
     check_blocks_in(Body).
+
+% Validate the structural tags independently of the rendering scanner: the
+% latter deliberately fails when it cannot find a complete block.
+check_stache_structure(Text) :-
+    scan_stache_tags(Text, []).
+
+scan_stache_tags(Text, Stack) :-
+    (   sub_string(Text, Open, 2, _, "{{")
+    ->  Start is Open + 2,
+        sub_string(Text, Start, _, 0, Tail),
+        (   sub_string(Tail, End, 2, _, "}}")
+        ->  sub_string(Tail, 0, End, _, Tag),
+            tag_structure(Tag, Stack, NextStack),
+            After is End + 2,
+            sub_string(Tail, After, _, 0, Rest),
+            scan_stache_tags(Rest, NextStack)
+        ;   ( structural_tag_start(Tail)
+            -> structure_error(unterminated_tag(Tail))
+            ;  finish_stache_stack(Stack)
+            )
+        )
+    ;   finish_stache_stack(Stack)
+    ).
+
+structural_tag_start(Tag) :-
+    split_string(Tag, " \t\r\n", " \t\r\n", [Name|_]),
+    memberchk(Name, ["match", "case", "default", "/match"]).
+
+tag_structure(Tag, Stack, Next) :-
+    split_string(Tag, " \t\r\n", " \t\r\n", Words),
+    (   Words = ["match", Key], Key \= "",
+        string_concat("match ", Key, Tag)
+    ->  Next = [match(false)|Stack]
+    ;   Words = ["case"|_]
+    ->  (   Stack = [match(false)|_], sub_string(Tag, 0, 5, _, "case ")
+        ->  Next = Stack
+        ;   structure_error(misplaced_case(Tag))
+        )
+    ;   Tag = "default"
+    ->  (   Stack = [match(false)|Rest]
+        ->  Next = [match(true)|Rest]
+        ;   structure_error(misplaced_default)
+        )
+    ;   Tag = "/match"
+    ->  (   Stack = [_|Rest]
+        ->  Next = Rest
+        ;   structure_error(unexpected_match_close)
+        )
+    ;   structural_tag_start(Tag)
+    ->  structure_error(malformed_tag(Tag))
+    ;   Next = Stack
+    ).
+
+finish_stache_stack([]).
+finish_stache_stack([_|_]) :- structure_error(unclosed_match).
+
+structure_error(Reason) :-
+    throw(error(pattern_stache(malformed_structure(Reason)), _)).
 
 check_blocks_in(Text) :-
     (   find_match_block(Text, _Key, _Before, MatchBody, After)
