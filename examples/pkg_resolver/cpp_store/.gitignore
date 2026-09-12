@@ -7,3 +7,6 @@
 # absolute store path into register_seek_fact_source, so it is a per-build
 # artifact, not a committed source. build.sh regenerates it.
 uw_resolve_wam_cpp_store/
+
+# Per-backend binary copies the memory×scale harness (run_scale) leaves behind.
+uw_resolve_wam_cpp_store_*

@@ -19,6 +19,8 @@
 #include "term_to_json.hpp"
 #include "env_build.hpp"
 
+#include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -260,6 +262,25 @@ int main() {
             out.set("crash", json::Json::makeString("unknown exception"));
         }
         std::cout << json::dump(out) << "\n";
+    }
+
+    // Opt-in cache/IO attribution for the memory×scale benchmark (stderr, so it
+    // never pollutes the JSONL on stdout). D43 byte counters cover BOTH backends
+    // (indexed ifstream reads and lmdb keyed scans); the L1/L2 hit/miss triple
+    // is only nonzero for the lmdb lazy+cached backend.
+    if (std::getenv("UW_WAM_CACHE_ATTRIBUTION")) {
+        unsigned long long l1 = 0, l2 = 0, miss = 0;
+        for (const auto& kv : vm.seek_fact_sources) {
+            l1   += kv.second->l1_hits();
+            l2   += kv.second->l2_hits();
+            miss += kv.second->cache_misses();
+        }
+        std::fprintf(stderr,
+            "[cache-attribution] fact_io_bytes=%llu fact_io_reads=%llu "
+            "l1_hits=%llu l2_hits=%llu misses=%llu\n",
+            (unsigned long long) wam_cpp::fact_io_bytes(),
+            (unsigned long long) wam_cpp::fact_io_reads(),
+            l1, l2, miss);
     }
     return 0;
 }

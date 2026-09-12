@@ -48,6 +48,10 @@ case "$BACKEND" in
     fi
     ;;
   lmdb)
+    # The C++ reader links vanilla system liblmdb, which rejects the default
+    # lmdb-js Symas-fork page format (MDB_INVALID). Opt into the from-source
+    # v1-compatible build for both the store build and any (re)install.
+    export UW_LMDB_DATA_V1=1
     # shellcheck source=../store/ensure_lmdb.sh
     source examples/pkg_resolver/store/ensure_lmdb.sh
     uw_require_lmdb
@@ -69,6 +73,10 @@ CPP="$PROJ/cpp"
 cd "$CPP"
 CXX="${CXX:-g++}"
 CXXFLAGS="${CXXFLAGS:--std=c++17 -O2}"
+# The lmdb backend compiles the WAM_CPP_ENABLE_LMDB reader (auto-#defined in the
+# generated header) which includes <lmdb.h> and needs system liblmdb at link.
+LINK_LIBS=""
+if [[ "$BACKEND" == "lmdb" ]]; then LINK_LIBS="-llmdb"; fi
 # generated WAM runtime + program (wam_runtime.h lives here -> -I.)
 $CXX $CXXFLAGS -c -o wam_runtime.o wam_runtime.cpp
 $CXX $CXXFLAGS -c -o generated_program.o generated_program.cpp
@@ -81,5 +89,5 @@ $CXX $CXXFLAGS -I. -I"$HERE" -c -o env_build.o        "$HERE/env_build.cpp"
 $CXX $CXXFLAGS -I. -I"$HERE" -c -o diff_main_store.o  "$HERE/diff_main_store.cpp"
 $CXX $CXXFLAGS -o diff_uwresolve_store \
     wam_runtime.o generated_program.o json.o term_build.o term_to_json.o \
-    env_build.o diff_main_store.o
+    env_build.o diff_main_store.o $LINK_LIBS
 echo "cpp_store/build.sh: backend=$BACKEND binary -> $CPP/diff_uwresolve_store"

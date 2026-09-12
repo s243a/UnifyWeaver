@@ -24,6 +24,11 @@ BIN="$HERE/uw_resolve_wam_cpp_store/cpp/diff_uwresolve_store"
 export LANG="${LANG:-C.UTF-8}"
 export LC_ALL="${LC_ALL:-C.UTF-8}"
 
+# The C++ lmdb reader links vanilla system liblmdb, which rejects the default
+# lmdb-js Symas-fork format. Opt into the from-source v1-compatible module so
+# the store this script builds is readable by the binary build.sh compiles.
+if [[ "$BACKEND" == "lmdb" ]]; then export UW_LMDB_DATA_V1=1; fi
+
 mkdir -p "$SCALE" "$OUT"
 cd "$ROOT"
 
