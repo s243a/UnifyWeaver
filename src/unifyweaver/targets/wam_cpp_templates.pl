@@ -40,9 +40,9 @@ cpp_template_root(Root) :-
     file_directory_name(Source, ModuleDir),
     directory_file_path(ModuleDir, '../../../templates/targets/cpp_wam', Root).
 
-% Both case bodies are required even when a particular project only uses one.
+% Both case bodies serve get_constant, get_integer, and get_nil.
 cpp_preflight_stache :-
-    Vars0 = ['I'="", 'CStr'="x", 'AiStr'="A1", 'Ai'="A1"],
+    Vars0 = ['I'="", 'Comment'="get_constant x, A1", 'Ai'="A1"],
     cpp_render_stache(head_constant, [op=head_constant(atom("x"))|Vars0], _),
     cpp_render_stache(head_constant, [op=head_constant(value("1"))|Vars0], _).
 
@@ -66,11 +66,11 @@ cpp_render_stache_at_root(Root, Id, Vars, Text) :-
            render_stache(Template, Vars, Text)),
           Error,
           throw(error(cpp_wam_stache_failure(Id, Path, Error),
-                      context(cpp_render_stache/3, emit_one(get_constant/2))))),
+                      context(cpp_render_stache/3, emit_one(head_match_family))))),
     (   string(Text), Text \== ""
     ->  true
     ;   throw(error(cpp_wam_stache_empty(Id, Path),
-                    context(cpp_render_stache/3, emit_one(get_constant/2))))
+                    context(cpp_render_stache/3, emit_one(head_match_family))))
     ).
 
 % Read and hash on every call: a broken edit at the same path must never use
@@ -93,12 +93,12 @@ cached_or_load_head_constant(Path, Digest, Template) :-
 
 valid_head_constant_vars(Vars) :-
     ground(Vars),
-    Vars = [op=Op, 'I'=I, 'CStr'=CStr, 'AiStr'=Ai, 'Ai'=Reg],
+    Vars = [op=Op, 'I'=I, 'Comment'=Comment, 'Ai'=Reg],
     (   Op = head_constant(atom(Esc)), text_value(Esc)
     ;   Op = head_constant(value(Val)),
         nonempty_text(Val)
     ),
-    maplist(text_value, [I, CStr, Ai, Reg]).
+    maplist(text_value, [I, Comment, Reg]).
 
 text_value(Value) :- atom(Value), !.
 text_value(Value) :- string(Value).
@@ -142,8 +142,7 @@ check_head_constant_case_tags(Branch, Body) :-
     ).
 
 head_constant_tag(_, "I").
-head_constant_tag(_, "CStr").
-head_constant_tag(_, "AiStr").
+head_constant_tag(_, "Comment").
 head_constant_tag(_, "Ai").
 head_constant_tag(atom, "Esc").
 head_constant_tag(value, "CppVal").

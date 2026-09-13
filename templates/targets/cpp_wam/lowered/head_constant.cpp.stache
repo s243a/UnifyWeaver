@@ -1,5 +1,5 @@
 {{! dialect(pattern_stache, 1) }}
-{{match op}}{{case head_constant(atom(Esc))}}{{I}}// get_constant {{CStr}}, {{AiStr}}
+{{match op}}{{case head_constant(atom(Esc))}}{{I}}// {{Comment}}
 {{I}}{
 {{I}}    int _m = vm->match_reg_atom("{{Ai}}", "{{Esc}}");
 {{I}}    if (_m < 0) {
@@ -9,7 +9,7 @@
 {{I}}        return false;
 {{I}}    }
 {{I}}}
-{{case head_constant(value(CppVal))}}{{I}}// get_constant {{CStr}}, {{AiStr}}
+{{case head_constant(value(CppVal))}}{{I}}// {{Comment}}
 {{I}}{
 {{I}}    Value _a = vm->get_reg("{{Ai}}");
 {{I}}    if (_a.is_unbound()) {

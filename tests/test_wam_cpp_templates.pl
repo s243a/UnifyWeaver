@@ -299,8 +299,8 @@ test(head_integer_nil_old_bytes,
     crypto_data_hash(Text, Actual, [algorithm(sha256), encoding(utf8)]),
     assertion(Actual == Digest).
 
-head_atom_vars([op=head_constant(atom("foo")), 'I'="", 'CStr'="foo", 'AiStr'="A1",
-                'Ai'="A1"]).
+head_atom_vars([op=head_constant(atom("foo")), 'I'="",
+                'Comment'="get_constant foo, A1", 'Ai'="A1"]).
 
 test(head_constant_unknown_shape,
      [throws(error(domain_error(cpp_wam_stache_variables, _), _))]) :-
@@ -314,7 +314,7 @@ test(head_constant_nonground,
 test(head_constant_missing_key,
      [throws(error(domain_error(cpp_wam_stache_variables, _), _))]) :-
     cpp_render_stache_at_root('/tmp', head_constant,
-        [op=head_constant(atom("foo")), 'I'="", 'CStr'="foo", 'AiStr'="A1"], _).
+        [op=head_constant(atom("foo")), 'I'="", 'Ai'="A1"], _).
 
 test(head_constant_foreign_cwd) :-
     setup_call_cleanup(
