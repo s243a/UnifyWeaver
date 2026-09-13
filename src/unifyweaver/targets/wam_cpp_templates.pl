@@ -4,6 +4,9 @@
 :- module(wam_cpp_templates, [cpp_render_template/3, cpp_render_template_at_root/4,
                              cpp_render_stache/3, cpp_render_stache_at_root/4,
                              cpp_preflight_stache/0,
+                             cpp_preflight_lowered_function/0,
+                             cpp_lowered_function_lines/4,
+                             cpp_lowered_function_lines_at_root/5,
                              cpp_with_template_root_for_test/2]).
 
 :- use_module(library(readutil), [read_file_to_string/3]).
@@ -22,6 +25,7 @@ cpp_template_path(runtime_step_execution, 'runtime/step_execution.cpp.mustache')
 cpp_template_path(runtime_lmdb_fact_source, 'runtime/lmdb_fact_source.cpp.mustache').
 cpp_template_path(main_shim, 'main.cpp.mustache').
 cpp_template_path(generated_program, 'generated_program.cpp.mustache').
+cpp_template_path(lowered_function, 'lowered/function.cpp.mustache').
 cpp_stache_path(head_constant, 'lowered/head_constant.cpp.stache').
 
 % Scoped fixture root for generator tests. Production callers resolve assets
@@ -45,6 +49,58 @@ cpp_preflight_stache :-
     Vars0 = ['I'="", 'Comment'="get_constant x, A1", 'Ai'="A1"],
     cpp_render_stache(head_constant, [op=head_constant(atom("x"))|Vars0], _),
     cpp_render_stache(head_constant, [op=head_constant(value("1"))|Vars0], _).
+
+cpp_preflight_lowered_function :-
+    cpp_lowered_function_lines("lowered_preflight_1",
+        "// lowered_preflight_1 — lowered from preflight/1", "", _).
+
+% The body is already rendered C++ and must remain literal. Return the same
+% [Header, Body, Footer] shape expected by lower_predicate_to_cpp/4.
+cpp_lowered_function_lines(Name, Comment, Body, Lines) :-
+    cpp_template_root(Root),
+    cpp_lowered_function_lines_at_root(Root, Name, Comment, Body, Lines).
+
+cpp_lowered_function_lines_at_root(Root, Name, Comment, Body,
+                                   [Header, BodyText, Footer]) :-
+    cpp_template_path(lowered_function, Relative),
+    directory_file_path(Root, Relative, Path),
+    (   nonempty_text(Name), nonempty_text(Comment), text_value(Body)
+    ->  true
+    ;   throw(error(domain_error(cpp_wam_lowered_function_variables,
+                                 [Name, Comment, Body]),
+                    context(cpp_lowered_function_lines/4, Path)))
+    ),
+    catch(read_file_to_string(Path, Template, [encoding(utf8)]),
+          Error,
+          throw(error(cpp_wam_template_load(lowered_function, Path, Error),
+                      context(cpp_lowered_function_lines/4, Path)))),
+    (   Template == ""
+    ->  throw(error(cpp_wam_template_empty(lowered_function, Path),
+                    context(cpp_lowered_function_lines/4, Path)))
+    ;   true
+    ),
+    (   lowered_function_shell_parts(Template, [BeforeComment, BetweenCommentName,
+                                                BetweenNameBody, Footer])
+    ->  text_string(Comment, CommentText),
+        text_string(Name, NameText),
+        text_string(Body, BodyText),
+        atomics_to_string([BeforeComment, CommentText, BetweenCommentName,
+                           NameText, BetweenNameBody], "", Header)
+    ;   throw(error(cpp_wam_template_tags(lowered_function, Path),
+                    context(cpp_lowered_function_lines/4, Path)))
+    ).
+
+text_string(Value, Value) :- string(Value), !.
+text_string(Value, String) :- atom_string(Value, String).
+
+% Exactly one of each ordered slot; static spans may contain no other tags.
+lowered_function_shell_parts(Template,
+    [BeforeComment, BetweenCommentName, BetweenNameBody, Footer]) :-
+    split_single_source_marker(Template, "{{comment}}", BeforeComment, AfterComment),
+    split_single_source_marker(AfterComment, "{{name}}", BetweenCommentName, AfterName),
+    split_single_source_marker(AfterName, "{{body}}", BetweenNameBody, Footer),
+    maplist(source_span_without_tags,
+            [BeforeComment, BetweenCommentName, BetweenNameBody, Footer]).
 
 cpp_render_stache(Id, Vars, Text) :-
     cpp_template_root(Root),

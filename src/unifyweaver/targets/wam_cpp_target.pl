@@ -43,7 +43,9 @@
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
-:- use_module(wam_cpp_templates, [cpp_render_template/3, cpp_preflight_stache/0]).
+:- use_module(wam_cpp_templates,
+              [cpp_render_template/3, cpp_preflight_stache/0,
+               cpp_preflight_lowered_function/0]).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('../core/relation_policy', [
@@ -2475,6 +2477,7 @@ write_wam_cpp_project(Predicates0, Options, ProjectDir) :-
     % the project directory. A failed asset must not leave usable-looking
     % partial C++ files behind.
     cpp_preflight_stache,
+    cpp_preflight_lowered_function,
     compile_wam_runtime_header_to_cpp(Options, HeaderCode),
     compile_wam_runtime_to_cpp(Options, RuntimeCode),
     compile_predicates_for_project(Predicates, Options, PredicatesCode),
@@ -2541,6 +2544,10 @@ handle_compile_error(_, _, error(cpp_wam_stache_failure(Id, Path, Cause), Contex
 handle_compile_error(_, _, error(cpp_wam_stache_empty(Id, Path), Context)) :-
     !,
     throw(error(cpp_wam_stache_empty(Id, Path), Context)).
+handle_compile_error(_, _, Err) :-
+    lowered_function_template_error(Err),
+    !,
+    throw(Err).
 handle_compile_error(throw, PI, Err) :- !,
     format(user_error,
            "WAM C++: re-throwing compile error for ~w: ~w~n",
@@ -2553,6 +2560,13 @@ handle_compile_error(_, PI, Err) :-
            "WAM C++: failed to compile ~w: ~w~n",
            [PI, Err]),
     fail.
+
+% A template edit between project preflight and a lowered predicate must not
+% become a silently omitted predicate under the default warn policy.
+lowered_function_template_error(error(cpp_wam_template_load(lowered_function, _, _), _)).
+lowered_function_template_error(error(cpp_wam_template_empty(lowered_function, _), _)).
+lowered_function_template_error(error(cpp_wam_template_tags(lowered_function, _), _)).
+lowered_function_template_error(error(domain_error(cpp_wam_lowered_function_variables, _), _)).
 
 foreign_pred_keys_from_options(Options, Keys) :-
     (   member(foreign_pred_keys(Keys0), Options)
