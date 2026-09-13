@@ -30,6 +30,40 @@
 % unexported wire decoders (pack_conflict/3, unpack_conflict/3, unpack_dep/4,
 % unpack_rev/4, unpack_provide/4 and their leaf helpers) are COPIED verbatim --
 % the wire format is frozen by the shared JS codec contract.
+%
+% ---------------------------------------------------------------------------
+% INTERVAL MODE (additive; the per-snapshot store_pkg path above is untouched)
+% ---------------------------------------------------------------------------
+%
+% A single-snapshot resolve can be answered straight from the
+% (Name,Ver,From,To) validity-interval table -- no per-snapshot store_pkg
+% materialization/replay. In interval mode:
+%
+%   store_interval : pack_key(PoolId, Name) -> "VerPacked#From#To"   (pooled;
+%       one asserted row PER VERSION TENURE, so a Name may have several rows --
+%       non-contiguous tenures are allowed. VerPacked is the frozen pack_ver/2
+%       atom; From/To are plain integers = the inclusive snapshot-index range
+%       for which Ver is Name's current version.)
+%
+% "The version(s) of Name present in snapshot T" = for each store_interval row
+% of Name, unpack to (Ver,From,To) and keep those with From =< T =< To (normally
+% exactly one -- a snapshot has one current version per Name). This replaces the
+% store_pkg SnapId|Name seek for MEMBERSHIP; the pool_* (dep/conflict/revdep/
+% provide) tables are loaded and consulted exactly as in the per-snapshot path.
+%
+% How the snapshot index T is carried: interval mode needs the NUMERIC snapshot
+% index, not a SnapId atom. Since store_key_snap/store_pkg are never consulted in
+% interval mode, we reuse the env's SnapId field to carry T (an integer, or an
+% atom that atom_number/2 accepts -- see snap_index/2). The env is thus
+% env_snap(T, PoolId, Base, Installed, Requested, Layers, Excluded, Aliases).
+% A dynamic flag interval_mode/0 (asserted by load_intervals_snap/3, retracted
+% by store_clear_snap/0) selects which membership source the three membership
+% predicates (package_in_store_snap/3, candidate_versions_snap/4,
+% package_in_name_snap/2) consult; everything downstream (candidates, providers,
+% dependents' guard, safe_upgrade, upgrade_set, tight_base_revdep) routes through
+% those three, so the whole resolver switches with the one flag. When the flag
+% is absent the frozen-style store_pkg path runs unchanged -- interval mode is
+% strictly additive and non-interval callers are unaffected.
 
 :- module(resolver_store_snapshot, [
     resolve_snap/3,
@@ -45,7 +79,8 @@
     dependents_snap/3,
     dependents_installed_snap/3,
     store_clear_snap/0,
-    load_p2_snap/2
+    load_p2_snap/2,
+    load_intervals_snap/3
 ]).
 
 :- use_module(resolver, [satisfies/2, version_lt/2]).
@@ -62,6 +97,8 @@
 :- use_module(library(http/json)).
 
 :- dynamic store_pkg/2.
+:- dynamic store_interval/2.
+:- dynamic interval_mode/0.
 :- dynamic pool_dep/2.
 :- dynamic pool_conflict/2.
 :- dynamic pool_revdep/2.
@@ -222,9 +259,12 @@ store_key_pool(Env, Name, Key) :-
     pack_key(Id, Name, Key).
 
 package_in_store_snap(Env, Name, Ver) :-
-    store_key_snap(Env, Name, Key),
-    store_pkg(Key, Packed),
-    unpack_ver(Packed, Ver).
+    (   interval_mode
+    ->  interval_ver_snap(Env, Name, Ver)
+    ;   store_key_snap(Env, Name, Key),
+        store_pkg(Key, Packed),
+        unpack_ver(Packed, Ver)
+    ).
 
 candidates_high_first_snap(Env, Name, C, Ver) :-
     candidate_versions_snap(Env, Name, C, Desc),
@@ -233,6 +273,12 @@ candidates_high_first_snap(Env, Name, C, Ver) :-
 candidate_versions_snap(Env, Name, C, Desc) :-
     (   excluded_name_env(Env, Name)
     ->  Desc = []
+    ;   interval_mode
+    ->  findall(V, (
+            interval_ver_snap(Env, Name, V),
+            satisfies(V, C)
+        ), Vs),
+        sort_versions_desc_snap(Vs, Desc)
     ;   store_key_snap(Env, Name, Key),
         findall(V, (
             store_pkg(Key, Packed),
@@ -241,6 +287,35 @@ candidate_versions_snap(Env, Name, C, Desc) :-
         ), Vs),
         sort_versions_desc_snap(Vs, Desc)
     ).
+
+% ---------------------------------------------------------------------------
+% Interval-mode membership: the version(s) of Name present in snapshot T, read
+% from the (Name,Ver,From,To) validity-interval table. Normally exactly one row
+% covers T (a snapshot has one current version per Name); several store_interval
+% rows per Name (multiple tenures) are supported and only those whose inclusive
+% [From,To] range covers T are kept. Reuses the frozen pack_key/unpack_ver.
+% ---------------------------------------------------------------------------
+
+interval_ver_snap(Env, Name, Ver) :-
+    env_poolid(Env, PoolId),
+    pack_key(PoolId, Name, Key),
+    env_snapid(Env, T0),
+    snap_index(T0, T),
+    store_interval(Key, Packed),
+    unpack_interval(Packed, Ver, From, To),
+    From =< T,
+    T =< To.
+
+% The env's SnapId field carries the numeric snapshot index in interval mode.
+snap_index(T, T) :- integer(T), !.
+snap_index(T0, T) :- atom_number(T0, T).
+
+unpack_interval(Packed0, Ver, From, To) :-
+    to_atom(Packed0, Packed),
+    split_string(Packed, '#', '', [VA, FromS, ToS]),
+    unpack_ver(VA, Ver),
+    number_string(From, FromS),
+    number_string(To, ToS).
 
 sort_versions_desc_snap(Vs, Desc) :-
     (   maplist(is_v3_snap, Vs)
@@ -282,6 +357,8 @@ no_acc_conflicts_snap(Env, Name, Ver, [Other-OtherVer|Rest]) :-
 
 store_clear_snap :-
     retractall(store_pkg(_, _)),
+    retractall(store_interval(_, _)),
+    retractall(interval_mode),
     retractall(pool_dep(_, _)),
     retractall(pool_conflict(_, _)),
     retractall(pool_revdep(_, _)),
@@ -307,6 +384,69 @@ load_pairs(Path, Pred) :-
     !,
     setup_call_cleanup(open(Path, read, S), load_pair_lines(S, Pred), close(S)).
 load_pairs(_Path, _Pred).
+
+% ---------------------------------------------------------------------------
+% INTERVAL MODE loader: pool_* (from PoolDir, exactly as load_p2_snap) PLUS the
+% (Name,Ver,From,To) validity intervals (from IntervalsFile) into store_interval,
+% keyed pack_key(PoolId, Name). Does NOT load store_pkg. Sets interval_mode.
+% PoolId is explicit (the interval keys need it, and it must match the env's
+% PoolId at query time) -- hence the 3-arity vs load_p2_snap/2.
+% ---------------------------------------------------------------------------
+load_intervals_snap(PoolDir, IntervalsFile, PoolId) :-
+    store_clear_snap,
+    atom_concat(PoolDir, '/dep.jsonl', DepF),
+    atom_concat(PoolDir, '/conflict.jsonl', ConfF),
+    atom_concat(PoolDir, '/revdep.jsonl', RevF),
+    atom_concat(PoolDir, '/provide.jsonl', PrF),
+    load_pairs(DepF, pool_dep),
+    load_pairs(ConfF, pool_conflict),
+    load_pairs(RevF, pool_revdep),
+    load_pairs(PrF, pool_provides),
+    load_intervals_file(IntervalsFile, PoolId),
+    assertz(interval_mode).
+
+load_intervals_file(Path, PoolId) :-
+    exists_file(Path),
+    !,
+    setup_call_cleanup(open(Path, read, S),
+                       load_interval_lines(S, PoolId),
+                       close(S)).
+load_intervals_file(_Path, _PoolId).
+
+load_interval_lines(S, PoolId) :-
+    read_line_to_string(S, Line),
+    (   Line == end_of_file
+    ->  true
+    ;   (   Line == ""
+        ->  true
+        ;   atom_string(Atom, Line),
+            atom_json_term(Atom, Term, [value_string_as(atom)]),
+            Term = [Name, VerJ, From, To],
+            json_ver_term(VerJ, Ver),
+            pack_ver(Ver, VA),
+            number_string(From, FS),
+            number_string(To, TS),
+            atomic_list_concat([VA, '#', FS, '#', TS], Payload),
+            pack_key(PoolId, Name, Key),
+            assertz(store_interval(Key, Payload))
+        ),
+        load_interval_lines(S, PoolId)
+    ).
+
+% intervals.jsonl Ver is the raw JSON version ([a,b,c] or {"deb":[E,Up,Rev]});
+% convert to the Prolog ver term so the frozen pack_ver/2 can serialize it.
+json_ver_term([X, Y, Z], v(X, Y, Z)) :- !.
+json_ver_term(D, deb(E, Up, Rev)) :-
+    is_dict(D),
+    get_dict(deb, D, [E, UpJ, RevJ]),
+    maplist(json_seg_term, UpJ, Up),
+    maplist(json_seg_term, RevJ, Rev).
+
+json_seg_term([Order, N], s(Codes, N)) :-
+    (   atom(Order)
+    ->  atom_codes(Order, Codes)
+    ;   string_codes(Order, Codes)
+    ).
 
 load_pair_lines(S, Pred) :-
     read_line_to_string(S, Line),
@@ -552,8 +692,11 @@ virtual_provider_ceilings_snap(Env, Virtual, C, Reasons) :-
     ), Reasons).
 
 package_in_name_snap(Env, Name) :-
-    store_key_snap(Env, Name, Key),
-    store_pkg(Key, _).
+    (   interval_mode
+    ->  interval_ver_snap(Env, Name, _)
+    ;   store_key_snap(Env, Name, Key),
+        store_pkg(Key, _)
+    ).
 
 alt_reasons_snap(_Env, [], _Seen, []).
 alt_reasons_snap(Env, [dep(N, C)|Rest], Seen, [alt(N, Reason)|Rs]) :-
