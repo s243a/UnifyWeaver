@@ -30,7 +30,8 @@
 :- use_module(wam_text_parser, [wam_text_to_items/2, wam_classify_constant_token/2]).
 :- use_module(wam_clause_chain, [clause_chain/2]).
 :- use_module(wam_cpp_templates,
-              [cpp_render_stache/3, cpp_lowered_function_lines/4]).
+              [cpp_render_stache/3, cpp_lowered_function_lines/4,
+               cpp_render_ite_shell/6]).
 % Inlined escape helper to avoid a circular import with wam_cpp_target.
 % Keeps this module standalone-loadable.
 
@@ -473,19 +474,11 @@ emit_one(execute(PredStr), I, ForeignPreds) :-
 emit_one(ite(Cond, Then, Else), I, ForeignPreds) :- !,
     nb_getval(cpp_ite_ctr, N0), N is N0 + 1, nb_setval(cpp_ite_ctr, N),
     string_concat(I, "    ", I2),
-    format("~w{~n", [I]),
-    format("~w    std::size_t _ite_mark~w = vm->trail.size();~n", [I, N]),
-    format("~w    bool _ite_cond~w = [&]() -> bool {~n", [I, N]),
-    emit_instrs(Cond, I2, ForeignPreds),
-    format("~w        return true;~n", [I]),
-    format("~w    }();~n", [I]),
-    format("~w    if (_ite_cond~w) {~n", [I, N]),
-    emit_instrs(Then, I2, ForeignPreds),
-    format("~w    } else {~n", [I]),
-    format("~w        vm->unwind_trail_to(_ite_mark~w);~n", [I, N]),
-    emit_instrs(Else, I2, ForeignPreds),
-    format("~w    }~n", [I]),
-    format("~w}~n", [I]).
+    with_output_to(string(CondCode), emit_instrs(Cond, I2, ForeignPreds)),
+    with_output_to(string(ThenCode), emit_instrs(Then, I2, ForeignPreds)),
+    with_output_to(string(ElseCode), emit_instrs(Else, I2, ForeignPreds)),
+    cpp_render_ite_shell(I, N, CondCode, ThenCode, ElseCode, Text),
+    format('~s', [Text]).
 emit_one(Instr, I, _) :-
     emit_one(Instr, I).
 
