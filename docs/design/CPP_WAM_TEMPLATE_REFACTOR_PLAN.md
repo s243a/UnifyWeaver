@@ -23,14 +23,15 @@ template spans, so a predicate or setup fragment containing literal
 program hashes remain identical for interpreter, functions, and LMDB-enabled
 fixtures, including both marker-shaped literals in generated C++ values.
 
-The complete `runtime.cpp` is now a single 311,009-byte, 7,027-line asset,
+At its initial extraction, `runtime.cpp` was a single 311,009-byte, 7,027-line asset,
 with frozen SHA-256 `fa0317a11da5069d0fa18a36bc1937419bcf187e7f6ec4c5d278fd0270cfd300`.
 `compile_wam_runtime_to_cpp/2` was option-invariant at extraction: LMDB code
 is already guarded by the header's macro, and the same runtime bytes are
 emitted with or without LMDB options. The adapter treats no-variable assets
 as literal source after rejecting any template tags. This avoids a needless
-generic-renderer scan of the 311 KB file. Further runtime subdivision remains
-open; no semantic logic moved out of Prolog.
+generic-renderer scan of the 311 KB file. Later Phase 3 slices divided that
+asset into ordered sections, as recorded below; no semantic logic moved out
+of Prolog.
 
 Project generation now validates the required Pattern Stache cases and renders
 all requested artifacts before creating the output directory. A failure in a
