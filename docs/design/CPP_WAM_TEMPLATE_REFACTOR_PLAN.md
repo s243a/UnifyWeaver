@@ -1,8 +1,10 @@
 # C++ WAM template refactor plan
 
 Status: in progress. Phase 1 (runtime header) and Phase 2 (lowered
-`get_constant`) landed in #4252 and #4253. This follow-up starts from
-`53d0bd4`, including the Pattern Stache literal-substitution fix in #4254.
+`get_constant`) landed in #4252 and #4253. The first Phase 3 slice, including
+project preflight and `main.cpp`, landed in #4255. The next slice starts from
+`cb714e9` and extracts `generated_program.cpp` and `runtime.cpp`.
+The Pattern Stache literal-substitution fix landed in #4254.
 The original planning baseline was `55796489a9750388f4fcf3cac602e4d525b14c28`
 (2026-09-11).
 
@@ -11,8 +13,23 @@ The original planning baseline was `55796489a9750388f4fcf3cac602e4d525b14c28`
 The optional `main.cpp` is now a whole-file asset. Its old emitted UTF-8 bytes
 are pinned by SHA-256 `0c0f30bcf02ebd2adf39e546e02cbdf53970bcd07f778be2f95c327`
 (3,252 bytes, 111 lines). The template has no placeholders; adapter validation
-rejects template tags in this asset and in the runtime header. Runtime and
-generated-program extraction remain open.
+rejects template tags in this asset and in the runtime header.
+
+The `generated_program.cpp.mustache` shell has two ordered, exactly-once
+markers: `predicates_code` and `setup_code`. The adapter splices only source
+template spans, so a predicate or setup fragment containing literal
+`{{setup_code}}` or `{{predicates_code}}` stays unchanged. Pre-extraction
+program hashes remain identical for interpreter, functions, and LMDB-enabled
+fixtures, including both marker-shaped literals in generated C++ values.
+
+The complete `runtime.cpp` is now a single 311,009-byte, 7,027-line asset,
+with frozen SHA-256 `fa0317a11da5069d0fa18a36bc1937419bcf187e7f6ec4c5d278fd0270cfd300`.
+`compile_wam_runtime_to_cpp/2` was option-invariant at extraction: LMDB code
+is already guarded by the header's macro, and the same runtime bytes are
+emitted with or without LMDB options. The adapter treats no-variable assets
+as literal source after rejecting any template tags. This avoids a needless
+generic-renderer scan of the 311 KB file. Runtime subdivision into coherent
+dependency groups remains open; no semantic logic moved out of Prolog.
 
 Project generation now validates the required Pattern Stache cases and renders
 all requested artifacts before creating the output directory. A failure in a
@@ -20,8 +37,10 @@ required asset or in template-backed predicate rendering leaves a new project
 directory absent.
 This does not make filesystem writes transactional if a later write itself fails.
 Isolated fixture tests cover missing and malformed `.stache` and `.mustache`
-files, plus the frozen main bytes. Native fact, choice, caller, and T6 parity
-queries pass with the extracted main.
+files, plus the frozen main bytes. The next slice adds missing/malformed
+program-shell and runtime-source fixtures; each leaves the project directory
+absent. The 32 focused template checks, six generator checks (including native
+compilation and fact/choice/caller queries), and three lowered T6 checks pass.
 
 The existing adapter caches the loaded Stache body by full path and SHA-256,
 while checking the file on every render so same-size and same-time edits cannot
@@ -31,6 +50,12 @@ local host. A separate 10,000-render synthetic loop took 4.38 s (0.438 ms per
 render). The realistic project invokes this fragment roughly 12 times including
 the two preflight case renders, so another parsed-case cache is deferred until
 larger real projects show material generation time in this path.
+
+After both new assets were extracted, a 10-fact `bench_pair/2` functions-mode
+project with 10 emitted `get_constant` fragments averaged 29.7 ms over 20
+generations on the same local host. Passing the validated static runtime
+through the generic Mustache scanner instead averaged 41.8 ms on the same
+fixture; direct literal return avoids that scan while preserving bytes.
 
 ## Outcome and scope
 
