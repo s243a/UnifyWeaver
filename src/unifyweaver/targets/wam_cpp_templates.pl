@@ -5,8 +5,11 @@
                              cpp_render_stache/3, cpp_render_stache_at_root/4,
                              cpp_preflight_stache/0,
                              cpp_preflight_lowered_function/0,
+                             cpp_preflight_ite_shell/0,
                              cpp_lowered_function_lines/4,
                              cpp_lowered_function_lines_at_root/5,
+                             cpp_render_ite_shell/6,
+                             cpp_render_ite_shell_at_root/7,
                              cpp_with_template_root_for_test/2]).
 
 :- use_module(library(readutil), [read_file_to_string/3]).
@@ -26,6 +29,7 @@ cpp_template_path(runtime_lmdb_fact_source, 'runtime/lmdb_fact_source.cpp.mustac
 cpp_template_path(main_shim, 'main.cpp.mustache').
 cpp_template_path(generated_program, 'generated_program.cpp.mustache').
 cpp_template_path(lowered_function, 'lowered/function.cpp.mustache').
+cpp_template_path(lowered_ite, 'lowered/ite.cpp.mustache').
 cpp_stache_path(head_constant, 'lowered/head_constant.cpp.stache').
 
 % Scoped fixture root for generator tests. Production callers resolve assets
@@ -53,6 +57,75 @@ cpp_preflight_stache :-
 cpp_preflight_lowered_function :-
     cpp_lowered_function_lines("lowered_preflight_1",
         "// lowered_preflight_1 — lowered from preflight/1", "", _).
+
+cpp_preflight_ite_shell :-
+    cpp_render_ite_shell("", 1, "", "", "", _).
+
+% All semantic children are rendered before this call. Source spans are read
+% once, checked against the exact ITE slot order, then joined without scanning
+% any inserted C++ (which may contain literal {{...}} text).
+cpp_render_ite_shell(Indent, Counter, Condition, Then, Else, Text) :-
+    cpp_template_root(Root),
+    cpp_render_ite_shell_at_root(Root, Indent, Counter, Condition, Then, Else, Text).
+
+cpp_render_ite_shell_at_root(Root, Indent, Counter, Condition, Then, Else, Text) :-
+    cpp_template_path(lowered_ite, Relative),
+    directory_file_path(Root, Relative, Path),
+    (   text_value(Indent), integer(Counter), Counter >= 1,
+        text_value(Condition), text_value(Then), text_value(Else)
+    ->  true
+    ;   throw(error(domain_error(cpp_wam_ite_variables,
+                                 [Indent, Counter, Condition, Then, Else]),
+                    context(cpp_render_ite_shell/6, Path)))
+    ),
+    catch(read_file_to_string(Path, Template, [encoding(utf8)]),
+          Error,
+          throw(error(cpp_wam_template_load(lowered_ite, Path, Error),
+                      context(cpp_render_ite_shell/6, Path)))),
+    (   Template == ""
+    ->  throw(error(cpp_wam_template_empty(lowered_ite, Path),
+                    context(cpp_render_ite_shell/6, Path)))
+    ;   true
+    ),
+    ite_shell_markers(Markers),
+    (   split_ordered_source_markers(Template, Markers, Parts)
+    ->  text_string(Indent, IndentText),
+        format(string(CounterText), '~w', [Counter]),
+        maplist(text_string, [Condition, Then, Else],
+                [ConditionText, ThenText, ElseText]),
+        ite_shell_values(IndentText, CounterText, ConditionText,
+                         ThenText, ElseText, Values),
+        interleave_source_slots(Parts, Values, Joined),
+        atomics_to_string(Joined, "", Text)
+    ;   throw(error(cpp_wam_template_tags(lowered_ite, Path),
+                    context(cpp_render_ite_shell/6, Path)))
+    ).
+
+ite_shell_markers([
+    "{{indent}}", "{{indent}}", "{{counter}}", "{{indent}}", "{{counter}}",
+    "{{condition}}", "{{indent}}", "{{indent}}", "{{indent}}", "{{counter}}",
+    "{{then}}", "{{indent}}", "{{indent}}", "{{counter}}",
+    "{{else}}", "{{indent}}", "{{indent}}"
+]).
+
+ite_shell_values(I, N, C, T, E,
+    [I, I, N, I, N, C, I, I, I, N, T, I, I, N, E, I, I]).
+
+split_ordered_source_markers(Text, [], [Text]) :-
+    source_span_without_tags(Text).
+split_ordered_source_markers(Text, [Marker|Markers], [Before|Parts]) :-
+    string_length(Marker, Length),
+    sub_string(Text, At, Length, _, Marker),
+    !,
+    sub_string(Text, 0, At, _, Before),
+    source_span_without_tags(Before),
+    End is At + Length,
+    sub_string(Text, End, _, 0, After),
+    split_ordered_source_markers(After, Markers, Parts).
+
+interleave_source_slots([Part], [], [Part]).
+interleave_source_slots([Part|Parts], [Value|Values], [Part,Value|Joined]) :-
+    interleave_source_slots(Parts, Values, Joined).
 
 % The body is already rendered C++ and must remain literal. Return the same
 % [Header, Body, Footer] shape expected by lower_predicate_to_cpp/4.
