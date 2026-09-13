@@ -519,43 +519,26 @@ emit_one(fail, I) :-
 % comparison (no allocation).
 emit_one(get_constant(CStr, AiStr), I) :-
     cpp_reg_name(AiStr, Ai),
+    format(string(Comment), 'get_constant ~w, ~w', [CStr, AiStr]),
     wam_classify_constant_token(CStr, Class),
     ( Class = atom(Name)
     ->  local_escape_cpp_string(Name, Esc),
-        Vars = [op=head_constant(atom(Esc)), 'I'=I, 'CStr'=CStr,
-                'AiStr'=AiStr, 'Ai'=Ai]
+        Op = head_constant(atom(Esc))
     ;   cpp_val_literal(CStr, CppVal),
-        Vars = [op=head_constant(value(CppVal)), 'I'=I, 'CStr'=CStr,
-                'AiStr'=AiStr, 'Ai'=Ai]
+        Op = head_constant(value(CppVal))
     ),
-    cpp_render_stache(head_constant, Vars, Text),
-    format('~s', [Text]).
+    emit_head_match(Op, Comment, Ai, I).
 
 emit_one(get_integer(NStr, AiStr), I) :-
     cpp_reg_name(AiStr, Ai),
-    format("~w// get_integer ~w, ~w~n", [I, NStr, AiStr]),
-    format("~w{~n", [I]),
-    format("~w    Value _a = vm->get_reg(\"~w\");~n", [I, Ai]),
-    format("~w    if (_a.is_unbound()) {~n", [I]),
-    format("~w        vm->trail_binding(\"~w\");~n", [I, Ai]),
-    format("~w        vm->put_reg(\"~w\", Value::Integer(~w));~n", [I, Ai, NStr]),
-    format("~w    } else if (!(_a == Value::Integer(~w))) {~n", [I, NStr]),
-    format("~w        return false;~n", [I]),
-    format("~w    }~n", [I]),
-    format("~w}~n", [I]).
+    format(string(Comment), 'get_integer ~w, ~w', [NStr, AiStr]),
+    format(string(CppVal), 'Value::Integer(~w)', [NStr]),
+    emit_head_match(head_constant(value(CppVal)), Comment, Ai, I).
 
 emit_one(get_nil(AiStr), I) :-
     cpp_reg_name(AiStr, Ai),
-    format("~w// get_nil ~w~n", [I, AiStr]),
-    format("~w{~n", [I]),
-    format("~w    int _m = vm->match_reg_atom(\"~w\", \"[]\");~n", [I, Ai]),
-    format("~w    if (_m < 0) {~n", [I]),
-    format("~w        vm->trail_binding(\"~w\");~n", [I, Ai]),
-    format("~w        vm->put_reg(\"~w\", Value::Atom(\"[]\"));~n", [I, Ai]),
-    format("~w    } else if (_m == 0) {~n", [I]),
-    format("~w        return false;~n", [I]),
-    format("~w    }~n", [I]),
-    format("~w}~n", [I]).
+    format(string(Comment), 'get_nil ~w', [AiStr]),
+    emit_head_match(head_constant(atom("[]")), Comment, Ai, I).
 
 emit_one(get_variable(XnStr, AiStr), I) :-
     cpp_reg_name(XnStr, Xn), cpp_reg_name(AiStr, Ai),
@@ -766,3 +749,8 @@ cpp_val_literal(Str, CppVal) :-
     ;   Class = atom(Name),
         format(atom(CppVal), 'Value::Atom("~w")', [Name])
     ).
+
+emit_head_match(Op, Comment, Ai, I) :-
+    cpp_render_stache(head_constant,
+        [op=Op, 'I'=I, 'Comment'=Comment, 'Ai'=Ai], Text),
+    format('~s', [Text]).
