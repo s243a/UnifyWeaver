@@ -4,8 +4,8 @@ Status: in progress. Phase 1 (runtime header) and Phase 2 (lowered
 `get_constant`) landed in #4252 and #4253. The first Phase 3 slice, including
 project preflight and `main.cpp`, landed in #4255. The program and runtime
 extraction landed in #4256, and the first three runtime sections in #4257.
-The first Phase 4 reusable lowered family landed in #4261; the current slice
-extracts the repeated lowered function shell from `b8a54ee`.
+The first Phase 4 reusable lowered family landed in #4261 and the lowered
+function shell in #4263. The current slice extracts the structured ITE shell.
 The Pattern Stache literal-substitution fix landed in #4254.
 The original planning baseline was `55796489a9750388f4fcf3cac602e4d525b14c28`
 (2026-09-11).
@@ -169,6 +169,26 @@ A 30-fact functions-mode project emits 30 uses of this shell. Three separate
 20-generation runs measured 46.25–47.75 ms/project, compared with 45.9–46.9
 ms/project in separate runs before this shell extraction. The small difference
 is within run variation and is generation time, not C++ compile time.
+
+## Phase 4 progress: structured ITE shell (2026-09-12)
+
+`lowered/ite.cpp.mustache` now owns the ITE wrapper: trail mark, condition
+lambda and its final `return true`, then/else selection, unwind before the
+else body, and closing braces. Prolog still increments the monotonic ITE
+counter and recursively emits Condition, Then, and Else in that order with the
+same child indent. A strict 17-slot source parser validates each repeated
+`indent`/`counter` marker and the one-time child slots before joining source
+spans with already-rendered children. Literal `{{...}}` text in a child is
+never rescanned.
+
+Frozen full-function hashes for single, sequential, and nested ITE predicates
+match pre-extraction bytes, including counter numbering. The native C++17 ITE
+suite passes its condition, rollback, sequential, and nested cases. Project
+preflight rejects missing, empty, unknown, missing-slot, duplicate-slot, and
+reordered-slot assets without creating a project. Asset failures after preflight
+also propagate through the default `warn` policy. A five-predicate ITE project
+rendered seven such shells and averaged 34.35 ms/project over 20 generations
+in one local run; there is no directly comparable pre-extraction timing.
 
 ## Outcome and scope
 

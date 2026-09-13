@@ -1,0 +1,10 @@
+{{indent}}{
+{{indent}}    std::size_t _ite_mark{{counter}} = vm->trail.size();
+{{indent}}    bool _ite_cond{{counter}} = [&]() -> bool {
+{{condition}}{{indent}}        return true;
+{{indent}}    }();
+{{indent}}    if (_ite_cond{{counter}}) {
+{{then}}{{indent}}    } else {
+{{indent}}        vm->unwind_trail_to(_ite_mark{{counter}});
+{{else}}{{indent}}    }
+{{indent}}}

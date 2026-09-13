@@ -8,16 +8,21 @@
 :- use_module('../src/unifyweaver/targets/wam_cpp_templates',
               [cpp_render_template_at_root/4, cpp_render_stache_at_root/4,
                cpp_lowered_function_lines_at_root/5,
+               cpp_render_ite_shell_at_root/7,
                cpp_with_template_root_for_test/2]).
 :- use_module('../src/unifyweaver/targets/wam_cpp_lowered_emitter', []).
 :- use_module('../src/unifyweaver/targets/wam_target', [compile_predicate_to_wam/3]).
 
-:- dynamic user:shell_t4/2, user:shell_t5/1, user:shell_t6/1, user:shell_ite/2.
+:- dynamic user:shell_t4/2, user:shell_t5/1, user:shell_t6/1, user:shell_ite/2,
+           user:shell_seqite/3, user:shell_nestedite/2.
 user:shell_t4(a,x). user:shell_t4(b,y). user:shell_t4(a,z).
 user:shell_t5(red). user:shell_t5(green). user:shell_t5(blue).
 user:shell_t6(s01). user:shell_t6(s02). user:shell_t6(s03). user:shell_t6(s04).
 user:shell_t6(s05). user:shell_t6(s06). user:shell_t6(s07). user:shell_t6(s08).
 user:shell_ite(X,Y) :- ( X > 0 -> Y = pos ; Y = nonpos ).
+user:shell_seqite(X,Y,Z) :- ( X > 0 -> Y = pos ; Y = nonpos ),
+                             ( X > 5 -> Z = big ; Z = small ).
+user:shell_nestedite(X,Y) :- ( X > 0 -> ( X > 10 -> Y = big ; Y = small ) ; Y = neg ).
 
 % SHA-256 covers UTF-8 bytes; lengths below count Prolog characters.
 % Captured from the old compile_wam_runtime_header_to_cpp/2 at local main
@@ -89,6 +94,10 @@ old_lowered_function_digest(shell_t6/1, 1151,
     '9326ae27c9eb3df2010e3d83bfe768b2d2641544005ef0b349468940dff9ae92').
 old_lowered_function_digest(shell_ite/2, 1393,
     '2c7fc9718f9f2f37fed6b07a6b22449e80e210445e672ceb7a23411fa62aae51').
+old_lowered_function_digest(shell_seqite/3, 2498,
+    '6c65043391d2892c9fa6c0e5e80a1f8f7dc2fd973a68083ac0be5e2a179d147c').
+old_lowered_function_digest(shell_nestedite/2, 2283,
+    'ee19e17bc3b261feddbdf66053619ea0484a57974157d19bb7d35f445e21f078').
 
 test(lowered_function_old_bytes,
      [forall(old_lowered_function_digest(PI, Length, Digest))]) :-
@@ -125,6 +134,32 @@ test(lowered_function_asset_errors_survive_warn_policy,
           domain_error(cpp_wam_lowered_function_variables, bad)]))]) :-
     Error = error(Problem, context(lowered_function, fixture)),
     catch(wam_cpp_target:handle_compile_error(warn, shell_t5/1, Error),
+          Actual, true),
+    assertion(Actual == Error).
+
+test(ite_shell_source_only_splice) :-
+    cpp_render_ite_shell_at_root('templates/targets/cpp_wam', "  ", 7,
+        "COND {{then}} {{counter}}\n", "THEN {{else}}\n",
+        "ELSE {{condition}}\n", Text),
+    assertion(sub_string(Text, _, _, _, "COND {{then}} {{counter}}\n")),
+    assertion(sub_string(Text, _, _, _, "THEN {{else}}\n")),
+    assertion(sub_string(Text, _, _, _, "ELSE {{condition}}\n")),
+    assertion(sub_string(Text, _, _, _, "_ite_mark7")),
+    assertion(sub_string(Text, _, _, _, "_ite_cond7")).
+
+test(ite_shell_rejects_bad_counter,
+     [throws(error(domain_error(cpp_wam_ite_variables, _), _))]) :-
+    cpp_render_ite_shell_at_root('templates/targets/cpp_wam', "", 0,
+        "", "", "", _).
+
+test(ite_shell_asset_errors_survive_warn_policy,
+     [forall(member(Problem,
+         [cpp_wam_template_load(lowered_ite, fixture, missing),
+          cpp_wam_template_empty(lowered_ite, fixture),
+          cpp_wam_template_tags(lowered_ite, fixture),
+          domain_error(cpp_wam_ite_variables, bad)]))]) :-
+    Error = error(Problem, context(lowered_ite, fixture)),
+    catch(wam_cpp_target:handle_compile_error(warn, shell_ite/2, Error),
           Actual, true),
     assertion(Actual == Error).
 
@@ -171,6 +206,24 @@ test(project_preflight_duplicate_lowered_slot_no_files) :-
 
 test(project_preflight_reordered_lowered_slots_no_files) :-
     with_project_template_fixture(reordered_lowered_slots, check_project_preflight_failure).
+
+test(project_preflight_missing_ite_shell_no_files) :-
+    with_project_template_fixture(missing_ite_shell, check_project_preflight_failure).
+
+test(project_preflight_empty_ite_shell_no_files) :-
+    with_project_template_fixture(empty_ite_shell, check_project_preflight_failure).
+
+test(project_preflight_unknown_ite_slot_no_files) :-
+    with_project_template_fixture(unknown_ite_slot, check_project_preflight_failure).
+
+test(project_preflight_missing_ite_slot_no_files) :-
+    with_project_template_fixture(missing_ite_slot, check_project_preflight_failure).
+
+test(project_preflight_duplicate_ite_slot_no_files) :-
+    with_project_template_fixture(duplicate_ite_slot, check_project_preflight_failure).
+
+test(project_preflight_reordered_ite_slots_no_files) :-
+    with_project_template_fixture(reordered_ite_slots, check_project_preflight_failure).
 
 test(project_preflight_malformed_main_no_files) :-
     with_project_template_fixture(malformed_main, check_project_preflight_failure).
@@ -299,12 +352,46 @@ with_project_template_fixture(Fault, Goal) :-
          (Fault == reordered_lowered_slots
          -> write_fixture(FunctionCopy, "{{name}}{{comment}}{{body}}")
          ;  true),
+         directory_file_path(RealRoot, 'lowered/ite.cpp.mustache', Ite),
+         directory_file_path(Lowered, 'ite.cpp.mustache', IteCopy),
+         (Fault == missing_ite_shell -> true ; copy_file(Ite, IteCopy)),
+         (Fault == empty_ite_shell -> write_fixture(IteCopy, "") ; true),
+         (Fault == unknown_ite_slot
+         -> read_file_to_string(IteCopy, IteShell, []),
+            string_concat(IteShell, "{{unknown}}", UnknownIte),
+            write_fixture(IteCopy, UnknownIte)
+         ;  true),
+         (Fault == missing_ite_slot
+         -> read_file_to_string(IteCopy, IteShell2, []),
+            replace_first_fixture_marker(IteShell2, "{{condition}}", "", MissingIte),
+            write_fixture(IteCopy, MissingIte)
+         ;  true),
+         (Fault == duplicate_ite_slot
+         -> read_file_to_string(IteCopy, IteShell3, []),
+            string_concat(IteShell3, "{{else}}", DuplicateIte),
+            write_fixture(IteCopy, DuplicateIte)
+         ;  true),
+         (Fault == reordered_ite_slots
+         -> read_file_to_string(IteCopy, IteShell4, []),
+            replace_first_fixture_marker(IteShell4, "{{condition}}", "{{TEMP}}", TempIte),
+            replace_first_fixture_marker(TempIte, "{{then}}", "{{condition}}", TempIte2),
+            replace_first_fixture_marker(TempIte2, "{{TEMP}}", "{{then}}", ReorderedIte),
+            write_fixture(IteCopy, ReorderedIte)
+         ;  true),
          (Fault == malformed_main -> write_fixture(MainCopy, "{{bad") ; true)),
         call(Goal, Fault, Root, Templates),
         delete_directory_and_contents(Root)).
 
 write_fixture(Path, Text) :-
     setup_call_cleanup(open(Path, write, Out), write(Out, Text), close(Out)).
+
+replace_first_fixture_marker(Text, Marker, Replacement, Result) :-
+    string_length(Marker, Length),
+    sub_string(Text, At, Length, _, Marker),
+    sub_string(Text, 0, At, _, Before),
+    End is At + Length,
+    sub_string(Text, End, _, 0, After),
+    atomics_to_string([Before, Replacement, After], "", Result).
 
 check_project_preflight_failure(Fault, Root, Templates) :-
     directory_file_path(Root, project, Project),
@@ -339,6 +426,13 @@ check_project_preflight_failure(Fault, Root, Templates) :-
                           duplicate_lowered_slot,
                           reordered_lowered_slots])
     ->  assertion(Error = error(cpp_wam_template_tags(lowered_function, _), _))
+    ;   Fault == missing_ite_shell
+    ->  assertion(Error = error(cpp_wam_template_load(lowered_ite, _, _), _))
+    ;   Fault == empty_ite_shell
+    ->  assertion(Error = error(cpp_wam_template_empty(lowered_ite, _), _))
+    ;   memberchk(Fault, [unknown_ite_slot, missing_ite_slot,
+                          duplicate_ite_slot, reordered_ite_slots])
+    ->  assertion(Error = error(cpp_wam_template_tags(lowered_ite, _), _))
     ;   assertion(Error = error(cpp_wam_stache_failure(head_constant, _, _), _))
     ),
     assertion(\+ exists_directory(Project)).
