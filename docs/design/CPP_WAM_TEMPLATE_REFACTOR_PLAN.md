@@ -4,7 +4,7 @@ Status: in progress. Phase 1 (runtime header) and Phase 2 (lowered
 `get_constant`) landed in #4252 and #4253. The first Phase 3 slice, including
 project preflight and `main.cpp`, landed in #4255. The program and runtime
 extraction landed in #4256, and the first three runtime sections in #4257.
-The current bounded continuation starts from `23268f0`.
+The first Phase 4 reusable lowered family is underway from `9cef7cf`.
 The Pattern Stache literal-substitution fix landed in #4254.
 The original planning baseline was `55796489a9750388f4fcf3cac602e4d525b14c28`
 (2026-09-11).
@@ -108,6 +108,42 @@ averaged 34.2 ms. Shrinking the validated shell appears to offset the added
 section reads on this fixture, but that timing is not C++ compiler time.
 Each additional explicit slot grows the adapter contract, so further splits
 should have a concrete maintenance or reuse payoff.
+
+## Phase 4 progress: shared head bind/match body (2026-09-12)
+
+The existing `lowered/head_constant.cpp.stache` atom and value cases now serve
+three lowered instruction handlers: `get_constant`, `get_integer`, and `get_nil`.
+This is actual source reuse: the bind-or-match C++ bodies previously duplicated
+in the integer and nil Prolog emitters now live in one pair of cases.
+Prolog still chooses the case, normalizes the register, classifies constant
+tokens, escapes atom names, and constructs literal values and exact comments.
+In particular, `get_integer` retains its raw numeric token spelling rather
+than passing through `cpp_val_literal/2`. The adapter validates the four-key
+render contract and both case bodies before project creation, and still checks
+the source file hash on every render so edits cannot use a stale parsed body.
+
+Frozen SHA-256/length checks cover the existing seven atom, integer, float,
+escaped, and placeholder-shaped `get_constant` fragments, plus three
+`get_integer` fragments (including raw `0007`) and two `get_nil` fragments.
+All bytes match the previous output. A native C++17 harness generated from
+manual WAM instruction lists exercises each case's equal/mismatch paths,
+binding, alias visibility, trail unwind, and a later-match failure. The
+rollback fixture initializes an unbound A1 cell because the existing runtime
+`trail_binding(name)` records only cells already present; this slice does not
+change runtime semantics.
+
+A 30-fact functions-mode project with atom, numeric and nil heads contains
+30 `get_constant` instructions and zero `get_integer`/`get_nil` instructions:
+the current source WAM compiler lowers all those heads through `get_constant`.
+Thus the template has three supported lowered call sites, but only one is used
+by this ordinary project. Twenty-generation runs after the change averaged
+45.9–46.9 ms/project on the local host (an earlier separate pre-change run
+was 56.5 ms/project); these separate runs do not establish a speedup. A direct
+100-iteration loop rendering all three operations measured 0.36–0.37 ms per
+fragment. Each call still hashes the template file to detect mutation, so
+expanding this family does add that cost when the integer/nil opcodes arrive
+through WAM text or manual lowering. No additional cache layer is justified by
+the ordinary project count.
 
 ## Outcome and scope
 
