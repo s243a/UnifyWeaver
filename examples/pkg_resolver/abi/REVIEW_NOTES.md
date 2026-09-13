@@ -160,7 +160,7 @@ its point and that fails if the fix is reverted. `run_abi_verify.sh`:
 
 | Sol finding | Fix (file) | Proving fixture(s) |
 |---|---|---|
-| P1 `abi_resolve.pl:289` curated absence = false hard veto | Ingest tags a plain `.symbols` (no `--elf`) as `curated`; only an `--elf` cross-check is `complete` (`ingest_symbols.mjs` `cmdSymbolsFile`). The resolver's `prov_usable/4` + `ev_says/5` let curated evidence establish PRESENCE but never ABSENCE (a curated omission yields no `Says` row → `unknown(absent_from_incomplete_evidence)`, never `missing`); `complete` absence still vetoes | **C10/C10b/C10c** (curated omission → unknown; present-in-curated → `provided(curated)`; the SAME store tagged `complete` DOES veto), **A26** (real libselinux1, ingested without `--elf`, is curated: an absent symbol → unknown), **D7** (simple.symbols without `--elf` → `curated`) |
+| P1 `abi_resolve.pl:289` curated absence = false hard veto | Ingest tags a plain `.symbols` (no `--elf`) as `curated`; only an `--elf` cross-check is `complete` (`ingest_symbols.mjs` `cmdSymbolsFile`). The resolver's `prov_usable/4` + `ev_says/5` let curated evidence establish PRESENCE but never ABSENCE (a curated omission yields no `Says` row → `unknown(absent_from_incomplete_evidence)`, never `missing`); `complete` absence still vetoes. **Unversioned path** (`unversioned_status/7`): the `missing` veto is gated on `\+ prov_evidence(S,_,_,complete)` for the NEEDED object, so a curated-only NEEDED library also yields `unknown` — a Fable re-verify caught an earlier over-widening to `prov_usable` here | **C10/C10b/C10c** (versioned: curated omission → unknown; present-in-curated → `provided(curated)`; the SAME store tagged `complete` DOES veto), **C12/C12b** (unversioned: curated-only omission → unknown; complete omission → missing), **A26** (real libselinux1, ingested without `--elf`, is curated: an absent symbol → unknown), **D7** (simple.symbols without `--elf` → `curated`) |
 | P1 `abi_resolve.pl:311` contradictory curated floor overrides presence | A curated minimum ABOVE its evidence release is contradictory: rejected at ingest (`debLe`, exit 3) and at load (`assert_symprov` `rel_le(Deb,R0)` → the store fails to load). The existing evidence-tied aggregation (C7) already lets direct presence beat a floor | **C11/C11b** (`assert_symprov` rejects min 2.0 > release 1.0; accepts 1.0 ⩽ 1.0), **contradictory.symbols** (ingest exit 3, nothing written) |
 | P2 `ingest_symbols.mjs:114` `DEB_VERSION_RE` not a real validator | `validDebVersion()` parses `[epoch:]upstream[-revision]` the way `dpkg --validate-version` does; `1:`, `1-`, `1::2` are rejected; one gate for every version/`--release` | **run_abi_verify** `bad_release_{1:,1-,1::2}` (exit 3), D9 `bad_release` |
 | P3 `crosscheck.mjs` fixture cannot detect comparator restoration | Added `numnode@LIBX_2.1` / `numnode@LIBX_2.10` (opaque labels that a numeric parser would collapse) to the crosscheck pair, plus a negative `elf_numcollapse` fixture that FAILS under the correct opaque comparison but would PASS only if a numeric node comparator were reintroduced (2.10 == 2.1) | **run_abi_verify** `(sol2-P3)` numeric-collapse pair must FAIL; equal pair now 7/7 identity, 5/5 per-name |
@@ -176,3 +176,12 @@ its point and that fails if the fix is reverted. `run_abi_verify.sh`:
 - `below_floor` remains a hard veto only as a DECLARED minimum (dpkg-shlibdeps'
   floor), never from mere absence, and never overriding a direct presence
   observation.
+- Pre-existing, noted for awareness (unchanged this pass): if a COMPLETE ELF row
+  observes a symbol ABSENT at R and a curated row claims `since` ≤ R, `combine/4`
+  extrapolates the curated presence over the contradicting complete absence
+  between the two evidence releases. It needs genuinely contradictory tiers and
+  is not a contract violation (`Min` is documented as defeasible), but a future
+  pass could treat a complete absence as authoritative over a curated floor.
+- Robustness (this pass): `debLe` `die()`s with a clear message if `dpkg` is not
+  on PATH (rather than silently rejecting every row); `load_abi_store/1` clears
+  the partial store if a row throws; the now-unused `bound_evidence/4` was removed.

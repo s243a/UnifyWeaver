@@ -149,7 +149,10 @@ function debLe(a, b) {
   if (_cmpCache.has(key)) return _cmpCache.get(key);
   let r;
   try { execFileSync("dpkg", ["--compare-versions", a, "le", b], { stdio: "ignore" }); r = true; }
-  catch { r = false; }
+  catch (e) {
+    if (e && e.code === "ENOENT") die(`dpkg not found on PATH; it is required to compare Debian versions (${a} vs ${b})`);
+    r = false;   // exit 1 = a > b (both a and b are already syntactically valid here)
+  }
   _cmpCache.set(key, r);
   return r;
 }

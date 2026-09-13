@@ -477,6 +477,26 @@ section_model :-
     check('C11b a since row with minimum (1.0) =< its evidence release (1.0) is accepted (sol2-floor)',
           ( abi_resolve:assert_symprov('libz.so.1|s@N', [since, '1.0', '1.0', unproven]),
             symprov('libz.so.1', s, 'N', since(_, '1.0', _, unproven)) )),
+
+    % C12: Sol re-review 2, P1 -- the UNVERSIONED path. An unversioned reference
+    % against a curated-only NEEDED object that omits it is unknown (curated
+    % absence proves nothing), NEVER a hard missing veto; the SAME object with
+    % COMPLETE evidence that omits it DOES veto. (The harness misses this: all
+    % of /bin/ls's unversioned refs are WEAK.)
+    fx_clear,
+    fx(symreq(bin, uu, none, none, 'GLOBAL')),
+    fx(needed(bin, 'libcur.so.1')),
+    fx(req_evidence(bin, readelf, complete, bin)),
+    fx(prov_evidence('libcur.so.1', symbols, R10, curated)),
+    fx_since('1.0', '1.0', unproven, Sk),
+    fx(symprov('libcur.so.1', other_fn, 'N', Sk)),
+    check('C12 unversioned req vs a curated-only provider that omits it -> unknown, NEVER missing (sol2-curated-absence, unversioned path)',
+          ( abi_verdict(bin, 'libcur.so.1', '1.0', V12), report(verdict, V12),
+            V12 = unknown(L12), memberchk(unknown(uu, _), L12) )),
+    retract(abi_resolve:prov_evidence('libcur.so.1', symbols, R10, curated)),
+    fx(prov_evidence('libcur.so.1', elf, R10, complete)),
+    check('C12b the SAME store with COMPLETE (elf) evidence omitting uu -> incompatible([missing(uu)]) (sol2-curated-absence, unversioned path)',
+          abi_verdict(bin, 'libcur.so.1', '1.0', incompatible([missing(uu)]))),
     fx_clear.
 
 % ===========================================================================

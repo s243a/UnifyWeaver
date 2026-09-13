@@ -142,6 +142,11 @@ abi_store_clear :-
 
 load_abi_store(Dir) :-
     abi_store_clear,
+    % A row that fails to parse/validate (e.g. a contradictory since(Min>R0))
+    % throws; clear the partial store so callers never compute on half a load.
+    catch(load_abi_rows(Dir), E, ( abi_store_clear, throw(E) )).
+
+load_abi_rows(Dir) :-
     load_rows(Dir, 'symprov.jsonl',  assert_symprov),
     load_rows(Dir, 'symreq.jsonl',   assert_symreq),
     load_rows(Dir, 'needed.jsonl',   assert_needed),
@@ -290,11 +295,6 @@ release_axis(So, Atoms) :-
 % ---------------------------------------------------------------------------
 % Evidence rows and what each says about one identity (Sol P1a)
 % ---------------------------------------------------------------------------
-
-% bound_evidence(So, Bound, Src, R0): the complete evidence row a bound rests
-% on. A bound whose evidence row is missing/incomplete is not usable.
-bound_evidence(So, since(_, _, R0, _), symbols, R0) :- prov_evidence(So, symbols, R0, complete).
-bound_evidence(So, at(R0, _), elf, R0)              :- prov_evidence(So, elf, R0, complete).
 
 % observed(So, Sym, Node, Src, R1, Bound): the identity is in the Src
 % evidence taken at R1.
@@ -458,8 +458,10 @@ unversioned_status(Bin, So, Sym, Bind, Rel, Hyp, Status) :-
     ->  Status = weak_unresolved(Sym)          % a weak ref never vetoes, so missing evidence is moot
     ;   unversioned_unproven(Bin, So, Sym, Rel, S1, N1)
     ->  Status = unknown(Sym, default_binding_unproven(S1, N1))
-    ;   needed(Bin, S), \+ prov_usable(S, _, _, _)
-    ->  Status = unknown(Sym, no_provider_evidence(S))
+    ;   needed(Bin, S), \+ prov_evidence(S, _, _, complete)
+    ->  ( prov_usable(S, _, _, _)          % a curated NEEDED object cannot prove
+        ->  Status = unknown(Sym, absent_from_incomplete_evidence(S))  % absence -> unknown, never a veto (Sol re-review 2, P1)
+        ;   Status = unknown(Sym, no_provider_evidence(S)) )
     ;   unversioned_unknown(Bin, So, Sym, Rel, _, Why)
     ->  Status = unknown(Sym, Why)
     ;   unversioned_nondefault(Bin, So, Sym, Rel, S3, N3)
