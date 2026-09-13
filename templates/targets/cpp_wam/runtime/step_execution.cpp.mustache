@@ -1,0 +1,1664 @@
+// ----------------------------------------------------------------------
+// Step
+// ----------------------------------------------------------------------
+
+// An indexed switch (switch_on_term / _constant / _structure) that jumps
+// directly to the selected clause bypasses the entry try_me_else of the
+// clause chain. Only a retry_me_else / trust_me sitting AT that target reads
+// indexed_entry -- to synthesize a fresh CP (retry) or to skip a spurious pop
+// (trust). When first-arg indexing selects a UNIQUE clause, the jump lands on
+// the clause body itself (e.g. an allocate), which has no such consumer: that
+// clause then succeeds and proceeds, leaving indexed_entry set as a stale
+// global latch. A LATER, unrelated trust_me -- notably the else-guard
+// trust_me of an if-then-else ( Cond -> Then ; Else ) -- would then read the
+// latch and skip popping its own choice point, so the guard CP is never
+// consumed and execution loops forever (non-termination). Set the flag only
+// when a consumer actually awaits it at the jump target.
+static inline bool switch_target_consumes_indexed(
+        const std::vector<Instruction>& instrs, std::size_t tgt) {
+    if (tgt >= instrs.size()) return false;
+    Instruction::Op op = instrs[tgt].op;
+    return op == Instruction::Op::RetryMeElse
+        || op == Instruction::Op::TrustMe;
+}
+
+bool WamState::step(const Instruction& instr) {
+    switch (instr.op) {
+        // ---- Head unification --------------------------------------
+        case Instruction::Op::GetConstant: {
+            CellPtr a = get_cell(instr.a);
+            if (a->is_unbound())          { bind_cell(a, instr.val); }
+            else if (!(*a == instr.val))  { return false; }
+            pc += 1; return true;
+        }
+        case Instruction::Op::GetInteger: {
+            CellPtr a = get_cell(instr.a);
+            Value want = Value::Integer(instr.n);
+            if (a->is_unbound())     { bind_cell(a, want); }
+            else if (!(*a == want))  { return false; }
+            pc += 1; return true;
+        }
+        case Instruction::Op::GetNil: {
+            CellPtr a = get_cell(instr.a);
+            Value want = Value::Atom("[]");
+            if (a->is_unbound())     { bind_cell(a, want); }
+            else if (!(*a == want))  { return false; }
+            pc += 1; return true;
+        }
+        case Instruction::Op::GetVariable: {
+            // X-reg shares the same cell as A-reg.
+            set_cell(instr.a, get_cell(instr.b));
+            pc += 1; return true;
+        }
+        case Instruction::Op::GetValue: {
+            if (!unify_cells(get_cell(instr.a), get_cell(instr.b))) return false;
+            pc += 1; return true;
+        }
+        case Instruction::Op::GetStructure: {
+            // instr.a = functor ("box/2"), instr.b = register ("A1" / "X1" ...).
+            CellPtr a = get_cell(instr.b);
+            const std::string& functor = instr.a;
+            std::size_t arity = 0;
+            auto p = functor.find_last_of('/');
+            if (p != std::string::npos) arity = std::stoull(functor.substr(p + 1));
+            if (a->is_unbound()) {
+                CellPtr target;
+                begin_write(*this, instr.b, functor, arity, target);
+                pc += 1; return true;
+            }
+            if (a->tag == Value::Tag::Compound && a->s == functor && a->args.size() == arity) {
+                push_read_mode(mode_stack, a->args);
+                pc += 1; return true;
+            }
+            return false;
+        }
+        case Instruction::Op::GetList: {
+            CellPtr a = get_cell(instr.a);
+            const std::string functor = "[|]/2";
+            if (a->is_unbound()) {
+                CellPtr target;
+                begin_write(*this, instr.a, functor, 2, target);
+                pc += 1; return true;
+            }
+            if (a->tag == Value::Tag::Compound && a->s == functor && a->args.size() == 2) {
+                push_read_mode(mode_stack, a->args);
+                pc += 1; return true;
+            }
+            return false;
+        }
+
+        // ---- Body construction -------------------------------------
+        case Instruction::Op::PutConstant: {
+            // Must allocate a fresh cell, not mutate the existing one:
+            // any X-reg aliasing this register (e.g. via prior
+            // get_variable) must NOT see the new value.
+            set_cell(instr.a, make_cell(instr.val));
+            pc += 1; return true;
+        }
+        case Instruction::Op::PutVariable: {
+            // Fresh shared cell visible from both registers.
+            CellPtr v = make_cell(Value::Unbound("_V" + std::to_string(var_counter++)));
+            set_cell(instr.a, v);
+            set_cell(instr.b, v);
+            pc += 1; return true;
+        }
+        case Instruction::Op::PutValue: {
+            // Target reg shares the source's cell.
+            set_cell(instr.b, get_cell(instr.a));
+            pc += 1; return true;
+        }
+        case Instruction::Op::PutStructure: {
+            // X-regs and Y-regs are local — when set_variable
+            // attached the cell to a parent structure's args slot,
+            // the cell is shared between the X/Y reg AND the parent.
+            // Subsequent put_structure on that reg MUST bind in place
+            // so the parent's args slot sees the new structure too.
+            //
+            // A-regs are different — they're argument-passing slots
+            // that may be aliased with OTHER A-regs via PutValue
+            // (e.g. the maplist/3 + call/3 case where the callee's
+            // A1 and A2 ended up sharing the same caller's var).
+            // Always allocate fresh for A-regs so we don't corrupt
+            // the aliased value.
+            const std::string& functor = instr.a;
+            std::size_t arity = 0;
+            auto p = functor.find_last_of('/');
+            if (p != std::string::npos) arity = std::stoull(functor.substr(p + 1));
+            CellPtr existing = get_cell(instr.b);
+            bool is_a_reg = !instr.b.empty() && instr.b[0] == 'A';
+            CellPtr target;
+            if (existing->is_unbound() && !is_a_reg) {
+                bind_cell(existing, Value::Compound(functor, {}));
+                target = existing;
+            } else {
+                target = std::make_shared<Cell>(
+                    Value::Compound(functor, {}));
+                set_cell(instr.b, target);
+            }
+            push_write_mode(mode_stack, target, arity);
+            pc += 1; return true;
+        }
+        case Instruction::Op::PutList: {
+            // See PutStructure — same A-reg-vs-X/Y-reg rule.
+            CellPtr existing = get_cell(instr.a);
+            bool is_a_reg = !instr.a.empty() && instr.a[0] == 'A';
+            CellPtr target;
+            if (existing->is_unbound() && !is_a_reg) {
+                bind_cell(existing, Value::Compound("[|]/2", {}));
+                target = existing;
+            } else {
+                target = std::make_shared<Cell>(
+                    Value::Compound("[|]/2", {}));
+                set_cell(instr.a, target);
+            }
+            push_write_mode(mode_stack, target, 2);
+            pc += 1; return true;
+        }
+
+        // ---- Unify (post Get-/Put-Structure / List) -----------------
+        case Instruction::Op::UnifyVariable: {
+            if (mode_stack.empty()) return false;
+            ModeFrame& m = mode_stack.back();
+            if (m.kind == ModeFrame::Kind::Read) {
+                if (m.idx >= m.args.size()) return false;
+                set_cell(instr.a, m.args[m.idx]);
+                m.idx += 1;
+            } else if (m.kind == ModeFrame::Kind::Write && m.target) {
+                CellPtr fresh = make_cell(Value::Unbound("_V" + std::to_string(var_counter++)));
+                set_cell(instr.a, fresh);
+                m.target->args.push_back(fresh);
+            } else return false;
+            auto_pop_modes(mode_stack);
+            pc += 1; return true;
+        }
+        case Instruction::Op::UnifyValue: {
+            if (mode_stack.empty()) return false;
+            ModeFrame& m = mode_stack.back();
+            if (m.kind == ModeFrame::Kind::Read) {
+                if (m.idx >= m.args.size()) return false;
+                if (!unify_cells(get_cell(instr.a), m.args[m.idx])) return false;
+                m.idx += 1;
+            } else if (m.kind == ModeFrame::Kind::Write && m.target) {
+                m.target->args.push_back(get_cell(instr.a));
+            } else return false;
+            auto_pop_modes(mode_stack);
+            pc += 1; return true;
+        }
+        case Instruction::Op::UnifyConstant: {
+            if (mode_stack.empty()) return false;
+            ModeFrame& m = mode_stack.back();
+            if (m.kind == ModeFrame::Kind::Read) {
+                if (m.idx >= m.args.size()) return false;
+                CellPtr c = m.args[m.idx];
+                if (c->is_unbound())         { bind_cell(c, instr.val); }
+                else if (!(*c == instr.val)) { return false; }
+                m.idx += 1;
+            } else if (m.kind == ModeFrame::Kind::Write && m.target) {
+                m.target->args.push_back(make_cell(instr.val));
+            } else return false;
+            auto_pop_modes(mode_stack);
+            pc += 1; return true;
+        }
+
+        // ---- Set (always write mode) -------------------------------
+        case Instruction::Op::SetVariable: {
+            if (mode_stack.empty() || mode_stack.back().kind != ModeFrame::Kind::Write
+                || !mode_stack.back().target) return false;
+            CellPtr fresh = make_cell(Value::Unbound("_V" + std::to_string(var_counter++)));
+            set_cell(instr.a, fresh);
+            mode_stack.back().target->args.push_back(fresh);
+            auto_pop_modes(mode_stack);
+            pc += 1; return true;
+        }
+        case Instruction::Op::SetValue: {
+            if (mode_stack.empty() || mode_stack.back().kind != ModeFrame::Kind::Write
+                || !mode_stack.back().target) return false;
+            mode_stack.back().target->args.push_back(get_cell(instr.a));
+            auto_pop_modes(mode_stack);
+            pc += 1; return true;
+        }
+        case Instruction::Op::SetConstant: {
+            if (mode_stack.empty() || mode_stack.back().kind != ModeFrame::Kind::Write
+                || !mode_stack.back().target) return false;
+            mode_stack.back().target->args.push_back(make_cell(instr.val));
+            auto_pop_modes(mode_stack);
+            pc += 1; return true;
+        }
+
+        // ---- Environment frames -----------------------------------
+        case Instruction::Op::Allocate: {
+            EnvFrame f;
+            f.saved_cp = cp;
+            // Capture B0 for this clause: cut_barrier was set to the
+            // caller-time choicepoint height by the Call/Execute that
+            // entered this predicate (and is restored on backtrack via
+            // the choicepoint snapshot), so it is the correct cut level
+            // for a plain cut in this clause body.
+            f.b0 = cut_barrier;
+            env_stack.push_back(std::move(f));
+            pc += 1; return true;
+        }
+        case Instruction::Op::Deallocate: {
+            if (!env_stack.empty()) {
+                cp = env_stack.back().saved_cp;
+                env_stack.pop_back();
+            }
+            pc += 1; return true;
+        }
+
+        // ---- Control flow ------------------------------------------
+        case Instruction::Op::Call: {
+            if (instr.a == "catch/3") { cp = pc + 1; return execute_catch(); }
+            if (instr.a == "throw/1") { cp = pc + 1; return execute_throw(); }
+            // findall/3, bagof/3, setof/3 meta-call — handles the
+            // non-inlined cases (nested aggregates, where only the
+            // OUTER one gets BeginAggregate-inlined; the inner is
+            // emitted as a plain Call to findall/bagof/setof which
+            // we dispatch here).
+            if (instr.a == "findall/3") return dispatch_findall_call(pc + 1);
+            if (instr.a == "bagof/3")   return dispatch_aggregate_call("bagof", pc + 1);
+            if (instr.a == "setof/3")   return dispatch_aggregate_call("setof", pc + 1);
+            // sub_atom/5 — nondeterministic substring enumeration.
+            // Needs its own dispatch arm (not via builtin()) so the
+            // CP machinery sees the correct continuation pc.
+            // sub_string/5 is the SWI string-typed alias and shares
+            // the same semantics on this runtime (atoms and strings
+            // are unified as Atom-tagged values).
+            if (instr.a == "sub_atom/5" || instr.a == "sub_string/5")
+                return dispatch_sub_atom(pc + 1);
+            // retract/1 — nondeterministic clause removal.
+            if (instr.a == "retract/1") return dispatch_retract(pc + 1);
+            // clause/2 — nondet enumeration of dynamic-db clauses.
+            if (instr.a == "clause/2") return dispatch_clause(pc + 1);
+            if (instr.a == "current_predicate/1")
+                return dispatch_current_predicate(pc + 1);
+            // ^/2 — existential quantification. Transparent for our
+            // find-style aggregation: invoke A2 (the goal) with the
+            // standard non-tail after-pc.
+            if (instr.a == "^/2") {
+                return invoke_goal_as_call(get_cell("A2"), pc + 1);
+            }
+            // phrase/2, phrase/3 — DCG entry. Add [List, Rest] to the
+            // body goal's args then dispatch as a regular call.
+            if (instr.a == "phrase/2") {
+                return dispatch_phrase_call(false, pc + 1);
+            }
+            if (instr.a == "phrase/3") {
+                return dispatch_phrase_call(true, pc + 1);
+            }
+            // call/N meta — needs its own arm so the after_pc is
+            // correctly pc + 1 (non-tail) rather than going through
+            // the Execute fallback's post-builtin pc=cp override.
+            if (instr.a.size() > 5
+                && instr.a.compare(0, 5, "call/") == 0) {
+                return dispatch_call_meta(instr.a, instr.n, pc + 1);
+            }
+            auto it = labels.find(instr.a);
+            if (it != labels.end()) {
+                cp = pc + 1;
+                // Record B0 for the callee: a plain cut in the callee
+                // cuts back to this choicepoint height (see EnvFrame::b0
+                // / Allocate). Saved/restored across backtracking by the
+                // callee's try_me_else choicepoint snapshot of cut_barrier.
+                cut_barrier = choice_points.size();
+                pc = it->second;
+                return true;
+            }
+            // Dynamic predicate path: assertz/retract have put facts
+            // into dynamic_db. Iterate through them via the iterator
+            // pattern. Tried before the builtin fallback so a user
+            // can assertz over a builtin name (unusual, but allowed).
+            if (dynamic_db.count(instr.a)) {
+                return dispatch_dynamic_call(instr.a, pc + 1);
+            }
+            // No user predicate matches: fall back to builtin dispatch.
+            // builtin() advances pc itself on success, mirroring the
+            // BuiltinCall path.
+            return builtin(instr.a, instr.n);
+        }
+        case Instruction::Op::Execute: {
+            if (instr.a == "catch/3") return execute_catch();
+            if (instr.a == "throw/1") return execute_throw();
+            if (instr.a == "findall/3" || instr.a == "bagof/3"
+                || instr.a == "setof/3") {
+                std::size_t tail_after = cp;
+                std::string kind =
+                    (instr.a == "findall/3") ? "collect" :
+                    (instr.a == "bagof/3")   ? "bagof"   : "setof";
+                return dispatch_aggregate_call(kind, tail_after);
+            }
+            if (instr.a == "sub_atom/5" || instr.a == "sub_string/5")
+                return dispatch_sub_atom(cp);
+            if (instr.a == "retract/1") return dispatch_retract(cp);
+            if (instr.a == "clause/2") return dispatch_clause(cp);
+            if (instr.a == "current_predicate/1")
+                return dispatch_current_predicate(cp);
+            if (instr.a == "^/2") {
+                return invoke_goal_as_call(get_cell("A2"), cp);
+            }
+            // phrase/2, phrase/3 in tail position.
+            if (instr.a == "phrase/2") {
+                return dispatch_phrase_call(false, cp);
+            }
+            if (instr.a == "phrase/3") {
+                return dispatch_phrase_call(true, cp);
+            }
+            // call/N meta in tail position — after_pc is the
+            // caller's saved cp (or halt if cp == 0).
+            if (instr.a.size() > 5
+                && instr.a.compare(0, 5, "call/") == 0) {
+                std::size_t tail_after = cp;
+                bool ok = dispatch_call_meta(instr.a, instr.n, tail_after);
+                if (!ok) return false;
+                return true;
+            }
+            auto it = labels.find(instr.a);
+            if (it != labels.end()) {
+                // Record B0 for the tail-called callee (see Op::Call).
+                cut_barrier = choice_points.size();
+                pc = it->second;
+                return true;
+            }
+            // Dynamic predicate path — tail-call form. after_pc is cp
+            // (the caller's saved continuation) for TCO.
+            if (dynamic_db.count(instr.a)) {
+                return dispatch_dynamic_call(instr.a, cp);
+            }
+            // Fall back to a deterministic builtin, then proceed to cp
+            // since execute is a tail call (no in-body continuation).
+            if (!builtin(instr.a, instr.n)) return false;
+            if (cp == 0) { halt = true; return true; }
+            pc = cp; cp = 0;
+            return true;
+        }
+        case Instruction::Op::CatchReturn: {
+            // Reached when a catch-protected goal proceeds normally.
+            // Pop the topmost catcher frame and proceed to its
+            // saved continuation.
+            if (catcher_frames.empty()) {
+                // Should not happen — defensive: halt as if normal proceed.
+                if (cp == 0) { halt = true; return true; }
+                pc = cp; cp = 0; return true;
+            }
+            CatcherFrame f = std::move(catcher_frames.back());
+            catcher_frames.pop_back();
+            cp = f.saved_cp;
+            if (cp == 0) { halt = true; return true; }
+            pc = cp;
+            cp = 0;
+            return true;
+        }
+        case Instruction::Op::NegationReturn: {
+            // Reached when a \+ or not protected goal proceeds normally
+            // (i.e. the goal succeeded). Pop the frame, fully restore
+            // pre-call VM state so any bindings / CPs the goal made
+            // are undone, and return false — the negation FAILS.
+            // backtrack() then resumes the outer flow.
+            if (negation_frames.empty()) return false;
+            NegationFrame f = std::move(negation_frames.back());
+            negation_frames.pop_back();
+            unwind_trail_to(f.trail_mark);
+            while (choice_points.size() > f.base_cp_count)
+                choice_points.pop_back();
+            while (aggregate_frames.size() > f.base_agg_count)
+                aggregate_frames.pop_back();
+            while (catcher_frames.size() > f.base_catcher_count)
+                catcher_frames.pop_back();
+            regs = std::move(f.saved_regs);
+            mode_stack = std::move(f.saved_mode_stack);
+            env_stack = std::move(f.saved_env_stack);
+            cut_barrier = f.saved_cut_barrier;
+            cp = f.saved_cp;
+            // Negation fails; let backtrack do its thing.
+            return false;
+        }
+        case Instruction::Op::FindallCollect: {
+            // Reached when a findall/3 protected goal succeeds via
+            // proceed back to findall_collect_pc. Snapshot the
+            // template's current value (deep copy so subsequent
+            // trail unwinds don't corrupt what we collected),
+            // append to the top aggregate's acc, then return false
+            // to force backtrack for the next solution. The
+            // existing aggregate-finalise in backtrack() takes
+            // over when CPs drain to base_cp_count.
+            if (aggregate_frames.empty()) return false;
+            AggregateFrame& f = aggregate_frames.back();
+            CellPtr value_cell = f.value_cell
+                ? f.value_cell
+                : get_cell(f.value_reg);
+            if (!value_cell) return false;
+            f.acc.push_back(deep_copy(*value_cell));
+            // For bagof/setof: also snapshot the current witness
+            // values (parallel to acc) so finalise can group by
+            // witness binding.
+            if (!f.witness_cells.empty()) {
+                std::vector<Value> witness_snap;
+                witness_snap.reserve(f.witness_cells.size());
+                for (auto& wc : f.witness_cells) {
+                    witness_snap.push_back(deep_copy(*wc));
+                }
+                f.acc_witnesses.push_back(std::move(witness_snap));
+            }
+            return false;
+        }
+        case Instruction::Op::ConjReturn: {
+            // Reached when a conjunction goal-term's G1 succeeded.
+            // Dispatch G2 with the original after_pc. Do NOT pop the
+            // frame — G1 may have left choice points that get retried
+            // when G2 fails or when findall/3 forces backtrack for
+            // more solutions; each G1 retry must re-dispatch THE SAME
+            // G2. backtrack() pops the frame when G1's CPs are
+            // fully drained.
+            if (conj_frames.empty()) return false;
+            const ConjFrame& f = conj_frames.back();
+            return invoke_goal_as_call(f.second_goal, f.after_pc);
+        }
+        case Instruction::Op::DisjAlt: {
+            // Reached when the disjunction's CP fired (G1 has
+            // exhausted its solutions). Pop the CP (trust_me-style —
+            // it's a one-shot, no more alternatives after G2) and
+            // the matching DisjFrame, then dispatch G2 with the
+            // original after_pc.
+            if (!choice_points.empty()) choice_points.pop_back();
+            if (disj_frames.empty()) return false;
+            DisjFrame f = std::move(disj_frames.back());
+            disj_frames.pop_back();
+            return invoke_goal_as_call(f.second_goal, f.after_pc);
+        }
+        case Instruction::Op::IfThenCommit: {
+            // Reached when Cond succeeded. Cut: drop all CPs the
+            // dispatch pushed (including our own paired CP). Pop
+            // the IfThenFrame. Dispatch Then with the original
+            // after_pc.
+            if (if_then_frames.empty()) return false;
+            IfThenFrame f = std::move(if_then_frames.back());
+            if_then_frames.pop_back();
+            while (choice_points.size() > f.base_cp_count)
+                choice_points.pop_back();
+            return invoke_goal_as_call(f.then_goal, f.after_pc);
+        }
+        case Instruction::Op::IfThenElse: {
+            // Reached when Cond failed and backtrack landed at our
+            // CP's alt_pc. Pop the CP (trust_me-style — once-only,
+            // same as DisjAlt) and the matching IfThenFrame, then
+            // dispatch Else with the original after_pc. For bare
+            // (Cond -> Then) goal-terms (no Else clause), else_goal
+            // is null — propagate failure instead.
+            if (!choice_points.empty()) choice_points.pop_back();
+            if (if_then_frames.empty()) return false;
+            IfThenFrame f = std::move(if_then_frames.back());
+            if_then_frames.pop_back();
+            if (!f.else_goal) return false;
+            return invoke_goal_as_call(f.else_goal, f.after_pc);
+        }
+        case Instruction::Op::AggregateNextGroup: {
+            // Reached via the CP pushed by aggregate-finalise (or
+            // by aggregate_bind_next_group itself) when more
+            // witness groups remain. Pop the CP and bind the next
+            // group via the shared helper, which itself pushes a
+            // CP if even MORE groups remain.
+            if (!choice_points.empty()) choice_points.pop_back();
+            return aggregate_bind_next_group();
+        }
+        case Instruction::Op::DynamicNextClause: {
+            // Reached when a dynamic-predicate call backtracks into
+            // its remaining clauses. Pop the CP and delegate to
+            // dynamic_try_next, which unifies the next clause and
+            // pushes another CP if more remain.
+            if (!choice_points.empty()) choice_points.pop_back();
+            return dynamic_try_next();
+        }
+        case Instruction::Op::SubAtomNext: {
+            // Reached when sub_atom/5 backtracks for more matches.
+            // Pop the CP and try the next (Before, Length) pair.
+            if (!choice_points.empty()) choice_points.pop_back();
+            return sub_atom_try_next();
+        }
+        case Instruction::Op::BodyNext: {
+            // Reached after a dynamic-rule body goal succeeded
+            // (either forward via cp=body_next_pc, or via backtrack
+            // into a CP that landed at one of the body's goals).
+            // body_next dispatches the next goal in the BodyFrame's
+            // sequence, or pops the frame + proceeds to outer
+            // after_pc when exhausted.
+            return body_next();
+        }
+        case Instruction::Op::RetractNext: {
+            // Reached when retract/1 backtracks for the next match.
+            // Pop the CP and continue scanning from iter.next_idx
+            // (which the previous retract_try_next advanced past
+            // the just-removed clause).
+            if (!choice_points.empty()) choice_points.pop_back();
+            return retract_try_next();
+        }
+        case Instruction::Op::CurrentPredNext: {
+            // Reached when current_predicate/1 backtracks for the
+            // next match. Pop the CP and let current_pred_try_next
+            // resume from iter.next_idx.
+            if (!choice_points.empty()) choice_points.pop_back();
+            return current_pred_try_next();
+        }
+        case Instruction::Op::OutputCaptureReturn: {
+            // Reached when a with_output_to/2 goal proceeds normally.
+            // Pop the OutputCaptureFrame, unify the captured buffer
+            // with the sink (atom/string/codes), and continue at the
+            // saved_cp.
+            if (output_capture_frames.empty()) return false;
+            OutputCaptureFrame f = std::move(output_capture_frames.back());
+            output_capture_frames.pop_back();
+            Value sink = deref(*f.sink);
+            if (sink.tag != Value::Tag::Compound
+                || sink.args.size() != 1) return false;
+            // stream/1 sink: write the buffer to the stream and skip
+            // unification entirely. Stream must already be open in
+            // write or append mode.
+            if (sink.s == "stream/1") {
+                Value sh = *sink.args[0];
+                if (sh.tag != Value::Tag::Atom) return false;
+                auto sit = streams.find(sh.s);
+                if (sit == streams.end()) return false;
+                if (sit->second.is_read) return false;
+                *sit->second.file << f.buffer;
+                if (f.saved_cp == 0) { halt = true; return true; }
+                pc = f.saved_cp;
+                cp = 0;
+                return true;
+            }
+            CellPtr tgt = sink.args[0];
+            Value out_v;
+            if (sink.s == "atom/1" || sink.s == "string/1") {
+                out_v = Value::Atom(f.buffer);
+            } else if (sink.s == "codes/1") {
+                // Build a list of integer codes from buf bottom-up.
+                CellPtr list = std::make_shared<Cell>(Value::Atom("[]"));
+                for (auto it = f.buffer.rbegin();
+                     it != f.buffer.rend(); ++it) {
+                    CellPtr head = std::make_shared<Cell>(Value::Integer(
+                        static_cast<std::int64_t>(
+                            static_cast<unsigned char>(*it))));
+                    std::vector<CellPtr> ca;
+                    ca.push_back(head);
+                    ca.push_back(list);
+                    list = std::make_shared<Cell>(
+                        Value::Compound("[|]/2", std::move(ca)));
+                }
+                out_v = *list;
+            } else {
+                return false;
+            }
+            if (tgt->is_unbound()) bind_cell(tgt, out_v);
+            else if (!unify_cells(tgt,
+                std::make_shared<Cell>(out_v))) return false;
+            if (f.saved_cp == 0) { halt = true; return true; }
+            pc = f.saved_cp;
+            cp = 0;
+            return true;
+        }
+        case Instruction::Op::Proceed: {
+            if (cp == 0) { halt = true; return true; }
+            pc = cp;
+            cp = 0;
+            return true;
+        }
+        case Instruction::Op::Fail:
+            return false;
+        case Instruction::Op::Jump:
+            pc = instr.target;
+            return true;
+        case Instruction::Op::Nop:
+            // Placeholder emitted for WAM-asm pseudo-instructions that
+            // currently have no runtime semantics (e.g.
+            // switch_on_constant_a2). Counted in PC accounting so labels
+            // resolve correctly; behaves as a fall-through.
+            pc += 1;
+            return true;
+
+        // ---- Choice points -----------------------------------------
+        case Instruction::Op::TryMeElse: {
+            // A normal entry to a clause chain. Clear any
+            // indexed_entry flag in case SwitchOnTerm pointed here
+            // (defensive -- our current compiler points indexed
+            // jumps at RetryMeElse / TrustMe rather than TryMeElse,
+            // but the flag should be local to a single dispatch).
+            indexed_entry = false;
+            ChoicePoint cp_;
+            cp_.alt_pc = instr.target;
+            cp_.saved_cp = cp;
+            cp_.trail_mark = trail.size();
+            cp_.cut_barrier = cut_barrier;
+            cp_.saved_regs = regs;
+            cp_.saved_mode_stack = mode_stack;
+            cp_.saved_env_stack = env_stack;
+            cp_.saved_body_frames = body_frames;
+            // A `get_level Yn` sitting immediately before this try_me_else
+            // parked its barrier level; this is the guard choice point that
+            // owns it. See record_ite_level / ChoicePoint::levels.
+            if (pending_level_set) {
+                cp_.levels[pending_level_reg] = pending_level_val;
+                pending_level_set = false;
+            }
+            choice_points.push_back(std::move(cp_));
+            pc += 1; return true;
+        }
+        case Instruction::Op::RetryMeElse: {
+            // Normal failure-driven retry path: update top CP's alt.
+            // Indexed-entry path (set by SwitchOnTerm bypassing the
+            // chain's entry TryMeElse): synthesize a fresh CP so this
+            // predicate level has its own backtrack handle, even if
+            // an outer level's CP is already on the stack.
+            if (!choice_points.empty() && !indexed_entry) {
+                choice_points.back().alt_pc = instr.target;
+            } else {
+                indexed_entry = false;
+                ChoicePoint cp_;
+                cp_.alt_pc = instr.target;
+                cp_.saved_cp = cp;
+                cp_.trail_mark = trail.size();
+                cp_.cut_barrier = cut_barrier;
+                cp_.saved_regs = regs;
+                cp_.saved_mode_stack = mode_stack;
+                cp_.saved_env_stack = env_stack;
+                cp_.saved_body_frames = body_frames;
+                choice_points.push_back(std::move(cp_));
+            }
+            pc += 1; return true;
+        }
+        case Instruction::Op::TrustMe: {
+            // Normally pops the top CP (the one TryMeElse/RetryMeElse
+            // installed for this chain). When SwitchOnTerm jumped
+            // directly to a TrustMe (last clause), no CP was installed
+            // and indexed_entry flags this -- nothing to pop, just
+            // clear the flag and continue.
+            if (indexed_entry) {
+                indexed_entry = false;
+            } else if (!choice_points.empty()) {
+                choice_points.pop_back();
+            }
+            pc += 1; return true;
+        }
+
+        // ---- Indexed-dispatch chain ops (issue #2400) -------------
+        // Emitted by wam_target.pl's build_term_index_with_chains for
+        // SwitchOnTerm / SwitchOnConstant / SwitchOnStructure targets
+        // whose dispatch group has >1 matching clauses.  Layout:
+        //   L_<P>_<A>_<group>_dispatch:
+        //       try   L_<P>_<A>_<I1>_body
+        //       retry L_<P>_<A>_<I2>_body
+        //       ...
+        //       trust L_<P>_<A>_<IN>_body
+        // Each instruction's target is the body label (PC).  CP push
+        // captures pc+1 (the next chain entry) so backtrack resumes
+        // through the chain.  Unlike TryMeElse/RetryMeElse, these
+        // JUMP to the body and don't need the indexed_entry hack —
+        // the chain is self-contained.
+        case Instruction::Op::Try: {
+            // Push a CP that resumes the chain at pc+1 (= next chain
+            // instr) on backtrack, then JUMP to the body label.
+            indexed_entry = false; // chain is self-contained
+            ChoicePoint cp_;
+            cp_.alt_pc = pc + 1;
+            cp_.saved_cp = cp;
+            cp_.trail_mark = trail.size();
+            cp_.cut_barrier = cut_barrier;
+            cp_.saved_regs = regs;
+            cp_.saved_mode_stack = mode_stack;
+            cp_.saved_env_stack = env_stack;
+            cp_.saved_body_frames = body_frames;
+            choice_points.push_back(std::move(cp_));
+            pc = instr.target; return true;
+        }
+        case Instruction::Op::Retry: {
+            // Mutate the top CP's alt_pc to pc+1 (next chain instr).
+            // The CP itself stays on the stack -- C++'s backtrack
+            // restores from but never pops, so Try's CP survives
+            // each backtrack and we just update where to resume.
+            // (Symmetric to RetryMeElse's mutate-don't-push branch.)
+            // Defensive fallback: if no CP exists (shouldn't happen
+            // in well-formed chains), synthesize one so the chain
+            // stays consistent.
+            indexed_entry = false;
+            if (!choice_points.empty()) {
+                choice_points.back().alt_pc = pc + 1;
+            } else {
+                ChoicePoint cp_;
+                cp_.alt_pc = pc + 1;
+                cp_.saved_cp = cp;
+                cp_.trail_mark = trail.size();
+                cp_.cut_barrier = cut_barrier;
+                cp_.saved_regs = regs;
+                cp_.saved_mode_stack = mode_stack;
+                cp_.saved_env_stack = env_stack;
+                cp_.saved_body_frames = body_frames;
+                choice_points.push_back(std::move(cp_));
+            }
+            pc = instr.target; return true;
+        }
+        case Instruction::Op::Trust: {
+            // Last entry in the chain: pop the chain CP and jump to
+            // the body label.  Mirrors TrustMe but jumps rather
+            // than falling through.  Skipping the pop leaks the
+            // chain CP and causes an infinite retry loop when this
+            // clause body fails and backtrack restores from it.
+            indexed_entry = false;
+            if (!choice_points.empty()) {
+                choice_points.pop_back();
+            }
+            pc = instr.target; return true;
+        }
+        case Instruction::Op::CutIte: {
+            // Soft cut for inlined if-then-else. The topmost CP at this
+            // point is the matching try_me_else (Cond just succeeded;
+            // anything Cond pushed sits above it and also wants to die
+            // on cut). Its saved cut_barrier is the OUTER barrier from
+            // before try_me_else fired — restoring it means subsequent
+            // !/0 in the Then branch still respects the enclosing scope.
+            // Crucially, CPs BELOW the try_me_else (e.g. an aggregate
+            // body's generator CP) are preserved, so `findall(X, (gen,
+            // (cond -> then ; else)), L)` keeps iterating gen on
+            // backtrack — the previous behaviour of `resize(cut_barrier)`
+            // would have dropped gen's CP too.
+            if (!choice_points.empty()) {
+                std::size_t top_idx = choice_points.size() - 1;
+                std::size_t saved_barrier =
+                    choice_points[top_idx].cut_barrier;
+                choice_points.resize(top_idx);
+                cut_barrier = saved_barrier;
+            }
+            pc += 1; return true;
+        }
+        // M17 soft cut. get_level snapshots the choicepoint level into a
+        // Y register BEFORE the if-then-else / negation try_me_else; cut
+        // truncates choicepoints back to that level at the commit site,
+        // removing the ITE/negation CP AND every CP the condition (or a
+        // negated goals generator) pushed above it. This fixes the legacy
+        // cut_ite, which only dropped the single topmost CP and so could
+        // not cut a negation over a generator (e.g. the forall negative
+        // case left the generators CP alive).
+        case Instruction::Op::GetLevel: {
+            // Level snapshot lives on the ITE's own choice point, never in
+            // register instr.a — a Y write here would land in the CALLER's
+            // env frame for a frameless callee (WAM_FLEET_GAPS A2 hazard).
+            record_ite_level(instr.a);
+            pc += 1; return true;
+        }
+        case Instruction::Op::Cut: {
+            std::size_t target;
+            if (lookup_ite_level(instr.a, target)) {
+                if (choice_points.size() > target) {
+                    choice_points.resize(target);
+                }
+                if (cut_barrier > target) cut_barrier = target;
+            }
+            // No recorded level = the guard was already cut away; no-op.
+            pc += 1; return true;
+        }
+
+        // ---- Builtins ----------------------------------------------
+        case Instruction::Op::BuiltinCall: {
+            // If the op has a registered label (e.g. an auto-injected
+            // helper like member/2 or length/2), dispatch as a Call so
+            // backtracking through clauses works naturally.
+            auto it = labels.find(instr.a);
+            if (it != labels.end()) {
+                cp = pc + 1;
+                pc = it->second;
+                return true;
+            }
+            // Nondeterministic / CP-aware builtins need their own dispatch
+            // arms (mirroring the Call opcode) because builtin() only
+            // handles the deterministic ops. The shared WAM compiler emits
+            // these as builtin_call, so without these arms they fall
+            // through to builtin() and silently fail.
+            if (instr.a == "sub_atom/5" || instr.a == "sub_string/5")
+                return dispatch_sub_atom(pc + 1);
+            if (instr.a == "retract/1") return dispatch_retract(pc + 1);
+            if (instr.a == "clause/2") return dispatch_clause(pc + 1);
+            if (instr.a == "current_predicate/1")
+                return dispatch_current_predicate(pc + 1);
+            return builtin(instr.a, instr.n);
+        }
+        case Instruction::Op::CallForeign:
+            pc += 1; return true;
+
+        // ---- Aggregate / findall driver ----------------------------
+        case Instruction::Op::BeginAggregate: {
+            AggregateFrame frame;
+            frame.agg_kind          = instr.a;
+            frame.value_reg         = instr.b;
+            frame.result_reg        = instr.val.s; // stuffed into val.s by factory
+            frame.begin_pc          = pc;
+            frame.return_pc         = 0;
+            frame.return_pc_set     = false;
+            frame.base_cp_count     = choice_points.size();
+            frame.trail_mark        = trail.size();
+            frame.saved_cp          = cp;
+            frame.saved_cut_barrier = cut_barrier;
+            frame.saved_regs        = regs;
+            frame.saved_mode_stack  = mode_stack;
+            frame.saved_env_stack   = env_stack;
+            // For bagof/setof with witnesses: instr.c is a semicolon-
+            // delimited list of register names ("Y2" / "Y1;Y2"). Store
+            // the names here — actual cell resolution happens lazily at
+            // EndAggregate, since Y-regs for free witnesses get
+            // allocated by put_variable INSIDE the aggregate body.
+            if (!instr.c.empty()) {
+                std::string buf;
+                for (char ch : instr.c) {
+                    if (ch == ';') {
+                        if (!buf.empty()) frame.witness_regs.push_back(buf);
+                        buf.clear();
+                    } else {
+                        buf.push_back(ch);
+                    }
+                }
+                if (!buf.empty()) frame.witness_regs.push_back(buf);
+            }
+            aggregate_frames.push_back(std::move(frame));
+            pc += 1;
+            return true;
+        }
+        case Instruction::Op::EndAggregate: {
+            if (aggregate_frames.empty()) return false;
+            AggregateFrame& f = aggregate_frames.back();
+            // Snapshot the current value of value_reg (deep copy so later
+            // trail-driven mutations don't alter what we collected).
+            CellPtr v = get_cell(instr.a);
+            f.acc.push_back(deep_copy(*v));
+            // For bagof/setof on the inlined path: resolve witness regs
+            // lazily on the first iteration (they get allocated inside
+            // the aggregate body, after BeginAggregate fired). The env
+            // frame keeps the same Y-reg shared_ptrs across body retries,
+            // so a single resolution is reusable for all later snapshots.
+            if (f.witness_cells.empty() && !f.witness_regs.empty()) {
+                for (auto& rname : f.witness_regs) {
+                    CellPtr wc = get_cell(rname);
+                    if (wc) f.witness_cells.push_back(wc);
+                }
+            }
+            // Snapshot witness values parallel to acc so finalise can
+            // partition by witness equality. Mirrors the FindallCollect
+            // arm used by the meta-call path.
+            if (!f.witness_cells.empty()) {
+                std::vector<Value> witness_snap;
+                witness_snap.reserve(f.witness_cells.size());
+                for (auto& wc : f.witness_cells) {
+                    witness_snap.push_back(deep_copy(*wc));
+                }
+                f.acc_witnesses.push_back(std::move(witness_snap));
+            }
+            f.return_pc     = pc + 1;
+            f.return_pc_set = true;
+            // Force backtrack to find the next solution of the body.
+            return false;
+        }
+
+        // ---- Indexing ----------------------------------------------
+        case Instruction::Op::SwitchOnConstant: {
+            // Dispatch on A1's atom/integer value. When the table has
+            // multiple entries for the same key (e.g. several clauses
+            // sharing A1=grew), only the first is the jump target; the
+            // rest are reached via the RetryMeElse chain at that label.
+            // Setting indexed_entry tells the receiving RetryMeElse to
+            // synthesize a fresh CP at this predicate level (otherwise
+            // it would mutate an outer level's CP). Symmetric to
+            // SwitchOnTerm.
+            CellPtr ac = get_cell("A1");
+            const Value& a = *ac;
+            if (a.is_unbound()) { pc += 1; return true; }
+            if (a.tag != Value::Tag::Atom && a.tag != Value::Tag::Integer
+                && a.tag != Value::Tag::Float) {
+                pc += 1; return true; // not a constant we index on
+            }
+            auto it = instr.const_map.find(a);
+            if (it != instr.const_map.end()) {
+                if (it->second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                if (it->second == Instruction::SWITCH_NONE)    return false;
+                indexed_entry = switch_target_consumes_indexed(instrs, it->second);
+                pc = it->second; return true;
+            }
+            // Bound constant with no matching indexed clause. If the
+            // predicate has variable-headed clauses (mixed-mode
+            // indexing), fall through to the try_me_else chain so
+            // those clauses still get a chance. Otherwise fail fast.
+            if (instr.no_match_fallthrough) { pc += 1; return true; }
+            return false;
+        }
+        case Instruction::Op::SwitchOnConstantA2: {
+            // Dispatch on A2's atom/integer value. Emitted when A1 is
+            // too variable to index on but A2 has all constants (e.g.
+            // a tag-style second argument). Identical shape to
+            // SwitchOnConstant — see comments there.
+            CellPtr ac = get_cell("A2");
+            const Value& a = *ac;
+            if (a.is_unbound()) { pc += 1; return true; }
+            if (a.tag != Value::Tag::Atom && a.tag != Value::Tag::Integer
+                && a.tag != Value::Tag::Float) {
+                pc += 1; return true;
+            }
+            auto it = instr.const_map.find(a);
+            if (it != instr.const_map.end()) {
+                if (it->second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                if (it->second == Instruction::SWITCH_NONE)    return false;
+                indexed_entry = switch_target_consumes_indexed(instrs, it->second);
+                pc = it->second; return true;
+            }
+            // See SwitchOnConstant: bound A2 with no entry in the
+            // table falls through to the try_me_else chain when the
+            // predicate has variable-A2 clauses (mixed-mode A2).
+            if (instr.no_match_fallthrough) { pc += 1; return true; }
+            return false;
+        }
+        case Instruction::Op::SwitchOnStructure: {
+            CellPtr ac = get_cell("A1");
+            const Value& a = *ac;
+            if (a.is_unbound()) { pc += 1; return true; }
+            if (a.tag != Value::Tag::Compound) { pc += 1; return true; }
+            for (auto& kv : instr.struct_table) {
+                if (kv.first == a.s) {
+                    if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                    if (kv.second == Instruction::SWITCH_NONE)    return false;
+                    indexed_entry = switch_target_consumes_indexed(instrs, kv.second);
+                    pc = kv.second; return true;
+                }
+            }
+            return false;
+        }
+        case Instruction::Op::SwitchOnStructureA2: {
+            // A2 mirror of SwitchOnStructure.
+            CellPtr ac = get_cell("A2");
+            const Value& a = *ac;
+            if (a.is_unbound()) { pc += 1; return true; }
+            if (a.tag != Value::Tag::Compound) { pc += 1; return true; }
+            for (auto& kv : instr.struct_table) {
+                if (kv.first == a.s) {
+                    if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                    if (kv.second == Instruction::SWITCH_NONE)    return false;
+                    indexed_entry = switch_target_consumes_indexed(instrs, kv.second);
+                    pc = kv.second; return true;
+                }
+            }
+            return false;
+        }
+        case Instruction::Op::SwitchOnTerm: {
+            // Direct-jump branches (pc = target) bypass the entry
+            // TryMeElse of the clause chain, so we flag them via
+            // indexed_entry. The receiving RetryMeElse/TrustMe sees
+            // the flag and synthesizes a CP (or skips a pop) so the
+            // current predicate level gets its own backtrack handle
+            // even when an outer level's CP is on the stack.
+            CellPtr ac = get_cell("A1");
+            const Value& a = *ac;
+            if (a.is_unbound()) { pc += 1; return true; }
+            if (a.tag == Value::Tag::Atom || a.tag == Value::Tag::Integer
+                || a.tag == Value::Tag::Float) {
+                for (auto& kv : instr.const_table) {
+                    if (kv.first == a) {
+                        if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                        if (kv.second == Instruction::SWITCH_NONE)    return false;
+                        indexed_entry = switch_target_consumes_indexed(instrs, kv.second);
+                        pc = kv.second; return true;
+                    }
+                }
+                return false;
+            }
+            if (a.tag == Value::Tag::Compound) {
+                if (a.s == "[|]/2") {
+                    if (instr.target == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                    if (instr.target == Instruction::SWITCH_NONE)    return false;
+                    indexed_entry = switch_target_consumes_indexed(instrs, instr.target);
+                    pc = instr.target; return true;
+                }
+                for (auto& kv : instr.struct_table) {
+                    if (kv.first == a.s) {
+                        if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                        if (kv.second == Instruction::SWITCH_NONE)    return false;
+                        indexed_entry = switch_target_consumes_indexed(instrs, kv.second);
+                        pc = kv.second; return true;
+                    }
+                }
+                return false;
+            }
+            pc += 1; return true;
+        }
+        case Instruction::Op::SwitchOnTermA2: {
+            // A2 mirror of SwitchOnTerm.
+            CellPtr ac = get_cell("A2");
+            const Value& a = *ac;
+            if (a.is_unbound()) { pc += 1; return true; }
+            if (a.tag == Value::Tag::Atom || a.tag == Value::Tag::Integer
+                || a.tag == Value::Tag::Float) {
+                for (auto& kv : instr.const_table) {
+                    if (kv.first == a) {
+                        if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                        if (kv.second == Instruction::SWITCH_NONE)    return false;
+                        indexed_entry = switch_target_consumes_indexed(instrs, kv.second);
+                        pc = kv.second; return true;
+                    }
+                }
+                return false;
+            }
+            if (a.tag == Value::Tag::Compound) {
+                if (a.s == "[|]/2") {
+                    if (instr.target == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                    if (instr.target == Instruction::SWITCH_NONE)    return false;
+                    indexed_entry = switch_target_consumes_indexed(instrs, instr.target);
+                    pc = instr.target; return true;
+                }
+                for (auto& kv : instr.struct_table) {
+                    if (kv.first == a.s) {
+                        if (kv.second == Instruction::SWITCH_DEFAULT) { pc += 1; return true; }
+                        if (kv.second == Instruction::SWITCH_NONE)    return false;
+                        indexed_entry = switch_target_consumes_indexed(instrs, kv.second);
+                        pc = kv.second; return true;
+                    }
+                }
+                return false;
+            }
+            pc += 1; return true;
+        }
+    }
+    return false;
+}
+
+// (deep_copy is defined above, before step().)
+
+// Build the finalisation result for an aggregate based on its kind.
+// Falls back to the raw list when the kind isn't recognised.
+// Standard-order-of-terms comparison for setof's sort + dedup.
+// Sorts: Var < Number < Atom < Compound, with compounds compared by
+// (functor-string, arity, args lexicographically). The functor
+// string already encodes "Name/Arity" so comparing it covers both
+// name and arity at once when they differ. Args are deref'd so
+// indirect bindings come through correctly.
+// ISO §7.2 standard order of terms — returns -1 / 0 / +1.
+//   Variable @< Number @< Atom @< Compound
+//   Variables: by internal cell-name lex order (stable but
+//              implementation-defined per ISO).
+//   Numbers: by value. Equal-value integer @< float (ISO tie-break).
+//   Atoms: lex (codepoint).
+//   Compounds: arity first, then functor name lex, then args lex.
+//
+// Used by @</2, @=</2, @>/2, @>=/2, compare/3. Distinct from
+// term_less below, which compares the "Name/Arity" string as a
+// whole (good enough for setof's internal sort, but not strictly
+// ISO since "foo/10" comes BEFORE "foo/2" lexicographically).
+static int standard_order_cmp(const Value& a, const Value& b) {
+    auto category = [](const Value& v) -> int {
+        if (v.is_unbound()) return 0;       // variable
+        switch (v.tag) {
+            case Value::Tag::Integer:
+            case Value::Tag::Float:    return 1; // number
+            case Value::Tag::Atom:     return 2; // atom
+            case Value::Tag::Compound: return 3; // compound
+            default:                   return 4;
+        }
+    };
+    int ca = category(a), cb = category(b);
+    if (ca != cb) return ca < cb ? -1 : 1;
+    if (ca == 0) {
+        // Both variables.
+        if (a.s < b.s) return -1;
+        if (a.s > b.s) return 1;
+        return 0;
+    }
+    if (ca == 1) {
+        double av = (a.tag == Value::Tag::Integer)
+                    ? static_cast<double>(a.i) : a.f;
+        double bv = (b.tag == Value::Tag::Integer)
+                    ? static_cast<double>(b.i) : b.f;
+        if (av < bv) return -1;
+        if (av > bv) return 1;
+        // Equal value — int @< float per ISO tie-break.
+        if (a.tag == Value::Tag::Integer && b.tag == Value::Tag::Float)
+            return -1;
+        if (a.tag == Value::Tag::Float && b.tag == Value::Tag::Integer)
+            return 1;
+        return 0;
+    }
+    if (ca == 2) {
+        if (a.s < b.s) return -1;
+        if (a.s > b.s) return 1;
+        return 0;
+    }
+    // Compound: arity, then name, then args.
+    if (a.args.size() != b.args.size())
+        return a.args.size() < b.args.size() ? -1 : 1;
+    auto name_of = [](const std::string& s) -> std::string {
+        auto slash = s.rfind('/');
+        return slash == std::string::npos ? s : s.substr(0, slash);
+    };
+    std::string an = name_of(a.s);
+    std::string bn = name_of(b.s);
+    if (an < bn) return -1;
+    if (an > bn) return 1;
+    for (std::size_t i = 0; i < a.args.size(); ++i) {
+        if (!a.args[i] || !b.args[i]) continue;
+        int c = standard_order_cmp(*a.args[i], *b.args[i]);
+        if (c != 0) return c;
+    }
+    return 0;
+}
+
+static bool term_less(const Value& a, const Value& b) {
+    if (a.tag != b.tag)
+        return static_cast<int>(a.tag) < static_cast<int>(b.tag);
+    switch (a.tag) {
+        case Value::Tag::Atom:
+        case Value::Tag::Unbound:
+            return a.s < b.s;
+        case Value::Tag::Integer:
+            return a.i < b.i;
+        case Value::Tag::Float:
+            return a.f < b.f;
+        case Value::Tag::Compound: {
+            if (a.s != b.s) return a.s < b.s;
+            // Same functor/arity — compare args lexicographically.
+            for (std::size_t i = 0;
+                 i < a.args.size() && i < b.args.size(); ++i) {
+                if (!a.args[i] || !b.args[i]) continue;
+                if (term_less(*a.args[i], *b.args[i])) return true;
+                if (term_less(*b.args[i], *a.args[i])) return false;
+            }
+            return a.args.size() < b.args.size();
+        }
+        default:
+            return false;
+    }
+}
+
+static Value finalize_aggregate(const std::string& kind, const std::vector<Value>& acc) {
+    auto as_d = [](const Value& v) { return v.tag == Value::Tag::Float ? v.f : (double)v.i; };
+    auto is_num = [](const Value& v) {
+        return v.tag == Value::Tag::Integer || v.tag == Value::Tag::Float;
+    };
+    if (kind == "count") {
+        return Value::Integer((std::int64_t)acc.size());
+    }
+    if (kind == "sum") {
+        bool has_float = false;
+        double sum_d = 0.0; std::int64_t sum_i = 0;
+        for (auto& v : acc) {
+            if (!is_num(v)) return Value{};
+            if (v.tag == Value::Tag::Float) { has_float = true; sum_d += v.f; }
+            else                            { sum_i += v.i; sum_d += (double)v.i; }
+        }
+        if (has_float) return Value::Float(sum_d);
+        return Value::Integer(sum_i);
+    }
+    if (kind == "min" || kind == "max") {
+        if (acc.empty()) return Value::Atom("[]");
+        const Value* best = &acc[0];
+        for (std::size_t k = 1; k < acc.size(); ++k) {
+            if (!is_num(acc[k])) return Value{};
+            if (kind == "min" ? (as_d(acc[k]) < as_d(*best))
+                              : (as_d(acc[k]) > as_d(*best))) {
+                best = &acc[k];
+            }
+        }
+        return *best;
+    }
+    // "collect" (findall), bagof/setof, and aggregate_all bag/set all
+    // build a list. bagof/setof fail on empty; findall and
+    // aggregate_all(bag/set) keep the historical empty-list behaviour.
+    if ((kind == "bagof" || kind == "setof") && acc.empty()) {
+        return Value{};
+    }
+    std::vector<Value> items = acc;
+    if (kind == "set" || kind == "setof") {
+        std::vector<Value> uniq;
+        for (auto& v : items) {
+            bool dup = false;
+            for (auto& w : uniq) { if (v == w) { dup = true; break; } }
+            if (!dup) uniq.push_back(v);
+        }
+        items = std::move(uniq);
+        std::sort(items.begin(), items.end(), term_less);
+    }
+    Value tail = Value::Atom("[]");
+    for (auto it = items.rbegin(); it != items.rend(); ++it) {
+        std::vector<CellPtr> args;
+        args.push_back(std::make_shared<Cell>(*it));
+        args.push_back(std::make_shared<Cell>(std::move(tail)));
+        tail = Value::Compound("[|]/2", std::move(args));
+    }
+    return tail;
+}
+
+// Walk forward from begin_pc to find the matching EndAggregate, counting
+// nested Begin/End pairs. Used to compute pc continuation when the body
+// of an aggregate fails before any EndAggregate fires.
+static std::size_t find_matching_end_aggregate(
+        const std::vector<Instruction>& instrs, std::size_t begin_pc) {
+    int depth = 1;
+    for (std::size_t k = begin_pc + 1; k < instrs.size(); ++k) {
+        if (instrs[k].op == Instruction::Op::BeginAggregate) ++depth;
+        else if (instrs[k].op == Instruction::Op::EndAggregate) {
+            if (--depth == 0) return k;
+        }
+    }
+    return instrs.size();
+}
+
+// Dispatch a Call/Execute to a dynamic predicate (one populated by
+// assertz/asserta and not present in labels). Snapshots the A-args
+// from regs, pushes a DynamicIterator, then delegates to
+// dynamic_try_next which unifies the first clause and pushes a CP
+// for the rest when more than one exists.
+bool WamState::dispatch_dynamic_call(const std::string& key,
+                                     std::size_t after_pc) {
+    auto db_it = dynamic_db.find(key);
+    if (db_it == dynamic_db.end() || db_it->second.empty()) return false;
+    auto sl = key.rfind('/');
+    if (sl == std::string::npos) return false;
+    std::size_t arity = 0;
+    try { arity = std::stoul(key.substr(sl + 1)); }
+    catch (...) { return false; }
+    // Snapshot A-registers BEFORE pushing the iterator so backtrack
+    // (which restores regs from the CP) gets the same call_args.
+    DynamicIterator dit;
+    dit.key = key;
+    dit.next_idx = 0;
+    dit.after_pc = after_pc;
+    dit.call_args.reserve(arity);
+    for (std::size_t i = 1; i <= arity; ++i) {
+        dit.call_args.push_back(get_cell("A" + std::to_string(i)));
+    }
+    dynamic_iters.push_back(std::move(dit));
+    return dynamic_try_next();
+}
+
+// Try the next clause in the top DynamicIterator. Unify the call
+// args with a fresh-renamed copy of the clause; if more clauses
+// remain, push a CP whose alt_pc = dynamic_next_clause_pc. Pop the
+// iterator and fail if exhausted.
+bool WamState::dynamic_try_next() {
+    if (dynamic_iters.empty()) return false;
+    DynamicIterator& it = dynamic_iters.back();
+    auto db_it = dynamic_db.find(it.key);
+    // The predicate may have been retract-all'd mid-iteration. Treat
+    // a missing or empty clause list as exhaustion.
+    if (db_it == dynamic_db.end() || it.next_idx >= db_it->second.size()) {
+        dynamic_iters.pop_back();
+        return false;
+    }
+    std::size_t idx = it.next_idx;
+    bool has_more = (idx + 1 < db_it->second.size());
+    std::string saved_key = it.key;
+    std::vector<CellPtr> call_args = it.call_args;
+    std::size_t saved_after_pc = it.after_pc;
+    // Advance the index BEFORE we push the CP — the CP snapshots
+    // dynamic_iters state, so the captured `next_idx` should already
+    // point at the SUBSEQUENT clause to try on backtrack.
+    it.next_idx = idx + 1;
+    // Push the CP (only if more clauses remain after this one).
+    if (has_more) {
+        ChoicePoint cp_;
+        cp_.alt_pc            = dynamic_next_clause_pc;
+        cp_.saved_cp          = cp;
+        cp_.trail_mark        = trail.size();
+        cp_.cut_barrier       = cut_barrier;
+        cp_.saved_regs        = regs;
+        cp_.saved_mode_stack  = mode_stack;
+        cp_.saved_env_stack   = env_stack;
+        cp_.saved_body_frames = body_frames;
+        choice_points.push_back(std::move(cp_));
+    } else {
+        // Last clause for this call — drop the iterator. It's no
+        // longer needed; clause exhaustion will fall through to
+        // ordinary backtrack at the OUTER scope.
+        dynamic_iters.pop_back();
+    }
+    // Build a rename seed for fresh-copy: when a top-level head var is
+    // unbound AND the matching call arg is also unbound, map the
+    // stored var's name to the caller's cell. This makes the head
+    // arg (and any body occurrences of the same var) SHARE the
+    // caller's cell — essential because our cell model lacks a ref-
+    // chain for unbound-unbound unification, so a plain unify_cells
+    // would leave the two unbound cells unaliased.
+    CellPtr stored = db_it->second[idx];
+    Value stored_v = deref(*stored);
+    CellPtr stored_head = stored;
+    if (stored_v.tag == Value::Tag::Compound && stored_v.s == ":-/2"
+        && stored_v.args.size() == 2) {
+        stored_head = stored_v.args[0];
+    }
+    std::unordered_map<std::string, CellPtr> seed;
+    Value sh = deref(*stored_head);
+    if (sh.tag == Value::Tag::Compound
+        && sh.args.size() == call_args.size())
+    {
+        for (std::size_t i = 0; i < call_args.size(); ++i) {
+            Value harg = deref(*sh.args[i]);
+            Value carg = deref(*call_args[i]);
+            if (harg.is_unbound() && carg.is_unbound()) {
+                seed.emplace(harg.s, call_args[i]);
+            }
+        }
+    }
+    CellPtr fresh = deep_copy_term_seeded(stored, std::move(seed));
+    Value fv = deref(*fresh);
+    // Decompose: clauses are either bare heads (facts) or
+    // ":-/2"(Head, Body) compounds (rules). Body defaults to a "true"
+    // atom for facts so the common dispatch path is the same.
+    CellPtr head_cell;
+    CellPtr body_cell;
+    if (fv.tag == Value::Tag::Compound && fv.s == ":-/2"
+        && fv.args.size() == 2) {
+        head_cell = fv.args[0];
+        body_cell = fv.args[1];
+    } else {
+        head_cell = fresh;
+        body_cell = std::make_shared<Cell>(Value::Atom("true"));
+    }
+    Value hv = deref(*head_cell);
+    // Unify the call args with the head's args.
+    if (hv.tag == Value::Tag::Atom) {
+        // 0-arity head — no args to bind. call_args must be empty;
+        // the key-match already covered name + arity.
+        if (!call_args.empty()) return false;
+    } else if (hv.tag == Value::Tag::Compound) {
+        if (hv.args.size() != call_args.size()) return false;
+        for (std::size_t i = 0; i < call_args.size(); ++i) {
+            if (!unify_cells(call_args[i], hv.args[i])) return false;
+        }
+    } else {
+        return false;
+    }
+    // Body == "true" → fact match completes; jump to continuation.
+    Value bv = deref(*body_cell);
+    if (bv.tag == Value::Tag::Atom && bv.s == "true") {
+        if (saved_after_pc == 0) { halt = true; return true; }
+        pc = saved_after_pc;
+        cp = 0;
+        return true;
+    }
+    // Otherwise build a BodyFrame from the flattened conjunction body
+    // and dispatch sequentially. The flattening avoids ConjFrame
+    // nesting on the shared conj_return_pc — see BodyFrame doc.
+    std::vector<CellPtr> goals;
+    std::function<void(CellPtr)> flatten = [&](CellPtr g) {
+        Value gv = deref(*g);
+        if (gv.tag == Value::Tag::Compound && gv.s == ",/2"
+            && gv.args.size() == 2)
+        {
+            flatten(gv.args[0]);
+            flatten(gv.args[1]);
+        } else {
+            goals.push_back(g);
+        }
+    };
+    flatten(body_cell);
+    BodyFrame bf;
+    bf.goals = std::move(goals);
+    bf.next_idx = 0;
+    bf.after_pc = saved_after_pc;
+    bf.base_cp_count = choice_points.size();
+    body_frames.push_back(std::move(bf));
+    return body_next();
+}
+
+// retract/1 dispatcher. Reads A1 (the pattern), derives the
+// predicate's "name/arity" key, pushes a RetractIterator, and
+// delegates to retract_try_next to find the first matching clause.
+bool WamState::dispatch_retract(std::size_t after_pc) {
+    CellPtr pat = get_cell("A1");
+    Value pv = deref(*pat);
+    if (pv.is_unbound()) return false;
+    std::string key;
+    if (pv.tag == Value::Tag::Compound && pv.s == ":-/2"
+        && pv.args.size() == 2)
+    {
+        Value head = deref(*pv.args[0]);
+        if (head.tag == Value::Tag::Atom) key = head.s + "/0";
+        else if (head.tag == Value::Tag::Compound) key = head.s;
+        else return false;
+    } else if (pv.tag == Value::Tag::Atom) {
+        key = pv.s + "/0";
+    } else if (pv.tag == Value::Tag::Compound) {
+        key = pv.s;
+    } else {
+        return false;
+    }
+    RetractIterator it;
+    it.key = std::move(key);
+    it.pattern = pat;
+    it.next_idx = 0;
+    it.after_pc = after_pc;
+    retract_iters.push_back(std::move(it));
+    return retract_try_next();
+}
+
+// clause/2 dispatch. Reuses the RetractIterator infrastructure but
+// with is_clause_only=true so retract_try_next unifies both head
+// and body and DOESN'T remove the matched clause.
+bool WamState::dispatch_clause(std::size_t after_pc) {
+    CellPtr head_pat = get_cell("A1");
+    CellPtr body_pat = get_cell("A2");
+    Value hv = deref(*head_pat);
+    if (hv.is_unbound())
+        return throw_iso_error(make_instantiation_error());
+    std::string key;
+    if (hv.tag == Value::Tag::Atom) key = hv.s + "/0";
+    else if (hv.tag == Value::Tag::Compound) key = hv.s;
+    else return throw_iso_error(make_type_error("callable", hv));
+    // clause/2 in our runtime only sees dynamic-db clauses; static
+    // predicates compiled to bytecode aren't introspectable here.
+    if (dynamic_db.find(key) == dynamic_db.end()) return false;
+    RetractIterator it;
+    it.key = std::move(key);
+    it.pattern = head_pat;
+    it.body_pattern = body_pat;
+    it.is_clause_only = true;
+    it.next_idx = 0;
+    it.after_pc = after_pc;
+    retract_iters.push_back(std::move(it));
+    return retract_try_next();
+}
+
+// dispatch_current_predicate: prebuild the candidate-key list at
+// entry (drawing from labels + dynamic_db, deduped + sorted for
+// deterministic enumeration), filter by any ground portion of the
+// Name/Arity spec, and delegate the per-match unification +
+// CP-push to current_pred_try_next.
+bool WamState::dispatch_current_predicate(std::size_t after_pc) {
+    Value spec = *get_cell("A1");
+    if (spec.is_unbound())
+        return throw_iso_error(make_instantiation_error());
+    if (spec.tag != Value::Tag::Compound || spec.s != "//2"
+        || spec.args.size() != 2)
+        return throw_iso_error(make_type_error("predicate_indicator", spec));
+    CellPtr name_cell = spec.args[0];
+    CellPtr arity_cell = spec.args[1];
+    Value name_v = *name_cell;
+    Value arity_v = *arity_cell;
+    if (!name_v.is_unbound() && name_v.tag != Value::Tag::Atom)
+        return throw_iso_error(make_type_error("atom", name_v));
+    if (!arity_v.is_unbound() && arity_v.tag != Value::Tag::Integer)
+        return throw_iso_error(make_type_error("integer", arity_v));
+    std::set<std::string> all_keys;
+    for (auto& p : labels) all_keys.insert(p.first);
+    for (auto& p : dynamic_db) all_keys.insert(p.first);
+    std::vector<std::string> matched;
+    matched.reserve(all_keys.size());
+    for (auto& k : all_keys) {
+        auto slash = k.rfind('/');
+        if (slash == std::string::npos) continue;
+        std::string n = k.substr(0, slash);
+        std::int64_t a;
+        try { a = std::stoll(k.substr(slash + 1)); }
+        catch (...) { continue; }
+        if (!name_v.is_unbound() && name_v.s != n) continue;
+        if (!arity_v.is_unbound() && arity_v.i != a) continue;
+        matched.push_back(k);
+    }
+    if (matched.empty()) return false;
+    CurrentPredIterator it;
+    it.keys = std::move(matched);
+    it.next_idx = 0;
+    it.name_cell = name_cell;
+    it.arity_cell = arity_cell;
+    it.after_pc = after_pc;
+    current_pred_iters.push_back(std::move(it));
+    return current_pred_try_next();
+}
+
+bool WamState::current_pred_try_next() {
+    if (current_pred_iters.empty()) return false;
+    CurrentPredIterator& it = current_pred_iters.back();
+    while (it.next_idx < it.keys.size()) {
+        std::size_t i = it.next_idx;
+        std::size_t mark = trail.size();
+        const std::string& key = it.keys[i];
+        auto slash = key.rfind('/');
+        std::string n = key.substr(0, slash);
+        std::int64_t a;
+        try { a = std::stoll(key.substr(slash + 1)); }
+        catch (...) { ++it.next_idx; continue; }
+        Value n_v = Value::Atom(n);
+        Value a_v = Value::Integer(a);
+        bool ok = true;
+        if (it.name_cell->is_unbound()) bind_cell(it.name_cell, n_v);
+        else if (!(*it.name_cell == n_v)) ok = false;
+        if (ok) {
+            if (it.arity_cell->is_unbound()) bind_cell(it.arity_cell, a_v);
+            else if (!(*it.arity_cell == a_v)) ok = false;
+        }
+        if (ok) {
+            it.next_idx = i + 1;
+            bool has_more = (it.next_idx < it.keys.size());
+            std::size_t saved_after_pc = it.after_pc;
+            if (has_more) {
+                ChoicePoint cp_;
+                cp_.alt_pc            = current_pred_next_pc;
+                cp_.saved_cp          = cp;
+                cp_.trail_mark        = mark;
+                cp_.cut_barrier       = cut_barrier;
+                cp_.saved_regs        = regs;
+                cp_.saved_mode_stack  = mode_stack;
+                cp_.saved_env_stack   = env_stack;
+                cp_.saved_body_frames = body_frames;
+                choice_points.push_back(std::move(cp_));
+            } else {
+                current_pred_iters.pop_back();
+            }
+            if (saved_after_pc == 0) { halt = true; return true; }
+            pc = saved_after_pc;
+            cp = 0;
+            return true;
+        }
+        unwind_trail_to(mark);
+        ++it.next_idx;
+    }
+    current_pred_iters.pop_back();
+    return false;
+}
+
+// Scan dynamic_db[key] from iter.next_idx onward for a clause that
+// unifies with iter.pattern. On match: remove that clause, leave
+// bindings in place (per ISO), push a CP if any clauses remain
+// after the removal, and proceed to after_pc. On exhaustion: pop
+// the iterator and fail.
+bool WamState::retract_try_next() {
+    if (retract_iters.empty()) return false;
+    RetractIterator& it = retract_iters.back();
+    auto db_it = dynamic_db.find(it.key);
+    if (db_it == dynamic_db.end()) {
+        retract_iters.pop_back();
+        return false;
+    }
+    auto& vec = db_it->second;
+    std::size_t i = it.next_idx;
+    while (i < vec.size()) {
+        std::size_t mark = trail.size();
+        CellPtr fresh = deep_copy_term(vec[i]);
+        // For clause/2: split the stored term into Head / Body. A
+        // bare-fact entry has Body = true; a :-/2 entry uses its
+        // args. We then unify pattern with Head and body_pattern
+        // with Body. retract/1 just unifies the full term with
+        // pattern (no body slot).
+        bool matched = false;
+        if (it.is_clause_only) {
+            CellPtr head_part, body_part;
+            if (fresh->tag == Value::Tag::Compound
+                && fresh->s == ":-/2" && fresh->args.size() == 2) {
+                head_part = fresh->args[0];
+                body_part = fresh->args[1];
+            } else {
+                head_part = fresh;
+                body_part = std::make_shared<Cell>(Value::Atom("true"));
+            }
+            matched = unify_cells(it.pattern, head_part)
+                   && unify_cells(it.body_pattern, body_part);
+        } else {
+            matched = unify_cells(it.pattern, fresh);
+        }
+        if (matched) {
+            // Match. We need to:
+            // 1) push a CP (if more candidates exist) whose trail
+            //    mark is BEFORE the unification, so backtrack undoes
+            //    the pattern's bindings and the pattern is reusable;
+            // 2) for retract: remove the matched clause from vec.
+            //    for clause/2: leave it in place.
+            // 3) leave the unification bindings in place (per ISO
+            //    retract / clause-success semantics) and proceed.
+            // The CP's saved regs/etc are the current values — at
+            // entry to retract_try_next, before any binding — which
+            // match what the caller of dispatch_retract set up.
+            if (it.is_clause_only) {
+                // Don't remove; advance past this index for the
+                // next backtrack iteration.
+                it.next_idx = i + 1;
+            } else {
+                vec.erase(vec.begin() + i);
+                it.next_idx = i;
+            }
+            bool has_more = (it.next_idx < vec.size());
+            std::size_t saved_after_pc = it.after_pc;
+            if (has_more) {
+                ChoicePoint cp_;
+                cp_.alt_pc            = retract_next_pc;
+                cp_.saved_cp          = cp;
+                cp_.trail_mark        = mark; // PRE-unify trail mark
+                cp_.cut_barrier       = cut_barrier;
+                cp_.saved_regs        = regs;
+                cp_.saved_mode_stack  = mode_stack;
+                cp_.saved_env_stack   = env_stack;
+                cp_.saved_body_frames = body_frames;
+                choice_points.push_back(std::move(cp_));
+            } else {
+                retract_iters.pop_back();
+            }
+            if (saved_after_pc == 0) { halt = true; return true; }
+            pc = saved_after_pc;
+            cp = 0;
+            return true;
+        }
+        // No match at i — undo any partial bindings and try i+1.
+        unwind_trail_to(mark);
+        ++i;
+    }
+    // Exhausted — drop the iterator and fail.
+    retract_iters.pop_back();
+    return false;
+}
+
+// Dispatch the top BodyFrame's next goal (with cp=body_next_pc so
+// subsequent BodyNext fires advance through the sequence), or pop
+// the frame and proceed to outer after_pc when exhausted. Forward
+// pop is safe because ChoicePoints snapshot body_frames at push
+// time; if a CP from inside this body fires later, it restores
+// body_frames including this frame, and dispatch resumes correctly.
+bool WamState::body_next() {
+    if (body_frames.empty()) return false;
+    BodyFrame& f = body_frames.back();
+    if (f.next_idx >= f.goals.size()) {
+        std::size_t after = f.after_pc;
+        body_frames.pop_back();
+        if (after == 0) { halt = true; return true; }
+        pc = after;
+        cp = 0;
+        return true;
+    }
+    CellPtr g = f.goals[f.next_idx++];
+    return invoke_goal_as_call(g, body_next_pc);
+}
