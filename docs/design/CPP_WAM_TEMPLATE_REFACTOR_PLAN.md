@@ -2,8 +2,9 @@
 
 Status: in progress. Phase 1 (runtime header) and Phase 2 (lowered
 `get_constant`) landed in #4252 and #4253. The first Phase 3 slice, including
-project preflight and `main.cpp`, landed in #4255. The next slice starts from
-`cb714e9` and extracts `generated_program.cpp` and `runtime.cpp`.
+project preflight and `main.cpp`, landed in #4255. The program and runtime
+extraction landed in #4256, and the first three runtime sections in #4257.
+The current bounded continuation starts from `23268f0`.
 The Pattern Stache literal-substitution fix landed in #4254.
 The original planning baseline was `55796489a9750388f4fcf3cac602e4d525b14c28`
 (2026-09-11).
@@ -79,6 +80,34 @@ after the split over separate isolated 20-generation runs on the local host.
 The extra file reads, marker validation, and assembly add measurable generation
 time; later splits should weigh that cost against concrete reuse or maintenance
 benefit. The C++ executable source and behavior remain unchanged.
+
+### Builtin and Step runtime split (2026-09-12)
+
+The next two contiguous sections follow existing headings:
+`runtime/builtin_dispatch.cpp.mustache` contains the complete 2,894-line
+`WamState::builtin` dispatch, and `runtime/step_execution.cpp.mustache` contains
+1,664 lines of Step/execution code up to the term parser heading. The shell is
+now 1,529 lines. No definitions moved across their original order or into a
+different translation unit. The adapter uses five explicit ordered slots,
+requires each marker exactly once, validates static shell spans and child
+files, then joins them without rescanning inserted text. It remains a bounded
+C++-specific assembler rather than a general template engine.
+
+The frozen runtime SHA-256 above still matches under plain and LMDB options.
+Missing and malformed fixtures and duplicate markers for both new sections,
+plus an out-of-order shell, all fail before any project directory is created.
+The 38 template checks, six focused generator checks, three lowered
+T6 checks, and two native LMDB checks pass.
+
+This is still **relocation and single-artifact composition, not reuse**:
+Builtin dispatch and Step each appear once in `wam_runtime.cpp`, and no shared
+code was deduplicated. A 10-fact `bench_pair/2` functions-mode project averaged
+41.3 ms before this split and 34.0 ms after it over separate isolated
+20-generation runs on the local host; a further 50-generation post-split run
+averaged 34.2 ms. Shrinking the validated shell appears to offset the added
+section reads on this fixture, but that timing is not C++ compiler time.
+Each additional explicit slot grows the adapter contract, so further splits
+should have a concrete maintenance or reuse payoff.
 
 ## Outcome and scope
 
