@@ -16,8 +16,9 @@ so we can compute the real `[min, max]` compatible release range for a binary.
   plus any unversioned references.
 - **Compatible(bin, release)** ⟺ every NEEDED soname is offered under its exact
   name AND every required `sym@node` is exported by that soname at that
-  release (unversioned references: exported under any node by any NEEDED
-  object).
+  release (unversioned references: exported as `Base` or as the **default**
+  version — `@@`, or the oldest version node — by some NEEDED object; a
+  hidden `@` export does not count, exactly as in the loader).
 
 Two axes, never mixed:
 
@@ -52,11 +53,21 @@ Two axes, never mixed:
    The minimum version is a **lower bound** a dependent must declare, *not* a
    ground-truth introduction date: Debian policy lets a maintainer raise it
    after a compatible behaviour change. The lane therefore stores it as
-   `since(Min)` and reports a release below it as `below_floor` (the same
+   `since(Min, ..., R0, Bind)` tied to the evidence release `R0` the file was
+   taken at, and reports a release below it as `below_floor` (the same
    conservative floor `dpkg-shlibdeps` emits), never as proof the symbol was
-   absent.
+   absent — and never when another evidence row (e.g. readelf at that
+   release) shows the symbol present. A `.symbols` file says nothing about
+   `@` vs `@@`, so its rows are `unproven` for unversioned references unless
+   the file is cross-checked against the library with `--elf lib.so`
+   (`run_abi_verify.sh` does this for libc6: 3006 rows, 0 disagreements).
+   Source-template tags are whitelisted (`(arch…)` with `--arch`,
+   `(ignore-blacklist)`, `(optional)` only with `--elf`); anything else, or a
+   block whose evidence release is unknown, rejects the whole file (exit 3),
+   also in `symbols-dir` batch mode.
 3. **`readelf`** on the ELF itself — exact for that file's release
-   (`at(R0)`), unknown for older releases, extrapolated for newer ones.
+   (`at(R0, Bind)`, with the default-version binding from `.gnu.version`),
+   unknown for older releases, extrapolated for newer ones.
 
 ## Worked examples (real output, Ubuntu 22.04.5, after `./run_abi_verify.sh`)
 
@@ -92,8 +103,8 @@ $ ... axis libc.so.6
 axis libc.so.6: [2.35-0ubuntu3,2.35-0ubuntu3.15]          # apt-cache madison + dpkg
 $ ... range /bin/ls libc.so.6
 range /bin/ls libc.so.6: [2.35-0ubuntu3, 2.35-0ubuntu3.15]
-  2.35-0ubuntu3: compatible(exact)
-  2.35-0ubuntu3.15: compatible(exact)
+  2.35-0ubuntu3: compatible(curated)
+  2.35-0ubuntu3.15: compatible(curated)
 $ ... verdict /bin/ls libc.so.6 2.31-0ubuntu9.9
 verdict /bin/ls libc.so.6 2.31-0ubuntu9.9: incompatible([below_floor('__libc_start_main'@'GLIBC_2.34','2.34'),below_floor(lstat@'GLIBC_2.33','2.33')])
 ```
@@ -101,6 +112,12 @@ The candidates are releases, not symbol-introduction points; `range/3` reports
 a `[min, max]` whose ends both carry `compatible` verdicts. With an axis
 extended below the floor (`2.31-0ubuntu9.9, 2.34-0ubuntu3, ...`) the min is
 `2.34-0ubuntu3` — the first release that actually satisfies the requirements.
+The basis is `curated` because the only evidence is the `.symbols` file;
+`exact` is reserved for readelf observations at that very release. Bounds
+from several evidence rows are aggregated, never taken first-match: if
+readelf evidence for `2.31-0ubuntu9.9` were ingested and showed every
+required identity, that release would be `compatible(exact)` despite the
+curated floor of 2.34 (test A25 does exactly that).
 
 ### 4. Exact node identity (the case the old model got wrong)
 
@@ -143,13 +160,36 @@ Likewise a NEEDED soname with no provider evidence yields
 ```
   exact sym@node identity: .symbols=3006 readelf=3006 shared=3006 only-readelf=0 only-.symbols=0
   identity agreement: 3006/3006 (100.0%)
-  legacy per-name earliest-row comparison (corrected aggregation): 2478/2478 (100.0%)
+  per-name node-set agreement: 2763/2763 (100.0%)
 ```
 The earlier "91.7% agreement, explained by the glibc 2.34 pthread/rt merge"
 was an aggregation bug: the last curated row of a symbol was compared with the
 earliest ELF node of that symbol, so any symbol with two nodes
 (`pthread_setname_np@GLIBC_2.12` + `@GLIBC_2.34`) "disagreed". Compared
-consistently, everything agrees; the merge explanation was false.
+consistently, everything agrees; the merge explanation was false. The
+per-name figure now compares the *set* of nodes per name — nothing is parsed
+out of a node name and nothing is ordered — and `fixtures/crosscheck/` pins
+the two-node case (plus a `GLIBC_PRIVATE` node and a `Base` node) as a static
+regression. Two empty inputs fail the check instead of passing on `NaN`.
+
+### 8. An unversioned reference vs a non-default-only export
+
+Fixture `libhid.so.1`: `hid_fn` is exported only as hidden `hid_fn@HID_1`
+(`.symver` with a single `@`); `usehid` was linked against an unversioned
+build and so references `hid_fn` without a version.
+```
+$ LD_LIBRARY_PATH=.out/fx/hid_idx3 .out/fx/usehid
+usehid: symbol lookup error: usehid: undefined symbol: hid_fn
+$ grep hid_fn .out/fx/store_hid_idx3/symprov.jsonl
+["libhid.so.1|hid_fn@HID_1",["at","1.0-1","nondefault"]]
+$ ... .out/fx/store_hid_idx3 status .out/fx/usehid libhid.so.1 1.0-1
+  missing(hid_fn,no_default_export('libhid.so.1','HID_1'))
+```
+The same hidden export at verdef index 2 (the oldest node, `hid_idx2`) is
+bound by the loader for legacy unversioned references, runs, and is recorded
+`default`. A `.symbols`-only store cannot tell `@` from `@@`, so there the
+answer is `unknown([unknown(hid_fn, default_binding_unproven(...))])`, never
+`compatible`.
 
 ## Epistemics
 
@@ -157,25 +197,37 @@ consistently, everything agrees; the merge explanation was false.
   when requirement evidence is complete and provider evidence for that soname
   is complete and attributed by index. Otherwise the answer is `unknown`.
 - **Presence = defeasible "structurally possible"** (`compatible(exact |
-  extrapolated)`) — necessary, not sufficient; semantics are unverified. It
-  never outranks a declared or tested dependency; it widens the candidate set
-  with a low-confidence maybe.
+  curated | extrapolated)`) — necessary, not sufficient; semantics are
+  unverified. It never outranks a declared or tested dependency; it widens
+  the candidate set with a low-confidence maybe.
+- **`curated`** means the presence rests on `.symbols` metadata (a curated
+  export list), not on a direct readelf observation at that release; it is
+  reported distinctly from `exact`.
 - **`below_floor`** is a curated floor, not proof of absence, and is reported
   distinctly so a caller can choose to treat it as declared-dependency
-  strength rather than ELF-hard strength.
+  strength rather than ELF-hard strength. It never overrides another evidence
+  row that shows the identity present at the release.
 - **`extrapolated`** relies on the in-soname monotone-export assumption and is
-  reported distinctly from `exact`.
+  reported distinctly from `exact`. Absence propagates the other way: absent
+  from complete evidence at `R1` means absent at every `Rel <= R1`
+  (`missing(..., observed_absent(Src, R1))`), but says nothing about later
+  releases (`unknown(..., absent_at(Src, R1))`). Present at `R0` and absent
+  at a later `R1` is an observed drop: the releases in between are
+  `unknown(..., dropped_between(R0, Src, R1))`.
 
 Confidence order: `tested > declared repo dep > ELF hard veto / ELF maybe >
 soname default`.
 
 ## Limits
 
-- Hidden (`@`, non-default) versions are matched like default (`@@`) ones,
-  which is what the loader does for an exact versioned reference; the "which
-  node does an *unversioned* reference bind to" rule is simplified to "any
-  exported node".
+- The unversioned-reference rule follows `ld.so` for `DT_NEEDED`-driven
+  binding: `Base`, the `@@` default, or the oldest version node (verdef
+  index 2, accepted by glibc for legacy binaries even when hidden). `dlsym()`
+  lookups use a different rule and are not modelled.
 - `.symbols` source-template constructs that need the binary to expand
-  (`(symver)`, `(regex)`, quoted C++ patterns) are rejected, not interpreted.
+  (`(symver)`, `(regex)`, quoted C++ patterns) and any unknown tag are
+  rejected, not interpreted; `(optional)` rows need `--elf`.
+- `soname_mismatch` needs a declared `replaces(New, Old)` row; the lane does
+  not guess that `libfoo.so.2` succeeds `libfoo.so.1` from the name.
 - The release axis is an input (from `apt-cache madison`, dpkg, a snapshot
   store); the lane never invents candidates from symbol data.

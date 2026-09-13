@@ -1,0 +1,7 @@
+# Batch-mode atomicity fixture (Sol P2a): the first block's package (libc6) is
+# installed so its evidence release is known; the second block's is not
+# (#PACKAGE#, no --release). The WHOLE file must be rejected: no good_fn row.
+libbatchgood.so.1 libc6 #MINVER#
+ good_fn@Base 1.0
+libbatchbad.so.1 #PACKAGE# #MINVER#
+ bad_fn@Base 1.0

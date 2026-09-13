@@ -25,27 +25,44 @@
 //   * Evidence completeness is explicit: every successful ingest emits an
 //     `evidence` row; a missing / unreadable ELF is a loud failure (exit 3)
 //     that -- when --out is given -- records a failure evidence row instead
-//     of an empty "success".
+//     of an empty "success". A `.symbols` file is ingested atomically: one
+//     unsupported row, one unknown tag, one block whose evidence release is
+//     unknown, or a bad --release rejects the WHOLE file (also in batch
+//     mode), nothing partial is written, and the run exits 3 (Sol P2).
+//   * Default-version binding is retained (Sol P1b): every provider row says
+//     whether an UNVERSIONED reference binds to it. From readelf that is the
+//     `.gnu.version` hidden bit (`@` = hidden = "nondefault", `@@` =
+//     "default"); the loader additionally binds legacy unversioned references
+//     to the OLDEST version node (verdef index 2) even when hidden, so index 2
+//     is recorded as "default" too (verified with the loader, fixture D10c).
+//     A `.symbols` file carries no `@@` information: its rows are "unproven"
+//     unless cross-checked against the ELF with --elf, and the resolver then
+//     answers unknown -- never compatible -- for an unversioned reference.
+//     `Base` (unversioned export) always binds.
 //
 // Store rows (all JSON arrays `[key, value]`):
-//   symprov.jsonl  ["<soname>|<sym>@<node>", ["since", "<debver>"]]   (.symbols)
-//                  ["<soname>|<sym>@<node>", ["at", "<release-id>"]]  (readelf)
+//   symprov.jsonl  ["<soname>|<sym>@<node>", ["since", "<debver>", "<evidence-release>", <binding>]]  (.symbols)
+//                  ["<soname>|<sym>@<node>", ["at", "<evidence-release>", <binding>]]                (readelf)
+//                  <binding> = "default" | "nondefault" | "unproven"
 //   symreq.jsonl   ["<binary>|<sym>@<node>", ["<soname>", "GLOBAL"|"WEAK"]]
 //                  ["<binary>|<sym>",        ["", "GLOBAL"|"WEAK"]]   (unversioned)
 //   needed.jsonl   ["<binary>", "<soname>"]
 //   evidence.jsonl ["provides|<soname>", ["symbols"|"elf", "<release-id>", "complete", "<source>"]]
 //                  ["requires|<binary>", ["readelf", "complete"|"missing_file"|"readelf_failed"|"inconsistent", "<detail>"]]
 //   releases.jsonl ["<soname>", "<debver>"]                            (candidate axis)
+//   replaces.jsonl ["<new-soname>", "<old-soname>"]                    (declared soname succession)
 //
 // Usage:
-//   node ingest_symbols.mjs symbols-file <path>  [--release V] [--arch A] [--out DIR] [--append] [--stdout]
-//   node ingest_symbols.mjs symbols-dir  <dir>   [--arch A] --out DIR
+//   node ingest_symbols.mjs symbols-file <path>  [--release V] [--arch A] [--elf lib.so] [--out DIR] [--append] [--stdout]
+//   node ingest_symbols.mjs symbols-dir  <dir>   [--release V] [--arch A] --out DIR
 //   node ingest_symbols.mjs elf          <lib.so> [--release V] [--out DIR] [--append] [--stdout]
 //   node ingest_symbols.mjs requires     <binary> [--out DIR] [--append] [--stdout]
 //   node ingest_symbols.mjs releases     <soname> <debver>... [--out DIR] [--append] [--stdout]
+//   node ingest_symbols.mjs replaces     <new-soname> <old-soname>... [--out DIR] [--append] [--stdout]
 //
 // Exit codes: 0 ok; 2 usage; 3 evidence failure (missing file, readelf failure,
-// unsupported .symbols template, unknown evidence release).
+// unsupported/unknown .symbols template construct, unknown or invalid evidence
+// release, (optional) row without ELF cross-check, ELF/.symbols disagreement).
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync, appendFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
@@ -106,20 +123,23 @@ const DEB_VERSION_RE = /^(?:\d+:)?\d[A-Za-z0-9.+~:-]*$/;
 //    <symbol>@<node> <minimum-version> [<dep-id>]   symbol row (indented)
 //
 // SOURCE-TEMPLATE syntax (debian/*.symbols in source packages) differs and is
-// only partially supportable without the binary at hand. We process the
-// semantics we can and REJECT the rest loudly (never silently mis-ingest):
-//   (optional)          processed: the row is kept (the tag only relaxes
-//                       dpkg-gensymbols' diff, it does not change the ABI fact)
+// only partially supportable without the binary at hand. Tags are WHITELISTED:
+// the ones below are processed, EVERY other tag rejects the file (Sol P2).
+//   (optional)          dpkg lets an optional symbol stay in the template
+//                       after it disappeared from the binary, so the row is
+//                       NOT an export fact by itself (Sol P1c). It is kept only
+//                       when --elf <lib> is given and the ELF exports that exact
+//                       sym@node; an optional row absent from the ELF is
+//                       dropped (reported on stderr); without --elf the file
+//                       is rejected.
 //   (arch=..)/(arch-bits=..)/(arch-endian=..)
 //                       processed when --arch is given (row kept iff it
 //                       selects the arch; arch-bits/endian derived from it);
 //                       rejected otherwise
-//   (symver)            rejected: `(symver)NODE minver` expands to "every
-//                       symbol under NODE", which needs the binary to expand
-//   (regex)             rejected: pattern rows need the binary to expand
-//   (c++) / (c++11) ... rejected: demangled C++ patterns (quoted) are not
-//                       ELF symbol identities
 //   (ignore-blacklist)  processed (ignored; does not affect identity)
+//   (symver), (regex), (c++...), any unknown tag
+//                       rejected: symver/regex/c++ need the binary to expand;
+//                       an unknown tag has unknown semantics
 //   #include "file"     rejected (template include)
 //   #PACKAGE#           accepted in the header; the package name is then
 //                       unknown so --release becomes mandatory
@@ -164,12 +184,13 @@ function parseTags(line) {
   return { tags, rest };
 }
 
-const UNSUPPORTED_TAGS = ["symver", "regex", "c++", "c++11", "c++14", "c++17", "c++20"];
+// Whitelist (Sol P2): every tag not listed here rejects the file.
+const SUPPORTED_TAGS = new Set(["optional", "arch", "arch-bits", "arch-endian", "ignore-blacklist"]);
 
 function parseSymbolsFile(path, { arch = null } = {}) {
   if (!existsSync(path)) die(`symbols file not found: ${path}`);
   const text = readFileSync(path, "utf8");
-  const blocks = [];                // {soname, package, rows: [{sym, node, minver}]}
+  const blocks = [];                // {soname, package, rows: [{sym, node, minver, optional}]}
   const errors = [];                // unsupported template constructs (line numbers)
   let cur = null;
   let lineNo = 0;
@@ -194,11 +215,9 @@ function parseSymbolsFile(path, { arch = null } = {}) {
     if (line[0] === "|" || line[0] === "*" || line[0] === "#") continue;
     const { tags, rest } = parseTags(line);
     line = rest.trimStart();
-    // Reject template-only semantics loudly.
-    for (const u of UNSUPPORTED_TAGS) {
-      if (tags.has(u)) { errors.push(`${lineNo}: unsupported template tag (${u}): ${raw.trim()}`); tags.clear(); line = null; break; }
-    }
-    if (line === null) continue;
+    // Whitelist: reject every tag whose semantics we do not implement.
+    const unknown = [...tags.keys()].filter((t) => !SUPPORTED_TAGS.has(t));
+    if (unknown.length) { errors.push(`${lineNo}: unsupported template tag (${unknown.join("|")}): ${raw.trim()}`); continue; }
     if (line[0] === '"') { errors.push(`${lineNo}: quoted (pattern) symbol needs the binary to expand: ${raw.trim()}`); continue; }
     // Architecture selectors.
     let archOk = true;
@@ -221,7 +240,7 @@ function parseSymbolsFile(path, { arch = null } = {}) {
     const sym = ident.slice(0, at), node = ident.slice(at + 1);
     if (!node) { errors.push(`${lineNo}: empty version node: ${raw.trim()}`); continue; }
     if (!DEB_VERSION_RE.test(minver)) { errors.push(`${lineNo}: minimum-version is not a Debian version: ${raw.trim()}`); continue; }
-    cur.rows.push({ sym, node, minver });
+    cur.rows.push({ sym, node, minver, optional: tags.has("optional"), lineNo });
   }
   return { blocks, errors };
 }
@@ -245,17 +264,17 @@ function elfTables(file) {
   const dynOut = readelf(["-W", "-d"], file);
   if (symOut === null || verOut === null || dynOut === null) return null;
 
-  const syms = [];                        // {idx, bind, ndx, name, verName (from name@VER), hiddenFromName}
+  const syms = [];                        // {idx, bind, ndx, name, verName (from name@VER), defaultFromName (@@)}
   for (const raw of symOut.split("\n")) {
     const m = raw.match(/^\s*(\d+):\s+\S+\s+\S+\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)?(?:\s+\((\d+)\))?\s*$/);
     if (!m) continue;
     const [, idx, , bind, , ndx, name0] = m;
     if (!name0) continue;
-    let name = name0, verName = null;
+    let name = name0, verName = null, defaultFromName = null;
     const dd = name0.indexOf("@@"), d = name0.indexOf("@");
-    if (dd >= 0) { name = name0.slice(0, dd); verName = name0.slice(dd + 2); }
-    else if (d > 0) { name = name0.slice(0, d); verName = name0.slice(d + 1); }
-    syms.push({ idx: +idx, bind, ndx, name, verName });
+    if (dd >= 0) { name = name0.slice(0, dd); verName = name0.slice(dd + 2); defaultFromName = true; }
+    else if (d > 0) { name = name0.slice(0, d); verName = name0.slice(d + 1); defaultFromName = false; }
+    syms.push({ idx: +idx, bind, ndx, name, verName, defaultFromName });
   }
 
   // .gnu.version: index -> {ver, hidden}
@@ -296,14 +315,24 @@ function elfTables(file) {
   return { syms, versym, verdef, verneed, soname, needed, hasVersioning: versym.size > 0 };
 }
 
-// Provides: defined dynamic symbols with their exact version node.
+// Provides: defined dynamic symbols with their exact version node and their
+// default-version binding (Sol P1b):
+//   binding = "default"    an unversioned reference binds to it: the `@@`
+//                          default (versym hidden bit clear), or the oldest
+//                          version node (verdef index 2), which the loader
+//                          accepts for legacy unversioned references even
+//                          when hidden (glibc dl-lookup: index < 3 is taken
+//                          before the hidden test; fixture D10c proves it)
+//           = "nondefault" hidden (`@`) at verdef index >= 3: an unversioned
+//                          reference does NOT bind to it (fixture D10)
+//   `Base` is always "default".
 function elfProvides(t) {
-  const rows = [];                        // {sym, node}
+  const rows = [];                        // {sym, node, binding}
   const problems = [];
   for (const s of t.syms) {
     if (s.ndx === "UND" || s.ndx === "Ndx") continue;
     if (s.bind !== "GLOBAL" && s.bind !== "WEAK") continue;   // LOCAL never exported
-    let node;
+    let node, binding = "default";
     if (!t.hasVersioning) node = "Base";
     else {
       const v = t.versym.get(s.idx);
@@ -314,11 +343,29 @@ function elfProvides(t) {
         node = t.verdef.get(v.ver);
         if (!node) { problems.push(`dynsym ${s.idx} (${s.name}) versym ${v.ver} has no verdef entry`); continue; }
         if (s.verName && s.verName !== node) problems.push(`dynsym ${s.idx}: name says @${s.verName} but verdef index says ${node}`);
+        if (s.defaultFromName !== null && s.defaultFromName === v.hidden)
+          problems.push(`dynsym ${s.idx} (${s.name}@${node}): name says ${s.defaultFromName ? "@@ default" : "@ hidden"} but versym hidden bit says ${v.hidden ? "hidden" : "default"}`);
+        binding = (!v.hidden || v.ver === 2) ? "default" : "nondefault";
       }
     }
-    rows.push({ sym: s.name, node });
+    rows.push({ sym: s.name, node, binding });
   }
   return { rows, problems };
+}
+
+// Exact export map of an ELF: "sym@node" -> binding. Used to cross-check a
+// `.symbols` file against the binary it describes (Sol P1c).
+function elfExportMap(path, what) {
+  const t = elfTables(path);
+  if (!t) die(`${what}: --elf ${path}: cannot read (missing file or readelf failure)`);
+  const { rows, problems } = elfProvides(t);
+  if (problems.length) die(`${what}: --elf ${path}: inconsistent version tables:\n  ${problems.slice(0, 10).join("\n  ")}`);
+  const map = new Map();
+  for (const { sym, node, binding } of rows) {
+    const k = `${sym}@${node}`;
+    if (!map.has(k) || binding === "default") map.set(k, binding);
+  }
+  return { soname: t.soname || path, map };
 }
 
 // Requires: undefined dynamic symbols, each attributed to (file, node) via its
@@ -347,7 +394,7 @@ function elfRequires(t) {
 // ---------------------------------------------------------------------------
 // Output sink.
 // ---------------------------------------------------------------------------
-const STORES = ["symprov", "symreq", "needed", "evidence", "releases"];
+const STORES = ["symprov", "symreq", "needed", "evidence", "releases", "replaces"];
 
 function makeSink(outDir, toStdout) {
   const buffers = Object.fromEntries(STORES.map((s) => [s, []]));
@@ -370,7 +417,7 @@ function makeSink(outDir, toStdout) {
 }
 
 function parseArgs(rest) {
-  const opts = { out: null, stdout: false, append: false, release: null, arch: null, positional: [] };
+  const opts = { out: null, stdout: false, append: false, release: null, arch: null, elf: null, positional: [] };
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (a === "--out") opts.out = rest[++i];
@@ -378,70 +425,99 @@ function parseArgs(rest) {
     else if (a === "--append") opts.append = true;
     else if (a === "--release") opts.release = rest[++i];
     else if (a === "--arch") opts.arch = rest[++i];
+    else if (a === "--elf") opts.elf = rest[++i];
     else opts.positional.push(a);
   }
   if (!opts.out && !opts.stdout) opts.stdout = true;
   return opts;
 }
 
-function requireRelease(opts, guess, what) {
-  const rel = opts.release || guess;
+// One Debian-version gate for every evidence release, whichever command
+// supplied it (Sol P2): --release, dpkg-query, or the `releases` axis.
+function validRelease(rel, what) {
   if (!rel) die(`${what}: evidence release unknown (not owned by an installed package); pass --release <debver>`);
-  if (!DEB_VERSION_RE.test(rel)) die(`${what}: --release '${rel}' is not a Debian version`);
+  if (!DEB_VERSION_RE.test(rel)) die(`${what}: release '${rel}' is not a Debian version`);
   return rel;
+}
+
+function requireRelease(opts, guess, what) {
+  return validRelease(opts.release || guess, what);
 }
 
 // ---------------------------------------------------------------------------
 // Commands.
 // ---------------------------------------------------------------------------
-function cmdSymbolsFile(opts, path, sink, { batch = false } = {}) {
+// A `.symbols` file is ingested ATOMICALLY: any error in any block returns
+// null (nothing is added to the sink), in single-file and batch mode alike.
+function cmdSymbolsFile(opts, path, sink, elf = null) {
   const { blocks, errors } = parseSymbolsFile(path, { arch: opts.arch });
+  if (!blocks.length && !errors.length) errors.push("no soname blocks");
+  const rows = [];                                   // deferred until the whole file is clean
+  const sonames = [];
+  let dropped = 0;
+  for (const b of blocks) {
+    const guess = b.package ? dpkgVersion(b.package) : null;
+    const rel = opts.release || guess;
+    if (!rel) { errors.push(`${b.soname}: evidence release unknown (package ${b.package || "#PACKAGE#"} not installed); pass --release`); continue; }
+    if (!DEB_VERSION_RE.test(rel)) { errors.push(`${b.soname}: release '${rel}' is not a Debian version`); continue; }
+    const xcheck = elf && elf.soname === b.soname ? elf.map : null;
+    const seen = new Set();
+    for (const { sym, node, minver, optional, lineNo } of b.rows) {
+      const k = `${sym}@${node}`;
+      if (xcheck) {
+        const binding = xcheck.get(k);
+        if (binding === undefined) {
+          if (optional) { dropped++; process.stderr.write(`ingest_symbols: ${path}:${lineNo}: (optional) ${k} not exported by ${opts.elf}; row dropped\n`); continue; }
+          errors.push(`${lineNo}: ${k} is in the .symbols file but not exported by --elf ${opts.elf}`);
+          continue;
+        }
+        seen.add(k);
+        rows.push([`${b.soname}|${k}`, ["since", minver, rel, binding]]);
+      } else {
+        if (optional) { errors.push(`${lineNo}: (optional) ${k} needs an ELF cross-check (--elf <lib>) to count as an export`); continue; }
+        rows.push([`${b.soname}|${k}`, ["since", minver, rel, node === "Base" ? "default" : "unproven"]]);
+      }
+    }
+    if (xcheck) for (const k of xcheck.keys()) if (!seen.has(k)) errors.push(`${b.soname}: ${k} is exported by --elf ${opts.elf} but absent from the .symbols file (evidence would not be complete)`);
+    rows.push([`provides|${b.soname}`, ["symbols", rel, "complete", path], "evidence"]);
+    sonames.push(b.soname);
+  }
   if (errors.length) {
-    process.stderr.write(`ingest_symbols: ${path}: ${errors.length} unsupported/malformed row(s) -- rejecting the file:\n`);
+    process.stderr.write(`ingest_symbols: ${path}: ${errors.length} problem(s) -- rejecting the whole file, nothing written:\n`);
     for (const e of errors.slice(0, 20)) process.stderr.write(`  ${e}\n`);
     if (errors.length > 20) process.stderr.write(`  ... ${errors.length - 20} more\n`);
     return null;
   }
-  if (!blocks.length) { process.stderr.write(`ingest_symbols: ${path}: no soname blocks\n`); return null; }
   let n = 0;
-  const sonames = [];
-  for (const b of blocks) {
-    const guess = b.package ? dpkgVersion(b.package) : null;
-    const rel = opts.release || guess;
-    if (!rel) {
-      process.stderr.write(`ingest_symbols: ${path}: ${b.soname}: evidence release unknown (package ${b.package || "#PACKAGE#"} not installed); pass --release\n`);
-      if (!batch) return null; else continue;
-    }
-    for (const { sym, node, minver } of b.rows) sink.add("symprov", `${b.soname}|${sym}@${node}`, ["since", minver]);
-    sink.add("evidence", `provides|${b.soname}`, ["symbols", rel, "complete", path]);
-    n += b.rows.length;
-    sonames.push(b.soname);
-  }
-  return { n, sonames };
+  for (const [k, v, store] of rows) { sink.add(store || "symprov", k, v); if (!store) n++; }
+  return { n, sonames, dropped };
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
 const opts = parseArgs(rest);
+if (opts.release !== null) validRelease(opts.release, cmd);
 
 if (cmd === "symbols-file") {
   const path = opts.positional[0];
   if (!path) die("symbols-file: missing path", 2);
+  const elf = opts.elf ? elfExportMap(opts.elf, `symbols-file ${path}`) : null;
   const sink = makeSink(opts.out, opts.stdout);
-  const r = cmdSymbolsFile(opts, path, sink);
+  const r = cmdSymbolsFile(opts, path, sink, elf);
   if (!r) process.exit(EXIT_EVIDENCE);
   sink.flush(opts.append);
-  process.stderr.write(`symbols-file ${path}: symprov=${r.n} sonames=${r.sonames.length} [${r.sonames.slice(0, 6).join(", ")}${r.sonames.length > 6 ? ", ..." : ""}]\n`);
+  process.stderr.write(`symbols-file ${path}: symprov=${r.n} sonames=${r.sonames.length} [${r.sonames.slice(0, 6).join(", ")}${r.sonames.length > 6 ? ", ..." : ""}]${elf ? ` cross-checked=${elf.soname} optional-dropped=${r.dropped}` : ""}\n`);
 } else if (cmd === "symbols-dir") {
   const dir = opts.positional[0];
   if (!dir || !opts.out) die("symbols-dir: needs <dir> and --out DIR", 2);
+  if (opts.elf) die("symbols-dir: --elf applies to a single file; use symbols-file", 2);
   const files = readdirSync(dir).filter((f) => f.endsWith(".symbols")).map((f) => join(dir, f));
   mkdirSync(opts.out, { recursive: true });
   for (const s of ["symprov", "evidence"]) writeFileSync(join(opts.out, s + ".jsonl"), "");
   let total = 0, ok = 0, rejected = 0;
   for (const f of files) {
     const sink = makeSink(opts.out, false);
-    const r = cmdSymbolsFile(opts, f, sink, { batch: true });
-    if (!r) { rejected++; continue; }
+    const r = cmdSymbolsFile(opts, f, sink);
+    if (!r) { rejected++; continue; }                // atomic: no block of a rejected file is written
     sink.flush(true);
     total += r.n; ok++;
   }
@@ -458,16 +534,16 @@ if (cmd === "symbols-file") {
   const { rows, problems } = elfProvides(t);
   if (problems.length) die(`elf ${path}: inconsistent version tables:\n  ${problems.slice(0, 10).join("\n  ")}`);
   const sink = makeSink(opts.out, opts.stdout);
-  const seen = new Set();
-  for (const { sym, node } of rows) {
+  const seen = new Map();                      // one identity per sym@node; "default" wins if both appear
+  for (const { sym, node, binding } of rows) {
     const k = `${so}|${sym}@${node}`;
-    if (seen.has(k)) continue;                 // @ and @@ of the same node are one identity
-    seen.add(k);
-    sink.add("symprov", k, ["at", rel]);
+    if (!seen.has(k) || binding === "default") seen.set(k, binding);
   }
+  let nd = 0;
+  for (const [k, binding] of seen) { sink.add("symprov", k, ["at", rel, binding]); if (binding === "nondefault") nd++; }
   sink.add("evidence", `provides|${so}`, ["elf", rel, "complete", path]);
   sink.flush(opts.append);
-  process.stderr.write(`elf ${path}: soname=${so} release=${rel} symprov=${seen.size}\n`);
+  process.stderr.write(`elf ${path}: soname=${so} release=${rel} symprov=${seen.size} (nondefault=${nd})\n`);
 } else if (cmd === "requires") {
   const path = opts.positional[0];
   if (!path) die("requires: missing path", 2);
@@ -497,12 +573,22 @@ if (cmd === "symbols-file") {
 } else if (cmd === "releases") {
   const [so, ...vers] = opts.positional;
   if (!so || !vers.length) die("releases: needs <soname> <debver>...", 2);
-  for (const v of vers) if (!DEB_VERSION_RE.test(v)) die(`releases: '${v}' is not a Debian version`);
+  for (const v of vers) validRelease(v, `releases ${so}`);
   const sink = makeSink(opts.out, opts.stdout);
   for (const v of vers) sink.add("releases", so, v);
   sink.flush(opts.append);
   process.stderr.write(`releases ${so}: ${vers.length} candidate(s)\n`);
+} else if (cmd === "replaces") {
+  // Declared soname succession (Sol P2d): offering <new> to a binary whose
+  // DT_NEEDED names <old> is a soname_mismatch only under this relation; any
+  // other name that is not NEEDED is simply not_needed (no stem heuristic).
+  const [so, ...olds] = opts.positional;
+  if (!so || !olds.length) die("replaces: needs <new-soname> <old-soname>...", 2);
+  const sink = makeSink(opts.out, opts.stdout);
+  for (const o of olds) sink.add("replaces", so, o);
+  sink.flush(opts.append);
+  process.stderr.write(`replaces ${so}: ${olds.join(", ")}\n`);
 } else {
-  process.stderr.write("usage: ingest_symbols.mjs symbols-file|symbols-dir|elf|requires|releases <args> [--release V] [--arch A] [--out DIR] [--append] [--stdout]\n");
+  process.stderr.write("usage: ingest_symbols.mjs symbols-file|symbols-dir|elf|requires|releases|replaces <args> [--release V] [--arch A] [--elf lib.so] [--out DIR] [--append] [--stdout]\n");
   process.exit(2);
 }

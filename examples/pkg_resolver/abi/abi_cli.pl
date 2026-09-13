@@ -9,7 +9,7 @@
 %
 % Commands:
 %   verdict <binary> <soname> <release> [DropSym DropNode DropAt]
-%       compatible(exact|extrapolated) | incompatible([...]) | unknown([...]) | not_needed(_)
+%       compatible(exact|curated|extrapolated) | incompatible([...]) | unknown([...]) | not_needed(_)
 %   status  <binary> <soname> <release>   one line per requirement (provided / missing / ...)
 %   floor   <binary> <soname>             curated lower bound implied by `.symbols` (= dpkg-shlibdeps' dep)
 %   axis    <soname>                      the ingested release candidates, ascending
