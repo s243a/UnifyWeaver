@@ -32,7 +32,10 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
             std::size_t agg_base = aggregate_frames.back().base_cp_count;
             if (agg_base > level) level = agg_base;
         }
-        if (choice_points.size() > level) choice_points.resize(level);
+        if (choice_points.size() > level) {
+            choice_points.resize(level);
+            prune_iters_to_choice_points();  // P1: drop cut-away nondet iterators
+        }
         pc += 1; return true;
     }
 
@@ -475,14 +478,49 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
     if (op == "atom_concat/3") {
         Value a1 = deref(*get_cell("A1"));
         Value a2 = deref(*get_cell("A2"));
-        if (a1.is_unbound() || a2.is_unbound()) return false;
-        std::string s1 = (a1.tag == Value::Tag::Atom) ? a1.s : render(a1);
-        std::string s2 = (a2.tag == Value::Tag::Atom) ? a2.s : render(a2);
-        Value result = Value::Atom(s1 + s2);
-        CellPtr tgt = get_cell("A3");
-        if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
-        if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
-        pc += 1; return true;
+        Value a3 = deref(*get_cell("A3"));
+        auto as_text = [&](const Value& v) {
+            return (v.tag == Value::Tag::Atom) ? v.s : render(v);
+        };
+        bool u1 = a1.is_unbound(), u2 = a2.is_unbound(), u3 = a3.is_unbound();
+        // (+,+,?) concatenate A1++A2 and unify with A3.
+        if (!u1 && !u2) {
+            Value result = Value::Atom(as_text(a1) + as_text(a2));
+            CellPtr tgt = get_cell("A3");
+            if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
+            if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
+            pc += 1; return true;
+        }
+        // Decomposition modes require A3 bound (SWI atom_concat/3 is
+        // bidirectional; unpack_constraint/unpack_dep rely on the (+,-,+)
+        // prefix-strip mode -- bound prefix gte: over bound whole gte:1.0.0
+        // must bind the middle arg to 1.0.0).
+        if (u3) return false;
+        std::string whole = as_text(a3);
+        // (+,-,+) A1 is a prefix of A3 -> A2 = the trailing suffix, else fail.
+        if (!u1 && u2) {
+            std::string p = as_text(a1);
+            if (whole.size() < p.size() || whole.compare(0, p.size(), p) != 0)
+                return false;
+            Value suf = Value::Atom(whole.substr(p.size()));
+            if (!unify_cells(get_cell("A2"), std::make_shared<Cell>(suf)))
+                return false;
+            pc += 1; return true;
+        }
+        // (-,+,+) A2 is a suffix of A3 -> A1 = the leading prefix, else fail.
+        if (u1 && !u2) {
+            std::string s = as_text(a2);
+            if (whole.size() < s.size()
+                || whole.compare(whole.size() - s.size(), s.size(), s) != 0)
+                return false;
+            Value pre = Value::Atom(whole.substr(0, whole.size() - s.size()));
+            if (!unify_cells(get_cell("A1"), std::make_shared<Cell>(pre)))
+                return false;
+            pc += 1; return true;
+        }
+        // (-,-,+) nondeterministic split enumeration is not needed by any
+        // pkg_resolver call; fail loudly-quiet rather than mis-answer.
+        return false;
     }
 
     // ---- atom_length/2 ----------------------------------------------
@@ -641,6 +679,61 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         else return false;
         Value av = Value::Atom(s);
         CellPtr tgt = get_cell("A1");
+        if (tgt->is_unbound()) { bind_cell(tgt, av); pc += 1; return true; }
+        if (!unify_cells(tgt, std::make_shared<Cell>(av))) return false;
+        pc += 1; return true;
+    }
+
+    // ---- number_string/2 --------------------------------------------
+    // number_string(?Number, ?String). Same conversion as atom_number/2
+    // with the argument roles swapped (no distinct string tag in this
+    // runtime, so a "string" here is an atom-tagged cell).
+    if (op == "number_string/2") {
+        Value a1 = deref(*get_cell("A1"));  // Number
+        Value a2 = deref(*get_cell("A2"));  // String
+        if (!a2.is_unbound()) {
+            if (a2.tag != Value::Tag::Atom) return false;
+            const std::string& buf = a2.s;
+            if (buf.empty()) return false;
+            Value result;
+            // P3: parse the float syntax INDEPENDENTLY of integer overflow.
+            // The old code required stoll to succeed before it would ever try
+            // stod, so an int64 overflow (stoll throws std::out_of_range,
+            // swallowed by catch(...)) rejected a perfectly valid float like
+            // "9223372036854775808.0" that SWI accepts. Now: try a whole-string
+            // integer parse; take it only if it both succeeds AND consumes the
+            // entire string; otherwise (partial consume, invalid, OR overflow)
+            // fall back to a whole-string float parse. Valid in-range integers
+            // still bind as Integer (existing behaviour preserved).
+            bool got_int = false;
+            std::int64_t ival = 0;
+            try {
+                std::size_t pos = 0;
+                ival = std::stoll(buf, &pos);
+                if (pos == buf.size()) got_int = true;
+            } catch (...) { /* overflow or non-integer: fall through to float */ }
+            if (got_int) {
+                result = Value::Integer(ival);
+            } else {
+                try {
+                    std::size_t pos = 0;
+                    double d = std::stod(buf, &pos);
+                    if (pos != buf.size()) return false;
+                    result = Value::Float(d);
+                } catch (...) { return false; }
+            }
+            CellPtr tgt = get_cell("A1");
+            if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
+            if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
+            pc += 1; return true;
+        }
+        if (a1.is_unbound()) return false;
+        std::string s;
+        if (a1.tag == Value::Tag::Integer) s = std::to_string(a1.i);
+        else if (a1.tag == Value::Tag::Float) s = render(a1);
+        else return false;
+        Value av = Value::Atom(s);
+        CellPtr tgt = get_cell("A2");
         if (tgt->is_unbound()) { bind_cell(tgt, av); pc += 1; return true; }
         if (!unify_cells(tgt, std::make_shared<Cell>(av))) return false;
         pc += 1; return true;

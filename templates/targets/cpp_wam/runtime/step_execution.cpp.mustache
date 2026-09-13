@@ -400,6 +400,7 @@ bool WamState::step(const Instruction& instr) {
             unwind_trail_to(f.trail_mark);
             while (choice_points.size() > f.base_cp_count)
                 choice_points.pop_back();
+            prune_iters_to_choice_points();  // P1: drop drained nondet iterators
             while (aggregate_frames.size() > f.base_agg_count)
                 aggregate_frames.pop_back();
             while (catcher_frames.size() > f.base_catcher_count)
@@ -475,6 +476,7 @@ bool WamState::step(const Instruction& instr) {
             if_then_frames.pop_back();
             while (choice_points.size() > f.base_cp_count)
                 choice_points.pop_back();
+            prune_iters_to_choice_points();  // P1: drop cut-away nondet iterators
             return invoke_goal_as_call(f.then_goal, f.after_pc);
         }
         case Instruction::Op::IfThenElse: {
@@ -762,6 +764,7 @@ bool WamState::step(const Instruction& instr) {
                 std::size_t saved_barrier =
                     choice_points[top_idx].cut_barrier;
                 choice_points.resize(top_idx);
+                prune_iters_to_choice_points();  // P1: drop cut-away iterators
                 cut_barrier = saved_barrier;
             }
             pc += 1; return true;
@@ -786,6 +789,7 @@ bool WamState::step(const Instruction& instr) {
             if (lookup_ite_level(instr.a, target)) {
                 if (choice_points.size() > target) {
                     choice_points.resize(target);
+                    prune_iters_to_choice_points();  // P1: drop cut-away iters
                 }
                 if (cut_barrier > target) cut_barrier = target;
             }
@@ -818,7 +822,23 @@ bool WamState::step(const Instruction& instr) {
             return builtin(instr.a, instr.n);
         }
         case Instruction::Op::CallForeign:
+            // D43 store-backed P/2 fact source dispatch. instr.a is the
+            // "name/arity" key, instr.n the arity. When the predicate is a
+            // registered seek source, do the keyed lazy seek and stream the
+            // matching rows through the choice-point machinery; the continuation
+            // is the next instruction (the Proceed the fact-stream body emits).
+            // A predicate with no registered source keeps the historical no-op
+            // (advance past it) so a stray CallForeign never wedges the loop.
+            if (seek_fact_sources.find(instr.a) != seek_fact_sources.end())
+                return dispatch_foreign_call(instr.a, instr.n, pc + 1);
             pc += 1; return true;
+        case Instruction::Op::ForeignNextClause: {
+            // Reached when a store-backed fact-source call backtracks into its
+            // remaining rows. Pop the CP and delegate to foreign_try_next, which
+            // unifies the next row and pushes another CP if more remain.
+            if (!choice_points.empty()) choice_points.pop_back();
+            return foreign_try_next();
+        }
 
         // ---- Aggregate / findall driver ----------------------------
         case Instruction::Op::BeginAggregate: {
@@ -1395,6 +1415,143 @@ bool WamState::dynamic_try_next() {
     bf.base_cp_count = choice_points.size();
     body_frames.push_back(std::move(bf));
     return body_next();
+}
+
+// ----------------------------------------------------------------------
+// D43 store-backed P/2 seek fact source dispatch
+// ----------------------------------------------------------------------
+
+// Register a seek source under "name/arity". kind is "indexed" (UWFI/UWIX
+// .data/.idx seek store at `path` prefix) or "lmdb" (opt-in comparison tier).
+void WamState::register_seek_fact_source(const std::string& key,
+                                         const std::string& kind,
+                                         const std::string& path) {
+    seek_fact_sources[key] = std::make_shared<SeekFactSource>(kind, path);
+}
+
+// CallForeign entry for a store-backed P/2 fact source. A bound atomic A1
+// becomes a keyed seek (only the records that key touches are read off disk);
+// an unbound A1 becomes a full scan (the unbound-arg1 provides walk). Every
+// matching row is materialised as a ground store_pred(A1,A2) clause and
+// streamed through the choice-point machinery so both bound-A2 filtering and
+// multi-row backtracking behave exactly like a term-catalog fact predicate.
+bool WamState::dispatch_foreign_call(const std::string& key,
+                                     std::int64_t arity,
+                                     std::size_t after_pc) {
+    auto src_it = seek_fact_sources.find(key);
+    if (src_it == seek_fact_sources.end()) return false;
+    if (arity != 2) return false;  // v1 serves P/2 only
+    CellPtr a1 = get_cell("A1");
+    CellPtr a2 = get_cell("A2");
+    Value a1d = deref(*a1);
+    std::optional<std::string> seek_key;
+    if (a1d.tag == Value::Tag::Atom
+        || a1d.tag == Value::Tag::Integer
+        || a1d.tag == Value::Tag::Float) {
+        seek_key = encode_store_key(a1d);
+    }
+    std::vector<std::pair<Value, Value>> rows;
+    try {
+        rows = src_it->second->rows(seek_key);
+    } catch (const std::exception& e) {
+        // Loud, non-fatal: surface the message (missing store, or the opt-in
+        // lmdb tier with no reader) and fail the goal rather than std::terminate
+        // out of the interpreter loop.
+        std::fprintf(stderr, "[wam-cpp] fact source %s: %s\n", key.c_str(), e.what());
+        return false;
+    }
+    if (rows.empty()) return false;
+    ForeignIterator it;
+    it.next_idx = 0;
+    it.after_pc = after_pc;
+    it.call_args.reserve(2);
+    it.call_args.push_back(a1);
+    it.call_args.push_back(a2);
+    it.clauses.reserve(rows.size());
+    for (auto& r : rows) {
+        std::vector<CellPtr> cargs;
+        cargs.reserve(2);
+        cargs.push_back(make_cell(r.first));
+        cargs.push_back(make_cell(r.second));
+        it.clauses.push_back(make_cell(Value::Compound(key, std::move(cargs))));
+    }
+    foreign_iters.push_back(std::move(it));
+    return foreign_try_next();
+}
+
+// Try the next row in the top ForeignIterator. Mirrors dynamic_try_next: push a
+// CP (alt_pc = foreign_next_clause_pc) when rows remain, unify the ground row
+// against the call args, and proceed to after_pc. Rows are ground store facts,
+// so a plain unify_cells suffices (no unbound-unbound rename seeding needed).
+bool WamState::foreign_try_next() {
+    if (foreign_iters.empty()) return false;
+    ForeignIterator& it = foreign_iters.back();
+    if (it.next_idx >= it.clauses.size()) {
+        foreign_iters.pop_back();
+        return false;
+    }
+    std::size_t idx = it.next_idx;
+    bool has_more = (idx + 1 < it.clauses.size());
+    std::vector<CellPtr> call_args = it.call_args;
+    std::size_t saved_after_pc = it.after_pc;
+    CellPtr clause = it.clauses[idx];
+    // Advance BEFORE pushing the CP — the CP snapshots foreign_iters state, so
+    // the captured next_idx must already point at the SUBSEQUENT row.
+    it.next_idx = idx + 1;
+    if (has_more) {
+        ChoicePoint cp_;
+        cp_.alt_pc            = foreign_next_clause_pc;
+        cp_.saved_cp          = cp;
+        cp_.trail_mark        = trail.size();
+        cp_.cut_barrier       = cut_barrier;
+        cp_.saved_regs        = regs;
+        cp_.saved_mode_stack  = mode_stack;
+        cp_.saved_env_stack   = env_stack;
+        cp_.saved_body_frames = body_frames;
+        choice_points.push_back(std::move(cp_));
+    } else {
+        // Last row — drop the iterator; exhaustion falls through to the outer
+        // backtrack scope.
+        foreign_iters.pop_back();
+    }
+    Value cv = deref(*clause);
+    if (cv.tag != Value::Tag::Compound || cv.args.size() != call_args.size())
+        return false;
+    for (std::size_t i = 0; i < call_args.size(); ++i) {
+        if (!unify_cells(call_args[i], cv.args[i])) return false;
+    }
+    // Fact match completes; advance to the continuation (the Proceed the
+    // fact-stream body emits after the call_foreign). Unlike dynamic_try_next
+    // (whose caller dispatches WITHOUT a label + return address), the store
+    // fact-source body IS reached by a normal Call that already set cp to the
+    // caller's return address, so we must NOT clobber cp -- the following
+    // Proceed returns through it.
+    pc = saved_after_pc;
+    return true;
+}
+
+// Prune the nondet iterator side stacks (foreign/dynamic/retract/
+// current_predicate) so their depth matches the number of live choice points
+// that own them. A choice point owns a side iterator iff its alt_pc is that
+// iterator's *_next_clause pc; the iterators form parallel stacks with those
+// CPs, so counting owning CPs gives the exact depth each side stack should have.
+// Called wherever choice_points is truncated by a CUT or a scope drain — the
+// truncation removes the top owning CP(s), and their iterators must die with
+// them, or a subsequent *_try_next would resume a leaked iterator (P1). Only
+// ever shrinks the side stacks (never grows), so it is a no-op when in sync and
+// safe to call at any shrink site.
+void WamState::prune_iters_to_choice_points() {
+    std::size_t nf = 0, nd = 0, nr = 0, nc = 0;
+    for (const ChoicePoint& c : choice_points) {
+        if (foreign_next_clause_pc && c.alt_pc == foreign_next_clause_pc) ++nf;
+        else if (dynamic_next_clause_pc && c.alt_pc == dynamic_next_clause_pc) ++nd;
+        else if (retract_next_pc && c.alt_pc == retract_next_pc) ++nr;
+        else if (current_pred_next_pc && c.alt_pc == current_pred_next_pc) ++nc;
+    }
+    if (foreign_iters.size() > nf) foreign_iters.resize(nf);
+    if (dynamic_iters.size() > nd) dynamic_iters.resize(nd);
+    if (retract_iters.size() > nr) retract_iters.resize(nr);
+    if (current_pred_iters.size() > nc) current_pred_iters.resize(nc);
 }
 
 // retract/1 dispatcher. Reads A1 (the pattern), derives the

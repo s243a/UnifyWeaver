@@ -13,17 +13,34 @@
 #ifndef UNIFYWEAVER_WAM_CPP_RUNTIME_H
 #define UNIFYWEAVER_WAM_CPP_RUNTIME_H
 
+#include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <deque>
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+// Lazy+cached LMDB seek backend (Stage 2). Compiled only when the codegen
+// declares an lmdb(Dir) store fact source (WAM_CPP_ENABLE_LMDB, auto-set in the
+// generated header). Link with -llmdb. The indexed(Prefix) seek backend stays
+// dependency-free -- lmdb.h is not pulled in unless the flag is set.
+#ifdef WAM_CPP_ENABLE_LMDB
+#include <lmdb.h>
+#endif
 
 namespace wam_cpp {
 
@@ -117,7 +134,7 @@ struct Instruction {
         CatchReturn, NegationReturn, FindallCollect, ConjReturn, DisjAlt,
         IfThenCommit, IfThenElse, AggregateNextGroup, DynamicNextClause,
         SubAtomNext, BodyNext, RetractNext, OutputCaptureReturn,
-        CurrentPredNext,
+        CurrentPredNext, ForeignNextClause,
         Nop
     };
     // Sentinel pc values for switch-table entries that should not jump.
@@ -301,6 +318,8 @@ public:
         { Instruction i; i.op = Op::OutputCaptureReturn; return i; }
     static Instruction CurrentPredNext()
         { Instruction i; i.op = Op::CurrentPredNext; return i; }
+    static Instruction ForeignNextClause()
+        { Instruction i; i.op = Op::ForeignNextClause; return i; }
     static Instruction Nop()
         { Instruction i; i.op = Op::Nop; return i; }
 };
@@ -542,6 +561,619 @@ struct ClauseSnapshot {
     std::size_t cp_count = 0;
 };
 
+// ============================================================================
+// D43 store-backed P/2 fact source (seek reader). C++ port of
+// examples/pkg_resolver/rust/uw_resolve_wam/src/seek_fact_source.rs (and the Go
+// seekFactSource): keyed binary-search seeks over the dependency-free UWFI/UWIX
+// .data/.idx store that the shared scripts/js_wam/uw_fact_index.js builder
+// writes. A bound-key lookup reads only the records that key touches (a lazy
+// seek), never the whole catalog; an unbound key does a full scan. Byte-for-byte
+// on-disk-compatible with the Go/Rust lanes (same open / lookup_offsets /
+// read_record / scan_all), including the D43 bytes-read counters.
+//
+// Typed key tags (atom 0x41 / string 0x53 / int 0x49 / float 0x46) match the
+// codec (uw_fact_codec.js encodeIndexKey) so a lookup finds the right key
+// regardless of the bound cell's type.
+//
+// The lmdb(Dir) kind is the opt-in comparison tier. The eager whole-DB
+// LmdbFactSource further down is Stage-2 territory; the seek reader's lmdb kind
+// carries no built-in reader and fails loudly, exactly like the Rust lane -- it
+// never silently falls back to the indexed format.
+// ============================================================================
+
+// D43 bytes-read proof counters. Global (not per-source) so a scale probe can
+// total the bytes read across all five stores in one query, mirroring the Go
+// lane's package-level factIOBytes / factIOReads / factIODataSize.
+inline std::atomic<std::uint64_t> g_fact_io_bytes{0};
+inline std::atomic<std::uint64_t> g_fact_io_reads{0};
+inline std::atomic<std::uint64_t> g_fact_io_data_size{0};
+
+inline std::uint64_t fact_io_bytes()     { return g_fact_io_bytes.load(std::memory_order_relaxed); }
+inline std::uint64_t fact_io_reads()     { return g_fact_io_reads.load(std::memory_order_relaxed); }
+inline std::uint64_t fact_io_data_size() { return g_fact_io_data_size.load(std::memory_order_relaxed); }
+inline void reset_fact_io() {
+    g_fact_io_bytes.store(0, std::memory_order_relaxed);
+    g_fact_io_reads.store(0, std::memory_order_relaxed);
+    g_fact_io_data_size.store(0, std::memory_order_relaxed);
+}
+
+inline std::size_t seek_le_u16(const std::string& b, std::size_t o) {
+    if (o + 2 > b.size()) return 0;
+    return (static_cast<unsigned char>(b[o]))
+         | (static_cast<std::size_t>(static_cast<unsigned char>(b[o + 1])) << 8);
+}
+inline std::uint32_t seek_le_u32(const std::string& b, std::size_t o) {
+    if (o + 4 > b.size()) return 0;
+    return (static_cast<std::uint32_t>(static_cast<unsigned char>(b[o])))
+         | (static_cast<std::uint32_t>(static_cast<unsigned char>(b[o + 1])) << 8)
+         | (static_cast<std::uint32_t>(static_cast<unsigned char>(b[o + 2])) << 16)
+         | (static_cast<std::uint32_t>(static_cast<unsigned char>(b[o + 3])) << 24);
+}
+inline int seek_bytes_compare(const std::string& a, const std::string& b) {
+    std::size_t n = std::min(a.size(), b.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        unsigned char ca = static_cast<unsigned char>(a[i]);
+        unsigned char cb = static_cast<unsigned char>(b[i]);
+        if (ca != cb) return ca < cb ? -1 : 1;
+    }
+    if (a.size() < b.size()) return -1;
+    if (a.size() > b.size()) return 1;
+    return 0;
+}
+
+// Character-code helpers (numeric codes, not char literals, so this text
+// survives verbatim through the Prolog-atom emission): 45 = "-", 43 = "+",
+// 46 = ".", 48..57 = digits, 69 = "E", 101 = "e".
+inline bool seek_is_digit(unsigned char c) { return c >= 48 && c <= 57; }
+inline bool seek_is_int_text(const std::string& t) {
+    if (t.empty()) return false;
+    std::size_t i = 0;
+    if (static_cast<unsigned char>(t[0]) == 45) { if (t.size() == 1) return false; i = 1; }
+    for (; i < t.size(); ++i) if (!seek_is_digit(static_cast<unsigned char>(t[i]))) return false;
+    return true;
+}
+inline bool seek_is_float_text(const std::string& t0) {
+    std::string s = t0;
+    if (s.empty()) return false;
+    if (static_cast<unsigned char>(s[0]) == 45) s = s.substr(1);
+    if (s.empty()) return false;
+    std::size_t split = s.size();
+    for (std::size_t k = 0; k < s.size(); ++k) {
+        unsigned char c = static_cast<unsigned char>(s[k]);
+        if (c == 101 || c == 69) { split = k; break; }
+    }
+    bool has_exp = split != s.size();
+    std::string mant = s.substr(0, split);
+    std::string exp  = has_exp ? s.substr(split + 1) : std::string();
+    int dot = -1;
+    for (std::size_t j = 0; j < mant.size(); ++j) {
+        unsigned char c = static_cast<unsigned char>(mant[j]);
+        if (c == 46) { if (dot >= 0) return false; dot = static_cast<int>(j); }
+        else if (!seek_is_digit(c)) return false;
+    }
+    if (has_exp) {
+        if (dot < 0) { if (mant.empty()) return false; }
+        else {
+            std::string left = mant.substr(0, dot);
+            std::string right = mant.substr(dot + 1);
+            if (left.empty() && right.empty()) return false;
+        }
+        std::string e = exp;
+        if (e.empty()) return false;
+        unsigned char e0 = static_cast<unsigned char>(e[0]);
+        if (e0 == 43 || e0 == 45) e = e.substr(1);
+        if (e.empty()) return false;
+        for (char cc : e) if (!seek_is_digit(static_cast<unsigned char>(cc))) return false;
+        return true;
+    }
+    if (dot < 0) return false;
+    std::string left = mant.substr(0, dot);
+    std::string right = mant.substr(dot + 1);
+    if (left.empty() && right.empty()) return false;
+    return true;
+}
+
+// Turn a stored cell text into a typed WAM value, matching the codec
+// classification (int / float / atom). The resolver store packs everything as
+// atoms; the numeric arms keep the distinctions for any store carrying bare
+// numbers. Mirrors the Rust/Go parse_fact_source_value.
+inline Value parse_fact_source_value(const std::string& text) {
+    // trim
+    std::size_t b = 0, e = text.size();
+    while (b < e && std::isspace(static_cast<unsigned char>(text[b]))) ++b;
+    while (e > b && std::isspace(static_cast<unsigned char>(text[e - 1]))) --e;
+    std::string t = text.substr(b, e - b);
+    if (seek_is_int_text(t)) {
+        try { return Value::Integer(static_cast<std::int64_t>(std::stoll(t))); }
+        catch (...) {}
+    }
+    if (seek_is_float_text(t)) {
+        try { return Value::Float(std::stod(t)); }
+        catch (...) {}
+    }
+    return Value::Atom(t);
+}
+
+// Encode a dereferenced bound key cell into the tagged byte key the .idx stores
+// (codec encodeIndexKey): atom 0x41 + utf8, string 0x53 + utf8, int 0x49 +
+// big-endian i64, float 0x46 + big-endian f64 bits. Mirrors the Rust/Go
+// encode_store_key. Returned as a std::string of raw bytes.
+inline std::string encode_store_key(const Value& v) {
+    std::string out;
+    if (v.tag == Value::Tag::Integer) {
+        out.resize(9);
+        out[0] = static_cast<char>(0x49);
+        std::uint64_t u = static_cast<std::uint64_t>(v.i);
+        for (int i = 0; i < 8; ++i) out[8 - i] = static_cast<char>((u >> (i * 8)) & 0xff);
+        return out;
+    }
+    if (v.tag == Value::Tag::Float) {
+        out.resize(9);
+        out[0] = static_cast<char>(0x46);
+        std::uint64_t u; std::memcpy(&u, &v.f, sizeof(u));
+        for (int i = 0; i < 8; ++i) out[8 - i] = static_cast<char>((u >> (i * 8)) & 0xff);
+        return out;
+    }
+    // Atom (and any string-tagged cell would take 0x53, but this runtime has no
+    // distinct string tag; the resolver store keys are all atoms).
+    out.push_back(static_cast<char>(0x41));
+    out.append(v.s);
+    return out;
+}
+
+// LMDB key layout (uw_fact_codec.js a1RangeKey / seqKey): the JS builder stores
+// each record twice -- under seqKey(i) = 0x00 + u64BE(i) and under
+// a1RangeKey(keyBytes,i) = 0x01 + u16BE(keylen) + keyBytes + u64BE(i), where
+// keyBytes = encodeIndexKey(a1) (== encode_store_key here). A keyed read
+// range-scans the a1Range band for one key (only the records that key touches);
+// a full scan walks the seq band once.
+inline std::string lmdb_a1_prefix(const std::string& enc_key) {
+    std::string p;
+    p.push_back(static_cast<char>(0x01));
+    std::size_t n = enc_key.size();
+    p.push_back(static_cast<char>((n >> 8) & 0xff));
+    p.push_back(static_cast<char>(n & 0xff));
+    p.append(enc_key);
+    return p;
+}
+inline std::string lmdb_a1_start(const std::string& enc_key) {
+    std::string s = lmdb_a1_prefix(enc_key);
+    s.append(8, static_cast<char>(0x00));  // seq = 0 -> band start
+    return s;
+}
+// Decode an LMDB value (== uw_fact_codec recordPayload: u16LE a1len, u16LE
+// a2len, a1, a2) into a typed (a1, a2) pair.
+inline bool decode_record_payload(const char* p, std::size_t len,
+                                  Value& a1_out, Value& a2_out) {
+    if (len < 4) return false;
+    std::string payload(p, len);
+    std::size_t a1_len = seek_le_u16(payload, 0);
+    std::size_t a2_len = seek_le_u16(payload, 2);
+    if (payload.size() < 4 + a1_len + a2_len) return false;
+    a1_out = parse_fact_source_value(payload.substr(4, a1_len));
+    a2_out = parse_fact_source_value(payload.substr(4 + a1_len, a2_len));
+    return true;
+}
+
+class SeekFactSource {
+public:
+    SeekFactSource(std::string kind, std::string path)
+        : kind_(std::move(kind)), path_(std::move(path)) {}
+
+    // P2: RAII — release the lazily-opened LMDB environment when the source is
+    // destroyed or replaced. ensure_open_lmdb() opens a raw MDB_env* (lmdb_env_)
+    // that owns OS file descriptors (data.mdb + lock.mdb); with no destructor
+    // that env leaked on every destroy — opening+destroying 20 sources drove the
+    // process FD count 6 -> 46. mdb_env_close reclaims the env AND the dbi/txn
+    // handles opened against it, so closing the env is the complete cleanup.
+    // The class owns a std::mutex, so it is already non-copyable and
+    // non-movable — the single owned env is never duplicated — but we spell the
+    // deletions out so the single-ownership invariant survives future edits.
+    ~SeekFactSource() {
+#ifdef WAM_CPP_ENABLE_LMDB
+        close_lmdb();
+#endif
+    }
+    SeekFactSource(const SeekFactSource&) = delete;
+    SeekFactSource& operator=(const SeekFactSource&) = delete;
+    SeekFactSource(SeekFactSource&&) = delete;
+    SeekFactSource& operator=(SeekFactSource&&) = delete;
+
+    const std::string& kind() const { return kind_; }
+    const std::string& path() const { return path_; }
+
+    // All matching rows for the query: a bound-key seek when `key` is set (only
+    // the records that key touches are read), else a full scan (the unbound-arg1
+    // provides walk). lmdb sources fail loudly (no reader built in).
+    std::vector<std::pair<Value, Value>> rows(const std::optional<std::string>& key) {
+        if (kind_ == "lmdb") {
+#ifdef WAM_CPP_ENABLE_LMDB
+            return rows_lmdb(key);
+#else
+            throw std::runtime_error(lmdb_seek_missing_error());
+#endif
+        }
+        ensure_open();
+        std::lock_guard<std::mutex> guard(mu_);
+        g_fact_io_data_size.store(data_size_, std::memory_order_relaxed);
+        std::vector<std::pair<Value, Value>> result;
+        if (key.has_value()) {
+            std::vector<std::uint32_t> offs = lookup_offsets(*key);
+            result.reserve(offs.size());
+            for (std::uint32_t off : offs) {
+                Value a1, a2;
+                if (read_record(static_cast<std::uint64_t>(off), a1, a2))
+                    result.emplace_back(std::move(a1), std::move(a2));
+            }
+        } else {
+            scan_all(result);
+        }
+        return result;
+    }
+
+    // Cache-attribution counters (D43 scale proof + the two-cache benchmark).
+    std::uint64_t l1_hits() const { return l1_hits_; }
+    std::uint64_t l2_hits() const { return l2_hits_; }
+    std::uint64_t cache_misses() const { return misses_; }
+
+    std::string lmdb_seek_missing_error() const {
+        return "C++ WAM fact source is declared as lmdb(" + path_ +
+            ") but no compatible lazy LMDB reader is built into this seek "
+            "backend. This tier is opt-in and carries no repo dependency; the "
+            "seek reader does not read the npm-lmdb store format. Use "
+            "UW_STORE_BACKEND=indexed (the default), which reads the "
+            "dependency-free UWFI/UWIX seek store. The indexed(...) store is a "
+            "different format and is not used as a fallback.";
+    }
+
+private:
+    std::string kind_;
+    std::string path_;
+    std::mutex  mu_;
+    bool        opened_ = false;
+    std::ifstream data_;
+    std::ifstream idx_;
+    std::uint64_t data_size_ = 0;
+    std::uint32_t n_keys_ = 0;
+    std::uint32_t keyblob_off_ = 0;
+    std::uint32_t hits_off_ = 0;
+    std::uint32_t n_records_ = 0;
+
+    // One positioned read that feeds the D43 counters. On a short read it
+    // returns only the bytes actually read (mirrors Go's factIORead).
+    std::string fact_io_read(std::ifstream& f, std::size_t length, std::uint64_t position) {
+        if (length == 0) return std::string();
+        std::string buf;
+        buf.resize(length);
+        f.clear();
+        f.seekg(static_cast<std::streamoff>(position), std::ios::beg);
+        f.read(&buf[0], static_cast<std::streamsize>(length));
+        std::streamsize n = f.gcount();
+        if (n < 0) n = 0;
+        g_fact_io_bytes.fetch_add(static_cast<std::uint64_t>(n), std::memory_order_relaxed);
+        g_fact_io_reads.fetch_add(1, std::memory_order_relaxed);
+        buf.resize(static_cast<std::size_t>(n));
+        return buf;
+    }
+
+    void ensure_open() {
+        std::lock_guard<std::mutex> guard(mu_);
+        if (opened_) return;
+        data_.open(path_ + ".data", std::ios::binary);
+        if (!data_.is_open())
+            throw std::runtime_error("seek store open failed (" + path_ + ".data)");
+        idx_.open(path_ + ".idx", std::ios::binary);
+        if (!idx_.is_open())
+            throw std::runtime_error("seek store open failed (" + path_ + ".idx)");
+        // data size
+        data_.seekg(0, std::ios::end);
+        data_size_ = static_cast<std::uint64_t>(data_.tellg());
+        data_.seekg(0, std::ios::beg);
+        g_fact_io_data_size.store(data_size_, std::memory_order_relaxed);
+        std::string ih = fact_io_read(idx_, 24, 0);
+        if (ih.size() < 24 || ih.compare(0, 4, "UWIX") != 0)
+            throw std::runtime_error("seek store: bad index magic at " + path_ + ".idx");
+        n_keys_      = seek_le_u32(ih, 8);
+        keyblob_off_ = seek_le_u32(ih, 12);
+        hits_off_    = seek_le_u32(ih, 16);
+        n_records_   = seek_le_u32(ih, 20);
+        std::string dh = fact_io_read(data_, 16, 0);
+        if (dh.size() < 16 || dh.compare(0, 4, "UWFI") != 0)
+            throw std::runtime_error("seek store: bad data magic at " + path_ + ".data");
+        opened_ = true;
+    }
+
+    // Binary search the sorted key table for `target`; return the .data offsets
+    // that key hits (empty if absent). Every probe is a positioned read, so the
+    // D43 counters see exactly the bytes a keyed seek touches.
+    std::vector<std::uint32_t> lookup_offsets(const std::string& target) {
+        std::vector<std::uint32_t> offs;
+        std::int64_t lo = 0;
+        std::int64_t hi = static_cast<std::int64_t>(n_keys_) - 1;
+        while (lo <= hi) {
+            std::int64_t mid = (lo + hi) >> 1;
+            std::uint64_t pos = 24 + static_cast<std::uint64_t>(mid) * 16;
+            std::string e = fact_io_read(idx_, 16, pos);
+            std::uint32_t key_rel = seek_le_u32(e, 0);
+            std::size_t   key_len = seek_le_u16(e, 4);
+            std::size_t   n_hits  = seek_le_u16(e, 6);
+            std::uint32_t hits_rel = seek_le_u32(e, 8);
+            std::string k = fact_io_read(idx_, key_len,
+                                         static_cast<std::uint64_t>(keyblob_off_) + key_rel);
+            int c = seek_bytes_compare(k, target);
+            if (c == 0) {
+                std::string hits = fact_io_read(idx_, n_hits * 4,
+                    static_cast<std::uint64_t>(hits_off_) + hits_rel);
+                offs.reserve(n_hits);
+                for (std::size_t i = 0; i < n_hits; ++i) offs.push_back(seek_le_u32(hits, i * 4));
+                return offs;
+            }
+            if (c < 0) lo = mid + 1; else hi = mid - 1;
+        }
+        return offs;
+    }
+
+    bool read_record(std::uint64_t data_off, Value& a1_out, Value& a2_out) {
+        std::string len_buf = fact_io_read(data_, 4, data_off);
+        if (len_buf.size() < 4) return false;
+        std::size_t payload_len = seek_le_u32(len_buf, 0);
+        std::string payload = fact_io_read(data_, payload_len, data_off + 4);
+        if (payload.size() < 4) return false;
+        std::size_t a1_len = seek_le_u16(payload, 0);
+        std::size_t a2_len = seek_le_u16(payload, 2);
+        if (payload.size() < 4 + a1_len + a2_len) return false;
+        std::string a1 = payload.substr(4, a1_len);
+        std::string a2 = payload.substr(4 + a1_len, a2_len);
+        a1_out = parse_fact_source_value(a1);
+        a2_out = parse_fact_source_value(a2);
+        return true;
+    }
+
+    void scan_all(std::vector<std::pair<Value, Value>>& out) {
+        out.reserve(n_records_);
+        std::uint64_t pos = 16;
+        for (std::uint32_t i = 0; i < n_records_; ++i) {
+            Value a1, a2;
+            if (read_record(pos, a1, a2)) out.emplace_back(std::move(a1), std::move(a2));
+            std::string len_buf = fact_io_read(data_, 4, pos);
+            pos += 4 + static_cast<std::uint64_t>(seek_le_u32(len_buf, 0));
+        }
+    }
+
+    // Two-cache attribution (present in both build modes so the public accessors
+    // link regardless of the LMDB gate).
+    std::uint64_t l1_hits_ = 0;
+    std::uint64_t l2_hits_ = 0;
+    std::uint64_t misses_ = 0;
+
+#ifdef WAM_CPP_ENABLE_LMDB
+    // ------------------------------------------------------------------
+    // Stage 2: lazy + two-level-cached LMDB backend.
+    //
+    // Mirrors the RUST edge-cache variant specifically -- FIFO L2, not
+    // Haskell's LRU (both are documented per-target choices; this lane picks
+    // Rust's). The two cache TYPES the WAM_RUST cache design identifies:
+    //   * L1 -- a fixed-size, direct-mapped, collision-overwrite table
+    //     (Rust's per-HEC L1_CACHE: one slot per key hash, no eviction
+    //     bookkeeping; the intra-query locality tier). Rust uses 1<<16 slots per
+    //     thread; the C++ WAM is single-threaded so one modest table suffices
+    //     (env override UW_WAM_LMDB_L1_SLOTS).
+    //   * L2 -- a shared, FIFO-bounded map (Rust's CacheShard: a memory-budget
+    //     cap with FIFO eviction -- push_back on fill, pop_front to evict, NOT
+    //     LRU; the cross-query reuse tier). Default cap auto-sizes from live
+    //     /proc/meminfo (mirrors Rust resolve_runtime_cache_capacity / R8b); env
+    //     override UW_WAM_LMDB_L2_CAP lets a benchmark shrink it to model memory
+    //     pressure -- the memory x scale crossover the owner wants.
+    // Compose as two_level: L1 hit skips L2; L2 hit promotes to L1; an LMDB miss
+    // (a real keyed range-scan off disk) fills both. Each cached entry is the
+    // full row list for one bound key (key -> vector<(a1,a2)>), so a repeat
+    // lookup of a hot key pays zero LMDB reads.
+    // ------------------------------------------------------------------
+    using RowVec = std::vector<std::pair<Value, Value>>;
+    using RowVecPtr = std::shared_ptr<RowVec>;
+
+    std::vector<std::pair<Value, Value>> rows_lmdb(const std::optional<std::string>& key) {
+        ensure_open_lmdb();
+        std::lock_guard<std::mutex> guard(mu_);
+        if (!key.has_value()) {
+            // Unbound arg1: full seq-band scan (the provides walk). Not cached.
+            RowVec out;
+            lmdb_scan_all(out);
+            return out;
+        }
+        const std::string& enc = *key;
+        // L1 probe (direct-mapped).
+        std::size_t slot = std::hash<std::string>()(enc) & l1_mask_;
+        if (l1_[slot].valid && l1_[slot].key == enc) {
+            ++l1_hits_;
+            return *l1_[slot].rows;
+        }
+        // L2 probe (shared FIFO map); on hit, promote into L1.
+        auto it = l2_.find(enc);
+        if (it != l2_.end()) {
+            ++l2_hits_;
+            l1_[slot].valid = true;
+            l1_[slot].key = enc;
+            l1_[slot].rows = it->second;
+            return *it->second;
+        }
+        // Miss: real keyed range-scan off disk, then fill BOTH tiers.
+        ++misses_;
+        RowVecPtr rows = std::make_shared<RowVec>();
+        lmdb_range_scan(enc, *rows);
+        l1_[slot].valid = true;
+        l1_[slot].key = enc;
+        l1_[slot].rows = rows;
+        if (l2_cap_ > 0) {
+            l2_[enc] = rows;
+            l2_order_.push_back(enc);
+            while (l2_.size() > l2_cap_) {
+                const std::string& victim = l2_order_.front();
+                if (victim != enc) l2_.erase(victim);
+                l2_order_.pop_front();
+            }
+        }
+        return *rows;
+    }
+
+    // Default L2 cap: size from live /proc/meminfo (mirrors Rust R8b
+    // resolve_runtime_cache_capacity) so the shipped default adapts to the host
+    // instead of a bare constant. Rough per-entry cost estimate -- groundwork
+    // precision per CACHE_COST_MODEL_PHILOSOPHY.md, not second-decimal accuracy.
+    static std::size_t lmdb_default_l2_cap() {
+        std::size_t mem_avail_kb = 0;
+        std::ifstream mi("/proc/meminfo");
+        std::string tok;
+        while (mi >> tok) {
+            if (tok == "MemAvailable:") { mi >> mem_avail_kb; break; }
+        }
+        if (mem_avail_kb == 0) return 4096;  // fallback if /proc unavailable
+        const std::size_t budget = (static_cast<std::size_t>(mem_avail_kb) * 1024u) / 20u; // ~5%
+        const std::size_t edge_bytes = 256;  // key string + shared RowVec est.
+        std::size_t cap = budget / edge_bytes;
+        if (cap < 1024) cap = 1024;              // floor, as Rust floors at 1024
+        if (cap > (1u << 20)) cap = (1u << 20);  // sane ceiling
+        return cap;
+    }
+    static std::size_t env_size(const char* name, std::size_t fallback) {
+        if (const char* e = std::getenv(name)) {
+            char* end = nullptr;
+            unsigned long v = std::strtoul(e, &end, 10);
+            if (end && *end == 0 && v > 0) return static_cast<std::size_t>(v);
+        }
+        return fallback;
+    }
+    static std::size_t round_up_pow2(std::size_t n) {
+        std::size_t p = 1;
+        while (p < n) p <<= 1;
+        return p;
+    }
+
+    // P2: close a successfully- OR partially-opened LMDB env and reset the
+    // handles so the source is safe to destroy, and so a retry after a failed
+    // open never leaks a previously-created env. Idempotent; mdb_env_close
+    // reclaims the dbi handle too. Caller must not hold mu_ re-entrantly (the
+    // destructor runs with no lock; ensure_open_lmdb's failure paths call this
+    // while holding mu_, which is fine — close_lmdb takes no lock itself).
+    void close_lmdb() {
+        if (lmdb_env_) {
+            mdb_env_close(lmdb_env_);
+            lmdb_env_ = nullptr;
+        }
+        lmdb_dbi_ = 0;
+        lmdb_open_ = false;
+    }
+
+    void ensure_open_lmdb() {
+        std::lock_guard<std::mutex> guard(mu_);
+        if (lmdb_open_) return;
+        // Configure caches on first open (env overrides in the UW_WAM_* runtime
+        // namespace; L2 default auto-sizes from available memory).
+        std::size_t l1_size = round_up_pow2(env_size("UW_WAM_LMDB_L1_SLOTS", 1u << 14));
+        l1_.assign(l1_size, L1Slot{});
+        l1_mask_ = l1_size - 1;
+        l2_cap_ = env_size("UW_WAM_LMDB_L2_CAP", lmdb_default_l2_cap());
+        int rc = mdb_env_create(&lmdb_env_);
+        if (rc != MDB_SUCCESS)
+            throw std::runtime_error("lmdb env_create failed for " + path_);
+        // The JS builder writes a directory env (data.mdb + lock.mdb). Probe for
+        // a single-file (NOSUBDIR) layout only when path_ has an extension.
+        unsigned int flags = MDB_RDONLY | MDB_NOTLS;
+        std::size_t dot = path_.rfind(static_cast<char>(46));  // 46 = "."
+        if (dot != std::string::npos && path_.substr(dot) == ".mdb")
+            flags |= MDB_NOSUBDIR;
+        rc = mdb_env_open(lmdb_env_, path_.c_str(), flags, 0664);
+        if (rc != MDB_SUCCESS) {
+            mdb_env_close(lmdb_env_);
+            lmdb_env_ = nullptr;
+            throw std::runtime_error("lmdb env_open failed for " + path_
+                + ": " + std::string(mdb_strerror(rc)));
+        }
+        MDB_txn* txn = nullptr;
+        rc = mdb_txn_begin(lmdb_env_, nullptr, MDB_RDONLY, &txn);
+        if (rc != MDB_SUCCESS) {
+            // P2: env was created+opened above; release it before bailing so the
+            // partial open does not leak its FDs (and a retry starts clean).
+            close_lmdb();
+            throw std::runtime_error("lmdb txn_begin failed for " + path_);
+        }
+        rc = mdb_dbi_open(txn, nullptr, 0, &lmdb_dbi_);
+        if (rc != MDB_SUCCESS) {
+            mdb_txn_abort(txn);
+            close_lmdb();  // P2: release the env on this partial-open path too
+            throw std::runtime_error("lmdb dbi_open failed for " + path_);
+        }
+        mdb_txn_commit(txn);
+        lmdb_open_ = true;
+    }
+
+    // Keyed range scan over the a1Range band for one encoded key. Reads ONLY the
+    // records that key touches (the lazy keyed read).
+    void lmdb_range_scan(const std::string& enc_key, RowVec& out) {
+        std::string prefix = lmdb_a1_prefix(enc_key);
+        std::string start = lmdb_a1_start(enc_key);
+        MDB_txn* txn = nullptr;
+        if (mdb_txn_begin(lmdb_env_, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS) return;
+        MDB_cursor* cur = nullptr;
+        if (mdb_cursor_open(txn, lmdb_dbi_, &cur) != MDB_SUCCESS) { mdb_txn_abort(txn); return; }
+        MDB_val k, v;
+        k.mv_size = start.size();
+        k.mv_data = const_cast<char*>(start.data());
+        int rc = mdb_cursor_get(cur, &k, &v, MDB_SET_RANGE);
+        while (rc == MDB_SUCCESS) {
+            if (k.mv_size < prefix.size()
+                || std::memcmp(k.mv_data, prefix.data(), prefix.size()) != 0)
+                break;  // left the key's band
+            g_fact_io_bytes.fetch_add(k.mv_size + v.mv_size, std::memory_order_relaxed);
+            g_fact_io_reads.fetch_add(1, std::memory_order_relaxed);
+            Value a1, a2;
+            if (decode_record_payload(static_cast<const char*>(v.mv_data), v.mv_size, a1, a2))
+                out.emplace_back(std::move(a1), std::move(a2));
+            rc = mdb_cursor_get(cur, &k, &v, MDB_NEXT);
+        }
+        mdb_cursor_close(cur);
+        mdb_txn_abort(txn);
+    }
+
+    // Full scan over the seq band (0x00 prefix); each record is stored once
+    // there (and once in the a1Range band), so this walks every row exactly once.
+    void lmdb_scan_all(RowVec& out) {
+        std::string prefix(1, static_cast<char>(0x00));
+        MDB_txn* txn = nullptr;
+        if (mdb_txn_begin(lmdb_env_, nullptr, MDB_RDONLY, &txn) != MDB_SUCCESS) return;
+        MDB_cursor* cur = nullptr;
+        if (mdb_cursor_open(txn, lmdb_dbi_, &cur) != MDB_SUCCESS) { mdb_txn_abort(txn); return; }
+        MDB_val k, v;
+        k.mv_size = prefix.size();
+        k.mv_data = const_cast<char*>(prefix.data());
+        int rc = mdb_cursor_get(cur, &k, &v, MDB_SET_RANGE);
+        while (rc == MDB_SUCCESS) {
+            if (k.mv_size < 1 || static_cast<unsigned char>(
+                    static_cast<const char*>(k.mv_data)[0]) != 0x00)
+                break;  // left the seq band
+            g_fact_io_bytes.fetch_add(k.mv_size + v.mv_size, std::memory_order_relaxed);
+            g_fact_io_reads.fetch_add(1, std::memory_order_relaxed);
+            Value a1, a2;
+            if (decode_record_payload(static_cast<const char*>(v.mv_data), v.mv_size, a1, a2))
+                out.emplace_back(std::move(a1), std::move(a2));
+            rc = mdb_cursor_get(cur, &k, &v, MDB_NEXT);
+        }
+        mdb_cursor_close(cur);
+        mdb_txn_abort(txn);
+    }
+
+    struct L1Slot { bool valid = false; std::string key; RowVecPtr rows; };
+    MDB_env* lmdb_env_ = nullptr;
+    MDB_dbi  lmdb_dbi_ = 0;
+    bool     lmdb_open_ = false;
+    std::vector<L1Slot> l1_;
+    std::size_t l1_mask_ = 0;
+    std::unordered_map<std::string, RowVecPtr> l2_;
+    std::deque<std::string> l2_order_;
+    std::size_t l2_cap_ = 0;
+#endif // WAM_CPP_ENABLE_LMDB
+};
+
 struct WamState {
     // A/X register file as a flat array indexed by reg_index() (A1..A100 ->
     // 0..99, X1..X220 -> 100..319). Y registers live in env_stack frames. This
@@ -638,6 +1270,23 @@ struct WamState {
     };
     std::vector<DynamicIterator> dynamic_iters;
     std::size_t dynamic_next_clause_pc = 0;
+    // D43 store-backed P/2 fact sources, keyed by "name/arity". Registered at
+    // setup by register_seek_fact_source (from the cpp_wam_fact_sources codegen
+    // option). CallForeign dispatches store predicates here for keyed lazy
+    // seeks instead of loading the whole catalog into dynamic_db.
+    std::unordered_map<std::string, std::shared_ptr<SeekFactSource>> seek_fact_sources;
+    // Iteration state for dispatch_foreign_call. Mirrors DynamicIterator, but
+    // the clause list is materialised per-call from a seek/scan (already the
+    // rows the bound key touches), so it is owned by the iterator rather than
+    // read from dynamic_db. Each clause is a ground store_pred(A1,A2) compound.
+    struct ForeignIterator {
+        std::vector<CellPtr> clauses;
+        std::size_t next_idx = 0;
+        std::vector<CellPtr> call_args;
+        std::size_t after_pc = 0;
+    };
+    std::vector<ForeignIterator> foreign_iters;
+    std::size_t foreign_next_clause_pc = 0;
     // Mutable globals — nb_setval/2, nb_getval/2, b_setval/2, b_getval/2.
     // Each key maps to a CellPtr holding the current value. nb_setval
     // replaces the pointer (non-backtrackable: prior bindings to the
@@ -902,6 +1551,40 @@ struct WamState {
     // after_pc; on no-match, undo trail and recurse (CP-style).
     // On exhausted iterator, pop and return false.
     bool    dynamic_try_next();
+    // Register a D43 store-backed P/2 seek fact source. Kind is "indexed"
+    // (UWFI/UWIX .data/.idx seek store at Path prefix) or "lmdb" (opt-in
+    // comparison tier; loud error at query time — no reader built into the seek
+    // backend).
+    void    register_seek_fact_source(const std::string& key,
+                                      const std::string& kind,
+                                      const std::string& path);
+    // Dispatch a CallForeign to a store-backed P/2 fact source: read A1, do a
+    // keyed seek when it is bound atomic (else a full scan), materialise the
+    // matching rows as ground clause cells, push a ForeignIterator, then
+    // delegate to foreign_try_next (which unifies the first row and pushes a CP
+    // for the rest if any). Returns false (→ backtrack) when no rows match.
+    bool    dispatch_foreign_call(const std::string& key,
+                                  std::int64_t arity,
+                                  std::size_t after_pc);
+    // Try the next row in the top ForeignIterator. Mirrors dynamic_try_next:
+    // unify call_args with the ground row, push a CP (alt_pc =
+    // foreign_next_clause_pc) if more rows remain, and proceed to after_pc.
+    bool    foreign_try_next();
+    // Prune the foreign/dynamic/retract/current_predicate iterator side stacks
+    // back into lockstep with choice_points. Each such iterator is owned by
+    // exactly one live choice point — the one whose alt_pc is that iterator's
+    // *_next_clause pc — so the iterator-stack depth must always equal the count
+    // of those owning CPs. When choice_points SHRINKS via a cut or a scope drain
+    // (the !/0 opcode, M17 Cut/CutIte, meta-call `!`, negation/if-then commit
+    // drains, findall/throw base drains) the pruned CP's iterator is orphaned
+    // and MUST be dropped in lockstep; otherwise a later *_try_next resumes the
+    // leaked iterator (P1: a nested cut in an inner foreign query left its
+    // iterator behind and an outer continuation resumed the WRONG one — SWI
+    // [a,b] vs compiled [a,_]). Call this at every choice_points-shrink site
+    // that is a cut/drain (NOT the *NextClause resumption pops, which pop their
+    // own CP and then legitimately re-read the same iterator). Only shrinks the
+    // side stacks — never grows them — so it is a safe no-op when already synced.
+    void    prune_iters_to_choice_points();
     // Nondet retract/1 — finds the next clause in dynamic_db[key]
     // (from iter.next_idx onward) that unifies with iter.pattern,
     // removes it, leaves the unification bindings in place, pushes

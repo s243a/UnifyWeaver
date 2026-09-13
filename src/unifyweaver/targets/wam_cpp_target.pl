@@ -439,7 +439,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     findall(Items, (
         member(PI, Predicates),
         catch(
-            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true), ite_use_y_level(true)], WamText),
+            ( cpp_predicate_wam_text(PI, Options, WamText),
               parse_pred_blocks(WamText, Items0),
               iso_errors_rewrite(IsoConfig, PI, Items0, Items)
             ),
@@ -459,7 +459,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
             conj_return, disj_alt, if_then_commit, if_then_else,
             aggregate_next_group, dynamic_next_clause, sub_atom_next,
             body_next, retract_next, output_capture_return,
-            current_pred_next],
+            current_pred_next, foreign_next_clause],
            FlatInstrs),
     length(FlatInstrs0, CatchReturnPC),
     NegationReturnPC is CatchReturnPC + 1,
@@ -475,6 +475,7 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     RetractNextPC is CatchReturnPC + 11,
     OutputCaptureReturnPC is CatchReturnPC + 12,
     CurrentPredNextPC is CatchReturnPC + 13,
+    ForeignNextClausePC is CatchReturnPC + 14,
     findall(LabelLine, (
         member(NameStr-PC, Labels),
         format(atom(LabelLine),
@@ -498,6 +499,15 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
                             Order, LoadLine)
     ), LoadLines),
     atomic_list_concat(LoadLines, '\n', LmdbLoadBody),
+    % D43 store-backed seek fact sources (cpp_wam_fact_sources option).
+    % One register_seek_fact_source(...) call per source, appended to
+    % wam_cpp_setup so the sources are live before any query runs.
+    seek_sources_from_options(Options, SeekSources),
+    findall(SeekLine, (
+        member(seek_source(SKey, SKind, SPath), SeekSources),
+        emit_seek_register_call(SKey, SKind, SPath, SeekLine)
+    ), SeekLines),
+    atomic_list_concat(SeekLines, '\n', SeekRegBody),
     length(FlatInstrs, Reserve),
     format(string(SetupCpp),
 'void wam_cpp_setup(WamState& vm) {
@@ -518,6 +528,8 @@ emit_setup_function(Predicates, Options, SetupCpp) :-
     vm.retract_next_pc = ~w;
     vm.output_capture_return_pc = ~w;
     vm.current_pred_next_pc = ~w;
+    vm.foreign_next_clause_pc = ~w;
+~w
 ~w
 ~w
 ~w
@@ -530,8 +542,8 @@ static const int _wam_cpp_setup_register = []() {
     ConjReturnPC, DisjAltPC, IfThenCommitPC, IfThenElsePC,
     AggregateNextGroupPC, DynamicNextClausePC, SubAtomNextPC,
     BodyNextPC, RetractNextPC, OutputCaptureReturnPC,
-    CurrentPredNextPC,
-    LabelBody, InstrBody, LmdbLoadBody]).
+    CurrentPredNextPC, ForeignNextClausePC,
+    LabelBody, InstrBody, LmdbLoadBody, SeekRegBody]).
 
 % Render one cpp_load_lmdb_fact_source call. DbName is either an
 % atom (named sub-DB) or [] (default unnamed DB -> nullptr).
@@ -558,6 +570,98 @@ db_name_arg(DbName, Arg) :-
 
 cpp_bool(true, 'true') :- !.
 cpp_bool(false, 'false').
+
+% ---------------------------------------------------------------------------
+% D43 store-backed seek fact sources (cpp_wam_fact_sources codegen option).
+%
+% Analogous to rust_wam_fact_sources / go_wam_fact_sources: a store-backed P/2
+% predicate is compiled to a two-instruction body [call_foreign, proceed] so
+% callers reach it by label exactly like any other predicate; the seek source
+% itself is registered in wam_cpp_setup and dispatched at runtime via
+% CallForeign → dispatch_foreign_call (keyed lazy seek). Distinct from the
+% eager, whole-DB cpp_fact_sources (LMDB) option, which stays as-is.
+%
+%   cpp_wam_fact_sources([ source(P/2, indexed(Prefix)) | source(P/2, lmdb(Dir)) ])
+% ---------------------------------------------------------------------------
+
+%% seek_sources_from_options(+Options, -Sources)
+%  Resolve the cpp_wam_fact_sources option into seek_source(Key, Kind, Path)
+%  terms. Key is "Name/Arity"; Kind is "indexed" | "lmdb"; Path is the absolute
+%  store prefix (indexed) or dir (lmdb), baked in at build time so the binary
+%  needs no runtime store argument (mirrors the Go/Rust lanes).
+seek_sources_from_options(Options, Sources) :-
+    (   member(cpp_wam_fact_sources(Specs), Options)
+    ->  findall(seek_source(Key, Kind, AbsPath), (
+            member(source(PI, Spec), Specs),
+            cpp_seek_source_pred(PI, Pred, Arity),
+            validate_seek_v1_arity(Pred, Arity),
+            format(atom(Key), '~w/~w', [Pred, Arity]),
+            cpp_seek_source_spec(Spec, Kind, Path0),
+            cpp_store_abs_path(Path0, AbsPath)
+        ), Sources)
+    ;   Sources = []
+    ).
+
+cpp_seek_source_pred(_:Name/Ar, Name, Ar) :- !.
+cpp_seek_source_pred(Name/Ar, Name, Ar).
+
+% v1 serves arity 2 only (mirrors the Rust/Go contract); reject anything else
+% loudly so a mis-declared source is a codegen-time error, not a silent skip.
+validate_seek_v1_arity(_, 2) :- !.
+validate_seek_v1_arity(Name, Arity) :-
+    throw(error(domain_error(cpp_wam_fact_source_arity_2, Name/Arity), _)).
+
+cpp_seek_source_spec(indexed(Prefix), indexed, Prefix).
+cpp_seek_source_spec(lmdb(Dir), lmdb, Dir).
+
+% Resolve a store path/prefix to an absolute path relative to the cwd so the
+% baked-in store location survives a different run directory.
+cpp_store_abs_path(Path, Abs) :-
+    atom_string(Path, PathStr),
+    working_directory(Cwd, Cwd),
+    (   catch(absolute_file_name(PathStr, Abs0, [relative_to(Cwd)]), _, fail),
+        Abs0 \== []
+    ->  Abs = Abs0
+    ;   Abs = PathStr
+    ).
+
+%% cpp_wam_fact_source_spec(+P, +Arity, +Options, -Spec)
+%  True when Options declare a store-backed source for P/Arity (arity 2).
+cpp_wam_fact_source_spec(P, Arity, Options, Spec) :-
+    Arity =:= 2,
+    member(cpp_wam_fact_sources(Sources), Options),
+    member(source(PI, Spec), Sources),
+    cpp_seek_source_pred(PI, Name, Ar),
+    Name == P, Ar =:= Arity.
+
+%% cpp_fact_stream_wam_text(+P, +Arity, -WamText)
+%  The two-instruction predicate body served for a store fact source: dispatch
+%  to CallForeign (which routes to the seek source) then proceed.
+cpp_fact_stream_wam_text(P, Arity, WamText) :-
+    format(atom(WamText),
+        '~w/~w:\n    call_foreign ~w/~w ~w\n    proceed\n',
+        [P, Arity, P, Arity, Arity]).
+
+%% cpp_predicate_wam_text(+PI, +Options, -WamText)
+%  WAM text for one predicate: the fact-stream body when PI is a declared
+%  cpp_wam_fact_sources source, else the shared compiler's output.
+cpp_predicate_wam_text(PI, Options, WamText) :-
+    ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
+    (   cpp_wam_fact_source_spec(Pred, Arity, Options, _Spec)
+    ->  cpp_fact_stream_wam_text(Pred, Arity, WamText)
+    ;   compile_predicate_to_wam(PI,
+            [inline_bagof_setof(true), ite_use_y_level(true)], WamText)
+    ).
+
+%% emit_seek_register_call(+Key, +Kind, +Path, -Line)
+%  Render one register_seek_fact_source(...) call for wam_cpp_setup.
+emit_seek_register_call(Key, Kind, Path, Line) :-
+    escape_cpp_string(Key, EKey),
+    escape_cpp_string(Kind, EKind),
+    escape_cpp_string(Path, EPath),
+    format(atom(Line),
+        '    vm.register_seek_fact_source("~w", "~w", "~w");',
+        [EKey, EKind, EPath]).
 
 % Map the Prolog on_duplicate policy atom to the C++ enum tag.
 % fallback(Policy) collapses to the inner policy for v1 (Phase 2
@@ -2346,6 +2450,8 @@ instr_to_setup_line(output_capture_return, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::OutputCaptureReturn());'.
 instr_to_setup_line(current_pred_next, _Labels, Line) :- !,
     Line = '    vm.instrs.push_back(Instruction::CurrentPredNext());'.
+instr_to_setup_line(foreign_next_clause, _Labels, Line) :- !,
+    Line = '    vm.instrs.push_back(Instruction::ForeignNextClause());'.
 instr_to_setup_line(Instr, _Labels, Line) :-
     wam_instruction_to_cpp_literal(Instr, Lit),
     format(atom(Line), '    vm.instrs.push_back(~w);', [Lit]).
@@ -2525,7 +2631,7 @@ compile_predicates_for_project(Predicates, Options, PredicatesCode) :-
     findall(Code, (
         member(PI, Predicates),
         catch(
-            ( compile_predicate_to_wam(PI, [inline_bagof_setof(true), ite_use_y_level(true)], WamCode),
+            ( cpp_predicate_wam_text(PI, Options1, WamCode),
               compile_wam_predicate_to_cpp(PI, WamCode, Options1, Code)
             ),
             Err,
@@ -2889,7 +2995,14 @@ write_text_file(Path, Content) :-
 
 compile_wam_runtime_header_to_cpp(Options, Code) :-
     compile_wam_runtime_header_body_to_cpp(Options, Body),
-    lmdb_sources_from_options(Options, LmdbSources),
+    lmdb_sources_from_options(Options, LmdbSources0),
+    % Also enable the LMDB gate when a D43 seek fact source selects the lmdb
+    % backend (Stage-2 lazy+cached reader), not only the eager cpp_fact_sources.
+    seek_sources_from_options(Options, SeekSources),
+    (   member(seek_source(_, lmdb, _), SeekSources)
+    ->  LmdbSources = [seek_lmdb|LmdbSources0]
+    ;   LmdbSources = LmdbSources0
+    ),
     (   LmdbSources == []
     ->  Code = Body
     ;   % Auto-enable LMDB when the codegen has fact sources. The

@@ -571,8 +571,10 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
         // created inside the call but never the caller's alternatives. A
         // clause-body `!` never comes through here — it is the !/0 builtin.
         if (g.s == "!") {
-            if (choice_points.size() > meta_call_barrier)
+            if (choice_points.size() > meta_call_barrier) {
                 choice_points.resize(meta_call_barrier);
+                prune_iters_to_choice_points();  // P1: drop cut-away iterators
+            }
             cp = after_pc;
             if (cp == 0) { halt = true; return true; }
             pc = cp; cp = 0;
@@ -1126,6 +1128,7 @@ bool WamState::execute_throw() {
         // Restore VM state to the frame's snapshot.
         unwind_trail_to(f.trail_mark);
         while (choice_points.size() > f.base_cp_count) choice_points.pop_back();
+        prune_iters_to_choice_points();  // P1: drop nondet iters unwound by throw
         while (aggregate_frames.size() > f.base_agg_count) aggregate_frames.pop_back();
         regs = f.saved_regs;
         mode_stack = f.saved_mode_stack;
@@ -1506,6 +1509,8 @@ bool WamState::query(const std::string& pred_key, const std::vector<Value>& args
     aggregate_frames.clear();
     mode_stack.clear();
     env_stack.clear();
+    foreign_iters.clear();   // P1: reset nondet iterator side stacks per query
+    dynamic_iters.clear();
     retract_iters.clear();
     current_pred_iters.clear();
     pc = it->second;
