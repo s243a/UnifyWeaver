@@ -1,0 +1,6 @@
+libtmpl.so.1 #PACKAGE# #MINVER#
+ (arch=amd64)only_amd64@Base 1.0
+ (arch=!amd64)not_amd64@Base 1.0
+ (arch-bits=64)bits64@Base 1.0
+ (optional)maybe_fn@Base 1.0
+ plain_fn@Base 1.0
