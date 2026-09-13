@@ -1,0 +1,6 @@
+["libx.so.1|pthread_setname_np@GLIBC_2.12",["since","2.12","2.35-1","unproven"]]
+["libx.so.1|pthread_setname_np@GLIBC_2.34",["since","2.34","2.35-1","unproven"]]
+["libx.so.1|getenv@GLIBC_2.2.5",["since","2.2.5","2.35-1","unproven"]]
+["libx.so.1|__libc_enable_secure@GLIBC_PRIVATE",["since","0","2.35-1","unproven"]]
+["libx.so.1|plain_fn@Base",["since","1.0","2.35-1","default"]]
+["libother.so.9|not_this_soname@OTHER_1",["since","1.0","2.35-1","unproven"]]

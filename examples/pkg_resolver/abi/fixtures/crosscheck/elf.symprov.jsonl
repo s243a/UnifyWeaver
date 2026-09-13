@@ -1,0 +1,5 @@
+["libx.so.1|pthread_setname_np@GLIBC_2.34",["at","2.35-1","default"]]
+["libx.so.1|pthread_setname_np@GLIBC_2.12",["at","2.35-1","nondefault"]]
+["libx.so.1|getenv@GLIBC_2.2.5",["at","2.35-1","default"]]
+["libx.so.1|__libc_enable_secure@GLIBC_PRIVATE",["at","2.35-1","default"]]
+["libx.so.1|plain_fn@Base",["at","2.35-1","default"]]
