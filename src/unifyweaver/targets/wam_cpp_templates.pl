@@ -18,6 +18,7 @@ cpp_template_path(runtime_source, 'runtime.cpp.mustache').
 cpp_template_path(runtime_cell_helpers, 'runtime/cell_helpers.cpp.mustache').
 cpp_template_path(runtime_arithmetic_eval, 'runtime/arithmetic_eval.cpp.mustache').
 cpp_template_path(runtime_builtin_dispatch, 'runtime/builtin_dispatch.cpp.mustache').
+cpp_template_path(runtime_step_execution, 'runtime/step_execution.cpp.mustache').
 cpp_template_path(runtime_lmdb_fact_source, 'runtime/lmdb_fact_source.cpp.mustache').
 cpp_template_path(main_shim, 'main.cpp.mustache').
 cpp_template_path(generated_program, 'generated_program.cpp.mustache').
@@ -201,16 +202,18 @@ render_cpp_template(runtime_source, Path, Template, [], Text) :-
     !,
     (   runtime_shell_parts(Template,
             [Prefix, BetweenCellAndArithmetic, BetweenArithmeticAndBuiltin,
-             BetweenBuiltinAndLmdb, Suffix])
+             BetweenBuiltinAndStep, BetweenStepAndLmdb, Suffix])
     ->  file_directory_name(Path, Root),
         cpp_render_template_at_root(Root, runtime_cell_helpers, [], Cell),
         cpp_render_template_at_root(Root, runtime_arithmetic_eval, [], Arithmetic),
         cpp_render_template_at_root(Root, runtime_builtin_dispatch, [], Builtin),
+        cpp_render_template_at_root(Root, runtime_step_execution, [], Step),
         cpp_render_template_at_root(Root, runtime_lmdb_fact_source, [], Lmdb),
         % Source spans are assembled once. Child text is never scanned again.
         atomics_to_string([Prefix, Cell, BetweenCellAndArithmetic, Arithmetic,
                            BetweenArithmeticAndBuiltin, Builtin,
-                           BetweenBuiltinAndLmdb, Lmdb, Suffix], "", Text)
+                           BetweenBuiltinAndStep, Step,
+                           BetweenStepAndLmdb, Lmdb, Suffix], "", Text)
     ;   throw(error(cpp_wam_template_tags(runtime_source, Path),
                     context(cpp_render_template/3, runtime_source)))
     ).
@@ -247,17 +250,19 @@ program_shell_parts(Template, Prefix, Middle, Suffix) :-
 % reordered, or unrelated source tags before loading any child section.
 runtime_shell_parts(Template,
     [Prefix, BetweenCellAndArithmetic, BetweenArithmeticAndBuiltin,
-     BetweenBuiltinAndLmdb, Suffix]) :-
+     BetweenBuiltinAndStep, BetweenStepAndLmdb, Suffix]) :-
     split_single_source_marker(Template, "{{cell_helpers}}", Prefix, AfterCell),
     split_single_source_marker(AfterCell, "{{arithmetic_eval}}",
                                BetweenCellAndArithmetic, AfterArithmetic),
     split_single_source_marker(AfterArithmetic, "{{builtin_dispatch}}",
                                BetweenArithmeticAndBuiltin, AfterBuiltin),
-    split_single_source_marker(AfterBuiltin, "{{lmdb_fact_source}}",
-                               BetweenBuiltinAndLmdb, Suffix),
+    split_single_source_marker(AfterBuiltin, "{{step_execution}}",
+                               BetweenBuiltinAndStep, AfterStep),
+    split_single_source_marker(AfterStep, "{{lmdb_fact_source}}",
+                               BetweenStepAndLmdb, Suffix),
     maplist(source_span_without_tags,
             [Prefix, BetweenCellAndArithmetic, BetweenArithmeticAndBuiltin,
-             BetweenBuiltinAndLmdb, Suffix]).
+             BetweenBuiltinAndStep, BetweenStepAndLmdb, Suffix]).
 
 split_single_source_marker(Text, Marker, Before, After) :-
     string_length(Marker, Length),
