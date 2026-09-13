@@ -12,12 +12,16 @@
 :- use_module('../src/unifyweaver/targets/wam_cpp_lowered_emitter', []).
 :- use_module('../src/unifyweaver/targets/wam_target', [compile_predicate_to_wam/3]).
 
-:- dynamic user:shell_t4/2, user:shell_t5/1, user:shell_t6/1, user:shell_ite/2.
+:- dynamic user:shell_t4/2, user:shell_t5/1, user:shell_t6/1, user:shell_ite/2,
+           user:shell_seqite/3, user:shell_nestedite/2.
 user:shell_t4(a,x). user:shell_t4(b,y). user:shell_t4(a,z).
 user:shell_t5(red). user:shell_t5(green). user:shell_t5(blue).
 user:shell_t6(s01). user:shell_t6(s02). user:shell_t6(s03). user:shell_t6(s04).
 user:shell_t6(s05). user:shell_t6(s06). user:shell_t6(s07). user:shell_t6(s08).
 user:shell_ite(X,Y) :- ( X > 0 -> Y = pos ; Y = nonpos ).
+user:shell_seqite(X,Y,Z) :- ( X > 0 -> Y = pos ; Y = nonpos ),
+                             ( X > 5 -> Z = big ; Z = small ).
+user:shell_nestedite(X,Y) :- ( X > 0 -> ( X > 10 -> Y = big ; Y = small ) ; Y = neg ).
 
 % SHA-256 covers UTF-8 bytes; lengths below count Prolog characters.
 % Captured from the old compile_wam_runtime_header_to_cpp/2 at local main
@@ -89,6 +93,10 @@ old_lowered_function_digest(shell_t6/1, 1151,
     '9326ae27c9eb3df2010e3d83bfe768b2d2641544005ef0b349468940dff9ae92').
 old_lowered_function_digest(shell_ite/2, 1393,
     '2c7fc9718f9f2f37fed6b07a6b22449e80e210445e672ceb7a23411fa62aae51').
+old_lowered_function_digest(shell_seqite/3, 2498,
+    '6c65043391d2892c9fa6c0e5e80a1f8f7dc2fd973a68083ac0be5e2a179d147c').
+old_lowered_function_digest(shell_nestedite/2, 2283,
+    'ee19e17bc3b261feddbdf66053619ea0484a57974157d19bb7d35f445e21f078').
 
 test(lowered_function_old_bytes,
      [forall(old_lowered_function_digest(PI, Length, Digest))]) :-
