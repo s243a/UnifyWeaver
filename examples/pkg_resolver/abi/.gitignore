@@ -1,0 +1,4 @@
+# Generated symbol-ABI stores and verification artifacts (rebuild via
+# run_abi_verify.sh). Never commit machine-specific ingested data.
+.out/
+*.jsonl
