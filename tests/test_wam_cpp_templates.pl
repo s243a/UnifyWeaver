@@ -11,12 +11,16 @@
 :- use_module('../src/unifyweaver/targets/wam_cpp_lowered_emitter', []).
 
 % SHA-256 covers UTF-8 bytes; lengths below count Prolog characters.
-% Captured from the old compile_wam_runtime_header_to_cpp/2 at local main
-% 1c5ce3682c7047ef9470ee0d5563e3313eccfa24 before extraction.
-old_header_digest(plain, 57611,
-    '268fd386b593d5826b54376a455d58a1ad9148439996530833d34ab9e4e06352').
-old_header_digest(lmdb, 57852,
-    'cc9ffdacc92b1234212340e7fbb2ae27786180a36b5818a43924708bc0c8f471').
+% Re-baselined after the D43 store-backed seek FactSource + lazy+cached LMDB
+% seek reader were re-applied to the runtime header (pkg_resolver cpp_store
+% lane). The pre-extraction baseline was compile_wam_runtime_header_to_cpp/2 at
+% local main 1c5ce3682c7047ef9470ee0d5563e3313eccfa24 (plain 57611 / lmdb
+% 57852); the SeekFactSource class and its guarded LMDB two-cache backend add
+% the byte delta.
+old_header_digest(plain, 86911,
+    'cc91d6bc37e2f7d6f3a6328a5b3e7892793c35e738a4fa9755631bd1d0944017').
+old_header_digest(lmdb, 87152,
+    '8f875cebdefa46b6e49434fdace3b761690e783751a56c88bb5079eb6a42e302').
 
 assert_old_header_bytes(Mode, Header) :-
     old_header_digest(Mode, Length, Digest),
@@ -56,9 +60,12 @@ test(main_shim_exact_bytes) :-
 test(runtime_source_exact_bytes, [forall(member(Options,
      [[], [cpp_fact_sources([source(edge/2, lmdb('/tmp/phase3b_lmdb'))])]]))]) :-
     wam_cpp_target:compile_wam_runtime_to_cpp(Options, Runtime),
-    string_length(Runtime, 310726),
+    string_length(Runtime, 320342),
     crypto_data_hash(Runtime, Digest, [algorithm(sha256), encoding(utf8)]),
-    assertion(Digest == 'fa0317a11da5069d0fa18a36bc1937419bcf187e7f6ec4c5d278fd0270cfd300').
+    % Re-baselined after the D43 CallForeign seek dispatch (dispatch_foreign_call
+    % / foreign_try_next + the ForeignNextClause case) was re-applied to the
+    % runtime source. Still option-invariant (both variants share this digest).
+    assertion(Digest == '3c6eef02a16a4fb73144228a3227cd10e90455b0c0bc5ef4795afa615a9c3643').
 
 test(program_shell_does_not_rescan_fragments) :-
     cpp_render_template_at_root('templates/targets/cpp_wam', generated_program,
@@ -69,14 +76,18 @@ test(program_shell_does_not_rescan_fragments) :-
     assertion(\+ sub_string(Text, _, _, _, "P S {{predicates_code}}")),
     assertion(\+ sub_string(Text, _, _, _, "S P {{setup_code}}")).
 
+% Re-baselined after the store-lane re-application: emit_setup_function now also
+% emits the foreign_next_clause trailing instruction + vm.foreign_next_clause_pc
+% and the (here empty) seek-source registration block, shifting the setup
+% section of generated_program.cpp for every variant.
 project_variant(functions, [emit_mode(functions), emit_main(true)],
-    'fadbf0020e10e86fbf206a5f1f6b0b912891676c8dc13a3168a34cece76aafa7').
+    'ec00ecb77568ab7d0e1105327f4093dadbc57bc2fac1f642afc54c66a9338330').
 project_variant(interpreter, [emit_mode(interpreter)],
-    '172c9e2924ade91fc01513916c2bab0dd96cdf700be0d95df5c9f939ec143ba3').
+    '45e030dfd9314ea0dd8d0fd0c938b424db4f0aeaa264e0e4c838eff016c2bc1f').
 project_variant(lmdb,
     [emit_mode(functions), emit_main(true),
      cpp_fact_sources([source(phase3_pair/2, lmdb('/tmp/phase3b_lmdb'))])],
-    'a9bf8ebfdf493820f05a9323ffc86c365b12844d83a91de927ae8b045edb0e3c').
+    'b12075dec8d51e3aa1dd6a11fe66c6e7915ebbd509c9f788df32737259076ddd').
 
 test(generated_program_old_bytes,
      [forall(project_variant(_, Options, Expected))]) :-
