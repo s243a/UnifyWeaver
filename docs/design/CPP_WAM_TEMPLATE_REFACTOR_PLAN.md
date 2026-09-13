@@ -28,8 +28,8 @@ with frozen SHA-256 `fa0317a11da5069d0fa18a36bc1937419bcf187e7f6ec4c5d278fd0270c
 is already guarded by the header's macro, and the same runtime bytes are
 emitted with or without LMDB options. The adapter treats no-variable assets
 as literal source after rejecting any template tags. This avoids a needless
-generic-renderer scan of the 311 KB file. Runtime subdivision into coherent
-dependency groups remains open; no semantic logic moved out of Prolog.
+generic-renderer scan of the 311 KB file. Further runtime subdivision remains
+open; no semantic logic moved out of Prolog.
 
 Project generation now validates the required Pattern Stache cases and renders
 all requested artifacts before creating the output directory. A failure in a
@@ -56,6 +56,29 @@ project with 10 emitted `get_constant` fragments averaged 29.7 ms over 20
 generations on the same local host. Passing the validated static runtime
 through the generic Mustache scanner instead averaged 41.8 ms on the same
 fixture; direct literal return avoids that scan while preserving bytes.
+
+### First bounded runtime split (2026-09-12)
+
+The runtime shell now inserts three contiguous sections at their original
+definition positions: `runtime/cell_helpers.cpp.mustache` (323 lines),
+`runtime/arithmetic_eval.cpp.mustache` (261 lines), and
+`runtime/lmdb_fact_source.cpp.mustache` (356 lines). The remaining shell is
+6,087 lines. The adapter requires each of its three markers exactly once and
+in order, rejects any other source tags, validates each static section, and
+concatenates the original source spans and section text once. It does not
+rescan inserted text. Missing or malformed sections fail before project
+directory creation.
+
+The assembled runtime keeps the frozen 311,009-byte SHA-256 above for plain and
+LMDB-enabled options. Native fact, choice, caller, lowered T6, and LMDB
+runtime/codegen cases pass. This split improves file ownership and review size;
+it is **relocation and composition, not fragment reuse**. Each section appears
+once in one runtime artifact, with no shared body replacing duplicate source.
+The same 10-fact functions-mode project averaged 27.4 ms before and 39.7 ms
+after the split over separate isolated 20-generation runs on the local host.
+The extra file reads, marker validation, and assembly add measurable generation
+time; later splits should weigh that cost against concrete reuse or maintenance
+benefit. The C++ executable source and behavior remain unchanged.
 
 ## Outcome and scope
 
