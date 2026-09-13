@@ -119,6 +119,28 @@ test(project_preflight_missing_runtime_no_files) :-
 test(project_preflight_malformed_runtime_no_files) :-
     with_project_template_fixture(malformed_runtime, check_project_preflight_failure).
 
+test(project_preflight_duplicate_runtime_marker_no_files) :-
+    with_project_template_fixture(duplicate_runtime_marker,
+                                  check_project_preflight_failure).
+
+test(project_preflight_reordered_runtime_markers_no_files) :-
+    with_project_template_fixture(reordered_runtime_markers,
+                                  check_project_preflight_failure).
+
+runtime_section(cell_helpers, 'cell_helpers.cpp.mustache', runtime_cell_helpers).
+runtime_section(arithmetic_eval, 'arithmetic_eval.cpp.mustache', runtime_arithmetic_eval).
+runtime_section(lmdb_fact_source, 'lmdb_fact_source.cpp.mustache', runtime_lmdb_fact_source).
+
+test(project_preflight_missing_runtime_section_no_files,
+     [forall(runtime_section(Section, _, _))]) :-
+    with_project_template_fixture(missing_runtime_section(Section),
+                                  check_project_preflight_failure).
+
+test(project_preflight_malformed_runtime_section_no_files,
+     [forall(runtime_section(Section, _, _))]) :-
+    with_project_template_fixture(malformed_runtime_section(Section),
+                                  check_project_preflight_failure).
+
 with_project_template_fixture(Fault, Goal) :-
     tmp_file(cpp_wam_preflight, Root),
     setup_call_cleanup(
@@ -127,6 +149,8 @@ with_project_template_fixture(Fault, Goal) :-
          make_directory(Templates),
          directory_file_path(Templates, lowered, Lowered),
          make_directory(Lowered),
+         directory_file_path(Templates, runtime, RuntimeSections),
+         make_directory(RuntimeSections),
          source_file(wam_cpp_target:write_wam_cpp_project(_, _, _), Source),
          file_directory_name(Source, ModuleDir),
          directory_file_path(ModuleDir, '../../../templates/targets/cpp_wam', RealRoot),
@@ -138,6 +162,23 @@ with_project_template_fixture(Fault, Goal) :-
          directory_file_path(Templates, 'runtime.cpp.mustache', RuntimeCopy),
          (Fault == missing_runtime -> true ; copy_file(Runtime, RuntimeCopy)),
          (Fault == malformed_runtime -> write_fixture(RuntimeCopy, "{{bad") ; true),
+         (Fault == duplicate_runtime_marker
+         -> read_file_to_string(RuntimeCopy, RuntimeShell, []),
+            string_concat(RuntimeShell, "{{cell_helpers}}", DuplicateShell),
+            write_fixture(RuntimeCopy, DuplicateShell)
+         ;  true),
+         (Fault == reordered_runtime_markers
+         -> write_fixture(RuntimeCopy,
+                "{{arithmetic_eval}}{{cell_helpers}}{{lmdb_fact_source}}")
+         ;  true),
+         forall(runtime_section(Section, Name, _),
+                (directory_file_path(RealRoot, 'runtime', RealRuntimeSections),
+                 directory_file_path(RealRuntimeSections, Name, RealSection),
+                 directory_file_path(RuntimeSections, Name, SectionCopy),
+                 (Fault == missing_runtime_section(Section)
+                 -> true ; copy_file(RealSection, SectionCopy)),
+                 (Fault == malformed_runtime_section(Section)
+                 -> write_fixture(SectionCopy, "{{bad") ; true))),
          directory_file_path(RealRoot, 'main.cpp.mustache', Main),
          directory_file_path(Templates, 'main.cpp.mustache', MainCopy),
          (Fault == missing_main -> true ; copy_file(Main, MainCopy)),
@@ -169,8 +210,15 @@ check_project_preflight_failure(Fault, Root, Templates) :-
     ->  assertion(Error = error(cpp_wam_template_tags(runtime_header, _), _))
     ;   Fault == missing_runtime
     ->  assertion(Error = error(cpp_wam_template_load(runtime_source, _, _), _))
-    ;   Fault == malformed_runtime
+    ;   memberchk(Fault, [malformed_runtime, duplicate_runtime_marker,
+                          reordered_runtime_markers])
     ->  assertion(Error = error(cpp_wam_template_tags(runtime_source, _), _))
+    ;   Fault = missing_runtime_section(Section)
+    ->  runtime_section(Section, _, TemplateId),
+        assertion(Error = error(cpp_wam_template_load(TemplateId, _, _), _))
+    ;   Fault = malformed_runtime_section(Section)
+    ->  runtime_section(Section, _, TemplateId),
+        assertion(Error = error(cpp_wam_template_tags(TemplateId, _), _))
     ;   Fault == missing_program
     ->  assertion(Error = error(cpp_wam_template_load(generated_program, _, _), _))
     ;   Fault == malformed_program

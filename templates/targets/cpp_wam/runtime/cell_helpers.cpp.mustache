@@ -1,0 +1,323 @@
+// ----------------------------------------------------------------------
+// Cell helpers
+// ----------------------------------------------------------------------
+
+static CellPtr make_cell(Value v = Value{}) {
+    return std::make_shared<Cell>(std::move(v));
+}
+
+// Y-regs are scoped to the top env frame; A/X-regs use the flat regs array.
+static bool is_y_reg(const std::string& name) {
+    return !name.empty() && name[0] == 'Y';
+}
+
+// Map an A/X register name to its flat-array index: A1->0 .. A100->99,
+// X1->100 .. X220->319. Returns -1 for non-A/X names (Y is handled by
+// is_y_reg before this is ever called for the array path).
+int WamState::reg_index(const std::string& name) {
+    if (name.size() < 2) return -1;
+    int n = 0;
+    for (std::size_t k = 1; k < name.size(); ++k) {
+        char ch = name[k];
+        if (ch < '0' || ch > '9') return -1;
+        n = n * 10 + (ch - '0');
+    }
+    if (name[0] == 'A') return n - 1;
+    if (name[0] == 'X') return 100 + (n - 1);
+    return -1;
+}
+
+CellPtr WamState::get_cell(const std::string& name) {
+    if (is_y_reg(name)) {
+        if (env_stack.empty()) env_stack.emplace_back();
+        auto& y = env_stack.back().y_regs;
+        auto it = y.find(name);
+        if (it != y.end()) return it->second;
+        CellPtr c = make_cell(Value::Unbound("_U_" + name));
+        y[name] = c;
+        return c;
+    }
+    int i = reg_index(name);
+    if (i < 0) return make_cell(Value::Unbound("_U_" + name));
+    if ((std::size_t)i >= regs.size()) regs.resize(i + 1);
+    if (!regs[i]) regs[i] = make_cell(Value::Unbound("_U_" + name));
+    return regs[i];
+}
+
+void WamState::set_cell(const std::string& name, CellPtr c) {
+    if (is_y_reg(name)) {
+        if (env_stack.empty()) env_stack.emplace_back();
+        env_stack.back().y_regs[name] = std::move(c);
+        return;
+    }
+    int i = reg_index(name);
+    if (i < 0) return;
+    if ((std::size_t)i >= regs.size()) regs.resize(i + 1);
+    regs[i] = std::move(c);
+}
+
+void WamState::put_variable_reg(const std::string& a, const std::string& b) {
+    CellPtr c = make_cell(Value::Unbound("_V" + std::to_string(var_counter++)));
+    set_cell(a, c);
+    set_cell(b, c);
+}
+
+void WamState::assign_reg(const std::string& name, Value v) {
+    set_cell(name, make_cell(std::move(v)));
+}
+
+Value WamState::get_reg(const std::string& name) const {
+    if (is_y_reg(name)) {
+        if (env_stack.empty()) return Value{};
+        auto& y = env_stack.back().y_regs;
+        auto it = y.find(name);
+        if (it == y.end()) return Value{};
+        return *it->second;
+    }
+    int i = reg_index(name);
+    if (i < 0 || (std::size_t)i >= regs.size() || !regs[i]) return Value{};
+    return *regs[i];
+}
+
+int WamState::match_reg_atom(const std::string& name, const char* atom) const {
+    const Value* v;
+    if (is_y_reg(name)) {
+        if (env_stack.empty()) return -1;
+        auto& y = env_stack.back().y_regs;
+        auto it = y.find(name);
+        if (it == y.end()) return -1;
+        v = it->second.get();
+    } else {
+        int i = reg_index(name);
+        if (i < 0 || (std::size_t)i >= regs.size() || !regs[i]) return -1;
+        v = regs[i].get();
+    }
+    // deref() is a no-op in this cell-mutates-in-place model, so the cell
+    // value is already the dereferenced value.
+    switch (v->tag) {
+        case Value::Tag::Atom:    return v->s == atom ? 1 : 0;
+        case Value::Tag::Unbound:
+        case Value::Tag::Uninit:  return -1;
+        default:                  return 0;
+    }
+}
+
+const std::string* WamState::match_reg_atom_str(const std::string& name) const {
+    const Value* v;
+    if (is_y_reg(name)) {
+        if (env_stack.empty()) return nullptr;
+        auto& y = env_stack.back().y_regs;
+        auto it = y.find(name);
+        if (it == y.end()) return nullptr;
+        v = it->second.get();
+    } else {
+        int i = reg_index(name);
+        if (i < 0 || (std::size_t)i >= regs.size() || !regs[i]) return nullptr;
+        v = regs[i].get();
+    }
+    // deref() is a no-op in this cell-mutates-in-place model, so the cell
+    // value is already dereferenced.
+    return v->tag == Value::Tag::Atom ? &v->s : nullptr;
+}
+
+void WamState::put_reg(const std::string& name, Value v) {
+    if (is_y_reg(name)) {
+        if (env_stack.empty()) env_stack.emplace_back();
+        auto& y = env_stack.back().y_regs;
+        auto it = y.find(name);
+        if (it == y.end()) y[name] = make_cell(std::move(v));
+        else               *it->second = std::move(v);
+        return;
+    }
+    int i = reg_index(name);
+    if (i < 0) return;
+    if ((std::size_t)i >= regs.size()) regs.resize(i + 1);
+    if (!regs[i]) regs[i] = make_cell(std::move(v));
+    else          *regs[i] = std::move(v);
+}
+
+// `get_level Yn` — snapshot the cut level for an if-then-else / negation
+// barrier WITHOUT writing register Yn. The level itself is unchanged from the
+// register-based version (choice_points.size() at this instant); only where it
+// is kept changes. Two emission shapes come out of compile_if_then_else/7:
+//
+//   1. `get_level BarrierReg` immediately BEFORE the ITE try_me_else — park
+//      it, and let that try_me_else record it on the guard choice point it
+//      pushes (see the TryMeElse handler). The level equals the count the
+//      guard will occupy, so `cut BarrierReg` prunes the guard and everything
+//      the committed branch pushed above it. Parking is required because the
+//      clause may be entered with NO choice point at all (a frameless callee
+//      reached from a shim / lowered caller), so there is nowhere to record.
+//   2. `get_level CondBarrierReg` immediately AFTER the try_me_else (only when
+//      the condition holds a top-level `!`) — its guard choice point already
+//      exists, so attach the level to the top CP directly.
+void WamState::record_ite_level(const std::string& reg) {
+    std::size_t level = choice_points.size();
+    if (pc + 1 < instrs.size()
+        && instrs[pc + 1].op == Instruction::Op::TryMeElse) {
+        pending_level_set = true;
+        pending_level_reg = reg;
+        pending_level_val = level;
+        return;
+    }
+    if (!choice_points.empty()) {
+        choice_points.back().levels[reg] = level;
+    }
+}
+
+// `cut Yn` read half — find the level `get_level Yn` recorded, searching the
+// choicepoint stack innermost-first. Returns false when the guard was already
+// cut away by an inner commit, in which case the stack is at or below the
+// level anyway and cutting would be a no-op. Searching the CP stack rather
+// than a register makes the barrier per-activation for free, and a callee can
+// never clobber a caller's.
+bool WamState::lookup_ite_level(const std::string& reg,
+                                std::size_t& out) const {
+    for (std::size_t k = choice_points.size(); k-- > 0; ) {
+        auto it = choice_points[k].levels.find(reg);
+        if (it != choice_points[k].levels.end()) {
+            out = it->second;
+            return true;
+        }
+    }
+    return false;
+}
+
+void WamState::trail_binding(const std::string& name) {
+    int i = reg_index(name);
+    if (i < 0 || (std::size_t)i >= regs.size() || !regs[i]) return;
+    TrailEntry e;
+    e.cell = regs[i];
+    e.prev = *regs[i];
+    trail.push_back(std::move(e));
+}
+
+void WamState::unwind_trail_to(std::size_t mark) {
+    while (trail.size() > mark) {
+        TrailEntry t = std::move(trail.back());
+        trail.pop_back();
+        if (t.alias_pop) {
+            if (!alias_pairs.empty()) alias_pairs.pop_back();
+        } else {
+            *t.cell = std::move(t.prev);
+        }
+    }
+}
+
+// M143: write v into every cell alias-connected to c that is still
+// unbound. Var-var unification records (a, b) pairs instead of copying
+// one unbound marker over the other (which left the two variables
+// independent: X = Y, X = 1, Y = 2 succeeded). Reads need no changes -
+// aliased cells stay genuinely Unbound until a real value arrives, at
+// which point this propagation makes every member of the alias group
+// see it (each write individually trailed for backtracking).
+void WamState::propagate_alias(const CellPtr& c, const Value& v) {
+    std::vector<const Value*> visited;
+    visited.push_back(c.get());
+    std::vector<CellPtr> frontier;
+    frontier.push_back(c);
+    while (!frontier.empty()) {
+        CellPtr cur = frontier.back();
+        frontier.pop_back();
+        for (const auto& pr : alias_pairs) {
+            CellPtr other;
+            if (pr.first.get() == cur.get()) other = pr.second;
+            else if (pr.second.get() == cur.get()) other = pr.first;
+            else continue;
+            bool seen = false;
+            for (const Value* p : visited) {
+                if (p == other.get()) { seen = true; break; }
+            }
+            if (seen) continue;
+            visited.push_back(other.get());
+            if (other->is_unbound()) {
+                TrailEntry e;
+                e.cell = other;
+                e.prev = *other;
+                trail.push_back(std::move(e));
+                *other = v;
+            }
+            frontier.push_back(other);
+        }
+    }
+}
+
+ClauseSnapshot WamState::lo_clause_snapshot() const {
+    ClauseSnapshot s;
+    s.saved_regs      = regs;
+    s.trail_mark      = trail.size();
+    s.cut_barrier     = cut_barrier;
+    s.saved_env_stack = env_stack;
+    s.cp_count        = choice_points.size();
+    return s;
+}
+
+void WamState::lo_restore_clause(const ClauseSnapshot& snap) {
+    unwind_trail_to(snap.trail_mark);
+    regs        = snap.saved_regs;
+    cut_barrier = snap.cut_barrier;
+    env_stack   = snap.saved_env_stack;
+    if (choice_points.size() > snap.cp_count) choice_points.resize(snap.cp_count);
+}
+
+void WamState::bind_cell(CellPtr cell, Value v) {
+    TrailEntry e;
+    e.cell = cell;
+    e.prev = *cell;
+    trail.push_back(std::move(e));
+    *cell = v;
+    // M143: a real value arriving at an alias-connected cell must reach
+    // every other member of the group. No-op when no aliases exist.
+    if (v.tag != Value::Tag::Unbound && !alias_pairs.empty()) {
+        propagate_alias(cell, v);
+    }
+}
+
+Value WamState::deref(const Value& v) const {
+    // Followers are explicitly bound Unbound cells. With our shared_ptr
+    // model the cell content is mutated in place, so deref through Value
+    // alone is a no-op — we just hand back v.
+    return v;
+}
+
+// Cell-aware unification. Binds variables via bind_cell so the trail
+// records every change.
+bool WamState::unify_cells(CellPtr a, CellPtr b) {
+    if (a.get() == b.get()) return true;
+    Value& va = *a;
+    Value& vb = *b;
+    if (va.is_unbound() && vb.is_unbound()) {
+        // M143: var-var unification ALIASES the two cells. The old
+        // bind_cell(a, vb) copied the b-side unbound marker into a,
+        // leaving the variables independent. Record the pair (undone
+        // via an alias_pop trail entry on backtrack); bind_cell
+        // propagates a later real value across the pair.
+        alias_pairs.emplace_back(a, b);
+        TrailEntry e;
+        e.alias_pop = true;
+        trail.push_back(std::move(e));
+        return true;
+    }
+    if (va.is_unbound()) { bind_cell(a, vb); return true; }
+    if (vb.is_unbound()) { bind_cell(b, va); return true; }
+    if (va.tag != vb.tag) return false;
+    switch (va.tag) {
+        case Value::Tag::Atom:    return va.s == vb.s;
+        case Value::Tag::Integer: return va.i == vb.i;
+        case Value::Tag::Float:   return va.f == vb.f;
+        case Value::Tag::Compound: {
+            if (va.s != vb.s) return false;
+            if (va.args.size() != vb.args.size()) return false;
+            for (std::size_t k = 0; k < va.args.size(); ++k) {
+                if (!unify_cells(va.args[k], vb.args[k])) return false;
+            }
+            return true;
+        }
+        default: return true;
+    }
+}
+
+bool WamState::unify(const Value& a, const Value& b) {
+    if (a.is_unbound() || b.is_unbound()) return true;
+    return a == b;
+}

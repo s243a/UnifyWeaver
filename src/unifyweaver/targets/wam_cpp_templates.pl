@@ -15,6 +15,9 @@
 
 cpp_template_path(runtime_header, 'runtime.h.mustache').
 cpp_template_path(runtime_source, 'runtime.cpp.mustache').
+cpp_template_path(runtime_cell_helpers, 'runtime/cell_helpers.cpp.mustache').
+cpp_template_path(runtime_arithmetic_eval, 'runtime/arithmetic_eval.cpp.mustache').
+cpp_template_path(runtime_lmdb_fact_source, 'runtime/lmdb_fact_source.cpp.mustache').
 cpp_template_path(main_shim, 'main.cpp.mustache').
 cpp_template_path(generated_program, 'generated_program.cpp.mustache').
 cpp_stache_path(head_constant, 'lowered/head_constant.cpp.stache').
@@ -193,6 +196,20 @@ render_cpp_template(generated_program, Path, Template,
     ;   throw(error(cpp_wam_template_tags(generated_program, Path),
                     context(cpp_render_template/3, generated_program)))
     ).
+render_cpp_template(runtime_source, Path, Template, [], Text) :-
+    !,
+    (   runtime_shell_parts(Template, Prefix, BetweenCellAndArithmetic,
+                            BetweenArithmeticAndLmdb, Suffix)
+    ->  file_directory_name(Path, Root),
+        cpp_render_template_at_root(Root, runtime_cell_helpers, [], Cell),
+        cpp_render_template_at_root(Root, runtime_arithmetic_eval, [], Arithmetic),
+        cpp_render_template_at_root(Root, runtime_lmdb_fact_source, [], Lmdb),
+        % Source spans are assembled once. Child text is never scanned again.
+        atomics_to_string([Prefix, Cell, BetweenCellAndArithmetic, Arithmetic,
+                           BetweenArithmeticAndLmdb, Lmdb, Suffix], "", Text)
+    ;   throw(error(cpp_wam_template_tags(runtime_source, Path),
+                    context(cpp_render_template/3, runtime_source)))
+    ).
 % Whole-file assets without variables are literal source after tag lint.
 % Avoid scanning the large runtime through the generic renderer at each build.
 render_cpp_template(Id, Path, Template, [], Text) :-
@@ -220,6 +237,35 @@ program_shell_parts(Template, Prefix, Middle, Suffix) :-
     sub_string(Template, SetupEnd, _, 0, Suffix),
     \+ template_has_tags(Prefix),
     \+ template_has_tags(Middle),
+    \+ template_has_tags(Suffix).
+
+% The runtime shell has three fixed ordered slots. Reject missing, repeated,
+% reordered, or unrelated source tags before loading any child section.
+runtime_shell_parts(Template, Prefix, BetweenCellAndArithmetic,
+                    BetweenArithmeticAndLmdb, Suffix) :-
+    CellMarker = "{{cell_helpers}}",
+    ArithmeticMarker = "{{arithmetic_eval}}",
+    LmdbMarker = "{{lmdb_fact_source}}",
+    findall(At, sub_string(Template, At, _, _, CellMarker), [CellAt]),
+    findall(At, sub_string(Template, At, _, _, ArithmeticMarker), [ArithmeticAt]),
+    findall(At, sub_string(Template, At, _, _, LmdbMarker), [LmdbAt]),
+    string_length(CellMarker, CellLen),
+    string_length(ArithmeticMarker, ArithmeticLen),
+    string_length(LmdbMarker, LmdbLen),
+    CellEnd is CellAt + CellLen,
+    ArithmeticEnd is ArithmeticAt + ArithmeticLen,
+    LmdbEnd is LmdbAt + LmdbLen,
+    CellEnd =< ArithmeticAt,
+    ArithmeticEnd =< LmdbAt,
+    CellMiddleLen is ArithmeticAt - CellEnd,
+    ArithmeticMiddleLen is LmdbAt - ArithmeticEnd,
+    sub_string(Template, 0, CellAt, _, Prefix),
+    sub_string(Template, CellEnd, CellMiddleLen, _, BetweenCellAndArithmetic),
+    sub_string(Template, ArithmeticEnd, ArithmeticMiddleLen, _, BetweenArithmeticAndLmdb),
+    sub_string(Template, LmdbEnd, _, 0, Suffix),
+    \+ template_has_tags(Prefix),
+    \+ template_has_tags(BetweenCellAndArithmetic),
+    \+ template_has_tags(BetweenArithmeticAndLmdb),
     \+ template_has_tags(Suffix).
 
 template_has_tags(Text) :- sub_string(Text, _, _, _, "{{"), !.

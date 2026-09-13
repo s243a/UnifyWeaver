@@ -1,0 +1,261 @@
+// ----------------------------------------------------------------------
+// Arithmetic eval
+// ----------------------------------------------------------------------
+
+Value WamState::eval_arith(CellPtr c, bool& ok) const {
+    if (!c) { ok = false; return Value{}; }
+    const Value& v = *c;
+    switch (v.tag) {
+        case Value::Tag::Integer:
+        case Value::Tag::Float:
+            return v;
+        case Value::Tag::Atom:
+            // SWI-style arithmetic constants. pi/e are doubles;
+            // inf/nan come from <cmath> + <limits>.
+            if (v.s == "pi") return Value::Float(3.14159265358979323846);
+            if (v.s == "e")  return Value::Float(2.71828182845904523536);
+            if (v.s == "inf" || v.s == "infinite")
+                return Value::Float(std::numeric_limits<double>::infinity());
+            if (v.s == "nan")
+                return Value::Float(std::nan(""));
+            if (v.s == "max_tagged_integer")
+                return Value::Integer(std::numeric_limits<std::int64_t>::max());
+            if (v.s == "min_tagged_integer")
+                return Value::Integer(std::numeric_limits<std::int64_t>::min());
+            // Numeric atoms ("5", "-3.14") are tolerated for robustness.
+            try {
+                std::size_t pos;
+                long long n = std::stoll(v.s, &pos);
+                if (pos == v.s.size()) return Value::Integer(n);
+            } catch (...) {}
+            try {
+                std::size_t pos;
+                double d = std::stod(v.s, &pos);
+                if (pos == v.s.size()) return Value::Float(d);
+            } catch (...) {}
+            ok = false; return Value{};
+        case Value::Tag::Compound: {
+            // Unary functions. -/1 is the historical entry; the rest
+            // (abs, sign, sqrt, trunc/floor/ceil/round, bitnot \/1)
+            // follow SWI semantics with one wrinkle: trunc/floor/ceil/round
+            // always return Integer (matches SWI even when fed a
+            // float). +/1 is identity, useful for term-level
+            // arithmetic where you parse "(+ X)" as a positive.
+            if (v.args.size() == 1) {
+                Value a = eval_arith(v.args[0], ok);
+                if (!ok) return Value{};
+                auto as_d1 = [](const Value& w){
+                    return w.tag == Value::Tag::Float ? w.f : (double)w.i;
+                };
+                if (v.s == "-/1") {
+                    if (a.tag == Value::Tag::Integer) return Value::Integer(-a.i);
+                    return Value::Float(-a.f);
+                }
+                if (v.s == "+/1") return a;
+                if (v.s == "abs/1") {
+                    if (a.tag == Value::Tag::Integer)
+                        return Value::Integer(a.i < 0 ? -a.i : a.i);
+                    return Value::Float(std::fabs(a.f));
+                }
+                if (v.s == "sign/1") {
+                    if (a.tag == Value::Tag::Integer)
+                        return Value::Integer(a.i > 0 ? 1 : (a.i < 0 ? -1 : 0));
+                    return Value::Float(a.f > 0 ? 1.0
+                                       : (a.f < 0 ? -1.0 : 0.0));
+                }
+                if (v.s == "sqrt/1") return Value::Float(std::sqrt(as_d1(a)));
+                // Trig + transcendentals: all promote Integer to
+                // double and always return Float.
+                if (v.s == "sin/1") return Value::Float(std::sin(as_d1(a)));
+                if (v.s == "cos/1") return Value::Float(std::cos(as_d1(a)));
+                if (v.s == "tan/1") return Value::Float(std::tan(as_d1(a)));
+                if (v.s == "asin/1") return Value::Float(std::asin(as_d1(a)));
+                if (v.s == "acos/1") return Value::Float(std::acos(as_d1(a)));
+                if (v.s == "atan/1") return Value::Float(std::atan(as_d1(a)));
+                if (v.s == "sinh/1") return Value::Float(std::sinh(as_d1(a)));
+                if (v.s == "cosh/1") return Value::Float(std::cosh(as_d1(a)));
+                if (v.s == "tanh/1") return Value::Float(std::tanh(as_d1(a)));
+                if (v.s == "asinh/1") return Value::Float(std::asinh(as_d1(a)));
+                if (v.s == "acosh/1") return Value::Float(std::acosh(as_d1(a)));
+                if (v.s == "atanh/1") return Value::Float(std::atanh(as_d1(a)));
+                if (v.s == "log/1") return Value::Float(std::log(as_d1(a)));
+                if (v.s == "exp/1") return Value::Float(std::exp(as_d1(a)));
+                // Integer bit-count functions. lsb/msb of 0 throw a
+                // domain error per SWI (no defined bit position).
+                if (v.s == "popcount/1") {
+                    if (a.tag != Value::Tag::Integer)
+                        { ok = false; return Value{}; }
+                    std::uint64_t u = (std::uint64_t)a.i;
+                    return Value::Integer(__builtin_popcountll(u));
+                }
+                if (v.s == "lsb/1") {
+                    if (a.tag != Value::Tag::Integer || a.i == 0)
+                        { ok = false; return Value{}; }
+                    std::uint64_t u = (std::uint64_t)a.i;
+                    return Value::Integer(__builtin_ctzll(u));
+                }
+                if (v.s == "msb/1") {
+                    if (a.tag != Value::Tag::Integer || a.i == 0)
+                        { ok = false; return Value{}; }
+                    std::uint64_t u = (std::uint64_t)a.i;
+                    return Value::Integer(63 - __builtin_clzll(u));
+                }
+                if (v.s == "truncate/1")
+                    return Value::Integer((std::int64_t)std::trunc(as_d1(a)));
+                if (v.s == "floor/1")
+                    return Value::Integer((std::int64_t)std::floor(as_d1(a)));
+                if (v.s == "ceiling/1")
+                    return Value::Integer((std::int64_t)std::ceil(as_d1(a)));
+                if (v.s == "round/1")
+                    return Value::Integer((std::int64_t)std::round(as_d1(a)));
+                if (v.s == "\\/1") { // bitwise NOT
+                    if (a.tag != Value::Tag::Integer) { ok = false; return Value{}; }
+                    return Value::Integer(~a.i);
+                }
+                ok = false; return Value{};
+            }
+            if (v.args.size() != 2) { ok = false; return Value{}; }
+            Value a = eval_arith(v.args[0], ok);
+            if (!ok) return Value{};
+            Value b = eval_arith(v.args[1], ok);
+            if (!ok) return Value{};
+            bool either_float = (a.tag == Value::Tag::Float || b.tag == Value::Tag::Float);
+            auto as_d = [](const Value& w){ return w.tag == Value::Tag::Float ? w.f : (double)w.i; };
+            if (v.s == "+/2") {
+                if (either_float) return Value::Float(as_d(a) + as_d(b));
+                return Value::Integer(a.i + b.i);
+            }
+            if (v.s == "-/2") {
+                if (either_float) return Value::Float(as_d(a) - as_d(b));
+                return Value::Integer(a.i - b.i);
+            }
+            if (v.s == "*/2") {
+                if (either_float) return Value::Float(as_d(a) * as_d(b));
+                return Value::Integer(a.i * b.i);
+            }
+            if (v.s == "//2") {
+                // Prolog '/' is float division. Lax / default mode
+                // follows IEEE 754 for float operands (inf / -inf /
+                // NaN on divide-by-zero) per
+                // WAM_CPP_ISO_ERRORS_SPECIFICATION §6.1; integer
+                // divide-by-zero remains uniform-fail. ISO mode
+                // detects divide-by-zero before calling eval_arith
+                // (via term_has_zero_divide) and throws
+                // evaluation_error(zero_divisor) regardless of
+                // operand type.
+                if (as_d(b) == 0.0) {
+                    if (either_float) {
+                        double num = as_d(a);
+                        if (num == 0.0) return Value::Float(std::nan(""));
+                        return Value::Float(num > 0
+                            ? std::numeric_limits<double>::infinity()
+                            : -std::numeric_limits<double>::infinity());
+                    }
+                    ok = false; return Value{};
+                }
+                if (either_float) return Value::Float(as_d(a) / as_d(b));
+                if (a.i % b.i == 0) return Value::Integer(a.i / b.i);
+                return Value::Float((double)a.i / (double)b.i);
+            }
+            if (v.s == "///2") {
+                if (b.i == 0) { ok = false; return Value{}; }
+                return Value::Integer(a.i / b.i);
+            }
+            if (v.s == "mod/2") {
+                if (b.i == 0) { ok = false; return Value{}; }
+                return Value::Integer(a.i % b.i);
+            }
+            // Min / max preserve the wider numeric type.
+            if (v.s == "min/2") {
+                if (either_float) return Value::Float(std::fmin(as_d(a), as_d(b)));
+                return Value::Integer(std::min(a.i, b.i));
+            }
+            if (v.s == "max/2") {
+                if (either_float) return Value::Float(std::fmax(as_d(a), as_d(b)));
+                return Value::Integer(std::max(a.i, b.i));
+            }
+            // **/2 always returns float (SWI); ^/2 stays integer when
+            // both args are int and the exponent is non-negative.
+            if (v.s == "**/2") {
+                return Value::Float(std::pow(as_d(a), as_d(b)));
+            }
+            // atan2(Y, X) -- standard library order.
+            if (v.s == "atan2/2") {
+                return Value::Float(std::atan2(as_d(a), as_d(b)));
+            }
+            // log(Base, X) -- log of X to base Base. Standard
+            // identity: log(X) / log(Base).
+            if (v.s == "log/2") {
+                double base = as_d(a);
+                double x = as_d(b);
+                return Value::Float(std::log(x) / std::log(base));
+            }
+            // copysign(X, Y) returns |X| with the sign of Y; always Float.
+            if (v.s == "copysign/2") {
+                return Value::Float(std::copysign(as_d(a), as_d(b)));
+            }
+            if (v.s == "^/2") {
+                if (either_float || b.i < 0) {
+                    return Value::Float(std::pow(as_d(a), as_d(b)));
+                }
+                std::int64_t result = 1, base = a.i, exp = b.i;
+                while (exp > 0) {
+                    if (exp & 1) result *= base;
+                    base *= base;
+                    exp >>= 1;
+                }
+                return Value::Integer(result);
+            }
+            // Integer-only functions below. Reject floats outright.
+            if (v.s == "gcd/2") {
+                if (either_float) { ok = false; return Value{}; }
+                std::int64_t x = a.i < 0 ? -a.i : a.i;
+                std::int64_t y = b.i < 0 ? -b.i : b.i;
+                while (y) { std::int64_t t = y; y = x % y; x = t; }
+                return Value::Integer(x);
+            }
+            if (v.s == "rem/2") {
+                // C99/C++11 ``%' follows dividend's sign; matches
+                // ISO rem. (mod follows divisor's sign -- different.)
+                if (either_float) { ok = false; return Value{}; }
+                if (b.i == 0) { ok = false; return Value{}; }
+                return Value::Integer(a.i % b.i);
+            }
+            if (v.s == "/\\/2") { // bitwise AND
+                if (either_float) { ok = false; return Value{}; }
+                return Value::Integer(a.i & b.i);
+            }
+            if (v.s == "\\//2") { // bitwise OR
+                if (either_float) { ok = false; return Value{}; }
+                return Value::Integer(a.i | b.i);
+            }
+            if (v.s == "xor/2") {
+                if (either_float) { ok = false; return Value{}; }
+                return Value::Integer(a.i ^ b.i);
+            }
+            if (v.s == ">>/2") {
+                if (either_float) { ok = false; return Value{}; }
+                return Value::Integer(a.i >> b.i);
+            }
+            if (v.s == "<</2") {
+                if (either_float) { ok = false; return Value{}; }
+                return Value::Integer(a.i << b.i);
+            }
+            ok = false; return Value{};
+        }
+        default:
+            ok = false; return Value{};
+    }
+}
+
+bool WamState::arith_compare(const std::string& op, const Value& a, const Value& b) const {
+    auto as_d = [](const Value& v){ return v.tag == Value::Tag::Float ? v.f : (double)v.i; };
+    double x = as_d(a), y = as_d(b);
+    if (op == ">/2")  return x >  y;
+    if (op == "</2")  return x <  y;
+    if (op == ">=/2") return x >= y;
+    if (op == "=</2") return x <= y;
+    if (op == "=:=/2") return x == y;
+    if (op == "=\\=/2") return x != y;
+    return false;
+}
