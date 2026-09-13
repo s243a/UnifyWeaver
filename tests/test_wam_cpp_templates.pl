@@ -123,12 +123,17 @@ test(project_preflight_duplicate_runtime_marker_no_files) :-
     with_project_template_fixture(duplicate_runtime_marker,
                                   check_project_preflight_failure).
 
+test(project_preflight_duplicate_builtin_marker_no_files) :-
+    with_project_template_fixture(duplicate_builtin_marker,
+                                  check_project_preflight_failure).
+
 test(project_preflight_reordered_runtime_markers_no_files) :-
     with_project_template_fixture(reordered_runtime_markers,
                                   check_project_preflight_failure).
 
 runtime_section(cell_helpers, 'cell_helpers.cpp.mustache', runtime_cell_helpers).
 runtime_section(arithmetic_eval, 'arithmetic_eval.cpp.mustache', runtime_arithmetic_eval).
+runtime_section(builtin_dispatch, 'builtin_dispatch.cpp.mustache', runtime_builtin_dispatch).
 runtime_section(lmdb_fact_source, 'lmdb_fact_source.cpp.mustache', runtime_lmdb_fact_source).
 
 test(project_preflight_missing_runtime_section_no_files,
@@ -167,9 +172,14 @@ with_project_template_fixture(Fault, Goal) :-
             string_concat(RuntimeShell, "{{cell_helpers}}", DuplicateShell),
             write_fixture(RuntimeCopy, DuplicateShell)
          ;  true),
+         (Fault == duplicate_builtin_marker
+         -> read_file_to_string(RuntimeCopy, RuntimeShell2, []),
+            string_concat(RuntimeShell2, "{{builtin_dispatch}}", DuplicateBuiltin),
+            write_fixture(RuntimeCopy, DuplicateBuiltin)
+         ;  true),
          (Fault == reordered_runtime_markers
          -> write_fixture(RuntimeCopy,
-                "{{arithmetic_eval}}{{cell_helpers}}{{lmdb_fact_source}}")
+                "{{cell_helpers}}{{builtin_dispatch}}{{arithmetic_eval}}{{lmdb_fact_source}}")
          ;  true),
          forall(runtime_section(Section, Name, _),
                 (directory_file_path(RealRoot, 'runtime', RealRuntimeSections),
@@ -211,7 +221,7 @@ check_project_preflight_failure(Fault, Root, Templates) :-
     ;   Fault == missing_runtime
     ->  assertion(Error = error(cpp_wam_template_load(runtime_source, _, _), _))
     ;   memberchk(Fault, [malformed_runtime, duplicate_runtime_marker,
-                          reordered_runtime_markers])
+                          duplicate_builtin_marker, reordered_runtime_markers])
     ->  assertion(Error = error(cpp_wam_template_tags(runtime_source, _), _))
     ;   Fault = missing_runtime_section(Section)
     ->  runtime_section(Section, _, TemplateId),
