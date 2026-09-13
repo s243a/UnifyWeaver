@@ -29,8 +29,12 @@ kept strictly apart:
 Evidence is explicit, and every provider bound is tied to the evidence row it
 came from:
 
-- `prov_evidence(So, symbols|elf, R0, complete)` — the soname's export set is
-  completely known at evidence release `R0`.
+- `prov_evidence(So, symbols|elf, R0, complete|curated)` — `complete` (readelf,
+  or a `.symbols` file cross-checked against the ELF with `--elf`) means the
+  export set is fully observed at `R0`, so **absence from it is a fact**;
+  `curated` (a plain `.symbols` lower-bound list, no `--elf`) means **presence
+  is evidence but absence proves nothing** — an omitted symbol is `unknown`,
+  never `missing`/`below_floor` (Sol re-review 2, P1).
 - `req_evidence(Bin, readelf, complete | missing_file | readelf_failed | inconsistent, Detail)`.
 - Provider bounds: `since(Min, MinAtom, R0, Bind)` from the `.symbols` evidence
   taken at `R0` (exported at `R0` and, by the curated bound, at every release
@@ -43,9 +47,10 @@ came from:
 Per identity and release, **all** evidence rows are aggregated: evidence
 taken *at* the release decides (readelf before `.symbols`); otherwise the
 nearest evidence below (presence extrapolates upward) and the nearest
-evidence above (absence propagates downward; a curated floor covers
-`Rel >= Min`) are combined. A release satisfied by any evidence row is never
-vetoed by another row's floor.
+evidence above (absence *from a complete export set* propagates downward; a
+curated floor covers `Rel >= Min`) are combined. A release satisfied by any
+evidence row is never vetoed by another row's floor, and a curated `.symbols`
+list never vetoes by absence — only a `complete` observation does.
 
 Verdict for `(Bin, So, Rel)`:
 
@@ -97,7 +102,7 @@ symprov.jsonl  ["<soname>|<sym>@<node>", ["since", "<debver>", "<evidence-releas
 symreq.jsonl   ["<binary>|<sym>@<node>", ["<soname>", "GLOBAL"|"WEAK"]]
                ["<binary>|<sym>",        ["", "GLOBAL"|"WEAK"]]      # unversioned reference
 needed.jsonl   ["<binary>", "<soname>"]
-evidence.jsonl ["provides|<soname>", ["symbols"|"elf", "<release-id>", "complete", "<source>"]]
+evidence.jsonl ["provides|<soname>", ["symbols"|"elf", "<release-id>", "complete"|"curated", "<source>"]]
                ["requires|<binary>", ["readelf", "complete"|"missing_file"|"readelf_failed"|"inconsistent", "<detail>"]]
 releases.jsonl ["<soname>", "<debver>"]                               # the candidate axis (actual releases)
 replaces.jsonl ["<new-soname>", "<old-soname>"]                       # declared soname succession

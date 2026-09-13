@@ -182,7 +182,19 @@ section_real(Out) :-
                 ( abi_verdict(Bin, So, '2.31-0ubuntu9.9', V25), report(verdict_2_31_with_elf, V25) ),
                 ( retractall(abi_resolve:symprov(So, _, _, at(R31, _))),
                   retract(abi_resolve:prov_evidence(So, elf, R31, complete)) ) ),
-            V25 == compatible(exact) )).
+            V25 == compatible(exact) )),
+
+    % Sol re-review 2, P1 on real data: libselinux1 is ingested WITHOUT --elf,
+    % so its evidence is CURATED. A symbol absent from that curated list is
+    % unknown, never a hard veto (libc6 above, ingested WITH --elf, is complete).
+    (   prov_evidence('libselinux.so.1', symbols, _, curated)
+    ->  check('A26 libselinux.so.1 (ingested without --elf) is curated: an absent symbol -> unknown, never incompatible (sol2-curated-absence)',
+              ( \+ prov_evidence('libselinux.so.1', _, _, complete),
+                with_extra_req(Bin, no_such_selinux_fn, 'LIBSELINUX_9.9', 'libselinux.so.1',
+                    ( abi_verdict(Bin, 'libselinux.so.1', '3.3-1build2', VC),
+                      report(verdict_selinux_curated, VC), VC = unknown(_) )) ))
+    ;   skip('A26 libselinux.so.1 curated evidence not present (libselinux1 not installed)')
+    ).
 
 with_extra_req(Bin, Sym, Node, So, Goal) :-
     setup_call_cleanup(assertz(abi_resolve:symreq(Bin, Sym, Node, So, 'GLOBAL')),
@@ -431,7 +443,41 @@ section_model :-
           abi_verdict(bin, 'libfoo.so.2', '1.0', not_needed('libfoo.so.2'))),
     fx(replaces('libfoo.so.2', 'libfoo.so.1')),
     check('C9c declared replaces(libfoo.so.2, libfoo.so.1) -> incompatible([soname_mismatch(offered(libfoo.so.2), needed(libfoo.so.1))]) (sol-P2d)',
-          abi_verdict(bin, 'libfoo.so.2', '1.0', incompatible([soname_mismatch(offered('libfoo.so.2'), needed('libfoo.so.1'))]))).
+          abi_verdict(bin, 'libfoo.so.2', '1.0', incompatible([soname_mismatch(offered('libfoo.so.2'), needed('libfoo.so.1'))]))),
+
+    % C10: Sol re-review 2, P1 -- CURATED .symbols evidence (ingested WITHOUT
+    % --elf) is a lower-bound list: PRESENCE in it counts (compatible(curated)),
+    % but ABSENCE from it proves nothing -> an omitted identity is unknown,
+    % NEVER a hard missing veto. The SAME store tagged `complete` (readelf or
+    % --elf cross-check) observes the export set fully, so absence THEN vetoes.
+    fx_clear,
+    fx_since('1.0', '1.0', unproven, Sc),
+    fx(symprov('libc2.so.1', present_fn, 'N', Sc)),
+    fx(symreq(bin, present_fn, 'N', 'libc2.so.1', 'GLOBAL')),
+    fx(symreq(bin, omitted_fn, 'N', 'libc2.so.1', 'GLOBAL')),
+    fx(needed(bin, 'libc2.so.1')),
+    fx(req_evidence(bin, readelf, complete, bin)),
+    fx(prov_evidence('libc2.so.1', symbols, R10, curated)),
+    check('C10 curated .symbols evidence: an omitted-but-real symbol -> unknown, NEVER incompatible(missing) (sol2-curated-absence)',
+          ( abi_verdict(bin, 'libc2.so.1', '1.0', V10), report(verdict, V10),
+            V10 = unknown(L10), memberchk(unknown(omitted_fn@'N', _), L10) )),
+    check('C10b a symbol present in the curated list -> provided(curated), not vetoed (sol2-curated-absence)',
+          req_status(bin, 'libc2.so.1', R10, none, provided(present_fn@'N', curated))),
+    retract(abi_resolve:prov_evidence('libc2.so.1', symbols, R10, curated)),
+    fx(prov_evidence('libc2.so.1', symbols, R10, complete)),
+    check('C10c the SAME store tagged COMPLETE (--elf cross-checked) DOES veto the omission -> incompatible([missing]) (sol2-curated-absence)',
+          abi_verdict(bin, 'libc2.so.1', '1.0', incompatible([missing(omitted_fn@'N')]))),
+
+    % C11: Sol re-review 2, P1 -- a contradictory curated floor (minimum ABOVE
+    % its evidence release) is rejected by assert_symprov, so the whole store
+    % fails to load rather than silently over-constraining a release.
+    fx_clear,
+    check('C11 assert_symprov rejects a since row whose minimum (2.0) exceeds its evidence release (1.0) (sol2-floor)',
+          \+ catch(abi_resolve:assert_symprov('libz.so.1|s@N', [since, '2.0', '1.0', unproven]), _, fail)),
+    check('C11b a since row with minimum (1.0) =< its evidence release (1.0) is accepted (sol2-floor)',
+          ( abi_resolve:assert_symprov('libz.so.1|s@N', [since, '1.0', '1.0', unproven]),
+            symprov('libz.so.1', s, 'N', since(_, '1.0', _, unproven)) )),
+    fx_clear.
 
 % ===========================================================================
 % D. ELF fixtures built by run_abi_verify.sh (real ingest pipeline)
@@ -532,15 +578,15 @@ elf_fixture_checks(FX) :-
 
 symbols_fixture_checks(FX) :-
     atom_concat(FX, '/simple', StS), load_abi_store(StS),
-    check('D7 [.symbols] simple cases: 2 sonames, |/* lines, comments, private 0, tilde + epoch minimums; rows tied to the evidence release (#7,sol-P1a)',
+    check('D7 [.symbols] simple cases: 2 sonames, |/* lines, comments, private 0, tilde + epoch minimums; rows tied to the evidence release; ingested without --elf so evidence is curated (#7,sol-P1a,sol2-curated-absence)',
           ( aggregate_all(count, symprov(_, _, _, _), 5),
-            rel_term('1.2-1', R12),
+            rel_term('1:1.2-1', R12),
             symprov('libsimple.so.1', simple_old, 'SIMPLE_1.0', since(deb(1, _, _), '1:0.9-2', R12, unproven)),
             symprov('libsimple.so.1', simple_new, 'SIMPLE_1.2', since(_, '1.2~rc1', R12, unproven)),
             symprov('libsimple.so.1', '_private_thing', 'SIMPLE_PRIVATE', since(_, '0', R12, unproven)),
             symprov('libsimple-extra.so.0', extra_fn, 'Base', since(_, '1.1', R12, default)),
-            prov_evidence('libsimple.so.1', symbols, R12, complete),
-            prov_evidence('libsimple-extra.so.0', symbols, R12, complete) )),
+            prov_evidence('libsimple.so.1', symbols, R12, curated),
+            prov_evidence('libsimple-extra.so.0', symbols, R12, curated) )),
     atom_concat(FX, '/tmpl_arch_amd64', StA), load_abi_store(StA),
     check('D8c [.symbols] (arch=..) processed with --arch amd64: amd64 rows kept, !amd64 dropped (#7)',
           ( aggregate_all(count, symprov(_, _, _, _), 3),

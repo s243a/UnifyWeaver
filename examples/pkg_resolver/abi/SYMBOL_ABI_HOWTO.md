@@ -196,6 +196,10 @@ answer is `unknown([unknown(hid_fn, default_binding_unproven(...))])`, never
 - **Absence / soname mismatch = hard veto** (`incompatible`) — valid only
   when requirement evidence is complete and provider evidence for that soname
   is complete and attributed by index. Otherwise the answer is `unknown`.
+  A plain `.symbols` file is `curated`, not `complete` (only readelf or an
+  `--elf` cross-check observes the export set fully), so **a symbol's absence
+  from a `.symbols` list is `unknown`, never a veto** (Sol re-review 2, P1);
+  its presence is still evidence (`compatible(curated)`).
 - **Presence = defeasible "structurally possible"** (`compatible(exact |
   curated | extrapolated)`) — necessary, not sufficient; semantics are
   unverified. It never outranks a declared or tested dependency; it widens

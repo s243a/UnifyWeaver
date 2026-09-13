@@ -93,16 +93,27 @@ echo "== 2. Cross-check: readelf($LIBSO) vs $LIBC_SYM =="
 node "$INGEST" elf "$LIBSO" --out "$OUT/cmp/elf" 2>/dev/null
 node "$INGEST" symbols-file "$LIBC_SYM" --out "$OUT/cmp/sym" 2>/dev/null
 node "$HERE/crosscheck.mjs" "$OUT/cmp/sym/symprov.jsonl" "$OUT/cmp/elf/symprov.jsonl" libc.so.6 | tee "$OUT/crosscheck.txt"
-echo "-- (sol-P3) fixed regression pair: two-node symbol, non-numeric node, Base, other soname ignored"
+echo "-- (sol-P3) fixed regression pair: two-node symbol, non-numeric node, Base, numeric-collapse pair, other soname ignored"
 node "$HERE/crosscheck.mjs" "$SRC/crosscheck/sym.symprov.jsonl" "$SRC/crosscheck/elf.symprov.jsonl" libx.so.1 | tee "$OUT/crosscheck_fixture.txt"
-grep -q 'identity agreement: 5/5 (100.0%)' "$OUT/crosscheck_fixture.txt" || fail "crosscheck fixture: expected 5/5 identity"
-grep -q 'per-name node-set agreement: 4/4 (100.0%)' "$OUT/crosscheck_fixture.txt" || fail "crosscheck fixture: expected 4/4 per-name"
+grep -q 'identity agreement: 7/7 (100.0%)' "$OUT/crosscheck_fixture.txt" || fail "crosscheck fixture: expected 7/7 identity"
+grep -q 'per-name node-set agreement: 5/5 (100.0%)' "$OUT/crosscheck_fixture.txt" || fail "crosscheck fixture: expected 5/5 per-name"
 echo "-- (sol-P3) dropped node must FAIL (exact identity and per-name both catch it)"
 if node "$HERE/crosscheck.mjs" "$SRC/crosscheck/sym.symprov.jsonl" "$SRC/crosscheck/elf_dropnode.symprov.jsonl" libx.so.1 >"$OUT/crosscheck_drop.txt" 2>&1; then
   fail "crosscheck accepted a dropped node"
 fi
 grep -q 'FAIL: exact identity sets differ' "$OUT/crosscheck_drop.txt" || fail "crosscheck: unexpected failure text: $(cat "$OUT/crosscheck_drop.txt")"
 echo "  expected failure, got: $(grep FAIL "$OUT/crosscheck_drop.txt" | sed 's/^ *//')"
+# (sol2-P3) The elf side drops LIBX_2.10 but keeps LIBX_2.1. As OPAQUE labels
+# these are distinct, so the correct crosscheck FAILS (identity 6/7). Only a
+# reintroduced NUMERIC node comparator would parse 2.10 == 2.1 and wrongly PASS
+# -- so this negative fixture guards against the comparator coming back.
+echo "-- (sol2-P3) numeric-collapse pair (LIBX_2.1 vs LIBX_2.10) must FAIL: only a restored numeric comparator would pass it"
+if node "$HERE/crosscheck.mjs" "$SRC/crosscheck/sym.symprov.jsonl" "$SRC/crosscheck/elf_numcollapse.symprov.jsonl" libx.so.1 >"$OUT/crosscheck_numcollapse.txt" 2>&1; then
+  fail "crosscheck collapsed LIBX_2.1 and LIBX_2.10 as equal numbers (numeric comparator reintroduced)"
+fi
+grep -q 'FAIL: exact identity sets differ' "$OUT/crosscheck_numcollapse.txt" || fail "crosscheck: unexpected numcollapse text: $(cat "$OUT/crosscheck_numcollapse.txt")"
+grep -q 'numnode@LIBX_2.10' "$OUT/crosscheck_numcollapse.txt" || fail "crosscheck: LIBX_2.10 should be reported only-.symbols"
+echo "  expected failure, got: $(grep FAIL "$OUT/crosscheck_numcollapse.txt" | sed 's/^ *//')"
 echo "-- (sol-P2c) empty inputs must FAIL, never pass on NaN"
 if node "$HERE/crosscheck.mjs" /dev/null /dev/null libc.so.6 >"$OUT/crosscheck_empty.txt" 2>&1; then
   fail "crosscheck passed on /dev/null vs /dev/null"
@@ -116,7 +127,9 @@ fi
 echo
 echo "== 3. Fixtures =="
 echo "-- .symbols templates: simple cases accepted; unsupported template rows rejected loudly"
-node "$INGEST" symbols-file "$SRC/simple.symbols" --release 1.2-1 --out "$FX/simple"
+# --release carries an epoch so the 1:0.9-2 minimum row is not above it (a
+# curated minimum must not exceed its evidence release -- Sol re-review 2, P1).
+node "$INGEST" symbols-file "$SRC/simple.symbols" --release 1:1.2-1 --out "$FX/simple"
 for t in tmpl_symver tmpl_cxx tmpl_arch; do
   expect_reject "$t" node "$INGEST" symbols-file "$SRC/$t.symbols" --release 1.0 --out "$FX/$t"
 done
@@ -133,6 +146,13 @@ echo "-- (sol-P2b) --release is validated with the Debian-version gate"
 expect_reject bad_release node "$INGEST" symbols-file "$SRC/simple.symbols" --release definitely-not-a-debian-version --out "$FX/bad_release"
 [ ! -e "$FX/bad_release" ] || fail "bad_release: store written despite rejection"
 expect_reject bad_release_elf node "$INGEST" elf "$LIBSO" --release definitely-not-a-debian-version --out "$FX/bad_release_elf"
+echo "-- (sol2-P2b) malformed Debian versions dpkg rejects (1:, 1-, 1::2) are refused, unlike the old loose regex"
+for badv in "1:" "1-" "1::2"; do
+  expect_reject "bad_release_$badv" node "$INGEST" symbols-file "$SRC/simple.symbols" --release "$badv" --out "$FX/bad_release_form"
+done
+echo "-- (sol2-floor) a curated minimum ABOVE its evidence release is contradictory: file rejected (exit 3), nothing written"
+expect_reject contradictory_floor node "$INGEST" symbols-file "$SRC/contradictory.symbols" --release 1.0 --out "$FX/contradictory"
+[ ! -e "$FX/contradictory/symprov.jsonl" ] || fail "contradictory_floor: store written despite rejection"
 echo "-- (sol-P2a) batch mode: a file with one unresolvable block is rejected ATOMICALLY (exit 3, no rows)"
 rc=0; node "$INGEST" symbols-dir "$SRC/batch" --out "$FX/batch" 2>"$FX/batch.err" || rc=$?
 [ "$rc" -eq 3 ] || fail "symbols-dir: expected exit 3, got $rc: $(cat "$FX/batch.err")"

@@ -47,7 +47,9 @@
 //   symreq.jsonl   ["<binary>|<sym>@<node>", ["<soname>", "GLOBAL"|"WEAK"]]
 //                  ["<binary>|<sym>",        ["", "GLOBAL"|"WEAK"]]   (unversioned)
 //   needed.jsonl   ["<binary>", "<soname>"]
-//   evidence.jsonl ["provides|<soname>", ["symbols"|"elf", "<release-id>", "complete", "<source>"]]
+//   evidence.jsonl ["provides|<soname>", ["symbols"|"elf", "<release-id>", "complete"|"curated", "<source>"]]
+//                  ("elf" and --elf-cross-checked "symbols" are "complete" (absence is a fact);
+//                   a plain "symbols" ingest is "curated" (a lower bound; absence proves nothing))
 //                  ["requires|<binary>", ["readelf", "complete"|"missing_file"|"readelf_failed"|"inconsistent", "<detail>"]]
 //   releases.jsonl ["<soname>", "<debver>"]                            (candidate axis)
 //   replaces.jsonl ["<new-soname>", "<old-soname>"]                    (declared soname succession)
@@ -109,9 +111,48 @@ function dpkgOwner(path) {
   } catch { return null; }
 }
 
-// A syntactically valid Debian version: [epoch:]upstream[-revision], upstream
-// starts with a digit (Policy 5.6.12). We only validate; parsing is Prolog's.
-const DEB_VERSION_RE = /^(?:\d+:)?\d[A-Za-z0-9.+~:-]*$/;
+// A syntactically valid Debian version: [epoch:]upstream[-revision] (Policy
+// 5.6.12), validated the way `dpkg --validate-version` does -- a loose regex
+// (the old DEB_VERSION_RE) accepted "1:", "1-" and "1::2", which dpkg rejects
+// (Sol re-review 2, P2). Ordering is still Prolog's; this only validates syntax.
+//   * epoch (optional): digits before the FIRST colon, must be all digits
+//   * upstream: must start with a digit; alnum . + ~ - and ':' (':' only when
+//     an epoch is present); '-' only as the last-hyphen revision delimiter
+//   * revision (optional, after the LAST '-'): alnum . + ~ , no '-' or ':',
+//     and must be non-empty when a '-' is present
+function validDebVersion(v) {
+  if (typeof v !== "string" || v.length === 0 || /\s/.test(v)) return false;
+  let rest = v, hasEpoch = false;
+  const colon = v.indexOf(":");
+  if (colon >= 0) {
+    if (!/^\d+$/.test(v.slice(0, colon))) return false;   // epoch must be all digits
+    rest = v.slice(colon + 1);
+    hasEpoch = true;
+  }
+  let upstream = rest, revision = null;
+  const hy = rest.lastIndexOf("-");
+  if (hy >= 0) { upstream = rest.slice(0, hy); revision = rest.slice(hy + 1); }
+  if (upstream.length === 0 || !/^[0-9]/.test(upstream)) return false;
+  const upstreamOk = hasEpoch ? /^[0-9A-Za-z.+~:-]+$/ : /^[0-9A-Za-z.+~-]+$/;
+  if (!upstreamOk.test(upstream)) return false;
+  if (revision !== null && !/^[0-9A-Za-z.+~]+$/.test(revision)) return false;  // empty or bad revision
+  return true;
+}
+
+// a <= b on the Debian version axis (dpkg is the reference implementation the
+// Prolog resolver:version_lt/2 mirrors). Cached: a .symbols block has one
+// evidence release and few distinct minimum versions. Used only to reject a
+// curated minimum ABOVE its evidence release (Sol re-review 2, P1).
+const _cmpCache = new Map();
+function debLe(a, b) {
+  const key = `${a} ${b}`;
+  if (_cmpCache.has(key)) return _cmpCache.get(key);
+  let r;
+  try { execFileSync("dpkg", ["--compare-versions", a, "le", b], { stdio: "ignore" }); r = true; }
+  catch { r = false; }
+  _cmpCache.set(key, r);
+  return r;
+}
 
 // ---------------------------------------------------------------------------
 // Tier: parse a Debian/Ubuntu `.symbols` file (binary control member form).
@@ -239,7 +280,7 @@ function parseSymbolsFile(path, { arch = null } = {}) {
     if (at <= 0 || minver === undefined) { errors.push(`${lineNo}: malformed symbol row: ${raw.trim()}`); continue; }
     const sym = ident.slice(0, at), node = ident.slice(at + 1);
     if (!node) { errors.push(`${lineNo}: empty version node: ${raw.trim()}`); continue; }
-    if (!DEB_VERSION_RE.test(minver)) { errors.push(`${lineNo}: minimum-version is not a Debian version: ${raw.trim()}`); continue; }
+    if (!validDebVersion(minver)) { errors.push(`${lineNo}: minimum-version is not a Debian version: ${raw.trim()}`); continue; }
     cur.rows.push({ sym, node, minver, optional: tags.has("optional"), lineNo });
   }
   return { blocks, errors };
@@ -436,7 +477,7 @@ function parseArgs(rest) {
 // supplied it (Sol P2): --release, dpkg-query, or the `releases` axis.
 function validRelease(rel, what) {
   if (!rel) die(`${what}: evidence release unknown (not owned by an installed package); pass --release <debver>`);
-  if (!DEB_VERSION_RE.test(rel)) die(`${what}: release '${rel}' is not a Debian version`);
+  if (!validDebVersion(rel)) die(`${what}: release '${rel}' is not a Debian version`);
   return rel;
 }
 
@@ -459,11 +500,14 @@ function cmdSymbolsFile(opts, path, sink, elf = null) {
     const guess = b.package ? dpkgVersion(b.package) : null;
     const rel = opts.release || guess;
     if (!rel) { errors.push(`${b.soname}: evidence release unknown (package ${b.package || "#PACKAGE#"} not installed); pass --release`); continue; }
-    if (!DEB_VERSION_RE.test(rel)) { errors.push(`${b.soname}: release '${rel}' is not a Debian version`); continue; }
+    if (!validDebVersion(rel)) { errors.push(`${b.soname}: release '${rel}' is not a Debian version`); continue; }
     const xcheck = elf && elf.soname === b.soname ? elf.map : null;
     const seen = new Set();
     for (const { sym, node, minver, optional, lineNo } of b.rows) {
       const k = `${sym}@${node}`;
+      // A curated minimum cannot exceed the release the file was curated from
+      // (Sol re-review 2, P1): such a row is contradictory. Reject the file.
+      if (!debLe(minver, rel)) { errors.push(`${lineNo}: minimum-version ${minver} is above the evidence release ${rel} (contradictory): ${k}`); continue; }
       if (xcheck) {
         const binding = xcheck.get(k);
         if (binding === undefined) {
@@ -479,7 +523,10 @@ function cmdSymbolsFile(opts, path, sink, elf = null) {
       }
     }
     if (xcheck) for (const k of xcheck.keys()) if (!seen.has(k)) errors.push(`${b.soname}: ${k} is exported by --elf ${opts.elf} but absent from the .symbols file (evidence would not be complete)`);
-    rows.push([`provides|${b.soname}`, ["symbols", rel, "complete", path], "evidence"]);
+    // A plain .symbols file is CURATED (a lower-bound list); only an --elf
+    // cross-check observes the export set completely (Sol re-review 2, P1).
+    // Curated presence is evidence; curated absence proves nothing.
+    rows.push([`provides|${b.soname}`, ["symbols", rel, xcheck ? "complete" : "curated", path], "evidence"]);
     sonames.push(b.soname);
   }
   if (errors.length) {

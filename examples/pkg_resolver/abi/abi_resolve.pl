@@ -24,28 +24,41 @@
 %       ever matches itself.
 %   Evidence is explicit and every provider bound is tied to the evidence row
 %   it rests on (Sol P1a):
-%     prov_evidence(So, Src, R0, complete)  -- So's export set is known
-%       completely at evidence release R0 (Src = symbols | elf).
+%     prov_evidence(So, Src, R0, Status)  -- what is known about So's export
+%       set at evidence release R0 (Src = symbols | elf):
+%         complete -- the export set was OBSERVED completely: readelf on the
+%                     ELF, or a `.symbols` file cross-checked against the ELF
+%                     with --elf (the ingest rejects any difference). Absence
+%                     from it is a fact.
+%         curated  -- a `.symbols` file ingested WITHOUT --elf: a curated
+%                     LOWER-BOUND list, not a complete export set. Presence in
+%                     it is (curated) evidence; ABSENCE FROM IT PROVES NOTHING
+%                     (Sol re-review 2, P1): an omitted identity is `unknown`,
+%                     never missing / below_floor / dropped / absent_at.
 %     symprov(So, Sym, Node, since(Min, MinAtom, R0, Bind)) -- from the
 %       `.symbols` evidence at R0: exported at R0 and, by the curated lower
 %       bound, at every release >= Min. Min is NOT a ground-truth introduction
 %       date (Debian policy lets it be raised); R < Min is `below_floor` (the
 %       conservative floor dpkg-shlibdeps emits) unless direct evidence says
-%       otherwise.
+%       otherwise. Min =< R0 always: a curated minimum cannot exceed the
+%       release the row was curated from; a row violating that is
+%       CONTRADICTORY, rejected by the ingest and by load_abi_store/1, and --
+%       if asserted directly -- evidence for nothing (Sol re-review 2, P1).
 %     symprov(So, Sym, Node, at(R0, Bind)) -- from readelf at R0.
 %     Bind = default | nondefault | unproven  (default-version binding)
 %     req_evidence(Bin, Src, Status, Detail) -- Bin's requirement set is
 %       complete, or why not (missing_file / readelf_failed / inconsistent).
-%   Per-identity status at release Rel aggregates EVERY complete evidence row
+%   Per-identity status at release Rel aggregates EVERY usable evidence row
 %   of the soname (ident_status/5): evidence AT Rel decides directly; else the
 %   nearest evidence BELOW Rel (presence extrapolates upward) and the nearest
 %   evidence ABOVE Rel (absence propagates downward, a curated floor covers
 %   Rel >= Min) are combined. A release satisfied by ANY evidence row is
-%   never vetoed by another row's bound.
+%   never vetoed by another row's bound, and a direct presence observation at
+%   or below Rel prevents any below_floor veto at Rel.
 %   Extrapolation (defeasible, documented): within a soname, exports do not
 %   disappear (removing one is an ABI break that requires a soname bump), so
 %   presence at R0 extends to R > R0 with basis `extrapolated`, and absence
-%   from a complete export set at R1 is a veto for R =< R1. Absence at R1 says
+%   from a COMPLETE export set at R1 is a veto for R =< R1. Absence at R1 says
 %   nothing about R > R1 (later releases add symbols): unknown. Presence never
 %   becomes a guarantee: compatible(_) is defeasible. A hypothetical
 %   drop(Sym, Node, At) models an in-soname removal to exercise the upper bound.
@@ -174,6 +187,10 @@ assert_symprov(K, [Kind | V]) :-
     (   Kind == since
     ->  V = [Min, EvRel, Bind0],
         parse_deb_version(Min, Deb), rel_term(EvRel, R0),
+        rel_le(Deb, R0),          % Sol re-review 2, P1: a curated minimum cannot
+                                  % exceed the release it was curated from; a
+                                  % contradictory since(Min>R0) row is rejected
+                                  % (the whole store then fails to load).
         binding(Node, Bind0, Bind),
         Bound = since(Deb, Min, R0, Bind)
     ;   Kind == at
@@ -284,13 +301,26 @@ bound_evidence(So, at(R0, _), elf, R0)              :- prov_evidence(So, elf, R0
 observed(So, Sym, Node, symbols, R1, B) :- B = since(_, _, R1, _), symprov(So, Sym, Node, B).
 observed(So, Sym, Node, elf, R1, B)     :- B = at(R1, _),          symprov(So, Sym, Node, B).
 
-% ev_says(So, Sym, Node, R1, Says): for every complete evidence row (Src, R1)
-% of So, whether Sym@Node is present in it (and under which bound) or absent.
+% prov_usable(So, Src, R0, Status): a provider evidence row the resolver can
+% use -- `complete` (readelf, or a `.symbols` file cross-checked against the ELF
+% with --elf: the export set is fully observed, so ABSENCE from it is a fact) or
+% `curated` (a plain `.symbols` lower-bound list ingested WITHOUT --elf:
+% PRESENCE in it is curated evidence, ABSENCE FROM IT PROVES NOTHING).
+prov_usable(So, Src, R0, Status) :-
+    prov_evidence(So, Src, R0, Status),
+    memberchk(Status, [complete, curated]).
+
+% ev_says(So, Sym, Node, R1, Says): for every usable evidence row (Src, R1) of
+% So, whether Sym@Node is present in it (and under which bound) or absent. Only
+% a COMPLETE export set can assert absence; a curated row that omits the
+% identity says nothing about it (Sol re-review 2, P1) -- it yields no Says row.
 ev_says(So, Sym, Node, R1, Says) :-
-    prov_evidence(So, Src, R1, complete),
+    prov_usable(So, Src, R1, Status),
     (   observed(So, Sym, Node, Src, R1, Bound)
     ->  Says = present(Src, Bound)
-    ;   Says = absent(Src)
+    ;   Status == complete
+    ->  Says = absent(Src)
+    ;   fail
     ).
 
 % ident_status(+So, +Sym, +Node, +Rel, -Status): the status of the exact
@@ -402,6 +432,8 @@ versioned_status(So, Sym, Node, Bind, Rel, Hyp, Status) :-
         ;   S = missing(Why)          -> Status = missing(Sym@Node, Why)
         ;   S = unknown(Why)          -> Status = unknown(Sym@Node, Why)
         )
+    ;   prov_usable(So, _, _, _)      % So has (curated) evidence, but not for
+    ->  Status = unknown(Sym@Node, absent_from_incomplete_evidence(So))  % this identity: unknown, not missing (Sol re-review 2, P1)
     ;   Status = unknown(Sym@Node, no_provider_evidence(So))
     ).
 
@@ -416,7 +448,7 @@ unversioned_status(Bin, So, Sym, Bind, Rel, Hyp, Status) :-
     (   \+ hyp_dropped_any(Hyp, Sym),
         (   unversioned_in(So, Sym, Rel, Node, Basis)
         ->  Status = provided(Sym, default_node(So, Node, Basis))
-        ;   needed(Bin, S), S \== So, prov_evidence(S, _, R0, complete),
+        ;   needed(Bin, S), S \== So, prov_usable(S, _, R0, _),
             unversioned_in(S, Sym, R0, Node, Basis)
         ->  Status = provided(Sym, default_node(S, Node, Basis))
         ;   fail
@@ -426,7 +458,7 @@ unversioned_status(Bin, So, Sym, Bind, Rel, Hyp, Status) :-
     ->  Status = weak_unresolved(Sym)          % a weak ref never vetoes, so missing evidence is moot
     ;   unversioned_unproven(Bin, So, Sym, Rel, S1, N1)
     ->  Status = unknown(Sym, default_binding_unproven(S1, N1))
-    ;   needed(Bin, S), \+ prov_evidence(S, _, _, complete)
+    ;   needed(Bin, S), \+ prov_usable(S, _, _, _)
     ->  Status = unknown(Sym, no_provider_evidence(S))
     ;   unversioned_unknown(Bin, So, Sym, Rel, _, Why)
     ->  Status = unknown(Sym, Why)
@@ -460,7 +492,7 @@ unversioned_nondefault(Bin, So, Sym, Rel, S, Node) :-
 % needed_at(Bin, So, Rel, S, R): the queried So at Rel, other NEEDED objects
 % at their own evidence release(s).
 needed_at(_, So, Rel, So, Rel).
-needed_at(Bin, So, _, S, R) :- needed(Bin, S), S \== So, prov_evidence(S, _, R, complete).
+needed_at(Bin, So, _, S, R) :- needed(Bin, S), S \== So, prov_usable(S, _, R, _).
 
 hyp_dropped_any(drop(Sym, _, _), Sym).
 
@@ -481,7 +513,7 @@ abi_verdict(Bin, So, RelAtom, Hyp, Verdict) :-
     ->  Verdict = incompatible([soname_mismatch(offered(So), needed(N))])
     ;   \+ needed(Bin, So)
     ->  Verdict = not_needed(So)
-    ;   \+ prov_evidence(So, _, _, complete)
+    ;   \+ prov_usable(So, _, _, _)
     ->  Verdict = unknown([no_provider_evidence(So)])
     ;   findall(S, req_status(Bin, So, Rel, Hyp, S), Ss),
         aggregate_statuses(Ss, Verdict)

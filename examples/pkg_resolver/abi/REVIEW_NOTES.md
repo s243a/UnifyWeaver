@@ -148,3 +148,31 @@ empty. The lane only *imports* `resolver:version_lt/2` and
   reasons.
 - `abi_floor/3` fails (rather than guessing) when a requirement has no
   `since()` row — readelf-only provider evidence has no package floor.
+
+## Sol re-review pass 2 — fixes
+
+Sol's re-review CLOSED five of the eight original findings (P1b, P1c, P2a, P2c,
+P2d) and returned REQUEST-CHANGES on four more, all rooted in one principle: a
+`.symbols` file is a curated LOWER-BOUND list, not a complete export set, so its
+ABSENCE proves nothing. Each fix is proven by a fixture whose check name carries
+its point and that fails if the fix is reverted. `run_abi_verify.sh`:
+`== 98 passed, 0 failed, 0 skipped ==`.
+
+| Sol finding | Fix (file) | Proving fixture(s) |
+|---|---|---|
+| P1 `abi_resolve.pl:289` curated absence = false hard veto | Ingest tags a plain `.symbols` (no `--elf`) as `curated`; only an `--elf` cross-check is `complete` (`ingest_symbols.mjs` `cmdSymbolsFile`). The resolver's `prov_usable/4` + `ev_says/5` let curated evidence establish PRESENCE but never ABSENCE (a curated omission yields no `Says` row → `unknown(absent_from_incomplete_evidence)`, never `missing`); `complete` absence still vetoes | **C10/C10b/C10c** (curated omission → unknown; present-in-curated → `provided(curated)`; the SAME store tagged `complete` DOES veto), **A26** (real libselinux1, ingested without `--elf`, is curated: an absent symbol → unknown), **D7** (simple.symbols without `--elf` → `curated`) |
+| P1 `abi_resolve.pl:311` contradictory curated floor overrides presence | A curated minimum ABOVE its evidence release is contradictory: rejected at ingest (`debLe`, exit 3) and at load (`assert_symprov` `rel_le(Deb,R0)` → the store fails to load). The existing evidence-tied aggregation (C7) already lets direct presence beat a floor | **C11/C11b** (`assert_symprov` rejects min 2.0 > release 1.0; accepts 1.0 ⩽ 1.0), **contradictory.symbols** (ingest exit 3, nothing written) |
+| P2 `ingest_symbols.mjs:114` `DEB_VERSION_RE` not a real validator | `validDebVersion()` parses `[epoch:]upstream[-revision]` the way `dpkg --validate-version` does; `1:`, `1-`, `1::2` are rejected; one gate for every version/`--release` | **run_abi_verify** `bad_release_{1:,1-,1::2}` (exit 3), D9 `bad_release` |
+| P3 `crosscheck.mjs` fixture cannot detect comparator restoration | Added `numnode@LIBX_2.1` / `numnode@LIBX_2.10` (opaque labels that a numeric parser would collapse) to the crosscheck pair, plus a negative `elf_numcollapse` fixture that FAILS under the correct opaque comparison but would PASS only if a numeric node comparator were reintroduced (2.10 == 2.1) | **run_abi_verify** `(sol2-P3)` numeric-collapse pair must FAIL; equal pair now 7/7 identity, 5/5 per-name |
+
+### Deliberate model points (documented, not requested)
+
+- After the P1(289) fix, `unknown(absent_at)` / `unknown(dropped_between)` treat
+  only DIRECT (`complete`) absence as a real absent endpoint; a curated omission
+  is `unknown`, never an absent observation.
+- The verdict basis is the WEAKEST contributing basis; `compatible(curated)` (any
+  `.symbols`-only requirement) is kept distinct from `compatible(exact)` (readelf
+  at that release), and curated evidence can never be laundered into `exact`.
+- `below_floor` remains a hard veto only as a DECLARED minimum (dpkg-shlibdeps'
+  floor), never from mere absence, and never overriding a direct presence
+  observation.

@@ -4,4 +4,3 @@
 ["libx.so.1|__libc_enable_secure@GLIBC_PRIVATE",["at","2.35-1","default"]]
 ["libx.so.1|plain_fn@Base",["at","2.35-1","default"]]
 ["libx.so.1|numnode@LIBX_2.1",["at","2.35-1","default"]]
-["libx.so.1|numnode@LIBX_2.10",["at","2.35-1","nondefault"]]
