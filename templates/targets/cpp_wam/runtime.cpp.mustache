@@ -117,7 +117,10 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
             std::size_t agg_base = aggregate_frames.back().base_cp_count;
             if (agg_base > level) level = agg_base;
         }
-        if (choice_points.size() > level) choice_points.resize(level);
+        if (choice_points.size() > level) {
+            choice_points.resize(level);
+            prune_iters_to_choice_points();  // P1: drop cut-away nondet iterators
+        }
         pc += 1; return true;
     }
 
@@ -778,17 +781,32 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
             const std::string& buf = a2.s;
             if (buf.empty()) return false;
             Value result;
+            // P3: parse the float syntax INDEPENDENTLY of integer overflow.
+            // The old code required stoll to succeed before it would ever try
+            // stod, so an int64 overflow (stoll throws std::out_of_range,
+            // swallowed by catch(...)) rejected a perfectly valid float like
+            // "9223372036854775808.0" that SWI accepts. Now: try a whole-string
+            // integer parse; take it only if it both succeeds AND consumes the
+            // entire string; otherwise (partial consume, invalid, OR overflow)
+            // fall back to a whole-string float parse. Valid in-range integers
+            // still bind as Integer (existing behaviour preserved).
+            bool got_int = false;
+            std::int64_t ival = 0;
             try {
                 std::size_t pos = 0;
-                std::int64_t i = std::stoll(buf, &pos);
-                if (pos == buf.size()) {
-                    result = Value::Integer(i);
-                } else {
+                ival = std::stoll(buf, &pos);
+                if (pos == buf.size()) got_int = true;
+            } catch (...) { /* overflow or non-integer: fall through to float */ }
+            if (got_int) {
+                result = Value::Integer(ival);
+            } else {
+                try {
+                    std::size_t pos = 0;
                     double d = std::stod(buf, &pos);
                     if (pos != buf.size()) return false;
                     result = Value::Float(d);
-                }
-            } catch (...) { return false; }
+                } catch (...) { return false; }
+            }
             CellPtr tgt = get_cell("A1");
             if (tgt->is_unbound()) { bind_cell(tgt, result); pc += 1; return true; }
             if (!unify_cells(tgt, std::make_shared<Cell>(result))) return false;
@@ -3534,6 +3552,7 @@ bool WamState::step(const Instruction& instr) {
             unwind_trail_to(f.trail_mark);
             while (choice_points.size() > f.base_cp_count)
                 choice_points.pop_back();
+            prune_iters_to_choice_points();  // P1: drop drained nondet iterators
             while (aggregate_frames.size() > f.base_agg_count)
                 aggregate_frames.pop_back();
             while (catcher_frames.size() > f.base_catcher_count)
@@ -3609,6 +3628,7 @@ bool WamState::step(const Instruction& instr) {
             if_then_frames.pop_back();
             while (choice_points.size() > f.base_cp_count)
                 choice_points.pop_back();
+            prune_iters_to_choice_points();  // P1: drop cut-away nondet iterators
             return invoke_goal_as_call(f.then_goal, f.after_pc);
         }
         case Instruction::Op::IfThenElse: {
@@ -3896,6 +3916,7 @@ bool WamState::step(const Instruction& instr) {
                 std::size_t saved_barrier =
                     choice_points[top_idx].cut_barrier;
                 choice_points.resize(top_idx);
+                prune_iters_to_choice_points();  // P1: drop cut-away iterators
                 cut_barrier = saved_barrier;
             }
             pc += 1; return true;
@@ -3920,6 +3941,7 @@ bool WamState::step(const Instruction& instr) {
             if (lookup_ite_level(instr.a, target)) {
                 if (choice_points.size() > target) {
                     choice_points.resize(target);
+                    prune_iters_to_choice_points();  // P1: drop cut-away iters
                 }
                 if (cut_barrier > target) cut_barrier = target;
             }
@@ -4660,6 +4682,30 @@ bool WamState::foreign_try_next() {
     return true;
 }
 
+// Prune the nondet iterator side stacks (foreign/dynamic/retract/
+// current_predicate) so their depth matches the number of live choice points
+// that own them. A choice point owns a side iterator iff its alt_pc is that
+// iterator's *_next_clause pc; the iterators form parallel stacks with those
+// CPs, so counting owning CPs gives the exact depth each side stack should have.
+// Called wherever choice_points is truncated by a CUT or a scope drain — the
+// truncation removes the top owning CP(s), and their iterators must die with
+// them, or a subsequent *_try_next would resume a leaked iterator (P1). Only
+// ever shrinks the side stacks (never grows), so it is a no-op when in sync and
+// safe to call at any shrink site.
+void WamState::prune_iters_to_choice_points() {
+    std::size_t nf = 0, nd = 0, nr = 0, nc = 0;
+    for (const ChoicePoint& c : choice_points) {
+        if (foreign_next_clause_pc && c.alt_pc == foreign_next_clause_pc) ++nf;
+        else if (dynamic_next_clause_pc && c.alt_pc == dynamic_next_clause_pc) ++nd;
+        else if (retract_next_pc && c.alt_pc == retract_next_pc) ++nr;
+        else if (current_pred_next_pc && c.alt_pc == current_pred_next_pc) ++nc;
+    }
+    if (foreign_iters.size() > nf) foreign_iters.resize(nf);
+    if (dynamic_iters.size() > nd) dynamic_iters.resize(nd);
+    if (retract_iters.size() > nr) retract_iters.resize(nr);
+    if (current_pred_iters.size() > nc) current_pred_iters.resize(nc);
+}
+
 // retract/1 dispatcher. Reads A1 (the pattern), derives the
 // predicate's "name/arity" key, pushes a RetractIterator, and
 // delegates to retract_try_next to find the first matching clause.
@@ -5333,8 +5379,10 @@ bool WamState::invoke_goal_as_call(CellPtr goal_cell, std::size_t after_pc) {
         // created inside the call but never the caller's alternatives. A
         // clause-body `!` never comes through here — it is the !/0 builtin.
         if (g.s == "!") {
-            if (choice_points.size() > meta_call_barrier)
+            if (choice_points.size() > meta_call_barrier) {
                 choice_points.resize(meta_call_barrier);
+                prune_iters_to_choice_points();  // P1: drop cut-away iterators
+            }
             cp = after_pc;
             if (cp == 0) { halt = true; return true; }
             pc = cp; cp = 0;
@@ -5888,6 +5936,7 @@ bool WamState::execute_throw() {
         // Restore VM state to the frame's snapshot.
         unwind_trail_to(f.trail_mark);
         while (choice_points.size() > f.base_cp_count) choice_points.pop_back();
+        prune_iters_to_choice_points();  // P1: drop nondet iters unwound by throw
         while (aggregate_frames.size() > f.base_agg_count) aggregate_frames.pop_back();
         regs = f.saved_regs;
         mode_stack = f.saved_mode_stack;
@@ -6268,6 +6317,8 @@ bool WamState::query(const std::string& pred_key, const std::vector<Value>& args
     aggregate_frames.clear();
     mode_stack.clear();
     env_stack.clear();
+    foreign_iters.clear();   // P1: reset nondet iterator side stacks per query
+    dynamic_iters.clear();
     retract_iters.clear();
     current_pred_iters.clear();
     pc = it->second;

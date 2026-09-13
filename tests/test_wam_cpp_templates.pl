@@ -17,10 +17,16 @@
 % local main 1c5ce3682c7047ef9470ee0d5563e3313eccfa24 (plain 57611 / lmdb
 % 57852); the SeekFactSource class and its guarded LMDB two-cache backend add
 % the byte delta.
-old_header_digest(plain, 86911,
-    'cc91d6bc37e2f7d6f3a6328a5b3e7892793c35e738a4fa9755631bd1d0944017').
-old_header_digest(lmdb, 87152,
-    '8f875cebdefa46b6e49434fdace3b761690e783751a56c88bb5079eb6a42e302').
+%
+% Re-baselined AGAIN (PR #4259, Astra's three fixes) from (plain 86911 / lmdb
+% 87152): P1 added the prune_iters_to_choice_points() declaration to the header,
+% and P2 added SeekFactSource's RAII destructor + close_lmdb() helper + deleted
+% copy/move ops (env-leak fix). Both variants grew by the SAME +3108 characters
+% (the additions are gate-independent text), which is the whole header delta.
+old_header_digest(plain, 90019,
+    'd65645f69ff27e69319a67b43c42399b5d7c1067a804f40faa44247fe430c19d').
+old_header_digest(lmdb, 90260,
+    '1fcfa56c3eca176cd75b7878b2a30710f6c062a0cbcfaf90fbc3fb27422994e2').
 
 assert_old_header_bytes(Mode, Header) :-
     old_header_digest(Mode, Length, Digest),
@@ -60,12 +66,18 @@ test(main_shim_exact_bytes) :-
 test(runtime_source_exact_bytes, [forall(member(Options,
      [[], [cpp_fact_sources([source(edge/2, lmdb('/tmp/phase3b_lmdb'))])]]))]) :-
     wam_cpp_target:compile_wam_runtime_to_cpp(Options, Runtime),
-    string_length(Runtime, 320342),
+    string_length(Runtime, 323458),
     crypto_data_hash(Runtime, Digest, [algorithm(sha256), encoding(utf8)]),
     % Re-baselined after the D43 CallForeign seek dispatch (dispatch_foreign_call
     % / foreign_try_next + the ForeignNextClause case) was re-applied to the
     % runtime source. Still option-invariant (both variants share this digest).
-    assertion(Digest == '3c6eef02a16a4fb73144228a3227cd10e90455b0c0bc5ef4795afa615a9c3643').
+    %
+    % Re-baselined AGAIN (PR #4259, Astra's three fixes) from 320342: P1 added
+    % prune_iters_to_choice_points() + its calls at every choice_points-shrink
+    % cut/drain site + the query() side-stack resets; P3 rewrote number_string/2's
+    % overflow-tolerant number parse. The +3116 characters are exactly those two
+    % source-side fixes (P2 is header-only). Still option-invariant.
+    assertion(Digest == '02d4163853a695550fc7c69d729a1ef33210dd5170b293054c04d8c52e21c880').
 
 test(program_shell_does_not_rescan_fragments) :-
     cpp_render_template_at_root('templates/targets/cpp_wam', generated_program,

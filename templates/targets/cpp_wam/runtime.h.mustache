@@ -760,6 +760,25 @@ public:
     SeekFactSource(std::string kind, std::string path)
         : kind_(std::move(kind)), path_(std::move(path)) {}
 
+    // P2: RAII — release the lazily-opened LMDB environment when the source is
+    // destroyed or replaced. ensure_open_lmdb() opens a raw MDB_env* (lmdb_env_)
+    // that owns OS file descriptors (data.mdb + lock.mdb); with no destructor
+    // that env leaked on every destroy — opening+destroying 20 sources drove the
+    // process FD count 6 -> 46. mdb_env_close reclaims the env AND the dbi/txn
+    // handles opened against it, so closing the env is the complete cleanup.
+    // The class owns a std::mutex, so it is already non-copyable and
+    // non-movable — the single owned env is never duplicated — but we spell the
+    // deletions out so the single-ownership invariant survives future edits.
+    ~SeekFactSource() {
+#ifdef WAM_CPP_ENABLE_LMDB
+        close_lmdb();
+#endif
+    }
+    SeekFactSource(const SeekFactSource&) = delete;
+    SeekFactSource& operator=(const SeekFactSource&) = delete;
+    SeekFactSource(SeekFactSource&&) = delete;
+    SeekFactSource& operator=(SeekFactSource&&) = delete;
+
     const std::string& kind() const { return kind_; }
     const std::string& path() const { return path_; }
 
@@ -1030,6 +1049,21 @@ private:
         return p;
     }
 
+    // P2: close a successfully- OR partially-opened LMDB env and reset the
+    // handles so the source is safe to destroy, and so a retry after a failed
+    // open never leaks a previously-created env. Idempotent; mdb_env_close
+    // reclaims the dbi handle too. Caller must not hold mu_ re-entrantly (the
+    // destructor runs with no lock; ensure_open_lmdb's failure paths call this
+    // while holding mu_, which is fine — close_lmdb takes no lock itself).
+    void close_lmdb() {
+        if (lmdb_env_) {
+            mdb_env_close(lmdb_env_);
+            lmdb_env_ = nullptr;
+        }
+        lmdb_dbi_ = 0;
+        lmdb_open_ = false;
+    }
+
     void ensure_open_lmdb() {
         std::lock_guard<std::mutex> guard(mu_);
         if (lmdb_open_) return;
@@ -1057,11 +1091,16 @@ private:
         }
         MDB_txn* txn = nullptr;
         rc = mdb_txn_begin(lmdb_env_, nullptr, MDB_RDONLY, &txn);
-        if (rc != MDB_SUCCESS)
+        if (rc != MDB_SUCCESS) {
+            // P2: env was created+opened above; release it before bailing so the
+            // partial open does not leak its FDs (and a retry starts clean).
+            close_lmdb();
             throw std::runtime_error("lmdb txn_begin failed for " + path_);
+        }
         rc = mdb_dbi_open(txn, nullptr, 0, &lmdb_dbi_);
         if (rc != MDB_SUCCESS) {
             mdb_txn_abort(txn);
+            close_lmdb();  // P2: release the env on this partial-open path too
             throw std::runtime_error("lmdb dbi_open failed for " + path_);
         }
         mdb_txn_commit(txn);
@@ -1531,6 +1570,21 @@ struct WamState {
     // unify call_args with the ground row, push a CP (alt_pc =
     // foreign_next_clause_pc) if more rows remain, and proceed to after_pc.
     bool    foreign_try_next();
+    // Prune the foreign/dynamic/retract/current_predicate iterator side stacks
+    // back into lockstep with choice_points. Each such iterator is owned by
+    // exactly one live choice point — the one whose alt_pc is that iterator's
+    // *_next_clause pc — so the iterator-stack depth must always equal the count
+    // of those owning CPs. When choice_points SHRINKS via a cut or a scope drain
+    // (the !/0 opcode, M17 Cut/CutIte, meta-call `!`, negation/if-then commit
+    // drains, findall/throw base drains) the pruned CP's iterator is orphaned
+    // and MUST be dropped in lockstep; otherwise a later *_try_next resumes the
+    // leaked iterator (P1: a nested cut in an inner foreign query left its
+    // iterator behind and an outer continuation resumed the WRONG one — SWI
+    // [a,b] vs compiled [a,_]). Call this at every choice_points-shrink site
+    // that is a cut/drain (NOT the *NextClause resumption pops, which pop their
+    // own CP and then legitimately re-read the same iterator). Only shrinks the
+    // side stacks — never grows them — so it is a safe no-op when already synced.
+    void    prune_iters_to_choice_points();
     // Nondet retract/1 — finds the next clause in dynamic_db[key]
     // (from iter.next_idx onward) that unifies with iter.pattern,
     // removes it, leaves the unification bindings in place, pushes
