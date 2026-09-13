@@ -4,6 +4,9 @@
 :- module(wam_cpp_templates, [cpp_render_template/3, cpp_render_template_at_root/4,
                              cpp_render_stache/3, cpp_render_stache_at_root/4,
                              cpp_preflight_stache/0,
+                             cpp_preflight_lowered_function/0,
+                             cpp_lowered_function_lines/4,
+                             cpp_lowered_function_lines_at_root/5,
                              cpp_with_template_root_for_test/2]).
 
 :- use_module(library(readutil), [read_file_to_string/3]).
@@ -17,9 +20,12 @@ cpp_template_path(runtime_header, 'runtime.h.mustache').
 cpp_template_path(runtime_source, 'runtime.cpp.mustache').
 cpp_template_path(runtime_cell_helpers, 'runtime/cell_helpers.cpp.mustache').
 cpp_template_path(runtime_arithmetic_eval, 'runtime/arithmetic_eval.cpp.mustache').
+cpp_template_path(runtime_builtin_dispatch, 'runtime/builtin_dispatch.cpp.mustache').
+cpp_template_path(runtime_step_execution, 'runtime/step_execution.cpp.mustache').
 cpp_template_path(runtime_lmdb_fact_source, 'runtime/lmdb_fact_source.cpp.mustache').
 cpp_template_path(main_shim, 'main.cpp.mustache').
 cpp_template_path(generated_program, 'generated_program.cpp.mustache').
+cpp_template_path(lowered_function, 'lowered/function.cpp.mustache').
 cpp_stache_path(head_constant, 'lowered/head_constant.cpp.stache').
 
 % Scoped fixture root for generator tests. Production callers resolve assets
@@ -38,11 +44,63 @@ cpp_template_root(Root) :-
     file_directory_name(Source, ModuleDir),
     directory_file_path(ModuleDir, '../../../templates/targets/cpp_wam', Root).
 
-% Both case bodies are required even when a particular project only uses one.
+% Both case bodies serve get_constant, get_integer, and get_nil.
 cpp_preflight_stache :-
-    Vars0 = ['I'="", 'CStr'="x", 'AiStr'="A1", 'Ai'="A1"],
+    Vars0 = ['I'="", 'Comment'="get_constant x, A1", 'Ai'="A1"],
     cpp_render_stache(head_constant, [op=head_constant(atom("x"))|Vars0], _),
     cpp_render_stache(head_constant, [op=head_constant(value("1"))|Vars0], _).
+
+cpp_preflight_lowered_function :-
+    cpp_lowered_function_lines("lowered_preflight_1",
+        "// lowered_preflight_1 — lowered from preflight/1", "", _).
+
+% The body is already rendered C++ and must remain literal. Return the same
+% [Header, Body, Footer] shape expected by lower_predicate_to_cpp/4.
+cpp_lowered_function_lines(Name, Comment, Body, Lines) :-
+    cpp_template_root(Root),
+    cpp_lowered_function_lines_at_root(Root, Name, Comment, Body, Lines).
+
+cpp_lowered_function_lines_at_root(Root, Name, Comment, Body,
+                                   [Header, BodyText, Footer]) :-
+    cpp_template_path(lowered_function, Relative),
+    directory_file_path(Root, Relative, Path),
+    (   nonempty_text(Name), nonempty_text(Comment), text_value(Body)
+    ->  true
+    ;   throw(error(domain_error(cpp_wam_lowered_function_variables,
+                                 [Name, Comment, Body]),
+                    context(cpp_lowered_function_lines/4, Path)))
+    ),
+    catch(read_file_to_string(Path, Template, [encoding(utf8)]),
+          Error,
+          throw(error(cpp_wam_template_load(lowered_function, Path, Error),
+                      context(cpp_lowered_function_lines/4, Path)))),
+    (   Template == ""
+    ->  throw(error(cpp_wam_template_empty(lowered_function, Path),
+                    context(cpp_lowered_function_lines/4, Path)))
+    ;   true
+    ),
+    (   lowered_function_shell_parts(Template, [BeforeComment, BetweenCommentName,
+                                                BetweenNameBody, Footer])
+    ->  text_string(Comment, CommentText),
+        text_string(Name, NameText),
+        text_string(Body, BodyText),
+        atomics_to_string([BeforeComment, CommentText, BetweenCommentName,
+                           NameText, BetweenNameBody], "", Header)
+    ;   throw(error(cpp_wam_template_tags(lowered_function, Path),
+                    context(cpp_lowered_function_lines/4, Path)))
+    ).
+
+text_string(Value, Value) :- string(Value), !.
+text_string(Value, String) :- atom_string(Value, String).
+
+% Exactly one of each ordered slot; static spans may contain no other tags.
+lowered_function_shell_parts(Template,
+    [BeforeComment, BetweenCommentName, BetweenNameBody, Footer]) :-
+    split_single_source_marker(Template, "{{comment}}", BeforeComment, AfterComment),
+    split_single_source_marker(AfterComment, "{{name}}", BetweenCommentName, AfterName),
+    split_single_source_marker(AfterName, "{{body}}", BetweenNameBody, Footer),
+    maplist(source_span_without_tags,
+            [BeforeComment, BetweenCommentName, BetweenNameBody, Footer]).
 
 cpp_render_stache(Id, Vars, Text) :-
     cpp_template_root(Root),
@@ -64,11 +122,11 @@ cpp_render_stache_at_root(Root, Id, Vars, Text) :-
            render_stache(Template, Vars, Text)),
           Error,
           throw(error(cpp_wam_stache_failure(Id, Path, Error),
-                      context(cpp_render_stache/3, emit_one(get_constant/2))))),
+                      context(cpp_render_stache/3, emit_one(head_match_family))))),
     (   string(Text), Text \== ""
     ->  true
     ;   throw(error(cpp_wam_stache_empty(Id, Path),
-                    context(cpp_render_stache/3, emit_one(get_constant/2))))
+                    context(cpp_render_stache/3, emit_one(head_match_family))))
     ).
 
 % Read and hash on every call: a broken edit at the same path must never use
@@ -91,12 +149,12 @@ cached_or_load_head_constant(Path, Digest, Template) :-
 
 valid_head_constant_vars(Vars) :-
     ground(Vars),
-    Vars = [op=Op, 'I'=I, 'CStr'=CStr, 'AiStr'=Ai, 'Ai'=Reg],
+    Vars = [op=Op, 'I'=I, 'Comment'=Comment, 'Ai'=Reg],
     (   Op = head_constant(atom(Esc)), text_value(Esc)
     ;   Op = head_constant(value(Val)),
         nonempty_text(Val)
     ),
-    maplist(text_value, [I, CStr, Ai, Reg]).
+    maplist(text_value, [I, Comment, Reg]).
 
 text_value(Value) :- atom(Value), !.
 text_value(Value) :- string(Value).
@@ -140,8 +198,7 @@ check_head_constant_case_tags(Branch, Body) :-
     ).
 
 head_constant_tag(_, "I").
-head_constant_tag(_, "CStr").
-head_constant_tag(_, "AiStr").
+head_constant_tag(_, "Comment").
 head_constant_tag(_, "Ai").
 head_constant_tag(atom, "Esc").
 head_constant_tag(value, "CppVal").
@@ -198,15 +255,20 @@ render_cpp_template(generated_program, Path, Template,
     ).
 render_cpp_template(runtime_source, Path, Template, [], Text) :-
     !,
-    (   runtime_shell_parts(Template, Prefix, BetweenCellAndArithmetic,
-                            BetweenArithmeticAndLmdb, Suffix)
+    (   runtime_shell_parts(Template,
+            [Prefix, BetweenCellAndArithmetic, BetweenArithmeticAndBuiltin,
+             BetweenBuiltinAndStep, BetweenStepAndLmdb, Suffix])
     ->  file_directory_name(Path, Root),
         cpp_render_template_at_root(Root, runtime_cell_helpers, [], Cell),
         cpp_render_template_at_root(Root, runtime_arithmetic_eval, [], Arithmetic),
+        cpp_render_template_at_root(Root, runtime_builtin_dispatch, [], Builtin),
+        cpp_render_template_at_root(Root, runtime_step_execution, [], Step),
         cpp_render_template_at_root(Root, runtime_lmdb_fact_source, [], Lmdb),
         % Source spans are assembled once. Child text is never scanned again.
         atomics_to_string([Prefix, Cell, BetweenCellAndArithmetic, Arithmetic,
-                           BetweenArithmeticAndLmdb, Lmdb, Suffix], "", Text)
+                           BetweenArithmeticAndBuiltin, Builtin,
+                           BetweenBuiltinAndStep, Step,
+                           BetweenStepAndLmdb, Lmdb, Suffix], "", Text)
     ;   throw(error(cpp_wam_template_tags(runtime_source, Path),
                     context(cpp_render_template/3, runtime_source)))
     ).
@@ -239,34 +301,32 @@ program_shell_parts(Template, Prefix, Middle, Suffix) :-
     \+ template_has_tags(Middle),
     \+ template_has_tags(Suffix).
 
-% The runtime shell has three fixed ordered slots. Reject missing, repeated,
+% The runtime shell has fixed ordered slots. Reject missing, repeated,
 % reordered, or unrelated source tags before loading any child section.
-runtime_shell_parts(Template, Prefix, BetweenCellAndArithmetic,
-                    BetweenArithmeticAndLmdb, Suffix) :-
-    CellMarker = "{{cell_helpers}}",
-    ArithmeticMarker = "{{arithmetic_eval}}",
-    LmdbMarker = "{{lmdb_fact_source}}",
-    findall(At, sub_string(Template, At, _, _, CellMarker), [CellAt]),
-    findall(At, sub_string(Template, At, _, _, ArithmeticMarker), [ArithmeticAt]),
-    findall(At, sub_string(Template, At, _, _, LmdbMarker), [LmdbAt]),
-    string_length(CellMarker, CellLen),
-    string_length(ArithmeticMarker, ArithmeticLen),
-    string_length(LmdbMarker, LmdbLen),
-    CellEnd is CellAt + CellLen,
-    ArithmeticEnd is ArithmeticAt + ArithmeticLen,
-    LmdbEnd is LmdbAt + LmdbLen,
-    CellEnd =< ArithmeticAt,
-    ArithmeticEnd =< LmdbAt,
-    CellMiddleLen is ArithmeticAt - CellEnd,
-    ArithmeticMiddleLen is LmdbAt - ArithmeticEnd,
-    sub_string(Template, 0, CellAt, _, Prefix),
-    sub_string(Template, CellEnd, CellMiddleLen, _, BetweenCellAndArithmetic),
-    sub_string(Template, ArithmeticEnd, ArithmeticMiddleLen, _, BetweenArithmeticAndLmdb),
-    sub_string(Template, LmdbEnd, _, 0, Suffix),
-    \+ template_has_tags(Prefix),
-    \+ template_has_tags(BetweenCellAndArithmetic),
-    \+ template_has_tags(BetweenArithmeticAndLmdb),
-    \+ template_has_tags(Suffix).
+runtime_shell_parts(Template,
+    [Prefix, BetweenCellAndArithmetic, BetweenArithmeticAndBuiltin,
+     BetweenBuiltinAndStep, BetweenStepAndLmdb, Suffix]) :-
+    split_single_source_marker(Template, "{{cell_helpers}}", Prefix, AfterCell),
+    split_single_source_marker(AfterCell, "{{arithmetic_eval}}",
+                               BetweenCellAndArithmetic, AfterArithmetic),
+    split_single_source_marker(AfterArithmetic, "{{builtin_dispatch}}",
+                               BetweenArithmeticAndBuiltin, AfterBuiltin),
+    split_single_source_marker(AfterBuiltin, "{{step_execution}}",
+                               BetweenBuiltinAndStep, AfterStep),
+    split_single_source_marker(AfterStep, "{{lmdb_fact_source}}",
+                               BetweenStepAndLmdb, Suffix),
+    maplist(source_span_without_tags,
+            [Prefix, BetweenCellAndArithmetic, BetweenArithmeticAndBuiltin,
+             BetweenBuiltinAndStep, BetweenStepAndLmdb, Suffix]).
+
+split_single_source_marker(Text, Marker, Before, After) :-
+    string_length(Marker, Length),
+    findall(At, sub_string(Text, At, Length, _, Marker), [At]),
+    End is At + Length,
+    sub_string(Text, 0, At, _, Before),
+    sub_string(Text, End, _, 0, After).
+
+source_span_without_tags(Text) :- \+ template_has_tags(Text).
 
 template_has_tags(Text) :- sub_string(Text, _, _, _, "{{"), !.
 template_has_tags(Text) :- sub_string(Text, _, _, _, "}}").

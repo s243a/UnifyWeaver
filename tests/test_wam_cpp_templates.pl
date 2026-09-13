@@ -7,8 +7,17 @@
               [compile_wam_runtime_header_to_cpp/2]).
 :- use_module('../src/unifyweaver/targets/wam_cpp_templates',
               [cpp_render_template_at_root/4, cpp_render_stache_at_root/4,
+               cpp_lowered_function_lines_at_root/5,
                cpp_with_template_root_for_test/2]).
 :- use_module('../src/unifyweaver/targets/wam_cpp_lowered_emitter', []).
+:- use_module('../src/unifyweaver/targets/wam_target', [compile_predicate_to_wam/3]).
+
+:- dynamic user:shell_t4/2, user:shell_t5/1, user:shell_t6/1, user:shell_ite/2.
+user:shell_t4(a,x). user:shell_t4(b,y). user:shell_t4(a,z).
+user:shell_t5(red). user:shell_t5(green). user:shell_t5(blue).
+user:shell_t6(s01). user:shell_t6(s02). user:shell_t6(s03). user:shell_t6(s04).
+user:shell_t6(s05). user:shell_t6(s06). user:shell_t6(s07). user:shell_t6(s08).
+user:shell_ite(X,Y) :- ( X > 0 -> Y = pos ; Y = nonpos ).
 
 % SHA-256 covers UTF-8 bytes; lengths below count Prolog characters.
 % Re-baselined after the D43 store-backed seek FactSource + lazy+cached LMDB
@@ -88,6 +97,56 @@ test(program_shell_does_not_rescan_fragments) :-
     assertion(\+ sub_string(Text, _, _, _, "P S {{predicates_code}}")),
     assertion(\+ sub_string(Text, _, _, _, "S P {{setup_code}}")).
 
+% Captured before the four lowered function headers/footers shared a shell.
+old_lowered_function_digest(shell_plain/1, 382,
+    'a0606ef0e168e0822e306a29e0e14973e16d8350adfedf696be279f2b1bfe0ee').
+old_lowered_function_digest(shell_t4/2, 2270,
+    '2ac4fc8a17f27245cdd071e7d2ef68db107974d819f26c4a8bd6995a0aae80a7').
+old_lowered_function_digest(shell_t5/1, 365,
+    'fd54ee8777448912e2632849a2d76036a1b069c5e2540bdea3fb8514be3f852f').
+old_lowered_function_digest(shell_t6/1, 1151,
+    '9326ae27c9eb3df2010e3d83bfe768b2d2641544005ef0b349468940dff9ae92').
+old_lowered_function_digest(shell_ite/2, 1393,
+    '2c7fc9718f9f2f37fed6b07a6b22449e80e210445e672ceb7a23411fa62aae51').
+
+test(lowered_function_old_bytes,
+     [forall(old_lowered_function_digest(PI, Length, Digest))]) :-
+    ( PI == shell_plain/1
+    -> Wam = [get_constant("foo", "A1"), proceed]
+    ;  once(compile_predicate_to_wam(PI,
+           [inline_bagof_setof(true), ite_use_y_level(true)], Wam)) ),
+    once(wam_cpp_lowered_emitter:lower_predicate_to_cpp(PI, Wam, [], Lines)),
+    assertion(Lines = [_, _, _]),
+    atomic_list_concat(Lines, '\n', Code),
+    string_length(Code, Length),
+    crypto_data_hash(Code, Actual, [algorithm(sha256), encoding(utf8)]),
+    assertion(Actual == Digest).
+
+test(lowered_function_body_and_metadata_are_literal) :-
+    cpp_lowered_function_lines_at_root('templates/targets/cpp_wam',
+        "lowered_literal_1", "// {{name}}", "return \"{{comment}} {{name}} {{body}}\";",
+        Lines),
+    atomic_list_concat(Lines, '\n', Code),
+    assertion(sub_string(Code, _, _, _, "// {{name}}")),
+    assertion(sub_string(Code, _, _, _, "return \"{{comment}} {{name}} {{body}}\";")),
+    assertion(sub_string(Code, _, _, _, "bool lowered_literal_1(WamState* vm)")).
+
+test(lowered_function_rejects_nonground_name,
+     [throws(error(domain_error(cpp_wam_lowered_function_variables, _), _))]) :-
+    cpp_lowered_function_lines_at_root('templates/targets/cpp_wam',
+        _, "// comment", "return true;", _).
+
+test(lowered_function_asset_errors_survive_warn_policy,
+     [forall(member(Problem,
+         [cpp_wam_template_load(lowered_function, fixture, missing),
+          cpp_wam_template_empty(lowered_function, fixture),
+          cpp_wam_template_tags(lowered_function, fixture),
+          domain_error(cpp_wam_lowered_function_variables, bad)]))]) :-
+    Error = error(Problem, context(lowered_function, fixture)),
+    catch(wam_cpp_target:handle_compile_error(warn, shell_t5/1, Error),
+          Actual, true),
+    assertion(Actual == Error).
+
 % Re-baselined after the store-lane re-application: emit_setup_function now also
 % emits the foreign_next_clause trailing instruction + vm.foreign_next_clause_pc
 % and the (here empty) seek-source registration block, shifting the setup
@@ -121,6 +180,21 @@ test(project_preflight_missing_stache_no_files) :-
 test(project_preflight_malformed_stache_no_files) :-
     with_project_template_fixture(malformed_stache, check_project_preflight_failure).
 
+test(project_preflight_missing_lowered_shell_no_files) :-
+    with_project_template_fixture(missing_lowered_shell, check_project_preflight_failure).
+
+test(project_preflight_malformed_lowered_shell_no_files) :-
+    with_project_template_fixture(malformed_lowered_shell, check_project_preflight_failure).
+
+test(project_preflight_missing_lowered_slot_no_files) :-
+    with_project_template_fixture(missing_lowered_slot, check_project_preflight_failure).
+
+test(project_preflight_duplicate_lowered_slot_no_files) :-
+    with_project_template_fixture(duplicate_lowered_slot, check_project_preflight_failure).
+
+test(project_preflight_reordered_lowered_slots_no_files) :-
+    with_project_template_fixture(reordered_lowered_slots, check_project_preflight_failure).
+
 test(project_preflight_malformed_main_no_files) :-
     with_project_template_fixture(malformed_main, check_project_preflight_failure).
 
@@ -146,12 +220,22 @@ test(project_preflight_duplicate_runtime_marker_no_files) :-
     with_project_template_fixture(duplicate_runtime_marker,
                                   check_project_preflight_failure).
 
+test(project_preflight_duplicate_builtin_marker_no_files) :-
+    with_project_template_fixture(duplicate_builtin_marker,
+                                  check_project_preflight_failure).
+
+test(project_preflight_duplicate_step_marker_no_files) :-
+    with_project_template_fixture(duplicate_step_marker,
+                                  check_project_preflight_failure).
+
 test(project_preflight_reordered_runtime_markers_no_files) :-
     with_project_template_fixture(reordered_runtime_markers,
                                   check_project_preflight_failure).
 
 runtime_section(cell_helpers, 'cell_helpers.cpp.mustache', runtime_cell_helpers).
 runtime_section(arithmetic_eval, 'arithmetic_eval.cpp.mustache', runtime_arithmetic_eval).
+runtime_section(builtin_dispatch, 'builtin_dispatch.cpp.mustache', runtime_builtin_dispatch).
+runtime_section(step_execution, 'step_execution.cpp.mustache', runtime_step_execution).
 runtime_section(lmdb_fact_source, 'lmdb_fact_source.cpp.mustache', runtime_lmdb_fact_source).
 
 test(project_preflight_missing_runtime_section_no_files,
@@ -190,9 +274,19 @@ with_project_template_fixture(Fault, Goal) :-
             string_concat(RuntimeShell, "{{cell_helpers}}", DuplicateShell),
             write_fixture(RuntimeCopy, DuplicateShell)
          ;  true),
+         (Fault == duplicate_builtin_marker
+         -> read_file_to_string(RuntimeCopy, RuntimeShell2, []),
+            string_concat(RuntimeShell2, "{{builtin_dispatch}}", DuplicateBuiltin),
+            write_fixture(RuntimeCopy, DuplicateBuiltin)
+         ;  true),
+         (Fault == duplicate_step_marker
+         -> read_file_to_string(RuntimeCopy, RuntimeShell3, []),
+            string_concat(RuntimeShell3, "{{step_execution}}", DuplicateStep),
+            write_fixture(RuntimeCopy, DuplicateStep)
+         ;  true),
          (Fault == reordered_runtime_markers
          -> write_fixture(RuntimeCopy,
-                "{{arithmetic_eval}}{{cell_helpers}}{{lmdb_fact_source}}")
+                "{{cell_helpers}}{{builtin_dispatch}}{{arithmetic_eval}}{{step_execution}}{{lmdb_fact_source}}")
          ;  true),
          forall(runtime_section(Section, Name, _),
                 (directory_file_path(RealRoot, 'runtime', RealRuntimeSections),
@@ -213,6 +307,21 @@ with_project_template_fixture(Fault, Goal) :-
          directory_file_path(Lowered, 'head_constant.cpp.stache', StacheCopy),
          (Fault == missing_stache -> true ; copy_file(Stache, StacheCopy)),
          (Fault == malformed_stache -> write_fixture(StacheCopy, "{{bad") ; true),
+         directory_file_path(RealRoot, 'lowered/function.cpp.mustache', Function),
+         directory_file_path(Lowered, 'function.cpp.mustache', FunctionCopy),
+         (Fault == missing_lowered_shell -> true ; copy_file(Function, FunctionCopy)),
+         (Fault == malformed_lowered_shell
+         -> write_fixture(FunctionCopy, "{{comment}}\nbool {{name}}(WamState* vm) {{{body}}}{{unknown}}")
+         ;  true),
+         (Fault == missing_lowered_slot
+         -> write_fixture(FunctionCopy, "{{comment}}\nbool {{name}}(WamState* vm) {}")
+         ;  true),
+         (Fault == duplicate_lowered_slot
+         -> write_fixture(FunctionCopy, "{{comment}}{{name}}{{body}}{{body}}")
+         ;  true),
+         (Fault == reordered_lowered_slots
+         -> write_fixture(FunctionCopy, "{{name}}{{comment}}{{body}}")
+         ;  true),
          (Fault == malformed_main -> write_fixture(MainCopy, "{{bad") ; true)),
         call(Goal, Fault, Root, Templates),
         delete_directory_and_contents(Root)).
@@ -234,6 +343,7 @@ check_project_preflight_failure(Fault, Root, Templates) :-
     ;   Fault == missing_runtime
     ->  assertion(Error = error(cpp_wam_template_load(runtime_source, _, _), _))
     ;   memberchk(Fault, [malformed_runtime, duplicate_runtime_marker,
+                          duplicate_builtin_marker, duplicate_step_marker,
                           reordered_runtime_markers])
     ->  assertion(Error = error(cpp_wam_template_tags(runtime_source, _), _))
     ;   Fault = missing_runtime_section(Section)
@@ -246,6 +356,12 @@ check_project_preflight_failure(Fault, Root, Templates) :-
     ->  assertion(Error = error(cpp_wam_template_load(generated_program, _, _), _))
     ;   Fault == malformed_program
     ->  assertion(Error = error(cpp_wam_template_tags(generated_program, _), _))
+    ;   Fault == missing_lowered_shell
+    ->  assertion(Error = error(cpp_wam_template_load(lowered_function, _, _), _))
+    ;   memberchk(Fault, [malformed_lowered_shell, missing_lowered_slot,
+                          duplicate_lowered_slot,
+                          reordered_lowered_slots])
+    ->  assertion(Error = error(cpp_wam_template_tags(lowered_function, _), _))
     ;   assertion(Error = error(cpp_wam_stache_failure(head_constant, _, _), _))
     ),
     assertion(\+ exists_directory(Project)).
@@ -282,8 +398,27 @@ test(head_constant_old_bytes, [forall(old_head_constant_digest(C, Reg, Length, D
     crypto_data_hash(Text, Actual, [algorithm(sha256), encoding(utf8)]),
     assertion(Actual == Digest).
 
-head_atom_vars([op=head_constant(atom("foo")), 'I'="", 'CStr'="foo", 'AiStr'="A1",
-                'Ai'="A1"]).
+% Frozen before get_integer/get_nil joined the head-match template family.
+old_head_integer_nil_digest(get_integer("42", "A1"), 261,
+    '7988437cdb2b295c42c01a14b2a9c6a9d0e88c294cc33ed56043ed19ff5ec8f0').
+old_head_integer_nil_digest(get_integer("-7", "X2"), 261,
+    '166ebf499cf5288151ad8beca50a10a723c373777fa18e7aade4035b45e21f67').
+old_head_integer_nil_digest(get_integer("0007", "Y3"), 267,
+    '00bea1e5930550854be3b020ef1d5e537d82a9f9b55833b6de53f97f783f61d2').
+old_head_integer_nil_digest(get_nil("A1"), 234,
+    'e33550a193983e50ec0dcb23c4268c6cc93ce29ce6e603ec2f50ea2c1a600af8').
+old_head_integer_nil_digest(get_nil("Y3"), 234,
+    'e437b88586617da1ca7fe991ea9dcb646a745534d6e7a6e479e70f08cea24e49').
+
+test(head_integer_nil_old_bytes,
+     [forall(old_head_integer_nil_digest(Instruction, Length, Digest))]) :-
+    with_output_to(string(Text), wam_cpp_lowered_emitter:emit_one(Instruction, "  ")),
+    string_length(Text, Length),
+    crypto_data_hash(Text, Actual, [algorithm(sha256), encoding(utf8)]),
+    assertion(Actual == Digest).
+
+head_atom_vars([op=head_constant(atom("foo")), 'I'="",
+                'Comment'="get_constant foo, A1", 'Ai'="A1"]).
 
 test(head_constant_unknown_shape,
      [throws(error(domain_error(cpp_wam_stache_variables, _), _))]) :-
@@ -297,7 +432,7 @@ test(head_constant_nonground,
 test(head_constant_missing_key,
      [throws(error(domain_error(cpp_wam_stache_variables, _), _))]) :-
     cpp_render_stache_at_root('/tmp', head_constant,
-        [op=head_constant(atom("foo")), 'I'="", 'CStr'="foo", 'AiStr'="A1"], _).
+        [op=head_constant(atom("foo")), 'I'="", 'Ai'="A1"], _).
 
 test(head_constant_foreign_cwd) :-
     setup_call_cleanup(

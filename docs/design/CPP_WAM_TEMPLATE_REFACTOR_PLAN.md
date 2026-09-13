@@ -2,8 +2,10 @@
 
 Status: in progress. Phase 1 (runtime header) and Phase 2 (lowered
 `get_constant`) landed in #4252 and #4253. The first Phase 3 slice, including
-project preflight and `main.cpp`, landed in #4255. The next slice starts from
-`cb714e9` and extracts `generated_program.cpp` and `runtime.cpp`.
+project preflight and `main.cpp`, landed in #4255. The program and runtime
+extraction landed in #4256, and the first three runtime sections in #4257.
+The first Phase 4 reusable lowered family landed in #4261; the current slice
+extracts the repeated lowered function shell from `b8a54ee`.
 The Pattern Stache literal-substitution fix landed in #4254.
 The original planning baseline was `55796489a9750388f4fcf3cac602e4d525b14c28`
 (2026-09-11).
@@ -22,14 +24,15 @@ template spans, so a predicate or setup fragment containing literal
 program hashes remain identical for interpreter, functions, and LMDB-enabled
 fixtures, including both marker-shaped literals in generated C++ values.
 
-The complete `runtime.cpp` is now a single 311,009-byte, 7,027-line asset,
+At its initial extraction, `runtime.cpp` was a single 311,009-byte, 7,027-line asset,
 with frozen SHA-256 `fa0317a11da5069d0fa18a36bc1937419bcf187e7f6ec4c5d278fd0270cfd300`.
 `compile_wam_runtime_to_cpp/2` was option-invariant at extraction: LMDB code
 is already guarded by the header's macro, and the same runtime bytes are
 emitted with or without LMDB options. The adapter treats no-variable assets
 as literal source after rejecting any template tags. This avoids a needless
-generic-renderer scan of the 311 KB file. Further runtime subdivision remains
-open; no semantic logic moved out of Prolog.
+generic-renderer scan of the 311 KB file. Later Phase 3 slices divided that
+asset into ordered sections, as recorded below; no semantic logic moved out
+of Prolog.
 
 Project generation now validates the required Pattern Stache cases and renders
 all requested artifacts before creating the output directory. A failure in a
@@ -79,6 +82,93 @@ after the split over separate isolated 20-generation runs on the local host.
 The extra file reads, marker validation, and assembly add measurable generation
 time; later splits should weigh that cost against concrete reuse or maintenance
 benefit. The C++ executable source and behavior remain unchanged.
+
+### Builtin and Step runtime split (2026-09-12)
+
+The next two contiguous sections follow existing headings:
+`runtime/builtin_dispatch.cpp.mustache` contains the complete 2,894-line
+`WamState::builtin` dispatch, and `runtime/step_execution.cpp.mustache` contains
+1,664 lines of Step/execution code up to the term parser heading. The shell is
+now 1,529 lines. No definitions moved across their original order or into a
+different translation unit. The adapter uses five explicit ordered slots,
+requires each marker exactly once, validates static shell spans and child
+files, then joins them without rescanning inserted text. It remains a bounded
+C++-specific assembler rather than a general template engine.
+
+The frozen runtime SHA-256 above still matches under plain and LMDB options.
+Missing and malformed fixtures and duplicate markers for both new sections,
+plus an out-of-order shell, all fail before any project directory is created.
+The 38 template checks, six focused generator checks, three lowered
+T6 checks, and two native LMDB checks pass.
+
+This is still **relocation and single-artifact composition, not reuse**:
+Builtin dispatch and Step each appear once in `wam_runtime.cpp`, and no shared
+code was deduplicated. A 10-fact `bench_pair/2` functions-mode project averaged
+41.3 ms before this split and 34.0 ms after it over separate isolated
+20-generation runs on the local host; a further 50-generation post-split run
+averaged 34.2 ms. Shrinking the validated shell appears to offset the added
+section reads on this fixture, but that timing is not C++ compiler time.
+Each additional explicit slot grows the adapter contract, so further splits
+should have a concrete maintenance or reuse payoff.
+
+## Phase 4 progress: shared head bind/match body (2026-09-12)
+
+The existing `lowered/head_constant.cpp.stache` atom and value cases now serve
+three lowered instruction handlers: `get_constant`, `get_integer`, and `get_nil`.
+This is actual source reuse: the bind-or-match C++ bodies previously duplicated
+in the integer and nil Prolog emitters now live in one pair of cases.
+Prolog still chooses the case, normalizes the register, classifies constant
+tokens, escapes atom names, and constructs literal values and exact comments.
+In particular, `get_integer` retains its raw numeric token spelling rather
+than passing through `cpp_val_literal/2`. The adapter validates the four-key
+render contract and both case bodies before project creation, and still checks
+the source file hash on every render so edits cannot use a stale parsed body.
+
+Frozen SHA-256/length checks cover the existing seven atom, integer, float,
+escaped, and placeholder-shaped `get_constant` fragments, plus three
+`get_integer` fragments (including raw `0007`) and two `get_nil` fragments.
+All bytes match the previous output. A native C++17 harness generated from
+manual WAM instruction lists exercises each case's equal/mismatch paths,
+binding, alias visibility, trail unwind, and a later-match failure. The
+rollback fixture initializes an unbound A1 cell because the existing runtime
+`trail_binding(name)` records only cells already present; this slice does not
+change runtime semantics.
+
+A 30-fact functions-mode project with atom, numeric and nil heads contains
+30 `get_constant` instructions and zero `get_integer`/`get_nil` instructions:
+the current source WAM compiler lowers all those heads through `get_constant`.
+Thus the template has three supported lowered call sites, but only one is used
+by this ordinary project. Twenty-generation runs after the change averaged
+45.9–46.9 ms/project on the local host (an earlier separate pre-change run
+was 56.5 ms/project); these separate runs do not establish a speedup. A direct
+100-iteration loop rendering all three operations measured 0.36–0.37 ms per
+fragment. Each call still hashes the template file to detect mutation, so
+expanding this family does add that cost when the integer/nil opcodes arrive
+through WAM text or manual lowering. No additional cache layer is justified by
+the ordinary project count.
+
+## Phase 4 progress: lowered function shell (2026-09-12)
+
+`lowered/function.cpp.mustache` now owns the common comment/signature/body/
+closing-brace shape used by the plain, T4, T5, and T6 lowered paths. Prolog
+continues to select the lowering strategy, render instruction bodies, and
+construct the mode-specific comment. The adapter validates three ordered,
+exactly-once source slots (`comment`, `name`, `body`) and returns the existing
+`[Header, Body, Footer]` shape. It inserts already-rendered C++ once, without
+rescanning marker-shaped text inside body or comment fragments. Project
+preflight validates the shell even for an interpreter-mode project, so missing,
+unknown, duplicate, or reordered slots fail before creating output files.
+If it changes after preflight, asset errors still propagate through the
+per-predicate `warn` policy instead of silently omitting a lowered predicate.
+
+Frozen full-function hashes match the old output for plain, T4, T5, T6, and a
+structured ITE predicate. Native C++17 ITE, T4, T5, and T6 execution suites
+pass. This is reuse across four emitter paths, replacing their repeated outer
+shells; it does not move clause dispatch or ITE semantics into the template.
+A 30-fact functions-mode project emits 30 uses of this shell. Three separate
+20-generation runs measured 46.25–47.75 ms/project, compared with 45.9–46.9
+ms/project in separate runs before this shell extraction. The small difference
+is within run variation and is generation time, not C++ compile time.
 
 ## Outcome and scope
 
