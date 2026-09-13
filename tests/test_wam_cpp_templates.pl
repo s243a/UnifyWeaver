@@ -280,6 +280,25 @@ test(head_constant_old_bytes, [forall(old_head_constant_digest(C, Reg, Length, D
     crypto_data_hash(Text, Actual, [algorithm(sha256), encoding(utf8)]),
     assertion(Actual == Digest).
 
+% Frozen before get_integer/get_nil joined the head-match template family.
+old_head_integer_nil_digest(get_integer("42", "A1"), 261,
+    '7988437cdb2b295c42c01a14b2a9c6a9d0e88c294cc33ed56043ed19ff5ec8f0').
+old_head_integer_nil_digest(get_integer("-7", "X2"), 261,
+    '166ebf499cf5288151ad8beca50a10a723c373777fa18e7aade4035b45e21f67').
+old_head_integer_nil_digest(get_integer("0007", "Y3"), 267,
+    '00bea1e5930550854be3b020ef1d5e537d82a9f9b55833b6de53f97f783f61d2').
+old_head_integer_nil_digest(get_nil("A1"), 234,
+    'e33550a193983e50ec0dcb23c4268c6cc93ce29ce6e603ec2f50ea2c1a600af8').
+old_head_integer_nil_digest(get_nil("Y3"), 234,
+    'e437b88586617da1ca7fe991ea9dcb646a745534d6e7a6e479e70f08cea24e49').
+
+test(head_integer_nil_old_bytes,
+     [forall(old_head_integer_nil_digest(Instruction, Length, Digest))]) :-
+    with_output_to(string(Text), wam_cpp_lowered_emitter:emit_one(Instruction, "  ")),
+    string_length(Text, Length),
+    crypto_data_hash(Text, Actual, [algorithm(sha256), encoding(utf8)]),
+    assertion(Actual == Digest).
+
 head_atom_vars([op=head_constant(atom("foo")), 'I'="", 'CStr'="foo", 'AiStr'="A1",
                 'Ai'="A1"]).
 
