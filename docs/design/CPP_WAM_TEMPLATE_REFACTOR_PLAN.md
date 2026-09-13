@@ -4,7 +4,8 @@ Status: in progress. Phase 1 (runtime header) and Phase 2 (lowered
 `get_constant`) landed in #4252 and #4253. The first Phase 3 slice, including
 project preflight and `main.cpp`, landed in #4255. The program and runtime
 extraction landed in #4256, and the first three runtime sections in #4257.
-The first Phase 4 reusable lowered family is underway from `9cef7cf`.
+The first Phase 4 reusable lowered family landed in #4261; the current slice
+extracts the repeated lowered function shell from `b8a54ee`.
 The Pattern Stache literal-substitution fix landed in #4254.
 The original planning baseline was `55796489a9750388f4fcf3cac602e4d525b14c28`
 (2026-09-11).
@@ -145,6 +146,29 @@ fragment. Each call still hashes the template file to detect mutation, so
 expanding this family does add that cost when the integer/nil opcodes arrive
 through WAM text or manual lowering. No additional cache layer is justified by
 the ordinary project count.
+
+## Phase 4 progress: lowered function shell (2026-09-12)
+
+`lowered/function.cpp.mustache` now owns the common comment/signature/body/
+closing-brace shape used by the plain, T4, T5, and T6 lowered paths. Prolog
+continues to select the lowering strategy, render instruction bodies, and
+construct the mode-specific comment. The adapter validates three ordered,
+exactly-once source slots (`comment`, `name`, `body`) and returns the existing
+`[Header, Body, Footer]` shape. It inserts already-rendered C++ once, without
+rescanning marker-shaped text inside body or comment fragments. Project
+preflight validates the shell even for an interpreter-mode project, so missing,
+unknown, duplicate, or reordered slots fail before creating output files.
+If it changes after preflight, asset errors still propagate through the
+per-predicate `warn` policy instead of silently omitting a lowered predicate.
+
+Frozen full-function hashes match the old output for plain, T4, T5, T6, and a
+structured ITE predicate. Native C++17 ITE, T4, T5, and T6 execution suites
+pass. This is reuse across four emitter paths, replacing their repeated outer
+shells; it does not move clause dispatch or ITE semantics into the template.
+A 30-fact functions-mode project emits 30 uses of this shell. Three separate
+20-generation runs measured 46.25–47.75 ms/project, compared with 45.9–46.9
+ms/project in separate runs before this shell extraction. The small difference
+is within run variation and is generation time, not C++ compile time.
 
 ## Outcome and scope
 

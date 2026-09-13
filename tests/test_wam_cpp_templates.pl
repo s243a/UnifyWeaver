@@ -7,8 +7,17 @@
               [compile_wam_runtime_header_to_cpp/2]).
 :- use_module('../src/unifyweaver/targets/wam_cpp_templates',
               [cpp_render_template_at_root/4, cpp_render_stache_at_root/4,
+               cpp_lowered_function_lines_at_root/5,
                cpp_with_template_root_for_test/2]).
 :- use_module('../src/unifyweaver/targets/wam_cpp_lowered_emitter', []).
+:- use_module('../src/unifyweaver/targets/wam_target', [compile_predicate_to_wam/3]).
+
+:- dynamic user:shell_t4/2, user:shell_t5/1, user:shell_t6/1, user:shell_ite/2.
+user:shell_t4(a,x). user:shell_t4(b,y). user:shell_t4(a,z).
+user:shell_t5(red). user:shell_t5(green). user:shell_t5(blue).
+user:shell_t6(s01). user:shell_t6(s02). user:shell_t6(s03). user:shell_t6(s04).
+user:shell_t6(s05). user:shell_t6(s06). user:shell_t6(s07). user:shell_t6(s08).
+user:shell_ite(X,Y) :- ( X > 0 -> Y = pos ; Y = nonpos ).
 
 % SHA-256 covers UTF-8 bytes; lengths below count Prolog characters.
 % Captured from the old compile_wam_runtime_header_to_cpp/2 at local main
@@ -69,6 +78,56 @@ test(program_shell_does_not_rescan_fragments) :-
     assertion(\+ sub_string(Text, _, _, _, "P S {{predicates_code}}")),
     assertion(\+ sub_string(Text, _, _, _, "S P {{setup_code}}")).
 
+% Captured before the four lowered function headers/footers shared a shell.
+old_lowered_function_digest(shell_plain/1, 382,
+    'a0606ef0e168e0822e306a29e0e14973e16d8350adfedf696be279f2b1bfe0ee').
+old_lowered_function_digest(shell_t4/2, 2270,
+    '2ac4fc8a17f27245cdd071e7d2ef68db107974d819f26c4a8bd6995a0aae80a7').
+old_lowered_function_digest(shell_t5/1, 365,
+    'fd54ee8777448912e2632849a2d76036a1b069c5e2540bdea3fb8514be3f852f').
+old_lowered_function_digest(shell_t6/1, 1151,
+    '9326ae27c9eb3df2010e3d83bfe768b2d2641544005ef0b349468940dff9ae92').
+old_lowered_function_digest(shell_ite/2, 1393,
+    '2c7fc9718f9f2f37fed6b07a6b22449e80e210445e672ceb7a23411fa62aae51').
+
+test(lowered_function_old_bytes,
+     [forall(old_lowered_function_digest(PI, Length, Digest))]) :-
+    ( PI == shell_plain/1
+    -> Wam = [get_constant("foo", "A1"), proceed]
+    ;  once(compile_predicate_to_wam(PI,
+           [inline_bagof_setof(true), ite_use_y_level(true)], Wam)) ),
+    once(wam_cpp_lowered_emitter:lower_predicate_to_cpp(PI, Wam, [], Lines)),
+    assertion(Lines = [_, _, _]),
+    atomic_list_concat(Lines, '\n', Code),
+    string_length(Code, Length),
+    crypto_data_hash(Code, Actual, [algorithm(sha256), encoding(utf8)]),
+    assertion(Actual == Digest).
+
+test(lowered_function_body_and_metadata_are_literal) :-
+    cpp_lowered_function_lines_at_root('templates/targets/cpp_wam',
+        "lowered_literal_1", "// {{name}}", "return \"{{comment}} {{name}} {{body}}\";",
+        Lines),
+    atomic_list_concat(Lines, '\n', Code),
+    assertion(sub_string(Code, _, _, _, "// {{name}}")),
+    assertion(sub_string(Code, _, _, _, "return \"{{comment}} {{name}} {{body}}\";")),
+    assertion(sub_string(Code, _, _, _, "bool lowered_literal_1(WamState* vm)")).
+
+test(lowered_function_rejects_nonground_name,
+     [throws(error(domain_error(cpp_wam_lowered_function_variables, _), _))]) :-
+    cpp_lowered_function_lines_at_root('templates/targets/cpp_wam',
+        _, "// comment", "return true;", _).
+
+test(lowered_function_asset_errors_survive_warn_policy,
+     [forall(member(Problem,
+         [cpp_wam_template_load(lowered_function, fixture, missing),
+          cpp_wam_template_empty(lowered_function, fixture),
+          cpp_wam_template_tags(lowered_function, fixture),
+          domain_error(cpp_wam_lowered_function_variables, bad)]))]) :-
+    Error = error(Problem, context(lowered_function, fixture)),
+    catch(wam_cpp_target:handle_compile_error(warn, shell_t5/1, Error),
+          Actual, true),
+    assertion(Actual == Error).
+
 project_variant(functions, [emit_mode(functions), emit_main(true)],
     'fadbf0020e10e86fbf206a5f1f6b0b912891676c8dc13a3168a34cece76aafa7').
 project_variant(interpreter, [emit_mode(interpreter)],
@@ -97,6 +156,21 @@ test(project_preflight_missing_stache_no_files) :-
 
 test(project_preflight_malformed_stache_no_files) :-
     with_project_template_fixture(malformed_stache, check_project_preflight_failure).
+
+test(project_preflight_missing_lowered_shell_no_files) :-
+    with_project_template_fixture(missing_lowered_shell, check_project_preflight_failure).
+
+test(project_preflight_malformed_lowered_shell_no_files) :-
+    with_project_template_fixture(malformed_lowered_shell, check_project_preflight_failure).
+
+test(project_preflight_missing_lowered_slot_no_files) :-
+    with_project_template_fixture(missing_lowered_slot, check_project_preflight_failure).
+
+test(project_preflight_duplicate_lowered_slot_no_files) :-
+    with_project_template_fixture(duplicate_lowered_slot, check_project_preflight_failure).
+
+test(project_preflight_reordered_lowered_slots_no_files) :-
+    with_project_template_fixture(reordered_lowered_slots, check_project_preflight_failure).
 
 test(project_preflight_malformed_main_no_files) :-
     with_project_template_fixture(malformed_main, check_project_preflight_failure).
@@ -210,6 +284,21 @@ with_project_template_fixture(Fault, Goal) :-
          directory_file_path(Lowered, 'head_constant.cpp.stache', StacheCopy),
          (Fault == missing_stache -> true ; copy_file(Stache, StacheCopy)),
          (Fault == malformed_stache -> write_fixture(StacheCopy, "{{bad") ; true),
+         directory_file_path(RealRoot, 'lowered/function.cpp.mustache', Function),
+         directory_file_path(Lowered, 'function.cpp.mustache', FunctionCopy),
+         (Fault == missing_lowered_shell -> true ; copy_file(Function, FunctionCopy)),
+         (Fault == malformed_lowered_shell
+         -> write_fixture(FunctionCopy, "{{comment}}\nbool {{name}}(WamState* vm) {{{body}}}{{unknown}}")
+         ;  true),
+         (Fault == missing_lowered_slot
+         -> write_fixture(FunctionCopy, "{{comment}}\nbool {{name}}(WamState* vm) {}")
+         ;  true),
+         (Fault == duplicate_lowered_slot
+         -> write_fixture(FunctionCopy, "{{comment}}{{name}}{{body}}{{body}}")
+         ;  true),
+         (Fault == reordered_lowered_slots
+         -> write_fixture(FunctionCopy, "{{name}}{{comment}}{{body}}")
+         ;  true),
          (Fault == malformed_main -> write_fixture(MainCopy, "{{bad") ; true)),
         call(Goal, Fault, Root, Templates),
         delete_directory_and_contents(Root)).
@@ -244,6 +333,12 @@ check_project_preflight_failure(Fault, Root, Templates) :-
     ->  assertion(Error = error(cpp_wam_template_load(generated_program, _, _), _))
     ;   Fault == malformed_program
     ->  assertion(Error = error(cpp_wam_template_tags(generated_program, _), _))
+    ;   Fault == missing_lowered_shell
+    ->  assertion(Error = error(cpp_wam_template_load(lowered_function, _, _), _))
+    ;   memberchk(Fault, [malformed_lowered_shell, missing_lowered_slot,
+                          duplicate_lowered_slot,
+                          reordered_lowered_slots])
+    ->  assertion(Error = error(cpp_wam_template_tags(lowered_function, _), _))
     ;   assertion(Error = error(cpp_wam_stache_failure(head_constant, _, _), _))
     ),
     assertion(\+ exists_directory(Project)).
