@@ -18,12 +18,26 @@
 
 main :-
     prompt(_, ''),
-    getenv('STORE_DIR', Dir),
-    % N=1 default: pool + membership from the one frozen store dir. N>1: point
-    % UW_POOL_DIR at the shared pool dir (dep/conflict/revdep/provide) while
-    % STORE_DIR holds the per-snapshot membership pkg.jsonl.
-    ( getenv('UW_POOL_DIR', PoolDir) -> true ; PoolDir = Dir ),
-    load_p2_snap(PoolDir, Dir),
+    (   getenv('UW_INTERVAL_MODE', IM), memberchk(IM, ['1', "1", 'true', "true"])
+    ->  % INTERVAL MODE: answer a single-snapshot resolve straight from the
+        % (Name,Ver,From,To) validity intervals -- no per-snapshot store_pkg.
+        % UW_INTERVALS_FILE = intervals.jsonl; UW_POOL_DIR (or STORE_DIR) holds
+        % the shared pool dep/conflict/revdep/provide.jsonl; UW_POOL_ID keys the
+        % pool + intervals; the numeric snapshot index T comes from UW_SNAP_ID
+        % (or each case's catalog_id), carried in the env's SnapId field.
+        getenv('UW_INTERVALS_FILE', IvlF),
+        ( getenv('UW_POOL_DIR', PoolDir) -> true
+        ; getenv('STORE_DIR', PoolDir) -> true
+        ; PoolDir = '.' ),
+        ( getenv('UW_POOL_ID', PoolId) -> true ; PoolId = default ),
+        load_intervals_snap(PoolDir, IvlF, PoolId)
+    ;   getenv('STORE_DIR', Dir),
+        % N=1 default: pool + membership from the one frozen store dir. N>1: point
+        % UW_POOL_DIR at the shared pool dir (dep/conflict/revdep/provide) while
+        % STORE_DIR holds the per-snapshot membership pkg.jsonl.
+        ( getenv('UW_POOL_DIR', PoolDir) -> true ; PoolDir = Dir ),
+        load_p2_snap(PoolDir, Dir)
+    ),
     read_line_to_string(user_input, Line),
     process_lines(Line).
 
