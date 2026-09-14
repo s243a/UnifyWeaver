@@ -549,6 +549,37 @@ section_model :-
     retract(abi_resolve:prov_evidence('libv.so.1', elf, R10, complete)),
     check('C15c with the 1.0 (default) evidence row removed, the orphaned default symprov does not count: 2.0 still no_default_export (astra detached-binding)',
           abi_verdict(bin, 'libv.so.1', '2.0', incompatible([missing(u, no_default_export('libv.so.1', 'N'))]))),
+
+    % C16: Fable re-verify R1 -- an unversioned ref BELOW a curated .symbols floor.
+    % ident_status is provided(curated) from the floor row ABOVE Rel, so binding_at
+    % must take the binding from that above row; otherwise it falsely vetoes missing.
+    % (The other unversioned .symbols tests all query AT the evidence release.)
+    fx_clear,
+    fx(symreq(bin, f, none, none, 'GLOBAL')),
+    fx(needed(bin, 'libf.so.1')),
+    fx(req_evidence(bin, readelf, complete, bin)),
+    fx_since('1.0', '2.0', default, Sf), fx_rel('2.0', R2f),
+    fx(symprov('libf.so.1', f, 'Base', Sf)),
+    fx(prov_evidence('libf.so.1', symbols, R2f, complete)),
+    check('C16 unversioned ref BELOW a curated floor (since 1.0, evidence 2.0), query 1.5 -> compatible(curated), not missing (fable R1)',
+          ( abi_verdict(bin, 'libf.so.1', '1.5', V16), report(verdict, V16), V16 == compatible(curated) )),
+    check('C16b at the floor minimum (1.0) -> compatible(curated) (fable R1)',
+          abi_verdict(bin, 'libf.so.1', '1.0', compatible(curated))),
+
+    % C17: Fable re-verify R2 -- the missing-veto coverage gate applies to the
+    % QUERIED So only; a sibling NEEDED object is evaluated at its OWN evidence
+    % release (a different package axis), so its complete evidence establishes
+    % absence there and must not force a cross-axis unknown.
+    fx_clear,
+    fx(symreq(bin, z, none, none, 'GLOBAL')),
+    fx(needed(bin, 'liba.so.1')), fx(needed(bin, 'libb.so.1')),
+    fx(req_evidence(bin, readelf, complete, bin)),
+    fx_rel('2.0', R2z),
+    fx(prov_evidence('liba.so.1', elf, R2z, complete)),
+    fx(prov_evidence('libb.so.1', elf, R10, complete)),
+    check('C17 unversioned z absent from both; query liba@2.0: sibling libb@1.0 counts at its own release -> missing(z), not a cross-axis unknown (fable R2)',
+          ( abi_verdict(bin, 'liba.so.1', '2.0', V17), report(verdict, V17),
+            V17 == incompatible([missing(z)]) )),
     fx_clear.
 
 % ===========================================================================

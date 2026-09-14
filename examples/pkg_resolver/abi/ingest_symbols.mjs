@@ -148,7 +148,7 @@ function validDebVersion(v) {
 // curated minimum ABOVE its evidence release (Sol re-review 2, P1).
 const _cmpCache = new Map();
 function debLe(a, b) {
-  const key = `${a} ${b}`;
+  const key = `${a}\u0000${b}`;
   if (_cmpCache.has(key)) return _cmpCache.get(key);
   let r;
   try { execFileSync("dpkg", ["--compare-versions", a, "le", b], { stdio: "ignore" }); r = true; }

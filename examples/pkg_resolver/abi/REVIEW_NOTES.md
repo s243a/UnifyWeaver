@@ -215,3 +215,22 @@ and fixture-proven; `run_abi_verify.sh`: `== 108 passed, 0 failed, 0 skipped ==`
   governs the RESOLVER, which orders exclusively via `resolver:version_lt/2`; the
   authoritative contradictory-floor rejection is the Prolog `assert_symprov`
   `rel_le/2` check (frozen path), with the JS `debLe` only a loud early guard.
+
+### Fable re-verify of the Astra fixes — two regressions caught and fixed
+
+A Fable re-verification of the Astra-fix commit caught two regressions the
+`binding_at` rework introduced (the harness missed them because every unversioned
+`.symbols` test queries AT the evidence release):
+
+- **R1** (false `missing` veto): `binding_at` took the binding only from the row
+  AT Rel or BELOW, but `ident_status` can credit a curated `.symbols` floor row
+  ABOVE Rel (`combine/4`, `Min =< Rel`). Fixed: `binding_at` now also selects that
+  above curated row (mirroring `combine`). Fixture **C16/C16b** (unversioned ref
+  BELOW a curated floor, query 1.5/1.0 → `compatible(curated)`, not `missing`).
+- **R2** (cross-axis false unknown): the missing-veto coverage gate compared So's
+  query release with a sibling's evidence release. Fixed: the gate applies to the
+  queried `So` only; siblings are evaluated at their own release (a sibling
+  lacking complete evidence is already handled earlier). Fixture **C17**.
+
+Also cleaned a stray NUL byte in the `debLe` cache-key string (now ` ` as
+source text). `run_abi_verify.sh`: `== 111 passed, 0 failed, 0 skipped ==`.

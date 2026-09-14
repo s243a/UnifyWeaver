@@ -469,8 +469,8 @@ unversioned_status(Bin, So, Sym, Bind, Rel, Hyp, Status) :-
     ->  Status = unknown(Sym, Why)
     ;   unversioned_nondefault(Bin, So, Sym, Rel, S3, N3)
     ->  Status = missing(Sym, no_default_export(S3, N3))
-    ;   needed(Bin, S), \+ absence_established(S, Rel)  % complete evidence only
-    ->  Status = unknown(Sym, absence_unestablished(S, Rel))  % below Rel: a later release may add it (Astra)
+    ;   \+ absence_established(So, Rel)  % So's complete evidence is only BELOW Rel
+    ->  Status = unknown(Sym, absence_unestablished(So, Rel))  % a later release may add it (Astra R1)
     ;   Status = missing(Sym)
     ).
 
@@ -509,13 +509,20 @@ unversioned_nondefault(Bin, So, Sym, Rel, S, Node) :-
 % same aggregation ident_status uses) AND the evidence row that establishes that
 % presence records default-version binding Bind. This ties the binding to the
 % applicable release/evidence (Astra): a binding from a non-applicable release or
-% an evidence-less symprov row cannot decide the verdict.
+% an evidence-less symprov row cannot decide the verdict. The row selected mirrors
+% ident_status/combine: the row AT Rel, else the nearest present row BELOW Rel
+% (extrapolated), else a curated `.symbols` floor ABOVE Rel that covers Rel
+% (Min =< Rel) -- without that last case an unversioned ref BELOW a curated floor
+% would falsely veto (Fable re-verify R1).
 binding_at(So, Sym, Node, Rel, Bind, Basis) :-
     ident_status(So, Sym, Node, Rel, provided(Basis)),
     findall(R1-Says, ev_says(So, Sym, Node, R1, Says), Rows),
     (   member(Rel1-_, Rows), Rel1 == Rel
     ->  says_at(Rows, Rel, present(_, Bound))
     ;   nearest_below(Rows, Rel, ev(_, present(_, Bound)))
+    ->  true
+    ;   nearest_above(Rows, Rel, ev(_, present(symbols, Bound))),
+        Bound = since(Min, _, _, _), rel_le(Min, Rel)
     ),
     bound_binding(Bound, Bind).
 
