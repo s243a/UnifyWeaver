@@ -1,0 +1,6 @@
+# Contradictory-floor fixture (Sol re-review 2, P1): the minimum-version 2.0 is
+# ABOVE the evidence release the file is ingested at (--release 1.0). A curated
+# minimum cannot exceed the release it was curated from, so the WHOLE file is
+# rejected (exit 3), nothing written.
+libcontra.so.1 #PACKAGE# #MINVER#
+ contra_fn@Base 2.0

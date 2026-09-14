@@ -1,0 +1,1 @@
+HID_1 { global: hid_fn; other_fn; local: *; };
