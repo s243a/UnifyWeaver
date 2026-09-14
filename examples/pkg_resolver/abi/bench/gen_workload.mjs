@@ -56,6 +56,17 @@ for await (const line of rl) {
 }
 if (keys.length === 0) { console.error('no keys read'); process.exit(1); }
 
+// Package-scale (or any store without the ABI hot sonames) fallback: if no key
+// belongs to a hot soname, model "a few packages re-touched constantly" with a
+// seeded random ~5% hot-key subset. Documented in the manifest as hot_mode.
+let hotMode = 'sonames';
+if (hotKeys.length === 0) {
+  hotMode = 'random-5pct';
+  const target = Math.max(1, Math.ceil(keys.length * 0.05));
+  const seen = new Set();
+  while (seen.size < target) { const i = Math.floor(rnd() * keys.length); if (!seen.has(i)) { seen.add(i); hotKeys.push(keys[i]); } }
+}
+
 // Build a distinct set of well-formed miss keys: real soname band + synthetic sym.
 const sonames = [...new Set(keys.map(k => k.slice(0, k.indexOf('|'))))];
 function missKey() { return `${pick(sonames)}|${MISS_SYM}`; }
@@ -91,6 +102,7 @@ const manifest = {
   source: jsonl,
   total_store_keys: keys.length,
   distinct_sonames: sonames.length,
+  hot_mode: hotMode,
   hot_sonames: [...HOT_SONAMES],
   hot_key_count: hotKeys.length,
   hot_key_fraction_of_store: +(hotKeys.length / keys.length).toFixed(4),

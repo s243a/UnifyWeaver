@@ -37,10 +37,18 @@ user:shell_nestedite(X,Y) :- ( X > 0 -> ( X > 10 -> Y = big ; Y = small ) ; Y = 
 % and P2 added SeekFactSource's RAII destructor + close_lmdb() helper + deleted
 % copy/move ops (env-leak fix). Both variants grew by the SAME +3108 characters
 % (the additions are gate-independent text), which is the whole header delta.
-old_header_digest(plain, 90019,
-    'd65645f69ff27e69319a67b43c42399b5d7c1067a804f40faa44247fe430c19d').
-old_header_digest(lmdb, 90260,
-    '1fcfa56c3eca176cd75b7878b2a30710f6c062a0cbcfaf90fbc3fb27422994e2').
+%
+% Re-baselined AGAIN (ABI store crossover "fair fight", from plain 90019 / lmdb
+% 90260): the indexed SeekFactSource read path now slurps the whole .idx into
+% RAM once at open (idx_blob_) and binary-searches it IN MEMORY (idx_key_compare
+% + rewritten lookup_offsets), eliminating the ~37 per-probe seek+read syscalls
+% per lookup. Answer-identical (503-case store differential + 51-case corpus:
+% 0 divergences). The +1872 characters are outside the WAM_CPP_ENABLE_LMDB gate,
+% so BOTH variants grew by the SAME delta (the whole header delta).
+old_header_digest(plain, 91891,
+    'cd123f80b7836b47f383d45b518df8cf04d3c069a2aa92575279da58375d7f86').
+old_header_digest(lmdb, 92132,
+    'bf5d8313c4d71799c3349283bacae6780a84c87cd32bea1080fb911057329c14').
 
 assert_old_header_bytes(Mode, Header) :-
     old_header_digest(Mode, Length, Digest),
