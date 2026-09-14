@@ -1,11 +1,11 @@
 # C++ WAM template refactor plan
 
-Status: in progress. Phase 1 (runtime header) and Phase 2 (lowered
-`get_constant`) landed in #4252 and #4253. The first Phase 3 slice, including
+Status: WAM C++ scope complete after the Phase 4 audit. Phase 1 (runtime
+header) and Phase 2 (lowered `get_constant`) landed in #4252 and #4253. The first Phase 3 slice, including
 project preflight and `main.cpp`, landed in #4255. The program and runtime
 extraction landed in #4256, and the first three runtime sections in #4257.
-The first Phase 4 reusable lowered family landed in #4261 and the lowered
-function shell in #4263. The current slice extracts the structured ITE shell.
+The first Phase 4 reusable lowered family landed in #4261, the lowered
+function shell in #4263, and the structured ITE shell in #4264.
 The Pattern Stache literal-substitution fix landed in #4254.
 The original planning baseline was `55796489a9750388f4fcf3cac602e4d525b14c28`
 (2026-09-11).
@@ -189,6 +189,24 @@ reordered-slot assets without creating a project. Asset failures after preflight
 also propagate through the default `warn` policy. A five-predicate ITE project
 rendered seven such shells and averaged 34.35 ms/project over 20 generations
 in one local run; there is no directly comparable pre-extraction timing.
+
+## Phase 4 closeout audit (2026-09-14)
+
+The remaining lowered instruction emitter was reviewed after the shared
+head-match, function, and ITE shells landed. The `get_*`, `put_*`, `unify_*`,
+and `set_*` groups repeat short comments and one-line `vm->step(...)` calls,
+but their argument normalization and runtime operations differ. The larger
+`call` and `execute` bodies are distinct control-flow cases. Moving these
+to additional files would increase template contracts and per-fragment
+rendering without sharing a substantial C++ body. They stay in Prolog as
+small emission patterns. The already-extracted runtime sections remain at
+coherent responsibility boundaries; no further runtime split is justified
+by file length alone.
+
+This closes the scoped WAM C++ migration. `cpp_target.pl` is a separate
+streaming/JSON backend and needs its own use-case audit before any template
+work. A future repeated body can reopen Phase 4 with a concrete reuse case,
+frozen output, and native behavior evidence.
 
 ## Outcome and scope
 
