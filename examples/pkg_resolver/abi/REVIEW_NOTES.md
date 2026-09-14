@@ -269,3 +269,24 @@ binding was UNIFIED into the aggregation. `run_abi_verify.sh`:
   command (**epoch_releases**), which has no `debLe` floor check to mask it; the
   hypothetical-drop node- and release-matching are isolated by **C13c** (same
   release, different node) and **C13d** (same node, future release).
+
+### Fable re-verify of the unification — two pre-existing false verdicts fixed
+
+A Fable re-verification confirmed the refactor introduced NO regression but found
+two PRE-EXISTING false verdicts (present on earlier commits too), now fixed.
+`run_abi_verify.sh`: `== 120 passed, 0 failed, 0 skipped ==`.
+
+- **M2 (false compatible — mode bug):** `ident_status/5` was mode-dependent —
+  `combine/4` and `says_status/3` carry their cut AFTER head unification, so a
+  caller passing a bound `Status` (e.g. `provided(_, default)`) could skip the
+  clause the unbound call fires and match a later one, yielding
+  `compatible(extrapolated)` for a symbol observed DROPPED. Fixed: `ident_status`
+  computes into a fresh variable via `ident_status_/5`, then unifies, so every
+  caller sees the single mode-independent status (closes the whole class, not
+  just this case). Fixture **C20**.
+- **M3 (false no_default_export):** `combine` clause 3 extrapolated the below-row
+  binding and ignored a disagreeing above row, so a nondefault-below + default-
+  above (floor not covering Rel) vetoed instead of reporting the binding as
+  changing. Fixed: `merge_binding/3` marks two conflicting DEFINITE bindings
+  `ambiguous` (→ `unknown`); `unproven` is treated as no-info, never a conflict.
+  Fixture **C21**.

@@ -335,7 +335,17 @@ ev_says(So, Sym, Node, R1, Says) :-
 % observed absence (then the identity was dropped somewhere in between:
 % unknown, not a false compat and not a false veto); absence above propagates
 % downward (monotone exports); a curated floor above covers Rel >= Min.
+% Mode-insensitive: compute the status into a FRESH variable, then unify with the
+% caller's pattern. combine/4 and says_status/3 carry their cut AFTER head
+% unification, so a caller passing a bound Status (e.g. provided(_, default))
+% must NOT be allowed to skip the clause the unbound call would fire and match a
+% later one -- that gave a false compatible for a symbol observed dropped (Fable
+% re-verify M2). Callers therefore always see the single, mode-independent status.
 ident_status(So, Sym, Node, Rel, Status) :-
+    ident_status_(So, Sym, Node, Rel, S0), !,
+    Status = S0.
+
+ident_status_(So, Sym, Node, Rel, Status) :-
     findall(R1-Says, ev_says(So, Sym, Node, R1, Says), Rows),
     Rows \== [],
     (   member(Rel1-_, Rows), Rel1 == Rel
@@ -387,14 +397,33 @@ combine(ev(R0, present(_, _)), ev(R1, absent(Src)), _, unknown(dropped_between(R
 combine(ev(_, present(_, BoundB)), ev(_, present(symbols, since(Min, _, _, BindA))), Rel, provided(curated, Bind)) :-
     rel_le(Min, Rel), !,
     bound_binding(BoundB, BindB),
-    ( BindB == BindA -> Bind = BindB ; Bind = ambiguous ).
-combine(ev(_, present(_, Bound)), _, _, provided(extrapolated, Bind)) :- !, bound_binding(Bound, Bind).
+    merge_binding(BindB, BindA, Bind).
+% below present, extrapolated upward. If a present row ABOVE records a DEFINITE
+% binding that conflicts with the below one, the binding is changing across Rel:
+% mark it ambiguous rather than confidently extrapolate the below binding (Fable
+% re-verify M3). `unproven` above is no-info, not a conflict.
+combine(ev(_, present(_, BoundB)), Above, _, provided(extrapolated, Bind)) :- !,
+    bound_binding(BoundB, BindB),
+    ( above_binding(Above, BindA) -> merge_binding(BindB, BindA, Bind) ; Bind = BindB ).
 combine(_, ev(R1, absent(Src)), _, missing(observed_absent(Src, R1))) :- !.
 combine(_, ev(_, present(symbols, since(Min, MinAtom, _, Bind))), Rel, Status) :- !,
     ( rel_le(Min, Rel) -> Status = provided(curated, Bind) ; Status = below_floor(MinAtom) ).
 combine(_, ev(R1, present(elf, _)), _, unknown(evidence_release(R1))) :- !.
 combine(ev(R0, absent(Src)), none, _, unknown(absent_at(Src, R0))) :- !.
 combine(none, none, _, unknown(no_evidence)).
+
+% above_binding(Above, Bind): the default-version binding a present ABOVE row
+% records (fails for none / absent -- no binding to conflict with).
+above_binding(ev(_, present(elf, at(_, Bind))), Bind).
+above_binding(ev(_, present(symbols, since(_, _, _, Bind))), Bind).
+
+% merge_binding(B1, B2, Merged): two DEFINITE bindings that differ -> ambiguous;
+% otherwise the definite one wins (`unproven` is no-info, never a conflict).
+merge_binding(B, B, B) :- !.
+merge_binding(B1, B2, ambiguous) :-
+    memberchk(B1, [default, nondefault]), memberchk(B2, [default, nondefault]), !.
+merge_binding(B1, _, B1) :- memberchk(B1, [default, nondefault]), !.
+merge_binding(_, B2, B2).
 
 % provides_at(So, Sym, Node, Rel, Basis): So exports exactly Sym@Node at Rel.
 provides_at(So, Sym, Node, Rel, Basis) :-

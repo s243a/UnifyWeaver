@@ -616,6 +616,39 @@ section_model :-
     check('C19 conflicting bindings (elf nondefault@1.0 vs curated default since 1.0@3.0), query 2.0 -> unknown(default_binding_conflict), not veto/compat (astra2 522)',
           ( abi_verdict(bin, 'libh.so.1', '2.0', V19), report(verdict, V19),
             V19 = unknown(L19), memberchk(unknown(h, default_binding_conflict('libh.so.1', 'N')), L19) )),
+
+    % C20: Fable re-verify M2 -- ident_status/5 is mode-insensitive. An unversioned
+    % ref to a symbol PRESENT at 1.0 and ABSENT (complete) at 3.0 is dropped in
+    % between; query 2.0 -> unknown(dropped_between), NEVER a false compatible
+    % (the mode bug let a bound provided(_,default) pattern skip the dropped clause).
+    fx_clear,
+    fx(symreq(bin, m, none, none, 'GLOBAL')),
+    fx(needed(bin, 'libm2.so.1')),
+    fx(req_evidence(bin, readelf, complete, bin)),
+    fx_rel('3.0', R3m),
+    fx(prov_evidence('libm2.so.1', elf, R10, complete)),
+    fx(prov_evidence('libm2.so.1', elf, R3m, complete)),
+    fx(symprov('libm2.so.1', m, 'N', at(R10, default))),
+    check('C20 unversioned ref, present@1.0 absent@3.0 (complete): query 2.0 -> unknown(dropped_between), not compatible (fable M2)',
+          ( abi_verdict(bin, 'libm2.so.1', '2.0', V20), report(verdict, V20),
+            V20 = unknown(L20), memberchk(unknown(m, dropped_between(_, elf, _)), L20) )),
+
+    % C21: Fable re-verify M3 -- no_default_export must not fire while the binding
+    % is changing across Rel. elf nondefault@1.0 + curated default since 2.5@3.0,
+    % query 2.0 (below the 2.5 floor) -> ambiguous -> unknown, not a veto.
+    fx_clear,
+    fx(symreq(bin, n, none, none, 'GLOBAL')),
+    fx(needed(bin, 'libn.so.1')),
+    fx(req_evidence(bin, readelf, complete, bin)),
+    fx_rel('3.0', R3n),
+    fx(prov_evidence('libn.so.1', elf, R10, complete)),
+    fx(prov_evidence('libn.so.1', symbols, R3n, complete)),
+    fx(symprov('libn.so.1', n, 'N', at(R10, nondefault))),
+    fx_since('2.5', '3.0', default, Sn),
+    fx(symprov('libn.so.1', n, 'N', Sn)),
+    check('C21 elf nondefault@1.0 + curated default since 2.5@3.0, query 2.0 (below floor) -> unknown(default_binding_conflict), not no_default_export (fable M3)',
+          ( abi_verdict(bin, 'libn.so.1', '2.0', V21), report(verdict, V21),
+            V21 = unknown(L21), memberchk(unknown(n, default_binding_conflict('libn.so.1', 'N')), L21) )),
     fx_clear.
 
 % ===========================================================================
