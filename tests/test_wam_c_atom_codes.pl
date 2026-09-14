@@ -3,13 +3,13 @@
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
 % Focused C atom_codes/2: generated/compiled C vs SWI for forward
-% atom-to-codes mode (ASCII, empty, multibyte code points).
+% atom-to-codes and fully bound reverse codes-to-atom modes.
 % Compatible and incompatible prebound outputs, rollback after mismatch,
 % caller continuation, and variable identity are verified.
-% Unbound atom, unsupported reverse mode, and non-atom inputs
+% Both-unbound, malformed reverse lists, and non-atom inputs
 % explicitly diagnose WAM_ERR_UNSUPPORTED, not silent logical failure.
 %
-%   swipl -q -g run_tests -t halt tests/test_wam_c_atom_codes.pl
+%   swipl --on-error=halt -q -g run_tests -t halt tests/test_wam_c_atom_codes.pl
 
 :- use_module('../src/unifyweaver/targets/wam_c_target').
 :- use_module('../src/unifyweaver/targets/wam_target').
@@ -22,6 +22,7 @@
 :- dynamic user:wam_atom_codes_continuation/3.
 :- dynamic user:wam_atom_codes_bind_control/1.
 :- dynamic user:wam_atom_codes_backtrack/1.
+:- dynamic user:wam_atom_codes_reverse_backtrack/1.
 :- dynamic user:wam_atom_codes_mismatch_positive/1.
 :- dynamic user:wam_atom_codes_mismatch_rollback/1.
 
@@ -56,6 +57,7 @@ cleanup_atom_codes_preds :-
     retractall(user:wam_atom_codes_continuation(_, _, _)),
     retractall(user:wam_atom_codes_bind_control(_)),
     retractall(user:wam_atom_codes_backtrack(_)),
+    retractall(user:wam_atom_codes_reverse_backtrack(_)),
     retractall(user:wam_atom_codes_mismatch_positive(_)),
     retractall(user:wam_atom_codes_mismatch_rollback(_)).
 
@@ -69,6 +71,10 @@ setup_atom_codes_preds :-
     assertz((user:wam_atom_codes_backtrack(Out) :-
                  ( atom_codes(foo, C), C == [99, 99], fail
                  ; ( var(C) -> Out = restored ; Out = bad )
+                 ), Out == restored)),
+    assertz((user:wam_atom_codes_reverse_backtrack(Out) :-
+                 ( atom_codes(A, [97, 98]), A == ab, fail
+                 ; ( var(A) -> Out = restored ; Out = bad )
                  ), Out == restored)),
     assertz((user:wam_atom_codes_mismatch_positive(Out) :-
                  atom_codes(hello, C), Out = C)),
@@ -109,6 +115,8 @@ token_swi(bind_control, ok, bind_control_ok) :-
     user:wam_atom_codes_bind_control([102, 111, 111]).
 token_swi(backtrack_rollback, ok, backtrack_ok) :-
     user:wam_atom_codes_backtrack(restored).
+token_swi(reverse_backtrack_rollback, ok, reverse_backtrack_ok) :-
+    user:wam_atom_codes_reverse_backtrack(restored).
 token_swi(mismatch_positive, ok, mismatch_positive_ok) :-
     user:wam_atom_codes_mismatch_positive([104, 101, 108, 108, 111]).
 token_swi(mismatch_rollback, ok, mismatch_rollback_ok) :-
@@ -119,7 +127,16 @@ token_swi(caller_continuation, ok, continuation_ok) :-
     S1 == start, S2 == done.
 token_swi(repeated_mismatch_rollback, ok, repeated_rollback_ok).
 token_swi(unbound_atom, ok, unbound_atom_ok).
-token_swi(reverse_mode, ok, reverse_mode_ok).
+token_swi(reverse_mode, ok, reverse_mode_ok) :-
+    atom_codes(Atom, [97, 98]), Atom == ab.
+token_swi(reverse_empty, ok, reverse_empty_ok) :-
+    atom_codes(Atom, []), Atom == ''.
+token_swi(reverse_unicode, ok, reverse_unicode_ok) :-
+    atom_codes(Atom, [955, 128640]), Atom == 'λ🚀'.
+token_swi(reverse_bad_code, ok, reverse_bad_code_ok).
+token_swi(reverse_nul, ok, reverse_nul_ok).
+token_swi(reverse_open_list, ok, reverse_open_list_ok).
+token_swi(reverse_cyclic_list, ok, reverse_cyclic_list_ok).
 token_swi(compound_input, ok, compound_ok).
 token_swi(nonempty_list, ok, nonempty_list_ok).
 token_swi(integer_input, ok, integer_ok).
@@ -275,6 +292,7 @@ run_compiled_c_atom_codes :-
     compile_one(user:wam_atom_codes_continuation/3, ContCode),
     compile_one(user:wam_atom_codes_bind_control/1, BindCode),
     compile_one(user:wam_atom_codes_backtrack/1, BackCode),
+    compile_one(user:wam_atom_codes_reverse_backtrack/1, ReverseBackCode),
     compile_one(user:wam_atom_codes_mismatch_positive/1, MisPosCode),
     compile_one(user:wam_atom_codes_mismatch_rollback/1, MismatchCode),
     compile_wam_runtime_to_c([], RuntimeCode),
@@ -287,7 +305,8 @@ run_compiled_c_atom_codes :-
     format(atom(ExePath), '~w_bin', [TmpBase]),
     write_text_file(RuntimePath, RuntimeCode),
     atomic_list_concat([QCode, "\n\n", ContCode, "\n\n", BindCode, "\n\n",
-                        BackCode, "\n\n", MisPosCode, "\n\n", MismatchCode],
+                        BackCode, "\n\n", ReverseBackCode, "\n\n",
+                        MisPosCode, "\n\n", MismatchCode],
                        AllPredCode),
     format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [AllPredCode]),
     write_text_file(PredPath, PredTranslationUnit),
@@ -312,9 +331,13 @@ run_compiled_c_atom_codes :-
               prebound_empty_mismatch,
               aliased_var_mismatch, preserve_input, reference_chain,
               repeated_calls, bind_control, backtrack_rollback,
+              reverse_backtrack_rollback,
               mismatch_positive, mismatch_rollback, c_unifier_rollback,
               caller_continuation, repeated_mismatch_rollback,
-              unbound_atom, reverse_mode, compound_input, nonempty_list,
+              unbound_atom, reverse_mode, reverse_empty, reverse_unicode,
+              reverse_bad_code, reverse_nul, reverse_open_list,
+              reverse_cyclic_list,
+              compound_input, nonempty_list,
               integer_input, distinguish_mismatch_vs_unsupported,
               prebound_heap_stable, malformed_utf8, heap_alloc_failure],
     findall(Id, (member(Id, Ground), \+ compare_ground(Id, CCases)), GroundBads),
@@ -334,6 +357,7 @@ void setup_wam_atom_codes_q_2(WamState *state);
 void setup_wam_atom_codes_continuation_3(WamState *state);
 void setup_wam_atom_codes_bind_control_1(WamState *state);
 void setup_wam_atom_codes_backtrack_1(WamState *state);
+void setup_wam_atom_codes_reverse_backtrack_1(WamState *state);
 void setup_wam_atom_codes_mismatch_positive_1(WamState *state);
 void setup_wam_atom_codes_mismatch_rollback_1(WamState *state);
 
@@ -554,6 +578,7 @@ int main(void) {
     setup_wam_atom_codes_continuation_3(&state);
     setup_wam_atom_codes_bind_control_1(&state);
     setup_wam_atom_codes_backtrack_1(&state);
+    setup_wam_atom_codes_reverse_backtrack_1(&state);
     setup_wam_atom_codes_mismatch_positive_1(&state);
     setup_wam_atom_codes_mismatch_rollback_1(&state);
 
@@ -715,7 +740,18 @@ int main(void) {
                    ok ? "backtrack_ok" : "backtrack_bad");
     }
 
-    /* 15. Mismatch positive control via compiled predicate */
+    /* 15. Reverse binding unwinds on caller backtracking. */
+    {
+        WamValue out_ref = make_out_ref(&state, "Out");
+        WamValue args[1] = { out_ref };
+        int rc = wam_run_predicate(&state, "wam_atom_codes_reverse_backtrack/1", args, 1);
+        int ok = rc == 0 && state.error == 0 &&
+                 same_atom(wam_deref_ptr(&state, &out_ref), "restored");
+        emit_token("reverse_backtrack_rollback", ok ? "ok" : "fail",
+                   ok ? "reverse_backtrack_ok" : "reverse_backtrack_bad");
+    }
+
+    /* 16. Mismatch positive control via compiled predicate */
     {
         WamValue out_ref = make_out_ref(&state, "Out");
         WamValue args[1] = { out_ref };
@@ -803,15 +839,82 @@ int main(void) {
         wam_clear_error(&state);
     }
 
-    /* 21. Reverse mode (unbound atom, bound codes) -> WAM_ERR_UNSUPPORTED */
+    /* 21. Reverse mode produces an atom from a bound code list. */
     {
         static const int ab_codes[] = {97, 98};
         WamValue codes = build_int_list(&state, ab_codes, 2);
-        int rc = run_atom_codes(&state, val_unbound("A"), codes);
-        int ok = (rc == WAM_ERR_UNSUPPORTED && state.error == WAM_ERR_UNSUPPORTED &&
-                  state.error_op != NULL && strcmp(state.error_op, "atom_codes/2") == 0);
+        WamValue atom_ref = make_out_ref(&state, "A");
+        int rc = run_atom_codes(&state, atom_ref, codes);
+        int ok = rc == 0 && state.error == 0 &&
+                 same_atom(wam_deref_ptr(&state, &atom_ref), "ab");
         emit_token("reverse_mode", ok ? "ok" : "fail",
                    ok ? "reverse_mode_ok" : "reverse_mode_bad");
+    }
+
+    /* 21a. Empty and multibyte reverse conversions. */
+    {
+        WamValue atom_ref = make_out_ref(&state, "A");
+        int rc = run_atom_codes(&state, atom_ref, val_atom("[]"));
+        int ok = rc == 0 && state.error == 0 &&
+                 same_atom(wam_deref_ptr(&state, &atom_ref), "");
+        emit_token("reverse_empty", ok ? "ok" : "fail",
+                   ok ? "reverse_empty_ok" : "reverse_empty_bad");
+    }
+    {
+        static const int unicode_codes[] = {955, 128640};
+        WamValue codes = build_int_list(&state, unicode_codes, 2);
+        WamValue atom_ref = make_out_ref(&state, "A");
+        int rc = run_atom_codes(&state, atom_ref, codes);
+        int ok = rc == 0 && state.error == 0 &&
+                 same_atom(wam_deref_ptr(&state, &atom_ref), "λ🚀");
+        emit_token("reverse_unicode", ok ? "ok" : "fail",
+                   ok ? "reverse_unicode_ok" : "reverse_unicode_bad");
+    }
+
+    /* Invalid scalar and open list are diagnosed, never partial atoms. */
+    {
+        static const int invalid_codes[] = {97, 55296};
+        WamValue codes = build_int_list(&state, invalid_codes, 2);
+        WamValue atom_ref = make_out_ref(&state, "A");
+        int rc = run_atom_codes(&state, atom_ref, codes);
+        int ok = rc == WAM_ERR_UNSUPPORTED && state.error == WAM_ERR_UNSUPPORTED &&
+                 state.error_op && strcmp(state.error_op, "atom_codes/2") == 0 &&
+                 val_is_unbound(*wam_deref_ptr(&state, &atom_ref));
+        emit_token("reverse_bad_code", ok ? "ok" : "fail",
+                   ok ? "reverse_bad_code_ok" : "reverse_bad_code_bad");
+        wam_clear_error(&state);
+    }
+    {
+        static const int nul_codes[] = {97, 0};
+        WamValue codes = build_int_list(&state, nul_codes, 2);
+        WamValue atom_ref = make_out_ref(&state, "A");
+        int rc = run_atom_codes(&state, atom_ref, codes);
+        int ok = rc == WAM_ERR_UNSUPPORTED && state.error == WAM_ERR_UNSUPPORTED &&
+                 val_is_unbound(*wam_deref_ptr(&state, &atom_ref));
+        emit_token("reverse_nul", ok ? "ok" : "fail",
+                   ok ? "reverse_nul_ok" : "reverse_nul_bad");
+        wam_clear_error(&state);
+    }
+    {
+        WamValue open_tail = make_out_ref(&state, "Tail");
+        WamValue codes = cons(&state, val_int(97), open_tail);
+        WamValue atom_ref = make_out_ref(&state, "A");
+        int rc = run_atom_codes(&state, atom_ref, codes);
+        int ok = rc == WAM_ERR_UNSUPPORTED && state.error == WAM_ERR_UNSUPPORTED &&
+                 val_is_unbound(*wam_deref_ptr(&state, &atom_ref));
+        emit_token("reverse_open_list", ok ? "ok" : "fail",
+                   ok ? "reverse_open_list_ok" : "reverse_open_list_bad");
+        wam_clear_error(&state);
+    }
+    {
+        WamValue codes = cons(&state, val_int(97), val_atom("[]"));
+        state.H_array[codes.data.ref_addr + 1] = codes;
+        WamValue atom_ref = make_out_ref(&state, "A");
+        int rc = run_atom_codes(&state, atom_ref, codes);
+        int ok = rc == WAM_ERR_UNSUPPORTED && state.error == WAM_ERR_UNSUPPORTED &&
+                 val_is_unbound(*wam_deref_ptr(&state, &atom_ref));
+        emit_token("reverse_cyclic_list", ok ? "ok" : "fail",
+                   ok ? "reverse_cyclic_list_ok" : "reverse_cyclic_list_bad");
         wam_clear_error(&state);
     }
 
