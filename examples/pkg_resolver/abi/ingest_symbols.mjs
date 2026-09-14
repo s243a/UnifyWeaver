@@ -125,7 +125,10 @@ function validDebVersion(v) {
   let rest = v, hasEpoch = false;
   const colon = v.indexOf(":");
   if (colon >= 0) {
-    if (!/^\d+$/.test(v.slice(0, colon))) return false;   // epoch must be all digits
+    const ep = v.slice(0, colon);
+    // epoch must be all digits and within dpkg's int range (Astra: 2147483648:1
+    // is rejected by dpkg --validate-version)
+    if (!/^\d+$/.test(ep) || Number(ep) > 2147483647) return false;
     rest = v.slice(colon + 1);
     hasEpoch = true;
   }
@@ -195,15 +198,20 @@ const KNOWN_ARCHES_64 = new Set(["amd64", "arm64", "ppc64el", "s390x", "riscv64"
 const BIG_ENDIAN = new Set(["s390x", "ppc64", "sparc64", "hppa", "m68k", "mips", "powerpc"]);
 
 function archSelects(spec, arch) {
-  // spec: "amd64 !i386 any-arm linux-any" -- dpkg-architecture style; we
-  // support exact names, `!` negation, and the `any`/`linux-any` wildcards.
+  // Only EXACT Debian architecture names (optionally `!`-negated) are supported.
+  // dpkg wildcard patterns (any, linux-any, any-arm, *-any, ...) require
+  // dpkg-architecture's matching semantics, which we do NOT reimplement -- our
+  // old ad-hoc matcher disagreed with dpkg (e.g. (arch=linux-any) wrongly
+  // included kfreebsd-amd64, (arch=any-arm) wrongly dropped armhf), so a row
+  // using a wildcard is REJECTED by the caller rather than mis-selected
+  // (Astra P2). Returns true/false, or null for "unsupported selector".
   const terms = spec.trim().split(/\s+/);
   let selected = null;
   for (let t of terms) {
     let neg = false;
     if (t.startsWith("!")) { neg = true; t = t.slice(1); }
-    const hit = t === "any" || t === "linux-any" || t === arch || t === `linux-${arch}` ||
-      (t.startsWith("any-") && arch.endsWith(t.slice(4)));
+    if (t === "any" || t.startsWith("any-") || t.endsWith("-any") || t.includes("*")) return null;
+    const hit = (t === arch);
     if (neg) { if (hit) return false; if (selected === null) selected = true; }
     else if (hit) selected = true;
     else if (selected === null) selected = false;
@@ -269,7 +277,11 @@ function parseSymbolsFile(path, { arch = null } = {}) {
       if (!tags.has(key)) continue;
       if (!arch) { errors.push(`${lineNo}: (${key}=...) selector but no --arch given: ${raw.trim()}`); archOk = null; break; }
       const v = String(tags.get(key));
-      if (key === "arch") archOk = archOk && archSelects(v, arch);
+      if (key === "arch") {
+        const sel = archSelects(v, arch);
+        if (sel === null) { errors.push(`${lineNo}: unsupported architecture wildcard in (arch=${v}); only exact names (optionally !negated) are supported: ${raw.trim()}`); archOk = null; break; }
+        archOk = archOk && sel;
+      }
       else if (key === "arch-bits") archOk = archOk && (v === (KNOWN_ARCHES_64.has(arch) ? "64" : "32"));
       else archOk = archOk && (v === (BIG_ENDIAN.has(arch) ? "big" : "little"));
     }
@@ -375,7 +387,10 @@ function elfProvides(t) {
   const problems = [];
   for (const s of t.syms) {
     if (s.ndx === "UND" || s.ndx === "Ndx") continue;
-    if (s.bind !== "GLOBAL" && s.bind !== "WEAK") continue;   // LOCAL never exported
+    // GLOBAL, WEAK, and STB_GNU_UNIQUE (readelf: "UNIQUE") are all exported and
+    // resolved by the loader; LOCAL is not. Dropping UNIQUE (e.g. ~100 in
+    // libstdc++.so.6) would let a real requirement produce a false missing veto.
+    if (s.bind !== "GLOBAL" && s.bind !== "WEAK" && s.bind !== "UNIQUE") continue;
     let node, binding = "default";
     if (!t.hasVersioning) node = "Base";
     else {

@@ -146,10 +146,24 @@ echo "-- (sol-P2b) --release is validated with the Debian-version gate"
 expect_reject bad_release node "$INGEST" symbols-file "$SRC/simple.symbols" --release definitely-not-a-debian-version --out "$FX/bad_release"
 [ ! -e "$FX/bad_release" ] || fail "bad_release: store written despite rejection"
 expect_reject bad_release_elf node "$INGEST" elf "$LIBSO" --release definitely-not-a-debian-version --out "$FX/bad_release_elf"
-echo "-- (sol2-P2b) malformed Debian versions dpkg rejects (1:, 1-, 1::2) are refused, unlike the old loose regex"
-for badv in "1:" "1-" "1::2"; do
-  expect_reject "bad_release_$badv" node "$INGEST" symbols-file "$SRC/simple.symbols" --release "$badv" --out "$FX/bad_release_form"
+echo "-- (sol2-P2b/astra) malformed Debian versions dpkg rejects (1:, 1-, 1::2, epoch>INT_MAX) are refused"
+for badv in "1:" "1-" "1::2" "2147483648:1"; do
+  expect_reject "bad_release_form" node "$INGEST" symbols-file "$SRC/simple.symbols" --release "$badv" --out "$FX/bad_release_form"
 done
+echo "-- (astra) architecture WILDCARD selectors (arch=linux-any) are rejected, not mis-selected"
+expect_reject tmpl_arch_wild node "$INGEST" symbols-file "$SRC/tmpl_arch_wild.symbols" --release 1.0 --arch amd64 --out "$FX/tmpl_arch_wild"
+[ ! -e "$FX/tmpl_arch_wild/symprov.jsonl" ] || fail "tmpl_arch_wild: store written despite rejection"
+echo "-- (astra) STB_GNU_UNIQUE exports are ingested, not dropped (would be a false missing veto)"
+LIBSTDCPP="$(ls /usr/lib/*/libstdc++.so.6 2>/dev/null | head -1)"
+if [ -n "$LIBSTDCPP" ] && readelf -W --dyn-syms "$LIBSTDCPP" | awk 'NR>3 && $1 ~ /^[0-9]+:$/ && $5=="UNIQUE"{f=1} END{exit !f}'; then
+  UNIQSYM="$(readelf -W --dyn-syms "$LIBSTDCPP" | awk 'NR>3 && $1 ~ /^[0-9]+:$/ && $5=="UNIQUE" && $8 ~ /@/ && !seen {print $8; seen=1}')"
+  UKEY="$(printf '%s' "$UNIQSYM" | sed 's/@@/@/')"
+  node "$INGEST" elf "$LIBSTDCPP" --release 1.0 --out "$FX/stdcpp" 2>/dev/null
+  grep -q "|${UKEY}\"" "$FX/stdcpp/symprov.jsonl" || fail "UNIQUE export $UNIQSYM not ingested from libstdc++ (dropped)"
+  echo "  ingested UNIQUE export $UNIQSYM (readelf is ground truth; the loader resolves UNIQUE globals)"
+else
+  echo "  (skip: no libstdc++.so.6 with UNIQUE exports on this machine)"
+fi
 echo "-- (sol2-floor) a curated minimum ABOVE its evidence release is contradictory: file rejected (exit 3), nothing written"
 expect_reject contradictory_floor node "$INGEST" symbols-file "$SRC/contradictory.symbols" --release 1.0 --out "$FX/contradictory"
 [ ! -e "$FX/contradictory/symprov.jsonl" ] || fail "contradictory_floor: store written despite rejection"

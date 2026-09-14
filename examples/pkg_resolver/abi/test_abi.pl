@@ -497,6 +497,58 @@ section_model :-
     fx(prov_evidence('libcur.so.1', elf, R10, complete)),
     check('C12b the SAME store with COMPLETE (elf) evidence omitting uu -> incompatible([missing(uu)]) (sol2-curated-absence, unversioned path)',
           abi_verdict(bin, 'libcur.so.1', '1.0', incompatible([missing(uu)]))),
+
+    % C13: Astra -- a hypothetical unversioned drop respects the node AND the
+    % release; it must not remove an unrelated node or an export below the drop.
+    fx_clear,
+    fx(symreq(bin, uu, none, none, 'GLOBAL')),
+    fx(needed(bin, 'libd.so.1')),
+    fx(req_evidence(bin, readelf, complete, bin)),
+    fx(prov_evidence('libd.so.1', elf, R10, complete)),
+    fx(symprov('libd.so.1', uu, 'Base', at(R10, default))),
+    check('C13 drop of a different node/later release leaves uu@Base -> compatible(exact) (astra hyp-drop)',
+          abi_verdict(bin, 'libd.so.1', '1.0', drop(uu, 'OTHER', '2.0'), compatible(exact))),
+    check('C13b dropping uu@Base at the query release removes it -> incompatible([missing(uu)]) (astra hyp-drop)',
+          ( abi_verdict(bin, 'libd.so.1', '1.0', drop(uu, 'Base', '1.0'), V13), report(verdict, V13),
+            V13 == incompatible([missing(uu)]) )),
+
+    % C14: Astra P1 -- an unversioned req vs complete evidence only BELOW the
+    % query release: absence there says nothing about later releases (may add the
+    % symbol) -> unknown, never a hard missing veto; evidence AT/above the release
+    % establishes absence -> missing.
+    fx_clear,
+    fx(symreq(bin, w, none, none, 'GLOBAL')),
+    fx(needed(bin, 'libw.so.1')),
+    fx(req_evidence(bin, readelf, complete, bin)),
+    fx(prov_evidence('libw.so.1', elf, R10, complete)),      % complete only at 1.0, w absent
+    check('C14 unversioned req, complete evidence only at 1.0 (w absent), queried at 2.0 -> unknown (absence not established), never missing (astra)',
+          ( abi_verdict(bin, 'libw.so.1', '2.0', V14), report(verdict, V14),
+            V14 = unknown(L14), memberchk(unknown(w, absence_unestablished('libw.so.1', _)), L14) )),
+    check('C14b the SAME store queried at 1.0 (the evidence release) -> incompatible([missing(w)]): absence established (astra)',
+          abi_verdict(bin, 'libw.so.1', '1.0', incompatible([missing(w)]))),
+
+    % C15: Astra P1 -- the default-version binding must come from the evidence
+    % APPLICABLE at the query release. u@N default at 1.0 but nondefault at 2.0:
+    % an unversioned ref at 2.0 must NOT bind (it is nondefault there), never a
+    % false compatible(exact); an orphaned default row (its evidence removed)
+    % must not count either.
+    fx_clear,
+    fx(symreq(bin, u, none, none, 'GLOBAL')),
+    fx(needed(bin, 'libv.so.1')),
+    fx(req_evidence(bin, readelf, complete, bin)),
+    fx_rel('2.0', R2v),
+    fx(prov_evidence('libv.so.1', elf, R10, complete)),
+    fx(prov_evidence('libv.so.1', elf, R2v, complete)),
+    fx(symprov('libv.so.1', u, 'N', at(R10, default))),
+    fx(symprov('libv.so.1', u, 'N', at(R2v, nondefault))),
+    check('C15 u@N default at 1.0 but nondefault at 2.0: unversioned ref at 2.0 -> no_default_export, not compatible(exact) (astra detached-binding)',
+          ( abi_verdict(bin, 'libv.so.1', '2.0', V15), report(verdict, V15),
+            V15 == incompatible([missing(u, no_default_export('libv.so.1', 'N'))]) )),
+    check('C15b at 1.0 (where it IS default) the unversioned ref binds -> compatible(exact) (astra detached-binding)',
+          abi_verdict(bin, 'libv.so.1', '1.0', compatible(exact))),
+    retract(abi_resolve:prov_evidence('libv.so.1', elf, R10, complete)),
+    check('C15c with the 1.0 (default) evidence row removed, the orphaned default symprov does not count: 2.0 still no_default_export (astra detached-binding)',
+          abi_verdict(bin, 'libv.so.1', '2.0', incompatible([missing(u, no_default_export('libv.so.1', 'N'))]))),
     fx_clear.
 
 % ===========================================================================
@@ -617,7 +669,8 @@ symbols_fixture_checks(FX) :-
     check('D8b [.symbols] (optional) row WITHOUT an ELF cross-check: file rejected, no store written (sol-optional)',
           \+ exists_file(OptF)),
     forall(member(T-Why, [tmpl_symver-'(#7)', tmpl_cxx-'(#7)', tmpl_arch-'(#7)',
-                          tmpl_unknown_tag-'(sol-P2b unknown tag)', bad_release-'(sol-P2b --release gate)']),
+                          tmpl_unknown_tag-'(sol-P2b unknown tag)', bad_release-'(sol-P2b --release gate)',
+                          tmpl_arch_wild-'(astra arch wildcard)']),
            ( atomic_list_concat([FX, '/', T, '/symprov.jsonl'], F),
              format(atom(Name), "D9 [.symbols] ~w rejected loudly: no store written ~w", [T, Why]),
              check(Name, \+ exists_file(F)) )),

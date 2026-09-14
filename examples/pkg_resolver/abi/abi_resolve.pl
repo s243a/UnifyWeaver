@@ -438,18 +438,21 @@ versioned_status(So, Sym, Node, Bind, Rel, Hyp, Status) :-
     ).
 
 % An unversioned reference binds (Sol P1b) to a `Base` export or to a DEFAULT
-% export of Sym in any NEEDED object -- never to a non-default (`@`) one. A
-% provider row whose binding is unproven (a `.symbols` row not cross-checked
-% against the ELF) can only make the answer unknown. Against the queried So
-% we evaluate at Rel; against the other NEEDED objects at their own evidence
-% release. Complete absence is a veto only when every NEEDED object has
-% complete provider evidence.
+% export of Sym in any NEEDED object -- never to a non-default (`@`) one, and the
+% default-version binding must come from the evidence APPLICABLE AT the queried
+% release, not from a stale or evidence-less row (Astra: a binding recorded at an
+% earlier release must not decide a later query). A curated row's binding is
+% `unproven`, which can only make the answer unknown. Against the queried So we
+% evaluate at Rel; against other NEEDED objects at their own evidence release.
+% A hard `missing` veto needs the symbol's ABSENCE to be ESTABLISHED at Rel for
+% every NEEDED object: complete evidence at a release >= Rel (absence propagates
+% downward). Complete evidence only BELOW Rel says nothing -- a later release may
+% add the symbol -- so the answer is unknown (Astra).
 unversioned_status(Bin, So, Sym, Bind, Rel, Hyp, Status) :-
-    (   \+ hyp_dropped_any(Hyp, Sym),
-        (   unversioned_in(So, Sym, Rel, Node, Basis)
+    (   (   unversioned_in(So, Sym, Rel, Hyp, Node, Basis)
         ->  Status = provided(Sym, default_node(So, Node, Basis))
         ;   needed(Bin, S), S \== So, prov_usable(S, _, R0, _),
-            unversioned_in(S, Sym, R0, Node, Basis)
+            unversioned_in(S, Sym, R0, Hyp, Node, Basis)
         ->  Status = provided(Sym, default_node(S, Node, Basis))
         ;   fail
         )
@@ -466,20 +469,31 @@ unversioned_status(Bin, So, Sym, Bind, Rel, Hyp, Status) :-
     ->  Status = unknown(Sym, Why)
     ;   unversioned_nondefault(Bin, So, Sym, Rel, S3, N3)
     ->  Status = missing(Sym, no_default_export(S3, N3))
+    ;   needed(Bin, S), \+ absence_established(S, Rel)  % complete evidence only
+    ->  Status = unknown(Sym, absence_unestablished(S, Rel))  % below Rel: a later release may add it (Astra)
     ;   Status = missing(Sym)
     ).
 
-% A default-bound export of Sym in S provided at Rel (any node).
-unversioned_in(S, Sym, Rel, Node, Basis) :-
-    node_binding(S, Sym, Node, default),
-    ident_status(S, Sym, Node, Rel, provided(Basis)).
+% absence_established(S, Rel): S has complete evidence at a release >= Rel, so a
+% symbol absent from it is absent at Rel too (monotone exports).
+absence_established(S, Rel) :-
+    prov_evidence(S, _, R0, complete),
+    rel_le(Rel, R0).
 
-% Some export of Sym that is provided at the relevant release but whose
-% default binding is unproven.
+% A DEFAULT-bound export of Sym in S, present at Rel, whose default binding is
+% taken from the evidence APPLICABLE at Rel (Astra) and which is not
+% hypothetically dropped (a drop targets a specific node at/after a release).
+unversioned_in(S, Sym, Rel, Hyp, Node, Basis) :-
+    symprov(S, Sym, Node, _),
+    \+ hyp_dropped(Hyp, Sym, Node, Rel),
+    binding_at(S, Sym, Node, Rel, default, Basis).
+
+% Some export of Sym present at the relevant release whose default binding, per
+% the applicable evidence, is `unproven` (a curated .symbols row, not --elf-checked).
 unversioned_unproven(Bin, So, Sym, Rel, S, Node) :-
     needed_at(Bin, So, Rel, S, R),
-    node_binding(S, Sym, Node, unproven),
-    ident_status(S, Sym, Node, R, provided(_)).
+    symprov(S, Sym, Node, _),
+    binding_at(S, Sym, Node, R, unproven, _).
 
 unversioned_unknown(Bin, So, Sym, Rel, S, Why) :-
     needed_at(Bin, So, Rel, S, R),
@@ -488,15 +502,30 @@ unversioned_unknown(Bin, So, Sym, Rel, S, Why) :-
 
 unversioned_nondefault(Bin, So, Sym, Rel, S, Node) :-
     needed_at(Bin, So, Rel, S, R),
-    node_binding(S, Sym, Node, nondefault),
-    ident_status(S, Sym, Node, R, provided(_)).
+    symprov(S, Sym, Node, _),
+    binding_at(S, Sym, Node, R, nondefault, _).
+
+% binding_at(So, Sym, Node, Rel, Bind, Basis): Sym@Node is present at Rel (the
+% same aggregation ident_status uses) AND the evidence row that establishes that
+% presence records default-version binding Bind. This ties the binding to the
+% applicable release/evidence (Astra): a binding from a non-applicable release or
+% an evidence-less symprov row cannot decide the verdict.
+binding_at(So, Sym, Node, Rel, Bind, Basis) :-
+    ident_status(So, Sym, Node, Rel, provided(Basis)),
+    findall(R1-Says, ev_says(So, Sym, Node, R1, Says), Rows),
+    (   member(Rel1-_, Rows), Rel1 == Rel
+    ->  says_at(Rows, Rel, present(_, Bound))
+    ;   nearest_below(Rows, Rel, ev(_, present(_, Bound)))
+    ),
+    bound_binding(Bound, Bind).
+
+bound_binding(since(_, _, _, B), B).
+bound_binding(at(_, B), B).
 
 % needed_at(Bin, So, Rel, S, R): the queried So at Rel, other NEEDED objects
 % at their own evidence release(s).
 needed_at(_, So, Rel, So, Rel).
 needed_at(Bin, So, _, S, R) :- needed(Bin, S), S \== So, prov_usable(S, _, R, _).
-
-hyp_dropped_any(drop(Sym, _, _), Sym).
 
 % ---------------------------------------------------------------------------
 % Verdict

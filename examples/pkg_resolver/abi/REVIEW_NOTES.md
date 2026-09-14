@@ -182,6 +182,36 @@ its point and that fails if the fix is reverted. `run_abi_verify.sh`:
   between the two evidence releases. It needs genuinely contradictory tiers and
   is not a contract violation (`Min` is documented as defeasible), but a future
   pass could treat a complete absence as authoritative over a curated floor.
-- Robustness (this pass): `debLe` `die()`s with a clear message if `dpkg` is not
-  on PATH (rather than silently rejecting every row); `load_abi_store/1` clears
-  the partial store if a row throws; the now-unused `bound_evidence/4` was removed.
+- Robustness: `debLe` `die()`s with a clear message if `dpkg` is not on PATH
+  (rather than silently rejecting every row); `load_abi_store/1` clears the
+  partial store if a row throws; the now-unused `bound_evidence/4` was removed.
+
+## Astra review — fixes
+
+Astra (the original reviewer) re-reviewed and confirmed original findings
+#1/#3/#5/#6 CLOSED but returned REQUEST-CHANGES with new issues, the most
+important found by ingesting live `libstdc++.so.6`. All real findings are fixed
+and fixture-proven; `run_abi_verify.sh`: `== 108 passed, 0 failed, 0 skipped ==`.
+
+| Astra finding | Fix | Proving fixture(s) |
+|---|---|---|
+| P1 `ingest:378` STB_GNU_UNIQUE exports dropped (elfProvides kept only GLOBAL/WEAK) → false `missing` veto; live libstdc++ dropped 106 | `elfProvides` now keeps `UNIQUE` too | **run_abi_verify (astra)** ingests libstdc++.so.6 and asserts a real UNIQUE export (`_ZNSt10moneypunctIcLb0EE4intlE@GLIBCXX_3.4`) is stored |
+| P1 `abi_resolve:461` unversioned historical-completeness false veto (complete evidence only BELOW Rel vetoed) | `unversioned_status/7` now vetoes `missing` only when absence is ESTABLISHED at Rel (`absence_established/2`: complete evidence at a release ≥ Rel); otherwise `unknown(absence_unestablished(...))` | **C14/C14b** (complete only at 1.0, query 2.0 → unknown; query 1.0 → missing) |
+| P1 `abi_resolve:474` default binding detached from evidence (any/orphaned row's binding used) → false `compatible(exact)` for unversioned | `binding_at/6` ties the default-version binding to the evidence APPLICABLE at Rel; `unversioned_in`/`unproven`/`nondefault` use it | **C15/C15b/C15c** (default@1.0 + nondefault@2.0: query 2.0 → no_default_export; query 1.0 → compatible; orphaned default ignored) |
+| P2 `ingest:201` arch selectors ≠ dpkg-architecture (`linux-any`/`any-arm` mis-matched) | `archSelects` supports only exact names (± `!`); wildcard patterns are REJECTED (exit 3), not mis-selected | **tmpl_arch_wild.symbols** rejected; **D9** asserts no store written |
+| P2 `ingest:128` `validDebVersion` epoch unbounded (`2147483648:1` accepted) | epoch capped at 2147483647 (dpkg's limit) | **run_abi_verify** `bad_release_form` includes `2147483648:1` (exit 3) |
+| P2 `abi_resolve:448` hypothetical unversioned drop ignored node + release | `unversioned_in` checks `\+ hyp_dropped(Hyp, Sym, Node, Rel)` per candidate export (node + release aware), like the versioned path | **C13/C13b** (drop of a different node/later release leaves the export; dropping the exact node at the release removes it) |
+
+### Deliberate dispositions (Astra P3, not changed)
+
+- `crosscheck.mjs` per-name mutation sensitivity: the negative `elf_numcollapse`
+  fixture guards the EXACT-IDENTITY path against a restored numeric node
+  comparator. The per-name figure is mathematically redundant with exact identity
+  when the `sym@node` key sets match (identical keys ⇒ identical per-name node
+  sets), so a per-name-only numeric mutation cannot be isolated by a fixture with
+  matching identity; the identity guard is the one the model relies on.
+- `debLe` uses `dpkg --compare-versions` (the reference implementation, as the
+  ingest already does for `dpkg-query`/`dpkg -S`). The FROZEN-predicate boundary
+  governs the RESOLVER, which orders exclusively via `resolver:version_lt/2`; the
+  authoritative contradictory-floor rejection is the Prolog `assert_symprov`
+  `rel_le/2` check (frozen path), with the JS `debLe` only a loud early guard.
