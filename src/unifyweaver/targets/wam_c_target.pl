@@ -5113,15 +5113,85 @@ static bool wam_ground_code_list_matches(WamState *state, WamValue *output,
     return cell->tag == VAL_ATOM && cell->data.atom && strcmp(cell->data.atom, "[]") == 0;
 }
 
-/* atom_codes/2: forward atom-to-codes mode only.
-   Decompose atom text into a list of Unicode code point integers.
-   Unbound atom or non-atom inputs are diagnosed as WAM_ERR_UNSUPPORTED.
-   Unification failure rolls back trail and heap bindings made by this builtin. */
+/* The reverse mode accepts only a finite, fully bound proper code list. A
+   bounded walk also rejects cyclic lists without mutating the query. */
+static bool wam_encode_single_utf8_char(int cp, char buf[5]);
+
+static bool wam_atom_codes_to_text(WamState *state, WamValue *codes,
+                                   char **text_out) {
+    WamValue *cell = wam_deref_ptr(state, codes);
+    size_t bytes = 0;
+    int count = 0;
+    for (;;) {
+        if ((cell->tag == VAL_LIST || cell->tag == VAL_STR) &&
+            (cell->data.ref_addr < 0 || cell->data.ref_addr >= state->H))
+            return false;
+        int base = wam_cons_head_addr(state, cell);
+        if (base < 0) break;
+        if (++count > 262144 || base >= state->H - 1)
+            return false;
+        WamValue *head = wam_deref_ptr(state, &state->H_array[base]);
+        char encoded[5];
+        if (head->tag != VAL_INT ||
+            !wam_encode_single_utf8_char(head->data.integer, encoded))
+            return false;
+        bytes += strlen(encoded);
+        cell = wam_deref_ptr(state, &state->H_array[base + 1]);
+    }
+    if (cell->tag != VAL_ATOM || !cell->data.atom ||
+        strcmp(cell->data.atom, "[]") != 0)
+        return false;
+
+    char *text = (char *)malloc(bytes + 1);
+    if (!text) return false;
+    size_t at = 0;
+    cell = wam_deref_ptr(state, codes);
+    for (;;) {
+        int base = wam_cons_head_addr(state, cell);
+        if (base < 0) break;
+        WamValue *head = wam_deref_ptr(state, &state->H_array[base]);
+        char encoded[5];
+        if (head->tag != VAL_INT ||
+            !wam_encode_single_utf8_char(head->data.integer, encoded)) {
+            free(text);
+            return false;
+        }
+        size_t len = strlen(encoded);
+        memcpy(text + at, encoded, len);
+        at += len;
+        cell = wam_deref_ptr(state, &state->H_array[base + 1]);
+    }
+    text[at] = 0;
+    *text_out = text;
+    return true;
+}
+
+/* atom_codes/2: atom-to-codes and fully ground codes-to-atom modes.
+   Unsupported shapes diagnose WAM_ERR_UNSUPPORTED; unification failures
+   roll back trail and heap bindings made by this builtin. */
 static bool wam_execute_atom_codes(WamState *state) {
     WamValue *a1 = wam_deref_ptr(state, &state->A[0]);
     if (val_is_unbound(*a1)) {
-        wam_set_unsupported_builtin(state, "atom_codes/2", 2);
-        return false;
+        char *text = NULL;
+        if (!wam_atom_codes_to_text(state, &state->A[1], &text)) {
+            wam_set_unsupported_builtin(state, "atom_codes/2", 2);
+            return false;
+        }
+        const char *interned = wam_intern_atom(state, text);
+        if (interned == text) {
+            free(text);
+            return false;
+        }
+        free(text);
+        int trail_mark = state->TR;
+        int heap_mark = state->H;
+        WamValue atom_val = val_atom(interned);
+        if (!wam_unify(state, &state->A[0], &atom_val)) {
+            unwind_trail(state, trail_mark);
+            state->H = heap_mark;
+            return false;
+        }
+        return true;
     }
     if (a1->tag != VAL_ATOM || !a1->data.atom) {
         wam_set_unsupported_builtin(state, "atom_codes/2", 2);

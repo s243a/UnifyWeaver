@@ -21,6 +21,17 @@ choicepoint restoration across ordinary and tail calls. Merge readiness is
 determined by the current compiled test gates and PR review, rather than the
 historical work-in-progress notes retained below.
 
+### Atom codes reverse-mode parity slice (2026-09-14)
+
+The C runtime now accepts `atom_codes(-Atom, +Codes)` for finite, fully bound
+proper lists of Unicode scalar values. It handles both WAM list cell layouts,
+including a compiled `"[|]/2"` tail, and binds the atom through the normal
+trail so caller backtracking restores the variable. Unsupported shapes such
+as open or cyclic lists, invalid scalar values, and U+0000 report
+`WAM_ERR_UNSUPPORTED`; C atoms are NUL-terminated and cannot represent U+0000.
+The existing forward mode remains unchanged. The focused generated-C/SWI suite
+is `tests/test_wam_c_atom_codes.pl`.
+
 ## Reverse implementation history (2026-09-09)
 
 This section records the earlier reverse implementation checkpoint. Its stale
