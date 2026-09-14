@@ -690,6 +690,18 @@ the implementation changed about the design. The load-bearing facts:
 
 ## Remaining follow-ons
 
+**EOF-sentinel: a literal `end_of_file` input line is mistaken for EOF (PRE-EXISTING,
+not END-only).** `END { print NR, $0 }` on input `a\nend_of_file\nb\n` prints `1 a`;
+gawk prints `3 b`. Two independent reviews (terra, astra) surfaced this. The shared
+stream driver (`src/unifyweaver/targets/wam_llvm_target.pl`, ~line 23909) detects
+end-of-input by comparing the record TEXT against `"end_of_file"` instead of by atom
+identity -- the runtime already has a distinct EOF atom, so the fix is an
+identity-based comparison plus a regression test. It predates the END-only work and
+affects EVERY program (the rule-bearing `{ n++ } END { print NR, $0 }` is equally
+wrong); END-only just made it reachable in an END-only shape. A runtime fix of its
+own, deliberately out of scope for the END-only PR.
+
+
 **END record reads, what is left** — each pinned as a decline in
 `tests/test_plawk_end_field_reads.pl`. A field or `NF` in a loop / `if`
 **condition** (a fail-safe decline: the rewrite reaches conditions, and no

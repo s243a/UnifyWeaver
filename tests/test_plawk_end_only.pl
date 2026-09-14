@@ -227,6 +227,10 @@ test(end_only_scalar_var_read_declines_not_miscompiles) :-
     build_status("END { printf \"%d\\n\", x }\n", 3),
     build_status("END { if (x == 0) print \"zero\" }\n", 3),
     build_status("END { if (NR > 0) print x }\n", 3),
+    build_status("END { print \"n=\" x }\n", 3),
+    build_status("END { print x + 1 }\n", 3),
+    build_status("END { if (NR == 0) print \"empty\"; else print x }\n", 3),
+    build_status("BEGIN { BINFMT=\"case(i64 | i64)\" } END { print x }\n", 3),
     !.
 
 % --- clang never rejects a supported END-only program -------------------
@@ -277,7 +281,8 @@ test(no_rule_less_shape_miscompiles) :-
         "END { if (x == 0) print \"zero\" }\n",
         "END { if (NR > 0) print x }\n",
         "BEGIN { FS=\":\" } END { print x }\n",
-        "BEGIN { BINFMT = \"i64\" } END { print x }\n"
+        "BEGIN { BINFMT = \"i64\" } END { print x }\n",
+        "END { print NR > \"/dev/stdout\" }\n"
     ]), build_status_not_4(Src)),
     !.
 
@@ -353,9 +358,10 @@ build_status_not_4(Src) :-
         [stdout(pipe(Out)), stderr(std), process(Pid)]),
     read_string(Out, _, _), close(Out),
     process_wait(Pid, exit(Status)),
-    ( Status =\= 4
+    ( memberchk(Status, [0, 2, 3])
     -> true
-    ;  format(user_error, "~nMISCOMPILE (exit 4): ~w~n", [Src]), fail
+    ;  format(user_error, "~nUNEXPECTED STATUS ~w (want 0/2/3, never 4): ~w~n",
+           [Status, Src]), fail
     ).
 
 build_ll(Src, LL) :-
