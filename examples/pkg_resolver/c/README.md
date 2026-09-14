@@ -32,6 +32,17 @@ as open or cyclic lists, invalid scalar values, and U+0000 report
 The existing forward mode remains unchanged. The focused generated-C/SWI suite
 is `tests/test_wam_c_atom_codes.pl`.
 
+### Atom chars reverse-mode parity slice (2026-09-14)
+
+The C runtime accepts `atom_chars(-Atom, +Chars)` for finite, fully bound proper
+lists whose elements are single Unicode scalar character atoms. Both WAM list
+cell layouts, including compiled `"[|]/2"` cons cells, are accepted. The atom
+binding follows normal trail and backtracking semantics. Open, cyclic, or
+improper lists, non-character elements, invalid UTF-8, and U+0000 are outside
+this mode and report `WAM_ERR_UNSUPPORTED`; NUL-terminated C atoms cannot
+represent U+0000. The focused generated-C/SWI suite is
+`tests/test_wam_c_atom_chars.pl`.
+
 ## Reverse implementation history (2026-09-09)
 
 This section records the earlier reverse implementation checkpoint. Its stale
