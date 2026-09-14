@@ -511,6 +511,10 @@ section_model :-
     check('C13b dropping uu@Base at the query release removes it -> incompatible([missing(uu)]) (astra hyp-drop)',
           ( abi_verdict(bin, 'libd.so.1', '1.0', drop(uu, 'Base', '1.0'), V13), report(verdict, V13),
             V13 == incompatible([missing(uu)]) )),
+    check('C13c same release, DIFFERENT node: drop(uu,OTHER,1.0) leaves uu@Base -> compatible (isolates NODE matching) (astra2)',
+          abi_verdict(bin, 'libd.so.1', '1.0', drop(uu, 'OTHER', '1.0'), compatible(exact))),
+    check('C13d same node, FUTURE release: drop(uu,Base,2.0) at query 1.0 leaves uu@Base -> compatible (isolates RELEASE matching) (astra2)',
+          abi_verdict(bin, 'libd.so.1', '1.0', drop(uu, 'Base', '2.0'), compatible(exact))),
 
     % C14: Astra P1 -- an unversioned req vs complete evidence only BELOW the
     % query release: absence there says nothing about later releases (may add the
@@ -580,6 +584,38 @@ section_model :-
     check('C17 unversioned z absent from both; query liba@2.0: sibling libb@1.0 counts at its own release -> missing(z), not a cross-axis unknown (fable R2)',
           ( abi_verdict(bin, 'liba.so.1', '2.0', V17), report(verdict, V17),
             V17 == incompatible([missing(z)]) )),
+
+    % C18: Astra re-review 2 -- the no_default_export veto is ALSO release-gated.
+    % A nondefault export with complete evidence only BELOW the query release ->
+    % unknown, not a hard veto (a default export could be added later).
+    fx_clear,
+    fx(symreq(bin, g, none, none, 'GLOBAL')),
+    fx(needed(bin, 'libg.so.1')),
+    fx(req_evidence(bin, readelf, complete, bin)),
+    fx(prov_evidence('libg.so.1', elf, R10, complete)),
+    fx(symprov('libg.so.1', g, 'N', at(R10, nondefault))),
+    check('C18 nondefault export, complete evidence only at 1.0, query 2.0 -> unknown, not no_default_export (astra2 470)',
+          ( abi_verdict(bin, 'libg.so.1', '2.0', V18), report(verdict, V18),
+            V18 = unknown(L18), memberchk(unknown(g, absence_unestablished('libg.so.1', _)), L18) )),
+    check('C18b at 1.0 (covered) it IS a no_default_export veto (astra2 470)',
+          abi_verdict(bin, 'libg.so.1', '1.0', incompatible([missing(g, no_default_export('libg.so.1', 'N'))]))),
+
+    % C19: Astra re-review 2 -- conflicting cross-tier bindings (elf nondefault at
+    % 1.0 vs curated default since 1.0, complete at 3.0). At 2.0 ident_status is
+    % provided(curated, ambiguous) -> unknown, never a veto or a confident compat.
+    fx_clear,
+    fx(symreq(bin, h, none, none, 'GLOBAL')),
+    fx(needed(bin, 'libh.so.1')),
+    fx(req_evidence(bin, readelf, complete, bin)),
+    fx_rel('3.0', R3h),
+    fx(prov_evidence('libh.so.1', elf, R10, complete)),
+    fx(prov_evidence('libh.so.1', symbols, R3h, complete)),
+    fx(symprov('libh.so.1', h, 'N', at(R10, nondefault))),
+    fx_since('1.0', '3.0', default, Sh),
+    fx(symprov('libh.so.1', h, 'N', Sh)),
+    check('C19 conflicting bindings (elf nondefault@1.0 vs curated default since 1.0@3.0), query 2.0 -> unknown(default_binding_conflict), not veto/compat (astra2 522)',
+          ( abi_verdict(bin, 'libh.so.1', '2.0', V19), report(verdict, V19),
+            V19 = unknown(L19), memberchk(unknown(h, default_binding_conflict('libh.so.1', 'N')), L19) )),
     fx_clear.
 
 % ===========================================================================
@@ -701,7 +737,8 @@ symbols_fixture_checks(FX) :-
           \+ exists_file(OptF)),
     forall(member(T-Why, [tmpl_symver-'(#7)', tmpl_cxx-'(#7)', tmpl_arch-'(#7)',
                           tmpl_unknown_tag-'(sol-P2b unknown tag)', bad_release-'(sol-P2b --release gate)',
-                          tmpl_arch_wild-'(astra arch wildcard)']),
+                          tmpl_arch_wild-'(astra arch wildcard)',
+                          tmpl_arch_tuple-'(astra2 arch tuple)', tmpl_arch_list-'(astra2 arch list)']),
            ( atomic_list_concat([FX, '/', T, '/symprov.jsonl'], F),
              format(atom(Name), "D9 [.symbols] ~w rejected loudly: no store written ~w", [T, Why]),
              check(Name, \+ exists_file(F)) )),

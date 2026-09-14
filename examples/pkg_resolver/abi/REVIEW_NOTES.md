@@ -234,3 +234,38 @@ A Fable re-verification of the Astra-fix commit caught two regressions the
 
 Also cleaned a stray NUL byte in the `debLe` cache-key string (now ` ` as
 source text). `run_abi_verify.sh`: `== 111 passed, 0 failed, 0 skipped ==`.
+
+## Astra re-review 2 — unversioned-path unification + arch hardening
+
+Astra re-reviewed again and found more unversioned-path issues, all rooted in
+`binding_at` being a SEPARATE re-derivation from `ident_status` and the veto
+branches not being uniformly release-gated. Rather than patch case-by-case, the
+binding was UNIFIED into the aggregation. `run_abi_verify.sh`:
+`== 118 passed, 0 failed, 0 skipped ==`.
+
+- **Unification (fixes P1 522):** `ident_status` now returns `provided(Basis,
+  Binding)`; `says_status`/`combine` carry the binding from the SAME row that
+  establishes presence, so binding and presence can never diverge. When a
+  present-below row and a covering curated-above row disagree on the binding it is
+  `ambiguous`. `binding_at` is deleted; `unversioned_in`/`unproven`/`nondefault`
+  and a new `unversioned_ambiguous` read the binding straight from `ident_status`.
+  An `ambiguous` binding → `unknown(default_binding_conflict(...))`, never a veto
+  or a confident compatible. Fixture **C19**.
+- **P1 470 (no_default_export release-gated):** the coverage gate
+  (`\+ absence_established(So, Rel)` → unknown) now precedes BOTH veto branches
+  (`no_default_export` and `missing`), so a nondefault export seen only in
+  complete evidence BELOW the query release yields `unknown`, not a veto (a
+  default export could be added later). Fixtures **C18/C18b**.
+- **P2 arch (208):** `archSelects` validates EVERY term first (an early match or
+  negation can no longer skip a later unsupported term), and rejects any term
+  containing `any`, a tuple/GNU form (`gnu-any-amd64`), a comma-list
+  (`amd64,arm64`), or anything not a clean exact arch name. Fixtures
+  **tmpl_arch_tuple / tmpl_arch_list** (D9).
+- **P2 arch attributes (285):** `arch-bits`/`arch-endian` use explicit
+  `ARCH_BITS`/`ARCH_ENDIAN` tables (verified vs dpkg-architecture, incl.
+  kfreebsd-amd64=64, mips64=big); a non-tabulated `--arch` REJECTS the row rather
+  than guessing. Fixture **arch_bits_unknown**.
+- **P2 (test isolation):** the epoch cap is now proven through the `releases`
+  command (**epoch_releases**), which has no `debLe` floor check to mask it; the
+  hypothetical-drop node- and release-matching are isolated by **C13c** (same
+  release, different node) and **C13d** (same node, future release).

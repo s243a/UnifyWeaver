@@ -355,9 +355,13 @@ says_at(Rows, R, Says) :-
     ;   Says = absent(symbols)
     ).
 
-says_status(present(elf, _), _, provided(exact)).
-says_status(present(symbols, since(Min, MinAtom, _, _)), Rel, Status) :-
-    ( rel_le(Min, Rel) -> Status = provided(curated) ; Status = below_floor(MinAtom) ).
+% provided(Basis, Binding): the default-version binding comes from the SAME
+% evidence row that establishes presence, so an unversioned reference can never
+% pick a binding ident_status did not credit (Astra re-review 2). Binding is
+% default | nondefault | unproven, or `ambiguous` when two credited rows disagree.
+says_status(present(elf, at(_, Bind)), _, provided(exact, Bind)).
+says_status(present(symbols, since(Min, MinAtom, _, Bind)), Rel, Status) :-
+    ( rel_le(Min, Rel) -> Status = provided(curated, Bind) ; Status = below_floor(MinAtom) ).
 says_status(absent(Src), Rel, missing(observed_absent(Src, Rel))).
 
 % Distinct evidence releases strictly below / above Rel; the nearest one wins.
@@ -375,21 +379,26 @@ nearest_above(Rows, Rel, Above) :-
     ;   As = [R1-_|_], says_at(Rows, R1, Says), Above = ev(R1, Says)
     ).
 
-% combine(Below, Above, Rel, Status)
+% combine(Below, Above, Rel, Status) -- provided carries (Basis, Binding); when
+% a present-below row and a covering curated-above row disagree on the binding,
+% the binding is `ambiguous` (Astra re-review 2: conflicting cross-tier bindings
+% must not yield a confident veto or a confident compatible).
 combine(ev(R0, present(_, _)), ev(R1, absent(Src)), _, unknown(dropped_between(R0, Src, R1))) :- !.
-combine(ev(_, present(_, _)), ev(_, present(symbols, since(Min, _, _, _))), Rel, provided(curated)) :-
-    rel_le(Min, Rel), !.
-combine(ev(_, present(_, _)), _, _, provided(extrapolated)) :- !.
+combine(ev(_, present(_, BoundB)), ev(_, present(symbols, since(Min, _, _, BindA))), Rel, provided(curated, Bind)) :-
+    rel_le(Min, Rel), !,
+    bound_binding(BoundB, BindB),
+    ( BindB == BindA -> Bind = BindB ; Bind = ambiguous ).
+combine(ev(_, present(_, Bound)), _, _, provided(extrapolated, Bind)) :- !, bound_binding(Bound, Bind).
 combine(_, ev(R1, absent(Src)), _, missing(observed_absent(Src, R1))) :- !.
-combine(_, ev(_, present(symbols, since(Min, MinAtom, _, _))), Rel, Status) :- !,
-    ( rel_le(Min, Rel) -> Status = provided(curated) ; Status = below_floor(MinAtom) ).
+combine(_, ev(_, present(symbols, since(Min, MinAtom, _, Bind))), Rel, Status) :- !,
+    ( rel_le(Min, Rel) -> Status = provided(curated, Bind) ; Status = below_floor(MinAtom) ).
 combine(_, ev(R1, present(elf, _)), _, unknown(evidence_release(R1))) :- !.
 combine(ev(R0, absent(Src)), none, _, unknown(absent_at(Src, R0))) :- !.
 combine(none, none, _, unknown(no_evidence)).
 
 % provides_at(So, Sym, Node, Rel, Basis): So exports exactly Sym@Node at Rel.
 provides_at(So, Sym, Node, Rel, Basis) :-
-    ident_status(So, Sym, Node, Rel, provided(Basis)).
+    ident_status(So, Sym, Node, Rel, provided(Basis, _)).
 
 % node_binding(So, Sym, Node, Bind): the default-version binding recorded for
 % an export (default: an unversioned reference binds to it; nondefault: it
@@ -425,7 +434,7 @@ versioned_status(So, Sym, Node, Bind, Rel, Hyp, Status) :-
     (   hyp_dropped(Hyp, Sym, Node, Rel)
     ->  Status = missing(Sym@Node, hypothetical_drop)
     ;   ident_status(So, Sym, Node, Rel, S)
-    ->  (   S = provided(Basis)       -> Status = provided(Sym@Node, Basis)
+    ->  (   S = provided(Basis, _)    -> Status = provided(Sym@Node, Basis)
         ;   S = below_floor(MinAtom)  -> Status = below_floor(Sym@Node, MinAtom)
         ;   S = missing(_), Bind == 'WEAK' -> Status = weak_unresolved(Sym@Node)
         ;   S = missing(observed_absent(_, R1)), R1 == Rel -> Status = missing(Sym@Node)
@@ -437,17 +446,18 @@ versioned_status(So, Sym, Node, Bind, Rel, Hyp, Status) :-
     ;   Status = unknown(Sym@Node, no_provider_evidence(So))
     ).
 
-% An unversioned reference binds (Sol P1b) to a `Base` export or to a DEFAULT
-% export of Sym in any NEEDED object -- never to a non-default (`@`) one, and the
-% default-version binding must come from the evidence APPLICABLE AT the queried
-% release, not from a stale or evidence-less row (Astra: a binding recorded at an
-% earlier release must not decide a later query). A curated row's binding is
-% `unproven`, which can only make the answer unknown. Against the queried So we
-% evaluate at Rel; against other NEEDED objects at their own evidence release.
-% A hard `missing` veto needs the symbol's ABSENCE to be ESTABLISHED at Rel for
-% every NEEDED object: complete evidence at a release >= Rel (absence propagates
-% downward). Complete evidence only BELOW Rel says nothing -- a later release may
-% add the symbol -- so the answer is unknown (Astra).
+% An unversioned reference binds (Sol P1b) to a `Base` export or a DEFAULT export
+% of Sym in any NEEDED object -- never a non-default (`@`) one. The binding comes
+% from ident_status (provided(Basis, Binding)), so it always reflects the row that
+% established presence at the queried release; binding and presence never diverge
+% (Astra re-review 2). A curated row's binding is `unproven`, and conflicting
+% cross-tier bindings are `ambiguous`; both yield unknown, never a veto or a
+% confident compatible. Against the queried So we evaluate at Rel; against other
+% NEEDED objects at their own evidence release. A hard veto (missing OR
+% no_default_export) needs absence -- of the symbol, or of a default export --
+% ESTABLISHED at Rel for So (complete evidence at a release >= Rel). Complete
+% evidence only BELOW Rel says nothing (a later release may add the symbol or a
+% default export) -> unknown (Astra re-review 2).
 unversioned_status(Bin, So, Sym, Bind, Rel, Hyp, Status) :-
     (   (   unversioned_in(So, Sym, Rel, Hyp, Node, Basis)
         ->  Status = provided(Sym, default_node(So, Node, Basis))
@@ -461,39 +471,47 @@ unversioned_status(Bin, So, Sym, Bind, Rel, Hyp, Status) :-
     ->  Status = weak_unresolved(Sym)          % a weak ref never vetoes, so missing evidence is moot
     ;   unversioned_unproven(Bin, So, Sym, Rel, S1, N1)
     ->  Status = unknown(Sym, default_binding_unproven(S1, N1))
+    ;   unversioned_ambiguous(Bin, So, Sym, Rel, S2, N2)
+    ->  Status = unknown(Sym, default_binding_conflict(S2, N2))
     ;   needed(Bin, S), \+ prov_evidence(S, _, _, complete)
     ->  ( prov_usable(S, _, _, _)          % a curated NEEDED object cannot prove
         ->  Status = unknown(Sym, absent_from_incomplete_evidence(S))  % absence -> unknown, never a veto (Sol re-review 2, P1)
         ;   Status = unknown(Sym, no_provider_evidence(S)) )
     ;   unversioned_unknown(Bin, So, Sym, Rel, _, Why)
     ->  Status = unknown(Sym, Why)
+    ;   \+ absence_established(So, Rel)  % So's complete evidence is only BELOW Rel: a later release
+    ->  Status = unknown(Sym, absence_unestablished(So, Rel))  % may add the symbol OR a default export (Astra re-review 2, gates BOTH vetoes)
     ;   unversioned_nondefault(Bin, So, Sym, Rel, S3, N3)
     ->  Status = missing(Sym, no_default_export(S3, N3))
-    ;   \+ absence_established(So, Rel)  % So's complete evidence is only BELOW Rel
-    ->  Status = unknown(Sym, absence_unestablished(So, Rel))  % a later release may add it (Astra R1)
     ;   Status = missing(Sym)
     ).
 
 % absence_established(S, Rel): S has complete evidence at a release >= Rel, so a
-% symbol absent from it is absent at Rel too (monotone exports).
+% symbol -- or a default export -- absent from it is absent at Rel too (monotone).
 absence_established(S, Rel) :-
     prov_evidence(S, _, R0, complete),
     rel_le(Rel, R0).
 
-% A DEFAULT-bound export of Sym in S, present at Rel, whose default binding is
-% taken from the evidence APPLICABLE at Rel (Astra) and which is not
-% hypothetically dropped (a drop targets a specific node at/after a release).
+% Per-object classification of an unversioned Sym at the relevant release, using
+% the binding ident_status credits (so binding and presence never diverge):
+%   unversioned_in         -> present with a DEFAULT (bindable) export, not dropped
+%   unversioned_unproven   -> present, binding only from a curated .symbols row
+%   unversioned_ambiguous  -> present, but the credited rows disagree on the binding
+%   unversioned_nondefault -> present only at a non-default node
 unversioned_in(S, Sym, Rel, Hyp, Node, Basis) :-
     symprov(S, Sym, Node, _),
     \+ hyp_dropped(Hyp, Sym, Node, Rel),
-    binding_at(S, Sym, Node, Rel, default, Basis).
+    ident_status(S, Sym, Node, Rel, provided(Basis, default)).
 
-% Some export of Sym present at the relevant release whose default binding, per
-% the applicable evidence, is `unproven` (a curated .symbols row, not --elf-checked).
 unversioned_unproven(Bin, So, Sym, Rel, S, Node) :-
     needed_at(Bin, So, Rel, S, R),
     symprov(S, Sym, Node, _),
-    binding_at(S, Sym, Node, R, unproven, _).
+    ident_status(S, Sym, Node, R, provided(_, unproven)).
+
+unversioned_ambiguous(Bin, So, Sym, Rel, S, Node) :-
+    needed_at(Bin, So, Rel, S, R),
+    symprov(S, Sym, Node, _),
+    ident_status(S, Sym, Node, R, provided(_, ambiguous)).
 
 unversioned_unknown(Bin, So, Sym, Rel, S, Why) :-
     needed_at(Bin, So, Rel, S, R),
@@ -503,28 +521,7 @@ unversioned_unknown(Bin, So, Sym, Rel, S, Why) :-
 unversioned_nondefault(Bin, So, Sym, Rel, S, Node) :-
     needed_at(Bin, So, Rel, S, R),
     symprov(S, Sym, Node, _),
-    binding_at(S, Sym, Node, R, nondefault, _).
-
-% binding_at(So, Sym, Node, Rel, Bind, Basis): Sym@Node is present at Rel (the
-% same aggregation ident_status uses) AND the evidence row that establishes that
-% presence records default-version binding Bind. This ties the binding to the
-% applicable release/evidence (Astra): a binding from a non-applicable release or
-% an evidence-less symprov row cannot decide the verdict. The row selected mirrors
-% ident_status/combine: the row AT Rel, else the nearest present row BELOW Rel
-% (extrapolated), else a curated `.symbols` floor ABOVE Rel that covers Rel
-% (Min =< Rel) -- without that last case an unversioned ref BELOW a curated floor
-% would falsely veto (Fable re-verify R1).
-binding_at(So, Sym, Node, Rel, Bind, Basis) :-
-    ident_status(So, Sym, Node, Rel, provided(Basis)),
-    findall(R1-Says, ev_says(So, Sym, Node, R1, Says), Rows),
-    (   member(Rel1-_, Rows), Rel1 == Rel
-    ->  says_at(Rows, Rel, present(_, Bound))
-    ;   nearest_below(Rows, Rel, ev(_, present(_, Bound)))
-    ->  true
-    ;   nearest_above(Rows, Rel, ev(_, present(symbols, Bound))),
-        Bound = since(Min, _, _, _), rel_le(Min, Rel)
-    ),
-    bound_binding(Bound, Bind).
+    ident_status(S, Sym, Node, R, provided(_, nondefault)).
 
 bound_binding(since(_, _, _, B), B).
 bound_binding(at(_, B), B).

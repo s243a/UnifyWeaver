@@ -150,9 +150,15 @@ echo "-- (sol2-P2b/astra) malformed Debian versions dpkg rejects (1:, 1-, 1::2, 
 for badv in "1:" "1-" "1::2" "2147483648:1"; do
   expect_reject "bad_release_form" node "$INGEST" symbols-file "$SRC/simple.symbols" --release "$badv" --out "$FX/bad_release_form"
 done
-echo "-- (astra) architecture WILDCARD selectors (arch=linux-any) are rejected, not mis-selected"
+echo "-- (astra) architecture WILDCARD/TUPLE/LIST selectors are rejected, not mis-selected"
 expect_reject tmpl_arch_wild node "$INGEST" symbols-file "$SRC/tmpl_arch_wild.symbols" --release 1.0 --arch amd64 --out "$FX/tmpl_arch_wild"
 [ ! -e "$FX/tmpl_arch_wild/symprov.jsonl" ] || fail "tmpl_arch_wild: store written despite rejection"
+expect_reject tmpl_arch_tuple node "$INGEST" symbols-file "$SRC/tmpl_arch_tuple.symbols" --release 1.0 --arch amd64 --out "$FX/tmpl_arch_tuple"
+expect_reject tmpl_arch_list node "$INGEST" symbols-file "$SRC/tmpl_arch_list.symbols" --release 1.0 --arch amd64 --out "$FX/tmpl_arch_list"
+echo "-- (astra2) epoch cap isolated via the releases command (no debLe floor check on that path)"
+expect_reject epoch_releases node "$INGEST" releases libepoch.so.1 "2147483648:1" --out "$FX/epoch_releases"
+echo "-- (astra2) arch-bits/endian on a NON-tabulated architecture is rejected, not guessed"
+expect_reject arch_bits_unknown node "$INGEST" symbols-file "$SRC/tmpl_arch.symbols" --release 1.0 --arch nonesucharch --out "$FX/arch_bits_unknown"
 echo "-- (astra) STB_GNU_UNIQUE exports are ingested, not dropped (would be a false missing veto)"
 LIBSTDCPP="$(ls /usr/lib/*/libstdc++.so.6 2>/dev/null | head -1)"
 if [ -n "$LIBSTDCPP" ] && readelf -W --dyn-syms "$LIBSTDCPP" | awk 'NR>3 && $1 ~ /^[0-9]+:$/ && $5=="UNIQUE"{f=1} END{exit !f}'; then

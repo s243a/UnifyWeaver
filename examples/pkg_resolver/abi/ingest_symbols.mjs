@@ -194,23 +194,43 @@ function debLe(a, b) {
 // dependent needs (Debian policy lets maintainers raise it after a compatible
 // behaviour change), NOT a ground-truth introduction date. Stored verbatim.
 
-const KNOWN_ARCHES_64 = new Set(["amd64", "arm64", "ppc64el", "s390x", "riscv64", "ia64", "mips64el", "sparc64", "ppc64", "alpha", "loong64"]);
-const BIG_ENDIAN = new Set(["s390x", "ppc64", "sparc64", "hppa", "m68k", "mips", "powerpc"]);
+// Architecture bit-width and endianness, tabulated for the arches we are
+// CONFIDENT about; an --arch not listed makes an (arch-bits=..)/(arch-endian=..)
+// row REJECT the file rather than guess wrong (Astra re-review 2: the old
+// positive-set-with-default guessed kfreebsd-amd64 as 32-bit and mips64 as
+// little-endian). Values verified against dpkg-architecture.
+const ARCH_BITS = {
+  amd64: 64, "kfreebsd-amd64": 64, i386: 32, "kfreebsd-i386": 32, x32: 32,
+  arm64: 64, armhf: 32, armel: 32, riscv64: 64, loong64: 64, ia64: 64,
+  ppc64: 64, ppc64el: 64, powerpc: 32, s390x: 64, alpha: 64, sparc64: 64, sparc: 32,
+  mips: 32, mipsel: 32, mips64: 64, mips64el: 64, m68k: 32, hppa: 32, sh4: 32,
+};
+const ARCH_ENDIAN = {
+  amd64: "little", "kfreebsd-amd64": "little", i386: "little", "kfreebsd-i386": "little", x32: "little",
+  arm64: "little", armhf: "little", armel: "little", riscv64: "little", loong64: "little", ia64: "little",
+  ppc64el: "little", mipsel: "little", mips64el: "little", sh4: "little", alpha: "little",
+  ppc64: "big", powerpc: "big", s390x: "big", sparc64: "big", sparc: "big",
+  mips: "big", mips64: "big", m68k: "big", hppa: "big",
+};
 
+// Only EXACT Debian architecture names (optionally `!`-negated) are supported.
+// dpkg wildcard/tuple patterns (any, linux-any, any-arm, gnu-any-amd64, ...) and
+// comma-lists need dpkg-architecture's matching semantics, which we do NOT
+// reimplement (the old ad-hoc matcher disagreed with dpkg), so a row using one is
+// REJECTED by the caller. EVERY term is validated FIRST, so an early match or
+// negation cannot skip a later unsupported term (Astra re-review 2). Returns
+// true/false, or null for "unsupported selector".
 function archSelects(spec, arch) {
-  // Only EXACT Debian architecture names (optionally `!`-negated) are supported.
-  // dpkg wildcard patterns (any, linux-any, any-arm, *-any, ...) require
-  // dpkg-architecture's matching semantics, which we do NOT reimplement -- our
-  // old ad-hoc matcher disagreed with dpkg (e.g. (arch=linux-any) wrongly
-  // included kfreebsd-amd64, (arch=any-arm) wrongly dropped armhf), so a row
-  // using a wildcard is REJECTED by the caller rather than mis-selected
-  // (Astra P2). Returns true/false, or null for "unsupported selector".
   const terms = spec.trim().split(/\s+/);
+  const cleanName = /^[a-z][a-z0-9]*(-[a-z0-9]+)?$/;   // amd64, armhf, kfreebsd-amd64
+  for (let t of terms) {
+    if (t.startsWith("!")) t = t.slice(1);
+    if (t.includes("any") || !cleanName.test(t)) return null;   // wildcard / tuple / list / malformed
+  }
   let selected = null;
   for (let t of terms) {
     let neg = false;
     if (t.startsWith("!")) { neg = true; t = t.slice(1); }
-    if (t === "any" || t.startsWith("any-") || t.endsWith("-any") || t.includes("*")) return null;
     const hit = (t === arch);
     if (neg) { if (hit) return false; if (selected === null) selected = true; }
     else if (hit) selected = true;
@@ -282,8 +302,16 @@ function parseSymbolsFile(path, { arch = null } = {}) {
         if (sel === null) { errors.push(`${lineNo}: unsupported architecture wildcard in (arch=${v}); only exact names (optionally !negated) are supported: ${raw.trim()}`); archOk = null; break; }
         archOk = archOk && sel;
       }
-      else if (key === "arch-bits") archOk = archOk && (v === (KNOWN_ARCHES_64.has(arch) ? "64" : "32"));
-      else archOk = archOk && (v === (BIG_ENDIAN.has(arch) ? "big" : "little"));
+      else if (key === "arch-bits") {
+        const bits = ARCH_BITS[arch];
+        if (bits === undefined) { errors.push(`${lineNo}: (arch-bits=..) but architecture ${arch} is not tabulated; refusing to guess: ${raw.trim()}`); archOk = null; break; }
+        archOk = archOk && (v === String(bits));
+      }
+      else {   // arch-endian
+        const end = ARCH_ENDIAN[arch];
+        if (end === undefined) { errors.push(`${lineNo}: (arch-endian=..) but architecture ${arch} is not tabulated; refusing to guess: ${raw.trim()}`); archOk = null; break; }
+        archOk = archOk && (v === end);
+      }
     }
     if (archOk === null) continue;
     if (!archOk) continue;                                         // row does not apply to this arch
