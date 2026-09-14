@@ -649,6 +649,41 @@ section_model :-
     check('C21 elf nondefault@1.0 + curated default since 2.5@3.0, query 2.0 (below floor) -> unknown(default_binding_conflict), not no_default_export (fable M3)',
           ( abi_verdict(bin, 'libn.so.1', '2.0', V21), report(verdict, V21),
             V21 = unknown(L21), memberchk(unknown(n, default_binding_conflict('libn.so.1', 'N')), L21) )),
+
+    % C22: Astra re-review 3 -- extrapolating past a NON-covering above row must
+    % NOT promote an unproven below binding to a future definite one. Curated
+    % unproven since 1.0 (ev 1.0) + complete default since 2.5 (ev 3.0), query 2.0
+    % (below the 2.5 floor) -> unknown(default_binding_unproven), NOT compatible.
+    fx_clear,
+    fx(symreq(bin, x, none, none, 'GLOBAL')),
+    fx(needed(bin, 'libx2.so.1')),
+    fx(req_evidence(bin, readelf, complete, bin)),
+    fx_rel('3.0', R3x),
+    fx_since('1.0', '1.0', unproven, Sx1),
+    fx_since('2.5', '3.0', default, Sx2),
+    fx(symprov('libx2.so.1', x, 'N', Sx1)),
+    fx(symprov('libx2.so.1', x, 'N', Sx2)),
+    fx(prov_evidence('libx2.so.1', symbols, R10, curated)),
+    fx(prov_evidence('libx2.so.1', symbols, R3x, complete)),
+    check('C22 curated-unproven below + complete default-since-2.5 above, query 2.0 -> unknown(default_binding_unproven), not compatible (astra3 regression)',
+          ( abi_verdict(bin, 'libx2.so.1', '2.0', V22), report(verdict, V22),
+            V22 = unknown(L22), memberchk(unknown(x, default_binding_unproven('libx2.so.1', 'N')), L22) )),
+
+    % C22b: same, with an ELF (not curated) default row above -- still must not
+    % promote the unproven below binding.
+    fx_clear,
+    fx(symreq(bin, x, none, none, 'GLOBAL')),
+    fx(needed(bin, 'libx3.so.1')),
+    fx(req_evidence(bin, readelf, complete, bin)),
+    fx_rel('3.0', R3xb),
+    fx_since('1.0', '1.0', unproven, Sy1),
+    fx(symprov('libx3.so.1', x, 'N', Sy1)),
+    fx(prov_evidence('libx3.so.1', symbols, R10, curated)),
+    fx(symprov('libx3.so.1', x, 'N', at(R3xb, default))),
+    fx(prov_evidence('libx3.so.1', elf, R3xb, complete)),
+    check('C22b curated-unproven below + ELF default above (3.0), query 2.0 -> unknown(default_binding_unproven), not compatible (astra3 regression)',
+          ( abi_verdict(bin, 'libx3.so.1', '2.0', V22b), report(verdict, V22b),
+            V22b = unknown(L22b), memberchk(unknown(x, default_binding_unproven('libx3.so.1', 'N')), L22b) )),
     fx_clear.
 
 % ===========================================================================

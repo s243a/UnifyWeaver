@@ -404,7 +404,7 @@ combine(ev(_, present(_, BoundB)), ev(_, present(symbols, since(Min, _, _, BindA
 % re-verify M3). `unproven` above is no-info, not a conflict.
 combine(ev(_, present(_, BoundB)), Above, _, provided(extrapolated, Bind)) :- !,
     bound_binding(BoundB, BindB),
-    ( above_binding(Above, BindA) -> merge_binding(BindB, BindA, Bind) ; Bind = BindB ).
+    ( above_binding(Above, BindA) -> extrapolate_binding(BindB, BindA, Bind) ; Bind = BindB ).
 combine(_, ev(R1, absent(Src)), _, missing(observed_absent(Src, R1))) :- !.
 combine(_, ev(_, present(symbols, since(Min, MinAtom, _, Bind))), Rel, Status) :- !,
     ( rel_le(Min, Rel) -> Status = provided(curated, Bind) ; Status = below_floor(MinAtom) ).
@@ -417,13 +417,23 @@ combine(none, none, _, unknown(no_evidence)).
 above_binding(ev(_, present(elf, at(_, Bind))), Bind).
 above_binding(ev(_, present(symbols, since(_, _, _, Bind))), Bind).
 
-% merge_binding(B1, B2, Merged): two DEFINITE bindings that differ -> ambiguous;
-% otherwise the definite one wins (`unproven` is no-info, never a conflict).
+% merge_binding(BelowOrAt, Covering, Merged): for a COVERING curated row (its
+% floor applies AT Rel), two DEFINITE bindings that differ -> ambiguous; otherwise
+% the definite one wins (`unproven` is no-info, never a conflict).
 merge_binding(B, B, B) :- !.
 merge_binding(B1, B2, ambiguous) :-
     memberchk(B1, [default, nondefault]), memberchk(B2, [default, nondefault]), !.
 merge_binding(B1, _, B1) :- memberchk(B1, [default, nondefault]), !.
 merge_binding(_, B2, B2).
+
+% extrapolate_binding(BindBelow, BindAbove, Bind): extrapolating a present-below
+% row past a NON-covering above row -- the above binding does NOT apply at Rel, so
+% KEEP the below binding; only flag `ambiguous` when both are definite and differ
+% (the binding is changing across Rel). Never promote an unproven below to a
+% future definite above (Astra re-review 3: that gave a false compatible).
+extrapolate_binding(B1, B2, ambiguous) :-
+    memberchk(B1, [default, nondefault]), memberchk(B2, [default, nondefault]), B1 \== B2, !.
+extrapolate_binding(B1, _, B1).
 
 % provides_at(So, Sym, Node, Rel, Basis): So exports exactly Sym@Node at Rel.
 provides_at(So, Sym, Node, Rel, Basis) :-

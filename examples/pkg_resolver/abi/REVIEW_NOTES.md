@@ -16,7 +16,7 @@ eight points) is addressed in the second section below. Frozen `resolver.pl`
 examples/pkg_resolver/{resolver.pl,resolver_store.pl,debian}` is empty).
 
 Run `./run_abi_verify.sh` (needs node, readelf, swipl, gcc). Expected tail:
-`== 92 passed, 0 failed, 0 skipped ==`. Check names in `test_abi.pl` carry the
+`== 122 passed, 0 failed, 0 skipped ==`. Check names in `test_abi.pl` carry the
 review point they prove: `(#n)` for Astra's points, `(sol-...)` for Sol's.
 The shell script's own assertions (exit codes, files not written, expected
 cross-check failures) abort the run with `FAIL:` before the Prolog section.
@@ -232,7 +232,7 @@ A Fable re-verification of the Astra-fix commit caught two regressions the
   queried `So` only; siblings are evaluated at their own release (a sibling
   lacking complete evidence is already handled earlier). Fixture **C17**.
 
-Also cleaned a stray NUL byte in the `debLe` cache-key string (now ` ` as
+Also cleaned a stray NUL byte in the `debLe` cache-key string (now `\u0000` as
 source text). `run_abi_verify.sh`: `== 111 passed, 0 failed, 0 skipped ==`.
 
 ## Astra re-review 2 — unversioned-path unification + arch hardening
@@ -290,3 +290,18 @@ two PRE-EXISTING false verdicts (present on earlier commits too), now fixed.
   changing. Fixed: `merge_binding/3` marks two conflicting DEFINITE bindings
   `ambiguous` (→ `unknown`); `unproven` is treated as no-info, never a conflict.
   Fixture **C21**.
+
+### Astra re-review 3 — one regression from the M3 fix, fixed
+
+Astra re-reviewed the unification+M2/M3 commit and confirmed everything closed
+except a regression the M3 change introduced: `combine` clause 3 (extrapolating a
+present-below row past a NON-covering above row) used `merge_binding`, which
+promoted an `unproven` below binding to a future definite above binding — a false
+`compatible` where it should stay `unknown(default_binding_unproven)`. Fixed:
+clause 3 now uses `extrapolate_binding/3` (KEEP the below binding; flag
+`ambiguous` only when both are definite and differ; never import the above
+binding). Clause 2 (the COVERING-curated case, where the above floor does apply
+at Rel) keeps `merge_binding`. Fixtures **C22** (curated-unproven below + complete
+default-since-above → unknown, not compatible) and **C22b** (ELF default above
+variant); C19/C21 still pass (definite conflicts → `ambiguous`). Also fixed a
+stray NUL byte in this file. `run_abi_verify.sh`: `== 122 passed, 0 failed, 0 skipped ==`.
