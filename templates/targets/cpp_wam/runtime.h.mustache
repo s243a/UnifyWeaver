@@ -784,31 +784,58 @@ public:
 
     // All matching rows for the query: a bound-key seek when `key` is set (only
     // the records that key touches are read), else a full scan (the unbound-arg1
-    // provides walk). lmdb sources fail loudly (no reader built in).
+    // provides walk). Keyed lookups go through the shared L1/L2 row cache so a
+    // repeat of a hot key pays zero backend I/O, for BOTH backends. lmdb sources
+    // fail loudly when no reader is built in.
     std::vector<std::pair<Value, Value>> rows(const std::optional<std::string>& key) {
         if (kind_ == "lmdb") {
 #ifdef WAM_CPP_ENABLE_LMDB
-            return rows_lmdb(key);
+            ensure_open_lmdb();
 #else
             throw std::runtime_error(lmdb_seek_missing_error());
 #endif
-        }
-        ensure_open();
-        std::lock_guard<std::mutex> guard(mu_);
-        g_fact_io_data_size.store(data_size_, std::memory_order_relaxed);
-        std::vector<std::pair<Value, Value>> result;
-        if (key.has_value()) {
-            std::vector<std::uint32_t> offs = lookup_offsets(*key);
-            result.reserve(offs.size());
-            for (std::uint32_t off : offs) {
-                Value a1, a2;
-                if (read_record(static_cast<std::uint64_t>(off), a1, a2))
-                    result.emplace_back(std::move(a1), std::move(a2));
-            }
         } else {
-            scan_all(result);
+            ensure_open();
         }
-        return result;
+        std::lock_guard<std::mutex> guard(mu_);
+        ensure_cache_config();
+        if (kind_ != "lmdb")
+            g_fact_io_data_size.store(data_size_, std::memory_order_relaxed);
+        if (!key.has_value()) {
+            // Unbound arg1: full scan (the provides walk). Never cached.
+            RowVec out;
+            scan_backend(out);
+            return out;
+        }
+        const std::string& enc = *key;
+        // L1 probe (direct-mapped).
+        std::size_t slot = l1_.empty() ? 0 : (std::hash<std::string>()(enc) & l1_mask_);
+        if (!l1_.empty() && l1_[slot].valid && l1_[slot].key == enc) {
+            ++l1_hits_;
+            return *l1_[slot].rows;
+        }
+        // L2 probe (shared FIFO map); on hit, promote into L1.
+        auto it = l2_.find(enc);
+        if (it != l2_.end()) {
+            ++l2_hits_;
+            if (!l1_.empty()) { l1_[slot].valid = true; l1_[slot].key = enc; l1_[slot].rows = it->second; }
+            return *it->second;
+        }
+        // Miss: real backend fetch, then fill BOTH tiers.
+        ++misses_;
+        RowVecPtr rowsp = std::make_shared<RowVec>();
+        fetch_keyed(enc, *rowsp);
+        if (!l1_.empty()) { l1_[slot].valid = true; l1_[slot].key = enc; l1_[slot].rows = rowsp; }
+        if (l2_cap_ > 0) {
+            l2_[enc] = rowsp;
+            l2_order_.push_back(enc);
+            while (l2_.size() > l2_cap_) {
+                const std::string& victim = l2_order_.front();
+                if (victim != enc) l2_.erase(victim);
+                l2_order_.pop_front();
+            }
+        }
+        return *rowsp;
     }
 
     // Cache-attribution counters (D43 scale proof + the two-cache benchmark).
@@ -845,6 +872,98 @@ private:
     // resident cost is small and constant, and it is answer-identical to the old
     // per-probe path. See lookup_offsets().
     std::string idx_blob_;
+
+    // ---- Shared, engine-agnostic row cache (BOTH indexed and lmdb) ----------
+    // The L1 (direct-mapped) + L2 (FIFO) caches map a lookup key -> its full
+    // decoded row list, so a repeat lookup of a hot key pays ZERO backend I/O
+    // regardless of storage engine. The cache is orthogonal to storage, so it is
+    // lifted out of the LMDB gate: the dependency-free indexed backend gets the
+    // same reuse win that was previously lmdb's only remaining advantage on
+    // skewed/reuse workloads.
+    //   L1 -- fixed-size, direct-mapped, collision-overwrite (intra-query
+    //         locality); env UW_WAM_FACT_L1_SLOTS (back-compat UW_WAM_LMDB_L1_SLOTS).
+    //   L2 -- shared FIFO-bounded map (cross-query reuse); env UW_WAM_FACT_L2_CAP
+    //         (back-compat UW_WAM_LMDB_L2_CAP); default auto-sizes from
+    //         /proc/meminfo. Compose two_level: L1 hit skips L2; L2 hit promotes
+    //         to L1; a miss fills both. Full (unbound-arg1) scans are NOT cached.
+    using RowVec = std::vector<std::pair<Value, Value>>;
+    using RowVecPtr = std::shared_ptr<RowVec>;
+    struct L1Slot { bool valid = false; std::string key; RowVecPtr rows; };
+    std::vector<L1Slot> l1_;
+    std::size_t l1_mask_ = 0;
+    std::unordered_map<std::string, RowVecPtr> l2_;
+    std::deque<std::string> l2_order_;
+    std::size_t l2_cap_ = 0;
+    bool cache_configured_ = false;
+
+    static std::size_t env_size(const char* name, std::size_t fallback) {
+        if (const char* e = std::getenv(name)) {
+            char* end = nullptr;
+            unsigned long v = std::strtoul(e, &end, 10);
+            if (end && *end == 0 && v > 0) return static_cast<std::size_t>(v);
+        }
+        return fallback;
+    }
+    static std::size_t round_up_pow2(std::size_t n) {
+        std::size_t p = 1;
+        while (p < n) p <<= 1;
+        return p;
+    }
+    // Default L2 cap: ~5% of live MemAvailable (mirrors Rust R8b
+    // resolve_runtime_cache_capacity), floored at 1024, ceilinged at 1<<20.
+    // Engine-agnostic (was lmdb_default_l2_cap).
+    static std::size_t default_l2_cap() {
+        std::size_t mem_avail_kb = 0;
+        std::ifstream mi("/proc/meminfo");
+        std::string tok;
+        while (mi >> tok) { if (tok == "MemAvailable:") { mi >> mem_avail_kb; break; } }
+        if (mem_avail_kb == 0) return 4096;
+        const std::size_t budget = (static_cast<std::size_t>(mem_avail_kb) * 1024u) / 20u;
+        const std::size_t edge_bytes = 256;
+        std::size_t cap = budget / edge_bytes;
+        if (cap < 1024) cap = 1024;
+        if (cap > (1u << 20)) cap = (1u << 20);
+        return cap;
+    }
+    // Configure L1/L2 once (caller holds mu_). Shared env names take precedence;
+    // the lmdb-specific names remain honored so existing lmdb callers/tests keep
+    // their exact behavior.
+    void ensure_cache_config() {
+        if (cache_configured_) return;
+        cache_configured_ = true;
+        std::size_t l1_size = round_up_pow2(env_size("UW_WAM_FACT_L1_SLOTS",
+                                  env_size("UW_WAM_LMDB_L1_SLOTS", 1u << 14)));
+        l1_.assign(l1_size, L1Slot{});
+        l1_mask_ = l1_size - 1;
+        l2_cap_ = env_size("UW_WAM_FACT_L2_CAP",
+                      env_size("UW_WAM_LMDB_L2_CAP", default_l2_cap()));
+    }
+
+    // Backend-specific fetch primitives, dispatched by the shared cache in rows().
+    void scan_backend(RowVec& out) {
+        if (kind_ == "lmdb") {
+#ifdef WAM_CPP_ENABLE_LMDB
+            lmdb_scan_all(out);
+#endif
+        } else {
+            scan_all(out);
+        }
+    }
+    void fetch_keyed(const std::string& enc, RowVec& out) {
+        if (kind_ == "lmdb") {
+#ifdef WAM_CPP_ENABLE_LMDB
+            lmdb_range_scan(enc, out);
+#endif
+        } else {
+            std::vector<std::uint32_t> offs = lookup_offsets(enc);
+            out.reserve(offs.size());
+            for (std::uint32_t off : offs) {
+                Value a1, a2;
+                if (read_record(static_cast<std::uint64_t>(off), a1, a2))
+                    out.emplace_back(std::move(a1), std::move(a2));
+            }
+        }
+    }
 
     // One positioned read that feeds the D43 counters. On a short read it
     // returns only the bytes actually read (mirrors Go's factIORead).
@@ -978,106 +1097,10 @@ private:
 
 #ifdef WAM_CPP_ENABLE_LMDB
     // ------------------------------------------------------------------
-    // Stage 2: lazy + two-level-cached LMDB backend.
-    //
-    // Mirrors the RUST edge-cache variant specifically -- FIFO L2, not
-    // Haskell's LRU (both are documented per-target choices; this lane picks
-    // Rust's). The two cache TYPES the WAM_RUST cache design identifies:
-    //   * L1 -- a fixed-size, direct-mapped, collision-overwrite table
-    //     (Rust's per-HEC L1_CACHE: one slot per key hash, no eviction
-    //     bookkeeping; the intra-query locality tier). Rust uses 1<<16 slots per
-    //     thread; the C++ WAM is single-threaded so one modest table suffices
-    //     (env override UW_WAM_LMDB_L1_SLOTS).
-    //   * L2 -- a shared, FIFO-bounded map (Rust's CacheShard: a memory-budget
-    //     cap with FIFO eviction -- push_back on fill, pop_front to evict, NOT
-    //     LRU; the cross-query reuse tier). Default cap auto-sizes from live
-    //     /proc/meminfo (mirrors Rust resolve_runtime_cache_capacity / R8b); env
-    //     override UW_WAM_LMDB_L2_CAP lets a benchmark shrink it to model memory
-    //     pressure -- the memory x scale crossover the owner wants.
-    // Compose as two_level: L1 hit skips L2; L2 hit promotes to L1; an LMDB miss
-    // (a real keyed range-scan off disk) fills both. Each cached entry is the
-    // full row list for one bound key (key -> vector<(a1,a2)>), so a repeat
-    // lookup of a hot key pays zero LMDB reads.
+    // Stage 2: lazy LMDB backend (keyed range-scan + full seq-band scan). The
+    // L1/L2 row cache that used to live here is now the shared, engine-agnostic
+    // cache above (rows()); this block is just the LMDB storage primitives.
     // ------------------------------------------------------------------
-    using RowVec = std::vector<std::pair<Value, Value>>;
-    using RowVecPtr = std::shared_ptr<RowVec>;
-
-    std::vector<std::pair<Value, Value>> rows_lmdb(const std::optional<std::string>& key) {
-        ensure_open_lmdb();
-        std::lock_guard<std::mutex> guard(mu_);
-        if (!key.has_value()) {
-            // Unbound arg1: full seq-band scan (the provides walk). Not cached.
-            RowVec out;
-            lmdb_scan_all(out);
-            return out;
-        }
-        const std::string& enc = *key;
-        // L1 probe (direct-mapped).
-        std::size_t slot = std::hash<std::string>()(enc) & l1_mask_;
-        if (l1_[slot].valid && l1_[slot].key == enc) {
-            ++l1_hits_;
-            return *l1_[slot].rows;
-        }
-        // L2 probe (shared FIFO map); on hit, promote into L1.
-        auto it = l2_.find(enc);
-        if (it != l2_.end()) {
-            ++l2_hits_;
-            l1_[slot].valid = true;
-            l1_[slot].key = enc;
-            l1_[slot].rows = it->second;
-            return *it->second;
-        }
-        // Miss: real keyed range-scan off disk, then fill BOTH tiers.
-        ++misses_;
-        RowVecPtr rows = std::make_shared<RowVec>();
-        lmdb_range_scan(enc, *rows);
-        l1_[slot].valid = true;
-        l1_[slot].key = enc;
-        l1_[slot].rows = rows;
-        if (l2_cap_ > 0) {
-            l2_[enc] = rows;
-            l2_order_.push_back(enc);
-            while (l2_.size() > l2_cap_) {
-                const std::string& victim = l2_order_.front();
-                if (victim != enc) l2_.erase(victim);
-                l2_order_.pop_front();
-            }
-        }
-        return *rows;
-    }
-
-    // Default L2 cap: size from live /proc/meminfo (mirrors Rust R8b
-    // resolve_runtime_cache_capacity) so the shipped default adapts to the host
-    // instead of a bare constant. Rough per-entry cost estimate -- groundwork
-    // precision per CACHE_COST_MODEL_PHILOSOPHY.md, not second-decimal accuracy.
-    static std::size_t lmdb_default_l2_cap() {
-        std::size_t mem_avail_kb = 0;
-        std::ifstream mi("/proc/meminfo");
-        std::string tok;
-        while (mi >> tok) {
-            if (tok == "MemAvailable:") { mi >> mem_avail_kb; break; }
-        }
-        if (mem_avail_kb == 0) return 4096;  // fallback if /proc unavailable
-        const std::size_t budget = (static_cast<std::size_t>(mem_avail_kb) * 1024u) / 20u; // ~5%
-        const std::size_t edge_bytes = 256;  // key string + shared RowVec est.
-        std::size_t cap = budget / edge_bytes;
-        if (cap < 1024) cap = 1024;              // floor, as Rust floors at 1024
-        if (cap > (1u << 20)) cap = (1u << 20);  // sane ceiling
-        return cap;
-    }
-    static std::size_t env_size(const char* name, std::size_t fallback) {
-        if (const char* e = std::getenv(name)) {
-            char* end = nullptr;
-            unsigned long v = std::strtoul(e, &end, 10);
-            if (end && *end == 0 && v > 0) return static_cast<std::size_t>(v);
-        }
-        return fallback;
-    }
-    static std::size_t round_up_pow2(std::size_t n) {
-        std::size_t p = 1;
-        while (p < n) p <<= 1;
-        return p;
-    }
 
     // P2: close a successfully- OR partially-opened LMDB env and reset the
     // handles so the source is safe to destroy, and so a retry after a failed
@@ -1097,12 +1120,8 @@ private:
     void ensure_open_lmdb() {
         std::lock_guard<std::mutex> guard(mu_);
         if (lmdb_open_) return;
-        // Configure caches on first open (env overrides in the UW_WAM_* runtime
-        // namespace; L2 default auto-sizes from available memory).
-        std::size_t l1_size = round_up_pow2(env_size("UW_WAM_LMDB_L1_SLOTS", 1u << 14));
-        l1_.assign(l1_size, L1Slot{});
-        l1_mask_ = l1_size - 1;
-        l2_cap_ = env_size("UW_WAM_LMDB_L2_CAP", lmdb_default_l2_cap());
+        // Cache sizing is handled once by the shared ensure_cache_config() (called
+        // from rows() under mu_), so both backends configure L1/L2 identically.
         int rc = mdb_env_create(&lmdb_env_);
         if (rc != MDB_SUCCESS)
             throw std::runtime_error("lmdb env_create failed for " + path_);
@@ -1192,15 +1211,10 @@ private:
         mdb_txn_abort(txn);
     }
 
-    struct L1Slot { bool valid = false; std::string key; RowVecPtr rows; };
+    // LMDB env handles only; the L1/L2 cache members are shared (declared above).
     MDB_env* lmdb_env_ = nullptr;
     MDB_dbi  lmdb_dbi_ = 0;
     bool     lmdb_open_ = false;
-    std::vector<L1Slot> l1_;
-    std::size_t l1_mask_ = 0;
-    std::unordered_map<std::string, RowVecPtr> l2_;
-    std::deque<std::string> l2_order_;
-    std::size_t l2_cap_ = 0;
 #endif // WAM_CPP_ENABLE_LMDB
 };
 

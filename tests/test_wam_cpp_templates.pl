@@ -45,10 +45,20 @@ user:shell_nestedite(X,Y) :- ( X > 0 -> ( X > 10 -> Y = big ; Y = small ) ; Y = 
 % per lookup. Answer-identical (503-case store differential + 51-case corpus:
 % 0 divergences). The +1872 characters are outside the WAM_CPP_ENABLE_LMDB gate,
 % so BOTH variants grew by the SAME delta (the whole header delta).
-old_header_digest(plain, 91891,
-    'cd123f80b7836b47f383d45b518df8cf04d3c069a2aa92575279da58375d7f86').
-old_header_digest(lmdb, 92132,
-    'bf5d8313c4d71799c3349283bacae6780a84c87cd32bea1080fb911057329c14').
+%
+% Re-baselined AGAIN (crossover row-cache LIFT, from plain 91891 / lmdb 92132):
+% the L1 direct-mapped + L2 FIFO row cache was lifted OUT of the LMDB gate into a
+% shared, engine-agnostic cache used by rows() for BOTH backends (indexed now
+% caches too), with a shared ensure_cache_config() + env (UW_WAM_FACT_L1_SLOTS /
+% L2_CAP; lmdb names honored for back-compat). Answer-identical (503 differential
+% + 51 corpus + 122 ABI verify: 0 divergences; bench cross-check indexed
+% rows_found == lmdb). Net +479 chars, gate-independent (shared members moved
+% above the gate; the lmdb block lost its duplicate cache code), so BOTH variants
+% grew by the SAME delta.
+old_header_digest(plain, 92370,
+    '3a7aacc80ae378492328d8ac8b95f5ab46caf4d87f2be958b0705e29d13677e9').
+old_header_digest(lmdb, 92611,
+    '0344661e034bd5c75993c738401999f4838d70da5477de903bce299c0e3064db').
 
 assert_old_header_bytes(Mode, Header) :-
     old_header_digest(Mode, Length, Digest),

@@ -1,162 +1,147 @@
-# ABI store backend crossover — the FAIR FIGHT: optimized indexed vs lmdb
+# ABI store backend crossover — neutralizing the cache: indexed+L1/L2 vs lmdb
 
-Follow-up to the first crossover run. That run found the `indexed` backend lost
-to `lmdb` by 13-72x, but mostly for an *incidental* reason: the on-disk
-`SeekFactSource` binary search re-read every probe from the stream (~37 positioned
-`ifstream` `read()` syscalls per lookup, re-paid on every repeat). This run
-**optimizes the real indexed backend** and re-measures on a level field, at two
-scales.
+Third run in the arc. Story so far:
+1. **First run:** lmdb beat `indexed` by 13-72x — but mostly because the on-disk
+   binary search re-read every probe (~37 `ifstream` syscalls/lookup).
+2. **Fair fight:** optimized the indexed read path (whole `.idx` slurped into RAM
+   once, in-memory binary search + one `.data` record read). Gap fell to ~1.6-2.2x
+   on zero-reuse but stayed 7-21x on reuse — because lmdb still had an L1/L2 **row
+   cache** and indexed had none.
+3. **This run:** **lift the L1/L2 row cache into the shared `SeekFactSource`** so
+   BOTH backends cache identically. Now caching is neutralized and we see the
+   true engine-vs-engine comparison.
 
 Harness + entry script: `examples/pkg_resolver/abi/bench/` (drives the C++ WAM
 `SeekFactSource` read path directly — not the JS lmdb backend).
-Reproduce: `bash examples/pkg_resolver/abi/bench/bench_crossover.sh`.
+Reproduce: `BUILD_OLD=1 bash examples/pkg_resolver/abi/bench/bench_crossover.sh`.
 
-## The optimization (shared cpp_wam runtime)
+## The change (shared cpp_wam runtime)
 
-`templates/targets/cpp_wam/runtime.h.mustache`, `SeekFactSource` indexed path:
-at store open the **entire `.idx` key table is slurped into RAM once**
-(`idx_blob_`); a keyed lookup is then an **in-memory** binary search
-(`idx_key_compare` + rewritten `lookup_offsets`) plus **one** positioned `.data`
-record read. The ~37 per-probe seek+read syscalls per lookup are gone. The `.data`
-file is still read with positioned `ifstream` reads (no mmap — kept simple, per
-the brief). Answer-identical; see correctness below.
-
-Effect on the deterministic read count: at symbol scale, skewed R=1 indexed reads
-fell from **1,884,629 → 132,190** (~14x); the remaining reads are the per-record
-`.data` reads (len prefix + payload = 2 reads/record) plus the one-time `.idx`
-slurp.
+`templates/targets/cpp_wam/runtime.h.mustache`: the L1 (direct-mapped) + L2
+(FIFO) row cache — key → decoded row list — was **lifted out of the
+`WAM_CPP_ENABLE_LMDB` gate** into an engine-agnostic cache in `rows()`, used by
+both backends. `rows()` now does: open → `ensure_cache_config()` → L1 probe → L2
+probe (promote on hit) → on miss, backend `fetch_keyed()` (indexed:
+`lookup_offsets`+`read_record`; lmdb: `lmdb_range_scan`) → fill both tiers. Full
+(unbound-arg1) scans are never cached. Shared sizing env `UW_WAM_FACT_L1_SLOTS` /
+`UW_WAM_FACT_L2_CAP` (the `UW_WAM_LMDB_*` names still honored for back-compat).
+Cache is orthogonal to storage, so this is a pure code move + one branch.
 
 ## Store sizes
 
 | scale | indexed | lmdb (v1) | rows | distinct keys |
 |---|---|---|---|---|
-| **symbol** (ABI `symprov/2`, `/var/lib/dpkg/info`) | **42 MB** (24 data + 18 idx) | **128 MB** | 256,225 | 249,097 |
-| **package** (`store/gen_scale_catalog.mjs` 5k catalog, `pkg/2`) | **320 KB** (164 + 156 KB) | **972 KB** | 7,522 | 5,007 |
+| **symbol** (ABI `symprov/2`, `/var/lib/dpkg/info`) | 42 MB (24 data + 18 idx) | 128 MB | 256,225 | 249,097 |
+| **package** (`gen_scale_catalog` 5k, `pkg/2`) | 320 KB (164 + 156 KB) | 972 KB | 7,522 | 5,007 |
 
-(The lmdb store is rebuilt v1-format via `store/ensure_lmdb.sh` so vanilla system
-`liblmdb` can read it; the shipped lmdb-js store is `MDB_INVALID` to vanilla
-liblmdb.)
+Benchmark cache sizing: `UW_WAM_FACT_L2_CAP=65536`, L1 default (1<<14 slots) —
+identical for indexed+cache and lmdb (fair).
 
-## Correctness (all three guardrails pass)
+## Correctness (all guardrails pass — a cache must not change answers)
 
-1. **Built-in cross-check:** optimized-indexed `rows_found` **==** lmdb
-   `rows_found` in every cell, both scales (e.g. symbol skewed R=10 = 660,940;
-   package unique R=1 = 7,522). Old-indexed matches too.
-2. **Resolver differential/corpus** (answer-identical, indexed backend, with the
-   optimized runtime): `run_differential_cpp_store.sh` = **503 cases, 0
-   divergences**; `run_corpus_cpp_store.sh` = **51 cases, 0 divergences**;
-   `run_abi_verify.sh` = **122 passed, 0 failed**.
-3. **Byte-frozen goldens** (`tests/test_wam_cpp_templates.pl`): re-baselined the
-   two header digests (plain 90019→91891, lmdb 90260→92132; +1872 chars each,
-   gate-independent). Full suite green. Runtime-source golden unchanged (I did
-   not touch `runtime.cpp.mustache`).
+1. **Cross-check:** indexed+cache `rows_found` **==** lmdb `rows_found` **==**
+   nocache, every cell, both scales. And indexed+cache reports **identical
+   L1/L2/miss counts to lmdb** (e.g. symbol skewed R=10 = 283,810 L1 / 195,733 L2
+   / 20,457 miss for both) — proof the shared cache behaves identically per
+   backend.
+2. **Resolver differential/corpus/ABI** (built at `-O0` under memory pressure,
+   one at a time): `run_differential_cpp_store.sh` = **503 / 0 divergences**;
+   `run_corpus_cpp_store.sh` = **51 / 0**; `run_abi_verify.sh` = **122 / 0**.
+3. **Byte-frozen goldens** re-baselined (plain 91891→92370, lmdb 92132→92611;
+   +479 each, gate-independent). Suite green. Runtime-source golden unchanged.
 
-Frozen resolver files (`resolver.pl` / `resolver_store.pl` / `debian/`) untouched
-(`git diff` clean).
+Frozen `resolver.pl` / `resolver_store.pl` / `debian/` untouched (`git diff` clean).
 
-## Results
+## Results (min-of-3 wall; WSL2 noisy — spreads in raw jsonl)
 
-min-of-3 wall (WSL2 — noisy; warm and fadvise-cold both shown). Reads / cache
-counters are deterministic (identical warm/cold and across repeats).
-
-### Headline: min wall (ms) and speedups
-
-| scale | workload | cache | R | old-idx | **opt-idx** | lmdb | opt speedup vs old | lmdb vs opt |
+| scale | workload | cache | R | idx-nocache | **idx+cache** | lmdb | cache vs nocache | lmdb vs cache |
 |---|---|---|---|---|---|---|---|---|
-| package | skewed | warm | 1 | 946 | **117** | 10 | 8.1x | 12.2x |
-| package | skewed | warm | 5 | 4601 | **573** | 30 | 8.0x | 19.1x |
-| package | skewed | warm | 10 | 9359 | **1193** | 56 | 7.8x | 21.5x |
-| package | uniform | warm | 1 | 934 | **119** | 11 | 7.9x | 11.1x |
-| package | uniform | warm | 10 | 9038 | **1122** | 61 | 8.1x | 18.3x |
-| package | unique | warm | 1 | 88 | **12** | 5 | 7.3x | 2.2x |
-| package | unique | warm | 5 | 465 | **64** | 8 | 7.3x | 8.2x |
-| package | unique | warm | 10 | 926 | **133** | 10 | 6.9x | 12.9x |
-| symbol | skewed | warm | 1 | 1412 | **167** | 63 | 8.5x | 2.6x |
-| symbol | skewed | warm | 5 | 7593 | **911** | 218 | 8.3x | 4.2x |
-| symbol | skewed | warm | 10 | 16406 | **1799** | 236 | 9.1x | 7.6x |
-| symbol | uniform | warm | 1 | 1659 | **188** | 122 | 8.8x | 1.5x |
-| symbol | uniform | warm | 10 | 16791 | **1760** | 252 | 9.5x | 7.0x |
-| symbol | unique | warm | 1 | 8724 | **959** | 593 | 9.1x | 1.6x |
-| symbol | unique | cold | 1 | 9556 | **1243** | 714 | 7.7x | 1.7x |
+| package | skewed | warm | 1 | 122 | **19** | 10 | 6.6x | 1.9x |
+| package | skewed | warm | 5 | 592 | **40** | 30 | 14.7x | 1.3x |
+| package | skewed | warm | 10 | 1167 | **65** | 57 | 18.1x | 1.1x |
+| package | uniform | warm | 10 | 1131 | **74** | 62 | 15.3x | 1.2x |
+| package | unique | warm | 1 | 12 | **15** | 5 | 0.8x | 2.7x |
+| package | unique | warm | 10 | 126 | **21** | 11 | 6.1x | 1.9x |
+| symbol | skewed | warm | 1 | 181 | **121** | 62 | 1.5x | 2.0x |
+| symbol | skewed | warm | 5 | 811 | **179** | 126 | 4.5x | 1.4x |
+| symbol | skewed | warm | 10 | 1706 | **250** | 213 | 6.8x | 1.2x |
+| symbol | skewed | cold | 10 | 1748 | **325** | 303 | 5.4x | 1.1x |
+| symbol | uniform | warm | 1 | 165 | **198** | 96 | 0.8x | 2.1x |
+| symbol | uniform | warm | 10 | 1591 | **353** | 254 | 4.5x | 1.4x |
+| symbol | unique | warm | 1 | 950 | **1284** | 586 | 0.7x | 2.2x |
+| symbol | unique | cold | 1 | 1196 | **1533** | 685 | 0.8x | 2.2x |
 
-(Full warm+cold sweep, all R, both scales: `.out/bench/results.symbol.jsonl` and
-`results.package.jsonl`. Cold ≈ warm everywhere — the stores are far smaller than
-RAM, and no hard memory-cap mechanism is available unprivileged on this WSL2 box,
-so a disk-bound regime is still unreachable; the read/cache counters are the
-trustworthy signal, as in the first run.)
+(Full warm+cold sweep, all R, both scales: `.out/bench/results.symbol.jsonl` +
+`results.package.jsonl`. Cold ≈ warm — stores ≪ RAM, no hard cap available
+unprivileged on WSL2, so no disk-bound regime; deterministic counters lead.)
 
-### Deterministic I/O (warm; the primary signal)
+### Deterministic I/O (warm; identical across repeats and warm/cold)
 
-| scale | workload | R | old-idx reads | opt-idx reads | lmdb reads | lmdb L1 | lmdb L2 | lmdb miss | rows |
+| scale | workload | R | nocache reads | cache reads | lmdb reads | L1 (cache=lmdb) | L2 (cache=lmdb) | miss | rows |
 |---|---|---|---|---|---|---|---|---|---|
-| package | skewed | 1 | 1,330,740 | 142,486 | 6,238 | 45,052 | 981 | 3,967 | 71,242 |
-| package | skewed | 10 | 13,307,382 | 1,424,842 | 6,238 | 480,499 | 15,534 | 3,967 | 712,420 |
-| package | uniform | 10 | 13,304,712 | 1,419,902 | 7,515 | 441,954 | 53,045 | 5,001 | 709,950 |
-| package | unique | 1 | 133,879 | 15,046 | 7,522 | 0 | 0 | 5,007 | 7,522 |
-| package | unique | 10 | 1,338,772 | 150,442 | 7,522 | 33,597 | 11,466 | 5,007 | 75,220 |
-| symbol | skewed | 1 | 1,884,629 | 132,190 | 26,454 | 21,280 | 8,263 | 20,457 | 66,094 |
-| symbol | skewed | 10 | 18,846,272 | 1,321,882 | 26,454 | 283,810 | 195,733 | 20,457 | 660,940 |
-| symbol | uniform | 10 | 18,424,622 | 898,482 | 41,103 | 111,415 | 348,829 | 39,756 | 449,240 |
-| symbol | unique | 1 | 9,482,081 | 540,964 | 264,015 | 867 | 2,366 | 252,992 | 270,481 |
+| package | skewed | 1 | 142,486 | 12,478 | 6,238 | 45,052 | 981 | 3,967 | 71,242 |
+| package | skewed | 10 | 1,424,842 | 12,478 | 6,238 | 480,499 | 15,534 | 3,967 | 712,420 |
+| package | unique | 10 | 150,442 | 15,046 | 7,522 | 33,597 | 11,466 | 5,007 | 75,220 |
+| symbol | skewed | 1 | 132,190 | 52,910 | 26,454 | 21,280 | 8,263 | 20,457 | 66,094 |
+| symbol | skewed | 10 | 1,321,882 | 52,910 | 26,454 | 283,810 | 195,733 | 20,457 | 660,940 |
+| symbol | uniform | 10 | 898,482 | 82,208 | 41,103 | 111,415 | 348,829 | 39,756 | 449,240 |
+| symbol | unique | 1 | 540,964 | 528,032 | 264,015 | 867 | 2,366 | 252,992 | 270,481 |
 
-## Verdict: does lmdb still win on a level field?
+Note: with the cache, indexed's read count is **flat in R** (52,910 at every R,
+like lmdb's 26,454) — the linear-in-R re-reads are gone. The residual ~2x reads
+vs lmdb is that indexed's `read_record` does two positioned reads per record (len
+prefix + payload) where lmdb's mmap cursor returns the value in one op.
 
-**Yes — lmdb still wins at BOTH scales, but the margin collapses, and the residual
-gap is caching, not the storage engine.** The optimization removed ~8-9.5x of the
-old indexed deficit uniformly (the per-probe syscalls). What is left:
+## Answer: does indexed+cache now match lmdb?
 
-- **Zero key reuse** (`unique` R=1, the fairest — caches are useless): lmdb wins
-  only **1.6x** (symbol) / **2.2x** (package). This residual is purely
-  read-path: opt-indexed does 2 positioned `.data` reads per record (len +
-  payload) vs lmdb's single mmap value fetch — syscalls vs page faults on the
-  ~same bytes.
-- **Reuse-bearing** (`skewed`/`uniform`, and higher R): the gap grows with reuse
-  — up to **7.6x** (symbol skewed R=10) and **21.5x** (package skewed R=10) —
-  because lmdb's L1 (direct-mapped) + L2 (FIFO) **row cache** serves repeats with
-  zero reads (its read count is FLAT in R: 6,238 / 26,454 regardless of R),
-  while opt-indexed has no cache and re-reads every record every repeat (reads
-  scale linearly with R). The deterministic columns make this explicit: at
-  symbol skewed R=10, lmdb does 26,454 reads and 283,810+195,733 cache hits;
-  opt-indexed does 1,321,882 reads.
+**On reuse — yes, essentially.** The cache neutralized the 7-21x reuse gap:
+indexed+cache is now within **1.1-1.4x** of lmdb at moderate/high reuse
+(skewed/uniform R≥5, both scales; e.g. symbol skewed R=10 250 ms vs 213 ms =
+1.2x; package skewed R=10 65 ms vs 57 ms = 1.1x). The huge wins were **entirely
+the cache** — confirmed, because indexed+cache and lmdb now post identical
+L1/L2/miss counts and their walls converge. The dependency-free backend gets the
+same reuse win.
 
-**Same direction at both scales; the size of the win is set by key-reuse, not by
-store size.** Package scale looks *more* lopsided only because a small keyset
-under a fixed query count means heavy reuse (50k queries over ~5k keys), which is
-exactly lmdb's cache regime. On the reuse-neutral control the two scales agree
-(~1.6-2.2x).
+**On zero-reuse (pure miss) — lmdb keeps a ~1.9-2.7x edge.** This is the true
+engine difference: mmap single-value fetch vs indexed's two positioned reads per
+record (`fact_io` shows cache-indexed does ~2x the reads of lmdb on misses). And
+because the cache can't help a pure-miss stream, it adds small overhead there —
+`unique` R=1 is the one place indexed+cache is *slower than* indexed-nocache
+(symbol 1284 vs 950 ms; package 15 vs 12 ms). So the cache is a clear win wherever
+there is any reuse and a slight tax on pure-miss.
 
-Crucially, **the remaining lmdb advantage is its application cache, which is not
-intrinsic to lmdb.** An equivalent L1/L2 row cache over decoded records could be
-added to the indexed backend and would erase the reuse-driven 7-21x, leaving only
-the ~2x cold read-path difference (which mmap-ing `.data` would further narrow).
+**Same conclusion at both scales.** Package (5k, the default's real domain) and
+symbol (256k) agree: cache≈lmdb on reuse, lmdb ~2x on pure-miss. Package looks
+more lopsided in the nocache column only because its small keyset means higher
+reuse.
 
-## Recommendation
+## Final default recommendation
 
-- **Make optimized-indexed the universal default.** It is dependency-free (no
-  `lmdb` npm, no system `liblmdb`, no Symas-vs-vanilla v1 format dance), ~3x
-  smaller on disk (42 MB vs 128 MB at symbol scale), works out of the box, and is
-  now within **~1.6-2.2x** of lmdb on cache-neutral access. At package scale —
-  the domain the default actually serves — both are effectively instant
-  (sub-150 ms for 50k lookups), so the external dependency buys nothing that
-  matters there. This directly tempers the "lmdb-by-default always" instinct.
-- **Add the row cache to indexed** (follow-up, own PR): an L1/L2 over decoded
-  records keyed by the encoded key would make the dependency-free backend
-  competitive with lmdb across the board, since the cache — not the B-tree — is
-  the remaining differentiator. (Out of scope here; the brief scoped the change
-  to the `.idx` load.)
-- **Keep lmdb as an opt-in for high-volume, high-reuse symbol resolution at
-  scale** (re-touching a few hot libraries under sustained query load), where its
-  row cache still gives 7x+ today and it avoids re-reads entirely — accepting the
-  external dependency and the larger store.
+**Make optimized + cached indexed the universal default.** The numbers support it:
 
-## Honesty caveats (unchanged from the first run)
+- **Dependency-free** (no `lmdb` npm, no system `liblmdb`, no Symas-vs-vanilla v1
+  format dance), **3x smaller on disk**, works out of the box.
+- **Matches lmdb on reuse** (within ~1.1-1.4x) — and real ABI/package resolution
+  is reuse-heavy (a few hot libraries/packages touched constantly), exactly where
+  the cache wins. At package scale both are effectively instant (sub-100 ms for
+  50k lookups).
+- The **only** place lmdb wins is pure-miss high-volume scans (~1.9-2.7x), a
+  workload the resolver does not run in steady state.
 
-- Hard memory caps remain unavailable unprivileged on this WSL2 host (no systemd
-  user bus, no cgroup delegation, no root); stores ≪ RAM, so `fadvise`-cold ≈
-  warm and a disk-bound regime is not reachable. Lead with the deterministic
-  read/cache counters; they are exact and reproducible.
-- Wall time is noisy on WSL2 (min-of-3, spreads in the raw jsonl). The ratios
-  above are robust to the noise; treat single-cell wall values as indicative.
-- This is an EXPERIMENT branch. The shared-runtime `.idx`-in-RAM change is
-  answer-identical and golden-rebaselined here, but if kept it needs its own
-  PR/review (it affects every cpp_wam indexed store consumer, not just this bench).
+**Keep lmdb opt-in for pure-miss, high-volume symbol scans** where its mmap
+read-path is ~2x and the external dependency is justified. The residual 2x is
+purely `read_record`'s two-reads-per-record; a follow-up (read len+payload in one
+`pread`, or mmap `.data`) would likely erase even that — leaving indexed
+strictly competitive everywhere. (Out of scope here.)
+
+## Honesty caveats
+
+- No hard memory cap available unprivileged on this WSL2 host (no systemd user
+  bus / cgroup delegation / root); stores ≪ RAM, so fadvise-cold ≈ warm and a
+  disk-bound regime is unreachable. Deterministic read/cache counters lead; they
+  are exact and reproducible.
+- Wall is min-of-3 and noisy on WSL2 (spreads in the raw jsonl; a couple of cold
+  cells show wide tails). The ratios are robust to the noise.
+- EXPERIMENT branch. The shared-runtime cache lift is answer-identical and
+  golden-rebaselined here, but touches every cpp_wam indexed-store consumer, so it
+  needs its own PR/review if kept.
