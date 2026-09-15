@@ -42,6 +42,17 @@
 #include <lmdb.h>
 #endif
 
+// POSIX mmap for the indexed .data file (read a record in-place, one page
+// access like lmdb, instead of two positioned reads). Falls back to positioned
+// ifstream reads where mmap is unavailable.
+#if defined(__unix__) || defined(__APPLE__)
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#define UW_SEEK_HAVE_MMAP 1
+#endif
+
 namespace wam_cpp {
 
 struct Value;
@@ -773,6 +784,12 @@ public:
 #ifdef WAM_CPP_ENABLE_LMDB
         close_lmdb();
 #endif
+#ifdef UW_SEEK_HAVE_MMAP
+        if (data_map_ && data_map_ != MAP_FAILED)
+            ::munmap(const_cast<unsigned char*>(data_map_), data_map_size_);
+        data_map_ = nullptr;
+        if (data_fd_ >= 0) { ::close(data_fd_); data_fd_ = -1; }
+#endif
     }
     SeekFactSource(const SeekFactSource&) = delete;
     SeekFactSource& operator=(const SeekFactSource&) = delete;
@@ -872,6 +889,13 @@ private:
     // resident cost is small and constant, and it is answer-identical to the old
     // per-probe path. See lookup_offsets().
     std::string idx_blob_;
+    // .data mmap (indexed backend). When mapped, a record is read in-place with
+    // one page access (no read syscall, exact byte count) -- so a resident miss
+    // costs ~one read like an lmdb mmap value fetch, not the two positioned reads
+    // (length prefix, then payload) of the ifstream fallback.
+    int data_fd_ = -1;
+    const unsigned char* data_map_ = nullptr;
+    std::size_t data_map_size_ = 0;
 
     // ---- Shared, engine-agnostic row cache (BOTH indexed and lmdb) ----------
     // The L1 (direct-mapped) + L2 (FIFO) caches map a lookup key -> its full
@@ -1012,6 +1036,25 @@ private:
         std::string dh = fact_io_read(data_, 16, 0);
         if (dh.size() < 16 || dh.compare(0, 4, "UWFI") != 0)
             throw std::runtime_error("seek store: bad data magic at " + path_ + ".data");
+#ifdef UW_SEEK_HAVE_MMAP
+        // mmap the .data so read_record accesses each record in-place (one page
+        // fault, no read syscall). The ifstream data_ stays only as the fallback
+        // path; close it once mapped to avoid holding an extra fd.
+        data_fd_ = ::open((path_ + ".data").c_str(), O_RDONLY);
+        if (data_fd_ >= 0 && data_size_ > 0) {
+            void* m = ::mmap(nullptr, static_cast<std::size_t>(data_size_),
+                             PROT_READ, MAP_PRIVATE, data_fd_, 0);
+            if (m != MAP_FAILED) {
+                data_map_ = static_cast<const unsigned char*>(m);
+                data_map_size_ = static_cast<std::size_t>(data_size_);
+                data_.close();  // reads now come from the map; fd no longer needed
+            } else {
+                ::close(data_fd_); data_fd_ = -1;  // fall back to ifstream reads
+            }
+        } else if (data_fd_ >= 0) {
+            ::close(data_fd_); data_fd_ = -1;
+        }
+#endif
         opened_ = true;
     }
 
@@ -1062,7 +1105,39 @@ private:
         return offs;
     }
 
+    static std::uint32_t le_u32_ptr(const unsigned char* b) {
+        return static_cast<std::uint32_t>(b[0])
+             | (static_cast<std::uint32_t>(b[1]) << 8)
+             | (static_cast<std::uint32_t>(b[2]) << 16)
+             | (static_cast<std::uint32_t>(b[3]) << 24);
+    }
+    static std::size_t le_u16_ptr(const unsigned char* b) {
+        return static_cast<std::size_t>(b[0]) | (static_cast<std::size_t>(b[1]) << 8);
+    }
+
     bool read_record(std::uint64_t data_off, Value& a1_out, Value& a2_out) {
+#ifdef UW_SEEK_HAVE_MMAP
+        if (data_map_) {
+            if (data_off + 4 > data_map_size_) return false;
+            const unsigned char* rec = data_map_ + data_off;
+            std::size_t payload_len = le_u32_ptr(rec);
+            if (payload_len < 4 || data_off + 4 + payload_len > data_map_size_) return false;
+            const unsigned char* p = rec + 4;  // payload
+            std::size_t a1_len = le_u16_ptr(p);
+            std::size_t a2_len = le_u16_ptr(p + 2);
+            if (payload_len < 4 + a1_len + a2_len) return false;
+            // One logical record read (in-place; mirrors lmdb's per-record
+            // 1 read + record-bytes accounting -- no read syscall, exact bytes).
+            g_fact_io_bytes.fetch_add(4 + payload_len, std::memory_order_relaxed);
+            g_fact_io_reads.fetch_add(1, std::memory_order_relaxed);
+            a1_out = parse_fact_source_value(
+                std::string(reinterpret_cast<const char*>(p + 4), a1_len));
+            a2_out = parse_fact_source_value(
+                std::string(reinterpret_cast<const char*>(p + 4 + a1_len), a2_len));
+            return true;
+        }
+#endif
+        // Fallback: two positioned ifstream reads (non-POSIX / mmap unavailable).
         std::string len_buf = fact_io_read(data_, 4, data_off);
         if (len_buf.size() < 4) return false;
         std::size_t payload_len = seek_le_u32(len_buf, 0);
@@ -1081,6 +1156,18 @@ private:
     void scan_all(std::vector<std::pair<Value, Value>>& out) {
         out.reserve(n_records_);
         std::uint64_t pos = 16;
+#ifdef UW_SEEK_HAVE_MMAP
+        if (data_map_) {
+            for (std::uint32_t i = 0; i < n_records_; ++i) {
+                if (pos + 4 > data_map_size_) break;
+                std::size_t payload_len = le_u32_ptr(data_map_ + pos);
+                Value a1, a2;
+                if (read_record(pos, a1, a2)) out.emplace_back(std::move(a1), std::move(a2));
+                pos += 4 + static_cast<std::uint64_t>(payload_len);
+            }
+            return;
+        }
+#endif
         for (std::uint32_t i = 0; i < n_records_; ++i) {
             Value a1, a2;
             if (read_record(pos, a1, a2)) out.emplace_back(std::move(a1), std::move(a2));

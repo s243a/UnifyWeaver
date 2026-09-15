@@ -55,10 +55,20 @@ user:shell_nestedite(X,Y) :- ( X > 0 -> ( X > 10 -> Y = big ; Y = small ) ; Y = 
 % rows_found == lmdb). Net +479 chars, gate-independent (shared members moved
 % above the gate; the lmdb block lost its duplicate cache code), so BOTH variants
 % grew by the SAME delta.
-old_header_digest(plain, 92370,
-    '3a7aacc80ae378492328d8ac8b95f5ab46caf4d87f2be958b0705e29d13677e9').
-old_header_digest(lmdb, 92611,
-    '0344661e034bd5c75993c738401999f4838d70da5477de903bce299c0e3064db').
+%
+% Re-baselined AGAIN (crossover .data mmap follow-up, from plain 92370 / lmdb
+% 92611): the indexed read path now mmaps .data and reads each record in-place
+% (one page access like lmdb, not two positioned reads) -- guarded POSIX headers,
+% data_map_ members, mmap in ensure_open, an mmap read_record/scan_all path +
+% ifstream fallback, and munmap in the destructor. Answer-identical (503
+% differential + 51 corpus + 122 ABI verify: 0 divergences; bench cross-check
+% indexed rows_found == lmdb, and the deterministic read count fell to ~1 per
+% record = lmdb parity). The +4159 chars are gate-independent, so BOTH variants
+% grew by the SAME delta.
+old_header_digest(plain, 96529,
+    '397f1dfb0762915d6ac2368ffb1422811e75a4dfb828ba7d29740848744df7a2').
+old_header_digest(lmdb, 96770,
+    '7d393ce8e085d607ef7a1d7f0eb8803c62cc0cccbb50a7bf9fd8739efeb4f4d4').
 
 assert_old_header_bytes(Mode, Header) :-
     old_header_digest(Mode, Length, Digest),
