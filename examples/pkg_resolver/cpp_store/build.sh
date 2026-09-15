@@ -29,7 +29,11 @@ ROOT="$(cd "$HERE/../../.." && pwd)"
 SRC="$HERE/../resolver_store.pl"
 PROJ="$HERE/uw_resolve_wam_cpp_store"
 STORE="${STORE_DIR:-$HERE/../store/.out/corpus}"
-BACKEND="${UW_STORE_BACKEND:-indexed}"
+# Requested backend: auto (default) | indexed | lmdb. `auto` is a POLICY layer
+# that picks a concrete backend by store-size-vs-RAM and NEVER changes answers
+# (see ../store/ensure_lmdb.sh:uw_resolve_store_backend and
+# ../abi/bench/BACKEND_SELECTION.md). An explicit UW_STORE_BACKEND overrides it.
+BACKEND_REQ="${UW_STORE_BACKEND:-auto}"
 
 export LANG="${LANG:-C.UTF-8}"
 export LC_ALL="${LC_ALL:-C.UTF-8}"
@@ -40,6 +44,15 @@ cd "$ROOT"
 if [[ ! -f "$STORE/cases.jsonl" ]]; then
   swipl -q -g dump_store_data -t halt examples/pkg_resolver/dump_store_data.pl -- "$STORE"
 fi
+
+# Resolve auto -> concrete. The C++ reader always needs the vanilla-compatible
+# v1 lmdb format, so opt in before the usability probe/build. Sourcing the
+# helper is harmless for the indexed path.
+export UW_LMDB_DATA_V1=1
+# shellcheck source=../store/ensure_lmdb.sh
+source examples/pkg_resolver/store/ensure_lmdb.sh
+BACKEND="$(uw_resolve_store_backend "$BACKEND_REQ" "$STORE")"
+echo "cpp_store/build.sh: requested=$BACKEND_REQ resolved backend=$BACKEND (store=$STORE)"
 
 case "$BACKEND" in
   indexed)

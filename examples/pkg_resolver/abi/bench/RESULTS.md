@@ -1,6 +1,9 @@
 # ABI store backend crossover — neutralizing the cache: indexed+L1/L2 vs lmdb
 
-Third run in the arc. Story so far:
+> Data appendix. The decision doc (theory + policy + the `auto` default) is
+> [`BACKEND_SELECTION.md`](BACKEND_SELECTION.md).
+
+Story so far:
 1. **First run:** lmdb beat `indexed` by 13-72x — but mostly because the on-disk
    binary search re-read every probe (~37 `ifstream` syscalls/lookup).
 2. **Fair fight:** optimized the indexed read path (whole `.idx` slurped into RAM
