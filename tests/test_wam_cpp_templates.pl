@@ -65,10 +65,27 @@ user:shell_nestedite(X,Y) :- ( X > 0 -> ( X > 10 -> Y = big ; Y = small ) ; Y = 
 % indexed rows_found == lmdb, and the deterministic read count fell to ~1 per
 % record = lmdb parity). The +4159 chars are gate-independent, so BOTH variants
 % grew by the SAME delta.
-old_header_digest(plain, 96529,
-    '397f1dfb0762915d6ac2368ffb1422811e75a4dfb828ba7d29740848744df7a2').
-old_header_digest(lmdb, 96770,
-    '7d393ce8e085d607ef7a1d7f0eb8803c62cc0cccbb50a7bf9fd8739efeb4f4d4').
+%
+% Re-baselined AGAIN (fix-forward: mmap the .idx, from plain 96529 / lmdb 96770):
+% the indexed read path now mmaps .idx too (page-cache-backed + evictable) instead
+% of slurping it into a non-evictable heap std::string -- the slurp was 39-97% of
+% the store and risked bad_alloc under the very pressure that routes >2xRAM stores
+% to indexed. Adds idx_map_/idx_base_/idx_len_ members, close_indexed(), idx_u32/
+% idx_u16, mmap in ensure_open with tellg<0 guards + fd-close-after-mmap, and
+% lookup_offsets/idx_key_compare reading through idx_base_. Answer-identical (503
+% differential + 51 corpus + 122 ABI verify: 0 divergences). The +3279 chars are
+% gate-independent, so BOTH variants grew by the SAME delta.
+%
+% Re-baselined AGAIN (fix-forward P3: idx_key_compare corrupt-.idx guard, from
+% plain 99808 / lmdb 100049): handle off > idx_len_ BEFORE forming the pointer
+% (no past-the-end pointer; no spurious empty-target "match"). Only affects a
+% corrupt index; well-formed stores unchanged (503 differential + 51 corpus: 0
+% divergences). The +343 chars are gate-independent, so BOTH variants grew by the
+% SAME delta.
+old_header_digest(plain, 100151,
+    'fff20e7a4533ee4b1c7422f3648e3e73e714e96e3946e33445b7686d351c6f6d').
+old_header_digest(lmdb, 100392,
+    'e3fedc576ce7d81b3a6a14583179c106c90fa4da9cd35eb8287f3c0c3defff4d').
 
 assert_old_header_bytes(Mode, Header) :-
     old_header_digest(Mode, Length, Digest),
