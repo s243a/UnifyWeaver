@@ -174,15 +174,36 @@ function writeIndexedStore(inputPath, storePrefix) {
   dataChunks[0].writeUInt8(VERSION, 4);
   dataChunks[0].writeUInt32LE(rows.length, 8);
 
+  // Clustered .data layout (key-sorted): STABLE-sort the records by their
+  // first-arg key before writing .data, so all records for a given key are
+  // physically CONTIGUOUS. A keyed lookup then reads one contiguous block
+  // (~1 cold seek) instead of rows_per_key scattered records. Stable = preserve
+  // original source order among records with equal keys, so intra-key row order
+  // (and thus keyed-lookup answer order) is UNCHANGED. The .idx per-key hit
+  // lists are rebuilt below in this same source order and become naturally
+  // contiguous. This is builder-only: the on-disk record BYTES, the record
+  // count, and the .idx format are all unchanged, so the runtime read path
+  // (which reads records via .idx offsets) is byte-transparent to the reorder.
+  const keys = new Array(rows.length);
+  for (let i = 0; i < rows.length; i++) keys[i] = encodeIndexKey(rows[i].a1);
+  const order = new Array(rows.length);
+  for (let i = 0; i < rows.length; i++) order[i] = i;
+  order.sort(function (a, b) {
+    const c = Buffer.compare(keys[a], keys[b]);
+    if (c !== 0) return c;
+    return a - b; // stable tie-break: preserve original source order per key
+  });
+
   const byKey = new Map();
   let offset = DATA_HEADER;
-  for (let i = 0; i < rows.length; i++) {
+  for (let k = 0; k < order.length; k++) {
+    const i = order[k];
     const payload = recordPayload(rows[i]);
     const rec = Buffer.alloc(4 + payload.length);
     rec.writeUInt32LE(payload.length, 0);
     payload.copy(rec, 4);
     dataChunks.push(rec);
-    const key = encodeIndexKey(rows[i].a1);
+    const key = keys[i];
     const keyHex = key.toString("hex");
     if (!byKey.has(keyHex)) byKey.set(keyHex, { key: key, offsets: [] });
     byKey.get(keyHex).offsets.push(offset);

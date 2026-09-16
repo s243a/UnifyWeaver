@@ -28,6 +28,69 @@ Harness + entry script: `examples/pkg_resolver/abi/bench/` (drives the C++ WAM
 `SeekFactSource` read path directly — not the JS lmdb backend).
 Reproduce: `BUILD_OLD=1 bash examples/pkg_resolver/abi/bench/bench_crossover.sh`.
 
+---
+
+## Round 5: clustered (key-sorted) `.data` — erasing lmdb's last edge
+
+**What changed (builder-only):** `scripts/js_wam/uw_fact_codec.js`
+`writeIndexedStore` now **stable-sorts the `.data` records by their first-arg key**
+before writing, so all rows for a key are physically contiguous. The `.idx` offsets
+rebuild naturally contiguous per key. Stable sort preserves source order among equal
+keys, so intra-key answer order is unchanged. **No runtime, `.idx` format, record
+bytes, or record count change** — the read path (`lookup_offsets` → `read_record`
+per offset) is byte-transparent to the reorder, so **goldens are untouched** (this
+round did NOT touch `runtime.h.mustache`).
+
+**Why it matters:** lmdb's only remaining win was the disk-bound multi-row regime,
+where source-order `.data` scattered a key's `M` rows across ~`M` distinct 4KB
+pages → up to `M` cold seeks per miss. Clustered `.data` collapses that to ~1 page.
+
+**Deterministic proof — `cost_model.mjs scatter` (distinct `.data` pages/key, read
+straight from `.idx`; the trustworthy I/O signal):**
+
+| store | rows_per_key | cold-reads/miss BEFORE | cold-reads/miss AFTER | lmdb (structural) |
+|---|---|---|---|---|
+| synthetic 8-row interleaved (5000×8) | 8.0 | **8.0** | **1.055** | 1 |
+| resolver `revdep` (scattered; max 109/key) | 4.02 | **3.79** | **1.024** | 1 |
+| resolver `dep` (already source-clustered) | 3.00 | 1.033 | 1.015 | 1 |
+| resolver `pkg` (~1-row) | 1.50 | 1.003 | 1.002 | 1 |
+
+The headline is `revdep`: a *realistically* scattered multi-row table drops from
+**3.79 → 1.02** cold-reads/miss, matching lmdb's structural ~1. The ~1-row stores
+(`pkg`, and by construction ABI `symprov` ≈ 1.03) were already ~1 and are unchanged.
+The residual `.05` on the 8-row store is the occasional key whose contiguous block
+straddles a page boundary — still ~1.
+
+**Wall time (honest):** an indexed-only cold-vs-clustered comparison on this box
+(same `bench_indexed` binary, scattered vs clustered `.data`, `UW_BENCH_EVICT=1`,
+R=5 × 5000 keys, min-of-5) was **flat**: 143.9 ms (scattered) vs 144.2 ms
+(clustered) cold; 142.9 vs 141.8 warm — within WSL2 noise. Expected: the store is
+≪ RAM and `posix_fadvise(DONTNEED)` creates no real memory pressure, so cold ≈ warm
+and the page cache hides the scatter. The D43 `fact_io_reads` (40001) and
+`fact_io_bytes` (1,311,136) are **identical** between layouts (logical reads
+unchanged — clustering improves physical *page* locality, not the read count); so is
+the bench `row_digest` (`2c9b8ee1c769f290`), an order-independent content hash of
+every returned row — an independent **answer-identity** confirmation. The wall
+payoff appears only under genuine disk-bound pressure, which this host can't create
+unprivileged; the deterministic scatter collapse is the proof that the pressure-time
+cold-read count is now ~1.
+
+**Correctness (clustered store, built `-O0`/nice, one at a time):**
+`run_differential_cpp_store.sh` = **503 / 0 divergences**;
+`run_corpus_cpp_store.sh` = **51 / 0**; `run_abi_verify.sh` = **122 / 0**.
+Goldens **untouched** (builder-only; confirmed by `git diff`). Full-scan
+(unbound-arg1 provides walk) now enumerates `.data` in key order instead of source
+order; the order-sensitive 503/51 differentials stay **0 divergences**, so the
+reorder does not change resolve answers or their order. Frozen `resolver.pl` /
+`resolver_store.pl` / `debian/` untouched.
+
+**Bottom line:** indexed's cold-reads/miss is now ~1 in every regime, so lmdb has no
+remaining speed edge — it is an opt-in for **maturity** (crash-safety, concurrent
+writers), not performance. See `BACKEND_SELECTION.md` for the reframed policy and
+the `rows_per_key`-gate follow-up.
+
+---
+
 ## The change (shared cpp_wam runtime)
 
 `templates/targets/cpp_wam/runtime.h.mustache`: the L1 (direct-mapped) + L2
