@@ -147,6 +147,22 @@ for SCALE in $SCALES; do
     run_cell "$RES" lmdb        lmdb    "$OUT/bench_lmdb"        "$LMDB" "$WLDIR" "$wl" "$R" "$ev"
   done; done; done
   echo "== wrote $RES =="
+  # ASSERT answer-identity: for each (workload,R,evict) cell every backend must
+  # return the same rows_found (a backend choice must never change answers).
+  node -e '
+const fs=require("fs");
+const rows=fs.readFileSync(process.argv[1],"utf8").split("\n").filter(Boolean).map(JSON.parse);
+const by={}; let bad=0;
+for(const o of rows){const k=`${o.workload}|R${o.R}|ev${o.evict}`;(by[k]=by[k]||[]).push(o);}
+for(const k of Object.keys(by)){
+  const g=by[k], want=g[0].rows_found;
+  for(const o of g) if(o.rows_found!==want){
+    console.error(`  ROWS MISMATCH ${k}: ${o.label}=${o.rows_found} vs ${g[0].label}=${want}`); bad=1;
+  }
+}
+if(bad){console.error("== ROWS_FOUND NOT IDENTICAL ACROSS BACKENDS =="); process.exit(1);}
+console.log("== rows_found identical across backends for every cell ("+Object.keys(by).length+" cells) ==");
+' "$RES"
 done
 echo "store sizes:"; du -h "$OUT/idx/symprov.data" "$OUT/idx/symprov.idx" "$OUT/lmdb_v1/symprov/data.mdb" \
   "$SCALE_DIR/pkg.data" "$SCALE_DIR/pkg.idx" "$PB/lmdb_pkg/data.mdb" 2>/dev/null | sed 's/^/  /'

@@ -784,12 +784,7 @@ public:
 #ifdef WAM_CPP_ENABLE_LMDB
         close_lmdb();
 #endif
-#ifdef UW_SEEK_HAVE_MMAP
-        if (data_map_ && data_map_ != MAP_FAILED)
-            ::munmap(const_cast<unsigned char*>(data_map_), data_map_size_);
-        data_map_ = nullptr;
-        if (data_fd_ >= 0) { ::close(data_fd_); data_fd_ = -1; }
-#endif
+        close_indexed();
     }
     SeekFactSource(const SeekFactSource&) = delete;
     SeekFactSource& operator=(const SeekFactSource&) = delete;
@@ -882,13 +877,22 @@ private:
     std::uint32_t keyblob_off_ = 0;
     std::uint32_t hits_off_ = 0;
     std::uint32_t n_records_ = 0;
-    // The whole .idx (sorted key table + key blob + hits blob) is slurped into
-    // RAM ONCE at open (idx_blob_). A keyed lookup is then an IN-MEMORY binary
-    // search over the key table plus exactly one positioned .data record read --
-    // no per-probe seek+read syscalls. At symbol scale the .idx is ~18MB, so the
-    // resident cost is small and constant, and it is answer-identical to the old
-    // per-probe path. See lookup_offsets().
-    std::string idx_blob_;
+    // The .idx (sorted key table + key blob + hits blob) is mmap'd at open
+    // (idx_map_) so a keyed lookup is an IN-MEMORY binary search over the key
+    // table plus one .data record read -- no per-probe seek+read syscalls. mmap
+    // (PROT_READ, MAP_PRIVATE) keeps the index PAGE-CACHE-BACKED and EVICTABLE:
+    // the .idx can be 39-97% of the store, so the earlier heap slurp allocated
+    // ~that much NON-evictable anonymous memory -- under the very memory pressure
+    // that routes a >2xRAM store to indexed, that risked bad_alloc -> caught as a
+    // goal failure -> silent under-answering. The ifstream slurp (idx_blob_)
+    // remains only as the non-POSIX / mmap-unavailable fallback. Reads go through
+    // idx_base_/idx_len_, which point at the map or the fallback blob.
+    std::string idx_blob_;                    // fallback storage only
+    int idx_fd_ = -1;
+    const unsigned char* idx_map_ = nullptr;
+    std::size_t idx_map_size_ = 0;
+    const unsigned char* idx_base_ = nullptr; // map or idx_blob_.data()
+    std::size_t idx_len_ = 0;
     // .data mmap (indexed backend). When mapped, a record is read in-place with
     // one page access (no read syscall, exact byte count) -- so a resident miss
     // costs ~one read like an lmdb mmap value fetch, not the two positioned reads
@@ -1006,6 +1010,37 @@ private:
         return buf;
     }
 
+    // Bounds-checked little-endian reads over the resolved index base
+    // (idx_base_ = mmap or fallback blob). Return 0 on any out-of-range offset,
+    // matching the old seek_le_* behavior on a short buffer.
+    std::uint32_t idx_u32(std::size_t o) const {
+        if (!idx_base_ || o + 4 > idx_len_) return 0;
+        return le_u32_ptr(idx_base_ + o);
+    }
+    std::size_t idx_u16(std::size_t o) const {
+        if (!idx_base_ || o + 2 > idx_len_) return 0;
+        return le_u16_ptr(idx_base_ + o);
+    }
+
+    // Release every indexed-backend handle/mapping and reset state so the source
+    // is safe to destroy AND a retry after a failed open starts clean.
+    void close_indexed() {
+#ifdef UW_SEEK_HAVE_MMAP
+        if (idx_map_ && idx_map_ != MAP_FAILED)
+            ::munmap(const_cast<unsigned char*>(idx_map_), idx_map_size_);
+        idx_map_ = nullptr; idx_map_size_ = 0;
+        if (idx_fd_ >= 0) { ::close(idx_fd_); idx_fd_ = -1; }
+        if (data_map_ && data_map_ != MAP_FAILED)
+            ::munmap(const_cast<unsigned char*>(data_map_), data_map_size_);
+        data_map_ = nullptr; data_map_size_ = 0;
+        if (data_fd_ >= 0) { ::close(data_fd_); data_fd_ = -1; }
+#endif
+        if (data_.is_open()) data_.close();
+        if (idx_.is_open()) idx_.close();
+        std::string().swap(idx_blob_);
+        idx_base_ = nullptr; idx_len_ = 0;
+    }
+
     void ensure_open() {
         std::lock_guard<std::mutex> guard(mu_);
         if (opened_) return;
@@ -1013,43 +1048,79 @@ private:
         if (!data_.is_open())
             throw std::runtime_error("seek store open failed (" + path_ + ".data)");
         idx_.open(path_ + ".idx", std::ios::binary);
-        if (!idx_.is_open())
+        if (!idx_.is_open()) {
+            close_indexed();
             throw std::runtime_error("seek store open failed (" + path_ + ".idx)");
-        // data size
+        }
+        // data size (guard a negative tellg: a failed stat/seek must not become a
+        // resize(SIZE_MAX) later -- report it clearly and leave no half-open state)
         data_.seekg(0, std::ios::end);
-        data_size_ = static_cast<std::uint64_t>(data_.tellg());
+        std::streamoff dpos = data_.tellg();
         data_.seekg(0, std::ios::beg);
+        if (dpos < 0) { close_indexed(); throw std::runtime_error("seek store: cannot size " + path_ + ".data"); }
+        data_size_ = static_cast<std::uint64_t>(dpos);
         g_fact_io_data_size.store(data_size_, std::memory_order_relaxed);
-        // Slurp the entire .idx into RAM once (single positioned read; the
-        // D43 counters see it as one read of the whole index). Every subsequent
-        // key probe reads from idx_blob_ in memory -- zero syscalls per probe.
+        // .idx size
         idx_.seekg(0, std::ios::end);
-        std::uint64_t idx_size = static_cast<std::uint64_t>(idx_.tellg());
+        std::streamoff ipos = idx_.tellg();
         idx_.seekg(0, std::ios::beg);
-        idx_blob_ = fact_io_read(idx_, static_cast<std::size_t>(idx_size), 0);
-        if (idx_blob_.size() < 24 || idx_blob_.compare(0, 4, "UWIX") != 0)
+        if (ipos < 0) { close_indexed(); throw std::runtime_error("seek store: cannot size " + path_ + ".idx"); }
+        std::uint64_t idx_size = static_cast<std::uint64_t>(ipos);
+#ifdef UW_SEEK_HAVE_MMAP
+        // mmap the .idx: page-cache-backed + evictable, so the in-memory binary
+        // search reads through the map with no per-probe syscall AND no
+        // non-evictable heap. Charges nothing to the D43 counters at open (mmap
+        // faults lazily; only actual record reads count). Fd is closed right
+        // after mapping -- the mapping stays valid.
+        idx_fd_ = ::open((path_ + ".idx").c_str(), O_RDONLY);
+        if (idx_fd_ >= 0 && idx_size > 0) {
+            void* m = ::mmap(nullptr, static_cast<std::size_t>(idx_size),
+                             PROT_READ, MAP_PRIVATE, idx_fd_, 0);
+            ::close(idx_fd_); idx_fd_ = -1;
+            if (m != MAP_FAILED) {
+                idx_map_ = static_cast<const unsigned char*>(m);
+                idx_map_size_ = static_cast<std::size_t>(idx_size);
+                idx_.close();  // header + probes read from the map
+            }
+        } else if (idx_fd_ >= 0) {
+            ::close(idx_fd_); idx_fd_ = -1;
+        }
+#endif
+        if (idx_map_) {
+            idx_base_ = idx_map_; idx_len_ = idx_map_size_;
+        } else {
+            // Fallback (non-POSIX / mmap failed): slurp once. THIS path charges
+            // the full index size to the D43 counters (one read) -- the mmap path
+            // does not, which is the correct, lazy accounting.
+            idx_blob_ = fact_io_read(idx_, static_cast<std::size_t>(idx_size), 0);
+            idx_base_ = reinterpret_cast<const unsigned char*>(idx_blob_.data());
+            idx_len_ = idx_blob_.size();
+        }
+        if (idx_len_ < 24 || std::memcmp(idx_base_, "UWIX", 4) != 0) {
+            close_indexed();
             throw std::runtime_error("seek store: bad index magic at " + path_ + ".idx");
-        n_keys_      = seek_le_u32(idx_blob_, 8);
-        keyblob_off_ = seek_le_u32(idx_blob_, 12);
-        hits_off_    = seek_le_u32(idx_blob_, 16);
-        n_records_   = seek_le_u32(idx_blob_, 20);
+        }
+        n_keys_      = idx_u32(8);
+        keyblob_off_ = idx_u32(12);
+        hits_off_    = idx_u32(16);
+        n_records_   = idx_u32(20);
         std::string dh = fact_io_read(data_, 16, 0);
-        if (dh.size() < 16 || dh.compare(0, 4, "UWFI") != 0)
+        if (dh.size() < 16 || dh.compare(0, 4, "UWFI") != 0) {
+            close_indexed();
             throw std::runtime_error("seek store: bad data magic at " + path_ + ".data");
+        }
 #ifdef UW_SEEK_HAVE_MMAP
         // mmap the .data so read_record accesses each record in-place (one page
-        // fault, no read syscall). The ifstream data_ stays only as the fallback
-        // path; close it once mapped to avoid holding an extra fd.
+        // fault, no read syscall). Fd is closed right after mapping.
         data_fd_ = ::open((path_ + ".data").c_str(), O_RDONLY);
         if (data_fd_ >= 0 && data_size_ > 0) {
             void* m = ::mmap(nullptr, static_cast<std::size_t>(data_size_),
                              PROT_READ, MAP_PRIVATE, data_fd_, 0);
+            ::close(data_fd_); data_fd_ = -1;
             if (m != MAP_FAILED) {
                 data_map_ = static_cast<const unsigned char*>(m);
                 data_map_size_ = static_cast<std::size_t>(data_size_);
-                data_.close();  // reads now come from the map; fd no longer needed
-            } else {
-                ::close(data_fd_); data_fd_ = -1;  // fall back to ifstream reads
+                data_.close();  // reads now come from the map
             }
         } else if (data_fd_ >= 0) {
             ::close(data_fd_); data_fd_ = -1;
@@ -1058,12 +1129,12 @@ private:
         opened_ = true;
     }
 
-    // Byte-compare `target` against the key blob region [off, off+len) in
-    // idx_blob_ WITHOUT copying it out (string_view semantics, identical to
+    // Byte-compare `target` against the key blob region [off, off+len) in the
+    // mapped index (idx_base_) WITHOUT copying it out (identical to
     // seek_bytes_compare). Returns <0 / 0 / >0.
     int idx_key_compare(std::size_t off, std::size_t len, const std::string& target) const {
-        if (off + len > idx_blob_.size()) len = (off <= idx_blob_.size()) ? (idx_blob_.size() - off) : 0;
-        const char* k = idx_blob_.data() + off;
+        if (off + len > idx_len_) len = (off <= idx_len_) ? (idx_len_ - off) : 0;
+        const unsigned char* k = idx_base_ + off;
         std::size_t n = std::min(len, target.size());
         for (std::size_t i = 0; i < n; ++i) {
             unsigned char ca = static_cast<unsigned char>(k[i]);
@@ -1076,10 +1147,10 @@ private:
     }
 
     // Binary search the sorted key table for `target`; return the .data offsets
-    // that key hits (empty if absent). The whole .idx is resident in idx_blob_
-    // (loaded once at open), so every probe is an in-memory read -- NO per-probe
-    // seek+read syscall. Only the matching .data record read (read_record) still
-    // touches disk. Answer-identical to the old per-probe path.
+    // that key hits (empty if absent). The .idx is mmap'd (idx_base_), so every
+    // probe is an in-memory read of a page-cache-backed page -- NO per-probe
+    // seek+read syscall and NO non-evictable heap. Only the matching .data record
+    // read (read_record) still faults a page. Answer-identical to the old path.
     std::vector<std::uint32_t> lookup_offsets(const std::string& target) {
         std::vector<std::uint32_t> offs;
         std::int64_t lo = 0;
@@ -1087,17 +1158,17 @@ private:
         while (lo <= hi) {
             std::int64_t mid = (lo + hi) >> 1;
             std::size_t pos = 24 + static_cast<std::size_t>(mid) * 16;
-            std::uint32_t key_rel = seek_le_u32(idx_blob_, pos);
-            std::size_t   key_len = seek_le_u16(idx_blob_, pos + 4);
-            std::size_t   n_hits  = seek_le_u16(idx_blob_, pos + 6);
-            std::uint32_t hits_rel = seek_le_u32(idx_blob_, pos + 8);
+            std::uint32_t key_rel = idx_u32(pos);
+            std::size_t   key_len = idx_u16(pos + 4);
+            std::size_t   n_hits  = idx_u16(pos + 6);
+            std::uint32_t hits_rel = idx_u32(pos + 8);
             std::size_t   key_off = static_cast<std::size_t>(keyblob_off_) + key_rel;
             int c = idx_key_compare(key_off, key_len, target);
             if (c == 0) {
                 std::size_t hoff = static_cast<std::size_t>(hits_off_) + hits_rel;
                 offs.reserve(n_hits);
                 for (std::size_t i = 0; i < n_hits; ++i)
-                    offs.push_back(seek_le_u32(idx_blob_, hoff + i * 4));
+                    offs.push_back(idx_u32(hoff + i * 4));
                 return offs;
             }
             if (c < 0) lo = mid + 1; else hi = mid - 1;

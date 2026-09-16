@@ -18,9 +18,10 @@ the decision doc: what we learned, the policy, and how to refine it.
 - lmdb only pulls ahead in one regime: **disk-bound (store > RAM) AND
   multi-row-per-key**, where its key-clustered leaves save cold seeks. The
   asymptotic win there is **≈ rows_per_key**.
-- **Default policy (`auto`): pick lmdb iff `store_size > 2 × available_RAM` and
-  lmdb is usable, else indexed.** Deliberately conservative and **size-only** for
-  now (a rows-per-key refinement is deferred; see below).
+- **Default policy (`auto`): pick lmdb iff `store_size > 2 × available_RAM`
+  AND `rows_per_key ≥ 2` AND lmdb is usable for the C++ lane, else indexed.**
+  Deliberately conservative; the `rows_per_key ≥ 2` gate keeps ~1-row/key stores
+  (ABI symprov = 1.03) on indexed even when huge, because lmdb buys nothing there.
 
 ## Theory: the cost model
 
@@ -99,41 +100,60 @@ Implemented in `examples/pkg_resolver/store/ensure_lmdb.sh`
 
 ```
 choose LMDB  iff  store_size_bytes > UW_STORE_LMDB_RAM_FACTOR × available_RAM_bytes
-             AND  lmdb is usable (uw_ensure_lmdb succeeds)
+             AND  rows_per_key >= UW_STORE_LMDB_MIN_ROWS_PER_KEY
+             AND  lmdb is usable for the C++ lane
 else INDEXED
 ```
 
 - `UW_STORE_LMDB_RAM_FACTOR` — the headroom factor, **default 2** (named constant,
-  tunable). 2× is deliberately conservative: the model puts the *onset* at ~1×
-  RAM and skew pushes it higher, so 2× only trips lmdb once the store clearly
-  exceeds RAM and disk-bound misses are unavoidable.
+  tunable; a non-integer value is rejected with a warning and treated as 2). 2× is
+  deliberately conservative: the model puts the *onset* at ~1× RAM and skew pushes
+  it higher, so 2× only trips lmdb once the store clearly exceeds RAM and
+  disk-bound misses are unavoidable.
+- `UW_STORE_LMDB_MIN_ROWS_PER_KEY` — **default 2**. `rows_per_key` is aggregated
+  cheaply from the UWIX `.idx` headers (`n_records / n_keys`, no scan) across all
+  indexes in the store dir. Because the asymptotic lmdb win is ≈ rows_per_key, a
+  ~1-row/key store (ABI symprov = 1.03) never benefits — this gate keeps it on
+  indexed even above 2× RAM. When no `.idx` exists yet (pre-build), rows_per_key
+  is *unknown* and the gate is skipped (size-only for that first build).
 - `available_RAM` — `/proc/meminfo` `MemAvailable`, overridable with
   `UW_STORE_AVAIL_RAM_BYTES` (WSL2's `MemAvailable` balloons, so the override
   matters for tests/reproducibility).
 - `store_size` — the **built** indexed store (`*.data` + `*.idx`) when present,
   else the source **P/2 JSONL** (`*.jsonl`, excluding `cases.jsonl`) as a
   pre-build estimate. One consistent measure; documented here.
-- **Fallback:** if the size rule wants lmdb but lmdb is not usable
-  (`uw_ensure_lmdb` fails / `MDB_INVALID`), it **WARNs loudly and uses indexed** —
-  safe because indexed is answer-identical and ~as fast up to the disk-bound
-  multi-row regime. It prints the chosen backend and the size-vs-`2×RAM` numbers.
+- **`lmdb usable` for the C++ lane** is a real probe, not just "the npm module
+  loads": (1) `uw_ensure_lmdb` (the v1-format module used to *build* the store),
+  (2) system `liblmdb` links (`#include <lmdb.h>` + `-llmdb`) — the C++ reader
+  needs it, and (3) best-effort: an already-built lmdb store under `DIR/lmdb/*`
+  actually `mdb_env_open`s (catches `MDB_INVALID` from a wrong page format).
+- **Fallback:** if the rule wants lmdb but it is not usable, it **WARNs loudly and
+  uses indexed** — safe because indexed is answer-identical and ~as fast up to the
+  disk-bound multi-row regime. It prints the chosen backend and the numbers.
 - **Policy only, never answers.** Whichever backend is chosen returns identical
   rows. Proven: 503-case store differential + 51-case corpus stay **0
-  divergences** (corpus verified through the auto path → indexed), and
-  `test_auto_select.sh` checks the rule returns lmdb above 2× and indexed below
-  (via `UW_STORE_AVAIL_RAM_BYTES`).
+  divergences** (corpus verified through the auto path → indexed);
+  `bench_crossover.sh` asserts `rows_found` identical across backends in every
+  cell; and `test_auto_select.sh` checks the size rule and the rows_per_key gate
+  (lmdb above 2× with rpk≥2, indexed below 2× or at rpk<2) via the RAM override.
+
+## Storage note: the index is mmap'd, not slurped
+
+The indexed backend **mmaps** both `.idx` and `.data` (`PROT_READ`,
+`MAP_PRIVATE`), page-cache-backed and **evictable**. An earlier version slurped
+the whole `.idx` into a heap `std::string` — but the `.idx` is **39-97% of the
+store**, so that allocated ~that much *non-evictable anonymous* memory. Under the
+exact pressure that routes a `> 2× RAM` store to indexed, the slurp risked
+`bad_alloc` → caught as a goal failure → *silent under-answering*. mmap restores
+the O(1)-heap, page-cache-friendly behavior (with an `ifstream` fallback for
+non-POSIX). It also fixes the D43 counters (the mmap path charges nothing at open;
+only actual record reads count).
 
 ## Future refinement (deferred, per the owner)
 
-The size-only rule is conservative but coarse. Two cheap improvements, explicitly
-deferred:
+One cheap improvement remains, explicitly deferred:
 
-1. **Fold in rows_per_key.** The asymptotic benefit is ≈ rows_per_key, so for
-   ~1-row-per-key stores lmdb is *never* worth it even above 2× RAM. The ABI
-   `symprov` store is **1.03 rows/key** (249,097 keys / 256,225 rows) — cheaply
-   computable from the `.idx` header (keys vs records) with no scan. A refined
-   selector should require `rows_per_key ≳ 2` in addition to the size trigger.
-2. **Key-sort the indexed `.data`.** Indexed's only structural disadvantage is
+1. **Key-sort the indexed `.data`.** Indexed's only structural disadvantage is
    source-order scatter (M scattered pages per multi-row key). Building `.data`
    in **key order** clusters a key's rows into ~1 page (measured: an 8-row/key
    store drops from 8 to **1.05** pages/key), erasing lmdb's disk-bound edge
