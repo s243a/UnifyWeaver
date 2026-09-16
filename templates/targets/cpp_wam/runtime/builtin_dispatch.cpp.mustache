@@ -333,6 +333,59 @@ bool WamState::builtin(const std::string& op, std::int64_t /*arity*/) {
         if (a.tag != Value::Tag::Atom) return false;
         pc += 1; return true;
     }
+    if (op == "is_list/1") {
+        CellPtr root = get_cell("A1");
+        if (!root) return false;
+        Value v = deref(*root);
+        if (v.is_unbound()) return false;
+        if (v.tag == Value::Tag::Atom && v.s == "[]") {
+            pc += 1; return true;
+        }
+        if (v.tag != Value::Tag::Compound || v.s != "[|]/2" || v.args.size() != 2) {
+            return false;
+        }
+
+        CellPtr slow = root;
+        CellPtr fast = root;
+        Value fv = v;
+        while (true) {
+            // Advance fast by 1.
+            fast = fv.args[1];
+            if (!fast) return false;
+            Value fv1 = deref(*fast);
+            if (fv1.is_unbound()) return false;
+            if (fv1.tag == Value::Tag::Atom && fv1.s == "[]") {
+                pc += 1; return true;
+            }
+            if (fv1.tag != Value::Tag::Compound || fv1.s != "[|]/2" || fv1.args.size() != 2) {
+                return false;
+            }
+            if (slow.get() == fast.get()) return false;
+
+            // Advance fast by 2.
+            fast = fv1.args[1];
+            if (!fast) return false;
+            Value fv2 = deref(*fast);
+            if (fv2.is_unbound()) return false;
+            if (fv2.tag == Value::Tag::Atom && fv2.s == "[]") {
+                pc += 1; return true;
+            }
+            if (fv2.tag != Value::Tag::Compound || fv2.s != "[|]/2" || fv2.args.size() != 2) {
+                return false;
+            }
+
+            // Advance slow by 1.
+            if (!slow) return false;
+            Value sv = deref(*slow);
+            if (sv.tag != Value::Tag::Compound || sv.s != "[|]/2" || sv.args.size() != 2) {
+                return false;
+            }
+            slow = sv.args[1];
+            if (slow.get() == fast.get()) return false;
+
+            fv = std::move(fv2);
+        }
+    }
     if (op == "integer/1") {
         Value a = *get_cell("A1");
         if (a.tag != Value::Tag::Integer) return false;
