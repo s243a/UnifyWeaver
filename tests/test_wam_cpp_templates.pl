@@ -37,10 +37,38 @@ user:shell_nestedite(X,Y) :- ( X > 0 -> ( X > 10 -> Y = big ; Y = small ) ; Y = 
 % and P2 added SeekFactSource's RAII destructor + close_lmdb() helper + deleted
 % copy/move ops (env-leak fix). Both variants grew by the SAME +3108 characters
 % (the additions are gate-independent text), which is the whole header delta.
-old_header_digest(plain, 90019,
-    'd65645f69ff27e69319a67b43c42399b5d7c1067a804f40faa44247fe430c19d').
-old_header_digest(lmdb, 90260,
-    '1fcfa56c3eca176cd75b7878b2a30710f6c062a0cbcfaf90fbc3fb27422994e2').
+%
+% Re-baselined AGAIN (ABI store crossover "fair fight", from plain 90019 / lmdb
+% 90260): the indexed SeekFactSource read path now slurps the whole .idx into
+% RAM once at open (idx_blob_) and binary-searches it IN MEMORY (idx_key_compare
+% + rewritten lookup_offsets), eliminating the ~37 per-probe seek+read syscalls
+% per lookup. Answer-identical (503-case store differential + 51-case corpus:
+% 0 divergences). The +1872 characters are outside the WAM_CPP_ENABLE_LMDB gate,
+% so BOTH variants grew by the SAME delta (the whole header delta).
+%
+% Re-baselined AGAIN (crossover row-cache LIFT, from plain 91891 / lmdb 92132):
+% the L1 direct-mapped + L2 FIFO row cache was lifted OUT of the LMDB gate into a
+% shared, engine-agnostic cache used by rows() for BOTH backends (indexed now
+% caches too), with a shared ensure_cache_config() + env (UW_WAM_FACT_L1_SLOTS /
+% L2_CAP; lmdb names honored for back-compat). Answer-identical (503 differential
+% + 51 corpus + 122 ABI verify: 0 divergences; bench cross-check indexed
+% rows_found == lmdb). Net +479 chars, gate-independent (shared members moved
+% above the gate; the lmdb block lost its duplicate cache code), so BOTH variants
+% grew by the SAME delta.
+%
+% Re-baselined AGAIN (crossover .data mmap follow-up, from plain 92370 / lmdb
+% 92611): the indexed read path now mmaps .data and reads each record in-place
+% (one page access like lmdb, not two positioned reads) -- guarded POSIX headers,
+% data_map_ members, mmap in ensure_open, an mmap read_record/scan_all path +
+% ifstream fallback, and munmap in the destructor. Answer-identical (503
+% differential + 51 corpus + 122 ABI verify: 0 divergences; bench cross-check
+% indexed rows_found == lmdb, and the deterministic read count fell to ~1 per
+% record = lmdb parity). The +4159 chars are gate-independent, so BOTH variants
+% grew by the SAME delta.
+old_header_digest(plain, 96529,
+    '397f1dfb0762915d6ac2368ffb1422811e75a4dfb828ba7d29740848744df7a2').
+old_header_digest(lmdb, 96770,
+    '7d393ce8e085d607ef7a1d7f0eb8803c62cc0cccbb50a7bf9fd8739efeb4f4d4').
 
 assert_old_header_bytes(Mode, Header) :-
     old_header_digest(Mode, Length, Digest),

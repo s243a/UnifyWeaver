@@ -74,18 +74,30 @@ called, exposing two mode gaps (each fixed with the store adapter as witness):
 
 ## Backends
 
-- **`UW_STORE_BACKEND=indexed`** (default) reads the dependency-free UWFI/UWIX
-  seek store with positioned `ifstream` reads and NO application cache — it leans
-  entirely on the OS page cache.
+- **`UW_STORE_BACKEND=auto`** (default when unset) is a size-based policy: it
+  picks `lmdb` when the store is larger than `2 × available RAM` **and** lmdb is
+  usable, else `indexed` (loud fallback to `indexed` if lmdb was wanted but is
+  unusable). It prints the choice and the size-vs-RAM numbers, and it never
+  changes answers. Rule + theory + benchmarks:
+  [`../abi/bench/BACKEND_SELECTION.md`](../abi/bench/BACKEND_SELECTION.md).
+  Implemented in [`../store/ensure_lmdb.sh`](../store/ensure_lmdb.sh)
+  (`uw_resolve_store_backend`); tunable via `UW_STORE_LMDB_RAM_FACTOR` (default 2)
+  and `UW_STORE_AVAIL_RAM_BYTES` (RAM override). An explicit `indexed`/`lmdb`
+  overrides `auto`.
+- **`UW_STORE_BACKEND=indexed`** reads the dependency-free UWFI/UWIX seek store;
+  the record read is now an **mmap in-place** access (one page fault per record,
+  like lmdb) with a positioned-`ifstream` fallback, over a whole-`.idx`-in-RAM
+  binary search, plus the shared **L1/L2 row cache** (below). No external dep.
 - **`UW_STORE_BACKEND=lmdb`** (Stage 2) is the lazy + two-level-cached LMDB
   reader (compiled under `WAM_CPP_ENABLE_LMDB`, auto-#defined when an `lmdb(Dir)`
   seek source is declared; links system `liblmdb`). Each bound-key lookup is a
-  keyed range-scan over the a1Range band; results are cached in an **L1**
-  direct-mapped slot table (mirrors Rust's `L1_CACHE`) and an **L2** FIFO map
-  (mirrors Rust's `CacheShard`; NOT Haskell's LRU). L2's default cap auto-sizes
-  from live `/proc/meminfo`; env overrides `UW_WAM_LMDB_L2_CAP` /
-  `UW_WAM_LMDB_L1_SLOTS` tune it (used by the benchmark sweep). It **fails
-  loudly**, never silently falling back to indexed.
+  keyed range-scan over the a1Range band. Results go through the **shared,
+  engine-agnostic row cache** (also used by `indexed`): an **L1** direct-mapped
+  slot table (mirrors Rust's `L1_CACHE`) and an **L2** FIFO map (mirrors Rust's
+  `CacheShard`; NOT Haskell's LRU). L2's default cap auto-sizes from live
+  `/proc/meminfo`; env overrides `UW_WAM_FACT_L2_CAP` / `UW_WAM_FACT_L1_SLOTS`
+  (legacy `UW_WAM_LMDB_*` still honored) tune it. It **fails loudly**, never
+  silently falling back to indexed.
 
   **liblmdb format note:** the default `lmdb` npm prebuilt is a Symas fork whose
   page format vanilla system `liblmdb` rejects (`MDB_INVALID`). Set
