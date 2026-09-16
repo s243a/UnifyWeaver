@@ -15,13 +15,24 @@ the decision doc: what we learned, the policy, and how to refine it.
   RAM, (2) the shared L1/L2 row cache, and (3) an mmap in-place record read, it
   **matches lmdb** on every workload that fits RAM: within ~1.1-1.4x on reuse and
   **~1.0x** on resident pure-miss.
-- lmdb only pulls ahead in one regime: **disk-bound (store > RAM) AND
-  multi-row-per-key**, where its key-clustered leaves save cold seeks. The
-  asymptotic win there is **≈ rows_per_key**.
+- lmdb used to pull ahead in exactly one regime: **disk-bound (store > RAM) AND
+  multi-row-per-key**, where its key-clustered leaves save cold seeks (asymptotic
+  win ≈ rows_per_key). **The clustered `.data` layout closes that gap.** Indexed
+  now **stable-sorts `.data` by key at build time** so a key's rows are physically
+  contiguous — a keyed lookup touches **~1 distinct `.data` page**, not
+  rows_per_key. Measured (deterministic, from `.idx`): the 8-row/key synthetic
+  store drops from **8.0 → 1.05** cold-reads/miss; the realistic scattered
+  `revdep` table (4 rows/key, max 109) drops **3.79 → 1.02**; both matching lmdb's
+  structural ~1. So indexed is now perf-competitive **everywhere**, disk-bound
+  multi-row included.
+- **lmdb is therefore no longer a performance necessity — it is an opt-in for its
+  MATURITY**: battle-tested storage, crash-safety, and concurrent writers. The
+  dependency-free indexed backend is the default and loses nothing on speed.
 - **Default policy (`auto`): pick lmdb iff `store_size > 2 × available_RAM`
   AND `rows_per_key ≥ 2` AND lmdb is usable for the C++ lane, else indexed.**
-  Deliberately conservative; the `rows_per_key ≥ 2` gate keeps ~1-row/key stores
-  (ABI symprov = 1.03) on indexed even when huge, because lmdb buys nothing there.
+  This round leaves the default unchanged (conservative), but with clustered
+  `.data` the `rows_per_key ≥ 2` gate no longer reflects a real indexed
+  disadvantage — see *Follow-up: the rows_per_key gate can be relaxed*.
 
 ## Theory: the cost model
 
@@ -31,9 +42,17 @@ with hit rate `h`, rows-per-key `M`, and store/RAM ratio `r ≥ 1`:
 ```
 T(backend) = h·t_hit + (1−h)·cold_reads·[ (1/r)·t_mem + (1−1/r)·t_seek ]
    P(a miss's page is evicted) ≈ 1 − 1/r      (fraction of store not resident)
-   indexed: cold_reads = M   (records stored in source order → M scattered pages)
-   lmdb:    cold_reads ≈ 1   (records clustered in ~1 B-tree leaf, keyed by key)
+   indexed (clustered .data): cold_reads ≈ 1  (a key's rows are contiguous → ~1 page)
+   lmdb:                       cold_reads ≈ 1  (records clustered in ~1 B-tree leaf)
 ```
+
+> **Clustered `.data` (this round).** The row `indexed: cold_reads = M` above was
+> the *old* source-order layout. The builder now stable-sorts `.data` by key, so a
+> key's `M` rows occupy `M` *contiguous* offsets → ~1 distinct 4KB page. The model
+> below is retained to explain the historical crossover; with clustered `.data`
+> **`M` collapses to 1 for indexed too**, so the `T_indexed/T_lmdb → M` asymptote
+> and the whole `K` table below flatten to **1.0× at every r** — lmdb has no
+> speed edge left. The measured `scatter` proof of this collapse is in the table.
 
 Measured primitives on this box (WSL2; `cost_model.sh` + `cost_model_probe.c`):
 
@@ -44,8 +63,25 @@ Measured primitives on this box (WSL2; `cost_model.sh` + `cost_model_probe.c`):
 | `t_seek / t_mem` | **~340-350×** | — |
 | `t_hit` — cache-hit lookup | indexed ~0.3-0.6 µs, lmdb ~0.15 µs | 50k lookups / 100 hot keys |
 | `t_miss_resident` — warm zero-reuse lookup | ~2.4-2.6 µs (indexed ≈ lmdb) | `unique` R=1 warm |
-| **scatter** = indexed cold-reads/miss | **= rows_per_key** (exact) | distinct 4KB `.data` pages a key spans, from `.idx` |
+| **scatter** = indexed cold-reads/miss (source-order, old) | **= rows_per_key** (exact) | distinct 4KB `.data` pages a key spans, from `.idx` |
+| **scatter** = indexed cold-reads/miss (**clustered, now**) | **≈ 1** | same measure; clustered `.data` → contiguous offsets |
 | lmdb cold-reads/miss | **≈ 1** | structural (key-ordered B-tree) |
+
+**Clustered `.data` scatter — measured before/after (`cost_model.mjs scatter`, deterministic, `.idx`-only):**
+
+| store | rows_per_key | cold-reads/miss BEFORE (source-order) | cold-reads/miss AFTER (clustered) | lmdb (structural) |
+|---|---|---|---|---|
+| synthetic 8-row interleaved | 8.0 | **8.0** | **1.055** | 1 |
+| resolver `revdep` (scattered, max 109) | 4.02 | **3.79** | **1.024** | 1 |
+| resolver `dep` (already source-clustered) | 3.00 | 1.03 | 1.015 | 1 |
+| resolver `pkg` (~1-row) | 1.50 | 1.003 | 1.002 | 1 |
+| ABI `symprov` (~1-row) | ~1.03 | ~1.0 | ~1.0 (unchanged) | 1 |
+
+The scatter collapse is **builder-only** and answer-identical: the record bytes,
+count, and `.idx` format are unchanged (only the physical order of `.data` records
+and their offsets change), so the runtime read path is byte-transparent to it. The
+`revdep` line is the headline — a *realistically* scattered multi-row table where
+lmdb previously won ~3.8× on cold reads now ties it at ~1.
 
 **What the model says:**
 
@@ -88,9 +124,11 @@ Three-way min-of-3 wall, symbol scale (256k rows), warm:
   ~2.2× to **~1.0×** (unique R=1: indexed 593 ms vs lmdb 591 ms warm; 0.92× cold).
 - Deterministic parity: after mmap the indexed miss read-count equals lmdb's
   (~1 read/record), and indexed's cache reports identical L1/L2/miss to lmdb.
-- The disk-bound multi-row advantage is **modeled, not stress-tested** (see
-  Honesty): the scatter (= rows_per_key) and `t_seek` are measured; the aggregate
-  disk-bound regime is extrapolated.
+- lmdb's disk-bound multi-row advantage was **modeled, not stress-tested** (see
+  Honesty): the scatter (= rows_per_key) and `t_seek` were measured; the aggregate
+  disk-bound regime was extrapolated. **Clustered `.data` now removes that
+  advantage at its root** — indexed's scatter drops to ~1 (measured deterministically
+  from `.idx`), so there is no rows_per_key gap left to stress-test.
 
 ## Default policy: `auto`
 
@@ -149,22 +187,60 @@ the O(1)-heap, page-cache-friendly behavior (with an `ifstream` fallback for
 non-POSIX). It also fixes the D43 counters (the mmap path charges nothing at open;
 only actual record reads count).
 
-## Future refinement (deferred, per the owner)
+## Done: key-sorted (clustered) indexed `.data`
 
-One cheap improvement remains, explicitly deferred:
+The refinement previously deferred here is now **implemented** (builder-only, in
+`scripts/js_wam/uw_fact_codec.js` `writeIndexedStore`). Indexed's only structural
+disadvantage was source-order scatter (M scattered pages per multi-row key). The
+builder now **stable-sorts `.data` by first-arg key** so a key's rows are physically
+contiguous, clustering them into ~1 page (measured: the 8-row/key store drops from
+8 to **1.055** pages/key; the scattered `revdep` table from **3.79 → 1.02**),
+erasing lmdb's disk-bound edge **without the external dependency**. Stable = source
+order preserved among equal keys, so intra-key answer order is unchanged; the `.idx`
+format, record bytes, and record count are untouched, so the runtime read path is
+byte-transparent (no goldens rebaseline). Answer-identity re-proven: store
+differential **503/0**, corpus **51/0**, ABI verify **122/0**, and the bench
+`row_digest` is byte-identical between the scattered and clustered layouts.
 
-1. **Key-sort the indexed `.data`.** Indexed's only structural disadvantage is
-   source-order scatter (M scattered pages per multi-row key). Building `.data`
-   in **key order** clusters a key's rows into ~1 page (measured: an 8-row/key
-   store drops from 8 to **1.05** pages/key), erasing lmdb's disk-bound edge
-   **without the external dependency**. This would make indexed competitive even
-   in the multi-row disk-bound regime, shrinking `auto`'s lmdb branch further.
+## Follow-up: the `rows_per_key` gate can be relaxed (discuss)
+
+The `auto` policy's `rows_per_key ≥ 2` gate exists because, with source-order
+`.data`, a multi-row key cost indexed ≈ rows_per_key cold reads — so lmdb's win
+scaled with rows_per_key and the gate steered multi-row stores toward lmdb above
+2× RAM. **Clustered `.data` removes that premise**: indexed's cold-reads/miss is
+now ~1 regardless of rows_per_key, so lmdb no longer has a multi-row speed edge to
+gate for. The gate could be **relaxed or dropped** — arguably the *entire* lmdb
+auto-branch could go, since indexed now matches lmdb on speed in every measured
+regime and lmdb's remaining value is maturity/crash-safety/concurrency (a
+deployment choice, not something `auto` should infer from store shape).
+
+**Recommendation:** do NOT change the default this round. Reasons: (1) the
+disk-bound multi-row regime is *modeled*, not stress-tested on this box (no fair
+memory cap — see Honesty), so keep the conservative gate until the clustered win is
+confirmed under real pressure; (2) leaving `auto` as-is keeps this change
+builder-only and low-risk. Flag for a follow-up decision: once the clustered
+cold-read collapse is validated under real memory pressure, relax
+`UW_STORE_LMDB_MIN_ROWS_PER_KEY` (or retire the size/rows auto-branch entirely and
+make lmdb a purely explicit opt-in).
 
 ## Honesty
 
 - Resident costs (`t_hit`, `t_miss_resident`, the ~1.0× pure-miss parity) and the
   per-page cold latency `t_seek` are **measured**. The **scatter** (indexed
-  cold-reads/miss = rows_per_key) is measured exactly from `.idx` offsets.
+  cold-reads/miss) is measured exactly from `.idx` offsets — **before** clustering
+  it = rows_per_key, **after** it ≈ 1. That collapse is the deterministic,
+  trustworthy signal for the clustered-`.data` win, and it is fully reproducible
+  (`cost_model.mjs scatter`).
+- **The clustered win is proven deterministically, not on wall time here.** On this
+  box, an indexed-only cold-vs-clustered wall comparison (same binary, scattered vs
+  clustered `.data`, `UW_BENCH_EVICT=1`, min-of-5) was **flat** (~144 ms both) —
+  because the store is far smaller than RAM and `posix_fadvise(DONTNEED)` does not
+  create real memory pressure, so "cold" ≈ warm and the OS page cache absorbs the
+  reads. The `fact_io_reads`/`fact_io_bytes` D43 counters are also identical
+  between layouts (logical reads are unchanged; only physical *page* locality
+  improves). The wall payoff of fewer distinct cold pages only materializes under
+  genuine memory pressure / real disk seeks, which this WSL2 host cannot produce
+  unprivileged.
 - The **aggregate disk-bound regime is modeled/extrapolated** from those
   primitives, **not stress-tested**: this WSL2 box has no fair memory-cap
   mechanism (no cgroup `memory.max` unprivileged; capping the app cache is unfair
