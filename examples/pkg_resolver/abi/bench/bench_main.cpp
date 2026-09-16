@@ -42,6 +42,22 @@ static const char* env_or(const char* name, const char* dflt) {
   return (v && *v) ? v : dflt;
 }
 
+// FNV-1a 64 over raw bytes.
+static inline std::uint64_t fnv1a(std::uint64_t h, const void* data, std::size_t n) {
+  const unsigned char* p = static_cast<const unsigned char*>(data);
+  for (std::size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 1099511628211ULL; }
+  return h;
+}
+// Hash one WAM Value (tag + all fields) so different-typed values never collide.
+static std::uint64_t value_hash(std::uint64_t h, const Value& v) {
+  unsigned char tag = static_cast<unsigned char>(v.tag);
+  h = fnv1a(h, &tag, 1);
+  h = fnv1a(h, v.s.data(), v.s.size());
+  h = fnv1a(h, &v.i, sizeof(v.i));
+  h = fnv1a(h, &v.f, sizeof(v.f));
+  return h;
+}
+
 // Evict one file's pages from the OS page cache (no root needed):
 // posix_fadvise(DONTNEED) drops the clean cached pages for the inode, so the
 // next read faults from disk. This is the root-free "store not resident under
@@ -107,6 +123,12 @@ int main(int argc, char** argv) {
 
   std::uint64_t rowsFound = 0;
   std::uint64_t lookups = 0;
+  // Order-independent content digest: sum a per-row FNV hash over EVERY (a1,a2)
+  // returned across the whole run. Commutative accumulation means row order
+  // (lmdb range-scan vs indexed hit-offset order) does not matter -- two runs
+  // agree iff they returned the same MULTISET of rows. This makes the
+  // cross-backend assert a true answer-identity check, not just a count match.
+  std::uint64_t rowDigest = 0;
   auto t0 = std::chrono::steady_clock::now();
   for (int r = 0; r < R; ++r) {
     for (const std::string& k : keys) {
@@ -114,6 +136,8 @@ int main(int argc, char** argv) {
       // encode_store_key (0x41 atom tag + utf8) before the keyed seek.
       auto rows = src.rows(std::optional<std::string>(encode_store_key(Value::Atom(k))));
       rowsFound += rows.size();
+      for (const auto& pr : rows)
+        rowDigest += value_hash(value_hash(1469598103934665603ULL, pr.first), pr.second);
       ++lookups;
     }
   }
@@ -124,7 +148,7 @@ int main(int argc, char** argv) {
     "{\"kind\":\"%s\",\"R\":%d,\"nkeys\":%zu,\"lookups\":%llu,\"rows_found\":%llu,"
     "\"fact_io_bytes\":%llu,\"fact_io_reads\":%llu,\"fact_io_data_size\":%llu,"
     "\"l1_hits\":%llu,\"l2_hits\":%llu,\"cache_misses\":%llu,"
-    "\"l1_slots\":\"%s\",\"l2_cap\":\"%s\",\"evict\":%d,\"wall_ms\":%.3f}\n",
+    "\"l1_slots\":\"%s\",\"l2_cap\":\"%s\",\"evict\":%d,\"row_digest\":\"%016llx\",\"wall_ms\":%.3f}\n",
     kind.c_str(), R, keys.size(),
     (unsigned long long)lookups, (unsigned long long)rowsFound,
     (unsigned long long)fact_io_bytes(), (unsigned long long)fact_io_reads(),
@@ -134,6 +158,7 @@ int main(int argc, char** argv) {
     env_or("UW_WAM_LMDB_L1_SLOTS", "default"),
     env_or("UW_WAM_LMDB_L2_CAP", "default"),
     evict ? 1 : 0,
+    (unsigned long long)rowDigest,
     wall_ms);
   return 0;
 }

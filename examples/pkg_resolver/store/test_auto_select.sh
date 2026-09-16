@@ -53,6 +53,12 @@ check "explicit lmdb passes through"     lmdb    "$(uw_resolve_store_backend lmd
 check "invalid FACTOR -> defaults, resolves" indexed \
   "$(UW_STORE_LMDB_RAM_FACTOR=abc UW_STORE_AVAIL_RAM_BYTES=1000000000 uw_resolve_store_backend auto "$TMP/s" 2>/dev/null)"
 
+# Invalid MIN_ROWS_PER_KEY must not become awk injection or silently skip the
+# gate: it defaults to 2 and still resolves (rpk unknown here -> lmdb, usable).
+check "invalid MIN_ROWS_PER_KEY -> defaults, resolves" lmdb \
+  "$(UW_STORE_LMDB_MIN_ROWS_PER_KEY='2); system("touch '"$TMP"'/pwn"' UW_STORE_AVAIL_RAM_BYTES=1 TEST_LMDB_USABLE=1 uw_resolve_store_backend auto "$TMP/s" 2>/dev/null)"
+if [ -e "$TMP/pwn" ]; then echo "  FAIL  awk injection executed!"; rm -f "$TMP/pwn"; fail=1; else echo "  PASS  no awk injection from MIN_ROWS_PER_KEY"; fi
+
 # rows_per_key gate (needs a real UWIX index; skip if the indexer is unavailable).
 INDEX="$ROOT/scripts/js_wam/uw_fact_index.js"
 if command -v node >/dev/null 2>&1 && [ -f "$INDEX" ]; then

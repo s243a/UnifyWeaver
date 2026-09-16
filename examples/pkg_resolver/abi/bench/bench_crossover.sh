@@ -148,20 +148,28 @@ for SCALE in $SCALES; do
   done; done; done
   echo "== wrote $RES =="
   # ASSERT answer-identity: for each (workload,R,evict) cell every backend must
-  # return the same rows_found (a backend choice must never change answers).
+  # return the same rows_found AND the same row_digest -- an order-independent
+  # content hash of every (a1,a2) returned (emitted by bench_main.cpp). Matching
+  # counts alone would not catch a wrong row with the right cardinality; the
+  # digest makes this a true content check.
   node -e '
 const fs=require("fs");
 const rows=fs.readFileSync(process.argv[1],"utf8").split("\n").filter(Boolean).map(JSON.parse);
 const by={}; let bad=0;
 for(const o of rows){const k=`${o.workload}|R${o.R}|ev${o.evict}`;(by[k]=by[k]||[]).push(o);}
 for(const k of Object.keys(by)){
-  const g=by[k], want=g[0].rows_found;
-  for(const o of g) if(o.rows_found!==want){
-    console.error(`  ROWS MISMATCH ${k}: ${o.label}=${o.rows_found} vs ${g[0].label}=${want}`); bad=1;
+  const g=by[k], want=g[0];
+  for(const o of g){
+    if(o.rows_found!==want.rows_found){
+      console.error(`  ROWS MISMATCH ${k}: ${o.label}=${o.rows_found} vs ${want.label}=${want.rows_found}`); bad=1;
+    }
+    if(o.row_digest!==want.row_digest){
+      console.error(`  DIGEST MISMATCH ${k}: ${o.label}=${o.row_digest} vs ${want.label}=${want.row_digest}`); bad=1;
+    }
   }
 }
-if(bad){console.error("== ROWS_FOUND NOT IDENTICAL ACROSS BACKENDS =="); process.exit(1);}
-console.log("== rows_found identical across backends for every cell ("+Object.keys(by).length+" cells) ==");
+if(bad){console.error("== ANSWERS NOT IDENTICAL ACROSS BACKENDS =="); process.exit(1);}
+console.log("== rows_found AND row_digest identical across backends for every cell ("+Object.keys(by).length+" cells) ==");
 ' "$RES"
 done
 echo "store sizes:"; du -h "$OUT/idx/symprov.data" "$OUT/idx/symprov.idx" "$OUT/lmdb_v1/symprov/data.mdb" \
