@@ -1133,7 +1133,12 @@ private:
     // mapped index (idx_base_) WITHOUT copying it out (identical to
     // seek_bytes_compare). Returns <0 / 0 / >0.
     int idx_key_compare(std::size_t off, std::size_t len, const std::string& target) const {
-        if (off + len > idx_len_) len = (off <= idx_len_) ? (idx_len_ - off) : 0;
+        // Only reachable with off > idx_len_ on a CORRUPT .idx (a key entry
+        // pointing past the blob). Handle it BEFORE forming the pointer: never
+        // build a past-the-end pointer (UB), and never report a spurious 0
+        // "match" for an empty target (which would yield garbage offsets).
+        if (off > idx_len_) return target.empty() ? 1 : -1;
+        if (off + len > idx_len_) len = idx_len_ - off;
         const unsigned char* k = idx_base_ + off;
         std::size_t n = std::min(len, target.size());
         for (std::size_t i = 0; i < n; ++i) {

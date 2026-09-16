@@ -51,8 +51,14 @@ static void evict_file(const std::string& p) {
   if (fd < 0) return;
   struct stat st{};
   if (::fstat(fd, &st) == 0 && st.st_size > 0) {
-    // Read through it once to ensure it is cached, then drop it, so DONTNEED
-    // has resident pages to evict (DONTNEED is a no-op on non-resident pages).
+    // Pre-fault the file so its pages are actually RESIDENT, THEN drop them:
+    // POSIX_FADV_DONTNEED is a no-op on non-resident pages, so without the
+    // streaming read below the "cold" run would be cold-in-name-only. The
+    // sequential read forces the pages in; DONTNEED then evicts them, so the
+    // subsequent lookups genuinely fault from disk.
+    char buf[1 << 16];
+    ssize_t n;
+    while ((n = ::read(fd, buf, sizeof(buf))) > 0) { /* force pages resident */ }
     ::posix_fadvise(fd, 0, st.st_size, POSIX_FADV_DONTNEED);
   }
   ::close(fd);
