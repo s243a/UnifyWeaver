@@ -1448,7 +1448,7 @@ compile_unwind_trail_to_rust(Code) :-
         if self.trail.len() <= saved_len { return; }
         let new_entries = self.trail.len() - saved_len;
         for entry in self.trail.iter().rev().take(new_entries) {
-            if let Some(binding_key) = entry.key.strip_prefix("__binding__") {
+            if let Some(binding_key) = entry.binding_name() {
                 match &entry.old_value {
                     Some(val) => { self.bindings.insert(binding_key.to_string(), val.clone()); }
                     None => { self.bindings.remove(binding_key); }
@@ -2846,7 +2846,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                 // the trial bindings are unwound.
                 let pairs: Vec<Value> = self.trail[mark..].iter()
                     .filter_map(|entry| {
-                        let name = entry.key.strip_prefix("__binding__")?;
+                        let name = entry.binding_name()?;
                         let bound = self.bindings.get(name)?.clone();
                         Some(Value::strv(
                             "=/2".to_string(),
@@ -7236,8 +7236,8 @@ compile_execute_meta_builtin_to_rust(Code) :-
         if self.trail.len() > trail_mark {
             let tail = self.trail.split_off(trail_mark);
             for e in tail {
-                let is_frame_local_reg = !e.key.starts_with("__binding__")
-                    && e.key.as_bytes().first() == Some(&b''Y'');
+                let is_frame_local_reg = e.register_name()
+                    .map_or(false, |r| r.as_bytes().first() == Some(&b''Y''));
                 if !is_frame_local_reg {
                     self.trail.push(e);
                 }
@@ -9060,7 +9060,7 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     % Appended here rather than in the shared cargo template so the wiring stays
     % inside the wam_rust target (the shared template also feeds other lanes).
     atom_concat(CargoContent0,
-        '\n[features]\ndefault = ["decorate_sort", "intern", "deref_memo"]\n# When off, the sort/msort/keysort/setof builtins fall back to the original\n# `term_compare` (re-deref) path; output is byte-identical to the on build.\ndecorate_sort = []\n# Hot-path opt #2 (D96): intern functor/atom/var names to u32 ids so term\n# construction, `deref_var` and the `"f/N"` functor parse stop allocating tiny\n# name Strings. Default ON (A/B: B3 -29% Ir/-29% wall, B2 -41% Ir/-32% wall,\n# byte-identical). Off = the pre-intern String path, kept for A/B via\n# `--no-default-features --features decorate_sort`; the two are sha-distinct.\nintern = []\n# Hot-path opt #5 (D103): cache deref-stability on the Arc-shared Args spine so\n# `deref_heap` skips re-walking + rebuilding already-canonical (ground, no\n# "f/N" functor, no cons-Str) terms. The flag is set ONLY from deref_heap\'s\n# own verified verbatim-identity path, so an ON short-circuit is byte-identical\n# to the OFF full walk. Default ON. Off = the exact pre-D103 deref_heap (no\n# cache field consulted), a perfect A/B baseline, via\n# `--no-default-features --features "decorate_sort intern"`.\nderef_memo = []\n# T7 parallel-aggregate path (state.rs `#[cfg(feature="parallel")]`). Declared\n# so Cargo\'s unexpected-cfgs lint knows the name (adding [features] above turns\n# that lint on). Off by default and empty: enabling it needs rayon, which is a\n# hard dep only under the generator\'s parallel(true) option.\nparallel = []\n',
+        '\n[features]\ndefault = ["decorate_sort", "intern", "deref_memo", "trail_enum"]\n# When off, the sort/msort/keysort/setof builtins fall back to the original\n# `term_compare` (re-deref) path; output is byte-identical to the on build.\ndecorate_sort = []\n# Hot-path opt #2 (D96): intern functor/atom/var names to u32 ids so term\n# construction, `deref_var` and the `"f/N"` functor parse stop allocating tiny\n# name Strings. Default ON (A/B: B3 -29% Ir/-29% wall, B2 -41% Ir/-32% wall,\n# byte-identical). Off = the pre-intern String path, kept for A/B via\n# `--no-default-features --features decorate_sort`; the two are sha-distinct.\nintern = []\n# Hot-path opt #5 (D103): cache deref-stability on the Arc-shared Args spine so\n# `deref_heap` skips re-walking + rebuilding already-canonical (ground, no\n# "f/N" functor, no cons-Str) terms. The flag is set ONLY from deref_heap\'s\n# own verified verbatim-identity path, so an ON short-circuit is byte-identical\n# to the OFF full walk. Default ON. Off = the exact pre-D103 deref_heap (no\n# cache field consulted), a perfect A/B baseline, via\n# `--no-default-features --features "decorate_sort intern"`.\nderef_memo = []\n# Hot-path opt #6 (D104): enum-tag the backtrack trail (D94 #4 lever, B2 bind\n# path). `TrailEntry.key` becomes `TrailKey::Binding(name)` / `Register(name)`\n# instead of a `String`, so `bind_var` stops `format!("__binding__{}")`-concat-\n# allocating on every variable bind and `unwind_trail_to` matches the variant\n# instead of `strip_prefix`-parsing on every unwind (also removes any risk of a\n# register name colliding with the `"__binding__"` prefix). Default ON. Off =\n# the exact pre-D104 `format!`/`strip_prefix` String path, a perfect A/B\n# baseline, via `--no-default-features --features "decorate_sort intern deref_memo"`;\n# output is byte-identical ON vs OFF.\ntrail_enum = []\n# T7 parallel-aggregate path (state.rs `#[cfg(feature="parallel")]`). Declared\n# so Cargo\'s unexpected-cfgs lint knows the name (adding [features] above turns\n# that lint on). Off by default and empty: enabling it needs rayon, which is a\n# hard dep only under the generator\'s parallel(true) option.\nparallel = []\n',
         CargoContent),
     directory_file_path(ProjectDir, 'Cargo.toml', CargoPath),
     write_file(CargoPath, CargoContent),
