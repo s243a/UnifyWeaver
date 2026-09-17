@@ -11,7 +11,7 @@ path = "src/main.rs"
 [dependencies]
 
 [features]
-default = ["decorate_sort", "intern", "deref_memo"]
+default = ["decorate_sort", "intern", "deref_memo", "trail_enum"]
 # When off, the sort/msort/keysort/setof builtins fall back to the original
 # `term_compare` (re-deref) path; output is byte-identical to the on build.
 decorate_sort = []
@@ -29,6 +29,16 @@ intern = []
 # cache field consulted), a perfect A/B baseline, via
 # `--no-default-features --features "decorate_sort intern"`.
 deref_memo = []
+# Hot-path opt #6 (D104): enum-tag the backtrack trail (D94 #4 lever, B2 bind
+# path). `TrailEntry.key` becomes `TrailKey::Binding(name)` / `Register(name)`
+# instead of a `String`, so `bind_var` stops `format!("__binding__{}")`-concat-
+# allocating on every variable bind and `unwind_trail_to` matches the variant
+# instead of `strip_prefix`-parsing on every unwind (also removes any risk of a
+# register name colliding with the `"__binding__"` prefix). Default ON. Off =
+# the exact pre-D104 `format!`/`strip_prefix` String path, a perfect A/B
+# baseline, via `--no-default-features --features "decorate_sort intern deref_memo"`;
+# output is byte-identical ON vs OFF.
+trail_enum = []
 # T7 parallel-aggregate path (state.rs `#[cfg(feature="parallel")]`). Declared
 # so Cargo's unexpected-cfgs lint knows the name (adding [features] above turns
 # that lint on). Off by default and empty: enabling it needs rayon, which is a

@@ -354,11 +354,134 @@ fn parse_meminfo_kib(rest: &str) -> Option<u64> {
     Some(kib * 1024)
 }
 
-/// Trail entry: records the old value of a register before mutation.
+/// Trail entry: records the old value of a register (or the prior binding of a
+/// variable) before mutation.
+///
+/// The trail carries two kinds of entry: a *binding* entry (an unbound variable
+/// was bound in `self.bindings`) and a *register* entry (a register / Yi slot
+/// was overwritten). Under the `trail_enum` feature (default ON) the kind is an
+/// enum variant on `TrailKey`, so `bind_var` pushes `TrailKey::Binding(name)`
+/// with no `"__binding__"` prefix `format!` concat and `unwind_trail_to`
+/// discriminates by matching the variant (no `strip_prefix` parse) -- one fewer
+/// String allocation per bind, one fewer parse per unwind, and no risk of a
+/// register name colliding with the `"__binding__"` prefix. With the feature
+/// OFF the key is the exact pre-change `String` (`format!("__binding__{}")` +
+/// `strip_prefix`), a perfect A/B baseline; the two builds are byte-identical.
+#[cfg(feature = "trail_enum")]
+#[derive(Clone, Debug)]
+pub enum TrailKey {
+    /// An unbound variable named `.0` was bound; undo restores/removes it in `bindings`.
+    Binding(String),
+    /// A register named `.0` was overwritten; undo restores it via `put_reg`.
+    Register(String),
+}
+
+#[cfg(feature = "trail_enum")]
+#[derive(Clone, Debug)]
+pub struct TrailEntry {
+    pub key: TrailKey,
+    pub old_value: Option<Value>,
+}
+
+#[cfg(not(feature = "trail_enum"))]
 #[derive(Clone, Debug)]
 pub struct TrailEntry {
     pub key: String,
     pub old_value: Option<Value>,
+}
+
+/// Owned, config-independent classification of a *popped* trail entry, used by
+/// `unwind_trail_to`. Consuming the entry hands the name straight through: no
+/// clone under `trail_enum`; with the feature OFF the binding name is allocated
+/// exactly where the pre-change `var.to_string()` did (register names still move
+/// with no allocation), so the OFF allocation profile is unchanged.
+pub enum TrailUndo {
+    Binding(String),
+    Register(String),
+}
+
+impl TrailEntry {
+    /// Construct a binding trail entry recording the prior binding of `var_name`.
+    #[cfg(feature = "trail_enum")]
+    #[inline]
+    pub fn binding(var_name: &str, old_value: Option<Value>) -> Self {
+        TrailEntry { key: TrailKey::Binding(var_name.to_string()), old_value }
+    }
+    #[cfg(not(feature = "trail_enum"))]
+    #[inline]
+    pub fn binding(var_name: &str, old_value: Option<Value>) -> Self {
+        TrailEntry { key: format!("__binding__{}", var_name), old_value }
+    }
+
+    /// Construct a register trail entry recording the prior value of `reg_name`.
+    #[cfg(feature = "trail_enum")]
+    #[inline]
+    pub fn register(reg_name: &str, old_value: Option<Value>) -> Self {
+        TrailEntry { key: TrailKey::Register(reg_name.to_string()), old_value }
+    }
+    #[cfg(not(feature = "trail_enum"))]
+    #[inline]
+    pub fn register(reg_name: &str, old_value: Option<Value>) -> Self {
+        TrailEntry { key: reg_name.to_string(), old_value }
+    }
+
+    /// The variable name if this is a binding entry, else `None`. Byte-identical
+    /// to the OFF `strip_prefix("__binding__")` discrimination.
+    #[cfg(feature = "trail_enum")]
+    #[inline]
+    pub fn binding_name(&self) -> Option<&str> {
+        match &self.key {
+            TrailKey::Binding(name) => Some(name.as_str()),
+            TrailKey::Register(_) => None,
+        }
+    }
+    #[cfg(not(feature = "trail_enum"))]
+    #[inline]
+    pub fn binding_name(&self) -> Option<&str> {
+        self.key.strip_prefix("__binding__")
+    }
+
+    /// The register name if this is a register entry, else `None`. Mirrors the
+    /// OFF `!key.starts_with("__binding__")` register discrimination.
+    #[cfg(feature = "trail_enum")]
+    #[inline]
+    pub fn register_name(&self) -> Option<&str> {
+        match &self.key {
+            TrailKey::Register(name) => Some(name.as_str()),
+            TrailKey::Binding(_) => None,
+        }
+    }
+    #[cfg(not(feature = "trail_enum"))]
+    #[inline]
+    pub fn register_name(&self) -> Option<&str> {
+        if self.key.starts_with("__binding__") {
+            None
+        } else {
+            Some(self.key.as_str())
+        }
+    }
+
+    /// Consume the entry, returning its kind (with the owned name) and old value.
+    /// Used by `unwind_trail_to`; the OFF path reproduces the pre-change work
+    /// (a `to_string()` for the binding branch, a move for the register branch).
+    #[cfg(feature = "trail_enum")]
+    #[inline]
+    pub fn classify(self) -> (TrailUndo, Option<Value>) {
+        let undo = match self.key {
+            TrailKey::Binding(name) => TrailUndo::Binding(name),
+            TrailKey::Register(name) => TrailUndo::Register(name),
+        };
+        (undo, self.old_value)
+    }
+    #[cfg(not(feature = "trail_enum"))]
+    #[inline]
+    pub fn classify(self) -> (TrailUndo, Option<Value>) {
+        let undo = match self.key.strip_prefix("__binding__") {
+            Some(name) => TrailUndo::Binding(name.to_string()),
+            None => TrailUndo::Register(self.key),
+        };
+        (undo, self.old_value)
+    }
 }
 
 /// Maximum register count -- matches Go's [512]Value + padding for X/Y regs.
@@ -2464,10 +2587,7 @@ impl WamState {
     /// Also records a trail entry so that backtracking can undo this binding.
     pub fn bind_var(&mut self, var_name: &str, val: Value) {
         let old = self.bindings.get(var_name).cloned();
-        self.trail.push(TrailEntry {
-            key: format!("__binding__{}", var_name),
-            old_value: old,
-        });
+        self.trail.push(TrailEntry::binding(var_name, old));
         self.bindings.insert(var_name.to_string(), val);
     }
 
@@ -2483,17 +2603,17 @@ impl WamState {
                 Some(e) => e,
                 None => break,
             };
-            if let Some(var) = entry.key.strip_prefix("__binding__") {
-                match entry.old_value {
-                    Some(v) => { self.bindings.insert(var.to_string(), v); }
-                    None => { self.bindings.remove(var); }
-                }
-            } else {
-                // Register trail entry: key is a register name.
-                match entry.old_value {
-                    Some(v) => self.put_reg(&entry.key, v),
-                    None => self.put_reg(&entry.key, Value::Uninit),
-                }
+            let (undo, old_value) = entry.classify();
+            match undo {
+                TrailUndo::Binding(var) => match old_value {
+                    Some(v) => { self.bindings.insert(var, v); }
+                    None => { self.bindings.remove(&var); }
+                },
+                TrailUndo::Register(reg) => match old_value {
+                    // Register trail entry: key is a register name.
+                    Some(v) => self.put_reg(&reg, v),
+                    None => self.put_reg(&reg, Value::Uninit),
+                },
             }
         }
     }
@@ -4330,10 +4450,7 @@ impl WamState {
     /// Record a binding on the trail for backtracking.
     pub fn trail_binding(&mut self, key: &str) {
         let old = self.get_reg(key);
-        self.trail.push(TrailEntry {
-            key: key.to_string(),
-            old_value: old,
-        });
+        self.trail.push(TrailEntry::register(key, old));
     }
 
     /// Follow the variable-binding chain BY REFERENCE: no allocation, and no
@@ -8910,6 +9027,118 @@ mod deref_memo_tests {
     }
 }
 
+// D104 (enum-tag the trail): the trail must undo binding entries and register
+// entries correctly and never confuse one for the other. These tests pass under
+// both the `trail_enum` build (variant match) and the OFF build (string prefix).
+#[cfg(test)]
+mod trail_enum_tests {
+    use super::*;
+
+    fn vm() -> WamState { WamState::new(vec![], HashMap::new()) }
+
+    // Round-trip: bind a var, bind it AGAIN, bind a fresh var, and overwrite a
+    // register (a register-trail entry in the SAME trail), then unwind to a mark
+    // and assert every binding AND the register are restored EXACTLY. This proves
+    // the trail discriminates a Binding entry from a Register entry (by variant
+    // under `trail_enum`, by prefix under the OFF baseline) — a register entry is
+    // never mis-applied to the binding table, and a binding entry is never applied
+    // to a register.
+    #[test]
+    fn bind_unwind_round_trip_with_register_entry() {
+        let mut m = vm();
+
+        // Pre-mark state: _X bound to atom(one); register A1 holds atom(reg0).
+        m.bind_var("_X", Value::atom("one"));
+        m.put_reg("A1", Value::atom("reg0"));
+        assert_eq!(m.bindings.get("_X"), Some(&Value::atom("one")));
+        assert_eq!(m.get_reg("A1"), Some(Value::atom("reg0")));
+
+        let mark = m.trail.len();
+
+        // Past the mark: rebind _X, bind a fresh _Y, and overwrite register A1
+        // via a register-trail entry (trail_binding records the old value first).
+        m.bind_var("_X", Value::atom("two"));       // Binding entry (old = one)
+        m.bind_var("_Y", Value::atom("y_val"));     // Binding entry (old = None)
+        m.trail_binding("A1");                        // Register entry (old = reg0)
+        m.put_reg("A1", Value::atom("reg1"));
+
+        // The mutations took effect.
+        assert_eq!(m.bindings.get("_X"), Some(&Value::atom("two")));
+        assert_eq!(m.bindings.get("_Y"), Some(&Value::atom("y_val")));
+        assert_eq!(m.get_reg("A1"), Some(Value::atom("reg1")));
+        assert_eq!(m.trail.len(), mark + 3, "three trail entries past the mark");
+
+        m.unwind_trail_to(mark);
+
+        // _X restored to its pre-mark binding, _Y removed (was unbound before the
+        // mark), A1 restored to reg0.
+        assert_eq!(m.bindings.get("_X"), Some(&Value::atom("one")),
+            "binding _X restored to pre-mark value");
+        assert_eq!(m.bindings.get("_Y"), None,
+            "binding _Y removed (was unbound before the mark)");
+        assert_eq!(m.get_reg("A1"), Some(Value::atom("reg0")),
+            "register A1 restored to pre-mark value");
+        assert_eq!(m.trail.len(), mark, "trail truncated to the mark");
+    }
+
+    // Repeated unwinds are stable and a full unwind (mark 0) clears everything a
+    // query touched — the choice-point backtrack path in miniature.
+    #[test]
+    fn full_unwind_clears_all_query_bindings() {
+        let mut m = vm();
+        m.bind_var("_A", Value::atom("a1"));
+        m.bind_var("_B", Value::atom("b1"));
+        m.put_reg("A1", Value::atom("r0"));
+        m.trail_binding("A1");
+        m.put_reg("A1", Value::atom("r1"));
+
+        m.unwind_trail_to(0);
+        assert_eq!(m.bindings.get("_A"), None, "_A cleared");
+        assert_eq!(m.bindings.get("_B"), None, "_B cleared");
+        assert_eq!(m.get_reg("A1"), Some(Value::atom("r0")), "A1 back to r0");
+        assert_eq!(m.trail.len(), 0);
+
+        // Unwinding an already-empty trail past its length is a no-op.
+        m.unwind_trail_to(0);
+        assert_eq!(m.trail.len(), 0);
+    }
+
+    // Variant discrimination at the entry level: a binding entry reports only a
+    // binding name, a register entry reports only a register name, and classify()
+    // hands back the owned name + old value for each kind. A register whose name
+    // does NOT start with "__binding__" (every real register: A1.., X1.., Y1..)
+    // is discriminated correctly under both builds.
+    #[test]
+    fn binding_and_register_entries_discriminate() {
+        let be = TrailEntry::binding("V", Some(Value::atom("old_v")));
+        assert_eq!(be.binding_name(), Some("V"), "binding entry reports its var name");
+        assert_eq!(be.register_name(), None, "binding entry is not a register");
+
+        let re = TrailEntry::register("A2", Some(Value::atom("old_r")));
+        assert_eq!(re.register_name(), Some("A2"), "register entry reports its reg name");
+        assert_eq!(re.binding_name(), None, "register entry is not a binding");
+
+        let ye = TrailEntry::register("Y3", None);
+        assert_eq!(ye.register_name(), Some("Y3"));
+        assert_eq!(ye.binding_name(), None);
+
+        match be.classify() {
+            (TrailUndo::Binding(n), Some(v)) => {
+                assert_eq!(n, "V");
+                assert_eq!(v, Value::atom("old_v"));
+            }
+            _ => panic!("binding entry misclassified by classify()"),
+        }
+        match re.classify() {
+            (TrailUndo::Register(n), Some(v)) => {
+                assert_eq!(n, "A2");
+                assert_eq!(v, Value::atom("old_r"));
+            }
+            _ => panic!("register entry misclassified by classify()"),
+        }
+    }
+}
+
 
 impl WamState {
     pub fn step(&mut self, instr: &Instruction) -> bool {
@@ -10173,7 +10402,7 @@ impl WamState {
         if self.trail.len() <= saved_len { return; }
         let new_entries = self.trail.len() - saved_len;
         for entry in self.trail.iter().rev().take(new_entries) {
-            if let Some(binding_key) = entry.key.strip_prefix("__binding__") {
+            if let Some(binding_key) = entry.binding_name() {
                 match &entry.old_value {
                     Some(val) => { self.bindings.insert(binding_key.to_string(), val.clone()); }
                     None => { self.bindings.remove(binding_key); }
@@ -12892,7 +13121,7 @@ impl WamState {
                 // the trial bindings are unwound.
                 let pairs: Vec<Value> = self.trail[mark..].iter()
                     .filter_map(|entry| {
-                        let name = entry.key.strip_prefix("__binding__")?;
+                        let name = entry.binding_name()?;
                         let bound = self.bindings.get(name)?.clone();
                         Some(Value::strv(
                             "=/2".to_string(),
@@ -15350,8 +15579,8 @@ impl WamState {
         if self.trail.len() > trail_mark {
             let tail = self.trail.split_off(trail_mark);
             for e in tail {
-                let is_frame_local_reg = !e.key.starts_with("__binding__")
-                    && e.key.as_bytes().first() == Some(&b'Y');
+                let is_frame_local_reg = e.register_name()
+                    .map_or(false, |r| r.as_bytes().first() == Some(&b'Y'));
                 if !is_frame_local_reg {
                     self.trail.push(e);
                 }
