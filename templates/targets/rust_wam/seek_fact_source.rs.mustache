@@ -20,6 +20,8 @@ use std::fs::File;
 use std::os::unix::fs::FileExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+#[cfg(feature = "store_cache")]
+use std::collections::HashMap;
 
 use crate::value::Value;
 
@@ -283,6 +285,27 @@ pub struct SeekFactSource {
     kind: String,
     path: String,
     inner: Mutex<Option<OpenStore>>,
+    /// L1 decoded-row cache (`store_cache` feature, default ON): keyed by the
+    /// tagged lookup key (`encode_store_key` output), the value is the exact
+    /// `Vec<(Value, Value)>` a fresh bound-key seek over `rows()` would
+    /// produce, verbatim and in seek order. The store is read-only for the
+    /// life of a resolve (facts never change; the store path is baked in at
+    /// build time), so a given key always yields the same rows -- a cache hit
+    /// is byte-safe by construction. Only the bound-key path reads/writes
+    /// this map; `scan_all` (the unbound-arg1 full scan) never touches it.
+    ///
+    /// Interior mutability: `rows()` takes `&self`. A `RefCell` would suffice
+    /// for a strictly single-threaded resolve, but it is not safe here: the
+    /// T7 parallel-aggregate runtime (`par_aggregate.rs`, plain `std::thread`
+    /// + `thread::scope`, NOT gated behind the `parallel` Cargo feature)
+    /// clones the whole `WamState` per worker thread, and `WamState` derives
+    /// `Clone`, so each worker's `seek_fact_sources: HashMap<String,
+    /// Arc<SeekFactSource>>` holds a cloned `Arc` pointing at this SAME
+    /// `SeekFactSource`. Concurrent `rows()` calls across worker threads are
+    /// therefore a real possibility, not a hypothetical one, so this uses
+    /// `Mutex` (matching `inner` above) rather than `RefCell`.
+    #[cfg(feature = "store_cache")]
+    cache: Mutex<HashMap<Vec<u8>, Vec<(Value, Value)>>>,
 }
 
 impl SeekFactSource {
@@ -291,6 +314,8 @@ impl SeekFactSource {
             kind: "indexed".to_string(),
             path: prefix.to_string(),
             inner: Mutex::new(None),
+            #[cfg(feature = "store_cache")]
+            cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -299,6 +324,8 @@ impl SeekFactSource {
             kind: "lmdb".to_string(),
             path: dir.to_string(),
             inner: Mutex::new(None),
+            #[cfg(feature = "store_cache")]
+            cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -414,11 +441,21 @@ impl SeekFactSource {
         if let Err(e) = self.ensure_open() {
             panic!("{}", e);
         }
-        let guard = self.inner.lock().unwrap();
-        let store = guard.as_ref().unwrap();
-        FACT_IO_DATA_SIZE.store(store.data_size, Ordering::Relaxed);
         match key {
             Some(target) => {
+                // L1 decoded-row cache (see the `cache` field doc): a hit
+                // returns a clone of exactly the rows a fresh seek below
+                // would produce, in the same order, skipping the .idx binary
+                // search and the .data reads/decode entirely.
+                #[cfg(feature = "store_cache")]
+                {
+                    if let Some(cached) = self.cache.lock().unwrap().get(&target) {
+                        return cached.clone();
+                    }
+                }
+                let guard = self.inner.lock().unwrap();
+                let store = guard.as_ref().unwrap();
+                FACT_IO_DATA_SIZE.store(store.data_size, Ordering::Relaxed);
                 let offs = Self::lookup_offsets(store, &target);
                 let mut rows = Vec::with_capacity(offs.len());
                 for off in offs {
@@ -426,9 +463,24 @@ impl SeekFactSource {
                         rows.push(row);
                     }
                 }
+                drop(guard);
+                #[cfg(feature = "store_cache")]
+                {
+                    self.cache.lock().unwrap().insert(target, rows.clone());
+                }
                 rows
             }
-            None => Self::scan_all(store),
+            None => {
+                // scan_all is intentionally NEVER cached: its order is
+                // #4272-clustered (answer-invariant but not the seek order a
+                // bound-key cache entry would need to match), and it is only
+                // ever run once per unbound-arg1 query, so there is nothing
+                // to amortize -- caching it would only add risk.
+                let guard = self.inner.lock().unwrap();
+                let store = guard.as_ref().unwrap();
+                FACT_IO_DATA_SIZE.store(store.data_size, Ordering::Relaxed);
+                Self::scan_all(store)
+            }
         }
     }
 }
@@ -438,4 +490,175 @@ pub fn lmdb_seek_missing_error(store_path: &str) -> String {
         "Rust WAM fact source is declared as lmdb({}) but no compatible LMDB reader is built into this Rust binary. This backend is opt-in and carries no repo dependency; the Rust lane does not read the npm-lmdb (uw_fact_lmdb) store format. Use UW_STORE_BACKEND=indexed (the default), which reads the dependency-free UWFI/UWIX seek store. The indexed(...) store is a different format and is not used as a fallback.",
         store_path
     )
+}
+
+// D106 (store_cache): a cache hit must return the SAME rows, in the SAME
+// order, as the fresh uncached seek that would have run without it, and a
+// miss must populate the cache so the next lookup for that key is a hit.
+// These tests build a tiny on-disk UWFI/UWIX store pair -- the exact bytes
+// `ensure_open`/`lookup_offsets`/`read_record` decode -- under a fresh
+// temp-dir prefix, and drive `SeekFactSource::rows` directly, so the real
+// seek path is exercised end to end, not a mock. They pass under BOTH the
+// `store_cache` build (miss-then-hit) and the OFF baseline (every call is an
+// uncached seek, trivially self-consistent), matching the trail_enum_tests /
+// deref_memo_tests pattern of one test file proving both configs correct.
+#[cfg(test)]
+mod store_cache_tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+
+    static TEST_ID: AtomicU64 = AtomicU64::new(0);
+
+    /// Write a minimal UWFI/UWIX store pair under a fresh temp-dir prefix:
+    /// two rows under key "alice" -- ("alice","bob") then ("alice","carol"),
+    /// in that seek order -- plus an unrelated "zed" key so the `.idx` binary
+    /// search has more than one entry to walk. Returns (temp_dir, path_prefix)
+    /// so the caller can pass `&prefix` to `SeekFactSource::new_indexed` and
+    /// clean up `temp_dir` afterward.
+    fn build_test_store() -> (std::path::PathBuf, String) {
+        let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir()
+            .join(format!("uw_seek_cache_test_{}_{}", std::process::id(), id));
+        std::fs::create_dir_all(&dir).unwrap();
+        let prefix = dir.join("store").to_string_lossy().into_owned();
+
+        // --- .data (UWFI): 16-byte header + 3 length-prefixed records, each
+        // payload = a1_len(u16) + a2_len(u16) + a1 bytes + a2 bytes. ---
+        fn record(a1: &str, a2: &str) -> Vec<u8> {
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&(a1.len() as u16).to_le_bytes());
+            payload.extend_from_slice(&(a2.len() as u16).to_le_bytes());
+            payload.extend_from_slice(a1.as_bytes());
+            payload.extend_from_slice(a2.as_bytes());
+            let mut rec = Vec::new();
+            rec.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            rec.extend_from_slice(&payload);
+            rec
+        }
+        let rec0 = record("alice", "bob");
+        let rec1 = record("alice", "carol");
+        let rec2 = record("zed", "x");
+        let off0: u32 = 16;
+        let off1: u32 = off0 + rec0.len() as u32;
+        let off2: u32 = off1 + rec1.len() as u32;
+
+        let mut data = Vec::new();
+        data.extend_from_slice(b"UWFI");
+        data.extend_from_slice(&[0u8; 12]); // reserved, unread past the magic
+        data.extend_from_slice(&rec0);
+        data.extend_from_slice(&rec1);
+        data.extend_from_slice(&rec2);
+        std::fs::write(format!("{}.data", prefix), &data).unwrap();
+
+        // --- .idx (UWIX): 24-byte header + 2 sorted 16-byte key entries +
+        // keyblob + hits blob (a u32-offset array per key, in seek order). ---
+        let key_alice = encode_store_key(&Value::atom("alice"));
+        let key_zed = encode_store_key(&Value::atom("zed"));
+        assert!(bytes_compare(&key_alice, &key_zed) < 0, "fixture must be key-sorted for the binary search");
+
+        let mut keyblob = Vec::new();
+        let alice_rel = keyblob.len() as u32;
+        keyblob.extend_from_slice(&key_alice);
+        let zed_rel = keyblob.len() as u32;
+        keyblob.extend_from_slice(&key_zed);
+
+        let mut hits = Vec::new();
+        let alice_hits_rel = hits.len() as u32;
+        hits.extend_from_slice(&off0.to_le_bytes());
+        hits.extend_from_slice(&off1.to_le_bytes());
+        let zed_hits_rel = hits.len() as u32;
+        hits.extend_from_slice(&off2.to_le_bytes());
+
+        let n_keys: u32 = 2;
+        let entries_off: u32 = 24;
+        let keyblob_off = entries_off + n_keys * 16;
+        let hits_off = keyblob_off + keyblob.len() as u32;
+        let n_records: u32 = 3;
+
+        let entry = |key_rel: u32, key_len: u16, n_hits: u16, hits_rel: u32| -> Vec<u8> {
+            let mut e = Vec::new();
+            e.extend_from_slice(&key_rel.to_le_bytes());
+            e.extend_from_slice(&key_len.to_le_bytes());
+            e.extend_from_slice(&n_hits.to_le_bytes());
+            e.extend_from_slice(&hits_rel.to_le_bytes());
+            e.extend_from_slice(&[0u8; 4]); // pad entry to 16 bytes
+            e
+        };
+        let entry_alice = entry(alice_rel, key_alice.len() as u16, 2, alice_hits_rel);
+        let entry_zed = entry(zed_rel, key_zed.len() as u16, 1, zed_hits_rel);
+
+        let mut idx = Vec::new();
+        idx.extend_from_slice(b"UWIX");
+        idx.extend_from_slice(&[0u8; 4]); // reserved
+        idx.extend_from_slice(&n_keys.to_le_bytes());
+        idx.extend_from_slice(&keyblob_off.to_le_bytes());
+        idx.extend_from_slice(&hits_off.to_le_bytes());
+        idx.extend_from_slice(&n_records.to_le_bytes());
+        idx.extend_from_slice(&entry_alice);
+        idx.extend_from_slice(&entry_zed);
+        idx.extend_from_slice(&keyblob);
+        idx.extend_from_slice(&hits);
+        std::fs::write(format!("{}.idx", prefix), &idx).unwrap();
+
+        (dir, prefix)
+    }
+
+    #[test]
+    fn cache_hit_matches_fresh_uncached_seek_same_order() {
+        let (dir, prefix) = build_test_store();
+        let key = encode_store_key(&Value::atom("alice"));
+
+        // One SeekFactSource: the first rows() call is a cache MISS (under
+        // `store_cache`) -- it must do the real seek and populate the cache;
+        // the second call for the SAME key must be a HIT and return an
+        // identical clone, in the same order.
+        let src = SeekFactSource::new_indexed(&prefix);
+        let miss = src.rows(Some(key.clone()));
+        let hit = src.rows(Some(key.clone()));
+        assert_eq!(
+            hit, miss,
+            "a cache hit must return the SAME rows, in the SAME order, as the seek that populated it"
+        );
+
+        // A brand-new instance has an empty cache, so its single call is a
+        // ground-truth fresh uncached seek -- it must match too.
+        let fresh_src = SeekFactSource::new_indexed(&prefix);
+        let fresh = fresh_src.rows(Some(key));
+        assert_eq!(
+            fresh, miss,
+            "cached result matches an independent fresh uncached seek for the same key"
+        );
+
+        let expected = vec![
+            (Value::atom("alice"), Value::atom("bob")),
+            (Value::atom("alice"), Value::atom("carol")),
+        ];
+        assert_eq!(miss, expected, "rows decoded correctly and in seek order (bob before carol)");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_is_per_key_and_does_not_cross_contaminate() {
+        let (dir, prefix) = build_test_store();
+        let src = SeekFactSource::new_indexed(&prefix);
+
+        let alice_key = encode_store_key(&Value::atom("alice"));
+        let zed_key = encode_store_key(&Value::atom("zed"));
+        let missing_key = encode_store_key(&Value::atom("nope"));
+
+        let alice_rows = src.rows(Some(alice_key.clone()));
+        let zed_rows = src.rows(Some(zed_key.clone()));
+        // Re-fetch (now both are cache hits, if `store_cache` is on) --
+        // neither key's cached entry may leak into the other's result.
+        assert_eq!(src.rows(Some(alice_key)), alice_rows);
+        assert_eq!(src.rows(Some(zed_key)), zed_rows);
+        assert_eq!(zed_rows, vec![(Value::atom("zed"), Value::atom("x"))]);
+
+        // A key absent from the store yields an empty result, cached or not.
+        assert_eq!(src.rows(Some(missing_key.clone())), Vec::<(Value, Value)>::new());
+        assert_eq!(src.rows(Some(missing_key)), Vec::<(Value, Value)>::new());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

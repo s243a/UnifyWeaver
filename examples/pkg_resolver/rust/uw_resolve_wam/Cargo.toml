@@ -11,7 +11,7 @@ path = "src/main.rs"
 [dependencies]
 
 [features]
-default = ["decorate_sort", "intern", "deref_memo", "trail_enum"]
+default = ["decorate_sort", "intern", "deref_memo", "trail_enum", "store_cache"]
 # When off, the sort/msort/keysort/setof builtins fall back to the original
 # `term_compare` (re-deref) path; output is byte-identical to the on build.
 decorate_sort = []
@@ -39,6 +39,17 @@ deref_memo = []
 # baseline, via `--no-default-features --features "decorate_sort intern deref_memo"`;
 # output is byte-identical ON vs OFF.
 trail_enum = []
+# Hot-path opt #7 (D106): L1 decoded-row cache on SeekFactSource (D43 store
+# seek path). A bound-key seek caches its decoded `Vec<(Value, Value)>` rows
+# (verbatim, in seek order) by the tagged lookup key, so a repeat seek for the
+# same key skips the .idx binary search and the .data reads/decode. The store
+# is read-only for the life of a resolve, so a key always yields the same
+# rows -- byte-safe by construction. `scan_all` (unbound arg1) is never cached.
+# Default ON. Off = the exact pre-D106 seek path (no cache field consulted),
+# a perfect A/B baseline, via
+# `--no-default-features --features "decorate_sort intern deref_memo trail_enum"`;
+# output is byte-identical ON vs OFF.
+store_cache = []
 # T7 parallel-aggregate path (state.rs `#[cfg(feature="parallel")]`). Declared
 # so Cargo's unexpected-cfgs lint knows the name (adding [features] above turns
 # that lint on). Off by default and empty: enabling it needs rayon, which is a
