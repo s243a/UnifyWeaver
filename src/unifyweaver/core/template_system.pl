@@ -694,7 +694,8 @@ path = "src/main.rs"
 {{#use_rayon}}rayon = "1"
 {{/use_rayon}}{{#use_lmdb_zero}}lmdb-zero = "0.4"
 {{/use_lmdb_zero}}{{#use_heed}}heed = "0.20"
-{{/use_heed}}').
+{{/use_heed}}{{#use_mimalloc}}mimalloc = { version = "0.1", optional = true }
+{{/use_mimalloc}}').
 
 %% Rust WAM lib.rs template
 %% lmdb_fact_source module is declared when either LMDB crate is active

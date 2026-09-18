@@ -9,9 +9,10 @@ name = "bench"
 path = "src/main.rs"
 
 [dependencies]
+mimalloc = { version = "0.1", optional = true }
 
 [features]
-default = ["decorate_sort", "intern", "deref_memo", "trail_enum", "store_cache"]
+default = ["decorate_sort", "intern", "deref_memo", "trail_enum", "store_cache", "mimalloc"]
 # When off, the sort/msort/keysort/setof builtins fall back to the original
 # `term_compare` (re-deref) path; output is byte-identical to the on build.
 decorate_sort = []
@@ -64,6 +65,21 @@ store_cache = []
 # `SeekFactSource::rows` on an lmdb(Dir) source fails loudly at query time
 # (`lmdb_seek_missing_error`) -- never a silent fallback to indexed(...).
 store_lmdb = []
+# D110: mimalloc as the process global allocator (drop-in swap -- changes HOW
+# memory is allocated, not WHAT is computed, so output is byte-identical to
+# the system-allocator build BY CONSTRUCTION). Motivated by the D109
+# re-profile: glibc malloc internals were about 37% of B3 Ir on the term path.
+# `mimalloc` is an OPTIONAL dependency (vendors + `cc`-compiles the mimalloc
+# C source; no system lib needed) gated behind this feature via Cargo's
+# `dep:mimalloc` syntax, exactly like `store_lmdb` above, so an OFF build
+# (`--no-default-features --features "decorate_sort intern deref_memo trail_enum store_cache"`)
+# never fetches or compiles the mimalloc crate at all. Default ON. The
+# `#[global_allocator]` static itself lives in each BINARY crate root (never
+# lib.rs) -- src/main.rs (the `bench` bin) and the hand-written shim
+# `src/bin/uw_resolve/main.rs` / `src/bin/uw_resolve_store/main.rs` -- each
+# gated behind `#[cfg(feature = "mimalloc")]`, so an OFF build links the
+# system (glibc) allocator instead. See docs/reports/wam_rust_mimalloc_ab.md.
+mimalloc = ["dep:mimalloc"]
 # T7 parallel-aggregate path (state.rs `#[cfg(feature="parallel")]`). Declared
 # so Cargo's unexpected-cfgs lint knows the name (adding [features] above turns
 # that lint on). Off by default and empty: enabling it needs rayon, which is a

@@ -18,6 +18,15 @@
 // Usage:
 //   uw_resolve            < cases.jsonl > results.jsonl
 //   uw_resolve --bench    < one_case.json          (load/resolve timings)
+//
+// D110: mimalloc as this binary's global allocator (default ON via the
+// `mimalloc` Cargo feature on the generated uw_resolve_wam crate). Drop-in
+// swap -- changes HOW memory is allocated, not WHAT is computed -- so output
+// is byte-identical to the OFF (system/glibc allocator) build. See
+// docs/reports/wam_rust_mimalloc_ab.md.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod json;
 

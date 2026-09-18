@@ -130,6 +130,7 @@ main :-
         [ module_name('uw_resolve_wam_store'),
           wam_fallback(true),
           no_kernels(true),
+          mimalloc(true),
           emit_mode(interpreter),
           rust_wam_fact_sources(Sources) ],
         OutDir),

@@ -16,6 +16,15 @@
 //   uw_resolve_store              < cases.jsonl > results.jsonl
 //   uw_resolve_store --corpus     < cases.jsonl        (also compares expected)
 //   uw_resolve_store --scale-probe DIR                 (D43 bytes-read proof)
+//
+// D110: mimalloc as this binary's global allocator (default ON via the
+// `mimalloc` Cargo feature on the generated uw_resolve_wam_store crate).
+// Drop-in swap -- changes HOW memory is allocated, not WHAT is computed --
+// so output is byte-identical to the OFF (system/glibc allocator) build.
+// See docs/reports/wam_rust_mimalloc_ab.md.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod json;
 
