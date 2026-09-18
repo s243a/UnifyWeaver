@@ -202,3 +202,47 @@ Output is byte-identical ON vs OFF on every gate (as guaranteed by
 construction — a global allocator cannot change term computation), so this
 lever carries none of the correctness risk of a site-specific optimization.
 `resolver.pl`/`resolver_store.pl` are unmodified.
+
+## Addendum (D110 follow-up): mimalloc is opt-in in the generator, not global default (offline-CI fix)
+
+**Date:** 2026-09-18 (same day). **Why:** the original change above put
+`"mimalloc"` in the `default` feature list emitted for **every** generated
+`wam_rust` crate. That turned the **WAM Conformance Smoke (rust)** CI job red
+(run 35356783599, PR #4277). That job generates fresh crates and builds them
+with `cargo build --offline`, and a declared optional dependency is resolved
+into `Cargo.lock` **even when its feature is off** — so a fresh crate on a
+runner with no cached crates.io index failed at resolve time:
+
+```
+error: no matching package named `mimalloc` found
+location searched: crates.io index
+required by package `uw_rust_ct v0.1.0`
+```
+
+Local D110 verification passed only because this box's cargo cache already
+held `mimalloc-0.1.52`; the CI runner's offline cache did not. The
+conformance harness documents the broken invariant explicitly
+(`tests/test_wam_cross_target_conformance.pl`: "the generated crate has no
+external deps, so `--offline` needs no network").
+
+**Fix** (mirrors the `store_lmdb` / lmdb-zero pattern exactly): mimalloc is
+now **OFF by default in the generator**, gated on a `mimalloc(true)` build
+option. BOTH the optional-dependency line AND the feature's `dep:mimalloc`
+activation are gated — when off, the dependency line is omitted and the
+feature is emitted **empty** (`mimalloc = []`, kept declared so
+`#[cfg(feature="mimalloc")]` never trips the unexpected-cfgs lint), so cargo
+never resolves mimalloc from the registry index and a plain generated crate
+has zero external deps. The `pkg_resolver` term and store benches pass
+`mimalloc(true)` (`examples/pkg_resolver/rust/build.pl`,
+`examples/pkg_resolver/rust_store/build.pl`), so their crates keep mimalloc
+default-ON — the checked-in `rust/uw_resolve_wam/Cargo.toml` is unchanged and
+byte-for-byte reproduced by the `mimalloc(true)` path. All A/B numbers above
+still stand (they were measured on the mimalloc-ON bench crates, which are
+unaffected).
+
+**Verified:** the exact failing conformance job
+(`CONFORMANCE_TARGETS=rust CONFORMANCE_PROGRAMS=member,builtins
+CONFORMANCE_SAMPLE=2 CONFORMANCE_SEED=15551`, `LANG=C.utf8`) now passes rc=0;
+a mimalloc-off generated crate emits empty `[dependencies]` + `mimalloc = []`;
+a mimalloc-on crate is structurally identical to the checked-in bench
+`Cargo.toml`.
