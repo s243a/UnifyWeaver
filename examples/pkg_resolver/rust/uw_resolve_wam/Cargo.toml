@@ -50,6 +50,20 @@ trail_enum = []
 # `--no-default-features --features "decorate_sort intern deref_memo trail_enum"`;
 # output is byte-identical ON vs OFF.
 store_cache = []
+# D108: real LMDB reader for SeekFactSource's lmdb(Dir) tier (opt-in, NON-
+# default parity backend -- see docs/reports/wam_rust_lmdb_store_backend.md).
+# Gated behind this feature (rather than always compiling `use lmdb_zero`)
+# because seek_fact_source.rs is emitted into EVERY wam_rust crate
+# unconditionally, most of which never add lmdb-zero as a dependency; the
+# feature is declared in every crate's [features] table (empty when unused,
+# exactly like `parallel` below) so `#[cfg(feature = "store_lmdb")]` never
+# trips Cargo's unexpected-cfgs lint. Auto-default-ON ONLY for a project whose
+# rust_wam_fact_sources are lmdb(Dir) (this Cargo.toml then also carries a
+# real, non-optional lmdb-zero dependency); every other project leaves it
+# out of `default` and never links lmdb-zero at all. When off (or absent),
+# `SeekFactSource::rows` on an lmdb(Dir) source fails loudly at query time
+# (`lmdb_seek_missing_error`) -- never a silent fallback to indexed(...).
+store_lmdb = []
 # T7 parallel-aggregate path (state.rs `#[cfg(feature="parallel")]`). Declared
 # so Cargo's unexpected-cfgs lint knows the name (adding [features] above turns
 # that lint on). Off by default and empty: enabling it needs rayon, which is a

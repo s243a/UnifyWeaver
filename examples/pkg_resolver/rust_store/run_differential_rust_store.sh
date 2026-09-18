@@ -40,6 +40,9 @@ case "$BACKEND" in
     fi
     ;;
   lmdb)
+    # D108: the Rust reader needs the vanilla-liblmdb v1 data format (see
+    # rust_store/build.sh's lmdb branch for why).
+    export UW_LMDB_DATA_V1=1
     # shellcheck source=../store/ensure_lmdb.sh
     source "$HERE/../store/ensure_lmdb.sh"
     uw_require_lmdb
