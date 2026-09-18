@@ -44,6 +44,7 @@ main :-
         [ module_name('uw_resolve_wam'),
           wam_fallback(true),
           no_kernels(true),
+          mimalloc(true),
           emit_mode(interpreter) ],
         OutDir),
     format("build.pl: wrote Rust WAM project under ~w~n", [OutDir]).
