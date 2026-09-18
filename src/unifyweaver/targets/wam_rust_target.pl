@@ -9044,13 +9044,34 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     ;   UseLmdbZero = false, UseHeed = false
     ),
 
-    % Generate Cargo.toml (conditionally adds exactly one of lmdb-zero or heed).
+    % D108: does THIS generated project's store-backed fact sources
+    % (rust_wam_fact_sources) declare any lmdb(Dir) source? build.pl's
+    % store_sources/3 makes every source in one build either ALL indexed(_)
+    % or ALL lmdb(_) (never mixed), so this is a per-project fact, not a
+    % per-predicate one. Only gates the Cargo.toml dependency + the
+    % `store_lmdb` default feature -- independent of the lmdb_mode(cursor)
+    % graph-edge option above (unrelated subsystem; UseLmdbZero/UseHeed for
+    % lib.rs's `pub mod lmdb_fact_source` stay driven by lmdb_mode only).
+    (   option(rust_wam_fact_sources(FactSources0), Options, []),
+        member(source(_, lmdb(_)), FactSources0)
+    ->  StoreUsesLmdb = true
+    ;   StoreUsesLmdb = false
+    ),
+    ( (UseLmdbZero == true ; StoreUsesLmdb == true) -> CargoUseLmdbZero = true ; CargoUseLmdbZero = false ),
+    (   StoreUsesLmdb == true
+    ->  StoreLmdbDefaultFeatures = ', "store_lmdb"'
+    ;   StoreLmdbDefaultFeatures = ''
+    ),
+
+    % Generate Cargo.toml (conditionally adds exactly one of lmdb-zero or heed;
+    % CargoUseLmdbZero also covers the D108 store-lmdb reader, which reuses the
+    % same lmdb-zero dependency line -- see the comment above).
     % parallel(true) promotes rayon from an optional dep to a hard dep so the
     % generated bench can call par_iter without a --features flag.
     option(parallel(UseRayon), Options, false),
     render_named_template(rust_wam_cargo,
         [module_name=ModuleName,
-         use_lmdb_zero=UseLmdbZero,
+         use_lmdb_zero=CargoUseLmdbZero,
          use_heed=UseHeed,
          use_rayon=UseRayon],
         CargoContent0),
@@ -9059,9 +9080,10 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     % sha-distinct binaries for a clean A/B, while output stays byte-identical.
     % Appended here rather than in the shared cargo template so the wiring stays
     % inside the wam_rust target (the shared template also feeds other lanes).
-    atom_concat(CargoContent0,
-        '\n[features]\ndefault = ["decorate_sort", "intern", "deref_memo", "trail_enum", "store_cache"]\n# When off, the sort/msort/keysort/setof builtins fall back to the original\n# `term_compare` (re-deref) path; output is byte-identical to the on build.\ndecorate_sort = []\n# Hot-path opt #2 (D96): intern functor/atom/var names to u32 ids so term\n# construction, `deref_var` and the `"f/N"` functor parse stop allocating tiny\n# name Strings. Default ON (A/B: B3 -29% Ir/-29% wall, B2 -41% Ir/-32% wall,\n# byte-identical). Off = the pre-intern String path, kept for A/B via\n# `--no-default-features --features decorate_sort`; the two are sha-distinct.\nintern = []\n# Hot-path opt #5 (D103): cache deref-stability on the Arc-shared Args spine so\n# `deref_heap` skips re-walking + rebuilding already-canonical (ground, no\n# "f/N" functor, no cons-Str) terms. The flag is set ONLY from deref_heap\'s\n# own verified verbatim-identity path, so an ON short-circuit is byte-identical\n# to the OFF full walk. Default ON. Off = the exact pre-D103 deref_heap (no\n# cache field consulted), a perfect A/B baseline, via\n# `--no-default-features --features "decorate_sort intern"`.\nderef_memo = []\n# Hot-path opt #6 (D104): enum-tag the backtrack trail (D94 #4 lever, B2 bind\n# path). `TrailEntry.key` becomes `TrailKey::Binding(name)` / `Register(name)`\n# instead of a `String`, so `bind_var` stops `format!("__binding__{}")`-concat-\n# allocating on every variable bind and `unwind_trail_to` matches the variant\n# instead of `strip_prefix`-parsing on every unwind (also removes any risk of a\n# register name colliding with the `"__binding__"` prefix). Default ON. Off =\n# the exact pre-D104 `format!`/`strip_prefix` String path, a perfect A/B\n# baseline, via `--no-default-features --features "decorate_sort intern deref_memo"`;\n# output is byte-identical ON vs OFF.\ntrail_enum = []\n# Hot-path opt #7 (D106): L1 decoded-row cache on SeekFactSource (D43 store\n# seek path). A bound-key seek caches its decoded `Vec<(Value, Value)>` rows\n# (verbatim, in seek order) by the tagged lookup key, so a repeat seek for the\n# same key skips the .idx binary search and the .data reads/decode. The store\n# is read-only for the life of a resolve, so a key always yields the same\n# rows -- byte-safe by construction. `scan_all` (unbound arg1) is never cached.\n# Default ON. Off = the exact pre-D106 seek path (no cache field consulted),\n# a perfect A/B baseline, via\n# `--no-default-features --features "decorate_sort intern deref_memo trail_enum"`;\n# output is byte-identical ON vs OFF.\nstore_cache = []\n# T7 parallel-aggregate path (state.rs `#[cfg(feature="parallel")]`). Declared\n# so Cargo\'s unexpected-cfgs lint knows the name (adding [features] above turns\n# that lint on). Off by default and empty: enabling it needs rayon, which is a\n# hard dep only under the generator\'s parallel(true) option.\nparallel = []\n',
-        CargoContent),
+    format(atom(FeaturesBlock),
+        '\n[features]\ndefault = ["decorate_sort", "intern", "deref_memo", "trail_enum", "store_cache"~w]\n# When off, the sort/msort/keysort/setof builtins fall back to the original\n# `term_compare` (re-deref) path; output is byte-identical to the on build.\ndecorate_sort = []\n# Hot-path opt #2 (D96): intern functor/atom/var names to u32 ids so term\n# construction, `deref_var` and the `"f/N"` functor parse stop allocating tiny\n# name Strings. Default ON (A/B: B3 -29% Ir/-29% wall, B2 -41% Ir/-32% wall,\n# byte-identical). Off = the pre-intern String path, kept for A/B via\n# `--no-default-features --features decorate_sort`; the two are sha-distinct.\nintern = []\n# Hot-path opt #5 (D103): cache deref-stability on the Arc-shared Args spine so\n# `deref_heap` skips re-walking + rebuilding already-canonical (ground, no\n# "f/N" functor, no cons-Str) terms. The flag is set ONLY from deref_heap\'s\n# own verified verbatim-identity path, so an ON short-circuit is byte-identical\n# to the OFF full walk. Default ON. Off = the exact pre-D103 deref_heap (no\n# cache field consulted), a perfect A/B baseline, via\n# `--no-default-features --features "decorate_sort intern"`.\nderef_memo = []\n# Hot-path opt #6 (D104): enum-tag the backtrack trail (D94 #4 lever, B2 bind\n# path). `TrailEntry.key` becomes `TrailKey::Binding(name)` / `Register(name)`\n# instead of a `String`, so `bind_var` stops `format!("__binding__{}")`-concat-\n# allocating on every variable bind and `unwind_trail_to` matches the variant\n# instead of `strip_prefix`-parsing on every unwind (also removes any risk of a\n# register name colliding with the `"__binding__"` prefix). Default ON. Off =\n# the exact pre-D104 `format!`/`strip_prefix` String path, a perfect A/B\n# baseline, via `--no-default-features --features "decorate_sort intern deref_memo"`;\n# output is byte-identical ON vs OFF.\ntrail_enum = []\n# Hot-path opt #7 (D106): L1 decoded-row cache on SeekFactSource (D43 store\n# seek path). A bound-key seek caches its decoded `Vec<(Value, Value)>` rows\n# (verbatim, in seek order) by the tagged lookup key, so a repeat seek for the\n# same key skips the .idx binary search and the .data reads/decode. The store\n# is read-only for the life of a resolve, so a key always yields the same\n# rows -- byte-safe by construction. `scan_all` (unbound arg1) is never cached.\n# Default ON. Off = the exact pre-D106 seek path (no cache field consulted),\n# a perfect A/B baseline, via\n# `--no-default-features --features "decorate_sort intern deref_memo trail_enum"`;\n# output is byte-identical ON vs OFF.\nstore_cache = []\n# D108: real LMDB reader for SeekFactSource\'s lmdb(Dir) tier (opt-in, NON-\n# default parity backend -- see docs/reports/wam_rust_lmdb_store_backend.md).\n# Gated behind this feature (rather than always compiling `use lmdb_zero`)\n# because seek_fact_source.rs is emitted into EVERY wam_rust crate\n# unconditionally, most of which never add lmdb-zero as a dependency; the\n# feature is declared in every crate\'s [features] table (empty when unused,\n# exactly like `parallel` below) so `#[cfg(feature = "store_lmdb")]` never\n# trips Cargo\'s unexpected-cfgs lint. Auto-default-ON ONLY for a project whose\n# rust_wam_fact_sources are lmdb(Dir) (this Cargo.toml then also carries a\n# real, non-optional lmdb-zero dependency); every other project leaves it\n# out of `default` and never links lmdb-zero at all. When off (or absent),\n# `SeekFactSource::rows` on an lmdb(Dir) source fails loudly at query time\n# (`lmdb_seek_missing_error`) -- never a silent fallback to indexed(...).\nstore_lmdb = []\n# T7 parallel-aggregate path (state.rs `#[cfg(feature="parallel")]`). Declared\n# so Cargo\'s unexpected-cfgs lint knows the name (adding [features] above turns\n# that lint on). Off by default and empty: enabling it needs rayon, which is a\n# hard dep only under the generator\'s parallel(true) option.\nparallel = []\n',
+        [StoreLmdbDefaultFeatures]),
+    atom_concat(CargoContent0, FeaturesBlock, CargoContent),
     directory_file_path(ProjectDir, 'Cargo.toml', CargoPath),
     write_file(CargoPath, CargoContent),
 

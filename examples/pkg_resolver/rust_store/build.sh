@@ -44,6 +44,12 @@ case "$BACKEND" in
     fi
     ;;
   lmdb)
+    # The Rust reader (D108) links vanilla liblmdb (lmdb-zero, which vendors
+    # and compiles the OpenLDAP liblmdb C source itself -- no system liblmdb
+    # needed), which rejects the default lmdb-js Symas-fork page format
+    # (MDB_INVALID). Opt into the from-source v1-compatible build for both the
+    # store build and any (re)install, exactly like cpp_store/build.sh.
+    export UW_LMDB_DATA_V1=1
     # shellcheck source=../store/ensure_lmdb.sh
     source examples/pkg_resolver/store/ensure_lmdb.sh
     uw_require_lmdb
