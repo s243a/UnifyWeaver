@@ -3228,6 +3228,7 @@ func (vm *WamState) runIsolatedGoal(targetPC int, args []Value) bool {
     sub.Trail = nil
     sub.TrailLen = 0
     sub.ChoicePoints = nil
+    sub.trailFloors = nil
     sub.Halted = false
     sub.CurrentStruct = nil
     sub.CurrentList = nil
@@ -3927,6 +3928,11 @@ func (vm *WamState) finishForeignResults(predKey string, resultRegs []int, resul
     default:
         baseRegs := vm.Regs
         trailMark := vm.TrailLen
+        // Conditional-trailing floor for this bare-mark boundary: on
+        // failure the code below unwinds to trailMark, so bindings of
+        // variables older than this point must keep being trailed.
+        vm.pushTrailFloor()
+        defer vm.popTrailFloor()
         heapTop := vm.HeapLen
         if !vm.applyForeignResult(predKey, resultRegs, results[0]) {
             vm.unwindTrailTo(trailMark)
@@ -3954,7 +3960,19 @@ func (vm *WamState) finishStreamResults(predKey string, resultRegs []int, result
     baseStackLen := len(vm.Stack)
     baseE := vm.E
     trailMark := vm.TrailLen
+    // Conditional-trailing floor for this bare-mark boundary: each loop
+    // iteration and the exhaustion path unwind to trailMark, so bindings
+    // of variables older than this point must keep being trailed.
+    vm.pushTrailFloor()
+    defer vm.popTrailFloor()
     heapTop := vm.HeapLen
+    // Complete register snapshot of the pre-stream state (vm.Regs still
+    // equals baseRegs here). A resumed foreign choice point restores
+    // registers from this via restoreSavedRegs; the partial 8+ycount
+    // slice used before was not a marker-format snapshot, so it was a
+    // no-op restore that leaned on the reg-alias trail. That trail is
+    // being removed, so this snapshot is now the register restorer.
+    baseSnapshot := vm.snapshotAllRegs()
     for idx, result := range results {
         vm.unwindTrailTo(trailMark)
         vm.Regs = baseRegs
@@ -3973,22 +3991,13 @@ func (vm *WamState) finishStreamResults(predKey string, resultRegs []int, result
         }
         if idx+1 < len(results) {
             remaining := append([]Value(nil), results[idx+1:]...)
-            ycount := vm.MaxYReg - 200
-            if ycount < 0 {
-                ycount = 0
-            }
-            savedRegs := make([]Value, 8+ycount)
-            copy(savedRegs[:8], baseRegs[:8])
-            if ycount > 0 {
-                copy(savedRegs[8:], baseRegs[200:200+ycount])
-            }
             vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
                 NextPC: resumePC,
                 ResumePC: resumePC,
                 CP: vm.CP,
                 E: baseE,
                 StackLen: baseStackLen,
-                SavedRegs: savedRegs,
+                SavedRegs: baseSnapshot,
                 HeapTop: heapTop,
                 TrailMark: trailMark,
                 ForeignPredKey: predKey,
@@ -3998,6 +4007,9 @@ func (vm *WamState) finishStreamResults(predKey string, resultRegs []int, result
                 CutB0Stack: vm.copyCutB0Stack(),
                 YSaves: vm.copyYSaveStack(),
                 YSaveLen: len(vm.YSaves),
+                // This CP is built without fillBarrier, so set the
+                // conditional-trailing undo frontier explicitly.
+                VarFloor: vm.NextVarId,
             })
         }
         vm.PC = resumePC

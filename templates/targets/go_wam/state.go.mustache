@@ -126,6 +126,15 @@ type ChoicePoint struct {
 	// for free, and backtracking discards it with the choice point that
 	// owns it.
 	Levels map[int]int
+	// VarFloor is vm.NextVarId captured when this choice point was
+	// pushed (set centrally in fillBarrier, and explicitly on the
+	// foreign-results CP literal in wam_go_target.pl). Conditional
+	// trailing uses it as an undo frontier: a variable bound after this
+	// CP was created (Idx >= VarFloor) is discarded when this CP
+	// unwinds, so its binding never needs trailing on this CP's behalf.
+	// NextVarId is monotonic, so the youngest CP carries the highest
+	// VarFloor.
+	VarFloor int
 }
 
 type EnvFrame struct {
@@ -332,6 +341,18 @@ type WamState struct {
 	// snapshot small for the common arity<=8 case while staying correct
 	// for wider predicates.
 	MaxAReg int
+	// MaxXReg is the highest X-register index ever written + 1.
+	//
+	// X-registers occupy Regs[100..199]. snapshotAllRegs used to skip
+	// them entirely (deemed clause-local), relying instead on the
+	// reg-alias trail entries bindUnbound appended to restore any
+	// X-reg that aliased a just-bound variable. Complete register
+	// snapshots make that trail redundant, so snapshotAllRegs now
+	// captures Regs[100..MaxXReg] too. Tracked in putReg (used by
+	// every interpreter register write and, after this change, by the
+	// lowered emitter's register-establishing writes). Starts at 0 so
+	// max(0, MaxXReg-100) is the used-slot count.
+	MaxXReg int
 	// E is the stack index of the currently-active EnvFrame, or -1
 	// when no frame is allocated (e.g., right after NewWamState before
 	// any Allocate). With env trimming, Deallocate moves E back along
@@ -373,6 +394,24 @@ type WamState struct {
 	// either way -- popYSave/invokeAtPC restore len(entry) slots and clear the
 	// tail to nil regardless (mirroring restoreSavedRegs).
 	forceFullYSave bool
+	// trailFloors is a stack of undo frontiers for "bare-mark" backtrack
+	// boundaries -- every `mark := vm.TrailLen; ...; unwindTrailTo(mark)`
+	// site (LoClauseSnapshot/LoRestoreClause, applySelectSolution,
+	// builtinCatch, \+/1, sub_atom/5, member/2, memberchk/2, select/3,
+	// the lowered ITE else branch, and finishForeignResults /
+	// finishStreamResults). While such a boundary is active its frontier
+	// (vm.NextVarId at mark capture) sits here, so conditional trailing
+	// keeps trailing bindings of variables older than the boundary even
+	// though the choice-point stack does not describe the boundary.
+	// Stack-disciplined: pushed at mark capture, popped when the boundary
+	// is done (via defer for function-scoped sites, explicit pop in loops).
+	trailFloors []int
+	// forceFullTrail (env UW_GO_TRAIL_FULL=1) disables conditional
+	// trailing: trailBinding then trails every binding unconditionally,
+	// exactly as it did before conditional trailing existed. A clean A/B
+	// (cond vs full) must be byte-identical; full is also the correctness
+	// fallback.
+	forceFullTrail bool
 }
 
 // allocVarId returns a fresh, globally-unique Idx for a new logical
@@ -419,11 +458,11 @@ func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
 
 func NewWamState(code []Instruction, labels map[string]int) *WamState {
 	ctx := NewWamContext(code, labels)
-	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1, heapVarPos: make(map[*Unbound][]int), forceHeapScan: os.Getenv("UW_GO_HEAPSCAN") == "1", forceFullYSave: os.Getenv("UW_GO_YSAVE_FULL") == "1"}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1, heapVarPos: make(map[*Unbound][]int), forceHeapScan: os.Getenv("UW_GO_HEAPSCAN") == "1", forceFullYSave: os.Getenv("UW_GO_YSAVE_FULL") == "1", forceFullTrail: os.Getenv("UW_GO_TRAIL_FULL") == "1"}
 }
 
 func NewWamStateFromCtx(ctx *WamContext) *WamState {
-	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1, heapVarPos: make(map[*Unbound][]int), forceHeapScan: os.Getenv("UW_GO_HEAPSCAN") == "1", forceFullYSave: os.Getenv("UW_GO_YSAVE_FULL") == "1"}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1, heapVarPos: make(map[*Unbound][]int), forceHeapScan: os.Getenv("UW_GO_HEAPSCAN") == "1", forceFullYSave: os.Getenv("UW_GO_YSAVE_FULL") == "1", forceFullTrail: os.Getenv("UW_GO_TRAIL_FULL") == "1"}
 }
 
 // RunParallel executes multiple seeds in parallel, each with their own
@@ -469,8 +508,13 @@ func (vm *WamState) putReg(idx int, val Value) {
 		if idx >= vm.MaxYReg {
 			vm.MaxYReg = idx + 1
 		}
-	} else if idx < 100 && idx >= vm.MaxAReg {
-		vm.MaxAReg = idx + 1
+	} else if idx < 100 {
+		if idx >= vm.MaxAReg {
+			vm.MaxAReg = idx + 1
+		}
+	} else if idx >= vm.MaxXReg {
+		// X-register range [100,200).
+		vm.MaxXReg = idx + 1
 	}
 }
 
@@ -508,7 +552,73 @@ func (vm *WamState) setBinding(addr int, val Value) {
 	vm.Bindings[addr] = val
 }
 
+// pushTrailFloor records the current NextVarId as a bare-mark boundary
+// frontier. Every variable created from now on (Idx >= this frontier)
+// is younger than the boundary and is discarded when the boundary
+// unwinds, so its binding need not be trailed on the boundary's behalf.
+func (vm *WamState) pushTrailFloor() {
+	vm.trailFloors = append(vm.trailFloors, vm.NextVarId)
+}
+
+// pushTrailFloorAt records a specific frontier (a choice point's
+// VarFloor), used by backtrack while it resumes a truncated CP.
+func (vm *WamState) pushTrailFloorAt(floor int) {
+	vm.trailFloors = append(vm.trailFloors, floor)
+}
+
+func (vm *WamState) popTrailFloor() {
+	if n := len(vm.trailFloors); n > 0 {
+		vm.trailFloors = vm.trailFloors[:n-1]
+	}
+}
+
+// trailFloor is the effective undo frontier: the max over every live
+// boundary (the youngest choice point's VarFloor plus every bare-mark
+// frontier). A binding is safe to skip only if it is younger than ALL
+// live boundaries, i.e. its Idx is >= this maximum. NextVarId is
+// monotonic so the youngest CP carries the highest CP VarFloor; the
+// trailFloors stack is scanned in full because backtrack can push a
+// CP frontier that is lower than an already-active bare-mark frontier.
+func (vm *WamState) trailFloor() int {
+	floor := 0
+	if n := len(vm.ChoicePoints); n > 0 {
+		if f := vm.ChoicePoints[n-1].VarFloor; f > floor {
+			floor = f
+		}
+	}
+	for _, f := range vm.trailFloors {
+		if f > floor {
+			floor = f
+		}
+	}
+	return floor
+}
+
+// shouldSkipTrail decides whether a binding of the variable at addr can
+// skip the trail. Skippable iff conditional trailing is on, the variable
+// is not a driver-minted output cell ([10000,11000), which is bound and
+// read back across boundaries by the shim / probe mains), there is a
+// live boundary (floor > 0), and the variable is younger than every live
+// boundary (addr >= floor). Register-index-range vars (Idx < 1000, used
+// by lowered code) are always trailed because addr < floor.
+func (vm *WamState) shouldSkipTrail(addr int) bool {
+	if vm.forceFullTrail {
+		return false
+	}
+	if addr >= 10000 && addr < 11000 {
+		return false
+	}
+	floor := vm.trailFloor()
+	if floor <= 0 {
+		return false
+	}
+	return addr >= floor
+}
+
 func (vm *WamState) trailBinding(addr int) {
+	if vm.shouldSkipTrail(addr) {
+		return
+	}
 	old := vm.getBinding(addr)
 	vm.Trail = append(vm.Trail, TrailEntry{Addr: addr, Old: old, HadOld: old != nil, RegIdx: -1})
 	vm.TrailLen++
@@ -533,14 +643,15 @@ func (vm *WamState) bindUnbound(u *Unbound, val Value) {
 	vm.setBinding(u.Idx, val)
 	for idx, reg := range vm.Regs {
 		if reg == u {
-			// Trail the rewrite so backtrack restores this register to the
-			// (now-unbound) variable cell. Without this, a register that
-			// aliased u keeps the stale bound value after backtrack and a
-			// later rebind of u (e.g. a generator yielding its next
-			// solution) never reaches it -- which made forall over a
-			// generator see only the first element.
-			vm.Trail = append(vm.Trail, TrailEntry{RegIdx: idx, RegOld: reg})
-			vm.TrailLen++
+			// Rewrite every register aliasing u to the bound value so
+			// later reads (esp. the store lane, which reads register
+			// values directly) see the binding. The rewrite is NO LONGER
+			// trailed: complete register snapshots (A+X+Y) at every
+			// backtrack boundary restore aliasing registers to their
+			// pre-bind variable cell, making the per-alias TrailEntry
+			// redundant. A generator that rebinds u on its next solution
+			// works because the boundary snapshot put Regs[idx] back to
+			// Unbound{u} before the rebind.
 			vm.Regs[idx] = val
 		}
 	}
@@ -575,80 +686,101 @@ func (vm *WamState) trailTrimTo(mark int) {
 	vm.TrailLen = mark
 }
 
-// snapshotAllRegs captures the used A-register range plus the used
-// portion of the Y-register range (Regs[200..vm.MaxYReg]). The
-// X-register range (Regs[100..199]) is intentionally skipped — X-regs
-// are clause-local in the codegen, so the next clause's head writes
-// whatever X-regs it needs and stale leftovers from the failed clause
-// never get touched. Y-regs *do* need saving because env trimming
-// stores Y-regs at *Allocate* time (caller's outer Y-regs) — at
-// TryMeElse time the caller's *current* Y-regs only exist in the CP
-// snapshot.
+// snapshotAllRegs captures the used A-register range, the used
+// X-register range (Regs[100..vm.MaxXReg]) and the used portion of the
+// Y-register range (Regs[200..vm.MaxYReg]).
+//
+// X-regs used to be skipped as clause-local, with the reg-alias trail
+// entries appended by bindUnbound doing the register restoration on
+// backtrack instead. Complete snapshots (A + X + Y at every backtrack
+// boundary) make that reg-alias trail redundant, so X-regs are now
+// captured too. Y-regs *do* need saving because env trimming stores
+// Y-regs at *Allocate* time (caller's outer Y-regs) — at TryMeElse time
+// the caller's *current* Y-regs only exist in the CP snapshot.
 //
 // The A range is sized by vm.MaxAReg, floored at 8. It used to be a
 // hard Regs[0..7]: A-registers live at Regs[0..99] (A(N) -> N-1), so
 // everything from A9 up was silently outside the snapshot and was
-// never restored on backtracking. A predicate of arity > 8 — the
-// portable parser's parse_op_loop/10, for instance — lost arguments
-// the moment it tried its second clause. Sizing by the high-water mark
-// keeps the common arity<=8 case exactly as cheap as before.
+// never restored on backtracking. Sizing by the high-water mark keeps
+// the common arity<=8 case exactly as cheap as before.
 //
 // Layout in the returned slice:
-//   - saved[0]                   := acount (as *Integer)
-//   - saved[1 .. 1+acount)       := vm.Regs[0..acount)        (A regs)
-//   - saved[1+acount .. ]        := vm.Regs[200..200+ycount)  (Y regs)
+//   - saved[0]                          := acount (as *Integer)
+//   - saved[1]                          := xcount (as *Integer)
+//   - saved[2 .. 2+acount)              := vm.Regs[0..acount)          (A)
+//   - saved[2+acount .. 2+acount+xcount)     := vm.Regs[100..100+xcount)   (X)
+//   - saved[2+acount+xcount .. ]        := vm.Regs[200..200+ycount)   (Y)
 //
-// where acount := max(8, vm.MaxAReg) and ycount := max(0, MaxYReg-200).
-// acount is stored rather than implied because restoreSavedRegs has to
-// split the slice, and MaxAReg may have grown since the push.
+// where acount := max(8, vm.MaxAReg), xcount := max(0, MaxXReg-100) and
+// ycount := max(0, MaxYReg-200). acount and xcount are stored (not
+// implied) because restoreSavedRegs has to split the slice and the
+// high-water marks may have grown since the push.
 func (vm *WamState) snapshotAllRegs() []Value {
 	acount := vm.MaxAReg
 	if acount < 8 {
 		acount = 8
 	}
+	xcount := vm.MaxXReg - 100
+	if xcount < 0 {
+		xcount = 0
+	}
 	ycount := vm.MaxYReg - 200
 	if ycount < 0 {
 		ycount = 0
 	}
-	saved := make([]Value, 1+acount+ycount)
+	saved := make([]Value, 2+acount+xcount+ycount)
 	saved[0] = &Integer{Val: int64(acount)}
-	copy(saved[1:1+acount], vm.Regs[:acount])
+	saved[1] = &Integer{Val: int64(xcount)}
+	copy(saved[2:2+acount], vm.Regs[:acount])
+	if xcount > 0 {
+		copy(saved[2+acount:2+acount+xcount], vm.Regs[100:100+xcount])
+	}
 	if ycount > 0 {
-		copy(saved[1+acount:], vm.Regs[200:200+ycount])
+		copy(saved[2+acount+xcount:], vm.Regs[200:200+ycount])
 	}
 	return saved
 }
 
 // restoreSavedRegs is the dual of snapshotAllRegs. The snapshot
-// captures up to MaxYReg-at-push-time; vm.MaxYReg may have grown
-// since (the failed clause wrote new Y-regs). Those "post-push"
-// Y-regs were nil at push time and need to be cleared back to nil
-// here, otherwise they'd leak failed-clause values into the next
-// clause's body. Without the clear, the bench had Velocity at
-// 1.602159 vs the post-Phase-D 1.601079 — a Y-reg from a longer
-// recursion path was bleeding into a shorter one. The clear loop
-// is bounded by MaxYReg-since-push (typically 0-2 slots), so it's
-// much cheaper than restoring the full 100-element Y range.
+// captures up to the high-water marks at push time; those marks may
+// have grown since (the failed clause wrote new regs). Registers
+// written between snapshot and now but outside the snapshot's range
+// were nil at push time and must be cleared back to nil here,
+// otherwise they'd leak failed-clause values into the next clause's
+// body. The clear loops are bounded by the growth since push
+// (typically 0-2 slots), so much cheaper than restoring full ranges.
 func (vm *WamState) restoreSavedRegs(saved []Value) {
-	if len(saved) < 1 {
+	if len(saved) < 2 {
 		return
 	}
-	marker, ok := saved[0].(*Integer)
+	amarker, ok := saved[0].(*Integer)
 	if !ok {
 		return
 	}
-	acount := int(marker.Val)
-	if acount < 0 || 1+acount > len(saved) {
+	xmarker, ok := saved[1].(*Integer)
+	if !ok {
 		return
 	}
-	copy(vm.Regs[:acount], saved[1:1+acount])
-	ycount := len(saved) - 1 - acount
-	if ycount > 0 {
-		copy(vm.Regs[200:200+ycount], saved[1+acount:])
+	acount := int(amarker.Val)
+	xcount := int(xmarker.Val)
+	if acount < 0 || xcount < 0 || 2+acount+xcount > len(saved) {
+		return
 	}
-	// Clear A-regs written between snapshot and now but not captured
-	// (they were outside the snapshot's range, so nil at push time).
+	copy(vm.Regs[:acount], saved[2:2+acount])
+	if xcount > 0 {
+		copy(vm.Regs[100:100+xcount], saved[2+acount:2+acount+xcount])
+	}
+	ycount := len(saved) - 2 - acount - xcount
+	if ycount > 0 {
+		copy(vm.Regs[200:200+ycount], saved[2+acount+xcount:])
+	}
+	// Clear A-regs written between snapshot and now but not captured.
 	for i := acount; i < vm.MaxAReg; i++ {
+		vm.Regs[i] = nil
+	}
+	// Same for X-regs.
+	pushMaxX := 100 + xcount
+	for i := pushMaxX; i < vm.MaxXReg; i++ {
 		vm.Regs[i] = nil
 	}
 	// Same for Y-regs.
@@ -674,7 +806,13 @@ type ClauseSnapshot struct {
 }
 
 // LoClauseSnapshot captures the clause-entry state for LoRestoreClause.
+// It also pushes a conditional-trailing floor: the T4 method that owns
+// this snapshot restores clause-entry state (unwindTrailTo) between
+// clause attempts, so bindings of variables older than the snapshot must
+// keep being trailed for the whole method. The lowered emitter pairs
+// this with a `defer vm.popTrailFloor()` right after the call.
 func (vm *WamState) LoClauseSnapshot() ClauseSnapshot {
+	vm.pushTrailFloor()
 	return ClauseSnapshot{
 		savedRegs: vm.snapshotAllRegs(),
 		trailMark: vm.TrailLen,
@@ -757,6 +895,9 @@ func (vm *WamState) copyYSaveStack() [][]Value {
 }
 
 func (vm *WamState) fillBarrier(cp *ChoicePoint) {
+	// Undo frontier for conditional trailing: variables minted after this
+	// point (Idx >= VarFloor) are discarded when this CP unwinds.
+	cp.VarFloor = vm.NextVarId
 	cp.PendingB0 = vm.PendingB0
 	cp.CutB0Stack = vm.copyCutB0Stack()
 	cp.YSaves = vm.copyYSaveStack()
@@ -1012,8 +1153,10 @@ func (vm *WamState) Clone() *WamState {
 		// the failed clause overwrote).
 		MaxYReg:      vm.MaxYReg,
 		MaxAReg:      vm.MaxAReg,
+		MaxXReg:      vm.MaxXReg,
 		forceHeapScan: vm.forceHeapScan,
 		forceFullYSave: vm.forceFullYSave,
+		forceFullTrail: vm.forceFullTrail,
 	}
 	// Deep-copy the var->heap-position index: the clone's Heap is a copy holding
 	// the SAME *Unbound pointers, so the parent's positions are valid for it, but
@@ -1035,6 +1178,9 @@ func (vm *WamState) Clone() *WamState {
 	}
 	if len(vm.CutB0Stack) > 0 {
 		newState.CutB0Stack = append([]int(nil), vm.CutB0Stack...)
+	}
+	if len(vm.trailFloors) > 0 {
+		newState.trailFloors = append([]int(nil), vm.trailFloors...)
 	}
 	return newState
 }
@@ -2038,6 +2184,8 @@ func formatTemplateText(v Value) (string, bool) {
 
 func (vm *WamState) applySelectSolution(solution SelectSolution) bool {
 	mark := vm.TrailLen
+	vm.pushTrailFloor()
+	defer vm.popTrailFloor()
 	if !vm.Unify(vm.getReg(0), solution.Elem) {
 		vm.unwindTrailTo(mark)
 		return false
@@ -2731,6 +2879,7 @@ func (vm *WamState) runGoalPropagating(targetPC int, args []Value) bool {
 	sub.Trail = nil
 	sub.TrailLen = 0
 	sub.ChoicePoints = nil
+	sub.trailFloors = nil
 	sub.Halted = false
 	sub.CurrentStruct = nil
 	sub.CurrentList = nil
@@ -2761,6 +2910,8 @@ func (vm *WamState) runGoalPropagating(targetPC int, args []Value) bool {
 // before Recovery runs, matching ISO.
 func (vm *WamState) builtinCatch(goal Value, catcher Value, recovery Value) (result bool) {
 	mark := vm.TrailLen
+	vm.pushTrailFloor()
+	defer vm.popTrailFloor()
 	cpLen := len(vm.ChoicePoints)
 	savedRegs := vm.snapshotAllRegs()
 
@@ -3349,6 +3500,8 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		after := int64(len(runes)) - end
 		sub := string(runes[start:end])
 		mark := vm.TrailLen
+		vm.pushTrailFloor()
+		defer vm.popTrailFloor()
 		if !vm.Unify(arg4, &Integer{Val: after}) {
 			return false
 		}
@@ -3487,25 +3640,27 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		goal := vm.deref(arg1)
 		f, args := decompose(goal)
 		if f != "" {
-			// Save A-regs temporarily
-			var oldRegs [3]Value
-			for idx := 0; idx < 3; idx++ {
-				oldRegs[idx] = vm.Regs[idx]
-			}
+			// Complete register snapshot: negation is opaque, so every
+			// register the probed goal touches (including bindUnbound
+			// reg-alias rewrites beyond A1-A3) must be rolled back
+			// afterwards. Before complete snapshots this restored only
+			// Regs[0:3] and leaned on the reg-alias trail for the rest;
+			// that trail is being removed.
+			savedRegs := vm.snapshotAllRegs()
 			if len(args) > 0 { vm.Regs[0] = args[0] }
 			if len(args) > 1 { vm.Regs[1] = args[1] }
 			if len(args) > 2 { vm.Regs[2] = args[2] }
 			opName := fmt.Sprintf("%s/%d", f, len(args))
 			trailMark := vm.TrailLen
+			vm.pushTrailFloor()
+			defer vm.popTrailFloor()
 			cpLen := len(vm.ChoicePoints)
 			res := vm.executeBuiltin(opName, len(args))
 			vm.unwindTrailTo(trailMark)
 			if cpLen <= len(vm.ChoicePoints) {
 				vm.ChoicePoints = vm.ChoicePoints[:cpLen]
 			}
-			for idx := 0; idx < 3; idx++ {
-				vm.Regs[idx] = oldRegs[idx]
-			}
+			vm.restoreSavedRegs(savedRegs)
 			if res {
 				return false
 			}
@@ -3551,6 +3706,7 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 				return false
 			}
 			mark := vm.TrailLen
+			vm.pushTrailFloor()
 			savedRegs := vm.snapshotAllRegs()
 			if vm.Unify(arg1, head) {
 				tail = vm.deref(tail)
@@ -3568,9 +3724,11 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 					vm.fillBarrier(&cp)
 					vm.ChoicePoints = append(vm.ChoicePoints, cp)
 				}
+				vm.popTrailFloor()
 				return true
 			}
 			vm.unwindTrailTo(mark)
+			vm.popTrailFloor()
 			v = vm.deref(tail)
 		}
 	case "memberchk/2":
@@ -3584,10 +3742,13 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 				return false
 			}
 			mark := vm.TrailLen
+			vm.pushTrailFloor()
 			if vm.Unify(arg1, head) {
+				vm.popTrailFloor()
 				return true
 			}
 			vm.unwindTrailTo(mark)
+			vm.popTrailFloor()
 			v = vm.deref(tail)
 		}
 	case "select/3":
@@ -3601,6 +3762,8 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		resumePC := vm.PC + 1
 		trailMark := vm.TrailLen
+		vm.pushTrailFloor()
+		defer vm.popTrailFloor()
 		savedRegs := vm.snapshotAllRegs()
 		stackLen := len(vm.Stack)
 		heapTop := vm.HeapLen
@@ -4248,12 +4411,25 @@ func (vm *WamState) builtinPredsort() bool {
 func (vm *WamState) invokeGoalOnce(goal Value) bool {
 	cpMark := len(vm.ChoicePoints)
 	trailMark := vm.TrailLen
+	// Conditional-trailing floor: on failure this unwinds to trailMark,
+	// so bindings of variables older than this point (including ones
+	// from the enclosing clause) must keep being trailed even though the
+	// goal's own choice points are cut to cpMark afterwards.
+	vm.pushTrailFloor()
+	defer vm.popTrailFloor()
+	// Complete register snapshot so the failure path restores every
+	// register the goal may have rewritten (bindUnbound rewrites any
+	// register aliasing a just-bound var). Before complete snapshots
+	// this relied on the reg-alias trail entries; those are being
+	// removed, so the snapshot is the sole restorer now.
+	savedRegs := vm.snapshotAllRegs()
 	ok := vm.invokeGoal(goal, cpMark)
 	if cpMark < len(vm.ChoicePoints) {
 		vm.ChoicePoints = vm.ChoicePoints[:cpMark]
 	}
 	if !ok {
 		vm.unwindTrailTo(trailMark)
+		vm.restoreSavedRegs(savedRegs)
 	}
 	return ok
 }
@@ -4589,6 +4765,14 @@ func (vm *WamState) backtrack() bool {
     // in-place, removing the explicit `vm.ChoicePoints[topIdx] = cp`
     // write-back the value-copy version needed.
     cp := &vm.ChoicePoints[topIdx]
+    // Keep this CP's undo frontier active for the whole resume. A
+    // resumed generator CP (member/select/between/foreign) is truncated
+    // mid-resume, dropping its VarFloor from the choice-point stack while
+    // bindings made during the resume still have to be undoable at
+    // cp.TrailMark on the next candidate; pushing it here (and popping on
+    // return) keeps those bindings trailed.
+    vm.pushTrailFloorAt(cp.VarFloor)
+    defer vm.popTrailFloor()
     vm.restoreBarrier(cp)
     if len(cp.IndexedClausePCs) > 0 {
         vm.unwindTrailTo(cp.TrailMark)
