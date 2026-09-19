@@ -53,6 +53,12 @@ pub type Sym = String;
 #[cfg(feature = "intern")]
 pub use self::interner::{decomp, intern, Decomp, Sym};
 
+// D113: the Sym-producing functor normaliser (see mod interner). Re-exported
+// only when both `intern` (ids exist) and `intern_sym_thread` (the cache exists)
+// are on; otherwise the hot sites fall back to the pre-D113 intern path.
+#[cfg(all(feature = "intern", feature = "intern_sym_thread"))]
+pub use self::interner::functor_sym;
+
 #[cfg(feature = "intern")]
 mod interner {
     use std::collections::HashMap;
@@ -130,6 +136,16 @@ mod interner {
         /// The `str(...)`-stripped canonical text — the fallback return of
         /// `functor_of` (arity mismatch / no `/` / unparsable suffix).
         pub inner: &'static str,
+        /// D113: `intern(name)` — the functor name's interned id, computed ONCE
+        /// here (per functor id) rather than re-hashed on every hot-path
+        /// rebuild. Byte-safe: interning is canonical, so this is the exact
+        /// `Sym` `name.into()` would yield.
+        #[cfg(feature = "intern_sym_thread")]
+        pub name_sym: Sym,
+        /// D113: `intern(inner)` — the Sym analog of `functor_of_sym`'s
+        /// arity-mismatch (`d.inner`) fallback.
+        #[cfg(feature = "intern_sym_thread")]
+        pub inner_sym: Sym,
     }
 
     /// One lazily-filled decomposition slot per id; null until first `decomp`.
@@ -145,12 +161,31 @@ mod interner {
             full
         };
         match inner.rfind('/') {
-            Some(slash) => Decomp {
-                name: &inner[..slash],
-                arity: inner[slash + 1..].parse::<usize>().ok(),
+            Some(slash) => {
+                let name = &inner[..slash];
+                Decomp {
+                    name,
+                    arity: inner[slash + 1..].parse::<usize>().ok(),
+                    inner,
+                    // D113: intern name/inner ONCE here (per functor id), so hot
+                    // construction sites read the id instead of re-hashing the
+                    // name string on every rebuild.
+                    #[cfg(feature = "intern_sym_thread")]
+                    name_sym: Sym(intern(name)),
+                    #[cfg(feature = "intern_sym_thread")]
+                    inner_sym: Sym(intern(inner)),
+                }
+            }
+            None => Decomp {
+                name: inner,
+                arity: None,
                 inner,
+                // No `/`: name == inner, so both ids are `intern(inner)`.
+                #[cfg(feature = "intern_sym_thread")]
+                name_sym: Sym(intern(inner)),
+                #[cfg(feature = "intern_sym_thread")]
+                inner_sym: Sym(intern(inner)),
             },
-            None => Decomp { name: inner, arity: None, inner },
         }
     }
 
@@ -307,6 +342,25 @@ mod interner {
                 drop(unsafe { Box::from_raw(raw) });
                 unsafe { *won }
             }
+        }
+    }
+
+    /// D113: the functor's normalised name as a `Sym` id — the Sym-producing
+    /// analog of `functor_of_sym`. Reads the id straight from the cached
+    /// `Decomp` (`name`/`inner` interned once in `compute_decomp`), so a hot
+    /// construction site builds a `Value::Str` functor WITHOUT re-hashing the
+    /// name string. Byte-identical to `intern(functor_of_sym(f, arity))`:
+    /// `name_sym`/`inner_sym` ARE `intern(name)`/`intern(inner)`, and interning
+    /// is canonical (same name ⟺ same id), so the returned id resolves to the
+    /// exact string the old `functor.into()` produced.
+    #[cfg(feature = "intern_sym_thread")]
+    #[inline]
+    pub fn functor_sym(f: Sym, arity: usize) -> Sym {
+        let d = decomp(f.0);
+        if d.arity == Some(arity) {
+            d.name_sym
+        } else {
+            d.inner_sym
         }
     }
 

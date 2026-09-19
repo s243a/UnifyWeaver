@@ -12,7 +12,7 @@ path = "src/main.rs"
 mimalloc = { version = "0.1", optional = true }
 
 [features]
-default = ["decorate_sort", "intern", "intern_fxhash", "deref_memo", "trail_enum", "store_cache", "mimalloc"]
+default = ["decorate_sort", "intern", "intern_fxhash", "intern_sym_thread", "deref_memo", "trail_enum", "store_cache", "mimalloc"]
 # When off, the sort/msort/keysort/setof builtins fall back to the original
 # `term_compare` (re-deref) path; output is byte-identical to the on build.
 decorate_sort = []
@@ -32,6 +32,19 @@ intern = []
 # Off = the exact pre-D112 SipHash map; the isolated A/B baseline (mimalloc held ON, only this lever toggled) is
 # `--no-default-features --features "decorate_sort intern deref_memo trail_enum store_cache mimalloc"`.
 intern_fxhash = []
+# Hot-path opt #9 (D113): thread interned `Sym` ids through term construction so
+# the hot deref/rebuild sites (deref_heap Str + Ref arms, heap_node_shallow,
+# deref_shallow) build a `Value::Str` functor from a cached id instead of
+# de-interning an existing `Sym` to `&str` and RE-interning it (a round-trip
+# that re-hashes on every rebuild). The functor name/inner are interned ONCE per
+# functor id, cached in the id-keyed `Decomp` (`name_sym`/`inner_sym`), and read
+# back via `crate::value::functor_sym`. Byte-identical BY CONSTRUCTION: the
+# cached id IS `intern(name)`/`intern(inner)`, interning is canonical, so it
+# resolves to the exact string the old `functor.into()` produced. Requires
+# `intern` (ids); a no-op fallback to the pre-D113 intern path otherwise.
+# Default ON. Off = the exact pre-D113 re-intern path, isolated A/B baseline via
+# `--no-default-features --features "decorate_sort intern intern_fxhash deref_memo trail_enum store_cache mimalloc"`.
+intern_sym_thread = []
 # Hot-path opt #5 (D103): cache deref-stability on the Arc-shared Args spine so
 # `deref_heap` skips re-walking + rebuilding already-canonical (ground, no
 # "f/N" functor, no cons-Str) terms. The flag is set ONLY from deref_heap's
