@@ -1059,26 +1059,34 @@ func copyStack(stack []StackEntry) []StackEntry {
 	return stack2
 }
 
+// D115: parse the trailing arity WITHOUT allocating. The old body did
+// strings.Split(f, "/") on every call -- and isConsFunctor calls parseFunctorName
+// on every cons check during list traversal, so strings.genSplit was ~28% of B3
+// allocation OBJECTS. LastIndexByte + a substring slice is byte-identical (the
+// arity is the segment after the LAST '/', exactly parts[len-1]) and allocates
+// nothing (a string slice shares the backing array).
 func parseFunctorArity(f string) int {
 	// Handle str(f/n) format
 	if strings.HasPrefix(f, "str(") && strings.HasSuffix(f, ")") {
 		f = f[4 : len(f)-1]
 	}
-	parts := strings.Split(f, "/")
-	if len(parts) >= 2 {
-		arity, _ := strconv.Atoi(parts[len(parts)-1])
+	if i := strings.LastIndexByte(f, '/'); i >= 0 {
+		arity, _ := strconv.Atoi(f[i+1:])
 		return arity
 	}
 	return 0
 }
 
+// D115: the functor name is everything before the LAST '/' -- exactly
+// strings.Join(parts[:len-1], "/") -- which is the substring f[:i]. Returning
+// the slice is byte-identical (Go strings are immutable; a slice is the same
+// value) and allocates nothing, replacing the old Split+Join.
 func parseFunctorName(f string) string {
 	if strings.HasPrefix(f, "str(") && strings.HasSuffix(f, ")") {
 		f = f[4 : len(f)-1]
 	}
-	parts := strings.Split(f, "/")
-	if len(parts) >= 2 {
-		return strings.Join(parts[:len(parts)-1], "/")
+	if i := strings.LastIndexByte(f, '/'); i >= 0 {
+		return f[:i]
 	}
 	return f
 }
