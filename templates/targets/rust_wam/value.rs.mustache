@@ -59,6 +59,26 @@ mod interner {
     use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
     use std::sync::{OnceLock, RwLock};
 
+    // Hot-path opt (D112): the name->id lookup table. Every `intern(s)` hashes
+    // `s` to probe this map (the construction fast path — deref_heap functor
+    // normalisation, deref_var, copy_term all re-intern name strings). The
+    // D111 post-mimalloc re-profile put that hashing at 8.1% of B3 Ir
+    // (`hash_one` 4.5% + `sip::write` 3.7%) — std's default SipHash, which is
+    // DoS-resistant but ~5-10x slower than a non-cryptographic hash for these
+    // short program-internal names. `intern_fxhash` (default ON) swaps the map
+    // to the crate's existing FxHash (state.rs `FxBuildHasher`). This is
+    // byte-identical BY CONSTRUCTION: a name's id is assigned from the `len`
+    // counter in first-sight order (see `intern`), never from the hash, and the
+    // map is only ever probed with get/insert (its iteration order is never
+    // observed), so the hasher cannot change any id or any output. OFF = the
+    // exact pre-D112 SipHash map; the isolated A/B baseline (mimalloc held ON,
+    // only this lever toggled) is
+    // `--no-default-features --features "decorate_sort intern deref_memo trail_enum store_cache mimalloc"`.
+    #[cfg(feature = "intern_fxhash")]
+    type NameMap = HashMap<&'static str, u32, crate::state::FxBuildHasher>;
+    #[cfg(not(feature = "intern_fxhash"))]
+    type NameMap = HashMap<&'static str, u32>;
+
     // Chunked, never-moving id -> name storage so `resolve` is lock-free and
     // wait-free: a chunk, once published, is never reallocated or freed, and the
     // leaked `&'static str` inside it never moves.
@@ -144,7 +164,7 @@ mod interner {
         len: AtomicU32,
         // name -> id, read-mostly. Read lock is the construction fast path;
         // write lock is taken only when a brand-new name is first interned.
-        map: RwLock<HashMap<&'static str, u32>>,
+        map: RwLock<NameMap>,
     }
 
     fn table() -> &'static Table {
@@ -162,7 +182,7 @@ mod interner {
                 chunks: v.into_boxed_slice(),
                 dchunks: dv.into_boxed_slice(),
                 len: AtomicU32::new(0),
-                map: RwLock::new(HashMap::new()),
+                map: RwLock::new(NameMap::default()),
             }
         })
     }

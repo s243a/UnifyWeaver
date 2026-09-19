@@ -12,7 +12,7 @@ path = "src/main.rs"
 mimalloc = { version = "0.1", optional = true }
 
 [features]
-default = ["decorate_sort", "intern", "deref_memo", "trail_enum", "store_cache", "mimalloc"]
+default = ["decorate_sort", "intern", "intern_fxhash", "deref_memo", "trail_enum", "store_cache", "mimalloc"]
 # When off, the sort/msort/keysort/setof builtins fall back to the original
 # `term_compare` (re-deref) path; output is byte-identical to the on build.
 decorate_sort = []
@@ -22,6 +22,16 @@ decorate_sort = []
 # byte-identical). Off = the pre-intern String path, kept for A/B via
 # `--no-default-features --features decorate_sort`; the two are sha-distinct.
 intern = []
+# Hot-path opt #8 (D112): swap the interner name->id lookup map from std's
+# default SipHash to the crate's FxHash (state.rs `FxBuildHasher`). The D111
+# post-mimalloc re-profile put interner hashing at 8.1% of B3 Ir (`hash_one`
+# 4.5% + `sip::write` 3.7%) -- every `intern()` SipHashes the name string to
+# probe the map. Byte-identical BY CONSTRUCTION: a name's id comes from the
+# `len` first-sight counter, never the hash, and the map's iteration order is
+# never observed, so the hasher cannot change any id or output. Default ON.
+# Off = the exact pre-D112 SipHash map; the isolated A/B baseline (mimalloc held ON, only this lever toggled) is
+# `--no-default-features --features "decorate_sort intern deref_memo trail_enum store_cache mimalloc"`.
+intern_fxhash = []
 # Hot-path opt #5 (D103): cache deref-stability on the Arc-shared Args spine so
 # `deref_heap` skips re-walking + rebuilding already-canonical (ground, no
 # "f/N" functor, no cons-Str) terms. The flag is set ONLY from deref_heap's
@@ -73,7 +83,13 @@ store_lmdb = []
 # C source; no system lib needed) gated behind this feature via Cargo's
 # `dep:mimalloc` syntax, exactly like `store_lmdb` above, so an OFF build
 # (`--no-default-features --features "decorate_sort intern deref_memo trail_enum store_cache"`)
-# never fetches or compiles the mimalloc crate at all. Default ON. The
+# never fetches or compiles the mimalloc crate at all. OFF by default in the
+# generator so a plain generated crate has no external deps and builds under
+# `cargo build --offline` (the conformance-smoke invariant); the pkg_resolver
+# benches opt in via the `mimalloc(true)` build option, which flips this line to
+# `mimalloc = ["dep:mimalloc"]` and adds "mimalloc" to `default`. When off the
+# feature is emitted empty (`mimalloc = []`) and the optional dep line is
+# omitted, so cargo never resolves mimalloc from the registry index. The
 # `#[global_allocator]` static itself lives in each BINARY crate root (never
 # lib.rs) -- src/main.rs (the `bench` bin) and the hand-written shim
 # `src/bin/uw_resolve/main.rs` / `src/bin/uw_resolve_store/main.rs` -- each
