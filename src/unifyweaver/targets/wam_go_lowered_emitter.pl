@@ -365,6 +365,7 @@ emit_multi_clause_n_go(FuncName, Pred, Arity, Instrs, GoLines) :-
 func (vm *WamState) ~w() bool {', [FuncName, Pred, Arity, FuncName]),
     with_output_to(string(Body),
         ( format("    _t4 := vm.LoClauseSnapshot()~n"),
+          format("    defer vm.popTrailFloor()  // pairs with LoClauseSnapshot pushTrailFloor~n"),
           emit_go_clauses(Clauses),
           format("    return false~n") )),
     format(string(Footer), '}', []),
@@ -508,6 +509,8 @@ emit_ite_block(CondInstrs, ThenInstrs, ElseInstrs, I) :-
     format("~w// if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)~n", [I]),
     format("~w{~n", [I]),
     format("~w    _trailMark := vm.TrailLen~n", [I]),
+    format("~w    vm.pushTrailFloor()  // conditional-trailing floor for the else-branch unwind~n", [I]),
+    format("~w    defer vm.popTrailFloor()~n", [I]),
     format("~w    _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it~n", [I]),
     format("~w    _condOk := func() bool {~n", [I]),
     emit_instrs(CondInstrs, InnerInd),
@@ -551,7 +554,7 @@ emit_one(get_constant(CStr, AiStr), I) :-
     format("~w    if _, ok := _a.(*Unbound); ok {~n", [I]),
     format("~w        u := _a.(*Unbound)~n", [I]),
     format("~w        vm.trailBinding(u.Idx)~n", [I]),
-    format("~w        vm.Regs[u.Idx] = ~w~n", [I, GoVal]),
+    format("~w        vm.putReg(u.Idx, ~w)~n", [I, GoVal]),
     format("~w    } else if !valueEquals(vm.deref(_a), ~w) {~n", [I, GoVal]),
     format("~w        return false~n", [I]),
     format("~w    }~n", [I]),
@@ -565,7 +568,7 @@ emit_one(get_integer(NStr, AiStr), I) :-
     format("~w    if _, ok := _a.(*Unbound); ok {~n", [I]),
     format("~w        u := _a.(*Unbound)~n", [I]),
     format("~w        vm.trailBinding(u.Idx)~n", [I]),
-    format("~w        vm.Regs[u.Idx] = &Integer{Val: ~w}~n", [I, NStr]),
+    format("~w        vm.putReg(u.Idx, &Integer{Val: ~w})~n", [I, NStr]),
     format("~w    } else if !valueEquals(vm.deref(_a), &Integer{Val: ~w}) {~n", [I, NStr]),
     format("~w        return false~n", [I]),
     format("~w    }~n", [I]),
@@ -580,7 +583,7 @@ emit_one(get_nil(AiStr), I) :-
     format("~w    if _, ok := _a.(*Unbound); ok {~n", [I]),
     format("~w        u := _a.(*Unbound)~n", [I]),
     format("~w        vm.trailBinding(u.Idx)~n", [I]),
-    format("~w        vm.Regs[u.Idx] = ~w~n", [I, NilVar]),
+    format("~w        vm.putReg(u.Idx, ~w)~n", [I, NilVar]),
     format("~w    } else if !valueEquals(vm.deref(_a), ~w) {~n", [I, NilVar]),
     format("~w        return false~n", [I]),
     format("~w    }~n", [I]),
@@ -589,7 +592,7 @@ emit_one(get_nil(AiStr), I) :-
 emit_one(get_variable(XnStr, AiStr), I) :-
     go_reg_idx(XnStr, Xn), go_reg_idx(AiStr, Ai),
     format("~w// get_variable ~w, ~w~n", [I, XnStr, AiStr]),
-    format("~wvm.Regs[~w] = vm.Regs[~w]~n", [I, Xn, Ai]).
+    format("~wvm.putReg(~w, vm.Regs[~w])~n", [I, Xn, Ai]).
 
 emit_one(get_value(XnStr, AiStr), I) :-
     go_reg_idx(XnStr, Xn), go_reg_idx(AiStr, Ai),
@@ -619,7 +622,7 @@ emit_one(put_constant(CStr, AiStr), I) :-
     go_reg_idx(AiStr, Ai),
     go_val_literal(CStr, GoVal),
     format("~w// put_constant ~w, ~w~n", [I, CStr, AiStr]),
-    format("~wvm.Regs[~w] = ~w~n", [I, Ai, GoVal]).
+    format("~wvm.putReg(~w, ~w)~n", [I, Ai, GoVal]).
 
 emit_one(put_variable(XnStr, AiStr), I) :-
     go_reg_idx(XnStr, Xn), go_reg_idx(AiStr, Ai),
@@ -627,13 +630,13 @@ emit_one(put_variable(XnStr, AiStr), I) :-
     format("~w{~n", [I]),
     format("~w    v := &Unbound{Name: fmt.Sprintf(\"_R%d\", ~w), Idx: ~w}~n", [I, Xn, Xn]),
     format("~w    vm.putReg(~w, v)~n", [I, Xn]),
-    format("~w    vm.Regs[~w] = v~n", [I, Ai]),
+    format("~w    vm.putReg(~w, v)~n", [I, Ai]),
     format("~w}~n", [I]).
 
 emit_one(put_value(XnStr, AiStr), I) :-
     go_reg_idx(XnStr, Xn), go_reg_idx(AiStr, Ai),
     format("~w// put_value ~w, ~w~n", [I, XnStr, AiStr]),
-    format("~wvm.Regs[~w] = vm.getReg(~w)~n", [I, Ai, Xn]).
+    format("~wvm.putReg(~w, vm.getReg(~w))~n", [I, Ai, Xn]).
 
 emit_one(put_structure(FStr, AiStr), I) :-
     go_reg_idx(AiStr, Ai),
