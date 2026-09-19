@@ -4531,6 +4531,25 @@ impl WamState {
         Self::functor_of(f, arity)
     }
 
+    /// D113: the normalised functor of `f` as a `Sym`, for building a
+    /// `Value::Str` without re-interning. Every hot construction site that used
+    /// to do `functor_of_sym(f, arity).into()` (or `strv(functor_of_sym(...))`)
+    /// — an id → &str (de-intern) → id (re-hash) round-trip on a `Sym` already
+    /// in hand — routes through here instead. Byte-identical to that round-trip:
+    /// with the cache on it reads the id from the `Decomp` (`crate::value::functor_sym`,
+    /// interned once per functor id); off it interns `functor_of_sym`'s &str
+    /// exactly as before. The two are sha-distinct binaries for a clean A/B.
+    #[cfg(all(feature = "intern", feature = "intern_sym_thread"))]
+    #[inline]
+    fn functor_sym_for(f: &crate::value::Sym, arity: usize) -> crate::value::Sym {
+        crate::value::functor_sym(*f, arity)
+    }
+    #[cfg(not(all(feature = "intern", feature = "intern_sym_thread")))]
+    #[inline]
+    fn functor_sym_for(f: &crate::value::Sym, arity: usize) -> crate::value::Sym {
+        Self::functor_of_sym(f, arity).into()
+    }
+
     /// Materialise the heap node whose header sits at `addr` — ONE level: the
     /// argument cells are read straight out of `heap[addr+1..]` and are NOT
     /// dereferenced. `None` when that slot does not hold a structure header.
@@ -4565,7 +4584,9 @@ impl WamState {
         let d = crate::value::decomp(sym.0);
         let arity = d.arity?;
         let args = self.heap_subargs(addr + 1, arity);
-        Some(Value::strv(d.name, args))
+        // D113: build the functor from its cached Sym id (== intern(d.name))
+        // instead of re-interning d.name here.
+        Some(Value::strv(Self::functor_sym_for(&sym, arity), args))
     }
 
     /// Resolve a cell ONE level and hand it back owned: follow the
@@ -4589,7 +4610,9 @@ impl WamState {
                     if f.len() == full.len() {
                         return c.clone();
                     }
-                    return Value::Str(f.to_string().into(), args.clone());
+                    // D113: normalised functor from its cached Sym id — no
+                    // `.to_string()` alloc and no re-hash (was `f.to_string().into()`).
+                    return Value::Str(Self::functor_sym_for(full, args.len()), args.clone());
                 }
                 Value::Ref(_) => c.clone(),
                 other => return other.clone(),
@@ -4882,7 +4905,8 @@ impl WamState {
                         return if functor == full_str.as_str() {
                             val.clone()
                         } else {
-                            Value::Str(functor.into(), args.clone())
+                            // D113: cached functor id, no re-hash (was functor.into()).
+                            Value::Str(Self::functor_sym_for(full_str, args.len()), args.clone())
                         };
                     }
                 }
@@ -4942,11 +4966,12 @@ impl WamState {
                         if functor == full_str.as_str() {
                             val.clone()
                         } else {
-                            // Intern the normalised functor directly from the
-                            // &str -- no intermediate String allocation (this is
-                            // the deref_heap functor-String site D94 flagged as
-                            // 93% of B3 deref_heap allocations).
-                            Value::Str(functor.into(), args.clone())
+                            // D113: normalised functor from its cached Sym id,
+                            // no re-hash. (Pre-D113 this interned the &str
+                            // directly -- the deref_heap functor-String site D94
+                            // flagged as 93% of B3 deref_heap allocations, since
+                            // eliminated; this removes the residual re-hash too.)
+                            Value::Str(Self::functor_sym_for(full_str, args.len()), args.clone())
                         }
                     }
                     Some(acc) => {
@@ -4961,7 +4986,8 @@ impl WamState {
                                 args.mark_not_stable();
                             }
                         }
-                        Value::strv(functor, acc)
+                        // D113: cached functor id, no re-hash (was strv(functor, ..)).
+                        Value::strv(Self::functor_sym_for(full_str, args.len()), acc)
                     }
                 }
             }
@@ -5034,7 +5060,9 @@ impl WamState {
                             let derefed: Vec<Value> = args.iter()
                                 .map(|a| self.deref_heap(a))
                                 .collect();
-                            return Value::strv(functor, derefed);
+                            // D113: cached functor id (== intern(functor), the
+                            // parsed arity always matches d.arity here), no re-hash.
+                            return Value::strv(Self::functor_sym_for(full_str, arity), derefed);
                         }
                     }
                 }
