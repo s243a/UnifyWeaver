@@ -105,7 +105,7 @@ type ChoicePoint struct {
 	// so a neck-cut still sees the B0 that was live at this CP.
 	PendingB0    int
 	CutB0Stack   []int
-	YSaves       [][100]Value
+	YSaves       [][]Value
 	// Levels: if-then-else barrier levels captured by `get_level Yn`,
 	// keyed by the Y-register index the shared emitter named. nil until
 	// a barrier is actually recorded (most choice points never carry one).
@@ -283,7 +283,7 @@ type WamState struct {
 	// `vm.PC = labels["p/4"]; vm.Run()`, which pushes no Y save — is
 	// NOT covered, which is why the if-then-else barrier does not live
 	// in a register at all any more (see ChoicePoint.Levels).
-	YSaves       [][100]Value
+	YSaves       [][]Value
 	// PendingLevel* park the barrier level captured by a `get_level Yn`
 	// that sits immediately before an if-then-else `try_me_else`, so the
 	// choice point that try_me_else is about to push can own it. The
@@ -367,6 +367,12 @@ type WamState struct {
 	// maintenance, so ON (map, default) vs OFF (scan) is a clean A/B and a
 	// correctness fallback. Set once from the UW_GO_HEAPSCAN=1 env var.
 	forceHeapScan bool
+	// forceFullYSave (D116) makes pushYSave store the full 100-slot Y range
+	// instead of sizing to MaxYReg-200, for a clean A/B of the slot-sizing win
+	// (and a fallback). Set once from UW_GO_YSAVE_FULL=1. Output is identical
+	// either way -- popYSave/invokeAtPC restore len(entry) slots and clear the
+	// tail to nil regardless (mirroring restoreSavedRegs).
+	forceFullYSave bool
 }
 
 // allocVarId returns a fresh, globally-unique Idx for a new logical
@@ -413,11 +419,11 @@ func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
 
 func NewWamState(code []Instruction, labels map[string]int) *WamState {
 	ctx := NewWamContext(code, labels)
-	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1, heapVarPos: make(map[*Unbound][]int), forceHeapScan: os.Getenv("UW_GO_HEAPSCAN") == "1"}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1, heapVarPos: make(map[*Unbound][]int), forceHeapScan: os.Getenv("UW_GO_HEAPSCAN") == "1", forceFullYSave: os.Getenv("UW_GO_YSAVE_FULL") == "1"}
 }
 
 func NewWamStateFromCtx(ctx *WamContext) *WamState {
-	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1, heapVarPos: make(map[*Unbound][]int), forceHeapScan: os.Getenv("UW_GO_HEAPSCAN") == "1"}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1, heapVarPos: make(map[*Unbound][]int), forceHeapScan: os.Getenv("UW_GO_HEAPSCAN") == "1", forceFullYSave: os.Getenv("UW_GO_YSAVE_FULL") == "1"}
 }
 
 // RunParallel executes multiple seeds in parallel, each with their own
@@ -735,11 +741,17 @@ func (vm *WamState) copyCutB0Stack() []int {
 	return out
 }
 
-func (vm *WamState) copyYSaveStack() [][100]Value {
+// copyYSaveStack (D116): copy only the outer slice of headers. Each entry is a
+// write-once []Value (created by copy in pushYSave, thereafter only read), so
+// sharing the backing arrays between vm.YSaves and a choice point is
+// observationally identical to the old deep value-copy of [100]Value arrays --
+// but costs depth*header instead of depth*1600 bytes. The outer slice is a
+// fresh make() so a later append to vm.YSaves never perturbs the CP's snapshot.
+func (vm *WamState) copyYSaveStack() [][]Value {
 	if len(vm.YSaves) == 0 {
 		return nil
 	}
-	out := make([][100]Value, len(vm.YSaves))
+	out := make([][]Value, len(vm.YSaves))
 	copy(out, vm.YSaves)
 	return out
 }
@@ -772,7 +784,9 @@ func (vm *WamState) restoreBarrier(cp *ChoicePoint) {
 		vm.CutB0Stack = nil
 	}
 	if cp.YSaves != nil {
-		vm.YSaves = make([][100]Value, len(cp.YSaves))
+		// D116: fresh outer slice (so future appends to vm.YSaves don't touch
+		// the CP), sharing the write-once entry backings via header copy.
+		vm.YSaves = make([][]Value, len(cp.YSaves))
 		copy(vm.YSaves, cp.YSaves)
 	} else {
 		vm.YSaves = nil
@@ -837,9 +851,22 @@ func (vm *WamState) lookupIteLevel(reg int) (int, bool) {
 	return 0, false
 }
 
+// pushYSave (D116): snapshot only the Y-regs the program actually uses
+// (Regs[200:MaxYReg]) instead of the full fixed 100-slot range. MaxYReg is a
+// monotonic high-water, so slots >= MaxYReg were never written and are nil --
+// the same value the old full-100 copy captured for them. popYSave restores the
+// captured slots and clears the tail to nil, so output is byte-identical. Entry
+// is a write-once []Value shared by choice-point snapshots (see copyYSaveStack).
 func (vm *WamState) pushYSave() {
-	var s [100]Value
-	copy(s[:], vm.Regs[200:300])
+	n := vm.MaxYReg - 200
+	if n < 0 {
+		n = 0
+	}
+	if vm.forceFullYSave {
+		n = 100
+	}
+	s := make([]Value, n)
+	copy(s, vm.Regs[200:200+n])
 	vm.YSaves = append(vm.YSaves, s)
 }
 
@@ -850,7 +877,14 @@ func (vm *WamState) popYSave() {
 	}
 	s := vm.YSaves[n-1]
 	vm.YSaves = vm.YSaves[:n-1]
-	copy(vm.Regs[200:300], s[:])
+	// Restore the captured slots, then clear any Y-regs the callee wrote above
+	// the snapshot (nil at save time) back to nil -- the "wipe callee's higher Y
+	// writes" guarantee the old full-100 restore provided. Mirrors
+	// restoreSavedRegs' tail-clear.
+	copy(vm.Regs[200:], s)
+	for i := 200 + len(s); i < vm.MaxYReg; i++ {
+		vm.Regs[i] = nil
+	}
 }
 
 // pushCallFrame is WAM Call: snapshot caller Ys and B0, then B0 <- B.
@@ -979,6 +1013,7 @@ func (vm *WamState) Clone() *WamState {
 		MaxYReg:      vm.MaxYReg,
 		MaxAReg:      vm.MaxAReg,
 		forceHeapScan: vm.forceHeapScan,
+		forceFullYSave: vm.forceFullYSave,
 	}
 	// Deep-copy the var->heap-position index: the clone's Heap is a copy holding
 	// the SAME *Unbound pointers, so the parent's positions are valid for it, but
@@ -996,7 +1031,7 @@ func (vm *WamState) Clone() *WamState {
 	copy(newState.Trail, vm.Trail)
 	copy(newState.ChoicePoints, vm.ChoicePoints)
 	if len(vm.YSaves) > 0 {
-		newState.YSaves = append([][100]Value(nil), vm.YSaves...)
+		newState.YSaves = append([][]Value(nil), vm.YSaves...)
 	}
 	if len(vm.CutB0Stack) > 0 {
 		newState.CutB0Stack = append([]int(nil), vm.CutB0Stack...)
@@ -4368,7 +4403,13 @@ func (vm *WamState) invokeAtPC(pc int, args []Value, cutFloor int) bool {
 	vm.Halted = false
 	ok := vm.runUntilHalt(cutFloor)
 	if len(vm.YSaves) > yStart {
-		copy(vm.Regs[200:300], vm.YSaves[yStart][:])
+		// D116: restore the sized entry + clear the callee-dirtied tail to nil
+		// (same discipline as popYSave), then drop frames back to yStart.
+		s := vm.YSaves[yStart]
+		copy(vm.Regs[200:], s)
+		for i := 200 + len(s); i < vm.MaxYReg; i++ {
+			vm.Regs[i] = nil
+		}
 		vm.YSaves = vm.YSaves[:yStart]
 	}
 	if len(vm.CutB0Stack) > savedCutLen {
