@@ -350,6 +350,23 @@ type WamState struct {
 	// error does not take the process down; callers that care can
 	// inspect this after Run returns false.
 	UncaughtBall Value
+	// heapVarPos maps an *Unbound to every heap index at which that exact
+	// pointer was pushed (recorded in heapPush). heapConsAfterUnbound uses it
+	// to jump straight to a var's heap cells instead of scanning the WHOLE heap
+	// per list-traversal step -- the O(heap)-per-step cost that dominated B3
+	// (heapConsAfterUnbound was ~74% cum of the 5k resolve). Keyed by POINTER,
+	// never by Idx: lowered.go mints many distinct *Unbound sharing one Idx, and
+	// the lookup mirrors the scan's own `cell == v` pointer test. Positions are
+	// compacted on read (entries >= HeapLen, or whose slot no longer IS the var
+	// after a heapTrimTo/re-push, are dropped), so no backtrack-time rewind is
+	// needed. Byte-identical to the scan: among live positions (push order ==
+	// ascending heap index, the heap being append-only) it returns the cons
+	// after the first occurrence, exactly as the linear scan did.
+	heapVarPos map[*Unbound][]int
+	// forceHeapScan keeps the original O(heap) linear scan and skips heapVarPos
+	// maintenance, so ON (map, default) vs OFF (scan) is a clean A/B and a
+	// correctness fallback. Set once from the UW_GO_HEAPSCAN=1 env var.
+	forceHeapScan bool
 }
 
 // allocVarId returns a fresh, globally-unique Idx for a new logical
@@ -396,11 +413,11 @@ func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
 
 func NewWamState(code []Instruction, labels map[string]int) *WamState {
 	ctx := NewWamContext(code, labels)
-	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1, heapVarPos: make(map[*Unbound][]int), forceHeapScan: os.Getenv("UW_GO_HEAPSCAN") == "1"}
 }
 
 func NewWamStateFromCtx(ctx *WamContext) *WamState {
-	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1, heapVarPos: make(map[*Unbound][]int), forceHeapScan: os.Getenv("UW_GO_HEAPSCAN") == "1"}
 }
 
 // RunParallel executes multiple seeds in parallel, each with their own
@@ -527,6 +544,18 @@ func (vm *WamState) heapPush(v Value) int {
 	addr := vm.HeapLen
 	vm.Heap = append(vm.Heap, v)
 	vm.HeapLen++
+	// Record where each *Unbound lands so heapConsAfterUnbound can skip the
+	// whole-heap scan. Only when the map path is active. (Every *Unbound that
+	// ever reaches a top-level heap cell does so through here, so the record is
+	// complete -- see heapConsAfterUnbound.)
+	if !vm.forceHeapScan {
+		if u, ok := v.(*Unbound); ok {
+			if vm.heapVarPos == nil {
+				vm.heapVarPos = make(map[*Unbound][]int)
+			}
+			vm.heapVarPos[u] = append(vm.heapVarPos[u], addr)
+		}
+	}
 	return addr
 }
 
@@ -949,6 +978,16 @@ func (vm *WamState) Clone() *WamState {
 		// the failed clause overwrote).
 		MaxYReg:      vm.MaxYReg,
 		MaxAReg:      vm.MaxAReg,
+		forceHeapScan: vm.forceHeapScan,
+	}
+	// Deep-copy the var->heap-position index: the clone's Heap is a copy holding
+	// the SAME *Unbound pointers, so the parent's positions are valid for it, but
+	// the slices must be independent so the clone's compaction doesn't mutate the
+	// parent's. (Without this the sub-VM would see an empty index and
+	// heapConsAfterUnbound would wrongly report "no cons".)
+	newState.heapVarPos = make(map[*Unbound][]int, len(vm.heapVarPos))
+	for k, ps := range vm.heapVarPos {
+		newState.heapVarPos[k] = append([]int(nil), ps...)
 	}
 	newState.Regs = vm.Regs
 	copy(newState.Bindings, vm.Bindings)
@@ -1229,7 +1268,59 @@ func rawListHeadTail(list *List) (Value, Value, bool) {
 	return list.Elements[0], &List{Elements: list.Elements[1:]}, true
 }
 
+// heapConsAfterUnbound: does an unbound var `v` sit in a heap cell whose
+// immediately-following cell derefs to a cons ([H|T], "."/"[|]" arity 2)? If so
+// return that cons. This reconstructs a list spine from heap adjacency for the
+// cases the put_structure bind-through misses (A-registers, embedded unbound
+// tails). Fast path (default): consult heapVarPos, which records exactly the
+// heap indices at which this `*Unbound` was pushed, so we test only those cells'
+// `+1` neighbours instead of scanning the whole heap. Byte-identical to the scan
+// (heapConsAfterUnboundScan): live positions are in ascending heap-index order,
+// so the first with a cons after it is the one the scan would have returned.
 func (vm *WamState) heapConsAfterUnbound(v *Unbound) (Value, bool) {
+	if vm.forceHeapScan {
+		return vm.heapConsAfterUnboundScan(v)
+	}
+	positions := vm.heapVarPos[v]
+	if len(positions) == 0 {
+		return nil, false
+	}
+	// Filter stale positions in place (heapTrimTo may have cut past them, or a
+	// trimmed slot may since hold a different value) while finding the cons after
+	// the first live occurrence.
+	live := positions[:0]
+	var result Value
+	found := false
+	for _, i := range positions {
+		if i >= vm.HeapLen || vm.Heap[i] != v {
+			continue // stale: drop
+		}
+		live = append(live, i)
+		if !found && i+1 < vm.HeapLen {
+			next := vm.deref(vm.Heap[i+1])
+			switch t := next.(type) {
+			case *Compound:
+				if isConsFunctor(t.Functor) && len(t.Args) == 2 {
+					result, found = next, true
+				}
+			case *Structure:
+				if isConsFunctor(t.Functor) && len(t.Args) == 2 {
+					result, found = next, true
+				}
+			}
+		}
+	}
+	if len(live) == 0 {
+		delete(vm.heapVarPos, v)
+	} else {
+		vm.heapVarPos[v] = live
+	}
+	return result, found
+}
+
+// heapConsAfterUnboundScan is the original O(heap) linear scan, kept as the
+// UW_GO_HEAPSCAN=1 A/B baseline and correctness fallback.
+func (vm *WamState) heapConsAfterUnboundScan(v *Unbound) (Value, bool) {
 	for i := 0; i < vm.HeapLen; i++ {
 		cell := vm.Heap[i]
 		if cell == v && i+1 < vm.HeapLen {
