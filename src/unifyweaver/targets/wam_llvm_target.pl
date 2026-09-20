@@ -23907,10 +23907,16 @@ check_line_atom:
   br i1 %line_is_atom, label %check_eof, label %fail_line_tag
 
 check_eof:
+  ; EOF by IDENTITY, not text. wam_stream_read_line_transient_value returns a
+  ; successful data record as the reserved transient id 2^62 (text in the shared
+  ; transient buffer) and real end-of-input as the interned end_of_file atom (a
+  ; distinct id). The old check stringified the id and compared the text against "end_of_file",
+  ; so any DATA line whose text was literally "end_of_file" (a transient, id 2^62)
+  ; matched and truncated the input. Comparing the id is exact: the only non-transient
+  ; value the reader returns here is the end_of_file atom = EOF. %line_s is still bound
+  ; (the record body prints $0 from it); only the EOF DECISION changes to the id test.
   %line_s = call i8* @wam_atom_to_string(i64 %line_payload)
-  %eof_s = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof, i32 0, i32 0
-  %eof_cmp = call i32 @strcmp(i8* %line_s, i8* %eof_s)
-  %is_eof = icmp eq i32 %eof_cmp, 0
+  %is_eof = icmp ne i64 %line_payload, 4611686018427387904
   br i1 %is_eof, label %close_stream, label %~w
 
 ~w:
@@ -23989,10 +23995,16 @@ check_line_atom:
   br i1 %line_is_atom, label %check_eof, label %fail_line_tag
 
 check_eof:
+  ; EOF by IDENTITY, not text. wam_stream_read_line_transient_value returns a
+  ; successful data record as the reserved transient id 2^62 (text in the shared
+  ; transient buffer) and real end-of-input as the interned end_of_file atom (a
+  ; distinct id). The old check stringified the id and compared the text against "end_of_file",
+  ; so any DATA line whose text was literally "end_of_file" (a transient, id 2^62)
+  ; matched and truncated the input. Comparing the id is exact: the only non-transient
+  ; value the reader returns here is the end_of_file atom = EOF. %line_s is still bound
+  ; (the record body prints $0 from it); only the EOF DECISION changes to the id test.
   %line_s = call i8* @wam_atom_to_string(i64 %line_payload)
-  %eof_s = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof, i32 0, i32 0
-  %eof_cmp = call i32 @strcmp(i8* %line_s, i8* %eof_s)
-  %is_eof = icmp eq i32 %eof_cmp, 0
+  %is_eof = icmp ne i64 %line_payload, 4611686018427387904
   br i1 %is_eof, label %close_stream, label %~w
 
 ~w:
