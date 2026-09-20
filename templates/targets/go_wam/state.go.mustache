@@ -15,19 +15,18 @@ import (
 )
 
 type TrailEntry struct {
+	// A trail entry records one variable binding to undo on backtrack:
+	// Bindings[Addr] was Old (nil if HadOld is false) before the bind.
+	// D117 removed register-alias trailing (complete register snapshots at
+	// every backtrack boundary now restore aliasing registers), so the former
+	// RegIdx/RegOld register-restore fields are gone -- every entry is a
+	// Bindings-restore. Dropping the two dead fields (an int + a 2-word Value)
+	// shrinks each entry from ~56 to ~24 bytes; the trail is the #2 B3
+	// allocation site and the term lane is GC-bound, so this is a direct
+	// GC-pressure cut. Byte-identical: the undone values are unchanged.
 	Addr   int
 	Old    Value
 	HadOld bool
-	// Register-restore entry: when RegIdx >= 0, this entry records a
-	// register-alias rewrite done by bindUnbound (Regs[RegIdx] was RegOld,
-	// an Unbound, before being rewritten to the bound value). Backtrack
-	// restores Regs[RegIdx] = RegOld so the register goes back to sharing
-	// the (now-unbound) variable cell -- otherwise a register that aliased
-	// a bound var keeps the stale value across backtracking and a later
-	// rebind of the same var doesn't reach it. RegIdx == -1 for the normal
-	// Bindings-restore entry.
-	RegIdx int
-	RegOld Value
 }
 
 type AtomPair struct {
@@ -620,7 +619,7 @@ func (vm *WamState) trailBinding(addr int) {
 		return
 	}
 	old := vm.getBinding(addr)
-	vm.Trail = append(vm.Trail, TrailEntry{Addr: addr, Old: old, HadOld: old != nil, RegIdx: -1})
+	vm.Trail = append(vm.Trail, TrailEntry{Addr: addr, Old: old, HadOld: old != nil})
 	vm.TrailLen++
 }
 
@@ -4968,15 +4967,10 @@ func (vm *WamState) backtrack() bool {
 func (vm *WamState) unwindTrailTo(mark int) {
     for i := vm.TrailLen - 1; i >= mark; i-- {
         entry := vm.Trail[i]
-        if entry.RegIdx >= 0 {
-            // Register-alias rewrite: restore the register to the variable
-            // cell it shared before bindUnbound rewrote it to a value.
-            vm.Regs[entry.RegIdx] = entry.RegOld
-            continue
-        }
-        // setBinding handles the bookkeeping: writing nil reverts an
-        // address to its unbound state, exactly matching the previous
-        // map-based delete-on-!HadOld for the slice rep.
+        // Every trail entry is a Bindings-restore since D117 dropped
+        // register-alias trailing. setBinding handles the bookkeeping:
+        // writing nil reverts an address to its unbound state, exactly
+        // matching the previous map-based delete-on-!HadOld for the slice rep.
         vm.setBinding(entry.Addr, entry.Old)
     }
     vm.Trail = vm.Trail[:mark]
