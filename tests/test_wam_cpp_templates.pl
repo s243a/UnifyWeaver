@@ -80,7 +80,7 @@ test(main_shim_exact_bytes) :-
 test(runtime_source_exact_bytes, [forall(member(Options,
      [[], [cpp_fact_sources([source(edge/2, lmdb('/tmp/phase3b_lmdb'))])]]))]) :-
     wam_cpp_target:compile_wam_runtime_to_cpp(Options, Runtime),
-    string_length(Runtime, 323458),
+    string_length(Runtime, 325284),
     crypto_data_hash(Runtime, Digest, [algorithm(sha256), encoding(utf8)]),
     % Re-baselined after the D43 CallForeign seek dispatch (dispatch_foreign_call
     % / foreign_try_next + the ForeignNextClause case) was re-applied to the
@@ -91,7 +91,9 @@ test(runtime_source_exact_bytes, [forall(member(Options,
     % cut/drain site + the query() side-stack resets; P3 rewrote number_string/2's
     % overflow-tolerant number parse. The +3116 characters are exactly those two
     % source-side fixes (P2 is header-only). Still option-invariant.
-    assertion(Digest == '02d4163853a695550fc7c69d729a1ef33210dd5170b293054c04d8c52e21c880').
+    % The cycle-safe is_list/1 builtin adds 1826 characters to the shared
+    % dispatch template; both runtime option variants still render identically.
+    assertion(Digest == '3e1cdbd62fa84cde45b592eaef76e2612c8dcd97c98eb37edabe2ad954573c9d').
 
 test(program_shell_does_not_rescan_fragments) :-
     cpp_render_template_at_root('templates/targets/cpp_wam', generated_program,
