@@ -1,0 +1,60 @@
+{{match instr}}
+Go bodies for the choice-point instructions of Step(). One case per Go instruction type.
+The Prolog assembler (go_step_case_order/1 in wam_go_templates.pl) owns
+the switch ORDER and the `case *Type:` line. This preamble is discarded
+by the {{match}} engine.
+{{case TryMeElse}}
+        nextPC := 0
+        if pc, ok := vm.Ctx.Labels[i.Label]; ok {
+            nextPC = pc
+        }
+        vm.pushChoicePoint(nextPC, i.Arity)
+        vm.PC++
+        return true
+{{case TryMeElsePc}}
+        vm.pushChoicePoint(i.NextPC, i.Arity)
+        vm.PC++
+        return true
+{{case RetryMeElse}}
+        if pc, ok := vm.Ctx.Labels[i.Label]; ok {
+            if len(vm.ChoicePoints) > 0 {
+                vm.ChoicePoints[len(vm.ChoicePoints)-1].NextPC = pc
+            }
+        }
+        vm.PC++
+        return true
+{{case RetryMeElsePc}}
+        if len(vm.ChoicePoints) > 0 {
+            vm.ChoicePoints[len(vm.ChoicePoints)-1].NextPC = i.NextPC
+        }
+        vm.PC++
+        return true
+{{case TrustMe}}
+        if len(vm.ChoicePoints) > 0 {
+            vm.ChoicePoints = vm.ChoicePoints[:len(vm.ChoicePoints)-1]
+        }
+        vm.PC++
+        return true
+{{case Try}}
+        target, ok := vm.Ctx.Labels[i.Label]
+        if !ok { return false }
+        vm.pushChoicePoint(vm.PC+1, 0)
+        vm.PC = target
+        return true
+{{case Retry}}
+        target, ok := vm.Ctx.Labels[i.Label]
+        if !ok { return false }
+        if len(vm.ChoicePoints) > 0 {
+            vm.ChoicePoints[len(vm.ChoicePoints)-1].NextPC = vm.PC + 1
+        }
+        vm.PC = target
+        return true
+{{case Trust}}
+        target, ok := vm.Ctx.Labels[i.Label]
+        if !ok { return false }
+        if len(vm.ChoicePoints) > 0 {
+            vm.ChoicePoints = vm.ChoicePoints[:len(vm.ChoicePoints)-1]
+        }
+        vm.PC = target
+        return true
+{{/match}}

@@ -28,12 +28,18 @@
     go_render_template_at_root/4,  % +Root, +Id, +Vars, -Text
     go_render_helper_methods/1,    % -HelpersText   (helper section, one final LF stripped)
     go_render_helper_methods_at_root/2,
+    go_step_case_order/1,          % -[GoTypeName,...]   the 50 names, in today's findall order
+    go_step_case_text/2,           % +GoTypeName, -Body  one library case, standalone-trimmed
+    go_step_case_text_at_root/3,   % +Root, +GoTypeName, -Body
+    go_render_step_method/1,       % -StepText           assembled Step() (compile_step_wam_to_go/2)
+    go_render_step_method_at_root/2,
     go_preflight/0,                % load + validate + render every required asset once
     go_with_template_root_for_test/2
 ]).
 
 :- use_module(library(readutil), [read_file_to_string/3]).
 :- use_module(library(filesex), [directory_file_path/3]).
+:- use_module('../core/template_system', [render_template/3]).
 
 :- thread_local test_go_template_root/1.
 
@@ -80,6 +86,47 @@ go_shell_markers(runtime_shell,
      "{{run_loop}}", "{{aggregate}}", "{{foreign_registry}}",
      "{{atom_fact2_sources}}", "{{foreign_results}}", "{{native_kernels}}",
      "{{execute_foreign}}", "{{seek_fact_source}}"]).
+
+% -- Step() switch: shell + five literal-match libraries (design §5.2-§5.4) ---
+%
+% Phase 3 moved the 50 wam_go_case/2 snippets out of wam_go_target.pl into five
+% {{match instr}} library files, one per family. The Prolog order list below
+% owns the switch order and the `case *Type:` line; the library files own only
+% the Go bodies. A body may move between family files without changing output as
+% long as go_step_case_order/1 and the case-set check (union == order) hold.
+go_step_shell_path('step/step_shell.go.mustache').
+
+go_step_library(head_unification,  'step/head_unification.go.mustache').
+go_step_library(body_construction, 'step/body_construction.go.mustache').
+go_step_library(control,           'step/control.go.mustache').
+go_step_library(choice_point,      'step/choice_point.go.mustache').
+go_step_library(indexing,          'step/indexing.go.mustache').
+
+% The five family files, in the order they are loaded and scanned.
+go_step_library_order([head_unification, body_construction, control,
+                       choice_point, indexing]).
+
+% The 50 Go instruction type names in today's findall (= clause) order. THIS is
+% the byte-identity contract for the switch (design §2.4).
+go_step_case_order([
+    % Head Unification (8)
+    'GetConstant', 'GetVariable', 'GetValue', 'GetStructure', 'GetList',
+    'UnifyVariable', 'UnifyValue', 'UnifyConstant',
+    % Body Construction (8)
+    'PutConstant', 'PutVariable', 'PutValue', 'PutStructure', 'PutList',
+    'SetVariable', 'SetValue', 'SetConstant',
+    % Control (20)
+    'Allocate', 'Deallocate', 'Call', 'GetArgInto', 'CallForeign',
+    'CallIndexedAtomFact2', 'CallFactStream', 'CallPc', 'Execute', 'ExecutePc',
+    'Jump', 'JumpPc', 'CutIte', 'GetLevel', 'Cut', 'BeginAggregate',
+    'EndAggregate', 'Proceed', 'BuiltinCall', 'BuiltinExecute',
+    % Choice Point (8)
+    'TryMeElse', 'TryMeElsePc', 'RetryMeElse', 'RetryMeElsePc', 'TrustMe',
+    'Try', 'Retry', 'Trust',
+    % Indexing (6)
+    'SwitchOnConstant', 'SwitchOnConstantPc', 'SwitchOnStructure',
+    'SwitchOnStructurePc', 'SwitchOnConstantA2', 'SwitchOnConstantA2Pc'
+]).
 
 % -- Go-aware tag lint (design §6.4) ----------------------------------------
 %
@@ -257,11 +304,148 @@ go_interleave_slots([Part], [], [Part]) :- !.
 go_interleave_slots([Part|Parts], [Value|Values], [Part, Value|Joined]) :-
     go_interleave_slots(Parts, Values, Joined).
 
+% -- Step libraries: read, scan case tags, validate the case set -------------
+%
+% A library file legitimately contains {{match }}/{{case }} tags, so it is NOT
+% run through go_source_span_clean; instead the adapter reads it, strips its one
+% final LF (like a section), scans its {{case NAME}} tags, and renders each case
+% body through the generic engine's {{match instr}} lookup (design §6.3).
+
+% Read a library file and strip its required single final LF. Never linted for
+% tags (it is a match library, not a static span).
+go_step_library_text_at_root(Root, LibId, Text) :-
+    (   go_step_library(LibId, Relative)
+    ->  true
+    ;   throw(error(domain_error(go_wam_step_library, LibId),
+                    context(go_step_library_text/2, 'unknown Go WAM step library')))
+    ),
+    directory_file_path(Root, Relative, Path),
+    go_read_asset(Path, LibId, step_library, go_step_library_text/2, Raw),
+    (   string_concat(Text, "\n", Raw)
+    ->  true
+    ;   throw(error(go_wam_template_eol(LibId, Path),
+                    context(go_step_library_text/2, LibId)))
+    ).
+
+% All {{case NAME}} tag names in a library text, in file order.
+go_step_case_names_in(Text, Names) :-
+    findall(Name, go_step_case_tag(Text, Name), Names).
+
+go_step_case_tag(Text, Name) :-
+    sub_string(Text, Begin, _, _, "{{case "),
+    Start is Begin + 7,
+    sub_string(Text, Start, _, 0, Tail),
+    once(sub_string(Tail, EndRel, 2, _, "}}")),
+    sub_string(Tail, 0, EndRel, _, ValStr),
+    atom_string(Name, ValStr).
+
+% Load all five libraries in order: lib(Id, Text, CaseNames).
+go_step_libraries_at_root(Root, Libs) :-
+    go_step_library_order(Ids),
+    maplist(go_load_step_library(Root), Ids, Libs).
+
+go_load_step_library(Root, Id, lib(Id, Text, Names)) :-
+    go_step_library_text_at_root(Root, Id, Text),
+    go_step_case_names_in(Text, Names).
+
+% The union of case names across the five files must equal go_step_case_order/1
+% exactly: no duplicate, no missing, no unknown (design §5.4).
+go_validate_step_case_set(Libs) :-
+    findall(Name, (member(lib(_, _, Ns), Libs), member(Name, Ns)), All),
+    (   append(_, [Dup|Rest], All), memberchk(Dup, Rest)
+    ->  throw(error(go_wam_step_case_duplicate(Dup),
+                    context(go_validate_step_case_set/1, Dup)))
+    ;   true
+    ),
+    go_step_case_order(Order),
+    (   member(Missing, Order), \+ memberchk(Missing, All)
+    ->  throw(error(go_wam_step_case_missing(Missing),
+                    context(go_validate_step_case_set/1, Missing)))
+    ;   true
+    ),
+    (   member(Unknown, All), \+ memberchk(Unknown, Order)
+    ->  throw(error(go_wam_step_case_unknown(Unknown),
+                    context(go_validate_step_case_set/1, Unknown)))
+    ;   true
+    ).
+
+% Render one case body from already-loaded libraries. The generic engine's
+% {{match instr}} selects the case; the adapter passes only instr, so Go text
+% (composite literals, bare }}) is never touched. The result is exactly
+% "\n" ++ Body ++ "\n" (the LF after {{case}} and the LF before the next tag);
+% both are stripped to recover today's wam_go_case/2 second argument.
+go_step_case_body_from_libs(Libs, Name, Body) :-
+    (   member(lib(_, Text, Names), Libs), memberchk(Name, Names)
+    ->  true
+    ;   throw(error(go_wam_step_case_missing(Name),
+                    context(go_step_case_text/2, Name)))
+    ),
+    render_template(Text, [instr=Name], Rendered),
+    (   string_concat("\n", Mid, Rendered),
+        string_concat(Body, "\n", Mid),
+        Body \== ""
+    ->  true
+    ;   throw(error(go_wam_step_case_shape(Name),
+                    context(go_step_case_text/2, Name)))
+    ).
+
+% -- Public per-case accessor (design §6.1) ----------------------------------
+go_step_case_text(Name, Body) :-
+    go_template_root(Root),
+    go_step_case_text_at_root(Root, Name, Body).
+
+go_step_case_text_at_root(Root, Name, Body) :-
+    go_step_libraries_at_root(Root, Libs),
+    go_validate_step_case_set(Libs),
+    go_step_case_body_from_libs(Libs, Name, Body).
+
+% -- Step() assembly: five libraries + shell splice (design §6.2, Appendix A) --
+%
+% Prolog owns the order, the `case *Type:` line and the '\n' separator; the
+% library files own the Go bodies; the shell owns the header/footer and the
+% {{cases}} slot. Byte-identical to the old atom-assembled compile_step_wam_to_go/2.
+go_render_step_method(Step) :-
+    go_template_root(Root),
+    go_render_step_method_at_root(Root, Step).
+
+go_render_step_method_at_root(Root, Step) :-
+    go_step_libraries_at_root(Root, Libs),
+    go_validate_step_case_set(Libs),
+    go_step_case_order(Names),
+    maplist(go_step_case_line(Libs), Names, Lines),
+    atomic_list_concat(Lines, '\n', Cases),
+    go_splice_step_shell(Root, Cases, Step).
+
+go_step_case_line(Libs, Name, Line) :-
+    go_step_case_body_from_libs(Libs, Name, Body),
+    format(atom(Line), '    case *~w:\n~w', [Name, Body]).
+
+% Splice the assembled cases into the step shell's single {{cases}} marker. The
+% shell's one final LF is stripped so compile_step_wam_to_go/2 still returns
+% text with no trailing LF (design §7.3).
+go_splice_step_shell(Root, Cases, Step) :-
+    go_step_shell_path(Relative),
+    directory_file_path(Root, Relative, Path),
+    go_read_asset(Path, step_shell, shell, go_render_step_method/1, Raw),
+    (   string_concat(Shell, "\n", Raw)
+    ->  true
+    ;   throw(error(go_wam_template_eol(step_shell, Path),
+                    context(go_render_step_method/1, step_shell)))
+    ),
+    (   go_split_ordered_markers(Shell, ["{{cases}}"], [Before, After]),
+        go_source_span_clean(Before),
+        go_source_span_clean(After)
+    ->  atomics_to_string([Before, Cases, After], "", Step)
+    ;   throw(error(go_wam_template_tags(step_shell, Path),
+                    context(go_render_step_method/1, step_shell)))
+    ).
+
 % -- Preflight (design §6.2: runs BEFORE make_directory_path/1) --------------
 %
 % Loads + lints every required asset and renders the shell once with
 % representative values. A broken template fails here, leaving no directory.
 go_preflight :-
     go_render_helper_methods(_),
+    go_render_step_method(_),
     go_render_template(runtime_shell,
         [package_name="wam", step_method="// preflight"], _).

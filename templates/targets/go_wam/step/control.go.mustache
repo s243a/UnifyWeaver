@@ -1,0 +1,223 @@
+{{match instr}}
+Go bodies for the control instructions of Step(). One case per Go instruction type.
+The Prolog assembler (go_step_case_order/1 in wam_go_templates.pl) owns
+the switch ORDER and the `case *Type:` line. This preamble is discarded
+by the {{match}} engine.
+{{case Allocate}}
+        // Env trimming: PrevE links the new frame back to the previously
+        // active env frame. vm.E moves to the index of the just-pushed
+        // frame so peekEnvFrame is O(1) and Deallocate can walk the
+        // PrevE chain without scanning the stack.
+        env := &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints), CutB0: vm.PendingB0, PrevE: vm.E}
+        // Snapshot the Y-reg range (200..299) into the env frame so a
+        // nested predicate that uses the same slot numbers via
+        // PutVariable doesn't silently clobber the caller's Y-regs.
+        // Restored at Deallocate. Bindings on caller-passed Unbounds
+        // still propagate via the global Bindings[Idx] table — deref
+        // of the restored Y-reg follows that binding, so we don't
+        // lose genuine results, only spurious leftover state.
+        // D119: slot-size the snapshot to the used Y-range (MaxYReg-200,
+        // typically ~10) instead of a full [100]Value, shrinking the EnvFrame
+        // allocation ~1.6 KB -> ~0.2 KB. forceFullEnvY keeps the full-100 save
+        // for the A/B baseline. Deallocate tail-clears to MaxYReg, so both
+        // sizes restore Regs[200:300] identically.
+        ycount := vm.MaxYReg - 200
+        if ycount < 0 {
+            ycount = 0
+        }
+        if vm.forceFullEnvY {
+            ycount = 100
+        }
+        env.SavedYRegs = make([]Value, ycount)
+        copy(env.SavedYRegs, vm.Regs[200:200+ycount])
+        vm.Stack = append(vm.Stack, env)
+        vm.E = len(vm.Stack) - 1
+        vm.PC++
+        return true
+{{case Deallocate}}
+        if vm.E >= 0 && vm.E < len(vm.Stack) {
+            if env, ok := vm.Stack[vm.E].(*EnvFrame); ok {
+                vm.CP = env.CP
+                // D119: restore the slot-sized snapshot and clear the tail up
+                // to MaxYReg (slots >= MaxYReg were never written, so nil). A
+                // lowered-allocated EnvFrame has a nil SavedYRegs (n == 0), so
+                // this clears Regs[200:MaxYReg] -- matching the old full-100
+                // copy of an all-nil array.
+                n := len(env.SavedYRegs)
+                copy(vm.Regs[200:200+n], env.SavedYRegs)
+                for i := 200 + n; i < vm.MaxYReg; i++ {
+                    vm.Regs[i] = nil
+                }
+                prevE := env.PrevE
+                // Physical-pop only if it's safe: the frame must be at
+                // the top of the stack AND no younger choicepoint
+                // references it (env.B0 == current CP count means the
+                // frame was Allocated AFTER the youngest live CP, so
+                // nothing depends on it staying around). Otherwise the
+                // frame stays on the stack — backtrack truncation will
+                // sweep it away when the referencing CPs are
+                // exhausted, and a future Allocate can push above it
+                // because vm.E now points at prevE, not at the dead
+                // frame's slot.
+                if env.B0 >= len(vm.ChoicePoints) && vm.E == len(vm.Stack)-1 {
+                    vm.Stack = vm.Stack[:vm.E]
+                }
+                vm.E = prevE
+            }
+        }
+        vm.PC++
+        return true
+{{case Call}}
+        vm.CP = vm.PC + 1
+        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
+            vm.pushCallFrame()
+            vm.PC = pc
+            return true
+        }
+        if _, ok := vm.Ctx.ForeignNativeKinds[i.Pred]; ok {
+            if vm.executeForeignPredicate(i.Pred, i.Arity) {
+                vm.PC = vm.CP
+                return true
+            }
+            return false
+        }
+        if vm.executeIndexedAtomFact2(i.Pred) {
+            vm.PC = vm.CP
+            return true
+        }
+        if vm.executeBuiltin(i.Pred, i.Arity) {
+            vm.PC = vm.CP
+            return true
+        }
+        vm.warnUnresolved("call", i.Pred)
+        return false
+{{case GetArgInto}}
+        term := vm.deref(vm.getReg(i.Src))
+        var selected Value
+        switch t := term.(type) {
+        case *Compound:
+            if i.Index < 1 || i.Index > len(t.Args) {
+                return false
+            }
+            selected = t.Args[i.Index-1]
+        case *Structure:
+            if i.Index < 1 || i.Index > len(t.Args) {
+                return false
+            }
+            selected = t.Args[i.Index-1]
+        case *List:
+            head, tail, ok := vm.listHeadTail(t)
+            if !ok {
+                return false
+            }
+            if i.Index == 1 {
+                selected = head
+            } else if i.Index == 2 {
+                selected = tail
+            } else {
+                return false
+            }
+        default:
+            return false
+        }
+        vm.trailBinding(i.Dest)
+        vm.putReg(i.Dest, selected)
+        vm.PC++
+        return true
+{{case CallForeign}}
+        return vm.executeForeignPredicate(i.Pred, i.Arity)
+{{case CallIndexedAtomFact2}}
+        return vm.executeIndexedAtomFact2(i.Pred)
+{{case CallFactStream}}
+        return vm.executeCallFactStream(i.Pred)
+{{case CallPc}}
+        vm.CP = vm.PC + 1
+        vm.pushCallFrame()
+        vm.PC = i.TargetPC
+        return true
+{{case Execute}}
+        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
+            vm.enterExecute()
+            vm.PC = pc
+            return true
+        }
+        if _, ok := vm.Ctx.ForeignNativeKinds[i.Pred]; ok {
+            return vm.executeForeignPredicate(i.Pred, 0)
+        }
+        if vm.executeIndexedAtomFact2(i.Pred) {
+            return true
+        }
+        if vm.executeBuiltin(i.Pred, predArityFromName(i.Pred)) {
+            vm.popCallFrame()
+            if vm.CP > 0 {
+                vm.PC = vm.CP
+            } else {
+                vm.Halted = true
+            }
+            return true
+        }
+        vm.warnUnresolved("execute", i.Pred)
+        return false
+{{case ExecutePc}}
+        vm.enterExecute()
+        vm.PC = i.TargetPC
+        return true
+{{case Jump}}
+        if pc, ok := vm.Ctx.Labels[i.Label]; ok {
+            vm.PC = pc
+            return true
+        }
+        return false
+{{case JumpPc}}
+        vm.PC = i.TargetPC
+        return true
+{{case CutIte}}
+        if len(vm.ChoicePoints) > 0 {
+            vm.ChoicePoints = vm.ChoicePoints[:len(vm.ChoicePoints)-1]
+        }
+        vm.PC++
+        return true
+{{case GetLevel}}
+        vm.recordIteLevel(i.Reg)
+        vm.PC++
+        return true
+{{case Cut}}
+        if target, ok := vm.lookupIteLevel(i.Reg); ok {
+            if target >= 0 && target < len(vm.ChoicePoints) {
+                vm.ChoicePoints = vm.ChoicePoints[:target]
+            }
+        }
+        vm.PC++
+        return true
+{{case BeginAggregate}}
+        return vm.executeAggregate(i.AggType, i.ValueReg, i.ResultReg)
+{{case EndAggregate}}
+        vm.PC++
+        return true
+{{case Proceed}}
+        vm.popCallFrame()
+        if vm.CP > 0 {
+            vm.PC = vm.CP
+        } else {
+            vm.Halted = true
+        }
+        return true
+{{case BuiltinCall}}
+        result := vm.executeBuiltin(i.Op, i.Arity)
+        if result {
+            vm.PC++
+        }
+        return result
+{{case BuiltinExecute}}
+        result := vm.executeBuiltin(i.Op, i.Arity)
+        if !result {
+            return false
+        }
+        vm.popCallFrame()
+        if vm.CP > 0 {
+            vm.PC = vm.CP
+        } else {
+            vm.Halted = true
+        }
+        return true
+{{/match}}
