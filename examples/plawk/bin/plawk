@@ -226,11 +226,12 @@ build(File, Out0, KeepLL) :-
         open(LLPath, append, S, [encoding(utf8)]),
         ( nl(S), write(S, DriverIR) ),
         close(S)),
+    plawk_clang_opt(Opt),
     (   plawk_program_uses_lmdb_cache(Program)
     ->  lmdb_c_runtime_file(CFile),
         format(atom(Cmd),
-            'clang -w -O2 ~w ~w -o ~w -lm -llmdb 2>&1', [LLPath, CFile, Out])
-    ;   format(atom(Cmd), 'clang -w -O2 ~w -o ~w -lm 2>&1', [LLPath, Out])
+            'clang -w ~w ~w ~w -o ~w -lm -llmdb 2>&1', [Opt, LLPath, CFile, Out])
+    ;   format(atom(Cmd), 'clang -w ~w ~w -o ~w -lm 2>&1', [Opt, LLPath, Out])
     ),
     process_create(path(sh), ['-c', Cmd],
         [stdout(pipe(CS)), stderr(std), process(Pid)]),
@@ -250,6 +251,25 @@ build(File, Out0, KeepLL) :-
 % A program uses the LMDB cache backend if any declared cache table names
 % it. Such a build links the C LMDB runtime (wam_cache_lmdb.c) and -llmdb;
 % the default file backend links neither.
+% Optimisation level for the final clang invocation, from PLAWK_CLANG_OPT (default
+% -O2). The test suite sets -O0: clang -O2 re-optimising the ~1.1MB bundled runtime
+% IR on every build is the peak-memory cost and most of build wall-time (a suite runs
+% ~4-7x faster at -O0), and tests assert output / exit status / pre-clang IR -- none
+% depend on the opt level, and IR-validity (exit 4) is caught at clang's verify pass,
+% before any optimisation. The value is whitelisted so a stray env setting cannot
+% inject shell text into the command; anything unrecognised falls back to -O2.
+plawk_clang_opt(Opt) :-
+    ( getenv('PLAWK_CLANG_OPT', Raw), plawk_valid_clang_opt(Raw)
+    -> Opt = Raw
+    ;  Opt = '-O2'
+    ).
+
+plawk_valid_clang_opt('-O0').
+plawk_valid_clang_opt('-O1').
+plawk_valid_clang_opt('-O2').
+plawk_valid_clang_opt('-O3').
+plawk_valid_clang_opt('-Os').
+
 plawk_program_uses_lmdb_cache(program(BeginClauses, _, _)) :-
     member(begin(Actions), BeginClauses),
     member(cache_table(_Name, _Path, lmdb), Actions),
