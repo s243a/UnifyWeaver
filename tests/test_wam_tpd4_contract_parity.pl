@@ -191,7 +191,9 @@ test(rust_bfs_parent_sets_not_dfs) :-
     !.
 
 test(go_parent_sets_no_source_seed) :-
-    read_file_string('src/unifyweaver/targets/wam_go_target.pl', S),
+    % Phase 1 template refactor: Go collector bodies moved to
+    % templates/targets/go_wam/runtime/helpers.go.mustache (byte-identical output).
+    read_file_string('templates/targets/go_wam/runtime/helpers.go.mustache', S),
     Pattern = "func (vm *WamState) collectNativeTransitiveParentDistanceResults",
     EndPattern = "func (vm *WamState) collectNativeTransitiveStepParentDistanceResults",
     sub_string(S, Start, _, _, Pattern),
