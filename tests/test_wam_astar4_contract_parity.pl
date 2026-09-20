@@ -226,7 +226,9 @@ test(c_relation_isolation_dynamic_float) :-
     assertion(\+ sub_string(S, _, _, _, "nodes[256]")).
 
 test(go_scala_r_elixir_contract_markers) :-
-    read_file_string('src/unifyweaver/targets/wam_go_target.pl', Go),
+    % Phase 1 template refactor: Go collector bodies moved to
+    % templates/targets/go_wam/runtime/helpers.go.mustache (byte-identical output).
+    read_file_string('templates/targets/go_wam/runtime/helpers.go.mustache', Go),
     assertion(sub_string(Go, _, _, _,
         "docs/design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md")),
     read_file_string('src/unifyweaver/targets/wam_scala_target.pl', Sc),

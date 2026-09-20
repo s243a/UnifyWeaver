@@ -164,7 +164,10 @@ test(rust_bfs_not_per_path) :-
     assertion(sub_string(S, _, _, _, "let mut seen: HashSet<String> = HashSet::new();")).
 
 test(go_does_not_seed_visited_with_source) :-
-    read_file_string('src/unifyweaver/targets/wam_go_target.pl', S),
+    % Phase 1 template refactor: the Go native-kernel collector bodies moved
+    % from wam_go_target.pl into templates/targets/go_wam/runtime/helpers.go.mustache
+    % (byte-identical output). The contract assertions follow the code there.
+    read_file_string('templates/targets/go_wam/runtime/helpers.go.mustache', S),
     assertion(sub_string(S, _, _, _, "collectNativeTransitiveDistanceResults")),
     assertion(sub_string(S, _, _, _,
         "// dist+ (docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md)")),

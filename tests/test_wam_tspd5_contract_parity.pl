@@ -206,7 +206,9 @@ test(rust_bfs_correlated_pairs_not_dfs) :-
     !.
 
 test(go_correlated_pair_sets) :-
-    read_file_string('src/unifyweaver/targets/wam_go_target.pl', S),
+    % Phase 1 template refactor: Go collector bodies moved to
+    % templates/targets/go_wam/runtime/helpers.go.mustache (byte-identical output).
+    read_file_string('templates/targets/go_wam/runtime/helpers.go.mustache', S),
     Pattern = "func (vm *WamState) collectNativeTransitiveStepParentDistanceResults",
     EndPattern = "func (vm *WamState) collectNativeCategoryAncestorHops",
     sub_string(S, Start, _, _, Pattern),

@@ -196,7 +196,9 @@ test(llvm_stream_and_bound_self_are_rplus) :-
         "Strict R+: Source==Target needs a self-loop")).
 
 test(go_handler_seeds_queue_from_neighbors) :-
-    read_file_string('src/unifyweaver/targets/wam_go_target.pl', S),
+    % Phase 1 template refactor: Go collector bodies moved to
+    % templates/targets/go_wam/runtime/helpers.go.mustache (byte-identical output).
+    read_file_string('templates/targets/go_wam/runtime/helpers.go.mustache', S),
     assertion(sub_string(S, _, _, _, "collectNativeTransitiveClosureResults")),
     assertion(sub_string(S, _, _, _,
         "queue := append([]string(nil), adjacency[source]...)")).

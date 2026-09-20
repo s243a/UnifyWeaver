@@ -227,7 +227,9 @@ test(c_relation_isolation_dynamic_stream) :-
         "docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md")).
 
 test(go_scala_r_elixir_contract_markers) :-
-    read_file_string('src/unifyweaver/targets/wam_go_target.pl', Go),
+    % Phase 1 template refactor: Go collector bodies moved to
+    % templates/targets/go_wam/runtime/helpers.go.mustache (byte-identical output).
+    read_file_string('templates/targets/go_wam/runtime/helpers.go.mustache', Go),
     assertion(sub_string(Go, _, _, _,
         "docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md")),
     read_file_string('src/unifyweaver/targets/wam_scala_target.pl', Sc),
