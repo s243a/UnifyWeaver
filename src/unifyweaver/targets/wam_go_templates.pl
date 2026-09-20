@@ -39,6 +39,18 @@
     go_render_ite_shell_at_root/7,
     go_render_head_match/5,         % +Indent, +Comment, +Ai, +GoVal, -Text
     go_render_head_match_at_root/6,
+    go_render_file/3,               % +Id, +Vars, -Text   (go.mod/value/instructions/state/main_bench)
+    go_render_file_at_root/4,
+    go_render_project_lib_header/4,          % +Package, +Imports, +Predicates, -Text
+    go_render_project_lib_header_at_root/5,
+    go_render_project_atoms_with_table/3,    % +Package, +AtomTable, -Text
+    go_render_project_atoms_with_table_at_root/4,
+    go_render_project_atoms_runtime_only/2,  % +Package, -Text
+    go_render_project_atoms_runtime_only_at_root/3,
+    go_render_project_lowered_header/3,       % +Package, +Lowered, -Text
+    go_render_project_lowered_header_at_root/4,
+    go_render_project_main_parallel/3,        % +Module, +Package, -Text
+    go_render_project_main_parallel_at_root/4,
     go_preflight/0,                % load + validate + render every required asset once
     go_with_template_root_for_test/2
 ]).
@@ -67,6 +79,24 @@ go_template_path(lowered_ite,      'lowered/ite.go.mustache').
 % passed through render_template/3 — a Comment holding a placeholder-shaped atom
 % ('{{Ai}}') would otherwise be rescanned by sequential key replacement.
 go_template_path(head_match,       'lowered/head_match.go.mustache').
+
+% Project files (design §8 Phase 4 slice 3). The five variable-render files keep
+% the generic template engine (they carry {{package_name}}/{{date}}/{{module_name}}
+% and no generated Go is spliced into them), read fail-closed through the adapter
+% (no more silent "// Template not found"). The five atom-embedded blocks are
+% spliced (never render_template) so generated Go bodies with literal {{...}} stay
+% literal.
+go_file_template_path(go_mod,       'go.mod.mustache').
+go_file_template_path(value,        'value.go.mustache').
+go_file_template_path(instructions, 'instructions.go.mustache').
+go_file_template_path(state,        'state.go.mustache').
+go_file_template_path(main_bench,   'main_bench.go.mustache').
+
+go_project_path(project_lib,               'project/lib.go.mustache').
+go_project_path(project_atoms_with_table,  'project/atoms_with_table.go.mustache').
+go_project_path(project_atoms_runtime_only,'project/atoms_runtime_only.go.mustache').
+go_project_path(project_lowered,           'project/lowered.go.mustache').
+go_project_path(project_main_parallel,     'project/main_parallel.go.mustache').
 
 % The eight ordered helper sections the runtime shell is spliced from (design
 % docs/proposals/wam_go_template_refactor_design.md §2.3 / §5). Phase 2 split
@@ -187,6 +217,11 @@ go_reserved_marker("{{I}}").
 go_reserved_marker("{{Comment}}").
 go_reserved_marker("{{Ai}}").
 go_reserved_marker("{{GoVal}}").
+% Project-block body markers (Phase 4 slice 3). None appears inside valid Go.
+go_reserved_marker("{{imports}}").
+go_reserved_marker("{{predicates}}").
+go_reserved_marker("{{atom_table}}").
+go_reserved_marker("{{lowered}}").
 
 go_structural_tag("{{#").
 go_structural_tag("{{^").
@@ -642,6 +677,104 @@ go_nonempty_text(Value) :-
     go_text_value(Value),
     Value \== '', Value \== "".
 
+% -- Project files (design §8 Phase 4 slice 3) -------------------------------
+%
+% Fail-closed variable-render for go.mod/value/instructions/state/main_bench.
+% Reads module-relative (no cwd lookup, no silent fallback) then renders through
+% the generic engine — byte-identical to the old read_template_file/2 +
+% render_template/3, minus the "// Template not found" masking.
+go_render_file(Id, Vars, Text) :-
+    go_template_root(Root),
+    go_render_file_at_root(Root, Id, Vars, Text).
+
+go_render_file_at_root(Root, Id, Vars, Text) :-
+    (   go_file_template_path(Id, Relative)
+    ->  true
+    ;   throw(error(domain_error(go_wam_file_template, Id),
+                    context(go_render_file/3, 'unknown Go WAM file template')))
+    ),
+    directory_file_path(Root, Relative, Path),
+    go_read_asset(Path, Id, file, go_render_file/3, Template),
+    render_template(Template, Vars, Text).
+
+% -- Project atom-embedded blocks: spliced, never render_template -------------
+%
+% Ordered-marker splice (like the ITE/head-match fragments): the package/module
+% name and the generated body (imports, predicates, atom table, lowered code) are
+% spliced as values and never rescanned. Byte-identical to the old format/2
+% headers in write_wam_go_project/3.
+go_project_markers(project_lib,
+    ["{{package_name}}", "{{imports}}", "{{predicates}}"]).
+go_project_markers(project_atoms_with_table,
+    ["{{package_name}}", "{{atom_table}}"]).
+go_project_markers(project_atoms_runtime_only,
+    ["{{package_name}}"]).
+go_project_markers(project_lowered,
+    ["{{package_name}}", "{{lowered}}"]).
+go_project_markers(project_main_parallel,
+    ["{{module_name}}",
+     "{{package_name}}", "{{package_name}}", "{{package_name}}",
+     "{{package_name}}", "{{package_name}}", "{{package_name}}"]).
+
+go_render_project_block(Id, Values, Text) :-
+    go_template_root(Root),
+    go_render_project_block_at_root(Root, Id, Values, Text).
+
+go_render_project_block_at_root(Root, Id, Values, Text) :-
+    (   go_project_path(Id, Relative)
+    ->  true
+    ;   throw(error(domain_error(go_wam_project_block, Id),
+                    context(go_render_project_block/3, 'unknown Go WAM project block')))
+    ),
+    (   maplist(go_head_match_slot, Values)
+    ->  true
+    ;   throw(error(domain_error(go_wam_project_block_variables, Values),
+                    context(go_render_project_block/3, Id)))
+    ),
+    directory_file_path(Root, Relative, Path),
+    go_read_asset(Path, Id, project, go_render_project_block/3, Template),
+    go_project_markers(Id, Markers),
+    (   go_split_repeated_markers(Template, Markers, Parts)
+    ->  go_interleave_slots(Parts, Values, Joined),
+        atomics_to_string(Joined, "", Text)
+    ;   throw(error(go_wam_template_tags(Id, Path),
+                    context(go_render_project_block/3, Id)))
+    ).
+
+% Named wrappers (the emitter calls these) -----------------------------------
+go_render_project_lib_header(PackageName, Imports, Predicates, Text) :-
+    go_render_project_block(project_lib, [PackageName, Imports, Predicates], Text).
+go_render_project_lib_header_at_root(Root, PackageName, Imports, Predicates, Text) :-
+    go_render_project_block_at_root(Root, project_lib,
+        [PackageName, Imports, Predicates], Text).
+
+go_render_project_atoms_with_table(PackageName, AtomTable, Text) :-
+    go_render_project_block(project_atoms_with_table, [PackageName, AtomTable], Text).
+go_render_project_atoms_with_table_at_root(Root, PackageName, AtomTable, Text) :-
+    go_render_project_block_at_root(Root, project_atoms_with_table,
+        [PackageName, AtomTable], Text).
+
+go_render_project_atoms_runtime_only(PackageName, Text) :-
+    go_render_project_block(project_atoms_runtime_only, [PackageName], Text).
+go_render_project_atoms_runtime_only_at_root(Root, PackageName, Text) :-
+    go_render_project_block_at_root(Root, project_atoms_runtime_only,
+        [PackageName], Text).
+
+go_render_project_lowered_header(PackageName, Lowered, Text) :-
+    go_render_project_block(project_lowered, [PackageName, Lowered], Text).
+go_render_project_lowered_header_at_root(Root, PackageName, Lowered, Text) :-
+    go_render_project_block_at_root(Root, project_lowered,
+        [PackageName, Lowered], Text).
+
+go_render_project_main_parallel(ModuleName, PackageName, Text) :-
+    go_render_project_block(project_main_parallel,
+        [ModuleName, PackageName, PackageName, PackageName,
+         PackageName, PackageName, PackageName], Text).
+go_render_project_main_parallel_at_root(Root, ModuleName, PackageName, Text) :-
+    go_render_project_block_at_root(Root, project_main_parallel,
+        [ModuleName, PackageName, PackageName, PackageName,
+         PackageName, PackageName, PackageName], Text).
+
 % -- Preflight (design §6.2: runs BEFORE make_directory_path/1) --------------
 %
 % Loads + lints every required asset and renders the shell once with
@@ -654,4 +787,15 @@ go_preflight :-
     go_render_lowered_function("goPreflightFn",
         "// goPreflightFn — lowered from preflight/1", "", _),
     go_render_ite_shell("", "", "", "", "", _),
-    go_render_head_match("    ", "get_constant foo, A1", 0, "goPreflightAtom", _).
+    go_render_head_match("    ", "get_constant foo, A1", 0, "goPreflightAtom", _),
+    % Project files + atom-embedded blocks (slice 3).
+    go_render_file(go_mod, [module_name="uw-preflight"], _),
+    go_render_file(value, [package_name="wam", date="preflight"], _),
+    go_render_file(instructions, [package_name="wam", date="preflight"], _),
+    go_render_file(state, [package_name="wam", date="preflight"], _),
+    go_render_file(main_bench, [package_name=main], _),
+    go_render_project_lib_header("wam", "", "", _),
+    go_render_project_atoms_with_table("wam", "", _),
+    go_render_project_atoms_runtime_only("wam", _),
+    go_render_project_lowered_header("wam", "", _),
+    go_render_project_main_parallel("uw-preflight", "wam", _).

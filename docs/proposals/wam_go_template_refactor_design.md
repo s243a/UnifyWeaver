@@ -945,6 +945,39 @@ green (incl. `_ite_exec`), contract-parity green. Added a `wam_go_head_match_fau
 plunit block (missing/empty/reserved-marker/structural-tag/missing-marker/
 duplicate-marker + a placeholder-comment-literal test).
 
+*Slice 3 (project templates) — landed.* Moved the remaining atom-embedded Go out
+of `write_wam_go_project/3` and routed the variable-render files through the
+adapter, deleting the silent `// Template not found` fallback. New files under
+`templates/targets/go_wam/project/`: `lib.go.mustache`
+(`{{package_name}}`/`{{imports}}`/`{{predicates}}`), `atoms_with_table.go.mustache`
+(`{{package_name}}`/`{{atom_table}}`), `atoms_runtime_only.go.mustache` (the
+35-line runtime-only fallback, `{{package_name}}`), `lowered.go.mustache`
+(`{{package_name}}`/`{{lowered}}`) and `main_parallel.go.mustache`
+(`{{module_name}}` + `{{package_name}}`×6 — note **six**, not the seven the format
+arg list suggested; `%%d`/`%%v` and `\n` were extracted by execution, not
+hand-transcribed, so the doubled percent and the backslash-n escape are preserved
+byte-for-byte). Adapter additions: `go_render_file/3` (+`_at_root/4`) reads
+go.mod/value/instructions/state/main_bench module-relative and fail-closed then
+renders through the generic engine (byte-identical to the old
+`read_template_file/2` + `render_template/3`, minus the silent fallback);
+`go_render_project_block/3` (+`_at_root`) does the ordered-marker splice for the
+five atom-embedded blocks, with named wrappers `go_render_project_lib_header/4`,
+`go_render_project_atoms_with_table/3`, `go_render_project_atoms_runtime_only/2`,
+`go_render_project_lowered_header/3`, `go_render_project_main_parallel/3`. The four
+project body markers joined `go_reserved_marker/1`; preflight renders every project
+file + block once. `wam_go_target.pl` lost `read_template_file/2` and
+`resolve_template_path/2` (now dead). Gates: `project_files_exact_bytes`
+(runtime.go, state.go) unchanged; the pkg_resolver gold `diff -r` empty for both
+`go` and `go_store` (covers go.mod/value/instructions/state/runtime/lib/atoms-with-
+table/lowered); the two blocks the gold does NOT exercise — the runtime-only atoms
+fallback and the parallel main — are pinned by new digest tests
+(`wam_go_project_blocks`) and were verified byte-identical to the old `format/2`
+output directly; corpus 51/51 + differential 2600/0 (`go`), 51/51 + 503/0
+(`go_store`); Go plunit suites green (incl. `_native_t5_parallel`). Added a
+`wam_go_project_faults` plunit block (missing/empty/reserved-marker/structural-tag
+for a spliced block, missing/duplicate marker for the lib block, and fail-closed
+missing/empty for the go.mod file template).
+
 Rollback: every phase is a single PR touching adapter + templates + call sites
 together; reverting it restores the previous byte-identical state.
 

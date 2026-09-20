@@ -48,7 +48,13 @@
                go_render_step_method_at_root/2,
                go_render_lowered_function_at_root/5,
                go_render_ite_shell_at_root/7,
-               go_render_head_match_at_root/6]).
+               go_render_head_match_at_root/6,
+               go_render_project_atoms_runtime_only/2,
+               go_render_project_main_parallel/3,
+               go_render_project_atoms_runtime_only_at_root/3,
+               go_render_project_lib_header_at_root/5,
+               go_render_project_main_parallel_at_root/4,
+               go_render_file_at_root/4]).
 
 % -- Frozen digests (design §2.3, §2.4, §2.5) -------------------------------
 
@@ -811,3 +817,144 @@ test(head_match_duplicate_marker_throws_tags) :-
         expect_head_match_error(go_wam_template_tags(head_match, _))).
 
 :- end_tests(wam_go_head_match_faults).
+
+% -- Phase 4 slice 3: project templates (design §8) --------------------------
+%
+% The pkg_resolver gold diff exercises go.mod/value/instructions/state/runtime/
+% lib.go/atoms.go(with table)/lowered.go. It does NOT exercise the runtime-only
+% atoms fallback (a no-atom project) or the parallel main.go (parallel(true) with
+% a non-main package), so pin those two blocks' bytes here.
+
+project_block_digest(atoms_runtime_only, 706,
+    '0d7e7f08a2e1c5126898064331d17eae6dde77f14dda9eef21feca4c477d360f').
+project_block_digest(main_parallel, 332,
+    '77f169a621bc733e686b6b76c134d7d194125c2031a1160bcd5aef6edd2bf3f7').
+
+:- begin_tests(wam_go_project_blocks).
+
+test(atoms_runtime_only_bytes) :-
+    go_render_project_atoms_runtime_only(wam, Text),
+    project_block_digest(atoms_runtime_only, Length, Digest),
+    assert_bytes(Text, Length, Digest).
+
+test(main_parallel_bytes) :-
+    go_render_project_main_parallel('uw-pkg-resolver', wam, Text),
+    project_block_digest(main_parallel, Length, Digest),
+    assert_bytes(Text, Length, Digest).
+
+% Determinism.
+test(project_block_repeated_render) :-
+    go_render_project_atoms_runtime_only(wam, A),
+    go_render_project_atoms_runtime_only(wam, B),
+    assertion(A == B).
+
+:- end_tests(wam_go_project_blocks).
+
+% -- Phase 4 slice 3 project-template fault fixtures (design §8 gate item 5) --
+%
+% Build a fixture root holding project/{lib,atoms_runtime_only,main_parallel}
+% and go.mod, apply one fault, and assert the renderers throw the right
+% contextual error (no silent "// Template not found" any more).
+
+with_go_project_fixture(Rel, Text, Goal) :-
+    tmp_file(wam_go_project_fixture, Root),
+    setup_call_cleanup(
+        build_go_project_fixture_root(Rel, Text, Root),
+        call(Goal, Root),
+        (   exists_directory(Root)
+        ->  delete_directory_and_contents(Root)
+        ;   true)).
+
+% Copy the real project/ dir and go.mod, then apply one fault to Rel (a path
+% relative to the template root). Text is real / write(T) / omit.
+build_go_project_fixture_root(Rel, Text, Root) :-
+    make_directory(Root),
+    directory_file_path(Root, project, ProjDir),
+    make_directory(ProjDir),
+    go_real_template_root(RealRoot),
+    forall(member(Name, ['lib.go.mustache', 'atoms_runtime_only.go.mustache',
+                         'main_parallel.go.mustache']),
+        (   atomic_list_concat(['project/', Name], RelName),
+            directory_file_path(RealRoot, RelName, RealFile),
+            directory_file_path(Root, RelName, CopyFile),
+            (   RelName == Rel
+            ->  go_place_fixture_file(Text, RealFile, CopyFile)
+            ;   copy_file(RealFile, CopyFile)
+            ))),
+    % go.mod at the root (for the file-template fault tests)
+    directory_file_path(RealRoot, 'go.mod.mustache', RealGoMod),
+    directory_file_path(Root, 'go.mod.mustache', CopyGoMod),
+    (   Rel == 'go.mod.mustache'
+    ->  go_place_fixture_file(Text, RealGoMod, CopyGoMod)
+    ;   copy_file(RealGoMod, CopyGoMod)
+    ).
+
+expect_atoms_runtime_error(Expected, Root) :-
+    catch(go_render_project_atoms_runtime_only_at_root(Root, wam, _),
+          error(Formal, _), Caught = Formal),
+    assertion(nonvar(Caught)),
+    assertion(subsumes_term(Expected, Caught)).
+
+expect_lib_error(Expected, Root) :-
+    catch(go_render_project_lib_header_at_root(Root, wam, "", "", _),
+          error(Formal, _), Caught = Formal),
+    assertion(nonvar(Caught)),
+    assertion(subsumes_term(Expected, Caught)).
+
+expect_gomod_error(Expected, Root) :-
+    catch(go_render_file_at_root(Root, go_mod, [module_name=m], _),
+          error(Formal, _), Caught = Formal),
+    assertion(nonvar(Caught)),
+    assertion(subsumes_term(Expected, Caught)).
+
+:- begin_tests(wam_go_project_faults).
+
+% Control: an untouched fixture root renders the runtime-only atoms + lib blocks.
+test(project_fixture_baseline_renders) :-
+    with_go_project_fixture('project/lib.go.mustache', real,
+        [Root]>>( go_render_project_atoms_runtime_only_at_root(Root, wam, _),
+                  go_render_project_lib_header_at_root(Root, wam, "", "", _) )).
+
+% --- spliced project blocks (atoms_runtime_only representative) ---
+test(atoms_runtime_missing_throws_load) :-
+    with_go_project_fixture('project/atoms_runtime_only.go.mustache', omit,
+        expect_atoms_runtime_error(go_wam_template_load(project_atoms_runtime_only, _, _))).
+
+test(atoms_runtime_empty_throws_empty) :-
+    with_go_project_fixture('project/atoms_runtime_only.go.mustache', write(""),
+        expect_atoms_runtime_error(go_wam_template_empty(project_atoms_runtime_only, _))).
+
+test(atoms_runtime_reserved_marker_throws_tags) :-
+    with_go_project_fixture('project/atoms_runtime_only.go.mustache',
+        write("package {{package_name}}\n{{step_method}}\n"),
+        expect_atoms_runtime_error(go_wam_template_tags(project_atoms_runtime_only, _))).
+
+test(atoms_runtime_structural_tag_throws_tags) :-
+    with_go_project_fixture('project/atoms_runtime_only.go.mustache',
+        write("package {{package_name}}\n{{match instr}}\n"),
+        expect_atoms_runtime_error(go_wam_template_tags(project_atoms_runtime_only, _))).
+
+% --- lib block: missing / duplicate slot ---
+test(lib_missing_marker_throws_tags) :-
+    % No {{predicates}} slot -> the ordered splice cannot consume the marker list.
+    with_go_project_fixture('project/lib.go.mustache',
+        write("package {{package_name}}\n\n{{imports}}\n"),
+        expect_lib_error(go_wam_template_tags(project_lib, _))).
+
+test(lib_duplicate_marker_throws_tags) :-
+    % An extra {{package_name}} beyond the declared count is left unconsumed and
+    % the trailing-span lint rejects it.
+    with_go_project_fixture('project/lib.go.mustache',
+        write("package {{package_name}}{{package_name}}\n\n{{imports}}{{predicates}}\n"),
+        expect_lib_error(go_wam_template_tags(project_lib, _))).
+
+% --- file templates (go.mod): fail-closed read (no silent fallback) ---
+test(gomod_missing_throws_load) :-
+    with_go_project_fixture('go.mod.mustache', omit,
+        expect_gomod_error(go_wam_template_load(go_mod, _, _))).
+
+test(gomod_empty_throws_empty) :-
+    with_go_project_fixture('go.mod.mustache', write(""),
+        expect_gomod_error(go_wam_template_empty(go_mod, _))).
+
+:- end_tests(wam_go_project_faults).

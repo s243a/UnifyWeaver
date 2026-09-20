@@ -59,7 +59,13 @@
              [wam_go_lowerable/3, lower_predicate_to_go/4, go_func_name/2]).
 :- use_module('../targets/wam_go_templates',
              [go_render_template/3, go_render_helper_methods/1,
-              go_render_step_method/1, go_preflight/0]).
+              go_render_step_method/1, go_preflight/0,
+              go_render_file/3,
+              go_render_project_lib_header/4,
+              go_render_project_atoms_with_table/3,
+              go_render_project_atoms_runtime_only/2,
+              go_render_project_lowered_header/3,
+              go_render_project_main_parallel/3]).
 :- use_module('../core/prolog_term_parser', []).
 :- use_module('../core/cpp_runtime_parser_wrappers', []).
 :- use_module(wam_runtime_parser_capability, [
@@ -97,27 +103,23 @@ write_wam_go_project(Predicates0, Options, ProjectDir) :-
     % Create directory structure
     make_directory_path(ProjectDir),
 
-    % Generate go.mod
-    read_template_file('templates/targets/go_wam/go.mod.mustache', GoModTemplate),
-    render_template(GoModTemplate, [module_name=ModuleName], GoModContent),
+    % Generate go.mod (fail-closed read + render through the adapter).
+    go_render_file(go_mod, [module_name=ModuleName], GoModContent),
     directory_file_path(ProjectDir, 'go.mod', GoModPath),
     write_file(GoModPath, GoModContent),
 
     % Write value.go from template
-    read_template_file('templates/targets/go_wam/value.go.mustache', ValueTemplate),
-    render_template(ValueTemplate, [package_name=PackageName, date=Date], ValueCode),
+    go_render_file(value, [package_name=PackageName, date=Date], ValueCode),
     directory_file_path(ProjectDir, 'value.go', ValuePath),
     write_file(ValuePath, ValueCode),
 
     % Write instructions.go from template
-    read_template_file('templates/targets/go_wam/instructions.go.mustache', InstrTemplate),
-    render_template(InstrTemplate, [package_name=PackageName, date=Date], InstrCode),
+    go_render_file(instructions, [package_name=PackageName, date=Date], InstrCode),
     directory_file_path(ProjectDir, 'instructions.go', InstrPath),
     write_file(InstrPath, InstrCode),
 
     % Write state.go from template
-    read_template_file('templates/targets/go_wam/state.go.mustache', StateTemplate),
-    render_template(StateTemplate, [package_name=PackageName, date=Date], StateCode),
+    go_render_file(state, [package_name=PackageName, date=Date], StateCode),
     directory_file_path(ProjectDir, 'state.go', StatePath),
     write_file(StatePath, StateCode),
 
@@ -146,11 +148,8 @@ write_wam_go_project(Predicates0, Options, ProjectDir) :-
     % Emit exactly the imports the generated code actually uses — Go errors
     % on both missing and unused imports.
     go_lib_import_block(PredicatesCode, ImportBlock),
-    format(atom(LibContent),
-'package ~w
-
-~w~w
-', [PackageName, ImportBlock, PredicatesCode]),
+    go_render_project_lib_header(PackageName, ImportBlock, PredicatesCode,
+                                LibContent),
     directory_file_path(ProjectDir, 'lib.go', LibPath),
     write_file(LibPath, LibContent),
 
@@ -164,61 +163,15 @@ write_wam_go_project(Predicates0, Options, ProjectDir) :-
     % their package-level vars. When there are none, runtime helpers still need
     % the internAtom function for dynamically sourced facts.
     (   AtomTableCode \== ""
-    ->  format(atom(AtomsContent),
-'package ~w
-
-// Auto-generated atom intern table.
-// Shared by lib.go (WAM bytecode literals) and lowered.go (lowered
-// predicate functions). Pointer-identity equality on these vars is
-// O(1); duplicate inline `&Atom{Name:"..."}` literals fall back to
-// string compare in Atom.Equals.
-
-~w
-', [PackageName, AtomTableCode]),
-        directory_file_path(ProjectDir, 'atoms.go', AtomsPath),
-        write_file(AtomsPath, AtomsContent)
-    ;   format(atom(AtomsContent),
-'package ~w
-
-// Runtime-only atom intern table. This project has no compile-time atom
-// literals, but fact-source helpers may still construct atoms dynamically.
-var atomInternMap = make(map[string]*Atom)
-
-func internAtom(name string) *Atom {
-    if a, ok := atomInternMap[name]; ok {
-        return a
-    }
-    a := &Atom{Name: name}
-    atomInternMap[name] = a
-    return a
-}
-
-// InternAtom is the exported form. Drivers and embedders must build
-// atoms through this rather than &Atom{Name: x}: Atom.Equals is pointer
-// identity only, so a fresh literal with the same name compares unequal
-// to the interned one the bytecode carries.
-func InternAtom(name string) *Atom {
-    return internAtom(name)
-}
-', [PackageName]),
-        directory_file_path(ProjectDir, 'atoms.go', AtomsPath),
-        write_file(AtomsPath, AtomsContent)
+    ->  go_render_project_atoms_with_table(PackageName, AtomTableCode,
+                                          AtomsContent)
+    ;   go_render_project_atoms_runtime_only(PackageName, AtomsContent)
     ),
+    directory_file_path(ProjectDir, 'atoms.go', AtomsPath),
+    write_file(AtomsPath, AtomsContent),
 
     (   LoweredCode \== ""
-    ->  format(atom(LoweredContent),
-'package ~w
-
-import "fmt"
-
-var _ = fmt.Sprintf
-
-// Lowered predicates: direct Go methods on *WamState
-// Generated by wam_go_lowered_emitter.pl
-// (Atom intern table lives in atoms.go.)
-
-~w
-', [PackageName, LoweredCode]),
+    ->  go_render_project_lowered_header(PackageName, LoweredCode, LoweredContent),
         directory_file_path(ProjectDir, 'lowered.go', LoweredPath),
         write_file(LoweredPath, LoweredContent)
     ;   true
@@ -226,32 +179,11 @@ var _ = fmt.Sprintf
 
     % Generate main.go benchmark harness from template (when package is main)
     (   PackageName == main
-    ->  read_template_file('templates/targets/go_wam/main_bench.go.mustache', MainTemplate),
-        render_template(MainTemplate, [package_name=PackageName], MainContent),
+    ->  go_render_file(main_bench, [package_name=PackageName], MainContent),
         directory_file_path(ProjectDir, 'main.go', MainPath),
         write_file(MainPath, MainContent)
     ;   option(parallel(true), Options)
-    ->  format(atom(MainContent),
-'package main
-
-import (
-	"fmt"
-	"~w"
-)
-
-func main() {
-	ctx := ~w.NewWamContext(~w.SharedWamCode, ~w.SharedWamLabels)
-	seeds := [][]~w.Value{
-		{&~w.Atom{Name: "query"}},
-	}
-	results := ~w.RunParallel(ctx, seeds, 0)
-	for i, res := range results {
-		if res != nil {
-			fmt.Printf("Seed %%d: %%v\\n", i, res)
-		}
-	}
-}
-', [ModuleName, PackageName, PackageName, PackageName, PackageName, PackageName, PackageName]),
+    ->  go_render_project_main_parallel(ModuleName, PackageName, MainContent),
         directory_file_path(ProjectDir, 'main.go', MainPath),
         write_file(MainPath, MainContent)
     ;   true
@@ -418,26 +350,10 @@ compile_lowered_predicates(Predicates, Options, Code) :-
     ;   atomic_list_concat(LoweredCodes, '\n\n', Code)
     ).
 
-%% read_template_file(+Path, -Content)
-read_template_file(Path, Content) :-
-    (   exists_file(Path)
-    ->  read_file_to_string(Path, Content, [])
-    ;   resolve_template_path(Path, AbsPath), exists_file(AbsPath)
-    ->  read_file_to_string(AbsPath, Content, [])
-    ;   format(atom(Content), "// Template not found: ~w", [Path])
-    ).
-
-%% resolve_template_path(+RelativePath, -AbsPath)
-%  Resolve a repo-root-relative template path against this module's source
-%  location, so generation works from any working directory (e.g. the
-%  conformance harness runs from tests/, where the cwd-relative
-%  'templates/...' path does not exist). Mirrors the python target's
-%  source_file/2-based resolution.
-resolve_template_path(RelativePath, AbsPath) :-
-    source_file(wam_go_target:write_wam_go_project(_,_,_), ThisFile),
-    file_directory_name(ThisFile, TargetsDir),   % src/unifyweaver/targets
-    atomic_list_concat([TargetsDir, '/../../../', RelativePath], Raw),
-    absolute_file_name(Raw, AbsPath).
+% (read_template_file/2 and resolve_template_path/2 were removed in Phase 4
+% slice 3: every project template now loads through the fail-closed adapter
+% wam_go_templates:go_render_file/3 / go_render_project_*/N, replacing the old
+% cwd-then-module lookup and its silent "// Template not found" fallback.)
 
 %% compile_predicates_for_project(+Predicates, +Options, -Code)
 compile_predicates_for_project([], _, "").
