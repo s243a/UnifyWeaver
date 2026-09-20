@@ -37,6 +37,8 @@
     go_render_lowered_function_at_root/5,
     go_render_ite_shell/6,         % +Indent, +Cond, +Then, +FreshReset, +Else, -Text
     go_render_ite_shell_at_root/7,
+    go_render_head_match/5,         % +Indent, +Comment, +Ai, +GoVal, -Text
+    go_render_head_match_at_root/6,
     go_preflight/0,                % load + validate + render every required asset once
     go_with_template_root_for_test/2
 ]).
@@ -60,6 +62,11 @@ go_template_path(runtime_shell,   'runtime.go.mustache').
 % '{{Ai}}') stays literal.
 go_template_path(lowered_function, 'lowered/function.go.mustache').
 go_template_path(lowered_ite,      'lowered/ite.go.mustache').
+% Head-match fragment (design §8 Phase 4 slice 2): the shared get_constant/
+% get_integer/get_nil bind-or-match body. Spliced on ordered markers, NEVER
+% passed through render_template/3 — a Comment holding a placeholder-shaped atom
+% ('{{Ai}}') would otherwise be rescanned by sequential key replacement.
+go_template_path(head_match,       'lowered/head_match.go.mustache').
 
 % The eight ordered helper sections the runtime shell is spliced from (design
 % docs/proposals/wam_go_template_refactor_design.md §2.3 / §5). Phase 2 split
@@ -175,6 +182,11 @@ go_reserved_marker("{{condition}}").
 go_reserved_marker("{{then}}").
 go_reserved_marker("{{else}}").
 go_reserved_marker("{{fresh_reset}}").
+% Head-match fragment markers (Phase 4 slice 2). None appears inside valid Go.
+go_reserved_marker("{{I}}").
+go_reserved_marker("{{Comment}}").
+go_reserved_marker("{{Ai}}").
+go_reserved_marker("{{GoVal}}").
 
 go_structural_tag("{{#").
 go_structural_tag("{{^").
@@ -551,6 +563,66 @@ go_render_ite_shell_at_root(Root, Indent, Condition, Then, FreshReset, Else,
                     context(go_render_ite_shell/6, Path)))
     ).
 
+% -- Head-match fragment (design §8 Phase 4 slice 2) -------------------------
+%
+% The shared get_constant/get_integer/get_nil bind-or-match body: one fragment
+% with the repeated ordered slots {{I}}×11, {{Comment}}, {{Ai}}, {{GoVal}}×2.
+% Spliced exactly like the ITE shell (ordered-repeated markers), NEVER through
+% render_template/3: the Comment for a placeholder-shaped atom (get_constant
+% '{{Ai}}') contains literal {{Ai}} and sequential key replacement would rescan
+% it. Byte-identical to the old three duplicated emit_one/2 bodies (frozen by the
+% slice-0 per-fragment digests). GoVal is pre-computed by the emitter (it runs
+% the side-effecting intern_atom_go/2 for atoms / nil), so nothing here interns.
+go_head_match_markers([
+    "{{I}}", "{{Comment}}",
+    "{{I}}",
+    "{{I}}", "{{Ai}}",
+    "{{I}}",
+    "{{I}}",
+    "{{I}}",
+    "{{I}}", "{{GoVal}}",
+    "{{I}}", "{{GoVal}}",
+    "{{I}}",
+    "{{I}}",
+    "{{I}}"
+]).
+
+go_head_match_values(I, Comment, Ai, GoVal,
+    [I, Comment, I, I, Ai, I, I, I, I, GoVal, I, GoVal, I, I, I]).
+
+go_render_head_match(Indent, Comment, Ai, GoVal, Text) :-
+    go_template_root(Root),
+    go_render_head_match_at_root(Root, Indent, Comment, Ai, GoVal, Text).
+
+go_render_head_match_at_root(Root, Indent, Comment, Ai, GoVal, Text) :-
+    go_template_path(head_match, Relative),
+    directory_file_path(Root, Relative, Path),
+    (   go_head_match_slot(Indent), go_nonempty_text(Comment),
+        go_head_match_slot(Ai), go_head_match_nonempty(GoVal)
+    ->  true
+    ;   throw(error(domain_error(go_wam_head_match_variables,
+                                 [Indent, Comment, Ai, GoVal]),
+                    context(go_render_head_match/5, Path)))
+    ),
+    go_read_asset(Path, head_match, fragment, go_render_head_match/5, Template),
+    go_head_match_markers(Markers),
+    (   go_split_repeated_markers(Template, Markers, Parts)
+    ->  go_head_match_values(Indent, Comment, Ai, GoVal, Values),
+        go_interleave_slots(Parts, Values, Joined),
+        atomics_to_string(Joined, "", Text)
+    ;   throw(error(go_wam_template_tags(head_match, Path),
+                    context(go_render_head_match/5, Path)))
+    ).
+
+% Head-match slots are atomic (the register index Ai is an integer; the indent,
+% comment and Go value are atoms/strings). atomics_to_string stringifies each
+% exactly as the old format/2 ~w did.
+go_head_match_slot(V) :- atom(V), !.
+go_head_match_slot(V) :- string(V), !.
+go_head_match_slot(V) :- number(V).
+
+go_head_match_nonempty(V) :- go_head_match_slot(V), V \== '', V \== "".
+
 % Split on each marker in order; each marker is matched at its FIRST remaining
 % occurrence (ordered-repeated), so {{indent}} can appear many times. Every span
 % between markers is linted (no template-origin tag left to emit unresolved).
@@ -581,4 +653,5 @@ go_preflight :-
         [package_name="wam", step_method="// preflight"], _),
     go_render_lowered_function("goPreflightFn",
         "// goPreflightFn — lowered from preflight/1", "", _),
-    go_render_ite_shell("", "", "", "", "", _).
+    go_render_ite_shell("", "", "", "", "", _),
+    go_render_head_match("    ", "get_constant foo, A1", 0, "goPreflightAtom", _).

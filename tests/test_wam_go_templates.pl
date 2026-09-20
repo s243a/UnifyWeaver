@@ -31,7 +31,8 @@
                compile_step_wam_to_go/2,
                compile_wam_runtime_to_go/2,
                write_wam_go_project/3,
-               init_atom_intern_table_go/0]).
+               init_atom_intern_table_go/0,
+               intern_atom_go/2]).
 % wam_go_target (for the non-exported go_compile_predicate_to_wam/3) and
 % wam_go_lowered_emitter (for the non-exported emit_one/2 and the exported
 % lower_predicate_to_go/4) are loaded so the Phase 4 slice-0 lowered digests
@@ -46,7 +47,8 @@
                go_render_step_method/1,
                go_render_step_method_at_root/2,
                go_render_lowered_function_at_root/5,
-               go_render_ite_shell_at_root/7]).
+               go_render_ite_shell_at_root/7,
+               go_render_head_match_at_root/6]).
 
 % -- Frozen digests (design §2.3, §2.4, §2.5) -------------------------------
 
@@ -720,3 +722,92 @@ test(ite_duplicate_marker_throws_tags) :-
         expect_ite_error(go_wam_template_tags(lowered_ite, _))).
 
 :- end_tests(wam_go_lowered_shell_faults).
+
+% -- Phase 4 slice 2 head-match fragment fault fixtures (design §8 gate) ------
+%
+% The head-match fragment (lowered/head_match.go.mustache) is spliced on ordered
+% markers, never rendered. Build a fixture root holding only that file, apply one
+% fault, and assert go_render_head_match_at_root/6 throws the right contextual
+% error. A representative call renders a get_constant-shaped body.
+
+render_head_match(Root) :-
+    go_render_head_match_at_root(Root, "    ", "get_constant foo, A1", 0,
+                                 "wamAtom_foo_0", _).
+
+with_go_head_match_fixture(HeadText, Goal) :-
+    tmp_file(wam_go_head_match_fixture, Root),
+    setup_call_cleanup(
+        build_go_head_match_fixture_root(HeadText, Root),
+        call(Goal, Root),
+        (   exists_directory(Root)
+        ->  delete_directory_and_contents(Root)
+        ;   true)).
+
+build_go_head_match_fixture_root(HeadText, Root) :-
+    make_directory(Root),
+    directory_file_path(Root, lowered, LoweredDir),
+    make_directory(LoweredDir),
+    go_real_template_root(RealRoot),
+    directory_file_path(RealRoot, 'lowered/head_match.go.mustache', RealHead),
+    directory_file_path(LoweredDir, 'head_match.go.mustache', HeadCopy),
+    go_place_fixture_file(HeadText, RealHead, HeadCopy).
+
+expect_head_match_error(Expected, Root) :-
+    catch(render_head_match(Root), error(Formal, _), Caught = Formal),
+    assertion(nonvar(Caught)),
+    assertion(subsumes_term(Expected, Caught)).
+
+:- begin_tests(wam_go_head_match_faults).
+
+% Control: the untouched fragment renders the real get_constant body exactly.
+test(head_match_baseline_matches_real) :-
+    init_atom_intern_table_go,
+    with_output_to(string(Real),
+        wam_go_lowered_emitter:emit_one(get_constant("foo", "A1"), "    ")),
+    init_atom_intern_table_go,
+    intern_atom_go("foo", Var),   % reproduce the interning the emitter does
+    with_go_head_match_fixture(real,
+        [Root]>>( format(string(Comment), "get_constant ~w, ~w", ["foo", "A1"]),
+                  go_render_head_match_at_root(Root, "    ", Comment, 0, Var, Got),
+                  assertion(Got == Real) )).
+
+% A Comment holding a placeholder-shaped atom ('{{Ai}}') must survive verbatim:
+% the fragment is spliced, never rendered, so {{Ai}} in the comment is not rescanned.
+test(head_match_placeholder_comment_literal) :-
+    with_go_head_match_fixture(real,
+        [Root]>>( go_render_head_match_at_root(Root, "    ",
+                      "get_constant '{{Ai}}', A1", 0, "wamAtom__Ai__0", Text),
+                  assertion(sub_string(Text, _, _, _, "// get_constant '{{Ai}}', A1")) )).
+
+test(head_match_missing_throws_load) :-
+    with_go_head_match_fixture(omit,
+        expect_head_match_error(go_wam_template_load(head_match, _, _))).
+
+test(head_match_empty_throws_empty) :-
+    with_go_head_match_fixture(write(""),
+        expect_head_match_error(go_wam_template_empty(head_match, _))).
+
+test(head_match_reserved_marker_throws_tags) :-
+    with_go_head_match_fixture(
+        write("{{I}}// {{Comment}}\n{{package_name}}{{I}}}\n"),
+        expect_head_match_error(go_wam_template_tags(head_match, _))).
+
+test(head_match_structural_tag_throws_tags) :-
+    with_go_head_match_fixture(
+        write("{{I}}// {{Comment}} {{match instr}}\n{{I}}}\n"),
+        expect_head_match_error(go_wam_template_tags(head_match, _))).
+
+test(head_match_missing_marker_throws_tags) :-
+    % No {{Ai}} slot -> the ordered-repeated splice cannot consume the full list.
+    with_go_head_match_fixture(
+        write("{{I}}// {{Comment}}\n{{I}}}\n"),
+        expect_head_match_error(go_wam_template_tags(head_match, _))).
+
+test(head_match_duplicate_marker_throws_tags) :-
+    % An extra {{I}} beyond the declared count leaves one unconsumed in the
+    % trailing span, which the lint rejects.
+    with_go_head_match_fixture(
+        write("{{I}}// {{Comment}}\n{{I}}\n{{I}}vm.Regs[{{Ai}}]\n{{I}}\n{{I}}\n{{I}}\n{{I}}{{GoVal}}\n{{I}}{{GoVal}}\n{{I}}\n{{I}}\n{{I}}\n{{I}}\n"),
+        expect_head_match_error(go_wam_template_tags(head_match, _))).
+
+:- end_tests(wam_go_head_match_faults).

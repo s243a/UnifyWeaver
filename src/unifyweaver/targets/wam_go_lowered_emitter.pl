@@ -32,7 +32,8 @@
 ]).
 :- use_module(wam_go_templates, [
     go_render_lowered_function/4,
-    go_render_ite_shell/6
+    go_render_ite_shell/6,
+    go_render_head_match/5
 ]).
 
 % =====================================================================
@@ -536,49 +537,31 @@ emit_one(fail, I) :-
 
 % --- Head unification (get_*) ---
 
+% get_constant / get_integer / get_nil share ONE bind-or-match body (the head
+% bind/match family). Each clause computes only the Go value expression and the
+% comment, then splices them through the head-match fragment
+% (templates/targets/go_wam/lowered/head_match.go.mustache). go_val_literal/2 and
+% intern_atom_go/2 (side-effecting) run HERE, before rendering, so the fragment
+% never interns. Byte-identical to the old three duplicated bodies (design §8
+% Phase 4 slice 2).
 emit_one(get_constant(CStr, AiStr), I) :-
     go_reg_idx(AiStr, Ai),
     go_val_literal(CStr, GoVal),
-    format("~w// get_constant ~w, ~w~n", [I, CStr, AiStr]),
-    format("~w{~n", [I]),
-    format("~w    _a := vm.deref(vm.Regs[~w])~n", [I, Ai]),
-    format("~w    if _, ok := _a.(*Unbound); ok {~n", [I]),
-    format("~w        u := _a.(*Unbound)~n", [I]),
-    format("~w        vm.trailBinding(u.Idx)~n", [I]),
-    format("~w        vm.putReg(u.Idx, ~w)~n", [I, GoVal]),
-    format("~w    } else if !valueEquals(vm.deref(_a), ~w) {~n", [I, GoVal]),
-    format("~w        return false~n", [I]),
-    format("~w    }~n", [I]),
-    format("~w}~n", [I]).
+    format(string(Comment), "get_constant ~w, ~w", [CStr, AiStr]),
+    emit_head_match(Comment, Ai, GoVal, I).
 
 emit_one(get_integer(NStr, AiStr), I) :-
     go_reg_idx(AiStr, Ai),
-    format("~w// get_integer ~w, ~w~n", [I, NStr, AiStr]),
-    format("~w{~n", [I]),
-    format("~w    _a := vm.deref(vm.Regs[~w])~n", [I, Ai]),
-    format("~w    if _, ok := _a.(*Unbound); ok {~n", [I]),
-    format("~w        u := _a.(*Unbound)~n", [I]),
-    format("~w        vm.trailBinding(u.Idx)~n", [I]),
-    format("~w        vm.putReg(u.Idx, &Integer{Val: ~w})~n", [I, NStr]),
-    format("~w    } else if !valueEquals(vm.deref(_a), &Integer{Val: ~w}) {~n", [I, NStr]),
-    format("~w        return false~n", [I]),
-    format("~w    }~n", [I]),
-    format("~w}~n", [I]).
+    format(string(Comment), "get_integer ~w, ~w", [NStr, AiStr]),
+    % Keep the raw numeric token spelling (e.g. 0007), as the old body did.
+    format(string(GoVal), "&Integer{Val: ~w}", [NStr]),
+    emit_head_match(Comment, Ai, GoVal, I).
 
 emit_one(get_nil(AiStr), I) :-
     go_reg_idx(AiStr, Ai),
     intern_atom_go("[]", NilVar),
-    format("~w// get_nil ~w~n", [I, AiStr]),
-    format("~w{~n", [I]),
-    format("~w    _a := vm.deref(vm.Regs[~w])~n", [I, Ai]),
-    format("~w    if _, ok := _a.(*Unbound); ok {~n", [I]),
-    format("~w        u := _a.(*Unbound)~n", [I]),
-    format("~w        vm.trailBinding(u.Idx)~n", [I]),
-    format("~w        vm.putReg(u.Idx, ~w)~n", [I, NilVar]),
-    format("~w    } else if !valueEquals(vm.deref(_a), ~w) {~n", [I, NilVar]),
-    format("~w        return false~n", [I]),
-    format("~w    }~n", [I]),
-    format("~w}~n", [I]).
+    format(string(Comment), "get_nil ~w", [AiStr]),
+    emit_head_match(Comment, Ai, NilVar, I).
 
 emit_one(get_variable(XnStr, AiStr), I) :-
     go_reg_idx(XnStr, Xn), go_reg_idx(AiStr, Ai),
@@ -748,6 +731,15 @@ emit_one(Instr, I) :-
 % =====================================================================
 % Helpers
 % =====================================================================
+
+%% emit_head_match(+Comment, +Ai, +GoVal, +Indent)
+%  Render the shared get_constant/get_integer/get_nil bind-or-match body
+%  (lowered/head_match.go.mustache) and print it. GoVal is pre-computed by the
+%  caller (go_val_literal/2 or intern_atom_go/2 has already run), so the fragment
+%  itself never interns.
+emit_head_match(Comment, Ai, GoVal, I) :-
+    go_render_head_match(I, Comment, Ai, GoVal, Text),
+    format("~s", [Text]).
 
 %% go_reg_idx(+RegStr, -Idx)
 %  Parse register string to Go array index.
