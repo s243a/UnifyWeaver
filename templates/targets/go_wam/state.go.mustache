@@ -164,7 +164,20 @@ type EnvFrame struct {
 	// Unbound — Bindings[Idx] is global and survives the Y-reg
 	// restore, so reading the restored Y-reg dereferences through the
 	// (still-bound) Unbound to the bound value.
-	SavedYRegs [100]Value
+	//
+	// D119: slot-sized from [100]Value to []Value. As a fixed [100]Value the
+	// field made every &EnvFrame ~1.6 KB (100 * 2-word interface), so the
+	// per-Allocate EnvFrame allocation was ~28% of B3 bytes (the #1 site once
+	// the trail and YSaves were cut) -- and even the lowered path, which never
+	// saves Y-regs, carried the dead 1.6 KB array. Now Allocate makes a slice
+	// of MaxYReg-200 slots (typically ~10) and Deallocate restores len(s) slots
+	// then tail-clears to MaxYReg -- exactly the D116 YSaves treatment, of which
+	// this is the twin the D116 report flagged as latent. Lowered EnvFrames
+	// leave it nil (no backing array at all). Byte-identical: MaxYReg is a
+	// monotonic high-water so slots >= it were never written (nil), and the
+	// sized save+tail-clear restore lands Regs[200:300] exactly as the full-100
+	// copy did.
+	SavedYRegs []Value
 	// CutB0: the predicate's call-time choicepoint height (copied from
 	// vm.PendingB0 at Allocate). A plain cut truncates choicepoints back
 	// to CutB0. Kept separate from B0 (allocate-time) because B0 drives
@@ -393,6 +406,12 @@ type WamState struct {
 	// either way -- popYSave/invokeAtPC restore len(entry) slots and clear the
 	// tail to nil regardless (mirroring restoreSavedRegs).
 	forceFullYSave bool
+	// forceFullEnvY (D119) makes the Allocate handler save the full 100-slot Y
+	// range into EnvFrame.SavedYRegs instead of sizing to MaxYReg-200, for a
+	// clean A/B of the env-frame slot-sizing win (and a fallback). Set once from
+	// UW_GO_ENVY_FULL=1. Output is identical either way -- Deallocate restores
+	// len(SavedYRegs) slots and clears the tail to MaxYReg regardless.
+	forceFullEnvY bool
 	// trailFloors is a stack of undo frontiers for "bare-mark" backtrack
 	// boundaries -- every `mark := vm.TrailLen; ...; unwindTrailTo(mark)`
 	// site (LoClauseSnapshot/LoRestoreClause, applySelectSolution,
@@ -457,11 +476,11 @@ func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
 
 func NewWamState(code []Instruction, labels map[string]int) *WamState {
 	ctx := NewWamContext(code, labels)
-	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1, heapVarPos: make(map[*Unbound][]int), forceHeapScan: os.Getenv("UW_GO_HEAPSCAN") == "1", forceFullYSave: os.Getenv("UW_GO_YSAVE_FULL") == "1", forceFullTrail: os.Getenv("UW_GO_TRAIL_FULL") == "1"}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1, heapVarPos: make(map[*Unbound][]int), forceHeapScan: os.Getenv("UW_GO_HEAPSCAN") == "1", forceFullYSave: os.Getenv("UW_GO_YSAVE_FULL") == "1", forceFullTrail: os.Getenv("UW_GO_TRAIL_FULL") == "1", forceFullEnvY: os.Getenv("UW_GO_ENVY_FULL") == "1"}
 }
 
 func NewWamStateFromCtx(ctx *WamContext) *WamState {
-	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1, heapVarPos: make(map[*Unbound][]int), forceHeapScan: os.Getenv("UW_GO_HEAPSCAN") == "1", forceFullYSave: os.Getenv("UW_GO_YSAVE_FULL") == "1", forceFullTrail: os.Getenv("UW_GO_TRAIL_FULL") == "1"}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1, Input: bufio.NewReader(os.Stdin), NextStreamID: 1, heapVarPos: make(map[*Unbound][]int), forceHeapScan: os.Getenv("UW_GO_HEAPSCAN") == "1", forceFullYSave: os.Getenv("UW_GO_YSAVE_FULL") == "1", forceFullTrail: os.Getenv("UW_GO_TRAIL_FULL") == "1", forceFullEnvY: os.Getenv("UW_GO_ENVY_FULL") == "1"}
 }
 
 // RunParallel executes multiple seeds in parallel, each with their own
@@ -1155,6 +1174,7 @@ func (vm *WamState) Clone() *WamState {
 		MaxXReg:      vm.MaxXReg,
 		forceHeapScan: vm.forceHeapScan,
 		forceFullYSave: vm.forceFullYSave,
+		forceFullEnvY: vm.forceFullEnvY,
 		forceFullTrail: vm.forceFullTrail,
 	}
 	// Deep-copy the var->heap-position index: the clone's Heap is a copy holding

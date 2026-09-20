@@ -2728,7 +2728,20 @@ wam_go_case('Allocate', '        // Env trimming: PrevE links the new frame back
         // still propagate via the global Bindings[Idx] table — deref
         // of the restored Y-reg follows that binding, so we don''t
         // lose genuine results, only spurious leftover state.
-        copy(env.SavedYRegs[:], vm.Regs[200:300])
+        // D119: slot-size the snapshot to the used Y-range (MaxYReg-200,
+        // typically ~10) instead of a full [100]Value, shrinking the EnvFrame
+        // allocation ~1.6 KB -> ~0.2 KB. forceFullEnvY keeps the full-100 save
+        // for the A/B baseline. Deallocate tail-clears to MaxYReg, so both
+        // sizes restore Regs[200:300] identically.
+        ycount := vm.MaxYReg - 200
+        if ycount < 0 {
+            ycount = 0
+        }
+        if vm.forceFullEnvY {
+            ycount = 100
+        }
+        env.SavedYRegs = make([]Value, ycount)
+        copy(env.SavedYRegs, vm.Regs[200:200+ycount])
         vm.Stack = append(vm.Stack, env)
         vm.E = len(vm.Stack) - 1
         vm.PC++
@@ -2737,7 +2750,16 @@ wam_go_case('Allocate', '        // Env trimming: PrevE links the new frame back
 wam_go_case('Deallocate', '        if vm.E >= 0 && vm.E < len(vm.Stack) {
             if env, ok := vm.Stack[vm.E].(*EnvFrame); ok {
                 vm.CP = env.CP
-                copy(vm.Regs[200:300], env.SavedYRegs[:])
+                // D119: restore the slot-sized snapshot and clear the tail up
+                // to MaxYReg (slots >= MaxYReg were never written, so nil). A
+                // lowered-allocated EnvFrame has a nil SavedYRegs (n == 0), so
+                // this clears Regs[200:MaxYReg] -- matching the old full-100
+                // copy of an all-nil array.
+                n := len(env.SavedYRegs)
+                copy(vm.Regs[200:200+n], env.SavedYRegs)
+                for i := 200 + n; i < vm.MaxYReg; i++ {
+                    vm.Regs[i] = nil
+                }
                 prevE := env.PrevE
                 // Physical-pop only if it''s safe: the frame must be at
                 // the top of the stack AND no younger choicepoint
