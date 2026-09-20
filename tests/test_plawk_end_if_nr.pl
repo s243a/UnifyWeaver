@@ -121,9 +121,14 @@ test(reversed_nr_end_if_condition_declines) :-
     build_status("{ n++ } END { if (3 == NR) print \"yes\" }\n", 3),
     !.
 
-% END-only programs (no rule) decline entirely -- separate driver gap.
-test(end_only_nr_if_declines) :-
-    build_status("END { if (NR == 3) print \"yes\" }\n", 3),
+% END-only programs now COMPILE -- the END-only driver landed. `END { if (NR == 3) ... }`
+% builds and matches gawk (prints "yes" on a 3-record input). This was pinned as a
+% decline while END-only was a gap; re-attributed, not deleted, when the gap closed.
+% Output parity is covered in tests/test_plawk_end_only.pl (end_if_no_rule); here we
+% pin the status flip so a regression that re-broke the END-only driver shows up in
+% the suite that first pinned this shape.
+test(end_only_nr_if_now_compiles) :-
+    build_status("END { if (NR == 3) print \"yes\" }\n", 0),
     !.
 
 % Assoc rules plus this scalar END-if select no driver: the assoc END-if route admits

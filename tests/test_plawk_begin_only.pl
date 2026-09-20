@@ -185,15 +185,17 @@ test(begin_only_calc_then_exit, [condition(clang_available)]) :-
 
 % --- clean declines -------------------------------------------------------
 
-% A zero-rule program WITH an END: awk reads input in this case (END sees NR), so
-% the loop-free driver must not claim it. No driver handles zero rules plus a
-% record loop yet, so it declines -- a follow-on, not a silent wrong answer.
-test(begin_and_end_without_rules_declines) :-
-    build_status("BEGIN { print \"b\" }\nEND { print \"e\" }\n", 3),
+% A zero-rule program WITH an END now COMPILES -- the END-only driver landed
+% (tests/test_plawk_end_only.pl). awk reads input in this case (END sees NR), so
+% unlike BEGIN-only these run the record loop with an empty rule chain. Was pinned
+% here as a decline while END-only was a gap; re-attributed, not deleted, to assert
+% the new behaviour. Output is literal-only, so it is deterministic on empty stdin.
+test(begin_and_end_without_rules_now_compiles) :-
+    run("BEGIN { print \"b\" }\nEND { print \"e\" }\n", "b\ne\n", 0),
     !.
 
-test(end_only_without_rules_declines) :-
-    build_status("END { print \"e\" }\n", 3),
+test(end_only_without_rules_now_compiles) :-
+    run("END { print \"e\" }\n", "e\n", 0),
     !.
 
 % BEGIN has no record and no scalar slots, so a field or variable read declines

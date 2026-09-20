@@ -367,6 +367,44 @@ parse, not the gate you expected to fire.
 
 ## Verification practices (do not skip)
 
+- **Relaxing a shared gate can turn a clean decline into a MISCOMPILE in a
+  neighbouring driver that relied on that gate failing.** END-only support needed
+  `plawk_scalar_state_plan/3` to admit an empty plan (`; Rules == []`). That made
+  `END { print ... }` compile — but the END-LOOP driver clause (`END { while ... }`)
+  cuts as soon as it sees a loop, then had been relying on `state_plan` *failing* for
+  a rule-less program to decline after the cut. With the guard relaxed, state_plan
+  succeeded, the clause committed past its cut, and it emitted a malformed loop
+  driver: exit 4, a miscompile, on a program that used to decline cleanly at exit 3.
+  The fix was a targeted `Rules0 \== []` guard on that clause so END-loop-with-no-rule
+  keeps declining. **When you relax a gate, enumerate every clause that used that
+  gate's failure as its own decline mechanism** — a cut-then-rely-on-a-later-goal-
+  failing clause is silently converted from "declines" to "commits and may miscompile".
+  A broad exit-4 sweep of the whole surface the relaxation touches is mandatory, not
+  optional: here it found exactly one such site, and the campaign's worst outcome
+  (invalid LLVM on a supported-looking program) was one un-run probe away.
+
+  **And the exit-4 sweep must vary the DATA the relaxation admits, not just the
+  program shapes.** My own sweep enumerated END-only shapes (print / printf / if /
+  loop / for-in) and driver clauses, and passed -- but every print case used a
+  literal, a field, NR, NF, or length. An ULTRA REVIEW caught what I missed:
+  `END { print x }`, a scalar VARIABLE, still exit-4'd. The reason is one level below
+  the dispatch clause: admitting an empty rule chain let plawk_scalar_state_plan
+  collect `x` as a slot, and the next-slot phi emitter then computed
+  LastRuleIndex = RuleCount - 1 = -1 and referenced `%rule_-1_*` -- undefined SSA.
+  The miscompile lived in the interaction between an empty rule chain and a NON-empty
+  state plan, a combination no shape-only sweep reaches unless it includes a program
+  whose END reads a scalar variable. Two lessons: (1) when a relaxation admits a new
+  input CLASS, enumerate the class's data dimensions (here: does the END read a
+  literal, a field, a special, or a scalar VAR?), because the defect can hide in a
+  data-dependent downstream (a phi index) that the dispatch-clause enumeration never
+  sees; (2) a second reviewer with fresh eyes found in one pass what my own thorough
+  verification did not -- the value of external review scales with how confident and
+  polished the change already looks. The fix guards the empty rule chain to fire only
+  when the state plan has no slots, so a scalar-var END-only program declines cleanly
+  (exit 3) as a follow-on; a correct pass-through phi also needs the
+  uninitialised-scalar representation settled (`print x` of an unset var is empty in
+  string context, 0 in numeric), which is why declining, not a quick phi patch, was
+  the right scope.
 - **gawk 5.2 is the oracle.** Compare output *and* exit status. Probe harness
   pattern: write the program, `rm -f` the binary first (a declining build must not
   run a stale one), build, run, diff against `gawk`.
@@ -652,6 +690,18 @@ the implementation changed about the design. The load-bearing facts:
 
 ## Remaining follow-ons
 
+**EOF-sentinel: a literal `end_of_file` input line is mistaken for EOF (PRE-EXISTING,
+not END-only).** `END { print NR, $0 }` on input `a\nend_of_file\nb\n` prints `1 a`;
+gawk prints `3 b`. Two independent reviews (terra, astra) surfaced this. The shared
+stream driver (`src/unifyweaver/targets/wam_llvm_target.pl`, ~line 23909) detects
+end-of-input by comparing the record TEXT against `"end_of_file"` instead of by atom
+identity -- the runtime already has a distinct EOF atom, so the fix is an
+identity-based comparison plus a regression test. It predates the END-only work and
+affects EVERY program (the rule-bearing `{ n++ } END { print NR, $0 }` is equally
+wrong); END-only just made it reachable in an END-only shape. A runtime fix of its
+own, deliberately out of scope for the END-only PR.
+
+
 **END record reads, what is left** — each pinned as a decline in
 `tests/test_plawk_end_field_reads.pl`. A field or `NF` in a loop / `if`
 **condition** (a fail-safe decline: the rewrite reaches conditions, and no
@@ -690,8 +740,13 @@ condition emitter has a clause for `end_lastrec_field(_)` / `end_lastrec_nf`) ·
   at parse time (#4169). The two share a spelling and nothing else: one needs the
   retained record, the other needs no runtime at all. · **builtins over the
 record** in END (`substr($0, …)`, `toupper($1)` — the gate retains for them, the
-emitters have no clause; the *literal* forms of all five are done) · **END-only**
-programs (a driver with no retain) ·
+emitters have no clause; the *literal* forms of all five are done) · ~~**END-only**
+programs~~ **DONE** (see below; `END { print ... }`, printf, END-`if`, and the empty
+program now compile — remaining END-only follow-ons are an END-only **loop**
+(`END { while ... }`, pinned as a clean exit-3 decline, NOT a miscompile), an END-only
+**scalar-variable read/write** (`END { print x }` -- see the review-found miscompile below),
+an END-only scalar **assignment** (`END { x = 5; print x }`), and for-in / getline in
+END-only) ·
 `printf` field args in the **assoc / mixed END chain** (a different driver, passes
 `no_end_record`) · the **associative** END-`if` branch (refused by
 `plawk_assoc_end_if_branch_prints_ok/2`, which allows only string literals there —
