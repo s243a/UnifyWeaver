@@ -79,6 +79,21 @@
 :- dynamic user:wam_cpp_is_num/1.
 :- dynamic user:wam_cpp_is_var/1.
 :- dynamic user:wam_cpp_is_compound/1.
+:- dynamic user:wam_cpp_is_list/1.
+:- dynamic user:wam_cpp_test_is_list_nil/0.
+:- dynamic user:wam_cpp_test_is_list_normal/0.
+:- dynamic user:wam_cpp_test_is_list_cons/0.
+:- dynamic user:wam_cpp_test_is_list_improper/0.
+:- dynamic user:wam_cpp_test_is_list_improper_chain/0.
+:- dynamic user:wam_cpp_test_is_list_open/0.
+:- dynamic user:wam_cpp_test_is_list_open_chain/0.
+:- dynamic user:wam_cpp_test_is_list_cyclic/0.
+:- dynamic user:wam_cpp_test_is_list_cyclic_chain/0.
+:- dynamic user:wam_cpp_test_is_list_atom/0.
+:- dynamic user:wam_cpp_test_is_list_var/0.
+:- dynamic user:wam_cpp_test_is_list_continuation/1.
+:- dynamic user:wam_cpp_test_is_list_cont_fail/1.
+:- dynamic user:wam_cpp_test_is_list_cont_cyclic/1.
 :- dynamic user:wam_cpp_test_nonvar/0.
 :- dynamic user:wam_cpp_test_functor/0.
 :- dynamic user:wam_cpp_test_arg1/0.
@@ -3762,6 +3777,23 @@ user:wam_cpp_is_int(X)         :- integer(X).
 user:wam_cpp_is_num(X)         :- number(X).
 user:wam_cpp_is_var(X)         :- var(X).
 user:wam_cpp_is_compound(X)    :- compound(X).
+user:wam_cpp_is_list(X)        :- is_list(X).
+user:wam_cpp_test_is_list_nil  :- is_list([]).
+user:wam_cpp_test_is_list_normal :- is_list([1, 2, 3]).
+user:wam_cpp_test_is_list_cons :- L = '[|]'(1, '[|]'(2, [])), is_list(L).
+user:wam_cpp_test_is_list_improper :- is_list('[|]'(1, 2)).
+user:wam_cpp_test_is_list_improper_chain :- L = '[|]'(1, '[|]'(2, '[|]'(3, 4))), is_list(L).
+user:wam_cpp_test_is_list_open :- L = '[|]'(1, _Tail), is_list(L).
+user:wam_cpp_test_is_list_open_chain :- L = '[|]'(1, '[|]'(2, _Tail)), is_list(L).
+user:wam_cpp_test_is_list_cyclic :- X = '[|]'(1, X), is_list(X).
+user:wam_cpp_test_is_list_cyclic_chain :- X = '[|]'(1, '[|]'(2, '[|]'(3, X))), is_list(X).
+user:wam_cpp_test_is_list_atom :- is_list(foo).
+user:wam_cpp_test_is_list_var  :- is_list(_X).
+user:wam_cpp_test_is_list_continuation(R) :- is_list([a, b, c]), R = ok.
+user:wam_cpp_test_is_list_cont_fail(R) :- is_list('[|]'(1, 2)), R = bad.
+user:wam_cpp_test_is_list_cont_fail(ok).
+user:wam_cpp_test_is_list_cont_cyclic(R) :- X = '[|]'(1, X), is_list(X), R = bad.
+user:wam_cpp_test_is_list_cont_cyclic(ok).
 user:wam_cpp_test_nonvar       :- X = foo, nonvar(X).
 % Term inspection
 user:wam_cpp_test_functor      :- functor(box(1, 2), box, 2).
@@ -4283,6 +4315,7 @@ test(cpp_e2e_builtin_type_checks, [condition(cpp_compiler_available)]) :-
     setup_call_cleanup(
         write_wam_cpp_project([user:wam_cpp_is_atom/1, user:wam_cpp_is_int/1,
                                user:wam_cpp_is_num/1, user:wam_cpp_is_compound/1,
+                               user:wam_cpp_is_list/1,
                                user:wam_cpp_test_nonvar/0],
                               [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
@@ -4294,7 +4327,51 @@ test(cpp_e2e_builtin_type_checks, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_is_num/1',   [foo],         false),
           run_query(BinPath, 'wam_cpp_is_compound/1', ['box(1,2)'], true),
           run_query(BinPath, 'wam_cpp_is_compound/1', [foo],        false),
+          run_query(BinPath, 'wam_cpp_is_list/1',  ['[]'],        true),
+          run_query(BinPath, 'wam_cpp_is_list/1',  ['[1,2]'],     true),
+          run_query(BinPath, 'wam_cpp_is_list/1',  [foo],         false),
+          run_query(BinPath, 'wam_cpp_is_list/1',  [42],          false),
           run_query(BinPath, 'wam_cpp_test_nonvar/0', [],            true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_builtin_is_list, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_is_list', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_is_list_nil/0,
+                               user:wam_cpp_test_is_list_normal/0,
+                               user:wam_cpp_test_is_list_cons/0,
+                               user:wam_cpp_test_is_list_improper/0,
+                               user:wam_cpp_test_is_list_improper_chain/0,
+                               user:wam_cpp_test_is_list_open/0,
+                               user:wam_cpp_test_is_list_open_chain/0,
+                               user:wam_cpp_test_is_list_cyclic/0,
+                               user:wam_cpp_test_is_list_cyclic_chain/0,
+                               user:wam_cpp_test_is_list_atom/0,
+                               user:wam_cpp_test_is_list_var/0,
+                               user:wam_cpp_test_is_list_continuation/1,
+                               user:wam_cpp_test_is_list_cont_fail/1,
+                               user:wam_cpp_test_is_list_cont_cyclic/1],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_is_list_nil/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_is_list_normal/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_is_list_cons/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_is_list_improper/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_improper_chain/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_open/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_open_chain/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_cyclic/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_cyclic_chain/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_atom/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_var/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_continuation/1', [ok], true),
+          run_query(BinPath, 'wam_cpp_test_is_list_continuation/1', [bad], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_cont_fail/1', [ok], true),
+          run_query(BinPath, 'wam_cpp_test_is_list_cont_fail/1', [bad], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_cont_cyclic/1', [ok], true),
+          run_query(BinPath, 'wam_cpp_test_is_list_cont_cyclic/1', [bad], false)
         ),
         delete_directory_and_contents(TmpDir)
     ).
