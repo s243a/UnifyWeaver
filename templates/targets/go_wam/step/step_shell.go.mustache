@@ -1,0 +1,8 @@
+// Step executes a single WAM instruction.
+func (vm *WamState) Step(instr Instruction) bool {
+    switch i := instr.(type) {
+{{cases}}
+    default:
+        return false
+    }
+}

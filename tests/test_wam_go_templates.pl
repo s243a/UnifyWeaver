@@ -34,7 +34,10 @@
 :- use_module('../src/unifyweaver/targets/wam_go_templates',
               [go_render_helper_methods/1,
                go_render_helper_methods_at_root/2,
-               go_render_template_at_root/4]).
+               go_render_template_at_root/4,
+               go_step_case_order/1,
+               go_render_step_method/1,
+               go_render_step_method_at_root/2]).
 
 % -- Frozen digests (design §2.3, §2.4, §2.5) -------------------------------
 
@@ -130,7 +133,37 @@ test(project_files_exact_bytes,
      [forall(project_file_digest(Name, Length, Digest))]) :-
     once(with_minimal_go_project(check_project_file(Name, Length, Digest))).
 
+% The switch order list has 50 distinct names, and the union of the five
+% library files' case names equals it exactly (no missing/duplicate/unknown).
+test(case_order_and_set) :-
+    go_step_case_order(Order),
+    length(Order, 50),
+    sort(Order, Sorted),
+    assertion(length(Sorted, 50)),
+    findall(N, library_case_name(N), FileNames),
+    sort(FileNames, FileSorted),
+    assertion(FileSorted == Sorted).
+
 :- end_tests(wam_go_templates).
+
+% Every {{case NAME}} tag across the five real step libraries.
+step_library_rel('step/head_unification.go.mustache').
+step_library_rel('step/body_construction.go.mustache').
+step_library_rel('step/control.go.mustache').
+step_library_rel('step/choice_point.go.mustache').
+step_library_rel('step/indexing.go.mustache').
+
+library_case_name(Name) :-
+    go_real_template_root(Root),
+    step_library_rel(Rel),
+    directory_file_path(Root, Rel, Path),
+    read_file_to_string(Path, Text, [encoding(utf8)]),
+    sub_string(Text, Begin, _, _, "{{case "),
+    Start is Begin + 7,
+    sub_string(Text, Start, _, 0, Tail),
+    once(sub_string(Tail, EndRel, 2, _, "}}")),
+    sub_string(Tail, 0, EndRel, _, ValStr),
+    atom_string(Name, ValStr).
 
 % -- Phase 2 fault fixtures (design §8 Phase 2 gate) ------------------------
 %
@@ -279,3 +312,129 @@ expect_shell_error(Expected, Root) :-
           error(Formal, _), Caught = Formal),
     assertion(nonvar(Caught)),
     assertion(subsumes_term(Expected, Caught)).
+
+% -- Phase 3 step-library fault fixtures (design §8 Phase 3 gate) -----------
+%
+% Build a fixture root holding the step shell + five step libraries, apply
+% exactly one fault, and assert go_render_step_method_at_root/2 throws the
+% right contextual error (missing/duplicate/unknown case, missing/empty/
+% no-final-LF file, missing shell marker). Mirrors the runtime-section faults.
+
+go_step_library_fixture(head_unification,  'head_unification.go.mustache').
+go_step_library_fixture(body_construction, 'body_construction.go.mustache').
+go_step_library_fixture(control,           'control.go.mustache').
+go_step_library_fixture(choice_point,      'choice_point.go.mustache').
+go_step_library_fixture(indexing,          'indexing.go.mustache').
+
+% Faults:
+%   none                    -- untouched copy (control)
+%   missing_lib(Id)         -- omit that library file
+%   corrupt_lib(Id, Text)   -- write Text in place of that library
+%   missing_shell           -- omit step_shell.go.mustache
+%   shell(Text)             -- write Text in place of step_shell.go.mustache
+with_go_step_fixture(Fault, Goal) :-
+    tmp_file(wam_go_step_fixture, Root),
+    setup_call_cleanup(
+        build_go_step_fixture_root(Fault, Root),
+        call(Goal, Root),
+        (   exists_directory(Root)
+        ->  delete_directory_and_contents(Root)
+        ;   true)).
+
+build_go_step_fixture_root(Fault, Root) :-
+    make_directory(Root),
+    directory_file_path(Root, step, StepDir),
+    make_directory(StepDir),
+    go_real_template_root(RealRoot),
+    directory_file_path(RealRoot, step, RealStepDir),
+    % step shell
+    directory_file_path(RealStepDir, 'step_shell.go.mustache', RealShell),
+    directory_file_path(StepDir, 'step_shell.go.mustache', ShellCopy),
+    (   Fault = missing_shell
+    ->  true
+    ;   Fault = shell(ShellText)
+    ->  write_fixture_file(ShellCopy, ShellText)
+    ;   copy_file(RealShell, ShellCopy)
+    ),
+    % five libraries
+    forall(go_step_library_fixture(Id, Name),
+        (   directory_file_path(RealStepDir, Name, RealLib),
+            directory_file_path(StepDir, Name, LibCopy),
+            (   Fault = missing_lib(Id)
+            ->  true
+            ;   Fault = corrupt_lib(Id, Text)
+            ->  write_fixture_file(LibCopy, Text)
+            ;   copy_file(RealLib, LibCopy)
+            ))).
+
+% A minimal but well-formed {{match instr}} library over the given case names.
+minimal_step_lib(Names, Text) :-
+    maplist([N, B]>>format(string(B), "{{case ~w}}\n        return false\n", [N]),
+            Names, Blocks),
+    atomic_list_concat(Blocks, '', Body),
+    format(string(Text), "{{match instr}}\npreamble discarded\n~w{{/match}}\n",
+           [Body]).
+
+expect_step_error(Expected, Root) :-
+    catch(go_render_step_method_at_root(Root, _),
+          error(Formal, _), Caught = Formal),
+    assertion(nonvar(Caught)),
+    assertion(subsumes_term(Expected, Caught)).
+
+:- begin_tests(wam_go_step_faults).
+
+% Control: an untouched step fixture reproduces the real Step() bytes exactly.
+test(step_fixture_baseline_matches_real) :-
+    go_render_step_method(Real),
+    with_go_step_fixture(none,
+        [Root]>>( go_render_step_method_at_root(Root, Got),
+                  assertion(Got == Real) )).
+
+test(missing_library_throws_load,
+     [forall(go_step_library_fixture(Id, _))]) :-
+    with_go_step_fixture(missing_lib(Id),
+        expect_step_error(go_wam_template_load(Id, _, _))).
+
+test(empty_library_throws_empty,
+     [forall(go_step_library_fixture(Id, _))]) :-
+    with_go_step_fixture(corrupt_lib(Id, ""),
+        expect_step_error(go_wam_template_empty(Id, _))).
+
+test(no_final_lf_library_throws_eol,
+     [forall(go_step_library_fixture(Id, _))]) :-
+    with_go_step_fixture(corrupt_lib(Id, "{{match instr}}\n{{case X}}\n y\n{{/match}}"),
+        expect_step_error(go_wam_template_eol(Id, _))).
+
+% Drop a case from the indexing library -> the case-set check reports it missing.
+test(missing_case_throws_missing) :-
+    minimal_step_lib(['SwitchOnConstant','SwitchOnConstantPc','SwitchOnStructure',
+                      'SwitchOnStructurePc','SwitchOnConstantA2'], LibText),
+    with_go_step_fixture(corrupt_lib(indexing, LibText),
+        expect_step_error(go_wam_step_case_missing('SwitchOnConstantA2Pc'))).
+
+% Duplicate a case within a library -> reported as a duplicate.
+test(duplicate_case_throws_duplicate) :-
+    minimal_step_lib(['SwitchOnConstant','SwitchOnConstant','SwitchOnConstantPc',
+                      'SwitchOnStructure','SwitchOnStructurePc',
+                      'SwitchOnConstantA2','SwitchOnConstantA2Pc'], LibText),
+    with_go_step_fixture(corrupt_lib(indexing, LibText),
+        expect_step_error(go_wam_step_case_duplicate('SwitchOnConstant'))).
+
+% All real names present plus one not in the order list -> reported as unknown.
+test(unknown_case_throws_unknown) :-
+    minimal_step_lib(['SwitchOnConstant','SwitchOnConstantPc','SwitchOnStructure',
+                      'SwitchOnStructurePc','SwitchOnConstantA2',
+                      'SwitchOnConstantA2Pc','Bogus'], LibText),
+    with_go_step_fixture(corrupt_lib(indexing, LibText),
+        expect_step_error(go_wam_step_case_unknown('Bogus'))).
+
+test(missing_shell_throws_load) :-
+    with_go_step_fixture(missing_shell,
+        expect_step_error(go_wam_template_load(step_shell, _, _))).
+
+test(shell_missing_cases_marker_throws_tags) :-
+    with_go_step_fixture(
+        shell("func (vm *WamState) Step(instr Instruction) bool {\n}\n"),
+        expect_step_error(go_wam_template_tags(step_shell, _))).
+
+:- end_tests(wam_go_step_faults).
