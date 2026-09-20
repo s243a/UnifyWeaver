@@ -30,6 +30,10 @@
     escape_go_string/2,
     intern_atom_go/2
 ]).
+:- use_module(wam_go_templates, [
+    go_render_lowered_function/4,
+    go_render_ite_shell/6
+]).
 
 % =====================================================================
 % Parsing
@@ -345,11 +349,9 @@ lower_predicate_to_go(PI, WamCode, Options, GoLines) :-
         ;   go_structured_clause1(WamCode, EmitInstrs)
         ),
         with_output_to(string(Body), emit_instrs(EmitInstrs, "    ")),
-        format(string(Header),
-'// ~w — lowered from ~w/~w
-func (vm *WamState) ~w() bool {', [FuncName, Pred, Arity, FuncName]),
-        format(string(Footer), '}', []),
-        GoLines = [Header, Body, Footer]
+        format(string(Comment), '// ~w — lowered from ~w/~w',
+               [FuncName, Pred, Arity]),
+        go_render_lowered_function(FuncName, Comment, Body, GoLines)
     ).
 
 %% emit_multi_clause_n_go(+FuncName, +Pred, +Arity, +Instrs, -GoLines)
@@ -360,16 +362,15 @@ func (vm *WamState) ~w() bool {', [FuncName, Pred, Arity, FuncName]),
 %  returns to the interpreter for clauses 2+, unlike multi_clause_1.
 emit_multi_clause_n_go(FuncName, Pred, Arity, Instrs, GoLines) :-
     go_split_clauses(Instrs, Clauses),
-    format(string(Header),
-'// ~w — lowered from ~w/~w (T4 all-clauses inline)
-func (vm *WamState) ~w() bool {', [FuncName, Pred, Arity, FuncName]),
+    format(string(Comment),
+           '// ~w — lowered from ~w/~w (T4 all-clauses inline)',
+           [FuncName, Pred, Arity]),
     with_output_to(string(Body),
         ( format("    _t4 := vm.LoClauseSnapshot()~n"),
           format("    defer vm.popTrailFloor()  // pairs with LoClauseSnapshot pushTrailFloor~n"),
           emit_go_clauses(Clauses),
           format("    return false~n") )),
-    format(string(Footer), '}', []),
-    GoLines = [Header, Body, Footer].
+    go_render_lowered_function(FuncName, Comment, Body, GoLines).
 
 emit_go_clauses([]).
 emit_go_clauses([Cl | Rest]) :-
@@ -404,11 +405,9 @@ emit_clause_chain_go(FuncName, Pred, Arity, Guards, Options, GoLines) :-
               emit_go_guards(Guards),
               format("    return false~n") ))
     ),
-    format(string(Header),
-'// ~w — lowered from ~w/~w (~w)
-func (vm *WamState) ~w() bool {', [FuncName, Pred, Arity, TagComment, FuncName]),
-    format(string(Footer), '}', []),
-    GoLines = [Header, Body, Footer].
+    format(string(Comment), '// ~w — lowered from ~w/~w (~w)',
+           [FuncName, Pred, Arity, TagComment]),
+    go_render_lowered_function(FuncName, Comment, Body, GoLines).
 
 emit_go_guards([]).
 emit_go_guards([guard(V, Rem) | Rest]) :-
@@ -506,25 +505,17 @@ has_internal_ite_pattern(Instrs) :-
 emit_ite_block(CondInstrs, ThenInstrs, ElseInstrs, I) :-
     atom_concat(I, "    ", InnerInd),
     cond_put_variable_instrs(CondInstrs, FreshVarInstrs),
-    format("~w// if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)~n", [I]),
-    format("~w{~n", [I]),
-    format("~w    _trailMark := vm.TrailLen~n", [I]),
-    format("~w    vm.pushTrailFloor()  // conditional-trailing floor for the else-branch unwind~n", [I]),
-    format("~w    defer vm.popTrailFloor()~n", [I]),
-    format("~w    _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it~n", [I]),
-    format("~w    _condOk := func() bool {~n", [I]),
-    emit_instrs(CondInstrs, InnerInd),
-    format("~w        return true~n", [I]),
-    format("~w    }()~n", [I]),
-    format("~w    if _condOk {~n", [I]),
-    emit_instrs(ThenInstrs, InnerInd),
-    format("~w    } else {~n", [I]),
-    format("~w        vm.Regs = _savedRegs~n", [I]),
-    format("~w        vm.unwindTrailTo(_trailMark)~n", [I]),
-    emit_instrs(FreshVarInstrs, InnerInd),   % reset condition-local fresh vars
-    emit_instrs(ElseInstrs, InnerInd),
-    format("~w    }~n", [I]),
-    format("~w}~n", [I]).
+    % Render the four children first, then splice them into the fixed ITE shell
+    % (templates/targets/go_wam/lowered/ite.go.mustache). The shell owns every
+    % fixed line (the trail/reg save-restore scaffolding); the children are
+    % spliced as values and never rescanned. Byte-identical to the old inline
+    % format/2 block (design §8 Phase 4 slice 1).
+    with_output_to(string(CondCode), emit_instrs(CondInstrs, InnerInd)),
+    with_output_to(string(ThenCode), emit_instrs(ThenInstrs, InnerInd)),
+    with_output_to(string(FreshCode), emit_instrs(FreshVarInstrs, InnerInd)),
+    with_output_to(string(ElseCode), emit_instrs(ElseInstrs, InnerInd)),
+    go_render_ite_shell(I, CondCode, ThenCode, FreshCode, ElseCode, Text),
+    format("~s", [Text]).
 
 %% cond_put_variable_instrs(+CondInstrs, -PutVarInstrs)
 %  The put_variable instructions in a condition, in order. Re-running them

@@ -884,6 +884,38 @@ would route these ITE predicates to the interpreter instead of lowering them).
 The pre-existing Phase-0..3 digests are unchanged. Gate: `test_wam_go_templates.pl`
 green including the new block; no generator bytes changed.
 
+*Slice 1 (function + ITE shells) — landed.* Added
+`templates/targets/go_wam/lowered/function.go.mustache`
+(`{{comment}}\nfunc (vm *WamState) {{name}}() bool {{{body}}}`, no trailing LF —
+the `{{body}}` marker only splits the footer `}` from the header, and Body is
+returned as the middle element of the `[Header, Body, Footer]` list, never
+rescanned) and `lowered/ite.go.mustache` (the fixed if-then-else scaffolding with
+ordered-repeated `{{indent}}` slots plus `{{condition}}`/`{{then}}`/`{{fresh_reset}}`/
+`{{else}}`; **no counter** — the Go ITE uses fixed local names
+`_trailMark`/`_condOk`/`_savedRegs` shadowed per nested Go `{}` block, unlike the
+C++ `_ite_mark{{counter}}`). The adapter gained `go_render_lowered_function/4`
+(+`_at_root/5`, exactly-once `{{comment}}`/`{{name}}`/`{{body}}` split) and
+`go_render_ite_shell/6` (+`_at_root/7`, ordered-repeated 19-marker splice via
+`go_split_repeated_markers/3`, mirroring C++ `ite_shell_markers/1`); the eight
+lowered-shell markers were added to `go_reserved_marker/1`; preflight renders both
+shells once. In `wam_go_lowered_emitter.pl` the three header/footer `format/2`s
+(plain, T4, T5/T6) each became a single `format` of the *comment line only* plus a
+`go_render_lowered_function/4` call, and `emit_ite_block/4` now renders its four
+children to strings and splices them through `go_render_ite_shell/6`. No Go text
+for these shells remains in the `.pl`. Gates: all twelve fragment + seven
+whole-function slice-0 digests unchanged; the pre-existing Phase-0 helpers/step
+digests unchanged; generator-vs-generator `diff -r` empty for both `go` and
+`go_store`; corpus 51/51 + differential 2600/0 (`go`), 51/51 + 503/0 (`go_store`);
+every Go lowered plunit suite green (including `_ite_exec`, which builds+runs the
+ITE Go), the six contract-parity suites green, engine suites green
+(`test_template_match_case.pl` 29/31 as at baseline). Added a
+`wam_go_lowered_shell_faults` plunit block with missing/empty/reserved-marker/
+structural-tag/missing-marker/duplicate-marker fixtures for both shells.
+Pre-existing failures unrelated to this slice and identical on base:
+`test_go_wam_builtins.pl` (ATOM_CONCAT) and `test_wam_go_frameless_ite_level.pl`
+(a `compile_predicate_to_wam_text/3` get_level/allocate assertion in the WAM
+compiler, not the lowered emitter).
+
 Rollback: every phase is a single PR touching adapter + templates + call sites
 together; reverting it restores the previous byte-identical state.
 

@@ -44,7 +44,9 @@
                go_render_template_at_root/4,
                go_step_case_order/1,
                go_render_step_method/1,
-               go_render_step_method_at_root/2]).
+               go_render_step_method_at_root/2,
+               go_render_lowered_function_at_root/5,
+               go_render_ite_shell_at_root/7]).
 
 % -- Frozen digests (design §2.3, §2.4, §2.5) -------------------------------
 
@@ -584,3 +586,137 @@ test(shell_missing_cases_marker_throws_tags) :-
         expect_step_error(go_wam_template_tags(step_shell, _))).
 
 :- end_tests(wam_go_step_faults).
+
+% -- Phase 4 slice 1 lowered-shell fault fixtures (design §8 gate item 5) -----
+%
+% Build a fixture template root holding lowered/{function,ite}.go.mustache,
+% apply exactly one fault, and assert the shell renderers throw the right
+% contextual error (never emitting a diagnostic as success). Mirrors the
+% runtime-section and step-library fault blocks above and the C++ lowered
+% function/ite asset-error tests.
+
+% A well-formed representative call for each shell (used by the control test and
+% as the render probe under each fault).
+render_lowered_function(Root) :-
+    go_render_lowered_function_at_root(Root, "PredFoo1",
+        "// PredFoo1 — lowered from foo/1", "    return true\n", _).
+
+render_ite_shell(Root) :-
+    go_render_ite_shell_at_root(Root, "    ",
+        "        return true\n", "        vm.putReg(0, x)\n", "", "", _).
+
+with_go_lowered_fixture(FunctionText, IteText, Goal) :-
+    tmp_file(wam_go_lowered_fixture, Root),
+    setup_call_cleanup(
+        build_go_lowered_fixture_root(FunctionText, IteText, Root),
+        call(Goal, Root),
+        (   exists_directory(Root)
+        ->  delete_directory_and_contents(Root)
+        ;   true)).
+
+% FunctionText / IteText are either real (copy the shipped file) or
+% write(Text) (write Text) or omit (leave the file out entirely).
+build_go_lowered_fixture_root(FunctionText, IteText, Root) :-
+    make_directory(Root),
+    directory_file_path(Root, lowered, LoweredDir),
+    make_directory(LoweredDir),
+    go_real_template_root(RealRoot),
+    directory_file_path(RealRoot, 'lowered/function.go.mustache', RealFn),
+    directory_file_path(RealRoot, 'lowered/ite.go.mustache', RealIte),
+    directory_file_path(LoweredDir, 'function.go.mustache', FnCopy),
+    directory_file_path(LoweredDir, 'ite.go.mustache', IteCopy),
+    go_place_fixture_file(FunctionText, RealFn, FnCopy),
+    go_place_fixture_file(IteText, RealIte, IteCopy).
+
+go_place_fixture_file(omit, _Real, _Copy) :- !.
+go_place_fixture_file(real, Real, Copy) :- !, copy_file(Real, Copy).
+go_place_fixture_file(write(Text), _Real, Copy) :- write_fixture_file(Copy, Text).
+
+expect_function_error(Expected, Root) :-
+    catch(render_lowered_function(Root), error(Formal, _), Caught = Formal),
+    assertion(nonvar(Caught)),
+    assertion(subsumes_term(Expected, Caught)).
+
+expect_ite_error(Expected, Root) :-
+    catch(render_ite_shell(Root), error(Formal, _), Caught = Formal),
+    assertion(nonvar(Caught)),
+    assertion(subsumes_term(Expected, Caught)).
+
+:- begin_tests(wam_go_lowered_shell_faults).
+
+% Control: untouched fixtures render (proving the fault assertions below prove
+% the corruption, not the harness).
+test(lowered_fixture_baseline_renders) :-
+    with_go_lowered_fixture(real, real,
+        [Root]>>( render_lowered_function(Root), render_ite_shell(Root) )).
+
+% --- function.go.mustache ---
+test(function_missing_throws_load) :-
+    with_go_lowered_fixture(omit, real,
+        expect_function_error(go_wam_template_load(lowered_function, _, _))).
+
+test(function_empty_throws_empty) :-
+    with_go_lowered_fixture(write(""), real,
+        expect_function_error(go_wam_template_empty(lowered_function, _))).
+
+test(function_reserved_marker_throws_tags) :-
+    with_go_lowered_fixture(
+        write("{{comment}}\nfunc (vm *WamState) {{name}}() bool {{{body}}}{{package_name}}"),
+        real,
+        expect_function_error(go_wam_template_tags(lowered_function, _))).
+
+test(function_structural_tag_throws_tags) :-
+    with_go_lowered_fixture(
+        write("{{comment}} {{match instr}}\nfunc (vm *WamState) {{name}}() bool {{{body}}}"),
+        real,
+        expect_function_error(go_wam_template_tags(lowered_function, _))).
+
+test(function_missing_marker_throws_tags) :-
+    % No {{body}} marker -> the ordered split fails.
+    with_go_lowered_fixture(
+        write("{{comment}}\nfunc (vm *WamState) {{name}}() bool {}"),
+        real,
+        expect_function_error(go_wam_template_tags(lowered_function, _))).
+
+test(function_duplicate_marker_throws_tags) :-
+    % Two {{comment}} markers -> exactly-once split fails.
+    with_go_lowered_fixture(
+        write("{{comment}}{{comment}}\nfunc (vm *WamState) {{name}}() bool {{{body}}}"),
+        real,
+        expect_function_error(go_wam_template_tags(lowered_function, _))).
+
+% --- ite.go.mustache ---
+test(ite_missing_throws_load) :-
+    with_go_lowered_fixture(real, omit,
+        expect_ite_error(go_wam_template_load(lowered_ite, _, _))).
+
+test(ite_empty_throws_empty) :-
+    with_go_lowered_fixture(real, write(""),
+        expect_ite_error(go_wam_template_empty(lowered_ite, _))).
+
+test(ite_reserved_marker_throws_tags) :-
+    % A reserved marker ({{package_name}}) left in a static span.
+    with_go_lowered_fixture(real,
+        write("{{indent}}{\n{{package_name}}{{indent}}}\n"),
+        expect_ite_error(go_wam_template_tags(lowered_ite, _))).
+
+test(ite_structural_tag_throws_tags) :-
+    with_go_lowered_fixture(real,
+        write("{{indent}}{ {{match instr}}\n{{indent}}}\n"),
+        expect_ite_error(go_wam_template_tags(lowered_ite, _))).
+
+test(ite_missing_marker_throws_tags) :-
+    % Drop the {{condition}} slot -> the ordered-repeated splice cannot consume
+    % the full marker list.
+    with_go_lowered_fixture(real,
+        write("{{indent}}{\n{{then}}{{else}}{{indent}}}\n"),
+        expect_ite_error(go_wam_template_tags(lowered_ite, _))).
+
+test(ite_duplicate_marker_throws_tags) :-
+    % An extra {{indent}} beyond the declared count leaves one unconsumed in the
+    % trailing span, which the lint rejects.
+    with_go_lowered_fixture(real,
+        write("{{indent}}{{indent}}{{indent}}{{indent}}{{indent}}{{indent}}{{indent}}{{indent}}{{condition}}{{indent}}{{indent}}{{indent}}{{then}}{{indent}}{{indent}}{{indent}}{{fresh_reset}}{{else}}{{indent}}{{indent}}{{indent}}\n"),
+        expect_ite_error(go_wam_template_tags(lowered_ite, _))).
+
+:- end_tests(wam_go_lowered_shell_faults).

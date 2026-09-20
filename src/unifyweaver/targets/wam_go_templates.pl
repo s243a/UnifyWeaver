@@ -33,6 +33,10 @@
     go_step_case_text_at_root/3,   % +Root, +GoTypeName, -Body
     go_render_step_method/1,       % -StepText           assembled Step() (compile_step_wam_to_go/2)
     go_render_step_method_at_root/2,
+    go_render_lowered_function/4,  % +Name, +Comment, +Body, -[Header,Body,Footer]
+    go_render_lowered_function_at_root/5,
+    go_render_ite_shell/6,         % +Indent, +Cond, +Then, +FreshReset, +Else, -Text
+    go_render_ite_shell_at_root/7,
     go_preflight/0,                % load + validate + render every required asset once
     go_with_template_root_for_test/2
 ]).
@@ -48,6 +52,14 @@
 % Shells carry ordered variable/child slots; sections are variable-free static
 % Go spliced verbatim after a Go-aware tag lint.
 go_template_path(runtime_shell,   'runtime.go.mustache').
+
+% Lowered-emitter shells (design §8 Phase 4 slice 1). Rendered by their own
+% entry points (go_render_lowered_function/4, go_render_ite_shell/6), NOT through
+% go_render_template/3: the body/child text is spliced as a value and never
+% rescanned, so a lowered fragment containing literal {{...}} (e.g. the atom
+% '{{Ai}}') stays literal.
+go_template_path(lowered_function, 'lowered/function.go.mustache').
+go_template_path(lowered_ite,      'lowered/ite.go.mustache').
 
 % The eight ordered helper sections the runtime shell is spliced from (design
 % docs/proposals/wam_go_template_refactor_design.md §2.3 / §5). Phase 2 split
@@ -154,6 +166,15 @@ go_reserved_marker("{{foreign_results}}").
 go_reserved_marker("{{native_kernels}}").
 go_reserved_marker("{{execute_foreign}}").
 go_reserved_marker("{{seek_fact_source}}").
+% Lowered-shell markers (Phase 4 slice 1). None appears inside valid Go.
+go_reserved_marker("{{comment}}").
+go_reserved_marker("{{name}}").
+go_reserved_marker("{{body}}").
+go_reserved_marker("{{indent}}").
+go_reserved_marker("{{condition}}").
+go_reserved_marker("{{then}}").
+go_reserved_marker("{{else}}").
+go_reserved_marker("{{fresh_reset}}").
 
 go_structural_tag("{{#").
 go_structural_tag("{{^").
@@ -440,6 +461,115 @@ go_splice_step_shell(Root, Cases, Step) :-
                     context(go_render_step_method/1, step_shell)))
     ).
 
+% -- Lowered function shell (design §8 Phase 4 slice 1) ----------------------
+%
+% One shell for the three lowered-function header/footer format/2s (plain, T4,
+% T5/T6). Returns the [Header, Body, Footer] list lower_predicate_to_go/4 wants:
+% the {{body}} marker only SPLITS the footer from the header — Body is spliced as
+% the middle list element and never rescanned. Byte-identical to the old
+% atom-format headers (frozen by the whole-function digests, §8 slice 0).
+go_render_lowered_function(Name, Comment, Body, Lines) :-
+    go_template_root(Root),
+    go_render_lowered_function_at_root(Root, Name, Comment, Body, Lines).
+
+go_render_lowered_function_at_root(Root, Name, Comment, Body,
+                                   [Header, BodyText, Footer]) :-
+    go_template_path(lowered_function, Relative),
+    directory_file_path(Root, Relative, Path),
+    (   go_nonempty_text(Name), go_nonempty_text(Comment), go_text_value(Body)
+    ->  true
+    ;   throw(error(domain_error(go_wam_lowered_function_variables,
+                                 [Name, Comment, Body]),
+                    context(go_render_lowered_function/4, Path)))
+    ),
+    go_read_asset(Path, lowered_function, shell, go_render_lowered_function/4,
+                  Template),
+    (   go_split_ordered_markers(Template,
+            ["{{comment}}", "{{name}}", "{{body}}"],
+            [BeforeComment, BetweenCN, BetweenNB, Footer]),
+        maplist(go_source_span_clean,
+                [BeforeComment, BetweenCN, BetweenNB, Footer])
+    ->  go_text_string(Comment, CommentText),
+        go_text_string(Name, NameText),
+        go_text_string(Body, BodyText),
+        atomics_to_string([BeforeComment, CommentText, BetweenCN, NameText,
+                           BetweenNB], "", Header)
+    ;   throw(error(go_wam_template_tags(lowered_function, Path),
+                    context(go_render_lowered_function/4, Path)))
+    ).
+
+% -- Lowered ITE shell (design §8 Phase 4 slice 1) ---------------------------
+%
+% Ordered-repeated marker splice (every {{indent}} occurrence listed, like C++
+% ite_shell_markers/1) around four already-rendered children: the condition, the
+% then branch, the fresh-variable reset and the else branch. No counter: the Go
+% ITE uses fixed local names (_trailMark/_condOk/_savedRegs) shadowed per nested
+% Go block. Children are spliced as values and never rescanned (a get_constant
+% fragment with a '{{Ai}}' atom stays literal). Byte-identical to the old
+% inline format/2 block (frozen by the single/sequential/nested-ITE digests).
+go_ite_shell_markers([
+    "{{indent}}", "{{indent}}", "{{indent}}", "{{indent}}", "{{indent}}",
+    "{{indent}}", "{{indent}}",
+    "{{condition}}",
+    "{{indent}}", "{{indent}}", "{{indent}}",
+    "{{then}}",
+    "{{indent}}", "{{indent}}", "{{indent}}",
+    "{{fresh_reset}}", "{{else}}",
+    "{{indent}}", "{{indent}}"
+]).
+
+go_ite_shell_values(I, C, T, F, E,
+    [I, I, I, I, I, I, I, C, I, I, I, T, I, I, I, F, E, I, I]).
+
+go_render_ite_shell(Indent, Condition, Then, FreshReset, Else, Text) :-
+    go_template_root(Root),
+    go_render_ite_shell_at_root(Root, Indent, Condition, Then, FreshReset, Else,
+                                Text).
+
+go_render_ite_shell_at_root(Root, Indent, Condition, Then, FreshReset, Else,
+                            Text) :-
+    go_template_path(lowered_ite, Relative),
+    directory_file_path(Root, Relative, Path),
+    (   go_text_value(Indent), go_text_value(Condition), go_text_value(Then),
+        go_text_value(FreshReset), go_text_value(Else)
+    ->  true
+    ;   throw(error(domain_error(go_wam_ite_variables,
+                                 [Indent, Condition, Then, FreshReset, Else]),
+                    context(go_render_ite_shell/6, Path)))
+    ),
+    go_read_asset(Path, lowered_ite, shell, go_render_ite_shell/6, Template),
+    go_ite_shell_markers(Markers),
+    (   go_split_repeated_markers(Template, Markers, Parts)
+    ->  go_text_string(Indent, IndentText),
+        maplist(go_text_string, [Condition, Then, FreshReset, Else],
+                [CondText, ThenText, FreshText, ElseText]),
+        go_ite_shell_values(IndentText, CondText, ThenText, FreshText, ElseText,
+                            Values),
+        go_interleave_slots(Parts, Values, Joined),
+        atomics_to_string(Joined, "", Text)
+    ;   throw(error(go_wam_template_tags(lowered_ite, Path),
+                    context(go_render_ite_shell/6, Path)))
+    ).
+
+% Split on each marker in order; each marker is matched at its FIRST remaining
+% occurrence (ordered-repeated), so {{indent}} can appear many times. Every span
+% between markers is linted (no template-origin tag left to emit unresolved).
+go_split_repeated_markers(Text, [], [Text]) :-
+    go_source_span_clean(Text).
+go_split_repeated_markers(Text, [Marker|Markers], [Before|Parts]) :-
+    string_length(Marker, Length),
+    sub_string(Text, At, Length, _, Marker),
+    !,
+    sub_string(Text, 0, At, _, Before),
+    go_source_span_clean(Before),
+    End is At + Length,
+    sub_string(Text, End, _, 0, After),
+    go_split_repeated_markers(After, Markers, Parts).
+
+go_nonempty_text(Value) :-
+    go_text_value(Value),
+    Value \== '', Value \== "".
+
 % -- Preflight (design §6.2: runs BEFORE make_directory_path/1) --------------
 %
 % Loads + lints every required asset and renders the shell once with
@@ -448,4 +578,7 @@ go_preflight :-
     go_render_helper_methods(_),
     go_render_step_method(_),
     go_render_template(runtime_shell,
-        [package_name="wam", step_method="// preflight"], _).
+        [package_name="wam", step_method="// preflight"], _),
+    go_render_lowered_function("goPreflightFn",
+        "// goPreflightFn — lowered from preflight/1", "", _),
+    go_render_ite_shell("", "", "", "", "", _).
