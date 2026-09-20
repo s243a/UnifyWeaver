@@ -15,6 +15,16 @@ designer with repo tools, including one empirical regeneration of the
 No nested subagents were available in the session, so no Sonnet/Opus subagent
 work is reported here.
 
+Revision 2026-09-20 (same day, after Phase 0/1 landed in `9f583c946` /
+`087a738bb`): §4.3, new §4.4, §5, §8 Phase 4 and §11 Q5 were rewritten to
+close the Phase-4 `.stache` gap — the first draft left a `.stache`
+instruction library as a *conditional* item with no concrete deliverable.
+The revision audits every per-instruction body in
+`wam_go_lowered_emitter.pl` (unchanged between `a102514d0` and `087a738bb`)
+against the C++ precedent's criterion and reaches a decision rather than a
+condition. That audit was also done directly with repo tools; no nested
+subagents were available.
+
 ---
 
 ## 1. Problem and goals
@@ -45,7 +55,9 @@ Goals, in priority order:
    (mirroring `templates/targets/cpp_wam/runtime/` and `lowered/`), and template
    files acting as **libraries** through the engines' `{{match}}` features,
    choosing per piece between the literal (`.mustache`) and pattern
-   (`.stache`) match (§4–§5).
+   (`.stache`) match (§4–§5). Outcome of that choice: every Go piece is
+   literal; §4.4 records why no piece qualifies for pattern match and what
+   would change that.
 4. Fail-closed loading with contextual errors, preflight before output files
    exist, and a test file that pins bytes (as `tests/test_wam_cpp_templates.pl` does).
 
@@ -172,7 +184,8 @@ Go: five `format(atom/string …)` shells (function header/footer at 348–352,
 `get_constant` / `get_integer` / `get_nil` bodies (548–590) are the same
 twelve lines differing only in the Go value expression and comment — the
 Go analogue of the C++ head-match family, but *without* the atom-vs-value
-runtime split C++ needed. See §5.4 and §8 Phase 4.
+runtime split C++ needed. That missing split is the whole `.stache`
+question for Go; §4.4 audits it. See also §5.4 and §8 Phase 4.
 
 ---
 
@@ -291,8 +304,8 @@ selected body needs the **field bound by the match** (`Esc` / `CppVal`).
 | (B) 50 step-case snippets (§2.4) | yes — by Go instruction **type name** (`GetConstant`, …), a plain identifier the Prolog assembler already holds | no (bodies have zero interpolation; `i.Ai`, `i.C` are Go field accesses, not template variables) | `.mustache` **library** files, one `{{match instr}}` block per family | **literal**: `{{case GetConstant}}` |
 | runtime.go / Step shells | slots only | rendered children | `.mustache` shells | none (exactly-once ordered markers) |
 | lowered function / ITE shells (Phase 4) | slots only | name, comment, body, indent | `.mustache` shells | none |
-| lowered head-match family `get_constant`/`get_integer`/`get_nil` (Phase 4, optional) | the three Go bodies are **identical** apart from the value expression and comment | yes, but as plain strings (`GoVal`, `Comment`, `Ai`, `I`) | `.mustache` fragment with placeholders suffices; `.stache` only if the emitter is later restructured to dispatch on the normalized instruction **term** | literal placeholders; pattern only under the restructuring condition |
-| lowered per-instruction library (Phase 4, conditional) | yes — on **instruction term shape** with bound register/value fields (`get_variable(Xn, Ai)`, `put_structure(F, Ai)`, …) | yes (bound fields) | `.stache` — this is the genuine pattern-match use case | **pattern**: `{{case get_variable(Xn, Ai)}}` over *normalized* terms |
+| lowered head-match family `get_constant`/`get_integer`/`get_nil` (Phase 4) | **no** — one body; the three Prolog clauses differ only in how they compute the value expression, and all three land on the same twelve Go lines | yes, but as four pre-rendered strings (`I`, `Comment`, `Ai`, `GoVal`); nothing in the body varies by the *shape* of the value | `.mustache` fragment, **spliced by the adapter on ordered repeated markers** (the `ite.cpp.mustache` mechanism), never through `render_template/3` — a `Comment` for the atom `'{{Ai}}'` would otherwise be rescanned (the C++ tests pin exactly this case) | none (repeated ordered slots: `{{I}}`×12, `{{Comment}}`, `{{Ai}}`, `{{GoVal}}`×2) |
+| lowered per-instruction library (Phase 4) | the discriminator is the instruction **functor**, which `emit_one/2`'s clause heads already dispatch on; no instruction's Go *statements* vary with the shape of a bound sub-term (audit in §4.4) | after normalisation (register → index, token → Go literal, functor → escaped, atom → interned var) the fields are already strings | **none — dropped.** A `.stache` here would be chosen for its binding syntax, not for structural dispatch: the "for no benefit" case of §4.1. The bodies stay as `format/2` emission patterns, exactly as the C++ closeout audit decided for the same families | — |
 
 Why not `.stache` for (B): the snippets need no bindings, the discriminator is
 a token, and pattern reading would turn `{{case GetConstant}}` into a
@@ -304,6 +317,110 @@ Why not a match library for (A): there is nothing to select; the blob is a
 fixed sequence. Splitting it into ordered static sections (composability by
 file ownership and review size) is the C++ "relocation and composition"
 pattern; a match block would add a dispatch that is always the same.
+
+### 4.4 Audit: is there a `.stache` home in the Go lowered emitter? (decision: no)
+
+The first draft of this document kept a `lowered/instruction.go.stache`
+"only if the emitter is restructured to dispatch on normalized instruction
+terms". That is a condition, not a design, and it left Phase 4 with no
+concrete `.stache` deliverable. This subsection replaces the condition with a
+decision, reached by applying the precedent's own criterion to every
+per-instruction body the Go emitter has.
+
+**The criterion (from the precedent).** The one `.stache` in the repo,
+`templates/targets/cpp_wam/lowered/head_constant.cpp.stache`, earns the
+pattern engine because a single WAM instruction has **two differently shaped
+statement bodies** — `vm->match_reg_atom(...)` with its `_m < 0 / == 0`
+ladder for atoms, `vm->get_reg(...)`/`is_unbound()`/`operator==` for
+integers and floats — and the choice between them is made by the **shape of
+a normalised term** (`head_constant(atom(Esc))` vs `head_constant(value(CppVal))`)
+whose bound field the chosen body needs (`wam_cpp_lowered_emitter.pl:506–527`,
+`739–742`). Note what does *not* dispatch there: `get_integer` and `get_nil`
+hard-pick a case in Prolog; only `get_constant` dispatches, on
+`wam_classify_constant_token/2`'s class. The C++ plan's rule is the same test
+in one sentence: "Use `.stache` only when term shape and bound fields make
+the representation simpler" (`CPP_WAM_TEMPLATE_REFACTOR_PLAN.md`, "Two
+engines, three useful template sizes", item 2), and its Phase-4 closeout
+audit applied it negatively to the `get_*`/`put_*`/`unify_*`/`set_*` groups:
+"repeat short comments and one-line `vm->step(...)` calls, but their argument
+normalization and runtime operations differ … They stay in Prolog as small
+emission patterns."
+
+**Census of `emit_one/2` at `wam_go_lowered_emitter.pl:540–755`** (26 emitting
+clauses, 4 silent consumers `try_me_else`/`trust_me`/`cut_ite`/`jump`, one
+`// TODO` fallback; 116 `format/2` calls in the region). Every emitting clause
+has exactly **one** Go body; the shapes are:
+
+| Body shape | Clauses | Lines emitted | What varies between clauses | Varies by *shape* of a bound sub-term? |
+|---|---|---|---|---|
+| head bind-or-match block | `get_constant` 548, `get_integer` 563, `get_nil` 577 | 12 (identical text) | the comment and one Go expression `GoVal` (`go_val_literal/2` result, `&Integer{Val: N}` with the raw token, or the interned `[]` variable) | **no** — `valueEquals(vm.deref(_a), GoVal)` is the same statement for atom, integer and float; atoms are package-level `*Atom` pointers, so Go has no allocation to avoid and no fast path to select |
+| `if !EXPR { return false }` guard | `get_value`, `get_structure`, `get_list`, `put_structure`, `put_list`, `unify_variable`, `unify_value`, `unify_constant`, `set_variable`, `set_value`, `set_constant`, `builtin_call`, `call_foreign` (13) | 3 + comment | one Go expression: `vm.Unify(a, b)`, `vm.Step(&GoType{Fields})`, `vm.executeBuiltin("op", n)`, `vm.executeForeignPredicate("p", n)` | **no** — the ten `vm.Step` delegates differ only in the struct literal (`Functor+Ai`, `Ai`, `Xn`, `C`); that is an *expression*, not a statement shape. A `.stache` with four field-shape cases would trade 10×4 `format/2` lines for 4 cases plus 10 normalisation clauses: same contract count, one more file, and the exact family the C++ closeout audit kept in Prolog |
+| one-liner | `proceed`, `fail`, `get_variable`, `put_constant`, `put_value`, `allocate`, `execute` (7) | 1 + comment | register indices / one expression | **no** (the C++ plan's "leave a simple existing `format/3` alone" size class) |
+| distinct blocks | `put_variable` (4 lines), `deallocate` (3), `call` (7) | fixed | register indices / call expression | **no** — one body each, nothing to select |
+
+Four places *look* like structural dispatch and were checked individually:
+
+1. **`go_val_literal/2` (792–805)** dispatches on `integer(N)` / `float(F)` /
+   `atom(Name)` to three different Go expressions — the only real
+   shape-dispatch in the file. It is not a template consumer for two
+   independent reasons: the bodies are one-line expressions (size class 1 of
+   the C++ rule), and the atom arm calls `intern_atom_go/2`, which is
+   **side-effecting** (`retract`/`assertz` of `go_atom_intern_next/1` and
+   `go_atom_intern_id/2` at `wam_go_target.pl:3214–3224`; the table it builds
+   is what `atoms.go` is generated from). A template cannot perform that
+   call, so the Go value must be computed *before* rendering — at which point
+   the shape is gone and only a string remains.
+2. **T5 if-cascade vs T6 string switch (390–450).** Two genuinely different
+   bodies, but the selection is per predicate on a *count threshold* plus an
+   all-atoms check (`go_t6_applicable/2`), not on any term's shape, and both
+   bodies iterate over the guard list — list iteration is a v1 `.stache`
+   exclusion ("the caller iterates; the template dispatches one term").
+3. **A whole-instruction library** (`{{case get_variable(Xn, Ai)}}`, the
+   first draft's candidate). Its "bound fields" are already-rendered strings
+   after normalisation, and its discriminator is the functor — which is a
+   token. The pattern engine would be selected for the convenience of naming
+   positional arguments in the case head; the same convenience is a `format/2`
+   argument list. §4.1 already names this as the "no benefit" case, and the
+   restructuring it requires (`emit_one/2` printing via `format('~s')` of a
+   rendered fragment for 26 clauses) is the cost the first draft's condition
+   was hedging against. The audit finds nothing on the other side of that
+   cost.
+4. **The head-match family as a one-case `.stache`.** Tempting only because
+   the pattern engine substitutes each scope once and never rescans a
+   rendered value (SPEC, "Interpolation"), which the head-match fragment
+   needs (`'{{Ai}}'`-shaped atoms). But the adapter's ordered-repeated-marker
+   splice gives the same guarantee without a header, a term reader and
+   overlap checks; a one-case match is a degenerate use of a dispatch
+   dialect. It stays `.mustache` + splice (§4.3 row).
+
+**Decision.** No Go instruction has a second body shape selected by a bound
+sub-term; therefore no `.stache` file is added to `templates/targets/go_wam/`
+in this refactor, and the conditional `lowered/instruction.go.stache` item
+is **removed** from §5 and §8 rather than left open. Every Go template is
+literal: shells, sections and literal-match libraries.
+
+**Reopen condition** (recorded the way the SPEC records exclusions — a
+condition to check, not a date). The item reopens when the Go lowered
+emitter gains, for one instruction, **two Go statement bodies selected by
+the shape of a bound sub-term**. The realistic trigger is a
+`get_constant` atom fast path — e.g. comparing the dereferenced register
+against the interned `*Atom` pointer before falling back to `valueEquals`,
+the Go analogue of C++'s `match_reg_atom`. That is a **semantic change to
+generated code** and belongs to a performance PR, not to this byte-identical
+refactor. When it lands, the deliverable is the direct mirror of the
+precedent and needs no further design:
+`lowered/head_match.go.stache` with `{{match op}}{{case head_constant(atom(AtomVar))}}
+…{{case head_constant(value(GoVal))}}…{{/match}}` and outer keys
+`I`/`Comment`/`Ai`; `emit_one(get_constant(..))` classifies the token and
+builds the `op` term exactly as `wam_cpp_lowered_emitter.pl:506–516` does,
+`get_integer` passes `value(...)` with the raw token, `get_nil` passes
+`atom(<interned [] var>)`; the adapter gets `go_render_stache/3` with a
+path+SHA-256 keyed cache and a four-key contract check
+(`wam_cpp_templates.pl:178–277`); the gate is the frozen per-fragment
+digest table of Phase 4 slice 0 (§8) re-baselined *in the performance PR
+that introduces the second body*, with the template-hygiene change landing
+as a separate byte-identical PR after it. Until that trigger fires, adding
+the file would be the over-engineering §4.1 warns against.
 
 ---
 
@@ -333,11 +450,12 @@ templates/targets/go_wam/
     control.go.mustache               LIBRARY — 20 cases
     choice_point.go.mustache          LIBRARY — 8 cases
     indexing.go.mustache              LIBRARY — 6 cases
-  lowered/                            Phase 4 (optional)
+  lowered/                            Phase 4
     function.go.mustache              SHELL — {{comment}} {{name}} {{body}}
     ite.go.mustache                   SHELL — ordered {{indent}}/{{condition}}/{{then}}/{{else}} slots
-    head_match.go.mustache            fragment — {{I}} {{Comment}} {{Ai}} {{GoVal}}
-    instruction.go.stache             LIBRARY (only under the §4.3 condition)
+    head_match.go.mustache            fragment — ordered repeated slots {{I}}×12 {{Comment}} {{Ai}} {{GoVal}}×2
+    (no .stache file: §4.4 — reopens only when a Go instruction gains a second
+     body shape selected by a bound sub-term; then lowered/head_match.go.stache)
   project/                            Phase 4 (optional)
     atoms_runtime_only.go.mustache    {{package_name}} (the 35-line static fallback at 175–198)
     lib_header.go.mustache, lowered_header.go.mustache, main_parallel.go.mustache
@@ -655,22 +773,64 @@ at HEAD (stale). Repeat for `go_store` with
   single-digit ms change. Add a parsed-case cache only if a real project shows
   material cost (C++ precedent: deferred).
 
-### Phase 4 — optional, only where composition pays
-- `lowered/function.go.mustache` + `lowered/ite.go.mustache` shells for the
-  lowered emitter (three header `format/2`s share one shape; ITE block is a
-  fixed shell around three rendered children) — the C++ Phase 4 slices
-  `#4263`/`#4264` are the template.
-- `lowered/head_match.go.mustache` for `get_constant`/`get_integer`/`get_nil`
-  (real reuse: three duplicated bodies → one; literal placeholders suffice).
-- `project/*.go.mustache` for the remaining small atom-embedded Go in
-  `write_wam_go_project/3` (atoms.go fallback, lib/lowered headers, parallel
-  main) and routing go.mod/value/instructions/state/main_bench through the
-  adapter, deleting the silent `// Template not found` fallback.
-- `lowered/instruction.go.stache` **only if** the emitter is restructured to
-  dispatch on normalized instruction terms with bound fields (§4.3); frozen
-  per-fragment digests as in `old_lowered_function_digest/3`.
-- Gate per slice: frozen fragment digests, lowered plunit suites (§9.2),
-  harness green.
+### Phase 4 — lowered emitter and project leftovers, only where composition pays
+
+All Phase 4 templates are `.mustache`; there is **no `.stache` slice** (§4.4
+decided it, with a recorded reopen condition). Slices, in order:
+
+- **Slice 0 — freeze lowered bytes (no generator change).** The Go lowered
+  suites (`test_wam_go_lowered_phase{1,2,3}.pl`, `_t{4,5,6}.pl`,
+  `_ite_exec.pl`) assert with `sub_string`/`sub_atom` only; none pins a
+  digest, so today nothing would catch a one-byte drift in a lowered
+  fragment. Add to `tests/test_wam_go_templates.pl`, modelled on the C++
+  `old_head_constant_digest/4`, `old_head_integer_nil_digest/3` and
+  `old_lowered_function_digest/3` tables:
+  - per-fragment digests of `with_output_to(string(T), emit_one(Instr, "    "))`
+    for `get_constant` with an atom, an integer token, a float token, an
+    escaped atom (`'a\"b'`, `'a\\b'`) and the placeholder-shaped atoms
+    `'{{name}}'` and `'{{Ai}}'` (the rescan trap), `get_integer` with `42`,
+    `-7` and the raw `0007`, and `get_nil` on `A1`/`Y3` — each captured
+    right after `wam_go_target:init_atom_intern_table_go/0` so the interned
+    variable names (`wamAtom_<sanitized>_<seq>`) are stable across runs;
+  - whole-function digests of `lower_predicate_to_go/4` on fixed WAM lists
+    covering the plain, T4, T5, T6 (`t6_min_clauses(3)` as `_t6.pl` does),
+    single-ITE, sequential-ITE and nested-ITE shapes — length + SHA-256 of
+    `atomic_list_concat(Lines, '\n', Code)`.
+  - Gate: the new tests pass against the *unchanged* emitter.
+- **Slice 1 — `lowered/function.go.mustache` + `lowered/ite.go.mustache`**
+  shells (the three header `format/2`s at 348–352, 363–365, 407–409 share
+  one shape; the ITE block 506–527 is a fixed shell around three rendered
+  children plus the fresh-variable reset) — C++ `#4263`/`#4264` are the
+  template. Rendered by ordered exactly-once (function) and
+  ordered-repeated (ITE: every `{{indent}}` occurrence listed, as
+  `ite_shell_markers/1` does) marker splices.
+- **Slice 2 — `lowered/head_match.go.mustache`** for
+  `get_constant`/`get_integer`/`get_nil`: three duplicated twelve-line bodies
+  → one fragment with the repeated ordered slots `{{I}}`×12, `{{Comment}}`,
+  `{{Ai}}`, `{{GoVal}}`×2. Prolog keeps everything it keeps in C++
+  (`CPP_WAM_TEMPLATE_REFACTOR_PLAN.md`, "shared head bind/match body"):
+  register normalisation, token classification, `intern_atom_go/2`, the raw
+  numeric spelling for `get_integer`, and the exact comment. The adapter
+  gets `go_render_head_match/5` (`I`, `Comment`, `Ai`, `GoVal` → text) with a
+  four-key contract check and preflight render; the emitter's three clauses
+  become `emit_head_match(Comment, Ai, GoVal, I)`. The fragment is **never**
+  passed to `template_system:render_template/3` (sequential whole-string
+  replacement would rescan a `Comment` containing `{{Ai}}`; slice 0's
+  digests for `'{{Ai}}'` pin that).
+- **Slice 3 — `project/*.go.mustache`** for the remaining small
+  atom-embedded Go in `write_wam_go_project/3` (atoms.go fallback, lib/lowered
+  headers, parallel main) and routing go.mod/value/instructions/state/
+  main_bench through the adapter, deleting the silent `// Template not found`
+  fallback (§2.1).
+- **Not a slice — `.stache`.** Dropped per §4.4. Reopens only when a Go
+  instruction acquires a second statement body selected by a bound
+  sub-term's shape (the realistic case: a `get_constant` atom fast path, a
+  performance change outside this refactor); the design for that moment is
+  already written there and needs a re-baseline of slice 0's digests in the
+  PR that changes the bytes, followed by a byte-identical hygiene PR.
+- Gate per slice: slice-0 digests unchanged, lowered plunit suites (§9.2)
+  green, harness green (§9.1), no Go text left in the `.pl` for that slice's
+  scope.
 
 Rollback: every phase is a single PR touching adapter + templates + call sites
 together; reverting it restores the previous byte-identical state.
@@ -759,9 +919,14 @@ Go text left in the `.pl` for that phase's scope.
   the adapter, removed in Phase 4.
 - **Q4 — section boundaries** (§2.3) are a proposal; the split script may cut
   differently as long as re-concatenation is exact.
-- **Q5 — Phase 4 scope**: whether to open the lowered-emitter work at all,
-  and under which reuse evidence a `.stache` instruction library is justified
-  (§4.3 condition).
+- **Q5 — Phase 4 scope**: whether to open the lowered-emitter work at all.
+  The `.stache` half of this question is **closed** by §4.4: no Go
+  instruction has a second body shape selected by a bound sub-term, so no
+  `.stache` library is justified in this refactor; the reopen condition is
+  recorded there. What remains for the owner is only whether slices 0–3
+  (§8) are worth doing now; recommendation: slice 0 (freeze lowered bytes)
+  unconditionally, since it costs one test table and protects the lowered
+  lane regardless, then slices 1–2 together as one PR, slice 3 last.
 
 ---
 
