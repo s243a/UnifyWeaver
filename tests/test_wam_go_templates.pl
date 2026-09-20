@@ -10,18 +10,31 @@
 % is moved into template files; the whole point of the refactor is to keep
 % every one of these bytes identical afterwards.
 %
+% Phase 2 (split): the helper blob is now eight ordered runtime/*.go.mustache
+% partials spliced by the shell. The digests above are unchanged (the eight
+% sections re-concatenate byte-for-byte). The wam_go_template_faults block adds
+% missing/empty/EOL/tag-contaminated fault fixtures for each new section plus
+% shell-marker faults, mirroring tests/test_wam_cpp_templates.pl.
+%
 % Recorded environment: SWI-Prolog 9.0.4 (x86_64-linux); baselines captured
 % from wam_go_target.pl at repo HEAD e1d709070 (code identical to main).
 % SHA-256 covers UTF-8 bytes; the string_length values count Prolog chars.
 
 :- use_module(library(plunit)).
 :- use_module(library(crypto), [crypto_data_hash/3, crypto_file_hash/3]).
-:- use_module(library(filesex), [directory_file_path/3]).
+:- use_module(library(filesex),
+              [directory_file_path/3, copy_file/2,
+               delete_directory_and_contents/1]).
+:- use_module(library(readutil), [read_file_to_string/3]).
 :- use_module('../src/unifyweaver/targets/wam_go_target',
               [compile_wam_helpers_to_go/2,
                compile_step_wam_to_go/2,
                compile_wam_runtime_to_go/2,
                write_wam_go_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_go_templates',
+              [go_render_helper_methods/1,
+               go_render_helper_methods_at_root/2,
+               go_render_template_at_root/4]).
 
 % -- Frozen digests (design §2.3, §2.4, §2.5) -------------------------------
 
@@ -118,3 +131,151 @@ test(project_files_exact_bytes,
     once(with_minimal_go_project(check_project_file(Name, Length, Digest))).
 
 :- end_tests(wam_go_templates).
+
+% -- Phase 2 fault fixtures (design §8 Phase 2 gate) ------------------------
+%
+% For each of the eight new runtime sections, build a fixture template root,
+% copy every real asset, corrupt exactly one, and assert the adapter throws a
+% contextual error (never emitting a diagnostic comment as success). Mirrors
+% tests/test_wam_cpp_templates.pl's missing/malformed-section fixtures against
+% the Go adapter's *_at_root/2,4 entry points and thread-local-free root
+% override.
+
+% Adapter section Id -> file name under runtime/. The Id is the first argument
+% of every contextual error the adapter throws for that section.
+go_runtime_section(runtime_run_loop,           'run_loop.go.mustache').
+go_runtime_section(runtime_aggregate,          'aggregate.go.mustache').
+go_runtime_section(runtime_foreign_registry,   'foreign_registry.go.mustache').
+go_runtime_section(runtime_atom_fact2_sources, 'atom_fact2_sources.go.mustache').
+go_runtime_section(runtime_foreign_results,    'foreign_results.go.mustache').
+go_runtime_section(runtime_native_kernels,     'native_kernels.go.mustache').
+go_runtime_section(runtime_execute_foreign,    'execute_foreign.go.mustache').
+go_runtime_section(runtime_seek_fact_source,   'seek_fact_source.go.mustache').
+
+go_real_template_root(RealRoot) :-
+    source_file(wam_go_templates:go_render_template(_, _, _), Source),
+    file_directory_name(Source, ModuleDir),
+    directory_file_path(ModuleDir,
+        '../../../templates/targets/go_wam', RealRoot).
+
+write_fixture_file(Path, Text) :-
+    setup_call_cleanup(open(Path, write, S, [encoding(utf8)]),
+                       write(S, Text),
+                       close(S)).
+
+% Build a complete fixture template root (shell + eight sections), applying
+% exactly one Fault. Faults:
+%   none                       -- untouched copy (control)
+%   missing_section(Id)        -- omit that section file
+%   corrupt_section(Id, Text)  -- write Text in place of that section
+%   shell(Text)                -- write Text in place of runtime.go.mustache
+with_go_template_fixture(Fault, Goal) :-
+    tmp_file(wam_go_tmpl_fixture, Root),
+    setup_call_cleanup(
+        build_go_fixture_root(Fault, Root),
+        call(Goal, Root),
+        (   exists_directory(Root)
+        ->  delete_directory_and_contents(Root)
+        ;   true)).
+
+build_go_fixture_root(Fault, Root) :-
+    make_directory(Root),
+    directory_file_path(Root, runtime, RuntimeDir),
+    make_directory(RuntimeDir),
+    go_real_template_root(RealRoot),
+    directory_file_path(RealRoot, 'runtime.go.mustache', RealShell),
+    directory_file_path(Root, 'runtime.go.mustache', ShellCopy),
+    (   Fault = shell(ShellText)
+    ->  write_fixture_file(ShellCopy, ShellText)
+    ;   copy_file(RealShell, ShellCopy)
+    ),
+    directory_file_path(RealRoot, runtime, RealRuntimeDir),
+    forall(go_runtime_section(Id, Name),
+        (   directory_file_path(RealRuntimeDir, Name, RealSection),
+            directory_file_path(RuntimeDir, Name, SectionCopy),
+            (   Fault = missing_section(Id)
+            ->  true
+            ;   Fault = corrupt_section(Id, Text)
+            ->  write_fixture_file(SectionCopy, Text)
+            ;   copy_file(RealSection, SectionCopy)
+            ))).
+
+% Corrupt-a-marker mutation of the real shell (split/rejoin, no regex).
+shell_without_marker(Marker, Shell) :-
+    go_real_template_root(RealRoot),
+    directory_file_path(RealRoot, 'runtime.go.mustache', RealShell),
+    read_file_to_string(RealShell, Real, [encoding(utf8)]),
+    atomic_list_concat(Parts, Marker, Real),
+    atomic_list_concat(Parts, "", Shell).
+
+shell_with_duplicate_marker(Marker, Shell) :-
+    go_real_template_root(RealRoot),
+    directory_file_path(RealRoot, 'runtime.go.mustache', RealShell),
+    read_file_to_string(RealShell, Real, [encoding(utf8)]),
+    atomic_list_concat([Real, Marker, "\n"], Shell).
+
+:- begin_tests(wam_go_template_faults).
+
+% Control: an untouched fixture root reproduces the real helper bytes exactly,
+% so the fault assertions below are proving the corruption, not the harness.
+test(fixture_baseline_matches_real) :-
+    go_render_helper_methods(Real),
+    with_go_template_fixture(none, check_fixture_helpers(Real)).
+
+test(missing_section_throws_load,
+     [forall(go_runtime_section(Id, _))]) :-
+    with_go_template_fixture(missing_section(Id),
+        expect_helper_error(go_wam_template_load(Id, _, _))).
+
+test(empty_section_throws_empty,
+     [forall(go_runtime_section(Id, _))]) :-
+    with_go_template_fixture(corrupt_section(Id, ""),
+        expect_helper_error(go_wam_template_empty(Id, _))).
+
+test(no_final_lf_section_throws_eol,
+     [forall(go_runtime_section(Id, _))]) :-
+    with_go_template_fixture(corrupt_section(Id, "func broken() {}"),
+        expect_helper_error(go_wam_template_eol(Id, _))).
+
+test(reserved_marker_in_section_throws_tags,
+     [forall(go_runtime_section(Id, _))]) :-
+    with_go_template_fixture(
+        corrupt_section(Id, "func x() {}\n{{step_method}}\n"),
+        expect_helper_error(go_wam_template_tags(Id, _))).
+
+test(structural_tag_in_section_throws_tags,
+     [forall(go_runtime_section(Id, _))]) :-
+    with_go_template_fixture(
+        corrupt_section(Id, "func x() {}\n{{match instr}}\n"),
+        expect_helper_error(go_wam_template_tags(Id, _))).
+
+% Shell-marker faults: the ordered exactly-once split must reject a shell that
+% drops or duplicates a section marker (design §6.3 / §6.4).
+test(shell_missing_marker_throws_tags) :-
+    shell_without_marker("{{seek_fact_source}}", Shell),
+    with_go_template_fixture(shell(Shell),
+        expect_shell_error(go_wam_template_tags(runtime_shell, _))).
+
+test(shell_duplicate_marker_throws_tags) :-
+    shell_with_duplicate_marker("{{run_loop}}", Shell),
+    with_go_template_fixture(shell(Shell),
+        expect_shell_error(go_wam_template_tags(runtime_shell, _))).
+
+:- end_tests(wam_go_template_faults).
+
+check_fixture_helpers(Expected, Root) :-
+    go_render_helper_methods_at_root(Root, Got),
+    assertion(Got == Expected).
+
+expect_helper_error(Expected, Root) :-
+    catch(go_render_helper_methods_at_root(Root, _),
+          error(Formal, _), Caught = Formal),
+    assertion(nonvar(Caught)),
+    assertion(subsumes_term(Expected, Caught)).
+
+expect_shell_error(Expected, Root) :-
+    catch(go_render_template_at_root(Root, runtime_shell,
+              [package_name="wam", step_method="// step"], _),
+          error(Formal, _), Caught = Formal),
+    assertion(nonvar(Caught)),
+    assertion(subsumes_term(Expected, Caught)).

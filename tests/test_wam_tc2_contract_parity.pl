@@ -41,6 +41,8 @@
 :- use_module('../src/unifyweaver/targets/wam_rust_target',
               [write_wam_rust_project/3,
                compile_wam_runtime_to_rust/2]).
+:- use_module('../src/unifyweaver/targets/wam_go_target',
+              [compile_wam_runtime_to_go/2]).
 :- use_module('../src/unifyweaver/core/recursive_kernel_detection',
               [detect_recursive_kernel/4]).
 
@@ -196,9 +198,12 @@ test(llvm_stream_and_bound_self_are_rplus) :-
         "Strict R+: Source==Target needs a self-loop")).
 
 test(go_handler_seeds_queue_from_neighbors) :-
-    % Phase 1 template refactor: Go collector bodies moved to
-    % templates/targets/go_wam/runtime/helpers.go.mustache (byte-identical output).
-    read_file_string('templates/targets/go_wam/runtime/helpers.go.mustache', S),
+    % Phase 2 template refactor: Go collector bodies live in
+    % templates/targets/go_wam/runtime/native_kernels.go.mustache; assert against
+    % the generated OUTPUT (as the rust check above does) so the check is robust
+    % to where the template source lives.
+    compile_wam_runtime_to_go([], Code),
+    atom_string(Code, S),
     assertion(sub_string(S, _, _, _, "collectNativeTransitiveClosureResults")),
     assertion(sub_string(S, _, _, _,
         "queue := append([]string(nil), adjacency[source]...)")).

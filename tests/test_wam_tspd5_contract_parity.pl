@@ -33,6 +33,8 @@
 :- use_module('../src/unifyweaver/targets/wam_rust_target',
               [write_wam_rust_project/3,
                compile_wam_runtime_to_rust/2]).
+:- use_module('../src/unifyweaver/targets/wam_go_target',
+              [compile_wam_runtime_to_go/2]).
 :- use_module('../src/unifyweaver/core/recursive_kernel_detection',
               [detect_recursive_kernel/4]).
 
@@ -206,9 +208,13 @@ test(rust_bfs_correlated_pairs_not_dfs) :-
     !.
 
 test(go_correlated_pair_sets) :-
-    % Phase 1 template refactor: Go collector bodies moved to
-    % templates/targets/go_wam/runtime/helpers.go.mustache (byte-identical output).
-    read_file_string('templates/targets/go_wam/runtime/helpers.go.mustache', S),
+    % Phase 2 template refactor: Go collector bodies live in
+    % templates/targets/go_wam/runtime/native_kernels.go.mustache; assert against
+    % the generated OUTPUT (as rust_bfs_correlated_pairs_not_dfs does) so the
+    % consecutive-func body slice is robust to template relocation. The
+    % collectNative* funcs are emitted consecutively in the generated runtime.
+    compile_wam_runtime_to_go([], Code),
+    atom_string(Code, S),
     Pattern = "func (vm *WamState) collectNativeTransitiveStepParentDistanceResults",
     EndPattern = "func (vm *WamState) collectNativeCategoryAncestorHops",
     sub_string(S, Start, _, _, Pattern),
