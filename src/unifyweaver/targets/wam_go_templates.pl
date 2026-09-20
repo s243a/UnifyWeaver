@@ -10,10 +10,14 @@
 % spliced Go through a template engine (so Go composite literals like
 % []qd{{source, 0}} stay literal).
 %
-% Phase 1 scope (design docs/proposals/wam_go_template_refactor_design.md §8):
-% the helper blob is one static section (runtime/helpers.go.mustache) spliced
-% into runtime.go.mustache alongside the package name and the (still
-% Prolog-assembled) Step() method.
+% Phase 2 scope (design docs/proposals/wam_go_template_refactor_design.md §8):
+% the helper blob is split into eight ordered static sections
+% (runtime/{run_loop,aggregate,foreign_registry,atom_fact2_sources,
+% foreign_results,native_kernels,execute_foreign,seek_fact_source}.go.mustache),
+% each spliced into its own marker in runtime.go.mustache alongside the package
+% name and the (still Prolog-assembled) Step() method. Re-concatenation with the
+% shell's inter-slot separator is byte-identical to the Phase 1 single-section
+% render.
 %
 % Fail-closed: a missing/empty/malformed asset throws a contextual error and
 % preflight runs BEFORE the output directory is created, so a broken template
@@ -38,11 +42,44 @@
 % Shells carry ordered variable/child slots; sections are variable-free static
 % Go spliced verbatim after a Go-aware tag lint.
 go_template_path(runtime_shell,   'runtime.go.mustache').
-go_section_path(runtime_helpers,  'runtime/helpers.go.mustache').
 
-% Ordered marker list per shell. Exactly one of each, in this order.
+% The eight ordered helper sections the runtime shell is spliced from (design
+% docs/proposals/wam_go_template_refactor_design.md §2.3 / §5). Phase 2 split
+% the single runtime/helpers.go.mustache blob into these at the §2.3 group
+% boundaries; re-concatenation with the shell's inter-slot separator is
+% byte-exact with the Phase 1 render.
+go_section_path(runtime_run_loop,           'runtime/run_loop.go.mustache').
+go_section_path(runtime_aggregate,          'runtime/aggregate.go.mustache').
+go_section_path(runtime_foreign_registry,   'runtime/foreign_registry.go.mustache').
+go_section_path(runtime_atom_fact2_sources, 'runtime/atom_fact2_sources.go.mustache').
+go_section_path(runtime_foreign_results,    'runtime/foreign_results.go.mustache').
+go_section_path(runtime_native_kernels,     'runtime/native_kernels.go.mustache').
+go_section_path(runtime_execute_foreign,    'runtime/execute_foreign.go.mustache').
+go_section_path(runtime_seek_fact_source,   'runtime/seek_fact_source.go.mustache').
+
+% Fixed order in which the eight helper sections are spliced into the shell and
+% joined by go_render_helper_methods/1. This IS the byte-identity contract for
+% the helper region; moving a declaration between section files is fine as long
+% as this order and each file stay coherent.
+go_helper_section_order([
+    runtime_run_loop,
+    runtime_aggregate,
+    runtime_foreign_registry,
+    runtime_atom_fact2_sources,
+    runtime_foreign_results,
+    runtime_native_kernels,
+    runtime_execute_foreign,
+    runtime_seek_fact_source
+]).
+
+% Ordered marker list for the runtime shell. Exactly one of each, in this order:
+% the package name, the Prolog-assembled Step() method, then the eight helper
+% sections (design §5.1).
 go_shell_markers(runtime_shell,
-    ["{{package_name}}", "{{step_method}}", "{{helper_methods}}"]).
+    ["{{package_name}}", "{{step_method}}",
+     "{{run_loop}}", "{{aggregate}}", "{{foreign_registry}}",
+     "{{atom_fact2_sources}}", "{{foreign_results}}", "{{native_kernels}}",
+     "{{execute_foreign}}", "{{seek_fact_source}}"]).
 
 % -- Go-aware tag lint (design §6.4) ----------------------------------------
 %
@@ -143,16 +180,21 @@ go_section_text_at_root(Root, Id, Text) :-
                     context(go_section_text/2, Id)))
     ).
 
-% -- Helper methods (Phase 1: the single helper section) --------------------
+% -- Helper methods (Phase 2: the eight ordered sections joined by the shell) -
 %
-% Returns the helper blob WITHOUT its final LF (uniform strip rule). The
-% exported wam_go_target:compile_wam_helpers_to_go/2 re-appends "\n" to keep
-% its old contract; the runtime shell owns the inter-slot newlines.
+% Reads the eight helper sections (each already stripped of its final LF) and
+% joins them with the runtime shell's inter-slot separator ("\n\n"), so the
+% result is byte-identical to the Phase 1 single-blob render. The exported
+% wam_go_target:compile_wam_helpers_to_go/2 re-appends "\n" to keep its old
+% trailing-LF contract; the runtime shell owns the inter-slot newlines.
 go_render_helper_methods(Text) :-
-    go_section_text(runtime_helpers, Text).
+    go_template_root(Root),
+    go_render_helper_methods_at_root(Root, Text).
 
 go_render_helper_methods_at_root(Root, Text) :-
-    go_section_text_at_root(Root, runtime_helpers, Text).
+    go_helper_section_order(Ids),
+    maplist(go_section_text_at_root(Root), Ids, Sections),
+    atomics_to_string(Sections, "\n\n", Text).
 
 % -- Shell splicing ---------------------------------------------------------
 go_render_template(Id, Vars, Text) :-
@@ -172,10 +214,11 @@ go_render_template_at_root(Root, runtime_shell, Vars, Text) :-
     go_shell_markers(runtime_shell, Markers),
     (   go_split_ordered_markers(Shell, Markers, Spans),
         maplist(go_source_span_clean, Spans)
-    ->  go_render_helper_methods_at_root(Root, Helpers),
+    ->  go_helper_section_order(Ids),
+        maplist(go_section_text_at_root(Root), Ids, Sections),
         go_text_string(Pkg, PkgText),
         go_text_string(Step, StepText),
-        go_interleave_slots(Spans, [PkgText, StepText, Helpers], Parts),
+        go_interleave_slots(Spans, [PkgText, StepText | Sections], Parts),
         atomics_to_string(Parts, "", Text)
     ;   throw(error(go_wam_template_tags(runtime_shell, Path),
                     context(go_render_template/3, runtime_shell)))

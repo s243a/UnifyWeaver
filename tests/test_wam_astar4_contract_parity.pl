@@ -46,6 +46,8 @@
 :- use_module('../src/unifyweaver/targets/wam_rust_target',
               [write_wam_rust_project/3,
                compile_wam_runtime_to_rust/2]).
+:- use_module('../src/unifyweaver/targets/wam_go_target',
+              [compile_wam_runtime_to_go/2]).
 :- use_module('../src/unifyweaver/core/recursive_kernel_detection',
               [detect_recursive_kernel/4]).
 
@@ -226,9 +228,12 @@ test(c_relation_isolation_dynamic_float) :-
     assertion(\+ sub_string(S, _, _, _, "nodes[256]")).
 
 test(go_scala_r_elixir_contract_markers) :-
-    % Phase 1 template refactor: Go collector bodies moved to
-    % templates/targets/go_wam/runtime/helpers.go.mustache (byte-identical output).
-    read_file_string('templates/targets/go_wam/runtime/helpers.go.mustache', Go),
+    % Phase 2 template refactor: Go collector bodies live in
+    % templates/targets/go_wam/runtime/native_kernels.go.mustache; assert against
+    % the generated OUTPUT (as the rust check above does) so the contract marker
+    % check is robust to where the template source lives.
+    compile_wam_runtime_to_go([], GoCode),
+    atom_string(GoCode, Go),
     assertion(sub_string(Go, _, _, _,
         "docs/design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md")),
     read_file_string('src/unifyweaver/targets/wam_scala_target.pl', Sc),

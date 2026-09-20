@@ -761,6 +761,38 @@ at HEAD (stale). Repeat for `go_store` with
 - Boundaries may be adjusted at execution (the gate does not care where the
   cuts are, only that concatenation is exact and each file is coherent).
 
+**Phase 2 execution notes (2026-09-20).** Landed as a pure byte-identical
+refactor. The eight sections were cut at the §2.3 group boundaries exactly as
+proposed (each boundary is a single `}\n\n<next decl>` blank-line separator);
+the `runtime/helpers.go.mustache` line ranges were run_loop 1–240, aggregate
+242–440, foreign_registry 442–555, atom_fact2_sources 557–765, foreign_results
+767–921, native_kernels 923–1388, execute_foreign 1390–1523, seek_fact_source
+1525–1941 (the D43 store comment block leads seek_fact_source). A split script
+asserted `"\n\n".join(section_i_without_final_LF) == helpers_without_final_LF`
+(61,351 bytes) before writing. `go_render_helper_methods/1` now joins the eight
+sections with the shell separator `"\n\n"`; `go_valid_runtime_shell_vars/3` is
+unchanged (`package_name` + `step_method` are still the only *variable* slots,
+the sections are children the adapter renders). Freeze digests unchanged
+(helpers 61,313 / `dab3b8c2…`, step 27,593 / `433eea3c…`); generator-vs-generator
+`diff -r` empty for both `go` and `go_store`; corpus 51/51 both lanes,
+differential 2600/0 (`go`) and 503/0 (`go_store`).
+
+**Contract-parity coupling — resolved by the robust compile-check (preferred
+option).** The six fleet-contract suites that Phase 1 had repointed at
+`runtime/helpers.go.mustache` (`test_wam_{td3,tspd5,tpd4,astar4,tc2,wsp3}_contract_parity.pl`)
+were converted to assert against the **generated Go output** instead of a
+template file, mirroring the Rust check already in each file: each Go test now
+does `compile_wam_runtime_to_go([], Code), atom_string(Code, S)` and keeps every
+original assertion verbatim (positive markers, `\+` negatives, and the
+tspd5/tpd4 consecutive-`func` body slice, which still works because the
+`collectNative*` functions are emitted consecutively in the runtime). Each file
+gained `:- use_module('../src/unifyweaver/targets/wam_go_target',
+[compile_wam_runtime_to_go/2])`. This ends the whack-a-mole permanently: Phase 3
+and Phase 4 may relocate template source freely — these suites check the bytes
+the contracts actually govern (the generated Go), not where the source lives.
+The fallback (repointing the read at `native_kernels.go.mustache`) was not
+needed; compile-in-test loaded cleanly in every suite's context.
+
 ### Phase 3 — the 50 step cases → five literal-match library files
 - Extraction script writes the five family files in findall order; add
   `go_step_case_order/1` (the 50 names, §2.4), `step/step_shell.go.mustache`,

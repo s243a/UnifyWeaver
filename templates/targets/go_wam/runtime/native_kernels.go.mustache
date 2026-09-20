@@ -1,0 +1,466 @@
+func valueAsAtomString(vm *WamState, v Value) (string, bool) {
+    val := vm.deref(v)
+    atom, ok := val.(*Atom)
+    if !ok {
+        return "", false
+    }
+    return atom.Name, true
+}
+
+func valueAsInteger(vm *WamState, v Value) (int64, bool) {
+    val := vm.deref(v)
+    integer, ok := val.(*Integer)
+    if !ok {
+        return 0, false
+    }
+    return integer.Val, true
+}
+
+func valueAsFloat(vm *WamState, v Value) (float64, bool) {
+    val := vm.deref(v)
+    switch n := val.(type) {
+    case *Integer:
+        return float64(n.Val), true
+    case *Float:
+        return n.Val, true
+    default:
+        return 0, false
+    }
+}
+
+func listAsSlice(vm *WamState, v Value) ([]Value, bool) {
+    val := vm.deref(v)
+    list, ok := val.(*List)
+    if !ok {
+        return nil, false
+    }
+    return list.Elements, true
+}
+
+func (vm *WamState) collectNativeListSuffixes(items []Value, out *[]Value) {
+    for idx := 0; idx <= len(items); idx++ {
+        suffix := append([]Value(nil), items[idx:]...)
+        *out = append(*out, &List{Elements: suffix})
+    }
+}
+
+func tupleValue(items ...Value) Value {
+    return &Compound{Functor: "__tuple__", Args: items}
+}
+
+func atomAdjacency(pairs []AtomPair) map[string][]string {
+    adjacency := make(map[string][]string)
+    for _, pair := range pairs {
+        adjacency[pair.Left] = append(adjacency[pair.Left], pair.Right)
+    }
+    return adjacency
+}
+
+func weightedAdjacency(triples []WeightedEdgeTriple) map[string][]WeightedEdgeTriple {
+    adjacency := make(map[string][]WeightedEdgeTriple)
+    for _, triple := range triples {
+        adjacency[triple.Left] = append(adjacency[triple.Left], triple)
+    }
+    return adjacency
+}
+
+func (vm *WamState) collectNativeTransitiveClosureResults(source string, pairs []AtomPair) []Value {
+    adjacency := atomAdjacency(pairs)
+    visited := make(map[string]bool)
+    queue := append([]string(nil), adjacency[source]...)
+    results := make([]Value, 0)
+    for len(queue) > 0 {
+        node := queue[0]
+        queue = queue[1:]
+        if visited[node] {
+            continue
+        }
+        visited[node] = true
+        results = append(results, internAtom(node))
+        queue = append(queue, adjacency[node]...)
+    }
+    return results
+}
+
+func (vm *WamState) collectNativeTransitiveDistanceResults(source string, pairs []AtomPair) []Value {
+    // dist+ (docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md): BFS shortest
+    // positive distance. Visited tracks edge-discovered nodes — do not seed
+    // with source (Source appears only for self-loop / nonempty cycle).
+    adjacency := atomAdjacency(pairs)
+    visited := make(map[string]bool)
+    type qd struct {
+        node string
+        dist int
+    }
+    queue := []qd{{source, 0}}
+    results := make([]Value, 0)
+    for len(queue) > 0 {
+        current := queue[0]
+        queue = queue[1:]
+        for _, next := range adjacency[current.node] {
+            if visited[next] {
+                continue
+            }
+            visited[next] = true
+            nextDist := current.dist + 1
+            queue = append(queue, qd{next, nextDist})
+            results = append(results, tupleValue(
+                internAtom(next),
+                &Integer{Val: int64(nextDist)},
+            ))
+        }
+    }
+    return results
+}
+
+func (vm *WamState) collectNativeTransitiveParentDistanceResults(source string, pairs []AtomPair) []Value {
+    // Shortest-positive parents
+    // (docs/design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md): BFS with
+    // parent sets. dist tracks edge-discovered nodes — do not seed with
+    // source. Equal-shortest parents are all emitted.
+    adjacency := atomAdjacency(pairs)
+    dist := make(map[string]int)
+    parents := make(map[string]map[string]bool)
+    type qd struct {
+        node string
+        dist int
+    }
+    queue := []qd{{source, 0}}
+    for len(queue) > 0 {
+        current := queue[0]
+        queue = queue[1:]
+        nextDist := current.dist + 1
+        for _, next := range adjacency[current.node] {
+            if d0, ok := dist[next]; ok {
+                if d0 == nextDist {
+                    parents[next][current.node] = true
+                }
+                continue
+            }
+            dist[next] = nextDist
+            parents[next] = map[string]bool{current.node: true}
+            queue = append(queue, qd{next, nextDist})
+        }
+    }
+    keys := make([]string, 0, len(dist))
+    for k := range dist {
+        keys = append(keys, k)
+    }
+    sort.Strings(keys)
+    results := make([]Value, 0)
+    for _, target := range keys {
+        d := dist[target]
+        pars := make([]string, 0, len(parents[target]))
+        for p := range parents[target] {
+            pars = append(pars, p)
+        }
+        sort.Strings(pars)
+        for _, parent := range pars {
+            results = append(results, tupleValue(
+                internAtom(target),
+                internAtom(parent),
+                &Integer{Val: int64(d)},
+            ))
+        }
+    }
+    return results
+}
+
+func (vm *WamState) collectNativeTransitiveStepParentDistanceResults(source string, pairs []AtomPair) []Value {
+    // Shortest-positive correlated step/parent
+    // (docs/design/WAM_TRANSITIVE_STEP_PARENT_DISTANCE5_CONTRACT.md).
+    // Level-synchronous BFS stores correlated (Step, Parent) pairs per
+    // Target — never an independent Step×Parent cross-product. Dist is
+    // not seeded with Source.
+    adjacency := atomAdjacency(pairs)
+    dist := make(map[string]int)
+    pairSets := make(map[string]map[[2]string]bool)
+    type qd struct {
+        node string
+        d    int
+    }
+    queue := []qd{{source, 0}}
+    for len(queue) > 0 {
+        current := queue[0]
+        queue = queue[1:]
+        nd := current.d + 1
+        for _, next := range adjacency[current.node] {
+            var cands [][2]string
+            if current.node == source {
+                cands = [][2]string{{next, source}}
+            } else {
+                seenStep := make(map[string]bool)
+                for pair := range pairSets[current.node] {
+                    if !seenStep[pair[0]] {
+                        seenStep[pair[0]] = true
+                        cands = append(cands, [2]string{pair[0], current.node})
+                    }
+                }
+            }
+            if d0, ok := dist[next]; !ok {
+                dist[next] = nd
+                set := make(map[[2]string]bool)
+                for _, c := range cands {
+                    set[c] = true
+                }
+                pairSets[next] = set
+                queue = append(queue, qd{next, nd})
+            } else if d0 == nd {
+                set := pairSets[next]
+                if set == nil {
+                    set = make(map[[2]string]bool)
+                    pairSets[next] = set
+                }
+                for _, c := range cands {
+                    set[c] = true
+                }
+            }
+        }
+    }
+    results := make([]Value, 0)
+    targets := make([]string, 0, len(dist))
+    for t := range dist {
+        targets = append(targets, t)
+    }
+    sort.Strings(targets)
+    for _, t := range targets {
+        d := dist[t]
+        type sp struct{ step, parent string }
+        list := make([]sp, 0, len(pairSets[t]))
+        for pair := range pairSets[t] {
+            list = append(list, sp{pair[0], pair[1]})
+        }
+        sort.Slice(list, func(i, j int) bool {
+            if list[i].step != list[j].step {
+                return list[i].step < list[j].step
+            }
+            return list[i].parent < list[j].parent
+        })
+        for _, p := range list {
+            results = append(results, tupleValue(
+                internAtom(t),
+                internAtom(p.step),
+                internAtom(p.parent),
+                &Integer{Val: int64(d)},
+            ))
+        }
+    }
+    return results
+}
+
+func pickShortestCandidate(dist map[string]float64, settled map[string]bool) (string, bool) {
+    bestNode := ""
+    bestDist := 0.0
+    found := false
+    for node, d := range dist {
+        if settled[node] {
+            continue
+        }
+        if !found || d < bestDist || (d == bestDist && node < bestNode) {
+            bestNode = node
+            bestDist = d
+            found = true
+        }
+    }
+    return bestNode, found
+}
+
+// heuristicLookup returns the min valid (from,target) weight.
+// Missing → 0. ok=false on malformed relevant heuristic (NaN/Inf/neg).
+func heuristicLookup(triples []WeightedEdgeTriple, from string, target string) (float64, bool) {
+    best := 0.0
+    saw := false
+    for _, triple := range triples {
+        if triple.Left != from || triple.Right != target {
+            continue
+        }
+        w := triple.Weight
+        if math.IsNaN(w) || math.IsInf(w, 0) || w < 0 {
+            return 0, false
+        }
+        if !saw || w < best {
+            best = w
+            saw = true
+        }
+    }
+    if saw {
+        return best, true
+    }
+    return 0, true
+}
+
+// collectNativeWeightedShortestPathResults — finite nonnegative Dijkstra
+// for weighted_shortest_path3
+// (docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md).
+// Emit one (Target, float64) per reachable non-Source target. Source is
+// never emitted (even via self-loop / cycle). Indexed triples are
+// atom-keyed; a reachable invalid weight (NaN / Inf / negative) fails
+// the complete call (nil result → foreign fail).
+func (vm *WamState) collectNativeWeightedShortestPathResults(source string, triples []WeightedEdgeTriple) []Value {
+    adjacency := weightedAdjacency(triples)
+    dist := map[string]float64{source: 0}
+    settled := make(map[string]bool)
+    results := make([]Value, 0)
+    for {
+        current, ok := pickShortestCandidate(dist, settled)
+        if !ok {
+            break
+        }
+        settled[current] = true
+        if current != source {
+            results = append(results, tupleValue(
+                internAtom(current),
+                &Float{Val: dist[current]},
+            ))
+        }
+        for _, edge := range adjacency[current] {
+            w := edge.Weight
+            if math.IsNaN(w) || math.IsInf(w, 0) || w < 0 {
+                return nil
+            }
+            candidate := dist[current] + w
+            prev, exists := dist[edge.Right]
+            if !exists || candidate < prev {
+                dist[edge.Right] = candidate
+            }
+        }
+    }
+    return results
+}
+
+// collectNativeAstarShortestPathResult — correctness-safe A* for
+// astar_shortest_path4 (docs/design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md).
+// Final cost is always the finite Dijkstra minimum (settled by g-cost).
+// Missing h = 0.0. Source=Target → 0.0. Malformed reachable edge or
+// relevant heuristic fails the complete call (nil).
+func (vm *WamState) collectNativeAstarShortestPathResult(source string, target string, dim int64, weighted []WeightedEdgeTriple, direct []WeightedEdgeTriple) []Value {
+    if dim <= 0 {
+        return nil
+    }
+    if source == target {
+        return []Value{&Float{Val: 0}}
+    }
+    adjacency := weightedAdjacency(weighted)
+    gScore := map[string]float64{source: 0}
+    open := map[string]bool{source: true}
+    for len(open) > 0 {
+        current := ""
+        bestG := 0.0
+        bestF := 0.0
+        found := false
+        for node := range open {
+            h, ok := heuristicLookup(direct, node, target)
+            if !ok {
+                return nil
+            }
+            g := gScore[node]
+            // Secondary scheduling key only (Dim/h); settle by g.
+            f := math.Pow(g, float64(dim)) + math.Pow(h, float64(dim))
+            if !found || g < bestG || (g == bestG && (f < bestF || (f == bestF && node < current))) {
+                current = node
+                bestG = g
+                bestF = f
+                found = true
+            }
+        }
+        if !found {
+            break
+        }
+        delete(open, current)
+        // Settled by g-cost (Dijkstra). Safe even if h overestimates.
+        if current == target {
+            return []Value{&Float{Val: gScore[current]}}
+        }
+        for _, edge := range adjacency[current] {
+            w := edge.Weight
+            if math.IsNaN(w) || math.IsInf(w, 0) || w < 0 {
+                return nil
+            }
+            candidate := gScore[current] + w
+            prev, exists := gScore[edge.Right]
+            if !exists || candidate < prev {
+                gScore[edge.Right] = candidate
+                open[edge.Right] = true
+            }
+        }
+    }
+    return nil
+}
+
+// listAsAtomStrings walks a Prolog cons-list and pulls each element
+// out as an atom string. Uses vm.listToSlice rather than listAsSlice
+// because the latter returns the 2-element [head, tail] cons cell,
+// not the full flattened list — `category_ancestor`'s visited list
+// can be many cells deep, and reading just the first cons would
+// silently truncate it (causing the kernel to walk paths through
+// already-visited nodes and produce wrong hop counts).
+func listAsAtomStrings(vm *WamState, v Value) ([]string, bool) {
+    items, ok := vm.listToSlice(v)
+    if !ok {
+        return nil, false
+    }
+    out := make([]string, 0, len(items))
+    for _, item := range items {
+        s, ok := valueAsAtomString(vm, item)
+        if !ok {
+            return nil, false
+        }
+        out = append(out, s)
+    }
+    return out, true
+}
+
+// collectNativeCategoryAncestorHops walks the parent edges of `cat`
+// looking for `root`, emitting one hop count per matching path. Mirrors
+// the Rust implementation at wam_rust_target.pl:1797 — same DFS, same
+// max-depth semantics, same visited-set skip. The adjacency map is
+// built once at the top level and threaded into the recursive helper
+// to avoid rebuilding it per call.
+func (vm *WamState) collectNativeCategoryAncestorHops(cat string, root string, visited []string, maxDepth int, pairs []AtomPair) []int64 {
+    adjacency := atomAdjacency(pairs)
+    var out []int64
+    vm.collectNativeCategoryAncestorHopsRec(cat, root, visited, maxDepth, adjacency, &out)
+    return out
+}
+
+func (vm *WamState) collectNativeCategoryAncestorHopsRec(cat string, root string, visited []string, maxDepth int, adjacency map[string][]string, out *[]int64) {
+    rootSeen := false
+    for _, v := range visited {
+        if v == root {
+            rootSeen = true
+            break
+        }
+    }
+    parents := adjacency[cat]
+    if !rootSeen {
+        for _, p := range parents {
+            if p == root {
+                *out = append(*out, 1)
+                break
+            }
+        }
+    }
+    if len(visited) >= maxDepth {
+        return
+    }
+    for _, parent := range parents {
+        skip := false
+        for _, v := range visited {
+            if v == parent {
+                skip = true
+                break
+            }
+        }
+        if skip {
+            continue
+        }
+        nextVisited := make([]string, 0, len(visited)+1)
+        nextVisited = append(nextVisited, parent)
+        nextVisited = append(nextVisited, visited...)
+        before := len(*out)
+        vm.collectNativeCategoryAncestorHopsRec(parent, root, nextVisited, maxDepth, adjacency, out)
+        for i := before; i < len(*out); i++ {
+            (*out)[i] += 1
+        }
+    }
+}

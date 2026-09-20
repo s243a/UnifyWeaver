@@ -1,0 +1,199 @@
+func (vm *WamState) executeAggregate(aggType string, valueReg int, resultReg int) bool {
+    endPC, ok := vm.findMatchingAggregateEnd(vm.PC)
+    if !ok {
+        return false
+    }
+    sub := vm.Clone()
+    baseChoicePoints := len(sub.ChoicePoints)
+    sub.PC = vm.PC + 1
+    sub.Halted = false
+    sub.CurrentStruct = nil
+    sub.CurrentList = nil
+
+    values := make([]Value, 0)
+    count := 0
+    for {
+        if !sub.runUntilPC(endPC, baseChoicePoints) {
+            break
+        }
+        count++
+        if aggType != "count" {
+            val := sub.Regs[valueReg]
+            if val == nil {
+                return false
+            }
+            values = append(values, sub.freezeTerm(val))
+        }
+        if !sub.backtrackAbove(baseChoicePoints) {
+            break
+        }
+    }
+
+    if aggType == "set" || aggType == "setof" {
+        sort.SliceStable(values, func(i, j int) bool {
+            return sub.compareTerms(values[i], values[j]) < 0
+        })
+    }
+
+    result, ok := aggregateResultValue(aggType, values, count)
+    if !ok {
+        return false
+    }
+    if !vm.bindOrUnifyReg(resultReg, result) {
+        return false
+    }
+    vm.PC = endPC + 1
+    return true
+}
+
+func (vm *WamState) findMatchingAggregateEnd(startPC int) (int, bool) {
+    depth := 1
+    for pc := startPC + 1; pc < len(vm.Ctx.Code); pc++ {
+        switch vm.Ctx.Code[pc].(type) {
+        case *BeginAggregate:
+            depth++
+        case *EndAggregate:
+            depth--
+            if depth == 0 {
+                return pc, true
+            }
+        }
+    }
+    return 0, false
+}
+
+func (vm *WamState) runUntilPC(targetPC int, baseChoicePoints int) bool {
+    for {
+        if vm.Halted {
+            return false
+        }
+        if vm.PC == targetPC {
+            return true
+        }
+        instr := vm.fetch()
+        if instr == nil {
+            return false
+        }
+        if !vm.Step(instr) {
+            if !vm.backtrackAbove(baseChoicePoints) {
+                return false
+            }
+        }
+    }
+}
+
+func (vm *WamState) backtrackAbove(limit int) bool {
+    if len(vm.ChoicePoints) <= limit {
+        return false
+    }
+    return vm.backtrack()
+}
+
+func (vm *WamState) bindOrUnifyReg(reg int, val Value) bool {
+    existing := vm.Regs[reg]
+    if existing == nil {
+        vm.trailBinding(reg)
+        vm.putReg(reg, val)
+        return true
+    }
+    return vm.Unify(existing, val)
+}
+
+func aggregateResultValue(aggType string, values []Value, count int) (Value, bool) {
+    switch aggType {
+    case "count":
+        return &Integer{Val: int64(count)}, true
+    case "collect":
+        return listFromItems(append([]Value(nil), values...)), true
+    case "bag":
+        return listFromItems(append([]Value(nil), values...)), true
+    case "bagof":
+        if len(values) == 0 {
+            return nil, false
+        }
+        return listFromItems(append([]Value(nil), values...)), true
+    case "set":
+        return &List{Elements: uniqueAggregateValues(values)}, true
+    case "setof":
+        if len(values) == 0 {
+            return nil, false
+        }
+        return &List{Elements: uniqueAggregateValues(values)}, true
+    case "sum":
+        total := 0.0
+        for _, value := range values {
+            number, ok := aggregateNumericValue(value)
+            if !ok {
+                return nil, false
+            }
+            total += number
+        }
+        return &Float{Val: total}, true
+    case "max":
+        if len(values) == 0 {
+            return nil, false
+        }
+        best, ok := aggregateNumericValue(values[0])
+        if !ok {
+            return nil, false
+        }
+        for _, value := range values[1:] {
+            number, ok := aggregateNumericValue(value)
+            if !ok {
+                return nil, false
+            }
+            if number > best {
+                best = number
+            }
+        }
+        return &Float{Val: best}, true
+    case "min":
+        if len(values) == 0 {
+            return nil, false
+        }
+        best, ok := aggregateNumericValue(values[0])
+        if !ok {
+            return nil, false
+        }
+        for _, value := range values[1:] {
+            number, ok := aggregateNumericValue(value)
+            if !ok {
+                return nil, false
+            }
+            if number < best {
+                best = number
+            }
+        }
+        return &Float{Val: best}, true
+    default:
+        return nil, false
+    }
+}
+
+func uniqueAggregateValues(values []Value) []Value {
+    out := make([]Value, 0, len(values))
+    for _, value := range values {
+        found := false
+        for _, existing := range out {
+            if valueEquals(existing, value) {
+                found = true
+                break
+            }
+        }
+        if !found {
+            out = append(out, value)
+        }
+    }
+    return out
+}
+
+func aggregateNumericValue(value Value) (float64, bool) {
+    switch t := value.(type) {
+    case *Integer:
+        return float64(t.Val), true
+    case *Float:
+        return t.Val, true
+    default:
+        return 0, false
+    }
+}

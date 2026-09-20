@@ -1,0 +1,240 @@
+// Run executes the WAM instruction loop until halt or failure.
+func (vm *WamState) Run() (result bool) {
+    // An ISO error that escapes every catch/3 surfaces as failure with
+    // the ball recorded in vm.UncaughtBall, rather than as a process
+    // crash. Non-prologBall panics are genuine bugs and re-raise.
+    defer func() {
+        if r := recover(); r != nil {
+            thrown, ok := r.(prologBall)
+            if !ok {
+                panic(r)
+            }
+            vm.UncaughtBall = thrown.Ball
+            result = false
+        }
+    }()
+    for {
+        if vm.Halted {
+            return true
+        }
+        instr := vm.fetch()
+        if instr == nil {
+            return false
+        }
+        if !vm.Step(instr) {
+            if !vm.backtrack() {
+                return false
+            }
+        }
+    }
+}
+
+func (vm *WamState) indexedClauseBodyStart(targetPC int) int {
+    if targetPC < 0 || targetPC >= len(vm.Ctx.Code) {
+        return targetPC
+    }
+    switch vm.Ctx.Code[targetPC].(type) {
+    case *TryMeElse, *TryMeElsePc, *RetryMeElse, *RetryMeElsePc, *TrustMe:
+        return targetPC + 1
+    default:
+        return targetPC
+    }
+}
+
+// isChoiceChainHead is true when a switch default resolved to the
+// TryMeElse/RetryMeElse that heads a multi-clause group (pick_need
+// classic/1+classic/2). Jumping there — not past it — lets the chain
+// try every clause. Named clause bodies (L_*_body) are never heads.
+func (vm *WamState) isChoiceChainHead(targetPC int) bool {
+    if targetPC < 0 || targetPC >= len(vm.Ctx.Code) {
+        return false
+    }
+    switch vm.Ctx.Code[targetPC].(type) {
+    case *TryMeElse, *TryMeElsePc, *RetryMeElse, *RetryMeElsePc:
+        return true
+    default:
+        return false
+    }
+}
+
+func (vm *WamState) enterIndexedAlternatives(targets []int) bool {
+    if len(targets) == 0 {
+        return false
+    }
+    if len(targets) > 1 {
+        // count non-nil A-regs as arity approximation when not statically known
+        arity := 0
+        for i := 0; i < 32; i++ {
+            if vm.Regs[i] != nil { arity = i + 1 }
+        }
+        if arity < 1 { arity = 1 }
+        vm.pushIndexedChoicePoint(targets[1:], arity)
+    }
+    vm.PC = targets[0]
+    return true
+}
+
+func (vm *WamState) enterIndexedClause(targetPC int) bool {
+    return vm.enterIndexedAlternatives([]int{vm.indexedClauseBodyStart(targetPC)})
+}
+
+func (vm *WamState) runIsolatedGoal(targetPC int, args []Value) bool {
+    sub := vm.Clone()
+    for idx := range sub.Regs {
+        sub.Regs[idx] = nil
+    }
+    for idx, arg := range args {
+        if idx >= len(sub.Regs) {
+            break
+        }
+        sub.Regs[idx] = arg
+    }
+    sub.PC = targetPC
+    sub.CP = 0
+    sub.E = -1
+    sub.Stack = nil
+    sub.Trail = nil
+    sub.TrailLen = 0
+    sub.ChoicePoints = nil
+    sub.trailFloors = nil
+    sub.Halted = false
+    sub.CurrentStruct = nil
+    sub.CurrentList = nil
+    return sub.Run()
+}
+
+// CollectResults gathers values from A registers (indices 0..N-1).
+func (vm *WamState) CollectResults() []Value {
+	results := make([]Value, 0)
+	for i := 0; i < 100; i++ {
+		val := vm.Regs[i]
+		if val == nil {
+			break
+		}
+		results = append(results, vm.deref(val))
+	}
+	return results
+}
+
+// fetch retrieves the instruction at the current PC.
+func (vm *WamState) fetch() Instruction {
+    if vm.PC >= 0 && vm.PC < len(vm.Ctx.Code) {
+        return vm.Ctx.Code[vm.PC]
+    }
+    return nil
+}
+
+func resolveInstructions(code []Instruction, labels map[string]int) []Instruction {
+    // resolveLabel handles the "default" sentinel that the constant-index
+    // emitter (build_constant_index/5 in wam_target.pl) puts on the
+    // first clause's entry — at runtime that label means "fall through
+    // to the next instruction" (vm.PC+1). resolveInstructions runs over
+    // the code linearly, so the "next" PC is always idx+1 of the
+    // current SwitchOnConstant. Without this resolution, every
+    // SwitchOnConstant with a default entry stays unresolved (because
+    // labels["default"] doesn't exist), keeping the linear-scan
+    // SwitchOnConstant runtime case alive — at scale-300 with
+    // category_parent's 6000-clause table the O(N) scan dominates
+    // the per-call cost.
+    resolveLabel := func(label string, idx int) (int, bool) {
+        if label == "default" {
+            return idx + 1, true
+        }
+        pc, ok := labels[label]
+        return pc, ok
+    }
+    resolved := make([]Instruction, 0, len(code))
+    for idx, instr := range code {
+        switch i := instr.(type) {
+        case *Call:
+            if pc, ok := labels[i.Pred]; ok {
+                resolved = append(resolved, &CallPc{TargetPC: pc, Arity: i.Arity})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *CallForeign:
+            resolved = append(resolved, instr)
+        case *Execute:
+            if pc, ok := labels[i.Pred]; ok {
+                resolved = append(resolved, &ExecutePc{TargetPC: pc})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *Jump:
+            if pc, ok := labels[i.Label]; ok {
+                resolved = append(resolved, &JumpPc{TargetPC: pc})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *TryMeElse:
+            if pc, ok := labels[i.Label]; ok {
+                resolved = append(resolved, &TryMeElsePc{NextPC: pc, Arity: i.Arity})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *RetryMeElse:
+            if pc, ok := labels[i.Label]; ok {
+                resolved = append(resolved, &RetryMeElsePc{NextPC: pc, Arity: i.Arity})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *SwitchOnConstant:
+            cases := make([]ConstPcCase, 0, len(i.Cases))
+            complete := true
+            for _, c := range i.Cases {
+                pc, ok := resolveLabel(c.Label, idx)
+                if !ok {
+                    complete = false
+                    break
+                }
+                cases = append(cases, ConstPcCase{Val: c.Val, TargetPC: pc})
+            }
+            if complete {
+                sort.Slice(cases, func(a, b int) bool {
+                    return compareValues(cases[a].Val, cases[b].Val) < 0
+                })
+                resolved = append(resolved, &SwitchOnConstantPc{Cases: cases})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *SwitchOnStructure:
+            cases := make([]StructPcCase, 0, len(i.Cases))
+            complete := true
+            for _, c := range i.Cases {
+                pc, ok := resolveLabel(c.Label, idx)
+                if !ok {
+                    complete = false
+                    break
+                }
+                cases = append(cases, StructPcCase{Functor: c.Functor, TargetPC: pc})
+            }
+            if complete {
+                resolved = append(resolved, &SwitchOnStructurePc{Cases: cases})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *SwitchOnConstantA2:
+            cases := make([]ConstPcCase, 0, len(i.Cases))
+            complete := true
+            for _, c := range i.Cases {
+                pc, ok := resolveLabel(c.Label, idx)
+                if !ok {
+                    complete = false
+                    break
+                }
+                cases = append(cases, ConstPcCase{Val: c.Val, TargetPC: pc})
+            }
+            if complete {
+                sort.Slice(cases, func(a, b int) bool {
+                    return compareValues(cases[a].Val, cases[b].Val) < 0
+                })
+                resolved = append(resolved, &SwitchOnConstantA2Pc{Cases: cases})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        default:
+            resolved = append(resolved, instr)
+        }
+    }
+    return resolved
+}

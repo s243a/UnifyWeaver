@@ -1,0 +1,155 @@
+func (vm *WamState) applyForeignResult(predKey string, resultRegs []int, result Value) bool {
+    tupleArity := parseForeignTupleLayout(vm.foreignResultLayout(predKey))
+    if tupleArity <= 1 {
+        if len(resultRegs) < 1 {
+            return false
+        }
+        return vm.Unify(vm.getReg(resultRegs[0]), result)
+    }
+    tuple, ok := result.(*Compound)
+    if !ok || tuple.Functor != "__tuple__" || len(tuple.Args) != tupleArity || len(resultRegs) < tupleArity {
+        return false
+    }
+    for idx := 0; idx < tupleArity; idx++ {
+        if !vm.Unify(vm.getReg(resultRegs[idx]), tuple.Args[idx]) {
+            return false
+        }
+    }
+    return true
+}
+
+func (vm *WamState) finishForeignResults(predKey string, resultRegs []int, results []Value) bool {
+    if len(results) == 0 {
+        return false
+    }
+    resumePC := vm.PC + 1
+    mode := vm.foreignResultMode(predKey)
+    switch mode {
+    case "stream":
+        return vm.finishStreamResults(predKey, resultRegs, results)
+    default:
+        baseRegs := vm.Regs
+        trailMark := vm.TrailLen
+        // Conditional-trailing floor for this bare-mark boundary: on
+        // failure the code below unwinds to trailMark, so bindings of
+        // variables older than this point must keep being trailed.
+        vm.pushTrailFloor()
+        defer vm.popTrailFloor()
+        heapTop := vm.HeapLen
+        if !vm.applyForeignResult(predKey, resultRegs, results[0]) {
+            vm.unwindTrailTo(trailMark)
+            vm.Regs = baseRegs
+            if heapTop >= 0 && heapTop <= vm.HeapLen {
+                vm.heapTrimTo(heapTop)
+            }
+            return false
+        }
+        vm.PC = resumePC
+        return true
+    }
+}
+
+func (vm *WamState) finishStreamResults(predKey string, resultRegs []int, results []Value) bool {
+    if len(results) == 0 {
+        return false
+    }
+    resumePC := vm.PC + 1
+    var baseRegs [320]Value
+    baseRegs = vm.Regs
+    // Capture stack length and the env-pointer instead of cloning
+    // the stack — backtrack truncates to baseStackLen and restores
+    // baseE the same way the regular CP path does.
+    baseStackLen := len(vm.Stack)
+    baseE := vm.E
+    trailMark := vm.TrailLen
+    // Conditional-trailing floor for this bare-mark boundary: each loop
+    // iteration and the exhaustion path unwind to trailMark, so bindings
+    // of variables older than this point must keep being trailed.
+    vm.pushTrailFloor()
+    defer vm.popTrailFloor()
+    heapTop := vm.HeapLen
+    // Complete register snapshot of the pre-stream state (vm.Regs still
+    // equals baseRegs here). A resumed foreign choice point restores
+    // registers from this via restoreSavedRegs; the partial 8+ycount
+    // slice used before was not a marker-format snapshot, so it was a
+    // no-op restore that leaned on the reg-alias trail. That trail is
+    // being removed, so this snapshot is now the register restorer.
+    baseSnapshot := vm.snapshotAllRegs()
+    for idx, result := range results {
+        vm.unwindTrailTo(trailMark)
+        vm.Regs = baseRegs
+        if baseStackLen <= len(vm.Stack) {
+            vm.Stack = vm.Stack[:baseStackLen]
+        }
+        vm.E = baseE
+        if heapTop >= 0 && heapTop <= vm.HeapLen {
+            vm.heapTrimTo(heapTop)
+        }
+        vm.Halted = false
+        vm.CurrentStruct = nil
+        vm.CurrentList = nil
+        if !vm.applyForeignResult(predKey, resultRegs, result) {
+            continue
+        }
+        if idx+1 < len(results) {
+            remaining := append([]Value(nil), results[idx+1:]...)
+            vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+                NextPC: resumePC,
+                ResumePC: resumePC,
+                CP: vm.CP,
+                E: baseE,
+                StackLen: baseStackLen,
+                SavedRegs: baseSnapshot,
+                HeapTop: heapTop,
+                TrailMark: trailMark,
+                ForeignPredKey: predKey,
+                ForeignResultRegs: append([]int(nil), resultRegs...),
+                ForeignResults: remaining,
+                PendingB0: vm.PendingB0,
+                CutB0Stack: vm.copyCutB0Stack(),
+                YSaves: vm.copyYSaveStack(),
+                YSaveLen: len(vm.YSaves),
+                // This CP is built without fillBarrier, so set the
+                // conditional-trailing undo frontier explicitly.
+                VarFloor: vm.NextVarId,
+            })
+        }
+        vm.PC = resumePC
+        return true
+    }
+    // The last candidate can fail only after binding an earlier tuple
+    // component (notably when output registers alias).  There is no next
+    // loop iteration to perform the usual reset, so restore the complete
+    // pre-stream snapshot before reporting exhaustion.
+    vm.unwindTrailTo(trailMark)
+    vm.Regs = baseRegs
+    if baseStackLen <= len(vm.Stack) {
+        vm.Stack = vm.Stack[:baseStackLen]
+    }
+    vm.E = baseE
+    if heapTop >= 0 && heapTop <= vm.HeapLen {
+        vm.heapTrimTo(heapTop)
+    }
+    vm.Halted = false
+    vm.CurrentStruct = nil
+    vm.CurrentList = nil
+    return false
+}
+
+func (vm *WamState) executeIndexedAtomFact2(predKey string) bool {
+    key, ok := valueAsAtomString(vm, vm.getReg(0))
+    if !ok {
+        return false
+    }
+    pairs := vm.Ctx.IndexedAtomFactPairs[predKey]
+    if source, ok := vm.Ctx.AtomFact2Sources[predKey]; ok {
+        pairs = source.LookupArg1(key)
+    }
+    results := make([]Value, 0)
+    for _, pair := range pairs {
+        if pair.Left == key {
+            results = append(results, internAtom(pair.Right))
+        }
+    }
+    return vm.finishStreamResults(predKey, []int{1}, results)
+}

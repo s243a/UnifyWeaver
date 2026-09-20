@@ -1,0 +1,134 @@
+func (vm *WamState) executeForeignPredicate(pred string, arity int) bool {
+    predKey := fmt.Sprintf("%s/%d", pred, arity)
+    nativeKind, ok := vm.Ctx.ForeignNativeKinds[predKey]
+    if !ok {
+        return false
+    }
+    switch nativeKind {
+    case "countdown_sum2":
+        n, ok := valueAsInteger(vm, vm.getReg(0))
+        if !ok {
+            return false
+        }
+        sum := n * (n + 1) / 2
+        return vm.finishForeignResults(predKey, []int{1}, []Value{&Integer{Val: sum}})
+    case "list_suffix2":
+        items, ok := listAsSlice(vm, vm.getReg(0))
+        if !ok {
+            return false
+        }
+        suffixes := make([]Value, 0, len(items)+1)
+        vm.collectNativeListSuffixes(items, &suffixes)
+        packed := make([]Value, 0, len(suffixes))
+        for _, suffix := range suffixes {
+            packed = append(packed, suffix)
+        }
+        return vm.finishForeignResults(predKey, []int{1}, packed)
+    case "list_suffixes2":
+        items, ok := listAsSlice(vm, vm.getReg(0))
+        if !ok {
+            return false
+        }
+        suffixes := make([]Value, 0, len(items)+1)
+        vm.collectNativeListSuffixes(items, &suffixes)
+        return vm.finishForeignResults(predKey, []int{1}, []Value{&List{Elements: suffixes}})
+    case "transitive_closure2":
+        source, ok := valueAsAtomString(vm, vm.getReg(0))
+        if !ok {
+            return false
+        }
+        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
+        pairs := vm.Ctx.IndexedAtomFactPairs[edgePred]
+        results := vm.collectNativeTransitiveClosureResults(source, pairs)
+        return vm.finishForeignResults(predKey, []int{1}, results)
+    case "transitive_distance3":
+        source, ok := valueAsAtomString(vm, vm.getReg(0))
+        if !ok {
+            return false
+        }
+        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
+        pairs := vm.Ctx.IndexedAtomFactPairs[edgePred]
+        results := vm.collectNativeTransitiveDistanceResults(source, pairs)
+        return vm.finishForeignResults(predKey, []int{1, 2}, results)
+    case "transitive_parent_distance4":
+        source, ok := valueAsAtomString(vm, vm.getReg(0))
+        if !ok {
+            return false
+        }
+        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
+        pairs := vm.Ctx.IndexedAtomFactPairs[edgePred]
+        results := vm.collectNativeTransitiveParentDistanceResults(source, pairs)
+        return vm.finishForeignResults(predKey, []int{1, 2, 3}, results)
+    case "transitive_step_parent_distance5":
+        source, ok := valueAsAtomString(vm, vm.getReg(0))
+        if !ok {
+            return false
+        }
+        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
+        pairs := vm.Ctx.IndexedAtomFactPairs[edgePred]
+        results := vm.collectNativeTransitiveStepParentDistanceResults(source, pairs)
+        return vm.finishForeignResults(predKey, []int{1, 2, 3, 4}, results)
+    case "category_ancestor":
+        // category_ancestor(Cat, Root, Hops, Visited) — output is Hops
+        // (A3, reg index 2). Cat=A1, Root=A2, Visited=A4. The WAM
+        // semantics: walk parents of Cat up to max_depth hops; emit one
+        // integer hop count per path that reaches Root, skipping any
+        // node already in Visited. See
+        // src/unifyweaver/core/recursive_kernel_detection.pl:135 for the
+        // canonical register layout and call spec.
+        cat, ok := valueAsAtomString(vm, vm.getReg(0))
+        if !ok {
+            return false
+        }
+        root, ok := valueAsAtomString(vm, vm.getReg(1))
+        if !ok {
+            return false
+        }
+        visited, ok := listAsAtomStrings(vm, vm.getReg(3))
+        if !ok {
+            return false
+        }
+        maxDepth := vm.foreignUsizeConfig(predKey, "max_depth")
+        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
+        pairs := vm.Ctx.IndexedAtomFactPairs[edgePred]
+        hops := vm.collectNativeCategoryAncestorHops(cat, root, visited, maxDepth, pairs)
+        if len(hops) == 0 {
+            return false
+        }
+        results := make([]Value, len(hops))
+        for i, h := range hops {
+            results[i] = &Integer{Val: h}
+        }
+        return vm.finishForeignResults(predKey, []int{2}, results)
+    case "weighted_shortest_path3":
+        source, ok := valueAsAtomString(vm, vm.getReg(0))
+        if !ok {
+            return false
+        }
+        weightPred := vm.foreignStringConfig(predKey, "weight_pred")
+        triples := vm.Ctx.IndexedWeightedEdgeTriples[weightPred]
+        results := vm.collectNativeWeightedShortestPathResults(source, triples)
+        return vm.finishForeignResults(predKey, []int{1, 2}, results)
+    case "astar_shortest_path4":
+        source, ok := valueAsAtomString(vm, vm.getReg(0))
+        if !ok {
+            return false
+        }
+        target, ok := valueAsAtomString(vm, vm.getReg(1))
+        if !ok {
+            return false
+        }
+        dim, ok := valueAsInteger(vm, vm.getReg(2))
+        if !ok || dim <= 0 {
+            return false
+        }
+        weightPred := vm.foreignStringConfig(predKey, "weight_pred")
+        directPred := vm.foreignStringConfig(predKey, "direct_dist_pred")
+        weighted := vm.Ctx.IndexedWeightedEdgeTriples[weightPred]
+        direct := vm.Ctx.IndexedWeightedEdgeTriples[directPred]
+        results := vm.collectNativeAstarShortestPathResult(source, target, dim, weighted, direct)
+        return vm.finishForeignResults(predKey, []int{3}, results)
+    default:
+        return false
+    }
+}
