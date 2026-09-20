@@ -30,7 +30,14 @@
               [compile_wam_helpers_to_go/2,
                compile_step_wam_to_go/2,
                compile_wam_runtime_to_go/2,
-               write_wam_go_project/3]).
+               write_wam_go_project/3,
+               init_atom_intern_table_go/0]).
+% wam_go_target (for the non-exported go_compile_predicate_to_wam/3) and
+% wam_go_lowered_emitter (for the non-exported emit_one/2 and the exported
+% lower_predicate_to_go/4) are loaded so the Phase 4 slice-0 lowered digests
+% below can call them module-qualified.
+:- use_module('../src/unifyweaver/targets/wam_go_lowered_emitter',
+              [lower_predicate_to_go/4]).
 :- use_module('../src/unifyweaver/targets/wam_go_templates',
               [go_render_helper_methods/1,
                go_render_helper_methods_at_root/2,
@@ -145,6 +152,145 @@ test(case_order_and_set) :-
     assertion(FileSorted == Sorted).
 
 :- end_tests(wam_go_templates).
+
+% -- Phase 4 slice 0: freeze the lowered emitter bytes (design §8) ------------
+%
+% The Go lowered suites (test_wam_go_lowered_phase{1,2,3}.pl, _t{4,5,6}.pl,
+% _ite_exec.pl) assert with sub_string/sub_atom only; none pins a digest, so a
+% one-byte drift in a lowered fragment would slip through. These tables, modelled
+% on the C++ old_head_constant_digest/4, old_head_integer_nil_digest/3 and
+% old_lowered_function_digest/3 tables, freeze the exact bytes BEFORE any
+% Phase-4 template extraction. Slices 1-3 (function/ITE shells, the head-match
+% fragment) must keep every one of these digests identical.
+%
+% Baselines captured from wam_go_lowered_emitter.pl at the unchanged (pre-slice-1)
+% emitter. SHA-256 covers UTF-8 bytes; string_length counts Prolog chars.
+
+% -- Per-fragment digests: with_output_to(string(T), emit_one(Instr, "    ")) --
+%
+% Each is captured right after init_atom_intern_table_go/0 so the interned var
+% names (wamAtom_<sanitized>_<seq>) are stable. The '{{name}}'/'{{Ai}}' atoms are
+% the placeholder-shaped rescan traps slice 2 must survive; the escaped atoms
+% ('a"b', 'a\b') and the raw get_integer spelling (0007) pin the escape/spelling
+% handling the emitter keeps in Prolog.
+old_lowered_fragment_digest(get_constant("foo", "A1"), 322,
+    '37a3d0cbe1b2d8548e1fa8d34201b126f5ac177574851fe7944c58a84151faaa').
+old_lowered_fragment_digest(get_constant("42", "X2"), 331,
+    '32c3627f2a5f34fd079dc4b877cde7b6be7878e672c574e7850cbf3822105436').
+old_lowered_fragment_digest(get_constant("3.5", "Y3"), 330,
+    '322e8128726a99f97c1a47a9aca2d13e79b6f98c94a0197986e601d043cfa06d').
+old_lowered_fragment_digest(get_constant("'a\"b'", "A1"), 324,
+    '16cea83ae959df720473c7b39be26042d0cb7ed9ef0fc7dfa4cc20198f7d557e').
+old_lowered_fragment_digest(get_constant("'a\\b'", "A1"), 324,
+    '6a743da38ea10a1ea9f62c6ea4b9336301fa5d02a29d1886d3605cf74abe8899').
+old_lowered_fragment_digest(get_constant("'{{name}}'", "A1"), 339,
+    '2d205a388772ae2df60c68902c6b515e11bf894753fdc16a06a98ddd947763a2').
+old_lowered_fragment_digest(get_constant("'{{Ai}}'", "A1"), 333,
+    'cdd761d4e948a4f285c218a1f8932fdf93d0403057c15c7856f149a0dd0c3496').
+old_lowered_fragment_digest(get_integer("42", "A1"), 328,
+    '1039bc8863dd40313b925c6fe051c520cadbc0ea3ab24dbc731b080dde7105df').
+old_lowered_fragment_digest(get_integer("-7", "X2"), 330,
+    'b459ec45c2eb89152a00b11b006221430723a345d4bf4fbe49224ecc72d347aa').
+old_lowered_fragment_digest(get_integer("0007", "Y3"), 336,
+    'bbfb72c04f11e8be33f8cc9608f9ae7aef21af073e0e327b841ccd0ef21b4360').
+old_lowered_fragment_digest(get_nil("A1"), 310,
+    '8baad2c619989c0cb0af914854acd787e5f9227e0f866197d71fae4be3b6793f').
+old_lowered_fragment_digest(get_nil("Y3"), 312,
+    '58f1fe600e4dd84927ee7fe83e78f928c478c804e110a688236814329bccb55e').
+
+% -- Whole-function digests: lower_predicate_to_go/4 over fixed shapes ---------
+%
+% shell_plain is a literal WAM list (as the C++ freeze does); the other six are
+% compiled from the fixture predicates below via the SAME entry the lowered path
+% uses (go_compile_predicate_to_wam/3, which adds inline_bagof_setof(true) and no
+% ite_use_y_level — matching compile_lowered_predicates/3). t6 uses the emitter
+% option t6_min_clauses(3) exactly as test_wam_go_lowered_t6.pl does.
+%   Spec = wam(List) | compile(user:PI, LowerOptions)
+old_lowered_function_digest(shell_plain,
+    wam([get_constant("foo", "A1"), proceed]), 435,
+    'cb2bf19657b95d227cac00311b241fe32afa6a1782d9c8a5c7d980b5a685b7e8').
+old_lowered_function_digest(shell_t4,
+    compile(user:grade/2, []), 2698,
+    '677b15e94a65e4df8a319ed907957adb01d5959339c1e17f158a17673a3ba539').
+old_lowered_function_digest(shell_t5,
+    compile(user:color/1, []), 487,
+    '8e7f7f8501b856ee46579b32d55d5af7bcc30b5e3ac00e8160cd750d1888059c').
+old_lowered_function_digest(shell_t6,
+    compile(user:few/1, [t6_min_clauses(3)]), 531,
+    'f0aa76906e8dd0ba5b69411e14a1f794f573c2db1bf0891b1a642cdcf25d3509').
+old_lowered_function_digest(shell_ite,
+    compile(user:gite/2, []), 1627,
+    '0e5c5664372503ffb99673d22ec9f38eb5b045dcac511e72bb568ebbdd1ac905').
+old_lowered_function_digest(shell_seqite,
+    compile(user:gseqite/3, []), 2911,
+    'cb8306a68c562cc85037aeaf1ce9c28e6fe62c135b553bd3fa897fe8d2dcd34b').
+old_lowered_function_digest(shell_nestedite,
+    compile(user:gnestite/2, []), 2780,
+    '92c915cf8a4d994c077217ab6169ca6c1a57092b13ef25596fe02d6c8be92f71').
+
+% Fixture predicates for the whole-function digests (mirror the shapes the Go
+% lowered t4/t5/t6/ite_exec suites use). Kept here so the freeze is self-contained.
+:- dynamic user:grade/2, user:color/1, user:few/1,
+           user:gite/2, user:gseqite/3, user:gnestite/2.
+
+user:grade(alice, a).
+user:grade(bob,   b).
+user:grade(alice, c).
+
+user:color(red).
+user:color(green).
+user:color(blue).
+
+user:few(a). user:few(b). user:few(c).
+
+user:gite(X, Y)       :- ( X > 0 -> Y = pos ; Y = nonpos ).
+user:gseqite(X, Y, Z) :- ( X > 0 -> Y = pos ; Y = nonpos ),
+                         ( Z > 0 -> Y = a ; Y = b ).
+user:gnestite(X, Y)   :- ( X > 0 -> ( X > 10 -> Y = big ; Y = small ) ; Y = neg ).
+
+lowered_function_code(wam(List), Code) :-
+    !,
+    init_atom_intern_table_go,
+    once(lower_predicate_to_go(shell_plain/1, List, [], Lines)),
+    atomic_list_concat(Lines, '\n', Code).
+lowered_function_code(compile(Module:PI, LowerOptions), Code) :-
+    once(wam_go_target:go_compile_predicate_to_wam(Module:PI, [], Wam)),
+    init_atom_intern_table_go,
+    once(lower_predicate_to_go(PI, Wam, LowerOptions, Lines)),
+    atomic_list_concat(Lines, '\n', Code).
+
+:- begin_tests(wam_go_lowered_freeze).
+
+% Per-fragment: emit_one(Instr, "    ") captured after a fresh intern table.
+test(lowered_fragment_bytes,
+     [forall(old_lowered_fragment_digest(Instr, Length, Digest))]) :-
+    init_atom_intern_table_go,
+    with_output_to(string(Text),
+        wam_go_lowered_emitter:emit_one(Instr, "    ")),
+    assert_bytes(Text, Length, Digest).
+
+% A fragment whose atom is placeholder-shaped ('{{Ai}}') must render without the
+% surrounding template machinery ever rescanning it (the slice-2 rescan trap).
+test(lowered_fragment_placeholder_atom_literal) :-
+    init_atom_intern_table_go,
+    with_output_to(string(Text),
+        wam_go_lowered_emitter:emit_one(get_constant("'{{Ai}}'", "A1"), "    ")),
+    assertion(sub_string(Text, _, _, _, "// get_constant '{{Ai}}', A1")).
+
+% Whole-function: lower_predicate_to_go over each fixed shape.
+test(lowered_function_bytes,
+     [forall(old_lowered_function_digest(_Name, Spec, Length, Digest))]) :-
+    lowered_function_code(Spec, Code),
+    assert_bytes(Code, Length, Digest).
+
+% Determinism: the same fixture re-renders byte-identically.
+test(lowered_function_repeated_render,
+     [forall(old_lowered_function_digest(_Name, Spec, _Length, _Digest))]) :-
+    lowered_function_code(Spec, First),
+    lowered_function_code(Spec, Second),
+    assertion(First == Second).
+
+:- end_tests(wam_go_lowered_freeze).
 
 % Every {{case NAME}} tag across the five real step libraries.
 step_library_rel('step/head_unification.go.mustache').

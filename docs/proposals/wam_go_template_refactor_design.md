@@ -864,6 +864,26 @@ decided it, with a recorded reopen condition). Slices, in order:
   green, harness green (§9.1), no Go text left in the `.pl` for that slice's
   scope.
 
+**Phase 4 execution notes (2026-09-20).**
+
+*Slice 0 (freeze lowered bytes) — landed.* No generator change. Added two
+digest tables to `tests/test_wam_go_templates.pl` in a new `wam_go_lowered_freeze`
+plunit block (27 tests): `old_lowered_fragment_digest/3` pins
+`with_output_to(string(T), emit_one(Instr, "    "))` for the twelve fragments
+named in §8 (get_constant with atom/integer/float/escaped-atom/`'{{name}}'`/
+`'{{Ai}}'`, get_integer 42/-7/0007, get_nil A1/Y3), each captured right after
+`wam_go_target:init_atom_intern_table_go/0`; `old_lowered_function_digest/4`
+pins length + SHA-256 of `atomic_list_concat(Lines, '\n', Code)` from
+`lower_predicate_to_go/4` on the seven shapes plain (literal WAM list), T4
+(`grade/2`), T5 (`color/1`), T6 (`few/1` + `t6_min_clauses(3)`), single-ITE
+(`gite/2`), sequential-ITE (`gseqite/3`), nested-ITE (`gnestite/2`). The
+non-plain functions are compiled through `go_compile_predicate_to_wam/3` with no
+`ite_use_y_level` option, matching `compile_lowered_predicates/3` (the lowered
+path), NOT the interpreter-classify path (which adds `ite_use_y_level(true)` and
+would route these ITE predicates to the interpreter instead of lowering them).
+The pre-existing Phase-0..3 digests are unchanged. Gate: `test_wam_go_templates.pl`
+green including the new block; no generator bytes changed.
+
 Rollback: every phase is a single PR touching adapter + templates + call sites
 together; reverting it restores the previous byte-identical state.
 
