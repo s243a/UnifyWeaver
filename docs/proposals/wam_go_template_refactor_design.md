@@ -864,6 +864,120 @@ decided it, with a recorded reopen condition). Slices, in order:
   green, harness green (§9.1), no Go text left in the `.pl` for that slice's
   scope.
 
+**Phase 4 execution notes (2026-09-20).**
+
+*Slice 0 (freeze lowered bytes) — landed.* No generator change. Added two
+digest tables to `tests/test_wam_go_templates.pl` in a new `wam_go_lowered_freeze`
+plunit block (27 tests): `old_lowered_fragment_digest/3` pins
+`with_output_to(string(T), emit_one(Instr, "    "))` for the twelve fragments
+named in §8 (get_constant with atom/integer/float/escaped-atom/`'{{name}}'`/
+`'{{Ai}}'`, get_integer 42/-7/0007, get_nil A1/Y3), each captured right after
+`wam_go_target:init_atom_intern_table_go/0`; `old_lowered_function_digest/4`
+pins length + SHA-256 of `atomic_list_concat(Lines, '\n', Code)` from
+`lower_predicate_to_go/4` on the seven shapes plain (literal WAM list), T4
+(`grade/2`), T5 (`color/1`), T6 (`few/1` + `t6_min_clauses(3)`), single-ITE
+(`gite/2`), sequential-ITE (`gseqite/3`), nested-ITE (`gnestite/2`). The
+non-plain functions are compiled through `go_compile_predicate_to_wam/3` with no
+`ite_use_y_level` option, matching `compile_lowered_predicates/3` (the lowered
+path), NOT the interpreter-classify path (which adds `ite_use_y_level(true)` and
+would route these ITE predicates to the interpreter instead of lowering them).
+The pre-existing Phase-0..3 digests are unchanged. Gate: `test_wam_go_templates.pl`
+green including the new block; no generator bytes changed.
+
+*Slice 1 (function + ITE shells) — landed.* Added
+`templates/targets/go_wam/lowered/function.go.mustache`
+(`{{comment}}\nfunc (vm *WamState) {{name}}() bool {{{body}}}`, no trailing LF —
+the `{{body}}` marker only splits the footer `}` from the header, and Body is
+returned as the middle element of the `[Header, Body, Footer]` list, never
+rescanned) and `lowered/ite.go.mustache` (the fixed if-then-else scaffolding with
+ordered-repeated `{{indent}}` slots plus `{{condition}}`/`{{then}}`/`{{fresh_reset}}`/
+`{{else}}`; **no counter** — the Go ITE uses fixed local names
+`_trailMark`/`_condOk`/`_savedRegs` shadowed per nested Go `{}` block, unlike the
+C++ `_ite_mark{{counter}}`). The adapter gained `go_render_lowered_function/4`
+(+`_at_root/5`, exactly-once `{{comment}}`/`{{name}}`/`{{body}}` split) and
+`go_render_ite_shell/6` (+`_at_root/7`, ordered-repeated 19-marker splice via
+`go_split_repeated_markers/3`, mirroring C++ `ite_shell_markers/1`); the eight
+lowered-shell markers were added to `go_reserved_marker/1`; preflight renders both
+shells once. In `wam_go_lowered_emitter.pl` the three header/footer `format/2`s
+(plain, T4, T5/T6) each became a single `format` of the *comment line only* plus a
+`go_render_lowered_function/4` call, and `emit_ite_block/4` now renders its four
+children to strings and splices them through `go_render_ite_shell/6`. No Go text
+for these shells remains in the `.pl`. Gates: all twelve fragment + seven
+whole-function slice-0 digests unchanged; the pre-existing Phase-0 helpers/step
+digests unchanged; generator-vs-generator `diff -r` empty for both `go` and
+`go_store`; corpus 51/51 + differential 2600/0 (`go`), 51/51 + 503/0 (`go_store`);
+every Go lowered plunit suite green (including `_ite_exec`, which builds+runs the
+ITE Go), the six contract-parity suites green, engine suites green
+(`test_template_match_case.pl` 29/31 as at baseline). Added a
+`wam_go_lowered_shell_faults` plunit block with missing/empty/reserved-marker/
+structural-tag/missing-marker/duplicate-marker fixtures for both shells.
+Pre-existing failures unrelated to this slice and identical on base:
+`test_go_wam_builtins.pl` (ATOM_CONCAT) and `test_wam_go_frameless_ite_level.pl`
+(a `compile_predicate_to_wam_text/3` get_level/allocate assertion in the WAM
+compiler, not the lowered emitter).
+
+*Slice 2 (head-match fragment) — landed.* Added
+`templates/targets/go_wam/lowered/head_match.go.mustache`, the single bind-or-match
+body shared by `get_constant`/`get_integer`/`get_nil`. Its ordered-repeated slots
+are **`{{I}}`×11, `{{Comment}}`, `{{Ai}}`, `{{GoVal}}`×2** — the design's §4.3/§8
+estimate of `{{I}}`×12 was one high; the Go body is eleven lines (the unbound
+branch is `u := _a.(*Unbound)` / `trailBinding` / `putReg`, one line more than
+C++'s two, so eleven `{{I}}` not C++'s ten). The slice-0 per-fragment digests are
+the ground truth and confirm the eleven. The adapter gained `go_render_head_match/5`
+(+`_at_root/6`): a four-key contract check (`I`, `Comment`, `Ai`, `GoVal`; `Ai` may
+be the integer register index) then the ordered-repeated 15-marker splice via
+`go_split_repeated_markers/3` — the SAME splice as the ITE shell, and **never**
+`render_template/3`, because a `Comment` for the atom `'{{Ai}}'` (get_constant
+'{{Ai}}') contains literal `{{Ai}}` that sequential whole-string replacement would
+rescan (slice-0's `'{{Ai}}'` and `'{{name}}'` digests pin exactly this). The four
+head-match markers joined `go_reserved_marker/1`; preflight renders the fragment
+once. In `wam_go_lowered_emitter.pl` the three twelve-line `emit_one/2` clauses
+collapsed to: compute `Comment` + `GoVal` (the integer arm keeps the raw token
+spelling; the constant arm runs the side-effecting `go_val_literal/2`; nil runs
+`intern_atom_go("[]", ...)`) then `emit_head_match(Comment, Ai, GoVal, I)`, which
+calls `go_render_head_match/5` and prints. `intern_atom_go/2` runs in the emitter
+before rendering, so the fragment never interns. No head-match Go text remains in
+the `.pl`. Gates: all slice-0 digests unchanged (fragments incl. the `'{{Ai}}'`
+rescan trap, and every whole-function that contains a `get_constant`/`get_nil`);
+generator-vs-generator `diff -r` empty for both `go` and `go_store`; corpus 51/51 +
+differential 2600/0 (`go`), 51/51 + 503/0 (`go_store`); Go lowered plunit suites
+green (incl. `_ite_exec`), contract-parity green. Added a `wam_go_head_match_faults`
+plunit block (missing/empty/reserved-marker/structural-tag/missing-marker/
+duplicate-marker + a placeholder-comment-literal test).
+
+*Slice 3 (project templates) — landed.* Moved the remaining atom-embedded Go out
+of `write_wam_go_project/3` and routed the variable-render files through the
+adapter, deleting the silent `// Template not found` fallback. New files under
+`templates/targets/go_wam/project/`: `lib.go.mustache`
+(`{{package_name}}`/`{{imports}}`/`{{predicates}}`), `atoms_with_table.go.mustache`
+(`{{package_name}}`/`{{atom_table}}`), `atoms_runtime_only.go.mustache` (the
+35-line runtime-only fallback, `{{package_name}}`), `lowered.go.mustache`
+(`{{package_name}}`/`{{lowered}}`) and `main_parallel.go.mustache`
+(`{{module_name}}` + `{{package_name}}`×6 — note **six**, not the seven the format
+arg list suggested; `%%d`/`%%v` and `\n` were extracted by execution, not
+hand-transcribed, so the doubled percent and the backslash-n escape are preserved
+byte-for-byte). Adapter additions: `go_render_file/3` (+`_at_root/4`) reads
+go.mod/value/instructions/state/main_bench module-relative and fail-closed then
+renders through the generic engine (byte-identical to the old
+`read_template_file/2` + `render_template/3`, minus the silent fallback);
+`go_render_project_block/3` (+`_at_root`) does the ordered-marker splice for the
+five atom-embedded blocks, with named wrappers `go_render_project_lib_header/4`,
+`go_render_project_atoms_with_table/3`, `go_render_project_atoms_runtime_only/2`,
+`go_render_project_lowered_header/3`, `go_render_project_main_parallel/3`. The four
+project body markers joined `go_reserved_marker/1`; preflight renders every project
+file + block once. `wam_go_target.pl` lost `read_template_file/2` and
+`resolve_template_path/2` (now dead). Gates: `project_files_exact_bytes`
+(runtime.go, state.go) unchanged; the pkg_resolver gold `diff -r` empty for both
+`go` and `go_store` (covers go.mod/value/instructions/state/runtime/lib/atoms-with-
+table/lowered); the two blocks the gold does NOT exercise — the runtime-only atoms
+fallback and the parallel main — are pinned by new digest tests
+(`wam_go_project_blocks`) and were verified byte-identical to the old `format/2`
+output directly; corpus 51/51 + differential 2600/0 (`go`), 51/51 + 503/0
+(`go_store`); Go plunit suites green (incl. `_native_t5_parallel`). Added a
+`wam_go_project_faults` plunit block (missing/empty/reserved-marker/structural-tag
+for a spliced block, missing/duplicate marker for the lib block, and fail-closed
+missing/empty for the go.mod file template).
+
 Rollback: every phase is a single PR touching adapter + templates + call sites
 together; reverting it restores the previous byte-identical state.
 

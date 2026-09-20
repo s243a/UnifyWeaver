@@ -30,14 +30,31 @@
               [compile_wam_helpers_to_go/2,
                compile_step_wam_to_go/2,
                compile_wam_runtime_to_go/2,
-               write_wam_go_project/3]).
+               write_wam_go_project/3,
+               init_atom_intern_table_go/0,
+               intern_atom_go/2]).
+% wam_go_target (for the non-exported go_compile_predicate_to_wam/3) and
+% wam_go_lowered_emitter (for the non-exported emit_one/2 and the exported
+% lower_predicate_to_go/4) are loaded so the Phase 4 slice-0 lowered digests
+% below can call them module-qualified.
+:- use_module('../src/unifyweaver/targets/wam_go_lowered_emitter',
+              [lower_predicate_to_go/4]).
 :- use_module('../src/unifyweaver/targets/wam_go_templates',
               [go_render_helper_methods/1,
                go_render_helper_methods_at_root/2,
                go_render_template_at_root/4,
                go_step_case_order/1,
                go_render_step_method/1,
-               go_render_step_method_at_root/2]).
+               go_render_step_method_at_root/2,
+               go_render_lowered_function_at_root/5,
+               go_render_ite_shell_at_root/7,
+               go_render_head_match_at_root/6,
+               go_render_project_atoms_runtime_only/2,
+               go_render_project_main_parallel/3,
+               go_render_project_atoms_runtime_only_at_root/3,
+               go_render_project_lib_header_at_root/5,
+               go_render_project_main_parallel_at_root/4,
+               go_render_file_at_root/4]).
 
 % -- Frozen digests (design §2.3, §2.4, §2.5) -------------------------------
 
@@ -145,6 +162,145 @@ test(case_order_and_set) :-
     assertion(FileSorted == Sorted).
 
 :- end_tests(wam_go_templates).
+
+% -- Phase 4 slice 0: freeze the lowered emitter bytes (design §8) ------------
+%
+% The Go lowered suites (test_wam_go_lowered_phase{1,2,3}.pl, _t{4,5,6}.pl,
+% _ite_exec.pl) assert with sub_string/sub_atom only; none pins a digest, so a
+% one-byte drift in a lowered fragment would slip through. These tables, modelled
+% on the C++ old_head_constant_digest/4, old_head_integer_nil_digest/3 and
+% old_lowered_function_digest/3 tables, freeze the exact bytes BEFORE any
+% Phase-4 template extraction. Slices 1-3 (function/ITE shells, the head-match
+% fragment) must keep every one of these digests identical.
+%
+% Baselines captured from wam_go_lowered_emitter.pl at the unchanged (pre-slice-1)
+% emitter. SHA-256 covers UTF-8 bytes; string_length counts Prolog chars.
+
+% -- Per-fragment digests: with_output_to(string(T), emit_one(Instr, "    ")) --
+%
+% Each is captured right after init_atom_intern_table_go/0 so the interned var
+% names (wamAtom_<sanitized>_<seq>) are stable. The '{{name}}'/'{{Ai}}' atoms are
+% the placeholder-shaped rescan traps slice 2 must survive; the escaped atoms
+% ('a"b', 'a\b') and the raw get_integer spelling (0007) pin the escape/spelling
+% handling the emitter keeps in Prolog.
+old_lowered_fragment_digest(get_constant("foo", "A1"), 322,
+    '37a3d0cbe1b2d8548e1fa8d34201b126f5ac177574851fe7944c58a84151faaa').
+old_lowered_fragment_digest(get_constant("42", "X2"), 331,
+    '32c3627f2a5f34fd079dc4b877cde7b6be7878e672c574e7850cbf3822105436').
+old_lowered_fragment_digest(get_constant("3.5", "Y3"), 330,
+    '322e8128726a99f97c1a47a9aca2d13e79b6f98c94a0197986e601d043cfa06d').
+old_lowered_fragment_digest(get_constant("'a\"b'", "A1"), 324,
+    '16cea83ae959df720473c7b39be26042d0cb7ed9ef0fc7dfa4cc20198f7d557e').
+old_lowered_fragment_digest(get_constant("'a\\b'", "A1"), 324,
+    '6a743da38ea10a1ea9f62c6ea4b9336301fa5d02a29d1886d3605cf74abe8899').
+old_lowered_fragment_digest(get_constant("'{{name}}'", "A1"), 339,
+    '2d205a388772ae2df60c68902c6b515e11bf894753fdc16a06a98ddd947763a2').
+old_lowered_fragment_digest(get_constant("'{{Ai}}'", "A1"), 333,
+    'cdd761d4e948a4f285c218a1f8932fdf93d0403057c15c7856f149a0dd0c3496').
+old_lowered_fragment_digest(get_integer("42", "A1"), 328,
+    '1039bc8863dd40313b925c6fe051c520cadbc0ea3ab24dbc731b080dde7105df').
+old_lowered_fragment_digest(get_integer("-7", "X2"), 330,
+    'b459ec45c2eb89152a00b11b006221430723a345d4bf4fbe49224ecc72d347aa').
+old_lowered_fragment_digest(get_integer("0007", "Y3"), 336,
+    'bbfb72c04f11e8be33f8cc9608f9ae7aef21af073e0e327b841ccd0ef21b4360').
+old_lowered_fragment_digest(get_nil("A1"), 310,
+    '8baad2c619989c0cb0af914854acd787e5f9227e0f866197d71fae4be3b6793f').
+old_lowered_fragment_digest(get_nil("Y3"), 312,
+    '58f1fe600e4dd84927ee7fe83e78f928c478c804e110a688236814329bccb55e').
+
+% -- Whole-function digests: lower_predicate_to_go/4 over fixed shapes ---------
+%
+% shell_plain is a literal WAM list (as the C++ freeze does); the other six are
+% compiled from the fixture predicates below via the SAME entry the lowered path
+% uses (go_compile_predicate_to_wam/3, which adds inline_bagof_setof(true) and no
+% ite_use_y_level — matching compile_lowered_predicates/3). t6 uses the emitter
+% option t6_min_clauses(3) exactly as test_wam_go_lowered_t6.pl does.
+%   Spec = wam(List) | compile(user:PI, LowerOptions)
+old_lowered_function_digest(shell_plain,
+    wam([get_constant("foo", "A1"), proceed]), 435,
+    'cb2bf19657b95d227cac00311b241fe32afa6a1782d9c8a5c7d980b5a685b7e8').
+old_lowered_function_digest(shell_t4,
+    compile(user:grade/2, []), 2698,
+    '677b15e94a65e4df8a319ed907957adb01d5959339c1e17f158a17673a3ba539').
+old_lowered_function_digest(shell_t5,
+    compile(user:color/1, []), 487,
+    '8e7f7f8501b856ee46579b32d55d5af7bcc30b5e3ac00e8160cd750d1888059c').
+old_lowered_function_digest(shell_t6,
+    compile(user:few/1, [t6_min_clauses(3)]), 531,
+    'f0aa76906e8dd0ba5b69411e14a1f794f573c2db1bf0891b1a642cdcf25d3509').
+old_lowered_function_digest(shell_ite,
+    compile(user:gite/2, []), 1627,
+    '0e5c5664372503ffb99673d22ec9f38eb5b045dcac511e72bb568ebbdd1ac905').
+old_lowered_function_digest(shell_seqite,
+    compile(user:gseqite/3, []), 2911,
+    'cb8306a68c562cc85037aeaf1ce9c28e6fe62c135b553bd3fa897fe8d2dcd34b').
+old_lowered_function_digest(shell_nestedite,
+    compile(user:gnestite/2, []), 2780,
+    '92c915cf8a4d994c077217ab6169ca6c1a57092b13ef25596fe02d6c8be92f71').
+
+% Fixture predicates for the whole-function digests (mirror the shapes the Go
+% lowered t4/t5/t6/ite_exec suites use). Kept here so the freeze is self-contained.
+:- dynamic user:grade/2, user:color/1, user:few/1,
+           user:gite/2, user:gseqite/3, user:gnestite/2.
+
+user:grade(alice, a).
+user:grade(bob,   b).
+user:grade(alice, c).
+
+user:color(red).
+user:color(green).
+user:color(blue).
+
+user:few(a). user:few(b). user:few(c).
+
+user:gite(X, Y)       :- ( X > 0 -> Y = pos ; Y = nonpos ).
+user:gseqite(X, Y, Z) :- ( X > 0 -> Y = pos ; Y = nonpos ),
+                         ( Z > 0 -> Y = a ; Y = b ).
+user:gnestite(X, Y)   :- ( X > 0 -> ( X > 10 -> Y = big ; Y = small ) ; Y = neg ).
+
+lowered_function_code(wam(List), Code) :-
+    !,
+    init_atom_intern_table_go,
+    once(lower_predicate_to_go(shell_plain/1, List, [], Lines)),
+    atomic_list_concat(Lines, '\n', Code).
+lowered_function_code(compile(Module:PI, LowerOptions), Code) :-
+    once(wam_go_target:go_compile_predicate_to_wam(Module:PI, [], Wam)),
+    init_atom_intern_table_go,
+    once(lower_predicate_to_go(PI, Wam, LowerOptions, Lines)),
+    atomic_list_concat(Lines, '\n', Code).
+
+:- begin_tests(wam_go_lowered_freeze).
+
+% Per-fragment: emit_one(Instr, "    ") captured after a fresh intern table.
+test(lowered_fragment_bytes,
+     [forall(old_lowered_fragment_digest(Instr, Length, Digest))]) :-
+    init_atom_intern_table_go,
+    with_output_to(string(Text),
+        wam_go_lowered_emitter:emit_one(Instr, "    ")),
+    assert_bytes(Text, Length, Digest).
+
+% A fragment whose atom is placeholder-shaped ('{{Ai}}') must render without the
+% surrounding template machinery ever rescanning it (the slice-2 rescan trap).
+test(lowered_fragment_placeholder_atom_literal) :-
+    init_atom_intern_table_go,
+    with_output_to(string(Text),
+        wam_go_lowered_emitter:emit_one(get_constant("'{{Ai}}'", "A1"), "    ")),
+    assertion(sub_string(Text, _, _, _, "// get_constant '{{Ai}}', A1")).
+
+% Whole-function: lower_predicate_to_go over each fixed shape.
+test(lowered_function_bytes,
+     [forall(old_lowered_function_digest(_Name, Spec, Length, Digest))]) :-
+    lowered_function_code(Spec, Code),
+    assert_bytes(Code, Length, Digest).
+
+% Determinism: the same fixture re-renders byte-identically.
+test(lowered_function_repeated_render,
+     [forall(old_lowered_function_digest(_Name, Spec, _Length, _Digest))]) :-
+    lowered_function_code(Spec, First),
+    lowered_function_code(Spec, Second),
+    assertion(First == Second).
+
+:- end_tests(wam_go_lowered_freeze).
 
 % Every {{case NAME}} tag across the five real step libraries.
 step_library_rel('step/head_unification.go.mustache').
@@ -438,3 +594,367 @@ test(shell_missing_cases_marker_throws_tags) :-
         expect_step_error(go_wam_template_tags(step_shell, _))).
 
 :- end_tests(wam_go_step_faults).
+
+% -- Phase 4 slice 1 lowered-shell fault fixtures (design §8 gate item 5) -----
+%
+% Build a fixture template root holding lowered/{function,ite}.go.mustache,
+% apply exactly one fault, and assert the shell renderers throw the right
+% contextual error (never emitting a diagnostic as success). Mirrors the
+% runtime-section and step-library fault blocks above and the C++ lowered
+% function/ite asset-error tests.
+
+% A well-formed representative call for each shell (used by the control test and
+% as the render probe under each fault).
+render_lowered_function(Root) :-
+    go_render_lowered_function_at_root(Root, "PredFoo1",
+        "// PredFoo1 — lowered from foo/1", "    return true\n", _).
+
+render_ite_shell(Root) :-
+    go_render_ite_shell_at_root(Root, "    ",
+        "        return true\n", "        vm.putReg(0, x)\n", "", "", _).
+
+with_go_lowered_fixture(FunctionText, IteText, Goal) :-
+    tmp_file(wam_go_lowered_fixture, Root),
+    setup_call_cleanup(
+        build_go_lowered_fixture_root(FunctionText, IteText, Root),
+        call(Goal, Root),
+        (   exists_directory(Root)
+        ->  delete_directory_and_contents(Root)
+        ;   true)).
+
+% FunctionText / IteText are either real (copy the shipped file) or
+% write(Text) (write Text) or omit (leave the file out entirely).
+build_go_lowered_fixture_root(FunctionText, IteText, Root) :-
+    make_directory(Root),
+    directory_file_path(Root, lowered, LoweredDir),
+    make_directory(LoweredDir),
+    go_real_template_root(RealRoot),
+    directory_file_path(RealRoot, 'lowered/function.go.mustache', RealFn),
+    directory_file_path(RealRoot, 'lowered/ite.go.mustache', RealIte),
+    directory_file_path(LoweredDir, 'function.go.mustache', FnCopy),
+    directory_file_path(LoweredDir, 'ite.go.mustache', IteCopy),
+    go_place_fixture_file(FunctionText, RealFn, FnCopy),
+    go_place_fixture_file(IteText, RealIte, IteCopy).
+
+go_place_fixture_file(omit, _Real, _Copy) :- !.
+go_place_fixture_file(real, Real, Copy) :- !, copy_file(Real, Copy).
+go_place_fixture_file(write(Text), _Real, Copy) :- write_fixture_file(Copy, Text).
+
+expect_function_error(Expected, Root) :-
+    catch(render_lowered_function(Root), error(Formal, _), Caught = Formal),
+    assertion(nonvar(Caught)),
+    assertion(subsumes_term(Expected, Caught)).
+
+expect_ite_error(Expected, Root) :-
+    catch(render_ite_shell(Root), error(Formal, _), Caught = Formal),
+    assertion(nonvar(Caught)),
+    assertion(subsumes_term(Expected, Caught)).
+
+:- begin_tests(wam_go_lowered_shell_faults).
+
+% Control: untouched fixtures render (proving the fault assertions below prove
+% the corruption, not the harness).
+test(lowered_fixture_baseline_renders) :-
+    with_go_lowered_fixture(real, real,
+        [Root]>>( render_lowered_function(Root), render_ite_shell(Root) )).
+
+% --- function.go.mustache ---
+test(function_missing_throws_load) :-
+    with_go_lowered_fixture(omit, real,
+        expect_function_error(go_wam_template_load(lowered_function, _, _))).
+
+test(function_empty_throws_empty) :-
+    with_go_lowered_fixture(write(""), real,
+        expect_function_error(go_wam_template_empty(lowered_function, _))).
+
+test(function_reserved_marker_throws_tags) :-
+    with_go_lowered_fixture(
+        write("{{comment}}\nfunc (vm *WamState) {{name}}() bool {{{body}}}{{package_name}}"),
+        real,
+        expect_function_error(go_wam_template_tags(lowered_function, _))).
+
+test(function_structural_tag_throws_tags) :-
+    with_go_lowered_fixture(
+        write("{{comment}} {{match instr}}\nfunc (vm *WamState) {{name}}() bool {{{body}}}"),
+        real,
+        expect_function_error(go_wam_template_tags(lowered_function, _))).
+
+test(function_missing_marker_throws_tags) :-
+    % No {{body}} marker -> the ordered split fails.
+    with_go_lowered_fixture(
+        write("{{comment}}\nfunc (vm *WamState) {{name}}() bool {}"),
+        real,
+        expect_function_error(go_wam_template_tags(lowered_function, _))).
+
+test(function_duplicate_marker_throws_tags) :-
+    % Two {{comment}} markers -> exactly-once split fails.
+    with_go_lowered_fixture(
+        write("{{comment}}{{comment}}\nfunc (vm *WamState) {{name}}() bool {{{body}}}"),
+        real,
+        expect_function_error(go_wam_template_tags(lowered_function, _))).
+
+% --- ite.go.mustache ---
+test(ite_missing_throws_load) :-
+    with_go_lowered_fixture(real, omit,
+        expect_ite_error(go_wam_template_load(lowered_ite, _, _))).
+
+test(ite_empty_throws_empty) :-
+    with_go_lowered_fixture(real, write(""),
+        expect_ite_error(go_wam_template_empty(lowered_ite, _))).
+
+test(ite_reserved_marker_throws_tags) :-
+    % A reserved marker ({{package_name}}) left in a static span.
+    with_go_lowered_fixture(real,
+        write("{{indent}}{\n{{package_name}}{{indent}}}\n"),
+        expect_ite_error(go_wam_template_tags(lowered_ite, _))).
+
+test(ite_structural_tag_throws_tags) :-
+    with_go_lowered_fixture(real,
+        write("{{indent}}{ {{match instr}}\n{{indent}}}\n"),
+        expect_ite_error(go_wam_template_tags(lowered_ite, _))).
+
+test(ite_missing_marker_throws_tags) :-
+    % Drop the {{condition}} slot -> the ordered-repeated splice cannot consume
+    % the full marker list.
+    with_go_lowered_fixture(real,
+        write("{{indent}}{\n{{then}}{{else}}{{indent}}}\n"),
+        expect_ite_error(go_wam_template_tags(lowered_ite, _))).
+
+test(ite_duplicate_marker_throws_tags) :-
+    % An extra {{indent}} beyond the declared count leaves one unconsumed in the
+    % trailing span, which the lint rejects.
+    with_go_lowered_fixture(real,
+        write("{{indent}}{{indent}}{{indent}}{{indent}}{{indent}}{{indent}}{{indent}}{{indent}}{{condition}}{{indent}}{{indent}}{{indent}}{{then}}{{indent}}{{indent}}{{indent}}{{fresh_reset}}{{else}}{{indent}}{{indent}}{{indent}}\n"),
+        expect_ite_error(go_wam_template_tags(lowered_ite, _))).
+
+:- end_tests(wam_go_lowered_shell_faults).
+
+% -- Phase 4 slice 2 head-match fragment fault fixtures (design §8 gate) ------
+%
+% The head-match fragment (lowered/head_match.go.mustache) is spliced on ordered
+% markers, never rendered. Build a fixture root holding only that file, apply one
+% fault, and assert go_render_head_match_at_root/6 throws the right contextual
+% error. A representative call renders a get_constant-shaped body.
+
+render_head_match(Root) :-
+    go_render_head_match_at_root(Root, "    ", "get_constant foo, A1", 0,
+                                 "wamAtom_foo_0", _).
+
+with_go_head_match_fixture(HeadText, Goal) :-
+    tmp_file(wam_go_head_match_fixture, Root),
+    setup_call_cleanup(
+        build_go_head_match_fixture_root(HeadText, Root),
+        call(Goal, Root),
+        (   exists_directory(Root)
+        ->  delete_directory_and_contents(Root)
+        ;   true)).
+
+build_go_head_match_fixture_root(HeadText, Root) :-
+    make_directory(Root),
+    directory_file_path(Root, lowered, LoweredDir),
+    make_directory(LoweredDir),
+    go_real_template_root(RealRoot),
+    directory_file_path(RealRoot, 'lowered/head_match.go.mustache', RealHead),
+    directory_file_path(LoweredDir, 'head_match.go.mustache', HeadCopy),
+    go_place_fixture_file(HeadText, RealHead, HeadCopy).
+
+expect_head_match_error(Expected, Root) :-
+    catch(render_head_match(Root), error(Formal, _), Caught = Formal),
+    assertion(nonvar(Caught)),
+    assertion(subsumes_term(Expected, Caught)).
+
+:- begin_tests(wam_go_head_match_faults).
+
+% Control: the untouched fragment renders the real get_constant body exactly.
+test(head_match_baseline_matches_real) :-
+    init_atom_intern_table_go,
+    with_output_to(string(Real),
+        wam_go_lowered_emitter:emit_one(get_constant("foo", "A1"), "    ")),
+    init_atom_intern_table_go,
+    intern_atom_go("foo", Var),   % reproduce the interning the emitter does
+    with_go_head_match_fixture(real,
+        [Root]>>( format(string(Comment), "get_constant ~w, ~w", ["foo", "A1"]),
+                  go_render_head_match_at_root(Root, "    ", Comment, 0, Var, Got),
+                  assertion(Got == Real) )).
+
+% A Comment holding a placeholder-shaped atom ('{{Ai}}') must survive verbatim:
+% the fragment is spliced, never rendered, so {{Ai}} in the comment is not rescanned.
+test(head_match_placeholder_comment_literal) :-
+    with_go_head_match_fixture(real,
+        [Root]>>( go_render_head_match_at_root(Root, "    ",
+                      "get_constant '{{Ai}}', A1", 0, "wamAtom__Ai__0", Text),
+                  assertion(sub_string(Text, _, _, _, "// get_constant '{{Ai}}', A1")) )).
+
+test(head_match_missing_throws_load) :-
+    with_go_head_match_fixture(omit,
+        expect_head_match_error(go_wam_template_load(head_match, _, _))).
+
+test(head_match_empty_throws_empty) :-
+    with_go_head_match_fixture(write(""),
+        expect_head_match_error(go_wam_template_empty(head_match, _))).
+
+test(head_match_reserved_marker_throws_tags) :-
+    with_go_head_match_fixture(
+        write("{{I}}// {{Comment}}\n{{package_name}}{{I}}}\n"),
+        expect_head_match_error(go_wam_template_tags(head_match, _))).
+
+test(head_match_structural_tag_throws_tags) :-
+    with_go_head_match_fixture(
+        write("{{I}}// {{Comment}} {{match instr}}\n{{I}}}\n"),
+        expect_head_match_error(go_wam_template_tags(head_match, _))).
+
+test(head_match_missing_marker_throws_tags) :-
+    % No {{Ai}} slot -> the ordered-repeated splice cannot consume the full list.
+    with_go_head_match_fixture(
+        write("{{I}}// {{Comment}}\n{{I}}}\n"),
+        expect_head_match_error(go_wam_template_tags(head_match, _))).
+
+test(head_match_duplicate_marker_throws_tags) :-
+    % An extra {{I}} beyond the declared count leaves one unconsumed in the
+    % trailing span, which the lint rejects.
+    with_go_head_match_fixture(
+        write("{{I}}// {{Comment}}\n{{I}}\n{{I}}vm.Regs[{{Ai}}]\n{{I}}\n{{I}}\n{{I}}\n{{I}}{{GoVal}}\n{{I}}{{GoVal}}\n{{I}}\n{{I}}\n{{I}}\n{{I}}\n"),
+        expect_head_match_error(go_wam_template_tags(head_match, _))).
+
+:- end_tests(wam_go_head_match_faults).
+
+% -- Phase 4 slice 3: project templates (design §8) --------------------------
+%
+% The pkg_resolver gold diff exercises go.mod/value/instructions/state/runtime/
+% lib.go/atoms.go(with table)/lowered.go. It does NOT exercise the runtime-only
+% atoms fallback (a no-atom project) or the parallel main.go (parallel(true) with
+% a non-main package), so pin those two blocks' bytes here.
+
+project_block_digest(atoms_runtime_only, 706,
+    '0d7e7f08a2e1c5126898064331d17eae6dde77f14dda9eef21feca4c477d360f').
+project_block_digest(main_parallel, 332,
+    '77f169a621bc733e686b6b76c134d7d194125c2031a1160bcd5aef6edd2bf3f7').
+
+:- begin_tests(wam_go_project_blocks).
+
+test(atoms_runtime_only_bytes) :-
+    go_render_project_atoms_runtime_only(wam, Text),
+    project_block_digest(atoms_runtime_only, Length, Digest),
+    assert_bytes(Text, Length, Digest).
+
+test(main_parallel_bytes) :-
+    go_render_project_main_parallel('uw-pkg-resolver', wam, Text),
+    project_block_digest(main_parallel, Length, Digest),
+    assert_bytes(Text, Length, Digest).
+
+% Determinism.
+test(project_block_repeated_render) :-
+    go_render_project_atoms_runtime_only(wam, A),
+    go_render_project_atoms_runtime_only(wam, B),
+    assertion(A == B).
+
+:- end_tests(wam_go_project_blocks).
+
+% -- Phase 4 slice 3 project-template fault fixtures (design §8 gate item 5) --
+%
+% Build a fixture root holding project/{lib,atoms_runtime_only,main_parallel}
+% and go.mod, apply one fault, and assert the renderers throw the right
+% contextual error (no silent "// Template not found" any more).
+
+with_go_project_fixture(Rel, Text, Goal) :-
+    tmp_file(wam_go_project_fixture, Root),
+    setup_call_cleanup(
+        build_go_project_fixture_root(Rel, Text, Root),
+        call(Goal, Root),
+        (   exists_directory(Root)
+        ->  delete_directory_and_contents(Root)
+        ;   true)).
+
+% Copy the real project/ dir and go.mod, then apply one fault to Rel (a path
+% relative to the template root). Text is real / write(T) / omit.
+build_go_project_fixture_root(Rel, Text, Root) :-
+    make_directory(Root),
+    directory_file_path(Root, project, ProjDir),
+    make_directory(ProjDir),
+    go_real_template_root(RealRoot),
+    forall(member(Name, ['lib.go.mustache', 'atoms_runtime_only.go.mustache',
+                         'main_parallel.go.mustache']),
+        (   atomic_list_concat(['project/', Name], RelName),
+            directory_file_path(RealRoot, RelName, RealFile),
+            directory_file_path(Root, RelName, CopyFile),
+            (   RelName == Rel
+            ->  go_place_fixture_file(Text, RealFile, CopyFile)
+            ;   copy_file(RealFile, CopyFile)
+            ))),
+    % go.mod at the root (for the file-template fault tests)
+    directory_file_path(RealRoot, 'go.mod.mustache', RealGoMod),
+    directory_file_path(Root, 'go.mod.mustache', CopyGoMod),
+    (   Rel == 'go.mod.mustache'
+    ->  go_place_fixture_file(Text, RealGoMod, CopyGoMod)
+    ;   copy_file(RealGoMod, CopyGoMod)
+    ).
+
+expect_atoms_runtime_error(Expected, Root) :-
+    catch(go_render_project_atoms_runtime_only_at_root(Root, wam, _),
+          error(Formal, _), Caught = Formal),
+    assertion(nonvar(Caught)),
+    assertion(subsumes_term(Expected, Caught)).
+
+expect_lib_error(Expected, Root) :-
+    catch(go_render_project_lib_header_at_root(Root, wam, "", "", _),
+          error(Formal, _), Caught = Formal),
+    assertion(nonvar(Caught)),
+    assertion(subsumes_term(Expected, Caught)).
+
+expect_gomod_error(Expected, Root) :-
+    catch(go_render_file_at_root(Root, go_mod, [module_name=m], _),
+          error(Formal, _), Caught = Formal),
+    assertion(nonvar(Caught)),
+    assertion(subsumes_term(Expected, Caught)).
+
+:- begin_tests(wam_go_project_faults).
+
+% Control: an untouched fixture root renders the runtime-only atoms + lib blocks.
+test(project_fixture_baseline_renders) :-
+    with_go_project_fixture('project/lib.go.mustache', real,
+        [Root]>>( go_render_project_atoms_runtime_only_at_root(Root, wam, _),
+                  go_render_project_lib_header_at_root(Root, wam, "", "", _) )).
+
+% --- spliced project blocks (atoms_runtime_only representative) ---
+test(atoms_runtime_missing_throws_load) :-
+    with_go_project_fixture('project/atoms_runtime_only.go.mustache', omit,
+        expect_atoms_runtime_error(go_wam_template_load(project_atoms_runtime_only, _, _))).
+
+test(atoms_runtime_empty_throws_empty) :-
+    with_go_project_fixture('project/atoms_runtime_only.go.mustache', write(""),
+        expect_atoms_runtime_error(go_wam_template_empty(project_atoms_runtime_only, _))).
+
+test(atoms_runtime_reserved_marker_throws_tags) :-
+    with_go_project_fixture('project/atoms_runtime_only.go.mustache',
+        write("package {{package_name}}\n{{step_method}}\n"),
+        expect_atoms_runtime_error(go_wam_template_tags(project_atoms_runtime_only, _))).
+
+test(atoms_runtime_structural_tag_throws_tags) :-
+    with_go_project_fixture('project/atoms_runtime_only.go.mustache',
+        write("package {{package_name}}\n{{match instr}}\n"),
+        expect_atoms_runtime_error(go_wam_template_tags(project_atoms_runtime_only, _))).
+
+% --- lib block: missing / duplicate slot ---
+test(lib_missing_marker_throws_tags) :-
+    % No {{predicates}} slot -> the ordered splice cannot consume the marker list.
+    with_go_project_fixture('project/lib.go.mustache',
+        write("package {{package_name}}\n\n{{imports}}\n"),
+        expect_lib_error(go_wam_template_tags(project_lib, _))).
+
+test(lib_duplicate_marker_throws_tags) :-
+    % An extra {{package_name}} beyond the declared count is left unconsumed and
+    % the trailing-span lint rejects it.
+    with_go_project_fixture('project/lib.go.mustache',
+        write("package {{package_name}}{{package_name}}\n\n{{imports}}{{predicates}}\n"),
+        expect_lib_error(go_wam_template_tags(project_lib, _))).
+
+% --- file templates (go.mod): fail-closed read (no silent fallback) ---
+test(gomod_missing_throws_load) :-
+    with_go_project_fixture('go.mod.mustache', omit,
+        expect_gomod_error(go_wam_template_load(go_mod, _, _))).
+
+test(gomod_empty_throws_empty) :-
+    with_go_project_fixture('go.mod.mustache', write(""),
+        expect_gomod_error(go_wam_template_empty(go_mod, _))).
+
+:- end_tests(wam_go_project_faults).

@@ -1,0 +1,22 @@
+package {{package_name}}
+
+// Runtime-only atom intern table. This project has no compile-time atom
+// literals, but fact-source helpers may still construct atoms dynamically.
+var atomInternMap = make(map[string]*Atom)
+
+func internAtom(name string) *Atom {
+    if a, ok := atomInternMap[name]; ok {
+        return a
+    }
+    a := &Atom{Name: name}
+    atomInternMap[name] = a
+    return a
+}
+
+// InternAtom is the exported form. Drivers and embedders must build
+// atoms through this rather than &Atom{Name: x}: Atom.Equals is pointer
+// identity only, so a fresh literal with the same name compares unequal
+// to the interned one the bytecode carries.
+func InternAtom(name string) *Atom {
+    return internAtom(name)
+}
