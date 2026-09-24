@@ -16,6 +16,10 @@
 %   range   <binary> <soname> [DropSym DropNode DropAt]
 %       range(Min, Max, ...) over the release axis (both ends compatible), or
 %       no_candidate / unknown / no_releases
+%   report  <binary>
+%       one floor/axis/range block per NEEDED soname (ascending soname order);
+%       a one-shot summary of the whole dependency set instead of repeating
+%       floor/axis/range per soname by hand.
 
 :- use_module(abi_resolve).
 
@@ -28,7 +32,7 @@ main :-
 
 usage :-
     format(user_error,
-           "usage: abi_cli.pl -- <store-dir> verdict|status|floor|axis|range <args>~n", []).
+           "usage: abi_cli.pl -- <store-dir> verdict|status|floor|axis|range|report <args>~n", []).
 
 drop_of([], none).
 drop_of([Sym, Node, At], drop(Sym, Node, At)).
@@ -59,4 +63,23 @@ run(range, [Bin, So | DropArgs]) :- !,
         forall(member(A-V, Pairs), format("  ~w: ~q~n", [A, V]))
     ;   format("range ~w ~w: ~q~n", [Bin, So, R])
     ).
+run(report, [Bin]) :- !,
+    findall(So, needed(Bin, So), Sos0), sort(Sos0, Sos),
+    (   Sos == []
+    ->  format("report ~w: no NEEDED sonames evidenced~n", [Bin])
+    ;   forall(member(So, Sos), report_one(Bin, So))
+    ).
 run(_, _) :- usage, halt(2).
+
+% report_one(Bin, So): the floor/axis/range block for one NEEDED soname.
+report_one(Bin, So) :-
+    (   abi_floor(Bin, So, F)
+    ->  true
+    ;   F = none
+    ),
+    release_axis(So, Rels),
+    abi_range(Bin, So, R),
+    format("~w:~n", [So]),
+    format("  floor: ~w~n", [F]),
+    format("  axis:  ~w~n", [Rels]),
+    format("  range: ~q~n", [R]).

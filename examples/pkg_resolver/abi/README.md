@@ -85,7 +85,7 @@ at a later `R1`) makes the releases in between `unknown(dropped_between(...))`.
 |------|------|
 | `ingest_symbols.mjs` | Ingest: `.symbols` (since bounds, optionally cross-checked against the ELF with `--elf`), `readelf` provides (`at` bounds with default-version binding), `readelf` requires (attributed via the ELF version **index**), NEEDED, evidence, release axis, declared soname succession (`replaces`). Loud, atomic failures (exit 3), never an empty or partial success. |
 | `abi_resolve.pl` | Resolver: store loading, the two axes, per-identity evidence aggregation, per-requirement status, verdicts, floor, range over the real release axis. |
-| `abi_cli.pl` | Driver: `verdict` / `status` / `floor` / `axis` / `range`. |
+| `abi_cli.pl` | Driver: `verdict` / `status` / `floor` / `axis` / `range` / `report`. |
 | `crosscheck.mjs` | readelf-vs-`.symbols` cross-check on exact identity + per-name node sets (no node-name parsing or ordering); fails on empty input. |
 | `test_abi.pl` | Assertions: real data (A), version axes (B), model fixtures (C), gcc-built ELF fixtures + `.symbols` template fixtures (D). |
 | `run_abi_verify.sh` | End-to-end: build the real store, cross-check (+ negatives), build/ingest fixtures with the loader as ground truth, run the tests. |
