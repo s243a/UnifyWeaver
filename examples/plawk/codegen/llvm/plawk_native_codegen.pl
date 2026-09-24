@@ -1199,6 +1199,8 @@ plawk_end_term_reads_record(field(_)) :-
     !.
 plawk_end_term_reads_record(special('NF')) :-
     !.
+plawk_end_term_reads_record(field_nf(_)) :-
+    !.
 plawk_end_term_reads_record(special(length)) :-
     !.
 plawk_end_term_reads_record(Term) :-
@@ -15370,6 +15372,9 @@ plawk_rule_body_print_field(field(_)).
 % is accepted on exactly the same terms as a rule body.
 plawk_rule_body_print_field(end_lastrec_field(_)).
 plawk_rule_body_print_field(end_lastrec_nf).
+% `$NF` / `$(NF+K)`, current record and retained record.
+plawk_rule_body_print_field(field_nf(_)).
+plawk_rule_body_print_field(end_lastrec_field_nf(_)).
 % `length` of the retained record, same reasoning as end_lastrec_nf above. This row is
 % what an END LOOP BODY needs: `END { while (n > 0) { print length; n-- } }` reaches
 % the shared sequence emitter, and without a row here it declined while the identical
@@ -22113,6 +22118,63 @@ plawk_emit_print_expr_for_context(end_lastrec_read(length(FieldIndex)), FieldSep
     plawk_i64_expr_ir(end_lastrec_read(length(FieldIndex)), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
 
+% `$NF` / `$(NF+K)`: a field whose index is only known per record. Count the fields,
+% add the literal offset, and take that field through the SUBSLICER at (1, i64-max)
+% -- not the plain field slicer, because `$(NF-1)` on a one-field record is `$0`
+% (index 0, the whole record), which only the subslicer serves. A negative index
+% (`$(NF-2)` on one field) is FATAL, as in gawk: exit 2 after the output so far.
+plawk_emit_print_expr_for_context(field_nf(Offset), FieldSeparator, Context,
+        slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), [], Lines) :-
+    integer(Offset),
+    integer(FieldSeparator),
+    plawk_print_expr_value_base(Context, field_nf, Base),
+    plawk_print_expr_output_names(Context, field_nf, FmtPrefix, PrintPrefix),
+    plawk_nf_field_subslice_lines('%line', Offset, FieldSeparator, Base, LenIR, PtrIR,
+        Lines).
+% The same over the retained record, in END (prefixed context only, like every
+% end_lastrec row).
+plawk_emit_print_expr_for_context(end_lastrec_field_nf(Offset), FieldSeparator,
+        Context, slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), [], Lines) :-
+    Context = print_context(prefixed, _Prefix, _Index),
+    integer(Offset),
+    integer(FieldSeparator),
+    plawk_print_expr_value_base(Context, end_lastrec_field_nf, Base),
+    plawk_print_expr_output_names(Context, end_lastrec_field_nf, FmtPrefix,
+        PrintPrefix),
+    plawk_lastrec_value_lines(Base, RecValueIR, ValueLines),
+    plawk_nf_field_subslice_lines(RecValueIR, Offset, FieldSeparator, Base, LenIR,
+        PtrIR, SliceLines),
+    append(ValueLines, SliceLines, Lines).
+
+%% plawk_nf_field_subslice_lines(+RecValueIR, +Offset, +FieldSeparator, +Base,
+%%     -LenIR, -PtrIR, -Lines) is det.
+%
+%  `$(NF+Offset)` of the record RecValueIR as a (ptr, i32 len) slice. The one place
+%  the dynamic index is computed, for the current and the retained record alike.
+plawk_nf_field_subslice_lines(RecValueIR, Offset, FieldSeparator, Base, LenIR, PtrIR,
+        Lines) :-
+    format(atom(CountBase), '~w_nf', [Base]),
+    llvm_emit_atom_field_count(RecValueIR, FieldSeparator, CountBase, CountIR),
+    format(atom(IndexLine), '  %~w_idx = add i64 %~w, ~w', [Base, CountBase, Offset]),
+    plawk_nf_field_checked_index(Offset, Base, IndexIR, CheckLines),
+    llvm_emit_atom_field_subslice(RecValueIR, IndexIR, FieldSeparator, 1,
+        9223372036854775807, Base, SliceIR),
+    format(atom(LenIR), '%~w_len', [Base]),
+    format(atom(PtrIR), '%~w_ptr', [Base]),
+    append([[CountIR, IndexLine], CheckLines, [SliceIR]], Lines).
+
+% NF + Offset is never negative for Offset >= 0, so only a negative offset pays for
+% the check. A negative index is fatal in awk (gawk exits 2), so it goes through the
+% runtime guard rather than silently reading an empty field.
+plawk_nf_field_checked_index(Offset, Base, IndexIR, []) :-
+    Offset >= 0,
+    !,
+    format(atom(IndexIR), '%~w_idx', [Base]).
+plawk_nf_field_checked_index(_Offset, Base, IndexIR, [CheckLine]) :-
+    format(atom(CheckLine),
+        '  %~w_cidx = call i64 @wam_awk_field_index_checked(i64 %~w_idx)', [Base, Base]),
+    format(atom(IndexIR), '%~w_cidx', [Base]).
+
 % String builtins over the RETAINED record: `toupper`/`tolower`/`substr`/`index` of
 % `$0` or `$N` in END. plawk_end_lastrec_rewrite/2 already turns `toupper(field(1))`
 % into `toupper(end_lastrec_field(1))` through its generic compound walk; these rows
@@ -22184,6 +22246,7 @@ plawk_end_lastrec_builtin(toupper(field(_))).
 plawk_end_lastrec_builtin(tolower(field(_))).
 plawk_end_lastrec_builtin(substr(field(_), _, _)).
 plawk_end_lastrec_builtin(index(field(_), string(_))).
+plawk_end_lastrec_builtin(field_nf(_)).
 
 plawk_end_lastrec_case(toupper(end_lastrec_field(FieldIndex)), upper, FieldIndex).
 plawk_end_lastrec_case(tolower(end_lastrec_field(FieldIndex)), lower, FieldIndex).
@@ -22225,6 +22288,8 @@ plawk_lastrec_subslice_lines(Base, Index, FieldSeparator, Start, Len, LenIR, Ptr
 plawk_end_lastrec_rewrite(field(Index), end_lastrec_field(Index)) :-
     !.
 plawk_end_lastrec_rewrite(special('NF'), end_lastrec_nf) :-
+    !.
+plawk_end_lastrec_rewrite(field_nf(Offset), end_lastrec_field_nf(Offset)) :-
     !.
 % `length` / `length($N)`. This clause must come before the generic compound walk
 % below, or `length(field(0))` would be rewritten INSIDE OUT to
@@ -22269,6 +22334,8 @@ plawk_normal_print_expr_value_base(binfield, Index, Base) :-
     format(atom(Base), 'plawk_binfield_~w', [Index]).
 plawk_normal_print_expr_value_base(length, Index, Base) :-
     format(atom(Base), 'plawk_length_~w', [Index]).
+plawk_normal_print_expr_value_base(field_nf, Index, Base) :-
+    format(atom(Base), 'plawk_field_nf_~w', [Index]).
 plawk_normal_print_expr_value_base(substr, Index, Base) :-
     format(atom(Base), 'plawk_substr_~w', [Index]).
 plawk_normal_print_expr_value_base(blob, Index, Base) :-

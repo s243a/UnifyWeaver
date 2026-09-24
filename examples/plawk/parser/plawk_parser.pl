@@ -4512,6 +4512,8 @@ field_expr(field(Index)) -->
       number_codes(Index, IndexCodes),
       Index >= 0
     }.
+field_expr(field_nf(Offset)) -->
+    nf_field_ref(Offset).
 field_expr(string(Value)) -->
     quoted_string(ValueCodes),
     { string_codes(Value, ValueCodes)
@@ -5193,6 +5195,41 @@ identifier_rest([Code | Codes]) -->
     !,
     identifier_rest(Codes).
 identifier_rest([]) -->
+    [].
+
+%% nf_field_ref(-Offset)//
+%
+%  `$NF`, `$(NF)`, `$(NF-K)`, `$(NF+K)` -- a field whose index is the record's field
+%  count plus a literal Offset -- parsed to `field_nf(Offset)`.
+%
+%  A DISTINCT functor on purpose, not `field(nf(Offset))`: dozens of codegen rows take
+%  `field(Index)` and compare Index arithmetically, and a non-integer there would
+%  throw rather than decline. No existing row matches `field_nf(_)`, so every context
+%  that has not been taught it declines, and each one that has is opted in explicitly.
+nf_field_ref(0) -->
+    "$NF",
+    identifier_boundary.
+nf_field_ref(Offset) -->
+    "$(",
+    ws,
+    "NF",
+    identifier_boundary,
+    ws,
+    nf_field_offset(Offset),
+    ws,
+    ")".
+
+nf_field_offset(Offset) -->
+    "-",
+    ws,
+    integer_codes(Codes),
+    { Codes \== [], number_codes(N, Codes), Offset is -N }.
+nf_field_offset(Offset) -->
+    "+",
+    ws,
+    integer_codes(Codes),
+    { Codes \== [], number_codes(Offset, Codes) }.
+nf_field_offset(0) -->
     [].
 
 identifier_boundary([Code | Rest], [Code | Rest]) :-
