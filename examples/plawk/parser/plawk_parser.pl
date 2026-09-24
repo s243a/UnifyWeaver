@@ -1117,13 +1117,56 @@ rule(rule(range(Start, End), Actions)) -->
     ws,
     pattern(End),
     !,
-    ws,
-    action_block(Actions).
+    pattern_rule_actions(Actions).
 rule(rule(Pattern, Actions)) -->
     pattern(Pattern),
     !,
-    ws,
-    action_block(Actions).
+    pattern_rule_actions(Actions).
+
+%% pattern_rule_actions(-Actions)//
+%
+%  The action after a pattern -- or none: a pattern with NO action is awk's default
+%  `{ print }` (`awk '/re/'`, `awk 'NR==2'`, `awk '$2 > 30'` -- the commonest awk
+%  programs there are), and yields exactly the AST `/re/ { print }` does.
+%
+%  The action's `{` must start on the pattern's OWN line. A pattern followed by a
+%  newline and then `{ ... }` is TWO rules in awk -- the bare pattern (printing) and
+%  an unconditional action -- and gawk runs both. Skipping the newline here (as
+%  `ws` did) silently merged them into one guarded rule: `/x/` NEWLINE
+%  `{ print $2 }` printed only the matching records' $2 instead of every $2 plus the
+%  matching records -- wrong output with exit 0, found while adding bare patterns.
+%
+%  An action-less pattern must END its line: optional blanks, then a newline, a
+%  comment, a `;` (consumed), or end of input. Requiring that -- rather than letting
+%  the next rule start on the same line -- keeps `/a/ /b/` from being read as two
+%  rules; awk reads it as one pattern (a concatenation), which plawk does not
+%  support, so it stays a parse failure rather than a different program.
+pattern_rule_actions(Actions) -->
+    line_blanks,
+    action_block(Actions),
+    !.
+pattern_rule_actions([print([field(0)])]) -->
+    bare_pattern_end.
+
+bare_pattern_end -->
+    line_blanks,
+    bare_pattern_terminator.
+
+bare_pattern_terminator -->
+    ";",
+    !.
+bare_pattern_terminator([], []) :-
+    !.
+bare_pattern_terminator([Code | Rest], [Code | Rest]) :-
+    memberchk(Code, [0'\n, 0'\r, 0'#]).
+
+line_blanks -->
+    [Code],
+    { Code =:= 0'  ; Code =:= 0'\t },
+    !,
+    line_blanks.
+line_blanks -->
+    [].
 rule(rule(always, Actions)) -->
     action_block(Actions).
 
