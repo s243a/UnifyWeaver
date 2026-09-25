@@ -43,7 +43,7 @@ test(binary_ir_f64_field_uses_double_load) :-
     plawk_parse_string("BEGIN { BINFMT = \"i64 f64\" } { print $1, $2 }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.bin', DriverIR),
     assertion(once(sub_atom(DriverIR, _, _, _, 'bitcast i8* %plawk_binfield_1_fp to double*'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@printf(i8* %binfield_fmt_1, double %plawk_binfield_1)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_print_awk_number(i8* %binfield_fmt_1, double %plawk_binfield_1)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@wam_atom_field_f64_value')),
     !.
 
