@@ -54,6 +54,7 @@
     llvm_emit_atom_field_subslice/7,     % +ValueIR, +FieldIndex, +SepCode, +Start, +Len, +SliceBase, -CallIR
     llvm_emit_atom_field_index/7,        % +GlobalBase, +ValueIR, +FieldIndex, +Needle, +SepCode, +IndexBase, -GlobalIR-CallIR
     llvm_emit_atom_field_i64_cmp_guard/7,% +ValueIR, +FieldIndex, +OpCode, +Expected, +SepCode, +ResultIR, -CallIR
+    llvm_emit_atom_field_strnum_cmp_guard/7,% +ValueIR, +FieldIndex, +OpCode, +Expected, +SepCode, +ResultIR, -CallIR
     llvm_emit_atom_field_str_cmp_guard/8,% +GlobalBase, +ValueIR, +FieldIndex, +OpCode, +Expected, +SepCode, +ResultIR, -GlobalIR-CallIR
     llvm_emit_atom_field_i64/5,          % +ValueIR, +FieldIndex, +SepCode, +ParseBase, -CallIR
     llvm_emit_atom_field_i64_or_default/7,% +ValueIR, +FieldIndex, +SepCode, +DefaultValue, +ParseBase, +ResultIR, -CallIR
@@ -6980,6 +6981,10 @@ entry:
   br i1 %ln.isnull, label %ln.no, label %ln.check
 
 ln.check:
+  %ln.start = call i1 @wam_awk_numeric_start(i8* %s)
+  br i1 %ln.start, label %ln.parse, label %ln.no
+
+ln.parse:
   %ln.endp = alloca i8*, align 8
   %ln.val = call double @strtod(i8* %s, i8** %ln.endp)
   %ln.end = load i8*, i8** %ln.endp
@@ -6987,7 +6992,7 @@ ln.check:
   br i1 %ln.consumed, label %ln.wsloop, label %ln.no
 
 ln.wsloop:
-  %ln.p = phi i8* [ %ln.end, %ln.check ], [ %ln.pn, %ln.wsstep ]
+  %ln.p = phi i8* [ %ln.end, %ln.parse ], [ %ln.pn, %ln.wsstep ]
   %ln.c = load i8, i8* %ln.p
   %ln.sp = icmp eq i8 %ln.c, 32
   %ln.tab = icmp eq i8 %ln.c, 9
@@ -7378,8 +7383,11 @@ cd.zero:
 ; awk numeric text is DECIMAL: after optional blanks and a sign it must start with a
 ; digit or a dot. C strtod also accepts "nan", "inf" and hex ("0x1A"), which awk reads
 ; as 0 (gawk without --non-decimal-data) -- so those are rejected up front; "0x1A"
-; reads as its leading "0", i.e. 0.
-define double @wam_awk_strtod(i8* %s) {
+; reads as its leading "0", i.e. 0. @wam_awk_numeric_start is that test, shared with
+; @wam_looks_numeric so "is it numeric" and "what is it worth" cannot disagree.
+; (gawk also treats the signed specials "+inf"/"-nan" as numbers; plawk does not --
+; a deliberate, negligible divergence.)
+define i1 @wam_awk_numeric_start(i8* %s) {
 entry:
   br label %as.skip
 
@@ -7388,7 +7396,9 @@ as.skip:
   %as.c = load i8, i8* %as.p
   %as.sp = icmp eq i8 %as.c, 32
   %as.tab = icmp eq i8 %as.c, 9
-  %as.isblank = or i1 %as.sp, %as.tab
+  %as.nl = icmp eq i8 %as.c, 10
+  %as.b1 = or i1 %as.sp, %as.tab
+  %as.isblank = or i1 %as.b1, %as.nl
   br i1 %as.isblank, label %as.blank, label %as.sign
 
 as.blank:
@@ -7407,7 +7417,7 @@ as.sign:
   %as.digit = and i1 %as.ge0, %as.le9
   %as.dot = icmp eq i8 %as.d, 46
   %as.lead = or i1 %as.digit, %as.dot
-  br i1 %as.lead, label %as.hexcheck, label %as.zero
+  br i1 %as.lead, label %as.hexcheck, label %as.no
 
 as.hexcheck:
   %as.zero_digit = icmp eq i8 %as.d, 48
@@ -7417,21 +7427,31 @@ as.hexcheck:
   %as.ux = icmp eq i8 %as.x, 88
   %as.isx = or i1 %as.lx, %as.ux
   %as.hex = and i1 %as.zero_digit, %as.isx
-  br i1 %as.hex, label %as.zero, label %as.parse
+  %as.ok = xor i1 %as.hex, true
+  ret i1 %as.ok
 
-as.parse:
-  %as.v = call double @strtod(i8* %s, i8** null)
-  ret double %as.v
+as.no:
+  ret i1 false
+}
 
-as.zero:
+define double @wam_awk_strtod(i8* %s) {
+entry:
+  %aw.ok = call i1 @wam_awk_numeric_start(i8* %s)
+  br i1 %aw.ok, label %aw.parse, label %aw.zero
+
+aw.parse:
+  %aw.v = call double @strtod(i8* %s, i8** null)
+  ret double %aw.v
+
+aw.zero:
   ret double 0.0
 }
 
-; printf `%d` (and x/o/u/i) of a double: truncate toward zero, as awk does. Outside
+; A double to an integer (printf `%d`, awk `int()`): truncate toward zero. Outside
 ; the i64 range (or NaN) a bare fptosi is poison, and gawk prints digits plawk cannot
 ; reproduce through a fixed `%ld` format -- so that is FATAL (exit 2 after the
 ; output so far) rather than a wrong number.
-@.wam_awk_i64_range_error = private constant [77 x i8] c"plawk: fatal: printf integer conversion of a value outside the 64-bit range\\0A\\00"
+@.wam_awk_i64_range_error = private constant [70 x i8] c"plawk: fatal: integer conversion of a value outside the 64-bit range\\0A\\00"
 
 define i64 @wam_awk_f64_to_i64(double %v) {
 entry:
@@ -7445,10 +7465,30 @@ fi.conv:
   ret i64 %fi.r
 
 fi.fatal:
-  %fi.msg = getelementptr [77 x i8], [77 x i8]* @.wam_awk_i64_range_error, i64 0, i64 0
-  %fi.written = call i64 @write(i32 2, i8* %fi.msg, i64 76)
+  %fi.msg = getelementptr [70 x i8], [70 x i8]* @.wam_awk_i64_range_error, i64 0, i64 0
+  %fi.written = call i64 @write(i32 2, i8* %fi.msg, i64 69)
   call void @exit(i32 2)
   unreachable
+}
+
+; awk `int($N)`: the NUMERIC value of the field (strtod semantics, "30.25" -> 30.25,
+; "3abc" -> 3) truncated toward zero. The strict integer parse is tried first, so
+; integer text keeps its exact i64 value (no round trip through a double above 2^53);
+; only other text takes the strtod path, with the range-checked truncation.
+define i64 @wam_awk_field_int_value(%Value %line, i64 %field_index, i8 %sep) {
+entry:
+  %afi.p = call %WamI64Parse @wam_atom_field_i64_value(%Value %line, i64 %field_index, i8 %sep)
+  %afi.ok = extractvalue %WamI64Parse %afi.p, 1
+  br i1 %afi.ok, label %afi.exact, label %afi.num
+
+afi.exact:
+  %afi.v = extractvalue %WamI64Parse %afi.p, 0
+  ret i64 %afi.v
+
+afi.num:
+  %afi.d = call double @wam_atom_field_f64_value(%Value %line, i64 %field_index, i8 %sep)
+  %afi.t = call i64 @wam_awk_f64_to_i64(double %afi.d)
+  ret i64 %afi.t
 }
 
 @wam_f64_field_buf = internal global i8* null
@@ -10057,6 +10097,92 @@ afv.parse:
 
 afv.no:
   ret %WamI64Parse %afv.no_value
+}
+
+; A field as a NUL-terminated C string (a missing field is ""), in a reused,
+; geometrically grown buffer -- valid until the next call.
+@wam_field_cstr_buf = internal global i8* null
+@wam_field_cstr_cap = internal global i64 0
+@.wam_field_cstr_empty = private constant [1 x i8] zeroinitializer
+
+define i8* @wam_atom_field_cstr(%Value %atom_value, i64 %field_index, i8 %sep) {
+entry:
+  %fc.empty = getelementptr [1 x i8], [1 x i8]* @.wam_field_cstr_empty, i64 0, i64 0
+  %fc.slice = call %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %fc.ptr = extractvalue %WamSlice %fc.slice, 0
+  %fc.len = extractvalue %WamSlice %fc.slice, 1
+  %fc.missing = icmp eq i8* %fc.ptr, null
+  br i1 %fc.missing, label %fc.none, label %fc.ensure
+
+fc.none:
+  ret i8* %fc.empty
+
+fc.ensure:
+  %fc.need = add i64 %fc.len, 1
+  %fc.cap = load i64, i64* @wam_field_cstr_cap
+  %fc.fits = icmp ule i64 %fc.need, %fc.cap
+  br i1 %fc.fits, label %fc.copy, label %fc.grow
+
+fc.grow:
+  %fc.old = load i8*, i8** @wam_field_cstr_buf
+  %fc.newcap = shl i64 %fc.need, 1
+  %fc.new = call i8* @realloc(i8* %fc.old, i64 %fc.newcap)
+  %fc.null = icmp eq i8* %fc.new, null
+  br i1 %fc.null, label %fc.none, label %fc.store
+
+fc.store:
+  store i8* %fc.new, i8** @wam_field_cstr_buf
+  store i64 %fc.newcap, i64* @wam_field_cstr_cap
+  br label %fc.copy
+
+fc.copy:
+  %fc.buf = load i8*, i8** @wam_field_cstr_buf
+  br label %fc.loop
+
+fc.loop:
+  %fc.i = phi i64 [ 0, %fc.copy ], [ %fc.i1, %fc.step ]
+  %fc.done = icmp uge i64 %fc.i, %fc.len
+  br i1 %fc.done, label %fc.term, label %fc.step
+
+fc.step:
+  %fc.sp = getelementptr i8, i8* %fc.ptr, i64 %fc.i
+  %fc.ch = load i8, i8* %fc.sp
+  %fc.dp = getelementptr i8, i8* %fc.buf, i64 %fc.i
+  store i8 %fc.ch, i8* %fc.dp
+  %fc.i1 = add i64 %fc.i, 1
+  br label %fc.loop
+
+fc.term:
+  %fc.endp = getelementptr i8, i8* %fc.buf, i64 %fc.len
+  store i8 0, i8* %fc.endp
+  ret i8* %fc.buf
+}
+
+; `$N OP int` with awk (POSIX) strnum semantics. A field is input, so it is a
+; strnum: when its text LOOKS numeric the comparison is numeric, otherwise it is a
+; STRING comparison against the constant decimal text. A missing or empty field is
+; the string "" (gawk: `$3 < 1` true, `$3 == 0` false on a two-field record).
+; The strict integer parse is the fast path (plain integer text); anything else
+; goes through @wam_strnum_cmp_int. Replaces @wam_atom_field_i64_cmp_value for
+; plawk, whose strict parse made every non-integer field compare FALSE:
+; "30.25" > 10 and "3abc" > 10 (a string compare, true in awk) were both false.
+define i1 @wam_atom_field_strnum_cmp_int(%Value %atom_value, i64 %field_index, i8 %sep, i64 %expected, i32 %op) {
+entry:
+  %fsn.parse = call %WamI64Parse @wam_atom_field_i64_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %fsn.ok = extractvalue %WamI64Parse %fsn.parse, 1
+  br i1 %fsn.ok, label %fsn.fast, label %fsn.slow
+
+fsn.fast:
+  %fsn.value = extractvalue %WamI64Parse %fsn.parse, 0
+  %fsn.fr = call i1 @wam_i64_cmp_value(i64 %fsn.value, i64 %expected, i32 %op)
+  ret i1 %fsn.fr
+
+fsn.slow:
+  %fsn.s = call i8* @wam_atom_field_cstr(%Value %atom_value, i64 %field_index, i8 %sep)
+  %fsn.sign = call i32 @wam_strnum_cmp_int(i8* %fsn.s, i8 1, i64 %expected)
+  %fsn.sign64 = sext i32 %fsn.sign to i64
+  %fsn.sr = call i1 @wam_i64_cmp_value(i64 %fsn.sign64, i64 0, i32 %op)
+  ret i1 %fsn.sr
 }
 
 define i1 @wam_atom_field_i64_cmp_value(%Value %atom_value, i64 %field_index, i8 %sep, i64 %expected, i32 %op) {
@@ -23843,6 +23969,21 @@ llvm_emit_atom_field_i64_cmp_guard(ValueIR, FieldIndex, OpCode, Expected, SepCod
     integer(Expected),
     format(atom(CallIR),
         '  ~w = call i1 @wam_atom_field_i64_cmp_value(%Value ~w, i64 ~w, i8 ~w, i64 ~w, i32 ~w)',
+        [ResultIR, ValueIR, FieldIndex, SepCode, Expected, OpCode]).
+
+%% llvm_emit_atom_field_strnum_cmp_guard(+ValueIR, +FieldIndex, +OpCode, +Expected, +SepCode, +ResultIR, -CallIR)
+%
+%  `$N OP int` with awk strnum semantics (@wam_atom_field_strnum_cmp_int): numeric
+%  when the field looks numeric, else a string comparison against the constant's
+%  decimal text. Same operands and op codes as llvm_emit_atom_field_i64_cmp_guard/7,
+%  which keeps its strict-integer meaning for any other caller.
+llvm_emit_atom_field_strnum_cmp_guard(ValueIR, FieldIndex, OpCode, Expected, SepCode, ResultIR, CallIR) :-
+    integer(FieldIndex),
+    integer(OpCode),
+    between(0, 5, OpCode),
+    integer(Expected),
+    format(atom(CallIR),
+        '  ~w = call i1 @wam_atom_field_strnum_cmp_int(%Value ~w, i64 ~w, i8 ~w, i64 ~w, i32 ~w)',
         [ResultIR, ValueIR, FieldIndex, SepCode, Expected, OpCode]).
 
 %% llvm_emit_atom_field_str_cmp_guard(+GlobalBase, +ValueIR, +FieldIndex, +OpCode, +Expected, +SepCode, +ResultIR, -GlobalIR-CallIR)

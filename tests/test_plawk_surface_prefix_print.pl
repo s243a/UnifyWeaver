@@ -482,10 +482,14 @@ test(surface_printf_string_literal_arg) :-
         "INFO boot ok\nERROR disk full\n",
         "kind:INFO\nkind:ERROR\n").
 
+% "nope" is not numeric-looking, so against 100 it is a STRING comparison in awk
+% ("nope" > "100" is true; gawk prints `bad nope`). These three expectations used
+% to encode plawk's strict parse, where a non-numeric field compared false -- they
+% disagreed with gawk. Corrected with the strnum fix (test_plawk_strnum_field_cmp.pl).
 test(surface_field_numeric_cmp_prints_matching_records) :-
     run_surface_print_smoke("$3 > 100 { print $1, $3 }\n",
         "disk used 95\ncpu used 101\nnet used 120\nbad used nope\nmem used -3\n",
-        "cpu 101\nnet 120\n").
+        "cpu 101\nnet 120\nbad nope\n").
 
 test(surface_field_eq_prints_nr_and_selected_fields) :-
     run_surface_print_smoke("$1 == \"ERROR\" { print NR, $2, $3 }\n",
@@ -545,7 +549,7 @@ test(surface_field_eq_counts_matching_records) :-
 test(surface_field_numeric_cmp_counts_matching_records) :-
     run_surface_print_smoke("$3 >= 100 { big++ } END { print big }\n",
         "disk used 95\ncpu used 100\nnet used 120\nbad used nope\nmem used -3\n",
-        "2\n").
+        "3\n").
 
 test(surface_field_numeric_cmp_handles_negative_values) :-
     run_surface_print_smoke("$2 < -5 { cold++ } END { print cold }\n",
@@ -555,7 +559,7 @@ test(surface_field_numeric_cmp_handles_negative_values) :-
 test(surface_field_numeric_eq_and_ne_counts) :-
     run_surface_print_smoke("$2 == 0 { zeros++ } $2 != 0 { nonzeros++ } END { print zeros, nonzeros }\n",
         "a 0\nb 1\nc nope\nd -1\n",
-        "1 2\n").
+        "1 3\n").
 
 test(surface_field_eq_counts_multiple_scalar_slots) :-
     run_surface_print_smoke("$1 == \"ERROR\" { errors++; matches++ } END { print errors, matches }\n",
@@ -1089,11 +1093,10 @@ test(surface_scalar_add_assign_uses_native_state_and_field_length) :-
 test(surface_scalar_add_assign_uses_native_field_i64_parse) :-
     plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { bytes += $3; last = $3 } END { print bytes, last }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_value(%Value %line, i64 3, i8 58)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '_field_i64_value = extractvalue %WamI64Parse'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '_field_i64_ok = extractvalue %WamI64Parse'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, 'select i1 %rule_0_body_slot_0_op_0_field_i64_ok'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0 = add i64 %slot_0, %rule_0_body_slot_0_op_0_field_i64_value_or_default'))),
+    % `bytes += $3` accumulates the field's strtod value in a DOUBLE slot (phase C);
+    % the strict i64 parse pinned here before read any non-integer text as 0.
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0_f64 = call double @wam_atom_field_f64_value(%Value %line, i64 3, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0 = fadd double %slot_0, %rule_0_body_slot_0_op_0_f64'))),
     % `last = $3` is a plain copy of a field, so strnum copy-propagation keeps it
     % a string (strnum) scalar -- it interns the field bytes rather than parsing
     % them as i64. That is what lets a non-numeric `$3` ("nope") round-trip to the
@@ -1123,23 +1126,22 @@ test(surface_branch_printf_uses_prefixed_native_vararg_call) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
+% `int($N)` lowers through @wam_awk_field_int_value (strict parse first, strtod +
+% truncation fallback): the old strict-parse-with-0-default pinned here read
+% `int("30.25")` as 0 (awk: 30). See tests/test_plawk_field_numeric_value.pl.
 test(surface_int_print_uses_native_field_i64_parse) :-
     plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { print $3, int($3) }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_value(%Value %line, i64 3, i8 58)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_1_value = extractvalue %WamI64Parse %plawk_int_1, 0'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_1_ok = extractvalue %WamI64Parse %plawk_int_1, 1'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_1_value_or_default = select i1 %plawk_int_1_ok, i64 %plawk_int_1_value, i64 0'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_int_1 = call i32 (i8*, ...) @printf(i8* %int_fmt_1, i64 %plawk_int_1_value_or_default)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_1 = call i64 @wam_awk_field_int_value(%Value %line, i64 3, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_int_1 = call i32 (i8*, ...) @printf(i8* %int_fmt_1, i64 %plawk_int_1)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
 test(surface_int_add_print_uses_shared_i64_add_lowering) :-
     plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { print int($3) + 1 }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_value(%Value %line, i64 3, i8 58)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_0_lhs_value_or_default = select i1 %plawk_int_add_0_lhs_ok, i64 %plawk_int_add_0_lhs_value, i64 0'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_0 = add i64 %plawk_int_add_0_lhs_value_or_default, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_0_lhs = call i64 @wam_awk_field_int_value(%Value %line, i64 3, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_0 = add i64 %plawk_int_add_0_lhs, 1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%printed_int_add_0 = call i32 (i8*, ...) @printf(i8* %int_add_fmt_0, i64 %plawk_int_add_0)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
@@ -1147,9 +1149,8 @@ test(surface_int_add_print_uses_shared_i64_add_lowering) :-
 test(surface_int_sub_print_uses_shared_i64_sub_lowering) :-
     plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { print int($3) - 1 }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_value(%Value %line, i64 3, i8 58)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_0_lhs_value_or_default = select i1 %plawk_int_sub_0_lhs_ok, i64 %plawk_int_sub_0_lhs_value, i64 0'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_0 = sub i64 %plawk_int_sub_0_lhs_value_or_default, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_0_lhs = call i64 @wam_awk_field_int_value(%Value %line, i64 3, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_0 = sub i64 %plawk_int_sub_0_lhs, 1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%printed_int_sub_0 = call i32 (i8*, ...) @printf(i8* %int_sub_fmt_0, i64 %plawk_int_sub_0)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
@@ -1162,8 +1163,8 @@ test(surface_i64_primary_binary_print_uses_shared_lowering) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_1 = add i64 %plawk_int_add_1_lhs, 1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_2_lhs = call i64 @wam_atom_field_length_value(%Value %line, i64 0, i8 58)'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_2 = sub i64 %plawk_int_sub_2_lhs, 3'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_3_lhs_value_or_default = select i1 %plawk_int_add_3_lhs_ok, i64 %plawk_int_add_3_lhs_value, i64 0'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_3 = add i64 %plawk_int_add_3_lhs_value_or_default, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_3_lhs = call i64 @wam_awk_field_int_value(%Value %line, i64 3, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_3 = add i64 %plawk_int_add_3_lhs, 1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_5Fint_5Fadd_5F4_5Flhs = private constant [5 x i8] c"work\\00"'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_4_lhs = call i64 @wam_atom_field_index_value(%Value %line, i64 2, i8 58'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_4 = add i64 %plawk_int_add_4_lhs, 1'))),
@@ -1307,11 +1308,11 @@ test(surface_if_else_branch_print_uses_shared_prefixed_expr_lowering) :-
 test(surface_if_else_branch_print_uses_shared_prefixed_i64_binary_lowering) :-
     plawk_parse_string("{ if ($1 == \"ERROR\") { print int($3) - 1 } else { print int($3) + 1 } } END { print \"done\" }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_then_print_0_int_sub_0_lhs = call %WamI64Parse @wam_atom_field_i64_value(%Value %line, i64 3, i8 32)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_then_print_0_int_sub_0 = sub i64 %rule_0_body_if_0_then_print_0_int_sub_0_lhs_value_or_default, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_then_print_0_int_sub_0_lhs = call i64 @wam_awk_field_int_value(%Value %line, i64 3, i8 32)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_then_print_0_int_sub_0 = sub i64 %rule_0_body_if_0_then_print_0_int_sub_0_lhs, 1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%printed_rule_0_body_if_0_then_print_0_int_sub_0_0 = call i32 (i8*, ...) @printf(i8* %rule_0_body_if_0_then_print_0_int_sub_0_fmt_0, i64 %rule_0_body_if_0_then_print_0_int_sub_0)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_else_print_0_int_add_0_lhs = call %WamI64Parse @wam_atom_field_i64_value(%Value %line, i64 3, i8 32)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_else_print_0_int_add_0 = add i64 %rule_0_body_if_0_else_print_0_int_add_0_lhs_value_or_default, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_else_print_0_int_add_0_lhs = call i64 @wam_awk_field_int_value(%Value %line, i64 3, i8 32)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_else_print_0_int_add_0 = add i64 %rule_0_body_if_0_else_print_0_int_add_0_lhs, 1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%printed_rule_0_body_if_0_else_print_0_int_add_0_0 = call i32 (i8*, ...) @printf(i8* %rule_0_body_if_0_else_print_0_int_add_0_fmt_0, i64 %rule_0_body_if_0_else_print_0_int_add_0)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
@@ -1500,10 +1501,14 @@ test(surface_begin_field_separator_uses_configured_delimiter) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 2, i8 32)')),
     !.
 
+% `$N OP int` goes through @wam_atom_field_strnum_cmp_int (awk strnum semantics:
+% numeric when the field looks numeric, else a string comparison). The strict
+% @wam_atom_field_i64_cmp_value pinned here before made every non-integer field
+% compare false. See tests/test_plawk_strnum_field_cmp.pl.
 test(surface_numeric_guard_uses_native_i64_field_cmp) :-
     plawk_parse_string("BEGIN { FS = \":\" } $3 >= 100 { print $1, $3 }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_cmp_value(%Value %line, i64 3, i8 58, i64 100, i32 5)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_strnum_cmp_int(%Value %line, i64 3, i8 58, i64 100, i32 5)'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 1, i8 58)'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 3, i8 58)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
@@ -1512,8 +1517,8 @@ test(surface_numeric_guard_uses_native_i64_field_cmp) :-
 test(surface_numeric_eq_ne_guards_use_numeric_op_codes) :-
     plawk_parse_string("$2 == 0 { zeros++ } $2 != 0 { nonzeros++ } END { print zeros, nonzeros }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_cmp_value(%Value %line, i64 2, i8 32, i64 0, i32 0)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_cmp_value(%Value %line, i64 2, i8 32, i64 0, i32 1)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_strnum_cmp_int(%Value %line, i64 2, i8 32, i64 0, i32 0)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_strnum_cmp_int(%Value %line, i64 2, i8 32, i64 0, i32 1)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 

@@ -77,17 +77,18 @@ test(legacy_primary_minus_constant_ast_unchanged) :-
         [print([sub_i64(special('NR'), int(1)),
                 sub_i64(length(field(0)), int(3))])])], [])).
 
-% `/` is floating-point (fdiv, no integer guard); `%` stays integer and keeps its
-% zero-divisor / INT64_MIN-overflow guard (srem).
+% `/` is floating-point (fdiv). `%` of FIELDS is now double too (phase C: field
+% arithmetic is double, `%` is frem = fmod, awk's `%`), keeping plawk's
+% zero-divisor policy (x % 0 = 0) via a guard; there is no INT64_MIN overflow case
+% in double. This pinned the integer srem lowering before.
 test(arith_ir_division_is_float_modulo_stays_guarded_integer) :-
     plawk_parse_string("{ print $2 / $3, $2 % $3 }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
     assertion(once(sub_atom(DriverIR, _, _, _, 'fdiv double'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, 'sdiv i64')),
-    assertion(once(sub_atom(DriverIR, _, _, _, '_den_zero = icmp eq i64'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '_lhs_min = icmp eq i64'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '_safe_den = select i1'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '_raw = srem i64'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '_den_zero = fcmp oeq double'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '_raw = frem double'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'srem i64')),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
@@ -124,7 +125,7 @@ test(surface_float_division_by_zero_is_inf) :-
 
 % INT64_MIN / -1 has no integer-overflow trap under float `/` -- it is just the
 % double 2^63, an INTEGRAL value, which awk prints in full (gawk: the digits; this
-% pinned the old raw-%g "9.22337e+18"). `%` keeps the integer overflow guard (-> 0).
+% pinned the old raw-%g "9.22337e+18"). `%` is fmod in double: 0.
 test(surface_int64_min_division_is_float) :-
     run_arith_print_smoke("{ print $2 / $3, $2 % $3 }\n",
         "a -9223372036854775808 -1\n",
