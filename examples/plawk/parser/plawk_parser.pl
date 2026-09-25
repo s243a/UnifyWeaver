@@ -2262,9 +2262,7 @@ begin_clauses([begin(Actions)]) -->
     "{",
     ws,
     begin_actions(Actions),
-    ws,
-    "}",
-    ws,
+    action_block_close,
     !.
 begin_clauses([]) -->
     [].
@@ -2355,12 +2353,23 @@ begin_actions([Action | Actions]) -->
     begin_action(Action),
     begin_actions_rest(Actions).
 
+% Statements are separated as in any awk action -- `;` OR a newline (action_sep//0,
+% the same separator rule bodies use) -- and a trailing separator before `}` is
+% harmless (action_block_close//0). BEGIN used to accept `;` alone and commit before
+% the next statement, so the everyday multi-line form
+%
+%     BEGIN {
+%         FS = ":"
+%         OFS = "-"
+%     }
+%
+% and even `BEGIN { FS = ":"; }` were parse errors. The cut now follows a
+% successfully parsed statement, so a trailing separator falls through to the
+% empty clause instead of failing the block.
 begin_actions_rest([Action | Actions]) -->
-    ws,
-    ";",
-    ws,
-    !,
+    action_sep,
     begin_action(Action),
+    !,
     begin_actions_rest(Actions).
 begin_actions_rest([]) -->
     [].
