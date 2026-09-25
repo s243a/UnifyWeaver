@@ -599,15 +599,17 @@ test(nf_in_an_end_condition_declines) :-
         3),
     !.
 
-% Builtins over `$0`/`$N` in END are a separate follow-on: they contain a field
-% term, so the gate retains the record, but the END emitters have no clause for
-% them.
-test(end_substr_of_the_record_declines) :-
-    build_status("{ n++ } END { print substr($0, 1, 1) }\n", 3),
+% Builtins over `$0`/`$N` in END: these were pinned as declines while the END
+% emitters had no row for them (the gate retained the record; nothing could print
+% the builtin). The retained-record builtin rows landed, so the pins flip here, in
+% the suite that first pinned them; full coverage is in
+% tests/test_plawk_end_record_builtins.pl.
+test(end_substr_of_the_record_now_builds, [condition(clang_available)]) :-
+    run_input("{ n++ } END { print substr($0, 1, 1) }\n", "ab cd\nxy zw\n", "x\n"),
     !.
 
-test(end_toupper_of_a_field_declines) :-
-    build_status("{ n++ } END { print toupper($1) }\n", 3),
+test(end_toupper_of_a_field_now_builds, [condition(clang_available)]) :-
+    run_input("{ n++ } END { print toupper($1) }\n", "ab cd\nxy zw\n", "XY\n"),
     !.
 
 % An END-only program (no rules) now COMPILES and retains the last record -- the

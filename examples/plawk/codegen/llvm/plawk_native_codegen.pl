@@ -14273,6 +14273,19 @@ plawk_end_print_string_global_lines([concat(Parts) | Rest], Index) -->
     plawk_end_concat_string_globals(Parts, Index, 0),
     { NextIndex is Index + 1 },
     plawk_end_print_string_global_lines(Rest, NextIndex).
+% An `index` builtin over the retained record: its needle global comes from the
+% SAME row the block emitter lowers (plawk_end_lastrec_builtin_parts/6). The
+% field separator only shapes the block's runtime call, never the global, so any
+% byte serves here; 32 is the default FS.
+plawk_end_print_string_global_lines([Field | Rest], Index) -->
+    { plawk_end_lastrec_builtin_parts(Field, 32, print_context(prefixed, end_bi, Index),
+          _Type, GlobalParts, _Setup),
+      GlobalParts \== [],
+      !,
+      NextIndex is Index + 1
+    },
+    GlobalParts,
+    plawk_end_print_string_global_lines(Rest, NextIndex).
 plawk_end_print_string_global_lines([Field | Rest], Index) -->
     { \+ Field = string(_),
       \+ Field = concat(_),
@@ -14289,6 +14302,16 @@ plawk_end_concat_string_globals([string(Value) | Rest], Index, PartIndex) -->
       NextPartIndex is PartIndex + 1
     },
     [Line],
+    plawk_end_concat_string_globals(Rest, Index, NextPartIndex).
+plawk_end_concat_string_globals([Part | Rest], Index, PartIndex) -->
+    { CombinedIndex is Index * 1000 + PartIndex,
+      plawk_end_lastrec_builtin_parts(Part, 32,
+          print_context(prefixed, end_bi, CombinedIndex), _Type, GlobalParts, _Setup),
+      GlobalParts \== [],
+      !,
+      NextPartIndex is PartIndex + 1
+    },
+    GlobalParts,
     plawk_end_concat_string_globals(Rest, Index, NextPartIndex).
 plawk_end_concat_string_globals([Part | Rest], Index, PartIndex) -->
     { \+ Part = string(_),
@@ -19282,6 +19305,19 @@ plawk_end_printf_arg(length(field(FieldIndex)), _StatePlan, end_record(FieldSepa
     format(atom(Base), '~w_arg~w_len', [Prefix, Index]),
     plawk_i64_expr_ir(end_lastrec_read(length(FieldIndex)), FieldSeparator, Base, Base,
         ValueIR, [], Lines).
+% `substr` / `index` of `$0`/`$N` as a printf argument: the same retained-record rows
+% the END print uses (plawk_end_lastrec_builtin_parts/6), mapped onto the printf
+% call-argument vocabulary by the SAME mapping a record-context printf uses
+% (plawk_printf_type_call_args/2). `toupper`/`tolower` lower to a PRINT-ONLY case
+% transform with no value to pass, so they find no mapping and decline -- as they do
+% in a record-context printf.
+plawk_end_printf_arg(Arg, _StatePlan, end_record(FieldSeparator), Prefix, Index,
+        GlobalParts, Lines, CallArgs) :-
+    format(atom(ArgPrefix), '~w_arg~w', [Prefix, Index]),
+    plawk_end_lastrec_builtin_parts(Arg, FieldSeparator,
+        print_context(prefixed, ArgPrefix, 0), Type, GlobalParts, Lines),
+    plawk_printf_type_call_args(Type, CallArgs),
+    !.
 % A string literal argument gets its own module global.
 plawk_end_printf_arg(string(Value), _StatePlan, _EndRecord, Prefix, Index, [GlobalIR], [PtrLine],
         [string_ptr(PtrIR)]) :-
@@ -19770,6 +19806,22 @@ plawk_end_field_print_lines(length(field(FieldIndex)), _StatePlan, EndRecord,
       FieldIndex >= 0
     },
     plawk_end_lastrec_length_lines(FieldIndex, EndRecord, PrintIndex).
+% `toupper`/`tolower`/`substr`/`index` of `$0`/`$N` in a straight-line END print.
+% Not a third emitter: rewrite to the retained-record term and lower it through the
+% SAME prefixed print-expression rows an END `if` branch uses, so the straight-line
+% and branch forms cannot disagree. The prefix starts with `end_` so the multi-print
+% renamer (plawk_end_print_suffix_rename/3) keeps names unique across prints.
+% Globals (the `index` needle) are dropped here and emitted by
+% plawk_end_print_string_global_lines//2 from the same row.
+plawk_end_field_print_lines(Expr, _StatePlan, end_record(FieldSeparator),
+        PrintIndex) -->
+    { plawk_end_lastrec_builtin_parts(Expr, FieldSeparator,
+          print_context(prefixed, end_bi, PrintIndex), Type, _GlobalParts,
+          SetupParts),
+      plawk_prefixed_print_expr_output_ir(Type, end_bi, PrintIndex, PrintParts),
+      append(SetupParts, PrintParts, Lines)
+    },
+    plawk_emit_lines(Lines).
 % A bare scalar variable inside a concatenation: THE shared emitter, the same one
 % every standalone END print of a scalar goes through.
 %
@@ -22060,6 +22112,97 @@ plawk_emit_print_expr_for_context(end_lastrec_read(length(FieldIndex)), FieldSep
     plawk_print_expr_output_names(Context, end_lastrec_len, FmtPrefix, PrintPrefix),
     plawk_i64_expr_ir(end_lastrec_read(length(FieldIndex)), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
+
+% String builtins over the RETAINED record: `toupper`/`tolower`/`substr`/`index` of
+% `$0` or `$N` in END. plawk_end_lastrec_rewrite/2 already turns `toupper(field(1))`
+% into `toupper(end_lastrec_field(1))` through its generic compound walk; these rows
+% are the emitters that term was missing, so every END form of these builtins used
+% to decline. Each is its in-loop row with `%line` swapped for the re-materialised
+% retained Value (plawk_lastrec_value_lines/3) -- the runtime call that does the
+% work is the same one a rule body makes.
+%
+% Prefixed context only, like the other end_lastrec rows: a normal context finds no
+% clause and declines rather than reading a record that no longer exists.
+plawk_emit_print_expr_for_context(substr(end_lastrec_field(FieldIndex), Start, Len0),
+        FieldSeparator, Context, slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), [],
+        Lines) :-
+    Context = print_context(prefixed, _Prefix, _Index),
+    integer(FieldSeparator),
+    integer(FieldIndex),
+    FieldIndex >= 0,
+    integer(Start),
+    plawk_substr_max_len(Len0, Len),
+    plawk_print_expr_value_base(Context, end_lastrec_substr, Base),
+    plawk_print_expr_output_names(Context, end_lastrec_substr, FmtPrefix, PrintPrefix),
+    plawk_lastrec_subslice_lines(Base, FieldIndex, FieldSeparator, Start, Len,
+        LenIR, PtrIR, Lines).
+plawk_emit_print_expr_for_context(index(end_lastrec_field(FieldIndex), string(Needle)),
+        FieldSeparator, Context, i64(FmtPrefix, PrintPrefix, ValueIR), [GlobalIR],
+        Lines) :-
+    Context = print_context(prefixed, _Prefix, _Index),
+    integer(FieldSeparator),
+    integer(FieldIndex),
+    FieldIndex >= 0,
+    plawk_print_expr_value_base(Context, end_lastrec_index, Base),
+    plawk_print_expr_value_base(Context, end_lastrec_index_needle, GlobalBase),
+    plawk_print_expr_output_names(Context, end_lastrec_index, FmtPrefix, PrintPrefix),
+    plawk_lastrec_value_lines(Base, RecValueIR, ValueLines),
+    llvm_emit_atom_field_index(GlobalBase, RecValueIR, FieldIndex, Needle,
+        FieldSeparator, Base, GlobalIR-CallIR),
+    format(atom(ValueIR), '%~w', [Base]),
+    append(ValueLines, [CallIR], Lines).
+plawk_emit_print_expr_for_context(Case, FieldSeparator, Context,
+        case_slice(Mode, CaseBase, LenIR, PtrIR), [], Lines) :-
+    plawk_end_lastrec_case(Case, Mode, FieldIndex),
+    Context = print_context(prefixed, _Prefix, _Index),
+    integer(FieldSeparator),
+    integer(FieldIndex),
+    FieldIndex >= 0,
+    plawk_print_expr_value_base(Context, Mode, CaseBase),
+    % The case printer takes an i64 length (%_len64), which the subslice defines.
+    plawk_lastrec_subslice_lines(CaseBase, FieldIndex, FieldSeparator, 1,
+        9223372036854775807, _Len32IR, PtrIR, Lines),
+    format(atom(LenIR), '%~w_len64', [CaseBase]).
+
+%% plawk_end_lastrec_builtin_parts(+Expr, +FieldSeparator, +Context, -Type,
+%%     -GlobalParts, -SetupParts) is semidet.
+%
+%  A string builtin over `$0`/`$N` (the source-level term) lowered over the retained
+%  record for a straight-line END print. ONE call site for both passes that need it
+%  -- the block emitter and the globals pass -- so the `index` needle global the
+%  block references and the one the globals pass defines are the same term by
+%  construction, not by two format strings agreeing.
+plawk_end_lastrec_builtin_parts(Expr, FieldSeparator, Context, Type, GlobalParts,
+        SetupParts) :-
+    plawk_end_lastrec_builtin(Expr),
+    plawk_end_lastrec_rewrite(Expr, Rewritten),
+    plawk_emit_print_expr_for_context(Rewritten, FieldSeparator, Context, Type,
+        GlobalParts, SetupParts),
+    !.
+
+plawk_end_lastrec_builtin(toupper(field(_))).
+plawk_end_lastrec_builtin(tolower(field(_))).
+plawk_end_lastrec_builtin(substr(field(_), _, _)).
+plawk_end_lastrec_builtin(index(field(_), string(_))).
+
+plawk_end_lastrec_case(toupper(end_lastrec_field(FieldIndex)), upper, FieldIndex).
+plawk_end_lastrec_case(tolower(end_lastrec_field(FieldIndex)), lower, FieldIndex).
+
+%% plawk_lastrec_subslice_lines(+Base, +Index, +FieldSeparator, +Start, +Len,
+%%     -LenIR, -PtrIR, -Lines) is det.
+%
+%  A substr-style (Start, Len) window of `$Index` of the retained record. Unlike
+%  plawk_lastrec_slice_lines/6 this accepts Index 0 (the runtime subslicer measures
+%  the whole record for field 0; the plain field slicer does not), so the case
+%  builtins use it with (1, i64-max) as a whole-field read of `$0` and `$N` alike.
+plawk_lastrec_subslice_lines(Base, Index, FieldSeparator, Start, Len, LenIR, PtrIR,
+        Lines) :-
+    plawk_lastrec_value_lines(Base, RecValueIR, ValueLines),
+    llvm_emit_atom_field_subslice(RecValueIR, Index, FieldSeparator, Start, Len, Base,
+        SliceIR),
+    format(atom(LenIR), '%~w_len', [Base]),
+    format(atom(PtrIR), '%~w_ptr', [Base]),
+    append(ValueLines, [SliceIR], Lines).
 
 %% plawk_end_lastrec_rewrite(+Term0, -Term) is det.
 %

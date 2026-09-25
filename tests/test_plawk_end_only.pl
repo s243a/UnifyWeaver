@@ -198,12 +198,13 @@ test(end_only_forin_declines) :-
     build_status("END { for (k in a) print k }\n", 3),
     !.
 
-% builtins over the retained record in END are a separate follow-on (the LITERAL
-% forms fold; these read the record). Decline, exit 3.
-test(end_only_record_builtins_decline) :-
-    build_status("END { print substr($0, 1, 3) }\n", 3),
+% builtins over the retained record in END: pinned as declines while they were a
+% follow-on; the retained-record builtin rows landed, so the pin flips here (full
+% coverage in tests/test_plawk_end_record_builtins.pl).
+test(end_only_record_builtins_now_compile, [condition(clang_available)]) :-
+    run_with("ab cd\nxy zw\n", "END { print substr($0, 1, 3) }\n", "xy \n"),
     !,
-    build_status("END { print toupper($1) }\n", 3),
+    run_with("ab cd\nxy zw\n", "END { print toupper($1) }\n", "XY\n"),
     !.
 
 % getline in an END block is unsupported: declines, exit 3.
