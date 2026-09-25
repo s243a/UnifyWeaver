@@ -299,25 +299,36 @@ plawk_program_native_driver_ir(program(Begin0, _Rules, _End), _InputPath, _Drive
     plawk_begin_scalar_inits(Begin0, [], _),
     is_list(Begin0),
     member(begin(Actions), Begin0),
-    member(set(var(_), int(_)), Actions),
+    member(set(var(Name), Lit), Actions),
+    atom(Name),
+    ( Lit = int(_) ; Lit = string(_) ),
+    \+ plawk_begin_special_var(Name),
     !,
     fail.
-plawk_program_native_driver_ir(program(Begin0, Rules, End), InputPath, DriverIR) :-
+plawk_program_native_driver_ir(program(Begin0, Rules0, End0), InputPath, DriverIR) :-
     plawk_begin_scalar_inits(Begin0, Inits0, Begin),
     Inits0 \== [],
     !,
+    % A BEGIN constant that the program only PRINTS (`BEGIN { sep = "-" } { print
+    % $1 sep $2 }`) never gets a slot -- nothing outside BEGIN assigns it. When
+    % every use is directly a print/printf argument or a concatenation part, the
+    % literal is substituted there and the init dropped: the value cannot change.
+    plawk_begin_substitute_print_constants(Inits0, Rules0-End0, Rules-End, Inits1),
     % A name that nothing outside BEGIN mentions is unobservable: its initial value
     % is dropped, not required to be seeded (there is no slot to seed).
-    include(plawk_begin_init_live(Rules-End), Inits0, Inits),
-    b_setval(plawk_begin_inits, Inits),
-    (   plawk_program_native_driver_ir(program(Begin, Rules, End), InputPath, DriverIR0)
-    ->  b_setval(plawk_begin_inits, []),
-        forall(member(Name-_Value, Inits),
-            ( plawk_begin_init_marker(Name, Marker),
-              sub_atom(DriverIR0, _, _, _, Marker) )),
-        DriverIR = DriverIR0
-    ;   b_setval(plawk_begin_inits, []),
-        fail
+    include(plawk_begin_init_live(Rules-End), Inits1, Inits),
+    % Attempt 1: numeric seeds only (a phi constant). Attempt 2, only when attempt 1
+    % left a name unseeded (a string / strnum slot, whose value is an atom id):
+    % every init also gets a synthetic begin_seed(Name, Value) BEGIN action,
+    % interned in the entry block, and a text slot's phi seeds from that SSA value.
+    (   plawk_begin_init_attempt(Begin, Rules, End, Inits, [], InputPath, DriverIR0,
+            Unseeded),
+        Unseeded == []
+    ->  DriverIR = DriverIR0
+    ;   plawk_begin_init_attempt(Begin, Rules, End, Inits, all, InputPath, DriverIR1,
+            Unseeded1),
+        Unseeded1 == [],
+        DriverIR = DriverIR1
     ).
 
 %% A BEGIN-ONLY program: BEGIN clauses, no rules, no END.
@@ -8039,8 +8050,10 @@ plawk_begin_scalar_inits(BeginClauses0, Inits, BeginClauses) :-
     is_list(BeginClauses0),
     findall(Name-Value,
         ( member(begin(Actions), BeginClauses0),
-          member(set(var(Name), int(Value)), Actions),
-          atom(Name)
+          member(set(var(Name), Lit), Actions),
+          atom(Name),
+          \+ plawk_begin_special_var(Name),
+          plawk_begin_init_literal(Lit, Value)
         ),
         Inits0),
     Inits0 \== [],
@@ -8049,7 +8062,8 @@ plawk_begin_scalar_inits(BeginClauses0, Inits, BeginClauses) :-
     length(Names, N), length(Unique, N),
     forall(( member(begin(Actions), BeginClauses0),
              member(Action, Actions),
-             \+ ( Action = set(var(AName), int(_)), memberchk(AName, Names) ) ),
+             \+ ( Action = set(var(AName), Lit), memberchk(AName, Names),
+                  plawk_begin_init_literal(Lit, _) ) ),
            \+ ( member(Name, Names), sub_term(Sub, Action), Sub == Name )),
     !,
     Inits = Inits0,
@@ -8065,8 +8079,16 @@ plawk_begin_strip_inits(begin(Actions0), Names, begin(Actions)) :-
     Actions \== [].
 plawk_begin_strip_inits(Clause, _Names, Clause).
 
-plawk_begin_init_action(Names, set(var(Name), int(_))) :-
-    memberchk(Name, Names).
+plawk_begin_init_action(Names, set(var(Name), Lit)) :-
+    memberchk(Name, Names),
+    plawk_begin_init_literal(Lit, _).
+
+% An integer keeps its bare representation (a numeric seed's IR is unchanged); a
+% string literal is carried as string(Text).
+plawk_begin_init_literal(int(Value), Value) :-
+    integer(Value).
+plawk_begin_init_literal(string(Text), string(Text)) :-
+    string(Text).
 
 plawk_begin_init_live(Rules-End, Name-_Value) :-
     sub_term(Sub, Rules-End),
@@ -8075,6 +8097,136 @@ plawk_begin_init_live(Rules-End, Name-_Value) :-
 
 plawk_begin_init_marker(Name, Marker) :-
     format(atom(Marker), ' ; plawk-begin-init(~w)', [Name]).
+
+%% plawk_begin_init_attempt(+Begin, +Rules, +End, +Inits, +TextSeeds, +InputPath,
+%%     -DriverIR, -Unseeded) is semidet.
+%
+%  Compile with the lifted Inits; TextSeeds is [] (numeric seeds only) or `all`
+%  (every init also gets an entry-block interned text seed). Unseeded lists the
+%  names whose phi carries no marker -- or, for a text seed, whose global or intern
+%  call is missing from the IR (a driver that skipped the BEGIN action).
+plawk_begin_init_attempt(Begin0, Rules, End, Inits, TextSeeds, InputPath, DriverIR,
+        Unseeded) :-
+    (   TextSeeds == all
+    ->  findall(begin_seed(Name, Value), member(Name-Value, Inits), Seeds),
+        pairs_keys(Inits, SeedNames),
+        plawk_begin_add_seed_actions(Begin0, Seeds, Begin)
+    ;   SeedNames = [],
+        Begin = Begin0
+    ),
+    b_setval(plawk_begin_inits, Inits),
+    b_setval(plawk_begin_text_seeds, SeedNames),
+    (   plawk_program_native_driver_ir(program(Begin, Rules, End), InputPath, DriverIR)
+    ->  b_setval(plawk_begin_inits, []),
+        b_setval(plawk_begin_text_seeds, []),
+        findall(Name,
+            ( member(Name-_Value, Inits),
+              \+ plawk_begin_init_seeded(Name, DriverIR) ),
+            Unseeded)
+    ;   b_setval(plawk_begin_inits, []),
+        b_setval(plawk_begin_text_seeds, []),
+        fail
+    ).
+
+plawk_begin_init_seeded(Name, IR) :-
+    plawk_begin_init_marker(Name, Marker),
+    sub_atom(IR, _, _, _, Marker),
+    (   plawk_begin_text_seed_ir(Name, SeedIR),
+        format(atom(Use), '[~w, %check_handle_value]', [SeedIR]),
+        sub_atom(IR, _, _, _, Use)
+    ->  % the phi seeds from the interned id: its definition and text must exist
+        format(atom(Def), '~w = call i64 @wam_intern_atom(', [SeedIR]),
+        sub_atom(IR, _, _, _, Def),
+        format(atom(Glob), '@.plawk_begin_seed_~w = ', [Name]),
+        sub_atom(IR, _, _, _, Glob)
+    ;   true
+    ).
+
+plawk_begin_substitute_print_constants([], Program, Program, []).
+plawk_begin_substitute_print_constants([Name-Value | Rest], Program0, Program, Inits) :-
+    plawk_begin_init_literal(Lit, Value),
+    plawk_begin_print_only_uses(Name, Program0),
+    !,
+    plawk_substitute_var(Program0, Name, Lit, Program1),
+    plawk_begin_substitute_print_constants(Rest, Program1, Program, Inits).
+plawk_begin_substitute_print_constants([Init | Rest], Program0, Program,
+        [Init | Inits]) :-
+    plawk_begin_substitute_print_constants(Rest, Program0, Program, Inits).
+
+% Every occurrence of Name is var(Name) sitting directly in a print/printf argument
+% list or a concatenation's parts, and there is at least one.
+plawk_begin_print_only_uses(Name, Program) :-
+    aggregate_all(count, ( sub_term(T, Program), T == Name ), Total),
+    Total > 0,
+    aggregate_all(count,
+        ( sub_term(T, Program), compound(T),
+          ( T = print(Args) ; T = printf(_Fmt, Args) ; T = concat(Args) ),
+          is_list(Args),
+          member(A, Args), A == var(Name) ),
+        Direct),
+    Direct == Total.
+
+plawk_substitute_var(Term0, Name, Lit, Term) :-
+    (   Term0 == var(Name)
+    ->  Term = Lit
+    ;   compound(Term0)
+    ->  Term0 =.. [F | Args0],
+        maplist([A0, A]>>plawk_substitute_var(A0, Name, Lit, A), Args0, Args),
+        Term =.. [F | Args]
+    ;   Term = Term0
+    ).
+
+plawk_begin_add_seed_actions([begin(Actions)], Seeds, [begin(All)]) :-
+    !,
+    append(Actions, Seeds, All).
+plawk_begin_add_seed_actions([], Seeds, [begin(Seeds)]) :-
+    !.
+plawk_begin_add_seed_actions(Begin, _Seeds, Begin).
+
+plawk_begin_text_seed_ir(Name, SeedIR) :-
+    format(atom(SeedIR), '%plawk_begin_seed_~w', [Name]).
+
+% The text a BEGIN initial value has as an atom: an integer's decimal digits, or the
+% string itself.
+plawk_begin_seed_text(Value, Text) :-
+    integer(Value),
+    !,
+    number_string(Value, Text).
+plawk_begin_seed_text(string(Text), Text).
+
+%% plawk_begin_seed_lines(+BeginClauses, -Lines) is det.
+%  Entry-block intern of every begin_seed(Name, Value) action.
+plawk_begin_seed_lines(BeginClauses, Lines) :-
+    findall(Line,
+        ( member(begin(Actions), BeginClauses),
+          member(begin_seed(Name, Value), Actions),
+          plawk_begin_seed_text(Value, Text),
+          format(atom(GName), 'plawk_begin_seed_~w', [Name]),
+          llvm_emit_c_string_global(GName, Text, _G, Len, Bytes),
+          plawk_begin_text_seed_ir(Name, SeedIR),
+          (   format(atom(Line),
+                  '  ~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+                  [SeedIR, Bytes, Bytes, GName])
+          ;   format(atom(Line),
+                  '  ~w = call i64 @wam_intern_atom(i8* ~w_ptr, i64 ~w)',
+                  [SeedIR, SeedIR, Len])
+          )
+        ),
+        Lines).
+
+plawk_begin_seed_global_lines(BeginClauses, Lines) :-
+    findall(G,
+        ( member(begin(Actions), BeginClauses),
+          member(begin_seed(Name, Value), Actions),
+          plawk_begin_seed_text(Value, Text),
+          format(atom(GName), 'plawk_begin_seed_~w', [Name]),
+          llvm_emit_c_string_global(GName, Text, G, _Len, _Bytes)
+        ),
+        Lines).
+
+plawk_begin_special_var(Name) :-
+    memberchk(Name, ['BINFMT', 'OUTFMT', 'DYNLOAD', 'DYNCACHE', 'FS', 'OFS', 'ORS',
+        'RS', 'SUBSEP']).
 
 % The BEGIN value of Name, when one was lifted for the program being compiled.
 plawk_begin_init_value(Name, Value) :-
@@ -8098,9 +8250,19 @@ plawk_slot_seed(Slot, Zero, '') :-
     plawk_slot_zero_ir(Slot, Zero).
 
 plawk_slot_init_ir(scalar_counter(_Name), Value, Seed) :-
+    integer(Value),
     format(atom(Seed), '~w', [Value]).
 plawk_slot_init_ir(scalar_double(_Name), Value, Seed) :-
+    integer(Value),
     format(atom(Seed), '~w.0', [Value]).
+% A string / strnum slot holds an interned atom id: seeded from the entry-block
+% intern of the text, when attempt 2 put one there (plawk_begin_seed_lines/2).
+plawk_slot_init_ir(Slot, _Value, Seed) :-
+    ( Slot = scalar_string(Name) ; Slot = scalar_strnum(Name) ),
+    nb_current(plawk_begin_text_seeds, Seeds),
+    is_list(Seeds),
+    memberchk(Name, Seeds),
+    plawk_begin_text_seed_ir(Name, Seed).
 
 plawk_slot_zero_ir(scalar_counter(_Name), '0').
 plawk_slot_zero_ir(scalar_double(_Name), '0.0').
@@ -14095,7 +14257,8 @@ plawk_begin_print_string_globals(BeginClauses, GlobalIR) :-
     plawk_fs_regex_global_lines(BeginClauses, RegexLines),
     plawk_rs_global_lines(BeginClauses, RsLines),
     plawk_subsep_global_lines(BeginClauses, SubsepLines),
-    append([[OutputGlobalIR], RegexLines, RsLines, SubsepLines], Lines),
+    plawk_begin_seed_global_lines(BeginClauses, SeedLines),
+    append([[OutputGlobalIR], RegexLines, RsLines, SubsepLines, SeedLines], Lines),
     plawk_join_nonempty_ir(Lines, GlobalIR).
 
 %% plawk_begin_clause_outputs_ir(+BeginClauses, -GlobalIR, -BodyIR) is semidet.
@@ -14320,13 +14483,15 @@ plawk_begin_print_ir([begin(Actions)], OutputSeparator, IR) :-
     plawk_rs_store_lines([begin(Actions)], RsStoreLines),
     plawk_subsep_store_lines([begin(Actions)], SubsepStoreLines),
     plawk_fs_regex_store_lines([begin(Actions)], StoreLines),
-    append([RsStoreLines, SubsepStoreLines, StoreLines, [OutputIR]], Lines),
+    plawk_begin_seed_lines([begin(Actions)], SeedLines),
+    append([RsStoreLines, SubsepStoreLines, StoreLines, SeedLines, [OutputIR]], Lines),
     plawk_join_nonempty_ir(Lines, IR).
 plawk_begin_print_ir([begin(Actions)], _OutputSeparator, IR) :-
     plawk_rs_store_lines([begin(Actions)], RsStoreLines),
     plawk_subsep_store_lines([begin(Actions)], SubsepStoreLines),
     plawk_fs_regex_store_lines([begin(Actions)], StoreLines),
-    append([RsStoreLines, SubsepStoreLines, StoreLines], StartupLines),
+    plawk_begin_seed_lines([begin(Actions)], SeedLines),
+    append([RsStoreLines, SubsepStoreLines, StoreLines, SeedLines], StartupLines),
     (   StartupLines == []
     ->  IR = ''
     ;   atomic_list_concat(StartupLines, '\n', IR)

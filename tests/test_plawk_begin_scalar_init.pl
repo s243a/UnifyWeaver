@@ -104,15 +104,40 @@ test(no_marker_without_begin_values) :-
 
 % --- what cannot be seeded declines (never prints the type zero) ------------
 
+% String / strnum slots, which declined until their seed could be an atom id: a
+% second compile attempt interns the value's text in the entry block
+% (begin_seed/2) and seeds the phi from it. `BEGIN { m = 9 } { m = $1 }` was the
+% case that proved the IR check has teeth -- with the check disabled it built and
+% printed "" on empty input where gawk prints 9 -- and now prints 9.
+test(text_slot_seeds, [condition(clang_available)]) :-
+    run("BEGIN { max = 0 }\n$2 > max { max = $2 }\nEND { print max }\n", "7\n"),
+    !,
+    run_with("", "BEGIN { max = 0 }\n$2 > max { max = $2 }\nEND { print max }\n", "0\n"),
+    !,
+    run("BEGIN { m = 9 }\n{ m = $1 }\nEND { print m }\n", "c\n"),
+    !,
+    run_with("", "BEGIN { m = 9 }\n{ m = $1 }\nEND { print m }\n", "9\n"),
+    !,
+    run_with("", "BEGIN { m = \"none\" }\n{ if ($2 > 100) m = $1 }\nEND { print m }\n",
+        "none\n"),
+    !,
+    run("BEGIN { s = \"x\" }\n{ s = s $1 }\nEND { print s }\n", "xabc\n"),
+    !.
+
+% A BEGIN constant the program only prints is substituted as a literal.
+test(print_only_constants, [condition(clang_available)]) :-
+    run("BEGIN { sep = \"-\" }\n{ print $1 sep $2 }\n", "a-5\nb-7\nc-2\n"),
+    !,
+    run("BEGIN { label = \"row\" }\n{ print label, NR }\n", "row 1\nrow 2\nrow 3\n"),
+    !,
+    % reassigned in a rule: not a constant -- it takes the seeded-slot path
+    run("BEGIN { sep = \"-\" }\n{ sep = \":\"; print $1 sep $2 }\n",
+        "a:5\nb:7\nc:2\n"),
+    !.
+
 test(unseedable_declines) :-
     forall(member(Src,
-            [ % strnum slot: the value is a runtime atom id
-              "BEGIN { max = 0 }\n$2 > max { max = $2 }\nEND { print max }\n",
-              % string slot -- the case that proves the IR check has teeth: with the
-              % check disabled this BUILDS, and on empty input prints "" where gawk
-              % prints 9 (the seed was silently the type zero)
-              "BEGIN { m = 9 }\n{ m = $1 }\nEND { print m }\n",
-              % assigned twice in BEGIN: not order-independent
+            [ % assigned twice in BEGIN: not order-independent
               "BEGIN { n = 1; n = 2 }\n{ n++ }\nEND { print n }\n",
               % read by another BEGIN statement
               "BEGIN { x = 5; print x }\n",
