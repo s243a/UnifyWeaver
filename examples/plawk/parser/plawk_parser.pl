@@ -2385,6 +2385,20 @@ begin_action(unsupported_getline(begin(Action))) -->
 begin_action(Action) -->
     begin_assignment(Action),
     !.
+% `NAME = INT` for a USER scalar (`BEGIN { n = 1 }`, `BEGIN { total = -5 }`): an
+% initial value. Codegen seeds the scalar's slot with it (plawk_begin_scalar_inits/3)
+% and declines any program it cannot seed. After begin_assignment//1, so the special
+% variables keep their own (string) productions; a special or reserved name is never
+% taken as a user scalar here.
+begin_action(set(var(Name), int(Value))) -->
+    identifier(Name),
+    { \+ begin_special_name(Name) },
+    ws,
+    "=",
+    \+ "=",
+    ws,
+    begin_int_literal(Value),
+    !.
 % `BEGIN { printf "fmt", args }` -- before print_action so the longer keyword
 % wins (`print` would otherwise match the prefix of `printf` and leave a stray
 % `f`). BEGIN runs before the record loop, so there is no record and no scalar
@@ -2410,6 +2424,23 @@ begin_assignment(set(var(Name), string(Value))) -->
     ws,
     quoted_string(ValueCodes),
     { string_codes(Value, ValueCodes) }.
+
+begin_int_literal(Value) -->
+    "-",
+    ws,
+    integer_codes(Codes),
+    { Codes \== [], number_codes(N, Codes), Value is -N }.
+begin_int_literal(Value) -->
+    integer_codes(Codes),
+    { Codes \== [], number_codes(Value, Codes) }.
+
+begin_special_name(Name) :-
+    (   scalar_cmp_reserved_name(Name)
+    ;   memberchk(Name, ['BINFMT', 'OUTFMT', 'DYNLOAD', 'DYNCACHE', 'FS', 'OFS',
+            'ORS', 'RS', 'SUBSEP', 'RT', 'FILENAME', 'ENVIRON', 'ARGV', 'CONVFMT',
+            'OFMT', 'IGNORECASE', 'TAG'])
+    ),
+    !.
 
 begin_assignment_name('BINFMT') -->
     "BINFMT".
