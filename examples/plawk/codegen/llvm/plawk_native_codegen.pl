@@ -8398,11 +8398,10 @@ plawk_strnum_rule_action(Rules, Action) :-
     plawk_scalar_nested_action(Action0, Action).
 
 % A strnum FIELD source: a bare field copy `x = $N` (the seed of strnum-ness).
-% Both surface shapes for a field read (`field(N)` and `int(field(N))`) count.
+% NOT `x = int($N)`: that is a NUMBER (the truncated numeric value), and counting it
+% as a field copy made `x` hold the field's TEXT -- `x = int($2); print x` printed
+% "30.25" where awk prints 30.
 plawk_scalar_strnum_field_source(set(var(Name), field(FieldIndex)), Name) :-
-    integer(FieldIndex),
-    FieldIndex >= 0.
-plawk_scalar_strnum_field_source(set(var(Name), int(field(FieldIndex))), Name) :-
     integer(FieldIndex),
     FieldIndex >= 0.
 
@@ -8576,6 +8575,7 @@ plawk_strnum_arith_expr(int(_)) :- !.
 plawk_strnum_arith_expr(const(_)) :- !.
 plawk_strnum_arith_expr(field(_)) :- !.
 plawk_strnum_arith_expr(field_i64(_)) :- !.
+plawk_strnum_arith_expr(field_int(_)) :- !.
 plawk_strnum_arith_expr(length(_)) :- !.
 plawk_strnum_arith_expr(nf) :- !.
 plawk_strnum_arith_expr(nr) :- !.
@@ -16394,7 +16394,7 @@ plawk_scalar_action_update(add(var(Name), length(field(FieldIndex))), Name, add(
     FieldIndex >= 0.
 plawk_scalar_action_update(add(var(Name), field(FieldIndex)), Name, add(field_i64(FieldIndex))) :-
     FieldIndex >= 0.
-plawk_scalar_action_update(add(var(Name), int(field(FieldIndex))), Name, add(field_i64(FieldIndex))) :-
+plawk_scalar_action_update(add(var(Name), int(field(FieldIndex))), Name, add(field_int(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_scalar_action_update(add(var(Name), Expr), Name, add(Expr)) :-
     plawk_i64_scalar_primary_expr(Expr).
@@ -16503,7 +16503,7 @@ plawk_scalar_action_update(set(var(Name), length(field(FieldIndex))), Name, set(
     FieldIndex >= 0.
 plawk_scalar_action_update(set(var(Name), field(FieldIndex)), Name, set(field_i64(FieldIndex))) :-
     FieldIndex >= 0.
-plawk_scalar_action_update(set(var(Name), int(field(FieldIndex))), Name, set(field_i64(FieldIndex))) :-
+plawk_scalar_action_update(set(var(Name), int(field(FieldIndex))), Name, set(field_int(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_scalar_action_update(set(var(Name), Expr), Name, set(Expr)) :-
     plawk_i64_scalar_primary_expr(Expr).
@@ -17981,6 +17981,12 @@ plawk_scalar_numeric_expr_ir(special(Name), FieldSeparator, Prefix, SlotIndex,
     format(atom(SpecBase), '~w_slot_~w_op_~w_spec', [Prefix, SlotIndex, OpIndex]),
     plawk_i64_expr_ir_parts(special(Name), FieldSeparator, SpecBase, SpecBase,
         ValueIR, GlobalIR, IR).
+plawk_scalar_numeric_expr_ir(field_int(FieldIndex), FieldSeparator, Prefix, SlotIndex,
+        OpIndex, ValueIR, GlobalIR, IR) :-
+    format(atom(ParseBase), '~w_slot_~w_op_~w_field_int',
+        [Prefix, SlotIndex, OpIndex]),
+    plawk_i64_expr_ir_parts(field_int(FieldIndex), FieldSeparator, ParseBase, ParseBase,
+        ValueIR, GlobalIR, IR).
 plawk_scalar_numeric_expr_ir(field_i64(FieldIndex), FieldSeparator, Prefix, SlotIndex,
         OpIndex, ValueIR, GlobalIR, IR) :-
     format(atom(ParseBase), '~w_slot_~w_op_~w_field_i64',
@@ -18223,8 +18229,25 @@ plawk_i64_expr_ir(length(FieldIndex), FieldSeparator, Base, _GlobalBase, ValueIR
     format(atom(ValueIR), '%~w', [Base]).
 plawk_i64_expr_ir(int(field(FieldIndex)), FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts) :-
-    plawk_i64_expr_ir(field_i64(FieldIndex), FieldSeparator, Base, GlobalBase,
+    plawk_i64_expr_ir(field_int(FieldIndex), FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts).
+% awk `int($N)`: the field's numeric value truncated toward zero. It shared the
+% strict integer parse of a bare field read, which reads any non-integer text as 0
+% (`int("30.25")` printed 0; awk: 30). @wam_awk_field_int_value keeps that parse as
+% the exact fast path and falls back to strtod + range-checked truncation. A binary
+% descriptor types its fields itself: the typed load, as before.
+plawk_i64_expr_ir(field_int(FieldIndex), binfmt(Types), Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts) :-
+    !,
+    plawk_i64_expr_ir(field_i64(FieldIndex), binfmt(Types), Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts).
+plawk_i64_expr_ir(field_int(FieldIndex), FieldSeparator, Base, _GlobalBase, ValueIR,
+        [], [CallIR]) :-
+    integer(FieldSeparator),
+    format(atom(ValueIR), '%~w', [Base]),
+    format(atom(CallIR),
+        '  ~w = call i64 @wam_awk_field_int_value(%Value %line, i64 ~w, i8 ~w)',
+        [ValueIR, FieldIndex, FieldSeparator]).
 plawk_i64_expr_ir(field_i64(FieldIndex), binfmt(Types), Base, _GlobalBase,
         ValueIR, [], LoadLines) :-
     !,
@@ -18769,6 +18792,19 @@ plawk_f64_expr_ir(Expr, FieldSeparator, Base, GlobalBase, ValueIR,
         [ValueIR, F64Op, LeftValueIR, RightValueIR]),
     append(LeftGlobalParts, RightGlobalParts, GlobalParts),
     append([LeftSetupParts, RightSetupParts, [OpIR]], SetupParts).
+% A text FIELD in a double context is read as a number the awk way -- strtod
+% semantics through the same row as `float($N)` (@wam_atom_field_f64_value). It used
+% to fall to the i64-then-promote clause below, whose strict integer parse reads any
+% non-integer text as 0: `$2 * 1.5` on "30.25" printed 0 (gawk: 45.375). A binary
+% descriptor types its fields itself and keeps that path.
+plawk_f64_expr_ir(field(Index), FieldSeparator, Base, GlobalBase, ValueIR,
+        GlobalParts, SetupParts) :-
+    integer(FieldSeparator),
+    integer(Index),
+    Index >= 0,
+    !,
+    plawk_f64_expr_ir(float_field(Index), FieldSeparator, Base, GlobalBase, ValueIR,
+        GlobalParts, SetupParts).
 plawk_f64_expr_ir(Expr, FieldSeparator, Base, GlobalBase, ValueIR,
         GlobalParts, SetupParts) :-
     % i64-typed subtree in a double context: emit as i64, then promote.
@@ -21815,7 +21851,7 @@ plawk_emit_print_expr_for_context(int(field(FieldIndex)), FieldSeparator, Contex
         i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
     plawk_print_expr_value_base(Context, int, Base),
     plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
-    plawk_i64_expr_ir(field_i64(FieldIndex), FieldSeparator, Base, Base,
+    plawk_i64_expr_ir(field_int(FieldIndex), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
 % a substituted scalar read (var(Name) -> ssa(SlotValue)): print the i64 SSA
 % value directly. This is what makes `print i` work for a scalar slot.

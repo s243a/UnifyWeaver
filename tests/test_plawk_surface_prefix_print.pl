@@ -1123,23 +1123,22 @@ test(surface_branch_printf_uses_prefixed_native_vararg_call) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
+% `int($N)` lowers through @wam_awk_field_int_value (strict parse first, strtod +
+% truncation fallback): the old strict-parse-with-0-default pinned here read
+% `int("30.25")` as 0 (awk: 30). See tests/test_plawk_field_numeric_value.pl.
 test(surface_int_print_uses_native_field_i64_parse) :-
     plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { print $3, int($3) }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_value(%Value %line, i64 3, i8 58)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_1_value = extractvalue %WamI64Parse %plawk_int_1, 0'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_1_ok = extractvalue %WamI64Parse %plawk_int_1, 1'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_1_value_or_default = select i1 %plawk_int_1_ok, i64 %plawk_int_1_value, i64 0'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_int_1 = call i32 (i8*, ...) @printf(i8* %int_fmt_1, i64 %plawk_int_1_value_or_default)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_1 = call i64 @wam_awk_field_int_value(%Value %line, i64 3, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_int_1 = call i32 (i8*, ...) @printf(i8* %int_fmt_1, i64 %plawk_int_1)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
 test(surface_int_add_print_uses_shared_i64_add_lowering) :-
     plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { print int($3) + 1 }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_value(%Value %line, i64 3, i8 58)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_0_lhs_value_or_default = select i1 %plawk_int_add_0_lhs_ok, i64 %plawk_int_add_0_lhs_value, i64 0'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_0 = add i64 %plawk_int_add_0_lhs_value_or_default, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_0_lhs = call i64 @wam_awk_field_int_value(%Value %line, i64 3, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_0 = add i64 %plawk_int_add_0_lhs, 1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%printed_int_add_0 = call i32 (i8*, ...) @printf(i8* %int_add_fmt_0, i64 %plawk_int_add_0)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
@@ -1147,9 +1146,8 @@ test(surface_int_add_print_uses_shared_i64_add_lowering) :-
 test(surface_int_sub_print_uses_shared_i64_sub_lowering) :-
     plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { print int($3) - 1 }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_value(%Value %line, i64 3, i8 58)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_0_lhs_value_or_default = select i1 %plawk_int_sub_0_lhs_ok, i64 %plawk_int_sub_0_lhs_value, i64 0'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_0 = sub i64 %plawk_int_sub_0_lhs_value_or_default, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_0_lhs = call i64 @wam_awk_field_int_value(%Value %line, i64 3, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_0 = sub i64 %plawk_int_sub_0_lhs, 1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%printed_int_sub_0 = call i32 (i8*, ...) @printf(i8* %int_sub_fmt_0, i64 %plawk_int_sub_0)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
@@ -1162,8 +1160,8 @@ test(surface_i64_primary_binary_print_uses_shared_lowering) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_1 = add i64 %plawk_int_add_1_lhs, 1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_2_lhs = call i64 @wam_atom_field_length_value(%Value %line, i64 0, i8 58)'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_sub_2 = sub i64 %plawk_int_sub_2_lhs, 3'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_3_lhs_value_or_default = select i1 %plawk_int_add_3_lhs_ok, i64 %plawk_int_add_3_lhs_value, i64 0'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_3 = add i64 %plawk_int_add_3_lhs_value_or_default, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_3_lhs = call i64 @wam_awk_field_int_value(%Value %line, i64 3, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_3 = add i64 %plawk_int_add_3_lhs, 1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@.plawk_5Fint_5Fadd_5F4_5Flhs = private constant [5 x i8] c"work\\00"'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_4_lhs = call i64 @wam_atom_field_index_value(%Value %line, i64 2, i8 58'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_int_add_4 = add i64 %plawk_int_add_4_lhs, 1'))),
@@ -1307,11 +1305,11 @@ test(surface_if_else_branch_print_uses_shared_prefixed_expr_lowering) :-
 test(surface_if_else_branch_print_uses_shared_prefixed_i64_binary_lowering) :-
     plawk_parse_string("{ if ($1 == \"ERROR\") { print int($3) - 1 } else { print int($3) + 1 } } END { print \"done\" }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_then_print_0_int_sub_0_lhs = call %WamI64Parse @wam_atom_field_i64_value(%Value %line, i64 3, i8 32)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_then_print_0_int_sub_0 = sub i64 %rule_0_body_if_0_then_print_0_int_sub_0_lhs_value_or_default, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_then_print_0_int_sub_0_lhs = call i64 @wam_awk_field_int_value(%Value %line, i64 3, i8 32)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_then_print_0_int_sub_0 = sub i64 %rule_0_body_if_0_then_print_0_int_sub_0_lhs, 1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%printed_rule_0_body_if_0_then_print_0_int_sub_0_0 = call i32 (i8*, ...) @printf(i8* %rule_0_body_if_0_then_print_0_int_sub_0_fmt_0, i64 %rule_0_body_if_0_then_print_0_int_sub_0)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_else_print_0_int_add_0_lhs = call %WamI64Parse @wam_atom_field_i64_value(%Value %line, i64 3, i8 32)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_else_print_0_int_add_0 = add i64 %rule_0_body_if_0_else_print_0_int_add_0_lhs_value_or_default, 1'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_else_print_0_int_add_0_lhs = call i64 @wam_awk_field_int_value(%Value %line, i64 3, i8 32)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_if_0_else_print_0_int_add_0 = add i64 %rule_0_body_if_0_else_print_0_int_add_0_lhs, 1'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%printed_rule_0_body_if_0_else_print_0_int_add_0_0 = call i32 (i8*, ...) @printf(i8* %rule_0_body_if_0_else_print_0_int_add_0_fmt_0, i64 %rule_0_body_if_0_else_print_0_int_add_0)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.

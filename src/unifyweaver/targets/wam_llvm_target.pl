@@ -7368,11 +7368,11 @@ as.zero:
   ret double 0.0
 }
 
-; printf `%d` (and x/o/u/i) of a double: truncate toward zero, as awk does. Outside
+; A double to an integer (printf `%d`, awk `int()`): truncate toward zero. Outside
 ; the i64 range (or NaN) a bare fptosi is poison, and gawk prints digits plawk cannot
 ; reproduce through a fixed `%ld` format -- so that is FATAL (exit 2 after the
 ; output so far) rather than a wrong number.
-@.wam_awk_i64_range_error = private constant [77 x i8] c"plawk: fatal: printf integer conversion of a value outside the 64-bit range\\0A\\00"
+@.wam_awk_i64_range_error = private constant [70 x i8] c"plawk: fatal: integer conversion of a value outside the 64-bit range\\0A\\00"
 
 define i64 @wam_awk_f64_to_i64(double %v) {
 entry:
@@ -7386,10 +7386,30 @@ fi.conv:
   ret i64 %fi.r
 
 fi.fatal:
-  %fi.msg = getelementptr [77 x i8], [77 x i8]* @.wam_awk_i64_range_error, i64 0, i64 0
-  %fi.written = call i64 @write(i32 2, i8* %fi.msg, i64 76)
+  %fi.msg = getelementptr [70 x i8], [70 x i8]* @.wam_awk_i64_range_error, i64 0, i64 0
+  %fi.written = call i64 @write(i32 2, i8* %fi.msg, i64 69)
   call void @exit(i32 2)
   unreachable
+}
+
+; awk `int($N)`: the NUMERIC value of the field (strtod semantics, "30.25" -> 30.25,
+; "3abc" -> 3) truncated toward zero. The strict integer parse is tried first, so
+; integer text keeps its exact i64 value (no round trip through a double above 2^53);
+; only other text takes the strtod path, with the range-checked truncation.
+define i64 @wam_awk_field_int_value(%Value %line, i64 %field_index, i8 %sep) {
+entry:
+  %afi.p = call %WamI64Parse @wam_atom_field_i64_value(%Value %line, i64 %field_index, i8 %sep)
+  %afi.ok = extractvalue %WamI64Parse %afi.p, 1
+  br i1 %afi.ok, label %afi.exact, label %afi.num
+
+afi.exact:
+  %afi.v = extractvalue %WamI64Parse %afi.p, 0
+  ret i64 %afi.v
+
+afi.num:
+  %afi.d = call double @wam_atom_field_f64_value(%Value %line, i64 %field_index, i8 %sep)
+  %afi.t = call i64 @wam_awk_f64_to_i64(double %afi.d)
+  ret i64 %afi.t
 }
 
 @wam_f64_field_buf = internal global i8* null
