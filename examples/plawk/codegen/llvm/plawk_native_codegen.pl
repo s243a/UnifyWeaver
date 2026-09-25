@@ -175,6 +175,47 @@ plawk_program_native_driver_ir(Program, _InputPath, _DriverIR) :-
     !,
     fail.
 
+% BEGIN initial values for user scalars (`BEGIN { n = 1 }`). The assignments are
+% LIFTED out of BEGIN before any driver sees them -- several drivers ignore a BEGIN
+% action they do not recognise, which would silently drop the value -- and become
+% the SEED of each scalar's loop-header phi in place of the type zero
+% (plawk_scalar_loop_phi_lines//2 via plawk_slot_seed/3). A seeded slot is never
+% "unset", so it is left out of unset tracking.
+%
+% The guarantee is checked on the OUTPUT, not assumed: every seeded phi carries a
+% `; plawk-begin-init(NAME)` marker, and the program is accepted only if the IR has
+% one for EVERY lifted name. A driver whose slots do not start at that phi, a string
+% slot (whose value is a runtime atom id, not a constant), or a name no slot holds --
+% all leave a name unmarked, and the program declines (exit 3) rather than printing
+% the type zero where awk prints the BEGIN value.
+% A user-scalar BEGIN assignment that could NOT be lifted (assigned twice, or read
+% by another BEGIN statement) must not reach the drivers: some ignore unfamiliar
+% BEGIN actions, which would silently drop it. Decline.
+plawk_program_native_driver_ir(program(Begin0, _Rules, _End), _InputPath, _DriverIR) :-
+    plawk_begin_scalar_inits(Begin0, [], _),
+    is_list(Begin0),
+    member(begin(Actions), Begin0),
+    member(set(var(_), int(_)), Actions),
+    !,
+    fail.
+plawk_program_native_driver_ir(program(Begin0, Rules, End), InputPath, DriverIR) :-
+    plawk_begin_scalar_inits(Begin0, Inits0, Begin),
+    Inits0 \== [],
+    !,
+    % A name that nothing outside BEGIN mentions is unobservable: its initial value
+    % is dropped, not required to be seeded (there is no slot to seed).
+    include(plawk_begin_init_live(Rules-End), Inits0, Inits),
+    b_setval(plawk_begin_inits, Inits),
+    (   plawk_program_native_driver_ir(program(Begin, Rules, End), InputPath, DriverIR0)
+    ->  b_setval(plawk_begin_inits, []),
+        forall(member(Name-_Value, Inits),
+            ( plawk_begin_init_marker(Name, Marker),
+              sub_atom(DriverIR0, _, _, _, Marker) )),
+        DriverIR = DriverIR0
+    ;   b_setval(plawk_begin_inits, []),
+        fail
+    ).
+
 %% A BEGIN-ONLY program: BEGIN clauses, no rules, no END.
 %
 %  POSIX: "If an awk program consists of only actions with the pattern BEGIN,
@@ -7866,6 +7907,80 @@ plawk_slot_llvm_type(scalar_string(_Name), i64).
 plawk_slot_llvm_type(scalar_strnum(_Name), i64).
 plawk_slot_llvm_type(scalar_record_number, i64).
 
+%% plawk_begin_scalar_inits(+BeginClauses0, -Inits, -BeginClauses) is det.
+%
+%  Lift `NAME = INT` user-scalar assignments out of BEGIN as Name-Value pairs. Only
+%  when it is order-independent: each name assigned ONCE, and no other BEGIN
+%  statement mentions it (`BEGIN { print n; n = 1 }` must not see the value early).
+%  Otherwise nothing is lifted, the assignment stays in BEGIN, and the drivers --
+%  none of which lowers it -- decline. A begin/1 left empty is dropped.
+plawk_begin_scalar_inits(BeginClauses0, Inits, BeginClauses) :-
+    is_list(BeginClauses0),
+    findall(Name-Value,
+        ( member(begin(Actions), BeginClauses0),
+          member(set(var(Name), int(Value)), Actions),
+          atom(Name)
+        ),
+        Inits0),
+    Inits0 \== [],
+    pairs_keys(Inits0, Names),
+    sort(Names, Unique),
+    length(Names, N), length(Unique, N),
+    forall(( member(begin(Actions), BeginClauses0),
+             member(Action, Actions),
+             \+ ( Action = set(var(AName), int(_)), memberchk(AName, Names) ) ),
+           \+ ( member(Name, Names), sub_term(Sub, Action), Sub == Name )),
+    !,
+    Inits = Inits0,
+    findall(Clause,
+        ( member(Clause0, BeginClauses0),
+          plawk_begin_strip_inits(Clause0, Names, Clause) ),
+        BeginClauses).
+plawk_begin_scalar_inits(BeginClauses, [], BeginClauses).
+
+plawk_begin_strip_inits(begin(Actions0), Names, begin(Actions)) :-
+    !,
+    exclude(plawk_begin_init_action(Names), Actions0, Actions),
+    Actions \== [].
+plawk_begin_strip_inits(Clause, _Names, Clause).
+
+plawk_begin_init_action(Names, set(var(Name), int(_))) :-
+    memberchk(Name, Names).
+
+plawk_begin_init_live(Rules-End, Name-_Value) :-
+    sub_term(Sub, Rules-End),
+    Sub == Name,
+    !.
+
+plawk_begin_init_marker(Name, Marker) :-
+    format(atom(Marker), ' ; plawk-begin-init(~w)', [Name]).
+
+% The BEGIN value of Name, when one was lifted for the program being compiled.
+plawk_begin_init_value(Name, Value) :-
+    nb_current(plawk_begin_inits, Inits),
+    is_list(Inits),
+    memberchk(Name-Value, Inits).
+
+%% plawk_slot_seed(+Slot, -SeedIR, -Marker) is det.
+%
+%  The value a slot's loop-header phi starts from: the type zero, or -- for a
+%  NUMERIC slot with a BEGIN initial value -- that value, with the marker the driver
+%  entry checks for. A string/strnum slot is never seeded (its value is a runtime
+%  atom id), so its name stays unmarked and the program declines.
+plawk_slot_seed(Slot, Seed, Marker) :-
+    plawk_slot_name(Slot, Name),
+    plawk_begin_init_value(Name, Value),
+    plawk_slot_init_ir(Slot, Value, Seed),
+    !,
+    plawk_begin_init_marker(Name, Marker).
+plawk_slot_seed(Slot, Zero, '') :-
+    plawk_slot_zero_ir(Slot, Zero).
+
+plawk_slot_init_ir(scalar_counter(_Name), Value, Seed) :-
+    format(atom(Seed), '~w', [Value]).
+plawk_slot_init_ir(scalar_double(_Name), Value, Seed) :-
+    format(atom(Seed), '~w.0', [Value]).
+
 plawk_slot_zero_ir(scalar_counter(_Name), '0').
 plawk_slot_zero_ir(scalar_double(_Name), '0.0').
 plawk_slot_zero_ir(scalar_string(_Name), '0').
@@ -15178,14 +15293,14 @@ plawk_scalar_loop_phi_lines([], _) -->
     [].
 plawk_scalar_loop_phi_lines([Slot | Rest], Index) -->
     { plawk_slot_llvm_type(Slot, Type),
-      plawk_slot_zero_ir(Slot, Zero),
+      plawk_slot_seed(Slot, Zero, Marker),
       ( Slot == scalar_record_number
       -> format(atom(Line),
              '  %slot_~w_prev = phi ~w [~w, %check_handle_value], [%next_slot_~w, %continue_loop]',
              [Index, Type, Zero, Index])
       ;  format(atom(Line),
-             '  %slot_~w = phi ~w [~w, %check_handle_value], [%next_slot_~w, %continue_loop]',
-             [Index, Type, Zero, Index])
+             '  %slot_~w = phi ~w [~w, %check_handle_value], [%next_slot_~w, %continue_loop]~w',
+             [Index, Type, Zero, Index, Marker])
       ),
       NextIndex is Index + 1
     },
@@ -17513,6 +17628,8 @@ plawk_unset_tracked_slots(Rules, StatePlan, TrackedIndices) :-
           plawk_numeric_slot_print(Slot, _Kind, _Fmt, _Bytes, _Type),
           plawk_slot_name(Slot, Name),
           Index < Width,
+          % a BEGIN-initialised scalar is never unset
+          \+ plawk_begin_init_value(Name, _),
           plawk_unset_name_only_updated(Rules, Name)
         ),
         TrackedIndices).
