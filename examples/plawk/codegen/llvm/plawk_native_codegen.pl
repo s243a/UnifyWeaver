@@ -7566,6 +7566,45 @@ plawk_forin_end_guard_lines(guard_value_f(Op, M, D), TableIndex, Lines, CondVar,
 %  it each iteration, then -- after the loop -- print the fields (the
 %  accumulator variable resolves to the folded total, string literals print
 %  verbatim) and free every table.
+% Summing the values of a DOUBLE-valued array (`for (k in c) s += c[k]` after
+% `c[$1] += $2`): a double accumulator over @wam_assoc_f64_value_at, printed the
+% awk way. The i64 accumulator below would read the stored bit patterns as integers.
+plawk_forin_end_accum_ir(_LoopVar, ArrayName, Acc, forin_val(ArrayName), PrintFields,
+        AssocPlan, _Descriptor, OutputSeparator, IR) :-
+    plawk_f64_array(ArrayName),
+    !,
+    plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+    PrintFields = [_ | _],
+    phrase(plawk_forin_accum_f64_print_lines(PrintFields, Acc, OutputSeparator, 0),
+        PrintLines),
+    atomic_list_concat(PrintLines, '\n', PrintIR),
+    phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
+    atomic_list_concat(FreeLines, '\n', FreeIR),
+    format(atom(IR),
+'  br label %forin_head
+
+forin_head:
+  %forin_idx = phi i64 [0, %end_print], [%forin_next_idx, %forin_body_done]
+  %forin_acc = phi double [0.0, %end_print], [%forin_next_acc, %forin_body_done]
+  %forin_slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_idx)
+  %forin_done = icmp slt i64 %forin_slot, 0
+  br i1 %forin_done, label %forin_after, label %forin_body
+
+forin_body:
+  %forin_acc_val = call double @wam_assoc_f64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)
+  %forin_next_acc = fadd double %forin_acc, %forin_acc_val
+  br label %forin_body_done
+
+forin_body_done:
+  %forin_next_idx = add i64 %forin_slot, 1
+  br label %forin_head
+
+forin_after:
+~w
+  %forin_out_newline = call i32 @putchar(i32 10)
+~w
+  ret i32 0',
+        [TableIndex, TableIndex, PrintIR, FreeIR]).
 plawk_forin_end_accum_ir(_LoopVar, ArrayName, Acc, Operand, PrintFields,
         AssocPlan, _Descriptor, OutputSeparator, IR) :-
     plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
@@ -7636,6 +7675,26 @@ plawk_forin_accum_print_lines([string(Value) | Rest], Acc, OutputSeparator, Inde
     plawk_end_string_print_lines(Value, Index),
     { NextIndex is Index + 1 },
     plawk_forin_accum_print_lines(Rest, Acc, OutputSeparator, NextIndex).
+
+plawk_forin_accum_f64_print_lines([], _Acc, _OutputSeparator, _Index) -->
+    [].
+plawk_forin_accum_f64_print_lines([var(Acc) | Rest], Acc, OutputSeparator, Index) -->
+    plawk_forin_accum_separator_lines(Index, OutputSeparator),
+    { format(atom(FmtPtr),
+          '  %forin_out_fmt_~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
+          [Index]),
+      format(atom(PrintCall),
+          '  %forin_out_printed_~w = call i32 @wam_print_awk_number(i8* %forin_out_fmt_~w, double %forin_acc)',
+          [Index, Index]),
+      NextIndex is Index + 1
+    },
+    [FmtPtr, PrintCall],
+    plawk_forin_accum_f64_print_lines(Rest, Acc, OutputSeparator, NextIndex).
+plawk_forin_accum_f64_print_lines([string(Value) | Rest], Acc, OutputSeparator, Index) -->
+    plawk_forin_accum_separator_lines(Index, OutputSeparator),
+    plawk_end_string_print_lines(Value, Index),
+    { NextIndex is Index + 1 },
+    plawk_forin_accum_f64_print_lines(Rest, Acc, OutputSeparator, NextIndex).
 
 plawk_forin_accum_separator_lines(0, _OutputSeparator) -->
     !,
@@ -11778,7 +11837,7 @@ plawk_assoc_rule_action_blocks(RuleIndex,
 % (a field value or an integer constant) folded in through the same inc
 % primitive the counter uses with a delta of 1. Straight-line, as above.
 plawk_assoc_rule_action_blocks(RuleIndex,
-        [assoc_add_n_action(Index, _ArrayName, TableIndex, Comps, Delta) | Rest],
+        [assoc_add_n_action(Index, ArrayName, TableIndex, Comps, Delta) | Rest],
         NextLabel, FieldSeparator) -->
     { integer(FieldSeparator),
       ( Rest == []
@@ -11792,10 +11851,20 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(KeyId), '%~w_key_id', [Base]),
       plawk_subsep_key_n_ir(Base, '%line', Comps, FieldSeparator, KeyId,
           GlobalDecl, KeyLines),
-      plawk_assoc_scalar_src_lines(Delta, Base, FieldSeparator, DeltaVar, DeltaLines),
-      format(atom(Inc),
-          '  %~w_sum = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 ~w)',
-          [Base, TableIndex, KeyId, DeltaVar]),
+      (   plawk_f64_array(ArrayName)
+      ->  % a DOUBLE-valued array (see the single-key `+=` above)
+          plawk_assoc_f64_delta_lines(Delta, Base, FieldSeparator, DeltaVar,
+              DeltaLines),
+          plawk_f64_table_marker(ArrayName, TableIndex, Marker),
+          format(atom(Inc),
+              '  %~w_sum = call double @wam_assoc_f64_add(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, double ~w)~n  ~w',
+              [Base, TableIndex, KeyId, DeltaVar, Marker])
+      ;   plawk_assoc_scalar_src_lines(Delta, Base, FieldSeparator, DeltaVar,
+              DeltaLines),
+          format(atom(Inc),
+              '  %~w_sum = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 ~w)',
+              [Base, TableIndex, KeyId, DeltaVar])
+      ),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[global(GlobalDecl), Label], KeyLines, DeltaLines,
               [Inc, Next, '']], Lines)

@@ -96,6 +96,24 @@ test(assoc_under_a_pattern, [condition(clang_available)]) :-
         ["a 33.25", "b 5", "c 1250000"]),
     !.
 
+% Literal and multi-dimensional keys (the arity-n `+=` emitter), and the END for-in
+% accumulate over a double table -- both were declined by the IR check until
+% taught, which the full sweep caught as regressions of integer-data programs.
+test(assoc_double_with_literal_and_compound_keys, [condition(clang_available)]) :-
+    run("{ c[\"t\"] += $2 } END { print c[\"t\"] }\n", "1.25004e+06\n"),
+    !,
+    run("{ c[$1,$2] += $2 } END { for (k in c) s += c[k]; print s }\n",
+        "1.25004e+06\n"),
+    !.
+
+test(assoc_double_end_accumulate, [condition(clang_available)]) :-
+    run("{ c[$1] += $2 } END { for (k in c) s += c[k]; print \"total\", s }\n",
+        "total 1.25004e+06\n"),
+    !,
+    % an integer counter array keeps its i64 accumulator
+    run("{ c[$1]++ } END { for (k in c) s += c[k]; print s }\n", "4\n"),
+    !.
+
 % Integer-only deltas and counters keep the i64 table (no f64 entry at all).
 test(integer_arrays_unchanged) :-
     ir_of("{ c[$1] += 2; d[$1]++ } END { for (k in c) print k, c[k] }\n", IR),
