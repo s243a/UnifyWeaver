@@ -5801,6 +5801,46 @@ inc.fail:
 ; of accumulating. This is the write primitive for str-valued tables, whose
 ; i64 payloads are atom-registry ids -- adding two ids is meaningless, so
 ; last-write-wins is the accumulate analogue for labels.
+; DOUBLE-valued tables (awk `arr[k] += $N` over decimal data): the same i64 table,
+; each value holding a double BIT PATTERN. An absent key reads as bit pattern 0,
+; which is exactly +0.0, so the absent-is-zero rule carries over unchanged. Only
+; these entry points may read or write such a table -- plawk checks that on the
+; generated IR, so the bits are never taken for an integer.
+define double @wam_assoc_f64_add(%WamAssocI64Table* %table, i64 %key, double %delta) {
+entry:
+  %af.old = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 %key)
+  %af.od = bitcast i64 %af.old to double
+  %af.nd = fadd double %af.od, %delta
+  %af.nb = bitcast double %af.nd to i64
+  %af.set = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %key, i64 %af.nb)
+  ret double %af.nd
+}
+
+; `print arr[k]` on a double-valued table: the awk rendering of the value when the
+; key exists, NOTHING when it does not (the absent-is-empty rule of the i64 print).
+define void @wam_assoc_f64_print(%WamAssocI64Table* %table, i64 %key) {
+entry:
+  %afp.has = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %table, i64 %key)
+  br i1 %afp.has, label %afp.print, label %afp.done
+
+afp.print:
+  %afp.bits = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 %key)
+  %afp.d = bitcast i64 %afp.bits to double
+  %afp.fmt = getelementptr [5 x i8], [5 x i8]* @.wam_awk_ofmt, i64 0, i64 0
+  %afp.r = call i32 @wam_print_awk_number(i8* %afp.fmt, double %afp.d)
+  br label %afp.done
+
+afp.done:
+  ret void
+}
+
+define double @wam_assoc_f64_value_at(%WamAssocI64Table* %table, i64 %slot) {
+entry:
+  %afv.bits = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %table, i64 %slot)
+  %afv.d = bitcast i64 %afv.bits to double
+  ret double %afv.d
+}
+
 define i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %key, i64 %value) {
 entry:
   %table_null = icmp eq %WamAssocI64Table* %table, null
