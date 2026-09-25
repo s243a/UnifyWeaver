@@ -7316,6 +7316,82 @@ cd.zero:
 ; "3.14abc" reads as 3.14 and non-numeric text reads as 0.0. Field
 ; slices are copied into a growable NUL-terminated scratch buffer;
 ; field 0 uses the record atom''s C string directly.
+; awk numeric text is DECIMAL: after optional blanks and a sign it must start with a
+; digit or a dot. C strtod also accepts "nan", "inf" and hex ("0x1A"), which awk reads
+; as 0 (gawk without --non-decimal-data) -- so those are rejected up front; "0x1A"
+; reads as its leading "0", i.e. 0.
+define double @wam_awk_strtod(i8* %s) {
+entry:
+  br label %as.skip
+
+as.skip:
+  %as.p = phi i8* [ %s, %entry ], [ %as.pn, %as.blank ]
+  %as.c = load i8, i8* %as.p
+  %as.sp = icmp eq i8 %as.c, 32
+  %as.tab = icmp eq i8 %as.c, 9
+  %as.isblank = or i1 %as.sp, %as.tab
+  br i1 %as.isblank, label %as.blank, label %as.sign
+
+as.blank:
+  %as.pn = getelementptr i8, i8* %as.p, i64 1
+  br label %as.skip
+
+as.sign:
+  %as.plus = icmp eq i8 %as.c, 43
+  %as.minus = icmp eq i8 %as.c, 45
+  %as.signed = or i1 %as.plus, %as.minus
+  %as.p1 = getelementptr i8, i8* %as.p, i64 1
+  %as.q = select i1 %as.signed, i8* %as.p1, i8* %as.p
+  %as.d = load i8, i8* %as.q
+  %as.ge0 = icmp uge i8 %as.d, 48
+  %as.le9 = icmp ule i8 %as.d, 57
+  %as.digit = and i1 %as.ge0, %as.le9
+  %as.dot = icmp eq i8 %as.d, 46
+  %as.lead = or i1 %as.digit, %as.dot
+  br i1 %as.lead, label %as.hexcheck, label %as.zero
+
+as.hexcheck:
+  %as.zero_digit = icmp eq i8 %as.d, 48
+  %as.q1 = getelementptr i8, i8* %as.q, i64 1
+  %as.x = load i8, i8* %as.q1
+  %as.lx = icmp eq i8 %as.x, 120
+  %as.ux = icmp eq i8 %as.x, 88
+  %as.isx = or i1 %as.lx, %as.ux
+  %as.hex = and i1 %as.zero_digit, %as.isx
+  br i1 %as.hex, label %as.zero, label %as.parse
+
+as.parse:
+  %as.v = call double @strtod(i8* %s, i8** null)
+  ret double %as.v
+
+as.zero:
+  ret double 0.0
+}
+
+; printf `%d` (and x/o/u/i) of a double: truncate toward zero, as awk does. Outside
+; the i64 range (or NaN) a bare fptosi is poison, and gawk prints digits plawk cannot
+; reproduce through a fixed `%ld` format -- so that is FATAL (exit 2 after the
+; output so far) rather than a wrong number.
+@.wam_awk_i64_range_error = private constant [77 x i8] c"plawk: fatal: printf integer conversion of a value outside the 64-bit range\\0A\\00"
+
+define i64 @wam_awk_f64_to_i64(double %v) {
+entry:
+  %fi.lo = fcmp oge double %v, 0xC3E0000000000000
+  %fi.hi = fcmp olt double %v, 0x43E0000000000000
+  %fi.ok = and i1 %fi.lo, %fi.hi
+  br i1 %fi.ok, label %fi.conv, label %fi.fatal
+
+fi.conv:
+  %fi.r = fptosi double %v to i64
+  ret i64 %fi.r
+
+fi.fatal:
+  %fi.msg = getelementptr [77 x i8], [77 x i8]* @.wam_awk_i64_range_error, i64 0, i64 0
+  %fi.written = call i64 @write(i32 2, i8* %fi.msg, i64 76)
+  call void @exit(i32 2)
+  unreachable
+}
+
 @wam_f64_field_buf = internal global i8* null
 @wam_f64_field_cap = internal global i64 0
 
@@ -7331,7 +7407,7 @@ f64.whole:
   br i1 %line_null, label %f64.zero, label %f64.parse_whole
 
 f64.parse_whole:
-  %whole_v = call double @strtod(i8* %line_s, i8** null)
+  %whole_v = call double @wam_awk_strtod(i8* %line_s)
   ret double %whole_v
 
 f64.field:
@@ -7379,7 +7455,7 @@ f64.copy_step:
 f64.terminate:
   %end_p = getelementptr i8, i8* %buf, i64 %flen
   store i8 0, i8* %end_p
-  %field_v = call double @strtod(i8* %buf, i8** null)
+  %field_v = call double @wam_awk_strtod(i8* %buf)
   ret double %field_v
 
 f64.zero:
