@@ -9605,6 +9605,29 @@ ss.no:
   ret %WamSlice %ss.empty
 }
 
+; awk `$(expr)` with a NEGATIVE index is a fatal error (gawk: "attempt to access
+; field -1", exit 2), not an empty field. A computed field index -- `$(NF-1)` on an
+; empty record -- is passed through here: returned unchanged when >= 0, otherwise
+; the program stops with exit status 2. exit() flushes stdout, so every line printed
+; before the bad access still appears, as in gawk. A call rather than an inline
+; branch, so the caller stays one straight-line block and no phi predecessor moves.
+@.wam_awk_negative_field_error = private constant [50 x i8] c"plawk: fatal: attempt to access a negative field\\0A\\00"
+
+define i64 @wam_awk_field_index_checked(i64 %index) {
+entry:
+  %afic.neg = icmp slt i64 %index, 0
+  br i1 %afic.neg, label %afic.fatal, label %afic.ok
+
+afic.ok:
+  ret i64 %index
+
+afic.fatal:
+  %afic.msg = getelementptr [50 x i8], [50 x i8]* @.wam_awk_negative_field_error, i64 0, i64 0
+  %afic.written = call i64 @write(i32 2, i8* %afic.msg, i64 49)
+  call void @exit(i32 2)
+  unreachable
+}
+
 define %WamSlice @wam_atom_field_subslice_value(%Value %atom_value, i64 %field_index, i8 %sep, i64 %start, i64 %max_len) {
 entry:
   %afs.empty0 = insertvalue %WamSlice undef, i8* null, 0
