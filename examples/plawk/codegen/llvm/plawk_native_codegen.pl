@@ -17790,7 +17790,8 @@ plawk_scalar_update_operation_ir_(set(Expr), _Slot, FieldSeparator, Prefix, Slot
 % of the printf action.
 plawk_str_build_ir(sprintf(string(Format), Args), FieldSeparator, Base, IdValueIR,
         GlobalParts, SetupLines) :-
-    phrase(plawk_printf_arg_pairs(Args, FieldSeparator, Base, 0), ArgPairs),
+    plawk_printf_arg_classes(Format, Classes),
+    phrase(plawk_printf_arg_pairs(Args, Classes, FieldSeparator, Base, 0), ArgPairs),
     pairs_keys_values(ArgPairs, ArgGlobalParts, ArgInfoPairs),
     pairs_keys_values(ArgInfoPairs, ArgSetupParts, ArgCallArgLists),
     append(ArgCallArgLists, CallArgs),
@@ -21532,7 +21533,8 @@ plawk_prefixed_print_action_ir(Fields, FieldSeparator, OutputSeparator, Prefix, 
     atomic_list_concat(BodyParts, '\n', IR).
 
 plawk_prefixed_printf_action_ir(Format, Args, FieldSeparator, Prefix, Pair) :-
-    phrase(plawk_printf_arg_pairs(Args, FieldSeparator, Prefix, 0), ArgPairs),
+    plawk_printf_arg_classes(Format, Classes),
+    phrase(plawk_printf_arg_pairs(Args, Classes, FieldSeparator, Prefix, 0), ArgPairs),
     plawk_printf_from_arg_pairs(ArgPairs, Format, Prefix, Pair).
 
 %% plawk_printf_from_arg_pairs(+ArgPairs, +Format, +Prefix, -GlobalIR-IR)
@@ -21573,18 +21575,104 @@ plawk_printf_from_arg_pairs(ArgPairs, Format, Prefix, GlobalIR-IR) :-
     append(ArgSetupParts, [FmtPtr, PrintCall], BodyParts),
     atomic_list_concat(BodyParts, '\n', IR).
 
-plawk_printf_arg_pairs([], _FieldSeparator, _Prefix, _Index) -->
+plawk_printf_arg_pairs([], _Classes, _FieldSeparator, _Prefix, _Index) -->
     [].
-plawk_printf_arg_pairs([Arg | Args], FieldSeparator, Prefix, Index) -->
-    { plawk_emit_prefixed_print_expr_ir(Arg, FieldSeparator, Prefix, Index,
-          Type, GlobalParts, SetupParts),
-      plawk_printf_type_call_args(Type, CallArgs),
+plawk_printf_arg_pairs([Arg | Args], Classes, FieldSeparator, Prefix, Index) -->
+    { plawk_printf_class_at(Classes, Index, Class),
+      plawk_printf_coerce_arg(Class, FieldSeparator, Arg, Arg1),
+      plawk_emit_prefixed_print_expr_ir(Arg1, FieldSeparator, Prefix, Index,
+          Type, GlobalParts, SetupParts0),
+      plawk_printf_type_call_args(Type, CallArgs0),
+      (   Arg1 == Arg
+      ->  CoerceLines = [], CallArgs = CallArgs0
+      ;   plawk_printf_coerce_call_args(Class, Prefix, Index, CallArgs0,
+              CoerceLines, CallArgs)
+      ),
+      append(SetupParts0, CoerceLines, SetupParts),
       plawk_join_nonempty_ir(GlobalParts, GlobalIR),
       plawk_join_nonempty_ir(SetupParts, SetupIR),
       NextIndex is Index + 1
     },
     [GlobalIR-(SetupIR-CallArgs)],
-    plawk_printf_arg_pairs(Args, FieldSeparator, Prefix, NextIndex).
+    plawk_printf_arg_pairs(Args, Classes, FieldSeparator, Prefix, NextIndex).
+
+%% plawk_printf_arg_classes(+Format, -Classes) is det.
+%
+%  What each argument's conversion NEEDS, in argument order: `int` (d i o x X u),
+%  `float` (f F e E g G), `str` (s), `char` (c), or `other`. awk converts an argument
+%  to what its conversion asks for; C printf does not, so the classes drive the
+%  coercions below. Scans with the same plawk_printf_scan_spec/6 the format rewriter
+%  uses, so the two cannot disagree about where a conversion is. An unscannable `%`
+%  is skipped here and left for the rewriter to reject.
+plawk_printf_arg_classes(Format, Classes) :-
+    string_codes(Format, Codes),
+    plawk_printf_classes_codes(Codes, Classes).
+
+plawk_printf_classes_codes([], []).
+plawk_printf_classes_codes([0'%, 0'% | Rest], Classes) :-
+    !,
+    plawk_printf_classes_codes(Rest, Classes).
+plawk_printf_classes_codes([0'% | Rest0], [Class | Classes]) :-
+    plawk_printf_scan_spec(Rest0, _Flags, _Width, _Prec, Conv, Rest),
+    !,
+    plawk_printf_conv_class(Conv, Class),
+    plawk_printf_classes_codes(Rest, Classes).
+plawk_printf_classes_codes([_ | Rest], Classes) :-
+    plawk_printf_classes_codes(Rest, Classes).
+
+plawk_printf_conv_class(Conv, int) :-
+    memberchk(Conv, [0'd, 0'i, 0'o, 0'x, 0'X, 0'u]),
+    !.
+plawk_printf_conv_class(Conv, float) :-
+    memberchk(Conv, [0'f, 0'F, 0'e, 0'E, 0'g, 0'G]),
+    !.
+plawk_printf_conv_class(0's, str) :-
+    !.
+plawk_printf_conv_class(0'c, char) :-
+    !.
+plawk_printf_conv_class(_Conv, other).
+
+plawk_printf_class_at(Classes, Index, Class) :-
+    nth0(Index, Classes, Class),
+    !.
+plawk_printf_class_at(_Classes, _Index, other).
+
+%% plawk_printf_coerce_arg(+Class, +FieldSeparator, +Arg0, -Arg) is det.
+%
+%  A text field under a NUMERIC conversion is read as a number, awk-style: the
+%  strtod coercion `float($N)` already lowers (`"30.25"` -> 30.25, `"3abc"` -> 3,
+%  non-numeric -> 0). Without this `printf "%d", $2` declined -- the field arrived
+%  as a slice, which only `%s` accepts. Text records only: a binary descriptor
+%  types its fields itself.
+plawk_printf_coerce_arg(Class, FieldSeparator, field(Index), float_field(Index)) :-
+    memberchk(Class, [int, float]),
+    integer(FieldSeparator),
+    integer(Index),
+    Index >= 0,
+    !.
+plawk_printf_coerce_arg(_Class, _FieldSeparator, Arg, Arg).
+
+%% plawk_printf_coerce_call_args(+Class, +Prefix, +Index, +CallArgs0, -Lines,
+%%     -CallArgs) is det.
+%
+%  Applied ONLY to an argument that plawk_printf_coerce_arg/4 turned from a field
+%  into a strtod read: under `%d`/`%x`/... that double is TRUNCATED toward zero, as
+%  awk does (`printf "%d", "30.25"` -> 30), through the runtime's
+%  @wam_awk_f64_to_i64: a value outside the i64 range is FATAL (exit 2) rather than a
+%  bare `fptosi` (poison there) or a saturated wrong number -- gawk prints digits a
+%  fixed `%ld` cannot reproduce.
+%
+%  NOT applied to other numeric arguments, deliberately. plawk's integer path reads a
+%  non-integer field as 0 (`x = $2 + 0` on "30.25" is 0: a strict i64 parse with a
+%  zero default), so widening/narrowing THOSE values would turn today's clean decline
+%  of `x = $2 + 0; printf "%5.1f", x` into silent wrong output. Extend this once
+%  field numeric reads follow awk (strtod) semantics everywhere.
+plawk_printf_coerce_call_args(int, Prefix, Index, [f64(Value)], [Line],
+        [i64(Out)]) :-
+    !,
+    format(atom(Out), '%~w_arg~w_cvi', [Prefix, Index]),
+    format(atom(Line), '  ~w = call i64 @wam_awk_f64_to_i64(double ~w)', [Out, Value]).
+plawk_printf_coerce_call_args(_Class, _Prefix, _Index, CallArgs, [], CallArgs).
 
 plawk_printf_type_call_args(i64(_FmtPrefix, _PrintPrefix, ValueIR), [i64(ValueIR)]).
 plawk_printf_type_call_args(slice(_FmtPrefix, _PrintPrefix, LenIR, PtrIR), [slice_len(LenIR), slice_ptr(PtrIR)]).
