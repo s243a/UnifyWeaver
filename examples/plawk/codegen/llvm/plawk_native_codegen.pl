@@ -16393,7 +16393,11 @@ plawk_scalar_action_update(add(var(Name), int(Value)), Name, add(const(Value))) 
     integer(Value).
 plawk_scalar_action_update(add(var(Name), length(field(FieldIndex))), Name, add(length(FieldIndex))) :-
     FieldIndex >= 0.
-plawk_scalar_action_update(add(var(Name), field(FieldIndex)), Name, add(field_i64(FieldIndex))) :-
+% `s += $N` accumulates the field's NUMERIC value, a double (strtod): the i64
+% accumulator read any non-integer text as 0 (`s += $2` over 30.25, 5, 3abc summed
+% to 5; awk: 38.25). float_field/1 makes the slot double through the ordinary
+% double fixpoint; a binary descriptor's float_field reads its typed field.
+plawk_scalar_action_update(add(var(Name), field(FieldIndex)), Name, add(float_field(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_scalar_action_update(add(var(Name), int(field(FieldIndex))), Name, add(field_int(FieldIndex))) :-
     FieldIndex >= 0.
@@ -17675,7 +17679,8 @@ plawk_scalar_update_operation_ir_(set(Expr), _Slot, FieldSeparator, Prefix, Slot
 plawk_str_build_ir(sprintf(string(Format), Args), FieldSeparator, Base, IdValueIR,
         GlobalParts, SetupLines) :-
     plawk_printf_arg_classes(Format, Classes),
-    phrase(plawk_printf_arg_pairs(Args, Classes, FieldSeparator, Base, 0), ArgPairs),
+    phrase(plawk_printf_arg_pairs(Args, Classes, FieldSeparator, Base, 0), ArgPairs0),
+    plawk_printf_truncate_pairs(Format, Base, ArgPairs0, ArgPairs),
     pairs_keys_values(ArgPairs, ArgGlobalParts, ArgInfoPairs),
     pairs_keys_values(ArgInfoPairs, ArgSetupParts, ArgCallArgLists),
     append(ArgCallArgLists, CallArgs),
@@ -18514,6 +18519,28 @@ plawk_ternary_cond_ir(cmp(int(Expected), Op0, field(Index)), FieldSeparator,
     !,
     plawk_ternary_cond_ir(cmp(field(Index), Op, int(Expected)), FieldSeparator,
         Base, GlobalBase, CondIR, GlobalParts, Pre, SetupParts).
+%  A DOUBLE comparison: either operand is a double-typed tree (`$2 + 1 > 10 ? …`,
+%  whose field operand makes it double -- plawk_arith_field_operand/1). Both sides
+%  lower as doubles and `fcmp`; lowering them as i64 (Form 2) re-read the field
+%  with the strict integer parse.
+plawk_ternary_cond_ir(cmp(CondLeft, Op, CondRight), FieldSeparator, Base,
+        GlobalBase, CondIR, GlobalParts, OperandSetupParts, [CondLine]) :-
+    ( plawk_expr_is_double(CondLeft) ; plawk_expr_is_double(CondRight) ),
+    plawk_fcmp_pred(Op, Pred),
+    !,
+    format(atom(CondLeftBase), '~w_cl', [Base]),
+    format(atom(CondLeftGlobal), '~w_cl', [GlobalBase]),
+    plawk_f64_expr_ir(CondLeft, FieldSeparator, CondLeftBase, CondLeftGlobal,
+        CondLeftValueIR, CondLeftGlobalParts, CondLeftSetupParts),
+    format(atom(CondRightBase), '~w_cr', [Base]),
+    format(atom(CondRightGlobal), '~w_cr', [GlobalBase]),
+    plawk_f64_expr_ir(CondRight, FieldSeparator, CondRightBase, CondRightGlobal,
+        CondRightValueIR, CondRightGlobalParts, CondRightSetupParts),
+    format(atom(CondLine), '  %~w_cond = fcmp ~w double ~w, ~w',
+        [Base, Pred, CondLeftValueIR, CondRightValueIR]),
+    format(atom(CondIR), '%~w_cond', [Base]),
+    append([CondLeftGlobalParts, CondRightGlobalParts], GlobalParts),
+    append([CondLeftSetupParts, CondRightSetupParts], OperandSetupParts).
 %  Form 2 -- an i64 comparison (`$2 > 1 ? …`, `NR == 2 ? …`): lower both operands
 %  as i64 expressions and `icmp`.
 plawk_ternary_cond_ir(cmp(CondLeft, Op, CondRight), FieldSeparator, Base,
@@ -18579,7 +18606,22 @@ plawk_expr_is_double(Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     ( plawk_expr_is_double(Left)
     ; plawk_expr_is_double(Right)
+    ; plawk_arith_field_operand(Left)
+    ; plawk_arith_field_operand(Right)
     ).
+
+%% plawk_arith_field_operand(+Expr) is semidet.
+%
+%  A field read as an OPERAND of arithmetic makes the tree double: awk's numbers are
+%  doubles, and a field's numeric value is its strtod reading ("30.25" -> 30.25),
+%  which an i64 tree could only get wrong -- it read any non-integer text as 0
+%  (`$2 + 1` on "30.25" printed 1; `$2 % 3` printed 0). Doubles print the awk way
+%  (integral -> integer), so integer data prints as before. Deliberately NOT a
+%  clause of plawk_expr_is_double/1 for a bare field: `print $2` and `x = $2` are
+%  text, not arithmetic. `%` lowers to frem (= fmod, awk's `%`).
+plawk_arith_field_operand(field(Index)) :-
+    integer(Index),
+    Index >= 0.
 
 %% plawk_f64_print_expr(+Expr) is semidet.
 %
@@ -18635,11 +18677,23 @@ plawk_f64_expr_ir(float_const(Mantissa, Denominator), _FieldSeparator, Base,
     format(atom(ValueIR), '%~w', [Base]),
     format(atom(ConstIR), '  ~w = fdiv double ~w.0, ~w.0',
         [ValueIR, Mantissa, Denominator]).
+% A binary descriptor field as a DOUBLE: loaded at its declared type, then an i64
+% field is widened (sitofp) -- plawk_f64_expr_ir/7 must always yield a double.
+% Returning the raw i64 load was harmless while float($N) over an i64 field was
+% rare; `s += $N` accumulating float_field(N) made it a clang type error (the
+% phase-C sweep caught it: `sum += $2` over BINFMT "i64 i64").
 plawk_f64_expr_ir(float_field(Index), binfmt(Types), Base, _GlobalBase,
-        ValueIR, [], LoadLines) :-
+        ValueIR, [], Lines) :-
     !,
-    plawk_binfmt_field_load_lines(binfmt(Types), Index, Base, ValueIR,
-        LoadLines).
+    (   plawk_binfmt_field_type(binfmt(Types), Index, i64)
+    ->  format(atom(LoadBase), '~w_i', [Base]),
+        plawk_binfmt_field_load_lines(binfmt(Types), Index, LoadBase, IntIR,
+            LoadLines),
+        format(atom(ValueIR), '%~w', [Base]),
+        format(atom(Widen), '  ~w = sitofp i64 ~w to double', [ValueIR, IntIR]),
+        append(LoadLines, [Widen], Lines)
+    ;   plawk_binfmt_field_load_lines(binfmt(Types), Index, Base, ValueIR, Lines)
+    ).
 plawk_f64_expr_ir(float_field(Index), FieldSeparator, Base, _GlobalBase,
         ValueIR, [], [CallIR]) :-
     format(atom(ValueIR), '%~w', [Base]),
@@ -18812,10 +18866,23 @@ plawk_f64_expr_ir(Expr, FieldSeparator, Base, GlobalBase, ValueIR,
     plawk_f64_expr_ir(Right, FieldSeparator, RightBase, RightGlobalBase,
         RightValueIR, RightGlobalParts, RightSetupParts),
     format(atom(ValueIR), '%~w', [Base]),
-    format(atom(OpIR), '  ~w = ~w double ~w, ~w',
-        [ValueIR, F64Op, LeftValueIR, RightValueIR]),
+    plawk_f64_binary_op_lines(F64Op, Base, LeftValueIR, RightValueIR, OpLines),
     append(LeftGlobalParts, RightGlobalParts, GlobalParts),
-    append([LeftSetupParts, RightSetupParts, [OpIR]], SetupParts).
+    append([LeftSetupParts, RightSetupParts, OpLines], SetupParts).
+
+%% plawk_f64_binary_op_lines(+F64Op, +Base, +LeftIR, +RightIR, -Lines) is det.
+%
+%  `%` keeps plawk's zero-divisor policy in double arithmetic: `x % 0` is 0, as the
+%  guarded integer srem it replaced gave (frem by zero is NaN). gawk aborts on a zero
+%  divisor instead; that existing, documented plawk divergence is left as it was.
+plawk_f64_binary_op_lines(frem, Base, LeftIR, RightIR, [Zero, Raw, Sel]) :-
+    !,
+    format(atom(Zero), '  %~w_den_zero = fcmp oeq double ~w, 0.0', [Base, RightIR]),
+    format(atom(Raw), '  %~w_raw = frem double ~w, ~w', [Base, LeftIR, RightIR]),
+    format(atom(Sel), '  %~w = select i1 %~w_den_zero, double 0.0, double %~w_raw',
+        [Base, Base, Base]).
+plawk_f64_binary_op_lines(F64Op, Base, LeftIR, RightIR, [Line]) :-
+    format(atom(Line), '  %~w = ~w double ~w, ~w', [Base, F64Op, LeftIR, RightIR]).
 % A text FIELD in a double context is read as a number the awk way -- strtod
 % semantics through the same row as `float($N)` (@wam_atom_field_f64_value). It used
 % to fall to the i64-then-promote clause below, whose strict integer parse reads any
@@ -20823,54 +20890,49 @@ plawk_pattern_guard_ir(field_div_cmp(I, K, Op, RHS), FieldSeparator, GlobalBase,
     integer(FieldSeparator),
     integer(I), I > 0,
     plawk_field_div_cmp_guard_ir(I, K, Op, RHS, FieldSeparator, GlobalBase, MatchValue, GuardIR).
-% `$I ARITH K CMP RHS` shared guard: parse field I as a signed i64 (non-numeric
-% -> 0, matching plawk field arithmetic), apply the integer arithmetic op with
-% K, then icmp the result against RHS. `%` is srem (parser guarantees K != 0).
+% `$I ARITH K CMP RHS` shared guard. An arithmetic RESULT is a number, so awk
+% compares it numerically -- as a double: field I is read by its strtod value
+% (@wam_atom_field_f64_value: "30.25" -> 30.25, "3abc" -> 3, non-numeric -> 0),
+% the op is the double op (`%` is frem = fmod, awk's `%`), then fcmp against RHS.
+% It used a strict i64 parse defaulting to 0, so `$2 + 0 > 10` on "30.25" was
+% false (awk: true). K and RHS are integer literals (the parser guarantees K != 0
+% for `%`), written as exact `N.0` double constants.
 plawk_field_arith_cmp_guard_ir(I, ArithOp, K, Op, RHS, FieldSeparator, Base,
         MatchValue, ''-GuardCallIR) :-
-    plawk_icmp_pred(Op, Pred),
-    plawk_field_arith_llvm_op(ArithOp, LLVMOp),
+    plawk_fcmp_pred(Op, Pred),
+    plawk_field_arith_f64_op(ArithOp, F64Op),
     format(atom(ParseBase), '~w_fa~w', [Base, I]),
-    llvm_emit_atom_field_i64('%line', I, FieldSeparator, ParseBase, ParseIR),
     format(atom(GuardCallIR),
-'~w
-  %~w_num = select i1 %~w_ok, i64 %~w_value, i64 0
-  %~w_ar = ~w i64 %~w_num, ~w
-  ~w = icmp ~w i64 %~w_ar, ~w',
-        [ParseIR,
-         ParseBase, ParseBase, ParseBase,
-         ParseBase, LLVMOp, ParseBase, K,
+'  %~w_num = call double @wam_atom_field_f64_value(%Value %line, i64 ~w, i8 ~w)
+  %~w_ar = ~w double %~w_num, ~w.0
+  ~w = fcmp ~w double %~w_ar, ~w.0',
+        [ParseBase, I, FieldSeparator,
+         ParseBase, F64Op, ParseBase, K,
          MatchValue, Pred, ParseBase, RHS]).
 
-% `$I ARITH $J CMP RHS` shared guard: parse both fields as signed i64 (each
-% non-numeric -> 0, via the parse-with-default-0 helper), apply the integer op to
-% the two field values, then icmp the result against the literal RHS. Only
-% add/sub/mul reach here (the parser rejects `%`/`/` between two fields, whose
-% zero divisor would be UB); unique per-field ParseBases keep temporaries
-% distinct across rule blocks.
+% `$I ARITH $J CMP RHS` shared guard: both fields by their strtod values, the
+% double op, fcmp against RHS -- the same reasoning as the single-field guard
+% above. Only add/sub/mul reach here (the parser rejects `%`/`/` between two
+% fields); unique per-field bases keep temporaries distinct across rule blocks.
 plawk_field_field_arith_cmp_guard_ir(I, ArithOp, J, Op, RHS, FieldSeparator, Base,
         MatchValue, ''-GuardCallIR) :-
-    plawk_icmp_pred(Op, Pred),
-    plawk_field_arith_llvm_op(ArithOp, LLVMOp),
-    format(atom(BaseI), '~w_ffa~wi', [Base, I]),
-    format(atom(BaseJ), '~w_ffa~wj', [Base, J]),
-    format(atom(NumI), '%~w_num', [BaseI]),
-    format(atom(NumJ), '%~w_num', [BaseJ]),
-    llvm_emit_atom_field_i64_or_default('%line', I, FieldSeparator, 0, BaseI, NumI, ParseIRI),
-    llvm_emit_atom_field_i64_or_default('%line', J, FieldSeparator, 0, BaseJ, NumJ, ParseIRJ),
+    plawk_fcmp_pred(Op, Pred),
+    plawk_field_arith_f64_op(ArithOp, F64Op),
     format(atom(GuardCallIR),
-'~w
-~w
-  %~w_ffar = ~w i64 ~w, ~w
-  ~w = icmp ~w i64 %~w_ffar, ~w',
-        [ParseIRI, ParseIRJ,
-         Base, LLVMOp, NumI, NumJ,
+'  %~w_ffa~wi_num = call double @wam_atom_field_f64_value(%Value %line, i64 ~w, i8 ~w)
+  %~w_ffa~wj_num = call double @wam_atom_field_f64_value(%Value %line, i64 ~w, i8 ~w)
+  %~w_ffar = ~w double %~w_ffa~wi_num, %~w_ffa~wj_num
+  ~w = fcmp ~w double %~w_ffar, ~w.0',
+        [Base, I, I, FieldSeparator,
+         Base, J, J, FieldSeparator,
+         Base, F64Op, Base, I, Base, J,
          MatchValue, Pred, Base, RHS]).
 
-plawk_field_arith_llvm_op(add, add).
-plawk_field_arith_llvm_op(sub, sub).
-plawk_field_arith_llvm_op(mul, mul).
-plawk_field_arith_llvm_op(mod, srem).
+plawk_field_arith_f64_op(add, fadd).
+plawk_field_arith_f64_op(sub, fsub).
+plawk_field_arith_f64_op(mul, fmul).
+plawk_field_arith_f64_op(mod, frem).
+
 
 % `$I / K CMP V` shared guard: `/` is always floating-point in awk, so parse
 % field I as an f64 (@wam_atom_field_f64_value, non-numeric -> 0.0), fdiv by the
@@ -21498,7 +21560,8 @@ plawk_prefixed_printf_action_ir(Format, Args, FieldSeparator, Prefix, Pair) :-
 %  scalar slots because END has no record) share ONE format rewriter and call
 %  emitter. Two producers, one consumer, so the format rewrite cannot drift
 %  between the two contexts.
-plawk_printf_from_arg_pairs(ArgPairs, Format, Prefix, GlobalIR-IR) :-
+plawk_printf_from_arg_pairs(ArgPairs0, Format, Prefix, GlobalIR-IR) :-
+    plawk_printf_truncate_pairs(Format, Prefix, ArgPairs0, ArgPairs),
     pairs_keys_values(ArgPairs, ArgGlobalParts, ArgInfoPairs),
     pairs_keys_values(ArgInfoPairs, ArgSetupParts, ArgCallArgLists),
     append(ArgCallArgLists, CallArgs),
@@ -21531,13 +21594,8 @@ plawk_printf_arg_pairs([Arg | Args], Classes, FieldSeparator, Prefix, Index) -->
       plawk_printf_coerce_arg(Class, FieldSeparator, Arg, Arg1),
       plawk_emit_prefixed_print_expr_ir(Arg1, FieldSeparator, Prefix, Index,
           Type, GlobalParts, SetupParts0),
-      plawk_printf_type_call_args(Type, CallArgs0),
-      (   Arg1 == Arg
-      ->  CoerceLines = [], CallArgs = CallArgs0
-      ;   plawk_printf_coerce_call_args(Class, Prefix, Index, CallArgs0,
-              CoerceLines, CallArgs)
-      ),
-      append(SetupParts0, CoerceLines, SetupParts),
+      plawk_printf_type_call_args(Type, CallArgs),
+      SetupParts = SetupParts0,
       plawk_join_nonempty_ir(GlobalParts, GlobalIR),
       plawk_join_nonempty_ir(SetupParts, SetupIR),
       NextIndex is Index + 1
@@ -21601,27 +21659,36 @@ plawk_printf_coerce_arg(Class, FieldSeparator, field(Index), float_field(Index))
     !.
 plawk_printf_coerce_arg(_Class, _FieldSeparator, Arg, Arg).
 
-%% plawk_printf_coerce_call_args(+Class, +Prefix, +Index, +CallArgs0, -Lines,
-%%     -CallArgs) is det.
+%% plawk_printf_truncate_pairs(+Format, +Prefix, +ArgPairs0, -ArgPairs) is det.
 %
-%  Applied ONLY to an argument that plawk_printf_coerce_arg/4 turned from a field
-%  into a strtod read: under `%d`/`%x`/... that double is TRUNCATED toward zero, as
-%  awk does (`printf "%d", "30.25"` -> 30), through the runtime's
-%  @wam_awk_f64_to_i64: a value outside the i64 range is FATAL (exit 2) rather than a
-%  bare `fptosi` (poison there) or a saturated wrong number -- gawk prints digits a
-%  fixed `%ld` cannot reproduce.
+%  A DOUBLE argument under an integer conversion (`%d` `%i` `%o` `%x` `%X` `%u`) is
+%  truncated toward zero, as awk does (`printf "%d", 30.7` -> 30), through the
+%  runtime's @wam_awk_f64_to_i64 -- FATAL (exit 2) outside the i64 range rather than
+%  a bare `fptosi` (poison there) or a wrong number. Applied where every printf
+%  and sprintf meets its format (plawk_printf_from_arg_pairs/4, the sprintf
+%  builder), so record-context, END and sprintf arguments share one rule.
 %
-%  NOT applied to other numeric arguments, deliberately. plawk's integer path reads a
-%  non-integer field as 0 (`x = $2 + 0` on "30.25" is 0: a strict i64 parse with a
-%  zero default), so widening/narrowing THOSE values would turn today's clean decline
-%  of `x = $2 + 0; printf "%5.1f", x` into silent wrong output. Extend this once
-%  field numeric reads follow awk (strtod) semantics everywhere.
-plawk_printf_coerce_call_args(int, Prefix, Index, [f64(Value)], [Line],
-        [i64(Out)]) :-
+%  Only narrowing, never widening: a double is correct wherever it comes from (a
+%  field reads via strtod), but some integer paths still read a non-integer field
+%  as 0, and widening THOSE under `%f` would turn a clean decline into wrong output.
+plawk_printf_truncate_pairs(Format, Prefix, Pairs0, Pairs) :-
+    plawk_printf_arg_classes(Format, Classes),
+    plawk_printf_truncate_pairs_(Pairs0, Classes, Prefix, 0, Pairs).
+
+plawk_printf_truncate_pairs_([], _Classes, _Prefix, _Index, []).
+plawk_printf_truncate_pairs_([Pair0 | Rest0], Classes, Prefix, Index, [Pair | Rest]) :-
+    plawk_printf_class_at(Classes, Index, Class),
+    plawk_printf_truncate_pair(Class, Prefix, Index, Pair0, Pair),
+    NextIndex is Index + 1,
+    plawk_printf_truncate_pairs_(Rest0, Classes, Prefix, NextIndex, Rest).
+
+plawk_printf_truncate_pair(int, Prefix, Index, GlobalIR-(SetupIR0-[f64(Value)]),
+        GlobalIR-(SetupIR-[i64(Out)])) :-
     !,
     format(atom(Out), '%~w_arg~w_cvi', [Prefix, Index]),
-    format(atom(Line), '  ~w = call i64 @wam_awk_f64_to_i64(double ~w)', [Out, Value]).
-plawk_printf_coerce_call_args(_Class, _Prefix, _Index, CallArgs, [], CallArgs).
+    format(atom(Line), '  ~w = call i64 @wam_awk_f64_to_i64(double ~w)', [Out, Value]),
+    plawk_join_nonempty_ir([SetupIR0, Line], SetupIR).
+plawk_printf_truncate_pair(_Class, _Prefix, _Index, Pair, Pair).
 
 plawk_printf_type_call_args(i64(_FmtPrefix, _PrintPrefix, ValueIR), [i64(ValueIR)]).
 plawk_printf_type_call_args(slice(_FmtPrefix, _PrintPrefix, LenIR, PtrIR), [slice_len(LenIR), slice_ptr(PtrIR)]).

@@ -1093,11 +1093,10 @@ test(surface_scalar_add_assign_uses_native_state_and_field_length) :-
 test(surface_scalar_add_assign_uses_native_field_i64_parse) :-
     plawk_parse_string("BEGIN { FS = \":\" } $1 == \"ERROR\" { bytes += $3; last = $3 } END { print bytes, last }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_value(%Value %line, i64 3, i8 58)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '_field_i64_value = extractvalue %WamI64Parse'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '_field_i64_ok = extractvalue %WamI64Parse'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, 'select i1 %rule_0_body_slot_0_op_0_field_i64_ok'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0 = add i64 %slot_0, %rule_0_body_slot_0_op_0_field_i64_value_or_default'))),
+    % `bytes += $3` accumulates the field's strtod value in a DOUBLE slot (phase C);
+    % the strict i64 parse pinned here before read any non-integer text as 0.
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0_f64 = call double @wam_atom_field_f64_value(%Value %line, i64 3, i8 58)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0 = fadd double %slot_0, %rule_0_body_slot_0_op_0_f64'))),
     % `last = $3` is a plain copy of a field, so strnum copy-propagation keeps it
     % a string (strnum) scalar -- it interns the field bytes rather than parsing
     % them as i64. That is what lets a non-numeric `$3` ("nope") round-trip to the

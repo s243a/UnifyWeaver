@@ -47,11 +47,14 @@ test(double_slot_ir_uses_double_phis_and_fadd) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
+% A counter stays i64; a FIELD accumulator is double (awk numbers are doubles: the
+% i64 accumulator read "30.25" as 0 -- see test_plawk_field_arith_double.pl). This
+% pinned both as i64 before phase C.
 test(i64_slots_stay_i64) :-
     plawk_parse_string("{ n++ ; total += $2 } END { print n, total }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(\+ sub_atom(DriverIR, _, _, _, 'phi double')),
-    assertion(\+ sub_atom(DriverIR, _, _, _, 'fadd')),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%slot_0 = phi i64 '))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%slot_1 = phi double '))),
     !.
 
 test(fixpoint_promotes_transitive_reads) :-

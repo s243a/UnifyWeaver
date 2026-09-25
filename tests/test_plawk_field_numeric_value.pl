@@ -92,12 +92,13 @@ test(int_out_of_range_is_fatal, [condition(clang_available)]) :-
 % --- known divergences, left for phases B and C -------------------------------
 % These pin CURRENT behaviour so the phases that fix them flip a visible test.
 
-test(known_integer_arithmetic_divergence, [condition(clang_available)]) :-
-    % gawk: 31.25 6 4
-    run("{ print $2 + 1 }\n", "1\n6\n1\n"),
+% Phase C made field arithmetic double: this pin, a known divergence until then
+% (plawk printed 1 6 1 and 5), now matches gawk. Full coverage in
+% tests/test_plawk_field_arith_double.pl.
+test(integer_arithmetic_now_matches_gawk, [condition(clang_available)]) :-
+    run("{ print $2 + 1 }\n", "31.25\n6\n4\n"),
     !,
-    % gawk: 38.25
-    run("{ s += $2 } END { print s }\n", "5\n"),
+    run("{ s += $2 } END { print s }\n", "38.25\n"),
     !.
 
 % Phase B fixed `$N OP int` (awk strnum semantics): this pin, a known divergence

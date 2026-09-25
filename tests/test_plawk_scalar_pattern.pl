@@ -165,12 +165,14 @@ test(field_scalar_combined, [condition(clang_available)]) :-
         "5 1\n200 2\n9 3\n", Out),
     assertion(Out == "5 1\n9 3\n"), !.
 
-% a non-numeric field makes the comparison false (same as `$1 > int`).
+% A non-numeric field is compared as a STRING against the counter's text, as in
+% awk ("abc" > "1" is true; gawk prints both records). This pinned the old strict
+% parse, where a non-numeric field compared false -- disagreeing with gawk.
 test(field_scalar_nonnumeric, [condition(clang_available)]) :-
     sdir(Dir),
     build_run(Dir, 'fn', "{ t++ } $1 > t { print $0 }\n",
         "abc 1\n9 2\n", Out),
-    assertion(Out == "9 2\n"), !.
+    assertion(Out == "abc 1\n9 2\n"), !.
 
 % --- string-scalar patterns (NAME OP "literal") ----------------------------
 
