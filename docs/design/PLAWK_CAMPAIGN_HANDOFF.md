@@ -547,6 +547,24 @@ parse, not the gate you expected to fire.
   is gated, install the dependency and run it before drawing any conclusion from its
   silence — and never let a gated suite's silence reach a claim made outside the
   repo.
+- **A parser normalisation step that FAILS fails the whole parse.** The dedupe
+  desugaring (#4296) folded over `program(_, Rules, _)` assuming `Rules` is a list; a
+  tagged-union program carries `case_blocks(Blocks)` there, so `foldl` failed and
+  every tagged-union program became exit 2 (five union suites red). Every step in
+  the `plawk_parse_source/3` chain must pass through shapes it does not rewrite
+  (`is_list/1` guard + identity clause) — a failing step is not a decline, it is a
+  parse error for programs the step was never about.
+- **Sweep the COMBINATION of a batch, not only each branch.** That regression passed
+  the dedupe branch's own suites and every targeted run; only a full sweep of all
+  five open branches merged together caught it before push. When several PRs will
+  land together, build one integration tree (`git worktree add --detach`, merge the
+  branches), sweep it once, and confirm afterwards that the merged tip is
+  byte-identical to the swept tree (`git diff <tip> <swept>` empty).
+- **Same-line rule structure is load-bearing.** The rule grammar skipped newlines
+  between a pattern and `{`, silently merging `/x/` NEWLINE `{ … }` (two rules in
+  awk) into one guarded rule — wrong output, exit 0, invisible until bare patterns
+  made the two-rule reading expressible. Whitespace that crosses a newline is
+  syntax in awk; use `line_blanks`, not `ws`, wherever awk separates statements.
 
 ## Where the durable-store (DB) arc stands
 
