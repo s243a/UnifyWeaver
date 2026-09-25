@@ -7265,6 +7265,63 @@ ci.zero:
 ; is numeric-typed; otherwise lexical against bval formatted with %g (awk-style
 ; number-to-string). Returns the sign as i32 (-1/0/1).
 @.wam_strnum_dbl_fmt = private constant [3 x i8] c"%g\00"
+; awk renders a number as TEXT (print, and CONVFMT for a string comparison) by
+; one rule: an INTEGRAL value prints as an integer, every other value through
+; "%.6g" (OFMT / CONVFMT). Raw "%g" printed 1250000 as 1.25e+06. Integral means:
+; inside +-2^63 the value survives an i64 round trip; beyond it every finite double
+; is integral; NaN and the infinities are not (they print through %.6g).
+@.wam_awk_int_fmt = private constant [5 x i8] c"%.0f\\00"
+@.wam_awk_ofmt = private constant [5 x i8] c"%.6g\\00"
+
+define i1 @wam_awk_num_is_integral(double %v) {
+entry:
+  %ai.lo = fcmp oge double %v, 0xC3E0000000000000
+  %ai.hi = fcmp olt double %v, 0x43E0000000000000
+  %ai.in = and i1 %ai.lo, %ai.hi
+  br i1 %ai.in, label %ai.round, label %ai.far
+
+ai.round:
+  %ai.t = fptosi double %v to i64
+  %ai.b = sitofp i64 %ai.t to double
+  %ai.eq = fcmp oeq double %ai.b, %v
+  ret i1 %ai.eq
+
+ai.far:
+  %ai.inf = fcmp oeq double %v, 0x7FF0000000000000
+  %ai.ninf = fcmp oeq double %v, 0xFFF0000000000000
+  %ai.isinf = or i1 %ai.inf, %ai.ninf
+  %ai.ord = fcmp ord double %v, %v
+  %ai.notinf = xor i1 %ai.isinf, true
+  %ai.res = and i1 %ai.ord, %ai.notinf
+  ret i1 %ai.res
+}
+
+define i8* @wam_awk_num_fmt(double %v) {
+entry:
+  %af.int = call i1 @wam_awk_num_is_integral(double %v)
+  %af.i = getelementptr [5 x i8], [5 x i8]* @.wam_awk_int_fmt, i64 0, i64 0
+  %af.g = getelementptr [5 x i8], [5 x i8]* @.wam_awk_ofmt, i64 0, i64 0
+  %af.f = select i1 %af.int, i8* %af.i, i8* %af.g
+  ret i8* %af.f
+}
+
+; `print` of a double. Takes the caller format so the unset-aware render keeps
+; working: an EMPTY format (an unset scalar) prints nothing.
+define i32 @wam_print_awk_number(i8* %fmt, double %v) {
+entry:
+  %pn.c = load i8, i8* %fmt
+  %pn.empty = icmp eq i8 %pn.c, 0
+  br i1 %pn.empty, label %pn.none, label %pn.print
+
+pn.none:
+  ret i32 0
+
+pn.print:
+  %pn.f = call i8* @wam_awk_num_fmt(double %v)
+  %pn.r = call i32 (i8*, ...) @printf(i8* %pn.f, double %v)
+  ret i32 %pn.r
+}
+
 
 define i32 @wam_strnum_cmp_double(i8* %as, i8 %akind, double %bval) {
 entry:
@@ -7291,7 +7348,7 @@ cd.numge:
 cd.lexical:
   %cd.buf = alloca [64 x i8]
   %cd.bufp = getelementptr [64 x i8], [64 x i8]* %cd.buf, i64 0, i64 0
-  %cd.fmt = getelementptr [3 x i8], [3 x i8]* @.wam_strnum_dbl_fmt, i64 0, i64 0
+  %cd.fmt = call i8* @wam_awk_num_fmt(double %bval)
   %cd.w = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %cd.bufp, i64 64, i8* %cd.fmt, double %bval)
   %cd.rc = call i32 @strcmp(i8* %as, i8* %cd.bufp)
   %cd.slt = icmp slt i32 %cd.rc, 0

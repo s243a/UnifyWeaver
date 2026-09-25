@@ -6528,7 +6528,7 @@ plawk_records_field_lines(arith(F64Op, LPlan, RPlan), PrintIndex, FieldSep, Line
         '  %~w_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
         [B]),
     format(atom(PrL),
-        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, double %~w_res)', [B, B, B]),
+        '  %~w_pr = call i32 @wam_print_awk_number(i8* %~w_fmt, double %~w_res)', [B, B, B]),
     append([LLines, RLines, [OpL, FmtL, PrL]], Lines).
 
 % A row-arithmetic operand as a double: a column read as f64, or a constant.
@@ -7616,7 +7616,7 @@ plawk_forin_decode_print_lines([var(Var) | Rest], LoopVar, VarSSAs, Descriptor,
             '  %forin_dprint_fld_fmt_~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
             [Index]),
         format(atom(PrintCall),
-            '  %forin_dprint_fld_~w = call i32 (i8*, ...) @printf(i8* %forin_dprint_fld_fmt_~w, double ~w)',
+            '  %forin_dprint_fld_~w = call i32 @wam_print_awk_number(i8* %forin_dprint_fld_fmt_~w, double ~w)',
             [Index, Index, SSA])
     ;   format(atom(FmtVar), 'forin_dprint_fld_fmt_~w', [Index]),
         format(atom(PrintVar), 'forin_dprint_fld_~w', [Index]),
@@ -9745,7 +9745,7 @@ plawk_assoc_print_one_field(farith(F64Op, LOperand, ROperand), Base, Index, Fiel
         '  %~w_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
         [P]),
     format(atom(PrL),
-        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, double %~w_res)', [P, P, P]),
+        '  %~w_pr = call i32 @wam_print_awk_number(i8* %~w_fmt, double %~w_res)', [P, P, P]),
     append([LLines, RLines, [OpL, FmtL, PrL]], Lines).
 
 %% plawk_assoc_arith_operand_lines(+Operand, +P, +Slot, +FieldSep, -ValVar, -Lines)
@@ -14161,7 +14161,7 @@ plawk_begin_const_expr_lines(Expr, Index) -->
               '  %~w_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
               [Base]),
           format(atom(PrintCall),
-              '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, double ~w)',
+              '  %~w_pr = call i32 @wam_print_awk_number(i8* %~w_fmt, double ~w)',
               [Base, Base, ValueIR])
       ;   plawk_i64_expr_ir(Expr, 32, Base, Base, ValueIR, [], SetupParts),
           format(atom(FmtPtr),
@@ -19639,9 +19639,10 @@ plawk_end_numeric_print_lines(StatePlan, Slot, SlotIndex, ValueIR, PrintIndex,
     format(atom(FmtSel),
         '  %end_~w_fmt_~w = select i1 %end_asg_~w, i8* getelementptr ([~w x i8], [~w x i8]* @.~w, i64 0, i64 0), i8* getelementptr ([1 x i8], [1 x i8]* @.plawk_surface_print_unset, i64 0, i64 0)',
         [Kind, PrintIndex, PrintIndex, FmtBytes, FmtBytes, FmtGlobal]),
+    plawk_numeric_print_callee(Kind, Callee),
     format(atom(PrintCall),
-        '  %printed_end_~w_~w = call i32 (i8*, ...) @printf(i8* %end_~w_fmt_~w, ~w ~w)',
-        [Kind, PrintIndex, Kind, PrintIndex, LLVMType, ValueIR]),
+        '  %printed_end_~w_~w = call i32 ~w(i8* %end_~w_fmt_~w, ~w ~w)',
+        [Kind, PrintIndex, Callee, Kind, PrintIndex, LLVMType, ValueIR]),
     Lines = [AsgPtr, AsgLoad, FmtSel, PrintCall].
 % Untracked, or a slot kind with no unset render: the pre-existing unconditional
 % number. Names match what the tracked branch would emit, so the two are
@@ -19653,7 +19654,7 @@ plawk_end_numeric_print_lines(_StatePlan, scalar_double(_Name), _SlotIndex, Valu
         '  %end_f64_fmt_~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
         [PrintIndex]),
     format(atom(PrintCall),
-        '  %printed_end_f64_~w = call i32 (i8*, ...) @printf(i8* %end_f64_fmt_~w, double ~w)',
+        '  %printed_end_f64_~w = call i32 @wam_print_awk_number(i8* %end_f64_fmt_~w, double ~w)',
         [PrintIndex, PrintIndex, ValueIR]).
 plawk_end_numeric_print_lines(_StatePlan, _Slot, _SlotIndex, ValueIR, PrintIndex,
         [FmtPtr, PrintCall]) :-
@@ -19669,6 +19670,11 @@ plawk_end_numeric_print_lines(_StatePlan, _Slot, _SlotIndex, ValueIR, PrintIndex
 %  printf argument. Only kinds listed here get the unset-aware render; a kind absent
 %  from this table falls through to the unconditional number, so adding a numeric
 %  slot kind cannot silently acquire a half-built unset path.
+% The callee a numeric render goes through: a double via @wam_print_awk_number
+% (integral -> integer, else %.6g, as awk prints), an integer via printf.
+plawk_numeric_print_callee(f64, '@wam_print_awk_number') :- !.
+plawk_numeric_print_callee(_Kind, '(i8*, ...) @printf').
+
 plawk_numeric_slot_print(scalar_counter(_Name), i64, plawk_surface_print_i64, 4,
     i64).
 plawk_numeric_slot_print(scalar_double(_Name), f64, plawk_surface_print_f64, 3,
@@ -20168,7 +20174,7 @@ plawk_end_expr_print_lines(Expr, StatePlan, PrintIndex) -->
              '  %~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
              [FmtVar]),
          format(atom(PrintCall),
-             '  %printed_end_expr_f64_~w = call i32 (i8*, ...) @printf(i8* %~w, double ~w)',
+             '  %printed_end_expr_f64_~w = call i32 @wam_print_awk_number(i8* %~w, double ~w)',
              [PrintIndex, FmtVar, ValueIR])
       ;  plawk_i64_expr_ir(SubstitutedExpr, 32, Base, Base, ValueIR,
              [], SetupParts),
@@ -22418,8 +22424,9 @@ plawk_print_expr_output_ir(f64(FmtPrefix, PrintPrefix, ValueIR), Index, [FmtPtr,
     format(atom(FmtPtr),
         '  %~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
         [FmtVar]),
+    % awk renders an integral double as an integer (@wam_print_awk_number), not %g.
     format(atom(PrintCall),
-        '  %~w = call i32 (i8*, ...) @printf(i8* %~w, double ~w)',
+        '  %~w = call i32 @wam_print_awk_number(i8* %~w, double ~w)',
         [PrintVar, FmtVar, ValueIR]).
 
 % A string-literal print field: the setup already built a pointer to the

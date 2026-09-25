@@ -33,6 +33,8 @@ test(parses_float_field_delta) :-
         [rule(always, [add(var(sum), float_field(2))])],
         [end([print([var(sum)])])])).
 
+% A double renders through @wam_print_awk_number (awk: integral -> integer, else
+% %.6g), not a raw %g printf -- see test_plawk_awk_number_print.pl.
 test(double_slot_ir_uses_double_phis_and_fadd) :-
     plawk_parse_string("{ sum += $2 * 1.5 } END { print sum }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
@@ -41,7 +43,7 @@ test(double_slot_ir_uses_double_phis_and_fadd) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '%next_slot_0 = phi double '))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%final_slot_0 = phi double '))),
     assertion(once(sub_atom(DriverIR, _, _, _, ' = fadd double %slot_0, '))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@printf(i8* %end_f64_fmt_0, double %final_slot_0)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_print_awk_number(i8* %end_f64_fmt_0, double %final_slot_0)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
@@ -57,7 +59,7 @@ test(fixpoint_promotes_transitive_reads) :-
     plawk_parse_string("{ a = 1.5 ; b = a + 1 } END { print b }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
     assertion(once(sub_atom(DriverIR, _, _, _,
-        '@printf(i8* %end_f64_fmt_0, double %final_slot_'))),
+        '@wam_print_awk_number(i8* %end_f64_fmt_0, double %final_slot_'))),
     !.
 
 test(end_arith_on_double_slot_promotes_to_f64) :-
