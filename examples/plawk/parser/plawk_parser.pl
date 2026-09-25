@@ -68,9 +68,93 @@ plawk_parse_source(Source, Program, PrologClauses) :-
     phrase(plawk_program(Program0, FunctionClauses, DynEntries), Codes),
     plawk_normalise_c_for(Program0, Program1),
     plawk_normalise_getline_loops(Program1, Program2),
-    plawk_fold_literal_builtins(Program2, Program),
+    plawk_fold_literal_builtins(Program2, Program3),
+    plawk_desugar_assoc_postinc_patterns(Program3, Program),
     append(BlockClauses, FunctionClauses, PrologClauses),
     plawk_dynentry_reserved_check(DynEntries, PrologClauses).
+
+%% plawk_desugar_assoc_postinc_patterns(+Program0, -Program)
+%
+%  awk's dedupe idiom `!seen[$1]++` (print a record the first time its key is seen)
+%  and its positive twin `seen[$1]++` (every repeat). The pattern reads the OLD value
+%  of seen[K], then increments it. Rewritten into two rules the membership machinery
+%  already compiles, in this order:
+%
+%      !A[K]++ { ACT }   ==>   K in A { A[K]++ }      !(K in A) { A[K]++; ACT }
+%       A[K]++ { ACT }   ==>   K in A { A[K]++; ACT } !(K in A) { A[K]++ }
+%
+%  Exactly one of the pair fires per record (the first leaves membership as it
+%  found it for the second only when it did not fire), and the increment precedes
+%  ACT, as the pattern's evaluation does in awk.
+%
+%  It is exact only while "K in A" and "A[K] is truthy" agree -- i.e. while every
+%  write to A is `A[x]++`, which never leaves a present element at 0. So the rewrite
+%  applies only when, across the RULES, A is touched solely by `A[x]++` and `in`
+%  tests, and BEGIN does not mention A. END is unrestricted: it runs after the last
+%  pattern. Anything else keeps the raw assoc_postinc term, which codegen declines.
+% Only a plain rule LIST is rewritten. A tagged-union program carries its rules as
+% case_blocks(Blocks) -- not a list -- and must pass through untouched: this step
+% FAILING would fail the whole parse (it once turned every tagged-union program into
+% a parse error).
+plawk_desugar_assoc_postinc_patterns(program(Begin, Rules0, End),
+        program(Begin, Rules, End)) :-
+    is_list(Rules0),
+    !,
+    foldl(plawk_desugar_assoc_postinc_rule(Begin, Rules0), Rules0, Nested, []),
+    plawk_flatten_rule_groups(Nested, Rules).
+plawk_desugar_assoc_postinc_patterns(Program, Program).
+
+plawk_desugar_assoc_postinc_rule(Begin, AllRules, Rule, [Group | Rest], Rest) :-
+    plawk_assoc_postinc_rule_pair(Rule, Begin, AllRules, Group),
+    !.
+plawk_desugar_assoc_postinc_rule(_Begin, _AllRules, Rule, [[Rule] | Rest], Rest).
+
+plawk_flatten_rule_groups(Groups, Rules) :-
+    append(Groups, Rules).
+
+plawk_assoc_postinc_rule_pair(rule(not_pat(assoc_postinc(Key, Array)), Actions),
+        Begin, AllRules,
+        [ rule(in_arr(Key, Array), [inc_assoc(var(Array), Key)]),
+          rule(not_pat(in_arr(Key, Array)), [inc_assoc(var(Array), Key) | Actions])
+        ]) :-
+    plawk_assoc_postinc_exact(Array, Begin, AllRules).
+plawk_assoc_postinc_rule_pair(rule(assoc_postinc(Key, Array), Actions),
+        Begin, AllRules,
+        [ rule(in_arr(Key, Array), [inc_assoc(var(Array), Key) | Actions]),
+          rule(not_pat(in_arr(Key, Array)), [inc_assoc(var(Array), Key)])
+        ]) :-
+    plawk_assoc_postinc_exact(Array, Begin, AllRules).
+
+% A is increment-only across the rules and absent from BEGIN. The check strips the
+% admitted uses and then requires no mention of A to remain -- conservative on
+% purpose: a false "mention" only costs the rewrite (a decline), never exactness.
+plawk_assoc_postinc_exact(Array, Begin, Rules) :-
+    atom(Array),
+    \+ plawk_term_mentions_name(Begin, Array),
+    plawk_strip_postinc_uses(Array, Rules, Stripped),
+    \+ plawk_term_mentions_name(Stripped, Array).
+
+plawk_strip_postinc_uses(Array, Term0, Term) :-
+    (   Term0 = assoc_postinc(Key0, Array)
+    ->  plawk_strip_postinc_uses(Array, Key0, Key),
+        Term = assoc_postinc_ok(Key)
+    ;   Term0 = inc_assoc(var(Array), Key0)
+    ->  plawk_strip_postinc_uses(Array, Key0, Key),
+        Term = inc_assoc_ok(Key)
+    ;   Term0 = in_arr(Key0, Array)
+    ->  plawk_strip_postinc_uses(Array, Key0, Key),
+        Term = in_arr_ok(Key)
+    ;   compound(Term0)
+    ->  Term0 =.. [Name | Args0],
+        maplist(plawk_strip_postinc_uses(Array), Args0, Args),
+        Term =.. [Name | Args]
+    ;   Term = Term0
+    ).
+
+plawk_term_mentions_name(Term, Name) :-
+    sub_term(Sub, Term),
+    Sub == Name,
+    !.
 
 %% plawk_normalise_c_for(+Program0, -Program)
 %
@@ -1257,6 +1341,21 @@ base_pattern(Pattern) -->
     !.
 base_pattern(Pattern) -->
     in_arr_pattern(Pattern),
+    !.
+% `A[K]++` as a pattern: true when the element's OLD value is truthy, and it
+% increments either way. Parsed to assoc_postinc(K, A) and desugared by
+% plawk_desugar_assoc_postinc_patterns/2 into membership rules when that is exact;
+% otherwise the term stays, and codegen (which has no row for it) declines.
+base_pattern(assoc_postinc(KeyExpr, ArrayName)) -->
+    table_ident(ArrayName),
+    ws,
+    "[",
+    ws,
+    assoc_key_expr(KeyExpr),
+    ws,
+    "]",
+    ws,
+    "++",
     !.
 base_pattern(Pattern) -->
     field_match_pattern(Pattern),
