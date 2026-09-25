@@ -68,6 +68,37 @@ test(spaced_paren_length_is_call, [condition(clang_available)]) :-
     build_run(Dir, 'lsp', "{ x = length ($1); print x }\n", "ab cd\n", Out),
     assertion(Out == "2\n"), !.
 
+% --- `length()`: an EMPTY argument list is the same shorthand -------------
+%
+% gawk accepts `length()` as `length($0)`; plawk used to fail to parse it (exit 2)
+% in every context. length_no_argument//0 now also consumes `( )`, so every site
+% that accepts bare `length` accepts `length()` -- pinned at the AST and in each
+% context kind.
+
+test(empty_parens_length_parses) :-
+    plawk_parse_string("{ print length() }\n",
+        program([], [rule(always, [print([length(field(0))])])], [])),
+    !,
+    plawk_parse_string("{ print length( ) }\n",
+        program([], [rule(always, [print([length(field(0))])])], [])),
+    !.
+
+test(empty_parens_length_in_every_context, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'le1', "{ print length() }\n", "hello\nhi\n", O1),
+    assertion(O1 == "5\n2\n"),
+    build_run(Dir, 'le2', "length() > 3 { print }\n", "hello\nhi\n", O2),
+    assertion(O2 == "hello\n"),
+    build_run(Dir, 'le3', "{ n += length() } END { print n }\n", "hello\nhi\n", O3),
+    assertion(O3 == "7\n"),
+    build_run(Dir, 'le4', "{ print length() + 1 }\n", "abc\n", O4),
+    assertion(O4 == "4\n"),
+    build_run(Dir, 'le5', "{ if (length() > 3) print \"long\" }\n", "hello\nhi\n", O5),
+    assertion(O5 == "long\n"),
+    build_run(Dir, 'le6', "END { print length() }\n", "hello\nhi\n", O6),
+    assertion(O6 == "2\n"),
+    !.
+
 :- end_tests(plawk_length_bare).
 
 % --- helpers ---------------------------------------------------------------

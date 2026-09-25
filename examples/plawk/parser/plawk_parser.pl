@@ -5382,9 +5382,16 @@ identifier_boundary([], []).
 % lookahead: `length` must be a complete token that is NOT the start of a call,
 % so `length(...)` / `length (...)` stay function calls (handled by the
 % parenthesised clauses) and `lengthy` / `length_x` stay identifiers.
+%
+% `length()` -- an EMPTY argument list -- is the same shorthand (gawk: `length()`
+% is `length($0)`), so this nonterminal also consumes `( )`. Doing it here, not at
+% each call site, means every context that accepts bare `length` accepts `length()`
+% too; a site cannot be missed.
 length_no_argument(Rest, Rest) :-
     \+ ( Rest = [Code | _], identifier_continue_code(Code) ),
     \+ phrase(length_call_open, Rest, _).
+length_no_argument -->
+    ws, "(", ws, ")".
 
 length_call_open -->
     ws, "(".
