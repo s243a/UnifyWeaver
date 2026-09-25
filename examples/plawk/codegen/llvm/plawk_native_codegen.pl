@@ -111,6 +111,7 @@ plawk_dedupe_keep_order([PI | Rest0], [PI | Deduped]) :-
      llvm_emit_atom_field_subslice/7,
      llvm_emit_atom_field_index/7,
      llvm_emit_atom_field_i64_cmp_guard/7,
+     llvm_emit_atom_field_strnum_cmp_guard/7,
      llvm_emit_atom_field_i64_or_default/7,
      llvm_emit_c_string_global/5,
      llvm_emit_printf_i64/5,
@@ -18490,6 +18491,29 @@ plawk_ternary_cond_ir(cmp(field(Index), Op, string(Expected)), FieldSeparator,
     format(atom(CondIR), '%~w_cond', [Base]),
     llvm_emit_atom_field_str_cmp_guard(CondGlobal, '%line', Index, OpCode,
         Expected, FieldSeparator, CondIR, CondGlobalIR-CondCallIR).
+%  A text field against an integer constant (`$2 > 10 ? …`, either operand order):
+%  awk strnum semantics through the SAME runtime the `$N OP int` rule pattern and
+%  `if` guard use (@wam_atom_field_strnum_cmp_int) -- numeric when the field looks
+%  numeric, else a string comparison. Before this row it fell to Form 2's strict
+%  integer parse, so "30.25" > 10 was false here while the `if` spelling was true.
+plawk_ternary_cond_ir(cmp(field(Index), Op, int(Expected)), FieldSeparator,
+        Base, _GlobalBase, CondIR, [], [], [CondCallIR]) :-
+    integer(FieldSeparator),
+    integer(Index),
+    Index >= 1,
+    integer(Expected),
+    plawk_field_cmp_op_code(Op, OpCode),
+    !,
+    format(atom(CondIR), '%~w_cond', [Base]),
+    llvm_emit_atom_field_strnum_cmp_guard('%line', Index, OpCode, Expected,
+        FieldSeparator, CondIR, CondCallIR).
+plawk_ternary_cond_ir(cmp(int(Expected), Op0, field(Index)), FieldSeparator,
+        Base, GlobalBase, CondIR, GlobalParts, Pre, SetupParts) :-
+    integer(Expected),
+    plawk_swap_cmp_op(Op0, Op),
+    !,
+    plawk_ternary_cond_ir(cmp(field(Index), Op, int(Expected)), FieldSeparator,
+        Base, GlobalBase, CondIR, GlobalParts, Pre, SetupParts).
 %  Form 2 -- an i64 comparison (`$2 > 1 ? …`, `NR == 2 ? …`): lower both operands
 %  as i64 expressions and `icmp`.
 plawk_ternary_cond_ir(cmp(CondLeft, Op, CondRight), FieldSeparator, Base,
@@ -20480,7 +20504,7 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), binfmt(Types), GuardIR) :-
         plawk_surface_bincmp, '%is_match', GuardIR).
 plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, ''-GuardCallIR) :-
     plawk_field_cmp_op_code(Op, OpCode),
-    llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
+    llvm_emit_atom_field_strnum_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, '%is_match', GuardCallIR).
 % Field-vs-string-literal ordering `$N < "str"` (single-rule guard): lexical
 % memcmp of the field slice against the literal. Text mode only (integer FS);
@@ -20621,7 +20645,7 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), binfmt(Types), GlobalBase, M
         GlobalBase, MatchValue, GuardIR).
 plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, _GlobalBase, MatchValue, ''-GuardCallIR) :-
     plawk_field_cmp_op_code(Op, OpCode),
-    llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
+    llvm_emit_atom_field_strnum_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, MatchValue, GuardCallIR).
 % Field-vs-string-literal ordering (multi-rule guard): per-rule GlobalBase keeps
 % the literal constant unique across rule blocks. Text mode only.
@@ -20703,16 +20727,16 @@ plawk_pattern_guard_ir(scalar_dbl_cmp_resolved(SSARef, Op, float_const(M, D)), _
         [GlobalBase, M, D,
          MatchValue, Pred, SSARef, GlobalBase]).
 % Field-vs-scalar pattern `$I OP NAME` (already resolved to the rule's slot SSA
-% value by plawk_resolve_scalar_cmp/4). Reuse the same numeric field-comparison
-% runtime as `$I OP int` -- @wam_atom_field_i64_cmp_value takes the expected
-% value as a runtime i64 argument, so the scalar's SSA value passes straight in;
-% the field is parsed as a signed i64 (non-numeric / missing -> false), giving
-% semantics identical to the field-vs-int-literal pattern.
+% value by plawk_resolve_scalar_cmp/4). Reuse the same field-comparison runtime as
+% `$I OP int` -- @wam_atom_field_strnum_cmp_int takes the expected value as a
+% runtime i64 argument, so the scalar's SSA value passes straight in. A counter is a
+% NUMBER, so awk's rule is the same as for an integer constant: numeric when the
+% field looks numeric, else a string comparison against the number's text.
 plawk_pattern_guard_ir(field_scalar_cmp_resolved(FieldIndex, Op, SSARef), FieldSeparator, _GlobalBase, MatchValue, ''-GuardCallIR) :-
     integer(FieldSeparator),
     plawk_field_cmp_op_code(Op, OpCode),
     format(atom(GuardCallIR),
-        '  ~w = call i1 @wam_atom_field_i64_cmp_value(%Value %line, i64 ~w, i8 ~w, i64 ~w, i32 ~w)',
+        '  ~w = call i1 @wam_atom_field_strnum_cmp_int(%Value %line, i64 ~w, i8 ~w, i64 ~w, i32 ~w)',
         [MatchValue, FieldIndex, FieldSeparator, SSARef, OpCode]).
 % Field vs a double scalar `$I OP NAME`: parse the field as an f64 (non-numeric /
 % missing -> 0.0) and fcmp against the scalar's double slot value. Op is

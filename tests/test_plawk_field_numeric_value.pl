@@ -100,9 +100,12 @@ test(known_integer_arithmetic_divergence, [condition(clang_available)]) :-
     run("{ s += $2 } END { print s }\n", "5\n"),
     !.
 
-test(known_integer_comparison_divergence, [condition(clang_available)]) :-
-    % gawk: alice carol ("3abc" is not numeric-looking: a STRING comparison)
-    run("$2 > 10 { print $1 }\n", ""),
+% Phase B fixed `$N OP int` (awk strnum semantics): this pin, a known divergence
+% until then (plawk printed nothing), now matches gawk. Full coverage in
+% tests/test_plawk_strnum_field_cmp.pl.
+test(integer_comparison_now_matches_gawk, [condition(clang_available)]) :-
+    % "3abc" is not numeric-looking: a STRING comparison, "3abc" > "10"
+    run("$2 > 10 { print $1 }\n", "alice\ncarol\n"),
     !.
 
 :- end_tests(plawk_field_numeric_value).

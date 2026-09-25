@@ -482,10 +482,14 @@ test(surface_printf_string_literal_arg) :-
         "INFO boot ok\nERROR disk full\n",
         "kind:INFO\nkind:ERROR\n").
 
+% "nope" is not numeric-looking, so against 100 it is a STRING comparison in awk
+% ("nope" > "100" is true; gawk prints `bad nope`). These three expectations used
+% to encode plawk's strict parse, where a non-numeric field compared false -- they
+% disagreed with gawk. Corrected with the strnum fix (test_plawk_strnum_field_cmp.pl).
 test(surface_field_numeric_cmp_prints_matching_records) :-
     run_surface_print_smoke("$3 > 100 { print $1, $3 }\n",
         "disk used 95\ncpu used 101\nnet used 120\nbad used nope\nmem used -3\n",
-        "cpu 101\nnet 120\n").
+        "cpu 101\nnet 120\nbad nope\n").
 
 test(surface_field_eq_prints_nr_and_selected_fields) :-
     run_surface_print_smoke("$1 == \"ERROR\" { print NR, $2, $3 }\n",
@@ -545,7 +549,7 @@ test(surface_field_eq_counts_matching_records) :-
 test(surface_field_numeric_cmp_counts_matching_records) :-
     run_surface_print_smoke("$3 >= 100 { big++ } END { print big }\n",
         "disk used 95\ncpu used 100\nnet used 120\nbad used nope\nmem used -3\n",
-        "2\n").
+        "3\n").
 
 test(surface_field_numeric_cmp_handles_negative_values) :-
     run_surface_print_smoke("$2 < -5 { cold++ } END { print cold }\n",
@@ -555,7 +559,7 @@ test(surface_field_numeric_cmp_handles_negative_values) :-
 test(surface_field_numeric_eq_and_ne_counts) :-
     run_surface_print_smoke("$2 == 0 { zeros++ } $2 != 0 { nonzeros++ } END { print zeros, nonzeros }\n",
         "a 0\nb 1\nc nope\nd -1\n",
-        "1 2\n").
+        "1 3\n").
 
 test(surface_field_eq_counts_multiple_scalar_slots) :-
     run_surface_print_smoke("$1 == \"ERROR\" { errors++; matches++ } END { print errors, matches }\n",
@@ -1498,10 +1502,14 @@ test(surface_begin_field_separator_uses_configured_delimiter) :-
     assertion(\+ sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 2, i8 32)')),
     !.
 
+% `$N OP int` goes through @wam_atom_field_strnum_cmp_int (awk strnum semantics:
+% numeric when the field looks numeric, else a string comparison). The strict
+% @wam_atom_field_i64_cmp_value pinned here before made every non-integer field
+% compare false. See tests/test_plawk_strnum_field_cmp.pl.
 test(surface_numeric_guard_uses_native_i64_field_cmp) :-
     plawk_parse_string("BEGIN { FS = \":\" } $3 >= 100 { print $1, $3 }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_cmp_value(%Value %line, i64 3, i8 58, i64 100, i32 5)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_strnum_cmp_int(%Value %line, i64 3, i8 58, i64 100, i32 5)'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 1, i8 58)'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_slice_value(%Value %line, i64 3, i8 58)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
@@ -1510,8 +1518,8 @@ test(surface_numeric_guard_uses_native_i64_field_cmp) :-
 test(surface_numeric_eq_ne_guards_use_numeric_op_codes) :-
     plawk_parse_string("$2 == 0 { zeros++ } $2 != 0 { nonzeros++ } END { print zeros, nonzeros }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_cmp_value(%Value %line, i64 2, i8 32, i64 0, i32 0)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_i64_cmp_value(%Value %line, i64 2, i8 32, i64 0, i32 1)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_strnum_cmp_int(%Value %line, i64 2, i8 32, i64 0, i32 0)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_atom_field_strnum_cmp_int(%Value %line, i64 2, i8 32, i64 0, i32 1)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
