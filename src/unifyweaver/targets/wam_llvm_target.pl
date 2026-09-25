@@ -7317,8 +7317,10 @@ pn.none:
   ret i32 0
 
 pn.print:
-  %pn.f = call i8* @wam_awk_num_fmt(double %v)
-  %pn.r = call i32 (i8*, ...) @printf(i8* %pn.f, double %v)
+  ; + 0.0 turns -0.0 into +0.0: awk prints an integral zero as 0, never -0.
+  %pn.v = fadd double %v, 0.0
+  %pn.f = call i8* @wam_awk_num_fmt(double %pn.v)
+  %pn.r = call i32 (i8*, ...) @printf(i8* %pn.f, double %pn.v)
   ret i32 %pn.r
 }
 

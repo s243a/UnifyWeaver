@@ -53,6 +53,11 @@ test(double_scalar_in_end, [condition(clang_available)]) :-
     run("a 2\nb 3\n", "{ s += $2 * 0.25 } END { print s }\n", "1.25\n"),
     !.
 
+% awk prints an integral zero as 0, never -0 (-7 % 0.5 is -0.0).
+test(negative_zero_prints_as_zero, [condition(clang_available)]) :-
+    run("a -2\n", "{ print $2 * 0.0 }\n", "0\n"),
+    !.
+
 test(literal_arithmetic, [condition(clang_available)]) :-
     run("x\n", "{ print 1234567.0 * 1 }\n", "1234567\n"),
     !.
