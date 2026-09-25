@@ -123,11 +123,12 @@ test(surface_float_division_by_zero_is_inf) :-
         "inf 0\n").
 
 % INT64_MIN / -1 has no integer-overflow trap under float `/` -- it is just the
-% double 2^63 (printed by %g); `%` keeps the integer overflow guard (-> 0).
+% double 2^63, an INTEGRAL value, which awk prints in full (gawk: the digits; this
+% pinned the old raw-%g "9.22337e+18"). `%` keeps the integer overflow guard (-> 0).
 test(surface_int64_min_division_is_float) :-
     run_arith_print_smoke("{ print $2 / $3, $2 % $3 }\n",
         "a -9223372036854775808 -1\n",
-        "9.22337e+18 0\n").
+        "9223372036854775808 0\n").
 
 test(surface_nonnumeric_fields_coerce_to_zero) :-
     run_arith_print_smoke("{ print $2 + $3 }\n",
