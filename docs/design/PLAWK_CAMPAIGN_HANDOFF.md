@@ -566,6 +566,28 @@ parse, not the gate you expected to fire.
   made the two-rule reading expressible. Whitespace that crosses a newline is
   syntax in awk; use `line_blanks`, not `ws`, wherever awk separates statements.
 
+- **Check the guarantee on the OUTPUT, not the path.** Three features this batch
+  could silently degrade to wrong output if an emitter on some driver path did not
+  take the new representation: BEGIN seeds (a phi marker per lifted name), double
+  assoc arrays (every IR line touching the table must be an allowed call, and every
+  f64 call must touch a marked table), and text seeds (the intern + global must
+  exist). Each check was shown to have teeth by disabling it: `BEGIN { m = 9 }`
+  printed "" on empty input; `print c["a"]` printed the raw bits
+  4629876338797314048. Prefer this over enumerating driver paths.
+- **A new type can re-open an old fallback.** Making field arithmetic double exposed
+  a fallback clause (the i64 binary print) that re-read fields strictly whenever the
+  f64 path could not take a tree -- wrong output, not a decline. When a value's type
+  changes, guard the OLD path against the new type (`\+ plawk_expr_is_double/1`) so
+  a miss declines.
+- **Pins can encode the bug.** Eight existing tests asserted the old wrong numeric
+  behaviour (a non-numeric field compared false; `%g` output; i64 IR shapes). Each
+  was flipped to gawk's output with a comment saying why -- verify pinned
+  expectations against the oracle before "fixing" code to match them.
+- **Design review first for cross-cutting changes.** The numeric-semantics phases
+  were reviewed by an independent subagent before implementation; it found two more
+  live bugs (`%g` printing, raw-strtod `@wam_looks_numeric`) and the hard ordering
+  (printer fix before double promotion).
+
 ## Where the durable-store (DB) arc stands
 
 Recorded because this campaign has been elsewhere for weeks and the next DB step is
