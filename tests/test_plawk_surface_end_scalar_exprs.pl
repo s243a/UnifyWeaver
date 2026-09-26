@@ -48,9 +48,10 @@ test(end_expr_ir_uses_final_slots_and_loop_nr_phi) :-
     plawk_parse_string("{ sum += $2 } END { print sum / NR }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_nr = phi i64 [0, %check_handle_value], [%current_nr, %continue_loop]'))),
-    % `/` is floating-point: the final slot promotes via sitofp and divides with fdiv.
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_end_expr_0_lhs = sitofp i64 %final_slot_0 to double'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_end_expr_0 = fdiv double'))),
+    % `/` is floating-point. `sum += $2` is a DOUBLE slot (phase C: field
+    % arithmetic is double), so the final slot divides directly -- only NR promotes.
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_end_expr_0_rhs = sitofp i64 %plawk_nr to double'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_end_expr_0 = fdiv double %final_slot_0, %plawk_end_expr_0_rhs'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 

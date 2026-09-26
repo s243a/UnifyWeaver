@@ -262,6 +262,10 @@ test(atom_field_i64_cmp_guard_emitter) :-
     llvm_emit_atom_field_i64_cmp_guard('%line', 3, 4, 100, 32, '%ok', CallIR),
     assertion(CallIR == '  %ok = call i1 @wam_atom_field_i64_cmp_value(%Value %line, i64 3, i8 32, i64 100, i32 4)').
 
+test(atom_field_strnum_cmp_guard_emitter) :-
+    llvm_emit_atom_field_strnum_cmp_guard('%line', 3, 4, 100, 32, '%ok', CallIR),
+    assertion(CallIR == '  %ok = call i1 @wam_atom_field_strnum_cmp_int(%Value %line, i64 3, i8 32, i64 100, i32 4)').
+
 test(atom_field_i64_emitter) :-
     llvm_emit_atom_field_i64('%line', 3, 58, plawk_value, CallIR),
     assertion(sub_atom(CallIR, _, _, _, '%plawk_value = call %WamI64Parse @wam_atom_field_i64_value(%Value %line, i64 3, i8 58)')),

@@ -79,7 +79,7 @@ test(combined_guard_ir_is_single_block) :-
     plawk_parse_string("$1 == \"ERROR\" && $3 > 100 { print $0 }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
     assertion(once(sub_atom(DriverIR, _, _, _, '%is_match_l = call i1 @wam_atom_field_eq_value'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%is_match_r = call i1 @wam_atom_field_i64_cmp_value'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%is_match_r = call i1 @wam_atom_field_strnum_cmp_int'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%is_match = and i1 %is_match_l, %is_match_r'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.

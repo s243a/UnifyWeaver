@@ -87,12 +87,13 @@ test(out_of_range_integer_conversion_is_fatal, [condition(clang_available)]) :-
 
 % --- the coercion is confined to fields ------------------------------------
 
-% An integer-path value is NOT widened: plawk reads "30.25" there as 0, so this must
-% keep declining rather than print 0.0.
-test(integer_path_values_are_not_coerced) :-
-    build_status("{ x = $2 + 0; printf \"%5.1f|\\n\", x }\n", 3),
+% These declined while plawk's integer path read "30.25" as 0 (widening that value
+% would have printed 0.0). Field arithmetic is now double (phase C), so they build
+% and match gawk.
+test(field_arithmetic_under_float_conversions, [condition(clang_available)]) :-
+    run("{ x = $2 + 0; printf \"%5.1f|\\n\", x }\n", " 30.2|\n  5.0|\n  3.0|\n"),
     !,
-    build_status("{ printf \"%.2f|\\n\", $2 * 1 }\n", 3),
+    run("{ printf \"%.2f|\\n\", $2 * 1 }\n", "30.25|\n5.00|\n3.00|\n"),
     !.
 
 % END printf of a field under a numeric conversion is not reached here (no
