@@ -15933,6 +15933,8 @@ plawk_rule_body_print_field(end_lastrec_field(_)).
 plawk_rule_body_print_field(end_lastrec_nf).
 % `$NF` / `$(NF+K)`, current record and retained record.
 plawk_rule_body_print_field(field_nf(_)).
+% `$i`: resolved to field_dyn(SlotValue, Offset) by the read substitution.
+plawk_rule_body_print_field(field_var(_, _)).
 plawk_rule_body_print_field(end_lastrec_field_nf(_)).
 % `length` of the retained record, same reasoning as end_lastrec_nf above. This row is
 % what an END LOOP BODY needs: `END { while (n > 0) { print length; n-- } }` reaches
@@ -16748,6 +16750,15 @@ plawk_substitute_cond_scalar_reads(or(A0, B0), Slots, Values, or(A, B)) :-
     plawk_substitute_cond_scalar_reads(B0, Slots, Values, B).
 plawk_substitute_scalar_read_part(Slots, Values, Part, SubPart) :-
     plawk_substitute_scalar_reads(Part, Slots, Values, SubPart).
+% `$i` (field_var): the index is the variable's CURRENT slot value. Only an
+% integer counter slot is an index; a double / string / strnum index stays
+% unsubstituted, and the print emitter (which has no field_var row) declines.
+plawk_substitute_scalar_reads(field_var(Name, Offset), Slots, Values, Substituted) :-
+    !,
+    (   plawk_substitute_scalar_reads(var(Name), Slots, Values, ssa(Value))
+    ->  Substituted = field_dyn(Value, Offset)
+    ;   Substituted = field_var(Name, Offset)
+    ).
 plawk_substitute_scalar_reads(var(Name), Slots, Values, Substituted) :-
     !,
     nth0(SlotIndex, Slots, Slot),
@@ -23064,6 +23075,27 @@ plawk_emit_print_expr_for_context(end_lastrec_field_nf(Offset), FieldSeparator,
         PtrIR, SliceLines),
     append(ValueLines, SliceLines, Lines).
 
+% `$i` / `$(i+K)` after substitution: the variable's slot value plus the offset,
+% ALWAYS range-checked (a negative index is fatal in awk, exit 2 -- the index is
+% runtime data here), then read through the subslicer (index 0 is $0, past NF is
+% empty), exactly like `$NF`.
+plawk_emit_print_expr_for_context(field_dyn(Value, Offset), FieldSeparator, Context,
+        slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), [], Lines) :-
+    atom(Value),
+    integer(Offset),
+    integer(FieldSeparator),
+    plawk_print_expr_value_base(Context, field_dyn, Base),
+    plawk_print_expr_output_names(Context, field_dyn, FmtPrefix, PrintPrefix),
+    format(atom(IdxLine), '  %~w_idx = add i64 ~w, ~w', [Base, Value, Offset]),
+    format(atom(CheckLine),
+        '  %~w_cidx = call i64 @wam_awk_field_index_checked(i64 %~w_idx)', [Base, Base]),
+    format(atom(IndexIR), '%~w_cidx', [Base]),
+    llvm_emit_atom_field_subslice('%line', IndexIR, FieldSeparator, 1,
+        9223372036854775807, Base, SliceIR),
+    format(atom(LenIR), '%~w_len', [Base]),
+    format(atom(PtrIR), '%~w_ptr', [Base]),
+    Lines = [IdxLine, CheckLine, SliceIR].
+
 %% plawk_nf_field_subslice_lines(+RecValueIR, +Offset, +FieldSeparator, +Base,
 %%     -LenIR, -PtrIR, -Lines) is det.
 %
@@ -23252,6 +23284,8 @@ plawk_normal_print_expr_value_base(binfield, Index, Base) :-
     format(atom(Base), 'plawk_binfield_~w', [Index]).
 plawk_normal_print_expr_value_base(length, Index, Base) :-
     format(atom(Base), 'plawk_length_~w', [Index]).
+plawk_normal_print_expr_value_base(field_dyn, Index, Base) :-
+    format(atom(Base), 'plawk_field_dyn_~w', [Index]).
 plawk_normal_print_expr_value_base(field_nf, Index, Base) :-
     format(atom(Base), 'plawk_field_nf_~w', [Index]).
 plawk_normal_print_expr_value_base(substr, Index, Base) :-
