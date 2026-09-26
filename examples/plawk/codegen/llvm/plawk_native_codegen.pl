@@ -9080,6 +9080,14 @@ plawk_strnum_print_field_safe(assoc(var(_), var(Name)), Name) :- !.
 plawk_strnum_print_field_safe(concat(Parts), Name) :-
     !,
     forall(member(Part, Parts), plawk_strnum_print_field_safe(Part, Name)).
+% Arithmetic over the strnum in a print (`print x * 2`): the read is substituted to
+% ssa_strnum, which makes the tree double and reads the text through strtod. Without
+% this row the arithmetic deactivated x as a strnum, x fell back to an i64 counter
+% fed by the strict integer parse, and "7.5" printed as 0.
+plawk_strnum_print_field_safe(Expr, _Name) :-
+    plawk_i64_binary_expr(Expr, _Op, _NamePart, _Left, _Right),
+    plawk_strnum_arith_expr(Expr),
+    !.
 
 plawk_scalar_update_name_expr(Action, Name, Expr) :-
     plawk_scalar_action_update(Action, Name, Operation),
@@ -15928,6 +15936,9 @@ plawk_rule_body_print_action(printf(string(Format), Args)) :-
     string(Format),
     maplist(plawk_rule_body_print_field, Args).
 
+plawk_nested_length_arg(field(_)).
+plawk_nested_length_arg(substr(field(_), _, _)).
+
 plawk_rule_body_print_field(field(_)).
 % `$N` of the retained last record -- what plawk_end_lastrec_rewrite/2 turns a
 % field read into when the print runs in END. Admitted here rather than given a
@@ -15937,6 +15948,8 @@ plawk_rule_body_print_field(end_lastrec_field(_)).
 plawk_rule_body_print_field(end_lastrec_nf).
 % `$NF` / `$(NF+K)`, current record and retained record.
 plawk_rule_body_print_field(field_nf(_)).
+% `$i`: resolved to field_dyn(SlotValue, Offset) by the read substitution.
+plawk_rule_body_print_field(field_var(_, _)).
 plawk_rule_body_print_field(end_lastrec_field_nf(_)).
 % `length` of the retained record, same reasoning as end_lastrec_nf above. This row is
 % what an END LOOP BODY needs: `END { while (n > 0) { print length; n-- } }` reaches
@@ -15986,6 +15999,14 @@ plawk_rule_body_print_field(int(Value)) :-
     integer(Value).
 plawk_rule_body_print_field(Expr) :-
     plawk_i64_general_binary_expr(Expr).
+% Arithmetic over SCALAR VARIABLES in a rule-body print (`print n * 2`,
+% `print s / 2`, `print n + $2`): the reads are substituted with the current slot
+% values (plawk_substitute_print_field/3) before emission, exactly as a bare
+% `print n` is. Checked here on the source tree, so a variable leaf is admitted
+% alongside the ordinary operands; the shared plawk_i64_operand_expr/1 stays
+% variable-free for the contexts that do no substitution.
+plawk_rule_body_print_field(Expr) :-
+    plawk_rule_body_var_arith_expr(Expr).
 plawk_rule_body_print_field(Expr) :-
     plawk_prolog_call_expr(Expr).
 plawk_rule_body_print_field(Expr) :-
@@ -16012,6 +16033,11 @@ plawk_rule_body_print_field(special('RSTART')).
 plawk_rule_body_print_field(special('RLENGTH')).
 plawk_rule_body_print_field(special('RT')).
 plawk_rule_body_print_field(substr(field(_), _Start, _Len)).
+plawk_rule_body_print_field(toupper(substr(field(_), _, _))).
+plawk_rule_body_print_field(tolower(substr(field(_), _, _))).
+plawk_rule_body_print_field(length(toupper(Arg))) :- plawk_nested_length_arg(Arg).
+plawk_rule_body_print_field(length(tolower(Arg))) :- plawk_nested_length_arg(Arg).
+plawk_rule_body_print_field(length(substr(field(_), _, _))).
 plawk_rule_body_print_field(index(field(_), string(_))).
 plawk_rule_body_print_field(tolower(field(_))).
 plawk_rule_body_print_field(toupper(field(_))).
@@ -16020,6 +16046,27 @@ plawk_rule_body_print_field(toupper(field(_))).
 %
 %  Recognize a native i64 binary expression tree whose leaves are i64
 %  primaries, integer literals, or bare numeric field coercions.
+plawk_rule_body_var_arith_expr(Expr) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    plawk_rule_body_var_arith_operand(Left),
+    plawk_rule_body_var_arith_operand(Right),
+    sub_term(V, Expr), compound(V), V = var(_),
+    !.
+
+plawk_rule_body_var_arith_operand(var(Name)) :-
+    atom(Name),
+    !.
+plawk_rule_body_var_arith_operand(float_const(M, D)) :-
+    integer(M), integer(D), D > 0,
+    !.
+plawk_rule_body_var_arith_operand(Expr) :-
+    plawk_i64_operand_expr(Expr),
+    !.
+plawk_rule_body_var_arith_operand(Expr) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    plawk_rule_body_var_arith_operand(Left),
+    plawk_rule_body_var_arith_operand(Right).
+
 plawk_i64_general_binary_expr(Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     plawk_i64_operand_expr(Left),
@@ -16718,6 +16765,15 @@ plawk_substitute_cond_scalar_reads(or(A0, B0), Slots, Values, or(A, B)) :-
     plawk_substitute_cond_scalar_reads(B0, Slots, Values, B).
 plawk_substitute_scalar_read_part(Slots, Values, Part, SubPart) :-
     plawk_substitute_scalar_reads(Part, Slots, Values, SubPart).
+% `$i` (field_var): the index is the variable's CURRENT slot value. Only an
+% integer counter slot is an index; a double / string / strnum index stays
+% unsubstituted, and the print emitter (which has no field_var row) declines.
+plawk_substitute_scalar_reads(field_var(Name, Offset), Slots, Values, Substituted) :-
+    !,
+    (   plawk_substitute_scalar_reads(var(Name), Slots, Values, ssa(Value))
+    ->  Substituted = field_dyn(Value, Offset)
+    ;   Substituted = field_var(Name, Offset)
+    ).
 plawk_substitute_scalar_reads(var(Name), Slots, Values, Substituted) :-
     !,
     nth0(SlotIndex, Slots, Slot),
@@ -19261,6 +19317,11 @@ plawk_f64_operand_expr(math_call(Fn, Args)) :-
     maplist(plawk_f64_operand_expr, Args).
 plawk_f64_operand_expr(Expr) :-
     plawk_i64_operand_expr(Expr).
+% Substituted scalar reads (a rule-body print of `n * 2`, `s / 2`, `x * 2`): the
+% slot value of an integer, double or strnum scalar.
+plawk_f64_operand_expr(ssa(Value)) :- atom(Value).
+plawk_f64_operand_expr(ssa_f64(Value)) :- atom(Value).
+plawk_f64_operand_expr(ssa_strnum(Value)) :- atom(Value).
 plawk_f64_operand_expr(Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     plawk_f64_operand_expr(Left),
@@ -22710,6 +22771,10 @@ plawk_emit_print_expr_for_context(Expr, FieldSeparator, Context,
 plawk_emit_print_expr_for_context(Expr, FieldSeparator, Context,
         i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, NamePart, _Left, _Right),
+    % A DOUBLE-typed tree must never print through the i64 path: it re-reads a
+    % field with the strict integer parse (`print n + $2` printed 2 for "7.5"). If
+    % the f64 clause above could not take it, the print declines instead.
+    \+ plawk_expr_is_double(Expr),
     plawk_i64_binary_print_kind(NamePart, Kind),
     plawk_print_expr_value_base(Context, Kind, Base),
     plawk_print_expr_output_names(Context, Kind, FmtPrefix, PrintPrefix),
@@ -22814,13 +22879,94 @@ plawk_emit_print_expr_for_context(special('ARGC'), FieldSeparator, Context,
         ValueIR, GlobalParts, SetupParts).
 
 plawk_emit_print_expr_for_context(substr(field(FieldIndex), Start, Len0), FieldSeparator, Context,
-        slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), [], [SliceIR]) :-
-    plawk_substr_max_len(Len0, Len),
+        slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), GlobalParts, Lines) :-
     plawk_print_expr_value_base(Context, substr, Base),
     plawk_print_expr_output_names(Context, substr, FmtPrefix, PrintPrefix),
-    llvm_emit_atom_field_subslice('%line', FieldIndex, FieldSeparator, Start, Len, Base, SliceIR),
+    plawk_substr_slice_lines(FieldIndex, Start, Len0, FieldSeparator, Base, LenIR,
+        _Len64IR, PtrIR, GlobalParts, Lines).
+
+%% plawk_substr_slice_lines(+FieldIndex, +Start, +Len, +FieldSeparator, +Base,
+%%     -LenIR, -Len64IR, -PtrIR, -GlobalParts, -Lines) is semidet.
+%
+%  `substr($N, Start, Len)` of the current record as a slice. Start/Len are integer
+%  literals, `to_end`, or a COMPUTED bound (`index($0, " ") + 1`, `length($1) - 2`)
+%  over always-integral leaves only -- anything else fails, and the program
+%  declines. A computed start below 1 is clamped to 1 with the length kept, which
+%  is what gawk 5.1 does (substr("hello", 0, 2) is "he"; the runtime subslicer
+%  would return empty). A negative length is empty, as in awk.
+plawk_substr_slice_lines(FieldIndex, Start, Len0, FieldSeparator, Base, LenIR, Len64IR,
+        PtrIR, GlobalParts, Lines) :-
+    integer(FieldSeparator),
+    plawk_substr_start_ir(Start, FieldSeparator, Base, StartIR, StartGlobals, StartLines),
+    plawk_substr_len_ir(Len0, FieldSeparator, Base, LenValIR, LenGlobals, LenLines),
+    llvm_emit_atom_field_subslice('%line', FieldIndex, FieldSeparator, StartIR, LenValIR,
+        Base, SliceIR),
     format(atom(LenIR), '%~w_len', [Base]),
-    format(atom(PtrIR), '%~w_ptr', [Base]).
+    format(atom(Len64IR), '%~w_len64', [Base]),
+    format(atom(PtrIR), '%~w_ptr', [Base]),
+    append(StartGlobals, LenGlobals, GlobalParts),
+    append([StartLines, LenLines, [SliceIR]], Lines).
+
+plawk_substr_start_ir(Start, _FieldSeparator, _Base, Start, [], []) :-
+    integer(Start),
+    !.
+plawk_substr_start_ir(Start, FieldSeparator, Base, StartIR, Globals, Lines) :-
+    plawk_substr_bound_expr(Start),
+    format(atom(SBase), '~w_st', [Base]),
+    plawk_i64_expr_ir(Start, FieldSeparator, SBase, SBase, RawIR, Globals, RawLines),
+    format(atom(StartIR), '%~w_clamped', [SBase]),
+    format(atom(Low), '  %~w_low = icmp slt i64 ~w, 1', [SBase, RawIR]),
+    format(atom(Clamp), '  ~w = select i1 %~w_low, i64 1, i64 ~w', [StartIR, SBase, RawIR]),
+    append(RawLines, [Low, Clamp], Lines).
+
+plawk_substr_len_ir(Len0, _FieldSeparator, _Base, Len, [], []) :-
+    plawk_substr_max_len(Len0, Len),
+    !.
+plawk_substr_len_ir(Len0, FieldSeparator, Base, LenIR, Globals, Lines) :-
+    plawk_substr_bound_expr(Len0),
+    format(atom(LBase), '~w_ln', [Base]),
+    plawk_i64_expr_ir(Len0, FieldSeparator, LBase, LBase, LenIR, Globals, Lines).
+
+% A computed substr bound: arithmetic whose leaves are always integral.
+plawk_substr_bound_expr(int(V)) :- integer(V), !.
+plawk_substr_bound_expr(length(field(N))) :- integer(N), N >= 0, !.
+plawk_substr_bound_expr(index(field(N), string(S))) :- integer(N), N >= 0, string(S), !.
+plawk_substr_bound_expr(special('NR')) :- !.
+plawk_substr_bound_expr(special('NF')) :- !.
+plawk_substr_bound_expr(Expr) :-
+    member(F, [add_i64, sub_i64, mul_i64]),
+    Expr =.. [F, L, R],
+    !,
+    plawk_substr_bound_expr(L),
+    plawk_substr_bound_expr(R).
+
+% toupper / tolower of a substr (`toupper(substr($1, 1, 1))`): the case printer
+% maps the substr slice, exactly as it maps a field.
+plawk_emit_print_expr_for_context(Case, FieldSeparator, Context,
+        case_slice(Mode, CaseBase, Len64IR, PtrIR), GlobalParts, Lines) :-
+    ( Case = toupper(substr(field(FieldIndex), Start, Len0)), Mode = upper
+    ; Case = tolower(substr(field(FieldIndex), Start, Len0)), Mode = lower
+    ),
+    !,
+    plawk_print_expr_value_base(Context, Mode, CaseBase),
+    plawk_substr_slice_lines(FieldIndex, Start, Len0, FieldSeparator, CaseBase,
+        _LenIR, Len64IR, PtrIR, GlobalParts, Lines).
+
+% length of a case builtin is the length of its argument; length of a substr is
+% the substr slice's length.
+plawk_emit_print_expr_for_context(length(Arg), FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, Lines) :-
+    ( Arg = toupper(Inner) ; Arg = tolower(Inner) ; Arg = substr(_, _, _), Inner = Arg ),
+    !,
+    plawk_print_expr_value_base(Context, length, Base),
+    plawk_print_expr_output_names(Context, length, FmtPrefix, PrintPrefix),
+    (   Inner = field(FieldIndex)
+    ->  plawk_i64_expr_ir(length(FieldIndex), FieldSeparator, Base, Base,
+            ValueIR, GlobalParts, Lines)
+    ;   Inner = substr(field(FieldIndex), Start, Len0),
+        plawk_substr_slice_lines(FieldIndex, Start, Len0, FieldSeparator, Base,
+            _LenIR, ValueIR, _PtrIR, GlobalParts, Lines)
+    ).
 
 % Resolve a substr length to the byte count passed to the runtime. A 3-arg
 % substr passes its explicit length; the 2-arg `substr(s, m)` form uses the
@@ -22971,6 +23117,27 @@ plawk_emit_print_expr_for_context(end_lastrec_field_nf(Offset), FieldSeparator,
     plawk_nf_field_subslice_lines(RecValueIR, Offset, FieldSeparator, Base, LenIR,
         PtrIR, SliceLines),
     append(ValueLines, SliceLines, Lines).
+
+% `$i` / `$(i+K)` after substitution: the variable's slot value plus the offset,
+% ALWAYS range-checked (a negative index is fatal in awk, exit 2 -- the index is
+% runtime data here), then read through the subslicer (index 0 is $0, past NF is
+% empty), exactly like `$NF`.
+plawk_emit_print_expr_for_context(field_dyn(Value, Offset), FieldSeparator, Context,
+        slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), [], Lines) :-
+    atom(Value),
+    integer(Offset),
+    integer(FieldSeparator),
+    plawk_print_expr_value_base(Context, field_dyn, Base),
+    plawk_print_expr_output_names(Context, field_dyn, FmtPrefix, PrintPrefix),
+    format(atom(IdxLine), '  %~w_idx = add i64 ~w, ~w', [Base, Value, Offset]),
+    format(atom(CheckLine),
+        '  %~w_cidx = call i64 @wam_awk_field_index_checked(i64 %~w_idx)', [Base, Base]),
+    format(atom(IndexIR), '%~w_cidx', [Base]),
+    llvm_emit_atom_field_subslice('%line', IndexIR, FieldSeparator, 1,
+        9223372036854775807, Base, SliceIR),
+    format(atom(LenIR), '%~w_len', [Base]),
+    format(atom(PtrIR), '%~w_ptr', [Base]),
+    Lines = [IdxLine, CheckLine, SliceIR].
 
 %% plawk_nf_field_subslice_lines(+RecValueIR, +Offset, +FieldSeparator, +Base,
 %%     -LenIR, -PtrIR, -Lines) is det.
@@ -23160,6 +23327,8 @@ plawk_normal_print_expr_value_base(binfield, Index, Base) :-
     format(atom(Base), 'plawk_binfield_~w', [Index]).
 plawk_normal_print_expr_value_base(length, Index, Base) :-
     format(atom(Base), 'plawk_length_~w', [Index]).
+plawk_normal_print_expr_value_base(field_dyn, Index, Base) :-
+    format(atom(Base), 'plawk_field_dyn_~w', [Index]).
 plawk_normal_print_expr_value_base(field_nf, Index, Base) :-
     format(atom(Base), 'plawk_field_nf_~w', [Index]).
 plawk_normal_print_expr_value_base(substr, Index, Base) :-

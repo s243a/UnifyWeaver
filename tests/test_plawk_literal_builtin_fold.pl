@@ -285,11 +285,12 @@ test(non_ascii_still_works_through_a_field, [condition(clang_available)]) :-
 %   exit 3 (decline) -- the argument is IN the vocabulary but the fold cannot
 %                       answer it exactly (the non-ASCII case above).
 %
-% A nested call is unreachable surface today. The fold is written bottom-up so it
-% would collapse `length(toupper("ab"))` in one pass if the vocabulary ever admitted
-% a call, which is why this is pinned as a vocabulary boundary and not as a fold gap.
-test(a_nested_call_is_outside_the_argument_vocabulary) :-
-    build_status("{ print length(toupper(\"ab\")) }\n", 2),
+% A nested call USED to be outside the vocabulary (exit 2). length() now admits a
+% case builtin (tests/test_plawk_nested_builtins.pl), and -- as this pin predicted --
+% the bottom-up fold collapses `length(toupper("ab"))` in one pass to the constant 2,
+% gawk's answer.
+test(a_nested_literal_call_folds, [condition(clang_available)]) :-
+    run_with("x\n", "{ print length(toupper(\"ab\")) }\n", "2\n"),
     !.
 
 test(a_variable_argument_is_outside_the_argument_vocabulary) :-
