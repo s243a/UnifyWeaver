@@ -9080,6 +9080,14 @@ plawk_strnum_print_field_safe(assoc(var(_), var(Name)), Name) :- !.
 plawk_strnum_print_field_safe(concat(Parts), Name) :-
     !,
     forall(member(Part, Parts), plawk_strnum_print_field_safe(Part, Name)).
+% Arithmetic over the strnum in a print (`print x * 2`): the read is substituted to
+% ssa_strnum, which makes the tree double and reads the text through strtod. Without
+% this row the arithmetic deactivated x as a strnum, x fell back to an i64 counter
+% fed by the strict integer parse, and "7.5" printed as 0.
+plawk_strnum_print_field_safe(Expr, _Name) :-
+    plawk_i64_binary_expr(Expr, _Op, _NamePart, _Left, _Right),
+    plawk_strnum_arith_expr(Expr),
+    !.
 
 plawk_scalar_update_name_expr(Action, Name, Expr) :-
     plawk_scalar_action_update(Action, Name, Operation),
@@ -15971,6 +15979,14 @@ plawk_rule_body_print_field(int(Value)) :-
     integer(Value).
 plawk_rule_body_print_field(Expr) :-
     plawk_i64_general_binary_expr(Expr).
+% Arithmetic over SCALAR VARIABLES in a rule-body print (`print n * 2`,
+% `print s / 2`, `print n + $2`): the reads are substituted with the current slot
+% values (plawk_substitute_print_field/3) before emission, exactly as a bare
+% `print n` is. Checked here on the source tree, so a variable leaf is admitted
+% alongside the ordinary operands; the shared plawk_i64_operand_expr/1 stays
+% variable-free for the contexts that do no substitution.
+plawk_rule_body_print_field(Expr) :-
+    plawk_rule_body_var_arith_expr(Expr).
 plawk_rule_body_print_field(Expr) :-
     plawk_prolog_call_expr(Expr).
 plawk_rule_body_print_field(Expr) :-
@@ -16005,6 +16021,27 @@ plawk_rule_body_print_field(toupper(field(_))).
 %
 %  Recognize a native i64 binary expression tree whose leaves are i64
 %  primaries, integer literals, or bare numeric field coercions.
+plawk_rule_body_var_arith_expr(Expr) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    plawk_rule_body_var_arith_operand(Left),
+    plawk_rule_body_var_arith_operand(Right),
+    sub_term(V, Expr), compound(V), V = var(_),
+    !.
+
+plawk_rule_body_var_arith_operand(var(Name)) :-
+    atom(Name),
+    !.
+plawk_rule_body_var_arith_operand(float_const(M, D)) :-
+    integer(M), integer(D), D > 0,
+    !.
+plawk_rule_body_var_arith_operand(Expr) :-
+    plawk_i64_operand_expr(Expr),
+    !.
+plawk_rule_body_var_arith_operand(Expr) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    plawk_rule_body_var_arith_operand(Left),
+    plawk_rule_body_var_arith_operand(Right).
+
 plawk_i64_general_binary_expr(Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     plawk_i64_operand_expr(Left),
@@ -19218,6 +19255,11 @@ plawk_f64_operand_expr(math_call(Fn, Args)) :-
     maplist(plawk_f64_operand_expr, Args).
 plawk_f64_operand_expr(Expr) :-
     plawk_i64_operand_expr(Expr).
+% Substituted scalar reads (a rule-body print of `n * 2`, `s / 2`, `x * 2`): the
+% slot value of an integer, double or strnum scalar.
+plawk_f64_operand_expr(ssa(Value)) :- atom(Value).
+plawk_f64_operand_expr(ssa_f64(Value)) :- atom(Value).
+plawk_f64_operand_expr(ssa_strnum(Value)) :- atom(Value).
 plawk_f64_operand_expr(Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     plawk_f64_operand_expr(Left),
@@ -22667,6 +22709,10 @@ plawk_emit_print_expr_for_context(Expr, FieldSeparator, Context,
 plawk_emit_print_expr_for_context(Expr, FieldSeparator, Context,
         i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, NamePart, _Left, _Right),
+    % A DOUBLE-typed tree must never print through the i64 path: it re-reads a
+    % field with the strict integer parse (`print n + $2` printed 2 for "7.5"). If
+    % the f64 clause above could not take it, the print declines instead.
+    \+ plawk_expr_is_double(Expr),
     plawk_i64_binary_print_kind(NamePart, Kind),
     plawk_print_expr_value_base(Context, Kind, Base),
     plawk_print_expr_output_names(Context, Kind, FmtPrefix, PrintPrefix),
