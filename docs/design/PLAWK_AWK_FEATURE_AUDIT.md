@@ -116,14 +116,38 @@ against gawk 5.1.0: EOF detected by identity, not text (a literal `end_of_file` 
 truncated input); END string builtins over the last record; `$NF` / `$(NF±K)`; bare
 patterns, plus the pattern/next-line-brace wrong-output fix; `!seen[$1]++`; `length()`.
 
-**Still open from that survey** (all decline or fail to parse — none miscompile):
-`BEGIN { n = 1 }` (BEGIN takes only special-var string assignments, print/printf/exit,
-`;`-separated — user scalars and newline-separated statements fail); printf
-width/precision (`%-8s %5.1f`, exit 3); `{ $2 = …; print }` with a bare `print`;
-`split` in a rule (exit 2); C-style `for` in BEGIN (exit 2); `print > file` (exit 2);
-nested builtins (`toupper(substr($1,1,1))`, `substr($0, index(…)+1)`); arithmetic
-truthiness as a pattern (`NR % 2`); `$NF` in conditions/assoc keys; mixed
-scalar+assoc programs reading fields in END; `asort` (gawk-only).
+**Batch 2026-09b — LANDED / in review** (#4299–#4307):
+- BEGIN: newline-separated statements; user-scalar initial values, numeric and
+  string/strnum (`BEGIN { n = 1 }`, `BEGIN { max = 0 }`, `BEGIN { m = "none" }`);
+  print-only BEGIN constants substituted as literals. #4299, #4303.
+- **Numeric semantics (was SILENT WRONG OUTPUT):** a field in a numeric context read
+  "30.25"/"3abc" as 0 and `$N OP int` compared false on any non-integer. Now: field
+  reads use awk strtod (decimal-only: `nan`/`inf`/hex are 0); `int($N)` truncates the
+  numeric value; `$N OP int` has POSIX strnum semantics (numeric if it looks numeric,
+  else a string comparison); field arithmetic, accumulators, strnum arithmetic and
+  field-fed assoc sums are DOUBLE (assoc via double bit patterns in the i64 table,
+  guarded by a driver-entry IR check). #4300–#4303, #4306.
+- Doubles print the awk way (integral -> integer, else `%.6g`; never `-0`). #4301.
+- printf numeric conversions of fields (`%d`, `%6.2f`), `%d` of a double truncates
+  (fatal outside i64). #4300, #4302.
+- Rule-body print: `print n * 2`, nested builtins (`toupper(substr($1,1,1))`,
+  computed substr bounds, gawk's start-below-1 clamp), `$i` / `$(i±K)`. #4305.
+- `print > "file"`, `>>`, printf redirects, `/dev/stderr`/`/dev/stdout`. #4307.
+
+Deliberate, pinned divergences: integers above 2^53 stay exact (gawk rounds);
+signed `+inf`/`-nan` text is a string; `x % 0` is 0 (gawk aborts).
+
+**Still open** (all decline or fail to parse — none miscompile):
+- **Mixed scalar + array in one rule** — `{ c[$1]++; n++ }`, `n = split(...)` with
+  scalar work, `split` then `for (i=1;i<=n;i++) print a[i]`. Structural: the mixed
+  driver's rule sequence has no assoc actions. Largest remaining gap.
+- **Computation in BEGIN** — loops/assignments feeding prints (`BEGIN { for (i=1;i<=3;i++)
+  print i }`): the BEGIN-only driver has no scalar state.
+- printf width/precision on non-field args where the value is an integer-path read;
+  `{ $2 = …; print }` with a bare `print`; arithmetic truthiness as a pattern
+  (`NR % 2`); `$NF`/`$i` in conditions and assoc keys; concatenated END array reads
+  (`print "a=" c["a"]`); unary minus on a variable (`print -n`); `x = toupper($1)`;
+  `index(toupper(...), ...)`; `asort` (gawk-only).
 
 0. **Numeric specials as condition operands — LANDED.** A row of silent wrong outputs,
    none of which declined:
