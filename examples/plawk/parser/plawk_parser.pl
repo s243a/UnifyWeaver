@@ -2399,6 +2399,18 @@ begin_action(set(var(Name), int(Value))) -->
     ws,
     begin_int_literal(Value),
     !.
+% `NAME = "text"` for a user scalar (`BEGIN { sep = "," }`): a string initial value,
+% seeded by codegen as an interned atom id at program start.
+begin_action(set(var(Name), string(Value))) -->
+    identifier(Name),
+    { \+ begin_special_name(Name) },
+    ws,
+    "=",
+    \+ "=",
+    ws,
+    quoted_string(Codes),
+    { string_codes(Value, Codes) },
+    !.
 % `BEGIN { printf "fmt", args }` -- before print_action so the longer keyword
 % wins (`print` would otherwise match the prefix of `printf` and leave a stray
 % `f`). BEGIN runs before the record loop, so there is no record and no scalar

@@ -189,6 +189,109 @@ plawk_program_native_driver_ir(Program, _InputPath, _DriverIR) :-
 % slot (whose value is a runtime atom id, not a constant), or a name no slot holds --
 % all leave a name unmarked, and the program declines (exit 3) rather than printing
 % the type zero where awk prints the BEGIN value.
+% DOUBLE-valued assoc arrays: `arr[$k] += $N` accumulates a field's numeric value,
+% a double -- the i64 table read "30.25" as 0 (`c[$1] += $2` summed 30.25 + 3abc
+% to 0; awk 33.25). Such an array stores double BIT PATTERNS in the ordinary i64
+% table through the runtime's @wam_assoc_f64_* entry points, taught to the `+=`
+% emitter and the iterated END for-in value print.
+%
+% The guarantee is checked on the OUTPUT, not assumed: the `+=` emitter marks the
+% table it used (`; plawk-f64-table(NAME)=N`), and every IR line that touches
+% %plawk_assoc_table_N must be an allowed call -- iteration, key, existence,
+% delete, new/free, or an @wam_assoc_f64_* entry. Any other use (an i64 value read
+% or print, a `++` on the same array, a cache save, ...) would take the bits for
+% an integer, so the program DECLINES instead. So does an array no emitter marked.
+plawk_program_native_driver_ir(Program, InputPath, DriverIR) :-
+    \+ ( nb_current(plawk_f64_arrays, Active), Active \== [] ),
+    plawk_program_f64_arrays(Program, Arrays),
+    Arrays \== [],
+    !,
+    b_setval(plawk_f64_arrays, Arrays),
+    (   plawk_program_native_driver_ir(Program, InputPath, DriverIR0)
+    ->  b_setval(plawk_f64_arrays, []),
+        b_setval(plawk_f64_table_indices, []),
+        forall(member(Array, Arrays),
+            plawk_f64_table_ir_ok(Array, DriverIR0, _TableIndex)),
+        findall(I, ( member(Array, Arrays),
+                     plawk_f64_table_ir_ok(Array, DriverIR0, I) ), F64Indices),
+        plawk_f64_calls_only_on(F64Indices, DriverIR0),
+        DriverIR = DriverIR0
+    ;   b_setval(plawk_f64_arrays, []),
+        b_setval(plawk_f64_table_indices, []),
+        fail
+    ).
+
+% The reverse direction: every @wam_assoc_f64_* call in the program operates on a
+% table the `+=` emitter marked double-valued -- so an index recorded wrongly can
+% never print an integer table's counts as double bits.
+plawk_f64_calls_only_on(F64Indices, IR) :-
+    split_string(IR, "\n", "", Lines),
+    forall(( member(Line, Lines),
+             sub_string(Line, _, _, _, "@wam_assoc_f64_"),
+             \+ sub_string(Line, _, _, _, "define ") ),
+           ( member(I, F64Indices),
+             format(atom(Ref), '%plawk_assoc_table_~w', [I]),
+             plawk_line_mentions_table(Line, Ref) )).
+
+plawk_program_f64_arrays(program(_Begin, Rules, _End), Arrays) :-
+    findall(Array,
+        ( sub_term(Term, Rules),
+          compound(Term),
+          Term = add_assoc(var(Array), _Key, Delta),
+          atom(Array),
+          Delta \= int(_)
+        ),
+        Arrays0),
+    sort(Arrays0, Arrays).
+
+plawk_f64_array(Array) :-
+    nb_current(plawk_f64_arrays, Arrays),
+    is_list(Arrays),
+    memberchk(Array, Arrays).
+
+plawk_f64_table_marker(Array, TableIndex, Marker) :-
+    format(atom(Marker), '; plawk-f64-table(~w)=~w', [Array, TableIndex]).
+
+% Every line mentioning the array's table is an allowed call; at least one marker.
+plawk_f64_table_ir_ok(Array, IR, TableIndex) :-
+    format(atom(Prefix), '; plawk-f64-table(~w)=', [Array]),
+    sub_atom(IR, B, L, _, Prefix),
+    Start is B + L,
+    sub_atom(IR, Start, _, 0, After),
+    atom_codes(After, AfterCodes),
+    phrase(plawk_digits(DigitCodes), AfterCodes, _),
+    DigitCodes \== [],
+    !,
+    number_codes(TableIndex, DigitCodes),
+    format(atom(TableRef), '%plawk_assoc_table_~w', [TableIndex]),
+    split_string(IR, "\n", "", Lines),
+    forall(( member(Line, Lines),
+             plawk_line_mentions_table(Line, TableRef) ),
+           plawk_f64_table_line_ok(Line)).
+
+plawk_digits([D | Ds]) --> [D], { code_type(D, digit) }, !, plawk_digits(Ds).
+plawk_digits([]) --> [].
+
+plawk_line_mentions_table(Line, TableRef) :-
+    sub_string(Line, B, L, _, TableRef),
+    End is B + L,
+    (   sub_string(Line, End, 1, _, Next)
+    ->  \+ ( string_codes(Next, [C]), code_type(C, digit) )
+    ;   true
+    ),
+    !.
+
+plawk_f64_table_line_ok(Line) :-
+    sub_string(Line, _, _, _, "; plawk-f64-table("),
+    !.
+plawk_f64_table_line_ok(Line) :-
+    member(Allowed, ["@wam_assoc_i64_new(", "@wam_assoc_i64_free(",
+                     "@wam_assoc_i64_iter_next(", "@wam_assoc_i64_key_at(",
+                     "@wam_assoc_i64_exists(", "@wam_assoc_i64_delete(",
+                     "@wam_assoc_f64_"]),
+    sub_string(Line, _, _, _, Allowed),
+    !.
+
 % A user-scalar BEGIN assignment that could NOT be lifted (assigned twice, or read
 % by another BEGIN statement) must not reach the drivers: some ignore unfamiliar
 % BEGIN actions, which would silently drop it. Decline.
@@ -196,25 +299,36 @@ plawk_program_native_driver_ir(program(Begin0, _Rules, _End), _InputPath, _Drive
     plawk_begin_scalar_inits(Begin0, [], _),
     is_list(Begin0),
     member(begin(Actions), Begin0),
-    member(set(var(_), int(_)), Actions),
+    member(set(var(Name), Lit), Actions),
+    atom(Name),
+    ( Lit = int(_) ; Lit = string(_) ),
+    \+ plawk_begin_special_var(Name),
     !,
     fail.
-plawk_program_native_driver_ir(program(Begin0, Rules, End), InputPath, DriverIR) :-
+plawk_program_native_driver_ir(program(Begin0, Rules0, End0), InputPath, DriverIR) :-
     plawk_begin_scalar_inits(Begin0, Inits0, Begin),
     Inits0 \== [],
     !,
+    % A BEGIN constant that the program only PRINTS (`BEGIN { sep = "-" } { print
+    % $1 sep $2 }`) never gets a slot -- nothing outside BEGIN assigns it. When
+    % every use is directly a print/printf argument or a concatenation part, the
+    % literal is substituted there and the init dropped: the value cannot change.
+    plawk_begin_substitute_print_constants(Inits0, Rules0-End0, Rules-End, Inits1),
     % A name that nothing outside BEGIN mentions is unobservable: its initial value
     % is dropped, not required to be seeded (there is no slot to seed).
-    include(plawk_begin_init_live(Rules-End), Inits0, Inits),
-    b_setval(plawk_begin_inits, Inits),
-    (   plawk_program_native_driver_ir(program(Begin, Rules, End), InputPath, DriverIR0)
-    ->  b_setval(plawk_begin_inits, []),
-        forall(member(Name-_Value, Inits),
-            ( plawk_begin_init_marker(Name, Marker),
-              sub_atom(DriverIR0, _, _, _, Marker) )),
-        DriverIR = DriverIR0
-    ;   b_setval(plawk_begin_inits, []),
-        fail
+    include(plawk_begin_init_live(Rules-End), Inits1, Inits),
+    % Attempt 1: numeric seeds only (a phi constant). Attempt 2, only when attempt 1
+    % left a name unseeded (a string / strnum slot, whose value is an atom id):
+    % every init also gets a synthetic begin_seed(Name, Value) BEGIN action,
+    % interned in the entry block, and a text slot's phi seeds from that SSA value.
+    (   plawk_begin_init_attempt(Begin, Rules, End, Inits, [], InputPath, DriverIR0,
+            Unseeded),
+        Unseeded == []
+    ->  DriverIR = DriverIR0
+    ;   plawk_begin_init_attempt(Begin, Rules, End, Inits, all, InputPath, DriverIR1,
+            Unseeded1),
+        Unseeded1 == [],
+        DriverIR = DriverIR1
     ).
 
 %% A BEGIN-ONLY program: BEGIN clauses, no rules, no END.
@@ -7452,6 +7566,45 @@ plawk_forin_end_guard_lines(guard_value_f(Op, M, D), TableIndex, Lines, CondVar,
 %  it each iteration, then -- after the loop -- print the fields (the
 %  accumulator variable resolves to the folded total, string literals print
 %  verbatim) and free every table.
+% Summing the values of a DOUBLE-valued array (`for (k in c) s += c[k]` after
+% `c[$1] += $2`): a double accumulator over @wam_assoc_f64_value_at, printed the
+% awk way. The i64 accumulator below would read the stored bit patterns as integers.
+plawk_forin_end_accum_ir(_LoopVar, ArrayName, Acc, forin_val(ArrayName), PrintFields,
+        AssocPlan, _Descriptor, OutputSeparator, IR) :-
+    plawk_f64_array(ArrayName),
+    !,
+    plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+    PrintFields = [_ | _],
+    phrase(plawk_forin_accum_f64_print_lines(PrintFields, Acc, OutputSeparator, 0),
+        PrintLines),
+    atomic_list_concat(PrintLines, '\n', PrintIR),
+    phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
+    atomic_list_concat(FreeLines, '\n', FreeIR),
+    format(atom(IR),
+'  br label %forin_head
+
+forin_head:
+  %forin_idx = phi i64 [0, %end_print], [%forin_next_idx, %forin_body_done]
+  %forin_acc = phi double [0.0, %end_print], [%forin_next_acc, %forin_body_done]
+  %forin_slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_idx)
+  %forin_done = icmp slt i64 %forin_slot, 0
+  br i1 %forin_done, label %forin_after, label %forin_body
+
+forin_body:
+  %forin_acc_val = call double @wam_assoc_f64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)
+  %forin_next_acc = fadd double %forin_acc, %forin_acc_val
+  br label %forin_body_done
+
+forin_body_done:
+  %forin_next_idx = add i64 %forin_slot, 1
+  br label %forin_head
+
+forin_after:
+~w
+  %forin_out_newline = call i32 @putchar(i32 10)
+~w
+  ret i32 0',
+        [TableIndex, TableIndex, PrintIR, FreeIR]).
 plawk_forin_end_accum_ir(_LoopVar, ArrayName, Acc, Operand, PrintFields,
         AssocPlan, _Descriptor, OutputSeparator, IR) :-
     plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
@@ -7522,6 +7675,26 @@ plawk_forin_accum_print_lines([string(Value) | Rest], Acc, OutputSeparator, Inde
     plawk_end_string_print_lines(Value, Index),
     { NextIndex is Index + 1 },
     plawk_forin_accum_print_lines(Rest, Acc, OutputSeparator, NextIndex).
+
+plawk_forin_accum_f64_print_lines([], _Acc, _OutputSeparator, _Index) -->
+    [].
+plawk_forin_accum_f64_print_lines([var(Acc) | Rest], Acc, OutputSeparator, Index) -->
+    plawk_forin_accum_separator_lines(Index, OutputSeparator),
+    { format(atom(FmtPtr),
+          '  %forin_out_fmt_~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
+          [Index]),
+      format(atom(PrintCall),
+          '  %forin_out_printed_~w = call i32 @wam_print_awk_number(i8* %forin_out_fmt_~w, double %forin_acc)',
+          [Index, Index]),
+      NextIndex is Index + 1
+    },
+    [FmtPtr, PrintCall],
+    plawk_forin_accum_f64_print_lines(Rest, Acc, OutputSeparator, NextIndex).
+plawk_forin_accum_f64_print_lines([string(Value) | Rest], Acc, OutputSeparator, Index) -->
+    plawk_forin_accum_separator_lines(Index, OutputSeparator),
+    plawk_end_string_print_lines(Value, Index),
+    { NextIndex is Index + 1 },
+    plawk_forin_accum_f64_print_lines(Rest, Acc, OutputSeparator, NextIndex).
 
 plawk_forin_accum_separator_lines(0, _OutputSeparator) -->
     !,
@@ -7747,7 +7920,16 @@ plawk_forin_body_print_lines([var(LoopVar) | Rest], LoopVar, ArrayName,
 plawk_forin_body_print_lines([assoc(var(LookupArrayName), var(LoopVar)) | Rest],
         LoopVar, ArrayName, TableIndex, AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
     plawk_forin_separator_lines(PrintIndex, OutputSeparator),
-    { (   LookupArrayName == ArrayName
+    { (   LookupArrayName == ArrayName,
+          plawk_f64_array(ArrayName)
+      ->  % the ITERATED double-valued table: read the slot as a double and print
+          % it the awk way (integral -> integer, else %.6g).
+          LookupTableIndex = TableIndex,
+          Iterated = f64,
+          format(atom(Value),
+              '  %forin_value_~w = call double @wam_assoc_f64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
+              [PrintIndex, TableIndex])
+      ;   LookupArrayName == ArrayName
       ->  LookupTableIndex = TableIndex,
           Iterated = true,
           format(atom(Value),
@@ -7760,7 +7942,15 @@ plawk_forin_body_print_lines([assoc(var(LookupArrayName), var(LoopVar)) | Rest],
               [PrintIndex, LookupTableIndex])
       ),
       format(atom(ValueIR), '%forin_value_~w', [PrintIndex]),
-      (   plawk_assoc_plan_str_array(AssocPlan, LookupArrayName),
+      (   Iterated == f64
+      ->  format(atom(FmtPtr),
+              '  %forin_f64_fmt_~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
+              [PrintIndex]),
+          format(atom(PrintCall),
+              '  %forin_printed_f64_~w = call i32 @wam_print_awk_number(i8* %forin_f64_fmt_~w, double ~w)',
+              [PrintIndex, PrintIndex, ValueIR]),
+          ValueLines = [Value, FmtPtr, PrintCall]
+      ;   plawk_assoc_plan_str_array(AssocPlan, LookupArrayName),
           Iterated == false
       ->  % a CROSS-table str lookup by the loop key: that key may be absent in
           % the looked-up table, and an absent element is empty in awk (resolving
@@ -7919,8 +8109,10 @@ plawk_begin_scalar_inits(BeginClauses0, Inits, BeginClauses) :-
     is_list(BeginClauses0),
     findall(Name-Value,
         ( member(begin(Actions), BeginClauses0),
-          member(set(var(Name), int(Value)), Actions),
-          atom(Name)
+          member(set(var(Name), Lit), Actions),
+          atom(Name),
+          \+ plawk_begin_special_var(Name),
+          plawk_begin_init_literal(Lit, Value)
         ),
         Inits0),
     Inits0 \== [],
@@ -7929,7 +8121,8 @@ plawk_begin_scalar_inits(BeginClauses0, Inits, BeginClauses) :-
     length(Names, N), length(Unique, N),
     forall(( member(begin(Actions), BeginClauses0),
              member(Action, Actions),
-             \+ ( Action = set(var(AName), int(_)), memberchk(AName, Names) ) ),
+             \+ ( Action = set(var(AName), Lit), memberchk(AName, Names),
+                  plawk_begin_init_literal(Lit, _) ) ),
            \+ ( member(Name, Names), sub_term(Sub, Action), Sub == Name )),
     !,
     Inits = Inits0,
@@ -7945,8 +8138,16 @@ plawk_begin_strip_inits(begin(Actions0), Names, begin(Actions)) :-
     Actions \== [].
 plawk_begin_strip_inits(Clause, _Names, Clause).
 
-plawk_begin_init_action(Names, set(var(Name), int(_))) :-
-    memberchk(Name, Names).
+plawk_begin_init_action(Names, set(var(Name), Lit)) :-
+    memberchk(Name, Names),
+    plawk_begin_init_literal(Lit, _).
+
+% An integer keeps its bare representation (a numeric seed's IR is unchanged); a
+% string literal is carried as string(Text).
+plawk_begin_init_literal(int(Value), Value) :-
+    integer(Value).
+plawk_begin_init_literal(string(Text), string(Text)) :-
+    string(Text).
 
 plawk_begin_init_live(Rules-End, Name-_Value) :-
     sub_term(Sub, Rules-End),
@@ -7955,6 +8156,136 @@ plawk_begin_init_live(Rules-End, Name-_Value) :-
 
 plawk_begin_init_marker(Name, Marker) :-
     format(atom(Marker), ' ; plawk-begin-init(~w)', [Name]).
+
+%% plawk_begin_init_attempt(+Begin, +Rules, +End, +Inits, +TextSeeds, +InputPath,
+%%     -DriverIR, -Unseeded) is semidet.
+%
+%  Compile with the lifted Inits; TextSeeds is [] (numeric seeds only) or `all`
+%  (every init also gets an entry-block interned text seed). Unseeded lists the
+%  names whose phi carries no marker -- or, for a text seed, whose global or intern
+%  call is missing from the IR (a driver that skipped the BEGIN action).
+plawk_begin_init_attempt(Begin0, Rules, End, Inits, TextSeeds, InputPath, DriverIR,
+        Unseeded) :-
+    (   TextSeeds == all
+    ->  findall(begin_seed(Name, Value), member(Name-Value, Inits), Seeds),
+        pairs_keys(Inits, SeedNames),
+        plawk_begin_add_seed_actions(Begin0, Seeds, Begin)
+    ;   SeedNames = [],
+        Begin = Begin0
+    ),
+    b_setval(plawk_begin_inits, Inits),
+    b_setval(plawk_begin_text_seeds, SeedNames),
+    (   plawk_program_native_driver_ir(program(Begin, Rules, End), InputPath, DriverIR)
+    ->  b_setval(plawk_begin_inits, []),
+        b_setval(plawk_begin_text_seeds, []),
+        findall(Name,
+            ( member(Name-_Value, Inits),
+              \+ plawk_begin_init_seeded(Name, DriverIR) ),
+            Unseeded)
+    ;   b_setval(plawk_begin_inits, []),
+        b_setval(plawk_begin_text_seeds, []),
+        fail
+    ).
+
+plawk_begin_init_seeded(Name, IR) :-
+    plawk_begin_init_marker(Name, Marker),
+    sub_atom(IR, _, _, _, Marker),
+    (   plawk_begin_text_seed_ir(Name, SeedIR),
+        format(atom(Use), '[~w, %check_handle_value]', [SeedIR]),
+        sub_atom(IR, _, _, _, Use)
+    ->  % the phi seeds from the interned id: its definition and text must exist
+        format(atom(Def), '~w = call i64 @wam_intern_atom(', [SeedIR]),
+        sub_atom(IR, _, _, _, Def),
+        format(atom(Glob), '@.plawk_begin_seed_~w = ', [Name]),
+        sub_atom(IR, _, _, _, Glob)
+    ;   true
+    ).
+
+plawk_begin_substitute_print_constants([], Program, Program, []).
+plawk_begin_substitute_print_constants([Name-Value | Rest], Program0, Program, Inits) :-
+    plawk_begin_init_literal(Lit, Value),
+    plawk_begin_print_only_uses(Name, Program0),
+    !,
+    plawk_substitute_var(Program0, Name, Lit, Program1),
+    plawk_begin_substitute_print_constants(Rest, Program1, Program, Inits).
+plawk_begin_substitute_print_constants([Init | Rest], Program0, Program,
+        [Init | Inits]) :-
+    plawk_begin_substitute_print_constants(Rest, Program0, Program, Inits).
+
+% Every occurrence of Name is var(Name) sitting directly in a print/printf argument
+% list or a concatenation's parts, and there is at least one.
+plawk_begin_print_only_uses(Name, Program) :-
+    aggregate_all(count, ( sub_term(T, Program), T == Name ), Total),
+    Total > 0,
+    aggregate_all(count,
+        ( sub_term(T, Program), compound(T),
+          ( T = print(Args) ; T = printf(_Fmt, Args) ; T = concat(Args) ),
+          is_list(Args),
+          member(A, Args), A == var(Name) ),
+        Direct),
+    Direct == Total.
+
+plawk_substitute_var(Term0, Name, Lit, Term) :-
+    (   Term0 == var(Name)
+    ->  Term = Lit
+    ;   compound(Term0)
+    ->  Term0 =.. [F | Args0],
+        maplist([A0, A]>>plawk_substitute_var(A0, Name, Lit, A), Args0, Args),
+        Term =.. [F | Args]
+    ;   Term = Term0
+    ).
+
+plawk_begin_add_seed_actions([begin(Actions)], Seeds, [begin(All)]) :-
+    !,
+    append(Actions, Seeds, All).
+plawk_begin_add_seed_actions([], Seeds, [begin(Seeds)]) :-
+    !.
+plawk_begin_add_seed_actions(Begin, _Seeds, Begin).
+
+plawk_begin_text_seed_ir(Name, SeedIR) :-
+    format(atom(SeedIR), '%plawk_begin_seed_~w', [Name]).
+
+% The text a BEGIN initial value has as an atom: an integer's decimal digits, or the
+% string itself.
+plawk_begin_seed_text(Value, Text) :-
+    integer(Value),
+    !,
+    number_string(Value, Text).
+plawk_begin_seed_text(string(Text), Text).
+
+%% plawk_begin_seed_lines(+BeginClauses, -Lines) is det.
+%  Entry-block intern of every begin_seed(Name, Value) action.
+plawk_begin_seed_lines(BeginClauses, Lines) :-
+    findall(Line,
+        ( member(begin(Actions), BeginClauses),
+          member(begin_seed(Name, Value), Actions),
+          plawk_begin_seed_text(Value, Text),
+          format(atom(GName), 'plawk_begin_seed_~w', [Name]),
+          llvm_emit_c_string_global(GName, Text, _G, Len, Bytes),
+          plawk_begin_text_seed_ir(Name, SeedIR),
+          (   format(atom(Line),
+                  '  ~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+                  [SeedIR, Bytes, Bytes, GName])
+          ;   format(atom(Line),
+                  '  ~w = call i64 @wam_intern_atom(i8* ~w_ptr, i64 ~w)',
+                  [SeedIR, SeedIR, Len])
+          )
+        ),
+        Lines).
+
+plawk_begin_seed_global_lines(BeginClauses, Lines) :-
+    findall(G,
+        ( member(begin(Actions), BeginClauses),
+          member(begin_seed(Name, Value), Actions),
+          plawk_begin_seed_text(Value, Text),
+          format(atom(GName), 'plawk_begin_seed_~w', [Name]),
+          llvm_emit_c_string_global(GName, Text, G, _Len, _Bytes)
+        ),
+        Lines).
+
+plawk_begin_special_var(Name) :-
+    memberchk(Name, ['BINFMT', 'OUTFMT', 'DYNLOAD', 'DYNCACHE', 'FS', 'OFS', 'ORS',
+        'RS', 'SUBSEP']).
 
 % The BEGIN value of Name, when one was lifted for the program being compiled.
 plawk_begin_init_value(Name, Value) :-
@@ -7978,9 +8309,19 @@ plawk_slot_seed(Slot, Zero, '') :-
     plawk_slot_zero_ir(Slot, Zero).
 
 plawk_slot_init_ir(scalar_counter(_Name), Value, Seed) :-
+    integer(Value),
     format(atom(Seed), '~w', [Value]).
 plawk_slot_init_ir(scalar_double(_Name), Value, Seed) :-
+    integer(Value),
     format(atom(Seed), '~w.0', [Value]).
+% A string / strnum slot holds an interned atom id: seeded from the entry-block
+% intern of the text, when attempt 2 put one there (plawk_begin_seed_lines/2).
+plawk_slot_init_ir(Slot, _Value, Seed) :-
+    ( Slot = scalar_string(Name) ; Slot = scalar_strnum(Name) ),
+    nb_current(plawk_begin_text_seeds, Seeds),
+    is_list(Seeds),
+    memberchk(Name, Seeds),
+    plawk_begin_text_seed_ir(Name, Seed).
 
 plawk_slot_zero_ir(scalar_counter(_Name), '0').
 plawk_slot_zero_ir(scalar_double(_Name), '0.0').
@@ -8347,9 +8688,24 @@ plawk_scalar_typed_slots(Rules, Names, Slots) :-
           plawk_scalar_update_name_expr(Action, Name, Expr)
         ),
         Updates),
-    plawk_scalar_double_fixpoint(Updates, [], Doubles),
-    plawk_scalar_string_names(Rules, Strings0),
     plawk_scalar_strnum_names(Rules, Strnums),
+    % A strnum's numeric value is its strtod reading, so arithmetic over one is
+    % double, like arithmetic over a field: `y = x + 1` and `s += x` (x = $2) read
+    % "30.25" as 0 on the i64 path. Accumulators of a strnum seed the fixpoint (the
+    % Name-Expr pairs cannot tell `s += x` from the copy `s = x`); a strnum operand
+    % of a binary tree is handled inside it.
+    findall(Name,
+        ( member(rule(_Pattern, Actions0), Rules),
+          plawk_trim_control_tails(Actions0, Actions),
+          member(Action0, Actions),
+          plawk_scalar_nested_action(Action0, Action),
+          plawk_scalar_action_update(Action, Name, add(var(Src))),
+          memberchk(Src, Strnums)
+        ),
+        StrnumAccs0),
+    sort(StrnumAccs0, StrnumAccs),
+    plawk_scalar_double_fixpoint(Updates, Strnums, StrnumAccs, Doubles),
+    plawk_scalar_string_names(Rules, Strings0),
     % An ARGV/getline source produces a set_str op, so it also lands in Strings0;
     % once it is an ACTIVATED strnum, drop it from the plain-string set so it
     % types as scalar_strnum (Strings is checked before Strnums). A deactivated
@@ -8764,26 +9120,39 @@ plawk_scalar_update_name_expr(do_while_loop(Body, Cond), Name, Expr) :-
     ; member(Action, Body), plawk_scalar_update_name_expr(Action, Name, Expr)
     ).
 
-plawk_scalar_double_fixpoint(Updates, Doubles0, Doubles) :-
+plawk_scalar_double_fixpoint(Updates, Strnums, Doubles0, Doubles) :-
     findall(Name,
         ( member(Name-Expr, Updates),
           \+ memberchk(Name, Doubles0),
-          plawk_update_expr_is_double(Expr, Doubles0)
+          plawk_update_expr_is_double(Expr, Doubles0, Strnums)
         ),
         New0),
     sort(New0, New),
     ( New == []
     -> Doubles = Doubles0
     ;  append(Doubles0, New, Doubles1),
-       plawk_scalar_double_fixpoint(Updates, Doubles1, Doubles)
+       plawk_scalar_double_fixpoint(Updates, Strnums, Doubles1, Doubles)
     ).
 
-plawk_update_expr_is_double(Expr, _Doubles) :-
+plawk_update_expr_is_double(Expr, _Doubles, _Strnums) :-
     plawk_expr_is_double(Expr),
     !.
-plawk_update_expr_is_double(Expr, Doubles) :-
+plawk_update_expr_is_double(Expr, Doubles, _Strnums) :-
     plawk_expr_scalar_read_name(Expr, Name),
     memberchk(Name, Doubles),
+    !.
+% An arithmetic tree with a strnum variable as an operand (`x + 1`, x = $2).
+plawk_update_expr_is_double(Expr, _Doubles, Strnums) :-
+    plawk_arith_tree_reads_strnum(Expr, Strnums),
+    !.
+
+plawk_arith_tree_reads_strnum(Expr, Strnums) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    (   member(Operand, [Left, Right]),
+        (   Operand = var(Name), memberchk(Name, Strnums)
+        ;   plawk_arith_tree_reads_strnum(Operand, Strnums)
+        )
+    ),
     !.
 
 plawk_scalar_typed_slot(_Doubles, Strings, _Strnums, Name, scalar_string(Name)) :-
@@ -9317,7 +9686,23 @@ plawk_assoc_plan_specs_tables(Rules, PrintFields, RuleSpecs, PrintArrays, Tables
         ),
         ActionArrays),
     append(ActionArrays, PrintArrays, ArrayNames0),
-    sort(ArrayNames0, Tables).
+    sort(ArrayNames0, Tables),
+    plawk_note_f64_table_indices(Tables).
+
+% Record which TABLE INDICES hold double-valued arrays, for emitters that know only
+% the index (plawk_assoc_value_print_line/3). Backtrackable, so an abandoned plan
+% leaves nothing behind; the driver-entry IR check verifies the result both ways.
+plawk_note_f64_table_indices(Tables) :-
+    (   nb_current(plawk_f64_arrays, Arrays), Arrays \== []
+    ->  findall(I, ( nth0(I, Tables, Array), memberchk(Array, Arrays) ), Indices),
+        b_setval(plawk_f64_table_indices, Indices)
+    ;   true
+    ).
+
+plawk_f64_table_index(TableIndex) :-
+    nb_current(plawk_f64_table_indices, Indices),
+    is_list(Indices),
+    memberchk(TableIndex, Indices).
 
 % The table an action spec establishes / mutates (its array name).
 plawk_assoc_spec_table_name(ArrayName-_Key, ArrayName) :- atom(ArrayName).
@@ -9674,6 +10059,20 @@ plawk_assoc_arith_operand_plan(_Tables, aint(V), aint(V)).
 
 % The per-record source value added to a scalar accumulator: a constant, or
 % field N converted to i64.
+%% plawk_assoc_f64_delta_lines(+Delta, +Base, +FieldSep, -DeltaIR, -Lines)
+%  A double-valued array's `+=` delta: a field's strtod value, or an integer
+%  constant as an exact `K.0` double.
+plawk_assoc_f64_delta_lines(int(V), _Base, _FieldSep, DeltaIR, []) :-
+    integer(V),
+    format(atom(DeltaIR), '~w.0', [V]).
+plawk_assoc_f64_delta_lines(field(K), Base, FieldSep, DeltaIR, [Line]) :-
+    integer(K),
+    integer(FieldSep),
+    format(atom(DeltaIR), '%~w_fd', [Base]),
+    format(atom(Line),
+        '  ~w = call double @wam_atom_field_f64_value(%Value %line, i64 ~w, i8 ~w)',
+        [DeltaIR, K, FieldSep]).
+
 plawk_assoc_scalar_src_lines(int(V), _Base, _FieldSep, V, []).
 plawk_assoc_scalar_src_lines(field(K), Base, FieldSep, SrcVar, [Line]) :-
     % Called at the definition's own type -- see the comment at the record-view
@@ -9815,6 +10214,12 @@ plawk_assoc_print_one_field(lookup_int(TableIndex, N, i64), Base, Index, _FieldS
 %  helper probes the occupied bit, not the value). Numeric contexts keep using
 %  @wam_assoc_i64_get directly, whose 0 for an absent key is awk's numeric
 %  reading of an uninitialized element.
+plawk_assoc_value_print_line(TableIndex, KeyIR, Line) :-
+    plawk_f64_table_index(TableIndex),
+    !,
+    format(atom(Line),
+        '  call void @wam_assoc_f64_print(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
+        [TableIndex, KeyIR]).
 plawk_assoc_value_print_line(TableIndex, KeyIR, Line) :-
     format(atom(Line),
         '  call void @wam_assoc_i64_print(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
@@ -11432,7 +11837,7 @@ plawk_assoc_rule_action_blocks(RuleIndex,
 % (a field value or an integer constant) folded in through the same inc
 % primitive the counter uses with a delta of 1. Straight-line, as above.
 plawk_assoc_rule_action_blocks(RuleIndex,
-        [assoc_add_n_action(Index, _ArrayName, TableIndex, Comps, Delta) | Rest],
+        [assoc_add_n_action(Index, ArrayName, TableIndex, Comps, Delta) | Rest],
         NextLabel, FieldSeparator) -->
     { integer(FieldSeparator),
       ( Rest == []
@@ -11446,10 +11851,20 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(KeyId), '%~w_key_id', [Base]),
       plawk_subsep_key_n_ir(Base, '%line', Comps, FieldSeparator, KeyId,
           GlobalDecl, KeyLines),
-      plawk_assoc_scalar_src_lines(Delta, Base, FieldSeparator, DeltaVar, DeltaLines),
-      format(atom(Inc),
-          '  %~w_sum = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 ~w)',
-          [Base, TableIndex, KeyId, DeltaVar]),
+      (   plawk_f64_array(ArrayName)
+      ->  % a DOUBLE-valued array (see the single-key `+=` above)
+          plawk_assoc_f64_delta_lines(Delta, Base, FieldSeparator, DeltaVar,
+              DeltaLines),
+          plawk_f64_table_marker(ArrayName, TableIndex, Marker),
+          format(atom(Inc),
+              '  %~w_sum = call double @wam_assoc_f64_add(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, double ~w)~n  ~w',
+              [Base, TableIndex, KeyId, DeltaVar, Marker])
+      ;   plawk_assoc_scalar_src_lines(Delta, Base, FieldSeparator, DeltaVar,
+              DeltaLines),
+          format(atom(Inc),
+              '  %~w_sum = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 ~w)',
+              [Base, TableIndex, KeyId, DeltaVar])
+      ),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[global(GlobalDecl), Label], KeyLines, DeltaLines,
               [Inc, Next, '']], Lines)
@@ -11589,7 +12004,7 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_split_action(Index, _ArrayName,
 % skip as the counted inc, but the inc delta is the record's DELTA (a field
 % value via @wam_atom_field_i64_value, or an integer constant) rather than 1.
 plawk_assoc_rule_action_blocks(RuleIndex,
-        [assoc_add_action(Index, _ArrayName, TableIndex, KeyIndex, Delta) | Rest],
+        [assoc_add_action(Index, ArrayName, TableIndex, KeyIndex, Delta) | Rest],
         NextLabel, FieldSeparator) -->
     { ( Rest == []
       -> ActionNextLabel = NextLabel
@@ -11614,10 +12029,24 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(KeyId),
           '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_ptr, i64 %~w_key_len)',
           [B, B, B]),
-      plawk_assoc_scalar_src_lines(Delta, B, FieldSeparator, DeltaVar, DeltaLines),
-      format(atom(Inc),
-          '  %~w_sum = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id, i64 ~w)',
-          [B, TableIndex, B, DeltaVar]),
+      (   plawk_f64_array(ArrayName)
+      ->  % a DOUBLE-valued array: the delta's numeric value (strtod for a field),
+          % folded in with @wam_assoc_f64_add; the marker names the table for the
+          % driver-entry IR check.
+          plawk_assoc_f64_delta_lines(Delta, B, FieldSeparator, DeltaVar,
+              DeltaLines0),
+          plawk_f64_table_marker(ArrayName, TableIndex, Marker),
+          format(atom(Inc0),
+              '  %~w_sum = call double @wam_assoc_f64_add(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id, double ~w)',
+              [B, TableIndex, B, DeltaVar]),
+          format(atom(Inc), '~w~n  ~w', [Inc0, Marker]),
+          DeltaLines = DeltaLines0
+      ;   plawk_assoc_scalar_src_lines(Delta, B, FieldSeparator, DeltaVar,
+              DeltaLines),
+          format(atom(Inc),
+              '  %~w_sum = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id, i64 ~w)',
+              [B, TableIndex, B, DeltaVar])
+      ),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId],
               DeltaLines, [Inc, Next, '']], Lines)
@@ -13897,7 +14326,8 @@ plawk_begin_print_string_globals(BeginClauses, GlobalIR) :-
     plawk_fs_regex_global_lines(BeginClauses, RegexLines),
     plawk_rs_global_lines(BeginClauses, RsLines),
     plawk_subsep_global_lines(BeginClauses, SubsepLines),
-    append([[OutputGlobalIR], RegexLines, RsLines, SubsepLines], Lines),
+    plawk_begin_seed_global_lines(BeginClauses, SeedLines),
+    append([[OutputGlobalIR], RegexLines, RsLines, SubsepLines, SeedLines], Lines),
     plawk_join_nonempty_ir(Lines, GlobalIR).
 
 %% plawk_begin_clause_outputs_ir(+BeginClauses, -GlobalIR, -BodyIR) is semidet.
@@ -14122,13 +14552,15 @@ plawk_begin_print_ir([begin(Actions)], OutputSeparator, IR) :-
     plawk_rs_store_lines([begin(Actions)], RsStoreLines),
     plawk_subsep_store_lines([begin(Actions)], SubsepStoreLines),
     plawk_fs_regex_store_lines([begin(Actions)], StoreLines),
-    append([RsStoreLines, SubsepStoreLines, StoreLines, [OutputIR]], Lines),
+    plawk_begin_seed_lines([begin(Actions)], SeedLines),
+    append([RsStoreLines, SubsepStoreLines, StoreLines, SeedLines, [OutputIR]], Lines),
     plawk_join_nonempty_ir(Lines, IR).
 plawk_begin_print_ir([begin(Actions)], _OutputSeparator, IR) :-
     plawk_rs_store_lines([begin(Actions)], RsStoreLines),
     plawk_subsep_store_lines([begin(Actions)], SubsepStoreLines),
     plawk_fs_regex_store_lines([begin(Actions)], StoreLines),
-    append([RsStoreLines, SubsepStoreLines, StoreLines], StartupLines),
+    plawk_begin_seed_lines([begin(Actions)], SeedLines),
+    append([RsStoreLines, SubsepStoreLines, StoreLines, SeedLines], StartupLines),
     (   StartupLines == []
     ->  IR = ''
     ;   atomic_list_concat(StartupLines, '\n', IR)
@@ -17995,6 +18427,16 @@ plawk_str_concat_field_lines([field(N) | Rest], B, EmptyName, FieldSep, Pos,
 plawk_scalar_f64_numeric_expr_ir(ssa_f64(Value), _FieldSeparator, _Prefix,
         _SlotIndex, _OpIndex, Value, '', '') :-
     !.
+% A bare strnum read into a double slot (`s += x`, x = $2): its strtod value
+% directly. The i64-then-promote clause below re-read it with the strict integer
+% parse and lost every non-integer ("30.25" -> 0).
+plawk_scalar_f64_numeric_expr_ir(ssa_strnum(Value), FieldSeparator, Prefix,
+        SlotIndex, OpIndex, ValueIR, '', SetupIR) :-
+    !,
+    format(atom(Base), '~w_slot_~w_op_~w_f64', [Prefix, SlotIndex, OpIndex]),
+    plawk_f64_expr_ir(ssa_strnum(Value), FieldSeparator, Base, Base, ValueIR, [],
+        SetupParts),
+    atomic_list_concat(SetupParts, '\n', SetupIR).
 plawk_scalar_f64_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
         OpIndex, ValueIR, GlobalIR, SetupIR) :-
     plawk_expr_is_double(Expr),
@@ -18739,6 +19181,9 @@ plawk_expr_is_double(Expr) :-
 plawk_arith_field_operand(field(Index)) :-
     integer(Index),
     Index >= 0.
+% A substituted strnum read (x = $2; `x + 1`): its numeric value is a strtod
+% reading too, so it makes the tree double for the same reason a field does.
+plawk_arith_field_operand(ssa_strnum(_Value)).
 
 %% plawk_f64_print_expr(+Expr) is semidet.
 %
@@ -18825,7 +19270,7 @@ plawk_f64_expr_ir(ssa_strnum(Value), _FieldSeparator, Base, _GlobalBase,
     format(atom(StrCall), '  %~w_snf_s = call i8* @wam_atom_to_string(i64 ~w)',
         [Base, Value]),
     format(atom(ParseCall),
-        '  ~w = call double @strtod(i8* %~w_snf_s, i8** null)', [ValueIR, Base]).
+        '  ~w = call double @wam_awk_strtod(i8* %~w_snf_s)', [ValueIR, Base]).
 % float(name(args)): the double-returning foreign call. A failed call
 % contributes 0.0, mirroring the i64 prolog_call contract.
 plawk_f64_expr_ir(float_dyncall(Args), FieldSeparator, Base, GlobalBase,
