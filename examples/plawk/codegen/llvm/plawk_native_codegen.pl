@@ -9737,6 +9737,25 @@ plawk_assoc_rule_action_specs(rule(Pattern, Actions), rule(Pattern, ActionSpecs,
 % Per-record assoc actions: an increment (Array-KeyIndex) or a grammar
 % populate (dynassoc(Array, Call)) that fills Array's table from the
 % returned [K-V,...] pairs.
+% `arr[k]++` on a DOUBLE-valued array (one that also takes a field-valued `+=`):
+% the same fold as `arr[k] += 1`, through the double `+=` emitters, instead of the
+% i64 count -- which would add 1 to a stored double BIT PATTERN. (Before this row
+% the driver-entry IR check declined the program.)
+plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), field(KeyIndex)),
+        assoc_add(ArrayName, KeyIndex, int(1))) :-
+    integer(KeyIndex), KeyIndex > 0,
+    plawk_f64_array(ArrayName),
+    !.
+plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), subsep_key(Fields)),
+        assoc_add_n(ArrayName, Comps, int(1))) :-
+    plawk_f64_array(ArrayName),
+    plawk_subsep_key_components(Fields, Comps),
+    !.
+plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), Lit),
+        assoc_add_n(ArrayName, Comps, int(1))) :-
+    plawk_f64_array(ArrayName),
+    plawk_assoc_literal_key_comps(Lit, Comps),
+    !.
 plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), field(KeyIndex)),
         ArrayName-KeyIndex) :-
     KeyIndex > 0.
@@ -15324,7 +15343,20 @@ plawk_assoc_end_print_lines([Field | Rest], AssocPlan, Descriptor, OutputSeparat
         NextPrintIndex).
 
 plawk_assoc_table_index(assoc_plan(Tables, _Actions), ArrayName, TableIndex) :-
-    nth0(TableIndex, Tables, ArrayName).
+    nth0(TableIndex, Tables, ArrayName),
+    plawk_note_f64_table_index(ArrayName, TableIndex).
+
+% Every driver resolves an array's table index here, so this is where a DOUBLE
+% array's index is recorded for emitters that know only the index (the cross-table
+% lookup print). The driver-entry IR check still verifies every f64 call's table.
+plawk_note_f64_table_index(ArrayName, TableIndex) :-
+    (   integer(TableIndex),
+        plawk_f64_array(ArrayName),
+        \+ plawk_f64_table_index(TableIndex)
+    ->  (   nb_current(plawk_f64_table_indices, L0), is_list(L0) -> true ; L0 = [] ),
+        b_setval(plawk_f64_table_indices, [TableIndex | L0])
+    ;   true
+    ).
 
 %% plawk_assoc_plan_str_array(+AssocPlan, +ArrayName) is semidet.
 %  ArrayName's table holds STRING values: some rule populates it through
