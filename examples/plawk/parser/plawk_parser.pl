@@ -4708,6 +4708,8 @@ field_expr(field(Index)) -->
     }.
 field_expr(field_nf(Offset)) -->
     nf_field_ref(Offset).
+field_expr(field_var(Name, Offset)) -->
+    var_field_ref(Name, Offset).
 field_expr(string(Value)) -->
     quoted_string(ValueCodes),
     { string_codes(Value, ValueCodes)
@@ -5408,6 +5410,26 @@ nf_field_ref(Offset) -->
     ws,
     "NF",
     identifier_boundary,
+    ws,
+    nf_field_offset(Offset),
+    ws,
+    ")".
+
+%% var_field_ref(-Name, -Offset)//
+%
+%  `$i`, `$(i)`, `$(i-K)`, `$(i+K)` -- a field whose index is a SCALAR VARIABLE plus
+%  a literal offset (`for (i = 1; i <= NF; i++) print $i`), parsed to
+%  field_var(Name, Offset). Like field_nf/1 a distinct functor: every context not
+%  taught it declines. NF and the other specials are not variables here.
+var_field_ref(Name, 0) -->
+    "$",
+    identifier(Name),
+    { \+ scalar_cmp_reserved_name(Name), Name \== 'NF' }.
+var_field_ref(Name, Offset) -->
+    "$(",
+    ws,
+    identifier(Name),
+    { \+ scalar_cmp_reserved_name(Name), Name \== 'NF' },
     ws,
     nf_field_offset(Offset),
     ws,
