@@ -1652,7 +1652,122 @@ declare double @exp(double)
 declare double @log(double)
 declare i32 @regcomp(i8*, i8*, i32)
 declare i32 @regexec(i8*, i8*, i64, i8*, i32)
-declare double @strtod(i8*, i8**)'
+declare double @strtod(i8*, i8**)
+
+; ---- awk output redirection: print ... > "file" / >> "file" ----
+; A redirected print runs between @plawk_redirect_begin(name, append) and
+; @plawk_redirect_end(): begin flushes stdio, saves the real stdout once, and
+; points fd 1 at the target -- opened ONCE per name (the first > truncates, >>
+; appends) and kept open, as awk does; end flushes and restores fd 1. So every
+; print emitter works unchanged. /dev/stderr and /dev/stdout are the real
+; streams, never reopened (an O_TRUNC reopen could truncate a file stderr is
+; itself redirected to). Native only: the WASM branch has no such symbols.
+declare i32 @dup(i32)
+declare i32 @dup2(i32, i32)
+declare i32 @fflush(i8*)
+@plawk_redir_saved = internal global i32 -1
+@plawk_redir_names = internal global [64 x i8*] zeroinitializer
+@plawk_redir_fds = internal global [64 x i32] zeroinitializer
+@plawk_redir_count = internal global i64 0
+@.plawk_redir_stderr = private constant [12 x i8] c"/dev/stderr\\00"
+@.plawk_redir_stdout = private constant [12 x i8] c"/dev/stdout\\00"
+@.plawk_redir_error = private constant [55 x i8] c"plawk: fatal: cannot open file for output redirection\\0A\\00"
+
+define void @plawk_redirect_begin(i8* %name, i32 %append) {
+entry:
+  %rb.fl = call i32 @fflush(i8* null)
+  %rb.saved0 = load i32, i32* @plawk_redir_saved
+  %rb.need = icmp slt i32 %rb.saved0, 0
+  br i1 %rb.need, label %rb.save, label %rb.special
+
+rb.save:
+  %rb.s = call i32 @dup(i32 1)
+  store i32 %rb.s, i32* @plawk_redir_saved
+  br label %rb.special
+
+rb.special:
+  %rb.errp = getelementptr [12 x i8], [12 x i8]* @.plawk_redir_stderr, i64 0, i64 0
+  %rb.iserr = call i32 @strcmp(i8* %name, i8* %rb.errp)
+  %rb.e0 = icmp eq i32 %rb.iserr, 0
+  br i1 %rb.e0, label %rb.use_err, label %rb.check_out
+
+rb.use_err:
+  %rb.d1 = call i32 @dup2(i32 2, i32 1)
+  ret void
+
+rb.check_out:
+  %rb.outp = getelementptr [12 x i8], [12 x i8]* @.plawk_redir_stdout, i64 0, i64 0
+  %rb.isout = call i32 @strcmp(i8* %name, i8* %rb.outp)
+  %rb.o0 = icmp eq i32 %rb.isout, 0
+  br i1 %rb.o0, label %rb.use_out, label %rb.head
+
+rb.use_out:
+  %rb.sv = load i32, i32* @plawk_redir_saved
+  %rb.d2 = call i32 @dup2(i32 %rb.sv, i32 1)
+  ret void
+
+rb.head:
+  %rb.i = phi i64 [ 0, %rb.check_out ], [ %rb.i1, %rb.next ]
+  %rb.cnt = load i64, i64* @plawk_redir_count
+  %rb.done = icmp uge i64 %rb.i, %rb.cnt
+  br i1 %rb.done, label %rb.open, label %rb.cmp
+
+rb.cmp:
+  %rb.np = getelementptr [64 x i8*], [64 x i8*]* @plawk_redir_names, i64 0, i64 %rb.i
+  %rb.n = load i8*, i8** %rb.np
+  %rb.c = call i32 @strcmp(i8* %name, i8* %rb.n)
+  %rb.same = icmp eq i32 %rb.c, 0
+  br i1 %rb.same, label %rb.found, label %rb.next
+
+rb.next:
+  %rb.i1 = add i64 %rb.i, 1
+  br label %rb.head
+
+rb.found:
+  %rb.fp = getelementptr [64 x i32], [64 x i32]* @plawk_redir_fds, i64 0, i64 %rb.i
+  %rb.fd = load i32, i32* %rb.fp
+  %rb.d3 = call i32 @dup2(i32 %rb.fd, i32 1)
+  ret void
+
+rb.open:
+  ; O_WRONLY|O_CREAT plus O_APPEND (>>) or O_TRUNC (>), mode 0666 (Linux values)
+  %rb.app = icmp ne i32 %append, 0
+  %rb.flags = select i1 %rb.app, i32 1089, i32 577
+  %rb.nfd = call i32 @open(i8* %name, i32 %rb.flags, i32 438)
+  %rb.bad = icmp slt i32 %rb.nfd, 0
+  br i1 %rb.bad, label %rb.fail, label %rb.remember
+
+rb.fail:
+  %rb.msg = getelementptr [55 x i8], [55 x i8]* @.plawk_redir_error, i64 0, i64 0
+  %rb.w = call i64 @write(i32 2, i8* %rb.msg, i64 54)
+  call void @exit(i32 2)
+  unreachable
+
+rb.remember:
+  %rb.room = icmp ult i64 %rb.cnt, 64
+  br i1 %rb.room, label %rb.store, label %rb.use_new
+
+rb.store:
+  %rb.snp = getelementptr [64 x i8*], [64 x i8*]* @plawk_redir_names, i64 0, i64 %rb.cnt
+  store i8* %name, i8** %rb.snp
+  %rb.sfp = getelementptr [64 x i32], [64 x i32]* @plawk_redir_fds, i64 0, i64 %rb.cnt
+  store i32 %rb.nfd, i32* %rb.sfp
+  %rb.cnt1 = add i64 %rb.cnt, 1
+  store i64 %rb.cnt1, i64* @plawk_redir_count
+  br label %rb.use_new
+
+rb.use_new:
+  %rb.d4 = call i32 @dup2(i32 %rb.nfd, i32 1)
+  ret void
+}
+
+define void @plawk_redirect_end() {
+entry:
+  %re.fl = call i32 @fflush(i8* null)
+  %re.sv = load i32, i32* @plawk_redir_saved
+  %re.d = call i32 @dup2(i32 %re.sv, i32 1)
+  ret void
+}'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)

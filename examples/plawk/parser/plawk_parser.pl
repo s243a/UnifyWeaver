@@ -2936,6 +2936,20 @@ action(Action) -->
 action(Action) -->
     if_action(Action),
     !.
+% Output redirection `print ... > "file"` / `>> "file"` (and printf). The target
+% is a string literal; the action is wrapped as redirect(write|append,
+% string(Path), Print). Without a redirect this clause fails and the plain
+% printf/print clauses below take the statement.
+action(redirect(Mode, string(Path), Inner)) -->
+    (   printf_action(Inner)
+    ;   print_action(Inner)
+    ),
+    redirect_blanks,
+    redirect_op(Mode),
+    redirect_blanks,
+    quoted_string(Codes),
+    { string_codes(Path, Codes) },
+    !.
 action(Action) -->
     printf_action(Action),
     !.
@@ -5412,6 +5426,17 @@ nf_field_ref(Offset) -->
     nf_field_offset(Offset),
     ws,
     ")".
+
+redirect_op(append) --> ">>", !.
+redirect_op(write) --> ">".
+
+redirect_blanks -->
+    [C],
+    { C =:= 0'  ; C =:= 0'\t },
+    !,
+    redirect_blanks.
+redirect_blanks -->
+    [].
 
 nf_field_offset(Offset) -->
     "-",

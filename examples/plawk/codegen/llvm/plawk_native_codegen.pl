@@ -9359,6 +9359,10 @@ plawk_actions_body_print_field(Actions, Field) :-
     member(Action, ReachableActions),
     plawk_action_body_print_field(Action, Field).
 
+% a redirected print is still a body print (its fields drive the same analyses:
+% scalar-plan activation, NR counter, strnum reads).
+plawk_action_body_print_field(redirect(_Mode, _Path, Inner), Field) :-
+    plawk_action_body_print_field(Inner, Field).
 plawk_action_body_print_field(print(Fields), Field) :-
     member(Field, Fields).
 plawk_action_body_print_field(printf(string(_Format), Args), Field) :-
@@ -15822,6 +15826,10 @@ plawk_scalar_rule_body_action(exit_store(_Code)).
 % srand(N) / srand() -- PRNG seeding statements (pure side effect).
 plawk_scalar_rule_body_action(srand(int(_Seed))).
 plawk_scalar_rule_body_action(srand_time).
+% `print ... > "file"`: admitted HERE only -- the scalar action-sequence emitter
+% lowers it; drivers that do not go through it never see it admitted.
+plawk_scalar_rule_body_action(redirect(Mode, string(Path), Inner)) :-
+    plawk_redirect_ok(Mode, Path, Inner).
 plawk_scalar_rule_body_action(Action) :-
     plawk_rule_body_print_action(Action).
 plawk_scalar_rule_body_action(writebin_out(Types, Fields)) :-
@@ -15881,6 +15889,13 @@ plawk_scalar_rule_body_plain_action(exit_store(_Code)).
 % srand(N) / srand() inside a branch body (`if (c) srand(1)`).
 plawk_scalar_rule_body_plain_action(srand(int(_Seed))).
 plawk_scalar_rule_body_plain_action(srand_time).
+plawk_scalar_rule_body_plain_action(redirect(Mode, string(Path), Inner)) :-
+    plawk_redirect_ok(Mode, Path, Inner).
+
+plawk_redirect_ok(Mode, Path, Inner) :-
+    memberchk(Mode, [write, append]),
+    string(Path),
+    plawk_rule_body_print_action(Inner).
 % a structured-return destructure inside a branch body: the sequence
 % walker lowers dynrec_bind wherever it appears (its slots/call IR is
 % branch-position-independent), so branch-body validation accepts it
@@ -17484,6 +17499,34 @@ plawk_scalar_action_sequence_pairs([getline_read(Var, File) | Rest], Slots, Asso
         NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, NextExits).
 % `srand(N)` -- seed the PRNG with the integer N (reproducible). A pure side
 % effect: no slot changes, so Values pass through unchanged.
+% `print ... > "file"` / `>> "file"`: the print, bracketed by the runtime's
+% @plawk_redirect_begin / @plawk_redirect_end (fd 1 temporarily points at the
+% file), so the print itself lowers exactly as an unredirected one.
+plawk_scalar_action_sequence_pairs([redirect(Mode, string(Path), Inner) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    !,
+    plawk_scalar_action_sequence_pairs([redirect_begin(Mode, Path), Inner, redirect_end | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
+plawk_scalar_action_sequence_pairs([redirect_begin(Mode, Path) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { format(atom(GName), '~w_redir_~w', [Prefix, OpIndex]),
+      llvm_emit_c_string_global(GName, Path, GlobalIR, _Len, Bytes),
+      format(atom(PtrLine),
+          '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+          [GName, Bytes, Bytes, GName]),
+      ( Mode == append -> App = 1 ; App = 0 ),
+      format(atom(CallLine), '  call void @plawk_redirect_begin(i8* %~w_ptr, i32 ~w)',
+          [GName, App]),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-PtrLine, ''-CallLine],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
+plawk_scalar_action_sequence_pairs([redirect_end | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    [''-'  call void @plawk_redirect_end()'],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 plawk_scalar_action_sequence_pairs([srand(int(Seed)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { integer(Seed),
