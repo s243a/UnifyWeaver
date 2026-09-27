@@ -292,6 +292,58 @@ plawk_f64_table_line_ok(Line) :-
     sub_string(Line, _, _, _, Allowed),
     !.
 
+% SPLIT in the mixed chain: a split table is positional and str-valued (keys are
+% raw positions, values atom ids), while every other mixed table is counted (keys
+% interned atom ids, values counts). Reading one kind as the other prints atom ids
+% or looks up the wrong key -- wrong output, not a crash.
+%
+% Checked on the OUTPUT: the mixed walker's split row marks the table it filled
+% (`; plawk-mixed-split(NAME)=N`), and every IR line that touches
+% %plawk_assoc_table_N must be the split fill, the positional str print, or the
+% table's new/free. Any other use declines the program.
+plawk_program_native_driver_ir(Program, InputPath, DriverIR) :-
+    \+ nb_current(plawk_mixed_split_check, active),
+    Program = program(_Begin, Rules, _End),
+    sub_term(Term, Rules), compound(Term), Term = split_into(_, _, _),
+    !,
+    b_setval(plawk_mixed_split_check, active),
+    (   plawk_program_native_driver_ir(Program, InputPath, DriverIR0)
+    ->  b_setval(plawk_mixed_split_check, inactive),
+        plawk_mixed_split_tables_ir_ok(DriverIR0),
+        DriverIR = DriverIR0
+    ;   b_setval(plawk_mixed_split_check, inactive),
+        fail
+    ).
+
+plawk_mixed_split_tables_ir_ok(IR) :-
+    findall(TableIndex, plawk_mixed_split_marker(IR, TableIndex), Indices0),
+    sort(Indices0, Indices),
+    split_string(IR, "\n", "", Lines),
+    forall(member(TableIndex, Indices),
+        ( format(atom(TableRef), '%plawk_assoc_table_~w', [TableIndex]),
+          forall(( member(Line, Lines),
+                   plawk_line_mentions_table(Line, TableRef) ),
+                 plawk_mixed_split_table_line_ok(Line)) )).
+
+plawk_mixed_split_marker(IR, TableIndex) :-
+    sub_atom(IR, B, L, _, '; plawk-mixed-split('),
+    Start is B + L,
+    sub_atom(IR, Start, _, 0, After),
+    once(sub_atom(After, CB, 2, _, ')=')),
+    DigitsStart is CB + 2,
+    sub_atom(After, DigitsStart, _, 0, DigitsAtom),
+    atom_codes(DigitsAtom, AfterCodes),
+    phrase(plawk_digits(DigitCodes), AfterCodes, _),
+    DigitCodes \== [],
+    number_codes(TableIndex, DigitCodes).
+
+plawk_mixed_split_table_line_ok(Line) :-
+    member(Allowed, ["; plawk-mixed-split(", "@wam_str_split_into(",
+                     "@wam_str_split_into_re(", "@wam_assoc_str_print(",
+                     "@wam_assoc_i64_new(", "@wam_assoc_i64_free("]),
+    sub_string(Line, _, _, _, Allowed),
+    !.
+
 % A user-scalar BEGIN assignment that could NOT be lifted (assigned twice, or read
 % by another BEGIN statement) must not reach the drivers: some ignore unfamiliar
 % BEGIN actions, which would silently drop it. Decline.
@@ -9259,13 +9311,14 @@ plawk_mixed_scalar_state_plan(Rules, PrintFields, state_plan(Slots, Tracked)) :-
     ),
     plawk_unset_tracked_slots(Rules, state_plan(Slots, []), Tracked).
 
-plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, [])) :-
+plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, Markers)) :-
     findall(ArrayName,
         ( member(rule(_Pattern, Actions), Rules),
           plawk_assoc_increment_spec_in_actions(Actions, ArrayName-_KeyIndex)
         ),
         ActionArrays),
-    ActionArrays \== [],
+    plawk_mixed_split_arrays(Rules, SplitArrays),
+    ( ActionArrays \== [] ; SplitArrays \== [] ),
     findall(ArrayName,
         ( member(Field, PrintFields),
           plawk_assoc_print_array(Field, ArrayName)
@@ -9286,8 +9339,45 @@ plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, [])) :-
     % action is still required above, and plawk_mixed_state_plan/3 still requires
     % a scalar slot or a conditional, so a pure-assoc or pure-scalar program keeps
     % its own driver.
-    append([ActionArrays, PrintArrays, MembershipArrays], ArrayNames0),
-    sort(ArrayNames0, Tables).
+    append([ActionArrays, PrintArrays, MembershipArrays], CountedNames),
+    % A split target is a POSITIONAL, str-valued table (keys are raw positions
+    % 1..n, values atom ids) -- a different kind from a counted table (keys are
+    % interned atom ids, values counts). The mixed walker reads it by position
+    % only; any counted use of the same array (an update, delete, `in` test, or END
+    % element print) would mix the two key spaces, so such a program declines.
+    \+ ( member(SplitArray, SplitArrays),
+         ( memberchk(SplitArray, CountedNames)
+         ; plawk_mixed_counted_use(Rules, SplitArray)
+         ) ),
+    append(CountedNames, SplitArrays, ArrayNames0),
+    sort(ArrayNames0, Tables),
+    % The kind markers the plan-kind predicates read (plawk_assoc_plan_str_array,
+    % plawk_assoc_plan_posarray_array). Omitted when there is no split, so the plan
+    % -- and the IR -- of every program without one is unchanged.
+    (   SplitArrays == []
+    ->  Markers = []
+    ;   Markers = [str_arrays(SplitArrays), posarrays(SplitArrays)]
+    ).
+
+%% plawk_mixed_split_arrays(+Rules, -SplitArrays)
+%  Arrays that some rule fills with `split(SRC, arr, "sep")` (at any nesting).
+plawk_mixed_split_arrays(Rules, SplitArrays) :-
+    findall(ArrayName,
+        ( sub_term(Term, Rules),
+          compound(Term),
+          Term = split_into(_Src, var(ArrayName), _Sep)
+        ),
+        SplitArrays0),
+    sort(SplitArrays0, SplitArrays).
+
+% A use of ArrayName other than a split fill or an element read in a print.
+plawk_mixed_counted_use(Rules, ArrayName) :-
+    sub_term(Term, Rules),
+    compound(Term),
+    Term \= split_into(_, _, _),
+    Term \= print(_),
+    plawk_action_table_name(Term, ArrayName),
+    !.
 
 plawk_actions_membership_array(Actions, ArrayName) :-
     member(Action, Actions),
@@ -9481,6 +9571,11 @@ plawk_mixed_update_action(Action) :-
 % slot there). Field / string-literal / integer-literal delete keys stay in the
 % pure-assoc chain; a numeric-scalar key declines at the walker's slot gate.
 plawk_mixed_update_action(delete_assoc(var(_ArrayName), var(_Name))).
+% `split($N, arr, "sep")` -- fills a positional str table (the walker's split row).
+% Same source/separator shapes as the pure-assoc chain's split.
+plawk_mixed_update_action(split_into(field(KeyIndex), var(_ArrayName), string(Sep))) :-
+    integer(KeyIndex), KeyIndex >= 0,
+    string(Sep), string_length(Sep, Len), Len >= 1.
 % Record-target main getline has no surface scalar update, but it still writes
 % the transient `$0` buffer and advances the hidden NR/FNR slot. The scalar-
 % target forms are admitted by plawk_scalar_action_update/3 above.
@@ -16076,6 +16171,8 @@ plawk_rule_body_print_field(assoc(var(_), var(_))).
 % a FIELD-keyed element read -- resolved against the mixed plan's tables; with no
 % plan (a scalar driver) it stays unresolved and the print declines.
 plawk_rule_body_print_field(assoc(var(_), field(N))) :- integer(N), N >= 0.
+% an integer position -- resolved only on a positional (split) table
+plawk_rule_body_print_field(assoc(var(_), int(N))) :- integer(N).
 plawk_rule_body_print_field(special('NR')).
 plawk_rule_body_print_field(special('NF')).
 plawk_rule_body_print_field(environ(Key)) :- string(Key).
@@ -16898,18 +16995,38 @@ plawk_resolve_assoc_read_field(Slots, Values, AssocPlan,
     nth0(SlotIndex, Slots, Slot),
     plawk_slot_name(Slot, KeyName),
     nth0(SlotIndex, Values, SlotValue),
-    plawk_assoc_read_resolved_term(Slot, TableIndex, SlotValue, Resolved),
+    (   plawk_assoc_plan_posarray_array(AssocPlan, ArrayName)
+    ->  plawk_assoc_pos_read_term(AssocPlan, ArrayName, Slot, TableIndex,
+            SlotValue, Resolved)
+    ;   plawk_assoc_read_resolved_term(Slot, TableIndex, SlotValue, Resolved)
+    ),
     !.
+% `print arr[2]` -- an integer-literal key, read BY POSITION from a positional
+% (split) table. On a counted table the literal would have to be interned as the
+% key "2"; that is not taught, so it is left unresolved (and declines).
+plawk_resolve_assoc_read_field(_Slots, _Values, AssocPlan,
+        assoc(var(ArrayName), int(N)), Resolved) :-
+    integer(N),
+    plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+    plawk_assoc_plan_posarray_array(AssocPlan, ArrayName),
+    !,
+    plawk_assoc_pos_read_term(AssocPlan, ArrayName, scalar_counter(int), TableIndex,
+        N, Resolved).
 % `print c[$N]` in a rule body of the mixed chain: a FIELD-keyed element read. The
 % key is the field's text interned (as the pure-assoc driver's lookup does); the
 % value prints through the table's print helper, which prints NOTHING for an
 % absent key -- awk's string-context reading of an unset element -- instead of
 % @wam_assoc_i64_get's 0.
 plawk_resolve_assoc_read_field(_Slots, _Values, AssocPlan,
-        assoc(var(ArrayName), field(N)), assoc_field_read(TableIndex, N)) :-
+        assoc(var(ArrayName), field(N)), Resolved) :-
     integer(N), N >= 0,
     plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
-    !.
+    !,
+    % a field key is TEXT, interned; a positional table is keyed by raw position
+    (   plawk_assoc_plan_posarray_array(AssocPlan, ArrayName)
+    ->  Resolved = assoc_unsupported_read(ArrayName)
+    ;   Resolved = assoc_field_read(TableIndex, N)
+    ).
 plawk_resolve_assoc_read_field(Slots, Values, AssocPlan, concat(Parts0),
         concat(Parts)) :-
     !,
@@ -16922,6 +17039,20 @@ plawk_assoc_read_resolved_term(Slot, TableIndex, SlotValue,
     !.
 plawk_assoc_read_resolved_term(scalar_counter(_), TableIndex, SlotValue,
         assoc_keyid_num(TableIndex, SlotValue)).
+
+%% plawk_assoc_pos_read_term(+AssocPlan, +ArrayName, +KeySlot, +TableIndex, +KeyIR, -Resolved)
+%  An element read from a POSITIONAL table: the key is the raw i64 position. Only a
+%  numeric key (a counter slot or an integer literal) is a position; a string or
+%  strnum key would need awk's string-to-number key conversion, so it resolves to
+%  assoc_unsupported_read/1, which has no emitter -- the program declines instead
+%  of reading an atom id as a position. A positional table that is not str-valued
+%  (no mixed producer makes one) declines the same way.
+plawk_assoc_pos_read_term(AssocPlan, ArrayName, scalar_counter(_), TableIndex, KeyIR,
+        assoc_pos_str(TableIndex, KeyIR)) :-
+    plawk_assoc_plan_str_array(AssocPlan, ArrayName),
+    !.
+plawk_assoc_pos_read_term(_AssocPlan, ArrayName, _Slot, _TableIndex, _KeyIR,
+        assoc_unsupported_read(ArrayName)).
 
 plawk_substitute_scalar_reads(blob_slice_vars(A0, B0), Slots, Values,
         blob_slice_vars(A, B)) :-
@@ -17740,6 +17871,44 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
     [Pair],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, NextExits).
+% `split($N, arr, "sep")` in the mixed chain: resolve the source (the record for
+% $0, else field N's slice) and call the split primitive, which clears the table
+% and refills it with the pieces at positions 1..n. Straight-line: a missing field
+% is a null/0 slice, which the primitive treats as the empty string (the table is
+% cleared, n = 0) without reading through the pointer -- awk's split of "". The
+% table must be one the plan marked positional, and the line after the call marks
+% it (`; plawk-mixed-split(NAME)=N`) for the driver-level IR check.
+plawk_scalar_action_sequence_pairs([split_into(field(KeyIndex), var(ArrayName), string(Sep)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { integer(KeyIndex), KeyIndex >= 0,
+      integer(FieldSeparator),
+      plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+      plawk_assoc_plan_posarray_array(AssocPlan, ArrayName),
+      plawk_assoc_plan_str_array(AssocPlan, ArrayName),
+      !,
+      format(atom(Base), '~w_split_~w', [Prefix, OpIndex]),
+      (   KeyIndex =:= 0
+      ->  format(atom(L1), '  %~w_lp = call i64 @value_payload(%Value %line)', [Base]),
+          format(atom(L2), '  %~w_src_ptr = call i8* @wam_atom_to_string(i64 %~w_lp)', [Base, Base]),
+          format(atom(L3), '  %~w_src_len = call i64 @strlen(i8* %~w_src_ptr)', [Base, Base])
+      ;   format(atom(L1),
+              '  %~w_src_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+              [Base, KeyIndex, FieldSeparator]),
+          format(atom(L2), '  %~w_src_ptr = extractvalue %WamSlice %~w_src_slice, 0', [Base, Base]),
+          format(atom(L3), '  %~w_src_len = extractvalue %WamSlice %~w_src_slice, 1', [Base, Base])
+      ),
+      plawk_split_call_lines(Sep, Base, TableIndex, SplitExtras, SplitCall),
+      findall(G, member(global(G), SplitExtras), Globals),
+      findall(E, ( member(E, SplitExtras), E \= global(_) ), ExtraLines),
+      atomic_list_concat(Globals, '\n', GlobalIR),
+      format(atom(Marker), '  ; plawk-mixed-split(~w)=~w', [ArrayName, TableIndex]),
+      append([[L1, L2, L3], ExtraLines, [SplitCall, Marker]], IRLines),
+      atomic_list_concat(IRLines, '\n', IR),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 % `arr[x]++` with a scalar-variable key: resolve the scalar to its current slot
 % value (Values0) and increment that key id. A string/strnum slot value IS the
 % interned atom id `arr[$N]` would produce (no field-slice / re-intern); a
@@ -22726,17 +22895,9 @@ plawk_emit_print_expr_for_context(ssa(Value), FieldSeparator, Context,
     plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
     plawk_i64_expr_ir(ssa(Value), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
-% `print arr[k]` (a resolved scalar-var-keyed assoc value read): fetch the i64
-% count for the key id via @wam_assoc_i64_get and print it with %ld. The single
-% get call is the setup; no module global is needed (the key id is an in-register
-% SSA value). Unlike the other assoc value prints this does not route through
-% plawk_assoc_value_print_line (which prints empty for an absent key, matching
-% awk): the print protocol here hands a value + format back to the CALLER, which
-% does the printf. That is sound because the supported mixed-chain shapes
-% increment the key before reading it (`{ k = $1; arr[k]++; print arr[k] }`), so
-% the key always exists -- read-before-write and cross-table shapes are outside
-% the compilable surface. Revisit together with the print-type protocol if those
-% shapes are admitted.
+% `print arr[$N]` (a resolved field-keyed read in a mixed rule body): intern the
+% field's text as the key and print through the table's print helper, which prints
+% nothing for an absent key. direct(Lines): the lines do the printing themselves.
 plawk_emit_print_expr_for_context(assoc_field_read(TableIndex, N), FieldSeparator, Context,
         direct(Lines), [], []) :-
     integer(FieldSeparator),
@@ -22751,6 +22912,12 @@ plawk_emit_print_expr_for_context(assoc_field_read(TableIndex, N), FieldSeparato
     format(atom(KeyIR), '%~w_kid', [Base]),
     plawk_assoc_value_print_line(TableIndex, KeyIR, PrL),
     Lines = [SliceL, PtrL, LenL, KidL, PrL].
+% `print arr[i]` / `print arr[2]` on a positional str table (split pieces): the key
+% is the raw position; the str print helper resolves the stored atom id to its
+% text and prints nothing for an absent position (awk's empty string).
+plawk_emit_print_expr_for_context(assoc_pos_str(TableIndex, KeyIR), _FieldSeparator,
+        _Context, direct([Line]), [], []) :-
+    plawk_assoc_str_value_print_line(TableIndex, KeyIR, Line).
 % `print arr[k]`: in a PRINT an absent element is awk's empty string, not 0
 % (@wam_assoc_i64_get reads 0 for a missing key, and printing that was wrong
 % output: `{ k = $1; print c[k] "|"; c[k]++ }` printed "0|" where gawk prints "|").

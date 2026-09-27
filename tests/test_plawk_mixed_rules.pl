@@ -21,8 +21,12 @@
 %   - there was no mixed driver for a program with NO END; one now exists (the
 %     single-print clause minus the END print: end_print frees the tables).
 %
-% Later PRs: field-key reads in a body print (`print n, c[$1]`), split with scalar
-% work, `n = split(...)`, loops over split arrays, for-in in a mixed body.
+% PR 2: field-key reads in a body print (`print n, c[$1]`); an absent element prints
+% "" (not 0). PR 3: `split($N, arr, "sep")` with scalar work -- the split table is
+% POSITIONAL and str-valued, a different kind from a counted table, so it is read
+% only by a numeric position and never shares an array with counted uses (both
+% checked on the generated IR). Later PRs: `n = split(...)`, loops over split
+% arrays, for-in in a mixed body.
 %
 % gawk is the oracle (verified against gawk 5.1.0, LC_ALL=C).
 
@@ -30,6 +34,8 @@
 :- use_module(library(process)).
 :- use_module(library(lists)).
 :- use_module(library(filesex), [make_directory_path/1]).
+:- use_module('../examples/plawk/parser/plawk_parser').
+:- use_module('../examples/plawk/codegen/llvm/plawk_native_codegen').
 
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
@@ -88,12 +94,65 @@ test(absent_element_prints_empty, [condition(clang_available)]) :-
     run("{ k = $1; c[k]++; print k, c[k] }\n", "a 1\nb 1\na 2\n"),
     !.
 
+% --- PR 3: split with scalar work -------------------------------------------
+
+% Pieces read by an integer position or a counter-valued scalar. The empty line's
+% missing $1 splits as "" (the array is emptied, a[2] prints ""); a regex separator
+% and a split of $0 take the same path. gawk 5.1.0.
+test(split_with_scalar_work, [condition(clang_available)]) :-
+    run_in("a,b,c 1\nx 2\n\nq,r 3\n",
+        "{ split($1, a, \",\"); n++; print a[2], n }\n", "b 1\n 2\n 3\nr 4\n"),
+    !,
+    run_in("a,b,c 1\nx 2\n\nq,r 3\n",
+        "{ split($1, a, \",\"); n++; print n, a[1] \"|\" a[3] \"|\" }\n",
+        "1 a|c|\n2 x||\n3 ||\n4 q||\n"),
+    !,
+    run_in("a,b,c 1\nx 2\n\nq,r 3\n",
+        "{ split($1, a, \",\"); i = 2; n++; print a[i] }\n", "b\n\n\nr\n"),
+    !,
+    run_in("a,b,c 1\nx 2\n\nq,r 3\n",
+        "{ split($1, a, \"[,r]\"); n++; print a[1], a[2] }\n", "a b\nx \n \nq \n"),
+    !,
+    run_in("a,b,c 1\nx 2\n\nq,r 3\n",
+        "{ n++; split($0, a, \" \"); print a[2] }\n", "1\n2\n\n3\n"),
+    !.
+
+% A split under a condition: a record that does not split keeps the previous pieces.
+test(conditional_split_keeps_previous_pieces, [condition(clang_available)]) :-
+    run_in("a,b,c 1\nx 2\n\nq,r 3\n",
+        "{ if (NF > 1) { split($1, a, \",\") } n++; print a[1] }\n", "a\nx\nx\nq\n"),
+    !.
+
+% The generated IR marks the split table, and every use of that table is the split
+% fill, the positional str print, or its new/free.
+test(split_table_is_marked_and_used_only_positionally) :-
+    build_ll("{ split($1, a, \",\"); n++; print a[2], n }\n", LL),
+    assertion(sub_string(LL, _, _, _, "; plawk-mixed-split(a)=0")),
+    assertion(sub_string(LL, _, _, _, "@wam_assoc_str_print(%WamAssocI64Table* %plawk_assoc_table_0, i64 2)")),
+    assertion(\+ sub_string(LL, _, _, _, "@wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_0")),
+    !.
+
+% Kind boundaries: a string key (a field, or a string-valued scalar) would need awk's
+% string-to-position conversion; a counted use of a split array (an update, an `in`
+% test, an END element read or for-in) mixes the two key spaces. All decline cleanly.
+test(split_kind_boundaries_decline) :-
+    forall(member(Src,
+            [ "{ split($1, a, \",\"); n++; print a[$2] }\n",
+              "{ split($1, a, \",\"); k = $2; print a[k] }\n",
+              "{ split($1, a, \",\"); a[$2]++; n++ }\n",
+              "{ split($1, a, \",\"); n++; if ((1 in a)) print \"y\" }\n",
+              "{ split($1, a, \",\"); n++ } END { print n, a[1] }\n",
+              "{ split($1, a, \",\"); n++ } END { for (k in a) print k, a[k] }\n"
+            ]),
+        build_status_is(Src, 3)),
+    !.
+
 % Forms the later PRs teach decline or fail to parse -- never exit 4.
 test(later_forms_do_not_miscompile) :-
     forall(member(Src,
             [ "{ c[$1] += $2; n++; print c[$1] }\n",
               "{ c[$1]++; if (c[$1] > 1) print \"dup\", $1 }\n",
-              "{ split($1, a, \",\"); n++; print a[2], n }\n",
+              "{ split($1, a, \",\"); n++; printf \"%s\\n\", a[1] }\n",
               "{ n = split($1, a, \",\"); print n }\n"
             ]),
         build_status_not_4(Src)),
@@ -110,6 +169,9 @@ odir(Dir) :-
 
 run(Src, Expected) :-
     input(Input),
+    run_in(Input, Src, Expected).
+
+run_in(Input, Src, Expected) :-
     odir(Dir),
     directory_file_path(Dir, 'mr_bin', Bin),
     % A build that unexpectedly declines must not silently run a stale binary.
@@ -146,6 +208,25 @@ build_status_not_4(Src) :-
     ;  format(user_error, "~n~w~n  build exit ~w (4 = clang miscompile)~n",
            [Src, Status]), fail
     ).
+
+build_status_is(Src, Expected) :-
+    odir(Dir),
+    directory_file_path(Dir, 'mr_status', Prog0),
+    atom_concat(Prog0, '.plawk', Prog),
+    atom_concat(Prog0, '_bin', Bin),
+    setup_call_cleanup(open(Prog, write, S, [encoding(utf8)]),
+        write(S, Src), close(S)),
+    build_status_of(Prog, Bin, Status),
+    ( Status == Expected
+    -> true
+    ;  format(user_error, "~n~w~n  build exit ~w, expected ~w~n",
+           [Src, Status, Expected]), fail
+    ).
+
+build_ll(Src, LL) :-
+    plawk_parse_string(Src, Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', IR),
+    atom_string(IR, LL).
 
 build_status_of(Prog, Bin, Status) :-
     process_create(path(swipl), ['examples/plawk/bin/plawk', build, Prog, '-o', Bin],
