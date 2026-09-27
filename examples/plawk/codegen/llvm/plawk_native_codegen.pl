@@ -817,6 +817,54 @@ plawk_program_native_driver_ir(
             RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+% A mixed (scalar slots + assoc tables) program with NO END: `{ c[$1]++; n++; print
+% n, c[$1] }`. The single-print clause below minus the END print: no END fields, no
+% retained record, and end_print only frees the tables and returns the exit code.
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules, []),
+    InputPath,
+    DriverIR
+) :-
+    \+ plawk_begin_has_binfmt(BeginClauses),
+    plawk_mixed_state_plan(Rules, [], MixedPlan),
+    MixedPlan = mixed_plan(ScalarPlan, AssocPlan, _PlannedRules),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_field_separator(BeginClauses, FieldSeparator),
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_mixed_rule_chain_ir(MixedPlan, FieldSeparator, OutputSeparator,
+        RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    append(BodyPrintFields, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(ScalarPlan, RecordCounterExprs,
+        RecordLoopPhiIR, RecordCounterIR),
+    plawk_state_loop_phi_ir(ScalarPlan, StateLoopPhiIR),
+    plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
+    plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
+    plawk_mixed_rule_controls(MixedPlan, MixedRuleControls),
+    plawk_mixed_scalar_next_phi_ir(ScalarPlan, RuleCount, MixedRuleControls,
+        BranchControlExits, NextPhiIR),
+    plawk_break_close_ir(ScalarPlan, RuleCount, MixedRuleControls,
+        BranchControlExits, done, BreakCloseIR, FinalStatePhiIR),
+    phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
+    atomic_list_concat(FreeLines, '\n', FreeIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w', [BeginGlobalIR, RuleGlobalIR]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
+    plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w~w
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
+        [FinalStatePhiIR, FreeIR]),
+    llvm_emit_stream_driver_ir(InputPath,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, LoopPhiIR,
+            lowered_mixed, RecordIR, NextPhiIR, BreakCloseIR, end_print,
+            CloseOkIR),
+        DriverIR).
+
 % A statement LIST in the mixed (scalar slots + assoc tables) END chain:
 % `{ c[$1]++; n++ } END { print n; print c["a"] }`, `… END { print n; exit 3 }`.
 % The fourth and last END chain to take a statement list, completing the set --
@@ -9230,7 +9278,14 @@ plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, [])) :-
           )
         ),
         MembershipArrays),
-    ( PrintArrays \== [] ; MembershipArrays \== [] ),
+    % No longer required: an END that prints an array element, or an `in` test.
+    % That guard made a program whose tables are only WRITTEN -- `{ c[$1]++; n++ }
+    % END { print n }`, or the same across two rules -- decline, though every piece
+    % lowers already (the rule walker has the table rows); the mixed plan is
+    % program-wide, so rule granularity never mattered. A table-establishing
+    % action is still required above, and plawk_mixed_state_plan/3 still requires
+    % a scalar slot or a conditional, so a pure-assoc or pure-scalar program keeps
+    % its own driver.
     append([ActionArrays, PrintArrays, MembershipArrays], ArrayNames0),
     sort(ArrayNames0, Tables).
 
