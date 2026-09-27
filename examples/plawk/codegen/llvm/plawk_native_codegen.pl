@@ -9576,6 +9576,19 @@ plawk_mixed_update_action(delete_assoc(var(_ArrayName), var(_Name))).
 plawk_mixed_update_action(split_into(field(KeyIndex), var(_ArrayName), string(Sep))) :-
     integer(KeyIndex), KeyIndex >= 0,
     string(Sep), string_length(Sep, Len), Len >= 1.
+% `n = split(...)` -- the count lands in a counter slot (the walker's gate).
+plawk_mixed_update_action(split_count(CountName, Split)) :-
+    atom(CountName),
+    plawk_mixed_update_action(Split).
+% Loops in a mixed body: the walker's loop rows are shared with the scalar chain
+% and thread the table plan into the body (a `for (i = 1; i <= n; i++)` over split
+% pieces parses to a while_loop).
+plawk_mixed_update_action(while_loop(Cond, Body)) :-
+    plawk_while_cond_ok(Cond),
+    plawk_mixed_branch_body_actions(Body).
+plawk_mixed_update_action(do_while_loop(Body, Cond)) :-
+    plawk_while_cond_ok(Cond),
+    plawk_mixed_branch_body_actions(Body).
 % Record-target main getline has no surface scalar update, but it still writes
 % the transient `$0` buffer and advances the hidden NR/FNR slot. The scalar-
 % target forms are admitted by plawk_scalar_action_update/3 above.
@@ -17200,6 +17213,9 @@ plawk_scalar_update_action_name(Action, Name) :-
 % surfaces CountName so it gets its own (i64) slot.
 plawk_scalar_update_action_name(gsub_count(CountName, _Global, _Regex, _Repl, Target), Name) :-
     ( Name = Target ; Name = CountName ).
+% `n = split(...)` writes the count scalar (an i64 slot) -- the split itself
+% writes a table, not a scalar.
+plawk_scalar_update_action_name(split_count(CountName, _Split), CountName).
 % `status = getline var < "file"` writes both the Var string scalar and the
 % Status i64 slot; action_update reports Var, this surfaces Status too.
 plawk_scalar_update_action_name(getline_capture(Status, Var, _File), Name) :-
@@ -17888,6 +17904,38 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
     [Pair],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, NextExits).
+%% plawk_mixed_split_ir(+KeyIndex, +ArrayName, +Sep, +AssocPlan, +FieldSeparator,
+%%     +Prefix, +OpIndex, -GlobalIR, -IR, -CountVar)
+%  The mixed walker's split: source lines, the split call (whose result, the
+%  piece count, is CountVar), and the table marker. Fails unless the plan marks
+%  ArrayName a positional str table.
+plawk_mixed_split_ir(KeyIndex, ArrayName, Sep, AssocPlan, FieldSeparator, Prefix,
+        OpIndex, GlobalIR, IR, CountVar) :-
+    integer(KeyIndex), KeyIndex >= 0,
+    integer(FieldSeparator),
+    plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+    plawk_assoc_plan_posarray_array(AssocPlan, ArrayName),
+    plawk_assoc_plan_str_array(AssocPlan, ArrayName),
+    format(atom(Base), '~w_split_~w', [Prefix, OpIndex]),
+    (   KeyIndex =:= 0
+    ->  format(atom(L1), '  %~w_lp = call i64 @value_payload(%Value %line)', [Base]),
+        format(atom(L2), '  %~w_src_ptr = call i8* @wam_atom_to_string(i64 %~w_lp)', [Base, Base]),
+        format(atom(L3), '  %~w_src_len = call i64 @strlen(i8* %~w_src_ptr)', [Base, Base])
+    ;   format(atom(L1),
+            '  %~w_src_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+            [Base, KeyIndex, FieldSeparator]),
+        format(atom(L2), '  %~w_src_ptr = extractvalue %WamSlice %~w_src_slice, 0', [Base, Base]),
+        format(atom(L3), '  %~w_src_len = extractvalue %WamSlice %~w_src_slice, 1', [Base, Base])
+    ),
+    plawk_split_call_lines(Sep, Base, TableIndex, SplitExtras, SplitCall),
+    findall(G, member(global(G), SplitExtras), Globals),
+    findall(E, ( member(E, SplitExtras), E \= global(_) ), ExtraLines),
+    atomic_list_concat(Globals, '\n', GlobalIR),
+    format(atom(Marker), '  ; plawk-mixed-split(~w)=~w', [ArrayName, TableIndex]),
+    append([[L1, L2, L3], ExtraLines, [SplitCall, Marker]], IRLines),
+    atomic_list_concat(IRLines, '\n', IR),
+    format(atom(CountVar), '%~w_n', [Base]).
+
 % `split($N, arr, "sep")` in the mixed chain: resolve the source (the record for
 % $0, else field N's slice) and call the split primitive, which clears the table
 % and refills it with the pieces at positions 1..n. Straight-line: a missing field
@@ -17897,35 +17945,33 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
 % it (`; plawk-mixed-split(NAME)=N`) for the driver-level IR check.
 plawk_scalar_action_sequence_pairs([split_into(field(KeyIndex), var(ArrayName), string(Sep)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
-    { integer(KeyIndex), KeyIndex >= 0,
-      integer(FieldSeparator),
-      plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
-      plawk_assoc_plan_posarray_array(AssocPlan, ArrayName),
-      plawk_assoc_plan_str_array(AssocPlan, ArrayName),
+    { plawk_mixed_split_ir(KeyIndex, ArrayName, Sep, AssocPlan, FieldSeparator,
+          Prefix, OpIndex, GlobalIR, IR, _CountVar),
       !,
-      format(atom(Base), '~w_split_~w', [Prefix, OpIndex]),
-      (   KeyIndex =:= 0
-      ->  format(atom(L1), '  %~w_lp = call i64 @value_payload(%Value %line)', [Base]),
-          format(atom(L2), '  %~w_src_ptr = call i8* @wam_atom_to_string(i64 %~w_lp)', [Base, Base]),
-          format(atom(L3), '  %~w_src_len = call i64 @strlen(i8* %~w_src_ptr)', [Base, Base])
-      ;   format(atom(L1),
-              '  %~w_src_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
-              [Base, KeyIndex, FieldSeparator]),
-          format(atom(L2), '  %~w_src_ptr = extractvalue %WamSlice %~w_src_slice, 0', [Base, Base]),
-          format(atom(L3), '  %~w_src_len = extractvalue %WamSlice %~w_src_slice, 1', [Base, Base])
-      ),
-      plawk_split_call_lines(Sep, Base, TableIndex, SplitExtras, SplitCall),
-      findall(G, member(global(G), SplitExtras), Globals),
-      findall(E, ( member(E, SplitExtras), E \= global(_) ), ExtraLines),
-      atomic_list_concat(Globals, '\n', GlobalIR),
-      format(atom(Marker), '  ; plawk-mixed-split(~w)=~w', [ArrayName, TableIndex]),
-      append([[L1, L2, L3], ExtraLines, [SplitCall, Marker]], IRLines),
-      atomic_list_concat(IRLines, '\n', IR),
       NextOpIndex is OpIndex + 1
     },
     [GlobalIR-IR],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
+% `n = split(...)`: the same split, and the primitive's piece count becomes the
+% count scalar's new slot value (a counter slot; the split row's `%<Base>_n`).
+plawk_scalar_action_sequence_pairs([split_count(CountName, split_into(field(KeyIndex), var(ArrayName), string(Sep))) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { nth0(CountIndex, Slots, CountSlot),
+      plawk_slot_name(CountSlot, CountName),
+      CountSlot = scalar_counter(_),
+      plawk_mixed_split_ir(KeyIndex, ArrayName, Sep, AssocPlan, FieldSeparator,
+          Prefix, OpIndex, GlobalIR, SplitIR, CountVar),
+      !,
+      % the count is an assignment: mark the slot (plawk_unset_marking_action/2)
+      plawk_scalar_assigned_store_ir(CountSlot, CountIndex, Prefix, OpIndex, StoreIR),
+      plawk_join_nonempty_ir([SplitIR, StoreIR], IR),
+      replace_nth0(CountIndex, Values0, CountVar, Values1),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, NextExits).
 % `arr[x]++` with a scalar-variable key: resolve the scalar to its current slot
 % value (Values0) and increment that key id. A string/strnum slot value IS the
 % interned atom id `arr[$N]` would produce (no field-slice / re-intern); a
@@ -18463,7 +18509,14 @@ plawk_unset_name_only_updated(Rules, Name) :-
              plawk_trim_control_tails(Actions, ReachableActions),
              plawk_end_actions_assigning(ReachableActions, Name, Action)
            ),
-           plawk_scalar_action_update(Action, Name, _Operation)).
+           plawk_unset_marking_action(Action, Name)).
+
+%  An assignment that stores the assigned mark: every update-shaped action (its
+%  emitter wrapper marks), and the `n = split(...)` count (its walker row marks).
+plawk_unset_marking_action(Action, Name) :-
+    plawk_scalar_action_update(Action, Name, _Operation),
+    !.
+plawk_unset_marking_action(split_count(Name, _Split), Name).
 
 %  Actions at any depth (an `if` branch, a loop body) that assign Name.
 plawk_end_actions_assigning(Actions, Name, Action) :-

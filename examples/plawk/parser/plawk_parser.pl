@@ -3946,6 +3946,15 @@ assignment_action(gsub_count(CountName, Global, Regex, Repl, Target)) -->
     ws, ")",
     !.
 
+% `n = split($N, arr, "sep")` -- count capture: split into `arr` as the bare
+% statement does and assign the piece count to `n`. Tried before the generic
+% scalar `set`; the `split(` keyword after `=` is unambiguous.
+assignment_action(split_count(CountName, Split)) -->
+    identifier(CountName),
+    ws, "=", ws,
+    split_action(Split),
+    !.
+
 % Getline assignments are tried before the generic scalar `set`. This is
 % essential for unsupported `status = getline`: without the dedicated fallback
 % it would be misparsed as a read of an ordinary variable named `getline`.

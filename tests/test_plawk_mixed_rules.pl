@@ -25,8 +25,10 @@
 % "" (not 0). PR 3: `split($N, arr, "sep")` with scalar work -- the split table is
 % POSITIONAL and str-valued, a different kind from a counted table, so it is read
 % only by a numeric position and never shares an array with counted uses (both
-% checked on the generated IR). Later PRs: `n = split(...)`, loops over split
-% arrays, for-in in a mixed body.
+% checked on the generated IR). PR 4: `n = split(...)` (the count is a counter
+% slot, marked assigned so an unset count still prints "") and loops in a mixed
+% body -- the walker's loop rows are shared, so `for (i = 1; i <= n; i++) print
+% a[i]` walks the pieces. Later: for-in in a mixed body.
 %
 % gawk is the oracle (verified against gawk 5.1.0, LC_ALL=C).
 
@@ -147,13 +149,58 @@ test(split_kind_boundaries_decline) :-
         build_status_is(Src, 3)),
     !.
 
+% --- PR 4: n = split(...), loops ---------------------------------------------
+
+test(split_count_and_loops_over_the_pieces, [condition(clang_available)]) :-
+    run_in("a,b,c 1\nx 2\n\nq,r 3\n",
+        "{ n = split($1, a, \",\"); print n }\n", "3\n1\n0\n2\n"),
+    !,
+    run_in("a,b,c 1\nx 2\n\nq,r 3\n",
+        "{ n = split($1, a, \",\"); for (i = 1; i <= n; i++) print i, a[i] }\n",
+        "1 a\n2 b\n3 c\n1 x\n1 q\n2 r\n"),
+    !,
+    run_in("a,b,c 1\nx 2\n\nq,r 3\n",
+        "{ n = split($1, a, \",\"); i = n; while (i > 0) { print a[i]; i-- } }\n",
+        "c\nb\na\nx\nr\nq\n"),
+    !,
+    % do-while runs once on the empty record: a[0] is absent, prints ""
+    run_in("a,b,c 1\nx 2\n\nq,r 3\n",
+        "{ n = split($1, a, \",\"); do { print a[n]; n-- } while (n > 0) }\n",
+        "c\nb\na\nx\n\nr\nq\n"),
+    !.
+
+% The count is an assignment: on EMPTY input it was never assigned, and awk prints
+% "" -- the slot carries the assigned mark like any update.
+test(split_count_unset_prints_empty, [condition(clang_available)]) :-
+    run_in("a,b,c 1\nx 2\n\nq,r 3\n",
+        "{ n = split($1, a, \",\") } END { print n }\n", "2\n"),
+    !,
+    run_in("", "{ n = split($1, a, \",\") } END { print n }\n", "\n"),
+    !.
+
+% Loops beside counted tables (shared walker rows; the table plan reaches the body).
+test(loops_beside_counted_tables, [condition(clang_available)]) :-
+    run_in("a 1\nb 2\na 3\nc 4\n",
+        "{ c[$1]++; i = 0; while (i < 2) { n++; i++ } } END { print n, c[\"a\"] }\n",
+        "8 2\n"),
+    !,
+    run_in("a 1\nb 2\na 3\nc 4\n",
+        "{ c[$1]++; for (i = 0; i < 2; i++) c[$1]++ } END { print c[\"a\"], c[\"b\"] }\n",
+        "6 3\n"),
+    !,
+    run_in("a 1\nb 2\na 3\nc 4\n",
+        "{ c[$1]++; i = 0; while (i < 3) { if (i == 1) break; i++ } ; n += i } END { print n, c[\"a\"] }\n",
+        "4 2\n"),
+    !.
+
 % Forms the later PRs teach decline or fail to parse -- never exit 4.
 test(later_forms_do_not_miscompile) :-
     forall(member(Src,
             [ "{ c[$1] += $2; n++; print c[$1] }\n",
               "{ c[$1]++; if (c[$1] > 1) print \"dup\", $1 }\n",
               "{ split($1, a, \",\"); n++; printf \"%s\\n\", a[1] }\n",
-              "{ n = split($1, a, \",\"); print n }\n"
+              "{ n = split($1, a, \",\"); for (i = 1; i <= n; i++) if (a[i] == \"b\") print \"found\" }\n",
+              "{ for (i = 0; i < 2; i++) c[$1]++; n++ } END { print n, c[\"a\"] }\n"
             ]),
         build_status_not_4(Src)),
     !.
