@@ -45,6 +45,27 @@ Versioned `lmdb_arg1_v1(Path)` supports `lmdb_materialisation(lazy)`
 default 4096), and explicit `auto` (codegen resolves via shared
 `resolve_auto_lmdb_materialisation/2`). LMDB-R-0/R-1/R-2A/R-2B complete.
 
+**Negation (fixed 2026-08-10, R-NEG-BACKTRACK).** `\+ G` returned
+**true** for some goals G that succeed — a wrong answer, not a crash.
+The discriminator was whether G left a choicepoint: first-argument
+indexing routes the first key through the `try_me_else` chain (pushing
+a CP) and later keys straight to a clause body (pushing none), so
+`\+ f(a)` was wrong while `\+ f(b)` and `\+ f(c)` were right on the
+same three-clause predicate.
+
+The defect was in the **shared compiler**, not the R runtime. `\+ G`
+lowers to `((G, !, fail) ; true)` on legacy targets, and that rewrite's
+`builtin_call !/0` cuts back to the environment frame's barrier — but
+nothing ensured the clause had a frame, and a body of just `\+ G`
+tripped none of the allocate conditions. R keeps the barrier only on the
+frame, so its cut fell back to dropping the topmost choicepoint, which
+is the wrong one precisely when G left one. C was unaffected because it
+maintains a separate `call_bases` stack.
+
+Fixed by `goals_contain_hard_cut_negation/1` in `wam_target.pl`. Note
+the cross-target conformance harness stayed green on both R arms
+throughout — the shared spec has no negation coverage (CONF-ADD-NEGATION).
+
 ## Gaps (relative to Rust / Haskell / F#)
 
 - **Classic conformance (CONF-R):** opt-in adapter (`r` / `r_functions`).
