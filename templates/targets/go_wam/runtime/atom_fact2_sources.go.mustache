@@ -1,0 +1,209 @@
+type staticAtomFact2Source struct {
+    pairs []AtomPair
+    byLeft map[string][]AtomPair
+}
+
+func newStaticAtomFact2Source(pairs []AtomPair) *staticAtomFact2Source {
+    copied := append([]AtomPair(nil), pairs...)
+    byLeft := make(map[string][]AtomPair)
+    for _, pair := range copied {
+        byLeft[pair.Left] = append(byLeft[pair.Left], pair)
+    }
+    return &staticAtomFact2Source{pairs: copied, byLeft: byLeft}
+}
+
+func (source *staticAtomFact2Source) Scan() []AtomPair {
+    if source == nil {
+        return nil
+    }
+    return append([]AtomPair(nil), source.pairs...)
+}
+
+func (source *staticAtomFact2Source) LookupArg1(left string) []AtomPair {
+    if source == nil {
+        return nil
+    }
+    return append([]AtomPair(nil), source.byLeft[left]...)
+}
+
+// lmdbAtomFact2Source serves arity-2 atom facts out of an LMDB
+// relation artifact through the `lmdb_relation_artifact` helper.
+//
+// Three materialisation tiers, selected at construction and mirroring
+// the F# LmdbFactSource (see templates/targets/fsharp_wam/
+// lmdb_fact_source.fs.mustache):
+//
+//   eager  — one Scan() at construction into an in-memory arg1 index.
+//            No helper process afterwards. Lowest per-lookup cost;
+//            pays a full materialisation up front, so it needs the
+//            demand set to fit in memory.
+//   lazy   — the original behaviour: one helper invocation per lookup,
+//            nothing retained. Right for segregated workloads with no
+//            cross-query key reuse.
+//   cached — on-demand like lazy, but memoised through a two-level
+//            cache. L1 is a small hot map; L2 is a larger bounded map.
+//            Once L2 is full new keys are served but not retained
+//            (bounded memory, no eviction churn), matching F#.
+//
+// Misses are cached too: a key with no rows records an empty result so
+// a repeated probe does not re-spawn the helper. The artifact is
+// read-only for the lifetime of the process, so this is safe.
+type lmdbAtomFact2Source struct {
+    predKey string
+    artifactDir string
+    helperBin string
+    mode string
+    l1Capacity int
+    l2Capacity int
+
+    mu sync.RWMutex
+    eagerAll []AtomPair
+    eagerByLeft map[string][]AtomPair
+    l1 map[string][]AtomPair
+    l2 map[string][]AtomPair
+}
+
+func newLmdbAtomFact2Source(predKey string, artifactDir string, mode string, l2Capacity int) *lmdbAtomFact2Source {
+    helperBin := os.Getenv("UW_LMDB_RELATION_ARTIFACT_BIN")
+    if helperBin == "" {
+        helperBin = "lmdb_relation_artifact"
+    }
+    switch mode {
+    case "eager", "lazy", "cached":
+    default:
+        mode = "cached"
+    }
+    if l2Capacity <= 0 {
+        l2Capacity = 4096
+    }
+    l1Capacity := l2Capacity / 8
+    if l1Capacity < 64 {
+        l1Capacity = 64
+    }
+    source := &lmdbAtomFact2Source{
+        predKey: predKey,
+        artifactDir: artifactDir,
+        helperBin: helperBin,
+        mode: mode,
+        l1Capacity: l1Capacity,
+        l2Capacity: l2Capacity,
+    }
+    if mode == "eager" {
+        source.materialise()
+    }
+    if mode == "cached" {
+        source.l1 = make(map[string][]AtomPair)
+        source.l2 = make(map[string][]AtomPair)
+    }
+    return source
+}
+
+// materialise runs the single eager-mode Scan and builds the arg1 index.
+func (source *lmdbAtomFact2Source) materialise() {
+    all := source.run("scan", source.artifactDir, source.predKey)
+    byLeft := make(map[string][]AtomPair, len(all))
+    for _, pair := range all {
+        byLeft[pair.Left] = append(byLeft[pair.Left], pair)
+    }
+    source.eagerAll = all
+    source.eagerByLeft = byLeft
+}
+
+func (source *lmdbAtomFact2Source) Scan() []AtomPair {
+    if source == nil {
+        return nil
+    }
+    if source.mode == "eager" {
+        source.mu.RLock()
+        defer source.mu.RUnlock()
+        return append([]AtomPair(nil), source.eagerAll...)
+    }
+    // lazy and cached both stream the full relation on demand; a full
+    // scan is not key-addressed, so there is nothing for the key caches
+    // to serve it from.
+    return source.run("scan", source.artifactDir, source.predKey)
+}
+
+func (source *lmdbAtomFact2Source) LookupArg1(left string) []AtomPair {
+    if source == nil {
+        return nil
+    }
+    switch source.mode {
+    case "eager":
+        source.mu.RLock()
+        defer source.mu.RUnlock()
+        return append([]AtomPair(nil), source.eagerByLeft[left]...)
+    case "cached":
+        return source.lookupCached(left)
+    default:
+        return source.run("get", source.artifactDir, source.predKey, left)
+    }
+}
+
+// lookupCached implements the L1 -> L2 -> helper dispatch. A hit in L2
+// promotes the entry into L1; a helper result populates both.
+func (source *lmdbAtomFact2Source) lookupCached(left string) []AtomPair {
+    source.mu.RLock()
+    if rows, ok := source.l1[left]; ok {
+        source.mu.RUnlock()
+        return append([]AtomPair(nil), rows...)
+    }
+    rows, ok := source.l2[left]
+    source.mu.RUnlock()
+    if ok {
+        source.mu.Lock()
+        if len(source.l1) < source.l1Capacity {
+            source.l1[left] = rows
+        }
+        source.mu.Unlock()
+        return append([]AtomPair(nil), rows...)
+    }
+
+    fetched := source.run("get", source.artifactDir, source.predKey, left)
+    if fetched == nil {
+        // Distinguish "no rows" from nil so a repeated miss stays cached.
+        fetched = []AtomPair{}
+    }
+    source.mu.Lock()
+    if len(source.l2) < source.l2Capacity {
+        source.l2[left] = fetched
+    }
+    if len(source.l1) < source.l1Capacity {
+        source.l1[left] = fetched
+    }
+    source.mu.Unlock()
+    return append([]AtomPair(nil), fetched...)
+}
+
+func (source *lmdbAtomFact2Source) run(args ...string) []AtomPair {
+    if source.helperBin == "" {
+        return nil
+    }
+    output, err := exec.Command(source.helperBin, args...).Output()
+    if err != nil {
+        return nil
+    }
+    return parseAtomFact2Rows(string(output))
+}
+
+func parseAtomFact2Rows(output string) []AtomPair {
+    lines := strings.Split(output, "\n")
+    pairs := make([]AtomPair, 0, len(lines))
+    for _, line := range lines {
+        line = strings.TrimSpace(line)
+        if line == "" {
+            continue
+        }
+        cols := strings.Split(line, "\t")
+        if len(cols) < 2 {
+            continue
+        }
+        left := strings.TrimSpace(cols[0])
+        right := strings.TrimSpace(cols[1])
+        if left == "" || right == "" {
+            continue
+        }
+        pairs = append(pairs, AtomPair{Left: left, Right: right})
+    }
+    return pairs
+}

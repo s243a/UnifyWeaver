@@ -25,7 +25,7 @@ WAM pipeline via `prefer_wam(true)`.
 |---|---:|
 | `src/unifyweaver/targets/wam_go_target.pl` | ~4.3k |
 | `src/unifyweaver/targets/wam_go_lowered_emitter.pl` | ~0.8k |
-| Dedicated tests | ~17 files |
+| Dedicated tests | ~26 files |
 
 ## What's shipped
 
@@ -78,6 +78,277 @@ non-WAM dataflow/stream compiler, not the WAM pipeline. Stays opt-in
   Rust's 17 ms): the benchmark runs `category_ancestor/4` through the
   shared bytecode loop rather than the FFI kernel path.
 
+## Whole-program exercise (A2, 2026-09): known / suspected deficiencies
+
+The peerhailer CLI-parser exercise (see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md)) found three JS-WAM runtime bug
+classes that are fleet-wide suspects. Go's audit:
+
+| # | Deficiency | Status | Evidence / reason |
+|---|---|---|---|
+| A1 | `sub_string/5` builtin missing | **verified missing** | Go has `sub_atom/5` (`state.go.mustache:2792`) but no `sub_string/5` |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **aliasing form: verified (structural), Call Y-save is a partial mitigation, X101≡Y1 not hit by uw-resolve. Frameless-Y form: REPRODUCED as a live wrong answer on the lowered lane → FIXED 2026-09** | encoding `X_n→n+99 / Y_n→n+199`, so **X101 ≡ index 200 ≡ Y1**. Call snapshots Y 200..299 and Proceed restores; Execute does **not** push (LCO). Choice points snapshot the Y-save stack. The numeric alias is unchanged. See the frameless-Y section below. |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **handled for known builtins; P3 helpers classified; unknown-builtin warn knob landed** | `BuiltinExecute` takes Proceed's return path **including** `popCallFrame`. Residual: a missed classifier entry still fails the query; `UW_WAM_WARN_UNKNOWN=1` now prints `[wam_go] call|execute of unresolved goal NAME failed` (off by default). `call/1`, `maplist/2-4`, `predsort/3`, `functor/3`, `arg/3`, `=../2` are `wam_go_direct_builtin`. Lowered `pred_to_go_call` also falls back to `executeBuiltin` then warn. |
+| A4 | String fidelity | **rung 0** | `value.go.mustache` has Integer/Float/Atom/Compound/Structure/List/Ref/Unbound — no string type; D37's double-quoted literals intern as atoms |
+
+Pattern lane: `go_target.pl` compiles facts from `clause(Head, true)`
+(`:6790-6798`) — the G-A3-8 execute-at-compile-time hazard is absent.
+The G-A3 machinery has no analogue; presume those gaps present until
+`examples/cli_args/` is attempted through the Go pattern lane.
+
+## Cut and choice-point barriers (2026-09)
+
+Pinned by `tests/test_wam_go_cut_semantics.pl` (35 probes, SWI oracle,
+`prefer_wam(true)` only — Go has no `emit_mode`). **35/35 vs SWI, 0
+refused-loudly.** The JS audit found 12 divergences of this class (`!`
+wiping ALL choice points). This backend now matches §9:
+
+- Call = `pushCallFrame` (Y-save + push B0, then `PendingB0 = len(CPs)`).
+- Execute = `enterExecute` (rebase `PendingB0` **without** pushing).
+- Proceed / `BuiltinExecute` = `popCallFrame`.
+- `!/0` truncates to `PendingB0`, not `EnvFrame.CutB0` (no-Allocate
+  neck-cut).
+- Every choice point snapshots `PendingB0`, `CutB0Stack`, and `YSaves`.
+
+uw-resolve plus the 35-probe corpus also forced:
+
+- **`call/1` opaque scope.** Previously a missing label (silent fail).
+  Now a builtin whose `!` truncates only to the metacall entry height.
+  Residual: nested *user* goals inside `call/1` are first-solution
+  (leftover CPs are not resumed as extra metacall solutions). p09/p10
+  do not need that path.
+- **`inline_bagof_setof(true)`.** bagof/setof compile to
+  `BeginAggregate` instead of `call bagof/3`. Empty bagof/setof fail;
+  setof sorts.
+- Aggregates still run in `Clone()`; an inner `!` cannot destroy the
+  caller's CPs. `freezeTerm` copies collected templates out of the clone
+  (findall nested Unbounds).
+
+ITE condition / `\+` / `once` / `forall` remain the M17 soft-cut
+rewrite. Probe count and any refused-loudly shapes are reported by the
+suite (currently 35 compile).
+
+## A2 frameless-Y: the if-then-else barrier (2026-09-03)
+
+**Verdict: wam_go WAS exposed — reproduced as a live wrong answer on the
+lowered lane, and fixed.** Pinned by
+`tests/test_wam_go_frameless_ite_level.pl` (RED on the pristine tree with
+2 divergences, green after).
+
+The shape (ledger D50/D52). `compile_if_then_else/7` in `wam_target.pl`
+reserves the ITE barrier's permanent register *after* it has decided
+whether the clause needs an environment, so under `ite_use_y_level(true)`
+— which **every** wam_go compile passes (`classify_predicates/3`, all
+four `go_compile_predicate_to_wam` arms) — it plants `get_level Y1` …
+`cut Y1` into clauses with **no `allocate`**. The canonical instance is
+`sat(V, gte(G)) :- \+ lt(V, G)`, the resolver's `satisfies/2` shape.
+
+What we found, lane by lane:
+
+- **Interpreter lane: already safe, and here is why.** D51's §9 work
+  added `vm.YSaves` — `Call` (`pushCallFrame`) snapshots `Regs[200:300]`
+  and `Proceed` (`popCallFrame`) restores it, with every choice point
+  saving and restoring the whole `YSaves` stack. That is the
+  wam_javascript Call-snapshot model, and it repairs the caller's Y1
+  after the frameless callee scribbles on it. Verified causally, not by
+  inspection: with the `copy` in `popYSave` disabled, a 14-shape
+  differential against SWI went from 14/14 correct to
+  `pick_b(3,gte(1),tagX,Out) = 1` (a choice-point depth), `pick_a` failing
+  outright, and a `findall` returning `[2,1]` instead of `[2,3]`.
+  Restoring the copy made all 14 correct again.
+- **Lowered lane: BROKEN.** `wam_go_lowered_emitter.pl` emits `call p/N`
+  as raw label dispatch —
+  `func() bool { if pc, ok := vm.Ctx.Labels["p/N"]; ok { vm.PC = pc; return vm.Run() }; return false }()`
+  — with **no `pushCallFrame`**, so no Y save is pushed and nothing is
+  restored; its `allocate` likewise pushes a bare `&EnvFrame{CP:…, B0:…}`
+  with no `SavedYRegs` copy. A lowered method that parks a permanent in
+  `vm.Regs[200]` and then calls an interpreted frameless-ITE callee
+  therefore got its Y1 overwritten. On the pristine tree, against SWI's
+  `Out = tagX`:
+
+  ```
+  vm.PredPick_b4(3, gte(1), tagX, Out)  ->  ok=true,  Out = 0   (a CP depth)
+  vm.PredPick_a4(3, gte(1), tagX, Out)  ->  ok=false            (silent fail)
+  ```
+
+  while the same predicate entered at its interpreter label returned
+  `tagX` for both. This lane is how `examples/pkg_resolver/go/shim.go`'s
+  sibling embedders reach a predicate, so it is not hypothetical.
+
+**The fix** takes the barrier out of the register file entirely — the
+wam_rust `ChoicePoint::levels` / wam_python `ChoicePoint.levels` model:
+
+- `ChoicePoint.Levels map[int]int` (nil until used) keyed by the
+  Y-register index the emitter named.
+- `recordIteLevel/1` replaces the `putReg` in the `GetLevel` case. The
+  level is unchanged (`len(vm.ChoicePoints)` at that instant); only its
+  home changes. Both emission shapes are handled: `get_level` immediately
+  *before* the ITE `try_me_else` parks the level (`PendingLevel*` on the
+  VM) for `fillBarrier` to record on the guard choice point that
+  `try_me_else` pushes; `get_level` immediately *after* it (the shape used
+  when the condition holds a top-level `!`) attaches to the guard that
+  already exists. Parking is load-bearing: the clause can be entered with
+  zero choice points, so there is nowhere to record until the guard is
+  pushed.
+- `lookupIteLevel/1` replaces the `getReg` in the `Cut` case, walking the
+  choice-point stack innermost-first; "not found" means an inner commit
+  already cut the guard away and the truncation is a no-op.
+- `restoreBarrier` clears a parked-but-unconsumed level, so it cannot
+  outlive a backtrack.
+
+Because the level never touches `vm.Regs`, the fix is independent of how
+the predicate was entered — it closes the lowered lane as well as the
+interpreter lane, and it does not depend on `YSaves` (which stays, since
+it still covers `get_variable Yn` in Allocate-less clauses).
+
+Files: `templates/targets/go_wam/state.go.mustache` (`ChoicePoint.Levels`,
+`PendingLevel*`, `recordIteLevel`, `lookupIteLevel`, `fillBarrier`,
+`restoreBarrier`), `templates/targets/go_wam/instructions.go.mustache`
+(doc), `src/unifyweaver/targets/wam_go_target.pl`
+(`wam_go_case('GetLevel')`, `wam_go_case('Cut')`).
+
+Gates re-run after the fix: cut probes **35/35** (0 refused), the five
+D51 probe suites, the full 24-suite `tests/test_wam_go_*.pl` sweep,
+corpus **39/39**, differential **2400/0/0**. The corpus and differential
+are *not* evidence for this fix — `shim.go` enters every predicate by
+label, never through a lowered method, so the resolver never exercised
+the broken lane. They are evidence the fix is neutral (and it is:
+pristine differential 27.9 s, fixed 25.2–27.1 s on the same box).
+
+### Residual (separate defect, NOT this one)
+
+A lowered method whose clause body contains a `call` into the
+interpreter and then tail-`execute`s itself **loses the output binding**.
+`wpick(4, tagY, Out)` returns `ok=true` with `Out` still unbound from
+`vm.PredWpick3()`, while the interpreter lane returns `tagY`. This is not
+the ITE barrier: the control `wcall/3` — same recursive shape, a plain
+`call okp/1` in the body, no if-then-else or negation anywhere — fails
+identically, and both fail the same way before and after the barrier fix
+(a second control, `wplain/3`, with no `call` at all, is correct on both
+lanes at every depth). Suspected cause, not verified: the lowered emitter
+does not implement the §9 call-frame protocol at all — `emit_one(call)`
+omits `pushCallFrame` and `emit_one(allocate)` omits the `SavedYRegs`
+copy, so the interpreted callee's `Proceed`/`popCallFrame` pops a frame
+the lowered caller never pushed. `tests/test_wam_go_frameless_ite_level.pl`
+runs `wpick` on the interpreter lane only and says why.
+
+## Whole-program exercise: uw-resolve (`examples/pkg_resolver/go/`)
+
+P3 resolver compiled through `wam_go` (`prefer_wam(true)`). JSON shim
+is term↔JSON IO only (deb versions, Provides 3-/4-ary, alternatives
+groups, `catalog/6|9|10`, blocked `providers`/`alternatives` shapes).
+Corpus **51/51** vs SWI; seeded differential **2600/0** (2400 `g*` @
+`0xa5b6c7d8` + 200 `p3g*` @ `0xdeb00001`). D59 `index_threshold(64)`
+comes free with the current `resolver.pl`.
+
+P3 builtin inventory (generated WAM → runtime → `wam_go_direct_builtin`):
+
+| Name | Found | Implemented | Classified |
+|---|---|---|---|
+| `maplist/2,3,4` | missing; compiler emits `BuiltinCall`/`Call` | yes, meta-calls user preds via `invokeGoalOnce` | yes |
+| `predsort/3` | missing; resolver `cmp_ver/3` for `deb/3` | yes | yes |
+| `functor/3`, `arg/3`, `=../2` | implemented, unclassified (A3) | already in `executeBuiltin` | now classified |
+| `string_codes/2` | present; empty result was `*List{}` | empty goes through `listFromItems` | already classified |
+| `memberchk/2` | already OK | — | — |
+
+`UW_WAM_WARN_UNKNOWN=1` (off by default) prints
+`[wam_go] call|execute of unresolved goal NAME failed` after the
+label/foreign/fact miss — additive, mirrors Rust.
+
+Bugs this program forced beyond the P0.5 table:
+
+| Symptom | Cause | Fix | Probe |
+|---|---|---|---|
+| `provides_virtual_only` / first-listed / versioned-ok → `{fail:true}` | `pick_need` indexes on Mode; `classic` is switch `"default"` with two clauses; Pc rewrite jumped to `idx+1` then `indexedClauseBodyStart` skipped `TryMeElse` | label-form default falls through (`PC++`); Pc form keeps the jump when the target is a try/retry head | `tests/test_wam_go_switch_default_chain.pl` |
+| 40 `p3g*` differentials `{fail:true}` (corpus still 51/51) | `predsort` meta-called `cmp_ver`; `invokeAtPC` smashed A2; `Unify(getReg(2), Sorted)` compared a version to a list. Single-element lists and `compare/3` never ran the less-func — corpus P3 rows filtered to one candidate | capture A2 before the comparator; restore regs after each `invokeGoalOnce`; leftover CPs truncated | `tests/test_wam_go_maplist_predsort.pl` (`gpreduser`) |
+
+**B1–B3** (this Cloud Agent VM, SWI 9.0.4, Go 1.22.2, Node v22):
+
+| Bench | Number |
+|---|---|
+| B1 corpus wall | **0.053s, 51/51** |
+| B2 differential | **2600 cases, 0 divergences**; SWI **1.671s** / Go **17.179s** |
+| B3 5k `resolve_layered` (`0xc0ffee01`) | load **0.065s** / resolve **10.620s**, same 10-package selection as SWI / D51 |
+
+Index effect: the 5k catalog is far above `index_threshold(64)`, so
+`resolve_layered` wraps `icat/3` (cannot toggle the frozen fact from
+owned files). D51 pre-index Go B3 was **11.0s** linear scans; with-index
+Go is **10.62s** (~1.04×). wamjs saw **9.2×** on the same G1 trees —
+Go's interpreted index build (~45 WAM instructions/row × 5k) almost
+cancels the lookup win. Selection matches the historical SWI 10-package
+set, so the index is semantically active.
+
+See `examples/pkg_resolver/go/README.md`.
+
+## Whole-program exercise: uw-resolve STORE-backed (`examples/pkg_resolver/go_store/`)
+
+The D43/D48 store path (already shipped on wamjs) brought to Go: the
+shared adapter `resolver_store.pl` compiled through `wam_go`
+(`prefer_wam(true)`) with the five store predicates
+(`store_pkg`/`store_dep`/`store_conflict`/`store_revdep`/`store_provides`,
+all P/2) served from the language-agnostic **indexed seek stores**
+(`pkg.data`/`pkg.idx`, …) that `examples/pkg_resolver/store/` writes.
+A bound-key lookup reads only the records that key touches instead of
+loading the whole catalog term.
+
+**Fact-source inventory (have vs needed).** Before this round the Go WAM
+had TSV + LMDB *in-memory* atom-fact sources (`registerTsvAtomFact2` /
+`registerLmdbAtomFact2` / `registerIndexedAtomFact2Pairs`) for the
+graph kernels — all `string`-keyed `AtomPair`, materialised eagerly via
+`Scan()`, arg1-bound-only, output-arg2-only. None of that serves
+`source(P/2, indexed(Prefix))`: it needs a true UWFI/UWIX seek reader
+(no eager Scan), typed keys (atom/string/int/float tags), both args as
+in/out, and an unbound-arg1 full scan (the `tight_base_revdep` provides
+walk). So the reader was **new**, not a reuse of the graph path.
+
+**Reader built.** `indexed(Prefix)` — a dependency-free seek reader
+(`seekFactSource`) mirroring the wamjs `runtime.js` reader byte for byte:
+binary-search the sorted `.idx` key table via `ReadAt`, read only the
+matching `.data` records, and count bytes for the D43 proof
+(`factIOBytes`/`FactIOBytes()`). Typed key tags (atom `0x41` / string
+`0x53` / int `0x49` / float `0x46`) match the codec. A P/2 store
+predicate compiles to a two-instruction body `[CallFactStream, Proceed]`
+so callers reach it by label like any predicate; `executeCallFactStream`
+seeks (or full-scans when arg1 is unbound), filters bound args, and
+streams solutions through the existing `finishStreamResults` choice-point
+machinery. `lmdb(Dir)` was **gated, not wired**: Go has no repo
+dependency and cannot read the npm-`lmdb` store format, so the arm emits
+`registerLmdbSeekFact2` and fails LOUDLY on first lookup (never a silent
+swap to indexed) — the D43/D56 missing-package contract, ungated.
+
+**Bugs this program forced (symptom → cause → fix → probe):**
+
+| Symptom | Cause | Fix | Probe |
+|---|---|---|---|
+| every resolve `{fail:true}` | `number_string/2` unimplemented (the store packs versions with it; the term path never needed it) | added `number_string/2` builtin (atom_number/2 with roles swapped) + direct-builtin classification | store corpus |
+| non-`any` constraints / provides dropped mid-stream | `atom_concat/3` only did forward `(+,+,-)`; `unpack_ver`/`unpack_constraint`/`unpack_dep` decompose `(+,-,+)` | extended `atom_concat/3` to prefix/suffix strip modes | store corpus (dependents/blocked) |
+| `"-"` provides-cell mis-compared | a double-quoted string constant interned as an atom *including its quotes* (`"-"` vs `-`) | `parse_string_to_go_val` now strips a round-tripped string to its content atom (D37) | store corpus (provides) |
+| `base(N-V,R)` / `layer(N,Pkgs)` env holds not found; multi-clause-per-functor solutions collapsed | the first-arg indexed-dispatch forms `try`/`retry`/`trust L` were unrecognised → emitted as comments → dispatch labels collapsed to one PC | implemented `Try`/`Retry`/`Trust` instructions + line handlers | store corpus (named_layer, freeze_audit) |
+| atoms.go `internAtom("""")` syntax error | `escape_go_string` escaped `\` only, not `"` | escape backslash-then-quote (+ nl/tab/cr) | build |
+
+These are all in owned files (`wam_go_target.pl`,
+`templates/targets/go_wam/*`). `resolver_store.pl` was **not** modified.
+
+**B3 payoff (this VM, Go 1.24, SWI 9.0.4) — the headline:**
+
+| Bench | Term catalog (`../go`) | Store seek (`../go_store`) |
+|---|---|---|
+| load | ~0.10s (whole 1.14 MB catalog) | none (seek on demand) |
+| resolve `resolve_layered` (`0xc0ffee01`) | **~14.6s** | **~0.77s** |
+| bytes read | ~1.14 MB (all) | **~11 KB / 1.14 MB (0.97%)** |
+| selection | 10 pkgs | identical 10 pkgs |
+
+The store leg resolves ~19× faster while reading under 1% of the store —
+Go's native speed plus read-only-what-you-need, the fleet's fastest leg
+at scale. (D43's bytes-read proof, now on Go: 880 reads, 11,025 bytes.)
+
+Gates: store corpus **51/51** byte-identical to the term corpus; 5k store
+differential **503/0** vs the SWI store oracle (`store_diff_runner.pl`,
+same JSONL); term corpus **51/51** + differential **2600/0** unchanged;
+full `tests/test_wam_go_*.pl` sweep **26/26**; wamjs + wamjs_store corpus
+**51/51** each; `CONFORMANCE_TARGETS=javascript` + cli_args untouched.
+See `examples/pkg_resolver/go_store/README.md`.
+
 ## Path forward
 
 1. Decide whether the WAM route should become a first-class Go product
@@ -94,4 +365,26 @@ Fleet-aligned snapshot; source-verified against `wam_go_target.pl`,
 the parity audit, and the conformance harness (`prefer_wam(true)`
 requirement confirmed) on 2026-07-11. Refreshed 2026-08-06 after all four Go
 gap cards (LMDB-GO, ISO-GO, BENCH-GO, PARSE-GO) landed. Update the parity audit first,
-then refresh here.
+then refresh here. 2026-09-01: added the whole-program (A2) deficiency
+audit — X→Y aliasing and the `BuiltinExecute` mitigation verified by
+source reading; see [`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).
+2026-09-03: uw-resolve on Go + 35-probe cut audit (35/35, 0 refused).
+A2 still structural (Call Y-save is a partial mitigation). A3 residual
+remains for unclassified builtins; `call/1` now classified. Cut suite
+is `prefer_wam(true)` only. B3 5k `resolve_layered` matches SWI after
+`allocVarId` skips Idx 10000–10999 (Go resolve 4.604s vs SWI 0.008s).
+2026-09-03 (later): **A2's frameless-Y form reproduced and fixed** —
+broken on the lowered lane (`vm.PredPick_b4` returned a choice-point
+depth), already safe on the interpreter lane thanks to D51's `YSaves`
+(proved causally by disabling `popYSave`'s restore). ITE barrier levels
+now live on `ChoicePoint.Levels`, never in `vm.Regs`. Probe
+`tests/test_wam_go_frameless_ite_level.pl`. A separate, pre-existing
+lowered-lane defect (a lowered method that `call`s the interpreter and
+then tail-recurses loses its output binding) is recorded as a residual
+above — it is not the barrier and is not fixed here.
+2026-09-04: **uw-resolve P3 on Go.** maplist/predsort/functor classified;
+`UW_WAM_WARN_UNKNOWN`; shim speaks deb/provides/alternatives; switch
+default try/retry chain; predsort A2 smash. Corpus **51/51**,
+differential **2600/0**, cut **35/35**, full `test_wam_go_*.pl` sweep
+green, shared-lane JS/cli_args/wamjs intact. B3 with-index **10.62s**
+vs D51 pre-index **11.0s**.

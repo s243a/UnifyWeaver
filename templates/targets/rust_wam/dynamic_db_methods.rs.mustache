@@ -22,7 +22,7 @@
             Some(next) => next,
             None => {
                 self.term_input_pos = self.term_input.len();
-                let eof = Value::Atom("end_of_file".to_string());
+                let eof = Value::Atom("end_of_file".to_string().into());
                 let target = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
                 if !self.unify(&target, &eof) {
                     return false;
@@ -214,18 +214,18 @@
     fn read_term_option_atom(&self, options: &Value, name: &str) -> Option<String> {
         let value = self.read_term_option_arg(options, name)?;
         match self.deref_heap(&self.deref_var(&value)) {
-            Value::Atom(atom) => Some(atom),
+            Value::Atom(atom) => Some(atom.as_str().to_string()),
             _ => None,
         }
     }
 
     fn raise_iso_error(&mut self, formal: Value) -> bool {
         self.var_counter += 1;
-        self.thrown_ball = Some(Value::Str(
+        self.thrown_ball = Some(Value::strv(
             "error/2".to_string(),
             vec![
                 formal,
-                Value::Unbound(format!("_EC{}", self.var_counter)),
+                Value::Unbound(format!("_EC{}", self.var_counter).into()),
             ],
         ));
         false
@@ -233,13 +233,13 @@
 
     fn raise_read_syntax_error(&mut self) -> bool {
         self.var_counter += 1;
-        let context = Value::Unbound(format!("_SE{}", self.var_counter));
-        self.thrown_ball = Some(Value::Str(
+        let context = Value::Unbound(format!("_SE{}", self.var_counter).into());
+        self.thrown_ball = Some(Value::strv(
             "error/2".to_string(),
             vec![
-                Value::Str(
+                Value::strv(
                     "syntax_error/1".to_string(),
-                    vec![Value::Atom("end_of_clause".to_string())],
+                    vec![Value::Atom("end_of_clause".to_string().into())],
                 ),
                 context,
             ],
@@ -248,7 +248,7 @@
     }
 
     fn bind_empty_read_term_options(&mut self, options: &Value) -> bool {
-        let empty = Value::List(Vec::new());
+        let empty = Value::list(Vec::new());
         for name in ["variable_names", "variables", "singletons"] {
             if let Some(target) = self.read_term_option_arg(options, name) {
                 if !self.unify(&target, &empty) {
@@ -277,7 +277,7 @@
                 _ => continue,
             };
             let name = match source.deref_heap(&source.deref_var(&args[0])) {
-                Value::Atom(name) if name != "_" => name,
+                Value::Atom(name) if name != "_" => name.as_str().to_string(),
                 _ => continue,
             };
             let variable = self.copy_external_term_from(source, &args[1], var_map);
@@ -293,13 +293,13 @@
         env: &Value,
         var_map: &mut std::collections::HashMap<String, String>,
     ) -> Value {
-        Value::List(
+        Value::list(
             self.copy_named_variables_from_env(source, env, var_map)
                 .into_iter()
                 .map(|(name, variable)| {
-                    Value::Str(
+                    Value::strv(
                         "=".to_string(),
-                        vec![Value::Atom(name), variable],
+                        vec![Value::Atom(name.into()), variable],
                     )
                 })
                 .collect(),
@@ -309,15 +309,15 @@
     fn collect_term_variable_names(&self, term: &Value, out: &mut Vec<String>) {
         let term = self.deref_heap(&self.deref_var(term));
         match term {
-            Value::Unbound(name) => out.push(name),
+            Value::Unbound(name) => out.push(name.as_str().to_string()),
             Value::Str(_, args) => {
-                for arg in args {
-                    self.collect_term_variable_names(&arg, out);
+                for arg in args.iter() {
+                    self.collect_term_variable_names(arg, out);
                 }
             }
             Value::List(items) => {
-                for item in items {
-                    self.collect_term_variable_names(&item, out);
+                for item in items.iter() {
+                    self.collect_term_variable_names(item, out);
                 }
             }
             _ => {}
@@ -328,11 +328,11 @@
         let mut occurrences = Vec::new();
         self.collect_term_variable_names(term, &mut occurrences);
         let mut seen = std::collections::HashSet::new();
-        Value::List(
+        Value::list(
             occurrences
                 .into_iter()
                 .filter(|name| seen.insert(name.clone()))
-                .map(Value::Unbound)
+                .map(Value::unbound)
                 .collect(),
         )
     }
@@ -346,7 +346,7 @@
         self.copy_named_variables_from_env(source, env, var_map)
             .into_iter()
             .filter_map(|(source_name, variable)| match variable {
-                Value::Unbound(runtime_name) => Some((runtime_name, source_name)),
+                Value::Unbound(runtime_name) => Some((runtime_name.as_str().to_string(), source_name)),
                 _ => None,
             })
             .collect()
@@ -379,12 +379,12 @@
             if source_name != "_" && source_name.starts_with('_') {
                 continue;
             }
-            pairs.push(Value::Str(
+            pairs.push(Value::strv(
                 "=".to_string(),
-                vec![Value::Atom(source_name), Value::Unbound(runtime_name)],
+                vec![Value::Atom(source_name.into()), Value::Unbound(runtime_name.into())],
             ));
         }
-        Value::List(pairs)
+        Value::list(pairs)
     }
 
     fn execute_assert_builtin(&mut self, op: &str) -> bool {
@@ -430,16 +430,14 @@
         let head_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
         let head = self.deref_heap(&self.deref_var(&head_raw));
         if matches!(&head, Value::Unbound(_) | Value::Uninit) {
-            return self.raise_iso_error(Value::Atom(
-                "instantiation_error".to_string(),
-            ));
+            return self.raise_iso_error(Value::atom("instantiation_error"));
         }
         let key = match self.dynamic_head_key(&head) {
             Some(key) => key,
             None => {
-                return self.raise_iso_error(Value::Str(
+                return self.raise_iso_error(Value::strv(
                     "type_error/2".to_string(),
-                    vec![Value::Atom("callable".to_string()), head],
+                    vec![Value::Atom("callable".to_string().into()), head],
                 ));
             }
         };
@@ -448,9 +446,7 @@
         let property_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
         let property = self.deref_heap(&self.deref_var(&property_raw));
         if matches!(&property, Value::Unbound(_) | Value::Uninit) {
-            return self.raise_iso_error(Value::Atom(
-                "instantiation_error".to_string(),
-            ));
+            return self.raise_iso_error(Value::atom("instantiation_error"));
         }
         let succeeds = match &property {
             Value::Atom(name) => match name.as_str() {
@@ -458,10 +454,10 @@
                 "dynamic" => dynamic_count.is_some(),
                 "static" => in_labels && dynamic_count.is_none(),
                 _ => {
-                    return self.raise_iso_error(Value::Str(
+                    return self.raise_iso_error(Value::strv(
                         "domain_error/2".to_string(),
                         vec![
-                            Value::Atom("predicate_property".to_string()),
+                            Value::Atom("predicate_property".to_string().into()),
                             property,
                         ],
                     ));
@@ -479,10 +475,10 @@
                 self.unify(&args[0], &Value::Integer(count as i64))
             }
             _ => {
-                return self.raise_iso_error(Value::Str(
+                return self.raise_iso_error(Value::strv(
                     "domain_error/2".to_string(),
                     vec![
-                        Value::Atom("predicate_property".to_string()),
+                        Value::Atom("predicate_property".to_string().into()),
                         property,
                     ],
                 ));
@@ -574,10 +570,11 @@
                         heap_len: cp_heap,
                         builtin_state: Some(BuiltinState {
                             name: "dynamic_call".to_string(),
-                            args: vec![Value::Atom(key.clone())],
+                            args: vec![Value::Atom(key.clone().into())],
                             data: vec![Value::Integer((idx + 1) as i64), Value::Integer(cont_pc as i64)],
                         }),
                         cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
                     });
                 }
                 if self.dynamic_clause_has_body(&clause) {
@@ -594,6 +591,7 @@
                             data: vec![Value::Integer(1), Value::Integer(cont_pc as i64)],
                         }),
                         cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
                     });
                 }
                 self.pc = cont_pc;
@@ -705,6 +703,7 @@
                     data: vec![Value::Integer((solution_idx + 1) as i64), Value::Integer(cont_pc as i64)],
                 }),
                 cut_barrier: self.cut_barrier,
+                levels: Vec::new(),
             });
             self.pc = cont_pc;
             return true;
@@ -743,9 +742,7 @@
         let spec = self.deref_heap(&self.deref_var(&spec_raw));
         let (name, arity) = match &spec {
             Value::Unbound(_) | Value::Uninit => {
-                return self.raise_iso_error(Value::Atom(
-                    "instantiation_error".to_string(),
-                ));
+                return self.raise_iso_error(Value::atom("instantiation_error"));
             }
             Value::Str(functor, args)
                 if args.len() == 2 && Self::display_functor_name(functor, 2) == "/" =>
@@ -756,25 +753,25 @@
                 )
             }
             _ => {
-                return self.raise_iso_error(Value::Str(
+                return self.raise_iso_error(Value::strv(
                     "type_error/2".to_string(),
                     vec![
-                        Value::Atom("predicate_indicator".to_string()),
+                        Value::Atom("predicate_indicator".to_string().into()),
                         spec,
                     ],
                 ));
             }
         };
         if !matches!(&name, Value::Atom(_) | Value::Unbound(_)) {
-            return self.raise_iso_error(Value::Str(
+            return self.raise_iso_error(Value::strv(
                 "type_error/2".to_string(),
-                vec![Value::Atom("atom".to_string()), name],
+                vec![Value::Atom("atom".to_string().into()), name],
             ));
         }
         if !matches!(&arity, Value::Integer(_) | Value::Unbound(_)) {
-            return self.raise_iso_error(Value::Str(
+            return self.raise_iso_error(Value::strv(
                 "type_error/2".to_string(),
-                vec![Value::Atom("integer".to_string()), arity],
+                vec![Value::Atom("integer".to_string().into()), arity],
             ));
         }
 
@@ -803,7 +800,7 @@
                 };
                 name_matches && arity_matches
             })
-            .map(Value::Atom)
+            .map(Value::atom)
             .collect();
         self.current_predicate_attempt(keys, 0, name, arity, cont_pc)
     }
@@ -832,7 +829,7 @@
             let cp_heap = self.heap.len();
             let cp_regs = self.save_regs();
             let cp_stack = self.stack.clone();
-            if self.unify(&name_pattern, &Value::Atom(name.to_string())) &&
+            if self.unify(&name_pattern, &Value::Atom(name.to_string().into())) &&
                 self.unify(&arity_pattern, &Value::Integer(arity))
             {
                 if idx + 1 < keys.len() {
@@ -846,7 +843,7 @@
                         builtin_state: Some(BuiltinState {
                             name: "current_predicate".to_string(),
                             args: vec![
-                                Value::List(keys.clone()),
+                                Value::list(keys.clone()),
                                 name_pattern.clone(),
                                 arity_pattern.clone(),
                             ],
@@ -856,6 +853,7 @@
                             ],
                         }),
                         cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
                     });
                 }
                 self.pc = cont_pc;
@@ -873,17 +871,15 @@
         let head_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
         let head = self.deref_heap(&self.deref_var(&head_raw));
         if matches!(&head, Value::Unbound(_) | Value::Uninit) {
-            return self.raise_iso_error(Value::Atom(
-                "instantiation_error".to_string(),
-            ));
+            return self.raise_iso_error(Value::atom("instantiation_error"));
         }
         let key = match self.dynamic_head_key(&head) {
             Some(key) => key,
             None => {
-                return self.raise_iso_error(Value::Str(
+                return self.raise_iso_error(Value::strv(
                     "type_error/2".to_string(),
                     vec![
-                        Value::Atom("callable".to_string()),
+                        Value::Atom("callable".to_string().into()),
                         head,
                     ],
                 ));
@@ -920,7 +916,7 @@
             let (head, body) = match self.dynamic_clause_head_body(&clause) {
                 Some((head, body)) => (
                     head,
-                    body.unwrap_or_else(|| Value::Atom("true".to_string())),
+                    body.unwrap_or_else(|| Value::Atom("true".to_string().into())),
                 ),
                 None => continue,
             };
@@ -936,7 +932,7 @@
                         builtin_state: Some(BuiltinState {
                             name: "dynamic_clause".to_string(),
                             args: vec![
-                                Value::Atom(key.clone()),
+                                Value::Atom(key.clone().into()),
                                 head_pattern.clone(),
                                 body_pattern.clone(),
                             ],
@@ -946,6 +942,7 @@
                             ],
                         }),
                         cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
                     });
                 }
                 self.pc = cont_pc;
@@ -967,11 +964,11 @@
         match pattern_functor {
             Some(functor) => match clause {
                 Value::Str(f, args) if (f == ":-" || f == ":-/2") && args.len() == 2 => {
-                    Some(Value::Str(functor.clone(), args.clone()))
+                    Some(Value::Str(functor.clone().into(), args.clone()))
                 }
-                fact => Some(Value::Str(
+                fact => Some(Value::strv(
                     functor.clone(),
-                    vec![fact.clone(), Value::Atom("true".to_string())],
+                    vec![fact.clone(), Value::Atom("true".to_string().into())],
                 )),
             },
             None => match clause {
@@ -1012,10 +1009,11 @@
                         heap_len: cp_heap,
                         builtin_state: Some(BuiltinState {
                             name: "dynamic_retract".to_string(),
-                            args: vec![Value::Atom(key.clone()), pattern.clone()],
+                            args: vec![Value::Atom(key.clone().into()), pattern.clone()],
                             data: vec![Value::Integer(idx as i64), Value::Integer(cont_pc as i64)],
                         }),
                         cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
                     });
                 }
                 self.pc = cont_pc;

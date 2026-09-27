@@ -1,0 +1,15 @@
+{{indent}}// if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)
+{{indent}}{
+{{indent}}    _trailMark := vm.TrailLen
+{{indent}}    vm.pushTrailFloor()  // conditional-trailing floor for the else-branch unwind
+{{indent}}    defer vm.popTrailFloor()
+{{indent}}    _savedRegs := vm.Regs   // Regs is a fixed array; assignment copies it
+{{indent}}    _condOk := func() bool {
+{{condition}}{{indent}}        return true
+{{indent}}    }()
+{{indent}}    if _condOk {
+{{then}}{{indent}}    } else {
+{{indent}}        vm.Regs = _savedRegs
+{{indent}}        vm.unwindTrailTo(_trailMark)
+{{fresh_reset}}{{else}}{{indent}}    }
+{{indent}}}

@@ -44,7 +44,7 @@ test(collect_wrapper_shape) :-
     wrap(rpaw_collect/1, Helpers, W),
     assertion(Helpers = [(_ :- _), (_ :- _)]),         % enum + body clauses
     assertion(sub_string(W, _, _, _, "par_collect")),
-    assertion(sub_string(W, _, _, _, "Value::List(__vals)")),  % collect reduce
+    assertion(sub_string(W, _, _, _, "Value::list(__vals)")),  % collect reduce
     assertion(sub_string(W, _, _, _, "vm.unify(&a1")),         % result is A1
     assertion(sub_string(W, _, _, _, "pub fn")).
 
@@ -78,7 +78,7 @@ test(set_wrapper_sorts_and_dedups) :-
 
 test(bag_wrapper_is_collect_list) :-
     wrap(rpaw_bag/1, _, W),
-    assertion(sub_string(W, _, _, _, "Value::List(__vals)")).
+    assertion(sub_string(W, _, _, _, "Value::list(__vals)")).
 
 test(sum_wrapper_folds) :-
     wrap(rpaw_sum/1, _, W),

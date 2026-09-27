@@ -95,6 +95,23 @@ opts + EMIT-KOTLIN-5: append_500 ~**28×**, fib_15 ~**1.85×**, ack_23
 - **No foreign kernels, no LMDB / fact source, no ISO contract.**
 - **No runtime-parser capability entry.**
 
+## Whole-program exercise (A2, 2026-09): known / suspected deficiencies
+
+The peerhailer CLI-parser exercise (see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md)) found three JS-WAM runtime bug
+classes that are fleet-wide suspects. Kotlin's audit:
+
+| # | Deficiency | Status | Evidence / reason |
+|---|---|---|---|
+| A1 | `sub_string/5` builtin missing | **verified missing** | no `sub_atom/5` either — the string-builtin surface is thin |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` fact | **absent (aliasing form)** | registers are string-named and Y regs resolve through per-frame environment slots (`WamRuntime.kt.mustache:104-110`), so numeric X→Y aliasing cannot occur; the frameless-Y-write form was not fully audited |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **suspected** | the native/bytecode dispatch (`tryRun` for last-call `execute P/N`, EMIT-KOTLIN-4) was not audited for the shape "last goal is a builtin with no label"; the shared emitter emits it (`deallocate` + `execute <builtin>`) for anything outside `is_builtin_pred/2` |
+| A4 | String fidelity | **rung 0** | no string term tag; D37's double-quoted literals intern as atoms |
+
+Pattern lane: `kotlin_target.pl` compiles facts from
+`clause(Head, true)` — the G-A3-8 execute-at-compile-time hazard is
+absent; the G-A3 machinery has no analogue there.
+
 ## Path forward
 
 1. Optional: heap-outside-map / trail-with-old-values if non-peeled T4 or
@@ -105,4 +122,6 @@ opts + EMIT-KOTLIN-5: append_500 ~**28×**, fib_15 ~**1.85×**, ack_23
 
 Fleet-aligned snapshot; source-verified against `wam_kotlin_target.pl`,
 `wam_kotlin_lowered_emitter.pl`, and `tests/test_wam_kotlin_target.pl`
-(2026-07-15). Through KT-SELF-REC-SOUNDNESS.
+(2026-07-15). Through KT-SELF-REC-SOUNDNESS. 2026-09-01: added the
+whole-program (A2) deficiency audit; see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md).

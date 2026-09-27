@@ -510,6 +510,20 @@ test(static_runtime_has_call_lowered, [nondet]) :-
 	read_file_to_string(SrcPath, Content, []),
 	sub_string(Content, _, _, _, "'call_lowered'").
 
+test(static_runtime_call_lowered_restores_both_execution_loops, [nondet]) :-
+	source_file(wam_python_target:compile_step_wam_to_python(_,_), ThisFile),
+	file_directory_name(ThisFile, ThisDir),
+	directory_file_path(ThisDir, 'wam_python_runtime/WamRuntime.py', SrcPath),
+	read_file_to_string(SrcPath, Content, []),
+	% Both the main WAM loop and aggregate-enumeration loop cross into
+	% lowered functions and must preserve their own environment context.
+	sub_string(Content, _, _, _, "saved_e = state.e"),
+	sub_string(Content, _, _, _, "state.e = saved_e"),
+	sub_string(Content, _, _, _, "saved_temp_y_regs = state.temp_y_regs"),
+	sub_string(Content, _, _, _, "saved_e = sub.e"),
+	sub_string(Content, _, _, _, "sub.e = saved_e"),
+	sub_string(Content, _, _, _, "saved_temp_y_regs = sub.temp_y_regs").
+
 test(static_runtime_run_wam_four_args, [nondet]) :-
 	% run_wam takes (code, labels, entry, state)
 	source_file(wam_python_target:compile_step_wam_to_python(_,_), ThisFile),
@@ -1841,6 +1855,31 @@ test(emit_lowered_return_add1, [nondet]) :-
 	sub_string(Lines, _, _, _, "_result = Int"),
 	sub_string(Lines, _, _, _, "pop_environment(state)").
 
+test(emit_lowered_y_registers_use_environment_helpers, [nondet]) :-
+	wam_python_lowered_emitter:emit_lowered_python(
+		y_frame/1,
+		[allocate, get_level("Y1"), cut("Y1"),
+		 get_variable("Y2", "A1"), deallocate, proceed],
+		[],
+		Lines),
+	% Python's canonical encoding is X1=129 and Y1=301.  Y accesses must
+	% pass through get_reg/set_reg so they resolve against the live frame.
+	sub_string(Lines, _, _, _, "set_reg(state, 301, state.b)"),
+	sub_string(Lines, _, _, _, "state.b = get_reg(state, 301)"),
+	sub_string(Lines, _, _, _, "set_reg(state, 302, get_reg(state, 1))"),
+	assertion(\+ sub_string(Lines, _, _, _, "state.regs[" )).
+
+test(emit_lowered_call_restores_caller_environment, [nondet]) :-
+	wam_python_lowered_emitter:emit_lowered_python(
+		caller/0,
+		[call("callee/0", "0"), proceed],
+		[],
+		Lines),
+	sub_string(Lines, _, _, _, "_saved_e = state.e"),
+	sub_string(Lines, _, _, _, "state.temp_y_regs = None"),
+	sub_string(Lines, _, _, _, "state.e = _saved_e"),
+	sub_string(Lines, _, _, _, "if not _call_ok: return False").
+
 :- end_tests(wam_python_lowered_emitter).
 
 % ============================================================================
@@ -2230,6 +2269,17 @@ test(static_runtime_io_emits_output, [nondet]) :-
 :- dynamic user:pcut_inline/0.
 :- dynamic user:pcut_forall_neg/0.
 :- dynamic user:pcut_forall_pass/0.
+:- dynamic user:py_lower_bind/1.
+:- dynamic user:py_lower_check/1.
+:- dynamic user:py_lower_succeed/0.
+:- dynamic user:py_lower_negtrue/0.
+:- dynamic user:py_lower_double/0.
+:- dynamic user:py_lower_top/1.
+:- dynamic user:py_lower_nested_top/1.
+:- dynamic user:py_lower_choice/1.
+:- dynamic user:py_lower_blocked/1.
+:- dynamic user:py_lower_not_blocked/1.
+:- dynamic user:py_lower_collect/1.
 user:pcut_acc(L, _, _) :- var(L), !, fail.
 user:pcut_acc([], N, N) :- !.
 user:pcut_acc([_|T], A, N) :- A1 is A + 1, pcut_acc(T, A1, N).
@@ -2241,6 +2291,27 @@ user:pcut_partial :- \+ pcut_plen([a,b|_], _).          % partial list rejected 
 user:pcut_inline :- \+ (pcut_gen(_), !, fail).          % inline cut in negation -> true
 user:pcut_forall_neg :- \+ forall(pcut_gen(X), X =:= 1). % not all -> \+ true
 user:pcut_forall_pass :- forall(pcut_gen(X), X >= 1).    % all -> true
+user:py_lower_bind(keep).
+user:py_lower_check(keep).
+user:py_lower_succeed :- \+ fail.
+user:py_lower_negtrue :- \+ true.
+user:py_lower_double :- \+ py_lower_negtrue.
+user:py_lower_top(X) :- py_lower_bind(X), py_lower_succeed, py_lower_check(X).
+user:py_lower_nested_top(X) :- py_lower_bind(X), py_lower_double, py_lower_check(X).
+user:py_lower_choice(a).
+user:py_lower_choice(b).
+user:py_lower_blocked(a).
+user:py_lower_not_blocked(X) :- \+ py_lower_blocked(X).
+user:py_lower_collect(L) :-
+    Keep = keep,
+    findall(X,
+        ( py_lower_choice(X),
+          py_lower_not_blocked(X),
+          Keep == keep
+        ),
+        L),
+    Keep == keep,
+    L = [b].
 
 :- begin_tests(wam_python_builtin_e2e).
 
@@ -2260,6 +2331,37 @@ test(generated_project_cut_negation_forall) :-
 			\+ sub_string(O3, _, _, _, "false."),
 			run_generated_query(ProjectDir, 'pcut_forall_pass/0', O4),
 			\+ sub_string(O4, _, _, _, "false.")
+		),
+		cleanup_tmp_dir(ProjectDir)).
+
+test(generated_lowered_project_preserves_y_frames_across_negation_calls, [nondet]) :-
+	setup_call_cleanup(
+		unique_tmp_dir('tmp_wam_python_lowered_y_e2e', ProjectDir),
+		(   wam_python_target:write_wam_python_project(
+				[user:py_lower_bind/1, user:py_lower_check/1,
+				 user:py_lower_succeed/0, user:py_lower_negtrue/0,
+				 user:py_lower_double/0, user:py_lower_top/1,
+				 user:py_lower_nested_top/1],
+				[emit_mode(lowered)], ProjectDir),
+			run_generated_query(ProjectDir, 'py_lower_top/1', O1),
+			once(sub_string(O1, _, _, _, "A1 = keep")),
+			\+ sub_string(O1, _, _, _, "false."),
+			run_generated_query(ProjectDir, 'py_lower_nested_top/1', O2),
+			once(sub_string(O2, _, _, _, "A1 = keep")),
+			\+ sub_string(O2, _, _, _, "false.")
+		),
+		cleanup_tmp_dir(ProjectDir)).
+
+test(generated_lowered_aggregate_negation_frame_smoke, [nondet]) :-
+	setup_call_cleanup(
+		unique_tmp_dir('tmp_wam_python_lowered_aggregate_y_e2e', ProjectDir),
+		(   wam_python_target:write_wam_python_project(
+				[user:py_lower_choice/1, user:py_lower_blocked/1,
+				 user:py_lower_not_blocked/1, user:py_lower_collect/1],
+				[emit_mode(lowered)], ProjectDir),
+			run_generated_query(ProjectDir, 'py_lower_collect/1', Output),
+			once(sub_string(Output, _, _, _, "A1 = .(b, [])")),
+			\+ sub_string(Output, _, _, _, "false.")
 		),
 		cleanup_tmp_dir(ProjectDir)).
 
@@ -2621,7 +2723,8 @@ is_iso_lax_script(Script) :-
 	], '\n', Script).
 
 run_generated_query(ProjectDir, Query, Output) :-
-	process_create(path(python), ['main.py', Query],
+	python_test_executable(Python),
+	process_create(Python, ['main.py', Query],
 		[cwd(ProjectDir), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
 	read_string(Out, _, Output),
 	read_string(Err, _, ErrText),
@@ -2635,7 +2738,8 @@ run_generated_query(ProjectDir, Query, Output) :-
 	).
 
 run_python_snippet(ProjectDir, Script, Output) :-
-	process_create(path(python), ['-c', Script],
+	python_test_executable(Python),
+	process_create(Python, ['-c', Script],
 		[cwd(ProjectDir), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
 	read_string(Out, _, Output),
 	read_string(Err, _, ErrText),
@@ -2646,6 +2750,14 @@ run_python_snippet(ProjectDir, Script, Output) :-
 	->  true
 	;   format(user_error, 'generated WAM Python snippet failed: ~w~n', [ErrText]),
 		fail
+	).
+
+python_test_executable(Python) :-
+	(   absolute_file_name(path(python), Python,
+			[access(execute), file_errors(fail)])
+	->  true
+	;   absolute_file_name(path(python3), Python,
+			[access(execute), file_errors(fail)])
 	).
 
 unique_tmp_dir(Prefix, TmpDir) :-

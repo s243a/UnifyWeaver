@@ -216,11 +216,14 @@ register_builtin_targets :-
 
     % JavaScript family - runtime selection via js_runtime_choice/2
     register_target(typescript, javascript, [types, async, modules, generics]),
-    register_target(clojurescript, javascript, [streaming, functional, lisp, browser, scittle, interpreted]),
+    register_target(annotated_js, javascript, [jsdoc, tsc_checked, modules, async]),
+    register_target(vanilla_js, javascript, [plain, modules, async]),
+    register_target(clojurescript, javascript, [streaming, functional, lisp, browser, scittle, nbb, babashka, interpreted]),
     register_target(node, javascript, [streaming, npm, filesystem, async]),
     register_target(deno, javascript, [typescript, permissions, secure, async]),
     register_target(bun, javascript, [fast, npm_compat, bundled, async]),
     register_target(browser, javascript, [dom, async, web_apis, fetch]),
+    register_target(wam_javascript, javascript, [wam, choice_points, hybrid]),
 
     % Functional family
     register_target(haskell, functional, [compiled, types, lazy, pattern_matching]),
@@ -274,6 +277,9 @@ target_module(ruby, ruby_target).
 target_module(lua, lua_target).
 target_module(wam_lua, wam_lua_target).
 target_module(typescript, typescript_target).
+target_module(annotated_js, annotated_js_target).
+target_module(vanilla_js, vanilla_js_target).
+target_module(wam_javascript, wam_javascript_target).
 target_module(haskell, haskell_target).
 target_module(elixir, elixir_target).
 target_module(wam_fsharp, wam_fsharp_target).

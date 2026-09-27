@@ -180,5 +180,13 @@ func isAtomic(v Value) bool {
 
 func valueEquals(a, b Value) bool {
 	if a == nil || b == nil { return a == b }
+	// The interned atom [] and a zero-length *List are the same Prolog
+	// term. Atom.Equals is pointer-only, so without this short-circuit
+	// get_constant [] fails against append([],[],L) (which yields a
+	// *List, not the interned atom). Unify already had this check;
+	// GetConstant / SwitchOnConstant go through valueEquals only.
+	if isEmptyListValue(a) && isEmptyListValue(b) {
+		return true
+	}
 	return a.Equals(b)
 }

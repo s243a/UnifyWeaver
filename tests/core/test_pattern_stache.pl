@@ -287,6 +287,57 @@ test(load_and_render_roundtrip) :-
     load_stache_file(Path, Template),
     Template = stache(1, _).
 
+test(unclosed_match_rejected_at_load,
+     error(pattern_stache(malformed_structure(unclosed_match)))) :-
+    header(H),
+    string_concat(H, "{{match g}}{{case a}}body", Text),
+    make_stache_file(Text, Path),
+    load_stache_file(Path, _).
+
+test(malformed_match_key_rejected_at_load,
+     error(pattern_stache(malformed_structure(malformed_tag(_))))) :-
+    header(H),
+    string_concat(H, "{{match}}{{case a}}body{{/match}}", Text),
+    make_stache_file(Text, Path),
+    load_stache_file(Path, _).
+
+test(case_outside_match_rejected_at_load,
+     error(pattern_stache(malformed_structure(misplaced_case(_))))) :-
+    header(H),
+    string_concat(H, "{{case a}}body", Text),
+    make_stache_file(Text, Path),
+    load_stache_file(Path, _).
+
+test(case_after_default_rejected_at_load,
+     error(pattern_stache(malformed_structure(misplaced_case(_))))) :-
+    header(H),
+    string_concat(H, "{{match g}}{{default}}x{{case a}}a{{/match}}", Text),
+    make_stache_file(Text, Path),
+    load_stache_file(Path, _).
+
+test(unterminated_case_rejected_at_load,
+     error(pattern_stache(malformed_structure(unterminated_tag(_))))) :-
+    header(H),
+    string_concat(H, "{{match g}}{{case a", Text),
+    make_stache_file(Text, Path),
+    load_stache_file(Path, _).
+
+test(unclosed_nested_match_rejected_at_load,
+     error(pattern_stache(malformed_structure(unclosed_match)))) :-
+    header(H),
+    string_concat(H,
+        "{{match outer}}{{case a}}{{match inner}}{{case x}}X{{/match}}",
+        Text),
+    make_stache_file(Text, Path),
+    load_stache_file(Path, _).
+
+test(extra_match_close_rejected_at_load,
+     error(pattern_stache(malformed_structure(unexpected_match_close)))) :-
+    header(H),
+    string_concat(H, "{{match g}}{{case a}}A{{/match}}{{/match}}", Text),
+    make_stache_file(Text, Path),
+    load_stache_file(Path, _).
+
 :- end_tests(q5_loader).
 
 %% ============================================
@@ -316,6 +367,24 @@ test(nonground_dispatch_is_error,
 test(unknown_placeholder_left_verbatim) :-
     render_stache("a {{missing}} b", [], R),
     R == "a {{missing}} b".
+
+test(case_binding_that_looks_like_outer_key_is_literal) :-
+    render_stache("{{match g}}{{case f(X)}}{{X}}{{/match}}",
+                  [g=f('{{K}}'), 'K'=replaced], R),
+    R == "{{K}}".
+
+test(outer_segments_render_once_around_case) :-
+    render_stache("{{K}}/{{match g}}{{case f(X)}}{{X}}{{/match}}/{{K}}",
+                  [g=f('{{K}}'), 'K'=outer], R),
+    R == "outer/{{K}}/outer".
+
+test(open_brace_adjacent_to_placeholder) :-
+    render_stache("{{{K}}}", ['K'=ok], R),
+    R == "{ok}".
+
+test(unfinished_marker_before_placeholder) :-
+    render_stache("{{ unfinished {{K}}", ['K'=ok], R),
+    R == "{{ unfinished ok".
 
 :- end_tests(q6_dict_contract).
 

@@ -13,6 +13,7 @@
 :- use_module(library(filesex)).
 :- use_module(library(process)).
 :- use_module(library(readutil)).
+:- use_module(library(time)).
 :- use_module('../src/unifyweaver/targets/wam_cpp_target').
 :- use_module('../src/unifyweaver/core/relation_policy', []).
 :- use_module('../src/unifyweaver/targets/wam_cpp_lowered_emitter').
@@ -78,6 +79,21 @@
 :- dynamic user:wam_cpp_is_num/1.
 :- dynamic user:wam_cpp_is_var/1.
 :- dynamic user:wam_cpp_is_compound/1.
+:- dynamic user:wam_cpp_is_list/1.
+:- dynamic user:wam_cpp_test_is_list_nil/0.
+:- dynamic user:wam_cpp_test_is_list_normal/0.
+:- dynamic user:wam_cpp_test_is_list_cons/0.
+:- dynamic user:wam_cpp_test_is_list_improper/0.
+:- dynamic user:wam_cpp_test_is_list_improper_chain/0.
+:- dynamic user:wam_cpp_test_is_list_open/0.
+:- dynamic user:wam_cpp_test_is_list_open_chain/0.
+:- dynamic user:wam_cpp_test_is_list_cyclic/0.
+:- dynamic user:wam_cpp_test_is_list_cyclic_chain/0.
+:- dynamic user:wam_cpp_test_is_list_atom/0.
+:- dynamic user:wam_cpp_test_is_list_var/0.
+:- dynamic user:wam_cpp_test_is_list_continuation/1.
+:- dynamic user:wam_cpp_test_is_list_cont_fail/1.
+:- dynamic user:wam_cpp_test_is_list_cont_cyclic/1.
 :- dynamic user:wam_cpp_test_nonvar/0.
 :- dynamic user:wam_cpp_test_functor/0.
 :- dynamic user:wam_cpp_test_arg1/0.
@@ -1349,6 +1365,9 @@ user:wam_cpp_test_lax_float_div_zero_nan :-
 :- dynamic user:wam_cpp_test_not_alias_succeeds/0.
 :- dynamic user:wam_cpp_test_not_alias_fails/0.
 :- dynamic user:wam_cpp_test_not_nan_check/0.
+:- dynamic user:wam_cpp_test_not_frame_fact/1.
+:- dynamic user:wam_cpp_test_not_frame_callee/1.
+:- dynamic user:wam_cpp_test_not_frame_caller/0.
 
 user:wam_cpp_test_not_fail        :- \+ fail.
 user:wam_cpp_test_not_true        :- \+ true.
@@ -1361,6 +1380,49 @@ user:wam_cpp_test_not_alias_fails    :- not(true).
 % The original gap that motivated this PR — NaN self-check needs \+/1
 % because NaN =:= NaN is false but \=== NaN at the structural level.
 user:wam_cpp_test_not_nan_check   :- R is 0.0 / 0.0, \+ (R =:= R).
+
+% A sole-negation callee still needs its own environment: its soft-cut
+% barrier uses Y1, while the caller keeps a live value in its own Y1 across
+% the call. Without the callee's allocate/deallocate pair, get_level aliases
+% and corrupts the caller cell.
+user:wam_cpp_test_not_frame_fact(a).
+user:wam_cpp_test_not_frame_callee(X) :-
+    \+ wam_cpp_test_not_frame_fact(X).
+user:wam_cpp_test_not_frame_caller :-
+    X = sentinel,
+    wam_cpp_test_not_frame_callee(z),
+    X == sentinel.
+
+% Sole-`\+` callee invoked from inside a negated-ITE CONDITION of a
+% multi-permanent-variable caller. This is the pkg_resolver blocked_acc/5
+% shape: `(base_ver(Cat,Name,BV), \+ satisfies(BV,C) -> ... ; ...)`, where
+% satisfies/2 is itself a sole-`\+` clause and the caller keeps Name/C/BV/Acc
+% live across it. Under ite_use_y_level the callee's `\+` compiles to a
+% soft-cut (G->fail;true) whose get_level/cut barrier needs a Y slot; if the
+% callee has no frame the barrier aliases the CALLER's frame and corrupts a
+% live cell (BV), so the wrong branch is taken and BV comes back mangled.
+% This is the manifestation behind the resolve_layered/explain_blocked
+% catalog/9 divergence; complements cpp_e2e_not_callee_frame_isolation
+% (which drives the sole-`\+` callee in isolation) by pinning the enclosing
+% multi-perm-var + negated-ITE-condition caller.
+:- dynamic user:wam_cpp_test_nsn_fact/1.
+user:wam_cpp_test_nsn_fact(a).
+user:wam_cpp_test_nsn_neg(X) :- \+ wam_cpp_test_nsn_fact(X).
+% base_ver-like: binds a payload into a caller permanent var.
+user:wam_cpp_test_nsn_id(_, N, payload(N)).
+% The blocked_acc/5 shape: a many-permanent-var clause whose if-then-else
+% CONDITION runs a sole-`\+` callee, with Name/C/BV/Acc0 all live across it
+% and consumed in the THEN arm. If the callee's barrier corrupts a caller
+% cell (the pre-fix bug), BV/Name come back wrong and the assertion fails.
+user:wam_cpp_test_not_blockedacc_shape :-
+    Cat = cat, Name = lib, C = gte, Acc0 = [],
+    (   wam_cpp_test_nsn_id(Cat, Name, BV),
+        wam_cpp_test_nsn_neg(BV)
+    ->  Acc1 = [blocked(Name, C, BV)|Acc0]
+    ;   Acc1 = Acc0
+    ),
+    Acc1 == [blocked(lib, gte, payload(lib))],
+    Name == lib, Cat == cat, C == gte.
 
 % Cut INSIDE a negated conjunction. \+ G desugars to (G -> fail ; true),
 % so the cut becomes a cut in the if-then-else CONDITION, which is opaque
@@ -3633,6 +3695,31 @@ user:wam_cpp_has_rect          :- user:wam_cpp_rect(box(1, 2)).
 user:wam_cpp_has_rect_wrong    :- user:wam_cpp_rect(box(1, 3)).
 user:wam_cpp_first(box(X, _), X).
 user:wam_cpp_lst([a, b, c]).
+% Non-termination regression (wam_cpp_target switch_target_consumes_indexed).
+% Mirrors the pkg_resolver item_ver/lookup_held/installed_or_base shape that
+% hung the C++ WAM (differential case g459) while SWI returned instantly.
+% wam_cpp_nt_iv/3 is first-arg STRUCTURE-indexed over three distinct functors
+% (-/2, base/2, layer/2), so a base(...) element is dispatched by a direct
+% switch_on_structure jump straight to that clause body -- with no
+% retry_me_else/trust_me at the target to consume the `indexed_entry` latch.
+% The leading base(a-1,r) element sets that latch and then FAILS the name
+% match; the ensuing backtrack lands on the if-then-else else-guard's
+% trust_me, which (pre-fix) read the stale latch and skipped popping its own
+% choice point -- so lookup was retried forever (flat memory, ~100% CPU).
+% wam_cpp_nt_iob/2 forces that backtrack by demanding version 99 while b
+% resolves to 2. Post-fix this terminates and fails cleanly.
+user:wam_cpp_nt_iv(N-V, Name, V)             :- N == Name.
+user:wam_cpp_nt_iv(base(N-V, _R), Name, V)   :- N == Name.
+user:wam_cpp_nt_iv(layer(_L, Pkgs), Name, V) :- user:wam_cpp_nt_lookup(Pkgs, Name, V).
+user:wam_cpp_nt_lookup([H|T], Name, Ver) :-
+    (   user:wam_cpp_nt_iv(H, Name, V0)
+    ->  Ver = V0
+    ;   user:wam_cpp_nt_lookup(T, Name, Ver)
+    ).
+user:wam_cpp_nt_iob(Name, V) :-
+    user:wam_cpp_nt_lookup([base(a-1, r), base(b-2, r), c-3], Name, BV),
+    V == BV.
+user:wam_cpp_nt_guard :- user:wam_cpp_nt_iob(b, 99).
 % Arithmetic & comparison
 user:wam_cpp_add1(X, Y)        :- Y is X + 1.
 user:wam_cpp_gt(X, Y)          :- X > Y.
@@ -3690,6 +3777,23 @@ user:wam_cpp_is_int(X)         :- integer(X).
 user:wam_cpp_is_num(X)         :- number(X).
 user:wam_cpp_is_var(X)         :- var(X).
 user:wam_cpp_is_compound(X)    :- compound(X).
+user:wam_cpp_is_list(X)        :- is_list(X).
+user:wam_cpp_test_is_list_nil  :- is_list([]).
+user:wam_cpp_test_is_list_normal :- is_list([1, 2, 3]).
+user:wam_cpp_test_is_list_cons :- L = '[|]'(1, '[|]'(2, [])), is_list(L).
+user:wam_cpp_test_is_list_improper :- is_list('[|]'(1, 2)).
+user:wam_cpp_test_is_list_improper_chain :- L = '[|]'(1, '[|]'(2, '[|]'(3, 4))), is_list(L).
+user:wam_cpp_test_is_list_open :- L = '[|]'(1, _Tail), is_list(L).
+user:wam_cpp_test_is_list_open_chain :- L = '[|]'(1, '[|]'(2, _Tail)), is_list(L).
+user:wam_cpp_test_is_list_cyclic :- X = '[|]'(1, X), is_list(X).
+user:wam_cpp_test_is_list_cyclic_chain :- X = '[|]'(1, '[|]'(2, '[|]'(3, X))), is_list(X).
+user:wam_cpp_test_is_list_atom :- is_list(foo).
+user:wam_cpp_test_is_list_var  :- is_list(_X).
+user:wam_cpp_test_is_list_continuation(R) :- is_list([a, b, c]), R = ok.
+user:wam_cpp_test_is_list_cont_fail(R) :- is_list('[|]'(1, 2)), R = bad.
+user:wam_cpp_test_is_list_cont_fail(ok).
+user:wam_cpp_test_is_list_cont_cyclic(R) :- X = '[|]'(1, X), is_list(X), R = bad.
+user:wam_cpp_test_is_list_cont_cyclic(ok).
 user:wam_cpp_test_nonvar       :- X = foo, nonvar(X).
 % Term inspection
 user:wam_cpp_test_functor      :- functor(box(1, 2), box, 2).
@@ -3998,6 +4102,27 @@ test(cpp_e2e_caller, [condition(cpp_compiler_available)]) :-
         delete_directory_and_contents(TmpDir)
     ).
 
+% Regression guard for the switch_target_consumes_indexed non-termination
+% fix. wam_cpp_nt_guard/0 backtracks into an if-then-else else-guard after a
+% first-arg structure-indexed clause dispatch. Before the fix the compiled
+% interpreter looped forever here; the call_with_time_limit turns any such
+% regression into a fast, loud failure instead of a hung test run.
+test(cpp_e2e_indexed_soft_cut_no_hang, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_nthang', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_nt_guard/0,
+                               user:wam_cpp_nt_iob/2,
+                               user:wam_cpp_nt_lookup/3,
+                               user:wam_cpp_nt_iv/3],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          % Must TERMINATE (guarded) and fail: b resolves to 2, never 99.
+          call_with_time_limit(60,
+              run_query(BinPath, 'wam_cpp_nt_guard/0', [], false))
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 % ------------------------------------------------------------------
 % Compound terms + lists: heap-resident structures via shared_ptr cells.
 % Exercises Get/PutStructure + Get/PutList + Unify*/Set* + the CLI parser
@@ -4190,6 +4315,7 @@ test(cpp_e2e_builtin_type_checks, [condition(cpp_compiler_available)]) :-
     setup_call_cleanup(
         write_wam_cpp_project([user:wam_cpp_is_atom/1, user:wam_cpp_is_int/1,
                                user:wam_cpp_is_num/1, user:wam_cpp_is_compound/1,
+                               user:wam_cpp_is_list/1,
                                user:wam_cpp_test_nonvar/0],
                               [emit_main(true)], TmpDir),
         ( build_e2e_binary(TmpDir, BinPath),
@@ -4201,7 +4327,51 @@ test(cpp_e2e_builtin_type_checks, [condition(cpp_compiler_available)]) :-
           run_query(BinPath, 'wam_cpp_is_num/1',   [foo],         false),
           run_query(BinPath, 'wam_cpp_is_compound/1', ['box(1,2)'], true),
           run_query(BinPath, 'wam_cpp_is_compound/1', [foo],        false),
+          run_query(BinPath, 'wam_cpp_is_list/1',  ['[]'],        true),
+          run_query(BinPath, 'wam_cpp_is_list/1',  ['[1,2]'],     true),
+          run_query(BinPath, 'wam_cpp_is_list/1',  [foo],         false),
+          run_query(BinPath, 'wam_cpp_is_list/1',  [42],          false),
           run_query(BinPath, 'wam_cpp_test_nonvar/0', [],            true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_builtin_is_list, [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_is_list', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project([user:wam_cpp_test_is_list_nil/0,
+                               user:wam_cpp_test_is_list_normal/0,
+                               user:wam_cpp_test_is_list_cons/0,
+                               user:wam_cpp_test_is_list_improper/0,
+                               user:wam_cpp_test_is_list_improper_chain/0,
+                               user:wam_cpp_test_is_list_open/0,
+                               user:wam_cpp_test_is_list_open_chain/0,
+                               user:wam_cpp_test_is_list_cyclic/0,
+                               user:wam_cpp_test_is_list_cyclic_chain/0,
+                               user:wam_cpp_test_is_list_atom/0,
+                               user:wam_cpp_test_is_list_var/0,
+                               user:wam_cpp_test_is_list_continuation/1,
+                               user:wam_cpp_test_is_list_cont_fail/1,
+                               user:wam_cpp_test_is_list_cont_cyclic/1],
+                              [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath, 'wam_cpp_test_is_list_nil/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_is_list_normal/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_is_list_cons/0', [], true),
+          run_query(BinPath, 'wam_cpp_test_is_list_improper/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_improper_chain/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_open/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_open_chain/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_cyclic/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_cyclic_chain/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_atom/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_var/0', [], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_continuation/1', [ok], true),
+          run_query(BinPath, 'wam_cpp_test_is_list_continuation/1', [bad], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_cont_fail/1', [ok], true),
+          run_query(BinPath, 'wam_cpp_test_is_list_cont_fail/1', [bad], false),
+          run_query(BinPath, 'wam_cpp_test_is_list_cont_cyclic/1', [ok], true),
+          run_query(BinPath, 'wam_cpp_test_is_list_cont_cyclic/1', [bad], false)
         ),
         delete_directory_and_contents(TmpDir)
     ).
@@ -6532,6 +6702,48 @@ test(cpp_e2e_not_alias, [condition(cpp_compiler_available)]) :-
                     'wam_cpp_test_not_alias_succeeds/0', [], true),
           run_query(BinPath,
                     'wam_cpp_test_not_alias_fails/0', [], false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_not_callee_frame_isolation,
+     [condition(cpp_compiler_available)]) :-
+    unique_cpp_tmp_dir('tmp_cpp_e2e_not_frame', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_not_frame_fact/1,
+             user:wam_cpp_test_not_frame_callee/1,
+             user:wam_cpp_test_not_frame_caller/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_not_frame_caller/0', [], true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(cpp_e2e_not_blockedacc_shape,
+     [condition(cpp_compiler_available)]) :-
+    % The blocked_acc/5 manifestation: a many-permanent-var clause whose
+    % if-then-else CONDITION calls a sole-`\+` callee, with the caller's
+    % Name/C/BV live across the negation and consumed in the THEN arm.
+    % This is the shape behind the pkg_resolver resolve_layered/explain
+    % _blocked divergence on a catalog/9. Verified to FAIL on the pre-fix
+    % compiler (unframed sole-`\+` callee corrupts the caller's BV cell)
+    % and PASS post-fix. Complements cpp_e2e_not_callee_frame_isolation,
+    % which exercises the callee in isolation; this pins the enclosing
+    % multi-perm-var + negated-ITE-condition caller.
+    unique_cpp_tmp_dir('tmp_cpp_e2e_not_blockedacc', TmpDir),
+    setup_call_cleanup(
+        write_wam_cpp_project(
+            [user:wam_cpp_test_nsn_fact/1,
+             user:wam_cpp_test_nsn_neg/1,
+             user:wam_cpp_test_nsn_id/3,
+             user:wam_cpp_test_not_blockedacc_shape/0],
+            [emit_main(true)], TmpDir),
+        ( build_e2e_binary(TmpDir, BinPath),
+          run_query(BinPath,
+                    'wam_cpp_test_not_blockedacc_shape/0', [], true)
         ),
         delete_directory_and_contents(TmpDir)
     ).
@@ -10665,6 +10877,34 @@ test(compile_error_default_is_warn) :-
     % handler. Using `unknown_policy` here exercises that branch.
     \+ wam_cpp_target:handle_compile_error(unknown_policy, foo/1,
                                           error(test_marker, _)).
+
+test(lowered_unsupported_instruction_fails_loudly,
+     [throws(error(wam_cpp_lowered_emitter_error(unsupported_instruction(bogus_lowered_op(a1))), _))]) :-
+    wam_cpp_lowered_emitter:emit_one(bogus_lowered_op(a1), "").
+
+% Guards against drift between the lowered emitter's cpp_supported/1 allow-list
+% and its emit_one clauses: every supported opcode must have an emit_one clause,
+% except the four switch_on_* indexing opcodes, which are stripped before
+% emission and dispatched by the interpreter's step().
+test(cpp_supported_opcode_has_emitter_or_is_indexing) :-
+    % Functors with a SPECIFIC (non-fallback) emit_one clause. The fallback has a
+    % variable head, so nonvar(Head) filters it out; collect from both arities.
+    findall(F/A,
+            ( ( clause(wam_cpp_lowered_emitter:emit_one(Head, _), _)
+              ; clause(wam_cpp_lowered_emitter:emit_one(Head, _, _), _) ),
+              nonvar(Head),
+              functor(Head, F, A) ),
+            Handled0),
+    sort(Handled0, Handled),
+    IndexingFunctors = [switch_on_constant/1, switch_on_constant_a2/1,
+                        switch_on_structure/1, switch_on_term/1],
+    findall(F/A,
+            ( wam_cpp_lowered_emitter:cpp_supported(T),
+              functor(T, F, A),
+              \+ memberchk(F/A, Handled),
+              \+ memberchk(F/A, IndexingFunctors) ),
+            Missing),
+    assertion(Missing == []).
 
 :- end_tests(wam_cpp_generator).
 

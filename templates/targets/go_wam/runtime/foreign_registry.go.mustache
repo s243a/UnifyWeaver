@@ -1,0 +1,114 @@
+func (vm *WamState) registerForeignNativeKind(predKey string, kind string) {
+    vm.Ctx.ForeignNativeKinds[predKey] = kind
+}
+
+func (vm *WamState) registerForeignResultLayout(predKey string, layout string) {
+    vm.Ctx.ForeignResultLayouts[predKey] = layout
+}
+
+func (vm *WamState) registerForeignResultMode(predKey string, mode string) {
+    vm.Ctx.ForeignResultModes[predKey] = mode
+}
+
+func (vm *WamState) registerForeignStringConfig(predKey string, key string, value string) {
+    cfg, ok := vm.Ctx.ForeignStringConfigs[predKey]
+    if !ok {
+        cfg = make(map[string]string)
+        vm.Ctx.ForeignStringConfigs[predKey] = cfg
+    }
+    cfg[key] = value
+}
+
+func (vm *WamState) registerForeignUsizeConfig(predKey string, key string, value int) {
+    cfg, ok := vm.Ctx.ForeignUsizeConfigs[predKey]
+    if !ok {
+        cfg = make(map[string]int)
+        vm.Ctx.ForeignUsizeConfigs[predKey] = cfg
+    }
+    cfg[key] = value
+}
+
+func (vm *WamState) registerIndexedAtomFact2Pairs(predKey string, pairs []AtomPair) {
+    vm.Ctx.IndexedAtomFactPairs[predKey] = pairs
+    vm.registerAtomFact2Source(predKey, newStaticAtomFact2Source(pairs))
+}
+
+func (vm *WamState) registerAtomFact2Source(predKey string, source AtomFact2Source) {
+    if source == nil {
+        return
+    }
+    vm.Ctx.AtomFact2Sources[predKey] = source
+    vm.Ctx.IndexedAtomFactPairs[predKey] = source.Scan()
+}
+
+func (vm *WamState) registerTsvAtomFact2(predKey string, path string) error {
+    data, err := os.ReadFile(path)
+    if err != nil {
+        return err
+    }
+    lines := strings.Split(string(data), "\n")
+    pairs := make([]AtomPair, 0, len(lines))
+    for idx, line := range lines {
+        line = strings.TrimSpace(line)
+        if line == "" {
+            continue
+        }
+        if idx == 0 {
+            continue
+        }
+        cols := strings.Split(line, "\t")
+        if len(cols) < 2 {
+            continue
+        }
+        left := strings.TrimSpace(cols[0])
+        right := strings.TrimSpace(cols[1])
+        if left == "" || right == "" {
+            continue
+        }
+        pairs = append(pairs, AtomPair{Left: left, Right: right})
+    }
+    vm.registerAtomFact2Source(predKey, newStaticAtomFact2Source(pairs))
+    return nil
+}
+
+func (vm *WamState) registerLmdbAtomFact2(predKey string, artifactDir string, mode string, l2Capacity int) error {
+    source := newLmdbAtomFact2Source(predKey, artifactDir, mode, l2Capacity)
+    vm.Ctx.AtomFact2Sources[predKey] = source
+    return nil
+}
+
+func (vm *WamState) registerIndexedWeightedEdgeTriples(predKey string, triples []WeightedEdgeTriple) {
+    vm.Ctx.IndexedWeightedEdgeTriples[predKey] = triples
+}
+
+func (vm *WamState) foreignResultLayout(predKey string) string {
+    return vm.Ctx.ForeignResultLayouts[predKey]
+}
+
+func (vm *WamState) foreignResultMode(predKey string) string {
+    return vm.Ctx.ForeignResultModes[predKey]
+}
+
+func (vm *WamState) foreignStringConfig(predKey string, key string) string {
+    cfg, ok := vm.Ctx.ForeignStringConfigs[predKey]
+    if !ok {
+        return ""
+    }
+    return cfg[key]
+}
+
+func (vm *WamState) foreignUsizeConfig(predKey string, key string) int {
+    cfg, ok := vm.Ctx.ForeignUsizeConfigs[predKey]
+    if !ok {
+        return 0
+    }
+    return cfg[key]
+}
+
+func parseForeignTupleLayout(layout string) int {
+    var arity int
+    if _, err := fmt.Sscanf(layout, "tuple:%d", &arity); err == nil {
+        return arity
+    }
+    return 0
+}

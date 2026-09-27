@@ -1,0 +1,356 @@
+// ----------------------------------------------------------------------
+// LMDB FactSource implementation (v1).
+// Gated by WAM_CPP_ENABLE_LMDB. When the flag is absent, only the
+// stub cpp_load_lmdb_fact_source below is compiled -- it returns
+// false and leaves dynamic_db untouched.
+// ----------------------------------------------------------------------
+
+#ifdef WAM_CPP_ENABLE_LMDB
+#include <filesystem>
+#include <stdexcept>
+
+LmdbFactSource::LmdbFactSource(const std::string& env_path,
+                               const char* db_name) {
+    int rc = mdb_env_create(&env_);
+    if (rc != MDB_SUCCESS) {
+        throw std::runtime_error(
+            std::string("mdb_env_create: ") + mdb_strerror(rc));
+    }
+    // Allow named sub-DBs; v1 only opens one per LmdbFactSource but
+    // reserves the headroom so users can keep multiple predicates
+    // in one env via repeated load calls with different db_name.
+    mdb_env_set_maxdbs(env_, 16);
+    // LMDB envs come in two flavours: a directory containing
+    // data.mdb + lock.mdb (no MDB_NOSUBDIR), or a single file path
+    // where the file is data.mdb and lock.mdb sits alongside
+    // (MDB_NOSUBDIR). Pick the right flag by probing the path --
+    // retrying mdb_env_open on the same env after failure is not
+    // safe per the LMDB docs.
+    unsigned int flags = MDB_RDONLY;
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(env_path, ec)) {
+        flags |= MDB_NOSUBDIR;
+    }
+    rc = mdb_env_open(env_, env_path.c_str(), flags, 0664);
+    if (rc != MDB_SUCCESS) {
+        mdb_env_close(env_);
+        env_ = nullptr;
+        throw std::runtime_error(
+            std::string("mdb_env_open ") + env_path + ": "
+            + mdb_strerror(rc));
+    }
+    MDB_txn* txn = nullptr;
+    rc = mdb_txn_begin(env_, nullptr, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) {
+        mdb_env_close(env_);
+        env_ = nullptr;
+        throw std::runtime_error(
+            std::string("mdb_txn_begin: ") + mdb_strerror(rc));
+    }
+    MDB_dbi dbi;
+    rc = mdb_dbi_open(txn, db_name, 0, &dbi);
+    if (rc != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        mdb_env_close(env_);
+        env_ = nullptr;
+        throw std::runtime_error(
+            std::string("mdb_dbi_open ")
+            + (db_name ? db_name : "<default>") + ": "
+            + mdb_strerror(rc));
+    }
+    mdb_txn_commit(txn);
+    dbi_ = dbi;
+    dbi_open_ = true;
+}
+
+LmdbFactSource::~LmdbFactSource() {
+    if (env_) {
+        if (dbi_open_) {
+            mdb_dbi_close(env_, dbi_);
+        }
+        mdb_env_close(env_);
+        env_ = nullptr;
+    }
+}
+
+void LmdbFactSource::stream_all(
+    const std::function<void(std::string_view,
+                             std::string_view)>& sink) {
+    MDB_txn* txn = nullptr;
+    int rc = mdb_txn_begin(env_, nullptr, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) {
+        throw std::runtime_error(
+            std::string("stream_all/txn_begin: ")
+            + mdb_strerror(rc));
+    }
+    MDB_cursor* cur = nullptr;
+    rc = mdb_cursor_open(txn, dbi_, &cur);
+    if (rc != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        throw std::runtime_error(
+            std::string("stream_all/cursor_open: ")
+            + mdb_strerror(rc));
+    }
+    MDB_val k{}, v{};
+    rc = mdb_cursor_get(cur, &k, &v, MDB_FIRST);
+    while (rc == MDB_SUCCESS) {
+        std::string_view ksv(static_cast<const char*>(k.mv_data),
+                             k.mv_size);
+        std::string_view vsv(static_cast<const char*>(v.mv_data),
+                             v.mv_size);
+        sink(ksv, vsv);
+        rc = mdb_cursor_get(cur, &k, &v, MDB_NEXT);
+    }
+    mdb_cursor_close(cur);
+    mdb_txn_abort(txn);
+    if (rc != MDB_NOTFOUND) {
+        throw std::runtime_error(
+            std::string("stream_all/cursor_get: ")
+            + mdb_strerror(rc));
+    }
+}
+
+LmdbFactSource::Meta LmdbFactSource::read_meta(const char* db_name) {
+    Meta meta;
+    MDB_txn* txn = nullptr;
+    int rc = mdb_txn_begin(env_, nullptr, MDB_RDONLY, &txn);
+    if (rc != MDB_SUCCESS) {
+        throw std::runtime_error(
+            std::string("read_meta/txn_begin: ")
+            + mdb_strerror(rc));
+    }
+    MDB_dbi meta_dbi;
+    rc = mdb_dbi_open(txn, "__meta__", 0, &meta_dbi);
+    if (rc == MDB_NOTFOUND) {
+        // __meta__ sub-DB absent -- transitional accommodation.
+        mdb_txn_abort(txn);
+        return meta;  // present == false
+    }
+    if (rc != MDB_SUCCESS) {
+        mdb_txn_abort(txn);
+        throw std::runtime_error(
+            std::string("read_meta/dbi_open(__meta__): ")
+            + mdb_strerror(rc));
+    }
+    // Key prefix per design doc: empty when data DB is the default
+    // unnamed DB, "<db_name>:" when a named sub-DB is in use.
+    std::string prefix = (db_name && *db_name)
+        ? (std::string(db_name) + ":") : std::string();
+    auto get_key = [&](const std::string& name) -> std::string {
+        std::string full = prefix + name;
+        MDB_val K{full.size(), const_cast<char*>(full.data())};
+        MDB_val V{};
+        int gr = mdb_get(txn, meta_dbi, &K, &V);
+        if (gr == MDB_NOTFOUND) return std::string();
+        if (gr != MDB_SUCCESS) {
+            throw std::runtime_error(
+                std::string("read_meta/get ") + full + ": "
+                + mdb_strerror(gr));
+        }
+        return std::string(static_cast<const char*>(V.mv_data),
+                           V.mv_size);
+    };
+    std::string sv = get_key("schema_version");
+    std::string pr = get_key("predicate");
+    std::string cs = get_key("columns");
+    mdb_txn_abort(txn);
+    if (sv.empty() && pr.empty() && cs.empty()) {
+        // __meta__ sub-DB exists but holds no entries for this DB.
+        // Treat as absent so the loader emits a warning.
+        return meta;
+    }
+    meta.present = true;
+    try { meta.schema_version = std::stoi(sv); }
+    catch (...) { meta.schema_version = 0; }
+    meta.predicate = pr;
+    // Split columns by comma. Trailing/leading whitespace is not
+    // tolerated -- the design doc specifies ASCII exact match.
+    std::string cur;
+    for (char c : cs) {
+        if (c == ',') {
+            meta.columns.push_back(std::move(cur));
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
+    }
+    if (!cur.empty() || !cs.empty()) {
+        meta.columns.push_back(std::move(cur));
+    }
+    return meta;
+}
+
+bool cpp_load_lmdb_fact_source(WamState& vm,
+                               const std::string& functor_arity_key,
+                               const std::string& env_path,
+                               const char* db_name,
+                               const LmdbLoadOptions& opts) {
+    std::string dbn = db_name ? db_name : "";
+    auto key = std::make_pair(env_path, dbn);
+    if (vm.loaded_lmdb_sources.count(key)) {
+        return true;  // idempotent
+    }
+    try {
+        LmdbFactSource src(env_path, db_name);
+        // Validate the __meta__ sub-DB before loading. Per design
+        // doc resolved-question 1: meta is REQUIRED to match the
+        // registered predicate; absent meta is a warning, mismatch
+        // is a hard error.
+        LmdbFactSource::Meta meta = src.read_meta(db_name);
+        if (meta.present) {
+            if (meta.schema_version != 1) {
+                throw std::runtime_error(
+                    "schema_version mismatch: expected 1, got "
+                    + std::to_string(meta.schema_version));
+            }
+            if (meta.predicate != functor_arity_key) {
+                throw std::runtime_error(
+                    "predicate mismatch: file is for "
+                    + meta.predicate + ", registered as "
+                    + functor_arity_key);
+            }
+            // v1: arity 2, so exactly 2 columns expected.
+            if (meta.columns.size() != 2) {
+                throw std::runtime_error(
+                    "columns count mismatch: expected 2, got "
+                    + std::to_string(meta.columns.size()));
+            }
+        } else {
+            std::fprintf(stderr,
+                "[wam-cpp] warning: %s (%s) has no __meta__ "
+                "sub-DB; loading without schema validation\n",
+                env_path.c_str(), functor_arity_key.c_str());
+        }
+        // Recover functor name from the key "name/arity" for the
+        // synthesised compound. v1 only supports arity 2; the key
+        // is assumed well-formed (caller is the codegen).
+        auto slash = functor_arity_key.find('/');
+        std::string functor = (slash == std::string::npos)
+            ? functor_arity_key
+            : functor_arity_key.substr(0, slash);
+        // Phase 2 enforcement: when opts.unique_check is set, the
+        // value column (arg2) is asserted unique across all rows.
+        // LMDB keys (arg1) are unique by construction without
+        // DUPSORT so we do not need to check them here; the
+        // meaningful check is on the value column. Per
+        // RELATION_POLICY_DECLARATIONS.md the on_duplicate policy
+        // decides what to do when the contract is violated.
+        //
+        // Build into a local vector and only commit to dynamic_db
+        // after stream_all returns without throwing -- otherwise a
+        // partial load would leave dynamic_db in a half-populated
+        // state and queries against the predicate would return
+        // wrong answers even after the loader reported failure.
+        std::vector<CellPtr> staged;
+        std::unordered_map<std::string, std::size_t> seen_value_to_row;
+        src.stream_all([&](std::string_view ks, std::string_view vs) {
+            // LMDB stores named sub-DBs as pointer records in the
+            // parent DB. When the data DB IS the default unnamed
+            // one, iterating it surfaces "__meta__" as a phantom
+            // row whose value is an internal sub-DB pointer.
+            // Skip it -- it is never user data.
+            if (ks == "__meta__") return;
+            std::string vstr(vs);
+            if (opts.unique_check) {
+                auto it = seen_value_to_row.find(vstr);
+                if (it != seen_value_to_row.end()) {
+                    switch (opts.on_duplicate) {
+                    case LmdbLoadOptions::OnDup::throw_:
+                        throw std::runtime_error(
+                            "duplicate value \"" + vstr
+                            + "\" with unique(true) and "
+                              "on_duplicate(throw)");
+                    case LmdbLoadOptions::OnDup::warn:
+                        std::fprintf(stderr,
+                            "[wam-cpp] warning: duplicate value "
+                            "in %s: %s\n",
+                            functor_arity_key.c_str(),
+                            vstr.c_str());
+                        break;
+                    case LmdbLoadOptions::OnDup::overwrite:
+                        // Replace the earlier row with this one.
+                        // staged[it->second] holds the prior cell.
+                        {
+                            auto k_cell = std::make_shared<Cell>(
+                                Value::Atom(std::string(ks)));
+                            auto v_cell = std::make_shared<Cell>(
+                                Value::Atom(vstr));
+                            std::vector<CellPtr> args;
+                            args.push_back(k_cell);
+                            args.push_back(v_cell);
+                            staged[it->second] = std::make_shared<Cell>(
+                                Value::Compound(
+                                    functor + "/2",
+                                    std::move(args)));
+                        }
+                        return;
+                    case LmdbLoadOptions::OnDup::first_wins:
+                        return;  // skip the duplicate
+                    case LmdbLoadOptions::OnDup::keep_all:
+                        break;   // fall through and append
+                    }
+                }
+            }
+            auto k_cell = std::make_shared<Cell>(
+                Value::Atom(std::string(ks)));
+            auto v_cell = std::make_shared<Cell>(
+                Value::Atom(vstr));
+            std::vector<CellPtr> args;
+            args.push_back(k_cell);
+            args.push_back(v_cell);
+            std::size_t pos = staged.size();
+            staged.push_back(std::make_shared<Cell>(
+                Value::Compound(functor + "/2", std::move(args))));
+            if (opts.unique_check) {
+                seen_value_to_row[vstr] = pos;
+            }
+        });
+        // Commit the staged rows only after stream_all completes
+        // without throwing.
+        auto& bucket = vm.dynamic_db[functor_arity_key];
+        // Apply order(...) policy. sort_keys is empty when the
+        // declared order is trivially satisfied by LMDB natural
+        // iteration (default, or [arg(1)] asc). std::sort is stable
+        // when applied to already-sorted input -- worst case here
+        // when sort_keys=[arg(2)] is O(n log n) but only fires
+        // when the user actually asked for a non-trivial sort.
+        if (!opts.sort_keys.empty()) {
+            std::sort(staged.begin(), staged.end(),
+                [&](const CellPtr& a, const CellPtr& b) {
+                    for (const auto& sk : opts.sort_keys) {
+                        const auto& av = a->args[sk.column - 1]->s;
+                        const auto& bv = b->args[sk.column - 1]->s;
+                        if (av != bv) {
+                            return sk.ascending ? (av < bv)
+                                                : (av > bv);
+                        }
+                    }
+                    return false;
+                });
+        }
+        bucket.insert(bucket.end(),
+                      std::make_move_iterator(staged.begin()),
+                      std::make_move_iterator(staged.end()));
+        vm.loaded_lmdb_sources.insert(key);
+        return true;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr,
+                     "cpp_load_lmdb_fact_source(%s, %s): %s\n",
+                     functor_arity_key.c_str(),
+                     env_path.c_str(),
+                     e.what());
+        return false;
+    }
+}
+#else
+// Stub when WAM_CPP_ENABLE_LMDB is not defined. Matches the C
+// target's stub (wam_c_target.pl:2392-2398): returns false and
+// touches nothing, so generated code that calls this still links.
+bool cpp_load_lmdb_fact_source(WamState&,
+                               const std::string&,
+                               const std::string&,
+                               const char*,
+                               const LmdbLoadOptions&) {
+    return false;
+}
+#endif // WAM_CPP_ENABLE_LMDB

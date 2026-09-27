@@ -1,0 +1,5 @@
+# Architecture-list fixture (Astra re-review 2): (arch=amd64,arm64) uses a
+# comma-list our whitespace parser does not handle; rejected, not mis-selected.
+liblist.so.1 #PACKAGE# #MINVER#
+ (arch=amd64,arm64)list_fn@Base 1.0
+ plain_fn@Base 1.0

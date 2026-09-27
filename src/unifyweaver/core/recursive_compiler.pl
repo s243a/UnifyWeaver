@@ -745,7 +745,7 @@ compile_transitive_closure(clojurescript, Pred, _Arity, BasePred, Options, Gener
     ;   TcOptions = [input(embedded)|Options]
     ),
     compile_tc_from_template(clojure, Pred, BasePred, [], TcOptions, ClojureCode),
-    clojurescript_target:clojurescript_from_clojure(ClojureCode, GeneratedCode),
+    clojurescript_target:clojurescript_from_clojure(ClojureCode, TcOptions, GeneratedCode),
     !.
 
 %% Jython transitive closure — supports input(Mode) via composable templates

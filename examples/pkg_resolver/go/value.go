@@ -1,0 +1,192 @@
+package wam
+
+import "fmt"
+
+type Value interface {
+	valueTag()
+	String() string
+	Equals(other Value) bool
+}
+
+type Integer struct { Val int64 }
+func (v *Integer) valueTag() {}
+func (v *Integer) String() string { return fmt.Sprintf("%d", v.Val) }
+func (v *Integer) Equals(other Value) bool {
+	o, ok := other.(*Integer)
+	return ok && v.Val == o.Val
+}
+
+type Float struct { Val float64 }
+func (v *Float) valueTag() {}
+func (v *Float) String() string { return fmt.Sprintf("%g", v.Val) }
+func (v *Float) Equals(other Value) bool {
+	o, ok := other.(*Float)
+	return ok && v.Val == o.Val
+}
+
+type Atom struct { Name string }
+func (v *Atom) valueTag() {}
+func (v *Atom) String() string { return v.Name }
+
+// Equals: pointer identity only. The runtime maintains a single
+// atomInternMap (in atoms.go) populated at init with every wamAtom_*
+// the codegen emits, plus runtime-side atoms via internAtom(name).
+// As long as every Atom-producing call site routes through
+// internAtom, two atoms with the same Name resolve to the same
+// pointer and equality is a single comparison.
+//
+// The previous version had a string fallback (`return v.Name == o.Name`)
+// for un-interned atoms. Profiling at scale-300 showed that fallback
+// was ~5% of CPU — every SwitchOnConstantPc forward-scan miss did a
+// string compare to confirm the case didn't match. Dropping the
+// fallback makes the negative-case path one pointer compare.
+//
+// CONSTRAINT: any caller that creates a fresh `&Atom{Name: ...}`
+// without going through internAtom risks producing two atoms with
+// the same Name but different pointers; Equals will then say they
+// differ. The runtime helpers in runtime.go that build atoms from
+// runtime strings (collectNativeTransitiveDistanceResults etc.) are
+// the known offenders; they're only reached by the kernels_on path,
+// not by the kernels_off effective-distance bench. If a workload
+// reaches them and behavior diverges, route through internAtom.
+func (v *Atom) Equals(other Value) bool {
+	o, ok := other.(*Atom)
+	if !ok {
+		return false
+	}
+	return v == o
+}
+
+type Compound struct {
+	Functor string
+	Args    []Value
+}
+func (v *Compound) valueTag() {}
+func (v *Compound) String() string {
+	return fmt.Sprintf("%s(%v)", v.Functor, v.Args)
+}
+func (v *Compound) Equals(other Value) bool {
+	o, ok := other.(*Compound)
+	if !ok || v.Functor != o.Functor || len(v.Args) != len(o.Args) { return false }
+	for i := range v.Args {
+		if !v.Args[i].Equals(o.Args[i]) { return false }
+	}
+	return true
+}
+
+type Structure struct {
+	Functor string
+	Arity   int
+	Args    []Value
+}
+func (v *Structure) valueTag() {}
+func (v *Structure) String() string {
+	return fmt.Sprintf("%s/%d", v.Functor, v.Arity)
+}
+func (v *Structure) Equals(other Value) bool {
+	o, ok := other.(*Structure)
+	if !ok || v.Functor != o.Functor || v.Arity != o.Arity {
+		return false
+	}
+	for i, a := range v.Args {
+		if !valueEquals(a, o.Args[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+type List struct { Elements []Value }
+func (v *List) valueTag() {}
+func (v *List) String() string { return fmt.Sprintf("%v", v.Elements) }
+func (v *List) Equals(other Value) bool {
+	o, ok := other.(*List)
+	if !ok || len(v.Elements) != len(o.Elements) { return false }
+	for i := range v.Elements {
+		if !v.Elements[i].Equals(o.Elements[i]) { return false }
+	}
+	return true
+}
+
+type Ref struct { Addr int }
+func (v *Ref) valueTag() {}
+func (v *Ref) String() string { return fmt.Sprintf("REF(%d)", v.Addr) }
+func (v *Ref) Equals(other Value) bool {
+	o, ok := other.(*Ref)
+	return ok && v.Addr == o.Addr
+}
+
+type Unbound struct { Name string; Idx int }
+func (v *Unbound) valueTag() {}
+func (v *Unbound) String() string { return "_" + v.Name }
+func (v *Unbound) Equals(other Value) bool {
+	o, ok := other.(*Unbound)
+	return ok && v.Idx == o.Idx
+}
+
+func isUnbound(v Value) bool {
+	_, ok := v.(*Unbound)
+	return ok
+}
+
+func isAtom(v Value) bool {
+	_, ok := v.(*Atom)
+	return ok
+}
+
+func isInteger(v Value) bool {
+	_, ok := v.(*Integer)
+	return ok
+}
+
+func isFloat(v Value) bool {
+	_, ok := v.(*Float)
+	return ok
+}
+
+func isNumber(v Value) bool {
+	switch v.(type) {
+	case *Integer, *Float:
+		return true
+	}
+	return false
+}
+
+func isCompound(v Value) bool {
+	switch v.(type) {
+	case *Compound, *Structure:
+		return true
+	}
+	return false
+}
+
+func isStructure(v Value) bool {
+	_, ok := v.(*Structure)
+	return ok
+}
+
+func isList(v Value) bool {
+	_, ok := v.(*List)
+	return ok
+}
+
+func isAtomic(v Value) bool {
+	switch v.(type) {
+	case *Atom, *Integer, *Float:
+		return true
+	}
+	return false
+}
+
+func valueEquals(a, b Value) bool {
+	if a == nil || b == nil { return a == b }
+	// The interned atom [] and a zero-length *List are the same Prolog
+	// term. Atom.Equals is pointer-only, so without this short-circuit
+	// get_constant [] fails against append([],[],L) (which yields a
+	// *List, not the interned atom). Unify already had this check;
+	// GetConstant / SwitchOnConstant go through valueEquals only.
+	if isEmptyListValue(a) && isEmptyListValue(b) {
+		return true
+	}
+	return a.Equals(b)
+}

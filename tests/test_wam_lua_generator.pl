@@ -88,6 +88,16 @@ user:wam_lua_greet(X, goodbye) :- X = moon.
 :- dynamic user:lcut_inline/0.
 :- dynamic user:lcut_forall_neg/0.
 :- dynamic user:lcut_forall_pass/0.
+:- dynamic user:wam_lua_y_frame_fact/1.
+:- dynamic user:wam_lua_y_frame_neg/1.
+:- dynamic user:wam_lua_y_frame_caller/0.
+:- dynamic user:wam_lua_nested_negfail/0.
+:- dynamic user:wam_lua_nested_middle/0.
+:- dynamic user:wam_lua_nested_top/0.
+:- dynamic user:wam_lua_floor_choice/1.
+:- dynamic user:wam_lua_floor_failer/0.
+:- dynamic user:wam_lua_floor_probe/0.
+:- dynamic user:wam_lua_floor_tail_probe/0.
 
 user:lcut_acc(L, _, _) :- var(L), !, fail.
 user:lcut_acc([], N, N) :- !.
@@ -100,6 +110,27 @@ user:lcut_partial :- \+ lcut_plen([a,b|_], _).          % partial list rejected 
 user:lcut_inline :- \+ (lcut_gen(_), !, fail).          % inline cut in negation -> true
 user:lcut_forall_neg :- \+ forall(lcut_gen(X), X =:= 1). % not all satisfy -> \+ true
 user:lcut_forall_pass :- forall(lcut_gen(X), X >= 1).    % all satisfy -> true
+% Keep X live in the caller's Y1 while a sole-negation callee uses Y1 for its
+% soft-cut barrier. A flat Y-register file lets the callee clobber X.
+user:wam_lua_y_frame_fact(a).
+user:wam_lua_y_frame_neg(X) :- \+ wam_lua_y_frame_fact(X).
+user:wam_lua_y_frame_caller :-
+    X = sentinel,
+    wam_lua_y_frame_neg(z),
+    X == sentinel.
+% A failed framed callee must unwind before the surrounding lowered ITE takes
+% its else branch.
+user:wam_lua_nested_negfail :- \+ true.
+user:wam_lua_nested_middle :-
+    (wam_lua_nested_negfail -> fail ; true).
+user:wam_lua_nested_top :- wam_lua_nested_middle.
+user:wam_lua_floor_choice(a).
+user:wam_lua_floor_choice(b).
+user:wam_lua_floor_failer :- fail.
+user:wam_lua_floor_probe :-
+    wam_lua_floor_choice(X), wam_lua_floor_failer, X = b.
+user:wam_lua_floor_tail_probe :-
+    wam_lua_floor_choice(_), wam_lua_floor_failer.
 user:wam_lua_fa_greet :-
     findall(X, user:wam_lua_greet(X, hello), L),
     L = [world].
@@ -583,6 +614,69 @@ test(lua_cut_negation_forall_e2e, [condition(lua_available)]) :-
         delete_directory_and_contents(TmpDir)
     ).
 
+test(lua_y_frame_interpreter_items_e2e, [condition(lua_available)]) :-
+    run_lua_y_frame_case('tmp_lua_y_frame_items', []).
+
+test(lua_y_frame_interpreter_text_e2e, [condition(lua_available)]) :-
+    run_lua_y_frame_case('tmp_lua_y_frame_text', [wam_ir(wam_text)]).
+
+test(lua_y_frame_functions_e2e, [condition(lua_available)]) :-
+    run_lua_y_frame_case('tmp_lua_y_frame_functions', [emit_mode(functions)]).
+
+test(lua_y_frame_functions_items_e2e, [condition(lua_available)]) :-
+    run_lua_y_frame_case(
+        'tmp_lua_y_frame_functions_items',
+        [emit_mode(functions), wam_ir(wam_items_bridge)]).
+
+test(lua_lcut_partial_interpreter_text_e2e, [condition(lua_available)]) :-
+    run_lua_lcut_partial_case('tmp_lua_lcut_text', [wam_ir(wam_text)]).
+
+test(lua_lcut_partial_functions_e2e, [condition(lua_available)]) :-
+    run_lua_lcut_partial_case(
+        'tmp_lua_lcut_functions',
+        [emit_mode(functions)]).
+
+test(lua_lcut_partial_functions_items_e2e, [condition(lua_available)]) :-
+    run_lua_lcut_partial_case(
+        'tmp_lua_lcut_functions_items',
+        [emit_mode(functions), wam_ir(wam_items_bridge)]).
+
+test(lua_nested_failed_negation_functions_e2e, [condition(lua_available)]) :-
+    unique_lua_tmp_dir('tmp_lua_nested_negation_functions', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project(
+            [ user:wam_lua_nested_negfail/0,
+              user:wam_lua_nested_middle/0,
+              user:wam_lua_nested_top/0
+            ],
+            [emit_mode(functions)],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          run_lua_lowered_query(LuaDir, wam_lua_nested_middle, true),
+          run_lua_lowered_query(LuaDir, wam_lua_nested_top, true)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+test(lua_nested_run_choicepoint_floor_functions_e2e,
+     [condition(lua_available)]) :-
+    unique_lua_tmp_dir('tmp_lua_choicepoint_floor_functions', TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project(
+            [ user:wam_lua_floor_choice/1,
+              user:wam_lua_floor_failer/0,
+              user:wam_lua_floor_probe/0,
+              user:wam_lua_floor_tail_probe/0
+            ],
+            [emit_mode(functions)],
+            TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          run_lua_lowered_query(LuaDir, wam_lua_floor_probe, false),
+          run_lua_lowered_query(LuaDir, wam_lua_floor_tail_probe, false)
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
 test(lua_findall_e2e, [condition(lua_available)]) :-
     unique_lua_tmp_dir('tmp_lua_findall_e2e', TmpDir),
     setup_call_cleanup(
@@ -806,6 +900,57 @@ test(lua_second_arg_switch_e2e, [condition(lua_available)]) :-
     ).
 
 :- end_tests(wam_lua_generator).
+
+run_lua_y_frame_case(Prefix, Options) :-
+    unique_lua_tmp_dir(Prefix, TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project(
+            [ user:wam_lua_y_frame_fact/1,
+              user:wam_lua_y_frame_neg/1,
+              user:wam_lua_y_frame_caller/0
+            ],
+            Options,
+            TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          (   memberchk(emit_mode(functions), Options)
+          ->  run_lua_lowered_query(
+                  LuaDir, wam_lua_y_frame_caller, true)
+          ;   run_lua_query(
+                  LuaDir, 'wam_lua_y_frame_caller/0', [], true)
+          )
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+run_lua_lcut_partial_case(Prefix, Options) :-
+    unique_lua_tmp_dir(Prefix, TmpDir),
+    setup_call_cleanup(
+        write_wam_lua_project(
+            [ user:lcut_acc/3,
+              user:lcut_plen/2,
+              user:lcut_partial/0
+            ],
+            Options,
+            TmpDir),
+        ( directory_file_path(TmpDir, 'lua', LuaDir),
+          (   memberchk(emit_mode(functions), Options)
+          ->  run_lua_lowered_query(LuaDir, lcut_partial, true)
+          ;   run_lua_query(LuaDir, 'lcut_partial/0', [], true)
+          )
+        ),
+        delete_directory_and_contents(TmpDir)
+    ).
+
+run_lua_lowered_query(LuaDir, Predicate, Expected) :-
+    format(string(Script),
+        'local p = require("generated_program")\nlocal ok = p.~w()\nio.write(ok and "true\\n" or "false\\n")\n',
+        [Predicate]),
+    run_lua_script(LuaDir, Script, Output),
+    normalize_space(string(Trimmed), Output),
+    (   Expected == true
+    ->  assertion(Trimmed == "true")
+    ;   assertion(Trimmed == "false")
+    ).
 
 unique_lua_tmp_dir(Prefix, TmpDir) :-
     get_time(T),

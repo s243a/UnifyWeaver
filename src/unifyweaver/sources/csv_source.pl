@@ -63,6 +63,16 @@ validate_config(Config) :-
             fail
         )
     ;   true
+    ),
+
+    % Validate project_columns if specified (additive column-subset projection)
+    (   member(project_columns(Proj), Config)
+    ->  (   is_list(Proj), Proj \== []
+        ->  true
+        ;   format('Error: project_columns must be a non-empty list of column names, got ~w~n', [Proj]),
+            fail
+        )
+    ;   true
     ).
 
 %% compile_source(+Pred/Arity, +Config, +Options, -BashCode)
@@ -101,7 +111,12 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
     (   member(has_header(true), AllOptions)
     ->  HeaderMode = auto,
         detect_csv_headers(CsvFile, Delimiter, DetectedColumns),
-        (   length(DetectedColumns, DetectedArity),
+        (   member(project_columns(ProjNames), AllOptions)
+        % Column-subset projection: arity is the projected count, which is
+        % expected to differ from the full header width. Use the projected
+        % names as the documented column list; no arity-mismatch warning.
+        ->  Columns = ProjNames
+        ;   length(DetectedColumns, DetectedArity),
             DetectedArity =:= Arity
         ->  Columns = DetectedColumns
         ;   format('Warning: Detected ~w columns but arity is ~w~n', [DetectedColumns, Arity]),
@@ -177,8 +192,21 @@ generate_csv_bash(PredStr, Arity, File, Delimiter, SkipLines,
     % Escape delimiter for awk
     escape_delimiter(Delimiter, EscapedDelimiter),
 
+    % Escape delimiter for a JS double-quoted string literal (TypeScript/Node
+    % templates split on this via String.prototype.split with a *string*
+    % argument, so no RegExp escaping is needed - only string-literal escaping).
+    js_escape_delimiter(Delimiter, JsDelimiter),
+
     % Create column list for comments
     atomic_list_concat(Columns, ', ', ColumnList),
+
+    % Column-subset projection (G-P9 residual, additive). Resolve any
+    % project_columns([...]) names to 0-based header indices and build the
+    % TypeScript-only template vars. Empty ProjIndices => pass-through defaults
+    % that reproduce the pre-projection template bytes exactly, so bash / PS /
+    % non-projecting TS output are unchanged.
+    resolve_projection(Options, File, Delimiter, Arity, ProjIndices),
+    projection_ts_vars(ProjIndices, Arity, ProjVars),
 
     % Determine template name with optional suffix
     (   member(template_suffix(Suffix), Options)
@@ -190,16 +218,22 @@ generate_csv_bash(PredStr, Arity, File, Delimiter, SkipLines,
 
     % Render template based on arity
     (   Arity =:= 1 ->
+        append([pred=PredStr, file=File, delimiter=EscapedDelimiter,
+                js_delimiter=JsDelimiter,
+                skip_lines=TotalSkip, quote_code=QuoteCode,
+                columns=ColumnList],
+               ProjVars, UnaryVars),
         render_named_template(UnaryTemplate,
-            [pred=PredStr, file=File, delimiter=EscapedDelimiter,
-             skip_lines=TotalSkip, quote_code=QuoteCode,
-             columns=ColumnList],
+            UnaryVars,
             [source_order([file, generated])],
             Code)
-    ;   render_named_template(BinaryTemplate,
-            [pred=PredStr, file=File, delimiter=EscapedDelimiter,
-             skip_lines=TotalSkip, quote_code=QuoteCode,
-             output_format=OutputFormat, columns=ColumnList, arity=Arity],
+    ;   append([pred=PredStr, file=File, delimiter=EscapedDelimiter,
+                js_delimiter=JsDelimiter,
+                skip_lines=TotalSkip, quote_code=QuoteCode,
+                output_format=OutputFormat, columns=ColumnList, arity=Arity],
+               ProjVars, BinaryVars),
+        render_named_template(BinaryTemplate,
+            BinaryVars,
             [source_order([file, generated])],
             Code)
     ).
@@ -230,6 +264,96 @@ escape_delimiter('\t', '\\t') :- !.  % Tab
 escape_delimiter('|', '\\|') :- !.   % Pipe
 escape_delimiter('\\', '\\\\') :- !. % Backslash
 escape_delimiter(D, D).              % Others pass through
+
+%% js_escape_delimiter(+Delimiter, -JsLiteral)
+%  Escape the raw delimiter for embedding inside a JS double-quoted string
+%  literal used with String.prototype.split(<string>). Because split receives
+%  a plain string (not a RegExp), metacharacters such as `|` need NO escaping;
+%  only characters that are special *inside a double-quoted JS string* do.
+%    tab      -> \t   (so the emitted source reads "\t")
+%    CR / LF  -> \r / \n
+%    backslash-> \\   (emitted "\\")
+%    dquote   -> \"   (emitted "\"")
+%    others   -> pass through (comma, pipe, semicolon, colon, space, ...)
+js_escape_delimiter('\t', '\\t') :- !.  % Tab  -> "\t"
+js_escape_delimiter('\r', '\\r') :- !.  % CR   -> "\r"
+js_escape_delimiter('\n', '\\n') :- !.  % LF   -> "\n"
+js_escape_delimiter('\\', '\\\\') :- !. % \\    -> "\\"
+js_escape_delimiter('"', '\\"') :- !.   % "    -> "\""
+js_escape_delimiter(D, D).              % pipe, semicolon, comma, ... pass through
+
+%% ============================================
+%% COLUMN-SUBSET PROJECTION (G-P9 residual)
+%% ============================================
+%% Additive `project_columns([Name, ...])` option for the `_typescript` CSV
+%% templates. Distinct from the arity-defining `columns([...])` option: it
+%% selects and REORDERS a subset of the file''s columns by matching the file''s
+%% detected HEADER row (so the file must have a header). Names are resolved to
+%% 0-based indices at compile time and threaded into the TS templates only; the
+%% bash and pure-PowerShell templates never reference the projection vars, so
+%% their output is unchanged (documented follow-up from GP9POLISH_INTEGRATION_PATCH).
+
+%% resolve_projection(+Options, +CsvFile, +Delimiter, +Arity, -ProjIndices)
+%  ProjIndices is the list of 0-based header indices for a project_columns
+%  option (in the requested order), or [] when no projection is requested.
+%  The number of projected columns must equal Arity. Fails with a clear
+%  message on a missing header, an unknown column name, or an arity mismatch.
+resolve_projection(Options, CsvFile, Delimiter, Arity, ProjIndices) :-
+    (   member(project_columns(Names), Options)
+    ->  (   is_list(Names)
+        ->  true
+        ;   format('Error: project_columns must be a list of column names, got ~w~n', [Names]),
+            fail
+        ),
+        detect_csv_headers(CsvFile, Delimiter, Header),
+        (   Header == []
+        ->  format('Error: project_columns requires a readable header row in ~w~n', [CsvFile]),
+            fail
+        ;   true
+        ),
+        length(Names, NProj),
+        (   NProj =:= Arity
+        ->  true
+        ;   format('Error: project_columns length (~w) does not match arity (~w)~n', [NProj, Arity]),
+            fail
+        ),
+        maplist(resolve_column_index(Header, CsvFile), Names, ProjIndices)
+    ;   ProjIndices = []
+    ).
+
+%% resolve_column_index(+Header, +CsvFile, +Name, -Index)
+%  0-based index of the first header entry equal to Name.
+resolve_column_index(Header, CsvFile, Name, Index) :-
+    (   nth0(Index, Header, Name)
+    ->  true
+    ;   format('Error: project_columns name ~w not found in header ~w of ~w~n',
+               [Name, Header, CsvFile]),
+        fail
+    ).
+
+%% projection_ts_vars(+ProjIndices, +Arity, -Vars)
+%  Build the TypeScript-only template vars. With no projection the vars carry
+%  pass-through defaults that reproduce the pre-projection template bytes
+%  exactly; with projection they select/reorder the chosen fields.
+projection_ts_vars([], _Arity,
+                   [min_fields='arity',
+                    output_expr='fields.slice(0, arity).join(":")',
+                    u_min='1',
+                    u_field='fields[0]']) :- !.
+projection_ts_vars(Indices, _Arity, Vars) :-
+    max_list(Indices, MaxIdx),
+    MinFields is MaxIdx + 1,
+    maplist(js_field_ref, Indices, FieldRefs),
+    atomic_list_concat(FieldRefs, ', ', FieldsJoined),
+    format(atom(OutputExpr), '[~w].join(":")', [FieldsJoined]),
+    Indices = [FirstIdx|_],
+    format(atom(UField), 'fields[~w]', [FirstIdx]),
+    Vars = [min_fields=MinFields,
+            output_expr=OutputExpr,
+            u_min=MinFields,
+            u_field=UField].
+
+js_field_ref(Idx, Ref) :- format(atom(Ref), 'fields[~w]', [Idx]).
 
 %% ============================================
 %% HARDCODED TEMPLATES (fallback)
@@ -356,6 +480,113 @@ function {{pred}}_check {
 if ($MyInvocation.InvocationName -ne ''.'') {
     {{pred}} @args
 }
+').
+
+%% ============================================
+%% TYPESCRIPT / NODE TEMPLATES (G-P9)
+%% ============================================
+%% Self-contained Node scripts (no npm deps): fs + line split. Mirror the
+%% pure-PowerShell semantics (lookup by first column when a key is given, else
+%% stream all rows; arity 1 emits the first field, arity 2+ joins the first
+%% <arity> fields with '':''). Uses only the template variables
+%% generate_csv_bash/11 already provides (pred, file, delimiter, skip_lines,
+%% arity) plus js_delimiter (G-P9 polish), so csv_source''s existing bash/PS
+%% behaviour is unchanged. Runs under either
+%% `node --experimental-strip-types file.ts` or plain `node file.js`.
+%% DELIMITERS (G-P9 polish): the `_typescript` templates split on
+%% {{js_delimiter}}, the raw delimiter escaped for a JS double-quoted string
+%% literal (see js_escape_delimiter/2). split() is given a *string*, not a
+%% RegExp, so `|` needs no escaping; tab becomes "\t", etc. Comma, tab, pipe,
+%% semicolon all work.
+%% PROJECTION (G-P9 residual, project_columns): the `_typescript` templates
+%% additionally consume {{min_fields}}/{{output_expr}} (binary) and
+%% {{u_min}}/{{u_field}} (unary), built by projection_ts_vars/3. With NO
+%% project_columns option these carry their pass-through defaults (`arity`,
+%% `fields.slice(0, arity).join(":")`, `1`, `fields[0]`) so the emitted script
+%% is byte-identical to the pre-projection template. With project_columns([...])
+%% the option''s column NAMES are resolved to 0-based indices against the file''s
+%% detected header at compile time (resolve_projection/5) and the templates
+%% select/reorder exactly those fields, e.g. `[fields[2], fields[0]].join(":")`.
+%% bash and _powershell_pure never reference these vars -> unchanged.
+
+% TypeScript/Node template for arity 1: pred(X)
+template_system:template(csv_source_unary_typescript, '#!/usr/bin/env node
+// {{pred}} - CSV source (arity 1) - self-contained Node (no npm deps)
+// Columns: {{columns}}
+// Generated by UnifyWeaver - TypeScript/Node data-source consumer
+const fs = require("fs");
+
+function {{pred}}(value) {
+    const raw = fs.readFileSync("{{file}}", "utf8");
+    const lines = raw.split(/\\r?\\n/).slice({{skip_lines}});
+    const out = [];
+    for (const line of lines) {
+        if (line === "") { continue; }
+        const fields = line.split("{{js_delimiter}}");
+        if (fields.length < {{u_min}}) { continue; }
+        if (value !== undefined && value !== "") {
+            if ({{u_field}} === value) { out.push({{u_field}}); }
+        } else {
+            out.push({{u_field}});
+        }
+    }
+    return out;
+}
+
+function {{pred}}_stream() {
+    return {{pred}}();
+}
+
+// Auto-execute when run directly
+if (require.main === module) {
+    const value = process.argv[2];
+    for (const row of {{pred}}(value)) {
+        console.log(row);
+    }
+}
+
+module.exports = { {{pred}}: {{pred}} };
+').
+
+% TypeScript/Node template for arity 2+: pred(Col1, Col2, ...)
+template_system:template(csv_source_binary_plus_typescript, '#!/usr/bin/env node
+// {{pred}} - CSV source (arity {{arity}}) - self-contained Node (no npm deps)
+// Columns: {{columns}}
+// Generated by UnifyWeaver - TypeScript/Node data-source consumer
+const fs = require("fs");
+
+function {{pred}}(key) {
+    const raw = fs.readFileSync("{{file}}", "utf8");
+    const lines = raw.split(/\\r?\\n/).slice({{skip_lines}});
+    const arity = {{arity}};
+    const out = [];
+    for (const line of lines) {
+        if (line === "") { continue; }
+        const fields = line.split("{{js_delimiter}}");
+        if (fields.length < {{min_fields}}) { continue; }
+        if (key !== undefined && key !== "" && fields[0] !== key) { continue; }
+        out.push({{output_expr}});
+    }
+    return out;
+}
+
+function {{pred}}_stream() {
+    return {{pred}}();
+}
+
+function {{pred}}_all() {
+    return {{pred}}();
+}
+
+// Auto-execute when run directly
+if (require.main === module) {
+    const key = process.argv[2];
+    for (const row of {{pred}}(key)) {
+        console.log(row);
+    }
+}
+
+module.exports = { {{pred}}: {{pred}} };
 ').
 
 % Pure PowerShell template for arity 2+: pred(Col1, Col2, ...)

@@ -24,22 +24,45 @@
 %                    of deps.edn.
 %   - build artifact: a JS bundle / browser page instead of a JVM jar.
 %
-% Runtime: the recommended v1 runtime is Scittle/SCI (borkdude's Small Clojure
-% Interpreter) embedded in the SciREPL ClojureScript kernel. The simple /
-% native-clause-lowering path and the recursion patterns are the
-% browser-supported surface. The stdin/stream pipeline modes (generator /
-% pipeline) assume an nbb-style Node runtime rather than browser Scittle and
-% are passed through best-effort.
+% Runtime variants (select with the runtime(Kind) option):
+%   - scittle : Scittle/SCI (borkdude's Small Clojure Interpreter) in the
+%               browser -- the SciREPL ClojureScript kernel surface. JS host
+%               interop (js/parseInt, js/Math.abs). No shebang (browser page).
+%   - nbb     : nbb, the Node ClojureScript runtime (sci-based). JS host
+%               interop, same rewrite as scittle. Emits a `#!/usr/bin/env nbb`
+%               shebang so the .cljs file is a standalone executable script.
+%   - bb      : Babashka (bb), borkdude's native Clojure sci interpreter run as
+%               an external binary (no npm dependency -- the peerhailer
+%               `shell:bb` idea). bb is *Clojure*, not ClojureScript: its host
+%               is the JVM, so it keeps the JVM-style interop (Integer/parseInt,
+%               Math/abs, (catch Exception e), (.getMessage e)) UNCHANGED --
+%               the JVM->JS rewrite is deliberately *not* applied for bb. Emits
+%               a `#!/usr/bin/env bb` shebang.
+%   - default : no runtime(...) option -- preserves the historical output
+%               exactly (JS interop rewrite + generic Scittle/SCI-or-nbb
+%               banner, no shebang). This is what existing callers get.
+%
+% The one JVM->JS rewrite (clojurescript_interop_rewrite/2) stays centralized;
+% the runtime variant only chooses *whether* to apply it (JS hosts yes, bb no)
+% and which entrypoint banner/shebang to prepend.
+%
+% Future work: a `squint` build-based cljs->js path (npx squint compile) is out
+% of scope for this card -- see docs/CLOJURESCRIPT_TARGET.md.
 %
 % Example:
-%   ?- compile_predicate_to_clojurescript(double/2, [], Code).
+%   ?- compile_predicate_to_clojurescript(double/2, [], Code).            % default
+%   ?- compile_predicate_to_clojurescript(double/2, [runtime(nbb)], Code). % nbb script
+%   ?- compile_predicate_to_clojurescript(double/2, [runtime(bb)], Code).  % bb script
 %   ?- generate_scittle_html("Demo", [main_ns('generated.demo'), cljs(Code)], HTML).
 
 :- module(clojurescript_target, [
     compile_predicate_to_clojurescript/3,   % +Pred/Arity, +Options, -CljsCode
     compile_predicate/3,                     % +Pred/Arity, +Options, -Code (registry dispatch)
+    compile_module/3,                        % +Predicates, +Options, -CljsCode (multi-predicate module)
     compile_facts_to_clojurescript/3,        % +Pred, +Arity, -CljsCode
-    clojurescript_from_clojure/2,            % +ClojureCode, -CljsCode (rewrite + banner)
+    clojurescript_from_clojure/2,            % +ClojureCode, -CljsCode (rewrite + banner, default runtime)
+    clojurescript_from_clojure/3,            % +ClojureCode, +Options, -CljsCode (runtime-variant aware)
+    cljs_runtime/2,                          % +Options, -Runtime (scittle|nbb|bb|default)
     clojurescript_interop_rewrite/2,         % +ClojureCode, -CljsCode
     generate_shadow_cljs_edn/2,              % +Options, -ShadowFile
     generate_scittle_html/3,                 % +Title, +Options, -HTML
@@ -51,12 +74,40 @@
 :- use_module(library(lists)).
 
 % Inherit the JVM Clojure target. Everything not overridden below is reused.
-:- use_module(clojure_target).
+% compile_module/3 is excluded from the import because this module defines and
+% exports its own CLJS variant (G-P6); it reuses the base via a module-qualified
+% call (clojure_target:compile_module/3). All other base predicates are imported.
+:- use_module(clojure_target, except([compile_module/3])).
+
+% Binding registry + the two Clojure(Script) binding catalogues. The catalogues
+% register through init_*_bindings/0 (direct declare_binding calls), so a plain
+% use_module does NOT populate the registry -- ensure_cljs_bindings/0 below runs
+% the initializers exactly once so both the `clojurescript` and the fallback
+% `clojure` binding keys are available to resolve_binding/4.
+:- use_module('../core/binding_registry').
+:- use_module('../bindings/clojure_bindings').
+:- use_module('../bindings/clojurescript_bindings').
+
+:- dynamic cljs_bindings_loaded/0.
+
+%% ensure_cljs_bindings
+%  Idempotently populate the registry with the JVM `clojure` bindings (the
+%  fallback layer) and the `clojurescript` bindings (the override layer). Safe to
+%  call from every compile entry point: declare_binding/6 is retract-then-assert,
+%  and the guard flag skips the work after the first successful load.
+ensure_cljs_bindings :-
+    ( cljs_bindings_loaded -> true
+    ; clojure_bindings:init_clojure_bindings,
+      clojurescript_bindings:init_clojurescript_bindings,
+      assertz(cljs_bindings_loaded)
+    ).
 
 %% init_clojurescript_target
-%  Initialize the ClojureScript target (delegates to the Clojure base).
+%  Initialize the ClojureScript target (delegates to the Clojure base) and load
+%  the Clojure(Script) binding catalogues.
 init_clojurescript_target :-
-    init_clojure_target.
+    init_clojure_target,
+    ensure_cljs_bindings.
 
 %% ============================================
 %% PUBLIC API
@@ -67,23 +118,97 @@ init_clojurescript_target :-
 %  target and rewriting the JVM host interop into JS host interop.
 compile_predicate_to_clojurescript(PredIndicator, Options, CljsCode) :-
     compile_predicate_to_clojure(PredIndicator, Options, ClojureCode),
-    clojurescript_from_clojure(ClojureCode, CljsCode).
+    clojurescript_from_clojure(ClojureCode, Options, CljsCode).
 
 %% clojurescript_from_clojure(+ClojureCode, -CljsCode)
-%  Turn JVM-Clojure source into ClojureScript: rewrite host interop, then
-%  prepend the CLJS banner. Shared by the single-predicate path above and the
-%  recursive_compiler's transitive-closure path (which reuses the JVM Clojure
-%  templates and post-processes them here), keeping the JVM->JS translation in
-%  one place.
+%  Backwards-compatible entry (default runtime): rewrite host interop, then
+%  prepend the generic CLJS banner. Kept for callers (e.g. recursive_compiler)
+%  that don't pass Options.
 clojurescript_from_clojure(ClojureCode, CljsCode) :-
-    clojurescript_interop_rewrite(ClojureCode, Rewritten),
-    cljs_banner(Banner),
-    string_concat(Banner, Rewritten, CljsCode).
+    clojurescript_from_clojure(ClojureCode, [], CljsCode).
+
+%% clojurescript_from_clojure(+ClojureCode, +Options, -CljsCode)
+%  Turn JVM-Clojure source into a runnable script for the selected runtime.
+%  Shared by the single-predicate path above and the recursive_compiler's
+%  transitive-closure path, keeping the JVM->JS translation in one place.
+%
+%  Runtime selection (runtime(Kind) in Options):
+%    - scittle / nbb / default : JS host (rewrite JVM interop -> JS interop)
+%    - bb                      : Babashka is Clojure on the JVM host, so the
+%                                JVM interop is left UNCHANGED (no rewrite)
+%  A runtime-specific banner (and shebang, for the executable nbb/bb scripts)
+%  is prepended.
+clojurescript_from_clojure(ClojureCode, Options, CljsCode) :-
+    cljs_runtime(Options, Runtime),
+    (   cljs_runtime_js_interop(Runtime)
+    ->  clojurescript_interop_rewrite(ClojureCode, Body0),    % JS host: token translate
+        cljs_binding_name_rewrite(Body0, Body)                % then apply CLJS name overrides
+    ;   ( string(ClojureCode) -> Body = ClojureCode ; atom_string(ClojureCode, Body) )  % bb: keep JVM interop + JVM names
+    ),
+    cljs_runtime_shebang(Runtime, Shebang),
+    cljs_runtime_banner(Runtime, Banner),
+    atomics_to_string([Shebang, Banner, Body], CljsCode).
+
+%% cljs_runtime(+Options, -Runtime)
+%  Resolve the runtime variant from Options. An unrecognised runtime(...) value
+%  falls back to `default` (preserving historical JS-interop output).
+cljs_runtime(Options, Runtime) :-
+    (   member(runtime(R), Options), cljs_known_runtime(R)
+    ->  Runtime = R
+    ;   Runtime = default
+    ).
+
+cljs_known_runtime(default).
+cljs_known_runtime(scittle).
+cljs_known_runtime(nbb).
+cljs_known_runtime(bb).
+
+%% cljs_runtime_js_interop(+Runtime)
+%  True for runtimes whose host is JavaScript (so the JVM->JS rewrite applies).
+%  Babashka (bb) is Clojure-on-JVM and is deliberately absent here.
+cljs_runtime_js_interop(default).
+cljs_runtime_js_interop(scittle).
+cljs_runtime_js_interop(nbb).
+
+%% cljs_runtime_shebang(+Runtime, -Shebang)
+%  Shebang line for the executable script runtimes; empty for browser/default.
+cljs_runtime_shebang(nbb, "#!/usr/bin/env nbb\n").
+cljs_runtime_shebang(bb,  "#!/usr/bin/env bb\n").
+cljs_runtime_shebang(scittle, "").
+cljs_runtime_shebang(default, "").
+
+%% cljs_runtime_banner(+Runtime, -Banner)
+%  Runtime-specific header comment.
+cljs_runtime_banner(default, Banner) :- cljs_banner(Banner).
+cljs_runtime_banner(scittle,
+    ";; Target: ClojureScript (Scittle/SCI, browser)\n;; Generated by UnifyWeaver ClojureScript Target (variant of clojure_target)\n").
+cljs_runtime_banner(nbb,
+    ";; Target: ClojureScript (nbb, Node sci runtime)\n;; Generated by UnifyWeaver ClojureScript Target (variant of clojure_target)\n").
+cljs_runtime_banner(bb,
+    ";; Target: Clojure (Babashka/bb, sci runtime -- JVM host interop retained)\n;; Generated by UnifyWeaver ClojureScript Target (variant of clojure_target)\n").
+
+%% atomics_to_string(+List, -String)
+%  Concatenate a list of atoms/strings into one string.
+atomics_to_string(List, String) :-
+    atomic_list_concat(List, Atom),
+    atom_string(Atom, String).
 
 %% compile_predicate(+Pred/Arity, +Options, -Code)
 %  Thin wrapper so target_registry's compile_to_target/4 can dispatch here.
 compile_predicate(PredIndicator, Options, Code) :-
     compile_predicate_to_clojurescript(PredIndicator, Options, Code).
+
+%% compile_module(+Predicates, +Options, -CljsCode)
+%  Compile several predicates into ONE ClojureScript module (G-P6). Reuses the
+%  base clojure_target:compile_module/3 (namespace/ns form + each predicate's
+%  defn + any declared components), then applies the same JVM->JS interop
+%  rewrite + runtime banner used by the single-predicate path. This keeps the
+%  emitted component/module code free of JVM host calls (no Integer/parseInt
+%  etc. leak into CLJS output) and consistent with typescript/python multi-
+%  predicate modules. Predicates may be `Name/Arity` or `pred(Name,Arity,Type)`.
+compile_module(Predicates, Options, CljsCode) :-
+    clojure_target:compile_module(Predicates, Options, ClojureCode),
+    clojurescript_from_clojure(ClojureCode, Options, CljsCode).
 
 %% compile_facts_to_clojurescript(+Pred, +Arity, -CljsCode)
 %  Facts export, reusing the Clojure base then rewriting interop.
@@ -129,7 +254,20 @@ cljs_interop_rules([
     % --- host IO / json libraries are JVM-only; map to JS analogues ---
     '[clojure.data.json :as json]'-'[clojure.string :as cljs-str]',
     '(json/write-str '-'(cljs-json-write-str ',
-    '(json/read-str '-'(cljs-json-read-str '
+    '(json/read-str '-'(cljs-json-read-str ',
+    % --- A3 whole-program runtime (clojure_target's clj_runtime_helper/2) ---
+    % Three host-specific lines, and only three: the failure sentinel's fresh
+    % object, and the two character primitives. Each From is the ENTIRE emitted
+    % body of one helper, so the rule is exact and cannot match anything else --
+    % the same discipline the Integer/parseInt and Math/abs rules follow.
+    % A Prolog char is a ONE-CHARACTER STRING in this target on both hosts, so
+    % only the code<->char conversion differs, not the representation.
+    '(def ^:private uw-fail (Object.))'-'(def ^:private uw-fail (js/Object.))',
+    '(defn ^:private uw-char-code [c] (int (.charAt (str c) 0)))'-'(defn ^:private uw-char-code [c] (.charCodeAt (str c) 0))',
+    '(defn ^:private uw-code-char [x] (str (char x)))'-'(defn ^:private uw-code-char [x] (js/String.fromCharCode x))'
+    % uw-parse-num needs no rule of its own: its body is
+    % `(Double/parseDouble (str s))`, and the Double/parseDouble rule above
+    % already rewrites it to `(js/parseFloat (str s))`, which is the JS host form.
 ]).
 
 %% cljs_replace_all(+In, +From, +To, -Out)
@@ -145,6 +283,72 @@ cljs_replace_all(In, From, To, Out) :-
 sub_atom_icasechk_safe(In, From) :-
     ( string(In) -> S = In ; atom_string(In, S) ),
     sub_string(S, _, _, _, From).
+
+%% ============================================
+%% BINDING NAME REWRITE (the `clojurescript` binding key -> CLJS names)
+%% ============================================
+
+%% cljs_binding_name_rewrite(+In, -Out)
+%  Consult the binding registry with the preference list [clojurescript, clojure]
+%  via the existing resolve_binding/4 fallback (a `clojurescript` binding wins;
+%  the 64 shared `clojure` bindings are the fallback) and rewrite each bound
+%  predicate's *call head* to its resolved target-language name.
+%
+%  Ordering vs the interop rewrite (avoids double-transformation): this pass runs
+%  AFTER clojurescript_interop_rewrite/2, so the CLJS function names it introduces
+%  (which may be `js/...` host calls, e.g. js/parseFloat) are the final text and
+%  are never re-seen -- hence never double-transformed -- by the JVM->JS interop
+%  pass. Conversely this pass's *source* tokens are the raw Prolog functors the
+%  base codegen emits, which the interop pass leaves untouched. The two passes
+%  thus act on disjoint tokens; the fixed order is documented and guaranteed safe.
+cljs_binding_name_rewrite(In, Out) :-
+    ensure_cljs_bindings,
+    cljs_name_override_rules(Rules),
+    foldl(apply_cljs_rule, Rules, In, Out0),
+    ( string(Out0) -> Out = Out0 ; atom_string(Out0, Out) ).
+
+%% cljs_name_override_rules(-Rules)
+%  One From-To substring pair per bound predicate whose resolved CLJS name
+%  differs from the functor the base codegen emits. Each predicate contributes
+%  boundary-anchored rules -- `(fn ` and `(fn)` -- so only *call heads* (a name
+%  immediately after an open paren) are rewritten; `(defn fn ...)` headers and
+%  substrings of other tokens are never touched.
+cljs_name_override_rules(Rules) :-
+    findall(Pred,
+            ( binding_registry:binding(clojurescript, Pred, _, _, _, _)
+            ; binding_registry:binding(clojure, Pred, _, _, _, _) ),
+            Preds0),
+    sort(Preds0, Preds),
+    findall(Rule, ( member(Pred, Preds), cljs_pred_override_rule(Pred, Rule) ), Rules0),
+    sort(Rules0, Rules).
+
+%% cljs_pred_override_rule(+Pred, -Rule)
+%  Yields the call-head rewrite rules for Pred when its resolved CLJS target name
+%  differs from an emitted functor spelling (raw or underscores->hyphens).
+cljs_pred_override_rule(Pred, Rule) :-
+    Pred = Name/_Arity,
+    resolve_binding([clojurescript, clojure], Pred, _Key,
+                    binding(_, _, TargetName, _, _, _)),
+    atom_string(TargetName, TargetStr),
+    atom_string(Name, RawStr),
+    cljs_hyphenate(RawStr, HyphenStr),
+    member(FromStr, [RawStr, HyphenStr]),
+    FromStr \== TargetStr,
+    (   atomic_list_concat(['(', FromStr, ' '], OpenFrom),
+        atomic_list_concat(['(', TargetStr, ' '], OpenTo),
+        Rule = OpenFrom-OpenTo
+    ;   atomic_list_concat(['(', FromStr, ')'], CloseFrom),
+        atomic_list_concat(['(', TargetStr, ')'], CloseTo),
+        Rule = CloseFrom-CloseTo
+    ).
+
+%% cljs_hyphenate(+In, -Out) - underscore->hyphen (Clojure naming convention).
+cljs_hyphenate(In, Out) :-
+    ( sub_string(In, _, _, _, "_")
+    ->  split_string(In, "_", "", Parts),
+        atomic_list_concat(Parts, '-', OutAtom),
+        atom_string(OutAtom, Out)
+    ;   Out = In ).
 
 %% cljs_banner(-Banner)
 %  Header noting the output is ClojureScript (runs under Scittle/SCI or nbb).

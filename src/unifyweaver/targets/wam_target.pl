@@ -1212,9 +1212,19 @@ format_index_entries(Entries, Str) :-
 %  the textual form. See
 %  wam_text_parser:wam_classify_constant_token/2 for the shared
 %  classification helper.
+%
+%  Prolog *strings* (SWI `string/1`, not atoms) are spelled with
+%  outer double quotes (`"hi"`), escaping `\\` and `"`. The shared
+%  classifier still returns `atom(Name)` for those tokens so every
+%  existing consumer stays byte-for-byte the same; string-aware
+%  runtimes (JS) consult
+%  wam_text_parser:wam_constant_token_is_string/1.
 quote_wam_constant(Value, Quoted) :-
     (   number(Value)
     ->  format(string(Quoted), "~w", [Value])
+    ;   string(Value)
+    ->  escape_for_wam_dquoting(Value, Escaped),
+        format(string(Quoted), '"~w"', [Escaped])
     ;   ( atom(Value) -> atom_string(Value, Str) ; Str = Value ),
         (   ( atom_looks_like_number(Str)
             ; constant_needs_quoting(Str)
@@ -1254,6 +1264,16 @@ escape_for_wam_quoting(Str, Escaped) :-
 escape_wam_char('\\', ['\\', '\\']).
 escape_wam_char('\'', ['\\', '\'']).
 escape_wam_char(C, [C]).
+
+escape_for_wam_dquoting(Str, Escaped) :-
+    string_chars(Str, Chars),
+    maplist(escape_wam_dquote_char, Chars, NestedChars),
+    append(NestedChars, EscChars),
+    string_chars(Escaped, EscChars).
+
+escape_wam_dquote_char('\\', ['\\', '\\']).
+escape_wam_dquote_char('"', ['\\', '"']).
+escape_wam_dquote_char(C, [C]).
 
 %% compile_single_clause_wam(+Clause, +Options, -Code)
 compile_single_clause_wam(Head-Body, Options, Code) :-
@@ -1303,6 +1323,15 @@ goals_contain_call_or_aggregate(Goals) :-
     ; G = findall(_, _, _)
     ; wam_inline_bagof_setof_enabled, G = bagof(_, _, _)
     ; wam_inline_bagof_setof_enabled, G = setof(_, _, _)
+    % Under ite_use_y_level(true), an inlined `\+ G` compiles to the
+    % soft-cut form `(G -> fail ; true)`, whose get_level/cut barrier needs
+    % a permanent Y-register. A clause whose ONLY body goal is such a
+    % negation would otherwise skip allocation (length(Goals) == 1 and `\+`
+    % is treated as a builtin below), so its barrier Y-register aliases the
+    % CALLER's frame and corrupts a shared register cell. Force a frame only
+    % when that inline rewrite is enabled; the runtime-builtin opt-out emits
+    % no Y-level barrier. (`not/1` already reaches the callable arm below.)
+    ; wam_ite_use_y_level_enabled, wam_inline_not_enabled, G = \+(_)
     ; callable(G), functor(G, F, _), \+ is_builtin_goal(F)
     ),
     !.
@@ -2705,6 +2734,7 @@ is_builtin_pred(reverse, 2).  % list reverse -- F#, Python, R, Clojure, Go,
                               % finding a labeled clause may need a
                               % builtin_call handler.
 is_builtin_pred(length, 2).
+is_builtin_pred(atomic, 1).  % ISO type test dispatched directly by supporting runtimes
 is_builtin_pred(functor, 3). % term inspection: name/arity read or construct
 is_builtin_pred(arg, 3).     % term inspection: Nth argument access
 is_builtin_pred((=..), 2).   % term inspection: univ (decompose/compose)

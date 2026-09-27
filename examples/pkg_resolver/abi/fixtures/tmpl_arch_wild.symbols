@@ -1,0 +1,6 @@
+# Architecture-wildcard fixture (Astra P2): (arch=linux-any) needs
+# dpkg-architecture matching semantics we do not reimplement, so the row is
+# rejected rather than mis-selected. The whole file is refused (exit 3).
+libwild.so.1 #PACKAGE# #MINVER#
+ (arch=linux-any)wild_fn@Base 1.0
+ plain_fn@Base 1.0

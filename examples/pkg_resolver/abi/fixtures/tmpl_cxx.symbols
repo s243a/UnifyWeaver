@@ -1,0 +1,3 @@
+libtmpl.so.1 #PACKAGE# #MINVER#
+ (c++)"Foo::bar(int)@Base" 1.0
+ plain_fn@Base 1.0

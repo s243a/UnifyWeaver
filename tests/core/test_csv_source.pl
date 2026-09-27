@@ -90,8 +90,9 @@ test_csv_manual_columns :-
 test_tsv_support :-
     format('  Testing TSV support...~n', []),
     
-    % Create test TSV file
-    TestFile = 'test_data.tsv',
+    % Create test TSV file (scratch name that does NOT collide with the
+    % repo-tracked test_data.tsv — this test writes then deletes TestFile)
+    TestFile = 'test_tsv_data.tsv',
     TestData = 'name\tage\tcity\nalice\t25\tnyc\nbob\t30\tsf\n',
     write_test_file(TestFile, TestData),
     

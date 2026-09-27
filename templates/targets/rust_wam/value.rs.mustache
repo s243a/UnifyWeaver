@@ -2,25 +2,636 @@
 // Date: {{date}}
 
 use std::fmt;
+use std::ops::Deref;
+use std::sync::Arc;
+#[cfg(feature = "deref_memo")]
+use std::sync::atomic::{AtomicU8, Ordering};
+
+// ===========================================================================
+// Symbol interning (hot-path optimization #2 — D94/D96).
+//
+// Functor / atom / unbound-variable NAMES are the tiny-`String` bucket the deep
+// profile (D94) blamed for 63% of B2 and 76% of B3 allocation blocks. `Sym` is
+// the name representation carried by `Value::Atom`, `Value::Str` and
+// `Value::Unbound`; it is chosen at compile time by the `intern` Cargo feature
+// so the ON build and the OFF build are sha-distinct binaries producing
+// byte-identical output (a clean A/B).
+//
+//   * feature OFF  ->  `type Sym = String`. This is the pre-intern path,
+//                      unchanged: every name is an owned `String` exactly as
+//                      before. All of `String`'s inherent methods and trait
+//                      impls (Deref<str>, Display, PartialEq<&str>, Ord, …)
+//                      serve directly, so the rest of the runtime compiles
+//                      against `Sym` with no cfg noise.
+//
+//   * feature ON   ->  `Sym(u32)`, a Copy index into a global, append-only,
+//                      canonical interner. `Value::clone` of an Atom/Unbound/Str
+//                      name becomes a `u32` copy (no malloc), `deref_var`
+//                      becomes allocation-free, and the `"f/N"` functor parse in
+//                      `deref_heap` no longer clones a String. De-interning
+//                      (`Sym::as_str`, `Display`) returns a `&'static str` from
+//                      the interner — used only for OUTPUT and for the sort
+//                      comparator's NAME-order compares.
+//
+// THE SORT-ORDER TRAP (D94/D95). SWI standard order compares atoms/functors by
+// NAME. Interned ids are assigned in first-seen order, NOT name order, so an
+// integer-id compare would order by id and silently corrupt every sort. The
+// comparators therefore de-intern to `&str` (via `as_str`/`functor_of`) for the
+// LESS/GREATER decision — approach (a) — keeping ordering name-correct and
+// byte-identical. To make that guarantee load-bearing rather than a convention,
+// the ON `Sym` deliberately does NOT implement `Ord`/`PartialOrd`: any code that
+// tries to order symbols by id is a COMPILE error, not a wrong answer. `Sym`'s
+// `PartialEq` (id compare) is still sound because interning is canonical — the
+// same name always maps to the same id — so id-equality iff name-equality.
+// ===========================================================================
+
+/// Name representation — see the module comment above. OFF path: a plain owned
+/// `String`, so the pre-intern behaviour is preserved verbatim.
+#[cfg(not(feature = "intern"))]
+pub type Sym = String;
+
+#[cfg(feature = "intern")]
+pub use self::interner::{decomp, intern, Decomp, Sym};
+
+// D113: the Sym-producing functor normaliser (see mod interner). Re-exported
+// only when both `intern` (ids exist) and `intern_sym_thread` (the cache exists)
+// are on; otherwise the hot sites fall back to the pre-D113 intern path.
+#[cfg(all(feature = "intern", feature = "intern_sym_thread"))]
+pub use self::interner::functor_sym;
+
+#[cfg(feature = "intern")]
+mod interner {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+    use std::sync::{OnceLock, RwLock};
+
+    // Hot-path opt (D112): the name->id lookup table. Every `intern(s)` hashes
+    // `s` to probe this map (the construction fast path — deref_heap functor
+    // normalisation, deref_var, copy_term all re-intern name strings). The
+    // D111 post-mimalloc re-profile put that hashing at 8.1% of B3 Ir
+    // (`hash_one` 4.5% + `sip::write` 3.7%) — std's default SipHash, which is
+    // DoS-resistant but ~5-10x slower than a non-cryptographic hash for these
+    // short program-internal names. `intern_fxhash` (default ON) swaps the map
+    // to the crate's existing FxHash (state.rs `FxBuildHasher`). This is
+    // byte-identical BY CONSTRUCTION: a name's id is assigned from the `len`
+    // counter in first-sight order (see `intern`), never from the hash, and the
+    // map is only ever probed with get/insert (its iteration order is never
+    // observed), so the hasher cannot change any id or any output. OFF = the
+    // exact pre-D112 SipHash map; the isolated A/B baseline (mimalloc held ON,
+    // only this lever toggled) is
+    // `--no-default-features --features "decorate_sort intern deref_memo trail_enum store_cache mimalloc"`.
+    #[cfg(feature = "intern_fxhash")]
+    type NameMap = HashMap<&'static str, u32, crate::state::FxBuildHasher>;
+    #[cfg(not(feature = "intern_fxhash"))]
+    type NameMap = HashMap<&'static str, u32>;
+
+    // Chunked, never-moving id -> name storage so `resolve` is lock-free and
+    // wait-free: a chunk, once published, is never reallocated or freed, and the
+    // leaked `&'static str` inside it never moves.
+    const CHUNK_BITS: u32 = 12;
+    const CHUNK_SIZE: usize = 1 << CHUNK_BITS; // 4096 names per chunk
+    const CHUNK_MASK: u32 = (CHUNK_SIZE as u32) - 1;
+    const NUM_CHUNKS: usize = 1 << 18; // up to ~1.07B symbols
+
+    type Chunk = [&'static str; CHUNK_SIZE];
+
+    // ---- Functor-decomposition cache (D101) ------------------------------
+    //
+    // `functor_of` / `heap_node_shallow` recover a functor's NAME and trailing
+    // ARITY from its `"name/arity"` text on every call, via `inner.rfind('/')`
+    // + `parse::<usize>()`. The D100 re-profile blamed that reverse-parse for
+    // ~11.9% of B3 (memrchr + next_match_back) plus the re-intern of the
+    // extracted name substring. Because the interner is append-only and
+    // CANONICAL (a given id's text never changes), each functor's decomposition
+    // is a pure, immutable function of its id — so it is computed ONCE and cached
+    // id-keyed; `functor_of_sym` then becomes an O(1) slot read, byte-identical
+    // to the parse (it returns slices of the SAME canonical `&'static str` the
+    // parse would have sliced).
+    //
+    // The fill is LAZY — done on the first `decomp(id)` for that id, NOT at
+    // intern time. Only ids actually used as functors ever pay for a
+    // decomposition; the far more numerous atom/variable names that are interned
+    // but never asked for their functor form (e.g. the millions of distinct
+    // fresh variable names a resolve creates) never run `rfind`/`parse` at all.
+    //
+    // Concurrency mirrors the interner's chunked, never-moving discipline: one
+    // `AtomicPtr<Decomp>` per id slot (null = not yet computed), chunks allocated
+    // and published by CAS, and the per-slot fill published by CAS too. Reads are
+    // lock-free/wait-free; a race to fill the same slot is harmless because the
+    // decomposition is a deterministic function of the id, so every racing writer
+    // computes byte-identical bytes and the CAS keeps exactly one, leaking the
+    // rest (a handful of 48-byte boxes over the whole run). No global `Mutex` and
+    // nothing on the interner's own hot path.
+
+    /// The decomposition of a functor `Sym`, keyed by its id. `name`/`inner` are
+    /// slices of the interner's canonical `&'static str`, so they live forever.
+    #[derive(Clone, Copy)]
+    pub struct Decomp {
+        /// `inner[..slash]` — the functor name (== `inner` when there is no `/`;
+        /// only read when `arity.is_some()`, i.e. a `/` was present).
+        pub name: &'static str,
+        /// The parsed trailing arity: `Some(a)` iff a `/` is present AND the
+        /// suffix parses as `usize`; `None` otherwise (no `/`, or unparsable).
+        pub arity: Option<usize>,
+        /// The `str(...)`-stripped canonical text — the fallback return of
+        /// `functor_of` (arity mismatch / no `/` / unparsable suffix).
+        pub inner: &'static str,
+        /// D113: `intern(name)` — the functor name's interned id, computed ONCE
+        /// here (per functor id) rather than re-hashed on every hot-path
+        /// rebuild. Byte-safe: interning is canonical, so this is the exact
+        /// `Sym` `name.into()` would yield.
+        #[cfg(feature = "intern_sym_thread")]
+        pub name_sym: Sym,
+        /// D113: `intern(inner)` — the Sym analog of `functor_of_sym`'s
+        /// arity-mismatch (`d.inner`) fallback.
+        #[cfg(feature = "intern_sym_thread")]
+        pub inner_sym: Sym,
+    }
+
+    /// One lazily-filled decomposition slot per id; null until first `decomp`.
+    type DChunk = [AtomicPtr<Decomp>; CHUNK_SIZE];
+
+    /// Compute a functor's decomposition from its canonical text — reproduces
+    /// `functor_of`'s `str(...)`-strip + `rfind('/')` + `parse` EXACTLY, once.
+    #[inline]
+    fn compute_decomp(full: &'static str) -> Decomp {
+        let inner: &'static str = if full.starts_with("str(") && full.ends_with(')') {
+            &full[4..full.len() - 1]
+        } else {
+            full
+        };
+        match inner.rfind('/') {
+            Some(slash) => {
+                let name = &inner[..slash];
+                Decomp {
+                    name,
+                    arity: inner[slash + 1..].parse::<usize>().ok(),
+                    inner,
+                    // D113: intern name/inner ONCE here (per functor id), so hot
+                    // construction sites read the id instead of re-hashing the
+                    // name string on every rebuild.
+                    #[cfg(feature = "intern_sym_thread")]
+                    name_sym: Sym(intern(name)),
+                    #[cfg(feature = "intern_sym_thread")]
+                    inner_sym: Sym(intern(inner)),
+                }
+            }
+            None => Decomp {
+                name: inner,
+                arity: None,
+                inner,
+                // No `/`: name == inner, so both ids are `intern(inner)`.
+                #[cfg(feature = "intern_sym_thread")]
+                name_sym: Sym(intern(inner)),
+                #[cfg(feature = "intern_sym_thread")]
+                inner_sym: Sym(intern(inner)),
+            },
+        }
+    }
+
+    struct Table {
+        // One atomic pointer per chunk; null until that chunk is first needed.
+        chunks: Box<[AtomicPtr<Chunk>]>,
+        // Parallel decomposition chunks (D101), lazily filled: dchunks[c] points
+        // at a chunk of per-id `AtomicPtr<Decomp>` slots (see `decomp`).
+        dchunks: Box<[AtomicPtr<DChunk>]>,
+        // Number of ids assigned so far (only mutated under `map`'s write lock).
+        len: AtomicU32,
+        // name -> id, read-mostly. Read lock is the construction fast path;
+        // write lock is taken only when a brand-new name is first interned.
+        map: RwLock<NameMap>,
+    }
+
+    fn table() -> &'static Table {
+        static T: OnceLock<Table> = OnceLock::new();
+        T.get_or_init(|| {
+            let mut v: Vec<AtomicPtr<Chunk>> = Vec::with_capacity(NUM_CHUNKS);
+            for _ in 0..NUM_CHUNKS {
+                v.push(AtomicPtr::new(std::ptr::null_mut()));
+            }
+            let mut dv: Vec<AtomicPtr<DChunk>> = Vec::with_capacity(NUM_CHUNKS);
+            for _ in 0..NUM_CHUNKS {
+                dv.push(AtomicPtr::new(std::ptr::null_mut()));
+            }
+            Table {
+                chunks: v.into_boxed_slice(),
+                dchunks: dv.into_boxed_slice(),
+                len: AtomicU32::new(0),
+                map: RwLock::new(NameMap::default()),
+            }
+        })
+    }
+
+    #[inline]
+    fn chunk_ptr(t: &'static Table, c: usize) -> *mut Chunk {
+        // Load, and if absent allocate-and-publish (CAS) exactly one chunk.
+        let existing = t.chunks[c].load(Ordering::Acquire);
+        if !existing.is_null() {
+            return existing;
+        }
+        let boxed: Box<Chunk> = Box::new([""; CHUNK_SIZE]);
+        let raw = Box::into_raw(boxed);
+        match t.chunks[c].compare_exchange(
+            std::ptr::null_mut(),
+            raw,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => raw,
+            Err(won) => {
+                // Someone else allocated it first; drop ours and use theirs.
+                drop(unsafe { Box::from_raw(raw) });
+                won
+            }
+        }
+    }
+
+    #[inline]
+    fn dchunk_ptr(t: &'static Table, c: usize) -> *mut DChunk {
+        // Same allocate-and-publish (CAS) discipline as `chunk_ptr`.
+        let existing = t.dchunks[c].load(Ordering::Acquire);
+        if !existing.is_null() {
+            return existing;
+        }
+        let boxed: Box<DChunk> =
+            Box::new(std::array::from_fn(|_| AtomicPtr::new(std::ptr::null_mut())));
+        let raw = Box::into_raw(boxed);
+        match t.dchunks[c].compare_exchange(
+            std::ptr::null_mut(),
+            raw,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => raw,
+            Err(won) => {
+                drop(unsafe { Box::from_raw(raw) });
+                won
+            }
+        }
+    }
+
+    /// Intern a name, returning its canonical id. Idempotent.
+    pub fn intern(s: &str) -> u32 {
+        let t = table();
+        // Fast path: already interned (read lock, no allocation, no mutation).
+        if let Some(&id) = t.map.read().unwrap().get(s) {
+            return id;
+        }
+        // Slow path: first sight of this name.
+        let mut w = t.map.write().unwrap();
+        if let Some(&id) = w.get(s) {
+            return id; // raced in between the read unlock and the write lock
+        }
+        let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
+        let id = t.len.load(Ordering::Relaxed);
+        let c = (id >> CHUNK_BITS) as usize;
+        let slot = (id & CHUNK_MASK) as usize;
+        let ptr = chunk_ptr(t, c);
+        // Publish the name BEFORE the id becomes reachable via the map. The D101
+        // functor decomposition is NOT computed here — it is filled lazily by
+        // `decomp` only for ids actually used as functors (see the module note).
+        unsafe {
+            (*ptr)[slot] = leaked;
+        }
+        t.len.store(id + 1, Ordering::Release);
+        w.insert(leaked, id);
+        id
+    }
+
+    /// De-intern: id -> the canonical `&'static str`. Lock-free / wait-free.
+    #[inline]
+    pub fn resolve(id: u32) -> &'static str {
+        let t = table();
+        let c = (id >> CHUNK_BITS) as usize;
+        let slot = (id & CHUNK_MASK) as usize;
+        let ptr = t.chunks[c].load(Ordering::Acquire);
+        debug_assert!(!ptr.is_null(), "resolve of unpublished sym id {}", id);
+        unsafe { (*ptr)[slot] }
+    }
+
+    /// Functor decomposition for `id` (D101). O(1) after the first call for that
+    /// id; lock-free / wait-free. Lazily computed from the canonical text and
+    /// cached, so only ids used as functors ever run `rfind`/`parse`, and each at
+    /// most once. `Copy`, so callers get an owned `Decomp` of `&'static str`s.
+    #[inline]
+    pub fn decomp(id: u32) -> Decomp {
+        let t = table();
+        let c = (id >> CHUNK_BITS) as usize;
+        let slot = (id & CHUNK_MASK) as usize;
+        let dptr = dchunk_ptr(t, c);
+        // Fast path: already computed.
+        let cur = unsafe { (*dptr)[slot].load(Ordering::Acquire) };
+        if !cur.is_null() {
+            return unsafe { *cur };
+        }
+        // Miss: compute once from the canonical text and publish by CAS. Racing
+        // fillers all compute the same bytes, so whichever wins is correct and
+        // the losers' boxes are freed.
+        let d = compute_decomp(resolve(id));
+        let raw = Box::into_raw(Box::new(d));
+        match unsafe {
+            (*dptr)[slot].compare_exchange(
+                std::ptr::null_mut(),
+                raw,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+        } {
+            Ok(_) => d,
+            Err(won) => {
+                drop(unsafe { Box::from_raw(raw) });
+                unsafe { *won }
+            }
+        }
+    }
+
+    /// D113: the functor's normalised name as a `Sym` id — the Sym-producing
+    /// analog of `functor_of_sym`. Reads the id straight from the cached
+    /// `Decomp` (`name`/`inner` interned once in `compute_decomp`), so a hot
+    /// construction site builds a `Value::Str` functor WITHOUT re-hashing the
+    /// name string. Byte-identical to `intern(functor_of_sym(f, arity))`:
+    /// `name_sym`/`inner_sym` ARE `intern(name)`/`intern(inner)`, and interning
+    /// is canonical (same name ⟺ same id), so the returned id resolves to the
+    /// exact string the old `functor.into()` produced.
+    #[cfg(feature = "intern_sym_thread")]
+    #[inline]
+    pub fn functor_sym(f: Sym, arity: usize) -> Sym {
+        let d = decomp(f.0);
+        if d.arity == Some(arity) {
+            d.name_sym
+        } else {
+            d.inner_sym
+        }
+    }
+
+    /// Interned symbol id. `Copy` — cloning a name is now a `u32` copy, not a
+    /// heap allocation. See the module comment for the sort-order-trap rationale
+    /// (no `Ord`: ordering must go through `as_str`, never the id).
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Sym(pub u32);
+
+    impl Sym {
+        /// The canonical name for this symbol (borrowed from the interner).
+        #[inline]
+        pub fn as_str(&self) -> &'static str {
+            resolve(self.0)
+        }
+    }
+
+    impl std::ops::Deref for Sym {
+        type Target = str;
+        #[inline]
+        fn deref(&self) -> &str {
+            resolve(self.0)
+        }
+    }
+
+    impl From<&str> for Sym {
+        #[inline]
+        fn from(s: &str) -> Sym {
+            Sym(intern(s))
+        }
+    }
+    impl From<String> for Sym {
+        #[inline]
+        fn from(s: String) -> Sym {
+            Sym(intern(&s))
+        }
+    }
+    impl From<&String> for Sym {
+        #[inline]
+        fn from(s: &String) -> Sym {
+            Sym(intern(s))
+        }
+    }
+
+    impl PartialEq<str> for Sym {
+        #[inline]
+        fn eq(&self, other: &str) -> bool {
+            self.as_str() == other
+        }
+    }
+    impl PartialEq<&str> for Sym {
+        #[inline]
+        fn eq(&self, other: &&str) -> bool {
+            self.as_str() == *other
+        }
+    }
+    impl PartialEq<String> for Sym {
+        #[inline]
+        fn eq(&self, other: &String) -> bool {
+            self.as_str() == other.as_str()
+        }
+    }
+    impl PartialEq<Sym> for &str {
+        #[inline]
+        fn eq(&self, other: &Sym) -> bool {
+            *self == other.as_str()
+        }
+    }
+
+    impl std::fmt::Display for Sym {
+        #[inline]
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.as_str())
+        }
+    }
+    impl std::fmt::Debug for Sym {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            std::fmt::Debug::fmt(self.as_str(), f)
+        }
+    }
+}
+
+/// Shared argument spine: the sub-arguments of a compound term, or the
+/// elements of a list — plus an offset, so that the TAIL of a list is the same
+/// allocation viewed one element further along.
+///
+/// STRUCTURAL SHARING (see docs/WAM_RUST_STATUS.md). Terms in this runtime are
+/// immutable — a variable binding lives in `WamState::bindings` keyed by the
+/// variable's name, never inside the term cell — so two terms may share one
+/// spine with no aliasing hazard: nothing can mutate a spine another snapshot
+/// observes, and the trail restores bindings, not cells. Sharing therefore
+/// needs no trail cooperation at all.
+///
+/// Two costs collapse because of it:
+///
+///  * `Value::clone` is O(1) for lists and compounds instead of a deep copy,
+///    so a choice point costs O(live registers), not O(term size) — a register
+///    holding the whole catalog is no longer copied per choice point.
+///  * `tail()` is O(1), so walking an N-element list is O(N) instead of
+///    allocating (and retaining) an N-element copy per step. That second one
+///    is what the resolver's `[H|T]` recursion over the catalog does at every
+///    level.
+///
+/// `Arc` rather than `Rc` because `WamState` must stay `Send`: the T7
+/// parallel-aggregate substrate forks a machine per Rayon worker and the
+/// static assertion in state.rs pins `Send` (an `Rc` inside `Value` would put
+/// non-`Send` data in `regs`/`heap`/`trail`/`bindings` and break it).
+///
+/// `Deref<Target = [Value]>` means every read (`len`, `iter`, indexing,
+/// slicing, `split_first`, `to_vec`) works on the visible window as if it were
+/// a plain slice; only construction and cons go through the methods below.
+///
+/// DEREF-STABILITY MEMO (D103, `deref_memo` feature). `Spine` carries a
+/// lock-free tristate `stable` flag caching the predicate "`deref_heap`
+/// returns a node built on THIS (full) spine structurally unchanged" — i.e.
+/// every element is deref-stable and nothing under it moves. It is set ONLY
+/// from `deref_heap`'s own verified identity path (never a separate groundness
+/// walk), so short-circuiting a stable spine to `val.clone()` is byte-identical
+/// by construction. Because `Value`s are immutable (a deref rebuilds; a binding
+/// lives in `WamState::bindings`, a spine is never mutated in place) and a
+/// deref-stable spine contains no `Unbound`, no `Ref`, no `"f/N"` functor and
+/// no cons-`Str`, the flag — once `1` (stable) or `2` (not) — is a permanent
+/// property of the immutable spine, safe across bindings, the trail and
+/// backtracking. The flag describes the FULL spine (`items[0..]`); a window
+/// `[off..]` of a fully-stable spine is itself all-stable (a suffix of an
+/// all-stable list is all-stable), so the short-circuit is sound at any `off`,
+/// but the flag is only ever SET from a full-spine (`off == 0`) walk.
+#[derive(Debug)]
+struct Spine {
+    items: Vec<Value>,
+    /// Deref-stability tristate: 0 = unknown, 1 = stable, 2 = not stable.
+    /// Relaxed atomics — a race recomputes the same deterministic value, so a
+    /// benign double-write is harmless and no lock is needed.
+    #[cfg(feature = "deref_memo")]
+    stable: AtomicU8,
+}
+
+#[derive(Clone, Debug)]
+pub struct Args {
+    spine: Arc<Spine>,
+    off: usize,
+}
+
+impl Args {
+    /// Take ownership of a freshly built vector as a new spine.
+    #[inline]
+    pub fn from_vec(items: Vec<Value>) -> Args {
+        Args {
+            spine: Arc::new(Spine {
+                items,
+                #[cfg(feature = "deref_memo")]
+                stable: AtomicU8::new(0),
+            }),
+            off: 0,
+        }
+    }
+
+    /// The empty spine.
+    #[inline]
+    pub fn empty() -> Args {
+        Args::from_vec(Vec::new())
+    }
+
+    /// This spine minus its first element — O(1), sharing the allocation.
+    /// Panics-free: an empty spine yields an empty spine.
+    #[inline]
+    pub fn tail(&self) -> Args {
+        let off = if self.off < self.spine.items.len() { self.off + 1 } else { self.off };
+        Args { spine: Arc::clone(&self.spine), off }
+    }
+
+    /// This spine with `head` prepended. The visible window starts at `off`, so
+    /// a slot before it may belong to another view of the same allocation and
+    /// can never be written; prepending therefore copies.
+    #[inline]
+    pub fn cons(&self, head: Value) -> Args {
+        let mut items = Vec::with_capacity(self.len() + 1);
+        items.push(head);
+        items.extend_from_slice(self);
+        Args::from_vec(items)
+    }
+
+    /// Are these the SAME view of the same allocation? Used to detect "nothing
+    /// changed" without comparing contents; `false` is always safe.
+    #[inline]
+    pub fn same_ref(a: &Args, b: &Args) -> bool {
+        a.off == b.off && Arc::ptr_eq(&a.spine, &b.spine)
+    }
+
+    /// True iff this window is the FULL spine (`off == 0`). The stability flag
+    /// is only ever SET from a full-spine walk (see the type comment).
+    #[cfg(feature = "deref_memo")]
+    #[inline]
+    pub fn is_full_view(&self) -> bool {
+        self.off == 0
+    }
+
+    /// The deref-stability tristate of the full spine (0/1/2). `deref_heap`
+    /// short-circuits on `1` and skips re-checking on `2`.
+    #[cfg(feature = "deref_memo")]
+    #[inline]
+    pub fn stability(&self) -> u8 {
+        self.spine.stable.load(Ordering::Relaxed)
+    }
+
+    /// True iff the full spine is proven deref-stable (state `1`).
+    #[cfg(feature = "deref_memo")]
+    #[inline]
+    pub fn is_full_stable(&self) -> bool {
+        self.stability() == 1
+    }
+
+    /// Record that the full spine is deref-stable. Only call from
+    /// `deref_heap`'s verified identity path on a full view (`off == 0`) whose
+    /// every element is deref-stable.
+    #[cfg(feature = "deref_memo")]
+    #[inline]
+    pub fn mark_stable(&self) {
+        self.spine.stable.store(1, Ordering::Relaxed);
+    }
+
+    /// Record that the full spine is NOT deref-stable (a permanent property of
+    /// the immutable spine — an element moved, or an element is never
+    /// deref-stable). Skips the stability re-check on later derefs.
+    #[cfg(feature = "deref_memo")]
+    #[inline]
+    pub fn mark_not_stable(&self) {
+        self.spine.stable.store(2, Ordering::Relaxed);
+    }
+}
+
+impl Deref for Args {
+    type Target = [Value];
+    #[inline]
+    fn deref(&self) -> &[Value] {
+        &self.spine.items[self.off..]
+    }
+}
+
+impl From<Vec<Value>> for Args {
+    #[inline]
+    fn from(items: Vec<Value>) -> Args {
+        Args::from_vec(items)
+    }
+}
+
+impl PartialEq for Args {
+    #[inline]
+    fn eq(&self, other: &Args) -> bool {
+        Self::same_ref(self, other) || **self == **other
+    }
+}
 
 /// Universal value type for the WAM runtime.
 /// Mirrors the Prolog term universe used by wam_runtime.pl.
 #[derive(Clone, Debug)]
 pub enum Value {
-    /// Atomic symbol (Prolog atom)
-    Atom(String),
+    /// Atomic symbol (Prolog atom) — name interned (see `Sym`).
+    Atom(Sym),
     /// Integer value
     Integer(i64),
     /// Floating point value
     Float(f64),
-    /// Compound term: functor name + sub-arguments
-    Str(String, Vec<Value>),
-    /// List value (Prolog list)
-    List(Vec<Value>),
+    /// Compound term: functor name (interned) + shared sub-argument spine
+    Str(Sym, Args),
+    /// List value (Prolog list), shared spine
+    List(Args),
     /// Heap reference (from put_structure/put_list)
     Ref(usize),
-    /// Unbound variable (e.g., _V5, _H3)
-    Unbound(String),
+    /// Unbound variable (e.g., _V5, _H3) — name interned (see `Sym`).
+    Unbound(Sym),
     /// Boolean value
     Bool(bool),
     /// Uninitialized register slot -- zero-cost sentinel for the register file.
@@ -84,7 +695,7 @@ impl Value {
     /// Extract atom string, panicking if not an atom.
     pub fn as_atom(&self) -> &str {
         match self {
-            Value::Atom(s) => s,
+            Value::Atom(s) => s.as_str(),
             _ => panic!("Expected atom, got {:?}", self),
         }
     }
@@ -93,19 +704,56 @@ impl Value {
     /// Returns (functor, args) or None for non-compound values.
     pub fn univ(&self) -> Option<(&str, &[Value])> {
         match self {
-            Value::Str(f, args) => Some((f, args)),
+            Value::Str(f, args) => Some((f.as_str(), args)),
             _ => None,
         }
     }
 
     /// Construct a compound term from functor and args.
     pub fn make_str(functor: &str, args: Vec<Value>) -> Value {
-        Value::Str(functor.to_string(), args)
+        Value::Str(functor.into(), Args::from_vec(args))
     }
+
+    /// Construct an atom from anything nameable (interns the name under the
+    /// `intern` feature; an owned `String` on the pre-intern path). This is the
+    /// construction helper the generator/runtime route atom construction
+    /// through so the name representation is single-sourced.
+    #[inline]
+    pub fn atom(name: impl Into<Sym>) -> Value {
+        Value::Atom(name.into())
+    }
+
+    /// Construct an unbound variable from anything nameable.
+    #[inline]
+    pub fn unbound(name: impl Into<Sym>) -> Value {
+        Value::Unbound(name.into())
+    }
+
+    /// Construct a compound term from a nameable functor and a shared spine.
+    #[inline]
+    pub fn str_sym(functor: impl Into<Sym>, args: Args) -> Value {
+        Value::Str(functor.into(), args)
+    }
+
+    /// Construct a list from an owned `Vec` (structural-sharing constructor).
+    /// `Value::List` itself takes the shared `Args` spine; this is the
+    /// convenience form for the many sites that build a fresh vector.
+    #[inline]
+    pub fn list(items: Vec<Value>) -> Value {
+        Value::List(Args::from_vec(items))
+    }
+
+    /// Construct a compound term from an owned functor `String` and an owned
+    /// `Vec` of arguments (structural-sharing constructor).
+    #[inline]
+    pub fn strv(functor: impl Into<Sym>, args: Vec<Value>) -> Value {
+        Value::Str(functor.into(), Args::from_vec(args))
+    }
+
 
     /// Create a new unbound variable with the given name.
     pub fn new_unbound(name: &str) -> Value {
-        Value::Unbound(name.to_string())
+        Value::Unbound(name.into())
     }
 }
 

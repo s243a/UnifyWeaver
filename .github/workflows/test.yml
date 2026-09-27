@@ -155,7 +155,8 @@ jobs:
             prototypes/mu_cosine/test_registry_v04_stage5.py \
             prototypes/mu_cosine/test_process_expression_enumerator.py \
             prototypes/mu_cosine/test_process_expression_split.py \
-            prototypes/mu_cosine/test_registry_v05_migration.py
+            prototypes/mu_cosine/test_registry_v05_migration.py \
+            prototypes/mu_cosine/test_process_expression_sampler.py
 
       - name: Run F# WAM target tests (codegen + dotnet smoke + LMDB conformance)
         env:
@@ -260,6 +261,24 @@ jobs:
       - name: Run sampled WAM conformance
         run: |
           swipl -q -f init.pl -s tests/test_wam_cross_target_conformance.pl -g "seed_sampler,run_tests" -t halt
+
+      - name: Run C++ WAM template contracts
+        if: matrix.target == 'cpp'
+        run: |
+          output="$(swipl -q -s tests/test_wam_cpp_templates.pl -g 'run_tests(wam_cpp_templates)' -t halt 2>&1)" || { printf '%s\n' "$output"; exit 1; }
+          printf '%s\n' "$output"
+          if grep -Eq '^ERROR:' <<< "$output"; then exit 1; fi
+          if ! grep -Eq '^% \[([0-9]+)/\1\].*passed' <<< "$output"; then exit 1; fi
+
+      - name: Run WAM-C text builtin regressions
+        if: matrix.target == 'c'
+        run: |
+          for suite in tests/test_wam_c_atom_codes.pl tests/test_wam_c_atom_chars.pl tests/test_wam_c_char_code.pl; do
+            output="$(swipl -q -g run_tests -t halt "$suite" 2>&1)" || { printf '%s\n' "$output"; exit 1; }
+            printf '%s\n' "$output"
+            if grep -Eq '(^ERROR:|\[FAIL\])' <<< "$output"; then exit 1; fi
+            if ! grep -q 'Tests Complete' <<< "$output"; then exit 1; fi
+          done
 
   wam_r_conformance:
     name: WAM R Conformance (interpreter + functions)

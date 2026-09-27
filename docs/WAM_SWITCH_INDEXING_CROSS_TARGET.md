@@ -84,6 +84,7 @@ emitter (not the token-parser predicates several targets also define).
 | Target | const_ft | const_a2 | const_a2_ft | term_a2 | struct_a2 | catch-all behaviour | impact |
 |---|:-:|:-:|:-:|:-:|:-:|---|---|
 | cpp | Y | Y | Y | Y | Y | — | full coverage |
+| **javascript** | Y | Y | Y | Y | Y | try/retry/trust dispatch chains | full coverage; ground dispatch leaves no CP, var first-arg falls back to the chain. Residual: the first switch key may leave a spurious CP; deep (arg > 2) indexing absent |
 | elixir (lowered emitter) | Y | Y | Y | Y | Y | — | full coverage |
 | fsharp | Y | Y | Y | Y | N | `Proceed` stub | covers the common set |
 | **scala** (fixed) | Y | Y | Y | Y | N | `Raw` (now unreachable for these) | fixed |

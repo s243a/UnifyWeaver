@@ -6,6 +6,28 @@
 
 (def well-known-intern-seeds ["true" "fail" "[]" "." "" "[|]" "[|]/2"])
 
+;; P3 helpers + the A3 class D60/D61 found unclassified. resolve-instruction
+;; rewrites unmatched call/execute of these to :builtin-call.
+(def clojure-wam-direct-builtins
+  #{"maplist/2" "maplist/3" "maplist/4" "predsort/3"
+    "functor/3" "arg/3" "=../2" "string_codes/2"})
+
+(defn clojure-wam-direct-builtin? [pred]
+  (contains? clojure-wam-direct-builtins pred))
+
+(defn uw-env-get [k]
+  (System/getenv k))
+
+(defn env-uw-warn-unknown? []
+  (try
+    (= "1" (uw-env-get "UW_WAM_WARN_UNKNOWN"))
+    (catch Exception _ false)))
+
+(defn warn-unresolved [kind pred]
+  (when (env-uw-warn-unknown?)
+    (binding [*out* *err*]
+      (println (str "[wam_clojure] " kind " of unresolved goal " pred " failed")))))
+
 (defn parse-functor-arity [functor]
   (let [slash (.lastIndexOf ^String functor "/")
         arity-str (when (pos? slash) (subs functor (inc slash)))]
@@ -26,7 +48,11 @@
                             (distinct functor-seeds))]
      {:atom-intern atom-intern
       :atom-deintern ordered-seeds
-      :functor-arity functor-arity})))
+      :functor-arity functor-arity
+      ;; `[|]/2` and `[]` are looked up on every get_list and every list walk;
+      ;; they are well-known seeds, so their terms can be built once here.
+      :list-functor {:tag :atom :id (get atom-intern "[|]/2")}
+      :empty-list {:tag :atom :id (get atom-intern "[]")}})))
 
 (defn intern-atom [ctx atom]
   (if-let [id (get (:atom-intern ctx) atom)]
@@ -46,8 +72,15 @@
 (defn atom-term? [v]
   (and (map? v) (= :atom (:tag v)) (contains? v :id)))
 
+;; Interned atoms are `{:tag :atom :id n}`; two of them are equal exactly when
+;; their ids are. Comparing the id first skips the generic map comparison on
+;; the busiest equality test in the runtime, and falls back to `=` for anything
+;; that is not an interned atom (integers, structures).
 (defn interned-equal? [left right]
-  (= left right))
+  (let [id (:id left)]
+    (if (nil? id)
+      (= left right)
+      (and (= id (:id right)) (= (:tag left) (:tag right))))))
 
 (defn normalize-literal-atom [ctx atom]
   (let [[_ctx id] (intern-atom ctx atom)]
@@ -86,12 +119,44 @@
     (normalize-literal-atom ctx value)
     value))
 
+(defn ite-else-label? [label]
+  (and (string? label) (str/starts-with? label "L_ite_else_")))
+
+;; --- first-argument indexing ----------------------------------------------
+;;
+;; wam_target emits the standard-WAM switch family (switch_on_constant /
+;; switch_on_structure / switch_on_term, on A1 or A2, plus the dedicated
+;; try / retry / trust dispatch chains) ahead of every multi-clause chain.
+;; Each entry is Key -> Label. A label of "default" or "none", or one with no
+;; address, means "fall through to the clause chain"; anything else is the
+;; address of a clause body (or of a chain entry point) to jump to directly.
+;;
+;; Resolving the entries ONCE, at load time, into a map from the dispatch key
+;; to the destination is what makes the dispatch a hash lookup rather than a
+;; scan -- and jumping straight at a clause body is what stops a list walk from
+;; pushing (and immediately backtracking through) a choice point per element.
+(defn switch-entry-target [labels label]
+  (let [pc (when (and (string? label)
+                      (not= "default" label)
+                      (not= "none" label))
+             (get labels label))]
+    (if (some? pc) pc :fallthrough)))
+
+;; Two entries may carry the same key (wam_target emits `req/2:default
+;; req/2:L_..._2` for a predicate whose clauses share a functor). The FIRST
+;; wins, exactly as a linear scan of the entry list would -- which is what
+;; keeps the indexed answer order identical to the unindexed one.
+(defn switch-entry-map [pairs]
+  (reduce (fn [m [k v]] (if (contains? m k) m (assoc m k v))) {} pairs))
+
 (defn resolve-instruction [labels instr ctx]
   (case (:op instr)
     :call
     (if-let [pc (get labels (:pred instr))]
       (assoc instr :op :call-pc :target-pc pc)
-      instr)
+      (if (clojure-wam-direct-builtin? (:pred instr))
+        (assoc instr :op :builtin-call :pred (:pred instr))
+        instr))
 
     :execute
     (if-let [pc (get labels (:pred instr))]
@@ -104,9 +169,15 @@
       instr)
 
     :try-me-else
-    (if-let [pc (get labels (:label instr))]
-      (assoc instr :op :try-me-else-pc :target-pc pc)
-      instr)
+    ;; An if-then-else lowers to `try_me_else L_ite_else_N / <cond> / cut_ite`,
+    ;; and its cut_ite must prune the alternative this instruction pushes ALONG
+    ;; WITH anything <cond> left behind. Tag the instruction here (the
+    ;; `L_ite_else_` label is wam_target's own marker, used the same way by the
+    ;; Rust WAM target) so cut-ite can find it again.
+    (let [instr (if (ite-else-label? (:label instr)) (assoc instr :ite true) instr)]
+      (if-let [pc (get labels (:label instr))]
+        (assoc instr :op :try-me-else-pc :target-pc pc)
+        instr))
 
     :retry-me-else
     (if-let [pc (get labels (:label instr))]
@@ -142,12 +213,61 @@
            (some (fn [entry]
                    (and (= "default" (:label entry))
                         (not (contains? entry :target-pc))))
-                 resolved-cases))]
+                 resolved-cases))
+          dispatch-map
+          (switch-entry-map
+           (keep (fn [entry]
+                   (when (contains? entry :value)
+                     [(normalize-literal-term ctx (:value entry))
+                      (switch-entry-target labels (:label entry))]))
+                 (:cases instr)))]
       (assoc instr
              :cases resolved-cases
              :case-map case-map
+             :dispatch-map dispatch-map
              :default-target-pc default-target-pc
              :default-fallthrough? default-fallthrough?))
+
+    :switch-on-structure
+    (assoc instr
+           :functor-map
+           (switch-entry-map
+            (map (fn [entry]
+                   [(normalize-literal-atom ctx (:functor entry))
+                    (switch-entry-target labels (:label entry))])
+                 (:cases instr))))
+
+    :switch-on-term
+    (assoc instr
+           :const-map
+           (switch-entry-map
+            (map (fn [entry]
+                   [(normalize-literal-term ctx (:value entry))
+                    (switch-entry-target labels (:label entry))])
+                 (:consts instr)))
+           :struct-map
+           (switch-entry-map
+            (map (fn [entry]
+                   [(normalize-literal-atom ctx (:functor entry))
+                    (switch-entry-target labels (:label entry))])
+                 (:structs instr)))
+           :list-target (switch-entry-target labels (:list-label instr))
+           :list-functor (normalize-literal-atom ctx "[|]/2"))
+
+    :try
+    (if-let [pc (get labels (:label instr))]
+      (assoc instr :op :try-pc :target-pc pc)
+      instr)
+
+    :retry
+    (if-let [pc (get labels (:label instr))]
+      (assoc instr :op :retry-pc :target-pc pc)
+      instr)
+
+    :trust
+    (if-let [pc (get labels (:label instr))]
+      (assoc instr :op :trust-pc :target-pc pc)
+      instr)
 
     :get-constant
     (update instr :constant #(normalize-literal-term ctx %))
@@ -195,9 +315,16 @@
       :trail []
       :heap []
       :unify-queue []
+      ;; Saved outer read-mode cursors. A nested get-structure/get-list inside a
+      ;; structure that is still being read (e.g. the head of a [H|T] cell that
+      ;; is itself a compound) must not lose the enclosing structure's remaining
+      ;; arguments -- the list TAIL is one of them.
+      :unify-stack []
       :build-stack []
       :choice-points []
       :cut-bar 0
+      ;; call-stack depth -> the caller's cut barrier (see enter-call-barrier)
+      :cut-bars {}
       :next-var-id 0
       :status :running})))
 
@@ -207,8 +334,11 @@
 (defn succeed-state [state]
   (assoc state :status :succeeded))
 
+;; Hot path: every instruction that does not transfer control ends here, so
+;; this is executed once per WAM instruction. `assoc` with the incremented
+;; value is measurably cheaper under nbb than `update` with a function.
 (defn advance [state]
-  (update state :pc inc))
+  (assoc state :pc (inc (:pc state))))
 
 (defn lowered-step-advanced? [continue? before after]
   (and continue?
@@ -222,6 +352,40 @@
   (let [stk (:stack state)]
     [(peek stk) (assoc state :stack (pop stk))]))
 
+;; --- cut barriers (the WAM B0) -------------------------------------------
+;;
+;; `!` prunes back to the choice-point count that was current when THIS
+;; predicate activation was entered -- not to whatever an earlier `allocate`
+;; happened to leave behind. Without a per-activation barrier a `\+ G`
+;; lowering (try-me-else ELSE / call G / ! / fail) inherited the barrier of
+;; the LAST predicate that allocated an environment, so the `!` pruned nothing
+;; and the following `fail` backtracked into the ELSE branch: every negation
+;; whose goal SUCCEEDED reported success. `satisfies(v(1,0,0), gte(v(2,0,0)))`
+;; was true, and every layered resolve silently ignored its ceiling.
+;;
+;; Barriers are keyed by CALL-STACK DEPTH rather than kept on a stack of their
+;; own, so a call pushed by lowered (non-interpreted) code -- which does not go
+;; through enter-call-barrier -- cannot desynchronise the two: its :proceed
+;; simply finds no saved entry and leaves the barrier alone, which is exactly
+;; the pre-existing behaviour.
+(defn enter-call-barrier [state]
+  (let [depth (inc (count (:stack state)))]
+    (-> state
+        (assoc-in [:cut-bars depth] (:cut-bar state))
+        (assoc :cut-bar (count (:choice-points state))))))
+
+;; WAM `execute P`: B0 <- B with no new frame. The callee reuses the caller's
+;; frame slot but still gets its own barrier, or a `!` in the tail-called
+;; predicate prunes the CALLER's clause alternatives.
+(defn enter-execute-barrier [state]
+  (assoc state :cut-bar (count (:choice-points state))))
+
+(defn leave-call-barrier [state]
+  (let [depth (count (:stack state))
+        saved (get (:cut-bars state) depth)]
+    (cond-> (update state :cut-bars dissoc depth)
+      (some? saved) (assoc :cut-bar saved))))
+
 (defn restore-choice-regs [state saved-regs]
   (assoc state :regs saved-regs))
 
@@ -231,21 +395,26 @@
          list->term
          parse-number-text
          reg-get-raw
+         run-wam-state
          sorted-unique-terms
          term-compare)
 
+;; A choice point records the machine registers as they stand now, so that
+;; `backtrack` can put them back. The state is already a persistent map holding
+;; exactly those values, so the snapshot IS that map with the four
+;; choice-point-only fields written over it: three `assoc`s instead of building
+;; a thirteen-entry map literal, which under nbb's interpreter was the single
+;; most expensive instruction in the resolver (every `->` and `\+` pushes one).
+;;
+;; restore-choice-state reads only the fields listed below, and the extra keys
+;; the state carries (:bindings, :trail, :choice-points, :code, ...) are never
+;; read back out of a choice point -- the trail is what undoes bindings.
 (defn choice-snapshot [state target-pc]
-  {:kind :wam
-   :pc target-pc
-   :stack (:stack state)
-   :regs (:regs state)
-   :env-stack (:env-stack state)
-   :trail-len (count (:trail state))
-   :heap-len (count (:heap state))
-   :unify-queue (:unify-queue state)
-   :build-stack (:build-stack state)
-   :cut-bar (:cut-bar state)
-   :next-var-id (:next-var-id state)})
+  (assoc state
+         :kind :wam
+         :pc target-pc
+         :trail-len (count (:trail state))
+         :heap-len (count (:heap state))))
 
 (defn foreign-choice-snapshot [state target-pc results]
   {:pc target-pc
@@ -255,6 +424,7 @@
    :env-stack (:env-stack state)
    :trail-len (count (:trail state))
    :cut-bar (:cut-bar state)
+   :cut-bars (:cut-bars state)
    :next-var-id (:next-var-id state)
    :foreign-results (vec results)})
 
@@ -428,20 +598,53 @@
           (update-in [:choice-points idx :aggregate-collected] conj entry)
           (assoc-in [:choice-points idx :next-var-id] (:next-var-id witness-state))))))
 
-(defn push-choice-point [state target-pc]
-  (update state :choice-points conj (choice-snapshot state target-pc)))
+(defn push-choice-point
+  ([state target-pc]
+   (push-choice-point state target-pc false))
+  ([state target-pc ite?]
+   (let [cp (choice-snapshot state target-pc)
+         cp (if ite? (assoc cp :ite true) cp)]
+     (assoc state :choice-points (conj (:choice-points state) cp)))))
 
+;; `(Cond -> Then ; Else)` lowers to try_me_else L_ite_else_N / Cond / cut_ite,
+;; and the commit must remove the ELSE alternative TOGETHER WITH every choice
+;; point Cond left standing -- that is what makes -> commit. Popping exactly one
+;; (the old behaviour) removed whichever choice point Cond happened to leave on
+;; top instead, so a Cond that succeeded and a Then that then failed fell
+;; through into the Else branch. `pick(layered, ...)` took the catalog branch
+;; for a package the frozen base already pins, and every layered query drifted
+;; onto the classic answer. The one-pop fallback is kept for a cut_ite whose
+;; try_me_else was not tagged (an unlabelled/unresolved instruction).
+(defn cut-ite-choice-points [state]
+  (let [cps (vec (:choice-points state))
+        idx (last (keep-indexed (fn [i cp] (when (:ite cp) i)) cps))]
+    (assoc state :choice-points
+           (cond
+             (some? idx) (vec (take idx cps))
+             (seq cps) (pop cps)
+             :else cps))))
+
+;; Undo the trail back to target-len, newest entry first, then truncate.
+;;
+;; The truncation is `subvec` (O(1)) and the walk touches only the entries being
+;; undone. The previous form copied the WHOLE trail twice per backtrack
+;; (`(vec (:trail state))` and `(vec (take target-len ...))`), which made
+;; backtracking quadratic in the number of bindings made so far -- invisible on
+;; a toy catalog, and the dominant cost on a 5000-package one.
 (defn unwind-trail [state target-len]
-  (loop [s state
-         entries (reverse (subvec (vec (:trail state)) target-len))]
-    (if-let [entry (first entries)]
-      (let [var-id (:var entry)
-            restored
-            (if (:had-old? entry)
-              (assoc-in s [:bindings var-id] (:old entry))
-              (update s :bindings dissoc var-id))]
-        (recur restored (rest entries)))
-      (assoc s :trail (vec (take target-len (:trail state)))))))
+  (let [trail (:trail state)
+        n (count trail)]
+    (if (<= n target-len)
+      state
+      (loop [s state i (dec n)]
+        (if (< i target-len)
+          (assoc s :trail (subvec trail 0 target-len))
+          (let [entry (nth trail i)
+                var-id (:var entry)
+                restored (if (:had-old? entry)
+                           (assoc-in s [:bindings var-id] (:old entry))
+                           (update s :bindings dissoc var-id))]
+            (recur restored (dec i))))))))
 
 (defn restore-choice-state [state cp]
   (case (:kind cp)
@@ -453,6 +656,7 @@
         (restore-choice-regs (:regs cp))
         (assoc :env-stack (:env-stack cp))
         (assoc :cut-bar (:cut-bar cp))
+        (assoc :cut-bars (:cut-bars cp))
         (assoc :next-var-id (:next-var-id cp))
         (update :choice-points pop))
 
@@ -464,8 +668,10 @@
         (assoc :env-stack (:env-stack cp))
         (assoc :heap (vec (take (:heap-len cp) (:heap state))))
         (assoc :unify-queue (:unify-queue cp))
+        (assoc :unify-stack (:unify-stack cp))
         (assoc :build-stack (:build-stack cp))
         (assoc :cut-bar (:cut-bar cp))
+        (assoc :cut-bars (:cut-bars cp))
         (assoc :next-var-id (:next-var-id cp))
         (update :choice-points pop))))
 
@@ -479,11 +685,15 @@
 (defn y-slot? [reg]
   (and (string? reg) (.startsWith reg "Y")))
 
+;; Register access is the busiest pair of functions in the runtime -- a WAM
+;; instruction reads or writes one or two registers. `get`/`assoc` on the
+;; already-extracted :regs map is cheaper under nbb than the `get-in`/`assoc-in`
+;; path walk these used to take.
 (defn reg-get-raw [state reg]
   (if (y-slot? reg)
     (let [env (peek (:env-stack state))]
       (get env reg))
-    (get-in state [:regs reg])))
+    (get (:regs state) reg)))
 
 (defn reg-set-raw [state reg value]
   (if (y-slot? reg)
@@ -492,21 +702,30 @@
         (assoc state :env-stack
                (conj (pop stk) (assoc (peek stk) reg value)))
         (assoc state :env-stack [{reg value}])))
-    (assoc-in state [:regs reg] value)))
+    (assoc state :regs (assoc (:regs state) reg value))))
 
 (defn var-term [id]
   {:var id})
 
+;; A variable cell is `{:var id}` and nothing else carries a :var key, so the
+;; keyword lookup alone decides it -- and it answers nil for the numbers and
+;; non-map values that also reach here, where `map?` + `contains?` cost two
+;; calls apiece.
 (defn logic-var? [v]
-  (and (map? v) (contains? v :var)))
+  (some? (:var v)))
 
+;; The overwhelmingly common case is a value that is not a variable at all
+;; (an atom, an integer, a structure): answer it without entering the loop.
 (defn deref-value [bindings v]
-  (loop [cur v]
-    (if (logic-var? cur)
-      (if-let [bound (get bindings (:var cur))]
-        (recur bound)
-        cur)
-      cur)))
+  (if (nil? (:var v))
+    v
+    (loop [cur v]
+      (let [bound (get bindings (:var cur))]
+        (if (nil? bound)
+          cur
+          (if (nil? (:var bound))
+            bound
+            (recur bound)))))))
 
 (defn bind-var [state var-term value]
   (let [var-id (:var var-term)
@@ -547,7 +766,22 @@
 (defn unifiable? [state left right]
   (first (unify-values state left right)))
 
+(declare term-identical-deep?)
+
 (defn term-identical? [state left right]
+  (let [bindings (:bindings state)
+        l0 (deref-value bindings left)
+        r0 (deref-value bindings right)]
+    ;; `==/2` on two atoms is the whole of `matching_deps/4`'s test, and it runs
+    ;; once per catalog row: answer it without building the recursive closure.
+    (if (and (not (structure-term? l0)) (not (structure-term? r0)))
+      (cond
+        (logic-var? l0) (and (logic-var? r0) (= (:var l0) (:var r0)))
+        (logic-var? r0) false
+        :else (interned-equal? l0 r0))
+      (term-identical-deep? state l0 r0))))
+
+(defn term-identical-deep? [state left right]
   (let [bindings (:bindings state)]
     (letfn [(identical* [l r]
               (let [l* (deref-value bindings l)
@@ -824,11 +1058,16 @@
   (and (map? v) (= :struct (:tag v))))
 
 (defn list-functor-term [ctx]
-  (normalize-literal-atom ctx "[|]/2"))
+  (or (:list-functor ctx)
+      (normalize-literal-atom ctx "[|]/2")))
+
+(defn empty-list-term [ctx]
+  (or (:empty-list ctx)
+      (normalize-literal-atom ctx "[]")))
 
 (defn proper-list-term? [state value]
   (let [bindings (:bindings state)
-        empty-list (normalize-literal-atom (:intern-context state) "[]")
+        empty-list (empty-list-term (:intern-context state))
         list-functor (list-functor-term (:intern-context state))]
     (loop [cur (deref-value bindings value)
            seen #{}]
@@ -844,7 +1083,7 @@
 
 (defn proper-list-length [state value]
   (let [bindings (:bindings state)
-        empty-list (normalize-literal-atom (:intern-context state) "[]")
+        empty-list (empty-list-term (:intern-context state))
         list-functor (list-functor-term (:intern-context state))]
     (loop [cur (deref-value bindings value)
            seen #{}
@@ -861,7 +1100,7 @@
 
 (defn proper-list-items [state value]
   (let [bindings (:bindings state)
-        empty-list (normalize-literal-atom (:intern-context state) "[]")
+        empty-list (empty-list-term (:intern-context state))
         list-functor (list-functor-term (:intern-context state))]
     (loop [cur (deref-value bindings value)
            seen #{}
@@ -1767,6 +2006,205 @@
       :else
       (backtrack state))))
 
+;; ---------------------------------------------------------------------------
+;; Meta-call (maplist / predsort). Persistent-map hygiene (D61 restated):
+;; the sub-run gets a FRESH :choice-points / :stack / :regs; on success we
+;; take only bindings/trail/heap/intern/next-var-id. Registers and leftover
+;; CPs never leak into the caller.
+;; ---------------------------------------------------------------------------
+
+(defn put-arg-regs [state args]
+  (loop [s state
+         i 1
+         remaining args]
+    (if (empty? remaining)
+      s
+      (recur (reg-set-raw s (str "A" i) (first remaining))
+             (inc i)
+             (rest remaining)))))
+
+(defn goal-name-args [state goal]
+  (let [g (deref-value (:bindings state) goal)]
+    (cond
+      (atom-term? g)
+      [(atom-text state g) []]
+
+      (structure-term? g)
+      (let [key (functor-key (:intern-context state) (:functor g))
+            name (functor-name-from-key key)]
+        (if (and (= name ":") (= 2 (count (:args g))))
+          (goal-name-args state (second (:args g)))
+          [name (vec (:args g))]))
+
+      :else nil)))
+
+(defn pred-extra-goal [state pred extra]
+  (let [p (deref-value (:bindings state) pred)]
+    (cond
+      (atom-term? p)
+      (let [name (atom-text state p)
+            n (count extra)
+            [ctx id] (intern-atom (:intern-context state) (str name "/" n))]
+        [(assoc state :intern-context ctx)
+         (structure-term (atom-term id) (vec extra))])
+
+      (structure-term? p)
+      (let [old (vec (:args p))
+            all (into old extra)
+            old-key (functor-key (:intern-context state) (:functor p))
+            old-name (functor-name-from-key old-key)
+            [ctx id] (intern-atom (:intern-context state) (str old-name "/" (count all)))]
+        [(assoc state :intern-context ctx)
+         (structure-term (atom-term id) all)])
+
+      :else nil)))
+
+(defn invoke-at-pc-isolated [state pc args]
+  ;; Fresh env/unify/call/CP stacks: Y-slots live on :env-stack, and a
+  ;; dirty unify-queue from the caller would make get-structure fail.
+  ;; Bindings/trail/heap are shared so maplist producers can write out-vars.
+  (let [isolated (-> state
+                     (assoc :regs {}
+                            :pc pc
+                            :stack []
+                            :env-stack []
+                            :unify-queue []
+                            :unify-stack []
+                            :build-stack []
+                            :choice-points []
+                            :cut-bar 0
+                            :cut-bars {}
+                            :status :running)
+                     (put-arg-regs args))
+        result (run-wam-state isolated)]
+    (when result
+      (-> state
+          (assoc :bindings (:bindings result)
+                 :trail (:trail result)
+                 :heap (:heap result)
+                 :intern-context (:intern-context result)
+                 :next-var-id (:next-var-id result)
+                 :instr-count (:instr-count result))))))
+
+(defn invoke-callable-isolated [state name args]
+  (let [key (str name "/" (count args))]
+    (if-let [pc (get (:labels state) key)]
+      (invoke-at-pc-isolated state pc args)
+      nil)))
+
+(defn invoke-goal-once [state goal]
+  (when-let [[name args] (goal-name-args state goal)]
+    (case name
+      "true" state
+      ("fail" "false") nil
+      (invoke-callable-isolated state name args))))
+
+(defn maplist-collect-lists [state n-lists]
+  (loop [i 0
+         lists []
+         unbound-at -1]
+    (if (>= i n-lists)
+      [lists unbound-at]
+      (let [items (proper-list-items state (or (reg-get-raw state (str "A" (+ 2 i))) ::unbound))]
+        (if (nil? items)
+          (if (>= unbound-at 0)
+            nil
+            (recur (inc i) (conj lists nil) i))
+          (recur (inc i) (conj lists items) unbound-at))))))
+
+(defn maplist-call-row [state pred extras]
+  (let [built (pred-extra-goal state pred extras)]
+    (when built
+      (let [[s2 goal] built]
+        (invoke-goal-once s2 goal)))))
+
+(defn apply-maplist-solution [state n-lists]
+  (let [pred (deref-value (:bindings state)
+                          (or (reg-get-raw state "A1") ::unbound))
+        collected (maplist-collect-lists state n-lists)]
+    (if-not collected
+      (backtrack state)
+      (let [[lists unbound-at] collected]
+        (if (neg? unbound-at)
+          (let [len0 (count (nth lists 0))]
+            (if (some #(not= (count %) len0) lists)
+              (backtrack state)
+              (loop [s state k 0]
+                (if (>= k len0)
+                  (advance s)
+                  (if-let [s3 (maplist-call-row s pred (mapv #(nth % k) lists))]
+                    (recur s3 (inc k))
+                    (backtrack state))))))
+          (let [bound (nth lists (if (zero? unbound-at) 1 0) nil)]
+            (if (or (nil? bound) (not= n-lists 2))
+              (backtrack state)
+              (loop [s state k 0 out []]
+                (if (>= k (count bound))
+                  (let [out-term (list->term (:intern-context s) out)
+                        dest (or (reg-get-raw s (str "A" (+ 2 unbound-at))) ::unbound)
+                        [ok unified] (unify-values s dest out-term)]
+                    (if ok (advance unified) (backtrack state)))
+                  (let [[y s1] (fresh-var s)
+                        extra (if (zero? unbound-at) [y (nth bound k)] [(nth bound k) y])]
+                    (if-let [s3 (maplist-call-row s1 pred extra)]
+                      (recur s3 (inc k) (conj out y))
+                      (backtrack state))))))))))))
+
+(defn pred-name-text [state pred]
+  (let [p (deref-value (:bindings state) pred)]
+    (cond
+      (atom-term? p) (functor-name-from-key (or (atom-text state p) ""))
+      (string? p) (functor-name-from-key p)
+      (structure-term? p)
+      (functor-name-from-key (or (functor-key (:intern-context state) (:functor p)) ""))
+      :else nil)))
+
+(defn pred-less? [state pred-name x y]
+  (if (= pred-name "compare")
+    [state (neg? (term-compare state x y))]
+    (let [[order s1] (fresh-var state)
+          built (pred-extra-goal s1
+                                 (or (reg-get-raw state "A1") ::unbound)
+                                 [order x y])]
+      (if-not built
+        [state false]
+        (let [[s2 goal] built
+              s3 (invoke-goal-once s2 goal)]
+          (if-not s3
+            [state false]
+            (let [o (deref-value (:bindings s3) order)]
+              [s3 (= "<" (atom-text s3 o))])))))))
+
+(defn insert-sorted-pred [state pred-name acc x]
+  (loop [s state
+         before []
+         after acc]
+    (if (empty? after)
+      [s (conj before x)]
+      (let [y (first after)
+            [s2 less?] (pred-less? s pred-name x y)]
+        (if less?
+          [s2 (into (conj before x) after)]
+          (recur s2 (conj before y) (rest after)))))))
+
+(defn apply-predsort-solution [state]
+  (let [pred (deref-value (:bindings state)
+                          (or (reg-get-raw state "A1") ::unbound))
+        items (proper-list-items state (or (reg-get-raw state "A2") ::unbound))
+        out (or (reg-get-raw state "A3") ::unbound)]
+    (if-not items
+      (backtrack state)
+      (let [pred-name (pred-name-text state pred)]
+        (loop [s state
+               acc []
+               remaining items]
+          (if (empty? remaining)
+            (let [sorted-term (list->term (:intern-context s) acc)
+                  [ok unified] (unify-values s out sorted-term)]
+              (if ok (advance unified) (backtrack state)))
+            (let [[s2 inserted] (insert-sorted-pred s pred-name acc (first remaining))]
+              (recur s2 inserted (rest remaining)))))))))
+
 (defn unify-text-atom-value [state value text]
   (if (or (string? value) (symbol? value))
     [(= (str value) text) state]
@@ -2219,24 +2657,49 @@
                   :else true)))]
       (ground* value #{}))))
 
+;; Normalising a term walks it, and a Prolog list of N elements is N NESTED
+;; [|]/2 cells: recursing into the last argument costs one JS stack frame per
+;; element. A 5000-package catalog term overflowed the stack before the query
+;; could even start. The last argument -- the list TAIL, and the deep direction
+;; of every right-nested term -- is therefore walked ITERATIVELY, with the
+;; enclosing cells parked on a frame vector and rebuilt on the way back out.
+;; Only the leading arguments recurse, and those are shallow (`package/2`,
+;; `v/3`).
+(defn- normalize-rebuild [ctx value frames]
+  (loop [v value i (dec (count frames))]
+    (if (neg? i)
+      [ctx v]
+      (let [f (nth frames i)]
+        (recur (assoc (:term f) :functor (:functor f) :args (conj (:init f) v))
+               (dec i))))))
+
 (defn normalize-term* [ctx term]
-  (cond
-    (atom-term? term) [ctx term]
-    (string? term)
-    (let [[ctx* id] (intern-atom ctx term)]
-      [ctx* (atom-term id)])
-    (structure-term? term)
-    (let [functor (:functor term)
-          [ctx1 functor*]
-          (cond
-            (atom-term? functor) [ctx functor]
-            (string? functor)
-            (let [[ctx* id] (intern-atom ctx functor)]
-              [ctx* (atom-term id)])
-            :else [ctx functor])
-          [ctx2 args*] (normalize-terms* ctx1 (:args term))]
-      [ctx2 (assoc term :functor functor* :args args*)])
-    :else [ctx term]))
+  (loop [ctx ctx t term frames []]
+    (cond
+      (atom-term? t) (normalize-rebuild ctx t frames)
+
+      (string? t)
+      (let [[ctx* id] (intern-atom ctx t)]
+        (normalize-rebuild ctx* (atom-term id) frames))
+
+      (structure-term? t)
+      (let [functor (:functor t)
+            [ctx1 functor*]
+            (cond
+              (atom-term? functor) [ctx functor]
+              (string? functor)
+              (let [[ctx* id] (intern-atom ctx functor)]
+                [ctx* (atom-term id)])
+              :else [ctx functor])
+            args (vec (:args t))]
+        (if (empty? args)
+          (normalize-rebuild ctx1 (assoc t :functor functor* :args []) frames)
+          (let [n (count args)
+                [ctx2 init*] (normalize-terms* ctx1 (subvec args 0 (dec n)))]
+            (recur ctx2 (nth args (dec n))
+                   (conj frames {:term t :functor functor* :init init*})))))
+
+      :else (normalize-rebuild ctx t frames))))
 
 (defn normalize-terms* [ctx terms]
   (loop [current-ctx ctx
@@ -2266,7 +2729,7 @@
 (defn list->term [ctx items]
   (reduce (fn [tail item]
             (structure-term (list-functor-term ctx) [item tail]))
-          (normalize-literal-atom ctx "[]")
+          (empty-list-term ctx)
           (reverse items)))
 
 (defn length-count-value [state value]
@@ -2401,16 +2864,72 @@
     (seq (:args term))
     nil))
 
+;; Read mode is a STACK of cursors, not a single queue. `get_structure`/
+;; `get_list` can fire while an enclosing structure is still being read -- the
+;; clause head `direct_on([depends(N,V,D,_)|Rest], ...)` compiles to
+;;   get-list A1 / unify-variable X9 / get-structure depends/4 X9 /
+;;   unify-variable ...x4 / unify-variable Rest
+;; where the LAST unify-variable belongs to the outer list cell and names the
+;; TAIL. Overwriting the queue dropped it, leaving the tail an unbound variable:
+;; the recursive call then unified it with `[]` and the walk silently stopped
+;; after one element. Pushing the enclosing cursor (and popping it when the
+;; inner one is exhausted) is what the JS WAM runtime's read_stack does.
 (defn enter-unify-mode [state items]
-  (assoc state :unify-queue (vec items)))
+  (if (seq (:unify-queue state))
+    (-> state
+        (update :unify-stack #(conj (or % []) (:unify-queue state)))
+        (assoc :unify-queue (vec items)))
+    (assoc state :unify-queue (vec items))))
 
+;; The read-mode cursor advances once per unify_* instruction -- 1.5 million
+;; times in one 5000-package resolve. `(vec (rest q))` rebuilt the remaining
+;; queue each time; `subvec` shares it.
 (defn pop-unify-item [state]
-  (let [q (:unify-queue state)]
-    [(first q) (assoc state :unify-queue (vec (rest q)))]))
+  (loop [s state]
+    (let [q (:unify-queue s)]
+      (if (seq q)
+        [(nth q 0) (assoc s :unify-queue (subvec q 1))]
+        (let [stk (:unify-stack s)]
+          (if (seq stk)
+            (recur (-> s
+                       (assoc :unify-queue (vec (peek stk)))
+                       (assoc :unify-stack (pop stk))))
+            [nil s]))))))
 
 (defn fresh-var [state]
   (let [id (:next-var-id state)]
     [(var-term id) (update state :next-var-id inc)]))
+
+;; get_structure / get_list, in ONE place. The interpreter's step and the
+;; lowered emitter both call these, so a read/write-mode fix cannot land in one
+;; and miss the other -- which is exactly how the missing WRITE mode survived:
+;; the lowered copy had only the read case, and a predicate whose OUTPUT
+;; argument is a compound (`probe_wrap(X, w(X, ok))`) failed in its own head.
+(defn op-get-structure [state functor reg]
+  (let [reg-val (deref-value (:bindings state)
+                             (or (reg-get-raw state reg) ::unbound))]
+    (cond
+      (structure-term? reg-val)
+      (if (interned-equal? (:functor reg-val) functor)
+        (-> state (enter-unify-mode (:args reg-val)) advance)
+        (backtrack state))
+
+      ;; WRITE mode: unbound register -> build the cell and read-unify against
+      ;; its fresh argument variables, so the following unify-* instructions
+      ;; construct rather than match.
+      (or (logic-var? reg-val) (= reg-val ::unbound))
+      (let [ar (or (functor-arity (:intern-context state) functor) 0)
+            [s1 args] (fresh-compound-args state ar)
+            cell (structure-term functor args)
+            s2 (if (logic-var? reg-val)
+                 (bind-var s1 reg-val cell)
+                 (reg-set-raw s1 reg cell))]
+        (-> s2 (enter-unify-mode args) advance))
+
+      :else (backtrack state))))
+
+(defn op-get-list [state reg]
+  (op-get-structure state (list-functor-term (:intern-context state)) reg))
 
 (defn copy-term-walk [state term var-map]
   (let [term* (deref-value (:bindings state) term)]
@@ -2498,25 +3017,84 @@
           (recur next-state)))
       s)))
 
+;; A dispatch destination is either an address (jump there, entering the clause
+;; DETERMINISTICALLY -- no choice point is pushed, and none is expected) or
+;; :fallthrough (run the clause chain from the next instruction, exactly as an
+;; unindexed predicate does).
+(defn switch-jump [state target]
+  (if (integer? target)
+    (assoc state :pc target)
+    (advance state)))
+
+(defn switch-reg-value [state instr]
+  (deref-value (:bindings state) (reg-get-raw state (or (:reg instr) "A1"))))
+
+(defn switch-unbound-value? [v]
+  (or (nil? v) (= v ::unbound) (logic-var? v)))
+
+;; An unbound dispatch register, and any key the index does not mention, fall
+;; through to the full clause chain: indexing may only ever REMOVE work that
+;; could not have produced an answer, never an alternative.
 (defn switch-target [state instr]
-  (let [reg-val (normalize-dispatch-value
-                 (:intern-context state)
-                 (deref-value (:bindings state) (reg-get-raw state "A1")))
-        case-map (:case-map instr)
-        default-target-pc (:default-target-pc instr)
-        default-fallthrough? (:default-fallthrough? instr)]
+  (let [raw (switch-reg-value state instr)]
+    (if (switch-unbound-value? raw)
+      (advance state)
+      (let [reg-val (normalize-dispatch-value (:intern-context state) raw)
+            dispatch-map (:dispatch-map instr)
+            case-map (:case-map instr)
+            default-target-pc (:default-target-pc instr)
+            default-fallthrough? (:default-fallthrough? instr)]
+        (cond
+          (contains? dispatch-map reg-val)
+          (switch-jump state (get dispatch-map reg-val))
+
+          (contains? case-map reg-val)
+          (assoc state :pc (get case-map reg-val))
+
+          default-target-pc
+          (assoc state :pc default-target-pc)
+
+          default-fallthrough?
+          (advance state)
+
+          :else
+          (backtrack state))))))
+
+(defn switch-structure-target [state instr]
+  (let [v (switch-reg-value state instr)]
+    (if (structure-term? v)
+      (let [target (get (:functor-map instr) (:functor v) ::miss)]
+        (if (= target ::miss)
+          (advance state)
+          (switch-jump state target)))
+      (advance state))))
+
+;; switch_on_term is the type-based form: constants take the constant table,
+;; a cons cell takes the dedicated list label, any other compound takes the
+;; structure table. This is the one that matters for `resolver.pl` -- every
+;; list-walking predicate is `p([], ...)` / `p([H|T], ...)`, and without it
+;; each of the 5000 elements of a catalog list pushed a choice point, failed
+;; clause 1's `get_constant []`, and backtracked into clause 2.
+(defn switch-term-target [state instr]
+  (let [v (switch-reg-value state instr)]
     (cond
-      (contains? case-map reg-val)
-      (assoc state :pc (get case-map reg-val))
+      (structure-term? v)
+      (if (interned-equal? (:functor v) (:list-functor instr))
+        (switch-jump state (:list-target instr))
+        (let [target (get (:struct-map instr) (:functor v) ::miss)]
+          (if (= target ::miss)
+            (advance state)
+            (switch-jump state target))))
 
-      default-target-pc
-      (assoc state :pc default-target-pc)
-
-      default-fallthrough?
+      (switch-unbound-value? v)
       (advance state)
 
       :else
-      (backtrack state))))
+      (let [key (normalize-dispatch-value (:intern-context state) v)
+            target (get (:const-map instr) key ::miss)]
+        (if (= target ::miss)
+          (advance state)
+          (switch-jump state target))))))
 
 (defn foreign-key [pred arity]
   (str pred "/" arity))
@@ -2723,45 +3301,10 @@
             (backtrack state)))
 
         :get-structure
-        (let [reg-val (deref-value (:bindings state)
-                                   (or (reg-get-raw state (:reg instr)) ::unbound))]
-          (cond
-            (structure-term? reg-val)
-            (if (interned-equal? (:functor reg-val) (:functor instr))
-              (-> state
-                  (enter-unify-mode (:args reg-val))
-                  advance)
-              (backtrack state))
-
-            :else
-            (backtrack state)))
+        (op-get-structure state (:functor instr) (:reg instr))
 
         :get-list
-        (let [reg-val (deref-value (:bindings state)
-                                   (or (reg-get-raw state (:reg instr)) ::unbound))
-              list-functor (list-functor-term (:intern-context state))]
-          (cond
-            (structure-term? reg-val)
-            (if (interned-equal? (:functor reg-val) list-functor)
-              (-> state
-                  (enter-unify-mode (:args reg-val))
-                  advance)
-              (backtrack state))
-
-            ;; WRITE mode: unbound register → build a fresh [H|T] cell, bind the
-            ;; register (var) to it, and read-unify against the fresh arg vars so
-            ;; the following unify-* instructions construct the list.
-            (or (logic-var? reg-val) (= reg-val ::unbound))
-            (let [[h s1] (fresh-var state)
-                  [t s2] (fresh-var s1)
-                  cell (structure-term list-functor [h t])
-                  s3 (if (logic-var? reg-val)
-                       (bind-var s2 reg-val cell)
-                       (reg-set-raw s2 (:reg instr) cell))]
-              (-> s3 (enter-unify-mode [h t]) advance))
-
-            :else
-            (backtrack state)))
+        (op-get-list state (:reg instr))
 
         :put-variable
         (let [[fresh next-state] (fresh-var state)]
@@ -2822,11 +3365,14 @@
 
         :call-pc
         (-> state
+            (enter-call-barrier)
             (update :stack conj (inc (:pc state)))
             (assoc :pc (:target-pc instr)))
 
         :execute-pc
-        (assoc state :pc (:target-pc instr))
+        (-> state
+            (enter-execute-barrier)
+            (assoc :pc (:target-pc instr)))
 
         :jump-pc
         (assoc state :pc (:target-pc instr))
@@ -2846,7 +3392,6 @@
         :allocate
         (-> state
             (update :env-stack conj {})
-            (assoc :cut-bar (count (:choice-points state)))
             advance)
 
         :deallocate
@@ -2857,9 +3402,31 @@
         :switch-on-constant
         (switch-target state instr)
 
+        :switch-on-structure
+        (switch-structure-target state instr)
+
+        :switch-on-term
+        (switch-term-target state instr)
+
+        ;; A dispatch chain (`try L / retry L' / trust L''`) is the group form
+        ;; of try_me_else / retry_me_else / trust_me: the alternative it leaves
+        ;; behind is the NEXT chain entry, and the clause body is jumped to.
+        :try-pc
+        (-> state
+            (push-choice-point (inc (:pc state)))
+            (assoc :pc (:target-pc instr)))
+
+        :retry-pc
+        (-> state
+            (push-choice-point (inc (:pc state)))
+            (assoc :pc (:target-pc instr)))
+
+        :trust-pc
+        (assoc state :pc (:target-pc instr))
+
         :try-me-else-pc
         (-> state
-            (push-choice-point (:target-pc instr))
+            (push-choice-point (:target-pc instr) (true? (:ite instr)))
             advance)
 
         :retry-me-else-pc
@@ -3258,19 +3825,45 @@
           "sub_atom/5"
           (apply-sub-atom-solution state (inc (:pc state)))
 
+          "maplist/2"
+          (apply-maplist-solution state 1)
+
+          "maplist/3"
+          (apply-maplist-solution state 2)
+
+          "maplist/4"
+          (apply-maplist-solution state 3)
+
+          "predsort/3"
+          (apply-predsort-solution state)
+
           "!/0"
           (-> state
               (update :choice-points #(vec (take (:cut-bar state) %)))
               advance)
 
-          (backtrack state))
+          (do (warn-unresolved "builtin-call" (:pred instr))
+              (backtrack state)))
 
         :call
         (case (:pred instr)
           "variant/2"
           (apply-variant-solution state)
 
-          (backtrack state))
+          "maplist/2"
+          (apply-maplist-solution state 1)
+
+          "maplist/3"
+          (apply-maplist-solution state 2)
+
+          "maplist/4"
+          (apply-maplist-solution state 3)
+
+          "predsort/3"
+          (apply-predsort-solution state)
+
+          (do (warn-unresolved "call" (:pred instr))
+              (backtrack state)))
 
         :execute
         (case (:pred instr)
@@ -3280,19 +3873,44 @@
               (succeed-state next-state)
               next-state))
 
-          (backtrack state))
+          "maplist/2"
+          (let [next-state (apply-maplist-solution state 1)]
+            (if (= :running (:status next-state))
+              (succeed-state next-state)
+              next-state))
+
+          "maplist/3"
+          (let [next-state (apply-maplist-solution state 2)]
+            (if (= :running (:status next-state))
+              (succeed-state next-state)
+              next-state))
+
+          "maplist/4"
+          (let [next-state (apply-maplist-solution state 3)]
+            (if (= :running (:status next-state))
+              (succeed-state next-state)
+              next-state))
+
+          "predsort/3"
+          (let [next-state (apply-predsort-solution state)]
+            (if (= :running (:status next-state))
+              (succeed-state next-state)
+              next-state))
+
+          (do (warn-unresolved "execute" (:pred instr))
+              (backtrack state)))
 
         :call-foreign
         (execute-foreign state instr)
 
         :cut-ite
         (-> state
-            (update :choice-points #(if (seq %) (pop %) %))
+            cut-ite-choice-points
             advance)
 
         :proceed
         (if (seq (:stack state))
-          (let [[ret-pc next-state] (pop-call-stack state)]
+          (let [[ret-pc next-state] (pop-call-stack (leave-call-barrier state))]
             (assoc next-state :pc ret-pc))
           (succeed-state state))
 
@@ -3304,6 +3922,25 @@
       :succeeded true
       :failed false
       (recur (step s)))))
+
+;; run-wam answers only true/false, which is enough for a ground query and
+;; nothing else: this state is immutable, so a caller that passed an unbound
+;; variable in an argument register has no way to read the answer back once the
+;; final state is discarded. (The JS WAM runtime mutates its state in place, so
+;; its shims deref the argument cell afterwards.) run-wam-state keeps the door
+;; open: the SUCCEEDING state, or nil on failure. Bindings are read with
+;; deref-value over (:bindings state).
+(def ^:dynamic *count-instrs* false)
+
+(defn run-wam-state [state]
+  (loop [s state]
+    (case (:status s)
+      :succeeded s
+      :failed nil
+      (let [s2 (step s)]
+        (recur (if *count-instrs*
+                 (assoc s2 :instr-count (inc (or (:instr-count s2) 0)))
+                 s2))))))
 
 (defn run-wam-predicate
   ([code labels start-pc regs]

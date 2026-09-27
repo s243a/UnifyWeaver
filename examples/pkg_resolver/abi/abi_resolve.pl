@@ -1,0 +1,695 @@
+:- encoding(utf8).
+% SPDX-License-Identifier: MIT OR Apache-2.0
+% Copyright (c) 2026 John William Creighton (@s243a)
+%
+% abi_resolve.pl -- symbol-level ABI-compatibility resolver (redesigned after
+% the PR #4262 review, revised after Sol's re-review; see REVIEW_NOTES.md for
+% the point-by-point map).
+%
+% MODEL
+%   Two independent axes:
+%     * ELF version-node axis: a node (GLIBC_2.34, LIBSELINUX_1.0, COMMON_1,
+%       PUBLIC, Base) is an opaque label. A requirement `Sym@Node` on soname So
+%       is satisfied only by a provider row with the SAME (So, Sym, Node) --
+%       string equality, never numeric ordering, never a bare-name fallback.
+%       `Base` = dpkg's spelling of "unversioned". An unversioned REQUIREMENT
+%       (no node) binds, as the loader does, only to a `Base` export or to a
+%       DEFAULT export (`@@`, or the oldest version node); a provider row whose
+%       default binding is unproven (a `.symbols` row not cross-checked against
+%       the ELF) yields unknown, never compatible.
+%     * Debian package-version axis: the `.symbols` minimum-version and the
+%       release candidates are deb/3 terms produced by debian/deb_parse.pl and
+%       ordered by the frozen resolver:version_lt/2 (epoch, ~, revision all
+%       handled there). A non-deb release id is kept as label(Atom) and only
+%       ever matches itself.
+%   Evidence is explicit and every provider bound is tied to the evidence row
+%   it rests on (Sol P1a):
+%     prov_evidence(So, Src, R0, Status)  -- what is known about So's export
+%       set at evidence release R0 (Src = symbols | elf):
+%         complete -- the export set was OBSERVED completely: readelf on the
+%                     ELF, or a `.symbols` file cross-checked against the ELF
+%                     with --elf (the ingest rejects any difference). Absence
+%                     from it is a fact.
+%         curated  -- a `.symbols` file ingested WITHOUT --elf: a curated
+%                     LOWER-BOUND list, not a complete export set. Presence in
+%                     it is (curated) evidence; ABSENCE FROM IT PROVES NOTHING
+%                     (Sol re-review 2, P1): an omitted identity is `unknown`,
+%                     never missing / below_floor / dropped / absent_at.
+%     symprov(So, Sym, Node, since(Min, MinAtom, R0, Bind)) -- from the
+%       `.symbols` evidence at R0: exported at R0 and, by the curated lower
+%       bound, at every release >= Min. Min is NOT a ground-truth introduction
+%       date (Debian policy lets it be raised); R < Min is `below_floor` (the
+%       conservative floor dpkg-shlibdeps emits) unless direct evidence says
+%       otherwise. Min =< R0 always: a curated minimum cannot exceed the
+%       release the row was curated from; a row violating that is
+%       CONTRADICTORY, rejected by the ingest and by load_abi_store/1, and --
+%       if asserted directly -- evidence for nothing (Sol re-review 2, P1).
+%     symprov(So, Sym, Node, at(R0, Bind)) -- from readelf at R0.
+%     Bind = default | nondefault | unproven  (default-version binding)
+%     req_evidence(Bin, Src, Status, Detail) -- Bin's requirement set is
+%       complete, or why not (missing_file / readelf_failed / inconsistent).
+%   Per-identity status at release Rel aggregates EVERY usable evidence row
+%   of the soname (ident_status/5): evidence AT Rel decides directly; else the
+%   nearest evidence BELOW Rel (presence extrapolates upward) and the nearest
+%   evidence ABOVE Rel (absence propagates downward, a curated floor covers
+%   Rel >= Min) are combined. A release satisfied by ANY evidence row is
+%   never vetoed by another row's bound, and a direct presence observation at
+%   or below Rel prevents any below_floor veto at Rel.
+%   Extrapolation (defeasible, documented): within a soname, exports do not
+%   disappear (removing one is an ABI break that requires a soname bump), so
+%   presence at R0 extends to R > R0 with basis `extrapolated`, and absence
+%   from a COMPLETE export set at R1 is a veto for R =< R1. Absence at R1 says
+%   nothing about R > R1 (later releases add symbols): unknown. Presence never
+%   becomes a guarantee: compatible(_) is defeasible. A hypothetical
+%   drop(Sym, Node, At) models an in-soname removal to exercise the upper bound.
+%
+% VERDICTS  abi_verdict(Bin, So, Rel, Verdict):
+%   compatible(exact | curated | extrapolated)
+%       exact        -- every requirement observed by readelf at exactly Rel
+%       curated      -- at least one rests on `.symbols` metadata only (Sol residual)
+%       extrapolated -- at least one rests on the monotone-export assumption
+%   incompatible([missing(Sym@Node) | missing(Sym@Node, Why) | below_floor(Sym@Node, MinAtom)
+%                 | soname_mismatch(offered(So), needed(N)) ...])   -- HARD veto,
+%       only reachable when requirement AND provider evidence are complete
+%   unknown([no_requires_evidence(Bin) | requires_evidence(Status, Detail)
+%            | no_provider_evidence(So) | unknown(Sym@Node, Why)
+%            | unknown(Sym, Why) ...])
+%   not_needed(So)   -- Bin has no DT_NEEDED entry for So and So is not a
+%                       declared replacement (replaces/2) of a NEEDED soname
+%
+% RANGE  abi_range(Bin, So, Releases, Result): every release in the ACTUAL
+%   candidate axis is evaluated; range(Min, Max, Pairs) has compatible verdicts
+%   at BOTH ends by construction (Min/Max are drawn from the compatible set).
+%
+% Frozen resolver.pl / resolver_store.pl are NOT edited.
+
+:- module(abi_resolve, [
+    op(200, xfx, @),
+    load_abi_store/1,
+    abi_store_clear/0,
+    symprov/4,
+    symreq/5,
+    needed/2,
+    replaces/2,
+    prov_evidence/4,
+    req_evidence/4,
+    release/3,
+    rel_term/2,
+    rel_le/2,
+    rel_lt/2,
+    ident_status/5,
+    provides_at/5,
+    req_status/5,
+    abi_verdict/4,
+    abi_verdict/5,
+    abi_floor/3,
+    soname_offer/3,
+    release_axis/2,
+    abi_range/3,
+    abi_range/4,
+    abi_range/5,
+    range_min_max/3
+]).
+
+:- op(200, xfx, @).            % Sym@Node terms in statuses/verdicts
+
+:- use_module('../resolver', [version_lt/2]).
+:- use_module('../debian/deb_parse', [parse_deb_version/2]).
+:- use_module(library(http/json)).
+:- use_module(library(lists)).
+:- use_module(library(apply)).
+
+:- dynamic symprov/4.          % symprov(SoName, Sym, Node, Bound)   Bound = since(Deb, Atom, R0, Bind) | at(R0, Bind)
+:- dynamic symreq/5.           % symreq(Binary, Sym, Node, SoName, Bind)   Node/SoName = none if unversioned
+:- dynamic needed/2.           % needed(Binary, SoName)
+:- dynamic replaces/2.         % replaces(NewSoName, OldSoName)   declared soname succession
+:- dynamic prov_evidence/4.    % prov_evidence(SoName, Src, Rel, Status)
+:- dynamic req_evidence/4.     % req_evidence(Binary, Src, Status, Detail)
+:- dynamic release/3.          % release(SoName, Rel, Atom)
+
+% ---------------------------------------------------------------------------
+% Store loading (P/2 JSONL: [Key, Value] per line; values may be JSON arrays)
+% ---------------------------------------------------------------------------
+
+abi_store_clear :-
+    retractall(symprov(_, _, _, _)),
+    retractall(symreq(_, _, _, _, _)),
+    retractall(needed(_, _)),
+    retractall(replaces(_, _)),
+    retractall(prov_evidence(_, _, _, _)),
+    retractall(req_evidence(_, _, _, _)),
+    retractall(release(_, _, _)).
+
+load_abi_store(Dir) :-
+    abi_store_clear,
+    % A row that fails to parse/validate (e.g. a contradictory since(Min>R0))
+    % throws; clear the partial store so callers never compute on half a load.
+    catch(load_abi_rows(Dir), E, ( abi_store_clear, throw(E) )).
+
+load_abi_rows(Dir) :-
+    load_rows(Dir, 'symprov.jsonl',  assert_symprov),
+    load_rows(Dir, 'symreq.jsonl',   assert_symreq),
+    load_rows(Dir, 'needed.jsonl',   assert_needed),
+    load_rows(Dir, 'replaces.jsonl', assert_replaces),
+    load_rows(Dir, 'evidence.jsonl', assert_evidence),
+    load_rows(Dir, 'releases.jsonl', assert_release).
+
+load_rows(Dir, File, Handler) :-
+    atomic_list_concat([Dir, '/', File], Path),
+    (   exists_file(Path)
+    ->  setup_call_cleanup(open(Path, read, S),
+                           load_row_lines(S, Path, 1, Handler),
+                           close(S))
+    ;   true
+    ).
+
+load_row_lines(S, Path, N, Handler) :-
+    read_line_to_string(S, Line),
+    (   Line == end_of_file
+    ->  true
+    ;   (   Line == ""
+        ->  true
+        ;   atom_string(Atom, Line),
+            (   catch(atom_json_term(Atom, [K, V], [value_string_as(atom)]), _, fail),
+                catch(call(Handler, K, V), _, fail)
+            ->  true
+            ;   throw(error(abi_store_row(Path, N, Line), load_abi_store/1))
+            )
+        ),
+        N1 is N + 1,
+        load_row_lines(S, Path, N1, Handler)
+    ).
+
+% "<soname>|<sym>@<node>" ->
+%   ["since", MinVer, EvidenceRelease, Bind] -> since(Deb, MinVer, R0, Bind)
+%   ["at", EvidenceRelease, Bind]            -> at(R0, Bind)
+% The evidence release is part of the row so a bound is tied to the evidence
+% it came from even when several evidence rows exist for one soname.
+assert_symprov(K, [Kind | V]) :-
+    split_first(K, '|', So, Ident),
+    split_last(Ident, '@', Sym, Node),
+    Node \== '',
+    (   Kind == since
+    ->  V = [Min, EvRel, Bind0],
+        parse_deb_version(Min, Deb), rel_term(EvRel, R0),
+        rel_le(Deb, R0),          % Sol re-review 2, P1: a curated minimum cannot
+                                  % exceed the release it was curated from; a
+                                  % contradictory since(Min>R0) row is rejected
+                                  % (the whole store then fails to load).
+        binding(Node, Bind0, Bind),
+        Bound = since(Deb, Min, R0, Bind)
+    ;   Kind == at
+    ->  V = [EvRel, Bind0],
+        rel_term(EvRel, R0),
+        binding(Node, Bind0, Bind),
+        Bound = at(R0, Bind)
+    ),
+    assertz(symprov(So, Sym, Node, Bound)).
+
+% A `Base` (unversioned) export always binds an unversioned reference.
+binding('Base', _, default) :- !.
+binding(_, Bind, Bind) :- memberchk(Bind, [default, nondefault, unproven]).
+
+% "<binary>|<sym>[@<node>]" -> symreq(Bin, Sym, Node, SoName, Bind)
+assert_symreq(K, [So0, Bind]) :-
+    split_first(K, '|', Bin, Ident),
+    (   split_last(Ident, '@', Sym, Node)
+    ->  Node \== '', So0 \== '', So = So0
+    ;   Sym = Ident, Node = none, So = none
+    ),
+    memberchk(Bind, ['GLOBAL', 'WEAK']),
+    assertz(symreq(Bin, Sym, Node, So, Bind)).
+
+assert_needed(Bin, So) :-
+    atom(So),
+    assertz(needed(Bin, So)).
+
+assert_replaces(New, Old) :-
+    atom(Old),
+    assertz(replaces(New, Old)).
+
+assert_evidence(K, V) :-
+    split_first(K, '|', Kind, Subject),
+    (   Kind == provides
+    ->  V = [Src, RelAtom, Status, _Source],
+        memberchk(Src, [symbols, elf]),
+        rel_term(RelAtom, Rel),
+        assertz(prov_evidence(Subject, Src, Rel, Status))
+    ;   Kind == requires
+    ->  V = [Src, Status, Detail],
+        assertz(req_evidence(Subject, Src, Status, Detail))
+    ).
+
+assert_release(So, V) :-
+    rel_term(V, Rel),
+    (   release(So, Rel, _) -> true ; assertz(release(So, Rel, V)) ).
+
+split_first(Atom, Sep, Before, After) :-
+    sub_atom(Atom, B, _, A, Sep), !,
+    sub_atom(Atom, 0, B, _, Before),
+    sub_atom(Atom, _, A, 0, After).
+
+split_last(Atom, Sep, Before, After) :-
+    sub_atom(Atom, B, _, A, Sep),
+    \+ ( sub_atom(Atom, B2, _, _, Sep), B2 > B ), !,
+    sub_atom(Atom, 0, B, _, Before),
+    sub_atom(Atom, _, A, 0, After).
+
+% ---------------------------------------------------------------------------
+% Release axis (Debian package versions; labels only match themselves)
+% ---------------------------------------------------------------------------
+
+% rel_term(+Atom, -Rel): deb/3 via the frozen parser, else label(Atom).
+rel_term(Atom, Rel) :-
+    (   catch(parse_deb_version(Atom, Deb), _, fail),
+        Deb = deb(_, [s([], _)|_], _)          % upstream starts with a digit (Policy 5.6.12)
+    ->  Rel = Deb
+    ;   Rel = label(Atom)
+    ).
+
+rel_lt(deb(E1, U1, R1), deb(E2, U2, R2)) :-
+    version_lt(deb(E1, U1, R1), deb(E2, U2, R2)).
+
+rel_le(A, B) :-
+    (   A = deb(_, _, _), B = deb(_, _, _)
+    ->  \+ version_lt(B, A)
+    ;   A == B
+    ).
+
+rel_cmp(Order, A-_, B-_) :-
+    (   rel_lt(A, B) -> Order = (<)
+    ;   rel_lt(B, A) -> Order = (>)
+    ;   A = deb(_, _, _), B = label(_) -> Order = (<)
+    ;   A = label(_), B = deb(_, _, _) -> Order = (>)
+    ;   A == B -> Order = (=)
+    ;   compare(Order, A, B)
+    ).
+
+% release_axis(SoName, AscendingAtoms): the actual release candidates known for
+% the soname (ingested `releases` rows), ascending, deduplicated.
+release_axis(So, Atoms) :-
+    findall(R-A, release(So, R, A), Pairs0),
+    predsort(rel_cmp, Pairs0, Pairs),
+    pairs_values(Pairs, Atoms).
+
+% ---------------------------------------------------------------------------
+% Evidence rows and what each says about one identity (Sol P1a)
+% ---------------------------------------------------------------------------
+
+% observed(So, Sym, Node, Src, R1, Bound): the identity is in the Src
+% evidence taken at R1.
+observed(So, Sym, Node, symbols, R1, B) :- B = since(_, _, R1, _), symprov(So, Sym, Node, B).
+observed(So, Sym, Node, elf, R1, B)     :- B = at(R1, _),          symprov(So, Sym, Node, B).
+
+% prov_usable(So, Src, R0, Status): a provider evidence row the resolver can
+% use -- `complete` (readelf, or a `.symbols` file cross-checked against the ELF
+% with --elf: the export set is fully observed, so ABSENCE from it is a fact) or
+% `curated` (a plain `.symbols` lower-bound list ingested WITHOUT --elf:
+% PRESENCE in it is curated evidence, ABSENCE FROM IT PROVES NOTHING).
+prov_usable(So, Src, R0, Status) :-
+    prov_evidence(So, Src, R0, Status),
+    memberchk(Status, [complete, curated]).
+
+% ev_says(So, Sym, Node, R1, Says): for every usable evidence row (Src, R1) of
+% So, whether Sym@Node is present in it (and under which bound) or absent. Only
+% a COMPLETE export set can assert absence; a curated row that omits the
+% identity says nothing about it (Sol re-review 2, P1) -- it yields no Says row.
+ev_says(So, Sym, Node, R1, Says) :-
+    prov_usable(So, Src, R1, Status),
+    (   observed(So, Sym, Node, Src, R1, Bound)
+    ->  Says = present(Src, Bound)
+    ;   Status == complete
+    ->  Says = absent(Src)
+    ;   fail
+    ).
+
+% ident_status(+So, +Sym, +Node, +Rel, -Status): the status of the exact
+% identity Sym@Node on So at Rel, aggregated over ALL complete evidence rows.
+%   provided(exact | curated | extrapolated)
+%   missing(Why)                 absent from a complete export set at/above Rel
+%   below_floor(MinAtom)         only a curated floor above Rel covers it, and Rel < Min
+%   unknown(Why)                 no evidence row speaks about Rel
+% Rule: evidence AT Rel decides (readelf before .symbols). Otherwise the
+% nearest evidence BELOW Rel (last known state) and the nearest evidence ABOVE
+% Rel are combined: presence below extrapolates upward unless the row above
+% observed absence (then the identity was dropped somewhere in between:
+% unknown, not a false compat and not a false veto); absence above propagates
+% downward (monotone exports); a curated floor above covers Rel >= Min.
+% Mode-insensitive: compute the status into a FRESH variable, then unify with the
+% caller's pattern. combine/4 and says_status/3 carry their cut AFTER head
+% unification, so a caller passing a bound Status (e.g. provided(_, default))
+% must NOT be allowed to skip the clause the unbound call would fire and match a
+% later one -- that gave a false compatible for a symbol observed dropped (Fable
+% re-verify M2). Callers therefore always see the single, mode-independent status.
+ident_status(So, Sym, Node, Rel, Status) :-
+    ident_status_(So, Sym, Node, Rel, S0), !,
+    Status = S0.
+
+ident_status_(So, Sym, Node, Rel, Status) :-
+    findall(R1-Says, ev_says(So, Sym, Node, R1, Says), Rows),
+    Rows \== [],
+    (   member(Rel1-_, Rows), Rel1 == Rel
+    ->  says_at(Rows, Rel, Says),
+        says_status(Says, Rel, Status)
+    ;   nearest_below(Rows, Rel, Below),
+        nearest_above(Rows, Rel, Above),
+        combine(Below, Above, Rel, Status)
+    ).
+
+% says_at(Rows, R, Says): what the evidence taken at exactly R says; when both
+% tiers were taken at R, readelf (direct observation) decides.
+says_at(Rows, R, Says) :-
+    (   member(R1-present(elf, B), Rows), R1 == R    -> Says = present(elf, B)
+    ;   member(R1-absent(elf), Rows), R1 == R        -> Says = absent(elf)
+    ;   member(R1-present(symbols, B), Rows), R1 == R -> Says = present(symbols, B)
+    ;   Says = absent(symbols)
+    ).
+
+% provided(Basis, Binding): the default-version binding comes from the SAME
+% evidence row that establishes presence, so an unversioned reference can never
+% pick a binding ident_status did not credit (Astra re-review 2). Binding is
+% default | nondefault | unproven, or `ambiguous` when two credited rows disagree.
+says_status(present(elf, at(_, Bind)), _, provided(exact, Bind)).
+says_status(present(symbols, since(Min, MinAtom, _, Bind)), Rel, Status) :-
+    ( rel_le(Min, Rel) -> Status = provided(curated, Bind) ; Status = below_floor(MinAtom) ).
+says_status(absent(Src), Rel, missing(observed_absent(Src, Rel))).
+
+% Distinct evidence releases strictly below / above Rel; the nearest one wins.
+nearest_below(Rows, Rel, Below) :-
+    findall(R-R, ( member(R-_, Rows), rel_lt(R, Rel) ), Bs0),
+    predsort(rel_cmp, Bs0, Bs),
+    (   Bs == [] -> Below = none
+    ;   last(Bs, R0-_), says_at(Rows, R0, Says), Below = ev(R0, Says)
+    ).
+
+nearest_above(Rows, Rel, Above) :-
+    findall(R-R, ( member(R-_, Rows), rel_lt(Rel, R) ), As0),
+    predsort(rel_cmp, As0, As),
+    (   As == [] -> Above = none
+    ;   As = [R1-_|_], says_at(Rows, R1, Says), Above = ev(R1, Says)
+    ).
+
+% combine(Below, Above, Rel, Status) -- provided carries (Basis, Binding); when
+% a present-below row and a covering curated-above row disagree on the binding,
+% the binding is `ambiguous` (Astra re-review 2: conflicting cross-tier bindings
+% must not yield a confident veto or a confident compatible).
+combine(ev(R0, present(_, _)), ev(R1, absent(Src)), _, unknown(dropped_between(R0, Src, R1))) :- !.
+combine(ev(_, present(_, BoundB)), ev(_, present(symbols, since(Min, _, _, BindA))), Rel, provided(curated, Bind)) :-
+    rel_le(Min, Rel), !,
+    bound_binding(BoundB, BindB),
+    merge_binding(BindB, BindA, Bind).
+% below present, extrapolated upward. If a present row ABOVE records a DEFINITE
+% binding that conflicts with the below one, the binding is changing across Rel:
+% mark it ambiguous rather than confidently extrapolate the below binding (Fable
+% re-verify M3). `unproven` above is no-info, not a conflict.
+combine(ev(_, present(_, BoundB)), Above, _, provided(extrapolated, Bind)) :- !,
+    bound_binding(BoundB, BindB),
+    ( above_binding(Above, BindA) -> extrapolate_binding(BindB, BindA, Bind) ; Bind = BindB ).
+combine(_, ev(R1, absent(Src)), _, missing(observed_absent(Src, R1))) :- !.
+combine(_, ev(_, present(symbols, since(Min, MinAtom, _, Bind))), Rel, Status) :- !,
+    ( rel_le(Min, Rel) -> Status = provided(curated, Bind) ; Status = below_floor(MinAtom) ).
+combine(_, ev(R1, present(elf, _)), _, unknown(evidence_release(R1))) :- !.
+combine(ev(R0, absent(Src)), none, _, unknown(absent_at(Src, R0))) :- !.
+combine(none, none, _, unknown(no_evidence)).
+
+% above_binding(Above, Bind): the default-version binding a present ABOVE row
+% records (fails for none / absent -- no binding to conflict with).
+above_binding(ev(_, present(elf, at(_, Bind))), Bind).
+above_binding(ev(_, present(symbols, since(_, _, _, Bind))), Bind).
+
+% merge_binding(BelowOrAt, Covering, Merged): for a COVERING curated row (its
+% floor applies AT Rel), two DEFINITE bindings that differ -> ambiguous; otherwise
+% the definite one wins (`unproven` is no-info, never a conflict).
+merge_binding(B, B, B) :- !.
+merge_binding(B1, B2, ambiguous) :-
+    memberchk(B1, [default, nondefault]), memberchk(B2, [default, nondefault]), !.
+merge_binding(B1, _, B1) :- memberchk(B1, [default, nondefault]), !.
+merge_binding(_, B2, B2).
+
+% extrapolate_binding(BindBelow, BindAbove, Bind): extrapolating a present-below
+% row past a NON-covering above row -- the above binding does NOT apply at Rel, so
+% KEEP the below binding; only flag `ambiguous` when both are definite and differ
+% (the binding is changing across Rel). Never promote an unproven below to a
+% future definite above (Astra re-review 3: that gave a false compatible).
+extrapolate_binding(B1, B2, ambiguous) :-
+    memberchk(B1, [default, nondefault]), memberchk(B2, [default, nondefault]), B1 \== B2, !.
+extrapolate_binding(B1, _, B1).
+
+% provides_at(So, Sym, Node, Rel, Basis): So exports exactly Sym@Node at Rel.
+provides_at(So, Sym, Node, Rel, Basis) :-
+    ident_status(So, Sym, Node, Rel, provided(Basis, _)).
+
+% node_binding(So, Sym, Node, Bind): the default-version binding recorded for
+% an export (default: an unversioned reference binds to it; nondefault: it
+% does not; unproven: `.symbols` row not cross-checked against the ELF).
+node_binding(So, Sym, Node, Bind) :-
+    symprov(So, Sym, Node, Bound),
+    (   Bound = since(_, _, _, B) -> Bind = B ; Bound = at(_, B) -> Bind = B ).
+
+hyp_dropped(drop(Sym, Node, At), Sym, Node, Rel) :-
+    rel_term(At, AtRel),
+    rel_le(AtRel, Rel).
+
+% ---------------------------------------------------------------------------
+% Per-requirement status
+% ---------------------------------------------------------------------------
+
+% req_status(Bin, So, Rel, Hyp, Status) enumerates one Status per requirement
+% of Bin that concerns So (versioned requirements attributed to So via the
+% version index, plus Bin's unversioned requirements, which the loader
+% resolves against any NEEDED object).
+req_status(Bin, So, Rel, Hyp, Status) :-
+    symreq(Bin, Sym, Node, So, Bind),
+    Node \== none,
+    versioned_status(So, Sym, Node, Bind, Rel, Hyp, Status).
+req_status(Bin, So, Rel, Hyp, Status) :-
+    symreq(Bin, Sym, none, none, Bind),
+    unversioned_status(Bin, So, Sym, Bind, Rel, Hyp, Status).
+
+% missing(Sym@Node) = absent from the complete export set observed AT Rel;
+% missing(Sym@Node, observed_absent(Src, R1)) = absent at a LATER release R1,
+% hence absent at Rel under monotone exports (the inference is visible).
+versioned_status(So, Sym, Node, Bind, Rel, Hyp, Status) :-
+    (   hyp_dropped(Hyp, Sym, Node, Rel)
+    ->  Status = missing(Sym@Node, hypothetical_drop)
+    ;   ident_status(So, Sym, Node, Rel, S)
+    ->  (   S = provided(Basis, _)    -> Status = provided(Sym@Node, Basis)
+        ;   S = below_floor(MinAtom)  -> Status = below_floor(Sym@Node, MinAtom)
+        ;   S = missing(_), Bind == 'WEAK' -> Status = weak_unresolved(Sym@Node)
+        ;   S = missing(observed_absent(_, R1)), R1 == Rel -> Status = missing(Sym@Node)
+        ;   S = missing(Why)          -> Status = missing(Sym@Node, Why)
+        ;   S = unknown(Why)          -> Status = unknown(Sym@Node, Why)
+        )
+    ;   prov_usable(So, _, _, _)      % So has (curated) evidence, but not for
+    ->  Status = unknown(Sym@Node, absent_from_incomplete_evidence(So))  % this identity: unknown, not missing (Sol re-review 2, P1)
+    ;   Status = unknown(Sym@Node, no_provider_evidence(So))
+    ).
+
+% An unversioned reference binds (Sol P1b) to a `Base` export or a DEFAULT export
+% of Sym in any NEEDED object -- never a non-default (`@`) one. The binding comes
+% from ident_status (provided(Basis, Binding)), so it always reflects the row that
+% established presence at the queried release; binding and presence never diverge
+% (Astra re-review 2). A curated row's binding is `unproven`, and conflicting
+% cross-tier bindings are `ambiguous`; both yield unknown, never a veto or a
+% confident compatible. Against the queried So we evaluate at Rel; against other
+% NEEDED objects at their own evidence release. A hard veto (missing OR
+% no_default_export) needs absence -- of the symbol, or of a default export --
+% ESTABLISHED at Rel for So (complete evidence at a release >= Rel). Complete
+% evidence only BELOW Rel says nothing (a later release may add the symbol or a
+% default export) -> unknown (Astra re-review 2).
+unversioned_status(Bin, So, Sym, Bind, Rel, Hyp, Status) :-
+    (   (   unversioned_in(So, Sym, Rel, Hyp, Node, Basis)
+        ->  Status = provided(Sym, default_node(So, Node, Basis))
+        ;   needed(Bin, S), S \== So, prov_usable(S, _, R0, _),
+            unversioned_in(S, Sym, R0, Hyp, Node, Basis)
+        ->  Status = provided(Sym, default_node(S, Node, Basis))
+        ;   fail
+        )
+    ->  true
+    ;   Bind == 'WEAK'
+    ->  Status = weak_unresolved(Sym)          % a weak ref never vetoes, so missing evidence is moot
+    ;   unversioned_unproven(Bin, So, Sym, Rel, S1, N1)
+    ->  Status = unknown(Sym, default_binding_unproven(S1, N1))
+    ;   unversioned_ambiguous(Bin, So, Sym, Rel, S2, N2)
+    ->  Status = unknown(Sym, default_binding_conflict(S2, N2))
+    ;   needed(Bin, S), \+ prov_evidence(S, _, _, complete)
+    ->  ( prov_usable(S, _, _, _)          % a curated NEEDED object cannot prove
+        ->  Status = unknown(Sym, absent_from_incomplete_evidence(S))  % absence -> unknown, never a veto (Sol re-review 2, P1)
+        ;   Status = unknown(Sym, no_provider_evidence(S)) )
+    ;   unversioned_unknown(Bin, So, Sym, Rel, _, Why)
+    ->  Status = unknown(Sym, Why)
+    ;   \+ absence_established(So, Rel)  % So's complete evidence is only BELOW Rel: a later release
+    ->  Status = unknown(Sym, absence_unestablished(So, Rel))  % may add the symbol OR a default export (Astra re-review 2, gates BOTH vetoes)
+    ;   unversioned_nondefault(Bin, So, Sym, Rel, S3, N3)
+    ->  Status = missing(Sym, no_default_export(S3, N3))
+    ;   Status = missing(Sym)
+    ).
+
+% absence_established(S, Rel): S has complete evidence at a release >= Rel, so a
+% symbol -- or a default export -- absent from it is absent at Rel too (monotone).
+absence_established(S, Rel) :-
+    prov_evidence(S, _, R0, complete),
+    rel_le(Rel, R0).
+
+% Per-object classification of an unversioned Sym at the relevant release, using
+% the binding ident_status credits (so binding and presence never diverge):
+%   unversioned_in         -> present with a DEFAULT (bindable) export, not dropped
+%   unversioned_unproven   -> present, binding only from a curated .symbols row
+%   unversioned_ambiguous  -> present, but the credited rows disagree on the binding
+%   unversioned_nondefault -> present only at a non-default node
+unversioned_in(S, Sym, Rel, Hyp, Node, Basis) :-
+    symprov(S, Sym, Node, _),
+    \+ hyp_dropped(Hyp, Sym, Node, Rel),
+    ident_status(S, Sym, Node, Rel, provided(Basis, default)).
+
+unversioned_unproven(Bin, So, Sym, Rel, S, Node) :-
+    needed_at(Bin, So, Rel, S, R),
+    symprov(S, Sym, Node, _),
+    ident_status(S, Sym, Node, R, provided(_, unproven)).
+
+unversioned_ambiguous(Bin, So, Sym, Rel, S, Node) :-
+    needed_at(Bin, So, Rel, S, R),
+    symprov(S, Sym, Node, _),
+    ident_status(S, Sym, Node, R, provided(_, ambiguous)).
+
+unversioned_unknown(Bin, So, Sym, Rel, S, Why) :-
+    needed_at(Bin, So, Rel, S, R),
+    node_binding(S, Sym, Node, B), B \== nondefault,
+    ident_status(S, Sym, Node, R, unknown(Why)).
+
+unversioned_nondefault(Bin, So, Sym, Rel, S, Node) :-
+    needed_at(Bin, So, Rel, S, R),
+    symprov(S, Sym, Node, _),
+    ident_status(S, Sym, Node, R, provided(_, nondefault)).
+
+bound_binding(since(_, _, _, B), B).
+bound_binding(at(_, B), B).
+
+% needed_at(Bin, So, Rel, S, R): the queried So at Rel, other NEEDED objects
+% at their own evidence release(s).
+needed_at(_, So, Rel, So, Rel).
+needed_at(Bin, So, _, S, R) :- needed(Bin, S), S \== So, prov_usable(S, _, R, _).
+
+% ---------------------------------------------------------------------------
+% Verdict
+% ---------------------------------------------------------------------------
+
+abi_verdict(Bin, So, RelAtom, Verdict) :-
+    abi_verdict(Bin, So, RelAtom, none, Verdict).
+
+abi_verdict(Bin, So, RelAtom, Hyp, Verdict) :-
+    rel_term(RelAtom, Rel),
+    (   \+ req_evidence(Bin, _, _, _)
+    ->  Verdict = unknown([no_requires_evidence(Bin)])
+    ;   req_evidence(Bin, _, Status, Detail), Status \== complete
+    ->  Verdict = unknown([requires_evidence(Status, Detail)])
+    ;   soname_offer(Bin, So, mismatch(N))
+    ->  Verdict = incompatible([soname_mismatch(offered(So), needed(N))])
+    ;   \+ needed(Bin, So)
+    ->  Verdict = not_needed(So)
+    ;   \+ prov_usable(So, _, _, _)
+    ->  Verdict = unknown([no_provider_evidence(So)])
+    ;   findall(S, req_status(Bin, So, Rel, Hyp, S), Ss),
+        aggregate_statuses(Ss, Verdict)
+    ).
+
+% The verdict basis is the WEAKEST basis among the provided requirements:
+% exact < curated < extrapolated.
+aggregate_statuses(Ss, Verdict) :-
+    include(hard_veto, Ss, Hard),
+    include(is_unknown, Ss, Unk),
+    (   Hard \== []
+    ->  Verdict = incompatible(Hard)
+    ;   Unk \== []
+    ->  Verdict = unknown(Unk)
+    ;   has_basis(Ss, extrapolated)
+    ->  Verdict = compatible(extrapolated)
+    ;   has_basis(Ss, curated)
+    ->  Verdict = compatible(curated)
+    ;   Verdict = compatible(exact)
+    ).
+
+has_basis(Ss, Basis) :-
+    (   memberchk(provided(_, Basis), Ss) -> true
+    ;   memberchk(provided(_, default_node(_, _, Basis)), Ss)
+    ).
+
+hard_veto(missing(_)).
+hard_veto(missing(_, _)).
+hard_veto(below_floor(_, _)).
+is_unknown(unknown(_, _)).
+
+% soname_offer(Bin, So, Offer): needed | mismatch(NeededSoName) | not_needed.
+% Offering libfoo.so.2 to a binary whose DT_NEEDED says libfoo.so.1 is a hard
+% veto ONLY under a declared succession relation replaces(libfoo.so.2,
+% libfoo.so.1) (the loader matches DT_NEEDED by exact soname string). Without
+% that declaration a name that is not NEEDED is simply not_needed -- no stem
+% heuristic (Sol P2d: libfoo.so.2 vs an unrelated NEEDED libfoo.so.1-extra).
+soname_offer(Bin, So, Offer) :-
+    (   needed(Bin, So)
+    ->  Offer = needed
+    ;   replaces(So, N), needed(Bin, N)
+    ->  Offer = mismatch(N)
+    ;   Offer = not_needed
+    ).
+
+% ---------------------------------------------------------------------------
+% Floor: the curated lower bound implied by `.symbols` (= dpkg-shlibdeps' dep)
+% ---------------------------------------------------------------------------
+
+% abi_floor(Bin, So, FloorAtom): the highest `.symbols` minimum-version among
+% the provider rows matched (exactly, by node) by Bin's requirements on So.
+% Fails if any versioned requirement on So has no since() provider row
+% (missing symbol, or readelf-only evidence).
+abi_floor(Bin, So, Floor) :-
+    findall(Sym-Node, ( symreq(Bin, Sym, Node, So, _), Node \== none ), Reqs),
+    Reqs \== [],
+    maplist(req_floor(So), Reqs, Mins),
+    max_deb(Mins, _-Floor).
+
+req_floor(So, Sym-Node, Max) :-
+    findall(Deb-Atom, symprov(So, Sym, Node, since(Deb, Atom, _, _)), Ms),
+    Ms \== [],
+    max_deb(Ms, Max).
+
+max_deb([M|Ms], Max) :- foldl(max_deb_1, Ms, M, Max).
+max_deb_1(D-A, D0-A0, Out) :- ( rel_lt(D0, D) -> Out = D-A ; Out = D0-A0 ).
+
+% ---------------------------------------------------------------------------
+% Range over the actual release axis
+% ---------------------------------------------------------------------------
+
+abi_range(Bin, So, Result) :-
+    release_axis(So, Rels),
+    abi_range(Bin, So, Rels, none, Result).
+
+% abi_range(Bin, So, Hyp, Result): store axis, hypothetical drop(Sym, Node, At).
+abi_range(Bin, So, Hyp, Result) :-
+    release_axis(So, Rels),
+    abi_range(Bin, So, Rels, Hyp, Result).
+
+% abi_range(Bin, So, RelAtoms, Hyp, Result):
+%   range(Min, Max, Pairs)  -- Min/Max are releases with compatible(_) verdicts
+%   no_candidate(Pairs)     -- every release incompatible / not needed
+%   unknown(Pairs)          -- no compatible release, some unknown
+%   no_releases             -- empty axis
+% Pairs = [RelAtom-Verdict ...] ascending.
+abi_range(_Bin, _So, [], _Hyp, no_releases) :- !.
+abi_range(Bin, So, RelAtoms, Hyp, Result) :-
+    maplist(rel_pair, RelAtoms, P0),
+    predsort(rel_cmp, P0, Sorted),
+    pairs_values(Sorted, Asc),
+    findall(A-V, ( member(A, Asc), abi_verdict(Bin, So, A, Hyp, V) ), Pairs),
+    range_min_max(Pairs, Pairs, Result).
+
+rel_pair(A, R-A) :- rel_term(A, R).
+
+range_min_max(Pairs, Detail, Result) :-
+    findall(A, member(A-compatible(_), Pairs), Compat),
+    (   Compat = [Min|_]
+    ->  last(Compat, Max),
+        Result = range(Min, Max, Detail)
+    ;   memberchk(_-unknown(_), Pairs)
+    ->  Result = unknown(Detail)
+    ;   Result = no_candidate(Detail)
+    ).

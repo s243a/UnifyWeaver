@@ -46,7 +46,7 @@
                     _ => return false,
                 };
                 let message = match Self::os_error_message(code) {
-                    Some(message) => Value::Atom(message),
+                    Some(message) => Value::Atom(message.into()),
                     None => return false,
                 };
                 let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);

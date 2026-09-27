@@ -1,0 +1,8 @@
+# Regenerated harness artifacts.
+.corpus_out/
+.diff_out/
+
+# The generated WAM Rust crate (written by build.sh / build.pl). It bakes the
+# absolute store path into setup_foreign_predicates, so it is a per-build
+# artifact, not a committed source. build.sh regenerates it.
+uw_resolve_wam_store/

@@ -33,6 +33,8 @@
 :- use_module('../src/unifyweaver/targets/wam_rust_target',
               [write_wam_rust_project/3,
                compile_wam_runtime_to_rust/2]).
+:- use_module('../src/unifyweaver/targets/wam_go_target',
+              [compile_wam_runtime_to_go/2]).
 :- use_module('../src/unifyweaver/core/recursive_kernel_detection',
               [detect_recursive_kernel/4]).
 
@@ -191,7 +193,13 @@ test(rust_bfs_parent_sets_not_dfs) :-
     !.
 
 test(go_parent_sets_no_source_seed) :-
-    read_file_string('src/unifyweaver/targets/wam_go_target.pl', S),
+    % Phase 2 template refactor: Go collector bodies live in
+    % templates/targets/go_wam/runtime/native_kernels.go.mustache; assert against
+    % the generated OUTPUT (as the rust check above does) so the consecutive-func
+    % body slice is robust to template relocation. The collectNative* funcs are
+    % emitted consecutively in the generated runtime.
+    compile_wam_runtime_to_go([], Code),
+    atom_string(Code, S),
     Pattern = "func (vm *WamState) collectNativeTransitiveParentDistanceResults",
     EndPattern = "func (vm *WamState) collectNativeTransitiveStepParentDistanceResults",
     sub_string(S, Start, _, _, Pattern),
@@ -358,7 +366,7 @@ test(c_tpd4_stream_and_bound, [condition(gcc_available)]) :-
         close(Out)),
     IncludeDir = 'src/unifyweaver/targets/wam_c_runtime',
     format(atom(Cmd),
-        'gcc -O0 -std=c11 -I~w ~w ~w ~w -o ~w 2>~w/gcc.err',
+        'gcc -O0 -std=c11 -I~w ~w ~w ~w -lm -o ~w 2>~w/gcc.err',
         [IncludeDir, RuntimePath, LibPath, MainPath, ExePath, Dir]),
     shell(Cmd, GccExit),
     ( GccExit =:= 0 -> true
@@ -748,7 +756,7 @@ static int install_retry_program(WamState *state) {
     /* Every requested retry first runs a guaranteed failing instruction.
      * wam_run then restores the native stream CP and resumes it normally. */
     state->code[fail_pc].tag = INSTR_BUILTIN_CALL;
-    state->code[fail_pc].as.pred.pred = "__tpd4_retry_fail/0";
+    state->code[fail_pc].as.pred.pred = "fail/0";
     state->code[fail_pc].as.pred.arity = 0;
     state->code[fail_pc + 1].tag = INSTR_PROCEED;
 

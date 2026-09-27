@@ -69,14 +69,21 @@ test_haskell_m17_get_level_cut :-
         (   assertz((user:m17chk_g(1))),
             assertz((user:m17chk :- \+ (m17chk_g(_), !, fail))),
             write_wam_haskell_project([user:m17chk_g/1, user:m17chk/0],
-                                      [module_name('m17chk'), emit_mode(functions)], Dir),
+                                      [module_name('m17chk'), emit_mode(functions),
+                                       register_mode(intmap)], Dir),
             atomic_list_concat([Dir, '/src/Predicates.hs'], PredF),
             atomic_list_concat([Dir, '/src/WamRuntime.hs'], RtF),
             read_file_to_string(PredF, PredCode, []),
             read_file_to_string(RtF, RtCode, []),
             (   sub_string(PredCode, _, _, _, "GetLevel "),   % instruction emitted (M17, not cut_ite)
                 sub_string(RtCode, _, _, _, "GetLevel reg"),  % step handler present
-                sub_string(RtCode, _, _, _, "Cut reg")
+                sub_string(RtCode, _, _, _, "Cut reg"),
+                % The pure IntMap engine must use the same frame-aware
+                % Y-register access as the default mutable-register engine.
+                sub_string(RtCode, _, _, _, "putReg reg (Integer (wsCPsLen s))"),
+                sub_string(RtCode, _, _, _, "case getReg reg s of"),
+                \+ sub_string(RtCode, _, _, _, "wsRegs = IM.insert reg (Integer (wsCPsLen s))"),
+                \+ sub_string(RtCode, _, _, _, "case IM.lookup reg (wsRegs s) of")
             ->  Ok = true
             ;   Ok = false
             )
@@ -88,7 +95,7 @@ test_haskell_m17_get_level_cut :-
     ( exists_directory(Dir) -> delete_directory_and_contents(Dir) ; true ),
     (   Ok == true
     ->  pass(Test)
-    ;   fail_test(Test, 'get_level not emitted in Predicates.hs or runtime handler missing')
+    ;   fail_test(Test, 'get_level/cut missing or pure engine bypasses frame-aware register access')
     ).
 
 test_haskell_functor_builtin_present :-

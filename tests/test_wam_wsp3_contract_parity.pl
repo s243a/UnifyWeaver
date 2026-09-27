@@ -53,6 +53,8 @@
 :- use_module('../src/unifyweaver/targets/wam_rust_target',
               [write_wam_rust_project/3,
                compile_wam_runtime_to_rust/2]).
+:- use_module('../src/unifyweaver/targets/wam_go_target',
+              [compile_wam_runtime_to_go/2]).
 :- use_module('../src/unifyweaver/core/recursive_kernel_detection',
               [detect_recursive_kernel/4]).
 
@@ -227,7 +229,12 @@ test(c_relation_isolation_dynamic_stream) :-
         "docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md")).
 
 test(go_scala_r_elixir_contract_markers) :-
-    read_file_string('src/unifyweaver/targets/wam_go_target.pl', Go),
+    % Phase 2 template refactor: Go collector bodies live in
+    % templates/targets/go_wam/runtime/native_kernels.go.mustache; assert against
+    % the generated OUTPUT (as the rust check above does) so the contract marker
+    % check is robust to where the template source lives.
+    compile_wam_runtime_to_go([], GoCode),
+    atom_string(GoCode, Go),
     assertion(sub_string(Go, _, _, _,
         "docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md")),
     read_file_string('src/unifyweaver/targets/wam_scala_target.pl', Sc),
@@ -348,7 +355,7 @@ test(c_two_pred_isolation_and_detour, [condition(gcc_available)]) :-
         close(Out)),
     IncludeDir = 'src/unifyweaver/targets/wam_c_runtime',
     format(atom(Cmd),
-        'gcc -O0 -std=c11 -I~w ~w ~w ~w -o ~w 2>~w/gcc.err',
+        'gcc -O0 -std=c11 -I~w ~w ~w ~w -lm -o ~w 2>~w/gcc.err',
         [IncludeDir, RuntimePath, LibPath, MainPath, ExePath, Dir]),
     shell(Cmd, GccExit),
     ( GccExit =:= 0 -> true

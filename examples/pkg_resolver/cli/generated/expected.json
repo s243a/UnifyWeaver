@@ -1,0 +1,604 @@
+{
+  "cases": [
+    {
+      "argv": ["resolve", "editor" ],
+      "catalog":"teaching",
+      "exit":0,
+      "id":"t_resolve",
+      "json": {
+	"command":"resolve",
+	"requests": ["editor" ],
+	"selection": [
+	  {"name":"editor", "version":"1.1.0"},
+	  {"name":"libc", "version":"2.0.0"},
+	  {"name":"syntax", "version":"2.0.0"}
+	],
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["install-plan", "editor" ],
+      "catalog":"teaching",
+      "exit":0,
+      "id":"t_install_plan",
+      "json": {
+	"command":"install-plan",
+	"manifests": [
+	  {
+	    "order": [
+	      {"name":"syntax", "version":"1.0.0"},
+	      {"name":"editor", "version":"1.0.0"}
+	    ],
+	    "request":"editor"
+	  }
+	],
+	"requests": ["editor" ],
+	"selection": [
+	  {"name":"editor", "version":"1.0.0"},
+	  {"name":"syntax", "version":"1.0.0"}
+	],
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["layer", "editor" ],
+      "catalog":"teaching",
+      "exit":0,
+      "id":"t_layer_spelling",
+      "json": {
+	"command":"install-plan",
+	"manifests": [
+	  {
+	    "order": [
+	      {"name":"syntax", "version":"1.0.0"},
+	      {"name":"editor", "version":"1.0.0"}
+	    ],
+	    "request":"editor"
+	  }
+	],
+	"requests": ["editor" ],
+	"selection": [
+	  {"name":"editor", "version":"1.0.0"},
+	  {"name":"syntax", "version":"1.0.0"}
+	],
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["why-blocked", "editor" ],
+      "catalog":"teaching",
+      "exit":1,
+      "id":"t_why_blocked",
+      "json": {
+	"blocked": [
+	  {
+	    "base_has":"1.0.0",
+	    "name":"libc",
+	    "needs": {"op":"gte", "version":"2.0.0"}
+	  }
+	],
+	"command":"why-blocked",
+	"request":"editor",
+	"status":"blocked"
+      }
+    },
+    {
+      "argv": ["deps", "editor" ],
+      "catalog":"teaching",
+      "exit":0,
+      "id":"t_deps",
+      "json": {
+	"command":"deps",
+	"depends": [
+	  {
+	    "constraint": {"op":"gte", "version":"1.0.0"},
+	    "dep":"libc",
+	    "version":"1.0.0"
+	  },
+	  {
+	    "constraint": {"op":"gte", "version":"1.0.0"},
+	    "dep":"syntax",
+	    "version":"1.0.0"
+	  },
+	  {
+	    "constraint": {"op":"gte", "version":"1.0.0"},
+	    "dep":"libc",
+	    "version":"1.1.0"
+	  },
+	  {
+	    "constraint": {"op":"gte", "version":"2.0.0"},
+	    "dep":"syntax",
+	    "version":"1.1.0"
+	  }
+	],
+	"package":"editor",
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["what-needs", "libc" ],
+      "catalog":"teaching",
+      "exit":0,
+      "id":"t_what_needs",
+      "json": {
+	"command":"what-needs",
+	"dependents": [
+	  {"name":"editor", "version":"1.0.0"},
+	  {"name":"editor", "version":"1.1.0"},
+	  {"name":"syntax", "version":"1.0.0"},
+	  {"name":"syntax", "version":"2.0.0"}
+	],
+	"installed_only":false,
+	"package":"libc",
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["what-needs", "libc", "--installed" ],
+      "catalog":"teaching",
+      "exit":0,
+      "id":"t_what_needs_installed",
+      "json": {
+	"command":"what-needs",
+	"dependents": [
+	  {"name":"editor", "version":"1.1.0"},
+	  {"name":"syntax", "version":"2.0.0"}
+	],
+	"installed_only":true,
+	"package":"libc",
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["orphans", "theme" ],
+      "catalog":"teaching",
+      "exit":0,
+      "id":"t_orphans",
+      "json": {
+	"command":"orphans",
+	"orphans": [
+	  {"name":"editor", "version":"1.1.0"},
+	  {"name":"syntax", "version":"2.0.0"}
+	],
+	"package":"theme",
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["audit" ],
+      "catalog":"teaching",
+      "exit":0,
+      "id":"t_audit",
+      "json": {
+	"audit": [ {"kind":"over_frozen", "name":"libc", "reason":null} ],
+	"command":"audit",
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["why-frozen", "libc" ],
+      "catalog":"teaching",
+      "exit":0,
+      "id":"t_why_frozen",
+      "json": {
+	"command":"why-frozen",
+	"kind":"over_frozen",
+	"package":"libc",
+	"reason":null,
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["safe-upgrade", "libc", "2.0.0" ],
+      "catalog":"teaching",
+      "exit":0,
+      "id":"t_safe_upgrade",
+      "json": {
+	"command":"safe-upgrade",
+	"package":"libc",
+	"result": {"cost":"blanket", "verdict":"safe"},
+	"status":"ok",
+	"version":"2.0.0"
+      }
+    },
+    {
+      "argv": ["resolve", "firefox" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_resolve",
+      "json": {
+	"command":"resolve",
+	"requests": ["firefox" ],
+	"selection": [
+	  {"name":"firefox", "version":"115.0.0"},
+	  {"name":"glibc", "version":"2.35.0"},
+	  {"name":"gtk", "version":"3.24.0"},
+	  {"name":"nss", "version":"3.90.0"}
+	],
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["resolve", "firefox", "mplayer" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_resolve_multi",
+      "json": {
+	"command":"resolve",
+	"requests": ["firefox", "mplayer" ],
+	"selection": [
+	  {"name":"firefox", "version":"115.0.0"},
+	  {"name":"glibc", "version":"2.35.0"},
+	  {"name":"gtk", "version":"3.24.0"},
+	  {"name":"mplayer", "version":"1.4.0"},
+	  {"name":"nss", "version":"3.90.0"}
+	],
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["resolve", "systemd" ],
+      "catalog":"frozen_base",
+      "exit":1,
+      "id":"f_resolve_excluded",
+      "json": {
+	"command":"resolve",
+	"reason":"no_solution",
+	"requests": ["systemd" ],
+	"status":"fail"
+      }
+    },
+    {
+      "argv": ["install-plan", "firefox" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_install_plan",
+      "json": {
+	"command":"install-plan",
+	"manifests": [
+	  {
+	    "order": [
+	      {"name":"nss", "version":"3.90.0"},
+	      {"name":"firefox", "version":"91.0.0"}
+	    ],
+	    "request":"firefox"
+	  }
+	],
+	"requests": ["firefox" ],
+	"selection": [
+	  {"name":"firefox", "version":"91.0.0"},
+	  {"name":"nss", "version":"3.90.0"}
+	],
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["install-plan", "gcc" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_install_plan_layer",
+      "json": {
+	"command":"install-plan",
+	"manifests": [ {"order": [], "request":"gcc"} ],
+	"requests": ["gcc" ],
+	"selection": [],
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["install-plan", "firefox", "mplayer" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_install_plan_multi",
+      "json": {
+	"command":"install-plan",
+	"manifests": [
+	  {
+	    "order": [
+	      {"name":"nss", "version":"3.90.0"},
+	      {"name":"firefox", "version":"91.0.0"}
+	    ],
+	    "request":"firefox"
+	  },
+	  {
+	    "order": [ {"name":"mplayer", "version":"1.4.0"} ],
+	    "request":"mplayer"
+	  }
+	],
+	"requests": ["firefox", "mplayer" ],
+	"selection": [
+	  {"name":"firefox", "version":"91.0.0"},
+	  {"name":"mplayer", "version":"1.4.0"},
+	  {"name":"nss", "version":"3.90.0"}
+	],
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["why-blocked", "firefox-esr" ],
+      "catalog":"frozen_base",
+      "exit":1,
+      "id":"f_why_blocked_alias",
+      "json": {
+	"blocked": [
+	  {
+	    "base_has":"2.31.0",
+	    "name":"glibc",
+	    "needs": {"op":"gte", "version":"2.35.0"}
+	  },
+	  {
+	    "base_has":"2.24.0",
+	    "name":"gtk",
+	    "needs": {"op":"gte", "version":"3.24.0"}
+	  }
+	],
+	"command":"why-blocked",
+	"request":"firefox-esr",
+	"status":"blocked"
+      }
+    },
+    {
+      "argv": ["why-blocked", "mplayer" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_why_blocked_clear",
+      "json": {
+	"blocked": [],
+	"command":"why-blocked",
+	"request":"mplayer",
+	"status":"clear"
+      }
+    },
+    {
+      "argv": ["deps", "firefox" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_deps",
+      "json": {
+	"command":"deps",
+	"depends": [
+	  {
+	    "constraint": {"op":"gte", "version":"2.31.0"},
+	    "dep":"glibc",
+	    "version":"91.0.0"
+	  },
+	  {
+	    "constraint": {"op":"gte", "version":"2.24.0"},
+	    "dep":"gtk",
+	    "version":"91.0.0"
+	  },
+	  {
+	    "constraint": {"op":"gte", "version":"3.68.0"},
+	    "dep":"nss",
+	    "version":"91.0.0"
+	  },
+	  {
+	    "constraint": {"op":"gte", "version":"2.35.0"},
+	    "dep":"glibc",
+	    "version":"115.0.0"
+	  },
+	  {
+	    "constraint": {"op":"gte", "version":"3.24.0"},
+	    "dep":"gtk",
+	    "version":"115.0.0"
+	  },
+	  {
+	    "constraint": {"op":"gte", "version":"3.90.0"},
+	    "dep":"nss",
+	    "version":"115.0.0"
+	  }
+	],
+	"package":"firefox",
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["deps", "gtk" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_deps_gtk",
+      "json": {
+	"command":"deps",
+	"depends": [
+	  {
+	    "constraint": {"hi":"2.35.0", "lo":"2.31.0", "op":"range"},
+	    "dep":"glibc",
+	    "version":"2.24.0"
+	  },
+	  {
+	    "constraint": {"op":"gte", "version":"2.35.0"},
+	    "dep":"glibc",
+	    "version":"3.24.0"
+	  }
+	],
+	"package":"gtk",
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["what-needs", "glibc" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_what_needs",
+      "json": {
+	"command":"what-needs",
+	"dependents": [
+	  {"name":"firefox", "version":"91.0.0"},
+	  {"name":"firefox", "version":"115.0.0"},
+	  {"name":"gcc", "version":"10.2.0"},
+	  {"name":"gcc", "version":"12.2.0"},
+	  {"name":"gtk", "version":"2.24.0"},
+	  {"name":"gtk", "version":"3.24.0"},
+	  {"name":"mplayer", "version":"1.4.0"},
+	  {"name":"pango", "version":"1.48.0"},
+	  {"name":"pango", "version":"1.50.0"},
+	  {"name":"rxvt", "version":"9.22.0"},
+	  {"name":"systemd", "version":"249.0.0"}
+	],
+	"installed_only":false,
+	"package":"glibc",
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["what-needs", "glibc", "--installed" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_what_needs_installed",
+      "json": {
+	"command":"what-needs",
+	"dependents": [
+	  {"name":"firefox", "version":"91.0.0"},
+	  {"name":"gcc", "version":"10.2.0"},
+	  {"name":"gtk", "version":"2.24.0"},
+	  {"name":"mplayer", "version":"1.4.0"},
+	  {"name":"pango", "version":"1.48.0"},
+	  {"name":"rxvt", "version":"9.22.0"}
+	],
+	"installed_only":true,
+	"package":"glibc",
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["orphans", "firefox" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_orphans",
+      "json": {
+	"command":"orphans",
+	"orphans": [ {"name":"nss", "version":"3.68.0"} ],
+	"package":"firefox",
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["audit" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_audit",
+      "json": {
+	"audit": [
+	  {"kind":"held", "name":"busybox", "reason":"modified"},
+	  {"kind":"held", "name":"glibc", "reason":"abi_anchor"},
+	  {"kind":"suggest", "name":"gtk", "reason":"abi_anchor"},
+	  {"kind":"over_frozen", "name":"pango", "reason":null},
+	  {"kind":"held", "name":"rxvt", "reason":"footprint"}
+	],
+	"command":"audit",
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["why-frozen", "glibc" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_why_frozen_anchor",
+      "json": {
+	"command":"why-frozen",
+	"kind":"held",
+	"package":"glibc",
+	"reason":"abi_anchor",
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["why-frozen", "gtk" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_why_frozen_suggest",
+      "json": {
+	"command":"why-frozen",
+	"kind":"suggest",
+	"package":"gtk",
+	"reason":"abi_anchor",
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["why-frozen", "pango" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_why_frozen_over",
+      "json": {
+	"command":"why-frozen",
+	"kind":"over_frozen",
+	"package":"pango",
+	"reason":null,
+	"status":"ok"
+      }
+    },
+    {
+      "argv": ["why-frozen", "nss" ],
+      "catalog":"frozen_base",
+      "exit":1,
+      "id":"f_why_frozen_absent",
+      "json": {
+	"command":"why-frozen",
+	"kind":null,
+	"package":"nss",
+	"reason":null,
+	"status":"not-frozen"
+      }
+    },
+    {
+      "argv": ["safe-upgrade", "glibc", "2.35.0" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_safe_upgrade_coord",
+      "json": {
+	"command":"safe-upgrade",
+	"package":"glibc",
+	"result": {
+	  "set": [
+	    {"name":"glibc", "version":"2.35.0"},
+	    {"name":"gtk", "version":"3.24.0"},
+	    {"name":"pango", "version":"1.50.0"}
+	  ],
+	  "verdict":"coordinated"
+	},
+	"status":"ok",
+	"version":"2.35.0"
+      }
+    },
+    {
+      "argv": ["safe-upgrade", "busybox", "1.35.0" ],
+      "catalog":"frozen_base",
+      "exit":1,
+      "id":"f_safe_upgrade_unsafe",
+      "json": {
+	"command":"safe-upgrade",
+	"package":"busybox",
+	"result": {"reason":"modified", "verdict":"unsafe"},
+	"status":"fail",
+	"version":"1.35.0"
+      }
+    },
+    {
+      "argv": ["safe-upgrade", "urxvt", "9.22.0" ],
+      "catalog":"frozen_base",
+      "exit":0,
+      "id":"f_safe_upgrade_alias",
+      "json": {
+	"command":"safe-upgrade",
+	"package":"urxvt",
+	"result": {"cost":"footprint", "verdict":"safe"},
+	"status":"ok",
+	"version":"9.22.0"
+      }
+    },
+    {
+      "argv": ["safe-upgrade", "nss", "3.90.0" ],
+      "catalog":"frozen_base",
+      "exit":1,
+      "id":"f_safe_upgrade_none",
+      "json": {
+	"command":"safe-upgrade",
+	"package":"nss",
+	"result": {"verdict":"no_candidate"},
+	"status":"fail",
+	"version":"3.90.0"
+      }
+    }
+  ]
+}

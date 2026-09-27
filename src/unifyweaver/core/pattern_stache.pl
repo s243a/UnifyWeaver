@@ -119,7 +119,66 @@ parse_dialect_header(Line, Version) :-
 %  template fails when it is loaded, not when the offending case is
 %  first needed.
 check_stache_template(stache(_, Body)) :-
+    check_stache_structure(Body),
     check_blocks_in(Body).
+
+% Validate the structural tags independently of the rendering scanner: the
+% latter deliberately fails when it cannot find a complete block.
+check_stache_structure(Text) :-
+    scan_stache_tags(Text, []).
+
+scan_stache_tags(Text, Stack) :-
+    (   sub_string(Text, Open, 2, _, "{{")
+    ->  Start is Open + 2,
+        sub_string(Text, Start, _, 0, Tail),
+        (   sub_string(Tail, End, 2, _, "}}")
+        ->  sub_string(Tail, 0, End, _, Tag),
+            tag_structure(Tag, Stack, NextStack),
+            After is End + 2,
+            sub_string(Tail, After, _, 0, Rest),
+            scan_stache_tags(Rest, NextStack)
+        ;   ( structural_tag_start(Tail)
+            -> structure_error(unterminated_tag(Tail))
+            ;  finish_stache_stack(Stack)
+            )
+        )
+    ;   finish_stache_stack(Stack)
+    ).
+
+structural_tag_start(Tag) :-
+    split_string(Tag, " \t\r\n", " \t\r\n", [Name|_]),
+    memberchk(Name, ["match", "case", "default", "/match"]).
+
+tag_structure(Tag, Stack, Next) :-
+    split_string(Tag, " \t\r\n", " \t\r\n", Words),
+    (   Words = ["match", Key], Key \= "",
+        string_concat("match ", Key, Tag)
+    ->  Next = [match(false)|Stack]
+    ;   Words = ["case"|_]
+    ->  (   Stack = [match(false)|_], sub_string(Tag, 0, 5, _, "case ")
+        ->  Next = Stack
+        ;   structure_error(misplaced_case(Tag))
+        )
+    ;   Tag = "default"
+    ->  (   Stack = [match(false)|Rest]
+        ->  Next = [match(true)|Rest]
+        ;   structure_error(misplaced_default)
+        )
+    ;   Tag = "/match"
+    ->  (   Stack = [_|Rest]
+        ->  Next = Rest
+        ;   structure_error(unexpected_match_close)
+        )
+    ;   structural_tag_start(Tag)
+    ->  structure_error(malformed_tag(Tag))
+    ;   Next = Stack
+    ).
+
+finish_stache_stack([]).
+finish_stache_stack([_|_]) :- structure_error(unclosed_match).
+
+structure_error(Reason) :-
+    throw(error(pattern_stache(malformed_structure(Reason)), _)).
 
 check_blocks_in(Text) :-
     (   find_match_block(Text, _Key, _Before, MatchBody, After)
@@ -229,23 +288,22 @@ render_stache(Text, Dict, Result) :-
     render_body(S, Dict, Result).
 
 render_body(Text, Dict, Result) :-
-    expand_match_blocks(Text, Dict, Expanded),
-    substitute_placeholders(Expanded, Dict, Result).
+    expand_match_blocks(Text, Dict, Result).
 
 %% expand_match_blocks(+Template, +Dict, -Result)
-%  The selected body is expanded and substituted under the CHILD dict
-%  carrying the pattern bindings, so bindings are visible to the body
-%  and invisible past {{/match}}.
+%  Render each source segment once in its own scope. Substituting the
+%  concatenated result again would reinterpret placeholder-shaped data
+%  inserted by a selected case (for example an atom named {{K}}).
 expand_match_blocks(Template, Dict, Result) :-
     (   find_match_block(Template, Key, Before, MatchBody, After)
     ->  parse_match_cases(MatchBody, Cases, Default),
         resolve_match_term(Key, Dict, Cases, Default, Body, ChildDict),
-        expand_match_blocks(Body, ChildDict, BodyExpanded),
-        substitute_placeholders(BodyExpanded, ChildDict, BodyDone),
-        expand_match_blocks(After, Dict, AfterExpanded),
-        string_concat(Before, BodyDone, P1),
-        string_concat(P1, AfterExpanded, Result)
-    ;   Result = Template
+        substitute_placeholders(Before, Dict, BeforeDone),
+        expand_match_blocks(Body, ChildDict, BodyDone),
+        expand_match_blocks(After, Dict, AfterDone),
+        string_concat(BeforeDone, BodyDone, P1),
+        string_concat(P1, AfterDone, Result)
+    ;   substitute_placeholders(Template, Dict, Result)
     ).
 
 %% resolve_match_term(+Key, +Dict, +Cases, +Default, -Body, -ChildDict)
@@ -288,36 +346,51 @@ resolve_match_term(Key, Dict, Cases, Default, Body, ChildDict) :-
     ).
 
 %% substitute_placeholders(+Text, +Dict, -Result)
-%  Replace {{q:Key}} (~q, re-readable) then {{Key}} (~w, display) for
-%  every Key=Value in Dict.  Keys not in the dict are left verbatim in
-%  both forms, matching the string dialect's behaviour (changing this
-%  is a deliberate exclusion in the SPEC — it would be a new dialect
-%  version, since it changes output).
-substitute_placeholders(Text, [], Text) :- !.
-substitute_placeholders(Text, [Key=Value|Rest], Result) :-
-    format(atom(QPlaceholder), '{{q:~w}}', [Key]),
-    format(atom(QValueAtom), '~q', [Value]),
-    atom_string(QValueAtom, QValueStr),
-    atom_string(QPlaceholder, QPlaceholderStr),
-    replace_substring(Text, QPlaceholderStr, QValueStr, QMid),
-    format(atom(Placeholder), '{{~w}}', [Key]),
-    format(atom(ValueAtom), '~w', [Value]),
-    atom_string(ValueAtom, ValueStr),
-    atom_string(Placeholder, PlaceholderStr),
-    replace_substring(QMid, PlaceholderStr, ValueStr, Mid),
-    substitute_placeholders(Mid, Rest, Result).
-
-replace_substring(String, Find, Replace, Result) :-
-    string_length(Find, FindLen),
-    (   sub_string(String, Before, FindLen, After, Find)
-    ->  sub_string(String, 0, Before, _, Prefix),
-        Start is Before + FindLen,
-        sub_string(String, Start, After, 0, Suffix),
-        replace_substring(Suffix, Find, Replace, RestResult),
-        string_concat(Prefix, Replace, Part1),
-        string_concat(Part1, RestResult, Result)
-    ;   Result = String
+%  Scan only the source template. Inserted values must remain literal even
+%  when they contain a placeholder for another key in the dict.
+substitute_placeholders(Text, Dict, Result) :-
+    (   sub_string(Text, Open, 2, _, "{{"),
+        TagStart is Open + 2,
+        sub_string(Text, Close, 2, _, "}}"),
+        Close >= TagStart
+    ->  (   sub_string(Text, InnerOpen, 2, _, "{{"),
+            InnerOpen > Open,
+            InnerOpen < Close
+        ->  sub_string(Text, 0, InnerOpen, _, Prefix),
+            sub_string(Text, InnerOpen, _, 0, Remainder),
+            substitute_placeholders(Remainder, Dict, Tail),
+            string_concat(Prefix, Tail, Result)
+        ;   substitute_one_placeholder(Text, Dict, Open, TagStart, Close, Result)
+        )
+    ;   Result = Text
     ).
+
+substitute_one_placeholder(Text, Dict, Open, TagStart, Close, Result) :-
+        TagLen is Close - TagStart,
+        sub_string(Text, 0, Open, _, Before),
+        sub_string(Text, TagStart, TagLen, _, Tag),
+        SuffixStart is Close + 2,
+        sub_string(Text, SuffixStart, _, 0, Suffix),
+        (   placeholder_value(Tag, Dict, Value)
+        ->  Replacement = Value
+        ;   MarkerLen is SuffixStart - Open,
+            sub_string(Text, Open, MarkerLen, _, Replacement)
+        ),
+        substitute_placeholders(Suffix, Dict, SuffixDone),
+        string_concat(Before, Replacement, PrefixDone),
+        string_concat(PrefixDone, SuffixDone, Result).
+
+placeholder_value(Tag, Dict, Replacement) :-
+    (   sub_string(Tag, 0, 2, _, "q:")
+    ->  sub_string(Tag, 2, _, 0, KeyText),
+        Format = '~q'
+    ;   KeyText = Tag,
+        Format = '~w'
+    ),
+    member(Key=Value, Dict),
+    format(string(KeyText), '~w', [Key]),
+    !,
+    format(string(Replacement), Format, [Value]).
 
 %% ============================================
 %% BLOCK SCANNING

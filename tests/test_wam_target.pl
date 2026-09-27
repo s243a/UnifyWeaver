@@ -96,6 +96,9 @@ test_nested_wrap(X) :- test_nested_check(box(inner(X, done))).
 
 :- dynamic test_failed/0.
 
+:- dynamic test_sole_negation/0.
+test_sole_negation :- \+ fail.
+
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
 
@@ -226,6 +229,50 @@ test_wam_multi_clause_findall_emits_allocate :-
     ;   wam_target:compile_predicate_to_wam(user:test_multi_findall/1, [], Code2),
         format(user_error, 'DEBUG: multi-clause findall output:~n~w~n', [Code2]),
         fail_test(Test, 'Multi-clause findall body missing allocate/deallocate per clause')
+    ).
+
+test_wam_sole_negation_frame_gate :-
+    Test = 'WAM: sole negation allocates for both inline rewrites, not for the runtime builtin',
+    (   wam_target:compile_predicate_to_wam(
+            user:test_sole_negation/0,
+            [ite_use_y_level(true)],
+            InlineCode),
+        atom_string(InlineCode, Inline),
+        sub_string(Inline, _, _, _, 'allocate'),
+        sub_string(Inline, _, _, _, 'get_level Y1'),
+        sub_string(Inline, _, _, _, 'cut Y1'),
+        sub_string(Inline, _, _, _, 'deallocate'),
+        wam_target:compile_predicate_to_wam_items(
+            user:test_sole_negation/0,
+            [ite_use_y_level(true)],
+            InlineItems),
+        member(allocate, InlineItems),
+        member(get_level("Y1"), InlineItems),
+        member(cut("Y1"), InlineItems),
+        member(deallocate, InlineItems),
+        wam_target:compile_predicate_to_wam(
+            user:test_sole_negation/0,
+            [ite_use_y_level(false)],
+            LegacyCode),
+        atom_string(LegacyCode, Legacy),
+        % Legacy hard-cut rewrite ((G,!,fail);true): its `builtin_call !/0`
+        % cuts to the env frame barrier, so the clause MUST get a frame
+        % (goals_contain_hard_cut_negation/1) -- but no Y-level barrier.
+        sub_string(Legacy, _, _, _, 'builtin_call !/0'),
+        sub_string(Legacy, _, _, _, 'allocate'),
+        \+ sub_string(Legacy, _, _, _, 'get_level'),
+        sub_string(Legacy, _, _, _, 'deallocate'),
+        wam_target:compile_predicate_to_wam(
+            user:test_sole_negation/0,
+            [ite_use_y_level(true), inline_not_as_failure(false)],
+            RuntimeCode),
+        atom_string(RuntimeCode, Runtime),
+        sub_string(Runtime, _, _, _, 'builtin_call \\+/1, 1'),
+        \+ sub_string(Runtime, _, _, _, 'allocate'),
+        \+ sub_string(Runtime, _, _, _, 'get_level'),
+        \+ sub_string(Runtime, _, _, _, 'deallocate')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Sole-negation allocation gate did not match the inline Y-level rewrite')
     ).
 
 %% Count non-overlapping occurrences of Sub in S.
@@ -820,6 +867,7 @@ run_tests :-
     test_wam_multi_clause_findall_emits_allocate,
     test_wam_bare_negation_emits_allocate,
     test_wam_nested_negation_emits_allocate,
+    test_wam_sole_negation_frame_gate,
     test_wam_a2_indexing,
     test_wam_mixed_mode_a1_indexing,
     test_wam_mixed_mode_a2_indexing,

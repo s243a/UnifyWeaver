@@ -1,0 +1,1 @@
+LIB_1 { global: foo; foo_legacy; local: *; };

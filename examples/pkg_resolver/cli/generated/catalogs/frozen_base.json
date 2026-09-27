@@ -1,0 +1,73 @@
+{
+  "aliases": [ ["urxvt", "rxvt" ],  ["firefox-esr", "firefox" ] ],
+  "base": [
+    ["glibc",  [2, 31, 0 ], "abi_anchor" ],
+    ["gtk",  [2, 24, 0 ], "blanket" ],
+    ["pango",  [1, 48, 0 ], "blanket" ],
+    ["rxvt",  [9, 22, 0 ], "footprint" ],
+    ["busybox",  [1, 31, 0 ], "modified" ]
+  ],
+  "conflicts": [ ["systemd",  [249, 0, 0 ], "busybox" ] ],
+  "depends": [
+    [
+      "gtk",
+      [2, 24, 0 ],
+      "glibc",
+      {"hi": [2, 35, 0 ], "lo": [2, 31, 0 ], "op":"range"}
+    ],
+    ["gtk",  [3, 24, 0 ], "glibc",  {"op":"gte", "v": [2, 35, 0 ]} ],
+    [
+      "pango",
+      [1, 48, 0 ],
+      "gtk",
+      {"hi": [3, 0, 0 ], "lo": [2, 24, 0 ], "op":"range"}
+    ],
+    ["pango",  [1, 48, 0 ], "glibc",  {"op":"gte", "v": [2, 31, 0 ]} ],
+    ["pango",  [1, 50, 0 ], "gtk",  {"op":"gte", "v": [3, 24, 0 ]} ],
+    ["pango",  [1, 50, 0 ], "glibc",  {"op":"gte", "v": [2, 35, 0 ]} ],
+    ["firefox",  [91, 0, 0 ], "gtk",  {"op":"gte", "v": [2, 24, 0 ]} ],
+    ["firefox",  [91, 0, 0 ], "glibc",  {"op":"gte", "v": [2, 31, 0 ]} ],
+    ["firefox",  [91, 0, 0 ], "nss",  {"op":"gte", "v": [3, 68, 0 ]} ],
+    ["firefox",  [115, 0, 0 ], "gtk",  {"op":"gte", "v": [3, 24, 0 ]} ],
+    ["firefox",  [115, 0, 0 ], "glibc",  {"op":"gte", "v": [2, 35, 0 ]} ],
+    ["firefox",  [115, 0, 0 ], "nss",  {"op":"gte", "v": [3, 90, 0 ]} ],
+    ["mplayer",  [1, 4, 0 ], "gtk",  {"op":"gte", "v": [2, 24, 0 ]} ],
+    ["mplayer",  [1, 4, 0 ], "glibc",  {"op":"gte", "v": [2, 31, 0 ]} ],
+    ["rxvt",  [9, 22, 0 ], "glibc",  {"op":"gte", "v": [2, 31, 0 ]} ],
+    ["gcc",  [10, 2, 0 ], "glibc",  {"op":"gte", "v": [2, 31, 0 ]} ],
+    ["gcc",  [12, 2, 0 ], "glibc",  {"op":"gte", "v": [2, 35, 0 ]} ],
+    ["systemd",  [249, 0, 0 ], "glibc",  {"op":"gte", "v": [2, 31, 0 ]} ]
+  ],
+  "excluded": ["systemd" ],
+  "installed": [
+    ["firefox",  [91, 0, 0 ] ],
+    ["gtk",  [2, 24, 0 ] ],
+    ["glibc",  [2, 31, 0 ] ],
+    ["pango",  [1, 48, 0 ] ],
+    ["nss",  [3, 68, 0 ] ],
+    ["mplayer",  [1, 4, 0 ] ],
+    ["rxvt",  [9, 22, 0 ] ],
+    ["busybox",  [1, 31, 0 ] ]
+  ],
+  "layers": [ {"name":"devx", "packages": [ ["gcc",  [10, 2, 0 ] ] ]} ],
+  "packages": [
+    ["glibc",  [2, 31, 0 ] ],
+    ["glibc",  [2, 35, 0 ] ],
+    ["gtk",  [2, 24, 0 ] ],
+    ["gtk",  [3, 24, 0 ] ],
+    ["pango",  [1, 48, 0 ] ],
+    ["pango",  [1, 50, 0 ] ],
+    ["nss",  [3, 68, 0 ] ],
+    ["nss",  [3, 90, 0 ] ],
+    ["firefox",  [91, 0, 0 ] ],
+    ["firefox",  [115, 0, 0 ] ],
+    ["mplayer",  [1, 4, 0 ] ],
+    ["rxvt",  [9, 22, 0 ] ],
+    ["busybox",  [1, 31, 0 ] ],
+    ["busybox",  [1, 35, 0 ] ],
+    ["gcc",  [10, 2, 0 ] ],
+    ["gcc",  [12, 2, 0 ] ],
+    ["systemd",  [249, 0, 0 ] ]
+  ],
+  "requested": ["firefox", "mplayer" ]
+}

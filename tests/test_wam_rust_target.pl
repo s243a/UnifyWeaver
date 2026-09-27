@@ -880,7 +880,7 @@ test_foreign_stream_stage_traversal_ir :-
         sub_string(TraversalCode, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
         sub_string(TraversalCode, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
         sub_string(TraversalCode, _, _, _, 'let agg_value = (cost + 1_f64);'),
-        sub_string(TraversalCode, _, _, _, 'packed_results.push(Value::Str("__tuple__".to_string(), vec![')
+        sub_string(TraversalCode, _, _, _, 'packed_results.push(Value::strv("__tuple__".to_string(), vec![')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign stream stage traversal did not render expected joined traversal')
     ).
@@ -2095,7 +2095,7 @@ fn compiled_runtime_parser_parses_public_entries() {
     let mut vm = empty_vm();
     let ops = op_table(&mut vm);
     vm.reset_query();
-    let codes = Value::List("p(a)".chars().map(|c| Value::Integer(c as i64)).collect());
+    let codes = Value::list("p(a)".chars().map(|c| Value::Integer(c as i64)).collect());
     assert!(parse_term_from_codes_3(
         &mut vm,
         codes,

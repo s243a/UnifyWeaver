@@ -1,0 +1,5 @@
+# Architecture-tuple fixture (Astra re-review 2): (arch=gnu-any-amd64) is a dpkg
+# GNU tuple wildcard we do not match; the row is rejected, not mis-selected.
+libtuple.so.1 #PACKAGE# #MINVER#
+ (arch=gnu-any-amd64)tuple_fn@Base 1.0
+ plain_fn@Base 1.0
