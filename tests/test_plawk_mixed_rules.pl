@@ -63,10 +63,35 @@ test(end_reading_the_table_still_works, [condition(clang_available)]) :-
     run("{ c[$1]++; n++ } END { print n; print c[\"a\"] }\n", "3\n2\n"),
     !.
 
+% --- PR 2: element reads in a rule-body print -------------------------------
+
+% `print c[$1]` -- a FIELD-keyed read, through the table print helper.
+test(field_key_read_in_a_body_print, [condition(clang_available)]) :-
+    run("{ c[$1]++; n++; print n, c[$1] }\n", "1 1\n2 1\n3 2\n"),
+    !,
+    run("{ c[$1]++; n++; print $1 \"=\" c[$1] }\n", "a=1\nb=1\na=2\n"),
+    !.
+
+% An ABSENT element prints as awk's empty string, not 0 -- for a field key and for a
+% variable key. The variable-key read printed 0 before this change (wrong output,
+% also on the base: `{ k = $1; print c[k] "|"; c[k]++ }` printed "0|").
+test(absent_element_prints_empty, [condition(clang_available)]) :-
+    run("{ n++; print c[$1] \"|\"; c[$1]++ }\n", "|\n|\n1|\n"),
+    !,
+    run("{ k = $1; print c[k] \"|\"; c[k]++ }\n", "|\n|\n1|\n"),
+    !,
+    run("{ k = $1; c[k]++; j = \"zz\"; print c[j] \"|\" }\n", "|\n|\n|\n"),
+    !,
+    run("{ n++; c[n]++; m = n + 5; print c[m] \"|\" }\n", "|\n|\n|\n"),
+    !,
+    % present keys unchanged
+    run("{ k = $1; c[k]++; print k, c[k] }\n", "a 1\nb 1\na 2\n"),
+    !.
+
 % Forms the later PRs teach decline or fail to parse -- never exit 4.
 test(later_forms_do_not_miscompile) :-
     forall(member(Src,
-            [ "{ c[$1]++; n++; print n, c[$1] }\n",
+            [ "{ c[$1] += $2; n++; print c[$1] }\n",
               "{ c[$1]++; if (c[$1] > 1) print \"dup\", $1 }\n",
               "{ split($1, a, \",\"); n++; print a[2], n }\n",
               "{ n = split($1, a, \",\"); print n }\n"
