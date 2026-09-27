@@ -299,8 +299,9 @@ plawk_f64_table_line_ok(Line) :-
 %
 % Checked on the OUTPUT: the mixed walker's split row marks the table it filled
 % (`; plawk-mixed-split(NAME)=N`), and every IR line that touches
-% %plawk_assoc_table_N must be the split fill, the positional str print, or the
-% table's new/free. Any other use declines the program.
+% %plawk_assoc_table_N must be the split fill, the positional str print, slot
+% iteration, a key read tagged `; plawk-mixed-split-key` (the mixed for-in row's
+% positional read), or the table's new/free. Any other use declines the program.
 plawk_program_native_driver_ir(Program, InputPath, DriverIR) :-
     \+ nb_current(plawk_mixed_split_check, active),
     Program = program(_Begin, Rules, _End),
@@ -338,7 +339,14 @@ plawk_mixed_split_marker(IR, TableIndex) :-
     number_codes(TableIndex, DigitCodes).
 
 plawk_mixed_split_table_line_ok(Line) :-
+    sub_string(Line, _, _, _, "@wam_assoc_i64_key_at("),
+    !,
+    % a key read from a split table is a POSITION: only the mixed for-in row's
+    % positional read (which prints it as a number) is tagged
+    sub_string(Line, _, _, _, "; plawk-mixed-split-key").
+plawk_mixed_split_table_line_ok(Line) :-
     member(Allowed, ["; plawk-mixed-split(", "@wam_str_split_into(",
+                     "@wam_assoc_i64_iter_next(",
                      "@wam_str_split_into_re(", "@wam_assoc_str_print(",
                      "@wam_assoc_i64_new(", "@wam_assoc_i64_free("]),
     sub_string(Line, _, _, _, Allowed),
@@ -9580,6 +9588,18 @@ plawk_mixed_update_action(split_into(field(KeyIndex), var(_ArrayName), string(Se
 plawk_mixed_update_action(split_count(CountName, Split)) :-
     atom(CountName),
     plawk_mixed_update_action(Split).
+% `for (k in arr) print ...` in a mixed body: print-only bodies (the walker's
+% for-in row). The loop key may not also be a scalar (checked at the row). NR and
+% FNR decline: the record counter is defined only when the program-wide print
+% scan sees them, and that scan does not look into a for-in body (teaching it
+% would expose the loop key as a scalar read to every driver).
+plawk_mixed_update_action(for_in(var(LoopVar), var(ArrayName), Body)) :-
+    atom(LoopVar), atom(ArrayName),
+    Body = [_ | _],
+    forall(member(Action, Body),
+        ( Action = print(Fields), Fields = [_ | _],
+          maplist(plawk_rule_body_print_field, Fields) )),
+    \+ ( sub_term(Special, Body), ( Special == special('NR') ; Special == special('FNR') ) ).
 % Loops in a mixed body: the walker's loop rows are shared with the scalar chain
 % and thread the table plan into the body (a `for (i = 1; i <= n; i++)` over split
 % pieces parses to a while_loop).
@@ -17887,6 +17907,120 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
     [Pair],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, NextExits).
+% `for (k in arr) print ...` in the mixed chain: iterate the table's occupied
+% slots (the pure-assoc chain's loop shape) and print each body line through the
+% walker's own print emitter, so OFS/ORS and the print protocol are the same as a
+% plain body print. The loop key and the iterated element are rewritten to loop
+% terms first:
+%   k       -> ssa(Key) on a positional (split) table -- the key IS the position;
+%              ssa_str(Key) on a counted table -- the key is an interned atom id;
+%   arr[k]  -> assoc_pos_str(T, Key) (str value by position) or assoc_keyid(T, Key).
+% Any other field resolves as in a plain print (scalars read the loop-invariant
+% slot values: the body only prints). A loop key that is also a scalar slot, a
+% cross-table read by the loop key, or a positional table that is not str-valued
+% declines. Scalar values are unchanged, so no phis; the row ends in its own
+% after-block.
+plawk_scalar_action_sequence_pairs([for_in(var(LoopVar), var(ArrayName), Body) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { \+ ( member(Slot, Slots), plawk_slot_name(Slot, LoopVar) ),
+      plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+      (   plawk_assoc_plan_posarray_array(AssocPlan, ArrayName)
+      ->  plawk_assoc_plan_str_array(AssocPlan, ArrayName),
+          Positional = true
+      ;   \+ plawk_assoc_plan_str_array(AssocPlan, ArrayName),
+          Positional = false
+      ),
+      format(atom(B), '~w_forin_~w', [Prefix, OpIndex]),
+      format(atom(KeyIR), '%~w_key', [B]),
+      plawk_mixed_forin_body_ir(Body, LoopVar, ArrayName, TableIndex, Positional,
+          KeyIR, Slots, Values0, AssocPlan, FieldSeparator, OutputSeparator, B, 0,
+          BodyGlobals, BodyIRs),
+      !,
+      atomic_list_concat(BodyGlobals, '\n', GlobalIR),
+      atomic_list_concat(BodyIRs, '\n', BodyIR),
+      (   Positional == true
+      ->  KeyTag = '  ; plawk-mixed-split-key'
+      ;   KeyTag = ''
+      ),
+      format(atom(IR),
+'  br label %~w_entry
+
+~w_entry:
+  br label %~w_head
+
+~w_head:
+  %~w_idx = phi i64 [0, %~w_entry], [%~w_next, %~w_cont]
+  %~w_slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_idx)
+  %~w_done = icmp slt i64 %~w_slot, 0
+  br i1 %~w_done, label %~w_after, label %~w_body
+
+~w_body:
+  %~w_key = call i64 @wam_assoc_i64_key_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_slot)~w
+~w
+  br label %~w_cont
+
+~w_cont:
+  %~w_next = add i64 %~w_slot, 1
+  br label %~w_head
+
+~w_after:',
+          [B, B, B, B,
+           B, B, B, B,
+           B, TableIndex, B,
+           B, B,
+           B, B, B,
+           B,
+           B, TableIndex, B, KeyTag,
+           BodyIR,
+           B,
+           B,
+           B, B,
+           B,
+           B]),
+      format(atom(AfterLabel), '~w_after', [B]),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, AfterLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
+
+plawk_mixed_forin_body_ir([], _LoopVar, _ArrayName, _TableIndex, _Positional, _KeyIR,
+        _Slots, _Values, _AssocPlan, _FieldSeparator, _OutputSeparator, _B, _N, [], []).
+plawk_mixed_forin_body_ir([print(Fields) | Rest], LoopVar, ArrayName, TableIndex,
+        Positional, KeyIR, Slots, Values, AssocPlan, FieldSeparator, OutputSeparator,
+        B, N, [GlobalIR | Globals], [IR | IRs]) :-
+    maplist(plawk_mixed_forin_field(LoopVar, ArrayName, TableIndex, Positional, KeyIR),
+        Fields, LoopFields),
+    maplist(plawk_resolve_assoc_read_field(Slots, Values, AssocPlan), LoopFields,
+        ResolvedFields),
+    maplist(plawk_substitute_print_field(Slots, Values), ResolvedFields, SubFields),
+    format(atom(PrintPrefix), '~w_print_~w', [B, N]),
+    plawk_prefixed_print_action_ir(SubFields, FieldSeparator, OutputSeparator,
+        PrintPrefix, GlobalIR-IR),
+    N1 is N + 1,
+    plawk_mixed_forin_body_ir(Rest, LoopVar, ArrayName, TableIndex, Positional,
+        KeyIR, Slots, Values, AssocPlan, FieldSeparator, OutputSeparator, B, N1,
+        Globals, IRs).
+
+% A loop-scoped field: the key, the iterated element, or (not mentioning the loop
+% key) an ordinary print field left for the normal resolution.
+plawk_mixed_forin_field(LoopVar, _ArrayName, _TableIndex, true, KeyIR, var(LoopVar),
+        ssa(KeyIR)) :- !.
+plawk_mixed_forin_field(LoopVar, _ArrayName, _TableIndex, false, KeyIR, var(LoopVar),
+        ssa_str(KeyIR)) :- !.
+plawk_mixed_forin_field(LoopVar, ArrayName, TableIndex, true, KeyIR,
+        assoc(var(ArrayName), var(LoopVar)), assoc_pos_str(TableIndex, KeyIR)) :- !.
+plawk_mixed_forin_field(LoopVar, ArrayName, TableIndex, false, KeyIR,
+        assoc(var(ArrayName), var(LoopVar)), assoc_keyid(TableIndex, KeyIR)) :- !.
+plawk_mixed_forin_field(LoopVar, ArrayName, TableIndex, Positional, KeyIR,
+        concat(Parts0), concat(Parts)) :-
+    !,
+    maplist(plawk_mixed_forin_field(LoopVar, ArrayName, TableIndex, Positional, KeyIR),
+        Parts0, Parts).
+plawk_mixed_forin_field(LoopVar, _ArrayName, _TableIndex, _Positional, _KeyIR,
+        Field, Field) :-
+    \+ ( sub_term(Sub, Field), Sub == var(LoopVar) ).
+
 %% plawk_mixed_split_ir(+KeyIndex, +ArrayName, +Sep, +AssocPlan, +FieldSeparator,
 %%     +Prefix, +OpIndex, -GlobalIR, -IR, -CountVar)
 %  The mixed walker's split: source lines, the split call (whose result, the

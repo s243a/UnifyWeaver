@@ -28,7 +28,10 @@
 % checked on the generated IR). PR 4: `n = split(...)` (the count is a counter
 % slot, marked assigned so an unset count still prints "") and loops in a mixed
 % body -- the walker's loop rows are shared, so `for (i = 1; i <= n; i++) print
-% a[i]` walks the pieces. Later: for-in in a mixed body.
+% a[i]` walks the pieces. PR 5: `for (k in arr) print ...` in a mixed body --
+% print-only bodies through the walker's own print emitter; the loop key prints as
+% a number on a split table and as text on a counted one (the split-table IR check
+% requires the positional key read to be tagged).
 %
 % gawk is the oracle (verified against gawk 5.1.0, LC_ALL=C).
 
@@ -193,6 +196,44 @@ test(loops_beside_counted_tables, [condition(clang_available)]) :-
         "4 2\n"),
     !.
 
+% --- PR 5: for-in in a mixed body ------------------------------------------
+% for-in order is unspecified: outputs compare as sorted lines.
+
+test(forin_over_split_pieces, [condition(clang_available)]) :-
+    run_sorted_in("a,b,c 1\nx 2\n\nq,r 1\n",
+        "{ n = split($1, a, \",\"); for (k in a) print k, a[k] }\n",
+        "1 a\n1 q\n1 x\n2 b\n2 r\n3 c\n"),
+    !,
+    run_sorted_in("a,b,c 1\nx 2\n\nq,r 1\n",
+        "{ n = split($1, a, \",\"); for (k in a) print \"[\" k \"]\" a[k] }\n",
+        "[1]a\n[1]q\n[1]x\n[2]b\n[2]r\n[3]c\n"),
+    !,
+    run_sorted_in("a,b,c 1\nx 2\n\nq,r 1\n",
+        "{ n = split($1, a, \",\"); if (n > 1) for (k in a) print k, a[k] }\n",
+        "1 a\n1 q\n2 b\n2 r\n3 c\n"),
+    !.
+
+test(forin_over_a_counted_table, [condition(clang_available)]) :-
+    run_sorted_in("a 1\nb 2\na 3\nc 4\n",
+        "{ c[$1]++; n++; for (k in c) print k, c[k], n }\n",
+        "a 1 1\na 1 2\na 2 3\na 2 4\nb 1 2\nb 1 3\nb 1 4\nc 1 4\n"),
+    !,
+    run_sorted_in("a 1\nb 2\na 3\nc 4\n",
+        "{ c[$1]++; n++; for (k in c) { print k; print c[k] } }\n",
+        "1\n1\n1\n1\n1\n1\n2\n2\na\na\na\na\nb\nb\nb\nc\n"),
+    !.
+
+% NR/FNR in a for-in body, a cross-table read by the loop key, and a loop key that
+% is also a scalar decline cleanly (never exit 4 -- NR was an undefined counter).
+test(forin_boundaries_decline) :-
+    forall(member(Src,
+            [ "{ c[$1]++; n++; for (k in c) print k, NR }\n",
+              "{ c[$1]++; n++; for (k in c) print k, FNR }\n",
+              "{ n = split($1, a, \",\"); for (k in a) print k, c[k] }\n"
+            ]),
+        build_status_is(Src, 3)),
+    !.
+
 % Forms the later PRs teach decline or fail to parse -- never exit 4.
 test(later_forms_do_not_miscompile) :-
     forall(member(Src,
@@ -254,6 +295,35 @@ build_status_not_4(Src) :-
     -> true
     ;  format(user_error, "~n~w~n  build exit ~w (4 = clang miscompile)~n",
            [Src, Status]), fail
+    ).
+
+run_sorted_in(Input, Src, Expected) :-
+    odir(Dir),
+    directory_file_path(Dir, 'mr_bin', Bin),
+    ( exists_file(Bin) -> delete_file(Bin) ; true ),
+    directory_file_path(Dir, 'mr', Prog0),
+    atom_concat(Prog0, '.plawk', Prog),
+    setup_call_cleanup(open(Prog, write, S, [encoding(utf8)]),
+        write(S, Src), close(S)),
+    atom_concat(Prog0, '_in.txt', In),
+    setup_call_cleanup(open(In, write, SI, [encoding(utf8)]),
+        write(SI, Input), close(SI)),
+    build_status_of(Prog, Bin, BuildStatus),
+    assertion(BuildStatus == 0),
+    process_create(Bin, [In], [stdout(pipe(PS)), stderr(std), process(Pid)]),
+    read_string(PS, _, Out0),
+    close(PS),
+    process_wait(Pid, exit(0)),
+    split_string(Out0, "\n", "", Lines0),
+    append(Lines, [""], Lines0),
+    msort(Lines, Sorted),
+    atomic_list_concat(Sorted, '\n', Joined),
+    atom_string(Joined, JoinedS),
+    string_concat(JoinedS, "\n", Out),
+    ( Out == Expected
+    -> true
+    ;  format(user_error, "~n~w~n  got      ~q~n  expected ~q~n",
+           [Src, Out, Expected]), fail
     ).
 
 build_status_is(Src, Expected) :-
