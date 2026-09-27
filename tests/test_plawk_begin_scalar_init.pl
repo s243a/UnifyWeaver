@@ -135,14 +135,21 @@ test(print_only_constants, [condition(clang_available)]) :-
         "a:5\nb:7\nc:2\n"),
     !.
 
+% The mixed scalar+assoc driver: pinned as a decline until mixed rules with
+% write-only tables were admitted (tests/test_plawk_mixed_rules.pl). It seeds from the
+% same loop-header phi, so the BEGIN value flows (the marker check passes).
+test(mixed_driver_seeds, [condition(clang_available)]) :-
+    run("BEGIN { n = 1 }\n{ c[$1]++; n++ }\nEND { print n }\n", "4\n"),
+    !,
+    run_with("", "BEGIN { n = 1 }\n{ c[$1]++; n++ }\nEND { print n }\n", "1\n"),
+    !.
+
 test(unseedable_declines) :-
     forall(member(Src,
             [ % assigned twice in BEGIN: not order-independent
               "BEGIN { n = 1; n = 2 }\n{ n++ }\nEND { print n }\n",
               % read by another BEGIN statement
               "BEGIN { x = 5; print x }\n",
-              % mixed scalar+assoc driver
-              "BEGIN { n = 1 }\n{ c[$1]++; n++ }\nEND { print n }\n",
               % END-only
               "BEGIN { n = 0 }\nEND { print n }\n"
             ]),
