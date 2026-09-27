@@ -128,12 +128,26 @@ test(ir_double_table_uses_only_f64_value_entries) :-
     \+ sub_atom(IR, _, _, _, '@wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_0'),
     !.
 
-% Uses of a double table no emitter is taught decline -- never read the bits.
+% `++` on a double array (routed through the double `+=` as `+= 1`) and a
+% cross-table lookup by another array's loop key -- both declined by the IR check
+% until taught.
+test(double_array_increment_and_cross_lookup, [condition(clang_available)]) :-
+    run_sorted("{ c[$1] += $2; c[$1]++ } END { for (k in c) print k, c[k] }\n",
+        ["a 35.25", "b 6", "c 1250001"]),
+    !,
+    run("{ c[\"t\"] += $2; c[\"t\"]++ } END { print c[\"t\"] }\n",
+        "1.25004e+06\n"),
+    !,
+    run_sorted("{ c[$1] += $2; d[$1]++ } END { for (k in d) print k, d[k], c[k] }\n",
+        ["a 2 33.25", "b 1 5", "c 1 1250000"]),
+    !.
+
+% A concatenated END read of an array element declines for EVERY array (an
+% integer one too) -- a general gap, not a double-table one; it must still never
+% read the bits.
 test(untaught_double_table_uses_decline) :-
     forall(member(Src,
-            [ "{ c[$1] += $2; c[$1]++ } END { for (k in c) print k, c[k] }\n",
-              "{ c[$1] += $2; d[$1]++ } END { for (k in d) print k, d[k], c[k] }\n",
-              "{ c[$1] += $2 } END { print c[\"a\"], c[\"zz\"] \"|\" }\n"
+            [ "{ c[$1] += $2 } END { print c[\"a\"], c[\"zz\"] \"|\" }\n"
             ]),
         build_status(Src, 3)),
     !.
