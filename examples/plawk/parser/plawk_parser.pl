@@ -4614,7 +4614,7 @@ field_expr(length(Field)) -->
     field_expr(Field),
     ws,
     ")",
-    { plawk_builtin_string_arg(Field) }.
+    { plawk_length_builtin_arg(Field) }.
 field_expr(length(field(0))) -->
     "length",
     length_no_argument.
@@ -4657,6 +4657,28 @@ field_expr(substr(Field, Start, to_end)) -->
     { plawk_builtin_string_arg(Field),
       StartCodes \== [],
       number_codes(Start, StartCodes), Start >= 1 }.
+% `substr(s, EXPR [, EXPR])` with COMPUTED bounds -- `substr($0, index($0, " ") + 1)`,
+% `substr($1, 2, length($1) - 2)`. After the literal-bound productions above, so a
+% literal call keeps its plain-integer AST. The bounds parse as i64 arithmetic;
+% codegen admits only always-integral leaves (length, index, NR, NF, literals) and
+% declines the rest.
+field_expr(substr(Field, Start, Len)) -->
+    "substr",
+    ws,
+    "(",
+    ws,
+    field_expr(Field),
+    ws,
+    ",",
+    ws,
+    i64_additive_expr(Start0),
+    ws,
+    substr_len_arg(Len0),
+    ")",
+    { plawk_builtin_string_arg(Field),
+      substr_bound_value(Start0, Start),
+      substr_bound_value(Len0, Len),
+      \+ ( integer(Start), integer(Len) ) }.
 field_expr(index(Field, string(Needle))) -->
     "index",
     ws,
@@ -4680,7 +4702,7 @@ field_expr(tolower(Field)) -->
     field_expr(Field),
     ws,
     ")",
-    { plawk_builtin_string_arg(Field) }.
+    { plawk_case_builtin_arg(Field) }.
 field_expr(toupper(Field)) -->
     "toupper",
     ws,
@@ -4689,7 +4711,42 @@ field_expr(toupper(Field)) -->
     field_expr(Field),
     ws,
     ")",
-    { plawk_builtin_string_arg(Field) }.
+    { plawk_case_builtin_arg(Field) }.
+
+% The arguments toupper/tolower accept: the shared builtin-argument vocabulary,
+% plus a substr of it (`toupper(substr($1, 1, 1))`) -- a slice, which the case
+% printer maps as easily as a field. Narrower than widening
+% plawk_builtin_string_arg/1, which would admit every nesting everywhere at once.
+plawk_case_builtin_arg(Field) :-
+    plawk_builtin_string_arg(Field),
+    !.
+plawk_case_builtin_arg(substr(Inner, _Start, _Len)) :-
+    plawk_builtin_string_arg(Inner).
+
+% length() additionally takes a case builtin or a substr (`length(toupper($1))`,
+% `length(substr($0, 3))`): both are byte slices of the same field.
+plawk_length_builtin_arg(Field) :-
+    plawk_builtin_string_arg(Field),
+    !.
+plawk_length_builtin_arg(Field) :-
+    ( Field = toupper(_) ; Field = tolower(_) ; Field = substr(_, _, _) ),
+    ( Field = substr(Inner, _, _) -> true ; arg(1, Field, Inner0),
+      ( Inner0 = substr(Inner, _, _) -> true ; Inner = Inner0 ) ),
+    plawk_builtin_string_arg(Inner).
+
+substr_len_arg(Len) -->
+    ",",
+    ws,
+    i64_additive_expr(Len),
+    ws,
+    !.
+substr_len_arg(to_end) -->
+    [].
+
+substr_bound_value(int(V), V) :-
+    integer(V),
+    !.
+substr_bound_value(Bound, Bound).
 field_expr(assoc(var(Name), KeyExpr)) -->
     table_ident(Name),
     ws,
@@ -4708,6 +4765,8 @@ field_expr(field(Index)) -->
     }.
 field_expr(field_nf(Offset)) -->
     nf_field_ref(Offset).
+field_expr(field_var(Name, Offset)) -->
+    var_field_ref(Name, Offset).
 field_expr(string(Value)) -->
     quoted_string(ValueCodes),
     { string_codes(Value, ValueCodes)
@@ -5408,6 +5467,26 @@ nf_field_ref(Offset) -->
     ws,
     "NF",
     identifier_boundary,
+    ws,
+    nf_field_offset(Offset),
+    ws,
+    ")".
+
+%% var_field_ref(-Name, -Offset)//
+%
+%  `$i`, `$(i)`, `$(i-K)`, `$(i+K)` -- a field whose index is a SCALAR VARIABLE plus
+%  a literal offset (`for (i = 1; i <= NF; i++) print $i`), parsed to
+%  field_var(Name, Offset). Like field_nf/1 a distinct functor: every context not
+%  taught it declines. NF and the other specials are not variables here.
+var_field_ref(Name, 0) -->
+    "$",
+    identifier(Name),
+    { \+ scalar_cmp_reserved_name(Name), Name \== 'NF' }.
+var_field_ref(Name, Offset) -->
+    "$(",
+    ws,
+    identifier(Name),
+    { \+ scalar_cmp_reserved_name(Name), Name \== 'NF' },
     ws,
     nf_field_offset(Offset),
     ws,

@@ -54,8 +54,11 @@ test(forms_parse_to_field_nf) :-
     !.
 
 % `$NFX` is not `$NF` followed by X.
+% `$NFX` is not `$NF` followed by X. Since `$i` landed it is what awk reads it as:
+% the field indexed by the VARIABLE NFX (tests/test_plawk_dollar_var.pl).
 test(nf_needs_an_identifier_boundary) :-
-    \+ plawk_parse_string("{ print $NFX }\n", _),
+    plawk_parse_string("{ print $NFX }\n",
+        program([], [rule(always, [print([field_var('NFX', 0)])])], [])),
     !.
 
 % --- rule body -------------------------------------------------------------
