@@ -131,15 +131,12 @@ test(both_routes_emit_the_same_nf_instructions) :-
 
 % --- the route boundaries, pinned with their reasons ------------------
 
-% This STILL declines, but its reason changed underneath it: the statement-list
-% dispatcher now threads EndRecord (the "its own change" the old comment deferred
-% to), so the token boundary is retired. What remains is the driver-SELECTION
-% boundary pinned two tests up -- an END that reads no table never reaches the mixed
-% driver, in the single-print and statement-list forms alike. The token half is
-% shown retired by the paired positive: the same NF statement compiles once a
-% statement in the list reads a table.
-test(the_statement_list_form_without_an_assoc_read_still_declines) :-
-    build_status("{ n++; c[$1]++ } END { print NF; print n }\n", 3),
+% This WAS pinned as a decline at the driver-SELECTION boundary: an END that read no
+% table never reached the mixed driver. That guard is gone (a write-only table is
+% still a mixed program), so the statement-list form compiles; gawk 5.1.0 agrees.
+test(the_statement_list_form_without_an_assoc_read_now_works,
+        [condition(clang_available)]) :-
+    run("{ n++; c[$1]++ } END { print NF; print n }\n", "2\n3\n"),
     !.
 
 test(nf_in_a_statement_list_with_an_assoc_read_works,
@@ -147,11 +144,10 @@ test(nf_in_a_statement_list_with_an_assoc_read_works,
     run("{ n++; c[$1]++ } END { print NF; print c[\"5\"] }\n", "2\n2\n"),
     !.
 
-% NF with NO assoc field in the END print declines -- a driver-SELECTION boundary, not this
-% capability: with nothing reading a table in END, the program does not reach the mixed
-% driver at all. Paired with the working form so the difference is visible.
-test(nf_without_an_assoc_end_field_declines) :-
-    build_status("{ n++; c[$1]++ } END { print NF }\n", 3),
+% NF with NO assoc field in the END print: WAS a decline (the same driver-SELECTION
+% guard, now removed). It reaches the mixed driver and prints NF of the last record.
+test(nf_without_an_assoc_end_field_now_works, [condition(clang_available)]) :-
+    run("{ n++; c[$1]++ } END { print NF }\n", "2\n"),
     !.
 
 % WAS a trio of declines: the assoc-only route had no `special` clauses at all, and this was
