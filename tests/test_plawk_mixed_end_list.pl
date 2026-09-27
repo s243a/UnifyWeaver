@@ -162,16 +162,16 @@ test(printf_field_argument_now_works, [condition(clang_available)]) :-
         "1\nc\n", 0),
     !.
 
-% INHERITED: the mixed driver requires the END to reference a table. A single
-% print with no assoc reference declines at the merge base too, so a statement
-% list of the same shape declines for the same reason -- not a regression, and
-% pinned so a future fix to that admission updates both.
-test(no_assoc_reference_single_print_declines) :-
-    build_status("{ c[$1]++; n++ } END { print n }\n", 3),
+% These were pinned as INHERITED declines -- the mixed driver required the END to
+% reference a table -- "so a future fix to that admission updates both". The fix
+% landed (tests/test_plawk_mixed_rules.pl): a program whose tables are only written
+% compiles, and both match gawk.
+test(no_assoc_reference_single_print_now_works, [condition(clang_available)]) :-
+    run("{ c[$1]++; n++ } END { print n }\n", "3\n", 0),
     !.
 
-test(no_assoc_reference_statement_list_declines) :-
-    build_status("{ c[$1]++; n++ } END { print n; exit 3 }\n", 3),
+test(no_assoc_reference_statement_list_now_works, [condition(clang_available)]) :-
+    run("{ c[$1]++; n++ } END { print n; exit 3 }\n", "3\n", 3),
     !.
 
 % --- structure ------------------------------------------------------------

@@ -140,17 +140,17 @@ test(no_retain_buffer_when_no_field_is_read) :-
     assertion(\+ sub_string(LL, _, _, _, "@plawk_lastrec_buf")),
     !.
 
-% --- the boundary, unchanged and still pinned ---------------------------
+% --- the former boundary, now crossed ------------------------------------
 
-% These two STILL decline, but the reason CHANGED and this comment must change with
-% it or it protects a stale attribution. The old reason -- plawk_end_list_bodies/8
-% carried no token -- is retired: the dispatcher threads EndRecord now, and the same
-% programs WITH an assoc read in the END list compile (pinned below). What remains
-% is the driver-SELECTION boundary this suite already pins for the single-print
-% form: an END that reads no table never reaches the mixed driver at all.
-test(the_statement_list_form_without_an_assoc_read_still_declines) :-
-    build_status("{ n++; c[$1]++ } END { print $1; print n }\n", 3),
-    build_status("{ n++; c[$1]++ } END { print NF; print n }\n", 3),
+% These two WERE pinned as declines: an END that read no table never reached the mixed
+% driver (plawk_mixed_assoc_count_plan/3 required an END element print or an `in`
+% test). That driver-SELECTION guard is gone -- a table that is only WRITTEN is
+% still a mixed program -- so both compile, matching gawk 5.1.0 on this input.
+test(the_statement_list_form_without_an_assoc_read_now_works,
+        [condition(clang_available)]) :-
+    run("{ n++; c[$1]++ } END { print $1; print n }\n", "7\n3\n"),
+    !,
+    run("{ n++; c[$1]++ } END { print NF; print n }\n", "2\n3\n"),
     !.
 
 % ...and the token half is retired: the same statements compile once any statement

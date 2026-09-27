@@ -817,6 +817,54 @@ plawk_program_native_driver_ir(
             RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+% A mixed (scalar slots + assoc tables) program with NO END: `{ c[$1]++; n++; print
+% n, c[$1] }`. The single-print clause below minus the END print: no END fields, no
+% retained record, and end_print only frees the tables and returns the exit code.
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules, []),
+    InputPath,
+    DriverIR
+) :-
+    \+ plawk_begin_has_binfmt(BeginClauses),
+    plawk_mixed_state_plan(Rules, [], MixedPlan),
+    MixedPlan = mixed_plan(ScalarPlan, AssocPlan, _PlannedRules),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_field_separator(BeginClauses, FieldSeparator),
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_mixed_rule_chain_ir(MixedPlan, FieldSeparator, OutputSeparator,
+        RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    append(BodyPrintFields, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(ScalarPlan, RecordCounterExprs,
+        RecordLoopPhiIR, RecordCounterIR),
+    plawk_state_loop_phi_ir(ScalarPlan, StateLoopPhiIR),
+    plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
+    plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
+    plawk_mixed_rule_controls(MixedPlan, MixedRuleControls),
+    plawk_mixed_scalar_next_phi_ir(ScalarPlan, RuleCount, MixedRuleControls,
+        BranchControlExits, NextPhiIR),
+    plawk_break_close_ir(ScalarPlan, RuleCount, MixedRuleControls,
+        BranchControlExits, done, BreakCloseIR, FinalStatePhiIR),
+    phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
+    atomic_list_concat(FreeLines, '\n', FreeIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w', [BeginGlobalIR, RuleGlobalIR]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
+    plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w~w
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
+        [FinalStatePhiIR, FreeIR]),
+    llvm_emit_stream_driver_ir(InputPath,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, LoopPhiIR,
+            lowered_mixed, RecordIR, NextPhiIR, BreakCloseIR, end_print,
+            CloseOkIR),
+        DriverIR).
+
 % A statement LIST in the mixed (scalar slots + assoc tables) END chain:
 % `{ c[$1]++; n++ } END { print n; print c["a"] }`, `… END { print n; exit 3 }`.
 % The fourth and last END chain to take a statement list, completing the set --
@@ -9230,7 +9278,14 @@ plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, [])) :-
           )
         ),
         MembershipArrays),
-    ( PrintArrays \== [] ; MembershipArrays \== [] ),
+    % No longer required: an END that prints an array element, or an `in` test.
+    % That guard made a program whose tables are only WRITTEN -- `{ c[$1]++; n++ }
+    % END { print n }`, or the same across two rules -- decline, though every piece
+    % lowers already (the rule walker has the table rows); the mixed plan is
+    % program-wide, so rule granularity never mattered. A table-establishing
+    % action is still required above, and plawk_mixed_state_plan/3 still requires
+    % a scalar slot or a conditional, so a pure-assoc or pure-scalar program keeps
+    % its own driver.
     append([ActionArrays, PrintArrays, MembershipArrays], ArrayNames0),
     sort(ArrayNames0, Tables).
 
@@ -16018,6 +16073,9 @@ plawk_rule_body_print_field(var(_)).
 % string/strnum key slot resolves (checked at the walker); other key forms
 % (`arr[$1]`, `arr["x"]`) and a numeric key are not matched here.
 plawk_rule_body_print_field(assoc(var(_), var(_))).
+% a FIELD-keyed element read -- resolved against the mixed plan's tables; with no
+% plan (a scalar driver) it stays unresolved and the print declines.
+plawk_rule_body_print_field(assoc(var(_), field(N))) :- integer(N), N >= 0.
 plawk_rule_body_print_field(special('NR')).
 plawk_rule_body_print_field(special('NF')).
 plawk_rule_body_print_field(environ(Key)) :- string(Key).
@@ -16841,6 +16899,16 @@ plawk_resolve_assoc_read_field(Slots, Values, AssocPlan,
     plawk_slot_name(Slot, KeyName),
     nth0(SlotIndex, Values, SlotValue),
     plawk_assoc_read_resolved_term(Slot, TableIndex, SlotValue, Resolved),
+    !.
+% `print c[$N]` in a rule body of the mixed chain: a FIELD-keyed element read. The
+% key is the field's text interned (as the pure-assoc driver's lookup does); the
+% value prints through the table's print helper, which prints NOTHING for an
+% absent key -- awk's string-context reading of an unset element -- instead of
+% @wam_assoc_i64_get's 0.
+plawk_resolve_assoc_read_field(_Slots, _Values, AssocPlan,
+        assoc(var(ArrayName), field(N)), assoc_field_read(TableIndex, N)) :-
+    integer(N), N >= 0,
+    plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
     !.
 plawk_resolve_assoc_read_field(Slots, Values, AssocPlan, concat(Parts0),
         concat(Parts)) :-
@@ -22389,6 +22457,8 @@ plawk_printf_truncate_pair(int, Prefix, Index, GlobalIR-(SetupIR0-[f64(Value)]),
 plawk_printf_truncate_pair(_Class, _Prefix, _Index, Pair, Pair).
 
 plawk_printf_type_call_args(i64(_FmtPrefix, _PrintPrefix, ValueIR), [i64(ValueIR)]).
+% an absent-aware element read is its numeric value in printf (absent = 0).
+plawk_printf_type_call_args(i64_or_empty(_F, _P, ValueIR, _Has), [i64(ValueIR)]).
 plawk_printf_type_call_args(slice(_FmtPrefix, _PrintPrefix, LenIR, PtrIR), [slice_len(LenIR), slice_ptr(PtrIR)]).
 plawk_printf_type_call_args(string(_Base, PtrIR), [string_ptr(PtrIR)]).
 plawk_printf_type_call_args(f64(_FmtPrefix, _PrintPrefix, ValueIR), [f64(ValueIR)]).
@@ -22667,23 +22737,51 @@ plawk_emit_print_expr_for_context(ssa(Value), FieldSeparator, Context,
 % the key always exists -- read-before-write and cross-table shapes are outside
 % the compilable surface. Revisit together with the print-type protocol if those
 % shapes are admitted.
+plawk_emit_print_expr_for_context(assoc_field_read(TableIndex, N), FieldSeparator, Context,
+        direct(Lines), [], []) :-
+    integer(FieldSeparator),
+    plawk_print_expr_value_base(Context, assoc_field_read, Base),
+    format(atom(SliceL),
+        '  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+        [Base, N, FieldSeparator]),
+    format(atom(PtrL), '  %~w_ptr = extractvalue %WamSlice %~w_slice, 0', [Base, Base]),
+    format(atom(LenL), '  %~w_len = extractvalue %WamSlice %~w_slice, 1', [Base, Base]),
+    format(atom(KidL),
+        '  %~w_kid = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len)', [Base, Base, Base]),
+    format(atom(KeyIR), '%~w_kid', [Base]),
+    plawk_assoc_value_print_line(TableIndex, KeyIR, PrL),
+    Lines = [SliceL, PtrL, LenL, KidL, PrL].
+% `print arr[k]`: in a PRINT an absent element is awk's empty string, not 0
+% (@wam_assoc_i64_get reads 0 for a missing key, and printing that was wrong
+% output: `{ k = $1; print c[k] "|"; c[k]++ }` printed "0|" where gawk prints "|").
+% i64_or_empty carries the existence bit: the print selects an EMPTY format when
+% the key is absent; as a printf argument it is the numeric value (absent = 0,
+% correct in a numeric conversion).
 plawk_emit_print_expr_for_context(assoc_keyid(TableIndex, KeyIdValue), _FieldSeparator, Context,
-        i64(FmtPrefix, PrintPrefix, ValueIR), [], [GetCall]) :-
+        i64_or_empty(FmtPrefix, PrintPrefix, ValueIR, HasIR), [], [HasCall, GetCall]) :-
     plawk_print_expr_value_base(Context, int, Base),
     plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
     format(atom(ValueIR), '%~w_assoc_get', [Base]),
+    format(atom(HasIR), '%~w_assoc_has', [Base]),
+    format(atom(HasCall),
+        '  ~w = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
+        [HasIR, TableIndex, KeyIdValue]),
     format(atom(GetCall),
         '  ~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
         [ValueIR, TableIndex, KeyIdValue]).
 % `print arr[n]` with a NUMERIC (counter) key: intern n's decimal spelling to its
 % atom id first (awk keys are strings), then fetch the count with that key id.
 plawk_emit_print_expr_for_context(assoc_keyid_num(TableIndex, SlotValue), _FieldSeparator, Context,
-        i64(FmtPrefix, PrintPrefix, ValueIR), [], [InternCall, GetCall]) :-
+        i64_or_empty(FmtPrefix, PrintPrefix, ValueIR, HasIR), [], [InternCall, HasCall, GetCall]) :-
     plawk_print_expr_value_base(Context, int, Base),
     plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
     format(atom(KeyIdIR), '%~w_keyid', [Base]),
     format(atom(InternCall),
         '  ~w = call i64 @wam_intern_i64_decimal(i64 ~w)', [KeyIdIR, SlotValue]),
+    format(atom(HasIR), '%~w_assoc_has', [Base]),
+    format(atom(HasCall),
+        '  ~w = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
+        [HasIR, TableIndex, KeyIdIR]),
     format(atom(ValueIR), '%~w_assoc_get', [Base]),
     format(atom(GetCall),
         '  ~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
@@ -23359,6 +23457,8 @@ plawk_normal_print_expr_value_base(binfield, Index, Base) :-
     format(atom(Base), 'plawk_binfield_~w', [Index]).
 plawk_normal_print_expr_value_base(length, Index, Base) :-
     format(atom(Base), 'plawk_length_~w', [Index]).
+plawk_normal_print_expr_value_base(assoc_field_read, Index, Base) :-
+    format(atom(Base), 'plawk_afr_~w', [Index]).
 plawk_normal_print_expr_value_base(field_dyn, Index, Base) :-
     format(atom(Base), 'plawk_field_dyn_~w', [Index]).
 plawk_normal_print_expr_value_base(field_nf, Index, Base) :-
@@ -23466,6 +23566,22 @@ plawk_print_expr_output_ir(string(Base, PtrIR), Index, [FmtPtr, PrintCall]) :-
         '  %~w = call i32 (i8*, ...) @printf(i8* %~w, i8* ~w)',
         [PrintVar, FmtVar, PtrIR]).
 
+% A print that is its own call sequence (the element read above prints through a
+% runtime helper, so there is no value to hand printf).
+plawk_print_expr_output_ir(direct(Lines), _Index, Lines).
+% An i64 that prints as EMPTY when HasIR is false (an absent array element in
+% string context). The empty format is the trailing NUL of the "%ld\0" global the
+% i64 print already uses, so no new global is needed.
+plawk_print_expr_output_ir(i64_or_empty(FmtPrefix, PrintPrefix, ValueIR, HasIR), Index,
+        [SelLine, PrintCall]) :-
+    format(atom(FmtVar), '~w_fmt_~w', [FmtPrefix, Index]),
+    format(atom(PrintVar), 'printed_~w_~w', [PrintPrefix, Index]),
+    format(atom(SelLine),
+        '  %~w = select i1 ~w, i8* getelementptr ([4 x i8], [4 x i8]* @.plawk_surface_print_i64, i64 0, i64 0), i8* getelementptr ([4 x i8], [4 x i8]* @.plawk_surface_print_i64, i64 0, i64 3)',
+        [FmtVar, HasIR]),
+    format(atom(PrintCall),
+        '  %~w = call i32 (i8*, ...) @printf(i8* %~w, i64 ~w)',
+        [PrintVar, FmtVar, ValueIR]).
 plawk_print_expr_output_ir(case_slice(Mode, PrintBase, LenIR, PtrIR), _Index, [PrintCall]) :-
     llvm_emit_ascii_case_slice_print(Mode, PtrIR, LenIR, PrintBase, PrintCall).
 
@@ -23478,6 +23594,9 @@ plawk_prefixed_print_expr_output_ir(slice(FmtPrefix, PrintPrefix, LenIR, PtrIR),
 plawk_prefixed_print_expr_output_ir(f64(FmtPrefix, PrintPrefix, ValueIR), _Prefix, Index, Parts) :-
     plawk_print_expr_output_ir(f64(FmtPrefix, PrintPrefix, ValueIR), Index, Parts).
 
+plawk_prefixed_print_expr_output_ir(direct(Lines), _Prefix, _Index, Lines).
+plawk_prefixed_print_expr_output_ir(i64_or_empty(F, P, V, H), _Prefix, Index, Parts) :-
+    plawk_print_expr_output_ir(i64_or_empty(F, P, V, H), Index, Parts).
 plawk_prefixed_print_expr_output_ir(case_slice(Mode, PrintBase, LenIR, PtrIR), _Prefix, _Index, [PrintCall]) :-
     llvm_emit_ascii_case_slice_print(Mode, PtrIR, LenIR, PrintBase, PrintCall).
 
