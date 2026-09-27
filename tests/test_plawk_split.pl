@@ -104,6 +104,18 @@ test(split_field_regex_sep, [condition(clang_available)]) :-
         "x|a1b22c|y\n", Out, St),
     assertion(St == 0), assertion(Out == "1 a\n2 b\n3 c\n"), !.
 
+% A MISSING source field is awk's empty string, and split("") CLEARS the array.
+% The split used to be SKIPPED on a missing field, so the previous record's
+% pieces survived: `print a[1]` printed "x" for the one-field record where gawk
+% prints an empty line -- wrong output, exit 0.
+test(split_of_a_missing_field_clears_the_array, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'smiss', "{ split($2, a, \",\"); print a[1], a[2] }\n",
+        "a x,y\nc\nd p,q\n", Out, RunStatus),
+    assertion(RunStatus == 0),
+    assertion(Out == "x y\n \np q\n"),
+    !.
+
 :- end_tests(plawk_split).
 
 % --- helpers ---------------------------------------------------------------

@@ -12014,19 +12014,19 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_split_action(Index, _ArrayName,
           format(atom(Sptr), '  %~w_src_ptr = call i8* @wam_atom_to_string(i64 %~w_lp)', [Base, Base]),
           format(atom(Slen), '  %~w_src_len = call i64 @strlen(i8* %~w_src_ptr)', [Base, Base]),
           append([Label, Lp, Sptr, Slen | SplitGlobals], [Split, Next, ''], Lines)
-      ;   % positive field: project its slice, skip on a missing field
-          format(atom(HaveLabel), '~w_have_src:', [Base]),
-          format(atom(HaveLabelName), '~w_have_src', [Base]),
+      ;   % positive field: project its slice and split it UNCONDITIONALLY. A
+          % missing field is awk's empty string, and split("") CLEARS the array
+          % (gawk: `split($2, a, ",")` on a one-field record leaves `a` empty). This
+          % used to SKIP the split, so the previous record's pieces survived and
+          % `print a[1]` printed stale data -- wrong output, exit 0. The missing
+          % field's slice is {null, 0}; the runtime clears the table and returns 0
+          % at length 0 without touching the pointer.
           format(atom(Slice),
               '  %~w_src_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
               [Base, KeyIndex, FieldSeparator]),
           format(atom(Ptr), '  %~w_src_ptr = extractvalue %WamSlice %~w_src_slice, 0', [Base, Base]),
           format(atom(Len), '  %~w_src_len = extractvalue %WamSlice %~w_src_slice, 1', [Base, Base]),
-          format(atom(Missing), '  %~w_src_missing = icmp eq i8* %~w_src_ptr, null', [Base, Base]),
-          format(atom(Branch), '  br i1 %~w_src_missing, label %~w, label %~w',
-              [Base, ActionNextLabel, HaveLabelName]),
-          append([Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel | SplitGlobals],
-                 [Split, Next, ''], Lines)
+          append([Label, Slice, Ptr, Len | SplitGlobals], [Split, Next, ''], Lines)
       )
     },
     plawk_emit_lines(Lines),
