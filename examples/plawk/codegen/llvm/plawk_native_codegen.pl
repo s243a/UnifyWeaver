@@ -11233,6 +11233,19 @@ plawk_assoc_rule_apply_ir(RuleIndex, Actions, NextLabel, FieldSeparator,
         atom_concat('\n', Gs, GlobalIR)
     ).
 
+%% plawk_missing_key_empty_lines(+Base, -EmptyGlobal, -SafePtrLine)
+%  A field KEY past NF is awk's empty string, not "no key": `c[$3]++` on a
+%  two-field record counts c[""]. The field slice is {null, 0} there; this swaps
+%  the null pointer for a per-site empty constant, so the intern sees a valid
+%  pointer (as the foreign-arg marshal does) and yields the "" atom id. Expects
+%  %<Base>_key_ptr and %<Base>_key_missing; defines %<Base>_key_sptr.
+plawk_missing_key_empty_lines(Base, EmptyGlobal, SafePtrLine) :-
+    format(atom(EmptyGlobal),
+        '@.~w_ek = private constant [1 x i8] zeroinitializer', [Base]),
+    format(atom(SafePtrLine),
+        '  %~w_key_sptr = select i1 %~w_key_missing, i8* getelementptr ([1 x i8], [1 x i8]* @.~w_ek, i64 0, i64 0), i8* %~w_key_ptr',
+        [Base, Base, Base, Base]).
+
 plawk_partition_global_lines([], [], []).
 plawk_partition_global_lines([global(G) | Rest], [G | Gs], Lines) :-
     !,
@@ -11772,6 +11785,10 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, Table
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, binfmt(Types)).
+% `arr[$k]++`: intern field k's slice and increment that key. A field past NF is
+% the empty string in awk, so `c[$3]++` on a two-field record counts c[""] -- the
+% null slice is swapped for an empty constant (plawk_missing_key_empty_lines/3)
+% rather than skipping the increment.
 plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, TableIndex, KeyIndex) | Rest], NextLabel, FieldSeparator) -->
     { ( Rest == []
       -> ActionNextLabel = NextLabel
@@ -11796,18 +11813,18 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, Table
       format(atom(Missing),
           '  %assoc_rule_~w_action_~w_key_missing = icmp eq i8* %assoc_rule_~w_action_~w_key_ptr, null',
           [RuleIndex, Index, RuleIndex, Index]),
-      format(atom(Branch),
-          '  br i1 %assoc_rule_~w_action_~w_key_missing, label %~w, label %~w',
-          [RuleIndex, Index, ActionNextLabel, HaveLabelName]),
+      format(atom(Branch), '  br label %~w', [HaveLabelName]),
+      format(atom(KeyBase), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
+      plawk_missing_key_empty_lines(KeyBase, EmptyGlobal, SafePtr),
       format(atom(KeyId),
-          '  %assoc_rule_~w_action_~w_key_id = call i64 @wam_intern_atom(i8* %assoc_rule_~w_action_~w_key_ptr, i64 %assoc_rule_~w_action_~w_key_len)',
+          '  %assoc_rule_~w_action_~w_key_id = call i64 @wam_intern_atom(i8* %assoc_rule_~w_action_~w_key_sptr, i64 %assoc_rule_~w_action_~w_key_len)',
           [RuleIndex, Index, RuleIndex, Index, RuleIndex, Index]),
       format(atom(Inc),
           '  %assoc_rule_~w_action_~w_count = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %assoc_rule_~w_action_~w_key_id, i64 1)',
           [RuleIndex, Index, TableIndex, RuleIndex, Index]),
       format(atom(Next), '  br label %~w', [ActionNextLabel])
     },
-    [Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId, Inc, Next, ''],
+    [global(EmptyGlobal), Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, SafePtr, KeyId, Inc, Next, ''],
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
 % `arr[$i,$j,...]++`: multi-dimensional counter, any arity. The N field indexes
 % are joined with SUBSEP and interned by @wam_intern_subsep_key_comp, then the
@@ -11902,10 +11919,9 @@ plawk_assoc_rule_action_blocks(RuleIndex,
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
-% `delete arr[$k]`: same key-intern + missing-key skip as the counted inc, but
-% call the void backward-shift delete instead of the inc. An absent key (null
-% slice) skips to the next action; the runtime delete is itself a no-op if the
-% interned key is not in the table.
+% `delete arr[$k]`: same key-intern as the counted inc (a missing field is the
+% key "", as in awk), but call the void backward-shift delete instead of the inc;
+% the runtime delete is itself a no-op if the interned key is not in the table.
 plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_action(Index, _ArrayName, TableIndex, KeyIndex) | Rest], NextLabel, FieldSeparator) -->
     { ( Rest == []
       -> ActionNextLabel = NextLabel
@@ -11930,18 +11946,18 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_action(Index, _ArrayName
       format(atom(Missing),
           '  %assoc_rule_~w_action_~w_key_missing = icmp eq i8* %assoc_rule_~w_action_~w_key_ptr, null',
           [RuleIndex, Index, RuleIndex, Index]),
-      format(atom(Branch),
-          '  br i1 %assoc_rule_~w_action_~w_key_missing, label %~w, label %~w',
-          [RuleIndex, Index, ActionNextLabel, HaveLabelName]),
+      format(atom(Branch), '  br label %~w', [HaveLabelName]),
+      format(atom(KeyBase), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
+      plawk_missing_key_empty_lines(KeyBase, EmptyGlobal, SafePtr),
       format(atom(KeyId),
-          '  %assoc_rule_~w_action_~w_key_id = call i64 @wam_intern_atom(i8* %assoc_rule_~w_action_~w_key_ptr, i64 %assoc_rule_~w_action_~w_key_len)',
+          '  %assoc_rule_~w_action_~w_key_id = call i64 @wam_intern_atom(i8* %assoc_rule_~w_action_~w_key_sptr, i64 %assoc_rule_~w_action_~w_key_len)',
           [RuleIndex, Index, RuleIndex, Index, RuleIndex, Index]),
       format(atom(Del),
           '  call void @wam_assoc_i64_delete(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %assoc_rule_~w_action_~w_key_id)',
           [TableIndex, RuleIndex, Index]),
       format(atom(Next), '  br label %~w', [ActionNextLabel])
     },
-    [Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId, Del, Next, ''],
+    [global(EmptyGlobal), Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, SafePtr, KeyId, Del, Next, ''],
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
 % `delete arr["lit"]`: intern the string-literal key to its canonical atom id
 % (via a private c-string global) and call the same void backward-shift delete.
@@ -12031,8 +12047,8 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_split_action(Index, _ArrayName,
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
-% Associative add-assign `arr[$k] += DELTA`: same key-intern + missing-key
-% skip as the counted inc, but the inc delta is the record's DELTA (a field
+% Associative add-assign `arr[$k] += DELTA`: same key-intern (a missing field
+% keys on "") as the counted inc, but the inc delta is the record's DELTA (a field
 % value via @wam_atom_field_i64_value, or an integer constant) rather than 1.
 plawk_assoc_rule_action_blocks(RuleIndex,
         [assoc_add_action(Index, ArrayName, TableIndex, KeyIndex, Delta) | Rest],
@@ -12055,10 +12071,10 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(Ptr), '  %~w_key_ptr = extractvalue %WamSlice %~w_key_slice, 0', [B, B]),
       format(atom(Len), '  %~w_key_len = extractvalue %WamSlice %~w_key_slice, 1', [B, B]),
       format(atom(Missing), '  %~w_key_missing = icmp eq i8* %~w_key_ptr, null', [B, B]),
-      format(atom(Branch), '  br i1 %~w_key_missing, label %~w, label %~w',
-          [B, ActionNextLabel, HaveLabelName]),
+      format(atom(Branch), '  br label %~w', [HaveLabelName]),
+      plawk_missing_key_empty_lines(B, EmptyGlobal, SafePtr),
       format(atom(KeyId),
-          '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_ptr, i64 %~w_key_len)',
+          '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_sptr, i64 %~w_key_len)',
           [B, B, B]),
       (   plawk_f64_array(ArrayName)
       ->  % a DOUBLE-valued array: the delta's numeric value (strtod for a field),
@@ -12079,12 +12095,13 @@ plawk_assoc_rule_action_blocks(RuleIndex,
               [B, TableIndex, B, DeltaVar])
       ),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
-      append([[Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId],
+      append([[global(EmptyGlobal), Label, Slice, Ptr, Len, Missing, Branch, '',
+               HaveLabel, SafePtr, KeyId],
               DeltaLines, [Inc, Next, '']], Lines)
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
-% Row capture `arr[$k] = $0`: same key-intern + missing-key skip, then intern
+% Row capture `arr[$k] = $0`: same key-intern (missing field -> ""), then intern
 % the whole current record (field 0, a stable copy of the transient line) and
 % store that atom id as the table's value (str-value / replace semantics via
 % @wam_assoc_i64_set). A later pass resolves the id back to the row's bytes.
@@ -12178,13 +12195,13 @@ plawk_assoc_rule_action_blocks(RuleIndex,
 %
 %  The key prologue shared by the row-capture blocks, so both key kinds reuse one
 %  row-value builder instead of duplicating it. A single FIELD key projects its
-%  slice and SKIPS the action when the field is missing (branching to
-%  ActionNextLabel, awk: no row is stored for a missing key). A MULTI-DIM
+%  slice; a missing field keys on the empty string (awk: `arr[$9] = $0` stores
+%  arr[""]), via plawk_missing_key_empty_lines/3. A MULTI-DIM
 %  subsep key is straight-line -- the shared builder always yields a valid key
 %  (a missing subscript is the empty string) -- and contributes its descriptor
 %  constants through Globals.
-plawk_assoc_row_key_prologue(KeyIndex, B, FieldSeparator, ActionNextLabel,
-        KeyIdIR, [], PreLines) :-
+plawk_assoc_row_key_prologue(KeyIndex, B, FieldSeparator, _ActionNextLabel,
+        KeyIdIR, [global(EmptyGlobal)], PreLines) :-
     integer(KeyIndex),
     !,
     format(atom(HaveLabelName), '~w_have_key', [B]),
@@ -12195,13 +12212,13 @@ plawk_assoc_row_key_prologue(KeyIndex, B, FieldSeparator, ActionNextLabel,
     format(atom(Ptr), '  %~w_key_ptr = extractvalue %WamSlice %~w_key_slice, 0', [B, B]),
     format(atom(Len), '  %~w_key_len = extractvalue %WamSlice %~w_key_slice, 1', [B, B]),
     format(atom(Missing), '  %~w_key_missing = icmp eq i8* %~w_key_ptr, null', [B, B]),
-    format(atom(Branch), '  br i1 %~w_key_missing, label %~w, label %~w',
-        [B, ActionNextLabel, HaveLabelName]),
+    format(atom(Branch), '  br label %~w', [HaveLabelName]),
+    plawk_missing_key_empty_lines(B, EmptyGlobal, SafePtr),
     format(atom(KeyId),
-        '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_ptr, i64 %~w_key_len)',
+        '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_sptr, i64 %~w_key_len)',
         [B, B, B]),
     format(atom(KeyIdIR), '%~w_key_id', [B]),
-    PreLines = [Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId].
+    PreLines = [Slice, Ptr, Len, Missing, Branch, '', HaveLabel, SafePtr, KeyId].
 plawk_assoc_row_key_prologue(subsep_key(Comps), B, FieldSeparator, _ActionNextLabel,
         KeyIdIR, [global(GlobalDecl)], PreLines) :-
     format(atom(KeyIdIR), '%~w_key_id', [B]),
@@ -19717,8 +19734,10 @@ plawk_scalar_if_passthrough_pairs([Value | Rest], [Value-'' | Pairs]) :-
     plawk_scalar_if_passthrough_pairs(Rest, Pairs).
 
 plawk_assoc_update_operation_ir(Prefix, OpIndex, TableIndex, KeyIndex,
-        FieldSeparator, ''-IR, DoneLabel) :-
+        FieldSeparator, EmptyGlobal-IR, DoneLabel) :-
     format(atom(Label), '~w_assoc_~w', [Prefix, OpIndex]),
+    % a missing field keys on "" (awk), not a skipped increment
+    plawk_missing_key_empty_lines(Label, EmptyGlobal, SafePtrLine),
     format(atom(HaveLabel), '~w_assoc_~w_have_key', [Prefix, OpIndex]),
     format(atom(DoneLabel), '~w_assoc_~w_done', [Prefix, OpIndex]),
     format(atom(SliceValue), '%~w_assoc_~w_key_slice', [Prefix, OpIndex]),
@@ -19735,10 +19754,11 @@ plawk_assoc_update_operation_ir(Prefix, OpIndex, TableIndex, KeyIndex,
   ~w = extractvalue %WamSlice ~w, 0
   ~w = extractvalue %WamSlice ~w, 1
   ~w = icmp eq i8* ~w, null
-  br i1 ~w, label %~w, label %~w
+  br label %~w
 
 ~w:
-  ~w = call i64 @wam_intern_atom(i8* ~w, i64 ~w)
+~w
+  ~w = call i64 @wam_intern_atom(i8* %~w_key_sptr, i64 ~w)
   ~w = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 1)
   br label %~w
 
@@ -19749,9 +19769,10 @@ plawk_assoc_update_operation_ir(Prefix, OpIndex, TableIndex, KeyIndex,
          KeyPtr, SliceValue,
          KeyLen, SliceValue,
          KeyMissing, KeyPtr,
-         KeyMissing, DoneLabel, HaveLabel,
          HaveLabel,
-         KeyId, KeyPtr, KeyLen,
+         HaveLabel,
+         SafePtrLine,
+         KeyId, Label, KeyLen,
          CountValue, TableIndex, KeyId,
          DoneLabel,
          DoneLabel]).
