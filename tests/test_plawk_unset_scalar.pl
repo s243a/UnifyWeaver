@@ -366,6 +366,37 @@ test(a_double_slot_is_tracked_like_a_counter) :-
     assertion(memberchk(Index, Tracked)),
     !.
 
+% --- rule-body (and BEGIN, END-loop) prints ---------------------------------
+%
+% The walker's print used to print a tracked counter's register as a number, so a
+% read before the first assignment printed 0 where gawk prints "":
+%   { print n "|"; n = 1 }        printed "0|" on the first record
+% A print of a tracked counter that is not DEFINITELY assigned at that point
+% (plawk_walker_assigned_get/1: straight-line writes so far; a branch or loop body
+% may not run) now reads the assigned mark (ssa_or_unset/2). Definitely-assigned
+% reads -- `{ n++; print n }`, `for (i = 0; ...) print i` -- are unchanged.
+% gawk 5.1.0.
+test(body_print_before_assignment_prints_empty, [condition(clang_available)]) :-
+    run_input("{ print n \"|\"; n = 1 }\n", "a 5\nb 7\nc 2\n", "|\n1|\n1|\n"),
+    !,
+    run_input("{ if ($2 > 5) n = 1; print n \"|\" }\n", "a 5\nb 7\nc 2\n", "|\n1|\n1|\n"),
+    !,
+    run_input("{ i = 0; while (i < 2) { print j \"|\"; j = 1; i++ } }\n", "a 5\nb 7\nc 2\n",
+        "|\n1|\n1|\n1|\n1|\n1|\n"),
+    !,
+    run_input("BEGIN { print n \"|\"; n = 1 }\n", "", "|\n"),
+    !,
+    % an END loop over a counter that is unset on empty input
+    run_input("{ n++ } END { while (n > 0) { print n; n-- } }\n", "a 5\nb 7\nc 2\n",
+        "3\n2\n1\n"),
+    !.
+
+test(definitely_assigned_prints_are_unchanged, [condition(clang_available)]) :-
+    run_input("{ n++; print n }\n", "a\nb\n", "1\n2\n"),
+    !,
+    run_input("{ for (i = 0; i < 2; i++) print i }\n", "a\n", "0\n1\n"),
+    !.
+
 :- end_tests(plawk_unset_scalar).
 
 % --- helpers ---------------------------------------------------------------
