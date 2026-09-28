@@ -209,11 +209,12 @@ test(begin_only_variable_read_declines) :-
     build_status("BEGIN { print n }\n", 3),
     !.
 
-% `exit` in a BEGIN block of a program that HAS rules: it would have to skip the
-% record loop yet still run END, which the shared driver template cannot express.
-% Declines rather than silently ignoring the exit.
-test(begin_exit_with_rules_declines) :-
-    build_status("BEGIN { exit 1 }\n{ print $1 }\n", 3),
+% `exit` in a BEGIN block of a program that HAS rules WAS a decline. A TRAILING
+% top-level exit now compiles through the BEGIN prelude (tests/
+% test_plawk_begin_compute.pl): no input is read, no rule runs, END still runs.
+% gawk 5.1.0: no output, status 1.
+test(begin_exit_with_rules_skips_the_input) :-
+    run_with_input("BEGIN { exit 1 }\n{ print $1 }\n", "a\nb\n", "", 1),
     !.
 
 % --- structure ------------------------------------------------------------
