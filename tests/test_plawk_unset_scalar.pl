@@ -44,10 +44,12 @@
 % WHY IT CANNOT PRODUCE WRONG OUTPUT (the trackability rule)
 %
 % A slot renders empty-when-unset only if EVERY reachable assignment to its name is
-% update-shaped -- i.e. goes through that one marking emitter.
-% plawk_unset_tracked_slots/3 enforces this. A name also written by a getline
-% capture, a `gsub` count or a dynrec bind (each of which writes a slot value
-% through its own emitter, with no mark) is NOT tracked and keeps printing 0.
+% update-shaped -- i.e. goes through that one marking emitter -- or is one of the
+% few other writers that store the mark themselves (the `n = gsub(...)` /
+% `n = split(...)` counts; plawk_unset_marking_action/2). plawk_unset_tracked_slots/3
+% enforces this. A name also written by a getline capture or a dynrec bind (each
+% of which writes a slot value through its own emitter, with no mark) is NOT
+% tracked and keeps printing 0.
 %
 % So "tracked" means "every write is marked", by construction rather than by
 % diligence -- the failure mode of a missed writer is an unfixed divergence, never
@@ -201,18 +203,29 @@ test(a_simple_counter_is_tracked) :-
     assertion(memberchk(Index, Tracked)),
     !.
 
-% A name written by a NON-update emitter is refused. `gsub_count` writes its count
-% slot through its own emitter with no mark, so tracking it would render an
-% assigned count as unset -- wrong output. This is the assertion that makes the
-% safety rule explicit rather than incidental.
-test(a_gsub_count_name_is_not_tracked) :-
-    Rules = [rule(always, [gsub_count(c, global, "o", "0", field(0))])],
+% A `gsub` count WAS refused: its row wrote the count slot with no mark, so
+% tracking it would have rendered an assigned count as unset. The row now stores
+% the mark itself (plawk_unset_marking_action/2 names it), so the count is
+% tracked -- and an unset count prints "" like awk
+% (tests/test_plawk_subgsub_match.pl, gsub_count_unset_prints_empty).
+test(a_gsub_count_name_is_tracked) :-
+    Rules = [rule(always, [gsub_count(c, 1, "o", "0", s)])],
     plawk_native_codegen:plawk_scalar_state_plan(Rules, [var(c)], StatePlan),
     plawk_native_codegen:plawk_state_plan_tracked(StatePlan, Tracked),
     plawk_native_codegen:plawk_state_plan_slots(StatePlan, Slots),
-    ( nth0(Index, Slots, scalar_counter(c))
+    nth0(Index, Slots, scalar_counter(c)),
+    assertion(memberchk(Index, Tracked)),
+    !.
+
+% A getline capture status still writes its slot without a mark: not tracked.
+test(a_getline_status_name_is_not_tracked) :-
+    Rules = [rule(always, [getline_capture(st, v, "f.txt")])],
+    plawk_native_codegen:plawk_scalar_state_plan(Rules, [var(st)], StatePlan),
+    plawk_native_codegen:plawk_state_plan_tracked(StatePlan, Tracked),
+    plawk_native_codegen:plawk_state_plan_slots(StatePlan, Slots),
+    ( nth0(Index, Slots, scalar_counter(st))
     -> assertion(\+ memberchk(Index, Tracked))
-    ;  true          % no counter slot for it at all is equally safe
+    ;  true
     ),
     !.
 

@@ -213,6 +213,31 @@ test(gsub_count_zero, [condition(clang_available)]) :-
         "abc\n", Out, St),
     assertion(St == 0), assertion(Out == "0 abc\n"), !.
 
+% An UNSET count prints "" (awk's uninitialised value), not 0: on empty input, or
+% when the capture never runs. The count carries the assigned mark like any
+% update (plawk_unset_marking_action/2). gawk 5.1.0.
+test(gsub_count_unset_prints_empty, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'gcu', "{ s = $0; n = gsub(/a/, \"x\", s) } END { print n \"|\" }\n",
+        "", Out, St),
+    assertion(St == 0), assertion(Out == "|\n"),
+    build_run(Dir, 'gcu2', "{ s = $0; if ($1 == \"zz\") n = gsub(/a/, \"x\", s) } END { print n \"|\" }\n",
+        "a 1\nb 2\n", Out2, St2),
+    assertion(St2 == 0), assertion(Out2 == "|\n"),
+    build_run(Dir, 'gcu3', "{ s = $0; n = gsub(/a/, \"x\", s) } END { print n \"|\" }\n",
+        "a a\nb\n", Out3, St3),
+    assertion(St3 == 0), assertion(Out3 == "0|\n"),
+    !.
+
+% The whole record as the target (`s = $0`): the copy was EMPTY (the 1-based field
+% slice helper asked for field 0), so the count was always 0 and s printed "".
+test(gsub_count_on_a_record_copy, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'gcr', "{ s = $0; n = gsub(/a/, \"x\", s); print n, s }\n",
+        "a 1\nb 2\n\na a\n", Out, St),
+    assertion(St == 0), assertion(Out == "1 x 1\n0 b 2\n0 \n2 x x\n"),
+    !.
+
 % --- sub/gsub into a field target (rebuilds $0) -----------------------------
 
 % gsub into field 2 rewrites that field and rebuilds $0 (joined with OFS).
