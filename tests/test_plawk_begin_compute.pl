@@ -194,12 +194,54 @@ test(begin_trailing_exit, [condition(clang_available)]) :-
     run_status("BEGIN { print \"hi\"; exit 1 } END { print \"e\", NR }\n", "hi\ne 0\n", 1),
     !.
 
+% --- PR 5: exit under a condition (or mid-block) in BEGIN -------------------
+% awk's exit stops BEGIN at once. BEGIN is rewritten so each exit stores the status
+% and sets a hidden begin-exit flag, statements after it in its block are dropped,
+% and statements after an `if` that may exit run only while the flag is clear. The
+% driver then opens /dev/null instead of the input when the flag is set (so no
+% record is read -- nothing waits on stdin -- and END still runs). Both outcomes
+% of each condition, output and exit status. gawk 5.1.0.
+test(begin_conditional_exit, [condition(clang_available)]) :-
+    run_status("BEGIN { x = 3; if (x > 2) { print \"big\"; exit 1 } } END { print \"e\", NR }\n",
+        "big\ne 0\n", 1),
+    !,
+    run_status("BEGIN { x = 1; if (x > 2) { print \"big\"; exit 1 } } END { print \"e\", NR }\n",
+        "e 3\n", 0),
+    !,
+    run_status("BEGIN { x = 3; if (x > 2) exit 2; print \"after\" } { print \"rec\" } END { print \"e\" }\n",
+        "e\n", 2),
+    !,
+    run_status("BEGIN { x = 1; if (x > 2) exit 2; print \"after\" } { print \"rec\" } END { print \"e\" }\n",
+        "after\nrec\nrec\nrec\ne\n", 0),
+    !,
+    run_status("BEGIN { n = 3; if (n > 2) exit } { n++ } END { print n }\n", "3\n", 0),
+    !,
+    run_status("BEGIN { n = 1; if (n > 2) exit } { n++ } END { print n }\n", "4\n", 0),
+    !,
+    run_status("BEGIN { x = 3; if (x > 2) { if (x > 5) exit 1; else exit 2 } } END { print \"e\" }\n",
+        "e\n", 2),
+    !,
+    run_status("BEGIN { x = 3; if (x > 2) exit 1 } END { exit 7 }\n", "", 7),
+    !,
+    run_status("BEGIN { x = 3; if (x > 2) exit 1; y = 5 } END { print y \"|\" }\n", "|\n", 1),
+    !,
+    % no rules, no END
+    run_status("BEGIN { x = 3; if (x > 2) exit 3; print \"no\" }\n", "", 3),
+    !,
+    % an exit mid-block: the rest of BEGIN is skipped
+    run_status("BEGIN { x = 1; exit; x = 2 } END { print x }\n", "1\n", 0),
+    !.
+
 % What a prelude cannot run declines cleanly -- never a dropped statement, never
-% exit 4: a non-trailing exit, getline, a record reference
+% exit 4: an exit inside a loop, a conditional special-variable set, getline, a
+% record reference
 % (BEGIN runs before the first record).
 test(prelude_boundaries_decline) :-
     forall(member(Src,
-            [ "BEGIN { x = 1; exit; x = 2 } END { print x }\n",
+            [ % an exit inside a loop (it would also have to leave the loop)
+              "BEGIN { i = 0; while (i < 3) { if (i == 1) exit 1; i++ } } END { print \"e\" }\n",
+              % a special variable set under a condition (specials are constants)
+              "BEGIN { x = 3; if (x > 2) FS = \":\" } { print $1 }\n",
               "BEGIN { x = 1 + 1; getline line < \"/etc/hostname\" }\n",
               "BEGIN { x = $1; print x }\n",
               "BEGIN { x = NR; print x }\n"

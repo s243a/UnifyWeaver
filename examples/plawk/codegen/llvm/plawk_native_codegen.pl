@@ -261,8 +261,12 @@ plawk_program_native_driver_ir(program(Begin0, Rules, End), InputPath, DriverIR)
         )
     ->  b_setval(plawk_begin_prelude, none),
         b_setval(plawk_begin_prelude_out, none),
-        Out = prelude(GlobalIR, PreludeIR, Assigned),
-        plawk_begin_prelude_finish(DriverIR0, GlobalIR, PreludeIR, Assigned, DriverIR)
+        Out = prelude(GlobalIR, PreludeIR, Assigned-Named),
+        (   BeginExit = cond_exit(_), \+ ( Rules == [], End == [] )
+        ->  plawk_begin_cond_exit_input(BeginExit, Named, DriverIR0, DriverIRx)
+        ;   DriverIRx = DriverIR0
+        ),
+        plawk_begin_prelude_finish(DriverIRx, GlobalIR, PreludeIR, Assigned-Named, DriverIR)
     ;   b_setval(plawk_begin_prelude, none),
         b_setval(plawk_begin_prelude_out, none),
         fail
@@ -276,16 +280,32 @@ plawk_program_native_driver_ir(program(Begin0, Rules, End), InputPath, DriverIR)
 %  must skip the loop yet still run END), getline, backed-cache declarations,
 %  and any record reference -- BEGIN runs before the first record.
 plawk_begin_prelude_split([begin(Actions0)], Rules, End, Specials, Prelude, BeginExit) :-
-    % a trailing top-level `exit [N]` with rules or END (an exit anywhere else --
-    % under a condition, mid-block -- stays refused below)
+    % a trailing top-level `exit [N]` with rules or END, and no other exit
     (   append(Actions, [exit(int(Code))], Actions0),
         integer(Code),
-        ( Rules \== [] ; End \== [] )
+        ( Rules \== [] ; End \== [] ),
+        \+ ( sub_term(T, Actions), compound(T), T = exit(_) )
     ->  BeginExit = begin_exit(Code)
+    % any other exit (under an `if`, mid-block): rewritten so it stores the
+    % status, sets the begin-exit flag and skips the rest of BEGIN
+    % (plawk_begin_cond_exit_rewrite/2); the driver then reads no input when the
+    % flag is set (plawk_begin_cond_exit_input/3). An exit in a loop declines.
+    ;   sub_term(T, Actions0), compound(T), T = exit(_),
+        % a BEGIN-only program the literal path lowers keeps that path (its
+        % exit is a store-and-return there already)
+        (   ( Rules \== [] ; End \== [] )
+        ->  true
+        ;   plawk_begin_needs_prelude(Actions0)
+        )
+    ->  partition(plawk_begin_special_set, Actions0, TopSpecials, Rest0),
+        plawk_begin_cond_exit_rewrite(Rest0, Rest),
+        append(TopSpecials, Rest, Actions),
+        findall(C, ( sub_term(E, Rest), compound(E), E = exit_store(C) ), Codes),
+        BeginExit = cond_exit(Codes)
     ;   Actions = Actions0,
         BeginExit = none
     ),
-    (   BeginExit = begin_exit(_)
+    (   BeginExit \== none
     ->  true
     ;   plawk_begin_needs_prelude(Actions)
     ->  true
@@ -315,12 +335,97 @@ plawk_begin_prelude_split([begin(Actions0)], Rules, End, Specials, Prelude, Begi
 %  A BEGIN exit's driver must read the empty input (the fixed-path template with
 %  /dev/null) and return the status it stored.
 plawk_begin_exit_ir_ok(none, _IR).
+plawk_begin_exit_ir_ok(cond_exit(Codes), IR) :-
+    (   ( member(C, Codes), C =\= 0 )
+    ->  sub_atom(IR, _, _, _, 'load i32, i32* @plawk_exit_code')
+    ;   true
+    ).
 plawk_begin_exit_ir_ok(begin_exit(Code), IR) :-
     sub_atom(IR, _, _, _, 'c"/dev/null\\00"'),
     (   Code =:= 0
     ->  true
     ;   sub_atom(IR, _, _, _, 'load i32, i32* @plawk_exit_code')
     ).
+
+%% plawk_begin_cond_exit_rewrite(+Actions, -Rewritten) is semidet.
+%  awk's `exit` in BEGIN stops BEGIN at once. Each `exit N` becomes a status store
+%  plus the begin-exit flag (a hidden scalar -- `$` cannot start an awk name), the
+%  statements after it in its block are dropped (unreachable), and the statements
+%  after an `if` that may exit run only while the flag is clear. Fails on an exit
+%  inside a loop (it would also have to leave the loop) or with a non-literal
+%  status.
+plawk_begin_cond_exit_rewrite([], []).
+plawk_begin_cond_exit_rewrite([exit(int(Code)) | _Unreachable],
+        [exit_store(Code), set(var('$begin_exit'), int(1))]) :-
+    integer(Code),
+    !.
+plawk_begin_cond_exit_rewrite([if(Cond, Then0, Else0) | Rest0], Out) :-
+    ( plawk_actions_contain_exit(Then0) ; plawk_actions_contain_exit(Else0) ),
+    !,
+    plawk_begin_cond_exit_rewrite(Then0, Then),
+    plawk_begin_cond_exit_rewrite(Else0, Else),
+    plawk_begin_cond_exit_rewrite(Rest0, Rest),
+    (   Rest == []
+    ->  Out = [if(Cond, Then, Else)]
+    ;   Out = [if(Cond, Then, Else),
+               if(scalar_if(cmp(var('$begin_exit'), eq, int(0))), Rest, [])]
+    ).
+plawk_begin_cond_exit_rewrite([Action | Rest0], [Action | Rest]) :-
+    \+ plawk_actions_contain_exit([Action]),
+    plawk_begin_cond_exit_rewrite(Rest0, Rest).
+
+plawk_actions_contain_exit(Actions) :-
+    sub_term(T, Actions), compound(T), T = exit(_),
+    !.
+
+%% plawk_begin_cond_exit_input(+BeginExit, +Named, +IR0, -IR) is semidet.
+%  With a conditional BEGIN exit, the input the driver opens depends on the flag
+%  the prelude leaves: set -> /dev/null (no record is read, no rule runs, END
+%  still runs, as in awk); clear -> the usual input. Edits the one input-selection
+%  point of the stream template (stdin/argv or a fixed path); if that point is not
+%  found exactly once, fails -- the program declines.
+plawk_begin_cond_exit_input(cond_exit(_), Named, IR0, IR) :-
+    !,
+    memberchk('$begin_exit'-Flag, Named),
+    NullGlobal = '@.plawk_begin_exit_null = private constant [10 x i8] c"/dev/null\\00"',
+    format(atom(OpenNull),
+'  %plawk_bx = icmp ne i64 ~w, 0
+  %bx_ptr = getelementptr [10 x i8], [10 x i8]* @.plawk_begin_exit_null, i32 0, i32 0
+  %bx_id = call i64 @wam_intern_atom(i8* %bx_ptr, i64 9)
+  %bx_path0 = insertvalue %Value undef, i32 0, 0
+  %bx_path = insertvalue %Value %bx_path0, i64 %bx_id, 1', [Flag]),
+    (   sub_atom(IR0, _, _, _, '  br i1 %have_arg, label %check_argv_path, label %use_stdin')
+    ->  atomic_list_concat([OpenNull,
+'  br i1 %plawk_bx, label %plawk_begin_exit_input, label %plawk_bx_no
+
+plawk_bx_no:
+  br i1 %have_arg, label %check_argv_path, label %use_stdin
+
+plawk_begin_exit_input:
+  %bx_handle = call %Value @wam_stream_open_value(%Value %bx_path)
+  br label %have_handle'], '\n', Branch),
+        plawk_replace_once(IR0,
+            '  br i1 %have_arg, label %check_argv_path, label %use_stdin',
+            Branch, IR1b),
+        plawk_replace_once(IR1b,
+            '%handle = phi %Value [ %file_handle, %open_argv_file ], [ %stdin_handle, %use_stdin ]',
+            '%handle = phi %Value [ %file_handle, %open_argv_file ], [ %stdin_handle, %use_stdin ], [ %bx_handle, %plawk_begin_exit_input ]',
+            IR2)
+    ;   atomic_list_concat([OpenNull,
+'  %path_sel = select i1 %plawk_bx, %Value %bx_path, %Value %path
+  %handle = call %Value @wam_stream_open_value(%Value %path_sel)'], '\n', Open),
+        plawk_replace_once(IR0,
+            '  %handle = call %Value @wam_stream_open_value(%Value %path)', Open, IR2)
+    ),
+    atomic_list_concat([IR2, '\n', NullGlobal, '\n'], IR).
+plawk_begin_cond_exit_input(_BeginExit, _Named, IR, IR).
+
+%% plawk_replace_once(+Atom, +Old, +New, -Result) is semidet.
+%  Old occurs exactly once in Atom.
+plawk_replace_once(Atom, Old, New, Result) :-
+    atomic_list_concat(Parts, Old, Atom),
+    Parts = [Before, After],
+    atomic_list_concat([Before, New, After], Result).
 
 % A statement the literal paths do not lower -- or literal user-scalar inits the
 % lift refuses (a name read by another BEGIN statement: `x = 3; print x`), which
@@ -345,8 +450,10 @@ plawk_begin_prelude_refused(Action) :-
     sub_term(Term, Action),
     compound(Term),
     (   Term = exit(_)
-    ;   Term = exit_store(_)
     ;   Term = next
+    % a special variable set inside a branch or loop (top-level ones are
+    % partitioned out as compile-time constants)
+    ;   Term = set(var(Special), _), atom(Special), plawk_begin_special_var(Special)
     ;   Term = unsupported_getline(_)
     ;   functor(Term, Name, _), sub_atom(Name, 0, _, _, getline)
     ;   functor(Term, Name, _), sub_atom(Name, 0, _, _, cache_)
