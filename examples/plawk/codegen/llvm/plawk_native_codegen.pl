@@ -176,6 +176,43 @@ plawk_program_native_driver_ir(Program, _InputPath, _DriverIR) :-
     !,
     fail.
 
+% BEGIN accepts the whole rule-body statement grammar (computation, loops, `++`,
+% concatenation, ...), but the drivers lower only the BEGIN forms the old
+% restricted grammar produced -- and several of them IGNORE a BEGIN action they
+% do not recognise, which would silently drop it (printing zeros where awk prints
+% the computed value). So any other BEGIN action declines here, before any driver
+% sees the program.
+plawk_program_native_driver_ir(Program, _InputPath, _DriverIR) :-
+    plawk_program_has_unlowered_begin(Program),
+    !,
+    fail.
+
+plawk_program_has_unlowered_begin(Program) :-
+    ( Program = program(BeginClauses, _, _)
+    ; Program = program_passes(BeginClauses, _, _)
+    ),
+    is_list(BeginClauses),
+    member(begin(Actions), BeginClauses),
+    member(Action, Actions),
+    \+ plawk_begin_lowered_action(Action),
+    !.
+
+%% plawk_begin_lowered_action(+Action) is semidet.
+%  The BEGIN action forms the drivers lower: special-variable and user-scalar
+%  literal assignments, print/printf/exit (their arguments are checked by the
+%  drivers), the getline marker (declined elsewhere), backed-cache declarations,
+%  and the codegen-synthesised seed marker.
+plawk_begin_lowered_action(set(var(Name), int(Value))) :- atom(Name), integer(Value).
+plawk_begin_lowered_action(set(var(Name), string(_))) :- atom(Name).
+plawk_begin_lowered_action(print(_)).
+plawk_begin_lowered_action(printf(_, _)).
+plawk_begin_lowered_action(exit(_)).
+plawk_begin_lowered_action(unsupported_getline(_)).
+plawk_begin_lowered_action(cache_table(_, _, _)).
+plawk_begin_lowered_action(cache_schema(_, _)).
+plawk_begin_lowered_action(cache_use(_, _, _)).
+plawk_begin_lowered_action(begin_seed(_, _)).
+
 % BEGIN initial values for user scalars (`BEGIN { n = 1 }`). The assignments are
 % LIFTED out of BEGIN before any driver sees them -- several drivers ignore a BEGIN
 % action they do not recognise, which would silently drop the value -- and become
@@ -5170,6 +5207,10 @@ plawk_action_blob_field(if(_Pattern, ThenActions, ElseActions), Blob) :-
 %  (the design requires an explicit spool, a later phase).
 plawk_program_multipass_driver_ir(Program, _DriverIR) :-
     plawk_program_has_unsupported_getline(Program),
+    !,
+    fail.
+plawk_program_multipass_driver_ir(Program, _DriverIR) :-
+    plawk_program_has_unlowered_begin(Program),
     !,
     fail.
 
