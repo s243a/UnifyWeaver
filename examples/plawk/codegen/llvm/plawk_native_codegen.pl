@@ -199,7 +199,7 @@ plawk_program_native_driver_ir(Program, _InputPath, _DriverIR) :-
 % is defined in the module.
 plawk_program_native_driver_ir(program(Begin0, Rules, End), InputPath, DriverIR) :-
     \+ nb_current(plawk_begin_prelude, pending(_, _)),
-    plawk_begin_prelude_split(Begin0, Specials, Prelude),
+    plawk_begin_prelude_split(Begin0, Rules, End, Specials, Prelude),
     !,
     plawk_output_separator(Begin0, OutputSeparator),
     append(Specials, [begin_prelude_here], BeginActions),
@@ -209,7 +209,15 @@ plawk_program_native_driver_ir(program(Begin0, Rules, End), InputPath, DriverIR)
     (   (   Rules == [], End == []
         ->  plawk_begin_only_prelude_driver_ir(Begin, Prelude, OutputSeparator,
                 InputPath, DriverIR0, Out)
-        ;   plawk_program_native_driver_ir(program(Begin, Rules, End), InputPath,
+        ;   % No rules but an END: awk reads the input, and an action-less rule
+            % is the same program. It routes the program through a driver with
+            % a record loop -- whose phis the prelude seeds -- instead of the
+            % END-only driver, which carries no scalar state.
+            (   Rules == []
+            ->  DriverRules = [rule(always, [])]
+            ;   DriverRules = Rules
+            ),
+            plawk_program_native_driver_ir(program(Begin, DriverRules, End), InputPath,
                 DriverIR0),
             nb_current(plawk_begin_prelude_out, Out0),
             (   Out0 = prelude(_, _, _)
@@ -235,14 +243,24 @@ plawk_program_native_driver_ir(program(Begin0, Rules, End), InputPath, DriverIR)
         fail
     ).
 
-%% plawk_begin_prelude_split(+BeginClauses, -Specials, -Prelude) is semidet.
+%% plawk_begin_prelude_split(+BeginClauses, +Rules, +End, -Specials, -Prelude) is semidet.
 %  A single BEGIN clause holding at least one statement the literal paths do not
 %  lower: Specials are its special-variable string sets, Prelude every other
 %  statement in order. Declines (fails) on what a prelude cannot run: exit (it
 %  must skip the loop yet still run END), getline, backed-cache declarations,
 %  and any record reference -- BEGIN runs before the first record.
-plawk_begin_prelude_split([begin(Actions)], Specials, Prelude) :-
-    plawk_begin_needs_prelude(Actions),
+plawk_begin_prelude_split([begin(Actions)], Rules, End, Specials, Prelude) :-
+    (   plawk_begin_needs_prelude(Actions)
+    ->  true
+    ;   % no rules but an END: the literal seed has no record-loop phi to seed
+        % there (the END-only driver carries no scalar state), so user-scalar
+        % literal inits run through the prelude too
+        Rules == [], End \== [],
+        member(set(var(Name), Lit), Actions),
+        atom(Name),
+        \+ plawk_begin_special_var(Name),
+        plawk_begin_init_literal(Lit, _)
+    ),
     !,
     partition(plawk_begin_special_set, Actions, Specials, Prelude),
     Prelude \== [],

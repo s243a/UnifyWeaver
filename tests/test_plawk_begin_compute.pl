@@ -150,16 +150,38 @@ test(begin_output_precedes_the_records, [condition(clang_available)]) :-
         "start\na 2\nb 2\nc 2\nend 2\n"),
     !.
 
+% --- PR 3: programs with no rules, only BEGIN and END ------------------------
+% awk reads the input when END is present, and an action-less rule is the same
+% program: the prelude wrapper routes it through a driver with a record loop (the
+% END-only driver carries no scalar state to seed). Literal user inits take this
+% path too when there are no rules. gawk 5.1.0.
+test(begin_and_end_without_rules, [condition(clang_available)]) :-
+    run("BEGIN { x = 3 + 4 } END { print x }\n", "7\n"),
+    !,
+    run("BEGIN { x = 3 + 4 } END { print x, NR }\n", "7 3\n"),
+    !,
+    run_with("", "BEGIN { x = 3 + 4 } END { print x, NR }\n", "7 0\n"),
+    !,
+    run("BEGIN { s = \"a\" \"b\" } END { print s }\n", "ab\n"),
+    !,
+    run("BEGIN { t = 0; for (i = 1; i <= 3; i++) t += i } END { print t }\n", "6\n"),
+    !,
+    run("BEGIN { x = 1 + 1; print \"b\" } END { print \"e\", x }\n", "b\ne 2\n"),
+    !,
+    run("BEGIN { n = 0 } END { print n }\n", "0\n"),
+    !,
+    run("BEGIN { n = 5; s = \"z\" } END { print n, s, NR }\n", "5 z 3\n"),
+    !.
+
 % What a prelude cannot run declines cleanly -- never a dropped statement, never
 % exit 4: exit (must skip the loop yet run END), getline, a record reference
-% (BEGIN runs before the first record), END-only programs (a later PR).
+% (BEGIN runs before the first record).
 test(prelude_boundaries_decline) :-
     forall(member(Src,
             [ "BEGIN { x = 1 + 1; exit }\n",
               "BEGIN { x = 1 + 1; getline line < \"/etc/hostname\" }\n",
               "BEGIN { x = $1; print x }\n",
-              "BEGIN { x = NR; print x }\n",
-              "BEGIN { x = 3 + 4 } END { print x }\n"
+              "BEGIN { x = NR; print x }\n"
             ]),
         build_status_is(Src, 3)),
     !.
