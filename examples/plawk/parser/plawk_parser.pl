@@ -2350,8 +2350,8 @@ cache_col_type(str) --> "str".
 cache_col_type(i64) --> "i64".
 
 begin_actions([Action | Actions]) -->
-    begin_action(Action),
-    begin_actions_rest(Actions).
+    begin_statement(Action),
+    begin_actions_rest(Action, Actions).
 
 % Statements are separated as in any awk action -- `;` OR a newline (action_sep//0,
 % the same separator rule bodies use) -- and a trailing separator before `}` is
@@ -2366,13 +2366,43 @@ begin_actions([Action | Actions]) -->
 % and even `BEGIN { FS = ":"; }` were parse errors. The cut now follows a
 % successfully parsed statement, so a trailing separator falls through to the
 % empty clause instead of failing the block.
-begin_actions_rest([Action | Actions]) -->
+begin_actions_rest(_Prev, [Action | Actions]) -->
     action_sep,
-    begin_action(Action),
+    begin_statement(Action),
     !,
-    begin_actions_rest(Actions).
-begin_actions_rest([]) -->
+    begin_actions_rest(Action, Actions).
+% as in a rule body, no separator is needed after a compound statement
+begin_actions_rest(Prev, [Action | Actions]) -->
+    { plawk_block_action(Prev) },
+    ws,
+    begin_statement(Action),
+    !,
+    begin_actions_rest(Action, Actions).
+begin_actions_rest(_Prev, []) -->
     [].
+
+%% begin_statement(-Action)//
+%
+%  One BEGIN statement. The BEGIN-specific productions come first (special
+%  variables, the getline marker, literal inits, print/printf/exit) -- but only
+%  when they consume the WHOLE statement, so `x = 3 + 1` is not committed as
+%  `x = 3`. Anything else parses with the rule-body statement grammar
+%  (computation, loops, `++`, concatenation); codegen declines the forms it cannot
+%  yet lower in BEGIN (plawk_program_has_unlowered_begin/1).
+begin_statement(Action) -->
+    begin_action(Action),
+    begin_statement_end,
+    !.
+begin_statement(Action) -->
+    action(Action),
+    % a special variable is set only through its own production above (a
+    % string literal); `NR = 1`, `FS = x` stay parse errors, as before
+    { \+ ( Action = set(var(Name), _), begin_special_name(Name) ) }.
+
+% lookahead: the statement ends here (a separator, or the block's `}`)
+begin_statement_end(S0, S0) :-
+    phrase(( action_sep ; ws, "}" ), S0, _),
+    !.
 
 % getline is deliberately not executable in BEGIN in this phase. Preserve the
 % surface as an explicit node so codegen reports a compile error (exit 3)
