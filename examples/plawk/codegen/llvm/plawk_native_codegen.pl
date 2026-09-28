@@ -199,26 +199,48 @@ plawk_program_native_driver_ir(Program, _InputPath, _DriverIR) :-
 % is defined in the module.
 plawk_program_native_driver_ir(program(Begin0, Rules, End), InputPath, DriverIR) :-
     \+ nb_current(plawk_begin_prelude, pending(_, _)),
-    plawk_begin_prelude_split(Begin0, Rules, End, Specials, Prelude),
+    plawk_begin_prelude_split(Begin0, Rules, End, Specials, Prelude, BeginExit),
     !,
     plawk_output_separator(Begin0, OutputSeparator),
     append(Specials, [begin_prelude_here], BeginActions),
     Begin = [begin(BeginActions)],
     b_setval(plawk_begin_prelude, pending(Prelude, OutputSeparator)),
     b_setval(plawk_begin_prelude_out, none),
-    (   (   Rules == [], End == []
-        ->  plawk_begin_only_prelude_driver_ir(Begin, Prelude, OutputSeparator,
+    (   (   ( Rules == [] ; BeginExit = begin_exit(_) ), End == []
+        ->  % no END to run after BEGIN (or BEGIN exits and there is none):
+            % a BEGIN-only program -- its driver returns the stored status
+            plawk_begin_only_prelude_driver_ir(Begin, Prelude, OutputSeparator,
                 InputPath, DriverIR0, Out)
         ;   % No rules but an END: awk reads the input, and an action-less rule
             % is the same program. It routes the program through a driver with
             % a record loop -- whose phis the prelude seeds -- instead of the
             % END-only driver, which carries no scalar state.
-            (   Rules == []
-            ->  DriverRules = [rule(always, [])]
-            ;   DriverRules = Rules
+            %
+            % BEGIN ending in `exit [N]` with rules or END: awk reads NO input,
+            % runs no rule, and still runs END (NR = 0; END's own exit overrides
+            % the status). Exactly the program with no rules over EMPTY input --
+            % so the rules are dropped and the driver reads the fixed empty
+            % input /dev/null instead of stdin or the file argument; the prelude
+            % stores the status (exit_store/1) and the driver's exit path
+            % returns it.
+            (   BeginExit = begin_exit(_)
+            ->  DriverInput = '/dev/null'
+            ;   DriverInput = InputPath
             ),
-            plawk_program_native_driver_ir(program(Begin, DriverRules, End), InputPath,
-                DriverIR0),
+            % with no (remaining) rules, the empty rule is tried first (a driver
+            % with a record loop, whose phis the prelude seeds); when END reads
+            % nothing the prelude assigns, the END-only driver serves as well
+            (   ( Rules == [] ; BeginExit = begin_exit(_) )
+            ->  (   plawk_program_native_driver_ir(
+                        program(Begin, [rule(always, [])], End), DriverInput, DriverIR0)
+                ->  true
+                ;   plawk_program_native_driver_ir(program(Begin, [], End),
+                        DriverInput, DriverIR0)
+                )
+            ;   plawk_program_native_driver_ir(program(Begin, Rules, End), DriverInput,
+                    DriverIR0)
+            ),
+            plawk_begin_exit_ir_ok(BeginExit, DriverIR0),
             nb_current(plawk_begin_prelude_out, Out0),
             (   Out0 = prelude(_, _, _)
             ->  Out = Out0
@@ -227,7 +249,7 @@ plawk_program_native_driver_ir(program(Begin0, Rules, End), InputPath, DriverIR)
                 % reads what it assigns: it then only has to RUN (its prints),
                 % over its own slot plan.
                 plawk_begin_prelude_values_unread(Prelude, Rules, End),
-                plawk_scalar_state_plan([], [], StatePlan),
+                plawk_begin_prelude_own_plan(StatePlan),
                 plawk_state_plan_slots(StatePlan, Slots),
                 plawk_begin_prelude_generate(Slots, prelude(G, IR, _Assigned-Named)),
                 % its values seed no phi, so no phi marker is required
@@ -243,14 +265,26 @@ plawk_program_native_driver_ir(program(Begin0, Rules, End), InputPath, DriverIR)
         fail
     ).
 
-%% plawk_begin_prelude_split(+BeginClauses, +Rules, +End, -Specials, -Prelude) is semidet.
+%% plawk_begin_prelude_split(+BeginClauses, +Rules, +End, -Specials, -Prelude,
+%%     -BeginExit) is semidet.
 %  A single BEGIN clause holding at least one statement the literal paths do not
 %  lower: Specials are its special-variable string sets, Prelude every other
 %  statement in order. Declines (fails) on what a prelude cannot run: exit (it
 %  must skip the loop yet still run END), getline, backed-cache declarations,
 %  and any record reference -- BEGIN runs before the first record.
-plawk_begin_prelude_split([begin(Actions)], Rules, End, Specials, Prelude) :-
-    (   plawk_begin_needs_prelude(Actions)
+plawk_begin_prelude_split([begin(Actions0)], Rules, End, Specials, Prelude, BeginExit) :-
+    % a trailing top-level `exit [N]` with rules or END (an exit anywhere else --
+    % under a condition, mid-block -- stays refused below)
+    (   append(Actions, [exit(int(Code))], Actions0),
+        integer(Code),
+        ( Rules \== [] ; End \== [] )
+    ->  BeginExit = begin_exit(Code)
+    ;   Actions = Actions0,
+        BeginExit = none
+    ),
+    (   BeginExit = begin_exit(_)
+    ->  true
+    ;   plawk_begin_needs_prelude(Actions)
     ->  true
     ;   % no rules but an END: the literal seed has no record-loop phi to seed
         % there (the END-only driver carries no scalar state), so user-scalar
@@ -262,9 +296,28 @@ plawk_begin_prelude_split([begin(Actions)], Rules, End, Specials, Prelude) :-
         plawk_begin_init_literal(Lit, _)
     ),
     !,
-    partition(plawk_begin_special_set, Actions, Specials, Prelude),
-    Prelude \== [],
-    \+ ( member(A, Prelude), plawk_begin_prelude_refused(A) ).
+    partition(plawk_begin_special_set, Actions, Specials, Prelude0),
+    \+ ( member(A, Prelude0), plawk_begin_prelude_refused(A) ),
+    (   BeginExit = begin_exit(ExitCode), ExitCode =\= 0
+    ->  append(Prelude0, [exit_store(ExitCode)], Prelude)
+    ;   BeginExit = begin_exit(0), Prelude0 == []
+    ->  % a bare `exit`: nothing to run, but the prelude marks the program's
+        % route; a no-op keeps the machinery uniform
+        Prelude = [exit_store(0)]
+    ;   Prelude = Prelude0
+    ),
+    Prelude \== [].
+
+%% plawk_begin_exit_ir_ok(+BeginExit, +DriverIR) is semidet.
+%  A BEGIN exit's driver must read the empty input (the fixed-path template with
+%  /dev/null) and return the status it stored.
+plawk_begin_exit_ir_ok(none, _IR).
+plawk_begin_exit_ir_ok(begin_exit(Code), IR) :-
+    sub_atom(IR, _, _, _, 'c"/dev/null\\00"'),
+    (   Code =:= 0
+    ->  true
+    ;   sub_atom(IR, _, _, _, 'load i32, i32* @plawk_exit_code')
+    ).
 
 % A statement the literal paths do not lower -- or literal user-scalar inits the
 % lift refuses (a name read by another BEGIN statement: `x = 3; print x`), which
@@ -310,6 +363,11 @@ plawk_begin_prelude_refused(Action) :-
 %  is exactly as before.
 plawk_prelude_planning_rules(Rules, [rule(always, Prelude) | Rules]) :-
     nb_current(plawk_begin_prelude, pending(Prelude, _)),
+    % a prelude that assigns and prints nothing (a bare exit status) has no slot
+    % needs -- and a rule-less driver requires an empty plan
+    (   plawk_actions_body_print_field(Prelude, _)
+    ;   member(Action, Prelude), plawk_scalar_update_action_name(Action, _)
+    ),
     !.
 plawk_prelude_planning_rules(Rules, Rules).
 
@@ -420,6 +478,15 @@ plawk_ir_global_defined(IR, G) :-
     sub_atom(IR, _, _, _, D),
     !.
 
+% The prelude's own slot plan (the planner over the pseudo-rule alone). A prelude
+% that assigns and prints nothing (`BEGIN { exit 2 }`) has no slots: the planner
+% refuses such a rule set, and the empty plan is the right one.
+plawk_begin_prelude_own_plan(StatePlan) :-
+    (   plawk_scalar_state_plan([], [], StatePlan0)
+    ->  StatePlan = StatePlan0
+    ;   StatePlan = state_plan([], [])
+    ).
+
 plawk_begin_prelude_values_unread(Prelude, Rules, End) :-
     \+ ( member(Action, Prelude),
          plawk_action_subaction_or_self(Action, Leaf),
@@ -432,7 +499,7 @@ plawk_begin_prelude_values_unread(Prelude, Rules, End) :-
 %  (the planner over the pseudo-rule alone) inside the BEGIN-only driver.
 plawk_begin_only_prelude_driver_ir(Begin, _Prelude, _OutputSeparator, InputPath,
         DriverIR, Out) :-
-    plawk_scalar_state_plan([], [], StatePlan),
+    plawk_begin_prelude_own_plan(StatePlan),
     plawk_state_plan_slots(StatePlan, Slots),
     plawk_begin_prelude_generate(Slots, Out),
     plawk_program_native_driver_ir(program(Begin, [], []), InputPath, DriverIR).

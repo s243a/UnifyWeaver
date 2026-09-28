@@ -173,12 +173,33 @@ test(begin_and_end_without_rules, [condition(clang_available)]) :-
     run("BEGIN { n = 5; s = \"z\" } END { print n, s, NR }\n", "5 z 3\n"),
     !.
 
+% --- PR 4: a trailing `exit` in BEGIN, with rules or END ---------------------
+% awk reads no input, runs no rule, and still runs END (NR = 0; END's own exit
+% overrides the status). That is the program with no rules over EMPTY input: the
+% rules are dropped and the driver reads /dev/null (checked on the output, with
+% the status load). Only a TRAILING top-level exit -- one under a condition or
+% mid-block stays declined. gawk 5.1.0 (output and exit status).
+test(begin_trailing_exit, [condition(clang_available)]) :-
+    run_status("BEGIN { x = 1 + 1; print \"b\"; exit 3 } { print \"rec\" } END { print \"e\", x, NR }\n",
+        "b\ne 2 0\n", 3),
+    !,
+    run_status("BEGIN { exit 3 } END { exit 5 }\n", "", 5),
+    !,
+    run_status("BEGIN { exit } END { print \"e\" }\n", "e\n", 0),
+    !,
+    run_status("BEGIN { exit 2 } { print }\n", "", 2),
+    !,
+    run_status("BEGIN { n = 4; exit 1 } { n++ } END { print n }\n", "4\n", 1),
+    !,
+    run_status("BEGIN { print \"hi\"; exit 1 } END { print \"e\", NR }\n", "hi\ne 0\n", 1),
+    !.
+
 % What a prelude cannot run declines cleanly -- never a dropped statement, never
-% exit 4: exit (must skip the loop yet run END), getline, a record reference
+% exit 4: a non-trailing exit, getline, a record reference
 % (BEGIN runs before the first record).
 test(prelude_boundaries_decline) :-
     forall(member(Src,
-            [ "BEGIN { x = 1 + 1; exit }\n",
+            [ "BEGIN { x = 1; exit; x = 2 } END { print x }\n",
               "BEGIN { x = 1 + 1; getline line < \"/etc/hostname\" }\n",
               "BEGIN { x = $1; print x }\n",
               "BEGIN { x = NR; print x }\n"
@@ -200,6 +221,33 @@ input("a 5\nb 7\nc 2\n").
 run(Src, Expected) :-
     input(Input),
     run_with(Input, Src, Expected).
+
+run_status(Src, Expected, ExpectedStatus) :-
+    input(Input),
+    odir(Dir),
+    directory_file_path(Dir, 'bc_bin', Bin),
+    ( exists_file(Bin) -> delete_file(Bin) ; true ),
+    directory_file_path(Dir, 'bc', Prog0),
+    atom_concat(Prog0, '.plawk', Prog),
+    setup_call_cleanup(open(Prog, write, S, [encoding(utf8)]),
+        write(S, Src), close(S)),
+    atom_concat(Prog0, '_in.txt', In),
+    setup_call_cleanup(open(In, write, SI, [encoding(utf8)]),
+        write(SI, Input), close(SI)),
+    process_create(path(swipl), ['examples/plawk/bin/plawk', build, Prog, '-o', Bin],
+        [stdout(pipe(O)), stderr(null), process(BPid)]),
+    read_string(O, _, _), close(O),
+    process_wait(BPid, exit(BuildStatus)),
+    assertion(BuildStatus == 0),
+    process_create(Bin, [In], [stdout(pipe(PS)), stderr(std), process(Pid)]),
+    read_string(PS, _, Out),
+    close(PS),
+    process_wait(Pid, exit(Status)),
+    ( Out == Expected, Status == ExpectedStatus
+    -> true
+    ;  format(user_error, "~n~w~n  got      ~q (status ~w)~n  expected ~q (status ~w)~n",
+           [Src, Out, Status, Expected, ExpectedStatus]), fail
+    ).
 
 run_with(Input, Src, Expected) :-
     odir(Dir),
