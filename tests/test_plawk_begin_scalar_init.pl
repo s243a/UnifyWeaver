@@ -144,13 +144,21 @@ test(mixed_driver_seeds, [condition(clang_available)]) :-
     run_with("", "BEGIN { n = 1 }\n{ c[$1]++; n++ }\nEND { print n }\n", "1\n"),
     !.
 
+% WERE declines: a name assigned twice in BEGIN, or read by another BEGIN
+% statement, cannot be lifted to a literal seed. They now run through the BEGIN
+% prelude (tests/test_plawk_begin_compute.pl) -- executed in order, the final
+% value seeding the loop. gawk 5.1.0.
+test(unliftable_inits_run_through_the_prelude, [condition(clang_available)]) :-
+    run("BEGIN { n = 1; n = 2 }\n{ n++ }\nEND { print n }\n", "5\n"),
+    !,
+    run_with("", "BEGIN { n = 1; n = 2 }\n{ n++ }\nEND { print n }\n", "2\n"),
+    !,
+    run("BEGIN { x = 5; print x }\n", "5\n"),
+    !.
+
 test(unseedable_declines) :-
     forall(member(Src,
-            [ % assigned twice in BEGIN: not order-independent
-              "BEGIN { n = 1; n = 2 }\n{ n++ }\nEND { print n }\n",
-              % read by another BEGIN statement
-              "BEGIN { x = 5; print x }\n",
-              % END-only
+            [ % END-only
               "BEGIN { n = 0 }\nEND { print n }\n"
             ]),
         build_status(Src, 3)),

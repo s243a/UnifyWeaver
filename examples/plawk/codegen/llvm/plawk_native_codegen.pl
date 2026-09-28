@@ -176,6 +176,249 @@ plawk_program_native_driver_ir(Program, _InputPath, _DriverIR) :-
     !,
     fail.
 
+% COMPUTATION IN BEGIN -- the prelude. BEGIN statements beyond the literal forms
+% (arithmetic, `x++`, concatenation, loops, prints of computed values) run ONCE,
+% before the record loop, through the SAME rule walker the rule bodies use
+% (plawk_scalar_action_sequence_pairs//14), starting from the type-zero slot
+% values. Its output SSA values seed the scalar loop-header phis in place of the
+% type zero -- the generalisation of the literal seed below. Special-variable
+% sets stay in BEGIN (they are compile-time constants); every other BEGIN
+% statement moves to the prelude, in order.
+%
+% Mechanics: BEGIN is handed to the drivers as its special sets plus a
+% begin_prelude_here marker, which the entry-block seed emitter renders as a
+% placeholder line. The state planners see the prelude as a leading pseudo-rule
+% (plawk_prelude_planning_rules/2), so BEGIN-only names get slots. The loop-phi
+% generator runs the prelude over the driver's own slots and records its output;
+% this clause then substitutes the placeholder with the prelude IR.
+%
+% Checked on the OUTPUT (declines otherwise): the placeholder occurs exactly once
+% and a prelude was generated for it; every name the prelude assigns seeds a phi
+% marked `; plawk-begin-prelude(NAME)`; the prelude never touches the record or
+% loop state (%line..., %current_nr, %handle, %slot_); and every @global it uses
+% is defined in the module.
+plawk_program_native_driver_ir(program(Begin0, Rules, End), InputPath, DriverIR) :-
+    \+ nb_current(plawk_begin_prelude, pending(_, _)),
+    plawk_begin_prelude_split(Begin0, Specials, Prelude),
+    !,
+    plawk_output_separator(Begin0, OutputSeparator),
+    append(Specials, [begin_prelude_here], BeginActions),
+    Begin = [begin(BeginActions)],
+    b_setval(plawk_begin_prelude, pending(Prelude, OutputSeparator)),
+    b_setval(plawk_begin_prelude_out, none),
+    (   (   Rules == [], End == []
+        ->  plawk_begin_only_prelude_driver_ir(Begin, Prelude, OutputSeparator,
+                InputPath, DriverIR0, Out)
+        ;   plawk_program_native_driver_ir(program(Begin, Rules, End), InputPath,
+                DriverIR0),
+            nb_current(plawk_begin_prelude_out, Out0),
+            (   Out0 = prelude(_, _, _)
+            ->  Out = Out0
+            ;   % the driver has no scalar loop state (e.g. `{ print $1 }`), so
+                % no phi generated the prelude. Fine when nothing after BEGIN
+                % reads what it assigns: it then only has to RUN (its prints),
+                % over its own slot plan.
+                plawk_begin_prelude_values_unread(Prelude, Rules, End),
+                plawk_scalar_state_plan([], [], StatePlan),
+                plawk_state_plan_slots(StatePlan, Slots),
+                plawk_begin_prelude_generate(Slots, prelude(G, IR, _Assigned-Named)),
+                % its values seed no phi, so no phi marker is required
+                Out = prelude(G, IR, []-Named)
+            )
+        )
+    ->  b_setval(plawk_begin_prelude, none),
+        b_setval(plawk_begin_prelude_out, none),
+        Out = prelude(GlobalIR, PreludeIR, Assigned),
+        plawk_begin_prelude_finish(DriverIR0, GlobalIR, PreludeIR, Assigned, DriverIR)
+    ;   b_setval(plawk_begin_prelude, none),
+        b_setval(plawk_begin_prelude_out, none),
+        fail
+    ).
+
+%% plawk_begin_prelude_split(+BeginClauses, -Specials, -Prelude) is semidet.
+%  A single BEGIN clause holding at least one statement the literal paths do not
+%  lower: Specials are its special-variable string sets, Prelude every other
+%  statement in order. Declines (fails) on what a prelude cannot run: exit (it
+%  must skip the loop yet still run END), getline, backed-cache declarations,
+%  and any record reference -- BEGIN runs before the first record.
+plawk_begin_prelude_split([begin(Actions)], Specials, Prelude) :-
+    plawk_begin_needs_prelude(Actions),
+    !,
+    partition(plawk_begin_special_set, Actions, Specials, Prelude),
+    Prelude \== [],
+    \+ ( member(A, Prelude), plawk_begin_prelude_refused(A) ).
+
+% A statement the literal paths do not lower -- or literal user-scalar inits the
+% lift refuses (a name read by another BEGIN statement: `x = 3; print x`), which
+% the literal path declines outright. Every program that compiles today fails
+% both, so its IR is unchanged.
+plawk_begin_needs_prelude(Actions) :-
+    member(Action, Actions),
+    \+ plawk_begin_lowered_action(Action),
+    !.
+plawk_begin_needs_prelude(Actions) :-
+    plawk_begin_scalar_inits([begin(Actions)], [], _),
+    member(set(var(Name), Lit), Actions),
+    atom(Name),
+    \+ plawk_begin_special_var(Name),
+    plawk_begin_init_literal(Lit, _),
+    !.
+
+plawk_begin_special_set(set(var(Name), string(_))) :-
+    plawk_begin_special_var(Name).
+
+plawk_begin_prelude_refused(Action) :-
+    sub_term(Term, Action),
+    compound(Term),
+    (   Term = exit(_)
+    ;   Term = exit_store(_)
+    ;   Term = next
+    ;   Term = unsupported_getline(_)
+    ;   functor(Term, Name, _), sub_atom(Name, 0, _, _, getline)
+    ;   functor(Term, Name, _), sub_atom(Name, 0, _, _, cache_)
+    ;   Term = field(_)
+    ;   Term = field_var(_, _)
+    ;   Term = special(_)
+    ;   functor(Term, Name, _), sub_atom(Name, _, _, _, assoc)
+    ;   Term = split_into(_, _, _)
+    ;   Term = for_in(_, _, _)
+    ),
+    !.
+
+%% plawk_prelude_planning_rules(+Rules, -PlanRules) is det.
+%  While a prelude is pending, the state planners see its statements as a leading
+%  pseudo-rule, so a name assigned only in BEGIN gets a slot (and is typed by its
+%  BEGIN writes). Otherwise Rules unchanged -- every other program's plan, and IR,
+%  is exactly as before.
+plawk_prelude_planning_rules(Rules, [rule(always, Prelude) | Rules]) :-
+    nb_current(plawk_begin_prelude, pending(Prelude, _)),
+    !.
+plawk_prelude_planning_rules(Rules, Rules).
+
+%% plawk_begin_prelude_generate(+Slots, -Out) is semidet.
+%  Run the pending prelude over Slots from their type zeros. Out is
+%  prelude(GlobalIR, IR, Assigned-Values): the names the prelude assigns, and every
+%  slot name's value after it.
+plawk_begin_prelude_generate(Slots, prelude(GlobalIR, IR, Assigned-Named)) :-
+    nb_current(plawk_begin_prelude, pending(Prelude, OutputSeparator)),
+    maplist(plawk_slot_zero_ir, Slots, Values0),
+    phrase(plawk_scalar_action_sequence_pairs(Prelude, Slots, none, 32,
+        OutputSeparator, begin_body, begin_body, begin, 0, Values0, Values, _OpIndex,
+        _ExitLabel, NextExits), Pairs),
+    NextExits == [],
+    pairs_keys_values(Pairs, GlobalParts, LineParts),
+    plawk_join_nonempty_ir(GlobalParts, GlobalIR),
+    atomic_list_concat(LineParts, '\n', IR0),
+    atomic_list_concat(['  ; plawk-begin-prelude-start', IR0,
+        '  ; plawk-begin-prelude-end'], '\n', IR),
+    findall(Name-Value,
+        ( nth0(I, Slots, Slot), plawk_slot_name(Slot, Name), atom(Name),
+          nth0(I, Values, Value) ),
+        Named),
+    findall(Name,
+        ( member(Action, Prelude),
+          plawk_action_subaction_or_self(Action, Leaf),
+          plawk_scalar_update_action_name(Leaf, Name) ),
+        Assigned0),
+    sort(Assigned0, Assigned).
+
+plawk_action_subaction_or_self(Action, Action).
+plawk_action_subaction_or_self(Action, Leaf) :-
+    plawk_action_subaction(Action, Leaf).
+
+% The value a slot starts from under a prelude: its value after the prelude.
+plawk_begin_prelude_seed(Slot, Seed, Marker) :-
+    nb_current(plawk_begin_prelude_out, prelude(_G, _IR, Assigned-Named)),
+    plawk_slot_name(Slot, Name),
+    atom(Name),
+    memberchk(Name-Seed, Named),
+    !,
+    (   memberchk(Name, Assigned)
+    ->  format(atom(Marker), ' ; plawk-begin-prelude(~w)', [Name])
+    ;   Marker = ''
+    ).
+
+%% plawk_begin_prelude_finish(+DriverIR0, +GlobalIR, +PreludeIR, +Assigned-Named, -DriverIR)
+%  Substitute the placeholder and verify the prelude's guarantees on the output.
+plawk_begin_prelude_finish(DriverIR0, GlobalIR, PreludeIR, Assigned-_Named, DriverIR) :-
+    Placeholder = '  ; plawk-begin-prelude-slot',
+    atomic_list_concat(Parts, Placeholder, DriverIR0),
+    Parts = [Before, After],
+    % the prelude reads no record or loop state
+    forall(member(Ref, ['%line', '%current_nr', '%handle', '%slot_', '%rule_',
+                        '%plawk_nr', '%next_slot_']),
+           \+ sub_atom(PreludeIR, _, _, _, Ref)),
+    % every assigned name seeds a phi (a BEGIN-only program has no loop: its
+    % prelude values are used where they are defined)
+    (   sub_atom(DriverIR0, _, _, _, '%check_handle_value')
+    ->  forall(member(Name, Assigned),
+            ( format(atom(M), '; plawk-begin-prelude(~w)', [Name]),
+              sub_atom(DriverIR0, _, _, _, M) ))
+    ;   true
+    ),
+    atomic_list_concat([Before, PreludeIR, After], DriverIR1),
+    (   GlobalIR == ''
+    ->  DriverIR2 = DriverIR1
+    ;   atomic_list_concat([DriverIR1, '\n', GlobalIR, '\n'], DriverIR2)
+    ),
+    plawk_begin_prelude_globals_defined(PreludeIR, DriverIR2, DriverIR).
+
+% Every @global the prelude uses must be defined. The assigned-mark table is
+% added when missing (it is a plain zeroed global); anything else missing
+% declines rather than leaving clang an undefined reference.
+plawk_begin_prelude_globals_defined(PreludeIR, IR0, IR) :-
+    findall(G, plawk_ir_global_ref(PreludeIR, G), Gs0),
+    sort(Gs0, Gs),
+    (   memberchk('plawk_slot_assigned', Gs),
+        \+ plawk_ir_global_defined(IR0, 'plawk_slot_assigned')
+    ->  plawk_slot_assigned_width(Width),
+        format(atom(Def), '@plawk_slot_assigned = internal global [~w x i1] zeroinitializer', [Width]),
+        atomic_list_concat([IR0, '\n', Def, '\n'], IR)
+    ;   IR = IR0
+    ),
+    forall(member(G, Gs), plawk_ir_global_defined(IR, G)).
+
+plawk_ir_global_ref(IR, G) :-
+    atom_codes(IR, Codes),
+    append(_, [0'@ | Rest], Codes),
+    plawk_ir_ident_codes(Rest, NameCodes),
+    NameCodes \== [],
+    atom_codes(G, NameCodes).
+
+plawk_ir_ident_codes([C | Cs], [C | Ns]) :-
+    ( code_type(C, alnum) ; C == 0'_ ; C == 0'. ),
+    !,
+    plawk_ir_ident_codes(Cs, Ns).
+plawk_ir_ident_codes(_, []).
+
+plawk_ir_global_defined(IR, G) :-
+    format(atom(Start), '@~w = ', [G]),
+    sub_atom(IR, 0, _, _, Start),
+    !.
+plawk_ir_global_defined(IR, G) :-
+    (   format(atom(D), '\n@~w = ', [G])
+    ;   format(atom(D), '@~w(', [G])     % define / declare
+    ),
+    sub_atom(IR, _, _, _, D),
+    !.
+
+plawk_begin_prelude_values_unread(Prelude, Rules, End) :-
+    \+ ( member(Action, Prelude),
+         plawk_action_subaction_or_self(Action, Leaf),
+         plawk_scalar_update_action_name(Leaf, Name),
+         ( sub_term(Sub, Rules) ; sub_term(Sub, End) ),
+         Sub == var(Name) ).
+
+%% plawk_begin_only_prelude_driver_ir(+Begin, +Prelude, +OFS, +InputPath, -DriverIR, -Out)
+%  A BEGIN-only program: no loop, so the prelude runs over its own slot plan
+%  (the planner over the pseudo-rule alone) inside the BEGIN-only driver.
+plawk_begin_only_prelude_driver_ir(Begin, _Prelude, _OutputSeparator, InputPath,
+        DriverIR, Out) :-
+    plawk_scalar_state_plan([], [], StatePlan),
+    plawk_state_plan_slots(StatePlan, Slots),
+    plawk_begin_prelude_generate(Slots, Out),
+    plawk_program_native_driver_ir(program(Begin, [], []), InputPath, DriverIR).
+
 % BEGIN accepts the whole rule-body statement grammar (computation, loops, `++`,
 % concatenation, ...), but the drivers lower only the BEGIN forms the old
 % restricted grammar produced -- and several of them IGNORE a BEGIN action they
@@ -212,6 +455,7 @@ plawk_begin_lowered_action(cache_table(_, _, _)).
 plawk_begin_lowered_action(cache_schema(_, _)).
 plawk_begin_lowered_action(cache_use(_, _, _)).
 plawk_begin_lowered_action(begin_seed(_, _)).
+plawk_begin_lowered_action(begin_prelude_here).
 
 % BEGIN initial values for user scalars (`BEGIN { n = 1 }`). The assignments are
 % LIFTED out of BEGIN before any driver sees them -- several drivers ignore a BEGIN
@@ -8405,6 +8649,14 @@ plawk_begin_seed_text(string(Text), Text).
 %% plawk_begin_seed_lines(+BeginClauses, -Lines) is det.
 %  Entry-block intern of every begin_seed(Name, Value) action.
 plawk_begin_seed_lines(BeginClauses, Lines) :-
+    plawk_begin_seed_lines_(BeginClauses, Lines0),
+    (   member(begin(Actions), BeginClauses),
+        memberchk(begin_prelude_here, Actions)
+    ->  append(Lines0, ['  ; plawk-begin-prelude-slot'], Lines)
+    ;   Lines = Lines0
+    ).
+
+plawk_begin_seed_lines_(BeginClauses, Lines) :-
     findall(Line,
         ( member(begin(Actions), BeginClauses),
           member(begin_seed(Name, Value), Actions),
@@ -8448,6 +8700,9 @@ plawk_begin_init_value(Name, Value) :-
 %  NUMERIC slot with a BEGIN initial value -- that value, with the marker the driver
 %  entry checks for. A string/strnum slot is never seeded (its value is a runtime
 %  atom id), so its name stays unmarked and the program declines.
+plawk_slot_seed(Slot, Seed, Marker) :-
+    plawk_begin_prelude_seed(Slot, Seed, Marker),
+    !.
 plawk_slot_seed(Slot, Seed, Marker) :-
     plawk_slot_name(Slot, Name),
     plawk_begin_init_value(Name, Value),
@@ -8698,7 +8953,11 @@ plawk_scalar_rule_controls(Rules, Controls) :-
         ),
         Controls).
 
-plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots, Tracked)) :-
+plawk_scalar_state_plan(Rules0, PrintFields, StatePlan) :-
+    plawk_prelude_planning_rules(Rules0, Rules),
+    plawk_scalar_state_plan_(Rules, PrintFields, StatePlan).
+
+plawk_scalar_state_plan_(Rules, PrintFields, state_plan(Slots, Tracked)) :-
     findall(Name,
         ( member(rule(_Pattern, Actions), Rules),
           plawk_trim_control_tails(Actions, ReachableActions),
@@ -9336,7 +9595,11 @@ plawk_mixed_state_plan(Rules, PrintFields, mixed_plan(ScalarPlan, AssocPlan, Pla
     ;   plawk_planned_rules_have_conditionals(PlannedRules)
     ).
 
-plawk_mixed_scalar_state_plan(Rules, PrintFields, state_plan(Slots, Tracked)) :-
+plawk_mixed_scalar_state_plan(Rules0, PrintFields, StatePlan) :-
+    plawk_prelude_planning_rules(Rules0, Rules),
+    plawk_mixed_scalar_state_plan_(Rules, PrintFields, StatePlan).
+
+plawk_mixed_scalar_state_plan_(Rules, PrintFields, state_plan(Slots, Tracked)) :-
     findall(Name,
         ( member(rule(_Pattern, Actions), Rules),
           plawk_trim_control_tails(Actions, ReachableActions),
@@ -14659,7 +14922,8 @@ plawk_begin_only_body_ir([begin(Actions)], OutputSeparator, IR) :-
     plawk_rs_store_lines([begin(Actions)], RsStoreLines),
     plawk_subsep_store_lines([begin(Actions)], SubsepStoreLines),
     plawk_fs_regex_store_lines([begin(Actions)], StoreLines),
-    append([RsStoreLines, SubsepStoreLines, StoreLines, [OutputIR]], Lines),
+    plawk_begin_seed_lines([begin(Actions)], SeedLines),
+    append([RsStoreLines, SubsepStoreLines, StoreLines, SeedLines, [OutputIR]], Lines),
     plawk_join_nonempty_ir(Lines, IR).
 
 %% plawk_begin_outputs_ir(+Statements, -GlobalIR, -BodyIR) is semidet.
@@ -16002,6 +16266,13 @@ plawk_scalar_rule_slot_input(RuleIndex, SlotIndex, Value) :-
 
 plawk_state_loop_phi_ir(StatePlan, IR) :-
     plawk_state_plan_slots(StatePlan, Slots),
+    % a pending BEGIN prelude runs over exactly these slots; its output values
+    % seed the phis (plawk_begin_prelude_seed/3)
+    (   nb_current(plawk_begin_prelude, pending(_, _))
+    ->  plawk_begin_prelude_generate(Slots, Out),
+        b_setval(plawk_begin_prelude_out, Out)
+    ;   true
+    ),
     phrase(plawk_scalar_loop_phi_lines(Slots, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
 
