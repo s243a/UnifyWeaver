@@ -221,6 +221,9 @@ plawk_program_native_driver_ir(program(Begin0, Rules, End), InputPath, DriverIR)
                 plawk_begin_prelude_values_unread(Prelude, Rules, End),
                 plawk_scalar_state_plan([], [], StatePlan),
                 plawk_state_plan_slots(StatePlan, Slots),
+                plawk_state_plan_tracked(StatePlan, Tracked),
+                b_setval(plawk_walker_tracked, Tracked),
+                b_setval(plawk_walker_assigned, []),
                 plawk_begin_prelude_generate(Slots, prelude(G, IR, _Assigned-Named)),
                 % its values seed no phi, so no phi marker is required
                 Out = prelude(G, IR, []-Named)
@@ -416,6 +419,9 @@ plawk_begin_only_prelude_driver_ir(Begin, _Prelude, _OutputSeparator, InputPath,
         DriverIR, Out) :-
     plawk_scalar_state_plan([], [], StatePlan),
     plawk_state_plan_slots(StatePlan, Slots),
+    plawk_state_plan_tracked(StatePlan, Tracked),
+    b_setval(plawk_walker_tracked, Tracked),
+    b_setval(plawk_walker_assigned, []),
     plawk_begin_prelude_generate(Slots, Out),
     plawk_program_native_driver_ir(program(Begin, [], []), InputPath, DriverIR).
 
@@ -1823,6 +1829,9 @@ plawk_end_loop_body_ir(Actions0, StatePlan, FieldSeparator, OutputSeparator,
         EndRecord, GlobalIR, IR) :-
     plawk_end_branch_fields_rewrite(EndRecord, Actions0, Actions),
     plawk_state_plan_slots(StatePlan, Slots),
+    plawk_state_plan_tracked(StatePlan, Tracked),
+    b_setval(plawk_walker_tracked, Tracked),
+    b_setval(plawk_walker_assigned, []),
     plawk_final_slot_values(StatePlan, FinalValues),
     phrase(plawk_scalar_action_sequence_pairs(Actions, Slots, none,
         FieldSeparator, OutputSeparator, end_body, end_print, end_body, 0,
@@ -16269,7 +16278,10 @@ plawk_state_loop_phi_ir(StatePlan, IR) :-
     % a pending BEGIN prelude runs over exactly these slots; its output values
     % seed the phis (plawk_begin_prelude_seed/3)
     (   nb_current(plawk_begin_prelude, pending(_, _))
-    ->  plawk_begin_prelude_generate(Slots, Out),
+    ->  plawk_state_plan_tracked(StatePlan, Tracked),
+        b_setval(plawk_walker_tracked, Tracked),
+        b_setval(plawk_walker_assigned, []),
+        plawk_begin_prelude_generate(Slots, Out),
         b_setval(plawk_begin_prelude_out, Out)
     ;   true
     ),
@@ -16299,6 +16311,9 @@ plawk_scalar_match_update_ir(StatePlan, Actions, FieldSeparator, OutputSeparator
 
 plawk_native_match_update_ir(StatePlan, AssocPlan, Actions, FieldSeparator, OutputSeparator, RuleIndex, NextExits, GlobalIR-IR) :-
     plawk_state_plan_slots(StatePlan, Slots),
+    plawk_state_plan_tracked(StatePlan, Tracked),
+    b_setval(plawk_walker_tracked, Tracked),
+    b_setval(plawk_walker_assigned, []),
     phrase(plawk_scalar_initial_slot_values(RuleIndex, Slots, 0), InitialValues),
     format(atom(Prefix), 'rule_~w_body', [RuleIndex]),
     phrase(plawk_scalar_action_sequence_pairs(Actions, Slots, AssocPlan, FieldSeparator, OutputSeparator,
@@ -17339,6 +17354,43 @@ plawk_substitute_scalar_reads(var(Name), Slots, Values, Substituted) :-
 plawk_substitute_print_field(Slots, Values, Field0, Field) :-
     plawk_substitute_scalar_reads(Field0, Slots, Values, Field).
 
+%% plawk_unset_counter_read_field(+Slots, +Values, +Field0, -Field)
+%  A print of a TRACKED counter (plawk_walker_tracked: every write to it stores the
+%  assigned mark) becomes ssa_or_unset/2 -- printing "" while unassigned, as awk
+%  does: `{ print n "|"; n = 1 }` printed "0|" on the first record. A value that is
+%  the direct result of an assignment op in this statement sequence
+%  (`%..._slot_N_op_M`) is certainly assigned and prints as before, so the common
+%  `{ n++; print n }` is unchanged. Recurses into concatenation parts.
+plawk_unset_counter_read_field(Slots, Values, concat(Parts0), concat(Parts)) :-
+    !,
+    maplist(plawk_unset_counter_read_field(Slots, Values), Parts0, Parts).
+plawk_unset_counter_read_field(Slots, Values, var(Name), ssa_or_unset(Value, SlotIndex)) :-
+    nb_current(plawk_walker_tracked, Tracked),
+    is_list(Tracked),
+    \+ ( plawk_walker_assigned_get(Assigned), memberchk(Name, Assigned) ),
+    nth0(SlotIndex, Slots, scalar_counter(Name)),
+    memberchk(SlotIndex, Tracked),
+    nth0(SlotIndex, Values, Value),
+    \+ sub_atom(Value, _, _, _, '_op_'),
+    !.
+plawk_unset_counter_read_field(_Slots, _Values, Field, Field).
+
+%% The names DEFINITELY assigned at this point of the walk: added by a straight-line
+%% write, reset around a branch or loop body (it may not run). Only a tracked
+%% counter NOT in this set needs the runtime assigned check in a print.
+plawk_walker_assigned_get(Assigned) :-
+    (   nb_current(plawk_walker_assigned, Assigned0), is_list(Assigned0)
+    ->  Assigned = Assigned0
+    ;   Assigned = []
+    ).
+
+plawk_walker_assigned_add(Name) :-
+    plawk_walker_assigned_get(Assigned),
+    (   memberchk(Name, Assigned)
+    ->  true
+    ;   b_setval(plawk_walker_assigned, [Name | Assigned])
+    ).
+
 %% plawk_resolve_assoc_read_field(+Slots, +Values, +AssocPlan, +Field0, -Field)
 %
 %  Rewrite a print item `arr[k]` (a scalar-var-keyed assoc VALUE read) into a
@@ -18218,6 +18270,7 @@ plawk_scalar_action_sequence_pairs([gsub_count(CountName, Global, Regex, Repl, T
       plawk_scalar_assigned_store_ir(CountSlot, CountIndex, Prefix, CountOp, StoreIR),
       plawk_join_nonempty_ir([CountLoad, StoreIR], CountLine),
       replace_nth0(CountIndex, Values1, CountNext, Values2),
+      plawk_walker_assigned_add(CountName),
       NextOpIndex is OpIndex + 1
     },
     [GsubPair, ''-CountLine],
@@ -18233,6 +18286,7 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
       plawk_scalar_update_operation_ir(Operation, Slot, FieldSeparator, Prefix, SlotIndex,
           OpIndex, InputValue, NextValue, Pair),
       replace_nth0(SlotIndex, Values0, NextValue, Values1),
+      plawk_walker_assigned_add(Name),
       NextOpIndex is OpIndex + 1
     },
     [Pair],
@@ -18415,6 +18469,7 @@ plawk_scalar_action_sequence_pairs([split_count(CountName, split_into(field(KeyI
       plawk_scalar_assigned_store_ir(CountSlot, CountIndex, Prefix, OpIndex, StoreIR),
       plawk_join_nonempty_ir([SplitIR, StoreIR], IR),
       replace_nth0(CountIndex, Values0, CountVar, Values1),
+      plawk_walker_assigned_add(CountName),
       NextOpIndex is OpIndex + 1
     },
     [GlobalIR-IR],
@@ -18504,7 +18559,8 @@ plawk_scalar_action_sequence_pairs([print(Fields) | Rest], Slots, AssocPlan, Fie
       % key-id slot value first, then substitute scalar-slot reads with their
       % threaded SSA values so a print can reference a scalar (e.g. a record-view
       % string field's (ptr,len) slice temps); idempotent for field/literal items.
-      maplist(plawk_resolve_assoc_read_field(Slots, Values0, AssocPlan), Fields, ResolvedFields),
+      maplist(plawk_unset_counter_read_field(Slots, Values0), Fields, Fields1),
+      maplist(plawk_resolve_assoc_read_field(Slots, Values0, AssocPlan), Fields1, ResolvedFields),
       maplist(plawk_substitute_print_field(Slots, Values0), ResolvedFields, SubFields),
       format(atom(PrintPrefix), '~w_print_~w', [Prefix, OpIndex]),
       plawk_prefixed_print_action_ir(SubFields, FieldSeparator, OutputSeparator, PrintPrefix, Pair),
@@ -18565,7 +18621,8 @@ plawk_scalar_action_sequence_pairs([exit_store(Code) | Rest], Slots, AssocPlan, 
 plawk_scalar_action_sequence_pairs([foreach_loop(Layout, Body) | Rest],
         Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
-    { Layout = foreach_layout(CountOff, ElemsOff, ElemSize, StageOff, _StageBase),
+    { plawk_walker_assigned_get(Assigned0),
+      Layout = foreach_layout(CountOff, ElemsOff, ElemSize, StageOff, _StageBase),
       format(atom(FeBase), '~w_fe_~w', [Prefix, OpIndex]),
       format(atom(EntryLabel), '~w_entry', [FeBase]),
       format(atom(HeadLabel), '~w_head', [FeBase]),
@@ -18643,6 +18700,9 @@ plawk_scalar_action_sequence_pairs([foreach_loop(Layout, Body) | Rest],
            FeBase, FeBase,
            HeadLabel,
            AfterLabel]),
+      % a body may run zero times (or take the other branch): what it
+      % assigned is not definitely assigned after it
+      b_setval(plawk_walker_assigned, Assigned0),
       NextOpIndex is OpIndex + 1
     },
     [GlobalIR-IR],
@@ -18657,7 +18717,8 @@ plawk_scalar_action_sequence_pairs([foreach_loop(Layout, Body) | Rest],
 plawk_scalar_action_sequence_pairs([while_loop(Cond, Body) | Rest],
         Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
-    { format(atom(Base), '~w_while_~w', [Prefix, OpIndex]),
+    { plawk_walker_assigned_get(Assigned0),
+      format(atom(Base), '~w_while_~w', [Prefix, OpIndex]),
       format(atom(EntryLabel), '~w_entry', [Base]),
       format(atom(HeadLabel), '~w_head', [Base]),
       format(atom(BodyLabel), '~w_body', [Base]),
@@ -18721,6 +18782,9 @@ plawk_scalar_action_sequence_pairs([while_loop(Cond, Body) | Rest],
            HeadLabel,
            AfterLabel,
            AfterPhiIR]),
+      % a body may run zero times (or take the other branch): what it
+      % assigned is not definitely assigned after it
+      b_setval(plawk_walker_assigned, Assigned0),
       NextOpIndex is OpIndex + 1
     },
     [GlobalIR-IR],
@@ -18734,7 +18798,8 @@ plawk_scalar_action_sequence_pairs([while_loop(Cond, Body) | Rest],
 plawk_scalar_action_sequence_pairs([do_while_loop(Body, Cond) | Rest],
         Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
-    { format(atom(Base), '~w_dowhile_~w', [Prefix, OpIndex]),
+    { plawk_walker_assigned_get(Assigned0),
+      format(atom(Base), '~w_dowhile_~w', [Prefix, OpIndex]),
       format(atom(EntryLabel), '~w_entry', [Base]),
       format(atom(BodyLabel), '~w_body', [Base]),
       format(atom(BodyDoneLabel), '~w_body_done', [Base]),
@@ -18799,6 +18864,9 @@ plawk_scalar_action_sequence_pairs([do_while_loop(Body, Cond) | Rest],
            CondVar, BodyLabel, AfterLabel,
            AfterLabel,
            AfterPhiIR]),
+      % a body may run zero times (or take the other branch): what it
+      % assigned is not definitely assigned after it
+      b_setval(plawk_walker_assigned, Assigned0),
       NextOpIndex is OpIndex + 1
     },
     [GlobalIR-IR],
@@ -18807,7 +18875,8 @@ plawk_scalar_action_sequence_pairs([do_while_loop(Body, Cond) | Rest],
     { append(RestExits, RestNextExits, NextExits) }.
 plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest],
         Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex, OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
-    { format(atom(GlobalBase), '~w_if_~w', [Prefix, OpIndex]),
+    { plawk_walker_assigned_get(Assigned0),
+      format(atom(GlobalBase), '~w_if_~w', [Prefix, OpIndex]),
       plawk_if_cond_ir(Pattern, Slots, Values0, AssocPlan, FieldSeparator,
           GlobalBase, CondValue, GuardGlobalIR-GuardIR),
       format(atom(ThenLabel), '~w_if_~w_then', [Prefix, OpIndex]),
@@ -18815,6 +18884,7 @@ plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest
       format(atom(DoneLabel), '~w_if_~w_done', [Prefix, OpIndex]),
       phrase(plawk_scalar_action_sequence_pairs(ThenActions, Slots, AssocPlan, FieldSeparator, OutputSeparator,
           ThenLabel, ThenLabel, RuleIndex, 0, Values0, ThenValues, _ThenOpIndex, ThenExitLabel, ThenNextExits), ThenPairs),
+      b_setval(plawk_walker_assigned, Assigned0),
       phrase(plawk_scalar_action_sequence_pairs(ElseActions, Slots, AssocPlan, FieldSeparator, OutputSeparator,
           ElseLabel, ElseLabel, RuleIndex, 0, Values0, ElseValues, _ElseOpIndex, ElseExitLabel, ElseNextExits), ElsePairs),
       pairs_keys_values(ThenPairs, ThenGlobalParts, ThenLineParts),
@@ -18850,6 +18920,9 @@ plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest
            DoneLabel, PhiIR]),
       atomic_list_concat([GuardGlobalIR, ThenGlobalIR, ElseGlobalIR], '\n', GlobalIR),
       append(ThenNextExits, ElseNextExits, BranchNextExits),
+      % a body may run zero times (or take the other branch): what it
+      % assigned is not definitely assigned after it
+      b_setval(plawk_walker_assigned, Assigned0),
       NextOpIndex is OpIndex + 1
     },
     [GlobalIR-IR],
@@ -23479,6 +23552,21 @@ plawk_emit_print_expr_for_context(assoc_keyid(TableIndex, KeyIdValue), _FieldSep
     format(atom(GetCall),
         '  ~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
         [ValueIR, TableIndex, KeyIdValue]).
+% `print n` of a TRACKED counter that may still be unassigned here: awk prints ""
+% for an uninitialised value, so the assigned mark (@plawk_slot_assigned, stored by
+% every write to a tracked slot) selects the empty format -- the same print type
+% as an absent array element. As a printf argument it is the value (0).
+plawk_emit_print_expr_for_context(ssa_or_unset(Value, SlotIndex), _FieldSeparator, Context,
+        i64_or_empty(FmtPrefix, PrintPrefix, Value, HasIR), [], [PtrLine, HasLine]) :-
+    plawk_print_expr_value_base(Context, int, Base),
+    plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
+    plawk_slot_assigned_width(Width),
+    format(atom(PtrIR), '%~w_asg_ptr', [Base]),
+    format(atom(HasIR), '%~w_asg', [Base]),
+    format(atom(PtrLine),
+        '  ~w = getelementptr [~w x i1], [~w x i1]* @plawk_slot_assigned, i64 0, i64 ~w',
+        [PtrIR, Width, Width, SlotIndex]),
+    format(atom(HasLine), '  ~w = load i1, i1* ~w', [HasIR, PtrIR]).
 % `print arr[n]` with a NUMERIC (counter) key: intern n's decimal spelling to its
 % atom id first (awk keys are strings), then fetch the count with that key id.
 plawk_emit_print_expr_for_context(assoc_keyid_num(TableIndex, SlotValue), _FieldSeparator, Context,
