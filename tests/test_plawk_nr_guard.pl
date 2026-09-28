@@ -72,12 +72,14 @@ test(nr_gated_block_use_after, [condition(clang_available)]) :-
         "x\n", Out, St),
     assertion(St == 0), assertion(Out == "5\n"), !.
 
-% a value captured on a specific record persists to later records.
+% a value captured on a specific record persists to later records. Before the
+% capture, c is unassigned and prints "" (gawk 5.1.0); this pinned "0" while body
+% prints ignored the assigned mark.
 test(nr_capture_persists, [condition(clang_available)]) :-
     ldir(Dir),
     build_run(Dir, 'ncp', "{ if (NR == 2) { c = 9 }; print c }\n",
         "a\nb\nc\n", Out, St),
-    assertion(St == 0), assertion(Out == "0\n9\n9\n"), !.
+    assertion(St == 0), assertion(Out == "\n9\n9\n"), !.
 
 % conditional accumulation over records (sum of positive fields).
 test(nr_conditional_accumulate, [condition(clang_available)]) :-
