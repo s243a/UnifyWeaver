@@ -156,12 +156,13 @@ test(unliftable_inits_run_through_the_prelude, [condition(clang_available)]) :-
     run("BEGIN { x = 5; print x }\n", "5\n"),
     !.
 
-test(unseedable_declines) :-
-    forall(member(Src,
-            [ % END-only
-              "BEGIN { n = 0 }\nEND { print n }\n"
-            ]),
-        build_status(Src, 3)),
+% WAS a decline: an END-only program has no record-loop phi for the literal seed.
+% With no rules, literal inits now run through the BEGIN prelude, which routes the
+% program through a driver with a record loop. gawk 5.1.0.
+test(end_only_init_runs_through_the_prelude, [condition(clang_available)]) :-
+    run("BEGIN { n = 0 }\nEND { print n }\n", "0\n"),
+    !,
+    run_with("", "BEGIN { n = 7 }\nEND { print n }\n", "7\n"),
     !.
 
 :- end_tests(plawk_begin_scalar_init).
