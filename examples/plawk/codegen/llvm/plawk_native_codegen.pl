@@ -12427,13 +12427,11 @@ plawk_row_cons_format_atom(Indexes, FieldSep, FmtAtom) :-
 plawk_row_cons_field_lines([], _B, _Empty, _FieldSep, _Pos, [], []).
 plawk_row_cons_field_lines([N | Rest], B, EmptyName, FieldSep, Pos,
         Lines, [Frag | Frags]) :-
-    format(atom(Slice),
-        '  %~w_c~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
-        [B, Pos, N, FieldSep]),
-    format(atom(Ptr), '  %~w_c~w_ptr = extractvalue %WamSlice %~w_c~w_slice, 0',
-        [B, Pos, B, Pos]),
-    format(atom(Len), '  %~w_c~w_len = extractvalue %WamSlice %~w_c~w_slice, 1',
-        [B, Pos, B, Pos]),
+    % $0 is the record's own text (the slice helper is 1-based)
+    format(atom(PartBase), '~w_c~w', [B, Pos]),
+    format(atom(PtrVar), '%~w_ptr', [PartBase]),
+    format(atom(LenVar), '%~w_len', [PartBase]),
+    plawk_field_text_lines(N, FieldSep, PartBase, PtrVar, LenVar, SrcLines),
     format(atom(Null), '  %~w_c~w_null = icmp eq i8* %~w_c~w_ptr, null',
         [B, Pos, B, Pos]),
     format(atom(SafePtr),
@@ -12444,7 +12442,7 @@ plawk_row_cons_field_lines([N | Rest], B, EmptyName, FieldSep, Pos,
     format(atom(Lenw), '  %~w_c~w_lenw = trunc i64 %~w_c~w_slen to i32',
         [B, Pos, B, Pos]),
     format(atom(Frag), 'i32 %~w_c~w_lenw, i8* %~w_c~w_sptr', [B, Pos, B, Pos]),
-    ThisLines = [Slice, Ptr, Len, Null, SafePtr, SafeLen, Lenw],
+    append(SrcLines, [Null, SafePtr, SafeLen, Lenw], ThisLines),
     Pos1 is Pos + 1,
     plawk_row_cons_field_lines(Rest, B, EmptyName, FieldSep, Pos1, RestLines, Frags),
     append(ThisLines, RestLines, Lines).
@@ -17901,8 +17899,12 @@ plawk_scalar_action_sequence_pairs([gsub_count(CountName, Global, Regex, Repl, T
       nth0(CountIndex, Slots, CountSlot),
       plawk_slot_name(CountSlot, CountName),
       format(atom(CountNext), '%~w_gsubcount_~w', [Prefix, OpIndex]),
-      format(atom(CountLine),
+      format(atom(CountLoad),
           '  ~w = load i64, i64* @plawk_gsub_count', [CountNext]),
+      % the count is an assignment: mark the slot (plawk_unset_marking_action/2)
+      format(atom(CountOp), '~w_gc', [OpIndex]),
+      plawk_scalar_assigned_store_ir(CountSlot, CountIndex, Prefix, CountOp, StoreIR),
+      plawk_join_nonempty_ir([CountLoad, StoreIR], CountLine),
       replace_nth0(CountIndex, Values1, CountNext, Values2),
       NextOpIndex is OpIndex + 1
     },
@@ -18646,11 +18648,13 @@ plawk_unset_name_only_updated(Rules, Name) :-
            plawk_unset_marking_action(Action, Name)).
 
 %  An assignment that stores the assigned mark: every update-shaped action (its
-%  emitter wrapper marks), and the `n = split(...)` count (its walker row marks).
+%  emitter wrapper marks), and the `n = split(...)` / `n = gsub(...)` counts (their
+%  walker rows mark).
 plawk_unset_marking_action(Action, Name) :-
     plawk_scalar_action_update(Action, Name, _Operation),
     !.
 plawk_unset_marking_action(split_count(Name, _Split), Name).
+plawk_unset_marking_action(gsub_count(Name, _Global, _Regex, _Repl, _Target), Name).
 
 %  Actions at any depth (an `if` branch, a loop body) that assign Name.
 plawk_end_actions_assigning(Actions, Name, Action) :-
@@ -18761,21 +18765,40 @@ plawk_scalar_update_operation_ir_(set_str(Src), Slot, FieldSeparator,
 % the slot got the field's numeric value (0 for non-numeric text), and printing
 % it resolved atom id 0 to empty. Both kinds hold an interned id, so both take
 % this store.
+%
+% `x = $0` is the whole record: the field-slice helper is 1-based (field 0 is a
+% null slice), so $0 reads the record's own text instead -- it printed empty.
 plawk_scalar_update_operation_ir_(set(field_i64(FieldIndex)), Slot,
         FieldSeparator, Prefix, SlotIndex, OpIndex, _InputValue, NextValue, ''-IR) :-
     plawk_slot_holds_text(Slot),
     !,
     format(atom(Base), '~w_slot_~w_op_~w_snum', [Prefix, SlotIndex, OpIndex]),
     format(atom(NextValue), '%~w_id', [Base]),
-    format(atom(IR),
-'  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)
-  %~w_ptr = extractvalue %WamSlice %~w_slice, 0
-  %~w_len = extractvalue %WamSlice %~w_slice, 1
-  %~w_id = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len)',
-        [Base, FieldIndex, FieldSeparator,
-         Base, Base,
-         Base, Base,
-         Base, Base, Base]).
+    format(atom(PtrVar), '%~w_ptr', [Base]),
+    format(atom(LenVar), '%~w_len', [Base]),
+    plawk_field_text_lines(FieldIndex, FieldSeparator, Base, PtrVar, LenVar, SrcLines),
+    format(atom(InternL), '  %~w_id = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len)',
+        [Base, Base, Base]),
+    append(SrcLines, [InternL], Lines),
+    atomic_list_concat(Lines, '\n', IR).
+
+%% plawk_field_text_lines(+FieldIndex, +FieldSeparator, +Base, +PtrVar, +LenVar, -Lines)
+%  Define PtrVar/LenVar as field N's bytes. N >= 1 projects the field's slice ({null,
+%  0} past NF); N = 0 is the whole record, whose text is the record atom's string --
+%  wam_atom_field_slice_value is 1-based, so asking it for field 0 yields a null
+%  slice (an empty $0).
+plawk_field_text_lines(0, _FieldSeparator, Base, PtrVar, LenVar, [LpL, PtrL, LenL]) :-
+    !,
+    format(atom(LpL), '  %~w_rec_lp = call i64 @value_payload(%Value %line)', [Base]),
+    format(atom(PtrL), '  ~w = call i8* @wam_atom_to_string(i64 %~w_rec_lp)', [PtrVar, Base]),
+    format(atom(LenL), '  ~w = call i64 @strlen(i8* ~w)', [LenVar, PtrVar]).
+plawk_field_text_lines(FieldIndex, FieldSeparator, Base, PtrVar, LenVar,
+        [SliceL, PtrL, LenL]) :-
+    format(atom(SliceL),
+        '  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+        [Base, FieldIndex, FieldSeparator]),
+    format(atom(PtrL), '  ~w = extractvalue %WamSlice %~w_slice, 0', [PtrVar, Base]),
+    format(atom(LenL), '  ~w = extractvalue %WamSlice %~w_slice, 1', [LenVar, Base]).
 % strnum copy `z = x` (step 4): both are strnum, so copy the source's atom id
 % straight into the target slot -- strnum-ness propagates, no coercion. The
 % read has already been substituted to ssa_strnum(Id).
@@ -18968,13 +18991,11 @@ plawk_str_concat_field_lines([ssa_str(Value) | Rest], B, EmptyName, FieldSep, Po
     append(ThisLines, RestLines, Lines).
 plawk_str_concat_field_lines([field(N) | Rest], B, EmptyName, FieldSep, Pos,
         Lines, [Frag | Frags]) :-
-    format(atom(Slice),
-        '  %~w_c~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
-        [B, Pos, N, FieldSep]),
-    format(atom(Ptr), '  %~w_c~w_ptr = extractvalue %WamSlice %~w_c~w_slice, 0',
-        [B, Pos, B, Pos]),
-    format(atom(Len), '  %~w_c~w_len = extractvalue %WamSlice %~w_c~w_slice, 1',
-        [B, Pos, B, Pos]),
+    % $0 is the record's own text (the slice helper is 1-based)
+    format(atom(PartBase), '~w_c~w', [B, Pos]),
+    format(atom(PtrVar), '%~w_ptr', [PartBase]),
+    format(atom(LenVar), '%~w_len', [PartBase]),
+    plawk_field_text_lines(N, FieldSep, PartBase, PtrVar, LenVar, SrcLines),
     format(atom(Null), '  %~w_c~w_null = icmp eq i8* %~w_c~w_ptr, null',
         [B, Pos, B, Pos]),
     format(atom(SafePtr),
@@ -18985,7 +19006,7 @@ plawk_str_concat_field_lines([field(N) | Rest], B, EmptyName, FieldSep, Pos,
     format(atom(Lenw), '  %~w_c~w_lenw = trunc i64 %~w_c~w_slen to i32',
         [B, Pos, B, Pos]),
     format(atom(Frag), 'i32 %~w_c~w_lenw, i8* %~w_c~w_sptr', [B, Pos, B, Pos]),
-    ThisLines = [Slice, Ptr, Len, Null, SafePtr, SafeLen, Lenw],
+    append(SrcLines, [Null, SafePtr, SafeLen, Lenw], ThisLines),
     Pos1 is Pos + 1,
     plawk_str_concat_field_lines(Rest, B, EmptyName, FieldSep, Pos1, RestLines, Frags),
     append(ThisLines, RestLines, Lines).
@@ -23106,20 +23127,22 @@ plawk_emit_print_expr_for_context(ssa(Value), FieldSeparator, Context,
 % `print arr[$N]` (a resolved field-keyed read in a mixed rule body): intern the
 % field's text as the key and print through the table's print helper, which prints
 % nothing for an absent key. direct(Lines): the lines do the printing themselves.
+% A field past NF is the key "" (as for the field-key updates), so the null slice
+% pointer is swapped for an empty constant before the intern.
 plawk_emit_print_expr_for_context(assoc_field_read(TableIndex, N), FieldSeparator, Context,
-        direct(Lines), [], []) :-
+        direct(Lines), [EmptyGlobal], []) :-
     integer(FieldSeparator),
     plawk_print_expr_value_base(Context, assoc_field_read, Base),
-    format(atom(SliceL),
-        '  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
-        [Base, N, FieldSeparator]),
-    format(atom(PtrL), '  %~w_ptr = extractvalue %WamSlice %~w_slice, 0', [Base, Base]),
-    format(atom(LenL), '  %~w_len = extractvalue %WamSlice %~w_slice, 1', [Base, Base]),
+    format(atom(PtrVar), '%~w_key_ptr', [Base]),
+    format(atom(LenVar), '%~w_len', [Base]),
+    plawk_field_text_lines(N, FieldSeparator, Base, PtrVar, LenVar, SrcLines),
+    format(atom(MissL), '  %~w_key_missing = icmp eq i8* %~w_key_ptr, null', [Base, Base]),
+    plawk_missing_key_empty_lines(Base, EmptyGlobal, SafePtrL),
     format(atom(KidL),
-        '  %~w_kid = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len)', [Base, Base, Base]),
+        '  %~w_kid = call i64 @wam_intern_atom(i8* %~w_key_sptr, i64 %~w_len)', [Base, Base, Base]),
     format(atom(KeyIR), '%~w_kid', [Base]),
     plawk_assoc_value_print_line(TableIndex, KeyIR, PrL),
-    Lines = [SliceL, PtrL, LenL, KidL, PrL].
+    append(SrcLines, [MissL, SafePtrL, KidL, PrL], Lines).
 % `print arr[i]` / `print arr[2]` on a positional str table (split pieces): the key
 % is the raw position; the str print helper resolves the stored atom id to its
 % text and prints nothing for an absent position (awk's empty string).
