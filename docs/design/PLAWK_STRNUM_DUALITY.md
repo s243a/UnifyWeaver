@@ -126,6 +126,10 @@ nothing left over.
 
 ## 2. plawk's current model — three disjoint static slot kinds
 
+> The storage kind is not the whole type: every slot is `kind | unset`, with the
+> unset case represented outside the storage value and rendered per context. That
+> part of the model is specified in `PLAWK_SCALAR_VALUE_MODEL.md`.
+
 plawk types every scalar **statically, at compile time**, into one of three
 disjoint slot kinds (`plawk_scalar_typed_slot/4` in
 `examples/plawk/codegen/llvm/plawk_native_codegen.pl`):

@@ -17449,14 +17449,21 @@ plawk_substitute_print_field(Slots, Values, Field0, Field) :-
 plawk_unset_counter_read_field(Slots, Values, concat(Parts0), concat(Parts)) :-
     !,
     maplist(plawk_unset_counter_read_field(Slots, Values), Parts0, Parts).
-plawk_unset_counter_read_field(Slots, Values, var(Name), ssa_or_unset(Value, SlotIndex)) :-
+plawk_unset_counter_read_field(Slots, Values, var(Name), Unset) :-
     nb_current(plawk_walker_tracked, Tracked),
     is_list(Tracked),
     \+ ( plawk_walker_assigned_get(Assigned), memberchk(Name, Assigned) ),
-    nth0(SlotIndex, Slots, scalar_counter(Name)),
+    nth0(SlotIndex, Slots, Slot),
+    plawk_slot_name(Slot, Name),
     memberchk(SlotIndex, Tracked),
     nth0(SlotIndex, Values, Value),
     \+ sub_atom(Value, _, _, _, '_op_'),
+    % a numeric slot is `number | unset`: print renders the unset case as ""
+    (   Slot = scalar_counter(_)
+    ->  Unset = ssa_or_unset(Value, SlotIndex)
+    ;   Slot = scalar_double(_)
+    ->  Unset = ssa_f64_or_unset(Value, SlotIndex)
+    ),
     !.
 plawk_unset_counter_read_field(_Slots, _Values, Field, Field).
 
@@ -23330,6 +23337,7 @@ plawk_printf_type_call_args(i64_or_empty(_F, _P, ValueIR, _Has), [i64(ValueIR)])
 plawk_printf_type_call_args(slice(_FmtPrefix, _PrintPrefix, LenIR, PtrIR), [slice_len(LenIR), slice_ptr(PtrIR)]).
 plawk_printf_type_call_args(string(_Base, PtrIR), [string_ptr(PtrIR)]).
 plawk_printf_type_call_args(f64(_FmtPrefix, _PrintPrefix, ValueIR), [f64(ValueIR)]).
+plawk_printf_type_call_args(f64_or_empty(_F, _P, ValueIR, _Has), [f64(ValueIR)]).
 
 plawk_printf_call_arg_kind(i64(_ValueIR), i64).
 plawk_printf_call_arg_kind(slice_len(_LenIR), slice_len).
@@ -23679,6 +23687,24 @@ plawk_emit_print_expr_for_context(ssa_f64(Value), FieldSeparator, Context,
     plawk_print_expr_output_names(Context, f64, FmtPrefix, PrintPrefix),
     plawk_f64_expr_ir(ssa_f64(Value), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
+% A DOUBLE slot that may still be unassigned here (the double counterpart of
+% ssa_or_unset/2): the assigned mark selects @wam_print_awk_number's empty format,
+% which prints nothing -- the unset case of the slot's `double | unset` value.
+plawk_emit_print_expr_for_context(ssa_f64_or_unset(Value, SlotIndex), FieldSeparator,
+        Context, f64_or_empty(FmtPrefix, PrintPrefix, ValueIR, HasIR), GlobalParts,
+        SetupParts) :-
+    plawk_print_expr_value_base(Context, f64, Base),
+    plawk_print_expr_output_names(Context, f64, FmtPrefix, PrintPrefix),
+    plawk_f64_expr_ir(ssa_f64(Value), FieldSeparator, Base, Base,
+        ValueIR, GlobalParts, SetupParts0),
+    plawk_slot_assigned_width(Width),
+    format(atom(PtrIR), '%~w_asg_ptr', [Base]),
+    format(atom(HasIR), '%~w_asg', [Base]),
+    format(atom(PtrLine),
+        '  ~w = getelementptr [~w x i1], [~w x i1]* @plawk_slot_assigned, i64 0, i64 ~w',
+        [PtrIR, Width, Width, SlotIndex]),
+    format(atom(HasLine), '  ~w = load i1, i1* ~w', [HasIR, PtrIR]),
+    append(SetupParts0, [PtrLine, HasLine], SetupParts).
 % a substituted STRING-scalar read (var(Name) -> ssa_str(SlotValue)): the slot
 % holds an atom id; resolve it to text (id 0 is the unset sentinel, printed as
 % empty). A select keeps it straight-line -- wam_atom_to_string is always called
@@ -24465,6 +24491,18 @@ plawk_print_expr_output_ir(i64_or_empty(FmtPrefix, PrintPrefix, ValueIR, HasIR),
     format(atom(PrintCall),
         '  %~w = call i32 (i8*, ...) @printf(i8* %~w, i64 ~w)',
         [PrintVar, FmtVar, ValueIR]).
+% A double that prints as EMPTY when HasIR is false: the empty format is the
+% trailing NUL of the "%g\0" global, which @wam_print_awk_number prints as nothing.
+plawk_print_expr_output_ir(f64_or_empty(FmtPrefix, PrintPrefix, ValueIR, HasIR), Index,
+        [SelLine, PrintCall]) :-
+    format(atom(FmtVar), '~w_fmt_~w', [FmtPrefix, Index]),
+    format(atom(PrintVar), 'printed_~w_~w', [PrintPrefix, Index]),
+    format(atom(SelLine),
+        '  %~w = select i1 ~w, i8* getelementptr ([3 x i8], [3 x i8]* @.plawk_surface_print_f64, i64 0, i64 0), i8* getelementptr ([3 x i8], [3 x i8]* @.plawk_surface_print_f64, i64 0, i64 2)',
+        [FmtVar, HasIR]),
+    format(atom(PrintCall),
+        '  %~w = call i32 @wam_print_awk_number(i8* %~w, double ~w)',
+        [PrintVar, FmtVar, ValueIR]).
 plawk_print_expr_output_ir(case_slice(Mode, PrintBase, LenIR, PtrIR), _Index, [PrintCall]) :-
     llvm_emit_ascii_case_slice_print(Mode, PtrIR, LenIR, PrintBase, PrintCall).
 
@@ -24480,6 +24518,8 @@ plawk_prefixed_print_expr_output_ir(f64(FmtPrefix, PrintPrefix, ValueIR), _Prefi
 plawk_prefixed_print_expr_output_ir(direct(Lines), _Prefix, _Index, Lines).
 plawk_prefixed_print_expr_output_ir(i64_or_empty(F, P, V, H), _Prefix, Index, Parts) :-
     plawk_print_expr_output_ir(i64_or_empty(F, P, V, H), Index, Parts).
+plawk_prefixed_print_expr_output_ir(f64_or_empty(F, P, V, H), _Prefix, Index, Parts) :-
+    plawk_print_expr_output_ir(f64_or_empty(F, P, V, H), Index, Parts).
 plawk_prefixed_print_expr_output_ir(case_slice(Mode, PrintBase, LenIR, PtrIR), _Prefix, _Index, [PrintCall]) :-
     llvm_emit_ascii_case_slice_print(Mode, PtrIR, LenIR, PrintBase, PrintCall).
 
