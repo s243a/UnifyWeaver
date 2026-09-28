@@ -176,8 +176,9 @@ plawk_term_mentions_name(Term, Name) :-
 %  Rules, which would have left a `c_for/4` term sitting in END for the driver to
 %  reject -- the loop would parse and then decline for no reason a reader could
 %  see.
-plawk_normalise_c_for(program(Begin, Rules0, End0), program(Begin, Rules, End)) :-
+plawk_normalise_c_for(program(Begin0, Rules0, End0), program(Begin, Rules, End)) :-
     !,
+    plawk_norm_cfor_begin(Begin0, Begin),
     plawk_norm_cfor_rules(Rules0, Rules),
     plawk_norm_cfor_end(End0, End).
 plawk_normalise_c_for(Program, Program).
@@ -193,6 +194,19 @@ plawk_norm_cfor_end(End0, End) :-
     !,
     maplist(plawk_norm_cfor_end_clause, End0, End).
 plawk_norm_cfor_end(Other, Other).
+
+% BEGIN too: it accepts the rule-body statement grammar, so a C-for there must
+% desugar the same way (the old BEGIN grammar never produced one).
+plawk_norm_cfor_begin(Begin0, Begin) :-
+    is_list(Begin0),
+    !,
+    maplist(plawk_norm_cfor_begin_clause, Begin0, Begin).
+plawk_norm_cfor_begin(Other, Other).
+
+plawk_norm_cfor_begin_clause(begin(Actions0), begin(Actions)) :-
+    !,
+    plawk_norm_cfor_actions(Actions0, Actions).
+plawk_norm_cfor_begin_clause(Other, Other).
 
 plawk_norm_cfor_end_clause(end(Actions0), end(Actions)) :-
     !,
