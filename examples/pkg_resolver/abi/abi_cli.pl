@@ -20,6 +20,9 @@
 %       one floor/axis/range block per NEEDED soname (ascending soname order);
 %       a one-shot summary of the whole dependency set instead of repeating
 %       floor/axis/range per soname by hand.
+%   explain <binary> <soname> <release> [DropSym DropNode DropAt]
+%       like verdict, but prints one human-readable line per reason in an
+%       incompatible([...]) / unknown([...]) verdict (compatible: header only).
 
 :- use_module(abi_resolve).
 
@@ -32,7 +35,7 @@ main :-
 
 usage :-
     format(user_error,
-           "usage: abi_cli.pl -- <store-dir> verdict|status|floor|axis|range|report <args>~n", []).
+           "usage: abi_cli.pl -- <store-dir> verdict|status|floor|axis|range|report|explain <args>~n", []).
 
 drop_of([], none).
 drop_of([Sym, Node, At], drop(Sym, Node, At)).
@@ -69,7 +72,32 @@ run(report, [Bin]) :- !,
     ->  format("report ~w: no NEEDED sonames evidenced~n", [Bin])
     ;   forall(member(So, Sos), report_one(Bin, So))
     ).
+run(explain, [Bin, So, Rel | DropArgs]) :- !,
+    drop_of(DropArgs, Drop),
+    abi_verdict(Bin, So, Rel, Drop, V),
+    (   V = incompatible(Rs) -> Kind = incompatible
+    ;   V = unknown(Rs)      -> Kind = unknown
+    ;   Rs = [], Kind = V
+    ),
+    format("explain ~w ~w ~w: ~w~n", [Bin, So, Rel, Kind]),
+    forall(member(R, Rs), (explain_line(R, T), format("  ~w~n", [T]))).
 run(_, _) :- usage, halt(2).
+
+% explain_line(Reason, Text): a human-readable line for one verdict reason.
+explain_line(missing(S@N), T) :- !,
+    format(atom(T), "symbol ~w (version node ~w) is absent at this release", [S, N]).
+explain_line(missing(S@N, hypothetical_drop), T) :- !,
+    format(atom(T), "symbol ~w@~w removed by the hypothetical drop", [S, N]).
+explain_line(missing(S@N, observed_absent(Src, R1)), T) :- !,
+    format(atom(T), "symbol ~w@~w absent at later release ~w (via ~w), so absent here", [S, N, R1, Src]).
+explain_line(below_floor(S@N, Min), T) :- !,
+    format(atom(T), "symbol ~w (version node ~w) first appears in release ~w (below_floor)", [S, N, Min]).
+explain_line(unknown(S@N, Why), T) :- !,
+    format(atom(T), "symbol ~w@~w: ~w", [S, N, Why]).
+explain_line(soname_mismatch(offered(O), needed(Nd)), T) :- !,
+    format(atom(T), "soname mismatch: offered ~w, needed ~w", [O, Nd]).
+explain_line(X, T) :-
+    format(atom(T), "~q", [X]).
 
 % report_one(Bin, So): the floor/axis/range block for one NEEDED soname.
 report_one(Bin, So) :-
