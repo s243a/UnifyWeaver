@@ -6,6 +6,8 @@
 This extends the package resolver from coarse version constraints
 (`libfoo (>= 2.0)`) to ABI compatibility at the *exact versioned symbol* level,
 so we can compute the real `[min, max]` compatible release range for a binary.
+The verdict term grammar and store schema are in `README.md`; this file is the
+usage guide.
 
 ## The model
 
@@ -118,6 +120,24 @@ from several evidence rows are aggregated, never taken first-match: if
 readelf evidence for `2.31-0ubuntu9.9` were ingested and showed every
 required identity, that release would be `compatible(exact)` despite the
 curated floor of 2.34 (test A25 does exactly that).
+
+### 3a. `explain`: a verdict with one readable line per reason
+
+`explain` runs the same verdict as `verdict`, then prints one line per reason
+of an `incompatible([...])` or `unknown([...])` result. A `compatible` result
+prints the header only. (Output below is from the small synthetic store used
+by `test_explain_cmd.sh`, not the Ubuntu store above.)
+
+```
+$ swipl -q -g main -t halt abi_cli.pl -- <store> explain mybin libb.so.1 1.0
+explain mybin libb.so.1 1.0: incompatible
+  symbol bar (version node LIBB_1) first appears in release 2.0 (below_floor)
+$ swipl -q -g main -t halt abi_cli.pl -- <store> explain mybin liba.so.1 1.0
+explain mybin liba.so.1 1.0: compatible(curated)
+```
+An `unknown` result lists its reasons the same way, e.g.
+`no_provider_evidence('libc9.so.1')`. The term grammar behind these reasons
+is in `README.md`.
 
 ### 4. Exact node identity (the case the old model got wrong)
 
