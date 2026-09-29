@@ -5,10 +5,14 @@ Copyright (c) 2026 John William Creighton (@s243a)
 
 # plawk array value model: key kinds, value kinds, provenance, and inputs
 
-**Status**: design specification (2026-09-28, revision 2). §1–§3 describe implemented
+**Status**: design specification (2026-09-28, revision 3). §1–§3 describe implemented
 behaviour; §4–§7 are the rules for making array elements general values, landing in
 the PR series of §8. Each PR updates this document. Changes to these rules are design
 changes, not bug fixes.
+
+Revision 3 follows a second review: a field assignment inherits the RHS kind; the
+static strnum category is distinguished from gawk's runtime `typeof`; a comparison is
+numeric only when both operands are; binary fields keep their BINFMT types.
 
 Revision 2 follows an external design review (PR #4329): it separates physical
 **encoding** from semantic **kind**, adds a present-but-unset element state, adds the
@@ -21,8 +25,12 @@ Related: `PLAWK_SCALAR_VALUE_MODEL.md` (a scalar slot is `kind | unset`),
 ## 1. awk's rule
 
 An awk array maps **string keys** to values; `a[1]` and `a["1"]` are the same element.
-An element's value is a number, a string, a **strnum** (input-derived text that
-compares numerically when it looks numeric), or **unset**. An element that was never
+An element's value is a number, a string, a **strnum**, or **unset**. A strnum is a
+*numeric-string candidate* (input text, `split` pieces, `ARGV`, `ENVIRON`) whose
+content looks numeric; a comparison is numeric only when **both** operands are
+numeric (a number, or a numeric-looking strnum), otherwise it is a string
+comparison. On input `10`, `{ print ($1 > "9"), ($1 > 9), typeof($1) }` prints
+`0 1 strnum`: the string constant `"9"` forces a string comparison. An element that was never
 created is *absent*. Both unset and absent read as `0` numerically and `""` as a
 string. gawk 5.1.0 (`LC_ALL=C`) is the oracle for every example below.
 
@@ -115,6 +123,12 @@ Two things must not be conflated:
 An array has **one semantic kind** (no per-element metadata), so its inputs must agree
 (§5). The encoding follows from the kind.
 
+plawk's `strnum` kind is **static**: it is the provenance category "numeric-string
+candidate", decided at compile time, and the numeric-looking test runs at run time
+(`@wam_looks_numeric`, `@wam_strnum_cmp`). So it includes input that gawk's `typeof`
+reports as `string` (`abc`) as well as runtime strnum (`10`). A numeric-looking string
+constant never acquires it.
+
 ## 5. Input kinds and the mixing rules
 
 Every value that enters an array -- every **input** -- has a semantic kind, known in
@@ -128,19 +142,23 @@ one of two ways.
 | `c[k] += x` | number: counter if `x` is an integer, double otherwise (x's numeric conversion, not its spelling) | `+= $2` supported |
 | `c[k] = 5`, `= n + 1` (arithmetic) | number | planned |
 | `c[k] = "text"`, concatenation, `sprintf`, string builtins | string | planned |
-| `c[k] = $N` (an unmodified field) | strnum | planned |
-| `c[k] = $0` (unmodified record) | strnum, encoded as `atom` | row capture supported |
-| `split(src, a, sep)` pieces | strnum, positional key | supported |
+| `c[k] = $N` (an unmodified text-input field) | strnum | planned |
+| `c[k] = $N` (a binary-input field) | its `BINFMT` type (i64 or f64 number) | planned |
+| `c[k] = $0` (unmodified text record) | strnum, encoded as `atom` | row capture supported |
+| `split(src, a, sep)` pieces | strnum, positional key -- for ANY source, literals included (`BEGIN { split("10 9", a); print typeof(a[1]), (a[1] > a[2]) }` prints `strnum 1`) | supported |
 | `c[k] = row(...)` | row (a plawk constructor: its own contract, string comparisons) | supported |
 | `c[k] = x` (a scalar copy) | x's kind | planned |
 | `c[k] = d[j]` (an element copy) | d's kind | planned |
 | `c[k] = cond ? A : B` | the agreement of A and B (else declines) | planned |
 | a copy of a possibly-unset value | declines (§3) | -- |
 
-**Mutated fields are not input-derived.** After `$1 = "10"`, `$1` is a string; after
-`$1 = 10`, a number (gawk prints `0`, then `1`, for `a["x"] = $1; print (a["x"] > 9)`
-on input `10`). A copy of a field the program assigns declines unless the assigned
-kind is statically known.
+**A field assignment takes the kind of its right-hand side.** Assigning a literal or
+an arithmetic result replaces input provenance: after `$1 = "10"`, `$1` is a string;
+after `$1 = 10`, a number (gawk prints `0`, then `1`, for
+`a["x"] = $1; print (a["x"] > 9)` on input `10`). Copying an input-derived value
+preserves it: on input `x 10`, `{ $1 = $2; print typeof($1), ($1 > 9) }` prints
+`strnum 1`. A copy of a field whose kind the compiler cannot establish -- assigned
+from different kinds on different paths -- declines.
 
 Future writers must be added to this table when they land: `sub`/`gsub` element
 targets, other compound assignments, `match`/`patsplit` output arrays, sort
@@ -177,7 +195,9 @@ it through §5.1:
 
 | ingress | contract |
 |---|---|
-| field, `$0`, `split` of input | strnum (input text) |
+| text-input field, `$0` | strnum (input text) |
+| binary-input field | its `BINFMT` type |
+| `split` pieces (any source) | strnum |
 | getline text (planned) | strnum |
 | `ARGV[i]`, `ENVIRON[k]` | strnum |
 | typed foreign scalar result | its declared type |

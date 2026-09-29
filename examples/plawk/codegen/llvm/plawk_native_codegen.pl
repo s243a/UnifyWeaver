@@ -531,15 +531,51 @@ plawk_program_native_driver_ir(Program, InputPath, DriverIR) :-
     ).
 
 plawk_driver_scalar_globals_defined(IR) :-
-    forall(( sub_atom(IR, B, L, _, '@plawk_scalar_'),
-             Start is B + L,
-             sub_atom(IR, Start, _, 0, After),
-             atom_codes(After, Codes),
-             plawk_ir_ident_codes(Codes, NameCodes),
-             NameCodes \== [] ),
-           ( atom_codes(Name, NameCodes),
-             format(atom(Def), '@plawk_scalar_~w = ', [Name]),
-             sub_atom(IR, _, _, _, Def) )).
+    split_string(IR, "\n", "", Lines),
+    maplist(plawk_ir_code_codes, Lines, CodeLines),
+    findall(Name,
+        ( member(Code, CodeLines),
+          append(_, [0'@ | Rest], Code),
+          append(`plawk_scalar_`, After, Rest),
+          plawk_ir_ident_codes(After, NameCodes), NameCodes \== [],
+          atom_codes(Name, NameCodes) ),
+        Refs0),
+    sort(Refs0, Refs),
+    findall(Name,
+        ( member(Code, CodeLines),
+          append(`@plawk_scalar_`, After, Code),
+          plawk_ir_ident_codes(After, NameCodes), NameCodes \== [],
+          append(NameCodes, Tail, After),
+          append(` = `, _, Tail),
+          atom_codes(Name, NameCodes) ),
+        Defs0),
+    sort(Defs0, Defs),
+    ord_subtract(Refs, Defs, []).
+
+%% plawk_ir_code_codes(+Line, -CodeCodes)
+%  The CODE part of one IR line: string-constant contents and the trailing `;`
+%  comment removed. A raw `"` always delimits an LLVM string (a quote inside one is
+%  escaped as \22), so `"..."` is skipped wholesale. A symbol spelled inside a
+%  printed string (`print "@plawk_scalar_x"`) or a marker comment is text, not a
+%  reference or a definition -- scanning raw text got both wrong.
+plawk_ir_code_codes(Line, Codes) :-
+    string_codes(Line, Codes0),
+    plawk_ir_code_codes_(Codes0, out, Codes).
+
+plawk_ir_code_codes_([], _, []).
+plawk_ir_code_codes_([0'" | Rest], out, [0'", 0'" | Codes]) :-
+    !,
+    plawk_ir_code_codes_(Rest, in, Codes).
+plawk_ir_code_codes_([0'" | Rest], in, Codes) :-
+    !,
+    plawk_ir_code_codes_(Rest, out, Codes).
+plawk_ir_code_codes_([_ | Rest], in, Codes) :-
+    !,
+    plawk_ir_code_codes_(Rest, in, Codes).
+plawk_ir_code_codes_([0'; | _], out, []) :-
+    !.
+plawk_ir_code_codes_([C | Rest], out, [C | Codes]) :-
+    plawk_ir_code_codes_(Rest, out, Codes).
 
 % BEGIN accepts the whole rule-body statement grammar (computation, loops, `++`,
 % concatenation, ...), but the drivers lower only the BEGIN forms the old

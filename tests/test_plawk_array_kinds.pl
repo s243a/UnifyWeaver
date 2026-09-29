@@ -69,6 +69,19 @@ test(special_variable_keys_decline_in_other_positions) :-
         build_status_is(Src, 3)),
     !.
 
+% The IR check reads CODE, not text: a symbol spelled inside a printed string is not
+% a reference (the first check declined this valid program), and a
+% definition-shaped string is not a definition (it let an undefined global reach
+% clang). Both found by the second review of this PR.
+test(ir_check_ignores_string_contents, [condition(clang_available)]) :-
+    run("BEGIN { print \"@plawk_scalar_x\" }\n", "@plawk_scalar_x\n"),
+    !,
+    run("{ print \"@plawk_scalar_y\", $1 }\n",
+        "@plawk_scalar_y a\n@plawk_scalar_y b\n@plawk_scalar_y a\n"),
+    !,
+    build_status_is("{ a[unassigned]++; print \"@plawk_scalar_unassigned = \" }\nEND { for (k in a) print k, a[k] }\n", 3),
+    !.
+
 % a user variable key is unchanged
 test(user_variable_key_still_parses) :-
     plawk_parse_string("{ k = $1; a[k]++ }\n",
