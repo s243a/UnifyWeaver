@@ -5483,8 +5483,18 @@ assoc_key_atom(string(Value)) -->
 assoc_key_atom(Blob) -->
     blob_call_expr(Blob),
     !.
+% A special variable as a key (`a[NR]`, `a[NF]`) is its own node: it is a record
+% value, not a user scalar. Parsed as `var('NR')` it resolved to a phantom scalar
+% slot and died in clang on an undefined @plawk_scalar_NR (exit 4). special(_)
+% keys have no lowering yet, so such a program declines cleanly; any other
+% reserved name is refused (a parse error, as for a comparison operand).
+assoc_key_atom(special(Name)) -->
+    identifier(Name),
+    { memberchk(Name, ['NR', 'NF', 'FNR']) },
+    !.
 assoc_key_atom(var(Name)) -->
-    identifier(Name).
+    identifier(Name),
+    { \+ scalar_cmp_reserved_name(Name) }.
 
 identifier(Name) -->
     identifier_start(Start),
