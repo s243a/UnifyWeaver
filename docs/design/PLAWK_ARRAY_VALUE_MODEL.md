@@ -3,184 +3,264 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 Copyright (c) 2026 John William Creighton (@s243a)
 -->
 
-# plawk array value model: key kind × value kind, and the closed-world rule
+# plawk array value model: key kinds, value kinds, provenance, and inputs
 
-**Status**: design specification (2026-09-28). §1–§3 describe implemented behaviour;
-§4–§6 are the agreed rules for making array elements general values (an array's kind
-is the join of the kinds of all its inputs; external inputs must be declared),
-landing in the PR series listed in §7. Each PR updates this document. Changes to these rules are
-design changes, not bug fixes.
+**Status**: design specification (2026-09-28, revision 2). §1–§3 describe implemented
+behaviour; §4–§7 are the rules for making array elements general values, landing in
+the PR series of §8. Each PR updates this document. Changes to these rules are design
+changes, not bug fixes.
+
+Revision 2 follows an external design review (PR #4329): it separates physical
+**encoding** from semantic **kind**, adds a present-but-unset element state, adds the
+raw-integer key kind, separates external **provenance** from array **escape**, and
+replaces the single "join" with explicit transfer and mixing rules.
 
 Related: `PLAWK_SCALAR_VALUE_MODEL.md` (a scalar slot is `kind | unset`),
 `PLAWK_STRNUM_DUALITY.md`, `PLAWK_ASSOC_FORIN.md`.
 
 ## 1. awk's rule
 
-An awk array maps **string keys** to values of any type; `a[1]` and `a["1"]` are the
-same element. An element that was never assigned is *absent*: it reads as `0` in a
-numeric context and `""` in a string context, like an unassigned scalar. (In awk a
-*read* of `a[k]` also creates the element; see §3.)
+An awk array maps **string keys** to values; `a[1]` and `a["1"]` are the same element.
+An element's value is a number, a string, a **strnum** (input-derived text that
+compares numerically when it looks numeric), or **unset**. An element that was never
+created is *absent*. Both unset and absent read as `0` numerically and `""` as a
+string. gawk 5.1.0 (`LC_ALL=C`) is the oracle for every example below.
 
-## 2. plawk's model: one static kind per array
+## 2. Key kinds
 
-Every array is typed **statically, for the whole program**, along two axes. There is
-one runtime table type (`%WamAssocI64Table`: i64 key, i64 value, occupied bit); the
-kinds are encodings over it.
+Every array has one key kind for the whole program. There is one runtime table type
+(`%WamAssocI64Table`: i64 key, i64 value, occupied bit); key kinds are encodings over
+it.
 
-| axis | kind | representation | produced by |
-|---|---|---|---|
-| **key** | counted (interned text) | key = interned atom id of the key text | `c[$1]++`, `c["x"]`, `c[5]` (the decimal text `"5"`) |
-| | positional | key = the raw integer position 1..n | `split(...)`, `as array` binds |
-| **value** | counter | i64 | `c[k]++`, `c[k] += 5` |
-| | double | IEEE bit pattern in the i64 cell (`@wam_assoc_f64_*`) | `s[k] += $2` (a non-integer delta) |
-| | str | interned atom id | `split` pieces, `t[k] = $0`, `row(...)`, `as assoc(str)` |
-
-A program that would use one array as two kinds **declines**. On a counted table an
-integer key means its decimal text, so `c[5]` and `c["5"]` are the same element (as
-in awk); on a positional table it is the raw position.
-
-These invariants are checked on the generated IR, not assumed: a double table's
-lines may only be `@wam_assoc_f64_*` value calls (`plawk_f64_table_ir_ok/3`), and a
-split table in the mixed route may only be filled, iterated and read positionally
-(`plawk_mixed_split_tables_ir_ok/1`).
-
-Special variables are record values, not user scalars: `a[NR]`, `a[NF]`, `a[FNR]`
-parse as `special(_)` keys. They have no lowering yet and decline (they used to
-parse as a phantom user scalar and fail in clang).
-
-## 3. Absent elements
-
-An element is `kind | absent`, and **existence (the occupied bit) is the mark**,
-never the value: a stored `0`, `0.0` or atom id `0` is a present element.
-
-| context | absent element |
-|---|---|
-| numeric read | the kind's type zero (`@wam_assoc_i64_get` returns 0) |
-| `print` | `""` (`@wam_assoc_i64_print` / `_f64_print` / `_str_print` probe the bit) |
-| `k in a` | false, and does not create the element |
-
-**Deliberate deviation:** plawk reads never create an element (no autovivification).
-In awk `{ x = c["z"] } END { for (k in c) print k }` lists `z`; plawk does not.
-
-## 4. An array's kind is the join of the kinds of ALL its inputs
-
-Every value that enters an array -- every **input** -- has a kind, and the array's
-value kind is the **join of the kinds of all its inputs anywhere in the program**:
-program-wide and order-insensitive, never "the kind of the previous assignment". One
-array is one storage, so its kind cannot change between program points. The join uses
-the scalar precedence **double > strnum > string > counter**, with the same
-disqualifier (a string-literal input rules out strnum). An array with both a
-string-family and a numeric-family input (`c[k] = "x"` and `c[k] += 1`) declines:
-there is no dual storage. A read never influences the kind.
-
-An input's kind is known in one of two ways:
-
-**Implied** -- by the operation or function that produces it, when the input is in
-the program text:
-
-| input | implied value kind | implied key kind |
+| key kind | representation | produced by |
 |---|---|---|
-| `c[k]++`, `c[k]--`, `c[k] += 5` (integer delta) | counter | counted |
-| `c[k] += $2`, `+= x` (field / double delta) | double | counted |
-| `c[k] = $2` (a field copy) | strnum | counted |
-| `c[k] = "text"`, `= a b` (concat), `= sprintf(...)`, string builtins | string | counted |
-| `c[k] = $0`, `= row(...)` | str (row) | counted |
-| `c[k] = n + 1` (arithmetic) | counter or double, as for a scalar RHS | counted |
-| `split(src, a, sep)` | str | positional |
+| counted (interned text) | the interned atom id of the key text | `c[$1]++`, `c["x"]`, `c[5]` (the decimal text `"5"`) |
+| positional | the raw integer position `1..n` | `split(...)`, `as array` binds |
+| raw integer | an arbitrary raw i64 (negatives included) | binary-input programs (`BEGIN { BINFMT = ... }`: `c[$1]++` on an i64 field) |
 
-**Declared** -- when the input comes from outside the program's text (I/O and foreign
-code), the compiler cannot see the value, so its kind must be stated:
+On a counted table an integer key means its decimal text (`c[5]` is `c["5"]`, as in
+awk); on a positional table it is the raw position. A program that uses one array
+with two key kinds declines.
 
-| external input | declaration |
+**Foreign keys.** The `as assoc` bridge today accepts integer keys verbatim and atom
+keys as intern ids in the same table (its implementation documents the collision
+risk). A value-kind declaration does not establish key safety: at a foreign boundary,
+numeric keys for a counted table must be normalised to their decimal text, or a
+separate raw-integer key declaration required and validated (§7).
+
+Special variables are runtime values, not user scalars: `a[NR]`, `a[FILENAME]`,
+`a[FS]`, ... parse as `special(_)` keys (the parser's one special-variable list,
+`begin_special_name/1`). They have no lowering yet and decline. A user variable that
+nothing assigns (`a[unassigned]`) also declines, caught on the generated IR (every
+driver scalar global it references must be defined). Both used to fail in clang.
+
+## 3. Element states: absent, present-unset, present-kind
+
+An element is
+
+    absent | present(unset) | present(kind)
+
+and **existence (the occupied bit) marks presence**, never the value: a stored `0`,
+`0.0` or atom id `0` is present.
+
+| context | absent | present(unset) |
+|---|---|---|
+| numeric read | 0 | 0 |
+| print / string read | `""` | `""` |
+| `k in a` | false | **true** |
+
+`present(unset)` arises from copying an unset value: `a["x"] = n` with `n` never
+assigned, or `a["x"] = a["missing"]`. gawk:
+
+```awk
+BEGIN { if (0) n++; a["x"] = n; a["zero"] = 0
+        print ("x" in a), "[" a["x"] "]", (a["x"] == 0), (a["x"] == "")
+        print "[" a["zero"] "]" }
+# 1 [] 1 1
+# [0]
+```
+
+The occupied bit alone cannot tell `present(unset)` from `present(0)`. **Rule:** until
+per-element metadata exists, a write whose value may be unset **declines**; it is
+never silently materialised as a stored zero.
+
+**Reads never create elements (deliberate dialect deviation).** In awk a read of
+`a[k]` creates the element; in plawk it does not. `k in a` is non-inserting in both.
+Observable where a program uses lookup as insertion, tests membership after a read,
+or counts/iterates a domain populated by reads. On input `a b`:
+
+```awk
+{ c[$1] += 0; print c[$2] }
+END { for (k in c) print k, c[k] }
+# gawk: "", then "a 0" and "b " (order unspecified); plawk: "", then "a 0" only
+```
+
+## 4. Value kinds: encoding vs semantic kind
+
+Two things must not be conflated:
+
+- the **encoding**: how the value is stored in the i64 cell -- `i64`, `f64` (bit
+  pattern, `@wam_assoc_f64_*`), or `atom` (an interned atom id);
+- the **semantic kind**: how the value behaves in comparisons and prints -- `number`
+  (counter or double), `string`, `strnum`, or `row`.
+
+`atom` encodes three semantic kinds with different comparisons. For input `10`:
+
+```awk
+{ a["input"] = $1; a["literal"] = "10"
+  print (a["input"] > 9), (a["literal"] > 9) }
+# gawk: 1 0   -- same bytes, strnum vs string
+```
+
+An array has **one semantic kind** (no per-element metadata), so its inputs must agree
+(§5). The encoding follows from the kind.
+
+## 5. Input kinds and the mixing rules
+
+Every value that enters an array -- every **input** -- has a semantic kind, known in
+one of two ways.
+
+### 5.1 Implied kinds (in-text inputs)
+
+| input | semantic kind | status |
+|---|---|---|
+| `c[k]++`, `c[k]--`, `c[k] += 5` (integer delta) | number (counter) | supported |
+| `c[k] += x` | number: counter if `x` is an integer, double otherwise (x's numeric conversion, not its spelling) | `+= $2` supported |
+| `c[k] = 5`, `= n + 1` (arithmetic) | number | planned |
+| `c[k] = "text"`, concatenation, `sprintf`, string builtins | string | planned |
+| `c[k] = $N` (an unmodified field) | strnum | planned |
+| `c[k] = $0` (unmodified record) | strnum, encoded as `atom` | row capture supported |
+| `split(src, a, sep)` pieces | strnum, positional key | supported |
+| `c[k] = row(...)` | row (a plawk constructor: its own contract, string comparisons) | supported |
+| `c[k] = x` (a scalar copy) | x's kind | planned |
+| `c[k] = d[j]` (an element copy) | d's kind | planned |
+| `c[k] = cond ? A : B` | the agreement of A and B (else declines) | planned |
+| a copy of a possibly-unset value | declines (§3) | -- |
+
+**Mutated fields are not input-derived.** After `$1 = "10"`, `$1` is a string; after
+`$1 = 10`, a number (gawk prints `0`, then `1`, for `a["x"] = $1; print (a["x"] > 9)`
+on input `10`). A copy of a field the program assigns declines unless the assigned
+kind is statically known.
+
+Future writers must be added to this table when they land: `sub`/`gsub` element
+targets, other compound assignments, `match`/`patsplit` output arrays, sort
+destinations.
+
+### 5.2 Mixing rules (one kind per array)
+
+| inputs of one array | result |
 |---|---|
-| a persistent store loaded at open | `declare NAME(col type, ...)`, `use NAME` (schema from the store header) |
-| a Prolog / dynamic bind | `as assoc(KIND)`, `as array(KIND)` |
-| getline into an array (future) | must carry a kind when it lands |
-| an array argument to a function / foreign call (future) | a kind annotation on the parameter |
+| counter + double | double (numeric widening, loses nothing) |
+| number + string | **declines** |
+| number + strnum | **declines** (input `007`: gawk prints `a["raw"]` as `007` and `a["sum"]` as `7`; promoting the array to double loses `007`) |
+| string + strnum | **declines** (the `1 0` example above) |
+| row + anything else | declines |
 
-So "all inputs typed" means: implied inputs type themselves; every external input
-carries a declaration. §5 is how the compiler knows which inputs are external.
+A read never influences the kind. With per-element metadata these rules could relax;
+without it, declining is the only way to keep gawk's observable behaviour.
 
-## 5. Knowing every input is visible: escape analysis
+## 6. External inputs, escape, and effect enumeration
 
-An in-memory plawk array lives exactly one run of the program, and the whole program
-is compiled at once. Nothing outside the program can put a value into an array unless
-the program hands the array out. So "every input is visible" is the same as "**the
-array never escapes**" -- decidable over the program text, with no destructor,
-finalizer or freeze keyword (the end of the program is the implicit finalizer).
+Two properties must be kept apart:
 
-### 5.1 The escape predicate
+- **provenance**: whether a value comes from outside the program (I/O, foreign code,
+  a store). It can reach an array without the array being handed out:
+  `getline x; a[k] = x`, `a[k] = ARGV[1]`, a copy of a foreign scalar result, a copy
+  from a store-backed array -- all are local writes.
+- **escape**: whether the array itself is handed out, so code outside the program can
+  write it: persistent stores, Prolog/dynamic binds, and (in future) array arguments.
 
-`plawk_array_escapes(Program, Array, Via)` holds iff one of:
+### 6.1 Ingress contracts
 
-| via | why it escapes | source forms | enumerator |
-|---|---|---|---|
-| persistent store | loaded at open (invisible input), committed at END | `declare NAME`, `declare NAME(cols)` | `plawk_program_cache_tables/2` |
-| attached store | as above; schema from the store header | `use NAME` | expanded by `bin/plawk` to the same cache terms |
-| dynamic / Prolog bind | foreign code writes the table | `as assoc`, `as assoc(str)`, `as array`, `as array(str)` | `plawk_posarray_producer(surface, …)` and the `dynassoc_bind*` rows of `plawk_assoc_body_action_spec` |
-| array argument | the callee may write it | not possible today (function and foreign-call parameters are scalars) | add a row when array arguments land |
-| getline into an array | external input | not implemented | add a row when it lands |
+Every external value carries a contract that supplies its kind, and copies propagate
+it through §5.1:
 
-Not escapes: the `over TABLE` / `records of` / `rows of` readers only READ a table
-(`plawk_passes_tables/2`); every in-text writer (`c[k]++`, `+=`, `=`, `delete`,
-`split`, row capture) and every element read is visible, enumerated by
-`plawk_action_table_name/2` and walked through branches and loops with
-`plawk_scalar_nested_action/2` (top-level-only collectors are a documented source of
-drift).
+| ingress | contract |
+|---|---|
+| field, `$0`, `split` of input | strnum (input text) |
+| getline text (planned) | strnum |
+| `ARGV[i]`, `ENVIRON[k]` | strnum |
+| typed foreign scalar result | its declared type |
+| store / bind value | its declared value kind (§7) |
+| unknown foreign result | rejected at compile time, or checked at its boundary at run time |
 
-### 5.2 The rules
+### 6.2 Escape
 
-1. **Non-escaping array**: the kind is the join of all its inputs (§4), final by
-   construction. A declaration, if present, is an assertion checked against the join
-   (e.g. force counter over double for integer data).
-2. **Escaping array**: a key-kind and value-kind declaration is **required**; an
-   undeclared escaping array declines with a reason naming the route, e.g.
-   `c escapes via a persistent store; declare its value kind: declare c as assoc(i64|f64|str)`.
-3. **Contradiction**: an input whose kind is outside the declared kind (or outside a
-   schema column's type) is a compile error -- never a coercion. The join is seeded
-   with the declared kind as a fixed point.
-4. **New input surfaces** (array parameters, getline into arrays) add a row to the
-   escape predicate; the IR kind check re-verifies the result on the generated code.
+| via | forms |
+|---|---|
+| persistent store (loaded at open, committed at END) | `declare NAME`, `declare NAME(cols)`, `use NAME` |
+| Prolog / dynamic bind (foreign code writes the table) | `as assoc(...)`, `as array(...)` |
+| array argument (future) | function and foreign-call parameters are scalars today |
 
-Today's implicit defaults -- a bare `declare NAME` and `as assoc` both mean i64 --
-remain as documented defaults (existing programs keep compiling); the explicit
-spellings of §6 are added beside them.
+An escaping array's kind **must be declared** (§7); an undeclared escaping array
+declines. Readers (`over` / `records of` / `rows of`) only read and are not escapes.
 
-### 5.3 Read-only arrays
+### 6.3 One effect enumeration
 
-`use NAME readonly` declares that the program only reads a store-backed array: every
-in-text writer of it declines (`NAME is read-only`), the END commit is skipped, and
-the store's schema is the sole source of the value kind -- the only sound choice when
-all inputs are external. A reporting pass then cannot corrupt a store.
+Inference, escape and `readonly` all depend on finding **every** read, write and import
+of an array. They must share one enumeration of effects -- `read(A)`, `write(A, Kind)`,
+`import(A, Contract)` -- that covers BEGIN, rule bodies, END, pass containers, nested
+blocks, and **wrapper nodes**, and that rejects any effect-bearing node it does not
+know. Today's helpers are not sufficient: `plawk_action_table_name/2` mixes reads and
+writes; `plawk_scalar_nested_action/2` does not unwrap `split_count/2`, so the write in
+`{ n = split($0, a, ":") }` is invisible to both; and `plawk_posarray_producer(surface,
+...)` also lists an ordinary local `split`, so it cannot serve unfiltered as the bind
+(escape) enumerator.
 
-## 6. Declaration surface
+### 6.4 Static vs runtime contract failures
 
-Today: `declare NAME(col str|i64, …)` / `use NAME` for stores, and `as assoc`,
-`as assoc(str)`, `as array`, `as array(str)` for binds; a bare `declare NAME` is
-implicitly i64. Planned, consistent with both: the value-kind slot becomes
-`i64 | f64 | str` on both surfaces (`as assoc(f64)`, `declare NAME as assoc(f64)`),
-`use NAME readonly`, and `BEGIN { declare c as assoc(i64) }` as the optional
-assertion in a closed program.
+A contradiction the compiler can prove -- an in-text write outside an array's declared
+kind -- is a **compile error** (a decline with a reason). A contract that depends on
+external data -- a foreign result or a store whose content changed since the build --
+is checked at run time at its boundary, and fails there. Neither silently coerces.
 
-## 7. Plan (element values)
+## 7. Declarations
 
-1. Key hygiene; this document. (`a[NR]` no longer reaches clang.) The escape
-   predicate (§5.1) lands with PR 2, before the first new input form.
-2. Numeric element writes `a[k] = expr`; one kind-inference predicate replacing the
-   three separate value-kind collectors; one IR kind check replacing the two above;
-   `a[k] += $2` beside scalar work.
+| interface | today | rule |
+|---|---|---|
+| persistent declaration | `declare NAME` (implicitly i64), `declare NAME(col str\|i64, ...)` | legacy forms kept as documented aliases, normalised to the typed form |
+| schema-derived attachment | `use NAME` | the store's schema is a fixed contract; validated at open if it differs from the build-time schema |
+| dynamic bind | `as assoc` (i64 value), `as assoc(str)`, `as array` (positional, i64 value), `as array(str)` | legacy defaults kept as aliases; key kind stated explicitly (§2 foreign keys) |
+| local assertion (closed program) | -- | planned: `BEGIN { declare c as assoc(KIND) }` |
+
+Planned: value kinds `i64 | f64 | str | strnum` on every surface (`str` is a pure
+string; `strnum` keeps input-derived comparison semantics across a store or bind);
+`use NAME readonly`.
+
+**Declarations do not coerce.** An assertion that narrows a kind -- e.g. counter
+storage for `c[k] += $2` -- needs proof: an explicit conversion in the program
+(`int($2)`) or a validated integer input schema. An unchecked declaration cannot
+prove that `$2` is always an integer.
+
+**`use NAME readonly`**: every write path to NAME (including wrapped ones such as
+`split_count`, and dynamic fills) declines, the END commit is skipped, and the schema
+is the sole source of the value kind. Readonly constrains writes; it does not by itself
+type indirect inputs.
+
+The existing IR guards (`plawk_f64_table_ir_ok/3`, `plawk_mixed_split_tables_ir_ok/1`)
+stay until a replacement check covers the same guarantees, and enforcement lands with
+each newly admitted input -- not deferred to the declaration PR.
+
+## 8. Plan
+
+1. Key hygiene; this document. All special-variable keys and unassigned-variable keys
+   decline instead of reaching clang.
+2. The shared effect enumeration (§6.3); numeric element writes (`a[k] = number`) with
+   the §5.2 mixing rules and the `present(unset)` decline (§3); `a[k] += x` beside
+   scalar work.
 3. Element reads as expressions: conditions (`if (c[$1] > 1)`), arithmetic, END loops.
-4. String element writes (`a[k] = "x"`, `a[k] = a[k] $2`) and `a[NR] = $0` with a
-   numeric END loop (tac).
-5. Declarations (§6: `as assoc(f64)`, `declare NAME as assoc(KIND)`,
-   `use NAME readonly`) with reason messages; the required-declaration decline for
-   escaping arrays and the contradiction error (§5.2) enforced.
+4. String and strnum element writes (`a[k] = "x"`, `a[k] = $N`, `a[k] = a[k] $2`) with
+   their mixing rules, and `a[NR] = $0` with a numeric END loop (tac).
+5. Declarations (§7), ingress contracts (§6.1), foreign-key normalisation (§2), with
+   reason messages.
 
-## 8. Tests
+## 9. Tests
 
-- `tests/test_plawk_array_kinds.pl`: key kinds, special-variable keys, integer-literal
-  keys on counted tables.
+- `tests/test_plawk_array_kinds.pl`: special-variable and unassigned keys decline;
+  integer-literal keys on counted tables.
 - `tests/test_plawk_posarray_keyspace.pl`, `tests/test_plawk_literal_assoc_key.pl`:
   the positional/counted key-space rule.
+- `tests/test_plawk_binary_assoc.pl`: raw-integer keys.
+- `tests/test_plawk_forin_val_strnum.pl`: split elements compare as strnum.
 - `tests/test_plawk_absent_key_read.pl`, `tests/test_plawk_mixed_rules.pl`: absent
   elements.

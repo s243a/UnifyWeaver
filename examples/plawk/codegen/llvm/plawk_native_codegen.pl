@@ -510,6 +510,37 @@ plawk_begin_only_prelude_driver_ir(Begin, _Prelude, _OutputSeparator, InputPath,
     plawk_begin_prelude_generate(Slots, Out),
     plawk_program_native_driver_ir(program(Begin, [], []), InputPath, DriverIR).
 
+% Driver-owned scalar globals (@plawk_scalar_<Name>, the assoc chain's scalar
+% store) are defined only by an action that writes the name. A READ of a name that
+% nothing writes -- `{ a[unassigned]++ }`, or a gawk-only variable such as ARGIND
+% used as a key -- referenced a global no line defines, and clang failed (exit 4).
+% Checked on the OUTPUT, whatever path emitted the reference: every
+% @plawk_scalar_<Name> the driver IR mentions must be defined in it, else the
+% program declines. (Defining it as 0 would be wrong output: atom id 0 is not the
+% empty-string key awk uses for an unset variable.)
+plawk_program_native_driver_ir(Program, InputPath, DriverIR) :-
+    \+ nb_current(plawk_scalar_globals_check, active),
+    !,
+    b_setval(plawk_scalar_globals_check, active),
+    (   plawk_program_native_driver_ir(Program, InputPath, DriverIR0)
+    ->  b_setval(plawk_scalar_globals_check, inactive),
+        plawk_driver_scalar_globals_defined(DriverIR0),
+        DriverIR = DriverIR0
+    ;   b_setval(plawk_scalar_globals_check, inactive),
+        fail
+    ).
+
+plawk_driver_scalar_globals_defined(IR) :-
+    forall(( sub_atom(IR, B, L, _, '@plawk_scalar_'),
+             Start is B + L,
+             sub_atom(IR, Start, _, 0, After),
+             atom_codes(After, Codes),
+             plawk_ir_ident_codes(Codes, NameCodes),
+             NameCodes \== [] ),
+           ( atom_codes(Name, NameCodes),
+             format(atom(Def), '@plawk_scalar_~w = ', [Name]),
+             sub_atom(IR, _, _, _, Def) )).
+
 % BEGIN accepts the whole rule-body statement grammar (computation, loops, `++`,
 % concatenation, ...), but the drivers lower only the BEGIN forms the old
 % restricted grammar produced -- and several of them IGNORE a BEGIN action they

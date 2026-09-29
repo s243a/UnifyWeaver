@@ -4,10 +4,13 @@
 %
 % Array key and value kinds -- docs/design/PLAWK_ARRAY_VALUE_MODEL.md.
 %
-% PR 1 (key hygiene): a special variable as a key (`a[NR]`, `a[NF]`) parsed as a
-% user scalar named NR, resolved to a phantom slot, and died in clang on an
-% undefined @plawk_scalar_NR -- exit 4, the worst outcome. It now parses as a
-% special(_) key, which has no lowering yet, so the program declines (exit 3).
+% PR 1 (key hygiene): a special variable as a key (`a[NR]`, `a[FILENAME]`,
+% `a[FS]`, ...) parsed as a user scalar, resolved to a phantom slot, and died in
+% clang on an undefined @plawk_scalar_<Name> -- exit 4, the worst outcome. It now
+% parses as a special(_) key (the parser's one special-variable list), which has no
+% lowering yet, so the program declines (exit 3). A never-assigned user variable key
+% (and a gawk-only name such as ARGIND) is caught on the generated IR: every driver
+% scalar global it references must be defined, else the program declines.
 % Integer-literal keys on a counted (interned-text) table mean their decimal text,
 % so c[5] and c["5"] are one element, as in awk.
 %
@@ -34,11 +37,31 @@ test(special_variable_keys_parse_as_specials) :-
         program([], [rule(always, [inc_assoc(var(a), special('NF'))])], [])),
     !.
 
-% no longer exit 4 (clang on an undefined @plawk_scalar_NR): a clean decline
+test(other_special_variable_keys_parse_as_specials) :-
+    forall(member(Name-Src,
+            [ 'FILENAME'-"{ a[FILENAME]++ }\n", 'FS'-"{ a[FS]++ }\n",
+              'SUBSEP'-"{ a[SUBSEP]++ }\n", 'FNR'-"{ a[FNR]++ }\n" ]),
+        plawk_parse_string(Src,
+            program([], [rule(always, [inc_assoc(var(a), special(Name))])], []))),
+    !.
+
+% no longer exit 4 (clang on an undefined @plawk_scalar_<Name>): a clean decline.
+% The first review of this PR found FILENAME, FS, ... and a never-assigned variable
+% still reaching clang; every one is pinned here.
 test(special_variable_keys_decline_cleanly) :-
+    forall(member(Key, ['NR', 'NF', 'FNR', 'FILENAME', 'FS', 'OFS', 'ORS', 'RS',
+                        'SUBSEP', 'RT', 'CONVFMT', 'OFMT', 'IGNORECASE',
+                        % gawk-only names, parsed as user variables: caught on the IR
+                        'ARGIND', 'ERRNO',
+                        % a user variable that nothing assigns
+                        unassigned]),
+        ( format(string(Src), "{ a[~w]++ } END { for (k in a) print k, a[k] }~n", [Key]),
+          build_status_is(Src, 3) )),
+    !.
+
+test(special_variable_keys_decline_in_other_positions) :-
     forall(member(Src,
-            [ "{ a[NR]++ } END { for (k in a) print k, a[k] }\n",
-              "{ a[NF]++ } END { for (k in a) print k, a[k] }\n",
+            [
               "{ a[NR] = $0 } END { print a[1] }\n",
               "{ delete a[NR] }\n",
               "{ if (NR in a) print \"y\" }\n"
