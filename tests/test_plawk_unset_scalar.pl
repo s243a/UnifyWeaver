@@ -391,6 +391,18 @@ test(body_print_before_assignment_prints_empty, [condition(clang_available)]) :-
         "3\n2\n1\n"),
     !.
 
+% The same rule for a DOUBLE slot (its value is `double | unset`): the assigned
+% mark selects @wam_print_awk_number's empty format. See
+% docs/design/PLAWK_SCALAR_VALUE_MODEL.md. gawk 5.1.0.
+test(double_body_print_before_assignment_prints_empty, [condition(clang_available)]) :-
+    run_input("{ print n, $1; n += $2 }\n", "a 5\nb 7.5\nc 2\n", " a\n5 b\n12.5 c\n"),
+    !,
+    run_input("{ if ($2 > 6) x = $2 * 0.5; print x \"|\" }\n", "a 5\nb 7.5\nc 2\n",
+        "|\n3.75|\n3.75|\n"),
+    !,
+    run_input("BEGIN { print f \"|\"; f = 0.5 }\n", "", "|\n"),
+    !.
+
 test(definitely_assigned_prints_are_unchanged, [condition(clang_available)]) :-
     run_input("{ n++; print n }\n", "a\nb\n", "1\n2\n"),
     !,
