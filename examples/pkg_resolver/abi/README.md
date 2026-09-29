@@ -12,6 +12,8 @@ and `resolver_store.pl` are not edited; the Debian-version comparison is
 delegated to `resolver:version_lt/2` on `deb/3` terms from
 `debian/deb_parse.pl`.
 
+Usage / runnable examples: see `SYMBOL_ABI_HOWTO.md`.
+
 The lane was redesigned after the PR #4262 review and revised after Sol's
 re-review; `REVIEW_NOTES.md` maps each review point to the code and the
 fixture that proves it.
