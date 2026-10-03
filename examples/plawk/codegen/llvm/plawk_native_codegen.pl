@@ -6461,11 +6461,18 @@ plawk_passes_tables(Passes, Tables) :-
 %  classified here, so they decline until their PRs land.
 plawk_set_value_kind(Value, Kind) :-
     Value \= field(_),
+    Value \= var(_),
     plawk_numeric_value_kind(Value, Kind).
 
 plawk_numeric_value_kind(int(N), counter) :- integer(N), !.
 plawk_numeric_value_kind(float_const(_, _), double) :- !.
 plawk_numeric_value_kind(field(N), double) :- integer(N), N >= 0, !.
+% a scalar read inside arithmetic (the mixed chain substitutes its slot value): its
+% numeric reading. Classified double -- awk numbers are doubles, and an integral
+% double prints as an integer -- so no slot-type lookup is needed here. A BARE
+% scalar copy (`arr[k] = n`) never reaches this (plawk_set_value_kind/2 requires
+% arithmetic around it): it may copy an unset value (§3) and declines.
+plawk_numeric_value_kind(var(N), double) :- atom(N), !.
 plawk_numeric_value_kind(length(field(N)), counter) :- integer(N), !.
 plawk_numeric_value_kind(int(field(N)), counter) :- integer(N), !.
 plawk_numeric_value_kind(div_i64(A, B), double) :-
@@ -10099,7 +10106,12 @@ plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, Markers)) :-
         ),
         ActionArrays),
     plawk_mixed_split_arrays(Rules, SplitArrays),
-    ( ActionArrays \== [] ; SplitArrays \== [] ),
+    % field-key `+=` / `=` element writes establish their table too (arrays PR 2c)
+    findall(ArrayName,
+        ( sub_term(T, Rules), compound(T),
+          plawk_mixed_elem_write(T, ArrayName, _K, Op), Op \== inc ),
+        ElemArrays),
+    ( ActionArrays \== [] ; SplitArrays \== [] ; ElemArrays \== [] ),
     findall(ArrayName,
         ( member(Field, PrintFields),
           plawk_assoc_print_array(Field, ArrayName)
@@ -10120,7 +10132,7 @@ plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, Markers)) :-
     % action is still required above, and plawk_mixed_state_plan/3 still requires
     % a scalar slot or a conditional, so a pure-assoc or pure-scalar program keeps
     % its own driver.
-    append([ActionArrays, PrintArrays, MembershipArrays], CountedNames),
+    append([ActionArrays, ElemArrays, PrintArrays, MembershipArrays], CountedNames),
     % A split target is a POSITIONAL, str-valued table (keys are raw positions
     % 1..n, values atom ids) -- a different kind from a counted table (keys are
     % interned atom ids, values counts). The mixed walker reads it by position
@@ -10357,6 +10369,78 @@ plawk_mixed_update_action(delete_assoc(var(_ArrayName), var(_Name))).
 plawk_mixed_update_action(split_into(field(KeyIndex), var(_ArrayName), string(Sep))) :-
     integer(KeyIndex), KeyIndex >= 0,
     string(Sep), string_length(Sep, Len), Len >= 1.
+% Field-key element writes (arrays PR 2c): `arr[$k] += D` (D a field or an
+% integer) and a numeric `arr[$k] = EXPR`; the array-kind rules decide the rest.
+plawk_mixed_update_action(Action) :-
+    plawk_mixed_elem_write(Action, _ArrayName, _KeyIndex, Op),
+    Op \== inc.
+
+%% plawk_mixed_elem_write(+Action, -ArrayName, -KeyIndex, -Op) is semidet.
+%  A field-key element write the mixed walker's element-write row lowers. `inc`
+%  only for a double-valued array (an integer array keeps its own `++` row).
+plawk_mixed_elem_write(add_assoc(var(A), field(K), Delta), A, K, add(Delta)) :-
+    integer(K), K > 0,
+    plawk_assoc_add_delta_ok(Delta).
+plawk_mixed_elem_write(set_assoc(var(A), field(K), Value), A, K, set(Value)) :-
+    integer(K), K > 0,
+    plawk_set_value_kind(Value, Kind),
+    memberchk(Kind, [counter, double]).
+plawk_mixed_elem_write(inc_assoc(var(A), field(K)), A, K, inc) :-
+    integer(K), K > 0,
+    plawk_f64_array(A).
+
+%% plawk_mixed_elem_write_ir(+Prefix, +OpIndex, +ArrayName, +TableIndex, +KeyIndex,
+%%     +FieldSeparator, +Op, +Slots, +Values, -Pair)
+%  Intern field K (a missing field is the key ""), compute the value and store it:
+%  @wam_assoc_f64_add / _f64_set (marked for the double-table IR check) on a
+%  double-valued array, @wam_assoc_i64_inc / _i64_set otherwise. Straight-line.
+plawk_mixed_elem_write_ir(Prefix, OpIndex, ArrayName, TableIndex, KeyIndex,
+        FieldSeparator, Op, Slots, Values, GlobalIR-IR) :-
+    integer(FieldSeparator),
+    format(atom(B), '~w_elem_~w', [Prefix, OpIndex]),
+    format(atom(SliceL),
+        '  %~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+        [B, KeyIndex, FieldSeparator]),
+    format(atom(PtrL), '  %~w_key_ptr = extractvalue %WamSlice %~w_key_slice, 0', [B, B]),
+    format(atom(LenL), '  %~w_key_len = extractvalue %WamSlice %~w_key_slice, 1', [B, B]),
+    format(atom(MissL), '  %~w_key_missing = icmp eq i8* %~w_key_ptr, null', [B, B]),
+    plawk_missing_key_empty_lines(B, EmptyGlobal, SafePtrL),
+    format(atom(KidL),
+        '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_sptr, i64 %~w_key_len)',
+        [B, B, B]),
+    format(atom(ValueBase), '~w_val', [B]),
+    (   plawk_f64_array(ArrayName)
+    ->  plawk_mixed_elem_f64(Op, ValueBase, FieldSeparator, Slots, Values,
+            ValueIR, ValueGlobals, ValueLines, Entry),
+        plawk_f64_table_marker(ArrayName, TableIndex, Marker),
+        format(atom(StoreL0),
+            '  %~w_r = call double @wam_assoc_f64_~w(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id, double ~w)',
+            [B, Entry, TableIndex, B, ValueIR]),
+        format(atom(StoreL), '~w~n  ~w', [StoreL0, Marker])
+    ;   plawk_mixed_elem_i64(Op, ValueBase, FieldSeparator, Slots, Values,
+            ValueIR, ValueGlobals, ValueLines, Entry),
+        format(atom(StoreL),
+            '  %~w_r = call i64 @wam_assoc_i64_~w(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id, i64 ~w)',
+            [B, Entry, TableIndex, B, ValueIR])
+    ),
+    plawk_join_nonempty_ir([EmptyGlobal | ValueGlobals], GlobalIR),
+    append([[SliceL, PtrL, LenL, MissL, SafePtrL, KidL], ValueLines, [StoreL]], Lines),
+    atomic_list_concat(Lines, '\n', IR).
+
+plawk_mixed_elem_f64(inc, _B, _FS, _Slots, _Values, '1.0', [], [], add).
+plawk_mixed_elem_f64(add(Delta), B, FS, _Slots, _Values, V, [], Lines, add) :-
+    plawk_assoc_f64_delta_lines(Delta, B, FS, V, Lines).
+plawk_mixed_elem_f64(set(Value0), B, FS, Slots, Values, V, Globals, Lines, set) :-
+    plawk_substitute_scalar_reads(Value0, Slots, Values, Value),
+    plawk_f64_expr_ir(Value, FS, B, B, V, Globals, Lines).
+
+plawk_mixed_elem_i64(add(Delta), B, FS, _Slots, _Values, V, [], Lines, inc) :-
+    plawk_assoc_scalar_src_lines(Delta, B, FS, V, Lines0),
+    ( is_list(Lines0) -> Lines = Lines0 ; Lines = [Lines0] ).
+plawk_mixed_elem_i64(set(Value0), B, FS, Slots, Values, V, Globals, Lines, set) :-
+    plawk_substitute_scalar_reads(Value0, Slots, Values, Value),
+    plawk_i64_expr_ir(Value, FS, B, B, V, Globals, Lines).
+
 % `n = split(...)` -- the count lands in a counter slot (the walker's gate).
 plawk_mixed_update_action(split_count(CountName, Split)) :-
     atom(CountName),
@@ -19055,6 +19139,8 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
       % integer here makes an unsupported var key (e.g. a double slot) fail rather
       % than emit `i64 svar(_)` -- so such a program declines cleanly.
       integer(KeyIndex),
+      % a double-valued array takes the element-write row below (f64 entries)
+      \+ plawk_f64_array(ArrayName),
       plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
       plawk_assoc_update_operation_ir(Prefix, OpIndex, TableIndex, KeyIndex,
           FieldSeparator, Pair, AssocExitLabel),
@@ -19062,6 +19148,22 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
     },
     [Pair],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, AssocExitLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
+% Field-key ELEMENT WRITES in the mixed chain (arrays PR 2c,
+% PLAWK_ARRAY_VALUE_MODEL.md §5): `arr[$k] += D`, `arr[$k] = EXPR`, and `arr[$k]++`
+% on a double-valued array. The admission and the kind rules
+% (plawk_array_kinds_ok/1) decided the array's kind; this row only stores at it.
+plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { plawk_mixed_elem_write(Action, ArrayName, KeyIndex, Op),
+      plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+      plawk_mixed_elem_write_ir(Prefix, OpIndex, ArrayName, TableIndex, KeyIndex,
+          FieldSeparator, Op, Slots, Values0, Pair),
+      !,
+      NextOpIndex is OpIndex + 1
+    },
+    [Pair],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 plawk_scalar_action_sequence_pairs([writebin_out(Types, Fields) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->

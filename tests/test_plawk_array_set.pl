@@ -12,8 +12,9 @@
 % (counter + double -> double), checked by plawk_array_kinds_ok/1 over the shared
 % effect enumeration, which also declines on any array use it does not know. A bare
 % field (strnum), a string, or a mix with split/row writes declines until their
-% PRs land. gawk 5.1.0 (LC_ALL=C); for-in order is unspecified, so outputs compare
-% as sorted lines.
+% PRs land. PR 2c admits the same writes, and `arr[$k] += D`, beside scalar work.
+% gawk 5.1.0 (LC_ALL=C); for-in order is unspecified, so outputs compare as sorted
+% lines.
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -89,6 +90,33 @@ test(unadmitted_kinds_and_mixes_decline) :-
               "{ c[$1] = 5; c[$2] = $0 } END { for (k in c) print k, c[k] }\n"
             ]),
         build_status_is(Src, 3)),
+    !.
+
+% --- PR 2c: the same writes beside scalar work (the mixed walker) --------------
+
+test(element_writes_beside_scalar_work, [condition(clang_available)]) :-
+    run_sorted("{ c[$1] += $2; n++; print c[$1] }\n", "5\n7.5\n8\n"),
+    !,
+    run_sorted("{ c[$1] += 2; n++; print c[$1] }\n", "2\n2\n4\n"),
+    !,
+    run_sorted("{ c[$1] = 5; n++; print c[$1], n }\n", "5 1\n5 2\n5 3\n"),
+    !,
+    run_sorted("{ c[$1] = $2 * 2; n++ } END { print n, c[\"a\"] }\n", "3 6\n"),
+    !.
+
+% a scalar inside the value's arithmetic reads the slot's current value
+test(scalar_operands_in_the_value, [condition(clang_available)]) :-
+    run_sorted("{ n++; c[$1] = n * 10; print c[$1] }\n", "10\n20\n30\n"),
+    !.
+
+% counter + double widen beside scalar work too: `++` lands on the double table
+test(mixed_numeric_widening, [condition(clang_available)]) :-
+    run_sorted("{ c[$1] = $2 * 1; c[$1]++; n++; print c[$1] }\n", "4\n6\n8.5\n"),
+    !.
+
+% a BARE scalar copy may copy an unset value (spec §3): declined
+test(bare_scalar_copy_declines) :-
+    build_status_is("{ n++; c[$1] = n } END { print c[\"a\"] }\n", 3),
     !.
 
 :- end_tests(plawk_array_set).
