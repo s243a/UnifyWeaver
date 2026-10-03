@@ -3927,7 +3927,14 @@ assoc_row_rhs(VarName, KeyExpr, set_row(VarName, KeyExpr)) -->
     "$0",
     !.
 assoc_row_rhs(VarName, KeyExpr, set_row_cons(VarName, KeyExpr, Fields)) -->
-    "row", ws, "(", ws, row_field_list(Fields), ws, ")".
+    "row", ws, "(", ws, row_field_list(Fields), ws, ")",
+    !.
+% `arr[k] = expr` -- an element write with the scalar RHS grammar. Which value
+% kinds compile is codegen's decision (docs/design/PLAWK_ARRAY_VALUE_MODEL.md §5):
+% numeric expressions first; a bare field (strnum), a string or a scalar copy
+% decline until their PRs land.
+assoc_row_rhs(VarName, KeyExpr, set_assoc(VarName, KeyExpr, Value)) -->
+    scalar_value_expr(Value).
 
 % Row constructor fields: one or more `$N` field references.
 row_field_list([F | Fs]) -->
