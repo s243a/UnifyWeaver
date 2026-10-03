@@ -189,11 +189,16 @@ plawk's emitters dispatch on the shape of a term constantly — `var(Name)`, `fi
 `{{match}}` over the print-field term with one `{{case}}` per field kind, rendered by every
 driver, instead of a per-driver clause set that can silently differ.
 
-**Not adopted yet, deliberately.** `pattern_stache` lives on an unmerged branch
-(`claude/pattern-stache-dispatcher-prototype-dizes2`,
-[`SPEC_pattern_stache.md`](SPEC_pattern_stache.md)) and its spec says it implements *only
-what two witnessed consumers needed*. Making plawk a third consumer is a coordination
-decision, not a refactor to slip into an unrelated PR — see §6.5.
+**Available, not yet adopted.** `pattern_stache` graduated on `main` (production engine
+`src/unifyweaver/core/pattern_stache.pl`, [`SPEC_pattern_stache.md`](SPEC_pattern_stache.md))
+and has been ported to this feature line unchanged, as an **optional** engine beside
+`template_system.pl` (which `.mustache` files keep using): `.stache` is for dispatch on the
+shape of a term, `.mustache` for fixed boilerplate with holes, and each is used where it fits.
+plawk's requirements as a consumer -- selection only, conditional lists of lines with a
+threaded index, whitespace control -- are recorded with verdicts in
+[`RECORD_prospective_consumer_plawk.md`](../../prototypes/mu_cosine/RECORD_prospective_consumer_plawk.md);
+none needs an engine change. Adopting it in plawk's emitters is still its own step, piloted on
+one emitter family -- see §6.5.
 
 ### 6.4 What the layering would have prevented, concretely
 
