@@ -761,14 +761,26 @@ ll_path(_Out, false, LLPath) :-
     tmp_build_dir(Dir),
     directory_file_path(Dir, 'plawk_build.ll', LLPath).
 
+%% tmp_build_dir(-Dir)
+%  The per-process scratch directory ($TMP/plawk_cli_<pid>): the intermediate
+%  plawk_build.ll, the `plawk run` binary, the LMDB schema probe. Whoever creates
+%  it registers its removal at halt -- every CLI path ends in halt/1 (success,
+%  a parse / compile decline, a clang failure, `run` after the program exits), so
+%  nothing is left behind. It used to be kept: each build left a directory in
+%  /tmp (42k of them, ~6 GB, after a few days of test sweeps). --keep-ll writes
+%  OUT.ll next to the output, not here, so it is unaffected.
 tmp_build_dir(Dir) :-
     current_prolog_flag(pid, Pid),
     current_prolog_flag(tmp_dir, Tmp),
     format(atom(Dir), '~w/plawk_cli_~w', [Tmp, Pid]),
     (   exists_directory(Dir)
     ->  true
-    ;   make_directory(Dir)
+    ;   make_directory(Dir),
+        at_halt(remove_tmp_build_dir(Dir))
     ).
+
+remove_tmp_build_dir(Dir) :-
+    catch(delete_directory_and_contents(Dir), _, true).
 
 %% check_foreign_calls(+File, +Program, +Preds)
 %
