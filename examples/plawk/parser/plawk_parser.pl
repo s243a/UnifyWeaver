@@ -5483,8 +5483,22 @@ assoc_key_atom(string(Value)) -->
 assoc_key_atom(Blob) -->
     blob_call_expr(Blob),
     !.
+% A special variable as a key (`a[NR]`, `a[FILENAME]`, `a[FS]`, ...) is its own
+% node: it is a runtime value, not a user scalar. Parsed as `var('NR')` it resolved
+% to a phantom scalar slot and died in clang on an undefined @plawk_scalar_NR
+% (exit 4). The set is the parser's one list of special variables
+% (begin_special_name/1); special(_) keys have no lowering yet, so such a program
+% declines cleanly. A builtin name (`length`, `int`, ...) is refused (a parse error,
+% as for a comparison operand). A user variable that is never assigned is caught
+% on the output instead (plawk_driver_scalar_globals_defined/1).
+assoc_key_atom(special(Name)) -->
+    identifier(Name),
+    { begin_special_name(Name),
+      \+ plawk_surface_reserved_name(Name) },
+    !.
 assoc_key_atom(var(Name)) -->
-    identifier(Name).
+    identifier(Name),
+    { \+ scalar_cmp_reserved_name(Name) }.
 
 identifier(Name) -->
     identifier_start(Start),

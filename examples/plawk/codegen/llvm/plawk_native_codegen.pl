@@ -617,6 +617,73 @@ plawk_begin_only_prelude_driver_ir(Begin, _Prelude, _OutputSeparator, InputPath,
     plawk_begin_prelude_generate(Slots, Out),
     plawk_program_native_driver_ir(program(Begin, [], []), InputPath, DriverIR).
 
+% Driver-owned scalar globals (@plawk_scalar_<Name>, the assoc chain's scalar
+% store) are defined only by an action that writes the name. A READ of a name that
+% nothing writes -- `{ a[unassigned]++ }`, or a gawk-only variable such as ARGIND
+% used as a key -- referenced a global no line defines, and clang failed (exit 4).
+% Checked on the OUTPUT, whatever path emitted the reference: every
+% @plawk_scalar_<Name> the driver IR mentions must be defined in it, else the
+% program declines. (Defining it as 0 would be wrong output: atom id 0 is not the
+% empty-string key awk uses for an unset variable.)
+plawk_program_native_driver_ir(Program, InputPath, DriverIR) :-
+    \+ nb_current(plawk_scalar_globals_check, active),
+    !,
+    b_setval(plawk_scalar_globals_check, active),
+    (   plawk_program_native_driver_ir(Program, InputPath, DriverIR0)
+    ->  b_setval(plawk_scalar_globals_check, inactive),
+        plawk_driver_scalar_globals_defined(DriverIR0),
+        DriverIR = DriverIR0
+    ;   b_setval(plawk_scalar_globals_check, inactive),
+        fail
+    ).
+
+plawk_driver_scalar_globals_defined(IR) :-
+    split_string(IR, "\n", "", Lines),
+    maplist(plawk_ir_code_codes, Lines, CodeLines),
+    findall(Name,
+        ( member(Code, CodeLines),
+          append(_, [0'@ | Rest], Code),
+          append(`plawk_scalar_`, After, Rest),
+          plawk_ir_ident_codes(After, NameCodes), NameCodes \== [],
+          atom_codes(Name, NameCodes) ),
+        Refs0),
+    sort(Refs0, Refs),
+    findall(Name,
+        ( member(Code, CodeLines),
+          append(`@plawk_scalar_`, After, Code),
+          plawk_ir_ident_codes(After, NameCodes), NameCodes \== [],
+          append(NameCodes, Tail, After),
+          append(` = `, _, Tail),
+          atom_codes(Name, NameCodes) ),
+        Defs0),
+    sort(Defs0, Defs),
+    ord_subtract(Refs, Defs, []).
+
+%% plawk_ir_code_codes(+Line, -CodeCodes)
+%  The CODE part of one IR line: string-constant contents and the trailing `;`
+%  comment removed. A raw `"` always delimits an LLVM string (a quote inside one is
+%  escaped as \22), so `"..."` is skipped wholesale. A symbol spelled inside a
+%  printed string (`print "@plawk_scalar_x"`) or a marker comment is text, not a
+%  reference or a definition -- scanning raw text got both wrong.
+plawk_ir_code_codes(Line, Codes) :-
+    string_codes(Line, Codes0),
+    plawk_ir_code_codes_(Codes0, out, Codes).
+
+plawk_ir_code_codes_([], _, []).
+plawk_ir_code_codes_([0'" | Rest], out, [0'", 0'" | Codes]) :-
+    !,
+    plawk_ir_code_codes_(Rest, in, Codes).
+plawk_ir_code_codes_([0'" | Rest], in, Codes) :-
+    !,
+    plawk_ir_code_codes_(Rest, out, Codes).
+plawk_ir_code_codes_([_ | Rest], in, Codes) :-
+    !,
+    plawk_ir_code_codes_(Rest, in, Codes).
+plawk_ir_code_codes_([0'; | _], out, []) :-
+    !.
+plawk_ir_code_codes_([C | Rest], out, [C | Codes]) :-
+    plawk_ir_code_codes_(Rest, out, Codes).
+
 % BEGIN accepts the whole rule-body statement grammar (computation, loops, `++`,
 % concatenation, ...), but the drivers lower only the BEGIN forms the old
 % restricted grammar produced -- and several of them IGNORE a BEGIN action they
