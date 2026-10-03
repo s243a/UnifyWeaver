@@ -3,6 +3,10 @@
 
 :- module(plawk_native_codegen, [
     plawk_program_native_driver_ir/3,
+    plawk_array_effects/2,
+    plawk_array_names/2,
+    plawk_array_escapes/3,
+    plawk_array_unknown_uses/2,
     plawk_program_native_driver_ir/4,
     plawk_program_multipass_driver_ir/2,
     plawk_program_multipass_driver_ir/3,
@@ -6432,6 +6436,123 @@ plawk_passes_tables(Passes, Tables) :-
         ),
         Names0),
     sort(Names0, Tables).
+
+%% Array EFFECTS -- the one enumeration of every read, write, import and
+%% declaration of every array in a program (docs/design/PLAWK_ARRAY_VALUE_MODEL.md
+%% §6.3). Value-kind inference, the escape rule and `readonly` all depend on finding
+%% EVERY effect, so they must share this list rather than each walking the AST.
+%%
+%% An effect is matched wherever it occurs in the program term (sub_term/2): BEGIN,
+%% rule bodies, END, pass containers, nested branches and loops, and WRAPPER nodes
+%% -- `n = split($0, a, ":")` parses to split_count(n, split_into(...)), whose write
+%% the older helpers (plawk_action_table_name/2, plawk_scalar_nested_action/2) did
+%% not see. Completeness is checked rather than assumed:
+%% plawk_array_unknown_uses/2 reports every occurrence of an array's var(Name) that
+%% is not the table position of a recognised effect, so a new array-touching node
+%% shows up there instead of silently escaping inference.
+%%
+%%   read(A)              an element read, iteration, membership, a reader pass,
+%%                        or a read through a row variable bound to A
+%%   row_binding(R, A)    a `rows of A as R` / `records of A as R` reader
+%%   write(A, How)        How: inc | add(Delta) | delete | split | row
+%%   import(A, Via)       Via: bind (Prolog / dynamic bind) | store (cache table)
+%%   declare(A, schema)   a store's declared row schema
+
+%% plawk_array_effects(+Program, -Effects) is det.
+%  A `rows of T as R` / `records of T as R` reader binds R to the current ROW of T;
+%  `R["col"]` is then a read of T, not of an array named R. Reads through a row
+%  variable are reported as reads of its table, beside the row_binding(R, T) effect.
+plawk_array_effects(Program, Effects) :-
+    findall(Effect, plawk_array_effect(Program, Effect), Raw),
+    findall(R-T, member(row_binding(R, T), Raw), Rows),
+    findall(E,
+        ( member(E0, Raw),
+          (   E0 = read(R), memberchk(R-T, Rows)
+          ->  E = read(T)
+          ;   E = E0
+          ) ),
+        Effects0),
+    sort(Effects0, Effects).
+
+%% plawk_array_effect(+Program, -Effect) is nondet.
+plawk_array_effect(Program, Effect) :-
+    sub_term(Term, Program),
+    compound(Term),
+    plawk_array_term_effect(Term, Effect, _TableArg).
+
+%% plawk_array_term_effect(+Term, -Effect, -TableArg)
+%  Effect of one node, and the argument position (1-based) holding the table, so
+%  the completeness check can tell a table position from any other var(Name).
+plawk_array_term_effect(inc_assoc(var(A), _), write(A, inc), 1).
+plawk_array_term_effect(add_assoc(var(A), _, D), write(A, add(D)), 1).
+plawk_array_term_effect(delete_assoc(var(A), _), write(A, delete), 1).
+plawk_array_term_effect(split_into(_, var(A), _), write(A, split), 2).
+plawk_array_term_effect(set_row(var(A), _), write(A, row), 1).
+plawk_array_term_effect(set_row_cons(var(A), _, _), write(A, row), 1).
+% `!seen[$1]++` / `seen[$1]++` as a pattern: reads the old value, then increments
+plawk_array_term_effect(assoc_postinc(_, A), write(A, inc), 2) :- atom(A).
+plawk_array_term_effect(assoc_postinc(_, A), read(A), 2) :- atom(A).
+plawk_array_term_effect(dynassoc_bind(var(A), _), import(A, bind), 1).
+plawk_array_term_effect(dynassoc_bind_str(var(A), _), import(A, bind), 1).
+plawk_array_term_effect(dynposarray_bind(var(A), _), import(A, bind), 1).
+plawk_array_term_effect(dynposarray_bind_str(var(A), _), import(A, bind), 1).
+plawk_array_term_effect(cache_table(A, _, _), import(A, store), 1) :- atom(A).
+plawk_array_term_effect(cache_use(A, _, _), import(A, store), 1) :- atom(A).
+plawk_array_term_effect(cache_schema(A, _), declare(A, schema), 1) :- atom(A).
+plawk_array_term_effect(assoc(var(A), _), read(A), 1).
+plawk_array_term_effect(for_in(_, var(A), _), read(A), 2).
+plawk_array_term_effect(in_arr(_, A), read(A), 2) :- atom(A).
+plawk_array_term_effect(forin_val(A), read(A), 1) :- atom(A).
+plawk_array_term_effect(forin_val_cmp(A, _, _, _), read(A), 1) :- atom(A).
+plawk_array_term_effect(pass_over(_, var(A), _), read(A), 2).
+plawk_array_term_effect(pass_records(_, var(A), _), read(A), 2).
+plawk_array_term_effect(pass_records(var(R), var(A), _), row_binding(R, A), 1).
+plawk_array_term_effect(pass_rows(_, var(A), _), read(A), 2).
+plawk_array_term_effect(pass_rows(var(R), var(A), _), row_binding(R, A), 1).
+plawk_array_term_effect(pass_rows_anon(var(A), _), read(A), 1).
+
+%% plawk_array_names(+Program, -Names) is det.
+%  The arrays (row variables are views of a table, not arrays).
+plawk_array_names(Program, Names) :-
+    plawk_array_effects(Program, Effects),
+    findall(A,
+        ( member(E, Effects),
+          ( E = read(A) ; E = write(A, _) ; E = import(A, _) ; E = declare(A, _) ) ),
+        Names0),
+    sort(Names0, Names).
+
+% Every name whose var(Name) occurrences the completeness check must account for:
+% the arrays and the row variables bound to them.
+plawk_array_checked_names(Program, Names) :-
+    plawk_array_names(Program, Arrays),
+    findall(R, plawk_array_effect(Program, row_binding(R, _)), Rows),
+    append(Arrays, Rows, Names0),
+    sort(Names0, Names).
+
+%% plawk_array_escapes(+Program, ?Array, ?Via) is nondet.
+%  The array is handed outside the compiled program (§6.2): code the compiler
+%  cannot see may write it.
+plawk_array_escapes(Program, Array, Via) :-
+    plawk_array_effect(Program, import(Array, Via)).
+
+%% plawk_array_unknown_uses(+Program, -Uses) is det.
+%  Every node that mentions an array's var(Name) OUTSIDE the table position of a
+%  recognised effect, as Name-Functor/Arity. Empty for every program the parser
+%  produces today; a non-empty result means a node shape this enumeration does not
+%  know, and a consumer that needs every effect must decline.
+plawk_array_unknown_uses(Program, Uses) :-
+    plawk_array_checked_names(Program, Names),
+    findall(Name-F/N,
+        ( sub_term(Term, Program),
+          compound(Term),
+          Term \= var(_),
+          functor(Term, F, N),
+          arg(I, Term, Arg),
+          nonvar(Arg), Arg = var(Name), atom(Name),
+          memberchk(Name, Names),
+          \+ plawk_array_term_effect(Term, _, I) ),
+        Uses0),
+    sort(Uses0, Uses).
 
 plawk_action_table_name(inc_assoc(var(Name), _Key), Name).
 plawk_action_table_name(delete_assoc(var(Name), _Key), Name).

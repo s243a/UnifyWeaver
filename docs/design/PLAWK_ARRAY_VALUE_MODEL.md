@@ -215,17 +215,33 @@ it through §5.1:
 An escaping array's kind **must be declared** (§7); an undeclared escaping array
 declines. Readers (`over` / `records of` / `rows of`) only read and are not escapes.
 
-### 6.3 One effect enumeration
+### 6.3 One effect enumeration (implemented)
 
 Inference, escape and `readonly` all depend on finding **every** read, write and import
-of an array. They must share one enumeration of effects -- `read(A)`, `write(A, Kind)`,
-`import(A, Contract)` -- that covers BEGIN, rule bodies, END, pass containers, nested
-blocks, and **wrapper nodes**, and that rejects any effect-bearing node it does not
-know. Today's helpers are not sufficient: `plawk_action_table_name/2` mixes reads and
-writes; `plawk_scalar_nested_action/2` does not unwrap `split_count/2`, so the write in
-`{ n = split($0, a, ":") }` is invisible to both; and `plawk_posarray_producer(surface,
-...)` also lists an ordinary local `split`, so it cannot serve unfiltered as the bind
-(escape) enumerator.
+of an array, so they share one enumeration, `plawk_array_effects/2` (in
+`plawk_native_codegen.pl`):
+
+| effect | meaning |
+|---|---|
+| `read(A)` | an element read, iteration, membership test, reader pass, or a read through a row variable bound to `A` |
+| `write(A, How)` | `How`: `inc`, `add(Delta)`, `delete`, `split`, `row` |
+| `import(A, Via)` | `Via`: `bind` (Prolog / dynamic bind) or `store` (cache table) -- the array escapes (`plawk_array_escapes/3`) |
+| `declare(A, schema)` | a store's declared row schema |
+| `row_binding(R, A)` | a `rows of A as R` / `records of A as R` reader: `R["col"]` is a read of `A`, and `R` is not an array |
+
+Effects are matched wherever they occur in the program term, so BEGIN, rule bodies,
+END, pass containers, nested blocks and **wrapper nodes** are covered by construction
+-- including `n = split($0, a, ":")`, which parses to `split_count(n, split_into(...))`
+and whose write the older helpers (`plawk_action_table_name/2`,
+`plawk_scalar_nested_action/2`) did not see. A local `split` is a write, not an import,
+so it never counts as an escape.
+
+**Completeness is checked, not assumed.** `plawk_array_unknown_uses/2` reports every
+occurrence of an array's (or row variable's) `var(Name)` that is not the table
+position of a recognised effect. It is empty for every program in the test suites
+(2446 parsed programs); a consumer that needs every effect -- the value-kind
+inference of PR 2b onward -- must decline on a non-empty result rather than miss an
+effect. Running this check on the suites is what surfaced the row-variable case.
 
 ### 6.4 Static vs runtime contract failures
 
@@ -265,9 +281,10 @@ each newly admitted input -- not deferred to the declaration PR.
 
 1. Key hygiene; this document. All special-variable keys and unassigned-variable keys
    decline instead of reaching clang.
-2. The shared effect enumeration (§6.3); numeric element writes (`a[k] = number`) with
-   the §5.2 mixing rules and the `present(unset)` decline (§3); `a[k] += x` beside
-   scalar work.
+2. (a) The shared effect enumeration (§6.3) -- landed. (b) Numeric element writes
+   (`a[k] = number`) with the §5.2 mixing rules and the `present(unset)` decline (§3),
+   consuming the enumeration and declining on unknown uses; `a[k] += x` beside scalar
+   work.
 3. Element reads as expressions: conditions (`if (c[$1] > 1)`), arithmetic, END loops.
 4. String and strnum element writes (`a[k] = "x"`, `a[k] = $N`, `a[k] = a[k] $2`) with
    their mixing rules, and `a[NR] = $0` with a numeric END loop (tac).
@@ -276,6 +293,8 @@ each newly admitted input -- not deferred to the declaration PR.
 
 ## 9. Tests
 
+- `tests/test_plawk_array_effects.pl`: the effect enumeration (wrapper nodes, every
+  program part, binds as imports, row variables, unknown-use detection).
 - `tests/test_plawk_array_kinds.pl`: special-variable and unassigned keys decline;
   integer-literal keys on counted tables.
 - `tests/test_plawk_posarray_keyspace.pl`, `tests/test_plawk_literal_assoc_key.pl`:
