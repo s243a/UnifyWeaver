@@ -53,8 +53,31 @@ test(runtime_libraries_match_table) :-
     assertion(sub_atom(IR, _, _, _, 'HOLE_FILLED')),
     split_string(IR, "\n", "", Lines),
     findall(Name, ( member(L, Lines), define_name(L, Name) ), Defined),
-    findall(Name, ( wam_llvm_runtime_chunk(Name, _), Name \== wam_stream_handle_globals ), Table),
+    findall(Name, ( wam_llvm_runtime_chunk(builtin_dispatch, Name, _),
+                    Name \== wam_stream_handle_globals ), Table),
     assertion(Defined == Table).
+
+% Every unit assembles, holes and all; a unit without holes has no markers left.
+test(every_unit_assembles) :-
+    findall(U, wam_llvm_runtime_chunk(U, _, _), Us0),
+    sort(Us0, Us),
+    assertion(length(Us, 12)),
+    forall(( member(U, Us), U \== builtin_dispatch, U \== meta_call ),
+           ( wam_llvm_runtime_unit_ir(U, [], IR),
+             assertion(\+ sub_atom(IR, _, _, _, '{{')) )).
+
+% meta_call's six holes are filled from the dict (the 22 positional ~w of the
+% format string it replaced).
+test(meta_call_holes_filled) :-
+    wam_llvm_runtime_unit_ir(meta_call,
+        [size=3, count=2, atom_rows='ATOMS', functor_rows='FUNCTORS',
+         arity_rows='ARITIES', label_rows='LABELS'], IR),
+    assertion(\+ sub_atom(IR, _, _, _, '{{')),
+    assertion(sub_atom(IR, _, _, _, '@wam_meta_call_atom_ids = private constant [3 x i64] [\nATOMS\n]')),
+    assertion(sub_atom(IR, _, _, _, 'icmp sge i32 %gi, 2')).
+
+test(unknown_unit_is_an_error, [error(wam_llvm_runtime(unknown_unit(nope)))]) :-
+    wam_llvm_runtime_unit_ir(nope, [], _).
 
 define_name(Line, Name) :-
     string_concat("define ", _, Line),

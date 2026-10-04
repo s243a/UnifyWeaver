@@ -1,0 +1,542 @@
+{{match fn}}
+; copy_term.ll.mustache -- copy_term and term walks: copy with a variable map, collect vars, ground, strict eq, numbervars, freeze.
+; One case per runtime chunk (a define with its comments and globals);
+; the assembly order is wam_llvm_runtime_chunk/3.
+{{case wam_copy_term_value}}; Recursively copy a %Value with a variable map: fresh %Compound cells
+; (arena), fresh heap cells for variables, and sharing preserved -- each
+; distinct source variable maps to exactly ONE fresh cell. Atomic values
+; (Atom / Integer / Float / Bool) copy by value. Cons-cell lists fall out
+; automatically since they are just compounds with functor "." / arity 2.
+define %Value @wam_copy_term_value(%WamState* %vm, %Value %v) {
+entry:
+  call void @wam_arena_ensure()
+  %map_mem = call i8* @wam_arena_alloc(i64 2048)
+  %map = bitcast i8* %map_mem to i64*
+  %fresh_mem = call i8* @wam_arena_alloc(i64 4096)
+  %freshes = bitcast i8* %fresh_mem to %Value*
+  %countp = alloca i32
+  store i32 0, i32* %countp
+  %r = call %Value @wam_copy_term_rec(%WamState* %vm, %Value %v, i64* %map, %Value* %freshes, i32* %countp)
+  ret %Value %r
+}
+{{case wam_copy_term_rec}}
+; The recursive worker behind copy_term/2. Derefs via @wam_deref_keep_var
+; (follows Ref chains but keeps the final Ref, so an unbound variable has
+; an ADDRESS to key the map on). tag 5 Ref (an unbound var): look the heap
+; index up in the map; a hit reuses the fresh cell already made for that
+; source variable (sharing preserved: p(X,X) copies with ONE fresh var), a
+; miss pushes a fresh heap cell and records the pair (map capacity 256;
+; beyond it, extra vars copy fresh-but-unshared, never aliased). The OLD
+; implementation returned Refs unchanged (they fell into the atomic
+; default), so the "copy" aliased the source heap cells and numbervars /
+; unification on the copy bound the ORIGINAL term through them.
+define %Value @wam_copy_term_rec(%WamState* %vm, %Value %v, i64* %map, %Value* %freshes, i32* %countp) {
+entry:
+  %kv = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %v)
+  %tag = call i32 @value_tag(%Value %kv)
+  switch i32 %tag, label %atomic [
+    i32 3, label %ct_compound
+    i32 5, label %ct_var
+    i32 6, label %ct_unbound
+  ]
+
+atomic:
+  ret %Value %kv
+
+ct_unbound:
+  ; a bare Unbound value with no heap identity: cannot share, copy fresh.
+  %fresh_unb = call %Value @value_unbound(i8* null)
+  ret %Value %fresh_unb
+
+ct_var:
+  %addr = call i64 @value_payload(%Value %kv)
+  %count = load i32, i32* %countp
+  br label %scan
+scan:
+  %i = phi i32 [ 0, %ct_var ], [ %inext, %scan_cont ]
+  %seen_all = icmp sge i32 %i, %count
+  br i1 %seen_all, label %miss, label %probe
+probe:
+  %mp = getelementptr i64, i64* %map, i32 %i
+  %ma = load i64, i64* %mp
+  %hit = icmp eq i64 %ma, %addr
+  br i1 %hit, label %use, label %scan_cont
+scan_cont:
+  %inext = add i32 %i, 1
+  br label %scan
+use:
+  %fp = getelementptr %Value, %Value* %freshes, i32 %i
+  %fv0 = load %Value, %Value* %fp
+  ret %Value %fv0
+miss:
+  %unb = call %Value @value_unbound(i8* null)
+  %ha = call i32 @wam_heap_push(%WamState* %vm, %Value %unb)
+  %fv = call %Value @value_ref(i32 %ha)
+  %room = icmp slt i32 %count, 256
+  br i1 %room, label %record, label %no_record
+record:
+  %mp2 = getelementptr i64, i64* %map, i32 %count
+  store i64 %addr, i64* %mp2
+  %fp2 = getelementptr %Value, %Value* %freshes, i32 %count
+  store %Value %fv, %Value* %fp2
+  %count1 = add i32 %count, 1
+  store i32 %count1, i32* %countp
+  br label %no_record
+no_record:
+  ret %Value %fv
+
+ct_compound:
+  %cp_bits = call i64 @value_payload(%Value %kv)
+  %cp_ptr = inttoptr i64 %cp_bits to %Compound*
+  %fn_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 0
+  %fn_ptr = load i8*, i8** %fn_slot
+  %ar_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 1
+  %arity = load i32, i32* %ar_slot
+  %args_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 2
+  %src_args = load %Value*, %Value** %args_slot
+
+  %cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %new_mem = call i8* @wam_arena_alloc(i64 %cp_size)
+  %new_cp = bitcast i8* %new_mem to %Compound*
+  %new_fn = getelementptr %Compound, %Compound* %new_cp, i32 0, i32 0
+  store i8* %fn_ptr, i8** %new_fn
+  %new_ar = getelementptr %Compound, %Compound* %new_cp, i32 0, i32 1
+  store i32 %arity, i32* %new_ar
+
+  %ar64 = zext i32 %arity to i64
+  %args_bytes = shl i64 %ar64, 4
+  %new_args_mem = call i8* @wam_arena_alloc(i64 %args_bytes)
+  %new_args = bitcast i8* %new_args_mem to %Value*
+  %new_args_slot = getelementptr %Compound, %Compound* %new_cp, i32 0, i32 2
+  store %Value* %new_args, %Value** %new_args_slot
+
+  %has_args = icmp sgt i32 %arity, 0
+  br i1 %has_args, label %ct_loop_entry, label %ct_done
+
+ct_loop_entry:
+  br label %ct_loop
+
+ct_loop:
+  %i2 = phi i32 [ 0, %ct_loop_entry ], [ %i_next, %ct_loop_step ]
+  %src_ptr = getelementptr %Value, %Value* %src_args, i32 %i2
+  %src_val = load %Value, %Value* %src_ptr
+  %dst_val = call %Value @wam_copy_term_rec(%WamState* %vm, %Value %src_val, i64* %map, %Value* %freshes, i32* %countp)
+  %dst_ptr = getelementptr %Value, %Value* %new_args, i32 %i2
+  store %Value %dst_val, %Value* %dst_ptr
+  %i_next = add i32 %i2, 1
+  %more = icmp slt i32 %i_next, %arity
+  br i1 %more, label %ct_loop_step, label %ct_done
+
+ct_loop_step:
+  br label %ct_loop
+
+ct_done:
+  %new_i64 = ptrtoint %Compound* %new_cp to i64
+  %new_val0 = insertvalue %Value undef, i32 3, 0
+  %new_val = insertvalue %Value %new_val0, i64 %new_i64, 1
+  ret %Value %new_val
+}
+{{case wam_collect_vars}}
+; M103: recursive depth-first left-to-right walk over a term,
+; prepending each Unbound variable onto an accumulator list. The
+; outer driver passes the empty [] atom-id list as initial acc;
+; walking args right-to-left + prepending keeps the leftmost var
+; at the front of the result. Does NOT deduplicate -- repeated
+; occurrences of the same variable appear once per occurrence.
+; SWI semantics technically dedupes -- known limitation for M103.
+define %Value @wam_collect_vars(%WamState* %vm, %Value %term, %Value %acc) {
+entry:
+  %tv.t = call %Value @wam_deref_value(%WamState* %vm, %Value %term)
+  %tv.tag = call i32 @value_tag(%Value %tv.t)
+  switch i32 %tv.tag, label %tv.atomic [
+    i32 6, label %tv.unbound
+    i32 3, label %tv.compound
+  ]
+
+tv.atomic:
+  ret %Value %acc
+
+tv.unbound:
+  call void @wam_arena_ensure()
+  %tv.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %tv.cp_mem = call i8* @wam_arena_alloc(i64 %tv.cp_size)
+  %tv.cp = bitcast i8* %tv.cp_mem to %Compound*
+  %tv.fn_slot = getelementptr %Compound, %Compound* %tv.cp, i32 0, i32 0
+  store i8* getelementptr ([4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0), i8** %tv.fn_slot
+  %tv.ar_slot = getelementptr %Compound, %Compound* %tv.cp, i32 0, i32 1
+  store i32 2, i32* %tv.ar_slot
+  %tv.args_mem = call i8* @wam_arena_alloc(i64 32)
+  %tv.args = bitcast i8* %tv.args_mem to %Value*
+  %tv.args_slot = getelementptr %Compound, %Compound* %tv.cp, i32 0, i32 2
+  store %Value* %tv.args, %Value** %tv.args_slot
+  %tv.head_ptr = getelementptr %Value, %Value* %tv.args, i32 0
+  ; Store the ORIGINAL %term (a Ref into the heap cell), not the
+  ; deref'd Unbound payload. Var identity matters: callers do
+  ; term_variables(foo(X, _), [V|_]) followed by V == X, which
+  ; needs V and X to share the same Ref address. Storing the
+  ; deref'd Unbound would give a tag-6 sentinel that compares
+  ; unequal to the original Ref.
+  store %Value %term, %Value* %tv.head_ptr
+  %tv.tail_ptr = getelementptr %Value, %Value* %tv.args, i32 1
+  store %Value %acc, %Value* %tv.tail_ptr
+  %tv.cp_i64 = ptrtoint %Compound* %tv.cp to i64
+  %tv.v0 = insertvalue %Value undef, i32 3, 0
+  %tv.v = insertvalue %Value %tv.v0, i64 %tv.cp_i64, 1
+  ret %Value %tv.v
+
+tv.compound:
+  %tv.cp_bits = call i64 @value_payload(%Value %tv.t)
+  %tv.src_cp = inttoptr i64 %tv.cp_bits to %Compound*
+  %tv.src_ar_slot = getelementptr %Compound, %Compound* %tv.src_cp, i32 0, i32 1
+  %tv.arity = load i32, i32* %tv.src_ar_slot
+  %tv.src_args_slot = getelementptr %Compound, %Compound* %tv.src_cp, i32 0, i32 2
+  %tv.src_args = load %Value*, %Value** %tv.src_args_slot
+  %tv.i0 = sub i32 %tv.arity, 1
+  %tv.has_args = icmp sge i32 %tv.i0, 0
+  br i1 %tv.has_args, label %tv.loop, label %tv.ret_acc
+
+tv.loop:
+  %tv.i = phi i32 [ %tv.i0, %tv.compound ], [ %tv.i_next, %tv.step ]
+  %tv.acc_cur = phi %Value [ %acc, %tv.compound ], [ %tv.acc_next, %tv.step ]
+  %tv.arg_ptr = getelementptr %Value, %Value* %tv.src_args, i32 %tv.i
+  %tv.arg = load %Value, %Value* %tv.arg_ptr
+  %tv.acc_next = call %Value @wam_collect_vars(%WamState* %vm, %Value %tv.arg, %Value %tv.acc_cur)
+  %tv.done = icmp eq i32 %tv.i, 0
+  br i1 %tv.done, label %tv.ret_loop, label %tv.step
+
+tv.step:
+  %tv.i_next = sub i32 %tv.i, 1
+  br label %tv.loop
+
+tv.ret_loop:
+  ret %Value %tv.acc_next
+
+tv.ret_acc:
+  ret %Value %acc
+}
+{{case wam_is_ground}}
+; M117: recursive ground check. Returns true iff %term contains no
+; unbound variables. Atomic (atom/int/float) -> true; unbound -> false;
+; compound -> recurse over each arg, false if any arg is non-ground.
+define i1 @wam_is_ground(%WamState* %vm, %Value %term) {
+entry:
+  %ig.t = call %Value @wam_deref_value(%WamState* %vm, %Value %term)
+  %ig.tag = call i32 @value_tag(%Value %ig.t)
+  switch i32 %ig.tag, label %ig.atomic [
+    i32 6, label %ig.unbound
+    i32 3, label %ig.compound
+  ]
+
+ig.atomic:
+  ret i1 true
+
+ig.unbound:
+  ret i1 false
+
+ig.compound:
+  %ig.cp_bits = call i64 @value_payload(%Value %ig.t)
+  %ig.src_cp = inttoptr i64 %ig.cp_bits to %Compound*
+  %ig.ar_slot = getelementptr %Compound, %Compound* %ig.src_cp, i32 0, i32 1
+  %ig.arity = load i32, i32* %ig.ar_slot
+  %ig.args_slot = getelementptr %Compound, %Compound* %ig.src_cp, i32 0, i32 2
+  %ig.src_args = load %Value*, %Value** %ig.args_slot
+  %ig.has = icmp sgt i32 %ig.arity, 0
+  br i1 %ig.has, label %ig.loop, label %ig.true
+
+ig.loop:
+  %ig.i = phi i32 [ 0, %ig.compound ], [ %ig.i_next, %ig.step ]
+  %ig.arg_ptr = getelementptr %Value, %Value* %ig.src_args, i32 %ig.i
+  %ig.arg = load %Value, %Value* %ig.arg_ptr
+  %ig.sub = call i1 @wam_is_ground(%WamState* %vm, %Value %ig.arg)
+  br i1 %ig.sub, label %ig.step, label %ig.false
+
+ig.step:
+  %ig.i_next = add i32 %ig.i, 1
+  %ig.more = icmp slt i32 %ig.i_next, %ig.arity
+  br i1 %ig.more, label %ig.loop, label %ig.true
+
+ig.true:
+  ret i1 true
+
+ig.false:
+  ret i1 false
+}
+{{case wam_deref_keep_var}}
+; M137: proper deref-at-every-level strict equality for ==/2 and the
+; structurally-inequal sibling (op id 21).
+; The pre-existing @value_equals (in value.ll.mustache) compares tags
+; and payloads shallowly and only derefs the top-level operands via the
+; caller. Recursive arg comparison loads the heap-stored %Value
+; verbatim, which means if an arg slot holds a Ref (the case for many
+; put_structure-built compounds), tag-eq becomes Ref==Ref and the
+; payload comparison is heap-address-vs-heap-address -- almost always
+; false even when the deref'd values are identical. Symptom uncovered
+; in M136: ``[a, b] == [a, b]' returned false for two literal lists.
+;
+; This helper derefs on entry AND inside the recursive arg loop so
+; structural equality holds regardless of how nested args are stored.
+;
+; M138: deref via @wam_deref_keep_var, NOT @wam_deref_value. The full
+; deref collapses a Ref-to-unbound-cell into the shared Unbound
+; sentinel { tag 6, payload 0 }, which erases variable identity --
+; X == Y would be true for two DISTINCT fresh vars (and sort/2 dedup
+; would merge f(X) with f(Y)). Stopping at the last Ref keeps the
+; variable represented as Ref{cell}, so the tag-5 shallow payload
+; compare becomes cell-address identity: X == X true, X == Y false.
+
+; Chase Ref chains but stop at the final Ref when the referenced cell
+; is unbound -- the Ref IS the variable's identity. Bound cells chase
+; through as usual. Hop-limited like @wam_deref_value.
+define %Value @wam_deref_keep_var(%WamState* %vm, %Value %v) alwaysinline nounwind {
+entry:
+  br label %dkv.loop
+dkv.loop:
+  %dkv.cur = phi %Value [ %v, %entry ], [ %dkv.cell, %dkv.follow ]
+  %dkv.i = phi i32 [ 0, %entry ], [ %dkv.i_next, %dkv.follow ]
+  %dkv.tag = extractvalue %Value %dkv.cur, 0
+  %dkv.is_ref = icmp eq i32 %dkv.tag, 5
+  %dkv.hop_ok = icmp slt i32 %dkv.i, 64
+  %dkv.cont = and i1 %dkv.is_ref, %dkv.hop_ok
+  br i1 %dkv.cont, label %dkv.peek, label %dkv.done
+dkv.peek:
+  %dkv.addr_i64 = extractvalue %Value %dkv.cur, 1
+  %dkv.addr = trunc i64 %dkv.addr_i64 to i32
+  %dkv.cell = call %Value @wam_heap_get(%WamState* %vm, i32 %dkv.addr)
+  %dkv.cell_unb = call i1 @value_is_unbound(%Value %dkv.cell)
+  br i1 %dkv.cell_unb, label %dkv.done, label %dkv.follow
+dkv.follow:
+  %dkv.i_next = add i32 %dkv.i, 1
+  br label %dkv.loop
+dkv.done:
+  ret %Value %dkv.cur
+}
+{{case wam_strict_eq}}
+define i1 @wam_strict_eq(%WamState* %vm, %Value %a, %Value %b) {
+entry:
+  %seq.da = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %a)
+  %seq.db = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %b)
+  %seq.tag_a = extractvalue %Value %seq.da, 0
+  %seq.tag_b = extractvalue %Value %seq.db, 0
+  %seq.tags_eq = icmp eq i32 %seq.tag_a, %seq.tag_b
+  br i1 %seq.tags_eq, label %seq.same_tag, label %seq.not_equal
+
+seq.same_tag:
+  %seq.is_compound = icmp eq i32 %seq.tag_a, 3
+  br i1 %seq.is_compound, label %seq.compound_case, label %seq.shallow_payload
+
+seq.shallow_payload:
+  %seq.pay_a = extractvalue %Value %seq.da, 1
+  %seq.pay_b = extractvalue %Value %seq.db, 1
+  %seq.pay_eq = icmp eq i64 %seq.pay_a, %seq.pay_b
+  ret i1 %seq.pay_eq
+
+seq.compound_case:
+  %seq.pa = extractvalue %Value %seq.da, 1
+  %seq.pb = extractvalue %Value %seq.db, 1
+  %seq.same_ptr = icmp eq i64 %seq.pa, %seq.pb
+  br i1 %seq.same_ptr, label %seq.equal, label %seq.deep_check
+
+seq.deep_check:
+  %seq.ap = inttoptr i64 %seq.pa to %Compound*
+  %seq.bp = inttoptr i64 %seq.pb to %Compound*
+  %seq.afn_slot = getelementptr %Compound, %Compound* %seq.ap, i32 0, i32 0
+  %seq.bfn_slot = getelementptr %Compound, %Compound* %seq.bp, i32 0, i32 0
+  %seq.afn = load i8*, i8** %seq.afn_slot
+  %seq.bfn = load i8*, i8** %seq.bfn_slot
+  %seq.fn_eq = call i1 @wam_functor_eq(i8* %seq.afn, i8* %seq.bfn)
+  br i1 %seq.fn_eq, label %seq.check_arity, label %seq.not_equal
+
+seq.check_arity:
+  %seq.aar_slot = getelementptr %Compound, %Compound* %seq.ap, i32 0, i32 1
+  %seq.bar_slot = getelementptr %Compound, %Compound* %seq.bp, i32 0, i32 1
+  %seq.aar = load i32, i32* %seq.aar_slot
+  %seq.bar = load i32, i32* %seq.bar_slot
+  %seq.ar_eq = icmp eq i32 %seq.aar, %seq.bar
+  br i1 %seq.ar_eq, label %seq.args_init, label %seq.not_equal
+
+seq.args_init:
+  %seq.aargs_slot = getelementptr %Compound, %Compound* %seq.ap, i32 0, i32 2
+  %seq.bargs_slot = getelementptr %Compound, %Compound* %seq.bp, i32 0, i32 2
+  %seq.aargs = load %Value*, %Value** %seq.aargs_slot
+  %seq.bargs = load %Value*, %Value** %seq.bargs_slot
+  %seq.has_args = icmp sgt i32 %seq.aar, 0
+  br i1 %seq.has_args, label %seq.loop, label %seq.equal
+
+seq.loop:
+  %seq.idx = phi i32 [ 0, %seq.args_init ], [ %seq.next_idx, %seq.step ]
+  %seq.ae_ptr = getelementptr %Value, %Value* %seq.aargs, i32 %seq.idx
+  %seq.ae = load %Value, %Value* %seq.ae_ptr
+  %seq.be_ptr = getelementptr %Value, %Value* %seq.bargs, i32 %seq.idx
+  %seq.be = load %Value, %Value* %seq.be_ptr
+  %seq.arg_eq = call i1 @wam_strict_eq(%WamState* %vm, %Value %seq.ae, %Value %seq.be)
+  br i1 %seq.arg_eq, label %seq.step, label %seq.not_equal
+
+seq.step:
+  %seq.next_idx = add i32 %seq.idx, 1
+  %seq.done = icmp sge i32 %seq.next_idx, %seq.aar
+  br i1 %seq.done, label %seq.equal, label %seq.loop
+
+seq.equal:
+  ret i1 true
+
+seq.not_equal:
+  ret i1 false
+}
+{{case wam_numbervars_walk}}
+; M105: recursive depth-first left-to-right walk that binds each
+; Unbound variable encountered to a fresh '$VAR'(N) compound on
+; the arena. Counter n is threaded through and returned -- caller
+; gets the next-available N to unify with End.
+define i64 @wam_numbervars_walk(%WamState* %vm, %Value %term, i64 %n) {
+entry:
+  %nw.t = call %Value @wam_deref_value(%WamState* %vm, %Value %term)
+  %nw.tag = call i32 @value_tag(%Value %nw.t)
+  switch i32 %nw.tag, label %nw.atomic [
+    i32 6, label %nw.unbound
+    i32 3, label %nw.compound
+  ]
+
+nw.atomic:
+  ret i64 %n
+
+nw.unbound:
+  ; Build the '$VAR'(n) compound on the arena. Then bind the
+  ; variable's heap cell to it via wam_trail_heap_binding + heap_set
+  ; so backtrack restores. Use the ORIGINAL term (a Ref) to locate
+  ; the heap cell; deref'd nw.t is just an Unbound sentinel.
+  call void @wam_arena_ensure()
+  %nw.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %nw.cp_mem = call i8* @wam_arena_alloc(i64 %nw.cp_size)
+  %nw.cp = bitcast i8* %nw.cp_mem to %Compound*
+  %nw.fn_slot = getelementptr %Compound, %Compound* %nw.cp, i32 0, i32 0
+  store i8* getelementptr ([5 x i8], [5 x i8]* @.fn__24VAR, i32 0, i32 0), i8** %nw.fn_slot
+  %nw.ar_slot = getelementptr %Compound, %Compound* %nw.cp, i32 0, i32 1
+  store i32 1, i32* %nw.ar_slot
+  %nw.args_mem = call i8* @wam_arena_alloc(i64 16)
+  %nw.args = bitcast i8* %nw.args_mem to %Value*
+  %nw.args_slot = getelementptr %Compound, %Compound* %nw.cp, i32 0, i32 2
+  store %Value* %nw.args, %Value** %nw.args_slot
+  %nw.n_v = call %Value @value_integer(i64 %n)
+  %nw.arg0_ptr = getelementptr %Value, %Value* %nw.args, i32 0
+  store %Value %nw.n_v, %Value* %nw.arg0_ptr
+  %nw.cp_i64 = ptrtoint %Compound* %nw.cp to i64
+  %nw.varN_v0 = insertvalue %Value undef, i32 3, 0
+  %nw.varN_v = insertvalue %Value %nw.varN_v0, i64 %nw.cp_i64, 1
+  ; Bind the var. The original %term is the Ref into the heap cell.
+  %nw.t_tag = extractvalue %Value %term, 0
+  %nw.t_isref = icmp eq i32 %nw.t_tag, 5
+  br i1 %nw.t_isref, label %nw.bind, label %nw.skip
+nw.bind:
+  %nw.addr_i64 = extractvalue %Value %term, 1
+  %nw.addr = trunc i64 %nw.addr_i64 to i32
+  %nw.old = call %Value @wam_heap_get(%WamState* %vm, i32 %nw.addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %nw.addr, %Value %nw.old)
+  call void @wam_heap_set(%WamState* %vm, i32 %nw.addr, %Value %nw.varN_v)
+  br label %nw.skip
+nw.skip:
+  %nw.n1 = add i64 %n, 1
+  ret i64 %nw.n1
+
+nw.compound:
+  %nw.cp_bits = call i64 @value_payload(%Value %nw.t)
+  %nw.src_cp = inttoptr i64 %nw.cp_bits to %Compound*
+  %nw.src_ar_slot = getelementptr %Compound, %Compound* %nw.src_cp, i32 0, i32 1
+  %nw.arity = load i32, i32* %nw.src_ar_slot
+  %nw.src_args_slot = getelementptr %Compound, %Compound* %nw.src_cp, i32 0, i32 2
+  %nw.src_args = load %Value*, %Value** %nw.src_args_slot
+  %nw.has_args = icmp sgt i32 %nw.arity, 0
+  br i1 %nw.has_args, label %nw.loop, label %nw.ret_n
+
+nw.loop:
+  %nw.i = phi i32 [ 0, %nw.compound ], [ %nw.i_next, %nw.step ]
+  %nw.n_cur = phi i64 [ %n, %nw.compound ], [ %nw.n_next, %nw.step ]
+  %nw.arg_ptr = getelementptr %Value, %Value* %nw.src_args, i32 %nw.i
+  %nw.arg = load %Value, %Value* %nw.arg_ptr
+  %nw.n_next = call i64 @wam_numbervars_walk(%WamState* %vm, %Value %nw.arg, i64 %nw.n_cur)
+  %nw.i_next = add i32 %nw.i, 1
+  %nw.done = icmp sge i32 %nw.i_next, %nw.arity
+  br i1 %nw.done, label %nw.ret_loop, label %nw.step
+
+nw.step:
+  br label %nw.loop
+
+nw.ret_loop:
+  ret i64 %nw.n_next
+
+nw.ret_n:
+  ret i64 %n
+}
+{{case wam_freeze_value}}
+; M11: deref-aware deep-copy. Resolves Refs to the heap-stored value,
+; then copies Compounds (recursing on args) so the returned %Value
+; is self-contained -- it survives a heap rewind. Used by
+; end_aggregate to capture per-iteration findall / setof results
+; whose Compound args otherwise point into the per-iteration heap
+; region that backtrack reclaims, silently aliasing every accumulated
+; entry to the LAST iteration's values.
+;
+; Atoms / Integers / Floats pass through. Unbounds after deref stay
+; unbound (best effort -- typical aggregate templates have all vars
+; bound by the time end_aggregate runs; an unbound template arg
+; indicates a logic bug the caller will see via the spurious
+; unbound in the result list).
+define %Value @wam_freeze_value(%WamState* %vm, %Value %v) {
+entry:
+  %d = call %Value @wam_deref_value(%WamState* %vm, %Value %v)
+  %tag = extractvalue %Value %d, 0
+  %is_cmp = icmp eq i32 %tag, 3
+  br i1 %is_cmp, label %fz_compound, label %fz_atomic
+
+fz_atomic:
+  ; Atom (0), Integer (1), Float (2), Ref-to-unbound (5 derefs to 6),
+  ; Unbound (6), Bool (7) -- all self-contained values; copy nothing.
+  ret %Value %d
+
+fz_compound:
+  %cp_bits = extractvalue %Value %d, 1
+  %cp_ptr = inttoptr i64 %cp_bits to %Compound*
+  %fn_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 0
+  %fn_ptr = load i8*, i8** %fn_slot
+  %ar_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 1
+  %arity = load i32, i32* %ar_slot
+  %args_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 2
+  %src_args = load %Value*, %Value** %args_slot
+
+  call void @wam_arena_ensure()
+  %cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %new_mem = call i8* @wam_arena_alloc(i64 %cp_size)
+  %new_cp = bitcast i8* %new_mem to %Compound*
+  %new_fn_slot = getelementptr %Compound, %Compound* %new_cp, i32 0, i32 0
+  store i8* %fn_ptr, i8** %new_fn_slot
+  %new_ar_slot = getelementptr %Compound, %Compound* %new_cp, i32 0, i32 1
+  store i32 %arity, i32* %new_ar_slot
+  %ar64 = zext i32 %arity to i64
+  %args_bytes = shl i64 %ar64, 4
+  %new_args_mem = call i8* @wam_arena_alloc(i64 %args_bytes)
+  %new_args = bitcast i8* %new_args_mem to %Value*
+  %new_args_slot = getelementptr %Compound, %Compound* %new_cp, i32 0, i32 2
+  store %Value* %new_args, %Value** %new_args_slot
+
+  %has_args = icmp sgt i32 %arity, 0
+  br i1 %has_args, label %fz_loop, label %fz_done
+
+fz_loop:
+  %i = phi i32 [ 0, %fz_compound ], [ %i_next, %fz_step ]
+  %src_ptr = getelementptr %Value, %Value* %src_args, i32 %i
+  %src_val = load %Value, %Value* %src_ptr
+  %dst_val = call %Value @wam_freeze_value(%WamState* %vm, %Value %src_val)
+  %dst_ptr = getelementptr %Value, %Value* %new_args, i32 %i
+  store %Value %dst_val, %Value* %dst_ptr
+  br label %fz_step
+
+fz_step:
+  %i_next = add i32 %i, 1
+  %more = icmp slt i32 %i_next, %arity
+  br i1 %more, label %fz_loop, label %fz_done
+
+fz_done:
+  %new_i64 = ptrtoint %Compound* %new_cp to i64
+  %new_val0 = insertvalue %Value undef, i32 3, 0
+  %new_val = insertvalue %Value %new_val0, i64 %new_i64, 1
+  ret %Value %new_val
+}{{/match}}

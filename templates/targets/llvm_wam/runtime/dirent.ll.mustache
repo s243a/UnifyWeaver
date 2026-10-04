@@ -1,0 +1,49 @@
+{{match fn}}
+; dirent.ll.mustache -- the M114 runtime probe for the dirent d_name offset (target_os(adapt)).
+; One case per runtime chunk (a define with its comments and globals);
+; the assembly order is wam_llvm_runtime_chunk/3.
+{{case dirent_probe_globals}}; === M114 runtime dirent::d_name offset probe ===
+@.uw_dot_dir = private constant [2 x i8] c".\00"
+@uw_dirent_d_name_offset_cache = private global i64 -1
+{{case wam_dirent_d_name_offset}}
+define i64 @wam_dirent_d_name_offset() {
+entry:
+  %cached = load i64, i64* @uw_dirent_d_name_offset_cache
+  %unset = icmp slt i64 %cached, 0
+  br i1 %unset, label %probe, label %done
+done:
+  ret i64 %cached
+probe:
+  %dot_ptr = getelementptr [2 x i8], [2 x i8]* @.uw_dot_dir, i32 0, i32 0
+  %dir = call i8* @opendir(i8* %dot_ptr)
+  %dir_null = icmp eq i8* %dir, null
+  br i1 %dir_null, label %fallback, label %read
+read:
+  %entry_ptr = call i8* @readdir(i8* %dir)
+  %entry_null = icmp eq i8* %entry_ptr, null
+  br i1 %entry_null, label %fallback_close, label %scan_init
+scan_init:
+  br label %scan_loop
+scan_loop:
+  %i = phi i64 [ 0, %scan_init ], [ %i_next, %scan_step ]
+  %too_far = icmp uge i64 %i, 256
+  br i1 %too_far, label %fallback_close, label %scan_check
+scan_check:
+  %byte_ptr = getelementptr i8, i8* %entry_ptr, i64 %i
+  %b = load i8, i8* %byte_ptr
+  %is_dot = icmp eq i8 %b, 46
+  br i1 %is_dot, label %scan_found, label %scan_step
+scan_step:
+  %i_next = add i64 %i, 1
+  br label %scan_loop
+scan_found:
+  %close_ret = call i32 @closedir(i8* %dir)
+  store i64 %i, i64* @uw_dirent_d_name_offset_cache
+  ret i64 %i
+fallback_close:
+  %close_ret2 = call i32 @closedir(i8* %dir)
+  br label %fallback
+fallback:
+  store i64 19, i64* @uw_dirent_d_name_offset_cache
+  ret i64 19
+}{{/match}}

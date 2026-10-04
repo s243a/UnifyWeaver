@@ -1,0 +1,269 @@
+{{match fn}}
+; meta_call.ll.mustache -- meta-call dispatch: the label table (holes: size, count, atom_rows, functor_rows, arity_rows, label_rows) and its lookups.
+; One case per runtime chunk (a define with its comments and globals);
+; the assembly order is wam_llvm_runtime_chunk/3.
+{{case meta_call_globals}}; === Meta-call dispatch table: atom/functor + arity -> label index ===
+; Host-global table, built at compile time from the host''s own predicates.
+; A loaded .wamo object carries its OWN table on the VM (fields 25/26); the
+; two find helpers below consult that table when present so an object can
+; meta-call its own predicates (eval bootstrap milestone 2).
+@wam_meta_call_atom_ids = private constant [{{size}} x i64] [
+{{atom_rows}}
+]
+@wam_meta_call_functors = private constant [{{size}} x i8*] [
+{{functor_rows}}
+]
+@wam_meta_call_arities = private constant [{{size}} x i32] [
+{{arity_rows}}
+]
+@wam_meta_call_label_indexes = private constant [{{size}} x i32] [
+{{case wam_meta_find_atom}}{{label_rows}}
+]
+
+; Resolve an atom goal (atom_id + target_arity) to a predicate label index,
+; or -1 if none matches. Uses the VM''s object meta-call table when installed
+; (loaded .wamo), else the host-global arrays.
+define i32 @wam_meta_find_atom(%WamState* %vm, i64 %atom_id, i32 %target_arity) {
+entry:
+  %om_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 25
+  %om = load %WamMetaRow*, %WamMetaRow** %om_ptr
+  %om_null = icmp eq %WamMetaRow* %om, null
+  br i1 %om_null, label %global, label %obj
+obj:
+  %omc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 26
+  %omc = load i32, i32* %omc_ptr
+  br label %oloop
+oloop:
+  %oi = phi i32 [ 0, %obj ], [ %oi1, %onext ]
+  %odone = icmp sge i32 %oi, %omc
+  br i1 %odone, label %notfound, label %ocheck
+ocheck:
+  %orow = getelementptr %WamMetaRow, %WamMetaRow* %om, i32 %oi
+  %oa_ptr = getelementptr %WamMetaRow, %WamMetaRow* %orow, i32 0, i32 0
+  %oa = load i64, i64* %oa_ptr
+  %oa_match = icmp eq i64 %oa, %atom_id
+  %oar_ptr = getelementptr %WamMetaRow, %WamMetaRow* %orow, i32 0, i32 2
+  %oar = load i32, i32* %oar_ptr
+  %oar_match = icmp eq i32 %oar, %target_arity
+  %o_match = and i1 %oa_match, %oar_match
+  br i1 %o_match, label %ofound, label %onext
+onext:
+  %oi1 = add i32 %oi, 1
+  br label %oloop
+ofound:
+  %ol_ptr = getelementptr %WamMetaRow, %WamMetaRow* %orow, i32 0, i32 3
+  %ol = load i32, i32* %ol_ptr
+  ret i32 %ol
+global:
+  br label %gloop
+gloop:
+  %gi = phi i32 [ 0, %global ], [ %gi1, %gnext ]
+  %gdone = icmp sge i32 %gi, {{count}}
+  br i1 %gdone, label %notfound, label %gcheck
+gcheck:
+  %gap = getelementptr [{{size}} x i64], [{{size}} x i64]* @wam_meta_call_atom_ids, i32 0, i32 %gi
+  %ga = load i64, i64* %gap
+  %ga_match = icmp eq i64 %ga, %atom_id
+  %grp = getelementptr [{{size}} x i32], [{{size}} x i32]* @wam_meta_call_arities, i32 0, i32 %gi
+  %gr = load i32, i32* %grp
+  %gr_match = icmp eq i32 %gr, %target_arity
+  %g_match = and i1 %ga_match, %gr_match
+  br i1 %g_match, label %gfound, label %gnext
+gnext:
+  %gi1 = add i32 %gi, 1
+  br label %gloop
+gfound:
+  %glp = getelementptr [{{size}} x i32], [{{size}} x i32]* @wam_meta_call_label_indexes, i32 0, i32 %gi
+  %gl = load i32, i32* %glp
+  ret i32 %gl
+notfound:
+  ret i32 -1
+}
+{{case wam_meta_find_compound}}
+; Resolve a compound goal (functor pointer + target_arity) to a label index,
+; or -1. Functor matching is by pointer identity; a loaded object''s compound
+; goals carry its own functor copies, which is exactly what its object table
+; stores (see the loader), so identity holds within one object.
+define i32 @wam_meta_find_compound(%WamState* %vm, i8* %functor, i32 %target_arity) {
+entry:
+  %om_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 25
+  %om = load %WamMetaRow*, %WamMetaRow** %om_ptr
+  %om_null = icmp eq %WamMetaRow* %om, null
+  br i1 %om_null, label %global, label %obj
+obj:
+  %omc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 26
+  %omc = load i32, i32* %omc_ptr
+  br label %oloop
+oloop:
+  %oi = phi i32 [ 0, %obj ], [ %oi1, %onext ]
+  %odone = icmp sge i32 %oi, %omc
+  br i1 %odone, label %notfound, label %ocheck
+ocheck:
+  %orow = getelementptr %WamMetaRow, %WamMetaRow* %om, i32 %oi
+  %of_ptr = getelementptr %WamMetaRow, %WamMetaRow* %orow, i32 0, i32 1
+  %of = load i8*, i8** %of_ptr
+  %of_match = icmp eq i8* %of, %functor
+  %oar_ptr = getelementptr %WamMetaRow, %WamMetaRow* %orow, i32 0, i32 2
+  %oar = load i32, i32* %oar_ptr
+  %oar_match = icmp eq i32 %oar, %target_arity
+  %o_match = and i1 %of_match, %oar_match
+  br i1 %o_match, label %ofound, label %onext
+onext:
+  %oi1 = add i32 %oi, 1
+  br label %oloop
+ofound:
+  %ol_ptr = getelementptr %WamMetaRow, %WamMetaRow* %orow, i32 0, i32 3
+  %ol = load i32, i32* %ol_ptr
+  ret i32 %ol
+global:
+  br label %gloop
+gloop:
+  %gi = phi i32 [ 0, %global ], [ %gi1, %gnext ]
+  %gdone = icmp sge i32 %gi, {{count}}
+  br i1 %gdone, label %notfound, label %gcheck
+gcheck:
+  %gfp = getelementptr [{{size}} x i8*], [{{size}} x i8*]* @wam_meta_call_functors, i32 0, i32 %gi
+  %gf = load i8*, i8** %gfp
+  %gf_match = icmp eq i8* %gf, %functor
+  %grp = getelementptr [{{size}} x i32], [{{size}} x i32]* @wam_meta_call_arities, i32 0, i32 %gi
+  %gr = load i32, i32* %grp
+  %gr_match = icmp eq i32 %gr, %target_arity
+  %g_match = and i1 %gf_match, %gr_match
+  br i1 %g_match, label %gfound, label %gnext
+gnext:
+  %gi1 = add i32 %gi, 1
+  br label %gloop
+gfound:
+  %glp = getelementptr [{{size}} x i32], [{{size}} x i32]* @wam_meta_call_label_indexes, i32 0, i32 %gi
+  %gl = load i32, i32* %glp
+  ret i32 %gl
+notfound:
+  ret i32 -1
+}
+{{case wam_dispatch_meta_call}}
+define i1 @wam_dispatch_meta_call(%WamState* %vm, i32 %total_arity, i32 %after_pc) {
+entry:
+  %arity_ok = icmp sge i32 %total_arity, 1
+  br i1 %arity_ok, label %read_goal, label %fail
+
+read_goal:
+  %goal = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %tag = extractvalue %Value %goal, 0
+  %is_atom = icmp eq i32 %tag, 0
+  br i1 %is_atom, label %atom_goal, label %maybe_compound
+
+maybe_compound:
+  %is_compound = icmp eq i32 %tag, 3
+  br i1 %is_compound, label %compound_goal, label %fail
+
+atom_goal:
+  %atom_id = extractvalue %Value %goal, 1
+  %target_arity = sub i32 %total_arity, 1
+  %label_idx = call i32 @wam_meta_find_atom(%WamState* %vm, i64 %atom_id, i32 %target_arity)
+  %atom_found = icmp sge i32 %label_idx, 0
+  br i1 %atom_found, label %atom_resolve, label %atom_consult
+
+atom_resolve:
+  %target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %label_idx)
+  %valid = icmp sge i32 %target_pc, 0
+  br i1 %valid, label %prepare_atom_args, label %fail
+
+prepare_atom_args:
+  %has_atom_args = icmp sgt i32 %target_arity, 0
+  br i1 %has_atom_args, label %shift_atom_args, label %go
+
+shift_atom_args:
+  %arg_i = phi i32 [ 0, %prepare_atom_args ], [ %arg_next, %shift_atom_args ]
+  %src_i = add i32 %arg_i, 1
+  %arg_val = call %Value @wam_get_reg(%WamState* %vm, i32 %src_i)
+  call void @wam_set_reg(%WamState* %vm, i32 %arg_i, %Value %arg_val)
+  %arg_next = add i32 %arg_i, 1
+  %arg_done = icmp sge i32 %arg_next, %target_arity
+  br i1 %arg_done, label %go, label %shift_atom_args
+
+compound_goal:
+  %compound_payload = extractvalue %Value %goal, 1
+  %compound_ptr = inttoptr i64 %compound_payload to %Compound*
+  %compound_fn_slot = getelementptr %Compound, %Compound* %compound_ptr, i32 0, i32 0
+  %compound_functor = load i8*, i8** %compound_fn_slot
+  %compound_arity_slot = getelementptr %Compound, %Compound* %compound_ptr, i32 0, i32 1
+  %compound_base_arity = load i32, i32* %compound_arity_slot
+  %compound_args_slot = getelementptr %Compound, %Compound* %compound_ptr, i32 0, i32 2
+  %compound_args = load %Value*, %Value** %compound_args_slot
+  %compound_extra_arity = sub i32 %total_arity, 1
+  %compound_target_arity = add i32 %compound_base_arity, %compound_extra_arity
+  %clabel_idx = call i32 @wam_meta_find_compound(%WamState* %vm, i8* %compound_functor, i32 %compound_target_arity)
+  %comp_found = icmp sge i32 %clabel_idx, 0
+  br i1 %comp_found, label %compound_resolve, label %compound_consult
+
+compound_resolve:
+  %ctarget_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %clabel_idx)
+  %cvalid = icmp sge i32 %ctarget_pc, 0
+  br i1 %cvalid, label %prepare_compound_extra, label %fail
+
+prepare_compound_extra:
+  %has_compound_extra = icmp sgt i32 %compound_extra_arity, 0
+  br i1 %has_compound_extra, label %copy_compound_extra_init, label %prepare_closure_args
+
+copy_compound_extra_init:
+  %extra_last = sub i32 %compound_extra_arity, 1
+  br label %copy_compound_extra
+
+copy_compound_extra:
+  %extra_i = phi i32 [ %extra_last, %copy_compound_extra_init ], [ %extra_prev, %copy_compound_extra ]
+  %extra_src = add i32 %extra_i, 1
+  %extra_dst = add i32 %compound_base_arity, %extra_i
+  %extra_val = call %Value @wam_get_reg(%WamState* %vm, i32 %extra_src)
+  call void @wam_set_reg(%WamState* %vm, i32 %extra_dst, %Value %extra_val)
+  %extra_is_first = icmp eq i32 %extra_i, 0
+  %extra_prev = sub i32 %extra_i, 1
+  br i1 %extra_is_first, label %prepare_closure_args, label %copy_compound_extra
+
+prepare_closure_args:
+  %has_closure_args = icmp sgt i32 %compound_base_arity, 0
+  br i1 %has_closure_args, label %copy_closure_args, label %compound_go
+
+copy_closure_args:
+  %base_i = phi i32 [ 0, %prepare_closure_args ], [ %base_next, %copy_closure_args ]
+  %base_arg_ptr = getelementptr %Value, %Value* %compound_args, i32 %base_i
+  %base_arg = load %Value, %Value* %base_arg_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 %base_i, %Value %base_arg)
+  %base_next = add i32 %base_i, 1
+  %base_done = icmp sge i32 %base_next, %compound_base_arity
+  br i1 %base_done, label %compound_go, label %copy_closure_args
+
+compound_go:
+  call void @wam_set_cp(%WamState* %vm, i32 %after_pc)
+  call void @wam_set_pc(%WamState* %vm, i32 %ctarget_pc)
+  ret i1 true
+
+go:
+  call void @wam_set_cp(%WamState* %vm, i32 %after_pc)
+  call void @wam_set_pc(%WamState* %vm, i32 %target_pc)
+  ret i1 true
+
+atom_consult:
+  ; Meta table missed an atom goal -- consult the dynamic clause store
+  ; for name/target_arity (see PLAWK_DYNAMIC_DB.md). target_arity > 0
+  ; here means a call/N closure the iterator cannot read from reg0, so
+  ; it simply finds no match and fails cleanly.
+  %ac_fn = call i8* @wam_atom_to_string(i64 %atom_id)
+  %ac_fn_null = icmp eq i8* %ac_fn, null
+  br i1 %ac_fn_null, label %fail, label %ac_go
+ac_go:
+  %ac_ok = call i1 @wam_dyn_consult(%WamState* %vm, i8* %ac_fn, i32 %target_arity, i32 %after_pc)
+  ret i1 %ac_ok
+
+compound_consult:
+  ; Meta table missed a compound goal -- consult the dynamic clause store.
+  ; Only when the goal in reg0 is the complete goal (no call/N closure
+  ; extra args); with extra args the iterator cannot see them, so fail.
+  %cc_no_extra = icmp eq i32 %compound_extra_arity, 0
+  br i1 %cc_no_extra, label %cc_go, label %fail
+cc_go:
+  %cc_ok = call i1 @wam_dyn_consult(%WamState* %vm, i8* %compound_functor, i32 %compound_base_arity, i32 %after_pc)
+  ret i1 %cc_ok
+
+fail:
+  ret i1 false
+}{{/match}}

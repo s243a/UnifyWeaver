@@ -1,0 +1,274 @@
+{{match fn}}
+; externals.ll.mustache -- external declarations: the wasm32 libc stubs, and the native libc declares plus output redirection.
+; One case per runtime chunk (a define with its comments and globals);
+; the assembly order is wam_llvm_runtime_chunk/3.
+{{case wasm_externals_globals}}
+; WASM bump allocator providing malloc/free symbols.
+; Heap starts at offset 65536 (64KB reserved for WASM stack).
+; free() is a no-op — memory is reclaimed by @wam_cleanup via arena rewind.
+@wam_malloc_ptr = internal global i64 65536
+{{case malloc}}
+define i8* @malloc(i64 %size) {
+entry:
+  %ptr_val = load i64, i64* @wam_malloc_ptr
+  %aligned = add i64 %size, 7
+  %masked = and i64 %aligned, -8
+  %new_ptr = add i64 %ptr_val, %masked
+  store i64 %new_ptr, i64* @wam_malloc_ptr
+  %result = inttoptr i64 %ptr_val to i8*
+  ret i8* %result
+}
+{{case free}}
+define void @free(i8* %ptr) {
+  ret void
+}
+{{case realloc}}
+; Bump-allocator @realloc for WASM: allocate fresh, memcpy old data,
+; return new ptr. Old block is leaked (the bump allocator has no
+; freelist). Used by M5 growable trail/stack/CP allocators.
+;
+; Note: this doesn't know the old block's size, so it conservatively
+; copies up to %new_size bytes. The bump allocator only ever hands
+; out blocks aligned to 8 bytes, and grows always double, so this
+; over-copies by at most a factor of 2 — within the WASM page budget
+; that callers already accept.
+define i8* @realloc(i8* %old, i64 %new_size) {
+entry:
+  %is_null = icmp eq i8* %old, null
+  br i1 %is_null, label %fresh_alloc, label %do_copy
+
+fresh_alloc:
+  %new0 = call i8* @malloc(i64 %new_size)
+  ret i8* %new0
+
+do_copy:
+  %new1 = call i8* @malloc(i64 %new_size)
+  ; We don't know the old block's actual size; the WAM grow path
+  ; always doubles, so copying %new_size / 2 is safe (the old block
+  ; was at least that large). Use shr by 1 to avoid sdiv.
+  %half = lshr i64 %new_size, 1
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %new1, i8* %old, i64 %half, i1 false)
+  ret i8* %new1
+}
+{{case printf}}
+; Stub printf for WASM (no-op, returns 0).
+define i32 @printf(i8* %fmt, ...) {
+  ret i32 0
+}
+{{case snprintf}}
+; Stub snprintf for WASM (no-op, returns 0).
+define i32 @snprintf(i8* %buf, i64 %size, i8* %fmt, ...) {
+  ret i32 0
+}
+{{case strcmp}}
+; Stub strcmp for WASM (returns 0 = equal, conservative).
+define i32 @strcmp(i8* %a, i8* %b) {
+  ret i32 0
+}
+{{case putchar}}
+; Stub putchar for WASM (no-op, returns 0).
+define i32 @putchar(i32 %c) {
+  ret i32 0
+}
+{{case native_externals_declares}}declare i8* @malloc(i64)
+declare i8* @realloc(i8*, i64)
+declare void @free(i8*)
+declare i32 @snprintf(i8*, i64, i8*, ...)
+declare i32 @strcmp(i8*, i8*)
+declare i32 @printf(i8*, ...)
+declare i32 @putchar(i32)
+declare i64 @time(i64*)
+declare i32 @clock_gettime(i32, i8*)
+declare i32 @stat(i8*, i8*)
+declare i32 @unlink(i8*)
+declare i32 @mkdir(i8*, i32)
+declare i32 @rename(i8*, i8*)
+declare i32 @rmdir(i8*)
+declare i8* @getenv(i8*)
+declare i32 @setenv(i8*, i8*, i32)
+declare i32 @unsetenv(i8*)
+declare i32 @chmod(i8*, i32)
+declare i32 @access(i8*, i32)
+declare i8* @opendir(i8*)
+declare i8* @readdir(i8*)
+declare i32 @closedir(i8*)
+declare i64 @strlen(i8*)
+declare i64 @strnlen(i8*, i64)
+declare i32 @system(i8*)
+declare i8* @getcwd(i8*, i64)
+declare i32 @chdir(i8*)
+declare i32 @getpid()
+declare i32 @getuid()
+declare i32 @geteuid()
+declare i32 @getgid()
+declare i32 @getegid()
+declare i32 @getppid()
+declare i32 @getpgrp()
+declare i8* @realpath(i8*, i8*)
+declare i32 @kill(i32, i32)
+declare i32 @truncate(i8*, i64)
+declare i32 @chown(i8*, i32, i32)
+declare i64 @readlink(i8*, i8*, i64)
+declare i32 @symlink(i8*, i8*)
+declare i32 @link(i8*, i8*)
+declare i32 @mkstemp(i8*)
+declare i32 @mkfifo(i8*, i32)
+declare i32 @close(i32)
+declare i32 @umask(i32)
+declare i32 @nice(i32)
+declare i32 @getpriority(i32, i32)
+declare i32 @setpriority(i32, i32, i32)
+declare i32 @getrlimit(i32, i8*)
+declare i32 @setrlimit(i32, i8*)
+declare i8* @getlogin()
+declare i32 @uname(i8*)
+declare i32 @open(i8*, i32, i32)
+declare i64 @read(i32, i8*, i64)
+declare i64 @write(i32, i8*, i64)
+declare i32* @__errno_location()
+declare i8* @strerror(i32)
+declare i32 @getrusage(i32, i8*)
+declare i8* @popen(i8*, i8*)
+declare i32 @pclose(i8*)
+declare i32 @fgetc(i8*)
+declare i32 @ferror(i8*)
+declare i64 @fread(i8*, i64, i64, i8*)
+declare i64 @fwrite(i8*, i64, i64, i8*)
+declare i32 @memcmp(i8*, i8*, i64)
+declare i8* @strstr(i8*, i8*)
+declare i32 @usleep(i32)
+declare i32 @gethostname(i8*, i64)
+declare double @drand48()
+declare i64 @lrand48()
+declare void @srand48(i64)
+declare i8* @localtime_r(i64*, i8*)
+declare i64 @strftime(i8*, i64, i8*, i8*)
+declare i64 @mktime(i8*)
+declare double @asin(double)
+declare double @acos(double)
+declare double @atan(double)
+declare double @atan2(double, double)
+declare double @pow(double, double)
+declare double @sqrt(double)
+declare double @sin(double)
+declare double @cos(double)
+declare double @exp(double)
+declare double @log(double)
+declare i32 @regcomp(i8*, i8*, i32)
+declare i32 @regexec(i8*, i8*, i64, i8*, i32)
+declare double @strtod(i8*, i8**)
+
+; ---- awk output redirection: print ... > "file" / >> "file" ----
+; A redirected print runs between @plawk_redirect_begin(name, append) and
+; @plawk_redirect_end(): begin flushes stdio, saves the real stdout once, and
+; points fd 1 at the target -- opened ONCE per name (the first > truncates, >>
+; appends) and kept open, as awk does; end flushes and restores fd 1. So every
+; print emitter works unchanged. /dev/stderr and /dev/stdout are the real
+; streams, never reopened (an O_TRUNC reopen could truncate a file stderr is
+; itself redirected to). Native only: the WASM branch has no such symbols.
+declare i32 @dup(i32)
+declare i32 @dup2(i32, i32)
+declare i32 @fflush(i8*)
+{{case plawk_redirect_begin}}@plawk_redir_saved = internal global i32 -1
+@plawk_redir_names = internal global [64 x i8*] zeroinitializer
+@plawk_redir_fds = internal global [64 x i32] zeroinitializer
+@plawk_redir_count = internal global i64 0
+@.plawk_redir_stderr = private constant [12 x i8] c"/dev/stderr\00"
+@.plawk_redir_stdout = private constant [12 x i8] c"/dev/stdout\00"
+@.plawk_redir_error = private constant [55 x i8] c"plawk: fatal: cannot open file for output redirection\0A\00"
+
+define void @plawk_redirect_begin(i8* %name, i32 %append) {
+entry:
+  %rb.fl = call i32 @fflush(i8* null)
+  %rb.saved0 = load i32, i32* @plawk_redir_saved
+  %rb.need = icmp slt i32 %rb.saved0, 0
+  br i1 %rb.need, label %rb.save, label %rb.special
+
+rb.save:
+  %rb.s = call i32 @dup(i32 1)
+  store i32 %rb.s, i32* @plawk_redir_saved
+  br label %rb.special
+
+rb.special:
+  %rb.errp = getelementptr [12 x i8], [12 x i8]* @.plawk_redir_stderr, i64 0, i64 0
+  %rb.iserr = call i32 @strcmp(i8* %name, i8* %rb.errp)
+  %rb.e0 = icmp eq i32 %rb.iserr, 0
+  br i1 %rb.e0, label %rb.use_err, label %rb.check_out
+
+rb.use_err:
+  %rb.d1 = call i32 @dup2(i32 2, i32 1)
+  ret void
+
+rb.check_out:
+  %rb.outp = getelementptr [12 x i8], [12 x i8]* @.plawk_redir_stdout, i64 0, i64 0
+  %rb.isout = call i32 @strcmp(i8* %name, i8* %rb.outp)
+  %rb.o0 = icmp eq i32 %rb.isout, 0
+  br i1 %rb.o0, label %rb.use_out, label %rb.head
+
+rb.use_out:
+  %rb.sv = load i32, i32* @plawk_redir_saved
+  %rb.d2 = call i32 @dup2(i32 %rb.sv, i32 1)
+  ret void
+
+rb.head:
+  %rb.i = phi i64 [ 0, %rb.check_out ], [ %rb.i1, %rb.next ]
+  %rb.cnt = load i64, i64* @plawk_redir_count
+  %rb.done = icmp uge i64 %rb.i, %rb.cnt
+  br i1 %rb.done, label %rb.open, label %rb.cmp
+
+rb.cmp:
+  %rb.np = getelementptr [64 x i8*], [64 x i8*]* @plawk_redir_names, i64 0, i64 %rb.i
+  %rb.n = load i8*, i8** %rb.np
+  %rb.c = call i32 @strcmp(i8* %name, i8* %rb.n)
+  %rb.same = icmp eq i32 %rb.c, 0
+  br i1 %rb.same, label %rb.found, label %rb.next
+
+rb.next:
+  %rb.i1 = add i64 %rb.i, 1
+  br label %rb.head
+
+rb.found:
+  %rb.fp = getelementptr [64 x i32], [64 x i32]* @plawk_redir_fds, i64 0, i64 %rb.i
+  %rb.fd = load i32, i32* %rb.fp
+  %rb.d3 = call i32 @dup2(i32 %rb.fd, i32 1)
+  ret void
+
+rb.open:
+  ; O_WRONLY|O_CREAT plus O_APPEND (>>) or O_TRUNC (>), mode 0666 (Linux values)
+  %rb.app = icmp ne i32 %append, 0
+  %rb.flags = select i1 %rb.app, i32 1089, i32 577
+  %rb.nfd = call i32 @open(i8* %name, i32 %rb.flags, i32 438)
+  %rb.bad = icmp slt i32 %rb.nfd, 0
+  br i1 %rb.bad, label %rb.fail, label %rb.remember
+
+rb.fail:
+  %rb.msg = getelementptr [55 x i8], [55 x i8]* @.plawk_redir_error, i64 0, i64 0
+  %rb.w = call i64 @write(i32 2, i8* %rb.msg, i64 54)
+  call void @exit(i32 2)
+  unreachable
+
+rb.remember:
+  %rb.room = icmp ult i64 %rb.cnt, 64
+  br i1 %rb.room, label %rb.store, label %rb.use_new
+
+rb.store:
+  %rb.snp = getelementptr [64 x i8*], [64 x i8*]* @plawk_redir_names, i64 0, i64 %rb.cnt
+  store i8* %name, i8** %rb.snp
+  %rb.sfp = getelementptr [64 x i32], [64 x i32]* @plawk_redir_fds, i64 0, i64 %rb.cnt
+  store i32 %rb.nfd, i32* %rb.sfp
+  %rb.cnt1 = add i64 %rb.cnt, 1
+  store i64 %rb.cnt1, i64* @plawk_redir_count
+  br label %rb.use_new
+
+rb.use_new:
+  %rb.d4 = call i32 @dup2(i32 %rb.nfd, i32 1)
+  ret void
+}
+{{case plawk_redirect_end}}
+define void @plawk_redirect_end() {
+entry:
+  %re.fl = call i32 @fflush(i8* null)
+  %re.sv = load i32, i32* @plawk_redir_saved
+  %re.d = call i32 @dup2(i32 %re.sv, i32 1)
+  ret void
+}{{/match}}
