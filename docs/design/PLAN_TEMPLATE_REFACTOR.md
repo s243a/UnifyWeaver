@@ -187,3 +187,17 @@ Guiding principle, from the owner: templates should be as general and composable
 possible (often meaning smaller templates), and **many literal cases that share a shape should
 collapse into one structural `.stache` case** -- §2's survey is where that pays: in the code that is
 still embedded in Prolog, not in today's `.mustache` corpus.
+
+## 9. Status
+
+- **PR 1 (merged):** the monolith atom became `runtime/builtin_dispatch.ll.mustache`.
+- **PR 2a:** that file is split into eight case libraries -- `assoc_table`, `fields`, `strnum`,
+  `regex`, `streams`, `cache`, `term_reader`, `builtin_dispatch` (now `@execute_builtin` alone).
+  A chunk is a define with the comments and globals before it (118 chunks: 117 defines plus the
+  stream-handle globals). `src/unifyweaver/targets/wam_llvm_runtime_libs.pl` holds the
+  `wam_llvm_runtime_chunk(Name, Library)` table: which chunks exist, where each lives, and the
+  assembly order (the monolith's, so the module is byte-identical). Each library's case set is
+  validated against the table once per process; `template_library_cases/2` parses a library
+  once and caches it. Pinned by `tests/test_template_library.pl`.
+- **PR 2b (next):** the other static atoms (backtrack, arith, copy_term, term_cmp, ssp,
+  meta_call, dirent, wasm stubs, wamo loader).

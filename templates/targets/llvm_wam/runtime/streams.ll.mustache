@@ -1,0 +1,1563 @@
+{{match fn}}
+; streams.ll.mustache -- input streams: stream handles, record reading, getline (file, pipe, main), argv, environ.
+; One case per runtime chunk (a define with its comments and globals); the assembly order is wam_llvm_runtime_chunk/2.
+{{case wam_stream_handle_globals}}; Execute builtin operations
+@wam_stream_handle_table = internal global [4096 x %WamLineReader*] zeroinitializer
+@wam_stream_handle_count = internal global i32 0
+; One byte per stream handle records whether any record has already been
+; returned. Regex RS uses it so ^ is active only at physical file start.
+@wam_stream_handle_started = internal global [4096 x i8] zeroinitializer
+
+@.wam_stream_eof_atom = private constant [12 x i8] c"end_of_file\00"
+{{case wam_stream_fail_value}}
+define %Value @wam_stream_fail_value() alwaysinline nounwind {
+entry:
+  %bad = call %Value @value_integer(i64 -1)
+  ret %Value %bad
+}
+{{case wam_stream_open_value}}
+define %Value @wam_stream_open_value(%Value %path_value) {
+entry:
+  %soh.t = call i32 @value_tag(%Value %path_value)
+  %soh.is_atom = icmp eq i32 %soh.t, 0
+  br i1 %soh.is_atom, label %soh.have_path, label %soh.fail
+
+soh.fail:
+  %soh.bad = call %Value @wam_stream_fail_value()
+  ret %Value %soh.bad
+
+soh.have_path:
+  %soh.aid = call i64 @value_payload(%Value %path_value)
+  %soh.path = call i8* @wam_atom_to_string(i64 %soh.aid)
+  %soh.path_null = icmp eq i8* %soh.path, null
+  br i1 %soh.path_null, label %soh.fail, label %soh.open
+
+soh.open:
+  %soh.fd = call i32 @open(i8* %soh.path, i32 0, i32 0)
+  %soh.open_ok = icmp sge i32 %soh.fd, 0
+  br i1 %soh.open_ok, label %soh.alloc_reader, label %soh.fail
+
+soh.alloc_reader:
+  %soh.reader_size = ptrtoint %WamLineReader* getelementptr (%WamLineReader, %WamLineReader* null, i32 1) to i64
+  %soh.reader_mem = call i8* @malloc(i64 %soh.reader_size)
+  %soh.reader_null = icmp eq i8* %soh.reader_mem, null
+  br i1 %soh.reader_null, label %soh.close_fd_fail, label %soh.alloc_buf
+
+soh.close_fd_fail:
+  call i32 @close(i32 %soh.fd)
+  br label %soh.fail
+
+soh.alloc_buf:
+  %soh.buf = call i8* @malloc(i64 4096)
+  %soh.buf_null = icmp eq i8* %soh.buf, null
+  br i1 %soh.buf_null, label %soh.free_reader_fail, label %soh.init
+
+soh.free_reader_fail:
+  call void @free(i8* %soh.reader_mem)
+  call i32 @close(i32 %soh.fd)
+  br label %soh.fail
+
+soh.init:
+  %soh.reader = bitcast i8* %soh.reader_mem to %WamLineReader*
+  %soh.fd_slot = getelementptr %WamLineReader, %WamLineReader* %soh.reader, i32 0, i32 0
+  store i32 %soh.fd, i32* %soh.fd_slot
+  %soh.buf_slot = getelementptr %WamLineReader, %WamLineReader* %soh.reader, i32 0, i32 1
+  store i8* %soh.buf, i8** %soh.buf_slot
+  %soh.cap_slot = getelementptr %WamLineReader, %WamLineReader* %soh.reader, i32 0, i32 2
+  store i64 4096, i64* %soh.cap_slot
+  %soh.len_slot = getelementptr %WamLineReader, %WamLineReader* %soh.reader, i32 0, i32 3
+  store i64 0, i64* %soh.len_slot
+  %soh.pos_slot = getelementptr %WamLineReader, %WamLineReader* %soh.reader, i32 0, i32 4
+  store i64 0, i64* %soh.pos_slot
+  %soh.count = load i32, i32* @wam_stream_handle_count
+  %soh.next = add i32 %soh.count, 1
+  %soh.cap_ok = icmp ult i32 %soh.next, 4096
+  br i1 %soh.cap_ok, label %soh.store_handle, label %soh.close_all_fail
+
+soh.store_handle:
+  %soh.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %soh.next
+  store %WamLineReader* %soh.reader, %WamLineReader** %soh.slot
+  store i32 %soh.next, i32* @wam_stream_handle_count
+  %soh.handle = zext i32 %soh.next to i64
+  %soh.v = call %Value @value_integer(i64 %soh.handle)
+  ret %Value %soh.v
+
+soh.close_all_fail:
+  call i32 @close(i32 %soh.fd)
+  call void @free(i8* %soh.buf)
+  call void @free(i8* %soh.reader_mem)
+  br label %soh.fail
+}
+{{case wam_stream_open_fd_value}}
+define %Value @wam_stream_open_fd_value(i64 %fd64) {
+entry:
+  ; Wrap an already-open file descriptor (e.g. fd 0 for stdin) in a
+  ; buffered reader handle. The fd is not opened or validated here;
+  ; wam_stream_close_value closes it like any other stream. On
+  ; allocation failure the caller keeps ownership of the fd.
+  %sfd.fd_ok = icmp sge i64 %fd64, 0
+  br i1 %sfd.fd_ok, label %sfd.alloc_reader, label %sfd.fail
+
+sfd.fail:
+  %sfd.bad = call %Value @wam_stream_fail_value()
+  ret %Value %sfd.bad
+
+sfd.alloc_reader:
+  %sfd.fd = trunc i64 %fd64 to i32
+  %sfd.reader_size = ptrtoint %WamLineReader* getelementptr (%WamLineReader, %WamLineReader* null, i32 1) to i64
+  %sfd.reader_mem = call i8* @malloc(i64 %sfd.reader_size)
+  %sfd.reader_null = icmp eq i8* %sfd.reader_mem, null
+  br i1 %sfd.reader_null, label %sfd.fail, label %sfd.alloc_buf
+
+sfd.alloc_buf:
+  %sfd.buf = call i8* @malloc(i64 4096)
+  %sfd.buf_null = icmp eq i8* %sfd.buf, null
+  br i1 %sfd.buf_null, label %sfd.free_reader_fail, label %sfd.init
+
+sfd.free_reader_fail:
+  call void @free(i8* %sfd.reader_mem)
+  br label %sfd.fail
+
+sfd.init:
+  %sfd.reader = bitcast i8* %sfd.reader_mem to %WamLineReader*
+  %sfd.fd_slot = getelementptr %WamLineReader, %WamLineReader* %sfd.reader, i32 0, i32 0
+  store i32 %sfd.fd, i32* %sfd.fd_slot
+  %sfd.buf_slot = getelementptr %WamLineReader, %WamLineReader* %sfd.reader, i32 0, i32 1
+  store i8* %sfd.buf, i8** %sfd.buf_slot
+  %sfd.cap_slot = getelementptr %WamLineReader, %WamLineReader* %sfd.reader, i32 0, i32 2
+  store i64 4096, i64* %sfd.cap_slot
+  %sfd.len_slot = getelementptr %WamLineReader, %WamLineReader* %sfd.reader, i32 0, i32 3
+  store i64 0, i64* %sfd.len_slot
+  %sfd.pos_slot = getelementptr %WamLineReader, %WamLineReader* %sfd.reader, i32 0, i32 4
+  store i64 0, i64* %sfd.pos_slot
+  %sfd.count = load i32, i32* @wam_stream_handle_count
+  %sfd.next = add i32 %sfd.count, 1
+  %sfd.cap_ok = icmp ult i32 %sfd.next, 4096
+  br i1 %sfd.cap_ok, label %sfd.store_handle, label %sfd.free_all_fail
+
+sfd.store_handle:
+  %sfd.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %sfd.next
+  store %WamLineReader* %sfd.reader, %WamLineReader** %sfd.slot
+  store i32 %sfd.next, i32* @wam_stream_handle_count
+  %sfd.handle = zext i32 %sfd.next to i64
+  %sfd.v = call %Value @value_integer(i64 %sfd.handle)
+  ret %Value %sfd.v
+
+sfd.free_all_fail:
+  call void @free(i8* %sfd.buf)
+  call void @free(i8* %sfd.reader_mem)
+  br label %sfd.fail
+}
+{{case wam_stream_reader_set_replay}}
+; Replace the consumed reader block with bytes that followed a regex RS match.
+; The file descriptor already points beyond those bytes, so replaying this
+; copied tail before the next refill preserves separators found by block scans.
+define i1 @wam_stream_reader_set_replay(%WamLineReader* %reader, i8* %src, i64 %len) {
+entry:
+  %srr.buf_slot = getelementptr %WamLineReader, %WamLineReader* %reader, i32 0, i32 1
+  %srr.cap_slot = getelementptr %WamLineReader, %WamLineReader* %reader, i32 0, i32 2
+  %srr.len_slot = getelementptr %WamLineReader, %WamLineReader* %reader, i32 0, i32 3
+  %srr.pos_slot = getelementptr %WamLineReader, %WamLineReader* %reader, i32 0, i32 4
+  %srr.cap = load i64, i64* %srr.cap_slot
+  %srr.fits = icmp ule i64 %len, %srr.cap
+  br i1 %srr.fits, label %srr.copy, label %srr.grow
+
+srr.grow:
+  %srr.twice = shl i64 %srr.cap, 1
+  %srr.needmore = icmp ugt i64 %len, %srr.twice
+  %srr.newcap = select i1 %srr.needmore, i64 %len, i64 %srr.twice
+  %srr.grew = icmp ugt i64 %srr.newcap, %srr.cap
+  br i1 %srr.grew, label %srr.alloc, label %srr.fail
+
+srr.alloc:
+  %srr.old = load i8*, i8** %srr.buf_slot
+  %srr.new = call i8* @realloc(i8* %srr.old, i64 %srr.newcap)
+  %srr.newnull = icmp eq i8* %srr.new, null
+  br i1 %srr.newnull, label %srr.fail, label %srr.store
+
+srr.store:
+  store i8* %srr.new, i8** %srr.buf_slot
+  store i64 %srr.newcap, i64* %srr.cap_slot
+  br label %srr.copy
+
+srr.copy:
+  %srr.dst = load i8*, i8** %srr.buf_slot
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %srr.dst, i8* %src, i64 %len, i1 false)
+  store i64 %len, i64* %srr.len_slot
+  store i64 0, i64* %srr.pos_slot
+  ret i1 true
+
+srr.fail:
+  ret i1 false
+}
+{{case wam_stream_read_line_value}}
+define %Value @wam_stream_read_line_value(%Value %handle_value) {
+entry:
+  %rhv.rs_so_slot = alloca i64, align 8
+  %rhv.rs_eo_slot = alloca i64, align 8
+  %rhv.t = call i32 @value_tag(%Value %handle_value)
+  %rhv.is_int = icmp eq i32 %rhv.t, 1
+  br i1 %rhv.is_int, label %rhv.lookup_handle, label %rhv.fail
+
+rhv.fail:
+  %rhv.bad = call %Value @wam_stream_fail_value()
+  ret %Value %rhv.bad
+
+rhv.lookup_handle:
+  %rhv.handle64 = call i64 @value_payload(%Value %handle_value)
+  %rhv.handle = trunc i64 %rhv.handle64 to i32
+  %rhv.handle_min = icmp sgt i32 %rhv.handle, 0
+  %rhv.handle_max = icmp ult i32 %rhv.handle, 4096
+  %rhv.handle_ok = and i1 %rhv.handle_min, %rhv.handle_max
+  br i1 %rhv.handle_ok, label %rhv.load_handle, label %rhv.fail
+
+rhv.load_handle:
+  %rhv.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %rhv.handle
+  %rhv.reader = load %WamLineReader*, %WamLineReader** %rhv.slot
+  %rhv.reader_null = icmp eq %WamLineReader* %rhv.reader, null
+  br i1 %rhv.reader_null, label %rhv.fail, label %rhv.have_handle
+
+rhv.have_handle:
+  %rhv.fd_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 0
+  %rhv.fd = load i32, i32* %rhv.fd_slot
+  %rhv.fd_ok = icmp sge i32 %rhv.fd, 0
+  %rhv.started_slot = getelementptr [4096 x i8], [4096 x i8]* @wam_stream_handle_started, i32 0, i32 %rhv.handle
+  %rhv.started = load i8, i8* %rhv.started_slot
+  %rhv.at_file_start = icmp eq i8 %rhv.started, 0
+  br i1 %rhv.fd_ok, label %rhv.alloc_out, label %rhv.fail
+
+rhv.alloc_out:
+  %rhv.out = call i8* @malloc(i64 4096)
+  %rhv.out_null = icmp eq i8* %rhv.out, null
+  br i1 %rhv.out_null, label %rhv.fail, label %rhv.loop
+
+rhv.loop:
+  %rhv.out_len = phi i64 [ 0, %rhv.alloc_out ], [ %rhv.out_len, %rhv.after_read ], [ %rhv.next_out_len, %rhv.nomatch ], [ %rhv.out_len, %rhv.para_skip ]
+  %rhv.out_cur = phi i8* [ %rhv.out, %rhv.alloc_out ], [ %rhv.out_cur, %rhv.after_read ], [ %rhv.append_out, %rhv.nomatch ], [ %rhv.out_cur, %rhv.para_skip ]
+  %rhv.out_cap = phi i64 [ 4096, %rhv.alloc_out ], [ %rhv.out_cap, %rhv.after_read ], [ %rhv.append_cap, %rhv.nomatch ], [ %rhv.out_cap, %rhv.para_skip ]
+  %rhv.buf_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 1
+  %rhv.buf = load i8*, i8** %rhv.buf_slot
+  %rhv.len_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 3
+  %rhv.len = load i64, i64* %rhv.len_slot
+  %rhv.pos_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 4
+  %rhv.pos = load i64, i64* %rhv.pos_slot
+  %rhv.have_byte = icmp slt i64 %rhv.pos, %rhv.len
+  br i1 %rhv.have_byte, label %rhv.consume, label %rhv.fill
+
+rhv.fill:
+  %rhv.cap_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 2
+  %rhv.cap = load i64, i64* %rhv.cap_slot
+  %rhv.n = call i64 @read(i32 %rhv.fd, i8* %rhv.buf, i64 %rhv.cap)
+  %rhv.n_neg = icmp slt i64 %rhv.n, 0
+  br i1 %rhv.n_neg, label %rhv.free_out_fail, label %rhv.check_eof
+
+rhv.check_eof:
+  %rhv.n_zero = icmp eq i64 %rhv.n, 0
+  br i1 %rhv.n_zero, label %rhv.eof_or_partial, label %rhv.after_read
+
+rhv.after_read:
+  store i64 %rhv.n, i64* %rhv.len_slot
+  store i64 0, i64* %rhv.pos_slot
+  br label %rhv.loop
+
+rhv.eof_or_partial:
+  %rhv.empty_line = icmp eq i64 %rhv.out_len, 0
+  br i1 %rhv.empty_line, label %rhv.eof, label %rhv.eof_dispatch
+
+rhv.eof_dispatch:
+  %rhv.eof_mode = load i8, i8* @wam_rs_mode
+  %rhv.eof_regex = icmp eq i8 %rhv.eof_mode, 2
+  br i1 %rhv.eof_regex, label %rhv.regex_eof_prepare, label %rhv.eof_plain
+
+rhv.eof_plain:
+  call void @wam_rt_clear()
+  br label %rhv.finalize
+
+rhv.regex_eof_prepare:
+  %rhv.eof_term = getelementptr i8, i8* %rhv.out_cur, i64 %rhv.out_len
+  store i8 0, i8* %rhv.eof_term
+  %rhv.eof_found = call i1 @wam_rs_regex_find(i8* %rhv.out_cur, i64 %rhv.out_len, i1 %rhv.at_file_start, i64* %rhv.rs_so_slot, i64* %rhv.rs_eo_slot)
+  br i1 %rhv.eof_found, label %rhv.regex_eof_copy, label %rhv.regex_eof_miss
+
+rhv.regex_eof_copy:
+  %rhv.eof_so = load i64, i64* %rhv.rs_so_slot
+  %rhv.eof_eo = load i64, i64* %rhv.rs_eo_slot
+  %rhv.eof_sep_len = sub i64 %rhv.eof_eo, %rhv.eof_so
+  %rhv.eof_sep = getelementptr i8, i8* %rhv.out_cur, i64 %rhv.eof_so
+  %rhv.eof_rt_ok = call i1 @wam_rt_set(i8* %rhv.eof_sep, i64 %rhv.eof_sep_len)
+  br i1 %rhv.eof_rt_ok, label %rhv.regex_eof_replay, label %rhv.free_out_fail
+
+rhv.regex_eof_replay:
+  %rhv.eof_tail = sub i64 %rhv.out_len, %rhv.eof_eo
+  %rhv.eof_tail_src = getelementptr i8, i8* %rhv.out_cur, i64 %rhv.eof_eo
+  %rhv.eof_replay_ok = call i1 @wam_stream_reader_set_replay(%WamLineReader* %rhv.reader, i8* %rhv.eof_tail_src, i64 %rhv.eof_tail)
+  br i1 %rhv.eof_replay_ok, label %rhv.regex_eof_ready, label %rhv.free_out_fail
+
+rhv.regex_eof_ready:
+  br label %rhv.finalize
+
+rhv.regex_eof_miss:
+  call void @wam_rt_clear()
+  br label %rhv.finalize
+
+rhv.consume:
+  %rhv.char_ptr = getelementptr i8, i8* %rhv.buf, i64 %rhv.pos
+  %rhv.ch = load i8, i8* %rhv.char_ptr
+  %rhv.pos_next = add i64 %rhv.pos, 1
+  store i64 %rhv.pos_next, i64* %rhv.pos_slot
+  %rhv.rslen_s = load i64, i64* @wam_rs_len
+  %rhv.para_s = icmp eq i64 %rhv.rslen_s, 0
+  %rhv.empty_s = icmp eq i64 %rhv.out_len, 0
+  %rhv.nl_s = icmp eq i8 %rhv.ch, 10
+  %rhv.pe_s = and i1 %rhv.para_s, %rhv.empty_s
+  %rhv.skip_s = and i1 %rhv.pe_s, %rhv.nl_s
+  br i1 %rhv.skip_s, label %rhv.para_skip, label %rhv.append
+
+rhv.para_skip:
+  br label %rhv.loop
+
+rhv.append:
+  %rhv.next_out_len_pre = add i64 %rhv.out_len, 1
+  %rhv.has_room = icmp ult i64 %rhv.next_out_len_pre, %rhv.out_cap
+  br i1 %rhv.has_room, label %rhv.append_store, label %rhv.grow_out
+
+rhv.grow_out:
+  %rhv.new_out_cap = shl i64 %rhv.out_cap, 1
+  %rhv.cap_grew = icmp ugt i64 %rhv.new_out_cap, %rhv.out_cap
+  br i1 %rhv.cap_grew, label %rhv.grow_alloc, label %rhv.free_out_fail
+
+rhv.grow_alloc:
+  %rhv.grown_out = call i8* @realloc(i8* %rhv.out_cur, i64 %rhv.new_out_cap)
+  %rhv.grown_null = icmp eq i8* %rhv.grown_out, null
+  br i1 %rhv.grown_null, label %rhv.free_out_fail, label %rhv.append_store
+
+rhv.append_store:
+  %rhv.append_out = phi i8* [ %rhv.out_cur, %rhv.append ], [ %rhv.grown_out, %rhv.grow_alloc ]
+  %rhv.append_cap = phi i64 [ %rhv.out_cap, %rhv.append ], [ %rhv.new_out_cap, %rhv.grow_alloc ]
+  %rhv.out_ptr = getelementptr i8, i8* %rhv.append_out, i64 %rhv.out_len
+  store i8 %rhv.ch, i8* %rhv.out_ptr
+  %rhv.next_out_len = add i64 %rhv.out_len, 1
+  br label %rhv.checkmatch
+
+; Dispatch literal, paragraph, and regex record-separator modes explicitly.
+; The paragraph label preserves the independent merge seam for paragraph RS.
+rhv.checkmatch:
+  %rhv.rsmode = load i8, i8* @wam_rs_mode
+  switch i8 %rhv.rsmode, label %rhv.literal_check [
+    i8 1, label %rhv.paragraph_check
+    i8 2, label %rhv.regex_maybe_scan
+  ]
+
+rhv.paragraph_check:
+  br label %rhv.literal_check
+
+rhv.literal_check:
+  %rhv.rslen = load i64, i64* @wam_rs_len
+  %rhv.is_para = icmp eq i64 %rhv.rslen, 0
+  br i1 %rhv.is_para, label %rhv.para_check, label %rhv.suffix_check
+
+rhv.para_check:
+  %rhv.pc_enough = icmp uge i64 %rhv.next_out_len, 2
+  br i1 %rhv.pc_enough, label %rhv.para_domatch, label %rhv.nomatch
+
+rhv.para_domatch:
+  %rhv.pc_len = sub i64 %rhv.next_out_len, 2
+  %rhv.pc_p2 = getelementptr i8, i8* %rhv.append_out, i64 %rhv.pc_len
+  %rhv.pc_i1 = sub i64 %rhv.next_out_len, 1
+  %rhv.pc_p1 = getelementptr i8, i8* %rhv.append_out, i64 %rhv.pc_i1
+  %rhv.pc_c2 = load i8, i8* %rhv.pc_p2
+  %rhv.pc_c1 = load i8, i8* %rhv.pc_p1
+  %rhv.pc_c2nl = icmp eq i8 %rhv.pc_c2, 10
+  %rhv.pc_c1nl = icmp eq i8 %rhv.pc_c1, 10
+  %rhv.pc_both = and i1 %rhv.pc_c2nl, %rhv.pc_c1nl
+  br i1 %rhv.pc_both, label %rhv.finalize, label %rhv.nomatch
+
+rhv.suffix_check:
+  %rhv.enough = icmp uge i64 %rhv.next_out_len, %rhv.rslen
+  br i1 %rhv.enough, label %rhv.domatch, label %rhv.nomatch
+
+rhv.domatch:
+  %rhv.mstart = sub i64 %rhv.next_out_len, %rhv.rslen
+  %rhv.mptr = getelementptr i8, i8* %rhv.append_out, i64 %rhv.mstart
+  %rhv.rsptr = load i8*, i8** @wam_rs_ptr
+  %rhv.cmp = call i32 @memcmp(i8* %rhv.mptr, i8* %rhv.rsptr, i64 %rhv.rslen)
+  %rhv.matched = icmp eq i32 %rhv.cmp, 0
+  br i1 %rhv.matched, label %rhv.literal_copy, label %rhv.nomatch
+
+rhv.literal_copy:
+  %rhv.literal_rt_ok = call i1 @wam_rt_set(i8* %rhv.mptr, i64 %rhv.rslen)
+  br i1 %rhv.literal_rt_ok, label %rhv.literal_ready, label %rhv.free_out_fail
+
+rhv.literal_ready:
+  br label %rhv.finalize
+
+; Scan once per filled reader block instead of once per byte. This gives
+; regexec the complete buffered prefix for leftmost-longest selection and
+; avoids repeated-prefix blowups on long records. A boundary-ending match is
+; deferred until another block or EOF can show whether it extends. POSIX
+; regexec has no partial-match state, so an optional extension that begins but
+; remains incomplete at a block edge follows the usual buffered-regex caveat.
+rhv.regex_maybe_scan:
+  %rhv.regex_scan_boundary = icmp eq i64 %rhv.pos_next, %rhv.len
+  br i1 %rhv.regex_scan_boundary, label %rhv.regex_prepare, label %rhv.nomatch
+
+rhv.regex_prepare:
+  %rhv.regex_term = getelementptr i8, i8* %rhv.append_out, i64 %rhv.next_out_len
+  store i8 0, i8* %rhv.regex_term
+  %rhv.regex_found = call i1 @wam_rs_regex_find(i8* %rhv.append_out, i64 %rhv.next_out_len, i1 %rhv.at_file_start, i64* %rhv.rs_so_slot, i64* %rhv.rs_eo_slot)
+  br i1 %rhv.regex_found, label %rhv.regex_hit, label %rhv.nomatch
+
+rhv.regex_hit:
+  %rhv.regex_so = load i64, i64* %rhv.rs_so_slot
+  %rhv.regex_eo = load i64, i64* %rhv.rs_eo_slot
+  %rhv.regex_at_end = icmp eq i64 %rhv.regex_eo, %rhv.next_out_len
+  br i1 %rhv.regex_at_end, label %rhv.nomatch, label %rhv.regex_copy
+
+rhv.regex_copy:
+  %rhv.regex_sep_len = sub i64 %rhv.regex_eo, %rhv.regex_so
+  %rhv.regex_sep = getelementptr i8, i8* %rhv.append_out, i64 %rhv.regex_so
+  %rhv.regex_rt_ok = call i1 @wam_rt_set(i8* %rhv.regex_sep, i64 %rhv.regex_sep_len)
+  br i1 %rhv.regex_rt_ok, label %rhv.regex_replay, label %rhv.free_out_fail
+
+rhv.regex_replay:
+  %rhv.regex_tail = sub i64 %rhv.next_out_len, %rhv.regex_eo
+  %rhv.regex_tail_src = getelementptr i8, i8* %rhv.append_out, i64 %rhv.regex_eo
+  %rhv.regex_replay_ok = call i1 @wam_stream_reader_set_replay(%WamLineReader* %rhv.reader, i8* %rhv.regex_tail_src, i64 %rhv.regex_tail)
+  br i1 %rhv.regex_replay_ok, label %rhv.regex_ready, label %rhv.free_out_fail
+
+rhv.regex_ready:
+  br label %rhv.finalize
+
+rhv.nomatch:
+  br label %rhv.loop
+
+rhv.finalize:
+  %rhv.fin_buf = phi i8* [ %rhv.append_out, %rhv.para_domatch ], [ %rhv.append_out, %rhv.literal_ready ], [ %rhv.append_out, %rhv.regex_ready ], [ %rhv.out_cur, %rhv.eof_plain ], [ %rhv.out_cur, %rhv.regex_eof_ready ], [ %rhv.out_cur, %rhv.regex_eof_miss ]
+  %rhv.fin_len = phi i64 [ %rhv.pc_len, %rhv.para_domatch ], [ %rhv.mstart, %rhv.literal_ready ], [ %rhv.regex_so, %rhv.regex_ready ], [ %rhv.out_len, %rhv.eof_plain ], [ %rhv.eof_so, %rhv.regex_eof_ready ], [ %rhv.out_len, %rhv.regex_eof_miss ]
+  store i8 1, i8* %rhv.started_slot
+  %rhv.has_chars = icmp sgt i64 %rhv.fin_len, 0
+  br i1 %rhv.has_chars, label %rhv.check_cr, label %rhv.intern_empty
+
+rhv.check_cr:
+  %rhv.last_idx = sub i64 %rhv.fin_len, 1
+  %rhv.last_ptr = getelementptr i8, i8* %rhv.fin_buf, i64 %rhv.last_idx
+  %rhv.last = load i8, i8* %rhv.last_ptr
+  %rhv.rsmode_cr = load i8, i8* @wam_rs_mode
+  %rhv.rsmode_literal = icmp eq i8 %rhv.rsmode_cr, 0
+  %rhv.rslen_cr = load i64, i64* @wam_rs_len
+  %rhv.rslen_is_1 = icmp eq i64 %rhv.rslen_cr, 1
+  %rhv.rsptr_cr = load i8*, i8** @wam_rs_ptr
+  %rhv.rsb_cr = load i8, i8* %rhv.rsptr_cr
+  %rhv.rsb_is_lf = icmp eq i8 %rhv.rsb_cr, 10
+  %rhv.rs_is_lf0 = and i1 %rhv.rslen_is_1, %rhv.rsb_is_lf
+  %rhv.rs_is_lf = and i1 %rhv.rsmode_literal, %rhv.rs_is_lf0
+  %rhv.last_is_cr = icmp eq i8 %rhv.last, 13
+  %rhv.do_trim_cr = and i1 %rhv.rs_is_lf, %rhv.last_is_cr
+  %rhv.para_cr = icmp eq i64 %rhv.rslen_cr, 0
+  %rhv.last_is_nl = icmp eq i8 %rhv.last, 10
+  %rhv.do_trim_para = and i1 %rhv.para_cr, %rhv.last_is_nl
+  %rhv.do_trim = or i1 %rhv.do_trim_cr, %rhv.do_trim_para
+  %rhv.trim_len = select i1 %rhv.do_trim, i64 %rhv.last_idx, i64 %rhv.fin_len
+  br label %rhv.intern
+
+rhv.intern_empty:
+  br label %rhv.intern
+
+rhv.intern:
+  %rhv.final_len = phi i64 [ %rhv.trim_len, %rhv.check_cr ], [ 0, %rhv.intern_empty ]
+  %rhv.term = getelementptr i8, i8* %rhv.fin_buf, i64 %rhv.final_len
+  store i8 0, i8* %rhv.term
+  %rhv.aid = call i64 @wam_intern_atom(i8* %rhv.fin_buf, i64 %rhv.final_len)
+  %rhv.v0 = insertvalue %Value undef, i32 0, 0
+  %rhv.v = insertvalue %Value %rhv.v0, i64 %rhv.aid, 1
+  call void @free(i8* %rhv.fin_buf)
+  ret %Value %rhv.v
+
+rhv.eof:
+  call void @free(i8* %rhv.out_cur)
+  %rhv.eof_ptr = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof_atom, i32 0, i32 0
+  %rhv.eof_aid = call i64 @wam_intern_atom(i8* %rhv.eof_ptr, i64 11)
+  %rhv.eof_v0 = insertvalue %Value undef, i32 0, 0
+  %rhv.eof_v = insertvalue %Value %rhv.eof_v0, i64 %rhv.eof_aid, 1
+  ret %Value %rhv.eof_v
+
+rhv.free_out_fail:
+  %rhv.fail_out = phi i8* [ %rhv.out_cur, %rhv.fill ], [ %rhv.out_cur, %rhv.grow_out ], [ %rhv.out_cur, %rhv.grow_alloc ], [ %rhv.append_out, %rhv.literal_copy ], [ %rhv.append_out, %rhv.regex_copy ], [ %rhv.append_out, %rhv.regex_replay ], [ %rhv.out_cur, %rhv.regex_eof_copy ], [ %rhv.out_cur, %rhv.regex_eof_replay ]
+  call void @free(i8* %rhv.fail_out)
+  br label %rhv.fail
+}
+{{case wam_stream_read_line_transient_value}}
+; Transient-line variant of read_line for per-record streaming: the
+; line lands in the shared @wam_transient_line_buf (grown geometrically,
+; reused across reads, never freed) and the returned atom Value carries
+; the reserved transient id 2^62 that @wam_atom_to_string maps to that
+; buffer. No malloc/free, no hashing, no atom-table append per record,
+; and memory stays constant on unbounded streams. Contract: the Value
+; is valid only until the next transient read -- callers that persist
+; line-derived data past the record must intern it (field-slice assoc
+; keys and $0 foreign-call arguments already do). EOF still returns the
+; real interned end_of_file atom.
+define %Value @wam_stream_read_line_transient_value(%Value %handle_value) {
+entry:
+  %rtv.rs_so_slot = alloca i64, align 8
+  %rtv.rs_eo_slot = alloca i64, align 8
+  %rtv.t = call i32 @value_tag(%Value %handle_value)
+  %rtv.is_int = icmp eq i32 %rtv.t, 1
+  br i1 %rtv.is_int, label %rtv.lookup_handle, label %rtv.fail
+
+rtv.fail:
+  %rtv.bad = call %Value @wam_stream_fail_value()
+  ret %Value %rtv.bad
+
+rtv.lookup_handle:
+  %rtv.handle64 = call i64 @value_payload(%Value %handle_value)
+  %rtv.handle = trunc i64 %rtv.handle64 to i32
+  %rtv.handle_min = icmp sgt i32 %rtv.handle, 0
+  %rtv.handle_max = icmp ult i32 %rtv.handle, 4096
+  %rtv.handle_ok = and i1 %rtv.handle_min, %rtv.handle_max
+  br i1 %rtv.handle_ok, label %rtv.load_handle, label %rtv.fail
+
+rtv.load_handle:
+  %rtv.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %rtv.handle
+  %rtv.reader = load %WamLineReader*, %WamLineReader** %rtv.slot
+  %rtv.reader_null = icmp eq %WamLineReader* %rtv.reader, null
+  br i1 %rtv.reader_null, label %rtv.fail, label %rtv.have_handle
+
+rtv.have_handle:
+  %rtv.fd_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 0
+  %rtv.fd = load i32, i32* %rtv.fd_slot
+  %rtv.fd_ok = icmp sge i32 %rtv.fd, 0
+  %rtv.started_slot = getelementptr [4096 x i8], [4096 x i8]* @wam_stream_handle_started, i32 0, i32 %rtv.handle
+  %rtv.started = load i8, i8* %rtv.started_slot
+  %rtv.at_file_start = icmp eq i8 %rtv.started, 0
+  br i1 %rtv.fd_ok, label %rtv.ensure_out, label %rtv.fail
+
+rtv.ensure_out:
+  %rtv.cap0 = load i64, i64* @wam_transient_line_cap
+  %rtv.have_buf = icmp sgt i64 %rtv.cap0, 0
+  br i1 %rtv.have_buf, label %rtv.loop_pre, label %rtv.first_alloc
+
+rtv.first_alloc:
+  %rtv.first_buf = call i8* @malloc(i64 4096)
+  %rtv.first_null = icmp eq i8* %rtv.first_buf, null
+  br i1 %rtv.first_null, label %rtv.fail, label %rtv.first_store
+
+rtv.first_store:
+  store i8* %rtv.first_buf, i8** @wam_transient_line_buf
+  store i64 4096, i64* @wam_transient_line_cap
+  br label %rtv.loop_pre
+
+rtv.loop_pre:
+  %rtv.out0 = load i8*, i8** @wam_transient_line_buf
+  %rtv.cap1 = load i64, i64* @wam_transient_line_cap
+  br label %rtv.loop
+
+rtv.loop:
+  %rtv.out_len = phi i64 [ 0, %rtv.loop_pre ], [ %rtv.out_len, %rtv.after_read ], [ %rtv.next_out_len, %rtv.nomatch ], [ %rtv.out_len, %rtv.para_skip ]
+  %rtv.out_cur = phi i8* [ %rtv.out0, %rtv.loop_pre ], [ %rtv.out_cur, %rtv.after_read ], [ %rtv.append_out, %rtv.nomatch ], [ %rtv.out_cur, %rtv.para_skip ]
+  %rtv.out_cap = phi i64 [ %rtv.cap1, %rtv.loop_pre ], [ %rtv.out_cap, %rtv.after_read ], [ %rtv.append_cap, %rtv.nomatch ], [ %rtv.out_cap, %rtv.para_skip ]
+  %rtv.buf_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 1
+  %rtv.buf = load i8*, i8** %rtv.buf_slot
+  %rtv.len_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 3
+  %rtv.len = load i64, i64* %rtv.len_slot
+  %rtv.pos_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 4
+  %rtv.pos = load i64, i64* %rtv.pos_slot
+  %rtv.have_byte = icmp slt i64 %rtv.pos, %rtv.len
+  br i1 %rtv.have_byte, label %rtv.consume, label %rtv.fill
+
+rtv.fill:
+  %rtv.cap_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 2
+  %rtv.rcap = load i64, i64* %rtv.cap_slot
+  %rtv.n = call i64 @read(i32 %rtv.fd, i8* %rtv.buf, i64 %rtv.rcap)
+  %rtv.n_neg = icmp slt i64 %rtv.n, 0
+  br i1 %rtv.n_neg, label %rtv.fail, label %rtv.check_eof
+
+rtv.check_eof:
+  %rtv.n_zero = icmp eq i64 %rtv.n, 0
+  br i1 %rtv.n_zero, label %rtv.eof_or_partial, label %rtv.after_read
+
+rtv.after_read:
+  store i64 %rtv.n, i64* %rtv.len_slot
+  store i64 0, i64* %rtv.pos_slot
+  br label %rtv.loop
+
+rtv.eof_or_partial:
+  %rtv.empty_line = icmp eq i64 %rtv.out_len, 0
+  br i1 %rtv.empty_line, label %rtv.eof, label %rtv.eof_dispatch
+
+rtv.eof_dispatch:
+  %rtv.eof_mode = load i8, i8* @wam_rs_mode
+  %rtv.eof_regex = icmp eq i8 %rtv.eof_mode, 2
+  br i1 %rtv.eof_regex, label %rtv.regex_eof_prepare, label %rtv.eof_plain
+
+rtv.eof_plain:
+  call void @wam_rt_clear()
+  br label %rtv.finalize
+
+rtv.regex_eof_prepare:
+  %rtv.eof_term = getelementptr i8, i8* %rtv.out_cur, i64 %rtv.out_len
+  store i8 0, i8* %rtv.eof_term
+  %rtv.eof_found = call i1 @wam_rs_regex_find(i8* %rtv.out_cur, i64 %rtv.out_len, i1 %rtv.at_file_start, i64* %rtv.rs_so_slot, i64* %rtv.rs_eo_slot)
+  br i1 %rtv.eof_found, label %rtv.regex_eof_copy, label %rtv.regex_eof_miss
+
+rtv.regex_eof_copy:
+  %rtv.eof_so = load i64, i64* %rtv.rs_so_slot
+  %rtv.eof_eo = load i64, i64* %rtv.rs_eo_slot
+  %rtv.eof_sep_len = sub i64 %rtv.eof_eo, %rtv.eof_so
+  %rtv.eof_sep = getelementptr i8, i8* %rtv.out_cur, i64 %rtv.eof_so
+  %rtv.eof_rt_ok = call i1 @wam_rt_set(i8* %rtv.eof_sep, i64 %rtv.eof_sep_len)
+  br i1 %rtv.eof_rt_ok, label %rtv.regex_eof_replay, label %rtv.fail
+
+rtv.regex_eof_replay:
+  %rtv.eof_tail = sub i64 %rtv.out_len, %rtv.eof_eo
+  %rtv.eof_tail_src = getelementptr i8, i8* %rtv.out_cur, i64 %rtv.eof_eo
+  %rtv.eof_replay_ok = call i1 @wam_stream_reader_set_replay(%WamLineReader* %rtv.reader, i8* %rtv.eof_tail_src, i64 %rtv.eof_tail)
+  br i1 %rtv.eof_replay_ok, label %rtv.regex_eof_ready, label %rtv.fail
+
+rtv.regex_eof_ready:
+  br label %rtv.finalize
+
+rtv.regex_eof_miss:
+  call void @wam_rt_clear()
+  br label %rtv.finalize
+
+rtv.consume:
+  %rtv.char_ptr = getelementptr i8, i8* %rtv.buf, i64 %rtv.pos
+  %rtv.ch = load i8, i8* %rtv.char_ptr
+  %rtv.pos_next = add i64 %rtv.pos, 1
+  store i64 %rtv.pos_next, i64* %rtv.pos_slot
+  ; paragraph mode (rs_len == 0): skip leading blank lines -- a newline while the
+  ; record is still empty is consumed without being appended.
+  %rtv.rslen_s = load i64, i64* @wam_rs_len
+  %rtv.para_s = icmp eq i64 %rtv.rslen_s, 0
+  %rtv.empty_s = icmp eq i64 %rtv.out_len, 0
+  %rtv.nl_s = icmp eq i8 %rtv.ch, 10
+  %rtv.pe_s = and i1 %rtv.para_s, %rtv.empty_s
+  %rtv.skip_s = and i1 %rtv.pe_s, %rtv.nl_s
+  br i1 %rtv.skip_s, label %rtv.para_skip, label %rtv.append
+
+rtv.para_skip:
+  br label %rtv.loop
+
+rtv.append:
+  %rtv.next_out_len_pre = add i64 %rtv.out_len, 1
+  %rtv.has_room = icmp ult i64 %rtv.next_out_len_pre, %rtv.out_cap
+  br i1 %rtv.has_room, label %rtv.append_store, label %rtv.grow_out
+
+rtv.grow_out:
+  %rtv.new_out_cap = shl i64 %rtv.out_cap, 1
+  %rtv.cap_grew = icmp ugt i64 %rtv.new_out_cap, %rtv.out_cap
+  br i1 %rtv.cap_grew, label %rtv.grow_alloc, label %rtv.fail
+
+rtv.grow_alloc:
+  %rtv.grown_out = call i8* @realloc(i8* %rtv.out_cur, i64 %rtv.new_out_cap)
+  %rtv.grown_null = icmp eq i8* %rtv.grown_out, null
+  br i1 %rtv.grown_null, label %rtv.fail, label %rtv.grow_store
+
+rtv.grow_store:
+  store i8* %rtv.grown_out, i8** @wam_transient_line_buf
+  store i64 %rtv.new_out_cap, i64* @wam_transient_line_cap
+  br label %rtv.append_store
+
+rtv.append_store:
+  %rtv.append_out = phi i8* [ %rtv.out_cur, %rtv.append ], [ %rtv.grown_out, %rtv.grow_store ]
+  %rtv.append_cap = phi i64 [ %rtv.out_cap, %rtv.append ], [ %rtv.new_out_cap, %rtv.grow_store ]
+  %rtv.out_ptr = getelementptr i8, i8* %rtv.append_out, i64 %rtv.out_len
+  store i8 %rtv.ch, i8* %rtv.out_ptr
+  %rtv.next_out_len = add i64 %rtv.out_len, 1
+  br label %rtv.checkmatch
+
+; Dispatch literal, paragraph, and regex record-separator modes explicitly.
+; Literal mode uses suffix matching, paragraph mode recognizes a blank line
+; (two adjacent newlines), and regex mode scans completed reader blocks.
+rtv.checkmatch:
+  %rtv.rsmode = load i8, i8* @wam_rs_mode
+  switch i8 %rtv.rsmode, label %rtv.literal_check [
+    i8 1, label %rtv.paragraph_check
+    i8 2, label %rtv.regex_maybe_scan
+  ]
+
+rtv.paragraph_check:
+  br label %rtv.literal_check
+
+rtv.literal_check:
+  %rtv.rslen = load i64, i64* @wam_rs_len
+  %rtv.is_para = icmp eq i64 %rtv.rslen, 0
+  br i1 %rtv.is_para, label %rtv.para_check, label %rtv.suffix_check
+
+rtv.para_check:
+  %rtv.pc_enough = icmp uge i64 %rtv.next_out_len, 2
+  br i1 %rtv.pc_enough, label %rtv.para_domatch, label %rtv.nomatch
+
+rtv.para_domatch:
+  %rtv.pc_len = sub i64 %rtv.next_out_len, 2
+  %rtv.pc_p2 = getelementptr i8, i8* %rtv.append_out, i64 %rtv.pc_len
+  %rtv.pc_i1 = sub i64 %rtv.next_out_len, 1
+  %rtv.pc_p1 = getelementptr i8, i8* %rtv.append_out, i64 %rtv.pc_i1
+  %rtv.pc_c2 = load i8, i8* %rtv.pc_p2
+  %rtv.pc_c1 = load i8, i8* %rtv.pc_p1
+  %rtv.pc_c2nl = icmp eq i8 %rtv.pc_c2, 10
+  %rtv.pc_c1nl = icmp eq i8 %rtv.pc_c1, 10
+  %rtv.pc_both = and i1 %rtv.pc_c2nl, %rtv.pc_c1nl
+  br i1 %rtv.pc_both, label %rtv.finalize, label %rtv.nomatch
+
+rtv.suffix_check:
+  %rtv.enough = icmp uge i64 %rtv.next_out_len, %rtv.rslen
+  br i1 %rtv.enough, label %rtv.domatch, label %rtv.nomatch
+
+rtv.domatch:
+  %rtv.mstart = sub i64 %rtv.next_out_len, %rtv.rslen
+  %rtv.mptr = getelementptr i8, i8* %rtv.append_out, i64 %rtv.mstart
+  %rtv.rsptr = load i8*, i8** @wam_rs_ptr
+  %rtv.cmp = call i32 @memcmp(i8* %rtv.mptr, i8* %rtv.rsptr, i64 %rtv.rslen)
+  %rtv.matched = icmp eq i32 %rtv.cmp, 0
+  br i1 %rtv.matched, label %rtv.literal_copy, label %rtv.nomatch
+
+rtv.literal_copy:
+  %rtv.literal_rt_ok = call i1 @wam_rt_set(i8* %rtv.mptr, i64 %rtv.rslen)
+  br i1 %rtv.literal_rt_ok, label %rtv.literal_ready, label %rtv.fail
+
+rtv.literal_ready:
+  br label %rtv.finalize
+
+; Keep the transient reader scan points aligned with the persistent reader.
+rtv.regex_maybe_scan:
+  %rtv.regex_scan_boundary = icmp eq i64 %rtv.pos_next, %rtv.len
+  br i1 %rtv.regex_scan_boundary, label %rtv.regex_prepare, label %rtv.nomatch
+
+rtv.regex_prepare:
+  %rtv.regex_term = getelementptr i8, i8* %rtv.append_out, i64 %rtv.next_out_len
+  store i8 0, i8* %rtv.regex_term
+  %rtv.regex_found = call i1 @wam_rs_regex_find(i8* %rtv.append_out, i64 %rtv.next_out_len, i1 %rtv.at_file_start, i64* %rtv.rs_so_slot, i64* %rtv.rs_eo_slot)
+  br i1 %rtv.regex_found, label %rtv.regex_hit, label %rtv.nomatch
+
+rtv.regex_hit:
+  %rtv.regex_so = load i64, i64* %rtv.rs_so_slot
+  %rtv.regex_eo = load i64, i64* %rtv.rs_eo_slot
+  %rtv.regex_at_end = icmp eq i64 %rtv.regex_eo, %rtv.next_out_len
+  br i1 %rtv.regex_at_end, label %rtv.nomatch, label %rtv.regex_copy
+
+rtv.regex_copy:
+  %rtv.regex_sep_len = sub i64 %rtv.regex_eo, %rtv.regex_so
+  %rtv.regex_sep = getelementptr i8, i8* %rtv.append_out, i64 %rtv.regex_so
+  %rtv.regex_rt_ok = call i1 @wam_rt_set(i8* %rtv.regex_sep, i64 %rtv.regex_sep_len)
+  br i1 %rtv.regex_rt_ok, label %rtv.regex_replay, label %rtv.fail
+
+rtv.regex_replay:
+  %rtv.regex_tail = sub i64 %rtv.next_out_len, %rtv.regex_eo
+  %rtv.regex_tail_src = getelementptr i8, i8* %rtv.append_out, i64 %rtv.regex_eo
+  %rtv.regex_replay_ok = call i1 @wam_stream_reader_set_replay(%WamLineReader* %rtv.reader, i8* %rtv.regex_tail_src, i64 %rtv.regex_tail)
+  br i1 %rtv.regex_replay_ok, label %rtv.regex_ready, label %rtv.fail
+
+rtv.regex_ready:
+  br label %rtv.finalize
+
+rtv.nomatch:
+  br label %rtv.loop
+
+rtv.finalize:
+  %rtv.fin_buf = phi i8* [ %rtv.append_out, %rtv.para_domatch ], [ %rtv.append_out, %rtv.literal_ready ], [ %rtv.append_out, %rtv.regex_ready ], [ %rtv.out_cur, %rtv.eof_plain ], [ %rtv.out_cur, %rtv.regex_eof_ready ], [ %rtv.out_cur, %rtv.regex_eof_miss ]
+  %rtv.fin_len = phi i64 [ %rtv.pc_len, %rtv.para_domatch ], [ %rtv.mstart, %rtv.literal_ready ], [ %rtv.regex_so, %rtv.regex_ready ], [ %rtv.out_len, %rtv.eof_plain ], [ %rtv.eof_so, %rtv.regex_eof_ready ], [ %rtv.out_len, %rtv.regex_eof_miss ]
+  store i8 1, i8* %rtv.started_slot
+  %rtv.has_chars = icmp sgt i64 %rtv.fin_len, 0
+  br i1 %rtv.has_chars, label %rtv.check_cr, label %rtv.terminate_empty
+
+rtv.check_cr:
+  %rtv.last_idx = sub i64 %rtv.fin_len, 1
+  %rtv.last_ptr = getelementptr i8, i8* %rtv.fin_buf, i64 %rtv.last_idx
+  %rtv.last = load i8, i8* %rtv.last_ptr
+  %rtv.rsmode_cr = load i8, i8* @wam_rs_mode
+  %rtv.rsmode_literal = icmp eq i8 %rtv.rsmode_cr, 0
+  %rtv.rslen_cr = load i64, i64* @wam_rs_len
+  %rtv.rslen_is_1 = icmp eq i64 %rtv.rslen_cr, 1
+  %rtv.rsptr_cr = load i8*, i8** @wam_rs_ptr
+  %rtv.rsb_cr = load i8, i8* %rtv.rsptr_cr
+  %rtv.rsb_is_lf = icmp eq i8 %rtv.rsb_cr, 10
+  %rtv.rs_is_lf0 = and i1 %rtv.rslen_is_1, %rtv.rsb_is_lf
+  %rtv.rs_is_lf = and i1 %rtv.rsmode_literal, %rtv.rs_is_lf0
+  %rtv.last_is_cr = icmp eq i8 %rtv.last, 13
+  %rtv.do_trim_cr = and i1 %rtv.rs_is_lf, %rtv.last_is_cr
+  ; paragraph mode: strip a lone trailing newline (only reachable at EOF; a
+  ; blank-line boundary already trimmed the separator).
+  %rtv.para_cr = icmp eq i64 %rtv.rslen_cr, 0
+  %rtv.last_is_nl = icmp eq i8 %rtv.last, 10
+  %rtv.do_trim_para = and i1 %rtv.para_cr, %rtv.last_is_nl
+  %rtv.do_trim = or i1 %rtv.do_trim_cr, %rtv.do_trim_para
+  %rtv.trim_len = select i1 %rtv.do_trim, i64 %rtv.last_idx, i64 %rtv.fin_len
+  br label %rtv.terminate
+
+rtv.terminate_empty:
+  br label %rtv.terminate
+
+rtv.terminate:
+  %rtv.final_len = phi i64 [ %rtv.trim_len, %rtv.check_cr ], [ 0, %rtv.terminate_empty ]
+  %rtv.term = getelementptr i8, i8* %rtv.fin_buf, i64 %rtv.final_len
+  store i8 0, i8* %rtv.term
+  %rtv.v0 = insertvalue %Value undef, i32 0, 0
+  %rtv.v = insertvalue %Value %rtv.v0, i64 4611686018427387904, 1
+  ret %Value %rtv.v
+
+rtv.eof:
+  %rtv.eof_ptr = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof_atom, i32 0, i32 0
+  %rtv.eof_aid = call i64 @wam_intern_atom(i8* %rtv.eof_ptr, i64 11)
+  %rtv.eof_v0 = insertvalue %Value undef, i32 0, 0
+  %rtv.eof_v = insertvalue %Value %rtv.eof_v0, i64 %rtv.eof_aid, 1
+  ret %Value %rtv.eof_v
+}
+{{case wam_stream_read_record}}
+; Fixed-size binary record reader over the buffered stream: copies
+; exactly %size bytes into %dst through the reader buffer. Returns
+; 1 for a full record, 0 for clean EOF at a record boundary, and -1
+; for a read error or a trailing partial record.
+define i64 @wam_stream_read_record(%Value %handle_value, i64 %size, i8* %dst) {
+entry:
+  %rrv.t = call i32 @value_tag(%Value %handle_value)
+  %rrv.is_int = icmp eq i32 %rrv.t, 1
+  br i1 %rrv.is_int, label %rrv.lookup_handle, label %rrv.fail
+
+rrv.fail:
+  ret i64 -1
+
+rrv.lookup_handle:
+  %rrv.handle64 = call i64 @value_payload(%Value %handle_value)
+  %rrv.handle = trunc i64 %rrv.handle64 to i32
+  %rrv.handle_min = icmp sgt i32 %rrv.handle, 0
+  %rrv.handle_max = icmp ult i32 %rrv.handle, 4096
+  %rrv.handle_ok = and i1 %rrv.handle_min, %rrv.handle_max
+  br i1 %rrv.handle_ok, label %rrv.load_handle, label %rrv.fail
+
+rrv.load_handle:
+  %rrv.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %rrv.handle
+  %rrv.reader = load %WamLineReader*, %WamLineReader** %rrv.slot
+  %rrv.reader_null = icmp eq %WamLineReader* %rrv.reader, null
+  br i1 %rrv.reader_null, label %rrv.fail, label %rrv.have_handle
+
+rrv.have_handle:
+  %rrv.fd_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 0
+  %rrv.fd = load i32, i32* %rrv.fd_slot
+  %rrv.fd_ok = icmp sge i32 %rrv.fd, 0
+  br i1 %rrv.fd_ok, label %rrv.loop, label %rrv.fail
+
+rrv.loop:
+  %rrv.copied = phi i64 [ 0, %rrv.have_handle ], [ %rrv.copied_next, %rrv.chunk ], [ %rrv.copied, %rrv.after_read ]
+  %rrv.done = icmp uge i64 %rrv.copied, %size
+  br i1 %rrv.done, label %rrv.full, label %rrv.need_bytes
+
+rrv.full:
+  ret i64 1
+
+rrv.need_bytes:
+  %rrv.buf_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 1
+  %rrv.buf = load i8*, i8** %rrv.buf_slot
+  %rrv.len_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 3
+  %rrv.len = load i64, i64* %rrv.len_slot
+  %rrv.pos_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 4
+  %rrv.pos = load i64, i64* %rrv.pos_slot
+  %rrv.have_byte = icmp slt i64 %rrv.pos, %rrv.len
+  br i1 %rrv.have_byte, label %rrv.chunk, label %rrv.fill
+
+rrv.chunk:
+  %rrv.avail = sub i64 %rrv.len, %rrv.pos
+  %rrv.want = sub i64 %size, %rrv.copied
+  %rrv.avail_smaller = icmp ult i64 %rrv.avail, %rrv.want
+  %rrv.n_copy = select i1 %rrv.avail_smaller, i64 %rrv.avail, i64 %rrv.want
+  %rrv.src = getelementptr i8, i8* %rrv.buf, i64 %rrv.pos
+  %rrv.dstp = getelementptr i8, i8* %dst, i64 %rrv.copied
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %rrv.dstp, i8* %rrv.src, i64 %rrv.n_copy, i1 false)
+  %rrv.pos_next = add i64 %rrv.pos, %rrv.n_copy
+  store i64 %rrv.pos_next, i64* %rrv.pos_slot
+  %rrv.copied_next = add i64 %rrv.copied, %rrv.n_copy
+  br label %rrv.loop
+
+rrv.fill:
+  %rrv.cap_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 2
+  %rrv.cap = load i64, i64* %rrv.cap_slot
+  %rrv.n = call i64 @read(i32 %rrv.fd, i8* %rrv.buf, i64 %rrv.cap)
+  %rrv.n_neg = icmp slt i64 %rrv.n, 0
+  br i1 %rrv.n_neg, label %rrv.fail, label %rrv.check_eof
+
+rrv.check_eof:
+  %rrv.n_zero = icmp eq i64 %rrv.n, 0
+  br i1 %rrv.n_zero, label %rrv.eof, label %rrv.after_read
+
+rrv.after_read:
+  store i64 %rrv.n, i64* %rrv.len_slot
+  store i64 0, i64* %rrv.pos_slot
+  br label %rrv.loop
+
+rrv.eof:
+  ; Clean EOF only at a record boundary; a trailing partial record is
+  ; an error.
+  %rrv.at_boundary = icmp eq i64 %rrv.copied, 0
+  %rrv.eof_status = select i1 %rrv.at_boundary, i64 0, i64 -1
+  ret i64 %rrv.eof_status
+}
+{{case wam_stream_close_value}}
+define i1 @wam_stream_close_value(%Value %handle_value) {
+entry:
+  %sch.t = call i32 @value_tag(%Value %handle_value)
+  %sch.is_int = icmp eq i32 %sch.t, 1
+  br i1 %sch.is_int, label %sch.lookup_handle, label %sch.fail
+
+sch.fail:
+  ret i1 false
+
+sch.lookup_handle:
+  %sch.handle64 = call i64 @value_payload(%Value %handle_value)
+  %sch.handle = trunc i64 %sch.handle64 to i32
+  %sch.handle_min = icmp sgt i32 %sch.handle, 0
+  %sch.handle_max = icmp ult i32 %sch.handle, 4096
+  %sch.handle_ok = and i1 %sch.handle_min, %sch.handle_max
+  br i1 %sch.handle_ok, label %sch.load_handle, label %sch.fail
+
+sch.load_handle:
+  %sch.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %sch.handle
+  %sch.reader = load %WamLineReader*, %WamLineReader** %sch.slot
+  %sch.reader_null = icmp eq %WamLineReader* %sch.reader, null
+  br i1 %sch.reader_null, label %sch.already_closed, label %sch.have_handle
+
+sch.already_closed:
+  ret i1 true
+
+sch.have_handle:
+  %sch.fd_slot = getelementptr %WamLineReader, %WamLineReader* %sch.reader, i32 0, i32 0
+  %sch.fd = load i32, i32* %sch.fd_slot
+  %sch.fd_ok = icmp sge i32 %sch.fd, 0
+  br i1 %sch.fd_ok, label %sch.close, label %sch.already_closed
+
+sch.close:
+  %sch.buf_slot = getelementptr %WamLineReader, %WamLineReader* %sch.reader, i32 0, i32 1
+  %sch.buf = load i8*, i8** %sch.buf_slot
+  %sch.close_ret = call i32 @close(i32 %sch.fd)
+  store i32 -1, i32* %sch.fd_slot
+  call void @free(i8* %sch.buf)
+  %sch.reader_i8 = bitcast %WamLineReader* %sch.reader to i8*
+  call void @free(i8* %sch.reader_i8)
+  store %WamLineReader* null, %WamLineReader** %sch.slot
+  %sch.ok = icmp eq i32 %sch.close_ret, 0
+  ret i1 %sch.ok
+}
+{{case wam_getline_file}}
+; awk `getline var < "file"`: read the next line of a file into a variable.
+; %pathptr/%pathlen name the file; %line_id_out receives the interned atom id of
+; the line on success. Returns 1 (a line was read), 0 (EOF), or -1 (open/read
+; error) -- the awk getline return contract.
+;
+; Handles are keyed by FILENAME in a small process-wide registry (so every
+; getline site reading the same file shares one open handle and advances through
+; it, matching awk), opened lazily on first use. Capacity is 64 distinct files.
+@wam_getline_reg_ids = internal global [64 x i64] zeroinitializer
+@wam_getline_reg_h = internal global [64 x i64] zeroinitializer
+@wam_getline_reg_n = internal global i64 0
+
+define i64 @wam_getline_file(i8* %pathptr, i64 %pathlen, i64* %line_id_out) {
+entry:
+  %gl.pid = call i64 @wam_intern_atom(i8* %pathptr, i64 %pathlen)
+  %gl.n = load i64, i64* @wam_getline_reg_n
+  br label %gl.scan
+
+gl.scan:
+  %gl.i = phi i64 [ 0, %entry ], [ %gl.i1, %gl.scan_next ]
+  %gl.done = icmp sge i64 %gl.i, %gl.n
+  br i1 %gl.done, label %gl.open, label %gl.scan_body
+
+gl.scan_body:
+  %gl.idp = getelementptr [64 x i64], [64 x i64]* @wam_getline_reg_ids, i64 0, i64 %gl.i
+  %gl.id = load i64, i64* %gl.idp
+  %gl.hit = icmp eq i64 %gl.id, %gl.pid
+  br i1 %gl.hit, label %gl.found, label %gl.scan_next
+
+gl.scan_next:
+  %gl.i1 = add i64 %gl.i, 1
+  br label %gl.scan
+
+gl.found:
+  %gl.fhp = getelementptr [64 x i64], [64 x i64]* @wam_getline_reg_h, i64 0, i64 %gl.i
+  %gl.fh = load i64, i64* %gl.fhp
+  br label %gl.ready
+
+gl.open:
+  %gl.full = icmp sge i64 %gl.n, 64
+  br i1 %gl.full, label %gl.err, label %gl.do_open
+
+gl.do_open:
+  %gl.pv0 = insertvalue %Value undef, i32 0, 0
+  %gl.pv = insertvalue %Value %gl.pv0, i64 %gl.pid, 1
+  %gl.hv = call %Value @wam_stream_open_value(%Value %gl.pv)
+  %gl.htag = extractvalue %Value %gl.hv, 0
+  %gl.hpay = extractvalue %Value %gl.hv, 1
+  %gl.hint = icmp eq i32 %gl.htag, 1
+  %gl.hpos = icmp sgt i64 %gl.hpay, 0
+  %gl.hok = and i1 %gl.hint, %gl.hpos
+  br i1 %gl.hok, label %gl.store, label %gl.err
+
+gl.store:
+  %gl.sidp = getelementptr [64 x i64], [64 x i64]* @wam_getline_reg_ids, i64 0, i64 %gl.n
+  store i64 %gl.pid, i64* %gl.sidp
+  %gl.shp = getelementptr [64 x i64], [64 x i64]* @wam_getline_reg_h, i64 0, i64 %gl.n
+  store i64 %gl.hpay, i64* %gl.shp
+  %gl.n1 = add i64 %gl.n, 1
+  store i64 %gl.n1, i64* @wam_getline_reg_n
+  br label %gl.ready
+
+gl.ready:
+  %gl.hcur = phi i64 [ %gl.fh, %gl.found ], [ %gl.hpay, %gl.store ]
+  %gl.hv0 = insertvalue %Value undef, i32 1, 0
+  %gl.hvr = insertvalue %Value %gl.hv0, i64 %gl.hcur, 1
+  %gl.line = call %Value @wam_stream_read_line_value(%Value %gl.hvr)
+  %gl.ltag = extractvalue %Value %gl.line, 0
+  %gl.lpay = extractvalue %Value %gl.line, 1
+  %gl.is_int = icmp eq i32 %gl.ltag, 1
+  %gl.neg = icmp slt i64 %gl.lpay, 0
+  %gl.readerr = and i1 %gl.is_int, %gl.neg
+  br i1 %gl.readerr, label %gl.err, label %gl.chk_atom
+
+gl.chk_atom:
+  %gl.is_atom = icmp eq i32 %gl.ltag, 0
+  br i1 %gl.is_atom, label %gl.chk_eof, label %gl.err
+
+gl.chk_eof:
+  %gl.ls = call i8* @wam_atom_to_string(i64 %gl.lpay)
+  %gl.eofp = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof_atom, i32 0, i32 0
+  %gl.cmp = call i32 @strcmp(i8* %gl.ls, i8* %gl.eofp)
+  %gl.iseof = icmp eq i32 %gl.cmp, 0
+  br i1 %gl.iseof, label %gl.eof, label %gl.line_ok
+
+gl.line_ok:
+  store i64 %gl.lpay, i64* %line_id_out
+  ret i64 1
+
+gl.eof:
+  ret i64 0
+
+gl.err:
+  ret i64 -1
+}
+{{case wam_getline_main_var}}
+; awk main-input `getline var`: read from the already-open primary stream.
+; The persistent reader shares the exact handle, buffered position, RS state,
+; regex replay, and RT updates used by the outer record driver. The output slot
+; is written only for a real record, so EOF and read errors preserve the target.
+; Returns the awk 1, 0, or -1 status.
+define i64 @wam_getline_main_var(%Value %handle, i64* %line_id_out) {
+entry:
+  %gmv.line = call %Value @wam_stream_read_line_value(%Value %handle)
+  %gmv.tag = extractvalue %Value %gmv.line, 0
+  %gmv.payload = extractvalue %Value %gmv.line, 1
+  %gmv.is_int = icmp eq i32 %gmv.tag, 1
+  %gmv.negative = icmp slt i64 %gmv.payload, 0
+  %gmv.read_error = and i1 %gmv.is_int, %gmv.negative
+  br i1 %gmv.read_error, label %gmv.error, label %gmv.check_atom
+
+gmv.check_atom:
+  %gmv.is_atom = icmp eq i32 %gmv.tag, 0
+  br i1 %gmv.is_atom, label %gmv.check_eof, label %gmv.error
+
+gmv.check_eof:
+  %gmv.text = call i8* @wam_atom_to_string(i64 %gmv.payload)
+  %gmv.text_null = icmp eq i8* %gmv.text, null
+  br i1 %gmv.text_null, label %gmv.error, label %gmv.compare_eof
+
+gmv.compare_eof:
+  %gmv.eof_text = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof_atom, i32 0, i32 0
+  %gmv.eof_cmp = call i32 @strcmp(i8* %gmv.text, i8* %gmv.eof_text)
+  %gmv.is_eof = icmp eq i32 %gmv.eof_cmp, 0
+  br i1 %gmv.is_eof, label %gmv.eof, label %gmv.success
+
+gmv.success:
+  store i64 %gmv.payload, i64* %line_id_out
+  ret i64 1
+
+gmv.eof:
+  ret i64 0
+
+gmv.error:
+  ret i64 -1
+}
+{{case wam_getline_main_record}}
+; awk main-input `getline`: read the next primary-stream record into $0.
+; Use the transient reader so a drain loop keeps the main driver constant-space.
+; Snapshot the old record first and restore it on an error; clean EOF does not
+; modify the transient buffer. This shares the outer handle and active RS/RT.
+; Returns the awk 1, 0, or -1 status.
+define i64 @wam_getline_main_record(%Value %handle) {
+entry:
+  %gmr.old_ptr = load i8*, i8** @wam_transient_line_buf
+  %gmr.have_old = icmp ne i8* %gmr.old_ptr, null
+  br i1 %gmr.have_old, label %gmr.snapshot, label %gmr.read_without_snapshot
+
+gmr.snapshot:
+  %gmr.old_len = call i64 @strlen(i8* %gmr.old_ptr)
+  %gmr.snapshot_len = add i64 %gmr.old_len, 1
+  %gmr.snapshot_ptr = call i8* @malloc(i64 %gmr.snapshot_len)
+  %gmr.snapshot_null = icmp eq i8* %gmr.snapshot_ptr, null
+  br i1 %gmr.snapshot_null, label %gmr.error_without_read, label %gmr.save
+
+gmr.save:
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %gmr.snapshot_ptr, i8* %gmr.old_ptr, i64 %gmr.snapshot_len, i1 false)
+  br label %gmr.read
+
+gmr.read_without_snapshot:
+  br label %gmr.read
+
+gmr.read:
+  %gmr.saved_ptr = phi i8* [ %gmr.snapshot_ptr, %gmr.save ], [ null, %gmr.read_without_snapshot ]
+  %gmr.saved_len = phi i64 [ %gmr.old_len, %gmr.save ], [ 0, %gmr.read_without_snapshot ]
+  %gmr.line = call %Value @wam_stream_read_line_transient_value(%Value %handle)
+  %gmr.tag = extractvalue %Value %gmr.line, 0
+  %gmr.payload = extractvalue %Value %gmr.line, 1
+  %gmr.is_int = icmp eq i32 %gmr.tag, 1
+  %gmr.negative = icmp slt i64 %gmr.payload, 0
+  %gmr.read_error = and i1 %gmr.is_int, %gmr.negative
+  br i1 %gmr.read_error, label %gmr.restore_or_error, label %gmr.check_atom
+
+gmr.check_atom:
+  %gmr.is_atom = icmp eq i32 %gmr.tag, 0
+  br i1 %gmr.is_atom, label %gmr.check_record, label %gmr.restore_or_error
+
+gmr.check_record:
+  %gmr.is_record = icmp eq i64 %gmr.payload, 4611686018427387904
+  br i1 %gmr.is_record, label %gmr.success, label %gmr.eof
+
+gmr.success:
+  call void @free(i8* %gmr.saved_ptr)
+  ret i64 1
+
+gmr.eof:
+  call void @free(i8* %gmr.saved_ptr)
+  ret i64 0
+
+gmr.restore_or_error:
+  %gmr.have_snapshot = icmp ne i8* %gmr.saved_ptr, null
+  br i1 %gmr.have_snapshot, label %gmr.restore, label %gmr.error_without_read
+
+gmr.restore:
+  %gmr.restored = call i64 @wam_transient_atom_from_bytes(i8* %gmr.saved_ptr, i64 %gmr.saved_len)
+  call void @free(i8* %gmr.saved_ptr)
+  ret i64 -1
+
+gmr.error_without_read:
+  ret i64 -1
+}
+{{case wam_getline_file_record}}
+; awk getline from a literal file into the current record. Reuse the shared
+; filename registry and persistent reader, but force a physical newline record
+; for this v1 form and suppress RT changes. On success, copy the persistent
+; atom text into the reserved transient record buffer so the existing %line
+; Value immediately exposes the new $0. EOF and errors leave that buffer
+; untouched. Returns the awk 1, 0, or -1 status.
+define i64 @wam_getline_file_record(i8* %pathptr, i64 %pathlen) {
+entry:
+  %gr.old_rs_ptr = load i8*, i8** @wam_rs_ptr
+  %gr.old_rs_len = load i64, i64* @wam_rs_len
+  %gr.old_rs_mode = load i8, i8* @wam_rs_mode
+  %gr.old_rt_suppress = load i1, i1* @wam_rt_suppress
+  %gr.newline = getelementptr [2 x i8], [2 x i8]* @.wam_rs_default, i64 0, i64 0
+  store i8* %gr.newline, i8** @wam_rs_ptr
+  store i64 1, i64* @wam_rs_len
+  store i8 0, i8* @wam_rs_mode
+  ; Let the RS-aware reader update RT to the separator it reads (a physical
+  ; newline in v1, or empty at a trailing partial record / EOF), matching awk --
+  ; a redirected record getline sets RT just like the main reader does.
+  store i1 false, i1* @wam_rt_suppress
+  %gr.line_id_slot = alloca i64, align 8
+  %gr.status = call i64 @wam_getline_file(i8* %pathptr, i64 %pathlen, i64* %gr.line_id_slot)
+  store i8* %gr.old_rs_ptr, i8** @wam_rs_ptr
+  store i64 %gr.old_rs_len, i64* @wam_rs_len
+  store i8 %gr.old_rs_mode, i8* @wam_rs_mode
+  store i1 %gr.old_rt_suppress, i1* @wam_rt_suppress
+  %gr.got = icmp eq i64 %gr.status, 1
+  br i1 %gr.got, label %gr.copy, label %gr.return_status
+
+gr.copy:
+  %gr.line_id = load i64, i64* %gr.line_id_slot
+  %gr.line_ptr = call i8* @wam_atom_to_string(i64 %gr.line_id)
+  %gr.line_null = icmp eq i8* %gr.line_ptr, null
+  br i1 %gr.line_null, label %gr.copy_error, label %gr.copy_bytes
+
+gr.copy_bytes:
+  %gr.line_len = call i64 @strlen(i8* %gr.line_ptr)
+  %gr.transient_id = call i64 @wam_transient_atom_from_bytes(i8* %gr.line_ptr, i64 %gr.line_len)
+  %gr.copy_failed = icmp slt i64 %gr.transient_id, 0
+  br i1 %gr.copy_failed, label %gr.copy_error, label %gr.success
+
+gr.success:
+  ret i64 1
+
+gr.copy_error:
+  ret i64 -1
+
+gr.return_status:
+  ret i64 %gr.status
+}
+{{case wam_getline_pipe}}
+; awk pipe getline: run a command through the host shell and read its stdout
+; one physical newline record at a time. Commands share a process-wide
+; registry keyed by command text, so repeated calls continue the same pipe.
+; A terminal state is retained after pclose so EOF and errors never respawn
+; the command. Capacity is 64 distinct commands.
+;
+; The output slot is written only after a complete record is available.
+; Returns 1 for a record, 0 for clean EOF, and -1 for popen, read, allocation,
+; or pclose errors. The command exit status does not turn pipe EOF into an
+; error. A final partial record is returned before a rare pclose error is
+; reported on the following call.
+@wam_getline_pipe_reg_ids = internal global [64 x i64] zeroinitializer
+@wam_getline_pipe_reg_fp = internal global [64 x i8*] zeroinitializer
+@wam_getline_pipe_reg_state = internal global [64 x i8] zeroinitializer
+@wam_getline_pipe_reg_n = internal global i64 0
+
+define i64 @wam_getline_pipe(i8* %cmdptr, i64 %cmdlen, i64* %line_id_out) {
+entry:
+  %gp.cid = call i64 @wam_intern_atom(i8* %cmdptr, i64 %cmdlen)
+  %gp.n = load i64, i64* @wam_getline_pipe_reg_n
+  br label %gp.scan
+
+gp.scan:
+  %gp.i = phi i64 [ 0, %entry ], [ %gp.i1, %gp.scan_next ]
+  %gp.scan_done = icmp sge i64 %gp.i, %gp.n
+  br i1 %gp.scan_done, label %gp.open, label %gp.scan_body
+
+gp.scan_body:
+  %gp.idp = getelementptr [64 x i64], [64 x i64]* @wam_getline_pipe_reg_ids, i64 0, i64 %gp.i
+  %gp.id = load i64, i64* %gp.idp
+  %gp.hit = icmp eq i64 %gp.id, %gp.cid
+  br i1 %gp.hit, label %gp.found, label %gp.scan_next
+
+gp.scan_next:
+  %gp.i1 = add i64 %gp.i, 1
+  br label %gp.scan
+
+gp.found:
+  %gp.found_statep = getelementptr [64 x i8], [64 x i8]* @wam_getline_pipe_reg_state, i64 0, i64 %gp.i
+  %gp.found_state = load i8, i8* %gp.found_statep
+  switch i8 %gp.found_state, label %gp.err [
+    i8 1, label %gp.found_open
+    i8 2, label %gp.eof
+    i8 3, label %gp.err
+  ]
+
+gp.found_open:
+  %gp.found_fpp = getelementptr [64 x i8*], [64 x i8*]* @wam_getline_pipe_reg_fp, i64 0, i64 %gp.i
+  %gp.found_fp = load i8*, i8** %gp.found_fpp
+  %gp.found_fp_null = icmp eq i8* %gp.found_fp, null
+  br i1 %gp.found_fp_null, label %gp.err, label %gp.ready
+
+gp.open:
+  %gp.full = icmp sge i64 %gp.n, 64
+  br i1 %gp.full, label %gp.err, label %gp.open_command
+
+gp.open_command:
+  %gp.command = call i8* @wam_atom_to_string(i64 %gp.cid)
+  %gp.command_null = icmp eq i8* %gp.command, null
+  br i1 %gp.command_null, label %gp.err, label %gp.do_popen
+
+gp.do_popen:
+  %gp.mode = alloca [2 x i8], align 1
+  %gp.mode_ptr = getelementptr [2 x i8], [2 x i8]* %gp.mode, i64 0, i64 0
+  store i8 114, i8* %gp.mode_ptr
+  %gp.mode_end = getelementptr i8, i8* %gp.mode_ptr, i64 1
+  store i8 0, i8* %gp.mode_end
+  %gp.opened_fp = call i8* @popen(i8* %gp.command, i8* %gp.mode_ptr)
+  %gp.open_failed = icmp eq i8* %gp.opened_fp, null
+  br i1 %gp.open_failed, label %gp.err, label %gp.store
+
+gp.store:
+  %gp.store_idp = getelementptr [64 x i64], [64 x i64]* @wam_getline_pipe_reg_ids, i64 0, i64 %gp.n
+  store i64 %gp.cid, i64* %gp.store_idp
+  %gp.store_fpp = getelementptr [64 x i8*], [64 x i8*]* @wam_getline_pipe_reg_fp, i64 0, i64 %gp.n
+  store i8* %gp.opened_fp, i8** %gp.store_fpp
+  %gp.store_statep = getelementptr [64 x i8], [64 x i8]* @wam_getline_pipe_reg_state, i64 0, i64 %gp.n
+  store i8 1, i8* %gp.store_statep
+  %gp.n1 = add i64 %gp.n, 1
+  store i64 %gp.n1, i64* @wam_getline_pipe_reg_n
+  br label %gp.ready
+
+gp.ready:
+  %gp.fp = phi i8* [ %gp.found_fp, %gp.found_open ], [ %gp.opened_fp, %gp.store ]
+  %gp.fpp = phi i8** [ %gp.found_fpp, %gp.found_open ], [ %gp.store_fpp, %gp.store ]
+  %gp.statep = phi i8* [ %gp.found_statep, %gp.found_open ], [ %gp.store_statep, %gp.store ]
+  %gp.buf0 = call i8* @malloc(i64 256)
+  %gp.buf0_null = icmp eq i8* %gp.buf0, null
+  br i1 %gp.buf0_null, label %gp.alloc_error, label %gp.read
+
+gp.read:
+  %gp.buf = phi i8* [ %gp.buf0, %gp.ready ], [ %gp.append_buf, %gp.append ]
+  %gp.len = phi i64 [ 0, %gp.ready ], [ %gp.len1, %gp.append ]
+  %gp.cap = phi i64 [ 256, %gp.ready ], [ %gp.append_cap, %gp.append ]
+  %gp.ch = call i32 @fgetc(i8* %gp.fp)
+  %gp.at_end = icmp eq i32 %gp.ch, -1
+  br i1 %gp.at_end, label %gp.read_end, label %gp.check_newline
+
+gp.check_newline:
+  %gp.is_newline = icmp eq i32 %gp.ch, 10
+  br i1 %gp.is_newline, label %gp.finish_open, label %gp.ensure
+
+gp.ensure:
+  %gp.full_buf = icmp uge i64 %gp.len, %gp.cap
+  br i1 %gp.full_buf, label %gp.grow, label %gp.append
+
+gp.grow:
+  %gp.new_cap = mul i64 %gp.cap, 2
+  %gp.grown = call i8* @realloc(i8* %gp.buf, i64 %gp.new_cap)
+  %gp.grow_failed = icmp eq i8* %gp.grown, null
+  br i1 %gp.grow_failed, label %gp.realloc_error, label %gp.append
+
+gp.append:
+  %gp.append_buf = phi i8* [ %gp.buf, %gp.ensure ], [ %gp.grown, %gp.grow ]
+  %gp.append_cap = phi i64 [ %gp.cap, %gp.ensure ], [ %gp.new_cap, %gp.grow ]
+  %gp.dst = getelementptr i8, i8* %gp.append_buf, i64 %gp.len
+  %gp.byte = trunc i32 %gp.ch to i8
+  store i8 %gp.byte, i8* %gp.dst
+  %gp.len1 = add i64 %gp.len, 1
+  br label %gp.read
+
+gp.finish_open:
+  %gp.open_has_chars = icmp ugt i64 %gp.len, 0
+  br i1 %gp.open_has_chars, label %gp.open_check_cr, label %gp.open_intern_empty
+
+gp.open_check_cr:
+  %gp.open_last_idx = sub i64 %gp.len, 1
+  %gp.open_last_ptr = getelementptr i8, i8* %gp.buf, i64 %gp.open_last_idx
+  %gp.open_last = load i8, i8* %gp.open_last_ptr
+  %gp.open_last_is_cr = icmp eq i8 %gp.open_last, 13
+  %gp.open_trimmed_len = select i1 %gp.open_last_is_cr, i64 %gp.open_last_idx, i64 %gp.len
+  br label %gp.open_intern
+
+gp.open_intern_empty:
+  br label %gp.open_intern
+
+gp.open_intern:
+  %gp.open_final_len = phi i64 [ %gp.open_trimmed_len, %gp.open_check_cr ], [ 0, %gp.open_intern_empty ]
+  %gp.line_id = call i64 @wam_intern_atom(i8* %gp.buf, i64 %gp.open_final_len)
+  call void @free(i8* %gp.buf)
+  store i64 %gp.line_id, i64* %line_id_out
+  ; The record was terminated by a physical newline (pipe getline is
+  ; newline-only in v1), so RT is that separator, matching awk.
+  %gp.rt_nl = getelementptr [2 x i8], [2 x i8]* @.wam_rs_default, i64 0, i64 0
+  %gp.rt_ok = call i1 @wam_rt_set(i8* %gp.rt_nl, i64 1)
+  ret i64 1
+
+gp.read_end:
+  %gp.read_error = call i32 @ferror(i8* %gp.fp)
+  %gp.read_failed = icmp ne i32 %gp.read_error, 0
+  br i1 %gp.read_failed, label %gp.io_error, label %gp.close_at_eof
+
+gp.close_at_eof:
+  %gp.close_status = call i32 @pclose(i8* %gp.fp)
+  store i8* null, i8** %gp.fpp
+  %gp.close_ok = icmp ne i32 %gp.close_status, -1
+  %gp.terminal_state = select i1 %gp.close_ok, i8 2, i8 3
+  store i8 %gp.terminal_state, i8* %gp.statep
+  %gp.have_partial = icmp ugt i64 %gp.len, 0
+  br i1 %gp.have_partial, label %gp.finish_partial, label %gp.finish_empty
+
+gp.finish_partial:
+  %gp.partial_last_idx = sub i64 %gp.len, 1
+  %gp.partial_last_ptr = getelementptr i8, i8* %gp.buf, i64 %gp.partial_last_idx
+  %gp.partial_last = load i8, i8* %gp.partial_last_ptr
+  %gp.partial_last_is_cr = icmp eq i8 %gp.partial_last, 13
+  %gp.partial_len = select i1 %gp.partial_last_is_cr, i64 %gp.partial_last_idx, i64 %gp.len
+  %gp.partial_id = call i64 @wam_intern_atom(i8* %gp.buf, i64 %gp.partial_len)
+  call void @free(i8* %gp.buf)
+  store i64 %gp.partial_id, i64* %line_id_out
+  ; A final record with no trailing newline had no separator: RT is empty.
+  call void @wam_rt_clear()
+  ret i64 1
+
+gp.finish_empty:
+  call void @free(i8* %gp.buf)
+  %gp.empty_status = select i1 %gp.close_ok, i64 0, i64 -1
+  ret i64 %gp.empty_status
+
+gp.alloc_error:
+  %gp.alloc_close = call i32 @pclose(i8* %gp.fp)
+  store i8* null, i8** %gp.fpp
+  store i8 3, i8* %gp.statep
+  ret i64 -1
+
+gp.realloc_error:
+  %gp.realloc_close = call i32 @pclose(i8* %gp.fp)
+  store i8* null, i8** %gp.fpp
+  store i8 3, i8* %gp.statep
+  call void @free(i8* %gp.buf)
+  ret i64 -1
+
+gp.io_error:
+  %gp.io_close = call i32 @pclose(i8* %gp.fp)
+  store i8* null, i8** %gp.fpp
+  store i8 3, i8* %gp.statep
+  call void @free(i8* %gp.buf)
+  ret i64 -1
+
+gp.eof:
+  ret i64 0
+
+gp.err:
+  ret i64 -1
+}
+{{case wam_getline_pipe_record}}
+; Pipe getline into the current record. The scalar helper owns command state
+; and produces a persistent atom. On success copy it into the reserved
+; transient record buffer so existing field and NF projections see the new
+; record immediately. EOF and errors do not touch the transient destination.
+define i64 @wam_getline_pipe_record(i8* %cmdptr, i64 %cmdlen) {
+entry:
+  %gpr.line_id_slot = alloca i64, align 8
+  %gpr.status = call i64 @wam_getline_pipe(i8* %cmdptr, i64 %cmdlen, i64* %gpr.line_id_slot)
+  %gpr.got = icmp eq i64 %gpr.status, 1
+  br i1 %gpr.got, label %gpr.copy, label %gpr.return_status
+
+gpr.copy:
+  %gpr.line_id = load i64, i64* %gpr.line_id_slot
+  %gpr.line_ptr = call i8* @wam_atom_to_string(i64 %gpr.line_id)
+  %gpr.line_null = icmp eq i8* %gpr.line_ptr, null
+  br i1 %gpr.line_null, label %gpr.copy_error, label %gpr.copy_bytes
+
+gpr.copy_bytes:
+  %gpr.line_len = call i64 @strlen(i8* %gpr.line_ptr)
+  %gpr.transient_id = call i64 @wam_transient_atom_from_bytes(i8* %gpr.line_ptr, i64 %gpr.line_len)
+  %gpr.copy_failed = icmp slt i64 %gpr.transient_id, 0
+  br i1 %gpr.copy_failed, label %gpr.copy_error, label %gpr.success
+
+gpr.success:
+  ret i64 1
+
+gpr.copy_error:
+  ret i64 -1
+
+gpr.return_status:
+  ret i64 %gpr.status
+}
+{{case wam_environ_get}}
+; awk ENVIRON["NAME"]: look up an environment variable by its NUL-terminated
+; name and return the interned atom id of its value, or 0 (the empty-string
+; sentinel) when it is unset -- matching awk, where a missing ENVIRON entry is
+; the empty string. getenv returns a pointer into the libc environment block;
+; @wam_intern_atom copies the bytes, so no separate arena copy is needed.
+define i64 @wam_environ_get(i8* %name) {
+entry:
+  %env.v = call i8* @getenv(i8* %name)
+  %env.null = icmp eq i8* %env.v, null
+  br i1 %env.null, label %env.unset, label %env.got
+
+env.got:
+  %env.len = call i64 @strlen(i8* %env.v)
+  %env.id = call i64 @wam_intern_atom(i8* %env.v, i64 %env.len)
+  ret i64 %env.id
+
+env.unset:
+  ret i64 0
+}
+{{case plawk_cmdline_load}}
+; awk ARGC / ARGV[i]: the command-line arguments. Read once (cached) from
+; /proc/self/cmdline, a buffer of NUL-separated argv segments -- so ARGV[i]
+; maps directly to the compiled binary argv (ARGV[0] the program, ARGV[1] the
+; first argument), matching awk. Linux-specific; a follow-on would capture
+; argc/argv in main for portability.
+@.plawk_cmdline_path = private constant [19 x i8] c"/proc/self/cmdline\00"
+@plawk_cmdline_buf = internal global [65536 x i8] zeroinitializer
+@plawk_cmdline_len = internal global i64 -1
+
+; Load /proc/self/cmdline into the buffer once; return its byte length (0 on
+; error or if empty). Cached in @plawk_cmdline_len (-1 = not yet loaded).
+define i64 @plawk_cmdline_load() {
+entry:
+  %cl.cached = load i64, i64* @plawk_cmdline_len
+  %cl.done = icmp sge i64 %cl.cached, 0
+  br i1 %cl.done, label %cl.ret, label %cl.load
+
+cl.load:
+  %cl.path = getelementptr [19 x i8], [19 x i8]* @.plawk_cmdline_path, i64 0, i64 0
+  %cl.fd = call i32 @open(i8* %cl.path, i32 0, i32 0)
+  %cl.fdok = icmp sge i32 %cl.fd, 0
+  br i1 %cl.fdok, label %cl.read, label %cl.fail
+
+cl.read:
+  %cl.buf = getelementptr [65536 x i8], [65536 x i8]* @plawk_cmdline_buf, i64 0, i64 0
+  %cl.n = call i64 @read(i32 %cl.fd, i8* %cl.buf, i64 65535)
+  %cl.c = call i32 @close(i32 %cl.fd)
+  %cl.neg = icmp slt i64 %cl.n, 0
+  %cl.len = select i1 %cl.neg, i64 0, i64 %cl.n
+  store i64 %cl.len, i64* @plawk_cmdline_len
+  ret i64 %cl.len
+
+cl.fail:
+  store i64 0, i64* @plawk_cmdline_len
+  ret i64 0
+
+cl.ret:
+  ret i64 %cl.cached
+}
+{{case wam_argc}}
+; ARGC: the number of NUL-terminated segments in the cmdline buffer.
+define i64 @wam_argc() {
+entry:
+  %ac.len = call i64 @plawk_cmdline_load()
+  %ac.buf = getelementptr [65536 x i8], [65536 x i8]* @plawk_cmdline_buf, i64 0, i64 0
+  br label %ac.loop
+
+ac.loop:
+  %ac.i = phi i64 [ 0, %entry ], [ %ac.i1, %ac.step ]
+  %ac.count = phi i64 [ 0, %entry ], [ %ac.count2, %ac.step ]
+  %ac.atend = icmp sge i64 %ac.i, %ac.len
+  br i1 %ac.atend, label %ac.ret, label %ac.step
+
+ac.step:
+  %ac.p = getelementptr i8, i8* %ac.buf, i64 %ac.i
+  %ac.ch = load i8, i8* %ac.p
+  %ac.isnul = icmp eq i8 %ac.ch, 0
+  %ac.inc = zext i1 %ac.isnul to i64
+  %ac.count2 = add i64 %ac.count, %ac.inc
+  %ac.i1 = add i64 %ac.i, 1
+  br label %ac.loop
+
+ac.ret:
+  ret i64 %ac.count
+}
+{{case wam_argv_get}}
+; ARGV[idx]: intern the idx-th NUL-terminated segment and return its atom id, or
+; 0 (empty) when idx is out of range. Segment idx starts right after the idx-th
+; NUL (segment 0 at offset 0).
+define i64 @wam_argv_get(i64 %idx) {
+entry:
+  %av.len = call i64 @plawk_cmdline_load()
+  %av.buf = getelementptr [65536 x i8], [65536 x i8]* @plawk_cmdline_buf, i64 0, i64 0
+  %av.negidx = icmp slt i64 %idx, 0
+  br i1 %av.negidx, label %av.zero, label %av.scan
+
+av.scan:
+  %av.i = phi i64 [ 0, %entry ], [ %av.i1, %av.step ]
+  %av.seen = phi i64 [ 0, %entry ], [ %av.seen2, %av.step ]
+  %av.start = phi i64 [ 0, %entry ], [ %av.start2, %av.step ]
+  %av.reached = icmp eq i64 %av.seen, %idx
+  br i1 %av.reached, label %av.found, label %av.more
+
+av.more:
+  %av.atend = icmp sge i64 %av.i, %av.len
+  br i1 %av.atend, label %av.zero, label %av.step
+
+av.step:
+  %av.p = getelementptr i8, i8* %av.buf, i64 %av.i
+  %av.ch = load i8, i8* %av.p
+  %av.isnul = icmp eq i8 %av.ch, 0
+  %av.i1 = add i64 %av.i, 1
+  %av.next_seen = add i64 %av.seen, 1
+  %av.seen2 = select i1 %av.isnul, i64 %av.next_seen, i64 %av.seen
+  %av.start2 = select i1 %av.isnul, i64 %av.i1, i64 %av.start
+  br label %av.scan
+
+av.found:
+  %av.oob = icmp sge i64 %av.start, %av.len
+  br i1 %av.oob, label %av.zero, label %av.emit
+
+av.emit:
+  %av.segp = getelementptr i8, i8* %av.buf, i64 %av.start
+  %av.seglen = call i64 @strlen(i8* %av.segp)
+  %av.id = call i64 @wam_intern_atom(i8* %av.segp, i64 %av.seglen)
+  ret i64 %av.id
+
+av.zero:
+  ret i64 0
+}
+{{/match}}

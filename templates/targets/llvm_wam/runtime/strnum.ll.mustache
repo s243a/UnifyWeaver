@@ -1,0 +1,600 @@
+{{match fn}}
+; strnum.ll.mustache -- awk numbers and strnums: numeric-string tests, comparisons, number formatting, strtod.
+; One case per runtime chunk (a define with its comments and globals); the assembly order is wam_llvm_runtime_chunk/2.
+{{case wam_looks_numeric}}
+; --- strnum support (PLAWK_STRNUM_DUALITY.md step 1) -------------------------
+; These primitives are the runtime half of POSIX numeric-string duality. They
+; are defined here and unit-tested standalone; no codegen calls them yet (the
+; scalar_strnum slot kind and comparison dispatch are later phases).
+
+; @wam_looks_numeric(s): does the NUL-terminated string %s look like a number
+; per POSIX (the whole string, after optional leading and trailing blanks, is a
+; valid numeric value)? strtod parses the leading number and reports where it
+; stopped; the string is numeric when a conversion happened and only blanks
+; (space or tab) remain after it. A null or empty string is not numeric.
+define i1 @wam_looks_numeric(i8* %s) {
+entry:
+  %ln.isnull = icmp eq i8* %s, null
+  br i1 %ln.isnull, label %ln.no, label %ln.check
+
+ln.check:
+  %ln.start = call i1 @wam_awk_numeric_start(i8* %s)
+  br i1 %ln.start, label %ln.parse, label %ln.no
+
+ln.parse:
+  %ln.endp = alloca i8*, align 8
+  %ln.val = call double @strtod(i8* %s, i8** %ln.endp)
+  %ln.end = load i8*, i8** %ln.endp
+  %ln.consumed = icmp ne i8* %ln.end, %s
+  br i1 %ln.consumed, label %ln.wsloop, label %ln.no
+
+ln.wsloop:
+  %ln.p = phi i8* [ %ln.end, %ln.parse ], [ %ln.pn, %ln.wsstep ]
+  %ln.c = load i8, i8* %ln.p
+  %ln.sp = icmp eq i8 %ln.c, 32
+  %ln.tab = icmp eq i8 %ln.c, 9
+  %ln.blank = or i1 %ln.sp, %ln.tab
+  br i1 %ln.blank, label %ln.wsstep, label %ln.wsdone
+
+ln.wsstep:
+  %ln.pn = getelementptr i8, i8* %ln.p, i64 1
+  br label %ln.wsloop
+
+ln.wsdone:
+  %ln.atnul = icmp eq i8 %ln.c, 0
+  br i1 %ln.atnul, label %ln.yes, label %ln.no
+
+ln.yes:
+  ret i1 1
+
+ln.no:
+  ret i1 0
+}
+{{case wam_strnum_cmp}}
+; @wam_strnum_cmp(as, akind, bs, bkind): compare two operands given as their
+; NUL-terminated string forms plus a kind tag per operand -- 0 = number,
+; 1 = strnum (input-derived), 2 = string literal. The comparison is numeric iff
+; BOTH operands are numeric-typed, where number is always numeric-typed, a strnum
+; is numeric-typed only when its content looks numeric, and a string literal
+; never is (POSIX strnum table, see PLAWK_STRNUM_DUALITY.md). Numeric comparison
+; is over strtod values; otherwise it is a strcmp of the two strings. Returns the
+; sign of the comparison as an i32: -1, 0, or 1.
+define i32 @wam_strnum_cmp(i8* %as, i8 %akind, i8* %bs, i8 %bkind) {
+entry:
+  ; operand A numeric-typed?
+  %sc.a_isnum = icmp eq i8 %akind, 0
+  %sc.a_isstrnum = icmp eq i8 %akind, 1
+  br i1 %sc.a_isnum, label %sc.a_yes, label %sc.a_maybe
+
+sc.a_maybe:
+  br i1 %sc.a_isstrnum, label %sc.a_look, label %sc.a_no
+
+sc.a_look:
+  %sc.a_ln = call i1 @wam_looks_numeric(i8* %as)
+  br label %sc.a_done
+
+sc.a_yes:
+  br label %sc.a_done
+
+sc.a_no:
+  br label %sc.a_done
+
+sc.a_done:
+  %sc.a_num = phi i1 [ 1, %sc.a_yes ], [ %sc.a_ln, %sc.a_look ], [ 0, %sc.a_no ]
+  ; operand B numeric-typed?
+  %sc.b_isnum = icmp eq i8 %bkind, 0
+  %sc.b_isstrnum = icmp eq i8 %bkind, 1
+  br i1 %sc.b_isnum, label %sc.b_yes, label %sc.b_maybe
+
+sc.b_maybe:
+  br i1 %sc.b_isstrnum, label %sc.b_look, label %sc.b_no
+
+sc.b_look:
+  %sc.b_ln = call i1 @wam_looks_numeric(i8* %bs)
+  br label %sc.b_done
+
+sc.b_yes:
+  br label %sc.b_done
+
+sc.b_no:
+  br label %sc.b_done
+
+sc.b_done:
+  %sc.b_num = phi i1 [ 1, %sc.b_yes ], [ %sc.b_ln, %sc.b_look ], [ 0, %sc.b_no ]
+  %sc.both = and i1 %sc.a_num, %sc.b_num
+  br i1 %sc.both, label %sc.numeric, label %sc.lexical
+
+sc.numeric:
+  %sc.av = call double @strtod(i8* %as, i8** null)
+  %sc.bv = call double @strtod(i8* %bs, i8** null)
+  %sc.lt = fcmp olt double %sc.av, %sc.bv
+  br i1 %sc.lt, label %sc.neg, label %sc.numge
+
+sc.numge:
+  %sc.gt = fcmp ogt double %sc.av, %sc.bv
+  br i1 %sc.gt, label %sc.pos, label %sc.zero
+
+sc.lexical:
+  %sc.rc = call i32 @strcmp(i8* %as, i8* %bs)
+  %sc.slt = icmp slt i32 %sc.rc, 0
+  br i1 %sc.slt, label %sc.neg, label %sc.lexge
+
+sc.lexge:
+  %sc.sgt = icmp sgt i32 %sc.rc, 0
+  br i1 %sc.sgt, label %sc.pos, label %sc.zero
+
+sc.neg:
+  ret i32 -1
+
+sc.pos:
+  ret i32 1
+
+sc.zero:
+  ret i32 0
+}
+{{case wam_strnum_cmp_slices}}
+@wam_strnum_slice_buf = internal global i8* null
+@wam_strnum_slice_cap = internal global i64 0
+
+; @wam_strnum_cmp_slices(ap, alen, bp, blen): compare two field slices as
+; input-derived strnums. Null with length zero denotes an empty field. Null
+; with a nonzero length, a negative or overflowing length, or allocation
+; failure returns the reserved result 2. Otherwise returns -1, 0, or 1.
+define i32 @wam_strnum_cmp_slices(i8* %ap, i64 %alen, i8* %bp, i64 %blen) {
+entry:
+  %ss.ap_null = icmp eq i8* %ap, null
+  %ss.alen_zero = icmp eq i64 %alen, 0
+  %ss.a_empty = and i1 %ss.ap_null, %ss.alen_zero
+  %ss.a_present = icmp ne i8* %ap, null
+  %ss.a_valid_ptr = or i1 %ss.a_empty, %ss.a_present
+  %ss.bp_null = icmp eq i8* %bp, null
+  %ss.blen_zero = icmp eq i64 %blen, 0
+  %ss.b_empty = and i1 %ss.bp_null, %ss.blen_zero
+  %ss.b_present = icmp ne i8* %bp, null
+  %ss.b_valid_ptr = or i1 %ss.b_empty, %ss.b_present
+  %ss.ptrs_valid = and i1 %ss.a_valid_ptr, %ss.b_valid_ptr
+  %ss.alen_negative = icmp slt i64 %alen, 0
+  %ss.blen_negative = icmp slt i64 %blen, 0
+  %ss.any_negative = or i1 %ss.alen_negative, %ss.blen_negative
+  %ss.lengths_valid = xor i1 %ss.any_negative, true
+  %ss.args_valid = and i1 %ss.ptrs_valid, %ss.lengths_valid
+  br i1 %ss.args_valid, label %ss.size_a, label %ss.fail
+
+ss.size_a:
+  %ss.after_a = add i64 %alen, 1
+  %ss.after_a_ok = icmp ugt i64 %ss.after_a, %alen
+  br i1 %ss.after_a_ok, label %ss.size_b, label %ss.fail
+
+ss.size_b:
+  %ss.before_b_nul = add i64 %ss.after_a, %blen
+  %ss.with_b_ok = icmp uge i64 %ss.before_b_nul, %ss.after_a
+  br i1 %ss.with_b_ok, label %ss.size_final, label %ss.fail
+
+ss.size_final:
+  %ss.need = add i64 %ss.before_b_nul, 1
+  %ss.need_ok = icmp ugt i64 %ss.need, %ss.before_b_nul
+  br i1 %ss.need_ok, label %ss.ensure, label %ss.fail
+
+ss.ensure:
+  %ss.cap = load i64, i64* @wam_strnum_slice_cap
+  %ss.fits = icmp ule i64 %ss.need, %ss.cap
+  br i1 %ss.fits, label %ss.copy_a_check, label %ss.grow
+
+ss.grow:
+  %ss.old_buf = load i8*, i8** @wam_strnum_slice_buf
+  %ss.cap_zero = icmp eq i64 %ss.cap, 0
+  br i1 %ss.cap_zero, label %ss.first_cap, label %ss.double_cap
+
+ss.first_cap:
+  br label %ss.alloc
+
+ss.double_cap:
+  %ss.twice_cap = shl i64 %ss.cap, 1
+  %ss.cap_grew = icmp ugt i64 %ss.twice_cap, %ss.cap
+  br i1 %ss.cap_grew, label %ss.alloc, label %ss.fail
+
+ss.alloc:
+  %ss.new_cap = phi i64 [ %ss.need, %ss.first_cap ], [ %ss.twice_cap, %ss.double_cap ]
+  %ss.new_buf = call i8* @realloc(i8* %ss.old_buf, i64 %ss.new_cap)
+  %ss.grow_failed = icmp eq i8* %ss.new_buf, null
+  br i1 %ss.grow_failed, label %ss.fail, label %ss.store_buf
+
+ss.store_buf:
+  store i8* %ss.new_buf, i8** @wam_strnum_slice_buf
+  store i64 %ss.new_cap, i64* @wam_strnum_slice_cap
+  br label %ss.ensure
+
+ss.copy_a_check:
+  %ss.buf = load i8*, i8** @wam_strnum_slice_buf
+  br i1 %ss.alen_zero, label %ss.term_a, label %ss.copy_a
+
+ss.copy_a:
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %ss.buf, i8* %ap, i64 %alen, i1 false)
+  br label %ss.term_a
+
+ss.term_a:
+  %ss.a_nul = getelementptr i8, i8* %ss.buf, i64 %alen
+  store i8 0, i8* %ss.a_nul
+  %ss.b_dst = getelementptr i8, i8* %ss.a_nul, i64 1
+  br i1 %ss.blen_zero, label %ss.term_b, label %ss.copy_b
+
+ss.copy_b:
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %ss.b_dst, i8* %bp, i64 %blen, i1 false)
+  br label %ss.term_b
+
+ss.term_b:
+  %ss.b_nul = getelementptr i8, i8* %ss.b_dst, i64 %blen
+  store i8 0, i8* %ss.b_nul
+  %ss.result = call i32 @wam_strnum_cmp(i8* %ss.buf, i8 1, i8* %ss.b_dst, i8 1)
+  ret i32 %ss.result
+
+ss.fail:
+  ret i32 2
+}
+{{case wam_intern_i64_decimal}}
+; @wam_strnum_cmp_int(as, akind, bval): compare a strnum/number/string operand
+; (as its string form + kind, like @wam_strnum_cmp) against an integer number
+; bval. Numeric iff the string operand is numeric-typed (number, or strnum that
+; looks numeric); otherwise lexical against bval formatted as a decimal string
+; (the number-to-string conversion a non-numeric-vs-number comparison needs).
+; Returns the sign as i32 (-1/0/1). Used for `strnum CMP <integer literal>`.
+@.wam_strnum_int_fmt = private constant [5 x i8] c"%lld\00"
+
+; Intern an i64 as its decimal-text atom id. awk array keys are strings, so
+; arr[n] with a numeric scalar n keys on n formatted as %lld (e.g. n=5 -> "5"),
+; matching the id a field/string key of the same spelling would produce. Format
+; into a 32-byte stack buffer (an i64 is at most 20 digits plus sign), then
+; intern the written bytes.
+define i64 @wam_intern_i64_decimal(i64 %n) {
+entry:
+  %d.buf = alloca [32 x i8]
+  %d.bufp = getelementptr [32 x i8], [32 x i8]* %d.buf, i64 0, i64 0
+  %d.fmt = getelementptr [5 x i8], [5 x i8]* @.wam_strnum_int_fmt, i64 0, i64 0
+  %d.w = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %d.bufp, i64 32, i8* %d.fmt, i64 %n)
+  %d.len = sext i32 %d.w to i64
+  %d.id = call i64 @wam_intern_atom(i8* %d.bufp, i64 %d.len)
+  ret i64 %d.id
+}
+{{case wam_strnum_cmp_int}}
+define i32 @wam_strnum_cmp_int(i8* %as, i8 %akind, i64 %bval) {
+entry:
+  %ci.a_isnum = icmp eq i8 %akind, 0
+  %ci.a_isstrnum = icmp eq i8 %akind, 1
+  br i1 %ci.a_isnum, label %ci.numeric, label %ci.a_maybe
+
+ci.a_maybe:
+  br i1 %ci.a_isstrnum, label %ci.a_look, label %ci.lexical
+
+ci.a_look:
+  %ci.ln = call i1 @wam_looks_numeric(i8* %as)
+  br i1 %ci.ln, label %ci.numeric, label %ci.lexical
+
+ci.numeric:
+  %ci.av = call double @strtod(i8* %as, i8** null)
+  %ci.bv = sitofp i64 %bval to double
+  %ci.lt = fcmp olt double %ci.av, %ci.bv
+  br i1 %ci.lt, label %ci.neg, label %ci.numge
+
+ci.numge:
+  %ci.gt = fcmp ogt double %ci.av, %ci.bv
+  br i1 %ci.gt, label %ci.pos, label %ci.zero
+
+ci.lexical:
+  %ci.buf = alloca [32 x i8]
+  %ci.bufp = getelementptr [32 x i8], [32 x i8]* %ci.buf, i64 0, i64 0
+  %ci.fmt = getelementptr [5 x i8], [5 x i8]* @.wam_strnum_int_fmt, i64 0, i64 0
+  %ci.w = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %ci.bufp, i64 32, i8* %ci.fmt, i64 %bval)
+  %ci.rc = call i32 @strcmp(i8* %as, i8* %ci.bufp)
+  %ci.slt = icmp slt i32 %ci.rc, 0
+  br i1 %ci.slt, label %ci.neg, label %ci.lexge
+
+ci.lexge:
+  %ci.sgt = icmp sgt i32 %ci.rc, 0
+  br i1 %ci.sgt, label %ci.pos, label %ci.zero
+
+ci.neg:
+  ret i32 -1
+
+ci.pos:
+  ret i32 1
+
+ci.zero:
+  ret i32 0
+}
+{{case wam_awk_num_is_integral}}
+; @wam_strnum_cmp_double(as, akind, bval): like @wam_strnum_cmp_int but the
+; number operand is a double (a float literal). Numeric iff the string operand
+; is numeric-typed; otherwise lexical against bval formatted with %g (awk-style
+; number-to-string). Returns the sign as i32 (-1/0/1).
+@.wam_strnum_dbl_fmt = private constant [3 x i8] c"%g\00"
+; awk renders a number as TEXT (print, and CONVFMT for a string comparison) by
+; one rule: an INTEGRAL value prints as an integer, every other value through
+; "%.6g" (OFMT / CONVFMT). Raw "%g" printed 1250000 as 1.25e+06. Integral means:
+; inside +-2^63 the value survives an i64 round trip; beyond it every finite double
+; is integral; NaN and the infinities are not (they print through %.6g).
+@.wam_awk_int_fmt = private constant [5 x i8] c"%.0f\00"
+@.wam_awk_ofmt = private constant [5 x i8] c"%.6g\00"
+
+define i1 @wam_awk_num_is_integral(double %v) {
+entry:
+  %ai.lo = fcmp oge double %v, 0xC3E0000000000000
+  %ai.hi = fcmp olt double %v, 0x43E0000000000000
+  %ai.in = and i1 %ai.lo, %ai.hi
+  br i1 %ai.in, label %ai.round, label %ai.far
+
+ai.round:
+  %ai.t = fptosi double %v to i64
+  %ai.b = sitofp i64 %ai.t to double
+  %ai.eq = fcmp oeq double %ai.b, %v
+  ret i1 %ai.eq
+
+ai.far:
+  %ai.inf = fcmp oeq double %v, 0x7FF0000000000000
+  %ai.ninf = fcmp oeq double %v, 0xFFF0000000000000
+  %ai.isinf = or i1 %ai.inf, %ai.ninf
+  %ai.ord = fcmp ord double %v, %v
+  %ai.notinf = xor i1 %ai.isinf, true
+  %ai.res = and i1 %ai.ord, %ai.notinf
+  ret i1 %ai.res
+}
+{{case wam_awk_num_fmt}}
+define i8* @wam_awk_num_fmt(double %v) {
+entry:
+  %af.int = call i1 @wam_awk_num_is_integral(double %v)
+  %af.i = getelementptr [5 x i8], [5 x i8]* @.wam_awk_int_fmt, i64 0, i64 0
+  %af.g = getelementptr [5 x i8], [5 x i8]* @.wam_awk_ofmt, i64 0, i64 0
+  %af.f = select i1 %af.int, i8* %af.i, i8* %af.g
+  ret i8* %af.f
+}
+{{case wam_print_awk_number}}
+; `print` of a double. Takes the caller format so the unset-aware render keeps
+; working: an EMPTY format (an unset scalar) prints nothing.
+define i32 @wam_print_awk_number(i8* %fmt, double %v) {
+entry:
+  %pn.c = load i8, i8* %fmt
+  %pn.empty = icmp eq i8 %pn.c, 0
+  br i1 %pn.empty, label %pn.none, label %pn.print
+
+pn.none:
+  ret i32 0
+
+pn.print:
+  ; + 0.0 turns -0.0 into +0.0: awk prints an integral zero as 0, never -0.
+  %pn.v = fadd double %v, 0.0
+  %pn.f = call i8* @wam_awk_num_fmt(double %pn.v)
+  %pn.r = call i32 (i8*, ...) @printf(i8* %pn.f, double %pn.v)
+  ret i32 %pn.r
+}
+{{case wam_strnum_cmp_double}}
+
+define i32 @wam_strnum_cmp_double(i8* %as, i8 %akind, double %bval) {
+entry:
+  %cd.a_isnum = icmp eq i8 %akind, 0
+  %cd.a_isstrnum = icmp eq i8 %akind, 1
+  br i1 %cd.a_isnum, label %cd.numeric, label %cd.a_maybe
+
+cd.a_maybe:
+  br i1 %cd.a_isstrnum, label %cd.a_look, label %cd.lexical
+
+cd.a_look:
+  %cd.ln = call i1 @wam_looks_numeric(i8* %as)
+  br i1 %cd.ln, label %cd.numeric, label %cd.lexical
+
+cd.numeric:
+  %cd.av = call double @strtod(i8* %as, i8** null)
+  %cd.lt = fcmp olt double %cd.av, %bval
+  br i1 %cd.lt, label %cd.neg, label %cd.numge
+
+cd.numge:
+  %cd.gt = fcmp ogt double %cd.av, %bval
+  br i1 %cd.gt, label %cd.pos, label %cd.zero
+
+cd.lexical:
+  %cd.buf = alloca [64 x i8]
+  %cd.bufp = getelementptr [64 x i8], [64 x i8]* %cd.buf, i64 0, i64 0
+  %cd.fmt = call i8* @wam_awk_num_fmt(double %bval)
+  %cd.w = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %cd.bufp, i64 64, i8* %cd.fmt, double %bval)
+  %cd.rc = call i32 @strcmp(i8* %as, i8* %cd.bufp)
+  %cd.slt = icmp slt i32 %cd.rc, 0
+  br i1 %cd.slt, label %cd.neg, label %cd.lexge
+
+cd.lexge:
+  %cd.sgt = icmp sgt i32 %cd.rc, 0
+  br i1 %cd.sgt, label %cd.pos, label %cd.zero
+
+cd.neg:
+  ret i32 -1
+
+cd.pos:
+  ret i32 1
+
+cd.zero:
+  ret i32 0
+}
+{{case wam_awk_numeric_start}}
+; awk-style numeric coercion of a record or projected field to double:
+; strtod parses a leading number and ignores trailing text, so
+; "3.14abc" reads as 3.14 and non-numeric text reads as 0.0. Field
+; slices are copied into a growable NUL-terminated scratch buffer;
+; field 0 uses the record atom's C string directly.
+; awk numeric text is DECIMAL: after optional blanks and a sign it must start with a
+; digit or a dot. C strtod also accepts "nan", "inf" and hex ("0x1A"), which awk reads
+; as 0 (gawk without --non-decimal-data) -- so those are rejected up front; "0x1A"
+; reads as its leading "0", i.e. 0. @wam_awk_numeric_start is that test, shared with
+; @wam_looks_numeric so "is it numeric" and "what is it worth" cannot disagree.
+; (gawk also treats the signed specials "+inf"/"-nan" as numbers; plawk does not --
+; a deliberate, negligible divergence.)
+define i1 @wam_awk_numeric_start(i8* %s) {
+entry:
+  br label %as.skip
+
+as.skip:
+  %as.p = phi i8* [ %s, %entry ], [ %as.pn, %as.blank ]
+  %as.c = load i8, i8* %as.p
+  %as.sp = icmp eq i8 %as.c, 32
+  %as.tab = icmp eq i8 %as.c, 9
+  %as.nl = icmp eq i8 %as.c, 10
+  %as.b1 = or i1 %as.sp, %as.tab
+  %as.isblank = or i1 %as.b1, %as.nl
+  br i1 %as.isblank, label %as.blank, label %as.sign
+
+as.blank:
+  %as.pn = getelementptr i8, i8* %as.p, i64 1
+  br label %as.skip
+
+as.sign:
+  %as.plus = icmp eq i8 %as.c, 43
+  %as.minus = icmp eq i8 %as.c, 45
+  %as.signed = or i1 %as.plus, %as.minus
+  %as.p1 = getelementptr i8, i8* %as.p, i64 1
+  %as.q = select i1 %as.signed, i8* %as.p1, i8* %as.p
+  %as.d = load i8, i8* %as.q
+  %as.ge0 = icmp uge i8 %as.d, 48
+  %as.le9 = icmp ule i8 %as.d, 57
+  %as.digit = and i1 %as.ge0, %as.le9
+  %as.dot = icmp eq i8 %as.d, 46
+  %as.lead = or i1 %as.digit, %as.dot
+  br i1 %as.lead, label %as.hexcheck, label %as.no
+
+as.hexcheck:
+  %as.zero_digit = icmp eq i8 %as.d, 48
+  %as.q1 = getelementptr i8, i8* %as.q, i64 1
+  %as.x = load i8, i8* %as.q1
+  %as.lx = icmp eq i8 %as.x, 120
+  %as.ux = icmp eq i8 %as.x, 88
+  %as.isx = or i1 %as.lx, %as.ux
+  %as.hex = and i1 %as.zero_digit, %as.isx
+  %as.ok = xor i1 %as.hex, true
+  ret i1 %as.ok
+
+as.no:
+  ret i1 false
+}
+{{case wam_awk_strtod}}
+define double @wam_awk_strtod(i8* %s) {
+entry:
+  %aw.ok = call i1 @wam_awk_numeric_start(i8* %s)
+  br i1 %aw.ok, label %aw.parse, label %aw.zero
+
+aw.parse:
+  %aw.v = call double @strtod(i8* %s, i8** null)
+  ret double %aw.v
+
+aw.zero:
+  ret double 0.0
+}
+{{case wam_awk_f64_to_i64}}
+; A double to an integer (printf `%d`, awk `int()`): truncate toward zero. Outside
+; the i64 range (or NaN) a bare fptosi is poison, and gawk prints digits plawk cannot
+; reproduce through a fixed `%ld` format -- so that is FATAL (exit 2 after the
+; output so far) rather than a wrong number.
+@.wam_awk_i64_range_error = private constant [70 x i8] c"plawk: fatal: integer conversion of a value outside the 64-bit range\0A\00"
+
+define i64 @wam_awk_f64_to_i64(double %v) {
+entry:
+  %fi.lo = fcmp oge double %v, 0xC3E0000000000000
+  %fi.hi = fcmp olt double %v, 0x43E0000000000000
+  %fi.ok = and i1 %fi.lo, %fi.hi
+  br i1 %fi.ok, label %fi.conv, label %fi.fatal
+
+fi.conv:
+  %fi.r = fptosi double %v to i64
+  ret i64 %fi.r
+
+fi.fatal:
+  %fi.msg = getelementptr [70 x i8], [70 x i8]* @.wam_awk_i64_range_error, i64 0, i64 0
+  %fi.written = call i64 @write(i32 2, i8* %fi.msg, i64 69)
+  call void @exit(i32 2)
+  unreachable
+}
+{{case wam_awk_field_int_value}}
+; awk `int($N)`: the NUMERIC value of the field (strtod semantics, "30.25" -> 30.25,
+; "3abc" -> 3) truncated toward zero. The strict integer parse is tried first, so
+; integer text keeps its exact i64 value (no round trip through a double above 2^53);
+; only other text takes the strtod path, with the range-checked truncation.
+define i64 @wam_awk_field_int_value(%Value %line, i64 %field_index, i8 %sep) {
+entry:
+  %afi.p = call %WamI64Parse @wam_atom_field_i64_value(%Value %line, i64 %field_index, i8 %sep)
+  %afi.ok = extractvalue %WamI64Parse %afi.p, 1
+  br i1 %afi.ok, label %afi.exact, label %afi.num
+
+afi.exact:
+  %afi.v = extractvalue %WamI64Parse %afi.p, 0
+  ret i64 %afi.v
+
+afi.num:
+  %afi.d = call double @wam_atom_field_f64_value(%Value %line, i64 %field_index, i8 %sep)
+  %afi.t = call i64 @wam_awk_f64_to_i64(double %afi.d)
+  ret i64 %afi.t
+}
+{{case wam_atom_field_f64_value}}
+@wam_f64_field_buf = internal global i8* null
+@wam_f64_field_cap = internal global i64 0
+
+define double @wam_atom_field_f64_value(%Value %line, i64 %field_index, i8 %sep) {
+entry:
+  %is_whole = icmp eq i64 %field_index, 0
+  br i1 %is_whole, label %f64.whole, label %f64.field
+
+f64.whole:
+  %aid = call i64 @value_payload(%Value %line)
+  %line_s = call i8* @wam_atom_to_string(i64 %aid)
+  %line_null = icmp eq i8* %line_s, null
+  br i1 %line_null, label %f64.zero, label %f64.parse_whole
+
+f64.parse_whole:
+  %whole_v = call double @wam_awk_strtod(i8* %line_s)
+  ret double %whole_v
+
+f64.field:
+  %slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %field_index, i8 %sep)
+  %fptr = extractvalue %WamSlice %slice, 0
+  %flen = extractvalue %WamSlice %slice, 1
+  %missing = icmp eq i8* %fptr, null
+  br i1 %missing, label %f64.zero, label %f64.ensure_buf
+
+f64.ensure_buf:
+  %need = add i64 %flen, 1
+  %cap = load i64, i64* @wam_f64_field_cap
+  %fits = icmp ule i64 %need, %cap
+  br i1 %fits, label %f64.copy, label %f64.grow
+
+f64.grow:
+  %old_buf = load i8*, i8** @wam_f64_field_buf
+  %new_cap = shl i64 %need, 1
+  %new_buf = call i8* @realloc(i8* %old_buf, i64 %new_cap)
+  %grow_null = icmp eq i8* %new_buf, null
+  br i1 %grow_null, label %f64.zero, label %f64.store_buf
+
+f64.store_buf:
+  store i8* %new_buf, i8** @wam_f64_field_buf
+  store i64 %new_cap, i64* @wam_f64_field_cap
+  br label %f64.copy
+
+f64.copy:
+  %buf = load i8*, i8** @wam_f64_field_buf
+  br label %f64.copy_loop
+
+f64.copy_loop:
+  %ci = phi i64 [ 0, %f64.copy ], [ %ci1, %f64.copy_step ]
+  %copy_done = icmp uge i64 %ci, %flen
+  br i1 %copy_done, label %f64.terminate, label %f64.copy_step
+
+f64.copy_step:
+  %src_p = getelementptr i8, i8* %fptr, i64 %ci
+  %dst_p = getelementptr i8, i8* %buf, i64 %ci
+  %byte = load i8, i8* %src_p
+  store i8 %byte, i8* %dst_p
+  %ci1 = add i64 %ci, 1
+  br label %f64.copy_loop
+
+f64.terminate:
+  %end_p = getelementptr i8, i8* %buf, i64 %flen
+  store i8 0, i8* %end_p
+  %field_v = call double @wam_awk_strtod(i8* %buf)
+  ret double %field_v
+
+f64.zero:
+  ret double 0.000000e+00
+}
+{{/match}}
