@@ -1376,13 +1376,28 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
 compile_run_loop_to_rust(Code) :-
     Code = '    /// Main execution loop. Runs until halt (pc=0), failure, or step limit.
     pub fn run(&mut self) -> bool {
+        // D122: borrow each instruction from an O(1) Arc snapshot of the
+        // program instead of `self.fetch().cloned()`, which deep-cloned the
+        // Instruction (its String names and Values) on every step only to
+        // satisfy the borrow checker before `self.step(&instr)`. The snapshot
+        // is re-validated with `Arc::ptr_eq` before every fetch: assigning a
+        // new program to `self.code`, or a copy-on-write `Arc::make_mut`
+        // edit (which must copy while this snapshot is alive), changes the
+        // pointer, and the next step then fetches from the new program -- the
+        // same instruction the old per-step fetch would have cloned. The
+        // snapshot keeps the instruction being stepped alive even if `step`
+        // replaces `self.code`, as the old clone did.
+        let mut code = Arc::clone(&self.code);
         loop {
             if self.pc == 0 { return true; }
             if self.step_limit > 0 && self.step_count >= self.step_limit {
                 return false;
             }
-            if let Some(instr) = self.fetch().cloned() {
-                if !self.step(&instr) {
+            if !Arc::ptr_eq(&code, &self.code) {
+                code = Arc::clone(&self.code);
+            }
+            if let Some(instr) = Self::fetch_in(&code, self.pc) {
+                if !self.step(instr) {
                     // ISO throw in flight: abort instead of backtracking —
                     // alternatives are discarded until a catch/3 frame
                     // (in a caller) consumes the ball.
@@ -3197,7 +3212,7 @@ compile_execute_term_builtin_to_rust(Code) :-
             }
             return false;
         }
-        let mut parser = WamState::new(self.code.clone(), self.labels.clone());
+        let mut parser = WamState::new_shared(Arc::clone(&self.code), self.labels.clone());
 
         let ops_var = Value::Unbound("_RP_ops".to_string().into());
         parser.set_reg_str("A1", ops_var.clone());
@@ -8146,7 +8161,7 @@ rust_lift_clause_fully(H, B, Model, P, A, Seed0, NB, Helpers, SeedN) :-
 foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, Setup, RunExpr) :-
     (   option(foreign_lowering(ForeignSpec), Options),
         rust_foreign_spec(Pred/Arity, ForeignSpec, SetupOps, EntryPred/EntryArity)
-    ->  InstrSetup = '    vm.code = Vec::new();
+    ->  InstrSetup = '    vm.code = std::sync::Arc::new(Vec::new());
     vm.labels = HashMap::new();
     vm.pc = 1;',
         rust_foreign_setup_code(SetupOps, Setup),
@@ -8159,7 +8174,7 @@ foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, Setup, RunExpr) 
     ];
     let mut labels: HashMap<String, usize> = HashMap::new();
 ~w
-    vm.code = code;
+    vm.code = std::sync::Arc::new(code);
     vm.labels = labels;
     vm.pc = 1;', [InstrLiterals, LabelLiterals]),
         Setup = "",
@@ -8846,7 +8861,7 @@ rust_bidirectional_wrapper_code(Pred, Kernel, Code) :-
 /// (register_ffi_fact_pairs or a lazy lookup source); the
 /// child-direction index is derived on first call when absent.
 pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value, a5: Value) -> bool {
-    vm.code = Vec::new();
+    vm.code = std::sync::Arc::new(Vec::new());
     vm.labels = std::collections::HashMap::new();
     vm.pc = 1;
 ~w    vm.set_reg("A1", a1);
@@ -8882,7 +8897,7 @@ rust_boundary_wrapper_code(Pred, Kernel, Code) :-
 /// vm.build_boundary_suffix(band, ..) for an explicit band. An empty
 /// side-table degrades to full enumeration (still correct).
 pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
-    vm.code = Vec::new();
+    vm.code = std::sync::Arc::new(Vec::new());
     vm.labels = std::collections::HashMap::new();
     vm.pc = 1;
 ~w    vm.set_reg("A1", a1);
@@ -9345,21 +9360,22 @@ compile_predicates_for_project(Predicates0, Options, Code) :-
             format(string(SharedCode),
 'use std::sync::OnceLock;
 
-static SHARED_WAM: OnceLock<(Vec<Instruction>, HashMap<String, usize>)> = OnceLock::new();
+static SHARED_WAM: OnceLock<(std::sync::Arc<Vec<Instruction>>, HashMap<String, usize>)> = OnceLock::new();
 
-fn get_shared_wam() -> &\'static (Vec<Instruction>, HashMap<String, usize>) {
+fn get_shared_wam() -> &\'static (std::sync::Arc<Vec<Instruction>>, HashMap<String, usize>) {
     SHARED_WAM.get_or_init(|| {
         let mut labels: HashMap<String, usize> = HashMap::new();
 ~w
         let code: Vec<Instruction> = vec![
 ~w
         ];
-        (code, labels)
+        (std::sync::Arc::new(code), labels)
     })
 }
 
 pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
     let (code, labels) = get_shared_wam();
+    let code: &Vec<Instruction> = code;
     (code.clone(), labels.clone())
 }', [AllLabels, AllInstrs])
         )
@@ -10651,20 +10667,21 @@ rust_shared_wam_chunked(AllInstrParts, AllLabels, SharedCode) :-
 
 ~w
 
-static SHARED_WAM: OnceLock<(Vec<Instruction>, HashMap<String, usize>)> = OnceLock::new();
+static SHARED_WAM: OnceLock<(std::sync::Arc<Vec<Instruction>>, HashMap<String, usize>)> = OnceLock::new();
 
-fn get_shared_wam() -> &\'static (Vec<Instruction>, HashMap<String, usize>) {
+fn get_shared_wam() -> &\'static (std::sync::Arc<Vec<Instruction>>, HashMap<String, usize>) {
     SHARED_WAM.get_or_init(|| {
         let mut labels: HashMap<String, usize> = HashMap::new();
 ~w
         let mut code: Vec<Instruction> = Vec::new();
 ~w
-        (code, labels)
+        (std::sync::Arc::new(code), labels)
     })
 }
 
 pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
     let (code, labels) = get_shared_wam();
+    let code: &Vec<Instruction> = code;
     (code.clone(), labels.clone())
 }', [FnsBlock, AllLabels, ExtBlock]).
 

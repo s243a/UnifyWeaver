@@ -688,7 +688,7 @@ test_foreign_spec_wrapper_generation :-
         sub_string(S, _, _, _, 'register_foreign_result_mode("category_ancestor/4", "stream")'),
         sub_string(S, _, _, _, 'register_foreign_usize_config("category_ancestor/4", "max_depth", 10)'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("category_ancestor", 4)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Generic foreign spec did not drive wrapper generation')
     ).
@@ -1063,7 +1063,7 @@ test_foreign_lowering_category_ancestor :-
         sub_string(S, _, _, _, 'register_foreign_result_mode("category_ancestor/4", "stream")'),
         sub_string(S, _, _, _, 'register_foreign_usize_config("category_ancestor/4", "max_depth", 10)'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("category_ancestor", 4)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for category_ancestor/4')
     ).
@@ -1079,7 +1079,7 @@ test_foreign_lowering_transitive_closure :-
         sub_string(S, _, _, _, 'register_foreign_string_config("tc_ancestor/2", "edge_pred", "tc_parent/2")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("tom", "bob"), ("tom", "liz"), ("bob", "ann"), ("bob", "pat"), ("pat", "jim")])'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tc_ancestor", 2)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tc_ancestor/2')
     ).
@@ -1093,7 +1093,7 @@ test_foreign_lowering_countdown_sum :-
         sub_string(S, _, _, _, 'register_foreign_result_layout("tri_sum/2", "tuple:1")'),
         sub_string(S, _, _, _, 'register_foreign_result_mode("tri_sum/2", "deterministic")'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tri_sum", 2)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tri_sum/2')
     ).
@@ -1107,7 +1107,7 @@ test_foreign_lowering_list_suffix :-
         sub_string(S, _, _, _, 'register_foreign_result_layout("tail_suffix/2", "tuple:1")'),
         sub_string(S, _, _, _, 'register_foreign_result_mode("tail_suffix/2", "stream")'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tail_suffix", 2)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tail_suffix/2')
     ).
@@ -1121,7 +1121,7 @@ test_foreign_lowering_list_suffixes :-
         sub_string(S, _, _, _, 'register_foreign_result_layout("tail_suffixes/2", "tuple:1")'),
         sub_string(S, _, _, _, 'register_foreign_result_mode("tail_suffixes/2", "deterministic_collection")'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tail_suffixes", 2)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tail_suffixes/2')
     ).
@@ -1131,7 +1131,7 @@ test_foreign_only_wrapper_omits_dead_wam_code :-
     (   rust_target:compile_predicate_to_rust(user:tail_suffixes/2,
             [include_main(false), foreign_lowering(true)], Code),
         atom_string(Code, S),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();'),
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());'),
         sub_string(S, _, _, _, 'vm.labels = HashMap::new();'),
         \+ sub_string(S, _, _, _, 'let code: Vec<Instruction> = vec!['),
         \+ sub_string(S, _, _, _, 'labels.insert('),
@@ -1152,7 +1152,7 @@ test_foreign_lowering_reverse_transitive_closure :-
         sub_string(S, _, _, _, 'register_foreign_string_config("tc_descendant/2", "edge_pred", "tc_parent/2")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("bob", "tom"), ("liz", "tom"), ("ann", "bob"), ("pat", "bob"), ("jim", "pat")])'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tc_descendant", 2)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tc_descendant/2')
     ).
@@ -1168,7 +1168,7 @@ test_foreign_lowering_transitive_distance :-
         sub_string(S, _, _, _, 'register_foreign_string_config("tc_distance/3", "edge_pred", "tc_parent/2")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("tom", "bob"), ("tom", "liz"), ("bob", "ann"), ("bob", "pat"), ("pat", "jim")])'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tc_distance", 3)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tc_distance/3')
     ).
@@ -1183,7 +1183,7 @@ test_foreign_lowering_transitive_parent_distance :-
         sub_string(S, _, _, _, 'register_foreign_result_mode("tc_parent_distance/4", "stream")'),
         sub_string(S, _, _, _, 'register_foreign_string_config("tc_parent_distance/4", "edge_pred", "tc_parent/2")'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tc_parent_distance", 4)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tc_parent_distance/4')
     ).
@@ -1198,7 +1198,7 @@ test_foreign_lowering_transitive_step_parent_distance :-
         sub_string(S, _, _, _, 'register_foreign_result_mode("tc_step_parent_distance/5", "stream")'),
         sub_string(S, _, _, _, 'register_foreign_string_config("tc_step_parent_distance/5", "edge_pred", "tc_parent/2")'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tc_step_parent_distance", 5)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tc_step_parent_distance/5')
     ).
@@ -1214,7 +1214,7 @@ test_foreign_lowering_weighted_shortest_path :-
         sub_string(S, _, _, _, 'register_foreign_string_config("weighted_path/3", "weight_pred", "weighted_edge/3")'),
         sub_string(S, _, _, _, 'register_indexed_weighted_edge_triples("weighted_edge/3", &[("s", "a", 1.0), ("s", "b", 4.0), ("a", "b", 2.0), ("a", "c", 5.0), ("b", "c", 1.0), ("c", "d", 3.0)])'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("weighted_path", 3)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for weighted_path/3')
     ).
@@ -1233,7 +1233,7 @@ test_foreign_lowering_astar_shortest_path :-
         sub_string(S, _, _, _, 'register_indexed_weighted_edge_triples("weighted_edge/3", &[("s", "a", 1.0), ("s", "b", 4.0), ("a", "b", 2.0), ("a", "c", 5.0), ("b", "c", 1.0), ("c", "d", 3.0)])'),
         sub_string(S, _, _, _, 'register_indexed_weighted_edge_triples("direct_semantic_dist/3", &[("s", "a", 1.0), ("s", "b", 3.0), ("s", "c", 4.0), ("s", "d", 7.0), ("a", "b", 2.0), ("a", "c", 3.0), ("a", "d", 6.0), ("b", "c", 1.0), ("b", "d", 4.0), ("c", "d", 3.0)])'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("astar_weighted_path", 4)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for astar_weighted_path/4')
     ).
