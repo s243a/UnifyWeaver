@@ -51,7 +51,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 pub type Sym = String;
 
 #[cfg(feature = "intern")]
-pub use self::interner::{decomp, intern, Decomp, Sym};
+pub use self::interner::{decomp, intern, lookup_sym, Decomp, Sym};
 
 // D113: the Sym-producing functor normaliser (see mod interner). Re-exported
 // only when both `intern` (ids exist) and `intern_sym_thread` (the cache exists)
@@ -296,6 +296,17 @@ mod interner {
         t.len.store(id + 1, Ordering::Release);
         w.insert(leaked, id);
         id
+    }
+
+    /// D125: the `Sym` of a name that is ALREADY interned, without interning
+    /// it (`None` if the name was never seen). Used by the string-keyed lookups
+    /// on `WamState::bindings` (`bindings.get("X")` from tests and harnesses):
+    /// every bound variable's name was interned when its `Value::Unbound` was
+    /// built, so a never-interned name cannot be bound, and a lookup must not
+    /// grow the interner as a side effect.
+    #[inline]
+    pub fn lookup_sym(s: &str) -> Option<Sym> {
+        table().map.read().unwrap().get(s).map(|&id| Sym(id))
     }
 
     /// De-intern: id -> the canonical `&'static str`. Lock-free / wait-free.

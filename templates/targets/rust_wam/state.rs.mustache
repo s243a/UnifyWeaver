@@ -38,6 +38,122 @@ impl std::hash::Hasher for FxHasher {
 pub type FxBuildHasher = std::hash::BuildHasherDefault<FxHasher>;
 pub type FxMap<K, V> = std::collections::HashMap<K, V, FxBuildHasher>;
 pub type FxSet<K> = std::collections::HashSet<K, FxBuildHasher>;
+
+/// D125: the variable-binding table (`WamState::bindings`), keyed by the
+/// variable's interned name `Sym` on the crate's FxHash.
+///
+/// It used to be a `HashMap<String, Value>` with std's default SipHash: every
+/// lookup SipHashed the name's bytes (`deref_var`, `deref_chain`, `bind_var`,
+/// the trail unwind) and every bind allocated a `String` key, although the
+/// caller already held the name as an interned `Sym`. Under the `intern`
+/// feature (default ON) the key is now that `Sym` (a `u32`, hashed with one
+/// multiply) and a bind allocates nothing. With `intern` OFF, `Sym` is `String`
+/// and this is a `String`-keyed FxHash map.
+///
+/// Exact by construction: interning is canonical (same name <=> same `Sym`),
+/// so the key identifies the same variable as the name string did, and the
+/// map is only ever probed (`get`/`insert`/`remove`/`clear`). Nothing outside
+/// tests iterates it, so neither the hasher nor the key type can change any
+/// observable result. (SipHash's per-process random seed would already have
+/// made any iteration-order dependence nondeterministic.)
+///
+/// String-keyed access (`bindings.get("X")`, as the test harnesses and the
+/// par-aggregate driver use it) keeps working through `BindKey`: a `&str` is
+/// looked up by its existing `Sym` without interning it.
+#[derive(Clone, Default)]
+pub struct Bindings {
+    map: HashMap<crate::value::Sym, Value, FxBuildHasher>,
+}
+
+/// A variable name that can key `Bindings`: the interned `Sym` the runtime
+/// carries in `Value::Unbound` (the hot path, no hashing of the text), or a
+/// plain `str`/`String` (tests and harnesses).
+pub trait BindKey {
+    /// The `Sym` to store a binding under (interns a string name).
+    fn bind_sym(&self) -> crate::value::Sym;
+    /// Run `f` on the `Sym` to look this name up under, or return `None` when
+    /// the name cannot be bound (a string that was never interned).
+    fn with_sym<R>(&self, f: impl FnOnce(&crate::value::Sym) -> R) -> Option<R>;
+}
+
+#[cfg(feature = "intern")]
+impl BindKey for crate::value::Sym {
+    #[inline]
+    fn bind_sym(&self) -> crate::value::Sym { *self }
+    #[inline]
+    fn with_sym<R>(&self, f: impl FnOnce(&crate::value::Sym) -> R) -> Option<R> { Some(f(self)) }
+}
+#[cfg(feature = "intern")]
+impl BindKey for str {
+    #[inline]
+    fn bind_sym(&self) -> crate::value::Sym { crate::value::Sym::from(self) }
+    #[inline]
+    fn with_sym<R>(&self, f: impl FnOnce(&crate::value::Sym) -> R) -> Option<R> {
+        crate::value::lookup_sym(self).map(|s| f(&s))
+    }
+}
+#[cfg(feature = "intern")]
+impl BindKey for String {
+    #[inline]
+    fn bind_sym(&self) -> crate::value::Sym { self.as_str().bind_sym() }
+    #[inline]
+    fn with_sym<R>(&self, f: impl FnOnce(&crate::value::Sym) -> R) -> Option<R> { self.as_str().with_sym(f) }
+}
+// `intern` OFF: `Sym` is `String`, so the `String` impl is the `Sym` impl.
+#[cfg(not(feature = "intern"))]
+impl BindKey for String {
+    #[inline]
+    fn bind_sym(&self) -> crate::value::Sym { self.clone() }
+    #[inline]
+    fn with_sym<R>(&self, f: impl FnOnce(&crate::value::Sym) -> R) -> Option<R> { Some(f(self)) }
+}
+#[cfg(not(feature = "intern"))]
+impl BindKey for str {
+    #[inline]
+    fn bind_sym(&self) -> crate::value::Sym { self.to_string() }
+    #[inline]
+    fn with_sym<R>(&self, f: impl FnOnce(&crate::value::Sym) -> R) -> Option<R> { Some(f(&self.to_string())) }
+}
+impl<T: BindKey + ?Sized> BindKey for &T {
+    #[inline]
+    fn bind_sym(&self) -> crate::value::Sym { (**self).bind_sym() }
+    #[inline]
+    fn with_sym<R>(&self, f: impl FnOnce(&crate::value::Sym) -> R) -> Option<R> { (**self).with_sym(f) }
+}
+
+impl Bindings {
+    pub fn new() -> Self { Bindings::default() }
+    /// The value `name` is bound to, if any.
+    #[inline]
+    pub fn get<K: BindKey + ?Sized>(&self, name: &K) -> Option<&Value> {
+        name.with_sym(|s| self.map.get(s)).flatten()
+    }
+    #[inline]
+    pub fn contains_key<K: BindKey + ?Sized>(&self, name: &K) -> bool {
+        self.get(name).is_some()
+    }
+    /// Bind `name` (replacing any binding), returning the previous value.
+    #[inline]
+    pub fn insert(&mut self, name: crate::value::Sym, val: Value) -> Option<Value> {
+        self.map.insert(name, val)
+    }
+    /// Unbind `name`, returning the value it was bound to.
+    #[inline]
+    pub fn remove<K: BindKey + ?Sized>(&mut self, name: &K) -> Option<Value> {
+        let map = &mut self.map;
+        name.with_sym(|s| map.remove(s)).flatten()
+    }
+    #[inline]
+    pub fn clear(&mut self) { self.map.clear() }
+    #[inline]
+    pub fn len(&self) -> usize { self.map.len() }
+    #[inline]
+    pub fn is_empty(&self) -> bool { self.map.is_empty() }
+    /// Every binding, in UNSPECIFIED order (sort before printing).
+    pub fn iter(&self) -> impl Iterator<Item = (&crate::value::Sym, &Value)> {
+        self.map.iter()
+    }
+}
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -354,6 +470,80 @@ fn parse_meminfo_kib(rest: &str) -> Option<u64> {
     Some(kib * 1024)
 }
 
+/// D127: the name a register trail entry records. Before D127 it was
+/// `reg_name.to_string()`: one heap `String` per `trail_binding`, ~10.7K per
+/// warm resolve at N=40, freed again when the trail was truncated. Every name
+/// the compiler emits is a canonical `A<n>`/`X<n>`/`Y<n>` with `n` in 0..=99
+/// (decimal, no leading zero), so those borrow the same text from the static
+/// `REG_NAMES` table; any other name is still an owned copy. Either way the
+/// entry holds exactly the bytes of the name it was given, so `register_name()`,
+/// the unwind's `put_reg(&reg, ..)` and the Y-frame filter see the same `&str`.
+pub type RegName = std::borrow::Cow<'static, str>;
+
+/// D127: the 300 canonical register names, indexed by `canonical_reg_slot`.
+pub static REG_NAMES: [&str; 300] = [
+    "A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9",
+    "A10", "A11", "A12", "A13", "A14", "A15", "A16", "A17", "A18", "A19",
+    "A20", "A21", "A22", "A23", "A24", "A25", "A26", "A27", "A28", "A29",
+    "A30", "A31", "A32", "A33", "A34", "A35", "A36", "A37", "A38", "A39",
+    "A40", "A41", "A42", "A43", "A44", "A45", "A46", "A47", "A48", "A49",
+    "A50", "A51", "A52", "A53", "A54", "A55", "A56", "A57", "A58", "A59",
+    "A60", "A61", "A62", "A63", "A64", "A65", "A66", "A67", "A68", "A69",
+    "A70", "A71", "A72", "A73", "A74", "A75", "A76", "A77", "A78", "A79",
+    "A80", "A81", "A82", "A83", "A84", "A85", "A86", "A87", "A88", "A89",
+    "A90", "A91", "A92", "A93", "A94", "A95", "A96", "A97", "A98", "A99",
+    "X0", "X1", "X2", "X3", "X4", "X5", "X6", "X7", "X8", "X9",
+    "X10", "X11", "X12", "X13", "X14", "X15", "X16", "X17", "X18", "X19",
+    "X20", "X21", "X22", "X23", "X24", "X25", "X26", "X27", "X28", "X29",
+    "X30", "X31", "X32", "X33", "X34", "X35", "X36", "X37", "X38", "X39",
+    "X40", "X41", "X42", "X43", "X44", "X45", "X46", "X47", "X48", "X49",
+    "X50", "X51", "X52", "X53", "X54", "X55", "X56", "X57", "X58", "X59",
+    "X60", "X61", "X62", "X63", "X64", "X65", "X66", "X67", "X68", "X69",
+    "X70", "X71", "X72", "X73", "X74", "X75", "X76", "X77", "X78", "X79",
+    "X80", "X81", "X82", "X83", "X84", "X85", "X86", "X87", "X88", "X89",
+    "X90", "X91", "X92", "X93", "X94", "X95", "X96", "X97", "X98", "X99",
+    "Y0", "Y1", "Y2", "Y3", "Y4", "Y5", "Y6", "Y7", "Y8", "Y9",
+    "Y10", "Y11", "Y12", "Y13", "Y14", "Y15", "Y16", "Y17", "Y18", "Y19",
+    "Y20", "Y21", "Y22", "Y23", "Y24", "Y25", "Y26", "Y27", "Y28", "Y29",
+    "Y30", "Y31", "Y32", "Y33", "Y34", "Y35", "Y36", "Y37", "Y38", "Y39",
+    "Y40", "Y41", "Y42", "Y43", "Y44", "Y45", "Y46", "Y47", "Y48", "Y49",
+    "Y50", "Y51", "Y52", "Y53", "Y54", "Y55", "Y56", "Y57", "Y58", "Y59",
+    "Y60", "Y61", "Y62", "Y63", "Y64", "Y65", "Y66", "Y67", "Y68", "Y69",
+    "Y70", "Y71", "Y72", "Y73", "Y74", "Y75", "Y76", "Y77", "Y78", "Y79",
+    "Y80", "Y81", "Y82", "Y83", "Y84", "Y85", "Y86", "Y87", "Y88", "Y89",
+    "Y90", "Y91", "Y92", "Y93", "Y94", "Y95", "Y96", "Y97", "Y98", "Y99",
+];
+
+/// D127: the `REG_NAMES` slot of a canonical register name (`A`/`X`/`Y`
+/// followed by `0`..`9`, or by `1`..`9` and a digit), else `None`. A name
+/// with a leading zero (`A01`) or 3+ digits is not canonical: its text differs
+/// from the table entry for the same index, so it must stay an owned copy.
+#[inline]
+pub fn canonical_reg_slot(name: &str) -> Option<usize> {
+    let (p, n) = match name.as_bytes() {
+        [p, d] if d.is_ascii_digit() => (*p, (d - b'0') as usize),
+        [p, d0 @ b'1'..=b'9', d1] if d1.is_ascii_digit() =>
+            (*p, (d0 - b'0') as usize * 10 + (d1 - b'0') as usize),
+        _ => return None,
+    };
+    match p {
+        b'A' => Some(n),
+        b'X' => Some(100 + n),
+        b'Y' => Some(200 + n),
+        _ => None,
+    }
+}
+
+/// D127: `name` as a `RegName`: a borrow of the static table for a canonical
+/// register name, an owned copy otherwise. Always the same text as `name`.
+#[inline]
+pub fn reg_name_of(name: &str) -> RegName {
+    match canonical_reg_slot(name) {
+        Some(i) => std::borrow::Cow::Borrowed(REG_NAMES[i]),
+        None => std::borrow::Cow::Owned(name.to_string()),
+    }
+}
+
 /// Trail entry: records the old value of a register (or the prior binding of a
 /// variable) before mutation.
 ///
@@ -371,9 +561,11 @@ fn parse_meminfo_kib(rest: &str) -> Option<u64> {
 #[derive(Clone, Debug)]
 pub enum TrailKey {
     /// An unbound variable named `.0` was bound; undo restores/removes it in `bindings`.
-    Binding(String),
+    /// D125: the interned name (`Sym`), so trailing a bind allocates nothing.
+    Binding(crate::value::Sym),
     /// A register named `.0` was overwritten; undo restores it via `put_reg`.
-    Register(String),
+    /// D127: a `RegName`, so trailing a canonical register allocates nothing.
+    Register(RegName),
 }
 
 #[cfg(feature = "trail_enum")]
@@ -396,8 +588,8 @@ pub struct TrailEntry {
 /// exactly where the pre-change `var.to_string()` did (register names still move
 /// with no allocation), so the OFF allocation profile is unchanged.
 pub enum TrailUndo {
-    Binding(String),
-    Register(String),
+    Binding(crate::value::Sym),
+    Register(RegName),
 }
 
 impl TrailEntry {
@@ -405,7 +597,7 @@ impl TrailEntry {
     #[cfg(feature = "trail_enum")]
     #[inline]
     pub fn binding(var_name: &str, old_value: Option<Value>) -> Self {
-        TrailEntry { key: TrailKey::Binding(var_name.to_string()), old_value }
+        TrailEntry { key: TrailKey::Binding(var_name.into()), old_value }
     }
     #[cfg(not(feature = "trail_enum"))]
     #[inline]
@@ -413,11 +605,24 @@ impl TrailEntry {
         TrailEntry { key: format!("__binding__{}", var_name), old_value }
     }
 
+    /// D125: a binding trail entry from the variable's interned name (what
+    /// `bind_var` holds), with no key allocation under `trail_enum`.
+    #[cfg(feature = "trail_enum")]
+    #[inline]
+    pub fn binding_from_sym(var_name: crate::value::Sym, old_value: Option<Value>) -> Self {
+        TrailEntry { key: TrailKey::Binding(var_name), old_value }
+    }
+    #[cfg(not(feature = "trail_enum"))]
+    #[inline]
+    pub fn binding_from_sym(var_name: crate::value::Sym, old_value: Option<Value>) -> Self {
+        TrailEntry { key: format!("__binding__{}", var_name), old_value }
+    }
+
     /// Construct a register trail entry recording the prior value of `reg_name`.
     #[cfg(feature = "trail_enum")]
     #[inline]
     pub fn register(reg_name: &str, old_value: Option<Value>) -> Self {
-        TrailEntry { key: TrailKey::Register(reg_name.to_string()), old_value }
+        TrailEntry { key: TrailKey::Register(reg_name_of(reg_name)), old_value }
     }
     #[cfg(not(feature = "trail_enum"))]
     #[inline]
@@ -431,7 +636,7 @@ impl TrailEntry {
     #[inline]
     pub fn binding_name(&self) -> Option<&str> {
         match &self.key {
-            TrailKey::Binding(name) => Some(name.as_str()),
+            TrailKey::Binding(name) => Some(&**name),
             TrailKey::Register(_) => None,
         }
     }
@@ -441,13 +646,29 @@ impl TrailEntry {
         self.key.strip_prefix("__binding__")
     }
 
+    /// D125: the bound variable's interned name if this is a binding entry
+    /// (a `u32` copy under `intern`), for the binding-table unwind.
+    #[cfg(feature = "trail_enum")]
+    #[inline]
+    pub fn binding_sym(&self) -> Option<crate::value::Sym> {
+        match &self.key {
+            TrailKey::Binding(name) => Some(name.clone()),
+            TrailKey::Register(_) => None,
+        }
+    }
+    #[cfg(not(feature = "trail_enum"))]
+    #[inline]
+    pub fn binding_sym(&self) -> Option<crate::value::Sym> {
+        self.key.strip_prefix("__binding__").map(|n| n.into())
+    }
+
     /// The register name if this is a register entry, else `None`. Mirrors the
     /// OFF `!key.starts_with("__binding__")` register discrimination.
     #[cfg(feature = "trail_enum")]
     #[inline]
     pub fn register_name(&self) -> Option<&str> {
         match &self.key {
-            TrailKey::Register(name) => Some(name.as_str()),
+            TrailKey::Register(name) => Some(name.as_ref()),
             TrailKey::Binding(_) => None,
         }
     }
@@ -477,8 +698,8 @@ impl TrailEntry {
     #[inline]
     pub fn classify(self) -> (TrailUndo, Option<Value>) {
         let undo = match self.key.strip_prefix("__binding__") {
-            Some(name) => TrailUndo::Binding(name.to_string()),
-            None => TrailUndo::Register(self.key),
+            Some(name) => TrailUndo::Binding(name.into()),
+            None => TrailUndo::Register(std::borrow::Cow::Owned(self.key)),
         };
         (undo, self.old_value)
     }
@@ -1497,6 +1718,429 @@ mod d124_builtin_dispatch_tests {
     }
 }
 
+#[cfg(test)]
+mod d125_bindings_tests {
+    // D125: `bindings` is keyed by the interned `Sym` on FxHash instead of a
+    // `String` on std's SipHash. The reference model below is the pre-D125
+    // table (`HashMap<String, Value>`) with a `(String, Option<Value>)` binding
+    // trail, driven exactly as the old `bind_var` / `unwind_trail_to` /
+    // `unwind_trail_bindings_only` drove it. It runs side by side with the real
+    // machine over long pseudo-random sequences of binds, register trail
+    // entries, unwinds, backtrack-style unwinds and resets, and every name is
+    // looked up after every step by `&str`, by `&String` and by `&Sym`.
+    use super::*;
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+        fn below(&mut self, n: usize) -> usize { (self.next() % n as u64) as usize }
+    }
+
+    fn names() -> Vec<String> {
+        let mut v: Vec<String> = (0..16).map(|i| format!("_V{}", i)).collect();
+        v.extend((0..12).map(|i| format!("_H{}", i)));
+        v.extend(["X", "Y", "_", "_G1", "\u{dc}n\u{ef}", "a b", "__binding__x", "A1"]
+            .iter().map(|s| s.to_string()));
+        v
+    }
+
+    enum MEntry { Bind(String, Option<Value>), Reg }
+
+    #[derive(Default)]
+    struct Model { map: HashMap<String, Value>, trail: Vec<MEntry> }
+
+    impl Model {
+        fn bind(&mut self, name: &str, val: Value) {
+            let old = self.map.get(name).cloned();
+            self.trail.push(MEntry::Bind(name.to_string(), old));
+            self.map.insert(name.to_string(), val);
+        }
+        fn undo(map: &mut HashMap<String, Value>, e: &MEntry) {
+            if let MEntry::Bind(n, old) = e {
+                match old {
+                    Some(v) => { map.insert(n.clone(), v.clone()); }
+                    None => { map.remove(n); }
+                }
+            }
+        }
+        fn unwind_to(&mut self, mark: usize) {
+            while self.trail.len() > mark {
+                let e = self.trail.pop().unwrap();
+                Self::undo(&mut self.map, &e);
+            }
+        }
+        fn unwind_bindings_only_then_truncate(&mut self, mark: usize) {
+            if self.trail.len() > mark {
+                for e in self.trail[mark..].iter().rev() { Self::undo(&mut self.map, e); }
+            }
+            self.trail.truncate(mark);
+        }
+        fn deref(&self, v: &Value) -> Value {
+            let mut cur = v.clone();
+            while let Value::Unbound(n) = &cur {
+                match self.map.get(&n.to_string()) {
+                    Some(next) => cur = next.clone(),
+                    None => break,
+                }
+            }
+            cur
+        }
+    }
+
+    fn check(vm: &WamState, m: &Model, names: &[String], step: usize) {
+        assert_eq!(vm.bindings.len(), m.map.len(), "len at step {}", step);
+        assert_eq!(vm.trail.len(), m.trail.len(), "trail len at step {}", step);
+        for n in names {
+            let want = m.map.get(n);
+            assert_eq!(vm.bindings.get(n.as_str()), want, "get(&str {:?}) at step {}", n, step);
+            assert_eq!(vm.bindings.get(n), want, "get(&String {:?}) at step {}", n, step);
+            let sym: crate::value::Sym = n.as_str().into();
+            assert_eq!(vm.bindings.get(&sym), want, "get(&Sym {:?}) at step {}", n, step);
+            assert_eq!(vm.bindings.contains_key(&sym), want.is_some());
+            let var = Value::Unbound(sym);
+            assert_eq!(vm.deref_var(&var), m.deref(&var), "deref_var({:?}) at step {}", n, step);
+        }
+        let mut got: Vec<String> = vm.bindings.iter().map(|(k, v)| format!("{}={:?}", k, v)).collect();
+        let mut want: Vec<String> = m.map.iter().map(|(k, v)| format!("{}={:?}", k, v)).collect();
+        got.sort();
+        want.sort();
+        assert_eq!(got, want, "iter() at step {}", step);
+    }
+
+    #[test]
+    fn bindings_match_the_string_keyed_model() {
+        let names = names();
+        for seed in 1..=12u64 {
+            let mut rng = Lcg(seed * 0x9e37_79b9);
+            let mut vm = WamState::new(vec![], HashMap::new());
+            let mut m = Model::default();
+            let mut marks: Vec<usize> = Vec::new();
+            for step in 0..1500 {
+                match rng.below(20) {
+                    0..=8 => {
+                        // Bind name i to an atom, an integer, a list, or a
+                        // later name j > i (so every chain is acyclic).
+                        let i = rng.below(names.len());
+                        let val = match rng.below(4) {
+                            0 => Value::atom(format!("a{}", rng.below(5)).as_str()),
+                            1 => Value::Integer(rng.below(100) as i64),
+                            2 if i + 1 < names.len() => {
+                                let j = i + 1 + rng.below(names.len() - i - 1);
+                                Value::Unbound(names[j].as_str().into())
+                            }
+                            _ => Value::list(vec![Value::Integer(step as i64)]),
+                        };
+                        // Alternate the key forms the runtime and tests use.
+                        match rng.below(3) {
+                            0 => vm.bind_var(names[i].as_str(), val.clone()),
+                            1 => vm.bind_var(&names[i], val.clone()),
+                            _ => {
+                                let s: crate::value::Sym = names[i].as_str().into();
+                                vm.bind_var(&s, val.clone())
+                            }
+                        }
+                        m.bind(&names[i], val);
+                    }
+                    9..=10 => {
+                        vm.put_reg("A1", Value::Integer(step as i64));
+                        vm.trail_binding("A1");
+                        m.trail.push(MEntry::Reg);
+                    }
+                    11..=13 => marks.push(vm.trail.len()),
+                    14..=16 => {
+                        if let Some(mk) = marks.pop() {
+                            let mk = mk.min(vm.trail.len());
+                            vm.unwind_trail_to(mk);
+                            m.unwind_to(mk);
+                        }
+                    }
+                    17..=18 => {
+                        if let Some(mk) = marks.pop() {
+                            let mk = mk.min(vm.trail.len());
+                            // What `backtrack` does to the trail.
+                            vm.unwind_trail_bindings_only(mk);
+                            vm.trail.truncate(mk);
+                            m.unwind_bindings_only_then_truncate(mk);
+                        }
+                    }
+                    _ => {
+                        if rng.below(10) == 0 {
+                            vm.reset_query();
+                            m = Model::default();
+                            marks.clear();
+                        }
+                    }
+                }
+                check(&vm, &m, &names, step);
+            }
+        }
+    }
+
+    #[test]
+    fn binding_trail_entries_from_str_and_sym_agree() {
+        let s: crate::value::Sym = "_V7".into();
+        let a = TrailEntry::binding("_V7", Some(Value::atom("old")));
+        let b = TrailEntry::binding_from_sym(s.clone(), Some(Value::atom("old")));
+        assert_eq!(a.binding_name(), Some("_V7"));
+        assert_eq!(b.binding_name(), Some("_V7"));
+        assert_eq!(a.binding_sym(), Some(s.clone()));
+        assert_eq!(b.binding_sym(), Some(s.clone()));
+        assert_eq!(b.register_name(), None);
+        assert_eq!(TrailEntry::register("A3", None).binding_sym(), None);
+        match b.classify() {
+            (TrailUndo::Binding(n), Some(v)) => {
+                assert_eq!(n, s);
+                assert_eq!(v, Value::atom("old"));
+            }
+            _ => panic!("binding entry misclassified"),
+        }
+    }
+
+    #[cfg(feature = "intern")]
+    #[test]
+    fn string_lookup_does_not_intern() {
+        let name = "__d125_never_interned_name__";
+        assert!(crate::value::lookup_sym(name).is_none());
+        let mut vm = WamState::new(vec![], HashMap::new());
+        assert_eq!(vm.bindings.get(name), None);
+        assert_eq!(vm.bindings.remove(name), None);
+        assert!(!vm.bindings.contains_key(name));
+        assert!(crate::value::lookup_sym(name).is_none(), "a lookup must not intern");
+        // Binding by string interns (as building `Value::Unbound` would) and
+        // the binding is then visible under every key form.
+        vm.bind_var(name, Value::Integer(1));
+        let sym = crate::value::lookup_sym(name).expect("bind interns the name");
+        assert_eq!(sym.as_str(), name);
+        assert_eq!(vm.bindings.get(&sym), Some(&Value::Integer(1)));
+        assert_eq!(vm.bindings.get(&name.to_string()), Some(&Value::Integer(1)));
+    }
+}
+
+#[cfg(test)]
+mod d126_format_free_step_tests {
+    // D126: `step` no longer calls `format!` to build a `"f/N"` key only to
+    // compare it (`GetStructure` read mode on an in-register compound,
+    // `SwitchOnStructure`/`SwitchOnStructurePc`), nor to build the fresh
+    // variable names `_V<n>`/`_H<n>`. Each test compares the new helper with
+    // the old `format!` expression, kept verbatim here.
+    use super::*;
+
+    fn arities() -> Vec<usize> {
+        let mut v: Vec<usize> = (0..=1200).collect();
+        let mut p: usize = 1;
+        while let Some(q) = p.checked_mul(10) {
+            for d in [p.wrapping_sub(1), p, p + 1, q - 1] { v.push(d); }
+            p = q;
+        }
+        v.extend([usize::MAX, usize::MAX - 1, u32::MAX as usize, 1 << 40]);
+        v
+    }
+
+    #[test]
+    fn usize_decimal_matches_to_string() {
+        let mut buf = [0u8; 20];
+        for n in arities().into_iter().chain(0..200_000) {
+            assert_eq!(WamState::usize_decimal(n, &mut buf), n.to_string().as_bytes(), "n={}", n);
+        }
+    }
+
+    #[test]
+    fn functor_key_eq_matches_the_format_compare() {
+        let functors = ["", "a", "f", "foo", "[|]", ".", "deb", "s", "v", "str(f",
+            "a/b", "f/2", "/", "\u{e9}t\u{e9}", "x y", "0", "1", "f1", "f/"];
+        let ns: Vec<usize> = (0..=130).chain([999, 1000, 1001, 65535, usize::MAX].into_iter()).collect();
+        let mut checked = 0usize;
+        for f in functors {
+            for &n in &ns {
+                let exact = format!("{}/{}", f, n);
+                // The exact key, near misses around it, and keys built from
+                // the other functors and arities.
+                let mut keys: Vec<String> = vec![
+                    exact.clone(),
+                    format!("{}/0{}", f, n),
+                    format!("{}/{}0", f, n),
+                    format!("{}/+{}", f, n),
+                    format!("{}/{} ", f, n),
+                    format!("{}//{}", f, n),
+                    format!("{}{}", f, n),
+                    format!("{}/", f),
+                    f.to_string(),
+                    format!("str({})", exact),
+                    format!("{}/{}", f, n.wrapping_add(1)),
+                    format!("{}/{}", f, n.wrapping_sub(1)),
+                    format!("x{}", exact),
+                    String::new(),
+                    "/".to_string(),
+                ];
+                keys.push(exact[..exact.len() - 1].to_string());
+                for g in functors { keys.push(format!("{}/{}", g, n)); }
+                for m in [0usize, 1, 2, 3, 10, 12] { keys.push(format!("{}/{}", f, m)); }
+                for key in &keys {
+                    let old = format!("{}/{}", f, n) == *key;
+                    assert_eq!(WamState::functor_key_eq(f, n, key), old, "f={:?} n={} key={:?}", f, n, key);
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100_000);
+    }
+
+    #[test]
+    fn fresh_var_sym_matches_the_format_name() {
+        for n in arities().into_iter().chain(0..50_000) {
+            for (tag, old) in [(b'V', format!("_V{}", n)), (b'H', format!("_H{}", n))] {
+                let new = WamState::fresh_var_sym(tag, n);
+                let old_sym: crate::value::Sym = old.clone().into();
+                assert_eq!(new, old_sym, "{}", old);
+                assert_eq!(&*new, old.as_str());
+                assert_eq!(Value::Unbound(new), Value::Unbound(old_sym));
+            }
+        }
+    }
+
+    #[test]
+    fn switch_on_structure_picks_the_same_entry() {
+        // The old arm built `key` once and took the first table entry equal to
+        // it; the new arm tests each entry with `functor_key_eq`.
+        let table: Vec<(String, usize)> = vec![
+            ("f/1".into(), 10), ("f/2".into(), 20), ("g/2".into(), 30), ("f/2".into(), 40),
+            ("f/02".into(), 50), ("[|]/2".into(), 60), ("f/10".into(), 70), ("/2".into(), 80),
+        ];
+        for f in ["f", "g", "[|]", "", "h"] {
+            for n in [0usize, 1, 2, 10, 20] {
+                let key = format!("{}/{}", f, n);
+                let old = table.iter().find(|(k, _)| *k == key).map(|(_, pc)| *pc);
+                let new = table.iter().find(|(k, _)| WamState::functor_key_eq(f, n, k)).map(|(_, pc)| *pc);
+                assert_eq!(new, old, "f={} n={}", f, n);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod d127_register_trail_tests {
+    // D127: a register trail entry keeps its name as a `RegName`: a borrow of
+    // the static `REG_NAMES` table for a canonical name, an owned copy for any
+    // other. The old entry held `reg_name.to_string()`. These tests check that
+    // the text is always the same, and that unwinding a mixed trail restores
+    // registers exactly as the old String-keyed entries did.
+    use super::*;
+
+    fn name_set() -> Vec<String> {
+        let mut v = Vec::new();
+        for p in ["A", "X", "Y", "B", "Z", "a", "y", "", "\u{c9}"] {
+            for n in 0..1000usize {
+                v.push(format!("{}{}", p, n));
+                if n < 100 { v.push(format!("{}{:02}", p, n)); v.push(format!("{}{:03}", p, n)); }
+            }
+            for s in ["", "+1", "-1", " 1", "1 ", "x", "1x", "\u{0661}", "18446744073709551616"] {
+                v.push(format!("{}{}", p, s));
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn reg_names_table_is_the_canonical_text() {
+        for (i, s) in REG_NAMES.iter().enumerate() {
+            let want = format!("{}{}", ["A", "X", "Y"][i / 100], i % 100);
+            assert_eq!(*s, want);
+            assert_eq!(canonical_reg_slot(s), Some(i));
+        }
+    }
+
+    #[test]
+    fn reg_name_of_keeps_the_exact_text() {
+        let mut borrowed = std::collections::HashSet::new();
+        for name in name_set() {
+            let r = reg_name_of(&name);
+            assert_eq!(r.as_ref(), name.as_str(), "text of {:?}", name);
+            let canonical = name.len() >= 2
+                && matches!(name.as_bytes()[0], b'A' | b'X' | b'Y')
+                && name[1..].parse::<usize>().map_or(false, |n| n < 100 && format!("{}", n) == name[1..]);
+            assert_eq!(matches!(r, std::borrow::Cow::Borrowed(_)), canonical, "{:?}", name);
+            if canonical { borrowed.insert(name.clone()); }
+            // The register entry reports, classifies and filters on the same text.
+            let e = TrailEntry::register(&name, None);
+            assert_eq!(e.register_name(), Some(name.as_str()));
+            assert_eq!(e.binding_name(), None);
+            match e.classify() {
+                (TrailUndo::Register(n), None) => assert_eq!(n.as_ref(), name.as_str()),
+                _ => panic!("register entry misclassified: {:?}", name),
+            }
+        }
+        assert_eq!(borrowed.len(), 300, "exactly the 300 canonical names borrow");
+    }
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+        fn below(&mut self, n: usize) -> usize { (self.next() % n as u64) as usize }
+    }
+
+    #[test]
+    fn unwind_matches_the_string_keyed_trail() {
+        // Two machines run the same random program. `vm` uses the real trail.
+        // `rf` keeps the pre-D127 register trail by hand, as
+        // (reg_name.to_string(), get_reg(name)), and undoes it with the same
+        // put_reg calls the old unwind made. Names include non-canonical forms
+        // that still decode to a live register (`A01`, `X007`, `Y01`, `A100`).
+        let names = ["A1", "A2", "A10", "A99", "X1", "X5", "X42", "Y1", "Y2", "Y12",
+                     "A01", "X007", "Y01", "A100"];
+        for seed in 1..=10u64 {
+            let mut rng = Lcg(seed * 7919);
+            let mut vm = WamState::new(vec![], HashMap::new());
+            vm.smut().push(StackEntry::Env(0, YRegs::new()));
+            let mut rf = vm.clone();
+            let mut rf_trail: Vec<(String, Option<Value>)> = Vec::new();
+            let mut marks: Vec<usize> = Vec::new();
+            for step in 0..2000 {
+                let name = names[rng.below(names.len())];
+                match rng.below(10) {
+                    0..=4 => {
+                        vm.trail_binding(name);
+                        let old = rf.get_reg(name);
+                        rf_trail.push((name.to_string(), old));
+                        let v = match rng.below(3) {
+                            0 => Value::Integer(step as i64),
+                            1 => Value::atom("a"),
+                            _ => Value::Unbound("_V1".into()),
+                        };
+                        vm.put_reg(name, v.clone());
+                        rf.put_reg(name, v);
+                    }
+                    5..=6 => marks.push(vm.trail.len()),
+                    _ => {
+                        if let Some(mk) = marks.pop() {
+                            vm.unwind_trail_to(mk);
+                            while rf_trail.len() > mk {
+                                match rf_trail.pop().unwrap() {
+                                    (reg, Some(v)) => rf.put_reg(&reg, v),
+                                    (reg, None) => rf.put_reg(&reg, Value::Uninit),
+                                }
+                            }
+                        }
+                    }
+                }
+                for r in names {
+                    assert_eq!(vm.get_reg(r), rf.get_reg(r), "reg {} at seed {} step {}", r, seed, step);
+                }
+                assert_eq!(vm.trail.len(), rf_trail.len(), "trail len at step {}", step);
+                for (e, (n, old)) in vm.trail.iter().zip(rf_trail.iter()) {
+                    assert_eq!(e.register_name(), Some(n.as_str()));
+                    assert_eq!(&e.old_value, old);
+                }
+            }
+        }
+    }
+}
+
 /// Stack entry: environment frames and unification contexts.
 #[derive(Clone, Debug)]
 pub enum StackEntry {
@@ -1695,7 +2339,7 @@ pub struct WamState {
     /// Variable binding table: maps Unbound variable names to their bound values.
     /// This simulates the WAM heap's shared binding semantics when PutVariable
     /// creates a variable that's stored in both a Y-register and an A-register.
-    pub bindings: HashMap<String, Value>,
+    pub bindings: Bindings,
     /// Counter for generating unique variable names.
     pub var_counter: usize,
     /// Cut barrier: choice point stack depth at the most recent neck/Allocate.
@@ -1858,7 +2502,7 @@ impl WamState {
             mu_facts: std::collections::HashMap::new(),
             clusters: std::collections::HashMap::new(),
             cluster_index: std::collections::HashMap::new(),
-            bindings: HashMap::new(),
+            bindings: Bindings::new(),
             var_counter: 0,
             cut_barrier: 0,
             backtrack_floor: 0,
@@ -3458,7 +4102,7 @@ impl WamState {
     pub fn deref_var(&self, val: &Value) -> Value {
         match val {
             Value::Unbound(name) => {
-                if let Some(bound) = self.bindings.get(name.as_str()) {
+                if let Some(bound) = self.bindings.get(name) {
                     self.deref_var(bound)
                 } else {
                     val.clone()
@@ -3523,7 +4167,7 @@ impl WamState {
 
     fn deref_match_atom(&self, val: &Value, atom: &str) -> Option<bool> {
         match val {
-            Value::Unbound(name) => match self.bindings.get(name.as_str()) {
+            Value::Unbound(name) => match self.bindings.get(name) {
                 Some(bound) => self.deref_match_atom(bound, atom),
                 None => None,
             },
@@ -3598,7 +4242,7 @@ impl WamState {
 
     fn deref_atom_str<'a>(&'a self, val: &'a Value) -> Option<&'a str> {
         match val {
-            Value::Unbound(name) => match self.bindings.get(name.as_str()) {
+            Value::Unbound(name) => match self.bindings.get(name) {
                 Some(bound) => self.deref_atom_str(bound),
                 None => None,
             },
@@ -3609,10 +4253,15 @@ impl WamState {
 
     /// Bind an unbound variable name to a value in the binding table.
     /// Also records a trail entry so that backtracking can undo this binding.
-    pub fn bind_var(&mut self, var_name: &str, val: Value) {
-        let old = self.bindings.get(var_name).cloned();
-        self.trail.push(TrailEntry::binding(var_name, old));
-        self.bindings.insert(var_name.to_string(), val);
+    ///
+    /// D125: the name is any `BindKey`. The runtime passes the `Sym` it holds
+    /// from `Value::Unbound`, so a bind hashes a `u32` and allocates no key;
+    /// tests may still pass a `&str`.
+    pub fn bind_var<K: BindKey + ?Sized>(&mut self, var_name: &K, val: Value) {
+        let name = var_name.bind_sym();
+        let old = self.bindings.get(&name).cloned();
+        self.trail.push(TrailEntry::binding_from_sym(name.clone(), old));
+        self.bindings.insert(name, val);
     }
 
     /// Unwind the trail back to `mark`, undoing every binding (and any
@@ -5539,7 +6188,7 @@ impl WamState {
         // state into a wrong answer rather than a hang.
         let mut hops: u32 = 0;
         while let Value::Unbound(name) = cur {
-            match self.bindings.get(name.as_str()) {
+            match self.bindings.get(name) {
                 Some(next) => {
                     hops += 1;
                     if hops > 1_000_000 { return cur; }
@@ -5549,6 +6198,54 @@ impl WamState {
             }
         }
         cur
+    }
+
+    /// D126: the decimal digits of `n`, written right-aligned into `buf`;
+    /// byte-identical to `n.to_string()` / `format!("{}", n)` (no sign, no
+    /// leading zeros, `"0"` for zero). 20 bytes hold `u64::MAX`.
+    #[inline]
+    pub fn usize_decimal(mut n: usize, buf: &mut [u8; 20]) -> &[u8] {
+        let mut i = buf.len();
+        loop {
+            i -= 1;
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            if n == 0 { break; }
+        }
+        &buf[i..]
+    }
+
+    /// D126: `format!("{}/{}", f, arity) == key`, without building the
+    /// string. The formatted key is `f`, then `/`, then the decimal arity, so
+    /// it equals `key` exactly when `key` starts with `f`, the next byte is
+    /// `/`, and the rest is `usize_decimal(arity)`.
+    #[inline]
+    pub fn functor_key_eq(f: &str, arity: usize, key: &str) -> bool {
+        let (k, fb) = (key.as_bytes(), f.as_bytes());
+        if k.len() < fb.len() + 2 || !k.starts_with(fb) || k[fb.len()] != b'/' {
+            return false;
+        }
+        let mut buf = [0u8; 20];
+        &k[fb.len() + 1..] == Self::usize_decimal(arity, &mut buf)
+    }
+
+    /// D126: the fresh variable name `format!("_{}{}", tag as char, n)`
+    /// (`_V<n>` from put_variable, `_H<n>` from set_variable/unify_variable)
+    /// as a `Sym`, built in a stack buffer instead of a heap `String`. The
+    /// bytes are the same, and interning the same text gives the same `Sym`
+    /// (`intern` OFF: the same `String`).
+    #[inline]
+    pub fn fresh_var_sym(tag: u8, n: usize) -> crate::value::Sym {
+        debug_assert!(tag.is_ascii());
+        let mut digits = [0u8; 20];
+        let d = Self::usize_decimal(n, &mut digits);
+        let mut buf = [0u8; 22];
+        buf[0] = b'_';
+        buf[1] = tag;
+        buf[2..2 + d.len()].copy_from_slice(d);
+        // ASCII by construction, so this never fails.
+        let name = std::str::from_utf8(&buf[..2 + d.len()]).expect("ascii name");
+        name.into()
     }
 
     /// Normalise a structure's functor key: strip the `"str(...)"` wrapper the
@@ -5953,7 +6650,7 @@ impl WamState {
     pub fn deref_heap(&self, val: &Value) -> Value {
         match val {
             Value::Unbound(name) => {
-                if let Some(v) = self.bindings.get(name.as_str()) {
+                if let Some(v) = self.bindings.get(name) {
                     return self.deref_heap(v);
                 }
                 val.clone()

@@ -217,7 +217,7 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                         // the built form for any bare-name Str.
                         let matches_functor =
                             f == fn_str.as_str()
-                            || format!("{}/{}", f, args.len()) == *fn_str;
+                            || Self::functor_key_eq(f, args.len(), fn_str);
                         if matches_functor {
                             self.smut().push(StackEntry::UnifyCtx(args.to_vec()));
                             self.pc += 1; true
@@ -283,7 +283,7 @@ wam_instruction_arm('Instruction::UnifyVariable(xn)', Body) :-
                         self.pc += 1; true
                     } else { false }
                 } else if let Some(StackEntry::WriteCtx(_marker)) = self.stack.last().cloned() {
-                    let var = Value::Unbound(format!("_H{}", self.var_counter).into());
+                    let var = Value::Unbound(Self::fresh_var_sym(b''H'', self.var_counter));
                     self.var_counter += 1;
                     self.set_heap_or_list(var.clone());
                     self.put_reg(xn, var);
@@ -362,7 +362,7 @@ wam_instruction_arm('Instruction::PutConstant(c, ai)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutVariable(xn, ai)', Body) :-
-    Body = '                let var = Value::Unbound(format!("_V{}", self.var_counter).into());
+    Body = '                let var = Value::Unbound(Self::fresh_var_sym(b''V'', self.var_counter));
                 self.var_counter += 1;
                 self.trail_binding(xn);
                 self.trail_binding(ai);
@@ -428,7 +428,7 @@ wam_instruction_arm('Instruction::PutList(ai)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
-    Body = '                let var = Value::Unbound(format!("_H{}", self.var_counter).into());
+    Body = '                let var = Value::Unbound(Self::fresh_var_sym(b''H'', self.var_counter));
                 self.var_counter += 1;
                 self.put_reg(xn, var.clone());
                 // Write the fresh variable into the current structure/list arg
@@ -625,7 +625,7 @@ wam_instruction_arm('Instruction::RecurseCategoryAncestorPc(mid_reg, root_reg, c
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
-                let child_hops = Value::Unbound(format!("_V{}", self.var_counter).into());
+                let child_hops = Value::Unbound(Self::fresh_var_sym(b''V'', self.var_counter));
                 self.var_counter += 1;
                 let next_visited = match visited {
                     Value::List(items) => Value::List(items.cons(mid.clone())),
@@ -1260,9 +1260,11 @@ wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
 wam_instruction_arm('Instruction::SwitchOnStructure(table)', Body) :-
     Body = '                if let Some(val) = self.get_reg_raw("A1") {
                     if let Some((f, args)) = val.univ() {
-                        let key = format!("{}/{}", f, args.len());
+                        // D126: compare each key with `f/N` in place instead
+                        // of building `format!("{}/{}", f, args.len())`.
+                        let n = args.len();
                         for (k, label) in table {
-                            if *k == key {
+                            if Self::functor_key_eq(f, n, k) {
                                 if let Some(&pc) = self.labels.get(label) {
                                     self.pc = pc; return true;
                                 }
@@ -1275,9 +1277,11 @@ wam_instruction_arm('Instruction::SwitchOnStructure(table)', Body) :-
 wam_instruction_arm('Instruction::SwitchOnStructurePc(table)', Body) :-
     Body = '                if let Some(val) = self.get_reg_raw("A1") {
                     if let Some((f, args)) = val.univ() {
-                        let key = format!("{}/{}", f, args.len());
+                        // D126: compare each key with `f/N` in place (see
+                        // SwitchOnStructure).
+                        let n = args.len();
                         for (k, target_pc) in table {
-                            if *k == key {
+                            if Self::functor_key_eq(f, n, k) {
                                 self.pc = *target_pc; return true;
                             }
                         }
@@ -1473,16 +1477,20 @@ compile_backtrack_to_rust(Code0) :-
     }
 '.
 
+%  D125: the binding table is keyed by the interned name (`Sym`), so the
+%  unwind takes the entry's `Sym` (a u32 copy under `intern`) instead of
+%  re-keying by `binding_key.to_string()`. Same entries, same reverse order,
+%  same insert/remove per entry.
 compile_unwind_trail_to_rust(Code) :-
     Code = '    /// Undo only binding-table entries from trail entries added since saved_len.
     fn unwind_trail_bindings_only(&mut self, saved_len: usize) {
         if self.trail.len() <= saved_len { return; }
         let new_entries = self.trail.len() - saved_len;
         for entry in self.trail.iter().rev().take(new_entries) {
-            if let Some(binding_key) = entry.binding_name() {
+            if let Some(binding_key) = entry.binding_sym() {
                 match &entry.old_value {
-                    Some(val) => { self.bindings.insert(binding_key.to_string(), val.clone()); }
-                    None => { self.bindings.remove(binding_key); }
+                    Some(val) => { self.bindings.insert(binding_key, val.clone()); }
+                    None => { self.bindings.remove(&binding_key); }
                 }
             }
         }
