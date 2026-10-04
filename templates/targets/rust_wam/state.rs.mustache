@@ -470,6 +470,80 @@ fn parse_meminfo_kib(rest: &str) -> Option<u64> {
     Some(kib * 1024)
 }
 
+/// D127: the name a register trail entry records. Before D127 it was
+/// `reg_name.to_string()`: one heap `String` per `trail_binding`, ~10.7K per
+/// warm resolve at N=40, freed again when the trail was truncated. Every name
+/// the compiler emits is a canonical `A<n>`/`X<n>`/`Y<n>` with `n` in 0..=99
+/// (decimal, no leading zero), so those borrow the same text from the static
+/// `REG_NAMES` table; any other name is still an owned copy. Either way the
+/// entry holds exactly the bytes of the name it was given, so `register_name()`,
+/// the unwind's `put_reg(&reg, ..)` and the Y-frame filter see the same `&str`.
+pub type RegName = std::borrow::Cow<'static, str>;
+
+/// D127: the 300 canonical register names, indexed by `canonical_reg_slot`.
+pub static REG_NAMES: [&str; 300] = [
+    "A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9",
+    "A10", "A11", "A12", "A13", "A14", "A15", "A16", "A17", "A18", "A19",
+    "A20", "A21", "A22", "A23", "A24", "A25", "A26", "A27", "A28", "A29",
+    "A30", "A31", "A32", "A33", "A34", "A35", "A36", "A37", "A38", "A39",
+    "A40", "A41", "A42", "A43", "A44", "A45", "A46", "A47", "A48", "A49",
+    "A50", "A51", "A52", "A53", "A54", "A55", "A56", "A57", "A58", "A59",
+    "A60", "A61", "A62", "A63", "A64", "A65", "A66", "A67", "A68", "A69",
+    "A70", "A71", "A72", "A73", "A74", "A75", "A76", "A77", "A78", "A79",
+    "A80", "A81", "A82", "A83", "A84", "A85", "A86", "A87", "A88", "A89",
+    "A90", "A91", "A92", "A93", "A94", "A95", "A96", "A97", "A98", "A99",
+    "X0", "X1", "X2", "X3", "X4", "X5", "X6", "X7", "X8", "X9",
+    "X10", "X11", "X12", "X13", "X14", "X15", "X16", "X17", "X18", "X19",
+    "X20", "X21", "X22", "X23", "X24", "X25", "X26", "X27", "X28", "X29",
+    "X30", "X31", "X32", "X33", "X34", "X35", "X36", "X37", "X38", "X39",
+    "X40", "X41", "X42", "X43", "X44", "X45", "X46", "X47", "X48", "X49",
+    "X50", "X51", "X52", "X53", "X54", "X55", "X56", "X57", "X58", "X59",
+    "X60", "X61", "X62", "X63", "X64", "X65", "X66", "X67", "X68", "X69",
+    "X70", "X71", "X72", "X73", "X74", "X75", "X76", "X77", "X78", "X79",
+    "X80", "X81", "X82", "X83", "X84", "X85", "X86", "X87", "X88", "X89",
+    "X90", "X91", "X92", "X93", "X94", "X95", "X96", "X97", "X98", "X99",
+    "Y0", "Y1", "Y2", "Y3", "Y4", "Y5", "Y6", "Y7", "Y8", "Y9",
+    "Y10", "Y11", "Y12", "Y13", "Y14", "Y15", "Y16", "Y17", "Y18", "Y19",
+    "Y20", "Y21", "Y22", "Y23", "Y24", "Y25", "Y26", "Y27", "Y28", "Y29",
+    "Y30", "Y31", "Y32", "Y33", "Y34", "Y35", "Y36", "Y37", "Y38", "Y39",
+    "Y40", "Y41", "Y42", "Y43", "Y44", "Y45", "Y46", "Y47", "Y48", "Y49",
+    "Y50", "Y51", "Y52", "Y53", "Y54", "Y55", "Y56", "Y57", "Y58", "Y59",
+    "Y60", "Y61", "Y62", "Y63", "Y64", "Y65", "Y66", "Y67", "Y68", "Y69",
+    "Y70", "Y71", "Y72", "Y73", "Y74", "Y75", "Y76", "Y77", "Y78", "Y79",
+    "Y80", "Y81", "Y82", "Y83", "Y84", "Y85", "Y86", "Y87", "Y88", "Y89",
+    "Y90", "Y91", "Y92", "Y93", "Y94", "Y95", "Y96", "Y97", "Y98", "Y99",
+];
+
+/// D127: the `REG_NAMES` slot of a canonical register name (`A`/`X`/`Y`
+/// followed by `0`..`9`, or by `1`..`9` and a digit), else `None`. A name
+/// with a leading zero (`A01`) or 3+ digits is not canonical: its text differs
+/// from the table entry for the same index, so it must stay an owned copy.
+#[inline]
+pub fn canonical_reg_slot(name: &str) -> Option<usize> {
+    let (p, n) = match name.as_bytes() {
+        [p, d] if d.is_ascii_digit() => (*p, (d - b'0') as usize),
+        [p, d0 @ b'1'..=b'9', d1] if d1.is_ascii_digit() =>
+            (*p, (d0 - b'0') as usize * 10 + (d1 - b'0') as usize),
+        _ => return None,
+    };
+    match p {
+        b'A' => Some(n),
+        b'X' => Some(100 + n),
+        b'Y' => Some(200 + n),
+        _ => None,
+    }
+}
+
+/// D127: `name` as a `RegName`: a borrow of the static table for a canonical
+/// register name, an owned copy otherwise. Always the same text as `name`.
+#[inline]
+pub fn reg_name_of(name: &str) -> RegName {
+    match canonical_reg_slot(name) {
+        Some(i) => std::borrow::Cow::Borrowed(REG_NAMES[i]),
+        None => std::borrow::Cow::Owned(name.to_string()),
+    }
+}
+
 /// Trail entry: records the old value of a register (or the prior binding of a
 /// variable) before mutation.
 ///
@@ -490,7 +564,8 @@ pub enum TrailKey {
     /// D125: the interned name (`Sym`), so trailing a bind allocates nothing.
     Binding(crate::value::Sym),
     /// A register named `.0` was overwritten; undo restores it via `put_reg`.
-    Register(String),
+    /// D127: a `RegName`, so trailing a canonical register allocates nothing.
+    Register(RegName),
 }
 
 #[cfg(feature = "trail_enum")]
@@ -514,7 +589,7 @@ pub struct TrailEntry {
 /// with no allocation), so the OFF allocation profile is unchanged.
 pub enum TrailUndo {
     Binding(crate::value::Sym),
-    Register(String),
+    Register(RegName),
 }
 
 impl TrailEntry {
@@ -547,7 +622,7 @@ impl TrailEntry {
     #[cfg(feature = "trail_enum")]
     #[inline]
     pub fn register(reg_name: &str, old_value: Option<Value>) -> Self {
-        TrailEntry { key: TrailKey::Register(reg_name.to_string()), old_value }
+        TrailEntry { key: TrailKey::Register(reg_name_of(reg_name)), old_value }
     }
     #[cfg(not(feature = "trail_enum"))]
     #[inline]
@@ -593,7 +668,7 @@ impl TrailEntry {
     #[inline]
     pub fn register_name(&self) -> Option<&str> {
         match &self.key {
-            TrailKey::Register(name) => Some(name.as_str()),
+            TrailKey::Register(name) => Some(name.as_ref()),
             TrailKey::Binding(_) => None,
         }
     }
@@ -624,7 +699,7 @@ impl TrailEntry {
     pub fn classify(self) -> (TrailUndo, Option<Value>) {
         let undo = match self.key.strip_prefix("__binding__") {
             Some(name) => TrailUndo::Binding(name.into()),
-            None => TrailUndo::Register(self.key),
+            None => TrailUndo::Register(std::borrow::Cow::Owned(self.key)),
         };
         (undo, self.old_value)
     }
@@ -1940,6 +2015,127 @@ mod d126_format_free_step_tests {
                 let old = table.iter().find(|(k, _)| *k == key).map(|(_, pc)| *pc);
                 let new = table.iter().find(|(k, _)| WamState::functor_key_eq(f, n, k)).map(|(_, pc)| *pc);
                 assert_eq!(new, old, "f={} n={}", f, n);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod d127_register_trail_tests {
+    // D127: a register trail entry keeps its name as a `RegName`: a borrow of
+    // the static `REG_NAMES` table for a canonical name, an owned copy for any
+    // other. The old entry held `reg_name.to_string()`. These tests check that
+    // the text is always the same, and that unwinding a mixed trail restores
+    // registers exactly as the old String-keyed entries did.
+    use super::*;
+
+    fn name_set() -> Vec<String> {
+        let mut v = Vec::new();
+        for p in ["A", "X", "Y", "B", "Z", "a", "y", "", "\u{c9}"] {
+            for n in 0..1000usize {
+                v.push(format!("{}{}", p, n));
+                if n < 100 { v.push(format!("{}{:02}", p, n)); v.push(format!("{}{:03}", p, n)); }
+            }
+            for s in ["", "+1", "-1", " 1", "1 ", "x", "1x", "\u{0661}", "18446744073709551616"] {
+                v.push(format!("{}{}", p, s));
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn reg_names_table_is_the_canonical_text() {
+        for (i, s) in REG_NAMES.iter().enumerate() {
+            let want = format!("{}{}", ["A", "X", "Y"][i / 100], i % 100);
+            assert_eq!(*s, want);
+            assert_eq!(canonical_reg_slot(s), Some(i));
+        }
+    }
+
+    #[test]
+    fn reg_name_of_keeps_the_exact_text() {
+        let mut borrowed = std::collections::HashSet::new();
+        for name in name_set() {
+            let r = reg_name_of(&name);
+            assert_eq!(r.as_ref(), name.as_str(), "text of {:?}", name);
+            let canonical = name.len() >= 2
+                && matches!(name.as_bytes()[0], b'A' | b'X' | b'Y')
+                && name[1..].parse::<usize>().map_or(false, |n| n < 100 && format!("{}", n) == name[1..]);
+            assert_eq!(matches!(r, std::borrow::Cow::Borrowed(_)), canonical, "{:?}", name);
+            if canonical { borrowed.insert(name.clone()); }
+            // The register entry reports, classifies and filters on the same text.
+            let e = TrailEntry::register(&name, None);
+            assert_eq!(e.register_name(), Some(name.as_str()));
+            assert_eq!(e.binding_name(), None);
+            match e.classify() {
+                (TrailUndo::Register(n), None) => assert_eq!(n.as_ref(), name.as_str()),
+                _ => panic!("register entry misclassified: {:?}", name),
+            }
+        }
+        assert_eq!(borrowed.len(), 300, "exactly the 300 canonical names borrow");
+    }
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+        fn below(&mut self, n: usize) -> usize { (self.next() % n as u64) as usize }
+    }
+
+    #[test]
+    fn unwind_matches_the_string_keyed_trail() {
+        // Two machines run the same random program. `vm` uses the real trail.
+        // `rf` keeps the pre-D127 register trail by hand, as
+        // (reg_name.to_string(), get_reg(name)), and undoes it with the same
+        // put_reg calls the old unwind made. Names include non-canonical forms
+        // that still decode to a live register (`A01`, `X007`, `Y01`, `A100`).
+        let names = ["A1", "A2", "A10", "A99", "X1", "X5", "X42", "Y1", "Y2", "Y12",
+                     "A01", "X007", "Y01", "A100"];
+        for seed in 1..=10u64 {
+            let mut rng = Lcg(seed * 7919);
+            let mut vm = WamState::new(vec![], HashMap::new());
+            vm.smut().push(StackEntry::Env(0, YRegs::new()));
+            let mut rf = vm.clone();
+            let mut rf_trail: Vec<(String, Option<Value>)> = Vec::new();
+            let mut marks: Vec<usize> = Vec::new();
+            for step in 0..2000 {
+                let name = names[rng.below(names.len())];
+                match rng.below(10) {
+                    0..=4 => {
+                        vm.trail_binding(name);
+                        let old = rf.get_reg(name);
+                        rf_trail.push((name.to_string(), old));
+                        let v = match rng.below(3) {
+                            0 => Value::Integer(step as i64),
+                            1 => Value::atom("a"),
+                            _ => Value::Unbound("_V1".into()),
+                        };
+                        vm.put_reg(name, v.clone());
+                        rf.put_reg(name, v);
+                    }
+                    5..=6 => marks.push(vm.trail.len()),
+                    _ => {
+                        if let Some(mk) = marks.pop() {
+                            vm.unwind_trail_to(mk);
+                            while rf_trail.len() > mk {
+                                match rf_trail.pop().unwrap() {
+                                    (reg, Some(v)) => rf.put_reg(&reg, v),
+                                    (reg, None) => rf.put_reg(&reg, Value::Uninit),
+                                }
+                            }
+                        }
+                    }
+                }
+                for r in names {
+                    assert_eq!(vm.get_reg(r), rf.get_reg(r), "reg {} at seed {} step {}", r, seed, step);
+                }
+                assert_eq!(vm.trail.len(), rf_trail.len(), "trail len at step {}", step);
+                for (e, (n, old)) in vm.trail.iter().zip(rf_trail.iter()) {
+                    assert_eq!(e.register_name(), Some(n.as_str()));
+                    assert_eq!(&e.old_value, old);
+                }
             }
         }
     }
