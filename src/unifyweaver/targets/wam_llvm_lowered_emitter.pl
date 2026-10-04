@@ -2020,6 +2020,7 @@ parse_call_target(PredStr, NameAtom, Arity) :-
 %  Calls from one lowered kernel to another skip this wrapper and
 %  share state directly via @lowered_<callee>_<arity>(%WamState*).
 emit_native_wrapper(Pred/Arity, WrapperCode) :-
+    llvm_entry_symbol(Pred, EntrySym),
     atom_string(Pred, PredStr),
     llvm_lowered_func_name(Pred/Arity, LoweredName),
     build_param_list(Arity, ParamList),
@@ -2037,9 +2038,20 @@ entry:
   ret i1 %r
 }',
         [PredStr, Arity,
-         PredStr, ParamList,
+         EntrySym, ParamList,
          ArgSetup,
          LoweredName]).
+
+%% llvm_entry_symbol(+Pred, -Sym) is det.
+%  The public entry name for Pred (wam_llvm_target:wam_llvm_entry_symbol/2:
+%  Pred itself unless it collides with a symbol the runtime declares or
+%  defines). Called module-qualified because wam_llvm_target imports this
+%  module; falls back to the plain name when the target is not loaded.
+llvm_entry_symbol(Pred, Sym) :-
+    (   current_predicate(wam_llvm_target:wam_llvm_entry_symbol/2)
+    ->  wam_llvm_target:wam_llvm_entry_symbol(Pred, Sym)
+    ;   Sym = Pred
+    ).
 
 %% emit_hybrid_dispatcher(+Pred/Arity, +StartPC, +InstrCount,
 %%                        +LabelArraySize, -DispatcherCode) is det.
@@ -2061,6 +2073,7 @@ entry:
 %  before any binding work).
 emit_hybrid_dispatcher(Pred/Arity, StartPC, InstrCount, LabelArraySize,
                        DispatcherCode) :-
+    llvm_entry_symbol(Pred, EntrySym),
     atom_string(Pred, PredStr),
     llvm_lowered_func_name(Pred/Arity, LoweredName),
     build_param_list(Arity, ParamList),
@@ -2092,7 +2105,7 @@ slow_path:
   ret i1 %slow
 }',
         [PredStr, Arity,
-         PredStr, ParamList,
+         EntrySym, ParamList,
          InstrCount, InstrCount,
          InstrCount,
          LabelArraySize, LabelArraySize,

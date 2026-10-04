@@ -71,7 +71,8 @@
     % Phase 5 (JIT): runtime-loadable WAM objects (.wamo)
     write_wam_object/3,                  % +Predicates, +Options, +OutFile
     wam_object_encode/3,                 % +Predicates, +Options, -Text (in-memory .wamo bytes)
-    wam_object_support_ir/1              % -IR (loader + call primitive; append to a host module)
+    wam_object_support_ir/1,             % -IR (loader + call primitive; append to a host module)
+    wam_llvm_entry_symbol/2              % +Pred, -Sym (public entry function name, see below)
 ]).
 
 :- use_module(library(lists)).
@@ -1181,6 +1182,102 @@ string_replace(Haystack, Needle, Replacement, Result) :-
 %  (e.g. a test negating a goal that contains this call) re-runs the
 %  whole compiler search -- one such \+ burned 45 CPU-minutes before
 %  this fence existed.
+%% wam_llvm_entry_symbol(+Pred, -Sym) is det.
+%  The LLVM name of Pred's public entry function (`define i1 @Sym(%Value ...)`).
+%  It is Pred itself unless that name is already taken by a symbol the module
+%  declares or defines -- a libc function the runtime declares (dup, open,
+%  read, write, close, time, stat, system, ...), a runtime function (step,
+%  backtrack, run_loop, ...) or the driver's main -- in which case it is
+%  uw_pred_<Pred>. Without this a predicate named dup/2 made clang reject the
+%  module ("invalid redefinition of function 'dup'"). External drivers that
+%  call an entry function look its name up here. The per-predicate globals
+%  (@<Pred>_start_pc, the wasm export @<Pred>_wasm) keep the plain name.
+wam_llvm_entry_symbol(Pred, Sym) :-
+    (   wam_llvm_reserved_symbol(Pred)
+    ->  atom_concat(uw_pred_, Pred, Sym)
+    ;   Sym = Pred
+    ).
+
+:- dynamic wam_llvm_reserved_symbols_cache/1.
+
+%% wam_llvm_reserved_symbol(+Name) is semidet.
+%  Name is declared or defined (function or global) by the runtime a module
+%  always carries. Computed once per process by scanning that runtime's own
+%  text -- the native and wasm32 external declarations, step, helpers, builtin
+%  dispatch, the .wamo loader and the static templates -- so the set cannot
+%  drift from what is actually emitted.
+wam_llvm_reserved_symbol(Name) :-
+    (   wam_llvm_reserved_symbols_cache(Set)
+    ->  true
+    ;   % snapshot/1: the emitters scanned here may intern atoms or register
+        % functor strings; this can run in the middle of a build, so none of
+        % that may leak into the module being built (atom ids are per module).
+        snapshot(wam_llvm_reserved_symbols(Set)),
+        assertz(wam_llvm_reserved_symbols_cache(Set))
+    ),
+    atom(Name),
+    get_assoc(Name, Set, _).
+
+%% wam_llvm_seed_reserved_symbols(+BuildTexts) is det.
+%  Inside a build: fill the cache from the step and helpers text the build has
+%  just generated (helpers include builtin dispatch), plus the cheap texts,
+%  instead of regenerating them -- a scan only. A no-op once cached.
+wam_llvm_seed_reserved_symbols(_) :-
+    wam_llvm_reserved_symbols_cache(_),
+    !.
+wam_llvm_seed_reserved_symbols(BuildTexts) :-
+    findall(T, wam_llvm_cheap_runtime_text(T), Cheap),
+    append(BuildTexts, Cheap, Texts),
+    wam_llvm_symbol_set(Texts, Set),
+    assertz(wam_llvm_reserved_symbols_cache(Set)).
+
+wam_llvm_reserved_symbols(Set) :-
+    findall(Text, wam_llvm_runtime_text(Text), Texts),
+    wam_llvm_symbol_set(Texts, Set).
+
+wam_llvm_symbol_set(Texts, Set) :-
+    findall(N-true,
+            ( member(T, Texts), wam_llvm_text_symbol(T, N) ),
+            Pairs0),
+    % main: the driver entry a module's harness defines.
+    sort([main-true | Pairs0], Pairs),
+    list_to_assoc(Pairs, Set).
+
+% The full set (outside a build): step and helpers (which include builtin
+% dispatch) are regenerated; the rest is cheap.
+wam_llvm_runtime_text(T) :- compile_step_wam_to_llvm([], T).
+wam_llvm_runtime_text(T) :- compile_wam_helpers_to_llvm([], T).
+wam_llvm_runtime_text(T) :- wam_llvm_cheap_runtime_text(T).
+
+wam_llvm_cheap_runtime_text(T) :- generate_external_declarations('x86_64-pc-linux-gnu', T).
+wam_llvm_cheap_runtime_text(T) :- generate_external_declarations('wasm32-unknown-wasi', T).
+wam_llvm_cheap_runtime_text(T) :- wam_object_support_ir(T).
+wam_llvm_cheap_runtime_text(T) :-
+    member(F, ['types', 'value', 'state', 'runtime', 'module']),
+    atomic_list_concat(['templates/targets/llvm_wam/', F, '.ll.mustache'], Path),
+    read_template_file(Path, T).
+
+%% wam_llvm_text_symbol(+Text, -Name) is nondet.
+%  Each @Name declared or defined at the start of a line of Text:
+%  `define ... @Name(`, `declare ... @Name(`, or a global `@Name = ...`.
+wam_llvm_text_symbol(Text, Name) :-
+    split_string(Text, "\n", "", Lines),
+    member(Line, Lines),
+    wam_llvm_line_symbol(Line, Name).
+
+wam_llvm_line_symbol(Line, Name) :-
+    (   ( string_concat("define", _, Line) ; string_concat("declare", _, Line) )
+    ->  once(sub_string(Line, At, 1, _, "@")),
+        Start is At + 1,
+        sub_string(Line, Start, _, 0, Rest),
+        once(sub_string(Rest, Len, 1, _, "("))
+    ;   string_concat("@", Rest, Line),
+        once(sub_string(Rest, Len, 1, _, " "))
+    ),
+    sub_string(Rest, 0, Len, _, NameS),
+    NameS \== "",
+    atom_string(Name, NameS).
+
 write_wam_llvm_project(Predicates, Options, OutputFile) :-
     wam_llvm_with_label_mode(Options,
         write_wam_llvm_project_(Predicates, Options, OutputFile)).
@@ -1249,6 +1346,7 @@ write_wam_llvm_project_(Predicates, Options, OutputFile) :-
     % Generate runtime (step + helpers)
     compile_step_wam_to_llvm(Options, StepFunc),
     compile_wam_helpers_to_llvm(Options, HelpersCode),
+    wam_llvm_seed_reserved_symbols([StepFunc, HelpersCode]),
     read_template_file('templates/targets/llvm_wam/runtime.ll.mustache', RuntimeTemplate),
     render_template(RuntimeTemplate, [
         step_function=StepFunc,
@@ -1440,6 +1538,7 @@ write_wam_llvm_wasm_project(Predicates, Options, OutputFile) :-
     % Runtime with iterative loop (no musttail)
     compile_step_wam_to_llvm(Options, StepFunc),
     compile_wam_helpers_to_llvm(Options, HelpersCode),
+    wam_llvm_seed_reserved_symbols([StepFunc, HelpersCode]),
     read_template_file('templates/targets/llvm_wam_wasm/runtime.ll.mustache', RuntimeTemplate),
     render_template(RuntimeTemplate, [
         step_function=StepFunc,
@@ -1810,6 +1909,7 @@ generate_wasm_exports(Predicates, ExportCode) :-
         ;   PredIndicator = Pred/Arity
         ),
         atom_string(Pred, PredStr),
+        wam_llvm_entry_symbol(Pred, EntrySym),
         build_llvm_undef_args(Arity, ArgsList),
         format(atom(ExportFunc),
 '; WASM export: ~w/~w
@@ -1820,7 +1920,7 @@ entry:
   call void @wam_cleanup()
   %ret = zext i1 %result to i32
   ret i32 %ret
-}', [PredStr, Arity, PredStr, Idx, PredStr, ArgsList])
+}', [PredStr, Arity, PredStr, Idx, EntrySym, ArgsList])
     ), ExportFuncs),
     atomic_list_concat(ExportFuncs, '\n\n', ExportFuncsStr),
     findall(AttrGroup, (
@@ -2833,6 +2933,7 @@ emit_one_entry_func(InstrCount, LabelCount, LabelArraySize,
     % own VM (bypassing the entry function) need to know where the
     % predicate starts in @module_code. The name matches the pattern
     % used by test tooling for regex extraction.
+    wam_llvm_entry_symbol(Pred, EntrySym),
     format(atom(Func),
 '; WAM-compiled predicate: ~w/~w (merged module code, start PC ~w)
 @~w_start_pc = private constant i32 ~w
@@ -2854,7 +2955,7 @@ entry:
 }',
         [PredStr, Arity, StartPC,
          PredStr, StartPC,
-         PredStr, ParamList,
+         EntrySym, ParamList,
          InstrCount, InstrCount,
          InstrCount,
          LabelArraySize, LabelArraySize,
@@ -8619,6 +8720,7 @@ compile_wam_predicate_to_llvm(Pred/Arity, WamCode, Options, LLVMCode) :-
 
 compile_wam_predicate_to_llvm_(Pred/Arity, WamCode, LLVMCode) :-
     atom_string(Pred, PredStr),
+    wam_llvm_entry_symbol(Pred, EntrySym),
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
     wam_lines_to_llvm(Lines, 0, LLVMLiterals, LabelEntries),
@@ -8676,7 +8778,7 @@ entry:
     SwitchTablesStr,
     PredStr, InstrCount, EntriesStr,
     PredStr, LabelArraySize, LabelsStr,
-    PredStr, ParamList,
+    EntrySym, ParamList,
     InstrCount, InstrCount, PredStr, InstrCount,
     LabelArraySize, LabelArraySize, PredStr, LabelCount,
     ArgSetup]).
