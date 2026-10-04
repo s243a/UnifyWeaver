@@ -1352,6 +1352,151 @@ mod d123_register_decode_tests {
     }
 }
 
+#[cfg(test)]
+mod d124_builtin_dispatch_tests {
+    // D124: `execute_builtin` matches the core builtins (true/0, fail/0,
+    // !/0, =/2) before the family cascade. That is exact only if no family
+    // claims a core name and a non-claiming family leaves the machine alone.
+    // These tests pin both premises and compare against the old cascade.
+    use super::*;
+
+    const CORE: [&str; 4] = ["true/0", "fail/0", "!/0", "=/2"];
+
+    /// The pre-D124 `execute_builtin`, verbatim apart from `self` -> `vm`.
+    fn old_execute_builtin(vm: &mut WamState, op: &str, arity: usize) -> bool {
+        if vm.execute_arith_builtin(op, arity) { return true; }
+        if vm.execute_io_builtin(op, arity) { return true; }
+        if vm.execute_type_builtin(op, arity) { return true; }
+        if vm.execute_term_builtin(op, arity) { return true; }
+        if vm.execute_ext_builtin(op, arity) { return true; }
+        if vm.execute_meta_builtin(op, arity) { return true; }
+
+        match op {
+            "true/0" => { vm.pc += 1; true }
+            "fail/0" => false,
+            "!/0" => { vm.choice_points.truncate(vm.cut_barrier); vm.pc += 1; true }
+            "=/2" => {
+                let a1 = vm.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let a2 = vm.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if vm.unify(&a1, &a2) { vm.pc += 1; true } else { false }
+            }
+            _ => false,
+        }
+    }
+
+    /// Everything a builtin can observably change, as one string.
+    fn fingerprint(vm: &WamState) -> String {
+        let mut b: Vec<String> = vm.bindings.iter()
+            .map(|(k, v)| format!("{}={:?}", k, v)).collect();
+        b.sort();
+        let regs: Vec<String> = (0..MAX_REGS)
+            .filter(|&i| !matches!(vm.regs()[i], Value::Uninit))
+            .map(|i| format!("{}:{:?}", i, vm.regs()[i])).collect();
+        format!("pc={} cp={} cps={} cut={} trail={} heap={:?} stack={} regs={:?} bindings={:?} thrown={:?}",
+            vm.pc, vm.cp, vm.choice_points.len(), vm.cut_barrier, vm.trail.len(),
+            vm.heap, vm.stack.len(), regs, b, vm.thrown_ball)
+    }
+
+    fn cp_at(m: &WamState, next_pc: usize) -> ChoicePoint {
+        ChoicePoint {
+            next_pc,
+            saved_args: m.save_regs(),
+            cp: m.cp,
+            stack: m.stack.clone(),
+            trail_len: m.trail.len(),
+            heap_len: m.heap.len(),
+            builtin_state: None,
+            cut_barrier: m.cut_barrier,
+            levels: vec![],
+        }
+    }
+
+    fn var(n: &str) -> Value { Value::Unbound(n.into()) }
+
+    /// Machine states covering what the core builtins read: A1/A2 pairs that
+    /// unify, clash, bind a variable (directly or through a chain), are
+    /// Uninit, plus a choice-point stack with a cut barrier.
+    fn states() -> Vec<WamState> {
+        let pairs: Vec<(Option<Value>, Option<Value>)> = vec![
+            (Some(Value::atom("a")), Some(Value::atom("a"))),
+            (Some(Value::atom("a")), Some(Value::atom("b"))),
+            (Some(var("_V1")), Some(Value::strv("f/1", vec![Value::atom("x")]))),
+            (Some(Value::list(vec![var("_V1"), Value::Integer(2)])),
+             Some(Value::list(vec![Value::Integer(1), var("_V2")]))),
+            (Some(var("_V3")), Some(var("_V4"))),
+            (None, Some(Value::atom("a"))),
+            (None, None),
+            (Some(Value::Integer(3)), Some(Value::Float(3.0))),
+        ];
+        let mut out = Vec::new();
+        for (a1, a2) in pairs {
+            let mut m = WamState::new(vec![], HashMap::new());
+            m.pc = 7;
+            m.cp = 3;
+            if let Some(v) = a1 { m.set_reg("A1", v); }
+            if let Some(v) = a2 { m.set_reg("A2", v); }
+            m.bind_var("_V3", var("_V5"));
+            for pc in [11, 12, 13] {
+                let cp = cp_at(&m, pc);
+                m.choice_points.push(cp);
+            }
+            m.cut_barrier = 1;
+            out.push(m);
+        }
+        out
+    }
+
+    #[test]
+    fn no_family_claims_a_core_builtin() {
+        // Each family, called directly with a core name, must return false
+        // and leave the machine exactly as it was. That is what made the old
+        // cascade fall through to the core arms with the state unchanged.
+        for m in states() {
+            for op in CORE {
+                let arity: usize = op.rsplit('/').next().unwrap().parse().unwrap();
+                let before = fingerprint(&m);
+                let fams: [fn(&mut WamState, &str, usize) -> bool; 6] = [
+                    |vm, op, a| vm.execute_arith_builtin(op, a),
+                    |vm, op, a| vm.execute_io_builtin(op, a),
+                    |vm, op, a| vm.execute_type_builtin(op, a),
+                    |vm, op, a| vm.execute_term_builtin(op, a),
+                    |vm, op, a| vm.execute_ext_builtin(op, a),
+                    |vm, op, a| vm.execute_meta_builtin(op, a),
+                ];
+                for (i, fam) in fams.iter().enumerate() {
+                    let mut vm = m.clone();
+                    assert!(!fam(&mut vm, op, arity), "family {} claimed {}", i, op);
+                    assert_eq!(fingerprint(&vm), before, "family {} changed state on {}", i, op);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn execute_builtin_matches_the_old_cascade() {
+        // Core names, plus names from each family (and an unknown one) so
+        // the reordered fall-through arm is checked too.
+        let ops: [(&str, usize); 12] = [
+            ("true/0", 0), ("fail/0", 0), ("!/0", 0), ("=/2", 2),
+            ("is/2", 2), ("atom/1", 1), ("var/1", 1), ("==/2", 2),
+            ("\\==/2", 2), ("compare/3", 3), ("length/2", 2), ("no_such_builtin/9", 9),
+        ];
+        let mut checked = 0;
+        for m in states() {
+            for (op, arity) in ops {
+                let mut old_vm = m.clone();
+                let mut new_vm = m.clone();
+                let old_r = old_execute_builtin(&mut old_vm, op, arity);
+                let new_r = new_vm.execute_builtin(op, arity);
+                assert_eq!(new_r, old_r, "result differs for {}", op);
+                assert_eq!(fingerprint(&new_vm), fingerprint(&old_vm), "state differs for {}", op);
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 8 * 12);
+    }
+}
+
 /// Stack entry: environment frames and unification contexts.
 #[derive(Clone, Debug)]
 pub enum StackEntry {
