@@ -1389,6 +1389,15 @@ entry:
   ret double %af.nd
 }
 
+; `arr[k] = expr` on a double-valued table: store the bit pattern of the value
+; (replace semantics), returning the stored double.
+define double @wam_assoc_f64_set(%WamAssocI64Table* %table, i64 %key, double %value) {
+entry:
+  %fs.nb = bitcast double %value to i64
+  %fs.set = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %key, i64 %fs.nb)
+  ret double %value
+}
+
 ; `print arr[k]` on a double-valued table: the awk rendering of the value when the
 ; key exists, NOTHING when it does not (the absent-is-empty rule of the i64 print).
 define void @wam_assoc_f64_print(%WamAssocI64Table* %table, i64 %key) {

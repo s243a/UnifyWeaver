@@ -36,6 +36,16 @@ dispatch on nothing and will never migrate, so the string parser survives regard
 would be permanent maintenance buying nothing, and it would apply a semantic edit invisibly at
 every load rather than as a reviewable diff.
 
+### Re-measured 2026-10-03 (plawk feature line)
+
+`main` now has **18** `.mustache` files using `{{match}}` (79 cases) plus one `.stache`; the plawk
+feature line has 2 (plus a test fixture). A family-by-family survey
+([`PLAN_TEMPLATE_REFACTOR.md`](design/PLAN_TEMPLATE_REFACTOR.md) §2.1) found the cases are almost
+all part selectors or one distinct body per instruction; exactly **one** literal family collapses
+into a single structural case (`fsharp_wam/program.fs.mustache` `kernel_kind`, 2 -> 1). The
+conclusion above is unchanged: no file is large enough to justify a converter. The families that
+do justify `.stache` are in target code still embedded in Prolog (same plan, §2.2-2.3).
+
 ## When to build it
 
 Check the condition, do not wait for a date:

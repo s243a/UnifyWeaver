@@ -139,8 +139,10 @@ one of two ways.
 | input | semantic kind | status |
 |---|---|---|
 | `c[k]++`, `c[k]--`, `c[k] += 5` (integer delta) | number (counter) | supported |
-| `c[k] += x` | number: counter if `x` is an integer, double otherwise (x's numeric conversion, not its spelling) | `+= $2` supported |
-| `c[k] = 5`, `= n + 1` (arithmetic) | number | planned |
+| `c[k] += x` | number: counter if `x` is an integer, double otherwise (x's numeric conversion, not its spelling) | `+= $2` / `+= 5` supported, with or without scalar work |
+| `c[k] = 5`, `= $2 * 2`, `= 7 / 2` (literals, arithmetic, `length`, `int`) | number: counter for integer arithmetic; double once a field, a float literal or a division takes part (`plawk_set_value_kind/2`) | supported (field keys), with or without scalar work |
+| `c[k] = n * 10` (a scalar inside arithmetic) | double (the scalar's numeric reading; an integral double prints as an integer) | supported beside scalar work |
+| `c[k] = n` (a BARE scalar copy) | the scalar's kind -- but it may copy an unset value (§3) | declines |
 | `c[k] = "text"`, concatenation, `sprintf`, string builtins | string | planned |
 | `c[k] = $N` (an unmodified text-input field) | strnum | planned |
 | `c[k] = $N` (a binary-input field) | its `BINFMT` type (i64 or f64 number) | planned |
@@ -282,9 +284,12 @@ each newly admitted input -- not deferred to the declaration PR.
 1. Key hygiene; this document. All special-variable keys and unassigned-variable keys
    decline instead of reaching clang.
 2. (a) The shared effect enumeration (§6.3) -- landed. (b) Numeric element writes
-   (`a[k] = number`) with the §5.2 mixing rules and the `present(unset)` decline (§3),
-   consuming the enumeration and declining on unknown uses; `a[k] += x` beside scalar
-   work.
+   (`a[k] = number`) in array-only rules: the §5.2 mixing rules enforced by
+   `plawk_array_kinds_ok/1` over the enumeration, declining on unknown uses and on
+   imported arrays; `@wam_assoc_f64_set` for double tables -- landed. (c) The same
+   writes, and `a[k] += x`, beside scalar work (the mixed walker), scalar operands
+   inside the value's arithmetic, `++` on a double table there; a bare scalar copy
+   declines (§3) -- landed.
 3. Element reads as expressions: conditions (`if (c[$1] > 1)`), arithmetic, END loops.
 4. String and strnum element writes (`a[k] = "x"`, `a[k] = $N`, `a[k] = a[k] $2`) with
    their mixing rules, and `a[NR] = $0` with a numeric END loop (tac).
@@ -293,6 +298,8 @@ each newly admitted input -- not deferred to the declaration PR.
 
 ## 9. Tests
 
+- `tests/test_plawk_array_set.pl`: numeric element writes, widening, declined kinds
+  and mixes.
 - `tests/test_plawk_array_effects.pl`: the effect enumeration (wrapper nodes, every
   program part, binds as imports, row variables, unknown-use detection).
 - `tests/test_plawk_array_kinds.pl`: special-variable and unassigned keys decline;
