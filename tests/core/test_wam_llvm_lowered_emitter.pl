@@ -63,11 +63,18 @@ lw_head([H|_], H).
 :- dynamic lw_lit_pair/1.
 lw_lit_pair(p(1, 2)).
 
-% Multi-clause — NOT lowerable (try_me_else/trust_me in the bytecode).
+% Multi-clause on distinct first-argument constants -- lowers as a T5
+% clause_chain (all clauses, first-argument dispatch).
 :- dynamic lw_choice/2.
 lw_choice(1, 10).
 lw_choice(2, 20).
 lw_choice(3, 30).
+
+% Multi-clause that is NOT a first-argument chain and whose clause 2 calls
+% out -- the M3 multi_clause_c1 shape (clause 1 lowered, bytecode for 2+).
+:- dynamic lw_choice_c1/2.
+lw_choice_c1(X, Y) :- Y is X + 1.
+lw_choice_c1(X, Y) :- lw_leaf(X, Y).
 
 % --- M4 call/execute coverage ---
 
@@ -117,20 +124,22 @@ test_lowerability :-
              throw(unexpected_unlowerable(PI))
           )
         )),
-    % Multi-clause first-arg-indexed predicates are now lowerable as
-    % multi_clause_c1 (M3) — clause 1 becomes the fast path, the full
-    % bytecode handles clauses 2+ via the dispatcher's slow path.
-    compile_predicate_to_wam(user:lw_choice/2, [], MultiWam),
-    ( wam_llvm_lowerable(lw_choice/2, MultiWam, MultiShape)
-    -> ( MultiShape == multi_clause_c1
-       -> format('  PASS: lw_choice/2 lowerable (multi_clause_c1)~n')
-       ;  format('  FAIL: lw_choice/2 expected multi_clause_c1, got ~w~n',
-                 [MultiShape]),
-          throw(unexpected_shape(lw_choice/2, MultiShape))
-       )
-    ;  format('  FAIL: lw_choice/2 should be lowerable as multi_clause_c1~n'),
-       throw(unexpected_unlowerable(lw_choice/2))
-    ).
+    % Multi-clause predicates: distinct first-argument constants lower as a
+    % T5 clause_chain (which takes precedence over M3); other multi-clause
+    % predicates with a call in a later clause keep M3's multi_clause_c1
+    % (clause 1 is the fast path, the bytecode handles clauses 2+).
+    forall(member(PI-Want, [lw_choice/2-clause_chain, lw_choice_c1/2-multi_clause_c1]),
+        ( compile_predicate_to_wam(user:PI, [], MultiWam),
+          ( wam_llvm_lowerable(PI, MultiWam, MultiShape)
+          -> ( MultiShape == Want
+             -> format('  PASS: ~w lowerable (~w)~n', [PI, Want])
+             ;  format('  FAIL: ~w expected ~w, got ~w~n', [PI, Want, MultiShape]),
+                throw(unexpected_shape(PI, MultiShape))
+             )
+          ;  format('  FAIL: ~w should be lowerable as ~w~n', [PI, Want]),
+             throw(unexpected_unlowerable(PI))
+          )
+        )).
 
 % ============================================================================
 % IR structure: the lowered function appears in the module

@@ -69,19 +69,34 @@ test_ir_structure :-
         ;  format('  FAIL: ~w missing~n', [Sym]),
            throw(missing_symbol(Sym))
         )),
-    % @wam_heap_push must route through @wam_heap_grow, not exit(2).
-    ( sub_string(Src, _, _, _, 'call void @wam_heap_grow(%WamState* %vm)')
+    % @wam_heap_push must route through @wam_heap_grow, not exit(2). Both
+    % checks look INSIDE @wam_heap_push: the module legitimately contains
+    % other exit(2) calls (awk-style fatal errors in the plawk runtime).
+    function_body(Src, 'define i32 @wam_heap_push(', PushBody),
+    ( sub_string(PushBody, _, _, _, 'call void @wam_heap_grow(%WamState* %vm)')
     -> format('  PASS: @wam_heap_push routes through @wam_heap_grow~n')
     ;  format('  FAIL: @wam_heap_push still aborts instead of growing~n'),
        throw(missing_heap_grow_call)
     ),
-    ( sub_string(Src, _, _, _, 'call void @exit(i32 2)')
+    ( sub_string(PushBody, _, _, _, 'call void @exit(i32 2)')
     -> format('  FAIL: legacy exit(2) abort path still present~n'),
        throw(legacy_abort_present)
     ;  format('  PASS: legacy exit(2) abort path removed~n')
     ),
     catch(delete_file(LLPath), _, true),
     clear_llvm_foreign_kernel_specs.
+
+%% function_body(+Src, +DefinePrefix, -Body)
+%  The text of the function whose define line starts with DefinePrefix, up
+%  to its closing brace at column 0.
+function_body(Src, DefinePrefix, Body) :-
+    (   sub_string(Src, B, _, _, DefinePrefix),
+        sub_string(Src, B, _, 0, From),
+        sub_string(From, E, _, _, "\n}\n")
+    ->  sub_string(From, 0, E, _, Body)
+    ;   format('  FAIL: ~w not found~n', [DefinePrefix]),
+        throw(missing_function(DefinePrefix))
+    ).
 
 test_heap_grow_exec :-
     format('~n--- M6 execution stress: heap grow over 50k iterations ---~n'),

@@ -1182,7 +1182,21 @@ string_replace(Haystack, Needle, Replacement, Result) :-
 %  whole compiler search -- one such \+ burned 45 CPU-minutes before
 %  this fence existed.
 write_wam_llvm_project(Predicates, Options, OutputFile) :-
-    once(write_wam_llvm_project_(Predicates, Options, OutputFile)).
+    wam_llvm_with_label_mode(Options,
+        write_wam_llvm_project_(Predicates, Options, OutputFile)).
+
+%% wam_llvm_with_label_mode(+Options, :Goal) is semidet.
+%  Run Goal once with the unknown-label policy taken from Options: strict
+%  (throw) by default, the legacy index-0 fallback under
+%  wam_strict_labels(false). The policy is read by lookup_label_index/3,
+%  whose ~15 call sites do not carry Options, so it is scoped here in a
+%  global variable and restored on exit (nesting restores the outer mode).
+wam_llvm_with_label_mode(Options, Goal) :-
+    (   option(wam_strict_labels(false), Options) -> Mode = false ; Mode = true ),
+    (   nb_current(wam_llvm_strict_labels, Old) -> true ; Old = true ),
+    setup_call_cleanup(nb_setval(wam_llvm_strict_labels, Mode),
+                       once(Goal),
+                       nb_setval(wam_llvm_strict_labels, Old)).
 
 write_wam_llvm_project_(Predicates, Options, OutputFile) :-
     option(module_name(ModuleName), Options, 'wam_generated'),
@@ -1190,6 +1204,22 @@ write_wam_llvm_project_(Predicates, Options, OutputFile) :-
     option(target_datalayout(DataLayout), Options,
         'e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128'),
     option(generated_date(Date), Options, 'reproducible'),
+
+    % M105: reset the atom-table dynamic predicates per module.
+    % Atom ids are module-scoped (each module emits its own
+    % @wam_atom_strings global) so persistent state across compiles
+    % only serves to accumulate. The 600+ test suite hit Prolog''s
+    % 4GB global-stack cap around test 650 because every compile
+    % re-interns 95 ASCII chars + [] + a handful of named atoms,
+    % and those atom_table_entry asserts piled up monotonically.
+    % This must run FIRST: substitute_foreign_kernel_impls/3 below
+    % interns every edge-fact atom while building the kernel tables.
+    % A reset after it wiped those entries, so @wam_atom_strings lacked
+    % them and the fact table ids collided with atoms interned later
+    % (edge ids 1, 2, 3 read back as [], ' ', '!').
+    retractall(atom_table_entry(_, _)),
+    retractall(atom_table_next_id(_)),
+    assertz(atom_table_next_id(1)),
 
     % M5.6: populate the foreign kernel spec table.
     % Path (a) directives have already run by load time. Path (b) is
@@ -1229,16 +1259,8 @@ write_wam_llvm_project_(Predicates, Options, OutputFile) :-
     % llvm_foreign_kernel_spec/3 entry is compiled to a body of
     % WAM instructions ending in `call_foreign Kind, Arity`.
     retractall(functor_string_global(_, _)),
-    % M105: also reset the atom-table dynamic predicates per module.
-    % Atom ids are module-scoped (each module emits its own
-    % @wam_atom_strings global) so persistent state across compiles
-    % only serves to accumulate. The 600+ test suite hit Prolog''s
-    % 4GB global-stack cap around test 650 because every compile
-    % re-interns 95 ASCII chars + [] + a handful of named atoms,
-    % and those atom_table_entry asserts piled up monotonically.
-    retractall(atom_table_entry(_, _)),
-    retractall(atom_table_next_id(_)),
-    assertz(atom_table_next_id(1)),
+    % (The per-module atom-table reset (M105) is at the top of this
+    % predicate, before the foreign kernel tables intern their atoms.)
     % Pre-register functor globals referenced directly by runtime
     % helpers (e.g. =../2 needs the cons-cell functor "." and the
     % empty-list atom "[]"). Route through register_functor_string so
@@ -1927,14 +1949,6 @@ read_template_file(Path, Content) :-
 %  own first instruction — silent self-recursion. Same class of bug
 %  WAT had before PR #1476.
 compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode) :-
-    expand_wam_llvm_project_predicates(Predicates, Options, ExpandedPredicates),
-    % M4: closure analysis — compute the set of predicates in this
-    % batch whose lowered kernels can be safely inter-linked via
-    % `call`/`execute`. A predicate joins the closure iff all of its
-    % clause-1 call/execute targets are also in the closure (computed
-    % to fixpoint). Passed through Options so pass1's per-pred
-    % lowerability check can consult it.
-    compute_lowered_closure(ExpandedPredicates, Options, ClosureSet),
     % M10: enable inline lowering of bagof/setof so they go through
     % the same aggregate dispatch path as findall/aggregate_all rather
     % than the runtime fallback (which is not wired up for LLVM).
@@ -1946,6 +1960,18 @@ compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode) :-
     -> OptionsWithBS = Options
     ;  OptionsWithBS = [inline_bagof_setof(true) | Options]
     ),
+    % Dependency discovery must see the same WAM the build compiles: with
+    % the raw Options a setof/bagof body reads as `call setof/3`, and SWI's
+    % own setof/3 (interpreted) was pulled in as a user predicate that then
+    % failed to compile -- fatal since failed predicates fail the build.
+    expand_wam_llvm_project_predicates(Predicates, OptionsWithBS, ExpandedPredicates),
+    % M4: closure analysis — compute the set of predicates in this
+    % batch whose lowered kernels can be safely inter-linked via
+    % `call`/`execute`. A predicate joins the closure iff all of its
+    % clause-1 call/execute targets are also in the closure (computed
+    % to fixpoint). Passed through Options so pass1's per-pred
+    % lowerability check can consult it.
+    compute_lowered_closure(ExpandedPredicates, Options, ClosureSet),
     % M17: emit if-then-else with get_level Y_n / cut Y_n bytecode
     % rather than the naive cut_ite. The LLVM target''s cut_ite was
     % a "decrement cp_count by 1" stub, which silently cut the wrong
@@ -8587,7 +8613,11 @@ builtin_op_to_id(_, 200).  % Unknown
 %% compile_wam_predicate_to_llvm(+Pred/Arity, +WamCode, +Options, -LLVMCode)
 %  Takes WAM instruction output and produces LLVM IR with instruction
 %  array and label table as global constants.
-compile_wam_predicate_to_llvm(Pred/Arity, WamCode, _Options, LLVMCode) :-
+compile_wam_predicate_to_llvm(Pred/Arity, WamCode, Options, LLVMCode) :-
+    wam_llvm_with_label_mode(Options,
+        compile_wam_predicate_to_llvm_(Pred/Arity, WamCode, LLVMCode)).
+
+compile_wam_predicate_to_llvm_(Pred/Arity, WamCode, LLVMCode) :-
     atom_string(Pred, PredStr),
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
@@ -8895,10 +8925,15 @@ resolve_llvm_literal(LabelMap, Parts, LLVMLit) :-
 
 %% lookup_label_index(+LabelName, +LabelMap, -Index)
 %  Find label index in map. Behaviour on unknown labels depends on context:
-%  - Default: warn on stderr, return 0 (for external predicate references)
-%  - With wam_strict_labels(true) in Options: throw an error
+%  - Default: throw an error (the predicate was not compiled into the module)
+%  - With wam_strict_labels(false) in Options (or the entry point's Options,
+%    via wam_llvm_with_label_mode/2): warn on stderr, return 0
 lookup_label_index(LabelName, LabelMap, Index) :-
-    lookup_label_index(LabelName, LabelMap, [], Index).
+    (   nb_current(wam_llvm_strict_labels, false)
+    ->  Options = [wam_strict_labels(false)]
+    ;   Options = []
+    ),
+    lookup_label_index(LabelName, LabelMap, Options, Index).
 lookup_label_index(LabelName, LabelMap, Options, Index) :-
     (   member(LabelName-Index, LabelMap)
     ->  true

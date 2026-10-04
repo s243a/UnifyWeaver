@@ -1204,10 +1204,17 @@ emit_instr(put_structure(FStr, AiStr), N, Next, Block) :- !,
     format(atom(L22),
 '  call void @wam_push_write_ctx(%WamState* %vm, i32 ~w)',
         [FArity]),
+    % The pushed WriteCtx starts with a null args pointer; without this the
+    % following set_* instructions write nothing and the compound's args stay
+    % uninitialised arena memory (the interpreter's put_structure and the
+    % lowered get_structure write mode both set it).
+    format(atom(L22b),
+'  call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %ps.~w.args)',
+        [N]),
     format(atom(L23), '  br label %~w', [Next]),
     atomic_list_concat(
         [L0, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10,
-         L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23],
+         L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L22b, L23],
         '\n', Block).
 
 % --- set_value Xn: append reg Xn to current WriteCtx ---
