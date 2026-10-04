@@ -1488,16 +1488,26 @@ compile_unwind_trail_to_rust(Code) :-
         }
     }'.
 
+%  D124: the four core builtins (true/0, fail/0, !/0, =/2) are matched
+%  BEFORE the family cascade. Before D124 they were the last arms, reached
+%  only after all six family matches had failed, although they are the most
+%  frequent builtins in compiled code. This is exact because (a) no family
+%  claims any of these four names (pinned by
+%  tests/test_wam_rust_builtin_dispatch.pl), and (b) a family that does not
+%  claim a name returns false at its `_ => false` arm without touching the
+%  machine (the only code ahead of a family `match op` is a pure name check
+%  in the type family and a `use` in the ext family). So the old cascade
+%  reached these arms with the state unchanged, and every other name still
+%  runs the same cascade in the same order.
 compile_execute_builtin_to_rust(Code) :-
     Code = '    /// Execute a built-in predicate by name.
+    ///
+    /// D124: the core builtins are matched first, then the family cascade
+    /// (arith, io, type, term, ext, meta, in that order) for every other
+    /// name. No family claims a core name, and a family that does not claim
+    /// a name returns false without side effects, so this gives exactly the
+    /// old cascade-then-core-match result.
     pub fn execute_builtin(&mut self, op: &str, arity: usize) -> bool {
-        if self.execute_arith_builtin(op, arity) { return true; }
-        if self.execute_io_builtin(op, arity) { return true; }
-        if self.execute_type_builtin(op, arity) { return true; }
-        if self.execute_term_builtin(op, arity) { return true; }
-        if self.execute_ext_builtin(op, arity) { return true; }
-        if self.execute_meta_builtin(op, arity) { return true; }
-
         match op {
             "true/0" => { self.pc += 1; true }
             "fail/0" => false,
@@ -1510,7 +1520,15 @@ compile_execute_builtin_to_rust(Code) :-
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 if self.unify(&a1, &a2) { self.pc += 1; true } else { false }
             }
-            _ => false,
+            _ => {
+                if self.execute_arith_builtin(op, arity) { return true; }
+                if self.execute_io_builtin(op, arity) { return true; }
+                if self.execute_type_builtin(op, arity) { return true; }
+                if self.execute_term_builtin(op, arity) { return true; }
+                if self.execute_ext_builtin(op, arity) { return true; }
+                if self.execute_meta_builtin(op, arity) { return true; }
+                false
+            }
         }
     }'.
 

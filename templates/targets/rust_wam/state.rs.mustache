@@ -1148,6 +1148,355 @@ mod d122_code_snapshot_tests {
     }
 }
 
+#[cfg(test)]
+mod d123_register_decode_tests {
+    // D123: `reg_index` decodes the emitted register names inline, the Y-name
+    // test is a byte test, and `get_reg` derefs the slot in place. Each must
+    // give exactly what the pre-D123 code gave, for every name form.
+    use super::*;
+
+    /// The pre-D123 `reg_index`, verbatim.
+    fn old_reg_index(name: &str) -> usize {
+        let bytes = name.as_bytes();
+        if bytes.is_empty() { return 0; }
+        let prefix = bytes[0];
+        let num_str = &name[1..];
+        let num: usize = num_str.parse().unwrap_or(0);
+        match prefix {
+            b'A' => num.wrapping_sub(1),          // A1->0, A2->1
+            b'X' => num.wrapping_add(99),          // X1->100, X2->101
+            b'Y' => num.wrapping_add(199),         // Y1->200, Y2->201
+            _ => 0,
+        }
+    }
+
+    /// The pre-D123 Y-register routing test, verbatim.
+    fn old_is_y(name: &str) -> bool {
+        name.starts_with('Y') && name.len() > 1
+            && name[1..].chars().next().map_or(false, |c| c.is_ascii_digit())
+    }
+
+    /// The pre-D123 `get_reg`, verbatim apart from `self` -> `vm`.
+    fn old_get_reg(vm: &WamState, name: &str) -> Option<Value> {
+        let raw = if name.starts_with('Y') && name.len() > 1 && name[1..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            let mut found = None;
+            for entry in vm.stack.iter().rev() {
+                if let StackEntry::Env(_, y_regs) = entry {
+                    found = y_regs.get(name).cloned();
+                    break;
+                }
+            }
+            found
+        } else {
+            vm.get_reg_raw(name)
+        };
+        raw.map(|v| vm.deref_var(&v))
+    }
+
+    /// Every name built from `prefixes` x every suffix of up to `max_len`
+    /// chars over `alphabet`, plus hand-picked long and odd forms.
+    fn names(prefixes: &[char], alphabet: &[char], max_len: usize) -> Vec<String> {
+        let mut suffixes: Vec<String> = vec![String::new()];
+        let mut layer: Vec<String> = vec![String::new()];
+        for _ in 0..max_len {
+            let mut next = Vec::new();
+            for s in &layer {
+                for &c in alphabet {
+                    let mut t = s.clone();
+                    t.push(c);
+                    next.push(t);
+                }
+            }
+            suffixes.extend(next.iter().cloned());
+            layer = next;
+        }
+        let mut out = Vec::new();
+        for &p in prefixes {
+            for s in &suffixes {
+                out.push(format!("{}{}", p, s));
+            }
+        }
+        for extra in [
+            "", "A", "X", "Y", "A0", "X0", "Y0", "A00", "Y01", "X007", "A100",
+            "X999", "Y4096", "Y4097", "A9999", "X12345", "A+1", "X+12", "Y+",
+            "A-1", "X-0", "A 1", "A1 ", "Aé", "Yé", "Xé1", "A١", "A18446744073709551615",
+            "A18446744073709551616", "X99999999999999999999", "Y4294967296",
+            "a1", "x1", "y1", "Z1", "_1", "AA1", "YY1", "A1a", "Y12a",
+        ] {
+            out.push(extra.to_string());
+        }
+        out
+    }
+
+    #[test]
+    fn reg_index_matches_the_parse_for_every_name_form() {
+        // Every ASCII prefix x every suffix of 0-3 chars over digits, the
+        // digit neighbours '/' and ':', sign chars, a letter and a space.
+        let prefixes: Vec<char> = (0u8..128).map(|b| b as char).collect();
+        let alphabet: Vec<char> = "0123456789/:+-a ".chars().collect();
+        let mut checked = 0usize;
+        for n in names(&prefixes, &alphabet, 3) {
+            assert_eq!(WamState::reg_index(&n), old_reg_index(&n), "name {:?}", n);
+            checked += 1;
+        }
+        // A/X/Y with every 1- and 2-byte ASCII suffix: covers the whole
+        // fast-path shape and every byte that sits next to it.
+        let all_ascii: Vec<char> = (0u8..128).map(|b| b as char).collect();
+        for n in names(&['A', 'X', 'Y'], &all_ascii, 2) {
+            assert_eq!(WamState::reg_index(&n), old_reg_index(&n), "name {:?}", n);
+            checked += 1;
+        }
+        assert!(checked > 600_000, "checked only {}", checked);
+    }
+
+    #[test]
+    fn reg_index_keeps_the_known_values_and_the_panic() {
+        assert_eq!(WamState::reg_index("A1"), 0);
+        assert_eq!(WamState::reg_index("A2"), 1);
+        assert_eq!(WamState::reg_index("A99"), 98);
+        assert_eq!(WamState::reg_index("X1"), 100);
+        assert_eq!(WamState::reg_index("X99"), 198);
+        assert_eq!(WamState::reg_index("Y1"), 200);
+        assert_eq!(WamState::reg_index("Y99"), 298);
+        assert_eq!(WamState::reg_index("A0"), usize::MAX);
+        assert_eq!(WamState::reg_index("A100"), 99);
+        assert_eq!(WamState::reg_index("A+1"), 0);
+        assert_eq!(WamState::reg_index("Q1"), 0);
+        // A multi-byte first char made the old `&name[1..]` panic. The new
+        // code reaches the same slice through `reg_index_parse`.
+        let new = std::panic::catch_unwind(|| WamState::reg_index("é1")).is_err();
+        let old = std::panic::catch_unwind(|| old_reg_index("é1")).is_err();
+        assert!(new && old);
+    }
+
+    #[test]
+    fn y_name_test_matches_the_old_predicate() {
+        let all_ascii: Vec<char> = (0u8..128).map(|b| b as char).collect();
+        let mut prefixes = all_ascii.clone();
+        prefixes.push('é');
+        for n in names(&prefixes, &all_ascii, 2) {
+            assert_eq!(WamState::is_y_reg_name(&n), old_is_y(&n), "name {:?}", n);
+        }
+        for n in ["Yé", "Y١", "Y\u{1F600}", "Y", "", "Y0", "Y01", "y1"] {
+            assert_eq!(WamState::is_y_reg_name(n), old_is_y(n), "name {:?}", n);
+        }
+    }
+
+    fn query_names() -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        for p in ["A", "X", "Y"] {
+            for i in 0..8 {
+                v.push(format!("{}{}", p, i));
+            }
+            v.push(format!("{}01", p));
+            v.push(format!("{}+1", p));
+            v.push(format!("{}100", p));
+            v.push(format!("{}x", p));
+            v.push(p.to_string());
+        }
+        for extra in ["", "Q1", "Yé", "Aé", "Y4096", "Y4097", "X599", "A600"] {
+            v.push(extra.to_string());
+        }
+        v
+    }
+
+    fn assert_same(vm: &WamState, ctx: &str) {
+        for n in query_names() {
+            let new = vm.get_reg(&n);
+            let old = old_get_reg(vm, &n);
+            assert_eq!(format!("{:?}", new), format!("{:?}", old), "{}: name {:?}", ctx, n);
+        }
+    }
+
+    fn var(n: &str) -> Value { Value::Unbound(n.into()) }
+
+    #[test]
+    fn get_reg_matches_the_old_clone_then_deref() {
+        let mut vm = WamState::new(vec![], HashMap::new());
+        assert_same(&vm, "empty machine, no frame");
+
+        // A/X registers: atom, bound chain, unbound var, compound, list,
+        // integer; A5 left Uninit.
+        vm.set_reg("A1", Value::atom("a"));
+        vm.set_reg("A2", var("_V1"));
+        vm.bind_var("_V1", var("_V2"));
+        vm.bind_var("_V2", Value::list(vec![Value::atom("x"), var("_V3")]));
+        vm.set_reg("A3", var("_V9"));
+        vm.set_reg("X1", Value::strv("f/2", vec![var("_V1"), Value::Integer(3)]));
+        vm.set_reg("X2", Value::Integer(-7));
+        vm.set_reg("X3", var("_V2"));
+        vm.set_reg("A99", Value::atom("edge"));
+        assert_same(&vm, "A/X only, no frame");
+
+        // A lower frame with Y1..Y3 and Y5, then a top frame.
+        vm.smut().push(StackEntry::Env(0, YRegs::new()));
+        vm.put_reg("Y1", Value::atom("low"));
+        vm.put_reg("Y5", var("_V1"));
+        vm.smut().push(StackEntry::Env(0, YRegs::new()));
+        assert_same(&vm, "empty top frame");
+        vm.put_reg("Y1", var("_V1"));
+        vm.put_reg("Y2", Value::atom("b"));
+        vm.put_reg("Y3", Value::Uninit); // stored Uninit: Some(Uninit)
+        vm.put_reg("Y01", Value::atom("noncanonical"));
+        vm.put_reg("Y4", var("_V9"));
+        assert_same(&vm, "top frame");
+
+        // Non-Env entries above the top frame are skipped.
+        vm.smut().push(StackEntry::UnifyCtx(vec![Value::atom("u")]));
+        vm.smut().push(StackEntry::WriteCtx(0));
+        assert_same(&vm, "ctx entries above the frame");
+
+        // A binding added later is seen by both.
+        vm.bind_var("_V9", Value::atom("late"));
+        assert_same(&vm, "after a late binding");
+    }
+}
+
+#[cfg(test)]
+mod d124_builtin_dispatch_tests {
+    // D124: `execute_builtin` matches the core builtins (true/0, fail/0,
+    // !/0, =/2) before the family cascade. That is exact only if no family
+    // claims a core name and a non-claiming family leaves the machine alone.
+    // These tests pin both premises and compare against the old cascade.
+    use super::*;
+
+    const CORE: [&str; 4] = ["true/0", "fail/0", "!/0", "=/2"];
+
+    /// The pre-D124 `execute_builtin`, verbatim apart from `self` -> `vm`.
+    fn old_execute_builtin(vm: &mut WamState, op: &str, arity: usize) -> bool {
+        if vm.execute_arith_builtin(op, arity) { return true; }
+        if vm.execute_io_builtin(op, arity) { return true; }
+        if vm.execute_type_builtin(op, arity) { return true; }
+        if vm.execute_term_builtin(op, arity) { return true; }
+        if vm.execute_ext_builtin(op, arity) { return true; }
+        if vm.execute_meta_builtin(op, arity) { return true; }
+
+        match op {
+            "true/0" => { vm.pc += 1; true }
+            "fail/0" => false,
+            "!/0" => { vm.choice_points.truncate(vm.cut_barrier); vm.pc += 1; true }
+            "=/2" => {
+                let a1 = vm.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let a2 = vm.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if vm.unify(&a1, &a2) { vm.pc += 1; true } else { false }
+            }
+            _ => false,
+        }
+    }
+
+    /// Everything a builtin can observably change, as one string.
+    fn fingerprint(vm: &WamState) -> String {
+        let mut b: Vec<String> = vm.bindings.iter()
+            .map(|(k, v)| format!("{}={:?}", k, v)).collect();
+        b.sort();
+        let regs: Vec<String> = (0..MAX_REGS)
+            .filter(|&i| !matches!(vm.regs()[i], Value::Uninit))
+            .map(|i| format!("{}:{:?}", i, vm.regs()[i])).collect();
+        format!("pc={} cp={} cps={} cut={} trail={} heap={:?} stack={} regs={:?} bindings={:?} thrown={:?}",
+            vm.pc, vm.cp, vm.choice_points.len(), vm.cut_barrier, vm.trail.len(),
+            vm.heap, vm.stack.len(), regs, b, vm.thrown_ball)
+    }
+
+    fn cp_at(m: &WamState, next_pc: usize) -> ChoicePoint {
+        ChoicePoint {
+            next_pc,
+            saved_args: m.save_regs(),
+            cp: m.cp,
+            stack: m.stack.clone(),
+            trail_len: m.trail.len(),
+            heap_len: m.heap.len(),
+            builtin_state: None,
+            cut_barrier: m.cut_barrier,
+            levels: vec![],
+        }
+    }
+
+    fn var(n: &str) -> Value { Value::Unbound(n.into()) }
+
+    /// Machine states covering what the core builtins read: A1/A2 pairs that
+    /// unify, clash, bind a variable (directly or through a chain), are
+    /// Uninit, plus a choice-point stack with a cut barrier.
+    fn states() -> Vec<WamState> {
+        let pairs: Vec<(Option<Value>, Option<Value>)> = vec![
+            (Some(Value::atom("a")), Some(Value::atom("a"))),
+            (Some(Value::atom("a")), Some(Value::atom("b"))),
+            (Some(var("_V1")), Some(Value::strv("f/1", vec![Value::atom("x")]))),
+            (Some(Value::list(vec![var("_V1"), Value::Integer(2)])),
+             Some(Value::list(vec![Value::Integer(1), var("_V2")]))),
+            (Some(var("_V3")), Some(var("_V4"))),
+            (None, Some(Value::atom("a"))),
+            (None, None),
+            (Some(Value::Integer(3)), Some(Value::Float(3.0))),
+        ];
+        let mut out = Vec::new();
+        for (a1, a2) in pairs {
+            let mut m = WamState::new(vec![], HashMap::new());
+            m.pc = 7;
+            m.cp = 3;
+            if let Some(v) = a1 { m.set_reg("A1", v); }
+            if let Some(v) = a2 { m.set_reg("A2", v); }
+            m.bind_var("_V3", var("_V5"));
+            for pc in [11, 12, 13] {
+                let cp = cp_at(&m, pc);
+                m.choice_points.push(cp);
+            }
+            m.cut_barrier = 1;
+            out.push(m);
+        }
+        out
+    }
+
+    #[test]
+    fn no_family_claims_a_core_builtin() {
+        // Each family, called directly with a core name, must return false
+        // and leave the machine exactly as it was. That is what made the old
+        // cascade fall through to the core arms with the state unchanged.
+        for m in states() {
+            for op in CORE {
+                let arity: usize = op.rsplit('/').next().unwrap().parse().unwrap();
+                let before = fingerprint(&m);
+                let fams: [fn(&mut WamState, &str, usize) -> bool; 6] = [
+                    |vm, op, a| vm.execute_arith_builtin(op, a),
+                    |vm, op, a| vm.execute_io_builtin(op, a),
+                    |vm, op, a| vm.execute_type_builtin(op, a),
+                    |vm, op, a| vm.execute_term_builtin(op, a),
+                    |vm, op, a| vm.execute_ext_builtin(op, a),
+                    |vm, op, a| vm.execute_meta_builtin(op, a),
+                ];
+                for (i, fam) in fams.iter().enumerate() {
+                    let mut vm = m.clone();
+                    assert!(!fam(&mut vm, op, arity), "family {} claimed {}", i, op);
+                    assert_eq!(fingerprint(&vm), before, "family {} changed state on {}", i, op);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn execute_builtin_matches_the_old_cascade() {
+        // Core names, plus names from each family (and an unknown one) so
+        // the reordered fall-through arm is checked too.
+        let ops: [(&str, usize); 12] = [
+            ("true/0", 0), ("fail/0", 0), ("!/0", 0), ("=/2", 2),
+            ("is/2", 2), ("atom/1", 1), ("var/1", 1), ("==/2", 2),
+            ("\\==/2", 2), ("compare/3", 3), ("length/2", 2), ("no_such_builtin/9", 9),
+        ];
+        let mut checked = 0;
+        for m in states() {
+            for (op, arity) in ops {
+                let mut old_vm = m.clone();
+                let mut new_vm = m.clone();
+                let old_r = old_execute_builtin(&mut old_vm, op, arity);
+                let new_r = new_vm.execute_builtin(op, arity);
+                assert_eq!(new_r, old_r, "result differs for {}", op);
+                assert_eq!(fingerprint(&new_vm), fingerprint(&old_vm), "state differs for {}", op);
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 8 * 12);
+    }
+}
+
 /// Stack entry: environment frames and unification contexts.
 #[derive(Clone, Debug)]
 pub enum StackEntry {
@@ -1532,8 +1881,39 @@ impl WamState {
 
     /// Parse a register name ("A1", "X3", "Y2") to a Vec index.
     /// A1->0, A2->1, ...; X1->100, X2->101, ...; Y1->200, Y2->201, ...
+    ///
+    /// D123: every register access re-parses its name, and the generic
+    /// `str::parse::<usize>` was most of that cost. The names the compiler
+    /// emits are an `A`/`X`/`Y` prefix plus one or two ASCII digits, so those
+    /// are decoded inline here. For an all-digit suffix of 1-2 bytes,
+    /// `parse::<usize>` returns exactly the decimal value, so the fast path
+    /// gives the same index. Every other name (more digits, leading `+`, empty
+    /// or non-digit suffix, any other prefix, non-ASCII) goes through
+    /// `reg_index_parse`, which is the pre-D123 body unchanged.
     #[inline]
     pub fn reg_index(name: &str) -> usize {
+        let num = match name.as_bytes() {
+            [p @ (b'A' | b'X' | b'Y'), d0] if d0.is_ascii_digit() => {
+                (*p, (d0 - b'0') as usize)
+            }
+            [p @ (b'A' | b'X' | b'Y'), d0, d1]
+                if d0.is_ascii_digit() && d1.is_ascii_digit() =>
+            {
+                (*p, (d0 - b'0') as usize * 10 + (d1 - b'0') as usize)
+            }
+            _ => return Self::reg_index_parse(name),
+        };
+        match num {
+            (b'A', n) => n.wrapping_sub(1),
+            (b'X', n) => n.wrapping_add(99),
+            (_, n) => n.wrapping_add(199),
+        }
+    }
+
+    /// The pre-D123 `reg_index` body. `reg_index` falls back to it for every
+    /// name outside its fast path.
+    #[inline(never)]
+    fn reg_index_parse(name: &str) -> usize {
         let bytes = name.as_bytes();
         if bytes.is_empty() { return 0; }
         let prefix = bytes[0];
@@ -3088,15 +3468,26 @@ impl WamState {
         }
     }
 
+    /// True for a name that `get_reg`/`put_reg`/`get_reg_ref` route to the
+    /// environment frame: `Y` followed by an ASCII digit. D123: a byte test
+    /// that is exactly equivalent to the old
+    /// `name.starts_with('Y') && name.len() > 1 &&
+    /// name[1..].chars().next().map_or(false, |c| c.is_ascii_digit())`.
+    /// `'Y'` is ASCII, so byte 1 is a char boundary. A non-ASCII byte 1 starts
+    /// a non-ASCII char, which is never an ASCII digit.
+    #[inline]
+    pub fn is_y_reg_name(name: &str) -> bool {
+        let b = name.as_bytes();
+        b.len() > 1 && b[0] == b'Y' && b[1].is_ascii_digit()
+    }
+
     /// Borrow a register's raw value (no Y-register routing for A/X regs; the
     /// topmost env frame for Y regs). Returns `None` for an uninitialised or
     /// missing slot. Unlike `get_reg`/`get_reg_raw` this does NOT clone, so the
     /// hot head-match path can compare in place.
     #[inline]
     pub fn get_reg_ref(&self, name: &str) -> Option<&Value> {
-        if name.starts_with('Y') && name.len() > 1
-            && name[1..].chars().next().map_or(false, |c| c.is_ascii_digit())
-        {
+        if Self::is_y_reg_name(name) {
             for entry in self.stack.iter().rev() {
                 if let StackEntry::Env(_, y_regs) = entry {
                     return match y_regs.get(name) {
@@ -3275,27 +3666,36 @@ impl WamState {
 
     /// Get a register value. Yi registers are read from the environment frame.
     /// Unbound values are dereferenced through the binding table.
+    ///
+    /// D123: dereferences the register slot in place. It used to clone the
+    /// slot first (`y_regs.get(name).cloned()` / `get_reg_raw`), deref the
+    /// copy (which clones again) and drop the copy. `deref_var` only reads
+    /// its argument, so the result is the same value. Lookup rules are
+    /// unchanged: a Y register comes from the topmost Env frame and a stored
+    /// `Uninit` is still returned (as before). An A/X slot that is `Uninit` or
+    /// out of range is `None`, which is `get_reg_raw`'s rule.
     pub fn get_reg(&self, name: &str) -> Option<Value> {
-        let raw = if name.starts_with('Y') && name.len() > 1 && name[1..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
+        if Self::is_y_reg_name(name) {
             // Yi register: find in the TOPMOST (most recent) environment frame
-            let mut found = None;
             for entry in self.stack.iter().rev() {
                 if let StackEntry::Env(_, y_regs) = entry {
-                    found = y_regs.get(name).cloned();
-                    break;
+                    // Dereference through the binding table
+                    return y_regs.get(name).map(|v| self.deref_var(v));
                 }
             }
-            found
+            None
         } else {
-            self.get_reg_raw(name)
-        };
-        // Dereference through the binding table
-        raw.map(|v| self.deref_var(&v))
+            match self.regs.get(Self::reg_index(name)) {
+                Some(Value::Uninit) | None => None,
+                // Dereference through the binding table
+                Some(v) => Some(self.deref_var(v)),
+            }
+        }
     }
 
     /// Set a register value. Yi registers are written to the topmost environment frame.
     pub fn put_reg(&mut self, name: &str, val: Value) {
-        if name.starts_with('Y') && name.len() > 1 && name[1..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
+        if Self::is_y_reg_name(name) {
             for entry in self.smut().iter_mut().rev() {
                 if let StackEntry::Env(_, y_regs) = entry {
                     y_regs.insert(name, val);
