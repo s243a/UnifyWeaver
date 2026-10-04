@@ -38,6 +38,122 @@ impl std::hash::Hasher for FxHasher {
 pub type FxBuildHasher = std::hash::BuildHasherDefault<FxHasher>;
 pub type FxMap<K, V> = std::collections::HashMap<K, V, FxBuildHasher>;
 pub type FxSet<K> = std::collections::HashSet<K, FxBuildHasher>;
+
+/// D125: the variable-binding table (`WamState::bindings`), keyed by the
+/// variable's interned name `Sym` on the crate's FxHash.
+///
+/// It used to be a `HashMap<String, Value>` with std's default SipHash: every
+/// lookup SipHashed the name's bytes (`deref_var`, `deref_chain`, `bind_var`,
+/// the trail unwind) and every bind allocated a `String` key, although the
+/// caller already held the name as an interned `Sym`. Under the `intern`
+/// feature (default ON) the key is now that `Sym` (a `u32`, hashed with one
+/// multiply) and a bind allocates nothing. With `intern` OFF, `Sym` is `String`
+/// and this is a `String`-keyed FxHash map.
+///
+/// Exact by construction: interning is canonical (same name <=> same `Sym`),
+/// so the key identifies the same variable as the name string did, and the
+/// map is only ever probed (`get`/`insert`/`remove`/`clear`). Nothing outside
+/// tests iterates it, so neither the hasher nor the key type can change any
+/// observable result. (SipHash's per-process random seed would already have
+/// made any iteration-order dependence nondeterministic.)
+///
+/// String-keyed access (`bindings.get("X")`, as the test harnesses and the
+/// par-aggregate driver use it) keeps working through `BindKey`: a `&str` is
+/// looked up by its existing `Sym` without interning it.
+#[derive(Clone, Default)]
+pub struct Bindings {
+    map: HashMap<crate::value::Sym, Value, FxBuildHasher>,
+}
+
+/// A variable name that can key `Bindings`: the interned `Sym` the runtime
+/// carries in `Value::Unbound` (the hot path, no hashing of the text), or a
+/// plain `str`/`String` (tests and harnesses).
+pub trait BindKey {
+    /// The `Sym` to store a binding under (interns a string name).
+    fn bind_sym(&self) -> crate::value::Sym;
+    /// Run `f` on the `Sym` to look this name up under, or return `None` when
+    /// the name cannot be bound (a string that was never interned).
+    fn with_sym<R>(&self, f: impl FnOnce(&crate::value::Sym) -> R) -> Option<R>;
+}
+
+#[cfg(feature = "intern")]
+impl BindKey for crate::value::Sym {
+    #[inline]
+    fn bind_sym(&self) -> crate::value::Sym { *self }
+    #[inline]
+    fn with_sym<R>(&self, f: impl FnOnce(&crate::value::Sym) -> R) -> Option<R> { Some(f(self)) }
+}
+#[cfg(feature = "intern")]
+impl BindKey for str {
+    #[inline]
+    fn bind_sym(&self) -> crate::value::Sym { crate::value::Sym::from(self) }
+    #[inline]
+    fn with_sym<R>(&self, f: impl FnOnce(&crate::value::Sym) -> R) -> Option<R> {
+        crate::value::lookup_sym(self).map(|s| f(&s))
+    }
+}
+#[cfg(feature = "intern")]
+impl BindKey for String {
+    #[inline]
+    fn bind_sym(&self) -> crate::value::Sym { self.as_str().bind_sym() }
+    #[inline]
+    fn with_sym<R>(&self, f: impl FnOnce(&crate::value::Sym) -> R) -> Option<R> { self.as_str().with_sym(f) }
+}
+// `intern` OFF: `Sym` is `String`, so the `String` impl is the `Sym` impl.
+#[cfg(not(feature = "intern"))]
+impl BindKey for String {
+    #[inline]
+    fn bind_sym(&self) -> crate::value::Sym { self.clone() }
+    #[inline]
+    fn with_sym<R>(&self, f: impl FnOnce(&crate::value::Sym) -> R) -> Option<R> { Some(f(self)) }
+}
+#[cfg(not(feature = "intern"))]
+impl BindKey for str {
+    #[inline]
+    fn bind_sym(&self) -> crate::value::Sym { self.to_string() }
+    #[inline]
+    fn with_sym<R>(&self, f: impl FnOnce(&crate::value::Sym) -> R) -> Option<R> { Some(f(&self.to_string())) }
+}
+impl<T: BindKey + ?Sized> BindKey for &T {
+    #[inline]
+    fn bind_sym(&self) -> crate::value::Sym { (**self).bind_sym() }
+    #[inline]
+    fn with_sym<R>(&self, f: impl FnOnce(&crate::value::Sym) -> R) -> Option<R> { (**self).with_sym(f) }
+}
+
+impl Bindings {
+    pub fn new() -> Self { Bindings::default() }
+    /// The value `name` is bound to, if any.
+    #[inline]
+    pub fn get<K: BindKey + ?Sized>(&self, name: &K) -> Option<&Value> {
+        name.with_sym(|s| self.map.get(s)).flatten()
+    }
+    #[inline]
+    pub fn contains_key<K: BindKey + ?Sized>(&self, name: &K) -> bool {
+        self.get(name).is_some()
+    }
+    /// Bind `name` (replacing any binding), returning the previous value.
+    #[inline]
+    pub fn insert(&mut self, name: crate::value::Sym, val: Value) -> Option<Value> {
+        self.map.insert(name, val)
+    }
+    /// Unbind `name`, returning the value it was bound to.
+    #[inline]
+    pub fn remove<K: BindKey + ?Sized>(&mut self, name: &K) -> Option<Value> {
+        let map = &mut self.map;
+        name.with_sym(|s| map.remove(s)).flatten()
+    }
+    #[inline]
+    pub fn clear(&mut self) { self.map.clear() }
+    #[inline]
+    pub fn len(&self) -> usize { self.map.len() }
+    #[inline]
+    pub fn is_empty(&self) -> bool { self.map.is_empty() }
+    /// Every binding, in UNSPECIFIED order (sort before printing).
+    pub fn iter(&self) -> impl Iterator<Item = (&crate::value::Sym, &Value)> {
+        self.map.iter()
+    }
+}
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -371,7 +487,8 @@ fn parse_meminfo_kib(rest: &str) -> Option<u64> {
 #[derive(Clone, Debug)]
 pub enum TrailKey {
     /// An unbound variable named `.0` was bound; undo restores/removes it in `bindings`.
-    Binding(String),
+    /// D125: the interned name (`Sym`), so trailing a bind allocates nothing.
+    Binding(crate::value::Sym),
     /// A register named `.0` was overwritten; undo restores it via `put_reg`.
     Register(String),
 }
@@ -396,7 +513,7 @@ pub struct TrailEntry {
 /// exactly where the pre-change `var.to_string()` did (register names still move
 /// with no allocation), so the OFF allocation profile is unchanged.
 pub enum TrailUndo {
-    Binding(String),
+    Binding(crate::value::Sym),
     Register(String),
 }
 
@@ -405,11 +522,24 @@ impl TrailEntry {
     #[cfg(feature = "trail_enum")]
     #[inline]
     pub fn binding(var_name: &str, old_value: Option<Value>) -> Self {
-        TrailEntry { key: TrailKey::Binding(var_name.to_string()), old_value }
+        TrailEntry { key: TrailKey::Binding(var_name.into()), old_value }
     }
     #[cfg(not(feature = "trail_enum"))]
     #[inline]
     pub fn binding(var_name: &str, old_value: Option<Value>) -> Self {
+        TrailEntry { key: format!("__binding__{}", var_name), old_value }
+    }
+
+    /// D125: a binding trail entry from the variable's interned name (what
+    /// `bind_var` holds), with no key allocation under `trail_enum`.
+    #[cfg(feature = "trail_enum")]
+    #[inline]
+    pub fn binding_from_sym(var_name: crate::value::Sym, old_value: Option<Value>) -> Self {
+        TrailEntry { key: TrailKey::Binding(var_name), old_value }
+    }
+    #[cfg(not(feature = "trail_enum"))]
+    #[inline]
+    pub fn binding_from_sym(var_name: crate::value::Sym, old_value: Option<Value>) -> Self {
         TrailEntry { key: format!("__binding__{}", var_name), old_value }
     }
 
@@ -431,7 +561,7 @@ impl TrailEntry {
     #[inline]
     pub fn binding_name(&self) -> Option<&str> {
         match &self.key {
-            TrailKey::Binding(name) => Some(name.as_str()),
+            TrailKey::Binding(name) => Some(&**name),
             TrailKey::Register(_) => None,
         }
     }
@@ -439,6 +569,22 @@ impl TrailEntry {
     #[inline]
     pub fn binding_name(&self) -> Option<&str> {
         self.key.strip_prefix("__binding__")
+    }
+
+    /// D125: the bound variable's interned name if this is a binding entry
+    /// (a `u32` copy under `intern`), for the binding-table unwind.
+    #[cfg(feature = "trail_enum")]
+    #[inline]
+    pub fn binding_sym(&self) -> Option<crate::value::Sym> {
+        match &self.key {
+            TrailKey::Binding(name) => Some(name.clone()),
+            TrailKey::Register(_) => None,
+        }
+    }
+    #[cfg(not(feature = "trail_enum"))]
+    #[inline]
+    pub fn binding_sym(&self) -> Option<crate::value::Sym> {
+        self.key.strip_prefix("__binding__").map(|n| n.into())
     }
 
     /// The register name if this is a register entry, else `None`. Mirrors the
@@ -477,7 +623,7 @@ impl TrailEntry {
     #[inline]
     pub fn classify(self) -> (TrailUndo, Option<Value>) {
         let undo = match self.key.strip_prefix("__binding__") {
-            Some(name) => TrailUndo::Binding(name.to_string()),
+            Some(name) => TrailUndo::Binding(name.into()),
             None => TrailUndo::Register(self.key),
         };
         (undo, self.old_value)
@@ -1497,6 +1643,207 @@ mod d124_builtin_dispatch_tests {
     }
 }
 
+#[cfg(test)]
+mod d125_bindings_tests {
+    // D125: `bindings` is keyed by the interned `Sym` on FxHash instead of a
+    // `String` on std's SipHash. The reference model below is the pre-D125
+    // table (`HashMap<String, Value>`) with a `(String, Option<Value>)` binding
+    // trail, driven exactly as the old `bind_var` / `unwind_trail_to` /
+    // `unwind_trail_bindings_only` drove it. It runs side by side with the real
+    // machine over long pseudo-random sequences of binds, register trail
+    // entries, unwinds, backtrack-style unwinds and resets, and every name is
+    // looked up after every step by `&str`, by `&String` and by `&Sym`.
+    use super::*;
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+        fn below(&mut self, n: usize) -> usize { (self.next() % n as u64) as usize }
+    }
+
+    fn names() -> Vec<String> {
+        let mut v: Vec<String> = (0..16).map(|i| format!("_V{}", i)).collect();
+        v.extend((0..12).map(|i| format!("_H{}", i)));
+        v.extend(["X", "Y", "_", "_G1", "\u{dc}n\u{ef}", "a b", "__binding__x", "A1"]
+            .iter().map(|s| s.to_string()));
+        v
+    }
+
+    enum MEntry { Bind(String, Option<Value>), Reg }
+
+    #[derive(Default)]
+    struct Model { map: HashMap<String, Value>, trail: Vec<MEntry> }
+
+    impl Model {
+        fn bind(&mut self, name: &str, val: Value) {
+            let old = self.map.get(name).cloned();
+            self.trail.push(MEntry::Bind(name.to_string(), old));
+            self.map.insert(name.to_string(), val);
+        }
+        fn undo(map: &mut HashMap<String, Value>, e: &MEntry) {
+            if let MEntry::Bind(n, old) = e {
+                match old {
+                    Some(v) => { map.insert(n.clone(), v.clone()); }
+                    None => { map.remove(n); }
+                }
+            }
+        }
+        fn unwind_to(&mut self, mark: usize) {
+            while self.trail.len() > mark {
+                let e = self.trail.pop().unwrap();
+                Self::undo(&mut self.map, &e);
+            }
+        }
+        fn unwind_bindings_only_then_truncate(&mut self, mark: usize) {
+            if self.trail.len() > mark {
+                for e in self.trail[mark..].iter().rev() { Self::undo(&mut self.map, e); }
+            }
+            self.trail.truncate(mark);
+        }
+        fn deref(&self, v: &Value) -> Value {
+            let mut cur = v.clone();
+            while let Value::Unbound(n) = &cur {
+                match self.map.get(&n.to_string()) {
+                    Some(next) => cur = next.clone(),
+                    None => break,
+                }
+            }
+            cur
+        }
+    }
+
+    fn check(vm: &WamState, m: &Model, names: &[String], step: usize) {
+        assert_eq!(vm.bindings.len(), m.map.len(), "len at step {}", step);
+        assert_eq!(vm.trail.len(), m.trail.len(), "trail len at step {}", step);
+        for n in names {
+            let want = m.map.get(n);
+            assert_eq!(vm.bindings.get(n.as_str()), want, "get(&str {:?}) at step {}", n, step);
+            assert_eq!(vm.bindings.get(n), want, "get(&String {:?}) at step {}", n, step);
+            let sym: crate::value::Sym = n.as_str().into();
+            assert_eq!(vm.bindings.get(&sym), want, "get(&Sym {:?}) at step {}", n, step);
+            assert_eq!(vm.bindings.contains_key(&sym), want.is_some());
+            let var = Value::Unbound(sym);
+            assert_eq!(vm.deref_var(&var), m.deref(&var), "deref_var({:?}) at step {}", n, step);
+        }
+        let mut got: Vec<String> = vm.bindings.iter().map(|(k, v)| format!("{}={:?}", k, v)).collect();
+        let mut want: Vec<String> = m.map.iter().map(|(k, v)| format!("{}={:?}", k, v)).collect();
+        got.sort();
+        want.sort();
+        assert_eq!(got, want, "iter() at step {}", step);
+    }
+
+    #[test]
+    fn bindings_match_the_string_keyed_model() {
+        let names = names();
+        for seed in 1..=12u64 {
+            let mut rng = Lcg(seed * 0x9e37_79b9);
+            let mut vm = WamState::new(vec![], HashMap::new());
+            let mut m = Model::default();
+            let mut marks: Vec<usize> = Vec::new();
+            for step in 0..1500 {
+                match rng.below(20) {
+                    0..=8 => {
+                        // Bind name i to an atom, an integer, a list, or a
+                        // later name j > i (so every chain is acyclic).
+                        let i = rng.below(names.len());
+                        let val = match rng.below(4) {
+                            0 => Value::atom(format!("a{}", rng.below(5)).as_str()),
+                            1 => Value::Integer(rng.below(100) as i64),
+                            2 if i + 1 < names.len() => {
+                                let j = i + 1 + rng.below(names.len() - i - 1);
+                                Value::Unbound(names[j].as_str().into())
+                            }
+                            _ => Value::list(vec![Value::Integer(step as i64)]),
+                        };
+                        // Alternate the key forms the runtime and tests use.
+                        match rng.below(3) {
+                            0 => vm.bind_var(names[i].as_str(), val.clone()),
+                            1 => vm.bind_var(&names[i], val.clone()),
+                            _ => {
+                                let s: crate::value::Sym = names[i].as_str().into();
+                                vm.bind_var(&s, val.clone())
+                            }
+                        }
+                        m.bind(&names[i], val);
+                    }
+                    9..=10 => {
+                        vm.put_reg("A1", Value::Integer(step as i64));
+                        vm.trail_binding("A1");
+                        m.trail.push(MEntry::Reg);
+                    }
+                    11..=13 => marks.push(vm.trail.len()),
+                    14..=16 => {
+                        if let Some(mk) = marks.pop() {
+                            let mk = mk.min(vm.trail.len());
+                            vm.unwind_trail_to(mk);
+                            m.unwind_to(mk);
+                        }
+                    }
+                    17..=18 => {
+                        if let Some(mk) = marks.pop() {
+                            let mk = mk.min(vm.trail.len());
+                            // What `backtrack` does to the trail.
+                            vm.unwind_trail_bindings_only(mk);
+                            vm.trail.truncate(mk);
+                            m.unwind_bindings_only_then_truncate(mk);
+                        }
+                    }
+                    _ => {
+                        if rng.below(10) == 0 {
+                            vm.reset_query();
+                            m = Model::default();
+                            marks.clear();
+                        }
+                    }
+                }
+                check(&vm, &m, &names, step);
+            }
+        }
+    }
+
+    #[test]
+    fn binding_trail_entries_from_str_and_sym_agree() {
+        let s: crate::value::Sym = "_V7".into();
+        let a = TrailEntry::binding("_V7", Some(Value::atom("old")));
+        let b = TrailEntry::binding_from_sym(s.clone(), Some(Value::atom("old")));
+        assert_eq!(a.binding_name(), Some("_V7"));
+        assert_eq!(b.binding_name(), Some("_V7"));
+        assert_eq!(a.binding_sym(), Some(s.clone()));
+        assert_eq!(b.binding_sym(), Some(s.clone()));
+        assert_eq!(b.register_name(), None);
+        assert_eq!(TrailEntry::register("A3", None).binding_sym(), None);
+        match b.classify() {
+            (TrailUndo::Binding(n), Some(v)) => {
+                assert_eq!(n, s);
+                assert_eq!(v, Value::atom("old"));
+            }
+            _ => panic!("binding entry misclassified"),
+        }
+    }
+
+    #[cfg(feature = "intern")]
+    #[test]
+    fn string_lookup_does_not_intern() {
+        let name = "__d125_never_interned_name__";
+        assert!(crate::value::lookup_sym(name).is_none());
+        let mut vm = WamState::new(vec![], HashMap::new());
+        assert_eq!(vm.bindings.get(name), None);
+        assert_eq!(vm.bindings.remove(name), None);
+        assert!(!vm.bindings.contains_key(name));
+        assert!(crate::value::lookup_sym(name).is_none(), "a lookup must not intern");
+        // Binding by string interns (as building `Value::Unbound` would) and
+        // the binding is then visible under every key form.
+        vm.bind_var(name, Value::Integer(1));
+        let sym = crate::value::lookup_sym(name).expect("bind interns the name");
+        assert_eq!(sym.as_str(), name);
+        assert_eq!(vm.bindings.get(&sym), Some(&Value::Integer(1)));
+        assert_eq!(vm.bindings.get(&name.to_string()), Some(&Value::Integer(1)));
+    }
+}
+
 /// Stack entry: environment frames and unification contexts.
 #[derive(Clone, Debug)]
 pub enum StackEntry {
@@ -1695,7 +2042,7 @@ pub struct WamState {
     /// Variable binding table: maps Unbound variable names to their bound values.
     /// This simulates the WAM heap's shared binding semantics when PutVariable
     /// creates a variable that's stored in both a Y-register and an A-register.
-    pub bindings: HashMap<String, Value>,
+    pub bindings: Bindings,
     /// Counter for generating unique variable names.
     pub var_counter: usize,
     /// Cut barrier: choice point stack depth at the most recent neck/Allocate.
@@ -1858,7 +2205,7 @@ impl WamState {
             mu_facts: std::collections::HashMap::new(),
             clusters: std::collections::HashMap::new(),
             cluster_index: std::collections::HashMap::new(),
-            bindings: HashMap::new(),
+            bindings: Bindings::new(),
             var_counter: 0,
             cut_barrier: 0,
             backtrack_floor: 0,
@@ -3458,7 +3805,7 @@ impl WamState {
     pub fn deref_var(&self, val: &Value) -> Value {
         match val {
             Value::Unbound(name) => {
-                if let Some(bound) = self.bindings.get(name.as_str()) {
+                if let Some(bound) = self.bindings.get(name) {
                     self.deref_var(bound)
                 } else {
                     val.clone()
@@ -3523,7 +3870,7 @@ impl WamState {
 
     fn deref_match_atom(&self, val: &Value, atom: &str) -> Option<bool> {
         match val {
-            Value::Unbound(name) => match self.bindings.get(name.as_str()) {
+            Value::Unbound(name) => match self.bindings.get(name) {
                 Some(bound) => self.deref_match_atom(bound, atom),
                 None => None,
             },
@@ -3598,7 +3945,7 @@ impl WamState {
 
     fn deref_atom_str<'a>(&'a self, val: &'a Value) -> Option<&'a str> {
         match val {
-            Value::Unbound(name) => match self.bindings.get(name.as_str()) {
+            Value::Unbound(name) => match self.bindings.get(name) {
                 Some(bound) => self.deref_atom_str(bound),
                 None => None,
             },
@@ -3609,10 +3956,15 @@ impl WamState {
 
     /// Bind an unbound variable name to a value in the binding table.
     /// Also records a trail entry so that backtracking can undo this binding.
-    pub fn bind_var(&mut self, var_name: &str, val: Value) {
-        let old = self.bindings.get(var_name).cloned();
-        self.trail.push(TrailEntry::binding(var_name, old));
-        self.bindings.insert(var_name.to_string(), val);
+    ///
+    /// D125: the name is any `BindKey`. The runtime passes the `Sym` it holds
+    /// from `Value::Unbound`, so a bind hashes a `u32` and allocates no key;
+    /// tests may still pass a `&str`.
+    pub fn bind_var<K: BindKey + ?Sized>(&mut self, var_name: &K, val: Value) {
+        let name = var_name.bind_sym();
+        let old = self.bindings.get(&name).cloned();
+        self.trail.push(TrailEntry::binding_from_sym(name.clone(), old));
+        self.bindings.insert(name, val);
     }
 
     /// Unwind the trail back to `mark`, undoing every binding (and any
@@ -5539,7 +5891,7 @@ impl WamState {
         // state into a wrong answer rather than a hang.
         let mut hops: u32 = 0;
         while let Value::Unbound(name) = cur {
-            match self.bindings.get(name.as_str()) {
+            match self.bindings.get(name) {
                 Some(next) => {
                     hops += 1;
                     if hops > 1_000_000 { return cur; }
@@ -5953,7 +6305,7 @@ impl WamState {
     pub fn deref_heap(&self, val: &Value) -> Value {
         match val {
             Value::Unbound(name) => {
-                if let Some(v) = self.bindings.get(name.as_str()) {
+                if let Some(v) = self.bindings.get(name) {
                     return self.deref_heap(v);
                 }
                 val.clone()

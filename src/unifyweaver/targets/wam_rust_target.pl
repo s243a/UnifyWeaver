@@ -1473,16 +1473,20 @@ compile_backtrack_to_rust(Code0) :-
     }
 '.
 
+%  D125: the binding table is keyed by the interned name (`Sym`), so the
+%  unwind takes the entry's `Sym` (a u32 copy under `intern`) instead of
+%  re-keying by `binding_key.to_string()`. Same entries, same reverse order,
+%  same insert/remove per entry.
 compile_unwind_trail_to_rust(Code) :-
     Code = '    /// Undo only binding-table entries from trail entries added since saved_len.
     fn unwind_trail_bindings_only(&mut self, saved_len: usize) {
         if self.trail.len() <= saved_len { return; }
         let new_entries = self.trail.len() - saved_len;
         for entry in self.trail.iter().rev().take(new_entries) {
-            if let Some(binding_key) = entry.binding_name() {
+            if let Some(binding_key) = entry.binding_sym() {
                 match &entry.old_value {
-                    Some(val) => { self.bindings.insert(binding_key.to_string(), val.clone()); }
-                    None => { self.bindings.remove(binding_key); }
+                    Some(val) => { self.bindings.insert(binding_key, val.clone()); }
+                    None => { self.bindings.remove(&binding_key); }
                 }
             }
         }
