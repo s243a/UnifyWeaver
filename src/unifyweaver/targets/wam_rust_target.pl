@@ -701,8 +701,7 @@ wam_instruction_arm('Instruction::ReturnAdd1(out_reg, in_reg)', Body) :-
 % --- Control Instructions ---
 
 wam_instruction_arm('Instruction::Allocate', Body) :-
-    Body = '                use std::collections::HashMap;
-                // The pending barrier belongs to the clause whose
+    Body = '                // The pending barrier belongs to the clause whose
                 // TryMeElse/RetryMeElse parked it, and reaches its Allocate on
                 // the VERY NEXT instruction. Without the pc check the value
                 // leaked: a fact predicate (try_me_else + head + proceed, no
@@ -716,7 +715,8 @@ wam_instruction_arm('Instruction::Allocate', Body) :-
                     _ => self.choice_points.len(),
                 };
                 let saved_cp = self.cp;
-                self.smut().push(StackEntry::Env(saved_cp, HashMap::new()));
+                // D120: slot-indexed Y registers (YRegs), not a String-keyed map.
+                self.smut().push(StackEntry::Env(saved_cp, YRegs::new()));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::Deallocate', Body) :-
