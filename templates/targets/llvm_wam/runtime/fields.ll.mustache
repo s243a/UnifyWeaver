@@ -1,0 +1,1850 @@
+{{match fn}}
+; fields.ll.mustache -- fields and slices: split, the field buffer, SUBSEP keys, field access and comparison.
+; One case per runtime chunk (a define with its comments and globals); the assembly order is wam_llvm_runtime_chunk/2.
+{{case wam_str_split_into}}
+; Split %str[0..len) on the single byte %sep into %table, keyed by 1-based
+; position (values are interned atom ids). The table is cleared first (split
+; replaces the array). Returns the piece count. An empty input yields 0 pieces;
+; adjacent / trailing separators yield empty pieces, as awk does with an
+; explicit single-char separator.
+define i64 @wam_str_split_into(%WamAssocI64Table* %table, i8* %str, i64 %len, i8 %sep) {
+entry:
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %sp.ret0, label %sp.clear_load
+
+sp.clear_load:
+  %cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  %cap = load i64, i64* %cap_slot
+  %entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %entries_slot
+  br label %sp.clear_loop
+
+sp.clear_loop:
+  %ci = phi i64 [ 0, %sp.clear_load ], [ %ci.next, %sp.clear_body ]
+  %ci.done = icmp uge i64 %ci, %cap
+  br i1 %ci.done, label %sp.clear_done, label %sp.clear_body
+
+sp.clear_body:
+  %ce = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %ci
+  %ce_occ = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %ce, i32 0, i32 2
+  store i1 false, i1* %ce_occ
+  %ci.next = add i64 %ci, 1
+  br label %sp.clear_loop
+
+sp.clear_done:
+  %count_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 0
+  store i64 0, i64* %count_slot
+  %len_zero = icmp eq i64 %len, 0
+  br i1 %len_zero, label %sp.ret0, label %sp.loop
+
+sp.loop:
+  %j = phi i64 [ 0, %sp.clear_done ], [ %jn, %sp.next ]
+  %fstart = phi i64 [ 0, %sp.clear_done ], [ %fstartn, %sp.next ]
+  %pos = phi i64 [ 1, %sp.clear_done ], [ %posn, %sp.next ]
+  %jdone = icmp uge i64 %j, %len
+  br i1 %jdone, label %sp.final, label %sp.body
+
+sp.body:
+  %cp = getelementptr i8, i8* %str, i64 %j
+  %c = load i8, i8* %cp
+  %sepc = icmp eq i8 %c, %sep
+  br i1 %sepc, label %sp.emit, label %sp.skip
+
+sp.emit:
+  %ep = getelementptr i8, i8* %str, i64 %fstart
+  %el = sub i64 %j, %fstart
+  %eid = call i64 @wam_intern_atom(i8* %ep, i64 %el)
+  %eset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %pos, i64 %eid)
+  %epos = add i64 %pos, 1
+  %efstart = add i64 %j, 1
+  br label %sp.next
+
+sp.skip:
+  br label %sp.next
+
+sp.next:
+  %posn = phi i64 [ %epos, %sp.emit ], [ %pos, %sp.skip ]
+  %fstartn = phi i64 [ %efstart, %sp.emit ], [ %fstart, %sp.skip ]
+  %jn = add i64 %j, 1
+  br label %sp.loop
+
+sp.final:
+  %lp = getelementptr i8, i8* %str, i64 %fstart
+  %ll = sub i64 %len, %fstart
+  %lid = call i64 @wam_intern_atom(i8* %lp, i64 %ll)
+  %lset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %pos, i64 %lid)
+  ret i64 %pos
+
+sp.ret0:
+  ret i64 0
+}
+{{case wam_str_split_into_re}}
+; split() with a multi-char / regex separator (a POSIX ERE). Like
+; @wam_str_split_into but the separators are regex matches; %pattern / %cache are
+; a per-call-site pattern string and lazily regcomp()ed cache (each split site
+; owns its separator, unlike the single program FS). %str[0..len) is not NUL-
+; terminated, so it is copied into a scratch buffer for regexec. Returns the
+; piece count; a compile failure stores the whole input as position 1.
+define i64 @wam_str_split_into_re(%WamAssocI64Table* %table, i8* %str, i64 %len, i8* %pattern, i8** %cache) {
+entry:
+  %spr.tnull = icmp eq %WamAssocI64Table* %table, null
+  br i1 %spr.tnull, label %spr.ret0, label %spr.clear_load
+
+spr.clear_load:
+  %spr.cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  %spr.cap = load i64, i64* %spr.cap_slot
+  %spr.entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %spr.entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %spr.entries_slot
+  br label %spr.clear_loop
+
+spr.clear_loop:
+  %spr.ci = phi i64 [ 0, %spr.clear_load ], [ %spr.ci_next, %spr.clear_body ]
+  %spr.ci_done = icmp uge i64 %spr.ci, %spr.cap
+  br i1 %spr.ci_done, label %spr.clear_done, label %spr.clear_body
+
+spr.clear_body:
+  %spr.ce = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %spr.entries, i64 %spr.ci
+  %spr.ce_occ = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %spr.ce, i32 0, i32 2
+  store i1 false, i1* %spr.ce_occ
+  %spr.ci_next = add i64 %spr.ci, 1
+  br label %spr.clear_loop
+
+spr.clear_done:
+  %spr.count_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 0
+  store i64 0, i64* %spr.count_slot
+  %spr.len_zero = icmp eq i64 %len, 0
+  br i1 %spr.len_zero, label %spr.ret0, label %spr.copy
+
+; copy %str[0..len) into a NUL-terminated scratch buffer for regexec
+spr.copy:
+  %spr.bufsz = add i64 %len, 1
+  %spr.buf = call i8* @malloc(i64 %spr.bufsz)
+  %spr.bufnull = icmp eq i8* %spr.buf, null
+  br i1 %spr.bufnull, label %spr.ret0, label %spr.cploop
+
+spr.cploop:
+  %spr.cpi = phi i64 [ 0, %spr.copy ], [ %spr.cpi1, %spr.cpstep ]
+  %spr.cpdone = icmp uge i64 %spr.cpi, %len
+  br i1 %spr.cpdone, label %spr.cpfin, label %spr.cpstep
+
+spr.cpstep:
+  %spr.srcp = getelementptr i8, i8* %str, i64 %spr.cpi
+  %spr.srcc = load i8, i8* %spr.srcp
+  %spr.dstp = getelementptr i8, i8* %spr.buf, i64 %spr.cpi
+  store i8 %spr.srcc, i8* %spr.dstp
+  %spr.cpi1 = add i64 %spr.cpi, 1
+  br label %spr.cploop
+
+spr.cpfin:
+  %spr.nulp = getelementptr i8, i8* %spr.buf, i64 %len
+  store i8 0, i8* %spr.nulp
+  %spr.cached = load i8*, i8** %cache
+  %spr.havec = icmp ne i8* %spr.cached, null
+  br i1 %spr.havec, label %spr.ready, label %spr.compile
+
+spr.compile:
+  %spr.mem = call i8* @malloc(i64 512)
+  %spr.memnull = icmp eq i8* %spr.mem, null
+  br i1 %spr.memnull, label %spr.whole, label %spr.docomp
+
+spr.docomp:
+  %spr.rc = call i32 @regcomp(i8* %spr.mem, i8* %pattern, i32 1)
+  %spr.ok = icmp eq i32 %spr.rc, 0
+  br i1 %spr.ok, label %spr.storec, label %spr.compfail
+
+spr.compfail:
+  call void @free(i8* %spr.mem)
+  br label %spr.whole
+
+spr.storec:
+  store i8* %spr.mem, i8** %cache
+  br label %spr.ready
+
+spr.ready:
+  %spr.preg = load i8*, i8** %cache
+  %spr.pm = alloca [4 x i64], align 8
+  %spr.pmp = bitcast [4 x i64]* %spr.pm to i8*
+  br label %spr.walk
+
+spr.walk:
+  %spr.pos = phi i64 [ 1, %spr.ready ], [ %spr.posn, %spr.after ]
+  %spr.fstart = phi i64 [ 0, %spr.ready ], [ %spr.sep_end, %spr.after ]
+  %spr.atend = icmp uge i64 %spr.fstart, %len
+  br i1 %spr.atend, label %spr.final, label %spr.exec
+
+spr.exec:
+  %spr.sp = getelementptr i8, i8* %spr.buf, i64 %spr.fstart
+  %spr.isbol = icmp eq i64 %spr.fstart, 0
+  %spr.eflags = select i1 %spr.isbol, i32 0, i32 1
+  %spr.rc2 = call i32 @regexec(i8* %spr.preg, i8* %spr.sp, i64 1, i8* %spr.pmp, i32 %spr.eflags)
+  %spr.matched = icmp eq i32 %spr.rc2, 0
+  br i1 %spr.matched, label %spr.havematch, label %spr.final
+
+spr.havematch:
+  %spr.so_p = bitcast i8* %spr.pmp to i32*
+  %spr.so = load i32, i32* %spr.so_p
+  %spr.eo_pp = getelementptr i8, i8* %spr.pmp, i64 4
+  %spr.eo_p = bitcast i8* %spr.eo_pp to i32*
+  %spr.eo = load i32, i32* %spr.eo_p
+  %spr.so64 = sext i32 %spr.so to i64
+  %spr.eo64 = sext i32 %spr.eo to i64
+  %spr.sep_start = add i64 %spr.fstart, %spr.so64
+  %spr.mlen = sub i32 %spr.eo, %spr.so
+  %spr.zlen = icmp eq i32 %spr.mlen, 0
+  %spr.end_nz = add i64 %spr.fstart, %spr.eo64
+  %spr.end_z = add i64 %spr.sep_start, 1
+  %spr.sep_end = select i1 %spr.zlen, i64 %spr.end_z, i64 %spr.end_nz
+  %spr.ep = getelementptr i8, i8* %spr.buf, i64 %spr.fstart
+  %spr.el = sub i64 %spr.sep_start, %spr.fstart
+  %spr.eid = call i64 @wam_intern_atom(i8* %spr.ep, i64 %spr.el)
+  %spr.eset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %spr.pos, i64 %spr.eid)
+  br label %spr.after
+
+spr.after:
+  %spr.posn = add i64 %spr.pos, 1
+  br label %spr.walk
+
+spr.final:
+  %spr.lp = getelementptr i8, i8* %spr.buf, i64 %spr.fstart
+  %spr.ll = sub i64 %len, %spr.fstart
+  %spr.lid = call i64 @wam_intern_atom(i8* %spr.lp, i64 %spr.ll)
+  %spr.lset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %spr.pos, i64 %spr.lid)
+  call void @free(i8* %spr.buf)
+  ret i64 %spr.pos
+
+spr.whole:
+  %spr.wid = call i64 @wam_intern_atom(i8* %spr.buf, i64 %len)
+  %spr.wset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 1, i64 %spr.wid)
+  call void @free(i8* %spr.buf)
+  ret i64 1
+
+spr.ret0:
+  ret i64 0
+}
+{{case wam_fields_new}}
+; Editable field buffer -- awk $1..$NF as a mutable %WamSlice array. A record
+; is split once into slices (pointing into the record text, no interning); field
+; assignments mutate slots in place; joining with OFS rebuilds $0 once at print.
+; This keeps record editing O(record) with zero interning, instead of rebuilding
+; and re-interning the whole record per assignment.
+
+; Split %rec (NUL-terminated) on the single byte %sep into a fresh field buffer.
+; Slices point into %rec, so the caller must keep %rec alive until the buffer is
+; freed. An empty record yields zero fields.
+define %WamFieldBuf* @wam_fields_new(i8* %rec, i8 %sep) {
+entry:
+  ; sep 0 is the reserved sentinel for a program-level regex FS
+  %fn.is_re = icmp eq i8 %sep, 0
+  br i1 %fn.is_re, label %fn.regex, label %fn.sl
+
+fn.regex:
+  %fn.rfb = call %WamFieldBuf* @wam_fields_new_re(i8* %rec)
+  ret %WamFieldBuf* %fn.rfb
+
+; reclen = index of the terminating NUL
+fn.sl:
+  %fn.i = phi i64 [ 0, %entry ], [ %fn.i1, %fn.ss ]
+  %fn.p = getelementptr i8, i8* %rec, i64 %fn.i
+  %fn.c = load i8, i8* %fn.p
+  %fn.z = icmp eq i8 %fn.c, 0
+  br i1 %fn.z, label %fn.cnt, label %fn.ss
+
+fn.ss:
+  %fn.i1 = add i64 %fn.i, 1
+  br label %fn.sl
+
+; count separators -> field count
+fn.cnt:
+  br label %fn.cl
+
+fn.cl:
+  %fn.ci = phi i64 [ 0, %fn.cnt ], [ %fn.ci1, %fn.cst ]
+  %fn.sc = phi i64 [ 0, %fn.cnt ], [ %fn.sc1, %fn.cst ]
+  %fn.cd = icmp uge i64 %fn.ci, %fn.i
+  br i1 %fn.cd, label %fn.mk, label %fn.cb
+
+fn.cb:
+  %fn.cp = getelementptr i8, i8* %rec, i64 %fn.ci
+  %fn.cc = load i8, i8* %fn.cp
+  %fn.iss = icmp eq i8 %fn.cc, %sep
+  %fn.inc = zext i1 %fn.iss to i64
+  br label %fn.cst
+
+fn.cst:
+  %fn.sc1 = add i64 %fn.sc, %fn.inc
+  %fn.ci1 = add i64 %fn.ci, 1
+  br label %fn.cl
+
+fn.mk:
+  %fn.empty = icmp eq i64 %fn.i, 0
+  %fn.nf0 = add i64 %fn.sc, 1
+  %fn.nf = select i1 %fn.empty, i64 0, i64 %fn.nf0
+  ; capacity: at least 4 so a few appends past NF avoid reallocation
+  %fn.small = icmp ult i64 %fn.nf, 4
+  %fn.cap = select i1 %fn.small, i64 4, i64 %fn.nf
+  %fn.sb1 = getelementptr %WamFieldBuf, %WamFieldBuf* null, i64 1
+  %fn.sbb = ptrtoint %WamFieldBuf* %fn.sb1 to i64
+  %fn.raw = call i8* @malloc(i64 %fn.sbb)
+  %fn.fb = bitcast i8* %fn.raw to %WamFieldBuf*
+  %fn.sl1 = getelementptr %WamSlice, %WamSlice* null, i64 %fn.cap
+  %fn.slb = ptrtoint %WamSlice* %fn.sl1 to i64
+  %fn.slraw = call i8* @malloc(i64 %fn.slb)
+  %fn.slices = bitcast i8* %fn.slraw to %WamSlice*
+  %fn.cslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fn.fb, i32 0, i32 0
+  store i64 %fn.nf, i64* %fn.cslot
+  %fn.capslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fn.fb, i32 0, i32 1
+  store i64 %fn.cap, i64* %fn.capslot
+  %fn.slslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fn.fb, i32 0, i32 2
+  store %WamSlice* %fn.slices, %WamSlice** %fn.slslot
+  %fn.nfz = icmp eq i64 %fn.nf, 0
+  br i1 %fn.nfz, label %fn.done, label %fn.sp
+
+fn.sp:
+  br label %fn.sploop
+
+; fill slices[pos] = {ptr, len} for each field
+fn.sploop:
+  %fn.j = phi i64 [ 0, %fn.sp ], [ %fn.jn, %fn.spnext ]
+  %fn.fstart = phi i64 [ 0, %fn.sp ], [ %fn.fstartn, %fn.spnext ]
+  %fn.pos = phi i64 [ 0, %fn.sp ], [ %fn.posn, %fn.spnext ]
+  %fn.jdone = icmp uge i64 %fn.j, %fn.i
+  br i1 %fn.jdone, label %fn.spfinal, label %fn.spbody
+
+fn.spbody:
+  %fn.jp = getelementptr i8, i8* %rec, i64 %fn.j
+  %fn.jc = load i8, i8* %fn.jp
+  %fn.jsep = icmp eq i8 %fn.jc, %sep
+  br i1 %fn.jsep, label %fn.spemit, label %fn.spskip
+
+fn.spemit:
+  %fn.ep = getelementptr i8, i8* %rec, i64 %fn.fstart
+  %fn.el = sub i64 %fn.j, %fn.fstart
+  %fn.eslot = getelementptr %WamSlice, %WamSlice* %fn.slices, i64 %fn.pos
+  %fn.ep0 = getelementptr %WamSlice, %WamSlice* %fn.eslot, i32 0, i32 0
+  store i8* %fn.ep, i8** %fn.ep0
+  %fn.el0 = getelementptr %WamSlice, %WamSlice* %fn.eslot, i32 0, i32 1
+  store i64 %fn.el, i64* %fn.el0
+  %fn.pos1 = add i64 %fn.pos, 1
+  %fn.fstart1 = add i64 %fn.j, 1
+  br label %fn.spnext
+
+fn.spskip:
+  br label %fn.spnext
+
+fn.spnext:
+  %fn.posn = phi i64 [ %fn.pos1, %fn.spemit ], [ %fn.pos, %fn.spskip ]
+  %fn.fstartn = phi i64 [ %fn.fstart1, %fn.spemit ], [ %fn.fstart, %fn.spskip ]
+  %fn.jn = add i64 %fn.j, 1
+  br label %fn.sploop
+
+fn.spfinal:
+  %fn.lp = getelementptr i8, i8* %rec, i64 %fn.fstart
+  %fn.ll = sub i64 %fn.i, %fn.fstart
+  %fn.lslot = getelementptr %WamSlice, %WamSlice* %fn.slices, i64 %fn.pos
+  %fn.lp0 = getelementptr %WamSlice, %WamSlice* %fn.lslot, i32 0, i32 0
+  store i8* %fn.lp, i8** %fn.lp0
+  %fn.ll0 = getelementptr %WamSlice, %WamSlice* %fn.lslot, i32 0, i32 1
+  store i64 %fn.ll, i64* %fn.ll0
+  br label %fn.done
+
+fn.done:
+  ret %WamFieldBuf* %fn.fb
+}
+{{case wam_fields_get}}
+; Read field %idx (1-based) as a slice; out-of-range yields {null, 0} (empty).
+define %WamSlice @wam_fields_get(%WamFieldBuf* %fb, i64 %idx) {
+entry:
+  %g.empty0 = insertvalue %WamSlice undef, i8* null, 0
+  %g.empty = insertvalue %WamSlice %g.empty0, i64 0, 1
+  %g.lt = icmp slt i64 %idx, 1
+  br i1 %g.lt, label %g.no, label %g.chk
+
+g.chk:
+  %g.cslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 0
+  %g.count = load i64, i64* %g.cslot
+  %g.gt = icmp sgt i64 %idx, %g.count
+  br i1 %g.gt, label %g.no, label %g.yes
+
+g.yes:
+  %g.slot = sub i64 %idx, 1
+  %g.slslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 2
+  %g.slices = load %WamSlice*, %WamSlice** %g.slslot
+  %g.e = getelementptr %WamSlice, %WamSlice* %g.slices, i64 %g.slot
+  %g.v = load %WamSlice, %WamSlice* %g.e
+  ret %WamSlice %g.v
+
+g.no:
+  ret %WamSlice %g.empty
+}
+{{case wam_fields_set}}
+; Set field %idx (1-based) to the slice {%ptr, %len}. Grows the slice array and
+; pads intervening slots with empties when %idx is past the current count.
+define void @wam_fields_set(%WamFieldBuf* %fb, i64 %idx, i8* %ptr, i64 %len) {
+entry:
+  %s.lt = icmp slt i64 %idx, 1
+  br i1 %s.lt, label %s.ret, label %s.load
+
+s.load:
+  %s.capslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 1
+  %s.cap = load i64, i64* %s.capslot
+  %s.cslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 0
+  %s.count = load i64, i64* %s.cslot
+  %s.slslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 2
+  %s.slices0 = load %WamSlice*, %WamSlice** %s.slslot
+  %s.needgrow = icmp ugt i64 %idx, %s.cap
+  br i1 %s.needgrow, label %s.grow, label %s.nogrow
+
+s.grow:
+  %s.raw0 = bitcast %WamSlice* %s.slices0 to i8*
+  %s.sl1 = getelementptr %WamSlice, %WamSlice* null, i64 %idx
+  %s.slb = ptrtoint %WamSlice* %s.sl1 to i64
+  %s.raw1 = call i8* @realloc(i8* %s.raw0, i64 %s.slb)
+  %s.slices1 = bitcast i8* %s.raw1 to %WamSlice*
+  store %WamSlice* %s.slices1, %WamSlice** %s.slslot
+  store i64 %idx, i64* %s.capslot
+  br label %s.nogrow
+
+s.nogrow:
+  %s.slices = phi %WamSlice* [ %s.slices0, %s.load ], [ %s.slices1, %s.grow ]
+  %s.slot = sub i64 %idx, 1
+  br label %s.padloop
+
+; pad [count, slot) with empty slices when growing the logical length
+s.padloop:
+  %s.j = phi i64 [ %s.count, %s.nogrow ], [ %s.j1, %s.padstep ]
+  %s.pdone = icmp uge i64 %s.j, %s.slot
+  br i1 %s.pdone, label %s.setslot, label %s.padstep
+
+s.padstep:
+  %s.pe = getelementptr %WamSlice, %WamSlice* %s.slices, i64 %s.j
+  %s.pe0 = getelementptr %WamSlice, %WamSlice* %s.pe, i32 0, i32 0
+  store i8* null, i8** %s.pe0
+  %s.pe1 = getelementptr %WamSlice, %WamSlice* %s.pe, i32 0, i32 1
+  store i64 0, i64* %s.pe1
+  %s.j1 = add i64 %s.j, 1
+  br label %s.padloop
+
+s.setslot:
+  %s.e = getelementptr %WamSlice, %WamSlice* %s.slices, i64 %s.slot
+  %s.e0 = getelementptr %WamSlice, %WamSlice* %s.e, i32 0, i32 0
+  store i8* %ptr, i8** %s.e0
+  %s.e1 = getelementptr %WamSlice, %WamSlice* %s.e, i32 0, i32 1
+  store i64 %len, i64* %s.e1
+  %s.cgt = icmp ugt i64 %idx, %s.count
+  br i1 %s.cgt, label %s.setcount, label %s.ret
+
+s.setcount:
+  store i64 %idx, i64* %s.cslot
+  br label %s.ret
+
+s.ret:
+  ret void
+}
+{{case wam_fields_join}}
+; Join fields 1..count with %ofs into a fresh NUL-terminated malloc buffer (the
+; rebuilt $0). The caller prints and frees it. No interning.
+define i8* @wam_fields_join(%WamFieldBuf* %fb, i8 %ofs) {
+entry:
+  %j.cslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 0
+  %j.count = load i64, i64* %j.cslot
+  %j.slslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 2
+  %j.slices = load %WamSlice*, %WamSlice** %j.slslot
+  br label %j.sl
+
+; pass 1: sum of field lengths
+j.sl:
+  %j.i = phi i64 [ 0, %entry ], [ %j.i1, %j.sstep ]
+  %j.acc = phi i64 [ 0, %entry ], [ %j.acc1, %j.sstep ]
+  %j.sd = icmp uge i64 %j.i, %j.count
+  br i1 %j.sd, label %j.mk, label %j.sbody
+
+j.sbody:
+  %j.e = getelementptr %WamSlice, %WamSlice* %j.slices, i64 %j.i
+  %j.el = getelementptr %WamSlice, %WamSlice* %j.e, i32 0, i32 1
+  %j.len = load i64, i64* %j.el
+  br label %j.sstep
+
+j.sstep:
+  %j.acc1 = add i64 %j.acc, %j.len
+  %j.i1 = add i64 %j.i, 1
+  br label %j.sl
+
+j.mk:
+  %j.cz = icmp eq i64 %j.count, 0
+  %j.cm1 = sub i64 %j.count, 1
+  %j.seps = select i1 %j.cz, i64 0, i64 %j.cm1
+  %j.t0 = add i64 %j.acc, %j.seps
+  %j.total = add i64 %j.t0, 1
+  %j.buf = call i8* @malloc(i64 %j.total)
+  br label %j.wl
+
+; pass 2: copy fields, inserting %ofs between them
+j.wl:
+  %j.wi = phi i64 [ 0, %j.mk ], [ %j.wi1, %j.wcont ]
+  %j.op = phi i64 [ 0, %j.mk ], [ %j.opn, %j.wcont ]
+  %j.wd = icmp uge i64 %j.wi, %j.count
+  br i1 %j.wd, label %j.fin, label %j.wbody
+
+j.wbody:
+  %j.first = icmp eq i64 %j.wi, 0
+  br i1 %j.first, label %j.after, label %j.emitsep
+
+j.emitsep:
+  %j.sd2 = getelementptr i8, i8* %j.buf, i64 %j.op
+  store i8 %ofs, i8* %j.sd2
+  %j.op_s = add i64 %j.op, 1
+  br label %j.after
+
+j.after:
+  %j.opa = phi i64 [ %j.op_s, %j.emitsep ], [ %j.op, %j.wbody ]
+  %j.e2 = getelementptr %WamSlice, %WamSlice* %j.slices, i64 %j.wi
+  %j.p2s = getelementptr %WamSlice, %WamSlice* %j.e2, i32 0, i32 0
+  %j.p2 = load i8*, i8** %j.p2s
+  %j.l2s = getelementptr %WamSlice, %WamSlice* %j.e2, i32 0, i32 1
+  %j.l2 = load i64, i64* %j.l2s
+  br label %j.cploop
+
+j.cploop:
+  %j.ci = phi i64 [ 0, %j.after ], [ %j.ci1, %j.cpstep ]
+  %j.cd2 = icmp uge i64 %j.ci, %j.l2
+  br i1 %j.cd2, label %j.cpfin, label %j.cpstep
+
+j.cpstep:
+  %j.sp = getelementptr i8, i8* %j.p2, i64 %j.ci
+  %j.sc = load i8, i8* %j.sp
+  %j.dpos = add i64 %j.opa, %j.ci
+  %j.dp = getelementptr i8, i8* %j.buf, i64 %j.dpos
+  store i8 %j.sc, i8* %j.dp
+  %j.ci1 = add i64 %j.ci, 1
+  br label %j.cploop
+
+j.cpfin:
+  %j.opn = add i64 %j.opa, %j.l2
+  %j.wi1 = add i64 %j.wi, 1
+  br label %j.wcont
+
+j.wcont:
+  br label %j.wl
+
+j.fin:
+  %j.nul = getelementptr i8, i8* %j.buf, i64 %j.op
+  store i8 0, i8* %j.nul
+  ret i8* %j.buf
+}
+{{case wam_fields_join_str}}
+; Join a field buffer with a MULTI-BYTE separator (sep, seplen bytes). Same
+; two-pass shape as @wam_fields_join, but the total reserves seplen bytes per
+; gap and each gap is a memcpy of the separator. seplen 0 joins fields adjacent.
+define i8* @wam_fields_join_str(%WamFieldBuf* %fb, i8* %sep, i64 %seplen) {
+entry:
+  %js.cslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 0
+  %js.count = load i64, i64* %js.cslot
+  %js.slslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 2
+  %js.slices = load %WamSlice*, %WamSlice** %js.slslot
+  br label %js.sl
+
+js.sl:
+  %js.i = phi i64 [ 0, %entry ], [ %js.i1, %js.sstep ]
+  %js.acc = phi i64 [ 0, %entry ], [ %js.acc1, %js.sstep ]
+  %js.sd = icmp uge i64 %js.i, %js.count
+  br i1 %js.sd, label %js.mk, label %js.sbody
+
+js.sbody:
+  %js.e = getelementptr %WamSlice, %WamSlice* %js.slices, i64 %js.i
+  %js.el = getelementptr %WamSlice, %WamSlice* %js.e, i32 0, i32 1
+  %js.len = load i64, i64* %js.el
+  br label %js.sstep
+
+js.sstep:
+  %js.acc1 = add i64 %js.acc, %js.len
+  %js.i1 = add i64 %js.i, 1
+  br label %js.sl
+
+js.mk:
+  %js.cz = icmp eq i64 %js.count, 0
+  %js.cm1 = sub i64 %js.count, 1
+  %js.nsep = select i1 %js.cz, i64 0, i64 %js.cm1
+  %js.sepbytes = mul i64 %js.nsep, %seplen
+  %js.t0 = add i64 %js.acc, %js.sepbytes
+  %js.total = add i64 %js.t0, 1
+  %js.buf = call i8* @malloc(i64 %js.total)
+  br label %js.wl
+
+js.wl:
+  %js.wi = phi i64 [ 0, %js.mk ], [ %js.wi1, %js.wcont ]
+  %js.op = phi i64 [ 0, %js.mk ], [ %js.opn, %js.wcont ]
+  %js.wd = icmp uge i64 %js.wi, %js.count
+  br i1 %js.wd, label %js.fin, label %js.wbody
+
+js.wbody:
+  %js.first = icmp eq i64 %js.wi, 0
+  br i1 %js.first, label %js.after, label %js.emitsep
+
+js.emitsep:
+  %js.sdst = getelementptr i8, i8* %js.buf, i64 %js.op
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %js.sdst, i8* %sep, i64 %seplen, i1 false)
+  %js.op_s = add i64 %js.op, %seplen
+  br label %js.after
+
+js.after:
+  %js.opa = phi i64 [ %js.op_s, %js.emitsep ], [ %js.op, %js.wbody ]
+  %js.e2 = getelementptr %WamSlice, %WamSlice* %js.slices, i64 %js.wi
+  %js.p2s = getelementptr %WamSlice, %WamSlice* %js.e2, i32 0, i32 0
+  %js.p2 = load i8*, i8** %js.p2s
+  %js.l2s = getelementptr %WamSlice, %WamSlice* %js.e2, i32 0, i32 1
+  %js.l2 = load i64, i64* %js.l2s
+  %js.dst2 = getelementptr i8, i8* %js.buf, i64 %js.opa
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %js.dst2, i8* %js.p2, i64 %js.l2, i1 false)
+  %js.opn = add i64 %js.opa, %js.l2
+  %js.wi1 = add i64 %js.wi, 1
+  br label %js.wcont
+
+js.wcont:
+  br label %js.wl
+
+js.fin:
+  %js.nul = getelementptr i8, i8* %js.buf, i64 %js.op
+  store i8 0, i8* %js.nul
+  ret i8* %js.buf
+}
+{{case wam_fields_free}}
+; Free a field buffer (its slice array and the struct).
+define void @wam_fields_free(%WamFieldBuf* %fb) {
+entry:
+  %ff.slslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 2
+  %ff.slices = load %WamSlice*, %WamSlice** %ff.slslot
+  %ff.raw = bitcast %WamSlice* %ff.slices to i8*
+  call void @free(i8* %ff.raw)
+  %ff.raw2 = bitcast %WamFieldBuf* %fb to i8*
+  call void @free(i8* %ff.raw2)
+  ret void
+}
+{{case wam_subsep_comp_slice}}
+; Resolve one multi-dim subscript COMPONENT to its bytes. A component descriptor
+; is {i64 field_index, i8* lit_ptr, i64 lit_len}: a NULL lit_ptr means "slice
+; field field_index out of the record", anything else means "use the literal
+; bytes (lit_ptr, lit_len)" -- so a component is either a record field or a
+; compile-time string/number literal. Literal descriptors are module constants,
+; so no per-record allocation is needed to describe a key.
+define %WamSlice @wam_subsep_comp_slice(%Value %line, {i64, i8*, i64}* %comp, i8 %fs) {
+entry:
+  %cs.lp_ptr = getelementptr {i64, i8*, i64}, {i64, i8*, i64}* %comp, i64 0, i32 1
+  %cs.lp = load i8*, i8** %cs.lp_ptr
+  %cs.is_lit = icmp ne i8* %cs.lp, null
+  br i1 %cs.is_lit, label %cs.lit, label %cs.fld
+
+cs.lit:
+  %cs.ll_ptr = getelementptr {i64, i8*, i64}, {i64, i8*, i64}* %comp, i64 0, i32 2
+  %cs.ll = load i64, i64* %cs.ll_ptr
+  %cs.s0 = insertvalue %WamSlice undef, i8* %cs.lp, 0
+  %cs.s1 = insertvalue %WamSlice %cs.s0, i64 %cs.ll, 1
+  ret %WamSlice %cs.s1
+
+cs.fld:
+  %cs.fi_ptr = getelementptr {i64, i8*, i64}, {i64, i8*, i64}* %comp, i64 0, i32 0
+  %cs.fi = load i64, i64* %cs.fi_ptr
+  %cs.fs = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %cs.fi, i8 %fs)
+  ret %WamSlice %cs.fs
+}
+{{case wam_intern_subsep_key_comp}}
+; arr[i,j,k,...] key -- N-dimensional subscript (N >= 1), backing the multi-dim
+; counter, read, and membership for any arity and any mix of field and literal
+; components. Joins the N components described by %comps (see
+; wam_subsep_comp_slice) with SUBSEP into one interned atom key. Two passes: sum
+; the component lengths for the buffer size, then copy each component with a
+; SUBSEP between successive ones. A missing field contributes an empty slice
+; (awk: an unset subscript is the empty string). The join buffer is a stack
+; alloca freed on return; wam_intern_atom copies the bytes it keeps.
+define i64 @wam_intern_subsep_key_comp(%Value %line, {i64, i8*, i64}* %comps, i64 %n, i8 %fs) {
+entry:
+  %skn.sepp = load i8*, i8** @wam_subsep_ptr
+  %skn.sepl = load i64, i64* @wam_subsep_len
+  br label %skn.len_loop
+
+skn.len_loop:
+  %skn.i = phi i64 [ 0, %entry ], [ %skn.i_next, %skn.len_step ]
+  %skn.acc = phi i64 [ 0, %entry ], [ %skn.acc_next, %skn.len_step ]
+  %skn.len_done_c = icmp uge i64 %skn.i, %n
+  br i1 %skn.len_done_c, label %skn.len_done, label %skn.len_step
+
+skn.len_step:
+  %skn.lc = getelementptr {i64, i8*, i64}, {i64, i8*, i64}* %comps, i64 %skn.i
+  %skn.lslice = call %WamSlice @wam_subsep_comp_slice(%Value %line, {i64, i8*, i64}* %skn.lc, i8 %fs)
+  %skn.llen = extractvalue %WamSlice %skn.lslice, 1
+  %skn.acc_next = add i64 %skn.acc, %skn.llen
+  %skn.i_next = add i64 %skn.i, 1
+  br label %skn.len_loop
+
+skn.len_done:
+  %skn.nm1 = sub i64 %n, 1
+  %skn.sep_total = mul i64 %skn.nm1, %skn.sepl
+  %skn.body = add i64 %skn.acc, %skn.sep_total
+  %skn.total = add i64 %skn.body, 1
+  %skn.buf = alloca i8, i64 %skn.total
+  br label %skn.copy_loop
+
+skn.copy_loop:
+  %skn.j = phi i64 [ 0, %skn.len_done ], [ %skn.j_next, %skn.copy_cont ]
+  %skn.off = phi i64 [ 0, %skn.len_done ], [ %skn.off_next, %skn.copy_cont ]
+  %skn.copy_done_c = icmp uge i64 %skn.j, %n
+  br i1 %skn.copy_done_c, label %skn.copy_done, label %skn.copy_body
+
+skn.copy_body:
+  %skn.is_first = icmp eq i64 %skn.j, 0
+  br i1 %skn.is_first, label %skn.after_sep, label %skn.do_sep
+
+skn.do_sep:
+  %skn.sepdst = getelementptr i8, i8* %skn.buf, i64 %skn.off
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %skn.sepdst, i8* %skn.sepp, i64 %skn.sepl, i1 false)
+  %skn.off_sep = add i64 %skn.off, %skn.sepl
+  br label %skn.after_sep
+
+skn.after_sep:
+  %skn.off1 = phi i64 [ %skn.off, %skn.copy_body ], [ %skn.off_sep, %skn.do_sep ]
+  %skn.cc = getelementptr {i64, i8*, i64}, {i64, i8*, i64}* %comps, i64 %skn.j
+  %skn.cslice = call %WamSlice @wam_subsep_comp_slice(%Value %line, {i64, i8*, i64}* %skn.cc, i8 %fs)
+  %skn.cptr = extractvalue %WamSlice %skn.cslice, 0
+  %skn.clen = extractvalue %WamSlice %skn.cslice, 1
+  %skn.miss = icmp eq i8* %skn.cptr, null
+  br i1 %skn.miss, label %skn.copy_cont, label %skn.do_field
+
+skn.do_field:
+  %skn.fdst = getelementptr i8, i8* %skn.buf, i64 %skn.off1
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %skn.fdst, i8* %skn.cptr, i64 %skn.clen, i1 false)
+  br label %skn.copy_cont
+
+skn.copy_cont:
+  %skn.off_next = add i64 %skn.off1, %skn.clen
+  %skn.j_next = add i64 %skn.j, 1
+  br label %skn.copy_loop
+
+skn.copy_done:
+  %skn.nul = getelementptr i8, i8* %skn.buf, i64 %skn.body
+  store i8 0, i8* %skn.nul
+  %skn.id = call i64 @wam_intern_atom(i8* %skn.buf, i64 %skn.body)
+  ret i64 %skn.id
+}
+{{case wam_fields_new_re}}
+; Build a field buffer by splitting the NUL-terminated record %rec on the program
+; FS regex (@wam_fs_regex_pattern_ptr / cache). Slices point into %rec. An empty
+; record yields 0 fields; an unset/uncompilable FS yields the whole record as
+; field 1. Used by field assignment when FS is a multi-char regex (sentinel 0).
+define %WamFieldBuf* @wam_fields_new_re(i8* %rec) {
+entry:
+  %nr.sb1 = getelementptr %WamFieldBuf, %WamFieldBuf* null, i64 1
+  %nr.sbb = ptrtoint %WamFieldBuf* %nr.sb1 to i64
+  %nr.raw = call i8* @malloc(i64 %nr.sbb)
+  %nr.fb = bitcast i8* %nr.raw to %WamFieldBuf*
+  %nr.sl1 = getelementptr %WamSlice, %WamSlice* null, i64 4
+  %nr.slb = ptrtoint %WamSlice* %nr.sl1 to i64
+  %nr.slraw = call i8* @malloc(i64 %nr.slb)
+  %nr.slices = bitcast i8* %nr.slraw to %WamSlice*
+  %nr.cslot = getelementptr %WamFieldBuf, %WamFieldBuf* %nr.fb, i32 0, i32 0
+  store i64 0, i64* %nr.cslot
+  %nr.capslot = getelementptr %WamFieldBuf, %WamFieldBuf* %nr.fb, i32 0, i32 1
+  store i64 4, i64* %nr.capslot
+  %nr.slslot = getelementptr %WamFieldBuf, %WamFieldBuf* %nr.fb, i32 0, i32 2
+  store %WamSlice* %nr.slices, %WamSlice** %nr.slslot
+  br label %nr.slen
+
+nr.slen:
+  %nr.li = phi i64 [ 0, %entry ], [ %nr.li1, %nr.slstep ]
+  %nr.lp = getelementptr i8, i8* %rec, i64 %nr.li
+  %nr.lc = load i8, i8* %nr.lp
+  %nr.lz = icmp eq i8 %nr.lc, 0
+  br i1 %nr.lz, label %nr.lendone, label %nr.slstep
+
+nr.slstep:
+  %nr.li1 = add i64 %nr.li, 1
+  br label %nr.slen
+
+nr.lendone:
+  %nr.emptyrec = icmp eq i64 %nr.li, 0
+  br i1 %nr.emptyrec, label %nr.done, label %nr.getpat
+
+nr.getpat:
+  %nr.pat = load i8*, i8** @wam_fs_regex_pattern_ptr
+  %nr.patnull = icmp eq i8* %nr.pat, null
+  br i1 %nr.patnull, label %nr.whole1, label %nr.ensure
+
+nr.ensure:
+  %nr.cached = load i8*, i8** @wam_fs_regex_cache
+  %nr.havec = icmp ne i8* %nr.cached, null
+  br i1 %nr.havec, label %nr.ready, label %nr.compile
+
+nr.compile:
+  %nr.mem = call i8* @malloc(i64 512)
+  %nr.memnull = icmp eq i8* %nr.mem, null
+  br i1 %nr.memnull, label %nr.whole1, label %nr.docomp
+
+nr.docomp:
+  %nr.rc = call i32 @regcomp(i8* %nr.mem, i8* %nr.pat, i32 1)
+  %nr.ok = icmp eq i32 %nr.rc, 0
+  br i1 %nr.ok, label %nr.storec, label %nr.compfail
+
+nr.compfail:
+  call void @free(i8* %nr.mem)
+  br label %nr.whole1
+
+nr.storec:
+  store i8* %nr.mem, i8** @wam_fs_regex_cache
+  br label %nr.ready
+
+nr.ready:
+  %nr.preg = load i8*, i8** @wam_fs_regex_cache
+  %nr.pm = alloca [4 x i64], align 8
+  %nr.pmp = bitcast [4 x i64]* %nr.pm to i8*
+  br label %nr.walk
+
+nr.walk:
+  %nr.pos = phi i64 [ 1, %nr.ready ], [ %nr.posn, %nr.after ]
+  %nr.fstart = phi i64 [ 0, %nr.ready ], [ %nr.sep_end, %nr.after ]
+  %nr.atend = icmp uge i64 %nr.fstart, %nr.li
+  br i1 %nr.atend, label %nr.last, label %nr.exec
+
+nr.exec:
+  %nr.sp = getelementptr i8, i8* %rec, i64 %nr.fstart
+  %nr.isbol = icmp eq i64 %nr.fstart, 0
+  %nr.eflags = select i1 %nr.isbol, i32 0, i32 1
+  %nr.rc2 = call i32 @regexec(i8* %nr.preg, i8* %nr.sp, i64 1, i8* %nr.pmp, i32 %nr.eflags)
+  %nr.matched = icmp eq i32 %nr.rc2, 0
+  br i1 %nr.matched, label %nr.havematch, label %nr.last
+
+nr.havematch:
+  %nr.so_p = bitcast i8* %nr.pmp to i32*
+  %nr.so = load i32, i32* %nr.so_p
+  %nr.eo_pp = getelementptr i8, i8* %nr.pmp, i64 4
+  %nr.eo_p = bitcast i8* %nr.eo_pp to i32*
+  %nr.eo = load i32, i32* %nr.eo_p
+  %nr.so64 = sext i32 %nr.so to i64
+  %nr.eo64 = sext i32 %nr.eo to i64
+  %nr.sep_start = add i64 %nr.fstart, %nr.so64
+  %nr.mlen = sub i32 %nr.eo, %nr.so
+  %nr.zlen = icmp eq i32 %nr.mlen, 0
+  %nr.end_nz = add i64 %nr.fstart, %nr.eo64
+  %nr.end_z = add i64 %nr.sep_start, 1
+  %nr.sep_end = select i1 %nr.zlen, i64 %nr.end_z, i64 %nr.end_nz
+  %nr.fp = getelementptr i8, i8* %rec, i64 %nr.fstart
+  %nr.flen = sub i64 %nr.sep_start, %nr.fstart
+  call void @wam_fields_set(%WamFieldBuf* %nr.fb, i64 %nr.pos, i8* %nr.fp, i64 %nr.flen)
+  br label %nr.after
+
+nr.after:
+  %nr.posn = add i64 %nr.pos, 1
+  br label %nr.walk
+
+nr.last:
+  %nr.lp2 = getelementptr i8, i8* %rec, i64 %nr.fstart
+  %nr.llen = sub i64 %nr.li, %nr.fstart
+  call void @wam_fields_set(%WamFieldBuf* %nr.fb, i64 %nr.pos, i8* %nr.lp2, i64 %nr.llen)
+  br label %nr.done
+
+nr.whole1:
+  call void @wam_fields_set(%WamFieldBuf* %nr.fb, i64 1, i8* %rec, i64 %nr.li)
+  br label %nr.done
+
+nr.done:
+  ret %WamFieldBuf* %nr.fb
+}
+{{case wam_atom_prefix_value}}
+define i1 @wam_atom_prefix_value(%Value %atom_value, i8* %prefix, i64 %prefix_len) {
+entry:
+  %ap.t = call i32 @value_tag(%Value %atom_value)
+  %ap.is_atom = icmp eq i32 %ap.t, 0
+  br i1 %ap.is_atom, label %ap.lookup, label %ap.no
+
+ap.lookup:
+  %ap.aid = call i64 @value_payload(%Value %atom_value)
+  %ap.str = call i8* @wam_atom_to_string(i64 %ap.aid)
+  %ap.null = icmp eq i8* %ap.str, null
+  br i1 %ap.null, label %ap.no, label %ap.loop
+
+ap.loop:
+  %ap.i = phi i64 [ 0, %ap.lookup ], [ %ap.next, %ap.step_ok ]
+  %ap.done = icmp uge i64 %ap.i, %prefix_len
+  br i1 %ap.done, label %ap.yes, label %ap.step
+
+ap.step:
+  %ap.sp = getelementptr i8, i8* %ap.str, i64 %ap.i
+  %ap.pp = getelementptr i8, i8* %prefix, i64 %ap.i
+  %ap.sc = load i8, i8* %ap.sp
+  %ap.pc = load i8, i8* %ap.pp
+  %ap.nonzero = icmp ne i8 %ap.sc, 0
+  %ap.eq = icmp eq i8 %ap.sc, %ap.pc
+  %ap.match = and i1 %ap.nonzero, %ap.eq
+  br i1 %ap.match, label %ap.step_ok, label %ap.no
+
+ap.step_ok:
+  %ap.next = add i64 %ap.i, 1
+  br label %ap.loop
+
+ap.yes:
+  ret i1 true
+
+ap.no:
+  ret i1 false
+}
+{{case wam_is_field_whitespace}}
+define i1 @wam_is_field_whitespace(i8 %ch) {
+entry:
+  %ws.space = icmp eq i8 %ch, 32
+  %ws.tab = icmp eq i8 %ch, 9
+  %ws.lf = icmp eq i8 %ch, 10
+  %ws.cr = icmp eq i8 %ch, 13
+  %ws.a = or i1 %ws.space, %ws.tab
+  %ws.b = or i1 %ws.lf, %ws.cr
+  %ws.r = or i1 %ws.a, %ws.b
+  ret i1 %ws.r
+}
+{{case wam_atom_field_eq_value}}
+define i1 @wam_atom_field_eq_value(%Value %atom_value, i64 %field_index, i8* %expected, i64 %expected_len, i8 %sep) {
+entry:
+  ; sep 0 (regex FS) and sep 32 (whitespace) both project via the slice path,
+  ; which dispatches to the regex splitter; only a literal single char inlines.
+  %fe.is_re = icmp eq i8 %sep, 0
+  %fe.default_sep = icmp eq i8 %sep, 32
+  %fe.via_slice = or i1 %fe.is_re, %fe.default_sep
+  br i1 %fe.via_slice, label %fe.slice_compare, label %fe.literal_entry
+
+fe.slice_compare:
+  %fe.slice = call %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %fe.slice_ptr = extractvalue %WamSlice %fe.slice, 0
+  %fe.slice_len = extractvalue %WamSlice %fe.slice, 1
+  %fe.slice_has_ptr = icmp ne i8* %fe.slice_ptr, null
+  br i1 %fe.slice_has_ptr, label %fe.slice_len_check, label %fe.no
+
+fe.slice_len_check:
+  %fe.slice_len_ok = icmp eq i64 %fe.slice_len, %expected_len
+  br i1 %fe.slice_len_ok, label %fe.slice_compare_loop, label %fe.no
+
+fe.slice_compare_loop:
+  %fe.slice_i = phi i64 [ 0, %fe.slice_len_check ], [ %fe.slice_next_i, %fe.slice_compare_step ]
+  %fe.slice_done = icmp uge i64 %fe.slice_i, %expected_len
+  br i1 %fe.slice_done, label %fe.yes, label %fe.slice_compare_char
+
+fe.slice_compare_char:
+  %fe.slice_line_ptr = getelementptr i8, i8* %fe.slice_ptr, i64 %fe.slice_i
+  %fe.slice_exp_ptr = getelementptr i8, i8* %expected, i64 %fe.slice_i
+  %fe.slice_line_ch = load i8, i8* %fe.slice_line_ptr
+  %fe.slice_exp_ch = load i8, i8* %fe.slice_exp_ptr
+  %fe.slice_eq = icmp eq i8 %fe.slice_line_ch, %fe.slice_exp_ch
+  br i1 %fe.slice_eq, label %fe.slice_compare_step, label %fe.no
+
+fe.slice_compare_step:
+  %fe.slice_next_i = add i64 %fe.slice_i, 1
+  br label %fe.slice_compare_loop
+
+fe.literal_entry:
+  %fe.t = call i32 @value_tag(%Value %atom_value)
+  %fe.is_atom = icmp eq i32 %fe.t, 0
+  br i1 %fe.is_atom, label %fe.check_index, label %fe.no
+
+fe.check_index:
+  %fe.index_ok = icmp sgt i64 %field_index, 0
+  br i1 %fe.index_ok, label %fe.lookup, label %fe.no
+
+fe.lookup:
+  %fe.aid = call i64 @value_payload(%Value %atom_value)
+  %fe.str = call i8* @wam_atom_to_string(i64 %fe.aid)
+  %fe.null = icmp eq i8* %fe.str, null
+  br i1 %fe.null, label %fe.no, label %fe.find_loop
+
+fe.find_loop:
+  %fe.cur_index = phi i64 [ 1, %fe.lookup ], [ %fe.next_index, %fe.after_sep ]
+  %fe.start_pos = phi i64 [ 0, %fe.lookup ], [ %fe.after_sep_pos, %fe.after_sep ]
+  %fe.index_match = icmp eq i64 %fe.cur_index, %field_index
+  br i1 %fe.index_match, label %fe.compare_loop, label %fe.skip_loop
+
+fe.skip_loop:
+  %fe.skip_pos = phi i64 [ %fe.start_pos, %fe.find_loop ], [ %fe.skip_next_pos, %fe.skip_next ]
+  %fe.skip_ptr = getelementptr i8, i8* %fe.str, i64 %fe.skip_pos
+  %fe.skip_ch = load i8, i8* %fe.skip_ptr
+  %fe.skip_nul = icmp eq i8 %fe.skip_ch, 0
+  br i1 %fe.skip_nul, label %fe.no, label %fe.skip_check_sep
+
+fe.skip_check_sep:
+  %fe.skip_is_sep = icmp eq i8 %fe.skip_ch, %sep
+  br i1 %fe.skip_is_sep, label %fe.after_sep, label %fe.skip_next
+
+fe.skip_next:
+  %fe.skip_next_pos = add i64 %fe.skip_pos, 1
+  br label %fe.skip_loop
+
+fe.after_sep:
+  %fe.after_sep_pos = add i64 %fe.skip_pos, 1
+  %fe.next_index = add i64 %fe.cur_index, 1
+  br label %fe.find_loop
+
+fe.compare_loop:
+  %fe.i = phi i64 [ 0, %fe.find_loop ], [ %fe.next_i, %fe.compare_step ]
+  %fe.pos = phi i64 [ %fe.start_pos, %fe.find_loop ], [ %fe.next_pos, %fe.compare_step ]
+  %fe.done = icmp uge i64 %fe.i, %expected_len
+  br i1 %fe.done, label %fe.check_end, label %fe.compare_char
+
+fe.compare_char:
+  %fe.line_ptr = getelementptr i8, i8* %fe.str, i64 %fe.pos
+  %fe.exp_ptr = getelementptr i8, i8* %expected, i64 %fe.i
+  %fe.line_ch = load i8, i8* %fe.line_ptr
+  %fe.exp_ch = load i8, i8* %fe.exp_ptr
+  %fe.line_nonzero = icmp ne i8 %fe.line_ch, 0
+  %fe.line_not_sep = icmp ne i8 %fe.line_ch, %sep
+  %fe.eq = icmp eq i8 %fe.line_ch, %fe.exp_ch
+  %fe.live = and i1 %fe.line_nonzero, %fe.line_not_sep
+  %fe.match = and i1 %fe.live, %fe.eq
+  br i1 %fe.match, label %fe.compare_step, label %fe.no
+
+fe.compare_step:
+  %fe.next_i = add i64 %fe.i, 1
+  %fe.next_pos = add i64 %fe.pos, 1
+  br label %fe.compare_loop
+
+fe.check_end:
+  %fe.end_ptr = getelementptr i8, i8* %fe.str, i64 %fe.pos
+  %fe.end_ch = load i8, i8* %fe.end_ptr
+  %fe.end_nul = icmp eq i8 %fe.end_ch, 0
+  %fe.end_sep = icmp eq i8 %fe.end_ch, %sep
+  %fe.end_ok = or i1 %fe.end_nul, %fe.end_sep
+  br i1 %fe.end_ok, label %fe.yes, label %fe.no
+
+fe.yes:
+  ret i1 true
+
+fe.no:
+  ret i1 false
+}
+{{case wam_atom_field_slice_value}}
+define %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_index, i8 %sep) {
+entry:
+  %fs.empty0 = insertvalue %WamSlice undef, i8* null, 0
+  %fs.empty = insertvalue %WamSlice %fs.empty0, i64 0, 1
+  ; sep 0 is the reserved sentinel for a program-level regex FS
+  %fs.is_re = icmp eq i8 %sep, 0
+  br i1 %fs.is_re, label %fs.regex_dispatch, label %fs.sep_check
+
+fs.regex_dispatch:
+  %fs.rr = call %WamSlice @wam_fs_regex_field_slice_value(%Value %atom_value, i64 %field_index)
+  ret %WamSlice %fs.rr
+
+fs.sep_check:
+  %fs.default_sep = icmp eq i8 %sep, 32
+  br i1 %fs.default_sep, label %fs.ws_atom_check, label %fs.literal_entry
+
+fs.literal_entry:
+  %fs.t = call i32 @value_tag(%Value %atom_value)
+  %fs.is_atom = icmp eq i32 %fs.t, 0
+  br i1 %fs.is_atom, label %fs.check_index, label %fs.no
+
+fs.check_index:
+  %fs.index_ok = icmp sgt i64 %field_index, 0
+  br i1 %fs.index_ok, label %fs.lookup, label %fs.no
+
+fs.lookup:
+  %fs.aid = call i64 @value_payload(%Value %atom_value)
+  %fs.str = call i8* @wam_atom_to_string(i64 %fs.aid)
+  %fs.null = icmp eq i8* %fs.str, null
+  br i1 %fs.null, label %fs.no, label %fs.find_loop
+
+fs.find_loop:
+  %fs.cur_index = phi i64 [ 1, %fs.lookup ], [ %fs.next_index, %fs.after_sep ]
+  %fs.start_pos = phi i64 [ 0, %fs.lookup ], [ %fs.after_sep_pos, %fs.after_sep ]
+  %fs.index_match = icmp eq i64 %fs.cur_index, %field_index
+  br i1 %fs.index_match, label %fs.end_loop, label %fs.skip_loop
+
+fs.skip_loop:
+  %fs.skip_pos = phi i64 [ %fs.start_pos, %fs.find_loop ], [ %fs.skip_next_pos, %fs.skip_next ]
+  %fs.skip_ptr = getelementptr i8, i8* %fs.str, i64 %fs.skip_pos
+  %fs.skip_ch = load i8, i8* %fs.skip_ptr
+  %fs.skip_nul = icmp eq i8 %fs.skip_ch, 0
+  br i1 %fs.skip_nul, label %fs.no, label %fs.skip_check_sep
+
+fs.skip_check_sep:
+  %fs.skip_is_sep = icmp eq i8 %fs.skip_ch, %sep
+  br i1 %fs.skip_is_sep, label %fs.after_sep, label %fs.skip_next
+
+fs.skip_next:
+  %fs.skip_next_pos = add i64 %fs.skip_pos, 1
+  br label %fs.skip_loop
+
+fs.after_sep:
+  %fs.after_sep_pos = add i64 %fs.skip_pos, 1
+  %fs.next_index = add i64 %fs.cur_index, 1
+  br label %fs.find_loop
+
+fs.end_loop:
+  %fs.end_pos = phi i64 [ %fs.start_pos, %fs.find_loop ], [ %fs.end_next_pos, %fs.end_next ]
+  %fs.end_ptr = getelementptr i8, i8* %fs.str, i64 %fs.end_pos
+  %fs.end_ch = load i8, i8* %fs.end_ptr
+  %fs.end_nul = icmp eq i8 %fs.end_ch, 0
+  br i1 %fs.end_nul, label %fs.yes, label %fs.end_check_sep
+
+fs.end_check_sep:
+  %fs.end_is_sep = icmp eq i8 %fs.end_ch, %sep
+  br i1 %fs.end_is_sep, label %fs.yes, label %fs.end_next
+
+fs.end_next:
+  %fs.end_next_pos = add i64 %fs.end_pos, 1
+  br label %fs.end_loop
+
+fs.yes:
+  %fs.ptr = getelementptr i8, i8* %fs.str, i64 %fs.start_pos
+  %fs.len = sub i64 %fs.end_pos, %fs.start_pos
+  %fs.slice0 = insertvalue %WamSlice undef, i8* %fs.ptr, 0
+  %fs.slice = insertvalue %WamSlice %fs.slice0, i64 %fs.len, 1
+  ret %WamSlice %fs.slice
+
+fs.ws_atom_check:
+  %fs.ws.t = call i32 @value_tag(%Value %atom_value)
+  %fs.ws.is_atom = icmp eq i32 %fs.ws.t, 0
+  br i1 %fs.ws.is_atom, label %fs.ws_check_index, label %fs.no
+
+fs.ws_check_index:
+  %fs.ws.index_ok = icmp sgt i64 %field_index, 0
+  br i1 %fs.ws.index_ok, label %fs.ws_lookup, label %fs.no
+
+fs.ws_lookup:
+  %fs.ws.aid = call i64 @value_payload(%Value %atom_value)
+  %fs.ws.str = call i8* @wam_atom_to_string(i64 %fs.ws.aid)
+  %fs.ws.null = icmp eq i8* %fs.ws.str, null
+  br i1 %fs.ws.null, label %fs.no, label %fs.ws_start
+
+fs.ws_start:
+  %fs.ws.cur_index = phi i64 [ 1, %fs.ws_lookup ], [ %fs.ws.next_index, %fs.ws_after_field ]
+  %fs.ws.pos0 = phi i64 [ 0, %fs.ws_lookup ], [ %fs.ws.after_field_pos, %fs.ws_after_field ]
+  br label %fs.ws_skip_ws
+
+fs.ws_skip_ws:
+  %fs.ws.skip_pos = phi i64 [ %fs.ws.pos0, %fs.ws_start ], [ %fs.ws.skip_next_pos, %fs.ws_skip_next ]
+  %fs.ws.skip_ptr = getelementptr i8, i8* %fs.ws.str, i64 %fs.ws.skip_pos
+  %fs.ws.skip_ch = load i8, i8* %fs.ws.skip_ptr
+  %fs.ws.skip_nul = icmp eq i8 %fs.ws.skip_ch, 0
+  br i1 %fs.ws.skip_nul, label %fs.no, label %fs.ws_skip_check
+
+fs.ws_skip_check:
+  %fs.ws.skip_is_ws = call i1 @wam_is_field_whitespace(i8 %fs.ws.skip_ch)
+  br i1 %fs.ws.skip_is_ws, label %fs.ws_skip_next, label %fs.ws_field_start
+
+fs.ws_skip_next:
+  %fs.ws.skip_next_pos = add i64 %fs.ws.skip_pos, 1
+  br label %fs.ws_skip_ws
+
+fs.ws_field_start:
+  %fs.ws.index_match = icmp eq i64 %fs.ws.cur_index, %field_index
+  br i1 %fs.ws.index_match, label %fs.ws_end_loop, label %fs.ws_scan_field
+
+fs.ws_scan_field:
+  %fs.ws.scan_pos = phi i64 [ %fs.ws.skip_pos, %fs.ws_field_start ], [ %fs.ws.scan_next_pos, %fs.ws_scan_next ]
+  %fs.ws.scan_ptr = getelementptr i8, i8* %fs.ws.str, i64 %fs.ws.scan_pos
+  %fs.ws.scan_ch = load i8, i8* %fs.ws.scan_ptr
+  %fs.ws.scan_nul = icmp eq i8 %fs.ws.scan_ch, 0
+  br i1 %fs.ws.scan_nul, label %fs.no, label %fs.ws_scan_check
+
+fs.ws_scan_check:
+  %fs.ws.scan_is_ws = call i1 @wam_is_field_whitespace(i8 %fs.ws.scan_ch)
+  br i1 %fs.ws.scan_is_ws, label %fs.ws_after_field, label %fs.ws_scan_next
+
+fs.ws_scan_next:
+  %fs.ws.scan_next_pos = add i64 %fs.ws.scan_pos, 1
+  br label %fs.ws_scan_field
+
+fs.ws_after_field:
+  %fs.ws.after_field_pos = add i64 %fs.ws.scan_pos, 1
+  %fs.ws.next_index = add i64 %fs.ws.cur_index, 1
+  br label %fs.ws_start
+
+fs.ws_end_loop:
+  %fs.ws.end_pos = phi i64 [ %fs.ws.skip_pos, %fs.ws_field_start ], [ %fs.ws.end_next_pos, %fs.ws_end_next ]
+  %fs.ws.end_ptr = getelementptr i8, i8* %fs.ws.str, i64 %fs.ws.end_pos
+  %fs.ws.end_ch = load i8, i8* %fs.ws.end_ptr
+  %fs.ws.end_nul = icmp eq i8 %fs.ws.end_ch, 0
+  br i1 %fs.ws.end_nul, label %fs.ws_yes, label %fs.ws_end_check
+
+fs.ws_end_check:
+  %fs.ws.end_is_ws = call i1 @wam_is_field_whitespace(i8 %fs.ws.end_ch)
+  br i1 %fs.ws.end_is_ws, label %fs.ws_yes, label %fs.ws_end_next
+
+fs.ws_end_next:
+  %fs.ws.end_next_pos = add i64 %fs.ws.end_pos, 1
+  br label %fs.ws_end_loop
+
+fs.ws_yes:
+  %fs.ws.ptr = getelementptr i8, i8* %fs.ws.str, i64 %fs.ws.skip_pos
+  %fs.ws.len = sub i64 %fs.ws.end_pos, %fs.ws.skip_pos
+  %fs.ws.slice0 = insertvalue %WamSlice undef, i8* %fs.ws.ptr, 0
+  %fs.ws.slice = insertvalue %WamSlice %fs.ws.slice0, i64 %fs.ws.len, 1
+  ret %WamSlice %fs.ws.slice
+
+fs.no:
+  ret %WamSlice %fs.empty
+}
+{{case wam_atom_field_count_value}}
+define i64 @wam_atom_field_count_value(%Value %atom_value, i8 %sep) {
+entry:
+  ; sep 0 is the reserved sentinel for a program-level regex FS
+  %fc.is_re = icmp eq i8 %sep, 0
+  br i1 %fc.is_re, label %fc.regex_dispatch, label %fc.sep_check
+
+fc.regex_dispatch:
+  %fc.rr = call i64 @wam_fs_regex_field_count_value(%Value %atom_value)
+  ret i64 %fc.rr
+
+fc.sep_check:
+  %fc.default_sep = icmp eq i8 %sep, 32
+  br i1 %fc.default_sep, label %fc.ws_atom_check, label %fc.literal_entry
+
+fc.literal_entry:
+  %fc.t = call i32 @value_tag(%Value %atom_value)
+  %fc.is_atom = icmp eq i32 %fc.t, 0
+  br i1 %fc.is_atom, label %fc.lookup, label %fc.zero
+
+fc.lookup:
+  %fc.aid = call i64 @value_payload(%Value %atom_value)
+  %fc.str = call i8* @wam_atom_to_string(i64 %fc.aid)
+  %fc.null = icmp eq i8* %fc.str, null
+  br i1 %fc.null, label %fc.zero, label %fc.check_empty
+
+fc.check_empty:
+  %fc.first = load i8, i8* %fc.str
+  %fc.empty = icmp eq i8 %fc.first, 0
+  br i1 %fc.empty, label %fc.zero, label %fc.loop
+
+fc.loop:
+  %fc.pos = phi i64 [ 0, %fc.check_empty ], [ %fc.next_pos, %fc.step ]
+  %fc.count = phi i64 [ 1, %fc.check_empty ], [ %fc.next_count, %fc.step ]
+  %fc.ptr = getelementptr i8, i8* %fc.str, i64 %fc.pos
+  %fc.ch = load i8, i8* %fc.ptr
+  %fc.nul = icmp eq i8 %fc.ch, 0
+  br i1 %fc.nul, label %fc.done, label %fc.check_sep
+
+fc.check_sep:
+  %fc.is_sep = icmp eq i8 %fc.ch, %sep
+  br label %fc.step
+
+fc.step:
+  %fc.sep_i64 = zext i1 %fc.is_sep to i64
+  %fc.next_count = add i64 %fc.count, %fc.sep_i64
+  %fc.next_pos = add i64 %fc.pos, 1
+  br label %fc.loop
+
+fc.done:
+  ret i64 %fc.count
+
+fc.ws_atom_check:
+  %fc.ws.t = call i32 @value_tag(%Value %atom_value)
+  %fc.ws.is_atom = icmp eq i32 %fc.ws.t, 0
+  br i1 %fc.ws.is_atom, label %fc.ws_lookup, label %fc.zero
+
+fc.ws_lookup:
+  %fc.ws.aid = call i64 @value_payload(%Value %atom_value)
+  %fc.ws.str = call i8* @wam_atom_to_string(i64 %fc.ws.aid)
+  %fc.ws.null = icmp eq i8* %fc.ws.str, null
+  br i1 %fc.ws.null, label %fc.zero, label %fc.ws_loop
+
+fc.ws_loop:
+  %fc.ws.pos = phi i64 [ 0, %fc.ws_lookup ], [ %fc.ws.next_pos, %fc.ws_step ]
+  %fc.ws.count = phi i64 [ 0, %fc.ws_lookup ], [ %fc.ws.next_count, %fc.ws_step ]
+  %fc.ws.in_field = phi i1 [ false, %fc.ws_lookup ], [ %fc.ws.next_in_field, %fc.ws_step ]
+  %fc.ws.ptr = getelementptr i8, i8* %fc.ws.str, i64 %fc.ws.pos
+  %fc.ws.ch = load i8, i8* %fc.ws.ptr
+  %fc.ws.nul = icmp eq i8 %fc.ws.ch, 0
+  br i1 %fc.ws.nul, label %fc.ws_done, label %fc.ws_check
+
+fc.ws_check:
+  %fc.ws.is_ws = call i1 @wam_is_field_whitespace(i8 %fc.ws.ch)
+  %fc.ws.not_ws = xor i1 %fc.ws.is_ws, true
+  %fc.ws.not_in_field = xor i1 %fc.ws.in_field, true
+  %fc.ws.new_field = and i1 %fc.ws.not_ws, %fc.ws.not_in_field
+  %fc.ws.inc = zext i1 %fc.ws.new_field to i64
+  %fc.ws.next_count = add i64 %fc.ws.count, %fc.ws.inc
+  %fc.ws.next_in_field = select i1 %fc.ws.is_ws, i1 false, i1 true
+  br label %fc.ws_step
+
+fc.ws_step:
+  %fc.ws.next_pos = add i64 %fc.ws.pos, 1
+  br label %fc.ws_loop
+
+fc.ws_done:
+  ret i64 %fc.ws.count
+
+fc.zero:
+  ret i64 0
+}
+{{case wam_atom_field_length_value}}
+define i64 @wam_atom_field_length_value(%Value %atom_value, i64 %field_index, i8 %sep) {
+entry:
+  %fl.whole = icmp eq i64 %field_index, 0
+  br i1 %fl.whole, label %fl.whole_record, label %fl.field
+
+fl.whole_record:
+  %fl.t = call i32 @value_tag(%Value %atom_value)
+  %fl.is_atom = icmp eq i32 %fl.t, 0
+  br i1 %fl.is_atom, label %fl.lookup, label %fl.zero
+
+fl.lookup:
+  %fl.aid = call i64 @value_payload(%Value %atom_value)
+  %fl.str = call i8* @wam_atom_to_string(i64 %fl.aid)
+  %fl.null = icmp eq i8* %fl.str, null
+  br i1 %fl.null, label %fl.zero, label %fl.measure
+
+fl.measure:
+  %fl.len = call i64 @strlen(i8* %fl.str)
+  ret i64 %fl.len
+
+fl.field:
+  %fl.slice = call %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %fl.field_len = extractvalue %WamSlice %fl.slice, 1
+  ret i64 %fl.field_len
+
+fl.zero:
+  ret i64 0
+}
+{{case wam_subslice_value}}
+define %WamSlice @wam_subslice_value(i8* %source_ptr, i64 %source_len, i64 %start, i64 %max_len) {
+entry:
+  %ss.empty0 = insertvalue %WamSlice undef, i8* null, 0
+  %ss.empty = insertvalue %WamSlice %ss.empty0, i64 0, 1
+  %ss.null = icmp eq i8* %source_ptr, null
+  br i1 %ss.null, label %ss.no, label %ss.check_start
+
+ss.check_start:
+  %ss.start_ok = icmp sgt i64 %start, 0
+  br i1 %ss.start_ok, label %ss.check_len, label %ss.no
+
+ss.check_len:
+  %ss.len_ok = icmp sge i64 %max_len, 0
+  br i1 %ss.len_ok, label %ss.compute, label %ss.no
+
+ss.compute:
+  %ss.offset = sub i64 %start, 1
+  %ss.in_range = icmp ult i64 %ss.offset, %source_len
+  br i1 %ss.in_range, label %ss.make_slice, label %ss.no
+
+ss.make_slice:
+  %ss.available = sub i64 %source_len, %ss.offset
+  %ss.len_fits = icmp ule i64 %max_len, %ss.available
+  %ss.out_len = select i1 %ss.len_fits, i64 %max_len, i64 %ss.available
+  %ss.ptr = getelementptr i8, i8* %source_ptr, i64 %ss.offset
+  %ss.slice0 = insertvalue %WamSlice undef, i8* %ss.ptr, 0
+  %ss.slice = insertvalue %WamSlice %ss.slice0, i64 %ss.out_len, 1
+  ret %WamSlice %ss.slice
+
+ss.no:
+  ret %WamSlice %ss.empty
+}
+{{case wam_awk_field_index_checked}}
+; awk `$(expr)` with a NEGATIVE index is a fatal error (gawk: "attempt to access
+; field -1", exit 2), not an empty field. A computed field index -- `$(NF-1)` on an
+; empty record -- is passed through here: returned unchanged when >= 0, otherwise
+; the program stops with exit status 2. exit() flushes stdout, so every line printed
+; before the bad access still appears, as in gawk. A call rather than an inline
+; branch, so the caller stays one straight-line block and no phi predecessor moves.
+@.wam_awk_negative_field_error = private constant [50 x i8] c"plawk: fatal: attempt to access a negative field\0A\00"
+
+define i64 @wam_awk_field_index_checked(i64 %index) {
+entry:
+  %afic.neg = icmp slt i64 %index, 0
+  br i1 %afic.neg, label %afic.fatal, label %afic.ok
+
+afic.ok:
+  ret i64 %index
+
+afic.fatal:
+  %afic.msg = getelementptr [50 x i8], [50 x i8]* @.wam_awk_negative_field_error, i64 0, i64 0
+  %afic.written = call i64 @write(i32 2, i8* %afic.msg, i64 49)
+  call void @exit(i32 2)
+  unreachable
+}
+{{case wam_atom_field_subslice_value}}
+define %WamSlice @wam_atom_field_subslice_value(%Value %atom_value, i64 %field_index, i8 %sep, i64 %start, i64 %max_len) {
+entry:
+  %afs.empty0 = insertvalue %WamSlice undef, i8* null, 0
+  %afs.empty = insertvalue %WamSlice %afs.empty0, i64 0, 1
+  %afs.whole = icmp eq i64 %field_index, 0
+  br i1 %afs.whole, label %afs.whole_record, label %afs.field
+
+afs.whole_record:
+  %afs.t = call i32 @value_tag(%Value %atom_value)
+  %afs.is_atom = icmp eq i32 %afs.t, 0
+  br i1 %afs.is_atom, label %afs.lookup, label %afs.no
+
+afs.lookup:
+  %afs.aid = call i64 @value_payload(%Value %atom_value)
+  %afs.str = call i8* @wam_atom_to_string(i64 %afs.aid)
+  %afs.null = icmp eq i8* %afs.str, null
+  br i1 %afs.null, label %afs.no, label %afs.measure
+
+afs.measure:
+  %afs.len = call i64 @strlen(i8* %afs.str)
+  %afs.whole_slice = call %WamSlice @wam_subslice_value(i8* %afs.str, i64 %afs.len, i64 %start, i64 %max_len)
+  ret %WamSlice %afs.whole_slice
+
+afs.field:
+  %afs.index_ok = icmp sgt i64 %field_index, 0
+  br i1 %afs.index_ok, label %afs.field_slice, label %afs.no
+
+afs.field_slice:
+  %afs.source = call %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %afs.source_ptr = extractvalue %WamSlice %afs.source, 0
+  %afs.source_len = extractvalue %WamSlice %afs.source, 1
+  %afs.source_has_ptr = icmp ne i8* %afs.source_ptr, null
+  br i1 %afs.source_has_ptr, label %afs.subslice, label %afs.no
+
+afs.subslice:
+  %afs.slice = call %WamSlice @wam_subslice_value(i8* %afs.source_ptr, i64 %afs.source_len, i64 %start, i64 %max_len)
+  ret %WamSlice %afs.slice
+
+afs.no:
+  ret %WamSlice %afs.empty
+}
+{{case wam_slice_index_value}}
+define i64 @wam_slice_index_value(i8* %source_ptr, i64 %source_len, i8* %needle, i64 %needle_len) {
+entry:
+  %si.needle_null = icmp eq i8* %needle, null
+  br i1 %si.needle_null, label %si.zero, label %si.check_empty
+
+si.check_empty:
+  %si.empty_needle = icmp eq i64 %needle_len, 0
+  br i1 %si.empty_needle, label %si.one, label %si.check_source
+
+si.check_source:
+  %si.source_null = icmp eq i8* %source_ptr, null
+  br i1 %si.source_null, label %si.zero, label %si.bounds
+
+si.bounds:
+  %si.too_long = icmp ugt i64 %needle_len, %source_len
+  br i1 %si.too_long, label %si.zero, label %si.outer
+
+si.outer:
+  %si.last_start = sub i64 %source_len, %needle_len
+  br label %si.outer_loop
+
+si.outer_loop:
+  %si.pos = phi i64 [ 0, %si.outer ], [ %si.next_pos, %si.advance ]
+  %si.past = icmp ugt i64 %si.pos, %si.last_start
+  br i1 %si.past, label %si.zero, label %si.inner_loop
+
+si.inner_loop:
+  %si.i = phi i64 [ 0, %si.outer_loop ], [ %si.next_i, %si.match_step ]
+  %si.done = icmp uge i64 %si.i, %needle_len
+  br i1 %si.done, label %si.found, label %si.compare
+
+si.compare:
+  %si.source_offset = add i64 %si.pos, %si.i
+  %si.source_ch_ptr = getelementptr i8, i8* %source_ptr, i64 %si.source_offset
+  %si.needle_ch_ptr = getelementptr i8, i8* %needle, i64 %si.i
+  %si.source_ch = load i8, i8* %si.source_ch_ptr
+  %si.needle_ch = load i8, i8* %si.needle_ch_ptr
+  %si.eq = icmp eq i8 %si.source_ch, %si.needle_ch
+  br i1 %si.eq, label %si.match_step, label %si.advance
+
+si.match_step:
+  %si.next_i = add i64 %si.i, 1
+  br label %si.inner_loop
+
+si.advance:
+  %si.next_pos = add i64 %si.pos, 1
+  br label %si.outer_loop
+
+si.found:
+  %si.result = add i64 %si.pos, 1
+  ret i64 %si.result
+
+si.one:
+  ret i64 1
+
+si.zero:
+  ret i64 0
+}
+{{case wam_atom_field_index_value}}
+define i64 @wam_atom_field_index_value(%Value %atom_value, i64 %field_index, i8 %sep, i8* %needle, i64 %needle_len) {
+entry:
+  %afi.whole = icmp eq i64 %field_index, 0
+  br i1 %afi.whole, label %afi.whole_record, label %afi.field
+
+afi.whole_record:
+  %afi.t = call i32 @value_tag(%Value %atom_value)
+  %afi.is_atom = icmp eq i32 %afi.t, 0
+  br i1 %afi.is_atom, label %afi.lookup, label %afi.zero
+
+afi.lookup:
+  %afi.aid = call i64 @value_payload(%Value %atom_value)
+  %afi.str = call i8* @wam_atom_to_string(i64 %afi.aid)
+  %afi.null = icmp eq i8* %afi.str, null
+  br i1 %afi.null, label %afi.zero, label %afi.measure
+
+afi.measure:
+  %afi.len = call i64 @strlen(i8* %afi.str)
+  %afi.whole_index = call i64 @wam_slice_index_value(i8* %afi.str, i64 %afi.len, i8* %needle, i64 %needle_len)
+  ret i64 %afi.whole_index
+
+afi.field:
+  %afi.index_ok = icmp sgt i64 %field_index, 0
+  br i1 %afi.index_ok, label %afi.field_slice, label %afi.zero
+
+afi.field_slice:
+  %afi.source = call %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %afi.source_ptr = extractvalue %WamSlice %afi.source, 0
+  %afi.source_len = extractvalue %WamSlice %afi.source, 1
+  %afi.source_has_ptr = icmp ne i8* %afi.source_ptr, null
+  br i1 %afi.source_has_ptr, label %afi.index, label %afi.zero
+
+afi.index:
+  %afi.field_index_value = call i64 @wam_slice_index_value(i8* %afi.source_ptr, i64 %afi.source_len, i8* %needle, i64 %needle_len)
+  ret i64 %afi.field_index_value
+
+afi.zero:
+  ret i64 0
+}
+{{case wam_slice_i64_parse_value}}
+define %WamI64Parse @wam_slice_i64_parse_value(i8* %source_ptr, i64 %source_len) {
+entry:
+  %si64.no0 = insertvalue %WamI64Parse undef, i64 0, 0
+  %si64.no_value = insertvalue %WamI64Parse %si64.no0, i1 false, 1
+  %si64.null = icmp eq i8* %source_ptr, null
+  br i1 %si64.null, label %si64.no, label %si64.check_len
+
+si64.check_len:
+  %si64.empty = icmp eq i64 %source_len, 0
+  br i1 %si64.empty, label %si64.no, label %si64.first
+
+si64.first:
+  %si64.first_ch = load i8, i8* %source_ptr
+  %si64.is_minus = icmp eq i8 %si64.first_ch, 45
+  %si64.is_plus = icmp eq i8 %si64.first_ch, 43
+  %si64.has_sign = or i1 %si64.is_minus, %si64.is_plus
+  %si64.start = select i1 %si64.has_sign, i64 1, i64 0
+  %si64.sign = select i1 %si64.is_minus, i64 -1, i64 1
+  %si64.only_sign = icmp uge i64 %si64.start, %source_len
+  br i1 %si64.only_sign, label %si64.no, label %si64.loop
+
+si64.loop:
+  %si64.pos = phi i64 [ %si64.start, %si64.first ], [ %si64.next_pos, %si64.digit_step ]
+  %si64.acc = phi i64 [ 0, %si64.first ], [ %si64.next_acc, %si64.digit_step ]
+  %si64.done = icmp uge i64 %si64.pos, %source_len
+  br i1 %si64.done, label %si64.yes, label %si64.read_digit
+
+si64.read_digit:
+  %si64.ch_ptr = getelementptr i8, i8* %source_ptr, i64 %si64.pos
+  %si64.ch = load i8, i8* %si64.ch_ptr
+  %si64.ge_0 = icmp uge i8 %si64.ch, 48
+  %si64.le_9 = icmp ule i8 %si64.ch, 57
+  %si64.is_digit = and i1 %si64.ge_0, %si64.le_9
+  br i1 %si64.is_digit, label %si64.digit_step, label %si64.no
+
+si64.digit_step:
+  %si64.ch_i64 = zext i8 %si64.ch to i64
+  %si64.digit = sub i64 %si64.ch_i64, 48
+  %si64.scaled = mul i64 %si64.acc, 10
+  %si64.next_acc = add i64 %si64.scaled, %si64.digit
+  %si64.next_pos = add i64 %si64.pos, 1
+  br label %si64.loop
+
+si64.yes:
+  %si64.value = mul i64 %si64.acc, %si64.sign
+  %si64.yes0 = insertvalue %WamI64Parse undef, i64 %si64.value, 0
+  %si64.yes_value = insertvalue %WamI64Parse %si64.yes0, i1 true, 1
+  ret %WamI64Parse %si64.yes_value
+
+si64.no:
+  ret %WamI64Parse %si64.no_value
+}
+{{case wam_slice_i64_cmp_value}}
+define i1 @wam_slice_i64_cmp_value(i8* %source_ptr, i64 %source_len, i64 %expected, i32 %op) {
+entry:
+  %si64.cmp.parse = call %WamI64Parse @wam_slice_i64_parse_value(i8* %source_ptr, i64 %source_len)
+  %si64.cmp.value = extractvalue %WamI64Parse %si64.cmp.parse, 0
+  %si64.cmp.ok = extractvalue %WamI64Parse %si64.cmp.parse, 1
+  br i1 %si64.cmp.ok, label %si64.compare, label %si64.no
+
+si64.compare:
+  %si64.cmp.result = call i1 @wam_i64_cmp_value(i64 %si64.cmp.value, i64 %expected, i32 %op)
+  br i1 %si64.cmp.result, label %si64.yes, label %si64.no
+
+si64.yes:
+  ret i1 true
+
+si64.no:
+  ret i1 false
+}
+{{case wam_i64_cmp_value}}
+define i1 @wam_i64_cmp_value(i64 %value, i64 %expected, i32 %op) {
+entry:
+  switch i32 %op, label %cmp.no [
+    i32 0, label %cmp.eq
+    i32 1, label %cmp.ne
+    i32 2, label %cmp.lt
+    i32 3, label %cmp.le
+    i32 4, label %cmp.gt
+    i32 5, label %cmp.ge
+  ]
+
+cmp.eq:
+  %cmp.eq_result = icmp eq i64 %value, %expected
+  br i1 %cmp.eq_result, label %cmp.yes, label %cmp.no
+
+cmp.ne:
+  %cmp.ne_result = icmp ne i64 %value, %expected
+  br i1 %cmp.ne_result, label %cmp.yes, label %cmp.no
+
+cmp.lt:
+  %cmp.lt_result = icmp slt i64 %value, %expected
+  br i1 %cmp.lt_result, label %cmp.yes, label %cmp.no
+
+cmp.le:
+  %cmp.le_result = icmp sle i64 %value, %expected
+  br i1 %cmp.le_result, label %cmp.yes, label %cmp.no
+
+cmp.gt:
+  %cmp.gt_result = icmp sgt i64 %value, %expected
+  br i1 %cmp.gt_result, label %cmp.yes, label %cmp.no
+
+cmp.ge:
+  %cmp.ge_result = icmp sge i64 %value, %expected
+  br i1 %cmp.ge_result, label %cmp.yes, label %cmp.no
+
+cmp.yes:
+  ret i1 true
+
+cmp.no:
+  ret i1 false
+}
+{{case wam_atom_field_i64_value}}
+define %WamI64Parse @wam_atom_field_i64_value(%Value %atom_value, i64 %field_index, i8 %sep) {
+entry:
+  %afv.no0 = insertvalue %WamI64Parse undef, i64 0, 0
+  %afv.no_value = insertvalue %WamI64Parse %afv.no0, i1 false, 1
+  %afv.whole = icmp eq i64 %field_index, 0
+  br i1 %afv.whole, label %afv.whole_record, label %afv.field
+
+afv.whole_record:
+  %afv.t = call i32 @value_tag(%Value %atom_value)
+  %afv.is_atom = icmp eq i32 %afv.t, 0
+  br i1 %afv.is_atom, label %afv.lookup, label %afv.no
+
+afv.lookup:
+  %afv.aid = call i64 @value_payload(%Value %atom_value)
+  %afv.str = call i8* @wam_atom_to_string(i64 %afv.aid)
+  %afv.null = icmp eq i8* %afv.str, null
+  br i1 %afv.null, label %afv.no, label %afv.measure
+
+afv.measure:
+  %afv.len = call i64 @strlen(i8* %afv.str)
+  %afv.whole_value = call %WamI64Parse @wam_slice_i64_parse_value(i8* %afv.str, i64 %afv.len)
+  ret %WamI64Parse %afv.whole_value
+
+afv.field:
+  %afv.index_ok = icmp sgt i64 %field_index, 0
+  br i1 %afv.index_ok, label %afv.field_slice, label %afv.no
+
+afv.field_slice:
+  %afv.source = call %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %afv.source_ptr = extractvalue %WamSlice %afv.source, 0
+  %afv.source_len = extractvalue %WamSlice %afv.source, 1
+  %afv.source_has_ptr = icmp ne i8* %afv.source_ptr, null
+  br i1 %afv.source_has_ptr, label %afv.parse, label %afv.no
+
+afv.parse:
+  %afv.field_value = call %WamI64Parse @wam_slice_i64_parse_value(i8* %afv.source_ptr, i64 %afv.source_len)
+  ret %WamI64Parse %afv.field_value
+
+afv.no:
+  ret %WamI64Parse %afv.no_value
+}
+{{case wam_atom_field_cstr}}
+; A field as a NUL-terminated C string (a missing field is ""), in a reused,
+; geometrically grown buffer -- valid until the next call.
+@wam_field_cstr_buf = internal global i8* null
+@wam_field_cstr_cap = internal global i64 0
+@.wam_field_cstr_empty = private constant [1 x i8] zeroinitializer
+
+define i8* @wam_atom_field_cstr(%Value %atom_value, i64 %field_index, i8 %sep) {
+entry:
+  %fc.empty = getelementptr [1 x i8], [1 x i8]* @.wam_field_cstr_empty, i64 0, i64 0
+  %fc.slice = call %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %fc.ptr = extractvalue %WamSlice %fc.slice, 0
+  %fc.len = extractvalue %WamSlice %fc.slice, 1
+  %fc.missing = icmp eq i8* %fc.ptr, null
+  br i1 %fc.missing, label %fc.none, label %fc.ensure
+
+fc.none:
+  ret i8* %fc.empty
+
+fc.ensure:
+  %fc.need = add i64 %fc.len, 1
+  %fc.cap = load i64, i64* @wam_field_cstr_cap
+  %fc.fits = icmp ule i64 %fc.need, %fc.cap
+  br i1 %fc.fits, label %fc.copy, label %fc.grow
+
+fc.grow:
+  %fc.old = load i8*, i8** @wam_field_cstr_buf
+  %fc.newcap = shl i64 %fc.need, 1
+  %fc.new = call i8* @realloc(i8* %fc.old, i64 %fc.newcap)
+  %fc.null = icmp eq i8* %fc.new, null
+  br i1 %fc.null, label %fc.none, label %fc.store
+
+fc.store:
+  store i8* %fc.new, i8** @wam_field_cstr_buf
+  store i64 %fc.newcap, i64* @wam_field_cstr_cap
+  br label %fc.copy
+
+fc.copy:
+  %fc.buf = load i8*, i8** @wam_field_cstr_buf
+  br label %fc.loop
+
+fc.loop:
+  %fc.i = phi i64 [ 0, %fc.copy ], [ %fc.i1, %fc.step ]
+  %fc.done = icmp uge i64 %fc.i, %fc.len
+  br i1 %fc.done, label %fc.term, label %fc.step
+
+fc.step:
+  %fc.sp = getelementptr i8, i8* %fc.ptr, i64 %fc.i
+  %fc.ch = load i8, i8* %fc.sp
+  %fc.dp = getelementptr i8, i8* %fc.buf, i64 %fc.i
+  store i8 %fc.ch, i8* %fc.dp
+  %fc.i1 = add i64 %fc.i, 1
+  br label %fc.loop
+
+fc.term:
+  %fc.endp = getelementptr i8, i8* %fc.buf, i64 %fc.len
+  store i8 0, i8* %fc.endp
+  ret i8* %fc.buf
+}
+{{case wam_atom_field_strnum_cmp_int}}
+; `$N OP int` with awk (POSIX) strnum semantics. A field is input, so it is a
+; strnum: when its text LOOKS numeric the comparison is numeric, otherwise it is a
+; STRING comparison against the constant decimal text. A missing or empty field is
+; the string "" (gawk: `$3 < 1` true, `$3 == 0` false on a two-field record).
+; The strict integer parse is the fast path (plain integer text); anything else
+; goes through @wam_strnum_cmp_int. Replaces @wam_atom_field_i64_cmp_value for
+; plawk, whose strict parse made every non-integer field compare FALSE:
+; "30.25" > 10 and "3abc" > 10 (a string compare, true in awk) were both false.
+define i1 @wam_atom_field_strnum_cmp_int(%Value %atom_value, i64 %field_index, i8 %sep, i64 %expected, i32 %op) {
+entry:
+  %fsn.parse = call %WamI64Parse @wam_atom_field_i64_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %fsn.ok = extractvalue %WamI64Parse %fsn.parse, 1
+  br i1 %fsn.ok, label %fsn.fast, label %fsn.slow
+
+fsn.fast:
+  %fsn.value = extractvalue %WamI64Parse %fsn.parse, 0
+  %fsn.fr = call i1 @wam_i64_cmp_value(i64 %fsn.value, i64 %expected, i32 %op)
+  ret i1 %fsn.fr
+
+fsn.slow:
+  %fsn.s = call i8* @wam_atom_field_cstr(%Value %atom_value, i64 %field_index, i8 %sep)
+  %fsn.sign = call i32 @wam_strnum_cmp_int(i8* %fsn.s, i8 1, i64 %expected)
+  %fsn.sign64 = sext i32 %fsn.sign to i64
+  %fsn.sr = call i1 @wam_i64_cmp_value(i64 %fsn.sign64, i64 0, i32 %op)
+  ret i1 %fsn.sr
+}
+{{case wam_atom_field_i64_cmp_value}}
+define i1 @wam_atom_field_i64_cmp_value(%Value %atom_value, i64 %field_index, i8 %sep, i64 %expected, i32 %op) {
+entry:
+  %afc.parse = call %WamI64Parse @wam_atom_field_i64_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %afc.value = extractvalue %WamI64Parse %afc.parse, 0
+  %afc.ok = extractvalue %WamI64Parse %afc.parse, 1
+  br i1 %afc.ok, label %afc.compare, label %afc.no
+
+afc.compare:
+  %afc.result = call i1 @wam_i64_cmp_value(i64 %afc.value, i64 %expected, i32 %op)
+  br i1 %afc.result, label %afc.yes, label %afc.no
+
+afc.yes:
+  ret i1 true
+
+afc.no:
+  ret i1 false
+}
+{{case wam_atom_field_str_cmp_value}}
+; Lexical (byte) comparison of a text field against a string literal, for
+; `$N < "str"` and friends. awk compares a field against a string CONSTANT
+; lexically (the constant forces a string comparison, never numeric), so this is
+; a plain memcmp over the shorter length, breaking ties by length (shorter is
+; less). A missing field is the empty string. The op code matches
+; @wam_i64_cmp_value (2 <, 3 <=, 4 >, 5 >=), applied to the sign vs 0.
+define i1 @wam_atom_field_str_cmp_value(%Value %atom_value, i64 %field_index, i8* %lit, i64 %lit_len, i8 %sep, i32 %op) {
+entry:
+  %fsc.slice = call %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %fsc.ptr = extractvalue %WamSlice %fsc.slice, 0
+  %fsc.len0 = extractvalue %WamSlice %fsc.slice, 1
+  %fsc.has = icmp ne i8* %fsc.ptr, null
+  %fsc.len = select i1 %fsc.has, i64 %fsc.len0, i64 0
+  %fsc.field_shorter = icmp ult i64 %fsc.len, %lit_len
+  %fsc.min = select i1 %fsc.field_shorter, i64 %fsc.len, i64 %lit_len
+  %fsc.min_zero = icmp eq i64 %fsc.min, 0
+  br i1 %fsc.min_zero, label %fsc.by_len, label %fsc.memcmp
+
+fsc.memcmp:
+  %fsc.mc = call i32 @memcmp(i8* %fsc.ptr, i8* %lit, i64 %fsc.min)
+  %fsc.mc_zero = icmp eq i32 %fsc.mc, 0
+  br i1 %fsc.mc_zero, label %fsc.by_len, label %fsc.by_mc
+
+fsc.by_mc:
+  %fsc.mc64 = sext i32 %fsc.mc to i64
+  br label %fsc.decide
+
+fsc.by_len:
+  %fsc.len_lt = icmp ult i64 %fsc.len, %lit_len
+  %fsc.len_gt = icmp ugt i64 %fsc.len, %lit_len
+  %fsc.len_sign0 = select i1 %fsc.len_gt, i64 1, i64 0
+  %fsc.len_sign = select i1 %fsc.len_lt, i64 -1, i64 %fsc.len_sign0
+  br label %fsc.decide
+
+fsc.decide:
+  %fsc.sign = phi i64 [ %fsc.mc64, %fsc.by_mc ], [ %fsc.len_sign, %fsc.by_len ]
+  %fsc.res = call i1 @wam_i64_cmp_value(i64 %fsc.sign, i64 0, i32 %op)
+  ret i1 %fsc.res
+}
+{{case wam_print_ascii_lower_slice}}
+define void @wam_print_ascii_lower_slice(i8* %source_ptr, i64 %source_len) {
+entry:
+  %lsp.null = icmp eq i8* %source_ptr, null
+  br i1 %lsp.null, label %lsp.done, label %lsp.loop
+
+lsp.loop:
+  %lsp.pos = phi i64 [ 0, %entry ], [ %lsp.next_pos, %lsp.step ]
+  %lsp.finished = icmp uge i64 %lsp.pos, %source_len
+  br i1 %lsp.finished, label %lsp.done, label %lsp.step
+
+lsp.step:
+  %lsp.ptr = getelementptr i8, i8* %source_ptr, i64 %lsp.pos
+  %lsp.ch = load i8, i8* %lsp.ptr
+  %lsp.ge_a = icmp uge i8 %lsp.ch, 65
+  %lsp.le_z = icmp ule i8 %lsp.ch, 90
+  %lsp.is_upper = and i1 %lsp.ge_a, %lsp.le_z
+  %lsp.lower_ch = add i8 %lsp.ch, 32
+  %lsp.out_ch = select i1 %lsp.is_upper, i8 %lsp.lower_ch, i8 %lsp.ch
+  %lsp.out_i32 = zext i8 %lsp.out_ch to i32
+  %lsp.printed = call i32 @putchar(i32 %lsp.out_i32)
+  %lsp.next_pos = add i64 %lsp.pos, 1
+  br label %lsp.loop
+
+lsp.done:
+  ret void
+}
+{{case wam_print_ascii_upper_slice}}
+define void @wam_print_ascii_upper_slice(i8* %source_ptr, i64 %source_len) {
+entry:
+  %usp.null = icmp eq i8* %source_ptr, null
+  br i1 %usp.null, label %usp.done, label %usp.loop
+
+usp.loop:
+  %usp.pos = phi i64 [ 0, %entry ], [ %usp.next_pos, %usp.step ]
+  %usp.finished = icmp uge i64 %usp.pos, %source_len
+  br i1 %usp.finished, label %usp.done, label %usp.step
+
+usp.step:
+  %usp.ptr = getelementptr i8, i8* %source_ptr, i64 %usp.pos
+  %usp.ch = load i8, i8* %usp.ptr
+  %usp.ge_a = icmp uge i8 %usp.ch, 97
+  %usp.le_z = icmp ule i8 %usp.ch, 122
+  %usp.is_lower = and i1 %usp.ge_a, %usp.le_z
+  %usp.upper_ch = sub i8 %usp.ch, 32
+  %usp.out_ch = select i1 %usp.is_lower, i8 %usp.upper_ch, i8 %usp.ch
+  %usp.out_i32 = zext i8 %usp.out_ch to i32
+  %usp.printed = call i32 @putchar(i32 %usp.out_i32)
+  %usp.next_pos = add i64 %usp.pos, 1
+  br label %usp.loop
+
+usp.done:
+  ret void
+}
+{{/match}}

@@ -77,7 +77,7 @@
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module('../core/template_system').
-:- use_module('../core/template_library', [template_library_render/3]).
+:- use_module(wam_llvm_runtime_libs, [wam_llvm_runtime_ir/2]).
 :- use_module('../bindings/llvm_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module(wam_llvm_lowered_emitter, [
@@ -4541,15 +4541,15 @@ compile_execute_builtin_to_llvm(Options, Code) :-
     % override with target_os(linux|darwin|freebsd|...).
     target_os_resolved(Options, OS),
     target_dirent_d_name_offset(OS, DirentNameOff),
-    % The builtin dispatch runtime lives in a template file -- it used to be a
-    % 16.8k-line quoted atom here, where an apostrophe in an LLVM comment closed
-    % the atom (docs/design/PLAN_TEMPLATE_REFACTOR.md). Its one hole is the
-    % M113/M114 dirent-d_name lookup IR: for static OS modes a single
+    % The builtin dispatch runtime lives in concern libraries under
+    % templates/targets/llvm_wam/runtime/, assembled by wam_llvm_runtime_libs --
+    % it used to be a 16.8k-line quoted atom here, where an apostrophe in an LLVM
+    % comment closed the atom (docs/design/PLAN_TEMPLATE_REFACTOR.md). Its one
+    % hole is the M113/M114 dirent-d_name lookup IR: for static OS modes a single
     % getelementptr with a literal offset; for target_os(adapt) a call to the
     % runtime probe helper plus a getelementptr using the returned offset.
     target_dirent_name_ptr_ir(OS, DirentNameOff, NamePtrIR),
-    template_library_render('templates/targets/llvm_wam/runtime/builtin_dispatch.ll.mustache',
-        [dirent_name_ptr=NamePtrIR], ExecuteIR),
+    wam_llvm_runtime_ir([dirent_name_ptr=NamePtrIR], ExecuteIR),
     % Append the M114 runtime probe helper. Always emitted -- it is
     % dead code when no caller is in adapt mode, which llc / clang
     % link-time DCE strips. Keeping it unconditional means the IR
