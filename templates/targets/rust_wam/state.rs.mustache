@@ -1844,6 +1844,107 @@ mod d125_bindings_tests {
     }
 }
 
+#[cfg(test)]
+mod d126_format_free_step_tests {
+    // D126: `step` no longer calls `format!` to build a `"f/N"` key only to
+    // compare it (`GetStructure` read mode on an in-register compound,
+    // `SwitchOnStructure`/`SwitchOnStructurePc`), nor to build the fresh
+    // variable names `_V<n>`/`_H<n>`. Each test compares the new helper with
+    // the old `format!` expression, kept verbatim here.
+    use super::*;
+
+    fn arities() -> Vec<usize> {
+        let mut v: Vec<usize> = (0..=1200).collect();
+        let mut p: usize = 1;
+        while let Some(q) = p.checked_mul(10) {
+            for d in [p.wrapping_sub(1), p, p + 1, q - 1] { v.push(d); }
+            p = q;
+        }
+        v.extend([usize::MAX, usize::MAX - 1, u32::MAX as usize, 1 << 40]);
+        v
+    }
+
+    #[test]
+    fn usize_decimal_matches_to_string() {
+        let mut buf = [0u8; 20];
+        for n in arities().into_iter().chain(0..200_000) {
+            assert_eq!(WamState::usize_decimal(n, &mut buf), n.to_string().as_bytes(), "n={}", n);
+        }
+    }
+
+    #[test]
+    fn functor_key_eq_matches_the_format_compare() {
+        let functors = ["", "a", "f", "foo", "[|]", ".", "deb", "s", "v", "str(f",
+            "a/b", "f/2", "/", "\u{e9}t\u{e9}", "x y", "0", "1", "f1", "f/"];
+        let ns: Vec<usize> = (0..=130).chain([999, 1000, 1001, 65535, usize::MAX].into_iter()).collect();
+        let mut checked = 0usize;
+        for f in functors {
+            for &n in &ns {
+                let exact = format!("{}/{}", f, n);
+                // The exact key, near misses around it, and keys built from
+                // the other functors and arities.
+                let mut keys: Vec<String> = vec![
+                    exact.clone(),
+                    format!("{}/0{}", f, n),
+                    format!("{}/{}0", f, n),
+                    format!("{}/+{}", f, n),
+                    format!("{}/{} ", f, n),
+                    format!("{}//{}", f, n),
+                    format!("{}{}", f, n),
+                    format!("{}/", f),
+                    f.to_string(),
+                    format!("str({})", exact),
+                    format!("{}/{}", f, n.wrapping_add(1)),
+                    format!("{}/{}", f, n.wrapping_sub(1)),
+                    format!("x{}", exact),
+                    String::new(),
+                    "/".to_string(),
+                ];
+                keys.push(exact[..exact.len() - 1].to_string());
+                for g in functors { keys.push(format!("{}/{}", g, n)); }
+                for m in [0usize, 1, 2, 3, 10, 12] { keys.push(format!("{}/{}", f, m)); }
+                for key in &keys {
+                    let old = format!("{}/{}", f, n) == *key;
+                    assert_eq!(WamState::functor_key_eq(f, n, key), old, "f={:?} n={} key={:?}", f, n, key);
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100_000);
+    }
+
+    #[test]
+    fn fresh_var_sym_matches_the_format_name() {
+        for n in arities().into_iter().chain(0..50_000) {
+            for (tag, old) in [(b'V', format!("_V{}", n)), (b'H', format!("_H{}", n))] {
+                let new = WamState::fresh_var_sym(tag, n);
+                let old_sym: crate::value::Sym = old.clone().into();
+                assert_eq!(new, old_sym, "{}", old);
+                assert_eq!(&*new, old.as_str());
+                assert_eq!(Value::Unbound(new), Value::Unbound(old_sym));
+            }
+        }
+    }
+
+    #[test]
+    fn switch_on_structure_picks_the_same_entry() {
+        // The old arm built `key` once and took the first table entry equal to
+        // it; the new arm tests each entry with `functor_key_eq`.
+        let table: Vec<(String, usize)> = vec![
+            ("f/1".into(), 10), ("f/2".into(), 20), ("g/2".into(), 30), ("f/2".into(), 40),
+            ("f/02".into(), 50), ("[|]/2".into(), 60), ("f/10".into(), 70), ("/2".into(), 80),
+        ];
+        for f in ["f", "g", "[|]", "", "h"] {
+            for n in [0usize, 1, 2, 10, 20] {
+                let key = format!("{}/{}", f, n);
+                let old = table.iter().find(|(k, _)| *k == key).map(|(_, pc)| *pc);
+                let new = table.iter().find(|(k, _)| WamState::functor_key_eq(f, n, k)).map(|(_, pc)| *pc);
+                assert_eq!(new, old, "f={} n={}", f, n);
+            }
+        }
+    }
+}
+
 /// Stack entry: environment frames and unification contexts.
 #[derive(Clone, Debug)]
 pub enum StackEntry {
@@ -5901,6 +6002,54 @@ impl WamState {
             }
         }
         cur
+    }
+
+    /// D126: the decimal digits of `n`, written right-aligned into `buf`;
+    /// byte-identical to `n.to_string()` / `format!("{}", n)` (no sign, no
+    /// leading zeros, `"0"` for zero). 20 bytes hold `u64::MAX`.
+    #[inline]
+    pub fn usize_decimal(mut n: usize, buf: &mut [u8; 20]) -> &[u8] {
+        let mut i = buf.len();
+        loop {
+            i -= 1;
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            if n == 0 { break; }
+        }
+        &buf[i..]
+    }
+
+    /// D126: `format!("{}/{}", f, arity) == key`, without building the
+    /// string. The formatted key is `f`, then `/`, then the decimal arity, so
+    /// it equals `key` exactly when `key` starts with `f`, the next byte is
+    /// `/`, and the rest is `usize_decimal(arity)`.
+    #[inline]
+    pub fn functor_key_eq(f: &str, arity: usize, key: &str) -> bool {
+        let (k, fb) = (key.as_bytes(), f.as_bytes());
+        if k.len() < fb.len() + 2 || !k.starts_with(fb) || k[fb.len()] != b'/' {
+            return false;
+        }
+        let mut buf = [0u8; 20];
+        &k[fb.len() + 1..] == Self::usize_decimal(arity, &mut buf)
+    }
+
+    /// D126: the fresh variable name `format!("_{}{}", tag as char, n)`
+    /// (`_V<n>` from put_variable, `_H<n>` from set_variable/unify_variable)
+    /// as a `Sym`, built in a stack buffer instead of a heap `String`. The
+    /// bytes are the same, and interning the same text gives the same `Sym`
+    /// (`intern` OFF: the same `String`).
+    #[inline]
+    pub fn fresh_var_sym(tag: u8, n: usize) -> crate::value::Sym {
+        debug_assert!(tag.is_ascii());
+        let mut digits = [0u8; 20];
+        let d = Self::usize_decimal(n, &mut digits);
+        let mut buf = [0u8; 22];
+        buf[0] = b'_';
+        buf[1] = tag;
+        buf[2..2 + d.len()].copy_from_slice(d);
+        // ASCII by construction, so this never fails.
+        let name = std::str::from_utf8(&buf[..2 + d.len()]).expect("ascii name");
+        name.into()
     }
 
     /// Normalise a structure's functor key: strip the `"str(...)"` wrapper the
