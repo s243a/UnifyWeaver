@@ -972,6 +972,182 @@ mod d121_backtrack_tests {
     }
 }
 
+#[cfg(test)]
+mod d122_code_snapshot_tests {
+    // D122: `run` borrows each instruction from an Arc snapshot of `code`
+    // instead of cloning it. It must behave exactly like the old
+    // `self.fetch().cloned()` loop, and the `Arc::ptr_eq` re-check must see
+    // every way the program can change under a held snapshot.
+    use super::*;
+
+    /// The pre-D122 `run`, verbatim apart from `self` -> `vm`.
+    fn old_run(vm: &mut WamState) -> bool {
+        loop {
+            if vm.pc == 0 { return true; }
+            if vm.step_limit > 0 && vm.step_count >= vm.step_limit {
+                return false;
+            }
+            if let Some(instr) = vm.fetch().cloned() {
+                if !vm.step(&instr) {
+                    if vm.thrown_ball.is_some() { return false; }
+                    if !vm.backtrack() { return false; }
+                }
+                vm.step_count += 1;
+            } else {
+                return false;
+            }
+        }
+    }
+
+    /// color(red). color(green). color(blue).   pick(blue).
+    /// query(X) :- color(X), pick(X).
+    /// `query` reaches `blue` only after two backtracks into color/1.
+    fn program() -> (Vec<Instruction>, HashMap<String, usize>) {
+        let a = |s: &str| Value::atom(s);
+        let code = vec![
+            Instruction::TryMeElse("L_c2".to_string()),             // 1 color/1
+            Instruction::GetConstant(a("red"), "A1".to_string()),   // 2
+            Instruction::Proceed,                                   // 3
+            Instruction::RetryMeElse("L_c3".to_string()),           // 4 L_c2
+            Instruction::GetConstant(a("green"), "A1".to_string()), // 5
+            Instruction::Proceed,                                   // 6
+            Instruction::TrustMe,                                   // 7 L_c3
+            Instruction::GetConstant(a("blue"), "A1".to_string()),  // 8
+            Instruction::Proceed,                                   // 9
+            Instruction::GetConstant(a("blue"), "A1".to_string()),  // 10 pick/1
+            Instruction::Proceed,                                   // 11
+            Instruction::Allocate,                                  // 12 query/1
+            Instruction::GetVariable("Y1".to_string(), "A1".to_string()),
+            Instruction::Call("color/1".to_string(), 1),
+            Instruction::PutValue("Y1".to_string(), "A1".to_string()),
+            Instruction::Call("pick/1".to_string(), 1),
+            Instruction::Deallocate,
+            Instruction::Proceed,                                   // 18
+        ];
+        let mut labels = HashMap::new();
+        labels.insert("color/1".to_string(), 1);
+        labels.insert("L_c2".to_string(), 4);
+        labels.insert("L_c3".to_string(), 7);
+        labels.insert("pick/1".to_string(), 10);
+        labels.insert("query/1".to_string(), 12);
+        (code, labels)
+    }
+
+    fn x() -> Value { Value::Unbound("X".to_string().into()) }
+
+    fn prepared(entry: usize, arg: Value, step_limit: u64) -> WamState {
+        let (code, labels) = program();
+        let mut vm = WamState::new(code, labels);
+        vm.reset_query();
+        vm.set_reg("A1", arg);
+        vm.cp = 0;
+        vm.pc = entry;
+        vm.step_limit = step_limit;
+        vm
+    }
+
+    fn observe(vm: &WamState, ok: bool) -> String {
+        format!("ok={} pc={} cp={} steps={} bts={} cps={} heap={} trail={} X={:?}",
+                ok, vm.pc, vm.cp, vm.step_count, vm.backtrack_count,
+                vm.choice_points.len(), vm.heap.len(), vm.trail.len(),
+                vm.deref_heap(&x()))
+    }
+
+    #[test]
+    fn run_matches_the_old_fetch_cloned_loop() {
+        let mut cases: Vec<(usize, Value, u64)> = vec![
+            (12, x(), 0),                  // succeeds after two backtracks
+            (12, Value::atom("red"), 0),   // fails: every clause tried
+            (12, Value::atom("blue"), 0),  // succeeds on the last clause
+            (10, Value::atom("green"), 0), // fails with no choice point
+            (0, x(), 0),                   // pc 0: halt -> true at once
+            (19, x(), 0),                  // pc one past the end -> false
+            (999, x(), 0),
+        ];
+        for limit in 1..30u64 {
+            cases.push((12, x(), limit)); // step limit hit mid-search
+        }
+        for (entry, arg, limit) in cases {
+            let mut old = prepared(entry, arg.clone(), limit);
+            let mut new = prepared(entry, arg.clone(), limit);
+            let ok_old = old_run(&mut old);
+            let ok_new = new.run();
+            assert_eq!(observe(&old, ok_old), observe(&new, ok_new),
+                       "entry={} arg={:?} limit={}", entry, arg, limit);
+        }
+        // Sanity: the main case really backtracked into color/1 and bound X.
+        let mut vm = prepared(12, x(), 0);
+        assert!(vm.run());
+        assert_eq!(vm.deref_heap(&x()), Value::atom("blue"));
+        assert_eq!(vm.backtrack_count, 2);
+    }
+
+    #[test]
+    fn fetch_in_keeps_the_fetch_bounds() {
+        let (code, labels) = program();
+        let mut vm = WamState::new(code.clone(), labels);
+        assert!(WamState::fetch_in(&code, 0).is_none());
+        assert!(WamState::fetch_in(&code, code.len() + 1).is_none());
+        assert!(WamState::fetch_in(&[], 1).is_none());
+        for pc in 1..=code.len() {
+            let got = WamState::fetch_in(&code, pc).expect("in range");
+            assert!(std::ptr::eq(got, &code[pc - 1]));
+        }
+        // `fetch` is `fetch_in` over the machine's own program.
+        for pc in 0..=code.len() + 2 {
+            vm.pc = pc;
+            assert_eq!(format!("{:?}", vm.fetch()),
+                       format!("{:?}", WamState::fetch_in(&code, pc)));
+            assert_eq!(vm.fetch().map(|i| i as *const Instruction),
+                       WamState::fetch_in(&vm.code, pc).map(|i| i as *const Instruction));
+        }
+    }
+
+    #[test]
+    fn every_program_change_moves_the_snapshot_pointer() {
+        let (code, labels) = program();
+        let mut vm = WamState::new(code, labels);
+        // A held snapshot (what `run` keeps) sees a copy-on-write edit as a
+        // pointer change, and still holds the old program intact.
+        let snap = Arc::clone(&vm.code);
+        Arc::make_mut(&mut vm.code).push(Instruction::Proceed);
+        assert!(!Arc::ptr_eq(&snap, &vm.code));
+        assert_eq!(snap.len() + 1, vm.code.len());
+        // An assignment is a pointer change too: the snapshot keeps its
+        // allocation alive, so the new program cannot reuse that address.
+        let snap = Arc::clone(&vm.code);
+        vm.code = Arc::new((*snap).clone());
+        assert!(!Arc::ptr_eq(&snap, &vm.code));
+        // Re-installing the same shared program is not a change.
+        let snap = Arc::clone(&vm.code);
+        vm.code = Arc::clone(&snap);
+        assert!(Arc::ptr_eq(&snap, &vm.code));
+        // A forked machine (par_aggregate clones WamState) shares the program
+        // instead of deep-copying it; new_shared shares the caller's Arc.
+        let fork = vm.clone();
+        assert!(Arc::ptr_eq(&fork.code, &vm.code));
+        let shared = WamState::new_shared(Arc::clone(&vm.code), vm.labels.clone());
+        assert!(Arc::ptr_eq(&shared.code, &vm.code));
+    }
+
+    #[test]
+    fn a_replaced_program_is_what_the_next_run_executes() {
+        let mut vm = prepared(12, x(), 0);
+        assert!(vm.run());
+        assert_eq!(vm.deref_heap(&x()), Value::atom("blue"));
+        // Change pick/1's fact to green: the same query now stops at green.
+        let mut code = (*vm.code).clone();
+        code[9] = Instruction::GetConstant(Value::atom("green"), "A1".to_string());
+        vm.code = Arc::new(code);
+        vm.reset_query();
+        vm.set_reg("A1", x());
+        vm.cp = 0;
+        vm.pc = 12;
+        assert!(vm.run());
+        assert_eq!(vm.deref_heap(&x()), Value::atom("green"));
+    }
+}
+
 /// Stack entry: environment frames and unification contexts.
 #[derive(Clone, Debug)]
 pub enum StackEntry {
@@ -1017,8 +1193,18 @@ pub struct WamState {
     pub cp: usize,
     /// Choice point stack for backtracking.
     pub choice_points: Vec<ChoicePoint>,
-    /// Compiled instruction sequence.
-    pub code: Vec<Instruction>,
+    /// Compiled instruction sequence, shared and immutable (D122).
+    ///
+    /// Behind an `Arc` so `run` can hold an O(1) snapshot of the program and
+    /// hand `step` a borrow of the current instruction, instead of cloning
+    /// the `Instruction` (its `String` register/functor names and `Value`s)
+    /// on every step. Replace the program by assigning a new `Arc`
+    /// (`vm.code = Arc::new(code)`); an in-place edit must go through
+    /// `Arc::make_mut` (copy-on-write). `run` re-checks `Arc::ptr_eq` against
+    /// its snapshot before every fetch, so a replacement or a copy-on-write
+    /// edit made while it runs is picked up on the very next step, exactly as
+    /// the old per-step `self.fetch().cloned()` did.
+    pub code: Arc<Vec<Instruction>>,
     /// Label -> PC mapping.
     pub labels: HashMap<String, usize>,
     /// Runtime-extensible dynamic clause store populated by asserta/assertz.
@@ -1271,6 +1457,13 @@ pub trait SpillSink {
 impl WamState {
     /// Create a new WAM state with the given code and labels.
     pub fn new(code: Vec<Instruction>, labels: HashMap<String, usize>) -> Self {
+        Self::new_shared(Arc::new(code), labels)
+    }
+
+    /// Create a new WAM state over an already-shared program (D122). Same as
+    /// `new`, but the program is shared with the caller instead of owned, so
+    /// no instruction is copied.
+    pub fn new_shared(code: Arc<Vec<Instruction>>, labels: HashMap<String, usize>) -> Self {
         WamState {
             pc: 1,
             regs: vec![Value::Uninit; MAX_REGS],
@@ -5570,10 +5763,18 @@ impl WamState {
 
     /// Fetch the current instruction.
     pub fn fetch(&self) -> Option<&Instruction> {
-        if self.pc == 0 || self.pc > self.code.len() {
+        Self::fetch_in(&self.code, self.pc)
+    }
+
+    /// The instruction at 1-based `pc` in `code`: `None` for pc 0 (halt) or
+    /// past the end. `fetch` and `run` (which reads from its D122 snapshot of
+    /// `code`) share this so their bounds rule cannot drift apart.
+    #[inline(always)]
+    pub fn fetch_in(code: &[Instruction], pc: usize) -> Option<&Instruction> {
+        if pc == 0 || pc > code.len() {
             None
         } else {
-            Some(&self.code[self.pc - 1])
+            Some(&code[pc - 1])
         }
     }
 

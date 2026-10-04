@@ -4516,7 +4516,7 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 3,
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     vm.reset_query();
-    vm.code = Vec::new();
+    vm.code = std::sync::Arc::new(Vec::new());
     vm.labels = HashMap::new();
     vm.pc = 1;
     vm.register_foreign_result_layout("~w", "tuple:3");
@@ -4657,7 +4657,7 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 4,
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     vm.reset_query();
-    vm.code = Vec::new();
+    vm.code = std::sync::Arc::new(Vec::new());
     vm.labels = HashMap::new();
     vm.pc = 1;
     vm.register_foreign_result_layout("~w", "tuple:4");
@@ -4883,7 +4883,7 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 3,
     use std::collections::BTreeMap;
 
     vm.reset_query();
-    vm.code = Vec::new();
+    vm.code = std::sync::Arc::new(Vec::new());
     vm.labels = HashMap::new();
     vm.pc = 1;
     vm.register_foreign_result_layout("~w", "tuple:2");
@@ -5008,7 +5008,7 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 3,
       format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     vm.reset_query();
-    vm.code = Vec::new();
+    vm.code = std::sync::Arc::new(Vec::new());
     vm.labels = HashMap::new();
     vm.pc = 1;
     vm.register_foreign_native_kind("~w/3", "weighted_shortest_path3");
@@ -5147,7 +5147,7 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 4,
     use std::collections::BTreeMap;
 
     vm.reset_query();
-    vm.code = Vec::new();
+    vm.code = std::sync::Arc::new(Vec::new());
     vm.labels = HashMap::new();
     vm.pc = 1;
     vm.register_foreign_result_layout("~w", "tuple:2");
@@ -5284,7 +5284,7 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 4,
       format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     vm.reset_query();
-    vm.code = Vec::new();
+    vm.code = std::sync::Arc::new(Vec::new());
     vm.labels = HashMap::new();
     vm.pc = 1;
     vm.register_foreign_native_kind("~w/4", "astar_shortest_path4");

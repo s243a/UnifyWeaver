@@ -17,7 +17,7 @@ fn assert_clause(vm: &mut WamState, op: &str, clause: Value) {
 
 fn dyn_values(vm: &mut WamState) -> Vec<Value> {
     vm.reset_query();
-    vm.code = vec![Instruction::Call("dyn/1".to_string(), 1), Instruction::Proceed];
+    vm.code = std::sync::Arc::new(vec![Instruction::Call("dyn/1".to_string(), 1), Instruction::Proceed]);
     vm.labels = HashMap::new();
     vm.set_reg_str("A1", ub("X"));
     vm.pc = 1;
@@ -34,7 +34,7 @@ fn dyn_values(vm: &mut WamState) -> Vec<Value> {
 
 fn second_values(vm: &mut WamState, pred: &str, first: Value) -> Vec<Value> {
     vm.reset_query();
-    vm.code = vec![Instruction::Call(pred.to_string(), 2), Instruction::Proceed];
+    vm.code = std::sync::Arc::new(vec![Instruction::Call(pred.to_string(), 2), Instruction::Proceed]);
     vm.labels = HashMap::new();
     vm.set_reg_str("A1", first);
     vm.set_reg_str("A2", ub("Y"));
@@ -74,10 +74,10 @@ fn asserted_rule_body_can_call_assert_alias() {
     );
 
     vm.reset_query();
-    vm.code = vec![
+    vm.code = std::sync::Arc::new(vec![
         Instruction::Call("seed_alias/0".to_string(), 0),
         Instruction::Proceed,
-    ];
+    ]);
     vm.labels = HashMap::new();
     vm.pc = 1;
 
@@ -127,10 +127,10 @@ fn asserted_rule_body_can_call_retract() {
     );
 
     vm.reset_query();
-    vm.code = vec![
+    vm.code = std::sync::Arc::new(vec![
         Instruction::Call("take/1".to_string(), 1),
         Instruction::Proceed,
-    ];
+    ]);
     vm.labels = HashMap::new();
     vm.set_reg_str("A1", ub("X"));
     vm.pc = 1;
@@ -160,10 +160,10 @@ fn asserted_rule_body_retract_backtracks_without_skipping() {
     );
 
     vm.reset_query();
-    vm.code = vec![
+    vm.code = std::sync::Arc::new(vec![
         Instruction::Call("take/1".to_string(), 1),
         Instruction::Proceed,
-    ];
+    ]);
     vm.labels = HashMap::new();
     vm.set_reg_str("A1", ub("X"));
     vm.pc = 1;
@@ -468,7 +468,7 @@ fn retract_distinguishes_fact_patterns_from_rule_patterns() {
     assert_eq!(dyn_values(&mut vm), vec![at("rule")]);
 
     vm.reset_query();
-    vm.code = vec![Instruction::Call("retract/1".to_string(), 1), Instruction::Proceed];
+    vm.code = std::sync::Arc::new(vec![Instruction::Call("retract/1".to_string(), 1), Instruction::Proceed]);
     vm.set_reg_str(
         "A1",
         rule(
@@ -483,7 +483,7 @@ fn retract_distinguishes_fact_patterns_from_rule_patterns() {
 
     assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("normalized")]));
     vm.reset_query();
-    vm.code = vec![Instruction::Call("retract/1".to_string(), 1), Instruction::Proceed];
+    vm.code = std::sync::Arc::new(vec![Instruction::Call("retract/1".to_string(), 1), Instruction::Proceed]);
     vm.set_reg_str(
         "A1",
         rule(
@@ -601,7 +601,7 @@ fn asserted_rule_body_can_call_read_term_two() {
     vm.reset_query();
     vm.set_term_input("p(A, A, B).");
     let query_pc = vm.code.len() + 1;
-    vm.code.extend([
+    std::sync::Arc::make_mut(&mut vm.code).extend([
         Instruction::Call("parse_meta/2".to_string(), 2),
         Instruction::Proceed,
     ]);
