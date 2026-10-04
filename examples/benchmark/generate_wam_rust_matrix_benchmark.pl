@@ -857,7 +857,7 @@ fn main() {
                 if let Some(hops) = vm.bindings
                     .get("Hops")
                     .cloned()
-                    .or_else(|| vm.regs.get(3).cloned().map(|v| vm.deref_var(&v)))
+                    .or_else(|| vm.regs().get(3).cloned().map(|v| vm.deref_var(&v)))
                     .and_then(|value| value_to_f64(&value)) {
                     let distance = hops + 1.0;
                     weight_sum += distance.powf(-n);
@@ -1594,7 +1594,7 @@ fn main() {
                 if let Some(hops) = vm.bindings
                     .get("Hops")
                     .cloned()
-                    .or_else(|| vm.regs.get(3).cloned().map(|v| vm.deref_var(&v)))
+                    .or_else(|| vm.regs().get(3).cloned().map(|v| vm.deref_var(&v)))
                     .and_then(|value| value_to_f64(&value)) {
                     let distance = hops + 1.0;
                     weight_sum += distance.powf(-n);

@@ -487,6 +487,54 @@ impl TrailEntry {
 /// Maximum register count -- matches Go's [512]Value + padding for X/Y regs.
 pub const MAX_REGS: usize = 600;
 
+/// D121: the A/X register window, `regs[0..AX_REGS]` (A* = 0..99, X* =
+/// 100..199). This is the slice a choice point saves (`save_regs`) and
+/// backtracking resets (`restore_regs`). Y registers live in env frames.
+pub const AX_REGS: usize = 200;
+const AX_WORDS: usize = (AX_REGS + 63) / 64;
+
+/// D121: dirty mask over the A/X register window.
+///
+/// **Invariant** (checked by `d121_backtrack_tests`): for every `i < AX_REGS`,
+/// `regs[i] != Value::Uninit` implies bit `i` is set. A set bit over an
+/// `Uninit` slot is allowed, so the mask is a superset of the live slots.
+///
+/// `restore_regs` used to write `Uninit` into all 200 slots on every
+/// backtrack and `save_regs` scanned all 200. With the mask, both visit only
+/// the slots that can be live. The result is exactly the same, because the
+/// slots outside the mask are already `Uninit`. The invariant holds because
+/// `regs` is private: every write goes through a `WamState` method in this
+/// module (`set_reg`, `set_reg_str`, `init_args`, `set_heap_or_list`,
+/// `restore_regs`, `reset_query`) and each of them maintains the mask.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct AxDirty([u64; AX_WORDS]);
+
+impl AxDirty {
+    #[inline]
+    fn mark(&mut self, idx: usize) {
+        if idx < AX_REGS {
+            self.0[idx >> 6] |= 1u64 << (idx & 63);
+        }
+    }
+
+    #[inline]
+    fn count(&self) -> usize {
+        self.0.iter().map(|w| w.count_ones() as usize).sum()
+    }
+
+    /// Visit the set bits in ascending index order.
+    #[inline]
+    fn for_each(&self, mut f: impl FnMut(usize)) {
+        for (w, &word) in self.0.iter().enumerate() {
+            let mut bits = word;
+            while bits != 0 {
+                f((w << 6) | bits.trailing_zeros() as usize);
+                bits &= bits - 1;
+            }
+        }
+    }
+}
+
 /// Choice point: saves state for backtracking.
 #[derive(Clone, Debug)]
 pub struct ChoicePoint {
@@ -721,6 +769,209 @@ mod d120_yregs_tests {
     }
 }
 
+#[cfg(test)]
+mod d121_backtrack_tests {
+    // D121: the A/X dirty mask must make save_regs/restore_regs produce
+    // exactly what the old full 200-slot scan/reset produced, and backtrack
+    // (which no longer clones the top ChoicePoint) must restore the same state
+    // and leave the CP stack exactly as before.
+    use super::*;
+
+    /// The pre-D121 `save_regs`, verbatim.
+    fn old_save(regs: &[Value]) -> Vec<(usize, Value)> {
+        regs.iter().enumerate()
+            .take(200)
+            .filter(|(_, v)| !matches!(v, Value::Uninit))
+            .map(|(i, v)| (i, v.clone()))
+            .collect()
+    }
+
+    /// The pre-D121 `restore_regs`, verbatim.
+    fn old_restore(regs: &mut Vec<Value>, saved: &[(usize, Value)]) {
+        for i in 0..200 {
+            if i < regs.len() {
+                regs[i] = Value::Uninit;
+            }
+        }
+        for (i, v) in saved {
+            if *i < regs.len() {
+                regs[*i] = v.clone();
+            }
+        }
+    }
+
+    fn assert_mask_covers_live_slots(m: &WamState) {
+        for i in 0..AX_REGS {
+            if !matches!(m.regs[i], Value::Uninit) {
+                assert_eq!((m.ax_dirty.0[i >> 6] >> (i & 63)) & 1, 1,
+                    "live A/X slot {} is missing from the dirty mask", i);
+            }
+        }
+    }
+
+    fn cp_at(m: &WamState, next_pc: usize, builtin: Option<BuiltinState>) -> ChoicePoint {
+        ChoicePoint {
+            next_pc,
+            saved_args: m.save_regs(),
+            cp: m.cp,
+            stack: m.stack.clone(),
+            trail_len: m.trail.len(),
+            heap_len: m.heap.len(),
+            builtin_state: builtin,
+            cut_barrier: m.cut_barrier,
+            levels: vec![("Y1".to_string(), 0)],
+        }
+    }
+
+    #[test]
+    fn mask_matches_old_full_scan_under_random_ops() {
+        // A deterministic LCG drives writes (A/X/Y names, including the odd
+        // "X0" -> 99 and "A150" -> 149 indices), Uninit writes, init_args,
+        // saves, restores of earlier snapshots and resets. A shadow register
+        // file runs the OLD save/restore and must agree after every step.
+        let mut m = WamState::new(vec![], HashMap::new());
+        let mut shadow: Vec<Value> = vec![Value::Uninit; MAX_REGS];
+        let mut snaps: Vec<Vec<(usize, Value)>> = Vec::new();
+        let mut seed: u64 = 0x2121_d121;
+        let mut next = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        for step in 0..4000 {
+            let op = next() % 20;
+            match op {
+                0..=11 => {
+                    let name = match next() % 4 {
+                        0 => format!("A{}", next() % 160),
+                        1 => format!("X{}", next() % 110),
+                        2 => format!("Y{}", 1 + next() % 3),
+                        _ => format!("A{}", 1 + next() % 6),
+                    };
+                    let val = if next() % 5 == 0 { Value::Uninit } else { Value::Integer(step as i64) };
+                    let idx = WamState::reg_index(&name);
+                    if idx < shadow.len() { shadow[idx] = val.clone(); }
+                    if next() % 2 == 0 { m.set_reg(&name, val); } else { m.set_reg_str(&name, val); }
+                }
+                12 => {
+                    let args: Vec<Value> = (0..(next() % 5)).map(|k| Value::Integer(k as i64)).collect();
+                    for (i, a) in args.iter().enumerate() { shadow[i] = a.clone(); }
+                    m.init_args(&args);
+                }
+                13..=15 => {
+                    let s = m.save_regs();
+                    assert_eq!(s, old_save(&shadow), "save_regs diverged at step {}", step);
+                    snaps.push(s);
+                }
+                16..=18 if !snaps.is_empty() => {
+                    let s = snaps[next() % snaps.len()].clone();
+                    old_restore(&mut shadow, &s);
+                    m.restore_regs(&s);
+                }
+                19 => {
+                    shadow.iter_mut().for_each(|v| *v = Value::Uninit);
+                    m.reset_query();
+                }
+                _ => {}
+            }
+            assert_eq!(m.regs, shadow, "register file diverged at step {}", step);
+            assert_mask_covers_live_slots(&m);
+        }
+        assert!(!snaps.is_empty());
+    }
+
+    #[test]
+    fn backtrack_restores_in_place_and_keeps_the_choice_point() {
+        let mut m = WamState::new(vec![], HashMap::new());
+        m.set_reg("A1", Value::Integer(1));
+        m.set_reg("X1", Value::Integer(11));
+        m.cp = 3;
+        let cp = cp_at(&m, 7, None);
+        let saved = cp.saved_args.clone();
+        m.choice_points.push(cp);
+        for round in 0..3 {
+            // A failed clause attempt dirties registers, heap, stack and
+            // control state, then backtracks.
+            m.set_reg("A1", Value::Integer(100 + round));
+            m.set_reg("A2", Value::Integer(2));
+            m.set_reg("X5", Value::Integer(55));
+            m.heap.push(Value::Integer(5));
+            m.smut().push(StackEntry::Env(0, YRegs::new()));
+            m.cp = 0;
+            m.cut_barrier = 4;
+            m.pending_level = Some(("Y9".to_string(), 1));
+            assert!(m.backtrack());
+            assert_eq!(m.pc, 7);
+            assert_eq!(m.cp, 3);
+            assert_eq!(m.cut_barrier, 0);
+            assert!(m.pending_level.is_none());
+            assert!(m.heap.is_empty());
+            assert!(m.stack.is_empty());
+            assert_eq!(m.get_reg_raw("A1"), Some(Value::Integer(1)));
+            assert_eq!(m.get_reg_raw("X1"), Some(Value::Integer(11)));
+            assert_eq!(m.get_reg_raw("A2"), None);
+            assert_eq!(m.get_reg_raw("X5"), None);
+            assert_mask_covers_live_slots(&m);
+            // The choice point is still there, untouched.
+            assert_eq!(m.choice_points.len(), 1);
+            assert_eq!(m.choice_points[0].saved_args, saved);
+            assert_eq!(m.choice_points[0].levels, vec![("Y1".to_string(), 0)]);
+            assert!(m.choice_points[0].builtin_state.is_none());
+        }
+        assert_eq!(m.backtrack_count, 3);
+    }
+
+    #[test]
+    fn builtin_cp_is_popped_and_a_failed_resume_falls_through() {
+        let mut m = WamState::new(vec![], HashMap::new());
+        m.set_reg("A1", Value::Integer(1));
+        let bottom = cp_at(&m, 5, None);
+        m.choice_points.push(bottom);
+        m.set_reg("A1", Value::Integer(2));
+        m.set_reg("X2", Value::Integer(22));
+        // An unknown builtin name: resume_builtin returns false, so backtrack
+        // must pop this CP and continue to the one below.
+        let top = cp_at(&m, 9, Some(BuiltinState {
+            name: "__d121_no_such_builtin__".to_string(),
+            args: vec![],
+            data: vec![],
+        }));
+        m.choice_points.push(top);
+        m.set_reg("A1", Value::Integer(3));
+        assert!(m.backtrack());
+        assert_eq!(m.choice_points.len(), 1);
+        assert_eq!(m.pc, 5);
+        assert_eq!(m.get_reg_raw("A1"), Some(Value::Integer(1)));
+        assert_eq!(m.get_reg_raw("X2"), None);
+        assert_mask_covers_live_slots(&m);
+    }
+
+    #[test]
+    fn backtrack_respects_the_floor() {
+        let mut m = WamState::new(vec![], HashMap::new());
+        m.set_reg("A1", Value::Integer(1));
+        let cp = cp_at(&m, 5, None);
+        m.choice_points.push(cp);
+        m.set_reg("A1", Value::Integer(2));
+        m.backtrack_floor = 1;
+        assert!(!m.backtrack());
+        assert_eq!(m.choice_points.len(), 1);
+        assert_eq!(m.get_reg_raw("A1"), Some(Value::Integer(2)));
+        // Only failing builtin CPs above the floor: all popped, then false.
+        m.backtrack_floor = 0;
+        m.choice_points.clear();
+        for pc in [11, 12] {
+            let cp = cp_at(&m, pc, Some(BuiltinState {
+                name: "__d121_no_such_builtin__".to_string(),
+                args: vec![],
+                data: vec![],
+            }));
+            m.choice_points.push(cp);
+        }
+        assert!(!m.backtrack());
+        assert!(m.choice_points.is_empty());
+    }
+}
+
 /// Stack entry: environment frames and unification contexts.
 #[derive(Clone, Debug)]
 pub enum StackEntry {
@@ -748,7 +999,11 @@ pub struct WamState {
     pub pc: usize,
     /// Register file: Ai (argument), Xi (temporary) -- O(1) indexed Vec.
     /// Encoding: A1->0, A2->1, ...; X1->100, X2->101, ...; Y1->200, Y2->201, ...
-    pub regs: Vec<Value>,
+    /// Private since D121 so that every write keeps `ax_dirty` in step; read
+    /// it from outside through `regs()`.
+    regs: Vec<Value>,
+    /// D121: which A/X slots can be live (see `AxDirty`).
+    ax_dirty: AxDirty,
     /// Stack: environment frames and unification contexts.
     /// Wrapped in Arc for O(1) clone in ChoicePoints (copy-on-write via make_mut).
     /// Arc (not Rc) so that WamState: Send, which is required by Rayon par_iter.
@@ -1019,6 +1274,7 @@ impl WamState {
         WamState {
             pc: 1,
             regs: vec![Value::Uninit; MAX_REGS],
+            ax_dirty: AxDirty::default(),
             stack: Arc::new(Vec::new()),
             heap: Vec::new(),
             trail: Vec::new(),
@@ -1098,11 +1354,18 @@ impl WamState {
         }
     }
 
+    /// Read-only view of the flat register file (see `regs` for the encoding).
+    #[inline]
+    pub fn regs(&self) -> &[Value] {
+        &self.regs
+    }
+
     /// Set an argument register by name.
     pub fn set_reg(&mut self, name: &str, val: Value) {
         let idx = Self::reg_index(name);
         if idx < self.regs.len() {
             self.regs[idx] = val;
+            self.ax_dirty.mark(idx);
         }
     }
 
@@ -1125,6 +1388,7 @@ impl WamState {
         let idx = Self::reg_index(name);
         if idx < self.regs.len() {
             self.regs[idx] = val;
+            self.ax_dirty.mark(idx);
         }
     }
 
@@ -2797,6 +3061,7 @@ impl WamState {
     /// Reset mutable query state without cloning code/labels.
     pub fn reset_query(&mut self) {
         self.regs.fill(Value::Uninit);
+        self.ax_dirty = AxDirty::default();
         self.stack = Arc::new(Vec::new());
         self.trail.clear();
         self.choice_points.clear();
@@ -2897,6 +3162,7 @@ impl WamState {
                 let int_val = Value::Integer(marker as i64);
                 if let Some(idx) = self.regs.iter().position(|v| *v == ref_val || *v == int_val) {
                     self.regs[idx] = list;
+                    self.ax_dirty.mark(idx);
                 }
                 self.smut().pop();
                 return;
@@ -2927,6 +3193,7 @@ impl WamState {
                                     let ref_val = Value::Ref(marker);
                                     if let Some(idx) = self.regs.iter().position(|v| *v == ref_val) {
                                         self.regs[idx] = Value::strv(functor.clone(), args);
+                                        self.ax_dirty.mark(idx);
                                     }
                                     self.smut().pop();
                                 }
@@ -2948,12 +3215,23 @@ impl WamState {
     /// when X registers hold meaningful state that backtrack must restore.
     /// Y registers live in stack Env frames and are restored via the
     /// ChoicePoint's stack snapshot.
+    ///
+    /// D121: visits only the slots in `ax_dirty` instead of all 200. Every
+    /// non-`Uninit` slot below `AX_REGS` is in the mask, and the mask is walked
+    /// in ascending order, so the result is the same `(index, value)` list, in
+    /// the same order, as the old full scan. The Vec is sized up front instead
+    /// of growing from empty.
     fn save_regs(&self) -> Vec<(usize, Value)> {
-        self.regs.iter().enumerate()
-            .take(200) // A registers (0..99) + X registers (100..199)
-            .filter(|(_, v)| !matches!(v, Value::Uninit))
-            .map(|(i, v)| (i, v.clone()))
-            .collect()
+        let mut saved = Vec::with_capacity(self.ax_dirty.count());
+        let regs = &self.regs;
+        self.ax_dirty.for_each(|i| {
+            if let Some(v) = regs.get(i) {
+                if !matches!(v, Value::Uninit) {
+                    saved.push((i, v.clone()));
+                }
+            }
+        });
+        saved
     }
 
     /// Restore argument registers and clear stale temporaries from failed paths.
@@ -2961,17 +3239,41 @@ impl WamState {
     /// NOT cleared here because they live in stack Env frames, not in the register
     /// Vec. Y-register state is restored via the ChoicePoint's stack snapshot.
     fn restore_regs(&mut self, saved: &[(usize, Value)]) {
-        // Clear A registers (0..99) and X registers (100..199) only.
-        // Y registers are stack-frame local (see get_reg/put_reg Y routing).
-        for i in 0..200 {
-            if i < self.regs.len() {
-                self.regs[i] = Value::Uninit;
+        Self::restore_ax_regs(&mut self.regs, &mut self.ax_dirty, saved);
+    }
+
+    /// D121: `restore_regs` over split field borrows, so `backtrack` can restore
+    /// from the top choice point's `saved_args` in place (no clone).
+    ///
+    /// Same end state as the old code, which wrote `Uninit` into all of
+    /// `regs[0..200]` and then wrote the saved values back. The mask covers
+    /// every live slot below `AX_REGS`, so clearing just the masked slots
+    /// leaves all of `regs[0..200]` `Uninit` as before. The saved values are
+    /// then written exactly as before, and the mask becomes exactly the set of
+    /// restored slots.
+    #[inline]
+    fn restore_ax_regs(regs: &mut Vec<Value>, dirty: &mut AxDirty, saved: &[(usize, Value)]) {
+        dirty.for_each(|i| {
+            if let Some(slot) = regs.get_mut(i) {
+                *slot = Value::Uninit;
+            }
+        });
+        *dirty = AxDirty::default();
+        for (i, v) in saved {
+            if *i < regs.len() {
+                regs[*i] = v.clone();
+                dirty.mark(*i);
             }
         }
-        for (i, v) in saved {
-            if *i < self.regs.len() {
-                self.regs[*i] = v.clone();
-            }
+    }
+
+    /// D121: restore the A/X registers from the TOP choice point's
+    /// `saved_args`, borrowed in place. `backtrack` used to clone the whole
+    /// `ChoicePoint` just to read them. No-op when there is no choice point.
+    #[inline]
+    fn restore_regs_from_top_cp(&mut self) {
+        if let Some(top) = self.choice_points.last() {
+            Self::restore_ax_regs(&mut self.regs, &mut self.ax_dirty, &top.saved_args);
         }
     }
 
@@ -5254,6 +5556,7 @@ impl WamState {
             // A1->0, A2->1, ... (i is 0-indexed, register index = i)
             if i < self.regs.len() {
                 self.regs[i] = arg.clone();
+                self.ax_dirty.mark(i);
             }
         }
     }
