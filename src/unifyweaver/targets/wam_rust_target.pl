@@ -1404,35 +1404,51 @@ compile_backtrack_to_rust(Code0) :-
         // those belong to a caller of a first-solution meta-call and must not
         // be resumed inside the nested run (see `backtrack_floor`).
         while self.choice_points.len() > self.backtrack_floor {
-            let cp = match self.choice_points.last().cloned() {
-                Some(cp) => cp,
-                None => break,
-            };
-            self.pc = cp.next_pc;
+            // D121: read the top choice point IN PLACE. This used to be
+            // `self.choice_points.last().cloned()`, a clone of the whole
+            // ChoicePoint (its saved_args Vec, its levels Vec of Strings,
+            // its builtin_state) on EVERY backtrack, although the CP
+            // normally stays on the stack for the next clause. Now: copy the
+            // scalars, bump the stack Arc, restore the registers from a
+            // borrow of saved_args, and move builtin_state out only on the
+            // path that pops the CP anyway.
+            let (next_pc, trail_len, heap_len, saved_cp, saved_cut_barrier, stack, has_builtin) =
+                match self.choice_points.last() {
+                    Some(cp) => (cp.next_pc, cp.trail_len, cp.heap_len, cp.cp, cp.cut_barrier,
+                                 cp.stack.clone(), cp.builtin_state.is_some()),
+                    None => break,
+                };
+            self.pc = next_pc;
 
             // 1. Unwind bindings from trail entries added since the CP.
-            self.unwind_trail_bindings_only(cp.trail_len);
+            self.unwind_trail_bindings_only(trail_len);
 
-            // 2. Restore stack (full clone), truncate trail and heap.
-            self.stack = cp.stack;
-            self.trail.truncate(cp.trail_len);
-            self.heap.truncate(cp.heap_len);
+            // 2. Restore stack (O(1) Arc clone), truncate trail and heap.
+            self.stack = stack;
+            self.trail.truncate(trail_len);
+            self.heap.truncate(heap_len);
 
             // 3. Restore registers and control state.
             // Binding-table changes are restored by trail unwind above.
-            self.restore_regs(&cp.saved_args);
-            self.cp = cp.cp;
-            self.cut_barrier = cp.cut_barrier;
+            // Nothing above touches choice_points, so the top CP is still
+            // the one read above.
+            self.restore_regs_from_top_cp();
+            self.cp = saved_cp;
+            self.cut_barrier = saved_cut_barrier;
             self.pending_cut_barrier = None;
             // A GetLevel parked between the last CP and this failure never
             // reached its TryMeElse; drop it rather than let the next
             // choice point adopt a stale barrier.
             self.pending_level = None;
 
-            if let Some(state) = cp.builtin_state {
-                self.choice_points.pop();
-                if self.resume_builtin(state) {
-                    return true;
+            if has_builtin {
+                // Pop the CP and take its builtin_state by value. The rest of
+                // the popped CP is dropped inside the closure, before
+                // resume_builtin runs (as the old `pop();` statement did).
+                if let Some(state) = self.choice_points.pop().and_then(|cp| cp.builtin_state) {
+                    if self.resume_builtin(state) {
+                        return true;
+                    }
                 }
                 continue;
             }
