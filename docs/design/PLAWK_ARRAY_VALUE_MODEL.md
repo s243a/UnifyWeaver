@@ -290,7 +290,17 @@ each newly admitted input -- not deferred to the declaration PR.
    writes, and `a[k] += x`, beside scalar work (the mixed walker), scalar operands
    inside the value's arithmetic, `++` on a double table there; a bare scalar copy
    declines (§3) -- landed.
-3. Element reads as expressions: conditions (`if (c[$1] > 1)`), arithmetic, END loops.
+3. Element reads as expressions.
+   (a) Conditions -- landed: `NAME[KEY]` is a comparison operand on either side
+   (`if (c[$1] > 1)`, `if (n < c["a"])`, with `&&`/`||`). Read numerically with
+   `@wam_assoc_i64_get` (absent -> 0) on **counter** tables only: every write `++`,
+   `+= int` or a counter set, not imported, no unknown use. The key is interned as the
+   writes intern it (field, literal, integer, SUBSEP list, or a scalar's id -- a key
+   scalar is not a numeric operand and keeps its kind). Double, strnum, string, split
+   and row tables, a string comparison, END conditions and loop conditions decline.
+   (b) Arithmetic and END: element reads inside expressions (`n = c[$1] * 10`,
+   `print c["a"] + c["b"]`, `printf ... s[k] / 3`), `if` inside an END `for (k in c)`
+   (today a parse error), and double-table reads (`fcmp`).
 4. String and strnum element writes (`a[k] = "x"`, `a[k] = $N`, `a[k] = a[k] $2`) with
    their mixing rules, and `a[NR] = $0` with a numeric END loop (tac).
 5. Declarations (§7), ingress contracts (§6.1), foreign-key normalisation (§2), with
@@ -300,6 +310,8 @@ each newly admitted input -- not deferred to the declaration PR.
 
 - `tests/test_plawk_array_set.pl`: numeric element writes, widening, declined kinds
   and mixes.
+- `tests/test_plawk_array_reads.pl`: element reads in conditions, key forms, the
+  declined kinds, and the loop-context leak regression.
 - `tests/test_plawk_array_effects.pl`: the effect enumeration (wrapper nodes, every
   program part, binds as imports, row variables, unknown-use detection).
 - `tests/test_plawk_array_kinds.pl`: special-variable and unassigned keys decline;

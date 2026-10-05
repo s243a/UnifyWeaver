@@ -762,6 +762,23 @@ plawk_begin_lowered_action(begin_prelude_here).
 % delete, new/free, or an @wam_assoc_f64_* entry. Any other use (an i64 value read
 % or print, a `++` on the same array, a cache save, ...) would take the bits for
 % an integer, so the program DECLINES instead. So does an array no emitter marked.
+% COUNTER arrays (arrays PR 3a): the arrays whose every write is a counter write
+% (`++`, `+= int`, a counter-valued set) and which are neither imported nor touched
+% by a use the effect enumeration does not know. Only these may be READ as a number
+% in a condition: their cells hold plain i64 counts and an absent element reads 0,
+% awk's numeric reading of an uninitialised element. A double, string, row or split
+% table is not in the set, so an element read of one declines. Scoped for the
+% duration of the driver, like the double-array set below.
+plawk_program_native_driver_ir(Program, InputPath, DriverIR) :-
+    \+ nb_current(plawk_counter_arrays_scope, active),
+    !,
+    plawk_program_counter_arrays(Program, Counters),
+    setup_call_cleanup(
+        ( nb_setval(plawk_counter_arrays, Counters),
+          nb_setval(plawk_counter_arrays_scope, active) ),
+        once(plawk_program_native_driver_ir(Program, InputPath, DriverIR)),
+        ( nb_setval(plawk_counter_arrays, []),
+          nb_setval(plawk_counter_arrays_scope, idle) )).
 plawk_program_native_driver_ir(Program, InputPath, DriverIR) :-
     \+ ( nb_current(plawk_f64_arrays, Active), Active \== [] ),
     plawk_program_f64_arrays(Program, Arrays),
@@ -809,6 +826,25 @@ plawk_program_f64_arrays(program(_Begin, Rules, _End), Arrays) :-
         ),
         Arrays0),
     sort(Arrays0, Arrays).
+
+plawk_program_counter_arrays(Program, Counters) :-
+    plawk_array_effects(Program, Effects),
+    plawk_array_unknown_uses(Program, Unknown),
+    findall(A, member(write(A, _), Effects), As0),
+    sort(As0, As),
+    findall(A,
+        ( member(A, As),
+          \+ memberchk(A-_, Unknown),
+          \+ memberchk(import(A, _), Effects),
+          forall(( member(write(A, How), Effects), How \== delete ),
+                 plawk_array_write_kind(How, counter)) ),
+        Counters).
+
+plawk_counter_array(Array) :-
+    nb_current(plawk_counter_arrays, Arrays),
+    is_list(Arrays),
+    memberchk(Array, Arrays),
+    \+ plawk_f64_array(Array).
 
 plawk_f64_array(Array) :-
     nb_current(plawk_f64_arrays, Arrays),
@@ -7131,6 +7167,17 @@ plawk_while_cond_vars(or(A, B), Vars) :-
     plawk_while_cond_vars(B, VB),
     append(VA, VB, Vars).
 % RSTART/RLENGTH operands are globals, not slots, so they add no slot vars.
+% An element read is a numeric operand, but its KEY is not: `c[k] > 1` compares
+% the element, never k. Reporting k here would give it a counter slot (every
+% condition variable is compared as an i64) and turn `k = $1` into a number --
+% so an element read contributes no variables; a scalar key must already have
+% its own slot, or the read declines.
+plawk_while_cond_vars(cmp(L, _Op, R), Vars) :-
+    ( L = assoc(_, _) ; R = assoc(_, _) ),
+    !,
+    plawk_cond_operand_vars(L, VL),
+    plawk_cond_operand_vars(R, VR),
+    append(VL, VR, Vars).
 plawk_while_cond_vars(cmp(special(_), _Op, int(_N)), []) :- !.
 plawk_while_cond_vars(cmp(special(_), _Op, var(W)), [W]) :- !.
 plawk_while_cond_vars(cmp(special(_), _Op, special(_)), []) :- !.
@@ -7138,6 +7185,78 @@ plawk_while_cond_vars(cmp(var(V), _Op, special(_)), [V]) :- !.
 plawk_while_cond_vars(cmp(var(V), _Op, int(_N)), [V]) :- !.
 plawk_while_cond_vars(cmp(var(V), _Op, string(_S)), [V]) :- !.
 plawk_while_cond_vars(cmp(var(V), _Op, var(W)), [V, W]).
+
+plawk_cond_operand_vars(var(V), [V]) :- !.
+plawk_cond_operand_vars(assoc(_, _), []) :- !.
+plawk_cond_operand_vars(_, []).
+
+%% plawk_cond_elem_reads(+Cond, +Slots, +Values, +AssocPlan, +FS, +Base, +I0, -I,
+%%     -Cond1, -Globals, -Lines) is semidet.
+%  Replace every element-read operand of Cond by ssa(Ref), emitting the lines that
+%  compute each Ref (numbered I0.. so their names are unique under Base).
+plawk_cond_elem_reads(and(A, B), Slots, Vs, Plan, FS, Base, I0, I, and(A1, B1), G, L) :-
+    !,
+    plawk_cond_elem_reads(A, Slots, Vs, Plan, FS, Base, I0, I1, A1, GA, LA),
+    plawk_cond_elem_reads(B, Slots, Vs, Plan, FS, Base, I1, I, B1, GB, LB),
+    append(GA, GB, G),
+    append(LA, LB, L).
+plawk_cond_elem_reads(or(A, B), Slots, Vs, Plan, FS, Base, I0, I, or(A1, B1), G, L) :-
+    !,
+    plawk_cond_elem_reads(A, Slots, Vs, Plan, FS, Base, I0, I1, A1, GA, LA),
+    plawk_cond_elem_reads(B, Slots, Vs, Plan, FS, Base, I1, I, B1, GB, LB),
+    append(GA, GB, G),
+    append(LA, LB, L).
+plawk_cond_elem_reads(cmp(L0, Op, R0), Slots, Vs, Plan, FS, Base, I0, I, cmp(L1, Op, R1), G, L) :-
+    plawk_cond_elem_operand(L0, Slots, Vs, Plan, FS, Base, I0, I1, L1, GL, LL),
+    plawk_cond_elem_operand(R0, Slots, Vs, Plan, FS, Base, I1, I, R1, GR, LR),
+    append(GL, GR, G),
+    append(LL, LR, L).
+
+plawk_cond_elem_operand(assoc(var(A), Key), Slots, Vs, Plan, FS, Base, I0, I,
+        ssa(Ref), Globals, Lines) :-
+    !,
+    plawk_counter_array(A),
+    plawk_assoc_table_index(Plan, A, TableIndex),
+    format(atom(EBase), '~w_e~w', [Base, I0]),
+    plawk_cond_elem_key(Key, Slots, Vs, FS, Base, EBase, KeyId, Globals, KeyLines),
+    format(atom(Ref), '%~w_val', [EBase]),
+    plawk_assoc_elem_call_line(Ref, i64, i64, get, TableIndex, KeyId, ReadLine),
+    append(KeyLines, [ReadLine], Lines),
+    I is I0 + 1.
+plawk_cond_elem_operand(Operand, _Slots, _Vs, _Plan, _FS, _Base, I, I, Operand, [], []).
+
+% The key, interned as the writes intern it. Field and literal components (and a
+% SUBSEP list of them) go through the one SUBSEP key builder -- a lone component is
+% the component's own text, so `c[$1]` and `c["a"]` reach the ids `c[$1]++` and
+% `c["a"]++` stored. A field key needs a current text record, so it declines in
+% END (Base plawk_endif...) and in binary mode. A scalar key uses the slot's id
+% (string / strnum) or the interned decimal of a counter.
+plawk_cond_elem_key(var(Name), Slots, Vs, _FS, _Base, EBase, KeyId, [], Lines) :-
+    !,
+    nth0(Idx, Slots, Slot),
+    plawk_slot_name(Slot, Name),
+    !,
+    nth0(Idx, Vs, SlotValue),
+    plawk_assoc_scalar_key_id(Slot, SlotValue, EBase, KeyId, Lines).
+plawk_cond_elem_key(Key, _Slots, _Vs, FS, Base, EBase, KeyId, [Global], Lines) :-
+    integer(FS),
+    plawk_cond_elem_key_comps(Key, Comps),
+    (   member(fld(_), Comps)
+    ->  \+ sub_atom(Base, 0, _, _, plawk_endif)
+    ;   true
+    ),
+    format(atom(KeyId), '%~w_kid', [EBase]),
+    plawk_subsep_key_n_ir(EBase, '%line', Comps, FS, KeyId, Global, Lines).
+
+plawk_cond_elem_key_comps(subsep_key(Parts), Comps) :-
+    !,
+    maplist(plawk_cond_elem_key_comp, Parts, Comps).
+plawk_cond_elem_key_comps(Part, [Comp]) :-
+    plawk_cond_elem_key_comp(Part, Comp).
+
+plawk_cond_elem_key_comp(field(N), fld(N)) :- integer(N), N >= 0.
+plawk_cond_elem_key_comp(string(S), lit(S)).
+plawk_cond_elem_key_comp(int(N), lit(Text)) :- integer(N), number_string(N, Text).
 
 %% plawk_while_cond_ir(+Cond, +Slots, +CondValues, +Base, -CondVar, -IR)
 %
@@ -7338,6 +7457,9 @@ plawk_swap_cmp_op(ge, le).
 % unique within a comparison.
 plawk_while_cond_operand(int(N), _Slots, _CondValues, _Base, _Path, _Side, N, []) :-
     !.
+% An element read the `if` pre-pass already computed (plawk_cond_elem_reads/11).
+plawk_while_cond_operand(ssa(Ref), _Slots, _CondValues, _Base, _Path, _Side, Ref, []) :-
+    !.
 plawk_while_cond_operand(special('RSTART'), _Slots, _CondValues, Base, Path, Side, Ref, [Line]) :-
     !,
     format(atom(Ref), '%~w_cond~w_~w_rstart', [Base, Path, Side]),
@@ -7484,6 +7606,24 @@ plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
     format(atom(CondValue), '%~w_cond', [GlobalBase]),
     plawk_scalar_str_cmp_ir('', SlotValue, Op, Value, GlobalBase, CondValue,
         GlobalIR, IR).
+% A condition that READS ARRAY ELEMENTS (arrays PR 3a): each `assoc(var(A), Key)`
+% operand is computed first -- the key interned exactly as the writes intern it, the
+% element read with @wam_assoc_i64_get (absent -> 0) -- and replaced by an ssa(Ref)
+% operand, so the ordinary scalar comparison emitter compares it like any i64. Only
+% counter tables qualify (plawk_counter_array/1); any other operand shape, an END
+% condition (no table plan, and no current record for a field key) and a non-text
+% record all make plawk_cond_elem_reads/11 fail, and the program declines.
+plawk_if_cond_ir(scalar_if(Cond), Slots, Values0, AssocPlan, FieldSeparator,
+        GlobalBase, CondValue, GlobalIR-GuardIR) :-
+    sub_term(assoc(_, _), Cond),
+    !,
+    plawk_cond_elem_reads(Cond, Slots, Values0, AssocPlan, FieldSeparator,
+        GlobalBase, 0, _, Cond1, Globals, ReadLines),
+    plawk_while_cond_ir(Cond1, Slots, Values0, FieldSeparator, GlobalBase,
+        CondValue, CmpIR),
+    plawk_join_nonempty_ir(Globals, GlobalIR),
+    append(ReadLines, [CmpIR], GuardLines),
+    atomic_list_concat(GuardLines, '\n', GuardIR).
 plawk_if_cond_ir(scalar_if(Cond), Slots, Values0, _AssocPlan, FieldSeparator,
         GlobalBase, CondValue, ''-GuardIR) :-
     !,
@@ -9899,12 +10039,20 @@ plawk_strnum_cond_unsafe_read(or(A, B), Set, Name) :-
     ( plawk_strnum_cond_unsafe_read(A, Set, Name)
     ; plawk_strnum_cond_unsafe_read(B, Set, Name)
     ).
-plawk_strnum_cond_unsafe_read(cmp(Left, _Op, Right), Set, Name) :-
+plawk_strnum_cond_unsafe_read(cmp(Left0, _Op, Right0), Set, Name) :-
     !,
+    plawk_strnum_mask_elem_key(Left0, Left),
+    plawk_strnum_mask_elem_key(Right0, Right),
     plawk_strnum_term_mentions(cmp(Left, x, Right), Name),
     \+ plawk_strnum_cmp_supported(Left, Right, Set, Name).
 plawk_strnum_cond_unsafe_read(Cond, _Set, Name) :-
     plawk_strnum_term_mentions(Cond, Name).
+
+% A scalar that is the whole KEY of an element read (`c[k] > 2`) is used as an
+% atom id, not compared -- the key path takes a strnum/string slot's id as-is
+% (plawk_assoc_scalar_key_id/5) -- so it is masked out of the unsafe-read scan.
+plawk_strnum_mask_elem_key(assoc(var(A), var(_)), elem_read(A)) :- !.
+plawk_strnum_mask_elem_key(Operand, Operand).
 
 % Supported comparison forms that read Name: against another strnum var still in
 % Set, a string literal (handled by the existing string-guard clauses and the
@@ -11336,6 +11484,13 @@ plawk_assoc_elem_write_line(Op, Kind, Res, TableIndex, KeyIR, ValueIR, Line) :-
 plawk_assoc_elem_fn_line(Fn, Kind, Res, TableIndex, KeyIR, ValueIR, Line) :-
     plawk_render_stache(assoc_elem,
         elem_write(Res, TableIndex, KeyIR, ValueIR, Fn, Kind), Line).
+
+%% plawk_assoc_elem_call_line(+Res, +RetTy, +Kind, +Fn, +TableIndex, +Arg, -Line)
+%  `Res = call RetTy @wam_assoc_<Kind>_<Fn>(table, i64 Arg)`: the one-argument
+%  element calls (get, value_at, key_at, exists, ...), spelled by the same template.
+plawk_assoc_elem_call_line(Res, RetTy, Kind, Fn, TableIndex, Arg, Line) :-
+    plawk_render_stache(assoc_elem,
+        elem_call(Res, RetTy, Kind, Fn, TableIndex, Arg), Line).
 
 plawk_assoc_write_fn(i64, add, inc).
 plawk_assoc_write_fn(i64, set, set).
@@ -19391,16 +19546,15 @@ plawk_scalar_action_sequence_pairs([while_loop(Cond, Body) | Rest],
           HeadValues),
       % break -> after, continue -> head (re-test): push the loop context so a
       % break/continue anywhere in the body branches to these labels.
-      plawk_loopctx_push(loop_ctx(AfterLabel, HeadLabel)),
-      phrase(plawk_scalar_action_sequence_pairs(Body, Slots, AssocPlan,
-          FieldSeparator, OutputSeparator, Base, BodyLabel, RuleIndex, 0,
-          HeadValues, BodyOutValues, _InnerOpIndex, InnerExitLabel,
-          InnerNextExits), BodyPairs),
-      pairs_keys_values(BodyPairs, BodyGlobalParts, BodyLineParts),
-      atomic_list_concat(BodyGlobalParts, '\n', GlobalIR),
-      atomic_list_concat(BodyLineParts, '\n', BodyIR),
-      plawk_branch_to_done_ir(InnerExitLabel, BodyDoneLabel, BodyDoneBrIR),
-      plawk_loopctx_pop,
+      plawk_with_loopctx(loop_ctx(AfterLabel, HeadLabel),
+          ( phrase(plawk_scalar_action_sequence_pairs(Body, Slots, AssocPlan,
+                FieldSeparator, OutputSeparator, Base, BodyLabel, RuleIndex, 0,
+                HeadValues, BodyOutValues, _InnerOpIndex, InnerExitLabel,
+                InnerNextExits), BodyPairs),
+            pairs_keys_values(BodyPairs, BodyGlobalParts, BodyLineParts),
+            atomic_list_concat(BodyGlobalParts, '\n', GlobalIR),
+            atomic_list_concat(BodyLineParts, '\n', BodyIR),
+            plawk_branch_to_done_ir(InnerExitLabel, BodyDoneLabel, BodyDoneBrIR) )),
       plawk_partition_loop_exits(InnerNextExits, Breaks, Continues, RestExits),
       % head phi carries continue values; the after phi carries break values
       plawk_while_head_phi_ir(Slots, Values0, BodyOutValues, Continues,
@@ -19470,16 +19624,15 @@ plawk_scalar_action_sequence_pairs([do_while_loop(Body, Cond) | Rest],
           ),
           HeadValues),
       % break -> after, continue -> body_done (which re-tests the condition)
-      plawk_loopctx_push(loop_ctx(AfterLabel, BodyDoneLabel)),
-      phrase(plawk_scalar_action_sequence_pairs(Body, Slots, AssocPlan,
-          FieldSeparator, OutputSeparator, Base, BodyLabel, RuleIndex, 0,
-          HeadValues, BodyOutValues, _InnerOpIndex, InnerExitLabel,
-          InnerNextExits), BodyPairs),
-      pairs_keys_values(BodyPairs, BodyGlobalParts, BodyLineParts),
-      atomic_list_concat(BodyGlobalParts, '\n', GlobalIR),
-      atomic_list_concat(BodyLineParts, '\n', BodyIR),
-      plawk_branch_to_done_ir(InnerExitLabel, BodyDoneLabel, BodyDoneBrIR),
-      plawk_loopctx_pop,
+      plawk_with_loopctx(loop_ctx(AfterLabel, BodyDoneLabel),
+          ( phrase(plawk_scalar_action_sequence_pairs(Body, Slots, AssocPlan,
+                FieldSeparator, OutputSeparator, Base, BodyLabel, RuleIndex, 0,
+                HeadValues, BodyOutValues, _InnerOpIndex, InnerExitLabel,
+                InnerNextExits), BodyPairs),
+            pairs_keys_values(BodyPairs, BodyGlobalParts, BodyLineParts),
+            atomic_list_concat(BodyGlobalParts, '\n', GlobalIR),
+            atomic_list_concat(BodyLineParts, '\n', BodyIR),
+            plawk_branch_to_done_ir(InnerExitLabel, BodyDoneLabel, BodyDoneBrIR) )),
       plawk_partition_loop_exits(InnerNextExits, Breaks, Continues, RestExits),
       % body_done merges the normal body output (from the body's exit block) with
       % each continue point, and the condition tests that merged value; the head
@@ -21194,6 +21347,21 @@ plawk_loopctx_pop :-
     ( nb_current(plawk_loopctx, [_ | Stack]) -> nb_setval(plawk_loopctx, Stack) ; true ).
 plawk_loopctx_current(Ctx) :-
     nb_current(plawk_loopctx, [Ctx | _]).
+
+%% plawk_with_loopctx(+Ctx, :Goal) is semidet.
+%  Run Goal (once) with Ctx pushed, popping it whether Goal succeeds, fails or
+%  throws. The stack is a non-backtrackable global, so a bare push/Goal/pop leaked
+%  the entry whenever the loop body declined after the push: a LATER rule-level
+%  `break` -- in the next route the driver tried for the same program, or the next
+%  program in the same process -- then branched to the dead loop's exit label
+%  instead of break_close_stream.
+plawk_with_loopctx(Ctx, Goal) :-
+    plawk_loopctx_push(Ctx),
+    (   catch(Goal, E, ( plawk_loopctx_pop, throw(E) ))
+    ->  plawk_loopctx_pop
+    ;   plawk_loopctx_pop,
+        fail
+    ).
 
 plawk_branch_terminal_exit(none).
 plawk_branch_terminal_exit(break).

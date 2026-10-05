@@ -76,5 +76,7 @@ plawk_stache_sample(assoc_elem, elem_write('%r', 2, 7, 1, inc, i64),
     '  %r = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_2, i64 7, i64 1)').
 plawk_stache_sample(assoc_elem, elem_write('%r', 2, '%id', '%v', set, f64),
     '  %r = call double @wam_assoc_f64_set(%WamAssocI64Table* %plawk_assoc_table_2, i64 %id, double %v)').
+plawk_stache_sample(assoc_elem, elem_call('%v', i64, i64, get, 3, '%k'),
+    '  %v = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_3, i64 %k)').
 
 :- initialization(plawk_stache_preflight).
