@@ -3,4 +3,5 @@
 {{case elem_print(T, Key, Kind)}}  call void @wam_assoc_{{Kind}}_print(%WamAssocI64Table* %plawk_assoc_table_{{T}}, i64 {{Key}})
 {{case elem_write(Res, T, Key, V, Fn, i64)}}  {{Res}} = call i64 @wam_assoc_i64_{{Fn}}(%WamAssocI64Table* %plawk_assoc_table_{{T}}, i64 {{Key}}, i64 {{V}})
 {{case elem_write(Res, T, Key, V, Fn, f64)}}  {{Res}} = call double @wam_assoc_f64_{{Fn}}(%WamAssocI64Table* %plawk_assoc_table_{{T}}, i64 {{Key}}, double {{V}})
+{{case elem_call(Res, RetTy, Kind, Fn, T, Arg)}}  {{Res}} = call {{RetTy}} @wam_assoc_{{Kind}}_{{Fn}}(%WamAssocI64Table* %plawk_assoc_table_{{T}}, i64 {{Arg}})
 {{/match}}

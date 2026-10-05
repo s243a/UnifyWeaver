@@ -3423,6 +3423,15 @@ while_cmp(cmp(special(length), Op, Rhs)) -->
 % It also makes `if (int > 2)` decline. gawk rejects that outright as a syntax error --
 % `int` is a builtin, not a variable name -- while plawk silently accepted it and
 % compared a phantom.
+% An array ELEMENT read as the left operand -- `if (c[$1] > 1)`, `if (c[$1] == 0)`
+% (arrays PR 3a, PLAWK_ARRAY_VALUE_MODEL.md section 8). Tried before the identifier
+% fallback, which would otherwise read `c` and fail at the bracket. The codegen reads
+% the element numerically (an absent element is 0) on counter tables only; every
+% other table kind, and every route without element-read support (loop
+% conditions, END), declines.
+while_cmp(cmp(Elem, Op, Rhs)) -->
+    cond_elem_read(Elem),
+    ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
 while_cmp(cmp(var(V), Op, Rhs)) -->
     identifier(V),
     { \+ scalar_cmp_reserved_name(V) },
@@ -3478,9 +3487,20 @@ while_cmp_rhs(special(Name)) -->
 while_cmp_rhs(special(length)) -->
     special_cmp_operand(length),
     !.
+while_cmp_rhs(Elem) -->
+    cond_elem_read(Elem),
+    !.
 while_cmp_rhs(var(W)) -->
     identifier(W),
     { \+ scalar_cmp_reserved_name(W) }.
+
+%% cond_elem_read(-Elem)//
+%  `NAME[KEY]` in a condition: the same subscript grammar as `NAME[KEY]++`.
+cond_elem_read(assoc(var(Name), Key)) -->
+    table_ident(Name),
+    ws, "[", ws,
+    assoc_key_expr(Key),
+    ws, "]".
 
 %% if_condition(-Cond)//
 %
