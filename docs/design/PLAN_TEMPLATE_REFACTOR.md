@@ -210,3 +210,14 @@ still embedded in Prolog, not in today's `.mustache` corpus.
 - **Still embedded (parameterised, not static):** the seven foreign-kernel `_impl` bodies, the
   atom-string globals, the six driver `main`s and the per-predicate `format/2` templates. These
   are PR 3 territory (`.stache` families, decision 5) or stay as Prolog that decides.
+- **PR 4 (plawk `.stache` pilot):** `examples/plawk/codegen/llvm/templates/assoc_elem.ll.stache`,
+  rendered by `examples/plawk/codegen/llvm/plawk_stache.pl` (`plawk_render_stache/3`; templates
+  cached per process, one-line whitespace policy, a load-time preflight that renders every case).
+  It replaces **20** `format/2` strings with **3** structural cases: `elem_print(T, Key, Kind)`
+  serves the i64 / f64 / str printers (the kind is a value); `elem_write(Res, T, Key, V, Fn, i64)`
+  and its `f64` twin serve every increment, add-assign and set, including the mixed-route writer
+  (only the LLVM type word differs per encoding). Prolog keeps the kind decision, the SSA names
+  and the op -> runtime-function map (`plawk_assoc_write_fn/3`: i64 add is `inc`). The plan's
+  sketch had four cases; set joined the write family once arrays PR 2b added it. A new encoding is
+  zero new cases for print and one for write. Verified: the IR corpus (2573 programs, 400
+  declines) is byte-identical, and exercises every case (~950 rendered lines).
