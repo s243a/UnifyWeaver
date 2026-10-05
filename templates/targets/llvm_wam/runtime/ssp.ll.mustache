@@ -1,0 +1,68 @@
+{{match fn}}
+; ssp.ll.mustache -- @ssp_emit_segment: split_string segment emitter.
+; One case per runtime chunk (a define with its comments and globals);
+; the assembly order is wam_llvm_runtime_chunk/3.
+{{case ssp_emit_segment}}; M68: split_string segment emitter -- strip pad chars from both ends,
+; intern the resulting substring, and store the Atom Value into arr[idx].
+define void @ssp_emit_segment(%WamState* %vm, i8* %src, i64 %seg_start, i64 %seg_end, i8* %pad, %Value* %arr, i32 %arr_idx) {
+entry:
+  br label %trim_left
+trim_left:
+  %tl_s = phi i64 [ %seg_start, %entry ], [ %tl_s1, %tl_skip ]
+  %tl_done = icmp uge i64 %tl_s, %seg_end
+  br i1 %tl_done, label %trim_right_init, label %tl_check
+tl_check:
+  %tl_bp = getelementptr i8, i8* %src, i64 %tl_s
+  %tl_b = load i8, i8* %tl_bp
+  ; Is %tl_b in %pad?
+  br label %tl_pad_loop
+tl_pad_loop:
+  %tl_pp = phi i8* [ %pad, %tl_check ], [ %tl_pp_n, %tl_pad_step ]
+  %tl_pc = load i8, i8* %tl_pp
+  %tl_pc_zero = icmp eq i8 %tl_pc, 0
+  br i1 %tl_pc_zero, label %trim_right_init, label %tl_pad_check
+tl_pad_check:
+  %tl_eq = icmp eq i8 %tl_b, %tl_pc
+  br i1 %tl_eq, label %tl_skip, label %tl_pad_step
+tl_pad_step:
+  %tl_pp_n = getelementptr i8, i8* %tl_pp, i32 1
+  br label %tl_pad_loop
+tl_skip:
+  %tl_s1 = add i64 %tl_s, 1
+  br label %trim_left
+trim_right_init:
+  %tri_start = phi i64 [ %tl_s, %trim_left ], [ %tl_s, %tl_pad_loop ]
+  br label %trim_right
+trim_right:
+  %tr_e = phi i64 [ %seg_end, %trim_right_init ], [ %tr_e1, %tr_skip ]
+  %tr_some = icmp ugt i64 %tr_e, %tri_start
+  br i1 %tr_some, label %tr_check, label %do_intern
+tr_check:
+  %tr_e1 = sub i64 %tr_e, 1
+  %tr_bp = getelementptr i8, i8* %src, i64 %tr_e1
+  %tr_b = load i8, i8* %tr_bp
+  br label %tr_pad_loop
+tr_pad_loop:
+  %tr_pp = phi i8* [ %pad, %tr_check ], [ %tr_pp_n, %tr_pad_step ]
+  %tr_pc = load i8, i8* %tr_pp
+  %tr_pc_zero = icmp eq i8 %tr_pc, 0
+  br i1 %tr_pc_zero, label %do_intern, label %tr_pad_check
+tr_pad_check:
+  %tr_eq = icmp eq i8 %tr_b, %tr_pc
+  br i1 %tr_eq, label %tr_skip, label %tr_pad_step
+tr_pad_step:
+  %tr_pp_n = getelementptr i8, i8* %tr_pp, i32 1
+  br label %tr_pad_loop
+tr_skip:
+  br label %trim_right
+do_intern:
+  %final_end = phi i64 [ %tr_e, %trim_right ], [ %tr_e, %tr_pad_loop ]
+  %final_len = sub i64 %final_end, %tri_start
+  %final_ptr = getelementptr i8, i8* %src, i64 %tri_start
+  %final_id = call i64 @wam_intern_atom(i8* %final_ptr, i64 %final_len)
+  %atom_v0 = insertvalue %Value undef, i32 0, 0
+  %atom_v = insertvalue %Value %atom_v0, i64 %final_id, 1
+  %slot = getelementptr %Value, %Value* %arr, i32 %arr_idx
+  store %Value %atom_v, %Value* %slot
+  ret void
+}{{/match}}

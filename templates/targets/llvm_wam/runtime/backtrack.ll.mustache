@@ -1,0 +1,178 @@
+{{match fn}}
+; backtrack.ll.mustache -- @backtrack and @unwind_trail: choicepoint restore and trail unwinding.
+; One case per runtime chunk (a define with its comments and globals);
+; the assembly order is wam_llvm_runtime_chunk/3.
+{{case backtrack}}define i1 @backtrack(%WamState* %vm) {
+entry:
+  ; An uncaught throw ABORTS the machine (campaign finding no. 10): refuse
+  ; to resume into live choice points. Without this check, the uncaught
+  ; throw behaved like an ordinary failure -- backtrack cleared halted and
+  ; re-executed over the half-unwound state (catastrophic-backtracking
+  ; hangs and corrupted terms). The flag is cleared per top-level query by
+  ; @wam_catch_reset, so re-satisfaction of completed queries still works.
+  %unc = load i1, i1* @wam_uncaught
+  br i1 %unc, label %fail, label %check_cps
+
+check_cps:
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
+  %has_cp = icmp sgt i32 %cpn, 0
+  br i1 %has_cp, label %check_agg, label %fail
+
+check_agg:
+  ; If the top CP is an aggregate frame, delegate to finalize_aggregate.
+  %ca_top_idx = sub i32 %cpn, 1
+  %ca_cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %ca_cps = load %ChoicePoint*, %ChoicePoint** %ca_cps_ptr
+  %ca_top = getelementptr %ChoicePoint, %ChoicePoint* %ca_cps, i32 %ca_top_idx
+  %ca_at_ptr = getelementptr %ChoicePoint, %ChoicePoint* %ca_top, i32 0, i32 4
+  %ca_at = load i32, i32* %ca_at_ptr
+  %is_agg = icmp sge i32 %ca_at, 0
+  br i1 %is_agg, label %do_finalize, label %check_foreign
+
+do_finalize:
+  %fin_ok = call i1 @wam_finalize_aggregate(%WamState* %vm)
+  ret i1 %fin_ok
+
+check_foreign:
+  ; If the top CP is a foreign-result iterator (agg_type == -2),
+  ; advance the cursor and yield the next result.
+  %is_foreign = icmp eq i32 %ca_at, -2
+  br i1 %is_foreign, label %do_foreign_yield, label %check_dyn
+
+check_dyn:
+  ; If the top CP is a dynamic-clause iterator (agg_type == -3), advance
+  ; the store scan and yield the next matching asserted clause.
+  %is_dyn = icmp eq i32 %ca_at, -3
+  br i1 %is_dyn, label %do_dyn_yield, label %check_retract
+
+check_retract:
+  ; agg_type == -4: a retract/1 iterator -- advance the scan, remove and
+  ; yield the next matching clause.
+  %is_ret = icmp eq i32 %ca_at, -4
+  br i1 %is_ret, label %do_retract_yield, label %check_barrier
+
+check_barrier:
+  ; agg_type == -8: a rule-body solve barrier. Backtracking that reaches it
+  ; means the nested body goal has no (more) solutions -- stop here so the
+  ; nested run_loop returns false rather than unwinding into the caller.
+  %is_barrier = icmp eq i32 %ca_at, -8
+  br i1 %is_barrier, label %fail, label %restore
+
+do_retract_yield:
+  %ry_ok = call i1 @wam_dyn_retract_iter_next(%WamState* %vm)
+  ret i1 %ry_ok
+
+do_dyn_yield:
+  %dy_ok = call i1 @wam_dyn_iter_next(%WamState* %vm)
+  ret i1 %dy_ok
+
+do_foreign_yield:
+  %fy_ok = call i1 @wam_foreign_iter_next(%WamState* %vm)
+  ret i1 %fy_ok
+
+restore:
+  %top_idx = sub i32 %cpn, 1
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  %top = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %top_idx
+
+  ; Get trail mark and unwind
+  %tm_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 2
+  %tm = load i32, i32* %tm_ptr
+  call void @unwind_trail(%WamState* %vm, i32 %tm)
+
+  ; Campaign finding no. 12: do NOT rewind heap_top here. The heap is
+  ; MONOTONIC within a top-level call, exactly like the arena. The old
+  ; rewind (restore heap_top from the CP) deallocated every cell the
+  ; failed attempt created -- but compounds live in the ARENA, and their
+  ; argument slots are raw pointers that the trail cannot cover: a
+  ; post-CP first-binding of a pre-CP compound's unbound slot survived
+  ; the trail unwind while the heap cell it referenced was deallocated.
+  ; Re-satisfaction (backtracking into a completed call's chain CP,
+  ; which is correct Prolog and how SWI recovers from divergent
+  ; alternatives) then re-read the compound in READ mode and followed
+  ; the dangling Ref above the rewound top -- the self-hosted
+  ; compiler's deferral walkers crashed exactly there (heap oob read
+  ; at heap_top, trace-proven). Bindings ARE still undone (the trail
+  ; handles that above); only the CELLS persist, unreferenced, until
+  ; the per-call reclamation -- the same lifetime the arena already
+  ; has. The CP still SAVES heap_top (field 11) for diagnostics, but
+  ; nothing restores it.
+  %saved_ht_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 11
+  %saved_ht = load i32, i32* %saved_ht_ptr
+  ; Restore stack_size so failed clauses cannot leave EnvFrames that
+  ; confuse the caller or the next alternative.
+  %saved_ss_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 13
+  %saved_ss = load i32, i32* %saved_ss_ptr
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  store i32 %saved_ss, i32* %ss_ptr
+
+  ; Restore registers
+  %dst_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %src_regs = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 1, i32 0
+  %dst_raw = bitcast %Value* %dst_regs to i8*
+  %src_raw = bitcast %Value* %src_regs to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst_raw, i8* %src_raw, i64 2048, i1 false)
+
+  ; Restore PC from choice point next_pc
+  %npc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 0
+  %npc = load i32, i32* %npc_ptr
+  call void @wam_set_pc(%WamState* %vm, i32 %npc)
+
+  ; Restore CP
+  %scp_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 3
+  %scp = load i32, i32* %scp_ptr
+  call void @wam_set_cp(%WamState* %vm, i32 %scp)
+
+  ; Clear halted
+  call void @wam_set_halted(%WamState* %vm, i1 false)
+
+  ret i1 true
+
+fail:
+  ret i1 false
+}{{case unwind_trail}}define void @unwind_trail(%WamState* %vm, i32 %saved_mark) {
+entry:
+  %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %ts = load i32, i32* %ts_ptr
+  %need_unwind = icmp sgt i32 %ts, %saved_mark
+  br i1 %need_unwind, label %loop, label %done
+
+loop:
+  %cur_ts = load i32, i32* %ts_ptr
+  %still_more = icmp sgt i32 %cur_ts, %saved_mark
+  br i1 %still_more, label %unwind_one, label %done
+
+unwind_one:
+  %new_ts = sub i32 %cur_ts, 1
+  store i32 %new_ts, i32* %ts_ptr
+  ; Load trail entry
+  %trail_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
+  %trail_arr = load %TrailEntry*, %TrailEntry** %trail_arr_ptr
+  %te = getelementptr %TrailEntry, %TrailEntry* %trail_arr, i32 %new_ts
+  %reg_ptr = getelementptr %TrailEntry, %TrailEntry* %te, i32 0, i32 0
+  %enc_idx = load i32, i32* %reg_ptr
+  %old_val_ptr = getelementptr %TrailEntry, %TrailEntry* %te, i32 0, i32 1
+  %old_val = load %Value, %Value* %old_val_ptr
+  ; Dispatch on the high-bit sentinel set by wam_trail_heap_binding
+  ; (0x40000000): if set, the entry encodes a heap address; otherwise
+  ; it is a plain register index. Without this dispatch, heap-trail
+  ; entries get treated as register indices, corrupting memory beyond
+  ; the regs array.
+  %heap_mask = and i32 %enc_idx, 1073741824
+  %is_heap = icmp ne i32 %heap_mask, 0
+  br i1 %is_heap, label %unwind_heap, label %unwind_reg
+
+unwind_heap:
+  %heap_addr = and i32 %enc_idx, 1073741823
+  call void @wam_heap_set(%WamState* %vm, i32 %heap_addr, %Value %old_val)
+  br label %loop
+
+unwind_reg:
+  call void @wam_set_reg(%WamState* %vm, i32 %enc_idx, %Value %old_val)
+  br label %loop
+
+done:
+  ret void
+}{{/match}}

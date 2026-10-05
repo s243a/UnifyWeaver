@@ -199,5 +199,14 @@ still embedded in Prolog, not in today's `.mustache` corpus.
   assembly order (the monolith's, so the module is byte-identical). Each library's case set is
   validated against the table once per process; `template_library_cases/2` parses a library
   once and caches it. Pinned by `tests/test_template_library.pl`.
-- **PR 2b (next):** the other static atoms (backtrack, arith, copy_term, term_cmp, ssp,
-  meta_call, dirent, wasm stubs, wamo loader).
+- **PR 2b:** the other runtime atoms move into nine more libraries -- `backtrack`
+  (`@backtrack`, `@unwind_trail`), `arith`, `copy_term`, `term_cmp`, `ssp`, `dirent` (the M114
+  probe), `externals` (wasm32 libc stubs; native declares plus output redirection),
+  `meta_call`, `wamo_loader`. The table gains a UNIT column (`wam_llvm_runtime_chunk(Unit,
+  Name, Library)`): a unit is what one emitter predicate returns, assembled by
+  `wam_llvm_runtime_unit_ir/3`. `meta_call` was a `format/2` string with 22 positional `~w`;
+  it is now six named holes (`size`, `count`, `atom_rows`, `functor_rows`, `arity_rows`,
+  `label_rows`). `wam_llvm_target.pl` drops from 11,525 to ~7,500 lines.
+- **Still embedded (parameterised, not static):** the seven foreign-kernel `_impl` bodies, the
+  atom-string globals, the six driver `main`s and the per-predicate `format/2` templates. These
+  are PR 3 territory (`.stache` families, decision 5) or stay as Prolog that decides.
