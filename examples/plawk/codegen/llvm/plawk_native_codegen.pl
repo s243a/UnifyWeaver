@@ -8246,13 +8246,9 @@ plawk_forin_writebin_value_lines(assoc(var(LookupArrayName), var(LoopVar)),
         LoopVar, ArrayName, TableIndex, AssocPlan, Base, ValueIR, [Line]) :-
     format(atom(ValueIR), '%~w_val', [Base]),
     (   LookupArrayName == ArrayName
-    ->  format(atom(Line),
-            '  ~w = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
-            [ValueIR, TableIndex])
+    ->  plawk_assoc_elem_call_line(ValueIR, i64, i64, value_at, TableIndex, '%forin_slot', Line)
     ;   plawk_assoc_table_index(AssocPlan, LookupArrayName, LookupTableIndex),
-        format(atom(Line),
-            '  ~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_key_id)',
-            [ValueIR, LookupTableIndex])
+        plawk_assoc_elem_call_line(ValueIR, i64, i64, get, LookupTableIndex, '%forin_key_id', Line)
     ).
 plawk_forin_writebin_value_lines(int(Value), _LoopVar, _ArrayName, _TableIndex,
         _AssocPlan, _Base, Value, []) :-
@@ -8450,9 +8446,7 @@ forin_after:
 % '' when none.
 plawk_forin_end_guard_lines(guard_exists(LookupTableIndex), _TableIndex,
         [ExistsLine], '%forin_gexists', '') :-
-    format(atom(ExistsLine),
-        '  %forin_gexists = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_key_id)',
-        [LookupTableIndex]).
+    plawk_assoc_elem_call_line('%forin_gexists', i1, i64, exists, LookupTableIndex, '%forin_key_id', ExistsLine).
 plawk_forin_end_guard_lines(guard_not(GuardPlan), TableIndex, Lines,
         '%forin_gnot', GuardGlobal) :-
     plawk_forin_end_guard_lines(GuardPlan, TableIndex, InnerLines, InnerCond,
@@ -8461,9 +8455,7 @@ plawk_forin_end_guard_lines(guard_not(GuardPlan), TableIndex, Lines,
     append(InnerLines, [NotLine], Lines).
 plawk_forin_end_guard_lines(guard_value(Op, V), TableIndex, Lines, CondVar, '') :-
     plawk_forin_cmp_pred(Op, Pred),
-    format(atom(ValLine),
-        '  %forin_gval = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
-        [TableIndex]),
+    plawk_assoc_elem_call_line('%forin_gval', i64, i64, value_at, TableIndex, '%forin_slot', ValLine),
     format(atom(CmpLine),
         '  %forin_gcmp = icmp ~w i64 %forin_gval, ~w', [Pred, V]),
     CondVar = '%forin_gcmp',
@@ -8480,9 +8472,7 @@ plawk_forin_end_guard_lines(guard_key(Op, V), _TableIndex, Lines, CondVar, '') :
 % duality), testing the sign against 0 with the comparison predicate.
 plawk_forin_end_guard_lines(guard_value_strnum(Op, V), TableIndex, Lines, CondVar, '') :-
     plawk_forin_cmp_pred(Op, Pred),
-    format(atom(ValLine),
-        '  %forin_gval = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
-        [TableIndex]),
+    plawk_assoc_elem_call_line('%forin_gval', i64, i64, value_at, TableIndex, '%forin_slot', ValLine),
     format(atom(StrLine),
         '  %forin_gval_s = call i8* @wam_atom_to_string(i64 %forin_gval)', []),
     format(atom(RcLine),
@@ -8507,9 +8497,7 @@ plawk_forin_end_guard_lines(guard_value_streq(Op, Text), TableIndex, Lines, Cond
     format(atom(LitLine),
         '  %forin_glit = call i64 @wam_intern_atom(i8* %forin_glitp, i64 ~w)',
         [StringLen]),
-    format(atom(ValLine),
-        '  %forin_gval = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
-        [TableIndex]),
+    plawk_assoc_elem_call_line('%forin_gval', i64, i64, value_at, TableIndex, '%forin_slot', ValLine),
     format(atom(CmpLine),
         '  %forin_gcmp = icmp ~w i64 %forin_gval, %forin_glit', [Pred]),
     CondVar = '%forin_gcmp',
@@ -8526,9 +8514,7 @@ plawk_forin_end_guard_lines(guard_value_strord(Op, Text), TableIndex, Lines, Con
     format(atom(PtrLine),
         '  %forin_glitp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
         [BytesLen, BytesLen, GName]),
-    format(atom(ValLine),
-        '  %forin_gval = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
-        [TableIndex]),
+    plawk_assoc_elem_call_line('%forin_gval', i64, i64, value_at, TableIndex, '%forin_slot', ValLine),
     format(atom(StrLine),
         '  %forin_gval_s = call i8* @wam_atom_to_string(i64 %forin_gval)', []),
     format(atom(RcLine),
@@ -8543,9 +8529,7 @@ plawk_forin_end_guard_lines(guard_value_strord(Op, Text), TableIndex, Lines, Con
 plawk_forin_end_guard_lines(guard_value_strnum_f(Op, M, D), TableIndex, Lines, CondVar, '') :-
     plawk_forin_cmp_pred(Op, Pred),
     format(atom(FvLine), '  %forin_gfv = fdiv double ~w.0, ~w.0', [M, D]),
-    format(atom(ValLine),
-        '  %forin_gval = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
-        [TableIndex]),
+    plawk_assoc_elem_call_line('%forin_gval', i64, i64, value_at, TableIndex, '%forin_slot', ValLine),
     format(atom(StrLine),
         '  %forin_gval_s = call i8* @wam_atom_to_string(i64 %forin_gval)', []),
     format(atom(RcLine),
@@ -8558,9 +8542,7 @@ plawk_forin_end_guard_lines(guard_value_strnum_f(Op, M, D), TableIndex, Lines, C
 plawk_forin_end_guard_lines(guard_value_f(Op, M, D), TableIndex, Lines, CondVar, '') :-
     plawk_forin_fcmp_pred(Op, FPred),
     format(atom(FvLine), '  %forin_gfv = fdiv double ~w.0, ~w.0', [M, D]),
-    format(atom(ValLine),
-        '  %forin_gval = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
-        [TableIndex]),
+    plawk_assoc_elem_call_line('%forin_gval', i64, i64, value_at, TableIndex, '%forin_slot', ValLine),
     format(atom(WidenLine),
         '  %forin_gval_d = sitofp i64 %forin_gval to double', []),
     format(atom(CmpLine),
@@ -8658,9 +8640,7 @@ forin_after:
 %  constant needs no line.
 plawk_forin_accum_operand_line(forin_val(_Array), TableIndex,
         '%forin_acc_val', Line) :-
-    format(atom(Line),
-        '  %forin_acc_val = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
-        [TableIndex]).
+    plawk_assoc_elem_call_line('%forin_acc_val', i64, i64, value_at, TableIndex, '%forin_slot', Line).
 plawk_forin_accum_operand_line(forin_key, _TableIndex, '%forin_key_id', '').
 plawk_forin_accum_operand_line(int(Value), _TableIndex, Value, '').
 
@@ -8937,20 +8917,17 @@ plawk_forin_body_print_lines([assoc(var(LookupArrayName), var(LoopVar)) | Rest],
           % it the awk way (integral -> integer, else %.6g).
           LookupTableIndex = TableIndex,
           Iterated = f64,
-          format(atom(Value),
-              '  %forin_value_~w = call double @wam_assoc_f64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
-              [PrintIndex, TableIndex])
+          format(atom(EcRes1), '%forin_value_~w', [PrintIndex]),
+          plawk_assoc_elem_call_line(EcRes1, double, f64, value_at, TableIndex, '%forin_slot', Value)
       ;   LookupArrayName == ArrayName
       ->  LookupTableIndex = TableIndex,
           Iterated = true,
-          format(atom(Value),
-              '  %forin_value_~w = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
-              [PrintIndex, TableIndex])
+          format(atom(EcRes2), '%forin_value_~w', [PrintIndex]),
+          plawk_assoc_elem_call_line(EcRes2, i64, i64, value_at, TableIndex, '%forin_slot', Value)
       ;   plawk_assoc_table_index(AssocPlan, LookupArrayName, LookupTableIndex),
           Iterated = false,
-          format(atom(Value),
-              '  %forin_value_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_key_id)',
-              [PrintIndex, LookupTableIndex])
+          format(atom(EcRes3), '%forin_value_~w', [PrintIndex]),
+          plawk_assoc_elem_call_line(EcRes3, i64, i64, get, LookupTableIndex, '%forin_key_id', Value)
       ),
       format(atom(ValueIR), '%forin_value_~w', [PrintIndex]),
       (   Iterated == f64
@@ -11427,9 +11404,8 @@ plawk_assoc_print_one_field(lookup_int(TableIndex, N, i64), _Base, _Index, Field
 % Binary records keep the numeric-0 reading of a missing key (see above).
 plawk_assoc_print_one_field(lookup_int(TableIndex, N, i64), Base, Index, _FieldSep, Lines) :-
     format(atom(P), '~w_f~w', [Base, Index]),
-    format(atom(ValL),
-        '  %~w_val = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
-        [P, TableIndex, N]),
+    format(atom(EcRes4), '%~w_val', [P]),
+    plawk_assoc_elem_call_line(EcRes4, i64, i64, get, TableIndex, N, ValL),
     format(atom(FmtL),
         '  %~w_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
         [P]),
@@ -11469,13 +11445,19 @@ plawk_assoc_str_value_print_line(TableIndex, KeyIR, Line) :-
 %% plawk_assoc_elem_fn_line(+Fn, +Kind, +Res, +TableIndex, +KeyIR, +ValueIR, -Line)
 %  One IR line touching element KeyIR of table TableIndex, spelled by the
 %  structural template templates/assoc_elem.ll.stache: print it (Kind i64 / f64 /
-%  str picks @wam_assoc_<Kind>_print), or write ValueIR into it, binding the
+%  str picks @wam_assoc_<Kind>_print; delete is the same void shape), or write
+%  ValueIR into it, binding the
 %  result to SSA name Res (Op add = fold the value in, set = replace; Kind i64 /
 %  f64 is the table's encoding). Every decision stays here -- the kind, the SSA
 %  names, the runtime function -- the template only spells the line. The runtime
 %  spells i64 add `inc` (it takes the delta as an argument).
 plawk_assoc_elem_print_line(Kind, TableIndex, KeyIR, Line) :-
-    plawk_render_stache(assoc_elem, elem_print(TableIndex, KeyIR, Kind), Line).
+    plawk_assoc_elem_void_line(print, TableIndex, KeyIR, Kind, Line).
+
+%% plawk_assoc_elem_void_line(+Fn, +TableIndex, +Arg, +Kind, -Line)
+%  `call void @wam_assoc_<Kind>_<Fn>(table, i64 Arg)`: print and delete.
+plawk_assoc_elem_void_line(Fn, TableIndex, Arg, Kind, Line) :-
+    plawk_render_stache(assoc_elem, elem_void(Fn, TableIndex, Arg, Kind), Line).
 
 plawk_assoc_elem_write_line(Op, Kind, Res, TableIndex, KeyIR, ValueIR, Line) :-
     plawk_assoc_write_fn(Kind, Op, Fn),
@@ -11558,9 +11540,9 @@ plawk_assoc_arith_operand_lines(alookup_at(TableIndex, N), P, Slot, FieldSep, Va
     format(atom(LenL), '  %~w_len = extractvalue %WamSlice %~w_slice, 1', [B, B]),
     format(atom(KidL),
         '  %~w_kid = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len)', [B, B, B]),
-    format(atom(ValL),
-        '  %~w_val = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_kid)',
-        [B, TableIndex, B]),
+    format(atom(EcRes6), '%~w_val', [B]),
+    format(atom(EcArg5), '%~w_kid', [B]),
+    plawk_assoc_elem_call_line(EcRes6, i64, i64, get, TableIndex, EcArg5, ValL),
     format(atom(PromL), '  ~w = sitofp i64 %~w_val to double', [ValVar, B]).
 
 plawk_assoc_body_action_spec(for_in(var(LoopVar), var(ArrayName), Body),
@@ -12726,16 +12708,16 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(Phi),
           '  %~w_idx = phi i64 [0, %assoc_rule_~w_action_~w], [%~w_next, %~w_done]',
           [B, RuleIndex, Index, B, B]),
-      format(atom(Slot),
-          '  %~w_slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_idx)',
-          [B, TableIndex, B]),
+      format(atom(EcRes8), '%~w_slot', [B]),
+      format(atom(EcArg7), '%~w_idx', [B]),
+      plawk_assoc_elem_call_line(EcRes8, i64, i64, iter_next, TableIndex, EcArg7, Slot),
       format(atom(DoneC), '  %~w_done_c = icmp slt i64 %~w_slot, 0', [B, B]),
       format(atom(BrBody),
           '  br i1 %~w_done_c, label %~w_after, label %~w_body', [B, B, B]),
       format(atom(BodyLbl), '~w_body:', [B]),
-      format(atom(Key),
-          '  %~w_key = call i64 @wam_assoc_i64_key_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_slot)',
-          [B, TableIndex, B]),
+      format(atom(EcRes10), '%~w_key', [B]),
+      format(atom(EcArg9), '%~w_slot', [B]),
+      plawk_assoc_elem_call_line(EcRes10, i64, i64, key_at, TableIndex, EcArg9, Key),
       phrase(plawk_forin_rule_field_lines(FieldPlans, B, 0), FieldLines),
       format(atom(NL), '  %~w_nl = call i32 @putchar(i32 10)', [B]),
       format(atom(BrDone), '  br label %~w_done', [B]),
@@ -12773,16 +12755,16 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(Phi),
           '  %~w_idx = phi i64 [0, %assoc_rule_~w_action_~w], [%~w_next, %~w_done]',
           [B, RuleIndex, Index, B, B]),
-      format(atom(Slot),
-          '  %~w_slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_idx)',
-          [B, TableIndex, B]),
+      format(atom(EcRes12), '%~w_slot', [B]),
+      format(atom(EcArg11), '%~w_idx', [B]),
+      plawk_assoc_elem_call_line(EcRes12, i64, i64, iter_next, TableIndex, EcArg11, Slot),
       format(atom(DoneC), '  %~w_done_c = icmp slt i64 %~w_slot, 0', [B, B]),
       format(atom(BrBody),
           '  br i1 %~w_done_c, label %~w_after, label %~w_body', [B, B, B]),
       format(atom(BodyLbl), '~w_body:', [B]),
-      format(atom(Key),
-          '  %~w_key = call i64 @wam_assoc_i64_key_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_slot)',
-          [B, TableIndex, B]),
+      format(atom(EcRes14), '%~w_key', [B]),
+      format(atom(EcArg13), '%~w_slot', [B]),
+      plawk_assoc_elem_call_line(EcRes14, i64, i64, key_at, TableIndex, EcArg13, Key),
       plawk_forin_guard_lines(GuardPlan, B, TableIndex, GuardLines, CondVar),
       format(atom(BrGuard),
           '  br i1 ~w, label %~w_print, label %~w_skip', [CondVar, B, B]),
@@ -12815,9 +12797,8 @@ plawk_assoc_rule_action_blocks(RuleIndex,
 plawk_forin_guard_lines(guard_exists(LookupTableIndex), B, _TableIndex,
         [ExistsLine], CondVar) :-
     format(atom(CondVar), '%~w_gexists', [B]),
-    format(atom(ExistsLine),
-        '  ~w = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key)',
-        [CondVar, LookupTableIndex, B]).
+    format(atom(EcArg15), '%~w_key', [B]),
+    plawk_assoc_elem_call_line(CondVar, i1, i64, exists, LookupTableIndex, EcArg15, ExistsLine).
 plawk_forin_guard_lines(guard_not(GuardPlan), B, TableIndex, Lines, CondVar) :-
     plawk_forin_guard_lines(GuardPlan, B, TableIndex, InnerLines, InnerCond),
     format(atom(CondVar), '%~w_gnot', [B]),
@@ -12825,9 +12806,9 @@ plawk_forin_guard_lines(guard_not(GuardPlan), B, TableIndex, Lines, CondVar) :-
     append(InnerLines, [NotLine], Lines).
 plawk_forin_guard_lines(guard_value(Op, V), B, TableIndex, Lines, CondVar) :-
     plawk_forin_cmp_pred(Op, Pred),
-    format(atom(ValLine),
-        '  %~w_gval = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_slot)',
-        [B, TableIndex, B]),
+    format(atom(EcRes17), '%~w_gval', [B]),
+    format(atom(EcArg16), '%~w_slot', [B]),
+    plawk_assoc_elem_call_line(EcRes17, i64, i64, value_at, TableIndex, EcArg16, ValLine),
     format(atom(CmpLine),
         '  %~w_gcmp = icmp ~w i64 %~w_gval, ~w', [B, Pred, B, V]),
     format(atom(CondVar), '%~w_gcmp', [B]),
@@ -12895,9 +12876,9 @@ plawk_forin_rule_field_value(key_int, B, N) -->
     },
     [FmtPtr, PrintCall].
 plawk_forin_rule_field_value(value_self(TableIndex, Kind), B, N) -->
-    { format(atom(Value),
-          '  %~w_v_~w = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_slot)',
-          [B, N, TableIndex, B])
+    { format(atom(EcRes19), '%~w_v_~w', [B, N]),
+ format(atom(EcArg18), '%~w_slot', [B]),
+ plawk_assoc_elem_call_line(EcRes19, i64, i64, value_at, TableIndex, EcArg18, Value)
     },
     [Value],
     plawk_forin_rule_value_print(Kind, B, N).
@@ -12920,9 +12901,9 @@ plawk_forin_rule_field_value(value_lookup(LookupIndex, str), B, _N) -->
     },
     [PrintCall].
 plawk_forin_rule_field_value(value_lookup(LookupIndex, Kind), B, N) -->
-    { format(atom(Value),
-          '  %~w_v_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key)',
-          [B, N, LookupIndex, B])
+    { format(atom(EcRes21), '%~w_v_~w', [B, N]),
+ format(atom(EcArg20), '%~w_key', [B]),
+ plawk_assoc_elem_call_line(EcRes21, i64, i64, get, LookupIndex, EcArg20, Value)
     },
     [Value],
     plawk_forin_rule_value_print(Kind, B, N).
@@ -13106,9 +13087,7 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(KeyId), '%~w_key_id', [Base]),
       plawk_subsep_key_n_ir(Base, '%line', Comps, FieldSeparator, KeyId,
           GlobalDecl, KeyLines),
-      format(atom(Del),
-          '  call void @wam_assoc_i64_delete(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
-          [TableIndex, KeyId]),
+      plawk_assoc_elem_void_line(delete, TableIndex, KeyId, i64, Del),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[global(GlobalDecl), Label], KeyLines, [Del, Next, '']], Lines)
     },
@@ -13186,9 +13165,8 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_action(Index, _ArrayName
       format(atom(KeyId),
           '  %assoc_rule_~w_action_~w_key_id = call i64 @wam_intern_atom(i8* %assoc_rule_~w_action_~w_key_sptr, i64 %assoc_rule_~w_action_~w_key_len)',
           [RuleIndex, Index, RuleIndex, Index, RuleIndex, Index]),
-      format(atom(Del),
-          '  call void @wam_assoc_i64_delete(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %assoc_rule_~w_action_~w_key_id)',
-          [TableIndex, RuleIndex, Index]),
+      format(atom(EcArg22), '%assoc_rule_~w_action_~w_key_id', [RuleIndex, Index]),
+      plawk_assoc_elem_void_line(delete, TableIndex, EcArg22, i64, Del),
       format(atom(Next), '  br label %~w', [ActionNextLabel])
     },
     [global(EmptyGlobal), Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, SafePtr, KeyId, Del, Next, ''],
@@ -13211,9 +13189,7 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       ),
       format(atom(Base), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
       format(atom(Label), '~w:', [Base]),
-      format(atom(Del),
-          '  call void @wam_assoc_i64_delete(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
-          [TableIndex, N]),
+      plawk_assoc_elem_void_line(delete, TableIndex, N, i64, Del),
       format(atom(Next), '  br label %~w', [ActionNextLabel])
     },
     [Label, Del, Next, ''],
@@ -13235,9 +13211,8 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_lit_action(Index, _Array
       format(atom(KeyId),
           '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_ptr, i64 ~w)',
           [Base, Base, StrLen]),
-      format(atom(Del),
-          '  call void @wam_assoc_i64_delete(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id)',
-          [TableIndex, Base]),
+      format(atom(EcArg23), '%~w_key_id', [Base]),
+      plawk_assoc_elem_void_line(delete, TableIndex, EcArg23, i64, Del),
       format(atom(Next), '  br label %~w', [ActionNextLabel])
     },
     [global(GlobalLine), Label, Ptr, KeyId, Del, Next, ''],
@@ -16516,9 +16491,8 @@ plawk_assoc_end_print_lines([assoc(var(ArrayName), int(Key)) | Rest], AssocPlan,
       ; plawk_assoc_plan_posarray_array(AssocPlan, ArrayName)
       ),
       plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
-      format(atom(Value),
-          '  %assoc_end_value_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
-          [PrintIndex, TableIndex, Key]),
+      format(atom(EcRes24), '%assoc_end_value_~w', [PrintIndex]),
+      plawk_assoc_elem_call_line(EcRes24, i64, i64, get, TableIndex, Key, Value),
       format(atom(ValueIR), '%assoc_end_value_~w', [PrintIndex]),
       (   plawk_assoc_plan_str_array(AssocPlan, ArrayName),
           \+ plawk_descriptor_is_binary(Descriptor)
@@ -16591,9 +16565,9 @@ plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], AssocPl
       format(atom(KeyId),
           '  %assoc_end_key_~w_id = call i64 @wam_intern_atom(i8* %assoc_end_key_~w_ptr, i64 ~w)',
           [PrintIndex, PrintIndex, KeyLen]),
-      format(atom(Value),
-          '  %assoc_end_value_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %assoc_end_key_~w_id)',
-          [PrintIndex, TableIndex, PrintIndex]),
+      format(atom(EcRes26), '%assoc_end_value_~w', [PrintIndex]),
+      format(atom(EcArg25), '%assoc_end_key_~w_id', [PrintIndex]),
+      plawk_assoc_elem_call_line(EcRes26, i64, i64, get, TableIndex, EcArg25, Value),
       format(atom(ValueIR), '%assoc_end_value_~w', [PrintIndex]),
       (   plawk_assoc_plan_str_array(AssocPlan, ArrayName)
       ->  % str-valued table: the runtime resolves the stored atom id to text,
@@ -16777,9 +16751,9 @@ plawk_mixed_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], ScalarP
       format(atom(KeyId),
           '  %assoc_end_key_~w_id = call i64 @wam_intern_atom(i8* %assoc_end_key_~w_ptr, i64 ~w)',
           [PrintIndex, PrintIndex, KeyLen]),
-      format(atom(Value),
-          '  %assoc_end_value_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %assoc_end_key_~w_id)',
-          [PrintIndex, TableIndex, PrintIndex]),
+      format(atom(EcRes28), '%assoc_end_value_~w', [PrintIndex]),
+      format(atom(EcArg27), '%assoc_end_key_~w_id', [PrintIndex]),
+      plawk_assoc_elem_call_line(EcRes28, i64, i64, get, TableIndex, EcArg27, Value),
       format(atom(ValueIR), '%assoc_end_value_~w', [PrintIndex]),
       (   plawk_assoc_plan_str_array(AssocPlan, ArrayName)
       ->  % str-valued table: the runtime resolves the stored atom id to text,
@@ -21483,9 +21457,7 @@ plawk_assoc_update_operation_keyid_ir(Prefix, OpIndex, TableIndex, Slot, SlotVal
 plawk_assoc_delete_operation_keyid_ir(Prefix, OpIndex, TableIndex, Slot, SlotValue, ''-IR) :-
     format(atom(BaseName), '~w_assoc_~w', [Prefix, OpIndex]),
     plawk_assoc_scalar_key_id(Slot, SlotValue, BaseName, KeyIdIR, SetupLines),
-    format(atom(DeleteLine),
-        '  call void @wam_assoc_i64_delete(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
-        [TableIndex, KeyIdIR]),
+    plawk_assoc_elem_void_line(delete, TableIndex, KeyIdIR, i64, DeleteLine),
     append(SetupLines, [DeleteLine], AllLines),
     atomic_list_concat(AllLines, '\n', IR).
 
@@ -22786,9 +22758,7 @@ plawk_assoc_pattern_guard_line_ir(in_arr(Key, ArrayName), Context, Descriptor,
     format(atom(KeyBase), '~w_in', [GlobalBase]),
     plawk_membership_key_ir(Key, ArrayName, Context, Descriptor, LineValue,
         KeyBase, KeyValue, GlobalIR, KeyLines),
-    format(atom(ExistsLine),
-        '  ~w = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
-        [MatchValue, TableIndex, KeyValue]),
+    plawk_assoc_elem_call_line(MatchValue, i1, i64, exists, TableIndex, KeyValue, ExistsLine),
     append(KeyLines, [ExistsLine], Lines),
     atomic_list_concat(Lines, '\n', GuardIR).
 plawk_assoc_pattern_guard_line_ir(not_pat(Pattern), Context, Descriptor,
@@ -24375,12 +24345,8 @@ plawk_emit_print_expr_for_context(assoc_keyid(TableIndex, KeyIdValue), _FieldSep
     plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
     format(atom(ValueIR), '%~w_assoc_get', [Base]),
     format(atom(HasIR), '%~w_assoc_has', [Base]),
-    format(atom(HasCall),
-        '  ~w = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
-        [HasIR, TableIndex, KeyIdValue]),
-    format(atom(GetCall),
-        '  ~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
-        [ValueIR, TableIndex, KeyIdValue]).
+    plawk_assoc_elem_call_line(HasIR, i1, i64, exists, TableIndex, KeyIdValue, HasCall),
+    plawk_assoc_elem_call_line(ValueIR, i64, i64, get, TableIndex, KeyIdValue, GetCall).
 % `print n` of a TRACKED counter that may still be unassigned here: awk prints ""
 % for an uninitialised value, so the assigned mark (@plawk_slot_assigned, stored by
 % every write to a tracked slot) selects the empty format -- the same print type
@@ -24406,13 +24372,9 @@ plawk_emit_print_expr_for_context(assoc_keyid_num(TableIndex, SlotValue), _Field
     format(atom(InternCall),
         '  ~w = call i64 @wam_intern_i64_decimal(i64 ~w)', [KeyIdIR, SlotValue]),
     format(atom(HasIR), '%~w_assoc_has', [Base]),
-    format(atom(HasCall),
-        '  ~w = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
-        [HasIR, TableIndex, KeyIdIR]),
+    plawk_assoc_elem_call_line(HasIR, i1, i64, exists, TableIndex, KeyIdIR, HasCall),
     format(atom(ValueIR), '%~w_assoc_get', [Base]),
-    format(atom(GetCall),
-        '  ~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
-        [ValueIR, TableIndex, KeyIdIR]).
+    plawk_assoc_elem_call_line(ValueIR, i64, i64, get, TableIndex, KeyIdIR, GetCall).
 % a substituted DOUBLE-scalar read (var(Name) -> ssa_f64(SlotValue)): print the
 % double SSA value with %g, mirroring the END-print double branch. This makes
 % `print x` work for a float-valued scalar slot in a rule body (the i64 `ssa`

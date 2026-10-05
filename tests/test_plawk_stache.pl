@@ -18,7 +18,7 @@ test(preflight_renders_every_case) :-
 % One case serves all three printers: the kind is a value, not a case.
 test(one_print_case_for_every_kind) :-
     forall(member(K, [i64, f64, str]),
-           ( plawk_render_stache(assoc_elem, elem_print(4, '%key', K), L),
+           ( plawk_render_stache(assoc_elem, elem_void(print, 4, '%key', K), L),
              format(atom(Want),
                  '  call void @wam_assoc_~w_print(%WamAssocI64Table* %plawk_assoc_table_4, i64 %key)',
                  [K]),
@@ -33,7 +33,7 @@ test(write_cases_per_encoding) :-
     assertion(L2 == '  %s = call double @wam_assoc_f64_add(%WamAssocI64Table* %plawk_assoc_table_0, i64 9, double 1.0)').
 
 test(nonground_op_is_an_error, [error(instantiation_error, _)]) :-
-    plawk_render_stache(assoc_elem, elem_print(_, '%k', i64), _).
+    plawk_render_stache(assoc_elem, elem_void(print, _, '%k', i64), _).
 
 % No case matches (and the template has no default): the rendering is empty,
 % which the one-line policy rejects rather than emitting nothing.

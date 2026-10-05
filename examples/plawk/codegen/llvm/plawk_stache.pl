@@ -7,7 +7,7 @@
 %
 % A template here is one {{match op}} block whose cases are STRUCTURAL: a family of
 % emitters that differed only in the values they substituted becomes one case, and
-% the caller passes a ground term (elem_print(Table, Key, i64), ...). Prolog keeps
+% the caller passes a ground term (elem_void(print, Table, Key, i64), ...). Prolog keeps
 % every decision -- which kind, which SSA names, which runtime function -- the
 % template only spells the line.
 %
@@ -70,7 +70,7 @@ plawk_stache_preflight :-
            )).
 
 % One sample per case, with the exact line it must produce.
-plawk_stache_sample(assoc_elem, elem_print(3, '%k', str),
+plawk_stache_sample(assoc_elem, elem_void(print, 3, '%k', str),
     '  call void @wam_assoc_str_print(%WamAssocI64Table* %plawk_assoc_table_3, i64 %k)').
 plawk_stache_sample(assoc_elem, elem_write('%r', 2, 7, 1, inc, i64),
     '  %r = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_2, i64 7, i64 1)').
