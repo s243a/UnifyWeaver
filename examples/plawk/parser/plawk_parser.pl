@@ -4213,6 +4213,9 @@ scalar_delta_expr(special('RLENGTH')) -->
     "RLENGTH".
 scalar_delta_expr(Expr) -->
     i64_binary_surface_expr(Expr).
+% a bare array element on the right of `+=` / `-=` (arrays PR 3b): `t += c[$1]`
+scalar_delta_expr(Elem) -->
+    cond_elem_read(Elem).
 % A standalone math builtin as the RHS (`x = sqrt($1)`). Tried after the binary
 % surface expr so `x = sqrt($1) + 1` parses as the full arithmetic expression.
 scalar_delta_expr(Expr) -->

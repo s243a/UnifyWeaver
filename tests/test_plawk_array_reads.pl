@@ -2,7 +2,7 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
-% Array element reads in conditions (arrays PR 3a) --
+% Array element reads in conditions (arrays PR 3a) and inside arithmetic (PR 3b) --
 % docs/design/PLAWK_ARRAY_VALUE_MODEL.md section 8, item 3.
 %
 % `if (c[$1] > 1)` was a parse error: a condition operand could be a scalar, a
@@ -95,6 +95,43 @@ test(declined_loop_body_leaves_no_loop_context) :-
     plawk_parse_string("{ if ($1 == \"x\") { hits++; break } else { total++ } } END { print hits, total }\n", P2),
     plawk_program_native_driver_ir(P2, 'input.txt', IR),
     assertion(sub_atom(IR, _, _, _, 'br label %break_close_stream')),
+    !.
+
+% --- PR 3b: element reads inside arithmetic (the mixed walker) ---------------
+
+test(arith_reads_in_assignments, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++; n = c[$1] * 10; print n }\n", "10\n10\n20\n10\n20\n30\n"),
+    run_exact("{ c[$1]++; n = c[\"a\"] + c[\"b\"]; print n }\n", "1\n2\n3\n3\n4\n5\n"),
+    run_exact("{ c[$1]++; n = c[$1] - 1; if (n > 0) print $1, n }\n", "a 1\nb 1\na 2\n"),
+    !.
+
+% `t += c[k]` / `t -= c[k]` take a bare element on the right.
+test(add_assign_an_element, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++; t += c[$1] } END { print t }\n", "10\n"),
+    run_exact("{ c[$1]++; t -= c[$1] } END { print t }\n", "-10\n"),
+    !.
+
+test(arith_reads_in_prints, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++; n++; print c[$1] * 2, n }\n", "2 1\n2 2\n4 3\n2 4\n4 5\n6 6\n"),
+    !.
+
+% A scalar key stays a string when its element is read in arithmetic too.
+test(arith_reads_keep_a_scalar_key_a_string, [condition(clang_available)]) :-
+    run_exact("{ k = $1; c[k]++; n = c[k] * 2; print k, n }\n",
+        "a 2\nb 2\na 4\nc 2\nb 4\na 6\n"),
+    run_exact("{ k = $1; c[k]++; print k, c[k] * 3 }\n", "a 3\nb 3\na 6\nc 3\nb 6\na 9\n"),
+    !.
+
+test(unadmitted_arith_reads_decline) :-
+    forall(member(Src,
+            [ % a double table
+              "{ c[$1] += $2; n = c[$1] * 2; print n }\n",
+              % a bare copy may be an unset element (spec section 3)
+              "{ c[$1]++; n = c[$1]; print n }\n",
+              % END expression reads (3b follow-on)
+              "{ c[$1]++ } END { print c[\"a\"] + c[\"b\"] }\n"
+            ]),
+        build_status_is(Src, 3)),
     !.
 
 :- end_tests(plawk_array_reads).
