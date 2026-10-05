@@ -1204,10 +1204,17 @@ emit_instr(put_structure(FStr, AiStr), N, Next, Block) :- !,
     format(atom(L22),
 '  call void @wam_push_write_ctx(%WamState* %vm, i32 ~w)',
         [FArity]),
+    % The pushed WriteCtx starts with a null args pointer; without this the
+    % following set_* instructions write nothing and the compound's args stay
+    % uninitialised arena memory (the interpreter's put_structure and the
+    % lowered get_structure write mode both set it).
+    format(atom(L22b),
+'  call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %ps.~w.args)',
+        [N]),
     format(atom(L23), '  br label %~w', [Next]),
     atomic_list_concat(
         [L0, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10,
-         L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23],
+         L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L22b, L23],
         '\n', Block).
 
 % --- set_value Xn: append reg Xn to current WriteCtx ---
@@ -2013,6 +2020,7 @@ parse_call_target(PredStr, NameAtom, Arity) :-
 %  Calls from one lowered kernel to another skip this wrapper and
 %  share state directly via @lowered_<callee>_<arity>(%WamState*).
 emit_native_wrapper(Pred/Arity, WrapperCode) :-
+    llvm_entry_symbol(Pred, EntrySym),
     atom_string(Pred, PredStr),
     llvm_lowered_func_name(Pred/Arity, LoweredName),
     build_param_list(Arity, ParamList),
@@ -2030,9 +2038,20 @@ entry:
   ret i1 %r
 }',
         [PredStr, Arity,
-         PredStr, ParamList,
+         EntrySym, ParamList,
          ArgSetup,
          LoweredName]).
+
+%% llvm_entry_symbol(+Pred, -Sym) is det.
+%  The public entry name for Pred (wam_llvm_target:wam_llvm_entry_symbol/2:
+%  Pred itself unless it collides with a symbol the runtime declares or
+%  defines). Called module-qualified because wam_llvm_target imports this
+%  module; falls back to the plain name when the target is not loaded.
+llvm_entry_symbol(Pred, Sym) :-
+    (   current_predicate(wam_llvm_target:wam_llvm_entry_symbol/2)
+    ->  wam_llvm_target:wam_llvm_entry_symbol(Pred, Sym)
+    ;   Sym = Pred
+    ).
 
 %% emit_hybrid_dispatcher(+Pred/Arity, +StartPC, +InstrCount,
 %%                        +LabelArraySize, -DispatcherCode) is det.
@@ -2054,6 +2073,7 @@ entry:
 %  before any binding work).
 emit_hybrid_dispatcher(Pred/Arity, StartPC, InstrCount, LabelArraySize,
                        DispatcherCode) :-
+    llvm_entry_symbol(Pred, EntrySym),
     atom_string(Pred, PredStr),
     llvm_lowered_func_name(Pred/Arity, LoweredName),
     build_param_list(Arity, ParamList),
@@ -2085,7 +2105,7 @@ slow_path:
   ret i1 %slow
 }',
         [PredStr, Arity,
-         PredStr, ParamList,
+         EntrySym, ParamList,
          InstrCount, InstrCount,
          InstrCount,
          LabelArraySize, LabelArraySize,

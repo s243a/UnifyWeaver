@@ -34,7 +34,11 @@ test_aggregate_compiles :-
     ;  format('  FAIL: WAM does not contain end_aggregate~n'),
        throw(missing_end_aggregate)
     ),
-    compile_wam_predicate_to_llvm(p/1, WamCode, [], LLVMCode),
+    % p/1 alone, outside a module: its call to number_fact/1 has no label
+    % here, which strict labels (the default) rightly reject in a real
+    % build. This check is only about the aggregate tags, so it opts out;
+    % test_llvm_as below compiles the whole module with strict labels on.
+    compile_wam_predicate_to_llvm(p/1, WamCode, [wam_strict_labels(false)], LLVMCode),
     format('  LLVM code generated (~w chars)~n', [LLVMCode]),
     % Tag 28: begin_aggregate
     ( sub_atom_or_string(LLVMCode, _, _, _, 'i32 28')

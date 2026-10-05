@@ -71,7 +71,8 @@
     % Phase 5 (JIT): runtime-loadable WAM objects (.wamo)
     write_wam_object/3,                  % +Predicates, +Options, +OutFile
     wam_object_encode/3,                 % +Predicates, +Options, -Text (in-memory .wamo bytes)
-    wam_object_support_ir/1              % -IR (loader + call primitive; append to a host module)
+    wam_object_support_ir/1,             % -IR (loader + call primitive; append to a host module)
+    wam_llvm_entry_symbol/2              % +Pred, -Sym (public entry function name, see below)
 ]).
 
 :- use_module(library(lists)).
@@ -1181,8 +1182,118 @@ string_replace(Haystack, Needle, Replacement, Result) :-
 %  (e.g. a test negating a goal that contains this call) re-runs the
 %  whole compiler search -- one such \+ burned 45 CPU-minutes before
 %  this fence existed.
+%% wam_llvm_entry_symbol(+Pred, -Sym) is det.
+%  The LLVM name of Pred's public entry function (`define i1 @Sym(%Value ...)`).
+%  It is Pred itself unless that name is already taken by a symbol the module
+%  declares or defines -- a libc function the runtime declares (dup, open,
+%  read, write, close, time, stat, system, ...), a runtime function (step,
+%  backtrack, run_loop, ...) or the driver's main -- in which case it is
+%  uw_pred_<Pred>. Without this a predicate named dup/2 made clang reject the
+%  module ("invalid redefinition of function 'dup'"). External drivers that
+%  call an entry function look its name up here. The per-predicate globals
+%  (@<Pred>_start_pc, the wasm export @<Pred>_wasm) keep the plain name.
+wam_llvm_entry_symbol(Pred, Sym) :-
+    (   wam_llvm_reserved_symbol(Pred)
+    ->  atom_concat(uw_pred_, Pred, Sym)
+    ;   Sym = Pred
+    ).
+
+:- dynamic wam_llvm_reserved_symbols_cache/1.
+
+%% wam_llvm_reserved_symbol(+Name) is semidet.
+%  Name is declared or defined (function or global) by the runtime a module
+%  always carries. Computed once per process by scanning that runtime's own
+%  text -- the native and wasm32 external declarations, step, helpers, builtin
+%  dispatch, the .wamo loader and the static templates -- so the set cannot
+%  drift from what is actually emitted.
+wam_llvm_reserved_symbol(Name) :-
+    (   wam_llvm_reserved_symbols_cache(Set)
+    ->  true
+    ;   % snapshot/1: the emitters scanned here may intern atoms or register
+        % functor strings; this can run in the middle of a build, so none of
+        % that may leak into the module being built (atom ids are per module).
+        snapshot(wam_llvm_reserved_symbols(Set)),
+        assertz(wam_llvm_reserved_symbols_cache(Set))
+    ),
+    atom(Name),
+    get_assoc(Name, Set, _).
+
+%% wam_llvm_seed_reserved_symbols(+BuildTexts) is det.
+%  Inside a build: fill the cache from the step and helpers text the build has
+%  just generated (helpers include builtin dispatch), plus the cheap texts,
+%  instead of regenerating them -- a scan only. A no-op once cached.
+wam_llvm_seed_reserved_symbols(_) :-
+    wam_llvm_reserved_symbols_cache(_),
+    !.
+wam_llvm_seed_reserved_symbols(BuildTexts) :-
+    findall(T, wam_llvm_cheap_runtime_text(T), Cheap),
+    append(BuildTexts, Cheap, Texts),
+    wam_llvm_symbol_set(Texts, Set),
+    assertz(wam_llvm_reserved_symbols_cache(Set)).
+
+wam_llvm_reserved_symbols(Set) :-
+    findall(Text, wam_llvm_runtime_text(Text), Texts),
+    wam_llvm_symbol_set(Texts, Set).
+
+wam_llvm_symbol_set(Texts, Set) :-
+    findall(N-true,
+            ( member(T, Texts), wam_llvm_text_symbol(T, N) ),
+            Pairs0),
+    % main: the driver entry a module's harness defines.
+    sort([main-true | Pairs0], Pairs),
+    list_to_assoc(Pairs, Set).
+
+% The full set (outside a build): step and helpers (which include builtin
+% dispatch) are regenerated; the rest is cheap.
+wam_llvm_runtime_text(T) :- compile_step_wam_to_llvm([], T).
+wam_llvm_runtime_text(T) :- compile_wam_helpers_to_llvm([], T).
+wam_llvm_runtime_text(T) :- wam_llvm_cheap_runtime_text(T).
+
+wam_llvm_cheap_runtime_text(T) :- generate_external_declarations('x86_64-pc-linux-gnu', T).
+wam_llvm_cheap_runtime_text(T) :- generate_external_declarations('wasm32-unknown-wasi', T).
+wam_llvm_cheap_runtime_text(T) :- wam_object_support_ir(T).
+wam_llvm_cheap_runtime_text(T) :-
+    member(F, ['types', 'value', 'state', 'runtime', 'module']),
+    atomic_list_concat(['templates/targets/llvm_wam/', F, '.ll.mustache'], Path),
+    read_template_file(Path, T).
+
+%% wam_llvm_text_symbol(+Text, -Name) is nondet.
+%  Each @Name declared or defined at the start of a line of Text:
+%  `define ... @Name(`, `declare ... @Name(`, or a global `@Name = ...`.
+wam_llvm_text_symbol(Text, Name) :-
+    split_string(Text, "\n", "", Lines),
+    member(Line, Lines),
+    wam_llvm_line_symbol(Line, Name).
+
+wam_llvm_line_symbol(Line, Name) :-
+    (   ( string_concat("define", _, Line) ; string_concat("declare", _, Line) )
+    ->  once(sub_string(Line, At, 1, _, "@")),
+        Start is At + 1,
+        sub_string(Line, Start, _, 0, Rest),
+        once(sub_string(Rest, Len, 1, _, "("))
+    ;   string_concat("@", Rest, Line),
+        once(sub_string(Rest, Len, 1, _, " "))
+    ),
+    sub_string(Rest, 0, Len, _, NameS),
+    NameS \== "",
+    atom_string(Name, NameS).
+
 write_wam_llvm_project(Predicates, Options, OutputFile) :-
-    once(write_wam_llvm_project_(Predicates, Options, OutputFile)).
+    wam_llvm_with_label_mode(Options,
+        write_wam_llvm_project_(Predicates, Options, OutputFile)).
+
+%% wam_llvm_with_label_mode(+Options, :Goal) is semidet.
+%  Run Goal once with the unknown-label policy taken from Options: strict
+%  (throw) by default, the legacy index-0 fallback under
+%  wam_strict_labels(false). The policy is read by lookup_label_index/3,
+%  whose ~15 call sites do not carry Options, so it is scoped here in a
+%  global variable and restored on exit (nesting restores the outer mode).
+wam_llvm_with_label_mode(Options, Goal) :-
+    (   option(wam_strict_labels(false), Options) -> Mode = false ; Mode = true ),
+    (   nb_current(wam_llvm_strict_labels, Old) -> true ; Old = true ),
+    setup_call_cleanup(nb_setval(wam_llvm_strict_labels, Mode),
+                       once(Goal),
+                       nb_setval(wam_llvm_strict_labels, Old)).
 
 write_wam_llvm_project_(Predicates, Options, OutputFile) :-
     option(module_name(ModuleName), Options, 'wam_generated'),
@@ -1190,6 +1301,22 @@ write_wam_llvm_project_(Predicates, Options, OutputFile) :-
     option(target_datalayout(DataLayout), Options,
         'e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128'),
     option(generated_date(Date), Options, 'reproducible'),
+
+    % M105: reset the atom-table dynamic predicates per module.
+    % Atom ids are module-scoped (each module emits its own
+    % @wam_atom_strings global) so persistent state across compiles
+    % only serves to accumulate. The 600+ test suite hit Prolog''s
+    % 4GB global-stack cap around test 650 because every compile
+    % re-interns 95 ASCII chars + [] + a handful of named atoms,
+    % and those atom_table_entry asserts piled up monotonically.
+    % This must run FIRST: substitute_foreign_kernel_impls/3 below
+    % interns every edge-fact atom while building the kernel tables.
+    % A reset after it wiped those entries, so @wam_atom_strings lacked
+    % them and the fact table ids collided with atoms interned later
+    % (edge ids 1, 2, 3 read back as [], ' ', '!').
+    retractall(atom_table_entry(_, _)),
+    retractall(atom_table_next_id(_)),
+    assertz(atom_table_next_id(1)),
 
     % M5.6: populate the foreign kernel spec table.
     % Path (a) directives have already run by load time. Path (b) is
@@ -1219,6 +1346,7 @@ write_wam_llvm_project_(Predicates, Options, OutputFile) :-
     % Generate runtime (step + helpers)
     compile_step_wam_to_llvm(Options, StepFunc),
     compile_wam_helpers_to_llvm(Options, HelpersCode),
+    wam_llvm_seed_reserved_symbols([StepFunc, HelpersCode]),
     read_template_file('templates/targets/llvm_wam/runtime.ll.mustache', RuntimeTemplate),
     render_template(RuntimeTemplate, [
         step_function=StepFunc,
@@ -1229,16 +1357,8 @@ write_wam_llvm_project_(Predicates, Options, OutputFile) :-
     % llvm_foreign_kernel_spec/3 entry is compiled to a body of
     % WAM instructions ending in `call_foreign Kind, Arity`.
     retractall(functor_string_global(_, _)),
-    % M105: also reset the atom-table dynamic predicates per module.
-    % Atom ids are module-scoped (each module emits its own
-    % @wam_atom_strings global) so persistent state across compiles
-    % only serves to accumulate. The 600+ test suite hit Prolog''s
-    % 4GB global-stack cap around test 650 because every compile
-    % re-interns 95 ASCII chars + [] + a handful of named atoms,
-    % and those atom_table_entry asserts piled up monotonically.
-    retractall(atom_table_entry(_, _)),
-    retractall(atom_table_next_id(_)),
-    assertz(atom_table_next_id(1)),
+    % (The per-module atom-table reset (M105) is at the top of this
+    % predicate, before the foreign kernel tables intern their atoms.)
     % Pre-register functor globals referenced directly by runtime
     % helpers (e.g. =../2 needs the cons-cell functor "." and the
     % empty-list atom "[]"). Route through register_functor_string so
@@ -1418,6 +1538,7 @@ write_wam_llvm_wasm_project(Predicates, Options, OutputFile) :-
     % Runtime with iterative loop (no musttail)
     compile_step_wam_to_llvm(Options, StepFunc),
     compile_wam_helpers_to_llvm(Options, HelpersCode),
+    wam_llvm_seed_reserved_symbols([StepFunc, HelpersCode]),
     read_template_file('templates/targets/llvm_wam_wasm/runtime.ll.mustache', RuntimeTemplate),
     render_template(RuntimeTemplate, [
         step_function=StepFunc,
@@ -1519,6 +1640,7 @@ generate_wasm_exports(Predicates, ExportCode) :-
         ;   PredIndicator = Pred/Arity
         ),
         atom_string(Pred, PredStr),
+        wam_llvm_entry_symbol(Pred, EntrySym),
         build_llvm_undef_args(Arity, ArgsList),
         format(atom(ExportFunc),
 '; WASM export: ~w/~w
@@ -1529,7 +1651,7 @@ entry:
   call void @wam_cleanup()
   %ret = zext i1 %result to i32
   ret i32 %ret
-}', [PredStr, Arity, PredStr, Idx, PredStr, ArgsList])
+}', [PredStr, Arity, PredStr, Idx, EntrySym, ArgsList])
     ), ExportFuncs),
     atomic_list_concat(ExportFuncs, '\n\n', ExportFuncsStr),
     findall(AttrGroup, (
@@ -1658,14 +1780,6 @@ read_template_file(Path, Content) :-
 %  own first instruction — silent self-recursion. Same class of bug
 %  WAT had before PR #1476.
 compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode) :-
-    expand_wam_llvm_project_predicates(Predicates, Options, ExpandedPredicates),
-    % M4: closure analysis — compute the set of predicates in this
-    % batch whose lowered kernels can be safely inter-linked via
-    % `call`/`execute`. A predicate joins the closure iff all of its
-    % clause-1 call/execute targets are also in the closure (computed
-    % to fixpoint). Passed through Options so pass1's per-pred
-    % lowerability check can consult it.
-    compute_lowered_closure(ExpandedPredicates, Options, ClosureSet),
     % M10: enable inline lowering of bagof/setof so they go through
     % the same aggregate dispatch path as findall/aggregate_all rather
     % than the runtime fallback (which is not wired up for LLVM).
@@ -1677,6 +1791,18 @@ compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode) :-
     -> OptionsWithBS = Options
     ;  OptionsWithBS = [inline_bagof_setof(true) | Options]
     ),
+    % Dependency discovery must see the same WAM the build compiles: with
+    % the raw Options a setof/bagof body reads as `call setof/3`, and SWI's
+    % own setof/3 (interpreted) was pulled in as a user predicate that then
+    % failed to compile -- fatal since failed predicates fail the build.
+    expand_wam_llvm_project_predicates(Predicates, OptionsWithBS, ExpandedPredicates),
+    % M4: closure analysis — compute the set of predicates in this
+    % batch whose lowered kernels can be safely inter-linked via
+    % `call`/`execute`. A predicate joins the closure iff all of its
+    % clause-1 call/execute targets are also in the closure (computed
+    % to fixpoint). Passed through Options so pass1's per-pred
+    % lowerability check can consult it.
+    compute_lowered_closure(ExpandedPredicates, Options, ClosureSet),
     % M17: emit if-then-else with get_level Y_n / cut Y_n bytecode
     % rather than the naive cut_ite. The LLVM target''s cut_ite was
     % a "decrement cp_count by 1" stub, which silently cut the wrong
@@ -2273,6 +2399,7 @@ emit_one_entry_func(InstrCount, LabelCount, LabelArraySize,
     % own VM (bypassing the entry function) need to know where the
     % predicate starts in @module_code. The name matches the pattern
     % used by test tooling for regex extraction.
+    wam_llvm_entry_symbol(Pred, EntrySym),
     format(atom(Func),
 '; WAM-compiled predicate: ~w/~w (merged module code, start PC ~w)
 @~w_start_pc = private constant i32 ~w
@@ -2294,7 +2421,7 @@ entry:
 }',
         [PredStr, Arity, StartPC,
          PredStr, StartPC,
-         PredStr, ParamList,
+         EntrySym, ParamList,
          InstrCount, InstrCount,
          InstrCount,
          LabelArraySize, LabelArraySize,
@@ -6043,8 +6170,13 @@ builtin_op_to_id(_, 200).  % Unknown
 %% compile_wam_predicate_to_llvm(+Pred/Arity, +WamCode, +Options, -LLVMCode)
 %  Takes WAM instruction output and produces LLVM IR with instruction
 %  array and label table as global constants.
-compile_wam_predicate_to_llvm(Pred/Arity, WamCode, _Options, LLVMCode) :-
+compile_wam_predicate_to_llvm(Pred/Arity, WamCode, Options, LLVMCode) :-
+    wam_llvm_with_label_mode(Options,
+        compile_wam_predicate_to_llvm_(Pred/Arity, WamCode, LLVMCode)).
+
+compile_wam_predicate_to_llvm_(Pred/Arity, WamCode, LLVMCode) :-
     atom_string(Pred, PredStr),
+    wam_llvm_entry_symbol(Pred, EntrySym),
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
     wam_lines_to_llvm(Lines, 0, LLVMLiterals, LabelEntries),
@@ -6102,7 +6234,7 @@ entry:
     SwitchTablesStr,
     PredStr, InstrCount, EntriesStr,
     PredStr, LabelArraySize, LabelsStr,
-    PredStr, ParamList,
+    EntrySym, ParamList,
     InstrCount, InstrCount, PredStr, InstrCount,
     LabelArraySize, LabelArraySize, PredStr, LabelCount,
     ArgSetup]).
@@ -6351,10 +6483,15 @@ resolve_llvm_literal(LabelMap, Parts, LLVMLit) :-
 
 %% lookup_label_index(+LabelName, +LabelMap, -Index)
 %  Find label index in map. Behaviour on unknown labels depends on context:
-%  - Default: warn on stderr, return 0 (for external predicate references)
-%  - With wam_strict_labels(true) in Options: throw an error
+%  - Default: throw an error (the predicate was not compiled into the module)
+%  - With wam_strict_labels(false) in Options (or the entry point's Options,
+%    via wam_llvm_with_label_mode/2): warn on stderr, return 0
 lookup_label_index(LabelName, LabelMap, Index) :-
-    lookup_label_index(LabelName, LabelMap, [], Index).
+    (   nb_current(wam_llvm_strict_labels, false)
+    ->  Options = [wam_strict_labels(false)]
+    ;   Options = []
+    ),
+    lookup_label_index(LabelName, LabelMap, Options, Index).
 lookup_label_index(LabelName, LabelMap, Options, Index) :-
     (   member(LabelName-Index, LabelMap)
     ->  true

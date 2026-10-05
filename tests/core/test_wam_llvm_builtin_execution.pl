@@ -3009,12 +3009,14 @@ test_nice_zero(_, R) :-
 :- dynamic test_nice_positive_raises/2.
 test_nice_positive_raises(_, R) :-
     % nice(+5) increases the niceness value (lowers priority).
-    % Unprivileged users can ALWAYS go nicer; only root can become
-    % less nice. Restore by setpriority on the way out.
+    % Unprivileged users can ALWAYS go nicer; only root (or RLIMIT_NICE)
+    % can become less nice, so the restore is best-effort: setpriority
+    % back to Before fails with EACCES for an ordinary user, and must not
+    % fail the test (the test binary is a throwaway child process).
     getpriority(Before),
     nice(5),
     getpriority(After),
-    setpriority(Before),
+    ( setpriority(Before) -> true ; true ),
     ( After > Before -> R is 1 ; R is 0 ).   % 1
 
 :- dynamic test_setpriority_roundtrip/2.
@@ -3025,7 +3027,7 @@ test_setpriority_roundtrip(_, R) :-
     Target is Before + 3,
     setpriority(Target),
     getpriority(Read),
-    setpriority(Before),
+    ( setpriority(Before) -> true ; true ),   % best-effort: EACCES unprivileged
     ( Read =:= Target -> R is 1 ; R is 0 ).   % 1
 
 :- dynamic test_nice_bad_arg/2.
