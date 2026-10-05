@@ -100,6 +100,8 @@ plawk_dedupe_keep_order([PI | Rest0], [PI | Deduped]) :-
     exclude(==(PI), Rest0, Rest),
     plawk_dedupe_keep_order(Rest, Deduped).
 
+:- use_module(plawk_stache, [plawk_render_stache/3]).
+
 :- use_module('../../../../src/unifyweaver/targets/wam_llvm_target',
     [llvm_emit_atom_prefix_guard/5,
      llvm_emit_atom_field_eq_guard/7,
@@ -10413,15 +10415,17 @@ plawk_mixed_elem_write_ir(Prefix, OpIndex, ArrayName, TableIndex, KeyIndex,
     ->  plawk_mixed_elem_f64(Op, ValueBase, FieldSeparator, Slots, Values,
             ValueIR, ValueGlobals, ValueLines, Entry),
         plawk_f64_table_marker(ArrayName, TableIndex, Marker),
-        format(atom(StoreL0),
-            '  %~w_r = call double @wam_assoc_f64_~w(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id, double ~w)',
-            [B, Entry, TableIndex, B, ValueIR]),
+        format(atom(StoreRes), '%~w_r', [B]),
+        format(atom(StoreKey), '%~w_key_id', [B]),
+        plawk_assoc_elem_fn_line(Entry, f64, StoreRes, TableIndex, StoreKey,
+            ValueIR, StoreL0),
         format(atom(StoreL), '~w~n  ~w', [StoreL0, Marker])
     ;   plawk_mixed_elem_i64(Op, ValueBase, FieldSeparator, Slots, Values,
             ValueIR, ValueGlobals, ValueLines, Entry),
-        format(atom(StoreL),
-            '  %~w_r = call i64 @wam_assoc_i64_~w(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id, i64 ~w)',
-            [B, Entry, TableIndex, B, ValueIR])
+        format(atom(StoreRes), '%~w_r', [B]),
+        format(atom(StoreKey), '%~w_key_id', [B]),
+        plawk_assoc_elem_fn_line(Entry, i64, StoreRes, TableIndex, StoreKey,
+            ValueIR, StoreL)
     ),
     plawk_join_nonempty_ir([EmptyGlobal | ValueGlobals], GlobalIR),
     append([[SliceL, PtrL, LenL, MissL, SafePtrL, KidL], ValueLines, [StoreL]], Lines),
@@ -11295,15 +11299,11 @@ plawk_assoc_print_one_field(lookup_int(TableIndex, N, i64), Base, Index, _FieldS
 %  @wam_assoc_i64_get directly, whose 0 for an absent key is awk's numeric
 %  reading of an uninitialized element.
 plawk_assoc_value_print_line(TableIndex, KeyIR, Line) :-
-    plawk_f64_table_index(TableIndex),
-    !,
-    format(atom(Line),
-        '  call void @wam_assoc_f64_print(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
-        [TableIndex, KeyIR]).
-plawk_assoc_value_print_line(TableIndex, KeyIR, Line) :-
-    format(atom(Line),
-        '  call void @wam_assoc_i64_print(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
-        [TableIndex, KeyIR]).
+    (   plawk_f64_table_index(TableIndex)
+    ->  Kind = f64
+    ;   Kind = i64
+    ),
+    plawk_assoc_elem_print_line(Kind, TableIndex, KeyIR, Line).
 
 %% plawk_assoc_str_value_print_line(+TableIndex, +KeyIR, -Line)
 %
@@ -11314,9 +11314,33 @@ plawk_assoc_value_print_line(TableIndex, KeyIR, Line) :-
 %  would be wrong here (id 0 is a legitimate static atom), which is why the helper
 %  probes presence.
 plawk_assoc_str_value_print_line(TableIndex, KeyIR, Line) :-
-    format(atom(Line),
-        '  call void @wam_assoc_str_print(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
-        [TableIndex, KeyIR]).
+    plawk_assoc_elem_print_line(str, TableIndex, KeyIR, Line).
+
+%% plawk_assoc_elem_print_line(+Kind, +TableIndex, +KeyIR, -Line)
+%% plawk_assoc_elem_write_line(+Op, +Kind, +Res, +TableIndex, +KeyIR, +ValueIR, -Line)
+%% plawk_assoc_elem_fn_line(+Fn, +Kind, +Res, +TableIndex, +KeyIR, +ValueIR, -Line)
+%  One IR line touching element KeyIR of table TableIndex, spelled by the
+%  structural template templates/assoc_elem.ll.stache: print it (Kind i64 / f64 /
+%  str picks @wam_assoc_<Kind>_print), or write ValueIR into it, binding the
+%  result to SSA name Res (Op add = fold the value in, set = replace; Kind i64 /
+%  f64 is the table's encoding). Every decision stays here -- the kind, the SSA
+%  names, the runtime function -- the template only spells the line. The runtime
+%  spells i64 add `inc` (it takes the delta as an argument).
+plawk_assoc_elem_print_line(Kind, TableIndex, KeyIR, Line) :-
+    plawk_render_stache(assoc_elem, elem_print(TableIndex, KeyIR, Kind), Line).
+
+plawk_assoc_elem_write_line(Op, Kind, Res, TableIndex, KeyIR, ValueIR, Line) :-
+    plawk_assoc_write_fn(Kind, Op, Fn),
+    plawk_assoc_elem_fn_line(Fn, Kind, Res, TableIndex, KeyIR, ValueIR, Line).
+
+plawk_assoc_elem_fn_line(Fn, Kind, Res, TableIndex, KeyIR, ValueIR, Line) :-
+    plawk_render_stache(assoc_elem,
+        elem_write(Res, TableIndex, KeyIR, ValueIR, Fn, Kind), Line).
+
+plawk_assoc_write_fn(i64, add, inc).
+plawk_assoc_write_fn(i64, set, set).
+plawk_assoc_write_fn(f64, add, add).
+plawk_assoc_write_fn(f64, set, set).
 
 %% plawk_assoc_kind_value_print_line(+Kind, +TableIndex, +KeyIR, -Line)
 %  Pick the printer for a table's value KIND: `str` resolves the stored atom id
@@ -12466,9 +12490,9 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
       format(atom(B), 'assoc_rule_~w_action_~w_incsv', [RuleIndex, Index]),
       format(atom(LoadKey), '  %~w_key = load i64, i64* @plawk_scalar_~w', [B, Name]),
-      format(atom(Inc),
-          '  %~w_count = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key, i64 ~w)',
-          [B, TableIndex, B, Delta]),
+      format(atom(IncRes), '%~w_count', [B]),
+      format(atom(IncKey), '%~w_key', [B]),
+      plawk_assoc_elem_write_line(add, i64, IncRes, TableIndex, IncKey, Delta, Inc),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       Lines = [Label, LoadKey, Inc, Next, '']
     },
@@ -12812,9 +12836,9 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, Table
       format(atom(KeyId),
           '  %~w_id = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len64)',
           [KeyBase, KeyBase, KeyBase]),
-      format(atom(Inc),
-          '  %~w_count = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_id, i64 1)',
-          [KeyBase, TableIndex, KeyBase]),
+      format(atom(IncRes), '%~w_count', [KeyBase]),
+      format(atom(IncKey), '%~w_id', [KeyBase]),
+      plawk_assoc_elem_write_line(add, i64, IncRes, TableIndex, IncKey, 1, Inc),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([GlobalMarkers, [Label], SetupParts,
               [Missing, Branch, '', HaveLabel, KeyId, Inc, Next, '']], Lines)
@@ -12833,9 +12857,8 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, Table
       format(atom(KeyBase), 'assoc_rule_~w_action_~w_key', [RuleIndex, Index]),
       plawk_binfmt_field_load_lines(binfmt(Types), KeyIndex, KeyBase, KeyValueIR,
           LoadLines),
-      format(atom(Inc),
-          '  %assoc_rule_~w_action_~w_count = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 1)',
-          [RuleIndex, Index, TableIndex, KeyValueIR]),
+      format(atom(IncRes), '%assoc_rule_~w_action_~w_count', [RuleIndex, Index]),
+      plawk_assoc_elem_write_line(add, i64, IncRes, TableIndex, KeyValueIR, 1, Inc),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[Label], LoadLines, [Inc, Next, '']], Lines)
     },
@@ -12875,9 +12898,9 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, Table
       format(atom(KeyId),
           '  %assoc_rule_~w_action_~w_key_id = call i64 @wam_intern_atom(i8* %assoc_rule_~w_action_~w_key_sptr, i64 %assoc_rule_~w_action_~w_key_len)',
           [RuleIndex, Index, RuleIndex, Index, RuleIndex, Index]),
-      format(atom(Inc),
-          '  %assoc_rule_~w_action_~w_count = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %assoc_rule_~w_action_~w_key_id, i64 1)',
-          [RuleIndex, Index, TableIndex, RuleIndex, Index]),
+      format(atom(IncRes), '%assoc_rule_~w_action_~w_count', [RuleIndex, Index]),
+      format(atom(IncKey), '%assoc_rule_~w_action_~w_key_id', [RuleIndex, Index]),
+      plawk_assoc_elem_write_line(add, i64, IncRes, TableIndex, IncKey, 1, Inc),
       format(atom(Next), '  br label %~w', [ActionNextLabel])
     },
     [global(EmptyGlobal), Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, SafePtr, KeyId, Inc, Next, ''],
@@ -12902,9 +12925,8 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action2(Index, _ArrayName, Tabl
       format(atom(KeyId), '%~w_key_id', [Base]),
       plawk_subsep_key_n_ir(Base, '%line', Comps, FieldSeparator, KeyId,
           GlobalDecl, KeyLines),
-      format(atom(Inc),
-          '  %~w_count = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 1)',
-          [Base, TableIndex, KeyId]),
+      format(atom(IncRes), '%~w_count', [Base]),
+      plawk_assoc_elem_write_line(add, i64, IncRes, TableIndex, KeyId, 1, Inc),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[global(GlobalDecl), Label], KeyLines, [Inc, Next, '']], Lines)
     },
@@ -12960,14 +12982,15 @@ plawk_assoc_rule_action_blocks(RuleIndex,
           plawk_assoc_f64_delta_lines(Delta, Base, FieldSeparator, DeltaVar,
               DeltaLines),
           plawk_f64_table_marker(ArrayName, TableIndex, Marker),
-          format(atom(Inc),
-              '  %~w_sum = call double @wam_assoc_f64_add(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, double ~w)~n  ~w',
-              [Base, TableIndex, KeyId, DeltaVar, Marker])
+          format(atom(SumRes), '%~w_sum', [Base]),
+          plawk_assoc_elem_write_line(add, f64, SumRes, TableIndex, KeyId,
+              DeltaVar, Inc0),
+          format(atom(Inc), '~w~n  ~w', [Inc0, Marker])
       ;   plawk_assoc_scalar_src_lines(Delta, Base, FieldSeparator, DeltaVar,
               DeltaLines),
-          format(atom(Inc),
-              '  %~w_sum = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 ~w)',
-              [Base, TableIndex, KeyId, DeltaVar])
+          format(atom(SumRes), '%~w_sum', [Base]),
+          plawk_assoc_elem_write_line(add, i64, SumRes, TableIndex, KeyId,
+              DeltaVar, Inc)
       ),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[global(GlobalDecl), Label], KeyLines, DeltaLines,
@@ -13133,15 +13156,17 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       ->  plawk_f64_expr_ir(Value, FieldSeparator, ValueBase, ValueBase, ValueIR,
               ValueGlobals, ValueLines),
           plawk_f64_table_marker(ArrayName, TableIndex, Marker),
-          format(atom(Store0),
-              '  %~w_stored = call double @wam_assoc_f64_set(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id, double ~w)',
-              [B, TableIndex, B, ValueIR]),
+          format(atom(StoreRes), '%~w_stored', [B]),
+          format(atom(StoreKey), '%~w_key_id', [B]),
+          plawk_assoc_elem_write_line(set, f64, StoreRes, TableIndex, StoreKey,
+              ValueIR, Store0),
           format(atom(Store), '~w~n  ~w', [Store0, Marker])
       ;   plawk_i64_expr_ir(Value, FieldSeparator, ValueBase, ValueBase, ValueIR,
               ValueGlobals, ValueLines),
-          format(atom(Store),
-              '  %~w_stored = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id, i64 ~w)',
-              [B, TableIndex, B, ValueIR])
+          format(atom(StoreRes), '%~w_stored', [B]),
+          format(atom(StoreKey), '%~w_key_id', [B]),
+          plawk_assoc_elem_write_line(set, i64, StoreRes, TableIndex, StoreKey,
+              ValueIR, Store)
       ),
       findall(global(G), member(G, ValueGlobals), GlobalMarkers),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
@@ -13187,16 +13212,18 @@ plawk_assoc_rule_action_blocks(RuleIndex,
           plawk_assoc_f64_delta_lines(Delta, B, FieldSeparator, DeltaVar,
               DeltaLines0),
           plawk_f64_table_marker(ArrayName, TableIndex, Marker),
-          format(atom(Inc0),
-              '  %~w_sum = call double @wam_assoc_f64_add(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id, double ~w)',
-              [B, TableIndex, B, DeltaVar]),
+          format(atom(SumRes), '%~w_sum', [B]),
+          format(atom(SumKey), '%~w_key_id', [B]),
+          plawk_assoc_elem_write_line(add, f64, SumRes, TableIndex, SumKey,
+              DeltaVar, Inc0),
           format(atom(Inc), '~w~n  ~w', [Inc0, Marker]),
           DeltaLines = DeltaLines0
       ;   plawk_assoc_scalar_src_lines(Delta, B, FieldSeparator, DeltaVar,
               DeltaLines),
-          format(atom(Inc),
-              '  %~w_sum = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id, i64 ~w)',
-              [B, TableIndex, B, DeltaVar])
+          format(atom(SumRes), '%~w_sum', [B]),
+          format(atom(SumKey), '%~w_key_id', [B]),
+          plawk_assoc_elem_write_line(add, i64, SumRes, TableIndex, SumKey,
+              DeltaVar, Inc)
       ),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[global(EmptyGlobal), Label, Slice, Ptr, Len, Missing, Branch, '',
@@ -13232,9 +13259,9 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(RowId),
           '  %~w_row_id = call i64 @wam_intern_atom(i8* %~w_row_ptr, i64 %~w_row_len)',
           [B, B, B]),
-      format(atom(Set),
-          '  %~w_setrc = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 %~w_row_id)',
-          [B, TableIndex, KeyIdIR, B]),
+      format(atom(SetRes), '%~w_setrc', [B]),
+      format(atom(SetVal), '%~w_row_id', [B]),
+      plawk_assoc_elem_write_line(set, i64, SetRes, TableIndex, KeyIdIR, SetVal, Set),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([KeyGlobals, [Label], KeyLines,
               [RowLineId, RowPtr, RowLen, RowId, Set, Next, '']], Lines)
@@ -13283,9 +13310,9 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(RowId),
           '  %~w_row_id = call i64 @wam_intern_atom(i8* %~w_bufp, i64 %~w_row_len)',
           [B, B, B]),
-      format(atom(Set),
-          '  %~w_setrc = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 %~w_row_id)',
-          [B, TableIndex, KeyIdIR, B]),
+      format(atom(SetRes), '%~w_setrc', [B]),
+      format(atom(SetVal), '%~w_row_id', [B]),
+      plawk_assoc_elem_write_line(set, i64, SetRes, TableIndex, KeyIdIR, SetVal, Set),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[global(EmptyGlobal), global(FmtGlobal)], KeyGlobals, [Label],
               KeyLines, FieldLines,
@@ -21209,6 +21236,7 @@ plawk_assoc_update_operation_ir(Prefix, OpIndex, TableIndex, KeyIndex,
     format(atom(KeyMissing), '%~w_assoc_~w_key_missing', [Prefix, OpIndex]),
     format(atom(KeyId), '%~w_assoc_~w_key_id', [Prefix, OpIndex]),
     format(atom(CountValue), '%~w_assoc_~w_count', [Prefix, OpIndex]),
+    plawk_assoc_elem_write_line(add, i64, CountValue, TableIndex, KeyId, 1, IncLine),
     format(atom(IR),
 '  br label %~w
 
@@ -21222,7 +21250,7 @@ plawk_assoc_update_operation_ir(Prefix, OpIndex, TableIndex, KeyIndex,
 ~w:
 ~w
   ~w = call i64 @wam_intern_atom(i8* %~w_key_sptr, i64 ~w)
-  ~w = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 1)
+~w
   br label %~w
 
 ~w:',
@@ -21236,7 +21264,7 @@ plawk_assoc_update_operation_ir(Prefix, OpIndex, TableIndex, KeyIndex,
          HaveLabel,
          SafePtrLine,
          KeyId, Label, KeyLen,
-         CountValue, TableIndex, KeyId,
+         IncLine,
          DoneLabel,
          DoneLabel]).
 
@@ -21275,9 +21303,8 @@ plawk_assoc_update_operation_keyid_ir(Prefix, OpIndex, TableIndex, Slot, SlotVal
     format(atom(BaseName), '~w_assoc_~w', [Prefix, OpIndex]),
     plawk_assoc_scalar_key_id(Slot, SlotValue, BaseName, KeyIdIR, SetupLines),
     format(atom(CountValue), '%~w_count', [BaseName]),
-    format(atom(IncLine),
-        '  ~w = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 ~w)',
-        [CountValue, TableIndex, KeyIdIR, Delta]),
+    plawk_assoc_elem_write_line(add, i64, CountValue, TableIndex, KeyIdIR, Delta,
+        IncLine),
     append(SetupLines, [IncLine], AllLines),
     atomic_list_concat(AllLines, '\n', IR).
 
