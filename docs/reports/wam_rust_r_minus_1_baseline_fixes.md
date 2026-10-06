@@ -359,3 +359,89 @@ environment stack (`Vec` clone −0.31 M, `Arc::drop_slow` +0.19 M), i.e. how
 the larger `Env` entry is cloned and dropped, not in the search.
 **Plunit:** same per-file results and failing names as after D132 (32 / 20
 files, 29 failing tests).
+
+## R−1e (D134): the `catch/3` goal is opaque to cut
+
+**Defect.** `catch/3` meta-calls its goal through `call_goal_value`, whose
+`!` arm truncates the choice points to `cut_barrier`. Unlike
+`call_goal_once` (used by `call/N`, `\+`, `->` conditions), `catch/3` left
+`cut_barrier` at the enclosing clause's B0, so a `!` in the goal removed the
+caller's choice points. `catch_cut(X) :- catch((!, member(X,[a,b])), _,
+true). catch_cut(c).` printed `a` and then the failure-driven driver failed
+(the cut also removed the driver's own choice points);
+`catch_cut_local(X) :- cc_d(X), catch(!, _, true)` printed only `1` (SWI
+`1`, `2`). Both emit modes.
+
+**Change** (`wam_rust_target.pl`, the `catch/3` arm only). Right after
+saving `cut_barrier` (already restored on every exit: goal success, plain
+failure, caught ball) and next to the R−1a floor, the arm sets
+`cut_barrier` to the entry depth before meta-calling the goal, as
+`call_goal_once` does. `catch/3` stays first-solution: on success it still
+truncates to the entry depth and commits. The recovery goal is unchanged
+(the row covers the goal only).
+
+**First-solution oracle.** SWI's `catch/3` is re-entrant, so SWI answers
+`[a,b,c]` for `catch_cut`; this runtime's first-solution `catch/3` (by design,
+out of scope here) gives `[a,c]` after the fix, which is the design's stated
+target for R−1e. The harness oracles `catch_cut` against the same clauses
+with `catch(G,C,R)` read as `catch(once(G),C,R)` (`bf_first_solution_catch/1`)
+and also asserts that SWI's own answer differs, so the gap stays visible.
+`catch_cut_local` needs no such reading.
+
+**Tests.** Before: `catch_cut` `a` and the driver failed, `catch_cut_local`
+`1` and the driver failed, in both modes. After: `[a,c]` (the
+first-solution oracle) and `[1,2]` (SWI), driver succeeding, in both modes.
+The direct lowered entries of these two programs are not checked, for two
+lowered-emitter defects outside R−1 found here: a lowered `call`/`execute`
+of a runtime builtin that has no label (`catch/3`) returns `false` instead of
+running the builtin (the interpreter's `Call`/`Execute` arms fall back to
+`execute_builtin`), and the `','/2` functor of a conjunction goal term is
+emitted as `"/2"`. `catch_floor` and `catch_rec_floor` pass their lowered
+check only because the failing first clause falls through to `ok`.
+
+**Gates.** Term differential 2600/0/0, term corpus 51/51, store differential
+503/0/0, store corpus 51/51 and identical to the term corpus, lib 260/260,
+CI rust conformance smoke rc=0 (unsampled and sample 2). **Byte identity:**
+all four output JSONLs and scale `--bench` stdout (N=40, 5000) are
+`cmp`-identical to the base, so the frozen baseline is unchanged.
+**Perf:** callgrind N=40 `--bench` 34.25 M Ir (D133 34.26 M). **Plunit:** same
+per-file results and failing names as after D133 (32 / 20 files, 29 failing
+tests). The harness itself, run in the clean export of this commit: 92 tests
+pass.
+
+## Summary
+
+| item | row | fixed programs (SWI-compared) | emit modes |
+| --- | --- | --- | --- |
+| R−1f | D129 | lowered crates with atom constants / fresh variables build under default features and `--no-default-features --features decorate_sort` | functions (both feature sets) |
+| R−1a | D130 | `catch_floor`, `catch_rec_floor`, `lower_floor`, `lower_floor_ex`, `dyn_floor` | interpreter, functions |
+| R−1b | D131 | `nested`, `nested_bag`, `nested_fail` | interpreter, functions |
+| R−1c | D132 | `ite_map`, `rundoite`, `ite_els_only`, `dis_map` (and the guards `ite_map_yes`, `ite_sibling_*`) | interpreter, functions, direct lowered |
+| R−1d | D133 | `cut_after_call`, `cut_in_agg` | interpreter (functions already right) |
+| R−1e | D134 | `catch_cut` (first-solution reading), `catch_cut_local` | interpreter, functions |
+
+**Resolver.** After every item the term and store differentials, both
+corpora and the scale `--bench` outputs were `cmp`-identical to the base
+`634c244`: none of the six fixes changes a resolver answer, so each re-freeze
+records an unchanged baseline. Callgrind on one N=40 `--bench` run went from
+34.41 M Ir (base) to 34.25 M (−0.5%, all of it at R−1d); no other item moved
+it by more than the +0.05% noise floor.
+
+**Plunit.** Over the 52 Rust WAM files, the base had 26 failing files and 38
+failing tests; after R−1 there are 20 and 29, a strict subset. The newly
+passing files are `test_wam_rust_cut_semantics` and the five lowered
+execution suites, which only needed to build under the default features
+(R−1f). `test_wam_rust_par_aggregate`'s `expensive_parallel_is_faster` is a
+wall-clock assertion on a standalone file no item touches; it failed twice
+while gate builds ran concurrently and passed when the runs were serialised.
+
+**Found, not fixed (outside R−1).** Three lowered-emitter defects, each
+excluded from the harness's direct-lowered check with its reason:
+`begin_aggregate`/`end_aggregate` are dropped, so a lowered aggregate runs
+its goal once as a conjunction; a lowered `call`/`execute` of a label-less
+runtime builtin (`catch/3`) returns false instead of running it; the
+`','/2` goal functor is emitted as `"/2"`. The general `\+/1` builtin arm's
+`naf_succeed` sentinel is not a backtrack floor (not reached by compiled code
+under the default options). `catch/3` recovery is still transparent to cut,
+and an aggregate frame abandoned by an exception still leaves its inner list
+in `aggregate_acc`.

@@ -7025,6 +7025,12 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 // inside the nested run, and catch/3 could not restore them.
                 let saved_floor = self.backtrack_floor;
                 self.backtrack_floor = cp_depth;
+                // R-1e: the goal is opaque to cut, like call/1 (and as
+                // call_goal_once does): a `!` inside it prunes back to the
+                // catch entry and no further. Before, it truncated to the
+                // enclosing clause''s B0 and removed the caller''s choice
+                // points. Every exit below restores saved_cut.
+                self.cut_barrier = cp_depth;
                 let goal_ok = self.call_goal_value(&goal);
                 self.backtrack_floor = saved_floor;
                 if goal_ok {

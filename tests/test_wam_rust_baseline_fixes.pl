@@ -159,6 +159,20 @@ bf_clause(cut_in_agg, (cut_in_agg(L) :- findall(X, (cut_d(X), cut_q, !), L))).
 bf_clause(cut_in_agg, cut_d(1)).
 bf_clause(cut_in_agg, cut_d(2)).
 
+% R-1e: the catch/3 goal is opaque to cut. catch/3 stays first-solution, so
+% catch_cut is oracled with catch(once(G),C,R) (see bf_first_solution_catch).
+bf_program(catch_cut,       'R-1e', catch_cut(X),       X, true).
+bf_program(catch_cut_local, 'R-1e', catch_cut_local(X), X, true).
+
+bf_clause(catch_cut, (catch_cut(X) :- catch((!, member(X, [a, b])), _, true))).
+bf_clause(catch_cut, catch_cut(c)).
+% the cut inside the catch goal must not remove the caller's choice points
+bf_clause(catch_cut_local, (catch_cut_local(X) :- cc_d(X), catch(!, _, true))).
+bf_clause(catch_cut_local, cc_d(1)).
+bf_clause(catch_cut_local, cc_d(2)).
+
+bf_first_solution_catch(catch_cut).
+
 %% bf_dynamic(?PI)
 %  Predicates the drivers create at run time with assertz/1. Declared dynamic
 %  in user: for SWI; not compiled for Rust (the runtime's dynamic database
@@ -532,6 +546,13 @@ bf_lowered_out_of_scope(nested,      lowered_aggregates_unsupported).
 bf_lowered_out_of_scope(nested_bag,  lowered_aggregates_unsupported).
 bf_lowered_out_of_scope(nested_fail, lowered_aggregates_unsupported).
 bf_lowered_out_of_scope(cut_in_agg,  lowered_aggregates_unsupported).
+% Two more lowered-emitter defects outside R-1, found with the R-1e cases: a
+% lowered `call`/`execute` of a runtime builtin that has no label (here
+% catch/3) returns false instead of running the builtin, and the `','/2`
+% functor of a conjunction goal term is emitted as "/2". The interpreted
+% entries of these programs are checked in both modes.
+bf_lowered_out_of_scope(catch_cut,       lowered_call_of_builtin_fails).
+bf_lowered_out_of_scope(catch_cut_local, lowered_call_of_builtin_fails).
 
 %% bf_lowered_required(?Name)
 %  Programs whose query predicate MUST be lowered in functions mode (so the
