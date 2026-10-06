@@ -916,7 +916,7 @@ mod d120_yregs_tests {
 
     fn vm_with_frame() -> WamState {
         let mut m = WamState::new(vec![], HashMap::new());
-        m.smut().push(StackEntry::Env(0, YRegs::new()));
+        m.smut().push(StackEntry::Env(0, YRegs::new(), 0));
         m
     }
 
@@ -958,9 +958,9 @@ mod d120_yregs_tests {
         let mut m = WamState::new(vec![], HashMap::new());
         m.put_reg("Y1", Value::Integer(1));
         assert_eq!(m.get_reg("Y1"), None);
-        m.smut().push(StackEntry::Env(0, YRegs::new()));
+        m.smut().push(StackEntry::Env(0, YRegs::new(), 0));
         m.put_reg("Y1", Value::Integer(1));
-        m.smut().push(StackEntry::Env(0, YRegs::new()));
+        m.smut().push(StackEntry::Env(0, YRegs::new(), 0));
         assert_eq!(m.get_reg("Y1"), None);
         m.put_reg("Y1", Value::Integer(2));
         assert_eq!(m.get_reg("Y1"), Some(Value::Integer(2)));
@@ -977,7 +977,7 @@ mod d120_yregs_tests {
         m.put_reg("Y5", Value::Integer(50));
         assert_eq!(m.get_reg("Y2"), Some(Value::Integer(20)));
         match snap.last() {
-            Some(StackEntry::Env(_, y)) => {
+            Some(StackEntry::Env(_, y, _)) => {
                 assert_eq!(y.get("Y2"), Some(&Value::Integer(10)));
                 assert_eq!(y.get("Y5"), None);
             }
@@ -1116,7 +1116,7 @@ mod d121_backtrack_tests {
             m.set_reg("A2", Value::Integer(2));
             m.set_reg("X5", Value::Integer(55));
             m.heap.push(Value::Integer(5));
-            m.smut().push(StackEntry::Env(0, YRegs::new()));
+            m.smut().push(StackEntry::Env(0, YRegs::new(), 0));
             m.cp = 0;
             m.cut_barrier = 4;
             m.pending_level = Some(("Y9".to_string(), 1));
@@ -1402,7 +1402,7 @@ mod d123_register_decode_tests {
         let raw = if name.starts_with('Y') && name.len() > 1 && name[1..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
             let mut found = None;
             for entry in vm.stack.iter().rev() {
-                if let StackEntry::Env(_, y_regs) = entry {
+                if let StackEntry::Env(_, y_regs, _) = entry {
                     found = y_regs.get(name).cloned();
                     break;
                 }
@@ -1550,10 +1550,10 @@ mod d123_register_decode_tests {
         assert_same(&vm, "A/X only, no frame");
 
         // A lower frame with Y1..Y3 and Y5, then a top frame.
-        vm.smut().push(StackEntry::Env(0, YRegs::new()));
+        vm.smut().push(StackEntry::Env(0, YRegs::new(), 0));
         vm.put_reg("Y1", Value::atom("low"));
         vm.put_reg("Y5", var("_V1"));
-        vm.smut().push(StackEntry::Env(0, YRegs::new()));
+        vm.smut().push(StackEntry::Env(0, YRegs::new(), 0));
         assert_same(&vm, "empty top frame");
         vm.put_reg("Y1", var("_V1"));
         vm.put_reg("Y2", Value::atom("b"));
@@ -2096,7 +2096,7 @@ mod d127_register_trail_tests {
         for seed in 1..=10u64 {
             let mut rng = Lcg(seed * 7919);
             let mut vm = WamState::new(vec![], HashMap::new());
-            vm.smut().push(StackEntry::Env(0, YRegs::new()));
+            vm.smut().push(StackEntry::Env(0, YRegs::new(), 0));
             let mut rf = vm.clone();
             let mut rf_trail: Vec<(String, Option<Value>)> = Vec::new();
             let mut marks: Vec<usize> = Vec::new();
@@ -2144,8 +2144,10 @@ mod d127_register_trail_tests {
 /// Stack entry: environment frames and unification contexts.
 #[derive(Clone, Debug)]
 pub enum StackEntry {
-    /// Environment frame: saved CP + Yi register storage.
-    Env(usize, YRegs),
+    /// Environment frame: saved CP, Yi register storage, and (R-1d) the
+    /// caller's cut barrier B0, saved by `Allocate` and restored by
+    /// `Deallocate` as in the standard WAM.
+    Env(usize, YRegs, usize),
     /// Read-mode unification context: sub-arguments to match.
     UnifyCtx(Vec<Value>),
     /// Write-mode unification context: remaining args to construct.
@@ -4133,7 +4135,7 @@ impl WamState {
     pub fn get_reg_ref(&self, name: &str) -> Option<&Value> {
         if Self::is_y_reg_name(name) {
             for entry in self.stack.iter().rev() {
-                if let StackEntry::Env(_, y_regs) = entry {
+                if let StackEntry::Env(_, y_regs, _) = entry {
                     return match y_regs.get(name) {
                         Some(Value::Uninit) | None => None,
                         Some(v) => Some(v),
@@ -4327,7 +4329,7 @@ impl WamState {
         if Self::is_y_reg_name(name) {
             // Yi register: find in the TOPMOST (most recent) environment frame
             for entry in self.stack.iter().rev() {
-                if let StackEntry::Env(_, y_regs) = entry {
+                if let StackEntry::Env(_, y_regs, _) = entry {
                     // Dereference through the binding table
                     return y_regs.get(name).map(|v| self.deref_var(v));
                 }
@@ -4346,7 +4348,7 @@ impl WamState {
     pub fn put_reg(&mut self, name: &str, val: Value) {
         if Self::is_y_reg_name(name) {
             for entry in self.smut().iter_mut().rev() {
-                if let StackEntry::Env(_, y_regs) = entry {
+                if let StackEntry::Env(_, y_regs, _) = entry {
                     y_regs.insert(name, val);
                     return;
                 }

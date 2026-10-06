@@ -313,3 +313,49 @@ both branches wrote the variable. **Perf:** callgrind N=40 `--bench`
 failing names as after D129 (32 / 20 files, 29 failing tests; the
 `par_aggregate` timing test passed with the gate builds no longer running
 concurrently).
+
+## R−1d (D133): B0 saved in the environment frame
+
+**Defect.** The cut barrier B0 (`cut_barrier`) is a machine register.
+`Allocate` sets it for the new clause (from the clause's
+`pending_cut_barrier`, else the current CP depth); nothing restored the
+caller's value when the callee returned. So after any call whose callee
+allocated, a `!` in the caller cut to the barrier the callee's clause left
+behind. `cut_after_call(R) :- cut_q, !, cut_r(R)` with
+`cut_q :- cut_t, cut_t` printed `first` and `fallback` in the interpreter
+(SWI: `first`); functions mode was already right because `lowered_dispatch`
+restores B0 itself. Inside an aggregate goal, the same stale barrier
+replaced the aggregate's raised barrier: `findall(X, (cut_d(X), cut_q, !),
+L)` gave `[1,2]` (SWI `[1]`).
+
+**Change** (standard WAM). `StackEntry::Env` gains a third field, the
+caller's B0: `Env(cp, YRegs, b0)` (`state.rs.mustache`). `Allocate` reads
+`cut_barrier` before replacing it and stores it in the frame; `Deallocate`
+restores it together with the continuation. The three fused
+deallocate-and-proceed instructions (`BaseCategoryAncestor…`, which pop the
+frame themselves) restore it too. Every other `Env` pattern and the unit-test
+frames in `state.rs.mustache` gained the extra field (`_` / `0`). One step
+implementation serves both emit modes; the lowered tier reaches `Allocate` /
+`Deallocate` through `vm.step`. Choice points still save and restore
+`cut_barrier` as before, and the environment snapshot they hold now carries
+each frame's saved B0 with it.
+
+**Tests.** New harness programs `cut_after_call` (the design's case) and
+`cut_in_agg`. Before: `[first,fallback]` and `[1,2]` in the interpreter
+(functions mode right). After: equal to SWI in both modes. `cut_in_agg`'s
+direct lowered entry is not checked (lowered aggregates, see R−1b). The
+35-probe cut-semantics suite (`test_wam_rust_cut_semantics.pl`, all four
+modes) still passes.
+
+**Gates.** Term differential 2600/0/0, term corpus 51/51, store differential
+503/0/0, store corpus 51/51 and identical to the term corpus, lib 260/260,
+CI rust conformance smoke rc=0 (unsampled and sample 2). **Byte identity:**
+all four output JSONLs and scale `--bench` stdout (N=40, 5000) are
+`cmp`-identical to the base, so the frozen baseline is unchanged.
+**Perf:** callgrind N=40 `--bench` 34.26 M Ir (D132 34.42 M, base 34.41 M):
+−0.5%. The choice-point work is unchanged (`save_regs` and `backtrack`
+cost the same Ir as in D132); the difference sits in the copy-on-write
+environment stack (`Vec` clone −0.31 M, `Arc::drop_slow` +0.19 M), i.e. how
+the larger `Env` entry is cloned and dropped, not in the search.
+**Plunit:** same per-file results and failing names as after D132 (32 / 20
+files, 29 failing tests).

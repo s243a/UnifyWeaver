@@ -534,8 +534,9 @@ wam_instruction_arm('Instruction::BaseCategoryAncestor(cat_reg, target_reg, visi
                 if !parent_matches {
                     return false;
                 }
-                if let Some(StackEntry::Env(old_cp, _)) = self.smut().pop() {
+                if let Some(StackEntry::Env(old_cp, _, old_b0)) = self.smut().pop() {
                     self.cp = old_cp;
+                    self.cut_barrier = old_b0;
                     let ret = self.cp;
                     self.cp = 0;
                     self.pc = ret;
@@ -590,8 +591,9 @@ wam_instruction_arm('Instruction::BaseCategoryAncestorBind(cat_reg, target_reg, 
                     Value::Atom(ref raw) if raw == "1" => {},
                     _ => return false,
                 }
-                if let Some(StackEntry::Env(old_cp, _)) = self.smut().pop() {
+                if let Some(StackEntry::Env(old_cp, _, old_b0)) = self.smut().pop() {
                     self.cp = old_cp;
+                    self.cut_barrier = old_b0;
                     let ret = self.cp;
                     self.cp = 0;
                     self.pc = ret;
@@ -688,8 +690,9 @@ wam_instruction_arm('Instruction::ReturnAdd1(out_reg, in_reg)', Body) :-
                         }
                     }
                 }
-                if let Some(StackEntry::Env(old_cp, _)) = self.smut().pop() {
+                if let Some(StackEntry::Env(old_cp, _, old_b0)) = self.smut().pop() {
                     self.cp = old_cp;
+                    self.cut_barrier = old_b0;
                     let ret = self.cp;
                     self.cp = 0;
                     self.pc = ret;
@@ -710,18 +713,27 @@ wam_instruction_arm('Instruction::Allocate', Body) :-
                 // cut back past a preceding fact predicate''s choice point
                 // (`findall(Y, (e(_), p28_h(Y)), L)` collected one solution
                 // instead of two).
+                let saved_b0 = self.cut_barrier;
                 self.cut_barrier = match self.pending_cut_barrier.take() {
                     Some((barrier, at_pc)) if at_pc == self.pc => barrier,
                     _ => self.choice_points.len(),
                 };
                 let saved_cp = self.cp;
                 // D120: slot-indexed Y registers (YRegs), not a String-keyed map.
-                self.smut().push(StackEntry::Env(saved_cp, YRegs::new()));
+                // R-1d: the frame keeps the caller''s B0 (saved above, before
+                // this clause''s barrier replaced it); Deallocate restores it.
+                self.smut().push(StackEntry::Env(saved_cp, YRegs::new(), saved_b0));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::Deallocate', Body) :-
-    Body = '                if let Some(StackEntry::Env(old_cp, _)) = self.smut().pop() {
+    Body = '                // R-1d: restore the caller''s B0 with its continuation. B0 is
+                // a machine register that each Allocate overwrites, so after a
+                // call returned, a `!` in the caller cut to the barrier the
+                // CALLEE''s clause left (`p :- q, !, r.` kept p''s alternatives
+                // whenever q had allocated).
+                if let Some(StackEntry::Env(old_cp, _, old_b0)) = self.smut().pop() {
                     self.cp = old_cp;
+                    self.cut_barrier = old_b0;
                     self.pc += 1; true
                 } else { false }'.
 

@@ -143,6 +143,22 @@ bf_clause(ite_sibling_then,
                                 ;  ite_mk(X), R = other(X) ))).
 bf_clause(ite_sibling_then, ite_mk(m)).
 
+% R-1d: B0 is saved in the environment frame at Allocate and restored at
+% Deallocate.
+bf_program(cut_after_call, 'R-1d', cut_after_call(R), R, true).
+bf_program(cut_in_agg,     'R-1d', cut_in_agg(L),     L, true).
+
+bf_clause(cut_after_call, (cut_after_call(R) :- cut_q, !, cut_r(R))).
+bf_clause(cut_after_call, cut_after_call(fallback)).
+bf_clause(cut_after_call, (cut_q :- cut_t, cut_t)).
+bf_clause(cut_after_call, cut_t).
+bf_clause(cut_after_call, cut_r(first)).
+% a `!` after a callee inside an aggregate goal cuts to the aggregate's own
+% barrier, not the callee's
+bf_clause(cut_in_agg, (cut_in_agg(L) :- findall(X, (cut_d(X), cut_q, !), L))).
+bf_clause(cut_in_agg, cut_d(1)).
+bf_clause(cut_in_agg, cut_d(2)).
+
 %% bf_dynamic(?PI)
 %  Predicates the drivers create at run time with assertz/1. Declared dynamic
 %  in user: for SWI; not compiled for Rust (the runtime's dynamic database
@@ -515,6 +531,7 @@ check_once(Mode, Name) :-
 bf_lowered_out_of_scope(nested,      lowered_aggregates_unsupported).
 bf_lowered_out_of_scope(nested_bag,  lowered_aggregates_unsupported).
 bf_lowered_out_of_scope(nested_fail, lowered_aggregates_unsupported).
+bf_lowered_out_of_scope(cut_in_agg,  lowered_aggregates_unsupported).
 
 %% bf_lowered_required(?Name)
 %  Programs whose query predicate MUST be lowered in functions mode (so the
