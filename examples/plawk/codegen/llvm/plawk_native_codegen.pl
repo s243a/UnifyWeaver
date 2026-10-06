@@ -7225,6 +7225,51 @@ plawk_cond_elem_operand(assoc(var(A), Key), Slots, Vs, Plan, FS, Base, I0, I,
     I is I0 + 1.
 plawk_cond_elem_operand(Operand, _Slots, _Vs, _Plan, _FS, _Base, I, I, Operand, [], []).
 
+%% plawk_action_has_arith_elem_read(+Action) is semidet.
+%  Action has an element read as an operand of binary arithmetic.
+plawk_action_has_arith_elem_read(Action) :-
+    sub_term(T, Action),
+    compound(T),
+    plawk_arith_parent(T, Args),
+    member(assoc(_, _), Args),
+    !.
+
+% A node whose operands are read as numbers: binary arithmetic, and the scalar
+% add-assign `t += X` (add(var(t), X); its var(t) is no element, so it is untouched).
+plawk_arith_parent(T, [L, R]) :-
+    plawk_i64_binary_expr(T, _Op, _Name, L, R),
+    !.
+plawk_arith_parent(add(var(N), X), [X]) :-
+    atom(N).
+
+%% plawk_arith_elem_reads(+Term, +Ctx, +Slots, +Vs, +Plan, +FS, +Base, +I0, -I,
+%%     -Term1, -Globals, -Lines) is semidet.
+%  Replace each element read whose parent is binary arithmetic (Ctx = arith) by
+%  ssa(Ref), emitting the reads in order. Keys and other element reads are left
+%  untouched (an assoc term is never descended into).
+plawk_arith_elem_reads(T, Ctx, Slots, Vs, Plan, FS, Base, I0, I, T1, G, L) :-
+    (   T = assoc(_, _)
+    ->  (   Ctx == arith
+        ->  plawk_cond_elem_operand(T, Slots, Vs, Plan, FS, Base, I0, I, T1, G, L)
+        ;   T1 = T, I = I0, G = [], L = []
+        )
+    ;   compound(T)
+    ->  (   plawk_arith_parent(T, _) -> ArgCtx = arith ; ArgCtx = other ),
+        T =.. [F | Args],
+        plawk_arith_elem_reads_args(Args, ArgCtx, Slots, Vs, Plan, FS, Base, I0, I,
+            Args1, G, L),
+        T1 =.. [F | Args1]
+    ;   T1 = T, I = I0, G = [], L = []
+    ).
+
+plawk_arith_elem_reads_args([], _Ctx, _Slots, _Vs, _Plan, _FS, _Base, I, I, [], [], []).
+plawk_arith_elem_reads_args([A | As], Ctx, Slots, Vs, Plan, FS, Base, I0, I,
+        [A1 | As1], G, L) :-
+    plawk_arith_elem_reads(A, Ctx, Slots, Vs, Plan, FS, Base, I0, I1, A1, GA, LA),
+    plawk_arith_elem_reads_args(As, Ctx, Slots, Vs, Plan, FS, Base, I1, I, As1, GR, LR),
+    append(GA, GR, G),
+    append(LA, LR, L).
+
 % The key, interned as the writes intern it. Field and literal components (and a
 % SUBSEP list of them) go through the one SUBSEP key builder -- a lone component is
 % the component's own text, so `c[$1]` and `c["a"]` reach the ids `c[$1]++` and
@@ -10071,6 +10116,11 @@ plawk_strnum_arith_expr(Expr) :-
 
 % Does var(Name) occur anywhere in Term?
 plawk_strnum_term_mentions(var(Name), Name) :- !.
+% ...except as the whole KEY of an array element (`c[k]`, arrays PR 3b): every key
+% path uses a string/strnum slot's atom id as-is (plawk_assoc_scalar_key_id/5), so
+% that is no unsafe read -- counting it demoted k to a number (`k = $1; ...
+% n = c[k] * 2; print k` printed 0 for k).
+plawk_strnum_term_mentions(assoc(_, var(_)), _) :- !, fail.
 plawk_strnum_term_mentions(Term, Name) :-
     compound(Term),
     functor(Term, _, Arity),
@@ -17376,11 +17426,19 @@ plawk_rule_body_var_arith_expr(Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     plawk_rule_body_var_arith_operand(Left),
     plawk_rule_body_var_arith_operand(Right),
-    sub_term(V, Expr), compound(V), V = var(_),
+    sub_term(V, Expr), compound(V), ( V = var(_) ; V = ssa(_) ),
     !.
 
 plawk_rule_body_var_arith_operand(var(Name)) :-
     atom(Name),
+    !.
+% an array element (arrays PR 3b) -- read by the mixed walker before the print and
+% substituted as an ssa(Ref) leaf (admitted below for the rewritten print)
+plawk_rule_body_var_arith_operand(assoc(var(A), _Key)) :-
+    atom(A),
+    !.
+plawk_rule_body_var_arith_operand(ssa(Ref)) :-
+    atom(Ref),
     !.
 plawk_rule_body_var_arith_operand(float_const(M, D)) :-
     integer(M), integer(D), D > 0,
@@ -17990,6 +18048,16 @@ plawk_i64_scalar_read_binary_expr(Expr) :-
 
 plawk_i64_scalar_read_operand_expr(var(Name)) :-
     atom(Name).
+% An array ELEMENT read (arrays PR 3b): the mixed walker computes it before the
+% action (plawk_arith_elem_reads/12) and substitutes an ssa(Ref) leaf. Where no
+% table plan resolves it -- or the table is not a counter table -- that fails and
+% the program declines; no emitter ever sees the assoc leaf itself.
+plawk_i64_scalar_read_operand_expr(assoc(var(A), _Key)) :-
+    atom(A).
+% ...and the ssa(Ref) leaf it becomes once read (the rewritten action is checked
+% again when the walker lowers it). ssa/1 only ever comes from such a substitution.
+plawk_i64_scalar_read_operand_expr(ssa(Ref)) :-
+    atom(Ref).
 plawk_i64_scalar_read_operand_expr(Expr) :-
     plawk_i64_operand_expr(Expr).
 plawk_i64_scalar_read_operand_expr(Expr) :-
@@ -18442,6 +18510,12 @@ plawk_scalar_action_update(add(var(Name), Expr), Name, add(Expr)) :-
     plawk_i64_scalar_read_binary_expr(Expr).
 plawk_scalar_action_update(add(var(Name), var(Read)), Name, add(var(Read))) :-
     atom(Read).
+% `t += c[$1]` (arrays PR 3b): the element is read by the mixed walker
+% (plawk_arith_elem_reads/12) and becomes an ssa(Ref) leaf before lowering.
+plawk_scalar_action_update(add(var(Name), assoc(var(A), Key)), Name, add(assoc(var(A), Key))) :-
+    atom(A).
+plawk_scalar_action_update(add(var(Name), ssa(Ref)), Name, add(ssa(Ref))) :-
+    atom(Ref).
 plawk_scalar_action_update(add(var(Name), prolog_call(Pred, Args)), Name,
         add(prolog_call(Pred, Args))) :-
     plawk_prolog_call_expr(prolog_call(Pred, Args)).
@@ -18623,6 +18697,28 @@ plawk_f64_scalar_read_operand_expr(Expr) :-
 plawk_scalar_action_sequence_pairs([], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
         OpIndex, Values, Values, OpIndex, CurrentLabel, []) -->
     [].
+% Element reads INSIDE ARITHMETIC (arrays PR 3b): `n = c[$1] * 10`, `t += c[$1]`,
+% `print c[$1] * 2`. Each read whose parent is a binary arithmetic node is computed
+% first (plawk_cond_elem_operand/11: counter tables only, key interned as the writes
+% intern it, absent -> 0) and replaced by an ssa(Ref) leaf, which the i64 expression
+% emitter already takes; the rewritten action then lowers as before. A bare copy
+% (`n = c[$1]`) and a plain `print c[$1]` are NOT rewritten: the copy may be an
+% unset element (spec section 3, it declines) and the print keeps its string-context
+% rule. Once an action has such a read, an unsupported one declines the program
+% (the cut commits) rather than reaching an emitter that cannot spell it.
+plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { plawk_action_has_arith_elem_read(Action),
+      !,
+      format(atom(RBase), '~w_er~w', [Prefix, OpIndex]),
+      plawk_arith_elem_reads(Action, other, Slots, Values0, AssocPlan, FieldSeparator,
+          RBase, 0, _, Action1, Globals, Lines),
+      plawk_join_nonempty_ir(Globals, GlobalIR),
+      atomic_list_concat(Lines, '\n', IR)
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs([Action1 | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 plawk_scalar_action_sequence_pairs([dynrec_bind(Vars, Call, Types) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_dynrec_bind_ok(dynrec_bind(Vars, Call, Types)),

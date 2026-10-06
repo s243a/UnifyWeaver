@@ -298,9 +298,15 @@ each newly admitted input -- not deferred to the declaration PR.
    writes intern it (field, literal, integer, SUBSEP list, or a scalar's id -- a key
    scalar is not a numeric operand and keeps its kind). Double, strnum, string, split
    and row tables, a string comparison, END conditions and loop conditions decline.
-   (b) Arithmetic and END: element reads inside expressions (`n = c[$1] * 10`,
-   `print c["a"] + c["b"]`, `printf ... s[k] / 3`), `if` inside an END `for (k in c)`
-   (today a parse error), and double-table reads (`fcmp`).
+   (b) Arithmetic in rule bodies -- landed: an element read whose parent is binary
+   arithmetic, or the right side of `+=` / `-=`, in the mixed walker
+   (`n = c[$1] * 10`, `t += c[$1]`, `print c[$1] * 2, n`, literal and scalar keys).
+   Same counter-table rule and key interning as (a). A bare copy (`n = c[$1]`)
+   declines (section 3). A scalar used as an element KEY is never an unsafe strnum
+   read (keys use the slot's id), so it keeps its kind.
+   (c) Still open: END expression reads (`END { print c["a"] + c["b"] }`), `if`
+   inside an END `for (k in c)` (today a parse error), printf arguments, and
+   double-table reads (`fcmp` / f64 arithmetic).
 4. String and strnum element writes (`a[k] = "x"`, `a[k] = $N`, `a[k] = a[k] $2`) with
    their mixing rules, and `a[NR] = $0` with a numeric END loop (tac).
 5. Declarations (§7), ingress contracts (§6.1), foreign-key normalisation (§2), with
