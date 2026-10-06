@@ -95,6 +95,24 @@ bf_clause(dyn_floor, (dyn_floor(X) :- dq(X), X = wrong)).
 bf_clause(dyn_floor, dyn_floor(ok)).
 bf_clause(dyn_floor, (dbad(_) :- fail)).
 
+% R-1b: one accumulator per active aggregate frame.
+bf_program(nested,      'R-1b', nested(L),      L, true).
+bf_program(nested_bag,  'R-1b', nested_bag(L),  L, true).
+bf_program(nested_fail, 'R-1b', nested_fail(L), L, true).
+
+bf_clause(nested, (nested(L) :- findall(A, (nested_a(A), findall(B, nested_b(A, B), _)), L))).
+bf_clause(nested, nested_a(a)).
+bf_clause(nested, nested_a(b)).
+bf_clause(nested, nested_b(a, one)).
+bf_clause(nested, nested_b(b, two)).
+% the inner aggregate's value is used, and the outer collects pairs
+bf_clause(nested_bag, (nested_bag(L) :- findall(p(A, Bs), (nested_a(A), findall(B, nested_b(A, B), Bs)), L))).
+% an inner bagof that FAILS (empty) must not lose the outer accumulator
+bf_clause(nested_fail, (nested_fail(L) :- findall(A, (nested_a(A), nested_try(A)), L))).
+bf_clause(nested_fail, (nested_try(_) :- bagof(B, nested_none(B), _))).
+bf_clause(nested_fail, nested_try(_)).
+bf_clause(nested_fail, (nested_none(_) :- fail)).
+
 %% bf_dynamic(?PI)
 %  Predicates the drivers create at run time with assertz/1. Declared dynamic
 %  in user: for SWI; not compiled for Rust (the runtime's dynamic database
@@ -441,7 +459,10 @@ check_all(Mode, Name) :-
 
 check_once(Mode, Name) :-
     bf_ensure_built(Mode),
-    (   rust_once(Mode, Name, ROut)
+    (   bf_lowered_out_of_scope(Name, Why)
+    ->  format(user_error, '  [~w] ~w: lowered entry not checked (~w)~n',
+               [Mode, Name, Why])
+    ;   rust_once(Mode, Name, ROut)
     ->  swi_once(Name, SOut),
         (   SOut == ROut
         ->  true
@@ -453,6 +474,17 @@ check_once(Mode, Name) :-
     ;   format(user_error, '  [~w] ~w: query predicate not lowered (skipped)~n',
                [Mode, Name])
     ).
+
+%% bf_lowered_out_of_scope(?Name, ?Why)
+%  Programs whose DIRECT lowered entry is wrong for a reason outside R-1.
+%  The lowered emitter has no begin_aggregate/end_aggregate support: it drops
+%  both instructions, so a lowered findall/bagof body runs its inner goal once
+%  as a plain conjunction (found while adding the R-1b cases; independent of
+%  the accumulator fix). The interpreted entry in functions mode, which is
+%  what an interpreted caller reaches, is still checked.
+bf_lowered_out_of_scope(nested,      lowered_aggregates_unsupported).
+bf_lowered_out_of_scope(nested_bag,  lowered_aggregates_unsupported).
+bf_lowered_out_of_scope(nested_fail, lowered_aggregates_unsupported).
 
 %% bf_lowered_required(?Name)
 %  Programs whose query predicate MUST be lowered in functions mode (so the

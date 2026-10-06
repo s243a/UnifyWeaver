@@ -978,7 +978,13 @@ wam_instruction_arm('Instruction::BuiltinCall(op, arity)', Body) :-
     Body = '                self.execute_builtin(op, *arity)'.
 
 wam_instruction_arm('Instruction::BeginAggregate(agg_type, value_reg, result_reg)', Body) :-
-    Body = '                self.aggregate_acc.clear();
+    Body = '                // R-1b: one accumulator per active aggregate frame. The
+                // enclosing frame''s solutions so far move into THIS frame''s
+                // data (after the continuation pc) and come back when this
+                // frame is finalised. The old `clear()` threw them away, so
+                // `findall(A, (a(A), findall(B, b(A,B), _)), L)` kept only the
+                // last A.
+                let __outer_acc = std::mem::take(&mut self.aggregate_acc);
                 // The continuation PC has to be known BEFORE the inner goal
                 // runs. It used to be recorded by EndAggregate -- but when the
                 // goal has ZERO solutions EndAggregate never executes, so the
@@ -1015,7 +1021,12 @@ wam_instruction_arm('Instruction::BeginAggregate(agg_type, value_reg, result_reg
                             Value::Atom(value_reg.clone().into()),
                             Value::Atom(result_reg.clone().into()),
                         ],
-                        data: vec![Value::Integer(__agg_ret_pc as i64)],
+                        data: {
+                            let mut __d = Vec::with_capacity(1 + __outer_acc.len());
+                            __d.push(Value::Integer(__agg_ret_pc as i64));
+                            __d.extend(__outer_acc);
+                            __d
+                        },
                     }),
                     cut_barrier: self.cut_barrier,
                     levels: Vec::new(),
@@ -5037,6 +5048,18 @@ compile_resume_builtin_to_rust(Code) :-
                 self.fact_table_attempt(state.args, rest, cont_pc)
             }
             "aggregate_frame" => {
+                // R-1b: this frame''s solutions are in aggregate_acc; the
+                // enclosing frame''s accumulator was parked in data[1..] by
+                // BeginAggregate. Put it back FIRST, so every exit below
+                // (including bagof/setof failing on an empty set) leaves the
+                // enclosing frame''s list intact, and finalise from `acc`.
+                let mut state = state;
+                let outer_acc: Vec<Value> = if state.data.len() > 1 {
+                    state.data.split_off(1)
+                } else {
+                    Vec::new()
+                };
+                let acc = std::mem::replace(&mut self.aggregate_acc, outer_acc);
                 if state.args.len() != 3 { return false; }
                 let agg_type = match &state.args[0] {
                     Value::Atom(s) => s.as_str(),
@@ -5052,7 +5075,7 @@ compile_resume_builtin_to_rust(Code) :-
                         let mut sum_i: i64 = 0;
                         let mut sum_f: f64 = 0.0;
                         let mut saw_float = false;
-                        for val in &self.aggregate_acc {
+                        for val in &acc {
                             match self.deref_var(&self.deref_heap(val)) {
                                 Value::Integer(n) => {
                                     sum_i += n;
@@ -5067,8 +5090,8 @@ compile_resume_builtin_to_rust(Code) :-
                         }
                         if saw_float { Value::Float(sum_f) } else { Value::Integer(sum_i) }
                     }
-                    "count" => Value::Integer(self.aggregate_acc.len() as i64),
-                    "collect" => Value::list(self.aggregate_acc.clone()),
+                    "count" => Value::Integer(acc.len() as i64),
+                    "collect" => Value::list(acc),
                     // bagof/setof differ from findall in exactly two ways at
                     // this (witness-free) level: they FAIL on an empty
                     // solution set, and setof sorts + dedups. The 4-operand
@@ -5076,12 +5099,12 @@ compile_resume_builtin_to_rust(Code) :-
                     // through to NoOp, so the aggregate frame was never pushed
                     // and the whole clause failed.
                     "bagof" | "bag" => {
-                        if self.aggregate_acc.is_empty() { return false; }
-                        Value::list(self.aggregate_acc.clone())
+                        if acc.is_empty() { return false; }
+                        Value::list(acc)
                     }
                     "setof" | "set" => {
-                        if self.aggregate_acc.is_empty() { return false; }
-                        let mut items: Vec<Value> = self.aggregate_acc.clone()
+                        if acc.is_empty() { return false; }
+                        let mut items: Vec<Value> = acc
                             .iter()
                             .map(|v| self.deref_heap(&self.deref_var(v)))
                             .collect();
@@ -5091,7 +5114,7 @@ compile_resume_builtin_to_rust(Code) :-
                     }
                     "max" => {
                         let mut best: Option<Value> = None;
-                        for val in &self.aggregate_acc {
+                        for val in &acc {
                             let current = self.deref_var(&self.deref_heap(val));
                             best = match best {
                                 None => Some(current),
@@ -5110,7 +5133,7 @@ compile_resume_builtin_to_rust(Code) :-
                     }
                     "min" => {
                         let mut best: Option<Value> = None;
-                        for val in &self.aggregate_acc {
+                        for val in &acc {
                             let current = self.deref_var(&self.deref_heap(val));
                             best = match best {
                                 None => Some(current),
@@ -5130,7 +5153,6 @@ compile_resume_builtin_to_rust(Code) :-
                     _ => return false,
                 };
 
-                self.aggregate_acc.clear();
                 // Bind through the Y-aware accessors. An aggregate embedded in a
                 // larger clause body has a *permanent* (Y) result register, which
                 // lives in the environment frame, not the flat regs array, so

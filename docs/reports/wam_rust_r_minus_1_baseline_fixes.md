@@ -147,3 +147,58 @@ per-file results and failing names as after D129, except
 `test_wam_rust_par_aggregate`'s `expensive_parallel_is_faster`, a wall-clock
 assertion (parallel vs sequential, untouched code) that failed once while the
 gate builds loaded the machine and passed on two reruns of the file alone.
+
+## R−1b (D131): one accumulator per active aggregate frame
+
+**Defect.** Inlined `findall/3`, `bagof/3`, `setof/3` and `aggregate_all/3`
+compile to `BeginAggregate … EndAggregate`. `BeginAggregate` pushes an
+aggregate-frame choice point and `EndAggregate` appends each solution to the
+machine's single `aggregate_acc`. `BeginAggregate` started with
+`aggregate_acc.clear()` and finalisation cleared it again, so an aggregate
+nested inside another aggregate's goal wiped the outer one's solutions so
+far: `nested(L)` gave `[b]` where SWI gives `[a,b]`, in both emit modes.
+
+**Change** (`wam_rust_target.pl` only: the `BeginAggregate` step arm and the
+`aggregate_frame` arm of `resume_builtin`; one step implementation serves
+both emit modes). `BeginAggregate` moves the enclosing accumulator out
+(`std::mem::take`) and parks it in the frame's `BuiltinState.data` after the
+continuation pc (`data = [ret_pc, outer…]`; with no enclosing aggregate this
+is the same one-element vector as before). Finalisation first splits the
+parked values off `data` and swaps them back into `aggregate_acc`, then
+computes the result from the frame's own list. The swap comes before every
+exit, so a `bagof`/`setof` that fails on an empty set, an unknown aggregate
+type or a result that does not unify all leave the enclosing frame's list
+intact. `data[0]` (the continuation pc) is read as before. The finalisation
+now moves the list into the result for `collect`/`bagof` instead of cloning
+it, which yields the same list.
+
+**Not changed.** A frame removed without finalisation (an exception thrown
+out of the aggregate's goal) still leaves `aggregate_acc` holding the
+abandoned inner list, as before; `catch/3` does not restore it. The
+parallel aggregate path (`par_aggregate.rs`) runs on forked machines and is
+unaffected.
+
+**Tests.** New harness programs: `nested` (the design's case), `nested_bag`
+(the inner result is used: `findall(p(A,Bs), (nested_a(A), findall(B,
+nested_b(A,B), Bs)), L)`), and `nested_fail` (an inlined inner `bagof` that
+fails on an empty set, reached through a helper clause, must not lose the
+outer list). Before: `[b]`, `[p(b,[two])]` and `[b]` in both modes; after:
+equal to SWI in both modes. The direct lowered entries of these three
+programs are not checked: the lowered emitter has no `begin_aggregate` /
+`end_aggregate` support at all and drops both instructions, so a lowered
+`findall` body runs its goal once as a plain conjunction (for example
+`lowered_nested_1` returns `L = a`). That is a separate lowered-tier defect,
+outside R−1; it is reported here and left unchanged.
+
+**Gates.** Term differential 2600/0/0, term corpus 51/51, store differential
+503/0/0, store corpus 51/51 and identical to the term corpus, lib 260/260,
+CI rust conformance smoke rc=0 (unsampled and sample 2). **Byte identity:**
+the generated crates differ from D130 only in the two aggregate arms; all four
+output JSONLs and scale `--bench` stdout (N=40, 5000) are `cmp`-identical to
+the base, so the frozen baseline is unchanged. **Perf:** callgrind N=40
+`--bench` 34.41 M Ir (D130 34.43 M, base 34.41 M): no measurable change.
+**Plunit:** same per-file results and failing names as after D130, including
+the `expensive_parallel_is_faster` timing flake. That test compiles only
+`src/unifyweaver/targets/rust_runtime/par_aggregate.rs` (a standalone toy
+machine that no R−1 commit touches) and asserts parallel wall time below
+sequential; it failed again under gate load and passed 1 of 2 reruns alone.
