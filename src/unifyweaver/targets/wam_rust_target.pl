@@ -10861,7 +10861,12 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         -> WamOptions = WamOptions0
         ;  WamOptions = [inline_bagof_setof(true)|WamOptions0]
         ),
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, WamOptions, WamCode),
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, WamOptions, WamCode0),
+        % R-1c: initialise, before the guard, every permanent variable first
+        % seen inside an if-then-else/disjunction and read after it (Rust
+        % only; the shared compiler is unchanged). Feeds both the shared
+        % instruction table and the lowered emitter.
+        rust_ite_init_permanent_vars(WamCode0, WamCode),
         (   option(foreign_lowering(ForeignSpec), Options),
             rust_foreign_spec(Pred/Arity, ForeignSpec, _, _)
         ->  % Foreign-lowered: compile individually (not shared WAM)
@@ -10899,6 +10904,185 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         Entry = classified(Module, Pred, Arity, failed, PredCode)
     ),
     classify_predicates(Rest, Options, RestEntries).
+
+%% rust_ite_init_permanent_vars(+WamCode0, -WamCode) is det.
+%  R-1c (docs/proposals/wam_rust_heap_cell_rewrite_design.md §12.1, §6.2 item 3,
+%  §6.6). After an if-then-else the shared compiler continues with the Then
+%  branch's variable map (`compile_if_then_else/7`: `Vf = V2`; disjunctions:
+%  `Vf = V1`). So a permanent variable whose FIRST occurrence is inside the
+%  construct is written by a first-occurrence instruction on one path only:
+%
+%    p(A,R) :- ( q(A,X) -> true ; true ), r(X,R).
+%      get_level Y4 / try_me_else L_ite_else_1 / put_value Y1,A1 /
+%      put_variable Y2,A2 / call q/2 / ... / L_ite_cont_1: put_value Y2,A1
+%
+%  When q fails, backtracking to the guard restores the environment snapshot,
+%  so the else path reaches `put_value Y2` with Y2 absent and fails (SWI:
+%  X stays unbound and r/2 runs). A variable first seen in the ELSE branch is
+%  the mirror case: the read after the construct is compiled as another
+%  first occurrence and replaces the else branch's binding with a fresh
+%  variable.
+%
+%  The Rust target therefore rewrites each clause's WAM text. A construct is
+%  `try_me_else L_ite_else_N ... L_ite_else_N: ... L_ite_cont_N:` (an ITE or
+%  a disjunction). Its SCOPE is the code its guard dominates: from the guard
+%  to the end of the branch of the enclosing construct that contains it (the
+%  enclosing `L_ite_else_M:` label when it sits in a Then/left branch, the
+%  enclosing `L_ite_cont_M:` when it sits in an Else/right branch), or to the
+%  end of the clause at top level. For every Yn whose first occurrence lies
+%  strictly inside a construct and which occurs again after that construct
+%  but within its scope, it inserts the self-init `put_variable Yn, Yn` (the
+%  form the shared compiler already uses for aggregate result variables)
+%  before the outermost such construct's guard (before its `get_level`, when
+%  there is one), and turns every first-occurrence instruction for Yn
+%  (get/put/unify/set _variable) inside that scope into its _value form.
+%  Occurrences outside the scope (in a sibling branch of an enclosing
+%  construct) are on paths the guard does not dominate and stay as they are.
+%  Yn then holds a fresh variable on every path through the guard, the CP
+%  snapshot taken at the guard includes it, and the lowered tier, which reads
+%  the same text, behaves the same way. Barrier registers (get_level / cut
+%  operands) are never candidates. Clauses are delimited by any label that is
+%  not an `L_ite_` label; Y numbering is per clause.
+rust_ite_init_permanent_vars(WamCode0, WamCode) :-
+    atom_string(WamCode0, Str),
+    split_string(Str, "\n", "", Lines0),
+    (   \+ ( member(L, Lines0), sub_string(L, _, _, _, "L_ite_else_") )
+    ->  WamCode = WamCode0
+    ;   rust_r1c_segments(Lines0, [], Segs),
+        maplist(rust_r1c_segment, Segs, Segs1),
+        append(Segs1, Lines),
+        atomic_list_concat(Lines, '\n', WamCode)
+    ).
+
+rust_r1c_segments([], Cur, [Seg]) :- reverse(Cur, Seg).
+rust_r1c_segments([L|Ls], Cur, Segs) :-
+    (   Cur \== [], rust_r1c_clause_label(L)
+    ->  reverse(Cur, Seg),
+        Segs = [Seg|Rest],
+        rust_r1c_segments(Ls, [L], Rest)
+    ;   rust_r1c_segments(Ls, [L|Cur], Segs)
+    ).
+
+rust_r1c_clause_label(L) :-
+    split_string(L, "", " \t", [T]),
+    sub_string(T, _, 1, 0, ":"),
+    \+ sub_string(T, 0, _, _, "L_ite_").
+
+rust_r1c_tokens(L, Toks) :-
+    split_string(L, " ,\t", " ,\t", Parts),
+    exclude(==(""), Parts, Toks).
+
+%  Y operands of a line; ITE barrier registers are not variables.
+rust_r1c_line_ys(L, Ys) :-
+    rust_r1c_tokens(L, Toks),
+    (   Toks = [Op|Args], \+ memberchk(Op, ["get_level", "cut"])
+    ->  include(rust_r1c_is_y, Args, Ys)
+    ;   Ys = []
+    ).
+
+rust_r1c_is_y(T) :-
+    string_concat("Y", N, T),
+    N \== "",
+    string_codes(N, Cs),
+    forall(member(C, Cs), code_type(C, digit)).
+
+rust_r1c_segment(Lines, Lines1) :-
+    length(Lines, N),
+    (   N =:= 0 -> Idxs = [] ; numlist(1, N, Idxs) ),
+    pairs_keys_values(IL, Idxs, Lines),
+    rust_r1c_regions(IL, Regions),
+    (   Regions == []
+    ->  Lines1 = Lines
+    ;   findall(Y, ( member(_-L, IL), rust_r1c_line_ys(L, Ys), member(Y, Ys) ), Ys0),
+        sort(Ys0, AllYs),
+        findall(init(Guard, Y, ScopeEnd),
+                ( member(Y, AllYs),
+                  rust_r1c_first_occ(IL, Y, F),
+                  findall(G-SE, ( member(R, Regions), R = r(G, S, _, E),
+                                  S < F, F < E,
+                                  rust_r1c_scope_end(R, Regions, N, SE),
+                                  rust_r1c_occurs_between(IL, Y, E, SE) ),
+                          GEs),
+                  GEs \== [],
+                  msort(GEs, [Guard-ScopeEnd|_])   % outermost: earliest guard
+                ),
+                Inits0),
+        msort(Inits0, Inits),
+        (   Inits == []
+        ->  Lines1 = Lines
+        ;   rust_r1c_rewrite(IL, Inits, Lines1)
+        )
+    ).
+
+%  r(GuardIdx, TryIdx, ElseLabelIdx, ContIdx) for every `try_me_else
+%  L_ite_else_N` with its `L_ite_else_N:` and `L_ite_cont_N:` labels in the
+%  same clause.
+rust_r1c_regions(IL, Regions) :-
+    findall(r(G, I, K, J),
+            ( member(I-L, IL),
+              rust_r1c_tokens(L, ["try_me_else", Label]),
+              sub_string(Label, 0, 11, _, "L_ite_else_"),
+              sub_string(Label, 11, _, 0, Num),
+              atomic_list_concat([Label, ":"], ElseAtom),
+              atom_string(ElseAtom, ElseLine),
+              member(K-LK, IL),
+              split_string(LK, "", " \t", [ElseLine]),
+              atomic_list_concat(["L_ite_cont_", Num, ":"], ContAtom),
+              atom_string(ContAtom, ContLine),
+              member(J-LJ, IL),
+              split_string(LJ, "", " \t", [ContLine]),
+              I0 is I - 1,
+              (   member(I0-LG, IL), rust_r1c_tokens(LG, ["get_level", _])
+              ->  G = I0
+              ;   G = I
+              ) ),
+            Regions).
+
+rust_r1c_first_occ(IL, Y, F) :-
+    member(F-L, IL), rust_r1c_line_ys(L, Ys), memberchk(Y, Ys), !.
+
+%  The last line a construct's guard dominates: the end of the enclosing
+%  construct's branch that contains it, or the clause end (N) at top level.
+rust_r1c_scope_end(r(_, I, _, J), Regions, N, End) :-
+    findall(IP-r(IP, KP, JP),
+            ( member(r(_, IP, KP, JP), Regions), IP < I, J < JP ),
+            Parents),
+    (   Parents == []
+    ->  End = N
+    ;   max_member(_-r(_, KP, JP), Parents),      % innermost: latest try
+        (   I < KP -> End = KP ; End = JP )
+    ).
+
+rust_r1c_occurs_between(IL, Y, E, End) :-
+    member(K-L, IL), K > E, K =< End,
+    rust_r1c_line_ys(L, Ys), memberchk(Y, Ys), !.
+
+rust_r1c_rewrite(IL, Inits, Lines) :-
+    findall(Line,
+            ( member(I-L, IL),
+              (   member(init(I, Y, _), Inits),
+                  format(string(Line), "    put_variable ~w, ~w", [Y, Y])
+              ;   rust_r1c_convert(I, L, Inits, Line)
+              ) ),
+            Lines).
+
+rust_r1c_convert(I, L, Inits, Line) :-
+    rust_r1c_tokens(L, Toks),
+    (   Toks = [Op, Y|_],
+        rust_r1c_var_to_value(Op, Op1),
+        member(init(G, Y, End), Inits), G < I, I =< End,
+        sub_string(L, B, _, A, Op)
+    ->  sub_string(L, 0, B, _, Pre),
+        sub_string(L, _, A, 0, Post),
+        atomic_list_concat([Pre, Op1, Post], LineA),
+        atom_string(LineA, Line)
+    ;   Line = L
+    ).
+
+rust_r1c_var_to_value("get_variable", "get_value").
+rust_r1c_var_to_value("put_variable", "put_value").
+rust_r1c_var_to_value("unify_variable", "unify_value").
+rust_r1c_var_to_value("set_variable", "set_value").
 
 %% collect_wam_entries(+Classified, +StartPC, -WamEntries, -AllInstrParts, -AllLabelParts)
 %  Iterates over classified predicates, collecting WAM code with cumulative PCs.

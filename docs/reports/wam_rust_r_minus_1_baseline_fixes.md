@@ -202,3 +202,114 @@ the `expensive_parallel_is_faster` timing flake. That test compiles only
 `src/unifyweaver/targets/rust_runtime/par_aggregate.rs` (a standalone toy
 machine that no R−1 commit touches) and asserts parallel wall time below
 sequential; it failed again under gate load and passed 1 of 2 reruns alone.
+
+## R−1c (D132): permanent variables first seen inside an if-then-else (Rust only)
+
+**Defect.** After `( C -> T ; E )` the shared compiler continues with the
+Then branch's variable map (`compile_if_then_else/7` in `wam_target.pl`:
+`Vf = V2` in both cases; `compile_disjunction/6` does the same with the left
+branch's map). A permanent variable whose first occurrence is inside the
+construct is therefore written by a first-occurrence instruction on one path
+only. Two shapes:
+
+- **first seen in the condition** (the design's case, §6.2 item 3):
+  `ite_map(A,R) :- (ite_q(A,X) -> true ; true), ite_r(X,R)` compiles the
+  condition's `X` as `put_variable Y2, A2` after the guard. When `ite_q`
+  fails, backtracking to the guard restores the environment snapshot, Y2 is
+  absent again, and the `put_value Y2, A1` after the ITE fails. SWI leaves
+  `X` unbound and gives `[a,b]` for `ite_map(no,R)`; the interpreter gave
+  `[]`. `rundoite(c,els)` failed in the interpreter for the same reason,
+  while the lowered tier (whose condition writes are not undone, §6.6)
+  succeeded, so the two Rust tiers disagreed.
+- **first seen in the else branch** (found while writing the tests):
+  `ite_els_only(A,R) :- (A == 1 -> true ; X = one), R = X` keeps the Then
+  map, which lacks `X`, so the `R = X` after the ITE is compiled as another
+  first occurrence (`put_variable`) and replaces the else branch's binding
+  with a fresh variable. SWI gives `one` for `ite_els_only(2,R)`; both Rust
+  tiers gave `_V2`. Disjunctions share the label shape and the rule:
+  `dis_map(yes,R) :- (ite_q(yes,X) ; true), ite_r(X,R)` gave `[a]` for SWI's
+  `[a,a,b]`.
+
+**Change** (Rust only, as the owner decided; `wam_target.pl` is unchanged).
+`classify_predicates/3` in `wam_rust_target.pl` passes each predicate's WAM
+text through the new `rust_ite_init_permanent_vars/2` right after
+`compile_predicate_to_wam/3`, so the shared instruction table and the lowered
+emitter both see the rewritten text. Clauses are delimited by any label
+that is not an `L_ite_` label (Y numbering is per clause). A construct is
+`try_me_else L_ite_else_N … L_ite_else_N: … L_ite_cont_N:`, and its *scope*
+is the code its guard dominates: from the guard to the end of the enclosing
+construct's branch that contains it (the enclosing `L_ite_else_M:` label for
+a Then/left branch, the enclosing `L_ite_cont_M:` for an Else/right branch),
+or to the clause end at top level. For every `Yn` whose first occurrence
+lies strictly inside a construct and that occurs again after the construct
+but within its scope, it:
+
+1. inserts `put_variable Yn, Yn` before the outermost such construct's guard
+   (before its `get_level` when there is one). This self-init form is the one
+   the shared compiler already emits for aggregate result variables; it puts
+   a fresh variable in the Y slot only.
+2. turns every first-occurrence instruction for `Yn` inside that scope
+   (`get_variable`, `put_variable`, `unify_variable`, `set_variable`) into its
+   `_value` form. With `Yn` already holding an unbound variable, each value
+   form does what the variable form did on the path that reached it, and the
+   value survives into the continuation on every path.
+
+Occurrences outside the scope sit in a sibling branch of an enclosing
+construct, on paths that never pass the guard; they keep their
+first-occurrence form. The scope limit matters: a first version of this
+change hoisted the init only past "after the continuation label", and in the
+resolver's `resolve_pending/6` (`Ver` and `DepReqs` first seen in an ITE
+nested in one branch of an outer ITE and seen again in the outer ITE's other
+branch) it turned the other branch's `put_variable` into a `put_value` of an
+absent slot: every resolve failed in the differential. The harness case
+`ite_sibling_else` reproduces that shape and failed on the first version.
+
+The guard's choice point is pushed after the init, so its snapshot includes
+`Yn`; a failed condition restores `Yn` to the fresh variable and undoes its
+bindings through the trail. Barrier registers (`get_level`/`cut` operands)
+are never candidates. Predicates without an `L_ite_else_` label are returned
+unchanged. This is the design's preferred form (§12.1: "initialize it before
+the guard"), and it gives the lowered ITE condition the plain policy of §6.6:
+no slot read after the condition is first written inside it.
+
+For `ite_map` the rewritten clause is:
+
+```
+allocate / get_variable Y1, A1 / get_variable Y3, A2
+put_variable Y2, Y2                      % R-1c init
+get_level Y4 / try_me_else L_ite_else_1
+put_value Y1, A1 / put_value Y2, A2      % was put_variable Y2, A2
+call ite_q/2, 2 / cut Y4 / ... / L_ite_cont_1:
+put_value Y2, A1 / put_value Y3, A2 / deallocate / execute ite_r/2
+```
+
+**Tests.** New harness programs: `ite_map` (`ite_map(no,R)`, the design's
+query) and `ite_map_yes` (the condition succeeds), `rundoite` (query
+`rundoite(c,els)`), `ite_els_only`, `dis_map`, and `ite_sibling_then` /
+`ite_sibling_else` (the scope rule above). `ite_map_yes` and the two sibling
+cases already pass on the base; they guard against the rewrite breaking a
+working shape. Before: `ite_map` `[]` in both
+modes (SWI `[a,b]`); `rundoite` no solution in the interpreter (SWI and the
+lowered tier: true); `ite_els_only` `_V2` in both modes and `_V1` from the
+direct lowered call (SWI `one`); `dis_map` `[a]` (SWI `[a,a,b]`). After: all
+equal to SWI in interpreter and functions mode, and the direct lowered calls
+equal `once/1`, so the interpreter and the lowered tier agree on `rundoite`.
+`test_wam_rust_lowered_ite_exec.pl`, which pins the lowered
+`rundoite(c,els)` = true and `rundoite(c,then)` = false, still passes.
+
+**Gates.** Term differential 2600/0/0, term corpus 51/51, store differential
+503/0/0, store corpus 51/51 and identical to the term corpus, lib 260/260,
+CI rust conformance smoke rc=0 (unsampled and sample 2). **Byte identity:**
+the rewrite touches nine resolver predicates (`audit_holds/4`,
+`blocked_acc/5`, `direct_on/4`, `filter_satisfies/3`,
+`keep_installed_or_base/4`, `matching_deps/4`, `matching_versions/4`,
+`removal_orphans/3`, `scan_base_holds/3`: one init each, the shape where a
+variable is first written in both branches of an ITE and read after it), so
+instruction indices in the generated table shift; all four output JSONLs and
+scale `--bench` stdout (N=40, 5000) are still `cmp`-identical to the base,
+so the frozen baseline is unchanged. Those predicates already worked because
+both branches wrote the variable. **Perf:** callgrind N=40 `--bench`
+34.42 M Ir (base 34.41 M, +0.02%). **Plunit:** same per-file results and
+failing names as after D129 (32 / 20 files, 29 failing tests; the
+`par_aggregate` timing test passed with the gate builds no longer running
+concurrently).

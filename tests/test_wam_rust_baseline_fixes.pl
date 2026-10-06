@@ -113,6 +113,36 @@ bf_clause(nested_fail, (nested_try(_) :- bagof(B, nested_none(B), _))).
 bf_clause(nested_fail, nested_try(_)).
 bf_clause(nested_fail, (nested_none(_) :- fail)).
 
+% R-1c: a permanent variable first seen inside an if-then-else (or a
+% disjunction) and read after it is initialised on every path.
+bf_program(ite_map,      'R-1c', ite_map(no, R),        R,   true).
+bf_program(ite_map_yes,  'R-1c', ite_map(yes, R),       R,   true).
+bf_program(rundoite,     'R-1c', rundoite(c, els),      yes, true).
+bf_program(ite_els_only, 'R-1c', ite_els_only(2, R),    R,   true).
+bf_program(dis_map,      'R-1c', dis_map(yes, R),       R,   true).
+
+bf_clause(ite_map, (ite_map(A, R) :- ( ite_q(A, X) -> true ; true ), ite_r(X, R))).
+bf_clause(ite_map, ite_q(yes, a)).
+bf_clause(ite_map, ite_r(a, a)).
+bf_clause(ite_map, ite_r(b, b)).
+bf_clause(rundoite, (rundoite(X, R) :- ( ( Y = a, Y = b ) -> R = then ; R = els ), X = Y)).
+% first seen in the ELSE branch: the compiler kept the Then map, so the read
+% after the ITE was compiled as a fresh variable
+bf_clause(ite_els_only, (ite_els_only(A, R) :- ( A == 1 -> true ; X = one ), R = X)).
+% the same rule for a plain disjunction
+bf_clause(dis_map, (dis_map(A, R) :- ( ite_q(A, X) ; true ), ite_r(X, R))).
+% X is first seen inside an ITE nested in the outer Then, and seen again in
+% the outer Else, a sibling branch the inner guard does not dominate: no
+% initialisation may be hoisted into the Then branch for it (the resolver's
+% resolve_pending/6 has this shape)
+bf_program(ite_sibling_then, 'R-1c', ite_sibling(1, R), R, true).
+bf_program(ite_sibling_else, 'R-1c', ite_sibling(2, R), R, true).
+bf_clause(ite_sibling_then,
+          (ite_sibling(A, R) :- ( A == 1
+                                -> ( A > 5 -> R = big ; ite_mk(X), R = got(X) )
+                                ;  ite_mk(X), R = other(X) ))).
+bf_clause(ite_sibling_then, ite_mk(m)).
+
 %% bf_dynamic(?PI)
 %  Predicates the drivers create at run time with assertz/1. Declared dynamic
 %  in user: for SWI; not compiled for Rust (the runtime's dynamic database
