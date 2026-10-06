@@ -83,3 +83,67 @@ strict subset of the base's: `test_wam_rust_cut_semantics` (all four modes;
 its probe driver no longer fails to build), `test_wam_rust_lowered_dispatch`,
 `_lowered_ite_exec` and `_lowered_t4`/`_t5`/`_t6` now pass, and nothing newly
 fails.
+
+## R−1a (D130): a backtrack floor for every nested execution
+
+**Defect.** `backtrack()` never resumes a choice point at or below
+`backtrack_floor` (D71). `call_goal_once` sets the floor to its entry depth
+around a meta-call, but four other places run nested code with no floor, so a
+goal that failed inside the nested `run()` backtracked into the caller's
+choice points from inside the nested run (rule L3 of the design, §5.2):
+
+| site | nested execution | what went wrong |
+| --- | --- | --- |
+| `catch/3` (`wam_rust_target.pl`, `execute_builtin`) | the goal and, after a caught ball, the recovery goal, both through `call_goal_value` → `call_goal_key` → `run()` | `catch_floor`: the failing goal resumed the caller's second clause inside the nested run; the driver then failed |
+| lowered `call` / `execute` (`wam_rust_lowered_emitter.pl`) | `vm.run()` of the callee | `lower_floor` (functions mode): the failing `lower_bad(2)` resumed the driver's choice points |
+| `lowered_dispatch` (`state.rs.mustache`) | the whole lowered body, entered from an interpreted `call`/`execute` | raised only `cut_barrier`, which bounds `!` but not failure |
+| dynamic rule bodies (`dynamic_db_methods.rs.mustache`, `dynamic_body_solutions`) | `call_goal_value` of a body goal on a cloned machine | `dyn_floor`: `dq(X) :- dbad(X)` with `dbad/1` failing resumed the caller's clause CP inside the clone (this confirms the design's suspected cause, §16) |
+
+**Change.** Each site saves `backtrack_floor`, sets it to its entry depth
+(`choice_points.len()` when the nested execution starts), and restores it
+on every exit: after the call returns for `catch/3` (goal and recovery
+separately) and lowered `call`/`execute`; after `f(self)` in
+`lowered_dispatch`, before its decline/success split; and in the dynamic
+solver each collected solution machine gets the caller's floor back (the
+solver replaces `*self` with one of them).
+
+**Not changed, with reasons.**
+
+- The six hybrid-wrapper `vm.backtrack()` loops in `rust_target.pl` (§8 of
+  the design). Every wrapper body starts with `vm.reset_query()`, which
+  clears `choice_points` and sets `backtrack_floor = 0`, and then replaces
+  `code` and `labels`. When the loop runs, the only choice points that exist
+  are the ones the kernel pushed inside the wrapper, so an exhausted stream
+  cannot resume an older caller CP: there is none. A floor at the entry depth
+  would be 0, the value `reset_query` already set. This answers the design's
+  open question (§16) for the current code; the rewrite's scope for the
+  wrappers (§8) still applies.
+- The general `\+/1` builtin arm (`execute_builtin`) runs a nested `run()`
+  with a `naf_succeed` sentinel CP that `resume_builtin` does not handle, so
+  a failing goal can pass the sentinel. Under the Rust target's default
+  options the compiler does not emit it (`\+` is inlined as an ITE, and
+  `call/N` reaches `\+` through `call_goal_once`, which is floored), so no
+  compiled program in the harness or the resolver reaches it; noted here for
+  the rewrite, not changed (it is outside the R−1a site list).
+
+**Tests.** New harness programs: `catch_floor`, `catch_rec_floor` (the
+recovery goal fails after a caught `throw`), `lower_floor`, `lower_floor_ex`
+(the failing callee is reached by a lowered `execute`), and `dyn_floor`
+(driver runs `assertz((dq(Y) :- dbad(Y)))` first). Before the fix:
+`catch_floor`, `catch_rec_floor` and `dyn_floor` printed `ok` and then the
+driver failed in both modes; `lower_floor` and `lower_floor_ex` did the same
+in functions mode (the interpreter was already right). After: all match SWI
+in both modes, and the direct lowered calls match `once/1`.
+
+**Gates.** Term differential 2600/0/0, term corpus 51/51, store differential
+503/0/0, store corpus 51/51 and identical to the term corpus, lib 260/260,
+CI rust conformance smoke rc=0 (unsampled and sample 2). **Byte identity:**
+the generated resolver crates differ from base only by the floor code above
+(`lowered_dispatch`, `catch/3`, the dynamic solver); all four output JSONLs and
+scale `--bench` stdout (N=40, 5000) are `cmp`-identical to the base, so the
+frozen baseline is unchanged. **Perf:** callgrind N=40 `--bench` 34.43 M Ir,
+identical to D129 (base 34.41 M; +0.05%, the noise floor). **Plunit:** same
+per-file results and failing names as after D129, except
+`test_wam_rust_par_aggregate`'s `expensive_parallel_is_faster`, a wall-clock
+assertion (parallel vs sequential, untouched code) that failed once while the
+gate builds loaded the machine and passed on two reruns of the file alone.

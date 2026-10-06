@@ -649,10 +649,16 @@
                 let mut vm = self.clone();
                 let cp_depth = vm.choice_points.len();
                 let mut out = Vec::new();
+                // R-1a (L3): the body goal's nested run may resume only the
+                // choice points it pushes itself. Each collected solution
+                // gets the caller's floor back.
+                let saved_floor = vm.backtrack_floor;
+                vm.backtrack_floor = cp_depth;
                 if vm.call_goal_value(&other) {
                     loop {
                         let mut solution = vm.clone();
                         solution.choice_points.truncate(cp_depth);
+                        solution.backtrack_floor = saved_floor;
                         out.push(solution);
                         if out.len() >= limit { break; }
                         if vm.choice_points.len() <= cp_depth { break; }

@@ -6985,7 +6985,15 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 let cp_depth = self.choice_points.len();
                 let saved_cp = self.cp;
                 let saved_cut = self.cut_barrier;
-                if self.call_goal_value(&goal) {
+                // R-1a (L3): the goal''s nested run may resume only choice
+                // points it pushed itself. Without the floor a failing goal
+                // backtracked into the CALLER''s clause alternatives from
+                // inside the nested run, and catch/3 could not restore them.
+                let saved_floor = self.backtrack_floor;
+                self.backtrack_floor = cp_depth;
+                let goal_ok = self.call_goal_value(&goal);
+                self.backtrack_floor = saved_floor;
+                if goal_ok {
                     // Goal succeeded: commit to its first solution
                     // (bindings carry forward) and advance past catch/3.
                     self.choice_points.truncate(cp_depth);
@@ -7022,7 +7030,12 @@ compile_execute_meta_builtin_to_rust(Code) :-
                         let mark2 = self.trail.len();
                         if self.unify(&catcher_raw, &ball) {
                             let recovery = self.deref_heap(&self.deref_var(&recovery_raw));
-                            if self.call_goal_value(&recovery) {
+                            // R-1a: the recovery goal gets its own floor.
+                            let saved_floor = self.backtrack_floor;
+                            self.backtrack_floor = self.choice_points.len();
+                            let recovery_ok = self.call_goal_value(&recovery);
+                            self.backtrack_floor = saved_floor;
+                            if recovery_ok {
                                 self.pc = catch_pc + 1;
                                 true
                             } else { false }

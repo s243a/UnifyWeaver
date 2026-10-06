@@ -4578,12 +4578,19 @@ impl WamState {
         let saved_pc = self.pc;
         let saved_barrier = self.cut_barrier;
         let saved_pending = self.pending_cut_barrier.take();
+        // R-1a (L3): a backtrack floor at the entry depth as well as the cut
+        // barrier. The barrier only bounds `!`; without the floor a nested
+        // `run()` inside the lowered body that failed backtracked into the
+        // interpreted caller's choice points.
+        let saved_floor = self.backtrack_floor;
         self.cp = 0;
         self.cut_barrier = cp_depth;
+        self.backtrack_floor = cp_depth;
         let ok = f(self);
         let left_choice_points = self.choice_points.len() > cp_depth;
         self.cp = saved_cp;
         self.cut_barrier = saved_barrier;
+        self.backtrack_floor = saved_floor;
         self.pending_cut_barrier = saved_pending;
         if left_choice_points {
             self.choice_points.truncate(cp_depth);

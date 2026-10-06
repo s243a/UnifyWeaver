@@ -1042,13 +1042,21 @@ emit_one(deallocate, I) :-
 
 % --- Control instructions ---
 
+% R-1a: the nested `vm.run()` of a lowered call/execute runs under a
+% backtrack floor at the call's entry depth (rule L3 of the heap-cell design,
+% the mechanism `call_goal_once` uses), so a callee that fails returns false
+% here instead of resuming a choice point older than the call.
 emit_one(call(PredStr, _NStr), I) :-
     format("~w// call ~w~n", [I, PredStr]),
     format("~w{~n", [I]),
     format("~w    let saved_cp = vm.cp;~n", [I]),
     format("~w    if let Some(&pc) = vm.labels.get(\"~w\") {~n", [I, PredStr]),
     format("~w        vm.pc = pc;~n", [I]),
-    format("~w        if !vm.run() { return false; }~n", [I]),
+    format("~w        let saved_floor = vm.backtrack_floor;~n", [I]),
+    format("~w        vm.backtrack_floor = vm.choice_points.len();~n", [I]),
+    format("~w        let ok = vm.run();~n", [I]),
+    format("~w        vm.backtrack_floor = saved_floor;~n", [I]),
+    format("~w        if !ok { return false; }~n", [I]),
     format("~w    } else { return false; }~n", [I]),
     format("~w    vm.cp = saved_cp;~n", [I]),
     format("~w}~n", [I]).
@@ -1057,7 +1065,11 @@ emit_one(execute(PredStr), I) :-
     format("~w// execute ~w (tail call)~n", [I, PredStr]),
     format("~wif let Some(&pc) = vm.labels.get(\"~w\") {~n", [I, PredStr]),
     format("~w    vm.pc = pc;~n", [I]),
-    format("~w    return vm.run();~n", [I]),
+    format("~w    let saved_floor = vm.backtrack_floor;~n", [I]),
+    format("~w    vm.backtrack_floor = vm.choice_points.len();~n", [I]),
+    format("~w    let ok = vm.run();~n", [I]),
+    format("~w    vm.backtrack_floor = saved_floor;~n", [I]),
+    format("~w    return ok;~n", [I]),
     format("~w}~n", [I]),
     format("~wreturn false;~n", [I]).
 

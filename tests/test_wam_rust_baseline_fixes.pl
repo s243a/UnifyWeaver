@@ -56,6 +56,8 @@
 %   Setup     : goal run once by the driver before the query loop.
 % ---------------------------------------------------------------------
 
+:- discontiguous bf_program/5, bf_clause/2.
+
 % R-1f: atom constants and fresh variables in lowered code.
 bf_program(lf_atoms,  'R-1f', lf_atoms(b, R),   R,   true).
 bf_program(lf_fresh,  'R-1f', lf_fresh(R),      R,   true).
@@ -67,15 +69,42 @@ bf_clause(lf_fresh, lf_pair(_, right)).
 bf_clause(lf_nil,   (lf_nil([], R) :- R = empty)).
 bf_clause(lf_nil,   (lf_nil([_|_], R) :- R = cons)).
 
-%% bf_first_solution_catch(?Name)
-%  Programs oracled against first-solution catch/3 (see the header).
-:- dynamic bf_first_solution_catch/1.
+% R-1a: every nested execution has a backtrack floor.
+bf_program(catch_floor,     'R-1a', catch_floor(X),     X, true).
+bf_program(catch_rec_floor, 'R-1a', catch_rec_floor(X), X, true).
+bf_program(lower_floor,     'R-1a', lower_floor(X),     X, true).
+bf_program(lower_floor_ex,  'R-1a', lower_floor_ex(X),  X, true).
+bf_program(dyn_floor,       'R-1a', dyn_floor(X),       X,
+           assertz((dq(Y) :- dbad(Y)))).
+
+bf_clause(catch_floor, (catch_floor(X) :- catch(catch_bad, _, true), X = wrong)).
+bf_clause(catch_floor, catch_floor(ok)).
+bf_clause(catch_floor, (catch_bad :- fail)).
+% the recovery goal fails after a caught throw
+bf_clause(catch_rec_floor, (catch_rec_floor(X) :- catch(throw(oops), _, catch_bad), X = wrong)).
+bf_clause(catch_rec_floor, catch_rec_floor(ok)).
+bf_clause(lower_floor, (lower_floor(X) :- lower_helper, X = -1)).
+bf_clause(lower_floor, lower_floor(0)).
+bf_clause(lower_floor, (lower_helper :- lower_bad(2), 3 = 3)).
+bf_clause(lower_floor, lower_bad(1)).
+% the failing callee is reached by a lowered `execute` (tail call)
+bf_clause(lower_floor_ex, (lower_floor_ex(X) :- lower_tail, X = -1)).
+bf_clause(lower_floor_ex, lower_floor_ex(0)).
+bf_clause(lower_floor_ex, (lower_tail :- lower_bad(2))).
+bf_clause(dyn_floor, (dyn_floor(X) :- dq(X), X = wrong)).
+bf_clause(dyn_floor, dyn_floor(ok)).
+bf_clause(dyn_floor, (dbad(_) :- fail)).
 
 %% bf_dynamic(?PI)
 %  Predicates the drivers create at run time with assertz/1. Declared dynamic
 %  in user: for SWI; not compiled for Rust (the runtime's dynamic database
 %  serves them).
-:- dynamic bf_dynamic/1.
+bf_dynamic(dq/1).
+
+%% bf_first_solution_catch(?Name)
+%  Programs oracled against first-solution catch/3 (see the header).
+:- dynamic bf_first_solution_catch/1.
+
 
 % ---------------------------------------------------------------------
 % Installation
