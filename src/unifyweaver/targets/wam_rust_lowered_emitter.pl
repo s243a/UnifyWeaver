@@ -898,7 +898,7 @@ emit_one(get_constant(CStr, AiStr), I) :-
         format("~w        Some(true) => {}~n", [I]),
         format("~w        Some(false) => return false,~n", [I]),
         format("~w        None => {~n", [I]),
-        format("~w            if !vm.head_constant(\"~w\", Value::Atom(\"~w\".to_string())) { return false; }~n", [I, Ai, Esc]),
+        format("~w            if !vm.head_constant(\"~w\", Value::Atom(\"~w\".into())) { return false; }~n", [I, Ai, Esc]),
         format("~w        }~n", [I]),
         format("~w    }~n", [I]),
         format("~w}~n", [I])
@@ -934,7 +934,7 @@ emit_one(get_nil(AiStr), I) :-
     format("~w        Some(true) => {}~n", [I]),
     format("~w        Some(false) => return false,~n", [I]),
     format("~w        None => {~n", [I]),
-    format("~w            if !vm.head_constant(\"~w\", Value::Atom(\"[]\".to_string())) { return false; }~n", [I, Ai]),
+    format("~w            if !vm.head_constant(\"~w\", Value::Atom(\"[]\".into())) { return false; }~n", [I, Ai]),
     format("~w        }~n", [I]),
     format("~w    }~n", [I]),
     format("~w}~n", [I]).
@@ -975,7 +975,7 @@ emit_one(put_variable(XnStr, AiStr), I) :-
     rust_reg_name(XnStr, Xn), rust_reg_name(AiStr, Ai),
     format("~w// put_variable ~w, ~w~n", [I, XnStr, AiStr]),
     format("~w{~n", [I]),
-    format("~w    let v = Value::Unbound(format!(\"_V{}\", vm.var_counter));~n", [I]),
+    format("~w    let v = Value::Unbound(WamState::fresh_var_sym(b'V', vm.var_counter));~n", [I]),
     format("~w    vm.var_counter += 1;~n", [I]),
     format("~w    vm.put_reg(\"~w\", v.clone());~n", [I, Xn]),
     format("~w    vm.put_reg(\"~w\", v);~n", [I, Ai]),
@@ -1111,5 +1111,5 @@ rust_val_literal(Str, RustVal) :-
     ;   Class = float(F)
     ->  format(atom(RustVal), 'Value::Float(~w)', [F])
     ;   Class = atom(Name),
-        format(atom(RustVal), 'Value::Atom("~w".to_string())', [Name])
+        format(atom(RustVal), 'Value::Atom("~w".into())', [Name])
     ).

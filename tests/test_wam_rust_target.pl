@@ -2407,9 +2407,11 @@ test_lowered_quoted_numeric_atom_strips_quotes :-
     (   lower_predicate_to_rust(test_quoted_numeric/1, WamCode, [], Lines),
         atomic_list_concat(Lines, '\n', RustCode),
         %% Must contain the quote-stripped form...
-        sub_string(RustCode, _, _, _, 'Value::Atom("42".to_string())'),
+        %% (R-1f: atom literals are `.into()`, so they compile whether
+        %% `Sym` is the interned id or a plain `String`.)
+        sub_string(RustCode, _, _, _, 'Value::Atom("42".into())'),
         %% ...and must NOT contain the buggy verbatim-with-quotes form.
-        \+ sub_string(RustCode, _, _, _, 'Value::Atom("\'42\'".to_string())')
+        \+ sub_string(RustCode, _, _, _, 'Value::Atom("\'42\'".into())')
     ->  pass(Test)
     ;   fail_test(Test,
             'Lowered emitter rendered quoted-numeric atom with quotes baked into the Rust string literal')
@@ -2425,7 +2427,7 @@ test_lowered_unquoted_integer_stays_integer :-
     (   lower_predicate_to_rust(test_unquoted_integer/1, WamCode, [], Lines),
         atomic_list_concat(Lines, '\n', RustCode),
         sub_string(RustCode, _, _, _, 'Value::Integer(42)'),
-        \+ sub_string(RustCode, _, _, _, 'Value::Atom("42".to_string())')
+        \+ sub_string(RustCode, _, _, _, 'Value::Atom("42".into())')
     ->  pass(Test)
     ;   fail_test(Test,
             'Lowered emitter mis-classified an unquoted integer as an atom')
