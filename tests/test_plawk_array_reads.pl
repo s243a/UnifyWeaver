@@ -2,7 +2,8 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
-% Array element reads in conditions (arrays PR 3a) and inside arithmetic (PR 3b) --
+% Array element reads in conditions (arrays PR 3a), inside arithmetic (PR 3b) and
+% in END (PR 3c) --
 % docs/design/PLAWK_ARRAY_VALUE_MODEL.md section 8, item 3.
 %
 % `if (c[$1] > 1)` was a parse error: a condition operand could be a scalar, a
@@ -127,9 +128,48 @@ test(unadmitted_arith_reads_decline) :-
             [ % a double table
               "{ c[$1] += $2; n = c[$1] * 2; print n }\n",
               % a bare copy may be an unset element (spec section 3)
-              "{ c[$1]++; n = c[$1]; print n }\n",
-              % END expression reads (3b follow-on)
-              "{ c[$1]++ } END { print c[\"a\"] + c[\"b\"] }\n"
+              "{ c[$1]++; n = c[$1]; print n }\n"
+            ]),
+        build_status_is(Src, 3)),
+    !.
+
+% --- PR 3c: END ------------------------------------------------------------
+% for-in order is unspecified, so these compare sorted lines.
+
+% `for (k in c) if (...) print` without braces -- the usual awk spelling -- is the
+% same term as the braced form.
+test(braceless_forin_guard, [condition(clang_available)]) :-
+    plawk_parse_string("{ c[$1]++ } END { for (k in c) if (c[k] > 1) print k }\n", P1),
+    plawk_parse_string("{ c[$1]++ } END { for (k in c) { if (c[k] > 1) print k } }\n", P2),
+    assertion(P1 == P2),
+    run_sorted("{ c[$1]++ } END { for (k in c) if (c[k] > 1) print k }\n", "a\nb\n"),
+    run_sorted("{ c[$1]++ } END { for (k in c) if (c[k] == 1) print k, \"once\" }\n",
+        "c once\n"),
+    !.
+
+test(forin_arith_fields, [condition(clang_available)]) :-
+    run_sorted("{ c[$1]++ } END { for (k in c) print k, c[k] * 2 }\n", "a 6\nb 4\nc 2\n"),
+    run_sorted("{ c[$1]++ } END { for (k in c) print k, c[k] / 4 }\n",
+        "a 0.75\nb 0.5\nc 0.25\n"),
+    run_sorted("{ c[$1]++; d[$1] += 2 } END { for (k in c) print k, c[k] + d[k] }\n",
+        "a 9\nb 6\nc 3\n"),
+    !.
+
+test(end_literal_key_arith, [condition(clang_available)]) :-
+    run_sorted("{ c[$1]++ } END { print c[\"a\"] + c[\"b\"] }\n", "5\n"),
+    run_sorted("{ c[$1]++ } END { print c[\"a\"] / 2, c[\"zz\"] + 1 }\n", "1.5 1\n"),
+    run_sorted("{ c[$1]++ } END { print c[\"a\"] * 2; print c[\"b\"] * 3 }\n", "6\n6\n"),
+    run_sorted("{ c[$1]++ } END { for (k in c) print k, c[k]; print \"total\", c[\"a\"] + c[\"b\"] + c[\"c\"] }\n",
+        "a 3\nb 2\nc 1\ntotal 6\n"),
+    run_sorted("{ c[$2]++ } END { print c[5] + c[7] }\n", "2\n"),
+    !.
+
+test(unadmitted_end_reads_decline) :-
+    forall(member(Src,
+            [ % a double table
+              "{ s[$1] += $2 } END { for (k in s) print k, s[k] * 2 }\n",
+              % END scalar `if` over an element (no table plan on that route yet)
+              "{ c[$1]++ } END { if (c[\"a\"] > 1) print \"many a\" }\n"
             ]),
         build_status_is(Src, 3)),
     !.
@@ -161,6 +201,36 @@ run_exact(Src, Expected) :-
     read_string(PS, _, Out),
     close(PS),
     process_wait(Pid, exit(0)),
+    (   Out == Expected
+    ->  true
+    ;   format(user_error, "~n~w~n  got      ~q~n  expected ~q~n", [Src, Out, Expected]),
+        fail
+    ).
+
+run_sorted(Src, Expected) :-
+    input(Input),
+    odir(Dir),
+    directory_file_path(Dir, 'ars_bin', Bin),
+    ( exists_file(Bin) -> delete_file(Bin) ; true ),
+    directory_file_path(Dir, 'ars', Prog0),
+    atom_concat(Prog0, '.plawk', Prog),
+    setup_call_cleanup(open(Prog, write, S, [encoding(utf8)]),
+        write(S, Src), close(S)),
+    atom_concat(Prog0, '_in.txt', In),
+    setup_call_cleanup(open(In, write, SI, [encoding(utf8)]),
+        write(SI, Input), close(SI)),
+    build_status_of(Prog, Bin, BuildStatus),
+    assertion(BuildStatus == 0),
+    process_create(Bin, [In], [stdout(pipe(PS)), stderr(std), process(Pid)]),
+    read_string(PS, _, Out0),
+    close(PS),
+    process_wait(Pid, exit(0)),
+    split_string(Out0, "\n", "", Lines0),
+    exclude(==(""), Lines0, Lines),
+    msort(Lines, Sorted),
+    atomic_list_concat(Sorted, '\n', Joined0),
+    atom_string(Joined0, Joined),
+    string_concat(Joined, "\n", Out),
     (   Out == Expected
     ->  true
     ;   format(user_error, "~n~w~n  got      ~q~n  expected ~q~n", [Src, Out, Expected]),

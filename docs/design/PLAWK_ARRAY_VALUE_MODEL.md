@@ -304,9 +304,14 @@ each newly admitted input -- not deferred to the declaration PR.
    Same counter-table rule and key interning as (a). A bare copy (`n = c[$1]`)
    declines (section 3). A scalar used as an element KEY is never an unsafe strnum
    read (keys use the slot's id), so it keeps its kind.
-   (c) Still open: END expression reads (`END { print c["a"] + c["b"] }`), `if`
-   inside an END `for (k in c)` (today a parse error), printf arguments, and
-   double-table reads (`fcmp` / f64 arithmetic).
+   (c) END -- landed: the braceless guarded print `for (k in c) if (c[k] > 1) print k`
+   (the same term as the braced form); arithmetic print fields over loop-keyed elements
+   (`print k, c[k] * 2`, `c[k] / 4`, `c[k] + d[k]` -- the iterated table by slot, others
+   by the loop key); END arithmetic over literal-key elements (`print c["a"] + c["b"]`,
+   also after a for-in in a statement list). Counter tables only.
+   (d) Still open: an END scalar `if` over an element (`END { if (c["a"] > 1) ... }`),
+   scalar state inside an END for-in (the max idiom), for-in printf bodies, guards
+   combining `&&` / key comparisons, and double-table reads (f64 arithmetic, `fcmp`).
 4. String and strnum element writes (`a[k] = "x"`, `a[k] = $N`, `a[k] = a[k] $2`) with
    their mixing rules, and `a[NR] = $0` with a numeric END loop (tac).
 5. Declarations (§7), ingress contracts (§6.1), foreign-key normalisation (§2), with
