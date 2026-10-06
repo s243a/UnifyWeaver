@@ -3,13 +3,19 @@
 
 # Rust WAM: heap-cell runtime rewrite, design and plan
 
-**Date:** 2026-10-04, revised 2026-10-05 after external review. **Ledger:** D128.
+**Date:** 2026-10-04, revised 2026-10-05 after external review, revised
+2026-10-06 after a second external review. **Ledger:** D128.
 **Status:** Design. The rewrite is decided; this document sets its
-representation, API and order. §17 maps each external-review finding to the
-sections that resolve it.
+representation, API and order. §17 maps each finding of the first external
+review to the sections that resolve it; §18 does the same for the second
+(a code-completeness sweep). One decision is left to the project owner: fix
+the confirmed baseline divergences from SWI-Prolog on main before the
+rewrite (phase R−1, §12.1, recommended) or emulate them in the rewrite.
 **Evidence:** `docs/reports/wam_rust_heap_cell_spike.md` (baseline profile,
 three spike variants, gates). Its numbers are cited below as **[S]**. Code
-citations are `file:line` at commit `e095a00`. `T` is
+citations are `file:line` at commit `e095a00` (runtime sources identical to
+`7da1210` and to `d0c1c06`). `RT` is `src/unifyweaver/targets/rust_target.pl`,
+`PA` is `templates/targets/rust_wam/par_aggregate.rs.mustache`. `T` is
 `src/unifyweaver/targets/wam_rust_target.pl`, `ST` is
 `templates/targets/rust_wam/state.rs.mustache`, `DB` is
 `templates/targets/rust_wam/dynamic_db_methods.rs.mustache`, `LE` is
@@ -63,6 +69,10 @@ to fix both, and in a particular order.
 - **Scopes have separate `rewind` and `close`.** Rewinding keeps a scope's
   protection, so a lowered multi-clause snapshot can be rewound once per
   clause (§5.3).
+- **Choice-point boundaries are generations, not depths.** Every CP gets a
+  generation number at push. Scopes, B0, ITE levels and the backtrack floor
+  record generations, so a cut through a scope cannot leave a stale boundary
+  (§5.2, §5.4 counterexample 3).
 - **Each scope and choice point carries an execution snapshot** (E,
   protected environment top, continuation, cut state, register policy), not
   only heap and trail tops (§6.3).
@@ -79,6 +89,11 @@ to fix both, and in a particular order.
   identity, unification, fresh copy (§7.2). The comparator reproduces today's
   quirks; corrections are separate behavior changes.
 - **Read and write mode use the S register.**
+- **Baseline divergences are fixed first (recommended, owner's decision).**
+  The second external review confirmed, against SWI-Prolog, behaviors where
+  today's runtime is wrong. The rewrite's heap invariant needs the
+  backtrack floor anyway. Phase R−1 fixes them on main as small separate
+  changes and re-freezes the byte-identity baseline (§12).
 
 ## 2. What the measurements rule in and out
 
@@ -114,7 +129,7 @@ pub struct Cell(u64);   // low 3 bits = tag, high 61 bits = payload
 | 4 | `STR` | heap address of a `FUN` header | the arguments follow the header |
 | 5 | `LIS` | heap address of the head cell; the tail is at +1 | the only cons form. The `"[\|]/2"` vs `"./2"` vs `Value::List` aliasing goes away |
 | 6 | `FUN` | functor id | a header cell, only inside the heap. `functors: Vec<(AtomId, u32 arity)>` is interned like atoms, so there are no `"f/N"` strings and no `decomp` |
-| 7 | `BOX` | index into `boxes: Vec<Boxed>` | `Float(f64)`, `BigInt(i64)` outside the 61-bit range, `Bool(bool)` (kept distinct from the atom `true` to preserve today's semantics). Its top is saved in every obligation and truncated on rollback |
+| 7 | `BOX` | `(index << 1) \| arena`: arena 0 indexes the machine's `boxes: Vec<Boxed>`, arena 1 the program's immutable constant-box arena (§3.3) | `Float(f64)`, `BigInt(i64)` outside the 61-bit range, `Bool(bool)` (kept distinct from the atom `true` to preserve today's semantics). The machine arena's top is saved in every obligation and truncated on rollback; the constant arena is never truncated |
 
 `deref(c)` follows `REF`s until it reaches a non-`REF` cell. For an unbound
 variable it returns `REF(addr)` of the `VAR` cell, so callers always have the
@@ -170,6 +185,34 @@ heap: Vec<Cell>
 `reset_query` sets `H = base` (O(1)). Nothing outside the heap may keep a heap
 address across a rollback below it (§5.6, §9.2).
 
+Boxes have the same two layers plus a permanent one:
+
+```
+const_boxes: Arc<[Boxed]>   program constants (Float, BigInt, Bool in instructions); built once at load,
+                            shared by every machine of the program (parser machines, par workers, clones)
+boxes: Vec<Boxed>
+  [0 .. boxes_base)         boxes of the base segment (call copy-in). Rebuilt per call.
+  [boxes_base .. top)       query boxes: reset to an obligation's `boxes` on rollback
+```
+
+`reset_query` sets the box top to `boxes_base`. Every obligation's `boxes` is
+at least `boxes_base`, so no rollback removes a box that a base-segment cell
+references. Instruction constants are pre-encoded cells (§4); a constant that
+needs a box is a `BOX` with arena bit 1, so it stays valid across every reset
+and rollback and on every machine that shares the code. Today the same
+constants are `Value`s inside `Instruction` (`instructions.rs.mustache:12`,
+`:26`, `:30`, `:44`, `:46`, `:134`) and need no lifetime rule. Export of a
+constant box copies its value into the `Detached`, as for any box.
+
+**Reset-surviving holders.** A value that survives `reset_query` on the same
+machine must be exported before the reset and imported after it. The one
+case today is the parser machine's operator table: `read_term` runs
+`canonical_op_table/1`, reads `ops`, calls `parser.reset_query()`, then puts
+`ops` into the parser's A2 (`T:3248-3256`). In the rewrite `ops` is exported
+to a `Detached` before the reset and imported (`PreserveName`; the table is
+ground) after it. The table depends only on the program, so a later
+optimization may cache the `Detached` per program.
+
 There is **no garbage collector** (as today, in effect: `Arc` frees eagerly, the
 heap does not). Deterministic forward recursion that never backtracks keeps its
 garbage until the query ends. For the resolver this is bounded by the work
@@ -180,7 +223,7 @@ done. For other programs it is a real risk (§13).
 Today every fresh variable is a `Value::Unbound(name)`. The name is the
 variable's identity, its text and its standard-order key. The rewrite keeps
 the exact text. These are all the prefixes the runtime generates
-(`grep` of `T`, `ST`, `DB`, `LE` and the shims):
+(`grep` of `T`, `ST`, `DB`, `LE`, `RT`, `PA`, the shims and the benchmark generators):
 
 | kind | name | created by | counter convention |
 | ---: | --- | --- | --- |
@@ -194,7 +237,7 @@ the exact text. These are all the prefixes the runtime generates
 | 7 | `_MB<n>` | `raise_builtin_error` (`T:5698-5699`) | pre |
 | 8 | `_EC<n>` | `raise_iso_error` (`DB:223-228`) | pre |
 | 9 | `_SE<n>` | `raise_read_syntax_error` (`DB:235-236`) | pre |
-| 15 | any other text | boundary names: `_uw_shim_out` (both shims), `__PAR_IN` / `__PAR_VAL` (`par_aggregate.rs.mustache:21-22`), `_N` (`main.rs.mustache:131`), `_A<i>` (fact-dispatch default, `T:9900`), `_RP_ops` / `_RP_term` / `_RP_env` (the separate parser machine, `T:3243-3258`), test names | `n` is the atom id of the full text |
+| 15 | any other text | boundary names: `_uw_shim_out` (both shims), `__PAR_IN` / `__PAR_VAL` (`par_aggregate.rs.mustache:21-22`), `_N` (`main.rs.mustache:131`), `_A<i>` (fact-dispatch default, `T:9900`), `_RP_ops` / `_RP_term` / `_RP_env` (the separate parser machine, `T:3243-3258`), `__wrapper_target` / `__wrapper_cost` and `__agg_target` / `__agg_cost` (the six hybrid wrappers, `RT:4552-4553`, `RT:4696-4697`, `RT:4912-4913`, `RT:5035-5036`, `RT:5179-5180`, `RT:5314-5315`), `Hops` (`examples/benchmark/generate_wam_effective_distance_benchmark.pl:927`), the `ParAggregate` input fallback that names a variable after its register operand (`T:1053`), test names (`tests/fixtures/wam_rust_dynamic_builtins.rs`, in-template tests) | `n` is the atom id of the full text |
 
 Encoding: `VAR` payload `(n << 4) | kind`, 4-bit kind, 57-bit `n`. The cell
 stores the number that appears in the name, not the counter at creation, so
@@ -213,11 +256,30 @@ all the arguments of that session, become one variable. Two sessions never
 share a variable by name. Today a name *is* a global identity, so code that
 relies on finding a variable again by name in a later call must keep the cell
 instead. Those sites are: the shims' `OUT_VAR` read-back, par_aggregate's
-`IN_VAR`/`VAL_VAR` read-back (`par_aggregate.rs.mustache:33`, `:56`, `:168`, `:193`), and
-the bench driver's `_N`. R3 rewrites each to hold the cell returned by the
-import. If an external name happens to equal a live generated name, today the
-two alias and in the rewrite they do not. No current shim or fact source
-produces such names.
+`IN_VAR`/`VAL_VAR` read-back (`par_aggregate.rs.mustache:33`, `:56`, `:168`, `:193`),
+the bench driver's `_N`, the six hybrid wrappers' 42 `vm.bindings` reads and
+removes (`RT:4477-5348`, §8), and the effective-distance benchmark's `Hops`
+read-back (`generate_wam_effective_distance_benchmark.pl:944`, `:967-968`). R3
+rewrites each to hold the cell returned by the import. If an external name
+happens to equal a live generated name, today the two alias and in the
+rewrite they do not. No current shim or fact source produces such names.
+
+**Helpers that rebuild a variable from its name.** Some runtime code finds an
+existing variable again by building `Value::Unbound(name)` from a name it
+collected. Today that *is* the variable. In the rewrite a name imported in a
+new session is a new variable, so these helpers must return the existing
+cells instead (§7.5). They are part of the migration inventory:
+
+| helper | used by | rewrite |
+| --- | --- | --- |
+| `collect_term_variable_names` + `variables_from_term` (`DB:309-338`) | `term_variables/2` (`T:2799-2816`), `numbervars/3` (`T:2817-2861`), `read_term` `variables(_)` (`T:3285-3289`) | `term_vars(c) -> Vec<Cell>`: `REF`s of distinct unbound variables in first-occurrence order |
+| `singletons_from_term`, `copied_variable_source_names` (`DB:340-387`) | `read_term` `singletons(_)` | count occurrences per variable cell in the imported term; map cell → source name through the import session |
+| `copy_named_variables_from_env`, `copy_variable_names_from_env` (`DB:262-307`) | `read_term` `variable_names(_)` | the pair values are the cells the shared parser import returned |
+| `unifiable/3` reading binding names off the trail (`T:2897-2915`) | `unifiable/3` | ordered bind-event capture (§7.5) |
+
+Otherwise `term_variables(f(X,X),[V]), V=a` leaves `X` unbound, `numbervars`
+numbers copies instead of the input, and `variable_names` stops sharing with
+the parsed term.
 
 `var_counter` restoration is per scope type and matches today exactly (§5.7).
 
@@ -245,16 +307,28 @@ produces such names.
   (`WT:2309-2333`). It is only a name for the level; it never addresses a slot
   (§6.4).
 - **Builtins get ids.** `BuiltinCall{id: BuiltinId, arity}` dispatches through
-  a table. The ~187 builtin names are resolved by the generator, which already
-  knows the set (`is_builtin_pred/2` plus the runtime's arms). An unknown name
+  a table. The assembled runtime has **154 grouped dispatch arms covering 216
+  predicate keys** (core 4/4, arith 3/8, io 62/87, type 9/9, term 25/29,
+  ext 42/58, meta 9/21), plus three dynamic-DB routes outside
+  `execute_builtin` (`retract/1`, `clause/2`, `current_predicate/1`,
+  `T:742-746`, `T:836-840`, `T:7456-7464`). The generator builds
+  `BuiltinId` from a machine-readable inventory extracted from the arms, not
+  from a hand list. An unknown name
   becomes a `CallUnknown{name}` that keeps today's `warn_unresolved_goal`
   behaviour.
 - **Constants are pre-encoded.** `GetConstant{c: Cell, a: Reg}`. Atom ids
   must be stable: the generator emits atom *text*, and a load-time table
   interns it once into a `Vec<Cell>` indexed by constant number. Instructions
-  hold that number, or the cell after load.
+  hold that number, or the cell after load. A Float, out-of-range integer or
+  Bool constant is a `BOX` in the program's constant arena (§3.3), never in a
+  machine's rollback-truncated box arena.
 - **Switch tables:** `SwitchOnConstant` becomes a sorted `Vec<(Cell, u32)>`
   or an `FxHashMap<Cell, u32>`. `SwitchOnStructure` is keyed by `FunctorId`.
+- **One functor namespace for the process.** The functor table follows the
+  existing `Sym` interner (`value.rs.mustache:27`): global, append-only,
+  canonical. So a `FunctorId` (and an `AtomId`) means the same functor on
+  every machine, and a `Detached` that carries one is valid on the parser
+  machine, in `par_aggregate` workers and in machine clones.
 - **Fused instructions** (`Cons`, `NotMember`, `ListLengthLt`,
   `RecurseCategoryAncestorPc`, `ReturnAdd1`, …) keep their meaning with
   numeric operands.
@@ -289,6 +363,11 @@ registers from the CP. A non-CP scope restores the registers its policy names
 (§6.3). Undo runs before truncation: entries are undone in reverse order while
 their addresses are still below the current H, then H is truncated.
 
+An env-slot entry is undone only if its slot is below the target
+obligation's `e_top`. A slot at or above it is dead after the rollback, and it
+may belong to a frame allocated after the entry was written (§6.3, "Env-slot
+entries of abandoned frames"). The paranoid build counts skipped entries.
+
 ### 5.2 Rollback obligations, HB and EB
 
 A **rollback obligation** is anything that may later restore the machine to
@@ -303,8 +382,9 @@ Each obligation records `h`, `tr`, `boxes` and `e_top` (the protected
 environment extent, §6.1). The machine keeps the two stacks separately:
 
 ```rust
-cps:    Vec<ChoicePoint>   // youngest last
-scopes: Vec<ScopeRec>      // youngest last; ScopeRec { h, tr, boxes, e_top, cp_depth, exec: ExecSnap, serial }
+cps:    Vec<ChoicePoint>   // youngest last; each carries gen: u64
+scopes: Vec<ScopeRec>      // youngest last; ScopeRec { h, tr, boxes, e_top, cp_gen: u64, exec: ExecSnap, serial }
+next_gen: u64              // generation of the next CP pushed; never reused within a query
 hb: u32, eb: u32           // derived caches
 fn derive(&mut self) {
     self.hb = max(self.cps.last().map_or(0, |c| c.h),     self.scopes.last().map_or(0, |s| s.h));
@@ -312,25 +392,44 @@ fn derive(&mut self) {
 }
 ```
 
+**CP generations.** Every pushed CP takes `gen = next_gen` and increments it.
+Generations increase strictly from the bottom of `cps` to the top, because
+CPs are only pushed on top and only removed from the top or by truncation.
+`reset_query` sets `next_gen` to 0. Every boundary that today is a CP depth
+is a generation in the rewrite: a scope's `cp_gen` (the `next_gen` at open),
+B0, `pending_b0`, ITE levels and the backtrack floor (§5.5, §6.3, §6.4).
+"Remove CPs above boundary `g`" means "pop while `top.gen ≥ g`", the same
+cost as `truncate`. A depth says how many CPs were older; a generation says
+which CPs were created after the boundary. The two agree until a cut removes
+a CP below the boundary (a cut "through" it, L2). After that the depth is
+stale and the generation is not (§5.4, counterexample 3).
+
 **Invariant I1 (monotone tops).** Within each stack, `h` and `e_top` never
 decrease from oldest to youngest. An obligation is opened at the current H,
 and H only drops to the `h` of a surviving obligation. So the maximum over all
 surviving obligations is the maximum of the two tops, and `derive` is O(1).
+
+**Invariant I2 (boundaries).** For an active scope `s`, every CP with
+`gen < s.cp_gen` was pushed before `s` opened, so its `h ≤ s.h`. Hence after
+`rewind(&s)` removes every CP with `gen ≥ s.cp_gen`, no surviving CP has an
+`h` above the rewound H. A depth boundary cannot give this after a cut
+through `s`.
 
 **Every transition recomputes HB and EB from what survives.** Nothing sets HB
 from a saved copy.
 
 | transition | obligations | HB, EB |
 | --- | --- | --- |
-| push a CP (clause, ITE guard, aggregate frame, builtin, fact/dynamic/foreign) | push onto `cps` | derive (= current H, E top) |
+| push a CP (clause, ITE guard, aggregate frame, builtin, fact/dynamic/foreign) | push onto `cps` with `gen = next_gen++` | derive (= current H, E top) |
 | `retry_me_else` | unchanged | unchanged |
 | `trust_me` | pop the top CP | derive |
 | backtrack to CP `c` | rewind to `c` (§5.5); `c` stays | derive |
 | builtin redo | rewind to `c`, pop `c`, derive, then resume (§5.6) | derive after the pop |
-| any cut (`!/0`, `CutTo`, `CutIte`, cut-to-depth in meta-call, `catch/3`, `\+`, aggregates, `lowered_dispatch`) | remove CPs above the target depth; **never removes a scope** | derive |
-| open scope | push onto `scopes` | derive (= current H) |
-| `rewind(&s)` | remove CPs at depth ≥ `s.cp_depth`; `s` stays | derive (= `s.h`) |
+| any cut (`!/0`, `CutTo`, `CutIte`, cut in a meta-call, `catch/3`, `\+`, aggregates, `lowered_dispatch`) | remove CPs with `gen ≥` the target generation; **never removes a scope** | derive |
+| open scope | push onto `scopes` with `cp_gen = next_gen` | derive (= current H) |
+| `rewind(&s)` | remove CPs with `gen ≥ s.cp_gen`; `s` stays | derive (= `s.h`) |
 | `close(s)` | pop `s` (must be the top scope) | derive |
+| `push_cp_keep(&s)` | push a CP with `s`'s tops; `s` stays | unchanged |
 | `push_cp_from(s)` | pop `s`, push a CP with `s`'s tops | unchanged |
 
 **LIFO rules.**
@@ -341,16 +440,26 @@ from a saved copy.
   scope.
 - **L2.** CPs may interleave with scopes freely. A cut removes CPs only, even
   CPs older than an active scope (a cut "through" a scope). A scope survives
-  the cut and keeps HB at its own `h` or higher. `close(s)` may leave CPs that
-  were pushed inside `s`. They keep their own protection.
+  the cut and keeps HB at its own `h` or higher. Because its boundary is a
+  generation, the cut does not change which CPs the scope owns. `close(s)`
+  may leave CPs that were pushed inside `s`; they keep their own protection.
+  A policy that restores E on close (§6.3) first removes them, because they
+  would resume into frames the close drops.
 - **L3.** While a scope is active, backtracking never resumes a CP older than
-  that scope. A scope that runs nested execution sets the backtrack floor to
-  its `cp_depth` (today `call_goal_once` does this, `T:7262-7271`). The
-  paranoid build asserts L3 on every backtrack. §16 lists the sites that do
-  not set a floor today.
+  that scope: a CP may be resumed only if `c.gen ≥ floor`. A scope that runs
+  nested execution sets the floor to its `cp_gen` (today `call_goal_once`
+  sets a depth floor, `T:7262-7271`). A CP pushed after a cut through the
+  scope has a generation above the floor, so its redo is allowed. The
+  paranoid build asserts L3 on every backtrack. Today several nested-execution
+  sites set no floor (§12 R−1a).
 
 L3 is what makes I1 hold for scopes. Without it, backtracking to an older CP
 would set H below an active scope's `h`.
+
+The paranoid build also counts "boundary crossed" events: a cut that removes
+a CP with `gen < s.cp_gen` for some active scope `s`. Under today's depth
+boundaries those are the only cases where the rewrite's behavior can differ
+from the frozen build (§5.4, §10).
 
 ### 5.3 Scope API: open, rewind, close
 
@@ -358,17 +467,21 @@ would set H below an active scope's `h`.
 #[must_use] pub struct Scope { idx: u32, serial: u32 }   // not Copy, not Clone
 fn open_scope(&mut self, p: ScopePolicy) -> Scope;  // captures tops + exec snapshot per policy; derive
 fn rewind(&mut self, s: &Scope);                    // undo trail to s.tr, H = s.h, boxes = s.boxes,
-                                                    // truncate CPs to s.cp_depth, restore exec snapshot per
+                                                    // remove CPs with gen >= s.cp_gen, restore exec snapshot per
                                                     // policy (incl. var_counter only if the policy says so);
                                                     // s stays active: HB, EB still >= s's tops
 fn close(&mut self, s: Scope);                      // end s keeping current bindings (commit); derive
 fn rewind_close(&mut self, s: Scope);               // rewind(&s) then close(s)
-fn push_cp_from(&mut self, s: Scope, alt: u32, kind: CpKind); // convert s into a CP (§5.6)
+fn push_cp_keep(&mut self, s: &Scope, alt: u32, kind: CpKind); // a CP from s's tops; s stays (§5.6)
+fn push_cp_from(&mut self, s: Scope, alt: u32, kind: CpKind);  // convert s into a CP (§5.6)
 ```
 
 `rewind` is reusable: the same scope can be rewound before every clause
 attempt, and every binding made after each rewind is still trailed. `close`
 consumes the token. `Scope` asserts in debug builds that it was closed.
+`push_cp_keep` exists for the one site that makes two CPs from one
+pre-candidate snapshot (`dynamic_call_attempt`, §5.6); it does not consume
+`s`, and the site must still end `s` with `push_cp_from` or `close`.
 
 `ScopePolicy` says which parts of the execution snapshot (§6.3) the scope
 captures and restores on `rewind` and on `close`. Each of today's ~96 rollback
@@ -378,7 +491,7 @@ sites maps to one policy (table in §6.3).
 bypasses this API into a compile error. The fields being private does not by
 itself make HB correct; `derive` on every transition above does.
 
-### 5.4 The two review counterexamples
+### 5.4 The review counterexamples
 
 **Counterexample 1: a cut inside a meta-call lowers HB below an active scope.**
 
@@ -387,7 +500,7 @@ itself make HB correct; `derive` on every transition above does.
 | 1 | older clause CP | [20] | [] | 20 | |
 | 2 | meta-call opens its scope at H=100 | [20] | [100] | 100 | |
 | 3 | inner goal pushes a CP at H=110 | [20, 110] | [100] | 110 | |
-| 4 | inner `!` cuts to the inner barrier (depth 1) | [20] | [100] | **100** | the old `Mark` design set HB = 20 here |
+| 4 | inner `!` cuts to the inner barrier (generation 1) | [20] | [100] | **100** | the old `Mark` design set HB = 20 here |
 | 5 | bind variable at address 50 | | | | 50 < 100: **trailed** |
 | 6 | the meta-call fails: `rewind_close` | [20] | [] | 20 | the trail entry restores address 50 |
 
@@ -410,17 +523,51 @@ at h=20. Variable `V` is at address 60 (allocated after the CP, before `s`).
 Both are required tests (§11.2, Appendix A), plus a three-clause fallback test
 in which clause 3 reads `V` and must see it unbound.
 
+**Counterexample 3 (second review): a cut through a scope, then a new CP.**
+With depth boundaries, a scope that captured depth 2 is wrong after a cut
+removes both older CPs and the goal pushes a new one at depth 1: floor 2
+refuses its redo, and `truncate(2)` on rewind leaves it alive above the
+rewound H. The code path exists today: `catch/3` calls its goal through
+`call_goal_value` without raising B0 (`T:6988`), so a `!` in the goal
+truncates to the enclosing clause's B0 (`T:7376`), below catch's
+`cp_depth` (`T:6985`). Example: `catch((!, member(X,[a,b])), E, true)` in a
+clause with an older clause CP. The structural `;` branch (`T:7414-7418`) is
+another: its left branch is not wrapped in `call_goal_once`, so a `!` there
+cuts below the `;` scope's boundary.
+
+With generations (two older CPs, gens 1 and 2, `h` 20 and 30; the enclosing
+B0 is gen 1):
+
+| step | event | `cps` (gen:h) | scope `s` | depth model (old) | generation model |
+| ---: | --- | --- | --- | --- | --- |
+| 1 | older CPs | [1:20, 2:30] | | | |
+| 2 | open `s` at H=100, floor set | | `cp_gen` 3, floor 3 | `cp_depth` 2, floor 2 | |
+| 3 | `!` cuts to B0 (gen 1) | [] | survives (L2) | | |
+| 4 | `member/2` pushes a CP at H=105 | [3:105] | | depth 1 < floor 2 | gen 3 ≥ floor 3 |
+| 5 | the goal fails; backtrack | | | redo refused | member redo allowed |
+| 6 | the goal fails again later; `rewind(&s)`, H=100 | | | `truncate(2)` keeps [105]: a CP above H | removes gen ≥ 3: [] |
+| 7 | success instead of 6: catch commits (`close` after removing gen ≥ 3) | [] | | `truncate(2)` keeps [105] | [] |
+
+Step 7 is the first-solution commit that today's `catch/3` intends
+(`T:6991-6994`); with today's stale depth the member CP survives the
+commit. Generations change the result only where today uses a boundary that
+a cut has crossed. With R−1e (`catch/3` opaque to cut, §12) the catch case
+disappears from the baseline. The required test (§11.2, Appendix A): cut
+through a scope, push a new CP, redo it, then rewind, and check that no CP
+survives with `h` above H and that the redo ran.
+
 ### 5.5 Choice points
 
 ```rust
 pub struct ChoicePoint {
+    gen: u64,                          // generation (§5.2)
     alt: u32,                          // next clause PC (0 for builtin-redo kinds)
     h: u32, tr: u32, boxes: u32,       // heap, trail and box tops
     e: u32, e_top: u32,                // E and the protected env extent (§6.1)
     cp: u32,                           // continuation
-    b0: u32,                           // saved cut barrier (today's cut_barrier)
+    b0: u64,                           // saved cut barrier (today's cut_barrier), as a generation
     args: u32, n: u8, save: RegSave,   // saved registers in arg_stack[args..args+n]
-    levels: Levels,                    // ITE barrier levels, 0–2 entries of (LevelId, depth) (§6.4)
+    levels: Levels,                    // ITE barrier levels, 0–2 entries of (LevelId, gen) (§6.4)
     kind: CpKind,                      // Clause | IteGuard | Aggregate{..} | Builtin(BuiltinRedo) | Fact | Dynamic | Foreign | Naf
 }
 enum RegSave { Args, Live(LiveSet), Dirty(DirtyMask) }
@@ -442,7 +589,8 @@ enum RegSave { Args, Live(LiveSet), Dirty(DirtyMask) }
   entries) to `tr`, truncate `H` and the boxes, restore the registers, set
   `E = e`, `CP = cp`, `B0 = b0`, clear `pending_b0` and `pending_level`, set
   `pc = alt`, derive. `var_counter` is **not** restored (§5.7).
-- **Cut** truncates `cps` to the target depth and derives HB and EB (§5.2).
+- **Cut** removes the CPs with `gen ≥` the target generation and derives HB
+  and EB (§5.2).
 
 ### 5.6 Builtin redo and retained cells
 
@@ -474,7 +622,8 @@ already stores the raw register values (`T:2423-2438`).
 **Capture tops and establish protection before candidate bindings.** Several
 sites today capture `trail.len()`/`heap.len()` first, try the candidate
 (which binds), and push the CP only after it succeeds:
-`fact_table_attempt` (`T:4979-5013`), `finish_foreign_results` (`T:4234-4260`),
+`fact_table_attempt` (`T:4979-5013`), `apply_first_compatible_foreign_result`
+(called from `finish_foreign_results`, `T:4228-4260`),
 `dynamic_call_attempt` (`DB:556-598`), `dynamic_rule_body_attempt`
 (`DB:681-708`), `dynamic_clause_attempt` (`DB:906-951`), and by the same
 `cp_trail` shape `current_predicate_attempt` (`DB:828`) and
@@ -485,6 +634,31 @@ captured heap top is not trailed, and backtracking to the later CP does not
 undo it. In the rewrite each such site opens a scope **before** the candidate
 and converts it with `push_cp_from(s, …)` on success, or `rewind_close(s)` on
 failure. The CP inherits the scope's tops, and HB covered the candidate.
+
+**Two CPs from one snapshot.** `dynamic_call_attempt` takes one snapshot
+before renaming the candidate clause (`DB:556-559`). When the candidate
+succeeds it pushes a later-clause CP if more clauses remain (`DB:564`) and
+then a rule-body CP if the clause has a body (`DB:581`), both with the same
+saved registers, stack, trail and heap tops. Backtracking resumes the
+rule-body CP first (the next body solution), then the later-clause CP. The
+rewrite keeps this order with one scope and both conversion forms:
+
+```rust
+let s = self.open_scope(ATTEMPT);                 // before Fresh(C) import (§9.2)
+// import the clause, detach its template R (§9.2), bind head, solve body
+match (more_clauses, has_body) {
+    (true,  true)  => { self.push_cp_keep(&s, cont, Dynamic(next_idx));      // older
+                        self.push_cp_from(s, cont, RuleBody(R, 1)); }        // younger
+    (true,  false) =>   self.push_cp_from(s, cont, Dynamic(next_idx)),
+    (false, true)  =>   self.push_cp_from(s, cont, RuleBody(R, 1)),
+    (false, false) =>   self.close(s),
+}
+```
+
+Both CPs carry the scope's `h`, `tr`, `boxes`, `e_top`, register save and
+exec snapshot, so I1 holds with equal tops. Each gets its own generation in
+push order. On failure the site does `rewind_close(s)`, as today's restore at
+`DB:600-603`.
 
 **The pop-before-resume transition.** Today `backtrack` pops a builtin CP and
 then calls `resume_builtin` (`T:1462-1470`). The rewrite does the same in this
@@ -522,6 +696,10 @@ later variables get, and so their text and sort order. Today:
 The rewrite gives `ScopePolicy` a `restore_var_counter` flag, set only for
 the two "yes" rows. CPs never restore it. So a failed alternative or a negated
 goal that creates variables leaves the counter advanced, exactly as today.
+This table is about in-place rollback. Whole-machine snapshots move the
+counter with the machine: an adopted dynamic-body solution brings its
+counter, a discarded snapshot or `par_aggregate` worker takes its increments
+with it (§9.4).
 
 ## 6. Environments and execution snapshots
 
@@ -542,6 +720,9 @@ estack: Vec<Cell>, frames: [prev_e, cp, n_y, y0 .. y(n-1)], E = current frame ba
 - `put_variable Yn, Ai` allocates the variable **on the heap** and puts a
   `REF` in both `Yn` and `Ai`. Permanent variables are never unbound *in* the
   environment. That removes the "unsafe variable" case.
+- If R−1d lands (§12), the frame also saves the caller's B0 at `Allocate` and
+  restores it at `Deallocate`, as in the standard WAM:
+  `[prev_e, cp, b0, n_y, y0 ..]`. Otherwise B0 stays outside frames, as today.
 
 ### 6.2 Y slot writes and the env-slot trail
 
@@ -594,8 +775,12 @@ a register entry whose old value was `None`; `get_reg` returns
 trail-only sites restore `UNINIT` (`ST:4273-4292`). The rewrite has a
 sentinel for each and restores the exact previous content. The R0b audit
 (§12) checks whether any trail-only site's later code reads such a slot; the
-lowered ITE is the only trail-only site that runs framed code with Y writes.
-Fixing the compiler's `Vf = V2` rule is a separate behavior change (§16).
+lowered ITE is the only trail-only site that runs framed code with Y writes,
+and it does not follow this rule today (§6.6). Fixing the compiler's
+`Vf = V2` rule is R−1c (§12). After it, a permanent variable first seen
+inside an ITE and read after it is initialized before the guard, so item 3's
+case no longer arises in compiled code; the env-slot trail stays for
+soundness.
 
 ### 6.3 Execution snapshot
 
@@ -606,10 +791,10 @@ A rollback must restore control state as well as heap state. Each scope's
 struct ExecSnap {
     e: u32, e_top: u32,              // E and protected env extent
     cp: u32, pc: u32,                // continuation and pc (only when the policy saves them)
-    b0: u32,                         // cut barrier
-    pending_b0: Option<(u32, u32)>,  // today's pending_cut_barrier (depth, at_pc)
-    pending_level: Option<(LevelId, u32)>,
-    floor: u32,                      // backtrack floor
+    b0: u64,                         // cut barrier, as a CP generation (§5.2)
+    pending_b0: Option<(u64, u32)>,  // today's pending_cut_barrier (generation, at_pc)
+    pending_level: Option<(LevelId, u64)>,
+    floor: u64,                      // backtrack floor, as a CP generation
     regs: RegSave,                   // None | Args(n) | Dirty(mask) | Live(set)
     var_counter: Option<u32>,        // only when the policy restores it (§5.7)
 }
@@ -622,13 +807,15 @@ restores; "close" is what the success path restores.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `lo_clause_snapshot` / `lo_restore_clause` (`ST:4524-4543`): T4 clause attempts, F11 loop | yes | dirty set, clear-then-restore | yes (today: the stack `Arc`) | no | `b0` | yes | nothing |
 | `lowered_dispatch` (`ST:4570-4597`) | via the clause snapshot on decline | dirty set | yes on decline | `cp` always, `pc` on decline | `b0`, `pending_b0` always | yes on decline | `cp`, `b0`, `pending_b0` |
-| `call_goal_once` (`T:7258-7303`) | none (its callers rewind) | none | **yes, on success too** | no (`call_goal_key` saves `pc`, `cp`) | `b0`, `floor` always | no | `E`, `e_top`, `b0`, `floor` |
-| `catch/3` (`T:6968-7034`) | yes | dirty set | yes | `cp` always | `b0` always | no | `cp`, `b0` |
+| `call_goal_once` (`T:7258-7303`) | none (its callers rewind) | none | **yes, on success too**; prunes env-slot entries of dropped frames (below) | no (`call_goal_key` saves `pc`, `cp`) | `b0`, `floor` always | no | remove CPs with `gen ≥ cp_gen`; `E`, `e_top`, `b0`, `floor`; prune |
+| `catch/3` (`T:6968-7034`) | yes | dirty set | yes | `cp` always | `b0` always; `floor` after R−1a | no | remove CPs with `gen ≥ cp_gen` (commit); `cp`, `b0` |
 | `predsort_order` (`T:7311-7338`) | trail always, after reading the result | dirty set, always | via `call_goal_once` | no | via `call_goal_once` | no | registers |
-| `\+`, `;`, `->` in `call_goal_value` (`T:7397-7435`) | trail | none | via `call_goal_once` | no | no | no | nothing |
+| `\+`, `->` in `call_goal_value` (`T:7397-7435`) | trail | none | via `call_goal_once` | no | no | no | nothing |
+| `;` fallback in `call_goal_value` (`T:7414-7418`) | trail | none | `E`, `e_top` on rewind (the left branch is not wrapped in `call_goal_once`) | no | no | no | nothing |
 | region P2 snapshot (`region_*_dispatch`, `region_decline`) | trail, heap | none (G-1: registers never clobbered) | no | no | no | yes | nothing |
-| lowered ITE condition (`LE:847-855`) | trail | **today: the register trail; after R0b: an explicit save of the registers the else branch reads** | env-slot trail | no | no | no | nothing |
+| lowered ITE condition (`LE:847-855`) | **see §6.6**: after R−1c, trail and heap; otherwise trail only, H kept, every bind trailed | today: the register trail for delegated arms, nothing for direct writes; after R0b: an explicit save of the registers the else branch reads | **no protection of the current frame**: direct Y writes are not trailed, as today | no | no | no | nothing |
 | trial unifications | trail | none | no | no | no | no | nothing |
+| `unifiable/3` trial (`T:2897-2915`) | trail, with ordered bind capture (§7.5) | none | no | no | no | no | always rewound |
 | fact/dynamic/foreign attempts | trail, heap | dirty set | yes | no | no | no | converted to a CP |
 
 Notes:
@@ -646,8 +833,43 @@ Notes:
   only unwind the trail. That is safe because unification allocates no heap
   cells. A site that keeps a cell computed inside a scope across its rewind
   must show that the cell is below `s.h` (debug assertion) or detach it first.
-  The one known case is the `unifiable`-style pair list (`T:2904-2915`), whose
-  values are pre-existing cells.
+  The one known case is `unifiable/3` (`T:2904-2915`): its captured pairs are
+  pre-existing cells, and the result list is allocated only after the rewind
+  (§7.5). The lowered ITE is the exception to H truncation unless R−1c lands
+  (§6.6).
+- **Env-slot entries of abandoned frames.** Today `call_goal_once` removes
+  the nested run's Y-register trail entries before restoring the stack,
+  keeping binding entries and A/X entries (`T:7279-7301`). It has to, because
+  today a register entry is undone into the *current* topmost frame, which
+  after the restore is the caller's. The rewrite's env-slot entries are
+  absolute, so they cannot hit the wrong frame by name, but an entry for a
+  dropped frame is still useless and can name a slot that a later frame
+  reuses. Two rules:
+  1. **Prune on close.** A scope whose policy restores `E` and `e_top` on
+     close first removes the CPs with `gen ≥ s.cp_gen` (L2), then drops every
+     env-slot entry above `s.tr` whose slot is at or above `s.e_top`, then
+     restores `E` and `e_top`. Heap entries above `s.tr` are kept: the
+     caller's later rewind still has to undo bindings the nested run made to
+     older variables (`predsort_order` reads `Order`, then rewinds). Entries
+     for slots below `s.e_top` are kept too; by the R1 check (§4) there are
+     none, and the paranoid build asserts it. No surviving obligation needs a
+     dropped entry: every older obligation has `e_top ≤ s.e_top`, so those
+     slots are dead for it, and every younger one is gone.
+  2. **Skip dead slots on undo** (§5.1). An entry left by a frame that was
+     abandoned without a close (a cut, then `Deallocate`) is undone only by
+     obligations older than that frame. Such a frame was allocated at or
+     above the obligation's `e_top` (`Allocate` places frames at `≥ EB`), so
+     the slot is dead after that rollback and the undo skips it. A frame
+     that is still live after the rollback is below `e_top` and was never
+     reused while the obligation was active, because new frames go at
+     `≥ EB ≥ e_top`.
+
+  The paranoid build tags every env-slot entry with the frame's allocation
+  serial and asserts on undo that the slot is either dead or still owned by
+  that frame. Required test (§11.2): a `predsort` comparator containing an
+  ITE whose condition writes a Y slot of the comparator's frame, followed by
+  a second comparator call that reuses the frame space, then an outer
+  rewind; the caller's Y slots and the second frame must be unchanged.
 - **No current instruction overwrites an already-live Y slot**, except the
   aggregate result write in §6.2 item 2, which the rewrite removes. The other
   hazard, first writes after a CP, is covered by the env-slot trail.
@@ -659,13 +881,13 @@ over without semantic change:
 
 | today | meaning | rewrite |
 | --- | --- | --- |
-| `ChoicePoint.levels: Vec<(String, usize)>` (`ST:776-789`) | named barrier levels: the Y name the compiler reserved, and the CP depth when `get_level` ran | `levels: Levels` with `(LevelId, u32 depth)`; at most two per guard |
+| `ChoicePoint.levels: Vec<(String, usize)>` (`ST:776-789`) | named barrier levels: the Y name the compiler reserved, and the CP depth when `get_level` ran | `levels: Levels` with `(LevelId, u64 gen)`: the `next_gen` when `get_level` ran (§5.2); at most two per guard |
 | `pending_level` | set by `GetLevel` when the next instruction is a `TryMeElse`/`TryMeElsePc` (shape 1); consumed by that push; cleared on backtrack | same, in `ExecSnap` and machine state |
 | shape 1: `get_level B` before `try_me_else` | records the depth *before* the guard on the guard CP | same |
 | shape 2: `get_level C` after `try_me_else`, only when the condition has a top-level `!` (`WT:2316-2333`) | attaches the depth *including* the guard to the guard CP | same |
-| `CutTo(yn)` | search CPs from the top for the nearest CP carrying `yn` (latest entry first); truncate to its depth; not found → no-op | same search on `LevelId`; truncation goes through the cut transition (§5.2), so HB and EB are derived |
+| `CutTo(yn)` | search CPs from the top for the nearest CP carrying `yn` (latest entry first); truncate to its depth; not found → no-op | same search on `LevelId`; removes CPs with `gen ≥` the recorded generation, through the cut transition (§5.2), so HB and EB are derived |
 | `CutIte` (legacy) | pop one CP | same, through the cut transition |
-| `cut_barrier` | B0: set by `Allocate` from `pending_cut_barrier` if `at_pc == pc`, else the CP depth (`T:713-716`); raised to the CP depth after an aggregate frame push (`T:1033`); set to the entry depth by `call_goal_once` and `lowered_dispatch`; restored by backtrack | `b0`, same rules; saved in CPs and in each scope's `ExecSnap` |
+| `cut_barrier` | B0: set by `Allocate` from `pending_cut_barrier` if `at_pc == pc`, else the CP depth (`T:713-716`); raised to the CP depth after an aggregate frame push (`T:1033`); set to the entry depth by `call_goal_once` and `lowered_dispatch`; restored by backtrack | `b0`, same rules with generations in place of depths (each "CP depth" above becomes `next_gen` at that moment); saved in CPs and in each scope's `ExecSnap` |
 | `pending_cut_barrier` | set by a clause `try_me_else` (not an `L_ite_else_*` label) and by `retry_me_else` to `(clause depth, pc + 1)`; cleared on backtrack | `pending_b0`; `TryMeElseIte` sets it to `None` as the label test does today |
 | `!/0` | truncate to `cut_barrier` | same, through the cut transition |
 
@@ -697,10 +919,102 @@ pushes a `FUN` header at `H` (write mode), and `unify_*` reads `heap[S++]`
 or pushes. `put_structure` writes `STR(H)` into the register immediately. The
 200-register scan in `set_heap_or_list` and its `"f/N"` parse go away.
 
+### 6.6 Lowered ITE condition
+
+**Today** (`LE:838-855`). The lowered ITE records `trail.len()`, runs the
+condition in a closure, and on failure calls `unwind_trail_to` and runs the
+else branch. Inside the condition there are two kinds of write:
+
+- **direct** emitted writes: `get_variable`, `get_value`, `put_variable`,
+  `put_value`, `put_constant` (`LE:942-985`) call `put_reg`, which writes the
+  topmost frame's Y slot or calls `set_reg_str`; neither trails
+  (`ST:4346-4356`, `ST:2604-2610`);
+- **delegated** writes: arms run through `vm.step(..)` (`get_structure`,
+  `get_list`, `unify_*`, `put_structure`, `put_list`) trail the registers
+  they write, as in the interpreter.
+
+Binding entries are always trailed. So after a failed condition: bindings
+are undone; slots and registers written by delegated arms are restored (a
+Y slot whose old content was absent becomes `Uninit`, `ST:4273-4292`); slots
+and registers written directly keep the condition's values; nothing on the
+heap side is freed. A variable created in the condition stays usable,
+unbound. This is not the uniform env-slot restoration of §6.2, and it is not
+the interpreter's behavior:
+
+```prolog
+rundoite(X,R) :- ((Y=a, Y=b) -> R=then ; R=els), X=Y.
+```
+
+`lowered_rundoite_2` on `(c, els)` succeeds, as in SWI-Prolog; the
+interpreter gives no solution, because its `PutVariable` trails the Y write
+(`T:365-372`), backtracking to the guard restores the stack snapshot, and the
+`put_value` for `X=Y` reads an absent slot (the §6.2 item 3 case).
+`tests/test_wam_rust_lowered_ite_exec.pl:41`, `:117` pins the lowered result
+(`true`).
+
+**With R−1c (recommended).** The compiler initializes, before the guard,
+every permanent variable first seen inside the ITE and read after it (§12).
+Then no slot first written in the condition is read on the else path or
+after the ITE, and the lowered ITE uses a plain scope:
+
+- open: `tr`, `h`, `boxes`, `cp_gen`, and `e_top` covering the current frame,
+  so condition writes into the frame are trailed like any protected write;
+- rewind (condition failed): undo the trail, truncate H and boxes, remove
+  CPs with `gen ≥ cp_gen`, restore the registers the else branch reads
+  (R0b); restored slots get their exact previous content;
+- close (condition succeeded): nothing.
+
+Lowered and interpreted code then agree with each other and with SWI on
+`rundoite` and on `ite_map` (§12).
+
+**Without R−1c (emulation).** The rewrite must reproduce both behaviors: the
+interpreter keeps §6.2's rule (it fails), and the lowered ITE uses a
+dedicated `LoweredIte` policy:
+
+- open: `tr`, `cp_gen`, `e_top` covering the current frame, and increment
+  the machine's `trail_all` count. While it is non-zero, `derive` sets HB to
+  `u32::MAX`, so every heap binding is trailed, as today's binding trail is
+  unconditional;
+- direct emitted writes use `set_y_untrailed(k, c)` (lowered code only; the
+  paranoid build counts them), so they are not undone, as today;
+- delegated writes go through the step arms and are trailed as protected
+  slot writes. An entry whose old content is `ABSENT` is undone to `UNINIT`,
+  the trail-only rule of `ST:4273-4292`;
+- rewind: undo the trail to `tr`; **do not truncate H or boxes**, so a
+  variable the condition created stays a valid unbound cell; remove CPs with
+  `gen ≥ cp_gen`; restore registers per R0b;
+- close: decrement `trail_all`.
+
+`trail_all` is required because H is kept. Under the normal rule a variable
+created in the condition is above the scope's opening H, so its binding
+(`Y=a`) would not be trailed, and the else branch would see `Y` still bound.
+The cost is confined to lowered ITE conditions. Keeping H is always sound:
+nothing is truncated, so nothing dangles.
+
+**Condition CPs.** Today a failed condition leaves any CP it pushed (for
+example a `member/2` CP left by a delegated builtin before a later goal
+failed): only the trail is unwound. That CP's saved trail top is then above
+the unwound trail, so a later backtrack into it would not undo bindings the
+else branch records below that top, which is unsound already. Both policies
+remove such CPs on rewind. The R−1 audit adds a probe for a lowered condition
+that leaves a CP and fails; if a configuration reaches it, the fix lands in
+R−1 too.
+
+**Gate.** `tests/test_wam_rust_lowered_ite_exec.pl` on the frozen build and
+on the rewrite, plus an interpreter run of the same predicates compared case
+by case. Before R−1c the expected difference on `rundoite(c,els)` is
+recorded (lowered `true`, interpreter no solution); after it both succeed.
+The lowered corpus compiles with default features only after R−1f; until
+then it runs with `--no-default-features`.
+
 ## 7. Builtins: migration API
 
-There are ~187 builtin arms in `state.rs` across the core, arith, io, type,
-term, ext and meta families. There are 10 builtin family templates
+There are 154 grouped builtin arms (216 predicate keys) in the assembled
+dispatch across the core, arith, io, type, term, ext and meta families (§4
+has the per-family counts), plus the three dynamic-DB routes. By the second
+external review's count, 149 arms (211 keys) read registers or build terms,
+directly or through helpers; the other five are `true/0`, `fail/0`, `!/0`,
+`nl/0`, `halt/0`. There are 10 builtin family templates
 (`*_builtin.rs.mustache`, ~1.4 K lines) and the dynamic-DB methods
 (`dynamic_db_methods.rs.mustache`, 1.0 K lines). Inside the builtins there are
 389 reads of `get_reg_raw("A<n>")`, 213 `deref_heap` calls and ~320
@@ -734,6 +1048,9 @@ impl WamState {
     fn mk_int(&mut self, n: i64) -> Cell; fn mk_float(&mut self, f: f64) -> Cell;
     fn mk_str(&mut self, f: FunctorId, args: &[Cell]) -> Cell;
     fn mk_list(&mut self, items: &[Cell], tail: Cell) -> Cell;
+    fn fresh_var(&mut self, kind: VarKind) -> Cell;       // new unbound VAR on the heap, returns its REF;
+                                                          // numbered from var_counter with the kind's
+                                                          // pre/post convention (§3.4): _V/_H post, _L/_F/_M/_C/... pre
     fn functor_id(&mut self, name: AtomId, arity: u32) -> FunctorId;
     fn open_scope(&mut self, p: ScopePolicy) -> Scope; fn rewind(&mut self, s: &Scope);
     fn close(&mut self, s: Scope); fn rewind_close(&mut self, s: Scope);
@@ -898,6 +1215,77 @@ Taken from the profile and from term size, not from popularity:
 Everything else (OS, process, time, random, stream, filesystem, read_term,
 format, atom/string conversion, assert/retract) starts bridged.
 
+`length/2` (`_L`), `functor/3` (`_F`) and the maplist/foldl/predsort helpers
+(`_M`) create variables. Native ports use `fresh_var(kind)` (§7.1), never a
+formatted `Value::Unbound` name through the bridge.
+
+### 7.5 Identity-preserving operations
+
+Three operations need more than `unify`, `export` and import, because today
+they recover variable identity from names or from the private trail.
+
+**Variable collection** (`term_variables/2`, `numbervars/3`, `read_term`
+`variables(_)`; today `collect_term_variable_names` + `variables_from_term`,
+`DB:309-338`):
+
+```rust
+fn term_vars(&self, c: Cell, out: &mut Vec<Cell>);   // REF of each distinct unbound variable,
+                                                    // depth-first, args left to right, head before tail
+```
+
+Distinct means the same cell after deref, which is what a distinct name is
+today. The result holds the input's own variables: `term_variables/2` builds
+its list from them, and `numbervars/3` binds exactly them to `'$VAR'(N)`
+(`T:2817-2861`). Required tests: `term_variables(f(X,X),[V]), V=a` binds `X`;
+`numbervars(f(X,Y),0,E)` binds `X` and `Y` themselves.
+
+**Parser results** (`read_term` family, `T:3219-3298`, `DB:262-387`). Today
+the parsed term and the parser's variable environment are copied with one
+`_RP` rename map, and `singletons` and `variables` rebuild variables from
+names. The rewrite uses one export session on the parser machine and one
+import session in the caller:
+
+1. on the parser machine, export the parsed term and then the `var_env`
+   entries, in that order, through one export session, so one `Detached`
+   holds all roots with shared variable indices;
+2. in the caller, import every root through one `Fresh(RP)` session in the
+   same order. `_RP<n>` numbers come out exactly as today: term variables
+   first, in first-occurrence order, then any variable that occurs only in
+   the environment;
+3. build `variable_names` pairs from the source names and the imported
+   cells, in today's order (`pairs.reverse()`, `DB:286`); build `variables`
+   with `term_vars` on the imported term; build `singletons` by counting
+   occurrences per cell in the imported term and mapping each cell to its
+   source name through the session, with today's filtering (skip
+   `_`-prefixed source names, unnamed variables print as `_`).
+
+Required test: `read_term_from_atom('f(X)',T,[variable_names(['X'=V])]),
+V=a, T==f(a)`.
+
+**Ordered bind capture** (`unifiable/3`, `T:2897-2915`). Today it unifies the
+two terms, reads the binding entries pushed since its mark, makes a pair
+`Name = Value` from each binding name and its *raw* bound value, unwinds,
+then unifies the output with the pair list. The raw value matters: for
+`unifiable(f(X),f(Y),S)` the pair is `X=Y`, and a deep-dereferenced export
+would give `Y=Y`. The trail and bindings become private, so the rewrite
+exposes the capture:
+
+```rust
+fn unify_capture(&mut self, s: &Scope, a: Cell, b: Cell,
+                 out: &mut Vec<(u32 /* var addr */, Cell /* value written */)>) -> bool;
+```
+
+It must run as the first operation inside a fresh trial scope `s`. It
+records every bind event in order, as `(addr, cell written into heap[addr])`,
+which is today's trail order. Because `s` was opened at the current H and
+unification allocates nothing, every bound address is below `s.h` and every
+written cell is a pre-existing cell or an immediate, so all of them survive
+`rewind(&s)` (debug assertion). The builtin then rewinds, allocates
+`'='(REF(addr), cell)` structures and the list with `mk_str`/`mk_list`, and
+unifies the output. It never allocates before the rewind, which would
+truncate the result. Required test: `unifiable(f(X),f(Y),S)` gives
+`S = [X=Y]` with `X` and `Y` still unbound and distinct, as today.
+
 ## 8. Lowered emitter and Stage-2 regions
 
 - **`wam_rust_lowered_emitter.pl` (1.1 K lines)** emits Rust that calls ~12
@@ -913,10 +1301,17 @@ format, atom/string conversion, assert/retract) starts bridged.
     each later clause, `close(s)` on success, `rewind_close(s)` after the last
     failure. The F11 loop closes the iteration's scope before `continue` and
     opens a new one;
-  - the lowered ITE (`LE:847-855`) becomes a scope with the lowered-ITE policy,
-    including the explicit register save added in R0b;
-  - lowered `call`/`execute` (`LE:1045-1062`) run nested code and set the
-    backtrack floor (L3).
+  - the lowered ITE (`LE:847-855`) becomes a scope with the policy of §6.6
+    (plain after R−1c, `LoweredIte` emulation otherwise), including the
+    explicit register save added in R0b;
+  - lowered `call`/`execute` (`LE:1045-1062`) and `lowered_dispatch`
+    (`ST:4574-4597`) run nested code and set the backtrack floor (L3). Today
+    neither sets one, and the confirmed `lower_floor` divergence follows from
+    it (§12 R−1a). Raising `cut_barrier` alone, as `lowered_dispatch` does,
+    does not stop failure backtracking;
+  - literal constants and fresh variables are emitted through the cell API
+    (constant table, `fresh_var`), which also retires today's `String`
+    literals (`LE:976-979`, `LE:1107-1115`, R−1f).
 
   This is required API migration: existing lowered configurations must keep
   working in the merge (§12).
@@ -932,8 +1327,38 @@ format, atom/string conversion, assert/retract) starts bridged.
   It is no weaker than today's, and HB now covers it.
   A region may also land on a tested compatibility path instead of natively
   (§12).
-- **`rust_target.pl` hybrid wrappers** (~4470–4580) read `vm.bindings` by
-  temporary variable names. Rewrite them on `reg` and export.
+- **`rust_target.pl` hybrid wrappers** (`RT:4448-5348`, about 900 lines).
+  Six generated wrapper bodies drive a foreign kernel by backtracking and
+  read its results by temporary variable name: 42 `vm.bindings.get`/`remove`
+  calls in all.
+
+  | wrapper (generator clause) | lines | temp names | accumulates |
+  | --- | --- | --- | --- |
+  | shortest-path stream, arity 3 (`compile_rust_foreign_stream_wrapper_from_plan/…,3`) | `RT:4448-4586` | `__wrapper_target`, `__wrapper_cost` | `packed_results: Vec<Value>` |
+  | A* stream, arity 4 (same, `,4`, `astar_kernel`) | `RT:4587-4737` | same | `packed_results` |
+  | grouped min, arity 3 (`compile_rust_foreign_min_aggregate_wrapper_from_plan/…,3`, `grouped_min`) | `RT:4813-4986` | `__agg_target`, `__agg_cost` | `BTreeMap<String, f64>`, then `packed_results` |
+  | scalar min, arity 3 (`scalar_min`) | `RT:4987-5074` | same | best `f64` |
+  | A* grouped min, arity 4 | `RT:5075-5261` | same | `BTreeMap<String, f64>` |
+  | A* scalar min, arity 4 | `RT:5262-5348` | same | best `f64` |
+
+  Policy for every wrapper:
+  - **names.** Create the two temporaries once per wrapper call with
+    `fresh_var` (or one `ByName` import, so they keep their kind-15 names) and
+    hold the returned cells. Each `bindings.get(name)` becomes
+    `deref(cell)`; each `bindings.remove(name)` (clearing before the next
+    start candidate) becomes a rollback, below.
+  - **holders.** Open one scope after creating the temporaries and capturing
+    the input/output argument cells (they predate the scope, so they survive
+    every rewind). Per solution, read the target and cost cells and copy them
+    out as ground values (atom text, `f64`) into the accumulator before the
+    next `backtrack`. The accumulators are plain Rust data or ground `Value`s
+    and hold no heap handle. Between start candidates, `rewind(&s)` replaces
+    the name removal. At the end, `rewind_close(s)`, then hand the ground
+    results to `finish_foreign_results` as today.
+  - **floor.** The wrapper loop calls `vm.backtrack()` with no floor today;
+    when the kernel's stream is exhausted it can resume an older caller CP.
+    The scope sets the floor (L3) so the loop stops instead. R−1a checks this
+    case on the frozen build.
 
 ## 9. Boundary
 
@@ -989,6 +1414,36 @@ struct DVar { name: VarName, anchor: Option<(u32 machine, u32 addr)> }
 several terms): walk the deref'd term, give each distinct variable one index,
 record its name and an anchor.
 
+**Export order matters where a term is reused.** Export reads the term as it
+is now, bindings included. A holder that must re-apply a term's original
+variable structure later has to export (or build) it before anything binds
+its variables. The case today is the renamed dynamic clause kept for
+`dynamic_rule_body` redo: `dynamic_call_attempt` renames the clause, applies
+head and body, and only then stores `clause.clone()` in the rule-body CP
+(`DB:562`, `DB:581-590`); `dynamic_rule_body_attempt` stores it again after
+re-applying (`DB:692`, `DB:702`). Today that works because the stored
+`Value` holds names whose bindings the backtrack undoes. Exported after
+binding, `assertz((p(X) :- member(X,[a,b])))` would give the template
+`p(a) :- member(a,[a,b])` after the first answer and lose `b`. The rewrite's
+order, inside the attempt scope (§5.6):
+
+1. take the stored clause `D` (a `Detached`, no anchors);
+2. rename: produce the template `R`, which is `D` with its variables given
+   their `_C<n>` names (pre-increment, first-occurrence order). `R` is built
+   directly from `D`, or exported from the fresh import before anything is
+   bound; either way no binding is visible in it;
+3. import `R` with `PreserveName` (new cells carrying the names step 2
+   assigned; the counter moved only in step 2, as in today's
+   `copy_term_walk`), unify the head, then solve the body;
+4. on success push the CPs; the rule-body redo record holds `R`;
+5. every retry (`dynamic_rule_body_attempt`) imports the same `R` with
+   `PreserveName`, re-applies it, and on success pushes a CP holding the
+   same `R`, never a re-export.
+
+`dynamic_clause_attempt` (`clause/2`) and `dynamic_retract_attempt` keep no
+clause in their redo data (key, patterns, index), so they import `D` with
+`Fresh(C)` per candidate and need no template.
+
 **Import policies.** Every import is through a session, so one name→cell map
 covers everything imported together.
 
@@ -1003,16 +1458,20 @@ covers everything imported together.
 
 | holder | today | rewrite: representation | import |
 | --- | --- | --- | --- |
-| `aggregate_acc` (findall/bagof/setof/aggregate_all) | `deref_var(deref_heap(v))` per solution (`T:1036-1041`), unbound variables kept by name; one machine-wide vector, cleared by every `BeginAggregate` | `Vec<Detached>`, exported at `EndAggregate` before the backtrack; the same single vector | finalization imports all solutions in one `Anchored` session, then builds the list, or sorts and dedups with `compare_std` (setof), or reduces |
+| `aggregate_acc` (findall/bagof/setof/aggregate_all) | `deref_var(deref_heap(v))` per solution (`T:1036-1041`), unbound variables kept by name; one machine-wide vector, cleared by every `BeginAggregate` (`T:981`), so a nested findall wipes the outer one's solutions | `Vec<Detached>`, exported at `EndAggregate` before the backtrack. After R−1b: one vector per active aggregate frame (a stack); without R−1b: the same single vector | finalization imports all solutions in one `Anchored` session, then builds the list, or sorts and dedups with `compare_std` (setof), or reduces |
 | `thrown_ball` | deep-deref'd `Value` at `throw/1` (`T:6957-6966`) | `Detached`, exported at `throw` before any rollback | `catch/3`: `Anchored`, after the rewind (below) |
 | error terms (`raise_builtin_error`, `raise_iso_error`, syntax errors) | `Value` with a fresh `_MB`/`_EC`/`_SE` variable | `Detached` built directly; the variable takes its name from `var_counter` (pre-increment) at creation | as a thrown ball |
 | `dynamic_db` clauses | `Value` renamed to `_C<n>` at assert (`DB:399`) | `Detached`, no anchors | retrieval: `Fresh(C)` (`DB:561`, `DB:912`, `DB:994`) |
-| redo data holding a renamed clause (`dynamic_rule_body`, `DB:681-708`) | `Value` | `Detached` | `PreserveName` on each retry |
+| redo data holding a renamed clause (`dynamic_rule_body`, `DB:581-590`, `DB:681-708`) | `Value` stored after the clause was applied | `Detached` template `R`, built **before** any head/body binding (export order above) | `PreserveName` on each retry; the same `R` is stored again, never re-exported |
 | `vm.call` result (public) | `deref_heap` of the output | `Detached` → plain `Value` with `Unbound(name)` | none |
-| `par_aggregate` inputs | parent `Value`s set into each fork's registers | `Detached` from the parent | `ByName`/`PreserveName` into each worker |
-| `par_aggregate` results (`par_aggregate.rs.mustache:155-245`) | each worker's `Value`s; worker variable names come from each fork's counter | `Detached`; anchors carry the worker's machine id, so the parent ignores them | one `PreserveName` session for the whole batch, so equal names alias as today. Residual difference: today a worker name equal to a live parent name would alias with the parent variable; here it does not. Resolver par results are ground |
-| `read_term` parser machine (`T:3238-3271`) | separate `WamState`; copied with `_RP` renaming | `Detached` from the parser machine | `Fresh(RP)` |
-| `dynamic_body_solutions` (`DB:632-665`) | whole-machine clones, `*self = solution` | unchanged: a machine clone copies its heap, so no handle crosses machines | none |
+| `par_aggregate` inputs | parent `Value`s set into each fork's registers | `Detached` from the parent; a worker's captured external args and its enumerated input are imported in one session, so names shared between them stay one variable | `ByName`/`PreserveName` into each worker |
+| `par_aggregate` results (`par_aggregate.rs.mustache:155-245`) | each worker's `Value`s; worker variable names come from each fork's counter | `Detached`, exported before each worker backtrack; anchors carry the worker's machine id (workers are forks, §9.4), so the parent ignores them | one `PreserveName` session for the whole batch, so equal names alias as today. Residual difference: today a worker name equal to a live parent name would alias with the parent variable; here it does not. Resolver par results are ground |
+| `read_term` parser machine (`T:3238-3271`) | separate `WamState`; copied with `_RP` renaming | one `Detached` holding the parsed term and the `var_env` entries (§7.5) | one `Fresh(RP)` session for all roots |
+| parser operator table `ops` (`T:3248-3256`) | `Value` read before `parser.reset_query()`, used after it | `Detached`, exported before the reset (§3.3) | `PreserveName` into the parser after the reset |
+| instruction constants (`instructions.rs.mustache:12`, `:26`, `:30`, `:44`, `:46`, `:134`) | `Value`s inside `Instruction`, alive for the program | pre-encoded `Cell`s; boxed ones in the program's constant-box arena (§3.3) | none; valid on every machine of the program |
+| `unifiable/3` substitution pairs (`T:2904-2915`) | raw `Value` pairs read from the trial trail, kept across the unwind | `Vec<(u32, Cell)>` from `unify_capture`, cells below the trial scope's `h` (§7.5) | none; the result list is built after the rewind |
+| hybrid-wrapper accumulators (`RT:4555`, `:4705`, `:4915`, `:5040`, `:5188`, `:5325`) | `packed_results: Vec<Value>`, `BTreeMap<String, f64>`, best `f64`, filled across kernel backtracking | ground values only, copied out per solution before the next backtrack (§8) | none |
+| `dynamic_body_solutions` (`DB:624-665`) | whole-machine clones, `*self = solution` | snapshot clone and adoption (§9.4): same machine id, scope records copied, the attempt scope's token stays valid | none |
 | `BuiltinState` redo data | `Vec<Value>` | `Vec<Cell>` under §5.6, or `Detached` | per kind |
 | global variables (`b_setval`/`nb_setval`) | not implemented | if added: `Detached` | `Anchored` for `b_`, `Fresh` for `nb_` |
 | lowered/region locals across a nested `run` | `Value` | `Cell`s, valid only while the scope that was active when they were read stays active and is not rewound below them | none |
@@ -1024,8 +1483,9 @@ rewrite keeps that order:
 1. `throw/1` exports the ball to a `Detached` immediately, while every cell
    it references is still valid, and sets `thrown_ball`;
 2. the run loop aborts without backtracking, as today (`T:1405-1408`);
-3. `catch/3` truncates CPs to its depth and does `rewind(&s)` on its scope:
-   trail, H, boxes, env, registers, `cp`, `b0`;
+3. `catch/3` does `rewind(&s)` on its scope, which removes the CPs with
+   `gen ≥ s.cp_gen` and restores trail, H, boxes, env, registers, `cp`,
+   `b0`;
 4. it imports the ball with `Anchored`. An outer variable that was unbound
    when thrown is unbound again after the rewind, so its anchor is accepted;
 5. it unifies the catcher. On failure it rewinds that unification, puts the
@@ -1038,14 +1498,83 @@ A ball never holds a heap address that the rewind in step 3 could invalidate.
 
 - `seek_fact_source.rs`, `csr_fact_source.rs` and the LMDB sources
   (`lmdb_fact_source_*`) hand rows to `fact_table_attempt` and
-  `finish_foreign_results` as `Value`s (atoms and ints). These become a
-  `ByName` import on delivery, or direct `mk_*` for atoms and ints (cheap, no
-  heap). Delivery opens a scope before the candidate binding (§5.6).
+  `finish_foreign_results` as `Value`s (atoms, ints and floats; the seek
+  source decodes `Float` rows, `seek_fact_source.rs.mustache:243`, `:265`).
+  These become a `ByName` import on delivery, or direct `mk_*` (atoms and
+  ints need no heap; a float takes a machine box). Delivery opens a scope
+  before the candidate binding (§5.6).
+- The shared decoded-row cache (`seek_fact_source.rs.mustache:334`, `:485`,
+  `:648`) survives resets and is shared across cloned machines. It keeps
+  ground `Value` rows (boundary data, no heap handles) and creates cells,
+  including `BOX` floats, only at delivery. It never caches a cell or a box
+  index.
 - `boundary_cache.rs` (7.8 K lines) works on `u32` node ids and talks to the
   machine only through result delivery, so it needs only a thin change.
 - Foreign kernels (`execute_foreign_predicate`, the native category-ancestor
   family) read registers as atoms and ints. Port them to `tag_of` and
   accessors.
+
+### 9.4 Machine snapshot, adoption and fork
+
+Two places copy a whole `WamState` today, for different purposes. The
+derived `Clone` copies the new fields too (scopes, `next_gen`, B0, floor,
+pending state, machine id), which is right for one and wrong for the other.
+So the rewrite has two operations and no public derived `Clone`.
+
+**Snapshot and adoption** (`dynamic_body_solutions`, `DB:624-665`;
+`dynamic_eval_body_solution`, `DB:628`). The dynamic body solver clones the
+machine per branch, runs the goal on the clone, records solution clones,
+and the caller replaces itself with one: `*self = solution`. This runs
+inside `dynamic_call_attempt`'s or `dynamic_rule_body_attempt`'s attempt
+scope (§5.6).
+
+- `snapshot(&self) -> WamState` copies everything, **keeping the machine
+  id, epoch, scope records, serials and `next_gen`**. A snapshot is the same
+  logical machine at a branch point: its heap prefix is identical, so its
+  live handles and anchors mean the same thing.
+- Scope tokens: the attempt scope's `ScopeRec` is copied with its index and
+  serial, so the Rust frame's `Scope` token is valid on the adopted machine.
+  Every scope the clone opened during the body has been closed before a
+  solution is recorded (they belong to Rust frames that have returned).
+  `adopt(&mut self, solution: WamState)` asserts (debug) that the solution's
+  scope stack equals `self`'s by index and serial, then replaces `self`.
+- Obligations and floor: clone-side execution is nested execution while the
+  attempt scope is active, so it runs with the floor at that scope's
+  `cp_gen` (L3). Today the solver's `vm.call_goal_value(&other)` (`DB:652`)
+  sets no floor; its explicit `cp_depth` check (`DB:658`) covers only the
+  enumeration loop. R−1a adds the floor on main (§12). Solution clones keep
+  the CPs they pushed with `gen ≥` the solver's entry boundary removed, as
+  today's `truncate(cp_depth)` (`DB:655`).
+- Pending state (`pending_b0`, `pending_level`) and B0 are copied and
+  adopted with the machine, as today.
+- `var_counter` moves with the adopted machine; a discarded snapshot's
+  increments are lost, as today (§5.7).
+- Anchors exported from a discarded snapshot carry the same machine id. They
+  stay harmless: an anchor is honored only if the address is below H and
+  holds an unbound `VAR` with exactly the same name, which today's global
+  name identity would treat as the same variable anyway.
+
+**Fork** (`par_aggregate` workers: `base.clone()` and `*m = base.clone()`,
+`PA:29`, `:52`, `:76`, `:93`, `:130`, `:156`, `:180`, `:209`, `:226`; the
+labeled paths then call `choice_points.clear()` and `aggregate_acc.clear()`,
+`PA:157-158`, `PA:181-182`).
+
+- `fork(&self) -> WamState` copies the heap, boxes and environment stack
+  (the inputs a worker reads) and gives the copy a **fresh machine id** and
+  epoch, so the parent rejects worker anchors and live handles.
+- It clears the CPs **and** the scope stack. No parent `Scope` token can
+  name a worker record, and a worker never rewinds into a parent obligation.
+- It resets B0, floor and `next_gen`-based boundaries to the worker's empty
+  CP stack (B0 = floor = `next_gen`), clears `pending_b0`, `pending_level`
+  and the aggregate accumulators, and derives HB and EB (both 0: the worker
+  never rolls back below its start, and its results leave as `Detached`).
+  Today the cleared CPs leave the inherited B0, pending state and floor
+  pointing at depths that no longer exist; the fork makes them consistent.
+- Each repeated reset of a worker (`*m = base.clone()`) is a new fork with a
+  new id, so anchors from an earlier body run are rejected too.
+- The generic collector (`src/unifyweaver/targets/rust_runtime/par_aggregate.rs`)
+  holds only `M: Clone` and `Vec<V>`; WAM callers instantiate `M` through
+  `fork` and `V = Detached`, and the generic substrate does not change.
 
 ## 10. What stays byte-identical
 
@@ -1070,10 +1599,19 @@ A ball never holds a heap address that the rewind in step 3 could invalidate.
     (§6.3);
   - error terms from `raise_iso_error`: built as `Detached` with today's
     variable names.
+- **The baseline.** "The pre-rewrite build" is the build frozen **after**
+  phase R−1 (§12). Each R−1 change re-freezes it explicitly. If the owner
+  chooses not to land an R−1 item, the rewrite emulates that behavior
+  (§12, "If not fixed first") and the frozen build stays as is for it.
 - **Known residual differences**, each needing a gate case before R3 green:
   external names equal to live generated names (§3.4); non-ground
-  `par_aggregate` results aliasing a parent variable by name (§9.2); and
-  any case where §16's L3 question turns out to change control flow.
+  `par_aggregate` results aliasing a parent variable by name (§9.2); CPs
+  that today survive a rewind or commit because a cut crossed a depth
+  boundary (`catch/3` without R−1e; the structural `;` fallback after the
+  "cannot retry a nondeterministic left conjunct" warning; a lowered
+  condition that leaves a CP, §6.6), which generations remove (§5.4). The
+  paranoid build's "boundary crossed" counter must be zero on every gate
+  corpus, or each event is explained.
 - **The generated Rust source changes completely.** It is not compared.
 
 ## 11. Test strategy and gates
@@ -1095,10 +1633,34 @@ A ball never holds a heap address that the rewind in step 3 could invalidate.
    `cargo test` only). Each runs against the frozen build too where it can,
    so "same as today" is checked, not assumed.
    - **Obligation model** (Appendix A): random sequences of push CP, trust,
-     cut to depth, open scope, rewind, close, allocate variable, bind,
+     cut to a generation, open scope, rewind, close, allocate variable, bind,
      backtrack, against a naive machine that trails every bind. After every
-     step the heap, the env slots and HB/EB must match. Fixed cases: both §5.4
-     counterexamples and the three-clause fallback.
+     step the heap, the env slots and HB/EB must match, and no CP may have
+     `h` above H. Fixed cases: the three §5.4 counterexamples (counterexample
+     3 is cut through a scope + new CP + redo + rewind) and the three-clause
+     fallback.
+   - **Abandoned environments** (§6.3): a `predsort` comparator with an ITE
+     whose condition first-writes a Y slot of the comparator's frame, a
+     second comparator call reusing that frame space, then an outer rewind;
+     the caller's Y slots and the live frame must be unchanged, and the
+     pruned entry count must equal the nested Y writes.
+   - **Lowered ITE** (§6.6): `tests/test_wam_rust_lowered_ite_exec.pl`
+     against the frozen build and an interpreter run of the same predicates.
+   - **Dynamic DB** (§5.6, §9.2): `assertz((p(X) :- member(X,[a,b])))` then
+     all solutions of `p(X)` give `[a,b]`; a dynamic predicate with two
+     clauses whose first has a body that yields two solutions gives the body
+     solutions before the second clause; a dynamic body that fails with an
+     older CP present (floor).
+   - **Identity** (§7.5): `term_variables(f(X,X),[V]), V=a` binds `X`;
+     `numbervars` binds the input's variables; `read_term_from_atom('f(X)',T,
+     [variable_names(['X'=V])]), V=a, T==f(a)`; `unifiable(f(X),f(Y),S)` gives
+     `[X=Y]` with both unbound.
+   - **Resets** (§3.3): two `read_term` calls on one machine (the operator
+     table survives the parser reset); a program with a float, a big-integer
+     and a Bool instruction constant run across several `vm.call`s, rollbacks
+     and a par fork.
+   - **Baseline divergences** (§12 R−1): each R−1 program, compared with
+     SWI-Prolog after its fix, and with the re-frozen build in the rewrite.
    - **Execution snapshot**: a lowered clause that allocates an environment
      and fails, after which clause 2 must see the entry E, continuation and
      B0; a nested comparator run (`predsort`) whose caller's Y slots and E are
@@ -1130,7 +1692,9 @@ A ball never holds a heap address that the rewind in step 3 could invalidate.
    - **Cursors**: maplist whose goal binds later elements; maplist whose
      goal backtracks internally; predsort whose comparator allocates.
    - **Backtrack floor**: `catch/3` whose goal fails with an older CP
-     present (§16).
+     present; lowered `call` and `execute` whose callee fails with an older
+     CP present (both emit modes); a hybrid wrapper whose kernel stream is
+     exhausted with an older CP present (§12 R−1a).
    - The existing property tests: keep today's `Value` algorithms for unify,
      `term_compare`, `terms_identical`, sort/dedup and `copy_term` as a
      test-only `term_ref` module; generate random terms (atoms with tricky
@@ -1144,6 +1708,12 @@ A ball never holds a heap address that the rewind in step 3 could invalidate.
    - check L1 and L3 on every scope operation and backtrack;
    - check live handles (§7.3);
    - count `CutTo` not-found events (§6.4);
+   - count "boundary crossed" cuts (§5.2) and skipped dead env-slot undos
+     (§5.1);
+   - tag env-slot entries with the frame's allocation serial and check them
+     on undo (§6.3);
+   - count `set_y_untrailed` writes if the `LoweredIte` emulation is used
+     (§6.6);
    - poison truncated heap cells.
 
    The differential must give identical output with it on and off.
@@ -1159,17 +1729,18 @@ A ball never holds a heap address that the rewind in step 3 could invalidate.
 
 The user chose a big-bang rewrite: one long-lived branch, one merge, all gates
 green. The order inside the branch still matters, and the spike sets it.
-R0a and R0b are optional and land on main **before** the branch, as two
-separately reviewed changes. G0 is a measurement gate before R2.
+R−1 (recommended) and R0a/R0b (optional) land on main **before** the branch,
+each as separately reviewed changes. G0 is a measurement gate before R2.
 
 | phase | content | why here (numbers **[S]**) | exit gate |
 | --- | --- | --- | --- |
+| **R−1** (recommended, main; owner's decision) | §12.1: R−1f, then R−1a–R−1d, optionally R−1e, each its own D-row | the rewrite needs L3 anyway; byte identity should target corrected behavior | each item's SWI comparison; full gate set; explicit re-freeze of the byte-identity baseline after each |
 | **R0a** (optional, main) | Arity-only register save at **clause-entry** `try_me_else`/`TryMeElsePc` (not `L_ite_else_*`). The generator emits the arity; no label parsing. Keeps the environment stack snapshot, `restore_ax_regs` clear-then-restore, and the register trail. **Not** ITE guards, aggregate frames, builtin/fact/dynamic/foreign CPs, `lo_clause_snapshot` or any lowered mid-clause snapshot: those keep `save_regs` | measured s1→s2: −1.83 M Ir (−7.9% of base), on top of s1; lib 260/260 in the spike | the full D127 gate set; lib tests; new tests: an unsaved temporary is `Uninit` in clause 2 as today; ITE guards still restore temporaries |
 | **R0b** (optional, main) | Remove **A/X** register trail entries. Y entries stay until R2's env-slot trail replaces them. First: (1) an audit table of every rollback consumer (the 61 + 35 `unwind_trail_to` sites, plus `lo_restore_clause`, `catch/3`, `predsort_order`), each classified as *restores registers explicitly*, *reads no A/X register that the scope could have clobbered*, or *relies on register entries*; (2) explicit saves for the third class. The lowered ITE (`LE:838-855`) is a known candidate: its condition's `vm.step` arms trail the registers they write, and the else branch reads registers; (3) targeted tests, written and passing before the removal: a failed `call/1` disjunction whose left branch clobbers A1; a lowered ITE whose condition calls a predicate and whose else reads A1; `\+` then a temporary read; `forall`; include/exclude with a failing goal; `catch/3` goal failure | measured s2→s3: −1.88 M Ir (−8.1% of base) is an upper bound: s3 also dropped Y entries and was never lib-tested. The spike calls s3 unsound in general | the audit table in the PR; the targeted tests; the full D127 gate set; lib tests |
-| **R1** | Generator: numeric `Reg` operands, X/Y split variants, PC-resolved control, `BuiltinId`, constant table, `TryMeElse{arity}`, `TryMeElseIte{live}`, `LevelId` operands, `FunctorId` switch keys, the Y-without-Allocate check | bucket (b) is ~18.5% and `step` self ~8% of N=40. Everything after it is written against the new encoding, so it comes first | the crate compiles against R2's skeleton; generator plunit |
+| **R1** | Generator: numeric `Reg` operands, X/Y split variants, PC-resolved control, `BuiltinId` (from the 216-key inventory), constant table with the constant-box arena, `TryMeElse{arity}`, `TryMeElseIte{live}`, `LevelId` operands, `FunctorId` switch keys, the Y-without-Allocate check. The other instruction emitters move with it: both benchmark generators (`examples/benchmark/generate_wam_effective_distance_benchmark.pl`, `generate_wam_rust_matrix_benchmark.pl`, both backends) and the runtime's textual instruction parser (`ST:7059-7063`) | bucket (b) is ~18.5% and `step` self ~8% of N=40. Everything after it is written against the new encoding, so it comes first | the crate compiles against R2's skeleton; generator plunit |
 | **G0** (gate, before R2) | Prototype on the proposed representation, in a scratch crate like the spike: (1) one native sort/comparator path (`msort` + `sort/2` dedup with `compare_std`) on the N=5000 catalog lists; (2) one large region (`group_keyed`, 59.8 M today) on cells. Measure Ir, wall, **boundary copy-in and copy-out**, and **peak memory** | §14's N=5000 ranges for these two are unvalidated; the spike measured cost today, not on cells | the measured residuals, with boundary cost, are inside §14's targets, or §14 and the R4/R5 scope are revised before R2 starts |
 | **R2** | Core machine: `Cell`, heap, `VAR` names, trail (heap + env slot), obligations and scopes, CP plus arg stack, env stack with EB, execution snapshots, ITE barriers, S register, every step arm, `backtrack`, cut, `run`. All builtins through the **bridge** | buckets (a), (c) and (d), about 32% of N=40, plus construction ~8% | builds and runs; the model and targeted tests (§11.2) pass |
-| **R3** | Boundary: `vm.call` copy-in/out, both shims, fact sources, kernels, `par_aggregate`, detached holders (findall/`copy_term`/assert/exceptions/`read_term`), `rust_target.pl` wrappers | nothing runs end-to-end without it, so R2+R3 is the first point where the differential can run | **differential, corpus and byte identity green** with every builtin bridged |
+| **R3** | Boundary: `vm.call` copy-in/out, both shims, fact sources, kernels, `par_aggregate` (fork, §9.4), detached holders (findall/`copy_term`/assert/exceptions/`read_term`/parser `ops`), all six `rust_target.pl` wrappers (§8), the benchmark driver and benchmark-generator read-backs (`_N`, `Hops`), `tests/fixtures/wam_rust_dynamic_builtins.rs`. The tracked crate `examples/pkg_resolver/rust/uw_resolve_wam/` is regenerated from the changed templates, never hand-ported | nothing runs end-to-end without it, so R2+R3 is the first point where the differential can run | **differential, corpus and byte identity green** with every builtin bridged |
 | **R4** | Native hot builtins (§7.4) | 23 sort-family calls are 196 M of 388 M at N=5000; R2/R3 with a bridged sort is about today's cost, because today already materializes | the N=5000 profile shows no bridged builtin above 1% |
 | **R5** | Lowered emitter on the cell API (required). Stage-2 regions: native, or a tested compatibility path (below) | regions are 138 M (35.5%) at N=5000 | region stress tests and gates; the G-1…G-5 re-check for each native region |
 | **R6** | Remove the old internals: `bindings`, `Args` spine and `deref_memo` flags, `"f/N"` functor syms and `decomp`, `WriteCtx`/`UnifyCtx`, `YRegs`, the register-name tables. Cold builtin families stay bridged | code size, compile time; removes the inlining tax of a dual representation, which the spike saw as +7.6 M at N=5000 | full gates |
@@ -1188,6 +1759,115 @@ on top of s1 rather than on main. Neither the cumulative −17.6% Ir nor the
 | API migration (correctness) | the merge must run every program that runs today | every builtin and region compiles and runs on the cell machine, natively or through the bridge; the lowered emitter emits the new API, so existing lowered configurations work; all gates green |
 | Native hot builtins (performance) | without them the N=5000 slope does not move, and the bridge adds copies | R4 in the same merge: no bridged builtin above 1% at N=5000 |
 | Native regions (performance) | 35.5% of N=5000 | optional for the merge. A region may land on a tested compatibility path: (a) disabled, so the region's predicates run interpreted (declining is always sound today), or (b) its existing logic on the bridge. Either needs its stress tests green. The merge then states which N=5000 target it claims (§14) |
+
+### 12.1 R−1: baseline fixes (decision for the project owner)
+
+The second external review compiled small programs with
+`write_wam_rust_project/3` and compared them with SWI-Prolog. It confirmed
+five behaviors where today's runtime differs from SWI, plus a lowered-ITE
+divergence between the two Rust tiers. This revision re-ran all of them at
+`d0c1c06` (SWI-Prolog 9.0.4; Rust interpreter and functions mode) and found
+two more of the same kind. The programs, verbatim:
+
+```prolog
+% catch_floor: query all catch_floor(X)
+catch_floor(X) :- catch(catch_bad, _, true), X=wrong. catch_floor(ok). catch_bad :- fail.
+% lower_floor: query all lower_floor(X) (functions mode, default features)
+lower_floor(X) :- lower_helper, X= -1. lower_floor(0). lower_helper :- lower_bad(2), 3=3. lower_bad(1).
+% ite_map: query all ite_map(no,R)
+ite_map(A,R) :- (ite_q(A,X)->true;true), ite_r(X,R). ite_q(yes,a). ite_r(a,a). ite_r(b,b).
+% cut_after_call: query all cut_after_call(R)
+cut_after_call(R) :- cut_q, !, cut_r(R). cut_after_call(fallback). cut_q :- cut_t, cut_t. cut_t. cut_r(first).
+% nested: query nested(L)
+nested(L) :- findall(A,(nested_a(A),findall(B,nested_b(A,B),_)),L).
+nested_a(a). nested_a(b). nested_b(a,one). nested_b(b,two).
+% rundoite: lowered_rundoite_2(c,els) directly, and all rundoite(c,els) interpreted
+rundoite(X,R) :- ((Y=a,Y=b)->R=then;R=els), X=Y.
+% found in this revision:
+catch_cut(X) :- catch((!,member(X,[a,b])),_,true). catch_cut(c).
+:- dynamic dq/1.   % run after assertz((dq(Y) :- dbad(Y)))
+dyn_floor(X) :- dq(X), X = wrong. dyn_floor(ok). dbad(_) :- fail.
+```
+
+| case | SWI | Rust today | cause |
+| --- | --- | --- | --- |
+| `catch_floor` | `[ok]` | interpreter `[]` | `catch/3` meta-calls its goal (`T:6988`; nested run at `T:7476`) with no backtrack floor; the failing goal's nested run resumes the caller's clause CP, and catch cannot restore the lost alternative |
+| `lower_floor` | `[0]` | functions mode `[]`, default features | lowered `call` runs a nested `vm.run()` with no floor (`LE:1051`); `lowered_dispatch` raises `cut_barrier` only (`ST:4581-4583`) |
+| `ite_map` | `[a,b]` | interpreter `[]` | after an ITE the compiler keeps the Then branch's variable map (`WT:2358-2361`); the else path's `put_value` reads an absent Y (`T:373`) |
+| `cut_after_call` | `[first]` | interpreter `[first,fallback]`, functions `[first]` | B0 is a machine register, set by `Allocate` (`T:713-716`) and not restored by `Deallocate` or `Proceed`; after `cut_q` returns, the `!` uses the B0 `cut_q`'s clause left. `lowered_dispatch` restores B0, hence the functions-mode result |
+| `nested` | `[[a,b]]` | interpreter and functions `[[b]]` | every `BeginAggregate` clears the one `aggregate_acc` (`T:981`), and finalization clears it again (`T:5133`) |
+| `rundoite(c,els)` | true | lowered `true`, interpreter no solution | §6.6 |
+| `catch_cut` | `[a,b,c]` | interpreter prints `a`, then the enclosing failure-driven driver fails | `catch/3` does not make its goal opaque to cut (it does not set B0 the way `call_goal_once` does, `T:7262-7266`), so `!` truncates to the enclosing B0 (`T:7376`); with the clause having no environment, that B0 is the caller's |
+| `dyn_floor` | prints `ok`, driver succeeds | prints `ok`, then the driver fails | probably the dynamic body solver's unfloored `vm.call_goal_value` (`DB:652`), same shape as `catch_floor`; R−1a confirms the cause |
+
+The review collected solutions with `findall/3`. This revision used
+failure-driven drivers (`( G, write(R), nl, fail ; true )`), which show the
+floor cases differently: the answer is printed from inside the nested run,
+then the driver itself fails. Same cause. The lowered corpus with atom
+constants does not compile with default Cargo features (24 `String`/`Sym`
+errors, reproduced), so the functions-mode atom cases ran with
+`--no-default-features`.
+
+**Recommendation: fix these on main first, as separate small D-rows, and do
+not emulate them.** The rewrite's heap invariant needs the floor rule L3
+(§5.2) anyway: a nested run that resumes a CP older than an active scope
+sets H below that scope's `h`, and the scope's later rewind is then
+meaningless. Emulating today's floorless runs needs a "crossed scope" state
+that the paranoid build cannot check (below). The other items are cheap on
+today's code and make the rewrite's byte-identity target the corrected
+behavior.
+
+| item | change on main | files | regression test (compared with SWI) |
+| --- | --- | --- | --- |
+| **R−1f** (first) | the lowered emitter emits atom constants as `Value::Atom("x".to_string())` (`LE:1114`) and fresh variables as `Value::Unbound(format!(..))` (`LE:978`), which do not compile under the default `intern` feature (D96: `Atom(Sym)`); emit `.into()` / the interner path instead. No behavior change | `wam_rust_lowered_emitter.pl` | the lowered tests (`tests/test_wam_rust_lowered_*.pl`, the cut-semantics `functions` mode) build with default features |
+| **R−1a** | backtrack floor for every nested execution: `catch/3` goal and recovery, lowered `call`/`execute` and `lowered_dispatch`, the dynamic body solver, the hybrid-wrapper `backtrack` loop (§8); each saves the floor, sets it to its entry depth, restores it | `wam_rust_target.pl`, `wam_rust_lowered_emitter.pl`, `state.rs.mustache`, `dynamic_db_methods.rs.mustache`, `rust_target.pl` | `catch_floor` → `[ok]`; `lower_floor` → `[0]` in both emit modes; `dyn_floor` → driver succeeds; a wrapper with an older CP present |
+| **R−1b** | one accumulator per active aggregate frame: `BeginAggregate` saves the outer accumulator in its frame and finalization restores it | `wam_rust_target.pl`, `state.rs.mustache` | `nested` → `[[a,b]]` in both emit modes |
+| **R−1c** | a permanent variable first seen inside an ITE and read after it is initialized on every path. Preferred form: initialize it before the guard (a fresh variable in its Y slot), so later occurrences are not first occurrences; this also gives §6.6 its plain policy. Alternative: initialize it at the end of each branch whose map lacks it | `wam_target.pl` (shared) | `ite_map` → `[a,b]`; `rundoite(c,els)` succeeds in both tiers |
+| **R−1d** | save B0 in the environment frame at `Allocate`, restore it at `Deallocate` (standard WAM) | `wam_rust_target.pl`, `state.rs.mustache` | `cut_after_call` → `[first]` in both emit modes |
+| **R−1e** (optional) | make the `catch/3` goal opaque to cut: set B0 to the entry depth around the goal, as `call_goal_once` does. Catch stays first-solution (SWI's `catch/3` is re-entrant; that difference is out of scope) | `wam_rust_target.pl` | `catch_cut` → `[a,c]` (first-solution catch; SWI `[a,b,c]`) |
+
+Rules for each item:
+
+- its own D-row, PR and review; it changes only what the row says;
+- the regression test runs the program under SWI and the Rust build and
+  compares, in every emit mode the item touches;
+- the full gate set (§11.1) stays green against SWI (term and store
+  differential, corpora, plunit with the same failing-test set);
+- then the byte-identity baseline is **re-frozen explicitly**: rebuild the
+  frozen binaries and outputs, record the commit in the D-row, and keep the
+  old ones until the next re-freeze. Where an item changes no resolver
+  output, the re-freeze still records that fact.
+
+R−1c changes the shared compiler, so every WAM target's output changes for
+the affected shape. It needs those targets' suites, or a Rust-only variant
+(the Rust target inserting the initialization when it emits the ITE). That
+choice is part of the owner's decision. R−1e is optional because it is a
+semantic change beyond the review's list; without it the rewrite emulates
+the commit (below).
+
+**If not fixed first.** What the rewrite must reproduce, per item:
+
+- **R−1a:** floorless nested runs at those sites. A backtrack that resumes a
+  CP with `gen <` an active scope's `cp_gen` marks every such scope
+  *crossed* and drops it from `derive`. The owner's later rewind or close of
+  a crossed scope restores only today's non-heap parts (E and `e_top`,
+  registers, `cp`, B0) and skips trail and H, matching today's
+  `unwind_trail_to(mark)` and `heap.truncate(mark)`, which are no-ops once
+  the trail and heap are below the mark. Today's stack restore also
+  resurrects the old Y slot contents; the rewrite cannot, because env slots
+  are not snapshotted, so the emulation is exact only where no frame above
+  the crossed CP's `e_top` was reused. The paranoid L3 check is disabled at
+  these sites. Not recommended.
+- **R−1b:** one machine-wide accumulator, as §9.2 states.
+- **R−1c:** the interpreter keeps §6.2's env-slot rule (reproduces `[]`);
+  the lowered ITE uses the `LoweredIte` emulation (§6.6).
+- **R−1d:** B0 outside frames, in the execution snapshot (§6.1, §6.4).
+- **R−1e:** `catch/3`'s close truncates by the depth recorded at open, not by
+  generation, so a CP pushed after a cut through the scope survives the
+  commit as today. Its rewind still uses the generation, for soundness; the
+  difference from today on that path is listed in §10.
+- **R−1f:** freeze the lowered baseline with `--no-default-features`; R5
+  replaces the emitted code anyway.
 
 ## 13. Risks
 
@@ -1231,6 +1911,15 @@ on top of s1 rather than on main. Neither the cumulative −17.6% Ir nor the
     `u64` with explicit `#[inline]` helpers, and the old enum is deleted in R6,
     not kept alongside.
 11. **Estimates.** §14's ranges are unvalidated. Mitigation: G0 before R2.
+12. **Moving baseline.** R−1 changes behavior on main, and each item
+    re-freezes the byte-identity baseline. A rewrite branch cut before the
+    last re-freeze compares against the wrong build. Mitigation: start the
+    branch after R−1 (or record which items were declined and emulate them),
+    and name the frozen commit in every R-phase report.
+13. **Generation boundaries change edge behavior.** Where today a cut crosses
+    a depth boundary, generations give different (sound) results (§5.4,
+    §10). Mitigation: the paranoid "boundary crossed" counter on every gate
+    corpus, and R−1e for the one known reachable case.
 
 ## 14. Expected gains (unvalidated targets)
 
@@ -1297,7 +1986,7 @@ changes.
 | `templates/targets/rust_wam/instructions.rs.mustache` | 149 | 100% | numeric operand enum |
 | `src/unifyweaver/targets/wam_rust_target.pl` | 11,064 | ~45% | step arms, `backtrack`, `run`, `execute_builtin` dispatch table, `unwind_trail_bindings_only`, instruction literal emission (regs, PCs, arity, live sets, level ids, builtin ids, constants), `call_goal_once`, findall/aggregate, catch/throw, foreign predicates, `resume_builtin` |
 | `src/unifyweaver/targets/wam_rust_lowered_emitter.pl` | 1,115 | ~50% | emitted API calls, scopes for T4/F11/ITE |
-| `src/unifyweaver/targets/rust_target.pl` | 14,234 | <2% (~150 lines near 4470–4580) | WAM-hybrid wrappers that read `vm.bindings` |
+| `src/unifyweaver/targets/rust_target.pl` | 14,234 | ~6% (~900 lines, `RT:4448-5348`) | the six WAM-hybrid wrapper bodies (§8): 42 `vm.bindings` reads/removes, temp-name creation, accumulators, the unfloored `backtrack` loop |
 | `templates/targets/rust_wam/dynamic_db_methods.rs.mustache` | 1,028 | ~40% | assert/retract/clause on `Detached`, scope-before-candidate |
 | `templates/targets/rust_wam/seek_fact_source.rs.mustache` | 1,047 | ~10% | row delivery |
 | `templates/targets/rust_wam/csr_fact_source.rs.mustache`, `lmdb_fact_source_heed.rs.mustache`, `lmdb_fact_source_lmdb_zero.rs.mustache`, `materialisation_setup.rs.mustache`, `lazy_category_parents.rs.mustache` | 179 + 176 + 452 + 149 + 23 | ~10% | row delivery and registration |
@@ -1309,13 +1998,19 @@ changes.
 | `examples/pkg_resolver/rust_store/shim/main.rs` | 753 | ~10% | same |
 | `examples/pkg_resolver/rust/build.pl`, `rust_store/build.pl` | small | maybe | only if build options change |
 | Rust WAM plunit (`tests/test_wam_rust_*.pl`, `tests/core/*rust*.pl`, 56 files) | — | some | expected generated-text fragments |
+| `tests/fixtures/wam_rust_dynamic_builtins.rs` | 829 | ~60% | a real Rust integration source copied into the generated crate by `tests/test_wam_rust_dynamic_builtins.pl:150`: old string `Instruction` constructors, `bindings` lookups, register writes, `Unbound` tests. Changing the plunit caller does not rewrite it |
+| `examples/benchmark/generate_wam_effective_distance_benchmark.pl` | 1,100 | ~30% | emits old instruction shapes and label-resolved PCs (`:340-377`, `:444`, `:456-523`, `:548-752`); register writes; `Hops` read back by name (`:927`, `:944`, `:967-968`) → hold the cell |
+| `examples/benchmark/generate_wam_rust_matrix_benchmark.pl` | 1,668 | ~30% | both emitted backends build old `GetConstant`/`Call`/`TryMeElse`/`BuiltinCall` variants with string operands and register writes (`:375-393`, `:404-654`, `:835-838`; duplicated driver `:1023-1041`, `:1052` on, `:1572-1575`) |
+| `examples/pkg_resolver/rust/uw_resolve_wam/` (tracked generated crate) | — | regenerated | regenerated from the changed templates and generator, including the new `cell.rs`/`detached.rs` and feature list; never hand-ported. Its own tests (`tests/comparator_equiv.rs`, …) follow the generated-crate row |
+| `src/unifyweaver/targets/wam_target.pl` | — | small, only with R−1c | the ITE variable-map fix, if the owner chooses the shared-compiler form (§12.1) |
 | generated-crate tests (`tests/comparator_equiv.rs`, `tests/intern_stress.rs`, in-template `mod d1xx_*_tests`) | — | ~50% | rewritten on the new API (§11.4) |
 | docs: `docs/WAM_RUST_STATUS.md`, this design, a per-phase report under `docs/reports/` | — | — | — |
 
 **Do not change:** `examples/pkg_resolver/resolver.pl`,
 `resolver_store.pl`, the shared `wam_target.pl` compiler (beyond optionally
-emitting ITE live sets and clause arity, which is additive), the WAT, Go and
-other targets.
+emitting ITE live sets and clause arity, which is additive, and R−1c if the
+owner chooses its shared form, which lands on main before the branch), the
+WAT, Go and other targets.
 
 ## 16. Open questions
 
@@ -1326,31 +2021,45 @@ To settle in R1:
 - Should the trail store the old cell always (8 bytes per entry), or only the
   address with the `VAR` name re-derived? Decide by measurement in R2.
 
-Found while revising against the code; each needs a test against the frozen
-build before R2, and any fix is a separate behavior change:
+**Settled by the second review.** The first revision listed four baseline
+questions here (backtrack floor, ITE variable map, B0 after a call, nested
+aggregates). The second external review answered all four by running them
+against SWI-Prolog, and this revision reproduced the answers: each is a
+divergence from SWI. They are now R−1a–R−1d (§12.1), with the lowered-ITE
+tier difference (§6.6), `catch/3` cut locality (R−1e) and the lowered
+emitter's `String`/`Sym` compile defect (R−1f).
 
-- **Backtrack floor (L3).** `catch/3` meta-calls its goal with
-  `call_goal_value` directly (`T:6988`), and lowered `call` runs `vm.run()`
-  (`LE:1045-1053`); neither sets `backtrack_floor`. If such a goal fails while
-  an older CP exists, can the nested `run()` resume that CP? The rewrite
-  enforces L3 for every scope that runs nested code. If the frozen build
-  behaves differently on the §11.2 floor test, decide before R3 whether to
-  match it.
-- **ITE variable map.** The compiler's map after an ITE is the Then branch's
-  (`WT:2360-2361`), so `p(A,R) :- ( q(A,X) -> true ; true ), r(X,R).` reads
-  an uninitialized `Y2` on the else path and fails today, where SWI succeeds.
-  The rewrite reproduces the failure (§6.2).
-- **B0 after a call.** `cut_barrier` is a machine register set by `Allocate`
-  and not saved in the environment frame, so after a call returns, a
-  clause-level `!` uses the B0 the callee left (`T:703-716`; no restore on
-  `Deallocate`/`Proceed`). The rewrite keeps this exactly, because B0 lives in
-  the execution snapshot, not the frame. Check whether it is intended with
-  `p :- q, !, r. p :- s.` where `q` has a multi-goal body.
-- **Nested aggregates.** `BeginAggregate` clears the single `aggregate_acc`
-  (`T:981`), so a findall inside a findall's goal discards the outer
-  collection so far. The rewrite keeps one vector, as today.
+**For the project owner, before the branch:**
 
-## 17. Review response
+- Land R−1 first (recommended) or emulate (§12.1, "If not fixed first"),
+  item by item.
+- R−1c in the shared compiler (all WAM targets change for the shape) or as a
+  Rust-only insertion.
+- R−1e, and separately whether `catch/3` should become re-entrant like
+  SWI's (today it is first-solution by design, `T:6969-6974`; out of scope
+  here).
+
+**To settle during R−1 and R2:**
+
+- `dyn_floor`: confirm that the dynamic body solver's unfloored
+  `call_goal_value` (`DB:652`) is the cause (§12.1).
+- The hybrid wrappers' `vm.backtrack()` loop (§8): confirm on the frozen
+  build whether an exhausted kernel stream resumes an older caller CP.
+- Can a lowered ITE condition leave a CP and then fail (§6.6)? If yes, fix
+  it in R−1; both policies remove such CPs.
+- `CutTo` not found: today a missing level is a no-op; with generations the
+  nearest-match search is unchanged, but a match on an older activation's
+  guard would now cut by generation. The paranoid counter (§6.4) decides
+  whether this ever happens.
+- Constant boxes: an arena bit in the `BOX` payload (§3.1) versus a
+  per-machine copied prefix of the constant boxes. The bit keeps forks and
+  parser machines free of copies; measure the extra branch in box access in
+  R2.
+- CP generation width: `u64` costs 8 bytes per CP and never overflows; a
+  `u32` reset per query with an overflow check is the alternative. Decide by
+  measurement in R2.
+
+## 17. Review response (first external review)
 
 An external review raised 12 findings. Each was checked against the code at
 `e095a00` before changing the design.
@@ -1388,6 +2097,58 @@ The review's closing advice is followed: findings 1–5 are resolved in §5,
 §6 and §9 before any core runtime code (R2), the first-to-second bind
 direction is kept (§3.1), and detached terms hold no heap handle (§9.2).
 
+## 18. Second review response
+
+A second external review swept the revised design (`d0c1c06`) for
+completeness against the code (runtime sources at `7da1210`). It accounted
+for 97 direct restore expressions and 35 region-decline calls, 20 literal CP
+pushes (8 after binding), every variable-creation site, the full builtin
+dispatch and the repository-wide consumers of removed APIs, in seven tables.
+It ranked ten gaps, G1–G4 as blocking. Each citation used below was checked
+against the code; the baseline programs were re-run (§12.1).
+
+| gap | finding | verified | sections changed | resolution |
+| --- | --- | --- | --- | --- |
+| G1 | cuts leave stale scope boundaries: a cut through a scope (L2) makes its CP depth, floor and saved floors stale, so a post-cut CP can be refused a redo or survive a rewind above H | yes: `catch/3` calls its goal without raising B0 (`T:6988`), `!` truncates to the inherited B0 (`T:7376`), catch later truncates to its own depth (`T:6985`, `T:6991-6994`, `T:7002-7021`); the structural `;` branch is a second path (`T:7414-7418`). Reproduced an observable effect: `catch_cut` (§12.1) | §1, §5.2, §5.3, §5.4, §5.5, §6.3, §6.4, §9.2, §10, §11, §12.1, App. A | CP generations. Scope boundaries, B0, `pending_b0`, ITE levels and the floor are generations; cuts and rewinds remove `gen ≥` the boundary. Invariant I2: no CP survives a rewind above H. Counterexample 3 works the depth-2 example through; required test cut + new CP + redo + rewind. R−1e (optional) makes `catch/3` opaque to cut |
+| G2 | abandoned environments leave env-slot trail entries | yes: today `call_goal_once` removes nested Y entries (`T:7279-7301`); the design had no equivalent | §5.1, §6.3, §11, App. A | prune env-slot entries of dropped frames on close of an E-restoring scope, keeping heap entries; skip undo of slots at or above the target's `e_top`; paranoid frame-serial tags; required test |
+| G3 | lowered ITE restoration differs from its baseline | yes: direct lowered writes call `put_reg` without trailing (`LE:942-985`, `ST:4346-4356`); `rundoite(c,els)` lowered `true`, interpreter no solution (re-run) | §6.2, §6.3, §6.6 (new), §8, §11, §12.1 | after R−1c a plain scope; otherwise the `LoweredIte` emulation (trail every bind, keep H, untrailed direct Y writes, delegated writes undo `ABSENT` to `UNINIT`). Gate: `tests/test_wam_rust_lowered_ite_exec.pl` plus an interpreter comparison |
+| G4 | dynamic redo exports the clause after binding | yes: `clause.clone()` stored after `dynamic_apply_clause_solution` (`DB:562`, `DB:581-590`; again `DB:692-702`) | §9.2 | export order: rename to a template `R` before any binding, keep the same `R` on every retry with `PreserveName` |
+| G5 | one snapshot, two CPs; snapshot/adoption vs fork | yes: `DB:564` and `DB:581` share `cp_regs`/`cp_stack`/tops; `*self = solution` (`DB:628`); worker `base.clone()` then `choice_points.clear()` (`PA:156-158`, `PA:180-182`) | §5.2, §5.3, §5.6, §5.7, §9.2, §9.4 (new) | `push_cp_keep(&s)` then `push_cp_from(s)`, order and tops stated. `snapshot`/`adopt` keep machine id, scope records and serials, floor at the attempt scope; `fork` gets a fresh id and clears CPs, scopes, B0, floor, pending state |
+| G6 | name-reconstruction helpers | yes: `variables_from_term` rebuilds `Value::unbound(name)` (`DB:327-338`); singletons rebuild from runtime names (`DB:355-387`) | §3.4, §7.5 (new), §11 | `term_vars` returns the input's own cells; one parser export session and one `Fresh(RP)` import session for the term and the environment, in today's order; helpers added to the migration inventory |
+| G7 | `unifiable/3` needs raw substitution capture | yes: reads binding names and raw bound values off the trail, then unwinds (`T:2897-2915`) | §6.3, §7.5, §9.2 | `unify_capture` inside a fresh trial scope: ordered `(addr, cell)` events, rewind, then allocate the pairs |
+| G8 | two reset-surviving holders | yes: parser `ops` read before `parser.reset_query()` and used after (`T:3248-3256`); instruction constants are `Value`s that become boxed cells (`instructions.rs.mustache:12` ff.) | §3.1, §3.3, §4, §9.2, §11 | export/import `ops` across the reset; program-wide immutable constant-box arena (arena bit in `BOX`), per-call `boxes_base` floor |
+| G9 | migration scope incomplete | yes: 42 `vm.bindings` reads/removes in six wrapper bodies (`RT:4448-5348`); the fixture is copied into the generated crate (`tests/test_wam_rust_dynamic_builtins.pl:150`); both benchmark generators emit old instruction shapes | §3.4, §8, §12, §15 | wrapper table with name, holder and floor policies; fixture, both benchmark generators and the regenerated tracked crate in §15 and R1/R3 |
+| G10 | confirmed baseline incompatibilities | yes: all reproduced with SWI-Prolog 9.0.4 and the Rust build at `d0c1c06` (§12.1), plus `catch_cut` and `dyn_floor` | §1, §10, §11, §12.1 (new), §16 | phase R−1 (owner's decision, recommended): R−1f, R−1a–R−1d, optional R−1e, each a D-row with an SWI regression test and an explicit re-freeze; per-item emulation if not fixed |
+| nit | builtin count | yes: 154 arms / 216 keys; five families match exactly by a scripted count of the generated crate, io and meta are consistent once multi-line arms are counted | §4, §7 | counts and inventory-driven `BuiltinId` |
+| nit | Float in cached rows | yes (`seek_fact_source.rs.mustache:243`, `:265`, cache `:334`) | §9.3 | Float rows; cache keeps ground `Value`s, boxes made at delivery |
+| nit | cross-machine `FunctorId` | yes: `Detached` carries `FunctorId` to parser machines and workers | §4 | one process-wide functor table, like the `Sym` interner |
+| nit | native fresh-variable constructor | yes: `length/2`, `functor/3`, `fresh_meta_var` create variables | §7.1, §7.4 | `fresh_var(kind)` with each kind's convention |
+
+**Where the review is partly wrong or imprecise.**
+
+- G2's harm. With the rewrite's absolute slot addresses, a stale entry can
+  only be undone by an obligation older than the abandoned frame. That frame
+  was allocated at or above the obligation's `e_top` (`Allocate` places frames
+  at `≥ EB`), so the slot is dead once that rollback completes: the entry
+  cannot corrupt a live frame, as it can today with name-relative undo. It
+  can still index past the stack's end, and the trail grows without bound in
+  long `maplist`/`predsort` loops. The design specifies pruning and skipping
+  anyway (§6.3).
+- The review's area-4 row for `T:1053` calls it an aggregate witness
+  fallback; it is the `ParAggregate` input fallback. Its `par_aggregate`
+  clone lines (`PA:51`, `:91`, `:224`) are `:52`, `:93`, `:226`, and it omits
+  `:76`, `:130`, `:209`. Neither changes a conclusion.
+- The review says the B0, ITE-map and nested-aggregate questions "require no
+  additional redesign". Under the recommended R−1 they become fixes on main,
+  which changes the frame layout (R−1d) and the accumulator (R−1b); the
+  emulation path keeps the review's reading.
+
+**Beyond the review.** Two more divergences of the same kind (`catch_cut`,
+`dyn_floor`, §12.1), an unfloored `backtrack` loop in the hybrid wrappers
+(§8), condition CPs left by a failed lowered ITE (§6.6), and the design's
+own misnamed foreign-attempt function (§5.6, now
+`apply_first_compatible_foreign_result`).
+
 ## Appendix A: obligation model test
 
 A small executable model, written as Python-like pseudocode. The real test is
@@ -1399,9 +2160,10 @@ trails every bind and every slot write, and compares them after each step.
 class M:
     heap: list            # cells; VAR = None, else a value
     trail: list           # (addr, old)
-    cps: list             # dicts: h, tr
-    scopes: list          # dicts: h, tr, cp_depth, serial
-    floor: int
+    cps: list             # dicts: gen, h, tr
+    scopes: list          # dicts: h, tr, cp_gen, serial
+    next_gen: int
+    floor: int            # a generation
     def hb(self):
         return max(self.cps[-1]["h"] if self.cps else 0,
                    self.scopes[-1]["h"] if self.scopes else 0)
@@ -1414,36 +2176,45 @@ class M:
             a, old = self.trail.pop()
             if a < len(self.heap): self.heap[a] = old
         del self.heap[h:]
-    def push_cp(self):   self.cps.append(dict(h=len(self.heap), tr=len(self.trail)))
+    def push_cp(self):
+        self.cps.append(dict(gen=self.next_gen, h=len(self.heap), tr=len(self.trail)))
+        self.next_gen += 1
     def trust(self):     self.cps.pop()
-    def cut_to(self, d): del self.cps[d:]                 # never touches scopes
+    def remove_from(self, g):                          # every CP with gen >= g
+        while self.cps and self.cps[-1]["gen"] >= g: self.cps.pop()
+    def cut_to(self, g): self.remove_from(g)           # never touches scopes
     def backtrack(self):
-        assert len(self.cps) > self.floor                  # L3
         c = self.cps[-1]
-        assert not self.scopes or len(self.cps) > self.scopes[-1]["cp_depth"]
+        assert c["gen"] >= self.floor                  # L3
+        assert not self.scopes or c["gen"] >= self.scopes[-1]["cp_gen"]
         self.undo_to(c["tr"], c["h"])
     def open(self):
-        s = dict(h=len(self.heap), tr=len(self.trail), cp_depth=len(self.cps), serial=fresh())
+        s = dict(h=len(self.heap), tr=len(self.trail), cp_gen=self.next_gen, serial=fresh())
         self.scopes.append(s); return s
     def rewind(self, s):
-        assert self.scopes[-1] is s                        # L1
-        del self.cps[s["cp_depth"]:]
-        self.undo_to(s["tr"], s["h"])                      # s stays active
+        assert self.scopes[-1] is s                    # L1
+        self.remove_from(s["cp_gen"])
+        self.undo_to(s["tr"], s["h"])                  # s stays active
+        assert all(c["h"] <= len(self.heap) for c in self.cps)   # I2
     def close(self, s):
-        assert self.scopes[-1] is s                        # L1
+        assert self.scopes[-1] is s                    # L1
         self.scopes.pop()
 ```
 
 Driver: a random walk over `alloc`, `bind` (to a random unbound address below
-H), `push_cp`, `trust`, `cut_to` (a random depth), `backtrack`, `open`,
-`rewind`, `close`, respecting L1 and L3. Both machines get the same ops. After
-every `backtrack`, `rewind` and `close`, `conditional.heap == naive.heap`.
+H), `push_cp`, `trust`, `cut_to` (a random generation at or below the
+current B0 stand-in), `backtrack`, `open`, `rewind`, `close`, respecting L1
+and L3. Both machines get the same ops. After every `backtrack`, `rewind` and
+`close`, `conditional.heap == naive.heap`, and no CP has `h` above H. A
+depth-based variant of the same model (boundaries as `len(cps)`) must fail
+counterexample 3; that keeps the test honest.
+
 Fixed cases:
 
 ```python
 # Counterexample 1
 grow_to(m, 20); m.push_cp(); grow_to(m, 100); s = m.open(); grow_to(m, 110); m.push_cp()
-m.cut_to(1); m.bind(50, "x"); m.rewind(s); m.close(s)
+m.cut_to(1); m.bind(50, "x"); m.rewind(s); m.close(s)    # gen 1 is the inner CP
 assert m.heap[50] is None
 # Counterexample 2 and the three-clause fallback
 grow_to(m, 20); m.push_cp(); grow_to(m, 100); s = m.open()   # V at address 60
@@ -1451,8 +2222,20 @@ m.bind(60, "c1"); m.rewind(s)
 m.bind(60, "c2"); m.rewind(s)
 assert m.heap[60] is None                              # clause 3 sees V unbound
 m.close(s)
+# Counterexample 3: cut through a scope, new CP, redo, rewind
+grow_to(m, 20); m.push_cp(); grow_to(m, 30); m.push_cp()  # gens 0, 1
+grow_to(m, 100); s = m.open(); m.floor = s["cp_gen"]      # cp_gen 2
+m.cut_to(0)                                                # cut through s: cps == []
+grow_to(m, 105); m.push_cp()                               # gen 2
+x = m.alloc(); m.bind(x, "a"); m.backtrack()               # redo allowed: gen 2 >= floor 2
+m.rewind(s)                                                # removes gen >= 2
+assert m.cps == [] and len(m.heap) == 100
+m.close(s)
 ```
 
 The same model, extended with an env-slot array and EB, covers the §6.2
 slot-write case: write a slot below EB inside a scope, rewind, and check the
-slot's exact previous content (`ABSENT`, `UNINIT` or a `REF`).
+slot's exact previous content (`ABSENT`, `UNINIT` or a `REF`). Extended with
+frames, it covers §6.3's abandoned-frame rules: a nested scope that restores
+E prunes its frames' entries on close, and an outer rewind skips entries for
+slots at or above its `e_top`.
