@@ -204,13 +204,12 @@ test(the_string_arm_emits_resolve_test_and_select) :-
 
 % --- boundaries, pinned with their kind --------------------------------
 
-% A for-in loop VARIABLE in a concat still declines. Not this defect and not a slot
-% kind: `k` is the iteration key, not a scalar slot, so it is a missing PART KIND in
-% the shared concat emitter -- the same kind of gap as the assoc read pinned in
-% tests/test_plawk_assoc_end_record.pl, and a follow-on rather than a narrowing.
-% Paired with the working plain form so the difference is visible.
-test(a_for_in_loop_variable_in_a_concat_declines) :-
-    build_status("{ c[$1]++ } END { for (k in c) print \"k=\" k }\n", 3),
+% A for-in loop VARIABLE in a concat: `k` is no scalar slot on the dedicated END
+% for-in drivers (a missing PART KIND in their concat emitter). Arrays PR 3d-2's mixed
+% END-control fallback binds the key to a STRING slot, so the shared concat emitter
+% handles it, and the program now compiles, matching gawk.
+test(a_for_in_loop_variable_in_a_concat_compiles, [condition(clang_available)]) :-
+    run_sorted("{ c[$1]++ } END { for (k in c) print \"k=\" k }\n", "k=5\nk=7\n"),
     !.
 
 test(the_same_loop_variable_printed_plainly_works, [condition(clang_available)]) :-

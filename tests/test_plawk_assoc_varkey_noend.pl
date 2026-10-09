@@ -74,14 +74,15 @@ test(noend_missing_field_key, [condition(clang_available)]) :-
     assertion(Lines == [" 3"]),
     !.
 
-% A numeric/computed key in the pure chain is a clean not-yet: there is no
-% field-copy set (`n = NR % 2` is arithmetic), so the program declines with a
-% compile error rather than mis-lowering.
-test(noend_numeric_key_rejected, [condition(clang_available)]) :-
+% A numeric/computed key is a clean not-yet in the pure chain (`n = NR % 2` is
+% arithmetic, no field-copy set). Arrays PR 3d-2's mixed END-control fallback
+% compiles it: the key's decimal spelling is interned, as the counter-key path does.
+test(noend_numeric_key_compiles_via_the_fallback, [condition(clang_available)]) :-
     ndir(Dir),
     Src = "{ n = NR % 2; c[n]++ } END { for (k in c) print k, c[k] }\n",
-    build_status(Dir, 'numk', Src, St),
-    assertion(St \== 0),
+    build_run_sorted(Dir, 'numk', Src, "a\nb\na\n", Lines, St),
+    assertion(St == 0),
+    assertion(Lines == ["0 1", "1 2"]),
     !.
 
 :- end_tests(plawk_assoc_varkey_noend).
